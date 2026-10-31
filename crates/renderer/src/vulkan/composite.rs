@@ -1950,6 +1950,53 @@ mod composite_params_layout_tests {
         // #6418 — the index is the core default that `WaterMaterial` and the caustic ray read,
         // not a literal retyped in the march.
         assert!(!shader.contains("1.333"), "the god-ray march retypes the water IOR");
+        // #6526 — the march's budgets and tuning come from `shader_constants_data.rs`, not
+        // inline literals, so a perf retune (or a CPU mirror of the occlusion) has one home.
+        for inline in [
+            "const int steps = 24;",
+            "i < 6;",
+            "const float g = 0.6;",
+            "min(sunPath, 900.0)",
+            "behind > 6.0 + 0.01 * clip.w && behind < 160.0",
+            "span * 1.5",
+            "sunDirection.y < 0.05",
+            "travel.y > -0.05",
+        ] {
+            assert!(
+                !shader.contains(inline),
+                "the god-ray march retypes a shared constant inline: `{inline}`"
+            );
+        }
+        for named in [
+            "int(UNDERWATER_GODRAY_STEPS)",
+            "UNDERWATER_GODRAY_OCCLUDER_TAPS_BELOW",
+            "UNDERWATER_GODRAY_OCCLUDER_TAPS_ABOVE",
+            "UNDERWATER_GODRAY_PHASE_G",
+            "UNDERWATER_GODRAY_OCCLUDER_REACH",
+            "UNDERWATER_GODRAY_SLAB_MAX",
+            "UNDERWATER_GODRAY_SPAN_REACH",
+            "UNDERWATER_GODRAY_MIN_SUN_ELEVATION",
+        ] {
+            assert!(shader.contains(named), "the god-ray march lost `{named}`");
+        }
+        // The placement tables hold one entry per tap (three fractions below the surface, three
+        // distances above it); the counts are constants so the cost has one home, but the tables
+        // are literals, so pin the counts to their length.
+        assert_eq!(
+            (
+                crate::shader_constants::UNDERWATER_GODRAY_OCCLUDER_TAPS_BELOW,
+                crate::shader_constants::UNDERWATER_GODRAY_OCCLUDER_TAPS_ABOVE
+            ),
+            (3, 3),
+            "changing a tap count needs the shader's placement table resized with it"
+        );
+        assert_eq!(
+            crate::shader_constants::UNDERWATER_GODRAY_STEPS
+                * (crate::shader_constants::UNDERWATER_GODRAY_OCCLUDER_TAPS_BELOW
+                    + crate::shader_constants::UNDERWATER_GODRAY_OCCLUDER_TAPS_ABOVE),
+            144,
+            "PERF-2026-10-27-D5-01's measured 144 depth taps per submerged pixel"
+        );
         assert_eq!(
             crate::shader_constants::WATER_CLEAN_IOR,
             byroredux_core::ecs::components::water::WaterMaterial::default().ior

@@ -1841,6 +1841,35 @@ pub const WATER_SHORE_REFRACT_DEPTH: f32 =
 pub const WATER_SHORE_REFRACT_MAX: f32 =
     byroredux_core::ecs::components::water::WATER_SHORE_REFRACT_MAX;
 pub const WATER_CLEAN_IOR: f32 = byroredux_core::ecs::components::water::WATER_CLEAN_IOR;
+
+// #6526 — the underwater god-ray march (`composite.frag` `underwaterGodRays` /
+// `underwaterSunVisibility`). The budgets are the cost: STEPS x (TAPS_BELOW +
+// TAPS_ABOVE) = 144 depth taps per submerged pixel (PERF-2026-10-27-D5-01), so a
+// retune of either has one home. The noise shaping (focus scales, drift speeds, the
+// ridge power) and the per-tap placement fractions stay documented locals in the
+// shader: they are look, not budget, and the tap tables are one entry per tap.
+/// Samples along the view ray through the water column.
+pub const UNDERWATER_GODRAY_STEPS: u32 = 24;
+/// Occluder taps up the refracted sun ray (below the surface); the shader's
+/// placement table has one fraction per tap.
+pub const UNDERWATER_GODRAY_OCCLUDER_TAPS_BELOW: u32 = 3;
+/// Occluder taps up the unrefracted sun ray above the surface (docks, hulls,
+/// bridges overhead); one distance per tap in the shader.
+pub const UNDERWATER_GODRAY_OCCLUDER_TAPS_ABOVE: u32 = 3;
+/// Henyey-Greenstein forward-scatter anisotropy of the shafts.
+pub const UNDERWATER_GODRAY_PHASE_G: f32 = 0.6;
+/// Longest sun path (world units) the below-surface occluder taps reach along.
+pub const UNDERWATER_GODRAY_OCCLUDER_REACH: f32 = 900.0;
+/// A tap is blocked when the scene surface at its pixel lies in front of it by more
+/// than `SLAB_MIN + SLAB_PER_DEPTH * clip.w` and less than `SLAB_MAX`.
+pub const UNDERWATER_GODRAY_SLAB_MIN: f32 = 6.0;
+pub const UNDERWATER_GODRAY_SLAB_PER_DEPTH: f32 = 0.01;
+pub const UNDERWATER_GODRAY_SLAB_MAX: f32 = 160.0;
+/// The march reaches at most this many fog spans along the view ray.
+pub const UNDERWATER_GODRAY_SPAN_REACH: f32 = 1.5;
+/// Sun elevation (`sunDirection.y`) under which there are no shafts, and the least
+/// downward travel of the refracted ray that still makes one.
+pub const UNDERWATER_GODRAY_MIN_SUN_ELEVATION: f32 = 0.05;
 pub const WATER_SHORE_RIPPLE_TURN_SHARE: f32 =
     byroredux_core::ecs::components::water::WATER_SHORE_RIPPLE_TURN_SHARE;
 pub const WATER_SWELL_SHORE_TOWARD_RAMP: f32 =
@@ -3053,6 +3082,17 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float WATER_SHORE_REFRACT_DEPTH),
     shader_define!(Float WATER_SHORE_REFRACT_MAX),
     shader_define!(Float WATER_CLEAN_IOR),
+    HeaderLine::Comment("Underwater god-ray march budgets and tuning (#6526)"),
+    shader_define!(Uint UNDERWATER_GODRAY_STEPS),
+    shader_define!(Uint UNDERWATER_GODRAY_OCCLUDER_TAPS_BELOW),
+    shader_define!(Uint UNDERWATER_GODRAY_OCCLUDER_TAPS_ABOVE),
+    shader_define!(Float UNDERWATER_GODRAY_PHASE_G),
+    shader_define!(Float UNDERWATER_GODRAY_OCCLUDER_REACH),
+    shader_define!(Float UNDERWATER_GODRAY_SLAB_MIN),
+    shader_define!(Float UNDERWATER_GODRAY_SLAB_PER_DEPTH),
+    shader_define!(Float UNDERWATER_GODRAY_SLAB_MAX),
+    shader_define!(Float UNDERWATER_GODRAY_SPAN_REACH),
+    shader_define!(Float UNDERWATER_GODRAY_MIN_SUN_ELEVATION),
     shader_define!(Float WATER_SHORE_RIPPLE_TURN_SHARE),
     shader_define!(Float WATER_SWELL_SHORE_TOWARD_RAMP),
     shader_define!(Float WATER_SHORE_MIN_UPHILL_LEN),

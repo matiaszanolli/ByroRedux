@@ -538,11 +538,15 @@ float underwaterSurfaceFocus(vec2 entry, float seconds) {
 // that is off screen cannot block; this is a contact-shadow term, not a trace.
 float underwaterSunVisibility(vec3 p, vec3 toSun, vec3 sunDirection, float sunPath, mat4 viewProj) {
     float visible = 1.0;
-    float reach = min(sunPath, 900.0);
+    float reach = min(sunPath, UNDERWATER_GODRAY_OCCLUDER_REACH);
     vec3 surfacePoint = p + toSun * sunPath;
-    for (int i = 0; i < 6; ++i) {
+    // One tap per entry of the two placement tables below: the fractions along the refracted
+    // ray and the distances along the unrefracted one (the counts are the shared constants).
+    const int belowTaps = int(UNDERWATER_GODRAY_OCCLUDER_TAPS_BELOW);
+    const int taps = belowTaps + int(UNDERWATER_GODRAY_OCCLUDER_TAPS_ABOVE);
+    for (int i = 0; i < taps; ++i) {
         vec3 q;
-        if (i < 3) {
+        if (i < belowTaps) {
             q = p + toSun * (reach * (i == 0 ? 0.15 : (i == 1 ? 0.4 : 0.75)));
         } else {
             q = surfacePoint + sunDirection * (i == 3 ? 60.0 : (i == 4 ? 180.0 : 420.0));
@@ -553,7 +557,8 @@ float underwaterSunVisibility(vec3 p, vec3 toSun, vec3 sunDirection, float sunPa
         if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) continue;
         float scene = linearViewDepth(uv, texture(depthTex, uv).r);
         float behind = clip.w - scene;
-        if (behind > 6.0 + 0.01 * clip.w && behind < 160.0) {
+        if (behind > UNDERWATER_GODRAY_SLAB_MIN + UNDERWATER_GODRAY_SLAB_PER_DEPTH * clip.w
+            && behind < UNDERWATER_GODRAY_SLAB_MAX) {
             visible = 0.0;
         }
     }
@@ -571,27 +576,27 @@ float underwaterSunVisibility(vec3 p, vec3 toSun, vec3 sunDirection, float sunPa
 vec3 underwaterGodRays(vec3 viewDir, vec3 sunDirection, float rayLength, float jitter) {
     float depthBelowSurface = params.caustic_flags.z;
     float span = max(params.caustic_flags.w, 1.0);
-    if (depthBelowSurface <= 0.0 || sunDirection.y < 0.05) return vec3(0.0);
+    if (depthBelowSurface <= 0.0 || sunDirection.y < UNDERWATER_GODRAY_MIN_SUN_ELEVATION) return vec3(0.0);
 
     // Air to clean water: the index `WaterMaterial` defaults to (#6418). The submerged plane's
     // own index is not in the submersion state yet.
     vec3 travel = refract(-sunDirection, vec3(0.0, 1.0, 0.0), 1.0 / WATER_CLEAN_IOR);
-    if (travel.y > -0.05) return vec3(0.0);
+    if (travel.y > -UNDERWATER_GODRAY_MIN_SUN_ELEVATION) return vec3(0.0);
 
     float surfaceY = params.camera_pos.y + depthBelowSurface;
-    float tMax = min(rayLength, span * 1.5);
+    float tMax = min(rayLength, span * UNDERWATER_GODRAY_SPAN_REACH);
     if (viewDir.y > 1.0e-3) {
         tMax = min(tMax, depthBelowSurface / viewDir.y);
     }
     // Looking toward the sun, light scatters forward along its travel
     // direction; Henyey-Greenstein, normalised so its mean over the sphere is 1.
-    const float g = 0.6;
+    const float g = UNDERWATER_GODRAY_PHASE_G;
     float cosine = dot(travel, -viewDir);
     float phase = (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * cosine, 1.5);
 
     mat4 viewProj = inverse(params.inv_view_proj);
     vec3 toSun = -travel;
-    const int steps = 24;
+    const int steps = int(UNDERWATER_GODRAY_STEPS);
     float k = 2.0 / span;
     float dt = tMax / float(steps);
     float seconds = params.weather_params.w;
