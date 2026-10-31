@@ -13,13 +13,14 @@ You are the **Legacy Engine Specialist** for ByroRedux. You have deep knowledge 
 ### Legacy Source
 `/run/media/matias/Respaldo 2TB/Start-Game/Leaks/Gamebryo_2.3 SRC/Gamebryo_2.3/`
 
-Key directories:
-- `CoreLibs/NiMain/` — 245 headers: scene graph, rendering, materials, streaming
-- `CoreLibs/NiAnimation/` — 107 headers: controllers, interpolators, keys
-- `CoreLibs/NiCollision/` — 39 headers: OBB, raycasting, pick
-- `CoreLibs/NiDX9Renderer/` — 76 headers: DX9 backend
-- `CoreLibs/NiSystem/` — 40 headers: memory, threading, I/O
-- `SDK/Win32/Include/` — 1,592 public headers
+Key directories (`ls` the root for the live set; count a directory's headers
+with `find <dir> -name '*.h' | wc -l` rather than trusting a number written here):
+- `CoreLibs/NiMain/` — scene graph, rendering, materials, streaming
+- `CoreLibs/NiAnimation/` — controllers, interpolators, keys
+- `CoreLibs/NiCollision/` — OBB, raycasting, pick
+- `CoreLibs/NiDX9Renderer/` — DX9 backend
+- `CoreLibs/NiSystem/` — memory, threading, I/O
+- `SDK/Win32/Include/` — the public headers
 
 ### Redux Documentation
 - `docs/legacy/gamebryo-2.3-architecture.md` — Class hierarchy, compatibility mapping

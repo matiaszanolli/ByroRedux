@@ -206,14 +206,14 @@ First step: `cargo run -p byroredux-nif --release --example nif_stats -- <archiv
 Paths: `crates/nif/src/import/{mod,transform,coord,precombine,units}.rs`, `import/types/`, `import/mesh/`, `import/walk/`, `import/material/{walker,dedicated_shader}.rs`
 First step: `git log --since=<last report> --format='%h %s' -- crates/nif/src/import/mesh crates/nif/src/import/walk`
 This is the *parse → ECS* handoff; per-game material classification is `/audit-nifal`.
-**Guards**: `import/mesh/sse_skin_index_space_tests.rs` (`#[ignore]`, needs Skyrim SE data),
+**Guards**: `import/mesh/sse_skin_index_space_tests.rs` (the real-data probe is `#[ignore]`, needs Skyrim SE data; `no_remap_contract_docs_decode_fn_not_payload_alias` runs always, pinning the #613/#2577 no-remap doc to `decode_sse_skin_payload`, e03dff819 #6513),
 `bs_tri_shape_partition_remap_tests.rs`, `sse_skin_geometry_reconstruction_tests.rs`,
 `tangent_convention_tests.rs`, `tests/normal_synthesis_corpus.rs` (ignored), `import/walk/tests.rs`.
 **Checklist**:
 - All `NiAVObject` fields via the `.av.*` sub-struct. Coordinate conversion (Z-up → Y-up,
   `coord.rs`) applied consistently to positions, normals, rotations. `compose_transforms`
   neutralises an overflowed (finite-input, non-finite-product) result through the #4549
-  sanitiser (#4633, `compose_transforms_overflowing_products_are_neutralized`).
+  sanitiser (#4633, `compose_transforms_overflowing_products_are_neutralized`). Every parent-chain fold goes through it: `extract_np_ragdoll` (#6303) and the Starfield external-skeleton resolver `SkeletonBones::from_scene` (`import/mesh/skeleton.rs`, resolves nodes with `any_ni_node`; ec8bbd01f #6473, `from_scene_scales_child_offsets_and_walks_switch_node_parents`) — a hand-rolled rotation x translation fold with no scale term is the regression.
 - **Walker bounds**: `NiNode.children` holds raw `BlockRef`s never verified to form a tree, so
   all five scene-graph walkers (hierarchical, flat, and the lights / texture-effect /
   particle-emitter satellites) thread one per-walk visited bitset (`new_visited`) through

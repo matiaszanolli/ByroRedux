@@ -26,7 +26,7 @@ is no substitute for a bound).
 - `crates/papyrus/src/`: `token.rs`, `lexer.rs`, `ast.rs`, `span.rs`, `error.rs`, `lib.rs`,
   `parser/{mod,expr,stmt,script}.rs`.
 - Instruments: `crates/pex/examples/pex_corpus_smoke.rs` (decompiles every `.pex` in real archives; the
-  source of the decompile-rate claim), `pex_dump_fn.rs` (raw-bytecode disassembly of one failing function),
+  source of the decompile-rate claim), `pex_dump_fn.rs` (raw-bytecode disassembly of one failing function), `pex_list_fns.rs` (a `.pex`'s typed function signatures, e.g. `Quest.pex` `OnStory*` — read-only convenience, not a gate),
   `pex_corpus_shapes.rs` + `docs/r5/corpus-shape-survey.txt`,
   `crates/bsa/examples/r5_extract_pex_ba2.rs` (corpus extractor).
 - Ground truth: crate docstrings (`crates/pex/src/lib.rs`, `decompile/mod.rs`), `docs/engine/{papyrus-parser,
@@ -145,7 +145,7 @@ First step: `cargo test -p byroredux-pex -- decompile::`; with game data: `cargo
 - **Recursion**: `MAX_REBUILD_DEPTH = 1024` in `control_flow.rs` (`boolean.rs` derives it — not restated);
   both rebuilds return `RecursionLimit` (`rebuild_rejects_excessive_recursion_depth` exists in *both* files).
   It and `MAX_EXPR_DEPTH` (256) compose additively (~1,280) and independent edits erode the margin
-  (#4113 still open, verified 2026-10-27) — check any change to either constant.
+  (#4113 still open, verified 2026-10-31) — check any change to either constant.
 - **`lower.rs` totality**: `lower_expr`/`lower_stmt` never panic on any `NodeKind`; intentional lossy lowerings
   matter only if a recognizer keys on the lost info: statement-shaped node as sub-expression → `NoneLit`
   (should be unreachable), `is` → `Cast`, `lower_binary_op` default arm →

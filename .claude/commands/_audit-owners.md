@@ -68,6 +68,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/plugin/src/esm/cell/wrld.rs` | esm, exterior; per-game | HIGH |
 | `crates/plugin/src/esm/records/misc/{location,relationship}.rs` | esm, scripting, performance Dim 7; per-game | HIGH |
 | `crates/plugin/src/esm/records/misc/challenge.rs` | esm, scripting, performance Dim 7; fnv | MEDIUM |
+| `crates/plugin/src/esm/records/misc/{music,media_set}.rs` | esm, audio Dim 3, performance Dim 7; per-game | MEDIUM |
 | `crates/plugin/src/esm/cell/index.rs` | esm, exterior, performance Dim 7; per-game | HIGH |
 | `crates/plugin/src/esm/records/lmsw.rs` | esm, nifal, performance Dim 7; starfield, fo4 | MEDIUM |
 | `crates/plugin/src/esm/records/actor/npc.rs` | esm, character Dim 4, performance Dim 7; per-game | HIGH |
@@ -178,6 +179,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/systems/script_requests.rs` | scripting Dim 6, gameplay, audio Dim 3+5, ecs, performance | MEDIUM |
 | `byroredux/src/systems/{flee,head_look,knockdown,revive,magic_shader,script_queries}.rs` | scripting Dim 6, gameplay, ecs, performance | MEDIUM |
 | `byroredux/src/systems/vats.rs` | character, gameplay, ecs, performance | MEDIUM |
+| `byroredux/src/systems/{mines,attraction,dead_body,iron_sights,random_conversation}.rs` | gameplay, scripting Dim 5, ecs, performance | MEDIUM |
 | `byroredux/src/systems/` | ecs, performance | MEDIUM |
 | `byroredux/src/render/{sky,water,groundcover}.rs` | exterior, renderer, performance, concurrency Dim 7 | MEDIUM |
 | `byroredux/src/render/` | renderer, performance, concurrency Dim 7 | MEDIUM |
@@ -190,6 +192,8 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/combat.rs` | gameplay, character, physics Dim 6 | MEDIUM |
 | `byroredux/src/inventory` | gameplay, character Dim 4 | MEDIUM |
 | `byroredux/src/crafting.rs` | gameplay, scripting Dim 5, save Dim 1 | MEDIUM |
+| `byroredux/src/{smithing,lockpick}.rs` | gameplay, scripting Dim 5, save Dim 1 | MEDIUM |
+| `byroredux/src/armor.rs` | gameplay, character, ecs | MEDIUM |
 | `byroredux/src/interaction.rs` | gameplay, ui, scripting Dim 5, save Dim 4 | MEDIUM |
 | `byroredux/src/settings_io.rs` | tooling, gameplay | LOW |
 | `byroredux/src/loading_screen.rs` | gameplay, esm, renderer Dim 1+5; skyrim, fo4 | LOW |
@@ -211,6 +215,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/commands/terrain.rs` | exterior Dim 2, ecs, tooling | MEDIUM |
 | `byroredux/src/commands/gameplay.rs` | gameplay, character Dims 3-4, ecs, tooling | MEDIUM |
 | `byroredux/src/commands/vats.rs` | character, gameplay, ecs, tooling | MEDIUM |
+| `byroredux/src/commands/story_actions.rs` | scripting Dim 5, gameplay, ecs, tooling | MEDIUM |
 | `byroredux/src/commands` | ecs, tooling | MEDIUM |
 | `byroredux/src/asset_provider/{actor_graph,archetype_idle,object_graph}.rs` | gameplay Dim 5, scripting Dim 5, parsers; fo4 | MEDIUM |
 | `byroredux/src/asset_provider/animation.rs` | scripting Dim 5, parsers | MEDIUM |

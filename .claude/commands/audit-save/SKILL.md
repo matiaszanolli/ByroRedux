@@ -29,7 +29,7 @@ progress** — frame as CRITICAL/HIGH per `_audit-severity.md` (data loss is CRI
 `bde3478db` it also calls per-subsystem `register_saved(&mut registry)` delegates in `crates/scripting/src/`
 (`ownership`, `crime_gold`, `crime_faction`, `obscript_state`, `obscript_ledger`, `crime_knowledge`, `challenges`,
 `magic_effects`, `speechcraft`, `loc_ref_types`, `destruction`, `skills` — `loc_ref_types` onward `e619dbbaf`, which splits the
-builder chain at each — plus `linked_refs`, `animation_graph`, `scanning`, `form_lists`, `0f11a98e9`; #5802 stays open for
+builder chain at each — plus `linked_refs`, `animation_graph`, `scanning`, `form_lists`, `0f11a98e9`, and `words_of_power` (M43, v120, after `skills`); #5802 stays open for
 the remaining slices), each at its rows' former position, because `schema_fingerprint` hashes rows in registration order — moving a
 delegate call is a `SchemaMismatch` for every existing save),
 `MUTABLE_DELTA_COLUMNS` (**second** hardcoded list driving the live overlay), `PRE_RELOAD_RESOURCES`,
@@ -186,19 +186,19 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
 ### Dimension 2: Format & Schema Discipline (registry fidelity + `FORMAT_MAJOR`)
 Paths: `crates/save/src/{snapshot,registry}.rs`, `save_io/serde_default_guard_tests.rs`, `crates/save/Cargo.toml`, `crates/core/Cargo.toml`
 First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git log --since=<last report> --format='%h %cs %s' -- crates/save/src/snapshot.rs`
-- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`: 119 as of 2026-10-27, with one `vN -> vN+1`
+- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`: 122 as of 2026-10-31, with one `vN -> vN+1`
   entry per bump from v22 on, contiguous since #5459 `a4ccf3b27` restored the v32→v33 entry (#5367 `14cff35ae`, new saved
   resource `DialogueSpokenInfoForms`) and pinned it with `the_bump_ledger_is_contiguous_and_current`. Recent anchors: v36 Wave 4 `RigidBodyData.surface_material`, v37 #5542
   widened it `u8`→`u32`, v38 #5300 re-keyed `DialogueSpokenInfoForms` to a (speaker ref, INFO) pair, and v39–v104
   are almost entirely M47.2 scripting state — new saved resource columns, `Effect` / `FragmentGuard` / `ValueExpr`
   variants and fields reachable through queued fragment continuations (`FragmentExecutionQueue`), `CharacterLevel`
-  v46 (kill XP ended #2947's exemption), `Bleedout` v51, `LevelUpPoints` v53; v105–v119 are gameplay/ObScript
+  v46 (kill XP ended #2947's exemption), `Bleedout` v51, `LevelUpPoints` v53; v105–v122 are gameplay/ObScript
   fields and columns (`Bleedout.remaining_secs` → `Option` v105, parked `ReferenceState.bleedout` v106, M47.3 ObScript
   columns v109–v112, `Material.source_shader_type` v113 #4256, parked `ReferenceState` script package / corpse pose +
   `PersistentReferenceStates` script rows v114 #6071–#6073 `611769b16`, parked `ReferenceState` magic effects /
 `weapon_drawn` / `ignore_crime` + `ScriptState` timer / rumble v115 #6085 `3b9060701`; `RigidBodyData` out,
 `ReferenceMotionTypeState` in v116 #6237 `6765e60eb`; v117 #6190 `ObScriptLedger` lost four unread columns; v118 Oblivion
-jail — `ObScriptLedger.stolen_goods` / `evidence` / `jail`; v119 the `CrimeKnowledge` resource joined the registry); do not hardcode the number elsewhere). Precedent: v112
+jail — `ObScriptLedger.stolen_goods` / `evidence` / `jail`; v119 the `CrimeKnowledge` resource joined the registry; v120 the `KnownWords` resource joined it and `Effect` gained `ObtainWord`; v121 `SmNodeRuntime.last_node_fire_hours`; v122 `ItemInstance.quality`); do not hardcode the number elsewhere). Precedent: v112
   (#6050 `5f8bbf454`) — `register_saved` columns landed after a baseline refresh with no bump and the shape guard sat
   red on main; a new registered column's defining file joins the shape scan, so it is a bump here too. Intra-type shape changes need a bump because
   `schema_fingerprint` hashes only column keys (+ replacing policy). A new required field, retyped field, or new `Option` in a saved
@@ -340,7 +340,7 @@ First step: read `execute_pending_save_loads` top to bottom against the sequence
   loaded world and be kept by the next save, #6239 `337bf25c8`)
   → `restore_extension_state` → wholesale
   `restore_resources` **again** (idempotent; re-asserts `CurrentCellContext`/`PlayerPose`; the second call is
-  not redundant) → `restore_resident` (parked rows for resident placements, #4695) → `drop_entity_bound_continuations` on `PapyrusProviderContinuationQueue` (session-local
+  not redundant) → `restore_resident` (parked rows for resident placements, #4695; followed by `combat::release_held_dead_actor_reconciliations`, which hands a corpse's held reconciliation to the Late-stage sink now that its placement is resident, #6133 `1e2c1d30e`) → `drop_entity_bound_continuations` on `PapyrusProviderContinuationQueue` (session-local
   `EntityRef` handles must not resume, #4139) → `build_form_id_remap` → a `ScriptPackage`-only `apply_deltas` pre-seat (the ambient selection honours a running
   script package over the schedule, so re-seating without it stamped the scheduled winner and the next minute's tick
   cleared the freshly overlaid `TravelState`/`Traveled` markers and reported a spurious package-change fragment; the column

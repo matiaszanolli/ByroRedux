@@ -35,7 +35,7 @@ changes gameplay silently — no crash, no validation error, no failing test unl
   `byroredux/src/inventory/` (`attach_to_player` stamps the player's `ActorValues`/`ActorVitals`/`CharacterLevel`/
   `Background`/`SpellList`/`RaceSpells` and reads `CharacterRulesProfile::vital_pools`), `byroredux/src/combat.rs` (`melee_damage_charal_bonus`, `grant_experience`),
   `byroredux/src/commands/{actor_value,condition}.rs`, VATS runtime `byroredux/src/systems/vats.rs` + `components/vats.rs` (`VatsState`) +
-  `commands/vats.rs` (`vats.*`; `build_vats_model` in `npc_spawn.rs` is the one installer), `byroredux/src/crime.rs` (installs the `CrimeModel` resource from
+  `commands/vats.rs` (`vats.*`; `build_vats_model` in `npc_spawn/stamps.rs` is the one installer), `byroredux/src/crime.rs` (installs the `CrimeModel` resource from
   `index.character_rules.crime()`), `crates/scripting/src/{crime_faction,jail}.rs` (crime-faction fines, Oblivion jail).
 - Handoff: gameplay writers of `ActorValues` (consumables, restoration, combat — `byroredux/src/
   {inventory,combat}.rs`, `systems/restoration.rs`) belong to `/audit-gameplay`; CHARAL owns only whether
@@ -54,7 +54,7 @@ ruleset.md` — **the authority for every constant**; a coefficient no capture s
 - VATS (#6350, open umbrella): the AP pool, its regen, the mode machine with world freeze, the targeting scan and the AP-gated
   queue/confirm (die roll per shot through the combat funnel, same-target hits folded into one `HitEvent`) are live for FO3/FNV
   (`3dc16208e`..`1fb7e6f56`). Still absent, so not findings: a VATS menu, per-part damage routing / limb health, playback + camera,
-  Concentrated Fire's perk accuracy. The to-hit operation order is **reconstructed, not captured**; its ground-truth test is
+  Concentrated Fire's perk accuracy. `vats.enter` shares the key's entry gates through `vats_entry_refusal` and `vats.scan/queue/confirm` refuse outside VATS (#6469 `9d82dc616`); a weapon's base to-hit is the `u8` at `WEAP` `DNAM`@40 and the VATS sub-record's AP is the *special* attack's (`WeaponVats::special_attack_ap`), a regular attack charges `DNAM`@68 or the engine default (#6449/#6450 `e97707b14`). The to-hit operation order is **reconstructed, not captured**; its ground-truth test is
   `#[ignore]`d pending recorded scenarios (#6403, open) — never let the reconstruction arbitrate itself.
 - Regen: `pool_regen_tick_system` is live for FO3/FNV **ActionPoints only** — `build_vats_model` returns a `PoolRegenConfig` carrying
   the `ActionPointsRegen` lane, installed on the first FO3/FNV cell load (`cell_loader/references/mod.rs`; #6374 `68f200ec4`
@@ -67,7 +67,7 @@ ruleset.md` — **the authority for every constant**; a coefficient no capture s
   Skyrim a perk point + a pool pick (#5916 `612bd179e`); only classic-TES `SkillUse` has no XP-driven roll.
 - Oblivion `RulesetBuilder::None` is deliberate (no AVIF pre-FO3 → no resolver); pinned by
   `oblivion_still_has_no_runtime_ruleset_and_that_is_deliberate`. FO76/Starfield: captures, no builders.
-- Open (verified 2026-10-27) — cite, do not re-file: #4137 (two `template_flags` bits with no consumer — Script 0x0200, Def Pack List 0x0400;
+- Open (verified 2026-10-31) — cite, do not re-file: #4137 (two `template_flags` bits with no consumer — Script 0x0200, Def Pack List 0x0400;
   the other four listed gained `ResolvedNpc` terminals, `eae8fd740`), #4232 (`effective_actor_level` returns 0 verbatim), #6403 (VATS to-hit ground truth). #4415 (magic runtime) is closed (`9813af435`). The 2026-09-19 report's
   #4452-#4457/#4459-#4463 are all closed — regression checks now. Verify with `gh issue view` before citing.
 
@@ -152,6 +152,9 @@ First step: `cargo test -p byroredux-core character::derived character::fallout 
   `oblivion_hand_to_hand_damage` cross-term) vs `charal-oblivion-ruleset.md` "Complete Damage Formula";
   `stealth.rs` (`detection_score`/`classify`) vs `charal-fnv-fo3-ruleset.md` "Sneak Detection". Perspective
   traps: UESP's "Opponent…" names are attacker-relative; the code reads the *wearer's* own skill (#4449).
+  `detection_score` transcribes the source's squared attenuation unclamped: past `MaxDist` it rises again (`d = 2·MaxDist` scores like `d = 0`), so
+  `DetectionInputs::distance <= locale.max_distance()` is a documented caller precondition (#6433 `7e9678fd8`,
+  `attenuation_past_max_distance_is_not_clamped`) — a caller that skips the range gate is the finding, not the formula.
   Verify regardless of consumer-less status.
 **Output**: `/tmp/audit/character/dim_2.md`
 
@@ -191,6 +194,7 @@ First step: `cargo test -p byroredux-core character::leveling character::regen c
   out-of-range authored values); `FALLOUT_NV` carries the six re-tunes FalloutNV.esm authors (#6424), FO3 the wiki defaults; the model is the
   profile's `vats()` row (#6423) — `build_vats_model` must not test the game. Check each default against `charal-fnv-fo3-ruleset.md`
   (*VATS tuning, Action Points regen and the radiation gauge*); steps in `to_hit_chance` marked RECONSTRUCTED stay marked until #6403 lands captures.
+- **Affliction pool** = the *composed* value (`AfflictionTable::pool_value` reads `ActorValues::current`, the layer `GetAV` and the HUD rad gauge read; writers accumulate on `mod_temporary`/`mod_permanent`, the `damage` layer is not the pool — #6428 `cf58dec5a`, `the_rad_gauge_and_the_affliction_pool_read_one_write`); rad accumulation and RADS-stage penalties are unbuilt.
 - **Affliction** = diff-and-reapply (remove previous band's penalty before applying the new one — a
   missing removal compounds); bands half-open and consistent; `band_for` vs `band_by_key` tie-break (#4456).
 - **Resistance/reputation**: `damage_multiplier` clamps `[0, cap]`, never negative (no healing);
@@ -201,8 +205,8 @@ First step: `cargo test -p byroredux-core character::leveling character::regen c
   default against its cited CS/UESP line (`fCrimeGoldSteal` 0.5, attack 40, murder 1000, prison divisor 100, `rush_bounty` 500 =
   Oblivion.esm's authored `iCrimeGoldAttackMin`); `theft_rounds_up` (Oblivion up, min 1 septim; Skyrim down) and the saturating
   `as i32` casts; `with_gmst` ignores non-finite/negative values. Pins `a_theft_fines_half_the_value_rounded_up_and_never_less_than_one`,
-  `skyrim_rounds_a_theft_down_and_keeps_the_bounty_per_crime_faction`. Trespass 5 / pickpocket 25 are the associated consts, used by
-  `crates/scripting/src/crime_faction.rs::faction_fine` only where a faction's Crime tab does not author them.
+  `skyrim_rounds_a_theft_down_and_keeps_the_bounty_per_crime_faction`. Trespass 5 / pickpocket 25 are `CrimeModel` fields (`trespass_gold`/`pickpocket_gold`, read from `iCrimeGoldTresspass`/`iCrimeGoldPickpocket` in `with_gmst`, #6427 `3a0b6be0a`,
+  `the_trespass_and_pickpocket_fines_are_authored_settings`), read by `crates/scripting/src/crime_faction.rs::faction_fine` only where a faction's Crime tab does not author them; a fixed const there is the regression.
 - Every constant here needs a **Source**; regen rates and band thresholds are exactly the numbers typed
   from memory.
 **Output**: `/tmp/audit/character/dim_3.md`
@@ -225,7 +229,7 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   race boundaries: `cell_loader/references/mod.rs` and `player_body.rs`, the latter joined in #5047
   `c20dcdb04`, which also moved the player's level/Background/outfit reads onto the Use-Stats/Use-Traits/
   Use-Inventory terminals) — a new direct call or a raw `npc.<field>` read is the recurrence
-  (fix-by-addition made it worse in #4086). Verify the enumerated count moved only deliberately, and that new reads honor `template_flags` rather than overwriting inherited values (six bits still have no consumer: #4137).
+  (fix-by-addition made it worse in #4086). Verify the enumerated count moved only deliberately, and that new reads honor `template_flags` rather than overwriting inherited values (only Script 0x0200 and Def Pack List 0x0400 still lack a consumer: #4137; Skyrim's Use Keywords 0x1000 gained a `keywords_terminal`, #6515 `26850aa5f`).
 - **Base-FormID readers of Use-Traits fields** (#6228 `b76a74e45`): sex/voice/race for readers that hold a base FormID rather than a
   spawn's `ResolvedNpc` go through `equip::traits_terminal` — the dialogue voice key (`systems/dialogue_voice.rs`), `ActorBaseTraits`
   (`GetIsSex`/`GetSex`/`GetVoiceType`/`GetLeveledActorBase`, which is its own arm now, not an alias of `GetActorBase`), the gendered

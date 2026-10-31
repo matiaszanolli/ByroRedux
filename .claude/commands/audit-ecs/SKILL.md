@@ -64,7 +64,9 @@ adherence and CI detector coverage are `/audit-concurrency` Dim 3 and Dim 5.
   recursive-read paths (#2384/#3696; `is_clean()` true after a caught ABBA panic); `GRAPH` lock
   poison is recovered with `unwrap_or_else(|poison| poison.into_inner())`, never `.expect` (#2385 —
   an `.expect` blinds the detector after its first correct catch); a recursive read is a deduplicated
-  `log::warn!`, not a reject (#2386/#3249: `recursive_read_warns_once_and_continues`); the `held_others`
+  `log::warn!`, not a reject (#2386/#3249: `recursive_read_warns_once_and_continues`), and it names the *user's*
+  call site because `Location::caller()` is captured in `track_read` itself, outside the `LOCKS.with` closure
+  (#6502 `2f82711c9`, `recursive_read_warning_names_the_users_call_site`); the `held_others`
   snapshot is gated on `cfg(debug_assertions)` AND `global_order::is_enabled()` (#823/#3680) so a
   detector-off debug build allocates nothing.
 - **Poison**: every acquisition resolves `PoisonError` through `storage_lock_poisoned` /
@@ -200,7 +202,12 @@ First step: `cargo test -p byroredux -- system_access_declaration_tests schedule
 
 Stages: `Early → Update → PostUpdate → Physics → Late` (`Stage`, discriminants 0..=4, ordered by
 `BTreeMap`); "exclusive" is a *phase inside every stage* (`StageData.exclusive`, serial after that
-stage's parallel batch), not a stage. Registered per stage in `register_{early,update,post_update,physics,late}_systems`.
+stage's parallel batch), not a stage. Registered per stage in `register_{early,update,post_update,physics,late}_systems`; the Update one is an
+orchestrator (`boot/schedule/update/mod.rs`) over five ordered segment functions in the same directory
+(`register_interaction_and_crime`, `register_combat`, `register_quest_story_scene_and_packages`,
+`register_script_runtime`, `register_player_and_animation`; #6359 `4ab5766e3`) — registration order is the producer →
+consumer contract, so a new system joins the segment whose slot it fills, and the per-function size pins in
+`per_frame_driver_functions_stay_within_their_size_pins` (`scheduler_access_tests.rs`) catch a segment regrowing.
 
 - **The `Access` model**: `Access::new().reads::<T>().writes::<U>().reads_resource::<R>()…`;
   declared / declared-empty / undeclared (`None`). `AccessConflict` has exactly `None`,
@@ -238,8 +245,9 @@ stage's parallel batch), not a stage. Registered per stage in `register_{early,u
   (`KillRecords` write plus its `SceneAliasCandidate` / `CreatureActor` / `FormIdComponent` / `FormIdPool` /
   `PapyrusPlayerEntity` reads, #6217 `ef48dbd03`). Since #5647 `eca0c4709` `raise_kill_story_event` ends in the
   scripting crate's `story_manager::raise_story_event`, whose collision path writes the `PendingScriptStoryEvents`
-  resource — a cross-crate, non-turbofish hop the table cannot follow. At HEAD that row declares `writes::<StoryEvent>`
-  but no `PendingScriptStoryEvents` write (only the dialogue exclusive in `boot/schedule/late.rs` does): a by-hand check.
+  resource — a cross-crate, non-turbofish hop. #6447 `1ebb38bce` closed the gap this left: the row now declares that
+  write and `raise_story_event` is a listed `PARALLEL_SYSTEMS` hop (red without it, per the commit). The same shape —
+  a producer reached only through a cross-crate call with no turbofish — stays a by-hand check for any other row.
   **What the guard cannot see** (audit these by hand for every parallel system and any exclusive being
   promoted to parallel): it matches only single-type turbofish `query` / `query_mut` / `resource` /
   `resource_mut` (+ `try_`), `.get` / `.get_mut` / `.has` (#4994) and the generic

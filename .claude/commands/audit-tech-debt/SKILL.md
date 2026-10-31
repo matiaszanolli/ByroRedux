@@ -78,40 +78,43 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
      echo "test files >2000 total LOC (lower priority, separate bucket): $(find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l)"
    } > /tmp/audit/tech-debt/baseline.txt
    ```
-   Measured 2026-10-27 at eae8fd740 (diff direction only, re-run, never quote): markers 26 (18 are `XXXX` false positives — three
-   are the `--type XXXX` usage placeholder in `crates/plugin/examples/dump_wths_refl.rs` — 2 the
-   FO4 `HACK` FourCC, 3 quoted upstream FIXMEs, 1 documented `TBD` — Dim 5; two real TODOs in `byroredux/src/loading_screen.rs`,
-   which cite the open #6194 since #6181, 51f97f708),
+   Measured 2026-10-31 at 8985a2e99 (diff direction only, re-run, never quote): markers 38 (18 are `XXXX` false positives — three
+   are the `--type XXXX` usage placeholder in `crates/plugin/examples/dump_wths_refl.rs` — 16 the FO4 `HACK` terminal
+   FourCC (M43's `byroredux/src/lockpick.rs` and its tests/doc comments, up from 2), 3 quoted upstream FIXMEs, 1 documented `TBD` — Dim 5;
+   **zero** real TODOs: the two in `byroredux/src/loading_screen.rs` (tracked by #6194 since #6181, 51f97f708) were rewritten as
+   a stated "what the P6 cover does not model" doc by 729fbab1f, closing #6194 — a fresh real TODO is notable),
    `allow(dead_code)` 39 (41 on 2026-10-25, #6397/#6398 retired two; 12 of them are `cfg(test)` TypeId-only markers in `crates/core/src/ecs/lock_tracker.rs`, c5113f0d9 —
-   not debt), `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 373 (unchanged since 2026-10-25; 368 on 2026-10-24, 363 on 2026-10-21, 352 on 2026-10-20, 322 on 2026-10-15; tools-inclusive —
+   not debt), `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 382 (373 on 2026-10-27, 368 on 2026-10-24, 363 on 2026-10-21, 352 on 2026-10-20, 322 on 2026-10-15; tools-inclusive —
    earlier reports scoped to `crates`+`byroredux` read lower; none runs on a hosted runner),
-   production >2000 LOC: **1** at the 2026-10-25 measure — `crates/renderer/src/shader_constants_data.rs` (3150, a data table, Dim 1); the
-   other, `crates/scripting/examples/mq101_conformance/`, was split by #6360 on 2026-10-28 (re-measure it by its children). Three left the list through real splits since 2026-10-25:
+   production >2000 LOC: **2** — `crates/renderer/src/shader_constants_data.rs` (3169, a data table, Dim 1) and
+   `crates/debug-ui/src/panels.rs` (2086, crossed from 1938 on the M43 dialogue-page / crafting / drop-and-cast panels, 041d57333..c2742a901; a real finding, no filed issue). The
+   other 2026-10-25 entry, `crates/scripting/examples/mq101_conformance/`, was split by #6360 (01f48c929, largest child ~530). Three left the list through real splits since 2026-10-25:
    `crates/audio/src/` (#6140, b2e542eee — `lib.rs` is a ~200-LOC hub over `dsp`/`world`/`components`/`system`/`cache`, largest child ~610),
-   `crates/nif/src/import/types/` (#6141, 5559074be — eight files, largest ~570) and `crates/scripting/src/obscript_effects/`
-   (2034 at d5d13edcc → 1842 after #6365/#6373, then split into per-domain handler modules by #6355 on 2026-10-28). The five scripting/save/cell monoliths of 2026-10-15 left the list through real splits —
+   `crates/nif/src/import/types/` (#6141, 5559074be — eight files, largest ~575) and `crates/scripting/src/obscript_effects/`
+   (2034 at d5d13edcc → 1842 after #6365/#6373, then split into per-domain handler modules by #6355, aa29774ec, largest child ~550). The five scripting/save/cell monoliths of 2026-10-15 left the list through real splits —
    `crates/scripting/src/fragment/vm.rs`, `crates/scripting/src/translate/effects.rs`, `crates/scripting/src/condition.rs`,
    `byroredux/src/save_io.rs` and `crates/plugin/src/esm/cell/mod.rs` are now ~70–150-LOC hubs over `vm/`, `effects/`,
    `condition/`, `save_io/` and `cell/` directories, the largest child ~1400 — as did `byroredux/src/components.rs` (#5467) and
    `crates/scripting/src/fragment/effects.rs` (#5468) before them. **Split-hub hazard:** a path-scoped `git log` / `grep` on a hub
    file silently sees only the hub (`git log -- byroredux/src/save_io.rs` returned 0 commits where the directory returned 24);
    scope Dim 1 deltas to the `<stem>/` directory and measure a split by its children, not by the parent shrinking. Watch-list
-   within 5%: `byroredux/src/inventory/` (1944), `crates/debug-ui/src/panels.rs` (1938),
-   `crates/renderer/src/vulkan/gpu_timers.rs` (1929) and `byroredux/src/npc_spawn/` (1901); just under the band:
-   `crates/plugin/src/esm/records/misc/world.rs` (1870), `crates/renderer/src/mesh.rs` (1864),
-   `byroredux/src/asset_provider/material/merge.rs` (1860). `byroredux/src/inventory/` (#6356) and `byroredux/src/npc_spawn/` (#6357) were split
-   again on 2026-10-28; measure them by children.
+   within 5%: `crates/plugin/src/esm/records/misc/world.rs` (1910); just under the band:
+   `crates/renderer/src/mesh.rs` (1864), `byroredux/src/asset_provider/material/merge.rs` (1860),
+   `crates/nif/src/import/material/mod.rs` (1857), `byroredux/src/app_events.rs` (1833). `byroredux/src/inventory/` (#6356, 258c6d9b2, largest child ~790)
+   and `byroredux/src/npc_spawn/` (#6357, 613c7f46e, largest child ~1460) were split on 2026-10-28; measure them by children.
+   `crates/renderer/src/vulkan/gpu_timers.rs` (1929 on 2026-10-25) fell to 1703 when #6358 (0288f468d) made the per-pass brackets
+   `TimerPass` table rows.
    `crates/renderer/src/vulkan/context/init.rs` (1950 on 2026-10-25) left the band — 3e6f6b66a (#6143) split the frame and
    Vulkan drivers into `init_stages.rs` and the per-stage `context/` files, each pinned by `function_size_pin_tests.rs`;
    the instance list is regenerated every audit from `dim1_big.txt` — trust the recipe and the count delta over the names;
-   test-heavy >2000: 93.
+   test-heavy >2000: 91.
    A raw whole-repo grep for `#[ignore]` also matches markdown prose — keep `--include='*.rs'`.
 
 ## Phase 2: Dimension Agents
 
 Ordered by debt impact: complexity and duplication compound across every edit; doc/audit rot misdirects the *next*
 audit; markers and dead code are cheap. Recent yield (`grep -h '\*\*Dimension\*\*' docs/audits/AUDIT_TECH_DEBT_*.md`):
-Dims 2, 1, 3 dominate (then 8, 4; 7, 9) — counted over all 41 reports on 2026-10-27; 5 and 6 rarely surface real debt. Each agent writes `/tmp/audit/tech-debt/dim_<N>.md`.
+Dims 2, 1, 3 dominate (then 8, 4; 7, 9) — counted over all 42 reports on 2026-10-31; 5 and 6 rarely surface real debt. Each agent writes `/tmp/audit/tech-debt/dim_<N>.md`.
 
 ### Dimension 1: File / Function / Module Complexity
 Paths: all `.rs` under `crates/`, `byroredux/`, `tools/`
@@ -186,6 +189,10 @@ auto-eligible findings (trivial). Guards that already police a class — aim at 
   it only sees a doc whose FIRST backticked name is a sibling declared just below (a looser rule flagged 126 sites of ordinary
   prose), so a splice that does not open with a name still needs a reviewer: sweep the commits' hunks that add an item
   directly below a doc block.
+- **Status-doc line ceilings**: `readme_and_roadmap_hold_their_line_ceilings` (`byroredux/src/workspace_hygiene_tests.rs`,
+  #5332) fails README.md > 600 or ROADMAP.md > 800 lines (`wc -l` agrees with it). ROADMAP.md read 808 at 8985a2e99 after
+  43252c859 had trimmed it to 800 — a red hygiene test there is a finding (trim, do not raise the cap). The `docs/engine/game-loop.md`
+  live-schedule table is pinned to name the VATS / package / crime systems (#6378, 31c0da40c; the pin moved to the same file in 43252c859).
 - **Deleted `Material::classify_pbr`**: `no_source_file_frames_the_deleted_classify_pbr_as_live`
   (`byroredux/src/workspace_hygiene_tests.rs`) fails a doc that names it as live. The survivors are the free fn
   `classify_pbr_keyword` and `Material::resolve_pbr`.
@@ -236,7 +243,8 @@ promotes (severity table).
 **False positives**: `XXXX`, the ESM extended-size sub-record tag (key on comment content — "references the ESM `XXXX`
 escape" — not a file list; `reader.rs`, `cell/wrld.rs`, the `b"XXXX"` test sentinels in `records/misc/magic.rs` and the
 FourCC table doc in `sdk/src/compatibility/storage_util/mod.rs` all qualify); `HACK`, the FO4 terminal-record FourCC
-(`crates/plugin/tests/parse_real_esm.rs`); a `// FIXME` quoting a reference implementation's
+(`crates/plugin/tests/parse_real_esm.rs`; since M43 also the `HACK` constant, docs and tests in `byroredux/src/lockpick.rs`,
+`byroredux/src/interaction.rs` and `byroredux/src/commands/story_actions.rs`); a `// FIXME` quoting a reference implementation's
 own FIXME (`crates/bgsm/src/bgem.rs`, `bs_geometry.rs`) documents upstream; a `TBD` that records an unresolved format
 semantic together with its own resolution (the FNV `WEAP` `DNAM` arm in `crates/plugin/src/esm/records/items.rs`) is a
 documented unknown, not a stale marker.

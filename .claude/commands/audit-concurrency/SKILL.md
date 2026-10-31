@@ -264,7 +264,7 @@ The access model and the mechanical declaration guard (`system_access_declaratio
 `sys.accesses` (`byroredux/src/commands/world_info.rs`) is the operator view of the same report.
 **Checklist**:
 - **Confirm the proof is live**: the two tests above are not `#[ignore]`d, the report's non-vacuity floors
-  (≥9 parallel systems, ≥7 pairs) still hold, and `PARALLEL_SYSTEMS.len()` equals the `add_to_with_access(` count.
+  (≥9 parallel systems, ≥7 pairs) still hold, and `PARALLEL_SYSTEMS.len()` equals the `add_to_with_access(` count. Update registration order lives in `byroredux/src/boot/schedule/update/` — five contiguous order segments called in file order since #6359 (4ab5766e3), each pinned by `per_frame_driver_functions_stay_within_their_size_pins`; a cross-stage ordering test reads those files in `boot::SOURCES` order, so a system moved between segments changes its sequence.
 - **Blind spots of the guard** (audit by hand): the scan reads turbofish `query` / `query_mut` / `resource` /
   `resource_mut` (+ `try_`), `world.get` / `get_mut` / `has` and generic `remove_component` /
   `insert_component` (#4994, #4821) — not `query_2_mut`, `resource_2_mut` or inferred types; it follows calls
@@ -283,11 +283,13 @@ The access model and the mechanical declaration guard (`system_access_declaratio
   reads — now a `raise_kill_story_event` hop in `PARALLEL_SYSTEMS`; the cross-crate hop behind it, the scripting crate's
   `note_death` — a `KillRecords` write plus `SceneAliasCandidate` / `CreatureActor` / `FormIdComponent` / `FormIdPool` /
   `PapyrusPlayerEntity` reads — is a listed hop too, #6217 ef48dbd03; a new CTDA arm's reads must be declared on
-  `npc_dialogue_selection` the same way, 561541d6c). **Check #5647 (eca0c4709) against this**: all three story-event
-  producers (CLOC, AHEL, KILL) now go through `raise_story_event`, whose collision arm writes `PendingScriptStoryEvents`
-  (marker guard released first, so the two never nest). `raise_kill_story_event` is a listed hop but `raise_story_event`
-  lives in the scripting crate and is not, and `player_controller_system`'s row declares `StoryEvent` without that resource —
-  confirm whether the analyzer can see the write.
+  `npc_dialogue_selection` the same way, 561541d6c). All three story-event
+  producers (CLOC, AHEL, KILL) go through `raise_story_event` since #5647 (eca0c4709): the first event on an entity takes the
+  `StoryEvent` marker, a second for the same entity appends to `PendingScriptStoryEvents` (marker guard released first, so the
+  two never nest). `raise_story_event` lives in the scripting crate and has no turbofish at the call site, so #6447 (1ebb38bce)
+  added it as a listed cross-file hop (`STORY_MANAGER_SRC`) and `player_controller_system`'s row now declares
+  `writes_resource::<PendingScriptStoryEvents>()` — verified red without the declaration; the other rows reaching
+  `raise_kill_story_event` are exclusives. Regression guard: any new parallel producer of a story event must declare the queue write.
 - **Cross-stage sequencing is invisible to the analyzer** (`analyze_pair` reasons within one stage). A
   consumer in an earlier stage than its single producer silently reads last frame's value while every KPI
   stays green. Pinned today: `player_wind_read_is_declared_and_weather_writer_is_exclusive` (WindField:
