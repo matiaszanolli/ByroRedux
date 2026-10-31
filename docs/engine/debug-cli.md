@@ -436,6 +436,7 @@ player.status               → report player mode, pose, and control state
 player.view [first|third]   → show or switch the player camera view (V key)
 player.body                 → report the assembled player body (root, meshes, view, equipment parts)
 inventory.status            → report the player's live inventory/equipment state
+craft benches              → list every loaded crafting bench with its base form and position (M43)
 mine.status                 → list the placed proximity mines and their state (waiting / armed / spent), M43 TMEE
 attraction.status           → the attraction keywords, object / NPC bases and placed carriers the load order gives the AOBJ system, M43
 dialogue.status             → show the activation-selected dialogue topics carried by NPCs

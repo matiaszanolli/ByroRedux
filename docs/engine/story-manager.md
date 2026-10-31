@@ -525,7 +525,12 @@ already has the surface:
   **Engine policy / not modelled:** the armor-rating bonus has nothing to act on (the engine has no Skyrim armor
   mitigation — it is stored and shown, not applied), the animation, and the "with perk" column is read as "any
   material perk applies". Fallout 4's component-based `COBJ` (`FVPA`)
-  and the forge-craft animation are also unmodelled.
+  and the forge-craft animation are also unmodelled. **Live-gated** by
+  [`m43-tempering.sh`](../smoke-tests/m43-tempering.sh) (2026-10-31, release build, Skyrim `HaltedStreamCamp01`'s
+  grindstone: `craft benches` found the wheel, `craft list` offered `Improve Steel Sword`, `craft make` improved the
+  held sword to Fine, the item count fell by exactly one ingot — no copy — and the list then read "no better
+  quality"). That run also found that nothing created the `ItemInstancePool` at boot (the instance machinery was
+  dormant outside tests), now initialised with the world.
 - **The leftover events and their payloads** (per-mnemonic quest counts,
   2026-10-30, quests reachable under each `SMEN` root — Skyrim: `ESJA` 2,
   `DEAD` 2, `ARRT` 2, `AHEL` 2, `NVPE` 1; FO4: `AOBJ` 16, `AHEL` 9, `OAAT` 4,
