@@ -1915,6 +1915,7 @@ mod dialogue_page_leave_tests {
                 emotion_type: 0,
                 topics: Vec::new(),
                 goodbye: false,
+                choices: false,
             },
         );
         world.insert_resource(DialogueSurfaceState {

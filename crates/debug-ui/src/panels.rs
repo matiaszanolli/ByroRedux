@@ -207,6 +207,8 @@ pub enum InventoryAction {
 pub struct DialogueTopicEntryView {
     pub topic_form_id: u32,
     pub name: String,
+    /// The NPC has already said this entry's line (the spoken-set); the page marks it.
+    pub said: bool,
 }
 
 /// P4 blocker 2 — the activation-selected dialogue topic plus the NPC's
@@ -224,6 +226,12 @@ pub struct DialogueTopicSnapshot {
     pub info_form_id: u32,
     pub response_text: String,
     pub topics: Vec<DialogueTopicEntryView>,
+    /// The line is still being presented (voice playing, or the subtitle's estimated duration running).
+    pub speaking: bool,
+    /// The line has real voice audio, not just a subtitle.
+    pub voiced: bool,
+    /// `topics` are the selected line's own replies (the CK's *choices*), not the general topic menu.
+    pub choices: bool,
 }
 
 /// The dialogue surface's mutations, applied to canonical world state after
@@ -751,14 +759,24 @@ fn draw_dialogue_page(
 ) {
     ui.add_space(4.0);
     if let Some(dialogue) = dialogue {
-        if !dialogue.speaker_name.is_empty() {
-            ui.label(
-                egui::RichText::new(dialogue.speaker_name.clone())
-                    .size(20.0)
-                    .strong()
-                    .color(Color32::from_rgb(235, 220, 170)),
-            );
-        }
+        ui.horizontal(|ui| {
+            if !dialogue.speaker_name.is_empty() {
+                ui.label(
+                    egui::RichText::new(dialogue.speaker_name.clone())
+                        .size(20.0)
+                        .strong()
+                        .color(Color32::from_rgb(235, 220, 170)),
+                );
+            }
+            // The speaking cue: shown while the line is being presented, and says whether real voice plays.
+            if dialogue.speaking {
+                ui.label(
+                    egui::RichText::new(if dialogue.voiced { "(speaking)" } else { "(speaking, no voice)" })
+                        .italics()
+                        .color(Color32::from_rgb(150, 200, 235)),
+                );
+            }
+        });
         ui.heading(dialogue.topic_name.clone());
         ui.add_space(10.0);
         // The response: a fixed-height, scrolling read-only panel so long
@@ -768,23 +786,32 @@ fn draw_dialogue_page(
             .max_height(180.0)
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                ui.label(
-                    egui::RichText::new(dialogue.response_text.clone())
-                        .size(16.0)
-                        .color(Color32::from_rgb(225, 222, 210)),
-                );
+                // The subtitle: full strength while the line is presented, dimmed once it has finished.
+                let subtitle = if dialogue.speaking {
+                    Color32::from_rgb(240, 238, 225)
+                } else {
+                    Color32::from_rgb(170, 168, 158)
+                };
+                ui.label(egui::RichText::new(dialogue.response_text.clone()).size(16.0).color(subtitle));
             });
         ui.add_space(12.0);
         ui.separator();
-        ui.label("Topics");
+        ui.label(if dialogue.choices { "Replies" } else { "Topics" });
         egui::ScrollArea::vertical()
             .id_salt("native_dialogue_topics")
             .max_height(180.0)
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                for topic in &dialogue.topics {
+                for (position, topic) in dialogue.topics.iter().enumerate() {
                     let selected = topic.topic_form_id == dialogue.topic_form_id;
-                    let label = ui.selectable_label(selected, topic.name.clone());
+                    // Replies are numbered; a topic already said is marked, the one being spoken is arrowed.
+                    let mut text = if dialogue.choices { format!("{}. {}", position + 1, topic.name) } else { topic.name.clone() };
+                    if selected {
+                        text = format!("> {text}");
+                    } else if topic.said {
+                        text.push_str("  (said)");
+                    }
+                    let label = ui.selectable_label(selected, text);
                     if label.clicked() && !selected {
                         outputs.dialogue_actions.push(DialogueUiAction::SelectTopic {
                             npc: dialogue.npc,
@@ -2335,6 +2362,54 @@ mod tests {
         );
     }
 
+    /// M43 — the page reads the line's timing, the reply-vs-topic mode and the said-markers; a click on a
+    /// reply still emits the selection, and the reply that is being spoken does not.
+    #[test]
+    fn dialogue_page_marks_speaking_replies_and_said_topics() {
+        let ctx = Context::default();
+        let snapshot = PanelSnapshot {
+            dialogue: Some(DialogueTopicSnapshot {
+                npc: 7,
+                speaker_name: "Eltrys".into(),
+                topic_form_id: 0x2010,
+                topic_name: "Greeting".into(),
+                info_form_id: 0x2011,
+                response_text: "Well met.".into(),
+                topics: vec![
+                    DialogueTopicEntryView { topic_form_id: 0x2010, name: "Hello".into(), said: false },
+                    DialogueTopicEntryView { topic_form_id: 0x2012, name: "Leave".into(), said: true },
+                ],
+                speaking: true,
+                voiced: true,
+                choices: true,
+            }),
+            ..Default::default()
+        };
+        let mut state = GameMenuState { visible: true, page: GameMenuPage::Dialogue, ..Default::default() };
+        let mut outputs = PanelOutputs::default();
+        // egui sizes a newly opened window before painting its contents: assert on the second pass.
+        ctx.begin_pass(egui::RawInput::default());
+        draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
+        let _ = end_pass(&ctx);
+        ctx.begin_pass(egui::RawInput::default());
+        draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
+        let output = end_pass(&ctx);
+        let text: String = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("(speaking)"), "the speaking cue with real voice: {text}");
+        assert!(text.contains("Replies"), "the list is the line's replies");
+        assert!(text.contains("> 1. Hello"), "the spoken reply is arrowed and numbered");
+        assert!(text.contains("2. Leave  (said)"), "a said reply is marked");
+        assert!(outputs.dialogue_actions.is_empty());
+    }
+
     #[test]
     fn dialogue_page_shows_the_response_and_emits_topic_clicks() {
         let ctx = Context::default();
@@ -2346,12 +2421,17 @@ mod tests {
                 topic_name: "MS01EltrysTopic".into(),
                 info_form_id: 0x2011,
                 response_text: "You took the note, then.".into(),
+                speaking: false,
+                voiced: false,
+                choices: false,
                 topics: vec![
                     DialogueTopicEntryView {
+                        said: false,
                         topic_form_id: 0x2010,
                         name: "Eltrys".into(),
                     },
                     DialogueTopicEntryView {
+                        said: false,
                         topic_form_id: 0x2012,
                         name: "Rumors".into(),
                     },
@@ -2437,6 +2517,9 @@ mod tests {
                 info_form_id: 0x2011,
                 response_text: "Watch yourself.".into(),
                 topics: Vec::new(),
+                speaking: false,
+                voiced: false,
+                choices: false,
             }),
             ..Default::default()
         };

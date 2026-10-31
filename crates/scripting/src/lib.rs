@@ -226,6 +226,7 @@ pub use actor_base_traits::{install_actor_base_traits, voice_type, ActorBaseTrai
 pub use crime_faction::{crime_faction, install_crime_factions, CrimeFactionOverrides, CrimeFactions};
 pub use linked_refs::{linked_ref, linked_ref_children, LinkedRefOverrides};
 pub use loc_ref_types::{has_loc_ref_type, LocRefTypeOverrides};
+pub use dialogue::info_spoken;
 pub use skills::{advance_skill, PendingSkillAdvances, SkillProgress, SkillScaling};
 pub use followers::{FollowerFlag, FollowerFlags, FollowerState};
 pub use misc_stats::{Achievements, MiscStats};

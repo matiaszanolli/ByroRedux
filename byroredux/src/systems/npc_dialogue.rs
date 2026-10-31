@@ -106,6 +106,9 @@ pub(crate) struct NpcDialogueTopic {
     /// the conversation ends when its presentation finishes (the
     /// estimated-duration close), not the page's Close button.
     pub(crate) goodbye: bool,
+    /// M43 — the list is this INFO's own `TCLT` links, the CK's *choices* (the replies that follow the
+    /// line), rather than the NPC's general topic menu.
+    pub(crate) choices: bool,
 }
 
 impl Component for NpcDialogueTopic {
@@ -254,6 +257,7 @@ fn select_on_topic<'a>(
     fallback_menu: &[(&'a DialRecord, &'a InfoRecord)],
 ) -> Option<(NpcDialogueTopic, &'a DialRecord)> {
     let linked = linked_menu(index, info, world, npc, player);
+    let choices = !linked.is_empty();
     let single = [(record, info)];
     let menu: &[(&DialRecord, &InfoRecord)] = if !linked.is_empty() {
         &linked
@@ -282,6 +286,7 @@ fn select_on_topic<'a>(
             emotion_type: info.emotion_type,
             topics: topic_entries(menu),
             goodbye: info.goodbye(),
+            choices,
         },
         // #5426 — the record goes back as a borrow; the caller clones
         // exactly once where ownership is genuinely needed (the registry
@@ -427,6 +432,20 @@ fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record
         // #5367 Phase L — a Goodbye line closes the conversation when its
         // presentation finishes (voice duration when Phase V resolved
         // it, the subtitle estimate otherwise).
+        // M43 — the line's presentation window, for the page's speaking cue: voice duration, else the
+        // subtitle estimate (the same figure the Goodbye close uses).
+        let line_now = world
+            .try_resource::<byroredux_core::ecs::resources::TotalTime>()
+            .map(|time| time.0)
+            .unwrap_or_default();
+        surface.line_ends_at = Some(
+            line_now
+                + voice_seconds
+                    .map(|s| s as f32)
+                    .unwrap_or_else(|| byroredux_scripting::estimate_dialogue_duration(&topic.speaker_text))
+                    .max(0.1),
+        );
+        surface.line_voiced = voice_seconds.is_some();
         surface.close_after = topic.goodbye.then(|| {
             let now = world
                 .try_resource::<byroredux_core::ecs::resources::TotalTime>()
@@ -959,9 +978,17 @@ fn speaker_full_name(world: &World, npc: EntityId) -> String {
 pub(crate) fn dialogue_snapshot(
     world: &World,
 ) -> Option<byroredux_debug_ui::DialogueTopicSnapshot> {
-    let npc = world.try_resource::<DialogueSurfaceState>()?.npc?;
+    let surface = *world.try_resource::<DialogueSurfaceState>()?;
+    let npc = surface.npc?;
     let topic = world.get::<NpcDialogueTopic>(npc)?.clone();
+    let now = world
+        .try_resource::<byroredux_core::ecs::resources::TotalTime>()
+        .map(|time| time.0)
+        .unwrap_or_default();
     Some(byroredux_debug_ui::DialogueTopicSnapshot {
+        speaking: surface.line_ends_at.is_some_and(|ends| now < ends),
+        voiced: surface.line_voiced,
+        choices: topic.choices,
         npc,
         speaker_name: speaker_full_name(world, npc),
         topic_form_id: topic.topic_form_id,
@@ -974,6 +1001,7 @@ pub(crate) fn dialogue_snapshot(
             .map(|entry| byroredux_debug_ui::DialogueTopicEntryView {
                 topic_form_id: entry.topic_form_id,
                 name: entry.name.clone(),
+                said: byroredux_scripting::info_spoken(world, npc, entry.info_form_id),
             })
             .collect(),
     })
@@ -1826,6 +1854,32 @@ mod tests {
             "A's selection must not outlive the conversation"
         );
         assert_eq!(world.resource::<DialogueSurfaceState>().serial, 2);
+    }
+
+    /// M43 — the page's snapshot carries the line's presentation window (speaking while it runs, no voice
+    /// without audio), and marks the topics the NPC has said.
+    #[test]
+    fn the_snapshot_reports_the_speaking_window_and_said_topics() {
+        let (mut world, player, npcs) = bound_world(&[(SPEAKER_REF, SPEAKER_BASE)]);
+        let eltrys = npcs[0];
+        world.insert_resource(byroredux_core::ecs::resources::TotalTime(10.0));
+        world.insert_resource(byroredux_scripting::DialogueSpokenInfoForms::default());
+        world.insert(eltrys, ActivateEvent { activator: player });
+        npc_dialogue_selection_system(&world);
+        world.remove::<ActivateEvent>(eltrys);
+
+        let ends = world.resource::<DialogueSurfaceState>().line_ends_at.expect("a line was presented");
+        assert!(ends > 10.0, "the window opens at the selection and runs the estimated duration");
+        let now = dialogue_snapshot(&world).expect("selected");
+        assert!(now.speaking, "inside the window the speaking cue shows");
+        assert!(!now.voiced, "no audio device in a test world: subtitle only");
+        assert!(
+            now.topics.iter().any(|entry| entry.said),
+            "the line just spoken is in the spoken-set, so its entry is marked said"
+        );
+
+        world.insert_resource(byroredux_core::ecs::resources::TotalTime(ends + 1.0));
+        assert!(!dialogue_snapshot(&world).expect("selected").speaking, "the cue ends with the line");
     }
 
     /// #5043 / #4701 — a dead player drives neither entry point.

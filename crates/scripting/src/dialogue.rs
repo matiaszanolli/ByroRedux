@@ -88,6 +88,14 @@ fn speaker_form_id(world: &World, actor: Option<EntityId>) -> u32 {
         .map_or(0, |candidate| candidate.reference_form_id)
 }
 
+/// Whether `speaker` has said `info_form_id` (the spoken-set [`note_info_spoken`] fills).
+pub fn info_spoken(world: &World, speaker: EntityId, info_form_id: u32) -> bool {
+    let speaker = speaker_form_id(world, Some(speaker));
+    world
+        .try_resource::<DialogueSpokenInfoForms>()
+        .is_some_and(|spoken| spoken.0.contains(&(speaker, info_form_id)))
+}
+
 /// Record that `speaker` has said `info_form_id` (#5367 Phase L, per actor
 /// since #5300). Called by the activation surface when a line is applied.
 /// A no-op when the resource is absent — [`crate::register`] installs it,
@@ -770,6 +778,12 @@ pub struct DialogueSurfaceState {
     pub opened_serial: u64,
     pub close_after: Option<f32>,
     pub close_requested: bool,
+    /// M43 — the `TotalTime` second the current line finishes being presented (its voice duration when a
+    /// voice resolved, the subtitle estimate otherwise); `None` before any line. The page's speaking cue
+    /// and subtitle emphasis read it.
+    pub line_ends_at: Option<f32>,
+    /// M43 — the current line has real voice audio (as opposed to a subtitle-only estimate).
+    pub line_voiced: bool,
 }
 
 impl Resource for DialogueSurfaceState {}

@@ -85,6 +85,18 @@ services (barter/repair), the SCEN bark categories (already consumed by
 scene playback), and any menu restyle — the native dialogue page is the
 UI for all of this.
 
+**The page's presentation (M43, 2026-10-30).** Beyond the speaker's name and the topic list, the native
+page now shows: a **speaking cue** next to the speaker while the line is being presented — `(speaking)` with
+real voice audio, `(speaking, no voice)` for a subtitle-only line — whose window is the voice duration when a
+voice resolved, else the subtitle estimate (`DialogueSurfaceState::line_ends_at`, the figure the Goodbye
+close already uses); the response as a **subtitle**, full strength while the line runs and dimmed after;
+**replies**, when the selected INFO's own `TCLT` links make up the list (the CK's *choices*): headed
+"Replies" and numbered, instead of "Topics"; and **topic state markers**: the line being spoken is arrowed
+(`>`) and an entry whose line the NPC has already said (the spoken-set) is tagged `(said)`. The layout and
+wording are this engine's own; the data behind each is the INFO's links, the spoken-set and the voice
+timing. Unit-tested on both sides (`dialogue_page_marks_speaking_replies_and_said_topics`,
+`the_snapshot_reports_the_speaking_window_and_said_topics`); not looked at in the live engine.
+
 ## 4. Design
 
 ### G — greeting layer
