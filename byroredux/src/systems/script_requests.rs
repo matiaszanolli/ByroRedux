@@ -237,6 +237,27 @@ pub(crate) fn sleep_system(world: &World, _dt: f32) {
 /// The crossfade a scripted track starts and stops with.
 const SCRIPT_MUSIC_FADE_SECS: f32 = 1.0;
 
+/// Whether a `MUSC` `FNAM` names a folder of variant tracks (a trailing separator) rather than
+/// one file (#6438; the `SOUN` twin is `sound_is_folder`, #3914).
+fn music_file_is_folder(file: &str) -> bool {
+    file.ends_with(['\\', '/'])
+}
+
+/// Music types already announced as folder-form: the notice is once per type, not once per
+/// `PlayMusic` (a script that retries every cycle would otherwise log each time).
+/// `NOT_SAVED_BY_DESIGN`: log de-dup only.
+static FOLDER_MUSIC_NOTED: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+
+/// `true` the first time `form` is seen in `noted`.
+fn note_folder_music(noted: &std::sync::Mutex<Vec<u32>>, form: u32) -> bool {
+    let mut noted = noted.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if noted.contains(&form) {
+        return false;
+    }
+    noted.push(form);
+    true
+}
+
 /// `PlayMusic`: play the named music type's track over what the cell is already playing (GECK: "will not
 /// stop the currently playing music of the cell"), from the sound archives. #6226 — on the audio world's
 /// scripted music layer: streamed (a stinger is tens of MB of PCM decoded whole), non-spatial on the
@@ -251,6 +272,19 @@ pub(crate) fn music_system(world: &World, _dt: f32) {
     let Some(track) = tracks.into_iter().last() else { return };
     // A headless session has nothing to play it on: no archive read, no decode.
     if !world.try_resource::<byroredux_audio::AudioWorld>().is_some_and(|audio| audio.is_active()) {
+        return;
+    }
+    // #6438 — a folder-form type (`FNAM` `battle\\`, `explore\\`, ...) names a directory of
+    // variant tracks, and which variant plays is a policy this engine has not made. Without
+    // this gate the lookup lands on the directory itself and the decode failure below blames
+    // the codec. Same fence `sound_is_folder` puts on a `SOUN` folder (#3914): no fallback.
+    if music_file_is_folder(&track.file) {
+        if note_folder_music(&FOLDER_MUSIC_NOTED, track.form_id) {
+            log::info!(
+                "PlayMusic: '{}' is a folder-form music type — variant selection is not modelled, nothing plays",
+                track.file
+            );
+        }
         return;
     }
     let key = format!("music\\{}", track.file.replace('/', "\\").to_ascii_lowercase());
@@ -532,6 +566,33 @@ mod tests {
         let audio = world.resource::<byroredux_audio::AudioWorld>();
         assert_eq!(audio.oneshots_requested(), 0);
         assert!(!audio.is_script_music_active());
+    }
+
+    /// #6438 — a folder-form `FNAM` (`battle\\`) is fenced before resolution: it is recognised by
+    /// its trailing separator in either slash form, a file is not, and the notice fires once per
+    /// type.
+    #[test]
+    fn a_folder_form_music_type_is_gated_and_announced_once() {
+        assert!(music_file_is_folder("battle\\"));
+        assert!(music_file_is_folder("explore/"));
+        assert!(!music_file_is_folder("battle\\battle_01.mp3"));
+        assert!(!music_file_is_folder(""));
+
+        let noted = std::sync::Mutex::new(Vec::new());
+        assert!(note_folder_music(&noted, 0x10), "the first sighting is announced");
+        assert!(!note_folder_music(&noted, 0x10), "a repeat of the same type is silent");
+        assert!(note_folder_music(&noted, 0x11), "another type is announced in its own right");
+    }
+
+    /// #6438 — the gate runs before any archive or data-folder lookup, so the folder never reaches
+    /// the decoder (the old misleading "failed to decode" warning).
+    #[test]
+    fn the_folder_gate_precedes_the_archive_lookup() {
+        let source = include_str!("script_requests.rs");
+        let body = source.split_once("pub(crate) fn music_system(").map(|(_, rest)| rest).unwrap();
+        let gate = body.find("music_file_is_folder(&track.file)").expect("music_system gates folder-form types");
+        let lookup = body.find("provider.extract(&key)").expect("the archive lookup");
+        assert!(gate < lookup, "the folder gate must run before the archive lookup");
     }
 
     /// #6226 — the scripted layer ends where a cell is left: both teardown choke points stop it.
