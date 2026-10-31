@@ -78,7 +78,7 @@ froxel field today: it is rebuilt from the `FogVolume` sources after a load. No
 screenshots (confirmed by Matías), distant fires look unchanged, cost reported
 against the baseline.
 
-### Phase 1 design (proposal, nothing built yet)
+### Phase 1 design (proposal; stage 1a built, see the staging table)
 
 **Why the froxels look blocky.** At 1.6 m a froxel is only a few centimetres
 across the screen (the exact figure depends on the field of view) but 0.63 m deep (first 5 m are only 8 slices). The flame is sampled
@@ -150,7 +150,7 @@ heat and fuel rates stay in `combustion.rs`.
 
 | Stage | Change | Visible? | Check |
 |---|---|---|---|
-| 1a | Move transport into the shared include; froxel output byte-identical | no | Simulation-state hash equal to baseline on s1–s5; per-pass GPU time unchanged |
+| 1a | Move transport into the shared include; froxel output byte-identical | no | **Done.** Final frame pixel-identical (PNG checksum) on s1, s2a, s3a across 3–5 runs; `check-shader-artifacts.sh` green; per-pass GPU time unchanged (s1 inject median 0.605 ms before, 0.611 ms after, 5 runs each, both built from `0d1b401ef` with and without the move) |
 | 1b | Local grid + sim pass, written but not yet drawn | no | Hash of local grid over 5 runs identical; sim pass ms reported |
 | 1c | Local march + composite combine + froxel hand-off | **yes** | s1 and s5 screenshots, per-pass ms, review by Matías |
 

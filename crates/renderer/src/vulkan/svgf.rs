@@ -2159,6 +2159,18 @@ mod denoiser_anchor_rot_tests {
             include_str!("../../shaders/volumetrics_inject.comp"),
         ),
         (
+            "shaders/include/volumetrics_bindings.glsl",
+            include_str!("../../shaders/include/volumetrics_bindings.glsl"),
+        ),
+        (
+            "shaders/include/combustion_sources.glsl",
+            include_str!("../../shaders/include/combustion_sources.glsl"),
+        ),
+        (
+            "shaders/include/combustion_transport.glsl",
+            include_str!("../../shaders/include/combustion_transport.glsl"),
+        ),
+        (
             "shaders/volumetrics_integrate.comp",
             include_str!("../../shaders/volumetrics_integrate.comp"),
         ),

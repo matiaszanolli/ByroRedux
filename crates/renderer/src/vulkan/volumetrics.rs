@@ -1820,7 +1820,7 @@ mod unit_tests {
     /// here instead of changing shipped visuals.
     #[test]
     fn injection_shader_promotes_zero_tint_to_neutral_scatter() {
-        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let shader = crate::source_scan::volumetrics_inject_glsl();
         for contract in [
             "max(fog_chromaticity.r, max(fog_chromaticity.g, fog_chromaticity.b)) <= 1.0e-6",
             "&& global_extinction > 0.0",
@@ -1880,7 +1880,7 @@ mod unit_tests {
     /// output-identical.
     #[test]
     fn sun_visibility_rays_are_gated_on_a_live_sun_term() {
-        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let shader = crate::source_scan::volumetrics_inject_glsl();
         let gate = shader
             .find("if (sunTermLive) {")
             .expect("the sun block must be gated on sunTermLive (#4793)");
@@ -1921,7 +1921,7 @@ mod unit_tests {
 
     #[test]
     fn architectural_glass_portal_checks_every_candidate_layer() {
-        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let shader = crate::source_scan::volumetrics_inject_glsl();
         let function = shader
             .split_once("bool traceArchitecturalWindowGlass(")
             .expect("architectural glass query")
@@ -1943,7 +1943,7 @@ mod unit_tests {
 
     #[test]
     fn local_visibility_work_is_gated_on_nonzero_scattering() {
-        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let shader = crate::source_scan::volumetrics_inject_glsl();
         let gated = shader
             .split("if (any(greaterThan(scattering_coef, vec3(0.0)))) {")
             .nth(1)
@@ -1963,7 +1963,7 @@ mod unit_tests {
     /// entries spend slots the loop then discarded.
     #[test]
     fn froxel_light_budget_charges_only_contributing_local_lights() {
-        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let shader = crate::source_scan::volumetrics_inject_glsl();
         let body = shader
             .split("uint budgetedLocalLights = 0u;")
             .nth(1)
@@ -1987,7 +1987,7 @@ mod unit_tests {
 
     #[test]
     fn tier_zero_sheds_unmarked_rim_rays_but_preserves_explicit_windows() {
-        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let shader = crate::source_scan::volumetrics_inject_glsl();
         assert!(shader.contains("uint fogRayQualityTier;"));
         let main = shader.split("void main()").nth(1).unwrap();
         let tier_gate = main.find("fogRayQualityTier > 0u").unwrap();
@@ -2015,7 +2015,7 @@ mod unit_tests {
 
     #[test]
     fn injector_consumes_authored_spectral_albedo_and_density_volumes() {
-        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let shader = crate::source_scan::volumetrics_inject_glsl();
         for contract in [
             "vec4 fog_tint;",
             "params.fog_tint.rgb",
@@ -2035,7 +2035,7 @@ mod unit_tests {
 
     #[test]
     fn combustion_profiles_feed_one_canonical_transported_contract() {
-        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let shader = crate::source_scan::volumetrics_inject_glsl();
         for contract in [
             "bool isLocalProfile(float actual, float expected)",
             "FOG_VOLUME_PROFILE_EXPLOSION",
@@ -2236,7 +2236,7 @@ mod unit_tests {
 
     #[test]
     fn transported_combustion_attenuates_directional_and_local_light_paths() {
-        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let shader = crate::source_scan::volumetrics_inject_glsl();
         for contract in [
             "const float COMBUSTION_FUEL_VAPOUR_SIGMA_T = 0.0035;",
             "const int COMBUSTION_LIGHT_TRANSMITTANCE_STEPS = 8;",
@@ -2583,7 +2583,7 @@ mod unit_tests {
         assert_eq!(transport_simulation_dt(true, 0.0), 0.0);
         assert_eq!(transport_simulation_dt(true, 1.0 / 60.0), 1.0 / 60.0);
 
-        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let shader = crate::source_scan::volumetrics_inject_glsl();
         for contract in [
             // The sentinel never reaches the physics as a negative step…
             "float simulationDt = clamp(params.fog_reference.w, 0.0, 1.0 / 15.0);",
@@ -2602,7 +2602,7 @@ mod unit_tests {
 
     #[test]
     fn every_contributing_local_fog_light_obeys_structural_visibility() {
-        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let shader = crate::source_scan::volumetrics_inject_glsl();
         for contract in [
             "visibilityMaskNeedsTrace(lights[li].params.z)",
             "visibilityOpaqueMask(lights[li].params.z)",
@@ -2622,7 +2622,7 @@ mod unit_tests {
 
     #[test]
     fn temporal_history_never_filters_across_camera_ray_columns() {
-        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let shader = crate::source_scan::volumetrics_inject_glsl();
         for contract in [
             "vec4 sampleHistoryColumn(vec3 uvw)",
             "ivec2 column = clamp(",
@@ -2642,7 +2642,7 @@ mod unit_tests {
 
     #[test]
     fn emissive_history_uses_previous_provenance_on_trailing_edges() {
-        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let shader = crate::source_scan::volumetrics_inject_glsl();
         for contract in [
             "layout(r32f, set = 0, binding = 12) uniform writeonly image3D emissionHistory;",
             "layout(set = 0, binding = 13) uniform sampler3D previousEmissionHistory;",
@@ -2719,7 +2719,7 @@ mod unit_tests {
         assert!(clouds.contains("medium_slab(sigma_t, step_size)"));
         for source in [
             clouds,
-            include_str!("../../shaders/volumetrics_inject.comp"),
+            crate::source_scan::volumetrics_inject_glsl(),
         ] {
             assert!(source.contains("return medium_henyey_greenstein("));
             assert!(source.contains("#include \"include/medium_transport.glsl\""));
@@ -2771,7 +2771,7 @@ mod unit_tests {
     /// that keeps the rejection's fallback value finite.
     #[test]
     fn v_buffer_history_rejects_non_finite_and_the_store_clamps_to_fp16() {
-        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let shader = crate::source_scan::volumetrics_inject_glsl();
         let blend_block = shader
             .split("vec4 history = sampleHistoryColumn(previousUvw);")
             .nth(1)
@@ -2939,7 +2939,7 @@ mod unit_tests {
         assert!((mean - centre).abs() < 1.0e-3 * LINEAR_DEPTH);
 
         // And the shader writes it that way.
-        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let shader = crate::source_scan::volumetrics_inject_glsl();
         assert!(
             shader.contains("float fieldT = sliceDistance(0.5 * (sliceFront + sliceBack));"),
             "the inject shader must derive fieldT from the normalized midpoint \
@@ -2966,7 +2966,7 @@ mod unit_tests {
         for (name, src) in [
             (
                 "volumetrics_inject.comp",
-                include_str!("../../shaders/volumetrics_inject.comp"),
+                crate::source_scan::volumetrics_inject_glsl(),
             ),
             (
                 "volumetrics_integrate.comp",
@@ -3031,7 +3031,7 @@ mod unit_tests {
     #[test]
     fn froxel_jitter_rotation_keeps_full_resolution_over_a_session() {
         const R3: [f64; 3] = [0.754877666, 0.569840296, 0.438289];
-        let src = include_str!("../../shaders/volumetrics_inject.comp");
+        let src = crate::source_scan::volumetrics_inject_glsl();
         let decl = src
             .split("const uvec3 R3_ROTATION_FIXED_0_32 = uvec3(")
             .nth(1)
@@ -3198,7 +3198,7 @@ mod unit_tests {
             "profile_params",
         ];
 
-        let glsl_src = include_str!("../../shaders/volumetrics_inject.comp");
+        let glsl_src = crate::source_scan::volumetrics_inject_glsl();
         let struct_start = glsl_src
             .find("struct GpuFogVolume {")
             .expect("volumetrics_inject.comp must declare `struct GpuFogVolume`");
@@ -3682,7 +3682,7 @@ mod unit_tests {
     #[allow(clippy::assertions_on_constants)] // the transport dt sentinels are pinned relationships, not runtime checks
     #[test]
     fn known_empty_transport_skips_history_stores_and_source_sampling() {
-        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let shader = crate::source_scan::volumetrics_inject_glsl();
         let main = shader.split_once("void main()").unwrap().1;
         let guarded = main.split_once("if (!transportKnownEmpty) {").unwrap().1
             .split_once("// View direction").unwrap().0;
@@ -4186,7 +4186,7 @@ mod transport_occupancy_tests {
     /// already pin this shader's text shape the same way.
     #[test]
     fn transport_occupancy_gate_is_wired_into_the_inject_pass() {
-        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        let shader = crate::source_scan::volumetrics_inject_glsl();
         for contract in [
             "layout(std430, set = 0, binding = 24) buffer CombustionOccupancyOut",
             "layout(std430, set = 0, binding = 25) readonly buffer CombustionOccupancyIn",

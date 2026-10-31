@@ -189,7 +189,7 @@ mod tests {
             include_str!("../../../shaders/include/bindings.glsl"),
             include_str!("../../../shaders/cluster_cull.comp"),
             include_str!("../../../shaders/caustic_splat.comp"),
-            include_str!("../../../shaders/volumetrics_inject.comp"),
+            crate::source_scan::volumetrics_inject_glsl(),
         ] {
             assert!(source
                 .contains("uint previousLightToCurrent[MAX_LIGHTS + 1u];\n    GpuLight lights[];"));

@@ -11,6 +11,41 @@ pub(crate) use byroredux_core::source_scan::production_text_or_whole;
 pub(crate) use byroredux_core::source_scan::rust_files;
 pub(crate) use byroredux_core::source_scan::strip_test_modules;
 
+/// `volumetrics_inject.comp` with its three shared combustion includes
+/// (`volumetrics_bindings`, `combustion_sources`, `combustion_transport`)
+/// expanded in place, i.e. the text the shader had before #6533 stage 1a split
+/// it. Source-scan tests that pin a property of the combustion model or
+/// transport read this instead of the bare `.comp`, so moving code into an
+/// include cannot turn them vacuous (they would otherwise stop finding their
+/// needle, or keep passing on a file that no longer holds the code).
+#[cfg(test)]
+pub(crate) fn volumetrics_inject_glsl() -> &'static str {
+    use std::sync::OnceLock;
+    static EXPANDED: OnceLock<String> = OnceLock::new();
+    EXPANDED.get_or_init(|| {
+        let mut text = String::from(include_str!("../shaders/volumetrics_inject.comp"));
+        for (name, body) in [
+            (
+                "volumetrics_bindings",
+                include_str!("../shaders/include/volumetrics_bindings.glsl"),
+            ),
+            (
+                "combustion_sources",
+                include_str!("../shaders/include/combustion_sources.glsl"),
+            ),
+            (
+                "combustion_transport",
+                include_str!("../shaders/include/combustion_transport.glsl"),
+            ),
+        ] {
+            let directive = format!("#include \"include/{name}.glsl\"");
+            assert!(text.contains(&directive), "inject shader lost `{directive}`");
+            text = text.replace(&directive, body);
+        }
+        text
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::rust_files;

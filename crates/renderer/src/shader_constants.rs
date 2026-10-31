@@ -219,23 +219,23 @@ mod tests {
         ("svgf_atrous.comp", "SIGMA_A"),
         ("svgf_atrous.comp", "EPS"),
         ("svgf_atrous.comp", "DEPTH_EPS"),
-        ("volumetrics_inject.comp", "PI"),
-        ("volumetrics_inject.comp", "AMBIENT_TEMPERATURE_K"),
+        ("include/combustion_sources.glsl", "PI"),
+        ("include/combustion_sources.glsl", "AMBIENT_TEMPERATURE_K"),
         (
-            "volumetrics_inject.comp",
+            "include/combustion_sources.glsl",
             "COMBUSTION_WALL_FRICTION_PER_SECOND",
         ),
-        ("volumetrics_inject.comp", "COMBUSTION_FUEL_VAPOUR_SIGMA_T"),
+        ("include/combustion_sources.glsl", "COMBUSTION_FUEL_VAPOUR_SIGMA_T"),
         (
-            "volumetrics_inject.comp",
+            "include/combustion_sources.glsl",
             "COMBUSTION_FUEL_VAPOUR_SINGLE_SCATTER_ALBEDO",
         ),
         (
-            "volumetrics_inject.comp",
+            "include/combustion_sources.glsl",
             "COMBUSTION_LIGHT_TRANSMITTANCE_STEPS",
         ),
         (
-            "volumetrics_inject.comp",
+            "include/combustion_sources.glsl",
             "COMBUSTION_LIGHT_TRANSMITTANCE_REACH_METERS",
         ),
         // ── #3880 ────────────────────────────────────────────────────
@@ -1049,7 +1049,7 @@ mod tests {
         let triangle = include_str!("../shaders/triangle.frag");
         let lighting = include_str!("../shaders/include/lighting.glsl");
         let water = include_str!("../shaders/water.frag");
-        let volumetrics = include_str!("../shaders/volumetrics_inject.comp");
+        let volumetrics = crate::source_scan::volumetrics_inject_glsl();
 
         assert!(triangle.contains("smoothstep(SHADOW_FADE_START, SHADOW_FADE_END, worldDist)"));
         for (name, source) in [
@@ -1072,7 +1072,7 @@ mod tests {
             ("water.frag", include_str!("../shaders/water.frag")),
             (
                 "volumetrics_inject.comp",
-                include_str!("../shaders/volumetrics_inject.comp"),
+                crate::source_scan::volumetrics_inject_glsl(),
             ),
             (
                 "caustic_splat.comp",
@@ -1351,7 +1351,7 @@ mod tests {
             ),
             (
                 "volumetrics_inject.comp",
-                include_str!("../shaders/volumetrics_inject.comp"),
+                crate::source_scan::volumetrics_inject_glsl(),
             ),
             (
                 "volumetrics_integrate.comp",
@@ -1663,7 +1663,7 @@ mod tests {
     /// lives in `generated_header_contains_all_defines`.
     #[test]
     fn volumetrics_fog_cluster_constants_not_redeclared() {
-        let src = include_str!("../shaders/volumetrics_inject.comp");
+        let src = crate::source_scan::volumetrics_inject_glsl();
         for needle in [
             "const uint FOG_CLUSTER_DIM",
             "const uint FOG_VOLUME_CLUSTER_DIM",
@@ -2597,7 +2597,7 @@ mod tests {
     /// it rather than keeping a private clamp with a stale upper bound.
     #[test]
     fn fog_profile_lane_is_clamped_only_through_volume_profile_kind() {
-        let shader: String = include_str!("../shaders/volumetrics_inject.comp")
+        let shader: String = crate::source_scan::volumetrics_inject_glsl()
             .chars()
             .filter(|c| !c.is_whitespace())
             .collect();

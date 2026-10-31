@@ -1584,7 +1584,7 @@ mod composite_params_layout_tests {
         let composite_rs = crate::source_scan::production_text(include_str!("composite.rs"));
         let composite_glsl = include_str!("../../shaders/composite.frag");
         let volumetrics_rs = include_str!("volumetrics.rs");
-        let volumetrics_glsl = include_str!("../../shaders/volumetrics_inject.comp");
+        let volumetrics_glsl = crate::source_scan::volumetrics_inject_glsl();
 
         for (name, rust, glsl, marker) in [
             (

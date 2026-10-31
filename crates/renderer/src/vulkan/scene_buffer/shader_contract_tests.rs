@@ -20,7 +20,7 @@ fn shader_discriminants_and_bone_lanes_use_generated_constants() {
     let header = include_str!("../../../shaders/include/shader_constants.glsl");
     let ray_hit = include_str!("../../../shaders/include/ray_hit.glsl");
     let skin = include_str!("../../../shaders/skin_vertices.comp");
-    let inject = include_str!("../../../shaders/volumetrics_inject.comp");
+    let inject = crate::source_scan::volumetrics_inject_glsl();
     let draw = include_str!("../context/frame_params.rs");
     for constant in [
         "VERTEX_BONE_INDICES_OFFSET_FLOATS",
@@ -1609,7 +1609,9 @@ fn rt_hit_shaders_have_no_unsafe_vertex_data_reads() {
         "include/ray_hit.glsl",
         "include/terrain_sample.glsl",
         "caustic_splat.comp",
-        "volumetrics_inject.comp",
+        // The boundary-triangle read (`rigidBoundaryNormal`) moved out of the
+        // inject shader with the shared combustion transport (#6533).
+        "include/combustion_transport.glsl",
     ] {
         assert!(
             sources.iter().any(|(name, _)| *name == required),
@@ -1865,7 +1867,7 @@ fn the_specular_aa_filter_is_evaluated_outside_the_per_light_loop() {
 /// luma-weighted centroid for a radiant channel.
 #[test]
 fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
-    let volumetrics_comp = include_str!("../../../shaders/volumetrics_inject.comp");
+    let volumetrics_comp = crate::source_scan::volumetrics_inject_glsl();
     let cluster_cull = include_str!("../../../shaders/cluster_cull.comp");
     let bindings = include_str!("../../../shaders/include/bindings.glsl");
     // #5094 — GpuFogClusterEntry moved to volumetrics/fog_clusters.rs; the
@@ -3545,8 +3547,8 @@ fn gpu_light_glsl_copies_stay_in_lockstep() {
             include_str!("../../../shaders/caustic_splat.comp"),
         ),
         (
-            "volumetrics_inject.comp",
-            include_str!("../../../shaders/volumetrics_inject.comp"),
+            "include/volumetrics_bindings.glsl",
+            include_str!("../../../shaders/include/volumetrics_bindings.glsl"),
         ),
     ];
 
@@ -3769,7 +3771,7 @@ fn std430_struct_size(fields: &[(String, String)]) -> usize {
 /// field-for-field, and the total std430 stride equals `size_of::<GpuInstance>()`.
 #[test]
 fn gpu_boundary_instance_stride_matches_gpu_instance() {
-    let glsl_src = include_str!("../../../shaders/volumetrics_inject.comp");
+    let glsl_src = crate::source_scan::volumetrics_inject_glsl();
     let glsl = parse_glsl_struct_fields_typed(glsl_src, "struct GpuBoundaryInstance");
     let rust = parse_rust_struct_fields(include_str!("gpu_types.rs"), "pub struct GpuInstance");
 
@@ -5282,6 +5284,18 @@ const LIGHT_CONSUMER_SOURCES: &[(&str, &str)] = &[
         "volumetrics_inject.comp",
         include_str!("../../../shaders/volumetrics_inject.comp"),
     ),
+    (
+        "include/volumetrics_bindings.glsl",
+        include_str!("../../../shaders/include/volumetrics_bindings.glsl"),
+    ),
+    (
+        "include/combustion_sources.glsl",
+        include_str!("../../../shaders/include/combustion_sources.glsl"),
+    ),
+    (
+        "include/combustion_transport.glsl",
+        include_str!("../../../shaders/include/combustion_transport.glsl"),
+    ),
 ];
 
 /// Executable (non-comment) lines of a GLSL source. The prohibitions below
@@ -5369,7 +5383,7 @@ fn authored_light_range_is_recovered_through_the_shared_cull_multiplier() {
         ),
         (
             "volumetrics_inject.comp",
-            include_str!("../../../shaders/volumetrics_inject.comp"),
+            crate::source_scan::volumetrics_inject_glsl(),
             2usize,
         ),
     ] {
@@ -5423,7 +5437,7 @@ fn both_attenuation_arms_clamp_the_authored_range_to_the_source_radius() {
         ),
         (
             "volumetrics_inject.comp",
-            include_str!("../../../shaders/volumetrics_inject.comp"),
+            crate::source_scan::volumetrics_inject_glsl(),
             "float froxelLightAtten(",
         ),
     ] {
@@ -5465,7 +5479,7 @@ fn both_attenuation_arms_clamp_the_authored_range_to_the_source_radius() {
 fn blue_noise_ranks_is_declared_exactly_once() {
     let header = include_str!("../../../shaders/include/blue_noise.glsl");
     let composite = include_str!("../../../shaders/composite.frag");
-    let volumetrics = include_str!("../../../shaders/volumetrics_inject.comp");
+    let volumetrics = crate::source_scan::volumetrics_inject_glsl();
 
     assert!(
         header.contains("const uint BLUE_NOISE_RANKS[64]"),
@@ -7280,7 +7294,7 @@ fn interleaved_gradient_noise_keeps_its_resolution_over_a_session() {
 fn layer_and_fog_shape_discriminants_are_never_hand_typed() {
     let sources = [
         ("triangle.frag", include_str!("../../../shaders/triangle.frag")),
-        ("volumetrics_inject.comp", include_str!("../../../shaders/volumetrics_inject.comp")),
+        ("volumetrics_inject.comp", crate::source_scan::volumetrics_inject_glsl()),
         ("volumetrics.rs", include_str!("../volumetrics.rs")),
         ("context/draw.rs", include_str!("../context/draw.rs")),
         ("context/frame_params.rs", include_str!("../context/frame_params.rs")),
@@ -7334,7 +7348,7 @@ fn layer_and_fog_shape_discriminants_are_never_hand_typed() {
         }
     }
     // The dispatch must name each generated id it routes on.
-    let inject = include_str!("../../../shaders/volumetrics_inject.comp");
+    let inject = crate::source_scan::volumetrics_inject_glsl();
     for id in ["FOG_VOLUME_SHAPE_CONE", "FOG_VOLUME_SHAPE_BOX", "FOG_VOLUME_SHAPE_SPHERE"] {
         assert!(
             inject.contains(&format!("shape == float({id})")),

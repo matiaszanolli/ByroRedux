@@ -124,6 +124,18 @@ mod supplemental_lane_guard {
             include_str!("../../shaders/volumetrics_inject.comp"),
         ),
         (
+            "include/volumetrics_bindings.glsl",
+            include_str!("../../shaders/include/volumetrics_bindings.glsl"),
+        ),
+        (
+            "include/combustion_sources.glsl",
+            include_str!("../../shaders/include/combustion_sources.glsl"),
+        ),
+        (
+            "include/combustion_transport.glsl",
+            include_str!("../../shaders/include/combustion_transport.glsl"),
+        ),
+        (
             "include/lighting.glsl",
             include_str!("../../shaders/include/lighting.glsl"),
         ),
