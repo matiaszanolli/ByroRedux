@@ -124,6 +124,10 @@ pub(super) fn dispatch_misc_gameplay_a_group(
                 index.condition_forms.insert(fid, parse_cndf(fid, subs, &cndf_remap));
             })?
         }
+        // Fallout 4 attraction rules: radius, delays and flags (CK *AttractionRule*).
+        b"AORU" => extract_records(reader, end, b"AORU", &mut |fid, subs| {
+            index.attraction_rules.insert(fid, parse_aoru(fid, subs));
+        })?,
         // Keyword editor ids: the animation-archetype keywords are told
         // apart by name (`AnimArchetype…`).
         b"KYWD" => {

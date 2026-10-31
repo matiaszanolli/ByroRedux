@@ -1491,8 +1491,9 @@ fn unlock_with_carried_key(world: &World, target: EntityId, commit: bool) -> boo
         return true;
     }
     // M43 — no key: a pick may open it (engine policy, see `lockpick.rs`).
-    let picked = carried_unlock_key(world, target).is_none();
-    if picked && !crate::lockpick::can_pick(world, target) {
+    let keyless = carried_unlock_key(world, target).is_none();
+    let bypass = if keyless { crate::lockpick::bypass_of(world, target) } else { None };
+    if keyless && bypass.is_none() {
         return false;
     }
     let form = world
@@ -1519,9 +1520,17 @@ fn unlock_with_carried_key(world: &World, target: EntityId, commit: bool) -> boo
             .resource_mut::<byroredux_scripting::ReferenceLockState>()
             .set_unlocked(form);
     }
-    if picked {
-        crate::notifications::push(world, "Picked the lock");
-        crate::lockpick::raise_lockpick_event(world, target);
+    if let Some(bypass) = bypass {
+        match bypass {
+            crate::lockpick::Bypass::Pick => {
+                crate::notifications::push(world, "Picked the lock");
+                crate::lockpick::raise_lockpick_event(world, target);
+            }
+            crate::lockpick::Bypass::Hack => {
+                crate::notifications::push(world, "Hacked the terminal");
+                crate::lockpick::raise_hack_event(world, target);
+            }
+        }
     } else {
         crate::notifications::push(world, "Unlocked with key");
     }
@@ -3115,5 +3124,51 @@ mod tests {
         assert_eq!(event.mnemonic, crate::lockpick::LOCK);
         assert_eq!(event.reference_2, Some(door), "the lock rides in R2");
         assert_eq!(world.get::<Inventory>(player).unwrap().count_of(PIN), 3, "the pick is not used up");
+    }
+
+    /// M43 — a locked terminal in a game with the `HACK` event is hacked without any item: it unlocks, the
+    /// player is told, and `HACK` carries the terminal in `R1` with success in `V1`. A barred terminal stays
+    /// shut, and a door (not a terminal) still needs a pick.
+    #[test]
+    fn a_locked_terminal_is_hacked_and_raises_the_hack_event() {
+        use byroredux_core::ecs::components::Inventory;
+        use byroredux_plugin::esm::records::{SmNodeKind, SmNodeRecord};
+        const TERMINAL_BASE: u32 = 0x4D2;
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.register::<Locked>();
+        world.register::<Inventory>();
+        world.insert_resource(crate::notifications::PlayerNotifications::default());
+        let player = world.spawn();
+        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(player));
+        world.insert(player, Inventory { items: Vec::new() });
+        world.insert_resource(crate::lockpick::LockpickItem(None));
+        world.insert_resource(crate::lockpick::TerminalBases::default());
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        index.terminals.insert(TERMINAL_BASE, Default::default());
+        crate::lockpick::install_terminal_bases(&mut world, &index);
+        let records = std::collections::HashMap::from([(
+            0x10,
+            SmNodeRecord { form_id: 0x10, kind: SmNodeKind::Event, event_mnemonic: Some(crate::lockpick::HACK), ..Default::default() },
+        )]);
+        byroredux_scripting::story_manager::install_story_manager(&mut world, &records);
+        let terminal = world.spawn();
+        world.insert(terminal, Locked { lock_level: 50, key_form_id: None });
+        world.insert(terminal, byroredux_scripting::SceneAliasCandidate { base_form_id: TERMINAL_BASE, ..Default::default() });
+        let barred = world.spawn();
+        world.insert(barred, Locked { lock_level: 253, key_form_id: None });
+        world.insert(barred, byroredux_scripting::SceneAliasCandidate { base_form_id: TERMINAL_BASE, ..Default::default() });
+        let door = world.spawn();
+        world.insert(door, Locked { lock_level: 50, key_form_id: None });
+
+        assert!(!activation_is_blocked(&world, terminal), "a hackable terminal is a target");
+        assert!(activation_is_blocked(&world, barred), "level 253 cannot be hacked");
+        assert!(activation_is_blocked(&world, door), "a door with no pick stays shut");
+        assert!(unlock_with_carried_key(&world, terminal, true));
+        assert!(world.get::<Locked>(terminal).is_none());
+        assert_eq!(crate::notifications::drain(&world), vec!["Hacked the terminal".to_owned()]);
+        let event = world.get::<byroredux_scripting::story_manager::StoryEvent>(player).map(|e| *e).expect("HACK raised");
+        assert_eq!((event.mnemonic, event.reference_1), (crate::lockpick::HACK, terminal));
+        assert_eq!(event.scripted.map(|s| s.values[0]), Some(1), "abSucceeded");
     }
 }

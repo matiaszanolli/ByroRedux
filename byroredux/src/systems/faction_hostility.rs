@@ -201,7 +201,7 @@ fn sight_points(world: &World, observer: EntityId, target: EntityId) -> Option<(
 
 /// Whether nothing solid stands between two points (the player's own body excepted); true without a
 /// physics world.
-fn sight_is_clear(world: &World, from: Vec3, to: Vec3) -> bool {
+pub(crate) fn sight_is_clear(world: &World, from: Vec3, to: Vec3) -> bool {
     let player = crate::systems::PlayerEntity::get(world);
     let player_body = player.and_then(|player| {
         world.query::<byroredux_physics::RapierHandles>().and_then(|handles| handles.get(player).map(|h| h.body))

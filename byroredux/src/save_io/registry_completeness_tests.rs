@@ -575,6 +575,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("RandomConversationState", "ambient NPC-to-NPC conversation attempt timers (30-60 s) and pair cooldowns; a load re-arms them like a fresh boot, and which ADIA a post-load pick raises is not state anything reads back (M43)"),
         ("DeadBodyState", "the DEAD discovery scan's pass clock and the bodies already found; a load re-arms the scan, so a body found before the save can be found once more (the node's reset window bounds how often that starts a quest) (M43)"),
         ("JailEscapeWatch", "whether the player has been seen inside the jail cell of the sentence being served, so the frames before the move to the cell lands are not an escape; a load re-observes the cell (M43)"),
+        ("TerminalBases", "the base forms of the load order's TERM records, to tell a hackable terminal from a lock; rebuilt from the records every boot (M43)"),
         ("LockpickItem", "the base form of the player's picks (BobbyPin / Lockpick); rebuilt from the load order by install_lockpick_item every boot (M43)"),
         ("AimWeapons", "weapon bases that use ammo, the data difference the aim state reads; rebuilt from the load order by install_aim_weapons every boot (M43)"),
         ("IronSightsState", "whether the player is holding the aim button with a gun; held input re-read every frame (M43)"),
@@ -583,6 +584,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("MineClock", "the mine trigger scan's cadence timer; a load restarts it (M43)"),
         ("ArmedMine", "a placed mine that has been tripped and is burning its fuse; a load restores the mine as placed (M43)"),
         ("SpentMine", "a mine that has gone off this session; the persistent half is the enable ledger entry it writes (M43)"),
+        ("AttractionBook", "the attraction keywords with their rules and the object / NPC bases that carry them; rebuilt from the records every boot (M43)"),
+        ("AttractionState", "per-pair attraction reaction timers and the scan clock; ambient scheduling a load re-arms (M43)"),
         ("StoryManagerRng", "selection RNG for random node policies (#5366 Phase 3); which radiant a post-load pick chooses is not state anything reads back"),
         // ── Dialogue trees (#5367) ──────────────────────────────────
         ("DialogueRandomState", "selection RNG; which greeting an old save rolled is not state anything reads back"),

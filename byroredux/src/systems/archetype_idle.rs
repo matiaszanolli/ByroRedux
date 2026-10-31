@@ -212,7 +212,7 @@ mod tests {
         world.insert_resource(ArchetypeIdleSeen::default());
         let mut index = EsmIndex::default();
         for (form_id, name) in [(CONFIDENT, "AnimArchetypeConfident"), (SCARED, "AnimArchetypeScared")] {
-            index.keywords.insert(form_id, KywdRecord { form_id, editor_id: name.to_owned() });
+            index.keywords.insert(form_id, KywdRecord { form_id, editor_id: name.to_owned(), attraction_rule: 0 });
         }
         index.races.insert(
             HUMAN,

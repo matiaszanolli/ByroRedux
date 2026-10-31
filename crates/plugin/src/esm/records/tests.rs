@@ -1974,7 +1974,9 @@ fn categories_table_row_count_pinned() {
     // Bumped 109 → 111 in #5757 (layered_material_swaps + material_path_forms
     //   — Starfield LMSW / MTPT, what REFR `XLMS` resolves through).
     // Bumped 111 → 112 in M43 (furniture_keywords — FURN `KWDA`, what marks a crafting bench).
-    assert_eq!(EsmIndex::categories().len(), 112);
+    // Bumped 112 → 114 in M43 (placed_object_keywords — ACTI/FLOR/CONT/FURN `KWDA`; attraction_rules — FO4
+    //   AORU, what the attraction-object story event reads).
+    assert_eq!(EsmIndex::categories().len(), 114);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring
@@ -2928,6 +2930,8 @@ fn reads_u32(body: &str) -> bool {
 /// field is a FormID. That is the half of the check the old allowlist
 /// could never do.
 const EXEMPT_NO_U32_READS: &[(&str, &str)] = &[
+    // M43 — the FO4 `AORU` attraction rule: three f32 and two flag bytes, no FormID.
+    ("misc/world.rs", "parse_aoru"),
     // #5152 — the INFO VMAD fragment section: flags bytes and
     // length-prefixed strings only; the scripts section (which carries the
     // FormIDs) is consumed by `ScriptInstanceData::parse_with_consumed`

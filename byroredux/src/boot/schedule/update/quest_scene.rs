@@ -17,6 +17,8 @@ fn register_random_conversations(scheduler: &mut Scheduler) {
     scheduler.add_exclusive(Stage::Update, crate::systems::iron_sights::iron_sights_system);
     // `TMEE`: placed proximity mines trip, burn their fuse and blast (idle when the load order has no mines).
     scheduler.add_exclusive(Stage::Update, crate::systems::mines::mine_system);
+    // `AOBJ`: an actor near an object that shares an attraction keyword reacts (idle without an `AOBJ` root).
+    scheduler.add_exclusive(Stage::Update, crate::systems::attraction::attraction_system);
     if std::env::var_os("BYRO_NO_RANDOM_CONVERSATIONS").is_none() {
         scheduler.add_exclusive(Stage::Update, crate::systems::random_conversation::random_conversation_system);
         // The hold system walks / releases the pairs it takes over; `BYRO_NO_AI_LOCOMOTION=1` leaves the

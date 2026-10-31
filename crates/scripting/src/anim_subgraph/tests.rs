@@ -22,7 +22,7 @@ fn entry(keys: &[u32], graph: &str) -> SubgraphData {
 }
 
 fn keyword(index: &mut EsmIndex, form_id: u32, editor_id: &str) {
-    index.keywords.insert(form_id, KywdRecord { form_id, editor_id: editor_id.to_owned() });
+    index.keywords.insert(form_id, KywdRecord { form_id, editor_id: editor_id.to_owned(), attraction_rule: 0 });
 }
 
 /// A settler who authors `AnimArchetypeConfident`, on a race that takes its

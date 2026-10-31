@@ -1279,13 +1279,51 @@ pub fn parse_cndf(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
 pub struct KywdRecord {
     pub form_id: u32,
     pub editor_id: String,
+    /// Fallout 4 `DATA` — the `AORU` attraction rule this keyword carries ("Attraction Type"), or `0`.
+    pub attraction_rule: u32,
+}
+
+/// Fallout 4 `AORU` attraction rule (xEdit `wbAORU`, `AOR2`: radius, min delay, max delay, requires line of
+/// sight, combat target). CK *AttractionRule*: "a game system that causes Actors to react to specific events
+/// that occur around them", specified on a keyword's *Attraction Type*.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AttractionRuleRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    pub radius: f32,
+    /// Seconds; an actor reacts to the same object no sooner than the minimum and no later than the maximum.
+    pub min_delay: f32,
+    pub max_delay: f32,
+    pub requires_line_of_sight: bool,
+    pub combat_target: bool,
+}
+
+pub fn parse_aoru(form_id: u32, subs: &[SubRecord]) -> AttractionRuleRecord {
+    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
+    let mut out = AttractionRuleRecord { form_id, editor_id: common.editor_id, ..Default::default() };
+    if let Some(sub) = subs.iter().find(|sub| &sub.sub_type == b"AOR2" && sub.data.len() >= 14) {
+        let f = |at: usize| f32::from_le_bytes(sub.data[at..at + 4].try_into().unwrap());
+        out.radius = f(0);
+        out.min_delay = f(4);
+        out.max_delay = f(8);
+        out.requires_line_of_sight = sub.data[12] != 0;
+        out.combat_target = sub.data[13] != 0;
+    }
+    out
 }
 
 pub fn parse_kywd(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> KywdRecord {
     let common = CommonNamedFields::from_subs_with_remap(subs, remap);
+    // Fallout 4's `DATA` is the attraction rule (xEdit `wbKYWD`); the other games author none.
+    let attraction_rule = subs
+        .iter()
+        .find(|sub| &sub.sub_type == b"DATA" && sub.data.len() >= 4)
+        .map(|sub| super::super::common::remap_fid(u32::from_le_bytes(sub.data[..4].try_into().unwrap()), remap))
+        .unwrap_or(0);
     KywdRecord {
         form_id,
         editor_id: common.editor_id,
+        attraction_rule,
     }
 }
 

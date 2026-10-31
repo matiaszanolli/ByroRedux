@@ -400,7 +400,7 @@ mod tests {
         index.furniture_keywords.insert(FORGE, vec![FORGE_KW]);
         index.furniture_keywords.insert(COOKPOT, vec![COOK_KW]);
         for (form_id, editor_id) in [(FORGE_KW, "CraftingSmithingForge"), (COOK_KW, "CraftingCookpot")] {
-            index.keywords.insert(form_id, byroredux_plugin::esm::records::KywdRecord { form_id, editor_id: editor_id.into() });
+            index.keywords.insert(form_id, byroredux_plugin::esm::records::KywdRecord { form_id, editor_id: editor_id.into(), attraction_rule: 0 });
         }
         crate::crafting::install_crafting(&mut world, &index);
         world.insert_resource(crate::notifications::PlayerNotifications::default());

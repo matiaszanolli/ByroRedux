@@ -6,6 +6,7 @@
 //! `dispatch_misc_gameplay_a.rs` for the weather/AI/dialogue half.
 
 use super::*;
+use super::common::kwda_keywords;
 
 /// Handles one of this domain's labels; the caller has already
 /// verified `label` is one of them.
@@ -72,6 +73,10 @@ pub(super) fn dispatch_misc_gameplay_b_group(
         // both in one walk.
         b"ACTI" => extract_records_with_modl(reader, end, b"ACTI", statics, &mut |fid, subs| {
             index.activators.insert(fid, parse_acti(fid, subs, &remap));
+            let keywords = kwda_keywords(subs, &remap);
+            if !keywords.is_empty() {
+                index.placed_object_keywords.insert(fid, keywords);
+            }
         })?,
         b"TERM" => extract_records_with_modl(reader, end, b"TERM", statics, &mut |fid, subs| {
             index.terminals.insert(fid, parse_term(fid, subs, &remap));

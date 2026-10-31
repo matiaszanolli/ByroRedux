@@ -369,6 +369,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(crate::systems::dead_body::DeadBodyState::default());
     world.insert_resource(crate::systems::iron_sights::IronSightsState::default());
     world.insert_resource(crate::systems::mines::MineClock::default());
+    world.insert_resource(crate::systems::attraction::AttractionState::default());
     world.insert_resource(byroredux_scripting::jail::JailEscapeWatch::default());
     world.insert_resource(crate::inventory::PendingDroppedItems::default());
     world.insert_resource(crate::crafting::ActiveCrafting::default());

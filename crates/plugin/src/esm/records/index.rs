@@ -576,6 +576,13 @@ pub struct EsmIndex {
     /// `FURN` base form → its `KWDA` keywords (Skyrim+; absent for a furniture with none). A crafting
     /// bench is a furniture carrying the keyword a `COBJ`'s `BNAM` names.
     pub furniture_keywords: HashMap<u32, Vec<u32>>,
+    /// M43 — the `KWDA` keywords of activator, flora and container bases (and furniture, which also lands in
+    /// [`Self::furniture_keywords`]): what makes a placed object an *attraction object* (Fallout 4,
+    /// [`Self::attraction_rules`]). Only bases that author at least one keyword appear.
+    pub placed_object_keywords: HashMap<u32, Vec<u32>>,
+    /// M43 — Fallout 4 `AORU` attraction rules: a keyword's `DATA` names one, and an object and an actor
+    /// that share that keyword react to each other inside its radius (CK *AttractionRule*).
+    pub attraction_rules: HashMap<u32, super::misc::AttractionRuleRecord>,
     // ── #810 / FNV-D2-NEW-03 — long-tail catch-all stubs ────────────
     //
     // 31 record types in the FNV catch-all-skip long tail. None has
@@ -1014,6 +1021,8 @@ impl EsmIndex {
             map_category!("impact_data_sets", impact_data_sets),
             map_category!("recipes", recipes),
             map_category!("furniture_keywords", furniture_keywords),
+            map_category!("placed_object_keywords", placed_object_keywords),
+            map_category!("attraction_rules", attraction_rules),
             // #810 / FNV-D2-NEW-03 — long-tail minimal stubs.
             map_category!("audio_locations", audio_locations),
             map_category!("animation_objects", animation_objects),

@@ -5,6 +5,7 @@
 //! `EsmIndex.trees` entry + `cells.statics`).
 
 use super::*;
+use super::common::kwda_keywords;
 use crate::esm::cell::support::parse_modl_group;
 
 /// Handles one of the world-placement labels; the caller has already
@@ -23,8 +24,18 @@ pub(super) fn dispatch_world_placement_group(
         // but no record-side parser yet. TREE was here too pre-#TREE
         // (SpeedTree Phase 1.1) but split out below so ICON / SNAM /
         // CNAM / BNAM / PFIG don't silently fall on the floor.
-        b"STAT" | b"MSTT" | b"DOOR" | b"FLOR" | b"IDLM" | b"BNDS" | b"ADDN" | b"TACT" => {
+        b"STAT" | b"MSTT" | b"DOOR" | b"IDLM" | b"BNDS" | b"ADDN" | b"TACT" => {
             parse_modl_group(reader, end, statics)?;
+        }
+        // FLOR — the same placement entry, plus the `KWDA` keywords an attraction object is recognised by.
+        b"FLOR" => {
+            let remap = reader.get_form_id_remap();
+            extract_records_with_modl(reader, end, b"FLOR", statics, &mut |fid, subs| {
+                let keywords = kwda_keywords(subs, &remap);
+                if !keywords.is_empty() {
+                    index.placed_object_keywords.insert(fid, keywords);
+                }
+            })?
         }
         // FURN — the same placement entry, plus the `KWDA` keywords a crafting bench is recognised
         // by (a `COBJ`'s `BNAM` names one of them).
@@ -41,6 +52,7 @@ pub(super) fn dispatch_world_placement_group(
                     })
                     .collect();
                 if !keywords.is_empty() {
+                    index.placed_object_keywords.insert(fid, keywords.clone());
                     index.furniture_keywords.insert(fid, keywords);
                 }
             })?

@@ -14,6 +14,12 @@
 //! - **Where it applies.** Only on a title whose Story Manager tree has a `LOCK` root (Fallout 4 and later);
 //!   every other game keeps "a lock without its key stays shut" until its own lock rules are sourced.
 //!
+//! **Terminals** (`HACK`): a locked terminal at the same pickable levels is *hacked* instead — no item, no
+//! word game, so the attempt always succeeds (engine policy; Fallout 4's Hacker perk ranks and the minigame
+//! are not modelled). It unlocks the terminal and raises `HACK` as `OnStoryHackTerminal(akComputer,
+//! abSucceeded)`: the terminal's reference in `R1` and `abSucceeded` in `V1` (always `1` here). A terminal is a
+//! reference whose base is a `TERM` record. Terminal menus, bodies and selections are a separate surface.
+//!
 //! A picked lock is recorded like a key unlock (the persistent lock ledger), and `LOCK` is raised as
 //! `OnStoryPickLock(akActor, akLock)` — the player in `R1`, the lock's reference in `R2` (the signature is
 //! read from `Quest.pex` in `Fallout4 - Misc.ba2`).
@@ -27,6 +33,29 @@ use byroredux_scripting::story_manager::{raise_story_event, SmTree, StoryEvent};
 
 /// The `SMEN` mnemonic of the lockpick-success event.
 pub(crate) const LOCK: [u8; 4] = *b"LOCK";
+
+/// The way the player gets past a lock without its key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Bypass {
+    /// A lock opened with a held pick.
+    Pick,
+    /// A terminal hacked.
+    Hack,
+}
+
+/// The base forms of the load order's terminals (`TERM`). `NOT_SAVED_BY_DESIGN`: rebuilt from the records
+/// every boot.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct TerminalBases(std::collections::HashSet<u32>);
+
+impl Resource for TerminalBases {}
+
+pub(crate) fn install_terminal_bases(world: &mut World, index: &EsmIndex) {
+    world.insert_resource(TerminalBases(index.terminals.keys().copied().collect()));
+}
+
+/// The `SMEN` mnemonic of the hack-terminal event (editor id `HackComputer`).
+pub(crate) const HACK: [u8; 4] = *b"HACK";
 
 /// The highest lock level a pick can open (`Master`).
 const MAX_PICKABLE_LEVEL: u8 = 100;
@@ -47,27 +76,58 @@ pub(crate) fn install_lockpick_item(world: &mut World, index: &EsmIndex) {
     world.insert_resource(LockpickItem(form));
 }
 
-/// Whether the player could pick the lock on `target` now: it is locked at a pickable level, the game has the
-/// `LOCK` event, and the player holds a pick.
-pub(crate) fn can_pick(world: &World, target: EntityId) -> bool {
-    let Some(lock) = world.get::<Locked>(target).map(|lock| *lock) else {
-        return false;
-    };
+fn has_root(world: &World, mnemonic: [u8; 4]) -> bool {
+    world.try_resource::<SmTree>().is_some_and(|tree| tree.roots_by_mnemonic.contains_key(&mnemonic))
+}
+
+/// How the player could get past the lock on `target` now, if at all: it is locked at a pickable level and
+/// either it is a terminal in a game with the `HACK` event, or the game has the `LOCK` event and the player
+/// holds a pick.
+pub(crate) fn bypass_of(world: &World, target: EntityId) -> Option<Bypass> {
+    let lock = world.get::<Locked>(target).map(|lock| *lock)?;
     if lock.lock_level > MAX_PICKABLE_LEVEL {
-        return false;
+        return None;
     }
-    if !world
-        .try_resource::<SmTree>()
-        .is_some_and(|tree| tree.roots_by_mnemonic.contains_key(&LOCK))
-    {
-        return false;
+    let is_terminal = world
+        .get::<byroredux_scripting::SceneAliasCandidate>(target)
+        .zip(world.try_resource::<TerminalBases>())
+        .is_some_and(|(candidate, terminals)| terminals.0.contains(&candidate.base_form_id));
+    if is_terminal {
+        return has_root(world, HACK).then_some(Bypass::Hack);
     }
-    let Some(pick) = world.try_resource::<LockpickItem>().and_then(|item| item.0) else {
-        return false;
-    };
+    if !has_root(world, LOCK) {
+        return None;
+    }
+    let pick = world.try_resource::<LockpickItem>().and_then(|item| item.0)?;
     byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world)
         .and_then(|player| world.get::<Inventory>(player).map(|inventory| inventory.count_of(pick) > 0))
         .unwrap_or(false)
+        .then_some(Bypass::Pick)
+}
+
+/// Whether the player could get past the lock on `target` now ([`bypass_of`]).
+pub(crate) fn can_pick(world: &World, target: EntityId) -> bool {
+    bypass_of(world, target).is_some()
+}
+
+/// The terminal `target` was hacked by the player: raise `HACK`, `OnStoryHackTerminal(akComputer,
+/// abSucceeded)` — the terminal in `R1`, success in `V1`.
+pub(crate) fn raise_hack_event(world: &World, target: EntityId) {
+    let Some(player) = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world) else {
+        return;
+    };
+    raise_story_event(
+        world,
+        player,
+        StoryEvent {
+            mnemonic: HACK,
+            reference_1: target,
+            reference_2: None,
+            location_1: None,
+            location_2: None,
+            scripted: Some(byroredux_scripting::story_manager::ScriptedStoryEvent { keyword: 0, values: [1, 0], has_reference_1: false }),
+        },
+    );
 }
 
 /// The lock on `target` was picked by the player: raise `LOCK` with `OnStoryPickLock(akActor, akLock)`'s

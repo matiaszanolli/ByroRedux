@@ -5,6 +5,7 @@
 //! global via `reader.get_form_id_remap()` before parsing (#2079).
 
 use super::*;
+use super::common::kwda_keywords;
 
 /// Handles one of the container/leveled-list labels; the caller has
 /// already verified `label` is one of this domain's.
@@ -27,6 +28,10 @@ pub(super) fn dispatch_container_group(
                 index
                     .containers
                     .insert(fid, parse_cont(fid, subs, &cont_remap));
+                let keywords = kwda_keywords(subs, &cont_remap);
+                if !keywords.is_empty() {
+                    index.placed_object_keywords.insert(fid, keywords);
+                }
             })?
         }
         b"LVLI" => {

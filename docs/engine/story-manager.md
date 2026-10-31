@@ -373,6 +373,24 @@ already has the surface:
   The live run's pair was already inside the trigger distance, so the walk
   itself is covered by the unit test (teleport into range) and the shared
   step, not by that run.
+- **`AOBJ`, Attraction Object** (M43, `systems/attraction.rs`). Fallout 4's attraction system (CK
+  *AttractionRule*, *SetAttractionActive*, *Quest Script*): a keyword's `DATA` names an `AORU` rule (radius, min
+  and max delay, requires line of sight, combat target — xEdit `wbAORU`/`wbKYWD`), and an object and an actor
+  that both carry the keyword react to each other. Fallout4.esm has 8 rules on 15 keywords, carried by
+  activator / flora / furniture / container bases and NPC bases (census 2026-10-30). New plumbing: `AORU` is a
+  dispatched record (`EsmIndex::attraction_rules`), `KywdRecord::attraction_rule`, and the `KWDA` of activator,
+  flora and container bases (`placed_object_keywords`; furniture's also lands there). A live NPC and a placed
+  object sharing an attraction keyword inside the rule's radius (and in line of sight when required) raise
+  `OnStoryAttractionObject` — actor `R1`, object `R2`, location `L1`, `V1` = `abCommanded` = 0 — after a delay
+  drawn between the rule's minimum and maximum, repeating while they stay. **Engine policy:** that reading of
+  "delay". **Not modelled:** rules with *Combat Target* (nothing says what it changes, so the workshop-resource
+  rule is left out rather than guessed), `SetAttractionActive` switching an object off, race keywords, the
+  workshop *commanded* path. Unit-tested; not run in the live engine.
+- **`HACK`, Hack Terminal** (M43, `lockpick.rs`): a locked terminal (a reference whose base is a `TERM`) at lock
+  level 0-100 in a game whose tree has a `HACK` root is hacked on activation — no item and no word game, so it
+  always succeeds (engine policy; the Hacker perk ranks are not modelled). It unlocks and raises
+  `OnStoryHackTerminal(akComputer, abSucceeded)`: the terminal in `R1`, success in `V1`. The terminal's menu
+  and body text are a separate surface and are not built. Unit-tested; not run in the live engine.
 - **`TMEE`, Mine Explosion** (M43, `systems/mines.rs`). `OnStoryMineExplosion(akVictim, akAttacker)`. The
   game's data defines a mine as a projectile with the *Alt. Trigger* flag, a trigger distance, a fuse and an
   explosion (xEdit `wbPROJ`; the layout was verified on `Fallout4.esm`: the frag mine is flags `0x66`,
@@ -504,8 +522,7 @@ already has the surface:
   akLock)`; `OAAT` = `OnStoryActorAttach(akActor, akLocation)` (its `SMEN` authors no editor id; the code is
   read from its child quests, `REDeadActorAttach` and kin); `AOBJ` = `OnStoryAttractionObject(akActor,
   akObject, akLocation, abCommanded)` (no editor id either, so the code is inferred from the name pair and
-  the workshop "attraction" the CK describes). `OAAT`, `LOCK`, `IRON` and `TMEE` have producers. **Still
-  without one:** `HACK` (the engine has no terminal interaction or hacking) and `AOBJ` (no workshop).
+  the CK's attraction system — not the workshop, as first guessed). Every one of the six now has a producer.
 
 ### 6.5 Persistence
 

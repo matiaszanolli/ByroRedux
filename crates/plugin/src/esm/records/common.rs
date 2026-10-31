@@ -761,3 +761,12 @@ mod tests {
         assert!(!is_localized_plugin(), "outer Drop restores baseline");
     }
 }
+
+/// Every `KWDA` keyword FormID of a record's sub-records, load-order remapped (Skyrim+; empty elsewhere).
+pub fn kwda_keywords(subs: &[crate::esm::reader::SubRecord], remap: &Option<FormIdRemap>) -> Vec<u32> {
+    subs.iter()
+        .filter(|sub| &sub.sub_type == b"KWDA")
+        .flat_map(|sub| sub.data.chunks_exact(4))
+        .map(|raw| remap_fid(u32::from_le_bytes(raw.try_into().expect("four-byte chunk")), remap))
+        .collect()
+}
