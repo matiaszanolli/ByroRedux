@@ -366,13 +366,18 @@ with flame energy within 0.2%.
 `FLAME_REFERENCE_RADIANCE` is the one exposure choice in the chain; everything
 else is physics. It is derived rather than eyeballed — the path integral
 reduces to `optical_depth * (1 - albedo) * L_e`, about `0.3 * L_e`,
-independent of flame size — and the resulting torch reach lands within a
-factor of two of vanilla authored torch LIGH radii, which is a cross-check on
-the whole chain rather than an input to it. A synthetic runtime lifecycle A/B
+independent of flame size. The earlier claim that the resulting torch reach
+lands within a factor of two of vanilla authored torch LIGH radii did not
+survive a device check (2026-10-31): the reach is `sqrt(luma / 1e-3)` clamped
+to 64 m, so a hearth sits at the clamp (about 14-17x a vanilla torch's cull
+radius) while a small brazier's derived luma is ~0.01 against ~1 for an
+authored light. A synthetic runtime lifecycle A/B
 on 2026-08-17 confirmed that the cooling phase restores nearby material detail
-and expiry removes both the volume and reduced field light. A visual A/B against
-real shipped fire content remains before treating the exposure choice as
-final.
+and expiry removes both the volume and reduced field light. A visual A/B on
+Skyrim hearths (2026-10-31, `BYRO_FIRE_VOLUMES` on/off, controlled for
+time of day) shows no blow-out: the Bannered Mare hearth region is ~18%
+brighter, the frame ~3.5%. The exposure choice stands; the reach does not (see
+above).
 
 ## Configuration
 

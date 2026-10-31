@@ -629,13 +629,23 @@ performance finding. The measured knob table is in
   total size`, ~20 times in multi-minute `--bench-hold` sessions and 0 in
   short ones. Suspected cause: a `dds::mip_size` rounding gap. Needs a
   targeted repro plus an allocation assert.
-- [ ] **Fire lighting is on by default and never had its visual check.**
-  `2325c1de` replaced `render/fire_lights.rs` (and its reach canary) with
-  `append_combustion_surface_lights` from the transported field, which flipped
-  the default as a side effect. Owed: an A/B on a vanilla torch interior (FNV
-  Prospector, Skyrim BanneredMare). Derived reach should land near the
-  ~512-unit vanilla LIGH radius, and fires without a companion LIGH should not
-  blow out the room.
+- [ ] **Fire lighting: visual check done 2026-10-31, derived reach still unbounded.**
+  `2325c1de`'s transported-field surface light (default since) was A/B'd with
+  `BYRO_FIRE_VOLUMES=0` (same binary, `time.set 12`, 20 s settle, same pose;
+  ON-vs-ON control ±0.1 mean luma, 1.5% of pixels >8 apart). Skyrim
+  WhiterunBanneredMare hearth: whole frame +3.5%, hearth region +18%, 14% of
+  pixels differ (control 1.5%); nothing blows out. WindhelmCandlehearthHall's
+  three flames, none within an authored LIGH's range: no measurable change
+  (derived radiant luma ~0.01 against ~1 for an authored light). FNV has no
+  flame volume in the saloon or the caves probed (the old "Prospector" target
+  was wrong); the FNV half of the A/B is still owed on exterior fire. **The
+  reach claim does not hold:** the derived cull radius is `sqrt(luma / 1e-3)`
+  clamped to 64 m x2, and a hearth (luma 3-18) sits at the clamp, 7 100-8 960
+  BU against a vanilla torch's ~512, so the `OVERSIZED REACH` canary (WARN)
+  fires for every hearth. Light cost is one extra light per cluster, not a
+  visual defect. Owed: pick a reach that tracks a meaningful illuminance
+  (relative to the cell's ambient) instead of the 1e-3 cutoff, then retire or
+  retune the canary. Captures: `~/Downloads/fire-lighting-ab/`.
 - [ ] **CHARAL runtime-dead surface.** The 2026-08-15 audit verified 62
   constants with zero mismatch at that HEAD; #5238 later falsified the
   then-current NPC Health row (fixed, and the capture's Health rows are now

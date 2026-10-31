@@ -1258,6 +1258,19 @@ impl VolumetricsPipeline {
                 ]
             })
             .unwrap_or([0.0; 3]);
+        // Radiant intensity (luma) of the strongest appended light, for the
+        // device A/B: the reach alone cannot say how much light a fire adds.
+        let strongest_radiant_luma = self
+            .combustion_light_candidates_scratch
+            .first()
+            .map(|(_, light)| {
+                byroredux_core::radiometry::linear_srgb_luminance([
+                    light.color_type[0],
+                    light.color_type[1],
+                    light.color_type[2],
+                ])
+            })
+            .unwrap_or(0.0);
         // W2.13 canary — max cull radius among the APPENDED lights (the
         // suppressed/appended split matters: a suppressed centroid never
         // reaches the scene). Folded into the topology tuple so a
@@ -1290,6 +1303,7 @@ impl VolumetricsPipeline {
                      suppressed_candidates={suppressed_candidates} \
                      appended_lights={append_count} \
                      max_cull_radius_bu={max_appended_cull_radius_bu:.0} \
+                     strongest_radiant_luma={strongest_radiant_luma:.1} \
                      (canary threshold {} BU, vanilla torch ~512 BU)",
                     COMBUSTION_REACH_CANARY_CULL_RADIUS_BU,
                 );
@@ -1299,6 +1313,7 @@ impl VolumetricsPipeline {
                      decoded_candidates={decoded_candidates} \
                      suppressed_candidates={suppressed_candidates} appended_lights={append_count} \
                      weight_quanta={weight_quanta} radiance_quanta={radiance_quanta} \
+                     strongest_radiant_luma={strongest_radiant_luma:.1} \
                      strongest_centroid_m={:.2},{:.2},{:.2}",
                     strongest_centroid_metres[0],
                     strongest_centroid_metres[1],
