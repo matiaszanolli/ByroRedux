@@ -11,18 +11,6 @@
 #ifndef BYRO_COMBUSTION_TRANSPORT_GLSL
 #define BYRO_COMBUSTION_TRANSPORT_GLSL
 
-vec4 sanitizedChemistry(vec4 chemistry) {
-    if (any(isnan(chemistry)) || any(isinf(chemistry))) {
-        return vec4(0.0, AMBIENT_TEMPERATURE_K, 0.0, 0.0);
-    }
-    chemistry.x = clamp(chemistry.x, 0.0, 1.0);
-    chemistry.y = chemistry.y > 1.0
-        ? clamp(chemistry.y, AMBIENT_TEMPERATURE_K, COMBUSTION_MAX_TEMPERATURE_K)
-        : AMBIENT_TEMPERATURE_K;
-    chemistry.z = clamp(chemistry.z, 0.0, 0.20);
-    chemistry.w = clamp(chemistry.w, 0.0, 64.0);
-    return chemistry;
-}
 
 vec4 sanitizedDynamics(vec4 dynamics) {
     if (any(isnan(dynamics)) || any(isinf(dynamics))) {
@@ -41,14 +29,6 @@ vec4 sanitizedDynamics(vec4 dynamics) {
     return dynamics;
 }
 
-vec4 sanitizedOptical(vec4 optical) {
-    if (any(isnan(optical)) || any(isinf(optical))) {
-        return vec4(0.0);
-    }
-    optical.rgb = clamp(optical.rgb, vec3(0.0), vec3(0.20));
-    optical.w = 0.0;
-    return optical;
-}
 // SEAM — each including shader defines this AFTER the include, over its own
 // storage for the previous-frame field (the froxel pass reprojects through
 // its camera grid; a world-space local grid indexes its own volume). It must
@@ -928,28 +908,5 @@ void transportCombustion(
     optical = sanitizedOptical(optical);
 }
 
-LocalMedium combustionMedium(vec4 chemistry, vec4 optical) {
-    LocalMedium medium = emptyLocalMedium();
-    chemistry = sanitizedChemistry(chemistry);
-    optical = sanitizedOptical(optical);
-    float fuelVapourSigmaT = chemistry.x * COMBUSTION_FUEL_VAPOUR_SIGMA_T;
-    float sigmaT = chemistry.z + fuelVapourSigmaT;
-    if (sigmaT <= 1.0e-7) {
-        return medium;
-    }
-
-    vec3 sigmaS = optical.rgb
-        + fuelVapourSigmaT * vec3(COMBUSTION_FUEL_VAPOUR_SINGLE_SCATTER_ALBEDO);
-    sigmaS = clamp(sigmaS, vec3(0.0), vec3(sigmaT));
-    vec3 sigmaA = vec3(sigmaT) - sigmaS;
-    medium.extinction = sigmaT;
-    medium.scattering = sigmaS;
-
-    float thermalLuma = chemistry.w
-        * blackbodyVisibleRadianceRatio(chemistry.y, 1850.0);
-    vec3 thermalRadiance = blackbodyChromaticity(chemistry.y) * thermalLuma;
-    medium.emission = sigmaA * thermalRadiance;
-    return medium;
-}
 
 #endif

@@ -11,11 +11,12 @@
 #ifndef BYRO_COMBUSTION_SOURCES_GLSL
 #define BYRO_COMBUSTION_SOURCES_GLSL
 
+#include "include/combustion_medium.glsl"
+
 const float PI = 3.14159265358979323846;
 // Rec. 709 luma weights come from the generated header's `LUMA_REC709`,
 // pinned to `byroredux_core::radiometry::LINEAR_SRGB_LUMA` so CPU and GPU agree
 // on what "brightness" means (#4347).
-const float AMBIENT_TEMPERATURE_K = 293.15;
 const float COMBUSTION_WALL_FRICTION_PER_SECOND = 0.35;
 // FOG_VOLUME_CLUSTER_DIM / MAX_FOG_VOLUMES_PER_CLUSTER come from the
 // #include'd shader_constants.glsl header (generated from
@@ -30,29 +31,10 @@ vec3 rotateByQuaternion(vec3 value, vec4 q) {
     return value + 2.0 * cross(q.xyz, cross(q.xyz, value) + q.w * value);
 }
 
-// Accumulated coefficients of the radiative transfer equation contributed by
-// authored local media at one froxel. Emission is carried separately from
-// in-scattering because the two behave differently under temporal
-// accumulation: in-scattering is a stochastic visibility estimate that WANTS
-// history, while emission is deterministic and fast-changing and does not.
-struct LocalMedium {
-    vec3 scattering;   // sigma_s, per world unit
-    float extinction;  // sigma_t, per world unit
-    vec3 emission;     // sigma_a * L_e, radiance per world unit
-};
 
-// Canonical renderer-side combustion-medium constants. Keeping the fuel
-// vapour coefficients here gives both camera-space integration and
-// light-space transmittance the same material instead of restating it in two
-// solver functions.
-const float COMBUSTION_FUEL_VAPOUR_SIGMA_T = 0.0035;
-const float COMBUSTION_FUEL_VAPOUR_SINGLE_SCATTER_ALBEDO = 0.10;
+// Light-space transmittance march budget (`transportedCombustionTransmittance`).
 const int COMBUSTION_LIGHT_TRANSMITTANCE_STEPS = 8;
 const float COMBUSTION_LIGHT_TRANSMITTANCE_REACH_METERS = 2.0;
-
-LocalMedium emptyLocalMedium() {
-    return LocalMedium(vec3(0.0), 0.0, vec3(0.0));
-}
 
 // Cheap deterministic phase offset so nearby fireplaces do not inhale and
 // flare in lockstep. The source center is stable in absolute space and already
@@ -299,48 +281,6 @@ float localDensityProfile(
     return boundary * rootFade * (mix(0.24, 1.42, licks) + hotCore * 0.28);
 }
 
-// Approximate blackbody chromaticity from Planck's law at representative
-// linear-sRGB wavelengths. Energy is normalized to unit Rec. 709 luminance;
-// the physically dominant T^4 radiance scaling is applied separately below.
-vec3 blackbodyChromaticity(float kelvin) {
-    float temperature = clamp(kelvin, 700.0, 12000.0);
-    vec3 wavelengthNm = vec3(610.0, 550.0, 460.0);
-    const float referenceNm = 610.0;
-    const float c2NmK = 1.438776877e7;
-    float referenceDenominator = exp(clamp(c2NmK / (referenceNm * temperature), 0.0, 80.0)) - 1.0;
-    vec3 denominator = exp(clamp(
-        vec3(c2NmK) / (wavelengthNm * temperature),
-        vec3(0.0),
-        vec3(80.0)
-    )) - vec3(1.0);
-    vec3 spectral = pow(vec3(referenceNm) / wavelengthNm, vec3(5.0))
-        * referenceDenominator / max(denominator, vec3(1.0e-6));
-    return spectral / max(dot(spectral, LUMA_REC709), 1.0e-4);
-}
-
-// Visible-band blackbody-radiance ratio, evaluated at the photopic response
-// peak (555 nm). The CPU canonical source uses a full CIE integration; this
-// one-wavelength ratio is the inexpensive per-froxel approximation to the
-// same Planck-law magnitude trend. Calibration is transported separately, so
-// the ratio is exactly 1 at the shared 1850 K flame reference and preserves
-// each source's authored/canonical HDR exposure.
-float blackbodyVisibleRadianceRatio(float kelvin, float referenceKelvin) {
-    const float wavelengthNm = 555.0;
-    const float c2NmK = 1.438776877e7;
-    float temperature = clamp(kelvin, 700.0, 12000.0);
-    float referenceTemperature = clamp(referenceKelvin, 700.0, 12000.0);
-    float numerator = exp(clamp(
-        c2NmK / (wavelengthNm * referenceTemperature),
-        0.0,
-        80.0
-    )) - 1.0;
-    float denominator = exp(clamp(
-        c2NmK / (wavelengthNm * temperature),
-        0.0,
-        80.0
-    )) - 1.0;
-    return clamp(numerator / max(denominator, 1.0e-6), 0.0, 4096.0);
-}
 
 // Resolve the one camera-centred cluster containing a world-space sample.
 // Keeping this lookup and the primitive-shape evaluation shared prevents the

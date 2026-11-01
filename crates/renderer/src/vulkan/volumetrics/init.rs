@@ -94,6 +94,10 @@ pub(in crate::vulkan) fn volumetrics_inject_layout_bindings(
         compute_binding(24, vk::DescriptorType::STORAGE_BUFFER),
         compute_binding(25, vk::DescriptorType::STORAGE_BUFFER),
     ]
+    .into_iter()
+    // 26..=31: the world-space combustion local grid (#6533).
+    .chain(local_grid::inject_local_grid_bindings())
+    .collect()
 }
 
 pub(in crate::vulkan) fn volumetrics_integrate_layout_bindings(
@@ -818,20 +822,27 @@ impl VolumetricsPipeline {
             unsafe { device.update_descriptor_sets(&int_writes, &[]) };
         }
 
-        // ── 12. World-space local grid (stage 1b) ─────────────────────
-        // Not fatal: without it the fire renders exactly as before.
-        partial.local_grid = match local_grid::LocalGrid::new(
+        // ── 12. World-space local grid (#6533) ────────────────────────
+        // Required: the inject set's bindings 26..=31 and composite's 12..=15
+        // point at its resources, so a missing grid cannot be papered over.
+        partial.local_grid = Some(try_or_cleanup!(
+            partial,
             device,
             allocator,
-            pipeline_cache,
-            partial.descriptor_set_layout,
-        ) {
-            Ok(grid) => Some(grid),
-            Err(e) => {
-                log::warn!("Volumetrics local grid disabled: {e:#}");
-                None
+            local_grid::LocalGrid::new(
+                device,
+                allocator,
+                pipeline_cache,
+                partial.descriptor_set_layout,
+                extent,
+            )
+            .context("Volumetrics local grid")
+        ));
+        if let Some(grid) = partial.local_grid.as_ref() {
+            for f in 0..MAX_FRAMES_IN_FLIGHT {
+                grid.write_inject_bindings(device, partial.descriptor_sets[f], f);
             }
-        };
+        }
 
         log::info!(
             "Volumetrics pipeline created from render {}x{}: {}x{}x{} froxels (1/{} XY), {} MiB / slot ({} volumes: 5×RGBA16F + R32F), far={} m",

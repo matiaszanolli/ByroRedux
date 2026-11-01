@@ -48,6 +48,7 @@ mod combustion;
 mod fog_clusters;
 pub(super) mod init;
 mod local_grid;
+pub use local_grid::LocalFireViews;
 pub(crate) mod noise;
 
 // #5094 — the fog-cluster build and the combustion light moments split
@@ -407,7 +408,8 @@ pub fn hybrid_slice_coordinate(
 /// directly, every frame — `sampleVolumetricColumn` rebuilds the bilinear
 /// 2x2 froxel-column footprint with depth-compatibility weights
 /// (`volumetricFroxel`, set 0 binding 6) and applies it as
-/// `combined = combined * vol.a + vol.rgb` in HDR-linear, pre-ACES. No
+/// `combined = combined * vol.a + vol.rgb` in HDR-linear, pre-ACES (composed around
+/// the close-range fire when a local-grid box is on the ray, #6533). No
 /// intermediate pass touches the volume between integrate and composite.
 ///
 /// History: gated off 2026-05-09 after a diagnosed per-froxel single-
@@ -821,7 +823,7 @@ impl VolumetricsPipeline {
                 frame,
                 fog_volumes,
                 camera_position,
-                fog_far,
+                fog_far.min(local_grid::LOCAL_GRID_REACH_METERS * WORLD_UNITS_PER_METER),
                 simulation_time,
                 COMBUSTION_HISTORY_LINGER_SECONDS,
             )?;
@@ -902,6 +904,9 @@ impl VolumetricsPipeline {
             });
         }
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&frame_params))?;
+        if let Some(grid) = self.local_grid.as_mut() {
+            grid.write_params(device, frame, &frame_params)?;
+        }
         // #3834 — bound to the header plus the volumes actually populated.
         // The shader early-outs on `fogVolumeCount == 0u` and otherwise reads
         // `volumes[i]` only for `i < count`, and `count` is rewritten in BOTH
@@ -1015,6 +1020,21 @@ impl VolumetricsPipeline {
             history_barriers.as_flattened(),
         );
 
+        // ── Stage B2: world-space local grid (#6533) ─────────────────────
+        // Simulate the boxes BEFORE the injection: the injection hands the
+        // fire inside a box off to the grid (it reads this frame's atlas), and
+        // writes the irradiance field the composite march lights it with.
+        // Reads the same set 0 as the injection and writes only its own atlas.
+        if let Some(grid) = self.local_grid.as_mut() {
+            grid.record_frame(
+                device,
+                cmd,
+                frame,
+                self.descriptor_sets[frame],
+                timers.as_deref_mut(),
+            );
+        }
+
         if let Some(timers) = timers.as_deref_mut() {
             timers.cmd_start(TimerPass::VolumetricsInject, device, cmd, frame);
         }
@@ -1035,21 +1055,6 @@ impl VolumetricsPipeline {
         if let Some(timers) = timers.as_deref_mut() {
             timers.cmd_end(TimerPass::VolumetricsInject, device, cmd, frame);
         }
-        // ── Stage C2: world-space local grid sim (stage 1b, not drawn yet) ──
-        // Reads the same set 0 as the injection (params, TLAS, fog primitives
-        // and clusters, boundary geometry) and writes only its own atlas, so
-        // it needs no ordering against the injection beyond the execution
-        // dependency `record_sim` adds to keep the timer brackets apart.
-        if let Some(grid) = self.local_grid.as_mut().filter(|grid| grid.has_work()) {
-            grid.record_sim(
-                device,
-                cmd,
-                frame,
-                self.descriptor_sets[frame],
-                timers.as_deref_mut(),
-            );
-        }
-
         // ── Stage D: barrier between injection and integration ──────
         // Sequence the injection WRITE on the lighting volume against
         // the integration READ of the same image. The integration
@@ -1114,6 +1119,15 @@ impl VolumetricsPipeline {
         // Make the integrated-volume WRITE visible to the composite
         // fragment shader's sampler3D READ.
         let post_int = image_barrier_general_write_to_read(self.integrated_volumes[frame].image);
+        // Plus the local grid's atlas and irradiance field, which composite's
+        // close-range fire march samples (#6533).
+        let local_published = self
+            .local_grid
+            .as_ref()
+            .map(|grid| grid.composite_barriers(frame));
+        let published: Vec<vk::ImageMemoryBarrier> = std::iter::once(post_int)
+            .chain(local_published.into_iter().flatten())
+            .collect();
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -1121,7 +1135,7 @@ impl VolumetricsPipeline {
             vk::DependencyFlags::empty(),
             &[],
             &[],
-            &[post_int],
+            &published,
         );
         // Publish binding 18's atomic writes to the host. The actual read is
         // deferred until this slot's fence is waited on at its next reuse;
@@ -1510,6 +1524,24 @@ impl VolumetricsPipeline {
         self.integrated_volumes.iter().map(|s| s.view).collect()
     }
 
+    /// Handles composite binds (set 0, bindings 12..=15) to draw the
+    /// close-range fire from the world-space local grid (#6533). `None` when
+    /// the grid could not be created, in which case composite cannot be built
+    /// either: its layout requires the bindings.
+    pub fn local_fire_views(&self) -> Option<local_grid::LocalFireViews> {
+        self.local_grid.as_ref().map(local_grid::LocalGrid::fire_views)
+    }
+
+    /// Switch off every consumer of the local-grid table for `frame`. Called
+    /// on a frame the volumetric passes did not run: the atlas and irradiance
+    /// field are stale, and composite must not march them.
+    pub fn clear_local_grid_params(&mut self, device: &ash::Device, frame: usize) -> Result<()> {
+        match self.local_grid.as_mut() {
+            Some(grid) => grid.clear_params(device, frame),
+            None => Ok(()),
+        }
+    }
+
     /// Update the injection descriptor set's binding 2 (TLAS) for
     /// `frame`. Mirrors [`super::caustic::CausticPipeline::write_tlas`]
     /// — the TLAS is rebuilt each frame, so this MUST be called every
@@ -1890,7 +1922,8 @@ mod unit_tests {
 
     /// #4532 — `VOLUMETRIC_OUTPUT_CONSUMED`'s doc justifies the gate by the
     /// CURRENT consumer: composite reads the integrated volume directly
-    /// (`sampleVolumetricColumn`, `combined = combined * vol.a + vol.rgb`).
+    /// (`sampleVolumetricColumn`, `combined = (volIn.rgb + volIn.a * fire.rgb) + fire.a * (...)`, which
+    /// is `combined * vol.a + vol.rgb` when no local-grid box is on the ray).
     /// The doc used to credit the 3x3 XY injection blur deleted from
     /// `volumetrics_integrate.comp` by 5be840d2b; pin both halves so the doc
     /// site cannot silently rot again — if composite stops consuming, or the
@@ -1907,7 +1940,9 @@ mod unit_tests {
         for contract in [
             "uniform sampler3D volumetricFroxel;",
             "vec4 vol = sampleVolumetricColumn(fragUV, sliceTexel, depth);",
-            "combined = combined * vol.a + vol.rgb;",
+            // #6533 — the fog around the close-range fire; reduces to
+            // `combined * vol.a + vol.rgb` when no local-grid box is on the ray.
+            "combined = (volIn.rgb + volIn.a * fire.rgb)",
         ] {
             assert!(
                 composite.contains(contract),
@@ -1998,7 +2033,7 @@ mod unit_tests {
     fn local_visibility_work_is_gated_on_nonzero_scattering() {
         let shader = crate::source_scan::volumetrics_inject_glsl();
         let gated = shader
-            .split("if (any(greaterThan(scattering_coef, vec3(0.0)))) {")
+            .split("if (any(greaterThan(scattering_coef, vec3(0.0))) || needsLightField) {")
             .nth(1)
             .expect("empty froxels must skip local lighting")
             .split("vec4 current = vec4(inscatter, extinction_coef)")
@@ -4271,9 +4306,9 @@ mod transport_occupancy_tests {
         // in `transportCombustion`'s signature also matches a bare
         // `"transportOccupied,"` search, so the old `.or_else` let a call
         // site regressed to `true` stay green. The call-site argument pair
-        // (`transportOccupied,` then `chemistry,`) is indented twelve
-        // spaces; the declaration, four — matching the pair pins the CALL.
-        let arg = ["\n            transportOccupied,\n            chemistry,"].concat();
+        // (`transportOccupied,` then `chemistry,`) is indented sixteen
+        // spaces (inside the local-grid `else`); the declaration, four — matching the pair pins the CALL.
+        let arg = ["\n                transportOccupied,\n                chemistry,"].concat();
         assert!(
             shader.contains(&arg),
             "`transportCombustion` must receive the occupancy gate at its call \

@@ -220,14 +220,14 @@ mod tests {
         ("svgf_atrous.comp", "EPS"),
         ("svgf_atrous.comp", "DEPTH_EPS"),
         ("include/combustion_sources.glsl", "PI"),
-        ("include/combustion_sources.glsl", "AMBIENT_TEMPERATURE_K"),
+        ("include/combustion_medium.glsl", "AMBIENT_TEMPERATURE_K"),
         (
             "include/combustion_sources.glsl",
             "COMBUSTION_WALL_FRICTION_PER_SECOND",
         ),
-        ("include/combustion_sources.glsl", "COMBUSTION_FUEL_VAPOUR_SIGMA_T"),
+        ("include/combustion_medium.glsl", "COMBUSTION_FUEL_VAPOUR_SIGMA_T"),
         (
-            "include/combustion_sources.glsl",
+            "include/combustion_medium.glsl",
             "COMBUSTION_FUEL_VAPOUR_SINGLE_SCATTER_ALBEDO",
         ),
         (
@@ -347,6 +347,16 @@ mod tests {
         // test `froxel_jitter_rotation_keeps_full_resolution_over_a_session`
         // parses it back out of the shader and checks it against R3.
         ("volumetrics_inject.comp", "R3_ROTATION_FIXED_0_32"),
+        // #6533 — the local-grid close-range march and its irradiance field.
+        // Tuning of one stage each, not CPU/GPU contract values.
+        ("volumetrics_inject.comp", "LOCAL_IRRADIANCE_HISTORY_WEIGHT"),
+        ("composite.frag", "LOCAL_FIRE_MAX_STEPS_PER_BOX"),
+        ("composite.frag", "LOCAL_FIRE_ISOTROPIC_PHASE"),
+        ("composite.frag", "LOCAL_FIRE_OPAQUE_TRANSMITTANCE"),
+        // The UBO binding slot differs per pass (inject set 0 binding 26,
+        // composite binding 12), so each includer defines it for its own set.
+        ("composite.frag", "LOCAL_GRID_PARAMS_BINDING"),
+        ("include/volumetrics_bindings.glsl", "LOCAL_GRID_PARAMS_BINDING"),
     ];
 
     fn shader_constant_data_names() -> std::collections::HashSet<&'static str> {

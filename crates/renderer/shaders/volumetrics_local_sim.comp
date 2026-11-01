@@ -67,8 +67,7 @@ float gCell;
 
 // The transport seam: previous-frame state at an arbitrary world position,
 // by hardware trilinear filtering inside this box's slab of the atlas. A
-// position outside the box has no history here (the caller treats it like the
-// froxel pass treats a position that reprojects off-screen). The sample is
+// position outside the box reads as clear air at rest (open boundary). The sample is
 // clamped half a cell inside the slab so filtering never reaches the
 // neighbouring box in the atlas.
 bool samplePreviousTransport(
@@ -86,7 +85,12 @@ bool samplePreviousTransport(
     vec3 cells = (worldPos - gBoxOrigin) / gCell;
     float dim = float(LOCAL_GRID_DIM);
     if (any(lessThan(cells, vec3(0.0))) || any(greaterThanEqual(cells, vec3(dim)))) {
-        return false;
+        // Open boundary: beyond the box is clear air at rest. Reporting "no
+        // history" instead would make the boundary cells keep their own state
+        // (the froxel pass's off-screen rule), so gas reaching a face would
+        // freeze there instead of leaving. The froxel grid carries it on from
+        // the coarse state the hand-off writes.
+        return true;
     }
     vec3 uvw = cells / dim;
     float slab = float(LOCAL_GRID_MAX_BOXES);

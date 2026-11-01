@@ -424,6 +424,29 @@ pub(super) fn composite_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<
             vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
             vk::ShaderStageFlags::FRAGMENT,
         ),
+        // 12..=15: the world-space combustion local grid's close-range fire
+        // (#6533) — the `LocalGridParams` table, this frame's state and
+        // optical atlas, and the irradiance field that lights them.
+        layout_binding(
+            12,
+            vk::DescriptorType::UNIFORM_BUFFER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
+        layout_binding(
+            13,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
+        layout_binding(
+            14,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
+        layout_binding(
+            15,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
     ]
 }
 
@@ -449,6 +472,7 @@ impl CompositePipeline {
         caustic_views: &[vk::ImageView],
         water_caustic_views: &[vk::ImageView], // #1257 / Phase E of #1210
         volumetric_views: &[vk::ImageView],
+        local_fire: &super::volumetrics::LocalFireViews,
         bloom_views: &[vk::ImageView],
         reactive_views: &[vk::ImageView],
         transparency_views: &[vk::ImageView],
@@ -468,6 +492,7 @@ impl CompositePipeline {
             caustic_views,
             water_caustic_views,
             volumetric_views,
+            local_fire,
             bloom_views,
             reactive_views,
             transparency_views,
@@ -494,6 +519,7 @@ impl CompositePipeline {
         caustic_views: &[vk::ImageView],
         water_caustic_views: &[vk::ImageView], // #1257 / Phase E of #1210
         volumetric_views: &[vk::ImageView],
+        local_fire: &super::volumetrics::LocalFireViews,
         bloom_views: &[vk::ImageView],
         reactive_views: &[vk::ImageView],
         transparency_views: &[vk::ImageView],
@@ -507,6 +533,7 @@ impl CompositePipeline {
         debug_assert_eq!(caustic_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(water_caustic_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(volumetric_views.len(), MAX_FRAMES_IN_FLIGHT);
+        debug_assert_eq!(local_fire.params.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(bloom_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(reactive_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(transparency_views.len(), MAX_FRAMES_IN_FLIGHT);
@@ -891,6 +918,14 @@ impl CompositePipeline {
             let water_caustic_info = [general_sampled_image_info(partial.nearest_sampler, water_caustic_views[i])];
             let volumetric_info = [general_sampled_image_info(partial.hdr_sampler, volumetric_views[i])];
             let bloom_info = [general_sampled_image_info(partial.hdr_sampler, bloom_views[i])];
+            let local_fire_params_info = [vk::DescriptorBufferInfo {
+                buffer: local_fire.params[i],
+                offset: 0,
+                range: vk::WHOLE_SIZE,
+            }];
+            let local_fire_state_info = [general_sampled_image_info(partial.hdr_sampler, local_fire.state[i])];
+            let local_fire_optical_info = [general_sampled_image_info(partial.hdr_sampler, local_fire.optical[i])];
+            let local_fire_irradiance_info = [general_sampled_image_info(partial.hdr_sampler, local_fire.irradiance[i])];
             let cloud_base_info = [sampled_image_info(cloud_noise.sampler, cloud_noise.base)];
             let cloud_detail_info = [sampled_image_info(cloud_noise.sampler, cloud_noise.detail)];
             let shadow_correction_info = [image_info(partial.nearest_sampler, shadow_correction.views[i], shadow_correction.layout)];
@@ -908,6 +943,10 @@ impl CompositePipeline {
                 write_combined_image_sampler(set, 9, &cloud_base_info),
                 write_combined_image_sampler(set, 10, &cloud_detail_info),
                 write_combined_image_sampler(set, 11, &shadow_correction_info),
+                write_uniform_buffer(set, 12, &local_fire_params_info),
+                write_combined_image_sampler(set, 13, &local_fire_state_info),
+                write_combined_image_sampler(set, 14, &local_fire_optical_info),
+                write_combined_image_sampler(set, 15, &local_fire_irradiance_info),
             ];
             // SAFETY: descriptor sets owned by `partial`; writes reference
             // HDR / depth / indirect / albedo / caustic / volumetric /
@@ -1140,6 +1179,7 @@ impl CompositePipeline {
         caustic_views: &[vk::ImageView],
         water_caustic_views: &[vk::ImageView], // #1257 / Phase E of #1210
         volumetric_views: &[vk::ImageView],
+        local_fire: &super::volumetrics::LocalFireViews,
         bloom_views: &[vk::ImageView],
         reactive_views: &[vk::ImageView],
         transparency_views: &[vk::ImageView],
@@ -1231,6 +1271,15 @@ impl CompositePipeline {
                 let water_caustic_info = [general_sampled_image_info(self.nearest_sampler, water_caustic_views[i])];
                 let volumetric_info = [general_sampled_image_info(self.hdr_sampler, volumetric_views[i])];
                 let bloom_info = [general_sampled_image_info(self.hdr_sampler, bloom_views[i])];
+                let local_fire_params_info = [vk::DescriptorBufferInfo {
+                    buffer: local_fire.params[i],
+                    offset: 0,
+                    range: vk::WHOLE_SIZE,
+                }];
+                let local_fire_state_info = [general_sampled_image_info(self.hdr_sampler, local_fire.state[i])];
+                let local_fire_optical_info = [general_sampled_image_info(self.hdr_sampler, local_fire.optical[i])];
+                let local_fire_irradiance_info = [general_sampled_image_info(self.hdr_sampler, local_fire.irradiance[i])];
+                // Typed [_; 16] array (was [_; 12] pre-local-grid, [_; 8] pre-#1257, [_; 9] pre-SKYAL
                 // Typed [_; 12] array (was [_; 8] pre-#1257, [_; 9] pre-SKYAL
                 // clouds, [_; 11] pre-shadow-filter) — compile catches
                 // divergence from the 12-binding layout. Init
@@ -1240,7 +1289,7 @@ impl CompositePipeline {
                 let cloud_detail_info = [sampled_image_info(cloud_noise.sampler, cloud_noise.detail)];
                 let shadow_correction_info = [image_info(self.nearest_sampler, shadow_correction.views[i], shadow_correction.layout)];
                 let set = self.descriptor_sets[i];
-                let writes: [vk::WriteDescriptorSet; 12] = [
+                let writes: [vk::WriteDescriptorSet; 16] = [
                     write_combined_image_sampler(set, 0, &hdr_info),
                     write_combined_image_sampler(set, 1, &indirect_info),
                     write_combined_image_sampler(set, 2, &albedo_info),
@@ -1253,6 +1302,10 @@ impl CompositePipeline {
                     write_combined_image_sampler(set, 9, &cloud_base_info),
                     write_combined_image_sampler(set, 10, &cloud_detail_info),
                     write_combined_image_sampler(set, 11, &shadow_correction_info),
+                    write_uniform_buffer(set, 12, &local_fire_params_info),
+                    write_combined_image_sampler(set, 13, &local_fire_state_info),
+                    write_combined_image_sampler(set, 14, &local_fire_optical_info),
+                    write_combined_image_sampler(set, 15, &local_fire_irradiance_info),
                 ];
                 // SAFETY: descriptor sets owned by `self`; writes
                 // reference freshly-recreated HDR views (owned by `self`)

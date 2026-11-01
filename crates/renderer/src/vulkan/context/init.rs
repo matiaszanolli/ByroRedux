@@ -56,6 +56,22 @@ struct CoreDevice {
     gpu_allocator: SharedAllocator,
 }
 
+/// #6533 — composite's bindings 12..=15 draw the world-space combustion local
+/// grid's close-range fire, so its resources are as required as the integrated
+/// froxel volume (binding 6): a missing grid cannot be bound around.
+fn local_fire_views_required(
+    volumetrics: Option<&crate::vulkan::volumetrics::VolumetricsPipeline>,
+) -> anyhow::Result<crate::vulkan::volumetrics::LocalFireViews> {
+    volumetrics
+        .and_then(|v| v.local_fire_views())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Volumetric local grid unavailable — composite bindings 12..=15 \
+                 (close-range fire) cannot be bound (#6533)."
+            )
+        })
+}
+
 impl VulkanContext {
     /// Init phase 1 (#1749): load the loader, create the instance + debug
     /// messenger + surface, pick the physical device, build the logical
@@ -741,6 +757,7 @@ impl VulkanContext {
             &caustic_views,
             &water_caustic_views,
             &volumetric_views,
+            &local_fire_views_required(volumetrics.as_ref())?,
             &bloom_views,
             &reactive_views,
             &transparency_views,

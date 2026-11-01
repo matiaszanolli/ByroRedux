@@ -25,9 +25,9 @@ use super::super::descriptors::{
 use super::super::image::{GpuImage, GpuImageDesc};
 use super::fog_clusters::{is_transport_emitter, GpuFogVolume};
 use super::{
-    write_combined_image_sampler, write_storage_buffer, write_storage_image, DescriptorPoolBuilder,
-    GpuBuffer, SharedAllocator, TimerPass, COMBUSTION_FIELD_FORMAT, MAX_FRAMES_IN_FLIGHT,
-    WORLD_UNITS_PER_METER,
+    write_combined_image_sampler, write_storage_buffer, write_storage_image, write_uniform_buffer,
+    DescriptorPoolBuilder, GpuBuffer, SharedAllocator, TimerPass, VolumetricsParams,
+    COMBUSTION_FIELD_FORMAT, FROXEL_FORMAT, MAX_FRAMES_IN_FLIGHT, WORLD_UNITS_PER_METER,
 };
 use crate::shader_constants::{LOCAL_GRID_DIM, LOCAL_GRID_MAX_BOXES};
 use crate::vulkan::descriptors::{
@@ -52,6 +52,15 @@ const LOCAL_SIM_WORKGROUP: u32 = 4;
 /// radii; a source too large for the coarsest stays on the froxels (a nuclear
 /// cloud, for instance, until Phase 6's burning-particle work).
 pub(crate) const CELL_LADDER_METERS: [f32; 5] = [0.025, 0.05, 0.10, 0.20, 0.40];
+/// Fires farther than this stay on the froxels (#6533: "distant fires
+/// unchanged"). A flame this far is a few screen pixels wide, and the froxel
+/// slices there are fine enough that the lattice no longer shows; spending a
+/// 64^3 box and a march on it buys nothing.
+pub(crate) const LOCAL_GRID_REACH_METERS: f32 = 20.0;
+/// A box whose source has drifted out to this multiple of the reach is kept
+/// (so a fire at the edge of the range does not lose its field every time the
+/// camera steps back and forth); only new boxes are held to the plain reach.
+const LOCAL_GRID_REACH_HYSTERESIS: f32 = 1.25;
 /// Box edge, in source radii. Leaves headroom above the source for the plume.
 pub(crate) const BOX_EDGE_PER_SOURCE_RADIUS: f32 = 6.0;
 /// Fraction of the box edge kept clear of a contained source on every side but
@@ -183,9 +192,12 @@ impl LocalBoxSet {
     /// over (nearest to the camera first, while slots remain) and release
     /// boxes that have had no source for `linger_seconds`.
     ///
-    /// `reach_world` is the half edge of the camera-centred cluster cube the
-    /// shader's source lookup (`localFogCluster`) is limited to; a source
-    /// outside it cannot be simulated here and is left to the froxels.
+    /// `reach_world` bounds how far from the camera a NEW box is created (a
+    /// source beyond it is left to the froxels); it is also capped by the
+    /// camera-centred cluster cube the shader's source lookup
+    /// (`localFogCluster`) is limited to, which the caller folds in. A source
+    /// already held by a box is kept out to `LOCAL_GRID_REACH_HYSTERESIS` times
+    /// the reach.
     pub(crate) fn update(
         &mut self,
         volumes: &[GpuFogVolume],
@@ -215,7 +227,7 @@ impl LocalBoxSet {
                 (center.iter().all(|v| v.is_finite())
                     && radius.is_finite()
                     && radius > 0.0
-                    && distance_sq.sqrt() <= reach_world)
+                    && distance_sq.sqrt() <= reach_world * LOCAL_GRID_REACH_HYSTERESIS)
                     .then_some(Source {
                         center,
                         radius,
@@ -234,6 +246,9 @@ impl LocalBoxSet {
             }) {
                 held.last_source_time = now;
                 continue;
+            }
+            if source.distance_sq.sqrt() > reach_world {
+                continue; // inside the hysteresis band: held boxes only
             }
             if let Some(slot) = self.boxes.iter().position(Option::is_none) {
                 self.boxes[slot] = Some(LocalBox {
@@ -273,6 +288,77 @@ pub(crate) fn local_sim_push_bytes(boxes: &LocalBoxSet) -> [u8; LOCAL_SIM_PUSH_B
     put(info + 4, boxes.history_mask().to_ne_bytes());
     put(info + 8, boxes.live_mask().to_ne_bytes());
     bytes
+}
+
+/// The per-frame table `include/local_grid_params.glsl` declares as the
+/// `LocalGridParams` UBO, bound by the froxel inject pass (set 0, binding 26)
+/// and by composite (binding 12). std140: every member is a `vec4`/`uvec4`, so
+/// the Rust layout is the GLSL one with no padding.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct GpuLocalGridParams {
+    /// xyz = absolute minimum corner, w = cell edge (world units), per slot.
+    pub(crate) boxes: [[f32; 4]; MAX_LOCAL_BOXES],
+    /// x = atlas slabs, y = history mask, z = live mask (0 disables every
+    /// consumer for this frame), w unused.
+    pub(crate) info: [u32; 4],
+    /// xyz = direction TO the sun.
+    pub(crate) sun_dir: [f32; 4],
+    /// rgb = sun radiance.
+    pub(crate) sun_radiance: [f32; 4],
+    /// x = forward g, y = backward g, z = forward mix.
+    pub(crate) phase: [f32; 4],
+    /// xyz = render origin.
+    pub(crate) render_origin: [f32; 4],
+}
+
+// SAFETY: `#[repr(C)]`, every field a multiple of 16 bytes — no padding (#3761).
+unsafe impl crate::vulkan::buffer::NoUninit for GpuLocalGridParams {}
+
+impl GpuLocalGridParams {
+    /// The table for this frame: live boxes (when `simulated`) plus the sun and
+    /// render origin the close-range march needs.
+    pub(crate) fn new(boxes: &LocalBoxSet, simulated: bool, frame: &VolumetricsParams) -> Self {
+        let mut params = Self::default();
+        if simulated {
+            for (slot, b) in boxes.boxes().iter().enumerate() {
+                if let Some(b) = b {
+                    params.boxes[slot] = [b.origin[0], b.origin[1], b.origin[2], b.cell];
+                }
+            }
+            params.info = [
+                boxes.slab_count() as u32,
+                boxes.history_mask(),
+                boxes.live_mask(),
+                0,
+            ];
+        }
+        params.sun_dir = [frame.sun_dir[0], frame.sun_dir[1], frame.sun_dir[2], 0.0];
+        params.sun_radiance = [frame.sun_color[0], frame.sun_color[1], frame.sun_color[2], 0.0];
+        params.phase = [frame.sun_dir[3], frame.medium_params[1], frame.medium_params[2], 0.0];
+        params.render_origin = [
+            frame.render_origin[0],
+            frame.render_origin[1],
+            frame.render_origin[2],
+            0.0,
+        ];
+        params
+    }
+}
+
+/// Everything composite binds to draw the close-range fire (set 0, bindings
+/// 12..=15), per frame in flight. Borrowed from the volumetrics pipeline, which
+/// owns the resources; composite writes descriptors from the handles.
+#[derive(Clone, Default)]
+pub struct LocalFireViews {
+    /// Binding 12 — `LocalGridParams` UBO.
+    pub params: Vec<vk::Buffer>,
+    /// Binding 13 — this frame's state atlas.
+    pub state: Vec<vk::ImageView>,
+    /// Binding 14 — this frame's optical atlas.
+    pub optical: Vec<vk::ImageView>,
+    /// Binding 15 — the irradiance field the inject pass writes.
+    pub irradiance: Vec<vk::ImageView>,
 }
 
 /// What the sim pass reports about itself, summed over boxes.
@@ -321,6 +407,19 @@ pub(crate) fn local_grid_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding
     ]
 }
 
+/// Bindings 26..=31 added to the froxel inject pass's set 0 for the local grid
+/// (the declarations are in `include/volumetrics_bindings.glsl`).
+pub(crate) fn inject_local_grid_bindings() -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
+    vec![
+        compute_binding(26, vk::DescriptorType::UNIFORM_BUFFER),
+        compute_binding(27, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        compute_binding(28, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        compute_binding(29, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+        compute_binding(30, vk::DescriptorType::STORAGE_IMAGE),
+        compute_binding(31, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
+    ]
+}
+
 /// The atlas extent: one box wide and high, `MAX_LOCAL_BOXES` boxes deep.
 fn atlas_extent() -> vk::Extent3D {
     vk::Extent3D {
@@ -337,7 +436,19 @@ pub(crate) const fn local_grid_resident_bytes() -> u64 {
     cells * 8 * 3 * MAX_FRAMES_IN_FLIGHT as u64
 }
 
+/// Bytes of the froxel-resolution irradiance field (RGBA16F), all slots.
+pub(crate) fn irradiance_resident_bytes(extent: vk::Extent3D) -> u64 {
+    u64::from(extent.width) * u64::from(extent.height) * u64::from(extent.depth) * 8
+        * MAX_FRAMES_IN_FLIGHT as u64
+}
+
 pub(crate) struct LocalGrid {
+    froxel_extent: vk::Extent3D,
+    /// Per-frame `LocalGridParams` UBO (host-visible).
+    params_buffers: Vec<GpuBuffer>,
+    /// Froxel-resolution irradiance field, written by the inject pass, read
+    /// by the next inject (temporal) and by composite's fire march.
+    irradiance: Vec<GpuImage>,
     set_layout: vk::DescriptorSetLayout,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
@@ -365,8 +476,12 @@ impl LocalGrid {
         allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
         inject_set_layout: vk::DescriptorSetLayout,
+        froxel_extent: vk::Extent3D,
     ) -> Result<Self> {
         let mut grid = Self {
+            froxel_extent,
+            params_buffers: Vec::new(),
+            irradiance: Vec::new(),
             set_layout: vk::DescriptorSetLayout::null(),
             pipeline_layout: vk::PipelineLayout::null(),
             pipeline: vk::Pipeline::null(),
@@ -487,6 +602,26 @@ impl LocalGrid {
             })();
             self.stats_buffers.push(stats);
             zeroed?;
+            let mut params = GpuBuffer::create_host_visible(
+                device,
+                allocator,
+                std::mem::size_of::<GpuLocalGridParams>() as vk::DeviceSize,
+                vk::BufferUsageFlags::UNIFORM_BUFFER,
+            )?;
+            // A zero table (live mask 0) until the first dispatch writes one.
+            let zeroed = params.write_mapped(device, std::slice::from_ref(&GpuLocalGridParams::default()));
+            self.params_buffers.push(params);
+            zeroed?;
+            self.irradiance.push(GpuImage::create(
+                device,
+                allocator,
+                &GpuImageDesc::color_3d(
+                    &format!("volumetrics_local_irradiance_{i}"),
+                    self.froxel_extent,
+                    FROXEL_FORMAT,
+                    usage,
+                ),
+            )?);
         }
 
         self.pool =
@@ -540,11 +675,12 @@ impl LocalGrid {
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
         log::info!(
-            "Volumetrics local grid created: {} boxes of {}^3 cells, {} MiB resident (3 x RGBA16F x {} slots)",
+            "Volumetrics local grid created: {} boxes of {}^3 cells, {} MiB atlas (3 x RGBA16F x {} slots) + {} MiB irradiance field",
             MAX_LOCAL_BOXES,
             LOCAL_GRID_CELLS,
             local_grid_resident_bytes() / (1024 * 1024),
             MAX_FRAMES_IN_FLIGHT,
+            irradiance_resident_bytes(self.froxel_extent) / (1024 * 1024),
         );
         Ok(())
     }
@@ -555,6 +691,122 @@ impl LocalGrid {
             .iter()
             .chain(self.dynamics.iter())
             .chain(self.optical.iter())
+            .chain(self.irradiance.iter())
+    }
+
+    /// Descriptor handles composite needs to draw the close-range fire.
+    pub(crate) fn fire_views(&self) -> LocalFireViews {
+        LocalFireViews {
+            params: self.params_buffers.iter().map(|b| b.buffer).collect(),
+            state: self.state.iter().map(|i| i.view).collect(),
+            optical: self.optical.iter().map(|i| i.view).collect(),
+            irradiance: self.irradiance.iter().map(|i| i.view).collect(),
+        }
+    }
+
+    /// Write bindings 26..=31 of the froxel inject pass's descriptor set for
+    /// `frame`: the table, this frame's atlas (read), and the irradiance field
+    /// (this slot written, the previous one sampled).
+    pub(crate) fn write_inject_bindings(
+        &self,
+        device: &ash::Device,
+        set: vk::DescriptorSet,
+        frame: usize,
+    ) {
+        let previous = (frame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
+        let params_info = [vk::DescriptorBufferInfo {
+            buffer: self.params_buffers[frame].buffer,
+            offset: 0,
+            range: std::mem::size_of::<GpuLocalGridParams>() as vk::DeviceSize,
+        }];
+        let state = [general_sampled_image_info(self.sampler, self.state[frame].view)];
+        let dynamics = [general_sampled_image_info(self.sampler, self.dynamics[frame].view)];
+        let optical = [general_sampled_image_info(self.sampler, self.optical[frame].view)];
+        let irradiance_write = [storage_image_info(self.irradiance[frame].view)];
+        let irradiance_previous =
+            [general_sampled_image_info(self.sampler, self.irradiance[previous].view)];
+        let writes = [
+            write_uniform_buffer(set, 26, &params_info),
+            write_combined_image_sampler(set, 27, &state),
+            write_combined_image_sampler(set, 28, &dynamics),
+            write_combined_image_sampler(set, 29, &optical),
+            write_storage_image(set, 30, &irradiance_write),
+            write_combined_image_sampler(set, 31, &irradiance_previous),
+        ];
+        // SAFETY: `set` is the inject pass's freshly written, not-yet-submitted
+        // descriptor set; the referenced views belong to this grid.
+        unsafe { device.update_descriptor_sets(&writes, &[]) };
+    }
+
+    /// Publish this frame's table. Call after `begin_frame` has placed the
+    /// boxes; `simulated` is whether the sim pass will run (a zero live mask
+    /// disables the hand-off and the march for the frame).
+    pub(crate) fn write_params(
+        &mut self,
+        device: &ash::Device,
+        frame: usize,
+        frame_params: &VolumetricsParams,
+    ) -> Result<()> {
+        let params = GpuLocalGridParams::new(&self.boxes, self.has_work(), frame_params);
+        self.params_buffers[frame].write_mapped(device, std::slice::from_ref(&params))
+    }
+
+    /// Disable every consumer of this slot's table (a frame the volumetric
+    /// passes did not run, so the atlas and irradiance field are stale).
+    pub(crate) fn clear_params(&mut self, device: &ash::Device, frame: usize) -> Result<()> {
+        self.params_buffers[frame]
+            .write_mapped(device, std::slice::from_ref(&GpuLocalGridParams::default()))
+    }
+
+    /// Barriers into and out of the frame's local-grid work, and the sim itself
+    /// when a box is live. Records, in order: history barriers for this slot's
+    /// atlas and irradiance field; the sim dispatch (timed); a write-to-read
+    /// barrier so the inject pass sees the atlas.
+    ///
+    /// # Safety
+    ///
+    /// As [`Self::record_sim`].
+    pub(crate) unsafe fn record_frame(
+        &mut self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        inject_set: vk::DescriptorSet,
+        timers: Option<&mut super::super::gpu_timers::GpuPerFrameTimers>,
+    ) {
+        let previous = (frame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
+        // The irradiance field is written by every inject dispatch, boxes or
+        // not, so its history barrier is unconditional.
+        let irradiance = [
+            image_barrier_general_read_to_write(self.irradiance[frame].image),
+            image_barrier_general_write_to_read(self.irradiance[previous].image),
+        ];
+        // SAFETY: caller contract — `cmd` is recording, the images live in GENERAL.
+        unsafe {
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &irradiance,
+            );
+        }
+        if self.has_work() {
+            // SAFETY: same contract.
+            unsafe { self.record_sim(device, cmd, frame, inject_set, timers) };
+        }
+    }
+
+    /// Barriers publishing this frame's compute writes to composite's fragment
+    /// reads: the atlas (state / optical) and the irradiance field.
+    pub(crate) fn composite_barriers(&self, frame: usize) -> [vk::ImageMemoryBarrier<'static>; 3] {
+        [
+            image_barrier_general_write_to_read(self.state[frame].image),
+            image_barrier_general_write_to_read(self.optical[frame].image),
+            image_barrier_general_write_to_read(self.irradiance[frame].image),
+        ]
     }
 
     pub(crate) fn stats(&self) -> LocalGridStats {
@@ -607,7 +859,7 @@ impl LocalGrid {
     /// `cmd` must be recording outside a render pass, `frame` must name an
     /// idle frame-in-flight slot, and `inject_set` must be that slot's
     /// froxel-inject descriptor set with its per-frame bindings written.
-    pub(crate) unsafe fn record_sim(
+    unsafe fn record_sim(
         &mut self,
         device: &ash::Device,
         cmd: vk::CommandBuffer,
@@ -669,6 +921,24 @@ impl LocalGrid {
         if let Some(timers) = timers {
             timers.cmd_end(TimerPass::VolumetricsLocalSim, device, cmd, frame);
         }
+        // The inject pass samples this frame's atlas next (hand-off).
+        let published = [
+            image_barrier_general_write_to_read(self.state[frame].image),
+            image_barrier_general_write_to_read(self.dynamics[frame].image),
+            image_barrier_general_write_to_read(self.optical[frame].image),
+        ];
+        // SAFETY: as above; the barrier only orders this dispatch's writes.
+        unsafe {
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &published,
+            );
+        }
         self.stats_live_mask[frame] = self.boxes.live_mask();
         self.stats_pending[frame] = true;
         self.dispatched_this_frame = true;
@@ -705,10 +975,14 @@ impl LocalGrid {
         {
             image.destroy(device, allocator);
         }
-        for buffer in &mut self.stats_buffers {
+        for mut image in self.irradiance.drain(..) {
+            image.destroy(device, allocator);
+        }
+        for buffer in self.stats_buffers.iter_mut().chain(self.params_buffers.iter_mut()) {
             buffer.destroy(device, allocator);
         }
         self.stats_buffers.clear();
+        self.params_buffers.clear();
         // SAFETY: caller contract — nothing is in flight; each handle is
         // destroyed once and nulled.
         unsafe {
@@ -838,6 +1112,28 @@ mod tests {
             .iter()
             .flatten()
             .any(|b| b.contains_source([farthest[0], farthest[1], farthest[2]], 0.3 * METER)));
+    }
+
+    #[test]
+    fn a_fire_beyond_the_near_reach_is_not_given_a_box_but_a_held_one_keeps_it() {
+        let reach = LOCAL_GRID_REACH_METERS * METER;
+        let mut set = LocalBoxSet::default();
+        let near = flame([LOCAL_GRID_REACH_METERS - 1.0, 0.5, 0.0], 0.3);
+        let just_out = flame([LOCAL_GRID_REACH_METERS + 2.0, 0.5, 0.0], 0.3);
+        set.update(&[just_out], [0.0; 3], reach, 0.0, 10.0);
+        assert_eq!(set.live_count(), 0, "new boxes only inside the reach");
+        set.update(&[near], [0.0; 3], reach, 0.0, 10.0);
+        assert_eq!(set.live_count(), 1);
+        // The camera backs off: the same fire is now 2 m past the reach, inside
+        // the hysteresis band, and keeps its box (and refreshes its timer).
+        let held_origin = set.boxes()[0].unwrap().origin;
+        set.update(&[near], [-3.0 * METER, 0.0, 0.0], reach, 5.0, 10.0);
+        assert_eq!(set.live_count(), 1);
+        assert_eq!(set.boxes()[0].unwrap().origin, held_origin);
+        assert_eq!(set.boxes()[0].unwrap().last_source_time, 5.0);
+        // Far past the band it is no longer refreshed and ages out.
+        set.update(&[near], [-30.0 * METER, 0.0, 0.0], reach, 20.0, 10.0);
+        assert_eq!(set.live_count(), 0);
     }
 
     #[test]

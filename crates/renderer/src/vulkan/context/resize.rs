@@ -1112,6 +1112,20 @@ impl VulkanContext {
                 ));
             }
         };
+        let local_fire = match self
+            .post
+            .volumetrics
+            .as_ref()
+            .and_then(|v| v.local_fire_views())
+        {
+            Some(views) => views,
+            None => {
+                return Err(anyhow::anyhow!(
+                    "Volumetrics local grid absent during resize — \
+                     composite bindings 12..=15 cannot be bound (#6533)."
+                ));
+            }
+        };
         let volumetric_views: Vec<vk::ImageView> = match self.post.volumetrics.as_ref() {
             Some(v) => v.integrated_views(),
             None => {
@@ -1166,6 +1180,7 @@ impl VulkanContext {
                 &caustic_views,
                 &water_caustic_views,
                 &volumetric_views,
+                &local_fire,
                 &bloom_views,
                 &views.reactive_views,
                 &views.transparency_views,

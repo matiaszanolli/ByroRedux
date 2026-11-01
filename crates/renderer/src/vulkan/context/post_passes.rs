@@ -989,6 +989,14 @@ impl VulkanContext {
                         // stale combustion/fog state.
                         vol.record_skipped_frame(frame);
                     }
+                    if !ran {
+                        // #6533 — this slot's local-grid atlas and irradiance
+                        // field were not refreshed; composite must not march
+                        // them from a table left by an earlier dispatch.
+                        if let Err(e) = vol.clear_local_grid_params(&self.device, frame) {
+                            log::warn!("local grid table not cleared on a skipped frame: {e:#}");
+                        }
+                    }
                 }
             }
         }

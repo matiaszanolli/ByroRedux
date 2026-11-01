@@ -598,6 +598,84 @@ void accumulateCombustionLightMoment(
     );
 }
 
+// Temporal weight of the irradiance field. Low-ish: the rays are binary and
+// jittered per frame, and the field is smooth in space.
+const float LOCAL_IRRADIANCE_HISTORY_WEIGHT = 0.8;
+
+// The froxel's coarse view of the local grid: a 3x3x3 stratified set of taps
+// over the froxel's own footprint (the three step vectors are one full froxel
+// apart), so a froxel much larger than a cell integrates the cells under it
+// instead of aliasing on a single centre tap.
+//
+// A plain mean of the STATE is wrong for the emissive part: thermal emission is
+// exponential in temperature, so the mean temperature of a flame and the cold
+// air around it radiates almost nothing, and the light moments (and with them
+// the fire's glow on the room) would vanish. So the extensive quantities —
+// fuel, soot extinction, spectral scattering, velocity — are averaged, and
+// the thermal state is rebuilt to carry the MEAN EMISSION: the temperature is
+// the emission-weighted mean (it sets the chromaticity) and the calibration is
+// scaled until `combustionMedium` of the coarse state emits the mean luma of
+// the taps.
+void localGridCoarseState(
+    uint box,
+    vec3 center,
+    vec3 stepX,
+    vec3 stepY,
+    vec3 stepZ,
+    out vec4 chemistry,
+    out vec4 dynamics,
+    out vec4 optical
+) {
+    float fuel = 0.0;
+    float soot = 0.0;
+    float temperature = 0.0;
+    float emissionLuma = 0.0;
+    float emissionLumaTemperature = 0.0;
+    dynamics = vec4(0.0);
+    optical = vec4(0.0);
+    for (int z = -1; z <= 1; ++z) {
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                vec3 p = center
+                    + stepX * (float(x) / 3.0)
+                    + stepY * (float(y) / 3.0)
+                    + stepZ * (float(z) / 3.0);
+                vec3 uvw = localAtlasUvw(box, p);
+                vec4 tapChemistry = sanitizedChemistry(texture(localAtlasState, uvw));
+                vec4 tapOptical = sanitizedOptical(texture(localAtlasOptical, uvw));
+                float tapEmission = dot(
+                    combustionMedium(tapChemistry, tapOptical).emission,
+                    LUMA_REC709
+                );
+                fuel += tapChemistry.x;
+                soot += tapChemistry.z;
+                temperature += tapChemistry.y;
+                emissionLuma += tapEmission;
+                emissionLumaTemperature += tapEmission * tapChemistry.y;
+                dynamics += sanitizedDynamics(texture(localAtlasDynamics, uvw));
+                optical += tapOptical;
+            }
+        }
+    }
+    const float tapCount = 27.0;
+    dynamics = sanitizedDynamics(dynamics / tapCount);
+    optical = sanitizedOptical(optical / tapCount);
+    chemistry = vec4(
+        fuel / tapCount,
+        emissionLuma > 0.0 ? emissionLumaTemperature / emissionLuma : temperature / tapCount,
+        soot / tapCount,
+        1.0
+    );
+    chemistry = sanitizedChemistry(chemistry);
+    // Emission is linear in the calibration lane, so one probe at calibration 1
+    // gives the factor that restores the mean emission.
+    float probeLuma = dot(combustionMedium(chemistry, optical).emission, LUMA_REC709);
+    chemistry.w = emissionLuma > 0.0
+        ? (emissionLuma / tapCount) / max(probeLuma, 1.0e-12)
+        : 0.0;
+    chemistry = sanitizedChemistry(chemistry);
+}
+
 void main() {
     ivec3 coord = ivec3(gl_GlobalInvocationID.xyz);
     ivec3 size = imageSize(froxel);
@@ -648,6 +726,10 @@ void main() {
     vec4 combustion_dynamics = vec4(0.0);
     vec4 combustion_optical = vec4(0.0);
     bool transportKnownEmpty = params.fog_reference.w < -1.5;
+    // #6533 — which local-grid box (if any) owns this froxel's fire.
+    uint localOwner = 0u;
+    bool localOwned = !transportExpired && localGrid.info.z != 0u
+        && localBoxOwner(field_world_pos, localOwner);
     if (!transportKnownEmpty) {
         // #4784 — pay the 27-cell occupancy probe only on frames that would
         // transport at all (live dt); the mark below still fires on paused
@@ -656,20 +738,38 @@ void main() {
         bool transportOccupied = simulationDt > 0.0
             && !transportExpired
             && combustionNeighborhoodOccupied(clusterIndex);
-        transportCombustion(
-            field_world_pos,
-            field_segment_start,
-            field_segment_end,
-            neighbor_step_x,
-            neighbor_step_y,
-            neighbor_step_z,
-            simulationDt,
-            transportExpired,
-            transportOccupied,
-            chemistry,
-            combustion_dynamics,
-            combustion_optical
-        );
+        if (localOwned) {
+            // #6533 — the fire inside a local-grid box is simulated there, at
+            // the box's own resolution. The froxel keeps only its coarse
+            // average (below): the history the neighbouring froxels advect
+            // from, the light moments and the self-shadow march still read a
+            // field here, but this pass does not advance it.
+            localGridCoarseState(
+                localOwner,
+                field_world_pos,
+                neighbor_step_x,
+                neighbor_step_y,
+                neighbor_step_z,
+                chemistry,
+                combustion_dynamics,
+                combustion_optical
+            );
+        } else {
+            transportCombustion(
+                field_world_pos,
+                field_segment_start,
+                field_segment_end,
+                neighbor_step_x,
+                neighbor_step_y,
+                neighbor_step_z,
+                simulationDt,
+                transportExpired,
+                transportOccupied,
+                chemistry,
+                combustion_dynamics,
+                combustion_optical
+            );
+        }
         imageStore(combustionState, coord, chemistry);
         imageStore(
             combustionDynamics,
@@ -739,6 +839,12 @@ void main() {
             transported_combustion.extinction *= flame_source_sample_ratio;
             transported_combustion.scattering *= flame_source_sample_ratio;
             transported_combustion.emission *= flame_source_sample_ratio;
+        }
+        if (localOwned) {
+            // Drawn by composite's close-range march from the box's own field.
+            // The coarse state above still fed the light moments, and
+            // `transportedMediumActive` still gates the self-shadow march.
+            transported_combustion = emptyLocalMedium();
         }
     }
     local_medium.extinction += transported_combustion.extinction;
@@ -818,6 +924,18 @@ void main() {
     // geometry with no marker, four coherent architecture hits around the
     // otherwise-clear ray establish a modeled opening candidate; an omitted
     // ceiling has no rim and stays dark.
+    // #6533 — the froxels in (and one froxel around) a local-grid box also
+    // produce the irradiance field the close-range march lights the fire with:
+    // sun radiance x visibility (alpha) and the summed local-light radiance
+    // without a phase function (rgb). Rays are paid only there.
+    float lightFieldMargin = max(
+        length(neighbor_step_x),
+        max(length(neighbor_step_y), length(neighbor_step_z))
+    );
+    bool needsLightField = !transportExpired && localGrid.info.z != 0u
+        && localBoxNear(field_world_pos, lightFieldMargin);
+    float lightFieldSunVisibility = 0.0;
+    vec3 lightFieldRadiance = vec3(0.0);
     vec3 ray_origin = world_pos;
     // Toward the sun, i.e. -light_in (light_in is the propagation
     // direction, away from the sun) — #1937.
@@ -830,7 +948,7 @@ void main() {
     // sun, which is zero at night too), so that half of the test is
     // warp-uniform; a froxel with no scattering medium skips on its own.
     bool sunTermLive = any(greaterThan(params.sun_color.rgb, vec3(0.0)))
-        && any(greaterThan(scattering_coef, vec3(0.0)));
+        && (any(greaterThan(scattering_coef, vec3(0.0))) || needsLightField);
     if (sunTermLive) {
         bool hasOpenSky = params.render_origin.w > 0.5;
         bool opaqueHit = traceShadowBinary(
@@ -880,6 +998,8 @@ void main() {
         }
     }
 
+    lightFieldSunVisibility = visibility;
+
     // In-scattered radiance from the sun at this voxel, gated on
     // shadow visibility. HG normalisation already includes 1/4π.
     //
@@ -899,7 +1019,7 @@ void main() {
     // walls even when surface lighting was corrected. #4785: emission and
     // authored inscatter above do not need visibility; a zero-scattering
     // froxel has no local-light term, so skip its rays and soot marches.
-    if (any(greaterThan(scattering_coef, vec3(0.0)))) {
+    if (any(greaterThan(scattering_coef, vec3(0.0))) || needsLightField) {
         // Mirrors `getClusterIndex` (`include/clusters.glsl`) exactly,
         // so a froxel maps to the SAME cluster the fragment shader
         // would at this world distance — using `params.sun_color.a`
@@ -1018,6 +1138,7 @@ void main() {
             }
             inscatter += scattering_coef * localPhase
                 * lights[li].color_type.rgb * atten * localVisibility;
+            lightFieldRadiance += lights[li].color_type.rgb * atten * localVisibility;
         }
     }
 
@@ -1112,4 +1233,23 @@ void main() {
         current.a = clamp(current.a, 0.0, 6.0e4);
     }
     imageStore(froxel, coord, current);
+
+    // #6533 — irradiance field for the close-range march. Outside the boxes it
+    // is exactly zero; inside, a light temporal blend with the previous slot
+    // (reprojected like the V-buffer history) tames the stochastic rays.
+    vec4 irradiance = vec4(0.0);
+    if (needsLightField) {
+        irradiance = vec4(
+            clamp(lightFieldRadiance, vec3(0.0), vec3(6.0e4)),
+            clamp(lightFieldSunVisibility, 0.0, 1.0)
+        );
+        vec3 previousUvw;
+        if (params.prev_camera_pos.w > 0.5 && reprojectHistory(world_pos, previousUvw)) {
+            vec4 previousIrradiance = texture(previousLocalIrradiance, previousUvw);
+            if (!(any(isnan(previousIrradiance)) || any(isinf(previousIrradiance)))) {
+                irradiance = mix(irradiance, previousIrradiance, LOCAL_IRRADIANCE_HISTORY_WEIGHT);
+            }
+        }
+    }
+    imageStore(localIrradiance, coord, irradiance);
 }

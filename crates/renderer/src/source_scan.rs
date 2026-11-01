@@ -11,8 +11,9 @@ pub(crate) use byroredux_core::source_scan::production_text_or_whole;
 pub(crate) use byroredux_core::source_scan::rust_files;
 pub(crate) use byroredux_core::source_scan::strip_test_modules;
 
-/// `volumetrics_inject.comp` with its three shared combustion includes
-/// (`volumetrics_bindings`, `combustion_sources`, `combustion_transport`)
+/// `volumetrics_inject.comp` with its shared combustion includes
+/// (`volumetrics_bindings`, `combustion_sources`, `combustion_transport`, and the
+/// `local_grid_params` / `combustion_medium` they pull in)
 /// expanded in place, i.e. the text the shader had before #6533 stage 1a split
 /// it. Source-scan tests that pin a property of the combustion model or
 /// transport read this instead of the bare `.comp`, so moving code into an
@@ -24,6 +25,9 @@ pub(crate) fn volumetrics_inject_glsl() -> &'static str {
     static EXPANDED: OnceLock<String> = OnceLock::new();
     EXPANDED.get_or_init(|| {
         let mut text = String::from(include_str!("../shaders/volumetrics_inject.comp"));
+        // Order matters: `combustion_sources` includes `combustion_medium`, and
+        // `volumetrics_bindings` includes `local_grid_params`, so each outer
+        // file is expanded first and the nested one after it.
         for (name, body) in [
             (
                 "volumetrics_bindings",
@@ -32,6 +36,14 @@ pub(crate) fn volumetrics_inject_glsl() -> &'static str {
             (
                 "combustion_sources",
                 include_str!("../shaders/include/combustion_sources.glsl"),
+            ),
+            (
+                "local_grid_params",
+                include_str!("../shaders/include/local_grid_params.glsl"),
+            ),
+            (
+                "combustion_medium",
+                include_str!("../shaders/include/combustion_medium.glsl"),
             ),
             (
                 "combustion_transport",

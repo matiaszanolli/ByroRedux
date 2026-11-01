@@ -549,8 +549,12 @@ Not resolution-scaled: three RGBA16F atlas volumes (`state`, `dynamics`,
 `optical`; 8 B per cell each) of `LOCAL_GRID_DIM`³ = 64³ cells × `LOCAL_GRID_MAX_BOXES`
 = 4 boxes stacked along Z (64 × 64 × 256), per frame-in-flight slot:
 `64³ × 4 × 8 B × 3 × 2 FIF` = **48 MiB resident** whenever the pipeline exists,
-live boxes or not (`local_grid_resident_bytes()`). Plus a 64 B host-readback
-stats buffer per slot. The grid is transient (not saved).
+live boxes or not (`local_grid_resident_bytes()`). Plus, per slot, a 64 B host-readback
+stats buffer, a 144 B parameter UBO, and a **froxel-resolution irradiance field**
+(RGBA16F, 8 B per froxel: the sun-visibility and local-light radiance the close-range
+fire march lights itself with; 160×90×64 × 8 B × 2 FIF ≈ 14 MiB at 1280×720, scaling
+with the render resolution like the rest of the froxel set). The grid is transient
+(not saved).
 
 **Per-slot host-visible buffers** (#5208 — these rows were missing until
 the 2026-10-03 audit; sizes derive from the named constants and are pinned

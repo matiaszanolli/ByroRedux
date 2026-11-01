@@ -152,7 +152,7 @@ heat and fuel rates stay in `combustion.rs`.
 |---|---|---|---|
 | 1a | Move transport into the shared include; froxel output byte-identical | no | **Done.** Final frame pixel-identical (PNG checksum) on s1, s2a, s3a across 3–5 runs; `check-shader-artifacts.sh` green; per-pass GPU time unchanged (s1 inject median 0.605 ms before, 0.611 ms after, 5 runs each, both built from `0d1b401ef` with and without the move) |
 | 1b | Local grid + sim pass, written but not yet drawn | no | **Done.** See "Stage 1b results" below |
-| 1c | Local march + composite combine + froxel hand-off | **yes** | s1 and s5 screenshots, per-pass ms, review by Matías |
+| 1c | Local march + composite combine + froxel hand-off | **yes** | **Built; awaiting Matías's review.** See "Stage 1c results" below |
 
 **Stage 1b results** (commit named in the history; release build, RTX 4070 Ti,
 1280×720, ray-quality tier pinned with `--rt-test-ray-quality-tier 3`).
@@ -184,6 +184,69 @@ heat and fuel rates stay in `combustion.rs`.
   cells. Stage 1c is expected to pay this back by having the froxel pass skip
   transport inside a box; if it does not, the coarse cell ladder or the box
   count is the knob. VRAM: 48 MiB resident (see `memory-budget.md`).
+
+**Stage 1c results** (release build, RTX 4070 Ti, 1280×720, ray-quality tier
+pinned to 3; before/after screenshots in
+[`fire-volumetrics-baseline/phase1/`](fire-volumetrics-baseline/phase1/)). **This
+stage is built and measured but NOT accepted:** the acceptance criteria that
+need a human — close-range flame clearly better than `s1_close_flame`, distant
+fires unchanged — are Matías's call, and the screenshots below have open issues
+(see "Known problems").
+
+What it does: boxes of the local grid are simulated first each frame; the
+froxel inject pass hands the fire inside a box off to them (it fills its own
+combustion volumes with the mean of the box cells under each froxel, advances
+nothing there, and leaves the fire's medium out of the fog it integrates);
+composite ray-marches each box once per pixel, stopping at the opaque depth,
+and composes the fog around it (`fog up to the box entry + fire + fog behind,
+attenuated by the fire`, which reduces exactly to the old expression when no
+box is on the ray). The fire is lit by an irradiance field the inject pass now
+writes around each box (sun radiance x visibility, summed local-light radiance).
+Boxes are created only within 20 m of the camera, held out to 25 m.
+
+Cost, median of 5 runs, ms (base = the binary before stage 1a, `0d1b401ef`; sim, inject
+and the `volumetrics` total are GPU brackets, composite is its own bracket and
+now includes the march):
+
+| scene | local sim | inject base → 1c | `volumetrics` total base → 1c | composite base → 1c | **total added** |
+|---|---:|---|---|---|---:|
+| s1_close_flame | 0.082 | 0.583 → 0.659 | 0.613 → 0.774 | 0.067 → 0.587 | **+0.68** |
+| s2a_oil_blast_2s | 0.249 | 0.674 → 0.836 | 0.715 → 1.128 | 0.103 → 0.691 | **+1.00** |
+| s3a_nuclear_blast_2s | 1.274 | 0.728 → 0.597 | 0.769 → 2.054 | 0.104 → 1.395 | **+2.58** |
+| s5_skyrim_mare_hearth | 0.151 | 0.636 → 0.681 | 0.664 → 0.862 | 0.076 → 0.604 | **+0.73** |
+
+Where the cost is: the march (one sample per cell along every ray through a
+box: s1's box covers about 60 % of the screen). It is the obvious target for
+Phase 2's adaptive step size; empty-space skipping through a coarse occupancy
+grid is the larger win. The nuclear scene is dominated by the sim (272k active
+cells).
+
+Checks run: renderer and workspace tests green apart from the unrelated
+`ROADMAP.md` line ceiling; `check-shader-artifacts.sh` green; sync validation
+clean on s1 and s5 (no VUID, no hazard); local grid state hash and the s1 final
+frame identical across 3 runs.
+
+Known problems (open, for review):
+
+- **Explosions look different, not just sharper.** s2a and s3a show a larger,
+  different fireball than the baseline at the same simulation time, and the
+  room is lit differently by it. The source model (`applyCombustionSources`) is
+  resolution dependent: it scales mass by how much of a cell the source covers,
+  so a coarse froxel under-sources a thin shell that a fine cell captures in
+  full. The baseline look was tuned against the coarse result.
+- **Stray froxel-sized orange blocks in s3a** (upper left, near the red wall):
+  hot gas outside any box, still drawn by the froxel grid. Not yet traced to
+  the exact cause.
+- **The close flame is very bright and soft.** s1's core clips to white with a
+  thin orange rim and little visible flame structure; the emission
+  calibrations were tuned for the coarse field, which averages the peak
+  temperature down.
+- **Fire in a sunlit interior is unverified.** The march lights the fire from the irradiance field, whose sun term reuses the froxel pass's sun-visibility rule (open sky, architectural glass, authored apertures); none of the four scenes has a sunbeam on the fire, so that path has not been looked at.
+- **Gas does not enter a box from the froxels** (open boundary: only outflow).
+- Mean emission, not mean temperature, is what the coarse froxel state
+  preserves (flame emission is exponential in temperature; a plain mean of the
+  state radiates nothing and the room loses the fire's glow, which is what the
+  first version did).
 
 **Risks to plan around.**
 

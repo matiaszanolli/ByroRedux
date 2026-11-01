@@ -273,4 +273,19 @@ layout(std430, set = 0, binding = 21) readonly buffer BoundaryIndexBuffer {
     uint boundaryIndexData[];
 };
 
+// ── World-space combustion local grid (tracking #6531, Phase 1 #6533) ─────
+// 26: box table + sun for the close-range march (also bound by composite).
+// 27/28/29: THIS frame's local-grid state / dynamics / optical atlas, written
+// by `volumetrics_local_sim.comp` earlier in the same command buffer. A froxel
+// inside a box fills its combustion volumes from these instead of simulating.
+// 30/31: the froxel-resolution irradiance field the close-range march lights
+// the fire with — written here, previous slot sampled for temporal smoothing.
+#define LOCAL_GRID_PARAMS_BINDING 26
+#include "include/local_grid_params.glsl"
+layout(set = 0, binding = 27) uniform sampler3D localAtlasState;
+layout(set = 0, binding = 28) uniform sampler3D localAtlasDynamics;
+layout(set = 0, binding = 29) uniform sampler3D localAtlasOptical;
+layout(set = 0, binding = 30, rgba16f) uniform writeonly image3D localIrradiance;
+layout(set = 0, binding = 31) uniform sampler3D previousLocalIrradiance;
+
 #endif

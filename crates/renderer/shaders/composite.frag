@@ -132,6 +132,18 @@ layout(set = 0, binding = 10) uniform sampler3D cloudDetailNoise;
 // (`shadow_filter.comp`). Valid only when `caustic_flags.y` > 0.5; otherwise
 // the binding holds a fallback view and is never read.
 layout(set = 0, binding = 11) uniform sampler2D shadowCorrectionTex;
+// #6533 — world-space combustion local grid, close-range fire. Binding 12 is
+// the box table + sun (the same UBO the froxel inject pass reads), 13/14 the
+// THIS-frame state / optical atlas written by `volumetrics_local_sim.comp`,
+// 15 the froxel-resolution irradiance field `volumetrics_inject.comp` writes
+// around each box. See `localFireMarch` below.
+#define LOCAL_GRID_PARAMS_BINDING 12
+#include "include/local_grid_params.glsl"
+#include "include/combustion_medium.glsl"
+#include "include/medium_transport.glsl"
+layout(set = 0, binding = 13) uniform sampler3D localFireState;
+layout(set = 0, binding = 14) uniform sampler3D localFireOptical;
+layout(set = 0, binding = 15) uniform sampler3D localFireIrradiance;
 
 // CAUSTIC_FIXED_SCALE from shader_constants.glsl — generated from
 // src/shader_constants_data.rs. Build-time drift catch: edit
@@ -271,6 +283,155 @@ vec4 sampleVolumetricColumn(
         texelFetch(volumetricFroxel, ivec3(nearestColumn, z1), 0),
         zBlend
     );
+}
+
+// Steps one box's segment may take. A box is 64 cells across, so the cap only
+// matters for a ray running diagonally through a corner at a fraction of a cell
+// per step; it bounds the worst-case per-pixel cost.
+const int LOCAL_FIRE_MAX_STEPS_PER_BOX = 160;
+// Radiance is stored without the isotropic phase of the local lights.
+const float LOCAL_FIRE_ISOTROPIC_PHASE = 1.0 / (4.0 * 3.14159265358979323846);
+// Below this the remaining ray can no longer change the pixel.
+const float LOCAL_FIRE_OPAQUE_TRANSMITTANCE = 0.004;
+
+// Interleaved gradient noise (Jimenez 2014), golden-ratio animated: the start
+// offset of each pixel's ray inside its first cell, decorrelated across the
+// screen and across frames so TAA integrates the stratification away.
+float localFireJitter(vec2 pixel) {
+    float ign = fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
+    return fract(ign + 0.61803398875 * params.depth_params.w);
+}
+
+// Ray-march the local-grid boxes along one camera ray, up to `tSurface`.
+//
+// Returns the radiance the fire adds (rgb) and the transmittance it leaves
+// (a), integrated with the exact slab form (`medium_slab`) at one sample per
+// cell. `tIn` is where the nearest box is entered: the caller composes the
+// froxel fog around that point (fog before the box, then the fire, then the
+// fog behind it), which is exact for a ray that crosses one box and a close
+// approximation for several.
+//
+// Everything is read from the box's own field — extinction, scattering and
+// thermal emission from the same `combustionMedium` the froxel pass uses —
+// lit by the irradiance field the froxel pass prepared around the box (sun
+// radiance x visibility, summed local lights). `rayOrigin` is camera-position
+// in the render-origin-relative frame the rest of this shader uses.
+vec4 localFireMarch(
+    vec2 uv,
+    vec3 rayOrigin,
+    vec3 rayDir,
+    float tSurface,
+    float jitter,
+    out float tIn
+) {
+    tIn = 0.0;
+    vec3 radiance = vec3(0.0);
+    float transmittance = 1.0;
+
+    float entry[LOCAL_GRID_MAX_BOXES];
+    float exit_[LOCAL_GRID_MAX_BOXES];
+    uint candidates = 0u;
+    vec3 invDir = 1.0 / (rayDir + vec3(equal(rayDir, vec3(0.0))) * 1.0e-9);
+    for (uint b = 0u; b < uint(LOCAL_GRID_MAX_BOXES); ++b) {
+        entry[b] = 1.0e30;
+        exit_[b] = 0.0;
+        if (!localBoxLive(b)) {
+            continue;
+        }
+        vec3 lo = localGrid.boxes[b].xyz - localGrid.render_origin.xyz;
+        vec3 hi = lo + vec3(localBoxEdge(b));
+        vec3 t0 = (lo - rayOrigin) * invDir;
+        vec3 t1 = (hi - rayOrigin) * invDir;
+        float tNear = max(max(min(t0.x, t1.x), min(t0.y, t1.y)), max(min(t0.z, t1.z), 0.0));
+        float tFar = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), min(max(t0.z, t1.z), tSurface));
+        if (tFar > tNear) {
+            entry[b] = tNear;
+            exit_[b] = tFar;
+            candidates |= 1u << b;
+        }
+    }
+    if (candidates == 0u) {
+        return vec4(0.0, 0.0, 0.0, 1.0);
+    }
+
+    float gridFar = params.volume_params.x;
+    bool multipleBoxes = (localGrid.info.z & (localGrid.info.z - 1u)) != 0u;
+    bool first = true;
+    for (uint pass = 0u; pass < uint(LOCAL_GRID_MAX_BOXES) && candidates != 0u; ++pass) {
+        // Nearest unprocessed box first.
+        uint box = 0u;
+        float nearest = 1.0e30;
+        for (uint b = 0u; b < uint(LOCAL_GRID_MAX_BOXES); ++b) {
+            if ((candidates & (1u << b)) != 0u && entry[b] < nearest) {
+                nearest = entry[b];
+                box = b;
+            }
+        }
+        candidates &= ~(1u << box);
+        if (first) {
+            tIn = entry[box];
+            first = false;
+        }
+
+        float cell = localGrid.boxes[box].w;
+        float span = exit_[box] - entry[box];
+        int steps = clamp(int(ceil(span / cell)), 1, LOCAL_FIRE_MAX_STEPS_PER_BOX);
+        float stepLength = span / float(steps);
+        for (int i = 0; i < steps; ++i) {
+            float t = entry[box] + (float(i) + jitter) * stepLength;
+            vec3 positionAbs = rayOrigin + rayDir * t + localGrid.render_origin.xyz;
+            uint owner;
+            // A finer box nested inside this one draws its own region. With a
+            // single live box there is nothing to arbitrate.
+            if (multipleBoxes && (!localBoxOwner(positionAbs, owner) || owner != box)) {
+                continue;
+            }
+            vec3 uvw = localAtlasUvw(box, positionAbs);
+            vec4 chemistry = texture(localFireState, uvw);
+            // Most cells of a box are clear air. The state alone decides that
+            // (soot, fuel vapour and hot gas are the only things that attenuate
+            // or emit), so skip the optics fetch and the blackbody evaluation
+            // `combustionMedium` costs for them.
+            if (chemistry.x <= 1.0e-4 && chemistry.z <= 1.0e-6 && chemistry.w <= 1.0e-4) {
+                continue;
+            }
+            vec4 optical = texture(localFireOptical, uvw);
+            LocalMedium medium = combustionMedium(chemistry, optical);
+            if (medium.extinction <= 1.0e-7 && max(medium.emission.r, max(medium.emission.g, medium.emission.b)) <= 1.0e-7) {
+                continue;
+            }
+
+            // Irradiance field: same camera ray column and slice mapping the
+            // froxel pass wrote it with, so (uv, slice) addresses it directly.
+            float slice = hybridSliceCoordinate(min(t, gridFar));
+            vec4 irradiance = texture(localFireIrradiance, vec3(uv, slice));
+            float cosTheta = dot(localGrid.sun_dir.xyz, rayDir);
+            float sunPhase = mix(
+                medium_henyey_greenstein(cosTheta, localGrid.phase.y),
+                medium_henyey_greenstein(cosTheta, localGrid.phase.x),
+                clamp(localGrid.phase.z, 0.0, 1.0)
+            );
+            // Two-octave multiple-scattering gain, as in the froxel pass: the
+            // single-scatter term alone leaves thick smoke too dark.
+            vec3 albedo = medium.scattering / max(vec3(medium.extinction), vec3(1.0e-6));
+            vec3 gain = vec3(1.0)
+                + COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT * albedo
+                + COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT * albedo * albedo;
+            vec3 source = medium.scattering * gain * (
+                    localGrid.sun_radiance.rgb * sunPhase * irradiance.a
+                    + irradiance.rgb * LOCAL_FIRE_ISOTROPIC_PHASE
+                )
+                + medium.emission;
+
+            vec2 slab = medium_slab(medium.extinction, stepLength);
+            radiance += transmittance * slab.y * source;
+            transmittance *= slab.x;
+            if (transmittance < LOCAL_FIRE_OPAQUE_TRANSMITTANCE) {
+                return vec4(radiance, 0.0);
+            }
+        }
+    }
+    return vec4(radiance, transmittance);
 }
 
 // Analytic optical depth for sigma_t(y)=sigma0*exp(-(y-y0)/H).
@@ -858,8 +1019,33 @@ void main() {
         // (radiance that arrived via in-scattering, NOT itself
         // attenuated by `T_cum` — the integrate pass already weighted
         // each slab's contribution by its own running transmittance).
-        combined = combined * vol.a + vol.rgb;
-        fogTransmittance *= vol.a;
+        // #6533 — close-range fire from the world-space local grid. The
+        // froxel fog excludes the fire the boxes own, so compose the two:
+        //   fog up to the box entry, then the fire, then the fog behind it
+        // attenuated by the fire. With no box on this ray (fire = 0, 1) the
+        // expression reduces exactly to `combined * vol.a + vol.rgb`.
+        vec4 fire = vec4(0.0, 0.0, 0.0, 1.0);
+        vec4 volIn = vec4(0.0, 0.0, 0.0, 1.0);
+        if (localGrid.info.z != 0u) {
+            vec3 rayDirection = (worldPos - params.camera_pos.xyz) / max(worldDist, 1.0e-6);
+            float tIn;
+            fire = localFireMarch(
+                fragUV,
+                params.camera_pos.xyz,
+                rayDirection,
+                worldDist,
+                localFireJitter(gl_FragCoord.xy),
+                tIn
+            );
+            if (fire.a < 1.0 || fire.r + fire.g + fire.b > 0.0) {
+                float sliceIn = hybridSliceCoordinate(min(tIn, gridFar));
+                float sliceTexelIn = clamp((sliceIn * sliceCount - 0.5) / sliceCount, 0.0, 1.0);
+                volIn = sampleVolumetricColumn(fragUV, sliceTexelIn, depth);
+            }
+        }
+        combined = (volIn.rgb + volIn.a * fire.rgb)
+            + fire.a * ((vol.rgb - volIn.rgb) + vol.a * combined);
+        fogTransmittance *= vol.a * fire.a;
 
         // Beyond-grid aerial perspective. Start at the grid boundary so
         // this composes after the froxel integral without double-counting.
