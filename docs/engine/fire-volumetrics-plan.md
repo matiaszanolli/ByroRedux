@@ -431,6 +431,27 @@ w_D = exp(-0.599085 / (d - 0.641583) - 0.665888).
 The diameter is an artistic choice, not a measured one: 10 um, inside the fitted
 range. It needs your eye, not a citation. The fit omits fogbow and glory.
 
+**2 (revised, same day). Species is explicit, not albedo-derived.** Measured
+before shipping: authored particle smoke is normalised to a peak albedo of 0.9
+(`fog.rs`, `tint / peak * 0.9`), so an albedo threshold would have made all of it
+steam. Steam is now `FogProfile::Steam` (GPU profile 8, `FogVolume` is not
+saved, so no save-format change), whose sources write their extinction into the
+optical texel's spare `w` lane; `w / sigma_t` is the steam share of a cell, and
+the lane advects, dilutes and decays with the gas. `combustionSteamFraction`
+reads it; `BYRO_LOCAL_GRID_DEBUG=no_species` forces the soot phase for A/B.
+Authored (non-transported) media keep the weather / local-light lobes. Open
+visual item: the `--combustion-lab-steam` scene shows the vent only faintly.
+
+**Cost (interleaved medians of 7, composite pass, Phase 2 baseline -> now):**
+s1 0.331 -> 0.389, s2a 0.308 -> 0.360, s3a 0.728 -> 0.861, s5 0.325 -> 0.549 ms
+(s5 is noisy). A build with the sun-lit branch compiled out returned s1/s2a/s3a
+to baseline, so the cost is the sun-lit code merely being present in the march
+loop, with no sun anywhere in these scenes. Tried and not enough: gating on sun
+visibility, per-ray octave lobes, lazy per-species evaluation, and splitting the
+march into sun / sun-less functions (both end up inlined into one entry point,
+so registers are sized for the heavier). The remaining fix is two specialised
+composite pipelines chosen by sun presence.
+
 **4. Internal glow.** Not designed yet. First measure whether the derived fire
 lights already light smoke from inside (A/B with them off), then decide.
 
