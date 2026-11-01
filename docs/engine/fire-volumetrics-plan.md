@@ -193,6 +193,10 @@ need a human — close-range flame clearly better than `s1_close_flame`, distant
 fires unchanged — are Matías's call, and the screenshots below have open issues
 (see "Known problems").
 
+**Review so far (Matías, 2026-11-01):** the close flame is an improvement; the
+s3a blocks were to be traced before Phase 2 (done, below). The explosion look
+and the cost are still open.
+
 What it does: boxes of the local grid are simulated first each frame; the
 froxel inject pass hands the fire inside a box off to them (it fills its own
 combustion volumes with the mean of the box cells under each froxel, advances
@@ -210,15 +214,15 @@ now includes the march):
 
 | scene | local sim | inject base → 1c | `volumetrics` total base → 1c | composite base → 1c | **total added** |
 |---|---:|---|---|---|---:|
-| s1_close_flame | 0.082 | 0.583 → 0.659 | 0.613 → 0.774 | 0.067 → 0.587 | **+0.68** |
-| s2a_oil_blast_2s | 0.249 | 0.674 → 0.836 | 0.715 → 1.128 | 0.103 → 0.691 | **+1.00** |
-| s3a_nuclear_blast_2s | 1.274 | 0.728 → 0.597 | 0.769 → 2.054 | 0.104 → 1.395 | **+2.58** |
-| s5_skyrim_mare_hearth | 0.151 | 0.636 → 0.681 | 0.664 → 0.862 | 0.076 → 0.604 | **+0.73** |
+| s1_close_flame | 0.077 | 0.583 → 0.588 | 0.613 → 0.693 | 0.067 → 0.550 | **+0.56** |
+| s2a_oil_blast_2s | 0.113 | 0.674 → 0.618 | 0.715 → 0.766 | 0.103 → 0.754 | **+0.70** |
+| s3a_nuclear_blast_2s | 0.836 | 0.728 → 0.584 | 0.769 → 1.505 | 0.104 → 1.188 | **+1.82** |
+| s5_skyrim_mare_hearth | 0.134 | 0.634 → 0.676 | 0.659 → 0.837 | 0.074 → 0.720 | **+0.82** |
 
 Where the cost is: the march (one sample per cell along every ray through a
 box: s1's box covers about 60 % of the screen). It is the obvious target for
 Phase 2's adaptive step size; empty-space skipping through a coarse occupancy
-grid is the larger win. The nuclear scene is dominated by the sim (272k active
+grid is the larger win. The nuclear scene is dominated by the sim (172k active
 cells).
 
 Checks run: renderer and workspace tests green apart from the unrelated
@@ -226,7 +230,7 @@ Checks run: renderer and workspace tests green apart from the unrelated
 clean on s1 and s5 (no VUID, no hazard); local grid state hash and the s1 final
 frame identical across 3 runs.
 
-Known problems (open, for review):
+Known problems (for review):
 
 - **Explosions look different, not just sharper.** s2a and s3a show a larger,
   different fireball than the baseline at the same simulation time, and the
@@ -234,9 +238,27 @@ Known problems (open, for review):
   resolution dependent: it scales mass by how much of a cell the source covers,
   so a coarse froxel under-sources a thin shell that a fine cell captures in
   full. The baseline look was tuned against the coarse result.
-- **Stray froxel-sized orange blocks in s3a** (upper left, near the red wall):
-  hot gas outside any box, still drawn by the froxel grid. Not yet traced to
-  the exact cause.
+- **The s3a orange blocks: traced and fixed.** They were not froxel gas and not
+  a box face: with the close-range march off (`BYRO_LOCAL_GRID_DEBUG=no_march`)
+  the froxels drew nothing at all there, so the blocks were local-grid
+  content, frozen hot pockets that persisted unchanged between frames behind
+  the blast. Turning BFECC off (`BYRO_BFECC=0`) removed them completely. The
+  BFECC error correction is tuned for view-depth slabs of 0.6 m and more; on
+  2.5-20 cm cells it is not needed (the semi-Lagrangian diffusion it cancels is
+  already small) and it leaves those pockets. The local grid now runs without
+  it (a seam in `combustion_transport.glsl`; the froxel pass keeps it). I did
+  not find why BFECC misbehaves at this resolution; Phase 6 ("BFECC only where
+  detail is still lost") is where that belongs.
+- **Explosion boxes were too small.** An explosion's `FogVolume` is the swept
+  bound of the authored effect (0.72 m for the lab's nuclear source) but the
+  blast pushes its gas several metres; a box sized for the source cut the dome
+  flat. Explosion boxes are now sized 16 source radii across (the 20 cm cell for
+  the lab's two explosions) and centred vertically.
+- **Flat faces remain** where a blast's gas crosses a box face into the froxels
+  (visible at the right of the dome in the s3a sequence); one seam of the
+  hand-off. `BYRO_LOCAL_GRID_DEBUG=no_march,no_handoff` bypasses the local grid
+  entirely and is byte-identical to the pre-stage-1a binary on s1, s2a and s3a,
+  so the froxel path is untouched.
 - **The close flame is very bright and soft.** s1's core clips to white with a
   thin orange rim and little visible flame structure; the emission
   calibrations were tuned for the coarse field, which averages the peak

@@ -2202,7 +2202,7 @@ mod unit_tests {
             "COMBUSTION_BFECC_ERROR_CORRECTION_STRENGTH",
             "COMBUSTION_BFECC_ERROR_TRACE_THRESHOLD",
             "void applyBfeccErrorCorrection(",
-            "* params.wind_gust.y;",
+            "* bfeccStrengthMultiplier();",
             "chemistry = clamp(",
             "texelFetch(previousCombustionState, coord, 0)",
             "applyBfeccErrorCorrection(\n                worldPos,",

@@ -1026,7 +1026,7 @@ void main() {
         // expression reduces exactly to `combined * vol.a + vol.rgb`.
         vec4 fire = vec4(0.0, 0.0, 0.0, 1.0);
         vec4 volIn = vec4(0.0, 0.0, 0.0, 1.0);
-        if (localGrid.info.z != 0u) {
+        if (localGrid.info.z != 0u && (localGrid.info.w & LOCAL_GRID_DEBUG_NO_MARCH) == 0u) {
             vec3 rayDirection = (worldPos - params.camera_pos.xyz) / max(worldDist, 1.0e-6);
             float tIn;
             fire = localFireMarch(

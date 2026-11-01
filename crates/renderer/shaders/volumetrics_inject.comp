@@ -397,6 +397,10 @@ bool samplePreviousTransport(
     return true;
 }
 
+float bfeccStrengthMultiplier() {
+    return params.wind_gust.y;
+}
+
 bool previousTransportBounds(
     vec3 worldPos,
     out vec4 chemistryMin,
@@ -729,6 +733,7 @@ void main() {
     // #6533 — which local-grid box (if any) owns this froxel's fire.
     uint localOwner = 0u;
     bool localOwned = !transportExpired && localGrid.info.z != 0u
+        && (localGrid.info.w & LOCAL_GRID_DEBUG_NO_HANDOFF) == 0u
         && localBoxOwner(field_world_pos, localOwner);
     if (!transportKnownEmpty) {
         // #4784 — pay the 27-cell occupancy probe only on frames that would

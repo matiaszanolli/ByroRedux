@@ -107,6 +107,12 @@ bool samplePreviousTransport(
     return true;
 }
 
+// The local grid runs plain semi-Lagrangian advection; see the seam's note in
+// `include/combustion_transport.glsl`.
+float bfeccStrengthMultiplier() {
+    return 0.0;
+}
+
 // The BFECC limiter's clamp range: min/max of the texels the trilinear tap at
 // `worldPos` interpolates, fetched by integer coordinate inside this box's
 // slab so the clamp never sees a neighbouring box.

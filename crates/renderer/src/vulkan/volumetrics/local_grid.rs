@@ -29,7 +29,11 @@ use super::{
     DescriptorPoolBuilder, GpuBuffer, SharedAllocator, TimerPass, VolumetricsParams,
     COMBUSTION_FIELD_FORMAT, FROXEL_FORMAT, MAX_FRAMES_IN_FLIGHT, WORLD_UNITS_PER_METER,
 };
-use crate::shader_constants::{LOCAL_GRID_DIM, LOCAL_GRID_MAX_BOXES};
+use crate::shader_constants::{
+    FOG_VOLUME_PROFILE_EXPLOSION, FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
+    FOG_VOLUME_PROFILE_EXPLOSION_OIL, LOCAL_GRID_DEBUG_NO_HANDOFF, LOCAL_GRID_DEBUG_NO_MARCH,
+    LOCAL_GRID_DIM, LOCAL_GRID_MAX_BOXES,
+};
 use crate::vulkan::descriptors::{
     clamp_sampler, compute_binding, general_sampled_image_info, storage_image_info,
 };
@@ -63,6 +67,16 @@ pub(crate) const LOCAL_GRID_REACH_METERS: f32 = 20.0;
 const LOCAL_GRID_REACH_HYSTERESIS: f32 = 1.25;
 /// Box edge, in source radii. Leaves headroom above the source for the plume.
 pub(crate) const BOX_EDGE_PER_SOURCE_RADIUS: f32 = 6.0;
+/// Box edge, in source radii, for an explosion. An explosion's `FogVolume` is
+/// the swept bound of the authored effect, but the gas it drives is pushed out
+/// by the blast far beyond it (the lab's nuclear source is 0.72 m across and the
+/// dome reaches several metres), and a box the gas outgrows cuts the dome flat
+/// at its faces. So explosions get a box sized for where the gas goes, not
+/// where it starts.
+pub(crate) const BOX_EDGE_PER_EXPLOSION_RADIUS: f32 = 16.0;
+/// Fraction of the box edge below an explosion's centre: a blast expands in
+/// every direction, so it is centred rather than given the flame's headroom.
+const BOX_BELOW_EXPLOSION: f32 = 0.5;
 /// Fraction of the box edge kept clear of a contained source on every side but
 /// the top, so the source never sits against the clamp.
 const BOX_INNER_MARGIN: f32 = 0.10;
@@ -102,23 +116,40 @@ impl LocalBox {
     }
 }
 
+/// Whether `volume` is an explosion (any profile) rather than a flame or smoke.
+fn is_explosion(volume: &GpuFogVolume) -> bool {
+    let profile = volume.profile_params[0];
+    [
+        FOG_VOLUME_PROFILE_EXPLOSION,
+        FOG_VOLUME_PROFILE_EXPLOSION_OIL,
+        FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
+    ]
+    .iter()
+    .any(|kind| (profile - kind).abs() < 0.5)
+}
+
 /// The finest ladder cell whose box holds `radius_world` of source, or `None`
 /// when even the coarsest cannot.
 pub(crate) fn cell_for_source_radius(radius_world: f32) -> Option<f32> {
+    cell_for_edge(BOX_EDGE_PER_SOURCE_RADIUS * radius_world)
+}
+
+/// The finest ladder cell whose box is at least `edge_world` across.
+fn cell_for_edge(edge_world: f32) -> Option<f32> {
     CELL_LADDER_METERS
         .iter()
         .map(|meters| meters * WORLD_UNITS_PER_METER)
-        .find(|cell| cell * LOCAL_GRID_CELLS as f32 >= BOX_EDGE_PER_SOURCE_RADIUS * radius_world)
+        .find(|cell| cell * LOCAL_GRID_CELLS as f32 >= edge_world)
 }
 
 /// Where a new box for a source of `radius` at `center` goes, snapped to a
 /// lattice of `BOX_ORIGIN_SNAP_CELLS` cells.
-fn place_box(center: [f32; 3], cell: f32) -> [f32; 3] {
+fn place_box(center: [f32; 3], cell: f32, below: f32) -> [f32; 3] {
     let edge = cell * LOCAL_GRID_CELLS as f32;
     let snap = cell * BOX_ORIGIN_SNAP_CELLS;
     let raw = [
         center[0] - 0.5 * edge,
-        center[1] - BOX_BELOW_SOURCE * edge,
+        center[1] - below * edge,
         center[2] - 0.5 * edge,
     ];
     raw.map(|v| (v / snap).floor() * snap)
@@ -208,7 +239,11 @@ impl LocalBoxSet {
     ) {
         struct Source {
             center: [f32; 3],
+            /// What the box has to contain: the source radius, scaled up for an
+            /// explosion to where its gas goes.
             radius: f32,
+            wanted: Option<f32>,
+            below: f32,
             distance_sq: f32,
         }
         let mut sources: Vec<Source> = volumes
@@ -220,9 +255,18 @@ impl LocalBoxSet {
                     volume.center_shape[1],
                     volume.center_shape[2],
                 ];
-                let radius = volume.half_extents_extinction[..3]
+                let source_radius = volume.half_extents_extinction[..3]
                     .iter()
                     .fold(0.0f32, |acc, v| acc.max(*v));
+                let explosion = is_explosion(volume);
+                // An explosion's box is sized for its gas, and must contain that
+                // whole extent (`radius`), not just the authored source.
+                let (radius, wanted, below) = if explosion {
+                    let radius = source_radius * BOX_EDGE_PER_EXPLOSION_RADIUS / BOX_EDGE_PER_SOURCE_RADIUS;
+                    (radius, cell_for_edge(BOX_EDGE_PER_EXPLOSION_RADIUS * source_radius), BOX_BELOW_EXPLOSION)
+                } else {
+                    (source_radius, cell_for_source_radius(source_radius), BOX_BELOW_SOURCE)
+                };
                 let distance_sq: f32 = (0..3).map(|a| (center[a] - camera[a]).powi(2)).sum();
                 (center.iter().all(|v| v.is_finite())
                     && radius.is_finite()
@@ -231,6 +275,8 @@ impl LocalBoxSet {
                     .then_some(Source {
                         center,
                         radius,
+                        wanted,
+                        below,
                         distance_sq,
                     })
             })
@@ -238,7 +284,7 @@ impl LocalBoxSet {
         sources.sort_by(|a, b| a.distance_sq.total_cmp(&b.distance_sq));
 
         for source in &sources {
-            let Some(wanted) = cell_for_source_radius(source.radius) else {
+            let Some(wanted) = source.wanted else {
                 continue;
             };
             if let Some(held) = self.boxes.iter_mut().flatten().find(|b| {
@@ -251,8 +297,17 @@ impl LocalBoxSet {
                 continue; // inside the hysteresis band: held boxes only
             }
             if let Some(slot) = self.boxes.iter().position(Option::is_none) {
+                let origin = place_box(source.center, wanted, source.below);
+                log::debug!(
+                    "local grid: box {slot} created at t={now:.2}s, cell {:.1} cm, edge {:.2} m, \
+                     source radius {:.2} m at {:.1} m",
+                    wanted / WORLD_UNITS_PER_METER * 100.0,
+                    wanted * LOCAL_GRID_CELLS as f32 / WORLD_UNITS_PER_METER,
+                    source.radius / WORLD_UNITS_PER_METER,
+                    source.distance_sq.sqrt() / WORLD_UNITS_PER_METER,
+                );
                 self.boxes[slot] = Some(LocalBox {
-                    origin: place_box(source.center, wanted),
+                    origin,
                     cell: wanted,
                     last_source_time: now,
                     history: false,
@@ -260,8 +315,9 @@ impl LocalBoxSet {
             }
         }
 
-        for slot in self.boxes.iter_mut() {
+        for (index, slot) in self.boxes.iter_mut().enumerate() {
             if slot.is_some_and(|b| now - b.last_source_time > linger_seconds) {
+                log::debug!("local grid: box {index} released at t={now:.2}s");
                 *slot = None;
             }
         }
@@ -288,6 +344,28 @@ pub(crate) fn local_sim_push_bytes(boxes: &LocalBoxSet) -> [u8; LOCAL_SIM_PUSH_B
     put(info + 4, boxes.history_mask().to_ne_bytes());
     put(info + 8, boxes.live_mask().to_ne_bytes());
     bytes
+}
+
+/// `BYRO_LOCAL_GRID_DEBUG`: comma-separated `no_march` (composite skips the
+/// close-range march) and/or `no_handoff` (the froxel pass keeps simulating the
+/// fire inside a box). A diagnostic for telling a fault in the local grid from
+/// one in the froxels around it; unset in normal use. Read once per process.
+fn local_grid_debug_bits() -> u32 {
+    static BITS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *BITS.get_or_init(|| {
+        let Ok(value) = std::env::var("BYRO_LOCAL_GRID_DEBUG") else {
+            return 0;
+        };
+        value.split(',').fold(0, |bits, word| match word.trim() {
+            "no_march" => bits | LOCAL_GRID_DEBUG_NO_MARCH,
+            "no_handoff" => bits | LOCAL_GRID_DEBUG_NO_HANDOFF,
+            "" => bits,
+            other => {
+                log::warn!("BYRO_LOCAL_GRID_DEBUG: unknown word `{other}` (use no_march, no_handoff)");
+                bits
+            }
+        })
+    })
 }
 
 /// The per-frame table `include/local_grid_params.glsl` declares as the
@@ -330,7 +408,7 @@ impl GpuLocalGridParams {
                 boxes.slab_count() as u32,
                 boxes.history_mask(),
                 boxes.live_mask(),
-                0,
+                local_grid_debug_bits(),
             ];
         }
         params.sun_dir = [frame.sun_dir[0], frame.sun_dir[1], frame.sun_dir[2], 0.0];
@@ -1134,6 +1212,58 @@ mod tests {
         // Far past the band it is no longer refreshed and ages out.
         set.update(&[near], [-30.0 * METER, 0.0, 0.0], reach, 20.0, 10.0);
         assert_eq!(set.live_count(), 0);
+    }
+
+    fn explosion(center_m: [f32; 3], radius_m: f32) -> GpuFogVolume {
+        let mut v = flame(center_m, radius_m);
+        v.profile_params[0] = FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR;
+        v
+    }
+
+    #[test]
+    fn an_explosion_box_is_sized_for_the_gas_not_the_authored_source() {
+        // The lab's nuclear source is 0.72 m; its dome reaches several metres.
+        let mut set = LocalBoxSet::default();
+        update(&mut set, &[explosion([2.0, 1.0, 3.0], 0.72)], 0.0);
+        let b = set.boxes()[0].expect("an explosion gets a box");
+        // 16 source radii = 11.5 m: the 20 cm cell (12.8 m edge), where a flame
+        // of the same radius would have taken the 10 cm one (6.4 m).
+        assert_eq!(b.cell, 0.20 * METER);
+        assert_eq!(cell_for_source_radius(0.72 * METER), Some(0.10 * METER));
+        // Centred vertically (a blast expands every way), not given the
+        // flame's headroom.
+        let centre_y = 1.0 * METER;
+        let below = centre_y - b.origin[1];
+        assert!(
+            (below - 0.5 * b.edge()).abs() <= b.cell * BOX_ORIGIN_SNAP_CELLS,
+            "centred within the origin snap, got {below} of {}",
+            b.edge()
+        );
+        // It holds the whole expected extent.
+        assert!(b.contains_source(
+            [2.0 * METER, centre_y, 3.0 * METER],
+            0.72 * METER * BOX_EDGE_PER_EXPLOSION_RADIUS / BOX_EDGE_PER_SOURCE_RADIUS
+        ));
+    }
+
+    #[test]
+    fn local_grid_shaders_pin_the_bfecc_seam_and_the_open_boundary() {
+        let sim = include_str!("../../../shaders/volumetrics_local_sim.comp");
+        let inject = include_str!("../../../shaders/volumetrics_inject.comp");
+        let transport = include_str!("../../../shaders/include/combustion_transport.glsl");
+        // The transport takes the strength through the seam, never straight
+        // from the host uniform, so the local grid can run without it.
+        assert!(transport.contains("* bfeccStrengthMultiplier();"));
+        assert!(!transport.contains("params.wind_gust.y"));
+        assert!(sim.contains("float bfeccStrengthMultiplier() {\n    return 0.0;\n}"));
+        assert!(inject.contains("float bfeccStrengthMultiplier() {\n    return params.wind_gust.y;\n}"));
+        // Open boundary: outside the box reads as clear air, not "no history".
+        let open = sim
+            .split("greaterThanEqual(cells, vec3(dim))")
+            .nth(1)
+            .and_then(|rest| rest.split("vec3 uvw = cells / dim;").next())
+            .expect("sampler's out-of-box branch");
+        assert!(open.contains("return true;"), "out-of-box must read as open air");
     }
 
     #[test]

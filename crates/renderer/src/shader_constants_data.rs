@@ -1978,6 +1978,11 @@ pub const FOG_VOLUME_CLUSTER_DIM: u32 = 16;
 /// size dispatches, push constants and the stats buffer from these.
 pub const LOCAL_GRID_DIM: u32 = 64;
 pub const LOCAL_GRID_MAX_BOXES: u32 = 4;
+/// `BYRO_LOCAL_GRID_DEBUG` bits carried in the local-grid table's `info.w`:
+/// composite skips the close-range march / the froxel pass skips the hand-off.
+/// A diagnostic for telling a fault in the local grid from one in the froxels.
+pub const LOCAL_GRID_DEBUG_NO_MARCH: u32 = 1;
+pub const LOCAL_GRID_DEBUG_NO_HANDOFF: u32 = 2;
 /// Bounded primitive references per cluster. FO3/FNV's busiest shipped cells
 /// place more than 50 baked shafts within 512 world units of one another;
 /// 64 avoids the obvious loss at the former 8-entry cap. Overflow keeps the
@@ -3127,6 +3132,8 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint FOG_VOLUME_CLUSTER_DIM),
     shader_define!(Uint LOCAL_GRID_DIM),
     shader_define!(Uint LOCAL_GRID_MAX_BOXES),
+    shader_define!(Uint LOCAL_GRID_DEBUG_NO_MARCH),
+    shader_define!(Uint LOCAL_GRID_DEBUG_NO_HANDOFF),
     shader_define!(Uint MAX_FOG_VOLUMES_PER_CLUSTER),
     shader_define!(Uint MAX_FOG_PORTALS_PER_CLUSTER),
     shader_define!(Uint MAX_COMPOSITE_SKY_APERTURES),

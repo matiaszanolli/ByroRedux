@@ -40,6 +40,16 @@ bool samplePreviousTransport(
     out vec4 optical
 );
 
+// SEAM (third) — scale on the BFECC error correction, 1 = the tuned strength,
+// 0 = plain semi-Lagrangian. The froxel pass returns the host's `BYRO_BFECC`
+// A/B switch. The local grid returns 0: its cells are 2.5-20 cm against the
+// froxels' view-depth slabs of 0.6 m and more, so the numerical diffusion BFECC
+// exists to cancel is already small there, and at that resolution the
+// correction left frozen, blocky pockets of hot gas behind a blast (visible in
+// the nuclear lab scene; gone with it off). Phase 6 revisits where detail is
+// still lost.
+float bfeccStrengthMultiplier();
+
 // SEAM (second) — the BFECC limiter's clamp range: component-wise min/max of
 // the previous-field texels the tap at `worldPos` interpolates. The including
 // shader defines it AFTER the include, next to `samplePreviousTransport`.
@@ -422,7 +432,7 @@ void applyBfeccErrorCorrection(
     float dt
 ) {
     float strength = COMBUSTION_BFECC_ERROR_CORRECTION_STRENGTH
-        * params.wind_gust.y;
+        * bfeccStrengthMultiplier();
     if (strength <= 0.0) {
         return;
     }

@@ -17,7 +17,8 @@ layout(std140, set = 0, binding = LOCAL_GRID_PARAMS_BINDING) uniform LocalGridPa
     // in world units. Slot b owns atlas Z slab b.
     vec4 boxes[LOCAL_GRID_MAX_BOXES];
     // x = atlas slabs in use, y = bit b set when slot b has history,
-    // z = bit b set when slot b holds a live box, w = unused.
+    // z = bit b set when slot b holds a live box, w = debug bits
+    // (`LOCAL_GRID_DEBUG_*`, set from BYRO_LOCAL_GRID_DEBUG; 0 in normal use).
     uvec4 info;
     // xyz = direction TO the sun (world space, unit), w unused.
     vec4 sun_dir;
@@ -29,6 +30,9 @@ layout(std140, set = 0, binding = LOCAL_GRID_PARAMS_BINDING) uniform LocalGridPa
     // xyz = the render origin the camera-relative frame is offset by.
     vec4 render_origin;
 } localGrid;
+
+// `info.w` debug bits (`LOCAL_GRID_DEBUG_NO_MARCH` / `_NO_HANDOFF`) come from the
+// generated constants header.
 
 bool localBoxLive(uint box) {
     return (localGrid.info.z & (1u << box)) != 0u;
