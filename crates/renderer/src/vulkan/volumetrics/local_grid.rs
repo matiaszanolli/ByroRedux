@@ -403,13 +403,23 @@ pub(crate) fn local_sim_push_bytes(boxes: &LocalBoxSet) -> [u8; LOCAL_SIM_PUSH_B
 
 /// Host-only debug bit: boxes for explosions only (no flame or smoke boxes).
 const DEBUG_ONLY_EXPLOSIONS: u32 = 1 << 8;
+/// Host-only debug bit: no light derived from the combustion field is appended
+/// to the frame's light list (the internal-glow A/B, #6535).
+const DEBUG_NO_DERIVED_LIGHTS: u32 = 1 << 9;
+
+/// Whether `BYRO_LOCAL_GRID_DEBUG=no_derived_lights` is set.
+pub(crate) fn derived_lights_disabled() -> bool {
+    local_grid_debug_bits() & DEBUG_NO_DERIVED_LIGHTS != 0
+}
 
 /// `BYRO_LOCAL_GRID_DEBUG`: comma-separated `no_march` (composite skips the
 /// close-range march), `no_handoff` (the froxel pass keeps simulating the
 /// fire inside a box) and/or `only_explosions` (no flame or smoke boxes, to look
 /// at a blast without a nested box) and/or `dense_march` (composite takes eight
 /// samples per cell: the converged reference for the stepping error) and/or
-/// `no_species` (every cell takes the soot phase, the steam A/B baseline). A diagnostic for telling a fault in the local grid from
+/// `no_species` (every cell takes the soot phase, the steam A/B baseline) and/or
+/// `no_derived_lights` (no light derived from the combustion field is added to
+/// the frame, the internal-glow A/B). A diagnostic for telling a fault in the local grid from
 /// one in the froxels around it; unset in normal use. Read once per process.
 fn local_grid_debug_bits() -> u32 {
     static BITS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
@@ -421,11 +431,12 @@ fn local_grid_debug_bits() -> u32 {
             "no_march" => bits | LOCAL_GRID_DEBUG_NO_MARCH,
             "no_handoff" => bits | LOCAL_GRID_DEBUG_NO_HANDOFF,
             "only_explosions" => bits | DEBUG_ONLY_EXPLOSIONS,
+            "no_derived_lights" => bits | DEBUG_NO_DERIVED_LIGHTS,
             "dense_march" => bits | LOCAL_GRID_DEBUG_DENSE_MARCH,
             "no_species" => bits | LOCAL_GRID_DEBUG_NO_SPECIES,
             "" => bits,
             other => {
-                log::warn!("BYRO_LOCAL_GRID_DEBUG: unknown word `{other}` (use no_march, no_handoff, only_explosions, dense_march, no_species)");
+                log::warn!("BYRO_LOCAL_GRID_DEBUG: unknown word `{other}` (use no_march, no_handoff, only_explosions, dense_march, no_species, no_derived_lights)");
                 bits
             }
         })

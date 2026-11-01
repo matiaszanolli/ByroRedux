@@ -222,7 +222,9 @@ impl VulkanContext {
         frame_light_ids.clear();
         frame_light_ids.extend_from_slice(light_ids);
         if let Some(ref mut volumetrics) = self.post.volumetrics {
-            if let Err(error) = volumetrics.append_combustion_surface_lights(
+            if crate::vulkan::volumetrics::derived_lights_disabled() {
+                // Debug A/B (`BYRO_LOCAL_GRID_DEBUG=no_derived_lights`).
+            } else if let Err(error) = volumetrics.append_combustion_surface_lights(
                 &self.device,
                 frame,
                 fog_volumes,

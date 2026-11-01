@@ -48,6 +48,7 @@ mod combustion;
 mod fog_clusters;
 pub(super) mod init;
 mod local_grid;
+pub(crate) use local_grid::derived_lights_disabled;
 pub use local_grid::LocalFireViews;
 pub(crate) mod noise;
 

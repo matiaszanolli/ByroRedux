@@ -233,12 +233,10 @@ pub(crate) fn setup_combustion_lab_scene(
             world,
             CombustionProbeSpec {
                 kind: CombustionProbeKind::Steam,
-                position: Vec3::new(
-                    manifest.explosion_position.x,
-                    lab_metres(0.30),
-                    manifest.explosion_position.z,
-                ),
-                half_extents: Vec3::new(lab_metres(0.22), lab_metres(0.30), lab_metres(0.22)),
+                // Upwind of the flame (the lab's crosswind blows toward +x) and
+                // nearer the camera, so both plumes drift across the same frame.
+                position: Vec3::new(lab_metres(-1.5), lab_metres(0.45), lab_metres(0.9)),
+                half_extents: Vec3::new(lab_metres(0.40), lab_metres(0.45), lab_metres(0.40)),
                 name: "combustion_lab_steam_vent",
             },
         );

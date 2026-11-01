@@ -262,7 +262,7 @@ pub(super) fn spawn_fog_volume_with_extinction(
 /// Steam-vent probe optics. Albedo near 1 because condensed water barely
 /// absorbs; the density is a lab choice that keeps the plume translucent.
 const STEAM_PROBE_ALBEDO: [f32; 3] = [0.97, 0.97, 0.97];
-const STEAM_PROBE_EXTINCTION_PER_METER: f32 = 3.0;
+const STEAM_PROBE_EXTINCTION_PER_METER: f32 = 6.0;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum CombustionProbeKind {
