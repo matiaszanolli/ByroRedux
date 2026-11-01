@@ -449,8 +449,13 @@ to baseline, so the cost is the sun-lit code merely being present in the march
 loop, with no sun anywhere in these scenes. Tried and not enough: gating on sun
 visibility, per-ray octave lobes, lazy per-species evaluation, and splitting the
 march into sun / sun-less functions (both end up inlined into one entry point,
-so registers are sized for the heavier). The remaining fix is two specialised
-composite pipelines chosen by sun presence.
+so registers are sized for the heavier). **Fixed** with two specialised
+composite pipelines (`LOCAL_FIRE_SUNLIT` specialization constant, picked each
+frame from whether the local-grid table carries sun radiance). Interleaved
+medians of 7, ms, Phase 2 baseline / one pipeline / two pipelines:
+s1 0.372 / 0.413 / 0.356, s2a 0.292 / 0.337 / 0.306, s3a 0.716 / 0.897 / 0.713,
+s5 0.347 / 0.388 / 0.378. Images are byte-identical to the one-pipeline build on
+s1/s2a/s3a.
 
 **4. Internal glow.** Not designed yet. First measure whether the derived fire
 lights already light smoke from inside (A/B with them off), then decide.

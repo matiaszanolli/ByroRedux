@@ -1535,6 +1535,13 @@ impl VolumetricsPipeline {
         self.local_grid.as_ref().map(local_grid::LocalGrid::fire_views)
     }
 
+    /// Whether this frame's local-grid table has sun radiance: composite binds
+    /// its sun pipeline when so and the sun-less one (a leaner march loop)
+    /// otherwise. `true`, the always-correct choice, when there is no grid.
+    pub fn local_fire_sunlit(&self) -> bool {
+        self.local_grid.as_ref().map_or(true, local_grid::LocalGrid::sunlit)
+    }
+
     /// Switch off every consumer of the local-grid table for `frame`. Called
     /// on a frame the volumetric passes did not run: the atlas and irradiance
     /// field are stale, and composite must not march them.

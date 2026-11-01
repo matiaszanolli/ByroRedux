@@ -458,6 +458,13 @@ pub(crate) struct GpuLocalGridParams {
 unsafe impl crate::vulkan::buffer::NoUninit for GpuLocalGridParams {}
 
 impl GpuLocalGridParams {
+    /// Whether the march this frame has any sun radiance to scatter: the same
+    /// test composite's shader applies to `sun_radiance`, so the CPU's choice of
+    /// specialised pipeline always agrees with it.
+    pub(crate) fn sunlit(&self) -> bool {
+        self.sun_radiance[..3].iter().any(|&c| c > 0.0)
+    }
+
     /// The table for this frame: live boxes (when `simulated`) plus the sun and
     /// render origin the close-range march needs.
     pub(crate) fn new(boxes: &LocalBoxSet, simulated: bool, frame: &VolumetricsParams) -> Self {
@@ -596,6 +603,9 @@ pub(crate) struct LocalGrid {
     froxel_extent: vk::Extent3D,
     /// Per-frame `LocalGridParams` UBO (host-visible).
     params_buffers: Vec<GpuBuffer>,
+    /// Whether the last published table carried any sun radiance; composite
+    /// picks its sun or sun-less pipeline from it (see `GpuLocalGridParams::sunlit`).
+    sunlit: bool,
     /// Per-frame occupancy bricks (device-local; cleared, then written by the sim).
     brick_buffers: Vec<GpuBuffer>,
     /// Froxel-resolution irradiance field, written by the inject pass, read
@@ -633,6 +643,7 @@ impl LocalGrid {
         let mut grid = Self {
             froxel_extent,
             params_buffers: Vec::new(),
+            sunlit: true,
             brick_buffers: Vec::new(),
             irradiance: Vec::new(),
             set_layout: vk::DescriptorSetLayout::null(),
@@ -904,6 +915,12 @@ impl LocalGrid {
         unsafe { device.update_descriptor_sets(&writes, &[]) };
     }
 
+    /// Whether the table published for this frame has sun radiance, i.e. which
+    /// composite pipeline the march needs.
+    pub(crate) fn sunlit(&self) -> bool {
+        self.sunlit
+    }
+
     /// Publish this frame's table. Call after `begin_frame` has placed the
     /// boxes; `simulated` is whether the sim pass will run (a zero live mask
     /// disables the hand-off and the march for the frame).
@@ -914,12 +931,15 @@ impl LocalGrid {
         frame_params: &VolumetricsParams,
     ) -> Result<()> {
         let params = GpuLocalGridParams::new(&self.boxes, self.has_work(), frame_params);
+        self.sunlit = params.sunlit();
         self.params_buffers[frame].write_mapped(device, std::slice::from_ref(&params))
     }
 
     /// Disable every consumer of this slot's table (a frame the volumetric
     /// passes did not run, so the atlas and irradiance field are stale).
     pub(crate) fn clear_params(&mut self, device: &ash::Device, frame: usize) -> Result<()> {
+        // The cleared table carries no sun and disables the march outright.
+        self.sunlit = false;
         self.params_buffers[frame]
             .write_mapped(device, std::slice::from_ref(&GpuLocalGridParams::default()))
     }

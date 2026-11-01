@@ -294,6 +294,11 @@ vec4 sampleVolumetricColumn(
 // matters for a ray running diagonally through a corner at a fraction of a cell
 // per step; it bounds the worst-case per-pixel cost.
 const int LOCAL_FIRE_MAX_STEPS_PER_BOX = 160;
+// Specialization constant: false builds the pipeline for a frame with no sun
+// radiance, with the sun-phase state folded out of the march loop. The sun
+// path costs ~0.1 ms of composite time per scene merely by existing in the
+// loop (register pressure), and every interior has no sun (#6535).
+layout(constant_id = 0) const bool LOCAL_FIRE_SUNLIT = true;
 // Empty-brick jumps a ray may take through one box (at most 3 * 8 bricks are
 // crossed along any axis-aligned path; diagonals cross a few more).
 const int LOCAL_FIRE_MAX_BRICK_JUMPS = 64;
@@ -374,7 +379,7 @@ vec4 localFireMarch(
     // are evaluated at most once per ray, by the first sample that is lit (soot)
     // or holds steam (steam), and blended per sample. With no sun radiance
     // neither is ever evaluated.
-    bool sunLive = any(greaterThan(localGrid.sun_radiance.rgb, vec3(0.0)));
+    bool sunLive = LOCAL_FIRE_SUNLIT && any(greaterThan(localGrid.sun_radiance.rgb, vec3(0.0)));
     float sunCos = dot(localGrid.sun_dir.xyz, rayDir);
     vec3 sootOctaves = vec3(0.0);
     vec3 steamOctaves = vec3(0.0);

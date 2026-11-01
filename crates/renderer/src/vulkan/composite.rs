@@ -313,6 +313,9 @@ pub struct CompositePipeline {
 
     /// Graphics pipeline: fullscreen triangle + linear scene composition.
     pipeline: vk::Pipeline,
+    /// The same pipeline specialised for a frame with no sun radiance
+    /// (`LOCAL_FIRE_SUNLIT = false`), chosen by `dispatch(.., local_fire_sunlit)`.
+    pipeline_sunless: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
@@ -456,6 +459,27 @@ pub(super) fn composite_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<
     ]
 }
 
+/// The vertex + fragment stages of a composite pipeline, the fragment stage
+/// carrying `spec` (the `LOCAL_FIRE_SUNLIT` specialization constant).
+fn composite_stages<'a>(
+    vert_module: vk::ShaderModule,
+    frag_module: vk::ShaderModule,
+    entry_point: &'a std::ffi::CStr,
+    spec: &'a vk::SpecializationInfo<'a>,
+) -> [vk::PipelineShaderStageCreateInfo<'a>; 2] {
+    [
+        vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::VERTEX)
+            .module(vert_module)
+            .name(entry_point),
+        vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(frag_module)
+            .name(entry_point)
+            .specialization_info(spec),
+    ]
+}
+
 impl CompositePipeline {
     /// Create all HDR intermediate images, the composite render pass +
     /// pipeline, and the per-frame scene-composition framebuffers.
@@ -552,6 +576,7 @@ impl CompositePipeline {
             composite_render_pass: vk::RenderPass::null(),
             composite_framebuffers: Vec::new(),
             pipeline: vk::Pipeline::null(),
+            pipeline_sunless: vk::Pipeline::null(),
             pipeline_layout: vk::PipelineLayout::null(),
             descriptor_set_layout: vk::DescriptorSetLayout::null(),
             descriptor_pool: vk::DescriptorPool::null(),
@@ -983,16 +1008,32 @@ impl CompositePipeline {
 
         // ── 9. Graphics pipeline ─────────────────────────────────────
         let entry_point = c"main";
-        let stages = [
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::VERTEX)
-                .module(partial.vert_module)
-                .name(entry_point),
-            vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::FRAGMENT)
-                .module(partial.frag_module)
-                .name(entry_point),
-        ];
+        // `LOCAL_FIRE_SUNLIT` (constant_id 0, a VkBool32): the default pipeline
+        // keeps the sun path, the second folds it out.
+        let spec_entries = [vk::SpecializationMapEntry::default()
+            .constant_id(0)
+            .offset(0)
+            .size(std::mem::size_of::<u32>())];
+        let sunlit_data = 1u32.to_ne_bytes();
+        let sunless_data = 0u32.to_ne_bytes();
+        let sunlit_spec = vk::SpecializationInfo::default()
+            .map_entries(&spec_entries)
+            .data(&sunlit_data);
+        let sunless_spec = vk::SpecializationInfo::default()
+            .map_entries(&spec_entries)
+            .data(&sunless_data);
+        let stages = composite_stages(
+            partial.vert_module,
+            partial.frag_module,
+            entry_point,
+            &sunlit_spec,
+        );
+        let stages_sunless = composite_stages(
+            partial.vert_module,
+            partial.frag_module,
+            entry_point,
+            &sunless_spec,
+        );
 
         // No vertex input — the fullscreen triangle is generated in the
         // vertex shader from gl_VertexIndex.
@@ -1064,20 +1105,29 @@ impl CompositePipeline {
             .layout(partial.pipeline_layout)
             .render_pass(partial.composite_render_pass)
             .subpass(0);
+        let pipeline_info_sunless = pipeline_info.stages(&stages_sunless);
 
-        // SAFETY: pipeline_info references partial.{vert_module,
+        // SAFETY: both infos reference partial.{vert_module,
         // frag_module, pipeline_layout, composite_render_pass} all
-        // created above. pipeline_cache is caller-provided.
-        partial.pipeline = match unsafe {
-            device.create_graphics_pipelines(pipeline_cache, &[pipeline_info], None)
+        // created above, and the specialization data outlives the call.
+        // pipeline_cache is caller-provided.
+        match unsafe {
+            device.create_graphics_pipelines(
+                pipeline_cache,
+                &[pipeline_info, pipeline_info_sunless],
+                None,
+            )
         } {
-            Ok(pipelines) => pipelines[0],
+            Ok(pipelines) => {
+                partial.pipeline = pipelines[0];
+                partial.pipeline_sunless = pipelines[1];
+            }
             Err((_, e)) => {
                 // SAFETY: cleanup-on-error.
                 unsafe { partial.destroy(device, allocator) };
                 return Err(anyhow::anyhow!("composite graphics pipeline: {e}"));
             }
-        };
+        }
 
         log::info!(
             "Scene-composition pipeline created at {}x{} (output {}x{} handled downstream)",
@@ -1103,6 +1153,7 @@ impl CompositePipeline {
         cmd: vk::CommandBuffer,
         frame: usize,
         bindless_set: vk::DescriptorSet,
+        local_fire_sunlit: bool,
     ) {
         let clear_values = [
             vk::ClearValue {
@@ -1130,7 +1181,15 @@ impl CompositePipeline {
         // render pass + pipeline + descriptor sets are owned by `self`.
         unsafe {
             device.cmd_begin_render_pass(cmd, &rp_begin, vk::SubpassContents::INLINE);
-            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+            device.cmd_bind_pipeline(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                if local_fire_sunlit {
+                    self.pipeline
+                } else {
+                    self.pipeline_sunless
+                },
+            );
 
             let viewport = vk::Viewport {
                 x: 0.0,
@@ -1442,6 +1501,10 @@ impl CompositePipeline {
             // at teardown, when the device is idle (frames-in-flight fenced /
             // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_pipeline(self.pipeline, None) };
+        }
+        if self.pipeline_sunless != vk::Pipeline::null() {
+            // SAFETY: as `pipeline` above.
+            unsafe { device.destroy_pipeline(self.pipeline_sunless, None) };
         }
         if self.vert_module != vk::ShaderModule::null() {
             // SAFETY: `vert_module` was created by this device and is destroyed here
