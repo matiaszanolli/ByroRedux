@@ -350,6 +350,7 @@ mod tests {
         // #6533 — the local-grid close-range march and its irradiance field.
         // Tuning of one stage each, not CPU/GPU contract values.
         ("volumetrics_inject.comp", "LOCAL_IRRADIANCE_HISTORY_WEIGHT"),
+        ("volumetrics_inject.comp", "LOCAL_DIRECTION_HISTORY_WEIGHT"),
         ("composite.frag", "LOCAL_FIRE_MAX_STEPS_PER_BOX"),
         ("composite.frag", "LOCAL_FIRE_ISOTROPIC_PHASE"),
         ("composite.frag", "LOCAL_FIRE_OPAQUE_TRANSMITTANCE"),

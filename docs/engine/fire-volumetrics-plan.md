@@ -469,8 +469,21 @@ Cost, interleaved medians of 7, composite ms, Phase 2 baseline -> two pipelines
 -> with direction: s1 0.355 -> 0.354 -> 0.511, s2a 0.309 -> 0.325 -> 0.401,
 s3a 0.755 -> 0.791 -> 1.167, s5 0.466 -> 0.375 -> 0.440. The per-sample phase
 (six pow(1.5) per soot sample) is the cost; a baked lookup over cos(theta)
-would replace it. The steam lab frame still reads as a tan, blocky smudge, not
-white steam: not review-ready.
+would replace it.
+
+**Steam lattice, found and fixed.** The lab steam showed a regular grid (one
+froxel column, ~8 px). A froxel-only render (`no_march,no_handoff`) shows the
+same grid with or without the species phase, so it is the froxel pass's own
+jitter noise (per-froxel jittered sample position and shadow rays); the species
+phase only made it visible, because steam's lobe is strongly angle-dependent
+and soot's is nearly flat. Softening the lobe and pinning the steam share did
+nothing. What worked: the light-direction field and the species phase's angle
+are taken from the froxel's centre, not the jittered sample, and the direction
+keeps a longer history (0.95; the radiance stays at 0.8). With those the
+species render is as smooth as the soot-phase one. Steam still reads tan, not
+white, in the lab: it is lit mostly by the flame's orange light and a frontlit
+or off-axis steam cloud is dim by construction (its forward lobe is only a few
+degrees wide). Not review-ready as a visual.
 
 **4. Internal glow.** Not designed yet. First measure whether the derived fire
 lights already light smoke from inside (A/B with them off), then decide.

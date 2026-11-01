@@ -607,6 +607,9 @@ void accumulateCombustionLightMoment(
 // Temporal weight of the irradiance field. Low-ish: the rays are binary and
 // jittered per frame, and the field is smooth in space.
 const float LOCAL_IRRADIANCE_HISTORY_WEIGHT = 0.8;
+// The light direction changes slowly and is read back through a lobe that
+// magnifies its noise, so it keeps a longer history than the radiance.
+const float LOCAL_DIRECTION_HISTORY_WEIGHT = 0.95;
 
 // The froxel's coarse view of the local grid: a 3x3x3 stratified set of taps
 // over the froxel's own footprint (the three step vectors are one full froxel
@@ -795,6 +798,11 @@ void main() {
     // the eye) produced: `normalize(vec3(0))` is NaN on drivers that do not
     // flush it, and the temporal history would carry it forever.
     vec3 view_dir = -froxel_ray_dir(sampleUv);
+    // The species phase is evaluated at the froxel's CENTRE ray and position, not
+    // the jittered sample: steam's lobe is strongly angle-dependent, so the
+    // per-froxel jitter (an 8x8 blue-noise tile) would print itself as a lattice
+    // the temporal history takes ~12 frames to average out.
+    vec3 field_view_dir = -froxel_ray_dir(fieldUv);
 
     // params.sun_dir.xyz points TO the sun; the light's propagation
     // (incoming) direction at the sample is the opposite, -sun_dir.
@@ -1046,7 +1054,7 @@ void main() {
     if (transportedMediumActive && visibility > 0.0
         && any(greaterThan(params.sun_color.rgb, vec3(0.0)))) {
         transported_sun_phase = combustionMultiScatterPhase(
-            cos_theta, transported_albedo, transported_steam);
+            dot(light_in, field_view_dir), transported_albedo, transported_steam);
     }
     vec3 inscatter = authored_inscatter
         + local_medium.emission
@@ -1181,8 +1189,9 @@ void main() {
             }
             vec3 transported_light_phase = vec3(0.0);
             if (transportedMediumActive && localVisibility > 1.0e-4) {
+                vec3 fieldToLight = normalize(lights[li].position_radius.xyz - field_world_pos);
                 transported_light_phase = combustionMultiScatterPhase(
-                    localCosTheta, transported_albedo, transported_steam);
+                    dot(-fieldToLight, field_view_dir), transported_albedo, transported_steam);
             }
             inscatter += (global_scattering_coef * localPhase
                 + transported_combustion.scattering * transported_light_phase)
@@ -1190,7 +1199,11 @@ void main() {
             vec3 lightFieldContribution = lights[li].color_type.rgb * atten * localVisibility;
             lightFieldRadiance += lightFieldContribution;
             float lightFieldLuma = dot(lightFieldContribution, LUMA_REC709);
-            lightFieldDirection += lightFieldLuma * -toLightDir;
+            // The direction is taken from the froxel's centre, not the jittered
+            // sample: the field is read back through steam's angle-dependent
+            // lobe, which turns per-froxel jitter into a visible lattice.
+            lightFieldDirection += lightFieldLuma
+                * -normalize(lights[li].position_radius.xyz - field_world_pos);
             lightFieldWeight += lightFieldLuma;
         }
     }
@@ -1312,7 +1325,7 @@ void main() {
             vec4 previousDirection = texture(
                 previousLocalIrradiance, localIrradianceAddress(previousUvw, irradianceWidth, 1.0));
             if (!(any(isnan(previousDirection)) || any(isinf(previousDirection)))) {
-                lightDirection = mix(lightDirection, previousDirection, LOCAL_IRRADIANCE_HISTORY_WEIGHT);
+                lightDirection = mix(lightDirection, previousDirection, LOCAL_DIRECTION_HISTORY_WEIGHT);
             }
         }
     }
