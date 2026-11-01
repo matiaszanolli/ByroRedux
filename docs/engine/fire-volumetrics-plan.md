@@ -288,8 +288,9 @@ Known problems (for review):
    difference is the old look being under-resolved, not a fault. For the nuclear
    blast (s3a) the reference keeps a thin grey smoke shell at the blast front
    that the local grid loses: plain semi-Lagrangian advection (BFECC is off, see
-   above) at 20 cm cells smears a sheet that thin. Open; a finer explosion cell
-   needs a bigger grid or a nested finer box, and BFECC is Phase 6.
+   above) at 20 cm cells smears a sheet that thin. Accepted for Phase 1 (Matías,
+   2026-11-01) on the condition that the shell comes back later: tracked as a
+   Phase 6 deliverable (see "Regain the nuclear smoke shell" there).
 2. **Flat faces and the rectangular hole.** Two causes. (a) A rectangle cut out
    of the blast cloud was the flame's fine box nested inside the explosion's box:
    the finer box owns the shared space in the draw, its sim has never seen the
@@ -402,9 +403,16 @@ and Matías has reviewed the noise.
   `combustion.rs`). Wavelet turbulence is not.
 - Burning-particle explosions (Feldman 2003): not present.
 - NanoVDB layout: not present, optional.
+- **Regain the nuclear smoke shell.** Phase 1 accepted losing the thin grey shell
+  at the s3a blast front (plain semi-Lagrangian advection at 20 cm cells smears
+  it). Candidates: BFECC with a limiter that works at fine cells (the Phase 1
+  pockets were its failure mode), a finer explosion cell via a nested box, or
+  burning-particle seeding for the front. Judge against
+  `phase1/s3a_*_reference_fine_froxels.png`.
 
 **Done when:** the same visual detail at a coarser grid, or more detail at the
-same cost, measured against the Phase 0 baseline.
+same cost, measured against the Phase 0 baseline, and the s3a smoke shell is
+back.
 
 ## Open questions for Matías
 
