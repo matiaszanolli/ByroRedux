@@ -370,6 +370,16 @@ vec4 localFireMarch(
         return vec4(0.0, 0.0, 0.0, 1.0);
     }
 
+    // The sun lobes depend only on the ray's angle to the sun, so each species'
+    // are evaluated at most once per ray, by the first sample that is lit (soot)
+    // or holds steam (steam), and blended per sample. With no sun radiance
+    // neither is ever evaluated.
+    bool sunLive = any(greaterThan(localGrid.sun_radiance.rgb, vec3(0.0)));
+    float sunCos = dot(localGrid.sun_dir.xyz, rayDir);
+    vec3 sootOctaves = vec3(0.0);
+    vec3 steamOctaves = vec3(0.0);
+    bool sootReady = false;
+    bool steamReady = false;
     float gridFar = params.volume_params.x;
     bool multipleBoxes = (localGrid.info.z & (localGrid.info.z - 1u)) != 0u;
     bool first = true;
@@ -489,7 +499,6 @@ vec4 localFireMarch(
             // froxel pass wrote it with, so (uv, slice) addresses it directly.
             float slice = hybridSliceCoordinate(min(ts, gridFar));
             vec4 irradiance = texture(localFireIrradiance, vec3(uv, slice));
-            float cosTheta = dot(localGrid.sun_dir.xyz, rayDir);
             // Species phase and the octave-softened multiple scattering, as in
             // the froxel pass (`include/combustion_phase.glsl`). The irradiance
             // field carries no direction, so its share stays isotropic and takes
@@ -499,10 +508,27 @@ vec4 localFireMarch(
             vec3 gain = vec3(1.0)
                 + COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT * albedo
                 + COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT * albedo * albedo;
+            // The sun's share is the expensive one (three phase octaves), and
+            // exactly zero wherever the sun is not visible: every interior.
+            vec3 sunScatter = vec3(0.0);
+            if (sunLive && irradiance.a > 1.0e-4) {
+                float steam = (localGrid.info.w & LOCAL_GRID_DEBUG_NO_SPECIES) != 0u
+                    ? 0.0
+                    : combustionSteamFraction(chemistry, optical);
+                if (!sootReady) {
+                    sootOctaves = combustionSootOctaves(sunCos);
+                    sootReady = true;
+                }
+                if (steam > 1.0e-3 && !steamReady) {
+                    steamOctaves = combustionSteamOctaves(sunCos);
+                    steamReady = true;
+                }
+                sunScatter = localGrid.sun_radiance.rgb
+                    * combustionBlendOctavePhase(sootOctaves, steamOctaves, albedo, steam)
+                    * irradiance.a;
+            }
             vec3 source = medium.scattering * (
-                    localGrid.sun_radiance.rgb * combustionMultiScatterPhase(cosTheta, albedo)
-                        * irradiance.a
-                    + gain * irradiance.rgb * LOCAL_FIRE_ISOTROPIC_PHASE
+                    sunScatter + gain * irradiance.rgb * LOCAL_FIRE_ISOTROPIC_PHASE
                 )
                 + medium.emission;
 

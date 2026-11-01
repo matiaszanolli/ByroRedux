@@ -9,7 +9,7 @@ use byroredux_core::radiometry::{blackbody_chromaticity_srgb, linear_srgb_lumina
 use byroredux_renderer::vulkan::volumetrics::{
     FOG_VOLUME_PROFILE_EXPLOSION, FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
     FOG_VOLUME_PROFILE_EXPLOSION_OIL, FOG_VOLUME_PROFILE_FLAME, FOG_VOLUME_PROFILE_HOMOGENEOUS,
-    FOG_VOLUME_PROFILE_LIGHT_SHAFT, FOG_VOLUME_PROFILE_SMOKE, GpuFogVolume, MAX_GPU_FOG_VOLUMES,
+    FOG_VOLUME_PROFILE_LIGHT_SHAFT, FOG_VOLUME_PROFILE_SMOKE, FOG_VOLUME_PROFILE_STEAM, GpuFogVolume, MAX_GPU_FOG_VOLUMES,
     WORLD_UNITS_PER_METER,
 };
 
@@ -187,6 +187,7 @@ fn gpu_volume_from_ecs_with_explosion_age(
         FogProfile::NuclearExplosion => FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
         FogProfile::LightShaft => FOG_VOLUME_PROFILE_LIGHT_SHAFT,
         FogProfile::SkyAperture => FOG_VOLUME_PROFILE_LIGHT_SHAFT,
+        FogProfile::Steam => FOG_VOLUME_PROFILE_STEAM,
     };
     let base_emission = volume.emissive_radiance.map(sanitize_emission);
     let base_temperature = volume.emission_temperature_k.max(0.0);

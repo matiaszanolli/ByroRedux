@@ -259,6 +259,11 @@ pub(super) fn spawn_fog_volume_with_extinction(
     name_entity(world, e, name);
 }
 
+/// Steam-vent probe optics. Albedo near 1 because condensed water barely
+/// absorbs; the density is a lab choice that keeps the plume translucent.
+const STEAM_PROBE_ALBEDO: [f32; 3] = [0.97, 0.97, 0.97];
+const STEAM_PROBE_EXTINCTION_PER_METER: f32 = 3.0;
+
 #[derive(Clone, Copy, Debug)]
 pub(super) enum CombustionProbeKind {
     Flame,
@@ -270,6 +275,9 @@ pub(super) enum CombustionProbeKind {
         start_delay_seconds: f32,
         lifetime_seconds: f32,
     },
+    /// A cool, passive steam vent: the water-droplet species, beside the soot
+    /// the flame makes (#6535).
+    Steam,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -287,6 +295,31 @@ pub(super) fn spawn_combustion_probe(world: &mut World, spec: CombustionProbeSpe
     let e = world.spawn();
     world.insert(e, Transform::new(spec.position, Quat::IDENTITY, 1.0));
     world.insert(e, GlobalTransform::new(spec.position, Quat::IDENTITY, 1.0));
+    if matches!(spec.kind, CombustionProbeKind::Steam) {
+        // Steam does not burn: no emission, a near-white albedo (condensed
+        // water absorbs almost nothing), and a modest density so the plume
+        // reads as a vent rather than a wall.
+        world.insert(
+            e,
+            FogVolume {
+                bounds: Some(FogBounds {
+                    center: Vec3::ZERO,
+                    rotation: Quat::IDENTITY,
+                    half_extents: spec.half_extents,
+                    shape: FogShape::Ellipsoid,
+                }),
+                extinction_per_meter: STEAM_PROBE_EXTINCTION_PER_METER,
+                single_scatter_albedo: STEAM_PROBE_ALBEDO,
+                edge_softness: 0.3,
+                profile: FogProfile::Steam,
+                emissive_radiance: [0.0; 3],
+                emission_temperature_k: 0.0,
+                source: FogSource::RuntimeEffect,
+            },
+        );
+        name_entity(world, e, spec.name);
+        return;
+    }
     let (profile, shape, regime, extinction_per_meter) = match spec.kind {
         CombustionProbeKind::Flame => (
             FogProfile::Flame,
@@ -306,6 +339,7 @@ pub(super) fn spawn_combustion_probe(world: &mut World, spec: CombustionProbeSpe
             CombustionRegime::NUCLEAR_EXPLOSION,
             12.0,
         ),
+        CombustionProbeKind::Steam => unreachable!("steam returned above"),
     };
     let emissive_radiance = regime
         .emissive_radiance()
@@ -337,7 +371,7 @@ pub(super) fn spawn_combustion_probe(world: &mut World, spec: CombustionProbeSpe
             start_delay_seconds,
             lifetime_seconds,
         } => Some((start_delay_seconds, lifetime_seconds)),
-        CombustionProbeKind::Flame => None,
+        CombustionProbeKind::Flame | CombustionProbeKind::Steam => None,
     };
     if let Some((start_delay_seconds, lifetime_seconds)) = timeline {
         let now_seconds = { world.resource::<TotalTime>().0 };

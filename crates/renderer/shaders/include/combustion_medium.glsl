@@ -8,7 +8,7 @@
 //
 // chemistry = (fuel mass fraction, temperature K, total extinction sigma_t per
 //              world unit, visible-radiance calibration at 1850 K)
-// optical   = (spectral scattering sigma_s.rgb per world unit, reserved zero)
+// optical   = (spectral scattering sigma_s.rgb per world unit, steam extinction)
 //
 // Needs, before the include: shader_constants.glsl (LUMA_REC709,
 // COMBUSTION_MAX_TEMPERATURE_K).
@@ -100,8 +100,19 @@ vec4 sanitizedOptical(vec4 optical) {
         return vec4(0.0);
     }
     optical.rgb = clamp(optical.rgb, vec3(0.0), vec3(0.20));
-    optical.w = 0.0;
+    // The w lane is the steam extinction (same units and range as chemistry.z).
+    optical.w = clamp(optical.w, 0.0, 0.20);
     return optical;
+}
+
+// Steam share of a cell's extinction, in [0, 1]: 0 is pure soot/smoke, 1 is
+// pure steam. Steam sources write their extinction into optical.w; everything
+// else leaves it at zero, so mixed cells land in between as the gas mixes.
+float combustionSteamFraction(vec4 chemistry, vec4 optical) {
+    chemistry = sanitizedChemistry(chemistry);
+    optical = sanitizedOptical(optical);
+    float sigmaT = chemistry.z + chemistry.x * COMBUSTION_FUEL_VAPOUR_SIGMA_T;
+    return clamp(optical.w / max(sigmaT, 1.0e-6), 0.0, 1.0);
 }
 
 LocalMedium combustionMedium(vec4 chemistry, vec4 optical) {

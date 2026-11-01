@@ -7,7 +7,7 @@ use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use byroredux_core::math::{Mat3, Quat, Vec3};
 use crate::shader_constants::{
     FOG_VOLUME_CLUSTER_DIM as GLSL_FOG_VOLUME_CLUSTER_DIM, FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
-    FOG_VOLUME_PROFILE_HOMOGENEOUS, FOG_VOLUME_PROFILE_LIGHT_SHAFT, FOG_VOLUME_PROFILE_SMOKE, FOG_VOLUME_SHAPE_BOX,
+    FOG_VOLUME_PROFILE_HOMOGENEOUS, FOG_VOLUME_PROFILE_LIGHT_SHAFT, FOG_VOLUME_SHAPE_BOX,
     FOG_VOLUME_SHAPE_CONE,
     FOG_VOLUME_SHAPE_SPHERE, MAX_FOG_PORTALS_PER_CLUSTER as GLSL_MAX_FOG_PORTALS_PER_CLUSTER,
     MAX_FOG_VOLUMES_PER_CLUSTER as GLSL_MAX_FOG_VOLUMES_PER_CLUSTER,
@@ -89,10 +89,7 @@ unsafe impl crate::vulkan::buffer::NoUninit for GpuFogVolume {}
 /// Whether `volume` is a source of the transported combustion field (smoke,
 /// flame or an explosion profile) rather than passive fog.
 pub(crate) fn is_transport_emitter(volume: &GpuFogVolume) -> bool {
-    let profile = volume.profile_params[0];
-    profile.is_finite()
-        && (FOG_VOLUME_PROFILE_SMOKE - 0.5..=FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR + 0.5)
-            .contains(&profile)
+    volume.profile_params[0].is_finite() && is_transported_profile(volume)
 }
 
 pub(crate) fn has_transport_emitter(volumes: &[GpuFogVolume]) -> bool {

@@ -899,6 +899,9 @@ void main() {
     // at its own albedo, which carries the gain's octaves with them.
     vec3 transported_albedo = transported_combustion.scattering
         / max(vec3(transported_combustion.extinction), vec3(1.0e-6));
+    float transported_steam = (localGrid.info.w & LOCAL_GRID_DEBUG_NO_SPECIES) != 0u
+        ? 0.0
+        : combustionSteamFraction(chemistry, combustion_optical);
     vec3 transported_gain = vec3(1.0)
         + COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT * transported_albedo
         + COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT * transported_albedo * transported_albedo;
@@ -1032,11 +1035,18 @@ void main() {
     // is hot, not because anything illuminates it, so it is independent of
     // both the phase function and the shadow ray. This is the term that makes
     // a fire visible in a pitch-dark cell.
+    // The species phase is three octaves of lobes; it is exactly zero-weighted
+    // wherever the sun is blocked, dark, or the froxel holds no transported gas.
+    vec3 transported_sun_phase = vec3(0.0);
+    if (transportedMediumActive && visibility > 0.0
+        && any(greaterThan(params.sun_color.rgb, vec3(0.0)))) {
+        transported_sun_phase = combustionMultiScatterPhase(
+            cos_theta, transported_albedo, transported_steam);
+    }
     vec3 inscatter = authored_inscatter
         + local_medium.emission
         + global_scattering_coef * phase * params.sun_color.rgb * visibility
-        + transported_combustion.scattering
-            * combustionMultiScatterPhase(cos_theta, transported_albedo)
+        + transported_combustion.scattering * transported_sun_phase
             * params.sun_color.rgb * visibility;
 
     // Phase 2b — point/spot light in-scattering, reusing the same cluster
@@ -1164,9 +1174,13 @@ void main() {
                     fract(jitter.z + float(ci) * 0.61803398875)
                 );
             }
+            vec3 transported_light_phase = vec3(0.0);
+            if (transportedMediumActive && localVisibility > 1.0e-4) {
+                transported_light_phase = combustionMultiScatterPhase(
+                    localCosTheta, transported_albedo, transported_steam);
+            }
             inscatter += (global_scattering_coef * localPhase
-                + transported_combustion.scattering
-                    * combustionMultiScatterPhase(localCosTheta, transported_albedo))
+                + transported_combustion.scattering * transported_light_phase)
                 * lights[li].color_type.rgb * atten * localVisibility;
             lightFieldRadiance += lights[li].color_type.rgb * atten * localVisibility;
         }

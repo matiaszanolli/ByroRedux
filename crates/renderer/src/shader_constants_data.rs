@@ -1195,14 +1195,13 @@ pub const COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT: f32 = 0.3;
 // Species phase (Phase 3, #6535). The steam lobe is the Jendersie & d'Eon 2023
 // fog fit, evaluated at this effective droplet diameter (micrometres; the fit
 // covers 5-50). The value is an artistic choice, not a measurement. A cell's
-// species is read from its mean transported albedo: at or below the LOW edge
-// it is soot (the repo's soot albedo is ~0.17), at or above the HIGH edge it is
-// steam (white-tinted emitters peak at 0.9). The octave eccentricity is the
+// species is carried by the field: a Steam source also writes its extinction
+// into the optical texel's spare `w` lane, so `w / sigma_t` is the steam share
+// of a cell (an albedo cannot tell them apart: authored smoke is always
+// normalised to a peak albedo of 0.9). The octave eccentricity is the
 // per-bounce shrink of the phase anisotropy (Unreal's documented default for
 // the same Wrenninge parameter).
 pub const COMBUSTION_STEAM_DROPLET_DIAMETER_UM: f32 = 10.0;
-pub const COMBUSTION_SPECIES_STEAM_ALBEDO_LOW: f32 = 0.4;
-pub const COMBUSTION_SPECIES_STEAM_ALBEDO_HIGH: f32 = 0.9;
 pub const COMBUSTION_OCTAVE_ECCENTRICITY: f32 = 0.5;
 
 // Transported-combustion -> surface-light reduction. The froxel injector
@@ -2006,6 +2005,9 @@ pub const LOCAL_GRID_DEBUG_NO_HANDOFF: u32 = 2;
 /// Composite marches eight samples per cell instead of one: the converged
 /// reference the production step is measured against (#6534).
 pub const LOCAL_GRID_DEBUG_DENSE_MARCH: u32 = 4;
+/// Every transported cell takes the soot phase, as if no steam were present:
+/// the A/B baseline for the species phase (#6535).
+pub const LOCAL_GRID_DEBUG_NO_SPECIES: u32 = 8;
 /// Bounded primitive references per cluster. FO3/FNV's busiest shipped cells
 /// place more than 50 baked shafts within 512 world units of one another;
 /// 64 avoids the obvious loss at the former 8-entry cap. Overflow keeps the
@@ -2043,6 +2045,7 @@ pub const FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR: f32 =
     byroredux_core::ecs::FogProfile::NuclearExplosion as u32 as f32;
 pub const FOG_VOLUME_PROFILE_LIGHT_SHAFT: f32 =
     byroredux_core::ecs::FogProfile::LightShaft as u32 as f32;
+pub const FOG_VOLUME_PROFILE_STEAM: f32 = byroredux_core::ecs::FogProfile::Steam as u32 as f32;
 pub const FOG_VOLUME_PROFILES: &[(&str, f32)] = &[
     (
         "FOG_VOLUME_PROFILE_HOMOGENEOUS",
@@ -2063,6 +2066,7 @@ pub const FOG_VOLUME_PROFILES: &[(&str, f32)] = &[
         "FOG_VOLUME_PROFILE_LIGHT_SHAFT",
         FOG_VOLUME_PROFILE_LIGHT_SHAFT,
     ),
+    ("FOG_VOLUME_PROFILE_STEAM", FOG_VOLUME_PROFILE_STEAM),
 ];
 
 // Main-pass ray-query decomposition. The runtime `DBG_DISABLE_*` bits below
@@ -2904,8 +2908,6 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT),
     shader_define!(Float COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT),
     shader_define!(Float COMBUSTION_STEAM_DROPLET_DIAMETER_UM),
-    shader_define!(Float COMBUSTION_SPECIES_STEAM_ALBEDO_LOW),
-    shader_define!(Float COMBUSTION_SPECIES_STEAM_ALBEDO_HIGH),
     shader_define!(Float COMBUSTION_OCTAVE_ECCENTRICITY),
     shader_define!(Float COMBUSTION_SOOT_OXIDATION_START_TEMPERATURE_K),
     shader_define!(Float COMBUSTION_SOOT_OXIDATION_FULL_TEMPERATURE_K),
@@ -3164,6 +3166,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint LOCAL_GRID_DEBUG_NO_MARCH),
     shader_define!(Uint LOCAL_GRID_DEBUG_NO_HANDOFF),
     shader_define!(Uint LOCAL_GRID_DEBUG_DENSE_MARCH),
+    shader_define!(Uint LOCAL_GRID_DEBUG_NO_SPECIES),
     shader_define!(Uint MAX_FOG_VOLUMES_PER_CLUSTER),
     shader_define!(Uint MAX_FOG_PORTALS_PER_CLUSTER),
     shader_define!(Uint MAX_COMPOSITE_SKY_APERTURES),
@@ -3177,6 +3180,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float FOG_VOLUME_PROFILE_EXPLOSION_OIL),
     shader_define!(Float FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR),
     shader_define!(Float FOG_VOLUME_PROFILE_LIGHT_SHAFT),
+    shader_define!(Float FOG_VOLUME_PROFILE_STEAM),
     HeaderLine::Blank,
     HeaderLine::Comment("Structured renderer correctness views (`GpuCamera.renderDebug.x`)."),
     shader_define!(Uint RENDER_DEBUG_FINAL),

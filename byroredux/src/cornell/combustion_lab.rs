@@ -59,7 +59,7 @@ pub(crate) fn combustion_lab_mode(args: &[String]) -> bool {
     args.iter().any(|arg| {
         matches!(
             arg.as_str(),
-            "--combustion-lab" | "--combustion-lab-nuclear"
+            "--combustion-lab" | "--combustion-lab-nuclear" | "--combustion-lab-steam"
         )
     })
 }
@@ -68,6 +68,13 @@ pub(crate) fn combustion_lab_mode(args: &[String]) -> bool {
 /// same camera, materials, and reference flame for an apples-to-apples A/B.
 pub(crate) fn combustion_lab_nuclear_mode(args: &[String]) -> bool {
     args.iter().any(|arg| arg == "--combustion-lab-nuclear")
+}
+
+/// Select the steam variant of the combustion lab: the reference flame's soot
+/// beside a steam vent where the explosion normally goes, in an open room, so
+/// the two species can be compared in one frame (#6535).
+pub(crate) fn combustion_lab_steam_mode(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--combustion-lab-steam")
 }
 
 /// Build a meter-scaled room for the transported combustion solver.
@@ -81,6 +88,7 @@ pub(crate) fn setup_combustion_lab_scene(
     world: &mut World,
     ctx: &mut VulkanContext,
     nuclear: bool,
+    steam: bool,
 ) -> (Vec3, Vec3) {
     let manifest = combustion_lab_manifest();
     install_cornell_lighting(world, false);
@@ -172,7 +180,7 @@ pub(crate) fn setup_combustion_lab_scene(
         );
     }
 
-    if !nuclear {
+    if !nuclear && !steam {
         // The oil case keeps the hood so the same capture validates a solid
         // boundary and tangential reappearance. A nuclear cloud is an open,
         // high-yield event in this harness; leaving the hood out exposes its
@@ -209,6 +217,35 @@ pub(crate) fn setup_combustion_lab_scene(
             name: "combustion_lab_flame",
         },
     );
+    if steam {
+        // The smoke species only read under light: the flame's own glow is
+        // too local and the reference fill too dim for a steam plume to show.
+        // A white key from above and to the side lights both plumes the same
+        // way, so the difference left between them is the species.
+        spawn_point_light(
+            world,
+            Vec3::new(lab_metres(-1.6), lab_metres(2.4), lab_metres(1.8)),
+            lab_metres(9.0),
+            [3.0, 3.0, 2.8],
+            "combustion_lab_steam_key",
+        );
+        spawn_combustion_probe(
+            world,
+            CombustionProbeSpec {
+                kind: CombustionProbeKind::Steam,
+                position: Vec3::new(
+                    manifest.explosion_position.x,
+                    lab_metres(0.30),
+                    manifest.explosion_position.z,
+                ),
+                half_extents: Vec3::new(lab_metres(0.22), lab_metres(0.30), lab_metres(0.22)),
+                name: "combustion_lab_steam_vent",
+            },
+        );
+        builder.finish();
+        log::info!("Combustion lab ready: flame + steam vent, open room");
+        return (manifest.camera_position, manifest.camera_target);
+    }
     let explosion_kind = if nuclear {
         CombustionProbeKind::NuclearExplosion {
             start_delay_seconds: manifest.explosion_start_delay_seconds,

@@ -39,7 +39,7 @@ use crate::shader_constants::{
 pub use crate::shader_constants::{
     FOG_VOLUME_PROFILE_EXPLOSION, FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
     FOG_VOLUME_PROFILE_EXPLOSION_OIL, FOG_VOLUME_PROFILE_FLAME, FOG_VOLUME_PROFILE_HOMOGENEOUS,
-    FOG_VOLUME_PROFILE_LIGHT_SHAFT, FOG_VOLUME_PROFILE_SMOKE,
+    FOG_VOLUME_PROFILE_LIGHT_SHAFT, FOG_VOLUME_PROFILE_SMOKE, FOG_VOLUME_PROFILE_STEAM,
 };
 use anyhow::{Context, Result};
 use ash::vk;
@@ -2216,7 +2216,7 @@ mod unit_tests {
             "COMBUSTION_SOOT_OXIDATION_FULL_TEMPERATURE_K",
             "float sootRetention = exp(",
             "chemistry.z *= exp(-COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND * dt);",
-            "optical.rgb *= exp(-COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND * dt);",
+            "optical *= exp(-COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND * dt);",
             "float specificOverpressure = 0.5 * expansionSpeedMps * expansionSpeedMps;",
             "dynamics.w = max(",
             "struct CombustionDifferential {",

@@ -512,10 +512,10 @@ void applyBfeccErrorCorrection(
         chemistryMin,
         chemistryMax
     );
-    optical.rgb = clamp(
-        optical.rgb + strength * opticalError.rgb,
-        opticalMin.rgb,
-        opticalMax.rgb
+    optical = clamp(
+        optical + strength * opticalError,
+        opticalMin,
+        opticalMax
     );
 }
 
@@ -718,7 +718,7 @@ void transportCombustion(
         // gives a ~15 s half-life instead of erasing an explosion cloud in the
         // first few seconds after its heat has cooled.
         chemistry.z *= exp(-COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND * dt);
-        optical.rgb *= exp(-COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND * dt);
+        optical *= exp(-COMBUSTION_AEROSOL_DISSIPATION_PER_SECOND * dt);
         chemistry.w *= exp(
             -COMBUSTION_RADIANCE_REMOVAL_PER_SECOND * dt
         );
@@ -756,7 +756,7 @@ void transportCombustion(
             chemistry.x *= dilution;
             chemistry.z *= dilution;
             chemistry.w *= dilution;
-            optical.rgb *= dilution;
+            optical *= dilution;
         }
 
         // Specific overpressure q is transported beside velocity but remains

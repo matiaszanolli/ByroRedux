@@ -167,6 +167,11 @@ pub enum FogProfile {
     /// like a light shaft and additionally permits sky and sunlight through
     /// the plane when a legacy opaque shell lies immediately behind it.
     SkyAperture = 7,
+    /// A cool, passive, buoyant plume of condensed water droplets. It moves
+    /// like [`FogProfile::Smoke`] but is its own species: the transported
+    /// field tracks how much of each cell's extinction is steam, and steam
+    /// scatters with a fog-like forward phase while soot keeps a weaker one.
+    Steam = 8,
 }
 
 impl FogProfile {
@@ -298,6 +303,7 @@ mod tests {
         assert_eq!(FogProfile::Explosion as u32, 3);
         assert_eq!(FogProfile::OilExplosion as u32, 4);
         assert_eq!(FogProfile::NuclearExplosion as u32, 5);
+        assert_eq!(FogProfile::Steam as u32, 8);
         assert_eq!(FogProfile::LightShaft as u32, 6);
         assert!(FogProfile::OilExplosion.is_explosion());
         assert!(FogProfile::NuclearExplosion.is_explosion());

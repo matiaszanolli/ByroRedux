@@ -54,7 +54,7 @@ bool isLocalProfile(float actual, float expected) {
 
 // The one place a raw `profile_params.x` lane is bounded to the generated
 // profile range. The upper bound is the HIGHEST generated profile
-// (FOG_VOLUME_PROFILE_LIGHT_SHAFT); every classification site must read the
+// (FOG_VOLUME_PROFILE_STEAM); every classification site must read the
 // lane through here. #4828: `evaluateCombustionSource` and
 // `flameSourceSampleRatio` each kept a private clamp whose upper bound was
 // still EXPLOSION_NUCLEAR after LIGHT_SHAFT (6.0) was added above it, so
@@ -64,8 +64,15 @@ float volumeProfileKind(GpuFogVolume volume) {
     return clamp(
         volume.profile_params.x,
         FOG_VOLUME_PROFILE_HOMOGENEOUS,
-        FOG_VOLUME_PROFILE_LIGHT_SHAFT
+        FOG_VOLUME_PROFILE_STEAM
     );
+}
+
+// Smoke and steam are one passive buoyant plume; steam differs only in the
+// species it writes into the field (see `combustionSteamFraction`).
+bool isSmokeProfile(float profileKind) {
+    return isLocalProfile(profileKind, FOG_VOLUME_PROFILE_SMOKE)
+        || isLocalProfile(profileKind, FOG_VOLUME_PROFILE_STEAM);
 }
 
 bool isExplosionProfile(float profileKind) {
@@ -96,7 +103,7 @@ vec2 sampleLocalTurbulence(
     bool isExplosion = isExplosionProfile(profileKind);
     bool isNuclear = isNuclearExplosionProfile(profileKind);
     bool isFlame = isLocalProfile(profileKind, FOG_VOLUME_PROFILE_FLAME);
-    bool isSmoke = isLocalProfile(profileKind, FOG_VOLUME_PROFILE_SMOKE);
+    bool isSmoke = isSmokeProfile(profileKind);
     float baseFrequency = isNuclear ? 0.34 : (isExplosion ? 0.58 : (isFlame ? 0.72 : (isSmoke ? 0.42 : 0.31)));
     float detailFrequency = isNuclear ? 0.82 : (isExplosion ? 1.35 : (isFlame ? 1.67 : (isSmoke ? 0.96 : 0.83)));
     float baseRise = isNuclear ? 0.045 : (isExplosion ? 0.11 : (isFlame ? 0.32 : (isSmoke ? 0.075 : 0.013)));
@@ -256,7 +263,7 @@ float localDensityProfile(
 
     float height = clamp(normalizedOffset.y * 0.5 + 0.5, 0.0, 1.0);
     float rootFade = smoothstep(-1.0, -0.78, normalizedOffset.y);
-    if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_SMOKE)) {
+    if (isSmokeProfile(profileKind)) {
         float billowNoise = turbulence.x * 0.76 + turbulence.y * 0.24;
         float occupied = smoothstep(0.24, 0.78, billowNoise);
         float rolls = 0.5 + 0.5 * sin(
@@ -821,13 +828,18 @@ void applyCombustionSources(
         float authoredSigmaT = max(volume.half_extents_extinction.w, 0.0);
         vec3 sourceAlbedo = clamp(volume.albedo_edge.rgb, vec3(0.0), vec3(1.0));
 
-        if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_SMOKE)) {
+        if (isSmokeProfile(profileKind)) {
             // Passive smoke supplies aerosol and a mild warm/upward exhaust,
             // but no fuel. `max` models a continuously emitting boundary
             // without making density depend on frame rate.
             float sourceSigmaT = authoredSigmaT * sourceMask;
             chemistry.z = max(chemistry.z, sourceSigmaT);
             optical.rgb = max(optical.rgb, sourceSigmaT * sourceAlbedo);
+            // Steam marks its share of the extinction in the spare lane; the
+            // lane then advects and decays with the gas like the albedo does.
+            if (isLocalProfile(profileKind, FOG_VOLUME_PROFILE_STEAM)) {
+                optical.w = max(optical.w, sourceSigmaT);
+            }
             chemistry.y = max(
                 chemistry.y,
                 mix(AMBIENT_TEMPERATURE_K, 430.0, sourceStateMask)

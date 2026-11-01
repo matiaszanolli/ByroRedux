@@ -2589,7 +2589,7 @@ mod tests {
     /// LIGHT_SHAFT fails here, and the shader pin below then demands the
     /// helper's bound move with it.
     #[test]
-    fn highest_generated_fog_profile_is_light_shaft() {
+    fn highest_generated_fog_profile_is_steam() {
         let (name, _) = FOG_VOLUME_PROFILES
             .iter()
             .copied()
@@ -2599,7 +2599,7 @@ mod tests {
             })
             .expect("FOG_VOLUME_PROFILES is non-empty");
         assert_eq!(
-            name, "FOG_VOLUME_PROFILE_LIGHT_SHAFT",
+            name, "FOG_VOLUME_PROFILE_STEAM",
             "the highest generated fog profile changed: update `volumeProfileKind` in \
              volumetrics_inject.comp to clamp to it (#4828)"
         );
@@ -2617,7 +2617,7 @@ mod tests {
             .filter(|c| !c.is_whitespace())
             .collect();
 
-        let max_name = "FOG_VOLUME_PROFILE_LIGHT_SHAFT";
+        let max_name = "FOG_VOLUME_PROFILE_STEAM";
         let helper = format!(
             "floatvolumeProfileKind(GpuFogVolumevolume){{returnclamp(volume.profile_params.x,\
              FOG_VOLUME_PROFILE_HOMOGENEOUS,{max_name});}}"

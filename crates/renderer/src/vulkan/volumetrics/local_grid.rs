@@ -31,7 +31,7 @@ use super::{
 };
 use crate::shader_constants::{
     LOCAL_GRID_BRICK, FOG_VOLUME_PROFILE_EXPLOSION, FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
-    FOG_VOLUME_PROFILE_EXPLOSION_OIL, LOCAL_GRID_DEBUG_DENSE_MARCH, LOCAL_GRID_DEBUG_NO_HANDOFF, LOCAL_GRID_DEBUG_NO_MARCH,
+    FOG_VOLUME_PROFILE_EXPLOSION_OIL, LOCAL_GRID_DEBUG_DENSE_MARCH, LOCAL_GRID_DEBUG_NO_HANDOFF, LOCAL_GRID_DEBUG_NO_SPECIES, LOCAL_GRID_DEBUG_NO_MARCH,
     LOCAL_GRID_DIM, LOCAL_GRID_MAX_BOXES,
 };
 use crate::vulkan::descriptors::{
@@ -408,7 +408,8 @@ const DEBUG_ONLY_EXPLOSIONS: u32 = 1 << 8;
 /// close-range march), `no_handoff` (the froxel pass keeps simulating the
 /// fire inside a box) and/or `only_explosions` (no flame or smoke boxes, to look
 /// at a blast without a nested box) and/or `dense_march` (composite takes eight
-/// samples per cell: the converged reference for the stepping error). A diagnostic for telling a fault in the local grid from
+/// samples per cell: the converged reference for the stepping error) and/or
+/// `no_species` (every cell takes the soot phase, the steam A/B baseline). A diagnostic for telling a fault in the local grid from
 /// one in the froxels around it; unset in normal use. Read once per process.
 fn local_grid_debug_bits() -> u32 {
     static BITS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
@@ -421,9 +422,10 @@ fn local_grid_debug_bits() -> u32 {
             "no_handoff" => bits | LOCAL_GRID_DEBUG_NO_HANDOFF,
             "only_explosions" => bits | DEBUG_ONLY_EXPLOSIONS,
             "dense_march" => bits | LOCAL_GRID_DEBUG_DENSE_MARCH,
+            "no_species" => bits | LOCAL_GRID_DEBUG_NO_SPECIES,
             "" => bits,
             other => {
-                log::warn!("BYRO_LOCAL_GRID_DEBUG: unknown word `{other}` (use no_march, no_handoff, only_explosions, dense_march)");
+                log::warn!("BYRO_LOCAL_GRID_DEBUG: unknown word `{other}` (use no_march, no_handoff, only_explosions, dense_march, no_species)");
                 bits
             }
         })
@@ -473,7 +475,8 @@ impl GpuLocalGridParams {
                 local_grid_debug_bits()
                     & (LOCAL_GRID_DEBUG_NO_MARCH
                         | LOCAL_GRID_DEBUG_NO_HANDOFF
-                        | LOCAL_GRID_DEBUG_DENSE_MARCH),
+                        | LOCAL_GRID_DEBUG_DENSE_MARCH
+                        | LOCAL_GRID_DEBUG_NO_SPECIES),
             ];
         }
         params.sun_dir = [frame.sun_dir[0], frame.sun_dir[1], frame.sun_dir[2], 0.0];

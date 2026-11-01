@@ -11,7 +11,7 @@ use crate::shader_constants::{
     COMBUSTION_LIGHT_GRID_Y, COMBUSTION_LIGHT_GRID_Z,
     COMBUSTION_LIGHT_HALF_EXTENT_XZ_METERS, COMBUSTION_LIGHT_HALF_EXTENT_Y_METERS,
     COMBUSTION_LIGHT_VOLUME_FIXED_SCALE,
-    FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR, FOG_VOLUME_PROFILE_SMOKE, VISIBILITY_MASK_FULL,
+    VISIBILITY_MASK_FULL,
 };
 use super::WORLD_UNITS_PER_METER;
 use super::fog_clusters::GpuFogVolume;
@@ -221,10 +221,8 @@ pub(crate) fn combustion_light_is_inside_authored_source(
         light.position_radius[2],
     ];
     source_volumes.iter().any(|volume| {
-        let profile = volume.profile_params[0];
-        let transported = profile.is_finite()
-            && (FOG_VOLUME_PROFILE_SMOKE - 0.5..=FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR + 0.5)
-                .contains(&profile);
+        let transported = volume.profile_params[0].is_finite()
+            && super::fog_clusters::is_transported_profile(volume);
         transported
             && volume_contains_position(volume, light_position)
             && authored_lights.iter().any(|candidate| {

@@ -2,10 +2,11 @@
 // #6531, Phase 3 #6535). Shared by the froxel inject pass and composite's
 // local fire march so both light the same smoke the same way.
 //
-// A cell's species comes from its transported spectral albedo: soot absorbs
-// (albedo ~0.2), a white-tinted emitter's steam does not (up to 0.9), and the
-// albedo advects with the gas, so a cell mixing the two lands in between. The
-// weight `combustionSteamWeight` is that position.
+// A cell's species is the steam share of its extinction
+// (`combustionSteamFraction`): Steam sources mark it in the field and it
+// advects with the gas, so a cell mixing the two lands in between. It is not
+// derived from the albedo: authored smoke is always normalised to a peak
+// albedo of 0.9, so an albedo cannot tell it from steam.
 //   soot  : the dual-lobe Henyey-Greenstein the local lights already used,
 //           weaker in the forward direction than fog.
 //   steam : Jendersie & d'Eon 2023, "An Approximate Mie Scattering Function
@@ -54,11 +55,6 @@ float combustionSootPhase(float cosTheta, float shrink) {
     );
 }
 
-float combustionSteamWeight(vec3 albedo) {
-    float mean = (albedo.r + albedo.g + albedo.b) * (1.0 / 3.0);
-    return smoothstep(COMBUSTION_SPECIES_STEAM_ALBEDO_LOW, COMBUSTION_SPECIES_STEAM_ALBEDO_HIGH, mean);
-}
-
 float combustionSpeciesPhase(float cosTheta, float steam, float shrink) {
     if (steam <= 1.0e-3) {
         return combustionSootPhase(cosTheta, shrink);
@@ -77,8 +73,7 @@ float combustionSpeciesPhase(float cosTheta, float steam, float shrink) {
 // the single-scatter phase plus the two higher octaves, each weighted by the
 // albedo it costs, with their anisotropy shrunk by the octave eccentricity.
 // Replaces `multiscatter_gain * phase`.
-vec3 combustionMultiScatterPhase(float cosTheta, vec3 albedo) {
-    float steam = combustionSteamWeight(albedo);
+vec3 combustionMultiScatterPhase(float cosTheta, vec3 albedo, float steam) {
     float p0 = combustionSpeciesPhase(cosTheta, steam, 1.0);
     float p1 = combustionSpeciesPhase(cosTheta, steam, COMBUSTION_OCTAVE_ECCENTRICITY);
     float p2 = combustionSpeciesPhase(
@@ -86,6 +81,33 @@ vec3 combustionMultiScatterPhase(float cosTheta, vec3 albedo) {
     return vec3(p0)
         + COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT * albedo * p1
         + COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT * albedo * albedo * p2;
+}
+
+// The octave lobes of one species at one angle, x/y/z = octave 0/1/2. A march
+// along one ray sees the same angle at every sample, so it evaluates these at
+// most once per ray, when a sample first needs them, and only blends them per
+// sample (`combustionBlendOctavePhase`).
+vec3 combustionSootOctaves(float cosTheta) {
+    const float c = COMBUSTION_OCTAVE_ECCENTRICITY;
+    return vec3(
+        combustionSootPhase(cosTheta, 1.0),
+        combustionSootPhase(cosTheta, c),
+        combustionSootPhase(cosTheta, c * c));
+}
+
+vec3 combustionSteamOctaves(float cosTheta) {
+    const float c = COMBUSTION_OCTAVE_ECCENTRICITY;
+    return vec3(
+        combustionSteamPhase(cosTheta, 1.0),
+        combustionSteamPhase(cosTheta, c),
+        combustionSteamPhase(cosTheta, c * c));
+}
+
+vec3 combustionBlendOctavePhase(vec3 sootOctaves, vec3 steamOctaves, vec3 albedo, float steam) {
+    vec3 p = mix(sootOctaves, steamOctaves, steam);
+    return vec3(p.x)
+        + COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT * albedo * p.y
+        + COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT * albedo * albedo * p.z;
 }
 
 #endif
