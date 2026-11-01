@@ -77,8 +77,12 @@ cargo build --release -p byroredux
 cargo build --workspace
 ```
 
-The `target/` directory grows large (~5 GB with all crates). Use
-`cargo clean` if disk space is tight.
+The `target/` directory grows large, and nothing in the build warns you: it
+reached ~390 GB on disk (534 GiB by cargo's own count) before being noticed. The
+budget is **100 GiB**. `scripts/target-size-guard.sh` checks it, names the
+largest entries and the cheapest ways to give the space back (the debug
+`incremental/` directory first); set `BYRO_TARGET_LIMIT_GB` to check a different
+budget. Run it before a long session, and use `cargo clean` when it fails.
 
 ---
 
