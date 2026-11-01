@@ -457,6 +457,21 @@ s1 0.372 / 0.413 / 0.356, s2a 0.292 / 0.337 / 0.306, s3a 0.716 / 0.897 / 0.713,
 s5 0.347 / 0.388 / 0.378. Images are byte-identical to the one-pipeline build on
 s1/s2a/s3a.
 
+**Light direction for the march (2026-11-01).** The irradiance field carried no
+direction, so the species phase only reached local lights in the froxel pass.
+The field's image is now twice the froxel width: the second half holds the
+radiance-weighted mean propagation direction of the lights (its length is their
+coherence), written by the inject pass and blended with history like the
+radiance. The march evaluates the species phase at that direction, falling back
+to the isotropic phase where the lights cancel. Effect: the `no_species` A/B in
+the steam lab now changes ~28,000 px (max 25/255), up from ~4,000 (max 11).
+Cost, interleaved medians of 7, composite ms, Phase 2 baseline -> two pipelines
+-> with direction: s1 0.355 -> 0.354 -> 0.511, s2a 0.309 -> 0.325 -> 0.401,
+s3a 0.755 -> 0.791 -> 1.167, s5 0.466 -> 0.375 -> 0.440. The per-sample phase
+(six pow(1.5) per soot sample) is the cost; a baked lookup over cos(theta)
+would replace it. The steam lab frame still reads as a tan, blocky smudge, not
+white steam: not review-ready.
+
 **4. Internal glow.** Not designed yet. First measure whether the derived fire
 lights already light smoke from inside (A/B with them off), then decide.
 
