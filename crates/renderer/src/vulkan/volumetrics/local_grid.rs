@@ -32,7 +32,7 @@ use super::{
 use crate::shader_constants::{
     LOCAL_GRID_BRICK, FOG_VOLUME_PROFILE_EXPLOSION, FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
     FOG_VOLUME_PROFILE_EXPLOSION_OIL, LOCAL_GRID_DEBUG_DENSE_MARCH, LOCAL_GRID_DEBUG_NO_HANDOFF, LOCAL_GRID_DEBUG_NO_SPECIES, LOCAL_GRID_DEBUG_NO_MARCH,
-    LOCAL_GRID_DIM, LOCAL_GRID_MAX_BOXES,
+    COMBUSTION_PHASE_TABLE_WIDTH, LOCAL_GRID_DIM, LOCAL_GRID_MAX_BOXES,
 };
 use crate::vulkan::descriptors::{
     clamp_sampler, compute_binding, general_sampled_image_info, storage_image_info,
@@ -43,6 +43,13 @@ use ash::vk;
 
 pub(crate) const VOLUMETRICS_LOCAL_SIM_COMP_SPV: &[u8] =
     include_bytes!("../../../shaders/volumetrics_local_sim.comp.spv");
+/// Evaluates the species phase lobes into [`LocalGrid`]'s phase table, once.
+const COMBUSTION_PHASE_BAKE_COMP_SPV: &[u8] =
+    include_bytes!("../../../shaders/combustion_phase_bake.comp.spv");
+/// Workgroup width in `combustion_phase_bake.comp`.
+const PHASE_BAKE_WORKGROUP: u32 = 64;
+/// The table's rows: soot, then steam.
+const PHASE_TABLE_ROWS: u32 = 2;
 
 /// Cells per box edge.
 pub(crate) const LOCAL_GRID_CELLS: u32 = LOCAL_GRID_DIM;
@@ -511,7 +518,7 @@ impl GpuLocalGridParams {
 }
 
 /// Everything composite binds to draw the close-range fire (set 0, bindings
-/// 12..=15), per frame in flight. Borrowed from the volumetrics pipeline, which
+/// 12..=17), per frame in flight. Borrowed from the volumetrics pipeline, which
 /// owns the resources; composite writes descriptors from the handles.
 #[derive(Clone, Default)]
 pub struct LocalFireViews {
@@ -525,6 +532,8 @@ pub struct LocalFireViews {
     pub irradiance: Vec<vk::ImageView>,
     /// Binding 16 — occupancy bricks (`BRICK_BUFFER_BYTES`).
     pub bricks: Vec<vk::Buffer>,
+    /// Binding 17 — the baked species phase table (one image, not per frame).
+    pub phase_table: vk::ImageView,
 }
 
 /// What the sim pass reports about itself, summed over boxes.
@@ -572,6 +581,9 @@ pub(crate) fn local_grid_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding
         compute_binding(6, vk::DescriptorType::STORAGE_BUFFER),
         // 7: occupancy bricks, written by the sim, read by composite's march.
         compute_binding(7, vk::DescriptorType::STORAGE_BUFFER),
+        // 8: the species phase table, written once by `combustion_phase_bake.comp`
+        // (the sim does not touch it; the bake shares this layout).
+        compute_binding(8, vk::DescriptorType::STORAGE_IMAGE),
     ]
 }
 
@@ -636,6 +648,11 @@ pub(crate) struct LocalGrid {
     set_layout: vk::DescriptorSetLayout,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
+    /// Fills `phase_table` once, from `initialize_layouts`.
+    phase_bake_pipeline: vk::Pipeline,
+    /// The species octave lobes over the scattering angle (rows: soot, steam),
+    /// composite's binding 17. Baked from `include/combustion_phase.glsl`.
+    phase_table: Option<GpuImage>,
     pool: vk::DescriptorPool,
     sets: Vec<vk::DescriptorSet>,
     sampler: vk::Sampler,
@@ -671,6 +688,8 @@ impl LocalGrid {
             set_layout: vk::DescriptorSetLayout::null(),
             pipeline_layout: vk::PipelineLayout::null(),
             pipeline: vk::Pipeline::null(),
+            phase_bake_pipeline: vk::Pipeline::null(),
+            phase_table: None,
             pool: vk::DescriptorPool::null(),
             sets: Vec::new(),
             sampler: vk::Sampler::null(),
@@ -705,10 +724,16 @@ impl LocalGrid {
         validate_set_layout(
             1,
             &bindings,
-            &[ReflectedShader {
-                name: "volumetrics_local_sim.comp",
-                spirv: VOLUMETRICS_LOCAL_SIM_COMP_SPV,
-            }],
+            &[
+                ReflectedShader {
+                    name: "volumetrics_local_sim.comp",
+                    spirv: VOLUMETRICS_LOCAL_SIM_COMP_SPV,
+                },
+                ReflectedShader {
+                    name: "combustion_phase_bake.comp",
+                    spirv: COMBUSTION_PHASE_BAKE_COMP_SPV,
+                },
+            ],
             "volumetrics_local_grid",
             &[],
         )
@@ -748,6 +773,13 @@ impl LocalGrid {
             self.pipeline_layout,
             "Volumetrics local grid sim",
         )?;
+        self.phase_bake_pipeline = super::super::pipeline::create_compute_pipeline(
+            device,
+            pipeline_cache,
+            COMBUSTION_PHASE_BAKE_COMP_SPV,
+            self.pipeline_layout,
+            "Combustion phase table bake",
+        )?;
 
         // SAFETY: `device` is live; handle owned by `self`.
         self.sampler =
@@ -757,6 +789,17 @@ impl LocalGrid {
         let usage = vk::ImageUsageFlags::STORAGE
             | vk::ImageUsageFlags::SAMPLED
             | vk::ImageUsageFlags::TRANSFER_DST;
+        self.phase_table = Some(GpuImage::create(
+            device,
+            allocator,
+            &GpuImageDesc::color_2d(
+                "combustion_phase_table",
+                COMBUSTION_PHASE_TABLE_WIDTH,
+                PHASE_TABLE_ROWS,
+                COMBUSTION_FIELD_FORMAT,
+                usage,
+            ),
+        )?);
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             for (name, fields) in [
                 ("state", &mut self.state),
@@ -858,6 +901,9 @@ impl LocalGrid {
                 offset: 0,
                 range: BRICK_BUFFER_BYTES,
             }];
+            let phase_table = [storage_image_info(
+                self.phase_table.as_ref().expect("phase table").view,
+            )];
             let set = self.sets[f];
             let writes = [
                 write_storage_image(set, 0, &write_state),
@@ -868,6 +914,7 @@ impl LocalGrid {
                 write_combined_image_sampler(set, 5, &read_optical),
                 write_storage_buffer(set, 6, &stats_info),
                 write_storage_buffer(set, 7, &bricks_info),
+                write_storage_image(set, 8, &phase_table),
             ];
             // SAFETY: the sets are freshly allocated and not yet in use.
             unsafe { device.update_descriptor_sets(&writes, &[]) };
@@ -890,6 +937,37 @@ impl LocalGrid {
             .chain(self.dynamics.iter())
             .chain(self.optical.iter())
             .chain(self.irradiance.iter())
+            .chain(self.phase_table.iter())
+    }
+
+    /// Fill the phase table. Records into the one-time initialisation command
+    /// buffer, after the images were moved to GENERAL and cleared (the caller
+    /// has made the clear visible to compute); the submit's fence publishes the
+    /// result to composite.
+    ///
+    /// # Safety
+    ///
+    /// `cmd` must be recording on `device`, and the table must be in GENERAL.
+    pub(crate) unsafe fn record_phase_bake(&self, device: &ash::Device, cmd: vk::CommandBuffer) {
+        // SAFETY: caller contract; the pipeline, layout and set outlive the
+        // submit. Only set 1 is bound: the bake shader declares nothing in set 0.
+        unsafe {
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.phase_bake_pipeline);
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.pipeline_layout,
+                1,
+                &self.sets[..1],
+                &[],
+            );
+            device.cmd_dispatch(
+                cmd,
+                COMBUSTION_PHASE_TABLE_WIDTH.div_ceil(PHASE_BAKE_WORKGROUP),
+                PHASE_TABLE_ROWS,
+                1,
+            );
+        }
     }
 
     /// Descriptor handles composite needs to draw the close-range fire.
@@ -900,6 +978,7 @@ impl LocalGrid {
             optical: self.optical.iter().map(|i| i.view).collect(),
             irradiance: self.irradiance.iter().map(|i| i.view).collect(),
             bricks: self.brick_buffers.iter().map(|b| b.buffer).collect(),
+            phase_table: self.phase_table.as_ref().expect("phase table").view,
         }
     }
 
@@ -1214,7 +1293,7 @@ impl LocalGrid {
         {
             image.destroy(device, allocator);
         }
-        for mut image in self.irradiance.drain(..) {
+        for mut image in self.irradiance.drain(..).chain(self.phase_table.take()) {
             image.destroy(device, allocator);
         }
         for buffer in self
@@ -1239,6 +1318,10 @@ impl LocalGrid {
             if self.pipeline != vk::Pipeline::null() {
                 device.destroy_pipeline(self.pipeline, None);
                 self.pipeline = vk::Pipeline::null();
+            }
+            if self.phase_bake_pipeline != vk::Pipeline::null() {
+                device.destroy_pipeline(self.phase_bake_pipeline, None);
+                self.phase_bake_pipeline = vk::Pipeline::null();
             }
             if self.pipeline_layout != vk::PipelineLayout::null() {
                 device.destroy_pipeline_layout(self.pipeline_layout, None);

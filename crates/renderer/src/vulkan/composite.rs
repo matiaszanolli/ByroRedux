@@ -456,6 +456,12 @@ pub(super) fn composite_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<
             vk::DescriptorType::STORAGE_BUFFER,
             vk::ShaderStageFlags::FRAGMENT,
         ),
+        // 17: the baked species phase table the march reads its lobes from.
+        layout_binding(
+            17,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
     ]
 }
 
@@ -962,6 +968,7 @@ impl CompositePipeline {
                 offset: 0,
                 range: vk::WHOLE_SIZE,
             }];
+            let phase_table_info = [general_sampled_image_info(partial.hdr_sampler, local_fire.phase_table)];
             let cloud_base_info = [sampled_image_info(cloud_noise.sampler, cloud_noise.base)];
             let cloud_detail_info = [sampled_image_info(cloud_noise.sampler, cloud_noise.detail)];
             let shadow_correction_info = [image_info(partial.nearest_sampler, shadow_correction.views[i], shadow_correction.layout)];
@@ -984,6 +991,7 @@ impl CompositePipeline {
                 write_combined_image_sampler(set, 14, &local_fire_optical_info),
                 write_combined_image_sampler(set, 15, &local_fire_irradiance_info),
                 write_storage_buffer(set, 16, &local_fire_bricks_info),
+                write_combined_image_sampler(set, 17, &phase_table_info),
             ];
             // SAFETY: descriptor sets owned by `partial`; writes reference
             // HDR / depth / indirect / albedo / caustic / volumetric /
@@ -1355,17 +1363,15 @@ impl CompositePipeline {
                     offset: 0,
                     range: vk::WHOLE_SIZE,
                 }];
-                // Typed [_; 16] array (was [_; 12] pre-local-grid, [_; 8] pre-#1257, [_; 9] pre-SKYAL
-                // Typed [_; 12] array (was [_; 8] pre-#1257, [_; 9] pre-SKYAL
-                // clouds, [_; 11] pre-shadow-filter) — compile catches
-                // divergence from the 12-binding layout. Init
-                // path at the post-`new()` writer above mirrors this
-                // exact shape.
+                let phase_table_info = [general_sampled_image_info(self.hdr_sampler, local_fire.phase_table)];
+                // Typed [_; 18] array — compile catches divergence from the
+                // 18-binding layout. Init path at the post-`new()` writer
+                // above mirrors this exact shape.
                 let cloud_base_info = [sampled_image_info(cloud_noise.sampler, cloud_noise.base)];
                 let cloud_detail_info = [sampled_image_info(cloud_noise.sampler, cloud_noise.detail)];
                 let shadow_correction_info = [image_info(self.nearest_sampler, shadow_correction.views[i], shadow_correction.layout)];
                 let set = self.descriptor_sets[i];
-                let writes: [vk::WriteDescriptorSet; 17] = [
+                let writes: [vk::WriteDescriptorSet; 18] = [
                     write_combined_image_sampler(set, 0, &hdr_info),
                     write_combined_image_sampler(set, 1, &indirect_info),
                     write_combined_image_sampler(set, 2, &albedo_info),
@@ -1383,6 +1389,7 @@ impl CompositePipeline {
                     write_combined_image_sampler(set, 14, &local_fire_optical_info),
                     write_combined_image_sampler(set, 15, &local_fire_irradiance_info),
                     write_storage_buffer(set, 16, &local_fire_bricks_info),
+                    write_combined_image_sampler(set, 17, &phase_table_info),
                 ];
                 // SAFETY: descriptor sets owned by `self`; writes
                 // reference freshly-recreated HDR views (owned by `self`)

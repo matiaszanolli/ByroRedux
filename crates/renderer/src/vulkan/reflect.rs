@@ -1028,7 +1028,10 @@ mod tests {
     /// early-outs, the 24-step loop, its surface break and the two noise
     /// lattice mixes) replaced the screen-space streak loop (106), and the depth-buffer sun
     /// visibility taps add seven (113), and the above-surface sun-ray taps one more
-    /// (114). Pins the
+    /// (114). The local fire march's species phase then moved from per-ray lazy
+    /// analytic lobes to the baked phase table (two lazy-evaluation flags and
+    /// the steam gate out, the table's steam-share gate in): 159, measured by
+    /// this test's own counter on the recompiled module. Pins the
     /// current count so a future stale-recompile of this file fails
     /// loudly instead of shipping silently, the same failure mode #1447
     /// fixed for `CameraUBO` size.
@@ -1037,8 +1040,8 @@ mod tests {
         let spv = include_bytes!("../../shaders/composite.frag.spv");
         let count = count_branch_conditionals(spv).expect("reflect composite.frag.spv");
         assert_eq!(
-            count, 162,
-            "composite.frag.spv has {count} OpBranchConditional instructions, expected 162 — \
+            count, 159,
+            "composite.frag.spv has {count} OpBranchConditional instructions, expected 159 — \
              the committed .spv looks stale relative to composite.frag; recompile it \
              (glslangValidator -V composite.frag -o composite.frag.spv from \
              crates/renderer/shaders). The raw correctness-debug guard is intentionally \

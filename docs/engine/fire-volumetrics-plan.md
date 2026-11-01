@@ -485,6 +485,35 @@ white, in the lab: it is lit mostly by the flame's orange light and a frontlit
 or off-axis steam cloud is dim by construction (its forward lobe is only a few
 degrees wide). Not review-ready as a visual.
 
+**Composite cost of the direction field, found and fixed.** The cost was
+register pressure, not the phase arithmetic. `VK_KHR_pipeline_executable_properties`
+on the RTX 4070 Ti: the sun-less composite pipeline needed 96 registers per
+thread before the direction field and 126 after (fewer warps in flight for a
+latency-bound march). Ablations, interleaved medians of 5, composite ms (s1 /
+s3a): dropping the direction fetch and its phase 0.572 / 1.435 -> 0.426 / 0.861;
+keeping the fetch but never taking the phase branch, 0.495 / 1.168 -> 0.482 /
+1.097. So:
+- A **baked phase table** (`combustion_phase_bake.comp`, 512 x 2 RGBA16F, rows
+  soot / steam, x/y/z = octave 0/1/2, axis `((1 - cos) / 2)^(1/4)` so the steam
+  forward peak spans ~35 texels) now replaces the per-sample lobes for both the
+  local lights and the sun. It is evaluated once from the same functions the
+  froxel pass uses, so the two cannot drift. On its own it was image-equivalent
+  (max 1/255 on s1/s2a/s3a/steam) but saved little (s3a 1.31 -> 1.09 ms, the
+  others within noise).
+- Caching the two bracketing slices along the ray (one fetch per slice crossed)
+  was tried and rejected: 128 registers with local-memory spill, no faster.
+- **The fix:** the march took the steam share after the irradiance fetches,
+  which kept the state and optics texels alive across them. Taken right after
+  `combustionMedium`, the sun-less pipeline is back to 96 registers. The sun-lit
+  one stays at 126 (119 before the direction field).
+
+Result, HEAD (`588a923aa`) -> now, interleaved medians of 5, composite ms:
+s1 0.600 -> 0.428, s2a 0.471 -> 0.356, s3a 1.163 -> 0.889, s5 0.439 -> 0.431,
+steam lab 0.628 -> 0.483. That is the cost of the ablation without the
+direction field, with the direction field kept. Final frames match HEAD within
+1/255 on s1/s2a/s3a/steam (s5 differs run to run in either binary by the same
+amount).
+
 **4. Internal glow.** Not designed yet. First measure whether the derived fire
 lights already light smoke from inside (A/B with them off), then decide.
 

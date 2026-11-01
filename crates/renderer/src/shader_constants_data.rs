@@ -1203,6 +1203,13 @@ pub const COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT: f32 = 0.3;
 // the same Wrenninge parameter).
 pub const COMBUSTION_STEAM_DROPLET_DIAMETER_UM: f32 = 10.0;
 pub const COMBUSTION_OCTAVE_ECCENTRICITY: f32 = 0.5;
+/// Texels across the baked phase table (`combustion_phase_bake.comp`): both
+/// species' three octave lobes tabulated over the scattering angle, so
+/// composite's per-sample light phase costs two fetches instead of a dozen
+/// `pow`s. The axis is `sqrt(sqrt((1 - cos) / 2))`, which spends the texels on
+/// the forward peak (steam's lobe is a few degrees wide); at 512 the narrowest
+/// lobe spans ~35 of them.
+pub const COMBUSTION_PHASE_TABLE_WIDTH: u32 = 512;
 
 // Transported-combustion -> surface-light reduction. The froxel injector
 // accumulates fixed-point radiant moments into this camera-centred grid; Rust
@@ -2909,6 +2916,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT),
     shader_define!(Float COMBUSTION_STEAM_DROPLET_DIAMETER_UM),
     shader_define!(Float COMBUSTION_OCTAVE_ECCENTRICITY),
+    shader_define!(Uint COMBUSTION_PHASE_TABLE_WIDTH),
     shader_define!(Float COMBUSTION_SOOT_OXIDATION_START_TEMPERATURE_K),
     shader_define!(Float COMBUSTION_SOOT_OXIDATION_FULL_TEMPERATURE_K),
     shader_define!(Float EXPLOSION_EXPANSION_TIME_SECONDS),

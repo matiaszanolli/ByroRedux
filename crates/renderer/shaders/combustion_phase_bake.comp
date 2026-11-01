@@ -1,0 +1,31 @@
+// Bakes the combustion species phase table (tracking #6531, Phase 3 #6535).
+//
+// Composite's local fire march needs each species' octave lobes once per
+// sample, at an angle taken from the light-direction field. Evaluating them
+// analytically costs a dozen `pow`s per sample and was +0.1..0.4 ms of the
+// composite pass; this tabulates them once, from the same functions the froxel
+// pass evaluates (`include/combustion_phase.glsl`), so the two cannot drift.
+//
+// Texel (x, 0) holds the soot lobes and (x, 1) the steam lobes, x/y/z = octave
+// 0/1/2, at the angle `combustionPhaseTableCosine((x + 0.5) / WIDTH)`.
+// Dispatched once when the local grid is initialised.
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "include/shader_constants.glsl"
+#include "include/medium_transport.glsl"
+#include "include/combustion_phase.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 1, binding = 8, rgba16f) uniform writeonly image2D phaseTable;
+
+void main() {
+    uvec2 texel = gl_GlobalInvocationID.xy;
+    if (texel.x >= uint(COMBUSTION_PHASE_TABLE_WIDTH) || texel.y >= 2u) {
+        return;
+    }
+    float cosTheta = combustionPhaseTableCosine((float(texel.x) + 0.5) / float(COMBUSTION_PHASE_TABLE_WIDTH));
+    vec3 octaves = texel.y == 0u ? combustionSootOctaves(cosTheta) : combustionSteamOctaves(cosTheta);
+    imageStore(phaseTable, ivec2(texel), vec4(octaves, 0.0));
+}

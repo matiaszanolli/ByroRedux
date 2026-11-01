@@ -83,10 +83,8 @@ vec3 combustionMultiScatterPhase(float cosTheta, vec3 albedo, float steam) {
         + COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT * albedo * albedo * p2;
 }
 
-// The octave lobes of one species at one angle, x/y/z = octave 0/1/2. A march
-// along one ray sees the same angle at every sample, so it evaluates these at
-// most once per ray, when a sample first needs them, and only blends them per
-// sample (`combustionBlendOctavePhase`).
+// The octave lobes of one species at one angle, x/y/z = octave 0/1/2. Composite
+// reads them from the baked table below rather than evaluating them per sample.
 vec3 combustionSootOctaves(float cosTheta) {
     const float c = COMBUSTION_OCTAVE_ECCENTRICITY;
     return vec3(
@@ -103,11 +101,28 @@ vec3 combustionSteamOctaves(float cosTheta) {
         combustionSteamPhase(cosTheta, c * c));
 }
 
-vec3 combustionBlendOctavePhase(vec3 sootOctaves, vec3 steamOctaves, vec3 albedo, float steam) {
-    vec3 p = mix(sootOctaves, steamOctaves, steam);
-    return vec3(p.x)
-        + COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT * albedo * p.y
-        + COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT * albedo * albedo * p.z;
+// Weights one species' three octave lobes into the phase a unit of scattering
+// is multiplied by (the same weights `combustionMultiScatterPhase` applies).
+vec3 combustionWeightOctaves(vec3 octaves, vec3 albedo) {
+    return vec3(octaves.x)
+        + COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT * albedo * octaves.y
+        + COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT * albedo * albedo * octaves.z;
+}
+
+// The baked table of `combustionSootOctaves` (row 0) and
+// `combustionSteamOctaves` (row 1) over the scattering angle, written once by
+// `combustion_phase_bake.comp` and read by composite's march. The axis spends
+// its texels on the forward peak: u = ((1 - cos) / 2)^(1/4). The bake and the
+// reader share these two functions, so a texel is always sampled at the angle
+// it was evaluated at.
+float combustionPhaseTableCoord(float cosTheta) {
+    float s = clamp(0.5 * (1.0 - cosTheta), 0.0, 1.0);
+    return sqrt(sqrt(s));
+}
+
+float combustionPhaseTableCosine(float u) {
+    float u2 = u * u;
+    return 1.0 - 2.0 * u2 * u2;
 }
 
 #endif

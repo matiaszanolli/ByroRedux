@@ -1045,6 +1045,12 @@ impl VolumetricsPipeline {
                 vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
             );
+            // The clear above is visible to compute; fill the phase table.
+            if let Some(grid) = self.local_grid.as_ref() {
+                // SAFETY: `cmd` is recording and the table was moved to GENERAL
+                // and cleared in this same command buffer.
+                unsafe { grid.record_phase_bake(device, cmd) };
+            }
             let noise_ready = [base_noise, detail_noise].map(|image| {
                 descriptors::image_barrier_transfer_dst_to_shader_read(image.image, 1)
             });
