@@ -151,8 +151,39 @@ heat and fuel rates stay in `combustion.rs`.
 | Stage | Change | Visible? | Check |
 |---|---|---|---|
 | 1a | Move transport into the shared include; froxel output byte-identical | no | **Done.** Final frame pixel-identical (PNG checksum) on s1, s2a, s3a across 3–5 runs; `check-shader-artifacts.sh` green; per-pass GPU time unchanged (s1 inject median 0.605 ms before, 0.611 ms after, 5 runs each, both built from `0d1b401ef` with and without the move) |
-| 1b | Local grid + sim pass, written but not yet drawn | no | Hash of local grid over 5 runs identical; sim pass ms reported |
+| 1b | Local grid + sim pass, written but not yet drawn | no | **Done.** See "Stage 1b results" below |
 | 1c | Local march + composite combine + froxel hand-off | **yes** | s1 and s5 screenshots, per-pass ms, review by Matías |
+
+**Stage 1b results** (commit named in the history; release build, RTX 4070 Ti,
+1280×720, ray-quality tier pinned with `--rt-test-ray-quality-tier 3`).
+
+- *Froxel output unchanged.* Final frame byte-identical between the pre-stage-1a
+  binary (`0d1b401ef`) and the stage 1b binary on s1, s2a and s3a, 3 runs each.
+  Without the pin the adaptive RT tier flips between 2 and 3 from run to run and
+  changes the whole frame (the unmodified binary does it too), so an unpinned
+  pixel comparison proves nothing; `capture.sh` now takes
+  `BYRO_CAPTURE_EXTRA` for the pin. (The stage 1a check above compared
+  unpinned runs that happened to land on the same tier; the pinned runs cover
+  1a and 1b together.)
+- *Local grid state is deterministic.* The order-independent state hash on the
+  bench line (`local_grid_hash`) was identical across 3 runs of s1
+  (`a4a2acc2` after 300 frames), also with `BYRO_VALIDATION=1` (sync
+  validation on: no hazard or VUID reported by the new pass).
+- *Cost.* Median of 5 interleaved runs, ms. The sim pass is added on top of the
+  existing passes until stage 1c moves the transport out of the froxels, and it
+  scales with the cells that carry combustion, not with box size:
+
+| scene | boxes | active cells | `volumetrics_local_sim` | `volumetrics_inject` base → 1b | `volumetrics` total base → 1b |
+|---|---:|---:|---:|---|---|
+| s1_close_flame | 1 | 7,228 | 0.081 | 0.583 → 0.572 | 0.613 → 0.682 |
+| s2a_oil_blast_2s | 2 | 37,277 | 0.262 | 0.674 → 0.645 | 0.715 → 0.952 |
+| s3a_nuclear_blast_2s | 2 | 272,145 | 1.252 | 0.728 → 0.692 | 0.769 → 2.014 |
+
+  The nuclear scene is the case to watch: its cloud fills about half of both
+  boxes, so the full advection / reaction / boundary-ray path runs for those
+  cells. Stage 1c is expected to pay this back by having the froxel pass skip
+  transport inside a box; if it does not, the coarse cell ladder or the box
+  count is the knob. VRAM: 48 MiB resident (see `memory-budget.md`).
 
 **Risks to plan around.**
 

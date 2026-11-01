@@ -77,7 +77,7 @@ fn gpu_breakdown(cov: &SkinCoverageStats) -> String {
         "main_render={} depth_history_copy={} tlas={} svgf={} composite={} cluster_cull={} \
          ssao={} bloom={} caustic={} volumetrics={} skin={} blas_refit={} \
          taa={} skin_palette={} upscale={} presentation={} sky_cube={} \
-         groundcover_scatter={} exposure_meter={} groundcover_models={} volumetrics_inject={} volumetrics_integrate={} shadow_filter={} cloud_shadow={} rt_tier={} volumetric_light_cap={} froxel_extent={}x{}x{} transport_armed={} fog_volume_count={} fog_cluster_max_density={} fog_cluster_max_portal={}",
+         groundcover_scatter={} exposure_meter={} groundcover_models={} volumetrics_inject={} volumetrics_integrate={} volumetrics_local_sim={} shadow_filter={} cloud_shadow={} rt_tier={} volumetric_light_cap={} froxel_extent={}x{}x{} transport_armed={} fog_volume_count={} fog_cluster_max_density={} fog_cluster_max_portal={} local_grid_boxes={} local_grid_cells={} local_grid_hash={:08x}",
         ms(cov.gpu_main_render_ms, cov.gpu_main_render_active),
         ms(
             cov.gpu_depth_history_copy_ms,
@@ -106,6 +106,7 @@ fn gpu_breakdown(cov: &SkinCoverageStats) -> String {
         ms(cov.gpu_groundcover_models_ms, cov.gpu_groundcover_models_active),
         ms(cov.gpu_volumetrics_inject_ms, cov.gpu_volumetrics_inject_active),
         ms(cov.gpu_volumetrics_integrate_ms, cov.gpu_volumetrics_integrate_active),
+        ms(cov.gpu_volumetrics_local_sim_ms, cov.gpu_volumetrics_local_sim_active),
         ms(cov.gpu_shadow_filter_ms, cov.gpu_shadow_filter_active),
         ms(cov.gpu_cloud_shadow_ms, cov.gpu_cloud_shadow_active),
         cov.volumetrics_state.rt_tier,
@@ -117,6 +118,9 @@ fn gpu_breakdown(cov: &SkinCoverageStats) -> String {
         cov.volumetrics_state.fog_volume_count,
         cov.volumetrics_state.max_density_count,
         cov.volumetrics_state.max_portal_count,
+        cov.volumetrics_state.local_grid_boxes,
+        cov.volumetrics_state.local_grid_cells,
+        cov.volumetrics_state.local_grid_hash,
     )
 }
 

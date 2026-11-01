@@ -197,7 +197,7 @@ fn bench_frame_max_over_p95(distribution: [f64; 3]) -> f64 {
 
 /// Bench-line key for each GPU bracket the `bench:` summary reports, in the
 /// order `app_events` copies them out of `SkinCoverageStats`.
-const BENCH_GPU_KEYS: [&str; 24] = [
+const BENCH_GPU_KEYS: [&str; 25] = [
     "skin_disp",
     "blas_refit",
     "taa",
@@ -228,6 +228,8 @@ const BENCH_GPU_KEYS: [&str; 24] = [
     "shadow_filter",
     // #6316 — the cloud-shadow bake, nested in `sky_cube`; appended, same rule.
     "cloud_shadow",
+    // #6533 stage 1b — the world-space combustion local-grid sim; appended, same rule.
+    "volumetrics_local_sim",
 ];
 
 /// One bench-line GPU reading: the bracket's key, its milliseconds and whether it ran this snapshot
@@ -263,6 +265,7 @@ fn bench_gpu_samples(s: &byroredux_core::ecs::SkinCoverageStats) -> [BenchGpuSam
         ("volumetrics_integrate", s.gpu_volumetrics_integrate_ms, s.gpu_volumetrics_integrate_active),
         ("shadow_filter", s.gpu_shadow_filter_ms, s.gpu_shadow_filter_active),
         ("cloud_shadow", s.gpu_cloud_shadow_ms, s.gpu_cloud_shadow_active),
+        ("volumetrics_local_sim", s.gpu_volumetrics_local_sim_ms, s.gpu_volumetrics_local_sim_active),
     ]
 }
 
@@ -473,8 +476,8 @@ mod bench_frame_distribution_tests {
     fn bench_gpu_keys_match_the_reported_bracket_order() {
         assert_eq!(
             BENCH_GPU_KEYS.len(),
-            24,
-            "the bench line reports 24 of gpu_timers.rs's 25 brackets — the \
+            25,
+            "the bench line reports 25 of gpu_timers.rs's 26 brackets — the \
              ground-cover *sampling bench* owns its own report. Note the two \
              ground-cover brackets are different passes: the production \
              interaction+scatter compute IS on the line (#4315); only the \

@@ -543,6 +543,15 @@ The pipeline also owns a private 64³ + 32³ R8 density-noise texture pair
 (288 KiB)** total. This is a second copy of the texels held by the shared
 SKYAL `CloudNoiseVolumes` pair; both are resident and must be counted.
 
+**World-space combustion local grid (#6533 stage 1b)** —
+[`volumetrics/local_grid.rs`](../../crates/renderer/src/vulkan/volumetrics/local_grid.rs).
+Not resolution-scaled: three RGBA16F atlas volumes (`state`, `dynamics`,
+`optical`; 8 B per cell each) of `LOCAL_GRID_DIM`³ = 64³ cells × `LOCAL_GRID_MAX_BOXES`
+= 4 boxes stacked along Z (64 × 64 × 256), per frame-in-flight slot:
+`64³ × 4 × 8 B × 3 × 2 FIF` = **48 MiB resident** whenever the pipeline exists,
+live boxes or not (`local_grid_resident_bytes()`). Plus a 64 B host-readback
+stats buffer per slot. The grid is transient (not saved).
+
 **Per-slot host-visible buffers** (#5208 — these rows were missing until
 the 2026-10-03 audit; sizes derive from the named constants and are pinned
 by `volumetrics_host_buffer_ledger_matches_the_code` in

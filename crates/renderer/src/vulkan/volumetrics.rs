@@ -47,6 +47,7 @@ use ash::vk;
 mod combustion;
 mod fog_clusters;
 pub(super) mod init;
+mod local_grid;
 pub(crate) mod noise;
 
 // #5094 — the fog-cluster build and the combustion light moments split
@@ -691,6 +692,11 @@ pub struct VolumetricsPipeline {
     /// per-frame instance table and canonical global geometry SSBOs used to
     /// recover rigid triangle normals at combustion boundaries.
     boundary_geometry_written: [bool; MAX_FRAMES_IN_FLIGHT],
+
+    /// World-space combustion local grid (tracking #6531, Phase 1 stage 1b):
+    /// simulated alongside the froxel field, not yet drawn. `None` when its
+    /// creation failed, which costs the fire nothing it has today.
+    local_grid: Option<local_grid::LocalGrid>,
 }
 
 impl VolumetricsPipeline {
@@ -809,6 +815,17 @@ impl VolumetricsPipeline {
         // buffer remains zero and does not need a host drain.
         self.combustion_moment_dirty[frame] |= combustion_active;
         let fog_far = self.far_distance_world().max(1.0);
+        if let Some(grid) = self.local_grid.as_mut() {
+            grid.begin_frame(
+                device,
+                frame,
+                fog_volumes,
+                camera_position,
+                fog_far,
+                simulation_time,
+                COMBUSTION_HISTORY_LINGER_SECONDS,
+            )?;
+        }
         let fog_cluster_t0 = std::time::Instant::now();
         // #2242 (REN-D16-04) — `fog_volume_upload.count` (the shader's
         // `fogVolumeCount`) is rewritten unconditionally in BOTH branches
@@ -861,6 +878,11 @@ impl VolumetricsPipeline {
         // Header lane 1 was padding. Publish the actual adaptive/pinned tier
         // even with zero local volumes: global interior dust can use rim rays.
         self.fog_volume_upload.count[1] = rt_tier;
+        let local_stats = self
+            .local_grid
+            .as_ref()
+            .map(local_grid::LocalGrid::stats)
+            .unwrap_or_default();
         if let Some(timers) = timers.as_deref_mut() {
             let (max_density_count, max_portal_count) = self.fog_cluster_entries[..cluster_hi]
                 .iter().fold((0, 0), |(density, portal), entry| {
@@ -874,6 +896,9 @@ impl VolumetricsPipeline {
                 fog_volume_count: self.fog_volume_upload.count[0],
                 max_density_count,
                 max_portal_count,
+                local_grid_boxes: local_stats.boxes,
+                local_grid_cells: local_stats.active_cells,
+                local_grid_hash: local_stats.state_hash,
             });
         }
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&frame_params))?;
@@ -1010,6 +1035,20 @@ impl VolumetricsPipeline {
         if let Some(timers) = timers.as_deref_mut() {
             timers.cmd_end(TimerPass::VolumetricsInject, device, cmd, frame);
         }
+        // ── Stage C2: world-space local grid sim (stage 1b, not drawn yet) ──
+        // Reads the same set 0 as the injection (params, TLAS, fog primitives
+        // and clusters, boundary geometry) and writes only its own atlas, so
+        // it needs no ordering against the injection beyond the execution
+        // dependency `record_sim` adds to keep the timer brackets apart.
+        if let Some(grid) = self.local_grid.as_mut().filter(|grid| grid.has_work()) {
+            grid.record_sim(
+                device,
+                cmd,
+                frame,
+                self.descriptor_sets[frame],
+                timers.as_deref_mut(),
+            );
+        }
 
         // ── Stage D: barrier between injection and integration ──────
         // Sequence the injection WRITE on the lighting volume against
@@ -1109,6 +1148,9 @@ impl VolumetricsPipeline {
         self.pending_simulation_time_seconds = None;
         self.combustion_active_until_seconds = f32::NEG_INFINITY;
         self.combustion_light_grid_valid.fill(false);
+        if let Some(grid) = self.local_grid.as_mut() {
+            grid.reset();
+        }
     }
 
     /// Advance temporal validity only after the command buffer that wrote the
@@ -1119,6 +1161,9 @@ impl VolumetricsPipeline {
             self.transport_fields.submitted();
             self.dispatched_this_frame = false;
             self.last_simulation_time_seconds = self.pending_simulation_time_seconds.take();
+            if let Some(grid) = self.local_grid.as_mut() {
+                grid.mark_frame_completed();
+            }
         }
     }
 
@@ -1451,6 +1496,9 @@ impl VolumetricsPipeline {
         self.pending_simulation_time_seconds = None;
         self.combustion_active_until_seconds = f32::NEG_INFINITY;
         self.combustion_light_grid_valid[frame] = false;
+        if let Some(grid) = self.local_grid.as_mut() {
+            grid.invalidate_history();
+        }
     }
 
     /// All per-frame-in-flight integration-output views, in slot order.
@@ -1598,6 +1646,11 @@ impl VolumetricsPipeline {
     /// device is not lost, and that no object owned by `self` is still in use
     /// by an in-flight command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
+        if let Some(mut grid) = self.local_grid.take() {
+            // SAFETY: same contract as this function — the GPU is done with
+            // every resource of the pipeline.
+            unsafe { grid.destroy(device, allocator) };
+        }
         for slot in self
             .lighting_volumes
             .drain(..)

@@ -15,6 +15,11 @@
 # server port is fixed and the two instances compete for the GPU.
 #
 # Notes that matter when reading the numbers:
+#  * The adaptive RT quality tier reacts to GPU load, so an unpinned run can
+#    land on tier 2 or 3 and the final frame differs by whole-image amounts
+#    between two runs of the SAME binary. For pixel A/B comparisons pin it:
+#    BYRO_CAPTURE_EXTRA="--rt-test-ray-quality-tier 3" (then runs are
+#    byte-identical, also across binaries that should render identically).
 #  * Every GPU figure is ONE frame's timestamp bracket (the final frame of the
 #    run), not an average. Compare medians across the repeats, not single runs.
 #  * `renderer-static` is not used: its clock is frozen, so the transported
@@ -67,7 +72,7 @@ for entry in "${SCENES[@]}"; do
   for rep in $(seq 1 "$REPS"); do
     # shellcheck disable=SC2086
     env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 BYRO_DEBUG_SERVER=1 \
-      timeout 300 xvfb-run -a "$BIN" $args --upscaler taa --window-size 1280x720 \
+      timeout 300 xvfb-run -a "$BIN" $args ${BYRO_CAPTURE_EXTRA:-} --upscaler taa --window-size 1280x720 \
       --screenshot "$OUT/${name}_r${rep}.png" >"$OUT/${name}_r${rep}.log" 2>&1 \
       || { echo "FAIL: $name run $rep, see $OUT/${name}_r${rep}.log" >&2; exit 1; }
     echo "$name run $rep ok"

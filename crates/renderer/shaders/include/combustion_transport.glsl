@@ -60,6 +60,18 @@ bool samplePreviousTransport(
     out vec4 optical
 );
 
+// SEAM (second) — the BFECC limiter's clamp range: component-wise min/max of
+// the previous-field texels the tap at `worldPos` interpolates. The including
+// shader defines it AFTER the include, next to `samplePreviousTransport`.
+// Returns false when the position has no history.
+bool previousTransportBounds(
+    vec3 worldPos,
+    out vec4 chemistryMin,
+    out vec4 chemistryMax,
+    out vec4 opticalMin,
+    out vec4 opticalMax
+);
+
 
 float combustionActivity(vec4 chemistry, vec4 optical);
 
@@ -491,27 +503,19 @@ void applyBfeccErrorCorrection(
         }
     }
 
-    // Limiter: the corrected value cannot leave the range of the eight
-    // previous-grid texels that feed the source-position trilinear tap.
-    vec3 sourceUvw;
-    if (!reprojectHistory(sourcePosition, sourceUvw)) {
+    // Limiter: the corrected value cannot leave the range of the previous-grid
+    // texels that feed the source-position tap.
+    vec4 chemistryMin;
+    vec4 chemistryMax;
+    vec4 opticalMin;
+    vec4 opticalMax;
+    if (!previousTransportBounds(
+            sourcePosition,
+            chemistryMin,
+            chemistryMax,
+            opticalMin,
+            opticalMax)) {
         return;
-    }
-    ivec3 size = textureSize(previousCombustionState, 0);
-    ivec3 base = ivec3(floor(sourceUvw * vec3(size) - vec3(0.5)));
-    vec4 chemistryMin = vec4(0.0, 1.0e9, 0.0, 0.0);
-    vec4 chemistryMax = vec4(0.0, -1.0e9, 0.0, 0.0);
-    vec4 opticalMin = vec4(1.0e9);
-    vec4 opticalMax = vec4(-1.0e9);
-    for (int corner = 0; corner < 8; ++corner) {
-        ivec3 offset = ivec3(corner & 1, (corner >> 1) & 1, (corner >> 2) & 1);
-        ivec3 coord = clamp(base + offset, ivec3(0), size - ivec3(1));
-        vec4 cornerChemistry = texelFetch(previousCombustionState, coord, 0);
-        vec4 cornerOptical = texelFetch(previousCombustionOptical, coord, 0);
-        chemistryMin = min(chemistryMin, cornerChemistry);
-        chemistryMax = max(chemistryMax, cornerChemistry);
-        opticalMin = min(opticalMin, cornerOptical);
-        opticalMax = max(opticalMax, cornerOptical);
     }
     chemistry = clamp(
         chemistry + strength * chemistryError,

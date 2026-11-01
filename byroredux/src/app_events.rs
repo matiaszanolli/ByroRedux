@@ -304,7 +304,7 @@ impl App {
              sim_time_s={:.6} entities={} meshes={} textures={} \
              draws={}/{}b/{}c bench_draws_raster_cmds={} \
              lights={} tlas={} state_hash={:016x} \
-             skin={}/{}+{} rt_tier={} volumetric_rt_tier={} volumetric_light_cap={} froxel_x={} froxel_y={} froxel_z={} transport_armed={} fog_volume_count={} fog_cluster_max_density={} fog_cluster_max_portal={} \
+             skin={}/{}+{} rt_tier={} volumetric_rt_tier={} volumetric_light_cap={} froxel_x={} froxel_y={} froxel_z={} transport_armed={} fog_volume_count={} fog_cluster_max_density={} fog_cluster_max_portal={} local_grid_boxes={} local_grid_cells={} local_grid_hash={:08x} \
              upscaler={} render_extent={} output_extent={}",
             bench_mode,
             bench_mode.gate_label(),
@@ -386,6 +386,9 @@ impl App {
             vol_state.fog_volume_count,
             vol_state.max_density_count,
             vol_state.max_portal_count,
+            vol_state.local_grid_boxes,
+            vol_state.local_grid_cells,
+            vol_state.local_grid_hash,
             // #4947 — the reconstruction path this run actually
             // exercised. A persisted `render.upscaler` can replace
             // the no-flag default, so a harness must read the

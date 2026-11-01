@@ -1972,6 +1972,12 @@ pub const PRESENTATION_RADIAL_TAPS: u32 = 6;
 // shared source, the same defect class as #1190/#1401).
 /// Camera-centered world-space cluster resolution used for local fog.
 pub const FOG_VOLUME_CLUSTER_DIM: u32 = 16;
+/// World-space combustion local grid (tracking #6531, Phase 1 #6533): cells per
+/// box edge, and the number of boxes stacked along Z in one atlas image. The
+/// sim shader (`volumetrics_local_sim.comp`) and `vulkan::volumetrics::local_grid`
+/// size dispatches, push constants and the stats buffer from these.
+pub const LOCAL_GRID_DIM: u32 = 64;
+pub const LOCAL_GRID_MAX_BOXES: u32 = 4;
 /// Bounded primitive references per cluster. FO3/FNV's busiest shipped cells
 /// place more than 50 baked shafts within 512 world units of one another;
 /// 64 avoids the obvious loss at the former 8-entry cap. Overflow keeps the
@@ -3119,6 +3125,8 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     HeaderLine::Blank,
     HeaderLine::Comment("Local fog-volume clustering (M55/Session 62)."),
     shader_define!(Uint FOG_VOLUME_CLUSTER_DIM),
+    shader_define!(Uint LOCAL_GRID_DIM),
+    shader_define!(Uint LOCAL_GRID_MAX_BOXES),
     shader_define!(Uint MAX_FOG_VOLUMES_PER_CLUSTER),
     shader_define!(Uint MAX_FOG_PORTALS_PER_CLUSTER),
     shader_define!(Uint MAX_COMPOSITE_SKY_APERTURES),

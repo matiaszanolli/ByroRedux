@@ -644,6 +644,12 @@ pub struct VolumetricsFrameState {
     pub fog_volume_count: u32,
     pub max_density_count: u32,
     pub max_portal_count: u32,
+    /// World-space combustion local grid (#6533 stage 1b): boxes simulated,
+    /// cells carrying combustion, and an order-independent hash of their
+    /// state, from the dispatch that last used this frame slot.
+    pub local_grid_boxes: u32,
+    pub local_grid_cells: u32,
+    pub local_grid_hash: u32,
 }
 
 /// Per-frame skinned-mesh BLAS coverage telemetry.
@@ -790,6 +796,9 @@ pub struct SkinCoverageStats {
     pub gpu_groundcover_models_ms: f32,
     pub gpu_volumetrics_inject_ms: f32,
     pub gpu_volumetrics_integrate_ms: f32,
+    /// #6533 stage 1b — the world-space combustion local-grid sim; sibling of
+    /// inject / integrate inside `gpu_volumetrics_ms` (never sum them).
+    pub gpu_volumetrics_local_sim_ms: f32,
     /// #5959 — the direct-shadow filter, nested inside `gpu_svgf_ms` when
     /// SVGF runs (never sum the two).
     pub gpu_shadow_filter_ms: f32,
@@ -828,6 +837,7 @@ pub struct SkinCoverageStats {
     pub gpu_groundcover_models_active: bool,
     pub gpu_volumetrics_inject_active: bool,
     pub gpu_volumetrics_integrate_active: bool,
+    pub gpu_volumetrics_local_sim_active: bool,
     pub gpu_shadow_filter_active: bool,
     pub gpu_cloud_shadow_active: bool,
 }

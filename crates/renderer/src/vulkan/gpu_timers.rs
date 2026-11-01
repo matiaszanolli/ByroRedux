@@ -2,8 +2,8 @@
 //!
 //! Bracketing GPU hot spots with `vkCmdWriteTimestamp` so per-pass
 //! cost can be measured rather than guessed. Owns one `VkQueryPool`
-//! per frame-in-flight slot, `QUERIES_PER_FRAME` (60) TIMESTAMP queries
-//! each — 30 start/end brackets, bumped from 32/16 by #4052's
+//! per frame-in-flight slot, `QUERIES_PER_FRAME` (62) TIMESTAMP queries
+//! each — 31 start/end brackets, bumped from 32/16 by #4052's
 //! ground-cover-bench bracket (#4210), again from 34/17 by the SKYAL
 //! sky-cubemap bake, again from 36/18 by the production ground-cover
 //! scatter (#4315), again from 38/19 by the exposure meter (#4618), again
@@ -11,8 +11,9 @@
 //! volumetrics inject / integrate brackets (`88c23887b`), again from
 //! 46/23 by the five main-pass geometry phases (`0925f7926`), again
 //! from 56/28 by the direct-shadow filter nested in the SVGF bracket
-//! (#5959), and again from 58/29 by the cloud-shadow bake nested in the
-//! sky-cube bracket (#6316):
+//! (#5959), again from 58/29 by the cloud-shadow bake nested in the
+//! sky-cube bracket (#6316), and from 60/30 by the world-space combustion
+//! local-grid sim (#6533):
 //!
 //! | Slot | Bracket                                |
 //! |------|----------------------------------------|
@@ -66,16 +67,18 @@
 //! | 47   | direct-shadow filter (inside SVGF) — end             |
 //! | 48   | cloud-shadow bake (inside sky cube) — start          |
 //! | 49   | cloud-shadow bake (inside sky cube) — end            |
-//! | 50   | main pass, opaque phase (profile only) — start       |
-//! | 51   | main pass, opaque phase (profile only) — end         |
-//! | 52   | main pass, blended phase (profile only) — start      |
-//! | 53   | main pass, blended phase (profile only) — end        |
-//! | 54   | main pass, water phase (profile only) — start        |
-//! | 55   | main pass, water phase (profile only) — end          |
-//! | 56   | main pass, ground-cover model draw (profile only) — start |
-//! | 57   | main pass, ground-cover model draw (profile only) — end   |
-//! | 58   | main pass, ground-cover blade draw (profile only) — start |
-//! | 59   | main pass, ground-cover blade draw (profile only) — end   |
+//! | 50   | volumetrics local-grid sim — start                   |
+//! | 51   | volumetrics local-grid sim — end                     |
+//! | 52   | main pass, opaque phase (profile only) — start       |
+//! | 53   | main pass, opaque phase (profile only) — end         |
+//! | 54   | main pass, blended phase (profile only) — start      |
+//! | 55   | main pass, blended phase (profile only) — end        |
+//! | 56   | main pass, water phase (profile only) — start        |
+//! | 57   | main pass, water phase (profile only) — end          |
+//! | 58   | main pass, ground-cover model draw (profile only) — start |
+//! | 59   | main pass, ground-cover model draw (profile only) — end   |
+//! | 60   | main pass, ground-cover blade draw (profile only) — start |
+//! | 61   | main pass, ground-cover blade draw (profile only) — end   |
 //!
 //! The original three brackets (skin dispatch / BLAS refit / TAA) shipped
 //! with the #1194 perf-bisect work; the skin-palette bracket (slots 28/29)
@@ -135,7 +138,7 @@ use super::sync::MAX_FRAMES_IN_FLIGHT;
 
 /// Two TIMESTAMP queries per bracket (start, end); the module doc's table is
 /// the one place that counts them.
-const QUERIES_PER_FRAME: u32 = 60;
+const QUERIES_PER_FRAME: u32 = 62;
 
 const Q_SKIN_DISPATCH_START: u32 = 0;
 const Q_SKIN_DISPATCH_END: u32 = 1;
@@ -211,6 +214,11 @@ const Q_SHADOW_FILTER_END: u32 = 47;
 /// recorded there, so `sky_cube_ms` keeps including it).
 const Q_CLOUD_SHADOW_START: u32 = 48;
 const Q_CLOUD_SHADOW_END: u32 = 49;
+/// #6533 stage 1b — the world-space combustion local grid sim. Separate from
+/// the froxel inject bracket so the baseline `volumetrics_inject` numbers keep
+/// their meaning; recorded right after it.
+const Q_VOLUMETRICS_LOCAL_SIM_START: u32 = 50;
+const Q_VOLUMETRICS_LOCAL_SIM_END: u32 = 51;
 
 /// Per-pass elapsed GPU time, milliseconds. Reads `0.0` for any
 /// bracket that didn't run on the snapshot frame OR before the
@@ -355,6 +363,11 @@ pub struct GpuTimerSnapshot {
     /// is nested in `sky_cube_ms`: never sum the two. Starts at
     /// `COMPUTE_SHADER`. Inactive when the bake failed to initialise.
     pub cloud_shadow_ms: f32,
+    /// #6533 stage 1b — `volumetrics_local_sim.comp`, the world-space local
+    /// grid. Separate from `volumetrics_inject_ms`; both sit inside
+    /// `volumetrics_ms`, so never sum the three. Inactive on any frame no box
+    /// is live.
+    pub volumetrics_local_sim_ms: f32,
     // Main-pass phase fields (`0925f7926`): BOTTOM_OF_PIPE phase-completion
     // intervals inside `main_render_ms`, one per `GeometryTimerPhase`. GPU
     // overlap can move work across boundaries; these are not isolated shader
@@ -407,6 +420,7 @@ pub struct GpuTimerSnapshot {
     pub volumetrics_integrate_active: bool,
     pub shadow_filter_active: bool,
     pub cloud_shadow_active: bool,
+    pub volumetrics_local_sim_active: bool,
     pub main_opaque_active: bool,
     pub main_blended_active: bool,
     pub main_water_active: bool,
@@ -475,6 +489,9 @@ const BIT_VOLUMETRICS_INJECT: u32 = 1 << 21;
 const BIT_VOLUMETRICS_INTEGRATE: u32 = 1 << 22;
 const BIT_SHADOW_FILTER: u32 = 1 << 23;
 const BIT_CLOUD_SHADOW: u32 = 1 << 24;
+/// Bits 25..=29 belong to the geometry phases (`GEOMETRY_PHASE_BIT_BASE`), so
+/// the next named bracket takes bit 30.
+const BIT_VOLUMETRICS_LOCAL_SIM: u32 = 1 << 30;
 
 /// A named START/END timestamp bracket. One row of [`TimerPass::row`] holds everything the two timestamp
 /// writes vary on, so adding a pass is a variant, a row and its `Q_*` / `BIT_*` constants — not two methods.
@@ -505,6 +522,7 @@ pub enum TimerPass {
     ShadowFilter,
     CloudShadow,
     VolumetricsIntegrate,
+    VolumetricsLocalSim,
 }
 
 /// The query slots, active bit and pipeline stages of one [`TimerPass`].
@@ -581,6 +599,8 @@ impl TimerPass {
             // #6316 — opens inside the sky-cube bracket.
             Self::CloudShadow => PassRow { start: Q_CLOUD_SHADOW_START, end: Q_CLOUD_SHADOW_END, bit: BIT_CLOUD_SHADOW, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
             Self::VolumetricsIntegrate => PassRow { start: Q_VOLUMETRICS_INTEGRATE_START, end: Q_VOLUMETRICS_INTEGRATE_END, bit: BIT_VOLUMETRICS_INTEGRATE, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
+            // #6533 stage 1b — opens after an execution barrier that retires the inject dispatch.
+            Self::VolumetricsLocalSim => PassRow { start: Q_VOLUMETRICS_LOCAL_SIM_START, end: Q_VOLUMETRICS_LOCAL_SIM_END, bit: BIT_VOLUMETRICS_LOCAL_SIM, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
         }
     }
 }
@@ -605,7 +625,7 @@ pub(crate) enum GeometryTimerPhase {
 /// constants so a new named bracket must move these bases rather than
 /// silently aliasing `MainOpaque`'s slot and bit; the `const` asserts below
 /// and `every_timer_slot_and_active_bit_is_unique_and_in_range` pin the rest.
-const Q_GEOMETRY_PHASE_BASE: u32 = Q_CLOUD_SHADOW_END + 1;
+const Q_GEOMETRY_PHASE_BASE: u32 = Q_VOLUMETRICS_LOCAL_SIM_END + 1;
 const GEOMETRY_PHASE_BIT_BASE: u32 = BIT_CLOUD_SHADOW.trailing_zeros() + 1;
 const GEOMETRY_TIMER_PHASE_COUNT: u32 = 5;
 const _: () = assert!(
@@ -761,6 +781,10 @@ fn snapshot_from_bits_with_valid_bits(
     snap.cloud_shadow_active = bits & BIT_CLOUD_SHADOW != 0;
     if snap.cloud_shadow_active {
         snap.cloud_shadow_ms = bracket_ms(Q_CLOUD_SHADOW_START);
+    }
+    snap.volumetrics_local_sim_active = bits & BIT_VOLUMETRICS_LOCAL_SIM != 0;
+    if snap.volumetrics_local_sim_active {
+        snap.volumetrics_local_sim_ms = bracket_ms(Q_VOLUMETRICS_LOCAL_SIM_START);
     }
     snap.main_opaque_active = bits & GeometryTimerPhase::MainOpaque.active_bit() != 0;
     if snap.main_opaque_active {

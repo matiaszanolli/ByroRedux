@@ -329,6 +329,10 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
             gpu_bracket_ms(cov.gpu_volumetrics_integrate_ms, cov.gpu_volumetrics_integrate_active),
         );
         gpu_pass_ms.insert(
+            "volumetrics_local_sim".to_string(),
+            gpu_bracket_ms(cov.gpu_volumetrics_local_sim_ms, cov.gpu_volumetrics_local_sim_active),
+        );
+        gpu_pass_ms.insert(
             "shadow_filter".to_string(),
             gpu_bracket_ms(cov.gpu_shadow_filter_ms, cov.gpu_shadow_filter_active),
         );

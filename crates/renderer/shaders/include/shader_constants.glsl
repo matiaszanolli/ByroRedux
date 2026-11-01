@@ -534,6 +534,8 @@
 
 // Local fog-volume clustering (M55/Session 62).
 #define FOG_VOLUME_CLUSTER_DIM 16u
+#define LOCAL_GRID_DIM 64u
+#define LOCAL_GRID_MAX_BOXES 4u
 #define MAX_FOG_VOLUMES_PER_CLUSTER 64u
 #define MAX_FOG_PORTALS_PER_CLUSTER 128u
 #define MAX_COMPOSITE_SKY_APERTURES 256u

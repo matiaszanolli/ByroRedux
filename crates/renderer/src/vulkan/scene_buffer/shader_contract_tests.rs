@@ -2378,6 +2378,14 @@ fn every_shader_struct_is_classified() {
             "FilterParams",
             MirroredPendingGuard("pushed as one hand-built f32 (sky_cube/filter.rs); no Rust struct"),
         ),
+        (
+            "LocalSimPush",
+            MirroredPendingGuard(
+                "pushed as hand-built bytes (volumetrics/local_grid.rs local_sim_push_bytes); \
+                 no Rust struct, offsets pinned by push_constants_encode_boxes_then_counts_in_shader_order \
+                 and the shader-text pin beside it",
+            ),
+        ),
         ("GroundCoverFactors", ShaderLocal),
         (
             "GroundCoverBlade",

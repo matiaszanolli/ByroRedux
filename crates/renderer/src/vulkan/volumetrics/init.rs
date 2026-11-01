@@ -211,6 +211,7 @@ impl VolumetricsPipeline {
             tlas_written: [false; MAX_FRAMES_IN_FLIGHT],
             lights_written: [false; MAX_FRAMES_IN_FLIGHT],
             boundary_geometry_written: [false; MAX_FRAMES_IN_FLIGHT],
+            local_grid: None,
         };
 
         // ── 1. Allocate per-frame-in-flight froxel volumes ────────────
@@ -817,6 +818,21 @@ impl VolumetricsPipeline {
             unsafe { device.update_descriptor_sets(&int_writes, &[]) };
         }
 
+        // ── 12. World-space local grid (stage 1b) ─────────────────────
+        // Not fatal: without it the fire renders exactly as before.
+        partial.local_grid = match local_grid::LocalGrid::new(
+            device,
+            allocator,
+            pipeline_cache,
+            partial.descriptor_set_layout,
+        ) {
+            Ok(grid) => Some(grid),
+            Err(e) => {
+                log::warn!("Volumetrics local grid disabled: {e:#}");
+                None
+            }
+        };
+
         log::info!(
             "Volumetrics pipeline created from render {}x{}: {}x{}x{} froxels (1/{} XY), {} MiB / slot ({} volumes: 5×RGBA16F + R32F), far={} m",
             render_extent.width,
@@ -905,7 +921,7 @@ impl VolumetricsPipeline {
             let detail_noise = self.detail_noise_volume.as_ref().expect("detail noise");
 
             // ── 1. Initialize writable froxels and upload-only noise images.
-            let mut barriers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT * 6 + 2);
+            let mut barriers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT * 9 + 2);
             for slot in self
                 .lighting_volumes
                 .iter()
@@ -914,6 +930,7 @@ impl VolumetricsPipeline {
                 .chain(self.combustion_state_volumes.iter())
                 .chain(self.combustion_dynamics_volumes.iter())
                 .chain(self.combustion_optical_volumes.iter())
+                .chain(self.local_grid.iter().flat_map(|grid| grid.images()))
             {
                 barriers.push(image_barrier_undef_to_general(slot.image).dst_access_mask(
                     vk::AccessFlags::SHADER_READ
@@ -979,6 +996,7 @@ impl VolumetricsPipeline {
                 .chain(self.combustion_state_volumes.iter())
                 .chain(self.combustion_dynamics_volumes.iter())
                 .chain(self.combustion_optical_volumes.iter())
+                .chain(self.local_grid.iter().flat_map(|grid| grid.images()))
             {
                 // SAFETY: same ownership/layout/usage contract as the RGBA
                 // froxels above; R32F consumes only the first clear channel,

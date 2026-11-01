@@ -86,13 +86,17 @@ pub struct GpuFogVolume {
 // (#3761).
 unsafe impl crate::vulkan::buffer::NoUninit for GpuFogVolume {}
 
+/// Whether `volume` is a source of the transported combustion field (smoke,
+/// flame or an explosion profile) rather than passive fog.
+pub(crate) fn is_transport_emitter(volume: &GpuFogVolume) -> bool {
+    let profile = volume.profile_params[0];
+    profile.is_finite()
+        && (FOG_VOLUME_PROFILE_SMOKE - 0.5..=FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR + 0.5)
+            .contains(&profile)
+}
+
 pub(crate) fn has_transport_emitter(volumes: &[GpuFogVolume]) -> bool {
-    volumes.iter().any(|volume| {
-        let profile = volume.profile_params[0];
-        profile.is_finite()
-            && (FOG_VOLUME_PROFILE_SMOKE - 0.5..=FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR + 0.5)
-                .contains(&profile)
-    })
+    volumes.iter().any(is_transport_emitter)
 }
 
 /// Whether `transportCombustion`'s RK2 advection block — the 18-fetch

@@ -397,6 +397,38 @@ bool samplePreviousTransport(
     return true;
 }
 
+bool previousTransportBounds(
+    vec3 worldPos,
+    out vec4 chemistryMin,
+    out vec4 chemistryMax,
+    out vec4 opticalMin,
+    out vec4 opticalMax
+) {
+    // Limiter: the corrected value cannot leave the range of the eight
+    // previous-grid texels that feed the source-position trilinear tap.
+    vec3 sourceUvw;
+    if (!reprojectHistory(worldPos, sourceUvw)) {
+        return false;
+    }
+    ivec3 size = textureSize(previousCombustionState, 0);
+    ivec3 base = ivec3(floor(sourceUvw * vec3(size) - vec3(0.5)));
+    chemistryMin = vec4(0.0, 1.0e9, 0.0, 0.0);
+    chemistryMax = vec4(0.0, -1.0e9, 0.0, 0.0);
+    opticalMin = vec4(1.0e9);
+    opticalMax = vec4(-1.0e9);
+    for (int corner = 0; corner < 8; ++corner) {
+        ivec3 offset = ivec3(corner & 1, (corner >> 1) & 1, (corner >> 2) & 1);
+        ivec3 coord = clamp(base + offset, ivec3(0), size - ivec3(1));
+        vec4 cornerChemistry = texelFetch(previousCombustionState, coord, 0);
+        vec4 cornerOptical = texelFetch(previousCombustionOptical, coord, 0);
+        chemistryMin = min(chemistryMin, cornerChemistry);
+        chemistryMax = max(chemistryMax, cornerChemistry);
+        opticalMin = min(opticalMin, cornerOptical);
+        opticalMax = max(opticalMax, cornerOptical);
+    }
+    return true;
+}
+
 
 // Beer-Lambert attenuation along the light path through the previous
 // canonical combustion field. The current field is being written by this

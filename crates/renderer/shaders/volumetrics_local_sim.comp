@@ -1,0 +1,221 @@
+// World-space combustion local grid — simulation pass (tracking #6531,
+// Phase 1 #6533, stage 1b).
+//
+// Advances the SAME transported combustion model the froxel inject pass runs
+// (`include/combustion_sources.glsl` + `include/combustion_transport.glsl`),
+// but on axis-aligned cubic cells anchored in world space instead of
+// camera-aligned froxels. A cell is a fixed physical size whatever the camera
+// does, so close-range detail no longer depends on the view-depth slice
+// distribution (0.63 m per slice in the first 5 m).
+//
+// Stage 1b only: the result is not read by anything that draws. It is
+// simulated and reduced to a deterministic state hash so the pass can be
+// verified and timed before the ray-march (stage 1c) consumes it.
+//
+// One dispatch advances every live box. Boxes are stacked along Z in one
+// atlas image per field: box b owns Z in [b * LOCAL_GRID_DIM, (b + 1) *
+// LOCAL_GRID_DIM). Box origin and cell size arrive in push constants.
+//
+// Descriptor set 0 is the froxel inject pass's set, bound as-is (see
+// `include/volumetrics_bindings.glsl`): params, TLAS, fog primitives, fog
+// clusters and boundary geometry are shared. Set 1 is the local grid.
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "include/shader_constants.glsl"
+#include "include/medium_transport.glsl"
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+#include "include/volumetrics_bindings.glsl"
+#include "include/combustion_sources.glsl"
+
+// Written this frame; the previous frame-in-flight slot is sampled below.
+layout(set = 1, binding = 0, rgba16f) uniform writeonly image3D localState;
+layout(set = 1, binding = 1, rgba16f) uniform writeonly image3D localDynamics;
+layout(set = 1, binding = 2, rgba16f) uniform writeonly image3D localOptical;
+layout(set = 1, binding = 3) uniform sampler3D previousLocalState;
+layout(set = 1, binding = 4) uniform sampler3D previousLocalDynamics;
+layout(set = 1, binding = 5) uniform sampler3D previousLocalOptical;
+
+// Per box: [0] cells carrying combustion, [1] XOR and [2] sum of a per-cell
+// hash of the written state. Both reductions are order-independent, so the
+// result does not depend on thread scheduling. Zeroed by the host after it
+// drains the slot; read back one frame-in-flight later.
+layout(std430, set = 1, binding = 6) buffer LocalGridStats {
+    uint localGridStats[];
+};
+
+layout(push_constant) uniform LocalSimPush {
+    // xyz = absolute world position of the box's minimum corner,
+    // w = cell edge in world units.
+    vec4 boxes[LOCAL_GRID_MAX_BOXES];
+    // x = atlas slabs to cover (highest live slot + 1), y = bit b set when box b
+    // has valid history (the same box, same placement, simulated last frame),
+    // z = bit b set when slot b holds a live box.
+    uvec4 info;
+} push;
+
+// The box this invocation belongs to. Set once in main() before any transport
+// call; `samplePreviousTransport` reads them.
+uint gBox;
+vec3 gBoxOrigin;
+float gCell;
+
+#include "include/combustion_transport.glsl"
+
+// The transport seam: previous-frame state at an arbitrary world position,
+// by hardware trilinear filtering inside this box's slab of the atlas. A
+// position outside the box has no history here (the caller treats it like the
+// froxel pass treats a position that reprojects off-screen). The sample is
+// clamped half a cell inside the slab so filtering never reaches the
+// neighbouring box in the atlas.
+bool samplePreviousTransport(
+    vec3 worldPos,
+    out vec4 chemistry,
+    out vec4 dynamics,
+    out vec4 optical
+) {
+    chemistry = vec4(0.0, AMBIENT_TEMPERATURE_K, 0.0, 0.0);
+    dynamics = vec4(0.0);
+    optical = vec4(0.0);
+    if ((push.info.y & (1u << gBox)) == 0u) {
+        return false;
+    }
+    vec3 cells = (worldPos - gBoxOrigin) / gCell;
+    float dim = float(LOCAL_GRID_DIM);
+    if (any(lessThan(cells, vec3(0.0))) || any(greaterThanEqual(cells, vec3(dim)))) {
+        return false;
+    }
+    vec3 uvw = cells / dim;
+    float slab = float(LOCAL_GRID_MAX_BOXES);
+    vec3 atlas = vec3(uvw.xy, (float(gBox) + uvw.z) / slab);
+    float half_cell = 0.5 / dim;
+    // Clamp Z to the slab's texel centres.
+    float zMin = (float(gBox) * dim + 0.5) / (dim * slab);
+    float zMax = (float(gBox + 1u) * dim - 0.5) / (dim * slab);
+    atlas.z = clamp(atlas.z, zMin, zMax);
+    atlas.xy = clamp(atlas.xy, vec2(half_cell), vec2(1.0 - half_cell));
+    chemistry = sanitizedChemistry(texture(previousLocalState, atlas));
+    dynamics = sanitizedDynamics(texture(previousLocalDynamics, atlas));
+    optical = sanitizedOptical(texture(previousLocalOptical, atlas));
+    return true;
+}
+
+// The BFECC limiter's clamp range: min/max of the texels the trilinear tap at
+// `worldPos` interpolates, fetched by integer coordinate inside this box's
+// slab so the clamp never sees a neighbouring box.
+bool previousTransportBounds(
+    vec3 worldPos,
+    out vec4 chemistryMin,
+    out vec4 chemistryMax,
+    out vec4 opticalMin,
+    out vec4 opticalMax
+) {
+    if ((push.info.y & (1u << gBox)) == 0u) {
+        return false;
+    }
+    vec3 cells = (worldPos - gBoxOrigin) / gCell;
+    int dim = int(LOCAL_GRID_DIM);
+    if (any(lessThan(cells, vec3(0.0))) || any(greaterThanEqual(cells, vec3(float(dim))))) {
+        return false;
+    }
+    ivec3 base = ivec3(floor(cells - vec3(0.5)));
+    chemistryMin = vec4(0.0, 1.0e9, 0.0, 0.0);
+    chemistryMax = vec4(0.0, -1.0e9, 0.0, 0.0);
+    opticalMin = vec4(1.0e9);
+    opticalMax = vec4(-1.0e9);
+    for (int corner = 0; corner < 8; ++corner) {
+        ivec3 offset = ivec3(corner & 1, (corner >> 1) & 1, (corner >> 2) & 1);
+        ivec3 coord = clamp(base + offset, ivec3(0), ivec3(dim - 1));
+        coord.z += int(gBox) * dim;
+        vec4 cornerChemistry = texelFetch(previousLocalState, coord, 0);
+        vec4 cornerOptical = texelFetch(previousLocalOptical, coord, 0);
+        chemistryMin = min(chemistryMin, cornerChemistry);
+        chemistryMax = max(chemistryMax, cornerChemistry);
+        opticalMin = min(opticalMin, cornerOptical);
+        opticalMax = max(opticalMax, cornerOptical);
+    }
+    return true;
+}
+
+uint hashWord(uint h, uint word) {
+    h ^= word;
+    h *= 0x9e3779b1u;
+    h ^= h >> 15;
+    h *= 0x85ebca6bu;
+    h ^= h >> 13;
+    return h;
+}
+
+void main() {
+    ivec3 global = ivec3(gl_GlobalInvocationID.xyz);
+    int dim = int(LOCAL_GRID_DIM);
+    int box = global.z / dim;
+    if (global.x >= dim || global.y >= dim || uint(box) >= push.info.x
+        || (push.info.z & (1u << uint(box))) == 0u) {
+        return;
+    }
+    ivec3 cell = ivec3(global.xy, global.z - box * dim);
+    gBox = uint(box);
+    gBoxOrigin = push.boxes[box].xyz;
+    gCell = push.boxes[box].w;
+
+    float simulationDt = clamp(params.fog_reference.w, 0.0, 1.0 / 15.0);
+    // Same sentinels as the froxel pass: a negative w means transport lapsed
+    // (write the empty state), below -1.5 the slot is already known empty.
+    bool transportExpired = params.fog_reference.w < 0.0;
+
+    vec3 center = gBoxOrigin + (vec3(cell) + 0.5) * gCell;
+    float halfCell = 0.5 * gCell;
+    // A cubic cell has no view ray; the source model integrates its coverage
+    // along a vertical column through the cell, matching how a rising plume
+    // is authored.
+    vec3 segmentStart = center - vec3(0.0, halfCell, 0.0);
+    vec3 segmentEnd = center + vec3(0.0, halfCell, 0.0);
+
+    vec4 chemistry;
+    vec4 dynamics;
+    vec4 optical;
+    transportCombustion(
+        center,
+        segmentStart,
+        segmentEnd,
+        vec3(gCell, 0.0, 0.0),
+        vec3(0.0, gCell, 0.0),
+        vec3(0.0, 0.0, gCell),
+        simulationDt,
+        transportExpired,
+        // The box is small and mostly active; no coarse occupancy gate.
+        simulationDt > 0.0 && !transportExpired,
+        chemistry,
+        dynamics,
+        optical
+    );
+
+    ivec3 texel = ivec3(cell.xy, cell.z + box * dim);
+    imageStore(localState, texel, chemistry);
+    imageStore(localDynamics, texel, dynamics);
+    imageStore(localOptical, texel, optical);
+
+    if (carriesCombustion(chemistry, optical)) {
+        uint linear = uint(cell.x + dim * (cell.y + dim * cell.z));
+        uint h = hashWord(0x811c9dc5u, linear);
+        h = hashWord(h, floatBitsToUint(chemistry.x));
+        h = hashWord(h, floatBitsToUint(chemistry.y));
+        h = hashWord(h, floatBitsToUint(chemistry.z));
+        h = hashWord(h, floatBitsToUint(chemistry.w));
+        h = hashWord(h, floatBitsToUint(dynamics.x));
+        h = hashWord(h, floatBitsToUint(dynamics.y));
+        h = hashWord(h, floatBitsToUint(dynamics.z));
+        h = hashWord(h, floatBitsToUint(dynamics.w));
+        h = hashWord(h, floatBitsToUint(optical.x));
+        h = hashWord(h, floatBitsToUint(optical.y));
+        h = hashWord(h, floatBitsToUint(optical.z));
+        uint base = uint(box) * 4u;
+        atomicAdd(localGridStats[base + 0u], 1u);
+        atomicXor(localGridStats[base + 1u], h);
+        atomicAdd(localGridStats[base + 2u], h);
+    }
+}
