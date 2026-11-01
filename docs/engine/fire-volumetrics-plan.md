@@ -362,8 +362,10 @@ the composite march (pinned RT tier, final frame of s1/s2a/s3a/s5).
 
 Error is small but larger than before on s1/s2a (99th percentile 1.7 and 3.0 /
 255 in those scenes). Jitter keeps the estimate unbiased, so what it adds is
-noise TAA integrates. Still to do for this phase: Matías's flicker review of a
-fly-through (`--bench-capture-every`).
+noise TAA integrates. **Reviewed by Matías (2026-11-01):** side-by-side
+sequences of s1/s2a/s3a (Phase 1 march | adaptive | 8x reference, every 3rd
+frame of a pan) "look good"; no flicker objection. Limit: the capture floor is
+every 3rd frame (20 fps), so 60 Hz flicker was not covered.
 
 ## Phase 3: Scattering appearance
 
