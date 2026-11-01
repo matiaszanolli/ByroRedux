@@ -374,7 +374,7 @@ vec4 localFireMarch(
     // are evaluated at most once per ray, by the first sample that is lit (soot)
     // or holds steam (steam), and blended per sample. With no sun radiance
     // neither is ever evaluated.
-    bool sunLive = any(greaterThan(localGrid.sun_radiance.rgb, vec3(0.0)));
+    const bool sunLive = false; // TEMP-ABLATE
     float sunCos = dot(localGrid.sun_dir.xyz, rayDir);
     vec3 sootOctaves = vec3(0.0);
     vec3 steamOctaves = vec3(0.0);
