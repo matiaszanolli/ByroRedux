@@ -388,6 +388,56 @@ every 3rd frame (20 fps), so 60 Hz flicker was not covered.
 **Done when:** thick smoke no longer looks flat or dirty, and steam and soot
 read as different materials in one scene.
 
+### Phase 3 design note (2026-11-01)
+
+Read before coding; sources were fetched from the primary documents, not
+recalled.
+
+**1. Multiple scattering: keep the closed-form series, soften its phase.**
+Wrenninge's octave scheme (as summarized in Hillaire, *Frostbite sky and clouds*,
+SIGGRAPH 2016 course notes, eqs. 19-20) sums octaves n = 0..N-1 with
+sigma_s' = sigma_s a^n, sigma_e' = sigma_e b^n and phase eccentricity scaled by
+c^n, and requires a <= b. The b^n term shortens the *light path* through the
+medium. Our light terms never march through the smoke they light (the sun
+visibility is a ray query against geometry, local lights get one transmittance
+tap, and composite reads a prepared irradiance field), so b^n has nothing to
+act on. The existing `1 + 0.6w + 0.3w^2` gain is the a^n part with a = albedo.
+Decision: keep that gain, and give each octave its own phase, g_n = g * c^n with
+c = 0.5 (Unreal's documented default for the same parameter; the Frostbite notes
+give no value). Total scattered energy is unchanged (every phase integrates to
+1); only its angular spread changes, so thick smoke loses the single peaked
+lobe that makes it read flat.
+
+**2. Species without a state or save change.** Steam and soot are today both the
+`Smoke` profile; what already differs is the transported spectral albedo
+(soot `[0.22, 0.16, 0.12]`, a white-tinted emitter up to 0.9, the no-colour
+fallback 0.67). The albedo is advected with the gas, so a cell mixing steam and
+soot gets an intermediate value for free. Decision: the species weight is a
+function of the cell's mean albedo, `smoothstep(0.4, 0.9, albedo)`; no new
+`FogProfile` variant (it would reach the save format) and no new field channel.
+The catch: a mid-grey smoke at 0.67 lands halfway; the fallback albedo is a
+candidate for revisiting if wood smoke reads too steamy.
+
+**3. Phase per species.** Soot keeps the repo's existing dual lobe (forward
+0.35, backward -0.12, mix 0.65), which is weaker-forward than fog. Steam uses
+Jendersie & d'Eon 2023, *An Approximate Mie Scattering Function for Fog and
+Cloud Rendering*, eqs. 2-7 (verified against the paper PDF):
+`phi = (1 - w_D) HG(g_HG) + w_D Draine(g_D, alpha)` with, for droplet diameter
+d in micrometres (fitted for 5 < d < 50),
+g_HG = exp(-0.0990567 / (d - 1.67154)),
+g_D = exp(-2.20679 / (d + 3.91029) - 0.428934),
+alpha = exp(3.62489 - 8.29288 / (d + 5.52825)),
+w_D = exp(-0.599085 / (d - 0.641583) - 0.665888).
+The diameter is an artistic choice, not a measured one: 10 um, inside the fitted
+range. It needs your eye, not a citation. The fit omits fogbow and glory.
+
+**4. Internal glow.** Not designed yet. First measure whether the derived fire
+lights already light smoke from inside (A/B with them off), then decide.
+
+**Stages.** 3a species phase + octave eccentricity, shared by the froxel inject
+pass and the local march; 3b internal glow; 3c a steam-and-soot lab scene and
+before/after captures for your review. Cost reported per stage.
+
 ## Phase 4: Fire colour and heat
 
 **[corrected]**
