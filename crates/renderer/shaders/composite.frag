@@ -141,6 +141,7 @@ layout(set = 0, binding = 11) uniform sampler2D shadowCorrectionTex;
 #include "include/local_grid_params.glsl"
 #include "include/combustion_medium.glsl"
 #include "include/medium_transport.glsl"
+#include "include/combustion_phase.glsl"
 layout(set = 0, binding = 13) uniform sampler3D localFireState;
 layout(set = 0, binding = 14) uniform sampler3D localFireOptical;
 layout(set = 0, binding = 15) uniform sampler3D localFireIrradiance;
@@ -489,20 +490,19 @@ vec4 localFireMarch(
             float slice = hybridSliceCoordinate(min(ts, gridFar));
             vec4 irradiance = texture(localFireIrradiance, vec3(uv, slice));
             float cosTheta = dot(localGrid.sun_dir.xyz, rayDir);
-            float sunPhase = mix(
-                medium_henyey_greenstein(cosTheta, localGrid.phase.y),
-                medium_henyey_greenstein(cosTheta, localGrid.phase.x),
-                clamp(localGrid.phase.z, 0.0, 1.0)
-            );
-            // Two-octave multiple-scattering gain, as in the froxel pass: the
-            // single-scatter term alone leaves thick smoke too dark.
+            // Species phase and the octave-softened multiple scattering, as in
+            // the froxel pass (`include/combustion_phase.glsl`). The irradiance
+            // field carries no direction, so its share stays isotropic and takes
+            // the plain two-octave gain, which is what the octave phases reduce
+            // to when the phase is flat.
             vec3 albedo = medium.scattering / max(vec3(medium.extinction), vec3(1.0e-6));
             vec3 gain = vec3(1.0)
                 + COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT * albedo
                 + COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT * albedo * albedo;
-            vec3 source = medium.scattering * gain * (
-                    localGrid.sun_radiance.rgb * sunPhase * irradiance.a
-                    + irradiance.rgb * LOCAL_FIRE_ISOTROPIC_PHASE
+            vec3 source = medium.scattering * (
+                    localGrid.sun_radiance.rgb * combustionMultiScatterPhase(cosTheta, albedo)
+                        * irradiance.a
+                    + gain * irradiance.rgb * LOCAL_FIRE_ISOTROPIC_PHASE
                 )
                 + medium.emission;
 

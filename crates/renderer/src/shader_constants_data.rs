@@ -1192,6 +1192,19 @@ pub const COMBUSTION_LOCAL_LIGHT_PHASE_MIX: f32 = 0.65;
 pub const COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT: f32 = 0.6;
 pub const COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT: f32 = 0.3;
 
+// Species phase (Phase 3, #6535). The steam lobe is the Jendersie & d'Eon 2023
+// fog fit, evaluated at this effective droplet diameter (micrometres; the fit
+// covers 5-50). The value is an artistic choice, not a measurement. A cell's
+// species is read from its mean transported albedo: at or below the LOW edge
+// it is soot (the repo's soot albedo is ~0.17), at or above the HIGH edge it is
+// steam (white-tinted emitters peak at 0.9). The octave eccentricity is the
+// per-bounce shrink of the phase anisotropy (Unreal's documented default for
+// the same Wrenninge parameter).
+pub const COMBUSTION_STEAM_DROPLET_DIAMETER_UM: f32 = 10.0;
+pub const COMBUSTION_SPECIES_STEAM_ALBEDO_LOW: f32 = 0.4;
+pub const COMBUSTION_SPECIES_STEAM_ALBEDO_HIGH: f32 = 0.9;
+pub const COMBUSTION_OCTAVE_ECCENTRICITY: f32 = 0.5;
+
 // Transported-combustion -> surface-light reduction. The froxel injector
 // accumulates fixed-point radiant moments into this camera-centred grid; Rust
 // drains the exact same ABI after the frame-slot fence. Keep the dimensions,
@@ -2890,6 +2903,10 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float COMBUSTION_LOCAL_LIGHT_PHASE_MIX),
     shader_define!(Float COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT),
     shader_define!(Float COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT),
+    shader_define!(Float COMBUSTION_STEAM_DROPLET_DIAMETER_UM),
+    shader_define!(Float COMBUSTION_SPECIES_STEAM_ALBEDO_LOW),
+    shader_define!(Float COMBUSTION_SPECIES_STEAM_ALBEDO_HIGH),
+    shader_define!(Float COMBUSTION_OCTAVE_ECCENTRICITY),
     shader_define!(Float COMBUSTION_SOOT_OXIDATION_START_TEMPERATURE_K),
     shader_define!(Float COMBUSTION_SOOT_OXIDATION_FULL_TEMPERATURE_K),
     shader_define!(Float EXPLOSION_EXPANSION_TIME_SECONDS),

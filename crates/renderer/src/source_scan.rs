@@ -34,6 +34,10 @@ pub(crate) fn volumetrics_inject_glsl() -> &'static str {
                 include_str!("../shaders/include/volumetrics_bindings.glsl"),
             ),
             (
+                "combustion_phase",
+                include_str!("../shaders/include/combustion_phase.glsl"),
+            ),
+            (
                 "combustion_sources",
                 include_str!("../shaders/include/combustion_sources.glsl"),
             ),

@@ -1967,7 +1967,8 @@ mod unit_tests {
     /// glass, rim probes, soot march) sits behind the `sunTermLive` test, so
     /// a zero-radiance sun (night; interiors' portal sun at night) or a
     /// froxel with no scattering medium traces none of them. The sun term is
-    /// `scattering_coef * phase * sun_color * visibility`, so the skip is
+    /// `scattering_coef * phase * sun_color * visibility` (split into the global and
+    /// species-phase local shares), so the skip is
     /// output-identical.
     #[test]
     fn sun_visibility_rays_are_gated_on_a_live_sun_term() {
@@ -1981,7 +1982,7 @@ mod unit_tests {
             "sunTermLive must test both factors of the sun in-scatter term"
         );
         let inscatter = shader
-            .find("scattering_coef * phase * params.sun_color.rgb * visibility")
+            .find("global_scattering_coef * phase * params.sun_color.rgb * visibility")
             .expect("sun in-scatter term");
         assert!(
             gate < inscatter,
@@ -2045,7 +2046,7 @@ mod unit_tests {
         assert!(gated.contains("ci < cluster.count && budgetedLocalLights < adaptiveLightCap"));
         assert!(gated.contains("traceShadowBinary("));
         assert!(gated.contains("transportedCombustionTransmittance("));
-        assert!(gated.contains("inscatter += scattering_coef * localPhase"));
+        assert!(gated.contains("inscatter += (global_scattering_coef * localPhase"));
     }
 
     /// #4971 — the froxel local-light budget is charged only for local lights
@@ -2201,7 +2202,7 @@ mod unit_tests {
             "COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT",
             "COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT",
             "vec3 multiscatter_gain = vec3(1.0)",
-            "+ local_medium.scattering * multiscatter_gain;",
+            "+ authored_medium.scattering * multiscatter_gain;",
             "COMBUSTION_BFECC_ERROR_CORRECTION_STRENGTH",
             "COMBUSTION_BFECC_ERROR_TRACE_THRESHOLD",
             "void applyBfeccErrorCorrection(",
@@ -2210,7 +2211,7 @@ mod unit_tests {
             "texelFetch(previousCombustionState, coord, 0)",
             "applyBfeccErrorCorrection(\n                worldPos,",
             "float localCosTheta = dot(-toLightDir, view_dir);",
-            "inscatter += scattering_coef * localPhase",
+            "inscatter += (global_scattering_coef * localPhase",
             "COMBUSTION_SOOT_OXIDATION_START_TEMPERATURE_K",
             "COMBUSTION_SOOT_OXIDATION_FULL_TEMPERATURE_K",
             "float sootRetention = exp(",

@@ -151,6 +151,7 @@ bool hasArchitectureRimAroundSkyRay(vec3 origin, vec3 direction, float tMax) {
     return true;
 }
 
+#include "include/combustion_phase.glsl"
 #include "include/combustion_sources.glsl"
 
 
@@ -858,6 +859,9 @@ void main() {
             transported_combustion.emission *= keep;
         }
     }
+    // The authored media (light shafts, homogeneous haze) keep the weather and
+    // local-light lobes; only the transported share takes the species phase.
+    LocalMedium authored_medium = local_medium;
     local_medium.extinction += transported_combustion.extinction;
     local_medium.scattering += transported_combustion.scattering;
     local_medium.emission += transported_combustion.emission;
@@ -884,14 +888,24 @@ void main() {
     // the local-medium share of the scattering coefficient: extinction, the
     // authored global fog term, and thermal emission are all untouched, so a
     // fog-only scene is bit-identical and fire keeps its direct-emission look.
-    vec3 local_medium_albedo = local_medium.scattering
-        / max(vec3(local_medium.extinction), vec3(1.0e-6));
+    vec3 authored_medium_albedo = authored_medium.scattering
+        / max(vec3(authored_medium.extinction), vec3(1.0e-6));
     vec3 multiscatter_gain = vec3(1.0)
-        + COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT * local_medium_albedo
+        + COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT * authored_medium_albedo
         + COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT
-            * local_medium_albedo * local_medium_albedo;
-    vec3 scattering_coef = global_extinction * global_albedo
-        + local_medium.scattering * multiscatter_gain;
+            * authored_medium_albedo * authored_medium_albedo;
+    // The transported share (flames, smoke, steam, blasts) gets the same gain
+    // for the gates below, but its phase comes from `combustionMultiScatterPhase`
+    // at its own albedo, which carries the gain's octaves with them.
+    vec3 transported_albedo = transported_combustion.scattering
+        / max(vec3(transported_combustion.extinction), vec3(1.0e-6));
+    vec3 transported_gain = vec3(1.0)
+        + COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT * transported_albedo
+        + COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT * transported_albedo * transported_albedo;
+    vec3 global_scattering_coef = global_extinction * global_albedo
+        + authored_medium.scattering * multiscatter_gain;
+    vec3 scattering_coef = global_scattering_coef
+        + transported_combustion.scattering * transported_gain;
 
     // CELL/WTHR fog colour is an apparent in-scattering colour, not merely a
     // hue for direct-light scattering. Treat it as the homogeneous medium's
@@ -1020,7 +1034,10 @@ void main() {
     // a fire visible in a pitch-dark cell.
     vec3 inscatter = authored_inscatter
         + local_medium.emission
-        + scattering_coef * phase * params.sun_color.rgb * visibility;
+        + global_scattering_coef * phase * params.sun_color.rgb * visibility
+        + transported_combustion.scattering
+            * combustionMultiScatterPhase(cos_theta, transported_albedo)
+            * params.sun_color.rgb * visibility;
 
     // Phase 2b — point/spot light in-scattering, reusing the same cluster
     // grid as surface shading. Every local light admitted by the bounded loop
@@ -1147,7 +1164,9 @@ void main() {
                     fract(jitter.z + float(ci) * 0.61803398875)
                 );
             }
-            inscatter += scattering_coef * localPhase
+            inscatter += (global_scattering_coef * localPhase
+                + transported_combustion.scattering
+                    * combustionMultiScatterPhase(localCosTheta, transported_albedo))
                 * lights[li].color_type.rgb * atten * localVisibility;
             lightFieldRadiance += lights[li].color_type.rgb * atten * localVisibility;
         }
