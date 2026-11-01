@@ -1125,6 +1125,9 @@ impl VolumetricsPipeline {
             .local_grid
             .as_ref()
             .map(|grid| grid.composite_barriers(frame));
+        if let Some(grid) = self.local_grid.as_ref() {
+            grid.record_publish_bricks(device, cmd);
+        }
         let published: Vec<vk::ImageMemoryBarrier> = std::iter::once(post_int)
             .chain(local_published.into_iter().flatten())
             .collect();

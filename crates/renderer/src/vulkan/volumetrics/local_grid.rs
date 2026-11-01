@@ -30,7 +30,7 @@ use super::{
     COMBUSTION_FIELD_FORMAT, FROXEL_FORMAT, MAX_FRAMES_IN_FLIGHT, WORLD_UNITS_PER_METER,
 };
 use crate::shader_constants::{
-    FOG_VOLUME_PROFILE_EXPLOSION, FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
+    LOCAL_GRID_BRICK, FOG_VOLUME_PROFILE_EXPLOSION, FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
     FOG_VOLUME_PROFILE_EXPLOSION_OIL, LOCAL_GRID_DEBUG_NO_HANDOFF, LOCAL_GRID_DEBUG_NO_MARCH,
     LOCAL_GRID_DIM, LOCAL_GRID_MAX_BOXES,
 };
@@ -48,6 +48,11 @@ pub(crate) const VOLUMETRICS_LOCAL_SIM_COMP_SPV: &[u8] =
 pub(crate) const LOCAL_GRID_CELLS: u32 = LOCAL_GRID_DIM;
 /// Boxes that can be live at once.
 pub(crate) const MAX_LOCAL_BOXES: usize = LOCAL_GRID_MAX_BOXES as usize;
+/// Bytes of one slot's occupancy-brick buffer: one `uint` per brick, per box
+/// `(LOCAL_GRID_DIM / LOCAL_GRID_BRICK)^3` bricks.
+pub(crate) const BRICK_BUFFER_BYTES: u64 = (MAX_LOCAL_BOXES as u64)
+    * ((LOCAL_GRID_DIM / LOCAL_GRID_BRICK) as u64).pow(3)
+    * 4;
 /// Workgroup edge in `volumetrics_local_sim.comp`.
 const LOCAL_SIM_WORKGROUP: u32 = 4;
 
@@ -97,6 +102,13 @@ pub(crate) struct LocalBox {
     /// This box (same placement) was simulated last frame, so the previous
     /// frame-in-flight slot holds its field.
     pub(crate) history: bool,
+    /// Built for an explosion. Such a box is sized for where the blast drives
+    /// its gas, holds every source inside it whatever their own cell size, and
+    /// replaces any finer box it overlaps: two boxes that overlap simulate
+    /// independent fluids, and the finer one owns the shared space in the draw,
+    /// so the blast's gas would be missing inside it (a rectangular hole in the
+    /// cloud).
+    pub(crate) explosion: bool,
 }
 
 impl LocalBox {
@@ -106,6 +118,14 @@ impl LocalBox {
 
     /// The source sphere sits inside the box with the inner margin clear on
     /// the sides and bottom (the top is free: that is where the plume goes).
+    /// The two boxes' volumes overlap.
+    fn overlaps(&self, other: &LocalBox) -> bool {
+        (0..3).all(|axis| {
+            self.origin[axis] < other.origin[axis] + other.edge()
+                && other.origin[axis] < self.origin[axis] + self.edge()
+        })
+    }
+
     fn contains_source(&self, center: [f32; 3], radius: f32) -> bool {
         let edge = self.edge();
         let margin = BOX_INNER_MARGIN * edge;
@@ -244,6 +264,7 @@ impl LocalBoxSet {
             radius: f32,
             wanted: Option<f32>,
             below: f32,
+            is_explosion: bool,
             distance_sq: f32,
         }
         let mut sources: Vec<Source> = volumes
@@ -277,27 +298,66 @@ impl LocalBoxSet {
                         radius,
                         wanted,
                         below,
+                        is_explosion: explosion,
                         distance_sq,
                     })
             })
             .collect();
-        sources.sort_by(|a, b| a.distance_sq.total_cmp(&b.distance_sq));
+        if local_grid_debug_bits() & DEBUG_ONLY_EXPLOSIONS != 0 {
+            sources.retain(|source| source.is_explosion);
+        }
+        // Explosions first: their boxes evict overlapping finer ones before
+        // those get a chance to be re-created or held this frame.
+        sources.sort_by(|a, b| {
+            b.is_explosion
+                .cmp(&a.is_explosion)
+                .then(a.distance_sq.total_cmp(&b.distance_sq))
+        });
 
         for source in &sources {
             let Some(wanted) = source.wanted else {
                 continue;
             };
             if let Some(held) = self.boxes.iter_mut().flatten().find(|b| {
-                b.cell <= wanted * 1.0001 && b.contains_source(source.center, source.radius)
+                (b.explosion || b.cell <= wanted * 1.0001)
+                    && b.contains_source(source.center, source.radius)
             }) {
-                held.last_source_time = now;
+                // A blast's box lives as long as the blast, not as long as a
+                // fire it happens to cover: that one is drawn there meanwhile
+                // and gets its own fine box back when the blast's box is gone.
+                if !held.explosion || source.is_explosion {
+                    held.last_source_time = now;
+                }
                 continue;
             }
             if source.distance_sq.sqrt() > reach_world {
                 continue; // inside the hysteresis band: held boxes only
             }
+            let origin = place_box(source.center, wanted, source.below);
+            let candidate = LocalBox {
+                origin,
+                cell: wanted,
+                last_source_time: now,
+                history: false,
+                explosion: source.is_explosion,
+            };
+            if source.is_explosion {
+                // A blast's box takes over the space of any finer box it overlaps.
+                for (index, slot) in self.boxes.iter_mut().enumerate() {
+                    if slot.is_some_and(|b| !b.explosion && b.overlaps(&candidate)) {
+                        log::debug!("local grid: box {index} evicted by an explosion box");
+                        *slot = None;
+                    }
+                }
+            } else if self
+                .boxes
+                .iter()
+                .flatten()
+                .any(|b| b.explosion && b.overlaps(&candidate))
+            {
+                continue; // inside a blast's box: drawn there, at its cell size
+            }
             if let Some(slot) = self.boxes.iter().position(Option::is_none) {
-                let origin = place_box(source.center, wanted, source.below);
                 log::debug!(
                     "local grid: box {slot} created at t={now:.2}s, cell {:.1} cm, edge {:.2} m, \
                      source radius {:.2} m at {:.1} m",
@@ -306,12 +366,7 @@ impl LocalBoxSet {
                     source.radius / WORLD_UNITS_PER_METER,
                     source.distance_sq.sqrt() / WORLD_UNITS_PER_METER,
                 );
-                self.boxes[slot] = Some(LocalBox {
-                    origin,
-                    cell: wanted,
-                    last_source_time: now,
-                    history: false,
-                });
+                self.boxes[slot] = Some(candidate);
             }
         }
 
@@ -346,9 +401,13 @@ pub(crate) fn local_sim_push_bytes(boxes: &LocalBoxSet) -> [u8; LOCAL_SIM_PUSH_B
     bytes
 }
 
+/// Host-only debug bit: boxes for explosions only (no flame or smoke boxes).
+const DEBUG_ONLY_EXPLOSIONS: u32 = 1 << 8;
+
 /// `BYRO_LOCAL_GRID_DEBUG`: comma-separated `no_march` (composite skips the
-/// close-range march) and/or `no_handoff` (the froxel pass keeps simulating the
-/// fire inside a box). A diagnostic for telling a fault in the local grid from
+/// close-range march), `no_handoff` (the froxel pass keeps simulating the
+/// fire inside a box) and/or `only_explosions` (no flame or smoke boxes, to look
+/// at a blast without a nested box). A diagnostic for telling a fault in the local grid from
 /// one in the froxels around it; unset in normal use. Read once per process.
 fn local_grid_debug_bits() -> u32 {
     static BITS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
@@ -359,9 +418,10 @@ fn local_grid_debug_bits() -> u32 {
         value.split(',').fold(0, |bits, word| match word.trim() {
             "no_march" => bits | LOCAL_GRID_DEBUG_NO_MARCH,
             "no_handoff" => bits | LOCAL_GRID_DEBUG_NO_HANDOFF,
+            "only_explosions" => bits | DEBUG_ONLY_EXPLOSIONS,
             "" => bits,
             other => {
-                log::warn!("BYRO_LOCAL_GRID_DEBUG: unknown word `{other}` (use no_march, no_handoff)");
+                log::warn!("BYRO_LOCAL_GRID_DEBUG: unknown word `{other}` (use no_march, no_handoff, only_explosions)");
                 bits
             }
         })
@@ -408,7 +468,7 @@ impl GpuLocalGridParams {
                 boxes.slab_count() as u32,
                 boxes.history_mask(),
                 boxes.live_mask(),
-                local_grid_debug_bits(),
+                local_grid_debug_bits() & (LOCAL_GRID_DEBUG_NO_MARCH | LOCAL_GRID_DEBUG_NO_HANDOFF),
             ];
         }
         params.sun_dir = [frame.sun_dir[0], frame.sun_dir[1], frame.sun_dir[2], 0.0];
@@ -437,6 +497,8 @@ pub struct LocalFireViews {
     pub optical: Vec<vk::ImageView>,
     /// Binding 15 — the irradiance field the inject pass writes.
     pub irradiance: Vec<vk::ImageView>,
+    /// Binding 16 — occupancy bricks (`BRICK_BUFFER_BYTES`).
+    pub bricks: Vec<vk::Buffer>,
 }
 
 /// What the sim pass reports about itself, summed over boxes.
@@ -482,6 +544,8 @@ pub(crate) fn local_grid_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding
         compute_binding(5, vk::DescriptorType::COMBINED_IMAGE_SAMPLER),
         // 6: per-box state reduction, drained by the host a frame later.
         compute_binding(6, vk::DescriptorType::STORAGE_BUFFER),
+        // 7: occupancy bricks, written by the sim, read by composite's march.
+        compute_binding(7, vk::DescriptorType::STORAGE_BUFFER),
     ]
 }
 
@@ -524,6 +588,8 @@ pub(crate) struct LocalGrid {
     froxel_extent: vk::Extent3D,
     /// Per-frame `LocalGridParams` UBO (host-visible).
     params_buffers: Vec<GpuBuffer>,
+    /// Per-frame occupancy bricks (device-local; cleared, then written by the sim).
+    brick_buffers: Vec<GpuBuffer>,
     /// Froxel-resolution irradiance field, written by the inject pass, read
     /// by the next inject (temporal) and by composite's fire march.
     irradiance: Vec<GpuImage>,
@@ -559,6 +625,7 @@ impl LocalGrid {
         let mut grid = Self {
             froxel_extent,
             params_buffers: Vec::new(),
+            brick_buffers: Vec::new(),
             irradiance: Vec::new(),
             set_layout: vk::DescriptorSetLayout::null(),
             pipeline_layout: vk::PipelineLayout::null(),
@@ -690,6 +757,12 @@ impl LocalGrid {
             let zeroed = params.write_mapped(device, std::slice::from_ref(&GpuLocalGridParams::default()));
             self.params_buffers.push(params);
             zeroed?;
+            self.brick_buffers.push(GpuBuffer::create_device_local_uninit(
+                device,
+                allocator,
+                BRICK_BUFFER_BYTES,
+                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            )?);
             self.irradiance.push(GpuImage::create(
                 device,
                 allocator,
@@ -739,6 +812,11 @@ impl LocalGrid {
                 offset: 0,
                 range: STATS_BYTES as vk::DeviceSize,
             }];
+            let bricks_info = [vk::DescriptorBufferInfo {
+                buffer: self.brick_buffers[f].buffer,
+                offset: 0,
+                range: BRICK_BUFFER_BYTES,
+            }];
             let set = self.sets[f];
             let writes = [
                 write_storage_image(set, 0, &write_state),
@@ -748,6 +826,7 @@ impl LocalGrid {
                 write_combined_image_sampler(set, 4, &read_dynamics),
                 write_combined_image_sampler(set, 5, &read_optical),
                 write_storage_buffer(set, 6, &stats_info),
+                write_storage_buffer(set, 7, &bricks_info),
             ];
             // SAFETY: the sets are freshly allocated and not yet in use.
             unsafe { device.update_descriptor_sets(&writes, &[]) };
@@ -779,6 +858,7 @@ impl LocalGrid {
             state: self.state.iter().map(|i| i.view).collect(),
             optical: self.optical.iter().map(|i| i.view).collect(),
             irradiance: self.irradiance.iter().map(|i| i.view).collect(),
+            bricks: self.brick_buffers.iter().map(|b| b.buffer).collect(),
         }
     }
 
@@ -877,6 +957,22 @@ impl LocalGrid {
         }
     }
 
+    /// Publish the sim's occupancy-brick writes to composite's fragment reads.
+    ///
+    /// # Safety
+    ///
+    /// `cmd` must be recording outside a render pass.
+    pub(crate) unsafe fn record_publish_bricks(&self, device: &ash::Device, cmd: vk::CommandBuffer) {
+        super::memory_barrier(
+            device,
+            cmd,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::AccessFlags::SHADER_WRITE,
+            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::AccessFlags::SHADER_READ,
+        );
+    }
+
     /// Barriers publishing this frame's compute writes to composite's fragment
     /// reads: the atlas (state / optical) and the irradiance field.
     pub(crate) fn composite_barriers(&self, frame: usize) -> [vk::ImageMemoryBarrier<'static>; 3] {
@@ -945,6 +1041,21 @@ impl LocalGrid {
         inject_set: vk::DescriptorSet,
         mut timers: Option<&mut super::super::gpu_timers::GpuPerFrameTimers>,
     ) {
+        // Zero this slot's occupancy bricks; the sim only ever sets them.
+        // SAFETY: caller contract — `cmd` is recording outside a render pass and
+        // this slot's brick buffer is idle (its last reader, composite, finished
+        // two frames ago and the all-slots fence wait has retired it).
+        unsafe {
+            device.cmd_fill_buffer(cmd, self.brick_buffers[frame].buffer, 0, BRICK_BUFFER_BYTES, 0);
+        }
+        super::memory_barrier(
+            device,
+            cmd,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::AccessFlags::TRANSFER_WRITE,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
+        );
         let previous = (frame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
         let barriers = [&self.state, &self.dynamics, &self.optical].map(|slots| {
             [
@@ -1056,11 +1167,17 @@ impl LocalGrid {
         for mut image in self.irradiance.drain(..) {
             image.destroy(device, allocator);
         }
-        for buffer in self.stats_buffers.iter_mut().chain(self.params_buffers.iter_mut()) {
+        for buffer in self
+            .stats_buffers
+            .iter_mut()
+            .chain(self.params_buffers.iter_mut())
+            .chain(self.brick_buffers.iter_mut())
+        {
             buffer.destroy(device, allocator);
         }
         self.stats_buffers.clear();
         self.params_buffers.clear();
+        self.brick_buffers.clear();
         // SAFETY: caller contract — nothing is in flight; each handle is
         // destroyed once and nulled.
         unsafe {
@@ -1247,6 +1364,38 @@ mod tests {
     }
 
     #[test]
+    fn an_explosion_box_replaces_an_overlapping_flame_box_and_holds_its_flame() {
+        let mut set = LocalBoxSet::default();
+        let torch = flame([2.0, 0.5, 3.0], 0.15);
+        update(&mut set, &[torch], 0.0);
+        let torch_box = set.boxes()[0].unwrap();
+        assert_eq!(torch_box.cell, 0.025 * METER);
+        assert!(!torch_box.explosion);
+        // A blast two metres away: its 12.8 m box covers the torch's.
+        let blast = explosion([4.0, 1.0, 3.0], 0.72);
+        update(&mut set, &[torch, blast], 1.0);
+        assert_eq!(set.live_count(), 1, "one box where there were two would overlap");
+        let blast_box = set.boxes().iter().flatten().next().unwrap();
+        assert!(blast_box.explosion);
+        assert!(blast_box.contains_source([2.0 * METER, 0.5 * METER, 3.0 * METER], 0.15 * METER));
+        // The torch keeps being held by the blast's coarser box instead of
+        // getting a nested fine one back.
+        update(&mut set, &[torch, blast], 2.0);
+        assert_eq!(set.live_count(), 1);
+        // Once the blast is over and its box has lingered out, the torch gets a
+        // fine box again.
+        let mut now = 2.0;
+        while set.live_count() > 0 && now < 60.0 {
+            now += 1.0;
+            update(&mut set, &[torch], now);
+        }
+        update(&mut set, &[torch], now + 1.0);
+        let again = set.boxes().iter().flatten().next().expect("torch box returns");
+        assert_eq!(again.cell, 0.025 * METER);
+        assert!(!again.explosion);
+    }
+
+    #[test]
     fn local_grid_shaders_pin_the_bfecc_seam_and_the_open_boundary() {
         let sim = include_str!("../../../shaders/volumetrics_local_sim.comp");
         let inject = include_str!("../../../shaders/volumetrics_inject.comp");
@@ -1264,6 +1413,9 @@ mod tests {
             .and_then(|rest| rest.split("vec3 uvw = cells / dim;").next())
             .expect("sampler's out-of-box branch");
         assert!(open.contains("return true;"), "out-of-box must read as open air");
+        // ... unless another live box with history covers the point: a nested
+        // fine box is fed by its parent, or the parent's gas is erased inside it.
+        assert!(open.contains("push.info.y & (1u << b)") && open.contains("push.boxes[b].xyz"));
     }
 
     #[test]

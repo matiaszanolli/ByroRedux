@@ -86,6 +86,30 @@ bool localBoxNear(vec3 p, float margin) {
     return false;
 }
 
+// How much of a box's own rendering `p` keeps: 1 well inside, 0 at the face,
+// rising over `LOCAL_GRID_FADE_CELLS` cells. The close-range march scales its
+// medium by this and the froxel pass scales the fire it hands off by 1 - this,
+// so gas crossing a box face is cross-faded between the two renderings instead
+// of cut flat.
+float localBoxFade(uint box, vec3 p) {
+    vec3 local = p - localGrid.boxes[box].xyz;
+    float edge = localBoxEdge(box);
+    vec3 inside = min(local, vec3(edge) - local);
+    float depth = min(inside.x, min(inside.y, inside.z));
+    return smoothstep(0.0, LOCAL_GRID_FADE_CELLS * localGrid.boxes[box].w, depth);
+}
+
+// Occupancy bricks: `LOCAL_GRID_BRICK`^3 cells each, one uint per brick, per box
+// `LOCAL_GRID_BRICKS_PER_AXIS`^3 bricks. Non-zero when any cell of the brick, or
+// of the one-cell skirt around it, carries combustion (so a filtered tap inside
+// an empty-looking brick never reads past a populated neighbour).
+const uint LOCAL_GRID_BRICKS_PER_AXIS = uint(LOCAL_GRID_DIM) / uint(LOCAL_GRID_BRICK);
+
+uint localBrickIndex(uint box, ivec3 brick) {
+    uint per = LOCAL_GRID_BRICKS_PER_AXIS;
+    return box * per * per * per + uint(brick.x) + per * (uint(brick.y) + per * uint(brick.z));
+}
+
 // Atlas texture coordinate of absolute point `p` inside box `box`, clamped to
 // the slab's texel centres so filtering never reaches a neighbouring box.
 vec3 localAtlasUvw(uint box, vec3 p) {

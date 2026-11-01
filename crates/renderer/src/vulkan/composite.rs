@@ -27,7 +27,7 @@ use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::cloud_noise::CloudNoiseViews;
 use super::descriptors::{
-    write_combined_image_sampler, write_uniform_buffer, DescriptorPoolBuilder,
+    write_combined_image_sampler, write_storage_buffer, write_uniform_buffer, DescriptorPoolBuilder,
 };
 use super::gbuffer::FSR_MASK_FORMAT;
 use super::image::{GpuImage, GpuImageDesc};
@@ -445,6 +445,12 @@ pub(super) fn composite_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<
         layout_binding(
             15,
             vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
+        // 16: the local grid's occupancy bricks (SSBO) — empty bricks are jumped over.
+        layout_binding(
+            16,
+            vk::DescriptorType::STORAGE_BUFFER,
             vk::ShaderStageFlags::FRAGMENT,
         ),
     ]
@@ -926,6 +932,11 @@ impl CompositePipeline {
             let local_fire_state_info = [general_sampled_image_info(partial.hdr_sampler, local_fire.state[i])];
             let local_fire_optical_info = [general_sampled_image_info(partial.hdr_sampler, local_fire.optical[i])];
             let local_fire_irradiance_info = [general_sampled_image_info(partial.hdr_sampler, local_fire.irradiance[i])];
+            let local_fire_bricks_info = [vk::DescriptorBufferInfo {
+                buffer: local_fire.bricks[i],
+                offset: 0,
+                range: vk::WHOLE_SIZE,
+            }];
             let cloud_base_info = [sampled_image_info(cloud_noise.sampler, cloud_noise.base)];
             let cloud_detail_info = [sampled_image_info(cloud_noise.sampler, cloud_noise.detail)];
             let shadow_correction_info = [image_info(partial.nearest_sampler, shadow_correction.views[i], shadow_correction.layout)];
@@ -947,6 +958,7 @@ impl CompositePipeline {
                 write_combined_image_sampler(set, 13, &local_fire_state_info),
                 write_combined_image_sampler(set, 14, &local_fire_optical_info),
                 write_combined_image_sampler(set, 15, &local_fire_irradiance_info),
+                write_storage_buffer(set, 16, &local_fire_bricks_info),
             ];
             // SAFETY: descriptor sets owned by `partial`; writes reference
             // HDR / depth / indirect / albedo / caustic / volumetric /
@@ -1279,6 +1291,11 @@ impl CompositePipeline {
                 let local_fire_state_info = [general_sampled_image_info(self.hdr_sampler, local_fire.state[i])];
                 let local_fire_optical_info = [general_sampled_image_info(self.hdr_sampler, local_fire.optical[i])];
                 let local_fire_irradiance_info = [general_sampled_image_info(self.hdr_sampler, local_fire.irradiance[i])];
+                let local_fire_bricks_info = [vk::DescriptorBufferInfo {
+                    buffer: local_fire.bricks[i],
+                    offset: 0,
+                    range: vk::WHOLE_SIZE,
+                }];
                 // Typed [_; 16] array (was [_; 12] pre-local-grid, [_; 8] pre-#1257, [_; 9] pre-SKYAL
                 // Typed [_; 12] array (was [_; 8] pre-#1257, [_; 9] pre-SKYAL
                 // clouds, [_; 11] pre-shadow-filter) — compile catches
@@ -1289,7 +1306,7 @@ impl CompositePipeline {
                 let cloud_detail_info = [sampled_image_info(cloud_noise.sampler, cloud_noise.detail)];
                 let shadow_correction_info = [image_info(self.nearest_sampler, shadow_correction.views[i], shadow_correction.layout)];
                 let set = self.descriptor_sets[i];
-                let writes: [vk::WriteDescriptorSet; 16] = [
+                let writes: [vk::WriteDescriptorSet; 17] = [
                     write_combined_image_sampler(set, 0, &hdr_info),
                     write_combined_image_sampler(set, 1, &indirect_info),
                     write_combined_image_sampler(set, 2, &albedo_info),
@@ -1306,6 +1323,7 @@ impl CompositePipeline {
                     write_combined_image_sampler(set, 13, &local_fire_state_info),
                     write_combined_image_sampler(set, 14, &local_fire_optical_info),
                     write_combined_image_sampler(set, 15, &local_fire_irradiance_info),
+                    write_storage_buffer(set, 16, &local_fire_bricks_info),
                 ];
                 // SAFETY: descriptor sets owned by `self`; writes
                 // reference freshly-recreated HDR views (owned by `self`)

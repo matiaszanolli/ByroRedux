@@ -144,6 +144,10 @@ layout(set = 0, binding = 11) uniform sampler2D shadowCorrectionTex;
 layout(set = 0, binding = 13) uniform sampler3D localFireState;
 layout(set = 0, binding = 14) uniform sampler3D localFireOptical;
 layout(set = 0, binding = 15) uniform sampler3D localFireIrradiance;
+// 16: the occupancy bricks the sim wrote this frame; empty ones are jumped over.
+layout(std430, set = 0, binding = 16) readonly buffer LocalFireBricks {
+    uint localFireBricks[];
+};
 
 // CAUSTIC_FIXED_SCALE from shader_constants.glsl — generated from
 // src/shader_constants_data.rs. Build-time drift catch: edit
@@ -289,6 +293,9 @@ vec4 sampleVolumetricColumn(
 // matters for a ray running diagonally through a corner at a fraction of a cell
 // per step; it bounds the worst-case per-pixel cost.
 const int LOCAL_FIRE_MAX_STEPS_PER_BOX = 160;
+// Empty-brick jumps a ray may take through one box (at most 3 * 8 bricks are
+// crossed along any axis-aligned path; diagonals cross a few more).
+const int LOCAL_FIRE_MAX_BRICK_JUMPS = 64;
 // Radiance is stored without the isotropic phase of the local lights.
 const float LOCAL_FIRE_ISOTROPIC_PHASE = 1.0 / (4.0 * 3.14159265358979323846);
 // Below this the remaining ray can no longer change the pixel.
@@ -374,12 +381,51 @@ vec4 localFireMarch(
         }
 
         float cell = localGrid.boxes[box].w;
-        float span = exit_[box] - entry[box];
-        int steps = clamp(int(ceil(span / cell)), 1, LOCAL_FIRE_MAX_STEPS_PER_BOX);
-        float stepLength = span / float(steps);
-        for (int i = 0; i < steps; ++i) {
-            float t = entry[box] + (float(i) + jitter) * stepLength;
-            vec3 positionAbs = rayOrigin + rayDir * t + localGrid.render_origin.xyz;
+        float stepLength = cell;
+        float t = entry[box];
+        float tEnd = exit_[box];
+        vec3 boxOrigin = localGrid.boxes[box].xyz - localGrid.render_origin.xyz;
+        vec3 dirCells = rayDir / cell;
+        int activeSteps = 0;
+        int jumps = 0;
+        while (t < tEnd
+            && activeSteps < LOCAL_FIRE_MAX_STEPS_PER_BOX
+            && jumps < LOCAL_FIRE_MAX_BRICK_JUMPS) {
+            // Where the ray is, in cells of this box, and the brick it is in.
+            vec3 cells = (rayOrigin + rayDir * t - boxOrigin) / cell;
+            ivec3 brick = clamp(
+                ivec3(floor(cells / float(LOCAL_GRID_BRICK))),
+                ivec3(0),
+                ivec3(int(LOCAL_GRID_BRICKS_PER_AXIS) - 1)
+            );
+            if (localFireBricks[localBrickIndex(box, brick)] == 0u) {
+                // Empty brick: leave it along the ray in one jump instead of
+                // sampling its 8^3 cells of clear air.
+                vec3 brickMin = vec3(brick * int(LOCAL_GRID_BRICK));
+                vec3 toFace = mix(
+                    brickMin - cells,
+                    brickMin + vec3(float(LOCAL_GRID_BRICK)) - cells,
+                    greaterThan(dirCells, vec3(0.0))
+                );
+                vec3 perAxis = vec3(
+                    dirCells.x != 0.0 ? toFace.x / dirCells.x : 1.0e30,
+                    dirCells.y != 0.0 ? toFace.y / dirCells.y : 1.0e30,
+                    dirCells.z != 0.0 ? toFace.z / dirCells.z : 1.0e30
+                );
+                t += max(min(perAxis.x, min(perAxis.y, perAxis.z)), 0.02 * cell);
+                ++jumps;
+                continue;
+            }
+
+            // One step through an occupied brick: sample inside it (jittered)
+            // and integrate the whole segment. `t` advances first so every
+            // `continue` below moves on.
+            float segment = min(stepLength, tEnd - t);
+            float ts = t + jitter * segment;
+            t += segment;
+            ++activeSteps;
+
+            vec3 positionAbs = rayOrigin + rayDir * ts + localGrid.render_origin.xyz;
             uint owner;
             // A finer box nested inside this one draws its own region. With a
             // single live box there is nothing to arbitrate.
@@ -388,22 +434,36 @@ vec4 localFireMarch(
             }
             vec3 uvw = localAtlasUvw(box, positionAbs);
             vec4 chemistry = texture(localFireState, uvw);
-            // Most cells of a box are clear air. The state alone decides that
-            // (soot, fuel vapour and hot gas are the only things that attenuate
-            // or emit), so skip the optics fetch and the blackbody evaluation
-            // `combustionMedium` costs for them.
+            // Most cells of an occupied brick are still clear air. The state
+            // alone decides that (soot, fuel vapour and hot gas are the only
+            // things that attenuate or emit), so skip the optics fetch and the
+            // blackbody evaluation `combustionMedium` costs for them.
             if (chemistry.x <= 1.0e-4 && chemistry.z <= 1.0e-6 && chemistry.w <= 1.0e-4) {
                 continue;
             }
             vec4 optical = texture(localFireOptical, uvw);
             LocalMedium medium = combustionMedium(chemistry, optical);
+            // Cross-fade with the froxels across the box face. Depth from the
+            // face in cells, from the segment start: the fade is smooth over
+            // 8 cells so the half-cell error is invisible, and most samples sit
+            // deeper than the fade and skip it.
+            float faceDepth = min(
+                min(min(cells.x, float(LOCAL_GRID_DIM) - cells.x), min(cells.y, float(LOCAL_GRID_DIM) - cells.y)),
+                min(cells.z, float(LOCAL_GRID_DIM) - cells.z)
+            );
+            if (faceDepth < LOCAL_GRID_FADE_CELLS) {
+                float fade = smoothstep(0.0, LOCAL_GRID_FADE_CELLS, faceDepth);
+                medium.extinction *= fade;
+                medium.scattering *= fade;
+                medium.emission *= fade;
+            }
             if (medium.extinction <= 1.0e-7 && max(medium.emission.r, max(medium.emission.g, medium.emission.b)) <= 1.0e-7) {
                 continue;
             }
 
             // Irradiance field: same camera ray column and slice mapping the
             // froxel pass wrote it with, so (uv, slice) addresses it directly.
-            float slice = hybridSliceCoordinate(min(t, gridFar));
+            float slice = hybridSliceCoordinate(min(ts, gridFar));
             vec4 irradiance = texture(localFireIrradiance, vec3(uv, slice));
             float cosTheta = dot(localGrid.sun_dir.xyz, rayDir);
             float sunPhase = mix(
@@ -423,7 +483,7 @@ vec4 localFireMarch(
                 )
                 + medium.emission;
 
-            vec2 slab = medium_slab(medium.extinction, stepLength);
+            vec2 slab = medium_slab(medium.extinction, segment);
             radiance += transmittance * slab.y * source;
             transmittance *= slab.x;
             if (transmittance < LOCAL_FIRE_OPAQUE_TRANSMITTANCE) {

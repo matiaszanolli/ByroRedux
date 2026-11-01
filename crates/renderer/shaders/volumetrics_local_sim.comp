@@ -47,6 +47,14 @@ layout(std430, set = 1, binding = 6) buffer LocalGridStats {
     uint localGridStats[];
 };
 
+// Occupancy bricks (see `include/local_grid_params.glsl`): the host zeroes this
+// slot's buffer before the dispatch; a cell carrying combustion sets its own
+// brick and every brick within one cell of it. Composite's march skips the
+// bricks that stay zero.
+layout(std430, set = 1, binding = 7) buffer LocalGridBricks {
+    uint localGridBricks[];
+};
+
 layout(push_constant) uniform LocalSimPush {
     // xyz = absolute world position of the box's minimum corner,
     // w = cell edge in world units.
@@ -66,8 +74,8 @@ float gCell;
 #include "include/combustion_transport.glsl"
 
 // The transport seam: previous-frame state at an arbitrary world position,
-// by hardware trilinear filtering inside this box's slab of the atlas. A
-// position outside the box reads as clear air at rest (open boundary). The sample is
+// by hardware trilinear filtering inside a box's slab of the atlas (this box's
+// own, or a covering box's beyond its faces; see below). The sample is
 // clamped half a cell inside the slab so filtering never reaches the
 // neighbouring box in the atlas.
 bool samplePreviousTransport(
@@ -82,23 +90,45 @@ bool samplePreviousTransport(
     if ((push.info.y & (1u << gBox)) == 0u) {
         return false;
     }
-    vec3 cells = (worldPos - gBoxOrigin) / gCell;
     float dim = float(LOCAL_GRID_DIM);
+    vec3 cells = (worldPos - gBoxOrigin) / gCell;
+    uint source = gBox;
     if (any(lessThan(cells, vec3(0.0))) || any(greaterThanEqual(cells, vec3(dim)))) {
-        // Open boundary: beyond the box is clear air at rest. Reporting "no
-        // history" instead would make the boundary cells keep their own state
-        // (the froxel pass's off-screen rule), so gas reaching a face would
-        // freeze there instead of leaving. The froxel grid carries it on from
-        // the coarse state the hand-off writes.
-        return true;
+        // Beyond this box. If another live box with history covers the point,
+        // its field is the boundary condition (a fine box nested in a coarse
+        // one is fed by it; without this the finer box, which owns the space in
+        // the draw, would show the coarse box's gas erased inside it). The finest
+        // such box wins. Failing that it is clear air at rest: an open boundary,
+        // so gas reaching a face leaves instead of freezing there (the froxel
+        // pass's "no history" rule would keep the boundary cell's own state).
+        float best = 1.0e30;
+        bool found = false;
+        for (uint b = 0u; b < uint(LOCAL_GRID_MAX_BOXES); ++b) {
+            if (b == gBox || (push.info.z & (1u << b)) == 0u || (push.info.y & (1u << b)) == 0u) {
+                continue;
+            }
+            vec3 other = (worldPos - push.boxes[b].xyz) / push.boxes[b].w;
+            if (any(lessThan(other, vec3(0.0))) || any(greaterThanEqual(other, vec3(dim)))) {
+                continue;
+            }
+            if (push.boxes[b].w < best) {
+                best = push.boxes[b].w;
+                source = b;
+                cells = other;
+                found = true;
+            }
+        }
+        if (!found) {
+            return true;
+        }
     }
     vec3 uvw = cells / dim;
     float slab = float(LOCAL_GRID_MAX_BOXES);
-    vec3 atlas = vec3(uvw.xy, (float(gBox) + uvw.z) / slab);
+    vec3 atlas = vec3(uvw.xy, (float(source) + uvw.z) / slab);
     float half_cell = 0.5 / dim;
     // Clamp Z to the slab's texel centres.
-    float zMin = (float(gBox) * dim + 0.5) / (dim * slab);
-    float zMax = (float(gBox + 1u) * dim - 0.5) / (dim * slab);
+    float zMin = (float(source) * dim + 0.5) / (dim * slab);
+    float zMax = (float(source + 1u) * dim - 0.5) / (dim * slab);
     atlas.z = clamp(atlas.z, zMin, zMax);
     atlas.xy = clamp(atlas.xy, vec2(half_cell), vec2(1.0 - half_cell));
     chemistry = sanitizedChemistry(texture(previousLocalState, atlas));
@@ -224,6 +254,16 @@ void main() {
         h = hashWord(h, floatBitsToUint(optical.y));
         h = hashWord(h, floatBitsToUint(optical.z));
         uint base = uint(box) * 4u;
+        // Bricks: this cell and its one-cell skirt.
+        ivec3 lo = max(cell - ivec3(1), ivec3(0)) / int(LOCAL_GRID_BRICK);
+        ivec3 hi = min(cell + ivec3(1), ivec3(dim - 1)) / int(LOCAL_GRID_BRICK);
+        for (int bz = lo.z; bz <= hi.z; ++bz) {
+            for (int by = lo.y; by <= hi.y; ++by) {
+                for (int bx = lo.x; bx <= hi.x; ++bx) {
+                    localGridBricks[localBrickIndex(uint(box), ivec3(bx, by, bz))] = 1u;
+                }
+            }
+        }
         atomicAdd(localGridStats[base + 0u], 1u);
         atomicXor(localGridStats[base + 1u], h);
         atomicAdd(localGridStats[base + 2u], h);

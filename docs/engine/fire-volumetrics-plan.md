@@ -214,16 +214,23 @@ now includes the march):
 
 | scene | local sim | inject base → 1c | `volumetrics` total base → 1c | composite base → 1c | **total added** |
 |---|---:|---|---|---|---:|
-| s1_close_flame | 0.077 | 0.583 → 0.588 | 0.613 → 0.693 | 0.067 → 0.550 | **+0.56** |
-| s2a_oil_blast_2s | 0.113 | 0.674 → 0.618 | 0.715 → 0.766 | 0.103 → 0.754 | **+0.70** |
-| s3a_nuclear_blast_2s | 0.836 | 0.728 → 0.584 | 0.769 → 1.505 | 0.104 → 1.188 | **+1.82** |
-| s5_skyrim_mare_hearth | 0.134 | 0.634 → 0.676 | 0.659 → 0.837 | 0.074 → 0.720 | **+0.82** |
+| s1_close_flame | 0.084 | 0.650 → 0.643 | 0.681 → 0.761 | 0.108 → 0.461 | **+0.43** |
+| s2a_oil_blast_2s | 0.074 | 0.572 → 0.665 | 0.607 → 0.779 | 0.100 → 0.339 | **+0.41** |
+| s3a_nuclear_blast_2s | 0.120 | 0.673 → 0.732 | 0.713 → 0.894 | 0.102 → 0.971 | **+1.05** |
+| s5_skyrim_mare_hearth | 0.145 | 0.633 → 0.676 | 0.659 → 0.850 | 0.071 → 0.415 | **+0.53** |
 
-Where the cost is: the march (one sample per cell along every ray through a
-box: s1's box covers about 60 % of the screen). It is the obvious target for
-Phase 2's adaptive step size; empty-space skipping through a coarse occupancy
-grid is the larger win. The nuclear scene is dominated by the sim (172k active
-cells).
+(Measured after the follow-ups below: base and 1c interleaved run by run so GPU
+clock drift hits both. The composite march skips empty occupancy bricks; the
+nuclear scene's sim is now cheap because the flame no longer gets a second,
+overlapping box during the blast.)
+
+Where the cost is: the composite march, one sample per cell along every ray
+through a box (s1's box covers about 60 % of the screen). Empty-space skipping
+through coarse occupancy bricks (below) took it from about 0.5-0.7 ms to 0.3-0.5
+ms on the sparse scenes; Phase 2's adaptive step size is the remaining lever.
+On a box the gas fills (a dense blast) the per-step brick lookup is overhead
+rather than a saving: that case measured slower with bricks than without in an
+earlier run, and the interleaved numbers above are the ones to trust.
 
 Checks run: renderer and workspace tests green apart from the unrelated
 `ROADMAP.md` line ceiling; `check-shader-artifacts.sh` green; sync validation
@@ -269,6 +276,35 @@ Known problems (for review):
   preserves (flame emission is exponential in temperature; a plain mean of the
   state radiates nothing and the room loses the fire's glow, which is what the
   first version did).
+
+**Open items from the first review, worked through** (Matías asked for all three):
+
+1. **Explosion look.** A reference render of the baseline binary with very fine
+   froxels (`--froxel-xy-divisor 2 --froxel-z-slices 256`, 640×360×256, 22 ms for
+   the inject pass alone, so only a yardstick) shows what the coarse baseline was
+   approximating. For the oil blast (s2a) the local grid is much closer to that
+   reference than the coarse baseline is: flame, smoke ball and the dimmer, less
+   pink wall lighting all match it (`..._reference_fine_froxels.png`). So that
+   difference is the old look being under-resolved, not a fault. For the nuclear
+   blast (s3a) the reference keeps a thin grey smoke shell at the blast front
+   that the local grid loses: plain semi-Lagrangian advection (BFECC is off, see
+   above) at 20 cm cells smears a sheet that thin. Open; a finer explosion cell
+   needs a bigger grid or a nested finer box, and BFECC is Phase 6.
+2. **Flat faces and the rectangular hole.** Two causes. (a) A rectangle cut out
+   of the blast cloud was the flame's fine box nested inside the explosion's box:
+   the finer box owns the shared space in the draw, its sim has never seen the
+   blast's gas, so the cloud was missing there. Traced by giving only the
+   explosion a box (`BYRO_LOCAL_GRID_DEBUG=only_explosions`: smooth round dome).
+   Fixed by never nesting: an explosion box holds every source it covers and
+   evicts any finer box it overlaps; the flame renders at the blast's cell size
+   until the blast's box is gone, then gets its fine box back. A box also reads a
+   covering box's field beyond its faces instead of clear air, for the overlaps
+   that remain. (b) A genuine box face is now a cross-fade, not a cut: the march
+   fades its density out and the froxel pass fades its share in over
+   `LOCAL_GRID_FADE_CELLS` (8) cells.
+3. **March cost.** The sim writes a brick of occupancy per 8^3 cells (this cell
+   and its one-cell skirt); the march jumps over empty bricks instead of
+   sampling 512 cells of clear air. The numbers are in the table above.
 
 **Risks to plan around.**
 

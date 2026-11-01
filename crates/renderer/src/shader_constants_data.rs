@@ -1978,6 +1978,13 @@ pub const FOG_VOLUME_CLUSTER_DIM: u32 = 16;
 /// size dispatches, push constants and the stats buffer from these.
 pub const LOCAL_GRID_DIM: u32 = 64;
 pub const LOCAL_GRID_MAX_BOXES: u32 = 4;
+/// Cells per brick edge of the occupancy bricks the sim writes and composite's
+/// march skips empty space with (`LOCAL_GRID_DIM / LOCAL_GRID_BRICK` bricks per box axis).
+pub const LOCAL_GRID_BRICK: u32 = 8;
+/// Width, in cells of the box, of the cross-fade at a box face: the local march
+/// fades its density out and the froxels fade theirs in over this distance, so
+/// gas crossing a face is not cut flat.
+pub const LOCAL_GRID_FADE_CELLS: f32 = 8.0;
 /// `BYRO_LOCAL_GRID_DEBUG` bits carried in the local-grid table's `info.w`:
 /// composite skips the close-range march / the froxel pass skips the hand-off.
 /// A diagnostic for telling a fault in the local grid from one in the froxels.
@@ -3132,6 +3139,8 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint FOG_VOLUME_CLUSTER_DIM),
     shader_define!(Uint LOCAL_GRID_DIM),
     shader_define!(Uint LOCAL_GRID_MAX_BOXES),
+    shader_define!(Uint LOCAL_GRID_BRICK),
+    shader_define!(Float LOCAL_GRID_FADE_CELLS),
     shader_define!(Uint LOCAL_GRID_DEBUG_NO_MARCH),
     shader_define!(Uint LOCAL_GRID_DEBUG_NO_HANDOFF),
     shader_define!(Uint MAX_FOG_VOLUMES_PER_CLUSTER),
