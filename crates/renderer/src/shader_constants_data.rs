@@ -1990,6 +1990,9 @@ pub const LOCAL_GRID_FADE_CELLS: f32 = 8.0;
 /// A diagnostic for telling a fault in the local grid from one in the froxels.
 pub const LOCAL_GRID_DEBUG_NO_MARCH: u32 = 1;
 pub const LOCAL_GRID_DEBUG_NO_HANDOFF: u32 = 2;
+/// Composite marches eight samples per cell instead of one: the converged
+/// reference the production step is measured against (#6534).
+pub const LOCAL_GRID_DEBUG_DENSE_MARCH: u32 = 4;
 /// Bounded primitive references per cluster. FO3/FNV's busiest shipped cells
 /// place more than 50 baked shafts within 512 world units of one another;
 /// 64 avoids the obvious loss at the former 8-entry cap. Overflow keeps the
@@ -3143,6 +3146,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float LOCAL_GRID_FADE_CELLS),
     shader_define!(Uint LOCAL_GRID_DEBUG_NO_MARCH),
     shader_define!(Uint LOCAL_GRID_DEBUG_NO_HANDOFF),
+    shader_define!(Uint LOCAL_GRID_DEBUG_DENSE_MARCH),
     shader_define!(Uint MAX_FOG_VOLUMES_PER_CLUSTER),
     shader_define!(Uint MAX_FOG_PORTALS_PER_CLUSTER),
     shader_define!(Uint MAX_COMPOSITE_SKY_APERTURES),

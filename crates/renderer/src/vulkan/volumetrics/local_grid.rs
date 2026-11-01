@@ -31,7 +31,7 @@ use super::{
 };
 use crate::shader_constants::{
     LOCAL_GRID_BRICK, FOG_VOLUME_PROFILE_EXPLOSION, FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
-    FOG_VOLUME_PROFILE_EXPLOSION_OIL, LOCAL_GRID_DEBUG_NO_HANDOFF, LOCAL_GRID_DEBUG_NO_MARCH,
+    FOG_VOLUME_PROFILE_EXPLOSION_OIL, LOCAL_GRID_DEBUG_DENSE_MARCH, LOCAL_GRID_DEBUG_NO_HANDOFF, LOCAL_GRID_DEBUG_NO_MARCH,
     LOCAL_GRID_DIM, LOCAL_GRID_MAX_BOXES,
 };
 use crate::vulkan::descriptors::{
@@ -407,7 +407,8 @@ const DEBUG_ONLY_EXPLOSIONS: u32 = 1 << 8;
 /// `BYRO_LOCAL_GRID_DEBUG`: comma-separated `no_march` (composite skips the
 /// close-range march), `no_handoff` (the froxel pass keeps simulating the
 /// fire inside a box) and/or `only_explosions` (no flame or smoke boxes, to look
-/// at a blast without a nested box). A diagnostic for telling a fault in the local grid from
+/// at a blast without a nested box) and/or `dense_march` (composite takes eight
+/// samples per cell: the converged reference for the stepping error). A diagnostic for telling a fault in the local grid from
 /// one in the froxels around it; unset in normal use. Read once per process.
 fn local_grid_debug_bits() -> u32 {
     static BITS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
@@ -419,9 +420,10 @@ fn local_grid_debug_bits() -> u32 {
             "no_march" => bits | LOCAL_GRID_DEBUG_NO_MARCH,
             "no_handoff" => bits | LOCAL_GRID_DEBUG_NO_HANDOFF,
             "only_explosions" => bits | DEBUG_ONLY_EXPLOSIONS,
+            "dense_march" => bits | LOCAL_GRID_DEBUG_DENSE_MARCH,
             "" => bits,
             other => {
-                log::warn!("BYRO_LOCAL_GRID_DEBUG: unknown word `{other}` (use no_march, no_handoff, only_explosions)");
+                log::warn!("BYRO_LOCAL_GRID_DEBUG: unknown word `{other}` (use no_march, no_handoff, only_explosions, dense_march)");
                 bits
             }
         })
@@ -468,7 +470,10 @@ impl GpuLocalGridParams {
                 boxes.slab_count() as u32,
                 boxes.history_mask(),
                 boxes.live_mask(),
-                local_grid_debug_bits() & (LOCAL_GRID_DEBUG_NO_MARCH | LOCAL_GRID_DEBUG_NO_HANDOFF),
+                local_grid_debug_bits()
+                    & (LOCAL_GRID_DEBUG_NO_MARCH
+                        | LOCAL_GRID_DEBUG_NO_HANDOFF
+                        | LOCAL_GRID_DEBUG_DENSE_MARCH),
             ];
         }
         params.sun_dir = [frame.sun_dir[0], frame.sun_dir[1], frame.sun_dir[2], 0.0];

@@ -381,7 +381,11 @@ vec4 localFireMarch(
         }
 
         float cell = localGrid.boxes[box].w;
-        float stepLength = cell;
+        // Debug reference: eight samples per cell, with the step caps scaled to
+        // match (`BYRO_LOCAL_GRID_DEBUG=dense_march`).
+        bool dense = (localGrid.info.w & LOCAL_GRID_DEBUG_DENSE_MARCH) != 0u;
+        float stepLength = dense ? cell * 0.125 : cell;
+        int maxSteps = dense ? LOCAL_FIRE_MAX_STEPS_PER_BOX * 8 : LOCAL_FIRE_MAX_STEPS_PER_BOX;
         float t = entry[box];
         float tEnd = exit_[box];
         vec3 boxOrigin = localGrid.boxes[box].xyz - localGrid.render_origin.xyz;
@@ -389,7 +393,7 @@ vec4 localFireMarch(
         int activeSteps = 0;
         int jumps = 0;
         while (t < tEnd
-            && activeSteps < LOCAL_FIRE_MAX_STEPS_PER_BOX
+            && activeSteps < maxSteps
             && jumps < LOCAL_FIRE_MAX_BRICK_JUMPS) {
             // Where the ray is, in cells of this box, and the brick it is in.
             vec3 cells = (rayOrigin + rayDir * t - boxOrigin) / cell;
