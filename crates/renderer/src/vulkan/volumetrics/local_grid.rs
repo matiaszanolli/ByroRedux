@@ -604,8 +604,19 @@ pub(crate) const fn local_grid_resident_bytes() -> u64 {
     cells * 8 * 3 * MAX_FRAMES_IN_FLIGHT as u64
 }
 
+/// The irradiance image's extent for a froxel grid: radiance and mean light
+/// direction side by side, so twice the grid's width
+/// (`include/local_irradiance.glsl`).
+pub(crate) fn irradiance_extent(froxel: vk::Extent3D) -> vk::Extent3D {
+    vk::Extent3D {
+        width: froxel.width * 2,
+        ..froxel
+    }
+}
+
 /// Bytes of the froxel-resolution irradiance field (RGBA16F), all slots.
 pub(crate) fn irradiance_resident_bytes(extent: vk::Extent3D) -> u64 {
+    let extent = irradiance_extent(extent);
     u64::from(extent.width) * u64::from(extent.height) * u64::from(extent.depth) * 8
         * MAX_FRAMES_IN_FLIGHT as u64
 }
@@ -798,7 +809,7 @@ impl LocalGrid {
                 allocator,
                 &GpuImageDesc::color_3d(
                     &format!("volumetrics_local_irradiance_{i}"),
-                    self.froxel_extent,
+                    irradiance_extent(self.froxel_extent),
                     FROXEL_FORMAT,
                     usage,
                 ),

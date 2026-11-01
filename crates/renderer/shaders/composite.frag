@@ -142,6 +142,7 @@ layout(set = 0, binding = 11) uniform sampler2D shadowCorrectionTex;
 #include "include/combustion_medium.glsl"
 #include "include/medium_transport.glsl"
 #include "include/combustion_phase.glsl"
+#include "include/local_irradiance.glsl"
 layout(set = 0, binding = 13) uniform sampler3D localFireState;
 layout(set = 0, binding = 14) uniform sampler3D localFireOptical;
 layout(set = 0, binding = 15) uniform sampler3D localFireIrradiance;
@@ -503,23 +504,39 @@ vec4 localFireMarch(
             // Irradiance field: same camera ray column and slice mapping the
             // froxel pass wrote it with, so (uv, slice) addresses it directly.
             float slice = hybridSliceCoordinate(min(ts, gridFar));
-            vec4 irradiance = texture(localFireIrradiance, vec3(uv, slice));
+            int irradianceWidth = textureSize(localFireIrradiance, 0).x;
+            vec4 irradiance = texture(
+                localFireIrradiance, localIrradianceAddress(vec3(uv, slice), irradianceWidth, 0.0));
+            vec3 lightDirection = texture(
+                localFireIrradiance, localIrradianceAddress(vec3(uv, slice), irradianceWidth, 1.0)).xyz;
             // Species phase and the octave-softened multiple scattering, as in
-            // the froxel pass (`include/combustion_phase.glsl`). The irradiance
-            // field carries no direction, so its share stays isotropic and takes
-            // the plain two-octave gain, which is what the octave phases reduce
-            // to when the phase is flat.
+            // the froxel pass (`include/combustion_phase.glsl`). The local
+            // lights' share uses the irradiance field's mean light direction:
+            // where the lights agree on one direction it takes that species
+            // phase, where they cancel it falls back to the isotropic phase
+            // with the plain two-octave gain (what the octave phases reduce to
+            // when the phase is flat).
             vec3 albedo = medium.scattering / max(vec3(medium.extinction), vec3(1.0e-6));
             vec3 gain = vec3(1.0)
                 + COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT * albedo
                 + COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT * albedo * albedo;
-            // The sun's share is the expensive one (three phase octaves), and
-            // exactly zero wherever the sun is not visible: every interior.
+            float steam = (localGrid.info.w & LOCAL_GRID_DEBUG_NO_SPECIES) != 0u
+                ? 0.0
+                : combustionSteamFraction(chemistry, optical);
+            vec3 lightScatter = gain * irradiance.rgb * LOCAL_FIRE_ISOTROPIC_PHASE;
+            float lightCoherence = length(lightDirection);
+            if (lightCoherence > 1.0e-3) {
+                float lightCos = dot(lightDirection / lightCoherence, -rayDir);
+                lightScatter = irradiance.rgb * mix(
+                    gain * LOCAL_FIRE_ISOTROPIC_PHASE,
+                    combustionMultiScatterPhase(lightCos, albedo, steam),
+                    min(lightCoherence, 1.0)
+                );
+            }
+            // The sun's share is exactly zero wherever the sun is not visible:
+            // every interior.
             vec3 sunScatter = vec3(0.0);
             if (sunLive && irradiance.a > 1.0e-4) {
-                float steam = (localGrid.info.w & LOCAL_GRID_DEBUG_NO_SPECIES) != 0u
-                    ? 0.0
-                    : combustionSteamFraction(chemistry, optical);
                 if (!sootReady) {
                     sootOctaves = combustionSootOctaves(sunCos);
                     sootReady = true;
@@ -532,9 +549,7 @@ vec4 localFireMarch(
                     * combustionBlendOctavePhase(sootOctaves, steamOctaves, albedo, steam)
                     * irradiance.a;
             }
-            vec3 source = medium.scattering * (
-                    sunScatter + gain * irradiance.rgb * LOCAL_FIRE_ISOTROPIC_PHASE
-                )
+            vec3 source = medium.scattering * (sunScatter + lightScatter)
                 + medium.emission;
 
             vec2 slab = medium_slab(medium.extinction, segment);

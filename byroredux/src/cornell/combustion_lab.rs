@@ -220,11 +220,14 @@ pub(crate) fn setup_combustion_lab_scene(
     if steam {
         // The smoke species only read under light: the flame's own glow is
         // too local and the reference fill too dim for a steam plume to show.
-        // A white key from above and to the side lights both plumes the same
-        // way, so the difference left between them is the species.
+        // A white key BEHIND the steam vent, close to the camera's line through
+        // it, shines through the plumes toward the camera. Steam's forward lobe
+        // is narrow (a few degrees wide at the paper's 10 um fit), so it only
+        // outshines soot when the light is nearly collinear with the view; the
+        // difference left between the two plumes is then the species.
         spawn_point_light(
             world,
-            Vec3::new(lab_metres(-1.6), lab_metres(2.4), lab_metres(1.8)),
+            Vec3::new(lab_metres(-2.5), lab_metres(0.7), lab_metres(-2.2)),
             lab_metres(9.0),
             [3.0, 3.0, 2.8],
             "combustion_lab_steam_key",
