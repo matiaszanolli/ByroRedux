@@ -336,6 +336,35 @@ local-march part into it.
 **Done when:** the "steppy" layering is gone at equal or lower sample counts and
 Matías has reviewed a fly-through for flicker.
 
+**Findings and work (2026-11-01).** Measured first, against a converged
+reference: `BYRO_LOCAL_GRID_DEBUG=dense_march` takes eight samples per cell in
+the composite march (pinned RT tier, final frame of s1/s2a/s3a/s5).
+
+- The Phase 1 march (one jittered sample per cell, exact slab form) differs from
+  that reference by a mean of 0.02-0.05 / 255 per pixel (largest single pixel 8
+  on s1/s2a/s3a, 51 on s5). There is no stepping error in the local march to
+  remove, and the reference costs 4-8x more. Energy-conserving integration was
+  already in; jitter is resolved by TAA, which runs after composite, so no
+  fire-specific history buffer was added.
+- What remained was cost. An **adaptive step** now doubles the step after each
+  quiet sample (clear gas, or less than 0.005 optical depth / HDR radiance per
+  cell) up to 2 cells, and returns to 1 cell on the first busy sample or after
+  an empty-brick jump. A 4-cell maximum was tried and rejected: mean error vs
+  the reference 0.4-0.8 / 255, largest pixel 60-94. A 2-cell maximum with the
+  0.05 busy threshold was worse than with 0.005.
+
+| scene | mean error vs reference, before -> after | composite, before -> after (median of 7, interleaved) |
+|---|---|---|
+| s1 | 0.047 -> 0.173 | 0.416 -> 0.353 ms |
+| s2a | 0.018 -> 0.126 | 0.415 -> 0.311 ms |
+| s3a | 0.025 -> 0.046 | 1.115 -> 0.757 ms |
+| s5 | 0.042 -> 0.047 | 0.414 -> 0.322 ms |
+
+Error is small but larger than before on s1/s2a (99th percentile 1.7 and 3.0 /
+255 in those scenes). Jitter keeps the estimate unbiased, so what it adds is
+noise TAA integrates. Still to do for this phase: Matías's flicker review of a
+fly-through (`--bench-capture-every`).
+
 ## Phase 3: Scattering appearance
 
 **[corrected]** Partly done:

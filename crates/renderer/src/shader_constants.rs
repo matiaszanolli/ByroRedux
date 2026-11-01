@@ -354,6 +354,8 @@ mod tests {
         ("composite.frag", "LOCAL_FIRE_ISOTROPIC_PHASE"),
         ("composite.frag", "LOCAL_FIRE_OPAQUE_TRANSMITTANCE"),
         ("composite.frag", "LOCAL_FIRE_MAX_BRICK_JUMPS"),
+        ("composite.frag", "LOCAL_FIRE_MAX_STEP_CELLS"),
+        ("composite.frag", "LOCAL_FIRE_BUSY_THRESHOLD"),
         // Derived from the shared LOCAL_GRID_DIM / LOCAL_GRID_BRICK, not a new value.
         ("include/local_grid_params.glsl", "LOCAL_GRID_BRICKS_PER_AXIS"),
         // The UBO binding slot differs per pass (inject set 0 binding 26,

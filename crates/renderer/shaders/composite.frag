@@ -296,6 +296,14 @@ const int LOCAL_FIRE_MAX_STEPS_PER_BOX = 160;
 // Empty-brick jumps a ray may take through one box (at most 3 * 8 bricks are
 // crossed along any axis-aligned path; diagonals cross a few more).
 const int LOCAL_FIRE_MAX_BRICK_JUMPS = 64;
+// Adaptive step (#6534): the step grows through clear or thin gas and falls back
+// to one cell as soon as a sample is busy. It doubles per quiet sample up to
+// this many cells; the slab form integrates a longer segment exactly for a
+// constant source, and the jitter keeps the estimate unbiased.
+const float LOCAL_FIRE_MAX_STEP_CELLS = 2.0;
+// A sample is busy when it adds this much optical depth or emitted radiance
+// (HDR units) over one cell. Tuned against the `dense_march` reference.
+const float LOCAL_FIRE_BUSY_THRESHOLD = 0.005;
 // Radiance is stored without the isotropic phase of the local lights.
 const float LOCAL_FIRE_ISOTROPIC_PHASE = 1.0 / (4.0 * 3.14159265358979323846);
 // Below this the remaining ray can no longer change the pixel.
@@ -385,6 +393,8 @@ vec4 localFireMarch(
         // match (`BYRO_LOCAL_GRID_DEBUG=dense_march`).
         bool dense = (localGrid.info.w & LOCAL_GRID_DEBUG_DENSE_MARCH) != 0u;
         float stepLength = dense ? cell * 0.125 : cell;
+        float maxStepScale = dense ? 1.0 : LOCAL_FIRE_MAX_STEP_CELLS;
+        float stepScale = 1.0;
         int maxSteps = dense ? LOCAL_FIRE_MAX_STEPS_PER_BOX * 8 : LOCAL_FIRE_MAX_STEPS_PER_BOX;
         float t = entry[box];
         float tEnd = exit_[box];
@@ -418,13 +428,15 @@ vec4 localFireMarch(
                 );
                 t += max(min(perAxis.x, min(perAxis.y, perAxis.z)), 0.02 * cell);
                 ++jumps;
+                // The brick we land in may hold content right at its face.
+                stepScale = 1.0;
                 continue;
             }
 
             // One step through an occupied brick: sample inside it (jittered)
             // and integrate the whole segment. `t` advances first so every
             // `continue` below moves on.
-            float segment = min(stepLength, tEnd - t);
+            float segment = min(stepLength * stepScale, tEnd - t);
             float ts = t + jitter * segment;
             t += segment;
             ++activeSteps;
@@ -434,6 +446,7 @@ vec4 localFireMarch(
             // A finer box nested inside this one draws its own region. With a
             // single live box there is nothing to arbitrate.
             if (multipleBoxes && (!localBoxOwner(positionAbs, owner) || owner != box)) {
+                stepScale = min(stepScale * 2.0, maxStepScale);
                 continue;
             }
             vec3 uvw = localAtlasUvw(box, positionAbs);
@@ -443,6 +456,7 @@ vec4 localFireMarch(
             // things that attenuate or emit), so skip the optics fetch and the
             // blackbody evaluation `combustionMedium` costs for them.
             if (chemistry.x <= 1.0e-4 && chemistry.z <= 1.0e-6 && chemistry.w <= 1.0e-4) {
+                stepScale = min(stepScale * 2.0, maxStepScale);
                 continue;
             }
             vec4 optical = texture(localFireOptical, uvw);
@@ -461,9 +475,14 @@ vec4 localFireMarch(
                 medium.scattering *= fade;
                 medium.emission *= fade;
             }
-            if (medium.extinction <= 1.0e-7 && max(medium.emission.r, max(medium.emission.g, medium.emission.b)) <= 1.0e-7) {
+            float emitted = max(medium.emission.r, max(medium.emission.g, medium.emission.b));
+            if (medium.extinction <= 1.0e-7 && emitted <= 1.0e-7) {
+                stepScale = min(stepScale * 2.0, maxStepScale);
                 continue;
             }
+            // Next step: long through thin gas, one cell once it is busy.
+            bool busy = max(medium.extinction, emitted) * cell > LOCAL_FIRE_BUSY_THRESHOLD;
+            stepScale = busy ? 1.0 : min(stepScale * 2.0, maxStepScale);
 
             // Irradiance field: same camera ray column and slice mapping the
             // froxel pass wrote it with, so (uv, slice) addresses it directly.
