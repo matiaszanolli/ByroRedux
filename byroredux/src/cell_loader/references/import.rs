@@ -31,10 +31,19 @@ use super::attach::{
 /// with it discarded do their walls line up with the rest of the room (the
 /// `LLSignBathrooms` doorway, the bathroom exits, a closed hallway end).
 /// Composed, they put walls across the hallway and open its end onto the
-/// void. FO3 shares the engine and the NIF format (`GameKind::Fallout3NV`).
+/// void. FO3 shares the engine and the NIF format (`GameKind::Fallout3NV`);
+/// verified on `MuseumTech01NEW` (`NeoRmWallWindow01` fits the kit grid,
+/// signs/flags/extinguisher mounts stand upright).
+///
+/// Fallout 4: on `ArcjetSystems01` every `HitDoorSm01` (28) and every judged
+/// `HitDoorSmBroken01` (4) — 90° roots, the latter with an inverse-rotated
+/// child — stands across its identity-root doorway wall when composed and in
+/// it when the root is replaced. FO4's `_oc.nif` precombines carry no root
+/// transform, so they are unaffected.
+///
 /// Other games stay composing until each is verified the same way.
 pub(crate) fn placement_replaces_model_root(game: GameKind) -> bool {
-    game == GameKind::Fallout3NV
+    matches!(game, GameKind::Fallout3NV | GameKind::Fallout4)
 }
 
 /// Apply [`placement_replaces_model_root`] to a freshly parsed REFR model,

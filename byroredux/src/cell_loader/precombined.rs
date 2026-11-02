@@ -32,7 +32,10 @@
 //! Deferred sub-items (M49 Stage B):
 //! - Collision — the sibling file is `<cell_formid:08x>_physics.nif`
 //!   (verified against real `Fallout4 - MeshesExtra.ba2` data, 2026-08-23 —
-//!   NOT `_precomb.nif`, which appears nowhere in the archive). Every
+//!   NOT `_precomb.nif`, which appears nowhere in the archive). Unlike the
+//!   `_oc.nif` render meshes, all 4,484 vanilla `_physics.nif` roots carry a
+//!   translation, so a loader for them must not run
+//!   `references::prepare_placed_model_scene` (it would clear it). Every
 //!   sampled instance decodes to exactly `NiNode` + `NiExtraData` +
 //!   `bhkNPCollisionObject` + `bhkPhysicsSystem`, and `bhkPhysicsSystem`'s
 //!   raw blob (`BhkSystemBinary`, `crates/nif/src/blocks/collision/
