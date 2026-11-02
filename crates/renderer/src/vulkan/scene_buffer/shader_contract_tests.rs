@@ -859,6 +859,10 @@ fn shadow_transport_uses_scale_aware_ray_origin_offset() {
         "intBitsToFloat(floatBitsToInt(relativePoint.x)",
         "return relativeOffset + renderOrigin.xyz",
         "const float INT_SCALE = 256.0",
+        // #6607 — every component's move is floored at INT_SCALE ULPs of the
+        // largest component, or a near-zero coordinate self-intersects.
+        "float floorDistance = max(largest, ORIGIN) * (INT_SCALE / 8388608.0);",
+        "greaterThan(abs(stepDelta), abs(floorDelta))",
     ] {
         assert!(
             origin.contains(needle),

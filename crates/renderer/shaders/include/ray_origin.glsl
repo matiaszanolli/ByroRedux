@@ -35,6 +35,21 @@ vec3 offsetRayOrigin(vec3 p, vec3 n) {
         abs(relativePoint.z) < ORIGIN
             ? relativePoint.z + FLOAT_SCALE * n.z : stepped.z
     );
+    // #6607 — the per-component step assumes each coordinate carries error
+    // at its own scale. A rasterised position does not: the interpolation
+    // and the matrices mix components, and the BVH's triangle test runs at
+    // the largest one's magnitude, so a coordinate near zero (a floor through
+    // the render origin's height) carries the large components' absolute
+    // error. Its own 1/65536 step then left shadow rays inside their own
+    // triangle's error band (self-hits at t ~ 1e-6 on a plane at |x| ~ 130).
+    // Floor every component's move at INT_SCALE ULPs of the largest one,
+    // along n; the per-component step still wins where it is larger.
+    float largest = max(max(abs(relativePoint.x), abs(relativePoint.y)), abs(relativePoint.z));
+    float floorDistance = max(largest, ORIGIN) * (INT_SCALE / 8388608.0);
+    vec3 stepDelta = relativeOffset - relativePoint;
+    vec3 floorDelta = n * floorDistance;
+    relativeOffset = relativePoint + mix(
+        floorDelta, stepDelta, greaterThan(abs(stepDelta), abs(floorDelta)));
     return relativeOffset + renderOrigin.xyz;
 }
 
