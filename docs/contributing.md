@@ -298,7 +298,7 @@ The following jobs run on pushes and/or pull requests:
 | Job | What it checks | GPU? |
 |---|---|---|
 | `issue-traceability` | Every issue a PR closes has a commit carrying `Fix #N` (or another GitHub closing keyword) | No |
-| `source-integrity` | Tracked source/docs contain no raw NUL bytes that make grep treat a file as binary | No |
+| `source-integrity` | Tracked source/docs contain no raw NUL bytes that make grep treat a file as binary; every PRD under `docs/prd/` passes `scripts/check-prd-conformance.py` (self-test first) | No |
 | `shader-artifacts` | Recompiles every first-party `.spv` from source and diffs against the checked-in binary (shader/artifact parity) | No |
 | `cargo-test` | `cargo check`, `cargo test --workspace`, `cargo clippy -D warnings` | No |
 | `lock-order-check` | Same tests with `BYRO_LOCK_ORDER_CHECK=1` (dynamic ABBA detector; supplements the always-enforced scheduler access-report proof) | No |
@@ -343,6 +343,7 @@ when a shader change moves a golden.
 - **Tests**: every new parser feature needs at least one unit test; every bug fix needs a regression test. Integration tests (`#[ignore]`) for real-data validation.
 - **No unsafe without a SAFETY comment** explaining the invariant that makes it sound.
 - **No per-game branches past the NIFAL / EXAL translation boundary** — new game quirks belong in the `Imported*` → `Canonical` translate step, not in the renderer or gameplay code.
+- **PRD before development**: work that meets a trigger in [docs/prd/README.md §1](prd/README.md#1-when-a-prd-is-required) (new milestone, layer, crate or host contract; per-game promise change; ≥3 crates or ≥5 issues) has an APPROVED PRD before its first implementation issue. `python3 scripts/check-prd-conformance.py --strict docs/prd/<slug>.md` is the automatic half; the §8 rubric is the manual half; `/prd new` scaffolds and `/prd review` runs both.
 - **Session-close ritual**: run `/session-close` before ending a working session to sync ROADMAP / HISTORY / README / docs/.
 
 ---

@@ -425,7 +425,7 @@ old is stale. Full index: [`roadmap-history.md` §6](docs/archive/roadmap-histor
 ### Growth discipline
 
 The project's single biggest risk is **scope growth without compression**.
-Tier ordering gives top-level backpressure; apply it inside crates too. If a
+Tier ordering gives top-level backpressure; apply it inside crates too, and start feature-sized work from a reviewed PRD ([docs/prd/](docs/prd/README.md)). If a
 single file crosses 3 500 lines, a struct crosses 50 fields, or a context
 struct crosses 60 fields, treat it as a signal to investigate before adding,
 not a stat to report.

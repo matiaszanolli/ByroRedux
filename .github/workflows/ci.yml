@@ -65,6 +65,10 @@ jobs:
         run: scripts/check-text-source-integrity.sh
       - name: Self-test the release packaging script
         run: scripts/package-release.sh --self-test
+      - name: Self-test the PRD conformance gate
+        run: python3 scripts/check-prd-conformance.py --self-test
+      - name: Check every PRD under docs/prd/ against docs/prd/README.md
+        run: python3 scripts/check-prd-conformance.py
 
   unused-dependencies:
     name: Unused dependencies

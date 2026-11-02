@@ -58,6 +58,15 @@ indexed, with what it gates and how to run it, in
 [`docs/smoke-tests/README.md`](docs/smoke-tests/README.md) — that index is
 the one list to trust; do not enumerate scripts here (#6166).
 
+### PRD gate
+Feature-sized work (a new milestone, layer, crate or host contract; a per-game
+promise change; ≥3 crates or ≥5 issues) needs an APPROVED PRD under `docs/prd/`
+before its first implementation issue — triggers, lifecycle, writing rules and
+the review rubric are in [docs/prd/README.md](docs/prd/README.md). `/prd new
+<slug> "<Feature name>" <PREFIX>` scaffolds from the template, `/prd review
+<slug>` runs the gate plus the rubric, and `python3
+scripts/check-prd-conformance.py` is the automatic half (CI `source-integrity`).
+
 ### Shader Compilation
 ```bash
 cd crates/renderer/shaders
