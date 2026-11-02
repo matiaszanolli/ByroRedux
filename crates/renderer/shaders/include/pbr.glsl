@@ -464,9 +464,12 @@ vec3 sampleVisibleGgxNormal(
     return normalize(T * localH.x + B * localH.y + N * localH.z);
 }
 
+// `lambertian` (M-LIGHT RLT-GI-010, `MAT_FLAG_LAMBERTIAN_REFERENCE`): the
+// reference-rung material is the plain Lambert lobe, no GGX and no (1 - F).
 vec3 evaluatePathBsdf(
     vec3 N, vec3 V, vec3 L,
     vec3 baseColor, float metalness, float roughness, float ior,
+    bool lambertian,
     out float diffusePdf, out float specularPdf
 ) {
     float NdotV = max(dot(N, V), 0.0);
@@ -474,6 +477,9 @@ vec3 evaluatePathBsdf(
     diffusePdf = NdotL * (1.0 / PI);
     specularPdf = 0.0;
     if (NdotV <= 1e-5 || NdotL <= 1e-5) return vec3(0.0);
+    if (lambertian) {
+        return (1.0 - clamp(metalness, 0.0, 1.0)) * max(baseColor, vec3(0.0)) * (1.0 / PI);
+    }
 
     vec3 halfSum = V + L;
     if (dot(halfSum, halfSum) <= 1e-8) return vec3(0.0);
@@ -506,8 +512,9 @@ vec3 evaluatePathBsdf(
 
 float pathSpecularProbability(
     vec3 N, vec3 V,
-    vec3 baseColor, float metalness, float ior
+    vec3 baseColor, float metalness, float ior, bool lambertian
 ) {
+    if (lambertian) return 0.0;
     float NdotV = max(dot(N, V), 0.0);
     vec3 F0 = mix(
         vec3(dielectricF0FromIor(ior)),
@@ -527,12 +534,13 @@ float pathSpecularProbability(
 bool samplePathBsdf(
     vec3 N, vec3 V,
     vec3 baseColor, float metalness, float roughness, float ior,
+    bool lambertian,
     float lobeSample, vec2 directionSample,
     out vec3 sampledDirection, out vec3 sampleWeight,
     out bool sampledSpecular
 ) {
     float specularProbability = pathSpecularProbability(
-        N, V, baseColor, metalness, ior);
+        N, V, baseColor, metalness, ior, lambertian);
     sampledSpecular = lobeSample < specularProbability;
     if (sampledSpecular) {
         vec3 H = sampleVisibleGgxNormal(N, V, roughness, directionSample);
@@ -552,7 +560,7 @@ bool samplePathBsdf(
     float specularPdf;
     vec3 bsdf = evaluatePathBsdf(
         N, V, sampledDirection,
-        baseColor, metalness, roughness, ior,
+        baseColor, metalness, roughness, ior, lambertian,
         diffusePdf, specularPdf);
     float mixturePdf = mix(
         diffusePdf, specularPdf, specularProbability);

@@ -735,13 +735,17 @@ pub mod material_flag {
     pub const RIM_LIGHTING: u32 = 1 << 14;
     pub const BACK_LIGHTING: u32 = 1 << 15;
 
+    /// M-LIGHT RLT-GI-010 — purely Lambertian reference-rung material. See
+    /// `shader_constants_data::MAT_FLAG_LAMBERTIAN_REFERENCE`.
+    pub const LAMBERTIAN_REFERENCE: u32 = 1 << 24;
+
     /// Bit-shift for the 8-bit `BSEffectShaderProperty.lighting_influence`
     /// byte packed into `material_flags` bits 16–23. Extract in GLSL as
     /// `float((materialFlags >> MAT_FLAG_EFFECT_LI_SHIFT) & 0xFFu) / 255.0`.
     /// Bits 11–15 all carry assigned single-bit flags (`THIN_GLASS`,
     /// `MSN_HAS_AUTHORED_Z`, `SOFT_LIGHTING`, `RIM_LIGHTING`,
-    /// `BACK_LIGHTING` — no reserved bits left in that range); bits 24–31
-    /// are free. Only meaningful when `EFFECT_LIT` is also set — the byte
+    /// `BACK_LIGHTING` — no reserved bits left in that range); bit 24 is
+    /// [`LAMBERTIAN_REFERENCE`] and bits 25–31 are free. Only meaningful when `EFFECT_LIT` is also set — the byte
     /// scales the directional + ambient contribution in the
     /// `MATERIAL_KIND_EFFECT_SHADER` lit branch. `0` (packed value of
     /// `lighting_influence == 0`) disables scene lighting; `255` is full

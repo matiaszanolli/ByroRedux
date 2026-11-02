@@ -1732,6 +1732,14 @@ pub const MAT_FLAG_MSN_HAS_AUTHORED_Z: u32 = 1 << 12;
 pub const MAT_FLAG_SOFT_LIGHTING: u32 = 1 << 13;
 pub const MAT_FLAG_RIM_LIGHTING: u32 = 1 << 14;
 pub const MAT_FLAG_BACK_LIGHTING: u32 = 1 << 15;
+/// M-LIGHT RLT-GI-010 — reference-rung material: purely Lambertian on the
+/// engine side, to match the external renderer's plain `diffuse` BSDF. The
+/// light loop drops its GGX lobe and (1 − F) diffuse weight, the primary
+/// surface's GI throughput drops its (1 − F) weight, and the bounded path
+/// evaluates and samples only the Lambert lobe at hits carrying it. Set only
+/// by Cornell reference rungs; no content producer sets it. Bit 24: the first
+/// of the free bits above the `EFFECT_LI` byte.
+pub const MAT_FLAG_LAMBERTIAN_REFERENCE: u32 = 1 << 24;
 // `MAT_FLAG_EFFECT_LI_SHIFT` — bit offset for the 8-bit
 // `BSEffectShaderProperty.lighting_influence` byte packed into bits
 // 16-23 of `materialFlags`. Extract via
@@ -3071,6 +3079,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint MAT_FLAG_SOFT_LIGHTING),
     shader_define!(Uint MAT_FLAG_RIM_LIGHTING),
     shader_define!(Uint MAT_FLAG_BACK_LIGHTING),
+    shader_define!(Uint MAT_FLAG_LAMBERTIAN_REFERENCE),
     shader_define!(Uint MAT_FLAG_MSN_HAS_AUTHORED_Z),
     shader_define!(Uint MAT_FLAG_EFFECT_LI_SHIFT),
     HeaderLine::Blank,

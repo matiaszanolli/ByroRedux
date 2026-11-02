@@ -342,6 +342,14 @@ vec3 shadowableLightRadiance(
     if ((dbgFlags & DBG_DISABLE_MULTISCATTER) == 0u) {
         specular *= multiScatterEnergyCompensation(F0, NdotV, aaRoughness);
     }
+    // M-LIGHT RLT-GI-010 — a reference-rung material is purely Lambertian:
+    // no GGX lobe and no (1 - F) weight, so it matches the external
+    // renderer's plain diffuse BSDF exactly.
+    bool lambertianReference = (mat.materialFlags & MAT_FLAG_LAMBERTIAN_REFERENCE) != 0u;
+    if (lambertianReference) {
+        kD = vec3(1.0 - metalness);
+        specular = vec3(0.0);
+    }
     vec3 unshadowedRadiance = lightColor * atten;
     // §12.5 — the canopy the light crossed before it reached this fragment.
     // Directional only: the sun is what a metre of grass measurably
@@ -357,7 +365,7 @@ vec3 shadowableLightRadiance(
             byroGcCanopyTransmittance(gGcDGround, gGcCanopyHeight, L.y);
     }
     vec3 diffuseBrdf;
-    if ((mat.materialFlags & MAT_FLAG_PBR_BSDF) != 0u) {
+    if ((mat.materialFlags & MAT_FLAG_PBR_BSDF) != 0u && !lambertianReference) {
         float HdotL = max(dot(H, L), 0.0);
         DisneyDiffuseSplit dd = disneyDiffuseSplit(
             albedo, roughness, mat.subsurface, mat.sheen, mat.sheenTint,
@@ -632,6 +640,7 @@ vec3 pathHitRadiance(
         vec3 candidateBsdf = evaluatePathBsdf(
             n, viewDir, candidateL,
             baseColor, mat.metalness, mat.roughness, mat.ior,
+            (mat.materialFlags & MAT_FLAG_LAMBERTIAN_REFERENCE) != 0u,
             diffusePdf, specularPdf);
         float score = candidateContrib
             * pathLuminance(lights[i].color_type.rgb * candidateBsdf);
@@ -666,6 +675,7 @@ vec3 pathHitRadiance(
         vec3 bsdf = evaluatePathBsdf(
             n, viewDir, L,
             baseColor, mat.metalness, mat.roughness, mat.ior,
+            (mat.materialFlags & MAT_FLAG_LAMBERTIAN_REFERENCE) != 0u,
             diffusePdf, specularPdf);
         if (pathLuminance(bsdf) <= 1e-6) continue;
         vec3 visibility = traceLightTransmittance(

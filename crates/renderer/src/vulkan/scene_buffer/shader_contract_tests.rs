@@ -4098,6 +4098,42 @@ fn bounded_path_uses_ggx_bsdf_transport_and_directional_environment() {
     );
 }
 
+/// M-LIGHT RLT-GI-010 — a reference-rung material must be purely Lambertian
+/// everywhere the engine shades it, or the L4 deficit measures glossy
+/// transport the reference does not model (V11: `specular_strength` alone
+/// leaves the GI walk's GGX lobe and every (1 − F) weight in place). Pins the
+/// three sites: the light loop, the primary surface's GI throughput, and the
+/// bounded path's hit evaluation and sampling.
+#[test]
+fn lambertian_reference_flag_reaches_light_loop_primary_weight_and_gi_walk() {
+    let frag = include_str!("../../../shaders/triangle.frag");
+    let pbr = include_str!("../../../shaders/include/pbr.glsl");
+    let lighting = include_str!("../../../shaders/include/lighting.glsl");
+    assert_eq!(
+        crate::shader_constants::MAT_FLAG_LAMBERTIAN_REFERENCE,
+        crate::vulkan::material::material_flag::LAMBERTIAN_REFERENCE
+    );
+
+    assert!(lighting.contains(
+        "bool lambertianReference = (mat.materialFlags & MAT_FLAG_LAMBERTIAN_REFERENCE) != 0u;"
+    ));
+    assert!(lighting.contains("kD = vec3(1.0 - metalness);\n        specular = vec3(0.0);"));
+    assert!(lighting.contains("(mat.materialFlags & MAT_FLAG_PBR_BSDF) != 0u && !lambertianReference"));
+    assert_eq!(
+        lighting
+            .matches("(mat.materialFlags & MAT_FLAG_LAMBERTIAN_REFERENCE) != 0u,")
+            .count(),
+        2,
+        "both pathHitRadiance BSDF evaluations must pass the flag"
+    );
+    assert!(frag.contains("primaryDiffuseWeight = vec3(1.0 - metalness);"));
+    assert!(frag.contains("(hitMat.materialFlags & MAT_FLAG_LAMBERTIAN_REFERENCE) != 0u,"));
+    assert!(pbr.contains("if (lambertian) return 0.0;"));
+    assert!(pbr.contains(
+        "return (1.0 - clamp(metalness, 0.0, 1.0)) * max(baseColor, vec3(0.0)) * (1.0 / PI);"
+    ));
+}
+
 /// Fixed-exponent Schlick weights belong on the ordinary ALU multiply path,
 /// not behind GLSL.std.450 `Pow`. Glass additionally uses the scalar helper so
 /// its hot path does not broadcast a dielectric F0 only to read `.r` back.

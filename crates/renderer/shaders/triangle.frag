@@ -4571,6 +4571,11 @@ void main() {
     vec3 primaryDiffuseWeight = (1.0 - fresnelSchlickPower(
         NdotV, F0, mat.fresnelPower))
         * (1.0 - metalness);
+    // M-LIGHT RLT-GI-010 — a Lambertian reference material has no Fresnel
+    // weight on its diffuse transport.
+    if ((mat.materialFlags & MAT_FLAG_LAMBERTIAN_REFERENCE) != 0u) {
+        primaryDiffuseWeight = vec3(1.0 - metalness);
+    }
     bool giTransportEligible = giRayEnabled
         && rayBudget.maxPathSegments > 0u
         && rayBudget.maxShadedHits > 0u
@@ -4784,6 +4789,7 @@ void main() {
                 if (!samplePathBsdf(
                         hitN, viewDir,
                         hitAlbedo, hitMat.metalness, hitMat.roughness, hitMat.ior,
+                        (hitMat.materialFlags & MAT_FLAG_LAMBERTIAN_REFERENCE) != 0u,
                         lobeRand.x, bounceRand,
                         pathDir, bsdfWeight, sampledSpecular)) break;
 
