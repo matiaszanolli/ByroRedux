@@ -261,7 +261,9 @@ void main() {
     // sample against its own neighbourhood mean — a cheap box-filtered
     // antialias — instead of the single-sample pass-through a hard reject
     // would give.
-    float gamma = disocclusionFromSky ? 0.0 : 1.5;
+    // params.params.z = the variance-clip width γ (TAA_VARIANCE_GAMMA = 1.5
+    // shipped; M-LIGHT RLT-SHD-006's `--rt-test-taa-gamma` re-validates it).
+    float gamma = disocclusionFromSky ? 0.0 : params.params.z;
     vec3 yMin = mean - gamma * sigma;
     vec3 yMax = mean + gamma * sigma;
 

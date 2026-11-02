@@ -227,6 +227,10 @@ pub struct RendererConfig {
     /// (`RESERVOIR_W_CLAMP`, `triangle.frag`), so its bias can be measured
     /// as the luminance-integral delta, clamp on against off.
     pub rt_test_no_reservoir_clamp: bool,
+    /// M-LIGHT RLT-SHD-006 — override TAA's variance-clip width γ
+    /// (`TAA_VARIANCE_GAMMA`, 1.5) to re-validate it against 1.0, as
+    /// `f32::to_bits` so the config stays `Eq` (like `rt_test_lod_scale_bits`).
+    pub rt_test_taa_gamma_bits: Option<u32>,
 }
 
 impl Default for RendererConfig {
@@ -247,6 +251,7 @@ impl Default for RendererConfig {
             rt_test_no_dust_floor: false,
             rt_test_no_gi_clamp: false,
             rt_test_no_reservoir_clamp: false,
+            rt_test_taa_gamma_bits: None,
         }
     }
 }

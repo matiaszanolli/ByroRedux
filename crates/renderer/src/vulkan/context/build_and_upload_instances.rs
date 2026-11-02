@@ -1674,11 +1674,15 @@ impl VulkanContext {
         if !self.taa_failed {
             // The `taa` borrow ends at the `upload_params` call, which is
             // what lets the error arm take `&mut self` for the latch.
+            let gamma = self
+                .renderer_config
+                .rt_test_taa_gamma_bits
+                .map_or(crate::vulkan::taa::TAA_VARIANCE_GAMMA, f32::from_bits);
             let upload = self
                 .post
                 .taa
                 .as_mut()
-                .map(|taa| taa.upload_params(&self.device, frame));
+                .map(|taa| taa.upload_params(&self.device, frame, gamma));
             if let Some(Err(e)) = upload {
                 // #3981 — the one reachable TAA failure. Everything the
                 // failure has to do lives in `latch_taa_failure`.

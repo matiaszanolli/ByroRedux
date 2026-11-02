@@ -86,6 +86,11 @@ pub const TAA_BYTES_PER_PIXEL: u32 = 8 * super::sync::MAX_FRAMES_IN_FLIGHT as u3
 
 const HISTORY_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 
+/// The YCoCg variance clip's width in standard deviations. M-LIGHT
+/// RLT-SHD-006 re-validates it with the shadow filter on, against 1.0, via
+/// `RendererConfig::rt_test_taa_gamma`.
+pub const TAA_VARIANCE_GAMMA: f32 = 1.5;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct TaaParams {
@@ -94,7 +99,8 @@ pub struct TaaParams {
     /// x = current-frame weight α in [0, 1] (0.1 is canonical, meaning 10%
     /// current + 90% history per frame → ~10-frame rolling average).
     /// y = first_frame flag (1.0 while history is not yet valid).
-    /// zw = reserved.
+    /// z = variance-clip width γ ([`TAA_VARIANCE_GAMMA`] unless overridden).
+    /// w = reserved.
     pub params: [f32; 4],
 }
 
@@ -562,7 +568,7 @@ impl TaaPipeline {
     /// barrier in `draw_frame` so the host write folds into that barrier's
     /// existing execution dependency rather than emitting a redundant barrier
     /// inside `dispatch`. Mirrors the SVGF fold from #961 / REN-D10-NEW-04.
-    pub fn upload_params(&mut self, device: &ash::Device, frame: usize) -> Result<()> {
+    pub fn upload_params(&mut self, device: &ash::Device, frame: usize, variance_gamma: f32) -> Result<()> {
         let first_frame = if should_force_history_reset(self.frames_since_creation) {
             1.0
         } else {
@@ -580,7 +586,7 @@ impl TaaPipeline {
                 1.0 / self.width as f32,
                 1.0 / self.height as f32,
             ],
-            params: [alpha, first_frame, 0.0, 0.0],
+            params: [alpha, first_frame, variance_gamma, 0.0],
         };
         self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&params))
     }
@@ -1103,7 +1109,7 @@ mod tests {
              same hard reject through this second term"
         );
         assert!(
-            src.contains("float gamma = disocclusionFromSky ? 0.0 : 1.5;"),
+            src.contains("float gamma = disocclusionFromSky ? 0.0 : params.params.z;"),
             "the sky-transition case must collapse the variance-clip window to zero width instead \
              of hard-rejecting, so accepted history clips to the current frame's own neighbourhood \
              mean rather than importing the reprojected sky/clear colour"

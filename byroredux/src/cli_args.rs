@@ -264,6 +264,14 @@ pub fn parse_renderer_config(args: &[String]) -> Result<RendererConfig> {
     let rt_test_no_gi_clamp = args.iter().any(|arg| arg == "--rt-test-no-gi-clamp");
     // M-LIGHT RLT-SHD-005 — ReSTIR's reservoir weight cap off.
     let rt_test_no_reservoir_clamp = args.iter().any(|arg| arg == "--rt-test-no-reservoir-clamp");
+    // M-LIGHT RLT-SHD-006 — TAA's variance-clip width.
+    let rt_test_taa_gamma_bits = match option("--rt-test-taa-gamma")? {
+        None => None,
+        Some(text) => match text.parse::<f32>() {
+            Ok(g) if g.is_finite() && g > 0.0 => Some(g.to_bits()),
+            _ => bail!("--rt-test-taa-gamma requires a positive number, got '{text}'"),
+        },
+    };
     // Stage 1 (RENDERING-PLAN.md) — display transform + auto-exposure boot
     // state; both stay live-tunable via the `tonemap` / `exposure` console
     // commands afterwards.
@@ -294,6 +302,7 @@ pub fn parse_renderer_config(args: &[String]) -> Result<RendererConfig> {
         rt_test_no_dust_floor,
         rt_test_no_gi_clamp,
         rt_test_no_reservoir_clamp,
+        rt_test_taa_gamma_bits,
     })
 }
 
