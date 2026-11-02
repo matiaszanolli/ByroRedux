@@ -37,7 +37,9 @@ declare -A DISPOSITION=(
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HARNESS_FILES=(scripts/fsr-bench-matrix.sh scripts/fsr_bench_report.py)
+# bench-scenes.sh holds the scenes' load arguments since it was split out of
+# fsr-bench-matrix.sh (M-LIGHT baselines share it), so it is harness too.
+HARNESS_FILES=(scripts/fsr-bench-matrix.sh scripts/fsr_bench_report.py scripts/bench-scenes.sh)
 
 STRICT=0
 SELF_TEST=0
@@ -118,7 +120,7 @@ if (( SELF_TEST )); then
   # Pin the watched set directly instead. The reporter is the half whose
   # arithmetic moved (0e91fc5e's render_sum), so dropping it from the pair is
   # precisely the blind spot this tool exists to close.
-  for want in scripts/fsr-bench-matrix.sh scripts/fsr_bench_report.py; do
+  for want in scripts/fsr-bench-matrix.sh scripts/fsr_bench_report.py scripts/bench-scenes.sh; do
     found=0
     for have in "${HARNESS_FILES[@]}"; do
       [[ "$have" == "$want" ]] && found=1

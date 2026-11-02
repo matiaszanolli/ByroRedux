@@ -1207,6 +1207,38 @@ pub fn is_glass_keyword_path(path: &str) -> bool {
 }
 
 pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
+    classify_pbr_keyword_routed(inputs).0
+}
+
+/// Which arm of [`classify_pbr_keyword`] decided a legacy material — the
+/// "translation route" half of M-LIGHT's material class (reference-lighting
+/// §2, RLT-IBL-008). Reported by the material-class dump; never read by the
+/// renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PbrRoute {
+    /// A material word in the texture path (metal, wood, stone, …).
+    Keyword,
+    /// The environment-map arm (`env_map_scale > 0.3`).
+    EnvMap,
+    /// The legacy glossiness arm (a gloss map is bound).
+    GlossMap,
+    /// No signal: [`PbrMaterial::NO_SIGNAL_NEUTRAL`].
+    NoSignal,
+}
+
+impl PbrRoute {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Keyword => "legacy_keyword",
+            Self::EnvMap => "legacy_env_map",
+            Self::GlossMap => "legacy_gloss_map",
+            Self::NoSignal => "legacy_no_signal",
+        }
+    }
+}
+
+/// [`classify_pbr_keyword`] with the arm that decided it.
+pub fn classify_pbr_keyword_routed(inputs: PbrClassifierInputs<'_>) -> (PbrMaterial, PbrRoute) {
     let path = inputs.texture_path.unwrap_or("");
     // Parent directories describe an asset family, not necessarily the
     // surface material. In particular, Skyrim stores stone walls, rubble,
@@ -1228,16 +1260,16 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
         // so a known conductor still receives environment response instead
         // of reading as dark diffuse paint. The GGX highlight remains much
         // softer than the old 0.3 mirror-chrome classification.
-        return PbrMaterial {
+        return (PbrMaterial {
             roughness: 0.55,
             metalness: 0.9,
-        };
+        }, PbrRoute::Keyword);
     }
     if contains_any_ci(path, &["gold", "silver", "bronze", "copper"]) {
-        return PbrMaterial {
+        return (PbrMaterial {
             roughness: 0.25,
             metalness: 0.95,
-        };
+        }, PbrRoute::Keyword);
     }
     // Alpha-UNAWARE arm: only "glass *material*" tokens
     // (glass/crystal/ice/gem) earn unconditional glass-smooth roughness —
@@ -1264,22 +1296,22 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
         || path_indicates_ice(path)
         || contains_any_ci_word(path, &["gem"])
     {
-        return PbrMaterial {
+        return (PbrMaterial {
             roughness: 0.1,
             metalness: 0.0,
-        };
+        }, PbrRoute::Keyword);
     }
     if contains_any_ci(path, &["wood", "plank", "barrel", "crate"]) || path_indicates_log(path) {
-        return PbrMaterial {
+        return (PbrMaterial {
             roughness: 0.7,
             metalness: 0.0,
-        };
+        }, PbrRoute::Keyword);
     }
     if contains_any_ci(path, &["stone", "rock", "cave", "brick", "ruins", "cobble"]) {
-        return PbrMaterial {
+        return (PbrMaterial {
             roughness: 0.85,
             metalness: 0.0,
-        };
+        }, PbrRoute::Keyword);
     }
     // "fur" is word-boundary-checked (#2009 / MAT-D1-01) — a bare
     // substring match makes it a literal prefix of "furniture", a
@@ -1293,10 +1325,10 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
         ],
     ) || contains_any_ci_word(path, &["fur"])
     {
-        return PbrMaterial {
+        return (PbrMaterial {
             roughness: 0.95,
             metalness: 0.0,
-        };
+        }, PbrRoute::Keyword);
     }
     // #3315 / FNV-D2-01 — "skin" is a *material* word and stays global (a
     // deathclaw hide texture is skin wherever it lives), but "body"/"head"/
@@ -1320,16 +1352,16 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
         || (is_character_asset_path(path)
             && contains_any_ci(path, &["body", "head", "hand", "face"]))
     {
-        return PbrMaterial {
+        return (PbrMaterial {
             roughness: 0.5,
             metalness: 0.0,
-        };
+        }, PbrRoute::Keyword);
     }
     if contains_any_ci(path, &["hair"]) {
-        return PbrMaterial {
+        return (PbrMaterial {
             roughness: 0.6,
             metalness: 0.0,
-        };
+        }, PbrRoute::Keyword);
     }
 
     // env_map_scale arm — base roughness for non-keyword surfaces.
@@ -1372,10 +1404,10 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
             // luminance here would chrome every PPLighting-only
             // decorative surface (flyers, posters). Treat as dielectric;
             // the base_roughness ceiling already stays >= 0.35.
-            return PbrMaterial {
+            return (PbrMaterial {
                 roughness: base_roughness,
                 metalness: 0.0,
-            };
+            }, PbrRoute::EnvMap);
         }
         let [sr, sg, sb] = inputs.specular_color;
         let spec_lum = 0.2126 * sr + 0.7152 * sg + 0.0722 * sb;
@@ -1383,10 +1415,10 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
         // spec_lum > 0.6 → metallic tier → roughness ceiling 0.55 (< RT threshold 0.6)
         // spec_lum ≤ 0.6 → dielectric tier → roughness ceiling 0.8 (no RT reflection)
         let roughness_ceiling = if spec_lum > 0.6 { 0.55_f32 } else { 0.8_f32 };
-        return PbrMaterial {
+        return (PbrMaterial {
             roughness: base_roughness.min(roughness_ceiling),
             metalness,
-        };
+        }, PbrRoute::EnvMap);
     }
 
     // No keyword match and no env_map_scale authoring — the bulk of Skyrim
@@ -1410,12 +1442,12 @@ pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
         if inputs.has_normal_map {
             roughness = (roughness - 0.1).max(0.05);
         }
-        return PbrMaterial {
+        return (PbrMaterial {
             roughness,
             metalness: 0.0,
-        };
+        }, PbrRoute::GlossMap);
     }
-    PbrMaterial::NO_SIGNAL_NEUTRAL
+    (PbrMaterial::NO_SIGNAL_NEUTRAL, PbrRoute::NoSignal)
 }
 
 impl Material {
@@ -2269,6 +2301,33 @@ mod tests {
     //   explicit `metalness` / `roughness` scalars regardless of
     //   source format. The caller seeds authored (BGSM) values or a
     //   `NaN` sentinel for "fill me from the keyword classifier".
+
+    /// M-LIGHT RLT-IBL-008 — the routed classifier names the arm that
+    /// decided, and its material is exactly the unrouted one's.
+    #[test]
+    fn classify_pbr_keyword_routed_names_each_arm() {
+        let base = PbrClassifierInputs {
+            texture_path: Some("textures/architecture/plain01.dds"),
+            glossiness: 40.0,
+            env_map_scale: 0.0,
+            has_normal_map: false,
+            specular_color: [1.0; 3],
+            specular_authored: false,
+            has_gloss_map: false,
+        };
+        let cases = [
+            (PbrClassifierInputs { texture_path: Some("textures/metal/plate.dds"), ..base }, PbrRoute::Keyword),
+            (PbrClassifierInputs { env_map_scale: 0.8, ..base }, PbrRoute::EnvMap),
+            (PbrClassifierInputs { has_gloss_map: true, ..base }, PbrRoute::GlossMap),
+            (base, PbrRoute::NoSignal),
+        ];
+        for (inputs, route) in cases {
+            let (material, got) = classify_pbr_keyword_routed(inputs);
+            assert_eq!(got, route);
+            let plain = classify_pbr_keyword(inputs);
+            assert_eq!((material.roughness, material.metalness), (plain.roughness, plain.metalness));
+        }
+    }
 
     #[test]
     fn resolve_pbr_populates_from_keyword_path() {

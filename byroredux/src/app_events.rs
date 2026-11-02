@@ -119,6 +119,13 @@ fn record_about_to_wait_timings(
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct GracefulExitRequested(pub bool);
 
+
+/// M-LIGHT RLT-PERF-005 — bench frames excluded from the adaptive-tier
+/// histogram while the controller settles after load (the first GPU timing
+/// samples and any startup hitch). Stated in the bench line and in the
+/// baselines manifest, as the PRD's settled-tier definition requires.
+pub(crate) const BENCH_RT_TIER_WARMUP_FRAMES: u32 = 60;
+
 impl byroredux_core::ecs::Resource for GracefulExitRequested {}
 
 impl App {
@@ -305,7 +312,8 @@ impl App {
              draws={}/{}b/{}c bench_draws_raster_cmds={} \
              lights={} tlas={} state_hash={:016x} \
              skin={}/{}+{} rt_tier={} volumetric_rt_tier={} volumetric_light_cap={} froxel_x={} froxel_y={} froxel_z={} transport_armed={} fog_volume_count={} fog_cluster_max_density={} fog_cluster_max_portal={} local_grid_boxes={} local_grid_cells={} local_grid_hash={:08x} \
-             upscaler={} render_extent={} output_extent={}",
+             upscaler={} render_extent={} output_extent={} \
+             rt_tier_hist={}/{}/{}/{} rt_tier_warmup={}",
             bench_mode,
             bench_mode.gate_label(),
             bench_mode.dt_label(),
@@ -396,6 +404,14 @@ impl App {
             upscaler_token,
             render_extent_token,
             output_extent_token,
+            // M-LIGHT RLT-PERF-005 — appended (#3629 rule): frames spent at
+            // each adaptive tier after the warm-up; the settled tier is the
+            // mode, the oscillation the share at any other tier.
+            self.bench_rt_tier_hist[0],
+            self.bench_rt_tier_hist[1],
+            self.bench_rt_tier_hist[2],
+            self.bench_rt_tier_hist[3],
+            BENCH_RT_TIER_WARMUP_FRAMES,
         );
         if let Some(line) = rt_integrity_line {
             println!("{line}");
@@ -529,12 +545,43 @@ impl App {
         false
     }
 
+    /// M-LIGHT RLT-PERF-005: count one adaptive-tier sample per rendered
+    /// bench frame past [`BENCH_RT_TIER_WARMUP_FRAMES`], for the bench line's
+    /// `rt_tier_hist`. Called once per `render_one_frame`; a call that did not
+    /// advance the bench frame count samples nothing.
+    pub(crate) fn sample_bench_rt_tier(&mut self) {
+        let frame = self.bench_frames_count;
+        if frame == self.bench_rt_tier_sampled_frame {
+            return;
+        }
+        self.bench_rt_tier_sampled_frame = frame;
+        if frame <= BENCH_RT_TIER_WARMUP_FRAMES {
+            return;
+        }
+        if let Some(ctx) = self.renderer.as_ref() {
+            let tier = ctx
+                .scene_buffers
+                .current_ray_budget(ctx.renderer_config.rt_test_ray_quality_tier)
+                .quality_tier
+                .min(3) as usize;
+            self.bench_rt_tier_hist[tier] += 1;
+        }
+    }
+
     /// `--export-mitsuba DIR` (M51 PTR-VAL-004, #6600): write the scene to a
     /// Mitsuba 3 directory after the first rendered frame, once. A refused
     /// export (PTX-005) is reported and the run continues.
     pub(crate) fn advance_mitsuba_export(&mut self) {
         if self.bench_frames_count == 0 {
             return;
+        }
+        // M-LIGHT A9 (RLT-IBL-008) — the material-class dump shares this
+        // first-rendered-frame hook.
+        if let Some(path) = self.material_dump_path.take() {
+            match crate::material_dump::write_material_dump(&self.world, &path) {
+                Ok(rows) => println!("material-dump: wrote {} ({rows} rows)", path.display()),
+                Err(e) => eprintln!("material-dump: failed: {e}"),
+            }
         }
         let (Some(dir), Some(ctx)) = (self.export_mitsuba_dir.take(), self.renderer.as_ref()) else {
             return;

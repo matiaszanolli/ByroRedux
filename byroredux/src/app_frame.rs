@@ -929,6 +929,7 @@ impl App {
         drop(cpu_t);
         // M51 PTR-VAL-004 — `--export-mitsuba DIR`, once a frame has rendered.
         self.advance_mitsuba_export();
+        self.sample_bench_rt_tier(); // M-LIGHT RLT-PERF-005
     }
 
     /// The pause menu's Quit, taken mid-frame: the egui frame built this

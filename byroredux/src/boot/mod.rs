@@ -544,6 +544,8 @@ pub(crate) fn run() -> Result<()> {
     app.linear_capture = linear_capture;
     app.export_mitsuba_dir =
         parse_string_arg(&args, "--export-mitsuba").map(std::path::PathBuf::from);
+    app.material_dump_path =
+        parse_string_arg(&args, "--material-dump").map(std::path::PathBuf::from);
     app.bench_capture = bench_capture;
     app.bench_camera = bench_camera;
     app.camera_pos_override = camera_pos;

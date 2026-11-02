@@ -46,6 +46,7 @@ mod objectives;
 mod hud;
 mod linear_capture;
 mod list_cells;
+mod material_dump;
 mod material_translate;
 mod name_lookup;
 mod npc_spawn;
@@ -796,6 +797,13 @@ struct App {
     /// `--export-mitsuba DIR` (M51 PTR-VAL-004): write the Cornell reference
     /// scene to a Mitsuba 3 directory after the first rendered frame.
     export_mitsuba_dir: Option<std::path::PathBuf>,
+    /// `--material-dump PATH` (M-LIGHT A9, RLT-IBL-008): the loaded scene's
+    /// material classes, written after the first rendered frame.
+    material_dump_path: Option<std::path::PathBuf>,
+    /// M-LIGHT RLT-PERF-005 — adaptive RT tier histogram over the bench
+    /// window past the warm-up, and the last frame sampled.
+    bench_rt_tier_hist: [u32; 4],
+    bench_rt_tier_sampled_frame: u32,
     /// `--bench-capture-every N --bench-capture-dir DIR`: PNG of every Nth
     /// rendered frame of a finite bench run (see `bench_capture`).
     bench_capture: Option<crate::bench_capture::FrameSequenceCapture>,
@@ -1330,6 +1338,9 @@ impl App {
             screenshot_path: None,
             linear_capture: None,
             export_mitsuba_dir: None,
+            material_dump_path: None,
+            bench_rt_tier_hist: [0; 4],
+            bench_rt_tier_sampled_frame: 0,
             bench_capture: None,
             camera_pos_override: None,
             camera_forward_override: None,
