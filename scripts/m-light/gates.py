@@ -566,7 +566,7 @@ def main() -> int:
     args = parser.parse_args()
 
     t_start = time.monotonic()
-    out: Path = args.out
+    out: Path = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     cache = args.cache or out / "reference-cache"
     if args.cold and cache.exists():

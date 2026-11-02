@@ -45,6 +45,13 @@ SCENES = ("cornell", "prospector", "whiterun", "medtek", "dugout")
 WAVE1_GAME_SCENES = ("prospector", "whiterun", "medtek", "dugout")
 LUMA = np.array([0.2126, 0.7152, 0.0722])
 TILE = 32  # RLT-CNT-001 tile grid
+# The bench of record's reference (TAA at native resolution) and the shipping
+# default (FSR 3.1 Quality, which renders fewer pixels and can settle on a
+# higher tier). The settled tier a player sees is the second one's.
+CONFIGS = (
+    ("taa", ["--upscaler", "taa"]),
+    ("fsr-quality", ["--upscaler", "fsr3", "--fsr-quality", "quality"]),
+)
 
 # RLT-IBL-008 thresholds, fixed here and recorded in the manifest.
 F1_ROUGHNESS = 0.2
@@ -179,7 +186,9 @@ def main() -> int:
     parser.add_argument("--frames", type=int, default=300)
     parser.add_argument("--anchor-frames", type=int, default=64)
     args = parser.parse_args()
-    out: Path = args.out
+    # Absolute: game scenes run with their Data folder as the working
+    # directory, so a relative output path would land inside the install.
+    out: Path = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     t0 = time.monotonic()
 
@@ -188,31 +197,44 @@ def main() -> int:
     engine = Engine(REPO / "target" / "release" / "byroredux", out)
     mi.set_variant("scalar_rgb")
 
-    base_rows, material_rows = [], []
+    base_rows, material_rows, pending_rows = [], [], []
     for scene in [s.strip() for s in args.scenes.split(",") if s.strip()]:
         workdir, _, _ = scene_spec(scene)
         if not workdir.is_dir():
             log(f"skip {scene}: {workdir} not present")
             continue
-        stepped = ["--upscaler", "taa", "--bench-frames", str(args.frames),
-                   "--bench-mode", "renderer-stepped", "--bench-camera", "orbit"]
+        stepped = ["--bench-frames", str(args.frames), "--bench-mode", "renderer-stepped",
+                   "--bench-camera", "orbit"]
         dump = out / "materials" / f"{scene}.tsv"
-        extra = stepped + (["--material-dump", str(dump)] if scene in WAVE1_GAME_SCENES else [])
-        line, _ = engine.run(scene, "adaptive", extra)
-        fields = bench_fields(line)
-        hist = [int(v) for v in fields["rt_tier_hist"].split("/")]
-        settled = int(np.argmax(hist))
-        oscillation = 1.0 - hist[settled] / max(sum(hist), 1)
-        log(f"{scene}: settled tier {settled}, oscillation {oscillation:.3f} (hist {hist})")
-
-        walls, gpus = [], []
-        for run in range(1, args.runs + 1):
-            pinned, _ = engine.run(scene, f"pinned_t{settled}_{run}",
-                                   stepped + ["--rt-test-ray-quality-tier", str(settled)])
-            walls.append(float(bench_fields(pinned)["wall_ms"]))
-            gpus.append(gpu_brackets(pinned))
-        gpu_median = {k: statistics.median(g.get(k, 0.0) for g in gpus) for k in gpus[0]}
-        log(f"{scene}: pinned tier {settled} wall {statistics.median(walls):.2f} ms ({min(walls):.2f}-{max(walls):.2f})")
+        anchor_tier, anchor_fields = None, None
+        for config, config_args in CONFIGS:
+            extra = config_args + stepped
+            if config == "taa" and scene in WAVE1_GAME_SCENES:
+                extra = extra + ["--material-dump", str(dump)]
+            line, _ = engine.run(scene, f"{config}_adaptive", extra)
+            fields = bench_fields(line)
+            hist = [int(v) for v in fields["rt_tier_hist"].split("/")]
+            settled = int(np.argmax(hist))
+            oscillation = 1.0 - hist[settled] / max(sum(hist), 1)
+            log(f"{scene}/{config}: settled tier {settled}, oscillation {oscillation:.3f} (hist {hist})")
+            walls, gpus = [], []
+            for run in range(1, args.runs + 1):
+                pinned, _ = engine.run(scene, f"{config}_pinned_t{settled}_{run}",
+                                       config_args + stepped + ["--rt-test-ray-quality-tier", str(settled)])
+                walls.append(float(bench_fields(pinned)["wall_ms"]))
+                gpus.append(gpu_brackets(pinned))
+            gpu_median = {k: statistics.median(g.get(k, 0.0) for g in gpus) for k in gpus[0]}
+            log(f"{scene}/{config}: pinned tier {settled} wall {statistics.median(walls):.2f} ms "
+                f"({min(walls):.2f}-{max(walls):.2f})")
+            pending_rows.append([
+                scene, config, str(settled), f"{oscillation:.4f}", fields["rt_tier_warmup"], str(sum(hist)),
+                fields["rt_tier_hist"], f"{statistics.median(walls):.3f}", f"{min(walls):.3f}",
+                f"{max(walls):.3f}", ";".join(f"{k}={v:.3f}" for k, v in sorted(gpu_median.items())),
+                fields.get("entities", ""), fields.get("render_extent", ""),
+            ])
+            if config == "taa":
+                anchor_tier, anchor_fields = settled, fields
+        fields, settled = anchor_fields, anchor_tier
 
         # Content anchor at the pinned pose: the stepped path's last camera.
         pos, fwd = fields["camera_pos"], fields["camera_forward"]
@@ -230,20 +252,16 @@ def main() -> int:
         tile_mean, tile_p95 = tile_stats(a, b)
         digest = hashlib.sha256(anchors[0].read_bytes()).hexdigest()[:16]
 
-        base_rows.append([
-            scene, str(settled), f"{oscillation:.4f}", fields["rt_tier_warmup"], str(sum(hist)),
-            fields["rt_tier_hist"], f"{statistics.median(walls):.3f}", f"{min(walls):.3f}", f"{max(walls):.3f}",
-            ";".join(f"{k}={v:.3f}" for k, v in sorted(gpu_median.items())),
-            fields.get("entities", ""), fields.get("render_extent", ""), pos, fwd,
-            f"{tile_mean:.5f}", f"{tile_p95:.5f}", digest,
-        ])
+        for row in pending_rows:
+            base_rows.append(row + [pos, fwd, f"{tile_mean:.5f}", f"{tile_p95:.5f}", digest])
+        pending_rows.clear()
         if scene in WAVE1_GAME_SCENES and dump.exists():
             material_rows += material_report(dump, scene)
 
     revision = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short=12", "HEAD"],
                               capture_output=True, text=True).stdout.strip()
     with open(out / "baselines.tsv", "w") as f:
-        f.write("scene\tsettled_tier\ttier_oscillation\twarmup_frames\twindow_frames\trt_tier_hist\t"
+        f.write("scene\tconfig\tsettled_tier\ttier_oscillation\twarmup_frames\twindow_frames\trt_tier_hist\t"
                 "pinned_wall_ms_median\tpinned_wall_ms_min\tpinned_wall_ms_max\tgpu_ms_median\tentities\t"
                 "render_extent\tanchor_camera_pos\tanchor_camera_forward\tanchor_tile_floor_mean\t"
                 "anchor_tile_floor_p95\tanchor_s0_sha256_16\n")
@@ -257,7 +275,7 @@ def main() -> int:
     wall = time.monotonic() - t0
     with open(out / "run-metadata.txt", "w") as f:
         f.write(f"revision={revision}\nruns={args.runs}\nframes={args.frames}\nanchor_frames={args.anchor_frames}\n"
-                f"conditions=renderer-stepped orbit, --upscaler taa (native), release build, fresh settings per run\n"
+                f"conditions=renderer-stepped orbit, configs taa (native) and fsr-quality, release build, fresh settings per run; anchors at native TAA, no jitter, the TAA settled tier\n"
                 f"tile={TILE}\nF1_roughness={F1_ROUGHNESS}\nF3_tolerance={F3_TOLERANCE}\nwall_seconds={wall:.1f}\n")
     log(f"done in {wall:.1f} s: {out / 'baselines.tsv'}, {out / 'materials.tsv'}")
     return 0
