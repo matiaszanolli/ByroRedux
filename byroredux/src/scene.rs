@@ -427,7 +427,9 @@ fn load_scene_content(
     } else if let Some(rung) = cornell_reference {
         // M-LIGHT reference rungs (RLT-REF-001/009): measured against an
         // external converged render, exportable with `--export-mitsuba`.
-        let (pos, target) = crate::cornell::setup_reference_scene(world, ctx, rung);
+        let view = crate::cornell::cornell_reference_view(args)
+            .unwrap_or_else(|message| panic!("{message}"));
+        let (pos, target) = crate::cornell::setup_reference_scene(world, ctx, rung, view);
         harness_cam = Some((pos, target));
         cam_center = target;
         has_nif_content = true;

@@ -131,6 +131,44 @@ probe and one real-content dense-light scene. ReSTIR experiments should use
 this suite before changing reservoir clamps, history caps, neighbor selection,
 or visibility-ray counts.
 
+## M-LIGHT reference gates
+
+The Cornell captures above compare the engine with itself. The M-LIGHT
+gates ([reference-lighting PRD](../prd/reference-lighting.md)) compare it
+with a converged external render of the same scene, on scene-linear
+captures (RLT-REF-007):
+
+```bash
+BYROREDUX_MITSUBA_PYTHON=~/mitsuba/bin/python scripts/m-light-gates.sh           # A15 + A16, warm cache
+BYROREDUX_MITSUBA_PYTHON=~/mitsuba/bin/python scripts/m-light-gates.sh --cold    # A18 cold timing
+cargo test -p byroredux --test m_light_gates -- --ignored --nocapture --test-threads=1
+```
+
+The runner (`scripts/m-light/gates.py`) builds the engine, runs each
+`--cornell-reference` rung with `--linear-capture` (an N-frame f32 OpenEXR of
+composite's output before bloom, exposure and tone mapping), exports the
+same scene with `--export-mitsuba` (design in [Path Tracing §1](path-tracing.md#1-cornell-scene-exporter-ptr-val-004)),
+renders the reference in Mitsuba 3 under the recipes of
+[§2.3](path-tracing.md#23-component-recipes-in-mitsuba-terms), and writes
+`target/m-light/manifest.tsv`: one row per gate, region and metric with the
+engine and reference noise floors (two sampling seeds per side,
+`--rt-test-seed-offset` on the engine), their root-sum-square and the pass
+state. References are cached by a hash of the exported scene, the Mitsuba
+version, the variant, the recipe, the sample count and the seed, so a
+shader-only change reuses every one (RLT-REF-015). Regions come from one
+camera ray per pixel centre intersected with the exported scene (Mitsuba's
+`shape_index` AOV indexes neither the XML order nor `Scene.shapes()`), per
+named shape, eroded three pixels so edge pixels — where the engine shades
+the pixel centre and Mitsuba's box filter integrates the coverage — never
+enter a mean.
+
+Engine switches the rungs use, all diagnostic: `--rt-test-seed-offset N`
+(RLT-REF-013), `--rt-test-no-jitter` (TAA only; RLT-REF-020),
+`--rt-test-no-dust-floor` (drops the 0.006 m⁻¹ interior dust medium;
+RLT-REF-009), `BYROREDUX_RENDER_DEBUG=0x20` (`DBG_DISABLE_SVGF`,
+RLT-REF-018), and the `filtered_direct` / `traced_share` views
+(RLT-SHD-009, RLT-GI-009).
+
 ## Related tools
 
 - [Cornell scene](../../byroredux/src/cornell.rs)

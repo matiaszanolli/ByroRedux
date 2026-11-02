@@ -102,7 +102,17 @@ walk's convention and the primary lobe's appears in the L4 deficit
 (RLT-REF-010) check the factors: a ratio *c* ≠ 1 there is a bug in this
 table or the exporter.
 
-### 2.2 BSDF mapping (Phase 1a scope: flat planes)
+### 2.2 BSDF mapping
+
+Phase 1a validates the Lambertian row only, on the material rung's flat
+planes (albedos 0.2, 0.5, 0.8 and the two wall colours, each at three view
+angles; `--cornell-reference materials`). It is the only row any Phase 1a
+rung uses, and it is exact by construction. The two specular rows are
+validated at Phase 4's entry, before the sky sweep consumes them: their
+known differences (the Smith remap, the Burley diffuse version) make the
+engine ÷ reference ratio a function of roughness and angle, so they need
+the per-roughness expected difference this table records, measured on the
+material rung, rather than a unit ratio.
 
 | Engine material | Engine lobes | Mitsuba 3 | Known differences |
 |---|---|---|---|

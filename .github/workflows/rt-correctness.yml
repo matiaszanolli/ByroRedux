@@ -22,6 +22,7 @@ on:
           - cornell
           - golden
           - material-provider-matrix
+          - m-light
           - all
 
 env:
@@ -76,6 +77,40 @@ jobs:
         with:
           name: cornell-rt-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/rt-correctness-artifacts
+          if-no-files-found: error
+          retention-days: 30
+
+  m-light:
+    # M-LIGHT reference gates (docs/prd/reference-lighting.md, RLT-OPS-001):
+    # A15 calibration + materials, A16 closure, A18 apparatus cost. Needs a
+    # Python with Mitsuba 3 and NumPy, named by the runner's
+    # BYROREDUX_MITSUBA_PYTHON variable — a developer tool, never an engine
+    # dependency. Until a `byroredux-rt` runner exists this runs on the RT
+    # dev box: `scripts/m-light-gates.sh` (see renderer-evaluation.md).
+    name: M-LIGHT reference gates
+    if: inputs.gate == 'm-light' || inputs.gate == 'all'
+    runs-on: [self-hosted, linux, x64, byroredux-rt]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: Run gates (warm reference cache)
+        env:
+          BYROREDUX_MITSUBA_PYTHON: ${{ vars.BYROREDUX_MITSUBA_PYTHON }}
+        run: xvfb-run -a scripts/m-light-gates.sh --out target/m-light
+      - name: Publish manifest and captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m-light-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/m-light/manifest.tsv
+            target/m-light/run-metadata.txt
+            target/m-light/engine
+            target/m-light/scenes
           if-no-files-found: error
           retention-days: 30
 

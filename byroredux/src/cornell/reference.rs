@@ -45,6 +45,12 @@ pub(crate) enum ReferenceRung {
     /// ceiling and back wall, red left wall, green right wall) with a tall
     /// block and a short cube, lit by one point emitter under the ceiling.
     LambertBox,
+    /// RLT-REF-014 material validation: one flat plane per mapped material
+    /// on a black floor under one emitter, seen from three view angles
+    /// (`--cornell-reference-view 0|1|2`). Phase 1a maps the Lambertian
+    /// materials only (albedos 0.2 / 0.5 / 0.8 and the two wall colours);
+    /// the specular rows join at Phase 4's entry (`path-tracing.md` §2.2).
+    Materials,
 }
 
 impl ReferenceRung {
@@ -52,11 +58,38 @@ impl ReferenceRung {
         match self {
             Self::CalibrationPoint => "cal-point",
             Self::LambertBox => "lambert-box",
+            Self::Materials => "materials",
         }
     }
 }
 
-const RUNGS: &[ReferenceRung] = &[ReferenceRung::CalibrationPoint, ReferenceRung::LambertBox];
+const RUNGS: &[ReferenceRung] = &[
+    ReferenceRung::CalibrationPoint,
+    ReferenceRung::LambertBox,
+    ReferenceRung::Materials,
+];
+
+/// The Lambertian materials Phase 1a maps (RLT-REF-008, RLT-REF-014), by
+/// plane name; the material rung lays them out left to right.
+pub(crate) const MATERIAL_PLANES: &[(&str, [f32; 3])] = &[
+    ("mat_lambert_020", [0.2; 3]),
+    ("mat_lambert_050", [0.5; 3]),
+    ("mat_lambert_080", [0.8; 3]),
+    ("mat_lambert_red", [0.65, 0.05, 0.05]),
+    ("mat_lambert_green", [0.12, 0.45, 0.15]),
+];
+
+/// Parse `--cornell-reference-view N` (0, 1 or 2; default 0): the material
+/// rung's view angle. Other rungs have one fixed camera and ignore it.
+pub(crate) fn cornell_reference_view(args: &[String]) -> Result<u32, String> {
+    let Some(index) = args.iter().position(|a| a == "--cornell-reference-view") else {
+        return Ok(0);
+    };
+    match args.get(index + 1).map(|v| v.parse::<u32>()) {
+        Some(Ok(view)) if view <= 2 => Ok(view),
+        _ => Err("--cornell-reference-view requires 0, 1 or 2".to_owned()),
+    }
+}
 
 /// Parse `--cornell-reference <rung>`; a typo is an error, never a fallback.
 pub(crate) fn cornell_reference_rung(args: &[String]) -> Result<Option<ReferenceRung>, String> {
@@ -119,6 +152,7 @@ pub(crate) fn setup_reference_scene(
     world: &mut World,
     ctx: &mut VulkanContext,
     rung: ReferenceRung,
+    view: u32,
 ) -> (Vec3, Vec3) {
     // RLT-REF-009: no ambient, no directional, interior (no sky probe, no
     // DALC), fog far beyond the scene and no medium. `bare` fits a medium
@@ -201,6 +235,44 @@ pub(crate) fn setup_reference_scene(
                 Vec3::new(0.0, BOX_HEIGHT * 0.5, 0.0),
             )
         }
+        ReferenceRung::Materials => {
+            // Planes 0.6 m square, 0.8 m apart, 1 cm above a black floor
+            // (zero albedo: no bounce reaches the planes, so direct-only and
+            // total agree up to the planes' own interreflection, which is
+            // none for coplanar planes).
+            let floor = builder.box_mesh([3.0 * M, BOX_WALL_T, 2.0 * M]);
+            spawn_object(
+                world,
+                floor,
+                neutral,
+                Vec3::new(0.0, -BOX_WALL_T, 0.0),
+                Quat::IDENTITY,
+                lambert([0.0; 3]),
+                "mat_floor_black",
+            );
+            let plane = builder.box_mesh([0.3 * M, 0.005 * M, 0.3 * M]);
+            let count = MATERIAL_PLANES.len() as f32;
+            for (i, (name, color)) in MATERIAL_PLANES.iter().enumerate() {
+                let x = (i as f32 - (count - 1.0) * 0.5) * 0.8 * M;
+                spawn_object(
+                    world,
+                    plane,
+                    neutral,
+                    Vec3::new(x, 0.01 * M, 0.0),
+                    Quat::IDENTITY,
+                    lambert(*color),
+                    name,
+                );
+            }
+            spawn_reference_emitter(world, Vec3::new(0.0, 1.5 * M, 0.3 * M), 2.0, "mat_emitter");
+            // Three view angles over the row: steep, oblique, grazing-ish.
+            let (height, back) = match view {
+                0 => (3.2 * M, 1.2 * M),
+                1 => (2.0 * M, 3.0 * M),
+                _ => (1.0 * M, 3.6 * M),
+            };
+            (Vec3::new(0.0, height, back), Vec3::ZERO)
+        }
     };
     let sources = builder.finish_recording_sources();
     world.insert_resource(CornellMeshSources(sources));
@@ -226,6 +298,16 @@ mod tests {
         }
         assert!(cornell_reference_rung(&args(&["--cornell-reference"])).is_err());
         assert!(cornell_reference_rung(&args(&["--cornell-reference", "cal-pt"])).is_err());
+    }
+
+    #[test]
+    fn view_selector_defaults_to_zero_and_rejects_out_of_range() {
+        assert_eq!(cornell_reference_view(&args(&[])).unwrap(), 0);
+        assert_eq!(
+            cornell_reference_view(&args(&["--cornell-reference-view", "2"])).unwrap(),
+            2
+        );
+        assert!(cornell_reference_view(&args(&["--cornell-reference-view", "3"])).is_err());
     }
 
     #[test]
