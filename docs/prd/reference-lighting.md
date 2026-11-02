@@ -1,8 +1,8 @@
 # Reference-Quality Lighting — Product Requirements
 
-**Status**: APPROVED (2026-11-02). Revision 7; the change history is in
-§12. Every decision in §10 is decided; implementation issues may be
-filed. Statements about
+**Status**: APPROVED (2026-11-02). Revision 8; the change history is in
+§12. Every decision in §10 is decided and every Phase 0 verify item is
+closed or filed as an issue. Statements about
 how an original engine, a published technique or an external tool behaves
 cite external sources (UESP and the Creation Kit wikis, the cited papers
 and vendor documentation); a claim that could not be verified is marked
@@ -214,7 +214,7 @@ live in the rung subsection of the exporter design (Related table).
 | `direct_only` | `Lo`: each light's diffuse and specular × raw shadow ratio; environment specular (RT reflection ray, or sky probe on a miss) for materials T9 admits; eye environment; the glass rim term; plus emissive. Not the shadow filter's correction (T3). Not multiplied by anything downstream | RLT-REF-009 (no emissive, glass or eye materials); interior rungs use only dielectrics without an authored cube, so T9 adds nothing | Paths with exactly one scattering vertex, lit by the rung's emitters only, no environment |
 | Filtered direct (new, RLT-SHD-009) | `direct_only` plus the shadow filter's correction | As `direct_only` | As `direct_only` |
 | Visibility (§2) | Filtered direct ÷ filtered direct with `DBG_DISABLE_DIRECT_SHADOWS` | As `direct_only` | Direct recipe ÷ direct recipe with the rung's casters removed |
-| `indirect_only` | The single-frame, pre-SVGF `indirectLight`, **not** multiplied by the local albedo: exteriors (SH9 sky × (1 − traced weight) + traced) × AO; DALC cells (cube + traced) × AO; other cells ambient × max(AO, 0.3) + traced × AO. Diffuse only: the GI walk carries no glossy interreflection | Authored ambient zero and no DALC (RLT-REF-009); every material of an L4 rung purely Lambertian — `specular_strength` 0 (`GpuMaterial` offset 28, `crates/renderer/src/vulkan/material.rs`) and metalness 0 on the engine side (RLT-GI-010); averaged over the linear capture's frame count; multiplied by the exporter's albedo for the region's object (every L4 region is one flat-albedo object) | Reference total − reference direct, both at the same sample count, with every L4 material mapped to the renderer's plain diffuse BSDF, so the reference's indirect carries no specular scattering either |
+| `indirect_only` | The single-frame, pre-SVGF `indirectLight`, **not** multiplied by the local albedo: exteriors (SH9 sky × (1 − traced weight) + traced) × AO; DALC cells (cube + traced) × AO; other cells ambient × max(AO, 0.3) + traced × AO. Not diffuse-only at HEAD: the GI walk shades hits with a dielectric GGX lobe and samples it on ≥ 5 % of bounces (V11), so L4 rungs switch it off (RLT-GI-010) | Authored ambient zero and no DALC (RLT-REF-009); every material of an L4 rung purely Lambertian — `specular_strength` 0 (`GpuMaterial` offset 28, `crates/renderer/src/vulkan/material.rs`) and metalness 0 on the engine side (RLT-GI-010); averaged over the linear capture's frame count; multiplied by the exporter's albedo for the region's object (every L4 region is one flat-albedo object) | Reference total − reference direct, both at the same sample count, with every L4 material mapped to the renderer's plain diffuse BSDF, so the reference's indirect carries no specular scattering either |
 | Traced share (new, RLT-GI-009) | The traced share as it enters `indirectLight`, including whatever multiplies it | As `indirect_only` | As `indirect_only` on interior rungs, where traced share and indirect coincide |
 | Sky specular | `direct_only` on the sky-only rung: environment specular alone | The probe alone, with no floor, wall or other probe on either side (RLT-REF-021); the directional light zeroed and the sky dome unchanged (RLT-REF-019); diffuse albedo zero | Environment-only render of that one probe with the specular part of the mapped BSDF (RLT-REF-008), against the RLT-REF-012 environment |
 | Sky diffuse | `indirect_only` × albedo on the sky-only rung | As sky specular, with one Lambertian probe alone | Environment-only render of that one Lambertian probe |
@@ -321,15 +321,27 @@ live in the rung subsection of the exporter design (Related table).
   subtends atan(*r*/*d*); a sphere-area emitter of the same radius subtends
   asin(*r*/*d*). Each rung MUST keep *r*/*d* ≤ 0.1 at every measured
   receiver point, where the two angular radii differ by about 0.5 %, and
-  the manifest MUST record the largest *r*/*d* used. **Phase 0: verify**
-  that the external renderer's point and sphere-area emitters are
-  inverse-square with a finite radius, and which emitter reproduces a
-  directional light of finite angular radius (settled by the emitter
-  documentation of the renderer M51's Q5 adopts).
+  the manifest MUST record the largest *r*/*d* used. V1 closed in rev 8
+  against Mitsuba 3.9.1's sources: its `point` emitter is inverse-square
+  but a delta light with no radius (`src/emitters/point.cpp`), so a rung
+  whose measurement depends on the source size (a penumbra) MUST export a
+  `sphere` shape carrying an `area` emitter of radius *r* and radiance
+  *I* ⁄ (π*r*²), which gives a facing receiver the irradiance *I* ⁄ *d*²
+  and is sampled over the asin(*r*/*d*) cone (`src/shapes/sphere.cpp`); a
+  rung that measures no penumbra MAY export the delta `point`. Its
+  `directional` emitter is a delta light at 3.9.1; an `angle` parameter
+  landed on master on 2026-09-21 (commit 67bcc328) in no release yet, so
+  the sun of finite angular radius (RLT-EXP-004) is chosen at Phase 3's
+  entry between a pinned build carrying that commit and an environment
+  map with the disc painted in, and the manifest records which.
 - **RLT-REF-003.** Reference images MUST NOT be checked in when the
   reference renderer's licence forbids it; the exporter and a pinned
-  renderer version MUST regenerate them locally. **Phase 0: verify** the
-  chosen renderer's licence terms for output images.
+  renderer version MUST regenerate them locally. V2 closed in rev 8:
+  Mitsuba 3's licence (BSD-3-Clause plus an "Enhancements" clause,
+  identical at v3.9.1 and master) governs redistribution of the
+  software and says nothing about rendered images, so it does not forbid
+  checking references in; the cache rule (RLT-REF-015) still keeps them
+  local, because they regenerate from the exporter in seconds.
 - **RLT-REF-004.** A metric manifest (`manifest.tsv` from
   `scripts/renderer-eval.sh`, extended) MUST record, per case, each §8
   metric with its frozen floor, its re-measured floor and its threshold,
@@ -394,7 +406,16 @@ live in the rung subsection of the exporter design (Related table).
   compensation in `include/lighting.glsl`; the split-sum environment term
   RLT-IBL-001 adds MUST honour the same bit), or record the expected
   difference per roughness and lobe in the table, so neither gate counts
-  a modelling difference as error. M51's per-probe mapping of the Cornell
+  a modelling difference as error. V13 closed in rev 8: none of Mitsuba
+  3's rough BSDFs (`roughconductor`, `roughdielectric`, `roughplastic`,
+  `principled`) compensates for multiple scattering — each is the
+  single-scattering D·G·F ⁄ 4 cos form with a separable Smith G — so every
+  specular-energy comparison runs the engine with
+  `DBG_DISABLE_MULTISCATTER`. The table MUST also record, per roughness,
+  the difference the engine light loop's Smith *k* = (*r* + 1)² ⁄ 8 remap
+  (`geometrySmith`, `include/pbr.glsl`) makes against Mitsuba's GGX, and
+  the exporter MUST set `distribution="ggx"` (Mitsuba's default is
+  Beckmann) with α = roughness². M51's per-probe mapping of the Cornell
   materials (its V4) is the starting point; this ID covers the materials
   of this PRD's rungs.
 - **RLT-REF-009.** A reference rung MUST NOT contain an emissive surface,
@@ -428,8 +449,11 @@ live in the rung subsection of the exporter design (Related table).
     deliberately smooth, low-frequency sky with no sun disc and no glow
     on both sides, where the engine's nine-coefficient irradiance is
     accurate. At HEAD on 2026-11-02 zeroing the dome's sun
-    (`dome.sun_dir.w`) removes the glow and the disc and keeps the
-    gradient (RLT-REF-019), which is such a sky. A ratio other than 1 on
+    (`dome.sun_dir.w`) removes the glow, the disc and the Rayleigh / Mie
+    term and keeps the gradient (RLT-REF-019), but `--cornell-sun`'s
+    procedural sky also carries a cloud deck (`cloud_coverage` 0.35 from
+    `WeatherSkyState::default`), so the smooth sky MUST also zero the
+    cloud coverage; V6 found the uniform sky reachable the same way. A ratio other than 1 on
     the full sky with its glow is L3 bias, measured by A6, not a unit
     error; a unit bug is filed only when the ratio is off on the smooth
     sky.
@@ -472,9 +496,13 @@ live in the rung subsection of the exporter design (Related table).
   plane's direct-only radiance MUST match the reference within the floor
   at three or more view angles and, for the normal-mapped plane, three or
   more light azimuths. A white-furnace variant SHOULD be added if the
-  engine can light a probe by a uniform environment; **Phase 0: verify**
-  whether it can (settled by reading the sky-probe inputs in
-  `sky_cube.rs` and `frame_params.rs`).
+  engine can light a probe by a uniform environment. V6 closed in rev 8:
+  it can, but only through new scene set-up code — with the zenith,
+  horizon and lower colours equal, the sun intensity zero, the cloud
+  coverage zero and no cloud texture layers, `sky_radiance` is constant
+  and so are the baked cube, its mips and the SH9; it must be an exterior
+  sky, since interiors get no sky probe, and no CLI flag or console
+  command sets those inputs today.
 - **RLT-REF-015.** Reference images MUST be cached locally, keyed by a
   hash of the exporter's output for the rung, the reference renderer's
   version and the sample count, and MUST be re-rendered only when that key
@@ -492,11 +520,11 @@ live in the rung subsection of the exporter design (Related table).
   run MUST exist for the skinned proxy (RLT-CON-003), and the exporter
   MUST export that frame's pose (RLT-EXP-001). At HEAD on 2026-11-01
   `renderer-static` steps 0 s and `renderer-stepped` a fixed 1/60 s
-  (`BenchMode::delta_time`, `byroredux/src/bench.rs`); **Phase 0: verify** whether
-  the animation and skinning systems advance under `renderer-stepped` and
-  give a bit-identical pose at a given frame (settled by a two-run
-  comparison of the skinned BLAS input), which decides whether this is the
-  existing mode or a new one.
+  (`BenchMode::delta_time`, `byroredux/src/bench.rs`). Whether the
+  animation and skinning systems advance under `renderer-stepped` and give
+  a bit-identical pose at a given frame (V9) needs a two-run comparison of
+  the skinned palette, filed in rev 8 as #6605 for Phase 3; its answer
+  decides whether this is the existing mode or a new one.
 - **RLT-REF-018.** A switch that bypasses SVGF — both its temporal
   accumulation and its à-trous passes — MUST exist for the closure rung,
   as a `DBG_*` bit listed with its siblings. At HEAD on 2026-11-01
@@ -508,11 +536,16 @@ live in the rung subsection of the exporter design (Related table).
   intensity (`dome.sun_dir.w`) scales the sun glow and the disc in
   `sky_radiance` (`include/sky.glsl`, the glow and `disc_base` terms) but
   not the zenith-to-horizon gradient, so zeroing the dome's sun would also
-  remove the glow the environment is meant to keep (RLT-REF-012).
-  **Phase 0: verify** whether the EXAL translate step can set the
-  directional light's intensity independently of `dome.sun_dir.w`
-  (settled by reading `env_translate/sky_weather.rs`); if not, the switch
-  is new code.
+  remove the glow the environment is meant to keep (RLT-REF-012); it also
+  scales the Rayleigh / Mie atmospheric term. V10 closed in rev 8: the
+  switch is new code. One value, `SkyParamsRes.sun_intensity`, feeds both
+  the directional light (`compute_directional_upload`,
+  `byroredux/src/render/lights.rs`) and `dome.sun_dir.w`
+  (`byroredux/src/render/sky.rs`), and the only independent input,
+  `CellLightingRes.directional_color`, is rewritten every exterior frame by
+  the weather system and also drives the clouds' sun lighting. The switch
+  drops the directional light after `compute_directional_upload` in
+  `collect_lights`, leaving the dome untouched.
 - **RLT-REF-020.** A capture mode MUST produce a linear `final` with no
   temporal reconstruction and no sub-pixel jitter, for the closure rung
   (RLT-REF-011). At HEAD on 2026-11-01 `--upscaler` accepts only `taa`
@@ -585,9 +618,15 @@ live in the rung subsection of the exporter design (Related table).
   NRD's shader sources, and the NRD SDK is not a dependency. At HEAD on
   2026-11-01 the reach is fixed (T3: 6 pixels), and the 36-byte `Reservoir`
   carries the blocker's surface ID (`occluderSurface`), not its distance.
-  **Phase 0: verify** whether a blocker distance fits the reservoir or
-  needs its own screen-sized image (settled by the reservoir layout test
-  `reservoir_glsl_copies_stay_in_lockstep` and a byte budget).
+  V3 closed in rev 8: the reservoir has no free 32-bit word (its
+  `accum` channels must stay f32 for the parked EMA floor), but each
+  pixel's `directUnshadowed[].y` is written as `packHalf2x16(vec2(U.b,
+  0.0))` (`triangle.frag`), so its high half is always zero and the
+  shadow filter already binds that buffer; the selected ray's blocker
+  distance (at most 12 000 units) fits it as an f16 at zero cost. A
+  temporally accumulated distance would instead grow the 36-byte
+  `Reservoir` to 40 bytes, +8 B/px across both frames in flight (+16.6 MB
+  at 1080p).
 - **RLT-SHD-004.** With the shadow filter on, the visibility error (§2)
   MUST be within the L1 threshold in a band just outside each penumbra on
   the lit side and on the umbra side, and across the shadow of a thin rod
@@ -665,8 +704,14 @@ live in the rung subsection of the exporter design (Related table).
   synthesize a normal map (`synthesize_wavy_normal_map`,
   `byroredux/src/cornell/builders.rs`).
 - **RLT-CON-008.** The contact rung MUST include an alpha-tested caster.
-  **Phase 0: verify** whether the Cornell builders can spawn an
-  alpha-tested material (settled by reading `cornell/builders.rs`).
+  V5 closed in rev 8: no builder sets `alpha_test` today, but a `Material`
+  with `alpha_test` set, a non-zero `alpha_threshold` and a cut-out
+  texture from `register_rgba`, spawned with `spawn_object`, needs no
+  renderer change; traced shadow rays honour alpha test by committing the
+  closest hit, testing coverage at mip 0 and re-tracing past holes, up to
+  `MAX_ALPHA_SKIP_LAYERS = 8` (`include/shadow_transport.glsl`,
+  `include/ray_hit.glsl`), so the caster MUST have fewer than eight
+  layers along any measured ray.
 - **RLT-CON-009.** Terrain contact cannot be expressed in the Cornell
   box; an exterior capture of terrain contact SHOULD be reported, not
   gated, by A11.
@@ -686,8 +731,10 @@ reach.
   sections "Split Sum Approximation" and "Environment BRDF"). The LUT-free
   analytic fit already in `envBRDFApprox` (`include/pbr.glsl`) is a later
   Karis fit, "Physically Based Shading on Mobile" (2014), per that
-  function's comment; **Phase 0: verify** its constants against that post
-  before it is used as the weight. At HEAD on 2026-11-01 an ordinary
+  function's comment. V7 closed in rev 8: both constant vectors, *r*,
+  `a004` and the returned scale and bias match the post exactly (read
+  from its December 2014 Web Archive copy; the live page refuses), so the
+  fit MAY be used as the weight as written. At HEAD on 2026-11-01 an ordinary
   exterior dielectric reflects no sky (T9).
 - **RLT-IBL-002.** Environment specular above `roughness 0.6` MUST come
   from the sky mip for that roughness instead of being dropped; the RT
@@ -740,10 +787,15 @@ reach.
     read each flag as a separate defect;
   - F3: on FO4, any material whose translated roughness differs from
     1 − its authored BGSM smoothness beyond float tolerance — the
-    conversion `material_translate.rs` states for BGSM content.
-    **Phase 0: verify** that conversion against an external description of
-    the BGSM smoothness field (settled by the Material-Editor source the
-    other PRDs cite).
+    conversion the engine applies to BGSM content
+    (`(1.0 - smoothness).clamp(0.04, 1.0)` in
+    `byroredux/src/asset_provider/material/merge.rs`, specular enabled
+    only), with its 0.5 no-gloss-map fallback excluded from the flag.
+    V12 could not be closed in rev 8: the Material-Editor source describes
+    `fSmoothness` only as "Smoothness of the specular effect." with no
+    conversion, and nif.xml's description contradicts the field's name, so
+    the conversion is filed as #6606 and F3 checks the engine against its
+    own rule, reported as an unverified convention, until it closes.
 
   Every flagged class MUST be fixed at the translation boundary or
   recorded as accepted with a reason, never capped in a shader; the owner
@@ -767,7 +819,13 @@ reach.
 - **RLT-GI-001.** The bounded path MUST evaluate light at two or more
   diffuse vertices at tiers 2 and 3. At HEAD on 2026-11-01 this is met
   (T11); this ID pins it with a shader-contract test so the ROADMAP row's
-  stale "1 in raster mode" cannot become true again.
+  stale "1 in raster mode" cannot become true again. At HEAD on
+  2026-11-02 `bounded_path_preserves_the_accepted_segment_and_diffuse_budgets`
+  pins tier 3 to the shader ceilings and every tier at or below them, but
+  nothing pins a floor: dropping tier 2 to one shaded hit, or lowering
+  tier 3 and `MAX_SHADED_HITS` together to one, passes every test. The
+  pin MUST assert at least two shaded hits and two path segments at tiers
+  2 and 3.
 - **RLT-GI-002.** The Cornell energy deficit (§2) and its relative error
   distribution MUST be published per ray quality tier on the floor,
   back-wall and ceiling regions, from `indirect_only` × albedo against the
@@ -812,14 +870,19 @@ reach.
   `indirect_only` mixes the traced share with the untraced sky share or
   authored ambient (§3.4), so no view isolates it.
 - **RLT-GI-010.** Every material of an L4 rung MUST be purely Lambertian on
-  both sides (§3.4): `specular_strength` 0 and metalness 0 on the engine,
-  the plain diffuse BSDF on the reference, so the deficit holds no glossy
-  interreflection the engine does not attempt. **Phase 0: verify** that
-  `specular_strength` 0 removes every specular contribution on the
-  engine — the light loop's GGX lobe, the multi-scatter compensation and
-  the environment term (settled by reading `include/lighting.glsl` and
-  `include/pbr.glsl`); if it does not, the rung needs a debug bit that
-  does.
+  both sides (§3.4): no specular lobe and no Fresnel weight on the
+  engine, the plain diffuse BSDF on the reference, so the deficit measures
+  diffuse transport only. V11 closed in rev 8: `specular_strength`
+  (`GpuMaterial` offset 28) scales only the light loop's GGX lobe and its
+  multi-scatter compensation (`include/lighting.glsl`); the environment
+  term is off for a metalness-0 material without an authored cube, but
+  the GI walk shades every hit with a dielectric GGX lobe whose F0 comes
+  from `ior`, samples that lobe on at least 5 % of bounces, and weights
+  every diffuse term by (1 − *F*) (`include/lighting.glsl`,
+  `include/pbr.glsl`), and Schlick's grazing term survives `ior` = 1. The
+  engine side therefore MUST gain a switch, built in Phase 1a, that makes
+  a rung's materials Lambertian in the light loop, at the GI walk's hits
+  and in its first-surface throughput.
 
 ### 5.6 Cost and budget (`RLT-PERF`)
 
@@ -967,7 +1030,7 @@ complete while it is unowned, and no other phase waits for it.
 
 | # | Original behaviour | Redux behaviour | Becomes redundant | Risk and its requirement |
 |---|---|---|---|---|
-| 1 | Oblivion draws shadows from shadow maps with a capped actor-shadow count and a filter level (`iShadowMapResolution`, `iActorShadowCountInt` / `Ext`, `iShadowFilter`; UESP [Oblivion:Oblivion.ini](https://en.uesp.net/wiki/Oblivion_Mod:Oblivion.ini)). Other titles: **Phase 0: verify** from their INI references | Every light ray-traced against the full TLAS, no caster cap (RLT-NG-002) | Shadow-resolution and shadow-count INI tweaks and the mods that ship them | Cost grows with lights; bounded by the adaptive budget → RLT-PERF-002, RLT-PERF-004 |
+| 1 | Oblivion draws shadows from shadow maps with a capped actor-shadow count and a filter level (`iShadowMapResolution`, `iActorShadowCountInt` / `Ext`, `iShadowFilter`; UESP [Oblivion:Oblivion.ini](https://en.uesp.net/wiki/Oblivion_Mod:Oblivion.ini)). Other titles (V8, partly closed in rev 8 — no UESP, GECK or CK INI reference page covers them): FO3 and FNV ship the same set (`iShadowMapResolution` 256–1024, `iActorShadowCountInt` / `Ext` 2–6, `iShadowFilter` 0–2 across their presets; Nukapedia *Fallout.ini (Gamebryo)*); Skyrim SE's presets carry `iShadowMapResolution`, `iNumFocusShadow` and `fShadowDistance`, FO4's `iShadowMapResolution`, `uiShadowFilter`, `iDirShadowSplits`, `iMaxFocusShadows` and `fShadowDistance` — names from the shipped preset INIs only; what focus shadows and splits do is unverified | Every light ray-traced against the full TLAS, no caster cap (RLT-NG-002) | Shadow-resolution and shadow-count INI tweaks and the mods that ship them | Cost grows with lights; bounded by the adaptive budget → RLT-PERF-002, RLT-PERF-004 |
 | 2 | Skyrim interior lighting templates author six directional-ambient colours and one cell-wide directional light "used to simulate bounced light"; the flat ambient colour only seeds the six values and "has no impact on the actual lighting" (CK wiki [Lighting Template](https://ck.uesp.net/wiki/Lighting_Template), local dump `ck-uesp-wiki/(main)/Lighting Template.wiki`) | Authored ambient combined with traced bounce light per Q2 | None | Interiors darker or brighter than authored → RLT-GI-005, RLT-IBL-009 |
 | 3 | ROADMAP's wording: a sky probe "captured once at cell load" | Re-baked every frame on exteriors | — | None: the probe follows time of day and weather; its cost is the `sky_cube` bracket ([SKYAL reflection filtering](../engine/skyal.md#reflection-filtering-2026-09-14)) → RLT-IBL-007 |
 | 4 | — (physical) Sun radius ≈ 0.0047 rad | 0.020 rad at HEAD, Q3 | — | Penumbrae wider than the reference unless both use one value → RLT-SHD-007 |
@@ -1118,19 +1181,19 @@ checked in.
 
 | # | Verify | Settled by |
 |---|---|---|
-| V1 | The external renderer's inverse-square and finite-cone emitters (RLT-REF-002) | Its emitter documentation |
-| V2 | Its licence terms for output images (RLT-REF-003) | Its licence file |
-| V3 | Whether a blocker distance fits the reservoir (RLT-SHD-003) | `reservoir_glsl_copies_stay_in_lockstep` and a byte budget |
+| V1 | The external renderer's inverse-square and finite-cone emitters (RLT-REF-002) | Closed in rev 8: `point` is a delta; `sphere` + `area` is finite and cone-sampled; `directional` is a delta at 3.9.1, `angle` on master only (RLT-REF-002) |
+| V2 | Its licence terms for output images (RLT-REF-003) | Closed in rev 8: BSD-3 plus Enhancements; silent on rendered images (RLT-REF-003) |
+| V3 | Whether a blocker distance fits the reservoir (RLT-SHD-003) | Closed in rev 8: as an f16 in the free high half of `directUnshadowed[].y` (RLT-SHD-003) |
 | V4 | Whether camera jitter is off for debug views under `--upscaler taa` (RLT-SHD-001) | Closed in rev 5: off (`taa_jitter_gate`, `context/assemble_camera_and_lights.rs`) |
-| V5 | Whether the Cornell builders can spawn an alpha-tested material (RLT-CON-008) | `cornell/builders.rs` |
-| V6 | Whether the engine can light a probe by a uniform environment (RLT-REF-014) | `sky_cube.rs`, `frame_params.rs` |
-| V7 | The `envBRDFApprox` constants (RLT-IBL-001) | Karis 2014, "Physically Based Shading on Mobile" |
-| V8 | The other titles' shadow INI settings (§6 row 1) | Their UESP / GECK INI references |
-| V9 | Whether `renderer-stepped` advances animation to a bit-identical skinned pose per frame (RLT-REF-017) | A two-run comparison of the skinned BLAS input |
-| V10 | Whether the directional light's intensity can be zeroed independently of `dome.sun_dir.w` (RLT-REF-019) | `env_translate/sky_weather.rs` |
-| V11 | Whether `specular_strength` 0 removes every specular contribution (RLT-GI-010) | `include/lighting.glsl`, `include/pbr.glsl` |
-| V12 | The BGSM smoothness-to-roughness conversion (RLT-IBL-008 F3) | The Material-Editor source |
-| V13 | Whether the reference renderer's rough conductor and dielectric BSDFs model multiple scattering (RLT-REF-008) | Its BSDF documentation |
+| V5 | Whether the Cornell builders can spawn an alpha-tested material (RLT-CON-008) | Closed in rev 8: yes, through `Material` fields and `register_rgba`, no renderer change (RLT-CON-008) |
+| V6 | Whether the engine can light a probe by a uniform environment (RLT-REF-014) | Closed in rev 8: yes, with new exterior-sky set-up code (RLT-REF-014) |
+| V7 | The `envBRDFApprox` constants (RLT-IBL-001) | Closed in rev 8: they match Karis 2014 exactly (RLT-IBL-001) |
+| V8 | The other titles' shadow INI settings (§6 row 1) | Closed in rev 8 for §6 row 1: setting names from the shipped preset INIs; their meanings are unverified and not needed by the row (§6 row 1) |
+| V9 | Whether `renderer-stepped` advances animation to a bit-identical skinned pose per frame (RLT-REF-017) | Filed in rev 8 as #6605 (needs a two-run measurement; Phase 3) |
+| V10 | Whether the directional light's intensity can be zeroed independently of `dome.sun_dir.w` (RLT-REF-019) | Closed in rev 8: no — one source feeds both; the switch is new code (RLT-REF-019) |
+| V11 | Whether `specular_strength` 0 removes every specular contribution (RLT-GI-010) | Closed in rev 8: no — the GI walk keeps a GGX lobe and (1 − F) weights; a Lambertian switch is needed (RLT-GI-010) |
+| V12 | The BGSM smoothness-to-roughness conversion (RLT-IBL-008 F3) | Not verifiable from the cited source; filed in rev 8 as #6606 (Phase 4) |
+| V13 | Whether the reference renderer's rough conductor and dielectric BSDFs model multiple scattering (RLT-REF-008) | Closed in rev 8: none does; engine runs `DBG_DISABLE_MULTISCATTER` (RLT-REF-008) |
 
 **Phase 1a — Apparatus for L4 and the global checks, proven.** Depends
 on M51's exporter and EXR-writer issues and on the acceptance of
@@ -1441,3 +1504,4 @@ Each needs the project owner. The recommendation is the first option.
 | 5 | 2026-11-01 | Review round 4 folded in: apparatus built in the phase that first uses it, each RLT-EXP request blocking only its consuming phase, Phase 1a narrowed to the L4 slice and global checks, Phase 1b to global baselines, and Q1's M51 dependency corrected (§5.9, §9, Q1, Q10); floors, baselines and budgets frozen at each term's phase entry, with a re-freeze rule for intended cross-term changes and an ownership rule for failures caused outside M-LIGHT (RLT-REF-006, RLT-OPS-004, Q6); cost measured with the tier pinned at the Phase 1b settled tier, settled-tier drop checked separately, and the milestone total made consistent with the per-phase floor (RLT-PERF-004…006, Q8); calibration stated as a ratio of 1 on a scaled export, an environment calibration rung added, and the "converged reference" definition corrected (§2, RLT-REF-010, A15); change declarations bounded per region with size and tolerance, committed before the code, larger-than-declared changes failing, and the content margin under the revision-row rule (RLT-CNT-001, RLT-CNT-002); penumbra width fitted on visibility (§2, RLT-SHD-001); the drawn skinned pose exported, not the BLAS source (RLT-EXP-001); probe-only sky rung on both sides (RLT-REF-021, §3.4); sun rung by close-up camera with its height rule (RLT-SHD-001, Q3); unreconstructed `final` capture mode (RLT-REF-020), V4 closed from `taa_jitter_gate`; component-specific normaliser for L3 / L4 relative error (§2); RLT-NG-008 revision wording, F2's whole-route flag stated, material-class route list closed after the Phase 1b dump, temporal-gate engine captures counted in A18 (RLT-REF-016) | reviewer: revise |
 | 6 | 2026-11-02 | Review round 5 (verdict: approved with edits; this revision makes the edits) folded in: multiple-scattering parity between the engine's compensated GGX and the reference BSDF, with V13 and the `DBG_DISABLE_MULTISCATTER` or recorded-difference choice (RLT-REF-008); sun-rung sizing corrected to the 10–90 % width and asserted on the reference's measured width (RLT-SHD-001); re-freeze rule that moves the baseline freely, treats a floor rise beyond the drift margin as a budget change and drops a term that leaves its threshold from S3 to S2 (RLT-REF-006, Q6); separate during-motion and post-stop L1 budgets (RLT-SHD-002, RLT-SHD-010, Q6); environment calibration on a uniform or smooth glow-free sky (RLT-REF-010); content anchors captured at phase entry after an entry-time A11 run, and change measured and declared on a 32 × 32 tile grid (RLT-CNT-001, RLT-CNT-002, §9); A7 report-only until the Q5 mechanism lands (RLT-GI-003); post-completion regression guards (RLT-OPS-005); contact tiers stated as an exception to Q7 (RLT-CON-001); Q8 percentages taken from A13's Phase 1b pinned-tier frame time, with a sub-5 ms example; Q6 wording "this phase"; exporter skinning formula matched to `triangle.vert` (RLT-EXP-001) | reviewer: approved |
 | 7 | 2026-11-02 | Owner approval: every §10 decision recorded as **Decided** — Q4 takes Alternative A (screen-space sun term, RLT-CON-004 in Phase 3), every other question its recommendation; Q1's decision authorises building M51's exporter and EXR writer under M51's IDs; RLT-NG-008 updated for Q4; status PROPOSED → APPROVED | owner: approved |
+| 8 | 2026-11-02 | Phase 0 verify items folded in from the code at HEAD and the cited sources: V1 (Mitsuba `point` and 3.9.1 `directional` are delta lights; sphere area emitters for finite sources; sun option chosen at Phase 3 entry, RLT-REF-002), V2 (licence silent on images, RLT-REF-003), V3 (blocker distance fits an unused f16, RLT-SHD-003), V5 (alpha-tested caster needs no renderer change, RLT-CON-008), V6 (uniform sky reachable with new set-up code, RLT-REF-014), V7 (constants match, RLT-IBL-001), V8 (preset-INI names, §6 row 1), V10 (one source feeds sun and dome; new switch, RLT-REF-019), V11 (GI walk keeps a GGX lobe and (1 − F); a Lambertian switch is required, RLT-GI-010, §3.4 corrected), V13 (no multiple scattering in Mitsuba; Smith *k* remap and GGX distribution recorded, RLT-REF-008); V9 filed as #6605 and V12 as #6606, with F3 reworded to the engine's own rule; environment calibration also zeroes the cloud deck (RLT-REF-010); RLT-GI-001's pin floor stated | — |
