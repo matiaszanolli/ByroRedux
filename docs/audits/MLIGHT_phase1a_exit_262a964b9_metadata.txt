@@ -1,0 +1,27 @@
+# M-LIGHT Phase 1a exit runs (2026-11-02)
+# cold:
+#   revision=262a964b9dc0
+#   gpu=NVIDIA GeForce RTX 4070 Ti 580.178.04
+#   mitsuba=3.9.1
+#   variant=cuda_ad_rgb
+#   tier=3
+#   engine_frames=64
+#   reference_spp=1024
+#   cache=cold
+#   references_rendered=12
+#   references_cached=0
+#   reference_render_seconds=6.2
+#   wall_seconds=291.2
+# warm (the HEAD advanced by a test-only commit between the two runs; same engine binary):
+#   revision=8a13c0bd7a89
+#   gpu=NVIDIA GeForce RTX 4070 Ti 580.178.04
+#   mitsuba=3.9.1
+#   variant=cuda_ad_rgb
+#   tier=3
+#   engine_frames=64
+#   reference_spp=1024
+#   cache=warm
+#   references_rendered=0
+#   references_cached=12
+#   reference_render_seconds=0.0
+#   wall_seconds=260.0
