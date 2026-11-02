@@ -162,6 +162,16 @@ named shape, eroded three pixels so edge pixels — where the engine shades
 the pixel centre and Mitsuba's box filter integrates the coverage — never
 enter a mean.
 
+Game content is held by declared changes, not a reference (RLT-CNT).
+`scripts/m-light-baselines.sh` records, per benchmark scene, the settled
+adaptive ray-quality tier (`rt_tier_hist` on the bench line, 60-frame
+warm-up), the frame time with the tier pinned there, the material-class
+report (`--material-dump`), and two seeded linear captures of `final` at the
+pinned pose — the content anchor. `scripts/m-light/content.py compare`
+then checks a later capture against the anchor on a 32 × 32 tile grid: a
+tile passes inside its two-capture floor plus the scene margin, or inside a
+declared region changed the declared way.
+
 Engine switches the rungs use, all diagnostic: `--rt-test-seed-offset N`
 (RLT-REF-013), `--rt-test-no-jitter` (TAA only; RLT-REF-020),
 `--rt-test-no-dust-floor` (drops the 0.006 m⁻¹ interior dust medium;
