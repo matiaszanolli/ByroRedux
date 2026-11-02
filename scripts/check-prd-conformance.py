@@ -385,13 +385,17 @@ def id_family_owners(root: Path) -> Dict[str, set]:
     return owners
 
 
+# R1: an ID retired in place as "(withdrawn, rev N)" keeps its slot and states no requirement.
+WITHDRAWN_RE = re.compile(r"\(withdrawn, rev \d+\)", re.IGNORECASE)
+
+
 def check_requirements_wording(prd: Prd) -> None:
     bounds = section_bounds(prd, "requirements")
     if not bounds:
         return
     for line, text in bullets_in(strip_fences(prd.lines), *bounds):
         m = ID_DEF_RE.match(text)
-        if m and not NORMATIVE_RE.search(text):
+        if m and not NORMATIVE_RE.search(text) and not WITHDRAWN_RE.search(text):
             prd.warn("W01", f"`{m.group(1)}` states no MUST / SHOULD / MAY — is it a requirement or a note?", line)
 
 
@@ -787,6 +791,7 @@ def self_test() -> int:
     expect("template token", GOOD_PRD.replace("Why this exists.", "Why <Feature name> exists."), ["E16"])
     expect("misnamed file", GOOD_PRD, ["E01", "E13"], name="widget-streaming-prd.md")
     expect("wording warning", GOOD_PRD.replace("A widget SHOULD unload when far.", "A widget unloads when far."), ["W01"])
+    expect("withdrawn id no warning", GOOD_PRD.replace("A widget SHOULD unload when far.", "(withdrawn, rev 2) Folded into WDG-LD-001."), [])
     expect("tbd warning", GOOD_PRD.replace("Why this exists.", "Why this exists. TBD."), ["W02"])
     expect("no recommendation warning", GOOD_PRD.replace("Recommended: 3. Alternative: 5.", "3 or 5."), ["W04"])
 

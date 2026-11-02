@@ -116,7 +116,8 @@ at H2 or H3, in this order (order is a warning, presence is an error).
   number after review; retire an ID in place with "(withdrawn, rev N)".
 - **R2 — RFC 2119 words.** MUST, SHOULD and MAY carry their RFC 2119
   meanings and are written in capitals. A requirement without one is
-  flagged by the gate as a warning (W01); the manual review decides whether
+  flagged by the gate as a warning (W01), except an ID retired as
+  "(withdrawn, rev N)" (R1); the manual review decides whether
   it is a requirement or a note that belongs in the model section.
 - **R3 — Nothing is guessed.** A statement about how an original engine, a
   file format, a tool or a mod ecosystem behaves cites an external source
