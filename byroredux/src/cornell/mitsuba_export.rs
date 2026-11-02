@@ -1063,7 +1063,7 @@ mod tests {
         let normal = xml.find(r#"<bsdf type="normalmap">"#).expect("normalmap");
         let diffuse = xml.find(r#"<bsdf type="diffuse">"#).expect("diffuse");
         assert!(mask < normal && normal < diffuse, "{xml}");
-        assert_eq!(xml.matches("<bsdf ").count(), xml.matches("</bsdf>").count() + 1, "{xml}");
+        assert_eq!(xml.matches("<bsdf ").count(), xml.matches("</bsdf>").count(), "{xml}");
     }
 
     #[test]
