@@ -244,22 +244,26 @@ class Engine:
         return exr
 
     def sequence(self, name: str, rung: str, tier: int, frames: list[int], bench_frames: int,
-                 extra: list[str]) -> dict[int, tuple[Path, str]]:
-        """Single-frame `final` captures at `frames` of one renderer-stepped
-        run (`--linear-capture-at`), each with the camera pose the log names."""
-        pattern = self.out / "engine" / f"{name}_f{{frame}}.exr"
+                 extra: list[str], view_mode: str = "final", seed: int = 0,
+                 debug_flags: str = "0") -> dict[int, tuple[Path, str]]:
+        """Single-frame captures at `frames` of one renderer-stepped run
+        (`--linear-capture-at`), each with the camera pose the log names."""
+        pattern = self.out / "engine" / f"{name}_s{seed}_f{{frame}}.exr"
         pattern.parent.mkdir(parents=True, exist_ok=True)
         args = [
-            str(self.binary), "--cornell-reference", rung, "--render-debug-mode", "final",
+            str(self.binary), "--cornell-reference", rung, "--render-debug-mode", view_mode,
             "--bench-frames", str(bench_frames), "--bench-mode", "renderer-stepped",
-            "--rt-test-ray-quality-tier", str(tier), "--rt-test-no-dust-floor",
+            "--rt-test-ray-quality-tier", str(tier), "--rt-test-seed-offset", str(seed),
+            "--rt-test-no-dust-floor",
             "--linear-capture", str(pattern), "--linear-capture-at", ",".join(map(str, frames)),
         ] + extra
-        env = dict(self.env_base, BYROREDUX_RENDER_DEBUG="0", RUST_LOG="error")
-        log_path = self.out / "engine" / f"{name}.log"
+        env = dict(self.env_base, BYROREDUX_RENDER_DEBUG=debug_flags, RUST_LOG="error")
+        log_path = self.out / "engine" / f"{name}_s{seed}.log"
         with open(log_path, "w") as log_file:
             subprocess.run(args, env=env, stdout=log_file, stderr=subprocess.STDOUT, timeout=900)
         text = log_path.read_text(errors="replace")
+        if "--export-mitsuba" in extra and "export-mitsuba: wrote" not in text:
+            raise SystemExit(f"m-light: export for {name} failed; see {log_path}")
         poses = {}
         for line in text.splitlines():
             if line.startswith("linear-capture: frame ") and " camera " in line:
@@ -632,7 +636,8 @@ class RungFile:
     profiles: list[tuple[str, str, np.ndarray, np.ndarray, float]] = field(default_factory=list)
     # (name, receiver, box min, box max), world units
     regions: list[tuple[str, str, np.ndarray, np.ndarray]] = field(default_factory=list)
-    # (name, receiver, centre x, centre z, half x, half z, yaw, width), world units
+    # (name, receiver, centre x, centre z, half x, half z, yaw, width), world units;
+    # a moving caster's band is written at the exported frame's pose
     bands: list[tuple[str, str, float, float, float, float, float, float]] = field(default_factory=list)
 
 
@@ -955,6 +960,57 @@ def gate_contact(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
                 if tier == CONTACT_TIERS[-1] and view_mode == "filtered_direct":
                     rows.append((Row("A5", case, band[0], "band_pixels", float(mask.sum()), 0.0, 0.0,
                                      passed="report"), key))
+    rows += contact_mid_animation(engine, store, spp)
+    return rows
+
+
+# RLT-CON-003: the skinned proxy mid-animation, at this bench frame of a
+# renderer-stepped run (t = 0.75 s of its 2 s sway, yaw 0.45 rad).
+PROXY_FRAME = 45
+
+
+def contact_mid_animation(engine: Engine, store: ReferenceStore, spp: int):
+    """A5's skinned-proxy row (RLT-CON-003): the proxy's band at one frame
+    of its animation, against the reference rendered at the pose exported
+    for that frame (RLT-EXP-001), and V9 (#6605): two runs must export
+    byte-identical posed meshes at the same frame."""
+    rows = []
+    rung_name, tier = "contact", CONTACT_TIERS[-1]
+    exports = [engine.out / "scenes" / f"contact-proxy-f{PROXY_FRAME}-run{s}" for s in (0, 1)]
+    base = ["--rt-test-no-jitter", "--upscaler", "taa"]
+    shadowed, unshadowed = [], []
+    for s in (0, 1):
+        export = ["--export-mitsuba", str(exports[s]), "--export-mitsuba-frame", str(PROXY_FRAME)]
+        seq = engine.sequence("contact_proxy", rung_name, tier, [PROXY_FRAME], PROXY_FRAME + 8,
+                              base + export, view_mode="filtered_direct", seed=s)
+        shadowed.append(load_exr(seq[PROXY_FRAME][0]))
+        seq = engine.sequence("contact_proxy_unshadowed", rung_name, tier, [PROXY_FRAME], PROXY_FRAME + 8,
+                              base, view_mode="filtered_direct", seed=s,
+                              debug_flags=hex(DBG_DISABLE_DIRECT_SHADOWS))
+        unshadowed.append(load_exr(seq[PROXY_FRAME][0]))
+    # V9: the drawn pose at a frame index is a function of the index alone.
+    plys = [sorted(p.read_bytes() for p in (e / "meshes").glob("*.ply")) for e in exports]
+    identical = float(plys[0] == plys[1])
+    rows.append((Row("V9", f"contact-proxy-frame{PROXY_FRAME}", "posed_meshes", "byte_identical_runs",
+                     identical, 0.0, 0.0, passed="yes" if identical == 1.0 else "no"), ""))
+    rung = read_rung(exports[0])
+    opened = without_casters(exports[0], rung.casters)
+    ref = [store.render(exports[0], "direct", spp, s) for s in (0, 1)]
+    ref_open = [store.render(opened, "direct", spp, s) for s in (0, 1)]
+    masks, positions = pixel_hits(exports[0])
+    band = next(b for b in rung.bands if b[0] == "con_proxy_band")
+    receiver = erode(masks[band[1]], ERODE_PX)
+    mask = band_mask(positions, receiver, band)
+    ve = [visibility(shadowed[s], unshadowed[s], receiver, rung.min_unshadowed)[0] for s in (0, 1)]
+    vr = [visibility(ref[s][0], ref_open[s][0], receiver, rung.min_unshadowed)[0] for s in (0, 1)]
+    mean, p95 = visibility_error(ve[0], vr[0], mask)
+    mean_e, p95_e = visibility_error(ve[1], vr[0], mask)
+    mean_r, p95_r = visibility_error(ve[0], vr[1], mask)
+    case = f"filtered_direct-tier{tier}-frame{PROXY_FRAME}"
+    rows.append((Row("A5", case, band[0], "visibility_error_mean", mean, abs(mean_e - mean), abs(mean_r - mean),
+                     passed="report"), ref[0][1]))
+    rows.append((Row("A5", case, band[0], "visibility_error_p95", p95, abs(p95_e - p95), abs(p95_r - p95),
+                     passed="report"), ref[0][1]))
     return rows
 
 
@@ -1026,6 +1082,10 @@ def gate_temporal(engine: Engine, store: ReferenceStore, ctx: Context, spp: int,
         cases.append(("A14", "penumbra-moving", clock))
     if "A3" in gates:
         cases.append(("A3", "penumbra", clock + ["--bench-camera", "pan"]))
+    if "SHD-006" in gates:
+        # RLT-SHD-006: the A3 capture again with TAA's variance clip at 1.0
+        # beside the shipped 1.5, shadow filter on.
+        cases.append(("SHD-006", "penumbra", clock + ["--bench-camera", "pan", "--rt-test-taa-gamma", "1.0"]))
     for gate, rung, extra in cases:
         export = engine.out / "scenes" / f"{rung}-temporal"
         # The receiver in view at the rung's own (start) pose; the pan's
@@ -1133,7 +1193,7 @@ def main() -> int:
         rows += gate_penumbra(engine, store, ctx, args.spp, gates)
     if "A5" in gates:
         rows += gate_contact(engine, store, ctx, args.spp)
-    if gates & {"A3", "A14"}:
+    if gates & {"A3", "A14", "SHD-006"}:
         rows += gate_temporal(engine, store, ctx, args.spp, gates)
     if "SHD-005" in gates:
         rows += gate_reservoir_clamp(engine, store, ctx, args.spp)

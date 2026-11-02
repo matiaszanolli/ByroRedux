@@ -50,6 +50,9 @@ pub(crate) struct CornellMeshSource {
     pub normals: Vec<[f32; 3]>,
     /// Exported only for meshes a textured shape uses (RLT-EXP-002).
     pub uvs: Vec<[f32; 2]>,
+    /// Skin binding per vertex (RLT-EXP-001); all-zero weights are rigid.
+    pub bone_indices: Vec<[u32; 4]>,
+    pub bone_weights: Vec<[f32; 4]>,
     pub indices: Vec<u32>,
 }
 
@@ -111,6 +114,11 @@ pub(crate) struct ExportShape {
     /// convention is the design's §2.2 normal-map row).
     pub normal_map: Option<u32>,
     pub cutout: Option<ExportCutout>,
+    /// RLT-EXP-001: this frame's bone palette (`bone_world · bind_inverse`,
+    /// `SkinnedMesh::compute_palette_into`, absolute world units) for a
+    /// skinned shape. The shape is then exported posed, with `to_world`
+    /// the identity.
+    pub palette: Option<Vec<Mat4>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -183,6 +191,7 @@ pub(crate) fn gather_export_scene(world: &World, extent: (u32, u32)) -> Result<E
     let texture_roles = world.query::<crate::components::MaterialTextureHandles>();
     let base_textures = world.query::<byroredux_core::ecs::TextureHandle>();
     let alpha_blended = world.query::<crate::components::AlphaBlend>();
+    let skins = world.query::<byroredux_core::ecs::SkinnedMesh>();
     if let (Some(meshes), Some(transforms), Some(materials)) = (
         world.query::<MeshHandle>(),
         world.query::<GlobalTransform>(),
@@ -219,13 +228,21 @@ pub(crate) fn gather_export_scene(world: &World, extent: (u32, u32)) -> Result<E
             } else {
                 None
             };
+            let palette = skins.as_ref().and_then(|q| q.get(entity)).map(|skin| {
+                let mut palette = Vec::new();
+                skin.compute_palette_into(&mut palette, |bone| {
+                    transforms.get(bone).map(|t| t.to_matrix())
+                });
+                palette
+            });
             shapes.push(ExportShape {
                 bsdf: export_bsdf(&name, material)?,
                 name,
                 mesh: mesh.0,
-                to_world: transform.to_matrix(),
+                to_world: if palette.is_some() { Mat4::IDENTITY } else { transform.to_matrix() },
                 normal_map,
                 cutout,
+                palette,
             });
         }
     }
@@ -299,11 +316,44 @@ pub(crate) fn gather_export_scene(world: &World, extent: (u32, u32)) -> Result<E
         emitters,
         sun,
         camera,
-        measurements: world
-            .try_resource::<super::reference::RungMeasurements>()
-            .map(|m| m.clone())
-            .unwrap_or_default(),
+        measurements: follow_moving_bands(
+            world,
+            &names,
+            world
+                .try_resource::<super::reference::RungMeasurements>()
+                .map(|m| m.clone())
+                .unwrap_or_default(),
+        ),
     })
+}
+
+/// A band that follows a moving caster takes its centre and yaw from that
+/// entity's `GlobalTransform` at the exported frame (RLT-CON-003).
+fn follow_moving_bands(
+    world: &World,
+    names: &HashMap<byroredux_core::ecs::EntityId, String>,
+    mut measurements: super::reference::RungMeasurements,
+) -> super::reference::RungMeasurements {
+    let Some(transforms) = world.query::<GlobalTransform>() else {
+        return measurements;
+    };
+    for band in &mut measurements.bands {
+        let Some(follow) = band.follow.as_deref() else {
+            continue;
+        };
+        let Some(transform) = names
+            .iter()
+            .find(|(_, name)| name.as_str() == follow)
+            .and_then(|(entity, _)| transforms.get(*entity))
+        else {
+            continue;
+        };
+        band.centre = Vec3::new(transform.translation.x, 0.0, transform.translation.z);
+        // Yaw about +Y: the angle that takes +X to the rotated X axis.
+        let x_axis = transform.rotation * Vec3::X;
+        band.yaw = (-x_axis.z).atan2(x_axis.x);
+    }
+    measurements
 }
 
 /// The directional light exactly as `collect_lights` builds it: the cell's
@@ -415,7 +465,19 @@ pub(crate) fn export_mitsuba(
         .collect();
     // One PLY per distinct mesh, named by a hash of its bytes (PTX-002).
     let mut mesh_files: BTreeMap<u32, String> = BTreeMap::new();
+    let mut posed_files: BTreeMap<String, String> = BTreeMap::new();
     for shape in &scene.shapes {
+        if let Some(palette) = &shape.palette {
+            // RLT-EXP-001: a skinned shape is its own posed mesh.
+            let source = sources.0.get(&shape.mesh).ok_or_else(|| {
+                format!("{}: skinned mesh {} has no recorded CPU source (PTX-003)", shape.name, shape.mesh)
+            })?;
+            let bytes = ply_bytes(&pose_skinned(source, palette), textured_meshes.contains(&shape.mesh));
+            let file = format!("meshes/{:016x}.ply", fnv1a64(&bytes));
+            std::fs::write(dir.join(&file), &bytes).map_err(|e| format!("write {file}: {e}"))?;
+            posed_files.insert(shape.name.clone(), file);
+            continue;
+        }
         if mesh_files.contains_key(&shape.mesh) {
             continue;
         }
@@ -457,7 +519,7 @@ pub(crate) fn export_mitsuba(
         }
     }
 
-    let xml = scene_xml(scene, &mesh_files, &texture_files);
+    let xml = scene_xml_with_posed(scene, &mesh_files, &posed_files, &texture_files);
     let scene_xml = dir.join("scene.xml");
     std::fs::write(&scene_xml, xml).map_err(|e| format!("write {}: {e}", scene_xml.display()))?;
     std::fs::write(dir.join("export.tsv"), export_tsv(scene))
@@ -469,6 +531,38 @@ pub(crate) fn export_mitsuba(
         shapes: scene.shapes.len(),
         emitters: scene.emitters.len(),
     })
+}
+
+/// RLT-EXP-001: the mesh posed by `palette` where `triangle.vert` draws it.
+/// The four weighted palette matrices are blended linearly with the weights
+/// as authored (not renormalised) and bone indices clamped to
+/// `MAX_BONES_PER_MESH − 1`, then applied to the bind-pose vertex as a
+/// homogeneous point. The rasteriser's perspective divide includes that
+/// point's w (the weight sum), so the drawn position is the w-divided one,
+/// and so is the export's. A vertex whose weights sum below 0.001 is rigid:
+/// with the identity `to_world` a skinned shape gets, it keeps its bind
+/// position. Normals take the blended matrix's upper 3 × 3, renormalised.
+/// Positions stay in world units.
+pub(crate) fn pose_skinned(source: &CornellMeshSource, palette: &[Mat4]) -> CornellMeshSource {
+    let mut posed = source.clone();
+    let max_index = byroredux_renderer::shader_constants::MAX_BONES_PER_MESH as usize - 1;
+    for (i, (p, n)) in posed.positions.iter_mut().zip(posed.normals.iter_mut()).enumerate() {
+        let (Some(index), Some(weight)) = (source.bone_indices.get(i), source.bone_weights.get(i)) else {
+            continue;
+        };
+        if weight.iter().sum::<f32>() < 0.001 || palette.is_empty() {
+            continue;
+        }
+        let mut blended = Mat4::ZERO;
+        for k in 0..4 {
+            let bone = palette.get((index[k] as usize).min(max_index)).copied().unwrap_or(Mat4::IDENTITY);
+            blended += bone * weight[k];
+        }
+        let h = blended * Vec3::from_array(*p).extend(1.0);
+        *p = (h.truncate() / h.w).to_array();
+        *n = blended.transform_vector3(Vec3::from_array(*n)).normalize_or_zero().to_array();
+    }
+    posed
 }
 
 /// Texels each source texel is baked into, per axis. The engine filters a
@@ -592,6 +686,16 @@ pub(crate) fn scene_xml(
     mesh_files: &BTreeMap<u32, String>,
     texture_files: &BTreeMap<String, ShapeTextureFiles>,
 ) -> String {
+    scene_xml_with_posed(scene, mesh_files, &BTreeMap::new(), texture_files)
+}
+
+/// [`scene_xml`] with posed skinned meshes, by shape name (RLT-EXP-001).
+fn scene_xml_with_posed(
+    scene: &ExportScene,
+    mesh_files: &BTreeMap<u32, String>,
+    posed_files: &BTreeMap<String, String>,
+    texture_files: &BTreeMap<String, ShapeTextureFiles>,
+) -> String {
     let mut out = String::new();
     let c = &scene.camera;
     let origin = to_metres(c.origin);
@@ -633,7 +737,7 @@ pub(crate) fn scene_xml(
     let _ = writeln!(out, "    </sensor>");
 
     for shape in &scene.shapes {
-        let file = &mesh_files[&shape.mesh];
+        let file = posed_files.get(&shape.name).unwrap_or_else(|| &mesh_files[&shape.mesh]);
         // Metres: scale the whole world-units matrix down, translation included.
         let m = Mat4::from_scale(Vec3::splat(1.0 / BETHESDA_UNITS_PER_METER)) * shape.to_world;
         let rows: Vec<String> = (0..4)
@@ -877,6 +981,8 @@ mod tests {
             positions: vec![[-1.0, 0.0, -1.0], [1.0, 0.0, -1.0], [1.0, 0.0, 1.0], [-1.0, 0.0, 1.0]],
             normals: vec![[0.0, 1.0, 0.0]; 4],
             uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            bone_indices: vec![[0; 4]; 4],
+            bone_weights: vec![[0.0; 4]; 4],
             indices: vec![0, 2, 1, 0, 3, 2],
         }
     }
@@ -896,6 +1002,7 @@ mod tests {
                 },
                 normal_map: None,
                 cutout: None,
+                palette: None,
             }],
             emitters: vec![ExportEmitter {
                 name: "key".into(),
@@ -1080,5 +1187,22 @@ mod tests {
         export_mitsuba(&scene(), &sources, &textures, &dir).unwrap();
         assert_eq!(first, std::fs::read(dir.join("scene.xml")).unwrap());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn skinned_shapes_export_posed_like_the_vertex_shader() {
+        let mut source = quad();
+        // Vertex 0 rigid; vertex 1 fully on bone 1; vertex 2 split 0.5 / 0.5;
+        // vertex 3 with weights as authored summing to 0.5 (not renormalised).
+        source.bone_indices = vec![[0; 4], [1, 0, 0, 0], [0, 1, 0, 0], [1, 0, 0, 0]];
+        source.bone_weights = vec![[0.0; 4], [1.0, 0.0, 0.0, 0.0], [0.5, 0.5, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0]];
+        let palette = [Mat4::IDENTITY, Mat4::from_translation(Vec3::new(10.0, 0.0, 0.0))];
+        let posed = pose_skinned(&source, &palette);
+        assert_eq!(posed.positions[0], source.positions[0]);
+        assert_eq!(posed.positions[1], [11.0, 0.0, -1.0]);
+        assert_eq!(posed.positions[2], [6.0, 0.0, 1.0]);
+        // Weight 0.5 on the translation: w = 0.5, so the drawn point is the
+        // full translation, as the perspective divide sees it.
+        assert_eq!(posed.positions[3], [9.0, 0.0, 1.0]);
     }
 }

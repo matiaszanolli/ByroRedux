@@ -186,6 +186,40 @@ The profile and region geometry comes from the rung's `rung.tsv`
 ([Path Tracing §1.3](path-tracing.md#13-the-sun-and-the-rungs-measurement-geometry)).
 Both gates are report-only until the owner sets the L1 budgets.
 
+A5 (RLT-CON-001…008) runs the `contact` rung, which has five casters on a
+normal-mapped floor:
+
+- a tall block;
+- a cube;
+- a plank lying flat;
+- an alpha-tested panel;
+- a skinned actor proxy.
+
+It reports the same visibility error over each caster's contact band (the
+`band` records), at tiers 1–3, with the shadow filter on
+(`filtered_direct`) and off (`direct_only`). The proxy is also measured
+mid-animation under `renderer-stepped`. That run takes a single-frame
+capture at bench frame 45 and exports the scene at the same frame
+(`--export-mitsuba-frame`), so the reference is rendered at the drawn pose
+(RLT-EXP-001). Two such runs must export byte-identical posed meshes,
+which is V9's answer (#6605).
+
+A14 (RLT-SHD-010, `penumbra-moving`) and A3 (RLT-SHD-002, a `pan` of the
+`penumbra` rung) are temporal gates. They compare the engine with itself,
+taking `final` after TAA (`--linear-capture-tap post-taa`) along a
+120-frame path that ends in a hold (`--bench-camera-length`):
+
+- **Samples.** Every 16 frames from frame 32 (`--linear-capture-at`), then
+  1, 4 and 16 frames after the stop.
+- **Parked reference.** Each sample is compared with the same path frozen
+  at that frame (`--bench-camera-freeze-at`) and converged for 256 frames.
+- **Floor.** The same single-frame captures with the path parked from
+  frame 0.
+
+`SHD-005` publishes `direct_only`'s luminance integral on the `restir-clamp`
+rung with the reservoir cap on and off. RLT-SHD-006 re-runs A3 with
+`--rt-test-taa-gamma 1.0` beside the shipped 1.5.
+
 Game content is held by declared changes, not a reference (RLT-CNT).
 `scripts/m-light-baselines.sh` records, per benchmark scene, the settled
 adaptive ray-quality tier (`rt_tier_hist` on the bench line, 60-frame
@@ -201,7 +235,16 @@ Engine switches the rungs use, all diagnostic: `--rt-test-seed-offset N`
 `--rt-test-no-dust-floor` (drops the 0.006 m⁻¹ interior dust medium;
 RLT-REF-009), `BYROREDUX_RENDER_DEBUG=0x20` (`DBG_DISABLE_SVGF`,
 RLT-REF-018), and the `filtered_direct` / `traced_share` views
-(RLT-SHD-009, RLT-GI-009).
+(RLT-SHD-009, RLT-GI-009). Phase 3 adds:
+
+- **Bias switches.** `--rt-test-no-reservoir-clamp` (RLT-SHD-005) and
+  `--rt-test-taa-gamma G` (RLT-SHD-006).
+- **Temporal capture.** `--linear-capture-tap post-taa` and
+  `--linear-capture-at F1,F2,…`, which needs a `{frame}` in the path.
+- **Bench clock.** `--bench-camera-length N` and
+  `--bench-camera-freeze-at F`. The camera path and every `BenchMover`
+  blocker share this clock.
+- **Export frame.** `--export-mitsuba-frame F`.
 
 ## Related tools
 

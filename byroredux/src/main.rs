@@ -800,6 +800,9 @@ struct App {
     /// `--export-mitsuba DIR` (M51 PTR-VAL-004): write the Cornell reference
     /// scene to a Mitsuba 3 directory after the first rendered frame.
     export_mitsuba_dir: Option<std::path::PathBuf>,
+    /// `--export-mitsuba-frame F`: export after bench frame F is drawn
+    /// rather than the first (M-LIGHT RLT-EXP-001: a mid-animation pose).
+    export_mitsuba_frame: u32,
     /// `--material-dump PATH` (M-LIGHT A9, RLT-IBL-008): the loaded scene's
     /// material classes, written after the first rendered frame.
     material_dump_path: Option<std::path::PathBuf>,
@@ -1342,6 +1345,7 @@ impl App {
             screenshot_path: None,
             linear_capture: None,
             export_mitsuba_dir: None,
+            export_mitsuba_frame: 0,
             material_dump_path: None,
             bench_rt_tier_hist: [0; 4],
             bench_rt_tier_sampled_frame: 0,

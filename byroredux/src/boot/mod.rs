@@ -544,6 +544,12 @@ pub(crate) fn run() -> Result<()> {
     app.linear_capture = linear_capture;
     app.export_mitsuba_dir =
         parse_string_arg(&args, "--export-mitsuba").map(std::path::PathBuf::from);
+    app.export_mitsuba_frame = match parse_string_arg(&args, "--export-mitsuba-frame") {
+        None => 0,
+        Some(text) => text
+            .parse::<u32>()
+            .map_err(|_| anyhow::anyhow!("--export-mitsuba-frame '{text}' is not a frame index"))?,
+    };
     app.material_dump_path =
         parse_string_arg(&args, "--material-dump").map(std::path::PathBuf::from);
     app.bench_capture = bench_capture;

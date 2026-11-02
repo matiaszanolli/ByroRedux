@@ -574,7 +574,10 @@ impl App {
     /// Mitsuba 3 directory after the first rendered frame, once. A refused
     /// export (PTX-005) is reported and the run continues.
     pub(crate) fn advance_mitsuba_export(&mut self) {
-        if self.bench_frames_count == 0 {
+        // Runs at `render_one_frame`'s tail, after the drawn frame's count
+        // advanced: `count == F + 1` means frame F is the one just drawn,
+        // whose ECS state (bone transforms, camera) this exports.
+        if self.bench_frames_count <= self.export_mitsuba_frame {
             return;
         }
         // M-LIGHT A9 (RLT-IBL-008) — the material-class dump shares this

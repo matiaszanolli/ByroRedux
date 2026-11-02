@@ -1,6 +1,6 @@
 # Reference-Quality Lighting — Product Requirements
 
-**Status**: ACTIVE (2026-11-02). Revision 13; the change history is in
+**Status**: ACTIVE (2026-11-02). Revision 14; the change history is in
 §12. Every decision in §10 is decided and every Phase 0 verify item is
 closed or filed as an issue.
 
@@ -913,7 +913,24 @@ reach.
   world footprint exceeds about 0.67 units, and its footprint is the larger
   screen derivative, so at 1280 × 720 the box's grazing floor and ceiling
   get no traced GI at any tier (A7 deficit 1.00). Added at Phase 2's entry
-  by owner decision (2026-11-02).
+  by owner decision (2026-11-02). **Deferred** to the Q5 radiance cache
+  (owner, 2026-11-02, rev 14). The isotropic-footprint gate met the
+  coverage clause on the box but not the cost clause. On content it traces
+  GI on every grazing surface in range. Against the Phase 1b control with
+  the tier pinned:
+
+  | Scene / configuration | Delta | Settled tier |
+  |---|---|---|
+  | Prospector / FSR Quality | +3.4 ms | unchanged |
+  | Whiterun / TAA | +10.9 ms | 1 → 0 |
+  | Whiterun / FSR Quality | +7.7 ms | 3 → 1 |
+  | Dugout / FSR Quality | +9.2 ms | 1 → 0 |
+
+  At tier 0 the adaptive budget turns GI off altogether. A narrower gate,
+  isotropic with the old ceiling of 2, still cost +1.8 to +5.0 ms and still
+  dropped Whiterun / TAA to tier 0. The Phase 1b gate ships until the cache
+  makes GI hits cheap enough to widen it, and any later widening re-runs
+  A13.
 
 ### 5.6 Cost and budget (`RLT-PERF`)
 
@@ -1258,7 +1275,9 @@ beyond Phase 1a. Entry baseline: A7 and A8. Then RLT-GI-004, RLT-GI-005
 per Q2, RLT-GI-011 and RLT-GI-012 (added at the entry, rev 13), and
 RLT-GI-007 on content; the Q5 mechanism for RLT-GI-003 (with
 RLT-GI-008 if the cache is adopted, which waits for M51's Phase 5), so
-RLT-GI-003 may stay open after this phase exits. Exit: A8 passes, A7
+RLT-GI-003 may stay open after this phase exits. At the exit (rev 14)
+RLT-GI-004 and RLT-GI-011 shipped. RLT-GI-005 waits on Q2's amended
+decision, and RLT-GI-012 waits on the Q5 cache, both by owner decision. Exit: A8 passes, A7
 publishes the deficit at every tier and passes at its threshold once the
 Q5 mechanism lands, A10 is re-published, A11 passes under the phase's
 change declaration, and A13 shows the phase within its Q8 ceiling.
@@ -1335,7 +1354,12 @@ Each needs the project owner. The recommendation is the first option.
    holds interior ambient to a reference, since reference rungs carry no
    ambient (RLT-REF-009).
    **Decided** (2026-11-02): the recommendation — cross-fade, authored
-   ambient through the untraced share and escaped rays only.
+   ambient through the untraced share and escaped rays only. Amended by
+   the owner at Phase 2 (2026-11-02, rev 14): the cross-fade is deferred.
+   Measured before it shipped, it darkened Whiterun by a median of 26 %
+   and by up to 79 % per tile, which is more change than the phase
+   declared or meant. RLT-GI-005 stays open, and the addition ships
+   unchanged.
 3. **Q3 — The sun's angular radius.** Recommended: the physical value (≈
    0.0047 rad, RLT-SHD-007) for the exterior sun, and 0.020 rad kept for
    interior XCLL directional keys, which have no physical source; set in

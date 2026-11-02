@@ -78,11 +78,11 @@ pub(crate) enum ReferenceRung {
     /// hero, about `RESERVOIR_W_CLAMP`'s 64× ratio) around the hero, the
     /// case the reservoir weight cap exists for and biases.
     ReservoirClamp,
-    /// RLT-CON-001 / -006 / -007 / -008: casters resting on a normal-mapped
-    /// floor under one emitter — a tall block, a small cube, a plank lying
-    /// flat and an alpha-tested panel — each with its contact band. The
-    /// skinned proxy (RLT-CON-003) joins with the animated bench mode
-    /// (RLT-REF-017) and the posed-skin export (RLT-EXP-001).
+    /// RLT-CON-001 / -003 / -006 / -007 / -008: casters resting on a
+    /// normal-mapped floor under one emitter — a tall block, a small cube, a
+    /// plank lying flat, an alpha-tested panel and a skinned actor proxy (a
+    /// column whose bone an `AnimationPlayer` yaws on a 2 s loop, advancing
+    /// under `renderer-stepped`, RLT-REF-017) — each with its contact band.
     Contact,
 }
 
@@ -118,6 +118,10 @@ pub(crate) struct ContactBand {
     pub half_extents: [f32; 2],
     pub yaw: f32,
     pub width: f32,
+    /// A moving caster's band follows this named entity: the exporter
+    /// takes `centre` and `yaw` from its `GlobalTransform` at the exported
+    /// frame (the skinned proxy's bone, RLT-CON-003).
+    pub follow: Option<String>,
 }
 
 /// World-space measurement geometry a rung fixes in its own code, exported
@@ -320,6 +324,7 @@ fn setup_contact_rung(world: &mut World, builder: &mut MeshBuilder, neutral: Tex
             half_extents: [half[0] * M, half[2] * M],
             yaw,
             width: band * M,
+            follow: None,
         });
         caster_names.push(name.to_string());
     }
@@ -343,8 +348,27 @@ fn setup_contact_rung(world: &mut World, builder: &mut MeshBuilder, neutral: Tex
         half_extents: [0.2 * M, 0.005 * M],
         yaw: 0.0,
         width: 0.04 * M,
+        follow: None,
     });
     caster_names.push("con_panel".into());
+
+    // RLT-CON-003: the skinned proxy, a 0.8 m column standing at (0.05,
+    // 0.55) m, every vertex on one bone whose yaw an AnimationPlayer sweeps
+    // 0 -> 0.6 -> 0 rad over 2 s. Under `renderer-static` (dt 0) it holds
+    // its t = 0 pose; under `renderer-stepped` it moves, so a capture and
+    // `--export-mitsuba-frame` at the same frame see the same pose
+    // (RLT-REF-017, RLT-EXP-001). Band <= 0.08 m.
+    spawn_skinned_proxy(world, builder, neutral, Vec3::new(0.05 * M, 0.0, 0.55 * M), [0.075, 0.4, 0.075]);
+    bands.push(ContactBand {
+        name: "con_proxy_band".into(),
+        receiver: "con_floor".into(),
+        centre: Vec3::new(0.05 * M, 0.0, 0.55 * M),
+        half_extents: [0.075 * M, 0.075 * M],
+        yaw: 0.0,
+        width: 0.05 * M,
+        follow: Some(PROXY_BONE.into()),
+    });
+    caster_names.push("con_proxy".into());
 
     // A 10 cm source, 2.4 m up and to one side, so every caster has a lit
     // and a shadowed side of its band.
@@ -357,6 +381,72 @@ fn setup_contact_rung(world: &mut World, builder: &mut MeshBuilder, neutral: Tex
     });
     // ~2 m from the casters: a 3 cm band is ~13 px at 720p.
     (Vec3::new(0.0, 1.6 * M, 1.2 * M), Vec3::new(0.0, 0.0, 0.05 * M))
+}
+
+/// The contact rung's skinned proxy bone (RLT-CON-003).
+pub(crate) const PROXY_BONE: &str = "con_proxy_bone";
+
+/// A box column skinned to one bone at `base` (its foot on the floor), the
+/// bone driven by a looping yaw clip. The bind pose is the bone at the
+/// origin, so the bind inverse is the identity.
+fn spawn_skinned_proxy(world: &mut World, builder: &mut MeshBuilder, neutral: TextureHandle, base: Vec3, half_m: [f32; 3]) {
+    use byroredux_core::animation::{
+        AnimationClip, AnimationClipRegistry, AnimationPlayer, CycleType, KeyType, RotationKey, TransformChannel,
+    };
+    use byroredux_core::ecs::{RenderLayer, SkinnedMesh};
+    let half = [half_m[0] * M, half_m[1] * M, half_m[2] * M];
+    let (mut vertices, indices) = box_vertices_colored(half, [1.0; 3]);
+    for vertex in &mut vertices {
+        vertex.position[1] += half[1]; // foot at the bone, y = 0
+        vertex.bone_indices = [0; 4];
+        vertex.bone_weights = [1.0, 0.0, 0.0, 0.0];
+    }
+    let mesh = builder.upload(&vertices, &indices);
+    let entity = spawn_object(world, mesh, neutral, base, Quat::IDENTITY, lambert([0.8; 3]), "con_proxy");
+    let bone = world.spawn();
+    world.insert(bone, Transform::new(base, Quat::IDENTITY, 1.0));
+    world.insert(bone, GlobalTransform::new(base, Quat::IDENTITY, 1.0));
+    name_entity(world, bone, PROXY_BONE);
+    world.insert(
+        entity,
+        SkinnedMesh {
+            skeleton_root: Some(bone),
+            bones: vec![Some(bone)],
+            bind_inverses: vec![byroredux_core::math::Mat4::IDENTITY],
+            global_skin_transform: byroredux_core::math::Mat4::IDENTITY,
+        },
+    );
+    world.insert(entity, RenderLayer::Actor);
+    let key = |time: f32, yaw: f32| RotationKey { time, value: Quat::from_rotation_y(yaw), tbc: None };
+    let channel = TransformChannel {
+        translation_keys: Vec::new(),
+        translation_type: KeyType::Linear,
+        rotation_keys: vec![key(0.0, 0.0), key(1.0, 0.6), key(2.0, 0.0)],
+        rotation_type: KeyType::Linear,
+        scale_keys: Vec::new(),
+        scale_type: KeyType::Linear,
+        priority: 0,
+    };
+    let bone_name = world.resource_mut::<byroredux_core::string::StringPool>().intern(PROXY_BONE);
+    let mut channels = rustc_hash::FxHashMap::default();
+    channels.insert(bone_name, channel);
+    let handle = world.resource_mut::<AnimationClipRegistry>().add(AnimationClip {
+        name: "m-light proxy sway".into(),
+        duration: 2.0,
+        cycle_type: CycleType::Loop,
+        frequency: 1.0,
+        phase: 0.0,
+        weight: 1.0,
+        accum_root_name: None,
+        channels,
+        float_channels: Vec::new(),
+        color_channels: Vec::new(),
+        bool_channels: Vec::new(),
+        texture_flip_channels: Vec::new(),
+        text_keys: Vec::new(),
+        root_yaw: Vec::new(),
+    });
+    world.insert(bone, AnimationPlayer::new(handle).with_root(bone));
 }
 
 /// Bind `normal_map` as `entity`'s tangent-space normal map (RLT-EXP-002).

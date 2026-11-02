@@ -479,6 +479,8 @@ impl<'a> MeshBuilder<'a> {
                 positions: verts.iter().map(|v| v.position).collect(),
                 normals: verts.iter().map(|v| v.normal).collect(),
                 uvs: verts.iter().map(|v| v.uv).collect(),
+                bone_indices: verts.iter().map(|v| v.bone_indices).collect(),
+                bone_weights: verts.iter().map(|v| v.bone_weights).collect(),
                 indices: idxs.to_vec(),
             },
         );

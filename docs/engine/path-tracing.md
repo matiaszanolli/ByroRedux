@@ -97,7 +97,30 @@ shadow) states it in its own code, as the `RungMeasurements` resource
 | `region` | name, receiver, box min, box max | A4 |
 
 `scripts/m-light/gates.py` reads the file. It never restates the geometry
-on its own.
+on its own. A `band` that follows a moving caster (`follow`, the skinned
+proxy's bone) is written at the exported frame's pose.
+
+### 1.4 Skinned meshes (RLT-EXP-001)
+
+A skinned shape is exported at the pose the rasteriser drew, from the
+same inputs `triangle.vert` reads:
+
+- **Palette.** The frame's bone palette, `bone_world · bind_inverse`
+  (`SkinnedMesh::compute_palette_into`).
+- **Blend.** The four palette matrices, linearly blended with the vertex
+  weights as authored (not renormalised), bone indices clamped to
+  `MAX_BONES_PER_MESH − 1`.
+- **Rigid vertices.** A vertex whose weights sum below 0.001 keeps its
+  bind position.
+- **Divide.** The blend is applied as a homogeneous point and then divided
+  by its w. The rasteriser's perspective divide includes that w, the
+  weight sum, so the divided point is the position it actually draws.
+
+The result is written as the shape's own PLY, with an identity `to_world`.
+It is never the skin-compute output the skinned BLAS is refit from, so a
+stale BLAS shows up as a contact error against the reference instead of
+being exported into it. `--export-mitsuba-frame F` exports after bench
+frame F is drawn, which gives a mid-animation pose.
 
 ---
 
