@@ -1,6 +1,6 @@
 # Reference-Quality Lighting — Product Requirements
 
-**Status**: ACTIVE (2026-11-02). Revision 9; the change history is in
+**Status**: ACTIVE (2026-11-02). Revision 10; the change history is in
 §12. Every decision in §10 is decided and every Phase 0 verify item is
 closed or filed as an issue.
 
@@ -45,9 +45,9 @@ table, or Phase 0 writes the missing design.
 | XCLL / DALC ambient, interior directional key | [Cell Lighting](../engine/lighting-from-cells.md) |
 | Ground-cover ray-tracing boundary | [EXAL Ground Cover](../engine/exal-groundcover.md#5-ray-tracing-boundary) |
 | SVGF, G-buffer, pass order | [Vulkan Renderer](../engine/renderer.md) |
-| External reference renderer (M51 §10 Q5), the Cornell exporter (PTR-VAL-004), the EXR writer (PTR-OUT-001), the hash-grid radiance cache (PTR-RT-002) | [Path Tracing Reference Mode PRD](path-tracing-reference-mode.md) alone. What this PRD needs the exporter to do beyond PTR-VAL-004 is filed as change requests against M51 (§5.9, `RLT-EXP`), unowned until M51's revision log accepts them; the rung subsection goes into the exporter section of `docs/engine/path-tracing.md`, which M51's Phase 0 writes |
+| External reference renderer (M51 §10 Q5), the Cornell exporter (PTR-VAL-004), the EXR writer (PTR-OUT-001), the hash-grid radiance cache (PTR-RT-002) | [Path Tracing Reference Mode PRD](path-tracing-reference-mode.md) alone. What this PRD needs the exporter to do beyond PTR-VAL-004 is filed as change requests against M51 (§5.9, `RLT-EXP`), unowned until M51's revision log accepts them; the rung subsection is [§2 of path-tracing.md](../engine/path-tracing.md#2-reference-lighting-rung-subsection), written early with its exporter section (rev 10); M51's Phase 0 writes the rest of that design |
 | Component-decomposition contract, calibration, rung content policy | This PRD, §3.4 and RLT-REF-008…014 |
-| Penumbra-aware shadow filtering | none yet — Phase 0 writes the design (RLT-SHD-003) |
+| Penumbra-aware shadow filtering | [Penumbra-Aware Shadow Filter](../engine/penumbra-aware-shadow-filter.md) (RLT-SHD-003; written in Phase 0, rev 10) |
 
 Normative terms **MUST**, **SHOULD** and **MAY** have their RFC 2119
 meanings, as in the related designs. Requirement IDs use the `RLT-` prefix.
@@ -1511,3 +1511,4 @@ Each needs the project owner. The recommendation is the first option.
 | 7 | 2026-11-02 | Owner approval: every §10 decision recorded as **Decided** — Q4 takes Alternative A (screen-space sun term, RLT-CON-004 in Phase 3), every other question its recommendation; Q1's decision authorises building M51's exporter and EXR writer under M51's IDs; RLT-NG-008 updated for Q4; status PROPOSED → APPROVED | owner: approved |
 | 8 | 2026-11-02 | Phase 0 verify items folded in from the code at HEAD and the cited sources: V1 (Mitsuba `point` and 3.9.1 `directional` are delta lights; sphere area emitters for finite sources; sun option chosen at Phase 3 entry, RLT-REF-002), V2 (licence silent on images, RLT-REF-003), V3 (blocker distance fits an unused f16, RLT-SHD-003), V5 (alpha-tested caster needs no renderer change, RLT-CON-008), V6 (uniform sky reachable with new set-up code, RLT-REF-014), V7 (constants match, RLT-IBL-001), V8 (preset-INI names, §6 row 1), V10 (one source feeds sun and dome; new switch, RLT-REF-019), V11 (GI walk keeps a GGX lobe and (1 − F); a Lambertian switch is required, RLT-GI-010, §3.4 corrected), V13 (no multiple scattering in Mitsuba; Smith *k* remap and GGX distribution recorded, RLT-REF-008); V9 filed as #6605 and V12 as #6606, with F3 reworded to the engine's own rule; environment calibration also zeroes the cloud deck (RLT-REF-010); RLT-GI-001's pin floor stated | — |
 | 9 | 2026-11-02 | APPROVED → ACTIVE: tracking issue #6595 and its phase issues filed, every Phase 0 verify item closed or filed (rev 8) | — |
+| 10 | 2026-11-02 | Phase 0 designs checked in: the penumbra-aware filter design (RLT-SHD-003, `PAF-`) and the exporter plus rung subsection in `docs/engine/path-tracing.md` (`PTX-`; *k*<sub>exp</sub> π / π / 1 for point / sun / environment, the flat-plane BSDF mapping, the Mitsuba recipes); Related table points at both | — |

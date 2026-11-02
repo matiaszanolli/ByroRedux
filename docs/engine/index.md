@@ -24,6 +24,8 @@ a working checkout and want to understand or change engine internals.
 | [Renderer Evaluation](renderer-evaluation.md) | renderer, byroredux | Deterministic Cornell convergence captures, denoiser A/B, performance metadata, and comparison workflow |
 | [Shader Pipeline](shader-pipeline.md) | renderer | All shader files, G-buffer layout, GPU data types (`GpuCamera`/`GpuInstance`/`GpuMaterial`/`GpuLight`), descriptor sets, pass order, pipeline cache |
 | [Shadow Pipeline Trade-offs](shadow-pipeline-tradeoffs.md) | renderer | Alpha-era constants (`W_CLAMP`, TAA γ, M=8, 24-bit seed) with invalidation conditions |
+| [Penumbra-Aware Shadow Filter](penumbra-aware-shadow-filter.md) | renderer | PROPOSED (2026-11-02). M-LIGHT RLT-SHD-003: shadow-filter reach sized per pixel from the traced blocker distance (Fernando 2005 PCSS estimate), screen-space blocker search, tier-shed iterations |
+| [Path Tracing](path-tracing.md) | renderer, byroredux | PROPOSED (2026-11-02), exporter sections only: deterministic Cornell → Mitsuba 3 exporter (M51 PTR-VAL-004) and M-LIGHT's rung subsection (*k*<sub>exp</sub>, BSDF mapping, component recipes); M51 Phase 0 writes the rest |
 | [FSR 3.1 Integration Plan](fsr3-upscaler-integration-plan.md) | renderer, fsr3-sys | Render/output extent split, temporal input contracts, mask policy, phase-by-phase execution record |
 | [FSR 3.1 Troubleshooting](fsr3-troubleshooting.md) | renderer, fsr3-sys | Symptom→cause guide for the upscaler path: silent blit fallbacks, smearing, ghosting, FP16/FP32, bench gotchas |
 | [Procedural Volumetric Fog](procedural-volumetric-fog.md) | renderer, plugin, nif | Froxel V-buffer, hybrid Z, temporal reprojection, TLAS/BLAS visibility, FSR masks, runtime knobs, and measurement table |
