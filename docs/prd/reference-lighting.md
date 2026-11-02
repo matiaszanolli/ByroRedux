@@ -1,23 +1,12 @@
 # Reference-Quality Lighting — Product Requirements
 
-**Status**: PROPOSED (2026-11-01). Revision 3, same day, folds in review
-round 2: §3 rebuilt around the four gated terms with the mechanisms moved
-to a non-gating inventory, the noise floor separated from the threshold
-(per-term bias budgets, Q6), a component-decomposition contract (§3.4),
-radiometric calibration, the exporter's missing scene content (materials,
-environment, sun, emissive policy), the sun counted once, noise floors
-moved out of Phase 0, the scope sentence narrowed to what is measured, the
-exporter / EXR writer / external renderer handed to M51 alone, and the
-shadow-filter gates corrected (at HEAD the debug views bypass the filter's
-correction, so rev 2's on / off A/B compared identical images). The
-M-LIGHT promise is written against the code at HEAD rather than the
-ROADMAP row, which predates most of what has shipped. The decisions it
-needs from the project owner are collected in §10; nothing below is built
-as a result of this document yet. Statements about how an original engine,
-a published technique or an external tool behaves cite external sources
-(UESP and the Creation Kit wikis, the cited papers and vendor
-documentation); a claim that could not be verified is marked **Phase 0:
-verify** instead of being stated as fact.
+**Status**: PROPOSED (2026-11-01). Revision 5; the change history is in
+§12. The decisions it needs from the project owner are collected in §10;
+nothing below is built as a result of this document yet. Statements about
+how an original engine, a published technique or an external tool behaves
+cite external sources (UESP and the Creation Kit wikis, the cited papers
+and vendor documentation); a claim that could not be verified is marked
+**Phase 0: verify** instead of being stated as fact.
 
 **Scope**: M-LIGHT ([ROADMAP Tier 8](../../ROADMAP.md#tier-8--visual-fidelity-stretch-post-tier-4-horizon))
 closes the gap between "lit correctly" and "lit as well as the data allows"
@@ -26,8 +15,8 @@ shadows, image-based lighting from the sky, and multi-bounce diffuse GI. It
 promises two different things, and keeps them apart. On the self-contained
 Cornell scene, each term is *measured* against a converged external
 reference and held within an owner-decided bias budget by a runnable gate.
-On game content, the same terms are held by non-regression gates and
-content probes; no game scene is compared to a reference unless Q9 takes
+On game content, the same terms are held by content gates against each
+phase's declared changes (§5.8) and by probes; no game scene is compared to a reference unless Q9 takes
 its alternative. Most of the row's mechanisms already ship (§3.2); this PRD
 spends its requirements on the measured gap. Out of scope: both
 path-tracing modes (M51, [path-tracing-reference-mode.md](path-tracing-reference-mode.md)),
@@ -51,7 +40,7 @@ table, or Phase 0 writes the missing design.
 | XCLL / DALC ambient, interior directional key | [Cell Lighting](../engine/lighting-from-cells.md) |
 | Ground-cover ray-tracing boundary | [EXAL Ground Cover](../engine/exal-groundcover.md#5-ray-tracing-boundary) |
 | SVGF, G-buffer, pass order | [Vulkan Renderer](../engine/renderer.md) |
-| External reference renderer (M51 §10 Q5), the Cornell exporter (PTR-VAL-004), the EXR writer (PTR-OUT-001), the hash-grid radiance cache (PTR-RT-002) | [Path Tracing Reference Mode PRD](path-tracing-reference-mode.md) alone. This PRD extends the exporter's scene content for its rungs (RLT-REF-001) and adds a rung subsection to the exporter section of `docs/engine/path-tracing.md`, which M51's Phase 0 writes |
+| External reference renderer (M51 §10 Q5), the Cornell exporter (PTR-VAL-004), the EXR writer (PTR-OUT-001), the hash-grid radiance cache (PTR-RT-002) | [Path Tracing Reference Mode PRD](path-tracing-reference-mode.md) alone. What this PRD needs the exporter to do beyond PTR-VAL-004 is filed as change requests against M51 (§5.9, `RLT-EXP`), unowned until M51's revision log accepts them; the rung subsection goes into the exporter section of `docs/engine/path-tracing.md`, which M51's Phase 0 writes |
 | Component-decomposition contract, calibration, rung content policy | This PRD, §3.4 and RLT-REF-008…014 |
 | Penumbra-aware shadow filtering | none yet — Phase 0 writes the design (RLT-SHD-003) |
 
@@ -102,29 +91,37 @@ gate is listed in §3 as shipped-unmeasured, never as done.
 |---|---|
 | **Term** | One of the four lighting quantities M-LIGHT gates: L1 penumbra, L2 contact, L3 sky IBL, L4 multi-bounce GI (§3.1). Each has exactly one gate. |
 | **Mechanism** | An engine component that produces part of a term (§3.2). Mechanisms have no state of their own and are never gated alone. |
-| **Converged reference** | An image of a rung rendered by the external renderer (M51 §10 Q5) to negligible noise, from the exporter's scene (RLT-REF-001) with the mapped BSDFs (RLT-REF-008), and scaled by the calibration factor (RLT-REF-010) before any absolute comparison. |
+| **Converged reference** | An image of a rung rendered by the external renderer (M51 §10 Q5) to negligible noise, from the exporter's scene (RLT-REF-001) with the mapped BSDFs (RLT-REF-008), and with every emitter's intensity scaled at export by its expected factor (RLT-REF-010). No factor is applied to the image. |
 | **Raster mode** | The shipped hybrid renderer: rasterised primary visibility, ray-query shadows, reflections and GI ([renderer.md](../engine/renderer.md)). The mode this PRD measures. |
 | **Progressive reference** / **interactive PT mode** | M51's two path-tracing modes, as [path-tracing-reference-mode.md §2](path-tracing-reference-mode.md#2-terminology) defines them. Neither exists at HEAD. "PT mode" in the ROADMAP row means the interactive one. |
 | **Hash-grid radiance cache** | M51's world-space radiance cache, defined in [path-tracing-reference-mode.md §2](path-tracing-reference-mode.md#2-terminology) and required by PTR-RT-002; the ROADMAP rows' "SHARC" names this component whatever its provenance under M51's Q2. |
 | **Rung** | A Cornell scene variant built for one measurement, in the sense of the L0–L5 oracle ([R4](../engine/rt-lighting-material-recovery.md#r4---build-the-cornell-l0-l5-oracle)). A **reference rung** is one that has a converged reference and obeys RLT-REF-009. |
 | **Component view** | An engine debug view used as one side of a metric; §3.4 states what it contains and the reference recipe that produces the same quantity. |
 | **Linear capture** | A raster-mode image of scene-linear radiance taken at composite's HDR output, before bloom, exposure, grading and tone mapping, averaged over a stated number of consecutive frames and written by the EXR writer (RLT-REF-007), as opposed to the 8-bit PNG of the presented swapchain that `screenshot` writes. |
-| **Calibration factor** | The scalar *k* that maps the reference's radiance scale onto the engine's, measured on the calibration rung (RLT-REF-010) and applied before every absolute metric. |
+| **Expected factor** / **calibration ratio** | *k*<sub>exp</sub> is the scale between the reference's radiance units and the engine's scene-linear units, derived on paper from the backbone's unit chain (emitter radiant intensity, world units per metre) and the exporter's unit conversion, one value per emitter kind (point, sun, environment). The exporter scales each emitter's intensity by it. The calibration ratio *c* is engine ÷ reference over a calibration rung exported that way (RLT-REF-010), and must be 1 within the combined floor. It is a check, never a fit: *c* ≠ 1 is a bug report against the unit chain or the exporter. No factor is ever applied to a rendered image. |
 | **Noise floor** | A metric's value between two captures of the same side that differ only in sampling seed (RLT-REF-006, RLT-REF-013). The lower bound of any threshold, never the threshold itself. |
-| **Bias budget** | The error a term may carry above its noise floor, decided per term by the owner (Q6). Raster mode is biased by design (bounded path, luminance clamp, W clamp, SSAO, SVGF), so the budget is a product decision, not a measurement. |
-| **Threshold** | A term's noise floor plus its bias budget. A gate passes when its metric is within the threshold. |
-| **Self-consistency gate** | A gate that compares the engine with itself (two engine captures, an engine A/B, an isolated GPU unit test) rather than with the converged reference. It earns state S1+, never S2. |
+| **Combined floor** | The floor of a comparison between two sides: the root-sum-square of the two sides' floors, since the two sides' sampling noise is independent. Every "combined noise floor" in this PRD means this. |
+| **Frozen floor** | A gate's combined floor as measured at the entry of the phase that improves its term (§9, phase entry), or at its first run for a gate no phase improves, and written into the threshold table. Later runs re-measure the floor and report it beside the frozen one; they replace it only under RLT-REF-006's re-freeze rule. |
+| **Floor drift margin** | How far a re-measured floor may rise above its frozen floor before the gate fails, set per term with its bias budget (Q6). |
+| **Bias budget** | The error a term may carry above its frozen floor, decided per term by the owner (Q6). Raster mode is biased by design (bounded path, luminance clamp, W clamp, SSAO, SVGF), so the budget is a product decision, not a measurement. |
+| **Threshold** | A term's frozen floor plus its bias budget. A gate passes when its metric is within the threshold and its re-measured floor is within the drift margin. |
+| **Self-consistency gate** | A gate that compares the engine with itself (two engine captures, an engine A/B, an isolated GPU unit test) rather than with the converged reference. Alone it earns state S1+, never S2. |
+| **Visibility** | Per pixel of a direct view, direct radiance ÷ unshadowed direct radiance, in [0, 1]. Engine side: the filtered direct view (RLT-SHD-009) divided by the same view captured with `DBG_DISABLE_DIRECT_SHADOWS` (`0x8000000`, `crates/renderer/src/shader_constants_data.rs`). Reference side: the direct recipe divided by the direct recipe with the rung's casters removed. Pixels whose unshadowed direct is below the rung's stated minimum are excluded and counted in the manifest. |
+| **Visibility error** | Per pixel, \|*V*<sub>raster</sub> − *V*<sub>ref</sub>\| over a region, reported as its mean and its 95th percentile. The metric for every direct-view region that is partly or fully shadowed (filter bands, contact bands), where a ratio to the reference luminance is undefined. |
+| **Temporal error** | The relative RMSE, over a region, between the engine's linear `final` capture during or after a motion and the engine's parked, converged `final` capture at the same pose and the same blocker position, normalised by the region's mean parked luminance. A self-consistency metric: both sides carry the same indirect bias, so it isolates ghosting, lag and boiling. |
 | **Shadow ratio** | The per-pixel ratio Σrad·V ÷ Σrad the direct term is shaded by (Heitz et al. 2018), stored in the ReSTIR reservoir as `accum` ([trade-offs §3](../engine/shadow-pipeline-tradeoffs.md#3-restir-di-replaced-the-transient-m--8-estimator)). |
 | **Shadow filter** | `shadow_filter.comp`: the edge-aware spatial filter over the shadow ratio. It writes a correction U·(filtered − raw) that `composite.frag` adds to the direct attachment. |
 | **Profile line** | A world-space segment on a receiver, perpendicular to a shadow edge, fixed in the rung's code and recorded in the manifest. |
-| **Penumbra width** | The world-space distance along a profile line between the 10 % and 90 % points of a smooth step fitted to the direct-term luminance profile (RLT-SHD-001). |
-| **Contact band** | The receiver strip of fixed world-space width that borders the line where a caster touches the receiver. Its width is set once in the rung's code and is no more than one tenth of the shortest caster's height in that rung, so the band measures contact, not penumbra. |
+| **Penumbra width** | The world-space distance along a profile line between the 10 % and 90 % points of a smooth step fitted to the visibility (§2) profile (RLT-SHD-001). Visibility rather than luminance, so the unshadowed light's falloff with distance and incidence angle along the line cannot move the two points. |
+| **Contact band** | The receiver strip that borders the line where one caster touches the receiver, defined per caster and fixed in the rung's code. For an upright caster its width is no more than one tenth of *that caster's* height above the receiver, so the band measures contact, not penumbra. For a caster lying flat (the plank, RLT-CON-006) the band is a fixed world-space width stated in the rung's code, independent of the caster's height, and the plank's thickness is no more than that width. |
 | **Sky probe** | SKYAL's baked sky cubemap (`sky_cube.comp`), its GGX mip chain (`sky_prefilter.comp`) and its nine SH coefficients (`sky_irradiance.comp`). |
 | **Bounded path** | The GI walk in `triangle.frag`: up to `MAX_PATH_SEGMENTS` segments, `MAX_SHADED_HITS` light-evaluated vertices, `MAX_DIFFUSE_BOUNCES` diffuse events. |
 | **Energy deficit** | 1 − (indirect luminance in raster mode ÷ indirect luminance in the converged reference), over a named region. Positive means raster mode is darker; negative means it is brighter. |
-| **Relative error distribution** | Per pixel, \|raster − reference\| ÷ reference over a region, reported as its mean and its 95th percentile, so a light leak and an underestimate cannot cancel in one ratio. |
-| **Ray quality tier** | The adaptive budget tier 0–3 (`AdaptiveRayBudget`, [backbone §6](../engine/physical-lighting-backbone.md#runtime-contract)); pinned in tests with `--rt-test-ray-quality-tier`. The **settled tier** of a scene is the tier the budget holds after warm-up on the reference GPU. |
-| **Reference GPU** | The RTX 4070 Ti that the ROADMAP bench table is measured on ([How to run a bench](../../ROADMAP.md#how-to-run-a-bench)). |
+| **Relative error distribution** | Per pixel, \|raster − reference\| ÷ *L*<sub>region</sub> over a region, where *L*<sub>region</sub> is a fixed normaliser of the region: for the direct-light terms (L1, L2), the region's mean reference direct luminance with every caster removed (its unoccluded luminance); for L3 and L4, the region's mean reference value of the same component (sky specular, sky diffuse or indirect), because removing casters would change the whole indirect field. It is reported as its mean and its 95th percentile, so a light leak and an underestimate cannot cancel in one ratio and a dark pixel cannot make the ratio explode. No metric in this PRD divides by a per-pixel reference value. |
+| **Ray quality tier** | The adaptive budget tier 0–3 (`AdaptiveRayBudget`, [backbone §6](../engine/physical-lighting-backbone.md#runtime-contract)); pinned in tests with `--rt-test-ray-quality-tier`. |
+| **Settled tier** | The most frequent tier of a scene over a fixed window of frames that follows a fixed warm-up on the reference GPU, both lengths stated in the RLT-PERF-005 harness and recorded in the manifest. The share of window frames spent at any other tier is published with it as the scene's tier oscillation. |
+| **Reference GPU** | The RTX 4070 Ti that the ROADMAP bench table is measured on ([How to run a bench](../../ROADMAP.md#how-to-run-a-bench)); replaced only by the RLT-OPS-003 procedure. |
+| **Material class** | The pair (translation route, conductor or dielectric) that `byroredux/src/material_translate.rs` assigns a material: the route is the source signal the translate step read (BGSM-authored smoothness, legacy glossiness and specular, the keyword-classified legacy fallback, and any further route the Phase 1b dump finds), and the conductor side is metalness > 0.3, the cut T9 uses. The route list is closed after the Phase 1b dump with a revision row; a route found later is added only through another. |
 | **Benchmark scenes** | The scenes of the ROADMAP bench table: the Cornell box, FNV Prospector Saloon, Skyrim SE WhiterunBanneredMare, FO4 MedTekResearch01 and FO4 Dugout Inn ([How to run a bench](../../ROADMAP.md#how-to-run-a-bench)). |
 
 ---
@@ -138,25 +135,30 @@ Each of the four terms has one **state**, from a closed set:
 | **S0** | Absent: the term is not computed | "absent" |
 | **S1** | Shipped, unmeasured: computed, no gate | "shipped, unmeasured" |
 | **S1+** | Self-consistent: computed, and only a self-consistency gate holds it | "self-gated: <gate>" |
-| **S2** | Measured: a gate reports its distance from the converged reference on a §3.4 quantity, with its noise floor | "measured: <metric> = <value> (floor <value>)" |
-| **S3** | Reference quality: the gate's metric is within the term's threshold (noise floor + Q6 budget) at the tier Q7 decides, on the reference GPU | "reference: <metric> within <threshold>" |
+| **S2** | Measured: every reference gate of the term reports its distance from the converged reference on a §3.4 quantity, with its floor | "measured: <metric> = <value> (floor <value>)" |
+| **S3** | Reference quality: every gate of the term — its reference gates and its temporal self-consistency gates — is within its threshold (frozen floor + Q6 budget) at the tier Q7 decides, on the reference GPU | "reference: <metric> within <threshold>" |
 
 M-LIGHT is complete when all four terms of §3.1 are S3 on the Cornell
-reference rungs, every non-regression gate in §7.2 passes on each Wave 1
-title, and every phase stayed within its cost ceiling (RLT-PERF-004). The
-mechanisms of §3.2 carry no state; rows that no gate here covers are listed
-in §3.3 with their owner.
+reference rungs, the content gate A11 (RLT-CNT-001) passes on every Wave 1
+title and on every Wave 2 title for which an install is available, and
+every phase stayed within its cost ceiling and the milestone within its
+total (RLT-PERF-004, RLT-PERF-006). Two cases change the rule. A term the
+owner declares done at its phase entry (Q6) is S3 from then on and its phase drops
+it. If Q5 takes Alternative B, L4 completes at S2: its deficit published
+and frozen as the raster-mode promise, with no S3 claim. The mechanisms of
+§3.2 carry no state; rows that no gate here covers are listed in §3.3 with
+their owner.
 
 ### 3.1 The four gated terms
 
 The table below is the state at HEAD on 2026-11-01. Its Today column is
-hand-written; at Phase 1 exit the generated Lighting fidelity table
-(RLT-REF-004, §8) replaces it, and this table is not maintained by hand
-after that.
+hand-written; from Phase 1b exit the generated Lighting fidelity table
+(RLT-REF-004, §8) replaces it, each term's row filled at that term's
+phase entry (§9), and this table is not maintained by hand after that.
 
 | # | Term | Gate | State | Today |
 |---|---|---|---|---|
-| L1 | Soft penumbra | A2 (width), A3 (camera motion), A14 (moving blocker), A4 (filter bands) | S1+ | `cornell_parked_penumbra_converges_at_one_shadow_ray` (`byroredux/tests/cornell_rt_oracle.rs`, A1) compares a parked one-ray capture with an 8-ray engine capture in 8-bit luma: engine against engine, no reference |
+| L1 | Soft penumbra | A2 (width) and A4 (filter bands) against the reference; A3 (camera motion) and A14 (moving blocker) as temporal self-consistency gates | S1+ | `cornell_parked_penumbra_converges_at_one_shadow_ray` (`byroredux/tests/cornell_rt_oracle.rs`, A1) compares a parked one-ray capture with an 8-ray engine capture in 8-bit luma: engine against engine, no reference |
 | L2 | Contact shadow | A5 | S1 | No rung measures a contact band |
 | L3 | Sky IBL, diffuse and specular, exteriors | A6, A17 | S1 | `vulkan::sky_cube::filter` GPU tests check the prefilter and the SH projection in isolation, not the lit result |
 | L4 | Multi-bounce diffuse GI | A7, A8 | S1 | The `scripts/renderer-eval.sh` no-à-trous A/B compares the engine with itself |
@@ -180,7 +182,7 @@ instead of restating them.
 | T7 | Exterior sky cube baked **every frame** (128² faces, 8 mips), GGX-prefiltered with 256 Hammersley samples, projected to 9 SH coefficients; scene set 1 bindings 20 / 21, gated on `exteriorSkyTint.w`. The bake evaluates `sky_radiance` (`include/sky.glsl`), which adds the sun disc and its glow, so both reach the prefiltered mips and the SH9 | L3 | [SKYAL §2.2](../engine/skyal.md#22-sky-cubemap--landed); `sky_cube.comp`; `SKY_CUBE_FACE_SIZE`, `crates/renderer/src/vulkan/sky_cube.rs` |
 | T8 | SH9 sky irradiance replaces authored ambient on exteriors, cross-faded with the traced share (`tracedDiffuseWeight`) | L3 | `exteriorSkyDiffuseOr`, `include/bindings.glsl`; consumer in `triangle.frag` `main()` |
 | T9 | Prefiltered sky on reflection-ray misses and the RT-off fallback, **only** for conductors (`metalness > 0.3`), materials with an authored cube, or Skyrim shader type 1 (EnvironmentMap, `materialKind == 1u`), never for eyes or glass, **only** below `roughness < 0.6`, scaled by a `(1.0 - roughness)` heuristic | L3 | `needsEnvironmentReflection` and `Lo += envColor * F * (1.0 - roughness)` in `triangle.frag`; the split-sum `envBRDFApprox` in `include/pbr.glsl` is used only for multi-scatter compensation |
-| T10 | No interior probe; escaped GI rays and the untraced share read the authored DALC cube or XCLL ambient | L4 (report only, RLT-IBL-006) | `pathEnvironmentRadiance`, `include/lighting.glsl` (gated on `jitter.w`) |
+| T10 | No interior probe; escaped GI rays and the untraced share read the authored DALC cube or XCLL ambient | — (report only, RLT-IBL-006) | `pathEnvironmentRadiance`, `include/lighting.glsl` (gated on `jitter.w`) |
 | T11 | Bounded path with `MAX_DIFFUSE_BOUNCES = 2`; light evaluated at up to 2 vertices (tiers 2–3), 1 (tier 1), none (tier 0); per-sample luminance clamp `GI_SAMPLE_LUMINANCE_CLAMP = 1.0`; distance fade 4 000–6 000 units. The ROADMAP row's "currently 1 in raster mode" is stale | L4 | `triangle.frag` GI loop; tiers in `settings_for_tier` |
 | T12 | Traced indirect is multiplied by SSAO (`combinedAO`) in all three ambient branches; interiors add authored ambient on top of traced indirect | L4 | `indirectLight` assembly in `triangle.frag` `main()` |
 | T13 | SVGF temporal + à-trous over indirect | — (§3.3) | [renderer.md § SVGF](../engine/renderer.md#svgf-temporal-denoiser) |
@@ -211,11 +213,12 @@ live in the rung subsection of the exporter design (Related table).
 |---|---|---|---|
 | `direct_only` | `Lo`: each light's diffuse and specular × raw shadow ratio; environment specular (RT reflection ray, or sky probe on a miss) for materials T9 admits; eye environment; the glass rim term; plus emissive. Not the shadow filter's correction (T3). Not multiplied by anything downstream | RLT-REF-009 (no emissive, glass or eye materials); interior rungs use only dielectrics without an authored cube, so T9 adds nothing | Paths with exactly one scattering vertex, lit by the rung's emitters only, no environment |
 | Filtered direct (new, RLT-SHD-009) | `direct_only` plus the shadow filter's correction | As `direct_only` | As `direct_only` |
-| `indirect_only` | The single-frame, pre-SVGF `indirectLight`, **not** multiplied by the local albedo: exteriors (SH9 sky × (1 − traced weight) + traced) × AO; DALC cells (cube + traced) × AO; other cells ambient × max(AO, 0.3) + traced × AO | Authored ambient zero and no DALC (RLT-REF-009); averaged over the linear capture's frame count; multiplied by the exporter's albedo for the region's object (every L4 region is one flat-albedo object) | Reference total − reference direct, both at the same sample count |
+| Visibility (§2) | Filtered direct ÷ filtered direct with `DBG_DISABLE_DIRECT_SHADOWS` | As `direct_only` | Direct recipe ÷ direct recipe with the rung's casters removed |
+| `indirect_only` | The single-frame, pre-SVGF `indirectLight`, **not** multiplied by the local albedo: exteriors (SH9 sky × (1 − traced weight) + traced) × AO; DALC cells (cube + traced) × AO; other cells ambient × max(AO, 0.3) + traced × AO. Diffuse only: the GI walk carries no glossy interreflection | Authored ambient zero and no DALC (RLT-REF-009); every material of an L4 rung purely Lambertian — `specular_strength` 0 (`GpuMaterial` offset 28, `crates/renderer/src/vulkan/material.rs`) and metalness 0 on the engine side (RLT-GI-010); averaged over the linear capture's frame count; multiplied by the exporter's albedo for the region's object (every L4 region is one flat-albedo object) | Reference total − reference direct, both at the same sample count, with every L4 material mapped to the renderer's plain diffuse BSDF, so the reference's indirect carries no specular scattering either |
 | Traced share (new, RLT-GI-009) | The traced share as it enters `indirectLight`, including whatever multiplies it | As `indirect_only` | As `indirect_only` on interior rungs, where traced share and indirect coincide |
-| Sky specular | `direct_only` on the sky-only rung: environment specular alone | `--cornell-sun` with the sun's intensity zero; probes with diffuse albedo zero | Environment-only render of the same probes with the specular part of the mapped BSDF (RLT-REF-008) |
-| Sky diffuse | `indirect_only` × albedo on the sky-only rung | As sky specular, with Lambertian probes | Environment-only render with Lambertian probes |
-| `final` | Direct + filter correction + SVGF'd indirect × albedo + composite terms | Closure rung (RLT-REF-011): fog out of range, no volumetric media, no caustic casters | Reference total |
+| Sky specular | `direct_only` on the sky-only rung: environment specular alone | The probe alone, with no floor, wall or other probe on either side (RLT-REF-021); the directional light zeroed and the sky dome unchanged (RLT-REF-019); diffuse albedo zero | Environment-only render of that one probe with the specular part of the mapped BSDF (RLT-REF-008), against the RLT-REF-012 environment |
+| Sky diffuse | `indirect_only` × albedo on the sky-only rung | As sky specular, with one Lambertian probe alone | Environment-only render of that one Lambertian probe |
+| `final` | Direct + filter correction + SVGF'd indirect × albedo + composite terms | Closure rung (RLT-REF-011): SVGF bypassed (RLT-REF-018), no temporal reconstruction or jitter (RLT-REF-020), fog out of range, no volumetric media, no caustic casters | Reference total |
 
 ---
 
@@ -223,10 +226,12 @@ live in the rung subsection of the exporter design (Related table).
 
 ### 4.1 Goals
 
-- **RLT-G-001 — Penumbrae match the reference, parked and moving.** Penumbra
-  width, the penumbra error during and after a camera pan, and the error
-  under a moving blocker are within the L1 threshold on the Cornell
-  reference rungs.
+- **RLT-G-001 — Penumbrae match the reference, and stay stable in
+  motion.** Parked penumbra width and the filter bands are within the L1
+  threshold of the reference on the Cornell reference rungs; during and
+  after a camera pan and under a moving blocker, the temporal error
+  against the engine's own parked, converged capture is within its L1
+  threshold.
 - **RLT-G-002 — Contact regions are grounded.** The contact band of every
   caster class — rigid block, thin plank, alpha-tested caster, skinned
   proxy mid-animation, and a normal-mapped receiver — is within the L2
@@ -243,7 +248,8 @@ live in the rung subsection of the exporter design (Related table).
   runs where and when RLT-OPS-001 says, and every number has a published
   noise floor.
 - **RLT-G-006 — The content promise is stated as what it is.** Game titles
-  are held by non-regression gates and probes, and ROADMAP never describes
+  are held by declared-change content gates (RLT-CNT) and probes, and
+  ROADMAP never describes
   a game title as "reference quality" unless Q9 adds a content reference.
 
 ### 4.2 Non-goals
@@ -276,9 +282,10 @@ live in the rung subsection of the exporter design (Related table).
   is drawn beyond the loaded grid. M35 owns the distant geometry
   ([distant-lod-completion.md](distant-lod-completion.md)); that PRD makes
   no shadow promise, so far-field shadowing is owned by **neither** PRD at
-  rev 3. Recorded here so the gap is visible, and decided in Q4.
+  this revision. Recorded here so the gap is visible, and decided in Q4.
 - **RLT-NG-009.** A converged reference of any game scene, unless Q9 takes
-  its alternative. Game content is gated for non-regression (RLT-G-006).
+  its alternative. Game content is gated against declared changes
+  (RLT-G-006, RLT-CNT).
 
 ---
 
@@ -286,16 +293,17 @@ live in the rung subsection of the exporter design (Related table).
 
 ### 5.1 Reference and measurement (`RLT-REF`)
 
-- **RLT-REF-001.** The exporter M51 owns (PTR-VAL-004) MUST write every
-  reference rung of this PRD with: geometry; per-object BSDF parameters
-  (albedo, roughness, metalness) under the RLT-REF-008 mapping; the normal
-  map and alpha-cutout texture of the RLT-CON-007 and RLT-CON-008 rungs;
-  the rung's emitters under RLT-REF-002; the sun as a distant emitter of
-  the Q3 angular radius; the environment under RLT-REF-012; the camera;
-  and, for the skinned rung, the pose drawn in the captured frame. This PRD
-  owns the rung content; M51 owns the tool. At HEAD on 2026-11-01 no
-  exporter exists; the scene is authored only in `cornell.rs` and
-  `cornell/builders.rs`.
+- **RLT-REF-001.** Every reference rung of this PRD MUST be written by the
+  exporter M51 owns (PTR-VAL-004): geometry, emitters, camera and
+  per-object BSDF parameters (albedo, roughness, metalness) under the
+  RLT-REF-008 mapping, which PTR-VAL-004's export of the `--cornell`
+  entities already implies. Everything beyond that — skinned poses,
+  normal-map and alpha textures, the sun-free environment, the sun as a
+  distant emitter, export-time emitter scaling — is a change request
+  against M51 (§5.9, RLT-EXP-001…006). This PRD owns the rung content; M51
+  owns the tool. At HEAD on 2026-11-01 no exporter exists; the scene is
+  authored only in `cornell.rs` and `cornell/builders.rs`, and
+  PTR-VAL-004's text names only "the parity scene".
 - **RLT-REF-002.** Every emitter in a reference rung MUST use an
   attenuation law the external renderer implements, and the engine side of
   the rung MUST use the same law. At HEAD on 2026-11-01 every Cornell
@@ -322,26 +330,38 @@ live in the rung subsection of the exporter design (Related table).
   chosen renderer's licence terms for output images.
 - **RLT-REF-004.** A metric manifest (`manifest.tsv` from
   `scripts/renderer-eval.sh`, extended) MUST record, per case, each §8
-  metric with its noise floor and threshold, the git revision, the ray
-  quality tier, the GPU and driver identity, the calibration factor, and
-  the sampling seeds of both sides. At HEAD on 2026-11-01 the manifest
+  metric with its frozen floor, its re-measured floor and its threshold,
+  the git revision, the ray quality tier, the GPU and driver identity,
+  *k*<sub>exp</sub> and the calibration ratio per emitter kind, the
+  reference-cache key (RLT-REF-015), and the sampling seeds of both sides. At HEAD on 2026-11-01 the manifest
   records PNG hashes and the `bench:` summary only
   ([renderer-evaluation](../engine/renderer-evaluation.md#quick-start)).
 - **RLT-REF-005.** Once M51 ships its progressive reference, its converged
   capture of each RLT reference rung SHOULD agree with the external
-  reference within the two references' combined noise floor; a
+  reference within the two references' combined floor (§2); a
   disagreement MUST be filed against M51 or the exporter, not absorbed into
   a threshold. M51's own parity check on its parity scene is PTR-VAL-002;
   this ID covers the RLT rungs only.
 - **RLT-REF-006.** Every §8 metric MUST have a noise floor measured per
   rung on both sides — two engine captures with different sampling seeds
-  (RLT-REF-013) and two differently-seeded reference renders — and every
-  threshold MUST equal that floor plus the term's Q6 bias budget. A
-  threshold MUST NOT be below its floor, and once Phase 2 starts MUST NOT
-  be raised without a revision row in §12. At HEAD on 2026-11-01 the
-  noise-floor practice exists for SKYAL captures
-  ([SKYAL §4](../engine/skyal.md#4-harness)) and no lighting threshold
-  exists.
+  (RLT-REF-013) and two differently-seeded reference renders — combined
+  per §2. Each gate's combined floor MUST be measured and frozen into the
+  threshold table at the entry of the phase that improves the gate's term
+  (§9), together with the term's baseline and its Q6 bias budget; the
+  threshold is the frozen floor plus the budget. Every later run MUST
+  re-measure the floor and report it, and MUST fail the gate when the
+  re-measured floor exceeds the frozen floor by more than the term's drift
+  margin, so a change that makes the image noisier cannot loosen its own
+  gate. When a phase intentionally changes a quantity that an
+  already-frozen gate of another term reads (for example, a shadow change
+  that moves the traced share an L4 gate reads), that phase MUST list the
+  gate in its change declaration (RLT-CNT-002) and re-freeze the gate's
+  floor and baseline with a revision row. The term keeps its budget, and
+  Q6's strictly-below rule is re-checked against the new baseline. A
+  frozen floor, a threshold or a content-gate margin (RLT-CNT-001) MUST
+  NOT change without a revision row in §12. At HEAD on 2026-11-01 the noise-floor practice exists for
+  SKYAL captures ([SKYAL §4](../engine/skyal.md#4-harness)) and no lighting
+  threshold exists.
 - **RLT-REF-007.** Every §8 metric MUST be computed on linear captures
   (§2), never on the presented PNG, and the capture's frame count MUST be
   recorded. The EXR file MUST be written by M51's EXR writer
@@ -355,7 +375,11 @@ live in the rung subsection of the exporter design (Related table).
   rung subsection of the exporter design, that states for each engine
   lobe (Lambertian diffuse, GGX specular with the engine's multi-scatter
   compensation, conductor Fresnel) the reference BSDF and parameter
-  transform. M51's per-probe mapping of the Cornell materials (its V4) is
+  transform. The same table MUST state the normal-map convention both
+  sides use: the tangent-space basis and how its tangent frame is built,
+  the green-channel orientation, and the texel-to-normal decode, so the
+  normal-mapped floor (RLT-CON-007) measures shadowing, not a convention
+  mismatch. M51's per-probe mapping of the Cornell materials (its V4) is
   the starting point; this ID covers the materials of this PRD's rungs.
 - **RLT-REF-009.** A reference rung MUST NOT contain an emissive surface,
   a glass or eye material, authored ambient, a DALC cube, fog within the
@@ -363,27 +387,55 @@ live in the rung subsection of the exporter design (Related table).
   `--cornell` spawns `ceiling_light_panel` and `emissive_cube` and sets a
   flat ambient of 0.03 (`install_cornell_lighting`, `byroredux/src/cornell.rs`),
   and `--cornell-sun` keeps `emissive_cube`.
-- **RLT-REF-010.** A calibration rung — one inverse-square point emitter
-  above a white Lambertian plane, nothing else — MUST produce the
-  calibration factor *k* as the ratio of engine to reference radiance over
-  the plane's centre region, and MUST show that ratio constant across the
-  plane within the noise floor, which also checks the inverse-square and
-  cosine laws. A second calibration rung with the sun alone MUST produce
-  the sun's factor. Each factor MUST be recorded in the manifest and
-  applied before every absolute metric. At HEAD on 2026-11-01 the
-  backbone defines emitters in scene-linear radiant intensity
+- **RLT-REF-010.** *k*<sub>exp</sub> (§2) MUST be derived on paper for
+  each emitter kind — point, sun, environment — from the backbone's unit
+  chain and the exporter's unit conversion, and written into the rung
+  subsection of the exporter design before any rung is rendered. The
+  exporter MUST scale each emitter's intensity by its *k*<sub>exp</sub>
+  (RLT-EXP-005). No factor is applied to a rendered image, so a scene that
+  mixes point emitters, the sun and an environment is calibrated per
+  emitter. One calibration rung per emitter kind then checks the chain, on
+  an export scaled that way, and each MUST give a calibration ratio (§2)
+  of 1 within the combined floor:
+  - point: one inverse-square point emitter above a white Lambertian
+    plane, nothing else, over the plane's centre region, with the ratio
+    also constant across the plane (which checks the inverse-square and
+    cosine laws);
+  - sun: the `direct_only` view of a purely Lambertian plane
+    (`specular_strength` 0 and metalness 0, as RLT-GI-010) with no
+    authored cube under `--cornell-sun`, so the sky probe cannot
+    contribute: no environment specular reaches a lobe-free material, and
+    sky diffuse is not in `direct_only` (§3.4);
+  - environment: one Lambertian probe on the probe-only sky rung
+    (RLT-REF-019, RLT-REF-021), on the sky diffuse view, or a uniform
+    environment instead if V6 finds the engine can light a probe by one.
+
+  Each kind's rung is built in the phase that first uses the kind (§9).
+  A ratio other than 1 beyond the floor MUST be filed as a bug against the
+  unit chain or the exporter, and every absolute metric of that emitter
+  kind stays unreported until it is fixed. At HEAD on 2026-11-01 the backbone defines emitters in
+  scene-linear radiant intensity
   ([backbone §6](../engine/physical-lighting-backbone.md#runtime-contract))
   and nothing maps that scale to any external renderer.
 - **RLT-REF-011.** A closure rung MUST show, on both sides, that the
-  component views sum to the total: on the engine, the linear `final`
-  capture MUST equal filtered direct + `indirect_only` × albedo within the
-  noise floor; on the reference, total MUST equal direct + indirect within
-  its noise floor.
-- **RLT-REF-012.** The exporter MUST write, as the reference environment
-  of every `--cornell-sun` rung, the engine's sky radiance for that frame
-  **without the sun disc**, and the sun as a separate distant emitter
-  (RLT-REF-001). The sun's glow stays in the environment on both sides: it
-  is sky radiance (`include/sky.glsl` treats it as clear-sky scattering).
+  component views sum to the total: on the engine, with SVGF bypassed
+  (RLT-REF-018) and no temporal reconstruction or jitter (RLT-REF-020), the linear
+  `final` capture MUST equal filtered direct + `indirect_only` × albedo
+  within the floor; on the reference, total MUST equal direct + indirect
+  within its floor. The same rung with SVGF on MUST publish the energy
+  SVGF adds or removes over each region, as a report handed to M54
+  ([neural-denoiser.md](neural-denoiser.md)), never as part of closure.
+- **RLT-REF-012.** The reference environment of every `--cornell-sun` rung
+  MUST be the engine's sky radiance for that frame **without the sun
+  disc**, evaluated directly from the analytic `sky_radiance`
+  (`include/sky.glsl`) at a face resolution at least four times the
+  engine's (`SKY_CUBE_FACE_SIZE`, 128², `crates/renderer/src/vulkan/sky_cube.rs`),
+  never copied from the engine's baked cube, so the reference does not
+  inherit the probe's discretisation and L3 can see a probe-resolution
+  error. The resolution MUST be recorded in the manifest; the sun is a
+  separate distant emitter (RLT-EXP-004). The sun's glow stays in the
+  environment on both sides: it is sky radiance (`include/sky.glsl` treats
+  it as clear-sky scattering). This export is change request RLT-EXP-003.
 - **RLT-REF-013.** The engine's RT sampling MUST accept a seed offset, so
   two captures of one binary can differ only in sampling. At HEAD on
   2026-11-01 RT sampling is seeded by fragment coordinate and frame
@@ -392,38 +444,103 @@ live in the rung subsection of the exporter design (Related table).
   be measured.
 - **RLT-REF-014.** A material-validation rung MUST place one flat plane of
   each mapped material (RLT-REF-008) under a single inverse-square
-  emitter, and its direct-only radiance MUST match the reference within
-  the noise floor at three or more view angles. A white-furnace variant
-  SHOULD be added if the engine can light a probe by a uniform
-  environment; **Phase 0: verify** whether it can (settled by reading the
-  sky-probe inputs in `sky_cube.rs` and `frame_params.rs`).
+  emitter, plus one plane carrying the RLT-CON-007 normal map, and each
+  plane's direct-only radiance MUST match the reference within the floor
+  at three or more view angles and, for the normal-mapped plane, three or
+  more light azimuths. A white-furnace variant SHOULD be added if the
+  engine can light a probe by a uniform environment; **Phase 0: verify**
+  whether it can (settled by reading the sky-probe inputs in
+  `sky_cube.rs` and `frame_params.rs`).
+- **RLT-REF-015.** Reference images MUST be cached locally, keyed by a
+  hash of the exporter's output for the rung, the reference renderer's
+  version and the sample count, and MUST be re-rendered only when that key
+  changes; an engine shader change MUST NOT invalidate the cache. At HEAD
+  on 2026-11-01 nothing renders a reference, so no cache exists.
+- **RLT-REF-016.** Phase 1a MUST publish the wall-clock time of one full
+  run of the reference gates on the RT development machine, cold (every
+  reference rendered) and warm (every reference cached), and the gate
+  runner MUST print it at the end of every run. The time MUST include the
+  engine's parked, converged capture at every sampled pose of the temporal
+  gates (RLT-SHD-002, RLT-SHD-010), which no cache removes, and every phase
+  that adds gates MUST re-publish it.
+- **RLT-REF-017.** A bench mode whose animation clock advances by a fixed
+  step and produces the same skinned pose at the same frame index on every
+  run MUST exist for the skinned proxy (RLT-CON-003), and the exporter
+  MUST export that frame's pose (RLT-EXP-001). At HEAD on 2026-11-01
+  `renderer-static` steps 0 s and `renderer-stepped` a fixed 1/60 s
+  (`BenchMode::delta_time`, `byroredux/src/bench.rs`); **Phase 0: verify** whether
+  the animation and skinning systems advance under `renderer-stepped` and
+  give a bit-identical pose at a given frame (settled by a two-run
+  comparison of the skinned BLAS input), which decides whether this is the
+  existing mode or a new one.
+- **RLT-REF-018.** A switch that bypasses SVGF — both its temporal
+  accumulation and its à-trous passes — MUST exist for the closure rung,
+  as a `DBG_*` bit listed with its siblings. At HEAD on 2026-11-01
+  `DBG_DISABLE_ATROUS` (`0x4000`) skips the à-trous passes only, and
+  `DBG_DISABLE_TEMPORAL` (`0x40000`) is ReSTIR's temporal reuse, not
+  SVGF's (`crates/renderer/src/shader_constants_data.rs`).
+- **RLT-REF-019.** The sky-only rung MUST zero the directional light
+  without changing the sky dome. At HEAD on 2026-11-01 the dome's sun
+  intensity (`dome.sun_dir.w`) scales the sun glow and the disc in
+  `sky_radiance` (`include/sky.glsl`, the glow and `disc_base` terms) but
+  not the zenith-to-horizon gradient, so zeroing the dome's sun would also
+  remove the glow the environment is meant to keep (RLT-REF-012).
+  **Phase 0: verify** whether the EXAL translate step can set the
+  directional light's intensity independently of `dome.sun_dir.w`
+  (settled by reading `env_translate/sky_weather.rs`); if not, the switch
+  is new code.
+- **RLT-REF-020.** A capture mode MUST produce a linear `final` with no
+  temporal reconstruction and no sub-pixel jitter, for the closure rung
+  (RLT-REF-011). At HEAD on 2026-11-01 `--upscaler` accepts only `taa`
+  and `fsr3` (`byroredux/src/cli_args.rs`), both of which reconstruct
+  `final` temporally, and the TAA jitter is dropped only for raw-output
+  debug views (`taa_jitter_gate`,
+  `crates/renderer/src/vulkan/context/assemble_camera_and_lights.rs`), so
+  this mode is new code.
+- **RLT-REF-021.** The sky IBL energy rungs (A6) and the environment
+  calibration rung MUST contain only the probe under test, on both
+  sides: no floor, box wall or second probe, so the engine's reflection
+  rays below the horizon and the reference's environment-only render see
+  the same scene. Occlusion by a floor is measured by RLT-IBL-004, not by
+  the energy sweep. At HEAD on 2026-11-01 `--cornell-sun` removes only the
+  ceiling and keeps the floor and walls (`byroredux/src/cornell.rs`), so
+  the probe-only variant is new rung content.
 
 ### 5.2 Soft shadows and penumbrae (`RLT-SHD`)
 
 - **RLT-SHD-001.** On a new Cornell penumbra rung (a blocker at a known
   height above the floor under one finite emitter), the penumbra width
   (§2) MUST be within the L1 threshold of the reference's, at tier 3.
-  The measurement MUST: use the filtered direct view (RLT-SHD-009); read a
+  The measurement MUST: fit the visibility (§2) of the filtered direct
+  view (RLT-SHD-009), not its luminance; read a
   fixed set of profile lines; average each profile across a strip of
   pixels along the edge; fit a smooth step whose form the rung's code
   names, by least squares; capture with no temporal reconstruction and no
   sub-pixel jitter on the engine side and a one-pixel box filter on the
   reference side; and place the blocker so the reference penumbra spans at
   least 10 pixels at capture resolution. The sun case MUST be a separate
-  rung at the Q3 radius, under the same rule. At HEAD on 2026-11-01 every
+  rung at the Q3 radius, under the same rule. A sun penumbra is only about
+  2*h*θ wide for a blocker at height *h* and angular radius θ (≈ 0.0094 *h*
+  at 0.0047 rad), so the sun rung MUST reach the 10-pixel minimum with a
+  close-up camera on the shadow edge rather than a taller blocker: for a
+  field of view *W* world units wide across *N* pixels, *h* ≥ 5*W* ⁄ (θ*N*),
+  and the rung's code MUST compute and assert this. At HEAD on 2026-11-01 every
   non-final debug view forces a native, unreconstructed blit
   (`render_debug_requires_raw_output`, `crates/renderer/src/shader_constants.rs`;
   `is_fsr_dispatch_active`, `context/draw.rs`), and the L2 rung asserts a
   hard edge only ([R4](../engine/rt-lighting-material-recovery.md#r4---build-the-cornell-l0-l5-oracle)).
-  **Phase 0: verify** whether camera jitter is also off for these views
-  under `--upscaler taa` (settled by reading the jitter gate beside
-  `is_fsr_dispatch_active` in `context/draw.rs`).
+  Under `--upscaler taa` the camera jitter is off for these views too
+  (`taa_jitter_gate`, `context/assemble_camera_and_lights.rs`, #4513).
 - **RLT-SHD-002.** During a `--bench-mode renderer-stepped --bench-camera pan`
-  run on the penumbra rung, the relative RMSE of the linear `final`
-  capture against the reference at the same pose, over the penumbra
-  region, MUST be within the L1 threshold at every sampled frame of the
+  run on the penumbra rung, the temporal error (§2) over the penumbra
+  region MUST be within its L1 threshold at every sampled frame of the
   motion (a fixed stride, recorded in the manifest) and at 1, 4 and 16
-  frames after the camera stops. `final` is used because the debug views
+  frames after the camera stops. The comparison is the engine against its
+  own parked, converged capture at the same pose, never against the
+  reference: in the penumbra `final` is dominated by indirect light, so a
+  reference comparison would report the L4 deficit as motion error, and it
+  would need a converged offline render per sampled pose. Distance from
+  the reference is A2's job. `final` is used because the debug views
   bypass temporal reconstruction, and the temporal path is what this gate
   measures. At HEAD on 2026-11-01 the only penumbra gate is parked (§3.1
   L1), and the pan path has no hold segment after it stops.
@@ -440,10 +557,10 @@ live in the rung subsection of the exporter design (Related table).
   **Phase 0: verify** whether a blocker distance fits the reservoir or
   needs its own screen-sized image (settled by the reservoir layout test
   `reservoir_glsl_copies_stay_in_lockstep` and a byte budget).
-- **RLT-SHD-004.** With the shadow filter on, the filtered direct view
-  MUST be within the L1 threshold of the reference in a band just outside
-  each penumbra on the lit side and on the umbra side, and across the
-  shadow of a thin rod a few pixels wide on the penumbra rung. These are
+- **RLT-SHD-004.** With the shadow filter on, the visibility error (§2)
+  MUST be within the L1 threshold in a band just outside each penumbra on
+  the lit side and on the umbra side, and across the shadow of a thin rod
+  a few pixels wide on the penumbra rung. These are
   the places where the filter bleeds light into shadow or shadow into
   light. At HEAD on 2026-11-01 rev 2's version of this gate compared
   `direct_only` with the filter off and on, and those two images are
@@ -471,7 +588,9 @@ live in the rung subsection of the exporter design (Related table).
   `RenderDebugMode` catalog. At HEAD on 2026-11-01 none does (T3).
 - **RLT-SHD-010.** A moving-blocker rung MUST move a blocker along a
   frame-indexed path between emitter and floor, and the RLT-SHD-002
-  measurement on it MUST be within the L1 threshold. At HEAD on 2026-11-01
+  temporal error on it — against the engine parked and converged with the
+  blocker held at that frame's position — MUST be within its L1
+  threshold. At HEAD on 2026-11-01
   `--bench-camera` moves only the camera (`byroredux/src/boot/mod.rs`).
 - **RLT-SHD-011.** A moving-light variant of RLT-SHD-010 SHOULD be added,
   since ReSTIR's temporal reuse is stressed hardest when the light moves.
@@ -479,18 +598,18 @@ live in the rung subsection of the exporter design (Related table).
 ### 5.3 Contact shadows (`RLT-CON`)
 
 - **RLT-CON-001.** On a new Cornell contact rung (the tall block and a small
-  cube resting on the floor under one emitter), the filtered direct view's
-  luminance across each contact band MUST be within the L2 threshold of
-  the reference, at tiers 1–3. At HEAD on 2026-11-01 no rung measures a
+  cube resting on the floor under one emitter), the visibility error (§2)
+  across each caster's contact band MUST be within the L2 threshold, at
+  tiers 1–3. At HEAD on 2026-11-01 no rung measures a
   contact band (T5).
 - **RLT-CON-002.** The same rung MUST pass with the shadow filter on: the
   filter's normal and distance edge stops MUST NOT lift occlusion in the
   contact band above the threshold. This is measured on the filtered
   direct view, because `direct_only` excludes the filter (T3).
 - **RLT-CON-003.** The rung MUST include a skinned actor proxy standing on
-  the floor, captured mid-animation in a bench mode whose animation clock
-  advances, and its contact band MUST be within the L2 threshold of a
-  reference rendered at the exported pose. A parked proxy cannot show a
+  the floor, captured mid-animation in the RLT-REF-017 bench mode, and its
+  contact band MUST be within the L2 threshold of a reference rendered at
+  that frame's exported pose (RLT-EXP-001). A parked proxy cannot show a
   stale skinned BLAS. At HEAD on 2026-11-01
   `cornell_skinned_actor_receives_light_and_casts_shadows` checks that an
   actor casts a shadow, not where it meets the floor, and
@@ -506,7 +625,8 @@ live in the rung subsection of the exporter design (Related table).
 - **RLT-CON-005.** Contact bands on ground cover are out of this area
   (RLT-NG-005); a contact gate MUST NOT be written against blades.
 - **RLT-CON-006.** The contact rung MUST include a thin plank lying on the
-  floor whose thickness is no more than the contact band's width.
+  floor, with its own flat-caster contact band (§2) and a thickness no more
+  than that band's width.
 - **RLT-CON-007.** The contact rung MUST include a normal-mapped floor
   receiver, so a shading normal that disagrees with the geometric normal
   near the crease shows as a contact error. The Cornell builders already
@@ -542,8 +662,8 @@ reach.
   reflection ray MAY stay gated at 0.6. At HEAD on 2026-11-01 the whole
   term is skipped above 0.6 (T9).
 - **RLT-IBL-003.** The `(1.0 - roughness)` energy heuristic MUST be
-  replaced by the split-sum weight, and the `--cornell-sun` L5 roughness
-  sweep MUST match the reference's sky specular (§3.4) within the L3
+  replaced by the split-sum weight, and the L5 roughness sweep, run on
+  the probe-only sky rung (RLT-REF-021), MUST match the reference's sky specular (§3.4) within the L3
   threshold at each of its five roughness values.
 - **RLT-IBL-004.** Sky specular MUST be occluded: in the RLT-CON-001
   contact bands under `--cornell-sun`, sky-specular luminance MUST be
@@ -572,14 +692,33 @@ reach.
   capture. At HEAD on 2026-11-01 the number is zero: the bake and the
   composite background evaluate the same `sky_radiance` in the same frame
   (T7).
-- **RLT-IBL-008.** Before Phase 3 ships RLT-IBL-001, the translated
-  roughness and metalness distributions of each canonical material class
-  MUST be published for each Wave 1 benchmark scene, and a class the owner
-  marks as mistranslated in review MUST be fixed at the translation
-  boundary, never by a shader-side cap. This is the guard against the
-  "everything looks like chrome" regression the dielectric gate in
-  `triangle.frag` records: its cause is legacy glossiness translated to
-  too-low roughness, or wrong BGSM metalness.
+- **RLT-IBL-008.** Before the IBL phase ships RLT-IBL-001, a material dump
+  MUST publish, for each Wave 1 benchmark scene and each material class
+  (§2), the translated roughness and metalness distributions, and MUST
+  raise these flags without human judgement:
+  - F1: the share of dielectric surfaces translated below a stated
+    roughness (the value is fixed in the dump tool, recommended 0.2, and
+    recorded in the manifest);
+  - F2: any material with metalness > 0.3 whose source carries no metal
+    signal (no BGSM metalness, no authored environment-map conductor
+    marker). On Oblivion, FO3 and FNV content the keyword-classified
+    legacy route carries no metal signal by construction, so F2 flags
+    every conductor that route produces: the owner should expect the
+    whole route to be flagged and fixed or accepted as one decision, not
+    read each flag as a separate defect;
+  - F3: on FO4, any material whose translated roughness differs from
+    1 − its authored BGSM smoothness beyond float tolerance — the
+    conversion `material_translate.rs` states for BGSM content.
+    **Phase 0: verify** that conversion against an external description of
+    the BGSM smoothness field (settled by the Material-Editor source the
+    other PRDs cite).
+
+  Every flagged class MUST be fixed at the translation boundary or
+  recorded as accepted with a reason, never capped in a shader; the owner
+  reviews only what is flagged. This is the guard against the "everything
+  looks like chrome" regression the dielectric gate in `triangle.frag`
+  records: its cause is legacy glossiness translated to too-low roughness,
+  or wrong BGSM metalness.
 - **RLT-IBL-009.** The mean linear luminance of each Wave 1 benchmark scene,
   HEAD against the pre-IBL anchor, MUST be published by
   `scripts/check-render-anchor.sh` (extended in Phase 1 to read linear
@@ -625,7 +764,7 @@ reach.
   not re-run at HEAD: the isolated bounce was "nearly black apart from
   sparse high-energy samples"
   ([trade-offs, real-content finding](../engine/shadow-pipeline-tradeoffs.md#real-content-finding-volumetric-coordinates-are-gamebryo-units));
-  Phase 1 re-captures it before any Phase 4 change.
+  Phase 1b re-captures it before any Phase 2 change.
 - **RLT-GI-008.** If Q5 adopts M51's hash-grid radiance cache as the
   bounded path's terminator, this PRD owns the cache's realtime allocation
   rule (the exception PTR-RT-006 hands over): its buffers MUST have a row
@@ -637,6 +776,15 @@ reach.
   listed in the `RenderDebugMode` catalog. At HEAD on 2026-11-01
   `indirect_only` mixes the traced share with the untraced sky share or
   authored ambient (§3.4), so no view isolates it.
+- **RLT-GI-010.** Every material of an L4 rung MUST be purely Lambertian on
+  both sides (§3.4): `specular_strength` 0 and metalness 0 on the engine,
+  the plain diffuse BSDF on the reference, so the deficit holds no glossy
+  interreflection the engine does not attempt. **Phase 0: verify** that
+  `specular_strength` 0 removes every specular contribution on the
+  engine — the light loop's GGX lobe, the multi-scatter compensation and
+  the environment term (settled by reading `include/lighting.glsl` and
+  `include/pbr.glsl`); if it does not, the rung needs a debug bit that
+  does.
 
 ### 5.6 Cost and budget (`RLT-PERF`)
 
@@ -650,11 +798,22 @@ reach.
   pinned camera, isolated settings —
   [How to run a bench](../../ROADMAP.md#how-to-run-a-bench)).
 - **RLT-PERF-004.** Each phase's added GPU time on the reference GPU MUST
-  stay within the ceiling Q8 decides, on every benchmark scene.
+  stay within the per-phase ceiling Q8 decides, on every game benchmark
+  scene, measured with the ray quality tier pinned
+  (`--rt-test-ray-quality-tier`) at the scene's Phase 1b settled tier, so
+  the adaptive budget cannot pay for a pass in quality and hide its time.
+  The Cornell box is excluded from the ceiling, because its frame
+  time is too small for a percentage to mean anything, and its pass costs
+  are reported.
 - **RLT-PERF-005.** Each phase exit MUST publish every benchmark scene's
-  settled tier on the reference GPU, beside the term results, so a
-  reader can see which tier the reference-quality claim describes for
-  that scene.
+  settled tier and tier oscillation (§2) on the reference GPU, beside the
+  term results, so a reader can see which tier the reference-quality claim
+  describes for that scene, and no scene's settled tier MUST fall below
+  its Phase 1b value. This is checked separately from RLT-PERF-004.
+- **RLT-PERF-006.** The GPU time all phases add together MUST stay within
+  the whole-milestone cap Q8 decides, on every game benchmark scene,
+  measured against the Phase 1b baseline with the tier pinned as in
+  RLT-PERF-004.
 
 ### 5.7 Gate operation (`RLT-OPS`)
 
@@ -662,14 +821,94 @@ reach.
   `m-light` option of `.github/workflows/rt-correctness.yml`, and MUST be
   run, with the resulting manifest checked into `docs/audits/`, at every
   phase exit and before every release that changes a file under
-  `crates/renderer/shaders/`. At HEAD on 2026-11-01 that workflow is
+  `crates/renderer/shaders/`; a shader-only change runs against the cached
+  references (RLT-REF-015). At HEAD on 2026-11-01 that workflow is
   manual-only and no runner carries its `byroredux-rt` label (the
   workflow's header comment), so the run happens on the RT development
   machine.
 - **RLT-OPS-002.** Thresholds MUST be fixed on the reference GPU. On any
-  other GPU the gates MUST run report-only; a difference beyond the noise
-  floor between GPUs MUST be filed as an issue, not absorbed into a
-  threshold.
+  other GPU the gates MUST run report-only; a difference beyond the
+  combined floor between GPUs MUST be filed as an issue, not absorbed into
+  a threshold.
+- **RLT-OPS-003.** Replacing the reference GPU MUST follow one procedure:
+  re-measure every frozen floor on the new GPU, re-run every gate, carry a
+  budget over unchanged when the re-measured baseline still leaves it
+  strictly below the baseline (Q6), return any budget that no longer does
+  to the owner, and record the replacement as a revision row in §12. The
+  old GPU's numbers stay in the manifest history.
+- **RLT-OPS-004.** When an M-LIGHT gate fails and the cause is a change
+  outside M-LIGHT (another milestone's renderer, sky, material or content
+  change, which the gate catches at the run before a shader-changing
+  release, RLT-OPS-001), that change MUST either be fixed or reverted,
+  with a regression issue filed against the milestone it belongs to, or
+  be accepted by the owner as intended, in which case the gate is
+  re-frozen under RLT-REF-006 with a revision row naming that change. A
+  failing gate is never loosened to absorb it, and the M-LIGHT phase in
+  progress does not exit while the failure is open.
+
+### 5.8 Content non-regression (`RLT-CNT`)
+
+The milestone changes how content looks on purpose: Q2 darkens
+ambient-lit interiors, RLT-IBL-010 darkens sun-facing exterior surfaces,
+RLT-GI-004 brightens cavities. A literal "nothing changed" gate fails by
+design, so content is gated against declared changes.
+
+- **RLT-CNT-001.** A11 MUST compare, per Wave 1 and Wave 2 benchmark scene
+  with an install, a linear capture (§2) at the pinned bench pose against
+  that scene's anchor capture from the previous phase exit (the Phase 1b
+  capture for the first phase), and MUST fail on any region whose change
+  exceeds the scene's tolerance and is not covered by a declaration
+  (RLT-CNT-002). The tolerance is the scene's two-capture floor plus a
+  per-scene margin recorded in the anchor manifest; the margin changes
+  only through a revision row, like a frozen floor (RLT-REF-006). At HEAD
+  on 2026-11-01 `scripts/check-render-anchor.sh` compares 8-bit PNGs and
+  A11 has no pass condition.
+- **RLT-CNT-002.** Every phase MUST check in a change declaration in a
+  commit that precedes the first commit of the code it covers. Each entry
+  MUST name one bounded region of one scene's anchor image (a rectangle,
+  or a mask checked in with the declaration), one direction (brighter or
+  darker), and an expected change in the region's mean linear luminance
+  with a tolerance. A change inside a declared region, in its direction
+  and no larger than the expected size plus the tolerance, passes; a
+  change outside every declared region, in the other direction, or larger
+  than declared, fails. A declared change that does not appear is
+  reported, not failed. The declaration also lists every already-frozen
+  gate of another term that the phase re-freezes (RLT-REF-006).
+- **RLT-CNT-003.** The shadow filter off / on capture pair on content
+  (rev 3's A11) MUST be published as a report beside the RLT-CNT-001
+  result, not gated.
+
+### 5.9 Requests to M51 (`RLT-EXP`)
+
+The exporter is M51's (PTR-VAL-004), and that requirement names only the
+parity scene. Each item below is a change request against M51's scope.
+Each stays **unowned** until M51's revision log (its §12) records it as
+accepted. An unowned request blocks only the phase that first consumes
+it, named at the end of each item; that phase's entry (§9) cannot
+complete while it is unowned, and no other phase waits for it.
+
+- **RLT-EXP-001.** The exporter MUST export a skinned mesh at the pose
+  the rasteriser drew at a given frame index: that frame's bone palette
+  (`bones[]`, set 1 binding 3, which `triangle.vert` applies to the
+  bind-pose vertices), never the SkinComputePipeline output buffer the
+  skinned BLAS is refit from (`crates/renderer/src/vulkan/acceleration/blas_skinned.rs`).
+  A stale BLAS then disagrees with the reference instead of matching it
+  (RLT-REF-017, RLT-CON-003). Consumed by Phase 3.
+- **RLT-EXP-002.** The exporter MUST export normal-map and alpha-cutout
+  textures and the normal-map convention of RLT-REF-008 (RLT-CON-007,
+  RLT-CON-008). Consumed by Phase 3.
+- **RLT-EXP-003.** The exporter MUST export the sun-free analytic
+  environment at the RLT-REF-012 resolution. Consumed by Phase 4.
+- **RLT-EXP-004.** The exporter MUST export the sun as a distant emitter
+  of the Q3 angular radius. Consumed by Phase 3 (the sun penumbra rung and
+  the sun calibration rung).
+- **RLT-EXP-005.** The exporter MUST scale each emitter's intensity by its
+  *k*<sub>exp</sub> (RLT-REF-010) and record the factors it applied.
+  Consumed by Phase 1a.
+- **RLT-EXP-006.** The exporter MUST support per-rung material and object
+  overrides (the RLT-GI-010 plain diffuse mapping; the probe-only sky rung
+  of RLT-REF-021) without a second scene definition. Consumed by
+  Phase 1a, for the plain diffuse mapping.
 
 ---
 
@@ -705,7 +944,7 @@ content" column, linked rather than restated;
 tier headings lag it (Oblivion is still filed under "cell loader pending").
 
 Wave 0 is the game-free Cornell scene: every reference gate and every
-threshold lives there. "In scope" for a game title means non-regression
+threshold lives there. "In scope" for a game title means declared-change
 gates and probes (A9–A13), not a reference comparison (RLT-NG-009).
 
 | Game | In scope | Why / wave |
@@ -730,27 +969,28 @@ scenarios need the user's own installed data; nothing is checked in.
 |---|---|---|---|---|---|
 | A1 | Parked penumbra converges (existing) | self-consistency | `cargo test -p byroredux --test cornell_rt_oracle -- --ignored cornell_parked_penumbra_converges_at_one_shadow_ray` | none | regression only |
 | A2 | Penumbra width | gate | new test `cornell_penumbra_width_matches_reference` in `cornell_rt_oracle.rs` (local light and sun rungs) | none + reference | RLT-SHD-001, RLT-SHD-007 |
-| A3 | Penumbra under camera motion | gate | new test `cornell_panned_penumbra_tracks_reference` | none + reference | RLT-SHD-002, RLT-SHD-006 |
-| A4 | Filter bands and thin rod | gate | new test `cornell_shadow_filter_bands_match_reference` | none + reference | RLT-SHD-004, RLT-SHD-009 |
-| A5 | Contact bands | gate | new test `cornell_contact_bands_match_reference` (block, cube, plank, normal-mapped floor, alpha-tested caster, skinned proxy mid-animation) | none + reference | RLT-CON-001…003, RLT-CON-006…008 |
-| A6 | Sky IBL energy | gate | new test `cornell_sun_ibl_sweep_matches_reference` (`--cornell-sun`, L5 sweep, specular-only and Lambertian probes) | none + reference | RLT-IBL-001…004 |
-| A7 | GI deficit | gate | `scripts/renderer-eval.sh` with `BYROREDUX_RENDER_EVAL_FRAMES="64 1024"`, extended in Phase 1 to pin `--rt-test-ray-quality-tier` 0–3 and write the RLT-REF-004 columns | none + reference | RLT-GI-002, RLT-GI-003, RLT-GI-006 |
+| A3 | Penumbra under camera motion | self-consistency gate (temporal error) | new test `cornell_panned_penumbra_is_temporally_stable` (engine moving vs engine parked and converged at the same pose) | none | RLT-SHD-002, RLT-SHD-006 |
+| A4 | Filter bands and thin rod | gate (visibility error) | new test `cornell_shadow_filter_bands_match_reference` | none + reference | RLT-SHD-004, RLT-SHD-009 |
+| A5 | Contact bands | gate (visibility error) | new test `cornell_contact_bands_match_reference` (block, cube, plank, normal-mapped floor, alpha-tested caster, skinned proxy mid-animation in the RLT-REF-017 mode) | none + reference | RLT-CON-001…003, RLT-CON-006…008, RLT-REF-017 |
+| A6 | Sky IBL energy | gate | new test `cornell_sun_ibl_sweep_matches_reference` (probe-only sky rung, L5 sweep, specular-only and Lambertian probes) | none + reference | RLT-IBL-001…004, RLT-REF-021 |
+| A7 | GI deficit | gate | `scripts/renderer-eval.sh` with `BYROREDUX_RENDER_EVAL_FRAMES="64 1024"`, extended in Phase 1 to pin `--rt-test-ray-quality-tier` 0–3 and write the RLT-REF-004 columns, on Lambertian-only rungs | none + reference | RLT-GI-002, RLT-GI-003, RLT-GI-006, RLT-GI-010 |
 | A8 | Traced share free of SSAO | gate | `scripts/renderer-eval.sh` with a new `--cornell` case pair: the traced-share view with and without `DBG_DISABLE_AO` (`0x800`) in its `debug_flags` column | none | RLT-GI-004, RLT-GI-009 |
 | A9 | Material translation and anchor luminance | report | material-class distribution dump (Phase 1 tool) and `scripts/check-render-anchor.sh` on linear captures, HEAD vs the pre-IBL anchor | FNV, Skyrim SE, FO4 | RLT-IBL-008, RLT-IBL-009 |
 | A10 | Real-content bounce | report | `scripts/renderer-eval-fnv.sh` (`DBG_VIZ_GI_BOUNCE` view) | FNV | RLT-GI-007 |
-| A11 | Content non-regression capture | gate | engine `--bench-frames 300 --bench-hold` (release with `BYRO_DEBUG_SERVER=1`), then `byro-dbg`: `render.debug` set to the filtered direct view, `r.shadowfilter off`, `screenshot a.png`, `r.shadowfilter on`, `screenshot b.png`, `render.debug final`, `stats`; plus one exterior terrain-contact capture | each Wave 1–2 title's benchmark scene, one exterior | RLT-SHD-009 on content, RLT-CON-009 (report), RLT-PERF-001 bracket |
+| A11 | Content non-regression against declared changes | gate | engine `--bench-frames 300 --bench-hold` (release with `BYRO_DEBUG_SERVER=1`) at the pinned bench pose, linear `final` capture compared with the previous phase's anchor under the phase's change declaration; the filtered-direct `r.shadowfilter off` / `on` pair and one exterior terrain-contact capture published as reports | each Wave 1–2 title's benchmark scene with an install, one exterior | RLT-CNT-001…003, RLT-SHD-009 on content, RLT-CON-009 (report), RLT-PERF-001 bracket |
 | A12 | Portal-sky escape | report | new script `docs/smoke-tests/m-light-portal-sky.sh` (an interior with Show Sky, `render.debug indirect_only` at a window) | FNV or Skyrim SE | RLT-IBL-006 |
-| A13 | Cost and settled tier | gate | benchmark-scene refresh per ROADMAP methodology | benchmark scenes' games | RLT-PERF-003…005 |
-| A14 | Moving blocker | gate | new test `cornell_moving_blocker_tracks_reference` | none + reference | RLT-SHD-010, RLT-SHD-011 |
-| A15 | Calibration and materials | gate | new test `cornell_calibration_and_material_rungs` | none + reference | RLT-REF-010, RLT-REF-014 |
-| A16 | Closure | gate | new test `cornell_components_sum_to_total` | none + reference | RLT-REF-011 |
-| A17 | Sun counted once | gate | new test `cornell_sun_energy_counted_once` | none + reference | RLT-IBL-010, RLT-REF-012 |
+| A13 | Cost and settled tier | gate | benchmark-scene refresh per ROADMAP methodology | benchmark scenes' games | RLT-PERF-003…006 |
+| A14 | Moving blocker | self-consistency gate (temporal error) | new test `cornell_moving_blocker_is_temporally_stable` | none | RLT-SHD-010, RLT-SHD-011 |
+| A15 | Calibration and materials | gate | new test `cornell_calibration_and_material_rungs` (calibration ratio 1 per emitter kind, each kind from the phase that first uses it; flat planes from Phase 1a, the normal-mapped plane from Phase 3) | none + reference | RLT-REF-010, RLT-REF-014 |
+| A16 | Closure | gate | new test `cornell_components_sum_to_total` (SVGF bypassed, unreconstructed `final`; SVGF energy change reported) | none + reference | RLT-REF-011, RLT-REF-018, RLT-REF-020 |
+| A17 | Sun counted once | gate | new test `cornell_sun_energy_counted_once` | none + reference | RLT-IBL-010, RLT-REF-012, RLT-REF-019 |
+| A18 | Apparatus cost | report | the gate runner's end-of-run timing, cold and warm cache, including the temporal gates' parked engine captures | none | RLT-REF-015, RLT-REF-016 |
 
 ### 7.3 Where the gates run
 
 | Gates | Where | When | Cross-GPU |
 |---|---|---|---|
-| A2–A8, A14–A17 | `rt-correctness.yml`, `m-light` option, on the RT development machine until a `byroredux-rt` runner exists (RLT-OPS-001) | Every phase exit; before a release that changes a shader | Thresholds fixed on the reference GPU; other GPUs report-only (RLT-OPS-002) |
+| A2–A8, A14–A18 | `rt-correctness.yml`, `m-light` option, on the RT development machine until a `byroredux-rt` runner exists (RLT-OPS-001), against cached references unless a cache key changed (RLT-REF-015) | Every phase exit; before a release that changes a shader | Thresholds fixed on the reference GPU; other GPUs report-only (RLT-OPS-002) |
 | A9–A13 | Local, with the user's game data | Every phase exit | Reference GPU only |
 | A1 | `rt-correctness.yml`, `cornell` option (existing) | As today | As today |
 
@@ -758,7 +998,7 @@ scenarios need the user's own installed data; nothing is checked in.
 
 ## 8. Metrics
 
-The numbers live in a "Lighting fidelity" table that the Phase 1 exit
+The numbers live in a "Lighting fidelity" table that the Phase 1b exit
 commit adds to ROADMAP §Status beside the bench table; frame-time costs
 stay in the bench table itself. Every gate metric is published with its
 noise floor and threshold (RLT-REF-004). This section defines what is
@@ -766,34 +1006,55 @@ counted.
 
 | Metric | Definition | Granularity |
 |---|---|---|
-| Penumbra width error | \|raster width − reference width\| ÷ reference width, §2 penumbra width, filtered direct view | per rung, per profile line, per tier |
-| Motion error | Relative RMSE of the linear `final` capture vs the reference at the same pose, penumbra region; max and mean over the motion, and the values at 1, 4 and 16 frames after the stop | per rung (camera pan, moving blocker), per tier |
-| Filter band error | Relative error distribution in the lit-side and umbra-side bands and across the thin rod's shadow | per band, per tier |
-| Contact error | Relative error distribution over the contact band, filtered direct view | per caster class, per tier |
+| Penumbra width error | \|raster width − reference width\| ÷ reference width, §2 penumbra width, fitted on the filtered direct view's visibility | per rung, per profile line, per tier |
+| Temporal error | §2 definition (engine moving vs engine parked and converged), penumbra region; max and mean over the motion, and the values at 1, 4 and 16 frames after the stop | per rung (camera pan, moving blocker), per tier |
+| Filter band error | Visibility error (§2) in the lit-side and umbra-side bands and across the thin rod's shadow | per band, per tier |
+| Contact error | Visibility error (§2) over each caster's contact band | per caster, per tier |
 | Sky IBL energy error | Sky specular and sky diffuse luminance error vs reference (§3.4) | per roughness, per dielectric / conductor, per component |
 | Sun energy error | Linear `final` vs reference on the unoccluded plane | per scene |
-| GI energy deficit | §2 definition, with its relative error distribution | per region, per tier, clamp on / off |
+| GI energy deficit | §2 definition on Lambertian-only rungs, with its relative error distribution | per region, per tier, clamp on / off |
 | Clamp bias | Luminance-integral delta, `RESERVOIR_W_CLAMP` on vs off | per scene |
-| Calibration factor | *k* for point emitters and for the sun (RLT-REF-010) | per renderer version, per GPU |
-| Noise floor | §2 definition | per metric, per rung, per side |
-| Settled tier | §2 definition | per benchmark scene |
-| Pass cost | `bench:` bracket milliseconds for each new pass | per benchmark scene |
+| Calibration check | Calibration ratio *c* (§2, RLT-REF-010): engine ÷ reference on an export scaled by *k*<sub>exp</sub>, 1 within the floor | per emitter kind, per renderer version, per GPU |
+| Noise floor | §2 definition; frozen value, re-measured value and their ratio against the drift margin | per metric, per rung, per side |
+| SVGF energy change | Region luminance with SVGF on minus SVGF bypassed (RLT-REF-011), handed to M54 | per region |
+| Content change | Linear-capture change vs the previous phase's anchor, declared and undeclared (RLT-CNT-001) | per scene, per region |
+| Settled tier | §2 definition, with tier oscillation | per benchmark scene |
+| Pass cost | `bench:` bracket milliseconds for each new pass with the tier pinned (RLT-PERF-004); per-phase and cumulative totals | per benchmark scene |
+| Gate run time | Wall-clock of one full reference-gate run, cold and warm cache (RLT-REF-016) | per run |
 
 ---
 
 ## 9. Delivery sequence
 
-Phases are ordered by what they unblock: decisions and designs first; then
-the measurement apparatus and the baseline, because every threshold
-depends on measured noise floors; then the mechanisms, one term at a time.
-This PRD depends on M51 for four things only: the exporter (PTR-VAL-004)
+Phases are ordered by what they unblock: decisions and designs first;
+then the apparatus the first term needs, proven before any number is
+published (1a); then the global baselines (cost, settled tier, material
+dump, content anchors) (1b); then the mechanisms, one term at a time,
+starting with the L4 slice that proves the pipeline end to end (Q10).
+Each piece of apparatus is built in the phase that first uses it, and
+each RLT-EXP request blocks only that phase (§5.9).
+This PRD depends on M51 for these things only: the exporter (PTR-VAL-004)
 and the EXR writer (PTR-OUT-001), which M51 files as their own Phase 1
-issues ahead of its progressive reference; its Q5 renderer choice; its
-progressive reference, for RLT-REF-005; and its radiance cache, for Q5's
-recommendation (M51's Phase 5).
+issues ahead of its progressive reference and which every phase from 1a
+on needs; M51's acceptance of each RLT-EXP request before the phase that
+consumes it; its Q5 renderer choice; its progressive reference, for
+RLT-REF-005; and its radiance cache, for Q5's recommendation (M51's
+Phase 5).
+
+**Phase entry (Phases 2–4).** Every mechanism phase opens the same way,
+before it changes the renderer:
+1. build the apparatus the phase is the first to use, as listed under it;
+2. run the phase's gates against the renderer as it stands, publish the
+   term's baseline and combined floor into the Lighting fidelity table,
+   which makes the term S2, and freeze the floors (RLT-REF-006);
+3. the owner writes the term's bias budget, drift margin and rationale
+   into the threshold table, or declares the term done (Q6);
+4. check in the phase's change declaration (RLT-CNT-002).
+
+Mechanism work starts only after step 4.
 
 **Phase 0 — Decisions, verify items and designs (no engine code).**
-Resolve Q1–Q9, citing M51's Q5 for the renderer. Write the penumbra-aware
+Resolve Q1–Q10, citing M51's Q5 for the renderer. Write the penumbra-aware
 filter design from published descriptions (RLT-SHD-003) and the rung
 subsection of the exporter design (rung content, the RLT-REF-008 mapping
 table, the §3.4 recipes in the chosen renderer's terms). Close every verify
@@ -806,47 +1067,81 @@ checked in.
 | V1 | The external renderer's inverse-square and finite-cone emitters (RLT-REF-002) | Its emitter documentation |
 | V2 | Its licence terms for output images (RLT-REF-003) | Its licence file |
 | V3 | Whether a blocker distance fits the reservoir (RLT-SHD-003) | `reservoir_glsl_copies_stay_in_lockstep` and a byte budget |
-| V4 | Whether camera jitter is off for debug views under `--upscaler taa` (RLT-SHD-001) | The jitter gate in `context/draw.rs` |
+| V4 | Whether camera jitter is off for debug views under `--upscaler taa` (RLT-SHD-001) | Closed in rev 5: off (`taa_jitter_gate`, `context/assemble_camera_and_lights.rs`) |
 | V5 | Whether the Cornell builders can spawn an alpha-tested material (RLT-CON-008) | `cornell/builders.rs` |
 | V6 | Whether the engine can light a probe by a uniform environment (RLT-REF-014) | `sky_cube.rs`, `frame_params.rs` |
 | V7 | The `envBRDFApprox` constants (RLT-IBL-001) | Karis 2014, "Physically Based Shading on Mobile" |
 | V8 | The other titles' shadow INI settings (§6 row 1) | Their UESP / GECK INI references |
+| V9 | Whether `renderer-stepped` advances animation to a bit-identical skinned pose per frame (RLT-REF-017) | A two-run comparison of the skinned BLAS input |
+| V10 | Whether the directional light's intensity can be zeroed independently of `dome.sun_dir.w` (RLT-REF-019) | `env_translate/sky_weather.rs` |
+| V11 | Whether `specular_strength` 0 removes every specular contribution (RLT-GI-010) | `include/lighting.glsl`, `include/pbr.glsl` |
+| V12 | The BGSM smoothness-to-roughness conversion (RLT-IBL-008 F3) | The Material-Editor source |
 
-**Phase 1 — Measurement apparatus and baseline.** Depends on M51's
-exporter and EXR-writer issues, not on M51's Phase 1 exit. The rung
-content (RLT-REF-001, RLT-REF-009), emitters (RLT-REF-002), environment
-export (RLT-REF-012), seed offset (RLT-REF-013), linear captures
-(RLT-REF-007), calibration and material rungs (RLT-REF-010, RLT-REF-014),
-closure rung (RLT-REF-011), the two new component views (RLT-SHD-009,
-RLT-GI-009), the moving-blocker path and the pan hold segment
-(RLT-SHD-002, RLT-SHD-010), the manifest columns (RLT-REF-004), the
-`m-light` workflow option (RLT-OPS-001), and gates A2–A8 and A14–A17 run
-against HEAD's renderer unchanged; RLT-GI-001's pin; RLT-SHD-005 and
-RLT-SHD-006 published; the RLT-GI-007 probe re-captured; A9 and A13
-published. Exit: A15 and A16 pass; the Lighting fidelity table in ROADMAP
-holds, per term, the baseline value and its noise floor, so every term is
-S2; and the owner has written the four bias budgets into the threshold
-table under Q6's procedure.
+**Phase 1a — Apparatus for L4 and the global checks, proven.** Depends
+on M51's exporter and EXR-writer issues and on the acceptance of
+RLT-EXP-005 and RLT-EXP-006, not on M51's Phase 1 exit. Ships the rung
+content for the L4, calibration, material and closure rungs
+(RLT-REF-001, RLT-REF-009), inverse-square emitters (RLT-REF-002),
+*k*<sub>exp</sub> for every emitter kind on paper and export-time
+emitter scaling (RLT-REF-010), the point calibration rung, the material
+mapping for flat planes (RLT-REF-008) and their validation rung
+(RLT-REF-014), the seed offset (RLT-REF-013), linear captures
+(RLT-REF-007), the SVGF bypass, the unreconstructed `final` and the
+closure rung (RLT-REF-018, RLT-REF-020, RLT-REF-011), the traced-share
+view (RLT-GI-009), the Lambertian L4 rungs (RLT-GI-010), the reference
+cache (RLT-REF-015), the manifest columns (RLT-REF-004) and the
+`m-light` workflow option (RLT-OPS-001). No term baseline is published
+in this phase. Exit: A15 gives a calibration ratio of 1 for point
+emitters and passes on the flat planes, A16 closes, and A18 publishes
+the cold and warm gate run times.
 
-**Phase 2 — Shadows and contact.** RLT-SHD-003 (penumbra-aware reach),
+**Phase 1b — Global baselines.** RLT-GI-001's pin; the RLT-GI-007 probe
+re-captured; A9 published with the RLT-IBL-008 flags, after which the
+material-class route list is closed (§2); A13 published, which fixes each
+benchmark scene's settled tier and the pinned-tier frame time that
+RLT-PERF-004 and RLT-PERF-006 measure against; the content anchors for
+RLT-CNT-001 captured. Exit: the Lighting fidelity table exists in
+ROADMAP with its cost and tier rows; each term's row is filled at that
+term's phase entry.
+
+**Phase 2 — GI energy (the L4 slice, Q10).** Entry apparatus: none
+beyond Phase 1a. Entry baseline: A7 and A8. Then RLT-GI-004, RLT-GI-005
+per Q2, and RLT-GI-007 on content; the Q5 mechanism for RLT-GI-003 (with
+RLT-GI-008 if the cache is adopted, which waits for M51's Phase 5), so
+RLT-GI-003 may stay open after this phase exits. Exit: A8 passes, A7
+publishes the deficit at every tier and passes at its threshold once the
+Q5 mechanism lands, A10 is re-published, A11 passes under the phase's
+change declaration, and A13 shows the phase within its Q8 ceiling.
+
+**Phase 3 — Shadows and contact.** Entry apparatus, consuming
+RLT-EXP-001, RLT-EXP-002 and RLT-EXP-004: the filtered direct view
+(RLT-SHD-009); the pan hold segment and the moving-blocker path
+(RLT-SHD-002, RLT-SHD-010); the animated bench mode (RLT-REF-017); the
+normal-map convention and the normal-mapped validation plane
+(RLT-REF-008, RLT-REF-014); the sun as a distant emitter and its
+calibration rung (RLT-REF-010); and the penumbra, contact and
+moving-blocker rungs. Entry baseline: A2–A5 and A14, with RLT-SHD-005 and
+RLT-SHD-006 published. Then RLT-SHD-003 (penumbra-aware reach),
 RLT-SHD-007 per Q3, RLT-SHD-004, RLT-SHD-010, RLT-CON-001…003 and
-RLT-CON-006…008, RLT-CON-004 if Q4 takes Alternative A. Exit: A2–A5 and
-A14 pass at their thresholds, and A13 shows the phase within its Q8
-ceiling.
+RLT-CON-006…008, and RLT-CON-004 if Q4 takes Alternative A. Exit: A2–A5
+and A14 pass at their thresholds, A11 passes under the phase's change
+declaration, and A13 shows the phase within its Q8 ceiling.
 
-**Phase 3 — Sky IBL.** RLT-IBL-008 first, then RLT-IBL-001…004,
-RLT-IBL-010 and RLT-IBL-006. Exit: A6 and A17 pass, A9 is re-published,
-A12 passes on one Wave 1 title, and A13 shows the phase within its
+**Phase 4 — Sky IBL.** Entry apparatus, consuming RLT-EXP-003: the
+sun-free analytic environment export (RLT-REF-012); the sky-only switch
+and the probe-only rung (RLT-REF-019, RLT-REF-021); and the environment
+calibration rung (RLT-REF-010). Entry baseline: A6 and A17. Then
+RLT-IBL-008's flagged classes resolved first, then RLT-IBL-001…004,
+RLT-IBL-010 and RLT-IBL-006. Exit: A6 and A17 pass, A9 is re-published
+with no unresolved flag, A12 passes on one Wave 1 title, A11 passes under
+the phase's change declaration, and A13 shows the phase within its
 ceiling.
-
-**Phase 4 — GI energy.** RLT-GI-004, RLT-GI-005 per Q2, and the Q5
-mechanism for RLT-GI-003 (with RLT-GI-008 if the cache is adopted, which
-waits for M51's Phase 5); RLT-GI-007 on content. Exit: A7 and A8 pass, A10
-is re-published, and A13 shows the phase within its ceiling.
 
 **Phase 5 — Waves and cross-check.** Wave 2 titles through A9, A11 and
 A13; RLT-REF-005 once M51's progressive reference ships. Exit: all four
-terms S3, and A11 passes on every Wave 1 and Wave 2 title with an install.
+terms S3 (or L4 at S2 under Q5 Alternative B, §3), A11 passes on every
+Wave 1 title and on every Wave 2 title with an install, and A13 shows the
+milestone within its RLT-PERF-006 total.
 
 ---
 
@@ -862,10 +1157,13 @@ Each needs the project owner. The recommendation is the first option.
    exporter (PTR-VAL-004) with this PRD's rung content (RLT-REF-001),
    because it shares no shader code with the engine and so cannot share its
    bugs. The renderer is M51's decision and is cited here, not reopened.
-   Consequence: Phases 0 and 2–4 do not wait for M51, Phase 1 waits only
-   for M51's exporter and EXR-writer issues, and the ROADMAP M-LIGHT row's
-   "Depends on: M51" must say so on approval. Alternative A: M51's
-   progressive reference; consequence: Phases 1–4 wait for M51's Phases
+   Consequence: only Phase 0 is independent of M51. Every later phase
+   waits for M51's exporter and EXR-writer issues (through Phase 1a), and
+   each waits for M51's acceptance of the RLT-EXP requests it consumes
+   (§5.9). None waits for M51's progressive reference or its Phase 1
+   exit, and the ROADMAP M-LIGHT row's "Depends on: M51" must say so on
+   approval. Alternative A: M51's
+   progressive reference; consequence: Phases 1a–4 wait for M51's Phases
    1–2, and the reference reuses the engine's own BSDF and visibility code,
    so a shared defect passes until PTR-VAL-002 catches it on the parity
    scene, which has no point or directional emitters (§3.4). Alternative B:
@@ -876,7 +1174,7 @@ Each needs the project owner. The recommendation is the first option.
    cross-fade as exteriors do — authored ambient enters only through the
    untraced share and through rays that escape (`pathEnvironmentRadiance`
    already returns it), so the bounce share is not counted twice;
-   consequence: interiors lit mostly by ambient get darker, and Phase 4 has
+   consequence: interiors lit mostly by ambient get darker, and Phase 2 has
    to show it on the benchmark scenes before it ships. Alternative: keep
    the addition; consequence: interiors keep today's look, and nothing
    holds interior ambient to a reference, since reference rungs carry no
@@ -886,8 +1184,8 @@ Each needs the project owner. The recommendation is the first option.
    interior XCLL directional keys, which have no physical source; set in
    the EXAL translate step. Consequence: sharper exterior shadows and
    narrower penumbrae for the filter and TAA to hold, and a sun penumbra
-   rung whose geometry must be tall enough for a 10-pixel penumbra
-   (RLT-SHD-001). Alternative: keep 0.020 rad everywhere; consequence:
+   rung that needs a close-up camera on the shadow edge to reach a
+   10-pixel penumbra (RLT-SHD-001). Alternative: keep 0.020 rad everywhere; consequence:
    today's look, and the reference scene must use the same inflated cone,
    so the gate measures transport, not realism.
 4. **Q4 — Sun shadows past the shadow fade.** At HEAD every TLAS caster is
@@ -907,7 +1205,7 @@ Each needs the project owner. The recommendation is the first option.
    directional rays at every tier, bounded by RLT-PERF-002 and measured by
    A13, and no new pass.
 5. **Q5 — How the GI energy tail is closed.** Recommended: publish the
-   deficit in Phase 1, then close the tail by reusing M51's hash-grid
+   deficit at Phase 2's entry, then close the tail by reusing M51's hash-grid
    radiance cache (§2; PTR-RT-002, built in M51's Phase 5) as the bounded
    path's terminator, with this PRD owning its realtime allocation rule
    (RLT-GI-008, the exception PTR-RT-006 hands over). Consequence:
@@ -917,25 +1215,42 @@ Each needs the project owner. The recommendation is the first option.
    rays per pixel on top of the cost #2161 accepted, bounded by the tiers
    and the Q8 ceiling. Alternative B: accept the deficit as the
    raster-mode promise and hold only the PT modes to the reference;
-   consequence: RLT-G-004 becomes "published" rather than "bounded", and
-   L4 cannot reach S3.
+   consequence: RLT-G-004 becomes "published" rather than "bounded", L4
+   completes at S2 with its deficit frozen (§3 completion rule), and the
+   milestone closes without an L4 reference-quality claim.
 6. **Q6 — The bias budget of each term.** Each term needs a budget above
-   its noise floor, because raster mode is biased by design and a
+   its frozen floor, because raster mode is biased by design and a
    threshold equal to the floor is unreachable. Recommended procedure, the
-   same for every term: the owner writes each budget into the threshold
-   table at Phase 1 exit, after the baseline and noise floors are
-   published and before any Phase 2 change, stated in the units below;
-   after Phase 2 starts a budget can only be raised by a revision row.
+   same for every term: at the entry of the phase that improves the term
+   (§9), after its baseline and frozen floors are published and before
+   that phase changes the renderer, the owner writes
+   into the threshold table, per term, in the units below:
+   - a **bias budget** strictly below the term's entry baseline error
+     (above the frozen floor), for every term a later phase claims to
+     improve, so the phase's exit cannot be met by the baseline itself;
+   - a one-line **rationale** for that budget tied to something outside
+     the measurement — a visibility argument (the error at which the term
+     is not visible at the capture resolution) or the error a published
+     technique reports for the same quantity;
+   - a **drift margin** for the term's re-measured floor (RLT-REF-006);
+   - or, instead of a budget, a declaration that the term is **done**: its
+     baseline is accepted as reference quality, it is S3 from that phase entry, and
+     the phase that would improve it drops it.
+
+   Once written, a budget, margin or done declaration changes only
+   through a revision row. A later re-freeze (RLT-REF-006, RLT-OPS-004)
+   keeps the budget and re-checks it against the strictly-below rule.
 
    | Term | Budget expressed as |
    |---|---|
-   | L1 penumbra | Relative penumbra width error; motion error at the post-stop frames |
-   | L2 contact | Mean and 95th-percentile relative error over the contact band |
-   | L3 sky IBL | Relative energy error per roughness and component, and the sun energy error |
+   | L1 penumbra | Relative penumbra width error and filter-band visibility error against the reference; temporal error at the post-stop frames |
+   | L2 contact | Mean and 95th-percentile visibility error over each caster's contact band |
+   | L3 sky IBL | Relative energy error (normalised per §2) per roughness and component, and the sun energy error |
    | L4 GI | Energy deficit and its 95th-percentile relative error, per region |
 
    Consequence: the budgets are informed by measurement but are owner
-   decisions on the record, and S3 means something fixed. Alternative A:
+   decisions on the record, each with a reason that is not "what the
+   baseline happened to be", and S3 means something fixed. Alternative A:
    fix numeric budgets now; consequence: no measured basis exists yet, so
    a budget may be unreachable or vacuous and would be revised under
    pressure. Alternative B: threshold equal to the noise floor (rev 2's
@@ -951,25 +1266,50 @@ Each needs the project owner. The recommendation is the first option.
    of any benchmark scene; consequence: the claim describes what players
    see, but L4 at tier 0 has no traced bounce (T11), so it either fails or
    forces Q5 Alternative A's cost into the low tiers.
-8. **Q8 — The cost ceiling per phase.** Recommended: on the reference GPU,
-   no phase may lower any benchmark scene's settled tier, and the new
-   brackets a phase adds may total at most 5 % of that scene's TAA-native
-   frame time in the ROADMAP bench table. Consequence: the gates cannot be
-   met by spending unbounded frame time; a mechanism that does not fit
-   becomes a tier-3-only feature or a separate decision. Alternative A: an
-   absolute per-phase millisecond ceiling; consequence: simpler to state,
-   but the same number is generous on Cornell and tight on
+8. **Q8 — The cost ceiling per phase and for the milestone.**
+   Recommended: on the reference GPU and on the four game benchmark scenes
+   (the Cornell box excluded, its costs reported, RLT-PERF-004): no phase
+   may lower any scene's settled tier; the new brackets a phase adds may
+   total at most the larger of 5 % of that scene's TAA-native frame time
+   in the ROADMAP bench table and an absolute floor of 0.25 ms, so a small
+   pass is never refused on a fast scene; and all phases together may add
+   at most the larger of 12 % of that frame time and the sum of the
+   per-phase floors of the phases that add a bracket (RLT-PERF-006), so
+   four phases cannot quietly sum to 20 % and the total is never smaller
+   than the per-phase rule allows (on a 6 ms scene 12 % is 0.72 ms, while
+   three phases at the floor add 0.75 ms). Every figure is measured with
+   the tier pinned at the scene's Phase 1b settled tier (RLT-PERF-004),
+   and the settled-tier condition is checked separately (RLT-PERF-005). Consequence: the gates cannot be met by spending
+   unbounded frame time; a mechanism that does not fit becomes a
+   tier-3-only feature or a separate decision. Alternative A: an absolute
+   per-phase millisecond ceiling and total; consequence: simpler to state,
+   but the same number is generous on a fast scene and tight on
    MedTekResearch01. Alternative B: report only (rev 2's RLT-PERF-003);
    consequence: quality can be bought with unbounded frame time.
 9. **Q9 — A converged reference for game content.** Recommended: no — the
-   reference gates stay on Cornell, game titles get non-regression gates
-   and probes, and ROADMAP says so (RLT-G-006). Consequence: a translation
+   reference gates stay on Cornell, game titles get declared-change gates
+   (RLT-CNT) and probes, and ROADMAP says so (RLT-G-006). Consequence: a translation
    defect on real materials is caught only by A9 and A11, not measured.
    Alternative: export one interior per Wave 1 title (Prospector Saloon,
    WhiterunBanneredMare, MedTekResearch01) and gate it like a rung;
    consequence: the exporter and the RLT-REF-008 mapping must cover
    textured legacy materials, alpha, skinning and the authored ambient,
    which is M51's Phase 3 content work, so Phase 5 waits for it.
+
+10. **Q10 — Which term goes first.** Recommended: an L4 vertical slice —
+    after Phase 1b, the first mechanism phase is GI energy (Phase 2):
+    RLT-GI-004, RLT-GI-005, the Lambertian rungs and the content probe,
+    which exercise the whole pipeline (exporter, calibration, closure,
+    linear captures, frozen floors, content declarations) end to end on
+    the term the 2026-07-19 FNV probe found weakest, before the shadow and
+    IBL phases spend on it. Consequence: RLT-GI-003 itself may stay open
+    after Phase 2, until Q5's mechanism lands; the slice proves the
+    apparatus, not the closure. Phase 1a builds only what this slice and
+    the global checks need, so the slice starts before the shadow and sky
+    apparatus exists. Alternative: rev 3's order (shadows, then
+    sky IBL, then GI); consequence: the first mechanism phase is the one
+    with the most rungs, and a flaw in the apparatus is found after the
+    largest phase has built on it.
 
 ---
 
@@ -1005,3 +1345,5 @@ Each needs the project owner. The recommendation is the first option.
 | 1 | 2026-11-01 | First draft | — |
 | 2 | 2026-11-01 | Review round 1 folded in: T5 / T6 / T9 / T14 inventory corrections, RLT-REF-002 and RLT-IBL-006 verify items closed from the code, inverse-square reference emitters, linear captures (RLT-REF-007), A8 tool, SIGMA / Karis / CK lighting-template citation precision, per-game tier link, cross-PRD alignment with M51 (shared exporter PTR-VAL-004, external renderer via M51 Q5, hash-grid radiance cache and RLT-GI-008, PTR-RT-007) and with M35 on far-field shadows (RLT-NG-008, Q4) | claude: revise |
 | 3 | 2026-11-01 | Review round 2 folded in: §3 split into four gated terms (L1–L4) and a non-gating mechanism inventory, with T6 / T13 / T14 listed as not gated here; S1+ state for self-consistency gates; noise floor separated from threshold, with per-term bias budgets (Q6); component-decomposition contract (§3.4), closure, calibration, material-mapping and material-validation rungs (RLT-REF-008…014); exporter scene content, sun-free environment and seed offset; emissive-free reference rungs; noise floors moved from Phase 0 to Phase 1 and the verify list made a table; scope narrowed to Cornell reference gates plus content non-regression (RLT-G-006, RLT-NG-009, Q9); exporter, EXR writer and renderer choice owned by M51 alone; specular-energy cap replaced by material-translation and anchor reports (RLT-IBL-005 withdrawn, RLT-IBL-008, 009); sun counted once (RLT-IBL-010); contact band and adversarial casters (RLT-CON-006…009); motion measured during and after the pan, moving blocker (RLT-SHD-010, 011); filter gates moved to a filtered direct view after finding that debug views bypass the filter correction (RLT-SHD-004, 009); penumbra-width procedure; clean-room wording replaced by published-descriptions-only; cost ceiling, settled tier and promised tier (RLT-PERF-004, 005, Q7, Q8); gate operation (RLT-OPS); traced-share view (RLT-GI-009); RLT-SHD-008 withdrawn; term-state metric dropped; "bench-of-record" replaced by the defined benchmark scenes | reviewer: revise |
+| 4 | 2026-11-01 | Review round 3 folded in: shadowed-region metrics moved to visibility error and every relative error normalised by the region's unoccluded luminance (§2, §8); calibration made a check, not a fit — analytic *k*<sub>exp</sub> applied to emitter intensities at export, *k*<sub>meas</sub> must match, sun factor measured on `direct_only` (RLT-REF-010, RLT-EXP-005); L4 rungs purely Lambertian on both sides (§3.4, RLT-GI-010); motion gates changed to temporal error against the engine's own parked, converged capture (RLT-SHD-002, RLT-SHD-010, A3, A14); floors frozen at Phase 1b with a drift margin, combined floor defined as root-sum-square (§2, RLT-REF-006); per-caster contact bands with a fixed flat-caster band for the plank (§2, RLT-CON-006); content gated against per-phase change declarations on linear captures, filter A/B demoted to a report (§5.8 RLT-CNT-001…003, A11); Q6 budgets strictly below the Phase 1b baseline with an external rationale, terms can be declared done; exporter additions filed as change requests against M51 (§5.9 RLT-EXP-001…006); Phase 1 split into 1a (apparatus proven) and 1b (baselines), L4 vertical slice first (Q10); Q8 excludes Cornell, adds an absolute floor and a milestone total (RLT-PERF-004, RLT-PERF-006); animated bench mode (RLT-REF-017), normal-map convention and normal-mapped validation plane (RLT-REF-008, RLT-REF-014), sky-only switch and one probe per capture (RLT-REF-019, §3.4), analytic high-resolution environment export (RLT-REF-012), closure with SVGF bypassed and SVGF energy reported to M54 (RLT-REF-011, RLT-REF-018), reference cache and gate run time (RLT-REF-015, RLT-REF-016, A18), objective material-class flags (§2, RLT-IBL-008); completion rule aligned with Phase 5 and the Q5 Alternative B case stated (§3); settled-tier warm-up and oscillation (§2, RLT-PERF-005); reference-GPU replacement procedure (RLT-OPS-003); Status paragraph trimmed; T10 untagged | reviewer: revise |
+| 5 | 2026-11-01 | Review round 4 folded in: apparatus built in the phase that first uses it, each RLT-EXP request blocking only its consuming phase, Phase 1a narrowed to the L4 slice and global checks, Phase 1b to global baselines, and Q1's M51 dependency corrected (§5.9, §9, Q1, Q10); floors, baselines and budgets frozen at each term's phase entry, with a re-freeze rule for intended cross-term changes and an ownership rule for failures caused outside M-LIGHT (RLT-REF-006, RLT-OPS-004, Q6); cost measured with the tier pinned at the Phase 1b settled tier, settled-tier drop checked separately, and the milestone total made consistent with the per-phase floor (RLT-PERF-004…006, Q8); calibration stated as a ratio of 1 on a scaled export, an environment calibration rung added, and the "converged reference" definition corrected (§2, RLT-REF-010, A15); change declarations bounded per region with size and tolerance, committed before the code, larger-than-declared changes failing, and the content margin under the revision-row rule (RLT-CNT-001, RLT-CNT-002); penumbra width fitted on visibility (§2, RLT-SHD-001); the drawn skinned pose exported, not the BLAS source (RLT-EXP-001); probe-only sky rung on both sides (RLT-REF-021, §3.4); sun rung by close-up camera with its height rule (RLT-SHD-001, Q3); unreconstructed `final` capture mode (RLT-REF-020), V4 closed from `taa_jitter_gate`; component-specific normaliser for L3 / L4 relative error (§2); RLT-NG-008 revision wording, F2's whole-route flag stated, material-class route list closed after the Phase 1b dump, temporal-gate engine captures counted in A18 (RLT-REF-016) | reviewer: revise |
