@@ -173,6 +173,12 @@ source, each texel the engine's filtered-then-decoded normal at its
 centre, re-encoded as n · ½ + ½. Mitsuba's own bilinear between those
 samples then differs from the engine by O(1/16²).
 
+Both sides map uv (0, 0) to the texture's first row with u along the
+row. Vulkan does that by definition, and a 2 × 2 Mitsuba render of a PLY
+quad with explicit `u` / `v` confirmed it for Mitsuba (2026-11-02): its
+PLY loader does not flip v. The bake therefore writes rows in source
+order.
+
 The vertex-tangent path is chosen on purpose. The engine's tangent-less
 fallback rebuilds T from screen derivatives, and its sign follows the
 screen-space UV Jacobian. On a box top face seen from above that gives

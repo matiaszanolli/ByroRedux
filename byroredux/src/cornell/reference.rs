@@ -68,6 +68,12 @@ pub(crate) enum ReferenceRung {
     /// (`BenchMover`; `--bench-camera-length` ends its motion in a hold,
     /// `--bench-camera-freeze-at` parks it for the converged reference).
     PenumbraMoving,
+    /// RLT-REF-014's normal-mapped plane: one 0.6 m Lambertian plane carrying
+    /// the RLT-CON-007 normal map through the authored tangent frame, on a
+    /// black floor, lit from three azimuths (`--cornell-reference-view 0|1|2`
+    /// moves the emitter, not the camera). Checks the normal-map convention
+    /// (`path-tracing.md` §2.2) before the contact rung relies on it.
+    NormalPlane,
     /// RLT-SHD-005: the Lambertian box with six dim emitters (1/60 of the
     /// hero, about `RESERVOIR_W_CLAMP`'s 64× ratio) around the hero, the
     /// case the reservoir weight cap exists for and biases.
@@ -143,6 +149,7 @@ impl ReferenceRung {
             Self::PenumbraSun => "penumbra-sun",
             Self::PenumbraMoving => "penumbra-moving",
             Self::ReservoirClamp => "restir-clamp",
+            Self::NormalPlane => "normal-plane",
             Self::Contact => "contact",
         }
     }
@@ -157,6 +164,7 @@ const RUNGS: &[ReferenceRung] = &[
     ReferenceRung::PenumbraSun,
     ReferenceRung::PenumbraMoving,
     ReferenceRung::ReservoirClamp,
+    ReferenceRung::NormalPlane,
     ReferenceRung::Contact,
 ];
 
@@ -288,19 +296,7 @@ fn setup_contact_rung(world: &mut World, builder: &mut MeshBuilder, neutral: Tex
     let floor_entity = spawn_object(world, floor, neutral, Vec3::new(0.0, -BOX_WALL_T, 0.0), Quat::IDENTITY,
         lambert([0.8; 3]), "con_floor");
     let normal_map = builder.register_texture(16, 16, super::builders::wavy_normal_map_pixels(16));
-    world.insert(
-        floor_entity,
-        crate::components::MaterialTextureHandles {
-            textures: byroredux_nif::import::MaterialTextureSet {
-                normal: normal_map,
-                ..Default::default()
-            },
-            normal_has_alpha: false,
-            tint_has_alpha: false,
-            parallax_height_scale: byroredux_core::ecs::components::material::DEFAULT_PARALLAX_HEIGHT_SCALE,
-            parallax_max_passes: byroredux_core::ecs::components::material::DEFAULT_PARALLAX_MAX_PASSES,
-        },
-    );
+    insert_normal_map(world, floor_entity, normal_map);
 
     // (name, half extents in metres, centre x/z, yaw, band width in metres)
     let casters: [(&str, [f32; 3], [f32; 2], f32, f32); 3] = [
@@ -361,6 +357,23 @@ fn setup_contact_rung(world: &mut World, builder: &mut MeshBuilder, neutral: Tex
     });
     // ~2 m from the casters: a 3 cm band is ~13 px at 720p.
     (Vec3::new(0.0, 1.6 * M, 1.2 * M), Vec3::new(0.0, 0.0, 0.05 * M))
+}
+
+/// Bind `normal_map` as `entity`'s tangent-space normal map (RLT-EXP-002).
+fn insert_normal_map(world: &mut World, entity: byroredux_core::ecs::EntityId, normal_map: u32) {
+    world.insert(
+        entity,
+        crate::components::MaterialTextureHandles {
+            textures: byroredux_nif::import::MaterialTextureSet {
+                normal: normal_map,
+                ..Default::default()
+            },
+            normal_has_alpha: false,
+            tint_has_alpha: false,
+            parallax_height_scale: byroredux_core::ecs::components::material::DEFAULT_PARALLAX_HEIGHT_SCALE,
+            parallax_max_passes: byroredux_core::ecs::components::material::DEFAULT_PARALLAX_MAX_PASSES,
+        },
+    );
 }
 
 /// RGBA8 cut-out for the alpha-tested panel: white, with a vertical and a
@@ -570,6 +583,26 @@ pub(crate) fn setup_reference_scene(
             camera
         }
         ReferenceRung::Contact => setup_contact_rung(world, &mut builder, neutral),
+        ReferenceRung::NormalPlane => {
+            let floor = builder.box_mesh([2.0 * M, BOX_WALL_T, 2.0 * M]);
+            spawn_object(world, floor, neutral, Vec3::new(0.0, -BOX_WALL_T, 0.0), Quat::IDENTITY,
+                lambert([0.0; 3]), "nm_floor_black");
+            let plane = builder.box_mesh_with_uv_tangents([0.3 * M, 0.005 * M, 0.3 * M]);
+            let entity = spawn_object(world, plane, neutral, Vec3::new(0.0, 0.01 * M, 0.0), Quat::IDENTITY,
+                lambert([0.8; 3]), "nm_plane");
+            let normal_map = builder.register_texture(16, 16, super::builders::wavy_normal_map_pixels(16));
+            insert_normal_map(world, entity, normal_map);
+            // 50° elevation, 1.5 m away, at azimuth 0°, 120° or 240°.
+            let azimuth = view as f32 * std::f32::consts::TAU / 3.0;
+            let (elevation, distance) = (50.0f32.to_radians(), 1.5);
+            let dir = Vec3::new(
+                elevation.cos() * azimuth.cos(),
+                elevation.sin(),
+                elevation.cos() * azimuth.sin(),
+            );
+            spawn_reference_emitter(world, dir * distance * M, 2.0, "nm_emitter");
+            (Vec3::new(0.0, 1.2 * M, 1.1 * M), Vec3::ZERO)
+        }
         ReferenceRung::Materials => {
             // Planes 0.6 m square, 0.8 m apart, 1 cm above a black floor
             // (zero albedo: no bounce reaches the planes, so direct-only and

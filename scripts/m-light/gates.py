@@ -401,6 +401,19 @@ def gate_materials(engine: Engine, store: ReferenceStore, ctx: Context, spp: int
         from_rung = [n for n in masks if n.startswith("mat_lambert_")]
         for name in from_rung:
             rows.append((unit_ratio_row("A15", f"materials-v{view}", name, ea, eb, ra, rb, masks[name]), key))
+    # The normal-mapped plane (RLT-REF-014, from Phase 3) at three light
+    # azimuths: the normal-map convention of path-tracing.md §2.2.
+    for view in (0, 1, 2):
+        export = engine.out / "scenes" / f"normal-plane-v{view}"
+        ea = engine.capture(f"normal_plane_v{view}_direct", "normal-plane", "direct_only", 0, ctx.tier,
+                            export_dir=export, reference_view=view)
+        eb = engine.capture(f"normal_plane_v{view}_direct", "normal-plane", "direct_only", 1, ctx.tier,
+                            reference_view=view)
+        ra, key = store.render(export, "direct", spp, 0)
+        rb, _ = store.render(export, "direct", spp, 1)
+        mask = region_masks(export)["nm_plane"]
+        rows.append((unit_ratio_row("A15", f"normal-plane-azimuth{view}", "nm_plane", load_exr(ea), load_exr(eb),
+                                    ra, rb, mask), key))
     return rows
 
 
