@@ -1,8 +1,13 @@
 # Reference-Quality Lighting — Product Requirements
 
-**Status**: APPROVED (2026-11-02). Revision 8; the change history is in
+**Status**: ACTIVE (2026-11-02). Revision 9; the change history is in
 §12. Every decision in §10 is decided and every Phase 0 verify item is
-closed or filed as an issue. Statements about
+closed or filed as an issue.
+
+**Tracking**: #6595 (parent). Phases: #6596 (0), #6601 (1a), #6598 (1b),
+#6602 (2), #6603 (3), #6604 (4), #6599 (5). M51 tools built here: #6600
+(exporter, PTR-VAL-004), #6597 (EXR writer, PTR-OUT-001). Verify items
+filed: #6605 (V9), #6606 (V12). Statements about
 how an original engine, a published technique or an external tool behaves
 cite external sources (UESP and the Creation Kit wikis, the cited papers
 and vendor documentation); a claim that could not be verified is marked
@@ -1505,3 +1510,4 @@ Each needs the project owner. The recommendation is the first option.
 | 6 | 2026-11-02 | Review round 5 (verdict: approved with edits; this revision makes the edits) folded in: multiple-scattering parity between the engine's compensated GGX and the reference BSDF, with V13 and the `DBG_DISABLE_MULTISCATTER` or recorded-difference choice (RLT-REF-008); sun-rung sizing corrected to the 10–90 % width and asserted on the reference's measured width (RLT-SHD-001); re-freeze rule that moves the baseline freely, treats a floor rise beyond the drift margin as a budget change and drops a term that leaves its threshold from S3 to S2 (RLT-REF-006, Q6); separate during-motion and post-stop L1 budgets (RLT-SHD-002, RLT-SHD-010, Q6); environment calibration on a uniform or smooth glow-free sky (RLT-REF-010); content anchors captured at phase entry after an entry-time A11 run, and change measured and declared on a 32 × 32 tile grid (RLT-CNT-001, RLT-CNT-002, §9); A7 report-only until the Q5 mechanism lands (RLT-GI-003); post-completion regression guards (RLT-OPS-005); contact tiers stated as an exception to Q7 (RLT-CON-001); Q8 percentages taken from A13's Phase 1b pinned-tier frame time, with a sub-5 ms example; Q6 wording "this phase"; exporter skinning formula matched to `triangle.vert` (RLT-EXP-001) | reviewer: approved |
 | 7 | 2026-11-02 | Owner approval: every §10 decision recorded as **Decided** — Q4 takes Alternative A (screen-space sun term, RLT-CON-004 in Phase 3), every other question its recommendation; Q1's decision authorises building M51's exporter and EXR writer under M51's IDs; RLT-NG-008 updated for Q4; status PROPOSED → APPROVED | owner: approved |
 | 8 | 2026-11-02 | Phase 0 verify items folded in from the code at HEAD and the cited sources: V1 (Mitsuba `point` and 3.9.1 `directional` are delta lights; sphere area emitters for finite sources; sun option chosen at Phase 3 entry, RLT-REF-002), V2 (licence silent on images, RLT-REF-003), V3 (blocker distance fits an unused f16, RLT-SHD-003), V5 (alpha-tested caster needs no renderer change, RLT-CON-008), V6 (uniform sky reachable with new set-up code, RLT-REF-014), V7 (constants match, RLT-IBL-001), V8 (preset-INI names, §6 row 1), V10 (one source feeds sun and dome; new switch, RLT-REF-019), V11 (GI walk keeps a GGX lobe and (1 − F); a Lambertian switch is required, RLT-GI-010, §3.4 corrected), V13 (no multiple scattering in Mitsuba; Smith *k* remap and GGX distribution recorded, RLT-REF-008); V9 filed as #6605 and V12 as #6606, with F3 reworded to the engine's own rule; environment calibration also zeroes the cloud deck (RLT-REF-010); RLT-GI-001's pin floor stated | — |
+| 9 | 2026-11-02 | APPROVED → ACTIVE: tracking issue #6595 and its phase issues filed, every Phase 0 verify item closed or filed (rev 8) | — |
