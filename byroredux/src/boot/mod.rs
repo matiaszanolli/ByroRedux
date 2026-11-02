@@ -548,6 +548,8 @@ pub(crate) fn run() -> Result<()> {
         parse_string_arg(&args, "--material-dump").map(std::path::PathBuf::from);
     app.bench_capture = bench_capture;
     app.bench_camera = bench_camera;
+    app.bench_path =
+        crate::bench_camera::BenchPathClock::from_args(&args).map_err(anyhow::Error::msg)?;
     app.camera_pos_override = camera_pos;
     app.camera_forward_override = camera_forward;
     event_loop.run_app(&mut app)?;

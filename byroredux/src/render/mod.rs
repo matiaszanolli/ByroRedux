@@ -631,7 +631,7 @@ const SUN_INTENSITY_PEAK: f32 = crate::env_translate::SUN_INTENSITY_PEAK;
 /// here, which cut 63% of the sun even under a "pleasant" sky (coverage 0.40)
 /// and lit the clouds themselves with the dimmed value although their march
 /// already self-shadows.
-fn compute_directional_upload(
+pub(crate) fn compute_directional_upload(
     directional_color: &[f32; 3],
     is_interior: bool,
     sun_intensity: f32,

@@ -732,6 +732,9 @@ struct App {
     /// `None` leaves the authored pose alone, which is the default and what
     /// every pre-existing bench does. See `bench_camera`.
     bench_camera: Option<crate::bench_camera::BenchCameraPath>,
+    /// Path length and freeze frame shared by the camera path and every
+    /// `BenchMover` (`--bench-camera-length`, `--bench-camera-freeze-at`).
+    bench_path: crate::bench_camera::BenchPathClock,
     /// Camera pose the bench path starts from — captured on the first bench
     /// frame rather than read from the CLI, so a path composes with whatever
     /// the scene (or `--camera-pos`) authored.
@@ -1322,6 +1325,7 @@ impl App {
             bench_summary_printed: false,
             bench_frames_count: 0,
             bench_camera: None,
+            bench_path: Default::default(),
             bench_camera_origin: None,
             bench_camera_applied_pose: None,
             bench_camera_subject_distance: None,

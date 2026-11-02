@@ -171,6 +171,30 @@ pub(super) fn wavy_normal_map_pixels(size: u32) -> Vec<u8> {
     pixels
 }
 
+/// Per-triangle dP/du (the UV Jacobian solve, sign included), projected off
+/// the vertex normal, written as each corner's tangent with w = +1. Meant for
+/// meshes whose faces share no vertices (the box primitives).
+pub(super) fn set_uv_tangents(verts: &mut [byroredux_renderer::Vertex], idxs: &[u32]) {
+    for tri in idxs.chunks_exact(3) {
+        let [a, b, c] = [tri[0] as usize, tri[1] as usize, tri[2] as usize];
+        let p = |k: usize| Vec3::from_array(verts[k].position);
+        let uv = |k: usize| verts[k].uv;
+        let (e1, e2) = (p(b) - p(a), p(c) - p(a));
+        let (du1, dv1) = (uv(b)[0] - uv(a)[0], uv(b)[1] - uv(a)[1]);
+        let (du2, dv2) = (uv(c)[0] - uv(a)[0], uv(c)[1] - uv(a)[1]);
+        let det = du1 * dv2 - du2 * dv1;
+        if det.abs() < 1e-12 {
+            continue;
+        }
+        let dp_du = (e1 * dv2 - e2 * dv1) / det;
+        for k in [a, b, c] {
+            let n = Vec3::from_array(verts[k].normal);
+            let t = (dp_du - n * n.dot(dp_du)).normalize_or_zero();
+            verts[k].tangent = [t.x, t.y, t.z, 1.0];
+        }
+    }
+}
+
 /// Spawn a renderable probe carrying `Transform`, `GlobalTransform`,
 /// `MeshHandle`, `Material`, and `Name`. `GlobalTransform` is seeded to
 /// match `Transform` so the first rendered frame is correct before
@@ -399,6 +423,8 @@ pub(super) struct MeshBuilder<'a> {
     /// CPU copy of every upload, kept for the Mitsuba exporter (PTX-003);
     /// handed to the world by [`Self::finish_recording_sources`].
     sources: std::collections::HashMap<u32, super::mitsuba_export::CornellMeshSource>,
+    /// Texels of textures registered through [`Self::register_texture`].
+    textures: std::collections::HashMap<u32, super::mitsuba_export::CornellTextureSource>,
 }
 
 impl<'a> MeshBuilder<'a> {
@@ -407,11 +433,22 @@ impl<'a> MeshBuilder<'a> {
             ctx,
             pending: Vec::new(),
             sources: std::collections::HashMap::new(),
+            textures: std::collections::HashMap::new(),
         }
     }
 
     pub(super) fn box_mesh(&mut self, half: [f32; 3]) -> MeshHandle {
         let (v, i) = box_vertices_colored(half, [1.0, 1.0, 1.0]);
+        self.upload(&v, &i)
+    }
+
+    /// [`Self::box_mesh`] with an authored tangent per vertex: T = dP/du
+    /// of its face, w = +1, so the engine's normal-map frame (T,
+    /// cross(N, T), N) is the one Mitsuba's `normalmap` builds from dP/du
+    /// (RLT-REF-008, `docs/engine/path-tracing.md` §2.2).
+    pub(super) fn box_mesh_with_uv_tangents(&mut self, half: [f32; 3]) -> MeshHandle {
+        let (mut v, i) = box_vertices_colored(half, [1.0, 1.0, 1.0]);
+        set_uv_tangents(&mut v, &i);
         self.upload(&v, &i)
     }
 
@@ -441,6 +478,7 @@ impl<'a> MeshBuilder<'a> {
             super::mitsuba_export::CornellMeshSource {
                 positions: verts.iter().map(|v| v.position).collect(),
                 normals: verts.iter().map(|v| v.normal).collect(),
+                uvs: verts.iter().map(|v| v.uv).collect(),
                 indices: idxs.to_vec(),
             },
         );
@@ -502,12 +540,38 @@ impl<'a> MeshBuilder<'a> {
         self.ctx.build_blas_batched(&self.pending);
     }
 
-    /// [`Self::finish`], returning the CPU mesh sources for the Mitsuba
-    /// exporter (`CornellMeshSources`, PTX-003).
+    /// Register an RGBA8 texture (`register_rgba`, an sRGB format) and keep
+    /// its texels for the Mitsuba exporter (`CornellTextureSources`,
+    /// RLT-EXP-002).
+    pub(super) fn register_texture(&mut self, width: u32, height: u32, rgba: Vec<u8>) -> u32 {
+        let upload_ctx = byroredux_renderer::upload_ctx!(self.ctx);
+        let handle = self
+            .ctx
+            .texture_registry
+            .register_rgba(upload_ctx, width, height, &rgba)
+            .expect("Cornell texture upload failed");
+        self.textures.insert(
+            handle,
+            super::mitsuba_export::CornellTextureSource {
+                width,
+                height,
+                rgba,
+                srgb: true,
+            },
+        );
+        handle
+    }
+
+    /// [`Self::finish`], returning the CPU mesh and texture sources for the
+    /// Mitsuba exporter (`CornellMeshSources`, `CornellTextureSources`,
+    /// PTX-003, RLT-EXP-002).
     pub(super) fn finish_recording_sources(
         self,
-    ) -> std::collections::HashMap<u32, super::mitsuba_export::CornellMeshSource> {
+    ) -> (
+        std::collections::HashMap<u32, super::mitsuba_export::CornellMeshSource>,
+        std::collections::HashMap<u32, super::mitsuba_export::CornellTextureSource>,
+    ) {
         self.ctx.build_blas_batched(&self.pending);
-        self.sources
+        (self.sources, self.textures)
     }
 }

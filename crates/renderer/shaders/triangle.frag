@@ -1084,7 +1084,7 @@ void main() {
     // room-scale surface: it reads the isotropic footprint below (a grazing
     // floor is not "far" just because one derivative is stretched) and its
     // ceiling is the full range, so a room in view sits below the fade.
-    const float RT_LOD_GI      = 3.0;  // GI ray ceiling
+    const float RT_LOD_GI      = 2.0;  // GI ray ceiling
     float rtFootprint = max(length(dFdx(fragWorldPosRel)), length(dFdy(fragWorldPosRel)));  // #1496 — derivative on relative pos
     float rtLodScale = renderDebug.y == 0u
         ? RT_LOD_SCALE

@@ -162,6 +162,30 @@ named shape, eroded three pixels so edge pixels — where the engine shades
 the pixel centre and Mitsuba's box filter integrates the coverage — never
 enter a mean.
 
+The penumbra gates, A2 and A4, run on the `penumbra` and `penumbra-sun`
+rungs. They measure visibility on both sides:
+
+- **Engine.** `filtered_direct` divided by the same view captured with
+  `DBG_DISABLE_DIRECT_SHADOWS`, at tier 3 with `--rt-test-no-jitter`.
+- **Reference.** The direct recipe divided by the direct recipe with the
+  rung's casters removed.
+
+For A2, each of the rung's profile lines is averaged across its strip into
+one-pixel bins, and the rung's named step (`disk_segment`) is fitted by
+least squares. The gate then compares the 10–90 % widths. Below the
+10-pixel minimum on the reference's own width the run stops rather than
+reporting (RLT-SHD-001).
+
+A4 reports the mean and 95th-percentile visibility error in three places:
+
+- a band one reference width deep on the umbra side of each penumbra;
+- the same band on the lit side;
+- the rod's shadow region.
+
+The profile and region geometry comes from the rung's `rung.tsv`
+([Path Tracing §1.3](path-tracing.md#13-the-sun-and-the-rungs-measurement-geometry)).
+Both gates are report-only until the owner sets the L1 budgets.
+
 Game content is held by declared changes, not a reference (RLT-CNT).
 `scripts/m-light-baselines.sh` records, per benchmark scene, the settled
 adaptive ray-quality tier (`rt_tier_hist` on the bench line, 60-frame

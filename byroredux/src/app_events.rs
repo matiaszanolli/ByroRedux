@@ -597,7 +597,16 @@ impl App {
                 .world
                 .try_resource::<crate::cornell::mitsuba_export::CornellMeshSources>()
                 .ok_or("the scene recorded no mesh sources (PTX-003)")?;
-            crate::cornell::mitsuba_export::export_mitsuba(&scene, &sources, &dir)
+            let textures = self
+                .world
+                .try_resource::<crate::cornell::mitsuba_export::CornellTextureSources>();
+            let empty = crate::cornell::mitsuba_export::CornellTextureSources::default();
+            crate::cornell::mitsuba_export::export_mitsuba(
+                &scene,
+                &sources,
+                textures.as_deref().unwrap_or(&empty),
+                &dir,
+            )
         });
         match outcome {
             Ok(report) => println!(

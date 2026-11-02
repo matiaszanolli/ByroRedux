@@ -66,6 +66,39 @@ The handedness of the image is checked, not assumed: the first exporter
 test renders the classic box (red wall on −X) and asserts the red wall
 lands on the left of both images.
 
+### 1.3 The sun and the rung's measurement geometry
+
+The directional light is exported exactly as `collect_lights` builds it.
+Its colour comes from `compute_directional_upload` over the cell's
+`CellLightingRes`, or from `SkyParamsRes.sun_intensity` when a sky is
+present, and its angular radius θ is the `sun_angular_radius` that
+`build_sky_params` hands the shader. One radius on both sides is
+RLT-SHD-007's "same value".
+
+Mitsuba gets a sphere area emitter 10 km away (`SUN_DISTANCE_M`) along
+the sun direction. The sphere's radius is *D* sin θ and its radiance is
+*k*<sub>exp</sub> · *E* ⁄ (π sin² θ). That subtends θ and delivers the
+irradiance *k*<sub>exp</sub> · *E* to a facing receiver, so the reference
+draws the same finite disk the engine samples. A `directional` emitter is
+a delta and would cast hard shadows. The sun row of `export.tsv` carries
+*E*, *k*<sub>exp</sub> and θ.
+
+A rung that measures geometry (penumbra profiles, the thin rod's
+shadow) states it in its own code, as the `RungMeasurements` resource
+(`byroredux/src/cornell/reference.rs`). The exporter writes it as
+`DIR/rung.tsv`, in world units, one record per line with its kind first:
+
+| Kind | Fields | Read by |
+|---|---|---|
+| `step_form` | the step fitted to a profile; `disk_segment` is the uncovered fraction of a disk source behind a straight edge | A2 |
+| `min_unshadowed` | pixels whose unshadowed direct is below this fraction of the receiver's brightest are excluded from visibility | A2, A4 |
+| `caster` | a shape the reference's unoccluded render removes (visibility, PRD §2) | A2, A4 |
+| `profile` | name, receiver, start, end, strip half-width: a line from the umbra to the lit side, perpendicular to a shadow edge | A2, A4 bands |
+| `region` | name, receiver, box min, box max | A4 |
+
+`scripts/m-light/gates.py` reads the file. It never restates the geometry
+on its own.
+
 ---
 
 ## 2. Reference-lighting rung subsection
@@ -124,8 +157,36 @@ Every rough lobe exports `distribution="ggx"` semantics with α =
 roughness², which `principled` uses natively. The material-validation
 rung (RLT-REF-014) measures each row at three view angles; a row whose
 recorded difference does not explain the measurement is a mapping bug.
-Normal-map convention (RLT-REF-008, RLT-CON-007) is added in Phase 3,
-with the normal-mapped plane.
+
+**Normal-map convention (RLT-REF-008, RLT-CON-007, RLT-EXP-002).** Both
+sides use the same frame and decode:
+
+| | Engine (`perturbNormalGrad`, `include/material_sampling.glsl`) | Mitsuba 3 (`normalmap`) |
+|---|---|---|
+| Tangent | The authored vertex tangent, Gram-Schmidt against N. Reference rungs author it as T = ∂P/∂u of each face (`set_uv_tangents`, `cornell/builders.rs`). | `normalize(∂p/∂u − n(n · ∂p/∂u))`, from the PLY's UVs |
+| Bitangent and green channel | `w · cross(N, T)` with w = +1, so +green points along cross(N, ∂P/∂u) | `cross(n, s)`: the same vector |
+| Texel decode | Bilinear on the texels, which are sRGB-decoded first because `register_rgba` uploads `R8G8B8A8_SRGB`; then xy = 2·rg − 1 and z = √(1 − x² − y²), ignoring the stored blue | n = 2·rgb − 1 of a float texture |
+
+The exporter does not ask Mitsuba to repeat the engine's decode. It bakes
+that decode into the texture: an `R32G32B32` EXR 16× finer than the
+source, each texel the engine's filtered-then-decoded normal at its
+centre, re-encoded as n · ½ + ½. Mitsuba's own bilinear between those
+samples then differs from the engine by O(1/16²).
+
+The vertex-tangent path is chosen on purpose. The engine's tangent-less
+fallback rebuilds T from screen derivatives, and its sign follows the
+screen-space UV Jacobian. On a box top face seen from above that gives
+(−∂P/∂u, −∂P/∂v), which is Mitsuba's frame turned 180°.
+
+**Alpha cut-out (RLT-CON-008, RLT-EXP-002).** The shadow ray's coverage
+test (`rayHitHasCoverage`, `include/ray_hit.glsl`) reads base-texture alpha
+at mip 0, bilinearly, times the material alpha, through
+`alphaComparePass`. The exporter bakes that binary result the same way as
+the normal map, 16× finer, and wraps the lobe in Mitsuba's `mask` with
+`filter_type="nearest"`. The coverage edge then sits where the engine's
+test flips, within 1/16 of a texel. The base texture's colour is not
+exported, so a cut-out caster's texture must be white (the contact rung's
+is).
 
 ### 2.3 Component recipes in Mitsuba terms
 

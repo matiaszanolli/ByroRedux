@@ -208,6 +208,46 @@ def capture_anchors_only(engine: Engine, args, out: Path) -> int:
     return 0
 
 
+def exit_cost(engine: Engine, control: Engine, args, out: Path) -> int:
+    """RLT-PERF-003..005 at a phase exit, against the same-machine control."""
+    configs = dict(CONFIGS)
+    header, *rows = args.exit_cost.read_text().splitlines()
+    cols = header.split("\t")
+    stepped = ["--bench-frames", str(args.frames), "--bench-mode", "renderer-stepped", "--bench-camera", "orbit"]
+    report, failed = [], 0
+    for line in rows:
+        r = dict(zip(cols, line.split("\t")))
+        scene, config, tier = r["scene"], r["config"], int(r["settled_tier"])
+        base = configs[config] + stepped
+        head_ms, control_ms = [], []
+        for run in range(1, args.runs + 1):
+            pinned = base + ["--rt-test-ray-quality-tier", str(tier)]
+            control_ms.append(float(bench_fields(control.run(scene, f"{config}_control_{run}", pinned)[0])["wall_ms"]))
+            head_ms.append(float(bench_fields(engine.run(scene, f"{config}_head_{run}", pinned)[0])["wall_ms"]))
+        adaptive = [a if a != str(args.frames) else str(240 + args.window) for a in base]
+        hist = [int(v) for v in bench_fields(engine.run(scene, f"{config}_adaptive", adaptive)[0])["rt_tier_hist"].split("/")]
+        settled = int(np.argmax(hist))
+        delta = statistics.median(head_ms) - statistics.median(control_ms)
+        ceiling = max(0.05 * float(r["pinned_wall_ms_median"]), 0.25)  # Q8 per phase
+        game_scene = scene != "cornell"  # Cornell is reported, not held (RLT-PERF-004)
+        cost_ok = delta <= ceiling or not game_scene
+        tier_ok = settled >= tier
+        failed += (not cost_ok) + (not tier_ok)
+        report.append([scene, config, str(tier), f"{statistics.median(control_ms):.3f}",
+                       f"{statistics.median(head_ms):.3f}", f"{delta:+.3f}", f"{ceiling:.3f}",
+                       "yes" if cost_ok else "no", str(settled), "/".join(map(str, hist)),
+                       "yes" if tier_ok else "no"])
+        log(f"{scene}/{config}: pinned tier {tier}: control {statistics.median(control_ms):.2f} ms, "
+            f"head {statistics.median(head_ms):.2f} ms, delta {delta:+.2f} (ceiling {ceiling:.2f}); "
+            f"settled tier {settled} (was {tier})")
+    with open(out / "exit-cost.tsv", "w") as f:
+        f.write("scene\tconfig\tpinned_tier\tcontrol_ms\thead_ms\tdelta_ms\tceiling_ms\tcost_pass\t"
+                "settled_tier\trt_tier_hist\ttier_pass\n")
+        for row in report:
+            f.write("\t".join(row) + "\n")
+    return 1 if failed else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("--out", type=Path, default=REPO / "target" / "m-light-baselines")
@@ -218,6 +258,11 @@ def main() -> int:
     parser.add_argument("--window", type=int, default=300,
                         help="adaptive frames counted after the engine's 240-frame tier warm-up")
     parser.add_argument("--anchor-frames", type=int, default=64)
+    parser.add_argument("--exit-cost", type=Path, metavar="BASELINES_TSV",
+                        help="phase-exit A13: pinned-tier frame time of this build against --control-binary "
+                             "(interleaved), the Q8 per-phase ceiling, and the settled tier (RLT-PERF-003..005)")
+    parser.add_argument("--control-binary", type=Path,
+                        help="the phase entry's engine, built in a worktree (same-machine control)")
     parser.add_argument("--anchors-only", type=Path, metavar="BASELINES_TSV",
                         help="re-capture only the content anchors, at the pose and TAA settled tier a "
                              "previous baselines.tsv recorded (RLT-CNT-001: a phase entry's anchors)")
@@ -236,6 +281,10 @@ def main() -> int:
     base_rows, material_rows, pending_rows = [], [], []
     if args.anchors_only:
         return capture_anchors_only(engine, args, out)
+    if args.exit_cost:
+        if not args.control_binary:
+            raise SystemExit("m-light-baselines: --exit-cost needs --control-binary")
+        return exit_cost(engine, Engine(args.control_binary.resolve(), out / "control"), args, out)
     for scene in [s.strip() for s in args.scenes.split(",") if s.strip()]:
         workdir, _, _ = scene_spec(scene)
         if not workdir.is_dir():

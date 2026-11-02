@@ -3,8 +3,15 @@
 
 Runs the engine's Cornell reference rungs, exports each scene to Mitsuba 3,
 renders the converged reference (cached, RLT-REF-015), and computes the
-Phase 1a gates on linear captures (RLT-REF-007):
+Cornell gates on linear captures (RLT-REF-007):
 
+  A2   penumbra width             (RLT-SHD-001; report until the L1 budget)
+  A4   filter bands and thin rod  (RLT-SHD-004; report until the L1 budget)
+  A3   penumbra under camera pan  (RLT-SHD-002; report until the L1 budgets)
+  A5   contact bands              (RLT-CON-001…008; report until the L2 budget)
+  A14  moving blocker             (RLT-SHD-010; report until the L1 budgets)
+  A7   GI deficit                 (RLT-GI-002; report until Q5's cache)
+  A8   traced share free of SSAO  (RLT-GI-004)
   A15  calibration and materials  (RLT-REF-010, RLT-REF-014)
   A16  closure                    (RLT-REF-011, RLT-REF-018, RLT-REF-020)
   A18  apparatus cost             (RLT-REF-016)
@@ -147,13 +154,14 @@ def shape_reflectance(scene_dir: Path) -> dict[str, np.ndarray]:
     return out
 
 
-def region_masks(scene_dir: Path, erode_px: int = ERODE_PX) -> dict[str, np.ndarray]:
-    """Per-shape pixel masks, eroded by ERODE_PX.
+def pixel_hits(scene_dir: Path) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    """Per-shape pixel masks (not eroded) and the hit position per pixel.
 
     One camera ray per pixel centre — the point the engine shades — is
     intersected with the exported scene and the hit shape compared with each
     shape. (Mitsuba's `shape_index` AOV is not used: its indices follow
-    neither the XML order nor `Scene.shapes()`.)
+    neither the XML order nor `Scene.shapes()`.) Positions are world units,
+    shape (height, width, 3).
     """
     import drjit as dr
 
@@ -166,12 +174,17 @@ def region_masks(scene_dir: Path, erode_px: int = ERODE_PX) -> dict[str, np.ndar
     uv = mi.Point2f((mi.Float(index % width) + 0.5) / width,
                     (mi.Float(index // width) + 0.5) / height)
     rays, _ = sensor.sample_ray(0.0, 0.0, uv, mi.Point2f(0.5, 0.5))
-    hit = scene.ray_intersect(rays).shape
-    masks = {}
-    for shape in scene.shapes():
-        mask = np.array(hit == mi.ShapePtr(shape)).reshape(height, width)
-        masks[shape.id()] = erode(mask, erode_px)
-    return masks
+    si = scene.ray_intersect(rays)
+    masks = {shape.id(): np.array(si.shape == mi.ShapePtr(shape)).reshape(height, width)
+             for shape in scene.shapes()}
+    positions = np.array(si.p).T.reshape(height, width, 3)
+    return masks, positions
+
+
+def region_masks(scene_dir: Path, erode_px: int = ERODE_PX) -> dict[str, np.ndarray]:
+    """Per-shape pixel masks, eroded by `erode_px` (see `pixel_hits`)."""
+    masks, _ = pixel_hits(scene_dir)
+    return {name: erode(mask, erode_px) for name, mask in masks.items()}
 
 
 def erode(mask: np.ndarray, radius: int) -> np.ndarray:
@@ -203,14 +216,15 @@ class Engine:
 
     def capture(self, name: str, rung: str, view_mode: str, seed: int, tier: int, *,
                 extra: list[str] | None = None, debug_flags: str = "0",
-                export_dir: Path | None = None, reference_view: int = 0) -> Path:
+                export_dir: Path | None = None, reference_view: int = 0,
+                bench_frames: int | None = None, bench_mode: str = "renderer-static") -> Path:
         exr = self.out / "engine" / f"{name}_s{seed}.exr"
         exr.parent.mkdir(parents=True, exist_ok=True)
         args = [
             str(self.binary), "--cornell-reference", rung,
             "--cornell-reference-view", str(reference_view),
             "--render-debug-mode", view_mode,
-            "--bench-frames", str(self.frames_warm), "--bench-mode", "renderer-static",
+            "--bench-frames", str(bench_frames or self.frames_warm), "--bench-mode", bench_mode,
             "--rt-test-ray-quality-tier", str(tier), "--rt-test-seed-offset", str(seed),
             # RLT-REF-009: reference rungs carry no medium.
             "--rt-test-no-dust-floor",
@@ -228,6 +242,36 @@ class Engine:
         if export_dir is not None and "export-mitsuba: wrote" not in text:
             raise SystemExit(f"m-light: export for {name} failed; see {log_path}")
         return exr
+
+    def sequence(self, name: str, rung: str, tier: int, frames: list[int], bench_frames: int,
+                 extra: list[str]) -> dict[int, tuple[Path, str]]:
+        """Single-frame `final` captures at `frames` of one renderer-stepped
+        run (`--linear-capture-at`), each with the camera pose the log names."""
+        pattern = self.out / "engine" / f"{name}_f{{frame}}.exr"
+        pattern.parent.mkdir(parents=True, exist_ok=True)
+        args = [
+            str(self.binary), "--cornell-reference", rung, "--render-debug-mode", "final",
+            "--bench-frames", str(bench_frames), "--bench-mode", "renderer-stepped",
+            "--rt-test-ray-quality-tier", str(tier), "--rt-test-no-dust-floor",
+            "--linear-capture", str(pattern), "--linear-capture-at", ",".join(map(str, frames)),
+        ] + extra
+        env = dict(self.env_base, BYROREDUX_RENDER_DEBUG="0", RUST_LOG="error")
+        log_path = self.out / "engine" / f"{name}.log"
+        with open(log_path, "w") as log_file:
+            subprocess.run(args, env=env, stdout=log_file, stderr=subprocess.STDOUT, timeout=900)
+        text = log_path.read_text(errors="replace")
+        poses = {}
+        for line in text.splitlines():
+            if line.startswith("linear-capture: frame ") and " camera " in line:
+                frame = int(line.split()[2])
+                poses[frame] = line.split(" camera ", 1)[1]
+        out = {}
+        for frame in frames:
+            path = Path(str(pattern).replace("{frame}", str(frame)))
+            if f"wrote {path} " not in text or not path.exists():
+                raise SystemExit(f"m-light: sequence {name} missed frame {frame}; see {log_path}")
+            out[frame] = (path, poses.get(frame, ""))
+        return out
 
 
 # ── Metrics ──────────────────────────────────────────────────────────────
@@ -300,17 +344,30 @@ def unit_ratio_row(gate: str, case: str, region: str, ea, eb, ra, rb, mask) -> R
 # ── Gates ────────────────────────────────────────────────────────────────
 
 
+# Calibration rungs per emitter kind, each from the phase that first uses it
+# (A15): the point from Phase 1a, the sun from Phase 3.
+CALIBRATION_RUNGS = ("cal-point", "cal-sun")
+
+
 def gate_calibration(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
-    """A15, point emitter (RLT-REF-010): direct_only over the plane."""
+    """A15, per emitter kind (RLT-REF-010): direct_only over the plane."""
     rows = []
-    export = engine.out / "scenes" / "cal-point"
-    ea = engine.capture("cal_point_direct", "cal-point", "direct_only", 0, ctx.tier, export_dir=export)
-    eb = engine.capture("cal_point_direct", "cal-point", "direct_only", 1, ctx.tier)
+    for rung in CALIBRATION_RUNGS:
+        rows += calibration_rows(engine, store, ctx, spp, rung)
+    return rows
+
+
+def calibration_rows(engine: Engine, store: ReferenceStore, ctx: Context, spp: int, rung: str):
+    rows = []
+    export = engine.out / "scenes" / rung
+    name = rung.replace("-", "_") + "_direct"
+    ea = engine.capture(name, rung, "direct_only", 0, ctx.tier, export_dir=export)
+    eb = engine.capture(name, rung, "direct_only", 1, ctx.tier)
     ra, key = store.render(export, "direct", spp, 0)
     rb, _ = store.render(export, "direct", spp, 1)
     mask = region_masks(export)["cal_plane"]
     ea, eb = load_exr(ea), load_exr(eb)
-    rows.append((unit_ratio_row("A15", "cal-point", "cal_plane", ea, eb, ra, rb, mask), key))
+    rows.append((unit_ratio_row("A15", rung, "cal_plane", ea, eb, ra, rb, mask), key))
     # Constancy across the plane (inverse-square and cosine laws): the ratio
     # on a 3x3 grid of sub-regions, each its own unit-ratio row.
     ys, xs = np.nonzero(mask)
@@ -323,7 +380,7 @@ def gate_calibration(engine: Engine, store: ReferenceStore, ctx: Context, spp: i
             sub &= mask
             if sub.sum() < 200:
                 continue
-            rows.append((unit_ratio_row("A15", "cal-point", f"cal_plane_{j}{i}", ea, eb, ra, rb, sub), key))
+            rows.append((unit_ratio_row("A15", rung, f"cal_plane_{j}{i}", ea, eb, ra, rb, sub), key))
     return rows
 
 
@@ -545,6 +602,423 @@ def gate_traced_share_ao(engine: Engine, store: ReferenceStore, ctx: Context, sp
     return rows
 
 
+# ── Penumbra: A2, A4 (Phase 3) ───────────────────────────────────────────
+
+PENUMBRA_RUNGS = ("penumbra", "penumbra-sun")
+DBG_DISABLE_DIRECT_SHADOWS = 0x8000000  # crates/renderer/src/shader_constants_data.rs
+PENUMBRA_MIN_PX = 10  # RLT-SHD-001: the reference penumbra spans at least 10 px
+
+
+@dataclass
+class RungFile:
+    """`rung.tsv`: the measurement geometry the rung fixes in its own code."""
+    step_form: str = ""
+    min_unshadowed: float = 0.0
+    casters: list[str] = field(default_factory=list)
+    # (name, receiver, start, end, strip half-width), world units
+    profiles: list[tuple[str, str, np.ndarray, np.ndarray, float]] = field(default_factory=list)
+    # (name, receiver, box min, box max), world units
+    regions: list[tuple[str, str, np.ndarray, np.ndarray]] = field(default_factory=list)
+    # (name, receiver, centre x, centre z, half x, half z, yaw, width), world units
+    bands: list[tuple[str, str, float, float, float, float, float, float]] = field(default_factory=list)
+
+
+def read_rung(scene_dir: Path) -> RungFile:
+    rung = RungFile()
+    for raw in (scene_dir / "rung.tsv").read_text().splitlines():
+        if not raw or raw.startswith("#"):
+            continue
+        f = raw.split("\t")
+        if f[0] == "step_form":
+            rung.step_form = f[1]
+        elif f[0] == "min_unshadowed":
+            rung.min_unshadowed = float(f[1])
+        elif f[0] == "caster":
+            rung.casters.append(f[1])
+        elif f[0] == "profile":
+            v = np.array([float(x) for x in f[3:10]])
+            rung.profiles.append((f[1], f[2], v[0:3], v[3:6], float(v[6])))
+        elif f[0] == "region":
+            v = np.array([float(x) for x in f[3:9]])
+            rung.regions.append((f[1], f[2], v[0:3], v[3:6]))
+        elif f[0] == "band":
+            rung.bands.append((f[1], f[2], *(float(x) for x in f[3:9])))
+    return rung
+
+
+def without_casters(scene_dir: Path, casters: list[str]) -> Path:
+    """The exported scene with the rung's casters removed (§2 visibility)."""
+    out = scene_dir.parent / f"{scene_dir.name}-unoccluded"
+    if out.exists():
+        shutil.rmtree(out)
+    shutil.copytree(scene_dir / "meshes", out / "meshes")
+    tree = ET.parse(scene_dir / "scene.xml")
+    root = tree.getroot()
+    for shape in list(root.findall("shape")):
+        if shape.get("id") in casters:
+            root.remove(shape)
+    tree.write(out / "scene.xml", encoding="utf-8", xml_declaration=True)
+    return out
+
+
+def visibility(shadowed: np.ndarray, unshadowed: np.ndarray, receiver: np.ndarray,
+               min_unshadowed: float) -> tuple[np.ndarray, int]:
+    """Per-pixel shadowed / unshadowed luminance on `receiver`, NaN elsewhere.
+
+    Pixels whose unshadowed luminance is below `min_unshadowed` of the
+    receiver's brightest are excluded and counted (§2).
+    """
+    u, lit = luminance(unshadowed), luminance(shadowed)
+    keep = receiver & (u > min_unshadowed * float(u[receiver].max()))
+    v = np.full(u.shape, np.nan)
+    v[keep] = lit[keep] / u[keep]
+    return v, int((receiver & ~keep).sum())
+
+
+def disk_segment(x: np.ndarray) -> np.ndarray:
+    """Uncovered fraction of a unit disk whose centre lies `x` radii past a
+    straight edge: the visibility behind an edge under a disk source."""
+    x = np.clip(x, -1.0, 1.0)
+    return (np.arccos(-x) + x * np.sqrt(1.0 - x * x)) / np.pi
+
+
+STEP_FORMS = {"disk_segment": disk_segment}
+
+
+def step_quantile(form, q: float) -> float:
+    lo, hi = -1.0, 1.0
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if form(np.array(mid)) < q else (lo, mid)
+    return 0.5 * (lo + hi)
+
+
+@dataclass
+class StepFit:
+    centre: float      # along the profile line, world units
+    radius: float      # half the full penumbra, world units
+    width_10_90: float  # world units
+
+
+def fit_step(form, t: np.ndarray, v: np.ndarray) -> StepFit:
+    """Least squares of lo + (hi - lo) * form((t - centre) / radius).
+
+    lo and hi are solved linearly for each (centre, radius); the two are
+    found by a grid search refined five times around the best cell.
+    """
+    def residual(centre: float, radius: float) -> float:
+        f = form((t - centre) / radius)
+        a = np.stack([1.0 - f, f], axis=1)
+        coef, *_ = np.linalg.lstsq(a, v, rcond=None)
+        r = a @ coef - v
+        return float(r @ r)
+
+    span = float(t.max() - t.min())
+    centres = np.linspace(t.min(), t.max(), 61)
+    radii = np.geomspace(span / 500.0, span, 61)
+    step, factor = span / 60.0, (500.0 ** (1.0 / 60.0))
+    best = (math.inf, 0.0, 0.0)
+    for _ in range(6):
+        for c in centres:
+            for r in radii:
+                e = residual(c, r)
+                if e < best[0]:
+                    best = (e, c, r)
+        _, c0, r0 = best
+        centres = np.linspace(c0 - step, c0 + step, 21)
+        radii = r0 * np.geomspace(1.0 / factor, factor, 21)
+        step, factor = step / 10.0, factor ** 0.1
+    _, centre, radius = best
+    width = (step_quantile(form, 0.9) - step_quantile(form, 0.1)) * radius
+    return StepFit(float(centre), float(radius), float(width))
+
+
+def line_coords(positions: np.ndarray, receiver: np.ndarray, start: np.ndarray, end: np.ndarray,
+                half_width: float) -> tuple[np.ndarray, np.ndarray, float]:
+    """Distance along the line per pixel, and the strip's pixels."""
+    axis = end - start
+    length = float(np.linalg.norm(axis))
+    u = axis / length
+    rel = positions - start
+    t = rel @ u
+    perp = np.linalg.norm(rel - t[..., None] * u, axis=-1)
+    return t, receiver & (t >= 0.0) & (t <= length) & (perp <= half_width), length
+
+
+def pixel_footprint(positions: np.ndarray, receiver: np.ndarray) -> float:
+    """Median world distance between horizontally adjacent receiver pixels."""
+    both = receiver[:, 1:] & receiver[:, :-1]
+    return float(np.median(np.linalg.norm(positions[:, 1:] - positions[:, :-1], axis=-1)[both]))
+
+
+def strip_profile(v: np.ndarray, t: np.ndarray, strip: np.ndarray, length: float,
+                  bin_width: float) -> tuple[np.ndarray, np.ndarray]:
+    """The strip averaged across its width: one mean per one-pixel bin."""
+    tv, vv = t[strip], v[strip]
+    keep = ~np.isnan(vv)
+    tv, vv = tv[keep], vv[keep]
+    bins = max(int(length / bin_width), 8)
+    index = np.clip((tv / length * bins).astype(int), 0, bins - 1)
+    centres, means = [], []
+    for i in range(bins):
+        sel = index == i
+        if sel.sum() >= 3:
+            centres.append((i + 0.5) * length / bins)
+            means.append(float(vv[sel].mean()))
+    return np.array(centres), np.array(means)
+
+
+def visibility_error(va: np.ndarray, vb: np.ndarray, mask: np.ndarray) -> tuple[float, float]:
+    """Mean and 95th percentile of |Va - Vb| over `mask` (§2)."""
+    both = mask & ~np.isnan(va) & ~np.isnan(vb)
+    if not both.any():
+        raise SystemExit("m-light: a visibility region has no unexcluded pixel")
+    err = np.abs(va[both] - vb[both])
+    return float(err.mean()), float(np.percentile(err, 95))
+
+
+def gate_penumbra(engine: Engine, store: ReferenceStore, ctx: Context, spp: int, gates: set[str]):
+    """A2 penumbra width (RLT-SHD-001) and A4 filter bands and thin rod
+    (RLT-SHD-004) on the local-light and sun penumbra rungs.
+
+    Visibility (§2) on both sides: the engine's filtered direct view over the
+    same view with DBG_DISABLE_DIRECT_SHADOWS, tier 3, unjittered; the
+    reference direct recipe over the same recipe with the rung's casters
+    removed. Report-only until the owner sets the L1 budgets (Q6).
+    """
+    del ctx
+    rows = []
+    extra = ["--rt-test-no-jitter"]
+    for rung_name in PENUMBRA_RUNGS:
+        export = engine.out / "scenes" / rung_name
+        shadowed = [load_exr(engine.capture(f"{rung_name}_fdirect", rung_name, "filtered_direct", s, 3,
+                                            extra=extra, export_dir=export if s == 0 else None))
+                    for s in (0, 1)]
+        unshadowed = [load_exr(engine.capture(f"{rung_name}_fdirect_unshadowed", rung_name, "filtered_direct",
+                                              s, 3, extra=extra, debug_flags=hex(DBG_DISABLE_DIRECT_SHADOWS)))
+                      for s in (0, 1)]
+        rung = read_rung(export)
+        form = STEP_FORMS[rung.step_form]
+        opened = without_casters(export, rung.casters)
+        ref = [store.render(export, "direct", spp, s) for s in (0, 1)]
+        ref_open = [store.render(opened, "direct", spp, s) for s in (0, 1)]
+        key = ref[0][1]
+        masks, positions = pixel_hits(export)
+
+        cache: dict[str, tuple] = {}
+
+        def side_visibility(receiver_name: str):
+            """(receiver mask, engine V per seed, reference V per seed, excluded)."""
+            if receiver_name not in cache:
+                receiver = erode(masks[receiver_name], ERODE_PX)
+                ve = [visibility(shadowed[s], unshadowed[s], receiver, rung.min_unshadowed) for s in (0, 1)]
+                vr = [visibility(ref[s][0], ref_open[s][0], receiver, rung.min_unshadowed) for s in (0, 1)]
+                cache[receiver_name] = (receiver, [v for v, _ in ve], [v for v, _ in vr], ve[0][1] + vr[0][1])
+            return cache[receiver_name]
+
+        regions: dict[str, tuple[np.ndarray, str]] = {}
+        for name, receiver_name, start, end, half_width in rung.profiles:
+            receiver, ve, vr, excluded = side_visibility(receiver_name)
+            t, strip, length = line_coords(positions, receiver, start, end, half_width)
+            footprint = pixel_footprint(positions, receiver)
+
+            def fit(v):
+                return fit_step(form, *strip_profile(v, t, strip, length, footprint))
+
+            fe, fr = [fit(v) for v in ve], [fit(v) for v in vr]
+            width_px = fr[0].width_10_90 / footprint
+            if width_px < PENUMBRA_MIN_PX:
+                raise SystemExit(f"m-light: {rung_name}/{name}: the reference penumbra spans {width_px:.1f} px, "
+                                 f"under RLT-SHD-001's {PENUMBRA_MIN_PX}; move the camera closer")
+
+            def width_error(e: StepFit, r: StepFit) -> float:
+                return abs(e.width_10_90 - r.width_10_90) / r.width_10_90
+
+            value = width_error(fe[0], fr[0])
+            if "A2" in gates:
+                rows.append((Row("A2", rung_name, name, "penumbra_width_error", value,
+                                 abs(width_error(fe[1], fr[0]) - value), abs(width_error(fe[0], fr[1]) - value),
+                                 passed="report"), key))
+                rows.append((Row("A2", rung_name, name, "reference_width_px", width_px, 0.0,
+                                 abs(fr[1].width_10_90 - fr[0].width_10_90) / footprint, passed="report"), key))
+                rows.append((Row("A2", rung_name, name, "excluded_pixels", float(excluded), 0.0, 0.0,
+                                 passed="report"), key))
+            # A4's bands just outside the reference penumbra, one 10-90 %
+            # width deep, on the umbra and the lit side.
+            r0 = fr[0]
+            for band, lo, hi in (("umbra_band", r0.centre - r0.radius - r0.width_10_90, r0.centre - r0.radius),
+                                 ("lit_band", r0.centre + r0.radius, r0.centre + r0.radius + r0.width_10_90)):
+                band_mask = strip & (t >= lo) & (t <= hi)
+                previous = regions.get(band, (np.zeros_like(receiver), receiver_name))[0]
+                regions[band] = (previous | band_mask, receiver_name)
+        for name, receiver_name, lo, hi in rung.regions:
+            receiver = side_visibility(receiver_name)[0]
+            inside = np.all((positions >= lo) & (positions <= hi), axis=-1)
+            regions[name] = (receiver & inside, receiver_name)
+        if "A4" not in gates:
+            continue
+        for region, (mask, receiver_name) in regions.items():
+            _, ve, vr, _ = side_visibility(receiver_name)
+            mean, p95 = visibility_error(ve[0], vr[0], mask)
+            mean_e, p95_e = visibility_error(ve[1], vr[0], mask)
+            mean_r, p95_r = visibility_error(ve[0], vr[1], mask)
+            rows.append((Row("A4", rung_name, region, "visibility_error_mean", mean,
+                             abs(mean_e - mean), abs(mean_r - mean), passed="report"), key))
+            rows.append((Row("A4", rung_name, region, "visibility_error_p95", p95,
+                             abs(p95_e - p95), abs(p95_r - p95), passed="report"), key))
+    return rows
+
+
+# ── Contact: A5 (Phase 3) ────────────────────────────────────────────────
+
+CONTACT_TIERS = (1, 2, 3)  # RLT-CON-001: tiers 1-3, an exception to Q7's tier-3 rule
+
+
+def band_mask(positions: np.ndarray, receiver: np.ndarray, band) -> np.ndarray:
+    """Receiver pixels within `width` of the caster's footprint, outside it.
+
+    The footprint is a rectangle turned by `yaw` about +Y (glam's
+    `Quat::from_rotation_y`: world x = cos·x + sin·z, world z = −sin·x + cos·z).
+    """
+    _, _, cx, cz, hx, hz, yaw, width = band
+    dx, dz = positions[..., 0] - cx, positions[..., 2] - cz
+    c, s = math.cos(yaw), math.sin(yaw)
+    lx, lz = c * dx - s * dz, s * dx + c * dz
+    outer = (np.abs(lx) <= hx + width) & (np.abs(lz) <= hz + width)
+    inner = (np.abs(lx) <= hx) & (np.abs(lz) <= hz)
+    return receiver & outer & ~inner
+
+
+def gate_contact(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
+    """A5 contact bands (RLT-CON-001, -002, -006, -007, -008).
+
+    Visibility (§2) per caster's contact band, the engine's filtered direct
+    view (shadow filter on, RLT-CON-002) and `direct_only` (off) at tiers
+    1-3, unjittered, against the reference's direct recipe over the same with
+    the casters removed. Report-only until the owner sets the L2 budget.
+    """
+    del ctx
+    rows = []
+    rung_name = "contact"
+    export = engine.out / "scenes" / rung_name
+    extra = ["--rt-test-no-jitter"]
+    exported = False
+    reference = None
+    for view_mode in ("filtered_direct", "direct_only"):
+        for tier in CONTACT_TIERS:
+            name = f"contact_{view_mode}_t{tier}"
+            shadowed = [load_exr(engine.capture(name, rung_name, view_mode, s, tier, extra=extra,
+                                                export_dir=export if not exported and s == 0 else None))
+                        for s in (0, 1)]
+            exported = True
+            unshadowed = [load_exr(engine.capture(f"{name}_unshadowed", rung_name, view_mode, s, tier, extra=extra,
+                                                  debug_flags=hex(DBG_DISABLE_DIRECT_SHADOWS)))
+                          for s in (0, 1)]
+            if reference is None:
+                rung = read_rung(export)
+                opened = without_casters(export, rung.casters)
+                ref = [store.render(export, "direct", spp, s) for s in (0, 1)]
+                ref_open = [store.render(opened, "direct", spp, s) for s in (0, 1)]
+                masks, positions = pixel_hits(export)
+                receivers = {band[1]: erode(masks[band[1]], ERODE_PX) for band in rung.bands}
+                vr = {r: [visibility(ref[s][0], ref_open[s][0], m, rung.min_unshadowed)[0] for s in (0, 1)]
+                      for r, m in receivers.items()}
+                reference = (rung, ref[0][1], positions, receivers, vr)
+            rung, key, positions, receivers, vr = reference
+            for band in rung.bands:
+                receiver_name = band[1]
+                receiver = receivers[receiver_name]
+                mask = band_mask(positions, receiver, band)
+                ve = [visibility(shadowed[s], unshadowed[s], receiver, rung.min_unshadowed)[0] for s in (0, 1)]
+                ref_v = vr[receiver_name]
+                mean, p95 = visibility_error(ve[0], ref_v[0], mask)
+                mean_e, p95_e = visibility_error(ve[1], ref_v[0], mask)
+                mean_r, p95_r = visibility_error(ve[0], ref_v[1], mask)
+                case = f"{view_mode}-tier{tier}"
+                rows.append((Row("A5", case, band[0], "visibility_error_mean", mean,
+                                 abs(mean_e - mean), abs(mean_r - mean), passed="report"), key))
+                rows.append((Row("A5", case, band[0], "visibility_error_p95", p95,
+                                 abs(p95_e - p95), abs(p95_r - p95), passed="report"), key))
+                if tier == CONTACT_TIERS[-1] and view_mode == "filtered_direct":
+                    rows.append((Row("A5", case, band[0], "band_pixels", float(mask.sum()), 0.0, 0.0,
+                                     passed="report"), key))
+    return rows
+
+
+# ── Temporal: A3, A14 (Phase 3) ──────────────────────────────────────────
+
+# The motion spans TEMPORAL_MOTION frames (`--bench-camera-length`), then
+# holds; samples every TEMPORAL_STRIDE frames from TEMPORAL_FIRST (past the
+# cold start) during it, and at 1, 4 and 16 frames after the stop
+# (RLT-SHD-002, -010). Each sample's parked reference freezes the same path
+# at that frame and converges for PARKED_SETTLE frames.
+TEMPORAL_MOTION = 120
+TEMPORAL_STRIDE = 16
+TEMPORAL_FIRST = 32
+TEMPORAL_POST_STOP = (1, 4, 16)
+PARKED_SETTLE = 256
+
+
+def temporal_error(moving: np.ndarray, parked: np.ndarray, mask: np.ndarray) -> float:
+    """Relative RMSE over `mask`, normalised by the parked mean (§2)."""
+    m, p = luminance(moving)[mask], luminance(parked)[mask]
+    return float(np.sqrt(np.mean((m - p) ** 2)) / max(float(p.mean()), 1e-9))
+
+
+def gate_temporal(engine: Engine, store: ReferenceStore, ctx: Context, spp: int, gates: set[str]):
+    """A14 moving blocker (RLT-SHD-010) and A3 camera pan (RLT-SHD-002):
+    the engine's `final` during and after a motion against itself parked and
+    converged at the same frame of the same path. Report-only until the L1
+    budgets. No reference: both sides carry the same indirect bias."""
+    del store, spp
+    rows = []
+    stop = TEMPORAL_MOTION - 1
+    motion = list(range(TEMPORAL_FIRST, TEMPORAL_MOTION, TEMPORAL_STRIDE))
+    post = [stop + k for k in TEMPORAL_POST_STOP]
+    bench_frames = post[-1] + 4
+    clock = ["--bench-camera-length", str(TEMPORAL_MOTION)]
+    cases = []
+    if "A14" in gates:
+        cases.append(("A14", "penumbra-moving", clock))
+    if "A3" in gates:
+        cases.append(("A3", "penumbra", clock + ["--bench-camera", "pan"]))
+    for gate, rung, extra in cases:
+        export = engine.out / "scenes" / f"{rung}-temporal"
+        # The receiver in view at the rung's own (start) pose; the pan's
+        # later poses see a rotated view of the same floor, so its mask is
+        # taken from the parked capture's non-black floor pixels instead.
+        engine.capture(f"{gate}_export", rung, "final", 0, ctx.tier, export_dir=export)
+        masks = region_masks(export)
+        floor = masks["pen_floor"]
+        moving = engine.sequence(f"{gate}_{rung}_moving", rung, ctx.tier, motion + post, bench_frames, extra)
+        parked_at = {f: f for f in motion} | {f: stop for f in post}
+        parked = {}
+        for frame in sorted(set(parked_at.values())):
+            parked[frame] = load_exr(engine.capture(
+                f"{gate}_{rung}_parked_f{frame}", rung, "final", 0, ctx.tier,
+                extra=extra + ["--bench-camera-freeze-at", str(frame)],
+                bench_frames=frame + PARKED_SETTLE, bench_mode="renderer-stepped"))
+        # The floor: the same single-frame captures with the path parked at
+        # the stop from frame 0, against the same converged reference — what
+        # per-frame sampling noise alone contributes.
+        still = engine.sequence(f"{gate}_{rung}_still", rung, ctx.tier, post, bench_frames,
+                                extra + ["--bench-camera-freeze-at", str(stop)])
+
+        def mask_for(reference):
+            return floor if gate == "A14" else erode(luminance(reference) > 1e-4, ERODE_PX)
+
+        floor_e = float(np.mean([temporal_error(load_exr(still[f][0]), parked[stop], mask_for(parked[stop]))
+                                 for f in post]))
+        for frame in motion + post:
+            image = load_exr(moving[frame][0])
+            reference = parked[parked_at[frame]]
+            phase = "during" if frame <= stop else f"post_stop_{frame - stop}"
+            row = Row(gate, f"{rung}-{phase}", f"frame_{frame}", "temporal_error",
+                      temporal_error(image, reference, mask_for(reference)), floor_e, 0.0, passed="report")
+            rows.append((row, ""))
+    return rows
+
+
 # ── Driver ───────────────────────────────────────────────────────────────
 
 
@@ -611,6 +1085,12 @@ def main() -> int:
         rows += gate_gi_deficit(engine, store, ctx, args.spp)
     if "A8" in gates:
         rows += gate_traced_share_ao(engine, store, ctx, args.spp)
+    if gates & {"A2", "A4"}:
+        rows += gate_penumbra(engine, store, ctx, args.spp, gates)
+    if "A5" in gates:
+        rows += gate_contact(engine, store, ctx, args.spp)
+    if gates & {"A3", "A14"}:
+        rows += gate_temporal(engine, store, ctx, args.spp, gates)
 
     manifest = out / "manifest.tsv"
     write_manifest(manifest, rows, ctx)

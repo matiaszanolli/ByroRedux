@@ -399,6 +399,64 @@ fn normalize_or(v: Vec3, fallback: Vec3) -> Vec3 {
     }
 }
 
+/// The clock frame-indexed bench paths read (M-LIGHT RLT-SHD-002, -010):
+/// how many frames the motion spans and where, if anywhere, it is frozen.
+/// Shared by the camera path and every [`BenchMover`], so a moving capture
+/// and its parked, converged reference reach the same pose by construction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BenchPathClock {
+    /// `--bench-camera-length N`: the motion spans N frames, then holds.
+    /// `None`: the whole `--bench-frames` run, as before.
+    pub length: Option<u32>,
+    /// `--bench-camera-freeze-at F`: hold the path at frame F from then on.
+    pub freeze_at: Option<u32>,
+}
+
+impl BenchPathClock {
+    pub fn from_args(args: &[String]) -> Result<Self, String> {
+        let number = |flag: &str| -> Result<Option<u32>, String> {
+            crate::cli_args::parse_string_arg(args, flag)
+                .map(|text| {
+                    text.parse::<u32>()
+                        .map_err(|_| format!("{flag} '{text}' is not a frame count"))
+                })
+                .transpose()
+        };
+        Ok(Self {
+            length: number("--bench-camera-length")?.filter(|n| *n > 0),
+            freeze_at: number("--bench-camera-freeze-at")?,
+        })
+    }
+
+    /// The (frame, path length) a path is evaluated at for bench frame
+    /// `frame` of a `run_frames` run.
+    pub fn frame_and_length(self, frame: u32, run_frames: u32) -> (u32, u32) {
+        let length = self.length.unwrap_or(run_frames).max(1);
+        (self.freeze_at.map_or(frame, |f| frame.min(f)), length)
+    }
+
+    /// Path progress in [0, 1], held at 1 past the end (the hold segment).
+    pub fn progress(self, frame: u32, run_frames: u32) -> f32 {
+        let (frame, length) = self.frame_and_length(frame, run_frames);
+        if length <= 1 {
+            return 0.0;
+        }
+        (frame as f32 / (length - 1) as f32).clamp(0.0, 1.0)
+    }
+}
+
+/// An entity moved by the bench clock along a straight line from `start` to
+/// `end` (world units), then held (M-LIGHT RLT-SHD-010's moving blocker).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct BenchMover {
+    pub start: Vec3,
+    pub end: Vec3,
+}
+
+impl byroredux_core::ecs::Component for BenchMover {
+    type Storage = byroredux_core::ecs::SparseSetStorage<Self>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -830,5 +888,29 @@ mod tests {
         // `ALL` drives the CLI error text; a variant missing from it would be
         // unlisted and effectively undiscoverable.
         assert!(BenchCameraPath::ALL.contains(&BenchCameraPath::GridSoak));
+    }
+
+    #[test]
+    fn path_clock_holds_after_its_length_and_at_its_freeze_frame() {
+        let clock = BenchPathClock { length: Some(11), freeze_at: None };
+        assert_eq!(clock.progress(0, 100), 0.0);
+        assert_eq!(clock.progress(5, 100), 0.5);
+        assert_eq!(clock.progress(10, 100), 1.0);
+        assert_eq!(clock.progress(60, 100), 1.0, "the hold segment");
+        let frozen = BenchPathClock { length: Some(11), freeze_at: Some(4) };
+        assert_eq!(frozen.progress(90, 300), clock.progress(4, 100));
+        assert_eq!(BenchPathClock::default().frame_and_length(7, 50), (7, 50));
+    }
+
+    #[test]
+    fn path_clock_parses_its_flags() {
+        let args: Vec<String> = ["--bench-camera-length", "120", "--bench-camera-freeze-at", "30"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let clock = BenchPathClock::from_args(&args).unwrap();
+        assert_eq!((clock.length, clock.freeze_at), (Some(120), Some(30)));
+        let bad: Vec<String> = ["--bench-camera-length", "x"].iter().map(|s| s.to_string()).collect();
+        assert!(BenchPathClock::from_args(&bad).is_err());
     }
 }

@@ -9,6 +9,14 @@
 //! before bloom; this file holds only the argument contract and the
 //! per-tick drive `about_to_wait` calls after `advance_screenshot_request`.
 //!
+//! `--linear-capture-at F1,F2,…` instead writes one single-frame capture
+//! during each listed bench frame, to PATH with `{frame}` replaced by the
+//! frame index (M-LIGHT RLT-SHD-002 / -010: the temporal gates sample a
+//! motion and the frames after it stops). The request is issued before that
+//! frame's draw, so the capture shows the pose the bench path chose for it.
+//! A listed frame that arrives while the previous capture is still in flight
+//! is reported as skipped.
+//!
 //! Like `--bench-capture-every`, this is a capture mode: the copy stalls
 //! nothing on the GPU, but the per-frame host readback is not free, so take
 //! `bench:` timings in a separate run.
@@ -28,6 +36,13 @@ pub(crate) struct LinearCaptureCli {
     /// `Some(ticks_left)` once the request is issued.
     pub deadline: Option<u32>,
     pub finished: bool,
+    /// `--linear-capture-at`: bench frames to capture, ascending. Empty for
+    /// the single bench-exit capture.
+    pub at: Vec<u32>,
+    /// Index into `at` of the next frame to capture.
+    pub next: usize,
+    /// The frame whose capture is in flight.
+    pub in_flight: Option<u32>,
 }
 
 /// What the caller does after one tick of [`LinearCaptureCli::advance`].
@@ -46,11 +61,31 @@ impl LinearCaptureCli {
         bench_frames: Option<u32>,
     ) -> Result<Option<Self>, String> {
         let frames = parse_string_arg(args, "--linear-capture-frames");
+        let at = parse_string_arg(args, "--linear-capture-at");
         let Some(path) = parse_string_arg(args, "--linear-capture") else {
-            if frames.is_some() {
-                return Err("--linear-capture-frames requires --linear-capture PATH".to_owned());
+            if frames.is_some() || at.is_some() {
+                return Err("--linear-capture-frames / -at require --linear-capture PATH".to_owned());
             }
             return Ok(None);
+        };
+        let at = match at {
+            None => Vec::new(),
+            Some(list) => {
+                if !path.contains("{frame}") {
+                    return Err("--linear-capture-at needs a PATH containing {frame}".to_owned());
+                }
+                let mut frames: Vec<u32> = list
+                    .split(',')
+                    .map(|f| {
+                        f.trim()
+                            .parse::<u32>()
+                            .map_err(|_| format!("--linear-capture-at: '{f}' is not a frame index"))
+                    })
+                    .collect::<Result<_, _>>()?;
+                frames.sort_unstable();
+                frames.dedup();
+                frames
+            }
         };
         if bench_frames.is_none() {
             return Err("--linear-capture requires --bench-frames N".to_owned());
@@ -71,7 +106,42 @@ impl LinearCaptureCli {
             frames,
             deadline: None,
             finished: false,
+            at,
+            next: 0,
+            in_flight: None,
         }))
+    }
+
+    fn path_for(&self, frame: u32) -> PathBuf {
+        PathBuf::from(self.path.to_string_lossy().replace("{frame}", &frame.to_string()))
+    }
+
+    /// `--linear-capture-at`: called every frame before its draw with the
+    /// bench frame about to be drawn. Collects a landed capture, then
+    /// requests this frame's if it is listed; returns whether it did.
+    pub(crate) fn advance_sequence(&mut self, ctx: &mut byroredux_renderer::VulkanContext, frame: u32) -> bool {
+        if self.at.is_empty() {
+            return false;
+        }
+        let mut requested = false;
+        if let Some(captured) = self.in_flight {
+            if let Some(outcome) = ctx.take_linear_capture_outcome() {
+                report_outcome(outcome, Some(captured));
+                self.in_flight = None;
+            }
+        }
+        while self.next < self.at.len() && self.at[self.next] <= frame {
+            let due = self.at[self.next];
+            self.next += 1;
+            if due == frame && self.in_flight.is_none() {
+                ctx.request_linear_capture(self.path_for(frame), 1);
+                self.in_flight = Some(frame);
+                requested = true;
+            } else {
+                eprintln!("linear-capture: frame {due} skipped (a capture was in flight)");
+            }
+        }
+        requested
     }
 
     /// One `about_to_wait` tick after the bench target is reached: issue the
@@ -83,23 +153,31 @@ impl LinearCaptureCli {
         if self.finished {
             return LinearCaptureStep::Done;
         }
+        if !self.at.is_empty() {
+            // The sequence is driven per frame by `advance_sequence`; the
+            // bench waits for its last capture, then exits.
+            let ticks_left = *self.deadline.get_or_insert(DEADLINE_SLACK_FRAMES);
+            if let (Some(captured), Some(outcome)) = (self.in_flight, ctx.take_linear_capture_outcome()) {
+                report_outcome(outcome, Some(captured));
+                self.in_flight = None;
+            }
+            if (self.next >= self.at.len() && self.in_flight.is_none()) || ticks_left == 0 {
+                for frame in &self.at[self.next..] {
+                    eprintln!("linear-capture: frame {frame} never reached (the bench ended first)");
+                }
+                self.finished = true;
+                return LinearCaptureStep::Done;
+            }
+            self.deadline = Some(ticks_left - 1);
+            return LinearCaptureStep::Pending;
+        }
         let Some(ticks_left) = self.deadline else {
             ctx.request_linear_capture(self.path.clone(), self.frames);
             self.deadline = Some(self.frames + DEADLINE_SLACK_FRAMES);
             return LinearCaptureStep::Pending;
         };
         if let Some(outcome) = ctx.take_linear_capture_outcome() {
-            match outcome {
-                Ok(report) => println!(
-                    "linear-capture: wrote {} ({}x{}, frames={}, nonfinite={})",
-                    report.path.display(),
-                    report.width,
-                    report.height,
-                    report.frames,
-                    report.nonfinite_samples
-                ),
-                Err(e) => eprintln!("linear-capture: failed: {e}"),
-            }
+            report_outcome(outcome, None);
             self.finished = true;
             return LinearCaptureStep::Done;
         }
@@ -110,6 +188,24 @@ impl LinearCaptureCli {
         }
         self.deadline = Some(ticks_left - 1);
         LinearCaptureStep::Pending
+    }
+}
+
+fn report_outcome(
+    outcome: Result<byroredux_renderer::vulkan::context::LinearCaptureReport, String>,
+    frame: Option<u32>,
+) {
+    let at = frame.map(|f| format!(", bench_frame={f}")).unwrap_or_default();
+    match outcome {
+        Ok(report) => println!(
+            "linear-capture: wrote {} ({}x{}, frames={}, nonfinite={}{at})",
+            report.path.display(),
+            report.width,
+            report.height,
+            report.frames,
+            report.nonfinite_samples
+        ),
+        Err(e) => eprintln!("linear-capture: failed: {e}"),
     }
 }
 
@@ -153,5 +249,27 @@ mod tests {
             LinearCaptureCli::from_args(&args(&["--linear-capture-frames", "4"]), Some(8)).is_err()
         );
         assert!(LinearCaptureCli::from_args(&args(&[]), Some(8)).unwrap().is_none());
+    }
+
+    #[test]
+    fn capture_at_lists_sorted_frames_and_needs_a_frame_placeholder() {
+        let parsed = LinearCaptureCli::from_args(
+            &args(&["--linear-capture", "out/f_{frame}.exr", "--linear-capture-at", "16, 4,1,4"]),
+            Some(64),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(parsed.at, vec![1, 4, 16]);
+        assert_eq!(parsed.path_for(4), PathBuf::from("out/f_4.exr"));
+        assert!(LinearCaptureCli::from_args(
+            &args(&["--linear-capture", "out/f.exr", "--linear-capture-at", "4"]),
+            Some(64)
+        )
+        .is_err());
+        assert!(LinearCaptureCli::from_args(
+            &args(&["--linear-capture", "f_{frame}.exr", "--linear-capture-at", "4,x"]),
+            Some(64)
+        )
+        .is_err());
     }
 }

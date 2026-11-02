@@ -724,7 +724,16 @@ impl App {
         Some(centroid_subject_distance(min, max, from))
     }
 
+    /// One bench frame's frame-indexed work, before the scheduler: movers,
+    /// the camera path, then a listed `--linear-capture-at` request (after
+    /// the pose, so its log line names the pose the capture shows).
     pub(crate) fn step_bench_camera(&mut self) {
+        self.step_bench_movers();
+        self.step_bench_camera_pose();
+        self.step_linear_capture_sequence();
+    }
+
+    fn step_bench_camera_pose(&mut self) {
         if !crate::bench::harness_active(self.bench_summary_printed) {
             // `--bench-hold` is an interactive inspection session once the
             // finite measurement is complete. Drop the last harness pose so
@@ -760,11 +769,19 @@ impl App {
             crate::bench_camera::BenchCameraPath::GridCross
                 | crate::bench_camera::BenchCameraPath::GridSoak
         );
-        let frame = if uses_streaming_clock {
-            self.bench_camera_path_frame
-                .min(total_frames.saturating_sub(1))
+        let (frame, total_frames) = if uses_streaming_clock {
+            (
+                self.bench_camera_path_frame
+                    .min(total_frames.saturating_sub(1)),
+                total_frames,
+            )
         } else {
-            self.bench_frames_count
+            // M-LIGHT RLT-SHD-002: `--bench-camera-length` ends the motion
+            // before the run does (the hold segment), and
+            // `--bench-camera-freeze-at` parks the path for a converged
+            // reference at one of its poses.
+            self.bench_path
+                .frame_and_length(self.bench_frames_count, total_frames)
         };
         // Lazy one-shot: physics is empty at seed time (see
         // `measure_bench_subject_distance`), so the first stepped frame with a
@@ -852,6 +869,64 @@ impl App {
                 cycle,
                 tracker.cycles().len()
             );
+        }
+    }
+
+    /// `--linear-capture-at` (`crate::linear_capture`): request a listed
+    /// frame's capture before its draw, on the frame index the bench paths
+    /// read, so the capture shows the pose they chose for it.
+    fn step_linear_capture_sequence(&mut self) {
+        if !crate::bench::harness_active(self.bench_summary_printed) {
+            return;
+        }
+        let frame = self.bench_frames_count;
+        let pose = self.bench_camera_applied_pose;
+        if let (Some(capture), Some(ctx)) = (self.linear_capture.as_mut(), self.renderer.as_mut()) {
+            if capture.advance_sequence(ctx, frame) {
+                if let Some(pose) = pose {
+                    // Full precision: the gates rebuild this frame's view from it.
+                    println!(
+                        "linear-capture: frame {frame} camera pos={:?},{:?},{:?} forward={:?},{:?},{:?}",
+                        pose.position.x, pose.position.y, pose.position.z,
+                        pose.forward.x, pose.forward.y, pose.forward.z
+                    );
+                }
+            }
+        }
+    }
+
+    /// M-LIGHT RLT-SHD-010: place every [`BenchMover`] at this frame's point
+    /// on its line, on the camera path's clock (`BenchPathClock`), before the
+    /// scheduler propagates transforms.
+    ///
+    /// [`BenchMover`]: crate::bench_camera::BenchMover
+    fn step_bench_movers(&mut self) {
+        let Some(run_frames) = self.bench_frames_target else {
+            return;
+        };
+        if !crate::bench::harness_active(self.bench_summary_printed) {
+            return;
+        }
+        let Some(movers) = self.world.query::<crate::bench_camera::BenchMover>() else {
+            return;
+        };
+        let t = self.bench_path.progress(self.bench_frames_count, run_frames);
+        let placed: Vec<_> = movers
+            .iter()
+            .map(|(entity, mover)| (entity, mover.start.lerp(mover.end, t)))
+            .collect();
+        drop(movers);
+        for (entity, position) in placed {
+            if let Some(mut transforms) = self.world.query_mut::<byroredux_core::ecs::Transform>() {
+                if let Some(transform) = transforms.get_mut(entity) {
+                    transform.translation = position;
+                }
+            }
+            if let Some(mut globals) = self.world.query_mut::<byroredux_core::ecs::GlobalTransform>() {
+                if let Some(global) = globals.get_mut(entity) {
+                    global.translation = position;
+                }
+            }
         }
     }
 
