@@ -1,0 +1,16 @@
+# M-LIGHT Phase 2 change declaration (docs/prd/reference-lighting.md RLT-CNT-002).
+# Checked in before the code it covers. Anchors: docs/audits/MLIGHT_phase2_anchors.tsv
+# (final view, TAA without jitter, each scene's Phase 1b TAA settled tier).
+# Sizes were measured on an uncommitted spike of exactly this code (2026-11-02):
+#   RLT-GI-004  traced GI no longer multiplied by SSAO (brighter at junctions)
+#   RLT-GI-011  bounded-path hits shade emitters in the primary lobe's Lambert
+#               convention (x pi), GI_SAMPLE_LUMINANCE_CLAMP rescaled by pi to stay
+#               in the same units (brighter wherever GI is traced)
+#   RLT-GI-012  the RT-LOD GI gate reads the isotropic footprint, ceiling 3 (GI on
+#               grazing room surfaces; brighter there)
+# Scenes whose settled tier is 0 (prospector, medtek, dugout) trace no GI and are
+# declared unchanged. The Q2 cross-fade (RLT-GI-005) is deferred and not covered.
+# Tiles are 32 x 32 px; 1280 x 720 has tiles x 0-39, y 0-21.
+# scene	tiles	direction	expected	tolerance	note
+cornell	0-39,0-21	brighter	0.92	0.05	whole frame, tier 1: spike median +0.137, p95 +0.586, max +0.918
+whiterun	0-39,0-21	brighter	0.16	0.04	whole frame, tier 1: spike median +0.019, p95 +0.083, max +0.158
