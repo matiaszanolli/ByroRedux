@@ -183,7 +183,10 @@ def main() -> int:
     parser.add_argument("--out", type=Path, default=REPO / "target" / "m-light-baselines")
     parser.add_argument("--scenes", default=",".join(SCENES))
     parser.add_argument("--runs", type=int, default=3)
-    parser.add_argument("--frames", type=int, default=300)
+    parser.add_argument("--frames", type=int, default=300,
+                        help="frames per pinned-tier timing run (the bench-of-record length)")
+    parser.add_argument("--window", type=int, default=300,
+                        help="adaptive frames counted after the engine's 240-frame tier warm-up")
     parser.add_argument("--anchor-frames", type=int, default=64)
     args = parser.parse_args()
     # Absolute: game scenes run with their Data folder as the working
@@ -211,7 +214,8 @@ def main() -> int:
             extra = config_args + stepped
             if config == "taa" and scene in WAVE1_GAME_SCENES:
                 extra = extra + ["--material-dump", str(dump)]
-            line, _ = engine.run(scene, f"{config}_adaptive", extra)
+            adaptive = [a if a != str(args.frames) else str(240 + args.window) for a in extra]
+            line, _ = engine.run(scene, f"{config}_adaptive", adaptive)
             fields = bench_fields(line)
             hist = [int(v) for v in fields["rt_tier_hist"].split("/")]
             settled = int(np.argmax(hist))

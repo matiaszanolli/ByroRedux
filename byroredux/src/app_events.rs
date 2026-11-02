@@ -121,10 +121,12 @@ pub(crate) struct GracefulExitRequested(pub bool);
 
 
 /// M-LIGHT RLT-PERF-005 — bench frames excluded from the adaptive-tier
-/// histogram while the controller settles after load (the first GPU timing
-/// samples and any startup hitch). Stated in the bench line and in the
-/// baselines manifest, as the PRD's settled-tier definition requires.
-pub(crate) const BENCH_RT_TIER_WARMUP_FRAMES: u32 = 60;
+/// histogram while the controller settles after load. The controller
+/// cold-starts at tier 0 and climbs one tier per 45 stable frames plus a
+/// 30-frame cooldown (`AdaptiveRayBudget`), so reaching tier 3 takes 225
+/// frames; the warm-up covers that climb. Stated in the bench line and in
+/// the baselines manifest, as the PRD's settled-tier definition requires.
+pub(crate) const BENCH_RT_TIER_WARMUP_FRAMES: u32 = 240;
 
 impl byroredux_core::ecs::Resource for GracefulExitRequested {}
 
