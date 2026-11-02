@@ -1,0 +1,9 @@
+# M-LIGHT Phase 2 content anchors (RLT-CNT-001), captured 2026-11-02 at 72420ae84.
+# Final view, --upscaler taa --rt-test-no-jitter, 64 frames, seeds 0 and 1, at the Phase 1b pose and TAA settled tier.
+# The per-scene margin changes only with a PRD revision row. Entry check against the Phase 1b exit anchors: 0 tiles outside tolerance on every scene.
+scene	tier	camera_pos	camera_forward	margin	sha256_s0	sha256_s1
+cornell	1	3.135,2.750,9.447	-0.341593,-0.049938,-0.938520	0.01	c06c1c15e48d361e	7e01d5e7bc5b8987
+prospector	0	389.122,3580.000,-793.846	-0.906310,0.000000,0.422614	0.01	9e123e0924c24de9	d1c500eeb961f977
+whiterun	1	177.223,188.000,1048.424	-0.342018,0.000000,-0.939693	0.01	668a0aa1f0b1577a	57c4bb309cd9b8ac
+medtek	0	-944.118,120.000,-872.365	-0.342020,0.000000,-0.939693	0.01	5d84d5fb384882f8	ad454ad3bae23199
+dugout	0	963.006,120.000,3349.023	-0.961532,0.000000,0.274692	0.01	e0fa5f6550c82415	ef8bf9ec26b8b0e4

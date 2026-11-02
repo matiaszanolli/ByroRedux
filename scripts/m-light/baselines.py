@@ -178,6 +178,36 @@ def material_report(dump: Path, scene: str) -> list[list[str]]:
     return rows
 
 
+def capture_anchor_pair(engine: Engine, scene: str, out: Path, tier: int, pos: str, fwd: str,
+                        frames: int) -> list[Path]:
+    """Two seeded linear captures of `final` at a pinned pose (the A11 anchor)."""
+    anchors = []
+    for seed in (0, 1):
+        exr = out / "anchors" / f"{scene}_s{seed}.exr"
+        exr.parent.mkdir(parents=True, exist_ok=True)
+        engine.run(scene, f"anchor_s{seed}", [
+            "--upscaler", "taa", "--rt-test-no-jitter", "--rt-test-ray-quality-tier", str(tier),
+            "--rt-test-seed-offset", str(seed), "--camera-pos", pos, "--camera-forward", fwd,
+            "--bench-frames", "30", "--bench-mode", "renderer-static",
+            "--linear-capture", str(exr), "--linear-capture-frames", str(frames)])
+        anchors.append(exr)
+    return anchors
+
+
+def capture_anchors_only(engine: Engine, args, out: Path) -> int:
+    header, *rows = args.anchors_only.read_text().splitlines()
+    cols = header.split("\t")
+    for line in rows:
+        r = dict(zip(cols, line.split("\t")))
+        if r.get("config", "taa") != "taa":
+            continue
+        scene = r["scene"]
+        anchors = capture_anchor_pair(engine, scene, out, int(r["settled_tier"]), r["anchor_camera_pos"],
+                                      r["anchor_camera_forward"], args.anchor_frames)
+        log(f"{scene}: anchors {anchors[0].name}, {anchors[1].name} (tier {r['settled_tier']})")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("--out", type=Path, default=REPO / "target" / "m-light-baselines")
@@ -188,6 +218,9 @@ def main() -> int:
     parser.add_argument("--window", type=int, default=300,
                         help="adaptive frames counted after the engine's 240-frame tier warm-up")
     parser.add_argument("--anchor-frames", type=int, default=64)
+    parser.add_argument("--anchors-only", type=Path, metavar="BASELINES_TSV",
+                        help="re-capture only the content anchors, at the pose and TAA settled tier a "
+                             "previous baselines.tsv recorded (RLT-CNT-001: a phase entry's anchors)")
     args = parser.parse_args()
     # Absolute: game scenes run with their Data folder as the working
     # directory, so a relative output path would land inside the install.
@@ -201,6 +234,8 @@ def main() -> int:
     mi.set_variant("scalar_rgb")
 
     base_rows, material_rows, pending_rows = [], [], []
+    if args.anchors_only:
+        return capture_anchors_only(engine, args, out)
     for scene in [s.strip() for s in args.scenes.split(",") if s.strip()]:
         workdir, _, _ = scene_spec(scene)
         if not workdir.is_dir():
@@ -242,16 +277,7 @@ def main() -> int:
 
         # Content anchor at the pinned pose: the stepped path's last camera.
         pos, fwd = fields["camera_pos"], fields["camera_forward"]
-        anchors = []
-        for seed in (0, 1):
-            exr = out / "anchors" / f"{scene}_s{seed}.exr"
-            exr.parent.mkdir(parents=True, exist_ok=True)
-            engine.run(scene, f"anchor_s{seed}", [
-                "--upscaler", "taa", "--rt-test-no-jitter", "--rt-test-ray-quality-tier", str(settled),
-                "--rt-test-seed-offset", str(seed), "--camera-pos", pos, "--camera-forward", fwd,
-                "--bench-frames", "30", "--bench-mode", "renderer-static",
-                "--linear-capture", str(exr), "--linear-capture-frames", str(args.anchor_frames)])
-            anchors.append(exr)
+        anchors = capture_anchor_pair(engine, scene, out, settled, pos, fwd, args.anchor_frames)
         a, b = (np.array(mi.Bitmap(str(p)), dtype=np.float64)[..., :3] for p in anchors)
         tile_mean, tile_p95 = tile_stats(a, b)
         digest = hashlib.sha256(anchors[0].read_bytes()).hexdigest()[:16]
