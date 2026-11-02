@@ -80,7 +80,8 @@ pub(crate) const MATERIAL_PLANES: &[(&str, [f32; 3])] = &[
 ];
 
 /// Parse `--cornell-reference-view N` (0, 1 or 2; default 0): the material
-/// rung's view angle. Other rungs have one fixed camera and ignore it.
+/// rung's view angle, or the box rung's close-up (1). The calibration rung
+/// has one fixed camera and ignores it.
 pub(crate) fn cornell_reference_view(args: &[String]) -> Result<u32, String> {
     let Some(index) = args.iter().position(|a| a == "--cornell-reference-view") else {
         return Ok(0);
@@ -230,10 +231,21 @@ pub(crate) fn setup_reference_scene(
                 3.0,
                 "box_emitter",
             );
-            (
-                Vec3::new(0.0, BOX_HEIGHT * 0.5, h + 3.4 * M),
-                Vec3::new(0.0, BOX_HEIGHT * 0.5, 0.0),
-            )
+            if view == 1 {
+                // Close-up of the tall block's base, ~1.1 m away: SSAO's
+                // screen radius shrinks with distance (16 px / (d / 100 u)),
+                // so only a camera this close sees it act on the contact and
+                // the floor-wall junction (A8, RLT-GI-004).
+                (
+                    Vec3::new(0.1 * M, 0.6 * M, 0.4 * M),
+                    Vec3::new(-0.6 * M, 0.1 * M, -0.5 * M),
+                )
+            } else {
+                (
+                    Vec3::new(0.0, BOX_HEIGHT * 0.5, h + 3.4 * M),
+                    Vec3::new(0.0, BOX_HEIGHT * 0.5, 0.0),
+                )
+            }
         }
         ReferenceRung::Materials => {
             // Planes 0.6 m square, 0.8 m apart, 1 cm above a black floor

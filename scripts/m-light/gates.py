@@ -147,7 +147,7 @@ def shape_reflectance(scene_dir: Path) -> dict[str, np.ndarray]:
     return out
 
 
-def region_masks(scene_dir: Path) -> dict[str, np.ndarray]:
+def region_masks(scene_dir: Path, erode_px: int = ERODE_PX) -> dict[str, np.ndarray]:
     """Per-shape pixel masks, eroded by ERODE_PX.
 
     One camera ray per pixel centre — the point the engine shades — is
@@ -170,7 +170,7 @@ def region_masks(scene_dir: Path) -> dict[str, np.ndarray]:
     masks = {}
     for shape in scene.shapes():
         mask = np.array(hit == mi.ShapePtr(shape)).reshape(height, width)
-        masks[shape.id()] = erode(mask, ERODE_PX)
+        masks[shape.id()] = erode(mask, erode_px)
     return masks
 
 
@@ -514,16 +514,27 @@ def gate_traced_share_ao(engine: Engine, store: ReferenceStore, ctx: Context, sp
     """A8 (RLT-GI-004): the traced share must not be multiplied by SSAO."""
     del store, spp  # engine against itself
     rows = []
-    export = engine.out / "scenes" / "lambert-box"
+    # The box rung's close-up (view 1): SSAO's screen radius shrinks with
+    # distance and is inert at the front view's 5-7 m.
+    export = engine.out / "scenes" / "lambert-box-closeup"
     needs_export = not (export / "scene.xml").exists()
     on = [load_exr(engine.capture("traced_share_ao_on", "lambert-box", "traced_share", s, ctx.tier,
-                                  export_dir=export if needs_export and s == 0 else None))
+                                  export_dir=export if needs_export and s == 0 else None,
+                                  reference_view=1))
           for s in (0, 1)]
     off = load_exr(engine.capture("traced_share_ao_off", "lambert-box", "traced_share", 0, ctx.tier,
-                                  debug_flags="0x800"))
-    masks = region_masks(export)
-    for name in L4_REGIONS:
-        mask = masks[name]
+                                  debug_flags="0x800", reference_view=1))
+    # SSAO acts within a few pixels of where geometry meets (block bases,
+    # room corners). Those are exactly the pixels the other gates' edge
+    # erosion removes, so A8 uses un-eroded shapes and all geometry together;
+    # a traced-share capture is the engine against itself, so the partial
+    # coverage that erosion exists for does not arise.
+    masks = region_masks(export, erode_px=0)
+    regions = {name: mask for name, mask in masks.items() if not name.endswith("_emitter")}
+    regions["all_geometry"] = np.logical_or.reduce(list(regions.values()))
+    for name, mask in regions.items():
+        if not mask.any() or region_mean(off, mask) <= 1e-6:
+            continue
         base = region_mean(off, mask)
         value = (region_mean(on[0], mask) - base) / max(base, 1e-9)
         floor = abs(region_mean(on[1], mask) - region_mean(on[0], mask)) / max(base, 1e-9)
