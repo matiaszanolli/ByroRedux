@@ -1,9 +1,76 @@
 //! Stateless helper functions used by VulkanContext::new(), recreate_swapchain(), and Drop.
 
-use super::super::allocator::{free_allocation_recovering, SharedAllocator};
+use super::super::allocator::{free_allocation_recovering, lock_recovering, SharedAllocator};
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
+
+/// Create a host-visible `TRANSFER_DST` buffer for GPU→CPU readback.
+///
+/// The screenshot, depth-capture and linear-capture paths own byte-identical
+/// staging buffers; this is the one constructor for all three, as
+/// [`destroy_staging_buffer`] is the one destructor. `GpuToCpu` prefers
+/// `HOST_CACHED`, so every reader must invalidate before reading (#2740).
+/// Returns `None` after logging when creation, allocation or binding fails;
+/// a failed bind frees the allocation and destroys the buffer first.
+pub(super) fn create_staging_buffer(
+    device: &ash::Device,
+    allocator: Option<&SharedAllocator>,
+    size: vk::DeviceSize,
+    name: &str,
+) -> Option<(vk::Buffer, vk_alloc::Allocation, vk::DeviceSize)> {
+    let alloc = allocator?;
+    let buffer_info = vk::BufferCreateInfo::default()
+        .size(size)
+        .usage(vk::BufferUsageFlags::TRANSFER_DST)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+    // SAFETY: `device` is live; `buffer_info` is fully populated with no
+    // dangling `p_next` chain.
+    let buffer = match unsafe { device.create_buffer(&buffer_info, None) } {
+        Ok(b) => b,
+        Err(e) => {
+            log::warn!("{name} buffer creation failed: {e}");
+            return None;
+        }
+    };
+    // SAFETY: `buffer` was just created above by this same device.
+    let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+
+    let allocation = {
+        let mut allocator = lock_recovering(alloc);
+        match allocator.allocate(&vk_alloc::AllocationCreateDesc {
+            name,
+            requirements,
+            location: gpu_allocator::MemoryLocation::GpuToCpu,
+            linear: true,
+            allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
+        }) {
+            Ok(a) => a,
+            Err(e) => {
+                log::warn!("{name} allocation failed: {e}");
+                // SAFETY: `buffer` was just created, has no bound memory,
+                // and is referenced by no command buffer.
+                unsafe { device.destroy_buffer(buffer, None) };
+                return None;
+            }
+        }
+    };
+
+    // SAFETY: `buffer` and `allocation` were both just produced by this
+    // device/allocator pair; on bind failure the buffer is unbound and
+    // unreferenced, so freeing the memory and destroying it is sound.
+    if let Err(e) = unsafe { device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset()) }
+    {
+        log::warn!("{name} bind failed: {e}");
+        // #4599 — poison-recovered free, not a bare unwrap on the lock.
+        free_allocation_recovering(alloc, allocation, name);
+        // SAFETY: as above — unbound and unreferenced.
+        unsafe { device.destroy_buffer(buffer, None) };
+        return None;
+    }
+    Some((buffer, allocation, size))
+}
 
 /// Destroy a readback staging buffer and return its allocation.
 ///

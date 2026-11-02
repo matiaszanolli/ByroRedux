@@ -15,7 +15,9 @@ raw-window-handle = { workspace = true }
 log = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
-image = { workspace = true }
+# `exr`: the project's one OpenEXR writer (linear captures, M51 PTR-OUT-001).
+image = { workspace = true, features = ["exr"] }
+half = { workspace = true }
 rustc-hash = { workspace = true }
 # Debug-UI overlay (Phase 4 of the debug-UI plan). egui is the CPU
 # UI side; egui-ash-renderer owns the GPU pipeline + descriptor

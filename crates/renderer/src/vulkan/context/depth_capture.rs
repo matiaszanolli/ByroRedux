@@ -22,8 +22,6 @@
 use super::VulkanContext;
 use ash::vk;
 use byroredux_core::ecs::DepthCapture;
-use gpu_allocator::vulkan as vk_alloc;
-use gpu_allocator::MemoryLocation;
 use std::sync::atomic::Ordering;
 
 impl VulkanContext {
@@ -274,70 +272,12 @@ impl VulkanContext {
             }
             self.destroy_depth_capture_staging();
         }
-        let Some(ref alloc) = self.allocator else {
-            return;
-        };
-
-        let buffer_info = vk::BufferCreateInfo::default()
-            .size(required_size)
-            .usage(vk::BufferUsageFlags::TRANSFER_DST)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-        // SAFETY: `self.device` is live; `buffer_info` is fully populated with
-        // no dangling `p_next` chain.
-        let buffer = unsafe {
-            match self.device.create_buffer(&buffer_info, None) {
-                Ok(b) => b,
-                Err(e) => {
-                    log::warn!("Depth capture staging buffer creation failed: {e}");
-                    return;
-                }
-            }
-        };
-        // SAFETY: `buffer` was just created above by this same device.
-        let requirements = unsafe { self.device.get_buffer_memory_requirements(buffer) };
-
-        let allocation = {
-            let mut allocator = alloc.lock().unwrap();
-            match allocator.allocate(&vk_alloc::AllocationCreateDesc {
-                name: "depth-capture-staging",
-                requirements,
-                location: MemoryLocation::GpuToCpu,
-                linear: true,
-                allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-            }) {
-                Ok(a) => a,
-                Err(e) => {
-                    log::warn!("Depth capture staging allocation failed: {e}");
-                    // SAFETY: `buffer` was just created, has no bound memory,
-                    // and is referenced by no command buffer.
-                    unsafe { self.device.destroy_buffer(buffer, None) };
-                    return;
-                }
-            }
-        };
-
-        // SAFETY: `buffer` and `allocation` were both just produced by this
-        // device/allocator pair; on bind failure the buffer is unbound and
-        // unreferenced, so freeing the memory and destroying it is sound.
-        unsafe {
-            if let Err(e) =
-                self.device
-                    .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
-            {
-                log::warn!("Depth capture staging bind failed: {e}");
-                // #4599 — poison-recovered free, not a bare unwrap on the lock.
-                super::super::allocator::free_allocation_recovering(
-                    alloc,
-                    allocation,
-                    "depth capture bind unwind",
-                );
-                self.device.destroy_buffer(buffer, None);
-                return;
-            }
-        }
-
-        self.overlay.depth_capture_staging = Some((buffer, allocation, required_size));
+        self.overlay.depth_capture_staging = super::helpers::create_staging_buffer(
+            &self.device,
+            self.allocator.as_ref(),
+            required_size,
+            "depth-capture-staging",
+        );
     }
 
     /// Free the depth-capture staging buffer. The contract — #3628's

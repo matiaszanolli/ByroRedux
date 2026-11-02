@@ -888,6 +888,7 @@ impl VulkanContext {
                 depth_capture_result: Arc::new(Mutex::new(None)),
                 depth_capture_staging: None,
                 depth_capture_pending_readback: None,
+                linear_capture: Default::default(),
                 ui_quad_handle: None,
                 egui_pass: None,
                 egui_pending_output: None,

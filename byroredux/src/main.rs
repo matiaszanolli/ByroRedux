@@ -44,6 +44,7 @@ mod inventory;
 mod notifications;
 mod objectives;
 mod hud;
+mod linear_capture;
 mod list_cells;
 mod material_translate;
 mod name_lookup;
@@ -785,6 +786,13 @@ struct App {
     /// `bench_frames_target` to be set (otherwise there is no
     /// deterministic capture frame). See `--screenshot`.
     screenshot_path: Option<String>,
+    /// `--linear-capture PATH [--linear-capture-frames N]`: on the
+    /// bench-exit frame, average the next N frames of composite's
+    /// scene-linear output (before bloom, exposure, grading and tone
+    /// mapping) and write a 32-bit-float RGB OpenEXR to PATH (M-LIGHT
+    /// RLT-REF-007, M51 PTR-OUT-001). The presented PNG of `--screenshot`
+    /// is a separate artefact and unchanged.
+    linear_capture: Option<crate::linear_capture::LinearCaptureCli>,
     /// `--bench-capture-every N --bench-capture-dir DIR`: PNG of every Nth
     /// rendered frame of a finite bench run (see `bench_capture`).
     bench_capture: Option<crate::bench_capture::FrameSequenceCapture>,
@@ -1317,6 +1325,7 @@ impl App {
             bench_frame_timings: byroredux_renderer::FrameTimings::default(),
             bench_cpu_frame_ms: Vec::new(),
             screenshot_path: None,
+            linear_capture: None,
             bench_capture: None,
             camera_pos_override: None,
             camera_forward_override: None,

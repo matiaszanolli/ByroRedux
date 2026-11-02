@@ -54,7 +54,8 @@ internal graph are not repeated).
 | flate2             | 1        | bsa, plugin                                   | Zlib decompression for BSA + BA2 + ESM records                |
 | lz4_flex           | 0.14     | bsa                                           | LZ4 frame (BSA v105) + LZ4 block (BA2 v3 / Starfield) decompression |
 | **Image**          |          |                                               |                                                               |
-| image              | 0.25     | renderer, byroredux (dev — golden frames), texture-upscale | Image I/O plus BC1/BC2/BC3 DDS decode for the upscale workbench |
+| image              | 0.25     | renderer, byroredux (dev — golden frames), texture-upscale | Image I/O plus BC1/BC2/BC3 DDS decode for the upscale workbench; the renderer adds the `exr` feature for the one OpenEXR writer (`write_linear_exr`, M51 PTR-OUT-001: 32-bit-float RGB, deterministic, bit-exact round trip — M51 V5) |
+| half               | 2        | renderer                                      | IEEE binary16 decode of the RGBA16F linear-capture readback (M-LIGHT RLT-REF-007); already in the graph through `image`'s `exr` feature |
 | tempfile           | 3        | texture-upscale, byroredux (dev)              | Isolated external-upscaler files and profile-loader fixtures   |
 | walkdir            | 2.5      | texture-upscale                               | Recursive loose-texture source indexing                       |
 | rustc-hash         | 2        | core, renderer, byroredux                     | Fast non-cryptographic maps and sets on hot paths              |

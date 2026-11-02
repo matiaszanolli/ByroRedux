@@ -378,6 +378,11 @@ impl VulkanContext {
         );
         self.record_ssao_pass(cmd, frame, vp, inv_vp_arr, camera_pos, render_origin);
         self.record_composite_pass(cmd, frame);
+        // M-LIGHT RLT-REF-007 — the scene-linear capture reads composite's
+        // output here, before bloom adds into it in place.
+        // SAFETY: outside any render pass, after composite and before bloom,
+        // the position `linear_capture_record_copy`'s contract names.
+        unsafe { self.linear_capture_record_copy(cmd, frame) };
         // #2796 / REN-D16-01 — bloom now runs AFTER composite, reading and
         // writing composite's own assembled scene (sky + GI + caustics +
         // direct) instead of the pre-composite raw HDR that never

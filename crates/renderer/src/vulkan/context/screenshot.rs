@@ -4,8 +4,6 @@
 use super::super::descriptors::color_subresource_single_mip;
 use super::VulkanContext;
 use ash::vk;
-use gpu_allocator::vulkan as vk_alloc;
-use gpu_allocator::MemoryLocation;
 use std::sync::atomic::Ordering;
 
 impl VulkanContext {
@@ -273,81 +271,18 @@ impl VulkanContext {
 
     /// Ensure a host-visible staging buffer exists for screenshot readback.
     fn ensure_screenshot_staging(&mut self, required_size: vk::DeviceSize) {
-        // Already large enough?
-        if let Some((_, _, existing_size)) = &self.overlay.screenshot_staging {
-            if *existing_size >= required_size {
+        if let Some((_, _, existing)) = &self.overlay.screenshot_staging {
+            if *existing >= required_size {
                 return;
             }
-            // Too small — destroy and recreate.
             self.destroy_screenshot_staging();
         }
-
-        let Some(ref alloc) = self.allocator else {
-            return;
-        };
-
-        let buffer_info = vk::BufferCreateInfo::default()
-            .size(required_size)
-            .usage(vk::BufferUsageFlags::TRANSFER_DST)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-        // SAFETY: `self.device` is live; `buffer_info` is a fully-populated
-        // `BufferCreateInfo` with no dangling `p_next` chain.
-        let buffer = unsafe {
-            match self.device.create_buffer(&buffer_info, None) {
-                Ok(b) => b,
-                Err(e) => {
-                    log::warn!("Screenshot staging buffer creation failed: {e}");
-                    return;
-                }
-            }
-        };
-
-        // SAFETY: `buffer` was just created above by this same device.
-        let requirements = unsafe { self.device.get_buffer_memory_requirements(buffer) };
-
-        let allocation = {
-            let mut allocator = alloc.lock().unwrap();
-            match allocator.allocate(&vk_alloc::AllocationCreateDesc {
-                name: "screenshot-staging",
-                requirements,
-                location: MemoryLocation::GpuToCpu,
-                linear: true,
-                allocation_scheme: vk_alloc::AllocationScheme::GpuAllocatorManaged,
-            }) {
-                Ok(a) => a,
-                Err(e) => {
-                    log::warn!("Screenshot staging allocation failed: {e}");
-                    // SAFETY: `buffer` was just created above, has no bound
-                    // memory yet, and is not referenced by any command buffer.
-                    unsafe { self.device.destroy_buffer(buffer, None) };
-                    return;
-                }
-            }
-        };
-
-        // SAFETY: `buffer` was just created and `allocation` was just
-        // allocated above by the same device/allocator pair; on bind
-        // failure the buffer is unbound and unreferenced, so destroying it
-        // (after returning its memory to the allocator) is sound.
-        unsafe {
-            if let Err(e) =
-                self.device
-                    .bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
-            {
-                log::warn!("Screenshot staging bind failed: {e}");
-                // #4599 — poison-recovered free, not a bare unwrap on the lock.
-                super::super::allocator::free_allocation_recovering(
-                    alloc,
-                    allocation,
-                    "screenshot bind unwind",
-                );
-                self.device.destroy_buffer(buffer, None);
-                return;
-            }
-        }
-
-        self.overlay.screenshot_staging = Some((buffer, allocation, required_size));
+        self.overlay.screenshot_staging = super::helpers::create_staging_buffer(
+            &self.device,
+            self.allocator.as_ref(),
+            required_size,
+            "screenshot-staging",
+        );
     }
 
     /// Free the screenshot staging buffer. The contract — why this is sound

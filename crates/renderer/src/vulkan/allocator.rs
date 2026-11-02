@@ -706,14 +706,15 @@ mod tests {
         // - buffer.rs ×1: create_bound_buffer's allocate
         // - texture.rs ×1: the DDS image allocate
         // - context/resources.rs ×1: fragmentation_report_lines
-        // - screenshot/depth_capture ×1 each: staging *allocate*
+        // The screenshot / depth / linear-capture staging allocate went
+        // through `helpers::create_staging_buffer` (M-LIGHT RLT-REF-007),
+        // which takes `lock_recovering`, so none of those files holds a
+        // direct acquire any more.
         let allowlist: &[(&str, usize, usize)] = &[
             ("allocator.rs", 1, 0),
             ("buffer.rs", 1, 0),
             ("texture.rs", 1, 0),
             ("context/resources.rs", 1, 0),
-            ("context/screenshot.rs", 0, 1),
-            ("context/depth_capture.rs", 0, 1),
         ];
 
         let mut files = Vec::new();

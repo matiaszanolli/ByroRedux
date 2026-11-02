@@ -491,9 +491,10 @@ struct PostChain {
 /// UI quad handle, and the screenshot / depth-capture triples of
 /// request flag, result slot and staging buffer.
 ///
-/// Two of these own device memory (`screenshot_staging`,
-/// `depth_capture_staging`), and `teardown.rs` frees them through
-/// `destroy_screenshot_staging` / `destroy_depth_capture_staging` rather
+/// Three of these own device memory (`screenshot_staging`,
+/// `depth_capture_staging`, `linear_capture_staging`), and `teardown.rs`
+/// frees them through `destroy_screenshot_staging` /
+/// `destroy_depth_capture_staging` / `destroy_linear_capture_staging` rather
 /// than by naming the fields — which is why a "does teardown mention
 /// this field" check would have called them handle-free. The grouping is
 /// a path rename only, so both frees and the egui-pass destroy keep
@@ -527,6 +528,10 @@ struct OverlayResources {
     /// so a same-frame resize cannot decode the new dimensions against the
     /// old copy — the same REG-02 / #1448 invariant the screenshot path has.
     depth_capture_pending_readback: Option<vk::Extent2D>,
+    /// M-LIGHT RLT-REF-007 / M51 PTR-OUT-001 — the scene-linear capture:
+    /// job, staging buffer (`linear_capture_staging`), pending readback and
+    /// outcome. See `linear_capture.rs`'s module doc.
+    linear_capture: linear_capture::LinearCaptureState,
     /// Mesh handle for the fullscreen quad used by UI overlay.
     ui_quad_handle: Option<u32>,
     /// Debug-UI overlay pass (Phase 4 of the debug-UI plan). `None`
@@ -1582,6 +1587,8 @@ mod assemble_camera_and_lights;
 mod begin_frame_recording;
 mod build_and_upload_instances;
 mod depth_capture;
+mod linear_capture;
+pub use linear_capture::{write_linear_exr, LinearCaptureReport};
 mod dispatch_skin_and_cluster;
 mod geometry_pass;
 mod helpers;

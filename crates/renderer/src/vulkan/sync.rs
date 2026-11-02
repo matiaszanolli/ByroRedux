@@ -59,9 +59,13 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 //   3. `scene_buffer/upload.rs`'s `terrain_tile_buffer` — one shared
 //      DEVICE_LOCAL buffer overwritten by a blocking staged copy from
 //      inside `draw_frame`.
-//   4. `context/screenshot.rs`'s `screenshot_staging` and
-//      `depth_capture.rs`'s `depth_capture_pending_readback` —
-//      single-slot host readbacks gated purely on the top-of-frame wait.
+//   4. `context/screenshot.rs`'s `screenshot_staging`,
+//      `depth_capture.rs`'s `depth_capture_pending_readback` and
+//      `linear_capture.rs`'s `linear_capture_staging` (M-LIGHT
+//      RLT-REF-007) — single-slot host readbacks gated purely on the
+//      top-of-frame wait; the linear capture records a copy every frame
+//      of a multi-frame average into the one buffer the previous frame's
+//      readback just drained.
 //   5. `morph_compute.rs`'s mapped `weight_buffer`, host-written by
 //      `flush_pending_morph_weights` (#3244); its own regression test
 //      pins "flush after the wait", and the wait it finds is this one.
@@ -688,6 +692,10 @@ mod tests {
                 include_str!("scene_buffer/upload.rs"),
             ),
             ("screenshot_staging", include_str!("context/screenshot.rs")),
+            (
+                "linear_capture_staging",
+                crate::source_scan::production_text(include_str!("context/linear_capture.rs")),
+            ),
             (
                 "weight_buffer",
                 crate::source_scan::production_text(include_str!("morph_compute.rs")),

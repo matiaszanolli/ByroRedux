@@ -189,8 +189,12 @@ rapier3d = "0.36"
 # image: defaults off — 0.25's default format set includes `avif`, which
 # pulls the rav1e AV1 encoder into the graph for a format nothing here
 # touches. Each consumer names what it decodes/encodes (PNG everywhere;
-# tools/texture-upscale adds its source-texture formats).
+# tools/texture-upscale adds its source-texture formats; the renderer adds
+# `exr` for the scene-linear capture writer, M51 PTR-OUT-001).
 image = { version = "0.25", default-features = false, features = ["png"] }
+# half: IEEE binary16 decode of RGBA16F readbacks (renderer linear capture,
+# M-LIGHT RLT-REF-007). Already in the graph through image's `exr` feature.
+half = "2"
 tempfile = "3"
 walkdir = "2.5"
 

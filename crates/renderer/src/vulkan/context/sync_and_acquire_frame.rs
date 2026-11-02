@@ -156,6 +156,9 @@ impl VulkanContext {
         self.screenshot_finish_readback();
         // #3308 — same fence-proven timing as the screenshot readback above.
         self.depth_capture_finish_readback();
+        // M-LIGHT RLT-REF-007 — same fence-proven timing; accumulates one
+        // frame of a multi-frame scene-linear average.
+        self.linear_capture_finish_readback();
 
         // Acquire next swapchain image. Bracketed (Phase 9) so a
         // FIFO-present-mode block waiting for the next image is

@@ -529,6 +529,16 @@ impl App {
         false
     }
 
+    /// Drive `--linear-capture` (see `linear_capture`). Returns `true` while
+    /// the capture still owes frames, like `advance_screenshot_request`.
+    fn advance_linear_capture(&mut self) -> bool {
+        let (Some(capture), Some(ctx)) = (self.linear_capture.as_mut(), self.renderer.as_mut())
+        else {
+            return false;
+        };
+        capture.advance(ctx) == crate::linear_capture::LinearCaptureStep::Pending
+    }
+
     /// Drive `--bench-capture-every`: collect the PNG of the capture in flight,
     /// then request the next one when the current frame is due. Shares the
     /// `ScreenshotBridge` (CLI owner) with the final `--screenshot`, so it never
@@ -1675,6 +1685,17 @@ impl ApplicationHandler for App {
                     self.emit_bench_summary();
 
                     if self.advance_screenshot_request() {
+                        record_about_to_wait_timings(
+                            &self.world,
+                            atw_pre_ns,
+                            atw_scheduler_ns,
+                            atw_post_t0,
+                        );
+                        return; // keep running frames
+                    }
+                    // M-LIGHT RLT-REF-007 — the scene-linear EXR, after the
+                    // PNG so the two never share a frame.
+                    if self.advance_linear_capture() {
                         record_about_to_wait_timings(
                             &self.world,
                             atw_pre_ns,
