@@ -1008,6 +1008,7 @@ impl SvgfPipeline {
         alpha_color: f32,
         alpha_moments: f32,
         progressive_accumulation: bool,
+        bypass: bool,
     ) -> Result<()> {
         // #648 / RP-2 — force a full history reset for the first
         // `MAX_FRAMES_IN_FLIGHT` frames after creation or
@@ -1044,10 +1045,13 @@ impl SvgfPipeline {
             // running average (Monte-Carlo accumulation) for a clean
             // ground-truth image; it reverts to the floored EMA the frame
             // any of those stops holding.
+            //
+            // params.z = 2.0 is the `DBG_DISABLE_SVGF` bypass (M-LIGHT
+            // RLT-REF-018): the shader copies the current frame through.
             params: [
                 alpha_color,
                 alpha_moments,
-                first_frame,
+                if bypass { 2.0 } else { first_frame },
                 if progressive_accumulation { 1.0 } else { 0.0 },
             ],
         };

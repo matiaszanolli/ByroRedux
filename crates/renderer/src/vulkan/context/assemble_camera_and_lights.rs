@@ -298,13 +298,16 @@ impl VulkanContext {
         // a stable pinhole fallback image.
         let (jx, jy, fsr_jitter_pixel, fsr_reset_pending) = match self.renderer_config.upscaler {
             super::super::upscaling::UpscalerMode::Taa => {
+                // M-LIGHT RLT-REF-020 — `--rt-test-no-jitter` pins the final
+                // view to the pixel centres too; the linear capture is read
+                // before TAA, so it then holds no temporal reconstruction.
                 let jitter_active = taa_jitter_gate(
                     self.post.taa.is_some(),
                     self.taa_failed,
                     crate::shader_constants::render_debug_requires_raw_output(
                         self.render_debug_flags,
                         self.render_debug_mode.shader_value(),
-                    ),
+                    ) || self.renderer_config.rt_test_no_jitter,
                 );
                 let (jx, jy) = taa_jitter(
                     jitter_active,

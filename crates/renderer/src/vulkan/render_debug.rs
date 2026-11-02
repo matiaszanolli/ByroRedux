@@ -31,10 +31,14 @@ pub enum RenderDebugMode {
     FacingRatio = crate::shader_constants::RENDER_DEBUG_FACING_RATIO,
     RestirLight = crate::shader_constants::RENDER_DEBUG_RESTIR_LIGHT,
     RestirHistory = crate::shader_constants::RENDER_DEBUG_RESTIR_HISTORY,
+    /// M-LIGHT RLT-GI-009 — the traced share of indirect, SSAO included.
+    TracedShare = crate::shader_constants::RENDER_DEBUG_TRACED_SHARE,
+    /// M-LIGHT RLT-SHD-009 — direct light with the shadow filter applied.
+    FilteredDirect = crate::shader_constants::RENDER_DEBUG_FILTERED_DIRECT,
 }
 
 impl RenderDebugMode {
-    pub const USER_MODES: [Self; 17] = [
+    pub const USER_MODES: [Self; 19] = [
         Self::Final,
         Self::ShadowVisibility,
         Self::SelectedLight,
@@ -52,6 +56,8 @@ impl RenderDebugMode {
         Self::FacingRatio,
         Self::RestirLight,
         Self::RestirHistory,
+        Self::TracedShare,
+        Self::FilteredDirect,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -74,6 +80,8 @@ impl RenderDebugMode {
             Self::FacingRatio => "facing_ratio",
             Self::RestirLight => "restir_light",
             Self::RestirHistory => "restir_history",
+            Self::TracedShare => "traced_share",
+            Self::FilteredDirect => "filtered_direct",
         }
     }
 
@@ -120,6 +128,8 @@ impl FromStr for RenderDebugMode {
             "facing" | "facing_ratio" => Ok(Self::FacingRatio),
             "restir" | "restir_light" => Ok(Self::RestirLight),
             "history" | "restir_history" => Ok(Self::RestirHistory),
+            "traced" | "traced_share" => Ok(Self::TracedShare),
+            "filtered_direct" => Ok(Self::FilteredDirect),
             _ => Err(format!(
                 "unknown render debug mode '{value}' (expected {})",
                 Self::user_mode_names()

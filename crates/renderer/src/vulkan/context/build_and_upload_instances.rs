@@ -1648,6 +1648,7 @@ impl VulkanContext {
                         decision.alpha_color,
                         decision.alpha_moments,
                         decision.progressive_accumulation,
+                        self.render_debug_flags & crate::shader_constants::DBG_DISABLE_SVGF != 0,
                     )
                 } {
                     // #3981 — latch, don't just warn. `record_svgf_pass`'s

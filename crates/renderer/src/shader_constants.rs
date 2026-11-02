@@ -161,10 +161,11 @@ mod tests {
                     0,
                     "{a_name} ({a:#010x}) and {b_name} ({b:#010x}) share a bit. The \
                      DBG_* u32 is fully allocated (bits 0-31), so a new view cannot be \
-                     given a fresh value — recycle DBG_RESERVED_20 (bit 5) by renaming \
-                     it in place (bit 9 already became DBG_VIZ_AO). The \
-                     GpuCamera.render_debug.w lane carries weather-surface state and \
-                     is not available for another debug payload. See #3563."
+                     given a fresh value, and both recyclable slots are spent (bit 9 \
+                     became DBG_VIZ_AO, bit 5 DBG_DISABLE_SVGF). Add a named view to \
+                     RenderDebugMode instead; the GpuCamera.render_debug.w lane \
+                     carries weather-surface state and is not available for another \
+                     debug payload. See #3563."
                 );
             }
             union |= a;
@@ -187,22 +188,19 @@ mod tests {
             );
         }
 
-        // Make the exhaustion visible rather than tribal knowledge: while no
-        // free bit remains, the recyclable placeholders must stay in the
-        // catalog, because they are the entire allocation pool. Bit 9 was
-        // recycled into DBG_VIZ_AO, so DBG_RESERVED_20 is the one slot left.
-        let free = (!union).count_ones();
-        if free == 0 {
-            {
-                let slot = "DBG_RESERVED_20";
-                assert!(
-                    singles.iter().any(|(n, _)| *n == slot),
-                    "{slot} was removed from DBG_BITS while the DBG_* u32 has 0 free \
-                     bits — it is the last slot a new debug view can be allocated \
-                     from. See #3563."
-                );
-            }
-        }
+        // Make the exhaustion visible rather than tribal knowledge: every bit
+        // of the word is a real view or ablation now. Bit 9 was recycled into
+        // DBG_VIZ_AO and bit 5 into DBG_DISABLE_SVGF (M-LIGHT RLT-REF-018), so
+        // no `DBG_RESERVED_*` placeholder remains to recycle.
+        assert_eq!(
+            (!union).count_ones(),
+            0,
+            "a DBG_* bit is unallocated — catalogue it, or add it as a named view"
+        );
+        assert!(
+            !singles.iter().any(|(n, _)| n.starts_with("DBG_RESERVED")),
+            "a reserved placeholder came back while every bit is allocated"
+        );
     }
 
     /// Top-level constants are the shader-side equivalent of public API:

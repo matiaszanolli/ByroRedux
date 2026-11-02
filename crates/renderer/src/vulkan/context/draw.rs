@@ -408,11 +408,7 @@ impl VulkanContext {
                 &pvp,
                 inv_vp_arr,
                 previous_camera_position,
-                // RLT-REF-013 — the volumetric samplers take the seeded index.
-                super::frame_params::rt_sampling_frame_index(
-                    self.frame_counter,
-                    self.renderer_config.rt_test_seed_offset,
-                ),
+                self.frame_counter,
                 volumetric_time_seconds,
                 sky_params,
                 fog_color,

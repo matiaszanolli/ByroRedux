@@ -214,8 +214,12 @@ void main() {
             && (vizFlags & DBG_VIZ_SHADOW_VISIBILITY) == DBG_VIZ_SHADOW_VISIBILITY);
     bool viewSelectedLight = debugMode == RENDER_DEBUG_SELECTED_LIGHT
         || (legacyDebugMode && (vizFlags & DBG_VIZ_SELECTED_LIGHT) != 0u);
+    // RLT-SHD-009 — the filtered-direct view shades exactly like direct_only;
+    // composite adds the shadow filter's correction.
     bool viewDirectOnly = debugMode == RENDER_DEBUG_DIRECT_ONLY
+        || debugMode == RENDER_DEBUG_FILTERED_DIRECT
         || (legacyDebugMode && (vizFlags & DBG_VIZ_DIRECT) != 0u);
+    bool viewTracedShare = debugMode == RENDER_DEBUG_TRACED_SHARE;
     bool viewIndirectOnly = debugMode == RENDER_DEBUG_INDIRECT_ONLY
         || (legacyDebugMode && (vizFlags & DBG_VIZ_RAW_INDIRECT) != 0u);
     bool viewMaterialLobe = debugMode == RENDER_DEBUG_MATERIAL_LOBE
@@ -648,10 +652,9 @@ void main() {
     //
     // `DBG_BYPASS_NORMAL_MAP = 0x10` remains as a runtime opt-out so
     // a future regression can be bisected without rebuilding the
-    // shader. The 0x20 bit (#1035) is now `DBG_RESERVED_20` — pre-#786
-    // it was the `DBG_FORCE_NORMAL_MAP` opt-IN when perturbation was
-    // off by default; the rename makes the no-op status explicit
-    // without breaking diagnostic scripts that set the bit by value.
+    // shader. The 0x20 bit was the `DBG_FORCE_NORMAL_MAP` opt-IN before
+    // #786, a no-op after, and since 2026-11-02 is `DBG_DISABLE_SVGF`
+    // (M-LIGHT RLT-REF-018), which this shader does not read.
     if (normalMapIdx != 0u
         && (dbgFlags & DBG_BYPASS_NORMAL_MAP) == 0u)
     {
@@ -5096,6 +5099,15 @@ void main() {
         // from "AO applies but nothing changes downstream", which a
         // DBG_DISABLE_AO tone-diff A/B cannot distinguish.
         outColor = vec4(vec3(ao), 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+    } else if (viewTracedShare) {
+        // M-LIGHT RLT-GI-009 — the traced share exactly as it enters
+        // `indirectLight` in every ambient branch above (`indirect *
+        // combinedAO`), without the untraced sky / ambient / DALC share.
+        // Single-frame, pre-SVGF, not multiplied by albedo, like
+        // `indirect_only`.
+        outColor = vec4(indirect * combinedAO, 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
     } else if (viewIndirectOnly) {

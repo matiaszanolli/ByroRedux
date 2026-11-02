@@ -1031,7 +1031,9 @@ mod tests {
     /// (114). The local fire march's species phase then moved from per-ray lazy
     /// analytic lobes to the baked phase table (two lazy-evaluation flags and
     /// the steam gate out, the table's steam-share gate in): 159, measured by
-    /// this test's own counter on the recompiled module. Pins the
+    /// this test's own counter on the recompiled module. The M-LIGHT
+    /// filtered-direct oracle's select in the raw-view return adds one (160,
+    /// RLT-SHD-009), measured the same way. Pins the
     /// current count so a future stale-recompile of this file fails
     /// loudly instead of shipping silently, the same failure mode #1447
     /// fixed for `CameraUBO` size.
@@ -1040,8 +1042,8 @@ mod tests {
         let spv = include_bytes!("../../shaders/composite.frag.spv");
         let count = count_branch_conditionals(spv).expect("reflect composite.frag.spv");
         assert_eq!(
-            count, 159,
-            "composite.frag.spv has {count} OpBranchConditional instructions, expected 159 — \
+            count, 160,
+            "composite.frag.spv has {count} OpBranchConditional instructions, expected 160 — \
              the committed .spv looks stale relative to composite.frag; recompile it \
              (glslangValidator -V composite.frag -o composite.frag.spv from \
              crates/renderer/shaders). The raw correctness-debug guard is intentionally \

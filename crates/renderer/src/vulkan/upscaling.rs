@@ -207,6 +207,18 @@ pub struct RendererConfig {
     /// noise floor can be measured. `0` is the shipping sequence. Camera
     /// jitter and DOF keep the raw frame counter, so geometry never moves.
     pub rt_test_seed_offset: u32,
+    /// M-LIGHT RLT-REF-020 — drop TAA's sub-pixel jitter for every view, so
+    /// the `final` view samples pixel centres like the raw debug views do.
+    /// With the linear capture taken before TAA, `final` then carries no
+    /// temporal reconstruction and no jitter (closure rung, RLT-REF-011).
+    /// Honoured under `--upscaler taa`; FSR modes refuse it at parse time.
+    pub rt_test_no_jitter: bool,
+    /// M-LIGHT RLT-REF-009 — drop the interior dust extinction floor
+    /// (`INTERIOR_DUST_EXTINCTION_PER_METER`, 0.006 m⁻¹) the volumetrics pass
+    /// applies to every interior with a local emitter, so a reference rung
+    /// carries no medium. Without it `final` loses ~1.8 % at 3 m against the
+    /// medium-free reference and the closure rung cannot close.
+    pub rt_test_no_dust_floor: bool,
 }
 
 impl Default for RendererConfig {
@@ -223,6 +235,8 @@ impl Default for RendererConfig {
             rt_test_lod_telemetry: false,
             rt_test_ray_quality_tier: None,
             rt_test_seed_offset: 0,
+            rt_test_no_jitter: false,
+            rt_test_no_dust_floor: false,
         }
     }
 }

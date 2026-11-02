@@ -121,9 +121,12 @@ pub(crate) fn setup_reference_scene(
     rung: ReferenceRung,
 ) -> (Vec3, Vec3) {
     // RLT-REF-009: no ambient, no directional, interior (no sky probe, no
-    // DALC), fog far beyond the scene.
+    // DALC), fog far beyond the scene and no medium. `bare` fits a medium
+    // from even an out-of-range legacy ramp, which the froxel integral then
+    // applies as a ~0.4 %/m extinction, so the rung disables it outright.
     world.insert_resource(CellLightingRes {
         directional_fade: Some(1.0),
+        fog_medium: crate::fog::FogMedium::DISABLED,
         ..CellLightingRes::bare(
             [0.0; 3],
             [0.0; 3],

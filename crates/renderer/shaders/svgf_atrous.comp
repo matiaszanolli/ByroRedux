@@ -95,7 +95,8 @@ void main() {
     // chain leaves the temporal result untouched. Composite always reads
     // the final iteration's buffer, so the disabled path reproduces the
     // pre-Phase-4 temporal-only look exactly.
-    if ((pc.dbgFlags & DBG_DISABLE_ATROUS) != 0u) {
+    // M-LIGHT RLT-REF-018 — `DBG_DISABLE_SVGF` bypasses both halves.
+    if ((pc.dbgFlags & (DBG_DISABLE_ATROUS | DBG_DISABLE_SVGF)) != 0u) {
         imageStore(outColor, p, vec4(cP, 1.0));
         return;
     }

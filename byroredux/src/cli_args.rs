@@ -252,6 +252,14 @@ pub fn parse_renderer_config(args: &[String]) -> Result<RendererConfig> {
         })
         .transpose()?
         .unwrap_or(0);
+    // M-LIGHT RLT-REF-020 — no sub-pixel jitter on any view. Only the TAA
+    // path honours it: FSR's reconstruction needs its jitter sequence.
+    let rt_test_no_jitter = args.iter().any(|arg| arg == "--rt-test-no-jitter");
+    if rt_test_no_jitter && upscaler != UpscalerMode::Taa {
+        bail!("--rt-test-no-jitter requires --upscaler taa");
+    }
+    // M-LIGHT RLT-REF-009 — no renderer-side interior dust medium.
+    let rt_test_no_dust_floor = args.iter().any(|arg| arg == "--rt-test-no-dust-floor");
     // Stage 1 (RENDERING-PLAN.md) — display transform + auto-exposure boot
     // state; both stay live-tunable via the `tonemap` / `exposure` console
     // commands afterwards.
@@ -278,6 +286,8 @@ pub fn parse_renderer_config(args: &[String]) -> Result<RendererConfig> {
         rt_test_lod_telemetry,
         rt_test_ray_quality_tier,
         rt_test_seed_offset,
+        rt_test_no_jitter,
+        rt_test_no_dust_floor,
     })
 }
 

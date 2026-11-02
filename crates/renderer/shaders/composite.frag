@@ -941,7 +941,11 @@ void main() {
             && debugMode != RENDER_DEBUG_COMPOSITE_TERM
             && debugMode != RENDER_DEBUG_VOLUMETRIC_TERM);
     if (rawDebug) {
-        outColor = direct4;
+        // RLT-SHD-009 — the filtered-direct oracle is the one raw view that
+        // keeps the shadow filter's correction applied above.
+        outColor = debugMode == RENDER_DEBUG_FILTERED_DIRECT
+            ? vec4(direct, direct4.a)
+            : direct4;
         return;
     }
 

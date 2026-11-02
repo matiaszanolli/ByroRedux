@@ -604,11 +604,9 @@ pub struct VulkanContext {
     ///   `0x10` — bypass normal-map perturbation (geometric N only)
     ///   `0x20` — reserved no-op (#1035 / R16-01). Pre-#786 this
     ///            opted IN to normal-map perturbation while it was
-    ///            off by default; since #786 closed the default
-    ///            flipped back to on, so this bit is harmless and
-    ///            kept only so legacy diagnostic scripts that set
-    ///            it don't suddenly start tripping a different
-    ///            behaviour. See `triangle.frag::DBG_RESERVED_20`.
+    ///            off by default; it was a no-op from #786 until
+    ///            2026-11-02, when it was recycled as
+    ///            `DBG_DISABLE_SVGF` (M-LIGHT RLT-REF-018).
     ///   `0x40` — visualize render-layer classification (#renderlayer):
     ///            Architecture grey, Clutter cyan, Actor magenta,
     ///            Decal yellow. Empirical validation that the

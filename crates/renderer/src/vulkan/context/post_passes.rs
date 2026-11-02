@@ -359,7 +359,11 @@ impl VulkanContext {
                 prev_view_proj,
                 inv_vp_arr,
                 previous_camera_pos,
-                frame_counter,
+                // RLT-REF-013 — the volumetric samplers take the seeded index.
+                frame_counter: super::frame_params::rt_sampling_frame_index(
+                    frame_counter,
+                    self.renderer_config.rt_test_seed_offset,
+                ),
                 volumetric_time_seconds,
                 sky_params,
                 fog_color,
@@ -718,8 +722,11 @@ impl VulkanContext {
                         &mut self.volumetric_fog_scratch,
                     );
                     let fog_volumes = self.volumetric_fog_scratch.as_slice();
+                    // M-LIGHT RLT-REF-009 — reference rungs carry no medium;
+                    // `--rt-test-no-dust-floor` removes this renderer-side one.
                     let effective_extinction_per_meter = if !sky_params.is_exterior
                         && (local_emitters_present || portal_sun_active)
+                        && !self.renderer_config.rt_test_no_dust_floor
                     {
                         fog_extinction_per_meter.max(INTERIOR_DUST_EXTINCTION_PER_METER)
                     } else {

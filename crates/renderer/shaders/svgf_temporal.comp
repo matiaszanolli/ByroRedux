@@ -44,7 +44,7 @@ layout(set = 0, binding = 7, rgba16f) uniform writeonly image2D outMoments;
 
 layout(set = 0, binding = 8) uniform SvgfTemporalParams {
     vec4 screen;   // xy = size, zw = 1/size
-    vec4 params;   // x = alpha_color, y = alpha_moments, z = first_frame_flag (1.0 = reset), w = progressive accumulation (1.0 = drop alpha floor, converge 1/N): camera parked AND light rig/scene unchanged, no recovery window open
+    vec4 params;   // x = alpha_color, y = alpha_moments, z = first_frame_flag (1.0 = reset; 2.0 = DBG_DISABLE_SVGF bypass), w = progressive accumulation (1.0 = drop alpha floor, converge 1/N): camera parked AND light rig/scene unchanged, no recovery window open
 };
 
 // ── Curr / prev octahedral-encoded world normals (#650 / SH-5) ──
@@ -82,6 +82,15 @@ void main() {
     }
     float currLum = luminance(currInd);
     float currLum2 = currLum * currLum;
+    // M-LIGHT RLT-REF-018 — `DBG_DISABLE_SVGF` (host sets params.z = 2):
+    // pass the single-frame indirect through untouched — no history, no
+    // firefly clamp — and mark it as never accumulated, like a background
+    // pixel, so the next frame cannot reproject from it either.
+    if (params.z > 1.5) {
+        imageStore(outIndirect, p, vec4(currInd, 1.0));
+        imageStore(outMoments, p, vec4(currLum, currLum2, 0.0, 0.0));
+        return;
+    }
     uint currID = texelFetch(currMeshIdTex, p, 0).r;
     // #650 / SH-5 — current-pixel world normal for the bilinear
     // consistency loop's normal-cone rejection.

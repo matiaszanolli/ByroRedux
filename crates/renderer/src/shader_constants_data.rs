@@ -2132,7 +2132,19 @@ pub const RENDER_DEBUG_RESTIR_LIGHT: u32 = 15;
 // tint = the deep scene-static tail, RED = history rejected this frame (one
 // raw shadow ray), BLUE = a blended decal borrowing its surface's history.
 pub const RENDER_DEBUG_RESTIR_HISTORY: u32 = 16;
-pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_RESTIR_HISTORY;
+// M-LIGHT RLT-GI-009 — the traced share of indirect light exactly as it
+// enters `indirectLight`, including the SSAO factor that multiplies it in
+// every ambient branch, and nothing of the untraced share (exterior SH9 sky
+// × (1 − traced weight), interior authored ambient, the DALC cube). Like
+// `INDIRECT_ONLY` it is single-frame, pre-SVGF and not multiplied by albedo.
+pub const RENDER_DEBUG_TRACED_SHARE: u32 = 17;
+// M-LIGHT RLT-SHD-009 — `DIRECT_ONLY` plus the shadow filter's correction
+// U · (filtered − raw), which composite adds to the direct attachment for
+// `final` but which every raw view (including `DIRECT_ONLY`) bypasses. The
+// main pass shades it exactly like `DIRECT_ONLY`; composite adds the
+// correction in its raw-view early return.
+pub const RENDER_DEBUG_FILTERED_DIRECT: u32 = 18;
+pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_FILTERED_DIRECT;
 pub const RENDER_DEBUG_LEGACY_FLAGS: u32 = u32::MAX;
 
 pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
@@ -2156,6 +2168,8 @@ pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
     ("RENDER_DEBUG_FACING_RATIO", RENDER_DEBUG_FACING_RATIO),
     ("RENDER_DEBUG_RESTIR_LIGHT", RENDER_DEBUG_RESTIR_LIGHT),
     ("RENDER_DEBUG_RESTIR_HISTORY", RENDER_DEBUG_RESTIR_HISTORY),
+    ("RENDER_DEBUG_TRACED_SHARE", RENDER_DEBUG_TRACED_SHARE),
+    ("RENDER_DEBUG_FILTERED_DIRECT", RENDER_DEBUG_FILTERED_DIRECT),
     ("RENDER_DEBUG_MODE_MAX", RENDER_DEBUG_MODE_MAX),
     ("RENDER_DEBUG_LEGACY_FLAGS", RENDER_DEBUG_LEGACY_FLAGS),
 ];
@@ -2197,15 +2211,20 @@ pub const DBG_VIZ_TANGENT: u32 = 0x8;
 /// decode at b63ab0c.
 pub const DBG_BYPASS_NORMAL_MAP: u32 = 0x10;
 
-/// 0x20 — RESERVED. Pre-#1035 (in the 77aa2de → 5dde345 window) this
-/// bit was the opt-IN for `perturbNormal` while the default was off
-/// (was named `DBG_FORCE_NORMAL_MAP`). After #786 closed (2026-05-03)
-/// the default flipped back to on and the bit became a silent no-op.
-/// Kept reserved so existing diagnostic scripts using
-/// `BYROREDUX_RENDER_DEBUG=0x20` / `0x24` / `0x28` keep working as
-/// no-ops; renamed at #1035 to make the no-op status explicit in the
-/// bit catalog.
-pub const DBG_RESERVED_20: u32 = 0x20;
+/// 0x20 — bypass SVGF entirely: temporal accumulation copies the current
+/// frame's indirect (no history, no firefly clamp) and the à-trous chain
+/// copies its input, so composite reads the single-frame pre-SVGF signal.
+/// M-LIGHT RLT-REF-018: the closure rung (RLT-REF-011) needs `final` to equal
+/// filtered direct + `indirect_only` × albedo with nothing temporal between
+/// them. Distinct from [`DBG_DISABLE_ATROUS`] (à-trous only) and
+/// [`DBG_DISABLE_TEMPORAL`] (ReSTIR's temporal reuse, not SVGF's).
+///
+/// Recycled from `DBG_RESERVED_20` (2026-11-02), the last free slot of the
+/// DBG_* word: pre-#1035 the bit was the `perturbNormal` opt-in and from #786
+/// a no-op kept for old `BYROREDUX_RENDER_DEBUG=0x20` / `0x24` / `0x28`
+/// scripts, of which none remains in the repository (only 2026-05 audit
+/// notes cite them).
+pub const DBG_DISABLE_SVGF: u32 = 0x20;
 
 /// 0x40 — visualize the per-entity content-class render layer driving
 /// the depth-bias ladder. Tints fragments by layer:
@@ -2547,12 +2566,12 @@ pub const fn dbg_viz_raw_output_any_mask() -> u32 {
 /// is what catches that; the pre-existing count-parity guard cannot, because
 /// it compares entry counts, never values.
 ///
-/// One recyclable slot remains for exactly this purpose:
-/// [`DBG_RESERVED_20`] (bit 5) — rename it in place rather than inventing a
-/// value. (Bit 9 was recycled into [`DBG_VIZ_AO`].) Past that, future debug
-/// expansion must coordinate with the history-dependent weather-surface
-/// payload already carried in `GpuCamera.render_debug.w`; that lane is no
-/// longer an unused flag word.
+/// No recyclable slot remains: bit 9 became [`DBG_VIZ_AO`] and bit 5
+/// [`DBG_DISABLE_SVGF`] (M-LIGHT, 2026-11-02). Future debug expansion must
+/// use the named-view discriminant (`RenderDebugMode`, `render_debug.x`) or
+/// coordinate with the history-dependent weather-surface payload already
+/// carried in `GpuCamera.render_debug.w`; that lane is no longer an unused
+/// flag word.
 ///
 /// The last three entries are compound unions of bits already listed above
 /// them, not bits of their own; the uniqueness guard skips them by name.
@@ -2562,7 +2581,7 @@ pub const DBG_BITS: &[(&str, u32)] = &[
     ("DBG_VIZ_NORMALS", DBG_VIZ_NORMALS),
     ("DBG_VIZ_TANGENT", DBG_VIZ_TANGENT),
     ("DBG_BYPASS_NORMAL_MAP", DBG_BYPASS_NORMAL_MAP),
-    ("DBG_RESERVED_20", DBG_RESERVED_20),
+    ("DBG_DISABLE_SVGF", DBG_DISABLE_SVGF),
     ("DBG_VIZ_RENDER_LAYER", DBG_VIZ_RENDER_LAYER),
     ("DBG_VIZ_GLASS_PASSTHRU", DBG_VIZ_GLASS_PASSTHRU),
     ("DBG_DISABLE_SPECULAR_AA", DBG_DISABLE_SPECULAR_AA),
@@ -3217,6 +3236,8 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint RENDER_DEBUG_FACING_RATIO),
     shader_define!(Uint RENDER_DEBUG_RESTIR_LIGHT),
     shader_define!(Uint RENDER_DEBUG_RESTIR_HISTORY),
+    shader_define!(Uint RENDER_DEBUG_TRACED_SHARE),
+    shader_define!(Uint RENDER_DEBUG_FILTERED_DIRECT),
     shader_define!(Uint RENDER_DEBUG_MODE_MAX),
     shader_define!(Uint RENDER_DEBUG_LEGACY_FLAGS),
     HeaderLine::Blank,
@@ -3226,7 +3247,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint DBG_VIZ_NORMALS),
     shader_define!(Uint DBG_VIZ_TANGENT),
     shader_define!(Uint DBG_BYPASS_NORMAL_MAP),
-    shader_define!(Uint DBG_RESERVED_20),
+    shader_define!(Uint DBG_DISABLE_SVGF),
     shader_define!(Uint DBG_VIZ_RENDER_LAYER),
     shader_define!(Uint DBG_VIZ_GLASS_PASSTHRU),
     shader_define!(Uint DBG_DISABLE_SPECULAR_AA),
