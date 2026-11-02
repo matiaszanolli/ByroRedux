@@ -4916,6 +4916,40 @@ fn triangle_frag_has_no_unshadowed_xcll_directional_fill() {
     assert!(!lighting.contains("lightType > 2.5"));
 }
 
+#[test]
+fn bounded_path_lights_two_diffuse_vertices_at_tiers_two_and_three() {
+    use crate::shader_constants::MAX_SHADED_HITS;
+    use crate::vulkan::scene_buffer::ray_budget::AdaptiveRayBudget;
+
+    // M-LIGHT RLT-GI-001 — the floor the existing ceiling pin above cannot
+    // see: dropping tier 2 to one shaded hit, or lowering tier 3 and
+    // MAX_SHADED_HITS together to one, passed every other test. Raster mode
+    // must evaluate light at two or more diffuse vertices at tiers 2 and 3,
+    // so ROADMAP's stale "1 in raster mode" cannot become true again.
+    assert!(MAX_SHADED_HITS >= 2, "the shader ceiling must allow two lit vertices");
+    for tier in [2, 3] {
+        let budget = AdaptiveRayBudget::settings_for_tier(tier);
+        assert!(
+            budget.max_shaded_hits >= 2,
+            "tier {tier} lights {} path vertices; RLT-GI-001 requires >= 2",
+            budget.max_shaded_hits
+        );
+        assert!(
+            budget.max_path_segments >= 2,
+            "tier {tier} allows {} path segments; two lit vertices need >= 2",
+            budget.max_path_segments
+        );
+    }
+    let frag = include_str!("../../../shaders/triangle.frag");
+    let bounces = frag
+        .split("const int MAX_DIFFUSE_BOUNCES = ")
+        .nth(1)
+        .and_then(|rest| rest.split(';').next())
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .expect("triangle.frag declares MAX_DIFFUSE_BOUNCES");
+    assert!(bounces >= 2, "MAX_DIFFUSE_BOUNCES = {bounces}; RLT-GI-001 requires >= 2");
+}
+
 /// Quality work may change the estimator, but the accepted #2161 cost point is
 /// still a six-segment path with two diffuse events. Specular/glass transport
 /// fits inside the same segment ceiling and must not silently expand the
