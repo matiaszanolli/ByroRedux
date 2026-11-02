@@ -1,6 +1,6 @@
 # Reference-Quality Lighting — Product Requirements
 
-**Status**: ACTIVE (2026-11-02). Revision 12; the change history is in
+**Status**: ACTIVE (2026-11-02). Revision 13; the change history is in
 §12. Every decision in §10 is decided and every Phase 0 verify item is
 closed or filed as an issue.
 
@@ -894,6 +894,27 @@ reach.
   a rung's materials Lambertian in the light loop, at the GI walk's hits
   and in its first-surface throughput.
 
+- **RLT-GI-011.** The bounded path MUST evaluate an emitter's light at
+  its hits with the primary lobe's Lambert convention: a hit's diffuse
+  response is ρ · *L* · atten · cos θ, as `diffuseBrdf = kD * albedo` gives
+  the primary surface, so bounce light stands to direct light as it does
+  in the reference, whose emitters carry *k*<sub>exp</sub> = π. The walk's
+  specular lobe, hit emission and escaped environment radiance keep their
+  physical units. At HEAD on 2026-11-02 the walk shades hits with
+  `evaluatePathBsdf`'s ρ ⁄ π (`include/pbr.glsl`, `pathHitRadiance` in
+  `include/lighting.glsl`), a factor of π below the primary lobe, which
+  alone accounts for about 68 % of the A7 deficit. Added at Phase 2's entry
+  by owner decision (2026-11-02).
+- **RLT-GI-012.** The RT-LOD gate MUST NOT remove the traced share from a
+  surface in view at room scale: on the box rung at tiers 2 and 3 the
+  traced-share view MUST be non-zero on at least 99 % of every L4 region's
+  pixels, within the Q8 cost ceiling (A13). At HEAD on 2026-11-02 the gate
+  (`rtLOD >= RT_LOD_GI`, `triangle.frag`) culls GI wherever a pixel's
+  world footprint exceeds about 0.67 units, and its footprint is the larger
+  screen derivative, so at 1280 × 720 the box's grazing floor and ceiling
+  get no traced GI at any tier (A7 deficit 1.00). Added at Phase 2's entry
+  by owner decision (2026-11-02).
+
 ### 5.6 Cost and budget (`RLT-PERF`)
 
 - **RLT-PERF-001.** Every new pass this PRD adds MUST have its own GPU
@@ -1234,7 +1255,8 @@ term's phase entry.
 
 **Phase 2 — GI energy (the L4 slice, Q10).** Entry apparatus: none
 beyond Phase 1a. Entry baseline: A7 and A8. Then RLT-GI-004, RLT-GI-005
-per Q2, and RLT-GI-007 on content; the Q5 mechanism for RLT-GI-003 (with
+per Q2, RLT-GI-011 and RLT-GI-012 (added at the entry, rev 13), and
+RLT-GI-007 on content; the Q5 mechanism for RLT-GI-003 (with
 RLT-GI-008 if the cache is adopted, which waits for M51's Phase 5), so
 RLT-GI-003 may stay open after this phase exits. Exit: A8 passes, A7
 publishes the deficit at every tier and passes at its threshold once the
@@ -1519,3 +1541,4 @@ Each needs the project owner. The recommendation is the first option.
 | 10 | 2026-11-02 | Phase 0 designs checked in: the penumbra-aware filter design (RLT-SHD-003, `PAF-`) and the exporter plus rung subsection in `docs/engine/path-tracing.md` (`PTX-`; *k*<sub>exp</sub> π / π / 1 for point / sun / environment, the flat-plane BSDF mapping, the Mitsuba recipes); Related table points at both | — |
 | 11 | 2026-11-02 | Phase 1a exit (#6601): A15 passes (point calibration 0.99927–0.99947 over the plane and its 3 × 3 grid; Lambertian planes 0.99931–0.99954 at three views), A16 closes on both sides, A18 published (cold 291.2 s with 12 references rendered in 6.2 s, warm 260.0 s; engine captures dominate); manifests in `docs/audits/MLIGHT_phase1a_exit_262a964b9_*`. Representation floor added to §2: RGBA16F capture storage (2<sup>−10</sup>) and composite's B10G11R11 indirect and albedo, modelled in the closure prediction. A7, A8, A15, A16, A18 commands now name `scripts/m-light-gates.sh` and `byroredux/tests/m_light_gates.rs`; RLT-REF-008's Phase 1a scope is the Lambertian row. Apparatus findings recorded for their phases: shadow-ray self-intersection near a coordinate plane (#6607, fixed); a renderer-side interior dust medium (0.006 m<sup>−1</sup>, switch `--rt-test-no-dust-floor`); B10G11R11 storage darkens `final`'s indirect by about 1–2 %; SVGF removes 3.6–4.9 % of the blocks' energy (M54 report); for Phase 2's entry, the RT-LOD gate culls GI on grazing room surfaces at 720p and the GI walk shades hits as ρ ⁄ π against the primary lobe's non-/π Lambert | — |
 | 12 | 2026-11-02 | Phase 1b exit (#6598). A13: settled tier and pinned-tier frame time per benchmark scene under TAA native (the bench of record's reference, which the Q8 percentages use) and FSR Quality (the shipping default, published beside): Cornell 1 / 2, Prospector 0 / 1 (oscillation 0.42 / 0.34), Whiterun 1 / 3, MedTek 0 / 0, Dugout 0 / 1 — three of the four game scenes run no traced GI at native resolution, the case Q7's consequence names. Settled tier measured past a 240-frame warm-up (the controller's cold-start climb to tier 3 takes 225 frames) over a 300-frame window. A9: material classes per Wave 1 scene with F1 (MedTek 1366 / 4931 and Dugout 365 / 1148 dielectrics below roughness 0.2), F2 (every keyword-route conductor: Prospector 147, MedTek 113, Whiterun 22) and F3 (MedTek 280 / 7492, Dugout 56 / 1204, unverified convention #6606); the material-class route list is closed (§2). RLT-GI-001 pinned; RLT-GI-007 re-captured (the tier-3 isolated bounce is non-zero on every pixel of the Prospector floor, median 0.0023); content anchors captured per scene with their 32 × 32 tile floor. Lighting fidelity table added to ROADMAP; manifests `docs/audits/MLIGHT_phase1b_*_688f42705` | — |
+| 13 | 2026-11-02 | Phase 2 entry, steps 2–3 (#6602). Baselines: A7 at tier 3 deficit 1.00 / 0.98 / 1.00 (floor / back wall / ceiling), 0.82 / 0.82 / 0.79 with the RT-LOD gate off, clamp off 0.973 on the back wall; A8 fails at HEAD (−0.54 % over all geometry, run on a new close-up view because SSAO is inert at the front view's distance). L4 is S2. Owner (2026-11-02): budget deficit ≤ 0.10 and p95 relative error ≤ 0.50 per region, drift margin 2× the frozen floor, rationale a visibility argument; frozen floors taken from the RT-LOD-off capture because the gate-on floor is exactly 0. The threshold table lives in `docs/audits/MLIGHT_thresholds.tsv`. The owner also added RLT-GI-011 (hit shading in the primary lobe's convention) and RLT-GI-012 (the RT-LOD gate keeps GI on room-scale surfaces) to Phase 2 | — |

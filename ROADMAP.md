@@ -173,8 +173,8 @@ FSR Quality nets +18% to +41%, Performance +39% to +56%; `native-aa` loses 2% to
 
 ### Lighting fidelity (M-LIGHT, [PRD](docs/prd/reference-lighting.md))
 
-Terms: L1 penumbra S1+ (A1 only), L2 contact S1, L3 sky IBL S1, L4 GI S1; each gains
-its measured row at its phase entry (manifests `docs/audits/MLIGHT_*`). Phase 1b
+Terms: L1 penumbra S1+ (A1), L2 contact S1, L3 sky IBL S1, **L4 GI S2**: tier-3 deficit 1.00 / 0.98 / 1.00
+(floor / back wall / ceiling; 0.82 / 0.82 / 0.79 with the RT-LOD gate off; floors ≤ 2e-3), A8 −0.54 %. Phase 1b
 baseline (`688f42705`, RTX 4070 Ti, 1280×720, stepped orbit, tier histogram past a
 240-frame warm-up); frame time is the 3-run median with the tier pinned there:
 

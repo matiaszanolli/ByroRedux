@@ -1,0 +1,17 @@
+# M-LIGHT threshold table (docs/prd/reference-lighting.md RLT-REF-006, Q6).
+# One row per gated metric. A row changes only with a revision row in the
+# PRD's §12. threshold = frozen_floor + budget; a gate fails when the metric
+# exceeds its threshold or the re-measured floor exceeds the frozen floor by
+# more than the drift margin. A7 runs report-only until the Q5 mechanism lands.
+# Frozen 2026-11-02 at Phase 2 entry (rev 13); L4 floors taken from the
+# RT-LOD-gate-off capture (the gate-on capture has no traced share on the
+# floor and ceiling, so its seed floor is exactly 0, which no drift margin can
+# hold once Phase 2's RT-LOD retune brings the traced share back).
+term	gate	rung	region	metric	tier	baseline	frozen_floor	budget	threshold	drift_margin	rationale
+L4	A7	lambert-box	box_floor	energy_deficit	3	1.000	0.000131	0.10	0.100131	2x frozen floor	visibility: the traced share is at most ~40 % of a lit surface's final luminance in the Cornell room, so a 10 % indirect deficit moves final luminance by at most ~4 %, which the owner judges not visible as a step at the capture resolution
+L4	A7	lambert-box	box_back	energy_deficit	3	0.978	0.0000879	0.10	0.1000879	2x frozen floor	as box_floor
+L4	A7	lambert-box	box_ceiling	energy_deficit	3	1.000	0.0000131	0.10	0.1000131	2x frozen floor	as box_floor
+L4	A7	lambert-box	box_floor	rel_error_p95	3	1.561	0.00193	0.50	0.50193	2x frozen floor	as box_floor
+L4	A7	lambert-box	box_back	rel_error_p95	3	1.339	0.00147	0.50	0.50147	2x frozen floor	as box_floor
+L4	A7	lambert-box	box_ceiling	rel_error_p95	3	1.622	0.000621	0.50	0.500621	2x frozen floor	as box_floor
+L4	A8	lambert-box-closeup	all_geometry	ssao_relative_change	3	-0.0054	0.0000606	0	0.0000606	2x frozen floor	self-consistency gate: threshold is the floor (RLT-GI-004)
