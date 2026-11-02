@@ -42,3 +42,6 @@ crates/*/examples/tmp_*
 
 # Release tarballs (scripts/package-release.sh)
 /dist/
+
+# Python bytecode (scripts/m-light tools)
+__pycache__/
