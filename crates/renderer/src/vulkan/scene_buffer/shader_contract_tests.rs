@@ -4172,12 +4172,12 @@ fn phase2_gi_energy_contracts() {
         "RLT-GI-011: the clamp is expressed in the hit radiance's units"
     );
 
-    assert!(frag.contains("const float RT_LOD_GI      = 3.0;"), "RLT-GI-012");
-    assert!(frag.contains(
-        "float rtFootprintGi = min(length(dFdx(fragWorldPosRel)), length(dFdy(fragWorldPosRel)));"
-    ));
-    assert!(frag.contains("if (giTransportEligible && rtLodGi < RT_LOD_GI) {"));
-    assert!(frag.contains("smoothstep(RT_LOD_GI - 0.75, RT_LOD_GI, rtLodGi)"));
+    // RLT-GI-012 is deferred to the Q5 radiance cache (PRD rev 14): the
+    // isotropic-footprint gate cost +3 to +11 ms on content at the pinned
+    // tier. Widening the GI gate again needs a fresh A13 exit-cost run.
+    assert!(frag.contains("const float RT_LOD_GI      = 2.0;"), "RLT-GI-012 deferred");
+    assert!(frag.contains("if (giTransportEligible && rtLOD < RT_LOD_GI) {"), "RLT-GI-012 deferred");
+    assert!(!frag.contains("rtLodGi"), "RLT-GI-012 deferred: re-time A13 before widening the gate");
 }
 
 /// Fixed-exponent Schlick weights belong on the ordinary ALU multiply path,
