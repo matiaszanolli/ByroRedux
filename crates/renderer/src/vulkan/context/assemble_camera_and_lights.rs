@@ -694,7 +694,10 @@ impl VulkanContext {
             render_debug: [
                 self.render_debug_mode.shader_value(),
                 self.renderer_config.rt_test_lod_scale_bits.unwrap_or(0),
-                u32::from(self.renderer_config.rt_test_lod_telemetry),
+                // Bit 0 RT-LOD telemetry, bit 1 `--rt-test-no-gi-clamp`
+                // (M-LIGHT RLT-GI-006).
+                u32::from(self.renderer_config.rt_test_lod_telemetry)
+                    | (u32::from(self.renderer_config.rt_test_no_gi_clamp) << 1),
                 // Low 16 bits = rain wetness; high 16 bits = snow coverage.
                 // The terrain shader decodes this only for exterior LAND
                 // surfaces, so the structured debug mode/telemetry lanes

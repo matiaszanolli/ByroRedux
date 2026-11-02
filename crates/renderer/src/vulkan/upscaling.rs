@@ -219,6 +219,10 @@ pub struct RendererConfig {
     /// carries no medium. Without it `final` loses ~1.8 % at 3 m against the
     /// medium-free reference and the closure rung cannot close.
     pub rt_test_no_dust_floor: bool,
+    /// M-LIGHT RLT-GI-006 — disable the bounded path's per-sample luminance
+    /// clamp (`GI_SAMPLE_LUMINANCE_CLAMP`), so the L4 deficit can be
+    /// published with the clamp at its shipped value and without it.
+    pub rt_test_no_gi_clamp: bool,
 }
 
 impl Default for RendererConfig {
@@ -237,6 +241,7 @@ impl Default for RendererConfig {
             rt_test_seed_offset: 0,
             rt_test_no_jitter: false,
             rt_test_no_dust_floor: false,
+            rt_test_no_gi_clamp: false,
         }
     }
 }

@@ -1086,7 +1086,9 @@ void main() {
         ? RT_LOD_SCALE
         : uintBitsToFloat(renderDebug.y);
     float rtLOD = clamp(log2(rtFootprint * rtLodScale), 0.0, 3.0);
-    bool rtLodTelemetryEnabled = renderDebug.z != 0u;
+    // renderDebug.z bit 0 = RT-LOD telemetry; bit 1 = M-LIGHT RLT-GI-006's
+    // `--rt-test-no-gi-clamp` (the bounded path's luminance clamp off).
+    bool rtLodTelemetryEnabled = (renderDebug.z & 1u) != 0u;
     if (rtLodTelemetryEnabled) {
         atomicAdd(rayBudget.rtLodFragments, 1u);
         uint rtLodBin = min(uint(floor(rtLOD)), 3u);
@@ -4816,7 +4818,7 @@ void main() {
             // leaves normal-energy samples exactly unchanged.
             vec3 boundedPathSample = max(pathRadiance, vec3(0.0));
             float boundedPathLum = pathLuminance(boundedPathSample);
-            if (boundedPathLum > GI_SAMPLE_LUMINANCE_CLAMP) {
+            if (boundedPathLum > GI_SAMPLE_LUMINANCE_CLAMP && (renderDebug.z & 2u) == 0u) {
                 boundedPathSample *= GI_SAMPLE_LUMINANCE_CLAMP / boundedPathLum;
             }
             indirect = boundedPathSample;

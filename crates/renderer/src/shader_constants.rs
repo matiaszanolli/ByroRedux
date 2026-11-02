@@ -1606,7 +1606,7 @@ mod tests {
         let draw = include_str!("vulkan/context/assemble_camera_and_lights.rs");
         assert!(shader.contains("renderDebug.y == 0u"));
         assert!(shader.contains("uintBitsToFloat(renderDebug.y)"));
-        assert!(shader.contains("bool rtLodTelemetryEnabled = renderDebug.z != 0u"));
+        assert!(shader.contains("bool rtLodTelemetryEnabled = (renderDebug.z & 1u) != 0u"));
         for counter in [
             "rtLodFragments",
             "rtLodBin0",
