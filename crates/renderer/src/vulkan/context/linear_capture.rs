@@ -16,6 +16,12 @@
 //! quantity the view names. The presented PNG that `screenshot` writes is
 //! untouched (PTR-OUT-005).
 //!
+//! A capture may instead tap TAA's resolved output ([`LinearCaptureTap::PostTaa`]):
+//! post-bloom and post-reconstruction, the image the temporal gates measure
+//! (M-LIGHT RLT-SHD-002, -006, -010), recorded right after the TAA dispatch.
+//! It exists only when TAA ran that frame (a `final` view, no latched TAA
+//! failure); otherwise the capture records nothing and its caller times out.
+//!
 //! Single consumer (the `--linear-capture` CLI), so like the depth capture it
 //! carries no owner tag and no generation.
 
@@ -42,9 +48,21 @@ pub(super) struct LinearCaptureState {
     outcome: Option<Result<LinearCaptureReport, String>>,
 }
 
+/// Where a capture reads the frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LinearCaptureTap {
+    /// Composite's output before bloom: scene-linear radiance with no
+    /// temporal reconstruction (RLT-REF-007, RLT-REF-020).
+    #[default]
+    PreBloom,
+    /// TAA's resolved output: after bloom and temporal reconstruction.
+    PostTaa,
+}
+
 /// A capture in progress: the frames still owed and the running sum.
 pub(super) struct LinearCaptureJob {
     path: PathBuf,
+    tap: LinearCaptureTap,
     frames_target: u32,
     frames_recorded: u32,
     frames_read: u32,
@@ -73,9 +91,15 @@ impl VulkanContext {
     /// Start a capture of the next `frames` consecutive frames into `path`.
     /// Replaces any capture still in progress. `frames` is clamped to ≥ 1.
     pub fn request_linear_capture(&mut self, path: impl Into<PathBuf>, frames: u32) {
+        self.request_linear_capture_at(path, frames, LinearCaptureTap::PreBloom);
+    }
+
+    /// [`Self::request_linear_capture`] from a chosen tap.
+    pub fn request_linear_capture_at(&mut self, path: impl Into<PathBuf>, frames: u32, tap: LinearCaptureTap) {
         self.overlay.linear_capture.outcome = None;
         self.overlay.linear_capture.job = Some(LinearCaptureJob {
             path: path.into(),
+            tap,
             frames_target: frames.max(1),
             frames_recorded: 0,
             frames_read: 0,
@@ -200,35 +224,13 @@ impl VulkanContext {
     /// exposure meter, TAA and the native bridge see what they expect
     /// whether or not a capture ran.
     pub(super) unsafe fn linear_capture_record_copy(&mut self, cmd: vk::CommandBuffer, frame: usize) {
-        let Some(job) = self.overlay.linear_capture.job.as_ref() else {
+        let Some((extent, staging_buffer)) = self.linear_capture_copy_target(LinearCaptureTap::PreBloom) else {
             return;
         };
-        if job.frames_recorded >= job.frames_target {
-            return;
-        }
-        let extent = self.frame_extents.render;
-        if let Some(first) = job.extent {
-            if first != extent {
-                self.fail_linear_capture(format!(
-                    "render extent changed mid-capture: {}x{} → {}x{}",
-                    first.width, first.height, extent.width, extent.height
-                ));
-                return;
-            }
-        }
         let Some(scene_image) = self.post.composite.as_ref().map(|c| c.scene_image(frame)) else {
             self.fail_linear_capture("composite pipeline absent".to_string());
             return;
         };
-        let buffer_size = extent.width as vk::DeviceSize
-            * extent.height as vk::DeviceSize
-            * SCENE_TEXEL_BYTES as vk::DeviceSize;
-        self.ensure_linear_capture_staging(buffer_size);
-        let Some((staging_buffer, _, _)) = self.overlay.linear_capture.staging.as_ref() else {
-            self.fail_linear_capture("staging buffer creation failed".to_string());
-            return;
-        };
-        let staging_buffer = *staging_buffer;
 
         let range = super::super::descriptors::color_subresource_single_mip();
         let to_src = vk::ImageMemoryBarrier::default()
@@ -249,22 +251,7 @@ impl VulkanContext {
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .image(scene_image)
             .subresource_range(range);
-        let region = vk::BufferImageCopy::default()
-            .buffer_offset(0)
-            .buffer_row_length(0) // tightly packed
-            .buffer_image_height(0)
-            .image_subresource(vk::ImageSubresourceLayers {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                mip_level: 0,
-                base_array_layer: 0,
-                layer_count: 1,
-            })
-            .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
-            .image_extent(vk::Extent3D {
-                width: extent.width,
-                height: extent.height,
-                depth: 1,
-            });
+        let region = full_copy_region(extent);
 
         // SAFETY: `cmd` is recording outside any render pass (caller
         // contract). `scene_image` is this frame's live composite target in
@@ -303,6 +290,102 @@ impl VulkanContext {
             );
         }
 
+        self.linear_capture_copy_recorded(extent);
+    }
+
+    /// The post-TAA tap: copy this frame's resolved TAA output. Call right
+    /// after a recorded TAA dispatch.
+    ///
+    /// # Safety
+    ///
+    /// `cmd` must be recording outside any render pass, after this frame's
+    /// TAA dispatch. TAA leaves its output in `GENERAL` behind a
+    /// compute-write → shader-read barrier; the copy only reads it in that
+    /// layout, so it changes nothing the upscale tap or next frame's TAA
+    /// expect.
+    pub(super) unsafe fn linear_capture_record_copy_post_taa(&mut self, cmd: vk::CommandBuffer, frame: usize) {
+        let Some((extent, staging_buffer)) = self.linear_capture_copy_target(LinearCaptureTap::PostTaa) else {
+            return;
+        };
+        let Some((image, taa_extent)) = self
+            .post
+            .taa
+            .as_ref()
+            .map(|taa| (taa.output_image(frame), vk::Extent2D { width: taa.width, height: taa.height }))
+        else {
+            self.fail_linear_capture("TAA pipeline absent".to_string());
+            return;
+        };
+        if taa_extent != extent {
+            self.fail_linear_capture(format!(
+                "TAA output {}x{} is not the render extent {}x{}",
+                taa_extent.width, taa_extent.height, extent.width, extent.height
+            ));
+            return;
+        }
+        let to_transfer = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+            .old_layout(vk::ImageLayout::GENERAL)
+            .new_layout(vk::ImageLayout::GENERAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(super::super::descriptors::color_subresource_single_mip());
+        // SAFETY: caller contract above. `image` is this frame's TAA history
+        // slot in `GENERAL`; the barrier orders the dispatch's writes before
+        // the transfer read, and the copy is read-only, so no restore is
+        // needed. `staging_buffer` is as in `linear_capture_record_copy`.
+        unsafe {
+            self.device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[to_transfer],
+            );
+            self.device.cmd_copy_image_to_buffer(
+                cmd,
+                image,
+                vk::ImageLayout::GENERAL,
+                staging_buffer,
+                &[full_copy_region(extent)],
+            );
+        }
+        self.linear_capture_copy_recorded(extent);
+    }
+
+    /// The extent and staging buffer for this frame's copy, if a capture
+    /// from `tap` still owes frames. Fails the capture on an extent change.
+    fn linear_capture_copy_target(&mut self, tap: LinearCaptureTap) -> Option<(vk::Extent2D, vk::Buffer)> {
+        let job = self.overlay.linear_capture.job.as_ref()?;
+        if job.tap != tap || job.frames_recorded >= job.frames_target {
+            return None;
+        }
+        let extent = self.frame_extents.render;
+        if let Some(first) = job.extent {
+            if first != extent {
+                self.fail_linear_capture(format!(
+                    "render extent changed mid-capture: {}x{} → {}x{}",
+                    first.width, first.height, extent.width, extent.height
+                ));
+                return None;
+            }
+        }
+        let buffer_size = extent.width as vk::DeviceSize
+            * extent.height as vk::DeviceSize
+            * SCENE_TEXEL_BYTES as vk::DeviceSize;
+        self.ensure_linear_capture_staging(buffer_size);
+        let Some((staging_buffer, _, _)) = self.overlay.linear_capture.staging.as_ref() else {
+            self.fail_linear_capture("staging buffer creation failed".to_string());
+            return None;
+        };
+        Some((extent, *staging_buffer))
+    }
+
+    fn linear_capture_copy_recorded(&mut self, extent: vk::Extent2D) {
         if let Some(job) = self.overlay.linear_capture.job.as_mut() {
             job.frames_recorded += 1;
             job.extent = Some(extent);
@@ -332,6 +415,26 @@ impl VulkanContext {
         let staging = self.overlay.linear_capture.staging.take();
         super::helpers::destroy_staging_buffer(&self.device, self.allocator.as_ref(), staging);
     }
+}
+
+/// One whole-image, tightly packed colour copy of mip 0.
+fn full_copy_region(extent: vk::Extent2D) -> vk::BufferImageCopy {
+    vk::BufferImageCopy::default()
+        .buffer_offset(0)
+        .buffer_row_length(0)
+        .buffer_image_height(0)
+        .image_subresource(vk::ImageSubresourceLayers {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            mip_level: 0,
+            base_array_layer: 0,
+            layer_count: 1,
+        })
+        .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+        .image_extent(vk::Extent3D {
+            width: extent.width,
+            height: extent.height,
+            depth: 1,
+        })
 }
 
 /// Add one RGBA16F frame's RGB to `sum` (three f64 per texel, alpha

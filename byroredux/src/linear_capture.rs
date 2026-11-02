@@ -17,6 +17,11 @@
 //! A listed frame that arrives while the previous capture is still in flight
 //! is reported as skipped.
 //!
+//! `--linear-capture-tap post-taa` reads TAA's resolved output instead of
+//! composite's (post-bloom, post-reconstruction; `final` view only), the
+//! image the temporal gates measure. The default, `pre-bloom`, is the
+//! unreconstructed scene-linear image every reference gate compares.
+//!
 //! Like `--bench-capture-every`, this is a capture mode: the copy stalls
 //! nothing on the GPU, but the per-frame host readback is not free, so take
 //! `bench:` timings in a separate run.
@@ -43,6 +48,8 @@ pub(crate) struct LinearCaptureCli {
     pub next: usize,
     /// The frame whose capture is in flight.
     pub in_flight: Option<u32>,
+    /// `--linear-capture-tap`: where every capture of this run reads.
+    pub tap: byroredux_renderer::vulkan::context::LinearCaptureTap,
 }
 
 /// What the caller does after one tick of [`LinearCaptureCli::advance`].
@@ -62,11 +69,20 @@ impl LinearCaptureCli {
     ) -> Result<Option<Self>, String> {
         let frames = parse_string_arg(args, "--linear-capture-frames");
         let at = parse_string_arg(args, "--linear-capture-at");
+        let tap = parse_string_arg(args, "--linear-capture-tap");
         let Some(path) = parse_string_arg(args, "--linear-capture") else {
-            if frames.is_some() || at.is_some() {
-                return Err("--linear-capture-frames / -at require --linear-capture PATH".to_owned());
+            if frames.is_some() || at.is_some() || tap.is_some() {
+                return Err("--linear-capture-frames / -at / -tap require --linear-capture PATH".to_owned());
             }
             return Ok(None);
+        };
+        use byroredux_renderer::vulkan::context::LinearCaptureTap;
+        let tap = match tap.as_deref() {
+            None | Some("pre-bloom") => LinearCaptureTap::PreBloom,
+            Some("post-taa") => LinearCaptureTap::PostTaa,
+            Some(other) => {
+                return Err(format!("--linear-capture-tap '{other}' is not pre-bloom or post-taa"))
+            }
         };
         let at = match at {
             None => Vec::new(),
@@ -109,6 +125,7 @@ impl LinearCaptureCli {
             at,
             next: 0,
             in_flight: None,
+            tap,
         }))
     }
 
@@ -134,7 +151,7 @@ impl LinearCaptureCli {
             let due = self.at[self.next];
             self.next += 1;
             if due == frame && self.in_flight.is_none() {
-                ctx.request_linear_capture(self.path_for(frame), 1);
+                ctx.request_linear_capture_at(self.path_for(frame), 1, self.tap);
                 self.in_flight = Some(frame);
                 requested = true;
             } else {
@@ -172,7 +189,7 @@ impl LinearCaptureCli {
             return LinearCaptureStep::Pending;
         }
         let Some(ticks_left) = self.deadline else {
-            ctx.request_linear_capture(self.path.clone(), self.frames);
+            ctx.request_linear_capture_at(self.path.clone(), self.frames, self.tap);
             self.deadline = Some(self.frames + DEADLINE_SLACK_FRAMES);
             return LinearCaptureStep::Pending;
         };
@@ -269,6 +286,25 @@ mod tests {
         assert!(LinearCaptureCli::from_args(
             &args(&["--linear-capture", "f_{frame}.exr", "--linear-capture-at", "4,x"]),
             Some(64)
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn tap_defaults_to_pre_bloom_and_rejects_unknown_names() {
+        use byroredux_renderer::vulkan::context::LinearCaptureTap;
+        let parsed = LinearCaptureCli::from_args(&args(&["--linear-capture", "a.exr"]), Some(8)).unwrap().unwrap();
+        assert_eq!(parsed.tap, LinearCaptureTap::PreBloom);
+        let parsed = LinearCaptureCli::from_args(
+            &args(&["--linear-capture", "a.exr", "--linear-capture-tap", "post-taa"]),
+            Some(8),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(parsed.tap, LinearCaptureTap::PostTaa);
+        assert!(LinearCaptureCli::from_args(
+            &args(&["--linear-capture", "a.exr", "--linear-capture-tap", "after"]),
+            Some(8)
         )
         .is_err());
     }

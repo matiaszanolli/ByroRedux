@@ -1066,6 +1066,8 @@ impl VulkanContext {
                         timers.cmd_end(TimerPass::Taa, &self.device, cmd, frame);
                     }
                 }
+                // M-LIGHT RLT-SHD-002 — the post-TAA linear capture tap.
+                self.linear_capture_record_copy_post_taa(cmd, frame);
             }
         }
     }

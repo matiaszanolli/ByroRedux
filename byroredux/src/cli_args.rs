@@ -262,6 +262,8 @@ pub fn parse_renderer_config(args: &[String]) -> Result<RendererConfig> {
     let rt_test_no_dust_floor = args.iter().any(|arg| arg == "--rt-test-no-dust-floor");
     // M-LIGHT RLT-GI-006 — the bounded path's luminance clamp off.
     let rt_test_no_gi_clamp = args.iter().any(|arg| arg == "--rt-test-no-gi-clamp");
+    // M-LIGHT RLT-SHD-005 — ReSTIR's reservoir weight cap off.
+    let rt_test_no_reservoir_clamp = args.iter().any(|arg| arg == "--rt-test-no-reservoir-clamp");
     // Stage 1 (RENDERING-PLAN.md) — display transform + auto-exposure boot
     // state; both stay live-tunable via the `tonemap` / `exposure` console
     // commands afterwards.
@@ -291,6 +293,7 @@ pub fn parse_renderer_config(args: &[String]) -> Result<RendererConfig> {
         rt_test_no_jitter,
         rt_test_no_dust_floor,
         rt_test_no_gi_clamp,
+        rt_test_no_reservoir_clamp,
     })
 }
 

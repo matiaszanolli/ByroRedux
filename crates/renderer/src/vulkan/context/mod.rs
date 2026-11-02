@@ -1586,7 +1586,7 @@ mod begin_frame_recording;
 mod build_and_upload_instances;
 mod depth_capture;
 mod linear_capture;
-pub use linear_capture::{write_linear_exr, LinearCaptureReport};
+pub use linear_capture::{write_linear_exr, LinearCaptureReport, LinearCaptureTap};
 mod dispatch_skin_and_cluster;
 mod geometry_pass;
 mod helpers;

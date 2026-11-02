@@ -223,6 +223,10 @@ pub struct RendererConfig {
     /// clamp (`GI_SAMPLE_LUMINANCE_CLAMP`), so the L4 deficit can be
     /// published with the clamp at its shipped value and without it.
     pub rt_test_no_gi_clamp: bool,
+    /// M-LIGHT RLT-SHD-005 — lift ReSTIR's per-reservoir weight cap
+    /// (`RESERVOIR_W_CLAMP`, `triangle.frag`), so its bias can be measured
+    /// as the luminance-integral delta, clamp on against off.
+    pub rt_test_no_reservoir_clamp: bool,
 }
 
 impl Default for RendererConfig {
@@ -242,6 +246,7 @@ impl Default for RendererConfig {
             rt_test_no_jitter: false,
             rt_test_no_dust_floor: false,
             rt_test_no_gi_clamp: false,
+            rt_test_no_reservoir_clamp: false,
         }
     }
 }

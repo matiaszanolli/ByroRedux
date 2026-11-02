@@ -651,7 +651,7 @@ mod tests {
         let scale = src.find("restirWSum *= restirM;").expect("#4940 scale");
         let temporal = src.find("float wPrev = rp.W * rpPHat * mPrev;").expect("temporal combine");
         let finalize = src
-            .find("restirW = min(restirWSum / (restirM * restirPHat), RESERVOIR_W_CLAMP);")
+            .find("restirW = min(restirWSum / (restirM * restirPHat), reservoirWClamp);")
             .expect("finalize");
         assert!(stream < scale && scale < temporal && temporal < finalize);
     }

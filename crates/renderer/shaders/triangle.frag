@@ -3335,7 +3335,10 @@ void main() {
         // 64× matches the ratio of a dim fill light to a hero light.
         // Shared by both the ReSTIR finalize path and the legacy WRS
         // pass 2 below, so it stays outside the ENABLE_LEGACY_WRS gate.
+        // M-LIGHT RLT-SHD-005: renderDebug.z bit 2 (`--rt-test-no-reservoir-clamp`)
+        // lifts the cap so its bias can be measured.
         const float RESERVOIR_W_CLAMP = 64.0;
+        float reservoirWClamp = (renderDebug.z & 4u) != 0u ? 3.0e38 : RESERVOIR_W_CLAMP;
 
 #if ENABLE_LEGACY_WRS
         // #1799 / PERF-D5-NEW-01 — legacy 16-slot WRS reservoir storage,
@@ -4028,7 +4031,7 @@ void main() {
             // Finalize W = wSum / (M · pHat).
             float restirW = 0.0;
             if (restirY != 0xFFFFFFFFu && restirM > 0.0 && restirPHat > 1e-6) {
-                restirW = min(restirWSum / (restirM * restirPHat), RESERVOIR_W_CLAMP);
+                restirW = min(restirWSum / (restirM * restirPHat), reservoirWClamp);
             }
             selectedLightDebug = restirY;
             vec3 frameContribution = vec3(0.0); // this frame's rad·W·V estimate
@@ -4422,7 +4425,7 @@ void main() {
             if (resLight[s] == 0xFFFFFFFFu) continue;
             uint i = resLight[s];
             if (!visibilityMaskNeedsTrace(lights[i].params.z)) continue;
-            float W = min((resWSum / max(resWSel[s], 1e-6)) * invK, RESERVOIR_W_CLAMP);
+            float W = min((resWSum / max(resWSel[s], 1e-6)) * invK, reservoirWClamp);
             vec3 lightPos = lights[i].position_radius.xyz;
             float radius = lights[i].position_radius.w;
             float lightType = lights[i].color_type.w;
