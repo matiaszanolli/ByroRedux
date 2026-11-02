@@ -1363,7 +1363,13 @@ pub const MESH_ID_STABLE_MASK: u32 = !MESH_ID_NO_HISTORY_BIT;
 // value at 1 spp; the temporal/spatial filters cannot average that heavy tail
 // before it becomes a large low-frequency stain. Keep ordinary bounce energy
 // untouched and bound only the outlier tail at the denoiser boundary.
-pub const GI_SAMPLE_LUMINANCE_CLAMP: f32 = 1.0;
+//
+// M-LIGHT RLT-GI-011 (2026-11-02): PI, was 1.0. Path hits now shade emitters
+// in the primary lobe's non-/PI Lambert convention, so ordinary bounce
+// samples are PI x their old values; at 1.0 the clamp cut ordinary bounce
+// energy, against its own stated intent. PI keeps the same tail in the same
+// units. Its bias is published by A7 (`--rt-test-no-gi-clamp`, RLT-GI-006).
+pub const GI_SAMPLE_LUMINANCE_CLAMP: f32 = std::f32::consts::PI;
 
 // Caustic accumulation
 pub const CAUSTIC_FIXED_SCALE: f32 = 65536.0;

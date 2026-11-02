@@ -612,6 +612,24 @@ vec3 pathEnvironmentRadiance(vec3 direction) {
     return sceneFlags.yzw * (1.0 / PI) * 0.5;
 }
 
+// M-LIGHT RLT-GI-011 — the BSDF an emitter's light meets at a path hit, in
+// the primary lobe's convention: the primary surface shades emitters with
+// the legacy non-/PI Lambert (`diffuseBrdf = kD * albedo` above), so the
+// hit's diffuse lobe is scaled by PI to match; otherwise bounce light sat a
+// factor of PI below the direct light it comes from. The specular lobe,
+// hit emission and escaped environment radiance keep physical units.
+vec3 pathHitEmitterBsdf(
+    vec3 n, vec3 viewDir, vec3 L, GpuMaterial mat, vec3 baseColor,
+    out float diffusePdf, out float specularPdf
+) {
+    vec3 specularLobe;
+    vec3 diffuseLobe = evaluatePathBsdfLobes(
+        n, viewDir, L, baseColor, mat.metalness, mat.roughness, mat.ior,
+        (mat.materialFlags & MAT_FLAG_LAMBERTIAN_REFERENCE) != 0u,
+        diffusePdf, specularPdf, specularLobe);
+    return diffuseLobe * PI + specularLobe;
+}
+
 // Direct outgoing radiance at a bounded-path hit. Candidate selection remains
 // bounded by GI_HIT_LIGHT_CAP and the caller-selected visible-light limit, but
 // scores and accumulates the actual material BRDF rather than treating every
@@ -637,11 +655,8 @@ vec3 pathHitRadiance(
                 candidateL, candidateDist, candidateContrib)) continue;
         float diffusePdf;
         float specularPdf;
-        vec3 candidateBsdf = evaluatePathBsdf(
-            n, viewDir, candidateL,
-            baseColor, mat.metalness, mat.roughness, mat.ior,
-            (mat.materialFlags & MAT_FLAG_LAMBERTIAN_REFERENCE) != 0u,
-            diffusePdf, specularPdf);
+        vec3 candidateBsdf = pathHitEmitterBsdf(
+            n, viewDir, candidateL, mat, baseColor, diffusePdf, specularPdf);
         float score = candidateContrib
             * pathLuminance(lights[i].color_type.rgb * candidateBsdf);
         int insertAt = -1;
@@ -672,11 +687,8 @@ vec3 pathHitRadiance(
                 i, p, n, dbgFlags, L, dist, contribution)) continue;
         float diffusePdf;
         float specularPdf;
-        vec3 bsdf = evaluatePathBsdf(
-            n, viewDir, L,
-            baseColor, mat.metalness, mat.roughness, mat.ior,
-            (mat.materialFlags & MAT_FLAG_LAMBERTIAN_REFERENCE) != 0u,
-            diffusePdf, specularPdf);
+        vec3 bsdf = pathHitEmitterBsdf(
+            n, viewDir, L, mat, baseColor, diffusePdf, specularPdf);
         if (pathLuminance(bsdf) <= 1e-6) continue;
         vec3 visibility = traceLightTransmittance(
             i, offsetRayOrigin(p, n), L, max(dist, 0.05));

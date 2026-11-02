@@ -4123,19 +4123,61 @@ fn lambertian_reference_flag_reaches_light_loop_primary_weight_and_gi_walk() {
     ));
     assert!(lighting.contains("kD = vec3(1.0 - metalness);\n        specular = vec3(0.0);"));
     assert!(lighting.contains("(mat.materialFlags & MAT_FLAG_PBR_BSDF) != 0u && !lambertianReference"));
+    // RLT-GI-011 — both pathHitRadiance evaluations go through
+    // pathHitEmitterBsdf, which passes the flag once.
     assert_eq!(
         lighting
             .matches("(mat.materialFlags & MAT_FLAG_LAMBERTIAN_REFERENCE) != 0u,")
             .count(),
-        2,
-        "both pathHitRadiance BSDF evaluations must pass the flag"
+        1,
+        "pathHitEmitterBsdf must pass the flag"
     );
+    assert_eq!(lighting.matches("= pathHitEmitterBsdf(").count(), 2);
     assert!(frag.contains("primaryDiffuseWeight = vec3(1.0 - metalness);"));
     assert!(frag.contains("(hitMat.materialFlags & MAT_FLAG_LAMBERTIAN_REFERENCE) != 0u,"));
     assert!(pbr.contains("if (lambertian) return 0.0;"));
     assert!(pbr.contains(
         "return (1.0 - clamp(metalness, 0.0, 1.0)) * max(baseColor, vec3(0.0)) * (1.0 / PI);"
     ));
+}
+
+/// M-LIGHT Phase 2 (reference-lighting RLT-GI-004, RLT-GI-011, RLT-GI-012).
+/// - RLT-GI-004: SSAO multiplies the untraced share only, in every ambient
+///   branch; the traced-share view shows `indirect` bare.
+/// - RLT-GI-011: path hits shade emitters through `pathHitEmitterBsdf`, whose
+///   diffuse lobe carries the primary lobe's PI; the luminance clamp is in the
+///   same units.
+/// - RLT-GI-012: the GI gate reads the isotropic footprint with the full-range
+///   ceiling, so grazing room surfaces keep their traced GI.
+#[test]
+fn phase2_gi_energy_contracts() {
+    let frag = include_str!("../../../shaders/triangle.frag");
+    let lighting = include_str!("../../../shaders/include/lighting.glsl");
+
+    for line in [
+        "indirectLight = skyDiffuse * (1.0 - tracedDiffuseWeight) * combinedAO + indirect;",
+        "indirectLight = ambient_dir * combinedAO + indirect;",
+        "indirectLight = ambient * ambientAO + indirect;",
+        "outColor = vec4(indirect, 1.0);",
+    ] {
+        assert!(frag.contains(line), "RLT-GI-004: `{line}` missing");
+    }
+    assert!(!frag.contains("+ indirect) * combinedAO"), "RLT-GI-004: traced share x SSAO is back");
+    assert!(!frag.contains("indirect * combinedAO"), "RLT-GI-004: traced share x SSAO is back");
+
+    assert!(lighting.contains("return diffuseLobe * PI + specularLobe;"), "RLT-GI-011");
+    assert_eq!(
+        crate::shader_constants::GI_SAMPLE_LUMINANCE_CLAMP,
+        std::f32::consts::PI,
+        "RLT-GI-011: the clamp is expressed in the hit radiance's units"
+    );
+
+    assert!(frag.contains("const float RT_LOD_GI      = 3.0;"), "RLT-GI-012");
+    assert!(frag.contains(
+        "float rtFootprintGi = min(length(dFdx(fragWorldPosRel)), length(dFdy(fragWorldPosRel)));"
+    ));
+    assert!(frag.contains("if (giTransportEligible && rtLodGi < RT_LOD_GI) {"));
+    assert!(frag.contains("smoothstep(RT_LOD_GI - 0.75, RT_LOD_GI, rtLodGi)"));
 }
 
 /// Fixed-exponent Schlick weights belong on the ordinary ALU multiply path,

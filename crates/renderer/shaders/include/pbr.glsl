@@ -466,12 +466,15 @@ vec3 sampleVisibleGgxNormal(
 
 // `lambertian` (M-LIGHT RLT-GI-010, `MAT_FLAG_LAMBERTIAN_REFERENCE`): the
 // reference-rung material is the plain Lambert lobe, no GGX and no (1 - F).
-vec3 evaluatePathBsdf(
+// The two lobes come back separately: an emitter's light at a path hit
+// scales the diffuse one into the primary lobe's convention (RLT-GI-011).
+vec3 evaluatePathBsdfLobes(
     vec3 N, vec3 V, vec3 L,
     vec3 baseColor, float metalness, float roughness, float ior,
     bool lambertian,
-    out float diffusePdf, out float specularPdf
+    out float diffusePdf, out float specularPdf, out vec3 specularLobe
 ) {
+    specularLobe = vec3(0.0);
     float NdotV = max(dot(N, V), 0.0);
     float NdotL = max(dot(N, L), 0.0);
     diffusePdf = NdotL * (1.0 / PI);
@@ -507,7 +510,21 @@ vec3 evaluatePathBsdf(
     // VNDF half-vector density transformed through reflection:
     // p(wi) = D(h) G1(wo) / (4 |n·wo|).
     specularPdf = D * G1V / max(4.0 * NdotV, 1e-6);
-    return diffuse + specular;
+    specularLobe = specular;
+    return diffuse;
+}
+
+vec3 evaluatePathBsdf(
+    vec3 N, vec3 V, vec3 L,
+    vec3 baseColor, float metalness, float roughness, float ior,
+    bool lambertian,
+    out float diffusePdf, out float specularPdf
+) {
+    vec3 specularLobe;
+    vec3 diffuseLobe = evaluatePathBsdfLobes(
+        N, V, L, baseColor, metalness, roughness, ior, lambertian,
+        diffusePdf, specularPdf, specularLobe);
+    return diffuseLobe + specularLobe;
 }
 
 float pathSpecularProbability(

@@ -1080,12 +1080,20 @@ void main() {
     // post-#material-matte-default: far fewer surfaces are glossy enough
     // (roughness < 0.6) to fire the ray at all.
     const float RT_LOD_REFLECT = 3.0;
-    const float RT_LOD_GI      = 2.0;  // GI ray ceiling
+    // M-LIGHT RLT-GI-012 — the GI gate keeps the bounded path on every
+    // room-scale surface: it reads the isotropic footprint below (a grazing
+    // floor is not "far" just because one derivative is stretched) and its
+    // ceiling is the full range, so a room in view sits below the fade.
+    const float RT_LOD_GI      = 3.0;  // GI ray ceiling
     float rtFootprint = max(length(dFdx(fragWorldPosRel)), length(dFdy(fragWorldPosRel)));  // #1496 — derivative on relative pos
     float rtLodScale = renderDebug.y == 0u
         ? RT_LOD_SCALE
         : uintBitsToFloat(renderDebug.y);
     float rtLOD = clamp(log2(rtFootprint * rtLodScale), 0.0, 3.0);
+    // RLT-GI-012 — the smaller derivative: the pixel's true size at its
+    // distance, without the grazing-angle stretch of the larger one.
+    float rtFootprintGi = min(length(dFdx(fragWorldPosRel)), length(dFdy(fragWorldPosRel)));
+    float rtLodGi = clamp(log2(rtFootprintGi * rtLodScale), 0.0, 3.0);
     // renderDebug.z bit 0 = RT-LOD telemetry; bit 1 = M-LIGHT RLT-GI-006's
     // `--rt-test-no-gi-clamp` (the bounded path's luminance clamp off).
     bool rtLodTelemetryEnabled = (renderDebug.z & 1u) != 0u;
@@ -4590,10 +4598,10 @@ void main() {
     float giFade = 1.0 - smoothstep(4000.0, 6000.0, giDist);
     giTransportEligible = giTransportEligible && giFade > 0.01;
     if (rtLodTelemetryEnabled && giTransportEligible) {
-        if (rtLOD < RT_LOD_GI) atomicAdd(rayBudget.rtGiTraced, 1u);
+        if (rtLodGi < RT_LOD_GI) atomicAdd(rayBudget.rtGiTraced, 1u);
         else atomicAdd(rayBudget.rtGiLodCulled, 1u);
     }
-    if (giTransportEligible && rtLOD < RT_LOD_GI) {
+    if (giTransportEligible && rtLodGi < RT_LOD_GI) {
             // GI noise seed. Hold it for 4 frames while the camera MOVES to
             // suppress flicker (SVGF history is short under motion). When the
             // camera is PARKED (dofParams.w >= 1: history mode 1, 2 or 3), advance the seed
@@ -4838,7 +4846,7 @@ void main() {
             // far-side zero continuously. No extra rays: the hard gate
             // still bounds where rays fire; this only shapes the weight
             // near the cutoff.
-            float giLodFade = 1.0 - smoothstep(RT_LOD_GI - 0.75, RT_LOD_GI, rtLOD);
+            float giLodFade = 1.0 - smoothstep(RT_LOD_GI - 0.75, RT_LOD_GI, rtLodGi);
             indirect *= giLodFade;
             tracedDiffuseWeight = giFade * giLodFade;
     }
@@ -4919,8 +4927,10 @@ void main() {
         // Both estimators include the same sky. Crossfade the unoccluded SH
         // fallback with the bounded path; adding them would count skylight
         // twice. The path handles actual geometry visibility and bounces.
+        // M-LIGHT RLT-GI-004 — SSAO multiplies only the untraced share; the
+        // traced share already resolved its own occlusion along real rays.
         vec3 skyDiffuse = exteriorSkyDiffuseOr(N, vec3(0.0)) * primaryDiffuseWeight;
-        indirectLight = (skyDiffuse * (1.0 - tracedDiffuseWeight) + indirect) * combinedAO;
+        indirectLight = skyDiffuse * (1.0 - tracedDiffuseWeight) * combinedAO + indirect;
     } else if (dalcFlags.x > 0.5) {
         // Sky-fill / cavity-fill cube. The cube carries the
         // hemispheric ambient response so we modulate by the
@@ -4929,10 +4939,14 @@ void main() {
         // from the cube, which is the directionally-correct
         // cavity fill.
         vec3 ambient_dir = sampleDalcCube(N);
-        indirectLight = (ambient_dir + indirect) * combinedAO;
+        // M-LIGHT RLT-GI-004 — SSAO multiplies the authored cube only; the
+        // traced share already resolved its own occlusion. (The Q2
+        // cross-fade of the cube against traced GI is deferred, rev 14.)
+        indirectLight = ambient_dir * combinedAO + indirect;
     } else {
         float ambientAO = max(combinedAO, AMBIENT_AO_FLOOR);
-        indirectLight = ambient * ambientAO + indirect * combinedAO;
+        // RLT-GI-004 — the traced share carries no SSAO.
+        indirectLight = ambient * ambientAO + indirect;
     }
 
     // Glass compositing: Fresnel controls the output alpha.
@@ -5105,11 +5119,11 @@ void main() {
         outAlbedo = vec4(1.0);
     } else if (viewTracedShare) {
         // M-LIGHT RLT-GI-009 — the traced share exactly as it enters
-        // `indirectLight` in every ambient branch above (`indirect *
-        // combinedAO`), without the untraced sky / ambient / DALC share.
+        // `indirectLight` in every ambient branch above (`indirect`, no SSAO
+        // since RLT-GI-004), without the untraced sky / ambient / DALC share.
         // Single-frame, pre-SVGF, not multiplied by albedo, like
         // `indirect_only`.
-        outColor = vec4(indirect * combinedAO, 1.0);
+        outColor = vec4(indirect, 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
     } else if (viewIndirectOnly) {
