@@ -242,6 +242,16 @@ pub fn parse_renderer_config(args: &[String]) -> Result<RendererConfig> {
             Ok(tier)
         })
         .transpose()?;
+    // M-LIGHT RLT-REF-013 — shift every RT sampler's seed so two captures of
+    // one binary differ only in sampling (noise-floor measurement).
+    let rt_test_seed_offset = option("--rt-test-seed-offset")?
+        .map(|value| {
+            value.parse::<u32>().map_err(|_| {
+                anyhow::anyhow!("--rt-test-seed-offset requires a non-negative integer, got '{value}'")
+            })
+        })
+        .transpose()?
+        .unwrap_or(0);
     // Stage 1 (RENDERING-PLAN.md) — display transform + auto-exposure boot
     // state; both stay live-tunable via the `tonemap` / `exposure` console
     // commands afterwards.
@@ -267,6 +277,7 @@ pub fn parse_renderer_config(args: &[String]) -> Result<RendererConfig> {
         rt_test_lod_scale_bits,
         rt_test_lod_telemetry,
         rt_test_ray_quality_tier,
+        rt_test_seed_offset,
     })
 }
 

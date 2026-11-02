@@ -926,6 +926,9 @@ impl App {
         cpu_t.rof_pre_draw_ms = rof_pre_draw_ns as f32 * NS_TO_MS;
         cpu_t.rof_draw_call_ms = rof_draw_call_ns as f32 * NS_TO_MS;
         cpu_t.rof_post_draw_ms = rof_post_draw_ns as f32 * NS_TO_MS;
+        drop(cpu_t);
+        // M51 PTR-VAL-004 — `--export-mitsuba DIR`, once a frame has rendered.
+        self.advance_mitsuba_export();
     }
 
     /// The pause menu's Quit, taken mid-frame: the egui frame built this

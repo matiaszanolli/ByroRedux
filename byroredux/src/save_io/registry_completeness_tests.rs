@@ -449,6 +449,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
     /// Verified 2026-08-05 against real (non-`#[cfg(test)]`) insertion
     /// sites for every entry — see the individual reasons.
     const NOT_SAVED_BY_DESIGN: &[(&str, &str)] = &[
+        // ── M-LIGHT reference rungs (#6600) ─────────────────────────
+        ("CornellMeshSources", "CPU copies of a Cornell reference rung's uploaded meshes, held only for --export-mitsuba; rebuilt by the rung's scene setup and keyed by session-local mesh handles"),
         // ── #6350 VATS session state ────────────────────────────────
         ("VatsModel", "re-derived at load from the load order's GMSTs by build_vats_model; saving it would freeze a mod's tuning across load-order changes"),
         ("VatsState", "transient targeting-mode state (mode + scan + queue); dies with the session like vanilla — the AP pool persists through ActorValues"),

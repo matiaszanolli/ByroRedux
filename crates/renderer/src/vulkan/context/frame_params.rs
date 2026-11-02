@@ -75,6 +75,17 @@ fn halton(mut index: u32, base: u32) -> f32 {
 /// a grid crossing — misfired on both ordinary walk/run speeds and every
 /// grid crossing, permanently defeating #1489's origin correction and
 /// forcing TAA/SVGF/FSR into a reset loop while the player simply moved.
+/// Frame-index stride between RT sampling seeds (RLT-REF-013). Odd and not
+/// a multiple of 64, so seeds differ in the 64-frame interleaved-gradient
+/// period as well as in the integer hashes; 4099 is prime.
+pub(crate) const RT_SEED_STRIDE: u32 = 4099;
+
+/// The frame index the RT samplers see: the frame counter shifted by the
+/// test seed offset, wrapped at 2^24 like `GpuCamera.position.w` (#1161).
+pub(crate) fn rt_sampling_frame_index(frame_counter: u32, seed_offset: u32) -> u32 {
+    frame_counter.wrapping_add(seed_offset.wrapping_mul(RT_SEED_STRIDE)) & 0x00FF_FFFF
+}
+
 pub(super) fn is_camera_cut(frame_counter: u32, camera_delta: f32, cam_forward_dot: f32) -> bool {
     frame_counter > 0 && (camera_delta > 256.0 || cam_forward_dot < 0.0)
 }
@@ -250,6 +261,29 @@ pub(super) fn morph_gpu_fields_for_draw(
     slot: Option<(vk::DeviceAddress, vk::DeviceAddress, u32)>,
 ) -> (vk::DeviceAddress, vk::DeviceAddress, u32) {
     slot.unwrap_or((0, 0, 0))
+}
+
+#[cfg(test)]
+mod rt_sampling_seed_tests {
+    use super::{rt_sampling_frame_index, RT_SEED_STRIDE};
+
+    #[test]
+    fn zero_offset_is_the_shipping_sequence() {
+        for frame in [0, 1, 63, 0x00FF_FFFF, 0x0100_0000, u32::MAX] {
+            assert_eq!(rt_sampling_frame_index(frame, 0), frame & 0x00FF_FFFF);
+        }
+    }
+
+    #[test]
+    fn seeds_differ_in_the_ign_period_and_wrap_at_2_24() {
+        // IGN keys on frame mod 64; a stride that is a multiple of 64 would
+        // give every seed the same IGN noise.
+        assert_ne!(RT_SEED_STRIDE % 64, 0);
+        let a = rt_sampling_frame_index(10, 1) % 64;
+        let b = rt_sampling_frame_index(10, 2) % 64;
+        assert_ne!(a, b);
+        assert!(rt_sampling_frame_index(0x00FF_FFFF, 1) < 0x0100_0000);
+    }
 }
 
 #[cfg(test)]

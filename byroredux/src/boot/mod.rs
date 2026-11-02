@@ -397,12 +397,14 @@ pub(crate) fn run() -> Result<()> {
     if renderer_config.rt_test_lod_scale_bits.is_some()
         || renderer_config.rt_test_lod_telemetry
         || renderer_config.rt_test_ray_quality_tier.is_some()
+        || renderer_config.rt_test_seed_offset != 0
     {
         log::warn!(
-            "RT TEST LOD diagnostics active: scale={:?} telemetry={} quality_tier={:?}",
+            "RT TEST LOD diagnostics active: scale={:?} telemetry={} quality_tier={:?} seed_offset={}",
             renderer_config.rt_test_lod_scale_bits.map(f32::from_bits),
             renderer_config.rt_test_lod_telemetry,
             renderer_config.rt_test_ray_quality_tier,
+            renderer_config.rt_test_seed_offset,
         );
     }
 
@@ -540,6 +542,8 @@ pub(crate) fn run() -> Result<()> {
     app.groundcover_off = groundcover_off;
     app.screenshot_path = screenshot_path;
     app.linear_capture = linear_capture;
+    app.export_mitsuba_dir =
+        parse_string_arg(&args, "--export-mitsuba").map(std::path::PathBuf::from);
     app.bench_capture = bench_capture;
     app.bench_camera = bench_camera;
     app.camera_pos_override = camera_pos;

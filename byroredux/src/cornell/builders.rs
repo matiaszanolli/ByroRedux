@@ -396,6 +396,9 @@ pub(super) fn name_entity(world: &mut World, entity: byroredux_core::ecs::Entity
 pub(super) struct MeshBuilder<'a> {
     pub(super) ctx: &'a mut VulkanContext,
     pending: Vec<(u32, u32, u32)>,
+    /// CPU copy of every upload, kept for the Mitsuba exporter (PTX-003);
+    /// handed to the world by [`Self::finish_recording_sources`].
+    sources: std::collections::HashMap<u32, super::mitsuba_export::CornellMeshSource>,
 }
 
 impl<'a> MeshBuilder<'a> {
@@ -403,6 +406,7 @@ impl<'a> MeshBuilder<'a> {
         Self {
             ctx,
             pending: Vec::new(),
+            sources: std::collections::HashMap::new(),
         }
     }
 
@@ -432,6 +436,14 @@ impl<'a> MeshBuilder<'a> {
             .expect("Cornell scene-mesh upload failed");
         self.pending
             .push((handle, verts.len() as u32, idxs.len() as u32));
+        self.sources.insert(
+            handle,
+            super::mitsuba_export::CornellMeshSource {
+                positions: verts.iter().map(|v| v.position).collect(),
+                normals: verts.iter().map(|v| v.normal).collect(),
+                indices: idxs.to_vec(),
+            },
+        );
         MeshHandle(handle)
     }
 
@@ -488,5 +500,14 @@ impl<'a> MeshBuilder<'a> {
     /// Build BLAS for every uploaded mesh in one batched call.
     pub(super) fn finish(self) {
         self.ctx.build_blas_batched(&self.pending);
+    }
+
+    /// [`Self::finish`], returning the CPU mesh sources for the Mitsuba
+    /// exporter (`CornellMeshSources`, PTX-003).
+    pub(super) fn finish_recording_sources(
+        self,
+    ) -> std::collections::HashMap<u32, super::mitsuba_export::CornellMeshSource> {
+        self.ctx.build_blas_batched(&self.pending);
+        self.sources
     }
 }

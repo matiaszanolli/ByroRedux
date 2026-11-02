@@ -529,6 +529,38 @@ impl App {
         false
     }
 
+    /// `--export-mitsuba DIR` (M51 PTR-VAL-004, #6600): write the scene to a
+    /// Mitsuba 3 directory after the first rendered frame, once. A refused
+    /// export (PTX-005) is reported and the run continues.
+    pub(crate) fn advance_mitsuba_export(&mut self) {
+        if self.bench_frames_count == 0 {
+            return;
+        }
+        let (Some(dir), Some(ctx)) = (self.export_mitsuba_dir.take(), self.renderer.as_ref()) else {
+            return;
+        };
+        let outcome = crate::cornell::mitsuba_export::gather_export_scene(
+            &self.world,
+            ctx.render_extent(),
+        )
+        .and_then(|scene| {
+            let sources = self
+                .world
+                .try_resource::<crate::cornell::mitsuba_export::CornellMeshSources>()
+                .ok_or("the scene recorded no mesh sources (PTX-003)")?;
+            crate::cornell::mitsuba_export::export_mitsuba(&scene, &sources, &dir)
+        });
+        match outcome {
+            Ok(report) => println!(
+                "export-mitsuba: wrote {} ({} shapes, {} emitters)",
+                report.scene_xml.display(),
+                report.shapes,
+                report.emitters
+            ),
+            Err(e) => eprintln!("export-mitsuba: refused: {e}"),
+        }
+    }
+
     /// Drive `--linear-capture` (see `linear_capture`). Returns `true` while
     /// the capture still owes frames, like `advance_screenshot_request`.
     fn advance_linear_capture(&mut self) -> bool {
@@ -1693,8 +1725,7 @@ impl ApplicationHandler for App {
                         );
                         return; // keep running frames
                     }
-                    // M-LIGHT RLT-REF-007 — the scene-linear EXR, after the
-                    // PNG so the two never share a frame.
+                    // M-LIGHT RLT-REF-007 — the scene-linear EXR, after the PNG.
                     if self.advance_linear_capture() {
                         record_about_to_wait_timings(
                             &self.world,

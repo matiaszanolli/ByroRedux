@@ -201,6 +201,12 @@ pub struct RendererConfig {
     /// Fixed adaptive-ray quality tier for controlled RT measurements.
     /// `None` leaves the shipping GPU-time controller authoritative.
     pub rt_test_ray_quality_tier: Option<u32>,
+    /// M-LIGHT RLT-REF-013 — offsets the frame index every RT sampler is
+    /// seeded with (`GpuCamera.position.w`, the volumetrics frame), so two
+    /// captures of one binary differ only in sampling and an engine-side
+    /// noise floor can be measured. `0` is the shipping sequence. Camera
+    /// jitter and DOF keep the raw frame counter, so geometry never moves.
+    pub rt_test_seed_offset: u32,
 }
 
 impl Default for RendererConfig {
@@ -216,6 +222,7 @@ impl Default for RendererConfig {
             rt_test_lod_scale_bits: None,
             rt_test_lod_telemetry: false,
             rt_test_ray_quality_tier: None,
+            rt_test_seed_offset: 0,
         }
     }
 }

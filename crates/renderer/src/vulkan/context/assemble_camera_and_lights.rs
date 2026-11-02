@@ -537,7 +537,11 @@ impl VulkanContext {
                 effective_cam_pos[0],
                 effective_cam_pos[1],
                 effective_cam_pos[2],
-                (self.frame_counter & 0xFFFFFF) as f32,
+                // RLT-REF-013 — the seed offset shifts sampling only.
+                super::frame_params::rt_sampling_frame_index(
+                    self.frame_counter,
+                    self.renderer_config.rt_test_seed_offset,
+                ) as f32,
             ],
             flags: [
                 rt_flag,

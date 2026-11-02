@@ -382,6 +382,8 @@ fn load_scene_content(
     // sun-only variant (#1942); see `crate::cornell`.
     let cornell_oracle =
         crate::cornell::cornell_oracle_rung(args).unwrap_or_else(|message| panic!("{message}"));
+    let cornell_reference = crate::cornell::cornell_reference_rung(args)
+        .unwrap_or_else(|message| panic!("{message}"));
     let combustion_lab = crate::cornell::combustion_lab_mode(args);
     let combustion_lab_nuclear = crate::cornell::combustion_lab_nuclear_mode(args);
     let combustion_lab_steam = crate::cornell::combustion_lab_steam_mode(args);
@@ -393,6 +395,7 @@ fn load_scene_content(
         || godray_lab.is_some()
         || cornell_glass_dragon
         || cornell_oracle.is_some()
+        || cornell_reference.is_some()
         || cornell_sun.is_some()
         || studio_mode;
     let mut harness_cam: Option<(Vec3, Vec3)> = None;
@@ -418,6 +421,13 @@ fn load_scene_content(
     } else if cornell_glass_dragon {
         let (pos, target) = crate::cornell::setup_cornell_glass_dragon_scene(world, ctx, args)
             .unwrap_or_else(|message| panic!("{message}"));
+        harness_cam = Some((pos, target));
+        cam_center = target;
+        has_nif_content = true;
+    } else if let Some(rung) = cornell_reference {
+        // M-LIGHT reference rungs (RLT-REF-001/009): measured against an
+        // external converged render, exportable with `--export-mitsuba`.
+        let (pos, target) = crate::cornell::setup_reference_scene(world, ctx, rung);
         harness_cam = Some((pos, target));
         cam_center = target;
         has_nif_content = true;

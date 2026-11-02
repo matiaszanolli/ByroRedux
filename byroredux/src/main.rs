@@ -793,6 +793,9 @@ struct App {
     /// RLT-REF-007, M51 PTR-OUT-001). The presented PNG of `--screenshot`
     /// is a separate artefact and unchanged.
     linear_capture: Option<crate::linear_capture::LinearCaptureCli>,
+    /// `--export-mitsuba DIR` (M51 PTR-VAL-004): write the Cornell reference
+    /// scene to a Mitsuba 3 directory after the first rendered frame.
+    export_mitsuba_dir: Option<std::path::PathBuf>,
     /// `--bench-capture-every N --bench-capture-dir DIR`: PNG of every Nth
     /// rendered frame of a finite bench run (see `bench_capture`).
     bench_capture: Option<crate::bench_capture::FrameSequenceCapture>,
@@ -1326,6 +1329,7 @@ impl App {
             bench_cpu_frame_ms: Vec::new(),
             screenshot_path: None,
             linear_capture: None,
+            export_mitsuba_dir: None,
             bench_capture: None,
             camera_pos_override: None,
             camera_forward_override: None,
