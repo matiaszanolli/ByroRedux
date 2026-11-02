@@ -68,6 +68,10 @@ pub(crate) enum ReferenceRung {
     /// (`BenchMover`; `--bench-camera-length` ends its motion in a hold,
     /// `--bench-camera-freeze-at` parks it for the converged reference).
     PenumbraMoving,
+    /// RLT-SHD-005: the Lambertian box with six dim emitters (1/60 of the
+    /// hero, about `RESERVOIR_W_CLAMP`'s 64× ratio) around the hero, the
+    /// case the reservoir weight cap exists for and biases.
+    ReservoirClamp,
     /// RLT-CON-001 / -006 / -007 / -008: casters resting on a normal-mapped
     /// floor under one emitter — a tall block, a small cube, a plank lying
     /// flat and an alpha-tested panel — each with its contact band. The
@@ -138,6 +142,7 @@ impl ReferenceRung {
             Self::Penumbra => "penumbra",
             Self::PenumbraSun => "penumbra-sun",
             Self::PenumbraMoving => "penumbra-moving",
+            Self::ReservoirClamp => "restir-clamp",
             Self::Contact => "contact",
         }
     }
@@ -151,6 +156,7 @@ const RUNGS: &[ReferenceRung] = &[
     ReferenceRung::Penumbra,
     ReferenceRung::PenumbraSun,
     ReferenceRung::PenumbraMoving,
+    ReferenceRung::ReservoirClamp,
     ReferenceRung::Contact,
 ];
 
@@ -423,7 +429,7 @@ pub(crate) fn setup_reference_scene(
             insert_reference_sun(world, Vec3::from_array(CALIBRATION_SUN_DIR));
             (Vec3::new(0.0, 2.6 * M, 2.6 * M), Vec3::ZERO)
         }
-        ReferenceRung::LambertBox => {
+        ReferenceRung::LambertBox | ReferenceRung::ReservoirClamp => {
             let h = BOX_HALF_W;
             let floor = builder.box_mesh([h, BOX_WALL_T, h]);
             let side = builder.box_mesh([BOX_WALL_T, BOX_HEIGHT * 0.5, h]);
@@ -465,6 +471,14 @@ pub(crate) fn setup_reference_scene(
                 3.0,
                 "box_emitter",
             );
+            if rung == ReferenceRung::ReservoirClamp {
+                for i in 0..6 {
+                    let angle = i as f32 * std::f32::consts::TAU / 6.0;
+                    // 1.5 m out: clear of both blocks and 0.5 m inside the walls.
+                    let pos = Vec3::new(1.5 * angle.cos() * M, 1.2 * M, 1.5 * angle.sin() * M);
+                    spawn_reference_emitter(world, pos, 0.05, &format!("box_dim_emitter_{i}"));
+                }
+            }
             if view == 1 {
                 // Close-up of the tall block's base, ~1.1 m away: SSAO's
                 // screen radius shrinks with distance (16 px / (d / 100 u)),

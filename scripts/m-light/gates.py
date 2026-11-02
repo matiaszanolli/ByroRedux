@@ -945,6 +945,33 @@ def gate_contact(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
     return rows
 
 
+# ── RLT-SHD-005: the reservoir weight cap's bias ────────────────────────
+
+
+def gate_reservoir_clamp(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
+    """RLT-SHD-005: the luminance-integral delta of `direct_only`, cap on
+    against off (`--rt-test-no-reservoir-clamp`), on the dim-plus-hero box at
+    tier 3, over all geometry. Published, not gated."""
+    del store, spp
+    export = engine.out / "scenes" / "restir-clamp"
+    on = [load_exr(engine.capture("restir_clamp_on", "restir-clamp", "direct_only", s, ctx.tier,
+                                  export_dir=export if s == 0 else None)) for s in (0, 1)]
+    off = [load_exr(engine.capture("restir_clamp_off", "restir-clamp", "direct_only", s, ctx.tier,
+                                   extra=["--rt-test-no-reservoir-clamp"])) for s in (0, 1)]
+    masks = region_masks(export, erode_px=0)
+    geometry = np.logical_or.reduce([m for name, m in masks.items() if "emitter" not in name])
+
+    def integral(image):
+        return float(luminance(image)[geometry].sum())
+
+    value = integral(on[0]) / integral(off[0]) - 1.0
+    floor_on = abs(integral(on[1]) / integral(off[0]) - 1.0 - value)
+    floor_off = abs(integral(on[0]) / integral(off[1]) - 1.0 - value)
+    row = Row("SHD-005", "restir-clamp", "all_geometry", "luminance_integral_delta", value,
+              floor_on, floor_off, passed="report")
+    return [(row, "")]
+
+
 # ── Temporal: A3, A14 (Phase 3) ──────────────────────────────────────────
 
 # The motion spans TEMPORAL_MOTION frames (`--bench-camera-length`), then
@@ -976,7 +1003,11 @@ def gate_temporal(engine: Engine, store: ReferenceStore, ctx: Context, spp: int,
     motion = list(range(TEMPORAL_FIRST, TEMPORAL_MOTION, TEMPORAL_STRIDE))
     post = [stop + k for k in TEMPORAL_POST_STOP]
     bench_frames = post[-1] + 4
-    clock = ["--bench-camera-length", str(TEMPORAL_MOTION)]
+    # The temporal path is what these gates measure, so the captures tap
+    # TAA's resolved output (`--linear-capture-tap post-taa`), not the
+    # unreconstructed image the reference gates compare.
+    clock = ["--bench-camera-length", str(TEMPORAL_MOTION), "--upscaler", "taa",
+             "--linear-capture-tap", "post-taa"]
     cases = []
     if "A14" in gates:
         cases.append(("A14", "penumbra-moving", clock))
@@ -1091,6 +1122,8 @@ def main() -> int:
         rows += gate_contact(engine, store, ctx, args.spp)
     if gates & {"A3", "A14"}:
         rows += gate_temporal(engine, store, ctx, args.spp, gates)
+    if "SHD-005" in gates:
+        rows += gate_reservoir_clamp(engine, store, ctx, args.spp)
 
     manifest = out / "manifest.tsv"
     write_manifest(manifest, rows, ctx)
