@@ -1058,6 +1058,40 @@ active for incremental wins; don't let them block Tier 1–4.
 
 ---
 
+### Completed-milestone one-liners archived from ROADMAP (2026-11-02)
+
+Moved verbatim from ROADMAP §Completed Milestones to keep it under its line
+ceiling (#5111) when the M-LIGHT Lighting fidelity table landed.
+
+**Graphics foundation** — M1 Vulkan init chain · M2 GPU geometry ·
+M4 ECS-driven rendering · M7 depth buffer · M8 texturing · M13 directional lighting.
+
+**ECS, plugins, coordinates** — M3 ECS foundation (World, Component, Storage,
+Query, Scheduler, Resources, string interning) · M5 plugin system (stable Form
+IDs, DAG resolver) · M6 legacy bridge (per-game parser stubs) · M17 coordinate
+fix (CW rotation, SVD degenerate repair) · R7 scheduler access declarations
+(`Access` builder, `sys.accesses`) · M27 parallel system dispatch (2026-05-23) ·
+M46.0 multi-plugin CLI (repeatable `--master`, #561).
+
+**NIF parser overhaul (N23 series)** — N23.1 trait hierarchy · N23.2 shader
+completeness · N23.3 Oblivion block types · N23.4 FO3/FNV validation · N23.5
+skinning · N23.6 Havok collision skip + compressed mesh · N23.7 Fallout 4 ·
+N23.8 particles · N23.9 FO76/Starfield · N23.10 test infrastructure · R3
+per-block-type parse histogram (`nif_stats --tsv`, seven-game baselines). The
+block dispatcher's live arm count is in `crates/nif/src/blocks/mod.rs`.
+
+**Asset pipeline** — M9 NIF parser · M10 NIF→ECS import · M11 BSA reader ·
+M14 DDS texture loading · M16 ESM parser & cell loading · M18 Skyrim SE NIF ·
+M19 full cell loading · M26 BA2 archive support (v1/v2/v3/v7/v8, zlib + LZ4) ·
+NIFAL (2026-05-28) — the canonical parse-time translation boundary · M49 FO4
+precombined geometry (CSG reader, 2026-06-02, #1351).
+
+**ESM records (M24 Phase 1)** — Items (WEAP/ARMO/AMMO/MISC/KEYM/ALCH/INGR/
+BOOK/NOTE), containers, leveled lists (LVLI/LVLN), NPC_, RACE, CLAS, FACT,
+GLOB, GMST; SCPT pre-Papyrus bytecode parsed (#443); CREA + LVLC dispatched
+(#442/#448); PACK / QUST / DIAL / MESG / PERK / SPEL / MGEF fully parsed
+(#446/#447; decode detail under M24.2 / M43).
+
 ## 6. Risk-reducer index, growth tripwire and pacing discipline
 
 ### Risk-reducers (R1–R7, new 2026-04-22)

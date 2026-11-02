@@ -1,0 +1,30 @@
+scene	route	class	instances	roughness_p05	roughness_median	roughness_p95	metalness_median	F1	F2	F3
+prospector	legacy_env_map	conductor	23	0.550	0.550	0.550	0.400			
+prospector	legacy_env_map	dielectric	106	0.100	0.450	0.800	0.000			
+prospector	legacy_keyword	conductor	147	0.040	0.550	0.550	0.900			
+prospector	legacy_keyword	dielectric	84	0.100	0.600	0.950	0.000			
+prospector	legacy_no_signal	dielectric	506	0.100	0.850	0.850	0.000			
+prospector	FLAGS		866					F1=10/474 (roughness<0.2)	F2=147 (conductor without metal signal)	F3=0/0 (FO4 BGSM vs (1-s).clamp(0.04,1); unverified, #6606)
+whiterun	legacy_env_map	conductor	159	0.550	0.550	0.550	0.400			
+whiterun	legacy_env_map	dielectric	1	0.800	0.800	0.800	0.000			
+whiterun	legacy_keyword	conductor	22	0.550	0.550	0.550	0.900			
+whiterun	legacy_keyword	dielectric	394	0.650	0.700	0.950	0.000			
+whiterun	legacy_no_signal	dielectric	755	0.670	0.850	0.850	0.000			
+whiterun	FLAGS		1331					F1=0/1081 (roughness<0.2)	F2=22 (conductor without metal signal)	F3=0/0 (FO4 BGSM vs (1-s).clamp(0.04,1); unverified, #6606)
+medtek	bgsm	conductor	88	0.199	0.199	0.500	0.302			
+medtek	bgsm	dielectric	7592	0.040	0.200	0.600	0.000			
+medtek	legacy_env_map	conductor	82	0.550	0.550	0.550	0.400			
+medtek	legacy_env_map	dielectric	77	0.550	0.800	0.800	0.000			
+medtek	legacy_gloss_map	dielectric	237	0.050	0.300	0.500	0.000			
+medtek	legacy_keyword	conductor	113	0.550	0.550	0.550	0.900			
+medtek	legacy_keyword	dielectric	5	0.100	0.100	0.100	0.000			
+medtek	legacy_no_signal	dielectric	98	0.650	0.850	0.850	0.000			
+medtek	FLAGS		8292					F1=1366/4931 (roughness<0.2)	F2=113 (conductor without metal signal)	F3=280/7492 (FO4 BGSM vs (1-s).clamp(0.04,1); unverified, #6606)
+dugout	bgsm	conductor	9	0.164	0.500	0.800	0.494			
+dugout	bgsm	dielectric	1262	0.040	0.400	0.600	0.000			
+dugout	legacy_env_map	conductor	29	0.454	0.550	0.550	0.400			
+dugout	legacy_env_map	dielectric	115	0.550	0.800	0.800	0.000			
+dugout	legacy_gloss_map	dielectric	64	0.050	0.100	0.850	0.000			
+dugout	legacy_keyword	dielectric	49	0.100	0.600	0.600	0.000			
+dugout	legacy_no_signal	dielectric	4	0.850	0.850	0.850	0.000			
+dugout	FLAGS		1532					F1=365/1148 (roughness<0.2)	F2=0 (conductor without metal signal)	F3=56/1204 (FO4 BGSM vs (1-s).clamp(0.04,1); unverified, #6606)

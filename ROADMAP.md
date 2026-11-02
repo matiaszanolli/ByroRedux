@@ -171,6 +171,21 @@ launch (7.7 at Whiterun HEAD), desktop resident, settings path fresh per run. No
 
 FSR Quality nets +18% to +41%, Performance +39% to +56%; `native-aa` loses 2% to 5%.
 
+### Lighting fidelity (M-LIGHT, [PRD](docs/prd/reference-lighting.md))
+
+Terms: L1 penumbra S1+ (A1 only), L2 contact S1, L3 sky IBL S1, L4 GI S1; each gains
+its measured row at its phase entry (manifests `docs/audits/MLIGHT_*`). Phase 1b
+baseline (`688f42705`, RTX 4070 Ti, 1280×720, stepped orbit, tier histogram past a
+240-frame warm-up); frame time is the 3-run median with the tier pinned there:
+
+| Scene | Settled tier TAA / FSR Q (oscillation) | Pinned-tier ms TAA / FSR Q |
+|---|---|---:|
+| Cornell | 1 / 2 (0 / 0) | 13.14 / 9.89 |
+| Prospector | 0 / 1 (0.42 / 0.34) | 9.75 / 10.55 |
+| Whiterun BanneredMare | 1 / 3 (0 / 0) | 13.62 / 9.65 |
+| MedTek Research 01 | 0 / 0 (0 / 0) | 27.73 / 16.36 |
+| FO4 Dugout Inn | 0 / 1 (0 / 0.01) | 15.51 / 12.40 |
+
 **Against the control (frame ms, `a3a7a43b0` → `d9a201c71`), TAA / Quality:**
 Cornell 10.60 → 11.59 (+9.3%) / 8.09 → 8.36 (+3.3%); Prospector 11.73 → 11.93
 (+1.7%) / 9.43 → 9.81 (+4.0%); Whiterun 11.17 → 11.94 (+6.9%) / 6.85 → 7.40
@@ -455,34 +470,10 @@ One-liners grouped by area. Full rows for milestones closed before 2026-09-29
 are in [`roadmap-history.md` §5](docs/archive/roadmap-history.md#5-tier-17-milestone-tables-with-full-rows);
 per-milestone scope is in `git log`; session context is [HISTORY.md](HISTORY.md).
 
-**Graphics foundation** — M1 Vulkan init chain · M2 GPU geometry ·
-M4 ECS-driven rendering · M7 depth buffer · M8 texturing · M13 directional lighting.
-
-**ECS, plugins, coordinates** — M3 ECS foundation (World, Component, Storage,
-Query, Scheduler, Resources, string interning) · M5 plugin system (stable Form
-IDs, DAG resolver) · M6 legacy bridge (per-game parser stubs) · M17 coordinate
-fix (CW rotation, SVD degenerate repair) · R7 scheduler access declarations
-(`Access` builder, `sys.accesses`) · M27 parallel system dispatch (2026-05-23) ·
-M46.0 multi-plugin CLI (repeatable `--master`, #561).
-
-**NIF parser overhaul (N23 series)** — N23.1 trait hierarchy · N23.2 shader
-completeness · N23.3 Oblivion block types · N23.4 FO3/FNV validation · N23.5
-skinning · N23.6 Havok collision skip + compressed mesh · N23.7 Fallout 4 ·
-N23.8 particles · N23.9 FO76/Starfield · N23.10 test infrastructure · R3
-per-block-type parse histogram (`nif_stats --tsv`, seven-game baselines). The
-block dispatcher's live arm count is in `crates/nif/src/blocks/mod.rs`.
-
-**Asset pipeline** — M9 NIF parser · M10 NIF→ECS import · M11 BSA reader ·
-M14 DDS texture loading · M16 ESM parser & cell loading · M18 Skyrim SE NIF ·
-M19 full cell loading · M26 BA2 archive support (v1/v2/v3/v7/v8, zlib + LZ4) ·
-NIFAL (2026-05-28) — the canonical parse-time translation boundary · M49 FO4
-precombined geometry (CSG reader, 2026-06-02, #1351).
-
-**ESM records (M24 Phase 1)** — Items (WEAP/ARMO/AMMO/MISC/KEYM/ALCH/INGR/
-BOOK/NOTE), containers, leveled lists (LVLI/LVLN), NPC_, RACE, CLAS, FACT,
-GLOB, GMST; SCPT pre-Papyrus bytecode parsed (#443); CREA + LVLC dispatched
-(#442/#448); PACK / QUST / DIAL / MESG / PERK / SPEL / MGEF fully parsed
-(#446/#447; decode detail under M24.2 / M43).
+**Foundations** — graphics foundation, ECS / plugins / coordinates, the N23
+NIF parser overhaul, the asset pipeline and the M24 Phase 1 ESM records:
+one-liners archived 2026-11-02 in
+[`roadmap-history.md` §5](docs/archive/roadmap-history.md#5-tier-17-milestone-tables-with-full-rows).
 
 **Animation and actors**
 M21 animation playback (.kf, linear/Hermite/TBC, 8 controller types,
@@ -748,6 +739,7 @@ Ground-truth as of 2026-10-30, HEAD `b03a4f79a`: all figures re-counted at the S
 | FO3 ESM parse floors, #3756 (index sum ≥ 44 000, measured 44 718 — an index sum that double-counts by design, not a record count; the file holds 718 952 records; placed refs ≥ 573 000; exterior cells ≥ 41 900) | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored --exact parse_rate_fo3_esm`                                                                                       |
 | FNV ESM parse floors (index sum ≥ 76 000, measured 78 575; same index-sum caveat as the FO3 row) | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored --exact parse_rate_fnv_esm`                                                                                       |
 | Dialogue greeting + force-greet census floors, #5367 (FNV: GREETING/HELLO topics exist, ≥438 greeting DIALs [parser-measured 438], ≥330 Dialogue-procedure PACKs with ≥260 PKDD topics [332/263]) — the source of the dialogue counts in M43's row | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored dialogue_greeting` |
+| **M-LIGHT Lighting fidelity** — settled tiers and pinned-tier ms (Phase 1b, `688f42705`); A15/A16 reference gates | `scripts/m-light-baselines.sh` (per-scene CWD handled; `BYROREDUX_MITSUBA_PYTHON`); `scripts/m-light-gates.sh` |
 | Story Manager census floors, #5366 (Skyrim: 571 nodes / 24 event mnemonics / 448 SMQNs / 1191 SM-referenced quests / 441-of-443 sibling integrity, exact; FO4: 311 / 17 count floors) — the source of every SM count claim in M43's row and the live smoke's target chain | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored story_manager` |
 
 **Rule**: every "FPS / ms / count" claim in this document must have a

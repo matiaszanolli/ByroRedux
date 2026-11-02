@@ -1,0 +1,10 @@
+revision=688f42705b74
+runs=3
+frames=300
+anchor_frames=64
+conditions=renderer-stepped orbit, configs taa (native) and fsr-quality, release build, fresh settings per run; anchors at native TAA, no jitter, the TAA settled tier
+tile=32
+F1_roughness=0.2
+F3_tolerance=0.001
+wall_seconds=1137.5
+fnv_probe=scripts/renderer-eval-fnv.sh re-run 2026-11-02 (target/renderer-eval-fnv/manifest.tsv); tier-3 DBG_VIZ_GI_BOUNCE linear capture: lower-third mean 0.0106, every pixel non-zero, median 0.0023, p95 0.047 (RLT-GI-007, A10)
