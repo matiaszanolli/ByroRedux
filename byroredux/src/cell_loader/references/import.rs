@@ -16,10 +16,52 @@ use std::sync::Arc;
 use crate::asset_provider::MaterialProvider;
 
 use crate::cell_loader::nif_import_registry::CachedNifImport;
+use byroredux_plugin::esm::reader::GameKind;
 
 use super::attach::{
     attach_points_component, child_attach_connections_component,
 };
+
+/// Whether `game` places a REFR by *replacing* its model's root-node local
+/// transform with the placement, rather than composing the two.
+///
+/// Established empirically on FNV `GSProspectorSaloonInterior`: the
+/// Goodsprings kit pieces `NVGSRmCorInExSmR02`, `NVGSRmEnd2Way`,
+/// `NVGSRmEnd3Way` and `NVGSRmWallExSm` carry a 90° root rotation, and only
+/// with it discarded do their walls line up with the rest of the room (the
+/// `LLSignBathrooms` doorway, the bathroom exits, a closed hallway end).
+/// Composed, they put walls across the hallway and open its end onto the
+/// void. FO3 shares the engine and the NIF format (`GameKind::Fallout3NV`).
+/// Other games stay composing until each is verified the same way.
+pub(crate) fn placement_replaces_model_root(game: GameKind) -> bool {
+    game == GameKind::Fallout3NV
+}
+
+/// Apply [`placement_replaces_model_root`] to a freshly parsed REFR model,
+/// before any importer walks it. Both cache-fill paths (this module and the
+/// streaming worker) call it, so every placement of a model sees one scene.
+pub(crate) fn prepare_placed_model_scene(
+    scene: &mut byroredux_nif::scene::NifScene,
+    replace_model_root: bool,
+    label: &str,
+) {
+    if !replace_model_root {
+        return;
+    }
+    if let Some(discarded) = scene.clear_root_transform() {
+        let t = discarded.translation;
+        log::debug!(
+            "NIF '{}': root transform replaced by the placement \
+             (discarded T=({:.1}, {:.1}, {:.1}) s={:.3} R={:?})",
+            label,
+            t.x,
+            t.y,
+            t.z,
+            discarded.scale,
+            discarded.rotation.rows,
+        );
+    }
+}
 
 /// Parse + import a NIF scene once. Returns `None` on parse failure
 /// or when the scene has zero useful geometry. All per-block parse
@@ -38,8 +80,17 @@ pub(crate) fn parse_and_import_nif_pub(
     mesh_resolver: Option<&dyn byroredux_nif::import::MeshResolver>,
     // #4636 — texture-existence probe for the merge's dead-path repair.
     texture_exists: &dyn Fn(&str) -> bool,
+    replace_model_root: bool,
 ) -> Option<Arc<CachedNifImport>> {
-    parse_and_import_nif(nif_data, label, mat_provider, pool, mesh_resolver, texture_exists)
+    parse_and_import_nif(
+        nif_data,
+        label,
+        mat_provider,
+        pool,
+        mesh_resolver,
+        texture_exists,
+        replace_model_root,
+    )
 }
 
 pub(super) fn parse_and_import_nif(
@@ -50,8 +101,10 @@ pub(super) fn parse_and_import_nif(
     mesh_resolver: Option<&dyn byroredux_nif::import::MeshResolver>,
     // #4636 — texture-existence probe for the merge's dead-path repair.
     texture_exists: &dyn Fn(&str) -> bool,
+    // [`placement_replaces_model_root`] for the placing game.
+    replace_model_root: bool,
 ) -> Option<Arc<CachedNifImport>> {
-    let scene = match byroredux_nif::parse_nif(nif_data) {
+    let mut scene = match byroredux_nif::parse_nif(nif_data) {
         Ok(s) => {
             log::debug!("Parsed NIF '{}': {} blocks", label, s.len());
             crate::parsed_nif_cache::note_scene_health(label, &s);
@@ -62,6 +115,7 @@ pub(super) fn parse_and_import_nif(
             return None;
         }
     };
+    prepare_placed_model_scene(&mut scene, replace_model_root, label);
 
     // #3036 — BSXFlags bit 5 is file-level metadata saying editor-marker
     // children are present; it does not classify the whole NIF as a marker.

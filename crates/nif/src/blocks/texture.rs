@@ -1118,6 +1118,9 @@ impl NiObject for NiTextureEffect {
     fn as_av_object(&self) -> Option<&dyn HasAVObject> {
         Some(self)
     }
+    fn transform_mut(&mut self) -> Option<&mut NiTransform> {
+        Some(&mut self.av.transform)
+    }
 }
 
 impl HasObjectNET for NiTextureEffect {

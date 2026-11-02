@@ -278,7 +278,7 @@ pub(crate) fn parse_one_nif(
             log::debug!("[stream-worker] NIF not in BSA: '{}'", path);
             return None;
         };
-        let scene = match byroredux_nif::parse_nif(&bytes) {
+        let mut scene = match byroredux_nif::parse_nif(&bytes) {
             Ok(s) => s,
             Err(e) => {
                 log::warn!("[stream-worker] NIF parse failed '{}': {}", path, e);
@@ -288,6 +288,11 @@ pub(crate) fn parse_one_nif(
         // #6115 — the sync REFR loader warned on a truncated scene; this worker,
         // which parses the exterior statics, cached it silently.
         crate::parsed_nif_cache::note_scene_health(&path, &scene);
+        crate::cell_loader::references::prepare_placed_model_scene(
+            &mut scene,
+            ctx.replace_model_root,
+            &path,
+        );
         // M49 — a shared-variant precombine carries its geometry in the
         // companion `.csg`; the walk-based import below would produce zero
         // meshes for it. Same decision the main-thread `PrecombinedSpawnJob`
@@ -418,6 +423,9 @@ pub(crate) struct PreParseContext<'a> {
     /// `BSPackedGeomObject::filename_hash` → the blob that answers to it,
     /// for the cell's precombine inputs. Empty when the cell has none.
     csg_blobs: &'a HashMap<u32, Arc<byroredux_bsa::CsgArchive>>,
+    /// `placement_replaces_model_root` for the cell's game — the same rule
+    /// the synchronous REFR import applies.
+    replace_model_root: bool,
 }
 
 /// Bounds decoded input buffers held by queued/running parse tasks. A task is
@@ -584,6 +592,7 @@ pub(crate) fn parse_model_keys(
     let ctx = PreParseContext {
         mesh_resolver,
         csg_blobs: &no_csgs,
+        replace_model_root: false,
     };
     let inputs: Vec<PreParseInput> = keys
         .into_iter()
@@ -949,6 +958,9 @@ pub(crate) fn pre_parse_cell(
     let ctx = PreParseContext {
         mesh_resolver: tex_provider,
         csg_blobs: &csg_blobs,
+        replace_model_root: crate::cell_loader::references::placement_replaces_model_root(
+            wctx.record_index.game,
+        ),
     };
     let (results, parallel_parse_threads, pipeline) =
         parse_nif_pipeline(inputs.into_iter(), stream_pool, &ctx);

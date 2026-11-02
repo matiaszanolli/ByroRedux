@@ -401,6 +401,10 @@ impl PrecombinedSpawnJob {
                             // #4636 — dead-path probe through the same
                             // provider the resolver arm already holds.
                             &|p| tex_provider.has_texture(p),
+                            // PreCombined meshes are a Fallout 4 feature.
+                            super::references::placement_replaces_model_root(
+                                byroredux_plugin::esm::reader::GameKind::Fallout4,
+                            ),
                         )
                     }
                 };

@@ -473,3 +473,21 @@ fn vanilla_tree_models_all_resolve() {
         );
     }
 }
+
+/// The placement-root rule is verified for FO3/FNV only (the Prospector
+/// Goodsprings kit pieces); every other game keeps composing the model root
+/// until it is verified the same way. Widening it is a deliberate edit here.
+#[test]
+fn placement_replaces_model_root_is_fallout3nv_only() {
+    use byroredux_plugin::esm::reader::GameKind;
+    assert!(placement_replaces_model_root(GameKind::Fallout3NV));
+    for game in [
+        GameKind::Oblivion,
+        GameKind::Skyrim,
+        GameKind::Fallout4,
+        GameKind::Fallout76,
+        GameKind::Starfield,
+    ] {
+        assert!(!placement_replaces_model_root(game), "{game:?}");
+    }
+}

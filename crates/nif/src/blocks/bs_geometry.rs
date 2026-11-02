@@ -136,6 +136,9 @@ impl NiObject for BSGeometry {
     fn as_av_object(&self) -> Option<&dyn traits::HasAVObject> {
         Some(self)
     }
+    fn transform_mut(&mut self) -> Option<&mut NiTransform> {
+        Some(&mut self.av.transform)
+    }
     fn as_shader_refs(&self) -> Option<&dyn traits::HasShaderRefs> {
         Some(self)
     }

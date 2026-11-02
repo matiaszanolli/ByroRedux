@@ -86,6 +86,64 @@ fn import_composes_scale() {
     assert!((m.translation[0] - 2.0).abs() < 1e-6);
 }
 
+/// The root rotation the FNV Goodsprings kit pieces carry (`NVGSRmEnd2Way`
+/// block 0), with a translation and scale on top. The flat import composes
+/// it into every mesh; once `clear_root_transform` has run, only the mesh's
+/// own local transform is left.
+#[test]
+fn clear_root_transform_drops_root_from_flat_import() {
+    let root_transform = NiTransform {
+        rotation: NiMatrix3 {
+            rows: [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        },
+        translation: NiPoint3 {
+            x: 5.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        scale: 2.0,
+    };
+    let blocks: Vec<Box<dyn crate::blocks::NiObject>> = vec![
+        Box::new(make_ni_node(root_transform, vec![BlockRef(1)])),
+        Box::new(make_ni_tri_shape("Kit", translated(1.0, 0.0, 0.0), 2, Vec::new())),
+        Box::new(make_tri_shape_data()),
+    ];
+    let mut scene = scene_from_blocks(blocks);
+    let mut pool = StringPool::new();
+
+    let composed = import_nif(&scene, &mut pool);
+    assert!((composed[0].scale - 2.0).abs() < 1e-6);
+    assert!((composed[0].rotation[3] - 1.0).abs() > 1e-3, "root rotation composed");
+
+    let discarded = scene.clear_root_transform().expect("root carried a transform");
+    assert_eq!(discarded.rotation.rows, root_transform.rotation.rows);
+    assert_eq!(discarded.scale, 2.0);
+    assert!(scene.clear_root_transform().is_none(), "already identity");
+
+    let placed = import_nif(&scene, &mut pool);
+    let m = &placed[0];
+    assert!((m.scale - 1.0).abs() < 1e-6);
+    assert!((m.translation[0] - 1.0).abs() < 1e-6);
+    assert!(m.translation[1].abs() < 1e-6 && m.translation[2].abs() < 1e-6);
+    let [x, y, z, w] = m.rotation;
+    assert!(x.abs() < 1e-6 && y.abs() < 1e-6 && z.abs() < 1e-6 && (w - 1.0).abs() < 1e-6);
+}
+
+/// A NiNode-subclass root reaches its transform through `base`.
+#[test]
+fn clear_root_transform_reaches_node_subclass_root() {
+    let ordered = crate::blocks::node::BsOrderedNode {
+        base: make_ni_node(translated(0.0, 0.0, 7.0), Vec::new()),
+        alpha_sort_bound: [0.0; 4],
+        is_static_bound: false,
+    };
+    let mut scene = scene_from_blocks(vec![Box::new(ordered)]);
+    let discarded = scene.clear_root_transform().expect("subclass root is AV");
+    assert_eq!(discarded.translation.z, 7.0);
+    let root = scene.root().and_then(|b| b.as_av_object()).unwrap();
+    assert_eq!(root.transform().translation.z, 0.0);
+}
+
 #[test]
 fn compose_transforms_identity() {
     let a = NiTransform::default();

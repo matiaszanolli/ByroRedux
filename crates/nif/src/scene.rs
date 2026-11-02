@@ -1,7 +1,7 @@
 //! NifScene — resolved scene graph after linking.
 
 use crate::blocks::{node::NiNode, NiObject};
-use crate::types::BlockRef;
+use crate::types::{BlockRef, NiTransform};
 use std::collections::BTreeMap;
 
 /// A fully parsed and linked NIF file.
@@ -197,6 +197,28 @@ impl NifScene {
     /// Get the root block (typically NiNode).
     pub fn root(&self) -> Option<&dyn NiObject> {
         self.root_index.and_then(|i| self.get(i))
+    }
+
+    /// Reset the root block's local transform to identity, returning the
+    /// transform it carried. `None` when there is no root, the root has no
+    /// NiAVObject transform, or it was already identity.
+    ///
+    /// For a consumer whose placement *replaces* the model root's transform
+    /// rather than composing with it: clearing it here, before any importer
+    /// runs, keeps meshes, collision, lights, emitters and the node graph in
+    /// agreement, since every walker composes the root's local transform.
+    pub fn clear_root_transform(&mut self) -> Option<NiTransform> {
+        let root = self.root_index?;
+        let transform = self.blocks.get_mut(root)?.transform_mut()?;
+        let identity = NiTransform::default();
+        let t = transform.translation;
+        if transform.rotation.rows == identity.rotation.rows
+            && [t.x, t.y, t.z] == [0.0; 3]
+            && transform.scale == identity.scale
+        {
+            return None;
+        }
+        Some(std::mem::replace(transform, identity))
     }
 
     /// Number of blocks.

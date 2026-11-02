@@ -115,6 +115,9 @@ macro_rules! impl_light_bases {
             fn as_av_object(&self) -> Option<&dyn HasAVObject> {
                 Some(self)
             }
+            fn transform_mut(&mut self) -> Option<&mut NiTransform> {
+                Some(&mut self.$base.av.transform)
+            }
         }
         impl HasObjectNET for $ty {
             fn name(&self) -> Option<&str> {
@@ -234,6 +237,9 @@ impl NiObject for NiSpotLight {
     }
     fn as_av_object(&self) -> Option<&dyn HasAVObject> {
         Some(self)
+    }
+    fn transform_mut(&mut self) -> Option<&mut NiTransform> {
+        Some(&mut self.point.base.av.transform)
     }
 }
 

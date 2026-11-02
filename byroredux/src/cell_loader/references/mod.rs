@@ -45,6 +45,8 @@ pub(crate) use attach::attach_light_flicker_if_needed;
 // already has the `&NifScene` to compute (#3072 / #3074).
 pub(crate) use attach::furniture_component;
 pub(super) use import::parse_and_import_nif_pub;
+// The streaming worker's cache-fill path applies the same root rule.
+pub(crate) use import::{placement_replaces_model_root, prepare_placed_model_scene};
 // Consumed only by the sibling `attach_points_spawn_tests` (#[cfg(test)]);
 // gate the re-export so it isn't an unused import in the non-test build.
 #[cfg(test)]

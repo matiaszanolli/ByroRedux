@@ -709,6 +709,7 @@ pub(super) fn spawn_synth_child(
                                 // is the same resolver this branch hands
                                 // the importer.
                                 &|p| tex_provider.has_texture(p),
+                                placement_replaces_model_root(record_index.game),
                             )
                         }
                     }

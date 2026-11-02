@@ -37,6 +37,9 @@ impl NiObject for NiNode {
     fn as_av_object(&self) -> Option<&dyn HasAVObject> {
         Some(self)
     }
+    fn transform_mut(&mut self) -> Option<&mut NiTransform> {
+        Some(&mut self.av.transform)
+    }
 }
 
 impl HasObjectNET for NiNode {
@@ -121,6 +124,9 @@ impl NiObject for BsOrderedNode {
     fn as_av_object(&self) -> Option<&dyn HasAVObject> {
         Some(&self.base)
     }
+    fn transform_mut(&mut self) -> Option<&mut NiTransform> {
+        self.base.transform_mut()
+    }
 }
 
 impl BsOrderedNode {
@@ -165,6 +171,9 @@ impl NiObject for BsValueNode {
     }
     fn as_av_object(&self) -> Option<&dyn HasAVObject> {
         Some(&self.base)
+    }
+    fn transform_mut(&mut self) -> Option<&mut NiTransform> {
+        self.base.transform_mut()
     }
 }
 
@@ -217,6 +226,9 @@ impl NiObject for BsMultiBoundNode {
     }
     fn as_av_object(&self) -> Option<&dyn HasAVObject> {
         Some(&self.base)
+    }
+    fn transform_mut(&mut self) -> Option<&mut NiTransform> {
+        self.base.transform_mut()
     }
 }
 
@@ -282,6 +294,9 @@ impl NiObject for BsTreeNode {
     fn as_av_object(&self) -> Option<&dyn HasAVObject> {
         Some(&self.base)
     }
+    fn transform_mut(&mut self) -> Option<&mut NiTransform> {
+        self.base.transform_mut()
+    }
 }
 
 impl BsTreeNode {
@@ -324,6 +339,9 @@ impl NiObject for NiBillboardNode {
     }
     fn as_av_object(&self) -> Option<&dyn HasAVObject> {
         Some(&self.base)
+    }
+    fn transform_mut(&mut self) -> Option<&mut NiTransform> {
+        self.base.transform_mut()
     }
 }
 
@@ -374,6 +392,9 @@ impl NiObject for NiSwitchNode {
     fn as_av_object(&self) -> Option<&dyn HasAVObject> {
         Some(&self.base)
     }
+    fn transform_mut(&mut self) -> Option<&mut NiTransform> {
+        self.base.transform_mut()
+    }
 }
 
 impl NiSwitchNode {
@@ -420,6 +441,9 @@ impl NiObject for NiLODNode {
     }
     fn as_av_object(&self) -> Option<&dyn HasAVObject> {
         Some(&self.base.base)
+    }
+    fn transform_mut(&mut self) -> Option<&mut NiTransform> {
+        self.base.base.transform_mut()
     }
 }
 
@@ -521,6 +545,9 @@ impl NiObject for NiSortAdjustNode {
     fn as_av_object(&self) -> Option<&dyn HasAVObject> {
         Some(&self.base)
     }
+    fn transform_mut(&mut self) -> Option<&mut NiTransform> {
+        self.base.transform_mut()
+    }
 }
 
 impl NiSortAdjustNode {
@@ -598,6 +625,9 @@ impl NiObject for BsRangeNode {
     }
     fn as_av_object(&self) -> Option<&dyn HasAVObject> {
         Some(&self.base)
+    }
+    fn transform_mut(&mut self) -> Option<&mut NiTransform> {
+        self.base.transform_mut()
     }
 }
 
@@ -683,6 +713,9 @@ impl NiObject for NiCamera {
     }
     fn as_av_object(&self) -> Option<&dyn HasAVObject> {
         Some(self)
+    }
+    fn transform_mut(&mut self) -> Option<&mut NiTransform> {
+        Some(&mut self.av.transform)
     }
 }
 
@@ -829,6 +862,9 @@ impl NiObject for BsWeakReferenceNode {
     }
     fn as_av_object(&self) -> Option<&dyn HasAVObject> {
         Some(&self.base)
+    }
+    fn transform_mut(&mut self) -> Option<&mut NiTransform> {
+        self.base.transform_mut()
     }
 }
 
@@ -1049,6 +1085,9 @@ impl NiObject for BsFaceGenNiNode {
     fn as_av_object(&self) -> Option<&dyn HasAVObject> {
         Some(&self.base)
     }
+    fn transform_mut(&mut self) -> Option<&mut NiTransform> {
+        self.base.transform_mut()
+    }
 }
 
 impl BsFaceGenNiNode {
@@ -1173,6 +1212,9 @@ impl NiObject for BsDistantObjectInstancedNode {
     }
     fn as_av_object(&self) -> Option<&dyn HasAVObject> {
         Some(&self.base.base)
+    }
+    fn transform_mut(&mut self) -> Option<&mut NiTransform> {
+        self.base.base.transform_mut()
     }
 }
 

@@ -49,6 +49,9 @@ impl NiObject for NiTriShape {
     fn as_av_object(&self) -> Option<&dyn traits::HasAVObject> {
         Some(self)
     }
+    fn transform_mut(&mut self) -> Option<&mut NiTransform> {
+        Some(&mut self.av.transform)
+    }
     fn as_shader_refs(&self) -> Option<&dyn traits::HasShaderRefs> {
         Some(self)
     }
@@ -238,6 +241,9 @@ impl NiObject for NiLodTriShape {
     }
     fn as_av_object(&self) -> Option<&dyn traits::HasAVObject> {
         Some(&self.base)
+    }
+    fn transform_mut(&mut self) -> Option<&mut NiTransform> {
+        self.base.transform_mut()
     }
     fn as_shader_refs(&self) -> Option<&dyn traits::HasShaderRefs> {
         Some(&self.base)

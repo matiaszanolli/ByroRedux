@@ -95,6 +95,13 @@ pub trait NiObject: Debug + Send + Sync {
     fn as_av_object(&self) -> Option<&dyn traits::HasAVObject> {
         None
     }
+    /// Mutable twin of `as_av_object().transform()`: `Some` for exactly the
+    /// blocks `as_av_object` upcasts. Lets a consumer rewrite a node's local
+    /// transform on the parsed scene before import (see
+    /// [`crate::scene::NifScene::clear_root_transform`]).
+    fn transform_mut(&mut self) -> Option<&mut crate::types::NiTransform> {
+        None
+    }
     /// Upcast to shader refs if this block provides shader/alpha property refs.
     fn as_shader_refs(&self) -> Option<&dyn traits::HasShaderRefs> {
         None

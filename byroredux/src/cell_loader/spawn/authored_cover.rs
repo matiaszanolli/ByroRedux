@@ -107,6 +107,9 @@ fn spawn_template(
             &mut pool,
             Some(tex_provider),
             &|p| tex_provider.has_texture(p),
+            // A ground-cover template, not a REFR placement: the
+            // placement-root rule has not been established for it.
+            false,
         )
     };
     let Some(cached) = cached else {
