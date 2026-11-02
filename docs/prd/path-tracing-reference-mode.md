@@ -1,6 +1,8 @@
 # Path Tracing Reference Mode — Product Requirements
 
-**Status**: PROPOSED (2026-11-01). Revision 3, same day: this PRD now
+**Status**: PROPOSED (2026-11-02). Revision 4 accepts reference-lighting's
+RLT-EXP-001…006 change requests into the exporter's scope (§12). Revision
+3 (2026-11-01): this PRD now
 owns the Cornell exporter, the EXR writer and the external-renderer
 choice outright, and files the first two as their own Phase 1 issues that
 reference-lighting depends on (its review round 2 asked for one owner per
@@ -704,3 +706,4 @@ Each needs the project owner. The recommendation is the first option.
 | 1 | 2026-11-01 | First draft | — |
 | 2 | 2026-11-01 | Review round 1 folded in: console-command inventory (PTR-MODE-001), missing TLAS exclusions, GI clamps and interior ambient in §3.1, V8 closed, determinism softened (PTR-EST-004, V13), per-game scope linked to the ROADMAP matrix, SHaRC licence clauses, GRIS convergence wording, verify list as a table, cross-PRD alignment with reference-lighting and neural-denoiser (PTR-RT-003, PTR-RT-006, PTR-RT-007, PTR-VAL-004, Q2, Q5); coordinator cross-PRD sync (sibling links and citations) | claude: revise |
 | 3 | 2026-11-01 | Single ownership, from reference-lighting's review round 2: the exporter (PTR-VAL-004) and the EXR writer (PTR-OUT-001) are owned here and filed as their own Phase 1 issues ahead of the progressive reference; Q5 is decided here and cited by reference-lighting Q1; PTR-VAL-003 points at reference-lighting's component-decomposition contract | — |
+| 4 | 2026-11-02 | Accepts reference-lighting's change requests RLT-EXP-001…006 (skinned pose at a frame index, normal-map and alpha textures, sun-free analytic environment, sun as a distant emitter, export-time *k*<sub>exp</sub> emitter scaling, per-rung overrides) into PTR-VAL-004's exporter scope. Per the owner's reference-lighting Q1 decision (2026-11-02), the exporter (PTR-VAL-004) and the EXR writer (PTR-OUT-001) are built now as their two stand-alone Phase 1 issues, ahead of this PRD's approval; nothing else of M51 is | — |

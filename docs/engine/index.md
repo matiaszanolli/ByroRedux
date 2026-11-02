@@ -57,8 +57,8 @@ a working checkout and want to understand or change engine internals.
 | [Wet Surface and Storm Accumulation — PRD](../prd/wet-surface-accumulation.md) | renderer, byroredux, plugin | PROPOSED (2026-11-01). M61: wet / snow / radstorm grime surface states driven by water contact and WTHR |
 | [Subsurface Scattering — PRD](../prd/subsurface-scattering.md) | renderer, byroredux | PROPOSED (2026-11-01). M56: Burley SSS for skin and organics, eye cornea refraction |
 | [Hair and Fur Shading — PRD](../prd/hair-shading.md) | renderer, nif, byroredux | PROPOSED (2026-11-01). M57: Marschner / Disney hair BRDF, RT hair shadows with stochastic transparency |
-| [Reference-Quality Lighting — PRD](../prd/reference-lighting.md) | renderer, byroredux | PROPOSED (2026-11-01). M-LIGHT: RT soft penumbras, contact shadows, per-cell IBL probe, multi-bounce GI |
-| [Path Tracing Reference Mode — PRD](../prd/path-tracing-reference-mode.md) | renderer | PROPOSED (2026-11-01). M51: full PT, ReSTIR-PT, SHARC radiance cache, screenshot/cinematic reference |
+| [Reference-Quality Lighting — PRD](../prd/reference-lighting.md) | renderer, byroredux | APPROVED (2026-11-02). M-LIGHT: RT soft penumbras, contact shadows, per-cell IBL probe, multi-bounce GI |
+| [Path Tracing Reference Mode — PRD](../prd/path-tracing-reference-mode.md) | renderer | PROPOSED (2026-11-02). M51: full PT, ReSTIR-PT, SHARC radiance cache, screenshot/cinematic reference |
 | [Neural Denoiser — PRD](../prd/neural-denoiser.md) | renderer | PROPOSED (2026-11-01). M54: small NN replacing the SVGF spatial filter, trained on engine captures |
 | [In-Engine World Editor — PRD](../prd/world-editor.md) | sdk, debug-protocol, debug-server, plugin, byroredux | PROPOSED (2026-11-01). M50: ECS-native cell editor with hot reload, undo, content-addressed plugin output |
 | [P2P Co-op — PRD](../prd/p2p-coop.md) | core, save, byroredux | PROPOSED (2026-11-01). M60: deterministic replication for up to 4 players, host authority and migration, no server |

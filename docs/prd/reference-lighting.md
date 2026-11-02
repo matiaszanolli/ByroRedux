@@ -1,8 +1,8 @@
 # Reference-Quality Lighting — Product Requirements
 
-**Status**: PROPOSED (2026-11-02). Revision 6; the change history is in
-§12. The decisions it needs from the project owner are collected in §10;
-nothing below is built as a result of this document yet. Statements about
+**Status**: APPROVED (2026-11-02). Revision 7; the change history is in
+§12. Every decision in §10 is decided; implementation issues may be
+filed. Statements about
 how an original engine, a published technique or an external tool behaves
 cite external sources (UESP and the Creation Kit wikis, the cited papers
 and vendor documentation); a claim that could not be verified is marked
@@ -281,8 +281,10 @@ live in the rung subsection of the exporter design (Related table).
 - **RLT-NG-008.** Sun shadows on receivers past `SHADOW_FADE_END`, and what
   is drawn beyond the loaded grid. M35 owns the distant geometry
   ([distant-lod-completion.md](distant-lod-completion.md)); that PRD makes
-  no shadow promise, so far-field shadowing is owned by **neither** PRD at
-  this revision. Recorded here so the gap is visible, and decided in Q4.
+  no shadow promise, so far-field shadowing was owned by **neither** PRD
+  until Q4. Q4 took Alternative A: on-screen sun shadow beyond the fade
+  is RLT-CON-004's screen-space term (Phase 3); traced sun shadows past
+  `SHADOW_FADE_END` and anything off-screen stay out of scope.
 - **RLT-NG-009.** A converged reference of any game scene, unless Q9 takes
   its alternative. Game content is gated against declared changes
   (RLT-G-006, RLT-CNT).
@@ -1223,6 +1225,11 @@ Each needs the project owner. The recommendation is the first option.
    the engine's own parked accumulation at tier 3; consequence: no new
    tool, but the two-bounce cap and the luminance clamp are baked into the
    "reference", so RLT-GI-003 and RLT-GI-006 cannot fail.
+   **Decided** (2026-11-02): the recommendation — the external Mitsuba 3
+   reference fed by M51's exporter. The owner also authorised building
+   M51's exporter (PTR-VAL-004) and EXR writer (PTR-OUT-001) as their own
+   stand-alone issues under M51's IDs, with Mitsuba 3 installed as a
+   developer tool, never an engine dependency.
 2. **Q2 — Interior authored ambient against traced GI.** Recommended:
    cross-fade as exteriors do — authored ambient enters only through the
    untraced share and through rays that escape (`pathEnvironmentRadiance`
@@ -1232,6 +1239,8 @@ Each needs the project owner. The recommendation is the first option.
    the addition; consequence: interiors keep today's look, and nothing
    holds interior ambient to a reference, since reference rungs carry no
    ambient (RLT-REF-009).
+   **Decided** (2026-11-02): the recommendation — cross-fade, authored
+   ambient through the untraced share and escaped rays only.
 3. **Q3 — The sun's angular radius.** Recommended: the physical value (≈
    0.0047 rad, RLT-SHD-007) for the exterior sun, and 0.020 rad kept for
    interior XCLL directional keys, which have no physical source; set in
@@ -1241,6 +1250,9 @@ Each needs the project owner. The recommendation is the first option.
    10-pixel penumbra (RLT-SHD-001). Alternative: keep 0.020 rad everywhere; consequence:
    today's look, and the reference scene must use the same inflated cone,
    so the gate measures transport, not realism.
+   **Decided** (2026-11-02): the recommendation — the physical radius for
+   the exterior sun, 0.020 rad kept for interior directional keys, set in
+   the EXAL translate step.
 4. **Q4 — Sun shadows past the shadow fade.** At HEAD every TLAS caster is
    traced inside `SHADOW_FADE_END`, and distant-LOD blocks up to
    `LOD_SHADOW_CASTER_DISTANCE` are already TLAS casters (T6), so the
@@ -1257,6 +1269,11 @@ Each needs the project owner. The recommendation is the first option.
    distance toward `LOD_SHADOW_CASTER_DISTANCE`; consequence: longer
    directional rays at every tier, bounded by RLT-PERF-002 and measured by
    A13, and no new pass.
+   **Decided** (2026-11-02): Alternative A — a Bend-style screen-space sun
+   shadow term beyond the fade, built under RLT-CON-004 from Bend's
+   published description only, in Phase 3. RLT-NG-008's far-field gap is
+   then owned by this PRD for the sun inside the screen; geometry beyond
+   the loaded grid stays M35's.
 5. **Q5 — How the GI energy tail is closed.** Recommended: publish the
    deficit at Phase 2's entry, then close the tail by reusing M51's hash-grid
    radiance cache (§2; PTR-RT-002, built in M51's Phase 5) as the bounded
@@ -1271,7 +1288,13 @@ Each needs the project owner. The recommendation is the first option.
    consequence: RLT-G-004 becomes "published" rather than "bounded", L4
    completes at S2 with its deficit frozen (§3 completion rule), and the
    milestone closes without an L4 reference-quality claim.
-6. **Q6 — The bias budget of each term.** Each term needs a budget above
+   **Decided** (2026-11-02): the recommendation — M51's hash-grid radiance
+   cache as the bounded path's terminator; A7 runs report-only
+   (RLT-GI-003) until it lands.
+6. **Q6 — The bias budget of each term.** **Decided** (2026-11-02): the
+   recommendation below — the owner writes each term's budget, rationale
+   and drift margin (or a done declaration) at that term's phase entry,
+   step 3. Each term needs a budget above
    its frozen floor, because raster mode is biased by design and a
    threshold equal to the floor is unreachable. Recommended procedure, the
    same for every term: at the entry of the phase that improves the term
@@ -1323,6 +1346,8 @@ Each needs the project owner. The recommendation is the first option.
    option RLT-CON-001 is a stated exception: the contact band sits mostly
    in umbra next to the contact line, so its error should not depend on
    the shadow sample count, and it is held at tiers 1–3 (tier 0 reported).
+   **Decided** (2026-11-02): the recommendation — S3 judged at tier 3,
+   tiers 0–2 and each scene's settled tier published beside it.
 8. **Q8 — The cost ceiling per phase and for the milestone.**
    Recommended: on the reference GPU and on the four game benchmark scenes
    (the Cornell box excluded, its costs reported, RLT-PERF-004): no phase
@@ -1346,6 +1371,9 @@ Each needs the project owner. The recommendation is the first option.
    but the same number is generous on a fast scene and tight on
    MedTekResearch01. Alternative B: report only (rev 2's RLT-PERF-003);
    consequence: quality can be bought with unbounded frame time.
+   **Decided** (2026-11-02): the recommendation — per phase the larger of
+   5 % and 0.25 ms, for the milestone the larger of 12 % and the sum of
+   the per-phase floors, no settled-tier drop, Cornell reported only.
 9. **Q9 — A converged reference for game content.** Recommended: no — the
    reference gates stay on Cornell, game titles get declared-change gates
    (RLT-CNT) and probes, and ROADMAP says so (RLT-G-006). Consequence: a translation
@@ -1355,6 +1383,8 @@ Each needs the project owner. The recommendation is the first option.
    consequence: the exporter and the RLT-REF-008 mapping must cover
    textured legacy materials, alpha, skinning and the authored ambient,
    which is M51's Phase 3 content work, so Phase 5 waits for it.
+   **Decided** (2026-11-02): the recommendation — no game-scene
+   reference; reference gates stay on Cornell.
 
 10. **Q10 — Which term goes first.** Recommended: an L4 vertical slice —
     after Phase 1b, the first mechanism phase is GI energy (Phase 2):
@@ -1370,6 +1400,8 @@ Each needs the project owner. The recommendation is the first option.
     sky IBL, then GI); consequence: the first mechanism phase is the one
     with the most rungs, and a flaw in the apparatus is found after the
     largest phase has built on it.
+    **Decided** (2026-11-02): the recommendation — the L4 vertical slice
+    is the first mechanism phase.
 
 ---
 
@@ -1408,3 +1440,4 @@ Each needs the project owner. The recommendation is the first option.
 | 4 | 2026-11-01 | Review round 3 folded in: shadowed-region metrics moved to visibility error and every relative error normalised by the region's unoccluded luminance (§2, §8); calibration made a check, not a fit — analytic *k*<sub>exp</sub> applied to emitter intensities at export, *k*<sub>meas</sub> must match, sun factor measured on `direct_only` (RLT-REF-010, RLT-EXP-005); L4 rungs purely Lambertian on both sides (§3.4, RLT-GI-010); motion gates changed to temporal error against the engine's own parked, converged capture (RLT-SHD-002, RLT-SHD-010, A3, A14); floors frozen at Phase 1b with a drift margin, combined floor defined as root-sum-square (§2, RLT-REF-006); per-caster contact bands with a fixed flat-caster band for the plank (§2, RLT-CON-006); content gated against per-phase change declarations on linear captures, filter A/B demoted to a report (§5.8 RLT-CNT-001…003, A11); Q6 budgets strictly below the Phase 1b baseline with an external rationale, terms can be declared done; exporter additions filed as change requests against M51 (§5.9 RLT-EXP-001…006); Phase 1 split into 1a (apparatus proven) and 1b (baselines), L4 vertical slice first (Q10); Q8 excludes Cornell, adds an absolute floor and a milestone total (RLT-PERF-004, RLT-PERF-006); animated bench mode (RLT-REF-017), normal-map convention and normal-mapped validation plane (RLT-REF-008, RLT-REF-014), sky-only switch and one probe per capture (RLT-REF-019, §3.4), analytic high-resolution environment export (RLT-REF-012), closure with SVGF bypassed and SVGF energy reported to M54 (RLT-REF-011, RLT-REF-018), reference cache and gate run time (RLT-REF-015, RLT-REF-016, A18), objective material-class flags (§2, RLT-IBL-008); completion rule aligned with Phase 5 and the Q5 Alternative B case stated (§3); settled-tier warm-up and oscillation (§2, RLT-PERF-005); reference-GPU replacement procedure (RLT-OPS-003); Status paragraph trimmed; T10 untagged | reviewer: revise |
 | 5 | 2026-11-01 | Review round 4 folded in: apparatus built in the phase that first uses it, each RLT-EXP request blocking only its consuming phase, Phase 1a narrowed to the L4 slice and global checks, Phase 1b to global baselines, and Q1's M51 dependency corrected (§5.9, §9, Q1, Q10); floors, baselines and budgets frozen at each term's phase entry, with a re-freeze rule for intended cross-term changes and an ownership rule for failures caused outside M-LIGHT (RLT-REF-006, RLT-OPS-004, Q6); cost measured with the tier pinned at the Phase 1b settled tier, settled-tier drop checked separately, and the milestone total made consistent with the per-phase floor (RLT-PERF-004…006, Q8); calibration stated as a ratio of 1 on a scaled export, an environment calibration rung added, and the "converged reference" definition corrected (§2, RLT-REF-010, A15); change declarations bounded per region with size and tolerance, committed before the code, larger-than-declared changes failing, and the content margin under the revision-row rule (RLT-CNT-001, RLT-CNT-002); penumbra width fitted on visibility (§2, RLT-SHD-001); the drawn skinned pose exported, not the BLAS source (RLT-EXP-001); probe-only sky rung on both sides (RLT-REF-021, §3.4); sun rung by close-up camera with its height rule (RLT-SHD-001, Q3); unreconstructed `final` capture mode (RLT-REF-020), V4 closed from `taa_jitter_gate`; component-specific normaliser for L3 / L4 relative error (§2); RLT-NG-008 revision wording, F2's whole-route flag stated, material-class route list closed after the Phase 1b dump, temporal-gate engine captures counted in A18 (RLT-REF-016) | reviewer: revise |
 | 6 | 2026-11-02 | Review round 5 (verdict: approved with edits; this revision makes the edits) folded in: multiple-scattering parity between the engine's compensated GGX and the reference BSDF, with V13 and the `DBG_DISABLE_MULTISCATTER` or recorded-difference choice (RLT-REF-008); sun-rung sizing corrected to the 10–90 % width and asserted on the reference's measured width (RLT-SHD-001); re-freeze rule that moves the baseline freely, treats a floor rise beyond the drift margin as a budget change and drops a term that leaves its threshold from S3 to S2 (RLT-REF-006, Q6); separate during-motion and post-stop L1 budgets (RLT-SHD-002, RLT-SHD-010, Q6); environment calibration on a uniform or smooth glow-free sky (RLT-REF-010); content anchors captured at phase entry after an entry-time A11 run, and change measured and declared on a 32 × 32 tile grid (RLT-CNT-001, RLT-CNT-002, §9); A7 report-only until the Q5 mechanism lands (RLT-GI-003); post-completion regression guards (RLT-OPS-005); contact tiers stated as an exception to Q7 (RLT-CON-001); Q8 percentages taken from A13's Phase 1b pinned-tier frame time, with a sub-5 ms example; Q6 wording "this phase"; exporter skinning formula matched to `triangle.vert` (RLT-EXP-001) | reviewer: approved |
+| 7 | 2026-11-02 | Owner approval: every §10 decision recorded as **Decided** — Q4 takes Alternative A (screen-space sun term, RLT-CON-004 in Phase 3), every other question its recommendation; Q1's decision authorises building M51's exporter and EXR writer under M51's IDs; RLT-NG-008 updated for Q4; status PROPOSED → APPROVED | owner: approved |
