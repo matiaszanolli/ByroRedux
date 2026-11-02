@@ -29,4 +29,4 @@ if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
     exit 2
 fi
 
-exec "${python}" -I "${repo_root}/scripts/m-light/gates.py" "$@"
+exec "${python}" -I -B "${repo_root}/scripts/m-light/gates.py" "$@"
