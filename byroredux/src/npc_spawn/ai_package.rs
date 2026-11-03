@@ -387,7 +387,7 @@ impl AmbientBehavior {
             // Flee and Ambush take the actor over, so like Find / UseWeapon / Dialogue they install
             // only from a condition pass decided on modelled terms (#5376 rule; #6468): a quest-gated
             // flee with an uncatalogued gate would otherwise fire on first contact.
-            package_conditions_fully_modeled(&package.conditions, world).then(|| Self::Flee {
+            package_conditions_fully_modeled(&package.conditions, world).then_some(Self::Flee {
                 threat_form_id: target_reference,
                 min_distance: target_distance,
                 refuge_form_id: location_reference,

@@ -1122,6 +1122,7 @@ impl LocalGrid {
     /// Also drains this slot's stats from the dispatch that last used it; the
     /// caller must have waited that slot's fence (the all-slots wait at the
     /// top of `draw_frame`).
+    #[allow(clippy::too_many_arguments)] // Per-frame placement inputs, all scalars from the caller's frame state.
     pub(crate) fn begin_frame(
         &mut self,
         device: &ash::Device,

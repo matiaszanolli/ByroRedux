@@ -681,6 +681,8 @@ fn to_metres(v: Vec3) -> Vec3 {
     v / BETHESDA_UNITS_PER_METER
 }
 
+/// [`scene_xml_with_posed`] with nothing posed: the tests' entry point.
+#[cfg(test)]
 pub(crate) fn scene_xml(
     scene: &ExportScene,
     mesh_files: &BTreeMap<u32, String>,
@@ -689,7 +691,7 @@ pub(crate) fn scene_xml(
     scene_xml_with_posed(scene, mesh_files, &BTreeMap::new(), texture_files)
 }
 
-/// [`scene_xml`] with posed skinned meshes, by shape name (RLT-EXP-001).
+/// The Mitsuba scene file, with posed skinned meshes by shape name (RLT-EXP-001).
 fn scene_xml_with_posed(
     scene: &ExportScene,
     mesh_files: &BTreeMap<u32, String>,

@@ -95,7 +95,7 @@ impl FrameSequenceCapture {
     /// `target` frames? Frame 0 is the first rendered frame; the last
     /// `TAIL_GUARD_FRAMES` are left to the final `--screenshot`.
     pub(crate) fn frame_due(&self, frame: u32, target: u32) -> bool {
-        frame % self.every == 0 && frame.saturating_add(TAIL_GUARD_FRAMES) < target
+        frame.is_multiple_of(self.every) && frame.saturating_add(TAIL_GUARD_FRAMES) < target
     }
 
     pub(crate) fn path_for(&self, frame: u32) -> PathBuf {

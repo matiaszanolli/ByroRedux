@@ -239,6 +239,7 @@ fn apply_placement(builder: SpatialTrackBuilder, positional: bool) -> SpatialTra
 /// builder drops kira's ear model and distance falloff (see
 /// [`apply_placement`]) so the sound is heard at nominal level and centred
 /// wherever the listener walks or turns.
+#[allow(clippy::too_many_arguments)] // One input per send/filter the shared builder applies.
 pub(crate) fn build_spatial_track(
     mgr: &mut AudioManager,
     listener_id: kira::listener::ListenerId,

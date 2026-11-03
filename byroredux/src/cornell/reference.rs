@@ -303,6 +303,7 @@ fn setup_contact_rung(world: &mut World, builder: &mut MeshBuilder, neutral: Tex
     insert_normal_map(world, floor_entity, normal_map);
 
     // (name, half extents in metres, centre x/z, yaw, band width in metres)
+    #[allow(clippy::type_complexity)] // the comment above names each element; an alias would only move the naming
     let casters: [(&str, [f32; 3], [f32; 2], f32, f32); 3] = [
         // 1.2 m tall: band <= 0.12 m.
         ("con_block", [0.15, 0.6, 0.15], [-0.55, -0.35], 0.3, 0.06),

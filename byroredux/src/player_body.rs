@@ -345,6 +345,7 @@ pub(crate) fn attach_assembled_root(
 /// person hides the body's meshes (`HiddenFirstPerson` also skips their
 /// palette builds), so a view toggle mid-stride reveals a body already in
 /// stride rather than animating from bind pose on the toggle frame.
+#[allow(clippy::too_many_arguments)] // The spawn's resolved records, each read for a different clip choice.
 fn attach_player_locomotion_animation(
     world: &mut World,
     player: EntityId,

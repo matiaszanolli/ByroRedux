@@ -295,9 +295,7 @@ fn resolve_weapon(
     // attack's, so it is never charged here.
     Some(VatsWeapon {
         base_to_hit: *vats_base_to_hit,
-        ap_cost: (*ap_cost > 0.0)
-            .then_some(*ap_cost)
-            .unwrap_or(world.resource::<VatsModel>().ap.attack_pistol),
+        ap_cost: if *ap_cost > 0.0 { *ap_cost } else { world.resource::<VatsModel>().ap.attack_pistol },
         skill_form: *skill_form,
     })
 }

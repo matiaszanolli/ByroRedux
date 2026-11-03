@@ -1382,7 +1382,7 @@ impl VulkanContext {
                     .post
                     .volumetrics
                     .as_ref()
-                    .map_or(true, |v| v.local_fire_sunlit());
+                    .is_none_or(|v| v.local_fire_sunlit());
                 composite.dispatch(&self.device, cmd, frame, bindless_set, local_fire_sunlit);
                 if let Some(ref mut timers) = self.gpu_timers {
                     timers.cmd_end(TimerPass::Composite, &self.device, cmd, frame);

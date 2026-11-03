@@ -1540,7 +1540,7 @@ impl VolumetricsPipeline {
     /// its sun pipeline when so and the sun-less one (a leaner march loop)
     /// otherwise. `true`, the always-correct choice, when there is no grid.
     pub fn local_fire_sunlit(&self) -> bool {
-        self.local_grid.as_ref().map_or(true, local_grid::LocalGrid::sunlit)
+        self.local_grid.as_ref().is_none_or(local_grid::LocalGrid::sunlit)
     }
 
     /// Switch off every consumer of the local-grid table for `frame`. Called

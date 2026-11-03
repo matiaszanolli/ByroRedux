@@ -302,7 +302,7 @@ pub fn go_to_jail(world: &World) -> bool {
                 location_2: None,
                 scripted: Some(crate::story_manager::ScriptedStoryEvent {
                     keyword: 0,
-                    values: [i32::try_from(sentence_gold).unwrap_or(i32::MAX), 0],
+                    values: [sentence_gold, 0],
                     has_reference_1: false,
                 }),
             },
@@ -386,7 +386,7 @@ pub fn send_player_to_jail(world: &World, faction: u32, guard: Option<EntityId>,
     let sent = request_move(world, jail.cell_marker);
     if sent {
         // `OnStoryJail(akGuard, akCrimeGroup, akLocation, aiCrimeGold)`.
-        raise(*b"JAIL", guard.unwrap_or(player), None, [i32::try_from(sentence_gold).unwrap_or(i32::MAX), 0]);
+        raise(*b"JAIL", guard.unwrap_or(player), None, [sentence_gold, 0]);
     }
     sent
 }

@@ -105,7 +105,7 @@ impl Vm<'_> {
             // `akSpeaker.GetCrimeFaction().SendPlayerToJail()`). See [`crate::jail::send_player_to_jail`].
             (Value::Form(faction), "sendplayertojail") if args.len() <= 2 && crate::is_faction(self.world, *faction) => {
                 let values = self.eval_args(frame, args)?;
-                let flag = |i: usize| values.get(i).map_or(true, Value::truthy);
+                let flag = |i: usize| values.get(i).is_none_or(Value::truthy);
                 self.deferred.jail_sends.push((*faction, self.deferred.speaker, flag(0), flag(1)));
                 Some(Value::None)
             }
