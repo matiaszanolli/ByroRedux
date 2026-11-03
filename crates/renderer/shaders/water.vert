@@ -28,9 +28,16 @@
 // water draws (they're authored zero on the water quad meshes); we
 // keep the attribute slots wired so `triangle.vert`'s VAO is
 // reusable without a second `VertexInputState`.
+//
+// `inColor` is NOT spare on water: it carries the baked bed field
+// (`cell_loader/water.rs::bed_vertex_color`) — r = bed depth /
+// WATER_BED_DEPTH_MAX, gb = shoreward direction mapped to 0..1,
+// a = WATER_BED_VALID_ALPHA when the vertex has bed data (opaque
+// white otherwise). `main()` decodes it into `vShore`; dropping the
+// attribute breaks shore depth, wave refraction and swell shoaling.
 
 layout(location = 0) in vec3 inPosition;
-layout(location = 1) in vec4 inColor;       // unused on water — kept for VAO compat
+layout(location = 1) in vec4 inColor;       // bed field — see above (#6497)
 layout(location = 2) in vec3 inNormal;
 layout(location = 3) in vec2 inUV;
 layout(location = 4) in uvec4 inBoneIndices; // unused
