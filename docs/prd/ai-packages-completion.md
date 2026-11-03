@@ -1,6 +1,6 @@
 # AI Packages Completion — Product Requirements
 
-**Status**: PROPOSED (2026-11-03). Revision 3 folds in review round 2
+**Status**: APPROVED (2026-11-03). Revision 4 records the owner's §10 decisions: Q2 sets Skyrim's weekday origin per edition, every other answer is the recommendation; implementation issues may be filed. Revision 3 folded in review round 2
 (§12 lists the topics). It covers the remainder of milestone M42: the
 procedures, package fields and per-game prerequisites that do not run yet.
 Statements about how the original engines behave cite external sources
@@ -556,7 +556,11 @@ Skyrim+ `PSDT` day-of-week byte uses the same enum as FO3/FNV, 0 Sunday …
   per game: `package_weekday` matches on `ScriptGame`
   (`crates/scripting/src/globals.rs:145-152`) and `day_of_week` takes a
   `fallout` flag (`globals.rs:129-139`). This requirement retires both
-  branches into the resource.
+  branches into the resource. Skyrim's origin depends on the edition
+  (decision Q2): the loader resolves it from the master it reads, the
+  2011 launch master (HEDR 0.94) giving Morndas and every later master
+  (HEDR 1.71) giving Sundas; `GameKind` folds both into one kind, so the
+  edition is read here and nowhere past the boundary.
 
 ### 5.7 Package flags (`AIP-FLG`)
 
@@ -854,6 +858,9 @@ option.
    and keep 22 declined with 21 and 23 (the rev-2 recommendation). The 6 FNV
    type-22 packages keep doing nothing. Alternative D: keep every class
    declined (today). The 2 FO3 type-12 packages keep doing nothing too.
+   **Decided** (2026-11-03): the recommendation — run weapon classes 12
+   (Weapons: Any) and 22 (Weapons: Melee) now (AIP-UW-008, AIP-UW-009); 21
+   and 23 stay declined until Phase 0 settles their labels.
 2. **Q2 — Skyrim+ weekday epoch.** UESP disagrees with itself.
    *Skyrim: Statistics* says the game "starts on Morndas, the 17th of Last
    Seed" (local `uesp-wiki/Skyrim/Statistics.wiki:30`). *Skyrim: Unbound*
@@ -871,12 +878,22 @@ option.
    (Statistics). The same packages run, each one weekday off from the
    Sundas reading. Alternative: leave Skyrim+ days unevaluated (today).
    Those packages then run every day.
+   **Decided** (2026-11-03): the owner's reading, which reconciles the two
+   UESP pages by edition — Skyrim starts on 17 Last Seed 4E 201, a Morndas
+   on the launch edition (the 2011 master, as *Skyrim: Statistics* says)
+   and a Sundas on every later edition (SE / AE, *Skyrim: Unbound*'s fresh
+   start); the loader tells the editions apart by the master's HEDR version
+   (AIP-SCHED-004). FO4 and Starfield take the recommendation: the
+   Gregorian weekday of the authored start date. The owner's answer named
+   Skyrim only; the FO4 / Starfield half is recorded as recommended.
 3. **Q3 — Sleep with no bed in range.** Recommended: no sit fallback. The
    actor idles at the Sleep location, because the GECK defines Sleep as
    "find a bed and sleep in it" and, with a radius, "pick a valid bed within
    the radius". A sleeper with no bed in range then stands at its Sleep
    location through the window. Alternative: keep the #5390 sit fallback.
    Sleepers stay visibly seated in chairs through their sleep window.
+   **Decided** (2026-11-03): the recommendation — no sit fallback; a
+   sleeper with no bed in range idles at its Sleep location.
 4. **Q4 — Ambient package flags.** Recommended: in scope are the flags that
    change selection: Once Per Day, Must Complete, Continue if PC near
    (AIP-FLG). Shopkeepers then stay while the player is in the shop, and a
@@ -887,6 +904,9 @@ option.
    blends to a run, from `Speed` (`systems/graph_locomotion.rs`). Alternative: all flags in a
    follow-up PRD. Shopkeepers then still leave with the player in the shop,
    and finished Travel packages re-run.
+   **Decided** (2026-11-03): the recommendation — Once Per Day, Must
+   Complete and Continue if PC near are in scope (AIP-FLG); the door lock /
+   unlock flags and Always Run / Always Sneak are out.
 5. **Q5 — Oblivion pathing.** Oblivion ships no `NAVM` (0 records in
    `Oblivion.esm`, `parse_navm`'s coverage table) and authors path grids
    instead ("A PGRD record defines the path grid for a cell", UESP
@@ -898,12 +918,18 @@ option.
    Oblivion's Travel- and Wander-heavy package set (§3.1) then walks
    straight at its goals and stalls against walls, which the character
    controller blocks (`systems/locomotion.rs` module doc).
+   **Decided** (2026-11-03): the recommendation — Oblivion paths over
+   `PGRD`, designed as a new section of NAVM Pathfinding and delivered in
+   Phase 4.
 6. **Q6 — Sandbox activity scoring.** Recommended: out of this PRD
    (AIP-NG-007), and a follow-up revision once idle markers and food
    consumption have runtimes. Sandboxers keep taking the nearest free seat
    (§6 row 1). Alternative: in scope as a Phase 1 item. That makes Phase 1
    depend on an idle-marker runtime and on Eat consuming food, neither of
    which exists.
+   **Decided** (2026-11-03): the recommendation — Sandbox activity scoring
+   stays out of this PRD (AIP-NG-007), for a follow-up revision once idle
+   markers and food consumption have runtimes.
 
 ---
 
@@ -929,3 +955,4 @@ option.
 | 1 | 2026-11-01 | First draft | — |
 | 2 | 2026-11-01 | Review round 1 folded in: census provenance (Phase 0: confirm), FO3/FNV object-type enum and the xEdit FO3/FNV split at 28/29, weapon classes 21–23 and Q1 reworked against the ROADMAP rationale, Skyrim Lean value settled by a mesh census (AIP-SEAT-001 now a fix), FO4 month sentinel settled from xEdit (AIP-SCHED-002), weekday origin at the boundary (new AIP-SCHED-004), Starfield graph gate and `input_destination` stated from HEAD, `pack.ambient` split (AIP-DX-005/006), CastMagic self-range and UseMagic blocker, deviation citations | claude: revise |
 | 3 | 2026-11-03 | Review round 2 folded in: HEAD re-verified at 2026-11-03 (Scene driver has no ForceGreet arm, Patrol's `XLKR` links are decoded but unused, Oblivion ambushers have no gate, `find_behavior` span, `cell.owners` as the existing reader); the FO4 `NVNM` decode named as unowned (Related, AIP-WALK-002, Phase 5); weapon class 22 fits its name, Q1 reworked to run 12 and 22; FO4/Starfield furniture positions settled from xEdit (`FURN` `SNAM`, new AIP-SEAT-007); Starfield subgraph shape settled from xEdit (AIP-WALK-001); Find-on-flora and Hand to Hand verify items; §6 rows for UseItemAt, Ambush, Patrol, the class-weapon pick and the bed sit pose; §3.2 leaf-name verify moved to the census tool (AIP-DX-003, now named); Starfield and date columns in §5.6, Starfield in AIP-DX-004; SCHED-004 states today's per-game weekday branches; AIP-UW-006 no longer a decline; real-data skip is not an acceptance pass; Phase 0 verify list as a table; Q2–Q6 consequences stated, Q4 and Q5 premises corrected | claude: revise |
+| 4 | 2026-11-03 | Owner decisions Q1–Q6 recorded; Q2 amended by the owner (Skyrim's weekday origin per edition), with AIP-SCHED-004 stating the load-time edition read; the rest take the recommendation | owner: approved |

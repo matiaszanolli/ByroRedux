@@ -1,6 +1,6 @@
 # Game UI Integration — Product Requirements
 
-**Status**: PROPOSED (2026-11-03). Revision 3 folds in review round 2:
+**Status**: APPROVED (2026-11-03). Revision 4 records the owner's §10 decisions, every one the recommendation; implementation issues may be filed. Revision 3 folded in review round 2:
 §3.1 re-verified at HEAD (no close path, one native page at a time, the
 native pause freezing every script, ObScript menu requests, `MenuMode`
 blocks and `Utility.IsInMenuMode` unserved), the pause flag and the
@@ -819,6 +819,10 @@ Each needs the project owner. The recommendation is the first option.
    original surfaces only, native pages removed. Consequence: the playable
    slice gates that run on native pages (`p3-hud.sh`, `m43-crafting.sh`,
    `dt1-dialogue-layers.sh`) fail until every menu is served.
+   **Decided** (2026-11-03): the recommendation — the game's own movie or
+   document (S1 / S2) for every menu whose host calls are all served (H1),
+   the native page (S3) as the fallback for missing data, unserved menus
+   and Starfield, and the dialogue menu first.
 2. **Q2 — HUD meter route (the decision the ROADMAP row names).**
    Recommended: adapter injection on both VMs, an AVM1 adapter mirroring the
    shipped AVM2 one, serving path-addressed access (GUI-PATH). It keeps the
@@ -840,6 +844,9 @@ Each needs the project owner. The recommendation is the first option.
    withdraws GUI-NG-001; listed so the owner sees the route R4 closed.
    Alternative C: native vitals over the vanilla chrome. Consequence: two
    HUDs on screen and HUD mods that restyle meters have no effect.
+   **Decided** (2026-11-03): the recommendation — adapter injection on both
+   VMs, an AVM1 adapter mirroring the shipped AVM2 one, serving
+   path-addressed access (GUI-PATH); scripts get no raw path access.
 3. **Q3 — One movie per open menu or one modal movie.** Recommended: one
    Ruffle player per open menu on a shared device (GUI-REG-005), every
    visible layer rendered, only the top input owner ticking input. It is the
@@ -847,6 +854,9 @@ Each needs the project owner. The recommendation is the first option.
    stays live. Alternative: at most one modal movie plus the HUD.
    Consequence: cheaper, but a menu that opens another (a message box from
    inventory) replaces it, which changes what scripts observe.
+   **Decided** (2026-11-03): the recommendation — one Ruffle player per
+   open menu on a shared device (GUI-REG-005), every visible layer
+   rendered, only the top input owner ticking input.
 4. **Q4 — Race menu scope.** Recommended: an interactive race and sex
    selection (plus name where the game's menu has it), on the original
    menu where Q1 allows and a native page otherwise, that stays open in
@@ -861,12 +871,18 @@ Each needs the project owner. The recommendation is the first option.
    placeholder on every game. Alternative B: full slider character creation
    inside M48. Consequence: pulls a morph runtime into the UI milestone and
    delays every other phase.
+   **Decided** (2026-11-03): the recommendation — an interactive race and
+   sex selection (plus name where the game's menu has it), open in the
+   registry until accepted; whether the caller waits follows GUI-PAGE-002's
+   Phase 0 check per game.
 5. **Q5 — Font fallback.** Recommended: a bundled, redistributable
    open-licence font family chosen in Phase 0, so captures are deterministic
    and pixel gates stay stable on every Linux install. Alternative: the
    system font configuration. Consequence: no bundled file, but glyph
    metrics vary by distribution, and a capture-based gate can pass on one
    machine and fail on another.
+   **Decided** (2026-11-03): the recommendation — a bundled,
+   redistributable open-licence font family chosen in Phase 0.
 6. **Q6 — Starfield in M48.** Context: #4470 (the Starfield HUD, M48.8)
    is closed with only its parser shim built; the profile, catalog, HUD
    bars, protocol pin and smoke it listed have no tracking issue today.
@@ -877,6 +893,9 @@ Each needs the project owner. The recommendation is the first option.
    Tier 2. Consequence: the PlaceObject3 shim stays the only Starfield UI
    work and the rest of #4470's list stays unowned until a later
    milestone takes it.
+   **Decided** (2026-11-03): the recommendation — Starfield is Wave 3
+   inside M48 if the Phase 0 scan finds a `BGSCodeObj`-shaped contract the
+   AVM2 profile can extend; otherwise out of M48 with a reason.
 
 ---
 
@@ -908,3 +927,4 @@ Each needs the project owner. The recommendation is the first option.
 | 1 | 2026-11-01 | First draft | — |
 | 2 | 2026-11-01 | Review round 1 folded in: §3.1 rows 7 and 11 evidence corrected at HEAD (row 3 and row 6 tightened); FO4 `MenuData` citation re-read (custom-menu struct, one vanilla value) and GUI-REG-004 made a verify; Scaleform `Invoke` paraphrase corrected (GUI-PATH-002); HUD-under-modal visibility (GUI-REG-003) and the race menu's caller-visible wait (GUI-PAGE-002) moved to **Phase 0: verify**; input-owner rule split out as GUI-REG-009; GECK menu-code gaps (GUI-REG-006); `ui.open` / `ui.close` driver GUI-OPS-005 for scenarios 3 and 9; GUI-HOST-002 observable; `LMC-UI-001` cited in GUI-HOST-004; protocol citations in GUI-HOST-006; VATS PRD linked and FO3 MenuXml menus pulled into Phase 3 for it; §6 redundancy column and flags-default row; §8 ROADMAP homes; Q2 states it does not reopen R4 | claude: revise |
 | 3 | 2026-11-03 | Review round 2 folded in: §3.1 re-verified at HEAD with file:line (rows 2, 3, 5, 9, 10, 13, 14 corrected or completed; rows 16 pause and 17 menu-mode script surfaces added); `Utility.IsInMenuMode`, the native pause and `Begin MenuMode` blocks brought into scope (GUI-REG-010, GUI-REG-011, GUI-EVT-006, scenario 10), with the HUD kept out of menu mode (GUI-REG-002/004); S4 gains the `recorded` fallback; menu codes sourced from xEdit `wbMenuModeEnum` and the GECK gap claim corrected (GUI-REG-002/006); GUI-PATH-005 held to the SDK plan's UI contribution service and GUI-PATH-004 to exact-name reservation; GUI-REG-007/008 and GUI-OPS-005 HEAD wording; GUI-XML-002 cross-reference; Skyrim twin for the dialogue Phase P gate (GUI-PAGE-004, Phase 4); GUI-PAGE-005 made checkable; the VATS menu's pause entry cites `VATS-UI-007` (GUI-REG-004/010); CS evidence on the race-menu wait (GUI-PAGE-002, Q4); uncited §6 / GUI-NG-003 claims sourced; §7.1 FO76, Oblivion, Skyrim LE and Starfield (#4470) rows; meter scripts renamed off `m48-8`; Q1, Q2, Q4, Q6 wording | claude: revise |
+| 4 | 2026-11-03 | Owner decisions Q1–Q6 recorded, every one the recommendation | owner: approved |

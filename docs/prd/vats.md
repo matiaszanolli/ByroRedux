@@ -1,6 +1,6 @@
 # VATS and Action Points — Product Requirements
 
-**Status**: PROPOSED (2026-11-03). Revision 3 folds in review round 2
+**Status**: APPROVED (2026-11-03). Revision 4 records the owner's §10 decisions, every one the recommendation; implementation issues may be filed. Revision 3 folded in review round 2
 (HEAD re-measured on 2026-11-03: limb-condition values are already seeded
 and restored on FO3/FNV, `BPND` is only partly decoded and FO4's not at
 all, no path leaves VATS on death or cell change; the FO4 weapon layout
@@ -749,6 +749,9 @@ Each needs the project owner. The recommendation is the first option.
    keep today's fixed seed. Consequence: no work, but every session and
    every new game repeats the same first rolls. Phase 0's check of what
    vanilla does on reload informs this but does not bind it.
+   **Decided** (2026-11-03): the recommendation — the VATS die-roll state
+   is saved with the game and seeded once per new game from the OS (a
+   `FORMAT_MAJOR` bump).
 2. **Q2 — FO4 wave scope.** Recommended: slow-motion target select, the FO4
    chance chain, AP regen, race-linked limb tables, the VATS menu, and the
    limb and playback requirements already written for FO3/FNV re-run on FO4
@@ -761,6 +764,11 @@ Each needs the project owner. The recommendation is the first option.
    Alternative B: the FO4 wave without limbs and playback (target select,
    chance chain, AP and menu only). Consequence: a smaller Phase 6, but FO4
    attacks execute instantly at confirm and FO4 limbs never cripple.
+   **Decided** (2026-11-03): the recommendation — the FO4 wave covers
+   slow-motion target select, the FO4 chance chain, AP regen, race-linked
+   limb tables, the VATS menu, and the FO3/FNV limb and playback
+   requirements on FO4 data; the critical meter waits for a combat
+   critical-hit system (VATS-AP-005).
 3. **Q3 — Whether Phase 4 waits for M48.** Which surface is the product
    (the game's own document or a native page) is the Game UI Integration
    PRD's Q1, not reopened here; VATS-UI-001 and -005 follow whatever that
@@ -774,11 +782,17 @@ Each needs the project owner. The recommendation is the first option.
    Consequence: a playable VATS menu before M48's menu-stack work, but a
    second VATS menu to retire later, and VATS-UI-001 waits for a later
    phase.
+   **Decided** (2026-11-03): the recommendation — Phase 4 waits for the
+   Game UI PRD's Phases 1 and 3 and ships `vats_menu.xml` through MenuXml;
+   the console drives VATS until then.
 4. **Q4 — Where Concentrated Fire is checked (withdrawn, rev 2).** Settled
    by the Perk Entry Points PRD's `PERK-HOOK-003`, which routes it through
    the *Has Concentrated Fire* entry point; VATS-PERK-001 now owns only the
    grouping rule. Recommended: nothing to decide here; the owner decides it
    in that PRD's approval round.
+   **Decided** (2026-11-03): withdrawn at rev 2; settled by the Perk Entry
+   Points PRD's PERK-HOOK-003 (approved 2026-11-03), which routes
+   Concentrated Fire through the *Has Concentrated Fire* entry point.
 5. **Q5 — Playback camera depth.** Recommended: the authored `CPTH`/`CAMS`
    selection (VATS-PLAY-003/004) in Phase 3. Consequence: Phase 3 decodes
    two record types and evaluates camera-path conditions, and playback uses
@@ -786,6 +800,8 @@ Each needs the project owner. The recommendation is the first option.
    first-person playback only in Phase 3, authored cameras later.
    Consequence: a quicker Phase 3, but VATS-PLAY-005's per-shot time scales
    then have no source and playback looks unlike the game.
+   **Decided** (2026-11-03): the recommendation — the authored `CPTH` /
+   `CAMS` camera selection (VATS-PLAY-003/004) in Phase 3.
 
 ---
 
@@ -816,3 +832,4 @@ Each needs the project owner. The recommendation is the first option.
 | 1 | 2026-11-01 | First draft | — |
 | 2 | 2026-11-01 | Review round 1 folded in: perk entry-point roles (codes 3, 6, 8) against GECK *Entry Point*; VATS-TOHIT-003 code path, arithmetic cap and both source readings; FO4 AP regen vs `fActionPointsRestoreRate`; VATS-LIMB-001/005 sourced from GECK *Stats List* / *GetVATSValue*; VATS-UI-004 citation; Starfield evidence; HEAD precision (VATS-AP-001, VATS-LIMB-008); Q3 sequencing only, Q4 withdrawn to `PERK-HOOK-003`; Phase 4 depends on Game UI Phases 1 and 3, scenario 6 driven by `GUI-OPS-005`; VATS-NG-008 co-op gate (P2P Co-op Q5) | claude: revise |
 | 3 | 2026-11-03 | Review round 2 folded in: HEAD re-measured at `8fb9b21d8` (VATS-LIMB-001 already met on FO3/FNV, §3.2 rows 3/10/14 and new row 15, VATS-MODE-003 exit paths, VATS-UI-004 no highlight state, line references, Starfield `fVATS*` count); VATS-FO4-005 AP layout settled from xEdit and the to-hit input made a verify; new VATS-FO4-007 (race-linked FO4 limb tables); VATS-FO4-006 and VATS-MODE-001 made observable; VATS-LIMB-006 re-sourced to GECK *Movement Settings* and split into new VATS-LIMB-010/011 (*Gun Spread Formula* / *Weapon Damage Formula*); VATS-PLAY-002 split into new VATS-PLAY-010; new VATS-UI-007 (VATS menu does not pause the world, against Game UI `GUI-REG-010`); VATS-LIMB-005 FO3/FNV un-cripple and VATS-TOHIT-005 unarmed reach made verify items; VATS-NG-006 re-based on *GetVATSMode*; FNV pause sourced; VATS-UI-001/005 conditional on Game UI Q1, VATS-UI-002 observable; CAMS/CPTH layout cited to xEdit; GetVATSMode/GetVATSValue indices; §6 row 8 (gore); scenarios name data and AP observable; Phase 5/6 dependencies; Q1/Q2/Q3/Q5 consequences, Q2 limb and playback scope; save design in Related and the map | claude: revise |
+| 4 | 2026-11-03 | Owner decisions Q1–Q3 and Q5 recorded, every one the recommendation; withdrawn Q4 closed against PERK-HOOK-003 (Perk Entry Points PRD, approved the same day) | owner: approved |
