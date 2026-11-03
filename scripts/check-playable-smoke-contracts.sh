@@ -119,8 +119,11 @@ done
 # #6461 — m42-package-procedures, vats-targeting and w2-dynamic-water each added an FNV gate that
 # exits 77 on missing data and never joined these lists (the third recurrence of the class);
 # w2-dynamic-water is game-parameterised, so it is in the fixture loop above.
+# #6589 — the nine M43 live gates of 2026-10-30/31 (armor through tempering) are the fourth.
 for name in dt1-dialogue-layers m42-eat-sleep sm1-story-manager dt2-skyrim-forcegreet m47-3-obscript fo4-ragdoll \
-    p4-fnv-quest-route p5-fnv-quest-persistence m42-package-procedures vats-targeting m43-adia-conversations m43-item-drop m43-crafting; do
+    p4-fnv-quest-route p5-fnv-quest-persistence m42-package-procedures vats-targeting m43-adia-conversations m43-item-drop m43-crafting \
+    m43-armor m43-attraction m43-attraction-reaction m43-fo4-actions m43-hello m43-mines m43-node-window \
+    m43-skyrim-actions m43-tempering; do
     smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
     set +e
     output="$(env "${DATA_NEUTRALISE[@]}" "$smoke" 2>&1)"
