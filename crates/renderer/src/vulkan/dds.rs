@@ -181,10 +181,19 @@ fn rgb565(c: u16) -> [f32; 3] {
 /// (variable-mode block — not worth a CPU decoder for a 1×1 average); the
 /// caller then keeps the material tint unchanged.
 pub fn average_rgb(meta: &DdsMetadata, data: &[u8]) -> Option<[f32; 3]> {
-    // Byte offset of the smallest mip level.
+    average_rgb_levels(meta, data.get(meta.data_offset..)?, 0)
+}
+
+/// [`average_rgb`] over a payload that starts at chain level `first_mip`
+/// instead of at the file's data offset: the bytes of levels
+/// `[first_mip, mip_count)` in order. The smallest level is in every such
+/// range, so an M39 floor upload yields the same average as the whole file
+/// (TXS-RES-006).
+pub fn average_rgb_levels(meta: &DdsMetadata, data: &[u8], first_mip: u32) -> Option<[f32; 3]> {
+    // Byte offset of the smallest mip level within `data`.
     let target = meta.mip_count.saturating_sub(1);
-    let mut offset = meta.data_offset;
-    for m in 0..target {
+    let mut offset = 0usize;
+    for m in first_mip.min(target)..target {
         offset += mip_size(meta.width, meta.height, m, meta.block_size, meta.compressed) as usize;
     }
     let w = mip_dimension(meta.width, target) as usize;
@@ -1969,6 +1978,41 @@ pub(crate) mod tests {
                 a[i],
                 b[i]
             );
+        }
+    }
+
+    /// M39 TXS-RES-006 — a floor upload carries only levels
+    /// `[floor_first, mip_count)`; the average read from it must equal the
+    /// average read from the whole file, for every possible first level.
+    #[test]
+    fn average_rgb_from_floor_matches_full_chain() {
+        let (w, h, mips) = (64u32, 32u32, 7u32);
+        let mut data = make_dds_header(w, h, mips, b"DXT1");
+        let meta = parse_dds(&data).unwrap();
+        let level_bytes: Vec<usize> = (0..mips)
+            .map(|m| mip_size(w, h, m, meta.block_size, meta.compressed) as usize)
+            .collect();
+        data.resize(meta.data_offset + level_bytes.iter().sum::<usize>(), 0);
+        // Distinct endpoints per level; only the smallest level's may count:
+        // green (RGB565 0x07E0) there, red (0xF800) everywhere else.
+        let (green, red) = (0x07E0u16, 0xF800u16);
+        let mut at = meta.data_offset;
+        for (level, &bytes) in level_bytes.iter().enumerate() {
+            for block in (0..bytes).step_by(8) {
+                let c0 = if level as u32 == mips - 1 { green } else { red };
+                data[at + block..at + block + 2].copy_from_slice(&c0.to_le_bytes());
+                data[at + block + 2..at + block + 4].copy_from_slice(&c0.to_le_bytes());
+            }
+            at += bytes;
+        }
+        let whole = average_rgb(&meta, &data).expect("BC1 average");
+        approx(whole, [0.0, 1.0, 0.0]);
+        let mut skipped = 0usize;
+        for first in 0..mips {
+            let levels = &data[meta.data_offset + skipped..];
+            let from_floor = average_rgb_levels(&meta, levels, first).expect("floor average");
+            assert_eq!(from_floor, whole, "first level {first}");
+            skipped += level_bytes[first as usize];
         }
     }
 
