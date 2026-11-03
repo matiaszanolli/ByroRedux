@@ -538,6 +538,10 @@ impl VulkanContext {
         stats.lights_submitted = lights_submitted;
         stats.lights_uploaded = lights_uploaded;
         stats.lights_dropped = lights_submitted.saturating_sub(lights_uploaded);
+        // #6493 — the shadow-history mover list's overflow, read instead of a
+        // per-frame warn.
+        (stats.moved_surfaces_submitted, stats.moved_surfaces_kept) =
+            self.scene_buffers.moved_surface_counts();
         stats.cluster_sampled = cluster.sampled;
         stats.cluster_overflowed = cluster.overflowed_clusters;
         stats.cluster_dropped = cluster.dropped_lights;

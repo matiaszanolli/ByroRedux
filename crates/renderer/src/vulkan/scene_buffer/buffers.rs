@@ -50,6 +50,12 @@ pub struct SceneBuffers {
     /// RT integrity snapshot cannot hide a repeated overflow behind the dirty
     /// upload gate.
     pub(super) last_light_counts: (u32, u32),
+    /// #6493 — `(submitted, kept)` moved surface IDs from the latest
+    /// `upload_moved_surface_ids`, for the RT integrity snapshot.
+    pub(super) last_moved_surface_counts: (u32, u32),
+    /// #6493 — the mover list is over its cap and that episode has been
+    /// logged; cleared when the count falls back under the cap.
+    pub(super) moved_surface_overflow_logged: bool,
     /// One UBO per frame-in-flight (camera data).
     pub(super) camera_buffers: Vec<GpuBuffer>,
     /// DEVICE_LOCAL | STORAGE_BUFFER bone palette per frame-in-flight.
@@ -1093,6 +1099,8 @@ impl SceneBuffers {
             last_uploaded_indirect_hash: [None; MAX_FRAMES_IN_FLIGHT],
             last_uploaded_light_hash: [None; MAX_FRAMES_IN_FLIGHT],
             last_light_counts: (0, 0),
+            last_moved_surface_counts: (0, 0),
+            moved_surface_overflow_logged: false,
         })
     }
 }

@@ -1073,6 +1073,19 @@ pub struct RtIntegrityStats {
     /// `tick_deferred_destroy` would only have surfaced later as VRAM
     /// pressure. Telemetry like its siblings; not part of the verdict.
     pub texture_pending_destroy_count: u32,
+    /// Moved stable surface IDs the last instance build submitted to the
+    /// shadow-history mover list (#6250, scene set binding 25).
+    ///
+    /// #6493 — the list is capped at `RESTIR_MAX_MOVED_SURFACES`, and every
+    /// animated skinned part counts separately, so a crowd overflows it. The
+    /// overflow used to surface only as a warn on every frame; it is logged
+    /// once per episode now and read here instead. Telemetry, not verdict: an
+    /// over-cap mover still taints through the hit arm, so the image cost is
+    /// bounded and a populated scene must not turn the verdict red.
+    pub moved_surfaces_submitted: u32,
+    /// Of [`Self::moved_surfaces_submitted`], the IDs that fit the list (the
+    /// first `RESTIR_MAX_MOVED_SURFACES` in draw-sort order).
+    pub moved_surfaces_kept: u32,
 }
 
 impl RtIntegrityStats {
@@ -1112,6 +1125,7 @@ impl RtIntegrityStats {
              blas_total_bytes={} blas_static_bytes={} \
              blas_pending_destroy_bytes={} blas_pending_destroy_count={} \
              scratch_pending_destroy_count={} texture_pending_destroy_count={} \
+             moved_surfaces={} moved_surfaces_kept={} \
              verdict={}",
             self.frame,
             u8::from(self.sampled),
@@ -1137,6 +1151,8 @@ impl RtIntegrityStats {
             self.blas_pending_destroy_count,
             self.scratch_pending_destroy_count,
             self.texture_pending_destroy_count,
+            self.moved_surfaces_submitted,
+            self.moved_surfaces_kept,
             self.verdict(),
         )
     }
@@ -1864,7 +1880,22 @@ mod tests {
              blas_total_bytes=0 blas_static_bytes=0 \
              blas_pending_destroy_bytes=0 blas_pending_destroy_count=0 \
              scratch_pending_destroy_count=0 texture_pending_destroy_count=0 \
+             moved_surfaces=0 moved_surfaces_kept=0 \
              verdict=PASS"
+        );
+
+        // #6493 — a mover list over its cap is telemetry like the backlog
+        // below: a crowd on screen must read on the line without failing it.
+        let crowded = RtIntegrityStats {
+            moved_surfaces_submitted: 212,
+            moved_surfaces_kept: 64,
+            ..clean
+        };
+        assert_eq!(crowded.verdict(), "PASS");
+        assert!(
+            crowded.machine_line().contains("moved_surfaces=212 moved_surfaces_kept=64 verdict=PASS"),
+            "{}",
+            crowded.machine_line()
         );
 
         // #3999 — BLAS residency is telemetry, not a correctness predicate.

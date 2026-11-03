@@ -298,6 +298,12 @@ impl super::buffers::SceneBuffers {
         self.last_light_counts
     }
 
+    /// `(submitted, kept)` moved surface IDs from the latest mover-list
+    /// upload (#6493); `kept < submitted` while the list is over its cap.
+    pub fn moved_surface_counts(&self) -> (u32, u32) {
+        self.last_moved_surface_counts
+    }
+
     /// Read the prior use of this frame slot after its fence has signalled.
     /// An armed-but-not-ready record is still returned: it means the requested
     /// pixel had no eligible main-pass fragment, an important result rather

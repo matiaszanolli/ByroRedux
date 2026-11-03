@@ -78,6 +78,35 @@ fn mark_bone_world_slot_written(state: &mut u8, frame_index: usize) {
     }
 }
 
+/// #6493 — true on the first upload of a mover-list overflow episode, and
+/// latches `logged` so the rest of the episode stays quiet; an upload that fits
+/// the cap clears the latch, so the next crowd is reported again.
+fn moved_surface_overflow_episode_starts(logged: &mut bool, submitted: usize, kept: usize) -> bool {
+    let over = submitted > kept;
+    let starts = over && !*logged;
+    *logged = over;
+    starts
+}
+
+#[cfg(test)]
+mod moved_surface_overflow_tests {
+    use super::moved_surface_overflow_episode_starts;
+
+    /// #6493 — a crowd held over the cap warned on every frame (~60 lines/s).
+    #[test]
+    fn overflow_warns_once_per_episode_and_rearms_under_the_cap() {
+        const CAP: usize = 64;
+        let mut logged = false;
+        let warned: Vec<bool> = [10, 70, 212, 70, 64, 0, 90, 90]
+            .into_iter()
+            .map(|submitted| {
+                moved_surface_overflow_episode_starts(&mut logged, submitted, submitted.min(CAP))
+            })
+            .collect();
+        assert_eq!(warned, [false, true, false, false, false, false, true, false]);
+    }
+}
+
 impl super::buffers::SceneBuffers {
     /// Upload light data for the current frame-in-flight.
     ///
@@ -833,8 +862,11 @@ impl super::buffers::SceneBuffers {
 
     /// #6250 — upload this build's moved stable surface IDs (scene set
     /// binding 25) for the mover taint's prev-occluder arm. The buffer is
-    /// `[count, ids...]`; over-cap ids are dropped with a warn (they still
-    /// taint via the hit arm / the K-jitter re-roll a few frames later).
+    /// `[count, ids...]`; over-cap ids are dropped (they still taint via the
+    /// hit arm / the K-jitter re-roll a few frames later). Every animated
+    /// skinned part counts, so a crowd stays over the cap for as long as it
+    /// is on screen: #6493 logs one warn per overflow episode and leaves the
+    /// running counts to `rt.integrity` (`moved_surface_counts`).
     /// Rewritten whole every frame — 260 B, no dirty-gate is worth the hash.
     pub fn upload_moved_surface_ids(
         &mut self,
@@ -848,10 +880,19 @@ impl super::buffers::SceneBuffers {
             MAX_FRAMES_IN_FLIGHT
         );
         let kept = moved_surface_ids.len().min(RESTIR_MAX_MOVED_SURFACES as usize);
-        if moved_surface_ids.len() > kept {
+        self.last_moved_surface_counts = (
+            moved_surface_ids.len().min(u32::MAX as usize) as u32,
+            kept as u32,
+        );
+        if moved_surface_overflow_episode_starts(
+            &mut self.moved_surface_overflow_logged,
+            moved_surface_ids.len(),
+            kept,
+        ) {
             log::warn!(
                 "moved-surface set over capacity: {} movers, kept {} (#6250) — the rest \
-                 taint via the hit arm instead of the prev-occluder arm",
+                 taint via the hit arm instead of the prev-occluder arm; logged once per \
+                 overflow episode, `rt.integrity` carries the live counts (#6493)",
                 moved_surface_ids.len(),
                 kept
             );
