@@ -473,17 +473,34 @@ fn the_root_body_lands_on_the_placement_through_a_lifted_parent() {
 }
 
 /// #6252 — which spawns park their `XRGD` pose: a Starts-Dead placement
-/// (Skyrim+), or a dead base on FO3/FNV; never a pose on a live FO3/FNV base,
-/// an Oblivion base (no verified rig) or an empty pose.
+/// (Skyrim+) or a dead base (FO3/FNV, Oblivion — decided per game at the record
+/// boundary); never a pose on a live base or an empty pose.
 #[test]
-fn a_corpse_pose_is_parked_on_the_placement_flag_or_a_fallout_dead_base() {
-    use byroredux_plugin::esm::reader::GameKind;
+fn a_corpse_pose_is_parked_on_the_placement_flag_or_a_dead_base() {
     let pose = ordered_entries(18);
-    assert!(parks_authored_pose(true, false, GameKind::Skyrim, &pose));
-    assert!(parks_authored_pose(false, true, GameKind::Fallout3NV, &pose));
-    assert!(!parks_authored_pose(false, false, GameKind::Fallout3NV, &pose), "Fisto's pose");
-    assert!(!parks_authored_pose(false, true, GameKind::Oblivion, &pose));
-    assert!(!parks_authored_pose(true, true, GameKind::Fallout3NV, &[]));
+    assert!(parks_authored_pose(true, false, &pose));
+    assert!(parks_authored_pose(false, true, &pose));
+    assert!(!parks_authored_pose(false, false, &pose), "Fisto's pose");
+    assert!(!parks_authored_pose(true, true, &[]));
+}
+
+/// #6490 — the game does not gate the pose, the rig does: Oblivion's dead-base
+/// corpses park their pose, and `pose_skeleton` refuses Oblivion's humanoid rig
+/// because it is not a verified body set (it is not FO3/FNV's, despite the shared
+/// `Bip01` names), so they collapse as before.
+#[test]
+fn the_unverified_oblivion_humanoid_rig_is_refused_by_the_rig_gate() {
+    let set = &OBLIVION_HUMANOID_RAGDOLL_BODIES[..];
+    let names = owned_names(set);
+    assert!(!is_fallout_posable_ragdoll(&names));
+    assert!(!is_skyrim_posable_ragdoll(&names));
+    assert!(!is_fo4_posable_ragdoll(&names));
+    let mut world = World::new();
+    let (root, bones) = bone_chain(&mut world, set, &[None; 18]);
+    let before: Vec<Quat> = bones.iter().map(|&b| world.get::<Transform>(b).unwrap().rotation).collect();
+    assert!(pose_skeleton(&world, root, &ordered_entries(18)).is_err());
+    let after: Vec<Quat> = bones.iter().map(|&b| world.get::<Transform>(b).unwrap().rotation).collect();
+    assert_eq!(before, after, "a refused pose leaves the skeleton as it was");
 }
 
 /// #6068 — SkeletonS poses only its 19-entry poses. The 18-entry ones (two
@@ -924,7 +941,6 @@ fn fo4_xrgd_poses_resolve_against_the_real_skeletons() {
 /// humanoid skeleton's ragdoll (the verified FO3/FNV body set), and how many poses sit on live
 /// bases. `None` when the game data is absent (asserts under `BYROREDUX_REQUIRE_GAME_DATA=1`).
 fn fallout_xrgd_census(env: &str, default: &str, esm: &str) -> Option<(usize, usize, usize)> {
-    use byroredux_plugin::esm::reader::GameKind;
     let data = std::env::var(env)
         .ok()
         .filter(|s| !s.is_empty())
@@ -952,7 +968,7 @@ fn fallout_xrgd_census(env: &str, default: &str, esm: &str) -> Option<(usize, us
         if r.ragdoll_pose.is_empty() {
             return;
         }
-        if !parks_authored_pose(r.starts_dead, npc.starts_dead, GameKind::Fallout3NV, &r.ragdoll_pose) {
+        if !parks_authored_pose(r.starts_dead, npc.starts_dead, &r.ragdoll_pose) {
             live_posed += 1;
             return;
         }

@@ -199,7 +199,6 @@ use byroredux_core::ecs::{
 use byroredux_core::math::coord::euler_zup_to_quat_yup_mode;
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm::cell::RagdollPoseBone;
-use byroredux_plugin::esm::reader::GameKind;
 
 /// The humanoid ragdoll's bodies in the order the `XRGD` entries list them
 /// (the skeleton NIF's `bhkRigidBody` order), by bone name. See the module
@@ -383,6 +382,35 @@ pub(crate) const FALLOUT_HUMANOID_RAGDOLL_BODIES: [&str; 18] = [
     "Bip01 R Hand",
 ];
 
+/// #6490 — Oblivion's humanoid ragdoll (`meshes\characters\_male\skeleton.nif`)
+/// as the importer extracts it: 18 bodies like FO3/FNV's, but spine-first,
+/// without `Bip01 Neck1` and with `SideWeapon`, so it matches no verified set
+/// and [`pose_skeleton`] refuses it. NOT a verified set — no `XRGD` order has
+/// been established for it (Oblivion.esm's 125 posed dead-base humanoid
+/// corpses author 18 entries 110 times, 22 entries 13 times, 17 twice). Kept
+/// so a test pins that the rig gate, not a game check, keeps it out.
+#[cfg(test)]
+pub(crate) const OBLIVION_HUMANOID_RAGDOLL_BODIES: [&str; 18] = [
+    "Bip01 NonAccum",
+    "Bip01 Spine",
+    "Bip01 Spine1",
+    "Bip01 Spine2",
+    "Bip01 Head",
+    "Bip01 L UpperArm",
+    "Bip01 L Forearm",
+    "Bip01 L Hand",
+    "Bip01 R UpperArm",
+    "Bip01 R Forearm",
+    "Bip01 R Hand",
+    "Bip01 L Thigh",
+    "Bip01 L Calf",
+    "Bip01 L Foot",
+    "Bip01 R Thigh",
+    "Bip01 R Calf",
+    "Bip01 R Foot",
+    "SideWeapon",
+];
+
 /// The FO4 human ragdoll's bodies in blob (body-id) order, by bone name.
 pub(crate) const FO4_HUMAN_RAGDOLL_BODIES: [&str; 18] = [
     "COM",
@@ -564,18 +592,23 @@ pub(crate) fn is_fallout_posable_ragdoll(body_bone_names: &[Option<String>]) -> 
 }
 
 /// Whether a spawn parks a placed actor's `XRGD` pose for its death
-/// reconciliation. Skyrim+ marks the corpse on the placement (`Starts Dead`);
-/// FO3/FNV mark it on the base record, and a pose on a live base (Fisto,
-/// `VHDKimballRangerAmbushed01`) is not a corpse's (#6252). Oblivion's base
-/// flag also marks a corpse, but no Oblivion rig is verified, so its poses are
-/// not parked.
+/// reconciliation: the actor is a corpse by its placement (`Starts Dead`,
+/// Skyrim+) or by its base record. Which base marks a corpse is decided per
+/// game at the record boundary — Oblivion's header bit (#5013), FO3/FNV's
+/// DATA Base Health ≤ 0 (#5005); no other game sets it — so a pose on a live
+/// FO3/FNV base (Fisto, `VHDKimballRangerAmbushed01`) is not parked (#6252).
+///
+/// Whether the pose can be *applied* is the rig's question, not the game's
+/// (#6490): [`pose_skeleton`] admits only the verified body sets and refuses
+/// the rest, and a refused pose falls back to the collapse. Oblivion's
+/// humanoid rig ([`OBLIVION_HUMANOID_RAGDOLL_BODIES`]) is not one of them, so
+/// its 125 posed corpses park and are refused until that rig is verified.
 pub(crate) fn parks_authored_pose(
     placement_starts_dead: bool,
     base_dead: bool,
-    game: GameKind,
     pose: &[RagdollPoseBone],
 ) -> bool {
-    !pose.is_empty() && (placement_starts_dead || (base_dead && game == GameKind::Fallout3NV))
+    !pose.is_empty() && (placement_starts_dead || base_dead)
 }
 
 /// Whether a ragdoll's bodies, by bone name in template order, are exactly one

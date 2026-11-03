@@ -869,11 +869,11 @@ fn advance_actor_synth(
                         // #5015 — an authored corpse lies as
                         // posed: park the `XRGD` pose for the
                         // death reconciliation to apply. #6252 —
-                        // on FO3/FNV the corpse is the base's.
+                        // on FO3/FNV the corpse is the base's; the
+                        // rig decides whether it applies (#6490).
                         if crate::ragdoll_pose::parks_authored_pose(
                             placed_ref.starts_dead,
                             npc.starts_dead,
-                            game,
                             &placed_ref.ragdoll_pose,
                         ) {
                             world.insert(

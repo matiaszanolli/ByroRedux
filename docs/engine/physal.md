@@ -223,10 +223,25 @@ Production activation comes from `combat::reconcile_dead_actor`, reached for
 live deaths, actors authored `Starts Dead`, and the save-load reconciliation
 sweep; `ragdoll <id>` remains the manual debug path. Before activation, a
 transient `AuthoredRagdollPose` may apply the placed actor's `XRGD` pose so the
-corpse starts from its authored pose rather than the spawn pose. This mapping
-is skeleton-keyed, not a `GameKind` branch: entry *k* maps to body *k* in the
-18-body humanoid set, rotations use the empirically derived Gamebryo XYZ
-product with negated angles, and entry zero places the COM at the reference.
+corpse starts from its authored pose rather than the spawn pose.
+
+Two decisions, neither a runtime `GameKind` branch (#6490). *Parking*: a pose is
+parked when the actor is a corpse by its placement (`Starts Dead`, Skyrim+) or by
+its base record, and which base marks a corpse is translated per game at the
+record boundary (Oblivion's header bit, FO3/FNV's DATA Base Health ≤ 0).
+*Applying*: `pose_skeleton` keys on the rig. The ragdoll's bodies, by bone name in
+template order, must be one of the verified sets, and each set carries its own map
+from entry to body. Skyrim's humanoid and creature sets and the FO3/FNV humanoid
+map entry *k* to body *k*. FO4's human, ghoul and super-mutant sets map each entry
+to a body by its `pose_bone_id`, allowing at most one trailing marker. Rotations
+use the empirically derived Gamebryo XYZ product with negated angles. The root
+body is placed at the skeleton root's position in its parent frame
+(`placement_local`), which is the reference itself where the parents sit at the
+placement origin (Skyrim's and FO4's COM) and undoes the hip lift of FO3/FNV's
+`Bip01`. A rig joins by adding its verified body set and map, never a game check.
+Oblivion's humanoid rig is not verified (its bodies are not FO3/FNV's despite the
+shared `Bip01` names), so its posed corpses are parked and refused.
+
 The pose is consumed once and is not saved. Unknown skeletons, missing or
 invalid entries, and other pose refusals leave the skeleton unchanged; normal
 ragdoll activation then uses its current pose and can still collapse from the
