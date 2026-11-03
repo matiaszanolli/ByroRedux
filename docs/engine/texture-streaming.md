@@ -288,11 +288,13 @@ than `first_resident`, sorted by:
 ### 6.2 Per-frame cap (TXS-BUD-006)
 
 Each frame at most `MAX_PROMOTION_UPLOAD_BYTES_PER_FRAME` of promotion
-uploads are submitted; the remainder waits for the next frame. Phase 1 sets
-the value from the measured upload cost per MiB under the forced
-floor-then-full sequence on the A9 soak, as the largest cap that keeps the
-frame-time p99 within run-to-run noise of the streaming-off control, and
-records it in [Memory Budget](memory-budget.md) with a ledger test.
+uploads are submitted; the remainder waits for the next frame. Phase 1
+bounds a frame's promotions by one upload sub-batch
+(`MAX_UPLOAD_BATCH_BYTES`, `VulkanContext::update_texture_streaming`).
+Phase 3 (TXS-BUD-006) sets the cap from the measured upload cost per MiB on
+the A9 soak, as the largest cap that keeps the frame-time p99 within
+run-to-run noise of the streaming-off control, and records it in
+[Memory Budget](memory-budget.md) with a ledger test.
 
 ### 6.3 Hysteresis (TXS-WANT-005)
 
@@ -391,7 +393,7 @@ No path calls `device_wait_idle` (TXS-RES-004).
 
 | Item | Settled by |
 |---|---|
-| `MAX_PROMOTION_UPLOAD_BYTES_PER_FRAME` | Phase 1 measurement (§6.2) |
+| `MAX_PROMOTION_UPLOAD_BYTES_PER_FRAME` | Phase 3 measurement (§6.2; Phase 1 uses one upload sub-batch) |
 | `DEMOTE_AFTER_FRAMES` | Phase 2 measurement (§6.3) |
 | `F` | Phase 3 measurement (§7.1) |
 | TLAS-only one-level bias | A11 in Phase 2 (§5.3) |
