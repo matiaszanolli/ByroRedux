@@ -12,8 +12,11 @@ use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
 /// Marker + accumulator on the entity whose horizontal movement
-/// should produce footstep sounds (today the fly-camera entity; an
-/// `M28.5` character controller will own this in future).
+/// should produce footstep sounds. A boot inserts one on the camera
+/// (`spawn_initial_camera`, the FlyCam walker) and, in character mode,
+/// a second on the player body (#5146), which is then the only one that
+/// accumulates: `footstep_system` re-seeds the camera's while
+/// `PlayerMode` is `Character` (#5348).
 ///
 /// `last_position` and `accumulated_stride` are mutated each frame
 /// by `footstep_system`; `stride_threshold` is read-only configuration

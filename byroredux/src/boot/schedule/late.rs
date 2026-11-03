@@ -83,22 +83,23 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::ecs::GlobalTransform>(),
     );
     // M44 Phase 3.5 / #3652 — footstep dispatch. Reads `GlobalTransform` for
-    // the world-space spawn position; the emitter lives on the active camera
-    // in FlyCam (and is skipped there while in character mode, #5348) and on
-    // the player body in character mode (`scene.rs`), so in
-    // player/third-person mode this is the SAME cross-stage hazard
-    // `make_billboard_system` just above was moved here to fix —
-    // `camera_follow_system`'s pose, not last frame's. Pre-#848 this was in
-    // `Stage::Update`, ahead of PostUpdate propagation, for the same class
-    // of staleness one stage earlier; #848 moved it to a PostUpdate
-    // exclusive, which fixed the fly-cam case (there `Transform` is written
-    // in `Stage::Update` and PostUpdate propagation resolves it same-frame)
-    // but left the player-mode case exactly as stale as billboard's, just
-    // quieter (a spatial-audio trigger position a few cm off, versus a
-    // visibly wrong facing) — an oversight, never an accepted trade-off
-    // like `particle_system`'s #3653 comment above documents. Also gains a
-    // declared Access here for the first time (previously a bare
-    // `add_exclusive`, unlike every neighboring exclusive in this file).
+    // the world-space spawn position. #3652 moved it here (from a PostUpdate
+    // exclusive, #848) when the camera was the character-mode walker, so it
+    // would read `camera_follow_system`'s pose, not last frame's. #5146 made
+    // the player body the only accumulating emitter in character mode: its
+    // `GlobalTransform` comes from Early `character_controller_system` plus
+    // PostUpdate propagation (Physics writes back only the local
+    // `Transform`), so no audible footstep reads `camera_follow_system`'s
+    // pose any more, and the FlyCam camera is likewise resolved by
+    // PostUpdate. What the Late slot after `camera_follow_system` still buys
+    // is the re-seed of the skipped camera emitter (#5348): it tracks the
+    // boom's current pose, so a later FlyCam switch starts its stride from
+    // where the camera actually is. `footstep_runs_after_camera_follow_in_late`
+    // pins that order; moving the system to PostUpdate after propagation
+    // would be equally correct for the body and would cost only that
+    // one-frame re-seed lag. Also gains a declared Access here for the first
+    // time (previously a bare `add_exclusive`, unlike every neighboring
+    // exclusive in this file).
     // #5146 adds the character-mode locomotion reads: `PlayerEntity` picks
     // the walking body, `CharacterController.is_grounded` and the
     // `WaterContact` swimlevel gate accumulation to grounded land motion.

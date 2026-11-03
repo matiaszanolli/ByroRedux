@@ -924,12 +924,18 @@ fn billboard_runs_after_camera_follow_in_late() {
 
 /// #4185 (CONC-D4-01) — `footstep_system` was moved to the `Stage::Late`
 /// exclusive lane by the same #3652 reasoning as
-/// `make_billboard_system` (its spatial-audio trigger position is derived
-/// from the camera pose `camera_follow_system` authors in Late's parallel
-/// batch) but got none of that fix's pins. `analyze_pair` is intra-stage,
-/// so a reshuffle back to `PostUpdate` — or down into Late's parallel
-/// batch — is invisible to every counter. Same three assertions as the
-/// billboard pin above, extended per the finding.
+/// `make_billboard_system` (its spatial-audio trigger position was then
+/// derived from the camera pose `camera_follow_system` authors in Late's
+/// parallel batch) but got none of that fix's pins. `analyze_pair` is
+/// intra-stage, so a reshuffle back to `PostUpdate` — or down into Late's
+/// parallel batch — is invisible to every counter. Same three assertions as
+/// the billboard pin above, extended per the finding.
+///
+/// #5349 — since #5146 the character-mode walker is the player body, whose
+/// pose is final after PostUpdate propagation, so no audible footstep reads
+/// the boom pose any more. The order still keeps the skipped camera
+/// emitter's re-seed (#5348) on the current boom pose; see the rationale on
+/// the `footstep_system` row in `late.rs` before retiring this pin.
 #[test]
 fn footstep_runs_after_camera_follow_in_late() {
     use byroredux_core::ecs::Stage;
@@ -966,8 +972,8 @@ fn footstep_runs_after_camera_follow_in_late() {
     assert!(
         camera_follow < footstep,
         "footstep_system ({footstep}) must run AFTER camera_follow_system \
-         ({camera_follow}) — otherwise its spatial-audio trigger position is \
-         one frame stale (#3652/#4185)"
+         ({camera_follow}) — otherwise the skipped camera emitter re-seeds \
+         from last frame's boom pose (#3652/#4185/#5349)"
     );
 
     for stage in &report.stages {
@@ -980,8 +986,8 @@ fn footstep_runs_after_camera_follow_in_late() {
                 .iter()
                 .any(|r| r.name.contains("footstep_system")),
             "footstep_system is registered in {:?} as well as Stage::Late — \
-             an earlier-stage copy reads the previous frame's camera pose \
-             (#3652/#4185)",
+             an earlier-stage copy reads the walker's pose before this \
+             frame's propagation (#3652/#4185)",
             stage.stage,
         );
     }
