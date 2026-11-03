@@ -23,8 +23,8 @@ shadows on RTX 4070 Ti. Current entity count + bench numbers in
 ![The Lucky 38 on the New Vegas Strip (Fallout: New Vegas)](docs/screenshots/new-vegas-strip.png)
 *The Lucky 38 and LVB Station on the New Vegas Strip, streamed from `FalloutNV.esm`'s `TheStripWorldNew` worldspace.*
 
-![Cyrodiil wilderness with ruins under a maple canopy (Oblivion)](docs/screenshots/oblivion-cyrodiil-ruins.png)
-*Cyrodiil wilderness from `Oblivion.esm` — SpeedTree foliage, ground-cover grass and weathered ruins in the distance.*
+![The Great Forest east of Chorrol (Oblivion)](docs/screenshots/oblivion-great-forest.png)
+*The Great Forest east of Chorrol, from `Oblivion.esm` — SpeedTree canopy over ground-cover ferns and grass.*
 
 ## At a glance
 

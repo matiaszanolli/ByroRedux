@@ -12,7 +12,7 @@ tools, no mod manager.
 | [`whiterun-bannered-mare.png`](whiterun-bannered-mare.png) | The Elder Scrolls V: Skyrim SE | `WhiterunBanneredMare` | 6,228 entities, 460 meshes, 352 textures; RT multi-light, captured 2026-11-03 after the lighting overhaul |
 | [`prospector-saloon.png`](prospector-saloon.png) | Fallout: New Vegas | `GSProspectorSaloonInterior` | 2,278 entities, 382 meshes, 345 textures; cell XCLL lighting, RT multi-light, captured 2026-11-03 after the lighting overhaul |
 | [`new-vegas-strip.png`](new-vegas-strip.png) | Fallout: New Vegas | `TheStripWorldNew` grid 0,0 radius 2 — the Lucky 38 and LVB Station | 11,383 entities, 1,171 meshes, 603 textures; exterior worldspace streaming, captured 2026-11-03 after the lighting overhaul |
-| [`oblivion-cyrodiil-ruins.png`](oblivion-cyrodiil-ruins.png) | The Elder Scrolls IV: Oblivion | Cyrodiil exterior (location not recorded) | SpeedTree canopy, ground-cover grass, ruins in the distance |
+| [`oblivion-great-forest.png`](oblivion-great-forest.png) | The Elder Scrolls IV: Oblivion | `Tamriel` grid -19,14 radius 3 — the Great Forest near Weatherleah, east of Chorrol | 28,121 entities, 1,543 meshes, 721 textures; SpeedTree canopy + ground cover, captured 2026-11-03 after the lighting overhaul |
 | [`anvil-oaken-halls.png`](anvil-oaken-halls.png) | The Elder Scrolls IV: Oblivion | `AnvilHeinrichOakenHallsHouse` | 1,193 entities, 281 meshes, 251 textures; cell XCLL + per-mesh NiLight torches, RT multi-light, captured 2026-11-03 after the lighting overhaul |
 
 `anvil-oaken-halls.png` is the hero shot for the Oblivion tier going
@@ -24,6 +24,11 @@ green.
 # Skyrim SE — the Bannered Mare in Whiterun (the `skyrim_se` profile supplies
 # Skyrim.esm and the vanilla mesh / texture / script / sound / voice BSAs)
 cargo run --release -- --game skyrim_se --cell WhiterunBanneredMare
+
+# Oblivion — the Great Forest near Weatherleah. -19,14 is one of the
+# Great Forest's densest SpeedTree cells (~50 TREE refs) with no Oblivion
+# gate nearby; radius 3 gives the canopy depth.
+cargo run --release -- --game oblivion --wrld Tamriel --grid -19,14 --radius 3
 
 # Oblivion — Heinrich Oaken Halls House in Anvil
 cargo run --release -- \
