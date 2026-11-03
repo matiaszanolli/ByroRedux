@@ -1288,7 +1288,12 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // #5912 — +1: `fuz_census.rs`, the grounding probe for the .fuz
         // payload census (40/40 SE voice files = WMAUDIO2 in an xWMA
         // container), kept alongside the crate's other archive probes.
-        ("bsa", 16, 1207),
+        // M39 Phase 0 (#6627) re-measure: +2 — `ba2_mip_chunk_census.rs` (the
+        // PRD's A4 census, named in docs/prd/texture-streaming.md) and
+        // `texture_read_cost.rs` (the Q2 (b) read-cost measurement), plus
+        // `dds_mip_scan --floor-edge`; all three produce the tables in
+        // docs/engine/texture-streaming.md §2.
+        ("bsa", 18, 1745),
         ("fsr3-sys", 1, 284),
         ("hkx", 14, 863),
         ("menuxml", 1, 197),
