@@ -1878,9 +1878,10 @@ pub const WATER_CLEAN_IOR: f32 = byroredux_core::ecs::components::water::WATER_C
 // #6526 — the underwater god-ray march (`composite.frag` `underwaterGodRays` /
 // `underwaterSunVisibility`). The budgets are the cost: STEPS x (TAPS_BELOW +
 // TAPS_ABOVE) = 144 depth taps per submerged pixel (PERF-2026-10-27-D5-01), so a
-// retune of either has one home. The noise shaping (focus scales, drift speeds, the
-// ridge power) and the per-tap placement fractions stay documented locals in the
-// shader: they are look, not budget, and the tap tables are one entry per tap.
+// retune of either has one home. The noise shaping (drift speeds, the ridge power)
+// and the per-tap placement fractions stay documented locals in the shader: they are
+// look, not budget, and the tap tables are one entry per tap. The focus scales are
+// here because they are bound to the render-origin snap (#6495, below).
 /// Samples along the view ray through the water column.
 pub const UNDERWATER_GODRAY_STEPS: u32 = 24;
 /// Occluder taps up the refracted sun ray (below the surface); the shader's
@@ -1903,6 +1904,17 @@ pub const UNDERWATER_GODRAY_SPAN_REACH: f32 = 1.5;
 /// Sun elevation (`sunDirection.y`) under which there are no shafts, and the least
 /// downward travel of the refracted ray that still makes one.
 pub const UNDERWATER_GODRAY_MIN_SUN_ELEVATION: f32 = 0.05;
+/// #6495 — the surface-focus pattern is evaluated in render-origin-relative space,
+/// and the render origin moves in whole steps of `RENDER_ORIGIN_SNAP` (one exterior
+/// cell). Both focus lattices tile with exactly that period, so a snap shifts the
+/// input by whole tiles and the pattern stays anchored to the world instead of
+/// re-seeding on every cell-grid crossing. Must equal `RENDER_ORIGIN_SNAP` (pinned
+/// by a test; that constant lives outside this build-script-shared file).
+pub const UNDERWATER_GODRAY_FOCUS_TILE: f32 = byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
+/// Lattice cells per tile of the two focus layers: 4096 / 58 = 70.6 and
+/// 4096 / 111 = 36.9 world units per cell (the pre-#6495 look was 70 and 37).
+pub const UNDERWATER_GODRAY_FOCUS_CELLS_A: u32 = 58;
+pub const UNDERWATER_GODRAY_FOCUS_CELLS_B: u32 = 111;
 pub const WATER_SHORE_RIPPLE_TURN_SHARE: f32 =
     byroredux_core::ecs::components::water::WATER_SHORE_RIPPLE_TURN_SHARE;
 pub const WATER_SWELL_SHORE_TOWARD_RAMP: f32 =
@@ -3175,6 +3187,9 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float UNDERWATER_GODRAY_SLAB_MAX),
     shader_define!(Float UNDERWATER_GODRAY_SPAN_REACH),
     shader_define!(Float UNDERWATER_GODRAY_MIN_SUN_ELEVATION),
+    shader_define!(Float UNDERWATER_GODRAY_FOCUS_TILE),
+    shader_define!(Uint UNDERWATER_GODRAY_FOCUS_CELLS_A),
+    shader_define!(Uint UNDERWATER_GODRAY_FOCUS_CELLS_B),
     shader_define!(Float WATER_SHORE_RIPPLE_TURN_SHARE),
     shader_define!(Float WATER_SWELL_SHORE_TOWARD_RAMP),
     shader_define!(Float WATER_SHORE_MIN_UPHILL_LEN),

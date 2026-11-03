@@ -2144,6 +2144,80 @@ mod composite_params_layout_tests {
         );
     }
 
+    /// #6495 — the focus pattern is sampled at a render-origin-relative `entry`, and the
+    /// origin moves in whole `RENDER_ORIGIN_SNAP` steps. Both focus lattices must tile with
+    /// exactly that period (wrapped cell indices, cell counts per tile), or every shaft
+    /// re-seeds on the frame an underwater camera crosses a cell-grid line.
+    #[test]
+    fn underwater_focus_pattern_tiles_with_the_render_origin_snap() {
+        use crate::shader_constants::{
+            UNDERWATER_GODRAY_FOCUS_CELLS_A, UNDERWATER_GODRAY_FOCUS_CELLS_B,
+            UNDERWATER_GODRAY_FOCUS_TILE,
+        };
+        use crate::vulkan::scene_buffer::{snap_render_origin, RENDER_ORIGIN_SNAP};
+        assert_eq!(UNDERWATER_GODRAY_FOCUS_TILE, RENDER_ORIGIN_SNAP);
+        // Every origin the renderer can produce is a whole number of tiles, so the
+        // relative-to-absolute shift is a whole number of lattice periods.
+        for camera in [
+            [0.0, 0.0, 0.0],
+            [4095.9, 10.0, -0.1],
+            [-176_000.0, 300.0, 251_904.5],
+            [1_000_003.0, -2000.0, -999_999.0],
+        ] {
+            let origin = snap_render_origin(byroredux_core::math::Vec3::from_array(camera));
+            for axis in [origin.x, origin.z] {
+                assert_eq!(
+                    (axis / UNDERWATER_GODRAY_FOCUS_TILE).fract(),
+                    0.0,
+                    "render origin {axis} is not a whole number of focus tiles"
+                );
+            }
+        }
+        // The cell counts keep the pre-#6495 look (70 and 37 units per cell) within 1.5%.
+        for (cells, look) in [(UNDERWATER_GODRAY_FOCUS_CELLS_A, 70.0), (UNDERWATER_GODRAY_FOCUS_CELLS_B, 37.0)] {
+            let scale = UNDERWATER_GODRAY_FOCUS_TILE / cells as f32;
+            assert!((scale / look - 1.0).abs() < 0.015, "focus scale {scale} drifted from {look}");
+        }
+
+        let shader = include_str!("../../shaders/composite.frag");
+        for needle in [
+            "ivec2 c0 = underwaterFocusWrap(ivec2(cell), n);",
+            "ivec2 c1 = underwaterFocusWrap(ivec2(cell) + 1, n);",
+            "vec2 tiles = entry / UNDERWATER_GODRAY_FOCUS_TILE;",
+            "underwaterFocusNoise(tiles * float(cellsA) + vec2(seconds * 0.35, seconds * 0.20), cellsA);",
+            "underwaterFocusNoise(tiles * float(cellsB) + vec2(-seconds * 0.27, seconds * 0.31), cellsB);",
+        ] {
+            assert!(shader.contains(needle), "the focus lattice lost its snap tiling: `{needle}`");
+        }
+        for gone in ["entry / 70.0", "entry / 37.0", "underwaterFocusHash(c + ivec2("] {
+            assert!(!shader.contains(gone), "an untiled focus lattice is back: `{gone}`");
+        }
+    }
+
+    /// #6496 — binding 4 pairs the depth view with the LINEAR `hdr_sampler`, so a filtered
+    /// read of `depthTex` averages near and far depth across a silhouette (a phantom slab
+    /// hit in the god-ray contact test), and LINEAR on `D32_SFLOAT` needs
+    /// `SAMPLED_IMAGE_FILTER_LINEAR`, which Vulkan does not mandate for depth formats.
+    /// Every read must be a `texelFetch`, which ignores the sampler.
+    #[test]
+    fn composite_reads_depth_only_through_texel_fetch() {
+        let shader = include_str!("../../shaders/composite.frag");
+        let mut fetches = 0;
+        for (at, _) in shader.match_indices("(depthTex,") {
+            let head = &shader[..at];
+            let callee_start = head
+                .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .map_or(0, |i| i + 1);
+            match &head[callee_start..] {
+                "texelFetch" => fetches += 1,
+                "textureSize" => {}
+                other => panic!("`{other}(depthTex, …)` reads depth through the LINEAR hdr_sampler"),
+            }
+        }
+        assert!(fetches >= 7, "expected every depth tap to be found ({fetches} texelFetch reads)");
+        assert!(shader.contains("linearViewDepth(uv, texelFetch(depthTex, px, 0).r)"));
+    }
+
     /// Compact local media often cover only a handful of froxel columns.
     /// Nearest-column reconstruction exposed those columns as square blocks;
     /// unconstrained trilinear reconstruction fixed the blocks by restoring

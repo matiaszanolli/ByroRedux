@@ -800,22 +800,38 @@ float underwaterFocusHash(ivec2 cell) {
     return float(v >> 8u) * (1.0 / 16777215.0);
 }
 
-float underwaterFocusNoise(vec2 p) {
+// Lattice cell `c` wrapped into [0, n) in exact integer math (GLSL's `%` is
+// undefined for negative operands). The float quotient may be off by one, and the
+// two corrections absorb it.
+ivec2 underwaterFocusWrap(ivec2 c, int n) {
+    ivec2 m = c - n * ivec2(floor(vec2(c) / float(n)));
+    return m + n * ivec2(lessThan(m, ivec2(0))) - n * ivec2(greaterThanEqual(m, ivec2(n)));
+}
+
+// Value noise whose lattice tiles every `n` cells (#6495).
+float underwaterFocusNoise(vec2 p, int n) {
     vec2 cell = floor(p);
     vec2 f = fract(p);
     f = f * f * (3.0 - 2.0 * f);
-    ivec2 c = ivec2(cell);
-    return mix(mix(underwaterFocusHash(c), underwaterFocusHash(c + ivec2(1, 0)), f.x),
-               mix(underwaterFocusHash(c + ivec2(0, 1)), underwaterFocusHash(c + ivec2(1, 1)), f.x),
+    ivec2 c0 = underwaterFocusWrap(ivec2(cell), n);
+    ivec2 c1 = underwaterFocusWrap(ivec2(cell) + 1, n);
+    return mix(mix(underwaterFocusHash(c0), underwaterFocusHash(ivec2(c1.x, c0.y)), f.x),
+               mix(underwaterFocusHash(ivec2(c0.x, c1.y)), underwaterFocusHash(c1), f.x),
                f.y);
 }
 
 // How much sunlight the wavy surface focuses onto the water column below the
 // point where this sample's sun ray crossed it: bright ridges where the crests
 // act as lenses, dark between. Two drifting scales of ridged value noise.
+// `entry` is render-origin-relative; both lattices tile with the origin's snap
+// period (UNDERWATER_GODRAY_FOCUS_TILE), so the pattern stays put in the world
+// when the origin snaps a cell over (#6495).
 float underwaterSurfaceFocus(vec2 entry, float seconds) {
-    float a = underwaterFocusNoise(entry / 70.0 + vec2(seconds * 0.35, seconds * 0.20));
-    float b = underwaterFocusNoise(entry / 37.0 + vec2(-seconds * 0.27, seconds * 0.31));
+    const int cellsA = int(UNDERWATER_GODRAY_FOCUS_CELLS_A);
+    const int cellsB = int(UNDERWATER_GODRAY_FOCUS_CELLS_B);
+    vec2 tiles = entry / UNDERWATER_GODRAY_FOCUS_TILE;
+    float a = underwaterFocusNoise(tiles * float(cellsA) + vec2(seconds * 0.35, seconds * 0.20), cellsA);
+    float b = underwaterFocusNoise(tiles * float(cellsB) + vec2(-seconds * 0.27, seconds * 0.31), cellsB);
     float ridge = 1.0 - abs(a + b - 1.0);
     return pow(ridge, 6.0) * 2.4;
 }
@@ -836,6 +852,11 @@ float underwaterSunVisibility(vec3 p, vec3 toSun, vec3 sunDirection, float sunPa
     // ray and the distances along the unrefracted one (the counts are the shared constants).
     const int belowTaps = int(UNDERWATER_GODRAY_OCCLUDER_TAPS_BELOW);
     const int taps = belowTaps + int(UNDERWATER_GODRAY_OCCLUDER_TAPS_ABOVE);
+    // Unfiltered, like every other depth tap here (#6496): binding 4 is the
+    // LINEAR hdr_sampler, which would average near and far depth into a
+    // phantom slab hit across silhouettes, and LINEAR on D32_SFLOAT needs a
+    // format feature Vulkan does not mandate.
+    ivec2 depthSize = textureSize(depthTex, 0);
     for (int i = 0; i < taps; ++i) {
         vec3 q;
         if (i < belowTaps) {
@@ -847,7 +868,8 @@ float underwaterSunVisibility(vec3 p, vec3 toSun, vec3 sunDirection, float sunPa
         if (clip.w <= 1.0e-3) continue;
         vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
         if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) continue;
-        float scene = linearViewDepth(uv, texture(depthTex, uv).r);
+        ivec2 px = min(ivec2(uv * vec2(depthSize)), depthSize - 1);
+        float scene = linearViewDepth(uv, texelFetch(depthTex, px, 0).r);
         float behind = clip.w - scene;
         if (behind > UNDERWATER_GODRAY_SLAB_MIN + UNDERWATER_GODRAY_SLAB_PER_DEPTH * clip.w
             && behind < UNDERWATER_GODRAY_SLAB_MAX) {
