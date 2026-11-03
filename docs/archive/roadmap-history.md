@@ -1203,8 +1203,14 @@ product instead of the work.
   (`Block with range [0, 28] which outside the VkPushConstantRange of
   [0, 16]`); water rendered only because the driver tolerated the
   out-of-range block, and GPU-assisted validation refused to run cleanly.
-- [ ] **BC2 world-texture mip-chain staging copy overruns the staging
-  buffer by 8 bytes on long streaming runs (observed 2026-09-18).**
+- [x] **BC2 world-texture mip-chain staging copy overruns the staging
+  buffer by 8 bytes on long streaming runs (observed 2026-09-18). — CLOSED
+  2026-11-03 (M39 Phase 0, #6627), fixed 2026-09-20 by #4512
+  (`80813026a`).** The cause was pooled staging released at the
+  driver-rounded `allocation.size()`, not `dds::mip_size` (pool entries now
+  record the requested size). Clean run at `4fe19016f`: `BYRO_VALIDATION=1 BYROREDUX_SOAK_FRAMES=12000 docs/smoke-tests/m-exteriors.sh fnv soak`, 12 000
+  frames, 24 grid crossings, 5 soak cycles, zero `VUID-` or `SYNC-HAZARD`
+  messages and zero "exceeds VkBuffer total size". Original entry:
   `vkCmdCopyBufferToImage ... exceeds VkBuffer total size` fires
   occasionally during `--bench-hold` sessions that stream many cells
   (0 occurrences on short runs, ~20 on multi-minute ones). The correlation is with run

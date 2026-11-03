@@ -1,9 +1,10 @@
 # Texture Streaming — Product Requirements
 
-**Status**: ACTIVE (2026-11-03). Revision 5 files the tracking issues.
-Revision 4 recorded the owner's §10 decisions, every one the
-recommendation. The PRD's two **Phase 0: verify** items (TXS-UP-001, the
-TXS-SRC-001 chunk census) are filed as Phase 0 acceptance criteria.
+**Status**: ACTIVE (2026-11-03). Revision 6 folds in the Phase 0
+results: both verify items are closed (TXS-UP-001's long run is clean,
+TXS-SRC-001's chunk census is in the design). Revision 5 filed the
+tracking issues; revision 4 recorded the owner's §10 decisions, every one
+the recommendation.
 Revision 3 folded in review round 2:
 every §3.3 row re-verified at a new HEAD, the Gamebryo skip-level and
 Oblivion texture-quality citations tightened to the sources that state
@@ -247,15 +248,14 @@ remains the home of the constants.
 - **TXS-UP-001.** A recorded long-run command (game, cell or grid, run
   length) MUST produce zero `vkCmdCopyBufferToImage` "exceeds VkBuffer total
   size" validation messages under `BYRO_VALIDATION=1`, both before streaming
-  lands and with it on. Today: the Known Issue
-  ([ROADMAP § Correctness and content](../../ROADMAP.md#correctness-and-content),
-  dated 2026-09-18) predates #4512's fix (2026-09-20, §3.3 row 3), which
-  traced the same +8 B overrun class to pooled staging release, and its
-  text still names the `dds::mip_size` rounding suspicion that #4512 ruled
-  out. **Phase 0: verify** that a multi-minute `--bench-hold`
-  streaming run, the shape the Known Issue describes, is clean at HEAD; if
-  it is, the Known Issue is struck citing #4512, and if it is not, the
-  command and its first failing texture are recorded there.
+  lands and with it on. The command is
+  `BYRO_VALIDATION=1 BYROREDUX_SOAK_FRAMES=12000 docs/smoke-tests/m-exteriors.sh fnv soak`
+  (FNV WastelandNV, 12 000 frames, 24 grid crossings). Verified clean
+  before streaming in Phase 0 (2026-11-03, #6627): zero `VUID-` or
+  `SYNC-HAZARD` messages. The 2026-09-18 Known Issue is closed in the
+  [ROADMAP archive](../archive/roadmap-history.md#7-known-issues-full-open-and-closed)
+  citing #4512's fix (§3.3 row 3), which traced the +8 B overrun to pooled
+  staging release, not to `dds::mip_size`. The "with it on" half is A5.
 - **TXS-UP-002.** `record_dds_upload` MUST return an error, in release
   builds, when the copy regions address more bytes than the staging buffer
   holds. Today: `debug_assert!` only (§3.3 row 3).
@@ -279,9 +279,11 @@ remains the home of the constants.
   into at most `-maxChunkCount` chunks (default 4) and gives a mip its own
   chunk when it is at least `-singleMipChunkX` × `-singleMipChunkY`
   (default 512 × 512) (Fallout 4 CK wiki, *Archive2*, local dump
-  `falloutck-uesp-wiki/(main)/Archive2.wiki`). **Phase 0: verify** with a
-  census of the vanilla FO4 and Starfield texture BA2s which mip ranges the
-  last chunk covers per record, and how many records ship one chunk only.
+  `falloutck-uesp-wiki/(main)/Archive2.wiki`). The Phase 0 census (A4,
+  [design §2.1](../engine/texture-streaming.md#21-ba2-dx10-chunk-layout-txs-src-001-a4))
+  confirms it on every multi-chunk vanilla record: one level per head
+  chunk, the rest of the chain in the last chunk, which tops out at 256 px
+  for 97.5 % of FO4's and 89.4 % of Starfield's.
 - **TXS-SRC-002.** For a BSA texture the provider MUST serve the floor's
   bytes from one extraction of the file. A BSA file is stored either raw or
   as one zlib (v103/v104) or LZ4 (v105) block, with a per-file inversion of
@@ -511,7 +513,9 @@ list readable for TXS-WANT on its GPU paths
 ([GDR-IND-006](gpu-driven-rendering.md#54-gpu-written-draws-gdr-ind)); M39
 does not wait for it.
 
-**Phase 0 — Survey, census and design (no engine code).** The §10
+**Phase 0 — Survey, census and design (no engine code).** Exit met
+2026-11-03 (#6627); the results are in the
+[design](../engine/texture-streaming.md#2-phase-0-measurements). The §10
 decisions are taken at approval ([PRD standard § 3](README.md#3-lifecycle));
 Phase 0 applies them. Write
 `docs/engine/texture-streaming.md` (state machine, wanted-mip rule, budget
@@ -693,3 +697,4 @@ default for every in-scope game.
 | 3 | 2026-11-03 | Review round 2 folded in: §3.3 re-verified at `8fb9b21d8` (row 3 line range, row 7 live-budget sample point, reserved-state redirect, closed state vocabulary), Gamebryo skip-level and Oblivion texture-quality citations, §6 row 2 re-sourced, retiring-image bytes (§2, TXS-TEL-001), testable TXS-WANT-002 / TXS-RES-006 / TXS-RES-007, TXS-G-002 aligned with TXS-BUD-002, A6 cell ids, A10 and phase exits matched to declared routes, Phase 0 applies decisions taken at approval, Q2 split into (a)/(b), Q4 fallback and drift consequence, Q5 made consistent with Q4, sibling PRD links | claude: revise |
 | 4 | 2026-11-03 | Owner decisions Q1–Q5 recorded, every one the recommendation (Q2 both parts); status line and the NIFAL Related row updated | owner: approved |
 | 5 | 2026-11-03 | → ACTIVE: parent #6626 and phase issues #6627–#6631 filed, `**Tracking**:` line added; the Phase 0 verify items are acceptance criteria of #6627 | — |
+| 6 | 2026-11-03 | Phase 0 results folded in: TXS-UP-001 verified clean with its recorded command and the BC2 Known Issue closed (#4512); TXS-SRC-001's chunk census cited from the design; Phase 0 exit marked met | — |

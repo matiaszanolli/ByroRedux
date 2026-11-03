@@ -617,11 +617,6 @@ performance finding. The measured knob table is in
 
 ### Correctness and content
 
-- [ ] **BC2 world-texture mip-chain staging copy overruns by 8 bytes on long
-  streaming runs** (2026-09-18): `vkCmdCopyBufferToImage … exceeds VkBuffer
-  total size`, ~20 times in multi-minute `--bench-hold` sessions and 0 in
-  short ones. Suspected cause: a `dds::mip_size` rounding gap. Needs a
-  targeted repro plus an allocation assert.
 - [ ] **Fire lighting: visual check done 2026-10-31, derived reach still unbounded.**
   `2325c1de`'s transported-field surface light (default since) was A/B'd on Skyrim
   hearths with `BYRO_FIRE_VOLUMES=0` against an ON-vs-ON control: no blow-out
