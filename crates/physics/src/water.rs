@@ -41,7 +41,7 @@ use byroredux_core::ecs::components::water::{
     WaterBedField, WaterContact, WaterCurrentVolume, WaterFlow, WaterKind, WaterMaterial,
     WaterPlane, WaterSurfaceMesh, WaterVolume, WATERLINE_HYSTERESIS, WATER_SHORE_REFRACT_DEPTH,
     WATER_SHORE_MIN_UPHILL_LEN, WATER_SHORE_REFRACT_MAX, WATER_SHORE_RIPPLE_TURN_SHARE,
-    WATER_SWELL_BREAK_RATIO, WATER_SWELL_SHORE_TOWARD_RAMP, WATER_WAVE_AMPLITUDE_MAX, WATER_WAVE_DEFAULT_SCROLL_A,
+    WATER_SWELL_BREAK_RATIO, WATER_SWELL_SHOAL_GAIN_MAX, WATER_SWELL_SHORE_TOWARD_RAMP, WATER_WAVE_AMPLITUDE_MAX, WATER_WAVE_DEFAULT_SCROLL_A,
     WATER_WAVE_DEFAULT_SCROLL_B, WATER_WAVE_FALLBACK_DIR_A, WATER_WAVE_FALLBACK_DIR_B,
     WATER_WAVE_MIX_A, WATER_WAVE_MIX_B, WATER_WAVE_PHASE_B_RATE, WATER_WAVE_RATE_MAX,
     WATER_WAVE_RATE_MIN, WATER_WAVE_SPATIAL_FLOOR_A, WATER_WAVE_SPATIAL_FLOOR_B,
@@ -759,10 +759,20 @@ fn clear_stale_water_contacts(world: &World) {
 /// Treating the mere presence of any non-zero wave amplitude as activity
 /// makes the settled-scene fast path unreachable in virtually every water
 /// cell (#3135).
-fn waves_require_contact_rescan(world: &World, surfaces: &[WaterSurface]) -> bool {
+///
+/// #6489 — the reach counts the wind swell too. A `wind_driven` plane rolls
+/// whatever its authored ripple (`authored_wave_height_over_bed` adds the two),
+/// so keying on the ripple alone left a swell-only plane on the quiesced fast
+/// path, where the #5561 settled-depth re-wake never runs, and sized the band
+/// too narrow wherever the swell outreached the ripple.
+fn waves_require_contact_rescan(
+    world: &World,
+    surfaces: &[WaterSurface],
+    weather_scroll: [f32; 2],
+) -> bool {
     let max_amplitude = surfaces
         .iter()
-        .map(|surface| surface.material.wave_amplitude.abs())
+        .map(|surface| surface_wave_reach(surface, weather_scroll))
         .filter(|amplitude| amplitude.is_finite())
         .fold(0.0_f32, f32::max);
     if max_amplitude <= 1.0e-4 {
@@ -777,6 +787,18 @@ fn waves_require_contact_rescan(world: &World, surfaces: &[WaterSurface]) -> boo
                 || contact.depth.abs() <= max_amplitude + WATERLINE_HYSTERESIS)
     });
     needs_rescan
+}
+
+/// The furthest animated displacement can move `surface` from its rest
+/// height: the authored ripple amplitude plus the wind swell's crest at its
+/// full shoaling gain (the breaking cap only lowers it). The swell takes the
+/// plane's kind-damped weather, as the per-body crest sample does (#5354).
+fn surface_wave_reach(surface: &WaterSurface, weather_scroll: [f32; 2]) -> f32 {
+    let swell = surface
+        .material
+        .swell(surface.kind.weather_scroll_for(weather_scroll))
+        .map_or(0.0, |swell| swell.amplitude * WATER_SWELL_SHOAL_GAIN_MAX);
+    surface.material.wave_amplitude.abs() + swell
 }
 
 /// WATAL Phase 2 — the buoyancy phase of [`physics_sync_system`]
@@ -905,7 +927,8 @@ fn apply_buoyancy_with_scratch(
     let (weather_scroll, wind_wave_scale) = time_secs
         .map(|time| weather_wave_adjustment(world, time))
         .unwrap_or(([0.0; 2], 1.0));
-    let waves_require_rescan = time_secs.is_some() && waves_require_contact_rescan(world, surfaces);
+    let waves_require_rescan =
+        time_secs.is_some() && waves_require_contact_rescan(world, surfaces, weather_scroll);
     // Fast path: without a surface no body can remain buoyant. Always clear
     // stale contacts first because a placed current marker may outlive the
     // plane during streaming; only return immediately when it is absent too.
@@ -1652,7 +1675,7 @@ mod tests {
         }];
 
         assert!(
-            !waves_require_contact_rescan(&world, &surfaces),
+            !waves_require_contact_rescan(&world, &surfaces, [0.0; 2]),
             "the canonical non-zero wave default must not disarm quiescence by itself"
         );
 
@@ -1667,8 +1690,90 @@ mod tests {
             },
         );
         assert!(
-            waves_require_contact_rescan(&world, &surfaces),
+            waves_require_contact_rescan(&world, &surfaces, [0.0; 2]),
             "a live contact inside the crest band must continue to track authored waves"
+        );
+    }
+
+    /// #6489 — a wind-driven plane with no authored ripple still rolls with
+    /// the swell, so a sleeping float on it must keep the scan (and the #5561
+    /// settled-depth re-wake inside it) armed; and the band reaches as far as
+    /// the swell does, not only the ripple.
+    #[test]
+    fn a_swell_only_plane_keeps_the_contact_rescan_armed() {
+        use byroredux_core::ecs::components::water::WEATHER_SCROLL_PER_BU_PER_S;
+        let mut world = World::new();
+        world.register::<WaterContact>();
+        let surface_entity = world.spawn();
+        let plane = |material| WaterSurface {
+            entity: surface_entity,
+            kind: WaterKind::Calm,
+            volume: WaterVolume {
+                min: [-10.0, -10.0, -10.0],
+                max: [10.0, 0.0, 10.0],
+            },
+            surface: None,
+            material,
+            flow: None,
+            damage_per_second: 0.0,
+            bed: None,
+        };
+        let swell_only = [plane(WaterMaterial {
+            wave_amplitude: 0.0,
+            wind_driven: true,
+            ..WaterMaterial::default()
+        })];
+        let still = [plane(WaterMaterial {
+            wave_amplitude: 0.0,
+            wind_driven: false,
+            ..WaterMaterial::default()
+        })];
+        // A gale: the swell crest is far above the ripple-free band.
+        let gale = [
+            byroredux_core::ecs::components::groundcover::MAX_WIND_SPEED * WEATHER_SCROLL_PER_BU_PER_S,
+            0.0,
+        ];
+        let calm_crest = swell_only[0].material.swell([0.0; 2]).unwrap().amplitude;
+        let gale_crest = swell_only[0]
+            .material
+            .swell(WaterKind::Calm.weather_scroll_for(gale))
+            .unwrap()
+            .amplitude;
+
+        let float = world.spawn();
+        world.insert(
+            float,
+            WaterContact {
+                surface_entity: Some(surface_entity),
+                depth: 0.5 * calm_crest,
+                submerged_fraction: 0.4,
+                ..WaterContact::default()
+            },
+        );
+        assert!(
+            waves_require_contact_rescan(&world, &swell_only, [0.0; 2]),
+            "a submerged float on a swell-only plane must keep the rescan armed"
+        );
+        assert!(
+            !waves_require_contact_rescan(&world, &still, [0.0; 2]),
+            "a plane with neither ripple nor swell still quiesces"
+        );
+
+        // A dry contact just above the waterline: outside the calm band, inside the gale's.
+        world.insert(
+            float,
+            WaterContact {
+                surface_entity: Some(surface_entity),
+                depth: calm_crest * WATER_SWELL_SHOAL_GAIN_MAX + WATERLINE_HYSTERESIS + 1.0,
+                submerged_fraction: 0.0,
+                ..WaterContact::default()
+            },
+        );
+        assert!(gale_crest > calm_crest * WATER_SWELL_SHOAL_GAIN_MAX + WATERLINE_HYSTERESIS + 1.0);
+        assert!(!waves_require_contact_rescan(&world, &swell_only, [0.0; 2]));
+        assert!(
+            waves_require_contact_rescan(&world, &swell_only, gale),
+            "the band must reach as far as the wind's swell does"
         );
     }
 
