@@ -6,6 +6,7 @@
 //! this module re-exports them so the crate's scans keep one import path
 //! and the cut stays defined exactly once.
 
+pub(crate) use byroredux_core::source_scan::function_text;
 pub(crate) use byroredux_core::source_scan::production_text;
 pub(crate) use byroredux_core::source_scan::production_text_or_whole;
 pub(crate) use byroredux_core::source_scan::rust_files;

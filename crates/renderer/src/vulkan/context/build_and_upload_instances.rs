@@ -1901,24 +1901,40 @@ mod draw_batch_capacity_clamp_tests {
     /// The clamp must run after the grow and before the indirect upload /
     /// batch consumers derive from the list — pin the wiring site, since
     /// the function itself is only reachable through a live frame recording.
+    ///
+    /// #6494 — compared inside `build_and_upload_instances`: since #6143 the
+    /// indirect upload lives in `upload_instance_and_draw_buffers`, defined
+    /// later in the file, so a whole-file `find` held by definition order.
     #[test]
     fn the_clamp_runs_after_the_grow_and_before_the_indirect_upload() {
+        use crate::source_scan::function_text;
         let src = crate::source_scan::production_text(include_str!(
             "build_and_upload_instances.rs"
         ));
-        let grow = src
+        let build = function_text(src, "pub(super) fn build_and_upload_instances(");
+        let grow = build
             .find("self.grow_instance_ssbos(frame, gpu_instances.len() + model_tail);")
             .expect("the final grow call must exist");
-        let clamp = src
+        let clamp = build
             .find("clamp_batches_to_instance_capacity(&mut batches, instance_capacity)")
             .expect("the batch clamp call must exist");
-        let indirect = src
-            .find("upload_indirect_draws(")
-            .expect("the indirect upload must exist");
+        let upload = build
+            .find("self.upload_instance_and_draw_buffers(")
+            .expect("the instance / draw-buffer upload call must exist");
         assert!(
-            grow < clamp && clamp < indirect,
+            grow < clamp && clamp < upload,
             "the clamp must see the post-grow capacity and run before any \
              consumer derives draw calls from the batch list (#4726)"
+        );
+        assert!(
+            !build.contains("upload_indirect_draws("),
+            "the indirect upload must go through `upload_instance_and_draw_buffers`, \
+             the call this pin orders"
+        );
+        assert!(
+            function_text(src, "fn upload_instance_and_draw_buffers(")
+                .contains(".upload_indirect_draws("),
+            "the indirect upload must still be in the helper the clamp precedes"
         );
     }
 }
@@ -2036,7 +2052,12 @@ mod ui_instance_idx_overflow_tests {
         let module_start = full_src
             .find("mod ui_instance_idx_overflow_tests")
             .expect("this test module must still exist under its own name");
-        let src = &full_src[..module_start];
+        // #6494 — one function, so the offsets below compare call order, not
+        // where helpers happen to be defined.
+        let src = crate::source_scan::function_text(
+            &full_src[..module_start],
+            "pub(super) fn build_and_upload_instances(",
+        );
 
         // The pre-grow capture must be a *candidate*, not the final value…
         assert!(
@@ -2387,32 +2408,45 @@ mod instance_capacity_growth_pin {
         crate::source_scan::production_text_or_whole(src)
     }
 
+    /// #6494 — each needle is searched inside the one function that owns it. The
+    /// grow (`grow_instance_ssbos`) and the upload (`upload_instance_and_draw_buffers`)
+    /// are separate helpers since #4833 / #6143, so whole-file offsets only
+    /// compared where the two are defined; the order that matters is the two
+    /// calls in `build_and_upload_instances`.
     #[test]
     fn instance_buffers_grow_before_upload_and_rebind_the_caustic_set() {
+        use crate::source_scan::function_text;
         let src = production(include_str!("build_and_upload_instances.rs"));
-        let grow = src
+        let grow_fn = function_text(src, "pub(super) fn grow_instance_ssbos(");
+        let ensure = grow_fn
             .find(".ensure_instance_capacity(")
             .expect("the frame must grow its instance SSBOs before uploading (#4199)");
-        let upload = src
-            .find(".upload_instances(&self.device, frame, gpu_instances)")
-            .expect("instances must still be uploaded");
-        assert!(
-            grow < upload,
-            "the grow must precede the upload, or the upload clamps to the old capacity"
-        );
-        let arm = &src[grow..upload];
+        let arm = &grow_fn[ensure..];
         assert!(
             arm.contains("Ok(true) =>") && arm.contains(".rebind_instance_buffer("),
             "a grow must rebind the caustic pipeline's set, which also names the buffer"
         );
-        // #4833 — the grow is a helper now, shared with `begin_frame_recording`;
+        assert!(
+            function_text(src, "fn upload_instance_and_draw_buffers(")
+                .contains(".upload_instances(&self.device, frame, gpu_instances)"),
+            "instances must still be uploaded by the helper"
+        );
+        // #4833 — the grow is a helper, shared with `begin_frame_recording`;
         // the frame builder must still CALL it before it uploads.
-        let call = src
+        let build = function_text(src, "pub(super) fn build_and_upload_instances(");
+        let call = build
             .find("self.grow_instance_ssbos(frame, gpu_instances.len() + model_tail)")
             .expect("build_and_upload_instances must still grow for the final count plus tail");
+        let upload = build
+            .find("self.upload_instance_and_draw_buffers(")
+            .expect("build_and_upload_instances must still upload through the helper");
         assert!(
             call < upload,
             "the final grow must precede the upload, or the upload clamps to the old capacity"
+        );
+        assert!(
+            !build.contains(".upload_instances("),
+            "an instance upload outside the helper escapes this order pin"
         );
     }
 
@@ -2507,14 +2541,7 @@ mod instance_capacity_growth_pin {
                 );
             }
         }
-        fn fn_body<'a>(src: &'a str, sig: &str) -> &'a str {
-            let start = src.find(sig).unwrap_or_else(|| panic!("`{sig}` must exist"));
-            let end = start
-                + src[start..]
-                    .find("\n    }\n")
-                    .expect("closing brace at impl indentation");
-            &src[start..end]
-        }
+        use crate::source_scan::function_text as fn_body;
 
         check(
             "begin_frame_recording",
@@ -2548,7 +2575,34 @@ mod instance_capacity_growth_pin {
             + src[body..]
                 .find("self.grow_instance_ssbos(frame, gpu_instances.len() + model_tail)")
                 .expect("the final grow must still be in build_and_upload_instances");
-        check("build_and_upload_instances (pre-grow)", &src[body..grow]);
+        let pre_grow = &src[body..grow];
+        check("build_and_upload_instances (pre-grow)", pre_grow);
+        // #6494 — what #6143 split out of the pre-grow stretch into helpers of
+        // this file runs before the grow too, so their bodies are scanned. The
+        // list is derived from the calls, so a new helper is covered without
+        // editing this test.
+        let mut helpers = std::collections::BTreeSet::new();
+        for marker in ["self.", "Self::"] {
+            for (at, _) in pre_grow.match_indices(marker) {
+                let rest = &pre_grow[at + marker.len()..];
+                let len = rest
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .unwrap_or(rest.len());
+                let signature = format!("fn {}(", &rest[..len]);
+                if rest[len..].starts_with('(') && src.contains(&signature) {
+                    helpers.insert(signature);
+                }
+            }
+        }
+        for signature in &helpers {
+            check(signature, fn_body(src, signature));
+        }
+        assert!(
+            helpers.contains("fn instance_flags(")
+                && helpers.contains("fn update_scene_history_gates("),
+            "the pre-grow helper scan found {helpers:?}; it must at least reach the \
+             #6143 extractions, or it has gone vacuous"
+        );
 
         // draw_frame between the two recording helpers and the final grow,
         // and the model tier — which does name the instance buffer — after it.

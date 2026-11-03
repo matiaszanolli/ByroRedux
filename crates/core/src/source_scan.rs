@@ -208,13 +208,20 @@ fn module_end(src: &str) -> Option<usize> {
 /// quietly regrowing (#6143); `signature` must be unique enough to name one
 /// function. Panics if it is not found or never closes.
 pub fn function_line_count(src: &str, signature: &str) -> usize {
+    function_text(src, signature).matches('\n').count() + 1
+}
+
+/// The text of the function whose header begins with `signature`, from the
+/// signature through its closing brace — the extent `function_line_count`
+/// measures. For order pins that must compare call sites *inside one function*:
+/// needles found across a whole file compare where helpers are defined, not the
+/// order the function runs them in (#6494). Panics like `function_line_count`.
+pub fn function_text<'a>(src: &'a str, signature: &str) -> &'a str {
     let at = src
         .find(signature)
         .unwrap_or_else(|| panic!("`{signature}` not found in source"));
-    let line_start = src[..at].rfind('\n').map_or(0, |nl| nl + 1);
-    let tail = &src[at..];
-    let end = module_end(tail).unwrap_or_else(|| panic!("`{signature}` never closes"));
-    src[line_start..at + end].matches('\n').count() + 1
+    let end = module_end(&src[at..]).unwrap_or_else(|| panic!("`{signature}` never closes"));
+    &src[at..at + end]
 }
 
 /// The name an item declaration line introduces: `fn`, `struct`, `enum`,
@@ -428,6 +435,11 @@ mod tests {
                    \x20   let s = \"}\";\n    // }\n    let c = '{';\n    format!(\"{x}\");\n    a\n}\nfn after() {}\n";
         assert_eq!(function_line_count(src, "fn target("), 9);
         assert_eq!(function_line_count(src, "fn before("), 1);
+        // #6494 — the same extent as text: the order pins search inside it.
+        let target = function_text(src, "fn target(");
+        assert!(target.starts_with("fn target(") && target.ends_with("    a\n}"));
+        assert!(!target.contains("fn after("));
+        assert_eq!(function_text(src, "fn before("), "fn before() {}");
     }
 
     #[test]
