@@ -50,7 +50,7 @@ a working checkout and want to understand or change engine internals.
 | [Distant LOD Completion — PRD](../prd/distant-lod-completion.md) | byroredux, renderer, nif | PROPOSED (2026-11-03). M35 remainder: VWD object-LOD gap (#3307), Oblivion/FO3 distant trees, reversed-Z flip, per-game band ladder |
 | [Texture Streaming — PRD](../prd/texture-streaming.md) | renderer, bsa, byroredux | PROPOSED (2026-11-03). M39: mip-chain-aware loading, on-demand high mips, VRAM budget with LRU eviction |
 | [Perk Entry Points — PRD](../prd/perk-entry-points.md) | plugin, core, byroredux | PROPOSED (2026-11-03). M24.2 remainder: decode residue, hook catalog, Quest/Ability bodies, perk gates, observability |
-| [AI Packages Completion — PRD](../prd/ai-packages-completion.md) | plugin, scripting, byroredux | PROPOSED (2026-11-01). M42 remainder: CastMagic, Find object types, UseWeapon classes, scheduling, FO4+ walk sources |
+| [AI Packages Completion — PRD](../prd/ai-packages-completion.md) | plugin, scripting, byroredux | PROPOSED (2026-11-03). M42 remainder: CastMagic, Find object types, UseWeapon classes, scheduling, FO4+ walk sources |
 | [VATS and Action Points — PRD](../prd/vats.md) | core, byroredux, ui | PROPOSED (2026-11-03). #6350 remainder: VATS menu, limb damage, playback camera, FO4 slow-motion lane |
 | [Game UI Integration — PRD](../prd/game-ui-integration.md) | ui, menuxml, byroredux | PROPOSED (2026-11-03). M48 remainder: method behaviour, gfx stubs, fonts, menu stack, Papyrus/ECS callbacks, HUD meters |
 | [Volumetric Lighting — PRD](../prd/volumetric-lighting.md) | renderer, plugin, byroredux | PROPOSED (2026-11-01). M55 remainder: REGN height fog, exterior light shafts, combustion boundary follow-ups |
