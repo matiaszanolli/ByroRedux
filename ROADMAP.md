@@ -24,12 +24,12 @@ commit. Live state only: when something closes, it becomes a one-liner under
 files, issue dirs) live in [Project Stats](#project-stats) only.
 
 **Gates.** `rust-toolchain.toml` pins rustc 1.96.0 (#5308), which is also the
-bin crate's MSRV since wasmtime 49. All 11 719 tests pass (2026-11-02), but **CI on
-`main` has been red since 2026-10-24** in three jobs: the blocking `cargo clippy
---workspace -- -D warnings` form (#6582), the smoke-contract check (#6589,
-`m43-armor.sh`), and the lock-order detector (`BYRO_LOCK_ORDER_CHECK=1`, which a
-bare `cargo test` does not run), which aborts on #6561 (`crafting::improve_plan`)
-and on #6618 (`material_dump`'s test, `e7d7af3c9`). The bench-of-record below (`d9a201c71`, 2026-10-22) was refreshed with a same-machine control and shows HEAD 1–9% slower than the outgoing record (R6a-regress-23). Its older open
+bin crate's MSRV since wasmtime 49. All 11 719 tests pass (2026-11-02). CI on `main`
+was red from 2026-10-24 until the Session 107 close fixed its three failing jobs:
+the blocking `cargo clippy --workspace -- -D warnings` form (#6582), the
+smoke-contract check (#6589) and the lock-order detector (`BYRO_LOCK_ORDER_CHECK=1`,
+which a bare `cargo test` does not run; cycles #6561 and #6618). All three pass
+locally at the close; check the first CI run after it before trusting them. The bench-of-record below (`d9a201c71`, 2026-10-22) was refreshed with a same-machine control and shows HEAD 1–9% slower than the outgoing record (R6a-regress-23). Its older open
 regression, **R6a-regress-22**, was the bench camera moving with `b9e961eeb`'s
 interior spawn ladder, not renderer code (#5128, 2026-09-30); a small residual
 stays open — the top-of-frame all-slots fence wait that dominates GPU-bound
@@ -692,7 +692,7 @@ performance finding. The measured knob table is in
 - [ ] **Clippy `--all-targets` carries 20 lints** (2026-10-19): test/example
   targets across `scripting`, `plugin`, `pex`, `hkx`, `sfmaterial` and the bin. The lane is a
   non-blocking CI step (#5621); the blocking `cargo clippy --workspace -- -D
-  warnings` form is red too (#6582, Status).
+  warnings` form passes again (#6582, 2026-11-02).
 - [ ] **Offline texture-set upscale finalization.** `tools/texture-upscale`
   works end-to-end: set discovery, TOML manifests, an external ESRGAN-family
   pass, companion-map upsampling and provenance. Remaining: per-game/per-role
