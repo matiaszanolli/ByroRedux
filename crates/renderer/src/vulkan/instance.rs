@@ -99,7 +99,7 @@ pub fn create_instance(
     if validation {
         log::warn!(
             "Vulkan VALIDATION ENABLED — sync-validation{} (BYRO_VALIDATION / debug build). \
-             Hazards route to this log as `vulkan::debug` errors.",
+             Hazards are logged under the `vulkan::debug` target.",
             if gpu_assisted_requested() {
                 " + GPU-Assisted (shader OOB / bad device address)"
             } else {
