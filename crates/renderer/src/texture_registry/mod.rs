@@ -112,6 +112,27 @@ struct PendingDdsUpload {
     change: Option<residency::ResidencyChange>,
 }
 
+/// M39 — where a streamed texture's levels come from: the archive key it
+/// was queued under, its sampler and colour space, and its DDS header (the
+/// file's bytes before the payload), which is enough to queue a demotion.
+#[derive(Debug, Clone)]
+struct StreamSource {
+    path: String,
+    clamp_mode: u8,
+    color_space: TextureColorSpace,
+    header: Vec<u8>,
+}
+
+/// M39 — a promotion whose levels the host must read: re-read `path` from
+/// chain level `target` down and hand the bytes to
+/// [`TextureRegistry::queue_promotion_bytes`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromotionRequest {
+    pub handle: TextureHandle,
+    pub path: String,
+    pub target: u32,
+}
+
 /// Outcome of [`TextureRegistry::queue_or_hit`]. Distinguishes a
 /// fresh reservation (caller must redirect the descriptor to the
 /// fallback) from a cache hit (descriptor already wired). Both
@@ -319,6 +340,13 @@ pub struct TextureRegistry {
     /// (TXS-UP-004); purged with the handle on its last release
     /// (TXS-RES-007).
     pending_promotions: Vec<PendingDdsUpload>,
+    /// M39 — where each streamed texture's levels come from, so the host can
+    /// re-read the levels a promotion needs (and a demotion can be queued
+    /// from the header alone). Removed with the handle's last release.
+    stream_sources: HashMap<TextureHandle, StreamSource>,
+    /// M39 — promotions waiting for the host to read their levels
+    /// (`take_promotion_requests` → `queue_promotion_bytes`).
+    promotion_requests: Vec<(TextureHandle, u32)>,
     /// M39 Phase 1 — the `render.texture_streaming` switch (TXS-RES-008).
     /// On: a streamable 2D texture's first upload installs only its floor,
     /// and a promotion to the full chain is queued behind it (the forced
@@ -511,6 +539,8 @@ impl TextureRegistry {
             fence_confirmed_idle_slot: None,
             pending_dds_uploads: Vec::new(),
             pending_promotions: Vec::new(),
+            stream_sources: HashMap::new(),
+            promotion_requests: Vec::new(),
             streaming: false,
             peak_resident_bytes: 0,
             slot_capacity_warning_emitted: false,

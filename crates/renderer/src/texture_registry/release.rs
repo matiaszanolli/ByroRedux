@@ -98,6 +98,8 @@ impl TextureRegistry {
         // M39 TXS-RES-007 — and any promotion or demotion queued for it.
         self.pending_promotions
             .retain(|upload| upload.handle != handle);
+        self.promotion_requests.retain(|&(h, _)| h != handle);
+        self.stream_sources.remove(&handle);
         true
     }
 
@@ -116,6 +118,10 @@ impl TextureRegistry {
                 .retain(|upload| !freed_set.contains(&upload.handle));
             self.pending_promotions
                 .retain(|upload| !freed_set.contains(&upload.handle));
+            self.promotion_requests
+                .retain(|(handle, _)| !freed_set.contains(handle));
+            self.stream_sources
+                .retain(|handle, _| !freed_set.contains(handle));
         }
         freed
     }

@@ -151,6 +151,8 @@ fn make_registry_for_overflow_test(max_textures: u32, occupied: usize) -> Textur
         fence_confirmed_idle_slot: None,
         pending_dds_uploads: Vec::new(),
         pending_promotions: Vec::new(),
+        stream_sources: HashMap::new(),
+        promotion_requests: Vec::new(),
         streaming: false,
         peak_resident_bytes: 0,
         slot_capacity_warning_emitted: false,
@@ -1310,54 +1312,67 @@ fn has_any_view_of_path_finds_every_key_variant() {
     }
 }
 
-/// M39 TXS-RES-002 — a promotion keeps the texture's handle and adds no
-/// slot: it is queued against the handle, and landing it moves only the
-/// entry's resident range.
-#[test]
-fn promotion_keeps_handle_and_slot_count() {
-    let mut reg = make_registry_for_overflow_test(64, 0);
-    reg.textures.push(TextureEntry {
+/// A 64×64 BC1 DDS of 7 levels whose payload starts at chain level `from`
+/// (0 = the whole file; `from > 0` = a BA2-style floor read).
+fn bc1_dds_from_level(from: u32) -> Vec<u8> {
+    let mut dds = crate::vulkan::dds::tests::make_dds_header(64, 64, 7, b"DXT1");
+    dds.truncate(128);
+    let tail: usize = (from..7).map(|l| crate::vulkan::dds::mip_size(64, 64, l, 8, true) as usize).sum();
+    dds.resize(128 + tail, 0x5A);
+    dds
+}
+
+fn streamable_entry(mip_count: u32, floor_first: u32) -> TextureEntry {
+    TextureEntry {
         texture: None,
         pending_destroy: VecDeque::new(),
         ref_count: 1,
         view_kind: TextureViewKind::D2,
         has_alpha: false,
         avg_rgb: None,
-        residency: Some(residency::Residency::at_floor(12, 3, 4096)),
-    });
+        residency: Some(residency::Residency::at_floor(mip_count, floor_first, 0)),
+    }
+}
+
+/// M39 TXS-RES-002 — a promotion keeps the texture's handle and adds no
+/// slot: it is queued against the handle, and landing it moves only the
+/// entry's resident range.
+#[test]
+fn promotion_keeps_handle_and_slot_count() {
+    let mut reg = make_registry_for_overflow_test(64, 0);
+    reg.textures.push(streamable_entry(7, 2));
     let handle: TextureHandle = 0;
     let slots = reg.len();
     let change = reg
-        .queue_residency_change(
-            handle,
-            0,
-            vec![0; 16],
-            1 << 20,
-            0,
-            TextureColorSpace::Srgb,
-            "a.dds".into(),
-        )
-        .expect("a floor texture promotes");
+        .queue_residency_change(handle, 0, bc1_dds_from_level(0), 0, TextureColorSpace::Srgb, "a.dds".into())
+        .expect("a floor texture promotes from whole-file bytes");
     assert_eq!(reg.len(), slots, "queueing adds no slot");
     assert_eq!(reg.pending_promotion_count(), 1);
     assert_eq!(reg.pending_promotions[0].handle, handle);
+    // Levels 0 and 1 of a 64×64 BC1 chain: 2048 + 512 bytes staged.
+    assert_eq!(reg.pending_promotions[0].staged_bytes, 2560);
     // The bookkeeping the flush applies once the new image is installed.
     let entry = &mut reg.textures[handle as usize];
     assert!(entry.residency.as_mut().unwrap().apply(change));
     assert_eq!(entry.residency.unwrap().first_resident, 0);
     assert_eq!(reg.len(), slots, "landing adds no slot");
-    // Nothing to do once full; a texture with no residency is never queued.
+    // Nothing to do once full.
     assert!(reg
-        .queue_residency_change(
-            handle,
-            0,
-            Vec::new(),
-            0,
-            0,
-            TextureColorSpace::Srgb,
-            String::new()
-        )
+        .queue_residency_change(handle, 0, bc1_dds_from_level(0), 0, TextureColorSpace::Srgb, String::new())
         .is_none());
+}
+
+/// M39 — a promotion needs bytes that reach its new first level: a floor
+/// read (payload from level 2) cannot promote to level 0, a read from
+/// level 1 can promote to 1.
+#[test]
+fn promotion_refuses_bytes_that_start_below_its_target() {
+    let mut reg = make_registry_for_overflow_test(64, 0);
+    reg.textures.push(streamable_entry(7, 2));
+    let srgb = TextureColorSpace::Srgb;
+    assert!(reg.queue_residency_change(0, 0, bc1_dds_from_level(2), 0, srgb, String::new()).is_none());
+    assert!(reg.queue_residency_change(0, 1, bc1_dds_from_level(1), 0, srgb, String::new()).is_some());
+    assert_eq!(reg.pending_promotions[0].staged_bytes, 512, "only level 1");
 }
 
 /// M39 TXS-RES-007 — the last release drops every queued promotion or
@@ -1366,90 +1381,70 @@ fn promotion_keeps_handle_and_slot_count() {
 fn last_drop_cancels_queued_promotion() {
     let mut reg = make_registry_for_overflow_test(64, 0);
     for _ in 0..2 {
-        reg.textures.push(TextureEntry {
-            texture: None,
-            pending_destroy: VecDeque::new(),
-            ref_count: 1,
-            view_kind: TextureViewKind::D2,
-            has_alpha: false,
-            avg_rgb: None,
-            residency: Some(residency::Residency::at_floor(10, 2, 1024)),
-        });
+        reg.textures.push(streamable_entry(7, 2));
     }
     for handle in [0, 1] {
-        reg.queue_residency_change(
-            handle,
-            0,
-            Vec::new(),
-            1,
-            0,
-            TextureColorSpace::Srgb,
-            String::new(),
-        )
-        .expect("queued");
+        reg.queue_residency_change(handle, 0, bc1_dds_from_level(0), 0, TextureColorSpace::Srgb, String::new())
+            .expect("queued");
     }
+    reg.promotion_requests.push((0, 0));
     assert!(reg.release_ref(0), "last holder of handle 0");
-    assert_eq!(
-        reg.pending_promotion_count(),
-        1,
-        "only handle 1's promotion is left"
-    );
+    assert_eq!(reg.pending_promotion_count(), 1, "only handle 1's promotion is left");
     assert_eq!(reg.pending_promotions[0].handle, 1);
+    assert!(reg.promotion_requests.is_empty(), "the pending re-read request goes too");
     assert_eq!(reg.release_refs_batch(&[1]), vec![1]);
     assert_eq!(reg.pending_promotion_count(), 0);
     // A released handle cannot be queued again.
     assert!(reg
-        .queue_residency_change(
-            0,
-            0,
-            Vec::new(),
-            1,
-            0,
-            TextureColorSpace::Srgb,
-            String::new()
-        )
+        .queue_residency_change(0, 0, bc1_dds_from_level(0), 0, TextureColorSpace::Srgb, String::new())
         .is_none());
+}
+
+/// M39 — a floor-only read asks the host for its promotion: the request
+/// names the archive key, and the bytes the host reads back queue the change.
+#[test]
+fn promotion_requests_round_trip_through_the_host() {
+    let mut reg = make_registry_for_overflow_test(64, 0);
+    reg.textures.push(streamable_entry(7, 2));
+    reg.stream_sources.insert(
+        0,
+        StreamSource {
+            path: "textures\\a.dds".into(),
+            clamp_mode: 0,
+            color_space: TextureColorSpace::Srgb,
+            header: bc1_dds_from_level(7),
+        },
+    );
+    reg.promotion_requests.push((0, 0));
+    let requests = reg.take_promotion_requests(8);
+    assert_eq!(
+        requests,
+        vec![PromotionRequest { handle: 0, path: "textures\\a.dds".into(), target: 0 }]
+    );
+    assert!(reg.take_promotion_requests(8).is_empty(), "taken once");
+    assert!(!reg.queue_promotion_bytes(0, 0, bc1_dds_from_level(2)), "floor bytes cannot promote");
+    assert!(reg.queue_promotion_bytes(0, 0, bc1_dds_from_level(0)));
+    assert_eq!(reg.pending_promotion_count(), 1);
+    assert!(!reg.queue_promotion_bytes(9, 0, bc1_dds_from_level(0)), "unknown handle");
 }
 
 /// M39 TXS-UP-004 — one promotion flush takes changes in queue order while
 /// their staged bytes fit the bound, and always at least one.
 #[test]
 fn promotion_flush_takes_in_order_within_the_byte_bound() {
-    let mut reg = make_registry_for_overflow_test(64, 0);
-    for _ in 0..4 {
-        reg.textures.push(TextureEntry {
-            texture: None,
-            pending_destroy: VecDeque::new(),
-            ref_count: 1,
-            view_kind: TextureViewKind::D2,
-            has_alpha: false,
-            avg_rgb: None,
-            residency: Some(residency::Residency::at_floor(10, 2, 0)),
-        });
-    }
-    for (handle, bytes) in [(0, 300u64), (1, 300), (2, 500), (3, 10)] {
-        reg.queue_residency_change(
-            handle,
-            0,
-            Vec::new(),
-            bytes,
-            0,
-            TextureColorSpace::Srgb,
-            String::new(),
-        );
-    }
-    assert_eq!(
-        upload::promotion_take_count(&reg.pending_promotions, 600),
-        2
-    );
-    assert_eq!(
-        upload::promotion_take_count(&reg.pending_promotions, 100),
-        1,
-        "first always goes"
-    );
-    assert_eq!(
-        upload::promotion_take_count(&reg.pending_promotions, 2_000),
-        4
-    );
+    let queued = |staged_bytes| PendingDdsUpload {
+        handle: 0,
+        dds_bytes: Vec::new(),
+        staged_bytes,
+        clamp_mode: 0,
+        view_kind: TextureViewKind::D2,
+        color_space: TextureColorSpace::Srgb,
+        path: String::new(),
+        change: None,
+    };
+    let pending: Vec<PendingDdsUpload> = [300u64, 300, 500, 10].into_iter().map(queued).collect();
+    assert_eq!(upload::promotion_take_count(&pending, 600), 2);
+    assert_eq!(upload::promotion_take_count(&pending, 100), 1, "first always goes");
+    assert_eq!(upload::promotion_take_count(&pending, 2_000), 4);
     assert_eq!(upload::promotion_take_count(&[], 2_000), 0);
 }

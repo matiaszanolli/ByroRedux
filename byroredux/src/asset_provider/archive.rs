@@ -427,7 +427,45 @@ impl ArchiveInner {
     /// is present but unreadable, and is warned once per entry with the
     /// archive path and the reader's own labelled error (#4658).
     pub(crate) fn extract_or_warn(&self, path: &str) -> Option<Vec<u8>> {
-        match self.extract(path) {
+        self.or_warn(path, self.extract(path))
+    }
+
+    /// M39 — a texture's floor read (docs/engine/texture-streaming.md §4): a
+    /// multi-chunk 2D BA2 DX10 record reads only its last chunk, under the
+    /// full-chain header (the registry infers the payload's first level
+    /// from its length); a cubemap, a single-chunk record, a BSA or a loose
+    /// file reads whole. Warns like [`Self::extract_or_warn`].
+    pub(crate) fn extract_texture_floor_or_warn(&self, path: &str) -> Option<Vec<u8>> {
+        if let Backend::Ba2(archive) = &self.backend {
+            if let Some(layout) = archive.dx10_layout(path) {
+                if let (false, [_, .., last]) = (layout.is_cubemap, layout.chunks.as_slice()) {
+                    let read = archive
+                        .extract_dx10_mips(path, u32::from(last.start_mip))
+                        .map(|(dds, _)| dds);
+                    return self.or_warn(path, read);
+                }
+            }
+        }
+        self.extract_or_warn(path)
+    }
+
+    /// M39 — `path` from chain level `first` down, for a promotion's
+    /// re-read: a BA2 DX10 record inflates only the chunks that reach
+    /// `first`; anything else reads whole. Warns like
+    /// [`Self::extract_or_warn`].
+    pub(crate) fn extract_texture_from_or_warn(&self, path: &str, first: u32) -> Option<Vec<u8>> {
+        match &self.backend {
+            Backend::Ba2(archive) if first > 0 && archive.dx10_layout(path).is_some() => {
+                let read = archive.extract_dx10_mips(path, first).map(|(dds, _)| dds);
+                self.or_warn(path, read)
+            }
+            _ => self.extract_or_warn(path),
+        }
+    }
+
+    /// `NotFound` is silent; any other error is warned once per entry.
+    fn or_warn(&self, path: &str, read: Result<Vec<u8>, std::io::Error>) -> Option<Vec<u8>> {
+        match read {
             Ok(data) => Some(data),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => {

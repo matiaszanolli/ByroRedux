@@ -201,11 +201,14 @@ fn fold_key(key: &str) -> String {
 }
 
 /// Queue each canonical texture key for a background read on `pool`.
-/// Returns how many were newly queued.
+/// Returns how many were newly queued. With `floors` (M39 streaming on), a
+/// read is the floor the archive allows, the same bytes the resolve would
+/// read itself (TXS-SRC-005).
 pub(crate) fn prefetch_textures(
     provider: &Arc<TextureProvider>,
     pool: &rayon::ThreadPool,
     keys: impl IntoIterator<Item = String>,
+    floors: bool,
 ) -> usize {
     let mut queued = 0;
     for key in keys {
@@ -224,9 +227,11 @@ pub(crate) fn prefetch_textures(
             // A panicking read must still finish the slot, or a resolve
             // waiting on it would never wake.
             let bytes =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| provider.extract(&key)))
-                    .ok()
-                    .flatten();
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    provider.extract_for_registry(&key, floors)
+                }))
+                .ok()
+                .flatten();
             provider.prefetch.finish(&key, epoch, bytes);
         });
     }

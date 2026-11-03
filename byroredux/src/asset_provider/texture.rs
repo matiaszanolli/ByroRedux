@@ -77,14 +77,14 @@ impl TextureProvider {
     /// Extract a texture on the resolve miss path, charging the read +
     /// inflate time (or the wait for a prefetch already reading it) to
     /// [`Self::resolve_extract_totals`].
-    fn extract_for_resolve(&self, path: &str) -> Option<Vec<u8>> {
+    fn extract_for_resolve(&self, path: &str, floors: bool) -> Option<Vec<u8>> {
         use super::texture_prefetch::Staged;
         use std::sync::atomic::Ordering::Relaxed;
         let started = std::time::Instant::now();
         let (bytes, prefetched) = match self.prefetch.take(path) {
             Staged::Bytes(bytes) => (Some(bytes), true),
             Staged::Missing => (None, true),
-            Staged::NotStaged => (self.extract(path), false),
+            Staged::NotStaged => (self.extract_for_registry(path, floors), false),
         };
         let nanos = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         self.resolve_extract.nanos.fetch_add(nanos, Relaxed);
@@ -170,6 +170,28 @@ impl TextureProvider {
         // #4658 — a present-but-corrupt entry is named, not silently missed.
         extract_first(self.texture_archives.iter().rev(), normalized.as_ref())
             .or_else(|| self.extract_via_facegen_tool_path_fallback(&normalized))
+    }
+
+    /// M39 — whether this provider's registry uploads read floors only:
+    /// with the renderer's streaming switch on, and never for a namespaced
+    /// (Studio) provider, whose registry keys are not archive keys.
+    pub(crate) fn streams_floors(&self, registry_streaming: bool) -> bool {
+        registry_streaming && self.registry_namespace.is_none()
+    }
+
+    /// M39 — [`Self::extract`] for a texture registry upload: with
+    /// `floors`, the floor read the archive allows
+    /// ([`Archive::extract_texture_floor_or_warn`]); same precedence.
+    pub(crate) fn extract_for_registry(&self, path: &str, floors: bool) -> Option<Vec<u8>> {
+        if !floors {
+            return self.extract(path);
+        }
+        let normalized = normalize_texture_path(path);
+        self.texture_archives
+            .iter()
+            .rev()
+            .find_map(|archive| archive.extract_texture_floor_or_warn(normalized.as_ref()))
+            .or_else(|| self.extract(path))
     }
 
     /// Whether a texture exists, without extracting or decompressing it.
@@ -781,7 +803,10 @@ fn resolve_texture_view_with_clamp(
     if let Some(cached) = cached {
         return cached;
     }
-    if let Some(dds_bytes) = tex_provider.extract_for_resolve(tex_path) {
+    // M39 — with streaming on, a 2D texture's first read is its floor
+    // (docs/engine/texture-streaming.md §4).
+    let floors = !cubemap && tex_provider.streams_floors(ctx.texture_registry.streaming());
+    if let Some(dds_bytes) = tex_provider.extract_for_resolve(tex_path, floors) {
         // #881 / CELL-PERF-03 — enqueue rather than upload
         // synchronously. The bindless slot is reserved eagerly with
         // the descriptor pointing at the fallback so this REFR's

@@ -973,8 +973,13 @@ fn prefetch_import_textures(
         .iter()
         .map(|path| crate::asset_provider::canonical_texture_key(path))
         .filter(|key| seen.insert(key.clone()) && !state.tex_provider.texture_resident(ctx, key));
-    let queued =
-        crate::asset_provider::prefetch_textures(&state.tex_provider, &state.stream_pool, keys);
+    let floors = state.tex_provider.streams_floors(ctx.texture_registry.streaming());
+    let queued = crate::asset_provider::prefetch_textures(
+        &state.tex_provider,
+        &state.stream_pool,
+        keys,
+        floors,
+    );
     state
         .telemetry
         .record_texture_prefetch(queued, state.tex_provider.prefetch_stats());

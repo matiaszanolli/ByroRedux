@@ -354,17 +354,16 @@ impl TextureRegistry {
     }
 
     /// M39 — plan a promotion or demotion of `handle` that makes `target`
-    /// its first resident level, and queue it. `dds_bytes` (the whole file)
-    /// is the source of any levels it uploads, `staged_bytes` what that
-    /// upload stages. `None` when the handle is not a live streamable
-    /// texture or nothing would move.
-    #[allow(clippy::too_many_arguments)]
+    /// its first resident level, and queue it. `dds_bytes` is a DDS file
+    /// (full-chain header, payload from any level at or above the change's
+    /// new first level; a demotion needs only the header). `None` when the
+    /// handle is not a live streamable texture, nothing would move, or the
+    /// bytes cannot supply the levels a promotion uploads.
     pub(crate) fn queue_residency_change(
         &mut self,
         handle: TextureHandle,
         target: u32,
         dds_bytes: Vec<u8>,
-        staged_bytes: vk::DeviceSize,
         clamp_mode: u8,
         color_space: TextureColorSpace,
         path: String,
@@ -374,14 +373,22 @@ impl TextureRegistry {
             return None;
         }
         let change = entry.residency?.plan(target)?;
+        let staged_bytes = if change.is_promotion() {
+            let meta =
+                crate::vulkan::dds::parse_dds_with_color_space(&dds_bytes, color_space).ok()?;
+            let payload = dds_bytes.len().saturating_sub(meta.data_offset);
+            if crate::vulkan::dds::payload_first_level(&meta, payload) > change.new_first {
+                return None;
+            }
+            let range = crate::vulkan::dds::level_byte_range(&meta, change.upload_levels());
+            (range.end - range.start) as vk::DeviceSize
+        } else {
+            0
+        };
         self.pending_promotions.push(PendingDdsUpload {
             handle,
             dds_bytes,
-            staged_bytes: if change.is_promotion() {
-                staged_bytes
-            } else {
-                0
-            },
+            staged_bytes,
             clamp_mode,
             view_kind: TextureViewKind::D2,
             color_space,
@@ -389,6 +396,54 @@ impl TextureRegistry {
             change: Some(change),
         });
         Some(change)
+    }
+
+    /// M39 — whether first uploads stream (the `render.texture_streaming`
+    /// switch); the host reads floors only while it is on.
+    pub fn streaming(&self) -> bool {
+        self.streaming
+    }
+
+    /// M39 — up to `max` promotions waiting for the host to read their
+    /// levels, oldest first.
+    pub fn take_promotion_requests(&mut self, max: usize) -> Vec<PromotionRequest> {
+        let take = max.min(self.promotion_requests.len());
+        let taken: Vec<(TextureHandle, u32)> = self.promotion_requests.drain(..take).collect();
+        taken
+            .into_iter()
+            .filter_map(|(handle, target)| {
+                let source = self.stream_sources.get(&handle)?;
+                Some(PromotionRequest {
+                    handle,
+                    path: source.path.clone(),
+                    target,
+                })
+            })
+            .collect()
+    }
+
+    /// M39 — queue the change a [`PromotionRequest`] asked for, from the
+    /// bytes the host read (a DDS file whose payload starts at or above the
+    /// request's target). `false` when the handle was released or has moved
+    /// so nothing is left to do, or the bytes do not cover the target.
+    pub fn queue_promotion_bytes(
+        &mut self,
+        handle: TextureHandle,
+        target: u32,
+        dds_bytes: Vec<u8>,
+    ) -> bool {
+        let Some(source) = self.stream_sources.get(&handle).cloned() else {
+            return false;
+        };
+        self.queue_residency_change(
+            handle,
+            target,
+            dds_bytes,
+            source.clamp_mode,
+            source.color_space,
+            source.path,
+        )
+        .is_some()
     }
 
     /// M39 — queued promotions and demotions, for telemetry.
@@ -611,10 +666,10 @@ impl TextureRegistry {
             staging: Option<crate::vulkan::buffer::StagingGuard>,
             /// M39 — `Some` when this replaces a live streamable image.
             change: Option<ResidencyChange>,
-            /// M39 — the residency a floor-first upload installs, with the
-            /// bytes its forced promotion to the full chain will stage and
-            /// the index of its source in `pending`.
-            floor: Option<(Residency, vk::DeviceSize, usize)>,
+            /// M39 — the residency a floor-first upload installs, whether
+            /// its source bytes hold the whole chain, the index of that
+            /// source in `pending`, and its header length.
+            floor: Option<(Residency, bool, usize, usize)>,
         }
         let mut staged: Vec<StagedUpload> = Vec::with_capacity(count);
 
@@ -679,6 +734,13 @@ impl TextureRegistry {
                     }
                     let pixel_data = crate::vulkan::dds::upload_pixels(&meta, &upload.dds_bytes);
                     let sampler = self.samplers[upload.clamp_mode as usize];
+                    // M39 — a BA2 floor read keeps the full-chain header over
+                    // a payload that starts at its last chunk's level.
+                    let payload_first = if meta.array_layers == 1 && meta.expand.is_none() {
+                        crate::vulkan::dds::payload_first_level(&meta, pixel_data.len())
+                    } else {
+                        0
+                    };
 
                     // M39 — a promotion or demotion of a live streamable
                     // texture: only if it still holds the range the change
@@ -699,8 +761,24 @@ impl TextureRegistry {
                             );
                             continue;
                         };
-                        let levels =
-                            crate::vulkan::dds::level_byte_range(&meta, change.upload_levels());
+                        let upload_levels = change.upload_levels();
+                        let bytes: &[u8] = if upload_levels.is_empty() {
+                            &[]
+                        } else if upload_levels.start < payload_first {
+                            log::warn!(
+                                "Residency change for '{}' needs level {} but its bytes start at {}; dropping it",
+                                upload.path,
+                                upload_levels.start,
+                                payload_first,
+                            );
+                            continue;
+                        } else {
+                            &pixel_data[crate::vulkan::dds::level_byte_range_in(
+                                &meta,
+                                upload_levels,
+                                payload_first,
+                            )]
+                        };
                         match crate::vulkan::texture::Texture::record_dds_residency_change(
                             device,
                             allocator,
@@ -708,7 +786,7 @@ impl TextureRegistry {
                             &meta,
                             change,
                             old_image,
-                            &pixel_data[levels],
+                            bytes,
                             sampler,
                             self.staging_pool.as_mut(),
                         ) {
@@ -731,16 +809,27 @@ impl TextureRegistry {
                     // M39 — with streaming on, a streamable 2D texture's
                     // first upload installs only its floor (TXS-RES-001).
                     // 16/24-bpp sources expanded on the CPU stay whole.
-                    let floor_first = (self.streaming
-                        && upload.view_kind == TextureViewKind::D2
-                        && !meta.is_cubemap
-                        && meta.array_layers == 1
-                        && meta.expand.is_none())
-                    .then(|| residency::floor_first_level(meta.width, meta.height, meta.mip_count))
-                    .flatten();
+                    // Bytes that start above level 0 (a BA2 floor read) can
+                    // only install as a floor, whatever the switch says now.
+                    let floor_first = if payload_first > 0 {
+                        Some(payload_first)
+                    } else {
+                        (self.streaming
+                            && upload.view_kind == TextureViewKind::D2
+                            && !meta.is_cubemap
+                            && meta.array_layers == 1
+                            && meta.expand.is_none())
+                        .then(|| {
+                            residency::floor_first_level(meta.width, meta.height, meta.mip_count)
+                        })
+                        .flatten()
+                    };
                     let first_mip = floor_first.unwrap_or(0);
-                    let levels =
-                        crate::vulkan::dds::level_byte_range(&meta, first_mip..meta.mip_count);
+                    let levels = crate::vulkan::dds::level_byte_range_in(
+                        &meta,
+                        first_mip..meta.mip_count,
+                        payload_first,
+                    );
                     // #1542: a 16/24-bpp `DDPF_RGB` source is CPU-expanded to
                     // R8G8B8A8. Its raw bytes aren't RGBA8 yet, so skip
                     // `average_rgb` for it (it would misread the packed
@@ -781,7 +870,6 @@ impl TextureRegistry {
                             }
                         };
                     let floor = floor_first.map(|floor_first| {
-                        let high = crate::vulkan::dds::level_byte_range(&meta, 0..floor_first);
                         let floor = crate::vulkan::dds::level_byte_range(
                             &meta,
                             floor_first..meta.mip_count,
@@ -792,8 +880,9 @@ impl TextureRegistry {
                                 floor_first,
                                 (floor.end - floor.start) as u64,
                             ),
-                            (high.end - high.start) as vk::DeviceSize,
+                            payload_first == 0,
                             index,
+                            meta.data_offset,
                         )
                     });
                     staged.push(StagedUpload {
@@ -879,9 +968,9 @@ impl TextureRegistry {
                     }
                 } else {
                     entry.texture = Some(texture);
-                    if let Some((residency, high_bytes, source)) = floor {
+                    if let Some((residency, whole, source, header_len)) = floor {
                         entry.residency = Some(residency);
-                        forced_promotions.push((handle, high_bytes, source));
+                        forced_promotions.push((handle, whole, source, header_len));
                     }
                 }
                 if pin_as_cube_fallback {
@@ -904,23 +993,35 @@ impl TextureRegistry {
             }
         }
 
-        // M39 Phase 1 — the forced floor-then-full sequence: every floor
-        // just installed queues its promotion to the full chain, from the
-        // file bytes already in hand (no source re-read exists before the
-        // wanted-mip signal does).
-        for (handle, high_bytes, source) in forced_promotions {
+        // M39 — every floor records its source. Its promotion to the full
+        // chain (forced until the wanted-mip signal exists) uses the bytes in
+        // hand when they hold the whole chain, and asks the host for a
+        // re-read when they were a floor-only read.
+        for (handle, whole, source, header_len) in forced_promotions {
             let upload = &mut pending[source];
-            let dds_bytes = std::mem::take(&mut upload.dds_bytes);
-            let path = std::mem::take(&mut upload.path);
-            self.queue_residency_change(
+            self.stream_sources.insert(
                 handle,
-                0,
-                dds_bytes,
-                high_bytes,
-                upload.clamp_mode,
-                upload.color_space,
-                path,
+                StreamSource {
+                    path: upload.path.clone(),
+                    clamp_mode: upload.clamp_mode,
+                    color_space: upload.color_space,
+                    header: upload.dds_bytes[..header_len.min(upload.dds_bytes.len())].to_vec(),
+                },
             );
+            if whole {
+                let dds_bytes = std::mem::take(&mut upload.dds_bytes);
+                let path = std::mem::take(&mut upload.path);
+                self.queue_residency_change(
+                    handle,
+                    0,
+                    dds_bytes,
+                    upload.clamp_mode,
+                    upload.color_space,
+                    path,
+                );
+            } else {
+                self.promotion_requests.push((handle, 0));
+            }
         }
 
         log::debug!("Flushed DDS upload sub-batch: {staged_count} of {count} staged");

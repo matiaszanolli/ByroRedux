@@ -935,6 +935,39 @@ pub fn level_byte_range(
     start..start + len
 }
 
+/// M39 — the chain level a single-layer payload starts at, from its length
+/// alone: 0 when it holds at least the whole chain, else the level `L` whose
+/// levels `[L, mip_count)` it holds exactly (a BA2 floor read keeps the
+/// full-chain header over a shorter payload). Any other length is 0, so a
+/// truncated file still fails the upload's size check.
+pub fn payload_first_level(meta: &DdsMetadata, payload_len: usize) -> u32 {
+    let size = |mip| mip_size(meta.width, meta.height, mip, meta.block_size, meta.compressed) as usize;
+    let mut suffix: usize = (0..meta.mip_count).map(size).sum();
+    if payload_len >= suffix {
+        return 0;
+    }
+    for level in 0..meta.mip_count {
+        suffix -= size(level);
+        if payload_len == suffix {
+            return level + 1;
+        }
+    }
+    0
+}
+
+/// [`level_byte_range`] inside a payload that starts at chain level
+/// `payload_first` (see [`payload_first_level`]). `levels.start` must not
+/// be below `payload_first`.
+pub fn level_byte_range_in(
+    meta: &DdsMetadata,
+    levels: std::ops::Range<u32>,
+    payload_first: u32,
+) -> std::ops::Range<usize> {
+    let base = level_byte_range(meta, 0..payload_first).end;
+    let range = level_byte_range(meta, levels);
+    range.start - base..range.end - base
+}
+
 /// Total byte size of all mip levels.
 pub fn total_data_size(meta: &DdsMetadata) -> u64 {
     let mut total = 0u64;
@@ -1044,7 +1077,7 @@ pub(crate) mod tests {
     const DDPF_ALPHAPIXELS: u32 = 0x1;
 
     /// Build a minimal valid DDS header for testing.
-    fn make_dds_header(width: u32, height: u32, mip_count: u32, fourcc: &[u8; 4]) -> Vec<u8> {
+    pub(crate) fn make_dds_header(width: u32, height: u32, mip_count: u32, fourcc: &[u8; 4]) -> Vec<u8> {
         let mut buf = vec![0u8; HEADER_SIZE + 256]; // header + some fake pixel data
                                                     // Magic
         buf[0..4].copy_from_slice(b"DDS ");
@@ -2000,6 +2033,24 @@ pub(crate) mod tests {
                 b[i]
             );
         }
+    }
+
+    /// M39 — a payload's first chain level is inferred from its length: the
+    /// whole chain (or more) is 0, an exact suffix `[L, mip_count)` is `L`,
+    /// anything else is 0 so the upload's size check still rejects it.
+    #[test]
+    fn payload_first_level_reads_a_floor_suffix_from_its_length() {
+        let meta = parse_dds(&make_dds_header(64, 64, 7, b"DXT1")).unwrap();
+        let size = |l| mip_size(64, 64, l, 8, true) as usize;
+        let suffix = |from: u32| (from..7).map(size).sum::<usize>();
+        assert_eq!(payload_first_level(&meta, suffix(0)), 0);
+        assert_eq!(payload_first_level(&meta, suffix(0) + 16), 0, "trailing bytes");
+        for from in 1..7 {
+            assert_eq!(payload_first_level(&meta, suffix(from)), from);
+            let range = level_byte_range_in(&meta, from..7, from);
+            assert_eq!(range, 0..suffix(from), "levels from {from} fill the payload");
+        }
+        assert_eq!(payload_first_level(&meta, suffix(2) + 1), 0, "not a suffix");
     }
 
     /// M39 TXS-RES-006 — a floor upload carries only levels
