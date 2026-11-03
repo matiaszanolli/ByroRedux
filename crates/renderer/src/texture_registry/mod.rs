@@ -28,6 +28,8 @@ pub use crate::vulkan::dds::TextureColorSpace;
 
 /// Gamebryo `TexClampMode` address pairs in their on-disk enum order.
 mod lookup;
+mod residency;
+pub(crate) use residency::ResidencyChange;
 mod dynamic_rgba;
 mod release;
 mod upload;
@@ -105,6 +107,9 @@ struct PendingDdsUpload {
     /// Lowercased path — for diagnostic logging only. The path_map
     /// entry is set up by `enqueue_dds_with_clamp` at queue time.
     path: String,
+    /// M39 — `Some` for a promotion or demotion of a live streamable
+    /// texture (queued on `pending_promotions`); `None` for a first upload.
+    change: Option<residency::ResidencyChange>,
 }
 
 /// Outcome of [`TextureRegistry::queue_or_hit`]. Distinguishes a
@@ -172,6 +177,10 @@ struct TextureEntry {
     ///
     /// #3682 — same move as `has_alpha`, same reason.
     avg_rgb: Option<[f32; 3]>,
+    /// M39 — the resident mip range of a streamable texture
+    /// (docs/engine/texture-streaming.md §3). `None` for a **whole**
+    /// texture and for every texture while streaming is off.
+    residency: Option<residency::Residency>,
 }
 
 /// Outcome of [`TextureRegistry::slot_rewrite`] — what a freshly recreated
@@ -304,6 +313,21 @@ pub struct TextureRegistry {
     /// `pending_set_writes` deferred-flush pattern (#92), extended
     /// from descriptor writes to the upload itself.
     pending_dds_uploads: Vec<PendingDdsUpload>,
+    /// M39 — queued promotions and demotions of live streamable textures.
+    /// Flushed by `flush_pending_promotions` under a per-frame byte bound,
+    /// through the same staging pool and sub-batch code as first uploads
+    /// (TXS-UP-004); purged with the handle on its last release
+    /// (TXS-RES-007).
+    pending_promotions: Vec<PendingDdsUpload>,
+    /// M39 Phase 1 — the `render.texture_streaming` switch (TXS-RES-008).
+    /// On: a streamable 2D texture's first upload installs only its floor,
+    /// and a promotion to the full chain is queued behind it (the forced
+    /// floor-then-full sequence that exercises residency before the
+    /// wanted-mip signal exists). Off: today's full-chain upload.
+    streaming: bool,
+    /// M39 — the largest live image total seen by
+    /// `fill_residency_telemetry` (TXS-TEL-001's session peak).
+    peak_resident_bytes: u64,
     /// Set once `check_slot_available` has already logged the
     /// approaching-capacity warning (#2030 / MEM-D3-01), so a long
     /// streaming session logs it once instead of once per subsequent
@@ -486,6 +510,9 @@ impl TextureRegistry {
             // the first `begin_frame` call.
             fence_confirmed_idle_slot: None,
             pending_dds_uploads: Vec::new(),
+            pending_promotions: Vec::new(),
+            streaming: false,
+            peak_resident_bytes: 0,
             slot_capacity_warning_emitted: false,
         };
 
@@ -615,6 +642,7 @@ impl TextureRegistry {
             view_kind: TextureViewKind::D2,
             has_alpha: false,
             avg_rgb: None,
+            residency: None,
         });
         self.fallback_handle = handle;
         Ok(())
@@ -646,6 +674,7 @@ impl TextureRegistry {
             view_kind: TextureViewKind::D2,
             has_alpha: false,
             avg_rgb: None,
+            residency: None,
         });
         self.neutral_fallback_handle = handle;
         Ok(())
@@ -691,6 +720,7 @@ impl TextureRegistry {
             // loads — no alpha-channel gloss signal, no GI-albedo tint.
             has_alpha: false,
             avg_rgb: None,
+            residency: None,
         });
 
         Ok(handle)

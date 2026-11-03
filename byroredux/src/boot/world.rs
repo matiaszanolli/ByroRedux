@@ -81,6 +81,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(byroredux_core::ecs::OwnershipTelemetry::default());
     world.insert_resource(byroredux_core::ecs::OwnershipTracker::new());
     world.insert_resource(byroredux_core::ecs::UpscalerTelemetry::default());
+    world.insert_resource(byroredux_core::ecs::TextureResidencyTelemetry::default());
     world.insert_resource(byroredux_core::ecs::PendingUpscalerSwitch::default());
     world.insert_resource(SkinCoverageStats::default());
     world.insert_resource(byroredux_core::ecs::RtIntegrityStats::default());

@@ -95,6 +95,9 @@ impl TextureRegistry {
         // the reference, or the next flush installs a texture onto a
         // `ref_count == 0` slot that no future release can ever free.
         self.pending_dds_uploads.retain(|upload| upload.handle != handle);
+        // M39 TXS-RES-007 — and any promotion or demotion queued for it.
+        self.pending_promotions
+            .retain(|upload| upload.handle != handle);
         true
     }
 
@@ -110,6 +113,8 @@ impl TextureRegistry {
             self.path_map.retain(|_, h| !freed_set.contains(&*h));
             // Same #4879 purge as `release_ref`, once for the whole batch.
             self.pending_dds_uploads
+                .retain(|upload| !freed_set.contains(&upload.handle));
+            self.pending_promotions
                 .retain(|upload| !freed_set.contains(&upload.handle));
         }
         freed

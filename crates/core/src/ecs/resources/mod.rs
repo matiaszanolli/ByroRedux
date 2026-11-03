@@ -624,6 +624,40 @@ pub struct UpscalerTelemetry {
 
 impl Resource for UpscalerTelemetry {}
 
+/// M39 — what `tex.residency` prints (docs/prd/texture-streaming.md
+/// TXS-TEL-001), refreshed on the renderer's throttled telemetry sample.
+/// Counts and bytes are per residency state; empty until the first sample.
+#[derive(Debug, Default)]
+pub struct TextureResidencyTelemetry {
+    /// The `render.texture_streaming` switch as the renderer last saw it.
+    pub streaming: bool,
+    /// Handles reserved with their upload still queued.
+    pub reserved: u64,
+    /// (count, bytes) of **whole** textures: cubemaps, single-level images,
+    /// and multi-level chains not streamed (within the floor, or streaming off).
+    pub whole_cube: (u64, u64),
+    pub whole_single_level: (u64, u64),
+    pub whole_chain: (u64, u64),
+    /// (count, bytes) of streamable textures by state.
+    pub floor: (u64, u64),
+    pub partial: (u64, u64),
+    pub full: (u64, u64),
+    /// Bytes the floors of every streamable texture hold.
+    pub floor_bytes: u64,
+    /// Bytes of replaced images waiting out `MAX_FRAMES_IN_FLIGHT`.
+    pub retiring_bytes: u64,
+    /// Every live image's bytes, and their peak over the session.
+    pub resident_bytes: u64,
+    pub peak_resident_bytes: u64,
+    /// Promotions and demotions queued.
+    pub queued_changes: u64,
+    /// Per bindless handle: `[first_resident, floor_first, mip_count]` of a
+    /// streamable texture, `None` otherwise.
+    pub per_handle: Vec<Option<[u32; 3]>>,
+}
+
+impl Resource for TextureResidencyTelemetry {}
+
 impl ScratchTelemetry {
     pub fn total_bytes(&self) -> usize {
         self.rows.iter().map(ScratchRow::bytes_used).sum()

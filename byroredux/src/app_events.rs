@@ -917,6 +917,13 @@ impl App {
                 .resource_mut::<byroredux_core::ecs::UpscalerTelemetry>();
             ctx.fill_upscaler_telemetry(&mut telemetry);
         }
+        // M39 — what `tex.residency` prints (TXS-TEL-001).
+        if let Some(ref mut ctx) = self.renderer {
+            let mut telemetry = self
+                .world
+                .resource_mut::<byroredux_core::ecs::TextureResidencyTelemetry>();
+            ctx.fill_texture_residency_telemetry(&mut telemetry);
+        }
     }
 }
 

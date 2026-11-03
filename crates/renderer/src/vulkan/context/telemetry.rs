@@ -45,6 +45,41 @@ impl VulkanContext {
     /// string when the described state actually changed (context creation,
     /// resize, preset switch, or a latched dispatch failure), so the steady
     /// state costs one string compare per frame rather than an allocation.
+    /// M39 — refresh the world-visible texture residency telemetry that
+    /// `tex.residency` prints (TXS-TEL-001).
+    pub fn fill_texture_residency_telemetry(
+        &mut self,
+        telemetry: &mut byroredux_core::ecs::TextureResidencyTelemetry,
+    ) {
+        self.texture_registry.fill_residency_telemetry(telemetry);
+    }
+
+    /// M39 — the `render.texture_streaming` switch, then this frame's
+    /// queued promotions and demotions, at most one upload sub-batch
+    /// (`MAX_UPLOAD_BATCH_BYTES`) per frame. Call before `draw_frame` so the
+    /// new images' descriptor writes reach this frame's slot at its
+    /// `begin_frame`. Phase 1 bound; docs/engine/texture-streaming.md §6.2
+    /// replaces it with a measured per-frame cap.
+    pub fn update_texture_streaming(&mut self, streaming: bool) {
+        self.texture_registry.set_streaming(streaming);
+        if self.texture_registry.pending_promotion_count() == 0 {
+            return;
+        }
+        let Some(allocator) = self.allocator.as_ref() else {
+            return;
+        };
+        if let Err(e) = self.texture_registry.flush_pending_promotions(
+            &self.device,
+            allocator,
+            &self.graphics_queue,
+            self.transfer_pool,
+            &self.transfer_fence,
+            crate::texture_registry::MAX_UPLOAD_BATCH_BYTES,
+        ) {
+            log::warn!("texture promotion flush failed: {e}");
+        }
+    }
+
     pub fn fill_upscaler_telemetry(&self, telemetry: &mut byroredux_core::ecs::UpscalerTelemetry) {
         // #2821 — carry the bracket's `_active` flag across with the value.
         // `0.0` from an absent timer pool, an upscaler that never dispatched,

@@ -914,6 +914,27 @@ pub fn mip_size(width: u32, height: u32, mip_level: u32, block_size: u32, compre
     }
 }
 
+/// Byte range of the chain levels `levels` inside a single-layer payload
+/// that starts at level 0 (what [`upload_pixels`] returns). M39 floor and
+/// promotion uploads slice their levels out of the file with it.
+pub fn level_byte_range(
+    meta: &DdsMetadata,
+    levels: std::ops::Range<u32>,
+) -> std::ops::Range<usize> {
+    let size = |mip| {
+        mip_size(
+            meta.width,
+            meta.height,
+            mip,
+            meta.block_size,
+            meta.compressed,
+        ) as usize
+    };
+    let start: usize = (0..levels.start).map(size).sum();
+    let len: usize = levels.map(size).sum();
+    start..start + len
+}
+
 /// Total byte size of all mip levels.
 pub fn total_data_size(meta: &DdsMetadata) -> u64 {
     let mut total = 0u64;

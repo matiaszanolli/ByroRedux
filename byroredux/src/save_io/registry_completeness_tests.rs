@@ -491,6 +491,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("DebugStats", "per-frame diagnostic counters"),
         ("ScratchTelemetry", "per-frame scratch-allocation telemetry"),
         ("UpscalerTelemetry", "renderer telemetry rebuilt every frame"),
+        ("TextureResidencyTelemetry", "M39 renderer telemetry rebuilt on the telemetry sample"),
         ("CpuFrameTimings", "per-frame performance telemetry"),
         ("SkinCoverageStats", "renderer coverage telemetry recomputed from current draws"),
         ("ImageHealth", "swapchain/frame health telemetry"),

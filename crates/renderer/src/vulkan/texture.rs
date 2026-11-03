@@ -60,6 +60,8 @@ pub struct Texture {
     /// different-sized image (#4515 — previously nothing retained the
     /// creation extent).
     creation_extent: vk::Extent3D,
+    /// Mip levels the image was created with (M39 telemetry classes).
+    level_count: u32,
     /// Only single-mip, single-layer sRGB RGBA images accept raw replacements.
     rgba_updateable: bool,
 }
@@ -166,6 +168,7 @@ impl Texture {
                 cmd,
                 meta,
                 0,
+                false,
                 pixel_data,
                 sampler,
                 staging_pool.as_deref_mut(),
@@ -191,99 +194,29 @@ impl Texture {
         Ok(texture)
     }
 
-    /// Record-only stage of a DDS upload — allocates the GPU image,
-    /// allocates a staging buffer, copies CPU pixel data into staging,
-    /// and RECORDS the layout-transition + copy pair into the provided
-    /// command buffer. Returns the partially-built `Texture`
-    /// (image + view + sampler) and the `StagingGuard` the caller MUST
-    /// retain until after the submit + fence-wait completes.
-    ///
-    /// Stage B (submit + wait) and Stage C (release staging) are the
-    /// caller's responsibility. Use this entry point when batching
-    /// many DDS uploads into ONE submit (see
-    /// `TextureRegistry::flush_pending_uploads`); for a single-shot
-    /// upload, use [`Self::from_dds_with_mip_chain`] instead which
-    /// bundles all three stages.
-    ///
-    /// SAFETY: the command buffer must be in the recording state. The
-    /// returned StagingGuard's underlying VkBuffer is referenced by
-    /// the recorded `cmd_copy_buffer_to_image`, so dropping it before
-    /// the GPU has finished executing the cmd would produce a
-    /// use-after-free. See #881 / CELL-PERF-03.
-    ///
-    /// `first_mip` selects the levels `[first_mip, meta.mip_count)` of the
-    /// chain `meta` describes (M39, TXS-UP-003): `pixel_data` holds exactly
-    /// those levels, level `first_mip` first, and the image is created with
-    /// that many levels at level `first_mip`'s extent, so its level 0 is the
-    /// chain's `first_mip`. Every caller that uploads a whole chain passes 0.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn record_dds_upload(
+    /// Create the device-local image, its memory and its view for levels
+    /// `[first_mip, meta.mip_count)` of the chain `meta` describes. Every
+    /// failure unwinds what it created and returns before the caller records
+    /// any command naming the image (#2178, #4599, #4854).
+    fn create_dds_image(
         device: &ash::Device,
         allocator: &SharedAllocator,
-        cmd: vk::CommandBuffer,
         meta: &super::dds::DdsMetadata,
         first_mip: u32,
-        pixel_data: &[u8],
-        sampler: vk::Sampler,
-        staging_pool: Option<&mut StagingPool>,
-    ) -> Result<(Self, StagingGuard)> {
+        copy_source: bool,
+    ) -> Result<DdsImage> {
         use super::dds;
 
-        ensure!(
-            first_mip < meta.mip_count,
-            "DDS upload first level {first_mip} is outside the {}-level chain",
-            meta.mip_count,
-        );
         let level_count = meta.mip_count - first_mip;
-        // Per-level copy regions for `[first_mip, mip_count)`. Their walk is
-        // the one price of the upload: the payload check, the staging
-        // request and the staging-capacity check below all use its total,
-        // so the region list and its budget cannot disagree (#4512,
-        // TXS-UP-003).
-        let (regions, total_size) = build_dds_copy_regions(meta, first_mip);
-        // #4511 — a returned error, not a release `assert!`: the input is
-        // mod-authorable, and a truncated-but-plausible DDS must fail the
-        // upload (checkerboard fallback / queued-upload drop) instead of
-        // panicking the engine.
-        ensure!(
-            pixel_data.len() as u64 >= total_size,
-            "DDS pixel data too small: {} bytes for {}x{} {:?} {} mips from level {} ({} expected)",
-            pixel_data.len(),
-            meta.width,
-            meta.height,
-            meta.format,
-            meta.mip_count,
-            first_mip,
-            total_size,
-        );
-
-        let image_size = total_size as vk::DeviceSize;
         let image_extent = vk::Extent3D {
             width: dds::mip_dimension(meta.width, first_mip),
             height: dds::mip_dimension(meta.height, first_mip),
             depth: 1,
         };
-
-        // 1. Staging buffer — from pool (reuse) or fresh. See #239.
-        // #2164 / L-5 — the fresh path unwinds its own create/allocate/bind
-        // window inside `create_staging_buffer`; the RAII guard covers
-        // everything after, and exists BEFORE the host write (the
-        // `mapped_slice_mut` failure path used to run while both the buffer
-        // and the allocation were still owned by bare locals).
-        let mut staging = if let Some(pool) = staging_pool {
-            pool.acquire(image_size)?
-        } else {
-            StagingGuard::create(device, allocator, image_size, "dds_texture_staging")?
-        };
-        // TXS-UP-002 — a release-mode error, before anything is recorded:
-        // regions that address past the staging buffer would make the copy
-        // read beyond it (the #4512 overrun class).
-        check_regions_fit_staging(total_size, staging.capacity())?;
-
-        staging.mapped_slice_mut()?[..total_size as usize]
-            .copy_from_slice(&pixel_data[..total_size as usize]);
-
-        // 2. Device-local image.
+        let mut usage = vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED;
+        if copy_source {
+            usage |= vk::ImageUsageFlags::TRANSFER_SRC;
+        }
         let image_flags = if meta.is_cubemap {
             vk::ImageCreateFlags::CUBE_COMPATIBLE
         } else {
@@ -298,7 +231,7 @@ impl Texture {
             .array_layers(meta.array_layers)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED)
+            .usage(usage)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED);
 
@@ -399,6 +332,292 @@ impl Texture {
             }
         };
 
+        Ok(DdsImage {
+            image,
+            allocation: image_alloc,
+            view: image_view,
+            extent: image_extent,
+            level_count,
+            view_kind,
+        })
+    }
+
+    /// M39 — record a promotion or demotion of a live streamable 2D texture
+    /// (docs/engine/texture-streaming.md §3.2): a new image of levels
+    /// `[change.new_first, mip_count)`, the levels both images hold copied
+    /// from `old_image` on the GPU, and `change.upload_levels()` copied from
+    /// `pixel_data`, which holds exactly those levels in order. `old_image`
+    /// is `SHADER_READ_ONLY_OPTIMAL` before and after, so frames already
+    /// submitted that sample it are unaffected; the caller retires it
+    /// through `pending_destroy` once this batch's fence has signalled.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_dds_residency_change(
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        cmd: vk::CommandBuffer,
+        meta: &super::dds::DdsMetadata,
+        change: crate::texture_registry::ResidencyChange,
+        old_image: vk::Image,
+        pixel_data: &[u8],
+        sampler: vk::Sampler,
+        staging_pool: Option<&mut StagingPool>,
+    ) -> Result<(Self, Option<StagingGuard>)> {
+        ensure!(
+            change.mip_count == meta.mip_count
+                && change.new_first < meta.mip_count
+                && change.old_first < meta.mip_count,
+            "residency change {change:?} does not fit the {}-level chain",
+            meta.mip_count,
+        );
+        ensure!(
+            !meta.is_cubemap && meta.array_layers == 1,
+            "residency changes apply to 2D single-layer textures only",
+        );
+        let (regions, total_size) =
+            build_dds_copy_regions_range(meta, change.upload_levels(), change.new_first);
+        ensure!(
+            pixel_data.len() as u64 >= total_size,
+            "residency change payload too small: {} bytes for levels {:?} ({} expected)",
+            pixel_data.len(),
+            change.upload_levels(),
+            total_size,
+        );
+        let staging = if total_size > 0 {
+            let mut staging = if let Some(pool) = staging_pool {
+                pool.acquire(total_size)?
+            } else {
+                StagingGuard::create(device, allocator, total_size, "dds_promotion_staging")?
+            };
+            check_regions_fit_staging(total_size, staging.capacity())?;
+            staging.mapped_slice_mut()?[..total_size as usize]
+                .copy_from_slice(&pixel_data[..total_size as usize]);
+            Some(staging)
+        } else {
+            None
+        };
+
+        let DdsImage {
+            image,
+            allocation: image_alloc,
+            view: image_view,
+            extent: image_extent,
+            level_count,
+            view_kind,
+        } = Self::create_dds_image(device, allocator, meta, change.new_first, true)?;
+
+        let copies = change.image_copies(meta.width, meta.height, 1);
+        let old_levels = meta.mip_count - change.old_first;
+        let new_range = color_subresource_mips_layers(level_count, 1);
+        let old_range = color_subresource_mips_layers(old_levels, 1);
+        let barrier = |image, range, old_layout, new_layout, src_access, dst_access| {
+            vk::ImageMemoryBarrier::default()
+                .old_layout(old_layout)
+                .new_layout(new_layout)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(image)
+                .subresource_range(range)
+                .src_access_mask(src_access)
+                .dst_access_mask(dst_access)
+        };
+        let to_transfer = [
+            barrier(
+                image,
+                new_range,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::AccessFlags::empty(),
+                vk::AccessFlags::TRANSFER_WRITE,
+            ),
+            barrier(
+                old_image,
+                old_range,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                vk::AccessFlags::SHADER_READ,
+                vk::AccessFlags::TRANSFER_READ,
+            ),
+        ];
+        let to_read = [
+            barrier(
+                image,
+                new_range,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                vk::AccessFlags::TRANSFER_WRITE,
+                vk::AccessFlags::SHADER_READ,
+            ),
+            barrier(
+                old_image,
+                old_range,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                vk::AccessFlags::TRANSFER_READ,
+                vk::AccessFlags::SHADER_READ,
+            ),
+        ];
+        unsafe {
+            // SAFETY: `cmd` is recording on the graphics queue the frames
+            // run on, so the first barrier's ALL_COMMANDS source scope
+            // includes every earlier submission that sampled `old_image`.
+            // `image` is the bound image created above; `old_image` is the
+            // caller's live image of `old_levels` levels in
+            // SHADER_READ_ONLY_OPTIMAL. Every copy region lies inside both
+            // images (`ResidencyChange::image_copies`), and the buffer
+            // regions address only `total_size` bytes of the staging buffer,
+            // checked against its capacity above.
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &to_transfer,
+            );
+            if let Some(staging) = staging.as_ref() {
+                device.cmd_copy_buffer_to_image(
+                    cmd,
+                    staging.buffer,
+                    image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &regions,
+                );
+            }
+            device.cmd_copy_image(
+                cmd,
+                old_image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &copies,
+            );
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &to_read,
+            );
+        }
+
+        Ok((
+            Self {
+                image,
+                image_view,
+                sampler,
+                view_kind,
+                allocation: Some(image_alloc),
+                device: device.clone(),
+                allocator: Some(allocator.clone()),
+                creation_extent: image_extent,
+                level_count,
+                rgba_updateable: false,
+            },
+            staging,
+        ))
+    }
+
+    /// Record-only stage of a DDS upload — allocates the GPU image,
+    /// allocates a staging buffer, copies CPU pixel data into staging,
+    /// and RECORDS the layout-transition + copy pair into the provided
+    /// command buffer. Returns the partially-built `Texture`
+    /// (image + view + sampler) and the `StagingGuard` the caller MUST
+    /// retain until after the submit + fence-wait completes.
+    ///
+    /// Stage B (submit + wait) and Stage C (release staging) are the
+    /// caller's responsibility. Use this entry point when batching
+    /// many DDS uploads into ONE submit (see
+    /// `TextureRegistry::flush_pending_uploads`); for a single-shot
+    /// upload, use [`Self::from_dds_with_mip_chain`] instead which
+    /// bundles all three stages.
+    ///
+    /// SAFETY: the command buffer must be in the recording state. The
+    /// returned StagingGuard's underlying VkBuffer is referenced by
+    /// the recorded `cmd_copy_buffer_to_image`, so dropping it before
+    /// the GPU has finished executing the cmd would produce a
+    /// use-after-free. See #881 / CELL-PERF-03.
+    ///
+    /// `first_mip` selects the levels `[first_mip, meta.mip_count)` of the
+    /// chain `meta` describes (M39, TXS-UP-003): `pixel_data` holds exactly
+    /// those levels, level `first_mip` first, and the image is created with
+    /// that many levels at level `first_mip`'s extent, so its level 0 is the
+    /// chain's `first_mip`. Every caller that uploads a whole chain passes 0.
+    /// `copy_source` adds `TRANSFER_SRC` usage, which a streamable texture
+    /// needs so a later residency change can copy its levels out.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_dds_upload(
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        cmd: vk::CommandBuffer,
+        meta: &super::dds::DdsMetadata,
+        first_mip: u32,
+        copy_source: bool,
+        pixel_data: &[u8],
+        sampler: vk::Sampler,
+        staging_pool: Option<&mut StagingPool>,
+    ) -> Result<(Self, StagingGuard)> {
+        ensure!(
+            first_mip < meta.mip_count,
+            "DDS upload first level {first_mip} is outside the {}-level chain",
+            meta.mip_count,
+        );
+        // Per-level copy regions for `[first_mip, mip_count)`. Their walk is
+        // the one price of the upload: the payload check, the staging
+        // request and the staging-capacity check below all use its total,
+        // so the region list and its budget cannot disagree (#4512,
+        // TXS-UP-003).
+        let (regions, total_size) = build_dds_copy_regions(meta, first_mip);
+        // #4511 — a returned error, not a release `assert!`: the input is
+        // mod-authorable, and a truncated-but-plausible DDS must fail the
+        // upload (checkerboard fallback / queued-upload drop) instead of
+        // panicking the engine.
+        ensure!(
+            pixel_data.len() as u64 >= total_size,
+            "DDS pixel data too small: {} bytes for {}x{} {:?} {} mips from level {} ({} expected)",
+            pixel_data.len(),
+            meta.width,
+            meta.height,
+            meta.format,
+            meta.mip_count,
+            first_mip,
+            total_size,
+        );
+
+        let image_size = total_size as vk::DeviceSize;
+
+        // 1. Staging buffer — from pool (reuse) or fresh. See #239.
+        // #2164 / L-5 — the fresh path unwinds its own create/allocate/bind
+        // window inside `create_staging_buffer`; the RAII guard covers
+        // everything after, and exists BEFORE the host write (the
+        // `mapped_slice_mut` failure path used to run while both the buffer
+        // and the allocation were still owned by bare locals).
+        let mut staging = if let Some(pool) = staging_pool {
+            pool.acquire(image_size)?
+        } else {
+            StagingGuard::create(device, allocator, image_size, "dds_texture_staging")?
+        };
+        // TXS-UP-002 — a release-mode error, before anything is recorded:
+        // regions that address past the staging buffer would make the copy
+        // read beyond it (the #4512 overrun class).
+        check_regions_fit_staging(total_size, staging.capacity())?;
+
+        staging.mapped_slice_mut()?[..total_size as usize]
+            .copy_from_slice(&pixel_data[..total_size as usize]);
+
+        // 2. Device-local image, memory and view (every failure unwinds before
+        // anything is recorded, #4854).
+        let DdsImage {
+            image,
+            allocation: image_alloc,
+            view: image_view,
+            extent: image_extent,
+            level_count,
+            view_kind,
+        } = Self::create_dds_image(device, allocator, meta, first_mip, copy_source)?;
+
         // 3-5. Record layout transitions + copy into the provided cmd.
         // Per-image barriers (not global) so multiple uploads recorded
         // into the same cmd don't serialise on each other unnecessarily.
@@ -472,11 +691,24 @@ impl Texture {
                 device: device.clone(),
                 allocator: Some(allocator.clone()),
                 creation_extent: image_extent,
+                level_count,
                 rgba_updateable: meta.format == vk::Format::R8G8B8A8_SRGB
                     && meta.mip_count == 1 && meta.array_layers == 1 && !meta.is_cubemap,
             },
             staging,
         ))
+    }
+
+    /// Mip levels of the image.
+    pub(crate) fn level_count(&self) -> u32 {
+        self.level_count
+    }
+
+    /// Bytes of the image's memory allocation (0 once destroyed).
+    pub(crate) fn allocation_bytes(&self) -> u64 {
+        self.allocation
+            .as_ref()
+            .map_or(0, |allocation| allocation.size())
     }
 
     /// Destroy the texture and free GPU memory.
@@ -596,13 +828,25 @@ fn build_dds_copy_regions(
     meta: &super::dds::DdsMetadata,
     first_mip: u32,
 ) -> (Vec<vk::BufferImageCopy>, u64) {
+    build_dds_copy_regions_range(meta, first_mip..meta.mip_count, first_mip)
+}
+
+/// [`build_dds_copy_regions`] for the chain levels `levels` of an image
+/// whose level 0 is chain level `image_first` (an M39 promotion uploads
+/// `[new_first, old_first)` into an image starting at `new_first`).
+fn build_dds_copy_regions_range(
+    meta: &super::dds::DdsMetadata,
+    levels: std::ops::Range<u32>,
+    image_first: u32,
+) -> (Vec<vk::BufferImageCopy>, u64) {
     use super::dds;
 
-    let levels = meta.mip_count.saturating_sub(first_mip);
-    let mut regions = Vec::with_capacity((levels * meta.array_layers) as usize);
+    let first_mip = image_first;
+    let level_count = levels.end.saturating_sub(levels.start);
+    let mut regions = Vec::with_capacity((level_count * meta.array_layers) as usize);
     let mut buffer_offset: u64 = 0;
     for layer in 0..meta.array_layers {
-        for mip in first_mip..meta.mip_count {
+        for mip in levels.clone() {
             let mip_bytes = dds::mip_size(
                 meta.width,
                 meta.height,
@@ -632,6 +876,17 @@ fn build_dds_copy_regions(
         }
     }
     (regions, buffer_offset)
+}
+
+/// The image, memory and view one DDS upload creates before it records
+/// anything ([`Texture::create_dds_image`]).
+struct DdsImage {
+    image: vk::Image,
+    allocation: vk_alloc::Allocation,
+    view: vk::ImageView,
+    extent: vk::Extent3D,
+    level_count: u32,
+    view_kind: TextureViewKind,
 }
 
 /// TXS-UP-002 — the copy regions of one upload must address no byte past
@@ -1569,51 +1824,68 @@ mod dds_upload_guard_tests {
     #[test]
     fn dds_image_setup_failures_unwind_before_recording_copy_commands() {
         let src = crate::source_scan::production_text(include_str!("texture.rs"));
-        let upload_at = src
-            .find("fn record_dds_upload(")
-            .expect("record_dds_upload production method");
-        let upload = &src[upload_at..src[upload_at..]
-            .find("/// Destroy the texture")
-            .map(|n| upload_at + n)
-            .expect("record_dds_upload method end")];
-        let create_view = upload
+        // The body of `fn <name>(` up to the next `\n    pub`/`\n    fn`/
+        // `\n    ///` item boundary.
+        let body = |name: &str| -> &str {
+            let at = src
+                .find(&format!("fn {name}("))
+                .unwrap_or_else(|| panic!("{name} present"));
+            let rest = &src[at + 3..];
+            let end = ["\n    pub", "\n    fn ", "\n    ///", "\n    #["]
+                .iter()
+                .filter_map(|marker| rest.find(marker))
+                .min()
+                .unwrap_or(rest.len());
+            &src[at..at + 3 + end]
+        };
+
+        // Image, memory and view are created in one helper, whose failures
+        // unwind before any caller records a command naming the image.
+        let create = body("create_dds_image");
+        let create_view = create
             .find("device.create_image_view(&view_info, None)")
             .expect("image view creation");
-        let record_barrier = upload
-            .find("device.cmd_pipeline_barrier(")
-            .expect("first image transition command");
-        assert!(create_view < record_barrier);
-        let view_failure = &upload[create_view..record_barrier];
+        let view_failure = &create[create_view..];
         assert!(view_failure.contains("device.destroy_image(image, None)"));
         // #4599 — the free goes through the shared poison-recovery helper
         // rather than a bare `.free(image_alloc)` under an `.expect`ing lock.
         assert!(view_failure.contains("free_allocation_recovering(allocator, image_alloc"));
-
-        let allocation = upload
+        let allocation = create
             .find("Failed to allocate DDS texture image memory")
             .expect("image allocation error context");
-        let allocation_failure = &upload[allocation.saturating_sub(260)..allocation + 80];
+        let allocation_failure = &create[allocation.saturating_sub(260)..allocation + 80];
         assert!(allocation_failure.contains("device.destroy_image(image, None)"));
+        assert!(!create.contains("cmd_"), "create_dds_image records nothing");
 
-        // #4880 (REN-D5-2026-09-26-02b) — the other half of the batched-flush
-        // hazard: once a copy from the staging buffer is recorded, a
-        // mid-record early-return would drop the StagingGuard (destroying the
-        // buffer) while `flush_upload_batch` still submits the command
+        // Both recorders (#4854, M39) create the image before their first
+        // recorded command, and (#4880) nothing after that command can fail:
+        // a mid-record early return would drop the StagingGuard (destroying
+        // the buffer) while `flush_upload_batch` still submits the command
         // buffer — a copy from freed memory (VUID-vkQueueSubmit-
-        // pCommandBuffers-00070 class). Pin that the recording tail after the
-        // first `cmd_pipeline_barrier` contains no fallible `?` at all, so
-        // nothing can fail between record and Ok. (`{:?}` in the completion
-        // log's format string is the one tolerated spelling.)
-        let tail = &upload[record_barrier..];
-        let tail_without_format_specs = tail.replace("{:?}", "");
-        assert!(
-            !tail_without_format_specs.contains('?'),
-            "record_dds_upload grew a fallible operation after the first \
-             recorded command — a failure there would submit the batched \
-             command buffer with a copy from a dropped staging buffer \
-             (#4880). Move the failure point back before the view/barrier \
-             setup, alongside the #2178/#4854 unwinds.",
-        );
+        // pCommandBuffers-00070 class). (`{:?}` in a log format string is
+        // the one tolerated spelling.)
+        for recorder in ["record_dds_upload", "record_dds_residency_change"] {
+            let upload = body(recorder);
+            let created = upload
+                .find("Self::create_dds_image(")
+                .unwrap_or_else(|| panic!("{recorder} creates its image through the helper"));
+            let record_barrier = upload
+                .find("device.cmd_pipeline_barrier(")
+                .unwrap_or_else(|| panic!("{recorder}: first image transition command"));
+            assert!(
+                created < record_barrier,
+                "{recorder}: image setup precedes recording"
+            );
+            let tail = &upload[record_barrier..];
+            let tail_without_format_specs = tail.replace("{:?}", "");
+            assert!(
+                !tail_without_format_specs.contains('?'),
+                "{recorder} grew a fallible operation after the first recorded \
+                 command — a failure there would submit the batched command \
+                 buffer with a copy from a dropped staging buffer (#4880). Move \
+                 the failure point back before the image setup.",
+            );
+        }
     }
 
     /// #4512 / #4881 — the staging release label comes from the guard
@@ -1625,7 +1897,22 @@ mod dds_upload_guard_tests {
     fn dds_upload_does_not_compute_its_own_staging_release_label() {
         let production = crate::source_scan::production_text(include_str!("texture.rs"));
         assert!(!production.contains("staging_capacity"));
-        assert!(!production.contains("allocation.size()"));
+        // M39 — the one allowed `.size()` read is the image allocation's, for
+        // residency telemetry (`Texture::allocation_bytes`); no staging path
+        // may price or label with an allocation size.
+        let telemetry = production
+            .find("pub(crate) fn allocation_bytes(")
+            .expect("allocation_bytes telemetry accessor");
+        let telemetry_end = telemetry
+            + production[telemetry..]
+                .find("\n    }")
+                .expect("allocation_bytes end");
+        let outside = format!(
+            "{}{}",
+            &production[..telemetry],
+            &production[telemetry_end..]
+        );
+        assert!(!outside.contains("allocation.size()"));
         assert!(production.contains("staging.release_to(pool);"));
     }
 

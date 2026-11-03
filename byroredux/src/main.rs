@@ -1719,7 +1719,7 @@ pub(crate) fn setting_number(world: &World, id: &str, fallback: f32) -> f32 {
     }
 }
 
-fn setting_bool(world: &World, id: &str, fallback: bool) -> bool {
+pub(crate) fn setting_bool(world: &World, id: &str, fallback: bool) -> bool {
     match setting_value(world, id) {
         Some(SettingValue::Bool(value)) => value,
         _ => fallback,

@@ -127,6 +127,7 @@ fn make_registry_for_overflow_test(max_textures: u32, occupied: usize) -> Textur
                 view_kind: TextureViewKind::D2,
                 has_alpha: false,
                 avg_rgb: None,
+                residency: None,
             })
             .collect(),
         path_map: HashMap::new(),
@@ -149,6 +150,9 @@ fn make_registry_for_overflow_test(max_textures: u32, occupied: usize) -> Textur
         current_slot: 0,
         fence_confirmed_idle_slot: None,
         pending_dds_uploads: Vec::new(),
+        pending_promotions: Vec::new(),
+        streaming: false,
+        peak_resident_bytes: 0,
         slot_capacity_warning_emitted: false,
     }
 }
@@ -280,6 +284,7 @@ fn make_registry_with_entry(path: &str, initial_ref_count: u32) -> TextureRegist
         view_kind: TextureViewKind::D2,
         has_alpha: false,
         avg_rgb: None,
+        residency: None,
     });
     reg.fallback_handle = 0;
     reg.textures.push(TextureEntry {
@@ -289,6 +294,7 @@ fn make_registry_with_entry(path: &str, initial_ref_count: u32) -> TextureRegist
         view_kind: TextureViewKind::D2,
         has_alpha: false,
         avg_rgb: None,
+        residency: None,
     });
     // 3 = WRAP_S_WRAP_T per nif.xml — the legacy REPEAT entry the
     // pre-#610 cache lookups (`acquire_by_path` / `get_by_path`)
@@ -456,6 +462,7 @@ fn release_refs_batch_preserves_holder_counts_and_purges_only_freed_paths() {
         view_kind: TextureViewKind::D2,
         has_alpha: false,
         avg_rgb: None,
+        residency: None,
     });
     reg.path_map.insert(clamp_keyed_path("table.dds", 3), 2);
     reg.textures.push(TextureEntry {
@@ -465,6 +472,7 @@ fn release_refs_batch_preserves_holder_counts_and_purges_only_freed_paths() {
         view_kind: TextureViewKind::D2,
         has_alpha: false,
         avg_rgb: None,
+        residency: None,
     });
     reg.path_map.insert(clamp_keyed_path("lamp.dds", 3), 3);
 
@@ -565,7 +573,7 @@ fn flush_upload_batch_skips_released_slots_before_parsing_or_staging() {
         .nth(1)
         .expect("flush_upload_batch present");
     let loop_start = batch
-        .find("for upload in &pending {")
+        .find("for (index, upload) in pending.iter().enumerate() {")
         .expect("record loop present");
     let guard = batch[loop_start..]
         .find("entry.ref_count == 0")
@@ -576,8 +584,12 @@ fn flush_upload_batch_skips_released_slots_before_parsing_or_staging() {
     let record = batch[loop_start..]
         .find("record_dds_upload(")
         .expect("record call present");
+    // M39 — the residency-change arm stages too, so the skip precedes it.
+    let change = batch[loop_start..]
+        .find("record_dds_residency_change(")
+        .expect("residency-change record call present");
     assert!(
-        guard < parse && guard < record,
+        guard < parse && guard < record && guard < change,
         "the ref_count == 0 skip must fire before any parse or staging work"
     );
 }
@@ -714,6 +726,7 @@ fn none_d2_slot_is_planned_as_a_checkerboard_fallback_rewrite() {
         view_kind: TextureViewKind::D2,
         has_alpha: false,
         avg_rgb: None,
+        residency: None,
     });
     reg.fallback_handle = 0;
     reg.textures.push(TextureEntry {
@@ -723,6 +736,7 @@ fn none_d2_slot_is_planned_as_a_checkerboard_fallback_rewrite() {
         view_kind: TextureViewKind::D2,
         has_alpha: false,
         avg_rgb: None,
+        residency: None,
     });
     assert_eq!(
         reg.slot_rewrite(1),
@@ -749,6 +763,7 @@ fn none_cube_slot_redirects_through_binding_1_only_when_a_cube_fallback_exists()
         view_kind: TextureViewKind::Cube,
         has_alpha: false,
         avg_rgb: None,
+        residency: None,
     });
     assert_eq!(
         reg.slot_rewrite(0),
@@ -765,6 +780,7 @@ fn none_cube_slot_redirects_through_binding_1_only_when_a_cube_fallback_exists()
         view_kind: TextureViewKind::Cube,
         has_alpha: false,
         avg_rgb: None,
+        residency: None,
     });
     reg.cube_fallback_handle = Some(1);
     assert_eq!(
@@ -825,6 +841,7 @@ fn handle_has_alpha_reads_the_seeded_flag_and_defaults_false_out_of_range() {
         view_kind: TextureViewKind::D2,
         has_alpha: true,
         avg_rgb: None,
+        residency: None,
     });
     assert!(reg.handle_has_alpha(0));
     assert!(
@@ -844,6 +861,7 @@ fn handle_avg_rgb_reads_the_seeded_value_and_is_none_out_of_range() {
         view_kind: TextureViewKind::D2,
         has_alpha: false,
         avg_rgb: Some([0.25, 0.5, 0.75]),
+        residency: None,
     });
     assert_eq!(reg.handle_avg_rgb(0), Some([0.25, 0.5, 0.75]));
     assert_eq!(
@@ -1290,4 +1308,148 @@ fn has_any_view_of_path_finds_every_key_variant() {
             }
         }
     }
+}
+
+/// M39 TXS-RES-002 — a promotion keeps the texture's handle and adds no
+/// slot: it is queued against the handle, and landing it moves only the
+/// entry's resident range.
+#[test]
+fn promotion_keeps_handle_and_slot_count() {
+    let mut reg = make_registry_for_overflow_test(64, 0);
+    reg.textures.push(TextureEntry {
+        texture: None,
+        pending_destroy: VecDeque::new(),
+        ref_count: 1,
+        view_kind: TextureViewKind::D2,
+        has_alpha: false,
+        avg_rgb: None,
+        residency: Some(residency::Residency::at_floor(12, 3, 4096)),
+    });
+    let handle: TextureHandle = 0;
+    let slots = reg.len();
+    let change = reg
+        .queue_residency_change(
+            handle,
+            0,
+            vec![0; 16],
+            1 << 20,
+            0,
+            TextureColorSpace::Srgb,
+            "a.dds".into(),
+        )
+        .expect("a floor texture promotes");
+    assert_eq!(reg.len(), slots, "queueing adds no slot");
+    assert_eq!(reg.pending_promotion_count(), 1);
+    assert_eq!(reg.pending_promotions[0].handle, handle);
+    // The bookkeeping the flush applies once the new image is installed.
+    let entry = &mut reg.textures[handle as usize];
+    assert!(entry.residency.as_mut().unwrap().apply(change));
+    assert_eq!(entry.residency.unwrap().first_resident, 0);
+    assert_eq!(reg.len(), slots, "landing adds no slot");
+    // Nothing to do once full; a texture with no residency is never queued.
+    assert!(reg
+        .queue_residency_change(
+            handle,
+            0,
+            Vec::new(),
+            0,
+            0,
+            TextureColorSpace::Srgb,
+            String::new()
+        )
+        .is_none());
+}
+
+/// M39 TXS-RES-007 — the last release drops every queued promotion or
+/// demotion of the handle with it, as #4879 does for a queued first upload.
+#[test]
+fn last_drop_cancels_queued_promotion() {
+    let mut reg = make_registry_for_overflow_test(64, 0);
+    for _ in 0..2 {
+        reg.textures.push(TextureEntry {
+            texture: None,
+            pending_destroy: VecDeque::new(),
+            ref_count: 1,
+            view_kind: TextureViewKind::D2,
+            has_alpha: false,
+            avg_rgb: None,
+            residency: Some(residency::Residency::at_floor(10, 2, 1024)),
+        });
+    }
+    for handle in [0, 1] {
+        reg.queue_residency_change(
+            handle,
+            0,
+            Vec::new(),
+            1,
+            0,
+            TextureColorSpace::Srgb,
+            String::new(),
+        )
+        .expect("queued");
+    }
+    assert!(reg.release_ref(0), "last holder of handle 0");
+    assert_eq!(
+        reg.pending_promotion_count(),
+        1,
+        "only handle 1's promotion is left"
+    );
+    assert_eq!(reg.pending_promotions[0].handle, 1);
+    assert_eq!(reg.release_refs_batch(&[1]), vec![1]);
+    assert_eq!(reg.pending_promotion_count(), 0);
+    // A released handle cannot be queued again.
+    assert!(reg
+        .queue_residency_change(
+            0,
+            0,
+            Vec::new(),
+            1,
+            0,
+            TextureColorSpace::Srgb,
+            String::new()
+        )
+        .is_none());
+}
+
+/// M39 TXS-UP-004 — one promotion flush takes changes in queue order while
+/// their staged bytes fit the bound, and always at least one.
+#[test]
+fn promotion_flush_takes_in_order_within_the_byte_bound() {
+    let mut reg = make_registry_for_overflow_test(64, 0);
+    for _ in 0..4 {
+        reg.textures.push(TextureEntry {
+            texture: None,
+            pending_destroy: VecDeque::new(),
+            ref_count: 1,
+            view_kind: TextureViewKind::D2,
+            has_alpha: false,
+            avg_rgb: None,
+            residency: Some(residency::Residency::at_floor(10, 2, 0)),
+        });
+    }
+    for (handle, bytes) in [(0, 300u64), (1, 300), (2, 500), (3, 10)] {
+        reg.queue_residency_change(
+            handle,
+            0,
+            Vec::new(),
+            bytes,
+            0,
+            TextureColorSpace::Srgb,
+            String::new(),
+        );
+    }
+    assert_eq!(
+        upload::promotion_take_count(&reg.pending_promotions, 600),
+        2
+    );
+    assert_eq!(
+        upload::promotion_take_count(&reg.pending_promotions, 100),
+        1,
+        "first always goes"
+    );
+    assert_eq!(
+        upload::promotion_take_count(&reg.pending_promotions, 2_000),
+        4
+    );
+    assert_eq!(upload::promotion_take_count(&[], 2_000), 0);
 }

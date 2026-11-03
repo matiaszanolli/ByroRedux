@@ -59,6 +59,12 @@ pub const TERRAIN_LOD_SOFTEN_SETTING_ID: &str = "render.terrain_lod_soften";
 /// lower resolution than the tiled splat layers, so the join reads as a step
 /// in detail unless the near terrain's detail gives way first.
 pub const TERRAIN_LOD_SOFTEN_DEFAULT: f32 = 0.5;
+/// M39 — texture streaming switch (docs/prd/texture-streaming.md
+/// TXS-RES-008). Off restores the full-chain upload, the same-binary control
+/// of every streaming A/B. Phase 1: on means the forced floor-then-full
+/// sequence (each texture uploads its floor, then promotes to the full
+/// chain); the shipped presets leave it at the default (decision Q5).
+pub const TEXTURE_STREAMING_SETTING_ID: &str = "render.texture_streaming";
 
 /// Register settings owned by the overlay itself. The binary calls this while
 /// assembling the universal [`SettingsRegistry`]; renderer, audio, input, and
@@ -189,5 +195,13 @@ pub fn register_builtin_settings(registry: &mut SettingsRegistry) -> Result<(), 
         1.0,
         0.05,
         "",
+    ))?;
+    registry.register(SettingEntry::toggle(
+        TEXTURE_STREAMING_SETTING_ID,
+        "Rendering",
+        "Texture streaming",
+        "Upload each texture's low-resolution mip levels first and add the \
+         finer ones afterwards. Off uploads every level at once.",
+        false,
     ))
 }

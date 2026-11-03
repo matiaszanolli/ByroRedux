@@ -660,6 +660,14 @@ impl App {
             ));
             // #6197 — terrain parallax settings onto every live tile.
             push_terrain_parallax(&self.world, ctx);
+            // M39 — the texture streaming switch, then this frame's queued
+            // promotions (before `draw_frame`, so their descriptor writes
+            // reach this frame's slot at `begin_frame`).
+            ctx.update_texture_streaming(crate::setting_bool(
+                &self.world,
+                byroredux_debug_ui::TEXTURE_STREAMING_SETTING_ID,
+                false,
+            ));
             // Terrain distance softening: the camera distance at which the
             // full-detail terrain is fully softened toward the LOD look.
             push_terrain_lod_soften(&self.world, self.streaming.as_ref(), ctx);

@@ -6,6 +6,7 @@
 //! synchronous twin of `enqueue_dds*` — same decode, same slot
 //! allocation, a different point in the frame.
 
+use super::residency::{self, Residency};
 use super::*;
 
 impl TextureRegistry {
@@ -128,6 +129,7 @@ impl TextureRegistry {
             view_kind: TextureViewKind::D2,
             has_alpha: crate::vulkan::dds::format_has_alpha(meta.format),
             avg_rgb: None,
+            residency: None,
         });
         self.path_map.insert(normalized, handle);
         // #1542: for a to-be-expanded 16/24-bpp source the raw bytes aren't
@@ -320,6 +322,7 @@ impl TextureRegistry {
             // HashMap's "absent handle reads false/None" contract.
             has_alpha: false,
             avg_rgb: None,
+            residency: None,
         });
         self.path_map.insert(normalized, handle);
         self.pending_dds_uploads.push(PendingDdsUpload {
@@ -330,6 +333,7 @@ impl TextureRegistry {
             view_kind,
             color_space,
             path: path.to_string(),
+            change: None,
         });
         Ok(EnqueueOutcome::Reserved(handle))
     }
@@ -340,6 +344,148 @@ impl TextureRegistry {
     /// `flush_pending_uploads`.
     pub fn pending_dds_upload_count(&self) -> usize {
         self.pending_dds_uploads.len()
+    }
+
+    /// M39 — the `render.texture_streaming` switch (TXS-RES-008). Takes
+    /// effect on the next first upload; textures already resident keep
+    /// their state.
+    pub fn set_streaming(&mut self, on: bool) {
+        self.streaming = on;
+    }
+
+    /// M39 — plan a promotion or demotion of `handle` that makes `target`
+    /// its first resident level, and queue it. `dds_bytes` (the whole file)
+    /// is the source of any levels it uploads, `staged_bytes` what that
+    /// upload stages. `None` when the handle is not a live streamable
+    /// texture or nothing would move.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn queue_residency_change(
+        &mut self,
+        handle: TextureHandle,
+        target: u32,
+        dds_bytes: Vec<u8>,
+        staged_bytes: vk::DeviceSize,
+        clamp_mode: u8,
+        color_space: TextureColorSpace,
+        path: String,
+    ) -> Option<ResidencyChange> {
+        let entry = self.textures.get(handle as usize)?;
+        if entry.ref_count == 0 {
+            return None;
+        }
+        let change = entry.residency?.plan(target)?;
+        self.pending_promotions.push(PendingDdsUpload {
+            handle,
+            dds_bytes,
+            staged_bytes: if change.is_promotion() {
+                staged_bytes
+            } else {
+                0
+            },
+            clamp_mode,
+            view_kind: TextureViewKind::D2,
+            color_space,
+            path,
+            change: Some(change),
+        });
+        Some(change)
+    }
+
+    /// M39 — queued promotions and demotions, for telemetry.
+    pub fn pending_promotion_count(&self) -> usize {
+        self.pending_promotions.len()
+    }
+
+    /// M39 — refresh what `tex.residency` prints (TXS-TEL-001). One pass
+    /// over the slots; called on the renderer's throttled telemetry sample.
+    pub fn fill_residency_telemetry(
+        &mut self,
+        out: &mut byroredux_core::ecs::TextureResidencyTelemetry,
+    ) {
+        let mut t = byroredux_core::ecs::TextureResidencyTelemetry {
+            streaming: self.streaming,
+            queued_changes: self.pending_promotions.len() as u64,
+            per_handle: Vec::with_capacity(self.textures.len()),
+            ..Default::default()
+        };
+        let add = |slot: &mut (u64, u64), bytes: u64| {
+            slot.0 += 1;
+            slot.1 += bytes;
+        };
+        for entry in &self.textures {
+            t.retiring_bytes += entry
+                .pending_destroy
+                .iter()
+                .map(|(_, texture)| texture.allocation_bytes())
+                .sum::<u64>();
+            let Some(texture) = entry.texture.as_ref() else {
+                if entry.ref_count > 0 {
+                    t.reserved += 1;
+                }
+                t.per_handle.push(None);
+                continue;
+            };
+            let bytes = texture.allocation_bytes();
+            t.resident_bytes += bytes;
+            match entry.residency {
+                Some(r) => {
+                    t.floor_bytes += r.floor_bytes;
+                    let state = if r.first_resident == 0 {
+                        &mut t.full
+                    } else if r.first_resident == r.floor_first {
+                        &mut t.floor
+                    } else {
+                        &mut t.partial
+                    };
+                    add(state, bytes);
+                    debug_assert_eq!(r.resident_levels(), r.mip_count - r.first_resident);
+                    t.per_handle
+                        .push(Some([r.first_resident, r.floor_first, r.mip_count]));
+                }
+                None => {
+                    let class = if texture.view_kind == TextureViewKind::Cube {
+                        &mut t.whole_cube
+                    } else if texture.level_count() <= 1 {
+                        &mut t.whole_single_level
+                    } else {
+                        &mut t.whole_chain
+                    };
+                    add(class, bytes);
+                    t.per_handle.push(None);
+                }
+            }
+        }
+        self.peak_resident_bytes = self.peak_resident_bytes.max(t.resident_bytes);
+        t.peak_resident_bytes = self.peak_resident_bytes;
+        *out = t;
+    }
+
+    /// M39 — flush queued promotions and demotions in queue order, staging
+    /// at most `max_bytes` (at least one change per call, as one oversized
+    /// upload cannot be split), through the same sub-batch path as first
+    /// uploads (TXS-UP-004). Called once per frame.
+    pub fn flush_pending_promotions(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        queue: &std::sync::Mutex<vk::Queue>,
+        command_pool: vk::CommandPool,
+        transfer_fence: &std::sync::Mutex<vk::Fence>,
+        max_bytes: vk::DeviceSize,
+    ) -> Result<usize> {
+        let take = promotion_take_count(&self.pending_promotions, max_bytes);
+        if take == 0 {
+            return Ok(0);
+        }
+        let batch: Vec<PendingDdsUpload> = self.pending_promotions.drain(..take).collect();
+        self.flush_upload_batch(
+            device,
+            allocator,
+            queue,
+            command_pool,
+            transfer_fence,
+            batch,
+        )
     }
 
     /// Total bytes the queued DDS uploads will stage — the figure the cell
@@ -453,7 +599,7 @@ impl TextureRegistry {
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
         transfer_fence: &std::sync::Mutex<vk::Fence>,
-        pending: Vec<PendingDdsUpload>,
+        mut pending: Vec<PendingDdsUpload>,
     ) -> Result<usize> {
         let count = pending.len();
 
@@ -462,7 +608,13 @@ impl TextureRegistry {
         struct StagedUpload {
             handle: TextureHandle,
             texture: crate::vulkan::texture::Texture,
-            staging: crate::vulkan::buffer::StagingGuard,
+            staging: Option<crate::vulkan::buffer::StagingGuard>,
+            /// M39 — `Some` when this replaces a live streamable image.
+            change: Option<ResidencyChange>,
+            /// M39 — the residency a floor-first upload installs, with the
+            /// bytes its forced promotion to the full chain will stage and
+            /// the index of its source in `pending`.
+            floor: Option<(Residency, vk::DeviceSize, usize)>,
         }
         let mut staged: Vec<StagedUpload> = Vec::with_capacity(count);
 
@@ -475,7 +627,7 @@ impl TextureRegistry {
             command_pool,
             transfer_fence,
             |cmd| {
-                for upload in &pending {
+                for (index, upload) in pending.iter().enumerate() {
                     // #4879 — the release path purges queued uploads for
                     // freed handles, but a slot whose last reference is
                     // already gone must never be installed: `ref_count == 0`
@@ -525,29 +677,96 @@ impl TextureRegistry {
                     if let Some(entry) = self.textures.get_mut(upload.handle as usize) {
                         entry.has_alpha = crate::vulkan::dds::format_has_alpha(meta.format);
                     }
+                    let pixel_data = crate::vulkan::dds::upload_pixels(&meta, &upload.dds_bytes);
+                    let sampler = self.samplers[upload.clamp_mode as usize];
+
+                    // M39 — a promotion or demotion of a live streamable
+                    // texture: only if it still holds the range the change
+                    // was planned against (a later change or a release may
+                    // have moved it since).
+                    if let Some(change) = upload.change {
+                        let old_image =
+                            self.textures.get(upload.handle as usize).and_then(|entry| {
+                                let current = entry.residency?;
+                                let texture = entry.texture.as_ref()?;
+                                (current.first_resident == change.old_first)
+                                    .then_some(texture.image)
+                            });
+                        let Some(old_image) = old_image else {
+                            log::debug!(
+                                "Skipping stale residency change for '{}' ({change:?})",
+                                upload.path,
+                            );
+                            continue;
+                        };
+                        let levels =
+                            crate::vulkan::dds::level_byte_range(&meta, change.upload_levels());
+                        match crate::vulkan::texture::Texture::record_dds_residency_change(
+                            device,
+                            allocator,
+                            cmd,
+                            &meta,
+                            change,
+                            old_image,
+                            &pixel_data[levels],
+                            sampler,
+                            self.staging_pool.as_mut(),
+                        ) {
+                            Ok((texture, staging)) => staged.push(StagedUpload {
+                                handle: upload.handle,
+                                texture,
+                                staging,
+                                change: Some(change),
+                                floor: None,
+                            }),
+                            Err(e) => log::warn!(
+                                "Failed to record residency change for '{}': {} — dropping it",
+                                upload.path,
+                                e,
+                            ),
+                        }
+                        continue;
+                    }
+
+                    // M39 — with streaming on, a streamable 2D texture's
+                    // first upload installs only its floor (TXS-RES-001).
+                    // 16/24-bpp sources expanded on the CPU stay whole.
+                    let floor_first = (self.streaming
+                        && upload.view_kind == TextureViewKind::D2
+                        && !meta.is_cubemap
+                        && meta.array_layers == 1
+                        && meta.expand.is_none())
+                    .then(|| residency::floor_first_level(meta.width, meta.height, meta.mip_count))
+                    .flatten();
+                    let first_mip = floor_first.unwrap_or(0);
+                    let levels =
+                        crate::vulkan::dds::level_byte_range(&meta, first_mip..meta.mip_count);
                     // #1542: a 16/24-bpp `DDPF_RGB` source is CPU-expanded to
                     // R8G8B8A8. Its raw bytes aren't RGBA8 yet, so skip
                     // `average_rgb` for it (it would misread the packed
                     // pixels) — these are UI/font atlases, never diffuse
-                    // albedo anyway.
+                    // albedo anyway. The average reads the smallest level,
+                    // which a floor holds (TXS-RES-006).
                     if upload.color_space == TextureColorSpace::Srgb && meta.expand.is_none() {
-                        if let Some(avg) = crate::vulkan::dds::average_rgb(&meta, &upload.dds_bytes)
-                        {
+                        if let Some(avg) = crate::vulkan::dds::average_rgb_levels(
+                            &meta,
+                            &pixel_data[levels.clone()],
+                            first_mip,
+                        ) {
                             if let Some(entry) = self.textures.get_mut(upload.handle as usize) {
                                 entry.avg_rgb = Some(avg);
                             }
                         }
                     }
-                    let pixel_data = crate::vulkan::dds::upload_pixels(&meta, &upload.dds_bytes);
-                    let sampler = self.samplers[upload.clamp_mode as usize];
                     let (texture, staging) =
                         match crate::vulkan::texture::Texture::record_dds_upload(
                             device,
                             allocator,
                             cmd,
                             &meta,
-                            0,
-                            pixel_data.as_ref(),
+                            first_mip,
+                            floor_first.is_some(),
+                            &pixel_data[levels],
                             sampler,
                             self.staging_pool.as_mut(),
                         ) {
@@ -561,10 +780,28 @@ impl TextureRegistry {
                                 continue;
                             }
                         };
+                    let floor = floor_first.map(|floor_first| {
+                        let high = crate::vulkan::dds::level_byte_range(&meta, 0..floor_first);
+                        let floor = crate::vulkan::dds::level_byte_range(
+                            &meta,
+                            floor_first..meta.mip_count,
+                        );
+                        (
+                            Residency::at_floor(
+                                meta.mip_count,
+                                floor_first,
+                                (floor.end - floor.start) as u64,
+                            ),
+                            (high.end - high.start) as vk::DeviceSize,
+                            index,
+                        )
+                    });
                     staged.push(StagedUpload {
                         handle: upload.handle,
                         texture,
-                        staging,
+                        staging: Some(staging),
+                        change: None,
+                        floor,
                     });
                 }
                 Ok(())
@@ -595,7 +832,9 @@ impl TextureRegistry {
                 // textures so their VkImage / staging buffer don't leak.
                 for mut s in staged {
                     s.texture.destroy(device, allocator);
-                    s.staging.destroy();
+                    if let Some(staging) = s.staging {
+                        staging.destroy();
+                    }
                 }
             }
             return Err(e);
@@ -604,11 +843,15 @@ impl TextureRegistry {
         // Install textures + write real descriptors. Replaces the
         // fallback redirect installed at enqueue time.
         let staged_count = staged.len();
+        let current_frame_id = self.current_frame_id;
+        let mut forced_promotions = Vec::new();
         for s in staged {
             let StagedUpload {
                 handle,
                 texture,
                 staging,
+                change,
+                floor,
             } = s;
 
             // Write descriptor for the real image view + sampler.
@@ -623,9 +866,24 @@ impl TextureRegistry {
             }
             self.apply_descriptor_write(device, handle, binding, image_view, sampler);
 
-            // Move the texture into its reserved slot.
+            // Move the texture into its reserved slot. A residency change
+            // replaces the live image, which retires through
+            // `pending_destroy` like any replaced image (TXS-RES-004).
             if let Some(entry) = self.textures.get_mut(handle as usize) {
-                entry.texture = Some(texture);
+                if let Some(change) = change {
+                    if let Some(residency) = entry.residency.as_mut() {
+                        residency.apply(change);
+                    }
+                    if let Some(old) = entry.texture.replace(texture) {
+                        entry.pending_destroy.push_back((current_frame_id, old));
+                    }
+                } else {
+                    entry.texture = Some(texture);
+                    if let Some((residency, high_bytes, source)) = floor {
+                        entry.residency = Some(residency);
+                        forced_promotions.push((handle, high_bytes, source));
+                    }
+                }
                 if pin_as_cube_fallback {
                     entry.ref_count = u32::MAX;
                 }
@@ -637,16 +895,55 @@ impl TextureRegistry {
 
             // Release staging back to the pool (or destroy if no
             // pool). The fence-wait above guarantees the GPU is done.
-            if let Some(pool) = self.staging_pool.as_mut() {
-                staging.release_to(pool);
-            } else {
-                staging.destroy();
+            if let Some(staging) = staging {
+                if let Some(pool) = self.staging_pool.as_mut() {
+                    staging.release_to(pool);
+                } else {
+                    staging.destroy();
+                }
             }
+        }
+
+        // M39 Phase 1 — the forced floor-then-full sequence: every floor
+        // just installed queues its promotion to the full chain, from the
+        // file bytes already in hand (no source re-read exists before the
+        // wanted-mip signal does).
+        for (handle, high_bytes, source) in forced_promotions {
+            let upload = &mut pending[source];
+            let dds_bytes = std::mem::take(&mut upload.dds_bytes);
+            let path = std::mem::take(&mut upload.path);
+            self.queue_residency_change(
+                handle,
+                0,
+                dds_bytes,
+                high_bytes,
+                upload.clamp_mode,
+                upload.color_space,
+                path,
+            );
         }
 
         log::debug!("Flushed DDS upload sub-batch: {staged_count} of {count} staged");
         Ok(staged_count)
     }
+}
+
+/// How many queued promotions one flush takes: in queue order while their
+/// staged bytes fit `max_bytes`, and always the first (it cannot be split).
+pub(super) fn promotion_take_count(
+    pending: &[PendingDdsUpload],
+    max_bytes: vk::DeviceSize,
+) -> usize {
+    let mut bytes: vk::DeviceSize = 0;
+    let mut take = 0;
+    for upload in pending {
+        if take > 0 && bytes.saturating_add(upload.staged_bytes) > max_bytes {
+            break;
+        }
+        bytes = bytes.saturating_add(upload.staged_bytes);
+        take += 1;
+    }
+    take
 }
 
 /// Bytes each queued upload stages, in queue order — the sizes

@@ -150,6 +150,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(TexMissingCommand);
     registry.register(TexLoadedCommand);
     registry.register(TexDumpCommand);
+    registry.register(TexResidencyCommand);
     registry.register(MeshInfoCommand);
     registry.register(MeshCacheCommand);
     registry.register(CtxScratchCommand);

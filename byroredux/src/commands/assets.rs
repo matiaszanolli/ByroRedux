@@ -225,6 +225,77 @@ mod tex_loaded_tests {
     }
 }
 
+/// M39 — texture residency (docs/prd/texture-streaming.md TXS-TEL-001):
+/// counts and bytes per state and per **whole** class, resident / peak /
+/// retiring / floor bytes, queued changes; with a bindless handle argument,
+/// that texture's resident range. Wanted mip, budget, deficits and declines
+/// arrive with M39 Phases 2–3.
+pub(crate) struct TexResidencyCommand;
+impl ConsoleCommand for TexResidencyCommand {
+    fn name(&self) -> &str {
+        "tex.residency"
+    }
+    fn description(&self) -> &str {
+        "Texture streaming residency: states, bytes, queued promotions (tex.residency [handle])"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let Some(t) = world.try_resource::<byroredux_core::ecs::TextureResidencyTelemetry>() else {
+            return CommandOutput::line("TextureResidencyTelemetry resource not present");
+        };
+        let mib = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
+        let arg = args.trim();
+        if !arg.is_empty() {
+            let Ok(handle) = arg.trim_start_matches('#').parse::<usize>() else {
+                return CommandOutput::error(format!(
+                    "tex.residency: expected a bindless handle number, got '{arg}'"
+                ));
+            };
+            return match t.per_handle.get(handle) {
+                Some(Some([first, floor, mips])) => {
+                    let state = if *first == 0 {
+                        "full"
+                    } else if first == floor {
+                        "floor"
+                    } else {
+                        "partial"
+                    };
+                    CommandOutput::line(format!(
+                        "handle {handle}: {state}, resident levels [{first}, {mips}) of {mips}, floor from level {floor}"
+                    ))
+                }
+                Some(None) => CommandOutput::line(format!(
+                    "handle {handle}: not streamable (whole, reserved, or released)"
+                )),
+                None => CommandOutput::error(format!(
+                    "tex.residency: handle {handle} is past the {} slots sampled",
+                    t.per_handle.len()
+                )),
+            };
+        }
+        let row = |name: &str, (count, bytes): (u64, u64)| {
+            format!("  {name:<20} {count:>7}  {:>9.1} MiB", mib(bytes))
+        };
+        CommandOutput::lines(vec![
+            format!("streaming: {}", if t.streaming { "on" } else { "off" }),
+            format!(
+                "resident {:.1} MiB (peak {:.1}), retiring {:.1} MiB, floors {:.1} MiB, queued changes {}, reserved {}",
+                mib(t.resident_bytes),
+                mib(t.peak_resident_bytes),
+                mib(t.retiring_bytes),
+                mib(t.floor_bytes),
+                t.queued_changes,
+                t.reserved,
+            ),
+            row("floor", t.floor),
+            row("partial", t.partial),
+            row("full", t.full),
+            row("whole: cubemap", t.whole_cube),
+            row("whole: single level", t.whole_single_level),
+            row("whole: chain", t.whole_chain),
+        ])
+    }
+}
+
 pub(crate) struct TexDumpCommand;
 impl ConsoleCommand for TexDumpCommand {
     fn name(&self) -> &str {
