@@ -165,6 +165,7 @@ impl Texture {
                 allocator,
                 cmd,
                 meta,
+                0,
                 pixel_data,
                 sampler,
                 staging_pool.as_deref_mut(),
@@ -209,34 +210,59 @@ impl Texture {
     /// the recorded `cmd_copy_buffer_to_image`, so dropping it before
     /// the GPU has finished executing the cmd would produce a
     /// use-after-free. See #881 / CELL-PERF-03.
+    ///
+    /// `first_mip` selects the levels `[first_mip, meta.mip_count)` of the
+    /// chain `meta` describes (M39, TXS-UP-003): `pixel_data` holds exactly
+    /// those levels, level `first_mip` first, and the image is created with
+    /// that many levels at level `first_mip`'s extent, so its level 0 is the
+    /// chain's `first_mip`. Every caller that uploads a whole chain passes 0.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_dds_upload(
         device: &ash::Device,
         allocator: &SharedAllocator,
         cmd: vk::CommandBuffer,
         meta: &super::dds::DdsMetadata,
+        first_mip: u32,
         pixel_data: &[u8],
         sampler: vk::Sampler,
         staging_pool: Option<&mut StagingPool>,
     ) -> Result<(Self, StagingGuard)> {
         use super::dds;
 
-        let total_size = dds::total_data_size(meta);
+        ensure!(
+            first_mip < meta.mip_count,
+            "DDS upload first level {first_mip} is outside the {}-level chain",
+            meta.mip_count,
+        );
+        let level_count = meta.mip_count - first_mip;
+        // Per-level copy regions for `[first_mip, mip_count)`. Their walk is
+        // the one price of the upload: the payload check, the staging
+        // request and the staging-capacity check below all use its total,
+        // so the region list and its budget cannot disagree (#4512,
+        // TXS-UP-003).
+        let (regions, total_size) = build_dds_copy_regions(meta, first_mip);
         // #4511 — a returned error, not a release `assert!`: the input is
         // mod-authorable, and a truncated-but-plausible DDS must fail the
         // upload (checkerboard fallback / queued-upload drop) instead of
         // panicking the engine.
         ensure!(
             pixel_data.len() as u64 >= total_size,
-            "DDS pixel data too small: {} bytes for {}x{} {:?} {} mips ({} expected)",
+            "DDS pixel data too small: {} bytes for {}x{} {:?} {} mips from level {} ({} expected)",
             pixel_data.len(),
             meta.width,
             meta.height,
             meta.format,
             meta.mip_count,
+            first_mip,
             total_size,
         );
 
         let image_size = total_size as vk::DeviceSize;
+        let image_extent = vk::Extent3D {
+            width: dds::mip_dimension(meta.width, first_mip),
+            height: dds::mip_dimension(meta.height, first_mip),
+            depth: 1,
+        };
 
         // 1. Staging buffer — from pool (reuse) or fresh. See #239.
         // #2164 / L-5 — the fresh path unwinds its own create/allocate/bind
@@ -249,6 +275,10 @@ impl Texture {
         } else {
             StagingGuard::create(device, allocator, image_size, "dds_texture_staging")?
         };
+        // TXS-UP-002 — a release-mode error, before anything is recorded:
+        // regions that address past the staging buffer would make the copy
+        // read beyond it (the #4512 overrun class).
+        check_regions_fit_staging(total_size, staging.capacity())?;
 
         staging.mapped_slice_mut()?[..total_size as usize]
             .copy_from_slice(&pixel_data[..total_size as usize]);
@@ -263,12 +293,8 @@ impl Texture {
             .flags(image_flags)
             .image_type(vk::ImageType::TYPE_2D)
             .format(meta.format)
-            .extent(vk::Extent3D {
-                width: meta.width,
-                height: meta.height,
-                depth: 1,
-            })
-            .mip_levels(meta.mip_count)
+            .extent(image_extent)
+            .mip_levels(level_count)
             .array_layers(meta.array_layers)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::OPTIMAL)
@@ -353,7 +379,7 @@ impl Texture {
             })
             .format(meta.format)
             .subresource_range(color_subresource_mips_layers(
-                meta.mip_count,
+                level_count,
                 meta.array_layers,
             ));
         let image_view = match unsafe {
@@ -373,25 +399,11 @@ impl Texture {
             }
         };
 
-        // Build per-mip copy regions. The walk returns the exact byte
-        // total the regions address — the same walk `dds::total_data_size`
-        // prices the staging budget with, asserted here so a drift between
-        // the region list and its budget can never land again (#4512).
-        let (regions, regions_total) = build_dds_copy_regions(meta);
-        debug_assert_eq!(
-            regions_total, total_size,
-            "per-mip region walk and staging budget disagree",
-        );
-        debug_assert!(
-            regions_total <= image_size,
-            "copy regions ({regions_total} B) exceed the staging buffer ({image_size} B)",
-        );
-
         // 3-5. Record layout transitions + copy into the provided cmd.
         // Per-image barriers (not global) so multiple uploads recorded
         // into the same cmd don't serialise on each other unnecessarily.
         let barrier_to_dst =
-            image_barrier_undef_to_transfer_dst_layers(image, meta.mip_count, meta.array_layers);
+            image_barrier_undef_to_transfer_dst_layers(image, level_count, meta.array_layers);
 
         // NONE as srcStageMask: UNDEFINED → TRANSFER_DST_OPTIMAL has no
         // prior writes to expose; NONE is the Vulkan 1.3 idiom
@@ -399,7 +411,7 @@ impl Texture {
         unsafe {
             // SAFETY: `cmd` is a live command buffer in the recording state;
             // `image` and `staging.buffer` are device-owned and live; the
-            // barrier's subresource range covers all `meta.mip_count` mips of
+            // barrier's subresource range covers all `level_count` mips of
             // `image`, and every `regions` entry's mip/extent/offset lies
             // within `image`'s extent while `buffer_offset + mip_bytes` stays
             // within the staging buffer's `image_size`.
@@ -422,16 +434,13 @@ impl Texture {
             );
         }
 
-        let barrier_to_read = image_barrier_transfer_dst_to_shader_read_layers(
-            image,
-            meta.mip_count,
-            meta.array_layers,
-        );
+        let barrier_to_read =
+            image_barrier_transfer_dst_to_shader_read_layers(image, level_count, meta.array_layers);
 
         unsafe {
             // SAFETY: `cmd` is still recording; `image` is device-owned and
             // live; `barrier_to_read`'s subresource range covers all
-            // `meta.mip_count` mips of `image` and transitions the layout the
+            // `level_count` mips of `image` and transitions the layout the
             // copy above left them in (TRANSFER_DST_OPTIMAL → shader-read).
             device.cmd_pipeline_barrier(
                 cmd,
@@ -446,10 +455,10 @@ impl Texture {
 
         log::info!(
             "DDS texture recorded: {}x{}, {:?}, {} mips, {:?}",
-            meta.width,
-            meta.height,
+            image_extent.width,
+            image_extent.height,
             meta.format,
-            meta.mip_count,
+            level_count,
             view_kind,
         );
 
@@ -462,11 +471,7 @@ impl Texture {
                 allocation: Some(image_alloc),
                 device: device.clone(),
                 allocator: Some(allocator.clone()),
-                creation_extent: vk::Extent3D {
-                    width: meta.width,
-                    height: meta.height,
-                    depth: 1,
-                },
+                creation_extent: image_extent,
                 rgba_updateable: meta.format == vk::Format::R8G8B8A8_SRGB
                     && meta.mip_count == 1 && meta.array_layers == 1 && !meta.is_cubemap,
             },
@@ -587,13 +592,17 @@ impl Drop for Texture {
 /// `dds::total_data_size` cannot disagree on odd sub-block final mips
 /// (#4512). Byte sizes use `dds::mip_size`, so `buffer_row_length`/`
 /// buffer_image_height` stay 0 (tightly packed).
-fn build_dds_copy_regions(meta: &super::dds::DdsMetadata) -> (Vec<vk::BufferImageCopy>, u64) {
+fn build_dds_copy_regions(
+    meta: &super::dds::DdsMetadata,
+    first_mip: u32,
+) -> (Vec<vk::BufferImageCopy>, u64) {
     use super::dds;
 
-    let mut regions = Vec::with_capacity((meta.mip_count * meta.array_layers) as usize);
+    let levels = meta.mip_count.saturating_sub(first_mip);
+    let mut regions = Vec::with_capacity((levels * meta.array_layers) as usize);
     let mut buffer_offset: u64 = 0;
     for layer in 0..meta.array_layers {
-        for mip in 0..meta.mip_count {
+        for mip in first_mip..meta.mip_count {
             let mip_bytes = dds::mip_size(
                 meta.width,
                 meta.height,
@@ -607,7 +616,8 @@ fn build_dds_copy_regions(meta: &super::dds::DdsMetadata) -> (Vec<vk::BufferImag
                 buffer_image_height: 0,
                 image_subresource: vk::ImageSubresourceLayers {
                     aspect_mask: vk::ImageAspectFlags::COLOR,
-                    mip_level: mip,
+                    // The image's level 0 is the chain's `first_mip`.
+                    mip_level: mip - first_mip,
                     base_array_layer: layer,
                     layer_count: 1,
                 },
@@ -622,6 +632,18 @@ fn build_dds_copy_regions(meta: &super::dds::DdsMetadata) -> (Vec<vk::BufferImag
         }
     }
     (regions, buffer_offset)
+}
+
+/// TXS-UP-002 — the copy regions of one upload must address no byte past
+/// the staging buffer they read. A returned error in every build: the
+/// region walk and the staging request share one total, so a failure here
+/// means the pool handed back a buffer smaller than requested.
+fn check_regions_fit_staging(regions_total: u64, buffer_bytes: vk::DeviceSize) -> Result<()> {
+    ensure!(
+        regions_total <= buffer_bytes,
+        "DDS copy regions address {regions_total} B but the staging buffer holds {buffer_bytes} B",
+    );
+    Ok(())
 }
 
 /// Validate an RGBA upload (#4515): the pixel payload must be exactly `width * height * 4` bytes
@@ -1371,7 +1393,7 @@ mod dds_upload_guard_tests {
             &[(344u32, 1375u32, 11u32), (173u32, 2970u32, 11u32), (173u32, 2970u32, 12u32)]
         {
             let m = meta(w, h, mips, 1, true);
-            let (regions, total) = build_dds_copy_regions(&m);
+            let (regions, total) = build_dds_copy_regions(&m, 0);
             assert_eq!(regions.len() as u32, mips, "{w}x{h} @{mips}");
             assert_eq!(
                 total,
@@ -1402,10 +1424,80 @@ mod dds_upload_guard_tests {
         );
     }
 
+    /// M39 A1 / TXS-UP-003 — a level range `[first, mip_count)` gets one
+    /// region per level, numbered from the image's level 0, packed from
+    /// offset 0, and its total equals the bytes those levels hold in the
+    /// full chain, so the staging request the walk prices is exact.
+    #[test]
+    fn copy_regions_for_mip_range_match_staging() {
+        for &(w, h, mips, compressed) in &[
+            (1024u32, 1024u32, 11u32, true),
+            (2048, 512, 12, true),
+            (173, 2970, 12, true),
+            (512, 512, 10, false),
+        ] {
+            let m = meta(w, h, mips, 1, compressed);
+            let block = if compressed { 8 } else { 4 };
+            let (_, full_total) = build_dds_copy_regions(&m, 0);
+            for first in 0..mips {
+                let (regions, total) = build_dds_copy_regions(&m, first);
+                assert_eq!(regions.len() as u32, mips - first, "{w}x{h} from {first}");
+                let mut offset = 0u64;
+                for (i, region) in regions.iter().enumerate() {
+                    let chain_mip = first + i as u32;
+                    assert_eq!(region.image_subresource.mip_level, i as u32);
+                    assert_eq!(
+                        region.buffer_offset, offset,
+                        "{w}x{h} from {first}, region {i}"
+                    );
+                    assert_eq!(region.image_extent.width, dds::mip_dimension(w, chain_mip));
+                    assert_eq!(region.image_extent.height, dds::mip_dimension(h, chain_mip));
+                    offset += dds::mip_size(w, h, chain_mip, block, compressed);
+                }
+                assert_eq!(total, offset, "{w}x{h} from {first}: walk total");
+                let skipped: u64 = (0..first)
+                    .map(|mip| dds::mip_size(w, h, mip, block, compressed))
+                    .sum();
+                assert_eq!(
+                    total + skipped,
+                    full_total,
+                    "{w}x{h} from {first}: range + skipped"
+                );
+            }
+        }
+    }
+
+    /// M39 A1 / TXS-UP-002 — regions addressing past the staging buffer are
+    /// a returned error in every build (not a `debug_assert!`), and the
+    /// check runs before `record_dds_upload` records its first command.
+    #[test]
+    fn staging_overrun_is_a_release_error() {
+        assert!(check_regions_fit_staging(4096, 4096).is_ok());
+        assert!(check_regions_fit_staging(4088, 4096).is_ok());
+        let err = check_regions_fit_staging(4104, 4096).expect_err("8 B over must fail");
+        assert!(err.to_string().contains("staging buffer holds"), "{err}");
+
+        let src = crate::source_scan::production_text(include_str!("texture.rs"));
+        let upload_at = src
+            .find("fn record_dds_upload(")
+            .expect("record_dds_upload");
+        let upload = &src[upload_at..];
+        let check = upload
+            .find("check_regions_fit_staging(total_size, staging.capacity())?")
+            .expect("record_dds_upload checks the staging capacity");
+        let first_record = upload
+            .find("device.cmd_pipeline_barrier(")
+            .expect("first barrier");
+        assert!(
+            check < first_record,
+            "the capacity check must precede recording"
+        );
+    }
+
     #[test]
     fn cubemap_regions_cover_all_six_faces() {
         let m = meta(4, 4, 1, 6, true);
-        let (regions, total) = build_dds_copy_regions(&m);
+        let (regions, total) = build_dds_copy_regions(&m, 0);
         assert_eq!(regions.len(), 6);
         assert_eq!(total, 48); // 6 faces × one 4×4 BC1 block (8 B)
         assert_eq!(total, dds::total_data_size(&m));

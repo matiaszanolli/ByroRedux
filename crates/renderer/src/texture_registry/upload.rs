@@ -546,6 +546,7 @@ impl TextureRegistry {
                             allocator,
                             cmd,
                             &meta,
+                            0,
                             pixel_data.as_ref(),
                             sampler,
                             self.staging_pool.as_mut(),

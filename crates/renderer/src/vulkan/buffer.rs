@@ -548,6 +548,11 @@ impl StagingGuard {
         self.cleanup();
     }
 
+    /// The `VkBuffer`'s create size, the most bytes a copy may read from it.
+    pub fn capacity(&self) -> vk::DeviceSize {
+        self.capacity
+    }
+
     /// Host-visible bytes of the guarded allocation.
     ///
     /// Exists so upload paths can fill staging *through* the guard rather
