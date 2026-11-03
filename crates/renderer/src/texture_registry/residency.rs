@@ -30,6 +30,32 @@ pub(crate) fn floor_first_level(width: u32, height: u32, mip_count: u32) -> Opti
     (level > 0).then_some(level)
 }
 
+/// M39 TXS-WANT-002 — which instances set a texture's wanted mip: one drawn
+/// by raster, only ones in the TLAS (seen by reflections, GI or shadows),
+/// or none. The order is the promotion priority (TXS-WANT-004).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum WantedCase {
+    Drawn,
+    TlasOnly,
+    Neither,
+}
+
+/// M39 — the finest level a texture is wanted at this frame, why, and the
+/// distance to its nearest wanting instance (the queue's last tie-break).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WantedMip {
+    pub level: u32,
+    pub case: WantedCase,
+    pub distance: f32,
+}
+
+/// M39 TXS-WANT-005 — a texture is demoted only after its wanted mip has
+/// been coarser than its resident range for this many consecutive frames,
+/// and no sooner than this many frames after its last promotion. A starting
+/// value (2 s at 60 fps); Phase 2 sets it from the churn measured on the A6
+/// and A7 benches (docs/engine/texture-streaming.md §6.3).
+pub(crate) const DEMOTE_AFTER_FRAMES: u64 = 120;
+
 /// The resident range `[first_resident, mip_count)` of one streamable
 /// texture. `first_resident` never rises above `floor_first`: the floor is
 /// always resident while the texture has a holder.

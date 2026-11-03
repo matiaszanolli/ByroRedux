@@ -191,6 +191,10 @@ pub struct GpuMesh {
     /// scales by (docs/engine/texture-streaming.md §5.1). `None` for a mesh
     /// whose UVs are degenerate (no UV area) and for non-scene uploads.
     pub world_per_uv: Option<f32>,
+    /// M39 — object-space bounding sphere `[cx, cy, cz, r]` of the mesh's
+    /// vertices (the wanted-mip estimate's distance term, §5.2); `None` for
+    /// non-scene uploads.
+    pub local_bound: Option<[f32; 4]>,
 }
 
 impl GpuMesh {
@@ -253,6 +257,23 @@ pub fn uv_texel_density(vertices: &[Vertex], indices: &[u32]) -> Option<f32> {
         uv += f64::from((u1 * v2 - u2 * v1).abs()) * 0.5;
     }
     (uv > 1e-12 && world > 0.0).then(|| (world / uv).sqrt() as f32)
+}
+
+/// M39 — object-space bounding sphere `[cx, cy, cz, r]` of `vertices`: the
+/// AABB centre and the farthest vertex from it. `None` for no vertices.
+pub fn bounding_sphere(vertices: &[Vertex]) -> Option<[f32; 4]> {
+    use byroredux_core::math::Vec3;
+    let first = Vec3::from(vertices.first()?.position);
+    let (min, max) = vertices.iter().fold((first, first), |(lo, hi), v| {
+        let p = Vec3::from(v.position);
+        (lo.min(p), hi.max(p))
+    });
+    let centre = (min + max) * 0.5;
+    let radius = vertices
+        .iter()
+        .map(|v| Vec3::from(v.position).distance(centre))
+        .fold(0.0f32, f32::max);
+    Some([centre.x, centre.y, centre.z, radius])
 }
 
 pub struct MeshRegistry {
@@ -588,6 +609,7 @@ impl MeshRegistry {
             is_scene_mesh: false,
             rt_capable: rt_enabled,
             world_per_uv: None,
+            local_bound: None,
         }));
         // Parallel-indexed refcount; lockstep with `meshes` push.
         self.mesh_ref_counts.push(1);
@@ -925,6 +947,7 @@ impl MeshRegistry {
         mesh.global_index_offset = i_offset;
         mesh.is_scene_mesh = true;
         mesh.world_per_uv = uv_texel_density(vertices, &indices);
+        mesh.local_bound = bounding_sphere(vertices);
 
         Ok(id)
     }
@@ -972,6 +995,7 @@ impl MeshRegistry {
             // this handle. The bounded LOD path uses the shared pool instead.
             rt_capable: false,
             world_per_uv: uv_texel_density(vertices, &indices),
+            local_bound: bounding_sphere(vertices),
         }));
         // Parallel-indexed refcount; lockstep with `meshes` push (mirrors
         // `upload`).
@@ -1123,6 +1147,7 @@ impl MeshRegistry {
                 is_scene_mesh: true,
                 rt_capable: upload.rt_enabled,
                 world_per_uv: uv_texel_density(upload.vertices, indices),
+                local_bound: bounding_sphere(upload.vertices),
             }));
             self.mesh_ref_counts.push(1);
             if let Some((model_path, sub_mesh_index)) = upload.cache_key {
@@ -1192,6 +1217,11 @@ impl MeshRegistry {
     /// Handles stay stable: the dropped slot holds `None` forever.
     /// Re-using a handle would re-enter the same `GpuInstance.mesh_id`
     /// for a different mesh and produce silent data corruption.
+    /// M39 — the mesh's object-space bounding sphere ([`bounding_sphere`]).
+    pub fn local_bound(&self, handle: u32) -> Option<[f32; 4]> {
+        self.meshes.get(handle as usize)?.as_ref()?.local_bound
+    }
+
     /// M39 — the mesh's UV texel density ([`uv_texel_density`]), `None` for
     /// an unknown or dropped handle or a mesh with degenerate UVs.
     pub fn world_per_uv(&self, handle: u32) -> Option<f32> {
@@ -1412,6 +1442,15 @@ mod uv_texel_density_tests {
             "out-of-range triangle skipped"
         );
         assert_eq!(uv_texel_density(&[], &[]), None);
+    }
+
+    #[test]
+    fn bounding_sphere_encloses_every_vertex() {
+        let (v, _) = quad(2.0, 1.0);
+        let [cx, cy, cz, r] = bounding_sphere(&v).unwrap();
+        assert_eq!([cx, cy, cz], [1.0, 1.0, 0.0]);
+        assert!((r - 2.0f32.sqrt()).abs() < 1e-5);
+        assert_eq!(bounding_sphere(&[]), None);
     }
 }
 

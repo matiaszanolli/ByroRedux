@@ -1322,6 +1322,21 @@ fn bc1_dds_from_level(from: u32) -> Vec<u8> {
     dds
 }
 
+/// A streamed texture's source record over a 64×64, 7-level BC1 header.
+fn stream_source(path: &str) -> StreamSource {
+    StreamSource {
+        path: path.into(),
+        clamp_mode: 0,
+        color_space: TextureColorSpace::Srgb,
+        header: bc1_dds_from_level(7),
+        width: 64,
+        wanted: None,
+        last_wanted_frame: 0,
+        last_promoted_frame: 0,
+        coarser_since: None,
+    }
+}
+
 fn streamable_entry(mip_count: u32, floor_first: u32) -> TextureEntry {
     TextureEntry {
         texture: None,
@@ -1406,15 +1421,8 @@ fn last_drop_cancels_queued_promotion() {
 fn promotion_requests_round_trip_through_the_host() {
     let mut reg = make_registry_for_overflow_test(64, 0);
     reg.textures.push(streamable_entry(7, 2));
-    reg.stream_sources.insert(
-        0,
-        StreamSource {
-            path: "textures\\a.dds".into(),
-            clamp_mode: 0,
-            color_space: TextureColorSpace::Srgb,
-            header: bc1_dds_from_level(7),
-        },
-    );
+    reg.stream_sources
+        .insert(0, stream_source("textures\\a.dds"));
     reg.promotion_requests.push((0, 0));
     let requests = reg.take_promotion_requests(8);
     assert_eq!(
@@ -1438,15 +1446,8 @@ fn demotion_queues_from_the_header_alone() {
     entry.residency.as_mut().unwrap().first_resident = 0;
     reg.textures.push(entry);
     assert!(!reg.queue_demotion(0, 1), "not streamed: no source");
-    reg.stream_sources.insert(
-        0,
-        StreamSource {
-            path: "textures\\a.dds".into(),
-            clamp_mode: 0,
-            color_space: TextureColorSpace::Srgb,
-            header: bc1_dds_from_level(7),
-        },
-    );
+    reg.stream_sources
+        .insert(0, stream_source("textures\\a.dds"));
     assert!(!reg.queue_demotion(0, 0), "already at level 0");
     assert!(reg.queue_demotion(0, 5), "demotes, clamped to the floor");
     assert_eq!(reg.pending_promotion_count(), 1);
@@ -1476,4 +1477,73 @@ fn promotion_flush_takes_in_order_within_the_byte_bound() {
     assert_eq!(upload::promotion_take_count(&pending, 100), 1, "first always goes");
     assert_eq!(upload::promotion_take_count(&pending, 2_000), 4);
     assert_eq!(upload::promotion_take_count(&[], 2_000), 0);
+}
+
+/// M39 TXS-WANT-003/004 — the wanted pass turns deficits into promotion
+/// requests ordered drawn before TLAS-only, then larger deficit, then
+/// nearer; a streamed texture no instance wants is wanted at its floor.
+#[test]
+fn wanted_pass_orders_promotions_drawn_first() {
+    use residency::{WantedCase, WantedMip};
+    let mut reg = make_registry_for_overflow_test(64, 0);
+    for handle in 0..4 {
+        reg.textures.push(streamable_entry(7, 3));
+        reg.stream_sources
+            .insert(handle, stream_source("textures\\a.dds"));
+    }
+    let want = |level, case, distance| WantedMip {
+        level,
+        case,
+        distance,
+    };
+    let wanted = HashMap::from([
+        (0, want(2, WantedCase::TlasOnly, 1.0)),
+        (1, want(1, WantedCase::Drawn, 50.0)),
+        (2, want(0, WantedCase::Drawn, 80.0)),
+        // handle 3 is not drawn anywhere: wanted at its floor, no request.
+    ]);
+    let stats = reg.apply_wanted(&wanted);
+    assert_eq!((stats.deficits, stats.requests, stats.demotions), (3, 3, 0));
+    // Drawn first (larger deficit first among them), TLAS-only last.
+    assert_eq!(reg.promotion_requests, vec![(2, 0), (1, 1), (0, 2)]);
+    assert_eq!(
+        reg.stream_sources[&3].wanted,
+        Some((3, WantedCase::Neither))
+    );
+    // The list is rebuilt each pass, not appended to.
+    reg.apply_wanted(&wanted);
+    assert_eq!(reg.promotion_requests.len(), 3);
+}
+
+/// M39 TXS-WANT-005 — a texture wanted coarser than it is resident is
+/// demoted only after `DEMOTE_AFTER_FRAMES` frames of it, and not within
+/// that many frames of its last promotion.
+#[test]
+fn wanted_pass_demotes_only_after_the_hysteresis_window() {
+    use residency::DEMOTE_AFTER_FRAMES;
+    let mut reg = make_registry_for_overflow_test(64, 0);
+    let mut entry = streamable_entry(7, 3);
+    entry.residency.as_mut().unwrap().first_resident = 0;
+    reg.textures.push(entry);
+    reg.stream_sources
+        .insert(0, stream_source("textures\\a.dds"));
+    let none = HashMap::new();
+    reg.current_frame_id = 10;
+    reg.stream_sources.get_mut(&0).unwrap().last_promoted_frame = 10;
+    for frame in 10..10 + DEMOTE_AFTER_FRAMES {
+        reg.current_frame_id = frame;
+        assert_eq!(
+            reg.apply_wanted(&none).demotions,
+            0,
+            "frame {frame}: inside the window"
+        );
+    }
+    reg.current_frame_id = 10 + DEMOTE_AFTER_FRAMES;
+    assert_eq!(reg.apply_wanted(&none).demotions, 1);
+    let change = reg.pending_promotions[0].change.unwrap();
+    assert_eq!(
+        (change.old_first, change.new_first),
+        (0, 3),
+        "down to the floor"
+    );
 }

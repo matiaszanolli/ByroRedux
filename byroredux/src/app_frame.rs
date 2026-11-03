@@ -46,6 +46,8 @@ fn push_texture_streaming(
     world: &byroredux_core::ecs::World,
     streamer: &mut Option<crate::texture_streamer::TextureStreamer>,
     ctx: &mut byroredux_renderer::VulkanContext,
+    draws: &[byroredux_renderer::DrawCommand],
+    (camera_pos, fov_y): ([f32; 3], f32),
 ) {
     let streaming = crate::setting_bool(
         world,
@@ -58,6 +60,9 @@ fn push_texture_streaming(
         );
     }
     if let Some(streamer) = streamer.as_mut() {
+        if streaming {
+            streamer.update_wanted(draws, ctx, camera_pos, fov_y);
+        }
         streamer.step(&mut ctx.texture_registry);
     }
     ctx.update_texture_streaming(streaming);
@@ -688,7 +693,13 @@ impl App {
             // #6197 — terrain parallax settings onto every live tile.
             push_terrain_parallax(&self.world, ctx);
             // M39 — texture streaming (before `draw_frame`).
-            push_texture_streaming(&self.world, &mut self.texture_streamer, ctx);
+            push_texture_streaming(
+                &self.world,
+                &mut self.texture_streamer,
+                ctx,
+                &self.draw_commands,
+                (frame.camera_pos, frame.camera_fov_y),
+            );
             // Terrain distance softening: the camera distance at which the
             // full-detail terrain is fully softened toward the LOD look.
             push_terrain_lod_soften(&self.world, self.streaming.as_ref(), ctx);

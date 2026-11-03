@@ -422,6 +422,93 @@ impl TextureRegistry {
             .collect()
     }
 
+    /// M39 — level 0's larger edge of a streamed texture, `None` for one that
+    /// is not streamed (the wanted-mip pass skips it).
+    pub fn stream_width(&self, handle: TextureHandle) -> Option<u32> {
+        self.stream_sources.get(&handle).map(|source| source.width)
+    }
+
+    /// M39 — apply this frame's wanted mips (docs/engine/texture-streaming.md
+    /// §5–§6). Every streamed texture absent from `wanted` is wanted at its
+    /// floor (TXS-WANT-003). A texture wanted finer than it is resident
+    /// becomes a promotion request, ordered drawn before TLAS-only before
+    /// neither, then larger deficit, then nearer (TXS-WANT-004); the list
+    /// replaces last frame's. One wanted coarser for `DEMOTE_AFTER_FRAMES`
+    /// frames, and as long after its last promotion, is demoted
+    /// (TXS-WANT-005). A texture with a change already queued waits.
+    pub fn apply_wanted(
+        &mut self,
+        wanted: &HashMap<TextureHandle, residency::WantedMip>,
+    ) -> WantedStats {
+        use residency::{WantedCase, DEMOTE_AFTER_FRAMES};
+        let frame = self.current_frame_id;
+        let queued: HashSet<TextureHandle> = self
+            .pending_promotions
+            .iter()
+            .map(|upload| upload.handle)
+            .collect();
+        let mut stats = WantedStats::default();
+        let mut candidates: Vec<(WantedCase, u32, f32, TextureHandle, u32)> = Vec::new();
+        let mut demotions = Vec::new();
+        for (&handle, source) in self.stream_sources.iter_mut() {
+            let Some(r) = self
+                .textures
+                .get(handle as usize)
+                .and_then(|entry| entry.residency)
+            else {
+                continue;
+            };
+            let w = wanted
+                .get(&handle)
+                .copied()
+                .unwrap_or(residency::WantedMip {
+                    level: r.floor_first,
+                    case: WantedCase::Neither,
+                    distance: f32::INFINITY,
+                });
+            let target = w.level.min(r.floor_first);
+            source.wanted = Some((target, w.case));
+            if w.case != WantedCase::Neither {
+                source.last_wanted_frame = frame;
+            }
+            if target < r.first_resident {
+                stats.deficits += 1;
+                source.coarser_since = None;
+                if !queued.contains(&handle) {
+                    candidates.push((
+                        w.case,
+                        r.first_resident - target,
+                        w.distance,
+                        handle,
+                        target,
+                    ));
+                }
+            } else if target > r.first_resident {
+                let since = *source.coarser_since.get_or_insert(frame);
+                let settled = frame.wrapping_sub(since) >= DEMOTE_AFTER_FRAMES
+                    && frame.wrapping_sub(source.last_promoted_frame) >= DEMOTE_AFTER_FRAMES;
+                if settled && !queued.contains(&handle) {
+                    demotions.push((handle, target));
+                    source.coarser_since = None;
+                }
+            } else {
+                source.coarser_since = None;
+            }
+        }
+        candidates.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(a.2.total_cmp(&b.2)));
+        stats.requests = candidates.len() as u32;
+        self.promotion_requests = candidates
+            .into_iter()
+            .map(|(_, _, _, handle, target)| (handle, target))
+            .collect();
+        for (handle, target) in demotions {
+            if self.queue_demotion(handle, target) {
+                stats.demotions += 1;
+            }
+        }
+        stats
+    }
+
     /// M39 — queue a demotion of a streamed texture to first resident level
     /// `target` (never coarser than its floor). A demotion uploads nothing,
     /// so the source's DDS header is all the queued change carries.
@@ -486,6 +573,7 @@ impl TextureRegistry {
         let mut t = byroredux_core::ecs::TextureResidencyTelemetry {
             streaming: self.streaming,
             queued_changes: self.pending_promotions.len() as u64,
+            promotion_requests: self.promotion_requests.len() as u64,
             per_handle: Vec::with_capacity(self.textures.len()),
             ..Default::default()
         };
@@ -493,7 +581,7 @@ impl TextureRegistry {
             slot.0 += 1;
             slot.1 += bytes;
         };
-        for entry in &self.textures {
+        for (slot, entry) in self.textures.iter().enumerate() {
             t.retiring_bytes += entry
                 .pending_destroy
                 .iter()
@@ -520,8 +608,21 @@ impl TextureRegistry {
                     };
                     add(state, bytes);
                     debug_assert_eq!(r.resident_levels(), r.mip_count - r.first_resident);
-                    t.per_handle
-                        .push(Some([r.first_resident, r.floor_first, r.mip_count]));
+                    let (wanted, case) = self
+                        .stream_sources
+                        .get(&(slot as TextureHandle))
+                        .and_then(|source| source.wanted)
+                        .map_or((u32::MAX, u32::MAX), |(level, case)| (level, case as u32));
+                    if wanted != u32::MAX && wanted < r.first_resident {
+                        t.deficits += 1;
+                    }
+                    t.per_handle.push(Some([
+                        r.first_resident,
+                        r.floor_first,
+                        r.mip_count,
+                        wanted,
+                        case,
+                    ]));
                 }
                 None => {
                     let class = if texture.view_kind == TextureViewKind::Cube {
@@ -680,7 +781,7 @@ impl TextureRegistry {
         queue: &std::sync::Mutex<vk::Queue>,
         command_pool: vk::CommandPool,
         transfer_fence: &std::sync::Mutex<vk::Fence>,
-        mut pending: Vec<PendingDdsUpload>,
+        pending: Vec<PendingDdsUpload>,
     ) -> Result<usize> {
         let count = pending.len();
 
@@ -989,6 +1090,11 @@ impl TextureRegistry {
                     if let Some(residency) = entry.residency.as_mut() {
                         residency.apply(change);
                     }
+                    if change.is_promotion() {
+                        if let Some(source) = self.stream_sources.get_mut(&handle) {
+                            source.last_promoted_frame = current_frame_id;
+                        }
+                    }
                     if let Some(old) = entry.texture.replace(texture) {
                         entry.pending_destroy.push_back((current_frame_id, old));
                     }
@@ -1019,35 +1125,28 @@ impl TextureRegistry {
             }
         }
 
-        // M39 — every floor records its source. Its promotion to the full
-        // chain (forced until the wanted-mip signal exists) uses the bytes in
-        // hand when they hold the whole chain, and asks the host for a
-        // re-read when they were a floor-only read.
-        for (handle, whole, source, header_len) in forced_promotions {
-            let upload = &mut pending[source];
+        // M39 — every floor records its source; from then on the wanted-mip
+        // pass (`apply_wanted`) decides its promotions, read back by the
+        // host. No high-mip bytes are kept (decision Q2 (b)).
+        for (handle, _whole, source, header_len) in forced_promotions {
+            let upload = &pending[source];
+            let header = upload.dds_bytes[..header_len.min(upload.dds_bytes.len())].to_vec();
+            let width = crate::vulkan::dds::parse_dds(&header)
+                .map_or(0, |meta| meta.width.max(meta.height));
             self.stream_sources.insert(
                 handle,
                 StreamSource {
                     path: upload.path.clone(),
                     clamp_mode: upload.clamp_mode,
                     color_space: upload.color_space,
-                    header: upload.dds_bytes[..header_len.min(upload.dds_bytes.len())].to_vec(),
+                    header,
+                    width,
+                    wanted: None,
+                    last_wanted_frame: current_frame_id,
+                    last_promoted_frame: 0,
+                    coarser_since: None,
                 },
             );
-            if whole {
-                let dds_bytes = std::mem::take(&mut upload.dds_bytes);
-                let path = std::mem::take(&mut upload.path);
-                self.queue_residency_change(
-                    handle,
-                    0,
-                    dds_bytes,
-                    upload.clamp_mode,
-                    upload.color_space,
-                    path,
-                );
-            } else {
-                self.promotion_requests.push((handle, 0));
-            }
         }
 
         log::debug!("Flushed DDS upload sub-batch: {staged_count} of {count} staged");

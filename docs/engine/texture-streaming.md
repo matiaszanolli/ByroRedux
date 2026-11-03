@@ -227,12 +227,16 @@ are kept in host RAM between promotions.
 
 ### 5.1 Per-mesh texel density
 
-At NIF import, each mesh records `world_per_uv`: the square root of the sum
-of its triangles' object-space areas over the sum of their UV-space areas
-(UV channel 0). It is the object-space length one UV unit covers, the
-quantity Unreal's overview calls a "texel world size". It is captured in
-the `Imported*` tier and carried through `translate()` with the mesh
-([NIFAL](nifal.md)), then stored per `MeshHandle` in `MeshRegistry`.
+Each mesh records `world_per_uv`: the square root of the sum of its
+triangles' object-space areas over the sum of their UV-space areas (UV
+channel 0). It is the object-space length one UV unit covers, the
+quantity Unreal's overview calls a "texel world size". It is computed
+where every scene mesh is registered (`MeshRegistry`'s scene-upload
+paths, `mesh::uv_texel_density`), from the same positions and UVs NIF
+import produced, so terrain, water, distant LOD and Starfield `.mesh`
+geometry carry it without a field per import path; decision Q2 (a)'s
+"captured at NIF import" is met at that boundary. The same paths record
+the mesh's object-space bounding sphere (`mesh::bounding_sphere`).
 Degenerate UVs (zero UV area) give `None`, and such a mesh wants the floor.
 
 ### 5.2 Per-instance estimate
@@ -247,10 +251,13 @@ wanted    = clamp(floor(log2(texture_width / px_per_uv)), 0, floor_first)
 ```
 
 A texture's wanted mip is the finest over its instances. The bound is the
-instance's `WorldBound`; `DrawCommand` carries no bound today, so Phase 2
-adds its centre and radius where `build_render_data` already reads it for
-the frustum cull. A texture's width is its level-0 width (the larger edge
-for non-square).
+mesh's object-space bounding sphere transformed by the draw's model
+matrix (no `DrawCommand` field needed). A texture's width is its level-0
+width (the larger edge for non-square). A drawn terrain tile wants its
+layer textures at level 0: their UVs tile by a per-layer scale the
+estimate does not model yet, so terrain trades no memory for no blur.
+The pass is `texture_streamer::compute_wanted`; `apply_wanted` in the
+registry turns its result into requests and demotions.
 
 ### 5.3 Cases (TXS-WANT-002, -003)
 
@@ -300,10 +307,10 @@ run-to-run noise of the streaming-off control, and records it in
 
 A texture is demoted only when its `wanted` has been coarser than
 `first_resident` for `DEMOTE_AFTER_FRAMES` consecutive frames **and** at
-least that many frames have passed since `last_promoted_frame`. Phase 2
-sets the value as the smallest window that gives zero churn on the A7
-pinned-camera benches and the A6 fresh-cell loads, and `tex.residency`
-prints it.
+least that many frames have passed since `last_promoted_frame`. It starts
+at 120 frames (2 s at 60 fps); Phase 2 sets the value as the smallest
+window that gives zero churn on the A7 pinned-camera benches and the A6
+fresh-cell loads, and `tex.residency` prints it.
 
 ---
 

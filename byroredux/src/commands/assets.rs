@@ -251,7 +251,7 @@ impl ConsoleCommand for TexResidencyCommand {
                 ));
             };
             return match t.per_handle.get(handle) {
-                Some(Some([first, floor, mips])) => {
+                Some(Some([first, floor, mips, wanted, case])) => {
                     let state = if *first == 0 {
                         "full"
                     } else if first == floor {
@@ -259,8 +259,14 @@ impl ConsoleCommand for TexResidencyCommand {
                     } else {
                         "partial"
                     };
+                    let wanted = match (*wanted, *case) {
+                        (u32::MAX, _) => "not yet computed".to_string(),
+                        (level, 0) => format!("level {level} (drawn)"),
+                        (level, 1) => format!("level {level} (TLAS only)"),
+                        (level, _) => format!("level {level} (neither drawn nor in the TLAS)"),
+                    };
                     CommandOutput::line(format!(
-                        "handle {handle}: {state}, resident levels [{first}, {mips}) of {mips}, floor from level {floor}"
+                        "handle {handle}: {state}, resident levels [{first}, {mips}) of {mips}, floor from level {floor}, wanted {wanted}"
                     ))
                 }
                 Some(None) => CommandOutput::line(format!(
@@ -277,6 +283,10 @@ impl ConsoleCommand for TexResidencyCommand {
         };
         CommandOutput::lines(vec![
             format!("streaming: {}", if t.streaming { "on" } else { "off" }),
+            format!(
+                "deficits {}, promotion requests waiting {}",
+                t.deficits, t.promotion_requests,
+            ),
             format!(
                 "resident {:.1} MiB (peak {:.1}), retiring {:.1} MiB, floors {:.1} MiB, queued changes {}, reserved {}",
                 mib(t.resident_bytes),

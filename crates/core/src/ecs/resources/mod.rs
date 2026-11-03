@@ -651,9 +651,15 @@ pub struct TextureResidencyTelemetry {
     pub peak_resident_bytes: u64,
     /// Promotions and demotions queued.
     pub queued_changes: u64,
-    /// Per bindless handle: `[first_resident, floor_first, mip_count]` of a
-    /// streamable texture, `None` otherwise.
-    pub per_handle: Vec<Option<[u32; 3]>>,
+    /// Streamed textures resident coarser than they are wanted (TXS-WANT).
+    pub deficits: u64,
+    /// Promotion requests waiting for the host's re-read, in priority order.
+    pub promotion_requests: u64,
+    /// Per bindless handle: `[first_resident, floor_first, mip_count,
+    /// wanted, case]` of a streamable texture, `None` otherwise. `wanted` is
+    /// `u32::MAX` before the first wanted pass; `case` is 0 drawn, 1 TLAS
+    /// only, 2 neither, `u32::MAX` unknown (TXS-WANT-002).
+    pub per_handle: Vec<Option<[u32; 5]>>,
 }
 
 impl Resource for TextureResidencyTelemetry {}

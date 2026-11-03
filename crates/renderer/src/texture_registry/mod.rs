@@ -30,6 +30,7 @@ pub use crate::vulkan::dds::TextureColorSpace;
 mod lookup;
 mod residency;
 pub(crate) use residency::ResidencyChange;
+pub use residency::{WantedCase, WantedMip};
 mod dynamic_rgba;
 mod release;
 mod upload;
@@ -121,6 +122,31 @@ struct StreamSource {
     clamp_mode: u8,
     color_space: TextureColorSpace,
     header: Vec<u8>,
+    /// Level 0's larger edge, the texel count the wanted-mip estimate
+    /// divides by (docs/engine/texture-streaming.md §5.2).
+    width: u32,
+    /// The wanted level and case the last `apply_wanted` set.
+    wanted: Option<(u32, residency::WantedCase)>,
+    /// Last frame an instance wanted it (drawn or TLAS-only): the eviction
+    /// order of TXS-BUD-003.
+    last_wanted_frame: u64,
+    /// Last frame a promotion of it landed (TXS-WANT-005 hysteresis).
+    last_promoted_frame: u64,
+    /// First frame of the current run in which it was wanted coarser than
+    /// it is resident.
+    coarser_since: Option<u64>,
+}
+
+/// M39 — what one `apply_wanted` pass found (`tex-stream:` and
+/// `tex.residency`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WantedStats {
+    /// Streamed textures resident coarser than they are wanted.
+    pub deficits: u32,
+    /// Promotion requests queued for the host, in priority order.
+    pub requests: u32,
+    /// Demotions queued this pass.
+    pub demotions: u32,
 }
 
 /// M39 — a promotion whose levels the host must read: re-read `path` from
