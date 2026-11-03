@@ -871,8 +871,22 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
 /// `GetDestructionStage`, `GetMapMarkerVisible`) read: the same state those getters do. Declared on
 /// `npc_dialogue_selection`, which evaluates the INFO conditions. A helper rather than more lines of
 /// `register_late_systems`, which is size-pinned (#6359).
+///
+/// #6558 — and the nine bridged after them: `GetIsCurrentPackage` (`ActivePackages`),
+/// `HasMagicEffect` (`ActiveMagicEffects`), `GetSitting` (`Seated`), `IsWeaponOut` (`WeaponDrawn`),
+/// `GetDetected` (the installed sight test: detection config, cell lighting, transforms, physics).
+/// `IsInInterior`, `IsKiller`, `GetRestrained` and `IsSneaking` read state the row already declares.
 fn bridged_script_getter_reads(access: Access) -> Access {
     access
+        .reads_resource::<byroredux_scripting::ActivePackages>()
+        .reads::<byroredux_scripting::magic_effects::ActiveMagicEffects>()
+        .reads::<byroredux_core::ecs::components::Seated>()
+        .reads::<byroredux_scripting::obscript_state::WeaponDrawn>()
+        .reads_resource::<byroredux_scripting::SightQuery>()
+        .reads_resource::<crate::systems::faction_hostility::DetectionConfig>()
+        .reads_resource::<crate::components::CellLightingRes>()
+        .reads::<byroredux_physics::RapierHandles>()
+        .reads_resource::<byroredux_physics::PhysicsWorld>()
         .reads::<byroredux_core::ecs::components::Locked>()
         .reads_resource::<byroredux_scripting::obscript_more::ChildRaces>()
         .reads_resource::<byroredux_scripting::obscript_ledger::ObScriptLedger>()

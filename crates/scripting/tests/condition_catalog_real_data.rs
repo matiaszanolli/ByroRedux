@@ -69,17 +69,19 @@ fn fnv_dialogue_declined_by_unmodeled_conditions() {
     // #6460 then catalogued the ten script getters still missing (IsChild 365,
     // GetTalkedToPC 50, GetHasNote 382, IsInList 372, GetLocked 5, GetCurrentTime 18,
     // GetInSameCell 32, GetBaseActorValue 277, GetDestructionStage 471,
-    // GetMapMarkerVisible 492), bridged to the VM's own bodies: 989 -> 650.
-    assert_eq!(declined_infos, 650, "declined FNV INFOs moved");
+    // GetMapMarkerVisible 492), bridged to the VM's own bodies: 989 -> 650. #6558 bridged nine
+    // more (GetIsCurrentPackage 161, IsInInterior 300, HasMagicEffect 214, GetSitting 159,
+    // GetDetected 45, IsKiller 409, IsWeaponOut 101, GetRestrained 244, IsSneaking 286): 650 -> 641.
+    assert_eq!(declined_infos, 641, "declined FNV INFOs moved");
     // Four quests were declined whole by IsChild (GenericAdultCombat, GenericKids),
     // IsInList (Followers) and GetTalkedToPC (DialogueCrimeKarma) until #6460.
     assert_eq!(declined_quests, 0, "declined FNV quest dialogue gates moved");
     // Objective targets (`QSTA`): 284 of the 772 conditioned ones were declined,
     // 198 only by catalogued-since getters (GetDisabled ×94 among them). What
     // is left is PlayerInRegion (612), GetInCellParam (230) and the like (#6460 took
-    // GetDestructionStage 471 and GetMapMarkerVisible 492: 86 -> 70).
+    // GetDestructionStage 471 and GetMapMarkerVisible 492: 86 -> 70; #6558's nine: 70 -> 69).
     assert_eq!(targets.len(), 772, "conditioned FNV objective targets moved");
-    assert_eq!(declined_targets, 70, "declined FNV objective targets moved");
+    assert_eq!(declined_targets, 69, "declined FNV objective targets moved");
 }
 
 fn fo3_index() -> Option<EsmIndex> {
@@ -90,7 +92,9 @@ fn fo3_index() -> Option<EsmIndex> {
 
 /// #6460 — the FO3 leg: before the script getters were catalogued, `IsInList` (372) and
 /// `GetTalkedToPC` (50) alone declined 21 FO3 quests whole — 5,377 of 22,327 INFOs (24 %). Now no quest
-/// is declined whole and 1,777 INFOs (8 %) are, by the functions still uncatalogued.
+/// is declined whole and 1,777 INFOs (8 %) were, by the functions still uncatalogued. #6558 bridged
+/// nine more getters the VM answers — `GetIsCurrentPackage` (161), the gate on package-context barks,
+/// led them — and 1,202 (5 %) are left, led by `GetScriptVariable` (53).
 #[test]
 #[ignore = "needs Fallout3.esm on disk"]
 fn fo3_dialogue_declined_by_unmodeled_conditions() {
@@ -108,7 +112,7 @@ fn fo3_dialogue_declined_by_unmodeled_conditions() {
     let declined_infos = infos.iter().filter(|info| declines(&info.conditions)).count();
     let declined_quests = index.quests.values().filter(|quest| declines(&quest.dialogue_conditions)).count();
     eprintln!("FO3 declined INFOs {declined_infos} of {}, quests {declined_quests}", infos.len());
-    assert_eq!(declined_infos, 1777, "declined FO3 INFOs moved");
+    assert_eq!(declined_infos, 1202, "declined FO3 INFOs moved");
     assert_eq!(declined_quests, 0, "declined FO3 quest dialogue gates moved");
 }
 

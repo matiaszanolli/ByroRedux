@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **88 functions** at their canonical CTDA
+//! lineage. This catalog ships **97 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -104,6 +104,15 @@
 //! | 277   | GetBaseActorValue      | the ObScript getter (FO3/FNV) |
 //! | 471   | GetDestructionStage    | the ObScript getter (FO3/FNV) |
 //! | 492   | GetMapMarkerVisible    | the ObScript getter (FO3/FNV) |
+//! | 45    | GetDetected            | the ObScript getter (FO3/FNV) |
+//! | 101   | IsWeaponOut            | the ObScript getter (FO3/FNV) |
+//! | 159   | GetSitting             | the ObScript getter (FO3/FNV) |
+//! | 161   | GetIsCurrentPackage    | the ObScript getter (FO3/FNV) |
+//! | 214   | HasMagicEffect         | the ObScript getter (FO3/FNV) |
+//! | 244   | GetRestrained          | the ObScript getter (FO3/FNV) |
+//! | 286   | IsSneaking             | the ObScript getter (FO3/FNV) |
+//! | 300   | IsInInterior           | the ObScript getter (FO3/FNV) |
+//! | 409   | IsKiller               | the ObScript getter (FO3/FNV) |
 //! | 116   | GetCrimeGold           | `ObScriptLedger` bounty (Oblivion dialect) |
 //! | 125   | IsGuard                | `GuardClasses`, the `CLAS` Guard flag (Oblivion / FO3 / FNV) |
 //! | 122   | GetCrime               | `CrimeKnowledge` (every game) |

@@ -629,7 +629,16 @@ pub fn evaluate_function(
         | ConditionFunction::GetInSameCell
         | ConditionFunction::GetBaseActorValue
         | ConditionFunction::GetDestructionStage
-        | ConditionFunction::GetMapMarkerVisible => {
+        | ConditionFunction::GetMapMarkerVisible
+        | ConditionFunction::GetDetected
+        | ConditionFunction::IsWeaponOut
+        | ConditionFunction::GetSitting
+        | ConditionFunction::GetIsCurrentPackage
+        | ConditionFunction::HasMagicEffect
+        | ConditionFunction::GetRestrained
+        | ConditionFunction::IsSneaking
+        | ConditionFunction::IsInInterior
+        | ConditionFunction::IsKiller => {
             vm_getter_value(function, condition, entity, world)
         }
         // #6251 — the state the ObScript getters of the same index read.

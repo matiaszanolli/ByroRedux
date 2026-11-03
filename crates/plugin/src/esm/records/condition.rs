@@ -585,6 +585,10 @@ pub fn param1_is_form_id(function_index: u32) -> bool {
         | 382 // GetHasNote — NOTE FormID, FO3/FNV (#6460)
         | 372 // IsInList — FLST FormID, FO3/FNV (#6460)
         | 32  // GetInSameCell — reference FormID, FO3/FNV (#6460)
+        | 45  // GetDetected — actor FormID, every game (#6558)
+        | 161 // GetIsCurrentPackage — PACK FormID, every game (#6558)
+        | 214 // HasMagicEffect — MGEF FormID, every game (#6558)
+        | 409 // IsKiller — actor FormID, FO3/FNV; Skyrim/FO4's IsKillerObject — FLST FormID (#6558)
     )
 }
 

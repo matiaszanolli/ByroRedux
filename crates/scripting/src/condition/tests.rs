@@ -2238,6 +2238,37 @@ fn the_obscript_getters_are_catalogued_and_modeled_on_fnv() {
     }
 }
 
+/// #6558 — nine more getters the VM answers (GetDetected 45, IsWeaponOut 101, GetSitting 159,
+/// GetIsCurrentPackage 161, HasMagicEffect 214, GetRestrained 244, IsSneaking 286, IsInInterior 300,
+/// IsKiller 409) are bridged like #6460's: modeled on FO3 / FNV only, read against the Run-On
+/// reference through the VM's own body. 101 and 409 are other functions from Skyrim on; the bridge's
+/// game gate is what keeps the FO3 / FNV body from answering there.
+#[test]
+fn fo3_fnv_package_and_stance_getters_are_bridged_to_the_vm() {
+    use byroredux_plugin::esm::reader::GameKind::{Fallout3NV, Fallout4, Oblivion, Skyrim};
+    for index in [45, 101, 159, 161, 214, 244, 286, 300, 409] {
+        let condition = cond(index, ComparisonOp::Eq, 1.0, false);
+        for game in [Fallout3NV, Oblivion, Skyrim, Fallout4] {
+            let mut world = World::new();
+            crate::register(&mut world);
+            world.insert_resource(crate::ScriptGame(game));
+            assert_eq!(is_modeled(&world, &condition), game == Fallout3NV, "{index} on {game:?}");
+        }
+    }
+
+    const PACKAGE: u32 = 0x0001_6558;
+    let (mut world, actor) = getter_world();
+    world.insert_resource(crate::ActivePackages::default());
+    assert!(evaluate_condition(&cond_params(161, PACKAGE, 0, 0.0), &world, &ctx(actor)));
+    world.resource_mut::<crate::ActivePackages>().0.insert(actor, PACKAGE);
+    assert!(evaluate_condition(&cond_params(161, PACKAGE, 0, 1.0), &world, &ctx(actor)), "running the package");
+    assert!(evaluate_condition(&cond_params(161, PACKAGE + 1, 0, 0.0), &world, &ctx(actor)), "another package");
+
+    assert!(evaluate_condition(&cond_params(244, 0, 0, 0.0), &world, &ctx(actor)));
+    world.insert(actor, crate::ActorControlState { restrained: true, ..Default::default() });
+    assert!(evaluate_condition(&cond_params(244, 0, 0, 1.0), &world, &ctx(actor)), "SetRestrained 1");
+}
+
 /// #6251 — xEdit: 131 is `GetSceneActionPercent` from FO4 on, 431
 /// `GetActiveBoostDuration` on Starfield.
 #[test]
