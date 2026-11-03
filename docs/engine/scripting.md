@@ -1490,7 +1490,11 @@ root state machine (states, their transitions, the wildcard transitions), each s
 exterior bootstrap and every streaming step) resolves the project from the archives, registers the
 state clips in the animation registry (a once-playing and a looping variant per animation) and
 attaches an `ObjectAnimationGraph` in the machine's start state, dropping the NIF's own embedded
-controller player, which would override the graph. An event takes the state's own transition on it
+controller player, which would override the graph. A project's file names resolve against its own
+directory with `.` / `..` hops collapsed (FO4 characters share a rig directories up, in
+`GenericBehaviors\zSingleBoneSkeleton`), and a `.hkt` spelling, which is how FO4 characters name
+their rigs and FO4 graphs their clips, is read from the `.hkx` the archives ship (#6556: 184 of
+the 187 vanilla FO4 prop projects load; the other three name files the data lacks). An event takes the state's own transition on it
 (else a wildcard one; `DISABLED` transitions never fire), enters the new state, and starts its clip
 on the object's `AnimationPlayer`: single play holds the last pose, looping loops, a user-controlled
 clip is held at its authored fraction. The clip's trigger events are scheduled in real time

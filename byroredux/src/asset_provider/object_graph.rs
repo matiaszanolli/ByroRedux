@@ -73,6 +73,37 @@ fn mesh_path(relative: &str) -> String {
     }
 }
 
+/// `name` as a behavior project authors it — backslashes or slashes, `.` and `..` hops — joined onto
+/// `directory` and collapsed to the exact key the archives store (#6556). FO4 characters name a
+/// shared rig directories up (`..\..\GenericBehaviors\zSingleBoneSkeleton\SingleBoneSkeleton.hkt`),
+/// and an archive lookup is an exact hit. A hop above the archive root stays at the root.
+fn project_relative(directory: &str, name: &str) -> String {
+    let mut parts: Vec<&str> = directory.split(['\\', '/']).filter(|part| !part.is_empty()).collect();
+    for segment in name.split(['\\', '/']) {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            segment => parts.push(segment),
+        }
+    }
+    parts.join("\\")
+}
+
+/// The archive paths a Havok file a project names is looked for at: as authored, then, for the
+/// Havok toolchain's `.hkt` tagfile spelling (any case: `Skeleton.HKT`), the `.hkx` the FO4 archives
+/// ship in its place (#6556) — the extension the actor route reads its skeletons by. FO4 characters
+/// spell their rigs and FO4 graphs their clips that way.
+fn havok_paths(path: &str) -> Vec<String> {
+    let mut paths = vec![path.to_owned()];
+    if path.to_ascii_lowercase().ends_with(".hkt") {
+        // The suffix is ASCII, so the stem ends on a char boundary.
+        paths.push(format!("{}.hkx", &path[..path.len() - 4]));
+    }
+    paths
+}
+
 /// Register every clip any state of `graph` plays, nested machines and blenders included.
 /// `path_of` names the file a clip's animation is read from and `load` reads and decodes
 /// it, but only for a clip not already registered. A clip it cannot load is reported and left
@@ -156,9 +187,9 @@ fn load_graph(
 ) -> Option<Arc<LoadedGraph>> {
     let project_path = mesh_path(project);
     let directory = project_path.rsplit_once('\\')?.0.to_owned();
-    let relative = |name: &str| format!("{directory}\\{}", name.trim_start_matches(['\\', '/']));
+    let relative = |name: &str| project_relative(&directory, name);
     let fetch = |path: &str, what: &str| {
-        let bytes = provider.extract_mesh(path);
+        let bytes = havok_paths(path).iter().find_map(|candidate| provider.extract_mesh(candidate));
         if bytes.is_none() {
             log::debug!("behavior graph '{project_path}': {what} '{path}' is not in the archives");
         }
@@ -178,7 +209,10 @@ fn load_graph(
         .ok()?;
 
     let clips = register_clips(world, &graph, &skeleton, &project_path, &relative, &mut |path| {
-        let bytes = provider.extract_mesh(path).ok_or_else(|| "it is not in the archives".to_owned())?;
+        let bytes = havok_paths(path)
+            .iter()
+            .find_map(|candidate| provider.extract_mesh(candidate))
+            .ok_or_else(|| "it is not in the archives".to_owned())?;
         byroredux_hkx::decode_animation(&bytes).map_err(|error| error.to_string())
     })?;
     Some(Arc::new(LoadedGraph { graph, clips, sequences: sequences.clone(), lazy: None }))
@@ -359,6 +393,67 @@ mod tests {
         world
     }
 
+    /// #6556 — a project-relative name is collapsed to the exact archive key: FO4 characters name a
+    /// shared rig directories up, and the archives hold no `..` keys.
+    #[test]
+    fn project_relative_names_collapse_dot_dot_hops() {
+        let dir = r"meshes\DLC05\SetDressing\Workshop\ConveyorBelts\DLC05WorkshopConveyorBelts";
+        assert_eq!(
+            project_relative(dir, r"..\..\..\..\..\GenericBehaviors\zSingleBoneSkeleton\SingleBoneSkeleton.hkt"),
+            r"meshes\GenericBehaviors\zSingleBoneSkeleton\SingleBoneSkeleton.hkt"
+        );
+        assert_eq!(project_relative(dir, r"Behaviors/Behavior.hkx"), format!(r"{dir}\Behaviors\Behavior.hkx"));
+        assert_eq!(project_relative(dir, r"\.\Animations\Idle.hkt"), format!(r"{dir}\Animations\Idle.hkt"));
+        assert_eq!(project_relative(r"meshes\a", r"..\..\..\b.hkx"), "b.hkx", "a hop above the root stays at it");
+    }
+
+    /// #6556 — a `.hkt` spelling (any case) is also looked for as the `.hkx` the archives ship; any other
+    /// name is looked for as authored only.
+    #[test]
+    fn havok_paths_try_the_hkx_for_a_hkt_spelling() {
+        assert_eq!(havok_paths(r"a\CharacterAssets\Skeleton.HKT"), [r"a\CharacterAssets\Skeleton.HKT", r"a\CharacterAssets\Skeleton.hkx"]);
+        assert_eq!(havok_paths(r"a\Animations\Idle.hkt"), [r"a\Animations\Idle.hkt", r"a\Animations\Idle.hkx"]);
+        assert_eq!(havok_paths(r"a\Behaviors\Behavior.hkx"), [r"a\Behaviors\Behavior.hkx"]);
+        assert_eq!(havok_paths("hkt"), ["hkt"]);
+    }
+
+    /// #6556 — against the shipped data: FO4 prop graphs load. Their characters spell the rig
+    /// `..\..\GenericBehaviors\zSingleBoneSkeleton\SingleBoneSkeleton.hkt` or `CharacterAssets\Skeleton.HKT`
+    /// and their graphs name `.hkt` clips; the archives ship `.hkx`. Before the fix none of the 187
+    /// vanilla projects loaded; 184 do now (the other three are authoring errors in the data).
+    ///
+    ///   cargo test -p byroredux --bin byroredux fo4_prop_behavior_graphs -- --ignored
+    #[test]
+    #[ignore = "needs Fallout 4 game data on disk"]
+    fn fo4_prop_behavior_graphs_load_with_their_rigs_and_clips() {
+        let data = byroredux_plugin::esm::test_paths::fo4_data_dir();
+        let archives = ["Fallout4 - Animations.ba2", "Fallout4 - Meshes.ba2", "DLCworkshop02 - Main.ba2", "DLCworkshop03 - Main.ba2"];
+        let mut args = Vec::new();
+        for file_name in archives {
+            let path = data.join(file_name);
+            if !path.is_file() {
+                byroredux_plugin::esm::test_paths::require_or_skip(&path.display().to_string());
+                return;
+            }
+            args.extend(["--bsa".to_owned(), path.to_string_lossy().into_owned()]);
+        }
+        let provider = crate::asset_provider::build_texture_provider(&args);
+        // (project, its rig spelling, whether its graph names clips of its own)
+        let projects = [
+            (r"GenericBehaviors\Autoplay\Autoplay.hkx", "..-relative .hkt", false),
+            (r"DLC05\SetDressing\Workshop\ConveyorBelts\DLC05WorkshopConveyorBelts\DLC05WorkshopConveyorBelts.hkx", "..-relative .hkt", false),
+            (r"DLC05\SetDressing\Workshop\PitchingMachine\DLC05WorkshopPitchingMachine01.hkx", "CharacterAssets .hkt", true),
+        ];
+        for (project, rig, has_clips) in projects {
+            let mut world = world();
+            let loaded = load_graph(&mut world, &provider, project, &HashMap::new())
+                .unwrap_or_else(|| panic!("{project} ({rig} rig) did not load"));
+            if has_clips {
+                assert!(!loaded.clips.is_empty(), "{project}: its .hkt clips must load from the .hkx");
+            }
+        }
+    }
+
     /// #6126 — a prop whose behaviour graph is unavailable is skipped by later passes
     /// instead of being re-keyed and re-looked-up every streaming frame, until its
     /// project or its own NIF's sequences change.
@@ -449,3 +544,4 @@ mod tests {
         assert!(register_clips(&mut world, &graph, &rig(), "p", &|name| name.to_owned(), &mut |_| Ok(animation())).is_none());
     }
 }
+
