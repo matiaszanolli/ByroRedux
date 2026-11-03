@@ -21,6 +21,7 @@
 use std::collections::HashMap;
 
 use byroredux_core::ecs::resource::Resource;
+use byroredux_core::ecs::world::World;
 
 use crate::quest_stages::QuestFormId;
 
@@ -247,6 +248,20 @@ impl CreatedReferences {
             record.placement = Some(placement);
         }
     }
+}
+
+/// #5802 — this subsystem's world setup, owned here instead of the crate's
+/// `register` hub: created-object references (saved).
+pub fn install(world: &mut World) {
+    world.init_resource::<CreatedReferences>();
+}
+
+/// #5802 — this subsystem's saved column. Called by the binary's
+/// `build_save_registry` at its place in the row order (the schema
+/// fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    registry.register_resource::<CreatedReferences>("CreatedReferences");
 }
 
 #[cfg(test)]

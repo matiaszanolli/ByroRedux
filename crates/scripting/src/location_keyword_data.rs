@@ -39,6 +39,20 @@ pub fn location_keyword_data(world: &World, location: u32, keyword: u32) -> f32 
         .map_or(0.0, |data| data.get(location, keyword))
 }
 
+/// #5802 — this subsystem's world setup, owned here instead of the crate's
+/// `register` hub: `Location.SetKeywordData` data (saved).
+pub fn install(world: &mut World) {
+    world.init_resource::<LocationKeywordData>();
+}
+
+/// #5802 — this subsystem's saved column. Called by the binary's
+/// `build_save_registry` at its place in the row order (the schema
+/// fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    registry.register_resource::<LocationKeywordData>("LocationKeywordData");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -24,8 +24,9 @@ pub fn register(world: &mut World) {
     world.init_resource::<LocationClearState>();
     // M47.2 — scripted AddToMap (saved).
     world.init_resource::<MapMarkers>();
-    // M47.2 — scripted IncrementStat misc stats (saved).
-    world.init_resource::<MiscStats>();
+    // M47.2 — scripted IncrementStat misc stats and AddAchievement awards
+    // (saved): `misc_stats` installs both (#5802).
+    misc_stats::install(world);
     world.init_resource::<crate::globals::GameCalendar>();
     // M47.2 — alias scripts: the authored ones (derived) and their owner ids
     // and started quests (saved).
@@ -68,8 +69,8 @@ pub fn register(world: &mut World) {
     // M47.2 — the weather scripts can ask about (derived).
     world.init_resource::<CurrentWeather>();
     world.init_resource::<WeatherClassifications>();
-    // M47.2 — keyword data scripts attached to locations (saved).
-    world.init_resource::<LocationKeywordData>();
+    // M47.2 — keyword data scripts attached to locations (saved, #5802).
+    location_keyword_data::install(world);
     // M47.2 — destructible objects' damage and stage changes, SetBribed /
     // SetIntimidated, SetLocRefType and Game.AdvanceSkill: each subsystem
     // installs its own resources (#5802).
@@ -91,14 +92,12 @@ pub fn register(world: &mut World) {
     scanning::install(world);
     // M47.2 — script-filled reference-collection alias members (saved).
     world.init_resource::<AliasCollections>();
-    // M47.2 — scripted SetPlayerTeammate / SetDoingFavor flags (saved).
-    world.init_resource::<FollowerState>();
-    // M47.2 — scripted AddAchievement awards (saved).
-    world.init_resource::<Achievements>();
+    // M47.2 — scripted SetPlayerTeammate / SetDoingFavor flags (saved, #5802).
+    followers::install(world);
     // M47.2 — scripted ForceRefTo / Clear alias overrides (saved).
     world.init_resource::<AliasOverrides>();
-    // M47.2 — created-object references (saved, like the ledger above).
-    world.init_resource::<CreatedReferences>();
+    // M47.2 — created-object references (saved, like the ledger above; #5802).
+    created_references::install(world);
     // M47.2 — quest location-alias bindings (saved, like the ledger above).
     world.init_resource::<LocationAliasBindings>();
     // M47.2 — the Papyrus interpreter's per-frame allowance (#5763); transient,

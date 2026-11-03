@@ -435,10 +435,11 @@ pub fn build_save_registry() -> SaveRegistry {
         // re-roll it.
         .register_resource::<byroredux_scripting::LocationAliasBindings>(
             "LocationAliasBindings",
-        )
-        // M47.2 — Created Object "At" references: identity, base and
-        // placement, so a quest's created reference respawns in its cell.
-        .register_resource::<byroredux_scripting::CreatedReferences>("CreatedReferences")
+        );
+    // M47.2 — Created Object "At" references: identity, base and
+    // placement, so a quest's created reference respawns in its cell.
+    byroredux_scripting::created_references::register_saved(&mut r);
+    r
         // M47.2 — scripted ForceRefTo / Clear alias overrides, by reference
         // FormID; dropped when their quest stops.
         .register_resource::<byroredux_scripting::AliasOverrides>("AliasOverrides")
@@ -456,11 +457,9 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<byroredux_scripting::QuestScriptObjects>("QuestScriptObjects")
         // M47.2 — Papyrus RegisterForUpdate / RegisterForSingleUpdate (and
         // the GameTime pair) registrations and the clocks they count.
-        .register_resource::<byroredux_scripting::ScriptUpdates>("ScriptUpdates")
-        // M47.2 — Game.IncrementStat misc stats.
-        .register_resource::<byroredux_scripting::MiscStats>("MiscStats")
-        // M47.2 — Game.AddAchievement awards.
-        .register_resource::<byroredux_scripting::Achievements>("Achievements");
+        .register_resource::<byroredux_scripting::ScriptUpdates>("ScriptUpdates");
+    // M47.2 — Game.IncrementStat misc stats and Game.AddAchievement awards.
+    byroredux_scripting::misc_stats::register_saved(&mut r);
     // M47.2 — ObjectReference.SetLinkedRef links.
     byroredux_scripting::linked_refs::register_saved(&mut r);
     r
@@ -499,15 +498,17 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<byroredux_scripting::AnimationEventRegistrations>("AnimationEventRegistrations");
     // M47.2 — destructible references' damage.
     byroredux_scripting::destruction::register_saved(&mut r);
-    r.register_resource::<byroredux_scripting::HitRegistrations>("HitRegistrations")
-        // M47.2 — Location.SetKeywordData data.
-        .register_resource::<byroredux_scripting::LocationKeywordData>("LocationKeywordData")
+    r.register_resource::<byroredux_scripting::HitRegistrations>("HitRegistrations");
+    // M47.2 — Location.SetKeywordData data.
+    byroredux_scripting::location_keyword_data::register_saved(&mut r);
+    r
         // M47.2 — SetNoFavorAllowed / SetActorCause flags.
         .register_resource::<byroredux_scripting::ReferenceFlags>("ReferenceFlags")
         // M47.2 — InputEnableLayer handles and the controls they disable.
-        .register_resource::<byroredux_scripting::InputLayers>("InputLayers")
-        // M47.2 — Actor.SetPlayerTeammate / SetDoingFavor flags.
-        .register_resource::<byroredux_scripting::FollowerState>("FollowerState")
+        .register_resource::<byroredux_scripting::InputLayers>("InputLayers");
+    // M47.2 — Actor.SetPlayerTeammate / SetDoingFavor flags.
+    byroredux_scripting::followers::register_saved(&mut r);
+    r
         // M47.2 — Papyrus distance-event registrations.
         .register_resource::<byroredux_scripting::DistanceWatches>("DistanceWatches")
         // M47.2 — script-filled RefCollectionAlias members.

@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 
 use byroredux_core::ecs::resource::Resource;
+use byroredux_core::ecs::world::World;
 
 /// One actor's follower flags.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -65,6 +66,20 @@ impl FollowerState {
     pub fn set_doing_favor(&mut self, actor: u32, doing: bool) {
         self.actors.entry(actor).or_default().doing_favor = doing;
     }
+}
+
+/// #5802 — this subsystem's world setup, owned here instead of the crate's
+/// `register` hub: `SetPlayerTeammate` / `SetDoingFavor` flags (saved).
+pub fn install(world: &mut World) {
+    world.init_resource::<FollowerState>();
+}
+
+/// #5802 — this subsystem's saved column. Called by the binary's
+/// `build_save_registry` at its place in the row order (the schema
+/// fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    registry.register_resource::<FollowerState>("FollowerState");
 }
 
 #[cfg(test)]

@@ -13,6 +13,7 @@
 use std::collections::BTreeMap;
 
 use byroredux_core::ecs::resource::Resource;
+use byroredux_core::ecs::world::World;
 
 /// The misc stats scripts maintain: the four the CK says only scripts keep, and
 /// the three speechcraft counts only `FavorDialogueScript` raises here.
@@ -77,6 +78,23 @@ impl Achievements {
     pub fn has(&self, id: i32) -> bool {
         self.awarded.contains(&id)
     }
+}
+
+/// #5802 — this subsystem's world setup, owned here instead of the crate's
+/// `register` hub: `Game.IncrementStat` misc stats and `Game.AddAchievement` awards (both
+/// saved).
+pub fn install(world: &mut World) {
+    world.init_resource::<MiscStats>();
+    world.init_resource::<Achievements>();
+}
+
+/// #5802 — this subsystem's saved columns. Called by the binary's
+/// `build_save_registry` at their place in the row order (the schema
+/// fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    registry.register_resource::<MiscStats>("MiscStats");
+    registry.register_resource::<Achievements>("Achievements");
 }
 
 #[cfg(test)]
