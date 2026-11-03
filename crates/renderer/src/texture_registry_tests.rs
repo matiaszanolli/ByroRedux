@@ -1428,6 +1428,35 @@ fn promotion_requests_round_trip_through_the_host() {
     assert!(!reg.queue_promotion_bytes(9, 0, bc1_dds_from_level(0)), "unknown handle");
 }
 
+/// M39 TXS-WANT-005 — a demotion of a streamed texture is queued from its
+/// source's header alone (it uploads nothing), never coarser than the
+/// floor, and only when it moves the texture.
+#[test]
+fn demotion_queues_from_the_header_alone() {
+    let mut reg = make_registry_for_overflow_test(64, 0);
+    let mut entry = streamable_entry(7, 2);
+    entry.residency.as_mut().unwrap().first_resident = 0;
+    reg.textures.push(entry);
+    assert!(!reg.queue_demotion(0, 1), "not streamed: no source");
+    reg.stream_sources.insert(
+        0,
+        StreamSource {
+            path: "textures\\a.dds".into(),
+            clamp_mode: 0,
+            color_space: TextureColorSpace::Srgb,
+            header: bc1_dds_from_level(7),
+        },
+    );
+    assert!(!reg.queue_demotion(0, 0), "already at level 0");
+    assert!(reg.queue_demotion(0, 5), "demotes, clamped to the floor");
+    assert_eq!(reg.pending_promotion_count(), 1);
+    let queued = &reg.pending_promotions[0];
+    assert_eq!(queued.staged_bytes, 0, "a demotion stages nothing");
+    let change = queued.change.expect("a residency change");
+    assert_eq!((change.old_first, change.new_first), (0, 2));
+    assert_eq!(queued.dds_bytes.len(), 128, "header only");
+}
+
 /// M39 TXS-UP-004 — one promotion flush takes changes in queue order while
 /// their staged bytes fit the bound, and always at least one.
 #[test]

@@ -36,6 +36,33 @@ fn host_method_diagnostic_key(menu_name: &str, method: &str) -> (String, String)
 }
 
 /// #6197 — publish the terrain parallax settings to every live LAND tile:
+/// M39 — the texture streaming switch; the re-reads promotions asked for
+/// (landed into the promotion queue, new ones started); then this frame's
+/// queued promotions. Runs before `draw_frame`, so the new images'
+/// descriptor writes reach this frame's slot at `begin_frame`. The streamer
+/// is created the first frame streaming is on. Extracted from
+/// `render_one_frame` per the #5096 size-pin discipline.
+fn push_texture_streaming(
+    world: &byroredux_core::ecs::World,
+    streamer: &mut Option<crate::texture_streamer::TextureStreamer>,
+    ctx: &mut byroredux_renderer::VulkanContext,
+) {
+    let streaming = crate::setting_bool(
+        world,
+        byroredux_debug_ui::TEXTURE_STREAMING_SETTING_ID,
+        false,
+    );
+    if streaming && streamer.is_none() {
+        *streamer = crate::texture_streamer::TextureStreamer::new(
+            crate::asset_provider::build_texture_provider(&crate::cli_args::effective_args()),
+        );
+    }
+    if let Some(streamer) = streamer.as_mut() {
+        streamer.step(&mut ctx.texture_registry);
+    }
+    ctx.update_texture_streaming(streaming);
+}
+
 /// the metre settings, converted to world units here and nowhere else.
 /// Either setting at 0 turns the effect off (depth 0 on the GPU). Extracted
 /// from `render_one_frame` per the #5096 size-pin discipline.
@@ -660,14 +687,8 @@ impl App {
             ));
             // #6197 — terrain parallax settings onto every live tile.
             push_terrain_parallax(&self.world, ctx);
-            // M39 — the texture streaming switch, then this frame's queued
-            // promotions (before `draw_frame`, so their descriptor writes
-            // reach this frame's slot at `begin_frame`).
-            ctx.update_texture_streaming(crate::setting_bool(
-                &self.world,
-                byroredux_debug_ui::TEXTURE_STREAMING_SETTING_ID,
-                false,
-            ));
+            // M39 — texture streaming (before `draw_frame`).
+            push_texture_streaming(&self.world, &mut self.texture_streamer, ctx);
             // Terrain distance softening: the camera distance at which the
             // full-detail terrain is fully softened toward the LOD look.
             push_terrain_lod_soften(&self.world, self.streaming.as_ref(), ctx);

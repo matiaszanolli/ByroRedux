@@ -69,6 +69,7 @@ mod streaming_helpers;
 mod studio_host;
 mod systems;
 mod terrain_height;
+mod texture_streamer;
 mod ui_input;
 #[cfg(test)]
 mod workspace_hygiene_tests;
@@ -692,6 +693,9 @@ struct App {
     /// One-shot warning latch for an actual ground-cover capacity fault. Ring
     /// fill-in is normal and is never logged as truncation.
     groundcover_truncation_logged: bool,
+    /// M39 — re-reads the levels texture promotions need
+    /// (`texture_streamer`); created the first frame streaming is on.
+    texture_streamer: Option<texture_streamer::TextureStreamer>,
     /// Bindless generated Tier-3 atlas and the palette signature currently in
     /// it. The handle is updated in place on a worldspace palette change, so
     /// it never grows the registry during travel.
@@ -1316,6 +1320,7 @@ impl App {
             groundcover_residency: Default::default(),
             groundcover_collect_scratch: Default::default(),
             groundcover_truncation_logged: false,
+            texture_streamer: None,
             groundcover_detail_atlas: None,
             groundcover_species: Vec::new(),
             groundcover_species_table: Vec::new(),

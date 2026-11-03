@@ -194,6 +194,19 @@ impl TextureProvider {
             .or_else(|| self.extract(path))
     }
 
+    /// M39 — a promotion's re-read of a registry texture from chain level
+    /// `first` down ([`Archive::extract_texture_from_or_warn`]): a BA2 DX10
+    /// record inflates only the chunks that reach `first`, anything else
+    /// reads whole. Same precedence as [`Self::extract`].
+    pub(crate) fn extract_texture_from(&self, path: &str, first: u32) -> Option<Vec<u8>> {
+        let normalized = normalize_texture_path(path);
+        self.texture_archives
+            .iter()
+            .rev()
+            .find_map(|archive| archive.extract_texture_from_or_warn(normalized.as_ref(), first))
+            .or_else(|| self.extract(path))
+    }
+
     /// Whether a texture exists, without extracting or decompressing it.
     pub(crate) fn has_texture(&self, path: &str) -> bool {
         let normalized = normalize_texture_path(path);

@@ -422,6 +422,32 @@ impl TextureRegistry {
             .collect()
     }
 
+    /// M39 — queue a demotion of a streamed texture to first resident level
+    /// `target` (never coarser than its floor). A demotion uploads nothing,
+    /// so the source's DDS header is all the queued change carries.
+    /// `false` when the handle is not streamed or nothing would move.
+    pub fn queue_demotion(&mut self, handle: TextureHandle, target: u32) -> bool {
+        let Some(source) = self.stream_sources.get(&handle).cloned() else {
+            return false;
+        };
+        let demotes = self
+            .textures
+            .get(handle as usize)
+            .and_then(|entry| entry.residency)
+            .is_some_and(|residency| target > residency.first_resident);
+        demotes
+            && self
+                .queue_residency_change(
+                    handle,
+                    target,
+                    source.header,
+                    source.clamp_mode,
+                    source.color_space,
+                    source.path,
+                )
+                .is_some()
+    }
+
     /// M39 — queue the change a [`PromotionRequest`] asked for, from the
     /// bytes the host read (a DDS file whose payload starts at or above the
     /// request's target). `false` when the handle was released or has moved
