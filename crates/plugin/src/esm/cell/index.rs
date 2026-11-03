@@ -149,6 +149,11 @@ pub struct EsmCellIndex {
     /// ground material, friction and restitution the terrain collider of a
     /// tile painted with the texture carries.
     pub landscape_texture_havok: HashMap<u32, super::LandscapeTextureHavok>,
+    /// MATT form ID → the Havok surface material id its name hashes to
+    /// (#6048): what an LTEX `MNAM` resolves through. Skyrim only — see
+    /// `support::matt_havok_material` for the source and why FO4 /
+    /// Starfield stay empty.
+    pub material_type_havok: HashMap<u32, u32>,
     /// Starfield MTPT (Material Path) form ID → its `Material` path
     /// (#5757): the source an LMSW entry names through
     /// `KeyMaterialPathForm`. Vanilla `Starfield.esm` ships 877.
@@ -636,6 +641,7 @@ impl EsmCellIndex {
             layered_material_swaps,
             material_path_forms,
             landscape_texture_havok,
+            material_type_havok,
             cell_form_id_lookup: _,
             refr_lookup: _,
         } = other;
@@ -789,6 +795,9 @@ impl EsmCellIndex {
         self.layered_material_swaps.extend(layered_material_swaps);
         self.material_path_forms.extend(material_path_forms);
         self.landscape_texture_havok.extend(landscape_texture_havok);
+        // A plugin's LTEX may name a master's MATT; keep every plugin's so the
+        // terrain lookup resolves across the load order.
+        self.material_type_havok.extend(material_type_havok);
         // #6036 — after `texture_sets` holds every plugin so far, so an LTEX
         // naming a master's TXST (or a master LTEX whose TXST a later plugin
         // overrides) resolves against the merged maps.

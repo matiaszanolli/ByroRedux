@@ -14,7 +14,8 @@ anyhow = { workspace = true }
 flate2 = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
+# #6048 — `bscrc32`: a Skyrim MATT's Havok material id is the BSCRC32 of its name.
+byroredux-bsa = { path = "../bsa" }
 
 [dev-dependencies]
 env_logger = { workspace = true }
-byroredux-bsa = { path = "../bsa" }

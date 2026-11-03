@@ -692,6 +692,44 @@ fn ltex_gnam_maps_landscape_layer_to_authored_grass() {
     );
 }
 
+/// #6048 — a Skyrim LTEX names its Havok material by MATT form; the MATT
+/// arm hashes the record's `MNAM` name (BSCRC32, lowercase) to the
+/// `SkyrimHavokMaterial` id the game's bhk leaves carry. The expected ids
+/// are nif.xml's `SKY_HAV_MAT_STONE` / `SKY_HAV_MAT_GRASS`. FO4 MATTs are
+/// routed but resolve to nothing: no source gives the id its shapes carry.
+#[test]
+fn matt_names_hash_to_the_skyrim_havok_material_id() {
+    let matt = |id: u32, name: &str| {
+        build_record(
+            b"MATT",
+            id,
+            &[
+                (b"EDID", b"MaterialTest\0".to_vec()),
+                (b"MNAM", format!("{name}\0").into_bytes()),
+            ],
+        )
+    };
+    let mut body = matt(0x0001_2F34, "Stone");
+    body.extend(matt(0x0001_2F46, "Grass"));
+    body.extend(matt(0x0001_2F47, ""));
+    let group = wrap_group(b"MATT", &body);
+
+    let mut esm = tes4_with_hedr(1.71); // Skyrim
+    esm.extend_from_slice(&group);
+    let index = parse_esm(&esm).expect("synthetic Skyrim MATT parses");
+    assert_eq!(index.game, GameKind::Skyrim);
+    let ids = &index.cells.material_type_havok;
+    assert_eq!(ids.get(&0x0001_2F34), Some(&3_741_512_247), "SKY_HAV_MAT_STONE");
+    assert_eq!(ids.get(&0x0001_2F46), Some(&1_848_600_814), "SKY_HAV_MAT_GRASS");
+    assert_eq!(ids.len(), 2, "an empty MNAM names no material: {ids:?}");
+
+    let mut esm = tes4_with_hedr(1.0); // FO4
+    esm.extend_from_slice(&group);
+    let index = parse_esm(&esm).expect("synthetic FO4 MATT parses");
+    assert_eq!(index.game, GameKind::Fallout4);
+    assert!(index.cells.material_type_havok.is_empty());
+}
+
 #[test]
 fn scen_group_dispatches_into_typed_scene_index() {
     let scene = build_record(

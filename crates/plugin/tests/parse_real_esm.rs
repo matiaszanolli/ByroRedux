@@ -1436,6 +1436,13 @@ fn ltex_havok_data_decodes_on_shipped_masters() {
             None => {
                 assert!(materials.is_empty(), "{master}: no HNAM material byte");
                 assert!(with_matt > 0, "{master}: MNAM names the material");
+                // #6048 — every MATT an LTEX names hashes to a Havok id.
+                let unresolved: Vec<u32> = havok
+                    .values()
+                    .filter_map(|h| h.material_type_form)
+                    .filter(|matt| !index.cells.material_type_havok.contains_key(matt))
+                    .collect();
+                assert!(unresolved.is_empty(), "{master}: unresolved MATTs {unresolved:08X?}");
             }
         }
     }

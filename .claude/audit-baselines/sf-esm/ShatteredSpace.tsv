@@ -105,7 +105,7 @@ top	GRAS	1	978	4	1	0
 top	SUNP	1	941	1	0	0
 top	ENCH	1	701	2	1	0
 top	LVLB	1	699	2	0	0
-top	MATT	1	676	4	0	0
+top	MATT	1	676	4	1	0
 top	SECH	1	605	2	1	0
 top	AMDL	1	552	4	0	0
 top	CAMS	1	545	2	1	0
@@ -196,7 +196,7 @@ leaf	LTEX	13	0	0	1	0
 leaf	LVLB	2	0	0	0	0
 leaf	LVLI	363	0	0	1	0
 leaf	LVLN	25	0	0	1	0
-leaf	MATT	4	0	0	0	0
+leaf	MATT	4	0	0	1	0
 leaf	MESG	138	0	0	1	0
 leaf	MGEF	44	0	0	1	0
 leaf	MISC	46	0	0	1	0
@@ -257,3 +257,5 @@ leaf	ZOOM	4	0	0	0	0
 # regenerated 2026-10-15 (#5758): dispatch arms AOPF/DLBR/OMOD/SCEN/SECH/SMBN/SMQN/SMEN/TRNS/WTHS now
 # read handled=1; byte totals from the installed 2026-07-01 Starfield build.
 # regenerated 2026-10-21 (#5757): dispatch arms LMSW/MTPT now read handled=1.
+# 2026-11-03 (#6048): dispatch arm MATT now reads handled=1 (sf_smoke derives the flag from
+# DISPATCH_HANDLED_FOURCCS alone; no byte total moves).

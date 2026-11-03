@@ -1,6 +1,6 @@
 //! Walker functions extracted from ../mod.rs (stage B refactor).
 //!
-//! Functions: parse_modl_group, parse_ltex_group, parse_txst_group, parse_scol_group, parse_pkin_group, parse_movs_group, parse_mswp_group.
+//! Functions: parse_modl_group, parse_ltex_group, matt_havok_material, parse_txst_group, parse_scol_group, parse_pkin_group, parse_movs_group, parse_mswp_group.
 
 use super::helpers::{read_mesh_path, read_zstring};
 use super::*;
@@ -614,6 +614,30 @@ fn parse_ltex_group_inner(
         }
     }
     Ok(())
+}
+
+/// The Havok surface material id a MATT (Material Type) record names
+/// (#6048), or `None` where no source states how the game derives it.
+///
+/// Skyrim: the `SkyrimHavokMaterial` id a NIF `bhk` shape carries is
+/// "CRC32 of the lowercase of the Creation Kit Material Name" (nif.xml),
+/// which is the MATT `MNAM` string (xEdit `wbString(MNAM, 'Material Name')`)
+/// run through Bethesda's `BSCRC32` — the no-pre-inversion, no-final-xor
+/// CRC-32 [`byroredux_bsa::bscrc32`] already implements. Checked against
+/// vanilla `Skyrim.esm`: 63 of its 78 MATTs hash to a value nif.xml lists,
+/// every ground material among them (`Stone` 3741512247, `Dirt`, `Grass`,
+/// `Snow`, `Gravel`, `Sand`, `Mud`, `Ice`); the 15 others are block, weapon
+/// and creature materials the nif.xml enum does not enumerate.
+///
+/// FO4 / Starfield author MATT too, but their collision rides the Havok
+/// packfile blob, so nothing sources what id their shapes carry; they stay
+/// `None` rather than borrowing Skyrim's rule.
+pub(crate) fn matt_havok_material(game: GameKind, subs: &[SubRecord]) -> Option<u32> {
+    if game != GameKind::Skyrim {
+        return None;
+    }
+    let name = read_zstring(&subs.iter().find(|s| s.sub_type == *b"MNAM")?.data);
+    (!name.is_empty()).then(|| byroredux_bsa::bscrc32(&name))
 }
 
 /// Parse TXST (Texture Set) records. Resolves TX00..TX07 into named

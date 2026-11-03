@@ -463,10 +463,13 @@ the NIF is re-parsed on load and the values re-derived. Terrain has no
 bhk shape: a LAND tile's collider carries the LTEX Havok material of the
 tile's dominant ground texture (#6048, `land_surface_material` in
 `cell_loader/terrain.rs`) — the `HNAM` material byte on Oblivion/FO3/FNV,
-the same enum the bhk leaves use. Skyrim/FO4 name it by `MATT` form,
-which has no sourced mapping to the bhk id yet, so their tiles keep the
-static default; LTEX friction/restitution are decoded but not translated
-(no source gives their scale). Consumers:
+the same enum the bhk leaves use. Skyrim names it by `MATT` form instead,
+and the `MATT`'s `MNAM` name hashes (`BSCRC32`, lowercase) to the same
+`SkyrimHavokMaterial` id its bhk leaves carry (`EsmCellIndex::
+material_type_havok`). FO4 also names a `MATT`, but its collision is the
+Havok blob, so no source gives the id its shapes carry and its tiles keep
+the static default; LTEX friction/restitution are decoded but not
+translated (no source gives their scale). Consumers:
 
 - `PhysicsWorld::surface_material_under` — a ground-probe ray that
   returns the hit collider's material byte; `footstep_system` feeds it

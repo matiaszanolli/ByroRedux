@@ -269,6 +269,7 @@ pub struct EsmCellIndex {
     pub layered_material_swaps:      HashMap<u32, LayeredMaterialSwapRecord>,          // Starfield LMSW (#5757)
     pub material_path_forms:         HashMap<u32, String>,                             // Starfield MTPT path
     pub landscape_texture_havok:     HashMap<u32, LandscapeTextureHavok>,              // LTEX → HNAM/MNAM Havok data (#6048)
+    pub material_type_havok:         HashMap<u32, u32>,                                // MATT → Havok material id, BSCRC32 of MNAM (Skyrim, #6048)
 }
 ```
 

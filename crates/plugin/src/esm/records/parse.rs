@@ -54,7 +54,7 @@ pub const DISPATCH_HANDLED_FOURCCS: &[[u8; 4]] = &[
     *b"DLBR", *b"DOBJ", *b"DOOR", *b"ECZN", *b"EFSH", *b"ENCH", *b"EXPL", *b"EYES", *b"FACT", *b"FLOR",
     *b"FLST", *b"FURN", *b"GLOB", *b"GMST", *b"GRAS", *b"HAIR", *b"HDPT", *b"HUNG", *b"IDLE",
     *b"IDLM", *b"IMAD", *b"IMGS", *b"IMOD", *b"INGR", *b"IPCT", *b"IPDS", *b"KEYM", *b"KYWD", *b"LCRT", *b"LCTN",
-    *b"LGTM", *b"LIGH", *b"LMSW", *b"LSCR", *b"LSCT", *b"LTEX", *b"LVLC", *b"LVLI", *b"LVLN", *b"LVSP", *b"MESG",
+    *b"LGTM", *b"LIGH", *b"LMSW", *b"LSCR", *b"LSCT", *b"LTEX", *b"LVLC", *b"LVLI", *b"LVLN", *b"LVSP", *b"MATT", *b"MESG",
     *b"MGEF", *b"MICN", *b"MISC", *b"MOVS", *b"MSET", *b"MSTT", *b"MSWP", *b"MTPT", *b"MUSC", *b"NAVI",
     *b"NAVM", *b"NOTE", *b"NPC_", *b"OMOD", *b"OTFT", *b"PACK", *b"PERK", *b"PKIN", *b"PROJ",
     *b"PWAT", *b"QUST", *b"RACE", *b"RADS", *b"RCCT", *b"RCPE", *b"REGN", *b"RELA", *b"REPU", *b"RGDL",
@@ -156,6 +156,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     let mut worldspace_persistent_cells: HashMap<String, CellData> = HashMap::new();
     let mut statics: HashMap<u32, StaticObject> = HashMap::new();
     let mut ltex = crate::esm::cell::support::LtexTables::default();
+    let mut material_type_havok: HashMap<u32, u32> = HashMap::new();
     let mut worldspaces: HashMap<String, crate::esm::cell::WorldspaceRecord> = HashMap::new();
     let mut worldspace_climates: HashMap<String, u32> = HashMap::new();
     let mut texture_sets: HashMap<u32, TextureSet> = HashMap::new();
@@ -246,6 +247,12 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             b"LTEX" => {
                 parse_ltex_group(&mut reader, end, game, &mut ltex)?
             }
+            // #6048 — the material an LTEX `MNAM` names (Skyrim / FO4 / SF).
+            b"MATT" => super::extract_records(&mut reader, end, b"MATT", &mut |fid, subs| {
+                if let Some(id) = crate::esm::cell::support::matt_havok_material(game, subs) {
+                    material_type_havok.insert(fid, id);
+                }
+            })?,
             b"TXST" => parse_txst_group(
                 &mut reader,
                 end,
@@ -534,6 +541,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
         landscape_grasses: ltex.ltex_to_grass,
         landscape_texture_names: ltex.editor_ids,
         landscape_texture_havok: ltex.havok,
+        material_type_havok,
         worldspaces,
         worldspace_climates,
         texture_sets,

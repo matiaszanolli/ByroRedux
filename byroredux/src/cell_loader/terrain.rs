@@ -806,6 +806,8 @@ pub(super) struct TerrainSpawnCtx<'a> {
     pub landscape_texture_names: &'a HashMap<u32, String>,
     /// LTEX Havok data (#6048): the terrain collider's surface material.
     pub landscape_texture_havok: &'a HashMap<u32, esm::cell::LandscapeTextureHavok>,
+    /// MATT → Havok material id: what a Skyrim LTEX `MNAM` resolves to.
+    pub material_type_havok: &'a HashMap<u32, u32>,
     pub blas_specs: &'a mut Vec<(u32, u32, u32)>,
     /// Y-up water-plane height for this cell, or `None` when it has none.
     ///
@@ -973,18 +975,22 @@ pub(super) fn dominant_land_texture(land: &esm::cell::LandscapeData) -> Option<u
 }
 
 /// The Havok surface material a LAND tile's collider carries (#6048): the
-/// `HNAM` material of the tile's dominant ground texture. `None` (the
-/// static default) when the default land dominates, or the game names the
-/// material by `MATT` form instead (Skyrim / FO4 — no sourced mapping from
-/// a `MATT` to the `bhk` material id yet).
+/// material of the tile's dominant ground texture — its `HNAM` byte
+/// (Oblivion / FO3 / FNV), else the id its `MNAM` `MATT` hashes to
+/// (Skyrim; `material_types` holds no FO4 entry, see
+/// `EsmCellIndex::material_type_havok`). `None` (the static default) when
+/// the default land dominates or the material is unresolved.
 fn land_surface_material(
     land: &esm::cell::LandscapeData,
     havok: &HashMap<u32, esm::cell::LandscapeTextureHavok>,
+    material_types: &HashMap<u32, u32>,
 ) -> Option<u32> {
-    havok
-        .get(&dominant_land_texture(land)?)?
-        .material
-        .map(u32::from)
+    let havok = havok.get(&dominant_land_texture(land)?)?;
+    havok.material.map(u32::from).or_else(|| {
+        havok
+            .material_type_form
+            .and_then(|matt| material_types.get(&matt).copied())
+    })
 }
 
 /// The LAND tile's collider: the whole tile, hidden quadrants included
@@ -1244,12 +1250,14 @@ pub(super) fn spawn_terrain_mesh(
         landscape_grasses,
         landscape_texture_names,
         landscape_texture_havok,
+        material_type_havok,
         blas_specs,
         water_y,
         game,
         hidden_quadrants,
     } = spawn;
-    let surface_material = land_surface_material(land, landscape_texture_havok);
+    let surface_material =
+        land_surface_material(land, landscape_texture_havok, material_type_havok);
     let origin_x = grid_x as f32 * EXTERIOR_CELL_UNITS;
     let origin_y = grid_y as f32 * EXTERIOR_CELL_UNITS;
 
@@ -2616,10 +2624,11 @@ mod land_havok_tests {
         assert_eq!(dominant_land_texture(&tile), None);
     }
 
-    /// The material is the `HNAM` byte (Oblivion / FO3 / FNV); a Skyrim / FO4
-    /// texture names a `MATT` and gives no material here.
+    /// The material is the `HNAM` byte (Oblivion / FO3 / FNV); a Skyrim
+    /// texture names a `MATT`, which resolves through the MATT table, and an
+    /// unresolved `MATT` (FO4, or one the table lacks) gives no material.
     #[test]
-    fn surface_material_is_the_dominant_textures_hnam_material() {
+    fn surface_material_is_the_dominant_textures_hnam_or_matt_material() {
         let mut havok = HashMap::new();
         havok.insert(
             SNOW,
@@ -2639,12 +2648,20 @@ mod land_havok_tests {
                 restitution: 30,
             },
         );
+        let no_matts = HashMap::new();
         let snowy = land([base(SNOW), base(SNOW), base(SNOW), base(DIRT)]);
-        assert_eq!(land_surface_material(&snowy, &havok), Some(14));
+        assert_eq!(land_surface_material(&snowy, &havok, &no_matts), Some(14));
         let grassy = land([base(GRASS), base(GRASS), base(GRASS), base(DIRT)]);
-        assert_eq!(land_surface_material(&grassy, &havok), None);
+        assert_eq!(land_surface_material(&grassy, &havok, &no_matts), None);
         let dirty = land([base(DIRT), base(DIRT), base(DIRT), base(SNOW)]);
-        assert_eq!(land_surface_material(&dirty, &havok), None, "no Havok data for DIRT");
+        assert_eq!(
+            land_surface_material(&dirty, &havok, &no_matts),
+            None,
+            "no Havok data for DIRT"
+        );
+        // SKY_HAV_MAT_GRASS, keyed by the LTEX's MATT.
+        let matts = HashMap::from([(0x0001_2345, 1_848_600_814)]);
+        assert_eq!(land_surface_material(&grassy, &havok, &matts), Some(1_848_600_814));
     }
 
     /// End to end through physics: the footstep probe reads the material
