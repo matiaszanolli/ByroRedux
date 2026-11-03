@@ -1,8 +1,10 @@
 # Texture Streaming — Product Requirements
 
-**Status**: APPROVED (2026-11-03). Revision 4 records the owner's §10
-decisions: every question takes its recommendation, and implementation
-issues may be filed. Revision 3 folded in review round 2:
+**Status**: ACTIVE (2026-11-03). Revision 5 files the tracking issues.
+Revision 4 recorded the owner's §10 decisions, every one the
+recommendation. The PRD's two **Phase 0: verify** items (TXS-UP-001, the
+TXS-SRC-001 chunk census) are filed as Phase 0 acceptance criteria.
+Revision 3 folded in review round 2:
 every §3.3 row re-verified at a new HEAD, the Gamebryo skip-level and
 Oblivion texture-quality citations tightened to the sources that state
 them, the Q4/Q5 recommendations made consistent with each other, Q2 split
@@ -17,6 +19,9 @@ phases and the decisions it needs from the owner. Statements about how an origin
 file format, a tool or an external specification behaves cite an external
 source; a claim that could not be verified is marked **Phase 0: verify**
 instead of being stated as fact.
+
+**Tracking**: #6626 (parent). Phases: #6627 (0), #6628 (1), #6629 (2),
+#6630 (3), #6631 (4).
 
 **Scope**: M39 in the [ROADMAP Tier 5 table](../../ROADMAP.md#tier-5--renderer-polish-quality-not-capability).
 Every 2D DDS texture the engine loads from a BSA, a BA2 or the loose tier
@@ -687,3 +692,4 @@ default for every in-scope game.
 | 2 | 2026-11-01 | Review round 1 folded in: BC2 overrun premise (#4512), settings-registry and image-replacement HEAD claims, #2030 status, wanted-mip attribution and verbatim Unreal quotes, testable TXS-RES-003 / TXS-WANT-004, launcher and debug-CLI owners, prose numbers to links | claude: revise |
 | 3 | 2026-11-03 | Review round 2 folded in: §3.3 re-verified at `8fb9b21d8` (row 3 line range, row 7 live-budget sample point, reserved-state redirect, closed state vocabulary), Gamebryo skip-level and Oblivion texture-quality citations, §6 row 2 re-sourced, retiring-image bytes (§2, TXS-TEL-001), testable TXS-WANT-002 / TXS-RES-006 / TXS-RES-007, TXS-G-002 aligned with TXS-BUD-002, A6 cell ids, A10 and phase exits matched to declared routes, Phase 0 applies decisions taken at approval, Q2 split into (a)/(b), Q4 fallback and drift consequence, Q5 made consistent with Q4, sibling PRD links | claude: revise |
 | 4 | 2026-11-03 | Owner decisions Q1–Q5 recorded, every one the recommendation (Q2 both parts); status line and the NIFAL Related row updated | owner: approved |
+| 5 | 2026-11-03 | → ACTIVE: parent #6626 and phase issues #6627–#6631 filed, `**Tracking**:` line added; the Phase 0 verify items are acceptance criteria of #6627 | — |
