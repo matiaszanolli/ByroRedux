@@ -20,8 +20,8 @@ shadows on RTX 4070 Ti. Current entity count + bench numbers in
 [ROADMAP Project Stats](ROADMAP.md#project-stats) (refreshed per
 `/session-close`).*
 
-![Prospector Saloon exterior with procedural clouds (Fallout: New Vegas)](docs/screenshots/prospector-saloon-exterior.png)
-*Outside Prospector Saloon in Goodsprings, Fallout: New Vegas — procedural clouds fill the sky.*
+![The Lucky 38 on the New Vegas Strip (Fallout: New Vegas)](docs/screenshots/new-vegas-strip.png)
+*The Lucky 38 and LVB Station on the New Vegas Strip, streamed from `FalloutNV.esm`'s `TheStripWorldNew` worldspace.*
 
 ![Cyrodiil wilderness with ruins under a maple canopy (Oblivion)](docs/screenshots/oblivion-cyrodiil-ruins.png)
 *Cyrodiil wilderness from `Oblivion.esm` — SpeedTree foliage, ground-cover grass and weathered ruins in the distance.*

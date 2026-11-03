@@ -11,7 +11,7 @@ tools, no mod manager.
 |---|---|---|---|
 | [`whiterun-bannered-mare.png`](whiterun-bannered-mare.png) | The Elder Scrolls V: Skyrim SE | `WhiterunBanneredMare` | 6,228 entities, 460 meshes, 352 textures; RT multi-light, captured 2026-11-03 after the lighting overhaul |
 | [`prospector-saloon.png`](prospector-saloon.png) | Fallout: New Vegas | `GSProspectorSaloonInterior` | 2,278 entities, 382 meshes, 345 textures; cell XCLL lighting, RT multi-light, captured 2026-11-03 after the lighting overhaul |
-| [`prospector-saloon-exterior.png`](prospector-saloon-exterior.png) | Fallout: New Vegas | Goodsprings — outside Prospector Saloon | Exterior scene with procedural clouds |
+| [`new-vegas-strip.png`](new-vegas-strip.png) | Fallout: New Vegas | `TheStripWorldNew` grid 0,0 radius 2 — the Lucky 38 and LVB Station | 11,383 entities, 1,171 meshes, 603 textures; exterior worldspace streaming, captured 2026-11-03 after the lighting overhaul |
 | [`oblivion-cyrodiil-ruins.png`](oblivion-cyrodiil-ruins.png) | The Elder Scrolls IV: Oblivion | Cyrodiil exterior (location not recorded) | SpeedTree canopy, ground-cover grass, ruins in the distance |
 | [`anvil-oaken-halls.png`](anvil-oaken-halls.png) | The Elder Scrolls IV: Oblivion | `AnvilHeinrichOakenHallsHouse` | 1,193 entities, 281 meshes, 251 textures; cell XCLL + per-mesh NiLight torches, RT multi-light, captured 2026-11-03 after the lighting overhaul |
 
@@ -39,6 +39,10 @@ cargo run --release -- \
     --bsa "$FNV_DATA/Fallout - Meshes.bsa" \
     --textures-bsa "$FNV_DATA/Fallout - Textures.bsa" \
     --textures-bsa "$FNV_DATA/Fallout - Textures2.bsa"
+
+# FNV — the New Vegas Strip. Radius 2 around 0,0 covers every populated
+# cell, Strip Station through the Lucky 38 (0,1) and the Freeside gate (0,2).
+cargo run --release -- --game fnv --wrld TheStripWorldNew --grid 0,0 --radius 2
 ```
 
 Press **Escape** to capture the mouse, **WASD** + mouse look to fly
