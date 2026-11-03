@@ -13,10 +13,10 @@ tools, no mod manager.
 | [`prospector-saloon.png`](prospector-saloon.png) | Fallout: New Vegas | `GSProspectorSaloonInterior` | 789 entities, 85 FPS, cell XCLL lighting |
 | [`prospector-saloon-exterior.png`](prospector-saloon-exterior.png) | Fallout: New Vegas | Goodsprings — outside Prospector Saloon | Exterior scene with procedural clouds |
 | [`oblivion-cyrodiil-ruins.png`](oblivion-cyrodiil-ruins.png) | The Elder Scrolls IV: Oblivion | Cyrodiil exterior (location not recorded) | SpeedTree canopy, ground-cover grass, ruins in the distance |
-| `anvil-oaken-halls.png` | The Elder Scrolls IV: Oblivion | `AnvilHeinrichOakenHallsHouse` | 379 entities, 376 meshes, 104 textures, 12 lights (cell XCLL + per-mesh NiLight torches), ~1600 FPS |
+| [`anvil-oaken-halls.png`](anvil-oaken-halls.png) | The Elder Scrolls IV: Oblivion | `AnvilHeinrichOakenHallsHouse` | 1,193 entities, 281 meshes, 251 textures; cell XCLL + per-mesh NiLight torches, RT multi-light, captured 2026-11-03 after the lighting overhaul |
 
 `anvil-oaken-halls.png` is the hero shot for the Oblivion tier going
-green. Save the screenshot you captured to this path.
+green.
 
 ## How to reproduce
 
