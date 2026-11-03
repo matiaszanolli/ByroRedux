@@ -576,7 +576,9 @@ before and after latent waits. File-backed, remaining list mutations and array
 transfers, object-scoped, arbitrary-key, and cross-mod shared calls remain
 deliberately unsupported until
 an engine service can honor
-their complete semantics. Recognizing the provider is not enough to claim
+their complete semantics. For file-backed state that service is now in scope:
+[LMC Q5](../prd/legacy-mod-compatibility.md#10-decisions-required) (2026-11-03)
+confines it to a per-mod data directory with bounded size. Recognizing the provider is not enough to claim
 compatibility. The function signatures are anchored to PapyrusUtil's
 [published `StorageUtil.psc`](https://github.com/eeveelo/PapyrusUtil/blob/master/Scripts/Source/StorageUtil.psc).
 
@@ -662,6 +664,10 @@ rejects catalogs that cannot be represented by the classic 8-bit load order.
 Numeric indices are callback-local compatibility values; portable forms
 continue to use stable source identity. Version probes deliberately remain
 feature-discovery evidence instead of returning a fake extender version.
+[LMC Q3](../prd/legacy-mod-compatibility.md#10-decisions-required) (2026-11-03)
+reverses that rule: each probe will answer the highest API level of its
+family that the catalog covers for the calling mod (LMC-SCR-010), never a
+fabricated build number.
 At live SCPT attachment, supported `Set` statements and nested
 `if`/`elseif`/`else` branches now translate into one static ECS statement tree.
 Preserved `SCTX` is preferred; source-less `SCDA` accepts exact `Begin`/`Set`/

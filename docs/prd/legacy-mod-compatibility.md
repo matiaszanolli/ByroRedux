@@ -1,11 +1,13 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: PROPOSED (2026-11-01). Revision 3, same day, folds in two
-review rounds (loose-root precedence and ownership, ITM and list-merge
-semantics, missing masters, level-aware per-mod version probes, archive
-pairing, new catalog rows, save semantics, Starfield medium plugins). The
-decisions it needs from the project owner are collected in §10; nothing
-below is built as a result of this document yet. Statements about how the
+**Status**: APPROVED (2026-11-03). Revision 4 records the owner's §10
+decisions; every one is decided and implementation issues may be filed.
+Q1 changed the promise for unofficial patches: a known patch is not
+loaded, the engine stands in for it (LMC-FIX-004), and the user is told it
+is not needed. Revision 3 (2026-11-01) folded in two review rounds
+(loose-root precedence and ownership, ITM and list-merge semantics, missing
+masters, level-aware per-mod version probes, archive pairing, new catalog
+rows, save semantics, Starfield medium plugins). Statements about how the
 original engines behave cite external sources (UESP and the Creation Kit /
 GECK wikis, extender sources, tool documentation); a claim that could not
 be verified is marked **Phase 0: verify** instead of being stated as fact.
@@ -51,9 +53,10 @@ statements, given by the project owner, define the product:
    scripts, UI, settings) work as authored. Mods that are *workarounds* for
    engine defects are neither needed nor pretended to work. The engine says
    which is which, per mechanism, before launch.
-3. **Fixes are built in; patches and extenders are not required.** Unofficial
-   patches load like any plugin and win by load order
-   ([FIX-005](../engine/builtin-fixes.md#1-requirements)); the engine never needs them.
+3. **Fixes are built in; patches and extenders are not required.** A known
+   unofficial patch is not loaded: the engine already carries its fixes,
+   stands in for it towards the mods that depend on it, and tells the user
+   it is not needed (decision Q1, LMC-FIX-004).
    Extender-dependent mods run without the extender because the engine owns
    the script-facing surface those extenders added. The extender binary
    itself is never loaded ([NG-001](../engine/sandboxed-linked-mods.md#5-non-goals)).
@@ -201,7 +204,7 @@ after that point.
 
 | # | Mechanism | Examples | Disp. | Today |
 |---|---|---|---|---|
-| T1 | Unofficial patches as plugins | UOP, UFO3P, YUP, USSEP, UFO4P, SCP | D1 (plugin) + D2 (necessity) | Loads as any plugin; fix catalog pending |
+| T1 | Unofficial patches as plugins | UOP, UFO3P, YUP, USSEP, UFO4P, SCP | D2, with a stand-in for dependents (LMC-FIX-004, decision Q1) | Loads as any plugin; fix catalog pending |
 | T2 | Generated patch plugins | Bashed Patch, Smashed Patch, Synthesis output, Reqtificator output | D1 (plugin) + D2 (necessity where §5.2 merge covers it) | Loads as any plugin |
 | T3 | Merged plugins, ESL-flagged plugins, "cleaned" masters | load-order management | D1 (plugin) + D2 (necessity) | No slot ceiling in the design; see LMC-ID-004 |
 | T4 | FO4 precombine / previs repair packs | PRP | D1 (data) + D2 (necessity) | REFR fallback when precombines are absent (M49); forced REFR-first on override: see LMC-REC-012 |
@@ -226,8 +229,10 @@ after that point.
   passes its acceptance scenario (§7.3).
 - **LMC-G-002 — No required fix stack.** Vanilla data on ByroRedux behaves as
   if the game's fix stack were installed ([FIX-001](../engine/builtin-fixes.md#1-requirements)).
-  A user who installs the stack anyway loses nothing and gains nothing, and
-  is told so.
+  A user who installs the stack anyway is told it is not needed; a known
+  unofficial patch is not loaded (LMC-FIX-001), the extender binary never is
+  (LMC-EXT-001), and mods that depend on either still run (LMC-FIX-004,
+  LMC-G-003).
 - **LMC-G-003 — Extender-free.** A mod that depends on an extender's
   script-facing API runs without the extender when its calls are in the
   catalog. Coverage is stated per function, per family, per game.
@@ -342,7 +347,8 @@ after that point.
   content MUST be an activation diagnostic, never a silent replacement
   ([PKG-013](../engine/sandboxed-linked-mods.md#8-package-manifest-requirements)).
 - **LMC-ID-011 — Missing masters.** When an enabled plugin declares a master
-  that is not in the profile, activation MUST disable that plugin and every
+  that is not in the profile (a skipped unofficial patch counts as present,
+  LMC-FIX-004), activation MUST disable that plugin and every
   plugin that transitively depends on it, report the chain (plugin, missing
   master, each disabled dependent), and continue activating the rest of the
   profile. The root that ships a disabled plugin (LMC-ID-012) is disabled
@@ -720,13 +726,27 @@ after that point.
 [Built-in Fixes](../engine/builtin-fixes.md) owns the requirements. This document
 adds the user-facing contract:
 
-- **LMC-FIX-001.** When a user enables an unofficial patch the fix catalog
-  already covers, the report MUST say how many of the patch's edits are
-  redundant with catalog entries and how many differ (the patch wins for
-  those, per FIX-005), so the user can decide to keep it.
+- **LMC-FIX-001 — Known patches are not loaded (decision Q1).** When a
+  profile contains an unofficial patch the fix catalog names for that game
+  (§3.1 row T1), activation MUST NOT load it, and the report MUST tell the
+  user it is not needed. The report MUST also count the patch's edits that
+  the catalog covers and list those it does not; an edit on that list is not
+  applied, so each one is a catalog gap, counted in the compatibility
+  metric until the catalog covers it.
 - **LMC-FIX-002.** A fix is never applied to content a mod changed
   (FIX-006), and the explain tooling shows which mod disarmed which fix.
 - **LMC-FIX-003.** `intent`-class fixes follow decision Q7.
+- **LMC-FIX-004 — Stand-in for a skipped patch (decision Q1).** A patch
+  skipped under LMC-FIX-001 MUST appear installed to everything that asks:
+  it satisfies master lists (so LMC-ID-011 does not disable its dependents),
+  and the load-order queries that mods use as presence probes
+  (`IsModLoaded`, `GetModIndex`, `GetNthModName` and their families,
+  LMC-SCR-010) answer as if it were loaded. A record the patch adds and an
+  enabled mod references MUST resolve to an engine-provided record under
+  the patch's identity. A reference the engine cannot yet resolve is
+  reported per mod, with the record it names, and counted as a catalog gap;
+  the mod is not disabled for it. How the engine provides those records
+  without redistributing the patch (FIX-002) is a Phase 0 design item.
 
 ### 5.9 Animation and body (`LMC-ANIM`)
 
@@ -1018,7 +1038,10 @@ item this document carries: the archive-pairing rules per game
 "introduced in" API levels of every extender and library family
 (LMC-SCR-004, LMC-SCR-010), levelled-list duplicate weighting on Skyrim+
 (LMC-REC-003), the SEQ-free quest start on every load path (R11), and
-every "verify" cell in §3.1. Exit: the catalog,
+every "verify" cell in §3.1. Design how the stand-in of LMC-FIX-004
+provides the records a skipped patch adds without redistributing the
+patch (FIX-002), and add the per-game list of known patch plugins to the
+fix catalog. Exit: the catalog,
 the corpus list and the scenarios are checked in; no mod files are.
 
 **Phase 1 — Mod profile and the record layer (M46).**
@@ -1045,7 +1068,8 @@ attach rate and extender API coverage targets agreed in Phase 0 for Wave 1.
 
 **Phase 4 — Built-in fixes, Phases 0–1 (parallel track).**
 [builtin-fixes.md §7](../engine/builtin-fixes.md#7-delivery-sequence) for FNV and
-Skyrim SE, plus the redundancy reporting (LMC-FIX-001, LMC-EXT-002). Exit:
+Skyrim SE, plus skipping known patches with their report (LMC-FIX-001,
+LMC-EXT-002) and the stand-in for their dependents (LMC-FIX-004). Exit:
 fix parity numbers published for both games.
 
 **Phase 5 — Animation and body.**
@@ -1078,11 +1102,23 @@ Each needs the project owner. The recommendation is the first option.
    is never loaded. If the intent was instead that both are *out of scope*
    because their job is built in, §3.1 rows T1 and N1 change from D1+D2 to
    D2 only, and LMC-G-003 narrows to the fix facade.
+   **Decided** (2026-11-03): neither reading as written. A known unofficial
+   patch is never required and is not loaded: the engine carries its fixes
+   and tells the user the patch is not needed (LMC-FIX-001). Towards the
+   mods that depend on it, the engine mocks its installed state and
+   provides its interfaces: the patch satisfies master lists and presence
+   probes, and the records it adds resolve to engine-provided records
+   (LMC-FIX-004). Script extenders take this draft's reading:
+   extender-dependent mods run through engine-owned services and the
+   extender binary is never loaded (row N1 and LMC-G-003 unchanged). Row T1
+   becomes D2 with the stand-in.
 2. **Q2 — List-merge default.** Recommended: `merge` by default with
    `legacy` per profile, using the per-form multiset rules in LMC-REC-003.
    Alternative: `legacy` by default, `merge` opt-in, which keeps documented
    load-order advice exact at the cost of making list patches necessary
    again.
+   **Decided** (2026-11-03): the recommendation — `merge` by default,
+   `legacy` per profile, per-form multiset rules of LMC-REC-003.
 3. **Q3 — Version and installation probes.** Recommended: answer per mod
    and per family, from the eager preflight: the highest API level at which
    every function the mod calls from that level or below is covered, and
@@ -1093,8 +1129,13 @@ Each needs the project owner. The recommendation is the first option.
    returned), accepting that version-gated mods disable themselves. The
    recommendation and Alternative A both reverse a stated SDK-plan rule and
    need an explicit decision.
+   **Decided** (2026-11-03): the recommendation — a per-mod, per-family API
+   level from the eager preflight (LMC-SCR-010). This explicitly reverses
+   the SDK plan's rule that probes never return a version; the plan cites
+   this decision.
 4. **Q4 — First wave.** Recommended: FNV and Skyrim SE (§7.1). Alternative:
    Skyrim SE alone, for the largest ecosystem first.
+   **Decided** (2026-11-03): the recommendation — FNV and Skyrim SE.
 5. **Q5 — File-backed mod state.** JsonUtil, JContainers JSON files and
    similar are "deliberately unsupported" in the SDK plan. Recommended:
    support them confined to a per-mod data directory
@@ -1102,20 +1143,34 @@ Each needs the project owner. The recommendation is the first option.
    because a large share of Skyrim frameworks persist configuration this
    way. Alternative: keep unsupported and port those frameworks' persistence
    to principal storage case by case.
+   **Decided** (2026-11-03): the recommendation — supported, confined to a
+   per-mod data directory with bounded size. This reverses the SDK plan's
+   "deliberately unsupported" for file-backed state; the plan cites this
+   decision.
 6. **Q6 — Total conversions.** Recommended: Tale of Two Wastelands and
    Enderal are a separate corpus tier measured after Wave 1 passes, not
    gating it. Alternative: exclude them from the corpus.
+   **Decided** (2026-11-03): the recommendation — Tale of Two Wastelands
+   and Enderal form a separate corpus tier measured after Wave 1 passes.
 7. **Q7 — `intent`-class fixes.** Carried from
    [builtin-fixes.md Q2](../engine/builtin-fixes.md#8-open-questions). Recommended:
    on by default, per-profile switch, each entry tagged so a disputed one can
    be turned off alone.
+   **Decided** (2026-11-03): the recommendation — on by default,
+   per-profile switch, each entry tagged so a disputed one can be turned
+   off alone. This closes [builtin-fixes.md
+   Q2](../engine/builtin-fixes.md#8-open-questions).
 8. **Q8 — Profile import scope.** Recommended: `plugins.txt`,
    `loadorder.txt`, MO2 profiles and Vortex deployments (LMC-ID-006).
    Alternative: `plugins.txt` only.
+   **Decided** (2026-11-03): the recommendation — `plugins.txt`,
+   `loadorder.txt`, MO2 profiles and Vortex deployments.
 9. **Q9 — Blocking versus reporting.** Recommended: data is never blocked;
    code is never loaded; both are reported. Alternative: refuse activation
    when a profile contains a D3 item, which punishes users for a harmless
    leftover.
+   **Decided** (2026-11-03): the recommendation — data is never blocked,
+   code is never loaded, both are reported.
 
 ---
 
@@ -1149,3 +1204,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 1 | 2026-11-01 | First draft: disposition model, mechanism catalog, requirements by layer, wrongs-righted register, candidate corpus, phases, nine decisions | — |
 | 2 | 2026-11-01 | Review round 1 folded in | Round 1: revise |
 | 3 | 2026-11-01 | Review round 2 folded in; the topics of both rounds are listed in the status line | Round 2: revise |
+| 4 | 2026-11-03 | Owner decisions Q1–Q9 recorded; Q1 amended: known unofficial patches are not loaded and the engine stands in for them (thesis 3, T1, LMC-G-002, LMC-FIX-001, new LMC-FIX-004, LMC-ID-011, Phase 0 design item); Q2–Q9 take the recommendation | owner: approved |

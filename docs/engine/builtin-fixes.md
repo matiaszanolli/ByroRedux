@@ -32,9 +32,13 @@ as in [Sandboxed Linked Mods](sandboxed-linked-mods.md).
   applied where that content is parsed or translated. Systems and the renderer
   MUST NOT carry per-game bug branches, and consumers see only corrected
   content.
-- **FIX-005 — Load order still wins.** A user-loaded plugin, including an
-  unofficial patch the player installs anyway, MUST override built-in fixes
-  through normal load order. Built-in fixes MUST NOT double-apply or fight it.
+- **FIX-005 — Load order still wins.** A user-loaded plugin MUST override
+  built-in fixes through normal load order. Built-in fixes MUST NOT
+  double-apply or fight it. The exception is an unofficial patch the catalog
+  names for that game: it is not loaded at all, the engine stands in for it
+  towards the mods that depend on it, and the user is told it is not needed
+  ([Legacy Mod Compatibility Q1](../prd/legacy-mod-compatibility.md#10-decisions-required),
+  LMC-FIX-001, LMC-FIX-004).
 - **FIX-006 — Guarded.** A data, script, or asset fix MUST apply only when its
   target still matches the known vanilla (buggy) content. A mismatch, such as
   a different game build or content already corrected upstream, skips the fix
@@ -146,8 +150,9 @@ keeping FIX-005:
   and copies its bug. Unofficial patches load after the DLC for this reason.
   Applying after official content checks the precondition against the
   record that actually won.
-- **User plugins still win.** A user-loaded USSEP, YUP, or any mod merges later
-  and replaces the corrected record like any other override.
+- **User plugins still win.** A user mod merges later and replaces the
+  corrected record like any other override. A known unofficial patch (USSEP,
+  YUP, …) never reaches this point: it is not loaded (FIX-005).
 - **No double-apply.** A user-loaded patch that sets the same value is a no-op
   by FIX-007. A user mod that sets a different value simply wins.
 
@@ -225,7 +230,10 @@ subsystem by subsystem, each landing with its catalog entry and test.
    is a quest-stage fix on a quest already past that stage.
 2. **Intent-class entries.** Are `intent` fixes on by default like `defect`
    fixes? FIX-001 says every fix is in, but some unofficial-patch changes are
-   disputed by players.
+   disputed by players. **Decided** by
+   [Legacy Mod Compatibility Q7](../prd/legacy-mod-compatibility.md#10-decisions-required)
+   (2026-11-03): on by default, with a per-profile switch, each entry tagged
+   so a disputed one can be turned off alone.
 3. **Vanilla reproduction.** Should a developer-only switch disable built-in
    fixes, so vanilla behaviour can be compared in regression triage? If yes,
    it must not become a player-facing setting that recreates the problem.
