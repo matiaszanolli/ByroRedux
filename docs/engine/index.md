@@ -98,6 +98,7 @@ a working checkout and want to understand or change engine internals.
 | [Debug CLI](debug-cli.md) | debug-protocol, debug-server, byro-dbg | Live ECS inspection, Papyrus expression queries, screenshots |
 | [Texture Upscale Workbench](../../tools/texture-upscale/README.md) | bsa, byro-texture-upscale | BSA/BA2 set discovery, external ESRGAN reference pass, semantic-map guided upscale |
 | [Memory Budget](memory-budget.md) | renderer, bsa, byroredux | VRAM/RAM ceilings, SSBO sizes, LRU eviction thresholds, deferred-destroy queue |
+| [Texture Streaming](texture-streaming.md) | renderer, bsa, byroredux | PROPOSED (2026-11-03), M39 Phase 0: residency state machine, floor rule (256 px, measured), wanted-mip estimate, promotion queue, budget and eviction; BA2/BSA census and read-cost tables |
 | [Testing](testing.md) | all | Unit + integration test inventory, how to run |
 | [Dependencies](dependencies.md) | all | Workspace crates and per-crate deps |
 
