@@ -27,7 +27,7 @@ use std::collections::{HashMap, HashSet};
 
 use byroredux_core::ecs::components::RenderLayer;
 use byroredux_core::ecs::{
-    GlobalTransform, MeshHandle, TextureHandle, Transform, World,
+    GlobalTransform, MeshHandle, TextureHandle, Transform, World, WorldBound,
 };
 use byroredux_core::math::coord::{zup_to_yup_pos, EXTERIOR_CELL_UNITS};
 use byroredux_nif::import::MaterialTextureSet;
@@ -952,6 +952,15 @@ fn append_lod_skirts(
     }
 }
 
+/// World-space bound of one LOD block for frustum culling, over its emitted
+/// (non-hole) vertices. `holes` covers only the `n * n` grid samples; the skirt
+/// vertices [`append_lod_skirts`] pushes after them are never holes and do
+/// count — they hang below the block. Indexing `holes[i]` past the grid was a
+/// main-thread panic on every skirted block (EXT-D6-2026-10-27-01, #6550).
+fn terrain_block_bound(vertices: &[Vertex], holes: &[bool]) -> WorldBound {
+    vertex_bound(vertices, |i| holes.get(i).copied().unwrap_or(false))
+}
+
 /// Build + spawn one finest-band LOD block whose SW-corner cell is
 /// `(bx0, by0)`. Returns `None`
 /// (nothing spawned) when the block is entirely holes — every cell either
@@ -1117,12 +1126,7 @@ fn spawn_lod_block(
 
     ctx.allocator.as_ref()?;
 
-    // World-space bound from the emitted (non-hole) vertices for frustum
-    // culling. Computed over all pushed vertices; hole placeholders sit at
-    // y=0 inside the block footprint, so they never enlarge the sphere
-    // beyond the real terrain extent. `holes` covers only the grid samples;
-    // the skirt vertices `append_lod_skirts` pushed after them are never holes.
-    let bound = vertex_bound(&vertices, |i| holes.get(i).copied().unwrap_or(false));
+    let bound = terrain_block_bound(&vertices, &holes);
 
     // Distant-terrain texture. Priority:
     //   1. EXAL's authored legacy diffuse quad: Oblivion's FormID-keyed
@@ -1534,6 +1538,33 @@ mod tests {
         for tri in indices.chunks(3) {
             assert!(face_normal(&vertices, tri)[0] < 0.0);
         }
+    }
+
+    /// #6550 — the bound runs over a vertex list longer than the hole mask
+    /// (the skirts are appended after the grid samples). A hole vertex far
+    /// away must not stretch the sphere; a skirt vertex must.
+    #[test]
+    fn terrain_block_bound_covers_skirts_beyond_the_hole_mask() {
+        let top = |x: f32, z: f32| Vertex::new([x, 100.0, z], [1.0, 1.0, 1.0], [0.0, 1.0, 0.0], [0.0, 0.0]);
+        // A 2x2 grid; the NE sample is a hole placeholder parked far away.
+        let mut vertices = vec![top(0.0, 0.0), top(1024.0, 0.0), top(0.0, -1024.0), top(50_000.0, -50_000.0)];
+        let holes = [false, false, false, true];
+        let mut indices = Vec::new();
+        append_lod_skirts(&mut vertices, &mut indices, &[(0, 1, [0.0, 0.0, 1.0])]);
+        assert!(vertices.len() > holes.len(), "the skirts outrun the mask");
+
+        let bound = terrain_block_bound(&vertices, &holes);
+        // The hole is excluded: the sphere stays inside the 1024-unit block.
+        assert!(bound.radius < 1024.0, "a hole vertex stretched the bound: {bound:?}");
+        // The skirt bottom (100 - drop) is included: the box spans
+        // y ∈ [100 - drop, 100], so its centre sits half a drop down, where
+        // the grid alone would centre it at y = 100.
+        assert!(
+            (bound.center.y - (100.0 - LOD_SKIRT_DROP / 2.0)).abs() < 1e-3,
+            "the skirt vertices must enlarge the bound: {bound:?}"
+        );
+        let grid_only = vertex_bound(&vertices[..3], |_| false);
+        assert!(bound.radius > grid_only.radius);
     }
 
     #[test]
