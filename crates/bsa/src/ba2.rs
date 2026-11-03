@@ -421,6 +421,59 @@ impl Ba2Archive {
         self.files.len()
     }
 
+    /// M39 (TXS-SRC-001) — `path`'s DDS with only the chunks that hold
+    /// levels `[first_mip, num_mips)`: the chunks before the first one whose
+    /// range reaches `first_mip` are neither read nor inflated. The header
+    /// still describes the whole chain; the payload starts at the returned
+    /// level, the first kept chunk's `start_mip` (at or below `first_mip`
+    /// when a chunk spans it). `first_mip` 0, or at or below the first
+    /// chunk, gives exactly [`Self::extract`]. A GNRL entry is refused.
+    pub fn extract_dx10_mips(&self, path: &str, first_mip: u32) -> io::Result<(Vec<u8>, u32)> {
+        let key = normalize_path(path);
+        let entry = self.files.get(&key).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("file not found in BA2: {}", path),
+            )
+        })?;
+        let Ba2Entry::Dx10 {
+            dxgi_format,
+            width,
+            height,
+            num_mips,
+            is_cubemap,
+            chunks,
+        } = entry
+        else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("BA2 '{path}' is a GNRL entry; mip ranges exist only in DX10 records"),
+            ));
+        };
+        // Chunks are in mip-0-first order (validated at open); keep the
+        // first one that reaches `first_mip` and every one after it.
+        let keep_from = chunks
+            .iter()
+            .position(|chunk| u32::from(chunk.end_mip) >= first_mip)
+            .unwrap_or(chunks.len().saturating_sub(1));
+        let covered_first = chunks
+            .get(keep_from)
+            .map_or(0, |chunk| u32::from(chunk.start_mip));
+        let dds = finish_dx10_payload(
+            Dx10TexInfo {
+                dxgi_format: *dxgi_format,
+                width: *width,
+                height: *height,
+                num_mips: *num_mips,
+                is_cubemap: *is_cubemap,
+            },
+            read_dx10_chunk_payloads(&self.file, &chunks[keep_from..])?,
+            self.compression,
+            path,
+        )?;
+        Ok((dds, covered_first))
+    }
+
     /// The DX10 record's header fields and per-chunk mip ranges for `path`,
     /// or `None` when the path is absent or a GNRL entry. Reads only the
     /// record table parsed at open; nothing is extracted.
@@ -2637,6 +2690,125 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let archive = result.expect("non-monotonic start_mip must open, not fail");
         assert_eq!(archive.file_count(), 1);
+    }
+
+    /// A one-record DX10 v1 BA2 whose chunks carry real zlib payloads:
+    /// chunk `i` holds the bytes `chunk_bytes[i]` and covers `ranges[i]`
+    /// (start_mip, end_mip). `corrupt` lists chunks whose stored payload is
+    /// replaced with bytes that cannot inflate.
+    fn build_dx10_ba2_with_payloads(
+        ranges: &[(u16, u16)],
+        chunk_bytes: &[Vec<u8>],
+        corrupt: &[usize],
+        width: u16,
+        num_mips: u8,
+    ) -> Vec<u8> {
+        use flate2::{write::ZlibEncoder, Compression};
+        use std::io::Write;
+        let packed: Vec<Vec<u8>> = chunk_bytes
+            .iter()
+            .enumerate()
+            .map(|(i, raw)| {
+                let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+                enc.write_all(raw).unwrap();
+                let mut z = enc.finish().unwrap();
+                if corrupt.contains(&i) {
+                    z.iter_mut().for_each(|b| *b = 0xFF);
+                }
+                z
+            })
+            .collect();
+        let records_end = 24u64 + 24 + ranges.len() as u64 * 24;
+        let payload_len: u64 = packed.iter().map(|z| z.len() as u64).sum();
+        let name_table_offset = records_end + payload_len;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"BTDX");
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(b"DX10");
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&name_table_offset.to_le_bytes());
+        let mut base = [0u8; 24];
+        base[13] = ranges.len() as u8;
+        base[14..16].copy_from_slice(&24u16.to_le_bytes());
+        base[16..18].copy_from_slice(&width.to_le_bytes()); // height
+        base[18..20].copy_from_slice(&width.to_le_bytes()); // width
+        base[20] = num_mips;
+        base[21] = 71; // BC1_UNORM
+        bytes.extend_from_slice(&base);
+        let mut offset = records_end;
+        for (i, &(start, end)) in ranges.iter().enumerate() {
+            let mut chunk = [0u8; 24];
+            chunk[0..8].copy_from_slice(&offset.to_le_bytes());
+            chunk[8..12].copy_from_slice(&(packed[i].len() as u32).to_le_bytes());
+            chunk[12..16].copy_from_slice(&(chunk_bytes[i].len() as u32).to_le_bytes());
+            chunk[16..18].copy_from_slice(&start.to_le_bytes());
+            chunk[18..20].copy_from_slice(&end.to_le_bytes());
+            chunk[20..24].copy_from_slice(&0xBAADF00Du32.to_le_bytes());
+            bytes.extend_from_slice(&chunk);
+            offset += packed[i].len() as u64;
+        }
+        for z in &packed {
+            bytes.extend_from_slice(z);
+        }
+        let name = "textures\\probe.dds";
+        bytes.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(name.as_bytes());
+        bytes
+    }
+
+    /// M39 A2 / TXS-SRC-001 — a mip-range extract inflates only the chunks
+    /// that reach the range, and its payload is the tail of a full extract's.
+    /// The head chunks are made un-inflatable: a full extract fails on them,
+    /// a floor extract never touches them.
+    #[test]
+    fn dx10_extract_mip_range_reads_only_tail_chunks() {
+        // 64×64 BC1, 7 levels: 2048, 512, 128 B for levels 0-2, then 32+8+8+8.
+        let ranges = [(0u16, 0u16), (1, 1), (2, 6)];
+        let chunk_bytes = vec![vec![0xA0u8; 2048], vec![0xB1; 512], (0..184u8).collect()];
+        let clean = build_dx10_ba2_with_payloads(&ranges, &chunk_bytes, &[], 64, 7);
+        let path = write_temp_ba2(&clean, "mips_clean");
+        let archive = Ba2Archive::open(&path).expect("opens");
+        let _ = std::fs::remove_file(&path);
+        let full = archive
+            .extract("textures\\probe.dds")
+            .expect("full extract");
+        let (floor, covered) = archive
+            .extract_dx10_mips("textures\\probe.dds", 2)
+            .expect("floor");
+        assert_eq!(covered, 2);
+        let header = 148;
+        assert_eq!(&floor[..header], &full[..header], "same full-chain header");
+        assert_eq!(
+            &floor[header..],
+            &full[header + 2048 + 512..],
+            "payload is the full tail"
+        );
+        let (all, covered) = archive
+            .extract_dx10_mips("textures\\probe.dds", 0)
+            .expect("all");
+        assert_eq!(
+            (all, covered),
+            (full.clone(), 0),
+            "first_mip 0 is a full extract"
+        );
+        // A level inside a chunk's span keeps that whole chunk.
+        let (mid, covered) = archive
+            .extract_dx10_mips("textures\\probe.dds", 4)
+            .expect("mid");
+        assert_eq!((covered, mid.len()), (2, header + 184));
+
+        let corrupt = build_dx10_ba2_with_payloads(&ranges, &chunk_bytes, &[0, 1], 64, 7);
+        let path = write_temp_ba2(&corrupt, "mips_corrupt");
+        let archive = Ba2Archive::open(&path).expect("opens");
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            archive.extract("textures\\probe.dds").is_err(),
+            "full extract inflates the heads"
+        );
+        let (floor_only, _) = archive
+            .extract_dx10_mips("textures\\probe.dds", 2)
+            .expect("the floor read never inflates the corrupt head chunks");
+        assert_eq!(floor_only, floor);
     }
 
     /// M39 / TXS-SRC-001 — `dx10_layout` reports the record's header fields
