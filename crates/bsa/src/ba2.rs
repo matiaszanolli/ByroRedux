@@ -154,17 +154,37 @@ struct Dx10Chunk {
     offset: u64,
     packed_size: u32,
     unpacked_size: u32,
-    // MILESTONE: M40 streaming (partial-mip-range texture upload) — see #1049.
-    // Today the BA2 reader extracts full DDS files; once M40 streams mip
-    // ranges, these per-chunk bounds are how the renderer requests the
-    // subset it needs without re-reading the whole texture.
-    //
-    // `start_mip` is already a live read (the monotonic-order validation
-    // below), so it needs no `#[allow(dead_code)]` — only `end_mip` is
-    // still write-only, reserved for M40 (#1761/TD8-004).
+    // The mip range this chunk stores. `extract` still assembles every
+    // chunk; `Ba2Archive::dx10_layout` exposes the ranges, which M39 texture
+    // streaming reads to fetch a floor without inflating the high mips
+    // (docs/prd/texture-streaming.md, TXS-SRC-001).
     start_mip: u16,
-    #[allow(dead_code)]
     end_mip: u16,
+}
+
+/// One chunk of a DX10 texture record as the archive stores it: the mip
+/// range it covers and its compressed / inflated sizes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Dx10ChunkInfo {
+    /// Absolute byte offset of the chunk's stored payload in the archive.
+    pub offset: u64,
+    pub start_mip: u16,
+    pub end_mip: u16,
+    /// 0 for a chunk stored raw.
+    pub packed_size: u32,
+    pub unpacked_size: u32,
+}
+
+/// A DX10 texture record's header fields and chunk layout, read from the
+/// record table without extracting the texture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dx10Layout {
+    pub dxgi_format: u8,
+    pub width: u16,
+    pub height: u16,
+    pub num_mips: u8,
+    pub is_cubemap: bool,
+    pub chunks: Vec<Dx10ChunkInfo>,
 }
 
 impl Ba2Archive {
@@ -399,6 +419,39 @@ impl Ba2Archive {
 
     pub fn file_count(&self) -> usize {
         self.files.len()
+    }
+
+    /// The DX10 record's header fields and per-chunk mip ranges for `path`,
+    /// or `None` when the path is absent or a GNRL entry. Reads only the
+    /// record table parsed at open; nothing is extracted.
+    pub fn dx10_layout(&self, path: &str) -> Option<Dx10Layout> {
+        match self.files.get(&normalize_path(path))? {
+            Ba2Entry::General { .. } => None,
+            Ba2Entry::Dx10 {
+                dxgi_format,
+                width,
+                height,
+                num_mips,
+                is_cubemap,
+                chunks,
+            } => Some(Dx10Layout {
+                dxgi_format: *dxgi_format,
+                width: *width,
+                height: *height,
+                num_mips: *num_mips,
+                is_cubemap: *is_cubemap,
+                chunks: chunks
+                    .iter()
+                    .map(|c| Dx10ChunkInfo {
+                        offset: c.offset,
+                        start_mip: c.start_mip,
+                        end_mip: c.end_mip,
+                        packed_size: c.packed_size,
+                        unpacked_size: c.unpacked_size,
+                    })
+                    .collect(),
+            }),
+        }
     }
 
     /// Iterate `(path, packed_size, unpacked_size)` for every GNRL
@@ -2584,5 +2637,29 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let archive = result.expect("non-monotonic start_mip must open, not fail");
         assert_eq!(archive.file_count(), 1);
+    }
+
+    /// M39 / TXS-SRC-001 — `dx10_layout` reports the record's header fields
+    /// and every chunk's stored mip range without extracting, and answers
+    /// `None` for an absent path.
+    #[test]
+    fn dx10_layout_reports_header_and_chunk_mip_ranges() {
+        let path = write_temp_ba2(&build_dx10_ba2(24, &[0, 2]), "layout");
+        let result = Ba2Archive::open(&path);
+        let _ = std::fs::remove_file(&path);
+        let archive = result.expect("synthetic DX10 BA2 opens");
+        let layout = archive
+            .dx10_layout("Textures/Probe.dds")
+            .expect("lookup is case- and slash-insensitive");
+        assert_eq!((layout.width, layout.height, layout.num_mips), (4, 4, 1));
+        assert_eq!(layout.dxgi_format, 98);
+        assert!(!layout.is_cubemap);
+        let ranges: Vec<(u16, u16)> = layout
+            .chunks
+            .iter()
+            .map(|c| (c.start_mip, c.end_mip))
+            .collect();
+        assert_eq!(ranges, vec![(0, 1), (2, 1)]);
+        assert!(archive.dx10_layout("textures\\absent.dds").is_none());
     }
 }
