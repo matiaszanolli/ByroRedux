@@ -264,6 +264,17 @@ grep -Fq 'check FAIL 0 1 1' "$M47_SMOKE" \
 grep -Fq 'hard_fail=1' "$M47_SMOKE" \
     || fail "m47-triggers.sh no longer has a HARD failure path for zero recognized REFRs"
 
+# #6553 — the `terrain-seams:` gate exempts FO4's one vanilla crack (#6458)
+# through `fo4_known_seam_crack`; an edit to it (or to the `first_dirty_pair`
+# match) could widen or break the exemption with no signal short of an FO4
+# boundary run on a machine with game data. Run its decision-table self-test.
+EXTERIORS_SMOKE="$ROOT_DIR/docs/smoke-tests/m-exteriors.sh"
+bash "$EXTERIORS_SMOKE" --self-test > /dev/null \
+    || fail "m-exteriors.sh --self-test failed (FO4 known-seam-crack exemption)"
+# Same counts on a different pair is the case the exemption exists to reject.
+grep -Fq 'check reject fo4 1 3 "7,2/8,2"' "$EXTERIORS_SMOKE" \
+    || fail "m-exteriors.sh --self-test no longer covers a new crack with the known counts"
+
 # EXT-D7-2026-09-21-01 / #4730 — every gate the workflow dispatches must
 # resolve to a real script. The m-exteriors arm passed `m-exteriors.sh`
 # into run_gate, which appends `.sh` itself, so CI executed
