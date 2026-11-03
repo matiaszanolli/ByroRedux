@@ -707,7 +707,7 @@ mod tests {
 
     fn at(entity: u32, x: f32, can_initiate: bool) -> Participant {
         Participant {
-            entity: entity,
+            entity,
             position: Vec3::new(x, 0.0, 0.0),
             can_initiate,
             sandbox_radius: None,

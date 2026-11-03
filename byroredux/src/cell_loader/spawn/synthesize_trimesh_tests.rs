@@ -596,16 +596,16 @@ fn effect_shader_sheets_do_not_synthesize_collision() {
     let solid = ImportedMaterial::default();
     assert!(render_geometry_can_collide(&solid));
 
-    let mut effect = ImportedMaterial::default();
-    effect.effect_shader = Some(BsEffectShaderData::default());
+    let effect = ImportedMaterial {
+        effect_shader: Some(BsEffectShaderData::default()),
+        ..Default::default()
+    };
     assert!(!render_geometry_can_collide(&effect));
 
-    let mut decal = ImportedMaterial::default();
-    decal.is_decal = true;
+    let decal = ImportedMaterial { is_decal: true, ..Default::default() };
     assert!(!render_geometry_can_collide(&decal));
 
-    let mut tested = ImportedMaterial::default();
-    tested.alpha_test = true;
+    let tested = ImportedMaterial { alpha_test: true, ..Default::default() };
     assert!(!render_geometry_can_collide(&tested));
 }
 
@@ -614,17 +614,20 @@ fn effect_shader_sheets_do_not_synthesize_collision() {
 /// the canonical "light made visible" signal; an unlit opaque mesh (a sign) is still a body.
 #[test]
 fn unlit_blended_sheets_do_not_synthesize_collision() {
-    let mut beam = ImportedMaterial::default();
-    beam.material_kind = byroredux_renderer::MATERIAL_KIND_NO_LIGHTING;
-    beam.has_alpha = true;
+    let beam = ImportedMaterial {
+        material_kind: byroredux_renderer::MATERIAL_KIND_NO_LIGHTING,
+        has_alpha: true,
+        ..Default::default()
+    };
     assert!(!render_geometry_can_collide(&beam));
 
-    let mut unlit_sign = ImportedMaterial::default();
-    unlit_sign.material_kind = byroredux_renderer::MATERIAL_KIND_NO_LIGHTING;
+    let unlit_sign = ImportedMaterial {
+        material_kind: byroredux_renderer::MATERIAL_KIND_NO_LIGHTING,
+        ..Default::default()
+    };
     assert!(render_geometry_can_collide(&unlit_sign));
 
-    let mut blended_lit = ImportedMaterial::default();
-    blended_lit.has_alpha = true;
+    let blended_lit = ImportedMaterial { has_alpha: true, ..Default::default() };
     assert!(render_geometry_can_collide(&blended_lit), "alpha blending alone (glass, foliage cards) is not VFX");
 }
 
@@ -649,7 +652,7 @@ fn fnv_light_vfx_sheets_synthesize_no_collider() {
         if !lower.starts_with("meshes\\effects\\") || !lower.ends_with(".nif") || !wanted.iter().any(|w| lower.contains(w)) {
             continue;
         }
-        let scene = byroredux_nif::parse_nif(&archive.extract(&path).unwrap()).unwrap();
+        let scene = byroredux_nif::parse_nif(&archive.extract(path).unwrap()).unwrap();
         let mut pool = byroredux_core::string::StringPool::new();
         let imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);
         for mesh in &imported.meshes {

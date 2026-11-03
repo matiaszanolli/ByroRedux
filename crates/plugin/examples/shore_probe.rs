@@ -25,13 +25,15 @@ use std::collections::HashMap;
 
 const SIDE: usize = 33;
 const SPACING: f32 = 128.0;
-const CELL: f32 = 4096.0;
 /// Steps between the dry start and the first wet vertex we accept, at most.
 const MAX_APPROACH_STEPS: usize = 6;
 /// Inland steps that must stay gentle and dry (1 024 BU), crossing a cell edge.
 const INLAND_STEPS: usize = 8;
 
 type Vertex = (i32, i32);
+/// (score, start vertex, direction (dx, dy) in lattice steps, lake surface,
+/// depth reached, wet steps).
+type Transect = (f32, Vertex, (i32, i32), f32, f32, usize);
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -85,8 +87,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        // (score, start vertex, direction (dx, dy) in lattice steps, lake surface, depth reached)
-        let mut found: Vec<(f32, Vertex, (i32, i32), f32, f32, usize)> = Vec::new();
+        let mut found: Vec<Transect> = Vec::new();
         for (&(gx, gy), cell) in cells {
             if let Some([x0, y0, x1, y1]) = window {
                 if gx < x0 || gx > x1 || gy < y0 || gy > y1 {

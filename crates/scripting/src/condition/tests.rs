@@ -131,7 +131,7 @@ fn cond(
 /// an uncatalogued function. The same index stays modeled on its own games.
 #[test]
 fn colliding_indices_are_unmodeled_on_the_games_that_reuse_them() {
-    use byroredux_plugin::esm::reader::GameKind::{Fallout3NV, Fallout4, Oblivion, Skyrim, Starfield};
+    use byroredux_plugin::esm::reader::GameKind::{Fallout3NV, Fallout4, Skyrim};
 
     // (index, a game that reuses it, a game the catalog row is right for)
     let cases = [

@@ -2215,8 +2215,7 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(room);
         world.insert_resource(crate::components::InteriorSkyExposureRes(false));
-        let mut grade = byroredux_scripting::ImageSpace::default();
-        grade.saturation = 0.25;
+        let grade = byroredux_scripting::ImageSpace { saturation: 0.25, ..Default::default() };
         world.insert_resource(byroredux_scripting::ImageSpaceBase(grade));
 
         let set_aside = InteriorOwnedState::take(&mut world);

@@ -780,6 +780,7 @@ mod tests {
         assert_eq!((m.metalness, m.specular_strength, m.ior), (0.0, 0.0, 1.0));
     }
 
+    #[allow(clippy::assertions_on_constants)] // a retuned SOURCE_RADIUS_M that breaks r/d <= 0.1 or the 1-unit floor must fail here
     #[test]
     fn source_radius_stays_below_a_tenth_of_the_nearest_receiver() {
         // Nearest measured surfaces: the box ceiling 0.3 m above the emitter,

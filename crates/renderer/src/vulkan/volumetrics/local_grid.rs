@@ -1348,15 +1348,17 @@ mod tests {
     const METER: f32 = WORLD_UNITS_PER_METER;
 
     fn flame(center_m: [f32; 3], radius_m: f32) -> GpuFogVolume {
-        let mut v = GpuFogVolume::default();
-        v.center_shape = [
-            center_m[0] * METER,
-            center_m[1] * METER,
-            center_m[2] * METER,
-            0.0,
-        ];
-        v.half_extents_extinction = [radius_m * METER, radius_m * METER, radius_m * METER, 1.0];
-        v.profile_params[0] = FOG_VOLUME_PROFILE_FLAME as f32;
+        let mut v = GpuFogVolume {
+            center_shape: [
+                center_m[0] * METER,
+                center_m[1] * METER,
+                center_m[2] * METER,
+                0.0,
+            ],
+            half_extents_extinction: [radius_m * METER, radius_m * METER, radius_m * METER, 1.0],
+            ..Default::default()
+        };
+        v.profile_params[0] = FOG_VOLUME_PROFILE_FLAME;
         v
     }
 
@@ -1556,7 +1558,7 @@ mod tests {
     fn passive_fog_and_out_of_reach_sources_get_no_box() {
         let mut set = LocalBoxSet::default();
         let mut fog = flame([2.0, 0.5, 3.0], 0.3);
-        fog.profile_params[0] = FOG_VOLUME_PROFILE_HOMOGENEOUS as f32;
+        fog.profile_params[0] = FOG_VOLUME_PROFILE_HOMOGENEOUS;
         update(&mut set, &[fog, flame([500.0, 0.0, 0.0], 0.3)], 0.0);
         assert_eq!(set.live_count(), 0);
     }

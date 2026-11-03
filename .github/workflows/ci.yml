@@ -219,11 +219,18 @@ jobs:
       # test build reaches); it went red twice in three days without CI
       # noticing. Non-blocking: the sweep-heavy test targets re-accumulate
       # lints on active days, so this reports without failing the job — the
-      # plain clippy gate above stays the blocking one.
+      # plain clippy gate above stays the blocking one. continue-on-error makes
+      # GitHub report a red run as `success`, so a failure also raises a
+      # warning annotation and a job-summary line (#6492, third silent red).
       - name: cargo clippy (--all-targets, non-blocking)
         if: success() || failure()
         continue-on-error: true
-        run: cargo clippy --workspace --all-targets --keep-going -- -D warnings
+        run: |
+          if ! cargo clippy --workspace --all-targets --keep-going -- -D warnings; then
+            echo "::warning::cargo clippy --all-targets is red — test/example-target lints have accumulated (non-blocking, #5621 / #6492)"
+            echo "### cargo clippy --all-targets is red (non-blocking) — see the step log (#6492)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
       # #5121 / #4595 — the renderer's `unsafe` blocks are guarded by its
       # crate-level `#![deny(clippy::undocumented_unsafe_blocks)]`, but that
       # gate only exists while clippy actually reaches the crate: rustc 1.98

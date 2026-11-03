@@ -681,8 +681,7 @@ fn is_player_in_jail_follows_the_sentence() {
 fn oblivion_weapon_anim_type_groups_the_data_type() {
     use byroredux_plugin::esm::records::{EsmIndex, ItemKind, ItemRecord};
     let (mut world, actor, ..) = world(GameKind::Oblivion);
-    let mut index = EsmIndex::default();
-    index.game = GameKind::Oblivion;
+    let mut index = EsmIndex { game: GameKind::Oblivion, ..Default::default() };
     // Blade1H, Blade2H, Blunt1H, Blunt2H, Staff, Bow.
     for (form, weapon_type) in (0x100u32..).zip(0u8..6) {
         let mut kind = ItemKind::weapon_stub(10, 0);

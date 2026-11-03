@@ -655,7 +655,6 @@ mod tests {
     }
 
     const WHITERUN: u32 = 0x28170;
-    const GUARD: u32 = 0x777;
     const CHEST: u32 = 0xC4E57;
 
     /// A Skyrim player with a crime faction whose exterior jail marker is jail 2's exit, 150 gold of crime

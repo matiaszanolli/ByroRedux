@@ -4958,6 +4958,7 @@ fn triangle_frag_has_no_unshadowed_xcll_directional_fill() {
     assert!(!lighting.contains("lightType > 2.5"));
 }
 
+#[allow(clippy::assertions_on_constants)] // MAX_SHADED_HITS >= 2 is a const pin on the shader ceiling (RLT-GI-001)
 #[test]
 fn bounded_path_lights_two_diffuse_vertices_at_tiers_two_and_three() {
     use crate::shader_constants::MAX_SHADED_HITS;
