@@ -148,6 +148,7 @@ fn spawn_template(
         placement_root: root,
         // A template is never placed: no collider, fallback or otherwise.
         collision_fallback: MissingCollisionFallback::None,
+        collision_authoring: cached.collision_authoring,
         spawned_nif_lights: 0,
     };
     let prepared = prepare_mesh_uploads(ctx, &pc, &cached, &resolved);

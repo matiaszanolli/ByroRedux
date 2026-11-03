@@ -315,7 +315,13 @@ components and the **M28.5 kinematic character controller** (closed
 2026-05-22) collides against the static architecture — the player walks
 on floors, slides along walls, autosteps, and falls under gravity. When
 a NIF authored no `bhk*` collision, a trimesh fallback is synthesised
-from the render geometry (gated on `base_layer`, #1294). Havok
+from the render geometry (gated on `base_layer`, #1294). Overlay surfaces
+never take it: decals, alpha-tested cards, effect-shader and unlit blended
+VFX sheets (#6459), and any alpha-blended surface whose NIF authored no
+collision body at all (#6555 — Oblivion's cobwebs and FX sheets; the
+original engines give such a mesh no body). A blended surface keeps the
+stand-in only where collision was authored but cannot be read yet (FO4+
+packed Havok, a precombine's `_physics.nif`). Havok
 constraints / ragdolls remain parse-only.
 
 ### 11. Mesh GPU upload

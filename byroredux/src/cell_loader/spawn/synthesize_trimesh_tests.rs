@@ -593,21 +593,32 @@ fn packed_proxy_is_keyframed_and_parented_to_visual_placement() {
 /// wedged the character capsule against it.
 #[test]
 fn effect_shader_sheets_do_not_synthesize_collision() {
+    let none = CollisionAuthoringSummary::default();
     let solid = ImportedMaterial::default();
-    assert!(render_geometry_can_collide(&solid));
+    assert!(render_geometry_can_collide(&solid, none));
 
     let effect = ImportedMaterial {
         effect_shader: Some(BsEffectShaderData::default()),
         ..Default::default()
     };
-    assert!(!render_geometry_can_collide(&effect));
+    assert!(!render_geometry_can_collide(&effect, PACKED));
 
     let decal = ImportedMaterial { is_decal: true, ..Default::default() };
-    assert!(!render_geometry_can_collide(&decal));
+    assert!(!render_geometry_can_collide(&decal, PACKED));
 
     let tested = ImportedMaterial { alpha_test: true, ..Default::default() };
-    assert!(!render_geometry_can_collide(&tested));
+    assert!(!render_geometry_can_collide(&tested, PACKED));
 }
+
+/// A NIF that authored FO4+ packed Havok the importer cannot read yet: its render geometry is the
+/// stand-in body.
+const PACKED: CollisionAuthoringSummary = CollisionAuthoringSummary {
+    classic: 0,
+    new_physics: 1,
+    phantom: 0,
+    plane_shapes: 0,
+    external: 0,
+};
 
 /// #6459 — FO3 / FNV light beams, light rays and glow fills are `BSShaderNoLightingProperty` +
 /// a blended `NiAlphaProperty`: no effect shader and no alpha test. The unlit + blended pair is
@@ -619,16 +630,42 @@ fn unlit_blended_sheets_do_not_synthesize_collision() {
         has_alpha: true,
         ..Default::default()
     };
-    assert!(!render_geometry_can_collide(&beam));
+    assert!(!render_geometry_can_collide(&beam, PACKED));
 
     let unlit_sign = ImportedMaterial {
         material_kind: byroredux_renderer::MATERIAL_KIND_NO_LIGHTING,
         ..Default::default()
     };
-    assert!(render_geometry_can_collide(&unlit_sign));
+    assert!(render_geometry_can_collide(&unlit_sign, CollisionAuthoringSummary::default()));
 
     let blended_lit = ImportedMaterial { has_alpha: true, ..Default::default() };
-    assert!(render_geometry_can_collide(&blended_lit), "alpha blending alone (glass, foliage cards) is not VFX");
+    assert!(
+        render_geometry_can_collide(&blended_lit, PACKED),
+        "alpha blending alone (glass, foliage cards) is not VFX where collision was authored"
+    );
+}
+
+/// #6555 — a blended surface is an overlay when its NIF authored no collision body (Oblivion's
+/// cobwebs and FX sheets are plain lit `NiAlphaProperty` meshes, `material_kind == 0`), and a
+/// stand-in body when collision was authored where the importer cannot read it: FO4+ packed Havok
+/// in the NIF, or a precombine's sibling `_physics.nif`. Opaque surfaces keep the fallback.
+#[test]
+fn blended_surfaces_collide_only_where_collision_was_authored() {
+    let blended = ImportedMaterial { has_alpha: true, ..Default::default() };
+    let nothing = CollisionAuthoringSummary::default();
+    assert!(!render_geometry_can_collide(&blended, nothing), "a cobweb is not a body");
+    let trigger_only = CollisionAuthoringSummary { phantom: 1, ..Default::default() };
+    assert!(!render_geometry_can_collide(&blended, trigger_only), "a phantom is a trigger, not a body");
+    assert!(render_geometry_can_collide(&blended, PACKED));
+    let precombine = CollisionAuthoringSummary { external: 1, ..Default::default() };
+    assert!(render_geometry_can_collide(&blended, precombine), "a precombine's bodies are its _physics.nif");
+    let classic = CollisionAuthoringSummary { classic: 1, ..Default::default() };
+    assert!(render_geometry_can_collide(&blended, classic), "authored but declined shapes keep the stand-in");
+    assert!(render_geometry_can_collide(&ImportedMaterial::default(), nothing), "opaque keeps the fallback");
+    // The precombine cache entry carries the marker.
+    let cached = crate::cell_loader::precombined::geometry_only_cached(Vec::new(), Vec::new());
+    assert!(!cached.collision_authoring.authors_no_body());
+    assert!(!cached.collision_authoring.needs_packed_collision_fallback(), "telemetry counts stay as they were");
 }
 
 /// #6459 — against the shipped data: FNV's census bases (the largest by placement count) are
@@ -653,11 +690,12 @@ fn fnv_light_vfx_sheets_synthesize_no_collider() {
             continue;
         }
         let scene = byroredux_nif::parse_nif(&archive.extract(path).unwrap()).unwrap();
+        let authoring = byroredux_nif::import::collision::summarize_collision_authoring(&scene);
         let mut pool = byroredux_core::string::StringPool::new();
         let imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);
         for mesh in &imported.meshes {
             assert!(
-                !render_geometry_can_collide(&mesh.material),
+                !render_geometry_can_collide(&mesh.material, authoring),
                 "{path}: an unlit blended VFX sheet would synthesize a solid collider"
             );
             checked += 1;
@@ -665,3 +703,53 @@ fn fnv_light_vfx_sheets_synthesize_no_collider() {
     }
     assert!(checked >= 20, "only {checked} census meshes found — the probe read nothing");
 }
+
+/// #6555 — against the shipped data: Oblivion's cobwebs, hanging crud and FX sheets (the audit
+/// census's STAT bases, 8,949 placements) author no collision and are blended, so none of their
+/// meshes synthesizes a collider. An opaque, collision-less architecture mesh keeps the fallback.
+///
+///   cargo test -p byroredux --bin byroredux oblivion_cobwebs -- --ignored
+#[test]
+#[ignore = "needs Oblivion game data on disk"]
+fn oblivion_cobwebs_and_fx_sheets_synthesize_no_collider() {
+    let meshes = byroredux_plugin::esm::test_paths::oblivion_data_dir().join("Oblivion - Meshes.bsa");
+    if !meshes.is_file() {
+        byroredux_plugin::esm::test_paths::require_or_skip(&format!("{meshes:?}"));
+        return;
+    }
+    let archive = byroredux_bsa::BsaArchive::open(&meshes).unwrap();
+    let census = [
+        "meshes\\dungeons\\misc\\cobweb01.nif",
+        "meshes\\dungeons\\misc\\cobweb02.nif",
+        "meshes\\dungeons\\misc\\cobweb03.nif",
+        "meshes\\dungeons\\misc\\cobweb04.nif",
+        "meshes\\dungeons\\misc\\cobweb05.nif",
+        "meshes\\dungeons\\misc\\cobweb06.nif",
+        "meshes\\dungeons\\misc\\cobweb07.nif",
+        "meshes\\dungeons\\misc\\hangcrud01.nif",
+        "meshes\\dungeons\\misc\\fx\\fxlightbeamlong01.nif",
+        "meshes\\dungeons\\misc\\fx\\fxlightbeam01.nif",
+        "meshes\\dungeons\\misc\\fx\\fxcloudsmall01.nif",
+        "meshes\\dungeons\\misc\\fx\\fxmistgroundeffect01.nif",
+    ];
+    let mut checked = 0usize;
+    for path in census {
+        let Ok(bytes) = archive.extract(path) else {
+            panic!("{path} missing from Oblivion - Meshes.bsa");
+        };
+        let scene = byroredux_nif::parse_nif(&bytes).unwrap();
+        let authoring = byroredux_nif::import::collision::summarize_collision_authoring(&scene);
+        assert!(authoring.authors_no_body(), "{path}: authors collision ({authoring:?})");
+        let mut pool = byroredux_core::string::StringPool::new();
+        let imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);
+        for mesh in &imported.meshes {
+            assert!(
+                !render_geometry_can_collide(&mesh.material, authoring),
+                "{path}: a blended overlay would synthesize a solid collider"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked >= census.len(), "only {checked} meshes imported from {} census NIFs", census.len());
+}
+

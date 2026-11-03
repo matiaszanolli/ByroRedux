@@ -100,9 +100,22 @@ pub struct CollisionAuthoringSummary {
     /// scene" and "one is present and its collision was intentionally
     /// dropped" were both invisible zeros — nothing distinguished them.
     pub plane_shapes: u32,
+    /// #6555 — collision authored for this geometry in a *sibling* file rather than the NIF: an
+    /// FO4 precombine's render meshes take their bodies from the cell's `<cell>_physics.nif` (a
+    /// `bhkNPCollisionObject` in every vanilla one). Never set by [`summarize_collision_authoring`];
+    /// the cell loader stamps it on precombine imports.
+    pub external: u32,
 }
 
 impl CollisionAuthoringSummary {
+    /// #6555 — whether the geometry authored no collision body anywhere: no classic or packed
+    /// Havok object in the NIF and none in a sibling file. It is how a game whose NIFs carry their
+    /// own collision says "walk through this" (a cobweb, a light shaft, a rug). A phantom is a
+    /// trigger volume, not a body.
+    pub const fn authors_no_body(self) -> bool {
+        self.classic == 0 && self.new_physics == 0 && self.external == 0
+    }
+
     /// Whether the scene contains at least one FO4+/FO76/Starfield packed
     /// collision object whose `BhkSystemBinary` payload is not decoded yet.
     pub const fn needs_packed_collision_fallback(self) -> bool {

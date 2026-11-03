@@ -90,17 +90,31 @@ enum MissingCollisionFallback {
 /// 6,726 under `meshes\effects\`.) An unlit *opaque* mesh (a sign, a screen)
 /// is still solid.
 ///
+/// #6555 — Oblivion has neither signal: its cobwebs, hanging crud and FX sheets
+/// (light beams, clouds, ground mist) are lit `NiAlphaProperty`-blended meshes
+/// with `material_kind == 0`, the same material a rug or a glass pane has. What
+/// they share is that the NIF authors no collision body, which is how every game
+/// whose NIFs carry their own collision says "walk through this" — the original
+/// engine gives such a mesh no body at all. So a blended surface is a stand-in
+/// body only when collision *was* authored and the importer cannot read it (FO4+
+/// packed Havok, a precombine's `_physics.nif`); with none authored it is an
+/// overlay. (The 2026-10-31 Oblivion audit census: 19 STAT bases, 8,949 REFRs, 6,906 of them
+/// cobwebs and `HangCrud01`.) An opaque surface keeps the fallback either way.
+///
 /// [`MATERIAL_KIND_NO_LIGHTING`]: byroredux_renderer::MATERIAL_KIND_NO_LIGHTING
 fn render_geometry_can_collide(
     material: &byroredux_nif::import::ImportedMaterial,
+    authoring: byroredux_nif::import::collision::CollisionAuthoringSummary,
 ) -> bool {
     let unlit_blended_sheet = material.material_kind == byroredux_renderer::MATERIAL_KIND_NO_LIGHTING
         && material.has_alpha;
+    let blended_overlay = material.has_alpha && authoring.authors_no_body();
     !material.is_decal
         && !material.alpha_test
         && material.effect_shader.is_none()
         && material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
         && !unlit_blended_sheet
+        && !blended_overlay
 }
 
 fn missing_collision_fallback(
@@ -887,6 +901,7 @@ pub(super) fn spawn_placed_instances(
         light_falloff_exponent,
         placement_root,
         collision_fallback,
+        collision_authoring: cached.collision_authoring,
         spawned_nif_lights,
     };
     let prepared_meshes = prepare_mesh_uploads(ctx, &pc, cached, &resolved_paths);

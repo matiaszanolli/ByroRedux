@@ -90,6 +90,7 @@ impl PrecombinedPlacement {
             light_falloff_exponent: 1.0,
             placement_root: self.root,
             collision_fallback: MissingCollisionFallback::ArchitectureTriMesh,
+            collision_authoring: self.cached.collision_authoring,
             spawned_nif_lights: 0,
         };
         while self.next_mesh < self.cached.meshes.len() {

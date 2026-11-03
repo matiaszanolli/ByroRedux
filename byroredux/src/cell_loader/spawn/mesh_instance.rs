@@ -582,6 +582,9 @@ pub(super) struct PlacementCtx<'a> {
     pub(super) light_falloff_exponent: f32,
     pub(super) placement_root: byroredux_core::ecs::EntityId,
     pub(super) collision_fallback: MissingCollisionFallback,
+    /// #6555 — what the NIF authored for collision; decides whether a blended surface is a
+    /// stand-in body or an overlay ([`render_geometry_can_collide`]).
+    pub(super) collision_authoring: byroredux_nif::import::collision::CollisionAuthoringSummary,
     pub(super) spawned_nif_lights: usize,
 }
 
@@ -1069,6 +1072,7 @@ pub(super) fn spawn_mesh_instance(
         light_falloff_exponent,
         placement_root,
         collision_fallback,
+        collision_authoring,
         spawned_nif_lights,
     } = *pc;
     let (mesh_handle, fresh_for_rt) = match prepared {
@@ -1525,7 +1529,7 @@ pub(super) fn spawn_mesh_instance(
     // sub-decomposed architecture changes behaviour.
     if collision_fallback == MissingCollisionFallback::ArchitectureTriMesh
         && mesh.skin.is_none()
-        && render_geometry_can_collide(source_material)
+        && render_geometry_can_collide(source_material, collision_authoring)
         && mesh.positions.len() >= 3
         && mesh.indices.len() >= 3
     {

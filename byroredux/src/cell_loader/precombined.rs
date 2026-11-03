@@ -1120,7 +1120,12 @@ pub(super) fn geometry_only_cached(
         beam_volumes: Default::default(),
         geometry_dedup,
         collisions: Vec::new(),
-        collision_authoring: Default::default(),
+        // #6555 — a precombine's bodies are the cell's `_physics.nif`, not these render meshes:
+        // authored, just elsewhere, so the render-geometry stand-in stays on every surface.
+        collision_authoring: byroredux_nif::import::collision::CollisionAuthoringSummary {
+            external: 1,
+            ..Default::default()
+        },
         lights: Vec::new(),
         particle_emitters: Vec::new(),
         embedded_clip: None,
