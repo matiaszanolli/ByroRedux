@@ -373,8 +373,14 @@ impl Parser {
     }
 
     /// Parse `as Type` cast suffix.
+    ///
+    /// #5445 — the type is a mandatory operand, the #5021/#5331 discipline:
+    /// it must share the keyword's line. `parse_base_type` skips newlines
+    /// (its declaration callers rely on that), so `x as` ⏎ `Actor` used to
+    /// glue with zero errors where the reference compiler rejects it.
     fn parse_cast(&mut self, lhs: Spanned<Expr>) -> Result<Spanned<Expr>, ParseError> {
         self.advance(); // consume 'as'
+        self.expect_same_line("type after 'as'")?;
         let target_type = self.parse_type()?;
         let span = lhs.span.merge(target_type.span);
         Ok(Spanned::new(
@@ -390,8 +396,11 @@ impl Parser {
     /// family as `as`; before `Is` had a token, the word lexed as an
     /// identifier and the statement tail became a fabricated second
     /// statement (`If f is Actor` → `If f` + `VarDecl is Actor`).
+    ///
+    /// #5445 — same-line type operand, as in [`Self::parse_cast`].
     fn parse_is(&mut self, lhs: Spanned<Expr>) -> Result<Spanned<Expr>, ParseError> {
         self.advance(); // consume 'is'
+        self.expect_same_line("type after 'is'")?;
         let target_type = self.parse_type()?;
         let span = lhs.span.merge(target_type.span);
         Ok(Spanned::new(

@@ -1866,6 +1866,9 @@ EndProperty
             // and a mandatory `[`: neither may sit on the next line.
             fn_body("Int[] a = New Int\n[5]"),
             fn_body("Int[] a = New\nInt[5]"),
+            // #5445 — the type operand of `as` / `is` is just as mandatory.
+            fn_body("Bool b = x as\nActor"),
+            fn_body("Bool b = x is\nActor"),
             // #5885 — the segment after a line-ending `:` is as mandatory
             // as the first one, in every qualified-name position.
             "ScriptName DLC01:\nFoo\n".to_string(),
