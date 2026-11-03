@@ -1,6 +1,8 @@
 # Texture Streaming — Product Requirements
 
-**Status**: PROPOSED (2026-11-03). Revision 3 folds in review round 2:
+**Status**: APPROVED (2026-11-03). Revision 4 records the owner's §10
+decisions: every question takes its recommendation, and implementation
+issues may be filed. Revision 3 folded in review round 2:
 every §3.3 row re-verified at a new HEAD, the Gamebryo skip-level and
 Oblivion texture-quality citations tightened to the sources that state
 them, the Q4/Q5 recommendations made consistent with each other, Q2 split
@@ -11,8 +13,7 @@ corrected to #4512's fix, settings-registry and image-replacement HEAD
 claims, the Unreal citations quoted verbatim). Revision 1 was the first
 draft: the M39 promise (low mips first, high mips on demand, a texture VRAM
 budget with LRU eviction), the residency vocabulary, requirements by area,
-phases and the decisions it needs from the owner. Nothing below is built as
-a result of this document yet. Statements about how an original engine, a
+phases and the decisions it needs from the owner. Statements about how an original engine, a
 file format, a tool or an external specification behaves cite an external
 source; a claim that could not be verified is marked **Phase 0: verify**
 instead of being stated as fact.
@@ -47,7 +48,7 @@ upscaling (`tools/texture-upscale`).
 | Per-game engine tiers | [Game Compatibility](../engine/game-compatibility.md) |
 | `SettingsRegistry`, settings persistence, graphics presets, GPU pre-flight | [Launcher § 4 Settings](../engine/launcher.md#4-settings-one-model-two-skins) |
 | Dotted console commands (`tex.*`) served to `byro-dbg` | [Debug CLI § CommandRegistry dispatch](../engine/debug-cli.md#commandregistry-dispatch-dotted-names) |
-| Per-mesh UV texel density captured at import (only if Q2 (a) takes the CPU estimate) | [NIFAL](../engine/nifal.md) |
+| Per-mesh UV texel density captured at import (Q2 (a)) | [NIFAL](../engine/nifal.md) |
 | Wanted-mip signal, residency state machine, budget arithmetic, eviction order | `docs/engine/texture-streaming.md` (Phase 0 writes it) |
 
 Normative terms **MUST**, **SHOULD** and **MAY** have their RFC 2119
@@ -572,6 +573,10 @@ default for every in-scope game.
    <https://docs.vulkan.org/refpages/latest/refpages/source/VK_EXT_image_view_min_lod.html>)
    — trivial and copy-free, but it saves no VRAM, so choosing it gives up
    TXS-G-002 and the budget requirements with it.
+   **Decided** (2026-11-03): the recommendation — reallocate on change: a
+   new image per promotion or demotion, shared levels copied on the GPU,
+   the old image retired through `pending_destroy`. No optional Vulkan
+   feature is required.
 2. **Q2 — Wanted-mip signal and BSA promotion source.** Two independent
    parts; answer each.
    **(a) Signal.** Recommended: a CPU estimate from each referencing
@@ -596,6 +601,10 @@ default for every in-scope game.
    extraction. Promotion needs no second inflate, at the cost of host RAM
    equal to the high mips of every streamed BSA texture with a holder,
    which then needs its own cap beside `STAGED_BYTE_CAP`.
+   **Decided** (2026-11-03): the recommendation for both parts — (a) a CPU
+   estimate from instance world bounds, distance and a per-mesh UV texel
+   density captured at NIF import; (b) a BSA promotion re-extracts the file
+   through the stream pool, holding no host RAM between promotions.
 3. **Q3 — Floor rule.** Recommended: the floor is the last chunk of a BA2
    DX10 record, and for every other source the levels at or below the edge
    the A4 census finds that chunk tops out at, so the BSA and loose games
@@ -605,6 +614,9 @@ default for every in-scope game.
    independent of the census. Simpler to state and the same for every
    texture, but on BA2 a floor that does not match a chunk boundary forces
    a read of the next chunk too.
+   **Decided** (2026-11-03): the recommendation — the floor is the last
+   chunk of a BA2 DX10 record, and for every other source the levels at or
+   below the edge the A4 census finds that chunk tops out at.
 4. **Q4 — Budget derivation.** Recommended: a fraction of the live
    `VK_EXT_memory_budget` DEVICE_LOCAL budget (already held in
    `GpuMemoryBudget`, §3.3 row 7) minus the non-texture rows the ledger
@@ -620,6 +632,11 @@ default for every in-scope game.
    ([Launcher § 4.3](../engine/launcher.md#43-presets-and-hardware-pre-flight)).
    Predictable and testable, but a larger card is held to its preset's
    figure unless the user moves it.
+   **Decided** (2026-11-03): the recommendation — a fraction of the live
+   `VK_EXT_memory_budget` DEVICE_LOCAL budget minus the ledger's
+   non-texture rows, recomputed at the throttled telemetry sample, falling
+   back to the same fraction of the smallest DEVICE_LOCAL heap; benches pin
+   it through the TXS-BUD-005 override.
 5. **Q5 — User-facing settings.** Depends on Q4. Recommended: two
    registered settings — the budget override (TXS-BUD-005), whose default
    means "use Q4's derivation", and the streaming on/off switch
@@ -635,6 +652,9 @@ default for every in-scope game.
    global skip as a third setting for low-end cards. Familiar to Oblivion
    players, but it reintroduces the uniform reduction this PRD replaces
    (§6 row 1).
+   **Decided** (2026-11-03): the recommendation — two registered settings,
+   the budget override (default: Q4's derivation) and the streaming switch,
+   with the shipped presets leaving both at their defaults.
 
 ---
 
@@ -666,3 +686,4 @@ default for every in-scope game.
 | 1 | 2026-11-01 | First draft | — |
 | 2 | 2026-11-01 | Review round 1 folded in: BC2 overrun premise (#4512), settings-registry and image-replacement HEAD claims, #2030 status, wanted-mip attribution and verbatim Unreal quotes, testable TXS-RES-003 / TXS-WANT-004, launcher and debug-CLI owners, prose numbers to links | claude: revise |
 | 3 | 2026-11-03 | Review round 2 folded in: §3.3 re-verified at `8fb9b21d8` (row 3 line range, row 7 live-budget sample point, reserved-state redirect, closed state vocabulary), Gamebryo skip-level and Oblivion texture-quality citations, §6 row 2 re-sourced, retiring-image bytes (§2, TXS-TEL-001), testable TXS-WANT-002 / TXS-RES-006 / TXS-RES-007, TXS-G-002 aligned with TXS-BUD-002, A6 cell ids, A10 and phase exits matched to declared routes, Phase 0 applies decisions taken at approval, Q2 split into (a)/(b), Q4 fallback and drift consequence, Q5 made consistent with Q4, sibling PRD links | claude: revise |
+| 4 | 2026-11-03 | Owner decisions Q1–Q5 recorded, every one the recommendation (Q2 both parts); status line and the NIFAL Related row updated | owner: approved |
