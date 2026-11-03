@@ -5,7 +5,12 @@
 //! Alt. Trigger - Proximity"), a fuse ("... - Timer") and the explosion it detonates into (xEdit `wbPROJ`);
 //! the vanilla frag mine is `flags 0x66`, proximity 100, timer 1.5, explosion `fragMineExplosion` (damage 100,
 //! inner radius 100, outer radius 500 — read from `Fallout4.esm`). A mine in the world is a placed reference to
-//! such a projectile.
+//! such a projectile: a `REFR` on Fallout 4, a `PGRE` ("placed grenade") on Fallout 3 / New Vegas, which the
+//! cell walker keeps as an ordinary placement (#3542) — `Fallout3.esm` places 344 of them, `FalloutNV.esm` 165.
+//! The GECK's own trap tutorial (*Bethsoft Tutorial Non-NPC population*, "Mines") draws the line: the mines
+//! under *Special Effects > Projectile* "are armed and ready to explode", while "inactive, lootable mines" are
+//! the `1handMineDrop` weapons. A placed `WEAP` mine (`WeapMineFrag` and kin) is therefore loot and is not
+//! keyed here (#6559).
 //!
 //! What runs here, with the engine-policy parts named:
 //! - **Trigger.** A live, placed actor — the player or an NPC — comes within the record's proximity distance of
@@ -21,7 +26,7 @@
 //! - **After.** `TMEE` is raised (`R1` the victim; `R2` is none — a placed mine has no owner) and the mine is
 //!   spent: hidden, disabled in the persistent enable ledger so it does not come back with its cell.
 //!
-//! Player-placed mines (the mine weapons) are not modelled; only mines placed in the world data.
+//! Player-placed mines (thrown from the mine weapons) are not modelled; only mines placed in the world data.
 
 use byroredux_core::ecs::components::{AnimatedVisibility, Children, Dead, GlobalTransform};
 use byroredux_core::ecs::resource::Resource;
@@ -400,6 +405,48 @@ mod tests {
         let event = world.get::<StoryEvent>(victim).map(|e| *e).expect("TMEE raised");
         assert_eq!((event.mnemonic, event.reference_1, event.reference_2), (TMEE, victim, None));
         assert_eq!(world.get::<AnimatedVisibility>(mine).map(|v| v.0), Some(false), "the spent mine is hidden");
+    }
+
+    /// #6559 — FO3 / FNV arm their minefields as `PGRE` placements of the mine `PROJ`, so the book keys them
+    /// by base like FO4's `REFR`s; the placed mine `WEAP`s are the GECK's "inactive, lootable mines" and stay
+    /// out of it. Counts are the shipped masters' (every cell, interior and exterior).
+    #[test]
+    #[ignore = "needs Fallout3.esm and FalloutNV.esm on disk"]
+    fn fo3_and_fnv_armed_mines_are_placed_projectiles_the_book_keys() {
+        use byroredux_plugin::esm::records::ItemKind;
+        use byroredux_plugin::esm::test_paths;
+        for (path, armed_placements, loot_placements) in
+            [(test_paths::fo3_esm(), 344usize, 97usize), (test_paths::fnv_esm(), 165, 17)]
+        {
+            let Ok(bytes) = std::fs::read(&path) else {
+                test_paths::require_or_skip(&path.display().to_string());
+                continue;
+            };
+            let index = byroredux_plugin::esm::records::parse_esm(&bytes).expect("parse");
+            let mut world = World::new();
+            install_mine_book(&mut world, &index);
+            let book = world.resource::<MineBook>().0.clone();
+            let mine_weapon = |base: u32| {
+                index.items.get(&base).is_some_and(|item| {
+                    matches!(item.kind, ItemKind::Weapon { .. }) && item.common.editor_id.to_ascii_lowercase().starts_with("weapmine")
+                })
+            };
+            let placements: Vec<u32> = index
+                .cells
+                .cells
+                .values()
+                .chain(index.cells.exterior_cells.values().flat_map(|cells| cells.values()))
+                .flat_map(|cell| cell.references.iter().map(|placed| placed.base_form_id))
+                .collect();
+            let armed = placements.iter().filter(|base| book.contains_key(base)).count();
+            let loot = placements.iter().filter(|&&base| mine_weapon(base)).count();
+            assert_eq!(armed, armed_placements, "{}: placed mine projectiles the book keys", path.display());
+            assert_eq!(loot, loot_placements, "{}: placed mine weapons (loot)", path.display());
+            assert!(
+                placements.iter().filter(|&&base| mine_weapon(base)).all(|base| !book.contains_key(base)),
+                "a placed mine weapon is loot, not an armed mine"
+            );
+        }
     }
 
     #[test]
