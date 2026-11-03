@@ -280,7 +280,7 @@ design doc.
 
 | #     | Milestone | State | Depends on |
 |-------|-----------|-------|------------|
-| M35   | Terrain LOD | **Shipped:** Skyrim/FO4 `.bto` objects and `.btr` terrain on a per-game `Ultra.ini` band ladder (`d96110eb`), with `_n`/`_msn` normal maps. Oblivion `_far.nif` placement LOD (#1726); FO3/FNV `blocks\` quad LOD (#3321). A derived far plane (`9e96a9f9`). The live `terrain.seams` gate in `m-exteriors.sh` (#2371). **Open:** VWD culling is blocked because baked `.bto` quads carry no per-object ids (#3307). `.btr` diffuse/normal sampling mode (#4912). Skyrim `.btt` distant trees are never drawn (#4913). The reversed-Z flip needs hardware validation (#3308). LAND value-plausibility guards ([`exterior-readiness-plan.md`](docs/engine/exterior-readiness-plan.md) Tranche C item 5). | M32 |
+| M35   | Terrain LOD | **Shipped:** Skyrim/FO4 `.bto` objects and `.btr` terrain on a per-game `Ultra.ini` band ladder (`d96110eb`), with `_n`/`_msn` normal maps. Oblivion `_far.nif` placement LOD (#1726); FO3/FNV `blocks\` quad LOD (#3321). A derived far plane (`9e96a9f9`). The live `terrain.seams` gate in `m-exteriors.sh` (#2371). **Open:** VWD culling is blocked because baked `.bto` quads carry no per-object ids (#3307). `.btr` diffuse/normal sampling mode (#4912). Skyrim `.btt` distant trees are never drawn (#4913). The reversed-Z flip needs hardware validation (#3308). LAND value-plausibility guards ([`exterior-readiness-plan.md`](docs/engine/exterior-readiness-plan.md) Tranche C item 5). [PRD](docs/prd/distant-lod-completion.md) APPROVED 2026-11-03. | M32 |
 | M39   | Texture streaming | Mip-chain-aware loading: upload low mips immediately, stream high mips on demand. Memory budget with LRU eviction. [PRD](docs/prd/texture-streaming.md) ACTIVE 2026-11-03, tracking #6626. | — |
 | M29.3 | Pre-skinned raster path | Make `triangle.vert` read pre-skinned vertices from the per-entity `SkinSlot` output instead of doing inline bone blending, and re-add the `VERTEX_BUFFER` usage dropped in #681. This saves ~50 ALU ops per skinned vertex, but makes raster depend on the compute pass. The recorded precondition is that the compute + BLAS-refit chain has proved stable on visible animated content. | `1ae235b`, #681 |
 
@@ -288,7 +288,7 @@ design doc.
 
 | #     | Milestone | State | Depends on |
 |-------|-----------|-------|------------|
-| M24.2 | ESM Phase 2 — QUST stages + PERK entries | **QUST done:** [`parse_qust`](crates/plugin/src/esm/records/misc/quest.rs) covers startup/shutdown stages, conditional log entries, objectives, and version-aware targets with load-order remapping, and the scripting runtime consumes all of it. **PERK:** all three PRKE entry bodies decode. **Open:** per-`function_type` EPFD decoding and per-entry CTDA. DIAL conversation trees are M43 scope. | R2 |
+| M24.2 | ESM Phase 2 — QUST stages + PERK entries | **QUST done:** [`parse_qust`](crates/plugin/src/esm/records/misc/quest.rs) covers startup/shutdown stages, conditional log entries, objectives, and version-aware targets with load-order remapping, and the scripting runtime consumes all of it. **PERK:** all three PRKE entry bodies decode, with per-function EPFD and per-entry CTDA. **Open:** the decode residue and the entry-point runtime, per the [Perk Entry Points PRD](docs/prd/perk-entry-points.md) (APPROVED 2026-11-03). DIAL conversation trees are M43 scope. | R2 |
 
 #### Tier 7 — Deep gameplay systems
 

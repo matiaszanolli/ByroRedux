@@ -1,6 +1,6 @@
 # Perk Entry Points — Product Requirements
 
-**Status**: PROPOSED (2026-11-03). Revision 3 folds in review round 2:
+**Status**: APPROVED (2026-11-03). Revision 4 records the owner's §10 decisions, every one the recommendation; implementation issues may be filed. Revision 3 folded in review round 2:
 every §3.3 claim re-read at HEAD; Skyrim perk fragments (PERK-DEC-011) and
 the activate entry's run path (PERK-HOOK-012) added; Skyrim's "Not Used"
 hooks Inert (PERK-HOOK-011); the embedded-script and FO3/FNV ability-rank
@@ -717,6 +717,9 @@ Each needs the project owner. The recommendation is the first option.
    Completed Milestones, so it would have to be reopened or a new milestone
    created; until then the decoded fields stay unread and Phase 0's catalog
    has no milestone to land in.
+   **Decided** (2026-11-03): the recommendation — decode and runtime
+   together, as this document does; ROADMAP's M24.2 row is rewritten to
+   point here.
 2. **Q2 — FO4 composition order, if Phase 0 finds no observable case.**
    Recommended: follow the FO4 CK text (lower number takes precedence, so the
    lower number applies last) as a property of the FO4 dialect (PERK-DIA-004);
@@ -724,6 +727,9 @@ Each needs the project owner. The recommendation is the first option.
    and Skyrim, and the order key becomes a dialect property. Alternative: one
    ascending order for every dialect; consequence: simpler, and wrong for FO4
    mods that rely on the documented direction.
+   **Decided** (2026-11-03): the recommendation — if Phase 0 finds no
+   observable case, FO4 follows the FO4 CK text (lower number applies last)
+   as a property of the FO4 dialect (PERK-DIA-004).
 3. **Q3 — Starfield.** Recommended: decode correctness of the `DATA` fields
    now (PERK-DEC-009), and Starfield's `EPFD` shapes, `PRRK` rank blocks and
    runtime when the CHARAL Starfield ruleset is buildable (charal.md §8, item
@@ -731,6 +737,10 @@ Each needs the project owner. The recommendation is the first option.
    then (PERK-DEC-010). Alternative: mark Starfield out of this PRD entirely;
    consequence: `PerkRecord` keeps reporting Starfield's trait, rank, playable
    and hidden fields from the wrong bytes until someone notices.
+   **Decided** (2026-11-03): the recommendation — Starfield gets `DATA`
+   decode correctness now (PERK-DEC-009); its `EPFD` shapes, `PRRK` rank
+   blocks and runtime wait for the CHARAL Starfield ruleset, and the census
+   reports its entries as undecoded until then (PERK-DEC-010).
 4. **Q4 — The weapon subject.** Recommended: a scratch subject entity, created
    once at boot and lent the attacker's equipped weapon's base form for the
    length of one composition, as `TemperingSubject` is lent the item being
@@ -741,6 +751,10 @@ Each needs the project owner. The recommendation is the first option.
    scratch entity at once. Alternative: make equipped weapons real entities;
    consequence: per-instance conditions become answerable, at the cost of an
    inventory and equip model change far outside this PRD.
+   **Decided** (2026-11-03): the recommendation — a scratch subject entity
+   created once at boot and lent the attacker's equipped weapon's base form
+   for one composition, as `TemperingSubject` is lent the item being
+   tempered.
 5. **Q5 — Where the activate choice appears.** The CK *Perk Entry Point* (and
    the FO4 CK's entry-point template) adds the choice "in addition to the
    normal activation prompt", both CKs' *Perk Fragments* pages call it "the
@@ -760,6 +774,9 @@ Each needs the project owner. The recommendation is the first option.
    Run Immediately entries fire, and FO4's fragments stay reachable through
    `perk.run`; consequence: FO3/FNV and Skyrim activate perks, and FO4's
    non-immediate ones, remain unusable in play.
+   **Decided** (2026-11-03): the recommendation — the activate choice
+   appears on the engine-native `MessageBox` page (surface S3) until M48's
+   menus replace it.
 6. **Q6 — FO3 *Calculate To Hit Chance* (8), broken in the shipped game.**
    The GECK says "Broken as of 1.1.0035 patch" and nothing more, so **Phase
    0: verify** what "broken" means (never runs, or runs with a wrong value)
@@ -787,6 +804,9 @@ Each needs the project owner. The recommendation is the first option.
    it Inert on FO3 only, matching the shipped game; consequence: a perk the
    GECK author meant to work never does, and the hook catalog must split the
    shared `Fallout3NV` row by rules profile.
+   **Decided** (2026-11-03): the recommendation — compose FO3 *Calculate To
+   Hit Chance* (8) on both games, recorded as an engine-behaviour fix entry
+   in the builtin-fixes catalog.
 7. **Q7 — How a perk's ability spell is held** (PERK-BODY-002). At HEAD
    `SpellList` is saved, and so is `ActorValues`, which already holds the
    value changes a constant spell made (`byroredux/src/save_io/registry.rs`);
@@ -804,6 +824,9 @@ Each needs the project owner. The recommendation is the first option.
    `AddSpell`; consequence: no reconcile pass, but a path that removes a perk
    and forgets the spell leaves it on the actor, and the CK's "removed when the
    Perk is removed" (CK *Perk*) then depends on every such path.
+   **Decided** (2026-11-03): the recommendation — a perk's ability spell is
+   derived from `Perks` by a reconcile through `add_spell` / `remove_spell`
+   on every `Perks` change and save load.
 
 ---
 
@@ -836,3 +859,4 @@ Each needs the project owner. The recommendation is the first option.
 | 1 | 2026-11-01 | First draft | — |
 | 2 | 2026-11-01 | Review round 1 folded in: FO3 tab subjects from xEdit's FO3 `wbPERKEntryPoints`, FO4 `EPFT` 8, Starfield hook range 0–254, `wbPERKFunctionNames`, CK Num Ranks wording, FO4 CK rank rule, Phase 3/4 dependencies (CHARAL FO4 row shipped), Q6 on builtin-fixes §2/§4 and FIX-003/004/008/009, Q1 split into Q7, Related owners for both bodies, VATS PRD rev 2 cross-references (PERK-HOOK-003/005, VATS-PERK-001/004/005/006), §6 rows 2 and 7 sourced | claude: revise |
 | 3 | 2026-11-03 | Review round 2 folded in: §3.3 re-read at HEAD (DT target tab unsupplied, `embedded_script_at`, Skyrim fragments D13); Skyrim perk fragments PERK-DEC-011 and the activate run path PERK-HOOK-012; `EPF2` split out as PERK-DEC-012; Skyrim "Not Used" hooks Inert PERK-HOOK-011; activate entries player-only and FO4 Run Immediately verify; PERK-DEC-008 and FO3/FNV ability-rank verify items closed from xEdit and GECK *Perk Entry*; DT target subject and hook-56 verify; census rule consistent with Starfield decode-only; HEAD states on DEC-010, DX-004, DX-005; §6 rows 1, 6, 7, 8 sourced, row 9 added, row 6 pointed at Q7; Phase 0 verify list as a table; Q1 (M47.2 closed), Q3, Q4 (shared scratch entity), Q5 (`MessageBox` page, sources), Q7 (saved `ActorValues`, idempotent `add_spell`) | claude: revise |
+| 4 | 2026-11-03 | Owner decisions Q1–Q7 recorded, every one the recommendation; ROADMAP's M24.2 row now points here (Q1) | owner: approved |

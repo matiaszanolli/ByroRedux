@@ -1,6 +1,6 @@
 # Distant LOD Completion — Product Requirements
 
-**Status**: PROPOSED (2026-11-03). Revision 3 folds in review round 2:
+**Status**: APPROVED (2026-11-03). Revision 4 records the owner's §10 decisions, every one the recommendation; implementation issues may be filed. Revision 3 folded in review round 2:
 every HEAD claim re-checked on 2026-11-03, Skyrim's tree-LOD shape and the
 Distant LOD Multiplier sub-record sourced, the far-field-shadow non-goal
 aligned with the Reference Lighting PRD's decided Q4, descriptors given
@@ -685,6 +685,9 @@ A11 pass, and the three-scene before/after table is published.
    `radius_unload`. It reintroduces the #1866 overlap risk, and it does not
    close the moat for non-VWD content. Alternative B: defer. M35 closes on
    ring separation and the moat stays, now measured by DLOD-GATE-005.
+   **Decided** (2026-11-03): the recommendation — per-cell segment
+   suppression at level 4 (DLOD-OBJ-002), with the VWD radius left coupled
+   to the full-detail radius.
 2. **Q2 — Legacy distant-terrain geometry (Oblivion, FO3, FNV).**
    Recommended: keep synthesising it from LAND (DLOD-TERR-003). The boundary
    block needs synth for its holes and skirts anyway, and the original tools
@@ -696,6 +699,8 @@ A11 pass, and the three-scene before/after table is published.
    `Landscape\LOD\*.nif` meshes. Consequence: such mods show their own
    distant ground, at the cost of a second geometry path with its own seam
    and skirt work.
+   **Decided** (2026-11-03): the recommendation — keep synthesising
+   Oblivion, FO3 and FNV distant terrain from LAND (DLOD-TERR-003).
 3. **Q3 — How Oblivion and FO3 distant trees are drawn.** Recommended: the
    `tree_lod.rs` representation, one mesh of crossed upright cards per LOD
    file (DLOD-TREE-006). It is the shape Skyrim's own tree LOD draws
@@ -706,10 +711,16 @@ A11 pass, and the three-scene before/after table is published.
    yaw-facing `Billboard` entity per tree, reusing the near-field path.
    Consequence: it matches the near-field look, but the entity count grows
    with every distant tree placed.
+   **Decided** (2026-11-03): the recommendation — Oblivion and FO3 distant
+   trees use the `tree_lod.rs` representation, one mesh of crossed upright
+   cards per LOD file (DLOD-TREE-006); V5 may still show those titles drew
+   them another way.
 4. **Q4 — Reversed-Z.** Recommended: flip once A9 to A11 pass (Phase 5),
    which turns the measured far-decade gain into the default. Alternative:
    keep `Conventional` and drop the item from M35. Depth stays the precision
    floor between LOD terrain and the LOD objects standing on it.
+   **Decided** (2026-11-03): the recommendation — flip to reversed-Z once
+   A9 to A11 pass (Phase 5).
 5. **Q5 — Band calibration.** Recommended: accept the INI-derived ladder and
    its documented reading as final (DLOD-BAND-006), consistent with the
    anti-scope on matching the original's look. The reading is: Chebyshev
@@ -722,6 +733,8 @@ A11 pass, and the three-scene before/after table is published.
    against captures of the original game. Consequence: it needs the
    original running beside Redux and a capture method; that is per-pixel
    parity work.
+   **Decided** (2026-11-03): the recommendation — the INI-derived band
+   ladder and its documented reading are final (DLOD-BAND-006).
 6. **Q6 — Oblivion VWD objects with no `_far.nif`.** The CS wiki says such
    an object "will not be visible in the game from distant" (*Visible When
    Distant Tutorial*; V12 seeks a second source). Recommended: keep drawing
@@ -731,6 +744,8 @@ A11 pass, and the three-scene before/after table is published.
    Phase 0 figure until DLOD-GATE-007). Alternative: match the original and
    skip them. Consequence: behaviour becomes faithful for mods, but the
    modder's flag then does nothing without a `_far.nif`.
+   **Decided** (2026-11-03): the recommendation — keep drawing the full
+   model of an Oblivion VWD object with no `_far.nif` (DLOD-OBJ-007).
 7. **Q7 — Rings whose authored reach ends inside the full-detail radius.**
    Redux keeps full detail out to 12 cells by default
    (`DEFAULT_EXTERIOR_RADIUS`); the original kept a 5×5 loaded area
@@ -749,6 +764,9 @@ A11 pass, and the three-scene before/after table is published.
    always stands past the full-detail edge at any radius, so the horizon
    exceeds the original's wherever its INI value is shorter, and that INI
    value no longer bounds the ring (an exception to DLOD-G-004).
+   **Decided** (2026-11-03): the recommendation — the authored reach stays
+   a ring's outer bound (DLOD-BAND-007), so at the default radius such a
+   ring draws nothing.
 
 ---
 
@@ -796,3 +814,4 @@ marked otherwise:
 | 1 | 2026-11-01 | First draft | — |
 | 2 | 2026-11-01 | Review round 1 folded in: six `GameKind` variants not seven (GATE-008, A8); FO3/FNV tree split made data-driven (TREE-005, -009); generated `BYRO_REVERSED_Z` (DEPTH-002); census counts framed as Phase 0 figures (§3.1, GATE-007, TREE-003/-004, BAND-003/-004, A6, A7, Q6); tree texture source vs `TREE_ICON_CANDIDATE_DIRS` (TREE-003); CK tree-LOD citation narrowed (TREE-008); closed-city INI keys (V1); M53 and far-field-shadow non-goals linked to sibling PRDs (NG-006, NG-010) | claude: revise |
 | 3 | 2026-11-03 | Review round 2 folded in: HEAD re-checked on 2026-11-03 (stale line anchors in F7, TREE-003, DEPTH-002; family-predicate tests already cover all six variants, GATE-008; FO3/FNV ladder models `fSplitDistanceMult` and clamps at 64 cells, BAND-001, BAND-006, §6 rows 3 and 8; depth baseline lives under `DEFAULT_RENDER_DISTANCE` and names no pose, DEPTH-001; `m-exteriors.sh` pins `--upscaler taa`, DEPTH-005, A10); Skyrim tree-LOD shape sourced from DynDOLOD (TREE-010, V5, §6 row 2, Q3) and per-reference unload hint (TREE-008, V4); `NAMA` sourced from xEdit (BAND-005, V9); `fTreeLoadDistance` meaning made a verify item (TREE-005, V10); new V14; Read state for descriptors (§3, F10, G-001, metrics); F6 marked invisible to the gate; GATE-006 scoped per worldspace; GATE-007 extends `probe_lod_corpus`; NG-010 cites the Reference Lighting PRD's decided Q4; Q2 and Q6 sourced and given explicit consequences; new BAND-007 and Q7 (rings inside the full-detail radius) | claude: revise |
+| 4 | 2026-11-03 | Owner decisions Q1–Q7 recorded, every one the recommendation | owner: approved |
