@@ -1954,8 +1954,10 @@ mod shared_parse_tests {
         assert_eq!(calls.get(), 2, "the processed index serves both");
     }
 
-    /// The step's gate and the cache's `exterior_ready` are one predicate: every game the step
-    /// processes is re-parsed for an exterior session, and no other is.
+    /// #6089 / #6464 — the "Use Land Data" landscape inheritance runs for the games whose
+    /// children were measured co-located on their parent's grid: Oblivion, FO3/FNV, and FO4
+    /// (NukaWorldMarket / NukaWorldAmphitheater decisive, Goodneighbor consistent). Skyrim
+    /// and Starfield have not been measured.
     #[test]
     fn use_land_data_children_inherit_on_oblivion_fo3_fnv_and_fo4_only() {
         use esm::reader::GameKind;
@@ -1966,6 +1968,8 @@ mod shared_parse_tests {
         assert!(!needs_exterior_processing(GameKind::Skyrim));
     }
 
+    /// The step's gate and the cache's `exterior_ready` are one predicate: every game the step
+    /// processes is re-parsed for an exterior session, and no other is.
     #[test]
     fn the_cache_and_the_processing_step_share_one_gate() {
         use esm::reader::GameKind;
