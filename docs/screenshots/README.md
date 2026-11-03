@@ -9,6 +9,7 @@ tools, no mod manager.
 
 | File | Game | Cell | Notes |
 |---|---|---|---|
+| [`whiterun-bannered-mare.png`](whiterun-bannered-mare.png) | The Elder Scrolls V: Skyrim SE | `WhiterunBanneredMare` | 6,228 entities, 460 meshes, 352 textures; RT multi-light, captured 2026-11-03 after the lighting overhaul |
 | [`prospector-saloon.png`](prospector-saloon.png) | Fallout: New Vegas | `GSProspectorSaloonInterior` | 789 entities, 85 FPS, cell XCLL lighting |
 | [`prospector-saloon-exterior.png`](prospector-saloon-exterior.png) | Fallout: New Vegas | Goodsprings — outside Prospector Saloon | Exterior scene with procedural clouds |
 | [`oblivion-cyrodiil-ruins.png`](oblivion-cyrodiil-ruins.png) | The Elder Scrolls IV: Oblivion | Cyrodiil exterior (location not recorded) | SpeedTree canopy, ground-cover grass, ruins in the distance |
@@ -20,6 +21,10 @@ green. Save the screenshot you captured to this path.
 ## How to reproduce
 
 ```bash
+# Skyrim SE — the Bannered Mare in Whiterun (the `skyrim_se` profile supplies
+# Skyrim.esm and the vanilla mesh / texture / script / sound / voice BSAs)
+cargo run --release -- --game skyrim_se --cell WhiterunBanneredMare
+
 # Oblivion — Heinrich Oaken Halls House in Anvil
 cargo run --release -- \
     --esm "$OBLIVION_DATA/Oblivion.esm" \
