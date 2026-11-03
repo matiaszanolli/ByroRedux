@@ -31,8 +31,7 @@ const MAX_APPROACH_STEPS: usize = 6;
 const INLAND_STEPS: usize = 8;
 
 type Vertex = (i32, i32);
-/// (score, start vertex, direction (dx, dy) in lattice steps, lake surface,
-/// depth reached, wet steps).
+/// (score, start vertex, (dx, dy) lattice step, lake surface, depth reached, wet steps).
 type Transect = (f32, Vertex, (i32, i32), f32, f32, usize);
 
 fn main() -> anyhow::Result<()> {
