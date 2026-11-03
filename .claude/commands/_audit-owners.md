@@ -230,6 +230,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/scene.rs` | per-game, ui Dim 6 | MEDIUM |
 | `byroredux/src/scene` | per-game | MEDIUM |
 | `byroredux/src/cornell` | renderer Dim 12 | LOW |
+| `byroredux/src/linear_capture.rs` | renderer Dim 12, runtime | LOW |
 | `byroredux/src/bench` | performance, runtime | LOW |
 | `byroredux/src/debug_load.rs` | tooling | MEDIUM |
 | `byroredux/src/list_cells.rs` | tooling, esm | LOW |

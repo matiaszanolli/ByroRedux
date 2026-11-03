@@ -20,16 +20,16 @@ commit. Live state only: when something closes, it becomes a one-liner under
 
 ## Status
 
-**Last session close:** Session 106, 2026-10-30. Workspace numbers (tests, LOC,
+**Last session close:** Session 107, 2026-11-02. Workspace numbers (tests, LOC,
 files, issue dirs) live in [Project Stats](#project-stats) only.
 
 **Gates.** `rust-toolchain.toml` pins rustc 1.96.0 (#5308), which is also the
-bin crate's MSRV since wasmtime 49. On it, the CI form `cargo clippy
---workspace -- -D warnings` was **clean** at the last run (2026-10-22, after the
-Session 103 `head_look` lint was fixed; `--all-targets` is not, Known Issues). All 11 600 tests
-pass (2026-10-30). The lock-order detector is clean across the workspace
-(`BYRO_LOCK_ORDER_CHECK=1`, `--exclude byroredux-ui`, 2026-10-24; it caught
-Session 104's Find and Flee, and a bare `cargo test` does not run it). The bench-of-record below (`d9a201c71`, 2026-10-22) was refreshed with a same-machine control and shows HEAD 1–9% slower than the outgoing record (R6a-regress-23). Its older open
+bin crate's MSRV since wasmtime 49. All 11 719 tests pass (2026-11-02), but **CI on
+`main` has been red since 2026-10-24** in three jobs: the blocking `cargo clippy
+--workspace -- -D warnings` form (#6582), the smoke-contract check (#6589,
+`m43-armor.sh`), and the lock-order detector (`BYRO_LOCK_ORDER_CHECK=1`, which a
+bare `cargo test` does not run), which aborts on #6561 (`crafting::improve_plan`)
+and on #6618 (`material_dump`'s test, `e7d7af3c9`). The bench-of-record below (`d9a201c71`, 2026-10-22) was refreshed with a same-machine control and shows HEAD 1–9% slower than the outgoing record (R6a-regress-23). Its older open
 regression, **R6a-regress-22**, was the bench camera moving with `b9e961eeb`'s
 interior spawn ladder, not renderer code (#5128, 2026-09-30); a small residual
 stays open — the top-of-frame all-slots fence wait that dominates GPU-bound
@@ -79,8 +79,8 @@ frames (#5365, the tracked throughput half of closed #4606/#5117).
   Dialogue: NPC activation selects a topic, a native response surface
   presents the INFO, and its `TIF_` fragments dispatch (P4).
   Story Manager (#5366; M43 closed 2026-10-30): Skyrim+ quests autostart
-  from the authored event tree — `SMBN`/`SMEN`/`SMQN` decode, fourteen event
-  producers (`KILL`, `CLOC`, `ADIA` NPC-to-NPC conversations, `CRFT` crafting, …),
+  from the authored event tree — `SMBN`/`SMEN`/`SMQN` decode, a producer for every
+  event on M43's list (`KILL`, `CLOC`, `ADIA` conversations, `CRFT`, FO4's `HACK`, …),
   condition-gated dispatch through the M47.1 evaluator into the canonical quest
   lifecycle, live-gated by [`sm1-story-manager.sh`](docs/smoke-tests/sm1-story-manager.sh).
 - **Save/load.** Full-ECS snapshot with validation gates, atomic write and
@@ -101,9 +101,9 @@ frames (#5365, the tracked throughput half of closed #4606/#5117).
   (#3802); FO4's compressed `NVNM` body is still undecoded.
 - FO76/Starfield actors have no walk-clip source (FO4's run through its Havok
   2014 behavior graphs).
-- Dialogue UI beyond the speaker's name and the topic list (M48). The dialogue layers
-  and voice are live ([`dialogue-trees.md`](docs/engine/dialogue-trees.md)); the Story
-  Manager producers that wait on other gameplay are named in the M43 row.
+- A restyled dialogue menu (M48): the native page names the speaker, cues who is
+  speaking and numbers the replies; the dialogue layers and voice are live
+  ([`dialogue-trees.md`](docs/engine/dialogue-trees.md)).
 - Starfield CDB materials: `.mat` texture slots merge from the streaming CDB
   index (`224a19372`, `18fce7e43`); #3398 stays open until its definition of
   done is checked.
@@ -117,14 +117,15 @@ frames (#5365, the tracked throughput half of closed #4606/#5117).
 - The [playable vertical slice](#playable-vertical-slice) is **complete**
   (P0–P5, closed 2026-10-01). Its follow-ons are listed there; none of them
   blocks the slice.
-- Quests & dialogue (M43, #5366/#5367) **closed 2026-10-30** — what it leaves to
-  other milestones is named in its row ([`story-manager.md`](docs/engine/story-manager.md)).
+- M-LIGHT, reference-quality lighting (#6595): the first feature run under the
+  [PRD gate](docs/prd/README.md), ACTIVE since 2026-11-02. Phases 0–1b are closed;
+  Phase 2 (GI energy, #6602) and Phase 3 (shadows and contact, #6603) are open.
+- Fire, smoke and explosions (#6531, [plan](docs/engine/fire-volumetrics-plan.md)):
+  Phases 1–3 (local grid, integration, species scattering) are built and await review.
 - RT lighting and material recovery: R0–R3 are complete. The rest is tracked
   in [`rt-lighting-material-recovery.md`](docs/engine/rt-lighting-material-recovery.md).
 - WATAL: W0 and W1 are closed on FNV and Skyrim (2026-10-26); distant water is per
-  cell (#5243). Calm water has wind-driven swell that shoals and breaks at shores,
-  river currents follow the bed (`WaterBedField`); underwater shafts are a sun-ray
-  march with a screen-space occluder test ([`watal.md`](docs/engine/watal.md)).
+  cell (#5243); the rest is in [`watal.md`](docs/engine/watal.md).
 
 ### How to run a bench
 
@@ -171,6 +172,20 @@ launch (7.7 at Whiterun HEAD), desktop resident, settings path fresh per run. No
 
 FSR Quality nets +18% to +41%, Performance +39% to +56%; `native-aa` loses 2% to 5%.
 
+**Against the control (frame ms, `a3a7a43b0` → `d9a201c71`), TAA / Quality:**
+Cornell 10.60 → 11.59 (+9.3%) / 8.09 → 8.36 (+3.3%); Prospector 11.73 → 11.93
+(+1.7%) / 9.43 → 9.81 (+4.0%); Whiterun 11.17 → 11.94 (+6.9%) / 6.85 → 7.40
+(+8.0%); MedTek 26.30 → 28.22 (+7.3%) / 15.48 → 16.75 (+8.2%); Dugout
+14.78 → 15.12 (+2.3%) / 10.63 → 10.73 (+0.9%). Every scene is slower at HEAD,
+with run ranges of at most 0.7 ms. Cornell is the content-identical control
+(37 entities, 32 draws on both builds), so its +0.99 ms TAA is renderer cost
+(R6a-regress-23); the game scenes' populations moved by under 3%. The outgoing
+record's own figures differ from the control's by up to ±4% (Cornell TAA 10.23
+vs 10.60 ms), hence the control. Prospector's TAA *gpu_main* is bimodal on both
+builds (about 4–5 or 10 ms between runs) with steady wall time: use frame ms.
+**No scene mounts `--scripts-bsa`, so this record cannot see the Papyrus
+interpreter** (first Known Issue).
+
 ### Lighting fidelity (M-LIGHT, [PRD](docs/prd/reference-lighting.md))
 
 Terms: L1 penumbra S1+ (A1), L2 contact S1, L3 sky IBL S1, **L4 GI S2**: tier-3 deficit 1.00 / 0.98 / 1.00
@@ -185,20 +200,6 @@ baseline (`688f42705`, RTX 4070 Ti, 1280×720, stepped orbit, tier histogram pas
 | Whiterun BanneredMare | 1 / 3 (0 / 0) | 13.62 / 9.65 |
 | MedTek Research 01 | 0 / 0 (0 / 0) | 27.73 / 16.36 |
 | FO4 Dugout Inn | 0 / 1 (0 / 0.01) | 15.51 / 12.40 |
-
-**Against the control (frame ms, `a3a7a43b0` → `d9a201c71`), TAA / Quality:**
-Cornell 10.60 → 11.59 (+9.3%) / 8.09 → 8.36 (+3.3%); Prospector 11.73 → 11.93
-(+1.7%) / 9.43 → 9.81 (+4.0%); Whiterun 11.17 → 11.94 (+6.9%) / 6.85 → 7.40
-(+8.0%); MedTek 26.30 → 28.22 (+7.3%) / 15.48 → 16.75 (+8.2%); Dugout
-14.78 → 15.12 (+2.3%) / 10.63 → 10.73 (+0.9%). Every scene is slower at HEAD,
-with run ranges of at most 0.7 ms. Cornell is the content-identical control
-(37 entities, 32 draws on both builds), so its +0.99 ms TAA is renderer cost
-(R6a-regress-23); the game scenes' populations moved by under 3%. The outgoing
-record's own figures differ from the control's by up to ±4% (Cornell TAA 10.23
-vs 10.60 ms), hence the control. Prospector's TAA *gpu_main* is bimodal on both
-builds (about 4–5 or 10 ms between runs) with steady wall time: use frame ms.
-**No scene mounts `--scripts-bsa`, so this record cannot see the Papyrus
-interpreter** (first Known Issue).
 
 ### Compatibility matrix
 
@@ -319,8 +320,8 @@ shipped; the rest of the tier has no active work.
 | M58      | Reference-quality post-process     | Kawase-blur bloom (5-pass dual filter, ~2 ms total), scatter-as-gather DOF for cinematic mode, per-object motion blur reusing existing motion vectors, color grading via 3D LUT (per-cell-type mood — interior warm, exterior cool, irradiated green), AgX or Tony McMapface tone mapping selectable alongside ACES, optional vignette / film grain. Single compute dispatch chain layered onto the existing composite pass; no extra render-pass churn. **Bloom slice shipped Session 33 (`33f48b5`):** separable box-filter downsample/upsample pyramid (`bloom_downsample.comp` / `bloom_upsample.comp`) applied to scene HDR after composite (`bloom_apply.comp`); the Kawase/Jimenez dual-filter upgrade and the DOF, motion-blur, LUT-grading and tone-map-selection scope all remain open. | —                       |
 | M56      | Subsurface scattering              | Burley normalized SSS (preferred) or screen-space SSS for skin / wax / fruit / soft organic materials. M41's NPCs become visibly human only once skin gets SSS — flat Lambert reads as plastic. Eyes get cornea refraction + caustic (existing M22 caustic compute path is reused, not duplicated). Optional RT-traced SSS variant for closeup actors in cinematic mode.                                                                                                                                       | M41, R1                 |
 | M57      | Hair / fur shading                 | Marschner three-lobe BRDF (R / TT / TRT) for hair; Disney's hair shading model as the simpler default. RT hair shadows with stochastic transparency. Bethesda-vintage hair plate meshes look like clay under standard PBR; correct hair shading is the difference between "T-pose mannequin" and "T-pose person." Pairs naturally with M56 — face closeups need both.                                                                                                                                          | M41                     |
-| M-LIGHT  | Reference-quality lighting         | Soft shadow penumbras filtered in screen space using RT visibility samples (no PCF, no cascade tricks), contact shadows on dielectrics (close-range RT for groundedness), IBL from per-cell HDR sky probe captured once at cell load, multi-bounce GI (≥ 2 bounces in PT mode; raster mode already lights 2 diffuse vertices at tiers 2–3). Closes the gap between "lit correctly" (today) and "lit as well as the data allows." [PRD](docs/prd/reference-lighting.md) APPROVED 2026-11-02. | M51 exporter + EXR writer only (not its PT modes) |
-| M51      | Path tracing reference mode        | Full PT (no rasterized fallback), ReSTIR-PT spatiotemporal reservoirs, SHARC radiance cache for diffuse, optional NRC neural radiance cache. Reference mode for screenshots / cinematics; demonstrates "RT-first" wasn't a positioning claim. References: Bitterli et al. (ReSTIR PT, 2022), Pharr et al. (SHARC, 2024). Reuses existing reservoir + denoiser plumbing from M31.5 / M37.                                                                                                                       | M37, M37.3              |
+| M-LIGHT  | Reference-quality lighting         | Soft shadow penumbras filtered in screen space using RT visibility samples (no PCF, no cascade tricks), contact shadows on dielectrics (close-range RT for groundedness), IBL from per-cell HDR sky probe captured once at cell load, multi-bounce GI (≥ 2 bounces in PT mode; raster mode already lights 2 diffuse vertices at tiers 2–3). Closes the gap between "lit correctly" (today) and "lit as well as the data allows." [PRD](docs/prd/reference-lighting.md) ACTIVE 2026-11-02; Phases 0–1b closed, gates in [§Lighting fidelity](#lighting-fidelity-m-light-prd). | M51 exporter + EXR writer only (not its PT modes) |
+| M51      | Path tracing reference mode        | Full PT (no rasterized fallback), ReSTIR-PT spatiotemporal reservoirs, SHARC radiance cache for diffuse, optional NRC neural radiance cache. Reference mode for screenshots / cinematics; demonstrates "RT-first" wasn't a positioning claim. References: Bitterli et al. (ReSTIR PT, 2022), Pharr et al. (SHARC, 2024). Reuses existing reservoir + denoiser plumbing from M31.5 / M37. **Built for M-LIGHT (2026-11-02):** the scene-linear EXR capture (#6597) and the Cornell → Mitsuba 3 exporter (#6600, Phase 1a scope); [PRD](docs/prd/path-tracing-reference-mode.md) PROPOSED.                                                                                                                       | M37, M37.3              |
 | M54      | Neural denoiser                    | Small NN (~1–2 MB weights) replaces SVGF spatial filter for indirect lighting once enough scene data exists to train. Targets visual parity + 30% runtime. References: NRD-NN, Intel Open Image Denoise GPU. Implementable as a Vulkan compute pass; no proprietary SDK dependency. At PT scales (M51) it stops being a perf optimisation and becomes a quality multiplier.                                                                                                                                  | M37, M51                |
 
 #### Tier 9 — Better-than-Bethesda capability stretch (post-Tier-4 horizon)
@@ -554,11 +555,12 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
   is +0.5–1.2 ms on Cornell, Whiterun and MedTek, unattributed (742-commit
   window: ReSTIR `c2647d468` / `17e0b7464` / `6110b6078`, GI sampling `0b56f1133`,
   SVGF history `1092b5b9e` / `24eb7dba8`, cloud-shadow map `c231f5b5f`). Next:
-  bisect Cornell `gpu_main`. The record is 399 commits old at the Session 106
+  bisect Cornell `gpu_main`. The record is 518 commits old at the Session 107
   close (renderer paths since: shadow filter `0999490b9`, ReSTIR taint
   `bed162262`, water waves/shores `7dd294ee3`, geometry-pool caps and admission
-  tiers `bb97be77c` / `22d6e1a80`, terrain softening `e71451d08`); none was
-  re-benched, so re-run before citing it.
+  tiers `bb97be77c` / `22d6e1a80`, terrain softening `e71451d08`, the fire local
+  grid `d3e3acc7b`, M-LIGHT GI energy `6f43c9bd4` and ray offsets `49324fc95`);
+  none was re-benched, so re-run before citing it.
 - [ ] **Papyrus interpreter: what the frame budget does not bound** (#5764).
   #5763 gave the four exclusive `Update` systems a shared 10 000-statement
   frame allowance (runaway frame 13.6 → 1.4 ms; a never-ending handler dies at
@@ -621,22 +623,17 @@ performance finding. The measured knob table is in
   short ones. Suspected cause: a `dds::mip_size` rounding gap. Needs a
   targeted repro plus an allocation assert.
 - [ ] **Fire lighting: visual check done 2026-10-31, derived reach still unbounded.**
-  `2325c1de`'s transported-field surface light (default since) was A/B'd with
-  `BYRO_FIRE_VOLUMES=0` (same binary, `time.set 12`, 20 s settle, same pose;
-  ON-vs-ON control ±0.1 mean luma, 1.5% of pixels >8 apart). Skyrim
-  WhiterunBanneredMare hearth: whole frame +3.5%, hearth region +18%, 14% of
-  pixels differ (control 1.5%); nothing blows out. WindhelmCandlehearthHall's
-  three flames, none within an authored LIGH's range: no measurable change
-  (derived radiant luma ~0.01 against ~1 for an authored light). FNV has no
-  flame volume in the saloon or the caves probed (the old "Prospector" target
-  was wrong); the FNV half of the A/B is still owed on exterior fire. **The
-  reach claim does not hold:** the derived cull radius is `sqrt(luma / 1e-3)`
-  clamped to 64 m x2, and a hearth (luma 3-18) sits at the clamp, 7 100-8 960
-  BU against a vanilla torch's ~512, so the `OVERSIZED REACH` canary (WARN)
-  fires for every hearth. Light cost is one extra light per cluster, not a
-  visual defect. Owed: pick a reach that tracks a meaningful illuminance
-  (relative to the cell's ambient) instead of the 1e-3 cutoff, then retire or
-  retune the canary. Captures: `~/Downloads/fire-lighting-ab/`.
+  `2325c1de`'s transported-field surface light (default since) was A/B'd on Skyrim
+  hearths with `BYRO_FIRE_VOLUMES=0` against an ON-vs-ON control: no blow-out
+  (figures in [`procedural-volumetric-fog.md`](docs/engine/procedural-volumetric-fog.md));
+  the FNV half is owed on exterior fire (its interiors have no flame volume). The
+  derived cull radius `sqrt(luma / 1e-3)` sits at its 64 m clamp for every hearth,
+  so the `OVERSIZED REACH` canary fires for each: one extra light per cluster, not
+  a visual defect. Owed: a reach that tracks illuminance relative to the cell's
+  ambient, then retire or retune the canary. Captures: `~/Downloads/fire-lighting-ab/`.
+- [ ] **Skyrim exterior → interior door loses the Vulkan device** (#6608, 2026-10-31):
+  NVRM Xid 109 on `p1-character-traversal`'s second Bannered Mare entry in 3 of 4
+  display runs; not bisected ([report](docs/audits/AUDIT_RUNTIME_2026-10-31.md)).
 - [ ] **CHARAL runtime-dead surface.** The 2026-08-15 audit verified 62
   constants with zero mismatch at that HEAD; #5238 later falsified the
   then-current NPC Health row (fixed, and the capture's Health rows are now
@@ -695,7 +692,7 @@ performance finding. The measured knob table is in
 - [ ] **Clippy `--all-targets` carries 20 lints** (2026-10-19): test/example
   targets across `scripting`, `plugin`, `pex`, `hkx`, `sfmaterial` and the bin. The lane is a
   non-blocking CI step (#5621); the blocking `cargo clippy --workspace -- -D
-  warnings` form is clean.
+  warnings` form is red too (#6582, Status).
 - [ ] **Offline texture-set upscale finalization.** `tools/texture-upscale`
   works end-to-end: set discovery, TOML manifests, an external ESRGAN-family
   pass, companion-map upsampling and provenance. Remaining: per-game/per-role
@@ -706,16 +703,16 @@ performance finding. The measured knob table is in
 
 ## Project Stats
 
-Ground-truth as of 2026-10-30, HEAD `b03a4f79a`: all figures re-counted at the Session 106 close.
+Ground-truth as of 2026-11-02, HEAD `7f2d98944`: all figures re-counted at the Session 107 close.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | 874 937                       |
-| Rust total lines (all `.rs`, excl. `target/`) | 932 331                  |
-| Source files (`.rs`, excl. `target/`)   | 1620 total · 1517 outside `tests/` dirs (+32 / +31 since the Session 105 close) |
+| Rust source lines (`src/` dirs)         | 886 562                       |
+| Rust total lines (all `.rs`, excl. `target/`) | 944 131                  |
+| Source files (`.rs`, excl. `target/`)   | 1642 total · 1538 outside `tests/` dirs (+22 / +21 since the Session 106 close) |
 | Workspace members                       | 35 (count the `[workspace] members` block only; 30 crates — `terrain-height` joined in Session 103 — + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
-| Tests                                   | **11 600 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-30; 380 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
-| Open issue directories                  | 6493 (`.claude/issues/`)     |
+| Tests                                   | **11 719 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-11-02; 382 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
+| Open issue directories                  | 6561 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **562 069** across eight games (Skyrim SE re-measured 2026-09-29 at 33 468 over 8 archives, #3712 added Animations; FO76's tail closed by #3461 and the 2026-10-03 re-measure (#4628) swept 102 980 over 5 of its 20 mesh-bearing archives; Skyrim LE 22 466 gated since fb8173fe0; earlier widenings #3369/#3466, Oblivion DLC #3925, Starfield #4440). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 468 · Skyrim LE 22 466 · FO4 235 082 · FO76 102 980 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on all eight titles (Starfield re-measured 2026-09-24 #4440; FO76's `GeneratedMeshes` truncation tail closed by #3461 and re-measured 2026-10-03, #4628). |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |

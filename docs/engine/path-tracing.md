@@ -23,8 +23,8 @@ environment and never linked by the engine.
 ### 1.1 Contract
 
 - **PTX-001.** `--export-mitsuba DIR` MUST write, after the first rendered
-  frame of a Cornell-family scene, `DIR/scene.xml` and one binary
-  little-endian PLY per distinct mesh under `DIR/meshes/`, then let the
+  frame of a Cornell-family scene, `<DIR>/scene.xml` and one binary
+  little-endian PLY per distinct mesh under `<DIR>/meshes/`, then let the
   run continue. The export reads `GlobalTransform`, `MeshHandle`,
   `Material`, `LightSource`, `Camera` and `Name`; it renders nothing.
 - **PTX-002.** The output MUST be deterministic: entities are written in
