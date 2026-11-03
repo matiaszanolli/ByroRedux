@@ -202,13 +202,6 @@ struct ImprovePlan {
     to: u8,
 }
 
-fn stack_quality(world: &World, stack: &byroredux_core::ecs::components::ItemStack) -> u8 {
-    stack
-        .instance
-        .and_then(|instance| world.try_resource::<byroredux_core::ecs::resources::ItemInstancePool>()?.get(instance).map(|inst| inst.quality))
-        .unwrap_or(0)
-}
-
 /// The player's current Smithing level.
 fn smithing_level(world: &World, player: EntityId) -> f32 {
     let Some(skill) = world.try_resource::<byroredux_scripting::ActorValueNames>().and_then(|names| names.resolve(SMITHING_SKILL)) else {
@@ -222,13 +215,17 @@ fn smithing_level(world: &World, player: EntityId) -> f32 {
 fn improve_plan(world: &World, player: EntityId, item: u32, enchanted: bool) -> Option<ImprovePlan> {
     let with_perk = byroredux_scripting::tempering::tempering_multiplier(world, player, item, enchanted) > 1.0;
     let target = crate::smithing::best_quality(smithing_level(world, player), with_perk);
-    let inventory = world.get::<Inventory>(player)?;
-    inventory
+    // Copy the matching rows out so the `Inventory` guard is gone before the pool is read (#6561).
+    let held: Vec<(usize, byroredux_core::ecs::components::ItemStack)> = world
+        .get::<Inventory>(player)?
         .items
         .iter()
+        .copied()
         .enumerate()
         .filter(|(_, stack)| stack.base_form_id == item && stack.count > 0)
-        .map(|(stack, row)| (stack, stack_quality(world, row)))
+        .collect();
+    held.into_iter()
+        .map(|(stack, row)| (stack, crate::smithing::stack_quality(world, &row)))
         .filter(|&(_, from)| from < target)
         .min_by_key(|&(_, from)| from)
         .map(|(stack, from)| ImprovePlan { stack, from, to: target })
@@ -766,8 +763,8 @@ mod tests {
     }
 
     fn quality_of(world: &World, player: EntityId, row: usize) -> u8 {
-        let inventory = world.get::<Inventory>(player).unwrap();
-        stack_quality(world, &inventory.items[row])
+        let stack = world.get::<Inventory>(player).unwrap().items[row];
+        crate::smithing::stack_quality(world, &stack)
     }
 
     /// Improving raises one held sword (not a duplicate), splits it from the stack, spends one ingot, and queues

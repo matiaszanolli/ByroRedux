@@ -145,11 +145,7 @@ pub(crate) fn totals(world: &World, wearer: EntityId) -> ArmorTotals {
     for row in rows {
         let Some(stack) = inventory.items.get(row as usize) else { continue };
         let Some(piece) = book.get(&stack.base_form_id) else { continue };
-        let quality = stack
-            .instance
-            .and_then(|instance| world.try_resource::<byroredux_core::ecs::resources::ItemInstancePool>()?.get(instance).map(|inst| inst.quality))
-            .unwrap_or(0);
-        let bonus = crate::smithing::armor_bonus(quality, piece.chest);
+        let bonus = crate::smithing::armor_bonus(crate::smithing::stack_quality(world, stack), piece.chest);
         totals.displayed_rating += item_rating(piece.rating, bonus, armor_skill(world, wearer, piece.kind), coeff);
         // Clothing and robes carry no hidden rating, so they add no piece.
         if piece.kind != ArmorKind::Clothing {

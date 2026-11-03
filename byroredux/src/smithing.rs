@@ -95,6 +95,16 @@ pub(crate) fn best_quality(skill: f32, with_perk: bool) -> u8 {
         .count() as u8
 }
 
+/// The quality of the held copy `stack` refers to (`0` for a stack with no pooled instance). Pass a copied stack,
+/// never a borrow out of a live `Inventory` guard: the save path takes `ItemInstancePool` before `Inventory`, so
+/// reading the pool under that guard closes a lock-order cycle (#6561, #4982).
+pub(crate) fn stack_quality(world: &byroredux_core::ecs::world::World, stack: &byroredux_core::ecs::components::ItemStack) -> u8 {
+    stack
+        .instance
+        .and_then(|instance| world.try_resource::<byroredux_core::ecs::resources::ItemInstancePool>()?.get(instance).map(|inst| inst.quality))
+        .unwrap_or(0)
+}
+
 /// The display name of quality `quality`; empty for an unimproved item.
 pub(crate) fn quality_name(quality: u8) -> &'static str {
     usize::from(quality)

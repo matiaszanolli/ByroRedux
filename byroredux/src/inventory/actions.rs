@@ -596,10 +596,7 @@ pub(super) fn reconcile_equipped_weapon(
             .filter(|stack| stack.count > 0)?;
         let form_id = stack.base_form_id;
         // M43 — an improved weapon (Skyrim tempering) hits harder by its quality's rating bonus.
-        let quality_bonus = stack
-            .instance
-            .and_then(|instance| world.try_resource::<byroredux_core::ecs::resources::ItemInstancePool>()?.get(instance).map(|inst| inst.quality))
-            .map_or(0.0, crate::smithing::weapon_bonus);
+        let quality_bonus = crate::smithing::weapon_bonus(crate::smithing::stack_quality(world, &stack));
         let (damage, reach, speed) =
             world
                 .try_resource::<InventoryCatalog>()
