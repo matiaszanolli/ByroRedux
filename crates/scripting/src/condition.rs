@@ -95,12 +95,12 @@
 //! | 431   | GetHealthPercentage    | `ActorValues` Health (FO3/FNV) |
 //! | 546   | GetQuestCompleted      | `QuestStageState` (FO3/FNV) |
 //! | 365   | IsChild                | the ObScript getter (FO3/FNV; Oblivion's 365 is below) |
-//! | 50    | GetTalkedToPC          | the ObScript getter (FO3/FNV) |
+//! | 50    | GetTalkedToPC          | the ObScript getter (Oblivion, FO3/FNV) |
 //! | 382   | GetHasNote             | the ObScript getter (FO3/FNV) |
 //! | 372   | IsInList               | the ObScript getter (FO3/FNV) |
-//! | 5     | GetLocked              | the ObScript getter (FO3/FNV) |
-//! | 18    | GetCurrentTime         | the ObScript getter (FO3/FNV) |
-//! | 32    | GetInSameCell          | the ObScript getter (FO3/FNV) |
+//! | 5     | GetLocked              | the ObScript getter (Oblivion, FO3/FNV) |
+//! | 18    | GetCurrentTime         | the ObScript getter (Oblivion, FO3/FNV) |
+//! | 32    | GetInSameCell          | the ObScript getter (Oblivion, FO3/FNV) |
 //! | 277   | GetBaseActorValue      | the ObScript getter (FO3/FNV) |
 //! | 471   | GetDestructionStage    | the ObScript getter (FO3/FNV) |
 //! | 492   | GetMapMarkerVisible    | the ObScript getter (FO3/FNV) |

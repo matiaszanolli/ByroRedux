@@ -58,6 +58,8 @@ scripting-lib authored_actor_value_indices_resolve_in_the_vanilla_masters
 # #6460 - the script getters catalogued as CTDA functions: FNV / FO3 declined-dialogue counts
 scripting-catalog fnv_dialogue_declined_by_unmodeled_conditions
 scripting-catalog fo3_dialogue_declined_by_unmodeled_conditions
+# #6554 - the four #6460 getters that are the same function at the same index on Oblivion
+scripting-catalog oblivion_dialogue_declined_by_unmodeled_conditions
 # byroredux bin (inventory / asset provider / npc spawn / cell loader)
 bin starfield_cydonia_pack_ins_instance_their_template_cells
 bin fo3_fnv_script_killed_corpses_match_the_measured_census

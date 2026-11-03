@@ -150,11 +150,30 @@ fn run_row(row: &Command, world: &World, game: Game, args: &[ObScriptValue], con
     (row.handler)(world, game == Game::Fallout, row.id, args, context)
 }
 
-/// Whether the script getter `cmd` can answer a CTDA condition in `world` (#6460): the loaded game is
-/// Fallout 3 / New Vegas — the games these getters' ids were aligned with the CTDA indices of — and
-/// the table has a row for it there.
+/// The bridged CTDA getters whose index is the same function on Oblivion as on Fallout 3 / New Vegas
+/// (UESP *Oblivion Mod:Function Indices*: 5 `GetLocked`, 18 `GetCurrentTime`, 32 `GetInSameCell`,
+/// 50 `GetTalkedToPC`) and whose VM body reads the same state there (#6554). 277
+/// `GetBaseActorValue` is the same function too but stays declined: its actor-value code has no
+/// Oblivion translation (no AVIFs), as `GetActorValue` (14) has none. The rest have no Oblivion index
+/// of that function.
+const OBLIVION_CONDITION_GETTERS: &[u16] = &[0x1005, 0x1012, 0x1020, 0x1032];
+
+/// The game family whose row answers the script getter `cmd` for a CTDA condition in `world`:
+/// Fallout 3 / New Vegas — the games the bridged ids were aligned with the CTDA indices of (#6460) —
+/// and Oblivion for [`OBLIVION_CONDITION_GETTERS`]. `None` for every other world, so a Skyrim or FO4
+/// index never reaches a `Games::Any` row.
+fn condition_getter_game(world: &World, cmd: u16) -> Option<Game> {
+    match Game::of(world) {
+        Game::Fallout => Some(Game::Fallout),
+        Game::Oblivion if OBLIVION_CONDITION_GETTERS.contains(&cmd) => Some(Game::Oblivion),
+        _ => None,
+    }
+}
+
+/// Whether the script getter `cmd` can answer a CTDA condition in `world` (#6460, #6554): the loaded
+/// game is one its id is aligned with ([`condition_getter_game`]) and the table has a row for it there.
 pub(crate) fn getter_answers_conditions(world: &World, cmd: u16) -> bool {
-    Game::of(world) == Game::Fallout && find(cmd, Game::Fallout).is_some()
+    condition_getter_game(world, cmd).is_some_and(|game| find(cmd, game).is_some())
 }
 
 /// The number the script getter `cmd` answers for a CTDA condition (#6460): the dialogue and
@@ -167,11 +186,10 @@ pub(crate) fn run_getter_for_condition(
     args: &[ObScriptValue],
     subject: Option<(u32, byroredux_core::ecs::storage::EntityId)>,
 ) -> Option<f32> {
-    if !getter_answers_conditions(world, cmd) {
-        return None;
-    }
+    let game = condition_getter_game(world, cmd)?;
+    let row = find(cmd, game)?;
     let context = Context { caller: subject.map(|(form, _)| form), known: subject, ..Context::default() };
-    match run_row(find(cmd, Game::Fallout)?, world, Game::Fallout, args, &context) {
+    match run_row(row, world, game, args, &context) {
         Action::Done { value: Some(ObScriptValue::Num(number)), .. } => Some(number),
         _ => None,
     }

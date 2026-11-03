@@ -341,7 +341,7 @@ pub enum ConditionFunction {
     /// gate and a script read one implementation.
     IsChild,
     /// `GetTalkedToPC → f32` (#6460): 1.0 when the Run-On actor has ever spoken to the player.
-    /// FO3 / FNV index **50**; the ObScript getter's body.
+    /// FO3 / FNV and Oblivion (#6554) index **50**; the ObScript getter's body.
     GetTalkedToPC,
     /// `GetHasNote(note) → f32` (#6460): 1.0 when the player has the Pip-Boy note `param_1`. FO3 /
     /// FNV index **382**; the ObScript getter's body. Reads no Run-On.
@@ -349,14 +349,14 @@ pub enum ConditionFunction {
     /// `IsInList(form_list) → f32` (#6460): 1.0 when the Run-On actor's base is in `param_1`. FO3 /
     /// FNV index **372**; the ObScript getter's body.
     IsInList,
-    /// `GetLocked → f32` (#6460): 1.0 while the Run-On reference is locked. FO3 / FNV index **5**;
-    /// the ObScript getter's body.
+    /// `GetLocked → f32` (#6460): 1.0 while the Run-On reference is locked. FO3 / FNV and Oblivion
+    /// (#6554) index **5**; the ObScript getter's body.
     GetLocked,
-    /// `GetCurrentTime → f32` (#6460): the game clock's hour (4:30 am = 4.5). FO3 / FNV index
-    /// **18**; the ObScript getter's body. Reads no Run-On.
+    /// `GetCurrentTime → f32` (#6460): the game clock's hour (4:30 am = 4.5). FO3 / FNV and
+    /// Oblivion (#6554) index **18**; the ObScript getter's body. Reads no Run-On.
     GetCurrentTime,
     /// `GetInSameCell(reference) → f32` (#6460): 1.0 when the Run-On reference and `param_1` are in
-    /// the same cell. FO3 / FNV index **32**; the ObScript getter's body.
+    /// the same cell. FO3 / FNV and Oblivion (#6554) index **32**; the ObScript getter's body.
     GetInSameCell,
     /// `GetBaseActorValue(actor_value) → f32` (#6460): the Run-On actor's base (undamaged,
     /// unmodified) value of the actor value `param_1` names, by the GECK enum code. FO3 / FNV index
@@ -543,7 +543,8 @@ const ROWS: &[Row] = &[
     Row { func: ConditionFunction::GetQuestCompleted, indices: &[546], name: "GetQuestCompleted", first_param_form_id: true, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
     // #6460 — the FO3 / FNV getters the ObScript VM already answers (command id `0x1000 +` the
     // index), bridged to the VM's own bodies in the evaluator (`vm_getter_command`). 365 is the
-    // game-variant pair: IsChild here, `GetPlayerInSEWorld` in `OBLIVION_DIALECT`.
+    // game-variant pair: IsChild here, `GetPlayerInSEWorld` in `OBLIVION_DIALECT`. 50, 5, 18 and 32
+    // are the same functions on Oblivion and answer there too (#6554, `OBLIVION_CONDITION_GETTERS`).
     Row { func: ConditionFunction::IsChild, indices: &[365], name: "IsChild", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetTalkedToPC, indices: &[50], name: "GetTalkedToPC", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetHasNote, indices: &[382], name: "GetHasNote", first_param_form_id: true, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },

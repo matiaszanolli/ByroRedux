@@ -2604,11 +2604,12 @@ mod global_form_id_index {
     }
 }
 
-/// #6460 — FO3 / FNV CTDA functions the ObScript VM already answers read the VM's own getter body:
-/// modeled on FO3 / FNV only (the games their command ids were aligned with the CTDA indices of),
-/// declined by the fail-closed gates on every other game.
+/// #6460 / #6554 — CTDA functions the ObScript VM already answers read the VM's own getter body:
+/// modeled on FO3 / FNV (the games their command ids were aligned with the CTDA indices of) and, for
+/// the four that are the same function at the same index there, on Oblivion; declined by the
+/// fail-closed gates on every other game.
 #[test]
-fn script_getter_functions_are_modeled_on_fallout_only_and_read_the_vms_body() {
+fn script_getter_functions_are_modeled_where_their_index_aligns_and_read_the_vms_body() {
     use byroredux_plugin::esm::reader::GameKind::{Fallout3NV, Fallout4, Oblivion, Skyrim};
     // IsChild, GetTalkedToPC, GetHasNote, IsInList, GetLocked, GetCurrentTime, GetInSameCell,
     // GetBaseActorValue, GetDestructionStage, GetMapMarkerVisible.
@@ -2619,8 +2620,11 @@ fn script_getter_functions_are_modeled_on_fallout_only_and_read_the_vms_body() {
             let mut world = World::new();
             crate::register(&mut world);
             world.insert_resource(crate::ScriptGame(game));
-            // 365 on Oblivion is the dialect's GetPlayerInSEWorld, modeled in its own right.
-            let expected = game == Fallout3NV || (index == 365 && game == Oblivion);
+            // 365 on Oblivion is the dialect's GetPlayerInSEWorld, modeled in its own right; 50, 5,
+            // 18 and 32 are GetTalkedToPC / GetLocked / GetCurrentTime / GetInSameCell there too
+            // (#6554). 277 is GetBaseActorValue on Oblivion but its code has no AVIF to read.
+            let oblivion_aligned = matches!(index, 365 | 50 | 5 | 18 | 32);
+            let expected = game == Fallout3NV || (oblivion_aligned && game == Oblivion);
             assert_eq!(is_modeled(&world, &condition), expected, "{index} on {game:?}");
         }
     }
@@ -2630,6 +2634,14 @@ fn script_getter_functions_are_modeled_on_fallout_only_and_read_the_vms_body() {
     let mut world = World::new();
     crate::register(&mut world);
     world.insert_resource(crate::ScriptGame(Fallout3NV));
+    crate::script_update_system(&world, 0.0, Some(30.5));
+    let subject = world.spawn();
+    assert!(evaluate_condition(&cond(18, ComparisonOp::Eq, 6.5, false), &world, &ctx(subject)));
+    assert!(!evaluate_condition(&cond(18, ComparisonOp::Eq, 12.0, false), &world, &ctx(subject)));
+    // The same on Oblivion, through Oblivion's own row (#6554).
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(crate::ScriptGame(Oblivion));
     crate::script_update_system(&world, 0.0, Some(30.5));
     let subject = world.spawn();
     assert!(evaluate_condition(&cond(18, ComparisonOp::Eq, 6.5, false), &world, &ctx(subject)));
