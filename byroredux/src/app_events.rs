@@ -1079,6 +1079,14 @@ impl ApplicationHandler for App {
                 }
                 self.debug_ui = Some(debug_ui_state);
 
+                // M39 — apply the texture streaming switch before
+                // `setup_scene` loads the first cell; the per-frame push in
+                // `render_one_frame` only starts with the first frame.
+                ctx.texture_registry.set_streaming(crate::setting_bool(
+                    &self.world,
+                    byroredux_debug_ui::TEXTURE_STREAMING_SETTING_ID,
+                    false,
+                ));
                 self.renderer = Some(ctx);
                 self.window = Some(win);
                 self.last_frame = Instant::now();
