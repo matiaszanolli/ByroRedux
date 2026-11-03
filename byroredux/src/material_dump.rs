@@ -13,7 +13,7 @@
 //! are computed by `scripts/m-light/baselines.py`, so their thresholds live in
 //! one place with the rest of the Phase 1b report.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -53,9 +53,15 @@ pub(crate) fn material_route(material: &Material) -> &'static str {
 /// of the same scene diff cleanly.
 pub(crate) fn material_rows(world: &World) -> String {
     let mut counts: BTreeMap<String, u32> = BTreeMap::new();
-    if let (Some(materials), Some(meshes)) = (world.query::<Material>(), world.query::<MeshHandle>()) {
+    // One storage guard at a time: holding `Material` while taking `MeshHandle`
+    // closes a lock-order cycle with the render path (#6618).
+    let meshed: HashSet<_> = world
+        .query::<MeshHandle>()
+        .map(|meshes| meshes.iter().map(|(entity, _)| entity).collect())
+        .unwrap_or_default();
+    if let Some(materials) = world.query::<Material>() {
         for (entity, material) in materials.iter() {
-            if meshes.get(entity).is_none() {
+            if !meshed.contains(&entity) {
                 continue;
             }
             let mut row = String::new();
