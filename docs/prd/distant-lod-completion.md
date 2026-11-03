@@ -1,15 +1,17 @@
 # Distant LOD Completion — Product Requirements
 
-**Status**: PROPOSED (2026-11-01). Revision 2, same day, folds in review
-round 1 (GameKind count, generated depth define, census figures framed as
-Phase 0, tree-texture source, CK tree-LOD citation, FO3/FNV tree split,
-virtual-geometry and far-field-shadow non-goals). Revision 1 was the first
-draft: the remainder of ROADMAP milestone M35 (Terrain LOD), re-scoped
-against the code at HEAD, which has already shipped three of the five items
-the M35 row lists as open.
+**Status**: PROPOSED (2026-11-03). Revision 3 folds in review round 2:
+every HEAD claim re-checked on 2026-11-03, Skyrim's tree-LOD shape and the
+Distant LOD Multiplier sub-record sourced, the far-field-shadow non-goal
+aligned with the Reference Lighting PRD's decided Q4, descriptors given
+their own state, and one new decision (Q7). Revision 2 folded in review
+round 1. Revision 1 was the first draft: the remainder of ROADMAP milestone
+M35 (Terrain LOD), re-scoped against the code at HEAD, which has already
+shipped three of the five items the M35 row lists as open.
 Statements about how an original engine, file format or tool behaves cite
-external sources (the local UESP / CS / CK / GECK wiki dumps, nif.xml, the
-games' shipped INI files); a claim that could not be verified is marked
+external sources (the local UESP / CS / CK / GECK wiki dumps, nif.xml,
+xEdit's record definitions, DynDOLOD's published help, the games' shipped
+INI files); a claim that could not be verified is marked
 **Phase 0: verify** instead of being stated as fact.
 
 **Scope**: Distant LOD on the five titles whose exteriors the engine loads
@@ -37,7 +39,7 @@ writes the missing design section.
 | Geometry-pool admission tiers for LOD uploads | [Memory Budget, Mesh Registry](../engine/memory-budget.md#mesh-registry) |
 | Tree tiers above the distant ring | [EXAL Trees §7](../engine/exal-trees.md#7-the-lod-chain) |
 | Depth mapping (reversed-Z) | `ACTIVE_DEPTH_MAPPING` rustdoc in `crates/core/src/ecs/components/camera.rs`; no design document — Phase 0 adds a section to the exterior readiness plan |
-| Oblivion and FO3 distant-tree families | None yet — Phase 0 adds them to [EXAL §5.2](../engine/exal.md#52-the-lodprovider-trait-gamevariant-for-lod) |
+| Oblivion and FO3 distant-tree families; per-tree LOD retirement (DLOD-TREE-008) | None yet — Phase 0 adds them to [EXAL §5.2](../engine/exal.md#52-the-lodprovider-trait-gamevariant-for-lod) |
 
 Normative terms **MUST**, **SHOULD** and **MAY** have their RFC 2119
 meanings, as in the related designs. Requirement IDs use the `DLOD-` prefix.
@@ -89,6 +91,8 @@ draw LOD for titles whose exteriors it does not load.
 | **Level** | Cells per quad edge: 4, 8, 16 or 32 (`LOD_LEVELS`, `lod_bands.rs`). |
 | **Band ladder** | `LodBandLadder`: the per-game refine distances that pick a level by distance (`lod_bands.rs`). |
 | **Resident full-detail cell** | A cell whose full REFRs and terrain are loaded now (`LodReconcileInput::resident_full_cells`). |
+| **Full-detail radius** | `radius_unload`, the Chebyshev radius within which a full-detail cell may be resident (`LodReconcileInput::full_detail_radius`). It is `--radius` + 1 (`streaming/mod.rs:590`). The default `--radius` is `DEFAULT_EXTERIOR_RADIUS`, 12 cells (`scene.rs:39`); every `m-exteriors.sh` profile runs `--radius 1`. |
+| **Reach** | The Chebyshev distance in cells from the player's cell to a ring's outer edge. A ring draws only between the full-detail radius and its reach (§5.4, Q7). |
 | **Overlap** | A LOD entity drawn over a resident full-detail cell. Counted by `lod.coverage` as `full_detail_overlaps` and `vwd_full_model_overlaps`. |
 | **Moat cell** | A non-resident cell next to the resident set (within one finest-level quad edge of it) inside a family's ring, covered by no entity of that family. The gap that whole-quad exclusion leaves. New metric, defined by DLOD-GATE-005. |
 | **Segment** | A `BSGeometrySegmentData` triangle range in a `BSSubIndexTriShape` / `BSSegmentedTriShape`; nif.xml describes these as "segmented in a grid (for LOD)" (`nifxml/nif.xml`, `BSGeometrySegmentData`). |
@@ -101,19 +105,22 @@ draw LOD for titles whose exteriors it does not load.
 
 ## 3. Core model
 
-Every LOD family on every title is in exactly one state:
+Every LOD family on every title is in exactly one state. Drawn and Drawn,
+gapped apply to the ring families (F1–F9), which put geometry in a ring;
+Read applies to the descriptors (F10, F11), which put none.
 
 | State | Meaning | Reported as |
 |---|---|---|
-| **Drawn** | Read, translated and resident on a boundary run, with zero overlaps and zero moat cells | nonzero `<family>_resident`, `verdict=PASS` |
+| **Drawn** | Parsed, translated and resident on a boundary run, with zero overlaps and zero moat cells | nonzero `<family>_resident`, `verdict=PASS` |
 | **Drawn, gapped** | Drawn, but whole-quad exclusion leaves moat cells at the resident boundary | nonzero moat count |
+| **Read** | A descriptor whose fields each have a consumer, or are named unconsumed with the reason in the reader's rustdoc | the reader's `cargo test` passes |
 | **Unconsumed** | Shipped in the vanilla archives, never read | no resident count; listed in §3.1 |
-| **Not authored** | The title ships no such family | the family predicate returns `false`, pinned by a test |
+| **Not authored** | The title ships no such family | the family predicate returns `false`, pinned by a test; where one `GameKind` spans two titles (FO3 and FNV), the archives hold no file of the family and the ring reports `0` without failing (DLOD-TREE-009) |
 
 ### 3.1 Family inventory
 
-The state at HEAD on 2026-11-01. The code column was checked against the
-source that day. The **Vanilla data** counts are not checked facts: they come
+The state at HEAD on 2026-11-03. The code column was re-checked against
+the source that day. The **Vanilla data** counts are not checked facts: they come
 from a one-off name-table census of the vanilla archives (BSA folder and file
 tables, BA2 name tables, and `.lod` group headers matched against
 `Oblivion.esm` TREE and STAT records) run from a throwaway script that is not
@@ -131,11 +138,11 @@ run's `lod-coverage:` line replaces it.
 | F3 | Heightmap synth fallback | all five | LAND | Drawn | `terrain_lod.rs` |
 | F4 | Combined objects `.bto` | Skyrim, FO4 | `meshes\terrain\<ws>\objects\` | Drawn, gapped | `object_lod.rs` (`ObjectLodScheme::BakedBto`); whole-quad exclusion against resident cells |
 | F5 | Fallout `blocks\` combined quads | FO3, FNV | `meshes\landscape\lod\<ws>\blocks\` | Drawn, gapped | `ObjectLodScheme::FalloutLegacyBlocks` (#3321), selected from `LegacyLodQuadIndex` (#5222) |
-| F6 | Oblivion `.lod` placements, STAT groups → `_far.nif` | Oblivion | 9 889 `.lod`; 118 STAT bases with a `_far.nif` (901 placements), 4 without (6) | Drawn | `placement_lod.rs`; full-model fallback for a base with no `_far.nif` (Q6) |
-| F7 | Oblivion `.lod` placements, TREE groups | Oblivion | 82 TREE bases, 98 661 placements: the large majority of all `.lod` placements | **Unconsumed** | `spawn_placement_lod_cell` (`placement_lod.rs:528`) resolves a group's base through `record_index.cells.statics`, which TREE records also populate (`dispatch_world_placement.rs:64-67`). A TREE's `MODL` is a bare `.spt` name (`references/import.rs:274-278`), so `far_nif_path` returns `None`, the `meshes\`-prefixed full path resolves in no archive, and the group reaches `None => continue` (`placement_lod.rs:548`) |
+| F6 | Oblivion `.lod` placements, STAT groups → `_far.nif` | Oblivion | 9 889 `.lod`; 118 STAT bases with a `_far.nif` (901 placements), 4 without (6) | Drawn; invisible to the gate | `placement_lod.rs`; full-model fallback for a base with no `_far.nif` (Q6); left out of `update_lod_coverage` by its doc comment (`streaming_helpers.rs:331-336`) |
+| F7 | Oblivion `.lod` placements, TREE groups | Oblivion | 82 TREE bases, 98 661 placements: the large majority of all `.lod` placements | **Unconsumed** | `spawn_placement_lod_cell` (`placement_lod.rs:528`) resolves a group's base through `record_index.cells.statics`, which TREE records also populate (`dispatch_world_placement.rs:64-67`). A TREE's `MODL` is a bare `.spt` name (`references/import.rs:337-341`), so `far_nif_path` returns `None`, the `meshes\`-prefixed full path resolves in no archive, and the group reaches `None => continue` (`placement_lod.rs:548`) |
 | F8 | Skyrim tree billboards `.btt` + `<ws>.lst` + `treelod` atlas | Skyrim | 386 level-4 `.btt` (`tree_lod.rs` module docs) | Drawn, gapped; invisible to the gate | `tree_lod.rs` (#4913, `a9384f9c0`); whole-quad exclusion (`footprint_intersects_full_detail`, pinned by `full_detail_cells_veto_the_quads_they_touch`); not counted by `update_lod_coverage` |
 | F9 | FO3 distant trees `.dtl` + `treetypes.lst` | FO3 | 75 `.dtl` + 4 `.lst` in `Fallout - Meshes.bsa` (71 at level 8, 4 at level 4), plus 33 `.dtl` + 7 `.lst` across Anchorage, BrokenSteel, PointLookout and ThePitt | **Unconsumed** | no reader: `.dtl` and `treetypes` appear nowhere in the code |
-| F10 | `lodsettings\<ws>.lod` descriptor | Skyrim, FO4 | 16 B per worldspace | Drawn (origin only) | `resolve_lod_grid_origin` (#2586); extent and level fields unread |
+| F10 | `lodsettings\<ws>.lod` descriptor | Skyrim, FO4 | 16 B per worldspace | Read | `parse_lod_settings_origin` (#2586, `lod_support.rs:138`) reads the SW cell, pinned by `lod_settings_descriptor_gives_the_sw_cell`; its rustdoc names the extent and the two level fields and says why nothing consumes them |
 | F11 | `lodsettings\<ws>.dlodsettings` descriptor | FO3, FNV | 15 (FO3) and 9 (FNV), 24 B each, in `Fallout - Misc.bsa` | **Unconsumed** | no reader; the legacy lattice is chosen by a residue-majority prune (#5387) and a coverage tie-break (#5520), which [EXAL §5.2](../engine/exal.md#52-the-lodprovider-trait-gamevariant-for-lod) calls "a data-anchored choice, not a verified reproduction" |
 | — | Separate tree family | FNV, FO4 | none: FNV has no `lod\<ws>\trees\` folder in any archive; FO4 ships no `.btt` | Not authored | `tree_lod_supported` is `false` for both (`object_lod_scheme_table`) |
 
@@ -155,9 +162,10 @@ Cross-cutting state, the same date:
 
 ### 4.1 Goals
 
-- **DLOD-G-001 — Every authored family drawn.** Every family that §3.1
-  marks Unconsumed or Drawn, on each of the five titles, reaches Drawn.
-  Family coverage (§8) is 100% on every title.
+- **DLOD-G-001 — Every authored family drawn.** Every ring family that
+  §3.1 marks Unconsumed or Drawn, on each of the five titles, reaches Drawn,
+  and every descriptor reaches Read. Family coverage (§8) is 100% on every
+  title.
 - **DLOD-G-002 — No moat.** Zero moat cells, per family, on every
   profile's boundary run, at every level where the asset gives a per-cell
   lever (§5.3).
@@ -209,9 +217,12 @@ Cross-cutting state, the same date:
   `SHADOW_FADE_END + DIRECTIONAL_SHADOW_TRACE_DISTANCE`) are already
   admitted to the TLAS as casters (`byroredux/src/render/static_meshes.rs`),
   so the gap is the fade distance, not missing LOD casters. The
-  [Reference Lighting PRD](reference-lighting.md) records the gap as owned
-  by neither PRD (RLT-NG-008) and holds the decision (its Q4); a tree ring
-  added here inherits the same caster admission and no more.
+  [Reference Lighting PRD](reference-lighting.md) decided it (its Q4,
+  2026-11-02): on-screen sun shadow beyond the fade is that PRD's
+  screen-space term (RLT-CON-004), and traced sun shadows past
+  `SHADOW_FADE_END` and anything off-screen stay out of scope
+  (RLT-NG-008). Not reopened here. A tree ring added here inherits the same
+  caster admission and no more.
 
 ---
 
@@ -220,7 +231,9 @@ Cross-cutting state, the same date:
 ### 5.1 Coverage and reporting (`DLOD-GATE`)
 
 - **DLOD-GATE-001.** The `lod-coverage:` line MUST carry `tree_resident=`,
-  the number of resident tree-LOD files across every tree family. Today the
+  the number of resident tree-LOD units across every tree family: one per
+  `.btt` or `.dtl` file, and one per Oblivion `.lod` cell with at least one
+  TREE group drawn. Today the
   line carries `terrain_resident` and `object_resident` only
   (`LodCoverageStats::machine_line`), and `update_lod_coverage`
   (`streaming_helpers.rs`) reads `state.lod_blocks` and
@@ -240,25 +253,40 @@ Cross-cutting state, the same date:
   cell. Today no gap metric exists, and nothing measures how wide the moat
   that whole-quad exclusion leaves actually is.
 - **DLOD-GATE-006.** `m-exteriors.sh` boundary mode MUST hard-fail a profile
-  when a family that §3.1 lists for its title has a resident count of 0
-  after the traversal settles. Today the script fails on overlaps, churn,
-  `held_back` and an incomplete line, but not on an absent family.
+  when one of `terrain_resident`, `object_resident`, `placement_resident` or
+  `tree_resident` reads 0 after the traversal settles while the
+  DLOD-GATE-007 census finds that ring's family in the profile's worldspace.
+  Today the script fails on overlaps, churn, `held_back` and an incomplete
+  line (`m-exteriors.sh:841-852`), but not on an absent family. The
+  worldspace qualifier matters: the `fo3` boundary profile sits in
+  MegatonWorld, which the 2026-11-01 census found without a `.dtl` of its
+  own (a Phase 0 figure).
 - **DLOD-GATE-007.** The vanilla census behind §3.1 MUST be checked in as an
   `#[ignore]` test, `lod_family_census`, that skips without game data and
-  asserts the per-title family file counts. Until it passes, every
-  **Vanilla data** figure in §3.1, and every count a requirement, scenario or
-  decision takes from it, is a Phase 0 figure; where the test's count
-  differs, the test wins and this document is revised.
+  asserts the family file counts per title and per worldspace. Its archive
+  half extends the family matching `crates/bsa/examples/probe_lod_corpus.rs`
+  already does (`.btr`, `.bto`, `.btt`, `landscape\lod` terrain and
+  `blocks\`, `distantlod\`, `lodsettings\*.lod`) with the families it does
+  not count today (`.dtl`, `treetypes.lst`, `.dlodsettings`) rather than
+  duplicating it. Until the test passes, every **Vanilla data** figure in
+  §3.1, and every count a requirement, scenario or decision takes from it,
+  is a Phase 0 figure; where the test's count differs, the test wins and
+  this document is revised.
 - **DLOD-GATE-008.** Which families each title authors MUST be answered by
-  the translate-tier predicates (`terrain_lod_layout`, `object_lod_scheme`,
+  the per-game family predicates (`terrain_lod_layout`, `object_lod_scheme`,
   `tree_lod_supported`, `placement_lod_supported`, plus one for each new tree
   family). One test, `lod_family_table_covers_every_game`, MUST enumerate
   all six `GameKind` variants across every predicate. There are six, not
   seven: Fallout 3 and New Vegas share `GameKind::Fallout3NV`
   (`crates/plugin/src/esm/reader.rs:202-227`), so no predicate can tell them
   apart and a per-title difference between them comes from the archives
-  (DLOD-TREE-009). Today each predicate has its own test
-  (`object_lod_scheme_table`, `placement_lod_supported_is_oblivion_only`).
+  (DLOD-TREE-009). Today the four predicates are already pinned over all
+  six variants, in three tests: `object_lod_scheme_table`
+  (`object_lod.rs:1342`, object and tree), `placement_lod_supported_is_oblivion_only`
+  (`placement_lod.rs:911`) and `combined_and_legacy_lod_capabilities_are_disjoint`
+  (`lod_support.rs:672`, `terrain_lod_layout` through its two wrappers).
+  The new test replaces those three tables with one and adds the new tree
+  predicates to it.
 
 ### 5.2 Distant trees (`DLOD-TREE`)
 
@@ -273,14 +301,17 @@ Cross-cutting state, the same date:
   Mod:Oblivion.ini*). **Phase 0: verify** whether the value is a radius or a
   diameter in cells, and whether the closed-city variant
   `uGridDistantTreeRangeCity` (default 4 per the same UESP page; absent from
-  the shipped INI) applies in closed-city worldspaces (V1).
+  the shipped INI) applies in closed-city worldspaces (V1). Read as a
+  diameter it is 7 cells, inside the default full-detail radius
+  (DLOD-BAND-007, Q7).
 - **DLOD-TREE-003.** An Oblivion distant tree MUST be textured from the
   source V2 settles, and the choice MUST be pinned by a test. The candidate is
   `textures\trees\billboards\`, which the 2026-11-01 census counts at 118
   textures (a Phase 0 figure, DLOD-GATE-007). It is not what the near-field
-  importer resolves: `TREE_ICON_CANDIDATE_DIRS` (`references/import.rs:196`)
-  tries `trees\leaves\` first, and its rustdoc records that `leaves\` holds
-  93 of 93 vanilla `TREE.ICON` names and `billboards\` only 10. **Phase 0:
+  importer resolves: `TREE_ICON_CANDIDATE_DIRS` (`references/import.rs:259`)
+  tries `trees\leaves\` first, and its rustdoc (`:243-252`) records that
+  `leaves\` holds 93 of 93 vanilla `TREE.ICON` names and `billboards\` only
+  10. **Phase 0:
   verify** which texture the original draws a distant tree with and how it
   sizes it (V2).
 - **DLOD-TREE-004.** FO3 `.dtl` files and their `treetypes.lst` MUST parse
@@ -296,27 +327,33 @@ Cross-cutting state, the same date:
   reach from `[TerrainManager] fTreeLoadDistance`, converted with
   `cells_from_bu` as the Skyrim ring is. The shipped FO3 and FNV
   `VeryHigh.ini` both author 40000 (line 26 of each), so one constant serves
-  the shared `GameKind`.
+  the shared `GameKind`. No source read for this draft says what the key
+  bounds; **Phase 0: verify** that it is the reach of the `.dtl` ring (V10).
+  40000 BU is 10 cells, inside the default full-detail radius, so at the
+  default `--radius` this ring draws nothing unless Q7 takes its
+  alternative (DLOD-BAND-007).
 - **DLOD-TREE-006.** Every tree family MUST translate into the one
   representation `tree_lod.rs` draws: one mesh per LOD file, `IsLodTerrain`,
   alpha-tested cards (Q3). Per-game differences MUST stay in the parse and
   translate step; no tree-specific branch may reach the renderer.
-- **DLOD-TREE-007.** No distant-tree card MUST be drawn inside a resident
+- **DLOD-TREE-007.** A distant-tree card MUST NOT be drawn inside a resident
   full-detail cell. This is observable as DLOD-GATE-003 reading 0.
 - **DLOD-TREE-008.** A tree-LOD file whose footprint touches resident cells
   SHOULD still draw the trees that stand in its non-resident cells, so
   `tree_moat_cells` reads 0. Today the whole file is vetoed
   (`full_detail_cells_veto_the_quads_they_touch`). No source read for this
-  draft says how the original retires a LOD tree on approach. The CK wiki
+  draft states how the original retires a LOD tree on approach. The CK wiki
   records only a custom-worldspace bug, "there are some issues with tree LOD
   where the LOD will not disappear, even if you move close to a tree. The
   cause of this issue isn't known yet" (CK wiki, *Creating a Custom
-  Worldspace with LOD*), which does not say whether hiding is per tree or per
-  quad. **Phase 0: verify** whether the original hides LOD trees
+  Worldspace with LOD*). DynDOLOD's *Tree LOD* help lists among the system's
+  limitations that "Tree LOD does not unload for references added by ESL
+  flagged plugins", which points at a per-reference key without stating
+  one. **Phase 0: verify** whether the original hides LOD trees
   individually, and the key that would match a LOD tree to its full tree: the
   `.btt` record's `u32` REFR FormID (`TreeLodInstance::ref_form_id`, parsed
-  at `tree_lod.rs:219` and read nowhere else) or the cell of its position
-  (V4).
+  at `tree_lod.rs:219` and read by no production code) or the cell of its
+  position (V4).
 - **DLOD-TREE-009.** FNV and FO4 MUST NOT start a separate tree ring:
   neither ships a tree family (§3.1). For FO4 this is `tree_lod_supported`
   returning `false`. FNV shares `GameKind::Fallout3NV` with FO3, so its
@@ -327,12 +364,16 @@ Cross-cutting state, the same date:
   authors 40000, although `lod_bands.rs:29` lists the FO4 key as absent and
   `:116-117` says FO4 "author[s] no such setting". **Phase 0: verify** what
   the key governs on a title with no separate tree family (V10).
-- **DLOD-TREE-010.** Each tree card's orientation and alpha cutoff MUST
-  carry either an external source or the "interpretation, not the engine's
-  draw" note `tree_lod.rs` carries today (`TREE_LOD_ALPHA_CUTOFF` is
-  unsourced). **Phase 0: verify** the original's tree-LOD orientation
-  (V5). `tree_lod.rs` asserts that the original's billboards face the
-  camera, and cites no source for it.
+- **DLOD-TREE-010.** Each tree family's card shape and alpha cutoff MUST
+  carry, in the rustdoc of the code that builds them, either an external
+  source or an "interpretation, not the engine's draw" note. For Skyrim the
+  shape is sourced: DynDOLOD's *Tree LOD* help says of the game's own tree
+  LOD that "The tree LOD billboard texture is shown on 2 double sided planes
+  intersecting each other at a 90 degree angle", upright with "No x or y
+  rotation angles", which is the crossed pair `tree_lod.rs` draws. Today
+  `tree_lod.rs:37-38` says the opposite ("The engine's tree LOD billboards
+  face the camera"), unsourced, and `TREE_LOD_ALPHA_CUTOFF` is marked
+  unsourced. **Phase 0: verify** the Oblivion and FO3 tree-LOD shape (V5).
 
 ### 5.3 Object-LOD boundary (`DLOD-OBJ`)
 
@@ -366,18 +407,29 @@ Cross-cutting state, the same date:
 
 ### 5.4 Distances and descriptors (`DLOD-BAND`)
 
-- **DLOD-BAND-001.** Every per-game LOD distance constant MUST name its INI
-  section, key and shipped value in its rustdoc, and a `cargo test` MUST pin
-  the value. Today the Skyrim, FO4 and FO3 ladders do (`lod_bands.rs`).
-  `PLACEMENT_LOD_RADIUS_CELLS` (16, `placement_lod.rs`) names no key, and
-  the `lod_bands.rs` table misstates FO4's `fTreeLoadDistance` as absent.
+- **DLOD-BAND-001.** Every per-game LOD distance constant MUST say in its
+  rustdoc either its INI section, key and shipped value, or that it is not
+  INI-derived and why, and a `cargo test` MUST pin the value. Today the
+  Skyrim and FO4 ladders and Skyrim's tree reach do, in the `lod_bands.rs`
+  module table and rustdoc, pinned by
+  `ladders_match_vanilla_terrain_manager_distances` and `tree_lod_tests.rs:238`.
+  The FO3/FNV ladder names its keys in a `//` comment, not rustdoc
+  (`lod_bands.rs:129-140`): its refine distances are
+  `fBlockLoadDistanceLow` 50000 BU stepped by `fSplitDistanceMult` 1.5, and
+  its outer extent `FALLOUT_LEGACY_MAX_CELLS` (64) is the archives' quad
+  extent, not the authored `fBlockLoadDistance` 125000 BU (about 31 cells);
+  it is pinned by `fallout_legacy_terrain_uses_all_four_authored_bands`.
+  `PLACEMENT_LOD_RADIUS_CELLS` (16, `placement_lod.rs:84`) names no key, and
+  `lod_bands.rs:29` and `:116-117` misstate FO4's `fTreeLoadDistance` as
+  absent (FO4 `Ultra.ini` line 33 authors 75000).
 - **DLOD-BAND-002.** The Oblivion placement ring MUST take its reach from
   `uGridDistantCount`: 25 in the shipped `Oblivion_default.ini`, which UESP
-  says "controls viewable distance for LOD buildings". Today the ring
-  reaches 16 cells (`PLACEMENT_LOD_RADIUS_CELLS`, `placement_lod.rs:84`).
+  says "Controls viewable distance for LOD buildings, ruins, etc." Today the
+  ring reaches 16 cells (`PLACEMENT_LOD_RADIUS_CELLS`, `placement_lod.rs:84`).
   **Phase 0: verify** whether the value is a radius or a diameter, and
   whether `uGridDistantCountCity` (default 4 per UESP) applies in
-  closed-city worldspaces (V1).
+  closed-city worldspaces (V1). Read as a diameter it is 12 cells, inside
+  the default full-detail radius (DLOD-BAND-007, Q7).
 - **DLOD-BAND-003.** The FO3/FNV `.dlodsettings` descriptor MUST be read
   once per streaming state on the LOD source worldspace, as
   `resolve_lod_grid_origin` reads `<ws>.lod`. **Phase 0: verify** the layout
@@ -391,14 +443,26 @@ Cross-cutting state, the same date:
   vanilla FO3 and FNV descriptor DLOD-GATE-007 finds (24 in the 2026-11-01
   census).
 - **DLOD-BAND-005.** The worldspace "Distant LOD Multiplier" (CK wiki,
-  *World Menu*; FO4 CK wiki, *WorldSpace*) MAY scale the object ring.
-  **Phase 0: verify** which WRLD sub-record holds it, whether any vanilla
-  worldspace authors a value other than 1, and what it scales (V9). Today
-  no `WorldspaceRecord` field (`crates/plugin/src/esm/cell/worldspace.rs`)
-  carries it.
+  *World Menu*; FO4 CK wiki, *WorldSpace*) MAY scale the object ring. xEdit
+  defines it as the WRLD `NAMA` float on Skyrim and FO4
+  (`wbFloat(NAMA, 'Distant LOD Multiplier')`, `wbDefinitionsTES5.pas:10687`,
+  `wbDefinitionsFO4.pas:13152`); neither wiki page describes what it does.
+  **Phase 0: verify** whether any vanilla worldspace authors a value other
+  than 1, and what it scales (V9). Today no `WorldspaceRecord` field
+  (`crates/plugin/src/esm/cell/worldspace.rs:146`) carries it.
 - **DLOD-BAND-006.** Band selection MUST keep its documented reading of the
-  INI thresholds (Chebyshev distance to the quad centre, `fSplitDistanceMult`
-  not modelled; `lod_bands.rs` module docs) unless Q5 is decided otherwise.
+  INI thresholds unless Q5 is decided otherwise: Chebyshev distance to the
+  quad centre (`lod_bands.rs` module docs); on Skyrim and FO4 the
+  `fBlockLevel<i>Distance` values with `fSplitDistanceMult` not modelled; on
+  FO3/FNV `fSplitDistanceMult` generating the successive boundaries from
+  `fBlockLoadDistanceLow` (`lod_bands.rs:129-140`). The original's metric and
+  reference point, and where it applies `fSplitDistanceMult`, are
+  unverified (V14).
+- **DLOD-BAND-007.** A ring whose reach ends inside the full-detail radius
+  MUST spawn nothing and MUST NOT fail the coverage verdict; its resident
+  count reads 0, unless Q7 takes its alternative. Observable on a default
+  `--radius` run of FO3 Wasteland once DLOD-TREE-005 lands
+  (`tree_resident=0`, `verdict=PASS`).
 
 ### 5.5 Distant terrain residue (`DLOD-TERR`)
 
@@ -416,21 +480,28 @@ Cross-cutting state, the same date:
 ### 5.6 Depth precision (`DLOD-DEPTH`)
 
 - **DLOD-DEPTH-001.** Before the flip, `depth.stats` MUST be captured at
-  pinned `--camera-pos` / `--camera-forward` poses on three scenes: the
-  recorded FNV satellite-dish pose, Skyrim Tamriel and FO4 Commonwealth. The
-  baseline table in the `ACTIVE_DEPTH_MAPPING` rustdoc MUST grow to all
-  three. Today it records the FNV scene only (`camera.rs`).
+  pinned `--camera-pos` / `--camera-forward` poses on three scenes: the FNV
+  satellite-dish scene, Skyrim Tamriel and FO4 Commonwealth. The measured
+  baseline table MUST grow to all three, each row with its pose
+  coordinates. Today the table sits in `DEFAULT_RENDER_DISTANCE`'s rustdoc
+  (`camera.rs:116-131`, which `ACTIVE_DEPTH_MAPPING`'s rustdoc cites) and
+  records the FNV scene only, by description ("camera on the Mojave
+  satellite-dish rise") rather than by pose.
 - **DLOD-DEPTH-002.** The flip MUST be one commit that changes
   `ACTIVE_DEPTH_MAPPING` (`camera.rs:179`) to `DepthMapping::Reversed` and
   carries the regenerated `include/shader_constants.glsl` and every
-  recompiled `.spv` that includes `include/depth_convention.glsl`.
-  `BYRO_REVERSED_Z` is not hand-edited: `crates/renderer/build.rs` generates
-  it from the constant (`shader_constants_data.rs:17`), and
+  recompiled `.spv` it changes; `scripts/check-shader-artifacts.sh`, which
+  recompiles every shader and requires byte-identical SPIR-V, MUST pass on
+  that commit. `BYRO_REVERSED_Z` is not hand-edited:
+  `crates/renderer/build.rs` generates it from the constant
+  (`shader_constants_data.rs:17`), and
   `the_shader_depth_convention_matches_the_engine_constant`
-  (`shader_contract_tests.rs:6225`) asserts both that the generated header
+  (`shader_contract_tests.rs:6342`) asserts both that the generated header
   matches and that `depth_convention.glsl` defines no copy. That test MUST
   pass, and `the_shipped_depth_mapping_is_conventional` (`camera.rs:1347`)
-  MUST be replaced by its reversed twin.
+  MUST be replaced by its reversed twin. The "Flipping it" rustdoc on
+  `ACTIVE_DEPTH_MAPPING` (`camera.rs:163-169`) still describes a hand edit
+  of `depth_convention.glsl`; the flip commit corrects it.
 - **DLOD-DEPTH-003.** After the flip, the far decade's distinct depth codes
   MUST exceed the conventional baseline at the same pose on each of the
   three scenes.
@@ -438,8 +509,11 @@ Cross-cutting state, the same date:
   `all boundary`, `all cycle` and `all water` MUST return the same
   per-profile verdicts as a pre-flip control run on the same machine.
 - **DLOD-DEPTH-005.** DLOD-DEPTH-004 MUST be run under both `--upscaler taa`
-  and the default FSR path. FSR3's `depth_inverted` flag is one of the
-  converted sites (#3308).
+  and the default `fsr3` upscaler (`cli_args.rs:171`). FSR3's
+  `depth_inverted` flag is one of the converted sites (#3308). Today
+  `m-exteriors.sh` passes `--upscaler taa` in every mode
+  (`m-exteriors.sh:322`), so the FSR half cannot be run; Phase 5 adds an
+  upscaler override to the script.
 - **DLOD-DEPTH-006.** Bench-of-record frame times after the flip MUST fall
   within the noise of a same-machine control
   ([bench methodology](../../ROADMAP.md#how-to-run-a-bench)).
@@ -452,7 +526,7 @@ Cross-cutting state, the same date:
   boundary profile.
 - **DLOD-PERF-002.** Every new ring MUST reconcile under its own
   `LodWorkBudget` and the shared frame deadline in `reconcile_lod_rings`, as
-  the four rings do today (`streaming_helpers.rs`).
+  the four rings do today (`streaming_helpers.rs:215-257`).
 - **DLOD-PERF-003.** On a pinned boundary pose, `main_render` time SHOULD
   stay within same-machine control noise after the Oblivion and FO3 tree
   rings land.
@@ -463,13 +537,14 @@ Cross-cutting state, the same date:
 
 | # | Original behaviour | Redux behaviour | Becomes redundant | Risk and its requirement |
 |---|---|---|---|---|
-| 1 | Full models within the 5×5 loaded area; LOD beyond it (CK wiki, *Static*; `uGridsToLoad=5` in the shipped `Oblivion_default.ini`) | Full detail within `DEFAULT_EXTERIOR_RADIUS` (12 cells, `scene.rs`); LOD rings start beyond it | Tools and INI tweaks that raise `uGridsToLoad` | The LOD rings start farther out and the geometry pool is shared → DLOD-PERF-001 (`held_back=0`) |
-| 2 | Tree LOD billboards; their orientation is unsourced | Static crossed cards per tree (`tree_lod.rs`) | — | A visible X shape on a close approach → DLOD-TREE-010, V5, Q3 |
-| 3 | Radial INI distances with `fSplitDistanceMult` (shipped `Ultra.ini` / `VeryHigh.ini`) | Chebyshev distance to the quad centre; split multiplier not modelled | — | Bands switch at slightly different distances → DLOD-BAND-006, Q5 |
+| 1 | Full models within the 5×5 loaded area; LOD beyond it (CK wiki, *Static*; `uGridsToLoad=5` in the shipped `Oblivion_default.ini`) | Full detail within `DEFAULT_EXTERIOR_RADIUS` (12 cells, `scene.rs:39`); LOD rings start beyond it | Tools and INI tweaks that raise `uGridsToLoad` | The LOD rings start farther out and the geometry pool is shared → DLOD-PERF-001 (`held_back=0`). An authored reach shorter than the full-detail radius leaves its ring empty at the default radius → DLOD-BAND-007, Q7 |
+| 2 | Skyrim: each LOD tree on "2 double sided planes intersecting each other at a 90 degree angle", upright (DynDOLOD, *Tree LOD*). Oblivion, FO3: unverified | The same crossed cards for every tree family (`tree_lod.rs`, DLOD-TREE-006) | — | Oblivion or FO3 may draw distant trees another way → DLOD-TREE-010, V5, Q3 |
+| 3 | `[TerrainManager]` distances in BU with `fSplitDistanceMult` (shipped `Ultra.ini` / `VeryHigh.ini`); the metric and reference point are unverified | Chebyshev distance to the quad centre; the split multiplier generates FO3/FNV's boundaries and is not modelled on Skyrim/FO4 | — | Bands switch at slightly different distances → DLOD-BAND-006, V14, Q5 |
 | 4 | A VWD object with no `_far.nif` is not visible from a distance (CS wiki, *Visible When Distant Tutorial*) | The full model is drawn as the distant mesh | `_far.nif` packs made only to surface existing VWD flags | Cost of full meshes at range on modded data → DLOD-OBJ-007, Q6, V12 |
-| 5 | Legacy terrain LOD meshes authored per quad (GECK wiki, *World LOD*: "Generate Terrain Meshes") | Geometry synthesised from LAND; only the authored textures are used | — | A mod that ships LOD meshes without matching LAND draws Redux's ground instead → DLOD-TERR-003, Q2 |
+| 5 | Legacy terrain LOD meshes authored per quad, generated from the land: GECK wiki, *World LOD* ("Generate Terrain Meshes: Creates terrain meshes for the world from the local land geometry"); CS wiki, *Landscape LOD Tutorial* (Heightmap Editor, *Generate LOD*) | Geometry synthesised from LAND; only the authored textures are used | — | A mod that ships LOD meshes without matching LAND draws Redux's ground instead → DLOD-TERR-003, Q2 |
 | 6 | The baked LOD diffuse as authored | Skyrim's baked ground scaled by 0.36 (`terrain_lod_albedo_gain`) | Mods that darken LOD textures | Calibrated on one scene → DLOD-TERR-002 |
 | 7 | Whole-quad pop-in at the loaded-area edge (whatever the original does there, unverified) | Per-cell segment suppression at level 4 (Q1) | — | Index sub-range draws are a render-visible change → DLOD-OBJ-002, live-gated by DLOD-GATE-005 |
+| 8 | FO3/FNV author `fBlockLoadDistance=125000` BU (about 31 cells) in `VeryHigh.ini`; what it bounds is unverified | The legacy ring reaches 64 cells, the archives' quad extent (`FALLOUT_LEGACY_MAX_CELLS`) | — | If V14 shows the key bounds the ring, Redux draws FO3/FNV LOD about twice as far, at Prop-tier cost → DLOD-BAND-001, DLOD-PERF-001, Q5 |
 
 The FO3 boundary profile's seam gate is red today on MegatonWorld (#6500,
 out of scope per DLOD-NG-003). Acceptance below reads the `lod-coverage:`
@@ -483,7 +558,7 @@ line, which that failure does not affect.
 
 | Game | In scope | Why / wave |
 |---|---|---|
-| Oblivion | yes | Families F2, F3, F6, F7. F7 (trees) and the `uGridDistantCount` reach are the open work. Exteriors pass the `m-exteriors.sh` gates ([compatibility matrix](../../ROADMAP.md#compatibility-matrix)). Wave 2 |
+| Oblivion | yes | Families F2, F3, F6, F7. F7 (trees) and the `uGridDistantCount` reach are the open work. Exterior state: [compatibility matrix](../../ROADMAP.md#compatibility-matrix). Wave 2 |
 | Fallout 3 | yes | F2, F3, F5, F9, F11. The `.dtl` trees and the `.dlodsettings` lattice are open. Wave 2 |
 | Fallout: New Vegas | yes | F2, F3, F5, F11. No tree family is authored; FNV shares `GameKind::Fallout3NV` and the FO3 translation, and gets no tree ring because its archives hold no `.dtl` (DLOD-TREE-009), not through a per-title branch. Wave 1 for the gate and descriptor work |
 | Skyrim (LE / SE / AE) | yes | F1, F3, F4, F8, F10. Acceptance runs on SE. LE and AE share `GameKind::Skyrim` and the translation; **Phase 0: verify** that LE's `Skyrim - Meshes.bsa` names the same families (V11). Wave 1 |
@@ -505,14 +580,14 @@ in. Engine runs use `--bench-hold` with `BYRO_DEBUG_SERVER=1` and
 |---|---|---|---|
 | A1 | `docs/smoke-tests/m-exteriors.sh skyrim boundary` | Skyrim SE | `lod-coverage:` shows nonzero `terrain_resident`, `object_resident` and `tree_resident`; `overlaps`, `full_detail_overlaps`, `vwd_full_model_overlaps`, `tree_churn`, `held_back`, `object_moat_cells` and `tree_moat_cells` all 0 |
 | A2 | `docs/smoke-tests/m-exteriors.sh fo4 boundary` | FO4 | as A1 without `tree_resident`; `object_moat_cells=0` if V6 holds |
-| A3 | `docs/smoke-tests/m-exteriors.sh fnv boundary` | FNV | as A2 for the `blocks\` ring |
+| A3 | `docs/smoke-tests/m-exteriors.sh fnv boundary` | FNV | as A2 for the `blocks\` ring, and `tree_resident=0` with the verdict unaffected (DLOD-TREE-009) |
 | A4 | `docs/smoke-tests/m-exteriors.sh oblivion boundary` | Oblivion | nonzero `placement_resident` and `tree_resident`; overlaps 0; `held_back=0` |
-| A5 | `cargo run --release -- --game fo3 --wrld Wasteland --grid 0,0 --radius 3 --bench-frames 300 --bench-hold`, then `lod.coverage` over `byro-dbg` | FO3 | nonzero `tree_resident`; overlaps 0. (The `fo3` boundary profile sits in MegatonWorld, which has no `.dtl` of its own) |
+| A5 | `cargo run --release -- --game fo3 --wrld Wasteland --grid 0,0 --radius 3 --bench-frames 300 --bench-hold`, then `lod.coverage` over `byro-dbg` | FO3 | nonzero `tree_resident`; overlaps 0. The `fo3` boundary profile sits in MegatonWorld, which the census found without a `.dtl` (a Phase 0 figure); `--radius 3` keeps the 10-cell tree reach outside the full-detail radius (DLOD-BAND-007) |
 | A6 | `cargo test -p byroredux --bin byroredux -- --ignored dtl_corpus_parses_and_resolves_every_species` | FO3 base and DLC | every `.dtl` and `.lst` file DLOD-GATE-007 counts parses; every species resolves |
 | A7 | `cargo test -p byroredux --bin byroredux -- --ignored dlodsettings_origin_tiles_every_authored_quad` | FO3, FNV | every descriptor DLOD-GATE-007 counts decodes; every authored `blocks\` and terrain quad sits on its descriptor's lattice |
 | A8 | `cargo test -p byroredux --bin byroredux lod_family_table_covers_every_game` | none | all six `GameKind` variants are classified by every family predicate |
 | A9 | Three pinned poses (DLOD-DEPTH-001); at each, `depth.stats` twice (arm, then read), before and after the flip | FNV, Skyrim SE, FO4 | far-decade distinct codes after > before on all three |
-| A10 | `m-exteriors.sh all static|boundary|cycle|water`, before and after the flip, under `--upscaler taa` and FSR | all five | identical per-profile verdicts |
+| A10 | `m-exteriors.sh` with `all static`, `all boundary`, `all cycle` and `all water`, before and after the flip, once with the script's `--upscaler taa` and once with the `fsr3` override DLOD-DEPTH-005 adds | all five | identical per-profile verdicts |
 | A11 | Bench-of-record refresh with a same-machine control | bench scenes | frame times within control noise |
 
 A boundary-run scenario reads the `lod-coverage:` line only. Its other
@@ -530,7 +605,7 @@ content" column once it closes. Frame times go to the bench-of-record.
 
 | Metric | Definition | Granularity |
 |---|---|---|
-| Family coverage | families Drawn ÷ families authored (§3.1) | per title |
+| Family coverage | (ring families Drawn + descriptors Read) ÷ families authored (§3.1) | per title |
 | Tree-LOD parse rate | tree-LOD files that parse ÷ files shipped | per title, per archive |
 | Moat cells | `object_moat_cells`, `tree_moat_cells` after settle | per title, per boundary profile |
 | Overlap and churn | sum of the overlap and churn fields after settle (a gate, expected 0) | per boundary profile |
@@ -544,32 +619,35 @@ content" column once it closes. Frame times go to the bench-of-record.
 Depends on M32 (landscape) and M40 (streaming), both closed. Phase 5 is
 independent of Phases 2–4 and may run in parallel with them.
 
-**Phase 0 — Verify, census and decide (no engine code).** Close V1–V13
-(below) from external sources or vanilla-data censuses. Get Q1–Q6 decided.
-Write the missing design text: the Oblivion and FO3 tree families in EXAL
-§5.2, and a reversed-Z section in the exterior readiness plan. File a
-tracking issue for the reversed-Z flip (none is open). Check in the
-DLOD-GATE-007 census and revise every Phase 0 figure it contradicts. Correct
-the stale M35 row in ROADMAP. Exit: `lod_family_census` passes on the
-owner's machine, 13 of 13 verify items closed or filed as issues,
-6 of 6 decisions carry **Decided**, and the M35 row's open list names only
-work this PRD tracks.
+**Phase 0 — Verify, census and decide (no engine code).** Close V1–V14
+(below) from external sources or vanilla-data censuses. Get Q1–Q7 decided.
+Write the missing design text: the Oblivion and FO3 tree families and
+per-tree retirement in EXAL §5.2, and a reversed-Z section in the exterior
+readiness plan. File a tracking issue for the reversed-Z flip (none is
+open). Check in the DLOD-GATE-007 census and revise every Phase 0 figure it
+contradicts. Correct the stale M35 row in ROADMAP, and the Status
+paragraph's distant-LOD line (`ROADMAP.md:44`), which still credits
+`_far.nif` LOD to FO3/FNV. Exit: `lod_family_census` passes on the owner's
+machine, 14 of 14 verify items closed or filed as issues, 7 of 7 decisions
+carry **Decided**, and the M35 row's open list names only work this PRD
+tracks.
 
 | V | Question | Settled by |
 |---|---|---|
 | V1 | Are `uGridDistantTreeRange` / `uGridDistantCount` radii or diameters in cells, and do the `…City` variants (default 4, UESP) apply in closed-city worldspaces? | A second written source (UESP talk pages, the CS wiki); else the owner rules on the risk |
 | V2 | Which texture and size the original uses for a distant Oblivion tree (`trees\billboards\` or the `TREE.ICON` leaves texture) | CS-wiki / UESP texture documentation; a census pairing the `trees\billboards\` DDS names with the `.lod` TREE bases |
 | V3 | `.dtl` record layout and `treetypes.lst` entry layout | A byte census over every shipped `.dtl` and `.lst` file, checked in as DLOD-TREE-004's test |
-| V4 | Does the original hide LOD trees one at a time, and by which key (REFR FormID or cell)? | A census matching `.btt` `ref_form_id` values to `Skyrim.esm` REFRs and their cells |
-| V5 | Does the original's tree LOD face the camera? | A published source (CK wiki, xLODGen / DynDOLOD documentation); else the static cross stays an interpretation |
+| V4 | Does the original hide LOD trees one at a time, and by which key (REFR FormID or cell)? | A census matching `.btt` `ref_form_id` values to `Skyrim.esm` REFRs and their cells; DynDOLOD's *Tree LOD* help (no unload for ESL-flagged references) points at a per-reference key without stating it |
+| V5 | Do Oblivion and FO3 draw distant trees as Skyrim does, on two upright planes crossed at 90° (DynDOLOD, *Tree LOD*, which covers Skyrim only)? | CS / GECK wiki, TES4LODGen / TES4qLOD documentation; else the crossed cards stay an interpretation for those two titles |
 | V6 | Do FO4 level-4 `.bto` segments partition one per cell? | `bto_segment_census.rs` run over `Fallout4 - Meshes.ba2` |
 | V7 | Do FO3/FNV `blocks\` segments partition one per cell? | The same census over `Fallout - Meshes.bsa` |
 | V8 | `.dlodsettings` field meanings | A census over every vanilla descriptor against the authored quad names (`LegacyLodQuadIndex`) |
-| V9 | The WRLD sub-record for "Distant LOD Multiplier", its vanilla values, and what it scales | xEdit's WRLD definitions (`wbDefinitionsTES5.pas`, `wbDefinitionsFO4.pas`) and a master census |
-| V10 | What `fTreeLoadDistance` governs on FO4 and FNV, which author it but ship no separate tree family | FO4 CK wiki, GECK wiki or a published INI reference |
+| V9 | The vanilla values of WRLD `NAMA` "Distant LOD Multiplier" (sub-record settled by xEdit, DLOD-BAND-005) and what it scales | A `NAMA` census over `Skyrim.esm`, `Fallout4.esm` and their DLC masters; a published description of the field |
+| V10 | What `fTreeLoadDistance` governs: the `.dtl` ring on FO3, and anything on FO4 and FNV, which author it but ship no separate tree family | FO4 CK wiki, GECK wiki or a published INI reference |
 | V11 | Does Skyrim LE ship the same family names as SE? | A name-table census of `Skyrim - Meshes.bsa` (LE) |
 | V12 | Is a VWD object with no `_far.nif` invisible at distance in the original? | A second source beside the CS wiki tutorial (TES4LODGen / TES4qLOD documentation) |
 | V13 | Are FO4 trees part of the `.bto` bake? | FO4 CK wiki or xLODGen documentation, plus a census of `.bto` sub-mesh texture paths |
+| V14 | How the original measures the `[TerrainManager]` distances (metric, reference point on a quad), where it applies `fSplitDistanceMult`, and whether FO3/FNV `fBlockLoadDistance` bounds the LOD ring | A published source (CK / GECK wiki, an INI reference); else the documented reading stands under Q5 |
 
 **Phase 1 — The gate sees every ring.** Ships DLOD-GATE-001 to -008 and
 DLOD-BAND-001, measured on today's families. Exit: all five boundary
@@ -577,9 +655,9 @@ profiles print the extended line; Skyrim's `tree_resident` is nonzero; the
 first moat counts are published in the M35 row; A8 passes.
 
 **Phase 2 — Distant trees for Oblivion and FO3.** Ships DLOD-TREE-001 to
--007, -009 and -010, DLOD-BAND-002 and DLOD-PERF-001 to -003. Exit: A4, A5
-and A6 pass; tree-LOD parse rate is 100% on FO3; family coverage is 100% on
-Oblivion and FO3.
+-007, -009 and -010, DLOD-BAND-002 and -007 as Q7 decides, and
+DLOD-PERF-001 to -003. Exit: A3, A4, A5 and A6 pass; tree-LOD parse rate is
+100% on FO3; family coverage is 100% on Oblivion and FO3.
 
 **Phase 3 — No moat.** Ships DLOD-OBJ-002 to -006 and DLOD-TREE-008, as Q1
 decides. Exit: A1 to A3 pass with both moat counts at 0 wherever V6 and V7
@@ -590,7 +668,8 @@ confirmed a per-cell lever; `vwd_full_model_overlaps` stays 0.
 measured and recorded; FO3/FNV moat and overlap counts are unchanged or
 better than the Phase 1 figures.
 
-**Phase 5 — Reversed-Z.** Ships DLOD-DEPTH-001 to -006. Exit: A9, A10 and
+**Phase 5 — Reversed-Z.** Ships DLOD-DEPTH-001 to -006, including the
+`m-exteriors.sh` upscaler override DLOD-DEPTH-005 needs. Exit: A9, A10 and
 A11 pass, and the three-scene before/after table is published.
 
 ---
@@ -606,34 +685,70 @@ A11 pass, and the three-scene before/after table is published.
    `radius_unload`. It reintroduces the #1866 overlap risk, and it does not
    close the moat for non-VWD content. Alternative B: defer. M35 closes on
    ring separation and the moat stays, now measured by DLOD-GATE-005.
-2. **Q2 — Legacy distant-terrain geometry.** Recommended: keep synthesising
-   from LAND (DLOD-TERR-003). The boundary block needs synth for its holes
-   and skirts anyway, and both sources come from the same LAND. Alternative:
-   read the authored `Landscape\LOD\*.nif` meshes. That matches mods which
-   ship LOD meshes, at the cost of a second geometry path with its own seam
+2. **Q2 — Legacy distant-terrain geometry (Oblivion, FO3, FNV).**
+   Recommended: keep synthesising it from LAND (DLOD-TERR-003). The boundary
+   block needs synth for its holes and skirts anyway, and the original tools
+   generated the authored meshes from the land too (GECK wiki, *World LOD*:
+   "Creates terrain meshes for the world from the local land geometry"; CS
+   wiki, *Landscape LOD Tutorial*), so on vanilla data both describe the
+   same ground. Consequence: a mod that ships LOD meshes without matching
+   LAND shows Redux's ground, not the mod's. Alternative: read the authored
+   `Landscape\LOD\*.nif` meshes. Consequence: such mods show their own
+   distant ground, at the cost of a second geometry path with its own seam
    and skirt work.
 3. **Q3 — How Oblivion and FO3 distant trees are drawn.** Recommended: the
-   `tree_lod.rs` representation, one crossed-card mesh per LOD file, so
-   there is one draw shape and one gate for every tree family
-   (DLOD-TREE-006). Alternative: one yaw-facing `Billboard` entity per tree,
-   reusing the near-field path. It matches the near-field look, but the
-   entity count grows with every distant tree placed.
+   `tree_lod.rs` representation, one mesh of crossed upright cards per LOD
+   file (DLOD-TREE-006). It is the shape Skyrim's own tree LOD draws
+   (DynDOLOD, *Tree LOD*: "2 double sided planes intersecting each other at
+   a 90 degree angle"), and it gives one draw shape and one gate for every
+   tree family. Consequence: if V5 finds Oblivion or FO3 drew distant trees
+   another way, those two titles look different at range. Alternative: one
+   yaw-facing `Billboard` entity per tree, reusing the near-field path.
+   Consequence: it matches the near-field look, but the entity count grows
+   with every distant tree placed.
 4. **Q4 — Reversed-Z.** Recommended: flip once A9 to A11 pass (Phase 5),
    which turns the measured far-decade gain into the default. Alternative:
    keep `Conventional` and drop the item from M35. Depth stays the precision
    floor between LOD terrain and the LOD objects standing on it.
 5. **Q5 — Band calibration.** Recommended: accept the INI-derived ladder and
    its documented reading as final (DLOD-BAND-006), consistent with the
-   anti-scope on matching the original's look. Alternative: calibrate the
-   distances against captures of the original game. It needs the original
-   running beside Redux and a capture method; that is per-pixel parity work.
-6. **Q6 — Oblivion VWD objects with no `_far.nif`.** Recommended: keep
-   drawing the full model (DLOD-OBJ-007). A VWD flag then always means
-   "visible at distance", and on vanilla data the 2026-11-01 census puts
-   it at 4 bases and 6 placements (§3.1, a Phase 0 figure until
-   DLOD-GATE-007). Alternative: match the original as the CS wiki
-   describes it and skip them. Behaviour becomes faithful for mods, but the
+   anti-scope on matching the original's look. The reading is: Chebyshev
+   distance to the quad centre; `fSplitDistanceMult` generating FO3/FNV's
+   band boundaries and not modelled on Skyrim/FO4; FO3/FNV's ring reaching
+   the archives' 64-cell quad extent. Consequence: bands may switch at
+   slightly different distances than the original's, and if V14 shows that
+   FO3/FNV `fBlockLoadDistance` (about 31 cells) bounds the ring, Redux
+   draws that LOD about twice as far. Alternative: calibrate the distances
+   against captures of the original game. Consequence: it needs the
+   original running beside Redux and a capture method; that is per-pixel
+   parity work.
+6. **Q6 — Oblivion VWD objects with no `_far.nif`.** The CS wiki says such
+   an object "will not be visible in the game from distant" (*Visible When
+   Distant Tutorial*; V12 seeks a second source). Recommended: keep drawing
+   the full model (DLOD-OBJ-007). Consequence: a VWD flag always means
+   "visible at distance", at the cost of full meshes at range; on vanilla
+   data the 2026-11-01 census puts it at 4 bases and 6 placements (§3.1, a
+   Phase 0 figure until DLOD-GATE-007). Alternative: match the original and
+   skip them. Consequence: behaviour becomes faithful for mods, but the
    modder's flag then does nothing without a `_far.nif`.
+7. **Q7 — Rings whose authored reach ends inside the full-detail radius.**
+   Redux keeps full detail out to 12 cells by default
+   (`DEFAULT_EXTERIOR_RADIUS`); the original kept a 5×5 loaded area
+   (`uGridsToLoad=5`). Some authored reaches are shorter than 12 cells:
+   FO3's `fTreeLoadDistance` (40000 BU, 10 cells), and Oblivion's
+   `uGridDistantCount` (25) and `uGridDistantTreeRange` (15) if V1 reads
+   them as diameters (12 and 7 cells). Recommended: the authored reach stays
+   the ring's outer bound (DLOD-BAND-007). Consequence: at the default
+   radius such a ring draws nothing, because full models already stand
+   farther out than the original's LOD did; boundary runs use `--radius 1`,
+   so the gate still measures every ring; and if V1 finds diameters,
+   Oblivion's building horizon at the default radius shrinks from today's
+   16 cells to the 12 the full models cover. Alternative: every ring reaches
+   at least 4 cells past `--radius`, the margin today's Oblivion placement
+   ring keeps (16 cells against the default 12). Consequence: some LOD
+   always stands past the full-detail edge at any radius, so the horizon
+   exceeds the original's wherever its INI value is shorter, and that INI
+   value no longer bounds the ring (an exception to DLOD-G-004).
 
 ---
 
@@ -655,17 +770,20 @@ A11 pass, and the three-scene before/after table is published.
 | Anti-scope and keep list | [ROADMAP anti-scope](../../ROADMAP.md#what-we-are-not-doing-anti-scope), [keep list](../../ROADMAP.md#the-keep-list--what-not-to-change-despite-temptation) |
 | Live milestone state and published metrics | [ROADMAP.md](../../ROADMAP.md) |
 | Virtual geometry and its stance on authored LOD | [Virtual Geometry PRD](virtual-geometry.md) (VGEO-NG-001, Q4) |
-| Far-field sun shadows (unowned) | [Reference Lighting PRD](reference-lighting.md) (RLT-NG-008, Q4) |
+| Far-field sun shadows (decided there) | [Reference Lighting PRD](reference-lighting.md) (RLT-NG-008, RLT-CON-004, Q4) |
+| Vanilla LOD family census tool | `crates/bsa/examples/probe_lod_corpus.rs` (DLOD-GATE-007 extends it) |
 
 External sources, all local dumps under `/mnt/data/src/reference/` unless
 marked otherwise:
 
 | Source | Used for |
 |---|---|
-| UESP, *Oblivion Mod:Oblivion.ini* (`uesp-wiki`) | `uGridDistantTreeRange`, `uGridDistantCount`, `bDisplayLODTrees` |
-| CS wiki: *Update Distant LOD Data*, *Visible When Distant Tutorial*, *TES4LODGen*, *TES4qLOD* (`cs-uesp-wiki`) | `.lod` holds tree and building positions; `_far.nif` requirement |
-| GECK wiki, *World LOD* (`geck-uesp-wiki`) | FO3/FNV `blocks` and `trees` LOD folders, `LODSettings`, generated terrain meshes |
+| UESP, *Oblivion Mod:Oblivion.ini* (`uesp-wiki`) | `uGridDistantTreeRange`, `uGridDistantCount` and their `…City` variants |
+| CS wiki: *Update Distant LOD Data*, *Visible When Distant Tutorial*, *TES4LODGen*, *TES4qLOD*, *Landscape LOD Tutorial* (`cs-uesp-wiki`) | `.lod` holds tree and building positions; `_far.nif` requirement; Oblivion terrain LOD meshes generated from the heightmap |
+| GECK wiki, *World LOD* (`geck-uesp-wiki`) | FO3/FNV `blocks` and `trees` LOD folders, `LODSettings`, terrain meshes generated "from the local land geometry" |
 | CK wiki: *Static*, *Creating a Custom Worldspace with LOD*, *World Menu* (`ck-uesp-wiki`); FO4 CK wiki, *WorldSpace* (`falloutck-uesp-wiki`) | Has Distant LOD and the 5×5 loaded area; tree LOD hiding; Distant LOD Multiplier |
+| xEdit WRLD definitions, `wbDefinitionsTES5.pas:10687`, `wbDefinitionsFO4.pas:13152` (local copies under `/mnt/data/tmp/`) | `NAMA` "Distant LOD Multiplier" |
+| DynDOLOD help, *Tree LOD* (<https://dyndolod.info/Help/Tree-LOD>, online) | Skyrim's tree LOD on two crossed double-sided upright planes; no unload for ESL-flagged references |
 | nif.xml, `BSGeometrySegmentData`, `BSSegmentedTriShape` (`nifxml/nif.xml`) | LOD segments "in a grid" |
 | Shipped INIs: Skyrim SE `Ultra.ini`, FO4 `Ultra.ini`, FO3 and FNV `VeryHigh.ini`, `Oblivion_default.ini` (game installs) | Band, tree and object distances |
 
@@ -677,3 +795,4 @@ marked otherwise:
 |---|---|---|---|
 | 1 | 2026-11-01 | First draft | — |
 | 2 | 2026-11-01 | Review round 1 folded in: six `GameKind` variants not seven (GATE-008, A8); FO3/FNV tree split made data-driven (TREE-005, -009); generated `BYRO_REVERSED_Z` (DEPTH-002); census counts framed as Phase 0 figures (§3.1, GATE-007, TREE-003/-004, BAND-003/-004, A6, A7, Q6); tree texture source vs `TREE_ICON_CANDIDATE_DIRS` (TREE-003); CK tree-LOD citation narrowed (TREE-008); closed-city INI keys (V1); M53 and far-field-shadow non-goals linked to sibling PRDs (NG-006, NG-010) | claude: revise |
+| 3 | 2026-11-03 | Review round 2 folded in: HEAD re-checked on 2026-11-03 (stale line anchors in F7, TREE-003, DEPTH-002; family-predicate tests already cover all six variants, GATE-008; FO3/FNV ladder models `fSplitDistanceMult` and clamps at 64 cells, BAND-001, BAND-006, §6 rows 3 and 8; depth baseline lives under `DEFAULT_RENDER_DISTANCE` and names no pose, DEPTH-001; `m-exteriors.sh` pins `--upscaler taa`, DEPTH-005, A10); Skyrim tree-LOD shape sourced from DynDOLOD (TREE-010, V5, §6 row 2, Q3) and per-reference unload hint (TREE-008, V4); `NAMA` sourced from xEdit (BAND-005, V9); `fTreeLoadDistance` meaning made a verify item (TREE-005, V10); new V14; Read state for descriptors (§3, F10, G-001, metrics); F6 marked invisible to the gate; GATE-006 scoped per worldspace; GATE-007 extends `probe_lod_corpus`; NG-010 cites the Reference Lighting PRD's decided Q4; Q2 and Q6 sourced and given explicit consequences; new BAND-007 and Q7 (rings inside the full-detail radius) | claude: revise |
