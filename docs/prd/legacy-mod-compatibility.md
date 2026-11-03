@@ -1,16 +1,18 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: APPROVED (2026-11-03). Revision 4 records the owner's §10
-decisions; every one is decided and implementation issues may be filed.
-Q1 changed the promise for unofficial patches: a known patch is not
-loaded, the engine stands in for it (LMC-FIX-004), and the user is told it
-is not needed. Revision 3 (2026-11-01) folded in two review rounds
+**Status**: ACTIVE (2026-11-03). Revision 5 files the tracking issues.
+Revision 4 recorded the owner's §10 decisions; every one is decided. Q1
+changed the promise for unofficial patches: a known patch is not loaded,
+the engine stands in for it (LMC-FIX-004), and the user is told it is not
+needed. Revision 3 (2026-11-01) folded in two review rounds
 (loose-root precedence and ownership, ITM and list-merge semantics, missing
 masters, level-aware per-mod version probes, archive pairing, new catalog
 rows, save semantics, Starfield medium plugins). Statements about how the
 original engines behave cite external sources (UESP and the Creation Kit /
 GECK wikis, extender sources, tool documentation); a claim that could not
 be verified is marked **Phase 0: verify** instead of being stated as fact.
+
+**Tracking**: #6664 (parent). Phases: #6669 (0), #6670 (1), #6671 (2), #6672 (3), #6673 (4), #6674 (5), #6675 (6), #6676 (7).
 
 **Scope**: What it means for a mod authored for Oblivion, Fallout 3, Fallout:
 New Vegas, Skyrim (LE / SE / AE), Fallout 4 or Starfield to "work" on
@@ -1205,3 +1207,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 2 | 2026-11-01 | Review round 1 folded in | Round 1: revise |
 | 3 | 2026-11-01 | Review round 2 folded in; the topics of both rounds are listed in the status line | Round 2: revise |
 | 4 | 2026-11-03 | Owner decisions Q1–Q9 recorded; Q1 amended: known unofficial patches are not loaded and the engine stands in for them (thesis 3, T1, LMC-G-002, LMC-FIX-001, new LMC-FIX-004, LMC-ID-011, Phase 0 design item); Q2–Q9 take the recommendation | owner: approved |
+| 5 | 2026-11-03 | → ACTIVE: parent #6664 and phase issues #6669, #6670, #6671, #6672, #6673, #6674, #6675, #6676 filed; the Phase 0 verify items are acceptance criteria of #6669 | — |

@@ -1,12 +1,15 @@
 # AI Packages Completion — Product Requirements
 
-**Status**: APPROVED (2026-11-03). Revision 4 records the owner's §10 decisions: Q2 sets Skyrim's weekday origin per edition, every other answer is the recommendation; implementation issues may be filed. Revision 3 folded in review round 2
+**Status**: ACTIVE (2026-11-03). Revision 5 files the tracking issues; every **Phase 0: verify** item is an acceptance criterion of the Phase 0 issue. Revision 4 recorded the owner's §10 decisions: Q2 sets Skyrim's weekday origin per edition, every other answer is the recommendation. Revision 3 folded in review round 2
 (§12 lists the topics). It covers the remainder of milestone M42: the
 procedures, package fields and per-game prerequisites that do not run yet.
 Statements about how the original engines behave cite external sources
 (UESP, the CS / GECK / Creation Kit wikis, fopdoc, xEdit, nif.xml). A
 claim that could not be verified is marked **Phase 0: verify** instead of
 being stated as fact.
+
+**Tracking**: #6634 (parent). Phases: #6655 (0), #6656 (1), #6658 (2), #6660 (3),
+#6662 (4), #6663 (5).
 
 **Scope**: What it means for an actor's own AI package list (`PKID`, the
 *ambient* packages) to run on ByroRedux in every target game. This covers
@@ -956,3 +959,4 @@ option.
 | 2 | 2026-11-01 | Review round 1 folded in: census provenance (Phase 0: confirm), FO3/FNV object-type enum and the xEdit FO3/FNV split at 28/29, weapon classes 21–23 and Q1 reworked against the ROADMAP rationale, Skyrim Lean value settled by a mesh census (AIP-SEAT-001 now a fix), FO4 month sentinel settled from xEdit (AIP-SCHED-002), weekday origin at the boundary (new AIP-SCHED-004), Starfield graph gate and `input_destination` stated from HEAD, `pack.ambient` split (AIP-DX-005/006), CastMagic self-range and UseMagic blocker, deviation citations | claude: revise |
 | 3 | 2026-11-03 | Review round 2 folded in: HEAD re-verified at 2026-11-03 (Scene driver has no ForceGreet arm, Patrol's `XLKR` links are decoded but unused, Oblivion ambushers have no gate, `find_behavior` span, `cell.owners` as the existing reader); the FO4 `NVNM` decode named as unowned (Related, AIP-WALK-002, Phase 5); weapon class 22 fits its name, Q1 reworked to run 12 and 22; FO4/Starfield furniture positions settled from xEdit (`FURN` `SNAM`, new AIP-SEAT-007); Starfield subgraph shape settled from xEdit (AIP-WALK-001); Find-on-flora and Hand to Hand verify items; §6 rows for UseItemAt, Ambush, Patrol, the class-weapon pick and the bed sit pose; §3.2 leaf-name verify moved to the census tool (AIP-DX-003, now named); Starfield and date columns in §5.6, Starfield in AIP-DX-004; SCHED-004 states today's per-game weekday branches; AIP-UW-006 no longer a decline; real-data skip is not an acceptance pass; Phase 0 verify list as a table; Q2–Q6 consequences stated, Q4 and Q5 premises corrected | claude: revise |
 | 4 | 2026-11-03 | Owner decisions Q1–Q6 recorded; Q2 amended by the owner (Skyrim's weekday origin per edition), with AIP-SCHED-004 stating the load-time edition read; the rest take the recommendation | owner: approved |
+| 5 | 2026-11-03 | → ACTIVE: parent #6634 and phase issues #6655, #6656, #6658, #6660, #6662, #6663 filed; the Phase 0 verify items are acceptance criteria of #6655 | — |

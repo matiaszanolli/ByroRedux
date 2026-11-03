@@ -1,6 +1,8 @@
 # Game UI Integration — Product Requirements
 
-**Status**: APPROVED (2026-11-03). Revision 4 records the owner's §10 decisions, every one the recommendation; implementation issues may be filed. Revision 3 folded in review round 2:
+**Status**: ACTIVE (2026-11-03). Revision 5 files the tracking issues.
+Revision 4 recorded the owner's §10 decisions, every one the
+recommendation. Revision 3 folded in review round 2:
 §3.1 re-verified at HEAD (no close path, one native page at a time, the
 native pause freezing every script, ObScript menu requests, `MenuMode`
 blocks and `Utility.IsInMenuMode` unserved), the pause flag and the
@@ -14,6 +16,9 @@ how an original engine, file format or tool behaves cite external sources
 (the Creation Kit / GECK / CS wikis, xEdit's record definitions, Autodesk's
 Scaleform documentation, the Ruffle project); a claim that could not be
 verified is marked **Phase 0: verify** instead of being stated as fact.
+
+**Tracking**: #6641 (parent). Phases: #6643 (0), #6653 (1), #6661 (2),
+#6665 (3), #6666 (4), #6667 (5), #6668 (6).
 
 **Scope**: The player-facing user interface of the six single-player
 target titles: which surface renders each of a game's menus (the game's own
@@ -928,3 +933,4 @@ Each needs the project owner. The recommendation is the first option.
 | 2 | 2026-11-01 | Review round 1 folded in: §3.1 rows 7 and 11 evidence corrected at HEAD (row 3 and row 6 tightened); FO4 `MenuData` citation re-read (custom-menu struct, one vanilla value) and GUI-REG-004 made a verify; Scaleform `Invoke` paraphrase corrected (GUI-PATH-002); HUD-under-modal visibility (GUI-REG-003) and the race menu's caller-visible wait (GUI-PAGE-002) moved to **Phase 0: verify**; input-owner rule split out as GUI-REG-009; GECK menu-code gaps (GUI-REG-006); `ui.open` / `ui.close` driver GUI-OPS-005 for scenarios 3 and 9; GUI-HOST-002 observable; `LMC-UI-001` cited in GUI-HOST-004; protocol citations in GUI-HOST-006; VATS PRD linked and FO3 MenuXml menus pulled into Phase 3 for it; §6 redundancy column and flags-default row; §8 ROADMAP homes; Q2 states it does not reopen R4 | claude: revise |
 | 3 | 2026-11-03 | Review round 2 folded in: §3.1 re-verified at HEAD with file:line (rows 2, 3, 5, 9, 10, 13, 14 corrected or completed; rows 16 pause and 17 menu-mode script surfaces added); `Utility.IsInMenuMode`, the native pause and `Begin MenuMode` blocks brought into scope (GUI-REG-010, GUI-REG-011, GUI-EVT-006, scenario 10), with the HUD kept out of menu mode (GUI-REG-002/004); S4 gains the `recorded` fallback; menu codes sourced from xEdit `wbMenuModeEnum` and the GECK gap claim corrected (GUI-REG-002/006); GUI-PATH-005 held to the SDK plan's UI contribution service and GUI-PATH-004 to exact-name reservation; GUI-REG-007/008 and GUI-OPS-005 HEAD wording; GUI-XML-002 cross-reference; Skyrim twin for the dialogue Phase P gate (GUI-PAGE-004, Phase 4); GUI-PAGE-005 made checkable; the VATS menu's pause entry cites `VATS-UI-007` (GUI-REG-004/010); CS evidence on the race-menu wait (GUI-PAGE-002, Q4); uncited §6 / GUI-NG-003 claims sourced; §7.1 FO76, Oblivion, Skyrim LE and Starfield (#4470) rows; meter scripts renamed off `m48-8`; Q1, Q2, Q4, Q6 wording | claude: revise |
 | 4 | 2026-11-03 | Owner decisions Q1–Q6 recorded, every one the recommendation | owner: approved |
+| 5 | 2026-11-03 | → ACTIVE: parent #6641 and phase issues #6643, #6653, #6661, #6665, #6666, #6667, #6668 filed; the Phase 0 verify items are acceptance criteria of #6643 | — |

@@ -1,6 +1,6 @@
 # Distant LOD Completion — Product Requirements
 
-**Status**: APPROVED (2026-11-03). Revision 4 records the owner's §10 decisions, every one the recommendation; implementation issues may be filed. Revision 3 folded in review round 2:
+**Status**: ACTIVE (2026-11-03). Revision 5 files the tracking issues. Revision 4 recorded the owner's §10 decisions, every one the recommendation. Revision 3 folded in review round 2:
 every HEAD claim re-checked on 2026-11-03, Skyrim's tree-LOD shape and the
 Distant LOD Multiplier sub-record sourced, the far-field-shadow non-goal
 aligned with the Reference Lighting PRD's decided Q4, descriptors given
@@ -13,6 +13,8 @@ external sources (the local UESP / CS / CK / GECK wiki dumps, nif.xml,
 xEdit's record definitions, DynDOLOD's published help, the games' shipped
 INI files); a claim that could not be verified is marked
 **Phase 0: verify** instead of being stated as fact.
+
+**Tracking**: #6633 (parent). Phases: #6636 (0), #6637 (1), #6638 (2), #6639 (3), #6640 (4), #6642 (5).
 
 **Scope**: Distant LOD on the five titles whose exteriors the engine loads
 (Oblivion, Fallout 3, Fallout: New Vegas, Skyrim, Fallout 4): every distant
@@ -815,3 +817,4 @@ marked otherwise:
 | 2 | 2026-11-01 | Review round 1 folded in: six `GameKind` variants not seven (GATE-008, A8); FO3/FNV tree split made data-driven (TREE-005, -009); generated `BYRO_REVERSED_Z` (DEPTH-002); census counts framed as Phase 0 figures (§3.1, GATE-007, TREE-003/-004, BAND-003/-004, A6, A7, Q6); tree texture source vs `TREE_ICON_CANDIDATE_DIRS` (TREE-003); CK tree-LOD citation narrowed (TREE-008); closed-city INI keys (V1); M53 and far-field-shadow non-goals linked to sibling PRDs (NG-006, NG-010) | claude: revise |
 | 3 | 2026-11-03 | Review round 2 folded in: HEAD re-checked on 2026-11-03 (stale line anchors in F7, TREE-003, DEPTH-002; family-predicate tests already cover all six variants, GATE-008; FO3/FNV ladder models `fSplitDistanceMult` and clamps at 64 cells, BAND-001, BAND-006, §6 rows 3 and 8; depth baseline lives under `DEFAULT_RENDER_DISTANCE` and names no pose, DEPTH-001; `m-exteriors.sh` pins `--upscaler taa`, DEPTH-005, A10); Skyrim tree-LOD shape sourced from DynDOLOD (TREE-010, V5, §6 row 2, Q3) and per-reference unload hint (TREE-008, V4); `NAMA` sourced from xEdit (BAND-005, V9); `fTreeLoadDistance` meaning made a verify item (TREE-005, V10); new V14; Read state for descriptors (§3, F10, G-001, metrics); F6 marked invisible to the gate; GATE-006 scoped per worldspace; GATE-007 extends `probe_lod_corpus`; NG-010 cites the Reference Lighting PRD's decided Q4; Q2 and Q6 sourced and given explicit consequences; new BAND-007 and Q7 (rings inside the full-detail radius) | claude: revise |
 | 4 | 2026-11-03 | Owner decisions Q1–Q7 recorded, every one the recommendation | owner: approved |
+| 5 | 2026-11-03 | → ACTIVE: parent #6633 and phase issues #6636, #6637, #6638, #6639, #6640, #6642 filed; the Phase 0 verify items are acceptance criteria of #6636 | — |

@@ -1,6 +1,6 @@
 # VATS and Action Points — Product Requirements
 
-**Status**: APPROVED (2026-11-03). Revision 4 records the owner's §10 decisions, every one the recommendation; implementation issues may be filed. Revision 3 folded in review round 2
+**Status**: ACTIVE (2026-11-03). Revision 5 files the tracking issues. Revision 4 recorded the owner's §10 decisions, every one the recommendation. Revision 3 folded in review round 2
 (HEAD re-measured on 2026-11-03: limb-condition values are already seeded
 and restored on FO3/FNV, `BPND` is only partly decoded and FO4's not at
 all, no path leaves VATS on death or cell change; the FO4 weapon layout
@@ -15,6 +15,9 @@ behave cite external sources (the GECK and Fallout 4 CK wiki dumps under
 `/mnt/data/src/reference/`, the Fallout wiki, the games' own master files
 read with a stated recipe); a claim that could not be verified is marked
 **Phase 0: verify** instead of being stated as fact.
+
+**Tracking**: #6350 (parent). Phases: #6644 (0), #6645 (1), #6646 (2),
+#6647 (3), #6648 (4), #6649 (5), #6650 (6).
 
 **Scope**: The Vault-Tec Assisted Targeting System as the player meets it in
 Fallout 3, Fallout: New Vegas and Fallout 4: entering the mode, pricing every
@@ -833,3 +836,4 @@ Each needs the project owner. The recommendation is the first option.
 | 2 | 2026-11-01 | Review round 1 folded in: perk entry-point roles (codes 3, 6, 8) against GECK *Entry Point*; VATS-TOHIT-003 code path, arithmetic cap and both source readings; FO4 AP regen vs `fActionPointsRestoreRate`; VATS-LIMB-001/005 sourced from GECK *Stats List* / *GetVATSValue*; VATS-UI-004 citation; Starfield evidence; HEAD precision (VATS-AP-001, VATS-LIMB-008); Q3 sequencing only, Q4 withdrawn to `PERK-HOOK-003`; Phase 4 depends on Game UI Phases 1 and 3, scenario 6 driven by `GUI-OPS-005`; VATS-NG-008 co-op gate (P2P Co-op Q5) | claude: revise |
 | 3 | 2026-11-03 | Review round 2 folded in: HEAD re-measured at `8fb9b21d8` (VATS-LIMB-001 already met on FO3/FNV, §3.2 rows 3/10/14 and new row 15, VATS-MODE-003 exit paths, VATS-UI-004 no highlight state, line references, Starfield `fVATS*` count); VATS-FO4-005 AP layout settled from xEdit and the to-hit input made a verify; new VATS-FO4-007 (race-linked FO4 limb tables); VATS-FO4-006 and VATS-MODE-001 made observable; VATS-LIMB-006 re-sourced to GECK *Movement Settings* and split into new VATS-LIMB-010/011 (*Gun Spread Formula* / *Weapon Damage Formula*); VATS-PLAY-002 split into new VATS-PLAY-010; new VATS-UI-007 (VATS menu does not pause the world, against Game UI `GUI-REG-010`); VATS-LIMB-005 FO3/FNV un-cripple and VATS-TOHIT-005 unarmed reach made verify items; VATS-NG-006 re-based on *GetVATSMode*; FNV pause sourced; VATS-UI-001/005 conditional on Game UI Q1, VATS-UI-002 observable; CAMS/CPTH layout cited to xEdit; GetVATSMode/GetVATSValue indices; §6 row 8 (gore); scenarios name data and AP observable; Phase 5/6 dependencies; Q1/Q2/Q3/Q5 consequences, Q2 limb and playback scope; save design in Related and the map | claude: revise |
 | 4 | 2026-11-03 | Owner decisions Q1–Q3 and Q5 recorded, every one the recommendation; withdrawn Q4 closed against PERK-HOOK-003 (Perk Entry Points PRD, approved the same day) | owner: approved |
+| 5 | 2026-11-03 | → ACTIVE: parent #6350 and phase issues #6644–#6650 filed; the Phase 0 verify items are acceptance criteria of #6644 | — |

@@ -1,6 +1,8 @@
 # Perk Entry Points — Product Requirements
 
-**Status**: APPROVED (2026-11-03). Revision 4 records the owner's §10 decisions, every one the recommendation; implementation issues may be filed. Revision 3 folded in review round 2:
+**Status**: ACTIVE (2026-11-03). Revision 5 files the tracking issues.
+Revision 4 recorded the owner's §10 decisions, every one the
+recommendation. Revision 3 folded in review round 2:
 every §3.3 claim re-read at HEAD; Skyrim perk fragments (PERK-DEC-011) and
 the activate entry's run path (PERK-HOOK-012) added; Skyrim's "Not Used"
 hooks Inert (PERK-HOOK-011); the embedded-script and FO3/FNV ability-rank
@@ -13,6 +15,8 @@ about how an original engine, format or tool behaves cite external sources
 (the Creation Kit and GECK wikis in their local dumps, xEdit's record
 definitions); a claim that could not be verified is marked **Phase 0:
 verify** instead of being stated as fact.
+
+**Tracking**: #6635 (parent). Phases: #6651 (0), #6652 (1), #6654 (2), #6657 (3), #6659 (4).
 
 **Scope**: What the engine promises a `PERK` record does once an actor holds
 it, on Fallout 3, Fallout: New Vegas, Skyrim and Fallout 4: every entry body
@@ -860,3 +864,4 @@ Each needs the project owner. The recommendation is the first option.
 | 2 | 2026-11-01 | Review round 1 folded in: FO3 tab subjects from xEdit's FO3 `wbPERKEntryPoints`, FO4 `EPFT` 8, Starfield hook range 0–254, `wbPERKFunctionNames`, CK Num Ranks wording, FO4 CK rank rule, Phase 3/4 dependencies (CHARAL FO4 row shipped), Q6 on builtin-fixes §2/§4 and FIX-003/004/008/009, Q1 split into Q7, Related owners for both bodies, VATS PRD rev 2 cross-references (PERK-HOOK-003/005, VATS-PERK-001/004/005/006), §6 rows 2 and 7 sourced | claude: revise |
 | 3 | 2026-11-03 | Review round 2 folded in: §3.3 re-read at HEAD (DT target tab unsupplied, `embedded_script_at`, Skyrim fragments D13); Skyrim perk fragments PERK-DEC-011 and the activate run path PERK-HOOK-012; `EPF2` split out as PERK-DEC-012; Skyrim "Not Used" hooks Inert PERK-HOOK-011; activate entries player-only and FO4 Run Immediately verify; PERK-DEC-008 and FO3/FNV ability-rank verify items closed from xEdit and GECK *Perk Entry*; DT target subject and hook-56 verify; census rule consistent with Starfield decode-only; HEAD states on DEC-010, DX-004, DX-005; §6 rows 1, 6, 7, 8 sourced, row 9 added, row 6 pointed at Q7; Phase 0 verify list as a table; Q1 (M47.2 closed), Q3, Q4 (shared scratch entity), Q5 (`MessageBox` page, sources), Q7 (saved `ActorValues`, idempotent `add_spell`) | claude: revise |
 | 4 | 2026-11-03 | Owner decisions Q1–Q7 recorded, every one the recommendation; ROADMAP's M24.2 row now points here (Q1) | owner: approved |
+| 5 | 2026-11-03 | → ACTIVE: parent #6635 and phase issues #6651, #6652, #6654, #6657, #6659 filed; the Phase 0 verify items are acceptance criteria of #6651 | — |
