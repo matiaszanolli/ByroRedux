@@ -186,6 +186,11 @@ pub struct GpuMesh {
     /// skinned path now reads this flag instead of assuming every
     /// skinned mesh is RT-capable.
     pub rt_capable: bool,
+    /// M39 — object-space length one UV unit covers on this mesh
+    /// (UV channel 0), the per-mesh texel density the wanted-mip estimate
+    /// scales by (docs/engine/texture-streaming.md §5.1). `None` for a mesh
+    /// whose UVs are degenerate (no UV area) and for non-scene uploads.
+    pub world_per_uv: Option<f32>,
 }
 
 impl GpuMesh {
@@ -223,6 +228,33 @@ pub struct SceneGeometryGroup {
 /// Handles are stable — dropping a mesh leaves a `None` in its slot
 /// rather than shifting subsequent handles. This keeps `GpuInstance`
 /// and cached handle lookups valid across cell transitions (#372).
+/// M39 — the object-space length one UV unit covers over a triangle list:
+/// the square root of the summed object-space triangle area over the summed
+/// UV-space area (UV channel 0), Unreal's "texel world size" per unit UV
+/// (docs/engine/texture-streaming.md §5.1). `None` when the UVs span no area.
+/// Indices past the vertex count are skipped, as the upload paths clamp them.
+pub fn uv_texel_density(vertices: &[Vertex], indices: &[u32]) -> Option<f32> {
+    let (mut world, mut uv) = (0.0f64, 0.0f64);
+    for tri in indices.chunks_exact(3) {
+        let (Some(a), Some(b), Some(c)) = (
+            vertices.get(tri[0] as usize),
+            vertices.get(tri[1] as usize),
+            vertices.get(tri[2] as usize),
+        ) else {
+            continue;
+        };
+        let e1 = byroredux_core::math::Vec3::from(b.position)
+            - byroredux_core::math::Vec3::from(a.position);
+        let e2 = byroredux_core::math::Vec3::from(c.position)
+            - byroredux_core::math::Vec3::from(a.position);
+        world += f64::from(e1.cross(e2).length()) * 0.5;
+        let (u1, v1) = (b.uv[0] - a.uv[0], b.uv[1] - a.uv[1]);
+        let (u2, v2) = (c.uv[0] - a.uv[0], c.uv[1] - a.uv[1]);
+        uv += f64::from((u1 * v2 - u2 * v1).abs()) * 0.5;
+    }
+    (uv > 1e-12 && world > 0.0).then(|| (world / uv).sqrt() as f32)
+}
+
 pub struct MeshRegistry {
     meshes: Vec<Option<GpuMesh>>,
     /// Accumulated vertex data for building the global geometry SSBO.
@@ -555,6 +587,7 @@ impl MeshRegistry {
             vertex_count: vertices.len() as u32,
             is_scene_mesh: false,
             rt_capable: rt_enabled,
+            world_per_uv: None,
         }));
         // Parallel-indexed refcount; lockstep with `meshes` push.
         self.mesh_ref_counts.push(1);
@@ -891,6 +924,7 @@ impl MeshRegistry {
         mesh.global_vertex_offset = v_offset;
         mesh.global_index_offset = i_offset;
         mesh.is_scene_mesh = true;
+        mesh.world_per_uv = uv_texel_density(vertices, &indices);
 
         Ok(id)
     }
@@ -937,6 +971,7 @@ impl MeshRegistry {
             // No dedicated buffers: the ordinary per-mesh BLAS path must skip
             // this handle. The bounded LOD path uses the shared pool instead.
             rt_capable: false,
+            world_per_uv: uv_texel_density(vertices, &indices),
         }));
         // Parallel-indexed refcount; lockstep with `meshes` push (mirrors
         // `upload`).
@@ -1087,6 +1122,7 @@ impl MeshRegistry {
                 vertex_count: upload.vertices.len() as u32,
                 is_scene_mesh: true,
                 rt_capable: upload.rt_enabled,
+                world_per_uv: uv_texel_density(upload.vertices, indices),
             }));
             self.mesh_ref_counts.push(1);
             if let Some((model_path, sub_mesh_index)) = upload.cache_key {
@@ -1156,6 +1192,12 @@ impl MeshRegistry {
     /// Handles stay stable: the dropped slot holds `None` forever.
     /// Re-using a handle would re-enter the same `GpuInstance.mesh_id`
     /// for a different mesh and produce silent data corruption.
+    /// M39 — the mesh's UV texel density ([`uv_texel_density`]), `None` for
+    /// an unknown or dropped handle or a mesh with degenerate UVs.
+    pub fn world_per_uv(&self, handle: u32) -> Option<f32> {
+        self.meshes.get(handle as usize)?.as_ref()?.world_per_uv
+    }
+
     pub fn drop_mesh(&mut self, handle: u32) -> bool {
         if !self.release_mesh_ref(handle) {
             return false;
@@ -1327,6 +1369,51 @@ fn index_slice_bytes(values: &[u32]) -> &[u8] {
 
 #[cfg(test)]
 mod pool_growth_cap_tests;
+
+#[cfg(test)]
+mod uv_texel_density_tests {
+    //! M39 — the per-mesh texel density the wanted-mip estimate scales by
+    //! (docs/engine/texture-streaming.md §5.1).
+    use super::*;
+
+    fn quad(size: f32, uv_span: f32) -> (Vec<Vertex>, Vec<u32>) {
+        let v = |x: f32, y: f32, u: f32, w: f32| {
+            Vertex::new([x, y, 0.0], [1.0; 3], [0.0, 0.0, 1.0], [u, w])
+        };
+        (
+            vec![
+                v(0.0, 0.0, 0.0, 0.0),
+                v(size, 0.0, uv_span, 0.0),
+                v(size, size, uv_span, uv_span),
+                v(0.0, size, 0.0, uv_span),
+            ],
+            vec![0, 1, 2, 0, 2, 3],
+        )
+    }
+
+    #[test]
+    fn density_is_world_length_per_uv_unit() {
+        let (v, i) = quad(2.0, 1.0);
+        assert!((uv_texel_density(&v, &i).unwrap() - 2.0).abs() < 1e-5);
+        // Tiling the same surface 4 times: each UV unit covers half the length.
+        let (v, i) = quad(2.0, 4.0);
+        assert!((uv_texel_density(&v, &i).unwrap() - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn degenerate_uvs_or_indices_give_none() {
+        let (mut v, i) = quad(2.0, 1.0);
+        v.iter_mut().for_each(|vertex| vertex.uv = [0.25, 0.25]);
+        assert_eq!(uv_texel_density(&v, &i), None, "no UV area");
+        let (v, _) = quad(2.0, 1.0);
+        assert_eq!(
+            uv_texel_density(&v, &[0, 1, 9]),
+            None,
+            "out-of-range triangle skipped"
+        );
+        assert_eq!(uv_texel_density(&[], &[]), None);
+    }
+}
 
 #[cfg(test)]
 mod sanitize_index_tests {
