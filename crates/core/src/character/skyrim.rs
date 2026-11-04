@@ -74,9 +74,21 @@ pub fn skyrim_skill_xp_between(
 
 /// Light Armor's per-skill-point Armor Rating bonus for the **player**
 /// (`1 + 0.004·LightArmor`). Source: UESP *Skyrim:Light Armor*
-/// (`charal-skyrim-ruleset.md`). NPCs use a distinct, higher constant
-/// (`0.015`) not modelled here — see [`skyrim_ruleset`].
+/// (`charal-skyrim-ruleset.md`). NPCs use a distinct, higher constant,
+/// [`ARMOR_SKILL_RATING_COEFF_NPC`], which the derived table below does not
+/// model — see [`skyrim_ruleset`].
+///
+/// UESP *Skyrim:Armor* gives the same `0.4/100` for Heavy Armor, so this is the
+/// one player coefficient for both skills: the per-piece rating in
+/// `byroredux/src/armor.rs` reads it (and the NPC one) from here rather than
+/// restating them (#6568).
 pub const LIGHT_ARMOR_RATING_COEFF: f32 = 0.004;
+
+/// The NPC counterpart of [`LIGHT_ARMOR_RATING_COEFF`] (`1 + 0.015·skill`; UESP
+/// *Skyrim:Armor*: "for NPCs the skill coefficient is 1.5 instead of 0.4"), for
+/// Light and Heavy Armor alike. Not a `skyrim_ruleset` row (NPC-scoped derived
+/// stats have no representation there); the per-piece armor model consumes it.
+pub const ARMOR_SKILL_RATING_COEFF_NPC: f32 = 0.015;
 
 /// Carry Weight's per-point-of-base-Stamina coefficient (`250 +
 /// 0.5·BaseStamina`). Source: UESP *Skyrim:Carry Weight*

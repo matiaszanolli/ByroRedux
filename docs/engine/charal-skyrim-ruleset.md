@@ -289,8 +289,18 @@ only, confirmed correct by this page, not a complete Armor Rating pipeline.
 A `DamageReduction%`/durability-multiplier calculator would be a standalone
 function (worn-item iteration + the capped percentage formula above), same
 shape as `stealth.rs` — real and buildable, but belongs in a combat/equipment
-module, not `character/`, and not attempted without being asked given no such
-module exists yet.
+module, not `character/`.
+
+**Since built (M43): `byroredux/src/armor.rs`** is that module — per-piece
+rating (both Light and Heavy, `CEILING`, the smithing quality bonus), the
+displayed rating, and the capped damage reduction, for the player (`0.4/100`)
+and for NPCs (`1.5/100`). It reads the two skill coefficients from here
+(`LIGHT_ARMOR_RATING_COEFF` and `ARMOR_SKILL_RATING_COEFF_NPC` in `skyrim.rs`)
+instead of restating them (#6568), so the constants have one home. It does not
+read the `DamageResist` derived row built above, and nothing writes the
+displayed rating into `DamageResist`: that row answers a
+`GetActorValue DamageResist` read only, so the two can disagree (the armor
+model is the Skyrim armor story; the row is a coefficient carrier).
 
 Also on this page, not skill-derived (equipped-weight-derived, applies
 regardless of armor skill): **movement speed penalty** = `min(15%, TotalEquippedWeight × 3/23)` —

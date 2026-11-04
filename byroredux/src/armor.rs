@@ -29,9 +29,11 @@ const REDUCTION_PER_RATING: f32 = 0.12;
 const HIDDEN_PER_PIECE: f32 = 3.0;
 /// The armor cap, in percent.
 const MAX_REDUCTION: f32 = 80.0;
-/// The armor-skill coefficient for the player and for NPCs.
-const SKILL_COEFF_PLAYER: f32 = 0.4;
-const SKILL_COEFF_NPC: f32 = 1.5;
+/// The armor-skill coefficient for the player and for NPCs, in the `coeff × skill / 100` form
+/// [`item_rating`] takes (UESP's 0.4 and 1.5). CHARAL owns the per-point values (#6568), so a correction
+/// there reaches this model too.
+const SKILL_COEFF_PLAYER: f32 = byroredux_core::character::skyrim::LIGHT_ARMOR_RATING_COEFF * 100.0;
+const SKILL_COEFF_NPC: f32 = byroredux_core::character::skyrim::ARMOR_SKILL_RATING_COEFF_NPC * 100.0;
 /// The `BOD2` biped bit of the body (cuirass) slot — the "chest armor" column of the quality table.
 const BODY_SLOT_BIT: u32 = 0x4;
 
@@ -168,6 +170,16 @@ pub(crate) fn mitigate(world: &World, target: EntityId, damage: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #6568 — the model reads CHARAL's skill-scaling constants instead of restating them: UESP's `0.4` and
+    /// `1.5` come out of `0.004` / `0.015` exactly, and the player's one is the very constant the Light
+    /// Armor `DamageResist` row is built from.
+    #[test]
+    fn the_skill_coefficients_are_charals() {
+        assert_eq!(SKILL_COEFF_PLAYER, 0.4);
+        assert_eq!(SKILL_COEFF_NPC, 1.5);
+        assert_eq!(SKILL_COEFF_PLAYER, byroredux_core::character::skyrim::LIGHT_ARMOR_RATING_COEFF * 100.0);
+    }
 
     /// UESP's worked figures: the reduction is 0.12 % per displayed point plus 3 % per piece, capped at 80 %, and
     /// "you'll reach the armor cap at 567 displayed armor rating when wearing all four pieces" — 567 × 0.12 + 12 =
