@@ -28,7 +28,7 @@
 //!
 //! Player-placed mines (thrown from the mine weapons) are not modelled; only mines placed in the world data.
 
-use byroredux_core::ecs::components::{AnimatedVisibility, Children, Dead, GlobalTransform};
+use byroredux_core::ecs::components::{AnimatedVisibility, Dead, GlobalTransform};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
@@ -144,15 +144,10 @@ fn live_actors(world: &World) -> Vec<(EntityId, Vec3)> {
         .collect()
 }
 
+/// Hide a spent mine's whole subtree. The walk is `collect_subtree` (#6577): the mine's `Children` come from a
+/// save-loaded hierarchy, and an unguarded stack walk spins forever on a cyclic one (#5513).
 fn hide(world: &World, entity: EntityId) {
-    let mut all = Vec::new();
-    let mut stack = vec![entity];
-    while let Some(next) = stack.pop() {
-        all.push(next);
-        if let Some(children) = world.get::<Children>(next) {
-            stack.extend(children.0.iter().copied());
-        }
-    }
+    let all = byroredux_core::ecs::collect_subtree(world, entity);
     if let Some(mut visibility) = world.query_mut::<AnimatedVisibility>() {
         for entity in all {
             visibility.insert(entity, AnimatedVisibility(false));
@@ -337,6 +332,7 @@ fn detonate(world: &World, book: &HashMap<u32, MineSpec>, mine: EntityId, victim
 mod tests {
     use super::*;
     use crate::systems::faction_hostility::CombatDisposition;
+    use byroredux_core::ecs::components::Children;
     use byroredux_plugin::esm::records::{ActorAiData, Aggression, Confidence, SmNodeKind, SmNodeRecord};
 
     const BASE: u32 = 0xE56C3;
@@ -446,6 +442,21 @@ mod tests {
                 placements.iter().filter(|&&base| mine_weapon(base)).all(|base| !book.contains_key(base)),
                 "a placed mine weapon is loot, not an armed mine"
             );
+        }
+    }
+
+    /// #6577 — a spent mine hides its whole subtree, and a cyclic `Children` graph (a corrupt save) ends the
+    /// walk instead of hanging `Stage::Update`: the hand-rolled stack walk `hide` used to carry never stopped.
+    #[test]
+    fn a_spent_mine_hides_a_cyclic_subtree_and_terminates() {
+        let (mut world, mine, victim) = setup();
+        let mesh = world.spawn();
+        world.insert(mine, Children(vec![mesh]));
+        world.insert(mesh, Children(vec![mine]));
+        let book = world.resource::<MineBook>().0.clone();
+        detonate(&world, &book, mine, victim);
+        for entity in [mine, mesh] {
+            assert_eq!(world.get::<AnimatedVisibility>(entity).map(|v| v.0), Some(false), "{entity:?} hidden");
         }
     }
 

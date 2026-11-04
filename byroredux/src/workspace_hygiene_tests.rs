@@ -1206,6 +1206,45 @@ fn no_source_hand_spells_the_player_entity_read() {
     );
 }
 
+/// #6577 — a whole-`Children` walk goes through `byroredux_core::ecs::collect_subtree`,
+/// which carries the visited set and `HierarchyTraversalGuard` budget that #5513 added
+/// after unguarded stack walks hung streaming adoption and loading-cover setup on a
+/// cyclic, save-loaded hierarchy. `mines.rs::hide` re-spelled the unguarded walk a
+/// month later and no scan saw it. The spelling every such walk shares is pushing a
+/// node's `Children` vector onto the worklist (`.extend(children.0…)`); the allowed
+/// sites are the collector itself and ragdoll's two guarded BFS walks (#4572), pinned
+/// by count so a third walk in `ragdoll.rs` fails too.
+#[test]
+fn no_production_code_hand_rolls_a_children_walk() {
+    const ALLOWED: &[(&str, usize)] = &[("crates/core/src/ecs/hierarchy.rs", 1), ("byroredux/src/ragdoll.rs", 4)];
+    let needle = [".extend(", "children.0"].concat();
+    let mut found = Vec::new();
+    let mut seen_allowed = 0;
+    for root in production_scan_roots(false) {
+        visit_workspace_rs_files(&root, &mut |path, contents| {
+            if is_test_source(path) {
+                return;
+            }
+            let production = byroredux_core::source_scan::production_text_or_whole(contents);
+            // Whitespace-insensitive: rustfmt may break the chain before `.extend(`.
+            let flat: String = production.split_whitespace().collect();
+            let count = flat.matches(&needle).count();
+            let allowed = ALLOWED.iter().find(|(file, _)| path.ends_with(file)).map(|(_, n)| *n);
+            seen_allowed += usize::from(allowed.is_some());
+            if count != allowed.unwrap_or(0) {
+                found.push(format!("{}: {count} walk(s), {} allowed", path.display(), allowed.unwrap_or(0)));
+            }
+        });
+    }
+    assert_eq!(seen_allowed, ALLOWED.len(), "an allowlisted file moved; re-point ALLOWED");
+    assert!(
+        found.is_empty(),
+        "hand-rolled `Children` walk — use `byroredux_core::ecs::collect_subtree`, or carry a \
+         visited set plus `HierarchyTraversalGuard` and update this count (#5513/#6577):\n{}",
+        found.join("\n"),
+    );
+}
+
 /// #6372 — `ItemKind::Weapon` has fourteen fields and ten test fixtures spelled
 /// all of them; the VATS work touched four of those literals to add one. The
 /// parser is the one place that builds the variant field by field; a fixture
