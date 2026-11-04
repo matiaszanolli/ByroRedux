@@ -6603,6 +6603,35 @@ fn removing_an_equipped_item_unequips_it() {
     assert_eq!(world.get::<crate::EquipmentEventBatch>(actor).unwrap().0.len(), 1);
 }
 
+/// #6544 — a removal by form takes plain rows before an improved (instanced) one, whichever has the lower index:
+/// `improve_item` improves a single copy in place and `Inventory::add` appends a later plain copy after it, so
+/// index order alone sold, dropped or spent the improved piece. A transfer carries the plain copy over, and
+/// with only the improved row left it is the one that goes.
+#[test]
+fn removal_by_form_takes_a_plain_copy_before_an_improved_one() {
+    use byroredux_core::ecs::components::ItemInstanceId;
+    const SWORD: u32 = 0x12EB7;
+    let mut world = World::new();
+    crate::register(&mut world);
+    let (actor, vendor) = (world.spawn(), world.spawn());
+    let improved = ItemStack { instance: Some(ItemInstanceId(std::num::NonZeroU32::new(5).unwrap())), ..ItemStack::new(SWORD, 1) };
+    let mut inventory = Inventory::new();
+    inventory.add(improved); // row 0: the improved copy
+    inventory.add(ItemStack::new(SWORD, 1)); // row 1: a plain copy bought later
+    world.insert(actor, inventory);
+
+    crate::remove_items(&world, actor, SWORD, 1, Some(vendor));
+    let held = world.get::<Inventory>(actor).unwrap().items.clone();
+    assert_eq!((held[0].count, held[0].instance), (1, improved.instance), "the improved copy stays");
+    assert_eq!(held[1].count, 0, "the plain copy went");
+    let sold = world.get::<Inventory>(vendor).unwrap().items.clone();
+    assert!(sold.iter().all(|row| row.instance.is_none()) && sold.iter().map(|row| row.count).sum::<u32>() == 1);
+
+    // Only the improved copy left: a second removal takes it (the order is a preference, not a refusal).
+    crate::remove_items(&world, actor, SWORD, 1, None);
+    assert_eq!(world.get::<Inventory>(actor).unwrap().count_of(SWORD), 0);
+}
+
 /// #6572 — a `SetRelationshipRank` raises the Story Manager's `CHRR` after the quest guards drop, not while
 /// `apply_effects` runs under them: nothing is raised by the arm itself, the flush raises one event per change
 /// with the rank that stood before it (an earlier change in the same run is the "old" one), and an unchanged

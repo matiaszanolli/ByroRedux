@@ -44,13 +44,22 @@ pub fn remove_items(
             return;
         };
         let mut moved: Vec<ItemStack> = Vec::new();
-        for (index, stack) in inventory.items.iter_mut().enumerate() {
+        // #6544 — a removal by form is not a choice of copy, so plain rows go before instanced ones (an improved
+        // piece carries its quality; `Inventory::add` appends a later plain copy after it, which index order
+        // alone would have kept). Within each class the rows keep their index order.
+        let mut order: Vec<usize> = inventory
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, stack)| stack.base_form_id == item_form_id && stack.count != 0)
+            .map(|(index, _)| index)
+            .collect();
+        order.sort_by_key(|&index| (inventory.items[index].instance.is_some(), index));
+        for index in order {
             if removed == count {
                 break;
             }
-            if stack.base_form_id != item_form_id || stack.count == 0 {
-                continue;
-            }
+            let stack = &mut inventory.items[index];
             let take = stack.count.min(count - removed);
             removed += take;
             if take == stack.count {
