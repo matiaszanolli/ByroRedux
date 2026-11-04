@@ -198,7 +198,7 @@ input decodes to its identity value is `off`, not `authored`.
   "Blur Radius 0–7" steps literally; per-pixel parity is anti-scope.
 - **PPX-NG-004.** Renderer-injector mods (ENB, ReShade, Community Shaders).
   Their disposition is D3 in
-  [LMC § 3.1](legacy-mod-compatibility.md#31-mechanism-catalog-starting-inventory)
+  [LMC § 3.1](legacy-mod-compatibility.md#31-mechanism-catalog)
   row N5; user LUTs (§5.5) serve the most portable part of what they do.
 - **PPX-NG-005.** Chromatic aberration, halation and FFT-convolution lens
   diffraction. They are RENDERING-PLAN Stage 1 research items, not in M58's
@@ -790,7 +790,7 @@ Each needs the project owner. The recommendation is the first option.
 | Bloom sky-gain capture and the authored-mood rule | [skyal.md](../engine/skyal.md#11-the-measured-defect) |
 | Where IMGS / IMAD become the canonical image space | [exal.md](../engine/exal.md#3-the-single-boundary-proposed) |
 | Colour-pipeline research plan (Stage 1) | [RENDERING-PLAN.md](../../RENDERING-PLAN.md#stage-1--color-pipeline-and-physical-camera) |
-| Renderer-injector mod disposition | [legacy-mod-compatibility.md](legacy-mod-compatibility.md#31-mechanism-catalog-starting-inventory) |
+| Renderer-injector mod disposition | [legacy-mod-compatibility.md](legacy-mod-compatibility.md#31-mechanism-catalog) |
 | Path-traced modes and their post-chain contract (M51) | [path-tracing-reference-mode.md](path-tracing-reference-mode.md) |
 | Bench methodology | [ROADMAP.md](../../ROADMAP.md#how-to-run-a-bench) |
 | Smoke-test contract | [docs/smoke-tests/README.md](../smoke-tests/README.md) |

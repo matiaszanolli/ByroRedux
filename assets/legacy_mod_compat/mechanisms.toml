@@ -1,0 +1,752 @@
+# Legacy mod mechanism catalog (docs/prd/legacy-mod-compatibility.md §3.1).
+#
+# The machine-readable home of the dispositions (LMC-CLS-006). The PRD's §3.1
+# tables are GENERATED from this file by scripts/check-lmc-catalog.py; edit
+# here, then run `scripts/check-lmc-catalog.py --write`. Nothing in the PRD's
+# tables is maintained by hand.
+#
+# Rules (LMC-CLS-001, -005):
+# - one disposition per mechanism per game; a mechanism that has components
+#   with different dispositions (the extender binary and the facilities it
+#   provides) is split into component entries ("N1.facilities", "N1.binary");
+# - `games` lists the games the mechanism exists for, as the PRD states them;
+#   a game absent from it has no such mechanism (not a D3);
+# - `disposition` is the CURRENT disposition; `target`, when present, is the
+#   one the mechanism is promoted to (S3 per construct);
+# - `per_game` overrides `disposition` for one game, with its own reason;
+# - every entry has a `reason`, at least one `citation`, and a `version`
+#   that is bumped, with the citation updated, on any disposition change;
+# - `verify` lists the Phase 0 questions still open for the entry. An entry
+#   with `verify` is a starting position, not a confirmed one.
+#
+# Dispositions: D1 works, D2 redundant, D3 not applicable, D4 port / served by
+# an engine service, D5 unsupported and tracked.
+catalog_version = 1
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+
+[[mechanism]]
+id = "R1"
+group = "records"
+name = "New records in a plugin (ESM/ESP/ESL/ESH)"
+examples = "every content mod"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "A plugin's new records are ordinary input to the multi-plugin fold."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.1 LMC-ID-003"]
+version = 1
+
+[[mechanism]]
+id = "R2"
+group = "records"
+name = "Record overrides of a master's records"
+examples = "patches, overhauls"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "Last-in-order wins at the fold; deletions are carried."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.2 LMC-REC-001"]
+version = 1
+
+[[mechanism]]
+id = "R3"
+group = "records"
+name = "Deleted / disabled records (DELE flag, UDR tombstones)"
+examples = "cleaned plugins, cell edits"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "Tombstones are decoded; the engine honours the deletion."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 R3"]
+verify = ["REFR semantics of DELE / UDR tombstones"]
+version = 1
+
+[[mechanism]]
+id = "R4"
+group = "records"
+name = "Injected records (a plugin defines a form in a master's ID space)"
+examples = "AWKCR-style, Bashed Patch"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "Loaded as any record the plugin defines."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 R4"]
+verify = ["behaviour of injected records, from a primary source"]
+version = 1
+
+[[mechanism]]
+id = "R5"
+group = "records"
+name = "Cell / worldspace overrides, new worldspaces, REFR edits"
+examples = "new lands, cell overhauls"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "The cell walker runs per plugin and the fold merges the overrides."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 R5"]
+verify = ["cell / worldspace override merge, per field"]
+version = 1
+
+[[mechanism]]
+id = "R6"
+group = "records"
+name = "Navmesh overrides"
+examples = "any cell edit"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "NAVM is decoded as data; runtime pathfinding is a separate design."
+citations = ["docs/engine/navmesh-pathfinding.md"]
+version = 1
+
+[[mechanism]]
+id = "R7"
+group = "records"
+name = "Localised string tables (STRINGS / DLSTRINGS / ILSTRINGS)"
+examples = "Skyrim+ localised plugins"
+disposition = "D1"
+games = ["skyrim", "fo4", "starfield"]
+reason = "String tables are read per plugin."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 R7"]
+version = 1
+
+[[mechanism]]
+id = "R8"
+group = "records"
+name = "Plugin header / form versions beyond the vanilla build"
+examples = "SE 1.71-header plugins, FO4 next-gen"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "The parser accepts the per-game header versions; plugins that only backport header support are redundant (see T3)."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 R8"]
+version = 1
+
+[[mechanism]]
+id = "R9"
+group = "records"
+name = "Small / light flag (FExxxyyy, 4,095 records) and Starfield medium flag (FDxxyyyy, 65,535 records)"
+examples = "ESPFE, Creation Kit CC, Starfield medium plugins"
+disposition = "D1"
+games = ["skyrim", "fo4", "starfield"]
+reason = "Both ID spaces are covered by the virtual legacy index (LMC-ID-005)."
+citations = ["https://blog.ortham.net/posts/2024-06-28-load-order-in-starfield/", "docs/prd/legacy-mod-compatibility.md §5.1 LMC-ID-005"]
+version = 1
+
+[[mechanism]]
+id = "R10"
+group = "records"
+name = "GMST overrides from plugins"
+examples = "tweak mods"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "Plugin GMSTs are records like any other; consumers that hard-code authored values break this class (#6567 is one instance)."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 R10"]
+version = 1
+
+[[mechanism]]
+id = "R11"
+group = "records"
+name = "SEQ files (seq/<plugin>.seq) listing Start Game Enabled quests"
+examples = "any Skyrim+ quest mod"
+disposition = "D2"
+games = ["skyrim", "fo4", "starfield"]
+reason = "The engine starts Start Game Enabled quests from the QUST record itself, so the file is never read; a shipped one is ignored with a note."
+citations = ["https://ck.uesp.net/wiki/Quest_Data_Tab", "https://wiki.beyondskyrim.org/wiki/Arcane_University:Seq_Guide", "docs/prd/legacy-mod-compatibility.md §5.10 LMC-SAV-003"]
+verify = ["every load path starts Start Game Enabled quests without a SEQ file", "the SEQ requirement on Fallout 4 and Starfield (the cited CK page states it for Skyrim 1.7+)"]
+version = 1
+
+[[mechanism]]
+id = "A1"
+group = "assets"
+name = "Loose files under Data\\ shadowing archives"
+examples = "texture packs, mesh fixes"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "Loose files outrank every archive."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.3 LMC-AST-001", "#6200"]
+version = 1
+
+[[mechanism]]
+id = "A2"
+group = "assets"
+name = "Plugin-paired archives (per-game naming rules)"
+examples = "most archived mods"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "The engine opens the archives the game would pair with a plugin by name, in profile order."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.3 LMC-AST-002", "https://geck.uesp.net/wiki/BSA_Files", "https://falloutck.uesp.net/wiki/Archive_File"]
+verify = ["Skyrim LE / SE: the paired name '<stem> - Textures.bsa' (only '<stem>.bsa' is confirmed, by the Creation Kit wiki)", "FO4: the localised voice-archive suffix", "Starfield: voice and localisation suffixes, and whether pairing is automatic or needs a same-named plugin"]
+version = 1
+
+[[mechanism]]
+id = "A3"
+group = "assets"
+name = "Archive list order (sResourceArchiveList, sArchiveList, .ccc)"
+examples = "official + CC content"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "Order semantics are imported into the profile and reproduced by profile order; the files are not read at runtime."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.3 LMC-AST-003"]
+version = 1
+
+[[mechanism]]
+id = "A4"
+group = "assets"
+name = "Archive invalidation (bInvalidateOlderFiles, redirection archives)"
+examples = "FO3/FNV/Oblivion texture mods"
+disposition = "D2"
+games = ["oblivion", "fo3", "fnv"]
+reason = "Loose files always win in this engine, so the INI flag and the redirection archive are ignored with a note."
+citations = ["https://geck.uesp.net/wiki/BSA_Files", "https://en.uesp.net/wiki/Oblivion_Mod:BSAs_and_Archive_Invalidation", "docs/prd/legacy-mod-compatibility.md §5.3 LMC-AST-004"]
+version = 1
+
+[[mechanism]]
+id = "A5"
+group = "assets"
+name = "DDS textures from mod tooling"
+examples = "all texture mods"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "Formats are decoded in crates/renderer/src/vulkan/dds.rs; the mod corpus gates the rest."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 A5"]
+version = 1
+
+[[mechanism]]
+id = "A6"
+group = "assets"
+name = "NIF meshes from mod tooling (NifSkope, Blender, 3ds Max exporters)"
+examples = "all mesh mods"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "The NIF parser is the input; mod NIFs join the parse corpus."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 A6"]
+version = 1
+
+[[mechanism]]
+id = "A7"
+group = "assets"
+name = "Sound / voice / lip (.wav, .xwm, .mp3, .fuz, .lip)"
+examples = "voiced mods"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "M44 audio plays them; the .fuz header bug is tracked as #6480."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 A7", "#6480"]
+version = 1
+
+[[mechanism]]
+id = "A8"
+group = "assets"
+name = "SpeedTree .spt replacements"
+examples = "Oblivion/FO3/FNV tree mods"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv"]
+reason = "crates/spt reads them and imports billboards."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 A8"]
+version = 1
+
+[[mechanism]]
+id = "A9"
+group = "assets"
+name = "FaceGen data (facegendata/) overrides"
+examples = "NPC overhauls"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "M41 FaceGen reads the data."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 A9"]
+verify = ["override of FaceGen data by loose path"]
+version = 1
+
+[[mechanism]]
+id = "A10.assets"
+group = "assets"
+name = "LOD-generator outputs: generated plugins, object / tree / grass LOD meshes and textures, TexGen output, xLODGen terrain LOD"
+examples = "DynDOLOD, TexGen, xLODGen"
+disposition = "D1"
+games = ["skyrim", "fo4"]
+reason = "The .bto / .btr ladder (M35) consumes generated static LOD like vanilla LOD, until engine-side LOD generation (M53) makes it redundant."
+citations = ["https://dyndolod.info/Help/Generation-Instructions", "docs/prd/legacy-mod-compatibility.md §3.1 A10"]
+version = 1
+
+[[mechanism]]
+id = "A10.occlusion-dll"
+group = "assets"
+name = "DynDOLOD Occlusion.esp and the DynDOLOD DLL"
+examples = "DynDOLOD"
+disposition = "D2"
+games = ["skyrim"]
+reason = "The engine has no occlusion planes to feed and owns dynamic LOD; the DLL is never loaded."
+citations = ["https://dyndolod.info/Help/DynDOLOD-DLL", "docs/prd/legacy-mod-compatibility.md §3.1 A10"]
+version = 1
+
+[[mechanism]]
+id = "A11"
+group = "assets"
+name = "Grass caches generated by No Grass In Objects (Data\\Grass\\ files)"
+examples = "NGIO, Grass Cache Helper NG"
+disposition = "D3"
+games = ["skyrim"]
+reason = "The engine's ground cover is engine-authored, so there is nothing for a precomputed cache to feed."
+citations = ["https://github.com/DwemerEngineer/No-Grass-In-Objects-NG", "docs/engine/exal-groundcover.md"]
+version = 1
+
+[[mechanism]]
+id = "S1"
+group = "scripts"
+name = "Papyrus .pex (new scripts, overriding vanilla scripts)"
+examples = "Skyrim+/FO4/SF mods"
+disposition = "D1"
+games = ["skyrim", "fo4", "starfield"]
+reason = "Lowering plus the bounded M47.2 VM run them; per-game rates are in ROADMAP."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.4 LMC-SCR-001"]
+version = 1
+
+[[mechanism]]
+id = "S2"
+group = "scripts"
+name = "ObScript in SCPT records"
+examples = "Oblivion/FO3/FNV mods"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv"]
+reason = "The SCDA interpreter (M47.3) runs them."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 S2"]
+version = 1
+
+[[mechanism]]
+id = "S3"
+group = "scripts"
+name = "Extender language extensions in ObScript (NVSE/OBSE let/eval, arrays, string vars, user-defined functions)"
+examples = "JIP-era FNV mods, OBSE mods"
+disposition = "D5"
+target = "D1"
+games = ["oblivion", "fnv"]
+reason = "Not modelled; tracked per construct and promoted to D1 construct by construct."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.4 LMC-SCR-008"]
+version = 1
+
+[[mechanism]]
+id = "S4.covered"
+group = "scripts"
+name = "Extender script functions the catalog covers (SKSE/F4SE/xNVSE/JIP/OBSE calls visible from Papyrus/ObScript)"
+examples = "nearly every scripted mod post-2012"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "A function with a Native or Mapped catalog entry runs."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.4 LMC-SCR-004", "crates/sdk/src/compatibility/"]
+version = 1
+
+[[mechanism]]
+id = "S4.uncovered"
+group = "scripts"
+name = "Extender script functions the catalog does not cover"
+examples = "nearly every scripted mod post-2012"
+disposition = "D5"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "Recognised, no route yet; each call produces an attributed diagnostic (LMC-SCR-003)."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.4 LMC-SCR-003"]
+verify = ["per-function 'introduced in' API level of every extender and library family, from changelogs"]
+version = 1
+
+[[mechanism]]
+id = "S5"
+group = "scripts"
+name = "Script-library DLLs' Papyrus API (PapyrusUtil StorageUtil, JContainers, powerofthree's Papyrus Extender, ConsoleUtil, UIExtensions)"
+examples = "frameworks"
+disposition = "D4"
+games = ["skyrim", "fo4", "starfield"]
+reason = "Served by engine-owned compatibility services; file-backed, object-scoped and JDB storage are unsupported until Phase 3."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.5 LMC-EXT-003"]
+verify = ["probe functions of MCM Helper, Fallout 4 MCM, ConsoleUtil, UIExtensions, HUDFramework, Workshop Framework and SFSE"]
+version = 1
+
+[[mechanism]]
+id = "S6"
+group = "scripts"
+name = "NVSE script runner .txt scripts, OBSE plugin INIs"
+examples = "FNV/Oblivion tweak mods"
+disposition = "D5"
+games = ["oblivion", "fnv"]
+reason = "Not modelled."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 S6"]
+version = 1
+
+[[mechanism]]
+id = "S7"
+group = "scripts"
+name = "VMAD / quest fragments / scene fragments from mods"
+examples = "quest mods"
+disposition = "D1"
+games = ["skyrim", "fo4", "starfield"]
+reason = "Same attach path as vanilla."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 S7"]
+version = 1
+
+[[mechanism]]
+id = "S8"
+group = "scripts"
+name = "Papyrus VM tuning INIs (fPostLoadUpdateTimeMS, iMaxAllocatedMemoryBytes, ...)"
+examples = "performance guides"
+disposition = "D2"
+games = ["skyrim", "fo4", "starfield"]
+reason = "The engine runs no original VM to tune."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 S8"]
+version = 1
+
+[[mechanism]]
+id = "N1.facilities"
+group = "native"
+name = "Extender runtime binaries: the facilities they provide (SKSE/F4SE/xNVSE/OBSE/SFSE)"
+examples = "-"
+disposition = "D2"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "The facilities are SDK services; nothing of the binary is needed."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.5 LMC-EXT-001"]
+version = 1
+
+[[mechanism]]
+id = "N1.binary"
+group = "native"
+name = "Extender runtime binaries: the executable itself"
+examples = "-"
+disposition = "D3"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "It patches the original executable and is never loaded."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.5 LMC-EXT-001"]
+version = 1
+
+[[mechanism]]
+id = "N2"
+group = "native"
+name = "Engine-fix plugins"
+examples = "SSE Engine Fixes, Bug Fixes SSE, Scrambled Bugs, NVAC, NVTF, Buffout 4, Oblivion engine fixes"
+disposition = "D2"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "Each fix is re-derived into the built-in fix catalog."
+citations = ["docs/engine/builtin-fixes.md", "docs/prd/legacy-mod-compatibility.md §5.5 LMC-EXT-002"]
+version = 1
+
+[[mechanism]]
+id = "N3"
+group = "native"
+name = "Memory / heap / LAA / crash-logger / address-library / preloader plugins"
+examples = "4GB patch, SSE Display Tweaks' allocator half, Address Library"
+disposition = "D3"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "The engine is 64-bit Rust; there is nothing to port."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 N3"]
+version = 1
+
+[[mechanism]]
+id = "N4"
+group = "native"
+name = "Gameplay plugins with engine hooks"
+examples = "Precision, TK Dodge RE, Place Everywhere, Better Jumping"
+disposition = "D4"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "Valid gameplay semantics behind native code; supported by source port to the SDK."
+citations = ["docs/engine/sandboxed-linked-mods.md#16-c-and-c-sdk-requirements", "docs/prd/legacy-mod-compatibility.md §5.5 LMC-EXT-004"]
+version = 1
+
+[[mechanism]]
+id = "N5"
+group = "native"
+name = "Renderer injectors"
+examples = "ENB, ReShade, Community Shaders, Oblivion Reloaded"
+disposition = "D3"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "A different renderer by design."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 N5"]
+version = 1
+
+[[mechanism]]
+id = "N6"
+group = "native"
+name = "Behaviour-graph generators' outputs (behaviors/*.hkx, animations/*.hkx, animationdatasinglefile.txt)"
+examples = "FNIS, Nemesis, Pandora"
+disposition = "D1"
+games = ["skyrim", "fo4"]
+reason = "The outputs are assets; crates/hkx reads Skyrim and FO4 graphs. The modded-graph runtime is unverified."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.9 LMC-ANIM-001"]
+version = 1
+
+[[mechanism]]
+id = "N7"
+group = "native"
+name = "Conditional animation replacement conventions (DAR _CustomConditions, OAR config.json)"
+examples = "animation mods"
+disposition = "D4"
+games = ["skyrim"]
+reason = "Read natively by the engine (engine-native service), no DLL."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.9 LMC-ANIM-002"]
+version = 1
+
+[[mechanism]]
+id = "N8"
+group = "native"
+name = "Head / face asset overrides needing a DLL (Blockhead)"
+examples = "OCOv2"
+disposition = "D4"
+games = ["oblivion"]
+reason = "Replaced by a profile-level override table keyed by stable form identity (engine-native)."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.9 LMC-ANIM-005"]
+version = 1
+
+[[mechanism]]
+id = "N9"
+group = "native"
+name = "Character-editor plugins (RaceMenu, LooksMenu) and the body-morph runtime (.tri)"
+examples = "body/face mods"
+disposition = "D5"
+games = ["skyrim", "fo4"]
+reason = "Runtime morph updates are not built."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.9 LMC-ANIM-003"]
+version = 1
+
+[[mechanism]]
+id = "U1"
+group = "ui"
+name = "Scaleform menu replacement .swf"
+examples = "SkyUI, DEF_UI, HUDFramework, StarUI"
+disposition = "D1"
+games = ["skyrim", "fo4", "starfield"]
+reason = "Served within the host-method catalogs (M48); an unmapped method is an attributed diagnostic."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.6"]
+version = 1
+
+[[mechanism]]
+id = "U2"
+group = "ui"
+name = "Mod Configuration Menus (SkyUI MCM, MCM Helper, FO4 MCM, FNV MCM via UIO)"
+examples = "most configurable mods"
+disposition = "D4"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "Served by an engine-owned MCM host."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.6 LMC-UI-002"]
+version = 1
+
+[[mechanism]]
+id = "U3"
+group = "ui"
+name = "MenuXml menu replacements and prefabs"
+examples = "DarNified UI, Vanilla UI Plus, oHUD, UIO"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv"]
+reason = "crates/menuxml reads them, including <include> prefabs."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 U3"]
+version = 1
+
+[[mechanism]]
+id = "U4"
+group = "ui"
+name = "Translation files (Interface/Translations/*_<lang>.txt)"
+examples = "SkyUI, localised mods"
+disposition = "D1"
+games = ["skyrim", "fo4", "starfield"]
+reason = "Read as interface data."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 U4"]
+verify = ["translation-file handling"]
+version = 1
+
+[[mechanism]]
+id = "U5"
+group = "ui"
+name = "Font replacements (fontconfig.txt, .swf fonts, .fnt)"
+examples = "UI mods"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "Read as interface data."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 U5"]
+verify = ["font-replacement handling"]
+version = 1
+
+[[mechanism]]
+id = "T1"
+group = "tooling"
+name = "Unofficial patches as plugins"
+examples = "UOP, UFO3P, YUP, USSEP, UFO4P, SCP"
+disposition = "D2"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "A known patch is not loaded; the engine stands in for dependents (decision Q1)."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.8 LMC-FIX-001", "docs/prd/legacy-mod-compatibility.md §5.8 LMC-FIX-004"]
+version = 1
+
+[[mechanism]]
+id = "T2.plugin"
+group = "tooling"
+name = "Generated patch plugins: the plugin"
+examples = "Bashed Patch, Smashed Patch, Synthesis output, Reqtificator output"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "A generated plugin loads as any plugin."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 T2"]
+version = 1
+
+[[mechanism]]
+id = "T2.necessity"
+group = "tooling"
+name = "Generated patch plugins: the need for them where record merging covers it"
+examples = "Bashed Patch, Smashed Patch, Synthesis output"
+disposition = "D2"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "The per-form merge policy covers the case the patch exists for."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.2 LMC-REC-003"]
+version = 1
+
+[[mechanism]]
+id = "T3.plugin"
+group = "tooling"
+name = "Merged plugins, ESL-flagged plugins, 'cleaned' masters: the plugin"
+examples = "load-order management"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "Loads as any plugin; there is no slot ceiling in the design."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.1 LMC-ID-004"]
+version = 1
+
+[[mechanism]]
+id = "T3.necessity"
+group = "tooling"
+name = "Merged plugins, ESL-flagged plugins, 'cleaned' masters: the need for them"
+examples = "load-order management"
+disposition = "D2"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "Plugin-count workarounds are not needed."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.1 LMC-ID-004"]
+version = 1
+
+[[mechanism]]
+id = "T4.data"
+group = "tooling"
+name = "FO4 precombine / previs repair packs: the data"
+examples = "PRP"
+disposition = "D1"
+games = ["fo4"]
+reason = "Loads as data; the engine falls back to REFRs when precombines are absent (M49)."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.2 LMC-REC-012"]
+version = 1
+
+[[mechanism]]
+id = "T4.necessity"
+group = "tooling"
+name = "FO4 precombine / previs repair packs: the need for them"
+examples = "PRP"
+disposition = "D2"
+games = ["fo4"]
+reason = "Forced REFR-first on override covers the case."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.2 LMC-REC-012"]
+version = 1
+
+[[mechanism]]
+id = "T5"
+group = "tooling"
+name = "Game INI edits for removed limits (uGridsToLoad, heap, bInvalidateOlderFiles, Papyrus)"
+examples = "performance guides"
+disposition = "D2"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "The limits do not exist in this engine; the INI is not read."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.7 LMC-SET-001"]
+version = 1
+
+[[mechanism]]
+id = "T6"
+group = "tooling"
+name = "Game INI edits for graphics"
+examples = "ENB guides, Ultra.ini tweaks"
+disposition = "D3"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "The engine settings registry owns graphics."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.7 LMC-SET-001"]
+version = 1
+
+[[mechanism]]
+id = "T7.registered"
+group = "tooling"
+name = "Game INI edits for gameplay-visible values the settings registry has"
+examples = "FOV, difficulty, fXP..."
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "An honoured key maps to a registry entry (the honoured-INI table, LMC-SET-001)."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.7 LMC-SET-001"]
+verify = ["the honoured-INI table: INI key to registry entry per game, each key from a primary source"]
+version = 1
+
+[[mechanism]]
+id = "T7.other"
+group = "tooling"
+name = "Game INI edits for gameplay-visible values the settings registry does not have"
+examples = "difficulty tweaks, fXP..."
+disposition = "D5"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "Reported with a note, tracked."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.7 LMC-SET-001"]
+version = 1
+
+[[mechanism]]
+id = "T8"
+group = "tooling"
+name = "Mod-provided INIs / JSON (Data/SKSE/Plugins/*.ini, MCM/Settings/*.json, NVSE/Plugins/*.ini)"
+examples = "configurable DLL mods"
+disposition = "D4"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "Readable by a ported extension through scoped content read (SEC-018)."
+citations = ["docs/engine/sandboxed-linked-mods.md#102-requirements", "docs/prd/legacy-mod-compatibility.md §5.7 LMC-SET-003"]
+version = 1
+
+[[mechanism]]
+id = "T9"
+group = "tooling"
+name = "Cosaves (.skse, .f4se, .nvse) and save editors"
+examples = "ReSaver, FallrimTools"
+disposition = "D3"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "There is no legacy save format (ROADMAP anti-scope)."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 T9"]
+version = 1
+
+[[mechanism]]
+id = "T10.vfs"
+group = "tooling"
+name = "Mod-manager virtual filesystems"
+examples = "MO2 USVFS"
+disposition = "D3"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "The engine reads a profile, not a virtual filesystem."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.1 LMC-ID-006"]
+version = 1
+
+[[mechanism]]
+id = "T10.outputs"
+group = "tooling"
+name = "Mod-manager deployment layouts and profiles"
+examples = "Vortex, MO2 profiles"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "Imported once into a profile (LMC-ID-006)."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.1 LMC-ID-006"]
+version = 1
+
+[[mechanism]]
+id = "T11.plugin-enablers"
+group = "tooling"
+name = "Plugin-limit and plugins.txt enablers"
+examples = "Plugins.txt Enabler"
+disposition = "D2"
+games = ["starfield"]
+reason = "The engine has no plugin gate to open."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 T11"]
+version = 1
+
+[[mechanism]]
+id = "T11.achievement-enablers"
+group = "tooling"
+name = "Achievement enablers"
+examples = "Achievement Enabler"
+disposition = "D3"
+games = ["starfield"]
+reason = "Targets the original executable's achievement lock."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 T11"]
+version = 1
+
+[[mechanism]]
+id = "T12"
+group = "tooling"
+name = "Total conversions"
+examples = "Tale of Two Wastelands, Enderal"
+disposition = "D1"
+games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
+reason = "Content loads as content; not attempted, corpus tier is decision Q6."
+citations = ["docs/prd/legacy-mod-compatibility.md §10 Q6"]
+version = 1

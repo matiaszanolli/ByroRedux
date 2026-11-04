@@ -69,6 +69,10 @@ jobs:
         run: python3 scripts/check-prd-conformance.py --self-test
       - name: Check every PRD under docs/prd/ against docs/prd/README.md
         run: python3 scripts/check-prd-conformance.py
+      - name: Self-test the legacy-mod mechanism catalog gate
+        run: python3 scripts/check-lmc-catalog.py --self-test
+      - name: Check the legacy-mod mechanism catalog and its generated PRD tables
+        run: python3 scripts/check-lmc-catalog.py
 
   unused-dependencies:
     name: Unused dependencies
