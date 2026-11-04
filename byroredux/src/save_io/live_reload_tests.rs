@@ -900,7 +900,14 @@ fn live_load_drain_discards_the_outgoing_sessions_requests() {
     world.insert_resource(PendingMusic(vec![MusicTrack { form_id: 1, file: "explore.mp3".into(), looping: false, decibels: 0.0 }]));
     world.insert_resource(PendingScriptMessages::default());
     world.insert_resource(crate::notifications::MessageBoxQueue::default());
+    // #6574 — the M43 transients: an open crafting session, a bench queued this tick, a drop awaiting REMP.
+    world.insert_resource(crate::crafting::ActiveCrafting(Some(byroredux_core::ecs::EntityId::from(7u32))));
+    world.insert_resource(crate::crafting::CraftingRequest(Some(byroredux_core::ecs::EntityId::from(8u32))));
+    world.insert_resource(crate::inventory::PendingDroppedItems(vec![(0xFF00_0001, 2.5)]));
     discard_outgoing_session_requests(&world);
+    assert_eq!(world.resource::<crate::crafting::ActiveCrafting>().0, None, "the crafting session ends");
+    assert_eq!(world.resource::<crate::crafting::CraftingRequest>().0, None, "a queued bench is dropped");
+    assert!(world.resource::<crate::inventory::PendingDroppedItems>().0.is_empty(), "pending REMPs are dropped");
     assert_eq!(world.resource::<PlayerMoveRequest>().0, None);
     assert!(world.resource::<PendingPlayerXp>().0.is_empty());
     assert!(world.resource::<PendingSkillAdvances>().0.is_empty());

@@ -310,7 +310,7 @@ fn player_drop_placement(world: &World, player: byroredux_core::ecs::EntityId) -
 
 /// Dropped items whose reference has not spawned yet, with the seconds they have waited: the
 /// Story Manager's `REMP` is raised when the entity exists. `NOT_SAVED_BY_DESIGN`: the created
-/// reference itself is saved; only the not-yet-raised event is dropped by a load.
+/// reference itself is saved; a load discards the queue (`discard_outgoing_session_requests`, #6574).
 #[derive(Default)]
 pub(crate) struct PendingDroppedItems(pub(crate) Vec<(u32, f32)>);
 

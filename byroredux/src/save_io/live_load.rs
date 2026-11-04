@@ -455,7 +455,8 @@ pub(super) fn discard_pending_story_events(world: &World) {
 /// `scripted_skill_system` wait a frame. Applied in the loaded game they
 /// would move the player off the restored pose or grant unearned progress,
 /// and the next save would keep it. The rest are the same shape: sleep hours,
-/// music, script messages and the message boxes they opened.
+/// music, script messages and the message boxes they opened, then (#6574) the crafting session and
+/// bench request and the dropped items still waiting to raise `REMP`.
 pub(super) fn discard_outgoing_session_requests(world: &World) {
     if let Some(mut request) = world.try_resource_mut::<byroredux_scripting::PlayerMoveRequest>() {
         request.0 = None;
@@ -477,6 +478,17 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     }
     if let Some(mut boxes) = world.try_resource_mut::<crate::notifications::MessageBoxQueue>() {
         boxes.0.clear();
+    }
+    // #6574 — M43 transients of the same shape. `ActiveCrafting`: a crafting session names the outgoing world's bench entity
+    // (ids are not reclaimed, so the page would stay open on a bench that no longer exists and list nothing),
+    // and a bench activated this tick is still queued behind the drain. A pending dropped item holds a
+    // created-reference FormID from the abandoned timeline, which the restored allocator can hand out again.
+    crate::crafting::end_crafting(world);
+    if let Some(mut request) = world.try_resource_mut::<crate::crafting::CraftingRequest>() {
+        request.0 = None;
+    }
+    if let Some(mut dropped) = world.try_resource_mut::<crate::inventory::PendingDroppedItems>() {
+        dropped.0.clear();
     }
 }
 

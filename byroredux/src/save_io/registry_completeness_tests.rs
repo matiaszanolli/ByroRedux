@@ -575,9 +575,9 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("StoryClock", "total game hours derived every frame from the saved GameTimeRes (#5366 Phase 3)"),
         ("ConversationHold", "an NPC-to-NPC random conversation in progress (partner, phase); a load drops the conversation and the ambient package system re-selects both actors packages (M43)"),
         ("CraftingBook", "Skyrim COBJ recipes and the bench keywords of every FURN base; rebuilt from the load order by install_crafting every boot (M43)"),
-        ("ActiveCrafting", "the bench whose crafting page is open; a menu session that a load closes (M43)"),
-        ("CraftingRequest", "a bench the player just activated, waiting for the app to open its page; drained the same frame (M43)"),
-        ("PendingDroppedItems", "dropped items whose REMP story event waits for the created reference to spawn (seconds); the created reference itself is saved, only the not-yet-raised event is lost on a load (M43)"),
+        ("ActiveCrafting", "the bench whose crafting page is open; a menu session. The load drain ends it (#6574) — it names the outgoing world's bench entity (M43)"),
+        ("CraftingRequest", "a bench the player just activated, waiting for the app to open its page; taken in render_one_frame after the save/load drain of the same tick, so a load discards it (#6574) (M43)"),
+        ("PendingDroppedItems", "dropped items whose REMP story event waits for the created reference to spawn (seconds); the created reference itself is saved, and a load discards the queue (#6574) so an id from the abandoned timeline cannot raise REMP for a reference the restored allocator hands out again (M43)"),
         ("RandomConversationState", "ambient NPC-to-NPC conversation attempt timers (30-60 s) and pair cooldowns; a load re-arms them like a fresh boot, and which ADIA a post-load pick raises is not state anything reads back (M43)"),
         ("DeadBodyState", "the DEAD discovery scan's pass clock and the bodies already found; a load re-arms the scan, so a body found before the save can be found once more (the node's reset window bounds how often that starts a quest) (M43)"),
         ("JailEscapeWatch", "whether the player has been seen inside the jail cell of the sentence being served, so the frames before the move to the cell lands are not an escape; a load re-observes the cell (M43)"),
@@ -1191,6 +1191,30 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         "SAVE-D1-2026-10-08-01 (#5458): NOT_SAVED_BY_DESIGN rows citing `Seated` \
          must state that its registration is restore_world-only (not the live \
          load path): {seated_without_path:#?}",
+    );
+
+    // #6574 (the generic guard the 10-21 / 10-27 / 10-31 audits asked for) — a row that says a load
+    // discards or ends its type claims `discard_outgoing_session_requests` does it. #6239, #6508 and
+    // #6574 were each a transient whose reason promised a load handled it while the drain never named it;
+    // a claim the drain does not back is now a failure here, not a latent stale-state bug.
+    let drain_source = include_str!("live_load.rs");
+    let drain = {
+        let start = drain_source
+            .find("pub(super) fn discard_outgoing_session_requests(")
+            .expect("the load drain's request sweep must exist");
+        let body = &drain_source[start..];
+        &body[..body.find("\n}\n").expect("the sweep's closing brace")]
+    };
+    let unbacked: Vec<&str> = NOT_SAVED_BY_DESIGN
+        .iter()
+        .filter(|(_, reason)| reason.contains("a load discards") || reason.contains("The load drain ends"))
+        .filter(|(name, _)| !drain.contains(name))
+        .map(|(name, _)| *name)
+        .collect();
+    assert!(
+        unbacked.is_empty(),
+        "NOT_SAVED_BY_DESIGN rows claim a load discards them but \
+         discard_outgoing_session_requests never names them: {unbacked:#?}",
     );
 }
 
