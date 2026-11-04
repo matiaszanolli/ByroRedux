@@ -342,12 +342,12 @@ pub enum PackTargetKind {
     Other(u32),
 }
 
-/// FO3/FNV package procedure-type index for `Sandbox` — idle activities
-/// in an area (sit, wander, use furniture). 56 % of vanilla FNV NPCs
-/// carry one; it's the dominant ambient idle behavior. See M42.
 /// `PKDT` Interrupt Flags bit: *Random conversations*.
 pub const PKDT_INTERRUPT_RANDOM_CONVERSATIONS: u16 = 0x0002;
 
+/// FO3/FNV package procedure-type index for `Sandbox` — idle activities
+/// in an area (sit, wander, use furniture). 56 % of vanilla FNV NPCs
+/// carry one; it's the dominant ambient idle behavior. See M42.
 pub const PROCEDURE_SANDBOX: u32 = 12;
 
 /// FO3/FNV package procedure-type index for `Wander` — walk to random
