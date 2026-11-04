@@ -99,7 +99,7 @@ impl TextureRegistry {
         self.pending_promotions
             .retain(|upload| upload.handle != handle);
         self.promotion_requests.retain(|&(h, _)| h != handle);
-        self.stream_sources.remove(&handle);
+        self.forget_stream_source(handle);
         true
     }
 
@@ -120,8 +120,9 @@ impl TextureRegistry {
                 .retain(|upload| !freed_set.contains(&upload.handle));
             self.promotion_requests
                 .retain(|(handle, _)| !freed_set.contains(handle));
-            self.stream_sources
-                .retain(|handle, _| !freed_set.contains(handle));
+            for &handle in &freed {
+                self.forget_stream_source(handle);
+            }
         }
         freed
     }

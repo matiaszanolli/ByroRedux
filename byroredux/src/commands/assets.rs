@@ -336,6 +336,11 @@ impl ConsoleCommand for TexResidencyCommand {
                 )
             },
             format!(
+                "above floors and whole: {:.1} MiB (session peak {:.1}) — the part the budget evicts",
+                mib(t.above_floor_bytes),
+                mib(t.peak_above_floor_bytes),
+            ),
+            format!(
                 "resident {:.1} MiB (peak {:.1}), retiring {:.1} MiB, floors {:.1} MiB, queued changes {}, reserved {}",
                 mib(t.resident_bytes),
                 mib(t.peak_resident_bytes),

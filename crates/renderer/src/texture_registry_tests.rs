@@ -151,10 +151,12 @@ fn make_registry_for_overflow_test(max_textures: u32, occupied: usize) -> Textur
         fence_confirmed_idle_slot: None,
         pending_dds_uploads: Vec::new(),
         pending_promotions: Vec::new(),
-        stream_sources: HashMap::new(),
+        stream_sources: Default::default(),
+        stream_widths: Vec::new(),
         promotion_requests: Vec::new(),
         streaming: false,
         peak_resident_bytes: 0,
+        peak_above_floor_bytes: 0,
         stream_counters: Default::default(),
         texture_budget: None,
         texture_budget_sampled: None,
@@ -1805,4 +1807,24 @@ fn queued_changes_count_against_the_budget() {
     let stats = reg.apply_wanted(&HashMap::from([(0, drawn(0)), (1, drawn(0))]));
     assert!(reg.promotion_requests.is_empty(), "handle 1 would overrun");
     assert_eq!(stats.declines, 1);
+}
+
+/// TXS-WANT-005 under pressure — when the budget has to drop a level from one
+/// of two equally wanted textures, the one promoted inside the hysteresis
+/// window is spared and the other gives it up (handle order would pick the
+/// first).
+#[test]
+fn budget_eviction_spares_a_texture_promoted_inside_the_hysteresis_window() {
+    let mut reg = budgeted_registry(&[0, 0], 2 * BC1_FROM_0 - 2048);
+    reg.current_frame_id = 1000;
+    reg.stream_sources.get_mut(&0).unwrap().last_promoted_frame = Some(990);
+    reg.apply_wanted(&HashMap::from([(0, drawn(0)), (1, drawn(0))]));
+    assert_eq!(queued_targets(&reg), vec![(1, 1)], "handle 1 is the victim");
+
+    // Outside the window the order falls back to handle order.
+    let mut reg = budgeted_registry(&[0, 0], 2 * BC1_FROM_0 - 2048);
+    reg.current_frame_id = 1000;
+    reg.stream_sources.get_mut(&0).unwrap().last_promoted_frame = Some(1000 - 500);
+    reg.apply_wanted(&HashMap::from([(0, drawn(0)), (1, drawn(0))]));
+    assert_eq!(queued_targets(&reg), vec![(0, 1)]);
 }

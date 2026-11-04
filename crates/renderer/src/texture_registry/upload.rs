@@ -21,6 +21,9 @@ pub(super) struct BudgetRow {
     last_wanted: u64,
     /// A change is already queued: its bytes count, but it cannot be moved.
     locked: bool,
+    /// Promoted within the hysteresis window: evicted only after every
+    /// texture outside the window (TXS-WANT-005).
+    recent: bool,
     /// The pass lowered `cur` (a demotion to queue).
     demoted: bool,
 }
@@ -441,7 +444,28 @@ impl TextureRegistry {
     /// M39 — level 0's larger edge of a streamed texture, `None` for one that
     /// is not streamed (the wanted-mip pass skips it).
     pub fn stream_width(&self, handle: TextureHandle) -> Option<u32> {
-        self.stream_sources.get(&handle).map(|source| source.width)
+        self.stream_widths
+            .get(handle as usize)
+            .copied()
+            .filter(|&width| width > 0)
+    }
+
+    /// Record a streamed texture's source (and its width for the wanted pass).
+    pub(super) fn insert_stream_source(&mut self, handle: TextureHandle, source: StreamSource) {
+        let slot = handle as usize;
+        if self.stream_widths.len() <= slot {
+            self.stream_widths.resize(slot + 1, 0);
+        }
+        self.stream_widths[slot] = source.width;
+        self.stream_sources.insert(handle, source);
+    }
+
+    /// Drop a streamed texture's source on its last release.
+    pub(super) fn forget_stream_source(&mut self, handle: TextureHandle) {
+        self.stream_sources.remove(&handle);
+        if let Some(width) = self.stream_widths.get_mut(handle as usize) {
+            *width = 0;
+        }
     }
 
     /// M39 — apply this frame's wanted mips (docs/engine/texture-streaming.md
@@ -457,13 +481,13 @@ impl TextureRegistry {
     /// spends it: over budget it demotes the textures wanted longest ago
     /// first (TXS-BUD-003), and a promotion that does not fit evicts first
     /// and is declined when that cannot make room (TXS-BUD-004).
-    pub fn apply_wanted(
+    pub fn apply_wanted<S: std::hash::BuildHasher>(
         &mut self,
-        wanted: &HashMap<TextureHandle, residency::WantedMip>,
+        wanted: &HashMap<TextureHandle, residency::WantedMip, S>,
     ) -> WantedStats {
         use residency::{WantedCase, DEMOTE_AFTER_FRAMES};
         let frame = self.current_frame_id;
-        let queued: HashMap<TextureHandle, u32> = self
+        let queued: rustc_hash::FxHashMap<TextureHandle, u32> = self
             .pending_promotions
             .iter()
             .filter_map(|upload| Some((upload.handle, upload.change?.new_first)))
@@ -631,11 +655,12 @@ impl TextureRegistry {
     fn spend_budget(
         &mut self,
         budget: u64,
-        queued: &HashMap<TextureHandle, u32>,
+        queued: &rustc_hash::FxHashMap<TextureHandle, u32>,
         candidates: &mut Vec<(residency::WantedCase, u32, f32, TextureHandle, u32)>,
         demotions: &mut Vec<(TextureHandle, u32)>,
         stats: &mut WantedStats,
     ) {
+        let frame = self.current_frame_id;
         let mut rows = std::mem::take(&mut self.budget_scratch);
         rows.clear();
         let whole_bytes: u64 = self
@@ -662,6 +687,9 @@ impl TextureRegistry {
                     .map_or(r.floor_first, |(level, _)| level.min(r.floor_first)),
                 last_wanted: source.last_wanted_frame,
                 locked: queued.contains_key(&handle),
+                recent: source.last_promoted_frame.is_some_and(|promoted| {
+                    frame.wrapping_sub(promoted) < residency::DEMOTE_AFTER_FRAMES
+                }),
                 demoted: false,
             });
         }
@@ -693,7 +721,14 @@ impl TextureRegistry {
             let mut order: Vec<usize> = (0..rows.len())
                 .filter(|&i| !rows[i].locked && rows[i].cur < rows[i].floor_first)
                 .collect();
-            order.sort_by_key(|&i| (rows[i].wanted <= rows[i].cur, rows[i].last_wanted, i));
+            order.sort_by_key(|&i| {
+                (
+                    rows[i].wanted <= rows[i].cur,
+                    rows[i].recent,
+                    rows[i].last_wanted,
+                    i,
+                )
+            });
             // Sweep 1: textures wanted coarser than they are resident, down
             // to the level they are wanted at.
             for &i in &order {
@@ -701,7 +736,7 @@ impl TextureRegistry {
                 drop_levels(&mut rows[i], &mut projected, limit, budget);
             }
             // Sweep 2: whatever is left above a floor, oldest first.
-            order.sort_by_key(|&i| (rows[i].last_wanted, i));
+            order.sort_by_key(|&i| (rows[i].recent, rows[i].last_wanted, i));
             for &i in &order {
                 let limit = rows[i].floor_first;
                 drop_levels(&mut rows[i], &mut projected, limit, budget);
@@ -755,7 +790,7 @@ impl TextureRegistry {
                     let mut order: Vec<usize> = (0..rows.len())
                         .filter(|&j| !rows[j].locked && rows[j].cur < rows[j].wanted)
                         .collect();
-                    order.sort_by_key(|&j| (rows[j].last_wanted, j));
+                    order.sort_by_key(|&j| (rows[j].recent, rows[j].last_wanted, j));
                     (order, 0)
                 });
                 let need = projected + delta - budget;
@@ -1047,6 +1082,10 @@ impl TextureRegistry {
         }
         self.peak_resident_bytes = self.peak_resident_bytes.max(t.resident_bytes);
         t.peak_resident_bytes = self.peak_resident_bytes;
+        let whole = t.whole_cube.1 + t.whole_single_level.1 + t.whole_chain.1;
+        t.above_floor_bytes = t.resident_bytes.saturating_sub(t.floor_bytes + whole);
+        self.peak_above_floor_bytes = self.peak_above_floor_bytes.max(t.above_floor_bytes);
+        t.peak_above_floor_bytes = self.peak_above_floor_bytes;
         *out = t;
     }
 
@@ -1571,7 +1610,7 @@ impl TextureRegistry {
             let level_bytes = parsed
                 .as_ref()
                 .map_or_else(Vec::new, crate::vulkan::dds::level_sizes);
-            self.stream_sources.insert(
+            self.insert_stream_source(
                 handle,
                 StreamSource {
                     path: upload.path.as_str().into(),

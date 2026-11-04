@@ -1,6 +1,6 @@
 # Texture Streaming — Design
 
-**Status**: PROPOSED (2026-11-03), written in M39 Phase 0 (#6627). This is
+**Status**: IMPLEMENTED through Phase 3, Phase 4 in progress (2026-11-04); written in M39 Phase 0 (#6627). This is
 the *how* behind the [Texture Streaming PRD](../prd/texture-streaming.md)
 (ACTIVE, tracking #6626), which owns the promise and every `TXS-` requirement
 cited here. It applies the owner's §10 decisions (2026-11-03): Q1 reallocate
@@ -294,14 +294,17 @@ than `first_resident`, sorted by:
 
 ### 6.2 Per-frame cap (TXS-BUD-006)
 
-Each frame at most `MAX_PROMOTION_UPLOAD_BYTES_PER_FRAME` of promotion
-uploads are submitted; the remainder waits for the next frame. Phase 1
-bounds a frame's promotions by one upload sub-batch
-(`MAX_UPLOAD_BATCH_BYTES`, `VulkanContext::update_texture_streaming`).
-Phase 3 (TXS-BUD-006) sets the cap from the measured upload cost per MiB on
-the A9 soak, as the largest cap that keeps the frame-time p99 within
-run-to-run noise of the streaming-off control, and records it in
-[Memory Budget](memory-budget.md) with a ledger test.
+Each frame `flush_pending_promotions` takes queued changes in order until
+their staged bytes reach `MAX_PROMOTION_UPLOAD_BYTES_PER_FRAME` (32 MiB) or
+their count reaches `MAX_RESIDENCY_CHANGES_PER_FRAME` (64); the remainder
+waits for the next frame, and the first change always goes (it cannot be
+split). The count cap exists because a demotion stages nothing but still
+allocates an image and copies the levels it keeps, so a budget drop would
+otherwise land thousands of replacements in one frame. Both are in
+[Memory Budget](memory-budget.md) § Texture Registry with ledger tests. The
+values are starting points set from the size of a 4096² BC7 chain (~21 MiB)
+and a frame's copy-queue stall, not from a p99 sweep of the A9 soak; the
+streaming-on frame time on the FO4 soak is the check on them.
 
 ### 6.3 Hysteresis (TXS-WANT-005)
 
@@ -319,43 +322,80 @@ fresh-cell loads, and `tex.residency` prints it.
 ### 7.1 Budget
 
 ```
-texture_budget = F × device_local_budget − non_texture_reserve
+texture_budget = max(F × capacity − reserve, 128 MiB)
+capacity       = GpuMemoryBudget live DEVICE_LOCAL budget (VK_EXT_memory_budget),
+                 else the smallest DEVICE_LOCAL heap
+reserve        = (device-local bytes this process holds − texture-image bytes)
+                 + (static-BLAS budget − static-BLAS bytes in use)
+F              = 0.80
 ```
 
-- `device_local_budget` is `GpuMemoryBudget::live_heap_budget_bytes`,
-  refreshed at the throttled telemetry sample
-  (`VulkanContext::sample_live_memory_budget`). Without
-  `VK_EXT_memory_budget` it is `GpuMemoryBudget::smallest_heap_bytes`.
-- `non_texture_reserve` is the sum of the [Memory Budget](memory-budget.md)
-  ledger's device-local rows other than textures at the current resolution
-  (scene buffers × frames in flight, the static BLAS budget, reservoirs,
-  screen-sized RT and post-process images, terrain height maps). One
-  function computes it beside the ledger tests, so the ledger stays the
-  only place the figures live.
-- `F` is the headroom fraction. Phase 3 sets it from A8: the largest value
-  at which the minimum-card emulation (the override set to that card's
-  budget) runs validation-clean with no allocation failure.
+- `capacity` is what `VulkanContext::live_memory_budget` reports; without the
+  extension it is `smallest_device_local_heap_bytes`, and the process's usage
+  comes from the allocator's own report instead of the extension.
+- The reserve is **measured, not summed from the ledger**: everything the
+  process holds on the device that is not a texture image (live or retiring)
+  is by definition what the budget must leave, and the one term the ledger
+  bounds but the process has not yet taken — the static BLAS growing to its
+  own budget — is added as headroom. This replaces the first sketch's
+  "sum of the ledger's non-texture rows at the current resolution": it
+  follows the resolution, FSR's SDK memory and whatever else is resident
+  without a second place that lists them. The ledger stays the home of the
+  constants it does state (the cap, the fraction, the minimum).
+- `F` = 0.80 is the engine's existing "approaching OOM" line
+  (`allocator::approaching_oom_line`), so a texture budget never plans past
+  the point the allocator already warns at. It is a policy choice. A8's
+  minimum-card emulation (the override at that card's budget) is the check on
+  it; the sweep that would pick a larger value was not run.
+- The 128 MiB floor stops a transiently large non-texture figure (a cell
+  load's staging, a BLAS build's scratch) from collapsing the budget to
+  zero. Below it the over-budget warning (TXS-BUD-002) names the shortfall.
 
-The override setting (§8), when non-zero, replaces the whole expression.
-The budget is logged once at renderer start with its terms (TXS-BUD-001),
-then printed by `tex.residency` on each change.
+`texture_registry::derive_budget` is the pure function; the override
+(`render.texture_budget_mib`, §8), when non-zero, replaces the whole
+expression unclamped. `VulkanContext::refresh_texture_budget` re-derives it
+twice a second while streaming is on, logs the first derivation with its
+terms (TXS-BUD-001), and `tex.residency` prints the current one.
 
 ### 7.2 Eviction (TXS-BUD-002…004, -007)
 
-Over budget, the streamer demotes the texture with the oldest
-`last_wanted_frame` by one level, repeating until under budget or every
-texture is at its floor (TXS-BUD-003). Floors and **whole** textures are
-never evicted; if they alone exceed the budget, one warning names both
-totals (TXS-BUD-002). A promotion that would exceed the budget first evicts
-by the same order and is declined, and counted, when that cannot make room
-(TXS-BUD-004). A failed image allocation for a promotion leaves the entry
-exactly as it was (TXS-BUD-007): the old image is retired only after the new
-one exists and its copies are recorded.
+`apply_wanted` spends the budget in payload bytes (the DDS header's level
+sizes for streamed textures, the allocation size for **whole** ones; the
+allocation of a streamed image runs ~2 % above its payload, so the
+resident figure `tex.residency` prints can sit that far over the budget).
+Queued changes count at the level they will leave resident.
+
+1. **Over budget**, demote one level at a time. First the textures wanted
+   coarser than they are resident, down to the level they are wanted at
+   (no visible loss), then any texture above its floor, never below it.
+   Within a sweep the order is: textures promoted outside the hysteresis
+   window before those inside it (TXS-WANT-005 holds under pressure unless
+   nothing else is left), then oldest `last_wanted_frame` first
+   (TXS-BUD-003).
+2. **Each promotion**, in queue order (§6.1): kept if it fits; otherwise made
+   to fit by demoting textures wanted coarser than resident, oldest
+   last-wanted first; otherwise **declined** (TXS-BUD-004): it leaves the
+   queue, the texture keeps its image, and the decline is counted once per
+   episode (until the texture's wanted level changes). A texture wanted at
+   its resident level is never evicted to fund another's promotion, so two
+   wanted textures cannot swap levels every frame.
+3. Floors, **whole** textures and queued changes are never evicted; if they
+   alone exceed the budget one warning names the totals (TXS-BUD-002).
+4. A promotion whose image allocation fails (TXS-BUD-007) is counted as a
+   decline, leaves the entry exactly as it was (the old image retires only
+   after the new one is installed), and is not requested again for
+   `DEMOTE_AFTER_FRAMES` frames.
 
 Retiring images (PRD §2) are counted apart and do not count against the
-budget; they are bounded by the per-frame cap times `MAX_FRAMES_IN_FLIGHT`.
+budget.
 
----
+A budget below the wanted set binds permanently: the wanted textures that do
+not fit are declined each episode and the scene sits at the budget. A scene
+that keeps gaining floors while the budget is tight (an interior's actors
+arriving after its architecture) can promote a texture and then evict it
+when the next floors land; the recent-promotion ordering above narrows this
+but does not remove it (Skyrim `WhiterunBanneredMare` at 30 MiB: 12
+promotions, 5 evictions before the ordering was added).
 
 ## 8. Settings (Q5, TXS-BUD-005, TXS-RES-008)
 
@@ -398,10 +438,16 @@ Both are registered in `core::settings::builtin` beside the existing
     wobbles 0.0016 units in Y on alternate frames, which restarted an
     exact-match clock every frame. `settle_restarts` near the frame count
     means the camera never stopped.
-  - **Evictions** and **declines** belong to the Phase 3 budget and read 0
-    until it lands: without a budget nothing evicts or declines.
-- `ownership_sample.rs` samples resident texture bytes beside
-  `texture_live_slots` (TXS-TEL-003).
+  - **Evictions** (demotions the budget ordered) and **declines** (promotions
+    it refused, or whose allocation failed) read 0 while the budget is not
+    exceeded. `budget_bytes` and `peak_above_floor_bytes` (session peak of
+    resident less floors and whole textures, the quantity A8 and A10 hold
+    to the budget) close the line.
+- `ownership_sample.rs` samples every texture image's bytes (live and
+  retiring) as the `texture_resident_bytes` class beside `texture_live_slots`
+  (TXS-TEL-003). It is an `Occupancy` class: with streaming the bytes follow
+  the camera, so the soak holds it to the growth check (no strictly rising
+  series beyond 1 %), not to an exact return.
 
 ---
 
@@ -420,9 +466,9 @@ No path calls `device_wait_idle` (TXS-RES-004).
 
 ## 11. Left open
 
-| Item | Settled by |
+| Item | State |
 |---|---|
-| `MAX_PROMOTION_UPLOAD_BYTES_PER_FRAME` | Phase 3 measurement (§6.2; Phase 1 uses one upload sub-batch) |
-| `DEMOTE_AFTER_FRAMES` | Phase 2 measurement (§6.3) |
-| `F` | Phase 3 measurement (§7.1) |
-| TLAS-only one-level bias | A11 in Phase 2 (§5.3) |
+| `MAX_PROMOTION_UPLOAD_BYTES_PER_FRAME` / `MAX_RESIDENCY_CHANGES_PER_FRAME` | set at 32 MiB / 64 (§6.2); not swept against frame-time p99 |
+| `DEMOTE_AFTER_FRAMES` | 120 (2 s at 60 fps): zero churn on the unpinned-budget benches of every game run so far |
+| `F` | 0.80, the engine's OOM line (§7.1); not swept |
+| TLAS-only one-level bias | A11 (see the PRD's Phase 2 exit) |

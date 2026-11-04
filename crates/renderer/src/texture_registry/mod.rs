@@ -425,7 +425,12 @@ pub struct TextureRegistry {
     /// M39 — where each streamed texture's levels come from, so the host can
     /// re-read the levels a promotion needs (and a demotion can be queued
     /// from the header alone). Removed with the handle's last release.
-    stream_sources: HashMap<TextureHandle, StreamSource>,
+    stream_sources: rustc_hash::FxHashMap<TextureHandle, StreamSource>,
+    /// Level 0's larger edge of each streamed handle, indexed by handle (`0`
+    /// = not streamed): the wanted-mip pass asks per draw per texture slot,
+    /// which a hash lookup made the pass's dominant cost (1.5 ms a frame on
+    /// MedTek's 8 000 draws).
+    stream_widths: Vec<u32>,
     /// M39 — promotions waiting for the host to read their levels
     /// (`take_promotion_requests` → `queue_promotion_bytes`).
     promotion_requests: Vec<(TextureHandle, u32)>,
@@ -438,6 +443,9 @@ pub struct TextureRegistry {
     /// M39 — the largest live image total seen by
     /// `fill_residency_telemetry` (TXS-TEL-001's session peak).
     peak_resident_bytes: u64,
+    /// M39 — the largest resident-less-floors-and-whole total seen by
+    /// `fill_residency_telemetry` (PRD §8 budget adherence).
+    peak_above_floor_bytes: u64,
     /// M39 TXS-TEL-002 — session counts of landed residency changes.
     stream_counters: StreamCounters,
     /// M39 TXS-BUD-001 — the texture pool budget (`None` until the renderer
@@ -637,10 +645,12 @@ impl TextureRegistry {
             fence_confirmed_idle_slot: None,
             pending_dds_uploads: Vec::new(),
             pending_promotions: Vec::new(),
-            stream_sources: HashMap::new(),
+            stream_sources: Default::default(),
+            stream_widths: Vec::new(),
             promotion_requests: Vec::new(),
             streaming: false,
             peak_resident_bytes: 0,
+            peak_above_floor_bytes: 0,
             stream_counters: StreamCounters::default(),
             texture_budget: None,
             texture_budget_sampled: None,

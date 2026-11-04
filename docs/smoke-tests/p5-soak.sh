@@ -20,6 +20,13 @@
 # warmup-end RSS fails as unbounded memory growth. The full curve is
 # retained in the artifacts.
 #
+# M39 A10 — before shutdown a `tex.residency` probe reads the session-peak
+# texture bytes above the floors and the whole textures; with streaming on
+# they must be within the texture budget (TXS-BUD-002). The probe is
+# informational with streaming off. BYROREDUX_SOAK_TEXTURE_STREAMING=0|1
+# seeds the run's isolated settings.toml (unset: the engine default), and
+# BYROREDUX_SOAK_TEXTURE_BUDGET_MIB pins the budget (unset: derived).
+#
 # Duration is BYROREDUX_SOAK_MINUTES (default 30). Shorten it to shake the
 # script itself out; the P5 gate of record runs the default.
 set -euo pipefail
@@ -54,6 +61,18 @@ if ss -ltn "sport = :$PORT" | grep -q LISTEN; then
 fi
 
 cargo build --release --offline --quiet -p byroredux -p byro-dbg
+if [[ -n "${BYROREDUX_SOAK_TEXTURE_STREAMING:-}" ]]; then
+    {
+        echo 'version = 1'
+        echo '[settings]'
+        if [[ "$BYROREDUX_SOAK_TEXTURE_STREAMING" == 1 ]]; then
+            echo '"render.texture_streaming" = true'
+        else
+            echo '"render.texture_streaming" = false'
+        fi
+        echo "\"render.texture_budget_mib\" = ${BYROREDUX_SOAK_TEXTURE_BUDGET_MIB:-0}.0"
+    } >"$LOG_DIR/settings.toml"
+fi
 debug_command() {
     timeout "$TIMEOUT" env BYRO_DEBUG_PORT="$PORT" target/release/byro-dbg >"$2" 2>&1 <<EOF
 $1
@@ -278,6 +297,21 @@ while (( SECONDS < deadline_s )); do
 done
 
 kill -0 "$engine_pid" 2>/dev/null || fail "engine died before the soak deadline"
+
+# M39 A10 — texture residency probe (see the header).
+debug_command tex.residency "$LOG_DIR/tex-residency.log" \
+    || fail "tex.residency probe rejected"
+tex_summary="tex.residency: streaming off, nothing to gate"
+if ! grep -Fq 'streaming: off' "$LOG_DIR/tex-residency.log"; then
+    peak_mib="$(grep -oE 'session peak [0-9.]+' "$LOG_DIR/tex-residency.log" | head -1 | awk '{print $3}')"
+    budget_mib="$(grep -oE 'budget [0-9.]+ MiB' "$LOG_DIR/tex-residency.log" | head -1 | awk '{print $2}')"
+    [[ -n "$peak_mib" && -n "$budget_mib" ]] \
+        || fail "tex.residency printed no session peak / budget (see tex-residency.log)"
+    awk -v p="$peak_mib" -v b="$budget_mib" 'BEGIN { exit !(p <= b) }' \
+        || fail "texture bytes above floors+whole peaked at ${peak_mib} MiB, over the ${budget_mib} MiB budget (TXS-BUD-002; see tex-residency.log)"
+    tex_summary="tex.residency: session-peak ${peak_mib} MiB above floors+whole within the ${budget_mib} MiB budget"
+fi
+echo "smoke[p5-soak]: $tex_summary"
 echo "smoke[p5-soak]: soak curve (cycle,time_s,rss_kb,quicksaves):"
 cat "$LOG_DIR/soak.csv"
 echo "smoke[p5-soak]: PASS -- ${SOAK_MINUTES} min, $cycle cycles, $quicksaves quicksaves, $applied_count door transitions, peak RSS $(( max_rss / 1024 ))MiB, no panic / stuck transition / control loss / unbounded growth"

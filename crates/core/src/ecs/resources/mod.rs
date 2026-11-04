@@ -649,6 +649,11 @@ pub struct TextureResidencyTelemetry {
     /// Every live image's bytes, and their peak over the session.
     pub resident_bytes: u64,
     pub peak_resident_bytes: u64,
+    /// Resident bytes less the floors and the **whole** textures — what the
+    /// budget can evict — and its session peak (PRD §8 budget adherence,
+    /// A8/A10).
+    pub above_floor_bytes: u64,
+    pub peak_above_floor_bytes: u64,
     /// Promotions and demotions queued.
     pub queued_changes: u64,
     /// Streamed textures resident coarser than they are wanted (TXS-WANT).

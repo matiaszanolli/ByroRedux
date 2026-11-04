@@ -11,7 +11,8 @@
 //! the chunks the promotion needs (`Ba2Archive::extract_dx10_mips`); a BSA
 //! or loose re-read is whole, the cost decision Q2 (b) accepted.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::FxHashMap;
+use std::collections::HashSet;
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
@@ -45,7 +46,7 @@ pub(crate) struct TextureStreamer {
     done_rx: mpsc::Receiver<FinishedRead>,
     /// This frame's wanted mips, kept across frames so the pass allocates
     /// nothing in steady state.
-    wanted: HashMap<TextureHandle, WantedMip>,
+    wanted: FxHashMap<TextureHandle, WantedMip>,
     /// What the last wanted pass found.
     pub(crate) last_wanted: WantedStats,
     /// PRD §8 settle time.
@@ -142,7 +143,7 @@ impl TextureStreamer {
             in_flight: HashSet::new(),
             done_tx,
             done_rx,
-            wanted: HashMap::new(),
+            wanted: FxHashMap::default(),
             last_wanted: WantedStats::default(),
             settle: SettleClock::default(),
         })
@@ -239,7 +240,8 @@ pub(crate) fn tex_stream_bench_line(
         "tex-stream: streaming={} resident_bytes={} peak_bytes={} floor_bytes={} \
          promotions={} demotions={} evictions={} declines={} churn={} \
          hysteresis_frames={} cell_loads={} floor_ready_ms={:.2} reserved={} \
-         deficits={} settled={} settle_ms={:.2} settle_restarts={} budget_bytes={}",
+         deficits={} settled={} settle_ms={:.2} settle_restarts={} budget_bytes={} \
+         peak_above_floor_bytes={}",
         u8::from(t.streaming),
         t.resident_bytes,
         t.peak_resident_bytes,
@@ -258,6 +260,7 @@ pub(crate) fn tex_stream_bench_line(
         settle.ms,
         settle.restarts,
         t.budget_bytes,
+        t.peak_above_floor_bytes,
     )
 }
 
@@ -280,7 +283,7 @@ pub(crate) fn compute_wanted(
     ctx: &VulkanContext,
     camera_pos: [f32; 3],
     fov_y: f32,
-    out: &mut HashMap<TextureHandle, WantedMip>,
+    out: &mut FxHashMap<TextureHandle, WantedMip>,
 ) {
     out.clear();
     let registry = &ctx.texture_registry;
@@ -423,6 +426,7 @@ mod tests {
             evictions: 2,
             declines: 3,
             budget_bytes: 4096,
+            peak_above_floor_bytes: 77,
             churn: 0,
             hysteresis_frames: 120,
             cell_loads_timed: 1,
@@ -436,17 +440,18 @@ mod tests {
             "tex-stream: streaming=0 resident_bytes=100 peak_bytes=200 floor_bytes=30 \
              promotions=4 demotions=1 evictions=2 declines=3 churn=0 \
              hysteresis_frames=120 cell_loads=1 floor_ready_ms=812.35 reserved=0 \
-             deficits=0 settled=1 settle_ms=0.00 settle_restarts=0 budget_bytes=4096"
+             deficits=0 settled=1 settle_ms=0.00 settle_restarts=0 budget_bytes=4096 \
+             peak_above_floor_bytes=77"
         );
         let on = TextureResidencyTelemetry {
             streaming: true,
             ..Default::default()
         };
-        assert!(tex_stream_bench_line(&on, None).ends_with("settled=0 settle_ms=0.00 settle_restarts=0 budget_bytes=0"));
+        assert!(tex_stream_bench_line(&on, None).ends_with("settle_restarts=0 budget_bytes=0 peak_above_floor_bytes=0"));
         assert!(tex_stream_bench_line(
             &on,
             Some(SettleReading { settled: true, ms: 1.5, restarts: 2 })
         )
-        .ends_with("settled=1 settle_ms=1.50 settle_restarts=2 budget_bytes=0"));
+        .ends_with("settle_restarts=2 budget_bytes=0 peak_above_floor_bytes=0"));
     }
 }
