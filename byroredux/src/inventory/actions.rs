@@ -84,6 +84,13 @@ pub(crate) enum MutationResult {
     Unavailable,
 }
 
+/// A consume attempt that cannot proceed, with the precondition that failed (#6610): the queue drain's own warning
+/// ("unavailable for the current player/item") names none, so an item a player could not use gave no clue why.
+fn refuse(form_id: u32, reason: &str) -> MutationResult {
+    log::warn!("consume_item {form_id:08X} refused: {reason}");
+    MutationResult::Unavailable
+}
+
 /// Consume an item with a validated restoration plan. Preflight mutation and
 /// leave a zero-count slot so equipment and UI indices never shift.
 pub(super) fn consume_item(world: &mut World, index: u32, form_id: u32) -> MutationResult {
@@ -92,23 +99,23 @@ pub(super) fn consume_item(world: &mut World, index: u32, form_id: u32) -> Mutat
     };
     use byroredux_core::ecs::resources::ItemInstancePool;
     let Some(player) = PlayerEntity::get(world) else {
-        return MutationResult::Unavailable;
+        return refuse(form_id, "there is no player entity");
     };
     if world.get::<Dead>(player).is_some() {
-        return MutationResult::Unavailable;
+        return refuse(form_id, "the player is dead");
     }
     let Some(stack) = world
         .get::<Inventory>(player)
         .and_then(|r| r.items.get(index as usize).copied())
         .filter(|s| s.base_form_id == form_id && s.count > 0)
     else {
-        return MutationResult::Unavailable;
+        return refuse(form_id, "inventory row is missing, spent, or not this item");
     };
     if world
         .get::<EquipmentSlots>(player)
         .is_some_and(|r| r.is_equipped(InventoryIndex(index)))
     {
-        return MutationResult::Unavailable;
+        return refuse(form_id, "the row is equipped");
     }
     let Some((effects, scripted, name)) = world.try_resource::<InventoryCatalog>().and_then(|r| {
         let effects = r.restorations.get(&form_id).cloned();
@@ -118,7 +125,7 @@ pub(super) fn consume_item(world: &mut World, index: u32, form_id: u32) -> Mutat
         }
         Some((effects.unwrap_or_default(), scripted, r.entries.get(&form_id)?.name.clone()))
     }) else {
-        return MutationResult::Unavailable;
+        return refuse(form_id, "the InventoryCatalog has no ingestible entry (no restoration or script effect) for it");
     };
     // Drop the catalog guard before the evaluator acquires component locks.
     // Re-evaluate at use time: acquiring a perk must not require a cell reload.
@@ -128,11 +135,27 @@ pub(super) fn consume_item(world: &mut World, index: u32, form_id: u32) -> Mutat
     effects.retain(|branch| {
         byroredux_scripting::condition::evaluate_modeled(&branch.conditions, world, &context)
     });
+    // #6610 — the scripted / value effects the caster runtime plays carry their authored CTDAs: those that
+    // hold start, those that fail are left out, and a term the evaluator cannot read refuses the item whole
+    // (never a half-drunk dose — the all-or-nothing rule of #6229, applied at use time).
+    let mut started = Vec::with_capacity(scripted.len());
+    for gated in &scripted {
+        if let Some(unreadable) = gated.conditions.iter().find(|condition| !byroredux_scripting::condition::is_modeled(world, condition)) {
+            return refuse(
+                form_id,
+                &format!("an effect-local condition (function {}) cannot be evaluated here", unreadable.function_index),
+            );
+        }
+        if byroredux_scripting::condition::evaluate(&gated.conditions, world, &context) {
+            started.push(gated.effect);
+        }
+    }
+    let scripted = started;
     let Some(health) = world.get::<ActorVitals>(player).map(|r| r.health) else {
-        return MutationResult::Unavailable;
+        return refuse(form_id, "the player has no ActorVitals");
     };
     let Some(values) = world.get::<ActorValues>(player) else {
-        return MutationResult::Unavailable;
+        return refuse(form_id, "the player has no ActorValues");
     };
     // Scale against the live composed Medicine value at use time. Store the
     // resolved rate in timed state so later skill changes do not rewrite an
@@ -140,26 +163,28 @@ pub(super) fn consume_item(world: &mut World, index: u32, form_id: u32) -> Mutat
     for effect in &mut effects {
         if let Some(scale) = effect.medicine {
             let Some(skill) = values.get(scale.actor_value).map(|v| v.current()) else {
-                return MutationResult::Unavailable;
+                return refuse(form_id, "the player lacks the Medicine actor value its dose scales with");
             };
             if !skill.is_finite() {
-                return MutationResult::Unavailable;
+                return refuse(form_id, "the player's Medicine value is not finite");
             }
             effect.magnitude *= scale.base + scale.multiplier * skill.clamp(0.0, 100.0) / 100.0;
         }
     }
-    if !values.current(health).is_finite()
-        || values.current(health) <= 0.0
-        || (effects.is_empty() && scripted.is_empty())
-        || effects.iter().any(|effect| {
-            !effect.magnitude.is_finite()
-                || effect.magnitude <= 0.0
-                || values
-                    .get(effect.actor_value)
-                    .is_none_or(|v| !v.current().is_finite() || !v.damage.is_finite())
-        })
+    if !values.current(health).is_finite() || values.current(health) <= 0.0 {
+        return refuse(form_id, "the player's health is not a positive finite number");
+    }
+    if effects.is_empty() && scripted.is_empty() {
+        return refuse(form_id, "every restoration branch's conditions failed and it has no script effect");
+    }
+    if let Some(effect) = effects.iter().find(|effect| !effect.magnitude.is_finite() || effect.magnitude <= 0.0) {
+        return refuse(form_id, &format!("restoration of actor value {:08X} has magnitude {}", effect.actor_value, effect.magnitude));
+    }
+    if let Some(effect) = effects
+        .iter()
+        .find(|effect| values.get(effect.actor_value).is_none_or(|v| !v.current().is_finite() || !v.damage.is_finite()))
     {
-        return MutationResult::Unavailable;
+        return refuse(form_id, &format!("the player's ActorValues lacks (or has a non-finite) actor value {:08X} the item restores", effect.actor_value));
     }
     drop(values);
     if stack.instance.is_some_and(|instance| {
@@ -167,7 +192,7 @@ pub(super) fn consume_item(world: &mut World, index: u32, form_id: u32) -> Mutat
             .try_resource::<ItemInstancePool>()
             .is_none_or(|pool| pool.get(instance).is_none())
     }) {
-        return MutationResult::Unavailable;
+        return refuse(form_id, "the row's ItemInstancePool slot is gone");
     }
     // Exclusive World access prevents the preflighted components changing.
     {

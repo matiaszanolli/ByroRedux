@@ -19,6 +19,15 @@ pub(crate) struct InventoryItemDefinition {
     pub(crate) weapon_speed: f32,
 }
 
+/// One caster-runtime effect of an ingestible with the effect-local CTDAs it was authored under (#6610). The
+/// runtime evaluates none itself, so [`consume_item`](super::actions) reads them at use time: an effect whose
+/// conditions fail is left out, and one whose conditions the evaluator cannot read refuses the whole item.
+#[derive(Debug, Clone)]
+pub(crate) struct GatedCastEffect {
+    pub effect: byroredux_scripting::magic_effects::CastEffect,
+    pub conditions: byroredux_plugin::esm::records::condition::ConditionList,
+}
+
 /// Process-local item lookup rebuilt whenever the plugin index is installed.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct InventoryCatalog {
@@ -26,7 +35,7 @@ pub(crate) struct InventoryCatalog {
     /// M47.3 — the magic effects an ingestible starts on its user through the caster runtime: its
     /// scripted effects (a chem's `ScriptEffectStart` / `Update` / `Finish`), and — for an item the
     /// restoration plan does not cover — its value effects too.
-    pub(super) script_effects: FxHashMap<u32, Vec<byroredux_scripting::magic_effects::CastEffect>>,
+    pub(super) script_effects: FxHashMap<u32, Vec<GatedCastEffect>>,
     pub(super) entries: FxHashMap<u32, InventoryItemDefinition>,
     pub(super) containers: rustc_hash::FxHashSet<u32>,
     /// #4699 — the Player `NPC_` base (`player_npc_form_id`): the identity
@@ -416,14 +425,19 @@ pub(super) fn build_player_character_template(index: &EsmIndex) -> PlayerCharact
 /// The effects an ingestible starts on its user through the caster runtime: every authored effect of
 /// an item the restoration plan does not cover, or only the scripted ones of an item it does (`planned`).
 /// `None` refuses the whole item (#6229), with the restoration plan's all-or-nothing rule: the caster
-/// runtime evaluates no effect condition, delivers only to self, and plays no poison, addiction or
-/// withdrawal, so a header that is not simple consumption, an effect-local CTDA, a touch/target delivery,
-/// an area, or an effect the runtime does not model makes the item unavailable rather than partial.
+/// runtime delivers only to self and plays no poison, addiction or withdrawal, so a header that is not
+/// simple consumption, a touch/target delivery, an area, an effect the runtime does not model, or an
+/// effect-local CTDA that cannot be carried (alias / global / swap-subject flags, a text or extra-data
+/// parameter) makes the item unavailable rather than partial.
+///
+/// #6610 — an effect-local CTDA that CAN be carried is: it travels with its effect
+/// ([`GatedCastEffect`]) and is evaluated when the item is used. Refusing every conditioned effect left
+/// New Vegas's Nuka-Cola unusable, its script effect being authored `GetIsID(player) == 1`.
 pub(super) fn caster_effects(
     index: &EsmIndex,
     form_id: u32,
     planned: bool,
-) -> Option<Vec<byroredux_scripting::magic_effects::CastEffect>> {
+) -> Option<Vec<GatedCastEffect>> {
     let ItemKind::Aid {
         authored_effects: Some(authored),
         simple_consumption_header: true,
@@ -439,15 +453,32 @@ pub(super) fn caster_effects(
             continue; // the plan applies it
         }
         if !effect.is_modelled()
-            || !entry.conditions.is_empty()
+            || !conditions_are_carriable(entry)
             || entry.delivery.is_some_and(|delivery| delivery != 0)
             || entry.effect.area != 0
         {
             return None;
         }
-        effects.push(effect);
+        effects.push(GatedCastEffect { effect, conditions: entry.conditions.clone() });
     }
     Some(effects)
+}
+
+/// Whether an effect's CTDAs are plain enough to be evaluated later against the user: every flag byte is a
+/// bare comparator (no `Use Global` / `Swap Subject and Target` / alias / package-data bits), the subject is the
+/// user or the target (the same one at ingestion), and no parameter is text or extra data.
+fn conditions_are_carriable(entry: &byroredux_plugin::esm::records::items::ConsumableEffect) -> bool {
+    use byroredux_plugin::esm::records::condition::{ConditionValue, RunOn};
+    entry.conditions.len() == entry.condition_flags.len()
+        && entry.conditions.iter().zip(&entry.condition_flags).all(|(condition, flags)| {
+            flags & 0x1e == 0
+                && flags >> 5 <= 5
+                && matches!(condition.run_on, RunOn::Subject | RunOn::Target)
+                && condition.extra_data_id == 0
+                && condition.param_1_text.is_none()
+                && condition.param_2_text.is_none()
+                && matches!(condition.comparand, ConditionValue::Literal(value) if value.is_finite())
+        })
 }
 
 /// Rebuild item presentation metadata and the base player's starting loadout

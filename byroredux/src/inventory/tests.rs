@@ -2728,10 +2728,24 @@ fn caster_effects_refuse_what_the_runtime_cannot_play_whole() {
     let poison = scripted_potion(false, vec![effect(0x500)]);
     assert!(caster_effects(&poison, 10, false).is_none(), "a non-simple header is refused");
 
+    // #6610 — a plain effect-local CTDA travels with its effect and is evaluated when the item is used...
     let mut gated = effect(0x500);
     gated.conditions.push(Default::default());
     gated.condition_flags.push(0);
-    assert!(caster_effects(&scripted_potion(true, vec![gated]), 10, false).is_none(), "a CTDA is refused");
+    let carried = caster_effects(&scripted_potion(true, vec![gated]), 10, false).expect("a plain CTDA is carried");
+    assert_eq!((carried.len(), carried[0].conditions.len()), (1, 1));
+    // ...but one the evaluator could never honour (an alias / global / swap-subject flag, a text parameter) still
+    // refuses the item whole.
+    for bad_flags in [0x02u8, 0x04, 0x08, 0x10] {
+        let mut flagged = effect(0x500);
+        flagged.conditions.push(Default::default());
+        flagged.condition_flags.push(bad_flags);
+        assert!(caster_effects(&scripted_potion(true, vec![flagged]), 10, false).is_none(), "flags {bad_flags:#x} are refused");
+    }
+    let mut texty = effect(0x500);
+    texty.conditions.push(byroredux_plugin::esm::records::condition::Condition { param_1_text: Some(byroredux_plugin::esm::records::condition::ConditionStringId::from_text("x")), ..Default::default() });
+    texty.condition_flags.push(0);
+    assert!(caster_effects(&scripted_potion(true, vec![texty]), 10, false).is_none(), "a text parameter is refused");
 
     let mut touch = effect(0x500);
     touch.delivery = Some(1);
@@ -2741,6 +2755,66 @@ fn caster_effects_refuse_what_the_runtime_cannot_play_whole() {
     assert!(caster_effects(&partial, 10, false).is_none(), "an unmodelled sibling refuses the item");
     // Planned: the plan applies the non-scripted effect, the caster runs only the script.
     assert_eq!(caster_effects(&partial, 10, true).map(|effects| effects.len()), Some(1));
+}
+
+/// A scripted ingestible whose one effect is gated on `condition` for the player, used from the fixture inventory.
+fn gated_script_use(condition: byroredux_plugin::esm::records::condition::Condition) -> (MutationResult, usize) {
+    use byroredux_scripting::magic_effects::{ActiveMagicEffects, CastEffect};
+    let (mut world, player) = restorative_fixture();
+    byroredux_scripting::register(&mut world);
+    world.register::<byroredux_scripting::SceneAliasCandidate>();
+    world.insert(player, byroredux_scripting::SceneAliasCandidate { base_form_id: 7, ..Default::default() });
+    world.get_mut::<Inventory>(player).unwrap().items[1] = ItemStack::new(0x6000, 1);
+    {
+        let mut catalog = world.resource_mut::<InventoryCatalog>();
+        catalog.entries.insert(
+            0x6000,
+            InventoryItemDefinition {
+                name: "Nuka-Cola".to_owned(),
+                category: "Aid",
+                value: 1,
+                weight: 1.0,
+                details: String::new(),
+                equip_target: None,
+                weapon_damage: None,
+                weapon_reach: 0.0,
+                weapon_speed: 0.0,
+            },
+        );
+        catalog.script_effects.insert(
+            0x6000,
+            vec![GatedCastEffect {
+                effect: CastEffect { mgef: 20, script: 0x500, duration: 5.0, magnitude: 1.0, value: None },
+                conditions: vec![condition],
+            }],
+        );
+    }
+    let result = apply_action(&mut world, byroredux_debug_ui::InventoryAction::Consume { index: 1, form_id: 0x6000 });
+    let active = world.get::<ActiveMagicEffects>(player).map_or(0, |effects| effects.0.len());
+    (result, active)
+}
+
+/// #6610 — New Vegas's Nuka-Cola authors its script effect `GetIsID(player) == 1`; refusing every conditioned
+/// effect left it unusable (`consume_item` Unavailable, no effect, item kept). The condition is now read when the
+/// item is used: it holds for the player (effect starts, item spent), fails for another base (the effect is
+/// left out, and an item that would do nothing is refused), and an unreadable term refuses the item whole.
+#[test]
+fn a_scripted_effect_gated_on_the_user_is_evaluated_at_use() {
+    use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue};
+    let is_id = |base: u32| Condition {
+        function_index: 72, // GetIsID
+        param_1: base,
+        comparator: ComparisonOp::Eq,
+        comparand: ConditionValue::Literal(1.0),
+        ..Default::default()
+    };
+    assert_eq!(gated_script_use(is_id(7)), (MutationResult::Consumed, 1), "the user is base 7: the effect starts");
+    assert_eq!(gated_script_use(is_id(8)).0, MutationResult::Unavailable, "another base: nothing would happen");
+    assert_eq!(
+        gated_script_use(Condition { function_index: 999_999, ..Default::default() }).0,
+        MutationResult::Unavailable,
+        "an uncatalogued function cannot be read: the item is refused whole",
+    );
 }
 
 /// #6229 — an installed catalog lists a refused item as neither consumable nor described as usable.
