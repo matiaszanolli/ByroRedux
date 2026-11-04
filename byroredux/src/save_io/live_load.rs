@@ -483,6 +483,12 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     // (ids are not reclaimed, so the page would stay open on a bench that no longer exists and list nothing),
     // and a bench activated this tick is still queued behind the drain. A pending dropped item holds a
     // created-reference FormID from the abandoned timeline, which the restored allocator can hand out again.
+    // #6573 / #6508 — `PendingEvidenceDeposits`: goods a confiscation queued for a jail chest name the outgoing
+    // timeline's FormIDs and would land in the loaded world's chest. The ledger's evidence (saved) stays the
+    // record of what was taken.
+    if let Some(mut deposits) = world.try_resource_mut::<byroredux_scripting::jail::PendingEvidenceDeposits>() {
+        deposits.0.clear();
+    }
     crate::crafting::end_crafting(world);
     if let Some(mut request) = world.try_resource_mut::<crate::crafting::CraftingRequest>() {
         request.0 = None;

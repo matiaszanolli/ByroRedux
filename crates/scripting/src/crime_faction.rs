@@ -10,7 +10,7 @@
 //! kept as `0`). No `CRIF` and no override is no crime faction: how the engine
 //! would pick one from the actor's other factions is not documented.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use byroredux_core::ecs::resource::Resource;
@@ -60,18 +60,38 @@ impl CrimeFactionOverrides {
 
 /// Every faction's authored Crime tab (Skyrim, FO4), by faction FormID. Derived, never saved.
 #[derive(Debug, Default, Clone)]
-pub struct CrimeFactionData(Arc<HashMap<u32, FactionCrime>>);
+pub struct CrimeFactionData {
+    data: Arc<HashMap<u32, FactionCrime>>,
+    /// The placed references some faction names as its `PLCN` player-inventory container whose base container
+    /// authors contents of its own. A parked deposit *replaces* a container's authored inventory at respawn, so
+    /// the jail never confiscates into one of these (#6573). A reference not found in the load order's cells is
+    /// not listed: it cannot be reached either, and the deposit seam declines it.
+    stocked_chests: Arc<HashSet<u32>>,
+}
 
 impl Resource for CrimeFactionData {}
 
 impl CrimeFactionData {
-    /// A table of `data` (faction FormID to its Crime tab), for a caller that stands in for a load order.
+    /// A table of `data` (faction FormID to its Crime tab), for a caller that stands in for a load order: no
+    /// container contents are known, so no chest counts as stocked.
     pub fn from_map(data: HashMap<u32, FactionCrime>) -> Self {
-        Self(Arc::new(data))
+        Self { data: Arc::new(data), stocked_chests: Arc::default() }
     }
 
     pub fn get(&self, faction: u32) -> Option<&FactionCrime> {
-        self.0.get(&faction)
+        self.data.get(&faction)
+    }
+
+    /// Whether the placed reference `chest` is a container that authors contents of its own.
+    pub fn chest_is_stocked(&self, chest: u32) -> bool {
+        self.stocked_chests.contains(&chest)
+    }
+
+    /// Mark `chest` as authoring contents, for a test standing in for the load order.
+    #[cfg(test)]
+    pub(crate) fn with_stocked_chest(mut self, chest: u32) -> Self {
+        Arc::make_mut(&mut self.stocked_chests).insert(chest);
+        self
     }
 }
 
@@ -83,8 +103,32 @@ pub fn install_crime_faction_data(world: &mut World, index: &EsmIndex) -> usize 
         .filter_map(|(&form_id, faction)| faction.crime.clone().map(|crime| (form_id, crime)))
         .collect();
     let count = data.len();
-    world.insert_resource(CrimeFactionData(Arc::new(data)));
+    let stocked_chests = stocked_player_inventory_chests(&data, index);
+    world.insert_resource(CrimeFactionData { data: Arc::new(data), stocked_chests: Arc::new(stocked_chests) });
     count
+}
+
+/// The `PLCN` chests of `data` that are placed in the load order's cells over a container with authored contents.
+fn stocked_player_inventory_chests(data: &HashMap<u32, FactionCrime>, index: &EsmIndex) -> HashSet<u32> {
+    let wanted: HashSet<u32> = data.values().map(|crime| crime.player_inventory_container).filter(|&chest| chest != 0).collect();
+    let mut stocked = HashSet::new();
+    if wanted.is_empty() {
+        return stocked;
+    }
+    let cells = &index.cells;
+    let all = cells
+        .cells
+        .values()
+        .chain(cells.worldspace_persistent_cells.values())
+        .chain(cells.exterior_cells.values().flat_map(|grid| grid.values()));
+    for cell in all {
+        for reference in cell.references.iter().filter(|r| wanted.contains(&r.form_id)) {
+            if index.containers.get(&reference.base_form_id).is_some_and(|container| !container.contents.is_empty()) {
+                stocked.insert(reference.form_id);
+            }
+        }
+    }
+    stocked
 }
 
 /// What a crime fines on the crime faction `crime` (Skyrim's Crime tab), and whether it is a

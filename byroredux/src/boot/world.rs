@@ -478,6 +478,11 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(byroredux_scripting::SwimQuery(crate::systems::actor_is_swimming));
     // M47.3 — the other state ObScript commands ask the engine about (sight, camera, menus, the reticle, traps).
     crate::systems::script_queries::install(&mut world);
+    // #6573 — `Faction.SendPlayerToJail` hands the player's inventory to the evidence chest through this, loaded
+    // or parked, and takes goods only from what it reports as landed.
+    world.insert_resource(byroredux_scripting::jail::EvidenceChestDeposit(
+        crate::cell_loader::reference_state::deposit_into_reference,
+    ));
     // #4816 — `faction_hostility_system` inserts it through a `query_mut`
     // guard, which cannot create a storage.
     world.register::<crate::systems::AmbientEngagement>();

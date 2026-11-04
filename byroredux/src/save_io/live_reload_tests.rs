@@ -904,7 +904,14 @@ fn live_load_drain_discards_the_outgoing_sessions_requests() {
     world.insert_resource(crate::crafting::ActiveCrafting(Some(byroredux_core::ecs::EntityId::from(7u32))));
     world.insert_resource(crate::crafting::CraftingRequest(Some(byroredux_core::ecs::EntityId::from(8u32))));
     world.insert_resource(crate::inventory::PendingDroppedItems(vec![(0xFF00_0001, 2.5)]));
+    // #6573 / #6508 — goods queued for a jail chest name the outgoing timeline's FormIDs.
+    world.insert_resource(byroredux_scripting::jail::PendingEvidenceDeposits(vec![byroredux_scripting::jail::EvidenceDeposit {
+        chest: 0xC4E57,
+        item: 0xF,
+        count: 3,
+    }]));
     discard_outgoing_session_requests(&world);
+    assert!(world.resource::<byroredux_scripting::jail::PendingEvidenceDeposits>().0.is_empty(), "queued deposits are dropped");
     assert_eq!(world.resource::<crate::crafting::ActiveCrafting>().0, None, "the crafting session ends");
     assert_eq!(world.resource::<crate::crafting::CraftingRequest>().0, None, "a queued bench is dropped");
     assert!(world.resource::<crate::inventory::PendingDroppedItems>().0.is_empty(), "pending REMPs are dropped");

@@ -71,12 +71,24 @@ pub const JAIL_MARKER_EDITOR_ID: &str = "PrisonMarker";
 /// *Jail*: "a Stolengoods container, placed in the jail interior cell").
 pub const JAIL_EVIDENCE_EDITOR_ID: &str = "StolenGoods";
 
-/// Confiscated goods on their way into a jail's chest. `NOT_SAVED_BY_DESIGN`: drained
-/// within the frame that queued them; the ledger's evidence is the durable record until delivered.
+/// Confiscated stolen goods on their way into a jail's chest (the Oblivion path: `PayFine` / `GoToJail`).
+/// `NOT_SAVED_BY_DESIGN`: drained within the frame that queued them; the ledger's evidence is the durable
+/// record until delivered, and a load discards the queue. `Faction.SendPlayerToJail` does not use it: it
+/// deposits synchronously through [`EvidenceChestDeposit`] (#6573).
 #[derive(Debug, Default)]
 pub struct PendingEvidenceDeposits(pub Vec<EvidenceDeposit>);
 
 impl Resource for PendingEvidenceDeposits {}
+
+/// Put `count` of `item` into the placed reference `chest`, loaded or not (`chest`, `item`, `count`); `false`
+/// when the chest can be neither found nor parked. The engine installs the real one
+/// (`cell_loader::reference_state::deposit_into_reference`: parking needs the load order's FormID resolver
+/// and the persistent reference store, which this crate does not link); without one nothing is deposited and
+/// `Faction.SendPlayerToJail` takes nothing. `NOT_SAVED_BY_DESIGN`.
+#[derive(Clone, Copy)]
+pub struct EvidenceChestDeposit(pub fn(&World, u32, u32, u32) -> bool);
+
+impl Resource for EvidenceChestDeposit {}
 
 /// `count` of `item` for the chest placed as reference `chest`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -393,16 +405,28 @@ pub fn send_player_to_jail(world: &World, faction: u32, guard: Option<EntityId>,
     sent
 }
 
-/// Everything the player holds, into the chest `chest` (queued as deposits: the chest need not be loaded).
+/// Everything the player holds, into the chest `chest`, one stack at a time: a stack leaves the inventory only
+/// once the chest has taken it. There is no ledger record on this path, so a deposit that cannot land (no
+/// installed seam, a chest the load order cannot resolve) must leave the goods with the player, never queue
+/// them (#6573). A chest that authors contents of its own is refused whole: a parked deposit replaces them.
 fn deposit_inventory(world: &World, player: EntityId, chest: u32) {
+    if world.try_resource::<crate::crime_faction::CrimeFactionData>().is_some_and(|data| data.chest_is_stocked(chest)) {
+        log::warn!("SendPlayerToJail: chest {chest:08X} authors contents of its own; the inventory stays with the player");
+        return;
+    }
+    let Some(deposit) = world.try_resource::<EvidenceChestDeposit>().map(|seam| seam.0) else {
+        log::warn!("SendPlayerToJail: no evidence-chest deposit is installed; the inventory stays with the player");
+        return;
+    };
     let held: Vec<(u32, u32)> = world
         .get::<byroredux_core::ecs::components::Inventory>(player)
         .map(|inventory| inventory.items.iter().map(|stack| (stack.base_form_id, stack.count)).collect())
         .unwrap_or_default();
     for (item, count) in held {
-        remove_items(world, player, item, count, None);
-        if let Some(mut deposits) = world.try_resource_mut::<PendingEvidenceDeposits>() {
-            deposits.0.push(EvidenceDeposit { chest, item, count });
+        if deposit(world, chest, item, count) {
+            remove_items(world, player, item, count, None);
+        } else {
+            log::warn!("SendPlayerToJail: chest {chest:08X} cannot be reached; {count} of {item:08X} stay with the player");
         }
     }
 }
@@ -671,8 +695,31 @@ mod tests {
             WHITERUN,
             byroredux_plugin::esm::records::FactionCrime { exterior_jail_marker: 2, player_inventory_container: CHEST, ..Default::default() },
         )])));
+        world.insert_resource(Landed::default());
+        world.insert_resource(EvidenceChestDeposit(land));
         let guard = world.spawn();
         (world, player, guard)
+    }
+
+    /// What the stand-in chest has taken, and whether it takes anything (`reachable`).
+    struct Landed {
+        deposits: Vec<EvidenceDeposit>,
+        reachable: bool,
+    }
+    impl Default for Landed {
+        fn default() -> Self {
+            Self { deposits: Vec::new(), reachable: true }
+        }
+    }
+    impl Resource for Landed {}
+
+    /// The test seam: lands the goods in `Landed` unless the chest is unreachable.
+    fn land(world: &World, chest: u32, item: u32, count: u32) -> bool {
+        let mut landed = world.resource_mut::<Landed>();
+        if landed.reachable {
+            landed.deposits.push(EvidenceDeposit { chest, item, count });
+        }
+        landed.reachable
     }
 
     /// The markers on entities plus the events a collision queued instead (one marker per entity).
@@ -698,9 +745,10 @@ mod tests {
         assert_eq!(world.resource::<ObScriptLedger>().jail, Some(JailSentence { exit_marker: 2, days: 1.5 }));
         assert_eq!(world.resource::<crate::FactionCrimeGold>().of(WHITERUN), (0, 0));
         assert_eq!(held(&world, player, CURRENCY_FORM) + held(&world, player, ARROW), 0);
-        let deposits = &world.resource::<PendingEvidenceDeposits>().0;
-        assert_eq!(deposits.len(), 2);
-        assert!(deposits.iter().all(|d| d.chest == CHEST));
+        let landed = world.resource::<Landed>();
+        assert_eq!(landed.deposits.len(), 2, "both stacks reached the chest");
+        assert!(landed.deposits.iter().all(|d| d.chest == CHEST));
+        assert!(world.resource::<PendingEvidenceDeposits>().0.is_empty(), "nothing waits in a one-frame queue");
         let events = raised(&world);
         assert!(events.iter().any(|e| e.mnemonic == *b"ARRT" && e.reference_1 == guard && e.reference_2 == Some(player)));
         assert!(events.iter().any(|e| e.mnemonic == *b"JAIL" && e.reference_1 == guard));
@@ -718,6 +766,44 @@ mod tests {
 
         let (world, _, guard) = skyrim_world();
         assert!(!send_player_to_jail(&world, 0xDEAD, Some(guard), true, true), "no crime data for the faction");
+    }
+
+    /// #6573 — the goods leave the inventory only once the chest has taken them. A chest the load order cannot
+    /// reach takes nothing, so the player keeps everything (it used to be removed first and queued for a deposit
+    /// that was dropped on failure, leaving no copy anywhere); the sentence itself still starts.
+    #[test]
+    fn an_unreachable_chest_takes_nothing_from_the_player() {
+        let (world, player, guard) = skyrim_world();
+        world.resource_mut::<Landed>().reachable = false;
+        assert!(send_player_to_jail(&world, WHITERUN, Some(guard), true, true), "the player is still jailed");
+        assert_eq!(held(&world, player, ARROW), 10);
+        assert_eq!(held(&world, player, CURRENCY_FORM), 100);
+        assert!(world.resource::<Landed>().deposits.is_empty());
+        assert!(world.resource::<PendingEvidenceDeposits>().0.is_empty(), "no deferred deposit to lose");
+    }
+
+    /// #6573 — with no deposit seam installed (a host that cannot park goods) nothing is taken either.
+    #[test]
+    fn without_a_deposit_seam_the_inventory_stays() {
+        let (mut world, player, guard) = skyrim_world();
+        world.remove_resource::<EvidenceChestDeposit>();
+        assert!(send_player_to_jail(&world, WHITERUN, Some(guard), true, true));
+        assert_eq!(held(&world, player, ARROW), 10);
+        assert_eq!(held(&world, player, CURRENCY_FORM), 100);
+    }
+
+    /// #6573 — a parked deposit replaces a container's authored contents at respawn, so a `PLCN` chest whose
+    /// base authors contents is refused whole.
+    #[test]
+    fn a_chest_that_authors_contents_is_not_confiscated_into() {
+        let (mut world, player, guard) = skyrim_world();
+        let crime = byroredux_plugin::esm::records::FactionCrime { exterior_jail_marker: 2, player_inventory_container: CHEST, ..Default::default() };
+        world.insert_resource(
+            crate::crime_faction::CrimeFactionData::from_map(std::collections::HashMap::from([(WHITERUN, crime)])).with_stocked_chest(CHEST),
+        );
+        assert!(send_player_to_jail(&world, WHITERUN, Some(guard), true, true));
+        assert_eq!(held(&world, player, ARROW), 10);
+        assert!(world.resource::<Landed>().deposits.is_empty());
     }
 
     /// A game with no CHARAL crime model (everything but Skyrim) must not be sentenced by Skyrim's divisor:

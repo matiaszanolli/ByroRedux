@@ -377,6 +377,66 @@ mod evidence_tests {
         assert!(world.resource::<PendingEvidenceDeposits>().0.is_empty());
         assert_eq!(world.resource::<ObScriptLedger>().evidence(), vec![(0xAAAA, 3)]);
     }
+
+    /// #6573 — `install_crime_faction_data` marks the `PLCN` chests whose base container authors contents, from
+    /// the load order's placed references: a jail must not confiscate into one (a parked deposit replaces its
+    /// authored inventory at respawn). An empty container and a reference found nowhere are not marked.
+    #[test]
+    fn a_plcn_chest_over_an_authored_container_is_marked_stocked() {
+        use byroredux_plugin::esm::cell::CellData;
+        use byroredux_plugin::esm::records::{ContainerRecord, EsmIndex, FactionCrime, FactionRecord, InventoryEntry};
+        const STOCKED_REF: u32 = 0x10;
+        const EMPTY_REF: u32 = 0x11;
+        const MISSING_REF: u32 = 0x12;
+        const STOCKED_BASE: u32 = 0x20;
+        const EMPTY_BASE: u32 = 0x21;
+        let container = |form_id: u32, contents: Vec<InventoryEntry>| ContainerRecord {
+            form_id,
+            editor_id: String::new(),
+            full_name: String::new(),
+            model_path: String::new(),
+            weight: 0.0,
+            flags: 0,
+            open_sound: 0,
+            close_sound: 0,
+            script_form_id: 0,
+            script_instance: None,
+            contents,
+        };
+        let mut index = EsmIndex::default();
+        index.containers.insert(STOCKED_BASE, container(STOCKED_BASE, vec![InventoryEntry { item_form_id: 0xF, count: 5 }]));
+        index.containers.insert(EMPTY_BASE, container(EMPTY_BASE, Vec::new()));
+        let mut cell = CellData::default();
+        for (form_id, base) in [(STOCKED_REF, STOCKED_BASE), (EMPTY_REF, EMPTY_BASE)] {
+            let mut placed = crate::cell_loader::refr_texture_overlay_tests::empty_placed_ref(base);
+            placed.form_id = form_id;
+            cell.references.push(placed);
+        }
+        index.cells.cells.insert("jail".into(), cell);
+        for (faction, chest) in [(1u32, STOCKED_REF), (2, EMPTY_REF), (3, MISSING_REF)] {
+            let crime = FactionCrime { player_inventory_container: chest, ..Default::default() };
+            index.factions.insert(
+                faction,
+                FactionRecord {
+                    form_id: faction,
+                    editor_id: String::new(),
+                    full_name: String::new(),
+                    flags: 0,
+                    relations: Vec::new(),
+                    ranks: Vec::new(),
+                    reputation: None,
+                    vendor: None,
+                    crime: Some(crime),
+                },
+            );
+        }
+        let mut world = World::new();
+        byroredux_scripting::crime_faction::install_crime_faction_data(&mut world, &index);
+        let data = world.resource::<byroredux_scripting::crime_faction::CrimeFactionData>();
+        assert!(data.chest_is_stocked(STOCKED_REF));
+        assert!(!data.chest_is_stocked(EMPTY_REF), "an authored-empty container is safe to park into");
+        assert!(!data.chest_is_stocked(MISSING_REF), "a reference in no cell is unreachable, not stocked");
+    }
 }
 
 #[cfg(test)]
