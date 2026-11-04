@@ -489,6 +489,9 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     if let Some(mut deposits) = world.try_resource_mut::<byroredux_scripting::jail::PendingEvidenceDeposits>() {
         deposits.0.clear();
     }
+    if let Some(mut hits) = world.try_resource_mut::<crate::systems::mines::PendingMineHits>() {
+        hits.clear();
+    }
     crate::crafting::end_crafting(world);
     if let Some(mut request) = world.try_resource_mut::<crate::crafting::CraftingRequest>() {
         request.0 = None;

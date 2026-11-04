@@ -118,6 +118,64 @@ pub(crate) struct MineClock(crate::systems::PassClock);
 
 impl Resource for MineClock {}
 
+/// Blast hits waiting to land: (target, mine, damage). `HitEvent` is one slot per target and `insert` replaces, so
+/// a blast on a target that already holds this frame's hit (a melee strike, a projectile, another mine's blast)
+/// waits a frame instead, as `PendingTrapHits` and `npc_combat_ai_system` do (#4324, #5860). A minefield trips in
+/// groups and the blasts overlap, so without this the player took one mine's damage where the data says N (#6540).
+/// `NOT_SAVED_BY_DESIGN`: a load discards it with the rest of the outgoing session's one-frame hits.
+#[derive(Debug, Default)]
+pub(crate) struct PendingMineHits(Vec<(EntityId, EntityId, f32)>);
+
+impl Resource for PendingMineHits {}
+
+impl PendingMineHits {
+    /// Drop every waiting hit (a load, which replaces the world they name).
+    pub(crate) fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+/// Land every waiting blast hit whose target holds no `HitEvent` yet; the rest stay for the next frame. A target
+/// that died or left the world while waiting takes no hit.
+fn land_mine_hits(world: &World) {
+    let hits = match world.try_resource_mut::<PendingMineHits>() {
+        Some(mut pending) if !pending.0.is_empty() => std::mem::take(&mut pending.0),
+        _ => return,
+    };
+    let mut held = Vec::new();
+    if let Some(mut events) = world.query_mut::<byroredux_scripting::HitEvent>() {
+        for hit @ (target, mine, damage) in hits {
+            if world.has::<Dead>(target) || !world.has::<GlobalTransform>(target) {
+                continue;
+            }
+            if events.get(target).is_some() {
+                held.push(hit);
+                continue;
+            }
+            events.insert(
+                target,
+                byroredux_scripting::HitEvent {
+                    aggressor: mine,
+                    source: mine,
+                    projectile: mine,
+                    damage,
+                    power_attack: false,
+                    sneak_attack: false,
+                    bash_attack: false,
+                    blocked: false,
+                },
+            );
+        }
+    } else {
+        held = hits;
+    }
+    if !held.is_empty() {
+        if let Some(mut pending) = world.try_resource_mut::<PendingMineHits>() {
+            pending.0.extend(held);
+        }
+    }
+}
+
 /// The damage `damage` at `distance` from a blast with the two radii: full inside `inner`, linear to nothing at
 /// `outer`.
 pub(crate) fn blast_damage(damage: f32, inner: f32, outer: f32, distance: f32) -> f32 {
@@ -188,6 +246,8 @@ pub(crate) fn placed_mines(world: &World) -> Vec<MineView> {
 
 /// System: trip mines on approach, burn their fuse, and blast.
 pub(crate) fn mine_system(world: &World, dt: f32) {
+    // Blasts that waited a frame for their target's slot (#6540).
+    land_mine_hits(world);
     let book = match world.try_resource::<MineBook>() {
         Some(book) if !book.0.is_empty() => book.0.clone(),
         _ => return,
@@ -207,6 +267,8 @@ pub(crate) fn mine_system(world: &World, dt: f32) {
         }
         detonate(world, &book, mine, state.victim);
     }
+    // The blasts just staged land now where their targets are free: this frame's first blast on each.
+    land_mine_hits(world);
     let due = world.try_resource_mut::<MineClock>().is_some_and(|mut clock| clock.0.due(dt, SCAN_SECS).is_some());
     if !due {
         return;
@@ -262,22 +324,8 @@ fn detonate(world: &World, book: &HashMap<u32, MineSpec>, mine: EntityId, victim
             (damage > 0.0).then_some((actor, damage))
         })
         .collect();
-    if let Some(mut events) = world.query_mut::<byroredux_scripting::HitEvent>() {
-        for (target, damage) in hits {
-            events.insert(
-                target,
-                byroredux_scripting::HitEvent {
-                    aggressor: mine,
-                    source: mine,
-                    projectile: mine,
-                    damage,
-                    power_attack: false,
-                    sneak_attack: false,
-                    bash_attack: false,
-                    blocked: false,
-                },
-            );
-        }
+    if let Some(mut pending) = world.try_resource_mut::<PendingMineHits>() {
+        pending.0.extend(hits.into_iter().map(|(target, damage)| (target, mine, damage)));
     }
     // `OnStoryMineExplosion(akVictim, akAttacker)`: the victim in R1; a placed mine has no attacker.
     if world.try_resource::<SmTree>().is_some_and(|tree| tree.roots_by_mnemonic.contains_key(&TMEE)) {
@@ -335,6 +383,7 @@ mod tests {
         world.register::<Children>();
         world.insert_resource(MineBook(Arc::new(HashMap::from([(BASE, SPEC)]))));
         world.insert_resource(MineClock::default());
+        world.insert_resource(PendingMineHits::default());
         let records = HashMap::from([(
             0x10,
             SmNodeRecord { form_id: 0x10, kind: SmNodeKind::Event, event_mnemonic: Some(TMEE), ..Default::default() },
@@ -386,6 +435,77 @@ mod tests {
         let event = world.get::<StoryEvent>(victim).map(|e| *e).expect("TMEE raised");
         assert_eq!((event.mnemonic, event.reference_1, event.reference_2), (TMEE, victim, None));
         assert_eq!(world.get::<AnimatedVisibility>(mine).map(|v| v.0), Some(false), "the spent mine is hidden");
+    }
+
+    /// A second mine of the same record next to the first (as a minefield lays them), already armed with a fuse
+    /// that runs out this frame.
+    fn armed_neighbour(world: &mut World, at: Vec3) -> EntityId {
+        let mine = world.spawn();
+        world.insert(mine, GlobalTransform { translation: at, ..Default::default() });
+        world.insert(mine, byroredux_scripting::SceneAliasCandidate { reference_form_id: 0x78, base_form_id: BASE, ..Default::default() });
+        mine
+    }
+
+    /// #6540 — two mines whose fuses run out together land both blasts on a shared target, one per frame, instead
+    /// of the second replacing the first; a melee hit already on the target that frame stands too.
+    #[test]
+    fn overlapping_blasts_and_a_same_frame_hit_all_land_one_per_frame() {
+        let (mut world, mine_a, victim) = setup();
+        let mine_b = armed_neighbour(&mut world, Vec3::new(10.0, 0.0, 0.0));
+        let melee = world.spawn();
+        for mine in [mine_a, mine_b] {
+            world.insert(mine, ArmedMine { victim, fuse_left: 0.1 });
+        }
+        world.insert(
+            victim,
+            byroredux_scripting::HitEvent {
+                aggressor: melee,
+                source: melee,
+                projectile: 0,
+                damage: 7.0,
+                power_attack: false,
+                sneak_attack: false,
+                bash_attack: false,
+                blocked: false,
+            },
+        );
+        let on_victim = |world: &World| world.get::<byroredux_scripting::HitEvent>(victim).map(|h| (h.aggressor, h.damage));
+        let drain = |world: &World| {
+            world.query_mut::<byroredux_scripting::HitEvent>().unwrap().remove(victim);
+        };
+
+        mine_system(&world, 0.2);
+        assert!(world.has::<SpentMine>(mine_a) && world.has::<SpentMine>(mine_b), "both mines went off");
+        assert_eq!(on_victim(&world), Some((melee, 7.0)), "the melee hit on the blast frame stands");
+        assert_eq!(world.resource::<PendingMineHits>().0.len(), 2, "both blasts wait");
+
+        let mut landed = Vec::new();
+        for _ in 0..2 {
+            drain(&world); // `event_cleanup_system` empties the frame's hits
+            mine_system(&world, 0.0);
+            landed.push(on_victim(&world).expect("a blast lands"));
+        }
+        assert_eq!(landed.iter().map(|hit| hit.1).collect::<Vec<_>>(), vec![100.0, 100.0], "N mines, N blasts");
+        assert_eq!(landed.iter().map(|hit| hit.0).collect::<std::collections::HashSet<_>>(), [mine_a, mine_b].into_iter().collect(), "one per mine");
+        assert!(world.resource::<PendingMineHits>().0.is_empty());
+        drain(&world);
+        mine_system(&world, 0.0);
+        assert_eq!(on_victim(&world), None, "nothing is left to land");
+    }
+
+    /// #6540 — a blast waiting for a free slot is dropped if its target dies meanwhile.
+    #[test]
+    fn a_blast_waiting_on_a_target_that_died_takes_no_hit() {
+        let (mut world, mine, victim) = setup();
+        world.insert(mine, ArmedMine { victim, fuse_left: 0.1 });
+        world.insert(victim, byroredux_scripting::HitEvent { aggressor: mine, source: mine, projectile: 0, damage: 1.0, power_attack: false, sneak_attack: false, bash_attack: false, blocked: false });
+        mine_system(&world, 0.2);
+        assert_eq!(world.resource::<PendingMineHits>().0.len(), 1);
+        world.query_mut::<byroredux_scripting::HitEvent>().unwrap().remove(victim);
+        world.insert(victim, Dead);
+        mine_system(&world, 0.0);
+        assert!(world.get::<byroredux_scripting::HitEvent>(victim).is_none());
+        assert!(world.resource::<PendingMineHits>().0.is_empty());
     }
 
     /// #6559 — FO3 / FNV arm their minefields as `PGRE` placements of the mine `PROJ`, so the book keys them

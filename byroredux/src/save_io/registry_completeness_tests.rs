@@ -587,6 +587,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("IronSightsState", "whether the player is holding the aim button with a gun; held input re-read every frame (M43)"),
         ("ComplexSceneObject", "the base form of the DOBJ CMPX Complex Scene Object; rebuilt from the load order every boot (M43)"),
         ("MineBook", "every proximity-mine projectile of the load order (trigger distance, fuse, blast), by PROJ FormID; rebuilt from the records every boot (M43)"),
+        ("PendingMineHits", "mine blast hits waiting a frame for their target's HitEvent slot (#6540); a load discards the queue (M43)"),
         ("MineClock", "the mine trigger scan's cadence timer; a load restarts it (M43)"),
         ("ArmedMine", "a placed mine that has been tripped and is burning its fuse; a load restores the mine as placed (M43)"),
         ("SpentMine", "a mine that has gone off this session; the persistent half is the enable ledger entry it writes (M43)"),
