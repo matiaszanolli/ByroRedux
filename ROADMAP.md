@@ -105,8 +105,9 @@ frames (#5365, the tracked throughput half of closed #4606/#5117).
 - Starfield CDB materials: `.mat` texture slots merge from the streaming CDB
   index (`224a19372`, `18fce7e43`); #3398 stays open until its definition of
   done is checked.
-- Texture streaming (M39) is off by default (`render.texture_streaming`) until its
-  budget/eviction and BSA phases land. Reversed-Z ships `Conventional` until
+- Texture streaming (M39) is off by default (`render.texture_streaming`) until its open gates close:
+  Starfield A6–A8 (not run), the A11 reflection A/B, a clean FO4 A9 soak and the default flip
+  ([results](docs/engine/texture-streaming.md#12-measured-results-2026-11-04)). Reversed-Z ships `Conventional` until
   validated on hardware (#3308).
 - Oblivion's CHARAL ruleset is built but unwired: `Oblivion.esm` has no AVIF
   records, so a legacy actor-value resolver comes first
@@ -119,8 +120,8 @@ frames (#5365, the tracked throughput half of closed #4606/#5117).
 - M-LIGHT, reference-quality lighting (#6595): the first feature run under the
   [PRD gate](docs/prd/README.md), ACTIVE since 2026-11-02. Phases 0–2 are closed;
   Phase 3 (shadows and contact, #6603) is open and its entry gates run.
-- Texture streaming (M39, #6626): Phases 0–1 closed 2026-11-03, Phase 2 (#6629) in
-  progress; detail in its [Tier 5 row](#tier-5--renderer-polish-quality-not-capability).
+- Texture streaming (M39, #6626): Phases 0–1 closed 2026-11-03; Phases 2–4 (#6629–#6631) built
+  and measured on five games, open on the gates in its [Tier 5 row](#tier-5--renderer-polish-quality-not-capability).
 - Fire, smoke and explosions (#6531, [plan](docs/engine/fire-volumetrics-plan.md)):
   Phases 1–3 (local grid, integration, species scattering) are built and await review.
 - RT lighting and material recovery: R0–R3 are complete. The rest is tracked
@@ -285,7 +286,7 @@ design doc.
 | #     | Milestone | State | Depends on |
 |-------|-----------|-------|------------|
 | M35   | Terrain LOD | **Shipped:** Skyrim/FO4 `.bto` objects and `.btr` terrain on a per-game `Ultra.ini` band ladder (`d96110eb`), with `_n`/`_msn` normal maps. Oblivion `_far.nif` placement LOD (#1726); FO3/FNV `blocks\` quad LOD (#3321). A derived far plane (`9e96a9f9`). The live `terrain.seams` gate in `m-exteriors.sh` (#2371). **Open:** VWD culling is blocked because baked `.bto` quads carry no per-object ids (#3307). `.btr` diffuse/normal sampling mode (#4912). Skyrim `.btt` distant trees are never drawn (#4913). The reversed-Z flip needs hardware validation (#3308). LAND value-plausibility guards ([`exterior-readiness-plan.md`](docs/engine/exterior-readiness-plan.md) Tranche C item 5). [PRD](docs/prd/distant-lod-completion.md) ACTIVE 2026-11-03, tracking #6633. | M32 |
-| M39   | Texture streaming | Mip-chain-aware loading: upload low mips immediately, stream high mips on demand. Memory budget with LRU eviction. **Phases 0–1 closed (2026-11-03):** BA2 chunk and BSA mip census plus design ([`texture-streaming.md`](docs/engine/texture-streaming.md)), mip-range uploads, floor-first residency and `tex.residency`. **Phase 2 in progress (#6629):** BA2 DX10 reads from a mip level down, a streamer pool for promotions, a per-frame wanted-mip pass from per-mesh UV texel density with hysteresis demotion, and the `tex-stream:` bench line. **Open:** the texture budget and LRU eviction (Phase 3, #6630); the BSA games and streaming on by default (Phase 4, #6631). [PRD](docs/prd/texture-streaming.md) ACTIVE 2026-11-03, tracking #6626. | — |
+| M39   | Texture streaming | Mip-chain-aware loading: upload low mips immediately, stream high mips on demand. Memory budget with LRU eviction. **Phases 0–1 closed (2026-11-03):** BA2 chunk and BSA mip census plus design ([`texture-streaming.md`](docs/engine/texture-streaming.md)), mip-range uploads, floor-first residency, `tex.residency`. **Phases 2–4 built (2026-11-04):** BA2 DX10 reads from a mip level down, a streamer pool, a per-frame wanted-mip pass (0.5 ms on MedTek), the `tex-stream:` bench line, a texture budget derived from the live device-local budget with oldest-last-wanted eviction and counted declines (`render.texture_budget_mib`), BSA floors from one extraction. Measured resident texture bytes off → on: FO4 MedTek 766 → 136 MiB, Skyrim Bannered Mare 399 → 55, FNV Prospector 77 → 39, FO3 37 → 17, Oblivion 16 → 10; floor-ready 3.8 → 1.4 s on MedTek; zero deficits and churn at settle ([tables](docs/engine/texture-streaming.md#12-measured-results-2026-11-04)). **Open gates:** Starfield A6–A8 (not run), A11, a clean FO4 A9 soak (its `physics_bodies` failure predates M39), default on. [PRD](docs/prd/texture-streaming.md) ACTIVE 2026-11-03, tracking #6626. | — |
 | M29.3 | Pre-skinned raster path | Make `triangle.vert` read pre-skinned vertices from the per-entity `SkinSlot` output instead of doing inline bone blending, and re-add the `VERTEX_BUFFER` usage dropped in #681. This saves ~50 ALU ops per skinned vertex, but makes raster depend on the compute pass. The recorded precondition is that the compute + BLAS-refit chain has proved stable on visible animated content. | `1ae235b`, #681 |
 
 #### Tier 6 — Engine infrastructure

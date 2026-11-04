@@ -395,7 +395,8 @@ that keeps gaining floors while the budget is tight (an interior's actors
 arriving after its architecture) can promote a texture and then evict it
 when the next floors land; the recent-promotion ordering above narrows this
 but does not remove it (Skyrim `WhiterunBanneredMare` at 30 MiB: 12
-promotions, 5 evictions before the ordering was added).
+promotions and 5 evictions before the ordering was added, 5 promotions and 0
+evictions after, three runs).
 
 ## 8. Settings (Q5, TXS-BUD-005, TXS-RES-008)
 
@@ -472,3 +473,98 @@ No path calls `device_wait_idle` (TXS-RES-004).
 | `DEMOTE_AFTER_FRAMES` | 120 (2 s at 60 fps): zero churn on the unpinned-budget benches of every game run so far |
 | `F` | 0.80, the engine's OOM line (§7.1); not swept |
 | TLAS-only one-level bias | A11 (see the PRD's Phase 2 exit) |
+
+---
+
+## 12. Measured results (2026-11-04)
+
+Measured on the 4070 Ti dev box (desktop resident; the driver reported 9–10
+GiB of device-local budget), release build, free camera at each cell's
+default pose, one run per arm unless stated (the FO4 arms were repeated three
+times at `93a0071b6` with the same shape). Control = `render.texture_streaming`
+off in the same binary, with an isolated `BYROREDUX_SETTINGS_PATH`. Each row is
+`target/release/byroredux --game <g> --cell <cell> --bench-frames 300
+--bench-hold`, then `tex.residency` and `tex.missing` through `byro-dbg` and
+the `tex-stream:` bench line.
+
+### 12.1 Floor first, settle (A6, A7)
+
+| Scene | Resident MiB, off → on | Floor-ready ms, off → on | Settle ms | Promotions | Deficits / churn / reserved | `textures=` / missing |
+|---|---:|---:|---:|---:|---|---|
+| FO4 MedTekResearch01 | 766.2 → 135.9 | 3 825 → 1 433 | 1 053 | 90 | 0 / 0 / 0 | 920 = 920 / none |
+| FNV GSProspectorSaloonInterior | 76.7 → 38.5 | 595 → 440 | 315 | 64 | 0 / 0 / 0 | 345 = 345 / none |
+| Skyrim SE WhiterunBanneredMare | 399.0 → 54.8 | 1 787 → 1 309 | 268 | 50 | 0 / 0 / 0 | 352 = 352 / none |
+| Oblivion AnvilHeinrichOakenHallsHouse | 15.9 → 10.5 | 467 → 403 | 57 | 22 | 0 / 0 / 0 | 251 = 251 / none |
+| FO3 MegatonMoriartysSaloon | 36.8 → 17.3 | 414 → 341 | 225 | 26 | 0 / 0 / 0 | 195 = 195 / none |
+
+### 12.2 Budget adherence (A8)
+
+`render.texture_budget_mib` pinned below each scene's streaming-on working
+set. "Above" is resident less floors and **whole** textures (PRD §8).
+
+| Scene | Budget MiB | Resident MiB | Above floors+whole, MiB | Evictions / declines | `tex.missing` |
+|---|---:|---:|---:|---|---|
+| FO4 MedTek | 120 / 100 | 121.7 / 101.7 | 46.7 / 26.7 | 0 / 49, 0 / 65 | none (control: none) |
+| FNV Prospector | 30 / 24 | 30.4 / 24.4 | 12.1 / 6.1 | 0 / 42, 0 / 54 | none |
+| Skyrim SE Bannered Mare | 40 / 30 | 40.5 / 30.5 | 19.8 / 9.9 | 0 / 39, 0 / 45 | none |
+
+Resident runs about 1.7 % over the budget figure because the budget counts
+payload bytes and the allocation rounds up (§7.2). The Skyrim 30 MiB row
+first read 12 promotions, 5 evictions and churn 5; see §7.2 for what changed.
+
+### 12.3 Soaks (A9, A10)
+
+- **FO4 Commonwealth 0,0 `grid-soak`** (1 800 frames, five cycles,
+  `BYRO_VALIDATION=1`, streaming on at a pinned 400 MiB): zero `VUID-` or
+  `SYNC-HAZARD` messages; `texture_resident_bytes` flat across the cycles
+  (406 → 417 MiB, against 2 810 MiB with streaming off); the same 151 942
+  entities, 14 286 draws and 8 unique missing textures as the control. The
+  `m-exteriors.sh fo4 soak` script still hard-fails on `physics_bodies`
+  (+17 after five cycles) in both arms, and identically (9 232 → 9 249) on
+  the session's starting commit `022d692bd` built separately, so that owner
+  is not the texture work's and the A9 criterion ("passes with the new
+  owner") is met for the owner and open for the script.
+- **FNV `p5-soak.sh`** (A10), 30 minutes, streaming on at a pinned 96 MiB:
+  105 cycles, no crash, stuck transition or control loss; session-peak 16.6
+  MiB above floors+whole against the 96 MiB budget; 2 150 promotions, 0
+  demotions, 0 evictions, 0 declines, 0 churn. Engine RSS drifts upward over
+  the run (2 954 → 4 134 MiB at cycle 77, 3 809 MiB at cycle 105, under the
+  script's 1.5× gate); the same soak with streaming off drifts the same way
+  (2 661 → 3 836 MiB by cycle 50, against 2 954 → 3 718 on), so the drift is
+  not streaming's.
+
+### 12.4 Cost and a defect found
+
+- The wanted-mip pass costs 0.52 ms a frame on FO4 MedTek (7 983 draws) and
+  0.14 ms on FNV Prospector, measured with a temporary timer around the pass.
+  It was 1.5 ms before the per-slot lookups became a dense table and the
+  per-frame maps used FxHash.
+- The first A10 runs crashed: `SIGSEGV` in the NVIDIA driver under
+  `TextureRegistry::begin_frame`, 3 of 3 within three cycles of the
+  exterior→interior quickload, with streaming on and not with it off.
+  Validation named it: `vkUpdateDescriptorSets` on an invalid `VkImageView`.
+  A queued bindless descriptor write kept the view that was current when it
+  was queued, and the deferred-destroy ring (aged by frames begun) could free
+  that view before the slot replayed its queue. Replay now resolves each
+  `(handle, binding)` against the live entry (`23f4aeee3`); the same soak then
+  passes 25–27 cycles in three minutes and is validation-clean.
+
+### 12.5 Not met
+
+- **Starfield `citycydoniamainlevel`** (A6–A8) was not run: the cell needs
+  more host RAM than the dev box had free (5–9 GiB of 29), and an
+  out-of-memory kill takes the desktop session with it.
+- **A11** (reflection A/B, FO4 MedTek at its default pose, 400-frame stepped
+  captures, three per arm): on-versus-off mean absolute difference 0.083–0.099
+  of 255 against 0.063–0.073 between equal arms; p99 of the per-pixel channel
+  maximum 2 against 1. The difference is not the wanted-mip choice: with every
+  texture forced to level 0 under streaming it is 0.087, and biasing the
+  wanted level one or two levels finer leaves it at about 0.09. Shifting one
+  capture by 4 frames moves the same pose by 1.1–1.8, so the scene is
+  timing-sensitive and the arms differ in load time; the residue sits at
+  edges of small props and specular glints, half of it on the same pixels as
+  the forced-level-0 run. A time-pinned capture is needed before A11 can be
+  called met or failed; the pose also is not mirror-like, so it does not test
+  the secondary-ray bias this requirement exists for.
+- **Streaming on by default** (the Phase 4 switch flip) is withheld until the
+  gates above close.

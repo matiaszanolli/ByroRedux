@@ -1,6 +1,7 @@
 # Texture Streaming — Product Requirements
 
-**Status**: ACTIVE (2026-11-03). Revision 6 folds in the Phase 0
+**Status**: ACTIVE (2026-11-04). Revision 7 records the Phase 2–4 build and
+its open gates (§12). Revision 6 folds in the Phase 0
 results: both verify items are closed (TXS-UP-001's long run is clean,
 TXS-SRC-001's chunk census is in the design). Revision 5 filed the
 tracking issues; revision 4 recorded the owner's §10 decisions, every one
@@ -698,3 +699,4 @@ default for every in-scope game.
 | 4 | 2026-11-03 | Owner decisions Q1–Q5 recorded, every one the recommendation (Q2 both parts); status line and the NIFAL Related row updated | owner: approved |
 | 5 | 2026-11-03 | → ACTIVE: parent #6626 and phase issues #6627–#6631 filed, `**Tracking**:` line added; the Phase 0 verify items are acceptance criteria of #6627 | — |
 | 6 | 2026-11-03 | Phase 0 results folded in: TXS-UP-001 verified clean with its recorded command and the BC2 Known Issue closed (#4512); TXS-SRC-001's chunk census cited from the design; Phase 0 exit marked met | — |
+| 7 | 2026-11-04 | Phases 2–4 built and measured (ROADMAP § Texture streaming): the budget derivation measures the non-texture reserve instead of summing ledger rows (design §7.1), the per-frame cap is 32 MiB and 64 changes, and a deferred-descriptor replay hazard that streaming exposed is fixed. Open gates, none waived: Starfield A6–A8 not run, A11's on/off delta exceeds the equal-arm noise, A9 on FO4 hard-fails on an unrelated owner, the default is not flipped | — |
