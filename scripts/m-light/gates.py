@@ -60,6 +60,11 @@ F16_REPRESENTATION = 2.0 ** -10
 # filter integrates the coverage.
 ERODE_PX = 3
 
+# Engine world units per metre (byroredux_core::lighting::BETHESDA_UNITS_PER_METER).
+# The exporter writes the scene in metres (PTX-004); rung measurements stay in
+# world units, so hit positions are scaled back before they meet them.
+WORLD_UNITS_PER_METRE = 70.0
+
 MANIFEST_COLUMNS = [
     "gate", "case", "region", "metric", "value", "floor_engine", "floor_reference",
     "floor_combined", "frozen_floor", "threshold", "pass", "tier", "engine_frames",
@@ -160,8 +165,9 @@ def pixel_hits(scene_dir: Path) -> tuple[dict[str, np.ndarray], np.ndarray]:
     One camera ray per pixel centre — the point the engine shades — is
     intersected with the exported scene and the hit shape compared with each
     shape. (Mitsuba's `shape_index` AOV is not used: its indices follow
-    neither the XML order nor `Scene.shapes()`.) Positions are world units,
-    shape (height, width, 3).
+    neither the XML order nor `Scene.shapes()`.) Positions are engine world
+    units, as the rung measurements are (the exported scene is in metres,
+    PTX-004), shape (height, width, 3).
     """
     import drjit as dr
 
@@ -177,7 +183,7 @@ def pixel_hits(scene_dir: Path) -> tuple[dict[str, np.ndarray], np.ndarray]:
     si = scene.ray_intersect(rays)
     masks = {shape.id(): np.array(si.shape == mi.ShapePtr(shape)).reshape(height, width)
              for shape in scene.shapes()}
-    positions = np.array(si.p).T.reshape(height, width, 3)
+    positions = np.array(si.p).T.reshape(height, width, 3) * WORLD_UNITS_PER_METRE
     return masks, positions
 
 
