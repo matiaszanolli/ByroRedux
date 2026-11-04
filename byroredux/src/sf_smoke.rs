@@ -31,14 +31,6 @@ use std::path::Path;
 // `game: GameKind` (set from the TES4 HEDR and record-header versions via
 // `GameKind::from_header`), so the smoke doesn't need to re-detect.
 
-/// Smoke-test a single cell in an ESM under the current `GameKind`
-/// dispatch. Reads `esm_path` from disk, parses it via the shared
-/// `parse_esm` entry point, looks up `cell_edid` in the interior cell
-/// index, and prints the resolve report.
-///
-/// Caller wires this from `main()` when `--sf-smoke <CELL>` is set;
-/// `--esm <PATH>` provides the ESM path. The function never returns
-/// `Ok(())` with a usable engine state — it's terminal: print, exit.
 /// Which non-`statics` index map holds `form_id`, if any (#2637).
 ///
 /// `sf_smoke` resolves REFR base forms against `statics`, which is correct for
@@ -73,6 +65,14 @@ fn nonstatic_base_type(
     None
 }
 
+/// Smoke-test a single cell in an ESM under the current `GameKind`
+/// dispatch. Reads `esm_path` from disk, parses it via the shared
+/// `parse_esm` entry point, looks up `cell_edid` in the interior cell
+/// index, and prints the resolve report.
+///
+/// Caller wires this from `main()` when `--sf-smoke <CELL>` is set;
+/// `--esm <PATH>` provides the ESM path. The function never returns
+/// `Ok(())` with a usable engine state — it's terminal: print, exit.
 pub fn run(esm_path: &Path, cell_edid: &str) -> Result<()> {
     let bytes = std::fs::read(esm_path)
         .with_context(|| format!("failed to read ESM at {}", esm_path.display()))?;

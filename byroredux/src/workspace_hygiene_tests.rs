@@ -1152,11 +1152,15 @@ fn default_insert_scanner_matches_only_the_default_shape() {
 /// stopped covering the new code. Runs the shared heuristic
 /// (`core::source_scan::spliced_doc_blocks`) over the bin and every crate.
 ///
-/// Narrow by design: it only sees a doc that LEADS with the name of a sibling
-/// declared just below. A looser first-name rule flagged 126 sites, nearly all
-/// ordinary prose naming a neighbour, and none of the eight #6373 splices open
-/// with a name at all, so a doc moved onto the wrong item without one still
-/// needs a reviewer.
+/// Two signals, both narrow by design. The first sees a doc that LEADS with the
+/// name of a sibling declared just below; a looser first-name rule flagged 126
+/// sites, nearly all ordinary prose naming a neighbour. The second (#6585) sees
+/// two docs fused into one block above an inserted item, with the old item left
+/// undocumented below it: the shape four splices took in four days by opening
+/// with an issue number, a record name or prose instead of a name. Taken alone,
+/// "the lead names the undocumented neighbour" matched 60 sites; the fused-block
+/// requirement (a later sentence opening on a name the item below carries)
+/// leaves the three real ones.
 #[test]
 fn no_doc_block_is_spliced_onto_the_wrong_item() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

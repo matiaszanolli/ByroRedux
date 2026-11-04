@@ -292,6 +292,10 @@ fn first_backtick_span(doc: &str) -> Option<&str> {
 ///
 /// A heuristic with a precise failure mode: a doc that names a nearby sibling
 /// before its own subject (rare) is flagged; fix it by leading with the subject.
+///
+/// A block is also flagged when it fuses two items' docs (#6585, see
+/// `fuses_two_docs`): the shape an insertion leaves when the displaced doc opens
+/// with an issue number, a record name or prose rather than a name.
 pub fn spliced_doc_blocks(src: &str) -> Vec<usize> {
     const LOOKAHEAD: usize = 40;
     let lines: Vec<&str> = src.lines().collect();
@@ -324,6 +328,10 @@ pub fn spliced_doc_blocks(src: &str) -> Vec<usize> {
         }
         let Some(item_line) = lines.get(at) else { break };
         let Some(own) = declared_item_name(item_line) else { continue };
+        if fuses_two_docs(&lines, first, i, at) {
+            out.push(first + 1);
+            continue;
+        }
         // First backtick span of the block, when it is a bare identifier.
         let doc: String = lines[first..i]
             .iter()
@@ -354,6 +362,92 @@ pub fn spliced_doc_blocks(src: &str) -> Vec<usize> {
         }
     }
     out
+}
+
+/// The text of one `///` line, marker and surrounding space removed.
+fn doc_line_text(line: &str) -> &str {
+    line.trim_start().trim_start_matches('/').trim()
+}
+
+/// The backticked identifiers (three characters or more) of one doc line, leaving out intra-doc
+/// link labels (``[`name`]``), which refer to an item rather than naming the subject.
+fn doc_line_names(text: &str) -> Vec<&str> {
+    let mut names = Vec::new();
+    let mut from = 0;
+    while let Some(open) = text[from..].find('`').map(|at| from + at) {
+        let Some(close) = text[open + 1..].find('`').map(|at| open + 1 + at) else { break };
+        let span = &text[open + 1..close];
+        let linked = text[..open].ends_with('[');
+        if !linked && span.len() >= 3 && span.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            names.push(span);
+        }
+        from = close + 1;
+    }
+    names
+}
+
+/// #6585 — the second splice shape: an item inserted between an existing item's doc and the item
+/// itself fuses the two docs into one block above the new item, and leaves the old item below it with
+/// no doc. Three signals together, so that a doc which merely mentions its neighbour does not match:
+/// - the item `x` declared next at the same indentation has no doc of its own;
+/// - the block's first line names something `x` carries and the documented item does not;
+/// - a later line of the block opens a new sentence (the previous line ends one) on a name the
+///   documented item carries and `x` does not. That line is where the inserted item's doc begins.
+fn fuses_two_docs(lines: &[&str], first: usize, end: usize, at: usize) -> bool {
+    const LOOKAHEAD: usize = 40;
+    let is_doc = |l: &str| {
+        let t = l.trim_start();
+        t.starts_with("///") && !t.starts_with("////")
+    };
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let want = indent(lines[at]);
+    let mut next = None;
+    for (k, line) in lines.iter().enumerate().take(lines.len().min(at + 1 + LOOKAHEAD)).skip(at + 1) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if indent(line) < want {
+            return false;
+        }
+        if indent(line) == want && declared_item_name(line).is_some() {
+            next = Some(k);
+            break;
+        }
+    }
+    let Some(x_at) = next else { return false };
+    let mut above = x_at - 1;
+    while above > at && lines[above].trim_start().starts_with("#[") {
+        above -= 1;
+    }
+    if is_doc(lines[above]) {
+        return false;
+    }
+    let mut x_end = x_at + 1;
+    while x_end < lines.len().min(x_at + LOOKAHEAD) {
+        let line = lines[x_end];
+        let t = line.trim_start();
+        let item_boundary = declared_item_name(line).is_some() || is_doc(line) || t.starts_with("#[");
+        if !t.is_empty() && indent(line) <= want && item_boundary {
+            break;
+        }
+        x_end += 1;
+    }
+    let documented = lines[at..x_at].join("\n").to_lowercase();
+    let neighbour = lines[x_at..x_end].join("\n").to_lowercase();
+    let names_only = |text: &str, here: &str, not_there: &str| {
+        doc_line_names(text).iter().any(|name| {
+            let name = name.to_lowercase();
+            here.contains(&name) && !not_there.contains(&name)
+        })
+    };
+    if !names_only(doc_line_text(lines[first]), &neighbour, &documented) {
+        return false;
+    }
+    (first + 1..end).any(|k| {
+        let line = doc_line_text(lines[k]);
+        let opens = line.starts_with(|c: char| c.is_uppercase() || c == '`' || c == '#');
+        doc_line_text(lines[k - 1]).ends_with('.') && opens && names_only(line, &documented, &neighbour)
+    })
 }
 
 /// Every `.rs` file under `dir`, recursively. For the tests that walk a
@@ -493,5 +587,83 @@ mod tests {
         assert!(spliced_doc_blocks("/// Does a's job, like `b`.\nfn a() {}\nfn b() {}\n").is_empty());
         // A non-identifier first span is skipped.
         assert!(spliced_doc_blocks("/// `Vec<u8>` of `b`.\nfn a() {}\nfn b() {}\n").is_empty());
+    }
+
+    /// Join fixture lines: a multi-line string literal would put each `///` at column 0, where the
+    /// workspace splice guard reads this file's own fixtures as doc blocks.
+    fn src(lines: &[&str]) -> String {
+        lines.join("\n")
+    }
+
+    /// #6585 — the fused shape, from the three splices the first signal let through: the old item's doc
+    /// leads the block, the inserted item's doc follows as a new sentence, and the old item below is left
+    /// undocumented. `story_events.rs` led with an issue number, `pack.rs` with a record name and
+    /// `sf_smoke.rs` with prose, so none opened on the old item's name.
+    #[test]
+    fn a_doc_fused_from_two_items_docs_is_flagged() {
+        let story_events = src(&[
+            "/// #5434 — `KILL` (Actor Kill), raised from every live death producer.",
+            "/// Slots: R1 = victim, R2 = killer.",
+            "/// M43 — `OAAT` (Actor Attach): an actor was placed into a loaded cell.",
+            "pub(crate) fn raise_actor_attach_story_event(world: &World, actor: EntityId) {",
+            "    const OAAT: [u8; 4] = *b\"OAAT\";",
+            "}",
+            "",
+            "pub(crate) fn raise_kill_story_event(world: &World, victim: EntityId) {",
+            "    raise(KILL, victim);",
+            "}",
+        ]);
+        assert_eq!(spliced_doc_blocks(&story_events), vec![1]);
+        let pack = src(&[
+            "/// FO3/FNV package procedure-type index for `Sandbox` — idle activities. See M42.",
+            "/// `PKDT` Interrupt Flags bit: *Random conversations*.",
+            "pub const PKDT_INTERRUPT_RANDOM_CONVERSATIONS: u16 = 0x0002;",
+            "",
+            "pub const PROCEDURE_SANDBOX: u32 = 12;",
+        ]);
+        assert_eq!(spliced_doc_blocks(&pack), vec![1]);
+        let sf_smoke = src(&[
+            "/// Smoke-test a single cell under the current `GameKind` dispatch.",
+            "/// The function never returns: print, exit.",
+            "/// Which non-`statics` index map holds `form_id`, if any (#2637).",
+            "fn nonstatic_base_type(index: &EsmIndex, form_id: u32) -> Option<&str> {",
+            "    index.lookup(form_id)",
+            "}",
+            "",
+            "pub fn run(path: &str, game: GameKind) {}",
+        ]);
+        assert_eq!(spliced_doc_blocks(&sf_smoke), vec![1]);
+    }
+
+    /// The near misses the fused-doc signal must leave alone, each taken from the tree: a helper's doc
+    /// naming the caller below it, through an intra-doc link or in a sentence that runs across the line
+    /// break; and a fused-looking block whose neighbour has a doc of its own.
+    #[test]
+    fn a_doc_that_only_mentions_its_neighbour_is_not_fused() {
+        let linked = src(&[
+            "/// Maximum nesting depth [`lower_statements`] recurses through.",
+            "/// Capped at `MAX_STMT_DEPTH`, the smaller bound.",
+            "const MAX_CONDITIONAL_DEPTH: u32 = MAX_STMT_DEPTH;",
+            "",
+            "fn lower_statements(depth: u32) {}",
+        ]);
+        assert!(spliced_doc_blocks(&linked).is_empty());
+        let mid_sentence = src(&[
+            "/// Shared control flow behind `sample_scalar`; after the last key holds the",
+            "/// last key's value. `time_of` extracts the time a key type carries.",
+            "fn sample_keyed(time_of: impl Fn() -> f32) {}",
+            "",
+            "fn sample_scalar() { sample_keyed(|| 0.0) }",
+        ]);
+        assert!(spliced_doc_blocks(&mid_sentence).is_empty(), "the restart must open a sentence on a new line");
+        let documented_neighbour = src(&[
+            "/// Raised for `KILL` deaths. M43 — the attach.",
+            "/// `OAAT` (Actor Attach): an actor was placed.",
+            "fn raise_attach() { OAAT }",
+            "",
+            "/// The kill event.",
+            "fn raise_kill() { KILL }",
+        ]);
+        assert!(spliced_doc_blocks(&documented_neighbour).is_empty(), "the neighbour keeps its own doc");
     }
 }
