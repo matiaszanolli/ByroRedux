@@ -648,6 +648,12 @@ mod system_access_declaration_tests {
     const WATER_SRC: &str = include_str!("../../../../crates/physics/src/water.rs");
     const COMBAT_SRC: &str = include_str!("../../combat.rs");
     const COMBAT_AI_SRC: &str = include_str!("../../systems/combat_ai.rs");
+    const LOOT_SRC: &str = include_str!("../../inventory/loot.rs");
+    const CRIME_SRC: &str = include_str!("../../crime.rs");
+    const ARMOR_SRC: &str = include_str!("../../armor.rs");
+    const CRAFTING_SRC: &str = include_str!("../../crafting.rs");
+    const LOCKPICK_SRC: &str = include_str!("../../lockpick.rs");
+    const SMITHING_SRC: &str = include_str!("../../smithing.rs");
     const AI_PACKAGE_SRC: &str = include_str!("../../npc_spawn/ai_package.rs");
     const ANIM_CONVERT_SRC: &str = include_str!("../../anim_convert.rs");
     // #5307 — the spoken-INFO fragment path: the bin system calls into the
@@ -1204,6 +1210,56 @@ mod system_access_declaration_tests {
                 (AI_PACKAGE_SRC, "suspend_ambient_behavior_for_combat"),
             ],
             "make_npc_combat_ai_system",
+        );
+    }
+
+    /// #6546 — M43 made the busiest gameplay exclusives acquire more than their rows said:
+    /// `interaction_system` reads the crafting book, the pick item, the terminal bases, the Story Manager tree
+    /// and the ledger and writes `CraftingRequest` and (through `unlock_with_carried_key`) `StoryEvent`;
+    /// `container_loot_system` writes `StoryEvent` (`AIPL`); `combat_damage_system` reads the armor model's
+    /// tables (`armor::mitigate`) and writes `StoryEvent` (`ASSU`, `KILL`). Exclusives are not paired by the
+    /// analyzer, so only this scan keeps the `sys.accesses` report honest for them (#3473).
+    #[test]
+    fn interaction_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(
+            &[
+                (INTERACTION_SRC, "interaction_system"),
+                (CRAFTING_SRC, "request_crafting"),
+                // `unlock_with_carried_key` -> the pick / hack bypass and its `LOCK` / `HACK` events.
+                (LOCKPICK_SRC, "bypass_of"),
+                (LOCKPICK_SRC, "raise_lockpick_event"),
+                (LOCKPICK_SRC, "raise_hack_event"),
+                (STORY_MANAGER_SRC, "raise_story_event"),
+            ],
+            "interaction_system",
+        );
+    }
+
+    #[test]
+    fn container_loot_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(
+            &[
+                (LOOT_SRC, "container_loot_system"),
+                (CRIME_SRC, "report_theft"),
+                // `AIPL` (loot.rs) is raised through the Story Manager.
+                (STORY_MANAGER_SRC, "raise_story_event"),
+            ],
+            "container_loot_system",
+        );
+    }
+
+    #[test]
+    fn combat_damage_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(
+            &[
+                (COMBAT_SRC, "combat_damage_system"),
+                // `armor::mitigate` -> `totals` -> the smithing quality of each worn piece.
+                (ARMOR_SRC, "mitigate"),
+                (SMITHING_SRC, "stack_quality"),
+                // `ASSU` / `KILL`.
+                (STORY_MANAGER_SRC, "raise_story_event"),
+            ],
+            "combat_damage_system",
         );
     }
 
