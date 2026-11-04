@@ -30,6 +30,9 @@ pub(crate) struct ExteriorCellApplyJob {
     persistent_refs: Vec<byroredux_plugin::esm::cell::PlacedRef>,
     persistent_promoted: bool,
     persistent_references: Option<Box<ReferenceLoadJob>>,
+    /// M39 TXS-TEL-002 — the floor-ready clock, started once the cell is
+    /// found.
+    textures_started: std::time::Instant,
 }
 
 // Boxing `Pending` would allocate on every cooperative frame slice. The
@@ -95,6 +98,7 @@ impl ExteriorCellApplyJob {
         let Some(cell) = cells_map.get(&(gx, gy)) else {
             return Ok(None);
         };
+        let textures_started = std::time::Instant::now();
 
         let cell_root = world.spawn();
         register_cell_root(world, cell_root);
@@ -270,6 +274,7 @@ impl ExteriorCellApplyJob {
             persistent_refs,
             persistent_promoted: false,
             persistent_references: None,
+            textures_started,
         }))
     }
 
@@ -420,6 +425,11 @@ impl ExteriorCellApplyJob {
         // #6102 — every reference of the tile has spawned: retire its pending
         // `OnReset` after the next pass marks the last slices' scripted refs.
         byroredux_scripting::obscript_state::cell_load_finished(world, self.cell_root);
+        record_cell_textures_ready(
+            ctx,
+            self.textures_started,
+            &format!("exterior({},{})", self.gx, self.gy),
+        );
         ExteriorCellApplyProgress::Complete(OneCellLoadInfo {
             cell_root: self.cell_root,
             center: self

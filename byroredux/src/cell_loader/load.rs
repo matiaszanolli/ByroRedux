@@ -528,6 +528,9 @@ pub(crate) struct InteriorCellApplyJob {
     absorbed: Option<std::collections::HashSet<u32>>,
     references: Option<Box<ReferenceLoadJob>>,
     phases: CellLoadPhaseTimings,
+    /// M39 TXS-TEL-002 — the floor-ready clock, started after the record
+    /// parse.
+    textures_started: Instant,
 }
 
 #[allow(clippy::large_enum_variant)] // The job is large and the result small, but one value exists per interior load and is moved, never stored in bulk; a Box would only add an allocation.
@@ -561,6 +564,7 @@ impl InteriorCellApplyJob {
         phases.esm_parse = phase_started.elapsed();
 
         let cell = find_interior_cell(&index, cell_editor_id)?;
+        let textures_started = Instant::now();
         // M47.3 — the references below attach their ObScript object scripts as they
         // spawn, so the tables must exist first (`populate_scene_runtime` is too late).
         crate::asset_provider::ensure_obscript_tables(world, &index);
@@ -638,6 +642,7 @@ impl InteriorCellApplyJob {
             absorbed: None,
             references: None,
             phases,
+            textures_started,
         })
     }
 
@@ -728,6 +733,7 @@ impl InteriorCellApplyJob {
             load_order,
             cell_root,
             mut phases,
+            textures_started,
             ..
         } = self;
         // #6102 — every reference has spawned: a reset owed to this cell is
@@ -805,6 +811,7 @@ impl InteriorCellApplyJob {
             "interior cell load left DDS uploads unflushed — a resolve_texture \
              call has moved below load_references' flush (#3320)"
         );
+        super::references::record_cell_textures_ready(ctx, textures_started, &cell_name);
 
         phases.finalization = phase_started.elapsed();
         log::info!(

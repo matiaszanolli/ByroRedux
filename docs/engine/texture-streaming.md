@@ -376,8 +376,30 @@ Both are registered in `core::settings::builtin` beside the existing
   deficits, declines, fallback reads, `DEMOTE_AFTER_FRAMES` and the per-frame
   cap. `tex.residency <path>` prints the entry's state, resident range,
   wanted mip with its case, `last_wanted_frame` and `last_promoted_frame`.
-- The `tex-stream:` bench line: resident bytes (current, peak), promotions,
-  demotions, evictions, declines, churn, floor-ready ms of the last load.
+- The `tex-stream:` bench line (`texture_streamer::tex_stream_bench_line`),
+  printed with streaming off too so one binary yields both arms:
+  `streaming resident_bytes peak_bytes floor_bytes promotions demotions
+  evictions declines churn hysteresis_frames cell_loads floor_ready_ms
+  reserved deficits settled settle_ms settle_restarts`.
+  - **Floor-ready** runs from the cell's record parse done (an interior
+    apply job's `begin`, an exterior job's `begin` once the cell is found)
+    to its last texture flush, recorded only when nothing is left queued
+    (`TextureRegistry::record_cell_load_ready`). Each job owns its clock, so
+    overlapping or cancelled loads cannot skew another's. The record parse is
+    excluded: it reads no texture and costs the same in both arms.
+  - **Churn** is a promotion and a demotion of one texture landing within
+    `DEMOTE_AFTER_FRAMES` of each other, either order. §6.3 never demotes
+    inside the window after a promotion, so in practice it counts a demotion
+    promoted back inside the window.
+  - **Settle** runs from the last camera stop (or the last cell load's
+    textures landing) to the first frame with no promotion requested,
+    queued or being read. A stop tolerates 1 unit of travel and 0.1° of turn
+    against the clock's start pose: the pinned MedTekResearch01 bench camera
+    wobbles 0.0016 units in Y on alternate frames, which restarted an
+    exact-match clock every frame. `settle_restarts` near the frame count
+    means the camera never stopped.
+  - **Evictions** and **declines** belong to the Phase 3 budget and read 0
+    until it lands: without a budget nothing evicts or declines.
 - `ownership_sample.rs` samples resident texture bytes beside
   `texture_live_slots` (TXS-TEL-003).
 

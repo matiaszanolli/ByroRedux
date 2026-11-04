@@ -228,8 +228,9 @@ mod tex_loaded_tests {
 /// M39 — texture residency (docs/prd/texture-streaming.md TXS-TEL-001):
 /// counts and bytes per state and per **whole** class, resident / peak /
 /// retiring / floor bytes, queued changes; with a bindless handle argument,
-/// that texture's resident range. Wanted mip, budget, deficits and declines
-/// arrive with M39 Phases 2–3.
+/// that texture's resident range and wanted mip. Landed promotions,
+/// demotions and churn with the hysteresis window, and the last cell load's
+/// floor-ready time; the budget and declines arrive with M39 Phase 3.
 pub(crate) struct TexResidencyCommand;
 impl ConsoleCommand for TexResidencyCommand {
     fn name(&self) -> &str {
@@ -286,6 +287,14 @@ impl ConsoleCommand for TexResidencyCommand {
             format!(
                 "deficits {}, promotion requests waiting {}",
                 t.deficits, t.promotion_requests,
+            ),
+            format!(
+                "landed: {} promotions, {} demotions, churn {} (hysteresis {} frames)",
+                t.promotions, t.demotions, t.churn, t.hysteresis_frames,
+            ),
+            format!(
+                "last cell load: textures ready in {:.2} ms ({} loads timed)",
+                t.floor_ready_ms, t.cell_loads_timed,
             ),
             format!(
                 "resident {:.1} MiB (peak {:.1}), retiring {:.1} MiB, floors {:.1} MiB, queued changes {}, reserved {}",

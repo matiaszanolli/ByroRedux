@@ -131,10 +131,26 @@ struct StreamSource {
     /// order of TXS-BUD-003.
     last_wanted_frame: u64,
     /// Last frame a promotion of it landed (TXS-WANT-005 hysteresis).
-    last_promoted_frame: u64,
+    last_promoted_frame: Option<u64>,
+    /// Last frame a demotion of it landed: a promotion landing within
+    /// `DEMOTE_AFTER_FRAMES` of it is churn (TXS-TEL-002).
+    last_demoted_frame: Option<u64>,
     /// First frame of the current run in which it was wanted coarser than
     /// it is resident.
     coarser_since: Option<u64>,
+}
+
+/// M39 TXS-TEL-002 — session counts of landed residency changes. Churn is
+/// a promotion and a demotion of one texture landing within
+/// `DEMOTE_AFTER_FRAMES` frames of each other, in either order (the PRD §8
+/// definition). `apply_wanted` never demotes inside the window after a
+/// promotion, so in practice churn counts a demotion the texture was
+/// promoted back from within the window: the demotion was wasted work.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StreamCounters {
+    pub(crate) promotions: u64,
+    pub(crate) demotions: u64,
+    pub(crate) churn: u64,
 }
 
 /// M39 — what one `apply_wanted` pass found (`tex-stream:` and
@@ -382,6 +398,12 @@ pub struct TextureRegistry {
     /// M39 — the largest live image total seen by
     /// `fill_residency_telemetry` (TXS-TEL-001's session peak).
     peak_resident_bytes: u64,
+    /// M39 TXS-TEL-002 — session counts of landed residency changes.
+    stream_counters: StreamCounters,
+    /// M39 TXS-TEL-002 — cell loads timed by `record_cell_load_ready`, and
+    /// the last one's floor-ready time.
+    cell_loads_timed: u64,
+    last_floor_ready_ms: f64,
     /// Set once `check_slot_available` has already logged the
     /// approaching-capacity warning (#2030 / MEM-D3-01), so a long
     /// streaming session logs it once instead of once per subsequent
@@ -569,6 +591,9 @@ impl TextureRegistry {
             promotion_requests: Vec::new(),
             streaming: false,
             peak_resident_bytes: 0,
+            stream_counters: StreamCounters::default(),
+            cell_loads_timed: 0,
+            last_floor_ready_ms: 0.0,
             slot_capacity_warning_emitted: false,
         };
 

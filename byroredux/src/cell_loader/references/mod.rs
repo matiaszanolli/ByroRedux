@@ -1043,6 +1043,20 @@ pub(super) fn flush_pending_cell_textures(ctx: &mut VulkanContext) {
     flush_pending_cell_textures_inner(ctx, true);
 }
 
+/// M39 TXS-TEL-002 — record a finished cell load's floor-ready time (its last
+/// texture flush has run; `started` is taken after its record parse) and log
+/// it beside the load's other phase timings.
+pub(super) fn record_cell_textures_ready(
+    ctx: &mut VulkanContext,
+    started: std::time::Instant,
+    label: &str,
+) {
+    if let Some(ms) = ctx.texture_registry.record_cell_load_ready(started) {
+        let mode = if ctx.texture_registry.streaming() { "floors" } else { "full chains" };
+        log::info!("  Cell '{label}' textures ready ({mode}) in {ms:.2} ms");
+    }
+}
+
 /// Flush a yielded slice only after enough DDS work has accumulated to
 /// amortize one command-buffer submit and fence wait.
 pub(super) fn flush_pending_cell_textures_on_yield(ctx: &mut VulkanContext) {

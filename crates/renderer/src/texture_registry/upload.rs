@@ -486,7 +486,9 @@ impl TextureRegistry {
             } else if target > r.first_resident {
                 let since = *source.coarser_since.get_or_insert(frame);
                 let settled = frame.wrapping_sub(since) >= DEMOTE_AFTER_FRAMES
-                    && frame.wrapping_sub(source.last_promoted_frame) >= DEMOTE_AFTER_FRAMES;
+                    && source
+                        .last_promoted_frame
+                        .is_none_or(|promoted| frame.wrapping_sub(promoted) >= DEMOTE_AFTER_FRAMES);
                 if settled && !queued.contains(&handle) {
                     demotions.push((handle, target));
                     source.coarser_since = None;
@@ -564,8 +566,71 @@ impl TextureRegistry {
         self.pending_promotions.len()
     }
 
-    /// M39 — refresh what `tex.residency` prints (TXS-TEL-001). One pass
-    /// over the slots; called on the renderer's throttled telemetry sample.
+    /// M39 — record a residency change that just landed: the hysteresis
+    /// frames `apply_wanted` reads (TXS-WANT-005) and the session counters
+    /// (TXS-TEL-002). A promotion and a demotion of one texture landing
+    /// within `DEMOTE_AFTER_FRAMES` of each other, either order, is churn.
+    pub(crate) fn note_change_landed(&mut self, handle: TextureHandle, change: ResidencyChange) {
+        use residency::DEMOTE_AFTER_FRAMES;
+        let frame = self.current_frame_id;
+        let within = |other: Option<u64>| {
+            other.is_some_and(|other| frame.wrapping_sub(other) < DEMOTE_AFTER_FRAMES)
+        };
+        let counters = &mut self.stream_counters;
+        let source = self.stream_sources.get_mut(&handle);
+        if change.is_promotion() {
+            counters.promotions += 1;
+            if let Some(source) = source {
+                counters.churn += u64::from(within(source.last_demoted_frame));
+                source.last_promoted_frame = Some(frame);
+            }
+        } else {
+            counters.demotions += 1;
+            if let Some(source) = source {
+                counters.churn += u64::from(within(source.last_promoted_frame));
+                source.last_demoted_frame = Some(frame);
+            }
+        }
+    }
+
+    /// M39 TXS-TEL-002 — record a cell load's floor-ready time once its last
+    /// texture flush has run: every texture the load reserved has left
+    /// **reserved** (PRD §8). `started` is the load's own clock, taken after
+    /// its record parse (which reads no texture and costs the same with
+    /// streaming on and off). With streaming off this times the full-chain
+    /// flush, the A6 control. `None` (nothing recorded) while uploads are
+    /// still queued.
+    pub fn record_cell_load_ready(&mut self, started: std::time::Instant) -> Option<f64> {
+        if !self.pending_dds_uploads.is_empty() {
+            return None;
+        }
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        self.cell_loads_timed += 1;
+        self.last_floor_ready_ms = elapsed_ms;
+        Some(elapsed_ms)
+    }
+
+    /// M39 TXS-TEL-002 — cell loads `record_cell_load_ready` has timed; a
+    /// change restarts the host's settle clock.
+    pub fn cell_loads_timed(&self) -> u64 {
+        self.cell_loads_timed
+    }
+
+    /// M39 — whether no promotion is requested of the host or queued for
+    /// upload: the registry's half of "settled" (PRD §8 settle time; the
+    /// host adds its reads in flight).
+    pub fn promotions_idle(&self) -> bool {
+        self.promotion_requests.is_empty()
+            && self
+                .pending_promotions
+                .iter()
+                .all(|upload| upload.change.is_none_or(|change| !change.is_promotion()))
+    }
+
+    /// M39 — refresh what `tex.residency` and the `tex-stream:` bench line
+    /// print (TXS-TEL-001/002). One pass over the slots, every frame (so the
+    /// session peak sees each frame's total), reusing `out`'s per-handle
+    /// buffer.
     pub fn fill_residency_telemetry(
         &mut self,
         out: &mut byroredux_core::ecs::TextureResidencyTelemetry,
@@ -574,7 +639,18 @@ impl TextureRegistry {
             streaming: self.streaming,
             queued_changes: self.pending_promotions.len() as u64,
             promotion_requests: self.promotion_requests.len() as u64,
-            per_handle: Vec::with_capacity(self.textures.len()),
+            promotions: self.stream_counters.promotions,
+            demotions: self.stream_counters.demotions,
+            churn: self.stream_counters.churn,
+            hysteresis_frames: residency::DEMOTE_AFTER_FRAMES,
+            cell_loads_timed: self.cell_loads_timed,
+            floor_ready_ms: self.last_floor_ready_ms,
+            // Refreshed every frame: keep last frame's allocation.
+            per_handle: {
+                let mut per_handle = std::mem::take(&mut out.per_handle);
+                per_handle.clear();
+                per_handle
+            },
             ..Default::default()
         };
         let add = |slot: &mut (u64, u64), bytes: u64| {
@@ -1061,7 +1137,8 @@ impl TextureRegistry {
         // fallback redirect installed at enqueue time.
         let staged_count = staged.len();
         let current_frame_id = self.current_frame_id;
-        let mut forced_promotions = Vec::new();
+        let mut floor_sources = Vec::new();
+        let mut landed_changes = Vec::new();
         for s in staged {
             let StagedUpload {
                 handle,
@@ -1091,11 +1168,7 @@ impl TextureRegistry {
                     if let Some(residency) = entry.residency.as_mut() {
                         residency.apply(change);
                     }
-                    if change.is_promotion() {
-                        if let Some(source) = self.stream_sources.get_mut(&handle) {
-                            source.last_promoted_frame = current_frame_id;
-                        }
-                    }
+                    landed_changes.push((handle, change));
                     if let Some(old) = entry.texture.replace(texture) {
                         entry.pending_destroy.push_back((current_frame_id, old));
                     }
@@ -1103,7 +1176,7 @@ impl TextureRegistry {
                     entry.texture = Some(texture);
                     if let Some((residency, whole, source, header_len)) = floor {
                         entry.residency = Some(residency);
-                        forced_promotions.push((handle, whole, source, header_len));
+                        floor_sources.push((handle, whole, source, header_len));
                     }
                 }
                 if pin_as_cube_fallback {
@@ -1126,10 +1199,14 @@ impl TextureRegistry {
             }
         }
 
+        for (handle, change) in landed_changes {
+            self.note_change_landed(handle, change);
+        }
+
         // M39 — every floor records its source; from then on the wanted-mip
         // pass (`apply_wanted`) decides its promotions, read back by the
         // host. No high-mip bytes are kept (decision Q2 (b)).
-        for (handle, _whole, source, header_len) in forced_promotions {
+        for (handle, _whole, source, header_len) in floor_sources {
             let upload = &pending[source];
             let header = upload.dds_bytes[..header_len.min(upload.dds_bytes.len())].to_vec();
             let width = crate::vulkan::dds::parse_dds(&header)
@@ -1144,7 +1221,8 @@ impl TextureRegistry {
                     width,
                     wanted: None,
                     last_wanted_frame: current_frame_id,
-                    last_promoted_frame: 0,
+                    last_promoted_frame: None,
+                    last_demoted_frame: None,
                     coarser_since: None,
                 },
             );

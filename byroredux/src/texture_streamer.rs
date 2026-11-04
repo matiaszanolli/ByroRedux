@@ -13,7 +13,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{mpsc, Arc};
+use std::time::{Duration, Instant};
 
+use byroredux_core::ecs::TextureResidencyTelemetry;
 use byroredux_core::math::{Mat4, Vec3};
 use byroredux_renderer::texture_registry::{
     TextureHandle, TextureRegistry, WantedCase, WantedMip, WantedStats,
@@ -46,6 +48,83 @@ pub(crate) struct TextureStreamer {
     wanted: HashMap<TextureHandle, WantedMip>,
     /// What the last wanted pass found.
     pub(crate) last_wanted: WantedStats,
+    /// PRD §8 settle time.
+    settle: SettleClock,
+}
+
+/// Camera position, forward and vertical field of view: what the wanted-mip
+/// pass reads, so a change of any of them restarts the settle clock.
+pub(crate) type StreamPose = ([f32; 3], [f32; 3], f32);
+
+/// A camera within this many world units of the pose its settle clock
+/// started at has not moved. A pinned bench camera wobbles by ~0.002 units
+/// between frames (MedTekResearch01, 2026-11-04), far below anything that
+/// moves a wanted level; comparing against the clock's start pose rather
+/// than last frame's lets a slow drift still add up to a move.
+const SETTLE_MOVE_UNITS: f32 = 1.0;
+/// cos 0.1°: a forward vector turned less than this has not turned.
+const SETTLE_TURN_COS: f32 = 0.999_998_5;
+
+/// M39 — PRD §8 settle time: "camera stop → no promotion queued or in
+/// flight". The clock starts when the camera moves or turns past the
+/// tolerances above, its field of view changes, or a cell load's textures
+/// land (the load is a camera stop for the textures it brings), and stops on
+/// the first frame with no promotion requested, queued or being read.
+#[derive(Debug, Default)]
+pub(crate) struct SettleClock {
+    pose: Option<StreamPose>,
+    loads_seen: u64,
+    since: Option<Instant>,
+    last: Option<Duration>,
+    /// Times the clock restarted: a reading is only meaningful when the
+    /// camera stopped, which a count near the frame count disproves.
+    restarts: u64,
+}
+
+/// What the `tex-stream:` line prints for settle: whether the clock is
+/// stopped, and its last reading (or, while it runs, the time so far).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct SettleReading {
+    pub(crate) settled: bool,
+    pub(crate) ms: f64,
+    pub(crate) restarts: u64,
+}
+
+impl SettleClock {
+    pub(crate) fn observe(&mut self, pose: StreamPose, loads: u64, idle: bool, now: Instant) {
+        let moved = self.pose.is_none_or(|start| {
+            Vec3::from_array(start.0).distance(Vec3::from_array(pose.0)) > SETTLE_MOVE_UNITS
+                || Vec3::from_array(start.1).dot(Vec3::from_array(pose.1)) < SETTLE_TURN_COS
+                || start.2 != pose.2
+        });
+        if moved || self.loads_seen != loads {
+            self.pose = Some(pose);
+            self.loads_seen = loads;
+            self.since = Some(now);
+            self.restarts += 1;
+        }
+        if idle {
+            if let Some(since) = self.since.take() {
+                self.last = Some(now.saturating_duration_since(since));
+            }
+        }
+    }
+
+    pub(crate) fn reading(&self, now: Instant) -> SettleReading {
+        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        match self.since {
+            Some(since) => SettleReading {
+                settled: false,
+                ms: ms(now.saturating_duration_since(since)),
+                restarts: self.restarts,
+            },
+            None => SettleReading {
+                settled: true,
+                ms: self.last.map_or(0.0, ms),
+                restarts: self.restarts,
+            },
+        }
+    }
 }
 
 impl TextureStreamer {
@@ -65,7 +144,19 @@ impl TextureStreamer {
             done_rx,
             wanted: HashMap::new(),
             last_wanted: WantedStats::default(),
+            settle: SettleClock::default(),
         })
+    }
+
+    /// Advance the settle clock after this frame's reads and flush.
+    pub(crate) fn observe_settle(&mut self, registry: &TextureRegistry, pose: StreamPose) {
+        let idle = self.in_flight.is_empty() && registry.promotions_idle();
+        self.settle
+            .observe(pose, registry.cell_loads_timed(), idle, Instant::now());
+    }
+
+    pub(crate) fn settle_reading(&self) -> SettleReading {
+        self.settle.reading(Instant::now())
     }
 
     /// M39 — the wanted-mip pass over this frame's draws ([`compute_wanted`]),
@@ -127,6 +218,44 @@ impl TextureStreamer {
         }
         (landed, started)
     }
+}
+
+/// M39 TXS-TEL-002 — the per-session `tex-stream:` bench line, from the
+/// residency telemetry and the streamer's settle clock (`None` when no
+/// streamer runs). With streaming off nothing promotes, so the run is
+/// settled at zero and `floor_ready_ms` times the full-chain control (A6).
+/// Evictions and declines are the Phase 3 budget's (TXS-BUD); nothing
+/// evicts or declines without a budget, so they read zero until it lands.
+pub(crate) fn tex_stream_bench_line(
+    t: &TextureResidencyTelemetry,
+    settle: Option<SettleReading>,
+) -> String {
+    let settle = settle.unwrap_or(SettleReading {
+        settled: !t.streaming,
+        ms: 0.0,
+        restarts: 0,
+    });
+    format!(
+        "tex-stream: streaming={} resident_bytes={} peak_bytes={} floor_bytes={} \
+         promotions={} demotions={} evictions=0 declines=0 churn={} \
+         hysteresis_frames={} cell_loads={} floor_ready_ms={:.2} reserved={} \
+         deficits={} settled={} settle_ms={:.2} settle_restarts={}",
+        u8::from(t.streaming),
+        t.resident_bytes,
+        t.peak_resident_bytes,
+        t.floor_bytes,
+        t.promotions,
+        t.demotions,
+        t.churn,
+        t.hysteresis_frames,
+        t.cell_loads_timed,
+        t.floor_ready_ms,
+        t.reserved,
+        t.deficits,
+        u8::from(settle.settled),
+        settle.ms,
+        settle.restarts,
+    )
 }
 
 /// M39 TXS-WANT-001/002 — this frame's wanted mip for every streamed texture
@@ -239,5 +368,79 @@ pub(crate) fn compute_wanted(
             }
             want(handle, level, case, distance);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const POSE: StreamPose = ([0.0, 1.0, 2.0], [0.0, 0.0, 1.0], 1.2);
+
+    /// The clock starts on the first pose, stops on the first idle frame,
+    /// and restarts on a pose change or a newly timed cell load.
+    #[test]
+    fn settle_clock_restarts_on_a_pose_change_or_a_cell_load() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut clock = SettleClock::default();
+        clock.observe(POSE, 1, false, at(0));
+        assert_eq!(clock.reading(at(40)), SettleReading { settled: false, ms: 40.0, restarts: 1 });
+        clock.observe(POSE, 1, false, at(50));
+        clock.observe(POSE, 1, true, at(120));
+        assert_eq!(clock.reading(at(500)), SettleReading { settled: true, ms: 120.0, restarts: 1 });
+        // Idle frames after settling leave the reading alone.
+        clock.observe(POSE, 1, true, at(600));
+        assert_eq!(clock.reading(at(700)).ms, 120.0);
+        // The camera turns: a new run.
+        let turned = (POSE.0, [1.0, 0.0, 0.0], POSE.2);
+        clock.observe(turned, 1, false, at(1_000));
+        clock.observe(turned, 1, true, at(1_030));
+        assert_eq!(clock.reading(at(1_100)), SettleReading { settled: true, ms: 30.0, restarts: 2 });
+        // Sub-unit wobble is not a move: no restart.
+        let wobble = ([0.0, 1.002, 2.0], turned.1, POSE.2);
+        clock.observe(wobble, 1, false, at(1_200));
+        assert_eq!(clock.reading(at(1_300)), SettleReading { settled: true, ms: 30.0, restarts: 2 });
+        // A cell load's textures land with the camera still: a new run, and
+        // already idle on the frame it starts.
+        clock.observe(turned, 2, true, at(2_000));
+        assert_eq!(clock.reading(at(2_100)), SettleReading { settled: true, ms: 0.0, restarts: 3 });
+    }
+
+    /// The line carries every TXS-TEL-002 field; with streaming off and no
+    /// streamer it reads settled at zero.
+    #[test]
+    fn bench_line_carries_the_tel_002_fields() {
+        let t = TextureResidencyTelemetry {
+            resident_bytes: 100,
+            peak_resident_bytes: 200,
+            floor_bytes: 30,
+            promotions: 4,
+            demotions: 1,
+            churn: 0,
+            hysteresis_frames: 120,
+            cell_loads_timed: 1,
+            floor_ready_ms: 812.345,
+            deficits: 0,
+            ..Default::default()
+        };
+        let line = tex_stream_bench_line(&t, None);
+        assert_eq!(
+            line,
+            "tex-stream: streaming=0 resident_bytes=100 peak_bytes=200 floor_bytes=30 \
+             promotions=4 demotions=1 evictions=0 declines=0 churn=0 \
+             hysteresis_frames=120 cell_loads=1 floor_ready_ms=812.35 reserved=0 \
+             deficits=0 settled=1 settle_ms=0.00 settle_restarts=0"
+        );
+        let on = TextureResidencyTelemetry {
+            streaming: true,
+            ..Default::default()
+        };
+        assert!(tex_stream_bench_line(&on, None).ends_with("settled=0 settle_ms=0.00 settle_restarts=0"));
+        assert!(tex_stream_bench_line(
+            &on,
+            Some(SettleReading { settled: true, ms: 1.5, restarts: 2 })
+        )
+        .ends_with("settled=1 settle_ms=1.50 settle_restarts=2"));
     }
 }

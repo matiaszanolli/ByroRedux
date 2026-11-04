@@ -418,6 +418,21 @@ impl App {
         if let Some(line) = rt_integrity_line {
             println!("{line}");
         }
+        // M39 TXS-TEL-002 — texture streaming's per-session line, printed
+        // with streaming off too: its `floor_ready_ms` is then the A6 control.
+        if let Some(residency) = self
+            .world
+            .try_resource::<byroredux_core::ecs::TextureResidencyTelemetry>()
+        {
+            let settle = self
+                .texture_streamer
+                .as_ref()
+                .map(crate::texture_streamer::TextureStreamer::settle_reading);
+            println!(
+                "{}",
+                crate::texture_streamer::tex_stream_bench_line(&residency, settle)
+            );
+        }
         drop(stats);
         if let Some(streaming) = self.streaming.as_ref() {
             println!("{}", streaming.telemetry.bench_line());

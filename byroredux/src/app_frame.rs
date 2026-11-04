@@ -47,7 +47,7 @@ fn push_texture_streaming(
     streamer: &mut Option<crate::texture_streamer::TextureStreamer>,
     ctx: &mut byroredux_renderer::VulkanContext,
     draws: &[byroredux_renderer::DrawCommand],
-    (camera_pos, fov_y): ([f32; 3], f32),
+    frame: &crate::render::RenderFrameView,
 ) {
     let streaming = crate::setting_bool(
         world,
@@ -61,11 +61,15 @@ fn push_texture_streaming(
     }
     if let Some(streamer) = streamer.as_mut() {
         if streaming {
-            streamer.update_wanted(draws, ctx, camera_pos, fov_y);
+            streamer.update_wanted(draws, ctx, frame.camera_pos, frame.camera_fov_y);
         }
         streamer.step(&mut ctx.texture_registry);
     }
     ctx.update_texture_streaming(streaming);
+    if let Some(streamer) = streamer.as_mut() {
+        let pose = (frame.camera_pos, frame.cam_forward, frame.camera_fov_y);
+        streamer.observe_settle(&ctx.texture_registry, pose);
+    }
 }
 
 /// the metre settings, converted to world units here and nowhere else.
@@ -698,7 +702,7 @@ impl App {
                 &mut self.texture_streamer,
                 ctx,
                 &self.draw_commands,
-                (frame.camera_pos, frame.camera_fov_y),
+                &frame,
             );
             // Terrain distance softening: the camera distance at which the
             // full-detail terrain is fully softened toward the LOD look.

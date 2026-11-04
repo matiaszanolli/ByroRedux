@@ -155,6 +155,9 @@ fn make_registry_for_overflow_test(max_textures: u32, occupied: usize) -> Textur
         promotion_requests: Vec::new(),
         streaming: false,
         peak_resident_bytes: 0,
+        stream_counters: Default::default(),
+        cell_loads_timed: 0,
+        last_floor_ready_ms: 0.0,
         slot_capacity_warning_emitted: false,
     }
 }
@@ -1332,7 +1335,8 @@ fn stream_source(path: &str) -> StreamSource {
         width: 64,
         wanted: None,
         last_wanted_frame: 0,
-        last_promoted_frame: 0,
+        last_promoted_frame: None,
+        last_demoted_frame: None,
         coarser_since: None,
     }
 }
@@ -1529,7 +1533,7 @@ fn wanted_pass_demotes_only_after_the_hysteresis_window() {
         .insert(0, stream_source("textures\\a.dds"));
     let none = HashMap::new();
     reg.current_frame_id = 10;
-    reg.stream_sources.get_mut(&0).unwrap().last_promoted_frame = 10;
+    reg.stream_sources.get_mut(&0).unwrap().last_promoted_frame = Some(10);
     for frame in 10..10 + DEMOTE_AFTER_FRAMES {
         reg.current_frame_id = frame;
         assert_eq!(
@@ -1546,4 +1550,79 @@ fn wanted_pass_demotes_only_after_the_hysteresis_window() {
         (0, 3),
         "down to the floor"
     );
+}
+
+/// M39 TXS-TEL-002 — landed changes are counted, and a promotion and a
+/// demotion of one texture landing within the hysteresis window of each
+/// other (either order) count as churn; outside it they do not.
+#[test]
+fn landed_changes_count_churn_inside_the_hysteresis_window() {
+    use residency::{ResidencyChange, DEMOTE_AFTER_FRAMES};
+    let mut reg = make_registry_for_overflow_test(64, 0);
+    reg.stream_sources
+        .insert(0, stream_source("textures\\a.dds"));
+    let promote = ResidencyChange { mip_count: 7, old_first: 2, new_first: 0 };
+    let demote = ResidencyChange { mip_count: 7, old_first: 0, new_first: 2 };
+    reg.current_frame_id = 100;
+    reg.note_change_landed(0, promote);
+    assert_eq!(reg.stream_sources[&0].last_promoted_frame, Some(100));
+    reg.current_frame_id = 100 + DEMOTE_AFTER_FRAMES;
+    reg.note_change_landed(0, demote);
+    assert_eq!(reg.stream_counters.churn, 0, "a demotion after the window is not churn");
+    reg.current_frame_id += DEMOTE_AFTER_FRAMES - 1;
+    reg.note_change_landed(0, promote);
+    assert_eq!(reg.stream_counters.churn, 1, "promoted back inside the window");
+    reg.current_frame_id += 1;
+    reg.note_change_landed(0, demote);
+    assert_eq!(reg.stream_counters.churn, 2, "demoted inside the window of a promotion");
+    assert_eq!(
+        (reg.stream_counters.promotions, reg.stream_counters.demotions),
+        (2, 2)
+    );
+    // A change of an unstreamed handle still counts, but cannot churn.
+    reg.note_change_landed(9, promote);
+    assert_eq!(reg.stream_counters.promotions, 3);
+    assert_eq!(reg.stream_counters.churn, 2);
+}
+
+/// M39 TXS-TEL-002 — a cell load's floor-ready time is recorded only once
+/// nothing is left queued to upload.
+#[test]
+fn cell_load_ready_records_only_when_nothing_is_queued() {
+    let mut reg = make_registry_for_overflow_test(64, 0);
+    let started = std::time::Instant::now();
+    reg.pending_dds_uploads.push(PendingDdsUpload {
+        handle: 0,
+        dds_bytes: Vec::new(),
+        staged_bytes: 0,
+        clamp_mode: 0,
+        view_kind: TextureViewKind::D2,
+        color_space: TextureColorSpace::Srgb,
+        path: String::new(),
+        change: None,
+    });
+    assert_eq!(reg.record_cell_load_ready(started), None, "an upload is still queued");
+    assert_eq!(reg.cell_loads_timed, 0);
+    reg.pending_dds_uploads.clear();
+    let ready = reg.record_cell_load_ready(started).expect("recorded");
+    assert!(ready >= 0.0);
+    assert_eq!(reg.cell_loads_timed, 1);
+    assert_eq!(reg.last_floor_ready_ms, ready);
+}
+
+/// M39 — the registry is idle once no promotion is requested or queued; a
+/// queued demotion does not hold it busy.
+#[test]
+fn promotions_idle_ignores_queued_demotions() {
+    let mut reg = make_registry_for_overflow_test(64, 0);
+    let mut entry = streamable_entry(7, 2);
+    entry.residency.as_mut().unwrap().first_resident = 0;
+    reg.textures.push(entry);
+    reg.stream_sources
+        .insert(0, stream_source("textures\\a.dds"));
+    assert!(reg.promotions_idle());
+    assert!(reg.queue_demotion(0, 2));
+    assert!(reg.promotions_idle(), "a demotion is not a promotion");
+    reg.promotion_requests.push((0, 0));
+    assert!(!reg.promotions_idle());
 }

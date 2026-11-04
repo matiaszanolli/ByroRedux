@@ -655,6 +655,21 @@ pub struct TextureResidencyTelemetry {
     pub deficits: u64,
     /// Promotion requests waiting for the host's re-read, in priority order.
     pub promotion_requests: u64,
+    /// Session counts of landed promotions and demotions, and churn: a
+    /// promotion and a demotion of one texture landing within
+    /// `hysteresis_frames` of each other (TXS-TEL-002).
+    pub promotions: u64,
+    pub demotions: u64,
+    pub churn: u64,
+    /// No demotion lands within this many frames of a texture's last
+    /// promotion, nor before it has been wanted coarser this long
+    /// (TXS-WANT-005).
+    pub hysteresis_frames: u64,
+    /// Cell loads the floor-ready clock has timed, and the last one's
+    /// floor-ready time: record parse done → the load's last texture flush
+    /// (with streaming off, the full-chain control; PRD §8).
+    pub cell_loads_timed: u64,
+    pub floor_ready_ms: f64,
     /// Per bindless handle: `[first_resident, floor_first, mip_count,
     /// wanted, case]` of a streamable texture, `None` otherwise. `wanted` is
     /// `u32::MAX` before the first wanted pass; `case` is 0 drawn, 1 TLAS

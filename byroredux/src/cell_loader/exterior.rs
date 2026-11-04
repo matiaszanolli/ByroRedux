@@ -18,6 +18,7 @@ use super::load::{register_cell_root, stamp_cell_root_range};
 use super::load_order::parse_record_indexes_shared;
 use super::references::{
     flush_pending_cell_textures, flush_pending_cell_textures_on_yield, load_references_budgeted,
+    record_cell_textures_ready,
     ReferenceLoadJob, ReferenceLoadProgress,
 };
 use super::{terrain, water, FrameTimeBudget};
