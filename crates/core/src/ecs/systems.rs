@@ -645,8 +645,8 @@ mod tests {
         }
 
         // Step 3: NOW set Parent(skel_root) = placement_root and
-        // add_child(placement_root, skel_root). Mirrors npc_spawn.rs:
-        // 366-367. This is the "external skeleton parent edge" — set
+        // add_child(placement_root, skel_root). Mirrors `parent_part` in
+        // byroredux/src/npc_spawn/resumable/mod.rs. This is the "external skeleton parent edge" — set
         // AFTER the NIF spawn assembled the skel internals.
         world.insert(skel_root, Parent(placement_root));
         world.insert(placement_root, Children(vec![skel_root]));

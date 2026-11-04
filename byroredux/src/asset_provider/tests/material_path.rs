@@ -325,7 +325,7 @@ fn is_facegen_tool_path_matches_an_already_canonical_path() {
 }
 
 /// `is_facegen_tool_path` — a real `textures\facegendata\…` per-NPC path
-/// (the FO4/Skyrim prebaked FaceGen convention, `npc_spawn.rs`'s
+/// (the FO4/Skyrim prebaked FaceGen convention, `npc_spawn/skeleton_paths.rs`'s
 /// `prebaked_facegen_tint_path`) must NOT match: `facegendata` shares a
 /// prefix with `facegen` but is a distinct, real archive folder that
 /// already resolves correctly and must not be routed through the basename

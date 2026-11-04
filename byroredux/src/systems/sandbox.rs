@@ -62,7 +62,7 @@ use crate::components::{SandboxSitClip, SeatReservations};
 /// current position, used when `SandboxBehavior.search_radius` is `None`
 /// (no PLDT / radius 0 / a location type the parser doesn't resolve a
 /// center for). Most sandboxing actors carry a real authored radius from
-/// PLDT (npc_spawn.rs); 512 was the estimate before that landed — still a
+/// PLDT (`npc_spawn/ai_package.rs`); 512 was the estimate before that landed — still a
 /// reasonable FNV-interior-scale default for the no-PLDT case.
 pub(crate) const SEAT_SEARCH_RADIUS: f32 = 512.0;
 

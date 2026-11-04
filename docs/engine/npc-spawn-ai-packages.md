@@ -159,7 +159,7 @@ The predicate lives at the caller because `scripting` depends on
 can't reach the evaluator. **Fail-open on unimplemented functions:**
 the M47.1 catalog covers 97 of Bethesda's ~300 condition functions, so
 if any condition in a package's list references an out-of-catalog
-function, `package_conditions_pass` (`npc_spawn.rs`) treats the whole
+function, `package_conditions_pass` (`npc_spawn/ai_package.rs`) treats the whole
 list as passing rather than let an unevaluable `Func == 1` silently
 resolve to `0.0 == 1` (false) and drop a package the engine can't
 reason about. Only lists whose every function is implemented gate for
@@ -221,7 +221,7 @@ piece (counter / bench / multi-chair table authored as one FURN with
 several `BSFurnitureMarker` positions) seats one actor per marker; before
 this the reservation was keyed by furniture entity alone and a six-stool
 counter seated exactly one NPC. The seat pose comes from the sit-enter
-clip (`sandbox_sit_enter_kf_path`, `npc_spawn.rs` — FNV/FO3 only,
+clip (`sandbox_sit_enter_kf_path`, `npc_spawn/anim_clips.rs` — FNV/FO3 only,
 `chairskirt_leftenter.kf`), parked at its **final frame**
 (`local_time = duration`, `playing = false`).
 
@@ -238,7 +238,7 @@ markers) live in `systems/sandbox.rs`'s module doc.
 
 Search *center* is always the actor's own spawn position, not a
 resolved `PLDT` target reference — a same-day investigation
-(2026-07-14, see `SandboxBehavior`'s doc comment and `npc_spawn.rs`)
+(2026-07-14, see `SandboxBehavior`'s doc comment and `npc_spawn/ai_package.rs`)
 found only ~12% of vanilla FNV `NearReference`-type packages resolve to
 anything spawnable, so FormID-based center resolution isn't planned as
 a near-term follow-up.
@@ -269,7 +269,7 @@ picking a new point. Target points and pause durations are **not**
 `rand`-crate randomness — both are derived from a SplitMix64-style
 avalanche hash seeded on `(WanderBehavior::form_id,
 WanderState::pick_count)`, the same no-RNG-dependency, save/reload-
-stable convention `npc_spawn.rs::idle_desync` uses for per-actor idle
+stable convention `npc_spawn/anim_clips.rs::idle_desync` uses for per-actor idle
 phase/speed desync.
 
 v0 scope, mirroring Sandbox's own documented approximations: no

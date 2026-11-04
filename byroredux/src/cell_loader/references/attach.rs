@@ -253,7 +253,7 @@ pub(crate) fn authored_container_inventory(
     for entry in &cont.contents {
         // Negative parsed counts are remove-from-inventory deltas, not
         // live state — clamp at runtime per `ItemStack::count` docs
-        // (matches the same normalization `npc_spawn.rs` applies to
+        // (matches the same normalization `npc_spawn/equip.rs` applies to
         // NPC/actor inventories built from the same CNTO entry shape).
         let runtime_count = entry.count.max(0) as u32;
         if runtime_count == 0 {

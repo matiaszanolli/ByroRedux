@@ -140,7 +140,7 @@ in the design narrative.
 |---|---|---|---|
 | `ActivateEvent` | `activator: EntityId` | `OnActivate` | shared interaction path used by gameplay input and diagnostics |
 | `HitEvent` | `aggressor`, `source`, `projectile: EntityId` + damage/attack flags | `OnHit` | combat runtime |
-| `EquipmentEventBatch` | `Vec<EquipmentChange>` (`item_form_id`, `equipped`), keyed by the wearer entity | actor `OnObjectEquipped` / `OnObjectUnequipped` | **live** — [`emit_equipment_changes`](../../crates/scripting/src/equipment.rs) appends to the wearer's one-frame batch (`get_mut`-then-`extend`); callers are [`byroredux/src/inventory/`](../../byroredux/src/inventory.rs) and the `EquipItem` fragment effect |
+| `EquipmentEventBatch` | `Vec<EquipmentChange>` (`item_form_id`, `equipped`), keyed by the wearer entity | actor `OnObjectEquipped` / `OnObjectUnequipped` | **live** — [`emit_equipment_changes`](../../crates/scripting/src/equipment.rs) appends to the wearer's one-frame batch (`get_mut`-then-`extend`); callers are [`byroredux/src/inventory/`](../../byroredux/src/inventory/) and the `EquipItem` fragment effect |
 | `TimerExpired` | `timer_id: u32` | `OnTimer` | `timer_tick_system` — **dormant** (#5608): nothing starts a `ScriptTimer`; FO4 `OnTimer` ships via the update-registration registry |
 | `AnimationTextKeyEvents` | `Vec<AnimationTextKeyEvent { label: FixedString, time: f32 }>` | KF text keys | `byroredux::systems::animation` (live — fires on every clip) |
 | `OnUpdateEvent` | (unit) | `OnUpdate` | `recurring_update_tick_system` |
@@ -2476,7 +2476,7 @@ shape: the reference's `ScriptVariables` hold it as `<name>#lo` / `<name>#hi` (t
 an `f32`), the quest locals as slots `0x4000 + n` / `0x8000 + n`. `OnDeathEnableLinkedRef` runs byte for byte in
 `obscript_objects` tests.
 
-**The effect bridge (`obscript_effects.rs`).** Most of what a legacy script *does* the Papyrus effect runtime
+**The effect bridge (`crates/scripting/src/obscript_effects/`).** Most of what a legacy script *does* the Papyrus effect runtime
 already does, with the engine's sinks behind it. An ObScript command is lowered to the `Effect` its Papyrus
 namesake builds and applied through `apply_fragment_guard_free`, the resolved references bound as the
 properties of a throwaway VMAD (the device the Papyrus VM uses for a native call), so nothing is

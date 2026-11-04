@@ -463,7 +463,7 @@ exception.
 - **Player chargen itself is still future work, but a stat-bearing player exists
   (#4458, `eb3784309`).** The player body carries the `ActorValues` + `ActorVitals`
   seed built from the base Player `NPC_` via `derive_npc_actor_values`
-  (`inventory.rs::build_player_character_template`), and since #4674 the ruleset's
+  (`inventory/catalog.rs::build_player_character_template`), and since #4674 the ruleset's
   `PlayerOnly` rows (Health/AP and friends) are evaluated for the player at
   stamping instead of inheriting the NPC answer. Full chargen (authored stats,
   race/session selection) remains a separate slice — see [[actor_value_population]].

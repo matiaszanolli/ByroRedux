@@ -617,7 +617,7 @@ mod sources_ordering_tests {
     const PER_FILE_WITNESS: &[(&str, &str)] = &[
         ("world.rs", "world.insert_resource(DeltaTime(0.0));"),
         ("schedule/early.rs", "timer_tick_system"),
-        ("schedule/update.rs", "combat_damage_system"),
+        ("schedule/update/player_animation.rs", "combat_damage_system"),
         (
             "schedule/post_update.rs",
             "make_world_bound_propagation_system",

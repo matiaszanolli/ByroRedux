@@ -62,7 +62,7 @@
 //!
 //! **Both arms are therefore marked provisional rather than asserted.**
 //! They are also currently unreachable in practice: the sole caller is
-//! `npc_spawn.rs`, and no FO76 or Starfield NPC spawn path exercises it
+//! `npc_spawn/equip.rs`, and no FO76 or Starfield NPC spawn path exercises it
 //! yet. Unblocking is cheap when either game's masters are mounted —
 //! census `ARMO` BOD2 values against the armours whose meshes visibly
 //! replace the torso, exactly as the FO4 column was settled.

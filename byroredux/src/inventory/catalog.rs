@@ -291,7 +291,7 @@ pub(crate) fn vitals_snapshot(
 
 /// Derive the player's actor values from the base Player `NPC_` record —
 /// never the placed reference (`0x14`) — mirroring `stamp_actor_values`
-/// (`npc_spawn.rs`) line for line: `derive_npc_actor_values`, then vitals
+/// (`npc_spawn/stamps.rs`) line for line: `derive_npc_actor_values`, then vitals
 /// keyed by the resolved Health AVIF only when Health actually landed.
 ///
 /// #4674 (CHAR-2026-09-21-D4-01) — with one difference from the NPC path:

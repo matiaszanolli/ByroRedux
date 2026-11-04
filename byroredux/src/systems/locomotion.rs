@@ -56,8 +56,8 @@ pub(crate) const LOCOMOTION_TURN_RATE: f32 = 4.0;
 pub(crate) const LOCOMOTION_GROUND_RAY_UP_OFFSET: f32 = 256.0;
 
 /// M42.10 — NPC KCC capsule half-height (BU, excludes caps), matching the
-/// shape-less-actor fallback collider (`npc_spawn.rs::install_fallback_
-/// actor_collider`) so every walking NPC sweeps with the same body the
+/// shape-less-actor fallback collider (`install_fallback_actor_collider`,
+/// `npc_spawn/fallback_physics.rs`) so every walking NPC sweeps with the same body the
 /// combat ray targeting already assumes. Derived from the shared const
 /// pair, not copied (#4689 — a retune of the fallback body now moves the
 /// KCC with it instead of silently diverging).

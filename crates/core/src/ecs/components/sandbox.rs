@@ -29,7 +29,7 @@ use crate::ecs::storage::{Component, EntityId};
 /// v0 always derives the search *center* from the actor's own
 /// `GlobalTransform`, regardless of the authored location type. FormID
 /// center resolution (`PackLocationTarget::NearReference` → a live
-/// entity's position) was investigated 2026-07-14 (see `npc_spawn.rs`)
+/// entity's position) was investigated 2026-07-14 (see `npc_spawn/ai_package.rs`)
 /// and found low-value: only ~12% of vanilla FNV NearReference packages
 /// resolve to anything spawnable, since most target either an
 /// unparsed/unloaded cell or the hardcoded XMarker family that

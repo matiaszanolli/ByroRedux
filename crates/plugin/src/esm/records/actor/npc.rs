@@ -587,7 +587,7 @@ pub fn parse_npc(
     }
     // MILESTONE: M41.0.5 (per-vertex morph runtime) — see #1057.
     // FMRI + FMRS pairs decoded here populate `face_morphs.morphs`
-    // (typed-morph-target form). `byroredux/src/npc_spawn.rs` ignores
+    // (typed-morph-target form). `byroredux/src/npc_spawn/` ignores
     // the array today; FaceGen Phase 4 (#794 family) only consumed the
     // `runtime_facegen` recipe path. Wire when the per-vertex morph
     // GPU runtime lands.

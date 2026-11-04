@@ -71,7 +71,13 @@ fn line_references(text: &str) -> Vec<(String, usize, usize, String)> {
         from = end;
         let tail = &text[end..];
         let digits_at = if let Some(rest) = tail.strip_prefix(":") {
-            tail.len() - rest.len()
+            // #6581 — a reference wrapped at its colon (`npc_spawn.rs:` ending one
+            // comment line, `// 366-367` opening the next) continues past the
+            // newline and the comment marker.
+            match rest.strip_prefix('\n') {
+                Some(next) => tail.len() - next.trim_start().trim_start_matches(['/', '!', '*']).trim_start().len(),
+                None => tail.len() - rest.len(),
+            }
         } else if let Some(rest) = tail.strip_prefix("#L") {
             tail.len() - rest.len()
         } else {
@@ -199,6 +205,15 @@ fn the_scanner_reads_both_reference_spellings() {
         refs,
         vec![("bar_baz.rs".to_string(), 42), ("a-b.rs".to_string(), 7)]
     );
+}
+
+#[test]
+fn the_scanner_follows_a_reference_wrapped_at_its_colon() {
+    // #6581: `crates/core/src/ecs/systems.rs` cited `npc_spawn.rs:` / `// 366-367`
+    // across two comment lines, so the deleted file's line number went unseen.
+    let refs = line_references("// Mirrors npc_spawn.rs:\n        // 366-367. This is\nsee x.rs:\n/// prose");
+    let refs: Vec<_> = refs.into_iter().map(|(n, l, src, _)| (n, l, src)).collect();
+    assert_eq!(refs, vec![("npc_spawn.rs".to_string(), 366, 1)]);
 }
 
 #[test]

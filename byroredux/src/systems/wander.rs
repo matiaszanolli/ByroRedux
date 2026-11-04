@@ -20,7 +20,7 @@
 //! Randomness is **deterministic, not a `rand`-crate RNG** — target points
 //! and pause durations are derived from a SplitMix64-style avalanche hash
 //! seeded on `(WanderBehavior::form_id, WanderState::pick_count)`, the
-//! same no-RNG-dependency convention `npc_spawn.rs::idle_desync` uses for
+//! same no-RNG-dependency convention `npc_spawn/anim_clips.rs::idle_desync` uses for
 //! per-actor idle phase/speed desync. This keeps wandering save/reload-
 //! stable without adding a dependency.
 //!
@@ -95,7 +95,7 @@ const WANDER_DEFAULT_RADIUS: f32 = super::locomotion::AI_PACKAGE_DEFAULT_RADIUS;
 const WANDER_PAUSE_MIN: f32 = 3.0;
 const WANDER_PAUSE_MAX: f32 = 8.0;
 
-/// SplitMix64-style avalanche — same core as `npc_spawn.rs::idle_desync`,
+/// SplitMix64-style avalanche — same core as `npc_spawn/anim_clips.rs::idle_desync`,
 /// extracted as a standalone step since Wander needs more than the two
 /// fractions `idle_desync` packs from one seed (target angle, target
 /// distance, and pause duration each need their own draw).

@@ -36,7 +36,7 @@
 //! PACK parsing; an AI-package evaluator exists
 //! (`package_conditions_pass` / `ambient_ai_package_system`, registered
 //! unconditionally as a `Stage::Update` exclusive in
-//! `byroredux/src/boot/schedule/update.rs`);
+//! `byroredux/src/boot/schedule/update/quest_scene.rs`);
 //! and M42 has delivered seven procedure runtimes (Sandbox / Wander /
 //! Travel / Follow / Escort / Guard / Patrol, M42.1–M42.9). The conclusion
 //! is unchanged — this module still has no consumer — but it is *unscheduled*

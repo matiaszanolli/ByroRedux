@@ -1,6 +1,6 @@
 //! Scoping check for the Skyrim+ ambient-AI gap: of the `PACK` records an
 //! NPC's own `PKID` list references directly (ambient candidates — the
-//! packages `npc_spawn.rs`'s M42 selector would need to run, with no `SCEN`
+//! packages `npc_spawn/ai_package.rs`'s M42 selector would need to run, with no `SCEN`
 //! driving them), how many are FO3/FNV flat-shaped (the only shape the
 //! current ambient selector understands) vs. Skyrim+ tree/template-shaped
 //! (`PackRecord.procedures` / `package_template_form_id` / `data_inputs` —

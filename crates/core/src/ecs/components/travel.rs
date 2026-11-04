@@ -45,7 +45,7 @@ use crate::math::Vec3;
 ///
 /// `form_id` is the raw ESM FormID (`NpcRecord.form_id`), captured at
 /// spawn — used to seed the deterministic fallback-pick hash, the same
-/// value `npc_spawn.rs::idle_desync` and `WanderBehavior::form_id` use.
+/// value `npc_spawn/anim_clips.rs::idle_desync` and `WanderBehavior::form_id` use.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct TravelBehavior {

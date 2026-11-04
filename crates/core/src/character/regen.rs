@@ -124,7 +124,7 @@ impl PoolRegenAccumulator {
 /// Per-game resolved AVIF ids the regen tick needs — a `Resource`.
 ///
 /// **Inserted in production for FO3/FNV only** (#6350):
-/// `build_vats_model` (`byroredux/src/npc_spawn.rs`) returns it with the
+/// `build_vats_model` (`byroredux/src/npc_spawn/stamps.rs`) returns it with the
 /// [`ActionPointsRegen`] lane, and the cell loader installs it on the first
 /// cell load. Every other game takes [`pool_regen_tick_system`]'s `let … else`
 /// early return, and on FO3/FNV the Fatigue/Magicka/Willpower ids are `None`

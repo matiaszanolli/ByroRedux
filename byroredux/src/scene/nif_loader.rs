@@ -702,7 +702,7 @@ fn load_nif_with_skeleton_from<'a>(
             // per NPC skeleton/body/head/equipped item, so any NPC-worn NIF
             // carrying an embedded controller stack registered a fresh,
             // un-freeable clip copy on every spawn and every cell reload — the
-            // sibling KF loader (`npc_spawn.rs`) already routes through
+            // sibling KF loader (`npc_spawn/anim_clips.rs`) already routes through
             // `get_or_insert_by_path`; this path had skipped it.
             registry.get_or_insert_by_path(label.to_string(), || clip)
         };

@@ -37,7 +37,7 @@ use crate::math::Vec3;
 /// here without needing a second investigation).
 ///
 /// `form_id` is the raw ESM FormID (`NpcRecord.form_id`), captured at
-/// spawn — the same value `npc_spawn.rs::idle_desync` hashes for
+/// spawn — the same value `npc_spawn/anim_clips.rs::idle_desync` hashes for
 /// per-actor phase/speed desync. `wander_system` folds it into its own
 /// deterministic target/pause-duration hash, so it needs no separate
 /// `FormIdComponent` query.
@@ -75,7 +75,7 @@ pub struct WanderState {
     /// Increments on every new target pick. Folded into the deterministic
     /// target/pause-duration hash (alongside `WanderBehavior::form_id`) so
     /// repeated picks for the same actor don't repeat the same point —
-    /// mirrors `npc_spawn.rs::idle_desync`'s no-RNG-crate determinism
+    /// mirrors `npc_spawn/anim_clips.rs::idle_desync`'s no-RNG-crate determinism
     /// convention (save/reload-stable, no `rand` dependency).
     pub pick_count: u32,
 }

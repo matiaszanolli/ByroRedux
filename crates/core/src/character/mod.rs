@@ -67,7 +67,7 @@
 //! game-agnostic canonical types those boundaries feed. The rulesets
 //! themselves have exactly one construction site —
 //! `CharacterRulesProfile::build_ruleset`, reached from
-//! `build_character_ruleset` (`byroredux/src/npc_spawn.rs`) — so "is game X
+//! `build_character_ruleset` (`byroredux/src/npc_spawn/stamps.rs`) — so "is game X
 //! wired?" is answered there, not by whether a `*_ruleset()` builder exists
 //! (Oblivion's does and is deliberately blocked on the pre-AVIF actor-value
 //! resolver, #3768; Skyrim's is wired, #3848).
