@@ -1,13 +1,13 @@
 # Reference-Quality Lighting — Product Requirements
 
-**Status**: ACTIVE (2026-11-02). Revision 14; the change history is in
+**Status**: ACTIVE (2026-11-04). Revision 15; the change history is in
 §12. Every decision in §10 is decided and every Phase 0 verify item is
 closed or filed as an issue.
 
 **Tracking**: #6595 (parent). Phases: #6596 (0), #6601 (1a), #6598 (1b),
 #6602 (2), #6603 (3), #6604 (4), #6599 (5). M51 tools built here: #6600
 (exporter, PTR-VAL-004), #6597 (EXR writer, PTR-OUT-001). Verify items
-filed: #6605 (V9), #6606 (V12). Statements about
+filed: #6605 (V9, closed in rev 15), #6606 (V12). Statements about
 how an original engine, a published technique or an external tool behaves
 cite external sources (UESP and the Creation Kit wikis, the cited papers
 and vendor documentation); a claim that could not be verified is marked
@@ -530,11 +530,19 @@ live in the rung subsection of the exporter design (Related table).
   run MUST exist for the skinned proxy (RLT-CON-003), and the exporter
   MUST export that frame's pose (RLT-EXP-001). At HEAD on 2026-11-01
   `renderer-static` steps 0 s and `renderer-stepped` a fixed 1/60 s
-  (`BenchMode::delta_time`, `byroredux/src/bench.rs`). Whether the
-  animation and skinning systems advance under `renderer-stepped` and give
-  a bit-identical pose at a given frame (V9) needs a two-run comparison of
-  the skinned palette, filed in rev 8 as #6605 for Phase 3; its answer
-  decides whether this is the existing mode or a new one.
+  (`BenchMode::delta_time`, `byroredux/src/bench.rs`). V9 (#6605, rev 15)
+  settles it as the existing mode: under `renderer-stepped` the
+  `AnimationPlayer` and transform propagation advance 1/60 s before each
+  drawn frame, so drawn frame F is clip time (F + 1) / 60 s. Two runs of
+  the contact rung with different RT seeds exported every file
+  byte-identical at frame 45, frames 0, 44 and 45 differed only in the
+  proxy mesh, and the proxy's yaw read back as 0.01 / 0.45 / 0.46 rad
+  against the clip's 0.6 (F + 1) / 60. The proxy's bind inverse is the
+  identity, so its exported palette is the bone world matrix that
+  `build_skinned_palettes` uploads as `skin_palette.comp`'s input; the
+  GPU multiply on identical inputs is deterministic. The mode needs a
+  non-static `--bench-camera` path; `--bench-camera pan
+  --bench-camera-freeze-at 0` holds the rung's camera.
 - **RLT-REF-018.** A switch that bypasses SVGF — both its temporal
   accumulation and its à-trous passes — MUST exist for the closure rung,
   as a `DBG_*` bit listed with its siblings. At HEAD on 2026-11-01
@@ -1237,7 +1245,7 @@ checked in.
 | V6 | Whether the engine can light a probe by a uniform environment (RLT-REF-014) | Closed in rev 8: yes, with new exterior-sky set-up code (RLT-REF-014) |
 | V7 | The `envBRDFApprox` constants (RLT-IBL-001) | Closed in rev 8: they match Karis 2014 exactly (RLT-IBL-001) |
 | V8 | The other titles' shadow INI settings (§6 row 1) | Closed in rev 8 for §6 row 1: setting names from the shipped preset INIs; their meanings are unverified and not needed by the row (§6 row 1) |
-| V9 | Whether `renderer-stepped` advances animation to a bit-identical skinned pose per frame (RLT-REF-017) | Filed in rev 8 as #6605 (needs a two-run measurement; Phase 3) |
+| V9 | Whether `renderer-stepped` advances animation to a bit-identical skinned pose per frame (RLT-REF-017) | Closed in rev 15 (#6605): yes — the existing mode is the RLT-REF-017 mode; drawn frame F is clip time (F + 1) / 60 s, and two runs export byte-identical posed meshes (RLT-REF-017) |
 | V10 | Whether the directional light's intensity can be zeroed independently of `dome.sun_dir.w` (RLT-REF-019) | Closed in rev 8: no — one source feeds both; the switch is new code (RLT-REF-019) |
 | V11 | Whether `specular_strength` 0 removes every specular contribution (RLT-GI-010) | Closed in rev 8: no — the GI walk keeps a GGX lobe and (1 − F) weights; a Lambertian switch is needed (RLT-GI-010) |
 | V12 | The BGSM smoothness-to-roughness conversion (RLT-IBL-008 F3) | Not verifiable from the cited source; filed in rev 8 as #6606 (Phase 4) |
@@ -1566,3 +1574,5 @@ Each needs the project owner. The recommendation is the first option.
 | 11 | 2026-11-02 | Phase 1a exit (#6601): A15 passes (point calibration 0.99927–0.99947 over the plane and its 3 × 3 grid; Lambertian planes 0.99931–0.99954 at three views), A16 closes on both sides, A18 published (cold 291.2 s with 12 references rendered in 6.2 s, warm 260.0 s; engine captures dominate); manifests in `docs/audits/MLIGHT_phase1a_exit_262a964b9_*`. Representation floor added to §2: RGBA16F capture storage (2<sup>−10</sup>) and composite's B10G11R11 indirect and albedo, modelled in the closure prediction. A7, A8, A15, A16, A18 commands now name `scripts/m-light-gates.sh` and `byroredux/tests/m_light_gates.rs`; RLT-REF-008's Phase 1a scope is the Lambertian row. Apparatus findings recorded for their phases: shadow-ray self-intersection near a coordinate plane (#6607, fixed); a renderer-side interior dust medium (0.006 m<sup>−1</sup>, switch `--rt-test-no-dust-floor`); B10G11R11 storage darkens `final`'s indirect by about 1–2 %; SVGF removes 3.6–4.9 % of the blocks' energy (M54 report); for Phase 2's entry, the RT-LOD gate culls GI on grazing room surfaces at 720p and the GI walk shades hits as ρ ⁄ π against the primary lobe's non-/π Lambert | — |
 | 12 | 2026-11-02 | Phase 1b exit (#6598). A13: settled tier and pinned-tier frame time per benchmark scene under TAA native (the bench of record's reference, which the Q8 percentages use) and FSR Quality (the shipping default, published beside): Cornell 1 / 2, Prospector 0 / 1 (oscillation 0.42 / 0.34), Whiterun 1 / 3, MedTek 0 / 0, Dugout 0 / 1 — three of the four game scenes run no traced GI at native resolution, the case Q7's consequence names. Settled tier measured past a 240-frame warm-up (the controller's cold-start climb to tier 3 takes 225 frames) over a 300-frame window. A9: material classes per Wave 1 scene with F1 (MedTek 1366 / 4931 and Dugout 365 / 1148 dielectrics below roughness 0.2), F2 (every keyword-route conductor: Prospector 147, MedTek 113, Whiterun 22) and F3 (MedTek 280 / 7492, Dugout 56 / 1204, unverified convention #6606); the material-class route list is closed (§2). RLT-GI-001 pinned; RLT-GI-007 re-captured (the tier-3 isolated bounce is non-zero on every pixel of the Prospector floor, median 0.0023); content anchors captured per scene with their 32 × 32 tile floor. Lighting fidelity table added to ROADMAP; manifests `docs/audits/MLIGHT_phase1b_*_688f42705` | — |
 | 13 | 2026-11-02 | Phase 2 entry, steps 2–3 (#6602). Baselines: A7 at tier 3 deficit 1.00 / 0.98 / 1.00 (floor / back wall / ceiling), 0.82 / 0.82 / 0.79 with the RT-LOD gate off, clamp off 0.973 on the back wall; A8 fails at HEAD (−0.54 % over all geometry, run on a new close-up view because SSAO is inert at the front view's distance). L4 is S2. Owner (2026-11-02): budget deficit ≤ 0.10 and p95 relative error ≤ 0.50 per region, drift margin 2× the frozen floor, rationale a visibility argument; frozen floors taken from the RT-LOD-off capture because the gate-on floor is exactly 0. The threshold table lives in `docs/audits/MLIGHT_thresholds.tsv`. The owner also added RLT-GI-011 (hit shading in the primary lobe's convention) and RLT-GI-012 (the RT-LOD gate keeps GI on room-scale surfaces) to Phase 2 | — |
+| 14 | 2026-11-02 | Phase 2 owner decisions (#6602), checked in with `2f2dc5380`: RLT-GI-012 deferred to the Q5 radiance cache because the isotropic-footprint gate cost +3.4 to +10.9 ms on content and dropped three settled tiers (the Phase 1b gate ships, and a later widening re-runs A13); Q2 amended, the interior cross-fade (RLT-GI-005) deferred because it darkened Whiterun by a median of 26 % and up to 79 % per tile; RLT-GI-004 and RLT-GI-011 shipped. The exit's A7 / A8 run is in `docs/audits/MLIGHT_phase2_exit_A7A8_a89ca367e.tsv` (A8 passes) | — |
+| 15 | 2026-11-04 | V9 closed (#6605): `renderer-stepped` is the RLT-REF-017 mode. Drawn frame F is clip time (F + 1) / 60 s; two runs with different RT seeds export byte-identical scenes at frame 45 and the proxy's yaw matches the clip. A5's mid-animation run now passes a parked `--bench-camera` path, which `renderer-stepped` requires, and checks the yaw as well as the byte identity | — |

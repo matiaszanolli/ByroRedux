@@ -965,19 +965,44 @@ def gate_contact(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
 
 
 # RLT-CON-003: the skinned proxy mid-animation, at this bench frame of a
-# renderer-stepped run (t = 0.75 s of its 2 s sway, yaw 0.45 rad).
+# renderer-stepped run. The animation steps 1/60 s before frame 0 is drawn,
+# so drawn frame F is clip time (F + 1) / 60 s: frame 45 is t = 46/60 s of
+# the 2 s sway, whose first key ramps yaw at 0.6 rad/s (`reference.rs`),
+# so yaw 0.46 rad (V9, #6605, measured 2026-11-04).
 PROXY_FRAME = 45
+PROXY_YAW_RATE = 0.6
+PROXY_YAW_TOLERANCE = 1e-4
+
+
+def proxy_yaw(scene_dir: Path) -> float:
+    """The exported proxy column's yaw about +Y, from its posed PLY: the
+    top face's corners around their centre, less the 45° of a square."""
+    root = ET.parse(scene_dir / "scene.xml").getroot()
+    shape = next(s for s in root.iter("shape") if s.get("id") == "con_proxy")
+    filename = next(e.get("value", "") for e in shape.iter("string") if e.get("name") == "filename")
+    data = (scene_dir / filename).read_bytes()
+    body = data[data.index(b"end_header\n") + len(b"end_header\n"):]
+    vertices = np.frombuffer(body, dtype="<f4", count=24 * 6).reshape(24, 6)[:, :3]
+    top = vertices[np.abs(vertices[:, 1] - vertices[:, 1].max()) < 1e-3]
+    corners = np.unique(np.round(top[:, [0, 2]], 4), axis=0)
+    centred = corners - corners.mean(axis=0)
+    angles = np.arctan2(-centred[:, 1], centred[:, 0]) % (math.pi / 2)
+    return float(angles.min() - math.pi / 4)
 
 
 def contact_mid_animation(engine: Engine, store: ReferenceStore, spp: int):
     """A5's skinned-proxy row (RLT-CON-003): the proxy's band at one frame
     of its animation, against the reference rendered at the pose exported
     for that frame (RLT-EXP-001), and V9 (#6605): two runs must export
-    byte-identical posed meshes at the same frame."""
+    byte-identical posed meshes at the same frame, at the clip time that
+    frame index names."""
     rows = []
     rung_name, tier = "contact", CONTACT_TIERS[-1]
     exports = [engine.out / "scenes" / f"contact-proxy-f{PROXY_FRAME}-run{s}" for s in (0, 1)]
-    base = ["--rt-test-no-jitter", "--upscaler", "taa"]
+    # renderer-stepped needs a non-static path; parked at frame 0 it holds
+    # the rung's camera while the animation clock steps.
+    base = ["--rt-test-no-jitter", "--upscaler", "taa",
+            "--bench-camera", "pan", "--bench-camera-freeze-at", "0"]
     shadowed, unshadowed = [], []
     for s in (0, 1):
         export = ["--export-mitsuba", str(exports[s]), "--export-mitsuba-frame", str(PROXY_FRAME)]
@@ -993,6 +1018,12 @@ def contact_mid_animation(engine: Engine, store: ReferenceStore, spp: int):
     identical = float(plys[0] == plys[1])
     rows.append((Row("V9", f"contact-proxy-frame{PROXY_FRAME}", "posed_meshes", "byte_identical_runs",
                      identical, 0.0, 0.0, passed="yes" if identical == 1.0 else "no"), ""))
+    # A pose that never advanced would also be identical: the yaw must be
+    # the clip's at frame index PROXY_FRAME.
+    yaw_error = abs(proxy_yaw(exports[0]) - PROXY_YAW_RATE * (PROXY_FRAME + 1) / 60.0)
+    rows.append((Row("V9", f"contact-proxy-frame{PROXY_FRAME}", "con_proxy", "yaw_error_rad",
+                     yaw_error, 0.0, 0.0, passed="yes" if yaw_error <= PROXY_YAW_TOLERANCE else "no",
+                     threshold=f"<={PROXY_YAW_TOLERANCE}"), ""))
     rung = read_rung(exports[0])
     opened = without_casters(exports[0], rung.casters)
     ref = [store.render(exports[0], "direct", spp, s) for s in (0, 1)]

@@ -198,11 +198,15 @@ normal-mapped floor:
 It reports the same visibility error over each caster's contact band (the
 `band` records), at tiers 1–3, with the shadow filter on
 (`filtered_direct`) and off (`direct_only`). The proxy is also measured
-mid-animation under `renderer-stepped`. That run takes a single-frame
+mid-animation under `renderer-stepped`, on a `pan` path parked at frame 0
+(the mode needs a non-static path). That run takes a single-frame
 capture at bench frame 45 and exports the scene at the same frame
 (`--export-mitsuba-frame`), so the reference is rendered at the drawn pose
-(RLT-EXP-001). Two such runs must export byte-identical posed meshes,
-which is V9's answer (#6605).
+(RLT-EXP-001). Drawn frame F is clip time (F + 1) / 60 s, because the
+animation steps before frame 0 is drawn. Two such runs must export
+byte-identical posed meshes, and the proxy's yaw must be the clip's at
+that time (0.46 rad at frame 45). Both held on 2026-11-04, which closed
+V9 (#6605): `renderer-stepped` is the RLT-REF-017 mode.
 
 A14 (RLT-SHD-010, `penumbra-moving`) and A3 (RLT-SHD-002, a `pan` of the
 `penumbra` rung) are temporal gates. They compare the engine with itself,
