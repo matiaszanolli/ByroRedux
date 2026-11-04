@@ -257,6 +257,28 @@ fn fallout3_dial_topic_flags_census() {
     );
 }
 
+/// #6541 — FNV `EXPL` `DATA` carries Force (0), Damage (4), Radius (8): the decode used to start at 8, so the mine
+/// system ran on the radius as its damage and a denormal radius. The vanilla frag mine is 100 damage out to 192
+/// units (raw bytes read from `FalloutNV.esm`).
+#[test]
+#[ignore = "needs FNV game data on disk"]
+fn fnv_expl_damage_and_radius_decode_at_xedits_offsets() {
+    let Some(data) = data_dir(test_paths::FNV_ENV, test_paths::FNV_DEFAULT) else {
+        eprintln!("[FNV/EXPL] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("FalloutNV.esm")).expect("read FalloutNV.esm");
+    let index = parse_esm(&bytes).expect("parse FalloutNV.esm");
+    for (form, name, damage, radius) in [
+        (0x0007_078B_u32, "MineFragExplosion", 100.0_f32, 192.0_f32),
+        (0x0010_9A0F, "MineNVPowderChargeExplosion", 75.0, 192.0),
+        (0x0013_0044, "C4Explosion", 250.0, 512.0),
+    ] {
+        let expl = index.explosions.get(&form).unwrap_or_else(|| panic!("{name} ({form:08X}) is in FalloutNV.esm"));
+        assert_eq!((expl.damage, expl.radius, expl.inner_radius), (damage, radius, radius), "{name}");
+    }
+}
+
 /// #2905 — FNAM is a display/coercion hint; FLTV is always an IEEE f32.
 #[test]
 #[ignore = "needs FNV game data on disk"]

@@ -429,16 +429,20 @@ pub struct ExplRecord {
     pub form_id: u32,
     pub editor_id: String,
     pub full_name: String,
-    /// Damage in HP per direct hit (f32): `DATA` offset 8..12 on Oblivion/FO3/FNV, offset 28 on Skyrim and
-    /// Fallout 4.
+    /// Damage in HP per direct hit (f32): `DATA` offset 4 on FO3/FNV, offset 28 on Skyrim and Fallout 4.
     pub damage: f32,
-    /// Explosion blast radius in game units (f32): `DATA` offset 12..16 on Oblivion/FO3/FNV, the single
+    /// Explosion blast radius in game units (f32): `DATA` offset 8 on FO3/FNV, the single
     /// `Radius` at 32 on Skyrim, and Fallout 4's `Outer Radius` at 36.
     pub radius: f32,
     /// Fallout 4's `Inner Radius` (`DATA` offset 32); equal to [`Self::radius`] on every other game, which
     /// author one radius.
     pub inner_radius: f32,
 }
+
+/// FO3 / FNV `EXPL` `DATA` (xEdit `wbEXPL`): Force at 0, then the damage here and the radius after it. Decoded
+/// through the radius (8..12).
+const EXPL_FO3_FNV_DAMAGE: usize = 4;
+const EXPL_FO3_FNV_DATA_LEN: usize = 12;
 
 /// Skyrim and Fallout 4 `EXPL` `DATA` (xEdit `wbEXPL`): six form ids (light, two sounds, impact data set, placed
 /// object, spawn projectile) fill 0..24, the force sits at 24, then the damage here. The radius follows:
@@ -474,9 +478,12 @@ pub fn parse_expl(form_id: u32, subs: &[SubRecord], game: crate::esm::reader::Ga
                     out.inner_radius = out.radius;
                 }
             }
-            b"DATA" if sub.data.len() >= 16 => {
+            // FO3 / FNV (xEdit `wbEXPL`): Force (0), Damage (4), Radius (8), then the Light form id (12) — the
+            // old arm started at 8, so it stored the radius as the damage and the light's form id, read as
+            // an f32, as the radius (#6541).
+            b"DATA" if sub.data.len() >= EXPL_FO3_FNV_DATA_LEN => {
                 let mut r = SubReader::new(&sub.data);
-                r.skip_or_eof(8); // damage starts at offset 8
+                r.skip_or_eof(EXPL_FO3_FNV_DAMAGE);
                 out.damage = r.f32_or_default();
                 out.radius = r.f32_or_default();
                 out.inner_radius = out.radius;
@@ -731,21 +738,24 @@ mod tests {
         assert!((r.base_value - 1.0).abs() < 1e-6);
     }
 
+    /// A real 52-byte FNV `EXPL` `DATA` image — `MineFragExplosion` (0x0007078B) from `FalloutNV.esm`: force 250,
+    /// damage 100, radius 192, then the light (a LIGH form id, `0x00014BFF`, which the old decode read as the
+    /// radius: a denormal) and the rest. (#6541)
     #[test]
-    fn parse_expl_picks_edid_full_damage_radius() {
-        // `FragGrenade` shape: damage at DATA[8..12], radius at [12..16].
-        let mut data = [0u8; 16];
-        data[8..12].copy_from_slice(&50.0_f32.to_le_bytes()); // damage
-        data[12..16].copy_from_slice(&350.0_f32.to_le_bytes()); // radius
+    fn parse_expl_reads_fo3_fnv_damage_and_radius_at_xedits_offsets() {
+        let mut data = [0u8; 52];
+        data[0..4].copy_from_slice(&250.0_f32.to_le_bytes()); // force
+        data[4..8].copy_from_slice(&100.0_f32.to_le_bytes()); // damage
+        data[8..12].copy_from_slice(&192.0_f32.to_le_bytes()); // radius
+        data[12..16].copy_from_slice(&0x0001_4BFFu32.to_le_bytes()); // light
         let subs = vec![
-            sub(b"EDID", b"FragGrenade\0"),
-            sub(b"FULL", b"Frag Grenade\0"),
+            sub(b"EDID", b"MineFragExplosion\0"),
+            sub(b"FULL", b"Frag Mine\0"),
             sub(b"DATA", data),
         ];
-        let e = parse_expl(0x0006_6EF8, &subs, crate::esm::reader::GameKind::Fallout3NV);
-        assert_eq!(e.editor_id, "FragGrenade");
-        assert!((e.damage - 50.0).abs() < 1e-3);
-        assert!((e.radius - 350.0).abs() < 1e-3);
+        let e = parse_expl(0x0007_078B, &subs, crate::esm::reader::GameKind::Fallout3NV);
+        assert_eq!(e.editor_id, "MineFragExplosion");
+        assert_eq!((e.damage, e.radius, e.inner_radius), (100.0, 192.0, 192.0));
     }
     /// A Fallout 4 mine (`FragMineProjectile` from `Fallout4.esm`): flags 0x66 (Explosion | Alt. Trigger | Can
     /// Be Disabled | Can Be Picked Up), type Lobber, proximity 100, timer 1.5, explosion 0xEECE9 — and its
