@@ -38,18 +38,25 @@ MIN_SHOT_BYTES="${BYROREDUX_SMOKE_MIN_SHOT_BYTES:-30000}"
 
 LOG_DIR="$(mktemp -d /tmp/byro-p6-loadmodel.XXXXXX)"
 engine_pid=""
+# #6613 — the failure message names $LOG_DIR as the artifacts, so a failure must keep it (the EXIT trap used
+# to `rm -rf` it on the way out, leaving nothing to inspect); BYROREDUX_KEEP_ARTIFACTS=1 keeps a passing run
+# too, as p3-player-body does.
+keep_artifacts=${BYROREDUX_KEEP_ARTIFACTS:-0}
 cleanup() {
     if [[ -n "$engine_pid" ]]; then
         kill -TERM "$engine_pid" 2>/dev/null || true
         wait "$engine_pid" 2>/dev/null || true
     fi
-    rm -rf "$LOG_DIR"
+    if (( keep_artifacts == 0 )); then
+        rm -rf "$LOG_DIR"
+    fi
 }
 trap cleanup EXIT
 
 fail() {
+    keep_artifacts=1
     echo "smoke[p6-loading-model]: FAIL -- $*" >&2
-    echo "artifacts: $LOG_DIR" >&2
+    echo "artifacts retained at $LOG_DIR" >&2
     exit 1
 }
 
@@ -89,8 +96,10 @@ for game in $GAMES; do
     shot="$LOG_DIR/$game.cover.png"
     cd "$SMOKE_ROOT_DIR"
     rm -f "screenshots/p6-cover.png"
+    # #6613 — `byroredux::app_step` is the target of the `Cell transition applied:` line the wait below greps; without
+    # it that line is filtered out and the gate times out on a transition that did apply.
     BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
-    RUST_LOG="warn,byroredux::loading_screen=info,byroredux::cell_loader::transition=info,byroredux::interaction=info" \
+    RUST_LOG="warn,byroredux::loading_screen=info,byroredux::cell_loader::transition=info,byroredux::interaction=info,byroredux::app_step=info" \
     target/release/byroredux \
         "${SMOKE_ENGINE_ARGS[@]}" \
         "${extra_args[@]}" \
