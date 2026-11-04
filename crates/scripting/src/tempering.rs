@@ -80,6 +80,11 @@ pub fn tempering_multiplier(world: &World, owner: EntityId, item_base: u32, ench
     if let Some(mut item) = world.try_resource_mut::<TemperingItem>() {
         item.enchanted = false;
     }
+    // Take the loan back: a `SceneAliasCandidate` left on the scratch entity would be a standing, placeless
+    // alias candidate for `refresh_scene_actor_bindings`, which checks no liveness or position (#6571).
+    if let Some(mut candidates) = world.query_mut::<crate::scene::SceneAliasCandidate>() {
+        candidates.remove(subject);
+    }
     value
 }
 
@@ -155,6 +160,22 @@ mod tests {
         assert_eq!(tempering_multiplier(&world, player, STEEL_SWORD, false), 2.0);
         assert_eq!(tempering_multiplier(&world, player, IRON_SWORD, false), 1.0, "iron has no material perk");
         assert_eq!(tempering_multiplier(&world, nobody, STEEL_SWORD, false), 1.0);
+    }
+
+    /// #6571 — the lent base form is taken back: the scratch subject is not left behind as an alias candidate.
+    #[test]
+    fn the_scratch_subject_is_not_left_as_an_alias_candidate() {
+        let (world, player, _nobody) = world();
+        let subject = world.resource::<TemperingSubject>().0;
+        let has_candidate = |world: &World| {
+            world.query::<crate::scene::SceneAliasCandidate>().is_some_and(|candidates| candidates.get(subject).is_some())
+        };
+        assert!(!has_candidate(&world));
+        assert_eq!(tempering_multiplier(&world, player, STEEL_SWORD, false), 2.0);
+        assert!(!has_candidate(&world), "the loan ends with the evaluation");
+        // And again: a second item still evaluates (the candidate is re-lent, not assumed present).
+        assert_eq!(tempering_multiplier(&world, player, IRON_SWORD, false), 1.0);
+        assert!(!has_candidate(&world));
     }
 
     #[test]
