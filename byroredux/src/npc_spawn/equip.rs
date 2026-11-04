@@ -226,7 +226,9 @@ pub(super) fn build_npc_equip_state<'a>(
     // level 1 while its terminal carries the real level was expanding its
     // leveled gear at the wrong tier. Same source `resolve_actor_spells`
     // already reads (equip.rs).
-    let actor_level = effective_actor_level(resolved.stats);
+    // #4232 — `resolved.level()`: a level-0 terminal picked by an LVLN
+    // takes that pick's entry level instead of emptying every list.
+    let actor_level = resolved.level();
     let mut expanded: Vec<ExpandedEquip> = Vec::new();
     let mut resolved_buf = Vec::new();
     // #4696 — the carry-list expander's (form_id, count) pairs.

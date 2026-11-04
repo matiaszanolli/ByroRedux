@@ -118,9 +118,15 @@ fn mixed_npc_list_cycles_share_one_budget() {
         Some(n.form_id)
     });
     assert_eq!(result, Some(4));
-    walk_inherited_records(&npc, 1, &index, TEMPLATE_FLAG_USE_TRAITS, 0, &mut |_| {
-        visits += 1
-    });
+    walk_inherited_records(
+        &npc,
+        1,
+        &index,
+        TEMPLATE_FLAG_USE_TRAITS,
+        0,
+        &mut |_| visits += 1,
+        &mut None,
+    );
     assert!(visits <= TPLT_MAX_DEPTH + 1);
 }
 

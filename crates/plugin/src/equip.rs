@@ -566,7 +566,7 @@ fn resolve_inherited_record<'a>(
     flag: u16,
     depth: u32,
 ) -> &'a crate::esm::records::actor::NpcRecord {
-    walk_inherited_records(npc, actor_level, index, flag, depth, &mut |_| {})
+    walk_inherited_records(npc, actor_level, index, flag, depth, &mut |_| {}, &mut None)
 }
 
 /// Resolve one *field* across the same `TPLT` chain, taking the deepest
@@ -597,16 +597,28 @@ pub fn resolve_inherited_field<'a, T>(
     authored: impl Fn(&'a crate::esm::records::actor::NpcRecord) -> Option<T>,
 ) -> Option<T> {
     let mut deepest = None;
-    walk_inherited_records(npc, actor_level, index, flag, 0, &mut |record| {
-        if let Some(value) = authored(record) {
-            deepest = Some(value);
-        }
-    });
+    walk_inherited_records(
+        npc,
+        actor_level,
+        index,
+        flag,
+        0,
+        &mut |record| {
+            if let Some(value) = authored(record) {
+                deepest = Some(value);
+            }
+        },
+        &mut None,
+    );
     deepest
 }
 
 /// The walk itself: visits `npc`, then each record the chain resolves
 /// through, and returns the terminal.
+///
+/// `last_pick_level` receives the authored entry level of the deepest `LVLN` /
+/// `LVLC` entry the walk picked (untouched when the chain crosses no list), so
+/// a caller can recover the *spawn* level the list handed the terminal (#4232).
 ///
 /// Split out of `resolve_inherited_record` for #4086 so the per-field
 /// resolver sees the intermediates without a second copy of the `LVLN`/`LVLC`
@@ -619,6 +631,7 @@ fn walk_inherited_records<'a>(
     flag: u16,
     depth: u32,
     visit: &mut impl FnMut(&'a crate::esm::records::actor::NpcRecord),
+    last_pick_level: &mut Option<u16>,
 ) -> &'a crate::esm::records::actor::NpcRecord {
     visit(npc);
     if depth >= TPLT_MAX_DEPTH {
@@ -665,7 +678,15 @@ fn walk_inherited_records<'a>(
             .get(&target)
             .or_else(|| index.creatures.get(&target))
         {
-            return walk_inherited_records(base, actor_level, index, flag, target_depth, visit);
+            return walk_inherited_records(
+                base,
+                actor_level,
+                index,
+                flag,
+                target_depth,
+                visit,
+                last_pick_level,
+            );
         }
         let Some(list) = index
             .leveled_npcs
@@ -686,6 +707,8 @@ fn walk_inherited_records<'a>(
         else {
             return npc;
         };
+        // #4232 — the entry level the list authored for the actor it picked.
+        *last_pick_level = Some(pick.level);
         target = pick.form_id;
     }
     // Exhausted the shared NPC/list budget; retain the last real record.
@@ -747,6 +770,9 @@ pub struct ResolvedNpc<'a> {
     /// The Use-Stats chain shell-first including the terminal, cached so
     /// [`Self::authored_stat_field`] needs no second traversal.
     stats_chain: Vec<&'a crate::esm::records::actor::NpcRecord>,
+    /// #4232 — the authored entry level of the deepest leveled-actor list the
+    /// Use-Stats walk picked through, when it crossed one. See [`Self::level`].
+    stats_pick_level: Option<u16>,
 }
 
 impl<'a> ResolvedNpc<'a> {
@@ -757,6 +783,7 @@ impl<'a> ResolvedNpc<'a> {
     pub fn resolve(shell: &'a crate::esm::records::actor::NpcRecord, index: &'a EsmIndex) -> Self {
         let shell_level = crate::esm::records::effective_actor_level(shell);
         let mut stats_chain = Vec::new();
+        let mut stats_pick_level = None;
         let stats = walk_inherited_records(
             shell,
             shell_level,
@@ -764,6 +791,7 @@ impl<'a> ResolvedNpc<'a> {
             TEMPLATE_FLAG_USE_STATS,
             0,
             &mut |record| stats_chain.push(record),
+            &mut stats_pick_level,
         );
         Self {
             shell,
@@ -832,6 +860,27 @@ impl<'a> ResolvedNpc<'a> {
                 0,
             ),
             stats_chain,
+            stats_pick_level,
+        }
+    }
+
+    /// #4232 — the level this spawn's leveled lists (gear, spells) resolve at.
+    ///
+    /// [`effective_actor_level`](crate::esm::records::effective_actor_level) of
+    /// the Use-Stats terminal, except that a terminal which authors level `0`
+    /// (30/3,816 FNV `NPC_` records) takes the entry level of the `LVLN` /
+    /// `LVLC` pick that selected it. Every vanilla `LVLI` entry sits at level
+    /// ≥ 1, so a literal `0` empties *every* list the actor owns at once. The
+    /// pick's level is authored data the spawn context already holds, so
+    /// nothing is invented, and `effective_actor_level` itself stays unfloored
+    /// (#3081 rejected `.max(1)` there). A terminal reached with no list on the
+    /// way, or one that authors a real level, is unchanged.
+    #[must_use]
+    pub fn level(&self) -> i16 {
+        let own = crate::esm::records::effective_actor_level(self.stats);
+        match (own, self.stats_pick_level) {
+            (0, Some(pick)) => i16::try_from(pick).unwrap_or(i16::MAX),
+            _ => own,
         }
     }
 
@@ -980,7 +1029,7 @@ pub fn expand_leveled_spell(form_id: u32, actor_level: i16, index: &EsmIndex, ou
 /// template chain) followed by its race's, every `LVSP` resolved at the
 /// actor's level, duplicates dropped in first-seen order.
 pub fn resolve_actor_spells(resolved: &ResolvedNpc<'_>, index: &EsmIndex) -> Vec<u32> {
-    let level = crate::esm::records::effective_actor_level(resolved.stats);
+    let level = resolved.level();
     let mut expanded = Vec::new();
     for &form_id in resolved.spells.spells.iter().chain(racial_spells(resolved, index)) {
         expand_leveled_spell(form_id, level, index, &mut expanded);
@@ -996,7 +1045,7 @@ pub fn resolve_actor_spells(resolved: &ResolvedNpc<'_>, index: &EsmIndex) -> Vec
 /// `RaceSpells` component so the scripted pair can operate without an
 /// `EsmIndex` at apply time.
 pub fn resolve_racial_spells(resolved: &ResolvedNpc<'_>, index: &EsmIndex) -> Vec<u32> {
-    let level = crate::esm::records::effective_actor_level(resolved.stats);
+    let level = resolved.level();
     let mut expanded = Vec::new();
     for &form_id in racial_spells(resolved, index) {
         expand_leveled_spell(form_id, level, index, &mut expanded);
@@ -2327,6 +2376,77 @@ mod tests {
             inv[0].item_form_id, 0xBADF00D,
             "highest-eligible LVLN variant wins"
         );
+    }
+
+    /// #4232 — a Use-Stats terminal that authors level 0, reached through an
+    /// `LVLN` pick, must resolve its leveled lists at the pick's entry level,
+    /// not at 0 (every vanilla LVLI entry is ≥ 1, so 0 empties them all).
+    #[test]
+    fn level_zero_terminal_takes_the_lvln_pick_entry_level() {
+        use crate::esm::records::container::{LeveledEntry, LeveledList};
+        let mut shell = npc_with(0x0010_0070, "VarTrooper");
+        shell.level = 1;
+        shell.template_form_id = 0x0010_0071; // the LVLN
+        shell.template_flags = TEMPLATE_FLAG_USE_STATS;
+        let mut trooper = npc_with(0x0010_0072, "TrooperLevelZero");
+        trooper.level = 0;
+        let mut idx = empty_index();
+        idx.npcs.insert(trooper.form_id, trooper);
+        idx.leveled_npcs.insert(
+            0x0010_0071,
+            LeveledList {
+                form_id: 0x0010_0071,
+                editor_id: String::new(),
+                chance_none: 0,
+                flags: 0,
+                entries: vec![LeveledEntry { level: 1, form_id: 0x0010_0072, count: 1 }],
+            },
+        );
+        add_armo(&mut idx, 0x0044_4444);
+        add_lvli(&mut idx, 0x0077_7777, 0, vec![(1, 0x0044_4444, 1)]);
+
+        let resolved = ResolvedNpc::resolve(&shell, &idx);
+        assert_eq!(resolved.stats.form_id, 0x0010_0072);
+        assert_eq!(
+            crate::esm::records::effective_actor_level(resolved.stats),
+            0,
+            "effective_actor_level stays unfloored (#3081)"
+        );
+        assert_eq!(resolved.level(), 1);
+        let mut out = Vec::new();
+        expand_leveled_form_id(0x0077_7777, resolved.level(), &idx, &mut out);
+        assert_eq!(out, vec![0x0044_4444], "min-level-1 list must not be empty");
+    }
+
+    /// #4232 — the pick level only backfills a literal 0: an authored level
+    /// wins, and a chain with no list in it is untouched.
+    #[test]
+    fn pick_level_does_not_override_an_authored_level_or_a_listless_chain() {
+        use crate::esm::records::container::{LeveledEntry, LeveledList};
+        let mut shell = npc_with(0x0010_0080, "Shell");
+        shell.level = 5;
+        shell.template_form_id = 0x0010_0081;
+        shell.template_flags = TEMPLATE_FLAG_USE_STATS;
+        let mut real = npc_with(0x0010_0082, "RealLevel");
+        real.level = 7;
+        let mut idx = empty_index();
+        idx.npcs.insert(real.form_id, real);
+        idx.leveled_npcs.insert(
+            0x0010_0081,
+            LeveledList {
+                form_id: 0x0010_0081,
+                editor_id: String::new(),
+                chance_none: 0,
+                flags: 0,
+                entries: vec![LeveledEntry { level: 3, form_id: 0x0010_0082, count: 1 }],
+            },
+        );
+        assert_eq!(ResolvedNpc::resolve(&shell, &idx).level(), 7);
+
+        // No list crossed: a plain level-0 actor stays 0.
+        let mut plain = npc_with(0x0010_0090, "PlainZero");
+        plain.level = 0;
+        assert_eq!(ResolvedNpc::resolve(&plain, &idx).level(), 0);
     }
 
     #[test]
