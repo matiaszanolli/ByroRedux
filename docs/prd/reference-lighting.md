@@ -1,6 +1,6 @@
 # Reference-Quality Lighting — Product Requirements
 
-**Status**: ACTIVE (2026-11-04). Revision 15; the change history is in
+**Status**: ACTIVE (2026-11-04). Revision 16; the change history is in
 §12. Every decision in §10 is decided and every Phase 0 verify item is
 closed or filed as an issue.
 
@@ -1285,7 +1285,8 @@ RLT-GI-007 on content; the Q5 mechanism for RLT-GI-003 (with
 RLT-GI-008 if the cache is adopted, which waits for M51's Phase 5), so
 RLT-GI-003 may stay open after this phase exits. At the exit (rev 14)
 RLT-GI-004 and RLT-GI-011 shipped. RLT-GI-005 waits on Q2's amended
-decision, and RLT-GI-012 waits on the Q5 cache, both by owner decision. Exit: A8 passes, A7
+decision, and RLT-GI-012 waits on the Q5 cache, both by owner decision.
+The exit held at rev 16 (`docs/audits/MLIGHT_phase2_exit_metadata.txt`). Exit: A8 passes, A7
 publishes the deficit at every tier and passes at its threshold once the
 Q5 mechanism lands, A10 is re-published, A11 passes under the phase's
 change declaration, and A13 shows the phase within its Q8 ceiling.
@@ -1576,3 +1577,4 @@ Each needs the project owner. The recommendation is the first option.
 | 13 | 2026-11-02 | Phase 2 entry, steps 2–3 (#6602). Baselines: A7 at tier 3 deficit 1.00 / 0.98 / 1.00 (floor / back wall / ceiling), 0.82 / 0.82 / 0.79 with the RT-LOD gate off, clamp off 0.973 on the back wall; A8 fails at HEAD (−0.54 % over all geometry, run on a new close-up view because SSAO is inert at the front view's distance). L4 is S2. Owner (2026-11-02): budget deficit ≤ 0.10 and p95 relative error ≤ 0.50 per region, drift margin 2× the frozen floor, rationale a visibility argument; frozen floors taken from the RT-LOD-off capture because the gate-on floor is exactly 0. The threshold table lives in `docs/audits/MLIGHT_thresholds.tsv`. The owner also added RLT-GI-011 (hit shading in the primary lobe's convention) and RLT-GI-012 (the RT-LOD gate keeps GI on room-scale surfaces) to Phase 2 | — |
 | 14 | 2026-11-02 | Phase 2 owner decisions (#6602), checked in with `2f2dc5380`: RLT-GI-012 deferred to the Q5 radiance cache because the isotropic-footprint gate cost +3.4 to +10.9 ms on content and dropped three settled tiers (the Phase 1b gate ships, and a later widening re-runs A13); Q2 amended, the interior cross-fade (RLT-GI-005) deferred because it darkened Whiterun by a median of 26 % and up to 79 % per tile; RLT-GI-004 and RLT-GI-011 shipped. The exit's A7 / A8 run is in `docs/audits/MLIGHT_phase2_exit_A7A8_a89ca367e.tsv` (A8 passes) | — |
 | 15 | 2026-11-04 | V9 closed (#6605): `renderer-stepped` is the RLT-REF-017 mode. Drawn frame F is clip time (F + 1) / 60 s; two runs with different RT seeds export byte-identical scenes at frame 45 and the proxy's yaw matches the clip. A5's mid-animation run now passes a parked `--bench-camera` path, which `renderer-stepped` requires, and checks the yaw as well as the byte identity | — |
+| 16 | 2026-11-04 | Phase 2 exit (#6602), evidence in `docs/audits/MLIGHT_phase2_exit_metadata.txt` and `MLIGHT_phase2_exit_A13.tsv`. A8 passes (0 change on every region). A7 is published at every tier: tier 3 deficit 1.00 / 0.93 / 1.00, 0.42 / 0.42 / 0.33 with the RT-LOD gate off. A10 re-published: the tier-3 Prospector floor bounce has mean 0.0191, median 0.0022 and p95 0.0861, with every pixel non-zero (Phase 1b 0.0106 / 0.0023 / 0.047). A11 passes on all five scenes under the Phase 2 declaration (0 tiles outside). A13: every game scene is within its Q8 ceiling and every settled tier is unchanged. Whiterun / TAA read +1.10 ms on 3 runs whose spread is wider than the ceiling, and +0.08 ms on a 7-run rerun, which settles the row. RLT-GI-003, RLT-GI-005 and RLT-GI-012 stay open on the Q5 cache and Q2's amendment | — |
