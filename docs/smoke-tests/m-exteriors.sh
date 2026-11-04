@@ -392,8 +392,15 @@ run_profile () {
         # pre-tonemap, linear view (SKYAL §4) so the pixel invariant below
         # gates sky assembly, not tone mapping or bloom. `render.debug final`
         # restores the ordinary view before the next phase's health sample.
+        # #6612 — the cycle's default camera sits close to terrain in several profiles (Skyrim's, FO3's and FNV's
+        # frames were a rock face or a wall with a door prompt): noon and night then differ by the dark surface's
+        # shading alone, ~0.01 mean luminance, far under the invariant's floor, and the constant HUD pixels keep the
+        # spread flat. Look up into the sky before the first capture (pitch is absolute; the water gate uses
+        # `input.look` the same way) so the term measures the sky and the sun-lit scene, which is what it is for.
+        # (A note out here: a `#` line inside the heredoc would be sent to byro-dbg as a command.)
         env BYRO_DEBUG_PORT="$PORT" "$DEBUG_BIN" > "$debug_log" 2>&1 <<EOF || true
 time.pause
+input.look 0 40
 time.set 06:00
 time.show
 env.health
