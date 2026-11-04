@@ -1805,28 +1805,107 @@ fn no_test_region_hardcodes_the_dev_machine_game_path() {
     );
 }
 
-/// #6378 — `docs/engine/game-loop.md`'s live-schedule table omitted the
-/// systems that landed 10-22..25 (VATS, the AI package procedures, crime).
-/// Pins that each system registered by those families is named in the table
-/// so a new registration in them is not silently undocumented again. A
-/// partial guard by design: it names the families the audit found missing,
-/// not every `scheduler.add*` call.
-#[test]
-fn the_live_schedule_table_names_the_vats_package_and_crime_systems() {
-    const GAME_LOOP_DOC: &str = include_str!("../../docs/engine/game-loop.md");
-    for system in [
-        "vats_mode_system",
-        "make_flee_package_system",
-        "make_find_package_system",
-        "use_weapon_package_system",
-        "jail_bed_system",
-        "evidence_deposit_system",
-        "make_guard_rush_system",
-    ] {
-        assert!(
-            GAME_LOOP_DOC.contains(system),
-            "docs/engine/game-loop.md's live-schedule table does not name `{system}` \
-             (register it in the table, #6378)"
-        );
+/// The system each `scheduler.add*(stage, system, …)` call in `source` registers: the last
+/// path segment of its second argument (`crate::systems::mines::mine_system` →
+/// `mine_system`, `crate::systems::make_wander_system()` → `make_wander_system`). Line
+/// comments are dropped first so prose that names a call is not read as one.
+fn registered_system_names(source: &str) -> Vec<String> {
+    let code: String = source
+        .lines()
+        .map(|line| line.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut names = Vec::new();
+    let mut rest = code.as_str();
+    while let Some(at) = rest.find("scheduler.add") {
+        rest = &rest[at + "scheduler.add".len()..];
+        let Some(open) = rest.find('(') else { break };
+        let mut depth = 0usize;
+        let mut close = open;
+        for (offset, c) in rest[open..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = open + offset;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let args = &rest[open + 1..close];
+        if let Some((_stage, system)) = args.split_once(',') {
+            let path: String = system
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | ':'))
+                .collect();
+            if let Some(name) = path.rsplit("::").next().filter(|name| !name.is_empty()) {
+                names.push(name.to_string());
+            }
+        }
+        rest = &rest[close..];
     }
+    names
+}
+
+/// Whether `text` names `ident` as a whole identifier: `make_eat_sleep_system` does not
+/// name `sleep_system`.
+fn names_identifier(text: &str, ident: &str) -> bool {
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    text.match_indices(ident).any(|(at, _)| {
+        !text[..at].chars().next_back().is_some_and(is_ident)
+            && !text[at + ident.len()..].chars().next().is_some_and(is_ident)
+    })
+}
+
+/// #6378 / #6583 — `docs/engine/game-loop.md`'s live-schedule table is the reference an
+/// auditor reads for stage order, and it fell behind twice. #6378 found the VATS,
+/// AI-package and crime systems missing and pinned those seven by name. The next family
+/// (seven M43 story producers) got past that list within a week, and by then 128 of 172
+/// registrations were unnamed. The pin is now derived: every system a `scheduler.add*`
+/// call under `boot/schedule/` registers (each stage file and Update segment, found on
+/// disk) must be named in the table as a whole identifier.
+#[test]
+fn every_registered_system_is_named_in_the_live_schedule_table() {
+    const GAME_LOOP_DOC: &str = include_str!("../../docs/engine/game-loop.md");
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut registered = Vec::new();
+    visit_workspace_rs_files(&manifest.join("src/boot/schedule"), &mut |path, contents| {
+        let production = byroredux_core::source_scan::production_text_or_whole(contents);
+        for name in registered_system_names(production) {
+            registered.push((path.strip_prefix(manifest).unwrap_or(path).display().to_string(), name));
+        }
+    });
+    // A scanner that stopped matching would pass on nothing.
+    assert!(registered.len() >= 150, "found only {} registrations under boot/schedule/", registered.len());
+    let missing: Vec<String> = registered
+        .iter()
+        .filter(|(_, name)| !names_identifier(GAME_LOOP_DOC, name))
+        .map(|(file, name)| format!("{file}: `{name}`"))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "docs/engine/game-loop.md's live-schedule table does not name these registered \
+         systems; add each to its stage's row (#6378/#6583):\n{}",
+        missing.join("\n"),
+    );
+}
+
+#[test]
+fn schedule_scanner_reads_the_registered_system_and_matches_whole_identifiers() {
+    let source = "\
+        // scheduler.add_exclusive(Stage::Update, commented_out_system);\n\
+        scheduler.add_exclusive(Stage::Update, crate::systems::mines::mine_system);\n\
+        scheduler.add_exclusive_with_access(\n    Stage::Late,\n    crate::systems::make_billboard_system(),\n    Access::new().reads::<Foo>(),\n);\n\
+        scheduler.add_to_with_access(Stage::Early, player_controller_system, access(a, b));\n";
+    assert_eq!(
+        registered_system_names(source),
+        vec!["mine_system", "make_billboard_system", "player_controller_system"]
+    );
+    assert!(names_identifier("the `sleep_system` row", "sleep_system"));
+    assert!(!names_identifier("`make_eat_sleep_system()`", "sleep_system"));
+    assert!(!names_identifier("sleep_systems", "sleep_system"));
 }
