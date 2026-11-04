@@ -98,6 +98,7 @@ pub(crate) fn sample_gpu_owners(
     out.meshes_live_slots = ctx.mesh_registry.live_slot_count() as u64;
     out.textures_registry = ctx.texture_registry.len() as u64;
     out.texture_live_slots = ctx.texture_registry.live_slot_count() as u64;
+    out.texture_resident_bytes = ctx.texture_registry.texture_image_bytes();
     out.terrain_tiles = ctx.occupied_terrain_tile_count() as u64;
 
     if let Some(accel) = ctx.accel_manager.as_ref() {

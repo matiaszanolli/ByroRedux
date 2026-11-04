@@ -65,7 +65,10 @@ fn push_texture_streaming(
         }
         streamer.step(&mut ctx.texture_registry);
     }
-    ctx.update_texture_streaming(streaming);
+    let budget_override_mib =
+        crate::setting_number(world, byroredux_debug_ui::TEXTURE_BUDGET_MIB_SETTING_ID, 0.0)
+            .max(0.0) as u64;
+    ctx.update_texture_streaming(streaming, budget_override_mib);
     if let Some(streamer) = streamer.as_mut() {
         let pose = (frame.camera_pos, frame.cam_forward, frame.camera_fov_y);
         streamer.observe_settle(&ctx.texture_registry, pose);

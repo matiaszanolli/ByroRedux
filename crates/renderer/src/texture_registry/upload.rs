@@ -9,6 +9,22 @@
 use super::residency::{self, Residency};
 use super::*;
 
+/// One streamed texture as the budget pass sees it (`spend_budget`).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct BudgetRow {
+    handle: TextureHandle,
+    /// First resident level once every queued change has landed.
+    cur: u32,
+    floor_first: u32,
+    /// The level the wanted pass wants (the floor when nothing wants it).
+    wanted: u32,
+    last_wanted: u64,
+    /// A change is already queued: its bytes count, but it cannot be moved.
+    locked: bool,
+    /// The pass lowered `cur` (a demotion to queue).
+    demoted: bool,
+}
+
 impl TextureRegistry {
     /// Load a DDS texture from raw bytes, or return a cached handle if already loaded.
     ///
@@ -429,23 +445,28 @@ impl TextureRegistry {
     }
 
     /// M39 — apply this frame's wanted mips (docs/engine/texture-streaming.md
-    /// §5–§6). Every streamed texture absent from `wanted` is wanted at its
+    /// §5–§7). Every streamed texture absent from `wanted` is wanted at its
     /// floor (TXS-WANT-003). A texture wanted finer than it is resident
     /// becomes a promotion request, ordered drawn before TLAS-only before
     /// neither, then larger deficit, then nearer (TXS-WANT-004); the list
     /// replaces last frame's. One wanted coarser for `DEMOTE_AFTER_FRAMES`
     /// frames, and as long after its last promotion, is demoted
     /// (TXS-WANT-005). A texture with a change already queued waits.
+    ///
+    /// With a texture budget set ([`Self::set_texture_budget`]) the same pass
+    /// spends it: over budget it demotes the textures wanted longest ago
+    /// first (TXS-BUD-003), and a promotion that does not fit evicts first
+    /// and is declined when that cannot make room (TXS-BUD-004).
     pub fn apply_wanted(
         &mut self,
         wanted: &HashMap<TextureHandle, residency::WantedMip>,
     ) -> WantedStats {
         use residency::{WantedCase, DEMOTE_AFTER_FRAMES};
         let frame = self.current_frame_id;
-        let queued: HashSet<TextureHandle> = self
+        let queued: HashMap<TextureHandle, u32> = self
             .pending_promotions
             .iter()
-            .map(|upload| upload.handle)
+            .filter_map(|upload| Some((upload.handle, upload.change?.new_first)))
             .collect();
         let mut stats = WantedStats::default();
         let mut candidates: Vec<(WantedCase, u32, f32, TextureHandle, u32)> = Vec::new();
@@ -474,7 +495,7 @@ impl TextureRegistry {
             if target < r.first_resident {
                 stats.deficits += 1;
                 source.coarser_since = None;
-                if !queued.contains(&handle) {
+                if !queued.contains_key(&handle) && frame >= source.retry_after_frame {
                     candidates.push((
                         w.case,
                         r.first_resident - target,
@@ -484,31 +505,303 @@ impl TextureRegistry {
                     ));
                 }
             } else if target > r.first_resident {
+                source.declined_target = None;
                 let since = *source.coarser_since.get_or_insert(frame);
                 let settled = frame.wrapping_sub(since) >= DEMOTE_AFTER_FRAMES
                     && source
                         .last_promoted_frame
                         .is_none_or(|promoted| frame.wrapping_sub(promoted) >= DEMOTE_AFTER_FRAMES);
-                if settled && !queued.contains(&handle) {
+                if settled && !queued.contains_key(&handle) {
                     demotions.push((handle, target));
                     source.coarser_since = None;
                 }
             } else {
+                source.declined_target = None;
                 source.coarser_since = None;
             }
         }
         candidates.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(a.2.total_cmp(&b.2)));
+        let mut budget_demotions = Vec::new();
+        if let Some(budget) = self.texture_budget {
+            self.spend_budget(
+                budget.bytes,
+                &queued,
+                &mut candidates,
+                &mut budget_demotions,
+                &mut stats,
+            );
+        }
         stats.requests = candidates.len() as u32;
         self.promotion_requests = candidates
             .into_iter()
             .map(|(_, _, _, handle, target)| (handle, target))
             .collect();
+        demotions.retain(|(handle, _)| !budget_demotions.iter().any(|(b, _)| b == handle));
+        for (handle, target) in budget_demotions {
+            if self.queue_demotion(handle, target) {
+                stats.demotions += 1;
+                stats.evictions += 1;
+                self.stream_counters.evictions += 1;
+            }
+        }
         for (handle, target) in demotions {
             if self.queue_demotion(handle, target) {
                 stats.demotions += 1;
             }
         }
         stats
+    }
+
+    /// M39 TXS-BUD-001 — whether the budget is due for re-derivation: the
+    /// first call, `override_mib` having changed, or half a second since the
+    /// last derivation. Marks the derivation taken when it answers `true`.
+    pub fn texture_budget_due(&mut self, override_mib: u64) -> bool {
+        let now = std::time::Instant::now();
+        let due = self.texture_budget_sampled.is_none_or(|(at, last)| {
+            last != override_mib || now.duration_since(at) >= std::time::Duration::from_millis(500)
+        });
+        if due {
+            self.texture_budget_sampled = Some((now, override_mib));
+        }
+        due
+    }
+
+    /// The budget pass's persistent scratch, as `(len, capacity, element
+    /// size)` for `fill_scratch_telemetry`.
+    pub fn budget_scratch_telemetry(&self) -> (usize, usize, usize) {
+        (
+            self.budget_scratch.len(),
+            self.budget_scratch.capacity(),
+            std::mem::size_of::<BudgetRow>(),
+        )
+    }
+
+    /// M39 TXS-BUD-001 — set the texture pool budget the wanted pass spends.
+    pub fn set_texture_budget(&mut self, budget: TextureBudget) {
+        self.texture_budget = Some(budget);
+    }
+
+    /// M39 — the budget in force, `None` before the renderer derived one.
+    pub fn texture_budget(&self) -> Option<TextureBudget> {
+        self.texture_budget
+    }
+
+    /// Bytes of every texture image the registry holds, live and retiring:
+    /// the figure the budget derivation takes out of the process's device
+    /// memory to find what is not a texture.
+    pub fn texture_image_bytes(&self) -> u64 {
+        self.textures
+            .iter()
+            .map(|entry| {
+                entry
+                    .texture
+                    .iter()
+                    .map(|texture| texture.allocation_bytes())
+                    .chain(
+                        entry
+                            .pending_destroy
+                            .iter()
+                            .map(|(_, texture)| texture.allocation_bytes()),
+                    )
+                    .sum::<u64>()
+            })
+            .sum()
+    }
+
+    /// M39 TXS-BUD-002…004 — spend the texture budget on this frame's
+    /// plan. `queued` maps a handle with a change already queued to the
+    /// first level that change leaves resident; those rows count their
+    /// bytes but cannot be reordered.
+    ///
+    /// Accounting is payload bytes from the DDS headers for streamed
+    /// textures plus the allocated bytes of **whole** ones. Floors are never
+    /// evicted; when floors, whole textures and queued changes alone exceed
+    /// the budget one warning names the totals.
+    ///
+    /// 1. Over budget: demote one level at a time, first the textures wanted
+    ///    coarser than they are resident (no visible loss), oldest
+    ///    last-wanted frame first, then any texture above its floor in the
+    ///    same order.
+    /// 2. Each promotion candidate, in queue order: kept if it fits; else
+    ///    made to fit by demoting textures wanted coarser than resident,
+    ///    oldest first; else dropped from the queue and counted as declined
+    ///    once per episode. A texture wanted at its resident level is never
+    ///    evicted to fund another's promotion, so two wanted textures cannot
+    ///    swap levels frame after frame.
+    fn spend_budget(
+        &mut self,
+        budget: u64,
+        queued: &HashMap<TextureHandle, u32>,
+        candidates: &mut Vec<(residency::WantedCase, u32, f32, TextureHandle, u32)>,
+        demotions: &mut Vec<(TextureHandle, u32)>,
+        stats: &mut WantedStats,
+    ) {
+        let mut rows = std::mem::take(&mut self.budget_scratch);
+        rows.clear();
+        let whole_bytes: u64 = self
+            .textures
+            .iter()
+            .filter(|entry| entry.residency.is_none())
+            .filter_map(|entry| entry.texture.as_ref())
+            .map(|texture| texture.allocation_bytes())
+            .sum();
+        for (&handle, source) in &self.stream_sources {
+            let Some(r) = self
+                .textures
+                .get(handle as usize)
+                .and_then(|entry| entry.residency)
+            else {
+                continue;
+            };
+            rows.push(BudgetRow {
+                handle,
+                cur: queued.get(&handle).copied().unwrap_or(r.first_resident),
+                floor_first: r.floor_first,
+                wanted: source
+                    .wanted
+                    .map_or(r.floor_first, |(level, _)| level.min(r.floor_first)),
+                last_wanted: source.last_wanted_frame,
+                locked: queued.contains_key(&handle),
+                demoted: false,
+            });
+        }
+        rows.sort_unstable_by_key(|row| row.handle);
+        let sources = &self.stream_sources;
+        let level_bytes = |row: &BudgetRow| -> u64 {
+            sources
+                .get(&row.handle)
+                .and_then(|source| source.level_bytes.get(row.cur as usize))
+                .copied()
+                .unwrap_or(0)
+        };
+        let mut projected: u64 = whole_bytes
+            + rows
+                .iter()
+                .map(|row| sources.get(&row.handle).map_or(0, |s| s.bytes_from(row.cur)))
+                .sum::<u64>();
+
+        // Drop levels of `row` until `projected` fits or `limit` is reached.
+        let drop_levels = |row: &mut BudgetRow, projected: &mut u64, limit: u32, target: u64| {
+            while *projected > target && row.cur < limit {
+                *projected = projected.saturating_sub(level_bytes(row));
+                row.cur += 1;
+                row.demoted = true;
+            }
+        };
+
+        if projected > budget {
+            let mut order: Vec<usize> = (0..rows.len())
+                .filter(|&i| !rows[i].locked && rows[i].cur < rows[i].floor_first)
+                .collect();
+            order.sort_by_key(|&i| (rows[i].wanted <= rows[i].cur, rows[i].last_wanted, i));
+            // Sweep 1: textures wanted coarser than they are resident, down
+            // to the level they are wanted at.
+            for &i in &order {
+                let limit = rows[i].wanted;
+                drop_levels(&mut rows[i], &mut projected, limit, budget);
+            }
+            // Sweep 2: whatever is left above a floor, oldest first.
+            order.sort_by_key(|&i| (rows[i].last_wanted, i));
+            for &i in &order {
+                let limit = rows[i].floor_first;
+                drop_levels(&mut rows[i], &mut projected, limit, budget);
+            }
+            if projected > budget {
+                if !self.budget_floor_warned {
+                    self.budget_floor_warned = true;
+                    let floors: u64 = rows
+                        .iter()
+                        .map(|row| {
+                            sources
+                                .get(&row.handle)
+                                .map_or(0, |s| s.bytes_from(row.floor_first))
+                        })
+                        .sum();
+                    log::warn!(
+                        "texture budget {} MiB cannot be met: floors {} MiB + whole textures \
+                         {} MiB leave {} MiB of other residents (queued promotions) above it",
+                        budget >> 20,
+                        floors >> 20,
+                        whole_bytes >> 20,
+                        projected.saturating_sub(floors + whole_bytes) >> 20,
+                    );
+                }
+            } else {
+                self.budget_floor_warned = false;
+            }
+        } else {
+            self.budget_floor_warned = false;
+        }
+
+        // Promotions, in queue order.
+        let mut declined: Vec<(TextureHandle, u32)> = Vec::new();
+        let mut pool: Option<(Vec<usize>, usize)> = None;
+        let mut kept = Vec::with_capacity(candidates.len());
+        for candidate in candidates.drain(..) {
+            let (_, _, _, handle, target) = candidate;
+            let Ok(i) = rows.binary_search_by_key(&handle, |row| row.handle) else {
+                continue;
+            };
+            if rows[i].demoted || rows[i].locked || target >= rows[i].cur {
+                continue;
+            }
+            let delta = sources
+                .get(&handle)
+                .map_or(0, |s| s.bytes_from(target) - s.bytes_from(rows[i].cur));
+            if projected + delta > budget {
+                // Make room from textures wanted coarser than they are
+                // resident, oldest last-wanted first.
+                let (order, pos) = pool.get_or_insert_with(|| {
+                    let mut order: Vec<usize> = (0..rows.len())
+                        .filter(|&j| !rows[j].locked && rows[j].cur < rows[j].wanted)
+                        .collect();
+                    order.sort_by_key(|&j| (rows[j].last_wanted, j));
+                    (order, 0)
+                });
+                let need = projected + delta - budget;
+                let available: u64 = order[*pos..]
+                    .iter()
+                    .map(|&j| {
+                        sources.get(&rows[j].handle).map_or(0, |s| {
+                            s.bytes_from(rows[j].cur) - s.bytes_from(rows[j].wanted)
+                        })
+                    })
+                    .sum();
+                if available < need {
+                    declined.push((handle, target));
+                    continue;
+                }
+                let goal = budget.saturating_sub(delta);
+                while projected > goal && *pos < order.len() {
+                    let j = order[*pos];
+                    let limit = rows[j].wanted;
+                    drop_levels(&mut rows[j], &mut projected, limit, goal);
+                    if rows[j].cur >= rows[j].wanted {
+                        *pos += 1;
+                    }
+                }
+            }
+            projected += delta;
+            rows[i].cur = target;
+            kept.push(candidate);
+        }
+        *candidates = kept;
+
+        for (handle, target) in declined {
+            if let Some(source) = self.stream_sources.get_mut(&handle) {
+                if source.declined_target != Some(target) {
+                    source.declined_target = Some(target);
+                    stats.declines += 1;
+                    self.stream_counters.declines += 1;
+                }
+            }
+        }
+        demotions.extend(
+            rows.iter()
+                .filter(|row| row.demoted)
+                .map(|row| (row.handle, row.cur)),
+        );
+        self.budget_scratch = rows;
     }
 
     /// M39 — queue a demotion of a streamed texture to first resident level
@@ -654,6 +947,13 @@ impl TextureRegistry {
             churn: self.stream_counters.churn,
             floors_from_tail: self.stream_counters.floors_from_tail,
             floors_from_whole_file: self.stream_counters.floors_from_whole_file,
+            budget_bytes: self.texture_budget.map_or(0, |b| b.bytes),
+            budget_source: self.texture_budget.map_or("none", |b| b.source.label()),
+            budget_capacity_bytes: self.texture_budget.map_or(0, |b| b.capacity_bytes),
+            budget_reserve_bytes: self.texture_budget.map_or(0, |b| b.reserve_bytes),
+            evictions: self.stream_counters.evictions,
+            declines: self.stream_counters.declines,
+            promotion_cap_bytes: MAX_PROMOTION_UPLOAD_BYTES_PER_FRAME,
             hysteresis_frames: residency::DEMOTE_AFTER_FRAMES,
             cell_loads_timed: self.cell_loads_timed,
             floor_ready_ms: self.last_floor_ready_ms,
@@ -763,7 +1063,11 @@ impl TextureRegistry {
         transfer_fence: &std::sync::Mutex<vk::Fence>,
         max_bytes: vk::DeviceSize,
     ) -> Result<usize> {
-        let take = promotion_take_count(&self.pending_promotions, max_bytes);
+        let take = promotion_take_count(
+            &self.pending_promotions,
+            max_bytes,
+            MAX_RESIDENCY_CHANGES_PER_FRAME,
+        );
         if take == 0 {
             return Ok(0);
         }
@@ -907,6 +1211,7 @@ impl TextureRegistry {
             floor: Option<(Residency, bool, usize, usize)>,
         }
         let mut staged: Vec<StagedUpload> = Vec::with_capacity(count);
+        let mut failed_changes: Vec<(TextureHandle, u32)> = Vec::new();
 
         // Use the persistent transfer fence (#302) so we don't pay a
         // per-flush vk::Fence create/destroy. `with_one_time_commands_reuse_fence`
@@ -1032,11 +1337,18 @@ impl TextureRegistry {
                                 change: Some(change),
                                 floor: None,
                             }),
-                            Err(e) => log::warn!(
-                                "Failed to record residency change for '{}': {} — dropping it",
-                                upload.path,
-                                e,
-                            ),
+                            Err(e) => {
+                                // TXS-BUD-007 — the texture keeps the image
+                                // it has (the old one retires only once the
+                                // new one is installed): counted, and not
+                                // retried for a while.
+                                log::warn!(
+                                    "Failed to record residency change for '{}': {} — texture left as it was",
+                                    upload.path,
+                                    e,
+                                );
+                                failed_changes.push((upload.handle, change.new_first));
+                            }
                         }
                         continue;
                     }
@@ -1165,6 +1477,16 @@ impl TextureRegistry {
             return Err(e);
         }
 
+        for (handle, target) in failed_changes {
+            self.stream_counters.declines += 1;
+            if let Some(source) = self.stream_sources.get_mut(&handle) {
+                source.declined_target = Some(target);
+                source.retry_after_frame = self
+                    .current_frame_id
+                    .wrapping_add(residency::DEMOTE_AFTER_FRAMES);
+            }
+        }
+
         // Install textures + write real descriptors. Replaces the
         // fallback redirect installed at enqueue time.
         let staged_count = staged.len();
@@ -1242,8 +1564,13 @@ impl TextureRegistry {
             self.note_floor_install(whole);
             let upload = &pending[source];
             let header = upload.dds_bytes[..header_len.min(upload.dds_bytes.len())].to_vec();
-            let width = crate::vulkan::dds::parse_dds(&header)
+            let parsed = crate::vulkan::dds::parse_dds(&header).ok();
+            let width = parsed
+                .as_ref()
                 .map_or(0, |meta| meta.width.max(meta.height));
+            let level_bytes = parsed
+                .as_ref()
+                .map_or_else(Vec::new, crate::vulkan::dds::level_sizes);
             self.stream_sources.insert(
                 handle,
                 StreamSource {
@@ -1257,6 +1584,9 @@ impl TextureRegistry {
                     last_promoted_frame: None,
                     last_demoted_frame: None,
                     coarser_since: None,
+                    level_bytes,
+                    declined_target: None,
+                    retry_after_frame: 0,
                 },
             );
         }
@@ -1266,16 +1596,21 @@ impl TextureRegistry {
     }
 }
 
-/// How many queued promotions one flush takes: in queue order while their
-/// staged bytes fit `max_bytes`, and always the first (it cannot be split).
+/// How many queued changes one flush takes: in queue order while their
+/// staged bytes fit `max_bytes` and their count stays within `max_changes`
+/// (a demotion stages nothing, but still allocates an image and copies the
+/// levels it keeps), and always the first (it cannot be split).
 pub(super) fn promotion_take_count(
     pending: &[PendingDdsUpload],
     max_bytes: vk::DeviceSize,
+    max_changes: usize,
 ) -> usize {
     let mut bytes: vk::DeviceSize = 0;
     let mut take = 0;
     for upload in pending {
-        if take > 0 && bytes.saturating_add(upload.staged_bytes) > max_bytes {
+        if take > 0
+            && (take >= max_changes || bytes.saturating_add(upload.staged_bytes) > max_bytes)
+        {
             break;
         }
         bytes = bytes.saturating_add(upload.staged_bytes);

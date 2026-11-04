@@ -935,6 +935,15 @@ pub fn level_byte_range(
     start..start + len
 }
 
+/// M39 — the payload bytes of every level of a single-layer chain, level 0
+/// first: the unit the texture budget accounts in (`level_sizes(meta)[l..]`
+/// is what a first resident level `l` holds).
+pub fn level_sizes(meta: &DdsMetadata) -> Vec<u64> {
+    (0..meta.mip_count)
+        .map(|mip| mip_size(meta.width, meta.height, mip, meta.block_size, meta.compressed))
+        .collect()
+}
+
 /// M39 — the chain level a single-layer payload starts at, from its length
 /// alone: 0 when it holds at least the whole chain, else the level `L` whose
 /// levels `[L, mip_count)` it holds exactly (a BA2 floor read keeps the

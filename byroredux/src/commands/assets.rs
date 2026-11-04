@@ -230,7 +230,7 @@ mod tex_loaded_tests {
 /// retiring / floor bytes, queued changes; with a bindless handle argument,
 /// that texture's resident range and wanted mip. Landed promotions,
 /// demotions and churn with the hysteresis window, and the last cell load's
-/// floor-ready time; the budget and declines arrive with M39 Phase 3.
+/// floor-ready time; the budget, its derivation, evictions and declines.
 pub(crate) struct TexResidencyCommand;
 impl ConsoleCommand for TexResidencyCommand {
     fn name(&self) -> &str {
@@ -320,6 +320,21 @@ impl ConsoleCommand for TexResidencyCommand {
                 "last cell load: textures ready in {:.2} ms ({} loads timed)",
                 t.floor_ready_ms, t.cell_loads_timed,
             ),
+            if t.budget_bytes == 0 {
+                "budget: none derived yet".to_string()
+            } else {
+                format!(
+                    "budget {:.1} MiB ({}; capacity {:.1} MiB, non-texture reserve {:.1} MiB), \
+                     evictions {}, declines {}, promotion upload cap {:.1} MiB/frame",
+                    mib(t.budget_bytes),
+                    t.budget_source,
+                    mib(t.budget_capacity_bytes),
+                    mib(t.budget_reserve_bytes),
+                    t.evictions,
+                    t.declines,
+                    mib(t.promotion_cap_bytes),
+                )
+            },
             format!(
                 "resident {:.1} MiB (peak {:.1}), retiring {:.1} MiB, floors {:.1} MiB, queued changes {}, reserved {}",
                 mib(t.resident_bytes),

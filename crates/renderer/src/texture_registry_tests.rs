@@ -156,6 +156,10 @@ fn make_registry_for_overflow_test(max_textures: u32, occupied: usize) -> Textur
         streaming: false,
         peak_resident_bytes: 0,
         stream_counters: Default::default(),
+        texture_budget: None,
+        texture_budget_sampled: None,
+        budget_floor_warned: false,
+        budget_scratch: Vec::new(),
         cell_loads_timed: 0,
         last_floor_ready_ms: 0.0,
         slot_capacity_warning_emitted: false,
@@ -1338,6 +1342,11 @@ fn stream_source(path: &str) -> StreamSource {
         last_promoted_frame: None,
         last_demoted_frame: None,
         coarser_since: None,
+        level_bytes: (0..7)
+            .map(|l| crate::vulkan::dds::mip_size(64, 64, l, 8, true))
+            .collect(),
+        declined_target: None,
+        retry_after_frame: 0,
     }
 }
 
@@ -1477,10 +1486,15 @@ fn promotion_flush_takes_in_order_within_the_byte_bound() {
         change: None,
     };
     let pending: Vec<PendingDdsUpload> = [300u64, 300, 500, 10].into_iter().map(queued).collect();
-    assert_eq!(upload::promotion_take_count(&pending, 600), 2);
-    assert_eq!(upload::promotion_take_count(&pending, 100), 1, "first always goes");
-    assert_eq!(upload::promotion_take_count(&pending, 2_000), 4);
-    assert_eq!(upload::promotion_take_count(&[], 2_000), 0);
+    assert_eq!(upload::promotion_take_count(&pending, 600, 64), 2);
+    assert_eq!(upload::promotion_take_count(&pending, 100, 64), 1, "first always goes");
+    assert_eq!(upload::promotion_take_count(&pending, 2_000, 64), 4);
+    assert_eq!(upload::promotion_take_count(&[], 2_000, 64), 0);
+    assert_eq!(
+        upload::promotion_take_count(&pending, 2_000, 3),
+        3,
+        "the change-count cap binds even when the bytes fit"
+    );
 }
 
 /// M39 TXS-WANT-003/004 — the wanted pass turns deficits into promotion
@@ -1639,4 +1653,156 @@ fn whole_file_floor_installs_are_counted_apart_from_tail_reads() {
     let mut t = byroredux_core::ecs::TextureResidencyTelemetry::default();
     reg.fill_residency_telemetry(&mut t);
     assert_eq!((t.floors_from_tail, t.floors_from_whole_file), (1, 2));
+}
+
+// ── M39 Phase 3: the texture pool budget (TXS-BUD) ───────────────────────
+
+/// Payload bytes of the 64×64, 7-level BC1 chain the helpers build, from a
+/// first resident level: 2048 / 512 / 128 / 32 / 8 / 8 / 8 per level.
+const BC1_FROM_0: u64 = 2744;
+const BC1_FROM_3: u64 = 56;
+
+fn budget_of(bytes: u64) -> TextureBudget {
+    TextureBudget {
+        bytes,
+        source: BudgetSource::Override,
+        capacity_bytes: 0,
+        reserve_bytes: 0,
+    }
+}
+
+/// A registry of streamed textures with floors from level 3. `resident[h]`
+/// is handle `h`'s first resident level.
+fn budgeted_registry(resident: &[u32], budget: u64) -> TextureRegistry {
+    let mut reg = make_registry_for_overflow_test(64, 0);
+    for (handle, &first) in resident.iter().enumerate() {
+        let mut entry = streamable_entry(7, 3);
+        entry.residency.as_mut().unwrap().first_resident = first;
+        reg.textures.push(entry);
+        reg.stream_sources
+            .insert(handle as u32, stream_source("textures\\a.dds"));
+    }
+    reg.set_texture_budget(budget_of(budget));
+    reg
+}
+
+fn drawn(level: u32) -> residency::WantedMip {
+    residency::WantedMip {
+        level,
+        case: residency::WantedCase::Drawn,
+        distance: 1.0,
+    }
+}
+
+fn queued_targets(reg: &TextureRegistry) -> Vec<(TextureHandle, u32)> {
+    reg.pending_promotions
+        .iter()
+        .filter_map(|upload| upload.change.map(|c| (upload.handle, c.new_first)))
+        .collect()
+}
+
+/// TXS-BUD-003 — over budget, the texture nothing wants is demoted first,
+/// down to its floor, and the wanted ones keep their levels: the loss lands
+/// where nothing is looking.
+#[test]
+fn over_budget_the_unwanted_texture_is_demoted_first() {
+    // Dropping handle 1 to its floor saves exactly the 2688 B over budget.
+    let mut reg = budgeted_registry(&[0, 0, 0], 3 * BC1_FROM_0 - 2688);
+    let wanted = HashMap::from([(0, drawn(0)), (2, drawn(0))]);
+    let stats = reg.apply_wanted(&wanted);
+    assert_eq!(queued_targets(&reg), vec![(1, 3)], "handle 1: not drawn");
+    assert_eq!((stats.evictions, stats.demotions), (1, 1));
+    assert_eq!(reg.stream_counters.evictions, 1);
+}
+
+/// TXS-BUD-002/003 — wanted textures are demoted one level at a time, never
+/// below the floor, when the budget is below what they want; floors alone
+/// over the budget end the pass at the floors.
+#[test]
+fn a_budget_below_the_wanted_set_demotes_to_the_floors_and_no_further() {
+    let mut reg = budgeted_registry(&[0, 0], 10);
+    let wanted = HashMap::from([(0, drawn(0)), (1, drawn(0))]);
+    reg.apply_wanted(&wanted);
+    assert_eq!(queued_targets(&reg), vec![(0, 3), (1, 3)]);
+    assert!(reg.budget_floor_warned, "floors alone exceed the budget: one warning");
+    // The pass does not ask for the textures back (they are queued, floors).
+    assert!(reg.promotion_requests.is_empty());
+}
+
+/// TXS-BUD-003 — one level at a time: a budget that needs only part of a
+/// texture's levels takes only those.
+#[test]
+fn eviction_stops_as_soon_as_the_budget_is_met() {
+    // Level 0 (2048 B) must go, nothing more.
+    let mut reg = budgeted_registry(&[0, 0], 2 * BC1_FROM_0 - 2048);
+    let wanted = HashMap::from([(0, drawn(0)), (1, drawn(0))]);
+    reg.apply_wanted(&wanted);
+    assert_eq!(queued_targets(&reg), vec![(0, 1)], "one level of one texture");
+}
+
+/// TXS-BUD-004 — a promotion that does not fit evicts first: a texture
+/// nothing wants gives up its levels so the drawn one can have its own.
+#[test]
+fn a_promotion_that_does_not_fit_evicts_the_unwanted_first() {
+    let mut reg = budgeted_registry(&[3, 0], BC1_FROM_0 + BC1_FROM_3 + 100);
+    let wanted = HashMap::from([(0, drawn(0))]);
+    let stats = reg.apply_wanted(&wanted);
+    assert_eq!(reg.promotion_requests, vec![(0, 0)], "the drawn texture is promoted");
+    assert_eq!(queued_targets(&reg), vec![(1, 3)], "funded by the unwanted one");
+    assert_eq!((stats.declines, stats.evictions), (0, 1));
+}
+
+/// TXS-BUD-004 / TXS-BUD-007 — when eviction cannot make room the promotion
+/// is declined, counted once, and the texture stays exactly as it was; the
+/// wanted texture that holds the memory is not evicted to fund it.
+#[test]
+fn a_promotion_that_cannot_fit_is_declined_once_and_nothing_thrashes() {
+    let mut reg = budgeted_registry(&[0, 3], BC1_FROM_0 + BC1_FROM_3 + 100);
+    let wanted = HashMap::from([(0, drawn(0)), (1, drawn(0))]);
+    for pass in 0..3 {
+        let stats = reg.apply_wanted(&wanted);
+        assert!(reg.promotion_requests.is_empty(), "pass {pass}: declined");
+        assert!(queued_targets(&reg).is_empty(), "pass {pass}: the holder is untouched");
+        assert_eq!(stats.declines, u32::from(pass == 0), "counted once per episode");
+    }
+    assert_eq!(reg.stream_counters.declines, 1);
+    // The textures are as they were.
+    assert_eq!(reg.textures[0].residency.unwrap().first_resident, 0);
+    assert_eq!(reg.textures[1].residency.unwrap().first_resident, 3);
+}
+
+/// Priority decides who gets the room: of two drawn promotions that cannot
+/// both fit, the one the queue ranks first is kept.
+#[test]
+fn the_higher_priority_promotion_gets_the_room() {
+    let mut reg = budgeted_registry(&[3, 3], 2 * BC1_FROM_3 + (BC1_FROM_0 - BC1_FROM_3) + 100);
+    let near = residency::WantedMip { distance: 5.0, ..drawn(0) };
+    let far = residency::WantedMip { distance: 50.0, ..drawn(0) };
+    let stats = reg.apply_wanted(&HashMap::from([(0, far), (1, near)]));
+    assert_eq!(reg.promotion_requests, vec![(1, 0)]);
+    assert_eq!((stats.requests, stats.declines), (1, 1));
+}
+
+/// No budget, no budget pass: today's behaviour is unchanged.
+#[test]
+fn without_a_budget_nothing_is_evicted_or_declined() {
+    let mut reg = budgeted_registry(&[0, 3], 1);
+    reg.texture_budget = None;
+    let wanted = HashMap::from([(0, drawn(0)), (1, drawn(0))]);
+    let stats = reg.apply_wanted(&wanted);
+    assert_eq!(reg.promotion_requests, vec![(1, 0)]);
+    assert_eq!((stats.evictions, stats.declines), (0, 0));
+    assert!(queued_targets(&reg).is_empty());
+}
+
+/// A queued change counts against the budget even though it has not landed:
+/// two promotions in flight cannot together overrun it.
+#[test]
+fn queued_changes_count_against_the_budget() {
+    let mut reg = budgeted_registry(&[3, 3], BC1_FROM_0 + BC1_FROM_3 + 100);
+    reg.queue_residency_change(0, 0, bc1_dds_from_level(0), 0, TextureColorSpace::Srgb, String::new())
+        .expect("queued");
+    let stats = reg.apply_wanted(&HashMap::from([(0, drawn(0)), (1, drawn(0))]));
+    assert!(reg.promotion_requests.is_empty(), "handle 1 would overrun");
+    assert_eq!(stats.declines, 1);
 }

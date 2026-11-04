@@ -829,12 +829,37 @@ before selecting any re-admission hysteresis.
 | Descriptor pool | `max_textures × 2 × MAX_FRAMES_IN_FLIGHT` combined image sampler descriptors — each per-frame set carries **two** `max_textures`-sized bindings |
 | Staging pool cap | 128 MB (retained after upload flush, #239) |
 | Upload sub-batch bound | `MAX_UPLOAD_BATCH_BYTES` = the 128 MiB staging retention budget: `flush_pending_uploads` submits at most this many staged bytes per fence wait (one larger texture goes alone, #4197) |
+| Promotion upload cap | `MAX_PROMOTION_UPLOAD_BYTES_PER_FRAME` = **32 MiB**: `flush_pending_promotions` takes queued streaming promotions in order until their staged bytes reach this in one frame (one larger change goes alone), and at most `MAX_RESIDENCY_CHANGES_PER_FRAME` = **64** changes: a demotion stages nothing, so a budget drop would otherwise land thousands of image replacements in one frame. It rides the same staging pool and sub-batch path as a cell-load flush (TXS-UP-004), so it adds no second retention budget |
+| Texture pool budget | `texture_registry::derive_budget`: `F × capacity − reserve`, floored at `MIN_DERIVED_BUDGET_BYTES` = **128 MiB**. `F` = `BUDGET_FRACTION_PERMILLE` = **800** ‰ (the engine's 80 % "approaching OOM" line); `capacity` = the live `VK_EXT_memory_budget` DEVICE_LOCAL budget, else the smallest DEVICE_LOCAL heap; `reserve` = the process's device-local bytes in use less texture-image bytes (live and retiring), plus the static BLAS's remaining headroom under its own budget. Re-derived twice a second while streaming is on; `render.texture_budget_mib` (default 0 = derive) replaces the whole expression |
 | Deferred-destroy countdown | `MAX_FRAMES_IN_FLIGHT` = 2 frames |
 
-There is no explicit texture-count eviction policy. When the bindless
-array fills, new uploads are rejected with an error and the caller
-(`asset_provider::resolve_texture`) falls back to the checkerboard
-handle — degrades gracefully, no crash/corruption.
+**Texture pool and eviction (M39, `render.texture_streaming` on).** A
+streamable 2D DDS keeps its **floor** (the levels at or below 256 px, or a BA2
+record's last chunk) resident while it has a holder; the levels above are
+promoted on demand and demoted under pressure. The pool is every streamed
+texture's resident levels plus the **whole** textures (cubemaps, single-level
+and within-floor chains, RGBA uploads). `apply_wanted` spends the budget in
+payload bytes: over it, textures wanted coarser than they are resident drop
+to the level they are wanted at, oldest last-wanted frame first, and then any
+texture above its floor drops one level at a time in the same order, never
+below the floor (TXS-BUD-003). A promotion that does not fit first evicts the
+same way from textures nothing wants at that level; if that cannot make room
+it is declined and counted, and the texture keeps the image it has
+(TXS-BUD-004/007). A wanted texture is never evicted to fund another's
+promotion. Floors and **whole** textures are never evicted: when they alone
+exceed the budget one warning names both totals (TXS-BUD-002). Retiring
+images (replaced by a promotion or demotion, waiting `MAX_FRAMES_IN_FLIGHT`
+frames in `pending_destroy`) are counted apart and do not count against the
+budget; `tex.residency` prints their bytes. `tex.residency` prints the budget with its derivation, the resident,
+peak, floor and retiring bytes, and the eviction and decline counts; the
+`tex-stream:` bench line carries the same counters. With streaming off there
+is no budget and no eviction: every texture uploads its full chain and stays
+until its last holder drops.
+
+When the bindless array fills, new uploads are rejected with an error and the
+caller (`asset_provider::resolve_texture`) falls back to the checkerboard
+handle — degrades gracefully, no crash/corruption. A budget overrun never
+does this: it demotes or declines a promotion instead.
 
 **Slots leak on cell revisit (#2030 / MEM-D3-01).** The registry is
 strictly grow-only: every registration takes a fresh `textures.len()`

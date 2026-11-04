@@ -25,8 +25,8 @@ fn classes_cover_every_field() {
     // *and* `write_values()`.
     // The ground-cover occupancy classes, decoded-audio cache bytes and
     // the #5382 voice-LRU classes are each represented in the ownership
-    // gate.
-    assert_eq!(OwnershipSnapshot::default().classes().len(), 29);
+    // gate, and so is the M39 resident-texture-bytes figure (TXS-TEL-003).
+    assert_eq!(OwnershipSnapshot::default().classes().len(), 30);
 }
 
 #[test]
@@ -574,4 +574,33 @@ fn image_health_is_clean_only_when_both_totals_are_zero() {
         ..Default::default()
     }
     .is_clean());
+}
+
+/// M39 TXS-TEL-003 — resident texture bytes face the growth check: a budget
+/// that stopped evicting (or a promotion path that leaked an image) shows as
+/// bytes climbing across every cycle, while the pose-dependent jitter of
+/// streaming does not.
+#[test]
+fn texture_resident_bytes_climbing_every_cycle_is_growth() {
+    let mut tracker = OwnershipTracker::new();
+    let at = |bytes| OwnershipSnapshot {
+        texture_resident_bytes: bytes,
+        ..Default::default()
+    };
+    tracker.set_baseline(at(100_000_000));
+    for bytes in [100_000_000, 120_000_000, 150_000_000, 190_000_000, 240_000_000] {
+        tracker.record_cycle(at(bytes));
+    }
+    let findings = tracker.evaluate();
+    assert_eq!(
+        findings.iter().map(|f| f.class).collect::<Vec<_>>(),
+        vec!["texture_resident_bytes"]
+    );
+
+    let mut flat = OwnershipTracker::new();
+    flat.set_baseline(at(100_000_000));
+    for bytes in [100_000_000, 100_400_000, 99_800_000, 100_100_000, 100_300_000] {
+        flat.record_cycle(at(bytes));
+    }
+    assert!(flat.evaluate().is_empty(), "streaming jitter is not a leak");
 }

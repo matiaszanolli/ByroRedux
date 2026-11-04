@@ -689,6 +689,20 @@ pub struct TextureResidencyTelemetry {
     /// (TXS-SRC-004).
     pub floors_from_tail: u64,
     pub floors_from_whole_file: u64,
+    /// TXS-BUD-001 — the texture pool budget in bytes (`0` until the
+    /// renderer derived one), where it came from, and the terms of the
+    /// derivation: the capacity the fraction applies to and the reserve left
+    /// to everything that is not a texture.
+    pub budget_bytes: u64,
+    pub budget_source: &'static str,
+    pub budget_capacity_bytes: u64,
+    pub budget_reserve_bytes: u64,
+    /// Session counts of demotions the budget ordered (TXS-BUD-003) and of
+    /// promotions it declined or whose allocation failed (TXS-BUD-004/007).
+    pub evictions: u64,
+    pub declines: u64,
+    /// TXS-BUD-006 — promotion upload bytes allowed per frame.
+    pub promotion_cap_bytes: u64,
 }
 
 impl Resource for TextureResidencyTelemetry {}

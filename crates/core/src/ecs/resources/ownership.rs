@@ -123,6 +123,12 @@ pub struct OwnershipSnapshot {
     pub textures_registry: u64,
     /// Texture slots the registry still counts as live (refcount > 0).
     pub texture_live_slots: u64,
+    /// Bytes of every texture image the registry holds, live and retiring
+    /// (M39 TXS-TEL-003). The residency counterpart of `texture_live_slots`
+    /// in bytes: with streaming it moves with the camera (promotions follow
+    /// what is wanted, the budget evicts), so it is held to the growth check
+    /// like an occupancy figure, not to an exact return.
+    pub texture_resident_bytes: u64,
     /// Populated `BlasEntry` slots. The backing `Vec` is index-addressed by
     /// mesh handle so its *length* is monotonic; this counts `Some`.
     pub blas_entries: u64,
@@ -280,6 +286,11 @@ impl OwnershipSnapshot {
                 policy: Exact,
             },
             OwnerClass {
+                name: "texture_resident_bytes",
+                value: self.texture_resident_bytes,
+                policy: Occupancy,
+            },
+            OwnerClass {
                 name: "blas_entries",
                 value: self.blas_entries,
                 policy: Exact,
@@ -414,6 +425,7 @@ impl OwnershipSnapshot {
         self.textures_in_use = next();
         self.textures_registry = next();
         self.texture_live_slots = next();
+        self.texture_resident_bytes = next();
         self.blas_entries = next();
         self.tlas_instances = next();
         self.terrain_tiles = next();

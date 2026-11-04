@@ -27,6 +27,12 @@ use std::collections::{HashMap, HashSet, VecDeque};
 pub use crate::vulkan::dds::TextureColorSpace;
 
 /// Gamebryo `TexClampMode` address pairs in their on-disk enum order.
+mod budget;
+pub use budget::{
+    derive_budget, BudgetInputs, BudgetSource, TextureBudget, BUDGET_FRACTION_PERMILLE,
+    MAX_PROMOTION_UPLOAD_BYTES_PER_FRAME, MAX_RESIDENCY_CHANGES_PER_FRAME,
+    MIN_DERIVED_BUDGET_BYTES,
+};
 mod lookup;
 mod residency;
 pub(crate) use residency::ResidencyChange;
@@ -139,6 +145,23 @@ struct StreamSource {
     /// First frame of the current run in which it was wanted coarser than
     /// it is resident.
     coarser_since: Option<u64>,
+    /// Payload bytes of each level of the full chain, from the DDS header:
+    /// the budget's unit of account (`level_bytes[l..]` is what a first
+    /// resident level `l` holds).
+    level_bytes: Vec<u64>,
+    /// The promotion target the budget last declined for this texture, so a
+    /// decline is counted once per episode, not once per frame (TXS-BUD-004).
+    declined_target: Option<u32>,
+    /// No promotion is requested before this frame: the backoff after a
+    /// failed image allocation (TXS-BUD-007).
+    retry_after_frame: u64,
+}
+
+impl StreamSource {
+    /// Bytes resident when the first resident level is `first`.
+    fn bytes_from(&self, first: u32) -> u64 {
+        self.level_bytes.iter().skip(first as usize).sum()
+    }
 }
 
 /// M39 TXS-TEL-002 — session counts of landed residency changes. Churn is
@@ -157,6 +180,13 @@ pub(crate) struct StreamCounters {
     /// (TXS-SRC-004: single-chunk BA2 records, and every BSA or loose file).
     pub(crate) floors_from_tail: u64,
     pub(crate) floors_from_whole_file: u64,
+    /// TXS-BUD-003 — demotions the budget ordered (one per texture per
+    /// pass, however many levels it dropped).
+    pub(crate) evictions: u64,
+    /// TXS-BUD-004 / -007 — promotions refused because eviction could not
+    /// make room, or whose image allocation failed; the texture stayed as it
+    /// was either way.
+    pub(crate) declines: u64,
 }
 
 /// M39 — what one `apply_wanted` pass found (`tex-stream:` and
@@ -167,8 +197,12 @@ pub struct WantedStats {
     pub deficits: u32,
     /// Promotion requests queued for the host, in priority order.
     pub requests: u32,
-    /// Demotions queued this pass.
+    /// Demotions queued this pass (hysteresis and budget).
     pub demotions: u32,
+    /// Of those, demotions the budget ordered (TXS-BUD-003).
+    pub evictions: u32,
+    /// Promotions the budget declined this pass (TXS-BUD-004).
+    pub declines: u32,
 }
 
 /// M39 — a promotion whose levels the host must read: re-read `path` from
@@ -406,6 +440,16 @@ pub struct TextureRegistry {
     peak_resident_bytes: u64,
     /// M39 TXS-TEL-002 — session counts of landed residency changes.
     stream_counters: StreamCounters,
+    /// M39 TXS-BUD-001 — the texture pool budget (`None` until the renderer
+    /// has derived one: nothing evicts or declines without it).
+    texture_budget: Option<TextureBudget>,
+    /// When the budget was last derived and with which override (MiB).
+    texture_budget_sampled: Option<(std::time::Instant, u64)>,
+    /// TXS-BUD-002 — the floors-and-whole-exceed-the-budget warning is
+    /// logged once per episode.
+    budget_floor_warned: bool,
+    /// Reused by the budget pass so the steady state allocates nothing.
+    budget_scratch: Vec<upload::BudgetRow>,
     /// M39 TXS-TEL-002 — cell loads timed by `record_cell_load_ready`, and
     /// the last one's floor-ready time.
     cell_loads_timed: u64,
@@ -598,6 +642,10 @@ impl TextureRegistry {
             streaming: false,
             peak_resident_bytes: 0,
             stream_counters: StreamCounters::default(),
+            texture_budget: None,
+            texture_budget_sampled: None,
+            budget_floor_warned: false,
+            budget_scratch: Vec::new(),
             cell_loads_timed: 0,
             last_floor_ready_ms: 0.0,
             slot_capacity_warning_emitted: false,

@@ -65,6 +65,12 @@ pub const TERRAIN_LOD_SOFTEN_DEFAULT: f32 = 0.5;
 /// sequence (each texture uploads its floor, then promotes to the full
 /// chain); the shipped presets leave it at the default (decision Q5).
 pub const TEXTURE_STREAMING_SETTING_ID: &str = "render.texture_streaming";
+/// M39 — the texture pool budget override, in MiB (TXS-BUD-005). 0, the
+/// default, uses the budget derived from the live device-local budget
+/// (decision Q4); any other value is the budget, which is how the minimum
+/// card is emulated on a larger one and how benches pin it. The shipped
+/// presets leave it at the default (decision Q5).
+pub const TEXTURE_BUDGET_MIB_SETTING_ID: &str = "render.texture_budget_mib";
 
 /// Register settings owned by the overlay itself. The binary calls this while
 /// assembling the universal [`SettingsRegistry`]; renderer, audio, input, and
@@ -203,5 +209,19 @@ pub fn register_builtin_settings(registry: &mut SettingsRegistry) -> Result<(), 
         "Upload each texture's low-resolution mip levels first and add the \
          finer ones afterwards. Off uploads every level at once.",
         false,
+    ))?;
+    registry.register(SettingEntry::slider(
+        TEXTURE_BUDGET_MIB_SETTING_ID,
+        "Rendering",
+        "Texture memory budget",
+        "Video memory the streamed textures may hold above their lowest \
+         levels; the finest levels of the textures seen longest ago are \
+         dropped first when it is exceeded. 0 derives it from the video \
+         memory the driver reports free. Needs texture streaming on.",
+        0.0,
+        0.0,
+        32768.0,
+        64.0,
+        " MiB",
     ))
 }

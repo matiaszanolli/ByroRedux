@@ -224,8 +224,8 @@ impl TextureStreamer {
 /// residency telemetry and the streamer's settle clock (`None` when no
 /// streamer runs). With streaming off nothing promotes, so the run is
 /// settled at zero and `floor_ready_ms` times the full-chain control (A6).
-/// Evictions and declines are the Phase 3 budget's (TXS-BUD); nothing
-/// evicts or declines without a budget, so they read zero until it lands.
+/// Evictions and declines are the budget's (TXS-BUD): they read zero while
+/// the budget is not exceeded.
 pub(crate) fn tex_stream_bench_line(
     t: &TextureResidencyTelemetry,
     settle: Option<SettleReading>,
@@ -237,15 +237,17 @@ pub(crate) fn tex_stream_bench_line(
     });
     format!(
         "tex-stream: streaming={} resident_bytes={} peak_bytes={} floor_bytes={} \
-         promotions={} demotions={} evictions=0 declines=0 churn={} \
+         promotions={} demotions={} evictions={} declines={} churn={} \
          hysteresis_frames={} cell_loads={} floor_ready_ms={:.2} reserved={} \
-         deficits={} settled={} settle_ms={:.2} settle_restarts={}",
+         deficits={} settled={} settle_ms={:.2} settle_restarts={} budget_bytes={}",
         u8::from(t.streaming),
         t.resident_bytes,
         t.peak_resident_bytes,
         t.floor_bytes,
         t.promotions,
         t.demotions,
+        t.evictions,
+        t.declines,
         t.churn,
         t.hysteresis_frames,
         t.cell_loads_timed,
@@ -255,6 +257,7 @@ pub(crate) fn tex_stream_bench_line(
         u8::from(settle.settled),
         settle.ms,
         settle.restarts,
+        t.budget_bytes,
     )
 }
 
@@ -417,6 +420,9 @@ mod tests {
             floor_bytes: 30,
             promotions: 4,
             demotions: 1,
+            evictions: 2,
+            declines: 3,
+            budget_bytes: 4096,
             churn: 0,
             hysteresis_frames: 120,
             cell_loads_timed: 1,
@@ -428,19 +434,19 @@ mod tests {
         assert_eq!(
             line,
             "tex-stream: streaming=0 resident_bytes=100 peak_bytes=200 floor_bytes=30 \
-             promotions=4 demotions=1 evictions=0 declines=0 churn=0 \
+             promotions=4 demotions=1 evictions=2 declines=3 churn=0 \
              hysteresis_frames=120 cell_loads=1 floor_ready_ms=812.35 reserved=0 \
-             deficits=0 settled=1 settle_ms=0.00 settle_restarts=0"
+             deficits=0 settled=1 settle_ms=0.00 settle_restarts=0 budget_bytes=4096"
         );
         let on = TextureResidencyTelemetry {
             streaming: true,
             ..Default::default()
         };
-        assert!(tex_stream_bench_line(&on, None).ends_with("settled=0 settle_ms=0.00 settle_restarts=0"));
+        assert!(tex_stream_bench_line(&on, None).ends_with("settled=0 settle_ms=0.00 settle_restarts=0 budget_bytes=0"));
         assert!(tex_stream_bench_line(
             &on,
             Some(SettleReading { settled: true, ms: 1.5, restarts: 2 })
         )
-        .ends_with("settled=1 settle_ms=1.50 settle_restarts=2"));
+        .ends_with("settled=1 settle_ms=1.50 settle_restarts=2 budget_bytes=0"));
     }
 }

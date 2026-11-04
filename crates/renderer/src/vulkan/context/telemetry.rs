@@ -54,14 +54,69 @@ impl VulkanContext {
         self.texture_registry.fill_residency_telemetry(telemetry);
     }
 
-    /// M39 — the `render.texture_streaming` switch, then this frame's
-    /// queued promotions and demotions, at most one upload sub-batch
-    /// (`MAX_UPLOAD_BATCH_BYTES`) per frame. Call before `draw_frame` so the
-    /// new images' descriptor writes reach this frame's slot at its
-    /// `begin_frame`. Phase 1 bound; docs/engine/texture-streaming.md §6.2
-    /// replaces it with a measured per-frame cap.
-    pub fn update_texture_streaming(&mut self, streaming: bool) {
+    /// M39 TXS-BUD-001 — derive the texture pool budget (design §7.1) and
+    /// hand it to the registry. Re-runs twice a second, or at once when
+    /// `override_mib` (`render.texture_budget_mib`, 0 = derive) changes. The
+    /// first derivation, and any change of source, is logged with its terms.
+    fn refresh_texture_budget(&mut self, override_mib: u64) {
+        if !self.texture_registry.texture_budget_due(override_mib) {
+            return;
+        }
+        let live = self.live_memory_budget();
+        let capacity_bytes = live.map_or_else(
+            || {
+                super::super::device::smallest_device_local_heap_bytes(
+                    &self.instance,
+                    self.physical_device,
+                )
+            },
+            |(_, budget)| budget,
+        );
+        let in_use_bytes = match (live, self.allocator.as_ref()) {
+            (Some((usage, _)), _) => usage,
+            (None, Some(allocator)) => allocator
+                .lock()
+                .map_or(0, |a| a.generate_report().total_allocated_bytes),
+            (None, None) => 0,
+        };
+        let blas_headroom_bytes = self.accel_manager.as_ref().map_or(0, |accel| {
+            accel
+                .blas_budget_bytes()
+                .saturating_sub(accel.static_blas_bytes())
+        });
+        let budget = crate::texture_registry::derive_budget(&crate::texture_registry::BudgetInputs {
+            capacity_bytes,
+            capacity_is_live: live.is_some(),
+            in_use_bytes,
+            texture_bytes: self.texture_registry.texture_image_bytes(),
+            blas_headroom_bytes,
+            override_bytes: override_mib << 20,
+        });
+        let previous = self.texture_registry.texture_budget();
+        if previous.is_none_or(|p| p.source != budget.source) {
+            log::info!(
+                "Texture budget {} MiB ({}): capacity {} MiB x {}/1000 less {} MiB held by \
+                 everything that is not a texture",
+                budget.bytes >> 20,
+                budget.source.label(),
+                budget.capacity_bytes >> 20,
+                crate::texture_registry::BUDGET_FRACTION_PERMILLE,
+                budget.reserve_bytes >> 20,
+            );
+        }
+        self.texture_registry.set_texture_budget(budget);
+    }
+
+    /// M39 — the `render.texture_streaming` switch and the texture budget
+    /// override, then this frame's queued promotions and demotions, at most
+    /// `MAX_PROMOTION_UPLOAD_BYTES_PER_FRAME` of uploads (TXS-BUD-006). Call
+    /// before `draw_frame` so the new images' descriptor writes reach this
+    /// frame's slot at its `begin_frame`.
+    pub fn update_texture_streaming(&mut self, streaming: bool, budget_override_mib: u64) {
         self.texture_registry.set_streaming(streaming);
+        if streaming {
+            self.refresh_texture_budget(budget_override_mib);
+        }
         if self.texture_registry.pending_promotion_count() == 0 {
             return;
         }
@@ -74,7 +129,7 @@ impl VulkanContext {
             &self.graphics_queue,
             self.transfer_pool,
             &self.transfer_fence,
-            crate::texture_registry::MAX_UPLOAD_BATCH_BYTES,
+            crate::texture_registry::MAX_PROMOTION_UPLOAD_BYTES_PER_FRAME,
         ) {
             log::warn!("texture promotion flush failed: {e}");
         }
@@ -124,6 +179,14 @@ impl VulkanContext {
         use std::mem::size_of;
 
         rows.clear();
+        // M39 TXS-BUD — the texture budget pass's row scratch.
+        let (len, capacity, elem_size_bytes) = self.texture_registry.budget_scratch_telemetry();
+        rows.push(ScratchRow {
+            name: "texture_budget_scratch",
+            len,
+            capacity,
+            elem_size_bytes,
+        });
         rows.push(ScratchRow {
             name: "volumetric_fog_scratch",
             len: self.volumetric_fog_scratch.len(),
