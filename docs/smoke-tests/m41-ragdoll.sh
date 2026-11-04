@@ -26,7 +26,8 @@
 # Usage:
 #   docs/smoke-tests/m41-ragdoll.sh
 #
-# Exit: 0 on success, non-zero on any failed hard assertion.
+# Exit: 0 on success, 77 when the FNV data is not installed (SKIP, never a pass), non-zero on any failed
+# hard assertion.
 
 set -euo pipefail
 
@@ -39,10 +40,15 @@ CELL="${BYROREDUX_RAGDOLL_CELL:-GSDocMitchellHouse}"
 # collapse (a 2-body result would mean the graph barely threaded).
 MIN_BODIES="${BYROREDUX_RAGDOLL_MIN_BODIES:-10}"
 
-if [[ ! -f "$FNV_DATA/FalloutNV.esm" ]]; then
-    echo "smoke[ragdoll]: SKIP — FalloutNV.esm not at $FNV_DATA"
-    exit 0
-fi
+# #6547 — SKIP != PASS: a runner without the game's data measures nothing, so it exits 77 (never 0, which a
+# CI lane would read as a pass) and names the missing file in the form
+# `scripts/check-playable-smoke-contracts.sh` pins.
+for required in FalloutNV.esm "Fallout - Meshes.bsa" "Fallout - Textures.bsa" "Fallout - Textures2.bsa"; do
+    if [[ ! -f "$FNV_DATA/$required" ]]; then
+        echo "smoke[m41-ragdoll]: SKIP -- missing $FNV_DATA/$required"
+        exit 77
+    fi
+done
 
 LOG_DIR="$(mktemp -d)"
 trap 'rm -rf "$LOG_DIR"' EXIT

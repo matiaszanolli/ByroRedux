@@ -60,7 +60,10 @@ for var in "${REFERENCED_DATA_VARS[@]}"; do
 done
 echo "playable-smoke-contracts: PASS -- data neutralisation covers every harness data variable (${REFERENCED_DATA_VARS[*]})"
 
-for name in p0-door-interaction p1-character-traversal p2-melee-core p5-save-restart w1-water-traversal w2-dynamic-water; do
+# #6547 — the three FNV P5 hardening gates (door transition, F5/F9 quicksave, soak) load the shared fixture
+# and call smoke_require_data like p5-save-restart, so they run through this loop too.
+for name in p0-door-interaction p1-character-traversal p2-melee-core p5-save-restart w1-water-traversal w2-dynamic-water \
+    p5-door-transition p5-f5-f9-quicksave p5-soak; do
     smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
     for game in "${GAMES[@]}"; do
         unset FIXTURE_GATES
@@ -120,7 +123,7 @@ done
 # exits 77 on missing data and never joined these lists (the third recurrence of the class);
 # w2-dynamic-water is game-parameterised, so it is in the fixture loop above.
 # #6589 — the nine M43 live gates of 2026-10-30/31 (armor through tempering) are the fourth.
-for name in dt1-dialogue-layers m42-eat-sleep sm1-story-manager dt2-skyrim-forcegreet m47-3-obscript fo4-ragdoll \
+for name in dt1-dialogue-layers m42-eat-sleep sm1-story-manager dt2-skyrim-forcegreet m47-3-obscript fo4-ragdoll m41-ragdoll \
     p4-fnv-quest-route p5-fnv-quest-persistence m42-package-procedures vats-targeting m43-adia-conversations m43-item-drop m43-crafting \
     m43-armor m43-attraction m43-attraction-reaction m43-fo4-actions m43-hello m43-mines m43-node-window \
     m43-skyrim-actions m43-tempering; do
@@ -340,9 +343,9 @@ echo "playable-smoke-contracts: PASS"
 # for a gate that cannot honour that, be listed here with the reason. This list only shrinks:
 # each entry below is a gate whose missing-data behaviour has not been verified yet.
 UNCHECKED_SMOKE_GATES=(
-    interior-godrays m-trees m34-day-night m41-equip m41-ragdoll m43-quest-runtime m47-2-bleedout
-    p3-hud p3-player-body p4-quest-route p5-door-transition p5-f5-f9-quicksave p5-quest-persistence
-    p5-soak p6-loading-model r6a_stale_15_bench tsd1-height-census
+    interior-godrays m-trees m34-day-night m41-equip m43-quest-runtime m47-2-bleedout
+    p3-hud p3-player-body p4-quest-route p5-quest-persistence
+    p6-loading-model r6a_stale_15_bench tsd1-height-census
 )
 # The checker's own text above this block (a pipe into `grep -q` would die of SIGPIPE under pipefail).
 checker_above="$(sed '/^# #6461 — a gate script that is in neither/,$d' "$ROOT_DIR/scripts/check-playable-smoke-contracts.sh")"
