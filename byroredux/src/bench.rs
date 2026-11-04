@@ -44,8 +44,9 @@ pub(crate) enum BenchMode {
     /// Fixed `dt = 0`, authored camera held still. Renderer attribution and
     /// deterministic regression gates only.
     RendererStatic,
-    /// Fixed `dt = 1/60`, non-static frame-indexed camera path. Animation,
-    /// streaming, and temporal-upscaler comparisons.
+    /// Fixed `dt = 1/60`, an explicit frame-indexed camera path (`static`
+    /// holds the authored camera while animation and bench movers step).
+    /// Animation, streaming, and temporal-upscaler comparisons.
     RendererStepped,
     /// Wall-clock delta-time and no harness-owned camera. Combined system
     /// observation only; never a regression gate.
@@ -235,10 +236,15 @@ fn camera_for_mode(
                 "--bench-mode renderer-static requires a static camera, not '{path}'"
             )),
         },
+        // An explicit `static` holds the authored camera while the fixed
+        // step still advances animation and the `BenchMover`s (M-LIGHT
+        // RLT-SHD-010's moving blocker, RLT-REF-017's skinned proxy). No
+        // path at all stays an error: the mode never guesses a camera.
         BenchMode::RendererStepped => match camera {
-            Some(path) if path != BenchCameraPath::Static => Ok(Some(path)),
-            _ => Err(
-                "--bench-mode renderer-stepped requires a non-static --bench-camera path"
+            Some(path) => Ok(Some(path)),
+            None => Err(
+                "--bench-mode renderer-stepped requires an explicit --bench-camera path \
+                 (`static` holds the authored camera while the clock steps)"
                     .to_owned(),
             ),
         },
@@ -497,6 +503,20 @@ mod tests {
         .is_err());
         assert!(
             resolve_bench_selection(true, Some(BenchMode::RendererStepped), None, None,).is_err()
+        );
+        // An explicit static camera on the stepped clock is not a hybrid:
+        // dt stays fixed, and the camera is the authored one held still.
+        let held = resolve_bench_selection(
+            true,
+            Some(BenchMode::RendererStepped),
+            Some(BenchCameraPath::Static),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            (held.mode, held.camera),
+            (BenchMode::RendererStepped, Some(BenchCameraPath::Static))
         );
         assert!(resolve_bench_selection(
             true,

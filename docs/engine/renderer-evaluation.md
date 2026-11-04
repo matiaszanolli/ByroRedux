@@ -198,8 +198,9 @@ normal-mapped floor:
 It reports the same visibility error over each caster's contact band (the
 `band` records), at tiers 1–3, with the shadow filter on
 (`filtered_direct`) and off (`direct_only`). The proxy is also measured
-mid-animation under `renderer-stepped`, on a `pan` path parked at frame 0
-(the mode needs a non-static path). That run takes a single-frame
+mid-animation under `renderer-stepped`, with `--bench-camera static` (the
+mode needs an explicit path; `static` holds the camera while the clock
+steps). That run takes a single-frame
 capture at bench frame 45 and exports the scene at the same frame
 (`--export-mitsuba-frame`), so the reference is rendered at the drawn pose
 (RLT-EXP-001). Drawn frame F is clip time (F + 1) / 60 s, because the

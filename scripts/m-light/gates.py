@@ -806,7 +806,7 @@ def gate_penumbra(engine: Engine, store: ReferenceStore, ctx: Context, spp: int,
     """
     del ctx
     rows = []
-    extra = ["--rt-test-no-jitter"]
+    extra = ["--upscaler", "taa", "--rt-test-no-jitter"]
     for rung_name in PENUMBRA_RUNGS:
         export = engine.out / "scenes" / rung_name
         shadowed = [load_exr(engine.capture(f"{rung_name}_fdirect", rung_name, "filtered_direct", s, 3,
@@ -919,7 +919,7 @@ def gate_contact(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
     rows = []
     rung_name = "contact"
     export = engine.out / "scenes" / rung_name
-    extra = ["--rt-test-no-jitter"]
+    extra = ["--upscaler", "taa", "--rt-test-no-jitter"]
     exported = False
     reference = None
     for view_mode in ("filtered_direct", "direct_only"):
@@ -999,10 +999,9 @@ def contact_mid_animation(engine: Engine, store: ReferenceStore, spp: int):
     rows = []
     rung_name, tier = "contact", CONTACT_TIERS[-1]
     exports = [engine.out / "scenes" / f"contact-proxy-f{PROXY_FRAME}-run{s}" for s in (0, 1)]
-    # renderer-stepped needs a non-static path; parked at frame 0 it holds
-    # the rung's camera while the animation clock steps.
-    base = ["--rt-test-no-jitter", "--upscaler", "taa",
-            "--bench-camera", "pan", "--bench-camera-freeze-at", "0"]
+    # renderer-stepped needs an explicit path; `static` holds the rung's
+    # camera while the animation clock steps.
+    base = ["--rt-test-no-jitter", "--upscaler", "taa", "--bench-camera", "static"]
     shadowed, unshadowed = [], []
     for s in (0, 1):
         export = ["--export-mitsuba", str(exports[s]), "--export-mitsuba-frame", str(PROXY_FRAME)]
@@ -1110,7 +1109,9 @@ def gate_temporal(engine: Engine, store: ReferenceStore, ctx: Context, spp: int,
              "--linear-capture-tap", "post-taa"]
     cases = []
     if "A14" in gates:
-        cases.append(("A14", "penumbra-moving", clock))
+        # The blocker moves on the bench clock; the camera holds still (a
+        # parked path would freeze the blocker too, it shares the clock).
+        cases.append(("A14", "penumbra-moving", clock + ["--bench-camera", "static"]))
     if "A3" in gates:
         cases.append(("A3", "penumbra", clock + ["--bench-camera", "pan"]))
     if "SHD-006" in gates:

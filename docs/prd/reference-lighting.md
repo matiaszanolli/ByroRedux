@@ -1,6 +1,6 @@
 # Reference-Quality Lighting — Product Requirements
 
-**Status**: ACTIVE (2026-11-04). Revision 16; the change history is in
+**Status**: ACTIVE (2026-11-04). Revision 17; the change history is in
 §12. Every decision in §10 is decided and every Phase 0 verify item is
 closed or filed as an issue.
 
@@ -540,9 +540,10 @@ live in the rung subsection of the exporter design (Related table).
   against the clip's 0.6 (F + 1) / 60. The proxy's bind inverse is the
   identity, so its exported palette is the bone world matrix that
   `build_skinned_palettes` uploads as `skin_palette.comp`'s input; the
-  GPU multiply on identical inputs is deterministic. The mode needs a
-  non-static `--bench-camera` path; `--bench-camera pan
-  --bench-camera-freeze-at 0` holds the rung's camera.
+  GPU multiply on identical inputs is deterministic. The mode needs an
+  explicit `--bench-camera` path; since rev 17 `static` is accepted and
+  holds the rung's camera while animation and the RLT-SHD-010 blocker step
+  (a parked path would freeze the blocker, which shares its clock).
 - **RLT-REF-018.** A switch that bypasses SVGF — both its temporal
   accumulation and its à-trous passes — MUST exist for the closure rung,
   as a `DBG_*` bit listed with its siblings. At HEAD on 2026-11-01
@@ -1578,3 +1579,4 @@ Each needs the project owner. The recommendation is the first option.
 | 14 | 2026-11-02 | Phase 2 owner decisions (#6602), checked in with `2f2dc5380`: RLT-GI-012 deferred to the Q5 radiance cache because the isotropic-footprint gate cost +3.4 to +10.9 ms on content and dropped three settled tiers (the Phase 1b gate ships, and a later widening re-runs A13); Q2 amended, the interior cross-fade (RLT-GI-005) deferred because it darkened Whiterun by a median of 26 % and up to 79 % per tile; RLT-GI-004 and RLT-GI-011 shipped. The exit's A7 / A8 run is in `docs/audits/MLIGHT_phase2_exit_A7A8_a89ca367e.tsv` (A8 passes) | — |
 | 15 | 2026-11-04 | V9 closed (#6605): `renderer-stepped` is the RLT-REF-017 mode. Drawn frame F is clip time (F + 1) / 60 s; two runs with different RT seeds export byte-identical scenes at frame 45 and the proxy's yaw matches the clip. A5's mid-animation run now passes a parked `--bench-camera` path, which `renderer-stepped` requires, and checks the yaw as well as the byte identity | — |
 | 16 | 2026-11-04 | Phase 2 exit (#6602), evidence in `docs/audits/MLIGHT_phase2_exit_metadata.txt` and `MLIGHT_phase2_exit_A13.tsv`. A8 passes (0 change on every region). A7 is published at every tier: tier 3 deficit 1.00 / 0.93 / 1.00, 0.42 / 0.42 / 0.33 with the RT-LOD gate off. A10 re-published: the tier-3 Prospector floor bounce has mean 0.0191, median 0.0022 and p95 0.0861, with every pixel non-zero (Phase 1b 0.0106 / 0.0023 / 0.047). A11 passes on all five scenes under the Phase 2 declaration (0 tiles outside). A13: every game scene is within its Q8 ceiling and every settled tier is unchanged. Whiterun / TAA read +1.10 ms on 3 runs whose spread is wider than the ceiling, and +0.08 ms on a 7-run rerun, which settles the row. RLT-GI-003, RLT-GI-005 and RLT-GI-012 stay open on the Q5 cache and Q2's amendment | — |
+| 17 | 2026-11-04 | Phase 3 entry, step 1 (#6603): the first run of the Phase 3 gates stopped on argument errors in apparatus that had never run. A2 / A4 and A5 passed `--rt-test-no-jitter` without `--upscaler taa`. A14 ran `renderer-stepped` with no camera path, and parking a path would have frozen its blocker, which shares the bench clock. `renderer-stepped` now accepts an explicit `--bench-camera static`: the camera holds while animation and the bench movers step, and a missing path is still refused. A14 and A5's mid-animation run use it (RLT-REF-017, RLT-SHD-010) | — |

@@ -372,8 +372,9 @@ as a performance option. Details and troubleshooting in
 **Named benchmark modes.** Every `--bench-frames` summary records one complete
 timing/camera contract: `renderer-static` fixes `dt=0` and holds the authored
 camera for renderer attribution and regression gates; `renderer-stepped` fixes
-`dt=1/60` and requires a non-static frame-indexed `--bench-camera` path for
-animation, streaming, and upscaler comparisons; `system-live` uses wall-clock
+`dt=1/60` and requires an explicit frame-indexed `--bench-camera` path for
+animation, streaming, and upscaler comparisons (`static` holds the authored
+camera while animation and bench movers step); `system-live` uses wall-clock
 time and a free camera and gates nothing. For example:
 
 ```bash
