@@ -982,8 +982,7 @@ fn theft_rule_reads_the_player_base_cell_ownership_and_the_rank_bar() {
             global_var_form_id: None,
         },
     );
-    let outcome = transfer_loot(&world, player, own_chest, LootSelection::All).unwrap();
-    assert!(!outcome.stolen, "the player's own chest");
+    transfer_loot(&world, player, own_chest, LootSelection::All).unwrap();
     assert_eq!(
         crate::notifications::drain(&world),
         vec!["Took 7 items".to_owned()]
@@ -1059,8 +1058,7 @@ fn theft_rule_reads_the_player_base_cell_ownership_and_the_rank_bar() {
     assert!(theft_owner(&world, player, shop_chest).is_none());
     world.resource_mut::<byroredux_scripting::OwnerOverrides>().set(0xDEAD, 0xABBA);
     assert!(theft_owner(&world, player, shop_chest).is_some());
-    let outcome = transfer_loot(&world, player, shop_chest, LootSelection::All).unwrap();
-    assert!(outcome.stolen);
+    transfer_loot(&world, player, shop_chest, LootSelection::All).unwrap();
     assert_eq!(
         crate::notifications::drain(&world),
         vec!["Stolen 7 items".to_owned()]
@@ -1172,8 +1170,12 @@ fn a_game_without_a_crime_model_charges_nothing() {
     use byroredux_scripting::obscript_ledger::{FactionFlag, ObScriptLedger};
     let (mut world, player, chest) = crime_world(Some(byroredux_core::math::Vec3::new(0.0, 0.0, 500.0)));
     world.remove_resource::<byroredux_core::character::CrimeModel>();
-    let outcome = transfer_loot(&world, player, chest, LootSelection::All).unwrap();
-    assert!(outcome.stolen, "still classified as theft");
+    transfer_loot(&world, player, chest, LootSelection::All).unwrap();
+    assert_eq!(
+        crate::notifications::drain(&world),
+        vec!["Stolen 7 items".to_owned()],
+        "still classified as theft"
+    );
     let ledger = world.resource::<ObScriptLedger>();
     assert_eq!(ledger.crime_gold, 0);
     assert!(!ledger.flag(FactionFlag::Steal, 0xF00D));

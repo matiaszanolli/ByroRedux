@@ -138,16 +138,13 @@ pub(crate) enum LootSelection {
 }
 
 /// What one validated transfer moved — drives the notification wording and
-/// the `ItemEventBatch` rows both sides publish.
+/// the `ItemEventBatch` rows both sides publish. Whether it was theft is not
+/// part of it (#6587): `transfer_loot` acts on that itself (the notification,
+/// the `stolen` item-transfer flag, `AIPL`, `crime::report_theft`).
 pub(crate) struct LootOutcome {
     pub item_count: u64,
     /// One `(base_form_id, count)` row per moved stack.
     pub rows: Vec<(u32, u32)>,
-    /// #4464 — read nowhere yet: with take-all wired straight to activation
-    /// no caller branches on theft; the witness/bounty consumer the P3 spec
-    /// defers is what will read it.
-    #[allow(dead_code)] // #4464 — forward-latent until theft consequences
-    pub stolen: bool,
 }
 
 /// Move loot from `source` into the player's inventory. Shared by the
@@ -179,7 +176,6 @@ pub(crate) fn transfer_loot(
     let mut outcome = LootOutcome {
         item_count: 0,
         rows: Vec::new(),
-        stolen,
     };
     // Indices (not copies) of source rows this transfer emptied, each with
     // its base form id, so source equipment pointing at them can be released
