@@ -177,14 +177,24 @@ pub(crate) fn track_read(type_id: TypeId, type_name: &'static str) {
             // `format!` cost behind it — now fires at most once per type
             // per thread for the life of the process.
             if entry.read_count == 1
+                && !recursive_read_is_permitted(type_id)
                 && WARNED_RECURSIVE_READ_TYPES.with(|warned| warned.borrow_mut().insert(type_id))
             {
+                // #6615 — the call site above names the SECOND read; the first guard's holder is
+                // somewhere up this same stack. With `RUST_BACKTRACE=1` (or `full`) the stack is
+                // printed, which locates it; without, `capture()` is a cheap "disabled" marker.
+                let backtrace = std::backtrace::Backtrace::capture();
+                let stack = if backtrace.status() == std::backtrace::BacktraceStatus::Captured {
+                    format!("\nthe stack of the second read (the first guard's holder is a frame of it):\n{backtrace}")
+                } else {
+                    " Set RUST_BACKTRACE=1 to print the stack, which names the first guard's holder.".to_owned()
+                };
                 log::warn!(
                     "ECS recursive-read hazard: a second `{type_name}` read guard is live on \
                      this thread, acquired at {caller}; reuse/drop the first guard when both \
                      reads target one World (#2386). This warning fires once per type per \
                      thread (#3249) — further recursive reads of `{type_name}` on this thread \
-                     are not logged."
+                     are not logged.{stack}"
                 );
                 #[cfg(test)]
                 {
@@ -206,6 +216,15 @@ pub(crate) fn track_read(type_id: TypeId, type_name: &'static str) {
             },
         );
     });
+}
+
+/// Types whose read-read re-entry is part of their contract, so the warning above never fires for them
+/// (#6617). `CommandRegistry` is read by every console dispatch site for the whole `execute` call (the registry
+/// owns the boxed commands being run), and `HelpCommand` re-reads it to list them: `ConsoleCommand::execute`
+/// documents that as permitted. Warning once for it spent the type's one-per-thread budget on a benign case and
+/// hid the first genuine recursive read on the same thread (#6615). A write is still a deadlock and still panics.
+fn recursive_read_is_permitted(type_id: TypeId) -> bool {
+    type_id == TypeId::of::<crate::console::CommandRegistry>()
 }
 
 /// Record a write lock acquisition. Panics if any lock (read or write) is
@@ -711,6 +730,34 @@ mod tests {
             .expect("the recursive read must have recorded its site");
         assert_eq!(line, expected_line, "named {file}:{line}, not the second query's line");
         assert!(file.ends_with("lock_tracker.rs"), "this test's own file, got {file}");
+    }
+
+    /// #6617 — `CommandRegistry` is read while the dispatcher holds it (`help` re-reads it): permitted by
+    /// `ConsoleCommand::execute`'s contract, so it neither warns nor spends the per-thread warning budget a
+    /// genuine recursive read of another type would need. A write while it is read is still refused.
+    #[test]
+    fn the_command_registry_may_be_re_read_without_a_warning() {
+        let id = TypeId::of::<crate::console::CommandRegistry>();
+        take_recursive_read_warning_count();
+        track_read(id, "CommandRegistry");
+        track_read(id, "CommandRegistry");
+        untrack_read(id);
+        untrack_read(id);
+        assert_eq!(take_recursive_read_warning_count(), 0, "a permitted re-read is silent");
+        assert!(is_clean());
+
+        // Another type still warns on its own first occurrence.
+        let other = TypeId::of::<FakeA>();
+        track_read(other, "FakeA");
+        track_read(other, "FakeA");
+        untrack_read(other);
+        untrack_read(other);
+        assert_eq!(take_recursive_read_warning_count(), 1);
+
+        track_read(id, "CommandRegistry");
+        let refused = std::panic::catch_unwind(|| track_write(id, "CommandRegistry"));
+        assert!(refused.is_err(), "read-then-write on one thread is still a deadlock");
+        untrack_read(id);
     }
 
     struct FakeRecursiveCycle;
