@@ -20,6 +20,9 @@ pub(crate) struct UiMenuState {
     pub dialogue: bool,
     pub message_box: bool,
     pub barter: bool,
+    /// The crafting page (a workbench, grindstone, …). The engine has no menu kind for it, so it counts
+    /// only toward "some menu is open" — never as the Pause menu (#6576).
+    pub crafting: bool,
     /// The developer console / overlay.
     pub console: bool,
     /// The loading cover.
@@ -28,21 +31,38 @@ pub(crate) struct UiMenuState {
 
 impl Resource for UiMenuState {}
 
-/// Read the open pages off the UI and publish them.
-pub(crate) fn publish_ui_menus(world: &World, ui: Option<&byroredux_debug_ui::DebugUiState>, loading: bool) {
-    let Some(ui) = ui else { return };
-    let inventory = ui.inventory_menu_visible();
-    let dialogue = ui.dialogue_menu_visible();
-    let message_box = ui.message_box_menu_visible();
-    let barter = ui.barter_menu_visible();
-    let state = UiMenuState {
-        pause: ui.game_menu_visible() && !(inventory || dialogue || message_box || barter),
+/// The page flags for a game menu: `pages` is `[inventory, dialogue, message box, barter, crafting]`, at most
+/// one of which is the open page. The menu being up on none of them is the Pause menu (or a settings page of
+/// it). `console` and `loading` are not pages and are left clear for the caller.
+fn page_state(game_menu_visible: bool, pages: [bool; 5]) -> UiMenuState {
+    let [inventory, dialogue, message_box, barter, crafting] = pages;
+    UiMenuState {
+        pause: game_menu_visible && !pages.contains(&true),
         inventory,
         dialogue,
         message_box,
         barter,
+        crafting,
+        ..Default::default()
+    }
+}
+
+/// Read the open pages off the UI and publish them.
+pub(crate) fn publish_ui_menus(world: &World, ui: Option<&byroredux_debug_ui::DebugUiState>, loading: bool) {
+    let Some(ui) = ui else { return };
+    let state = UiMenuState {
         console: ui.visible,
         loading,
+        ..page_state(
+            ui.game_menu_visible(),
+            [
+                ui.inventory_menu_visible(),
+                ui.dialogue_menu_visible(),
+                ui.message_box_menu_visible(),
+                ui.barter_menu_visible(),
+                ui.crafting_menu_visible(),
+            ],
+        )
     };
     if let Some(mut published) = world.try_resource_mut::<UiMenuState>() {
         *published = state;
@@ -57,7 +77,7 @@ fn menu_open(world: &World, kind: u32) -> bool {
     let message = ui.message_box || world.try_resource::<crate::notifications::MessageBoxQueue>().is_some_and(|boxes| !boxes.0.is_empty());
     let barter = ui.barter || world.try_resource::<crate::barter::ActiveBarter>().is_some_and(|barter| barter.is_open());
     let loading = ui.loading;
-    let other = message || barter || loading || ui.dialogue || ui.pause;
+    let other = message || barter || loading || ui.dialogue || ui.pause || ui.crafting;
     match kind {
         0 => other || ui.inventory || ui.console,
         1 | 1002 => ui.inventory,
@@ -215,6 +235,39 @@ mod tests {
         *world.resource_mut::<UiMenuState>() = UiMenuState { console: true, ..Default::default() };
         assert!(menu_open(&world, 3) && menu_open(&world, 0));
         assert!(!menu_open(&world, 1080), "a menu with no screen here is never open");
+    }
+
+    /// #6576 — a workbench is a menu (so "any menu" and "some other menu" are open) but not the Pause menu,
+    /// and each page raises exactly its own flag.
+    #[test]
+    fn the_crafting_page_is_open_but_is_not_the_pause_menu() {
+        let mut world = World::new();
+        install(&mut world);
+        *world.resource_mut::<UiMenuState>() = page_state(true, [false, false, false, false, true]);
+        assert!(menu_open(&world, 0) && menu_open(&world, 2), "a bench is a menu");
+        assert!(!menu_open(&world, 1013), "…and not the Pause menu");
+        assert!(!menu_open(&world, 1) && !menu_open(&world, 1053), "…nor the main four or the barter page");
+    }
+
+    /// #6576 — with the game menu up, exactly one page flag is set whichever page it is on: `pause` for none
+    /// of the named pages, otherwise that page alone; with the menu down, none.
+    #[test]
+    fn exactly_one_page_flag_is_set_for_each_open_page() {
+        let flags = |state: UiMenuState| {
+            [state.pause, state.inventory, state.dialogue, state.message_box, state.barter, state.crafting]
+        };
+        let lit = |state: UiMenuState| flags(state).iter().filter(|set| **set).count();
+        let pause = page_state(true, [false; 5]);
+        assert_eq!(flags(pause), [true, false, false, false, false, false], "the landing / settings page");
+        for page in 0..5 {
+            let mut pages = [false; 5];
+            pages[page] = true;
+            let state = page_state(true, pages);
+            assert_eq!(lit(state), 1, "page {page}: {state:?}");
+            assert!(!state.pause, "page {page} is not the Pause menu");
+            assert!(flags(state)[page + 1], "page {page} sets its own flag");
+        }
+        assert_eq!(lit(page_state(false, [false; 5])), 0, "menu down: nothing open");
     }
 
     /// #6236 — a velocity is measured only against the previous frame's sample: an actor that
