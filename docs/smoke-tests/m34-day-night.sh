@@ -77,6 +77,10 @@ while ! grep -q '^bench-hold:' "$engine_stderr" 2>/dev/null; do
     sleep 0.5
 done
 
+# #6616 — the clock runs at 120x between `time.resume` and the next `time.pause`; at today's frame cost that gap is
+# ~30 ms = 3.6 game-seconds, which moved 23:00 to 23.001 and the advance landed at hour=0.001. The script below
+# puts the clock back on the hour (`time.set 23:00`) while paused, so the advance is exact whatever the frame cost.
+# (This note lives out here: a `#` line inside the heredoc would be sent to byro-dbg as a command.)
 BYRO_DEBUG_PORT="$PORT" cargo run --release --quiet -p byro-dbg <<EOF >"$debug_log" 2>&1
 time.pause
 time.set 06:00
@@ -89,6 +93,7 @@ time.scale 120
 time.pause
 time.resume
 time.pause
+time.set 23:00
 time.advance 25
 time.show
 quit
@@ -125,7 +130,14 @@ require_output "time.set: day=0 hour=12.000 clock=12:00 phase=day" "day phase is
 require_output "sun: intensity=4.000" "noon produces full exterior sun"
 require_output "time.set: day=0 hour=23.000 clock=23:00 phase=night" "night phase is selectable"
 require_output "sun: intensity=0.000" "night removes exterior sun intensity"
-require_output "time.resume: day=0 hour=23.000 clock=23:00 phase=night scale=120.000x paused=false" "pause/resume retains the configured rate"
+# #6616 — the resume line is stamped after the clock has run at 120x for a few ms of wall time, so its hour is
+# 23.000 + a frame-cost-sized drift (23.001 observed); match the invariant, the rate and the unpaused state.
+if grep -Eq 'time\.resume: day=0 hour=23\.0[0-4][0-9] clock=23:00 phase=night scale=120\.000x paused=false' "$debug_log"; then
+    echo "smoke[m34-day-night]: PASS — pause/resume retains the configured rate"
+else
+    echo "smoke[m34-day-night]: FAIL — pause/resume retains the configured rate (no 'time.resume: … scale=120.000x paused=false' within 0.05 h of 23:00)"
+    hard_fail=1
+fi
 require_output "time.advance: day=2 hour=0.000 clock=00:00 phase=night" "multi-day advance carries day count and wraps the clock"
 
 if grep -Fq 'Error:' "$debug_log"; then
