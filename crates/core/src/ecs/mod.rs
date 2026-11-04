@@ -11,6 +11,7 @@ pub mod debug_load;
 pub mod game_profiles;
 pub mod hierarchy;
 mod lock_tracker;
+pub use lock_tracker::recursive_read_warnings_on_this_thread;
 pub mod metrics;
 pub mod packed;
 pub mod query;

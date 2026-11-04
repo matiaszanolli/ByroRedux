@@ -373,10 +373,16 @@ fn select_info<'a>(
     // win in file order. INFOs without a QSTI (Skyrim+/FO4 — ownership
     // is DIAL-side QNAM) keep the topic-level ownership, which the
     // activation route already filtered for running state.
-    let stages = world.try_resource::<QuestStageState>();
-    let info_quest_is_running = |info: &InfoRecord| match stages.as_deref() {
-        None => true,
-        Some(stages) => info.quest == 0 || stages.is_running(QuestFormId(info.quest)),
+    //
+    // #6615 — a short read per question, not one guard for the whole call: `select_info` used to bind
+    // `world.try_resource::<QuestStageState>()` here and keep it across every `evaluate` below, and
+    // `GetStageDone` re-reads that resource, so each FNV force-greet / dialogue selection ran a recursive
+    // read behind a possibly-parked writer (the std `RwLock` is writer-preferring on Linux).
+    let info_quest_is_running = |info: &InfoRecord| {
+        info.quest == 0
+            || world
+                .try_resource::<QuestStageState>()
+                .is_none_or(|stages| stages.is_running(QuestFormId(info.quest)))
     };
     // #5271 — quest priority orders the candidates (higher first,
     // authored file order inside a tie). Only reorder when priorities
@@ -402,9 +408,9 @@ fn select_info<'a>(
     //
     // The gate list is cloned out (an `Arc`) and the resource guard dropped
     // before `evaluate` runs: evaluation reads `QuestStageState` (and more),
-    // and this function already took `QuestStageState` before reaching here,
     // so holding `DialogueQuestConditions` across it closed a lock-order
-    // cycle the `BYRO_LOCK_ORDER_CHECK` lane reports.
+    // cycle the `BYRO_LOCK_ORDER_CHECK` lane reported (when this function held
+    // `QuestStageState` for its whole body; it no longer does, #6615).
     let mut gate_verdicts: HashMap<u32, bool> = HashMap::new();
     let quest_gate_passes = |quest: u32,
                              context: &ConditionContext,
@@ -974,6 +980,44 @@ mod tests {
         let line = super::select_first_info(topic, &world, Some(actor), Some(player)).unwrap();
         assert_eq!(line.response_text, "the generic line");
         }
+    }
+
+    /// #6615 — selecting a line must not evaluate conditions behind a live `QuestStageState` read: `GetStageDone`
+    /// re-reads that resource, so the old whole-call guard made every FNV force-greet and dialogue selection a
+    /// recursive read (a deadlock behind a parked writer on a writer-preferring `RwLock`). The tracker counts
+    /// distinct hazards per thread; this run must add none, and the selection must still honour the stage.
+    #[test]
+    fn selecting_a_line_takes_no_nested_quest_state_read() {
+        use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition};
+        const QUEST: u32 = 0x4242;
+        let mut gated = info(0x901, 0, "after the stage");
+        gated.quest = QUEST;
+        gated.conditions = vec![Condition {
+            function_index: 59, // GetStageDone
+            param_1: QUEST,
+            param_2: 10,
+            comparator: ComparisonOp::Eq,
+            comparand: byroredux_plugin::esm::records::condition::ConditionValue::Literal(1.0),
+            ..Default::default()
+        }];
+        let record = topic(vec![gated, info(0x902, 0, "before it")]);
+        let (mut world, _, actor, _) = setup(vec![record.clone()]);
+        let mut stages = QuestStageState::default();
+        stages.start_quest(QuestFormId(QUEST), Some(1));
+        world.insert_resource(stages);
+
+        let before = byroredux_core::ecs::recursive_read_warnings_on_this_thread();
+        let early = select_first_info(&record, &world, Some(actor), None).expect("the ungated line");
+        assert_eq!(early.form_id, 0x902, "stage 10 not reached: the gated line is skipped");
+
+        world.resource_mut::<QuestStageState>().set_stage(QuestFormId(QUEST), 10);
+        let late = select_first_info(&record, &world, Some(actor), None).expect("the gated line");
+        assert_eq!(late.form_id, 0x901, "stage 10 reached: the gated line wins");
+        assert_eq!(
+            byroredux_core::ecs::recursive_read_warnings_on_this_thread(),
+            before,
+            "condition evaluation ran under a live QuestStageState read guard",
+        );
     }
 
     /// setup()'s entity order, extracted for fixtures that build the world

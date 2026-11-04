@@ -79,7 +79,8 @@ thread_local! {
     // true on the second occurrence, but the operator only needs to hear
     // about it once to go fix the call site.
     static WARNED_RECURSIVE_READ_TYPES: RefCell<HashSet<TypeId>> = RefCell::new(HashSet::new());
-    #[cfg(test)]
+    /// How many recursive-read warnings this thread has raised (a counter, so a test in another crate can
+    /// assert that a code path takes no nested read — #6615).
     static RECURSIVE_READ_WARNINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// Test-only: the `(file, line)` the last recursive-read warning named (#6502).
     #[cfg(test)]
@@ -196,9 +197,9 @@ pub(crate) fn track_read(type_id: TypeId, type_name: &'static str) {
                      thread (#3249) — further recursive reads of `{type_name}` on this thread \
                      are not logged.{stack}"
                 );
+                RECURSIVE_READ_WARNINGS.with(|count| count.set(count.get() + 1));
                 #[cfg(test)]
                 {
-                    RECURSIVE_READ_WARNINGS.with(|count| count.set(count.get() + 1));
                     LAST_RECURSIVE_READ_SITE
                         .with(|site| site.set(Some((caller.file(), caller.line()))));
                 }
@@ -216,6 +217,13 @@ pub(crate) fn track_read(type_id: TypeId, type_name: &'static str) {
             },
         );
     });
+}
+
+/// The number of recursive-read warnings raised on the calling thread so far. Each type warns at most once per
+/// thread, so this counts distinct hazardous types; a regression test for a nested read takes the value before and
+/// after the code under test on its own thread.
+pub fn recursive_read_warnings_on_this_thread() -> usize {
+    RECURSIVE_READ_WARNINGS.with(std::cell::Cell::get)
 }
 
 /// Types whose read-read re-entry is part of their contract, so the warning above never fires for them
