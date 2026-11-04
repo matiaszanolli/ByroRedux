@@ -36,6 +36,14 @@ impl NamedSequences {
         self.handle("idle").or_else(|| self.handle("specialidle"))
     }
 
+    /// The sequence a stopped player is parked on when [`Self::spawn_handle`] finds nothing to play (#6610): a
+    /// script's `PlayGroup` retargets the object's sequence player, and a model with no `Idle` would otherwise
+    /// have none, so every `PlayGroup Forward` on a looping activator (the force-field glow, the Lucky 38's
+    /// lights) was declined since #6471. It is the first listed sequence, never played at spawn.
+    pub fn parked_handle(&self) -> Option<u32> {
+        self.0.first().map(|(_, handle)| *handle)
+    }
+
     /// The name of the sequence whose clip is `handle`.
     pub fn name_of(&self, handle: u32) -> Option<&str> {
         self.0.iter().find(|(_, h)| *h == handle).map(|(name, _)| &**name)
@@ -64,6 +72,16 @@ mod tests {
         assert_eq!(set(&["specialidle", "forward"]).spawn_handle(), Some(0));
         assert_eq!(set(&["specialidle", "idle"]).spawn_handle(), Some(1));
         assert_eq!(set(&[]).spawn_handle(), None);
+    }
+
+    /// #6610 — with no idle nothing plays, but a stopped player is parked on the first sequence so `PlayGroup`
+    /// has one to drive.
+    #[test]
+    fn a_model_without_an_idle_parks_a_player_on_its_first_sequence() {
+        let forward_only = set(&["forward", "backward"]);
+        assert_eq!(forward_only.spawn_handle(), None, "nothing plays at spawn");
+        assert_eq!(forward_only.parked_handle(), Some(0), "but a player is parked for PlayGroup");
+        assert_eq!(set(&[]).parked_handle(), None);
     }
 
     #[test]

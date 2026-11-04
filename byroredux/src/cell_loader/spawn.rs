@@ -983,10 +983,13 @@ pub(super) fn spawn_placed_instances(
     // terminal pod's monitor UV scroll), so every sequence's sinks are attached
     // here, not only the one that plays from spawn. Sinks are insert-if-missing.
     let mut spawn_sequence = None;
+    // #6610 — with no idle to play, a stopped player is parked on a sequence so `PlayGroup` has one to retarget.
+    let mut parked_sequence = None;
     if let Some(key) = mesh_cache_key {
         if let Some(sequences) = super::object_sequences::named_sequences_for(world, key, &cached.object_sequences) {
             let handles: Vec<u32> = sequences.0.iter().map(|(_, handle)| *handle).collect();
             spawn_sequence = sequences.spawn_handle();
+            parked_sequence = sequences.parked_handle().filter(|_| spawn_sequence.is_none());
             world.insert(placement_root, sequences);
             // The playing sequence's sinks are attached by the loop below.
             for handle in handles.into_iter().filter(|&handle| Some(handle) != spawn_sequence) {
@@ -1005,6 +1008,16 @@ pub(super) fn spawn_placed_instances(
         // `attach_animation_sinks` takes `&mut World`.
         crate::anim_convert::attach_clip_sinks(world, handle, ctx, tex_provider, placement_root);
         spawn_placement_player(world, placement_root, handle);
+    }
+    if let Some(handle) = parked_sequence {
+        // Its sinks were attached with the other non-playing sequences above. Stopped: the object keeps
+        // its bind pose until a script plays a group.
+        let player = spawn_placement_player(world, placement_root, handle);
+        if let Some(mut players) = world.query_mut::<byroredux_core::animation::AnimationPlayer>() {
+            if let Some(player) = players.get_mut(player) {
+                player.playing = false;
+            }
+        }
     }
 
     // M47.0 Phase 3b — return the placement_root alongside the
@@ -1900,6 +1913,9 @@ mod placement_player_tests {
         let spawn = byroredux_core::source_scan::production_text(include_str!("spawn.rs"));
         assert!(spawn.contains("for handle in clip_handle.into_iter().chain(spawn_sequence) {"));
         assert!(spawn.contains("spawn_sequence = sequences.spawn_handle();"));
+        // #6610 — and a model with no idle parks a STOPPED player for PlayGroup rather than playing nothing at all.
+        assert!(spawn.contains("parked_sequence = sequences.parked_handle().filter(|_| spawn_sequence.is_none());"));
+        assert!(spawn.contains("player.playing = false;"));
         assert!(!spawn.contains("handles.first()"), "the first listed sequence is a catalog entry, not the idle (#6471)");
     }
 }
