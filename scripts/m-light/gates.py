@@ -676,6 +676,11 @@ def without_casters(scene_dir: Path, casters: list[str]) -> Path:
     if out.exists():
         shutil.rmtree(out)
     shutil.copytree(scene_dir / "meshes", out / "meshes")
+    # Normal-map and cut-out bitmaps (RLT-EXP-002) the remaining shapes
+    # reference. Their names hash their pixels, so scene.xml's bytes (and
+    # the reference cache key) already cover their content.
+    if (scene_dir / "textures").is_dir():
+        shutil.copytree(scene_dir / "textures", out / "textures")
     tree = ET.parse(scene_dir / "scene.xml")
     root = tree.getroot()
     for shape in list(root.findall("shape")):
