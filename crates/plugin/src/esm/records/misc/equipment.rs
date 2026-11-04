@@ -4,6 +4,7 @@ use super::super::common::{read_lstring_or_zstring, read_zstring, CommonNamedFie
 use super::super::condition::{push_ctda, ConditionList};
 use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::records::common::remap_fid;
+use crate::esm::records::container::InventoryEntry;
 use crate::esm::sub_reader::SubReader;
 
 /// ARMA — armor addon record. Race-specific biped slot variants for
@@ -348,6 +349,9 @@ pub struct CobjRecord {
     pub conditions: ConditionList,
 }
 
+/// COBJ `NAM1` "Created Object Count" is a u16 (xEdit `wbDefinitionsTES5.pas`).
+const COBJ_NAM1_LEN: usize = 2;
+
 pub fn parse_cobj(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> CobjRecord {
     let mut out = CobjRecord {
         form_id,
@@ -371,8 +375,8 @@ pub fn parse_cobj(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
             b"BNAM" if sub.data.len() >= 4 => {
                 out.workbench_form = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }
-            // Skyrim ingredient: item FormID + count.
-            b"CNTO" if sub.data.len() >= 8 => {
+            // Skyrim ingredient: item FormID + count, the CONT `CNTO` wire shape.
+            b"CNTO" if sub.data.len() >= InventoryEntry::WIRE_SIZE => {
                 let mut r = SubReader::new(&sub.data);
                 let item = remap_fid(r.u32_or_default(), remap);
                 let count = r.u32_or_default();
@@ -381,8 +385,8 @@ pub fn parse_cobj(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                 }
             }
             b"CTDA" | b"CIS1" | b"CIS2" => push_ctda(sub, remap, &mut out.conditions),
-            b"NAM1" if sub.data.len() >= 2 => {
-                out.created_count = u32::from(u16::from_le_bytes([sub.data[0], sub.data[1]])).max(1);
+            b"NAM1" if sub.data.len() >= COBJ_NAM1_LEN => {
+                out.created_count = u32::from(SubReader::new(&sub.data).u16_or_default()).max(1);
             }
             _ => {}
         }

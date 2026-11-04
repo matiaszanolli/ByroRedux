@@ -1298,16 +1298,20 @@ pub struct AttractionRuleRecord {
     pub combat_target: bool,
 }
 
+/// `AOR2` through the combat-target byte: three f32s and two bool bytes (two unused bytes follow, xEdit
+/// `wbAORU`).
+const AOR2_LEN: usize = 14;
+
 pub fn parse_aoru(form_id: u32, subs: &[SubRecord]) -> AttractionRuleRecord {
     let common = CommonNamedFields::from_subs_with_remap(subs, &None);
     let mut out = AttractionRuleRecord { form_id, editor_id: common.editor_id, ..Default::default() };
-    if let Some(sub) = subs.iter().find(|sub| &sub.sub_type == b"AOR2" && sub.data.len() >= 14) {
-        let f = |at: usize| f32::from_le_bytes(sub.data[at..at + 4].try_into().unwrap());
-        out.radius = f(0);
-        out.min_delay = f(4);
-        out.max_delay = f(8);
-        out.requires_line_of_sight = sub.data[12] != 0;
-        out.combat_target = sub.data[13] != 0;
+    if let Some(sub) = subs.iter().find(|sub| &sub.sub_type == b"AOR2" && sub.data.len() >= AOR2_LEN) {
+        let mut r = SubReader::new(&sub.data);
+        out.radius = r.f32_or_default();
+        out.min_delay = r.f32_or_default();
+        out.max_delay = r.f32_or_default();
+        out.requires_line_of_sight = r.u8_or_default() != 0;
+        out.combat_target = r.u8_or_default() != 0;
     }
     out
 }

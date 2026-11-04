@@ -773,6 +773,10 @@ const SKYRIM_DALC_SIZE: usize = 32;
 /// fresnel are absent and keep their defaults.
 const SKYRIM_DALC_AXES_SIZE: usize = 24;
 
+/// Skyrim WTHR `NAM2` / `NAM3` sun and moon glare tables: one RGBA colour per
+/// time-of-day slot (`parse_glare_table`).
+const SKYRIM_GLARE_TABLE_LEN: usize = SKYRIM_NAM0_TOD_SLOTS * 4;
+
 /// Skyrim WTHR FNAM sub-record size (32 bytes = 8 × f32). Layout per
 /// UESP / xEdit:
 /// `[day_near, day_far, night_near, night_far, day_power, night_power,
@@ -1252,10 +1256,10 @@ fn parse_wthr_creation(
             b"NAM1" if sub.data.len() >= 4 => {
                 creation_layers.disabled = u32::from_le_bytes(sub.data[0..4].try_into().unwrap());
             }
-            b"NAM2" if skyrim && sub.data.len() >= 16 => {
+            b"NAM2" if skyrim && sub.data.len() >= SKYRIM_GLARE_TABLE_LEN => {
                 parse_glare_table(&mut record.skyrim_sun_glare, &sub.data)
             }
-            b"NAM3" if skyrim && sub.data.len() >= 16 => {
+            b"NAM3" if skyrim && sub.data.len() >= SKYRIM_GLARE_TABLE_LEN => {
                 parse_glare_table(&mut record.skyrim_moon_glare, &sub.data)
             }
             // #4069 — MNAM is a SPGD (precipitation shader-particle
@@ -2294,6 +2298,18 @@ mod tests {
         // MIDNIGHT synthesised from NIGHT (slot 3 colour with `g = 4`).
         assert_eq!(w.sky_colors[SKY_UPPER][TOD_MIDNIGHT].r, 1);
         assert_eq!(w.sky_colors[SKY_UPPER][TOD_MIDNIGHT].g, 4);
+    }
+
+    /// #6586 — `NAM2` / `NAM3` carry one RGBA per TOD slot: a full table lands in the sun and moon glare, a
+    /// body short of [`SKYRIM_GLARE_TABLE_LEN`] is not decoded.
+    #[test]
+    fn parse_skyrim_glare_tables_need_one_colour_per_tod_slot() {
+        let table: Vec<u8> = (0..SKYRIM_NAM0_TOD_SLOTS as u8).flat_map(|slot| [slot + 1, 0x10, 0x20, 0]).collect();
+        let w = parse_wthr(0x61A2, &[sub(b"NAM2", table.clone()), sub(b"NAM3", table.clone())], GameKind::Skyrim, &None);
+        assert_eq!(w.skyrim_sun_glare[3], SkyColor { r: 4, g: 0x10, b: 0x20, a: 0 });
+        assert_eq!(w.skyrim_moon_glare, w.skyrim_sun_glare);
+        let short = parse_wthr(0x61A3, &[sub(b"NAM2", table[..SKYRIM_GLARE_TABLE_LEN - 4].to_vec())], GameKind::Skyrim, &None);
+        assert_eq!(short.skyrim_sun_glare, [SkyColor::default(); 4]);
     }
 
     /// #6038 — older Skyrim form versions author a prefix of the NAM0 group

@@ -112,6 +112,21 @@ impl<'a> SubReader<'a> {
         self.pos = (self.pos + n).min(self.data.len());
     }
 
+    /// Best-effort forward seek to the absolute `offset`, capped at the end of
+    /// the buffer like [`Self::skip_or_eof`]. A layout decode names each field's
+    /// offset (`r.skip_to_or_eof(PROJ_DATA_IMPACT_FORCE)`) instead of summing the
+    /// gap by hand, so the offset table and the read order cannot drift apart
+    /// (#6586). An offset behind the cursor means the table is out of order: a
+    /// debug assertion, and the cursor stays put in release.
+    pub fn skip_to_or_eof(&mut self, offset: usize) {
+        debug_assert!(
+            offset >= self.pos,
+            "SubReader::skip_to_or_eof({offset}) is behind the cursor at {}",
+            self.pos
+        );
+        self.pos = self.pos.max(offset).min(self.data.len());
+    }
+
     // ── Strict reads (advance only on success) ──────────────────────────
 
     /// Read the next `n` bytes as a borrowed slice. Errors on truncation.
@@ -424,6 +439,19 @@ mod tests {
         let mut r = SubReader::new(&[0u8; 10]);
         r.skip_or_eof(100);
         assert_eq!(r.position(), 10);
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn skip_to_or_eof_seeks_an_absolute_offset_and_caps_at_buffer_end() {
+        let data = [0u8, 0, 0, 0, 0, 0, 0, 0, 0x2A, 0, 0, 0];
+        let mut r = SubReader::new(&data);
+        r.u32_or_default();
+        r.skip_to_or_eof(8);
+        assert_eq!(r.position(), 8, "the offset is absolute, not a gap from the cursor at 4");
+        assert_eq!(r.u32_or_default(), 0x2A);
+        r.skip_to_or_eof(100);
+        assert_eq!(r.position(), 12);
         assert!(r.is_empty());
     }
 

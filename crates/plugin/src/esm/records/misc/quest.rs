@@ -1164,7 +1164,7 @@ fn parse_qust_alias(
         // CNTO: {formid item, uint32 count}. COCT (the count of
         // CNTO records) is likewise redundant with just reading each
         // CNTO sub-record as it appears.
-        b"CNTO" if sub.data.len() >= 8 => {
+        b"CNTO" if sub.data.len() >= crate::esm::records::container::InventoryEntry::WIRE_SIZE => {
             if let QustBlock::Alias(alias) = &mut *block {
                 let mut r = SubReader::new(&sub.data);
                 let item = remap_form_id(r.u32_or_default(), remap);

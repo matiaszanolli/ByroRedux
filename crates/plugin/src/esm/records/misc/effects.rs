@@ -173,6 +173,27 @@ impl ProjRecord {
     }
 }
 
+/// `PROJ` `DATA` (FO3 / FNV / Skyrim; xEdit `wbPROJ`): the decode reads flags, gravity and speed before
+/// anything else, so a shorter body is not decoded.
+const PROJ_DATA_MIN_LEN: usize = 12;
+/// `DATA` field offsets the decode seeks to (xEdit `wbDefinitions{FNV,TES5}.pas`): the alt-trigger proximity
+/// (then the timer at 32 and the explosion at 36), the impact force, and the Skyrim+ collision radius (then the
+/// lifetime at 76). 16..28 are the two lights and the tracer chance, 40..52 the sound and the muzzle-flash and
+/// fade durations, 56..68 the countdown and disable sounds and the default weapon source; at 68 Skyrim+
+/// authors the cone spread and FO3 / FNV a rotation vector.
+const PROJ_DATA_ALT_TRIGGER_PROXIMITY: usize = 28;
+const PROJ_DATA_IMPACT_FORCE: usize = 52;
+const PROJ_DATA_COLLISION_RADIUS: usize = 72;
+/// Fallout 4's `PROJ` `DNAM` (xEdit `wbDefinitionsFO4.pas` `wbPROJ`), through the lifetime at 72..76, the last
+/// field decoded.
+const PROJ_FO4_DNAM_LEN: usize = 76;
+/// `DNAM` field offsets: flags u16 and type u16, gravity, speed, range and the two lights come first (FO4 drops
+/// the tracer chance); then the alt-trigger proximity (timer 28, explosion 32), the impact force, and the
+/// collision radius (lifetime 72).
+const PROJ_FO4_DNAM_ALT_TRIGGER_PROXIMITY: usize = 24;
+const PROJ_FO4_DNAM_IMPACT_FORCE: usize = 48;
+const PROJ_FO4_DNAM_COLLISION_RADIUS: usize = 68;
+
 pub fn parse_proj(
     form_id: u32,
     subs: &[SubRecord],
@@ -196,27 +217,21 @@ pub fn parse_proj(
             // #5846 — one sequential SubReader pass: offsets and their
             // length gates can no longer drift apart (this used to re-slice
             // `&sub.data[N..]` behind a hand-typed `len() >= N+4` per field).
-            b"DATA" if sub.data.len() >= 12 => {
+            b"DATA" if sub.data.len() >= PROJ_DATA_MIN_LEN => {
                 let mut r = SubReader::new(&sub.data);
                 out.flags = r.u32_or_default();
                 out.gravity = r.f32_or_default();
                 out.muzzle_speed = r.f32_or_default();
                 out.range = r.f32_or_default();
-                // Offsets 16..28 are the two lights and the tracer chance; then the alt-trigger
-                // proximity (28) and timer (32).
-                r.skip_or_eof(12);
+                r.skip_to_or_eof(PROJ_DATA_ALT_TRIGGER_PROXIMITY);
                 out.alt_trigger_proximity = r.f32_or_default();
                 out.alt_trigger_timer = r.f32_or_default();
                 let explosion = r.u32_or_default();
                 out.explosion = if explosion == 0 { 0 } else { remap_fid(explosion, remap) };
-                // 40..52 are the impact-force pair's neighbours (sound
-                // level, fade distances); impact force itself at 52.
-                r.skip_or_eof(12);
+                r.skip_to_or_eof(PROJ_DATA_IMPACT_FORCE);
                 out.impact_force = r.f32_or_default();
-                // 56..72 are decals / collision-anchored fields; the tail
-                // past 68 differs by era: Skyrim+ authors collision radius
-                // and lifetime there (xEdit TES5 `wbPROJ`), FO3/FNV a
-                // rotation.
+                // The tail from 68 differs by era: Skyrim+ authors cone spread, collision radius and lifetime
+                // there, FO3/FNV a rotation vector.
                 let skyrim_plus = matches!(
                     game,
                     crate::esm::reader::GameKind::Skyrim
@@ -225,15 +240,13 @@ pub fn parse_proj(
                         | crate::esm::reader::GameKind::Starfield
                 );
                 if skyrim_plus {
-                    r.skip_or_eof(16);
+                    r.skip_to_or_eof(PROJ_DATA_COLLISION_RADIUS);
                     out.collision_radius = r.f32_or_default();
                     out.lifetime = r.f32_or_default();
                 }
             }
-            // Fallout 4 moved the struct to `DNAM` (xEdit `wbDefinitionsFO4.pas` `wbPROJ`): flags u16, type
-            // u16, gravity, speed, range, two lights, then the alt-trigger proximity (24), timer (28) and
-            // the explosion (32); impact force at 48, collision radius 68, lifetime 72.
-            b"DNAM" if game == crate::esm::reader::GameKind::Fallout4 && sub.data.len() >= 76 => {
+            // Fallout 4 moved the struct to `DNAM`; its layout is the `PROJ_FO4_DNAM_*` offsets above.
+            b"DNAM" if game == crate::esm::reader::GameKind::Fallout4 && sub.data.len() >= PROJ_FO4_DNAM_LEN => {
                 let mut r = SubReader::new(&sub.data);
                 let flags = r.u16_or_default();
                 let kind = r.u16_or_default();
@@ -241,14 +254,14 @@ pub fn parse_proj(
                 out.gravity = r.f32_or_default();
                 out.muzzle_speed = r.f32_or_default();
                 out.range = r.f32_or_default();
-                r.skip_or_eof(8); // the two lights
+                r.skip_to_or_eof(PROJ_FO4_DNAM_ALT_TRIGGER_PROXIMITY);
                 out.alt_trigger_proximity = r.f32_or_default();
                 out.alt_trigger_timer = r.f32_or_default();
                 let explosion = r.u32_or_default();
                 out.explosion = if explosion == 0 { 0 } else { remap_fid(explosion, remap) };
-                r.skip_or_eof(12);
+                r.skip_to_or_eof(PROJ_FO4_DNAM_IMPACT_FORCE);
                 out.impact_force = r.f32_or_default();
-                r.skip_or_eof(16);
+                r.skip_to_or_eof(PROJ_FO4_DNAM_COLLISION_RADIUS);
                 out.collision_radius = r.f32_or_default();
                 out.lifetime = r.f32_or_default();
             }
@@ -427,6 +440,13 @@ pub struct ExplRecord {
     pub inner_radius: f32,
 }
 
+/// Skyrim and Fallout 4 `EXPL` `DATA` (xEdit `wbEXPL`): six form ids (light, two sounds, impact data set, placed
+/// object, spawn projectile) fill 0..24, the force sits at 24, then the damage here. The radius follows:
+/// Skyrim's single `Radius` at 32, Fallout 4's `Inner Radius` at 32 and `Outer Radius` at 36.
+const EXPL_SKYRIM_FO4_DAMAGE: usize = 28;
+/// Through Fallout 4's `Outer Radius` (36..40), the last field decoded.
+const EXPL_SKYRIM_FO4_DATA_LEN: usize = 40;
+
 pub fn parse_expl(form_id: u32, subs: &[SubRecord], game: crate::esm::reader::GameKind) -> ExplRecord {
     let mut out = ExplRecord {
         form_id,
@@ -441,12 +461,10 @@ pub fn parse_expl(form_id: u32, subs: &[SubRecord], game: crate::esm::reader::Ga
     out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
-            // Skyrim and Fallout 4 (xEdit `wbEXPL`): six form ids (24 bytes), then force (24), damage (28) and
-            // the radius — Skyrim's single `Radius` at 32, Fallout 4's `Outer Radius` at 36 after an `Inner
-            // Radius` at 32.
-            b"DATA" if matches!(game, crate::esm::reader::GameKind::Skyrim | crate::esm::reader::GameKind::Fallout4) && sub.data.len() >= 40 => {
+            // Skyrim and Fallout 4: the `EXPL_SKYRIM_FO4_*` layout above.
+            b"DATA" if matches!(game, crate::esm::reader::GameKind::Skyrim | crate::esm::reader::GameKind::Fallout4) && sub.data.len() >= EXPL_SKYRIM_FO4_DATA_LEN => {
                 let mut r = SubReader::new(&sub.data);
-                r.skip_or_eof(28);
+                r.skip_to_or_eof(EXPL_SKYRIM_FO4_DAMAGE);
                 out.damage = r.f32_or_default();
                 if game == crate::esm::reader::GameKind::Fallout4 {
                     out.inner_radius = r.f32_or_default();

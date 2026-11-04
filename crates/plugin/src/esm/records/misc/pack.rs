@@ -19,6 +19,15 @@ const PKCU_MIN_LEN: usize = 12;
 /// decoded (flags, fire rate / count, bursts, volley min / max, pause min /
 /// max); the trailing word is unread, so a 20-byte body is accepted.
 const PKW3_MIN_LEN: usize = 20;
+/// The `PKDT` type byte, after the u32 flags. FO3/FNV read it as the procedure;
+/// Skyrim+ authors 18 / 19 there.
+const PKDT_TYPE: usize = 4;
+/// Skyrim+ `PKDT` (12 bytes, xEdit `wbDefinitionsTES5.pas`): type, interrupt
+/// override, preferred speed and an unknown byte, then the u16 interrupt flags
+/// here. FO3/FNV's 8-byte `PKDT` has no word there.
+const PKDT_SKYRIM_INTERRUPT_FLAGS: usize = 8;
+/// A Skyrim+ `PKDT` that reaches past the interrupt flags.
+const PKDT_SKYRIM_MIN_LEN: usize = PKDT_SKYRIM_INTERRUPT_FLAGS + 2;
 
 /// `PACK` AI package record. 30-procedure scheduling system
 /// (guard patrols, merchant behavior, dialogue triggers, ambient
@@ -1138,12 +1147,10 @@ pub fn parse_pack(
             b"PKDT" if sub.data.len() >= 8 => {
                 let mut r = SubReader::new(&sub.data);
                 out.package_flags = r.u32_or_default();
-                // Skyrim+ (12-byte PKDT, type byte 18/19): u8 type, u8
-                // interrupt override, u8 preferred speed, u8 unknown, then
-                // the u16 interrupt flags @ 8 (xEdit `wbDefinitionsTES5.pas`
-                // PKDT). FO3/FNV's 8-byte PKDT has no word there.
-                if sub.data.len() >= 10 && matches!(sub.data[4], 18 | 19) {
-                    out.interrupt_flags = u16::from_le_bytes([sub.data[8], sub.data[9]]);
+                // Skyrim+ (type byte 18/19): the interrupt flags.
+                if sub.data.len() >= PKDT_SKYRIM_MIN_LEN && matches!(sub.data[PKDT_TYPE], 18 | 19) {
+                    out.interrupt_flags =
+                        SubReader::new(&sub.data[PKDT_SKYRIM_INTERRUPT_FLAGS..]).u16_or_default();
                 }
                 // FO3/FNV PKDT: the procedure type is a single BYTE at
                 // offset 4, followed by type-specific / flags2 bytes.
