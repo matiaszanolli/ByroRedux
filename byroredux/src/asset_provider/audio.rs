@@ -22,8 +22,62 @@
 
 use super::*;
 use byroredux_core::ecs::{Resource, World};
-use byroredux_plugin::esm::records::SounRecord;
+use byroredux_plugin::esm::records::{first_playable_track, EsmIndex, MuscRecord, MustRecord, SounRecord};
 use std::collections::HashMap;
+
+/// The record tables REGN background music resolves through: `SOUN` for the eras whose `music_form`
+/// is a sound, and Skyrim's `MUSC` → `MUST` chain for `RDMO` (#3816).
+#[derive(Clone, Copy)]
+pub(crate) struct RegionMusicTables<'a> {
+    pub(crate) sounds: &'a HashMap<u32, SounRecord>,
+    pub(crate) music_types: &'a HashMap<u32, MuscRecord>,
+    pub(crate) music_tracks: &'a HashMap<u32, MustRecord>,
+}
+
+impl<'a> RegionMusicTables<'a> {
+    pub(crate) fn new(index: &'a EsmIndex) -> Self {
+        Self { sounds: &index.sounds, music_types: &index.music_types, music_tracks: &index.music_tracks }
+    }
+}
+
+/// Archive key of a Skyrim `MUST.ANAM` track: lower-case, `\\`-separated, `music\\`-rooted.
+///
+/// Vanilla `Skyrim.esm` authors it from the game root with a leading separator
+/// (`\\Data\\Music\\Explore\\….wav`, all 28 region music types); other records are data-relative
+/// (`Music\\…`) or music-relative. Either way the archive entry is `music\\<...>`.
+pub(crate) fn music_archive_path(file: &str) -> String {
+    let normalized = file.replace('/', "\\").to_ascii_lowercase();
+    let mut path = normalized.trim_start_matches('\\').to_owned();
+    if let Some(rest) = path.strip_prefix("data\\") {
+        path = rest.to_owned();
+    }
+    if !path.starts_with("music\\") {
+        path = format!("music\\{path}");
+    }
+    path
+}
+
+/// Skyrim `RDMO` → `MUSC` → first playable `MUST` track, as an archive key. `None` when the form is
+/// not a `MUSC` or none of its tracks is playable (all silent, empty, or dangling).
+pub(crate) fn resolve_music_track_path(tables: &RegionMusicTables<'_>, music_form: u32) -> Option<String> {
+    let musc = tables.music_types.get(&music_form)?;
+    let track = first_playable_track(musc, tables.music_tracks)?;
+    Some(music_archive_path(&track.file))
+}
+
+/// The `.xwm` entry Skyrim ships for a track its records author as `.wav`: every one of the 28 vanilla
+/// region music tracks is authored `….wav` while `Skyrim - Sounds.bsa` holds only `….xwm`, the engine
+/// substituting the extension. `None` for a key that is not `.wav`.
+pub(crate) fn xwma_sibling(archive_path: &str) -> Option<String> {
+    archive_path.strip_suffix(".wav").map(|stem| format!("{stem}.xwm"))
+}
+
+/// Whether an archive key names xWMA audio, which the streaming loader cannot decode: the audio
+/// crate's xWMA route is `.fuz`-only and shells out to a host `ffmpeg` (#5912), too slow to run
+/// synchronously for a multi-minute track at cell load. 265 of Skyrim's 282 music tracks are `.xwm`.
+pub(crate) fn is_xwma_path(archive_path: &str) -> bool {
+    archive_path.ends_with(".xwm") || archive_path.ends_with(".xwma")
+}
 
 /// Look up a `SOUN` FormID's decoded `FNAM` path, verbatim. Returns `None`
 /// when the FormID isn't a known SOUN (bad data) or the record omitted
@@ -146,6 +200,11 @@ impl SoundArchiveProvider {
     pub(crate) fn extract(&self, archive_path: &str) -> Option<Vec<u8>> {
         extract_first(self.archives.iter().rev(), archive_path)
     }
+
+    /// Whether any supplied archive holds `archive_path` — an index lookup, no extraction.
+    pub(crate) fn contains(&self, archive_path: &str) -> bool {
+        self.archives.iter().any(|archive| archive.contains(archive_path))
+    }
 }
 
 impl Resource for SoundArchiveProvider {}
@@ -212,10 +271,17 @@ const REGN_AMBIENT_VOLUME: f32 = 1.0;
 /// something this engine build can't load) is worse than silence.
 pub(crate) fn dispatch_region_ambient_music(
     world: &mut World,
-    sounds: &HashMap<u32, SounRecord>,
+    tables: RegionMusicTables<'_>,
     music_form: Option<u32>,
 ) {
+    let sounds = tables.sounds;
     let resolved = music_form.and_then(|form_id| resolve_sound_path(sounds, form_id));
+    // #3816 — Skyrim's `RDMO` is a `MUSC`, whose first playable `MUST` track names the file. A FormID
+    // is one record, so this and the `SOUN` lookup above can never both hit.
+    let music_track = match resolved {
+        Some(_) => None,
+        None => music_form.and_then(|form_id| resolve_music_track_path(&tables, form_id)),
+    };
     // #3775 — whether the engine should loop this track continuously.
     let looping = music_form.is_some_and(|form_id| sound_loops(sounds, form_id));
     // #3787 (FNV) / #3811 (Oblivion + Skyrim) — `music_form` was authored
@@ -234,24 +300,52 @@ pub(crate) fn dispatch_region_ambient_music(
     // its target type at all" — repeated per-region-transition logging
     // would otherwise flood the log with the same diagnosis every cell
     // load.
-    if music_form.is_some() && resolved.is_none() {
+    if music_form.is_some() && resolved.is_none() && music_track.is_none() {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
             log::info!(
-                "REGN ambient: music_form did not resolve as a SOUN record on any \
-                 supported game — Oblivion's RDMD is a music-category enum (not a \
-                 FormID), Skyrim's RDMO targets MUSC, and FNV's RDSB/RDSI target MSET \
-                 (Media Set); none of those target types has a playback runtime \
-                 yet, so region ambient music is unsupported pending that work \
-                 (#3816), not a missing-archive content gap"
+                "REGN ambient: music_form resolved to neither a SOUN nor a playable \
+                 Skyrim MUSC track — Oblivion's RDMD is a music-category enum (not a \
+                 FormID) and FNV's RDSB/RDSI target MSET (Media Set); neither has a \
+                 playback runtime yet (#3816), and a Skyrim MUSC with no playable MUST \
+                 track is likewise silent. Not a missing-archive content gap"
             );
         });
     }
-    let archive_path = resolved.map(sound_archive_path);
-    let Some(archive_path) = archive_path else {
+    let archive_path = match (resolved, &music_track) {
+        (Some(path), _) => Some(sound_archive_path(path)),
+        (None, Some(track)) => Some(track.clone()),
+        (None, None) => None,
+    };
+    let Some(mut archive_path) = archive_path else {
         stop_region_ambient_music(world);
         return;
     };
+    // #3816 — a Skyrim track authored `.wav` ships as `.xwm`; prefer the authored name if the archive
+    // has it (the 17 real `.wav` tracks), else its xWMA sibling.
+    if music_track.is_some() {
+        if let (Some(provider), Some(sibling)) =
+            (world.try_resource::<SoundArchiveProvider>(), xwma_sibling(&archive_path))
+        {
+            if !provider.contains(&archive_path) && provider.contains(&sibling) {
+                archive_path = sibling;
+            }
+        }
+    }
+    // #3816 — Skyrim's music is xWMA; see `is_xwma_path`. Say what is missing instead of letting the
+    // decode below fail and blame the archive.
+    if is_xwma_path(&archive_path) {
+        static XWMA_ONCE: std::sync::Once = std::sync::Once::new();
+        XWMA_ONCE.call_once(|| {
+            log::info!(
+                "REGN ambient: '{archive_path}' is xWMA — the streaming music path has no xWMA \
+                 decoder (the .fuz route needs a host ffmpeg), so Skyrim region music stays silent \
+                 until one exists (#3816)"
+            );
+        });
+        stop_region_ambient_music(world);
+        return;
+    }
     // #3914 — a folder-form `FNAM` (half of FNV's SOUN library) names a
     // set of variants to pick from, not an entry; extracting it would be
     // a guaranteed miss logged as "not found in any archive", which is a
@@ -319,6 +413,17 @@ fn stop_region_ambient_music(world: &mut World) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Tables with only `SOUN`s populated: the pre-#3816 shape every older test dispatches with.
+    fn sounds_only(sounds: &HashMap<u32, SounRecord>) -> RegionMusicTables<'_> {
+        static EMPTY_TYPES: std::sync::OnceLock<HashMap<u32, MuscRecord>> = std::sync::OnceLock::new();
+        static EMPTY_TRACKS: std::sync::OnceLock<HashMap<u32, MustRecord>> = std::sync::OnceLock::new();
+        RegionMusicTables {
+            sounds,
+            music_types: EMPTY_TYPES.get_or_init(HashMap::new),
+            music_tracks: EMPTY_TRACKS.get_or_init(HashMap::new),
+        }
+    }
 
     fn soun(form_id: u32, path: &str) -> SounRecord {
         SounRecord {
@@ -489,7 +594,7 @@ mod tests {
     fn dispatch_with_no_provider_resource_does_not_panic() {
         let mut world = World::new();
         let sounds = HashMap::new();
-        dispatch_region_ambient_music(&mut world, &sounds, Some(0x1234));
+        dispatch_region_ambient_music(&mut world, sounds_only(&sounds), Some(0x1234));
     }
 
     /// An empty provider (boot without `--sounds-bsa`) must no-op the same
@@ -501,7 +606,7 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(SoundArchiveProvider::new());
         let sounds = HashMap::new();
-        dispatch_region_ambient_music(&mut world, &sounds, Some(0x1234));
+        dispatch_region_ambient_music(&mut world, sounds_only(&sounds), Some(0x1234));
     }
 
     /// `music_form: None` (no REGN directive, or the winning entry omits
@@ -512,7 +617,7 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(byroredux_audio::AudioWorld::headless());
         let sounds = HashMap::new();
-        dispatch_region_ambient_music(&mut world, &sounds, None);
+        dispatch_region_ambient_music(&mut world, sounds_only(&sounds), None);
         assert!(!world
             .resource::<byroredux_audio::AudioWorld>()
             .is_music_active());
@@ -530,7 +635,7 @@ mod tests {
         world.insert_resource(SoundArchiveProvider::new());
         let mut sounds = HashMap::new();
         sounds.insert(0x77, soun(0x77, "fx\\amb\\ceilingcrumble\\"));
-        dispatch_region_ambient_music(&mut world, &sounds, Some(0x77));
+        dispatch_region_ambient_music(&mut world, sounds_only(&sounds), Some(0x77));
         assert!(!world
             .resource::<byroredux_audio::AudioWorld>()
             .is_music_active());
@@ -553,9 +658,73 @@ mod tests {
         let sounds = HashMap::new();
         // 0xDEAD_BEEF stands in for a real MSET FormID here: authored
         // (Some), present in no SOUN map, same as every FNV RDSB target.
-        dispatch_region_ambient_music(&mut world, &sounds, Some(0xDEAD_BEEF));
+        dispatch_region_ambient_music(&mut world, sounds_only(&sounds), Some(0xDEAD_BEEF));
         assert!(!world
             .resource::<byroredux_audio::AudioWorld>()
             .is_music_active());
+    }
+
+    fn skyrim_tables() -> (HashMap<u32, MuscRecord>, HashMap<u32, MustRecord>) {
+        use byroredux_plugin::esm::records::MustKind;
+        let musc = MuscRecord { form_id: 0x10, tracks: vec![0x20], ..Default::default() };
+        let palette = MustRecord { form_id: 0x20, kind: MustKind::Palette, sub_tracks: vec![0x21], ..Default::default() };
+        let single = MustRecord {
+            form_id: 0x21,
+            kind: MustKind::SingleTrack,
+            file: "Music\\Explore\\Tundra_A.xwm".into(),
+            ..Default::default()
+        };
+        (
+            [(0x10, musc)].into_iter().collect(),
+            [(0x20, palette), (0x21, single)].into_iter().collect(),
+        )
+    }
+
+    /// #3816 — a Skyrim `RDMO` resolves MUSC → palette → first `SingleTrack` to a `music\\` archive key.
+    #[test]
+    fn a_skyrim_music_type_resolves_through_its_palette_to_an_archive_key() {
+        let (types, tracks) = skyrim_tables();
+        let sounds = HashMap::new();
+        let tables = RegionMusicTables { sounds: &sounds, music_types: &types, music_tracks: &tracks };
+        assert_eq!(
+            resolve_music_track_path(&tables, 0x10).as_deref(),
+            Some("music\\explore\\tundra_a.xwm")
+        );
+        assert_eq!(resolve_music_track_path(&tables, 0x99), None, "not a MUSC");
+    }
+
+    #[test]
+    fn music_archive_path_roots_at_music_without_doubling() {
+        assert_eq!(music_archive_path("Explore/A.xwm"), "music\\explore\\a.xwm");
+        assert_eq!(music_archive_path("Music\\Explore\\A.xwm"), "music\\explore\\a.xwm");
+        assert_eq!(music_archive_path("Data\\Music\\A.wav"), "music\\a.wav");
+        // The vanilla Skyrim.esm shape: from the game root, with a leading separator.
+        assert_eq!(
+            music_archive_path("\\Data\\Music\\Explore\\MUS_Explore_Day_01.wav"),
+            "music\\explore\\mus_explore_day_01.wav"
+        );
+    }
+
+    #[test]
+    fn a_wav_authored_track_has_an_xwm_sibling() {
+        assert_eq!(xwma_sibling("music\\explore\\a.wav").as_deref(), Some("music\\explore\\a.xwm"));
+        assert_eq!(xwma_sibling("music\\explore\\a.xwm"), None);
+    }
+
+    #[test]
+    fn xwma_music_is_fenced_off_from_the_streaming_decoder() {
+        assert!(is_xwma_path("music\\explore\\a.xwm"));
+        assert!(!is_xwma_path("music\\special\\a.wav"));
+    }
+
+    /// A Skyrim MUSC with an `.xwm` track reaches the xWMA fence and stops playback — no panic, no
+    /// archive read — even with every other layer absent.
+    #[test]
+    fn dispatching_a_skyrim_xwm_music_type_stops_without_panic() {
+        let (types, tracks) = skyrim_tables();
+        let sounds = HashMap::new();
+        let tables = RegionMusicTables { sounds: &sounds, music_types: &types, music_tracks: &tracks };
+        let mut world = World::new();
+        dispatch_region_ambient_music(&mut world, tables, Some(0x10));
     }
 }

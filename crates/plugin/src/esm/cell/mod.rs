@@ -181,13 +181,13 @@ mod plugin_loading_doc_pin_tests {
     fn the_audio_record_split_matches_the_dispatcher() {
         const DISPATCH_RS: &str = include_str!("../records/dispatch_misc_stub.rs");
         let quote = '"';
-        for parsed in ["SOUN", "MUSC", "ASPC"] {
+        for parsed in ["SOUN", "MUSC", "MUST", "ASPC"] {
             assert!(
                 DISPATCH_RS.contains(&format!("b{quote}{parsed}{quote} =>")),
                 "{parsed} lost its dispatch arm — plugin-loading.md lists it as parsed",
             );
         }
-        for unparsed in ["SNCT", "SOPM", "MUST", "REVB", "AECH"] {
+        for unparsed in ["SNCT", "SOPM", "REVB", "AECH"] {
             assert!(
                 !DISPATCH_RS.contains(&format!("b{quote}{unparsed}{quote} =>")),
                 "{unparsed} gained a dispatch arm — plugin-loading.md still lists it \

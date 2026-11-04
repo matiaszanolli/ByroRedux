@@ -55,7 +55,7 @@ pub const DISPATCH_HANDLED_FOURCCS: &[[u8; 4]] = &[
     *b"FLST", *b"FURN", *b"GLOB", *b"GMST", *b"GRAS", *b"HAIR", *b"HDPT", *b"HUNG", *b"IDLE",
     *b"IDLM", *b"IMAD", *b"IMGS", *b"IMOD", *b"INGR", *b"IPCT", *b"IPDS", *b"KEYM", *b"KYWD", *b"LCRT", *b"LCTN",
     *b"LGTM", *b"LIGH", *b"LMSW", *b"LSCR", *b"LSCT", *b"LTEX", *b"LVLC", *b"LVLI", *b"LVLN", *b"LVSP", *b"MATT", *b"MESG",
-    *b"MGEF", *b"MICN", *b"MISC", *b"MOVS", *b"MSET", *b"MSTT", *b"MSWP", *b"MTPT", *b"MUSC", *b"NAVI",
+    *b"MGEF", *b"MICN", *b"MISC", *b"MOVS", *b"MSET", *b"MSTT", *b"MSWP", *b"MTPT", *b"MUSC", *b"MUST", *b"NAVI",
     *b"NAVM", *b"NOTE", *b"NPC_", *b"OMOD", *b"OTFT", *b"PACK", *b"PERK", *b"PKIN", *b"PROJ",
     *b"PWAT", *b"QUST", *b"RACE", *b"RADS", *b"RCCT", *b"RCPE", *b"REGN", *b"RELA", *b"REPU", *b"RGDL",
     *b"SCEN", *b"SCOL", *b"SCPT", *b"SCRL", *b"SECH", *b"SGST", *b"SLGM", *b"SLPD", *b"SMBN",
@@ -445,7 +445,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
                 )?;
             }
             b"ALOC" | b"ANIO" | b"ASPC" | b"CAMS" | b"CPTH" | b"DOBJ" | b"MICN" | b"MSET"
-            | b"MUSC" | b"SOUN" | b"SNDR" | b"VTYP" | b"AMEF" | b"DEBR" | b"GRAS" | b"IMAD" | b"LSCR"
+            | b"MUSC" | b"MUST" | b"SOUN" | b"SNDR" | b"VTYP" | b"AMEF" | b"DEBR" | b"GRAS" | b"IMAD" | b"LSCR"
             | b"LSCT" | b"PWAT" | b"RGDL" | b"TRNS" | b"DEHY" | b"HUNG" | b"RADS" | b"SLPD"
             | b"CCRD" | b"CDCK" | b"CHAL" | b"CHIP" | b"CMNY" | b"CSNO" | b"RCCT" | b"RCPE"
             | b"BSGN" | b"CLOT" | b"SGST" | b"SLGM" | b"SECH" | b"AOPF" | b"LCTN" | b"LCRT" | b"RELA" => {

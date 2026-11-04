@@ -165,7 +165,7 @@ separate integration gap. See the gaps table below.
 | Underwater low-pass (submersion-driven, 900 Hz wet / dry bypass) | ✓ |
 | Water-surface splash + ripple one-shots (WATAL events) | ✓ |
 | Per-material footsteps (FOOT records) | ◐ mechanism shipped (`select_footstep_sound` + surface-material probe); no authored data yet — the FOOT→IPDS material table awaits decode |
-| Region ambient (REGN) — background music | ◐ dispatch mechanism ✓; no supported game's `music_form` currently resolves to a decodable SOUN path; playback awaits #3816 (MUSC/MUST/MSET/RDMD decode) |
+| Region ambient (REGN) — background music | ◐ dispatch mechanism ✓; Skyrim `RDMO` → `MUSC` → first playable `MUST` track resolves (28/28 vanilla regions, #3816) but the tracks ship as xWMA (`.xwm`), which the streaming path cannot decode, so nothing plays yet; cycling/random selection and loop points are not modelled; FNV `MSET` and Oblivion `RDMD` playback still await #3816 |
 | Region ambient (REGN) — incidental/loop sounds | ✗ |
 
 ---

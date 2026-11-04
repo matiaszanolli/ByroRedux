@@ -71,7 +71,11 @@ pub use equipment::{
 pub use imagespace::{parse_imad, ImadColorKey, ImadRecord, ImadScalarKey};
 pub use location::{parse_lctn, LctnRecord};
 pub use media_set::{parse_mset, IncidentalMediaSet, MediaSetKind, MediaSetRecord};
-pub use music::{parse_musc, MuscRecord};
+pub use music::{
+    first_playable_track, parse_musc, parse_musc_remapped, parse_must, MuscRecord, MustKind, MustLoop,
+    MustRecord, MUSC_ABRUPT_TRANSITION, MUSC_CYCLE_TRACKS, MUSC_DUCKS_CURRENT_TRACK,
+    MUSC_MAINTAIN_TRACK_ORDER, MUSC_PLAYS_ONE_SELECTION,
+};
 pub use relationship::{parse_rela, RelaRecord};
 pub use magic::{
     parse_ench, parse_mgef, parse_mgef_for_game, parse_perk, parse_spel, ActorValueRef, EnchRecord,

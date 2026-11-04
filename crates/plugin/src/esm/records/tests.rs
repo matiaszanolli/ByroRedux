@@ -2014,7 +2014,8 @@ fn categories_table_row_count_pinned() {
     // Bumped 111 → 112 in M43 (furniture_keywords — FURN `KWDA`, what marks a crafting bench).
     // Bumped 112 → 114 in M43 (placed_object_keywords — ACTI/FLOR/CONT/FURN `KWDA`; attraction_rules — FO4
     //   AORU, what the attraction-object story event reads).
-    assert_eq!(EsmIndex::categories().len(), 114);
+    // Bumped 114 → 115 in #3816 (music_tracks — Skyrim MUST, what a MUSC `TNAM` lists).
+    assert_eq!(EsmIndex::categories().len(), 115);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring

@@ -784,7 +784,7 @@ impl InteriorCellApplyJob {
         if previous_music_form != region_ambient.music_form {
             crate::asset_provider::dispatch_region_ambient_music(
                 world,
-                &index.sounds,
+                crate::asset_provider::RegionMusicTables::new(&index),
                 region_ambient.music_form,
             );
         }

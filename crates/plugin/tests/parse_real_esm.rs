@@ -536,6 +536,54 @@ fn skyrim_health_resolves_to_authored_avif_form_id() {
     }));
 }
 
+/// #3816 — Skyrim's REGN music chain on vanilla `Skyrim.esm`: every region `RDMO` names a `MUSC`, and
+/// the `MUSC` → (palette →) `MUST` walk lands on a track file. Counts print under `--nocapture`.
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn skyrim_region_music_resolves_through_musc_and_must() {
+    use byroredux_plugin::esm::records::{first_playable_track, RegionDataPayload};
+    let Some(data) = data_dir(test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT) else {
+        eprintln!("[Skyrim MUSC] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = parse_esm(&bytes).expect("parse Skyrim.esm");
+    let rdmo: Vec<u32> = index
+        .regions
+        .values()
+        .flat_map(|r| &r.entries)
+        .filter_map(|e| match &e.payload {
+            RegionDataPayload::Sound { music, .. } => *music,
+            _ => None,
+        })
+        .collect();
+    let musc_hit = rdmo.iter().filter(|f| index.music_types.contains_key(f)).count();
+    let playable: Vec<_> = rdmo
+        .iter()
+        .filter_map(|f| index.music_types.get(f))
+        .filter_map(|m| first_playable_track(m, &index.music_tracks))
+        .collect();
+    let xwm = playable.iter().filter(|t| t.file.to_ascii_lowercase().ends_with(".xwm")).count();
+    eprintln!(
+        "[Skyrim MUSC] MUSC={} MUST={} RDMO={} -> MUSC {} -> playable {} (xwm {})",
+        index.music_types.len(),
+        index.music_tracks.len(),
+        rdmo.len(),
+        musc_hit,
+        playable.len(),
+        xwm
+    );
+    for t in playable.iter().take(3) {
+        eprintln!("  sample track: {:?}", t.file);
+    }
+    // Census (2026-11-04): 50 MUSC, 258 MUST, 28 RDMO — all 28 resolve to a track, every one authored
+    // `….wav` (and shipped as `.xwm`, which the streaming path cannot decode).
+    assert_eq!((index.music_types.len(), index.music_tracks.len(), rdmo.len()), (50, 258, 28));
+    assert_eq!(musc_hit, rdmo.len(), "every RDMO names a MUSC");
+    assert_eq!(playable.len(), rdmo.len(), "every region music type resolves to a track file");
+    assert!(playable.iter().all(|t| t.file.to_ascii_lowercase().ends_with(".wav")));
+}
+
 /// #5359 — the per-NPC skin census on vanilla `Skyrim.esm`: 664 of the
 /// 5,118 `NPC_` records author `WNAM` (the issue's byte walk), all six
 /// Alduin records wear `skinDragonAlduin`, and the `SkinDraugrMale05`
@@ -2284,6 +2332,7 @@ fn parse_rate_fnv_esm() {
         + index.menu_icons.len()
         + index.media_sets.len()
         + index.music_types.len()
+        + index.music_tracks.len()
         + index.sounds.len()
         + index.voice_types.len()
         + index.ammo_effects.len()

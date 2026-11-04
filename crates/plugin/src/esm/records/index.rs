@@ -16,7 +16,7 @@ use super::{
     HdptRecord,
     IdleRecord, ImadRecord, LctnRecord, ImgsRecord, ImodRecord, InfoRecord, IpctRecord, IpdsRecord, ItemRecord,
     LeveledList, LgtmRecord, LoadScreenRecord, LoadScreenTransform, MesgRecord, MgefRecord,
-    MediaSetRecord, MinimalEsmRecord, MuscRecord, RadiationStageRecord, ResolvedLoadScreenModel,
+    MediaSetRecord, MinimalEsmRecord, MuscRecord, MustRecord, RadiationStageRecord, ResolvedLoadScreenModel,
     NaviRecord, NavmRecord,
     NpcRecord, OtftRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RaceRecord, RegnRecord,
     RepuRecord, ScenRecord, ScriptRecord, SlgmRecord, SmNodeRecord, SounRecord, SpelRecord,
@@ -623,6 +623,8 @@ pub struct EsmIndex {
     pub media_sets: HashMap<u32, MediaSetRecord>,
     /// `MUSC` music type.
     pub music_types: HashMap<u32, MuscRecord>,
+    /// Skyrim `MUST` music track — what a Skyrim `MUSC.TNAM` lists (#3816).
+    pub music_tracks: HashMap<u32, MustRecord>,
     /// `SOUN` sound. Upgraded from the `MinimalEsmRecord` long-tail stub
     /// (#810) to a real decode of `FNAM` (file path) — EX-16 item 1's
     /// stated prerequisite for resolving a REGN `RegionDataKind::Sound`
@@ -1035,6 +1037,7 @@ impl EsmIndex {
             map_category!("menu_icons", menu_icons),
             map_category!("media_sets", media_sets),
             map_category!("music_types", music_types),
+            map_category!("music_tracks", music_tracks),
             map_category!("sounds", sounds),
             map_category!("voice_types", voice_types),
             map_category!("ammo_effects", ammo_effects),

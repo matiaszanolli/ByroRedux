@@ -927,7 +927,7 @@ pub(crate) fn apply_cell_region_ambient(
     if previous_music_form != ambient.music_form {
         crate::asset_provider::dispatch_region_ambient_music(
             world,
-            &wctx.record_index.sounds,
+            crate::asset_provider::RegionMusicTables::new(&wctx.record_index),
             ambient.music_form,
         );
     }

@@ -240,9 +240,11 @@ index. Pre-fix required two passes.
 **Passthrough-raw** (model path extracted, rest skipped): STAT, MSTT,
 FURN, DOOR, LIGH, FLOR, IDLM, BNDS, ADDN, TACT.
 
-**Audio**: SOUN, MUSC and ASPC are parsed (`records/dispatch_misc_stub.rs` —
-SOUN into a typed `SounRecord` with FNAM sound-path decode). **Not yet
-parsed**: SNCT, SOPM, MUST, REVB, AECH.
+**Audio**: SOUN, MUSC, MUST and ASPC are parsed (`records/dispatch_misc_stub.rs` —
+SOUN into a typed `SounRecord` with FNAM sound-path decode; MUSC per game —
+FO3/FNV's file + level, Skyrim's flags + `TNAM` track list; Skyrim's `MUST`
+into `EsmIndex::music_tracks` with file, loop points and palette members, #3816).
+**Not yet parsed**: SNCT, SOPM, REVB, AECH.
 
 ### EsmCellIndex
 

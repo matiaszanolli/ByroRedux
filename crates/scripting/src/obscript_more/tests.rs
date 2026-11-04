@@ -457,7 +457,7 @@ fn play_music_queues_the_named_track_and_declines_an_unknown_one() {
     use byroredux_plugin::esm::records::{EsmIndex, MuscRecord};
     let (mut world, ..) = world(GameKind::Fallout3NV);
     let mut index = EsmIndex::default();
-    index.music_types.insert(0x171b4a, MuscRecord { form_id: 0x171b4a, editor_id: "musDocMitchellHouse".into(), file: "loc\\a.mp3".into(), decibels: 6.0 });
+    index.music_types.insert(0x171b4a, MuscRecord { form_id: 0x171b4a, editor_id: "musDocMitchellHouse".into(), file: "loc\\a.mp3".into(), decibels: 6.0, ..Default::default() });
     world.insert_resource(MusicTracks::from_index(&index));
     assert_eq!(world.try_resource::<MusicTracks>().unwrap().by_editor_id("MUSDOCMITCHELLHOUSE").map(|t| t.form_id), Some(0x171b4a));
     let c = ctx(None);
