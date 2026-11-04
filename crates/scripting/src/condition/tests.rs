@@ -143,6 +143,7 @@ fn colliding_indices_are_unmodeled_on_the_games_that_reuse_them() {
         (550, Fallout3NV, Skyrim),
         (555, Fallout3NV, Fallout4),
         (630, Fallout4, Skyrim),
+        (659, Fallout4, Skyrim),
     ];
     let mut world = World::new();
     crate::register(&mut world);
@@ -2283,6 +2284,19 @@ fn get_pc_is_sex_and_get_health_percentage_are_foreign_where_xedit_renames_them(
     }
     assert!(index_is_foreign_in(431, GameKind::Starfield));
     assert!(!index_is_foreign_in(431, GameKind::Fallout3NV));
+}
+
+/// #6570 — xEdit: 659 is Skyrim's `EPTemperingItemIsEnchanted` but FO4's `HasVMScript`, so a Fallout 4
+/// load order must not answer it from the tempering flag (always false outside the improve action).
+#[test]
+fn ep_tempering_item_is_enchanted_is_foreign_on_fallout4() {
+    use super::catalog::index_is_foreign_in;
+    use byroredux_plugin::esm::reader::GameKind;
+    assert!(index_is_foreign_in(659, GameKind::Fallout4), "659 is HasVMScript on FO4");
+    assert!(!index_is_foreign_in(659, GameKind::Skyrim), "659 is EPTemperingItemIsEnchanted on Skyrim");
+    // FO76 / Starfield definitions were not read, so nothing claims the index is foreign there.
+    assert!(!index_is_foreign_in(659, GameKind::Fallout76));
+    assert!(!index_is_foreign_in(659, GameKind::Starfield));
 }
 
 #[test]

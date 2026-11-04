@@ -645,6 +645,7 @@ const OBLIVION_DIALECT: &[(u32, ConditionFunction)] = &[
 /// | 550 | `IsSceneActionComplete` (Skyrim/FO4) | FO3/FNV: `IsGoreDisabled` |
 /// | 555 | `HasLoaded3D` (Skyrim/FO4) | FO3/FNV: `GetSpellUsageNum` |
 /// | 630 | `GetVMScriptVariable` (Skyrim) | FO4: `GetCombatAudioDetection` |
+/// | 659 | `EPTemperingItemIsEnchanted` (Skyrim) | FO4: `HasVMScript` |
 /// | 131 | `GetPCIsSex` (Oblivion, FO3/FNV, Skyrim) | FO4, FO76, Starfield: `GetSceneActionPercent` |
 /// | 426 | `GetIsVoiceType` (Skyrim/FO4) | FO3/FNV: a different function (theirs is 427) |
 /// | 427 | `GetIsVoiceType` (FO3/FNV) | Skyrim, FO4: a different function (theirs is 426) |
@@ -669,6 +670,8 @@ const FOREIGN_INDICES: &[(u32, &[GameKind])] = &[
     (550, &[GameKind::Fallout3NV]),
     (555, &[GameKind::Fallout3NV]),
     (630, &[GameKind::Fallout4]),
+    // `EPTemperingItemIsEnchanted` is Skyrim's; FO4 authors 659 as `HasVMScript` (#6570).
+    (659, &[GameKind::Fallout4]),
     (131, &[GameKind::Fallout4, GameKind::Fallout76, GameKind::Starfield]),
     (431, &[GameKind::Starfield]),
 ];
