@@ -770,6 +770,14 @@ fn scene_xml_with_posed(
         }
         if let Some(file) = &files.normal_map {
             let _ = writeln!(out, r#"        <bsdf type="normalmap">"#);
+            // The engine shades the plain shading-normal lobe (ρ·max(0, N′·L)).
+            // Mitsuba's normalmap (3.9.1) defaults to two corrections it does
+            // not model, the Estévez 2019 shadow-terminator term and
+            // Schüssler 2017's flip of normals the view falls behind, which
+            // made A15's normal-mapped plane read 1.7-5.7 % off. Both are
+            // off, so the convention is all that check compares (RLT-REF-008).
+            let _ = writeln!(out, r#"            <boolean name="use_shadowing_function" value="false"/>"#);
+            let _ = writeln!(out, r#"            <boolean name="flip_invalid_normals" value="false"/>"#);
             bitmap(&mut out, "normalmap", file, "bilinear");
         }
         match &shape.bsdf {
@@ -1173,6 +1181,14 @@ mod tests {
         let diffuse = xml.find(r#"<bsdf type="diffuse">"#).expect("diffuse");
         assert!(mask < normal && normal < diffuse, "{xml}");
         assert_eq!(xml.matches("<bsdf ").count(), xml.matches("</bsdf>").count(), "{xml}");
+        // The engine's plain shading-normal lobe: neither Mitsuba correction.
+        let block = &xml[normal..diffuse];
+        for switch in ["use_shadowing_function", "flip_invalid_normals"] {
+            assert!(
+                block.contains(&format!(r#"<boolean name="{switch}" value="false"/>"#)),
+                "{switch} must be off: {block}"
+            );
+        }
     }
 
     #[test]

@@ -1156,12 +1156,24 @@ def gate_temporal(engine: Engine, store: ReferenceStore, ctx: Context, spp: int,
 
         floor_e = float(np.mean([temporal_error(load_exr(still[f][0]), parked[stop], mask_for(parked[stop]))
                                  for f in post]))
+        # A sample during the motion also carries the run's cold start, since
+        # the temporal accumulators are still filling at frame 32. Its floor
+        # is therefore per frame: the same single frame of a run held at that
+        # frame's pose from frame 0, against the same converged reference.
+        # That is cold start plus sampling noise with no motion, and the
+        # excess over it is what the motion adds.
+        cold = {}
+        for frame in motion:
+            held = engine.sequence(f"{gate}_{rung}_held_f{frame}", rung, ctx.tier, [frame], frame + 4,
+                                   extra + ["--bench-camera-freeze-at", str(frame)])
+            cold[frame] = temporal_error(load_exr(held[frame][0]), parked[frame], mask_for(parked[frame]))
         for frame in motion + post:
             image = load_exr(moving[frame][0])
             reference = parked[parked_at[frame]]
             phase = "during" if frame <= stop else f"post_stop_{frame - stop}"
             row = Row(gate, f"{rung}-{phase}", f"frame_{frame}", "temporal_error",
-                      temporal_error(image, reference, mask_for(reference)), floor_e, 0.0, passed="report")
+                      temporal_error(image, reference, mask_for(reference)), cold.get(frame, floor_e), 0.0,
+                      passed="report")
             rows.append((row, ""))
     return rows
 

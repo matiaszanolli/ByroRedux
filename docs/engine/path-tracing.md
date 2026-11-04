@@ -207,6 +207,30 @@ fallback rebuilds T from screen derivatives, and its sign follows the
 screen-space UV Jacobian. On a box top face seen from above that gives
 (−∂P/∂u, −∂P/∂v), which is Mitsuba's frame turned 180°.
 
+The lobe under the perturbed frame must match as well. The engine shades
+the plain shading-normal Lambert, ρ · max(0, N′ · L). Mitsuba 3.9.1's
+`normalmap` defaults to two corrections on top of that:
+`use_shadowing_function` (the Estévez 2019 shadow-terminator term, which
+dims light arriving at a steep angle to a tilted shading normal) and
+`flip_invalid_normals` (Schüssler 2017, which mirrors a shading normal
+the view direction falls behind). Left on, they made the normal-mapped
+validation plane read 1.017 / 1.057 / 1.029 at the three light azimuths
+(2026-11-04). Both sides still used the same frame and texel mapping:
+the engine fitted per-pixel Lambert under this frame to 0.3–0.5 % rms,
+and every flipped or swapped variant fitted worse on both sides. The
+exporter turns both corrections off, and Mitsuba's `eval` then equals
+ρ/π · max(0, N′ · L) exactly. One difference remains: a nested `diffuse`
+returns 0 where the view direction is behind N′, and the engine does
+not. The validation plane's camera keeps N′ · V ≥ −0.01, so the
+difference does not show there.
+
+The sRGB decode in the table is the Cornell harness's, not game content's.
+`register_rgba` is the only RGBA upload, so these linearly encoded maps
+decode as sRGB, which skews the wavy pattern toward −x / −y and lays many
+normals nearly flat. Game normal maps take the DDS linear role and upload
+as `UNORM` (`vulkan/dds.rs`). The reference bakes the harness's decode, so
+the comparison stays like for like.
+
 **Alpha cut-out (RLT-CON-008, RLT-EXP-002).** The shadow ray's coverage
 test (`rayHitHasCoverage`, `include/ray_hit.glsl`) reads base-texture alpha
 at mip 0, bilinearly, times the material alpha, through

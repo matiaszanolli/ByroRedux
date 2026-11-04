@@ -218,8 +218,12 @@ taking `final` after TAA (`--linear-capture-tap post-taa`) along a
   1, 4 and 16 frames after the stop.
 - **Parked reference.** Each sample is compared with the same path frozen
   at that frame (`--bench-camera-freeze-at`) and converged for 256 frames.
-- **Floor.** The same single-frame captures with the path parked from
-  frame 0.
+- **Floor.** For a sample during the motion: the same single frame of a
+  run held at that frame's pose from frame 0, against the same parked
+  reference. The run's temporal accumulators are still filling at frame
+  32, so this floor carries the cold start as well as sampling noise. The
+  excess over it is what the motion adds. After the stop: the post-stop
+  frames of a run parked at the stop pose from frame 0.
 
 `SHD-005` publishes `direct_only`'s luminance integral on the `restir-clamp`
 rung with the reservoir cap on and off. RLT-SHD-006 re-runs A3 with
