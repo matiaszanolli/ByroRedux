@@ -367,13 +367,6 @@ pub(crate) fn raise_craft_story_event(world: &World, player: EntityId, bench: En
     );
 }
 
-/// #5434 — `KILL` (Actor Kill), raised from every LIVE death producer
-/// (combat damage, NPC/player drowning, the SDK actor-value batch) — never
-/// from corpse restores, which re-assert a death that already fired.
-/// Slots: R1 = victim, R2 = killer (`None` for environmental deaths such as
-/// drowning), L1 = the session's current LCTN (`WIKill06` authors a
-/// KILL→L1 alias fill). On pre-Creation titles this is a no-op (no SM tree
-/// installed).
 /// M43 — `OAAT` (Actor Attach): an actor was placed into a loaded cell. `OnStoryActorAttach(akActor,
 /// akLocation)` (read from `Quest.pex`): the actor in `R1`, the session location in `L1`. The code is read as
 /// the actor-attach event from its child quests (`REDeadActorAttach` and kin); its `SMEN` authors no
@@ -403,6 +396,13 @@ pub(crate) fn raise_actor_attach_story_event(world: &World, actor: EntityId) {
     );
 }
 
+/// #5434 — `KILL` (Actor Kill), raised from every LIVE death producer
+/// (combat damage, NPC/player drowning, the SDK actor-value batch) — never
+/// from corpse restores, which re-assert a death that already fired.
+/// Slots: R1 = victim, R2 = killer (`None` for environmental deaths such as
+/// drowning), L1 = the session's current LCTN (`WIKill06` authors a
+/// KILL→L1 alias fill). On pre-Creation titles this is a no-op (no SM tree
+/// installed).
 pub(crate) fn raise_kill_story_event(world: &World, victim: EntityId, killer: Option<EntityId>) {
     use byroredux_scripting::story_manager::StoryEvent;
     // #5372 — resolve the location BEFORE taking the StoryEvent write
