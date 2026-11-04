@@ -214,7 +214,7 @@ separate integration gap. See the gaps table below.
 | Authored alias metadata without an owning subsystem | ~ exposed as runtime overlays, not fabricated results |
 | Scene (`SCEN`) playback + PACK scene-package actions | ✓ MQ101 vertical slice |
 | Console observability — `quest.show`, `quest.aliases`, `quest.start`/`stop`/`setstage` | ✓ M43.1 |
-| Story Manager event payload / search | ✓ Phases 0–4 (SMBN/SMEN/SMQN decode, dispatcher, R1/R2/L1/L2 payload slots, policy bits, KILL/CLOC/AHEL producers, `sm1-story-manager.sh`); SCPT/LEVL/SKIL producers remain |
+| Story Manager event payload / search | ✓ M43, closed 2026-10-30 (SMBN/SMEN/SMQN decode, dispatcher, R1/R2/L1/L2 payload slots, `DNAM`/`RNAM`/`HNAM` policies, *Num quests to run* + *Max concurrent quests*, `sm1-story-manager.sh`). Producers: `KILL`/`CLOC`/`AHEL`/`SCPT`, `ADIA` random conversations, `LEVL`/`ASSU`/`AIPL`/`SKIL`/`JAIL`/`CHRR`/`REMP`/`CAST`/`CRFT`, `DEAD`/`ARRT`/`ESJA`/`NVPE`, and FO4's `LCLD`/`AOBJ`/`HACK`/`LOCK`/`IRON`/`OAAT`/`TMEE`; which rules are engine policy: [`story-manager.md`](engine/story-manager.md) §6.4 |
 | Reference collections filled by scripts (`AddRef` / `AddArray` / `RemoveRef` / `GetCount` / `GetAt` / `Find`) | ✓ `crates/scripting/src/alias_collections.rs` |
 | Reference collections filled by conditions or a fill type; true LCTN / unloaded-world alias queries | ✗ |
 | Created-object spawning from aliases ("Create Reference to Object" At another alias; `PlaceAtMe`) | ✓ `crates/scripting/src/created_references.rs` (`eeb6793b7`, `3299c7dcb`) |

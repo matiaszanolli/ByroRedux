@@ -304,9 +304,11 @@ pub(crate) fn walk_speed_for(world: &World, walk_handle: u32) -> f32 {
 /// **Skyrim and later use Havok Behavior Format `.hkx`** — there is
 /// no `.kf` sibling for any humanoid actor in vanilla SSE / FO4 / FO76
 /// / Starfield archives (BSA scan: 0 `.kf` hits across Meshes0 +
-/// Meshes1 + Animations BSAs in Skyrim SE on 2026-04-28). Animating
-/// SSE+ actors lands once a `.hkx` parser stub is wired — folded into
-/// M41.1 follow-up.
+/// Meshes1 + Animations BSAs in Skyrim SE on 2026-04-28). This function
+/// is the `.kf` path only. Havok actors are animated from `byroredux-hkx`
+/// decodes in `asset_provider`: Skyrim's IDLE clips and walk cycle
+/// (`animation.rs`), Fallout 4's idle by animation archetype
+/// (`archetype_idle.rs`) and its running behavior graphs (`actor_graph.rs`).
 ///
 /// FNV / FO3 ship the canonical resting-state idle as
 /// `meshes\characters\_male\locomotion\mtidle.kf` (move-type idle —
