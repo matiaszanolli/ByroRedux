@@ -76,7 +76,8 @@ pub(super) fn apply_reference_state_effect(
                 .find(|(changed, _)| *changed == pair)
                 .map_or_else(|| crate::relationships::relationship_rank(world, actor, other), |&(_, rank)| rank);
             deferred.relationship_changes.push((pair, *rank));
-            crate::relationships::raise_relationship_change(world, actor, other, old, *rank);
+            // `CHRR` is raised by the flush, after the quest guards drop (#6572).
+            deferred.relationship_events.push((actor, other, old, *rank));
             None
         }
         Effect::Kill { actor, killer, silent } => {

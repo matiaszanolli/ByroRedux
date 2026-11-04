@@ -238,6 +238,11 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::SetRelationshipRank` writes by base pair, recorded in
     /// [`crate::ScriptedRelationships`] after the guards drop.
     pub(crate) relationship_changes: Vec<((u32, u32), i8)>,
+    /// M43 — the Story Manager's `CHRR` for each `relationship_changes` write: (actor, other, old rank, new
+    /// rank), raised by [`crate::relationships::raise_relationship_change`] after the quest guards drop
+    /// and the ranks are recorded (#6572). Raising it inline took `StoryEvent` /
+    /// `PendingScriptStoryEvents` under the `QuestStageState` + `QuestObjectiveState` pair.
+    pub(crate) relationship_events: Vec<(EntityId, EntityId, i8, i8)>,
     /// M47.2 — `Effect::BlockActivation` changes, recorded in
     /// [`super::ReferenceActivationBlocks`] after the guards drop.
     pub(super) activation_blocks: Vec<(u32, bool)>,
@@ -315,6 +320,7 @@ impl DeferredFragmentEffects {
             location_clears: Vec::new(),
             base_protection: Vec::new(),
             relationship_changes: Vec::new(),
+            relationship_events: Vec::new(),
             story_events: Vec::new(),
             kills: Vec::new(),
             player_xp: Vec::new(),
@@ -936,6 +942,10 @@ impl DeferredFragmentEffects {
                     ranks.0.insert(pair, rank);
                 }
             }
+        }
+        // The guard on `ScriptedRelationships` is gone: the events take the Story Manager's storages.
+        for (actor, other, old, new) in std::mem::take(&mut self.relationship_events) {
+            crate::relationships::raise_relationship_change(world, actor, other, old, new);
         }
     }
 

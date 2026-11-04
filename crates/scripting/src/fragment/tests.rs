@@ -6602,3 +6602,47 @@ fn removing_an_equipped_item_unequips_it() {
     assert!(world.get::<EquipmentSlots>(actor).unwrap().is_equipped(InventoryIndex(1)));
     assert_eq!(world.get::<crate::EquipmentEventBatch>(actor).unwrap().0.len(), 1);
 }
+
+/// #6572 — a `SetRelationshipRank` raises the Story Manager's `CHRR` after the quest guards drop, not while
+/// `apply_effects` runs under them: nothing is raised by the arm itself, the flush raises one event per change
+/// with the rank that stood before it (an earlier change in the same run is the "old" one), and an unchanged
+/// rank raises none.
+#[test]
+fn set_relationship_rank_raises_chrr_only_when_the_deferred_effects_flush() {
+    const SPEAKER_BASE: u32 = 0x0001_3478;
+    let mut world = fixture();
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    let speaker = world.spawn();
+    world.query_mut::<crate::scene::SceneAliasCandidate>().unwrap().insert(
+        speaker,
+        crate::scene::SceneAliasCandidate { base_form_id: SPEAKER_BASE, ..Default::default() },
+    );
+    let set = |rank: i8| Effect::SetRelationshipRank { actor: ActorRef::Speaker, other: ActorRef::Player, rank };
+    let effects = vec![set(3), set(1), set(1)];
+    let mut stages = QuestStageState::default();
+    let mut objectives = QuestObjectiveState::default();
+    let mut deferred = DeferredFragmentEffects::new(&world);
+    deferred.speaker = Some(speaker);
+    apply_effects(&effects, Q, None, &world, &mut stages, &mut objectives, &mut deferred);
+
+    let chrr = |world: &World| -> Vec<[i32; 2]> {
+        let mut events: Vec<_> = world
+            .query::<crate::story_manager::StoryEvent>()
+            .map(|events| events.iter().map(|(_, e)| *e).collect())
+            .unwrap_or_default();
+        if let Some(pending) = world.try_resource::<crate::story_manager::PendingScriptStoryEvents>() {
+            events.extend(pending.0.iter().copied());
+        }
+        events.iter().filter(|e| e.mnemonic == *b"CHRR").map(|e| e.slots().values).collect()
+    };
+    assert!(chrr(&world).is_empty(), "the arm only records the change; the guards are still held");
+    assert_eq!(deferred.relationship_events.len(), 3);
+
+    deferred.apply(&world);
+    assert_eq!(chrr(&world), vec![[0, 3], [3, 1]], "one event per real change, the earlier change being the old rank");
+    assert_eq!(
+        crate::relationships::relationship_rank(&world, speaker, player),
+        1,
+        "the rank was recorded as well"
+    );
+}

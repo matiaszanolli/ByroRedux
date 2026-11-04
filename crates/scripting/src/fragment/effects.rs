@@ -108,6 +108,11 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 ///   - **via [`crate::package::request_package_evaluation`]** — `EvaluatePackageRequest`
 ///     (write, `Effect::EvaluatePackage`; the ObScript `EVP` command shares it)
 ///   - **via [`crate::condition::entity_global_form_id`]** — `FormIdPool` (read)
+///   - **via [`crate::relationships::relationship_rank`]** (`Effect::SetRelationshipRank`'s old rank, and the
+///     `ValueExpr::RelationshipRank` guard) — `ScriptedRelationships` (read), then `AuthoredRelationships` (read),
+///     released in turn. The `CHRR` story event the change raises is *not* taken here: it is queued on
+///     `DeferredFragmentEffects::relationship_events` and raised after the guards drop (#6572), as
+///     `SendStoryEvent` is, so `StoryEvent` / `PendingScriptStoryEvents` are never nested under them
 ///   - **via [`update_actor_cinematic_state`]** — `ActorCinematicState`
 ///   - **via `crate::magic::{add_spell, remove_spell}`** (the
 ///     `AddSpell`/`RemoveSpell` arms, applied inline rather than deferred —

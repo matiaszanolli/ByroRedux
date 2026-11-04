@@ -123,9 +123,10 @@ impl Vm<'_> {
                     };
                     if unique && rank == 0 {
                         self.deferred.relationship_changes.push((pair, 1));
-                        // M43 — the Story Manager's `CHRR`: the actor became the player's friend.
+                        // M43 — the Story Manager's `CHRR`: the actor became the player's friend. Raised by
+                        // the flush, after the quest guards drop (#6572).
                         if let Some(player) = crate::papyrus_demo::PapyrusPlayerEntity::get(self.world) {
-                            crate::relationships::raise_relationship_change(self.world, entity, player, 0, 1);
+                            self.deferred.relationship_events.push((entity, player, 0, 1));
                         }
                     }
                 }
