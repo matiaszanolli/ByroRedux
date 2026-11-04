@@ -952,10 +952,11 @@ impl TextureRegistry {
                         .flatten()
                     };
                     let first_mip = floor_first.unwrap_or(0);
-                    let levels = crate::vulkan::dds::level_byte_range_in(
+                    let levels = crate::vulkan::dds::upload_byte_range(
                         &meta,
-                        first_mip..meta.mip_count,
+                        first_mip,
                         payload_first,
+                        pixel_data.len(),
                     );
                     // #1542: a 16/24-bpp `DDPF_RGB` source is CPU-expanded to
                     // R8G8B8A8. Its raw bytes aren't RGBA8 yet, so skip

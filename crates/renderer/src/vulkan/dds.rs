@@ -968,6 +968,24 @@ pub fn level_byte_range_in(
     range.start - base..range.end - base
 }
 
+/// M39 — the bytes of a first upload's payload that hold levels
+/// `[first_mip, mip_count)`. Only a single-layer chain is sliced by level (a
+/// floor, or a BA2 floor read whose payload starts at `payload_first`); a
+/// whole upload reads the whole payload, because a cubemap's or an array's
+/// layers each carry their own chain, so its levels are not contiguous.
+pub fn upload_byte_range(
+    meta: &DdsMetadata,
+    first_mip: u32,
+    payload_first: u32,
+    payload_len: usize,
+) -> std::ops::Range<usize> {
+    if first_mip == 0 && payload_first == 0 {
+        0..payload_len
+    } else {
+        level_byte_range_in(meta, first_mip..meta.mip_count, payload_first)
+    }
+}
+
 /// Total byte size of all mip levels.
 pub fn total_data_size(meta: &DdsMetadata) -> u64 {
     let mut total = 0u64;
@@ -1883,6 +1901,41 @@ pub(crate) mod tests {
             expand: None,
         };
         assert_eq!(total_data_size(&meta), 48);
+    }
+
+    /// M39 regression — a whole upload of a cubemap reads all six faces. The
+    /// first-upload slice once measured one face's chain (`level_byte_range`
+    /// is per layer), so every FO4 `_e` cubemap failed its size check and
+    /// was dropped, leaving its handle reserved.
+    #[test]
+    fn whole_upload_byte_range_covers_every_cubemap_face() {
+        let meta = DdsMetadata {
+            width: 128,
+            height: 128,
+            mip_count: 8,
+            format: vk::Format::B8G8R8A8_SRGB,
+            block_size: 4,
+            compressed: false,
+            array_layers: 6,
+            is_cubemap: true,
+            data_offset: 148,
+            expand: None,
+        };
+        let payload = total_data_size(&meta) as usize;
+        assert_eq!(payload, 524_280, "six 87 380-byte chains");
+        assert_eq!(upload_byte_range(&meta, 0, 0, payload), 0..payload);
+        // A single-layer floor is still sliced by level.
+        let single = DdsMetadata {
+            array_layers: 1,
+            is_cubemap: false,
+            ..meta
+        };
+        assert_eq!(
+            upload_byte_range(&single, 6, 0, 87_380),
+            level_byte_range_in(&single, 6..8, 0)
+        );
+        // A BA2 floor read's payload starts at its first level.
+        assert_eq!(upload_byte_range(&single, 6, 6, 20), 0..20, "2×2 + 1×1 RGBA");
     }
 
     // ── #1074 / FO4-D2-008 — 7 previously-unsupported DXGI formats ───────────
