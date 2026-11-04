@@ -395,6 +395,19 @@ pub enum ConditionFunction {
     /// `IsKiller(actor) → f32` (#6558): 1.0 when `param_1` killed the Run-On actor. FO3 / FNV index
     /// **409** (Skyrim / FO4 author 409 as `IsKillerObject`, a form list); the ObScript getter's body.
     IsKiller,
+    /// `GetCurrentAIPackage → f32` (#6545): the package type the Run-On actor runs now (the GECK table: 0
+    /// Explore … 5 Combat …). Index **110** (Oblivion, FO3, FNV); the ObScript getter's body.
+    GetCurrentAIPackage,
+    /// `GetIsReference(ref) → f32` (#6545): 1.0 when the Run-On reference is `param_1`. Index **136**; the
+    /// ObScript getter's body.
+    GetIsReference,
+    /// `IsOwner(owner) → f32` (#6545): 1.0 when the Run-On object is owned by the faction or NPC `param_1`.
+    /// Index **278**; the ObScript getter's body.
+    IsOwner,
+    /// `GetHitLocation → f32` (#6545): the body part last hit, `-1` for none — the combat model records no hit
+    /// location, so the ObScript getter's body always answers `-1`. FO3 / FNV index **391** (Skyrim and later
+    /// author 391 as `IsPC1stPerson`); the bridge's game gate keeps the body from answering there.
+    GetHitLocation,
     /// Oblivion's `GetCrimeGold` (CTDA **116**; FO3 / FNV author 116 as
     /// `GetMinorCrimeCount`, Skyrim as `IsIntimidatedbyPlayer`, so it answers
     /// only through [`OBLIVION_DIALECT`]). The Run-On actor's bounty: the
@@ -592,6 +605,13 @@ const ROWS: &[Row] = &[
     Row { func: ConditionFunction::IsSneaking, indices: &[286], name: "IsSneaking", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::IsInInterior, indices: &[300], name: "IsInInterior", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::IsKiller, indices: &[409], name: "IsKiller", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    // #6545 — four more getters the VM answers, bridged the same way. `GetFriendHit` (288) and
+    // `GetFactionRelation` (450) are NOT: every authored FNV condition of them carries a zero `param_1`
+    // (the target the ObScript bodies need), and what the engine reads that as is not established.
+    Row { func: ConditionFunction::GetCurrentAIPackage, indices: &[110], name: "GetCurrentAIPackage", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetIsReference, indices: &[136], name: "GetIsReference", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::IsOwner, indices: &[278], name: "IsOwner", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetHitLocation, indices: &[391], name: "GetHitLocation", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     // The Oblivion dialect: these answer to no index of their own (the same
     // numbers are other functions in FO3 / FNV / Skyrim); `OBLIVION_DIALECT`
     // maps the Oblivion index to them. Indices and names from xEdit
@@ -735,7 +755,7 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 97] = [
+    pub const CATALOG: [ConditionFunction; 101] = [
         Self::GetDistance,
         Self::GetQuestVariable,
         Self::GetActorValue,
@@ -820,6 +840,10 @@ impl ConditionFunction {
         Self::IsSneaking,
         Self::IsInInterior,
         Self::IsKiller,
+        Self::GetCurrentAIPackage,
+        Self::GetIsReference,
+        Self::IsOwner,
+        Self::GetHitLocation,
         Self::GetCrimeGold,
         Self::CanPayCrimeGold,
         Self::GetPCFame,
@@ -882,6 +906,10 @@ impl ConditionFunction {
                 | Self::IsSneaking
                 | Self::IsInInterior
                 | Self::IsKiller
+                | Self::GetCurrentAIPackage
+                | Self::GetIsReference
+                | Self::IsOwner
+                | Self::GetHitLocation
         )
         .then(|| 0x1000 + self.row().indices[0] as u16)
     }
@@ -1091,6 +1119,10 @@ mod tests {
                 ConditionFunction::IsSneaking |
                 ConditionFunction::IsInInterior |
                 ConditionFunction::IsKiller |
+                ConditionFunction::GetCurrentAIPackage |
+                ConditionFunction::GetIsReference |
+                ConditionFunction::IsOwner |
+                ConditionFunction::GetHitLocation |
                 ConditionFunction::GetCrimeGold |
                 ConditionFunction::CanPayCrimeGold |
                 ConditionFunction::GetPCFame |

@@ -2270,6 +2270,37 @@ fn fo3_fnv_package_and_stance_getters_are_bridged_to_the_vm() {
     assert!(evaluate_condition(&cond_params(244, 0, 0, 1.0), &world, &ctx(actor)), "SetRestrained 1");
 }
 
+/// #6545 — four more getters the VM answers (GetCurrentAIPackage 110, GetIsReference 136, IsOwner 278,
+/// GetHitLocation 391) are catalogued and read through the VM's own bodies. 391 is `IsPC1stPerson` from Skyrim
+/// on, so it is modeled on FO3 / FNV only; the other three keep their meaning in every game they exist in.
+/// `GetFriendHit` (288) and `GetFactionRelation` (450) are deliberately still unmodeled: every authored
+/// condition of them carries a zero target, and what the engine makes of that is not established.
+#[test]
+fn four_more_fnv_getters_are_bridged_and_two_are_left_declined() {
+    use byroredux_plugin::esm::reader::GameKind::{Fallout3NV, Skyrim};
+    let (mut world, actor) = getter_world();
+    // `GetIsReference` is evaluated through the fragment guard machinery, which reads the quest state.
+    world.insert_resource(crate::quest_stages::QuestStageState::default());
+    world.insert_resource(crate::quest_stages::QuestObjectiveState::default());
+    for index in [110, 136, 278, 391] {
+        assert!(is_modeled(&world, &cond(index, ComparisonOp::Eq, 1.0, false)), "{index} is modeled on FNV");
+    }
+    for index in [288, 450] {
+        assert!(!is_modeled(&world, &cond(index, ComparisonOp::Eq, 1.0, false)), "{index} stays declined");
+    }
+    // The combat model records no hit location: the VM's body answers -1.
+    assert!(evaluate_condition(&cond_params(391, 0, 0, -1.0), &world, &ctx(actor)));
+    // GetIsReference: the Run-On reference is `param_1` (the actor's own global FormID here).
+    let own = crate::condition::entity_global_form_id(&world, actor).expect("the actor has a global FormID");
+    assert!(evaluate_condition(&cond_params(136, own, 0, 1.0), &world, &ctx(actor)), "it is itself");
+    assert!(evaluate_condition(&cond_params(136, own + 1, 0, 0.0), &world, &ctx(actor)), "and not another");
+    // IsOwner: an object owned by no one is owned by nobody.
+    assert!(evaluate_condition(&cond_params(278, 0x7, 0, 0.0), &world, &ctx(actor)));
+    world.insert_resource(crate::ScriptGame(Skyrim));
+    assert!(!is_modeled(&world, &cond(391, ComparisonOp::Eq, 1.0, false)), "391 is IsPC1stPerson on Skyrim");
+    world.insert_resource(crate::ScriptGame(Fallout3NV));
+}
+
 /// #6251 — xEdit: 131 is `GetSceneActionPercent` from FO4 on, 431
 /// `GetActiveBoostDuration` on Starfield.
 #[test]

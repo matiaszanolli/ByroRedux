@@ -589,6 +589,8 @@ pub fn param1_is_form_id(function_index: u32) -> bool {
         | 161 // GetIsCurrentPackage — PACK FormID, every game (#6558)
         | 214 // HasMagicEffect — MGEF FormID, every game (#6558)
         | 409 // IsKiller — actor FormID, FO3/FNV; Skyrim/FO4's IsKillerObject — FLST FormID (#6558)
+        | 136 // GetIsReference — reference FormID, every game (#6545)
+        | 278 // IsOwner — faction / NPC FormID, every game (#6545)
     )
 }
 

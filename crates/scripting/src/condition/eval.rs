@@ -638,7 +638,11 @@ pub fn evaluate_function(
         | ConditionFunction::GetRestrained
         | ConditionFunction::IsSneaking
         | ConditionFunction::IsInInterior
-        | ConditionFunction::IsKiller => {
+        | ConditionFunction::IsKiller
+        | ConditionFunction::GetCurrentAIPackage
+        | ConditionFunction::GetIsReference
+        | ConditionFunction::IsOwner
+        | ConditionFunction::GetHitLocation => {
             vm_getter_value(function, condition, entity, world)
         }
         // #6251 — the state the ObScript getters of the same index read.

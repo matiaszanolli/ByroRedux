@@ -72,7 +72,10 @@ fn fnv_dialogue_declined_by_unmodeled_conditions() {
     // GetMapMarkerVisible 492), bridged to the VM's own bodies: 989 -> 650. #6558 bridged nine
     // more (GetIsCurrentPackage 161, IsInInterior 300, HasMagicEffect 214, GetSitting 159,
     // GetDetected 45, IsKiller 409, IsWeaponOut 101, GetRestrained 244, IsSneaking 286): 650 -> 641.
-    assert_eq!(declined_infos, 641, "declined FNV INFOs moved");
+    // #6545 bridged four more (GetCurrentAIPackage 110, GetIsReference 136, IsOwner 278,
+    // GetHitLocation 391): 641 -> 613. GetFriendHit 288 (9) and GetFactionRelation 450 (6) stay
+    // declined: all their authored conditions carry a zero target the bodies cannot read.
+    assert_eq!(declined_infos, 613, "declined FNV INFOs moved");
     // Four quests were declined whole by IsChild (GenericAdultCombat, GenericKids),
     // IsInList (Followers) and GetTalkedToPC (DialogueCrimeKarma) until #6460.
     assert_eq!(declined_quests, 0, "declined FNV quest dialogue gates moved");

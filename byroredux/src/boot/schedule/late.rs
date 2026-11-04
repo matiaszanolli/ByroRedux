@@ -877,8 +877,16 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
 /// `HasMagicEffect` (`ActiveMagicEffects`), `GetSitting` (`Seated`), `IsWeaponOut` (`WeaponDrawn`),
 /// `GetDetected` (the installed sight test: detection config, cell lighting, transforms, physics).
 /// `IsInInterior`, `IsKiller`, `GetRestrained` and `IsSneaking` read state the row already declares.
+///
+/// #6545 — and four more: `GetCurrentAIPackage` (the reported package's `PackageRegistry` row, and
+/// `AiCombatState` for the combat answer), `IsOwner` (`OwnerOverrides`, `ExplicitOwner`);
+/// `GetIsReference` and `GetHitLocation` read nothing the row lacks.
 fn bridged_script_getter_reads(access: Access) -> Access {
     access
+        .reads_resource::<byroredux_scripting::package::PackageRegistry>()
+        .reads::<byroredux_scripting::AiCombatState>()
+        .reads_resource::<byroredux_scripting::OwnerOverrides>()
+        .reads::<byroredux_scripting::ownership::ExplicitOwner>()
         .reads_resource::<byroredux_scripting::ActivePackages>()
         .reads::<byroredux_scripting::magic_effects::ActiveMagicEffects>()
         .reads::<byroredux_core::ecs::components::Seated>()
