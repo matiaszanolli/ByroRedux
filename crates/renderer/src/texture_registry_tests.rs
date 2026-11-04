@@ -1487,7 +1487,7 @@ fn promotion_flush_takes_in_order_within_the_byte_bound() {
 /// requests ordered drawn before TLAS-only, then larger deficit, then
 /// nearer; a streamed texture no instance wants is wanted at its floor.
 #[test]
-fn wanted_pass_orders_promotions_drawn_first() {
+fn promotion_queue_orders_drawn_first() {
     use residency::{WantedCase, WantedMip};
     let mut reg = make_registry_for_overflow_test(64, 0);
     for handle in 0..4 {
@@ -1625,4 +1625,18 @@ fn promotions_idle_ignores_queued_demotions() {
     assert!(reg.promotions_idle(), "a demotion is not a promotion");
     reg.promotion_requests.push((0, 0));
     assert!(!reg.promotions_idle());
+}
+
+/// M39 TXS-SRC-004 — a floor installed from a whole-file read (a
+/// single-chunk BA2 record, a BSA or loose file) is counted apart from one
+/// the archive layer served from its tail, and the telemetry carries both.
+#[test]
+fn whole_file_floor_installs_are_counted_apart_from_tail_reads() {
+    let mut reg = make_registry_for_overflow_test(64, 0);
+    reg.note_floor_install(false);
+    reg.note_floor_install(true);
+    reg.note_floor_install(true);
+    let mut t = byroredux_core::ecs::TextureResidencyTelemetry::default();
+    reg.fill_residency_telemetry(&mut t);
+    assert_eq!((t.floors_from_tail, t.floors_from_whole_file), (1, 2));
 }

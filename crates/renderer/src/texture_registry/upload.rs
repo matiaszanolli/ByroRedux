@@ -415,7 +415,7 @@ impl TextureRegistry {
                 let source = self.stream_sources.get(&handle)?;
                 Some(PromotionRequest {
                     handle,
-                    path: source.path.clone(),
+                    path: source.path.to_string(),
                     target,
                 })
             })
@@ -532,7 +532,7 @@ impl TextureRegistry {
                     source.header,
                     source.clamp_mode,
                     source.color_space,
-                    source.path,
+                    source.path.to_string(),
                 )
                 .is_some()
     }
@@ -556,7 +556,7 @@ impl TextureRegistry {
             dds_bytes,
             source.clamp_mode,
             source.color_space,
-            source.path,
+            source.path.to_string(),
         )
         .is_some()
     }
@@ -564,6 +564,16 @@ impl TextureRegistry {
     /// M39 — queued promotions and demotions, for telemetry.
     pub fn pending_promotion_count(&self) -> usize {
         self.pending_promotions.len()
+    }
+
+    /// M39 TXS-SRC-004 — count one floor install by what the archive layer
+    /// handed over: only the tail, or the whole file.
+    pub(crate) fn note_floor_install(&mut self, from_whole_file: bool) {
+        if from_whole_file {
+            self.stream_counters.floors_from_whole_file += 1;
+        } else {
+            self.stream_counters.floors_from_tail += 1;
+        }
     }
 
     /// M39 — record a residency change that just landed: the hysteresis
@@ -642,6 +652,8 @@ impl TextureRegistry {
             promotions: self.stream_counters.promotions,
             demotions: self.stream_counters.demotions,
             churn: self.stream_counters.churn,
+            floors_from_tail: self.stream_counters.floors_from_tail,
+            floors_from_whole_file: self.stream_counters.floors_from_whole_file,
             hysteresis_frames: residency::DEMOTE_AFTER_FRAMES,
             cell_loads_timed: self.cell_loads_timed,
             floor_ready_ms: self.last_floor_ready_ms,
@@ -650,6 +662,17 @@ impl TextureRegistry {
                 let mut per_handle = std::mem::take(&mut out.per_handle);
                 per_handle.clear();
                 per_handle
+            },
+            paths: {
+                let mut paths = std::mem::take(&mut out.paths);
+                paths.clear();
+                paths
+            },
+            frame: self.current_frame_id,
+            last_wanted_frames: {
+                let mut frames = std::mem::take(&mut out.last_wanted_frames);
+                frames.clear();
+                frames
             },
             ..Default::default()
         };
@@ -668,6 +691,8 @@ impl TextureRegistry {
                     t.reserved += 1;
                 }
                 t.per_handle.push(None);
+                t.paths.push(None);
+                t.last_wanted_frames.push(0);
                 continue;
             };
             let bytes = texture.allocation_bytes();
@@ -699,6 +724,11 @@ impl TextureRegistry {
                         wanted,
                         case,
                     ]));
+                    let source = self.stream_sources.get(&(slot as TextureHandle));
+                    t.paths
+                        .push(source.map(|source| std::sync::Arc::clone(&source.path)));
+                    t.last_wanted_frames
+                        .push(source.map_or(0, |source| source.last_wanted_frame));
                 }
                 None => {
                     let class = if texture.view_kind == TextureViewKind::Cube {
@@ -710,6 +740,8 @@ impl TextureRegistry {
                     };
                     add(class, bytes);
                     t.per_handle.push(None);
+                    t.paths.push(None);
+                    t.last_wanted_frames.push(0);
                 }
             }
         }
@@ -1206,7 +1238,8 @@ impl TextureRegistry {
         // M39 — every floor records its source; from then on the wanted-mip
         // pass (`apply_wanted`) decides its promotions, read back by the
         // host. No high-mip bytes are kept (decision Q2 (b)).
-        for (handle, _whole, source, header_len) in floor_sources {
+        for (handle, whole, source, header_len) in floor_sources {
+            self.note_floor_install(whole);
             let upload = &pending[source];
             let header = upload.dds_bytes[..header_len.min(upload.dds_bytes.len())].to_vec();
             let width = crate::vulkan::dds::parse_dds(&header)
@@ -1214,7 +1247,7 @@ impl TextureRegistry {
             self.stream_sources.insert(
                 handle,
                 StreamSource {
-                    path: upload.path.clone(),
+                    path: upload.path.as_str().into(),
                     clamp_mode: upload.clamp_mode,
                     color_space: upload.color_space,
                     header,

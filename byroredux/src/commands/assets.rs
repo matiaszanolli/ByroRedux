@@ -237,7 +237,7 @@ impl ConsoleCommand for TexResidencyCommand {
         "tex.residency"
     }
     fn description(&self) -> &str {
-        "Texture streaming residency: states, bytes, queued promotions (tex.residency [handle])"
+        "Texture streaming residency: states, bytes, queued promotions (tex.residency [handle|path])"
     }
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
         let Some(t) = world.try_resource::<byroredux_core::ecs::TextureResidencyTelemetry>() else {
@@ -246,10 +246,24 @@ impl ConsoleCommand for TexResidencyCommand {
         let mib = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
         let arg = args.trim();
         if !arg.is_empty() {
-            let Ok(handle) = arg.trim_start_matches('#').parse::<usize>() else {
-                return CommandOutput::error(format!(
-                    "tex.residency: expected a bindless handle number, got '{arg}'"
-                ));
+            // A bindless handle number, or an archive path (`textures\\a.dds`).
+            let handle = match arg.trim_start_matches('#').parse::<usize>() {
+                Ok(handle) => handle,
+                Err(_) => {
+                    let key = arg.to_ascii_lowercase().replace('/', "\\");
+                    match t
+                        .paths
+                        .iter()
+                        .position(|p| p.as_deref().is_some_and(|p| p == key))
+                    {
+                        Some(handle) => handle,
+                        None => {
+                            return CommandOutput::error(format!(
+                                "tex.residency: '{arg}' is not a bindless handle number or the path of a streamed texture"
+                            ))
+                        }
+                    }
+                }
             };
             return match t.per_handle.get(handle) {
                 Some(Some([first, floor, mips, wanted, case])) => {
@@ -266,8 +280,14 @@ impl ConsoleCommand for TexResidencyCommand {
                         (level, 1) => format!("level {level} (TLAS only)"),
                         (level, _) => format!("level {level} (neither drawn nor in the TLAS)"),
                     };
+                    let last_wanted = t.last_wanted_frames.get(handle).copied().unwrap_or(0);
                     CommandOutput::line(format!(
-                        "handle {handle}: {state}, resident levels [{first}, {mips}) of {mips}, floor from level {floor}, wanted {wanted}"
+                        "handle {handle}{}: {state}, resident levels [{first}, {mips}) of {mips}, floor from level {floor}, wanted {wanted}, last wanted {} frames ago",
+                        t.paths
+                            .get(handle)
+                            .and_then(|p| p.as_deref())
+                            .map_or(String::new(), |p| format!(" ({p})")),
+                        t.frame.saturating_sub(last_wanted),
                     ))
                 }
                 Some(None) => CommandOutput::line(format!(
@@ -291,6 +311,10 @@ impl ConsoleCommand for TexResidencyCommand {
             format!(
                 "landed: {} promotions, {} demotions, churn {} (hysteresis {} frames)",
                 t.promotions, t.demotions, t.churn, t.hysteresis_frames,
+            ),
+            format!(
+                "floor reads: {} tail-only, {} whole-file (single-chunk BA2 records, BSA, loose)",
+                t.floors_from_tail, t.floors_from_whole_file,
             ),
             format!(
                 "last cell load: textures ready in {:.2} ms ({} loads timed)",

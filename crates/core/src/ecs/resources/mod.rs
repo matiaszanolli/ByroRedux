@@ -675,6 +675,20 @@ pub struct TextureResidencyTelemetry {
     /// `u32::MAX` before the first wanted pass; `case` is 0 drawn, 1 TLAS
     /// only, 2 neither, `u32::MAX` unknown (TXS-WANT-002).
     pub per_handle: Vec<Option<[u32; 5]>>,
+    /// The archive key of each streamable handle, parallel to `per_handle`
+    /// (`None` where `per_handle` is `None`): lets `tex.residency <path>`
+    /// find a texture by name (TXS-TEL-001).
+    pub paths: Vec<Option<std::sync::Arc<str>>>,
+    /// The registry's frame id at this sample, and per handle the last frame
+    /// an instance wanted it finer than nothing (drawn or TLAS-only), parallel
+    /// to `per_handle` (`0` where `per_handle` is `None`).
+    pub frame: u64,
+    pub last_wanted_frames: Vec<u64>,
+    /// Streamed floors installed from a tail-only read, and from a
+    /// whole-file read: single-chunk BA2 records, BSA and loose files
+    /// (TXS-SRC-004).
+    pub floors_from_tail: u64,
+    pub floors_from_whole_file: u64,
 }
 
 impl Resource for TextureResidencyTelemetry {}

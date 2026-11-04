@@ -118,7 +118,8 @@ struct PendingDdsUpload {
 /// file's bytes before the payload), which is enough to queue a demotion.
 #[derive(Debug, Clone)]
 struct StreamSource {
-    path: String,
+    /// Shared so the per-frame telemetry sample carries it without copying.
+    path: std::sync::Arc<str>,
     clamp_mode: u8,
     color_space: TextureColorSpace,
     header: Vec<u8>,
@@ -151,6 +152,11 @@ pub(crate) struct StreamCounters {
     pub(crate) promotions: u64,
     pub(crate) demotions: u64,
     pub(crate) churn: u64,
+    /// Floor installs whose payload began at the floor (the archive layer
+    /// read only the tail) against those whose payload was the whole file
+    /// (TXS-SRC-004: single-chunk BA2 records, and every BSA or loose file).
+    pub(crate) floors_from_tail: u64,
+    pub(crate) floors_from_whole_file: u64,
 }
 
 /// M39 — what one `apply_wanted` pass found (`tex-stream:` and
