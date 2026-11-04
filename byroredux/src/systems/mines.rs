@@ -114,7 +114,7 @@ impl Component for SpentMine {
 
 /// The scan clock. `NOT_SAVED_BY_DESIGN`.
 #[derive(Debug, Default)]
-pub(crate) struct MineClock(f32);
+pub(crate) struct MineClock(crate::systems::PassClock);
 
 impl Resource for MineClock {}
 
@@ -130,16 +130,12 @@ pub(crate) fn blast_damage(damage: f32, inner: f32, outer: f32, distance: f32) -
     }
 }
 
+/// The placed actors and the player, living, with where they stand.
 fn live_actors(world: &World) -> Vec<(EntityId, Vec3)> {
-    let player = crate::systems::PlayerEntity::get(world);
-    let mut actors: Vec<EntityId> = world
-        .query::<crate::systems::faction_hostility::CombatDisposition>()
-        .map(|dispositions| dispositions.iter().map(|(entity, _)| entity).collect())
-        .unwrap_or_default();
-    actors.extend(player);
+    let mut actors = crate::systems::faction_hostility::living_actors(world);
+    actors.extend(crate::systems::PlayerEntity::get(world).filter(|player| world.get::<Dead>(*player).is_none()));
     actors
         .into_iter()
-        .filter(|actor| world.get::<Dead>(*actor).is_none())
         .filter_map(|actor| Some((actor, world.get::<GlobalTransform>(actor)?.translation)))
         .collect()
 }
@@ -211,18 +207,7 @@ pub(crate) fn mine_system(world: &World, dt: f32) {
         }
         detonate(world, &book, mine, state.victim);
     }
-    let due = match world.try_resource_mut::<MineClock>() {
-        Some(mut clock) => {
-            clock.0 += dt.max(0.0);
-            if clock.0 < SCAN_SECS {
-                false
-            } else {
-                clock.0 = 0.0;
-                true
-            }
-        }
-        None => false,
-    };
+    let due = world.try_resource_mut::<MineClock>().is_some_and(|mut clock| clock.0.due(dt, SCAN_SECS).is_some());
     if !due {
         return;
     }

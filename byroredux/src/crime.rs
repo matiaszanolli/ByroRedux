@@ -48,7 +48,7 @@
 //! an actor without [`CreatureActor`].
 
 use byroredux_core::character::{BountyScope, CrimeKind, CrimeModel};
-use byroredux_core::ecs::components::{CreatureActor, Dead, FactionRanks, GlobalTransform};
+use byroredux_core::ecs::components::{CreatureActor, FactionRanks, GlobalTransform};
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::{EntityId, World};
@@ -71,15 +71,10 @@ pub(crate) fn install_crime_model(world: &mut World, index: &EsmIndex) {
 /// witness only where the game's model says they do (Skyrim's animals do, Oblivion's NPCs only).
 fn witnesses(world: &World, player: EntityId) -> Vec<EntityId> {
     let creatures = world.try_resource::<CrimeModel>().is_some_and(|model| model.creatures_witness);
-    let observers: Vec<EntityId> = world
-        .query::<crate::systems::faction_hostility::CombatDisposition>()
-        .map(|q| q.iter().map(|(entity, _)| entity).collect())
-        .unwrap_or_default();
-    observers
+    crate::systems::faction_hostility::living_actors(world)
         .into_iter()
         .filter(|&observer| {
             observer != player
-                && world.get::<Dead>(observer).is_none()
                 && (creatures || world.get::<CreatureActor>(observer).is_none())
                 && crate::systems::faction_hostility::actor_detects(world, observer, player)
         })
@@ -160,16 +155,11 @@ fn raise_alarm(world: &World, model: CrimeModel, player: EntityId, kind: CrimeKi
         return;
     };
     let heard_from: Vec<_> = witnesses.iter().filter_map(|&w| position(w)).collect();
-    let others: Vec<EntityId> = world
-        .query::<crate::systems::faction_hostility::CombatDisposition>()
-        .map(|q| q.iter().map(|(entity, _)| entity).collect())
-        .unwrap_or_default();
-    let mut guards: Vec<(f32, EntityId)> = others
+    let mut guards: Vec<(f32, EntityId)> = crate::systems::faction_hostility::living_actors(world)
         .into_iter()
         .filter(|&actor| {
             actor != player
                 && byroredux_scripting::guards::is_guard(world, actor)
-                && world.get::<Dead>(actor).is_none()
                 && world.get::<CreatureActor>(actor).is_none()
                 && world.get::<byroredux_scripting::AiCombatState>(actor).is_none()
         })
@@ -469,6 +459,7 @@ mod bed_tests {
 #[cfg(test)]
 mod alarm_tests {
     use super::*;
+    use byroredux_core::ecs::components::Dead;
     use crate::systems::faction_hostility::{CombatDisposition, DetectionConfig};
     use crate::systems::forcegreet::ForceGreetDirective;
     use byroredux_core::character::Background;
@@ -741,21 +732,19 @@ const RUSH_RETRY_SECS: f32 = 30.0;
 /// uses — which the authored arrest greeting answers. Below it a guard waits to be spoken to.
 /// The higher figures the wiki quotes are conditions in that greeting, not code here.
 pub(crate) fn make_guard_rush_system() -> impl FnMut(&World, f32) + Send + Sync {
-    let mut elapsed = 0.0f32;
+    let mut clock = crate::systems::PassClock::default();
     // Seconds before each guard may rush again.
     let mut waiting: std::collections::HashMap<EntityId, f32> = std::collections::HashMap::new();
     move |world: &World, dt: f32| {
         if dt.is_finite() {
-            elapsed += dt.max(0.0);
             for wait in waiting.values_mut() {
                 *wait -= dt.max(0.0);
             }
             waiting.retain(|_, wait| *wait > 0.0);
         }
-        if elapsed < RUSH_PERIOD_SECS {
+        if clock.due(dt, RUSH_PERIOD_SECS).is_none() {
             return;
         }
-        elapsed = 0.0;
         rush_wanted_player(world, &mut waiting);
     }
 }
@@ -773,15 +762,10 @@ fn rush_wanted_player(world: &World, waiting: &mut std::collections::HashMap<Ent
     if talking || !crate::systems::player_can_act(world) {
         return;
     }
-    let actors: Vec<EntityId> = world
-        .query::<crate::systems::faction_hostility::CombatDisposition>()
-        .map(|q| q.iter().map(|(entity, _)| entity).collect())
-        .unwrap_or_default();
-    for guard in actors {
+    for guard in crate::systems::faction_hostility::living_actors(world) {
         if guard == player
             || waiting.contains_key(&guard)
             || !byroredux_scripting::guards::is_guard(world, guard)
-            || world.get::<Dead>(guard).is_some()
             || world.get::<CreatureActor>(guard).is_some()
             || world.get::<byroredux_scripting::AiCombatState>(guard).is_some()
             || !crate::systems::faction_hostility::actor_detects(world, guard, player)

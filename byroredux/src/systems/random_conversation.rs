@@ -226,8 +226,8 @@ pub(crate) fn pick_target(
 /// the timers are 30–60 s of ambient scheduling that a load re-arms.
 #[derive(Default)]
 pub(crate) struct RandomConversationState {
-    /// Seconds of the pass interval not yet consumed.
-    pending_secs: f32,
+    /// The pass clock (seconds of the pass interval not yet consumed).
+    clock: crate::systems::PassClock,
     /// Seconds until each actor next looks for a partner.
     timers: HashMap<EntityId, f32>,
     /// Pairs (ordered by entity) and the seconds left on their cooldown.
@@ -402,11 +402,9 @@ pub(crate) fn random_conversation_system(world: &World, dt: f32) {
     let Some(mut state) = world.try_resource_mut::<RandomConversationState>() else {
         return;
     };
-    state.pending_secs += dt;
-    if state.pending_secs < STEP_SECS {
+    let Some(step) = state.clock.due(dt, STEP_SECS) else {
         return;
-    }
-    let step = std::mem::take(&mut state.pending_secs);
+    };
     drop(state);
 
     // No new ambient conversation starts while a complex-scene marker is in a loaded cell.

@@ -16,7 +16,7 @@
 //! The pass runs every [`PASS_SECS`] and only when the Story Manager tree has a `DEAD` root, so a title
 //! without one (Oblivion, Fallout 3, New Vegas) pays nothing.
 
-use super::faction_hostility::{actor_sees_corpse, CombatDisposition};
+use super::faction_hostility::actor_sees_corpse;
 use byroredux_core::ecs::components::{Dead, GlobalTransform};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::storage::EntityId;
@@ -35,7 +35,7 @@ const PASS_SECS: f32 = 1.0;
 /// found before the save can be found once more (the node's reset window bounds how often that starts a quest).
 #[derive(Default)]
 pub(crate) struct DeadBodyState {
-    elapsed: f32,
+    clock: crate::systems::PassClock,
     discovered: HashSet<EntityId>,
 }
 
@@ -52,11 +52,9 @@ pub(crate) fn dead_body_discovery_system(world: &World, dt: f32) {
     let Some(mut state) = world.try_resource_mut::<DeadBodyState>() else {
         return;
     };
-    state.elapsed += dt.max(0.0);
-    if state.elapsed < PASS_SECS {
+    if state.clock.due(dt, PASS_SECS).is_none() {
         return;
     }
-    state.elapsed = 0.0;
     let bodies: Vec<EntityId> = world
         .query::<Dead>()
         .map(|dead| dead.iter().map(|(entity, _)| entity).collect())
@@ -68,13 +66,9 @@ pub(crate) fn dead_body_discovery_system(world: &World, dt: f32) {
         return;
     }
     let player = crate::systems::PlayerEntity::get(world);
-    let observers: Vec<EntityId> = world
-        .query::<CombatDisposition>()
-        .map(|actors| actors.iter().map(|(entity, _)| entity).collect())
-        .unwrap_or_default();
-    let observers: Vec<EntityId> = observers
+    let observers: Vec<EntityId> = crate::systems::faction_hostility::living_actors(world)
         .into_iter()
-        .filter(|actor| Some(*actor) != player && world.get::<Dead>(*actor).is_none())
+        .filter(|actor| Some(*actor) != player)
         .collect();
     if observers.is_empty() {
         return;
@@ -122,7 +116,7 @@ pub(crate) fn dead_body_discovery_system(world: &World, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::faction_hostility::DetectionConfig;
+    use crate::systems::faction_hostility::{CombatDisposition, DetectionConfig};
     use byroredux_core::math::Vec3;
     use byroredux_plugin::esm::records::{ActorAiData, Aggression, Confidence, SmNodeKind, SmNodeRecord};
     use std::collections::HashMap;

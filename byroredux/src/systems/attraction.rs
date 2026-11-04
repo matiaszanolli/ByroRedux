@@ -132,7 +132,7 @@ pub(crate) fn tracked(world: &World) -> (usize, usize) {
 /// Per-pair reaction timers and the scan clock. `NOT_SAVED_BY_DESIGN`: ambient reactions a load re-arms.
 #[derive(Debug, Default)]
 pub(crate) struct AttractionState {
-    elapsed: f32,
+    clock: crate::systems::PassClock,
     /// (actor, object, keyword) → seconds left before the next reaction.
     pairs: HashMap<(EntityId, EntityId, u32), f32>,
 }
@@ -161,11 +161,9 @@ pub(crate) fn attraction_system(world: &World, dt: f32) {
     let Some(mut state) = world.try_resource_mut::<AttractionState>() else {
         return;
     };
-    state.elapsed += dt.max(0.0);
-    if state.elapsed < SCAN_SECS {
+    let Some(step) = state.clock.due(dt, SCAN_SECS) else {
         return;
-    }
-    let step = std::mem::take(&mut state.elapsed);
+    };
     drop(state);
 
     let mut objects: Vec<(EntityId, Vec3, &Vec<u32>)> = Vec::new();

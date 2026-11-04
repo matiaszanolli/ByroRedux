@@ -94,6 +94,19 @@ impl Component for CombatDisposition {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Every living placed actor: the entities stamped with a [`CombatDisposition`] at spawn, less the
+/// [`Dead`]. The one roster the systems that ask "which actors are around" share (#6579): crime
+/// witnesses and responding guards, the guard rush, corpse discovery, the mine blast. The player is
+/// not stamped, so a caller that wants the player adds them. The `CombatDisposition` guard is released
+/// before the `Dead` reads.
+pub(crate) fn living_actors(world: &World) -> Vec<EntityId> {
+    let actors: Vec<EntityId> = world
+        .query::<CombatDisposition>()
+        .map(|q| q.iter().map(|(entity, _)| entity).collect())
+        .unwrap_or_default();
+    actors.into_iter().filter(|actor| world.get::<Dead>(*actor).is_none()).collect()
+}
+
 /// Detection range from the load order's GMSTs. Absent when the game does
 /// not author `fSneakMaxDistance`, which disables ambient hostility.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -309,7 +322,7 @@ struct ActorSnapshot {
 /// Closure-persistent scratch, so a steady evaluation stops allocating.
 #[derive(Default)]
 struct HostilityScratch {
-    elapsed: f32,
+    clock: crate::systems::PassClock,
     actors: Vec<ActorSnapshot>,
     faction_ids: Vec<u32>,
     factions: Vec<FormRef>,
@@ -389,14 +402,9 @@ fn ambush_gates(world: &World) -> std::collections::HashMap<EntityId, AmbushGate
 }
 
 fn faction_hostility_system_inner(world: &World, dt: f32, scratch: &mut HostilityScratch) {
-    if dt.is_finite() {
-        scratch.elapsed += dt.max(0.0);
-    }
-    if scratch.elapsed < EVALUATION_PERIOD_SECS {
+    let Some(period) = scratch.clock.due(dt, EVALUATION_PERIOD_SECS) else {
         return;
-    }
-    let period = scratch.elapsed;
-    scratch.elapsed = 0.0;
+    };
 
     let Some(config) = world.try_resource::<DetectionConfig>().map(|c| *c) else {
         return;
@@ -723,6 +731,24 @@ mod tests {
             responsibility: None,
             attack_radius: None,
         }
+    }
+
+    /// #6579 — the shared roster: every stamped actor that is not dead; an unstamped entity (the
+    /// player) is not in it.
+    #[test]
+    fn living_actors_are_the_stamped_actors_that_are_not_dead() {
+        let mut world = World::new();
+        world.register::<CombatDisposition>();
+        world.register::<Dead>();
+        let alive = world.spawn();
+        let corpse = world.spawn();
+        let unstamped = world.spawn();
+        for actor in [alive, corpse] {
+            world.insert(actor, CombatDisposition(disposition(Aggression::Unaggressive)));
+        }
+        world.insert(corpse, Dead);
+        world.insert(unstamped, Dead);
+        assert_eq!(living_actors(&world), vec![alive]);
     }
 
     #[test]
