@@ -123,7 +123,26 @@ sleep 1
 # 63c0aee3b/#5142: the debug server's `screenshot` accepts only a bare
 # filename and writes under the engine cwd's screenshots/ dir (the game
 # $DATA dir) — capture by bare name, then move the file into $OUT_DIR.
+# #6609 — the ObScript / Papyrus quest runtimes (M47) now open the vanilla start-up message boxes (Oblivion's
+# "You dream of long days…", FNV's "Happy Trails Expedition"), and a modal dims the HUD strip the pixel gates
+# measure. Answer whatever is waiting before each capture, as every other live gate that meets them does
+# (`ui.answer`, the `smoke_answer_message_boxes` pattern in lib/fixture.sh): it is a no-op when none is up.
+answer_message_boxes() {
+    local out attempt
+    for attempt in 1 2 3 4 5 6; do
+        out="$(dbg_session "ui.answer" 2>&1 || true)"
+        if grep -Fq 'no message box is waiting' <<<"$out"; then
+            return 0
+        fi
+        if grep -Fq 'ui.answer: answered' <<<"$out"; then
+            echo "answered a message box: $(grep -o "answered '[^']*'" <<<"$out" | head -1)"
+        fi
+        sleep 0.5
+    done
+    return 0
+}
 shoot() {
+    answer_message_boxes
     local name="$1" shot="$DATA/screenshots/$1" attempt
     rm -f "$shot"
     dbg_session "screenshot $name" \
@@ -223,7 +242,10 @@ def diff_count(x0, x1, y0, y1, eps):
     return n
 
 chrome = diff_count(455, 825, 55, 90, 60)
-control = diff_count(200, 570, 300, 335, 60)
+# #6609 — the control strip must be a patch of the world that does not move. It used to be (200..570, 300..335),
+# which in BleakFallsBarrow01 sits over the waterfall mist (steam rolls through it between any two captures:
+# 2k-4k changed px, run to run). The floor below the horizon at the same width is static.
+control = diff_count(300, 670, 500, 535, 60)
 assert chrome > 300, f"FAIL: compass chrome did not draw ({chrome} changed px)"
 assert control < chrome // 3, \
     f"FAIL: world too animated between captures ({control} vs {chrome} changed px)"

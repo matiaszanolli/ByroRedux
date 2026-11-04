@@ -107,7 +107,26 @@ CMDS
 # 63c0aee3b/#5142: the debug server's `screenshot` accepts only a bare
 # filename and writes under the engine cwd's screenshots/ dir (the game
 # $DATA dir) — capture by bare name, then move the file into $OUT_DIR.
+# #6609 — the ObScript / Papyrus quest runtimes (M47) now open the vanilla start-up message boxes (Oblivion's
+# "You dream of long days…", FNV's "Happy Trails Expedition"), and a modal dims the HUD strip the pixel gates
+# measure. Answer whatever is waiting before each capture, as every other live gate that meets them does
+# (`ui.answer`, the `smoke_answer_message_boxes` pattern in lib/fixture.sh): it is a no-op when none is up.
+answer_message_boxes() {
+    local out attempt
+    for attempt in 1 2 3 4 5 6; do
+        out="$(dbg_session "ui.answer" 2>&1 || true)"
+        if grep -Fq 'no message box is waiting' <<<"$out"; then
+            return 0
+        fi
+        if grep -Fq 'ui.answer: answered' <<<"$out"; then
+            echo "answered a message box: $(grep -o "answered '[^']*'" <<<"$out" | head -1)"
+        fi
+        sleep 0.5
+    done
+    return 0
+}
 pin_and_shoot() {
+    answer_message_boxes
     dbg_session "$1" || { echo "FAIL: byro-dbg session timed out twice"; exit 1; }
     sleep 1
     local shot="$DATA/screenshots/$2" attempt
