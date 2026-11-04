@@ -141,6 +141,8 @@ mod fragment_activation_order_tests {
                 "crate::systems::projectiles::projectile_flight_system",
                 "crate::combat::combat_input_system,",
                 "crate::systems::make_npc_combat_ai_system()",
+                // #6580 — a mine blast hits every actor in its radius (M43 placed mines)
+                "crate::systems::mines::mine_system",
             ] {
                 // #5875 — `pos` panics on a producer that is no longer
                 // registered, like a missing consumer: skipping it would leave
