@@ -20,16 +20,14 @@ commit. Live state only: when something closes, it becomes a one-liner under
 
 ## Status
 
-**Last session close:** Session 107, 2026-11-02. Workspace numbers (tests, LOC,
+**Last session close:** Session 108, 2026-11-04. Workspace numbers (tests, LOC,
 files, issue dirs) live in [Project Stats](#project-stats) only.
 
 **Gates.** `rust-toolchain.toml` pins rustc 1.96.0 (#5308), which is also the
-bin crate's MSRV since wasmtime 49. All 11 719 tests pass (2026-11-02). CI on `main`
-was red from 2026-10-24 until the Session 107 close fixed its three failing jobs:
-the blocking `cargo clippy --workspace -- -D warnings` form (#6582), the
-smoke-contract check (#6589) and the lock-order detector (`BYRO_LOCK_ORDER_CHECK=1`,
-which a bare `cargo test` does not run; cycles #6561 and #6618). All three pass
-locally at the close; check the first CI run after it before trusting them. The bench-of-record below (`d9a201c71`, 2026-10-22) was refreshed with a same-machine control and shows HEAD 1–9% slower than the outgoing record (R6a-regress-23). Its older open
+bin crate's MSRV since wasmtime 49. All 11 757 tests pass (2026-11-04). CI on `main`
+is green from `db4182e86`, the first run after Session 107 fixed clippy (#6582), the
+smoke contracts (#6589) and the lock-order detector (#6561, #6618;
+`BYRO_LOCK_ORDER_CHECK=1`, which a bare `cargo test` does not run). The bench-of-record below (`d9a201c71`, 2026-10-22) was refreshed with a same-machine control and shows HEAD 1–9% slower than the outgoing record (R6a-regress-23). Its older open
 regression, **R6a-regress-22**, was the bench camera moving with `b9e961eeb`'s
 interior spawn ladder, not renderer code (#5128, 2026-09-30); a small residual
 stays open — the top-of-frame all-slots fence wait that dominates GPU-bound
@@ -107,8 +105,9 @@ frames (#5365, the tracked throughput half of closed #4606/#5117).
 - Starfield CDB materials: `.mat` texture slots merge from the streaming CDB
   index (`224a19372`, `18fce7e43`); #3398 stays open until its definition of
   done is checked.
-- Texture streaming (M39). Reversed-Z is implemented but ships `Conventional`
-  until validated on hardware (#3308).
+- Texture streaming (M39) is off by default (`render.texture_streaming`) until its
+  budget/eviction and BSA phases land. Reversed-Z ships `Conventional` until
+  validated on hardware (#3308).
 - Oblivion's CHARAL ruleset is built but unwired: `Oblivion.esm` has no AVIF
   records, so a legacy actor-value resolver comes first
   ([`charal.md`](docs/engine/charal.md)).
@@ -119,7 +118,9 @@ frames (#5365, the tracked throughput half of closed #4606/#5117).
   blocks the slice.
 - M-LIGHT, reference-quality lighting (#6595): the first feature run under the
   [PRD gate](docs/prd/README.md), ACTIVE since 2026-11-02. Phases 0–2 are closed;
-  Phase 3 (shadows and contact, #6603) is open.
+  Phase 3 (shadows and contact, #6603) is open and its entry gates run.
+- Texture streaming (M39, #6626): Phases 0–1 closed 2026-11-03, Phase 2 (#6629) in
+  progress; detail in its [Tier 5 row](#tier-5--renderer-polish-quality-not-capability).
 - Fire, smoke and explosions (#6531, [plan](docs/engine/fire-volumetrics-plan.md)):
   Phases 1–3 (local grid, integration, species scattering) are built and await review.
 - RT lighting and material recovery: R0–R3 are complete. The rest is tracked
@@ -201,6 +202,9 @@ baseline (`688f42705`, RTX 4070 Ti, 1280×720, stepped orbit, tier histogram pas
 | MedTek Research 01 | 0 / 0 (0 / 0) | 27.73 / 16.36 |
 | FO4 Dugout Inn | 0 / 1 (0 / 0.01) | 15.51 / 12.40 |
 
+The baseline is 88 commits old at the Session 108 close (the Phase 2 exit's A13
+last checked cost against it); re-run `scripts/m-light-baselines.sh` before citing it.
+
 ### Compatibility matrix
 
 NIF rates come from
@@ -281,7 +285,7 @@ design doc.
 | #     | Milestone | State | Depends on |
 |-------|-----------|-------|------------|
 | M35   | Terrain LOD | **Shipped:** Skyrim/FO4 `.bto` objects and `.btr` terrain on a per-game `Ultra.ini` band ladder (`d96110eb`), with `_n`/`_msn` normal maps. Oblivion `_far.nif` placement LOD (#1726); FO3/FNV `blocks\` quad LOD (#3321). A derived far plane (`9e96a9f9`). The live `terrain.seams` gate in `m-exteriors.sh` (#2371). **Open:** VWD culling is blocked because baked `.bto` quads carry no per-object ids (#3307). `.btr` diffuse/normal sampling mode (#4912). Skyrim `.btt` distant trees are never drawn (#4913). The reversed-Z flip needs hardware validation (#3308). LAND value-plausibility guards ([`exterior-readiness-plan.md`](docs/engine/exterior-readiness-plan.md) Tranche C item 5). [PRD](docs/prd/distant-lod-completion.md) ACTIVE 2026-11-03, tracking #6633. | M32 |
-| M39   | Texture streaming | Mip-chain-aware loading: upload low mips immediately, stream high mips on demand. Memory budget with LRU eviction. [PRD](docs/prd/texture-streaming.md) ACTIVE 2026-11-03, tracking #6626. | — |
+| M39   | Texture streaming | Mip-chain-aware loading: upload low mips immediately, stream high mips on demand. Memory budget with LRU eviction. **Phases 0–1 closed (2026-11-03):** BA2 chunk and BSA mip census plus design ([`texture-streaming.md`](docs/engine/texture-streaming.md)), mip-range uploads, floor-first residency and `tex.residency`. **Phase 2 in progress (#6629):** BA2 DX10 reads from a mip level down, a streamer pool for promotions, a per-frame wanted-mip pass from per-mesh UV texel density with hysteresis demotion, and the `tex-stream:` bench line. **Open:** the texture budget and LRU eviction (Phase 3, #6630); the BSA games and streaming on by default (Phase 4, #6631). [PRD](docs/prd/texture-streaming.md) ACTIVE 2026-11-03, tracking #6626. | — |
 | M29.3 | Pre-skinned raster path | Make `triangle.vert` read pre-skinned vertices from the per-entity `SkinSlot` output instead of doing inline bone blending, and re-add the `VERTEX_BUFFER` usage dropped in #681. This saves ~50 ALU ops per skinned vertex, but makes raster depend on the compute pass. The recorded precondition is that the compute + BLAS-refit chain has proved stable on visible animated content. | `1ae235b`, #681 |
 
 #### Tier 6 — Engine infrastructure
@@ -555,11 +559,12 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
   is +0.5–1.2 ms on Cornell, Whiterun and MedTek, unattributed (742-commit
   window: ReSTIR `c2647d468` / `17e0b7464` / `6110b6078`, GI sampling `0b56f1133`,
   SVGF history `1092b5b9e` / `24eb7dba8`, cloud-shadow map `c231f5b5f`). Next:
-  bisect Cornell `gpu_main`. The record is 518 commits old at the Session 107
+  bisect Cornell `gpu_main`. The record is 588 commits old at the Session 108
   close (renderer paths since: shadow filter `0999490b9`, ReSTIR taint
   `bed162262`, water waves/shores `7dd294ee3`, geometry-pool caps and admission
   tiers `bb97be77c` / `22d6e1a80`, terrain softening `e71451d08`, the fire local
-  grid `d3e3acc7b`, M-LIGHT GI energy `6f43c9bd4` and ray offsets `49324fc95`);
+  grid `d3e3acc7b`, M-LIGHT GI energy `6f43c9bd4` and ray offsets `49324fc95`,
+  M39's mip-range upload path `073e3af53` / `494d077b2` with streaming off);
   none was re-benched, so re-run before citing it.
 - [ ] **Papyrus interpreter: what the frame budget does not bound** (#5764).
   #5763 gave the four exclusive `Update` systems a shared 10 000-statement
@@ -698,15 +703,15 @@ performance finding. The measured knob table is in
 
 ## Project Stats
 
-Ground-truth as of 2026-11-02, HEAD `7f2d98944`: all figures re-counted at the Session 107 close.
+Ground-truth as of 2026-11-04, HEAD `3dd5c032e`: all figures re-counted at the Session 108 close.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | 886 562                       |
-| Rust total lines (all `.rs`, excl. `target/`) | 944 131                  |
-| Source files (`.rs`, excl. `target/`)   | 1642 total · 1538 outside `tests/` dirs (+22 / +21 since the Session 106 close) |
+| Rust source lines (`src/` dirs)         | 891 289                       |
+| Rust total lines (all `.rs`, excl. `target/`) | 948 915                  |
+| Source files (`.rs`, excl. `target/`)   | 1646 total · 1542 outside `tests/` dirs (+4 / +4 since the Session 107 close) |
 | Workspace members                       | 35 (count the `[workspace] members` block only; 30 crates — `terrain-height` joined in Session 103 — + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
-| Tests                                   | **11 719 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-11-02; 382 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
+| Tests                                   | **11 757 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-11-04; 386 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
 | Open issue directories                  | 6561 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **562 069** across eight games (Skyrim SE re-measured 2026-09-29 at 33 468 over 8 archives, #3712 added Animations; FO76's tail closed by #3461 and the 2026-10-03 re-measure (#4628) swept 102 980 over 5 of its 20 mesh-bearing archives; Skyrim LE 22 466 gated since fb8173fe0; earlier widenings #3369/#3466, Oblivion DLC #3925, Starfield #4440). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 468 · Skyrim LE 22 466 · FO4 235 082 · FO76 102 980 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on all eight titles (Starfield re-measured 2026-09-24 #4440; FO76's `GeneratedMeshes` truncation tail closed by #3461 and re-measured 2026-10-03, #4628). |
@@ -731,7 +736,7 @@ Ground-truth as of 2026-11-02, HEAD `7f2d98944`: all figures re-counted at the S
 | FO3 ESM parse floors, #3756 (index sum ≥ 44 000, measured 44 718 — an index sum that double-counts by design, not a record count; the file holds 718 952 records; placed refs ≥ 573 000; exterior cells ≥ 41 900) | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored --exact parse_rate_fo3_esm`                                                                                       |
 | FNV ESM parse floors (index sum ≥ 76 000, measured 78 575; same index-sum caveat as the FO3 row) | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored --exact parse_rate_fnv_esm`                                                                                       |
 | Dialogue greeting + force-greet census floors, #5367 (FNV: GREETING/HELLO topics exist, ≥438 greeting DIALs [parser-measured 438], ≥330 Dialogue-procedure PACKs with ≥260 PKDD topics [332/263]) — the source of the dialogue counts in M43's row | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored dialogue_greeting` |
-| **M-LIGHT Lighting fidelity** — settled tiers and pinned-tier ms (Phase 1b, `688f42705`); A15/A16 reference gates | `scripts/m-light-baselines.sh` (per-scene CWD handled; `BYROREDUX_MITSUBA_PYTHON`); `scripts/m-light-gates.sh` |
+| **M-LIGHT Lighting fidelity** — settled tiers and pinned-tier ms (Phase 1b, `688f42705`); the L4 tier-3 deficit (A7, Phase 2 exit, `docs/audits/MLIGHT_phase2_exit_A7A8_a89ca367e.tsv`); A15/A16 reference gates | `scripts/m-light-baselines.sh` (per-scene CWD handled; `BYROREDUX_MITSUBA_PYTHON`); `scripts/m-light-gates.sh` (default `--gates A15,A16`; `--gates A7,A8` for the deficit) |
 | Story Manager census floors, #5366 (Skyrim: 571 nodes / 24 event mnemonics / 448 SMQNs / 1191 SM-referenced quests / 441-of-443 sibling integrity, exact; FO4: 311 / 17 count floors) — the source of every SM count claim in M43's row and the live smoke's target chain | `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored story_manager` |
 
 **Rule**: every "FPS / ms / count" claim in this document must have a

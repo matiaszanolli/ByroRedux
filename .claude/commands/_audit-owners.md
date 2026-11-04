@@ -222,6 +222,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/asset_provider/audio.rs` | audio | MEDIUM |
 | `byroredux/src/asset_provider/script.rs` | scripting, papyrus | MEDIUM |
 | `byroredux/src/asset_provider/texture_prefetch.rs` | performance Dim 7, concurrency Dim 7 | MEDIUM |
+| `byroredux/src/texture_streamer.rs` | renderer, performance Dim 7, concurrency Dim 7 | MEDIUM |
 | `byroredux/src/asset_provider/material/` | nifal Dim 8, parsers, renderer Dim 6, performance Dim 3; fo4, starfield | HIGH |
 | `byroredux/src/asset_provider/terrain_height.rs` | exterior Dim 2, parsers | MEDIUM |
 | `byroredux/src/asset_provider/` | parsers; per-game | MEDIUM |
