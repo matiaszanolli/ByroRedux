@@ -901,6 +901,53 @@ impl TextureRegistry {
         }
     }
 
+    /// Bring queued descriptor writes up to date before they replay: for each
+    /// `(handle, binding)` keep only the latest write, and point it at the
+    /// view and sampler the handle's entry holds now — the fallback of its
+    /// kind when the handle has been released. The pinned cube fallback
+    /// written to slot 0 of the cube binding resolves to itself. Nothing
+    /// returned names an image that is not live, however many frames the
+    /// deferred-destroy ring has advanced since the write was queued.
+    fn resolve_pending_set_writes(&self, drained: Vec<PendingSetWrite>) -> Vec<PendingSetWrite> {
+        let cube_binding = TextureViewKind::Cube.descriptor_binding();
+        let live = |handle: TextureHandle| {
+            self.textures
+                .get(handle as usize)
+                .and_then(|entry| entry.texture.as_ref())
+        };
+        let fallback = |binding: u32| {
+            if binding == cube_binding {
+                self.cube_fallback_handle.and_then(live)
+            } else {
+                live(self.fallback_handle)
+            }
+        };
+        let mut seen: HashSet<(TextureHandle, u32)> = HashSet::with_capacity(drained.len());
+        let mut resolved = Vec::with_capacity(drained.len());
+        for write in drained.into_iter().rev() {
+            if !seen.insert((write.handle, write.binding)) {
+                continue;
+            }
+            let texture = if write.handle == 0 && write.binding == cube_binding {
+                fallback(cube_binding)
+            } else {
+                live(write.handle)
+                    .filter(|texture| texture.view_kind.descriptor_binding() == write.binding)
+                    .or_else(|| fallback(write.binding))
+            };
+            if let Some(texture) = texture {
+                resolved.push(PendingSetWrite {
+                    handle: write.handle,
+                    binding: write.binding,
+                    image_view: texture.image_view,
+                    sampler: texture.sampler,
+                });
+            }
+        }
+        resolved.reverse();
+        resolved
+    }
+
     /// Apply every queued descriptor write for `slot` via a single
     /// `vkUpdateDescriptorSets` batch. Safe to call only when the
     /// caller has waited on `slot`'s fence.
@@ -911,6 +958,15 @@ impl TextureRegistry {
         // Snapshot the queue so we can drain without holding a borrow
         // on `self.pending_set_writes` while we read `self.bindless_sets`.
         let drained: Vec<PendingSetWrite> = std::mem::take(&mut self.pending_set_writes[slot]);
+        // A queued write carries the view that was current when it was
+        // queued. That view may have been replaced (a promotion, a demotion)
+        // and destroyed since: the deferred-destroy ring ages by frames
+        // begun, and this slot is only replayed on its own turn. Replay what
+        // each slot entry holds now instead, so no write names a freed view.
+        let drained = self.resolve_pending_set_writes(drained);
+        if drained.is_empty() {
+            return;
+        }
         let set = self.bindless_sets[slot];
         // `DescriptorImageInfo` must outlive the `WriteDescriptorSet`
         // referencing it, so we build parallel vectors and index in

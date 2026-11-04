@@ -1828,3 +1828,28 @@ fn budget_eviction_spares_a_texture_promoted_inside_the_hysteresis_window() {
     reg.apply_wanted(&HashMap::from([(0, drawn(0)), (1, drawn(0))]));
     assert_eq!(queued_targets(&reg), vec![(0, 1)]);
 }
+
+/// A queued descriptor write names the view that was current when it was
+/// queued; by the time its slot replays, a promotion or a release may have
+/// replaced and destroyed that view (the soak crash: `vkUpdateDescriptorSets`
+/// on an invalid `VkImageView` inside `begin_frame`). The replay is resolved
+/// against the live entries: a released handle with no live fallback drops
+/// the write instead of passing the stale view through, and only the latest
+/// write per handle and binding survives.
+#[test]
+fn replayed_descriptor_writes_never_name_a_view_the_entry_no_longer_holds() {
+    use ash::vk::Handle;
+    let mut reg = make_registry_for_overflow_test(64, 0);
+    reg.textures.push(streamable_entry(7, 2)); // handle 0, no live texture
+    let stale = |handle, raw| PendingSetWrite {
+        handle,
+        binding: 0,
+        image_view: vk::ImageView::from_raw(raw),
+        sampler: vk::Sampler::null(),
+    };
+    let resolved = reg.resolve_pending_set_writes(vec![stale(0, 0xdead), stale(0, 0xbeef), stale(5, 0xf00d)]);
+    assert!(
+        resolved.is_empty(),
+        "no entry holds a live image and there is no fallback: nothing may replay, got {resolved:?}"
+    );
+}
