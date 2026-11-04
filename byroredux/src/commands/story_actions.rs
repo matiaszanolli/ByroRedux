@@ -16,6 +16,12 @@
 use super::shared::*;
 use byroredux_core::ecs::components::{GlobalTransform, Locked};
 
+/// A console number that is a real one: `str::parse::<f32>` also accepts `NaN`, `inf` and `-inf`, which must
+/// never reach a live transform or a persisted placement (#6575).
+fn parse_finite(word: &str) -> Option<f32> {
+    word.parse::<f32>().ok().filter(|value| value.is_finite())
+}
+
 pub(crate) struct LockStatusCommand;
 
 impl ConsoleCommand for LockStatusCommand {
@@ -168,8 +174,15 @@ impl ConsoleCommand for PlaceAtCommand {
         let Some(base) = parts.next().and_then(parse_console_form_id) else {
             return CommandOutput::error("usage: place.at <base_hex> [dx dy dz]");
         };
-        let offset: Vec<f32> = parts.filter_map(|part| part.parse().ok()).collect();
-        let offset = [offset.first().copied().unwrap_or(0.0), offset.get(1).copied().unwrap_or(0.0), offset.get(2).copied().unwrap_or(0.0)];
+        // A missing axis is 0; a present one must be a finite number — a typo is refused, not skipped (which
+        // would shift every later axis onto the wrong one).
+        let mut offset = [0.0_f32; 3];
+        for (axis, word) in offset.iter_mut().zip(parts) {
+            let Some(value) = parse_finite(word) else {
+                return CommandOutput::error("usage: place.at <base_hex> [dx dy dz] (finite numbers)");
+            };
+            *axis = value;
+        }
         let Some(player) = crate::systems::PlayerEntity::get(world) else {
             return CommandOutput::error("place.at: no player");
         };
@@ -257,11 +270,11 @@ impl ConsoleCommand for EntityMoveCommand {
         let parts: Vec<&str> = args.split_whitespace().collect();
         let (Some(entity), Some(dx), Some(dy), Some(dz)) = (
             parts.first().and_then(|p| p.parse::<u32>().ok()),
-            parts.get(1).and_then(|p| p.parse::<f32>().ok()),
-            parts.get(2).and_then(|p| p.parse::<f32>().ok()),
-            parts.get(3).and_then(|p| p.parse::<f32>().ok()),
+            parts.get(1).and_then(|p| parse_finite(p)),
+            parts.get(2).and_then(|p| parse_finite(p)),
+            parts.get(3).and_then(|p| parse_finite(p)),
         ) else {
-            return CommandOutput::error("usage: entity.move <entity> <dx> <dy> <dz>");
+            return CommandOutput::error("usage: entity.move <entity> <dx> <dy> <dz> (finite numbers)");
         };
         let delta = byroredux_core::math::Vec3::new(dx, dy, dz);
         let mut moved = false;
@@ -281,6 +294,58 @@ impl ConsoleCommand for EntityMoveCommand {
             CommandOutput::line(format!("entity {entity} moved by ({dx}, {dy}, {dz})"))
         } else {
             CommandOutput::error(format!("entity {entity} has no position"))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_core::ecs::components::Transform;
+
+    fn mover() -> (World, u32) {
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        let entity = world.spawn();
+        world.insert(entity, Transform::from_translation(Vec3::new(1.0, 2.0, 3.0)));
+        world.insert(entity, GlobalTransform { translation: Vec3::new(1.0, 2.0, 3.0), ..GlobalTransform::IDENTITY });
+        (world, entity)
+    }
+
+    fn positions(world: &World, entity: u32) -> (Vec3, Vec3) {
+        (world.get::<Transform>(entity).unwrap().translation, world.get::<GlobalTransform>(entity).unwrap().translation)
+    }
+
+    /// #6575 — `NaN` / `inf` parse as `f32` but must not reach the live transforms.
+    #[test]
+    fn entity_move_refuses_a_non_finite_delta_and_leaves_the_transforms_alone() {
+        let (world, entity) = mover();
+        let before = positions(&world, entity);
+        for bad in ["NaN 0 0", "0 inf 0", "0 0 -inf", "0 0", "abc 0 0"] {
+            let out = EntityMoveCommand.execute(&world, &format!("{entity} {bad}"));
+            assert!(out.lines[0].starts_with("Error: usage"), "{bad}: {:?}", out.lines);
+            assert_eq!(positions(&world, entity), before, "{bad} must not move anything");
+        }
+        let out = EntityMoveCommand.execute(&world, &format!("{entity} 1 -2 0.5"));
+        assert!(out.lines[0].contains("moved"), "{:?}", out.lines);
+        let expected = Vec3::new(2.0, 0.0, 3.5);
+        assert_eq!(positions(&world, entity), (expected, expected));
+    }
+
+    /// #6575 — an unparsable or non-finite `place.at` offset is a usage error, not a silently shifted axis
+    /// (`place.at 1F abc 5` used to read `5` as `dx`). Arguments are checked before the world is touched, so
+    /// a world with no player answers a good line with a different error.
+    #[test]
+    fn place_at_refuses_unparsable_and_non_finite_offsets() {
+        let world = World::new();
+        for bad in ["1F NaN", "1F 1 inf 3", "1F abc 5", "1F 1 2 -inf"] {
+            let out = PlaceAtCommand.execute(&world, bad);
+            assert!(out.lines[0].starts_with("Error: usage"), "{bad}: {:?}", out.lines);
+        }
+        for good in ["1F", "1F 1", "1F 1 2 3", "1F -1.5 0 2e2"] {
+            let out = PlaceAtCommand.execute(&world, good);
+            assert_eq!(out.lines[0], "Error: place.at: no player", "{good}");
         }
     }
 }
