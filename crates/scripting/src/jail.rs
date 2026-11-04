@@ -368,7 +368,9 @@ pub fn send_player_to_jail(world: &World, faction: u32, guard: Option<EntityId>,
     else {
         return false;
     };
-    let model = world.try_resource::<CrimeModel>().map_or(CrimeModel::SKYRIM, |model| *model);
+    // No CHARAL crime model for this game means no sentence, never Skyrim's (`character/mod.rs`:
+    // `None` is "no CHARAL here", not "use the default"); declined before anything is taken, as the siblings do.
+    let Some(model) = world.try_resource::<CrimeModel>().map(|model| *model) else { return false };
     let (nonviolent, violent) = world.try_resource::<crate::FactionCrimeGold>().map_or((0, 0), |gold| gold.of(faction));
     let sentence_gold = nonviolent.saturating_add(violent).max(0);
     if let Some(mut gold) = world.try_resource_mut::<crate::FactionCrimeGold>() {
@@ -716,6 +718,20 @@ mod tests {
 
         let (world, _, guard) = skyrim_world();
         assert!(!send_player_to_jail(&world, 0xDEAD, Some(guard), true, true), "no crime data for the faction");
+    }
+
+    /// A game with no CHARAL crime model (everything but Skyrim) must not be sentenced by Skyrim's divisor:
+    /// the arrest is still raised, but nothing is taken, no sentence is set and the player stays put.
+    #[test]
+    fn a_game_without_a_crime_model_is_not_sent_to_a_skyrim_jail() {
+        let (mut world, player, guard) = skyrim_world();
+        world.remove_resource::<CrimeModel>();
+        assert!(!send_player_to_jail(&world, WHITERUN, Some(guard), true, true));
+        assert_eq!(world.resource::<PlayerMoveRequest>().0, None);
+        assert!(world.resource::<ObScriptLedger>().jail.is_none());
+        assert_eq!(held(&world, player, ARROW), 10, "nothing taken");
+        assert_eq!(world.resource::<crate::FactionCrimeGold>().of(WHITERUN), (0, 150), "the faction's gold is untouched");
+        assert!(raised(&world).iter().any(|e| e.mnemonic == *b"ARRT"));
     }
 
     /// Without a `PLCN` container the goods would vanish, so nothing is taken.
