@@ -119,7 +119,7 @@ accounting so the plan does not re-implement any of it.
 | **Settings model** | [`crates/core/src/settings/`](../../crates/core/src/settings/) | **Done, and built for this.** `SettingEntry { id, section, label, description, value, default, control, restart_required }`; `SettingControl` is `Toggle` / `Slider{min,max,step,unit}` / `Choice{options}`; `SettingsRegistry` validates on `register` and `set`. Its module doc already states it exists so that "native game menus later" need not depend on a menu implementation. |
 | **Settings persistence** | [`byroredux/src/settings_io.rs`](../../byroredux/src/settings_io.rs) | **Done.** Versioned TOML (`SETTINGS_VERSION = 1`), `(id, value)` pairs overlaid onto freshly-registered defaults, unknown/stale keys skipped individually. Path overridable via `BYROREDUX_SETTINGS_PATH`. Atomic write shared with the save container (#3472). |
 | **Settings applied pre-device** | [`byroredux/src/main.rs`](../../byroredux/src/main.rs) `install_universal_settings` | **Done, and load-bearing for §4.** The registry is loaded *before* `VulkanContext` is created, and the persisted `render.upscaler` choice already drives renderer config at that point specifically to avoid a first-frame upscaler rebuild. A launcher that writes the settings file therefore already steers device setup with zero engine changes. |
-| **Panel harness** | [`crates/debug-ui/src/panels.rs`](../../crates/debug-ui/src/panels.rs) | **Reusable pattern, not reusable code.** Snapshot-in (`PanelSnapshot`) / outputs-out (`PanelOutputs`) with a player-facing `GameMenuState`/`GameMenuPage` pause menu and a `draw_player_setting` renderer. The *shape* is what §4 adopts. |
+| **Panel harness** | [`crates/debug-ui/src/panels/`](../../crates/debug-ui/src/panels/) | **Reusable pattern, not reusable code.** Snapshot-in (`PanelSnapshot`) / outputs-out (`PanelOutputs`) with a player-facing `GameMenuState`/`GameMenuPage` pause menu and a `draw_player_setting` renderer. The *shape* is what §4 adopts. |
 | **Save slots on disk** | [`crates/save/src/disk.rs`](../../crates/save/src/disk.rs) | **Partly done.** `save_<slot>.ess`, atomic write + ring, `list_slots`, `slots_by_recency`. Root from `BYROREDUX_SAVE_DIR`, default `saves`. |
 | **Per-game compatibility data** | [`ROADMAP.md`](../../ROADMAP.md) compat matrix | **Done as prose.** Per-game archive format, NIF clean/recoverable parse rates, and which cells are known-good. Not machine-readable — see §5. |
 | **Mod runtime** | [`crates/mod-runtime/`](../../crates/mod-runtime/) | **Early.** `PrincipalId` / `Principal` / `CapabilityId` / `CapabilitySet` identity and capability plumbing. No load-order model. Deferred to P4. |
@@ -340,7 +340,7 @@ is worse than no validator**, so there must be exactly one implementation of
 > `SettingChange` out), never the **widgets**.
 
 This is already the architecture of
-[`panels.rs`](../../crates/debug-ui/src/panels.rs) — `PanelSnapshot` in,
+[`panels/`](../../crates/debug-ui/src/panels/) — `PanelSnapshot` in,
 `PanelOutputs` out — and it is already the stated purpose of
 `crates/core/src/settings/`. The launcher adopts it rather than inventing a
 parallel notion of "graphics options".

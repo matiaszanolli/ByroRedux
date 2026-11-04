@@ -10,11 +10,11 @@
 #           as the top-left objective line
 #
 # The gate is pixel-deterministic: it scans the captures for the exact
-# bar-fill and title colors `crates/debug-ui/src/panels.rs` paints, so a
+# bar-fill and title colors `crates/debug-ui/src/panels/hud.rs` paints, so a
 # washed-out or misplaced HUD fails rather than passes. The fixture carries
 # the route: cell + pose, the quest stage whose script displays an objective
 # (Skyrim: MS01's stage-15 fragment; FNV: VCG02's stage-5 result script), and
-# the game's vital pools with the colors panels.rs paints for them.
+# the game's vital pools with the colors panels/hud.rs paints for them.
 #
 #   docs/smoke-tests/p3-hud.sh            # Skyrim SE
 #   docs/smoke-tests/p3-hud.sh fnv        # Fallout New Vegas
@@ -182,7 +182,7 @@ grep -Fq "$P3_QUEST_OBJECTIVE_LINE" <<<"$quest" \
 capture_screenshot "hud-full.png" \
     || fail "full HUD capture was not written"
 
-# Pixel verification — the exact colors panels.rs paints. python3 + PIL are
+# Pixel verification — the exact colors panels/hud.rs paints. python3 + PIL are
 # also used by the shader-parity tooling; absence is a smoke-environment
 # failure, not a SKIP.
 python3 - "$LOG_DIR" "${P3_VITAL_COLORS[@]}" <<'EOF' || fail "HUD pixel verification did not pass"

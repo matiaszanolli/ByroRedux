@@ -97,7 +97,7 @@ state for.
 | **Surface** | What renders a menu: one of the four classes in §3. |
 | **Original movie** | A game's own `.swf` from its interface archive (or a mod's replacement), run in Ruffle under a host profile ([ui.md](../engine/ui.md#why-ruffle)). |
 | **Original document** | A game's own MenuXml `menus\*.xml`, run by `byroredux-menuxml`. |
-| **Native page** | An engine-drawn page of the player menu (`GameMenuPage` in `crates/debug-ui/src/panels.rs`: Pause, Settings, Inventory, Dialogue, MessageBox, Barter, Crafting) or the native HUD layer (`draw_hud`, same file). |
+| **Native page** | An engine-drawn page of the player menu (`GameMenuPage` in `crates/debug-ui/src/panels/game_menu.rs`: Pause, Settings, Inventory, Dialogue, MessageBox, Barter, Crafting) or the native HUD layer (`draw_hud`, same file). |
 | **Host method** | A call a movie makes into the engine: a Skyrim `GameDelegate` method or a Fallout 4 `BGSCodeObj` function, recognised through the profile's catalog ([ui.md](../engine/ui.md#scaleform-host-methods-and-remaining-_globalgfx-stubs)). |
 | **Behaviour class** | The engine's answer to one host method: one of H1–H4 (§3.2). |
 | **Path-addressed access** | Reading, writing or invoking an ActionScript member by its dot path from the host (`_root.HUDMovieBaseInstance…`), the operation Scaleform exposes to C++ as `GFx::Movie::GetVariable` / `SetVariable` / `Invoke` ([Autodesk: Game Communication Overview](https://help.autodesk.com/cloudhelp/ENU/Scaleform-Help/scaleform_help/game_communication.html); [Autodesk: ActionScript](https://help.autodesk.com/cloudhelp/ENU/Scaleform-Help/scaleform_help/game_communication/c_actionscript.html)). |
@@ -137,7 +137,7 @@ after which this table is generated from that inventory or removed.
 |---|---|---|
 | 1 | Shipped slices | Host bridge, Skyrim/SkyUI and Fallout 4 `BGSCodeObj` catalogs, generated AVM2 adapter, archive navigator, MenuXml HUDs for Oblivion / FO3 / FNV, `--hud` over vanilla Skyrim and Fallout 4 `hudmenu.swf`: the [ROADMAP M48 row](../../ROADMAP.md#tier-7--deep-gameplay-systems) is the inventory and owns the catalog sizes |
 | 2 | Open movies | One: `UiManager` holds `player: Option<SwfPlayer>` and one `menu_name` (`crates/ui/src/lib.rs:57-65`). Each `SwfPlayer` creates its own wgpu instance and device (`create_wgpu_instance` / `request_adapter_and_device`, `crates/ui/src/player.rs:83-88` and `:125-130`). There is no close: a movie is replaced (`install_player`, `lib.rs:151`) or hidden (`hud.off`), never unloaded; #2723 deleted the caller-less `UiManager::close` (`lib.rs:356-364`) |
-| 3 | Native pages | `GameMenuPage` = Pause, Settings, Inventory, Dialogue, MessageBox, Barter, Crafting, drawn with egui in `crates/debug-ui/src/panels.rs:468`; one page at a time (`GameMenuState.page`, `panels.rs:481-487`). The native HUD layer (crosshair, prompts, vitals, objectives) is `draw_hud` (`panels.rs:246`); its vitals draw whenever the `interface.show_vitals` setting (default on, `byroredux/src/app_frame.rs:301`) is set and the player has vitals (`panels.rs:264`), whether or not an original HUD is up |
+| 3 | Native pages | `GameMenuPage` = Pause, Settings, Inventory, Dialogue, MessageBox, Barter, Crafting, drawn with egui in `crates/debug-ui/src/panels/game_menu.rs:11`; one page at a time (`GameMenuState.page`, `game_menu.rs:24-30`). The native HUD layer (crosshair, prompts, vitals, objectives) is `draw_hud` (`panels/hud.rs:7`); its vitals draw whenever the `interface.show_vitals` setting (default on, `byroredux/src/app_frame.rs:301`) is set and the player has vitals (`hud.rs:25`), whether or not an original HUD is up |
 | 4 | Host calls | Drained once per frame and logged; an `Unknown` or `MissingResponse` call warns once per (menu, method); no call is routed into game state (`drain_host_calls` loop, `byroredux/src/app_frame.rs:1401-1483`) |
 | 5 | Host answers | The only production response handlers are the Scaleform HUD driver's (`updateStats`, `RequestPlayerInfo`, Skyrim-profile only; `set_response_handler` at `byroredux/src/scaleform_hud.rs:298` is the only production caller, and no static `set_response` value is registered anywhere). The bridge itself consumes the adapter's `__byroBGSCodeObjDestroyed` acknowledgement (`record_call`, `crates/ui/src/host.rs:443-449`); the other `__byro*` hooks are engine-to-movie callbacks, not answers |
 | 6 | Vanilla HUD meters and compass | Empty on Skyrim and Fallout 4: the movies make no stats call (`hudmenu_host_calls_are_pinned_and_cataloged`, `fallout4_hudmenu_lifecycle_and_calls_are_pinned` in `crates/ui/tests/`), and the HUD driver's push table (`updateStats`, `updateCompass` and their capitalised forms) finds no registered target in a vanilla movie (`ScaleformHudDriver::push` doc, `byroredux/src/scaleform_hud.rs:430-444`) |
@@ -336,7 +336,7 @@ methods:
   through the host method and once through the native page's control and
   asserts the same resulting ECS state. The native pages already follow
   this rule for settings ("one validation/application path",
-  `draw_game_menu` doc in `crates/debug-ui/src/panels.rs`).
+  `draw_game_menu` doc in `crates/debug-ui/src/panels/game_menu.rs`).
 - **GUI-HOST-003.** An H2 answer MUST name its reason in the catalog, and
   methods whose purpose is an online service MUST be H2 with the reason
   "anti-scope: hosted services" (GUI-NG-003). **Phase 0: verify** which
@@ -562,7 +562,7 @@ methods:
   reason; a per-page test asserts that no unlisted engine string is drawn.
 - **GUI-PAGE-006.** Player-facing native pages SHOULD live outside the
   operator overlay crate; today they are in `byroredux-debug-ui`
-  (`crates/debug-ui/src/panels.rs`) beside the F3 operator panels.
+  (`crates/debug-ui/src/panels/`) beside the F3 operator panels.
 
 ### 5.9 MenuXml menus beyond the HUD (`GUI-XML`)
 

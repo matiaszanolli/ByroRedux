@@ -87,7 +87,7 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    not debt), `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 382 (373 on 2026-10-27, 368 on 2026-10-24, 363 on 2026-10-21, 352 on 2026-10-20, 322 on 2026-10-15; tools-inclusive —
    earlier reports scoped to `crates`+`byroredux` read lower; none runs on a hosted runner),
    production >2000 LOC: **2** — `crates/renderer/src/shader_constants_data.rs` (3169, a data table, Dim 1) and
-   `crates/debug-ui/src/panels.rs` (2086, crossed from 1938 on the M43 dialogue-page / crafting / drop-and-cast panels, 041d57333..c2742a901; a real finding, no filed issue). The
+   *crates/debug-ui/src/panels.rs* (2086, crossed from 1938 on the M43 dialogue-page / crafting / drop-and-cast panels, 041d57333..c2742a901), since split by #6578 into `panels/{snapshots,hud,game_menu,studio}.rs` (largest child `studio.rs`, 881 prod LOC; `game_menu.rs` 749). The
    other 2026-10-25 entry, `crates/scripting/examples/mq101_conformance/`, was split by #6360 (01f48c929, largest child ~530). Three left the list through real splits since 2026-10-25:
    `crates/audio/src/` (#6140, b2e542eee — `lib.rs` is a ~200-LOC hub over `dsp`/`world`/`components`/`system`/`cache`, largest child ~610),
    `crates/nif/src/import/types/` (#6141, 5559074be — eight files, largest ~575) and `crates/scripting/src/obscript_effects/`

@@ -389,7 +389,7 @@ Batch these as convenient. Each is S effort with low risk.
   `FullOutput::drop_without_applying_deltas()` at `byroredux/src/app_frame.rs:847`,
   `crates/renderer/src/vulkan/context/mod.rs:1456` and
   `crates/renderer/src/vulkan/context/teardown.rs:273`. Keep `clear()` in the
-  `panels.rs:1782` test helper, which returns the output afterwards.
+  `end_pass` test helper (`crates/debug-ui/src/panels/mod.rs`), which returns the output afterwards.
 - **Undrained egui drops**: `crates/debug-ui/src/lib.rs:236`, `:258`, `:288` set
   `last_output = None` without draining texture deltas. That would trip egui 0.36's
   debug assert if it ever ran with a frame pending. It doesn't today, because

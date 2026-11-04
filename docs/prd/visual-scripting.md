@@ -214,7 +214,7 @@ that.
 | 10 | Extension calls | Action nodes owned by mods | `FragmentProviderCall { route, arguments, principal }` (`model.rs:301`) carrying SDK `ScriptValue`s (`crates/sdk/src/script_function.rs`) |
 | 11 | Data-only packages | Shipping a graph | `ExtensionManifest` has no content-artifact field and refuses a package with no component (`ManifestError::MissingComponent`, `crates/sdk/src/manifest.rs:304`) |
 | 12 | Portable form identity | Form references in a graph | `FormRef { source, local }`, load-order independent (`crates/sdk/src/identity.rs:238`) |
-| 13 | Authoring surface | The editor | None for graphs. The debug UI's Studio tab edits transforms and materials through `StudioCommand`s (`crates/debug-ui/src/panels.rs:1275`); M50 is PROPOSED ([World Editor PRD](world-editor.md)) |
+| 13 | Authoring surface | The editor | None for graphs. The debug UI's Studio tab edits transforms and materials through `StudioCommand`s (`crates/debug-ui/src/panels/studio.rs:70`); M50 is PROPOSED ([World Editor PRD](world-editor.md)) |
 | 14 | Graph file, loader, catalog | — | None: no graph or behavior-tree code exists in `crates/` or `byroredux/` |
 | 15 | Original procedure-tree structure | Precedent only | `PackRecord` decodes leaf procedures; "Structural Sequence/Simultaneous/Stacked branches remain implicit" (`crates/plugin/src/esm/records/misc/pack.rs:124`) |
 

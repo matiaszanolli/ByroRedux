@@ -287,7 +287,7 @@ The repository already contains useful but disconnected foundations.
   Cornell-room fitting, snapshots, picking, and typed commands.
 - [`byroredux/src/studio_host.rs`](../../byroredux/src/studio_host.rs) translates
   those commands to ECS reads and writes through a private object/entity map.
-- [`crates/debug-ui/src/panels.rs`](../../crates/debug-ui/src/panels.rs) consumes
+- [`crates/debug-ui/src/panels/`](../../crates/debug-ui/src/panels/) consumes
   snapshots and emits commands without mutating the world directly.
 
 Studio public identities are now document-local `ObjectId` values. Commands

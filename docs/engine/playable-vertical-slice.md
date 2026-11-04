@@ -1242,7 +1242,7 @@ overlay's early-return cheap when they have nothing to draw.
 Character-mode player at the Bannered Mare (its `ActorValues` proven live by a
 `modav` health bump), MS01 advanced to stage 15 through the canonical
 `quest.setstage` fragment path, and both captures pixel-verified against the
-exact colors `panels.rs` paints: bars present in both, the objective title
+exact colors `panels/hud.rs` paints: bars present in both, the objective title
 appearing only after the fragment displayed objective 10. Two real defects
 the first captures exposed and closed: the bench-window HUD suppression keyed
 on `bench_frames_target` (which stays set through `--bench-hold`, so the bars

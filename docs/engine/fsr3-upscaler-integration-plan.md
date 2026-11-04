@@ -35,7 +35,7 @@ still recorded inside the main render pass rather than split out of it (4.1).
 Item 4.5 (Scaleform/Ruffle overlay + reticle composited after upscale) is
 **done** (#3426, 2026-08-29): the overlay moved into
 `PresentationPipeline::dispatch` and the reticle (the only crosshair in the
-tree, `debug-ui/src/panels.rs::show_crosshair`) was already drawn by the egui
+tree, `PanelSnapshot::show_crosshair`, drawn by `debug-ui/src/panels/hud.rs`) was already drawn by the egui
 pass after presentation.
 
 Phase 5 landed the dispatch itself: engine images wrapped as FFX Vulkan

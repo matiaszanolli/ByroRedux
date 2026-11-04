@@ -766,7 +766,7 @@ Each needs the project owner. The recommendation is the first option.
    Recommended: the engine-native `MessageBox` page (`GameMenuPage`, surface
    S3 in the [Game UI Integration PRD](game-ui-integration.md)), which exists
    at HEAD and shows a title, text and authored buttons (`MessageBoxView`,
-   `crates/debug-ui/src/panels.rs`): activating a reference with at least one
+   `crates/debug-ui/src/panels/`): activating a reference with at least one
    passing choice opens it with the default action and one button per `EPF2`
    label, until M48's menus replace it; consequence: one surface for every
    game, drivable headless, at the price of an extra page where Skyrim and FO4

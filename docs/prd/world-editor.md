@@ -547,7 +547,7 @@ keep-list wording is a ROADMAP edit, not a decision of this PRD.
 
 The needs below are the original editors' main windows, answered in the
 engine's debug UI, where the Studio panel already consumes snapshots and
-emits commands (`crates/debug-ui/src/panels.rs`).
+emits commands (`crates/debug-ui/src/panels/`).
 
 - **WED-UI-001 — Cell list.** The editor MUST list the profile's interior
   cells and, per worldspace, its exterior cells with their grid
@@ -651,7 +651,7 @@ spellings below are placeholders until Q3 and the Phase 0 design fix them.
 | A6 | Terrain edit | new script `docs/smoke-tests/wed3-terrain-edit.sh fnv` (and `skyrim_se`) | `FalloutNV.esm` + archives, WastelandNV; `Skyrim.esm` + archives, Tamriel; the `m-exteriors.sh` profiles | A height stroke across a shared cell edge changes `terrain.height` under the camera; `terrain.seams` reports zero disagreeing vertices; the save report lists the cell as "LOD stale"; after relaunch both are unchanged (WED-TER-001, -002, WED-DX-001) |
 | A7 | Live-apply latency | A3 with a frame counter | as A3 | Each edit kind's live apply lands on the next presented frame (WED-G-002) |
 | A8 | Hot reload | new script `docs/smoke-tests/wed4-hot-reload.sh fnv` | as A3 | A second engine, launched with the output plugin, reloads the cell on request after the editor saves a new move, and `inspect` there shows it without a restart (WED-NET-005) |
-| A9 | Editor surface | new `cargo test -p byroredux-debug-ui world_editor_panel`, headless `egui::Context` passes as the panel tests in `crates/debug-ui/src/panels.rs` already run | none (synthetic snapshot) | Scripted input on the cell list, reference list, manipulator, snapping toggles and base-object browser emits exactly the expected commands and mutates nothing else (WED-UI-001…008) |
+| A9 | Editor surface | new `cargo test -p byroredux-debug-ui world_editor_panel`, headless `egui::Context` passes as the panel tests in `crates/debug-ui/src/panels/` already run | none (synthetic snapshot) | Scripted input on the cell list, reference list, manipulator, snapping toggles and base-object browser emits exactly the expected commands and mutates nothing else (WED-UI-001…008) |
 
 ---
 

@@ -152,7 +152,7 @@ tests that pin each row.
 | 1 | Activation conversation | the moment a line can be generated | `open_conversation` and `apply_selection` in `byroredux/src/systems/npc_dialogue.rs`: blocking branch, top-level menu, generic-greeting fallback (`generic_greeting_record`) |
 | 2 | Condition-gated INFO choice | the authored lane | `select_first_info` (public) over the private `select_info` in `crates/scripting/src/dialogue.rs`, on the M47.1 `evaluate` (`crates/scripting/src/condition/eval.rs`) |
 | 3 | INFO fragments | the authority the generated lane must not touch | `apply_selection` runs the outgoing line's OnEnd and the new line's OnBegin (`speak_info_begin_fragment`) |
-| 4 | Native dialogue page | today's dialogue surface | `draw_dialogue_page` in `crates/debug-ui/src/panels.rs`; player input is `DialogueUiAction::SelectTopic` (its only variant) and the "Close (Esc)" button; no text input |
+| 4 | Native dialogue page | today's dialogue surface | `draw_dialogue_page` in `crates/debug-ui/src/panels/game_menu.rs`; player input is `DialogueUiAction::SelectTopic` (its only variant) and the "Close (Esc)" button; no text input |
 | 5 | Voice and speaking cue | voicing or not voicing generated text | `play_line_voice` in `byroredux/src/systems/dialogue_voice.rs`; `DialogueSurfaceState::line_voiced` (`crates/scripting/src/dialogue.rs`) drives "(speaking, no voice)" |
 | 6 | Saved dialogue state | what generated text must stay out of | `DialogueSpokenInfoForms` (`crates/scripting/src/dialogue.rs`), registered in `byroredux/src/save_io/registry.rs` |
 | 7 | Sandbox with no OS access | "no network calls" | No WASI linked (`crates/mod-runtime/src/lib.rs` module doc); the `extension` world in `crates/mod-runtime/wit/host.wit` has no network, filesystem, dialogue, quest or task interface |
@@ -590,7 +590,7 @@ scenarios use the stub backend.
 
 | # | Scenario | Driver | Data | Pass rule |
 |---|---|---|---|---|
-| 1 | No extension, nothing changes | existing `dialogue_page_marks_speaking_replies_and_said_topics` (`crates/debug-ui/src/panels.rs`), existing `docs/smoke-tests/dt1-dialogue-layers.sh` | FNV install for the smoke | Both pass unchanged (LLMD-G-001) |
+| 1 | No extension, nothing changes | existing `dialogue_page_marks_speaking_replies_and_said_topics` (`crates/debug-ui/src/panels/game_menu.rs`), existing `docs/smoke-tests/dt1-dialogue-layers.sh` | FNV install for the smoke | Both pass unchanged (LLMD-G-001) |
 | 2 | Ungranted and ineligible are refused | `cargo test -p byroredux --bin byroredux extensions::tests::dialogue_generation_refuses_ungranted_and_ineligible` | stub backend | `not-granted` and `not-eligible`; zero backend calls (LLMD-OPT-001, -004) |
 | 3 | Authority stays authored | `extensions::tests::generated_exchange_runs_no_fragment_and_keeps_quest_state` | stub backend, fixture DIAL/INFO with OnBegin/OnEnd fragments | No fragment dispatched; `QuestStageState` and `DialogueSpokenInfoForms` equal before and after (LLMD-SAFE-001 to -003) |
 | 4 | The WIT world exposes no mutation | `byroredux-mod-runtime` test `dialogue_interfaces_expose_no_world_mutation` | none | The new interfaces' functions match a checked-in allow-list (LLMD-HOST-006) |
