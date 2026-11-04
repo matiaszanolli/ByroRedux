@@ -102,6 +102,14 @@ orgnar="$(find_entity Orgnar)"
 [[ -n "$delphine" && -n "$orgnar" ]] || fail "Delphine / Orgnar not found"
 [[ "$(cond_value "$delphine" IsEssential)" == 1 ]] || fail "Delphine is not essential"
 [[ "$(cond_value "$orgnar" IsEssential)" == 0 ]] || fail "Orgnar reads essential"
+# #6611 — the recovery target is `fEssentialHealthPercentReGain` of the actor's UNDAMAGED health, and that health
+# is composed from the load order (base + class / level terms, #5914/#5915): 190 for Delphine at the time of the
+# report, not the 100 the gate once assumed (a literal 30). Read it from the running engine before the fight, when
+# nothing has damaged her yet, and derive the expectation from it.
+REGAIN="${BYROREDUX_BLEEDOUT_REGAIN:-0.3}"   # vanilla Skyrim.esm fEssentialHealthPercentReGain
+undamaged="$(cond_value "$delphine" GetActorValue 0x3E8)"
+[[ -n "$undamaged" ]] || fail "could not read Delphine's undamaged health"
+expected="$(awk -v u="$undamaged" -v r="$REGAIN" 'BEGIN { printf "%.3f", u * r }')"
 
 swing_until "$delphine" "killed=false.*bleedout"
 [[ "$(cond_value "$delphine" IsBleedingOut)" == 1 ]] || fail "Delphine is not bleeding out"
@@ -111,8 +119,9 @@ echo "smoke[m47-2-bleedout]: Delphine is down in bleedout"
 sleep 21
 [[ "$(cond_value "$delphine" IsBleedingOut)" == 0 ]] || fail "Delphine did not get back up"
 health="$(cond_value "$delphine" GetActorValue 0x3E8)"
-[[ "$health" == 30 ]] || fail "Delphine recovered at $health health, not 30"
-echo "smoke[m47-2-bleedout]: Delphine got back up at $health health"
+awk -v h="$health" -v e="$expected" 'BEGIN { d = h - e; exit !(d > -0.01 && d < 0.01) }' \
+    || fail "Delphine recovered at $health health, not $expected ($REGAIN of her undamaged $undamaged)"
+echo "smoke[m47-2-bleedout]: Delphine got back up at $health health ($REGAIN of $undamaged)"
 
 swing_until "$orgnar" "killed=true"
 [[ "$(cond_value "$orgnar" GetDead)" == 1 ]] || fail "Orgnar is not dead"
