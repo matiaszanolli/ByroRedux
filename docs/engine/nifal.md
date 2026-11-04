@@ -1006,11 +1006,13 @@ The material slice was executed this session as the template. Mechanics:
   (`scene/nif_loader.rs`, `cell_loader/spawn/mesh_instance.rs`). The other two
   production callers, `cell_loader/placement_lod.rs` and
   `cell_loader/object_lod.rs` (a caller since #4245), are exempt because they
-  attach no `MaterialTextureHandles` — all three resolvers read their inputs
-  out of that component and early-return without it, so calling them there would
-  be a no-op rather than a correctness gap (#3465; the text used to say
-  "both spawn sites", which stopped identifying the set once the third caller
-  landed).
+  attach no `MaterialTextureHandles` and run no BGSM merge. The first two
+  resolvers early-return without the component; the third does not (an absent
+  component defaults its gloss-map handle to `0`, which *satisfies* its
+  predicate) and is inert there only because its `bgsm_pbr_scalars_authored`
+  gate is false without a BGSM merge — so a handle-less site that merges a BGSM
+  must not call it (#3465, #4246; the text used to say "both spawn sites",
+  which stopped identifying the set once the third caller landed).
 
   The texture-only boundary (`translate_texture_only_material*`, used by the
   exterior terrain / water spawners) has one Phase-2 caller of its own:

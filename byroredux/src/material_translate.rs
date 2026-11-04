@@ -47,11 +47,16 @@
 //!
 //! #3465 — this used to say "both spawn sites", which stopped identifying the
 //! set when a third production caller landed. `cell_loader/placement_lod.rs`
-//! is that third one and is exempt: it attaches no `MaterialTextureHandles`,
-//! and all three resolvers read their inputs out of that component and
-//! early-return without it, so calling them there would be a no-op rather than
-//! a correctness gap. If placement LOD ever gains texture handles, it gains the
-//! resolvers with them.
+//! is that third one and is exempt: it attaches no `MaterialTextureHandles`
+//! and runs no BGSM merge. That is **not** "every resolver early-returns
+//! without the component" (#4246): the first two do, but
+//! [`resolve_unresolved_gloss_neutral_roughness`] defaults an absent
+//! component's gloss-map handle to `0` — exactly the value that satisfies its
+//! "no gloss map resolved" predicate — so it is inert there only because its
+//! `bgsm_pbr_scalars_authored` gate is false without a BGSM merge. Wiring it at
+//! a handle-less site that *does* merge a BGSM would silently neutralize
+//! near-mirror roughness. If placement LOD ever gains texture handles or a BGSM
+//! merge, it gains the resolvers with them.
 //!
 //! The texture-only boundary ([`translate_texture_only_material`]) has one
 //! Phase-2 caller too: `cell_loader/terrain_lod_btr.rs` calls
