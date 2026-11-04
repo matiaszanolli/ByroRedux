@@ -440,6 +440,10 @@ pub(crate) fn random_conversation_system(world: &World, dt: f32) {
     });
     let mut raised = Vec::new();
     let mut hellos = Vec::new();
+    // Actors a conversation of this pass has already taken: `participants` was filtered for holds once, at the
+    // start, so without this an actor that is one pair's target and also due itself would be booked twice and
+    // the second hold would overwrite the first (#6542).
+    let mut claimed: std::collections::HashSet<EntityId> = std::collections::HashSet::new();
     for initiator in due {
         let Some(me) = participants.iter().find(|p| p.entity == initiator) else {
             continue;
@@ -455,6 +459,9 @@ pub(crate) fn random_conversation_system(world: &World, dt: f32) {
         if hello && state.hello_targets.get(&initiator) == Some(&target) {
             continue;
         }
+        if !hello && (claimed.contains(&initiator) || claimed.contains(&target)) {
+            continue;
+        }
         if unit().map_or(0.0, |unit| unit * 100.0) >= settings.chance(interior) {
             continue;
         }
@@ -463,6 +470,8 @@ pub(crate) fn random_conversation_system(world: &World, dt: f32) {
             state.hello_targets.insert(initiator, target);
             hellos.push((initiator, target));
         } else {
+            claimed.insert(initiator);
+            claimed.insert(target);
             raised.push((initiator, target));
         }
     }
@@ -491,10 +500,45 @@ fn begin_conversation(world: &World, initiator: EntityId, target: EntityId) {
 
 /// End a hold on both actors; the ambient package system re-selects their packages on its next tick
 /// (suspension left their evaluation clock reset).
+///
+/// Only a hold that names the other actor as its partner is removed: an actor whose hold was taken over by a
+/// different pair keeps it, and the pair that lost its half is cleaned up by [`sweep_orphaned_partners`] (#6542).
 fn release_pair(world: &World, a: EntityId, b: EntityId) {
     if let Some(mut holds) = world.query_mut::<ConversationHold>() {
-        holds.remove(a);
-        holds.remove(b);
+        for (actor, partner) in [(a, b), (b, a)] {
+            if holds.get(actor).is_some_and(|hold| hold.partner == partner) {
+                holds.remove(actor);
+            }
+        }
+    }
+}
+
+/// Release every partner-side hold whose initiator no longer holds it back: the initiator was despawned (its hold
+/// went with it — a stream boundary unloads the initiator's cell while the partner stays resident) or took
+/// another partner. The initiator's own hold is the only one `conversation_hold_inner` drives, so without this
+/// the partner stood frozen with its package cleared for the rest of the session (#6542).
+fn sweep_orphaned_partners(world: &World) {
+    let orphans: Vec<EntityId> = {
+        let Some(holds) = world.query::<ConversationHold>() else { return };
+        holds
+            .iter()
+            .filter(|(actor, hold)| {
+                !hold.initiator
+                    && !holds
+                        .get(hold.partner)
+                        .is_some_and(|theirs| theirs.initiator && theirs.partner == *actor)
+            })
+            .map(|(actor, _)| actor)
+            .collect()
+    };
+    if orphans.is_empty() {
+        return;
+    }
+    if let Some(mut holds) = world.query_mut::<ConversationHold>() {
+        for actor in orphans {
+            log::debug!("random conversation: {actor:?} released, its initiator no longer holds it");
+            holds.remove(actor);
+        }
     }
 }
 
@@ -544,6 +588,7 @@ pub(crate) fn make_conversation_hold_system(walk_enabled: bool) -> impl FnMut(&W
 }
 
 fn conversation_hold_inner(world: &World, dt: f32, walk_enabled: bool, stuck_secs: &mut HashMap<EntityId, f32>) {
+    sweep_orphaned_partners(world);
     let initiators: Vec<(EntityId, ConversationHold)> = world
         .query::<ConversationHold>()
         .map(|query| query.iter().filter(|(_, hold)| hold.initiator).map(|(actor, hold)| (actor, *hold)).collect())
@@ -566,7 +611,11 @@ fn conversation_hold_inner(world: &World, dt: f32, walk_enabled: bool, stuck_sec
                 world.get::<GlobalTransform>(actor).is_some()
                     && crate::systems::npc_dialogue::npc_refuses_dialogue(world, actor).is_none()
             };
-            if !usable(initiator) || !usable(partner) || !world.has::<ConversationHold>(partner) {
+            // The partner must still be held *by this initiator*: a hold taken over by another pair ends this one.
+            let held_by_us = world
+                .get::<ConversationHold>(partner)
+                .is_some_and(|theirs| !theirs.initiator && theirs.partner == initiator);
+            if !usable(initiator) || !usable(partner) || !held_by_us {
                 return HoldStep::Release;
             }
             match hold.phase {
@@ -1073,6 +1122,101 @@ mod tests {
         // No scene starts: after fAISocialTimerToWaitForEvent (0.5 s) both are released.
         conversation_hold_system(&world, 1.0);
         assert!(world.get::<ConversationHold>(a).is_none() && world.get::<ConversationHold>(b).is_none());
+    }
+
+    fn pair_world() -> (World, [EntityId; 3]) {
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.register::<GlobalTransform>();
+        world.register::<Transform>();
+        world.register::<ConversationHold>();
+        let mut spawn = |x: f32| {
+            let actor = world.spawn();
+            world.insert(actor, GlobalTransform { translation: Vec3::new(x, 0.0, 0.0), ..Default::default() });
+            world.insert(actor, Transform { translation: Vec3::new(x, 0.0, 0.0), ..Default::default() });
+            actor
+        };
+        let actors = [spawn(0.0), spawn(100.0), spawn(200.0)];
+        (world, actors)
+    }
+
+    fn held(world: &World, actor: EntityId) -> Option<ConversationHold> {
+        world.get::<ConversationHold>(actor).map(|hold| *hold)
+    }
+
+    /// #6542 — a streamed-out initiator takes its hold with it; the partner, whose hold nothing else drives,
+    /// used to stand frozen with its package cleared for the session. The next hold pass frees it.
+    #[test]
+    fn a_partner_whose_initiator_was_despawned_is_released() {
+        let (mut world, [a, b, _]) = pair_world();
+        begin_conversation(&world, a, b);
+        world.despawn(a);
+        assert!(held(&world, b).is_some(), "the orphan exists before the pass");
+        conversation_hold_system(&world, 0.1);
+        assert!(held(&world, b).is_none(), "the partner is freed");
+    }
+
+    /// #6542 — an actor booked as a target and then as an initiator (two pairs overlapping): the first
+    /// initiator's release must not strip the hold the second pair now owns, and a partner left without an
+    /// initiator is freed.
+    #[test]
+    fn a_double_booked_actor_keeps_its_new_pair_and_the_old_partner_is_freed() {
+        let (world, [a, b, c]) = pair_world();
+        begin_conversation(&world, a, b);
+        begin_conversation(&world, b, c); // b is overwritten: now an initiator with partner c
+        conversation_hold_system(&world, 0.1);
+        assert!(held(&world, a).is_none(), "a's hold ends: its partner is held by someone else");
+        assert_eq!(held(&world, b).map(|h| (h.initiator, h.partner)), Some((true, c)), "b's new pair is intact");
+        assert_eq!(held(&world, c).map(|h| (h.initiator, h.partner)), Some((false, b)));
+
+        // And when b's own hold goes (here: it vanishes), c does not outlive it.
+        world.query_mut::<ConversationHold>().unwrap().remove(b);
+        conversation_hold_system(&world, 0.1);
+        assert!(held(&world, c).is_none());
+    }
+
+    /// #6542 — three actors in one social radius all come due in the same pass: one pair is booked and the
+    /// third is not, so no actor is in two holds and every hold has its reciprocal.
+    #[test]
+    fn one_pass_never_books_an_actor_twice() {
+        use crate::components::AmbientPackageRuntime;
+        use byroredux_plugin::esm::records::{GameSetting, PackRecord, SettingValue, SmNodeKind, SmNodeRecord};
+        use byroredux_scripting::package::PackageRegistry;
+        let (mut world, actors) = pair_world();
+        world.register::<AmbientPackageRuntime>();
+        world.register::<SandboxBehavior>();
+        world.insert_resource(RandomConversationState::default());
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        index.insert_game_setting(GameSetting { form_id: 0x1, editor_id: "fAISocialchanceForConversation".into(), value: SettingValue::Float(101.0) });
+        world.insert_resource(byroredux_scripting::obscript_state::GameSettings::from_index(&index));
+        let records = HashMap::from([(0x10, SmNodeRecord { form_id: 0x10, kind: SmNodeKind::Event, event_mnemonic: Some(ADIA), ..Default::default() })]);
+        byroredux_scripting::story_manager::install_story_manager(&mut world, &records);
+        world.insert_resource(PackageRegistry::from_records([PackRecord {
+            form_id: 0x77,
+            interrupt_flags: PKDT_INTERRUPT_RANDOM_CONVERSATIONS,
+            ..Default::default()
+        }]));
+        for actor in actors {
+            world.insert(actor, SandboxBehavior { search_radius: None });
+            world.insert(
+                actor,
+                AmbientPackageRuntime {
+                    package_candidates: vec![0x77],
+                    active_package_form_id: Some(0x77),
+                    actor_form_id: 0x1000 + actor,
+                    last_evaluated_game_minute: None,
+                },
+            );
+        }
+        for _ in 0..3 {
+            random_conversation_system(&world, 50.0);
+        }
+        let holds: Vec<(EntityId, ConversationHold)> = actors.iter().filter_map(|&a| held(&world, a).map(|h| (a, h))).collect();
+        assert_eq!(holds.len(), 2, "exactly one pair is held: {holds:?}");
+        for (actor, hold) in &holds {
+            let theirs = held(&world, hold.partner).expect("every hold has its reciprocal");
+            assert_eq!((theirs.partner, theirs.initiator), (*actor, !hold.initiator), "{actor:?} <-> {:?}", hold.partner);
+        }
     }
 
     #[test]
