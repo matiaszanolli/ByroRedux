@@ -354,6 +354,10 @@ pub struct PhysicsWorld {
     /// pipeline run for a fully-asleep scene without missing the first
     /// frame of newly-introduced motion. See the static-scene fast path.
     pending_wake: bool,
+    /// #6487 — impulses queued for multibody LINKS, which cannot take
+    /// `RigidBody::apply_impulse` (see [`Self::apply_impulse`]). Drained by
+    /// [`Self::step`] into a one-substep force.
+    pending_link_impulses: Vec<(RigidBodyHandle, byroredux_core::math::Vec3)>,
     /// Colliders inserted since the last pipeline step, which the broad
     /// phase's BVH — the scene-query index — does not hold yet. Registration
     /// queues them ([`Self::queue_query_refresh`]); a frame that steps
@@ -533,6 +537,7 @@ impl PhysicsWorld {
             // Step once on the first frame so any bodies present at startup
             // settle / populate the island state.
             pending_wake: true,
+            pending_link_impulses: Vec::new(),
             pending_query_leaves: Vec::new(),
             dynamic_bodies: Vec::new(),
             registered_shape_generations: None,
@@ -1182,20 +1187,79 @@ impl PhysicsWorld {
     /// Production consumer: `scripted_havok_impulse_system` handles Papyrus
     /// `ApplyHavokImpulse` requests. The planned WATAL Phase 3 splash kick /
     /// actor-jumping-out-of-water effect (#2889) is still unbuilt.
+    ///
+    /// **Multibody links (#6487).** Every ragdoll bone is a link, and a link's
+    /// `vels` are rebuilt from the multibody's generalized velocities at the
+    /// start of each island solve, so adding `impulse * inv_mass` to them is
+    /// silently overwritten (probe: a jointed pair given `+X * 300` moved
+    /// `dx = 0.0`, a free pair `150`). For a link the impulse is queued and
+    /// [`Self::step`] delivers it as the force `impulse / PHYSICS_DT` for the
+    /// first substep it runs — the channel the articulated solve does read
+    /// (the same reason link damping and buoyancy ride forces, #5540) — so the
+    /// link's velocity change is `impulse / mass`, as for a free body. A
+    /// non-finite impulse on a link is refused (`false`) rather than queued.
     pub fn apply_impulse(
         &mut self,
         handle: RigidBodyHandle,
         impulse: byroredux_core::math::Vec3,
     ) -> bool {
+        let is_link = self.is_multibody_link(handle);
         if let Some(b) = self.bodies.get_mut(handle) {
             if b.body_type() == RigidBodyType::Dynamic {
-                b.apply_impulse(impulse, true);
+                if is_link {
+                    if !impulse.is_finite() {
+                        return false;
+                    }
+                    // A sleeping island would not integrate the queued force.
+                    b.wake_up(true);
+                    self.pending_link_impulses.push((handle, impulse));
+                } else {
+                    b.apply_impulse(impulse, true);
+                }
                 self.forget_spawn_sleep(handle);
                 self.wake();
                 return true;
             }
         }
         false
+    }
+
+    /// #6487 — turn the queued link impulses into a user force for the first
+    /// substep of this stepping frame. Returns the `(body, user force before)`
+    /// pairs [`Self::release_link_impulse_forces`] restores after that
+    /// substep. Empty (and nothing consumed) when no substep will run this
+    /// frame, so a sub-tick frame keeps the impulse queued instead of leaving
+    /// a force behind for [`Self::apply_multibody_link_damping`] to reset.
+    /// Called AFTER that damping pass for the same reason: it resets a dry
+    /// link's force, which would erase the impulse.
+    fn deliver_link_impulses(&mut self) -> Vec<(RigidBodyHandle, byroredux_core::math::Vec3)> {
+        if self.pending_link_impulses.is_empty() || self.accumulator < PHYSICS_DT {
+            return Vec::new();
+        }
+        let mut before: Vec<(RigidBodyHandle, byroredux_core::math::Vec3)> = Vec::new();
+        for (handle, impulse) in std::mem::take(&mut self.pending_link_impulses) {
+            let Some(body) = self.bodies.get(handle) else {
+                continue; // despawned between the request and the step
+            };
+            if !body.is_dynamic() {
+                continue;
+            }
+            if !before.iter().any(|(seen, _)| *seen == handle) {
+                before.push((handle, body.user_force()));
+            }
+            self.add_force(handle, impulse / PHYSICS_DT, false);
+        }
+        before
+    }
+
+    /// #6487 — undo [`Self::deliver_link_impulses`] once the substep it fed
+    /// has run: the body's user force goes back exactly to what it was (the
+    /// water pass's buoyancy, the damping pass's drag).
+    fn release_link_impulse_forces(&mut self, before: &[(RigidBodyHandle, byroredux_core::math::Vec3)]) {
+        for &(handle, force) in before {
+            self.reset_forces(handle, false);
+            self.add_force(handle, force, false);
+        }
     }
 
     /// Set a body's linear velocity (engine world-space, Y-up). A nonzero
@@ -1452,6 +1516,8 @@ impl PhysicsWorld {
         // are excluded through `water_force_targets`: the water pass owns
         // their user force and folds the same coefficients into it.
         self.apply_multibody_link_damping();
+        // #6487 — queued link impulses become a force for the first substep.
+        let link_impulse_forces = self.deliver_link_impulses();
 
         // Anti-spiral wall-clock budget (#1698). Time the catch-up loop so a
         // settle storm can't pin the frame at the full 5-substep cost; once
@@ -1463,14 +1529,14 @@ impl PhysicsWorld {
 
         let mut steps = 0u32;
         while self.accumulator >= PHYSICS_DT && steps < MAX_SUBSTEPS {
-            if matches!(
-                self.run_substep(loop_start, budget),
-                SubstepOutcome::Stop
-            ) {
-                steps += 1;
-                break;
+            let stop = matches!(self.run_substep(loop_start, budget), SubstepOutcome::Stop);
+            if steps == 0 {
+                self.release_link_impulse_forces(&link_impulse_forces);
             }
             steps += 1;
+            if stop {
+                break;
+            }
         }
         // Consume the wake only once a substep has actually run (#2856).
         // Clearing it before the loop dropped one-shot wakes on any frame
@@ -2469,6 +2535,91 @@ mod tests {
         // And the victim is parked: finite, zeroed, asleep.
         assert!(w.bodies[victim].is_sleeping());
         assert!(w.bodies[victim].linvel().length() == 0.0);
+    }
+
+    /// A pair of dynamic balls, `joined` by a multibody spherical joint or free, in zero gravity so only
+    /// the pushes move them. Returns the world and the two handles.
+    fn impulse_pair(joined: bool) -> (PhysicsWorld, [RigidBodyHandle; 2]) {
+        use rapier3d::dynamics::{GenericJointBuilder, JointAxesMask};
+        use rapier3d::geometry::ColliderBuilder;
+        let mut w = PhysicsWorld::new();
+        w.gravity = Vector::ZERO;
+        let handles = [0.0f32, 20.0].map(|x| {
+            let h = w.bodies.insert(RigidBodyBuilder::dynamic().translation(Vector::new(x, 0.0, 0.0)).build());
+            w.colliders.insert_with_parent(ColliderBuilder::ball(5.0).density(1.0).build(), h, &mut w.bodies);
+            w.dynamic_bodies.push(h);
+            h
+        });
+        if joined {
+            let joint = GenericJointBuilder::new(JointAxesMask::LIN_X | JointAxesMask::LIN_Y | JointAxesMask::LIN_Z)
+                .local_anchor1(Vector::new(10.0, 0.0, 0.0))
+                .local_anchor2(Vector::new(-10.0, 0.0, 0.0))
+                .build();
+            w.multibody_joints.insert(handles[0], handles[1], joint, true).expect("joint");
+            assert!(w.is_multibody_link(handles[0]) && w.is_multibody_link(handles[1]));
+        }
+        // Dynamics register asleep and the first stepping frame re-sleeps them (#5544): settle, then push.
+        w.step(PHYSICS_DT);
+        (w, handles)
+    }
+
+    /// #6487 — `apply_impulse` on a multibody link was overwritten by the solver (a jointed ragdoll given
+    /// `+X * speed * mass` per bone moved `dx = 0.0` where a free pair moved `speed * t`), so every
+    /// `PushActorAway` collapsed the actor in place. The impulse now reaches a link as a one-substep force
+    /// and gives it the same velocity change it gives a free body.
+    #[test]
+    fn an_impulse_on_a_multibody_link_changes_its_velocity_like_a_free_bodys() {
+        let speed = 300.0f32;
+        let measure = |joined: bool| {
+            let (mut w, handles) = impulse_pair(joined);
+            for h in handles {
+                let mass = w.body_mass(h).unwrap();
+                assert!(mass > 0.0, "fixture: massed ball");
+                assert!(w.apply_impulse(h, Vec3::new(speed * mass, 0.0, 0.0)), "joined={joined}");
+            }
+            for _ in 0..30 {
+                w.step(PHYSICS_DT);
+            }
+            handles.map(|h| w.bodies[h].translation().x)
+        };
+        let free = measure(false);
+        let jointed = measure(true);
+        let travelled = speed * 30.0 * PHYSICS_DT;
+        for (i, (f, j)) in free.iter().zip(jointed).enumerate() {
+            let moved_free = f - [0.0, 20.0][i];
+            let moved_joint = j - [0.0, 20.0][i];
+            assert!(moved_free > 0.9 * travelled, "free body {i} moved {moved_free} of {travelled}");
+            assert!(
+                (moved_joint - moved_free).abs() < 0.1 * travelled,
+                "link {i} moved {moved_joint}, a free body {moved_free}: the impulse was discarded (#6487)"
+            );
+        }
+    }
+
+    /// #6487 — the impulse is delivered once. The force it rides is taken back after the first substep, so
+    /// the link keeps the velocity it was given instead of accelerating on, and a force the water pass had
+    /// put on the link survives untouched.
+    #[test]
+    fn a_link_impulse_is_a_single_kick_and_leaves_other_forces_alone() {
+        let (mut w, [a, b]) = impulse_pair(true);
+        let held = Vec3::new(0.0, 5.0, 0.0);
+        w.add_force(a, held, false);
+        let mass = w.body_mass(a).unwrap();
+        assert!(w.apply_impulse(a, Vec3::new(100.0 * mass, 0.0, 0.0)));
+        w.step(PHYSICS_DT);
+        assert!(w.pending_link_impulses.is_empty(), "consumed by the stepping frame");
+        let user = w.bodies[a].user_force();
+        assert!((user.x).abs() < 1.0e-4 && (user.y - held.y).abs() < 1.0e-4, "the kick's force is gone: {user:?}");
+        // Equal masses: the pair's total x momentum is the one kick, `impulse / mass = 100`, however the
+        // joint shares it between the two links. A force left applied would keep adding to it.
+        for _ in 0..10 {
+            w.step(PHYSICS_DT);
+        }
+        let total = w.bodies[a].linvel().x + w.bodies[b].linvel().x;
+        assert!((total - 100.0).abs() < 5.0, "one kick of 100 BU/s, not repeated or lost: {total}");
+        // A non-finite impulse is refused rather than queued.
+        assert!(!w.apply_impulse(a, Vec3::new(f32::NAN, 0.0, 0.0)));
+        assert!(w.pending_link_impulses.is_empty());
     }
 
     /// #5356 — the positive leg: a body that genuinely belongs to a live
