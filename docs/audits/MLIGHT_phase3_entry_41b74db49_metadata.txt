@@ -1,0 +1,7 @@
+# M-LIGHT Phase 3 entry, step 1 (#6603), docs/prd/reference-lighting.md §9, rev 18.
+command=BYROREDUX_MITSUBA_PYTHON=/mnt/data/venvs/mitsuba3/bin/python scripts/m-light-gates.sh --gates A2,A3,A4,A5,A14 --profile release --out target/m-light-phase3-entry
+manifest=docs/audits/MLIGHT_phase3_entry_41b74db49.tsv
+revision=41b74db49 (worktree clean of tracked changes; untracked .claude/issues only)
+gpu=NVIDIA GeForce RTX 4070 Ti 580.178.04
+mitsuba=3.9.1 variant=cuda_ad_rgb, 1024 spp, seeds 0,1; engine tier 3, 64 frames, seeds 0,1; references cached (16), wall 1115.9 s
+status=every row is `report`; no threshold exists until the owner writes the L1 / L2 budgets (Q6)
