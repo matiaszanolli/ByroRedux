@@ -2227,7 +2227,7 @@ mod device_address_caching_tests {
 
         let caller = include_str!("context/skinned_blas_refit.rs");
         assert!(
-            caller.contains(".get_or_insert_with(|| skin_pipeline.bind(&self.device, cmd))"),
+            caller.contains(".get_or_insert_with(|| skin_pipeline.bind(self.device, cmd))"),
             "the dispatch loop must bind lazily, once, before its first dispatch (#4205)"
         );
     }

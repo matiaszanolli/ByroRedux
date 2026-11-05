@@ -4,12 +4,13 @@
 //!
 //! Each pin sits just above the function's size at the time it was set. A
 //! function that was split by #6143 (`build_pipelines_and_finish`,
-//! `build_and_upload_instances`) is pinned at its post-split size; the three
-//! that were *not* split — `record_skinned_blas_refit`, `build_blas_batched`
-//! and `record_geometry_pass` — are pinned where they stand, so growth is a
-//! deliberate edit. Their extraction records barrier and bracket order and
-//! failure-path cleanup that only `BYRO_VALIDATION=1` on a device can verify,
-//! so it is left to a session that can run one rather than done blind.
+//! `build_and_upload_instances`) or #6708 (`record_skinned_blas_refit`) is
+//! pinned at its post-split size; the two that were *not* split —
+//! `build_blas_batched` and `record_geometry_pass` — are pinned where they
+//! stand, so growth is a deliberate edit. Their extraction records barrier and
+//! bracket order and failure-path cleanup that only `BYRO_VALIDATION=1` on a
+//! device can verify, so it is left to a session that can run one rather than
+//! done blind.
 //!
 //! A new addition that grows one of these must move the work into a helper or
 //! a `context/<phase>.rs` sibling and say so here — not raise the pin.
@@ -29,8 +30,9 @@ fn construction_and_recording_drivers_stay_within_their_size_pins() {
             "fn build_and_upload_instances(",
             555,
         ),
+        // 971 before #6708; the phases are `SkinChain` methods in the same file.
+        (include_str!("skinned_blas_refit.rs"), "fn record_skinned_blas_refit(", 275),
         // Not split (see the module docs).
-        (include_str!("skinned_blas_refit.rs"), "fn record_skinned_blas_refit(", 985),
         (include_str!("geometry_pass.rs"), "fn record_geometry_pass(", 770),
         (
             include_str!("../acceleration/blas_static.rs"),

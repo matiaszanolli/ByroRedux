@@ -5,13 +5,52 @@
 //! barriers, and recording order are unchanged from the pre-split
 //! `draw_frame`.
 
+use super::super::allocator::SharedAllocator;
 use super::super::descriptors::memory_barrier;
-use crate::vulkan::gpu_timers::TimerPass;
+use super::super::gpu_timers::GpuPerFrameTimers;
+use super::super::morph_compute::MorphSlot;
+use super::super::skin_compute::{
+    SkinComputePipeline, SkinCoverageFrame, SkinDispatchBuffers, SkinPushConstants, SkinSlot,
+};
 use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::{DrawCommand, VulkanContext};
+use crate::mesh::MeshRegistry;
+use crate::vulkan::acceleration::AccelerationManager;
+use crate::vulkan::gpu_timers::TimerPass;
 use ash::vk;
 use byroredux_core::ecs::storage::EntityId;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::time::Instant;
+
+/// One skinned entity's work for the frame: `(entity, push constants, index
+/// buffer, index count, vertex count)`.
+type SkinDispatch = (EntityId, SkinPushConstants, vk::Buffer, u32, u32);
+/// One queued BLAS BUILD: `(entity, skinned output buffer, vertex count, index
+/// buffer, index count)`.
+type SkinBlasBuild = (EntityId, vk::Buffer, u32, vk::Buffer, u32);
+
+/// The `VulkanContext` fields the skin chain borrows for one frame (#6708).
+///
+/// `record_skinned_blas_refit` holds `skin_compute` and `accel_manager` across
+/// the whole chain, so its phases cannot be `&mut self` methods on the context.
+/// They are methods on this instead: disjoint borrows, each field keeping its
+/// context name so a phase reads the same as it did inline.
+struct SkinChain<'a> {
+    device: &'a ash::Device,
+    frame_counter: u32,
+    skin_pipeline: &'a SkinComputePipeline,
+    accel: &'a mut AccelerationManager,
+    alloc: &'a SharedAllocator,
+    mesh_registry: &'a MeshRegistry,
+    morph_slots: &'a FxHashMap<EntityId, MorphSlot>,
+    skin_slots: &'a mut FxHashMap<EntityId, SkinSlot>,
+    failed_skin_slots: &'a mut FxHashSet<EntityId>,
+    failed_skin_blas: &'a mut FxHashSet<EntityId>,
+    pending_skin_unload_victims: &'a mut Vec<EntityId>,
+    skin_pending_populated: &'a mut Vec<EntityId>,
+    last_skin_coverage_frame: &'a mut SkinCoverageFrame,
+    gpu_timers: Option<&'a mut GpuPerFrameTimers>,
+}
 
 impl VulkanContext {
     /// Record the M29 GPU pre-skin + per-skinned-entity BLAS refit into the
@@ -76,6 +115,11 @@ impl VulkanContext {
         }
     }
 
+    /// Record the M29 GPU pre-skin + per-skinned-entity BLAS refit into the
+    /// open per-frame command buffer (#1748). Extracted verbatim from
+    /// `draw_frame` — runs after the bone-palette upload and before the
+    /// TLAS build, which picks up the freshly-refit BLAS via `self`. The
+    /// internal `unsafe` scopes, barriers, and recording order are unchanged.
     pub(super) fn record_skinned_blas_refit(
         &mut self,
         cmd: vk::CommandBuffer,
@@ -209,6 +253,22 @@ impl VulkanContext {
                     .map(|b| b.buffer);
                 let bone_buffer_size = self.scene_buffers.bone_buffer_size();
 
+                let mut chain = SkinChain {
+                    device: &self.device,
+                    frame_counter: self.frame_counter,
+                    skin_pipeline,
+                    accel,
+                    alloc,
+                    mesh_registry: &self.mesh_registry,
+                    morph_slots: &self.morph_slots,
+                    skin_slots: &mut self.skin_slots,
+                    failed_skin_slots: &mut self.failed_skin_slots,
+                    failed_skin_blas: &mut self.failed_skin_blas,
+                    pending_skin_unload_victims: &mut self.pending_skin_unload_victims,
+                    skin_pending_populated: &mut self.skin_pending_populated,
+                    last_skin_coverage_frame: &mut self.last_skin_coverage_frame,
+                    gpu_timers: self.gpu_timers.as_mut(),
+                };
                 if let (Some((input_buffer, input_size)), Some(bone_buf)) =
                     (global_vert_buf, bone_buffer)
                 {
@@ -227,148 +287,8 @@ impl VulkanContext {
                     seen.clear();
                     let mut dispatches = std::mem::take(&mut self.scratch.skin_dispatches_scratch);
                     dispatches.clear();
-                    for dc in draw_commands.iter() {
-                        if dc.bone_offset == 0 {
-                            continue;
-                        }
-                        if !seen.insert(dc.entity_id) {
-                            continue;
-                        }
-                        let Some(mesh) = self.mesh_registry.get(dc.mesh_handle) else {
-                            continue;
-                        };
-                        // Only meshes uploaded RT-capable may back a BLAS: their
-                        // index buffer is the AS build input, and without
-                        // `SHADER_DEVICE_ADDRESS |
-                        // ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR` both
-                        // the device-address query and the build are invalid
-                        // (VUID-VkBufferDeviceAddressInfo-buffer-02601 /
-                        // -geometry-03673). Skinned effect-shader proxies and
-                        // decals are uploaded `for_rt = false` precisely so rays
-                        // don't hit their non-physical hulls; the static BLAS
-                        // path already gates on the same flag, so this keeps the
-                        // two paths consistent instead of ray-tracing a proxy
-                        // only when it happens to be skinned.
-                        if !mesh.rt_capable {
-                            continue;
-                        }
-                        // #5187 (REN-D9-2026-10-03-01) — the skin-chain half
-                        // of #3372's residency gate (which `app_frame.rs`
-                        // applies to `in_raster`/`in_tlas` only). While a
-                        // streaming transaction defers
-                        // `rebuild_geometry_ssbo`, an appended mesh's
-                        // `global_vertex_offset` lies past the bound global
-                        // vertex buffer's end — or, post-compaction-plan,
-                        // inside another mesh's bytes — so dispatching
-                        // `skin_vertices.comp` against it is an OOB SSBO
-                        // read with `robustBufferAccess` off, and the
-                        // first-sight BLAS BUILD records the garbage as the
-                        // entity's ray-traced geometry. Pre-fix a static-pose
-                        // actor then kept that garbage forever: the
-                        // `has_populated_output` gate suppresses every later
-                        // re-dispatch, and nothing re-arms a slot when the
-                        // geometry becomes resident. Skipping the draw HERE
-                        // means no slot, no BLAS and no TLAS instance is
-                        // ever created from non-resident geometry, and the
-                        // gate re-arms itself: when the rebuild lands and
-                        // residency flips, the entity is collected again and
-                        // takes the ordinary first-sight path from valid
-                        // geometry.
-                        if !self.mesh_registry.is_geometry_resident(dc.mesh_handle) {
-                            continue;
-                        }
-                        // #3231 — mirrors the `GpuInstance` morph lookup in
-                        // `build_and_upload_instances.rs`: gate on `morph_slot_backs_mesh` so a
-                        // slot that survived a mesh remap (mod swap, cell
-                        // reload reusing an EntityId) never gets read by
-                        // `skin_vertices.comp` against the wrong mesh's
-                        // vertex/target counts.
-                        let morph_slot_fields = self
-                            .morph_slots
-                            .get(&dc.entity_id)
-                            .filter(|slot| {
-                                super::frame_params::morph_slot_backs_mesh(
-                                    slot.vertex_count(),
-                                    slot.target_count(),
-                                    mesh.vertex_count,
-                                )
-                            })
-                            .map(|slot| {
-                                (
-                                    slot.delta_address(),
-                                    slot.weight_address(),
-                                    slot.target_count(),
-                                )
-                            });
-                        let (morph_delta_address, morph_weight_address, morph_target_count) =
-                            super::frame_params::morph_gpu_fields_for_draw(morph_slot_fields);
-                        let push = super::super::skin_compute::SkinPushConstants {
-                            morph_delta_address,
-                            morph_weight_address,
-                            vertex_offset: mesh.global_vertex_offset,
-                            vertex_count: mesh.vertex_count,
-                            bone_offset: dc.bone_offset,
-                            morph_target_count,
-                        };
-                        dispatches.push((
-                            dc.entity_id,
-                            push,
-                            mesh.index_buffer
-                                .as_ref()
-                                .expect("skinned mesh requires a per-mesh index buffer")
-                                .buffer,
-                            mesh.index_count,
-                            mesh.vertex_count,
-                        ));
-                    }
-                    self.last_skin_coverage_frame.dispatches_total = dispatches.len() as u32;
+                    chain.collect_skin_dispatches(draw_commands, &mut seen, &mut dispatches);
 
-                    // First-sight setup: for each entity that doesn't
-                    // yet have a SkinSlot OR a skinned BLAS, create
-                    // the slot (CPU-only) and queue the BLAS BUILD
-                    // onto the per-frame `cmd` via the batched on-cmd
-                    // builder below. The steady-state compute dispatch
-                    // (further down) serves as the prime for the
-                    // newly-allocated slot — it writes the current
-                    // pose into the slot's output buffer before the
-                    // COMPUTE→AS_BUILD barrier, so the queued BUILD
-                    // reads valid vertex data.
-                    //
-                    // #679 / AS-8-9 — also re-enter this path for
-                    // entities whose BLAS has refit too many times
-                    // and degraded BVH traversal quality.
-                    // #5194 — build-then-swap: the entity is queued for
-                    // a fresh BUILD while the OLD entry stays live. The
-                    // pre-fix form dropped the BLAS first and let
-                    // `needs_blas` turn true, so a BUILD failure
-                    // (result-buffer / AS create / scratch grow under
-                    // VRAM pressure) left the actor out of the TLAS
-                    // until an unrelated eviction cleared
-                    // `failed_skin_blas`. Now the TLAS keeps instancing
-                    // the old entry and Phase 4's drop-before-insert
-                    // (#2481) retires it only after the replacement is
-                    // recorded; the slot's output buffer is preserved
-                    // either way (compute keeps streaming poses through
-                    // it), so only the BLAS object itself is replaced.
-                    //
-                    // #911 / REN-D5-NEW-02 — Pre-fix this loop paid
-                    // 2 fence-waits per first-sight entity (one-time
-                    // submit for compute prime + one-time submit for
-                    // sync BLAS BUILD), stalling `draw_frame` by
-                    // 2 × N queue waits on multi-NPC spawn frames.
-                    // The on-cmd batched builder eliminates both
-                    // host waits — every first-sight BUILD now
-                    // submits as part of the per-frame command
-                    // buffer that already carries the steady-state
-                    // compute dispatch, scratch-serialise barriers,
-                    // refit loop and TLAS build. Two-pass scratch
-                    // sizing inside
-                    // `build_skinned_blas_batched_on_cmd` keeps the
-                    // shared `blas_scratch_buffer` device address
-                    // stable across every recorded build in the
-                    // batch (the failure mode of the naive
-                    // "record N back-to-back, each inline-resizing
-                    // scratch" path).
                     // #1133 — sibling scratch; same lifetime as `seen` /
                     // `dispatches`. Replaced back into self at end of block.
                     let mut first_sight_builds =
@@ -380,128 +300,7 @@ impl VulkanContext {
                     let mut built_this_frame =
                         std::mem::take(&mut self.scratch.skin_built_this_frame_scratch);
                     built_this_frame.clear();
-                    for &(entity_id, _push, idx_buffer, idx_count, vertex_count) in &dispatches {
-                        let mut needs_slot = !self.skin_slots.contains_key(&entity_id);
-
-                        // #1297 / #1298 (DIM12-A-01) — reconcile an existing
-                        // slot's allocated capacity against the live mesh
-                        // vertex_count. If the entity's mesh_handle was remapped
-                        // to a different-vertex-count mesh, the slot's output
-                        // buffer (sized at create_slot time) is mis-sized, and
-                        // the compute dispatch — bounded only by
-                        // `push.vertex_count`, not the slot capacity — would
-                        // write past the buffer (OOB). Destroy + recreate the
-                        // slot and drop the now-stale paired skinned BLAS so
-                        // `create_slot` re-allocs to the new size. Immediate
-                        // destroy is safe here: the wait-on-both-in-flight-
-                        // fences at the top of `draw_frame` (line ~234) has
-                        // retired every command buffer referencing this slot's
-                        // buffer. Symmetric with the BLAS-side
-                        // `validate_refit_counts` guard.
-                        if !needs_slot {
-                            let stale_vc = self
-                                .skin_slots
-                                .get(&entity_id)
-                                .map(|s| s.vertex_count())
-                                .filter(|&slot_vc| {
-                                    super::super::skin_compute::skin_slot_capacity_stale(
-                                        slot_vc,
-                                        vertex_count,
-                                    )
-                                });
-                            if let Some(slot_vc) = stale_vc {
-                                log::info!(
-                                    "skin_compute slot for entity {entity_id} sized {slot_vc} verts \
-                                     but mesh now has {vertex_count} (mesh remap) — recreating slot \
-                                     to avoid OOB compute write (#1298)"
-                                );
-                                if let Some(slot) = self.skin_slots.remove(&entity_id) {
-                                    skin_pipeline.destroy_slot(&self.device, alloc, slot);
-                                }
-                                accel.drop_skinned_blas(entity_id);
-                                needs_slot = true;
-                            }
-                        }
-
-                        let rebuild_due = accel.should_rebuild_skinned_blas(entity_id);
-                        if rebuild_due {
-                            log::info!(
-                                "skin_compute BLAS rebuild for entity {entity_id} — \
-                                 refit chain reached {} frames, queueing fresh BUILD \
-                                 with swap-on-success (#679 / #5194)",
-                                accel
-                                    .skinned_blas_entry(entity_id)
-                                    .map(|e| e.refit_count)
-                                    .unwrap_or(0),
-                            );
-                        }
-                        let needs_blas = accel.skinned_blas_entry(entity_id).is_none();
-                        if !needs_slot && !needs_blas && !rebuild_due {
-                            continue;
-                        }
-                        // Skip retry on entities whose previous attempt
-                        // failed — `failed_skin_slots` is cleared on any
-                        // LRU eviction (capacity opened), so a real change
-                        // in pool occupancy un-suppresses the retry
-                        // naturally. Pre-#900 the failure path re-fired
-                        // `create_slot` every frame and re-logged the
-                        // WARN, observed at 58 WARN / 300 frames on
-                        // post-M41-EQUIP Prospector. The suppression
-                        // happens *before* the attempt counter so the
-                        // coverage gauge reports "real attempts made this
-                        // frame" rather than "entities the loop visited."
-                        if needs_slot && self.failed_skin_slots.contains(&entity_id) {
-                            continue;
-                        }
-                        // #2802 — the BLAS sibling of the gate above.
-                        // A failed first-sight build leaves the slot
-                        // behind, so `needs_slot` is false from the next
-                        // frame on and the slot gate can never suppress
-                        // it; without this the entity re-ran the size
-                        // query + build every frame and logged two WARNs
-                        // per frame (build + the refit that then finds no
-                        // BLAS). Same clear rule: LRU eviction re-opens
-                        // the retry.
-                        if needs_blas && self.failed_skin_blas.contains(&entity_id) {
-                            continue;
-                        }
-                        self.last_skin_coverage_frame.first_sight_attempted += 1;
-                        if needs_slot {
-                            match skin_pipeline.create_slot(&self.device, alloc, vertex_count) {
-                                Ok(slot) => {
-                                    self.skin_slots.insert(entity_id, slot);
-                                }
-                                Err(e) => {
-                                    log::warn!(
-                                        "skin_compute create_slot failed for entity {entity_id}: {e} \
-                                         — skinned RT shadow disabled for this entity (raster unaffected)"
-                                    );
-                                    self.failed_skin_slots.insert(entity_id);
-                                    continue;
-                                }
-                            }
-                        }
-                        if needs_blas || rebuild_due {
-                            let Some(slot) = self.skin_slots.get(&entity_id) else {
-                                continue;
-                            };
-                            first_sight_builds.push((
-                                entity_id,
-                                slot.output_buffer.buffer,
-                                vertex_count,
-                                idx_buffer,
-                                idx_count,
-                            ));
-                        } else {
-                            // Slot was missing but BLAS already existed —
-                            // structurally impossible today (slot+BLAS are
-                            // paired on insert and slot eviction also drops
-                            // the BLAS). Counted as a successful first-sight
-                            // pass so the coverage gauge stays sound if a
-                            // future refactor decouples the pair.
-                            self.last_skin_coverage_frame.first_sight_succeeded += 1;
-                        }
-                    }
+                    chain.prepare_first_sight_builds(&dispatches, &mut first_sight_builds);
 
                     // Per-frame steady-state: dispatch compute for
                     // every registered skinned slot (refresh output
@@ -525,385 +324,27 @@ impl VulkanContext {
                     // quiescent slots aren't reaped by the eviction
                     // sweep.
                     if !dispatches.is_empty() {
-                        // #1194 — bracket the skin compute dispatch
-                        // loop. START sits before the per-entity
-                        // dispatches; END sits after the loop body
-                        // (before the COMPUTE→AS_BUILD barrier so
-                        // the bracket measures only the dispatches
-                        // themselves, not the barrier transition cost
-                        // which lands inside the BLAS refit window).
-                        if let Some(ref mut timers) = self.gpu_timers {
-                            timers.cmd_start(TimerPass::SkinDispatch, &self.device, cmd, frame);
-                        }
-                        // SAFETY: `cmd` is recording; `skin_pipeline`, each `slot`'s descriptors, and the global vertex / bone input buffers are live for this frame. The pipeline is bound ONCE for the whole batch below (#4205, `SkinComputePipeline::bind`); each `dispatch` binds only that entity's slot descriptor set at the COMPUTE bind point (pinned by `slot_dispatch_does_not_rebind_the_pipeline_per_entity`). The loop records sequentially with no concurrent use of `cmd`.
-                        unsafe {
-                            // #4205 — one pipeline bind for the whole batch,
-                            // taken lazily so a frame whose every entity hits
-                            // the skip gate below records no bind at all.
-                            let mut bound = None;
-                            for &(entity_id, push, _, _, _) in &dispatches {
-                                let Some(slot) = self.skin_slots.get_mut(&entity_id) else {
-                                    continue;
-                                };
-                                // #643 / MEM-2-1 — bump LRU first
-                                // (before the skip gate) so the
-                                // eviction sweep below sees this
-                                // entity as "active this frame" even
-                                // when the dispatch is skipped.
-                                slot.last_used_frame =
-                                    super::super::skin_compute::skin_lru_stamp(self.frame_counter);
-                                // #4294 — no `MorphSlot` LRU bump here. This loop skips hidden,
-                                // slot-less and non-RT-capable entities, and a `MorphSlot` is never
-                                // rebuilt once reaped; `VulkanContext::refresh_morph_slot_lru` stamps
-                                // it from entity liveness instead.
-
-                                // #1195 / PERF-DIM7-01 — skip the
-                                // dispatch when the entity's pose is
-                                // unchanged AND the output buffer is
-                                // already populated. First-sight slots
-                                // always fall through to the dispatch
-                                // below (their `has_populated_output`
-                                // is still false).
-                                let is_dirty = pose_dirty.contains(&entity_id);
-                                if slot.has_populated_output && !is_dirty {
-                                    self.last_skin_coverage_frame.dispatches_skipped += 1;
-                                    continue;
-                                }
-                                let bound = bound
-                                    .get_or_insert_with(|| skin_pipeline.bind(&self.device, cmd));
-                                skin_pipeline.dispatch(
-                                    bound,
-                                    &self.device,
-                                    cmd,
-                                    slot,
-                                    frame,
-                                    super::super::skin_compute::SkinDispatchBuffers {
-                                        input_buffer,
-                                        input_buffer_size: input_size,
-                                        input_generation,
-                                        bone_buffer: bone_buf,
-                                        bone_buffer_size,
-                                    },
-                                    push,
-                                );
-                                // #3991 — the "populated" bit is what the
-                                // NEXT frame's skip gate reads, and it is only
-                                // true once this frame's dispatch has actually
-                                // executed. Setting it here, at record time,
-                                // makes it true for a command buffer
-                                // `draw_frame`'s three tail `Err` sites may
-                                // still discard — after which the slot's
-                                // output buffer is treated as populated while
-                                // holding whatever it held before, and its
-                                // BLAS is refit against that.
-                                //
-                                // Latched instead; promoted after
-                                // `queue_submit` returns `Ok`. Only entities
-                                // whose bit this dispatch would newly set are
-                                // recorded, so a rollback cannot clear a bit an
-                                // earlier successful frame established.
-                                if !slot.has_populated_output {
-                                    self.skin_pending_populated.push(entity_id);
-                                }
-                            }
-                        }
-                        // #1194 — END of skin compute dispatch bracket
-                        // (before the COMPUTE→AS_BUILD barrier).
-                        if let Some(ref mut timers) = self.gpu_timers {
-                            timers.cmd_end(TimerPass::SkinDispatch, &self.device, cmd, frame);
-                        }
-                        // SAFETY: `cmd` is recording. The COMPUTE_SHADER_WRITE -> (AS_BUILD | FRAGMENT)_READ barrier sequences the skin outputs before they are read as BLAS build inputs and before triangle.frag / water.frag dereference them via `skinnedVertexAddress` (#2403); the first-sight builds and refits share `blas_scratch_buffer` and self-emit AS_WRITE->AS_WRITE scratch-serialize barriers between builds; the closing AS_BUILD_WRITE -> AS_BUILD_READ barrier hands refit results to the TLAS build below.
-                        unsafe {
-                            // Compute writes (skinned vertex output
-                            // buffers) → AS build input reads. Covers
-                            // both the first-sight BUILD batch below
-                            // and the refit loop further down — both
-                            // read the freshly-written output buffers
-                            // as BLAS-build vertex input.
-                            // COMPUTE_SHADER → ACCELERATION_STRUCTURE_BUILD_KHR
-                            // | FRAGMENT_SHADER.
-                            // Skinned vertex output is a BLAS-build INPUT, so the
-                            // dst access is SHADER_READ (the spec's build-input
-                            // access), NOT ACCELERATION_STRUCTURE_READ. #1436.
-                            //
-                            // #2403 / CHAIN2-D2-01 — the FRAGMENT_SHADER dst bit
-                            // covers the *second* consumer this buffer acquired
-                            // in #2219: `GpuInstance.skinnedVertexAddress` is a
-                            // raw `GL_EXT_buffer_reference` address that
-                            // `getHitTriWorldPositions` (ray_hit.glsl, included
-                            // by triangle.frag / water.frag) dereferences for
-                            // secondary-ray hits on skinned actors. The AS
-                            // barriers that follow are AS_WRITE → AS_READ, whose
-                            // src access scope does not include this compute
-                            // SHADER_WRITE, so before this widening nothing in
-                            // the skin chain published the write to the fragment
-                            // stage. It happened to work only because the
-                            // cluster-cull pass emits a trailing *global*
-                            // COMPUTE/SHADER_WRITE → FRAGMENT/SHADER_READ
-                            // barrier later in `draw_frame` — but that lives
-                            // inside `if let Some(ref cc) = self.cluster_cull`,
-                            // and `ClusterCullPipeline::new` failure degrades to
-                            // `None` without gating the RT path. Cluster-cull
-                            // absent + a skinned actor seen through glass or
-                            // water was therefore a genuine read-after-write
-                            // hazard. Widening the dst here makes the
-                            // dependency this chain's own, and purely additive:
-                            // a wider dst stage mask can only add execution
-                            // dependencies, never remove one.
-                            //
-                            // #3582 — `COMPUTE_SHADER` joins the dst mask for
-                            // the same reason #2403 added `FRAGMENT_SHADER`:
-                            // a new consumer appeared. `caustic_splat.comp`
-                            // dereferences `hit.skinnedVertexAddress` through
-                            // its own inline `SkinnedVertexRef` block (added
-                            // by `9bf7d024`) rather than through
-                            // `include/ray_hit.glsl`, so an include-graph
-                            // trace still comes back clean while the deref
-                            // exists — which is how the 2026-08-14 audit
-                            // cleared this exact missing bit one day before
-                            // it became wrong. Execution order was already
-                            // established by chaining (skin compute ->
-                            // AS_BUILD here, AS_BUILD -> COMPUTE in
-                            // `draw.rs`); what was missing was purely memory
-                            // VISIBILITY to COMPUTE/SHADER_READ. Every
-                            // intervening barrier was walked in command
-                            // order: none covers `COMPUTE`/`SHADER_WRITE` ->
-                            // `COMPUTE`/`SHADER_READ`. The one that would
-                            // (`post_passes.rs`'s volumetrics barrier) runs
-                            // AFTER the caustic pass and is gated behind the
-                            // volumetrics triple.
-                            memory_barrier(
-                                &self.device,
-                                cmd,
-                                vk::PipelineStageFlags::COMPUTE_SHADER,
-                                vk::AccessFlags::SHADER_WRITE,
-                                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR
-                                    | vk::PipelineStageFlags::FRAGMENT_SHADER
-                                    | vk::PipelineStageFlags::COMPUTE_SHADER,
-                                vk::AccessFlags::SHADER_READ,
-                            );
-                            // #911 — first-sight BLAS BUILDs piggyback
-                            // on the per-frame `cmd` rather than each
-                            // paying a host fence-wait. The compute
-                            // dispatch above served as the prime for
-                            // every newly-allocated slot in
-                            // `first_sight_builds`; the
-                            // COMPUTE→AS_BUILD barrier just emitted
-                            // hands those writes to the build inputs.
-                            // The helper sizes the shared scratch from
-                            // each entity's max of BUILD and UPDATE
-                            // scratch (#5195 — the spec does not bound
-                            // updateScratchSize by buildScratchSize),
-                            // grows `blas_scratch_buffer` ONCE to the
-                            // max demand of the batch, then records each
-                            // build with an internal scratch-serialise
-                            // barrier (`AS_WRITE→AS_WRITE`) between
-                            // iterations so the shared scratch is
-                            // safely sequenced. The first refit
-                            // iteration below emits its own
-                            // scratch-serialise barrier as well
-                            // (#983 / REN-D8-NEW-15), covering the
-                            // BUILD-batch → first-refit transition.
-                            if !first_sight_builds.is_empty() {
-                                let results = accel.build_skinned_blas_batched_on_cmd(
-                                    &self.device,
-                                    alloc,
-                                    cmd,
-                                    &first_sight_builds,
-                                );
-                                for (entity_id, result) in results {
-                                    match result {
-                                        Ok(()) => {
-                                            self.last_skin_coverage_frame.first_sight_succeeded +=
-                                                1;
-                                            // D6-05 / #1812 — mark this
-                                            // entity so the refit loop
-                                            // below skips it: the BUILD
-                                            // just recorded already
-                                            // produced a complete BLAS
-                                            // from the exact same vertex
-                                            // data a refit would re-read.
-                                            // A failed build does NOT get
-                                            // marked — it leaves no BLAS
-                                            // behind, so the refit's own
-                                            // `accel.has_skinned_blas`
-                                            // check still governs that
-                                            // entity unchanged.
-                                            built_this_frame.insert(entity_id);
-                                        }
-                                        // #2802 — record the failure so the
-                                        // retry is suppressed until an LRU
-                                        // eviction re-opens it: one WARN per
-                                        // pressure episode instead of one per
-                                        // frame, per entity.
-                                        //
-                                        // #5194 — a forced-REBUILD failure is
-                                        // the different case: build-then-swap
-                                        // left the entity's pre-swap BLAS
-                                        // live, so keep it refitting (the
-                                        // degraded BVH the rebuild was fixing
-                                        // is the pre-fix failure mode's
-                                        // alternative, not a new cost) and
-                                        // reset its refit_count so the retry
-                                        // comes after another full refit
-                                        // cycle instead of every frame. Only
-                                        // a genuine first-sight failure — no
-                                        // entry at all — parks the entity in
-                                        // `failed_skin_blas`.
-                                        Err(e) => {
-                                            if accel.skinned_blas_entry(entity_id).is_some() {
-                                                log::warn!(
-                                                    "skin_compute BLAS rebuild failed for entity {entity_id}: {e} \
-                                                     — keeping the live BLAS refitting (degraded BVH); \
-                                                     retry after another refit cycle (#5194)"
-                                                );
-                                                accel.reset_skinned_blas_refit_count(entity_id);
-                                            } else {
-                                                log::warn!(
-                                                    "skin_compute first-sight BLAS build failed for entity {entity_id}: {e} \
-                                                     — skinned RT disabled for this entity until an eviction frees capacity \
-                                                     (raster unaffected)"
-                                                );
-                                                self.failed_skin_blas.insert(entity_id);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            // Each `refit_skinned_blas` call shares
-                            // `blas_scratch_buffer` with every other
-                            // refit in this loop AND with any BUILD
-                            // that ran earlier this frame — the
-                            // first-sight batch above (same `cmd`,
-                            // post-#911) and any `build_blas_batched`
-                            // cell-load (separate submission). Vulkan
-                            // spec on `scratchData` requires an
-                            // AS_WRITE → AS_WRITE serialise barrier
-                            // between every pair of AS-builds that
-                            // share scratch, regardless of submission
-                            // boundary (the host fence-wait is a
-                            // host-side dependency only and does NOT
-                            // establish device-side memory ordering
-                            // for the next submission). Emitting the
-                            // barrier before EVERY iteration covers
-                            // both refit→refit (#642), the
-                            // cross-submission BUILD→first-refit case
-                            // (#644 / MEM-2-2), and the same-cmd
-                            // BUILD-batch→first-refit case introduced
-                            // by #911 (the batched on-cmd builder
-                            // leaves an AS_WRITE in flight). The
-                            // redundant first-iteration barrier is
-                            // essentially free when the cmd has no
-                            // prior AS-build — same-stage
-                            // AS_WRITE↔AS_WRITE on a queue with no
-                            // in-flight build work.
-                            // #1194 — bracket the skinned-BLAS refit loop.
-                            // START is just before the loop body; END
-                            // is right after the AS_BUILD→AS_BUILD
-                            // barrier closes the refit window.
-                            if let Some(ref mut timers) = self.gpu_timers {
-                                timers.cmd_start(TimerPass::BlasRefit, &self.device, cmd, frame);
-                            }
-                            for &(entity_id, _, idx_buffer, idx_count, vertex_count) in &dispatches
-                            {
-                                let Some(slot) = self.skin_slots.get(&entity_id) else {
-                                    continue;
-                                };
-                                // #1196 / PERF-DIM7-02 — paired refit
-                                // gate. Same predicate as the dispatch
-                                // skip above: if the entity's pose was
-                                // unchanged this frame AND the slot
-                                // already has a populated output AND a
-                                // live BLAS, skip the refit. The BLAS
-                                // still references the same output
-                                // buffer; nothing changed underneath
-                                // it. The skip uses the same
-                                // `pose_dirty` set so the two decisions
-                                // can't diverge — the "split decisions
-                                // are the trap" warning from the audit.
-                                //
-                                // D6-05 / #1812 — first-sight entities
-                                // are always dirty, so the predicate
-                                // above alone can't catch them; they
-                                // used to fall through to a full UPDATE
-                                // against the exact vertex data their
-                                // BUILD (above, same `cmd`) just
-                                // consumed — pure wasted work, not a
-                                // correctness requirement. Skip them via
-                                // `built_this_frame` instead.
-                                let is_dirty = pose_dirty.contains(&entity_id);
-                                if built_this_frame.contains(&entity_id)
-                                    || (slot.has_populated_output
-                                        && !is_dirty
-                                        && accel.has_skinned_blas(entity_id))
-                                {
-                                    // Skip path mirrors the dispatch
-                                    // skip — counts via `dispatches_skipped`
-                                    // is the dispatch's responsibility;
-                                    // refit just falls through silently.
-                                    continue;
-                                }
-                                // #2802 — an entity with no BLAS cannot be
-                                // refitted: `refit_skinned_blas` submits
-                                // `mode = UPDATE` against an existing
-                                // structure, so it would fail its "no
-                                // skinned BLAS for entity" lookup and WARN.
-                                // That state means this frame's first-sight
-                                // build failed or was suppressed, and the
-                                // first-sight path owns the retry — skip
-                                // silently rather than counting an attempt
-                                // that could never succeed. This is also
-                                // what makes `refits_attempted` match its
-                                // documented meaning ("entities with a slot
-                                // AND an existing BLAS").
-                                if !accel.has_skinned_blas(entity_id) {
-                                    continue;
-                                }
-                                // Past the slot gate → coverage counts a
-                                // real refit attempt. Entities without a
-                                // slot land in `slots_failed` instead.
-                                self.last_skin_coverage_frame.refits_attempted += 1;
-                                // Scratch-serialize barrier is now self-emitted at the
-                                // top of refit_skinned_blas (blas_skinned.rs:555, #983).
-                                // Removed the redundant caller-side emit (#1095 / REN-D12-002).
-                                match accel.refit_skinned_blas(
-                                    &self.device,
-                                    cmd,
-                                    entity_id,
-                                    crate::vulkan::acceleration::SkinnedBlasGeometry {
-                                        vertex_address: slot.output_address(),
-                                        vertex_count,
-                                        index_buffer: idx_buffer,
-                                        index_count: idx_count,
-                                    },
-                                ) {
-                                    Ok(()) => {
-                                        self.last_skin_coverage_frame.refits_succeeded += 1;
-                                    }
-                                    Err(e) => {
-                                        log::warn!(
-                                            "skin_compute BLAS refit failed for entity {entity_id}: {e}"
-                                        );
-                                        continue;
-                                    }
-                                }
-                            }
-                            // BLAS refit writes → TLAS build reads.
-                            // ACCELERATION_STRUCTURE_BUILD_KHR → ACCELERATION_STRUCTURE_BUILD_KHR
-                            memory_barrier(
-                                &self.device,
-                                cmd,
-                                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                                vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
-                                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                                vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
-                            );
-                        }
-                        // #1194 — END of skinned-BLAS refit bracket
-                        // (after the AS_BUILD→AS_BUILD barrier).
-                        if let Some(ref mut timers) = self.gpu_timers {
-                            timers.cmd_end(TimerPass::BlasRefit, &self.device, cmd, frame);
-                        }
+                        chain.record_skin_dispatches(
+                            cmd,
+                            frame,
+                            &dispatches,
+                            SkinDispatchBuffers {
+                                input_buffer,
+                                input_buffer_size: input_size,
+                                input_generation,
+                                bone_buffer: bone_buf,
+                                bone_buffer_size,
+                            },
+                            pose_dirty,
+                        );
+                        chain.record_builds_and_refits(
+                            cmd,
+                            frame,
+                            &dispatches,
+                            &first_sight_builds,
+                            &mut built_this_frame,
+                            pose_dirty,
+                        );
                     }
 
                     // #1133 — return the skin-path scratches to `self`.
@@ -924,72 +365,7 @@ impl VulkanContext {
                 // for this frame index dropped no SkinSlots and no skinned
                 // BLAS at all, even for entities the cell loader already
                 // despawned via `pending_skin_unload_victims`.
-                //
-                // #643 / MEM-2-1 — drop SkinSlots (and the matching
-                // skinned BLAS) for entities whose `last_used_frame`
-                // trails the current draw by more than
-                // `MAX_FRAMES_IN_FLIGHT` frames. Mirrors
-                // `evict_unused_blas`'s LRU pattern: the threshold
-                // guarantees no in-flight command buffer still
-                // references the descriptor sets / output buffer /
-                // BLAS, so synchronous destroy is safe — no
-                // deferred-destroy queue needed.
-                //
-                // Pre-fix the `skin_slots` HashMap and the
-                // `skinned_blas` map only ever had entries
-                // *inserted* (draw.rs first-sight loop) or *drained
-                // wholesale on Drop* (context/mod.rs). On long
-                // sessions that streamed through several
-                // worldspaces, every NPC ever rendered stayed
-                // resident; the FREE_DESCRIPTOR_SET pool would
-                // exhaust well before the player's exterior
-                // population caught up.
-                let min_idle = MAX_FRAMES_IN_FLIGHT as u64 + 1;
-                let now = self.frame_counter as u64;
-                // #1003 — drain `pending_skin_unload_victims` populated by
-                // `cell_loader::unload_cell`. These entities have been
-                // despawned; their slots and per-skinned BLAS must be
-                // released NOW (post-fence-wait, so no in-flight
-                // command buffer still references the output buffer).
-                let mut evictees: Vec<EntityId> =
-                    std::mem::take(&mut self.pending_skin_unload_victims);
-                // Continue with the regular eviction filter for entries
-                // that aged out via the idle policy (the original path
-                // that protects against entity-still-alive-but-not-
-                // drawn scenarios — camera moved off-screen, etc.).
-                evictees.extend(self.skin_slots.iter().filter_map(|(&eid, slot)| {
-                    super::super::skin_compute::should_evict_skin_slot(
-                        slot.last_used_frame,
-                        now,
-                        min_idle,
-                    )
-                    .then_some(eid)
-                }));
-                if !evictees.is_empty() {
-                    log::debug!(
-                        "skin_slots eviction: dropping {} idle SkinSlot(s) and matching skinned BLAS",
-                        evictees.len()
-                    );
-                    for eid in evictees {
-                        if let Some(slot) = self.skin_slots.remove(&eid) {
-                            skin_pipeline.destroy_slot(&self.device, alloc, slot);
-                        }
-                        accel.drop_skinned_blas(eid);
-                    }
-                    // Capacity opened up — un-suppress retry on every
-                    // entity that previously failed. Cheap (the set
-                    // caps at `skinned_count - SKIN_MAX_SLOTS`, zero
-                    // on healthy scenes) and correct: each cleared
-                    // entry will retry once next frame; if its
-                    // retry succeeds, it allocates a slot, otherwise
-                    // it re-enters the cache via the failure path.
-                    // See #900.
-                    self.failed_skin_slots.clear();
-                    // #2802 — same event, same reason: a failed BLAS
-                    // build is a memory-pressure signal, and eviction is
-                    // what changes that pressure.
-                    self.failed_skin_blas.clear();
-                }
+                chain.evict_idle_skin_slots();
             }
         }
         // #3374 — the `MorphSlot` eviction pass runs OUTSIDE the
@@ -1009,6 +385,20 @@ impl VulkanContext {
         // (the main geometry pipeline needs `bufferDeviceAddress`, which is
         // enabled only alongside ray queries), but the RT-optional path is a
         // plausible future and this coupling is not load-bearing.
+        self.evict_idle_morph_slots();
+        // #2803 — the host-side cost of the whole skinned chain
+        // (dispatch loop + first-sight builds + refits + eviction),
+        // measured since M29 but discarded until this counter gave it a
+        // consumer. Surfaced through `SkinCoverageStats` /
+        // `skin.coverage`; distinct from the GPU brackets (#1194), which
+        // time the device work this function only records.
+        self.last_skin_coverage_frame.cpu_skin_chain_ns = skin_t0.elapsed().as_nanos() as u64;
+    }
+
+    /// #3374 — drop `MorphSlot`s for despawned entities and for entries past the
+    /// idle threshold. Needs neither `skin_compute` nor `accel_manager`, which is
+    /// why it runs outside the skin chain's guard (see the call site).
+    fn evict_idle_morph_slots(&mut self) {
         if let Some(ref alloc) = self.allocator {
             let min_idle = MAX_FRAMES_IN_FLIGHT as u64 + 1;
             let now = self.frame_counter as u64;
@@ -1046,13 +436,771 @@ impl VulkanContext {
             self.morph_delta_cache
                 .retain(|_, delta| delta.strong_count() != 0);
         }
-        // #2803 — the host-side cost of the whole skinned chain
-        // (dispatch loop + first-sight builds + refits + eviction),
-        // measured since M29 but discarded until this counter gave it a
-        // consumer. Surfaced through `SkinCoverageStats` /
-        // `skin.coverage`; distinct from the GPU brackets (#1194), which
-        // time the device work this function only records.
-        self.last_skin_coverage_frame.cpu_skin_chain_ns = skin_t0.elapsed().as_nanos() as u64;
+    }
+}
+
+impl SkinChain<'_> {
+    /// Collect this frame's unique skinned entities and their per-mesh metadata
+    /// from `draw_commands`, into the caller's `seen` / `dispatches` scratch.
+    fn collect_skin_dispatches(
+        &mut self,
+        draw_commands: &[DrawCommand],
+        seen: &mut FxHashSet<EntityId>,
+        dispatches: &mut Vec<SkinDispatch>,
+    ) {
+        for dc in draw_commands.iter() {
+            if dc.bone_offset == 0 {
+                continue;
+            }
+            if !seen.insert(dc.entity_id) {
+                continue;
+            }
+            let Some(mesh) = self.mesh_registry.get(dc.mesh_handle) else {
+                continue;
+            };
+            // Only meshes uploaded RT-capable may back a BLAS: their
+            // index buffer is the AS build input, and without
+            // `SHADER_DEVICE_ADDRESS |
+            // ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR` both
+            // the device-address query and the build are invalid
+            // (VUID-VkBufferDeviceAddressInfo-buffer-02601 /
+            // -geometry-03673). Skinned effect-shader proxies and
+            // decals are uploaded `for_rt = false` precisely so rays
+            // don't hit their non-physical hulls; the static BLAS
+            // path already gates on the same flag, so this keeps the
+            // two paths consistent instead of ray-tracing a proxy
+            // only when it happens to be skinned.
+            if !mesh.rt_capable {
+                continue;
+            }
+            // #5187 (REN-D9-2026-10-03-01) — the skin-chain half
+            // of #3372's residency gate (which `app_frame.rs`
+            // applies to `in_raster`/`in_tlas` only). While a
+            // streaming transaction defers
+            // `rebuild_geometry_ssbo`, an appended mesh's
+            // `global_vertex_offset` lies past the bound global
+            // vertex buffer's end — or, post-compaction-plan,
+            // inside another mesh's bytes — so dispatching
+            // `skin_vertices.comp` against it is an OOB SSBO
+            // read with `robustBufferAccess` off, and the
+            // first-sight BLAS BUILD records the garbage as the
+            // entity's ray-traced geometry. Pre-fix a static-pose
+            // actor then kept that garbage forever: the
+            // `has_populated_output` gate suppresses every later
+            // re-dispatch, and nothing re-arms a slot when the
+            // geometry becomes resident. Skipping the draw HERE
+            // means no slot, no BLAS and no TLAS instance is
+            // ever created from non-resident geometry, and the
+            // gate re-arms itself: when the rebuild lands and
+            // residency flips, the entity is collected again and
+            // takes the ordinary first-sight path from valid
+            // geometry.
+            if !self.mesh_registry.is_geometry_resident(dc.mesh_handle) {
+                continue;
+            }
+            // #3231 — mirrors the `GpuInstance` morph lookup in
+            // `build_and_upload_instances.rs`: gate on `morph_slot_backs_mesh` so a
+            // slot that survived a mesh remap (mod swap, cell
+            // reload reusing an EntityId) never gets read by
+            // `skin_vertices.comp` against the wrong mesh's
+            // vertex/target counts.
+            let morph_slot_fields = self
+                .morph_slots
+                .get(&dc.entity_id)
+                .filter(|slot| {
+                    super::frame_params::morph_slot_backs_mesh(
+                        slot.vertex_count(),
+                        slot.target_count(),
+                        mesh.vertex_count,
+                    )
+                })
+                .map(|slot| {
+                    (
+                        slot.delta_address(),
+                        slot.weight_address(),
+                        slot.target_count(),
+                    )
+                });
+            let (morph_delta_address, morph_weight_address, morph_target_count) =
+                super::frame_params::morph_gpu_fields_for_draw(morph_slot_fields);
+            let push = super::super::skin_compute::SkinPushConstants {
+                morph_delta_address,
+                morph_weight_address,
+                vertex_offset: mesh.global_vertex_offset,
+                vertex_count: mesh.vertex_count,
+                bone_offset: dc.bone_offset,
+                morph_target_count,
+            };
+            dispatches.push((
+                dc.entity_id,
+                push,
+                mesh.index_buffer
+                    .as_ref()
+                    .expect("skinned mesh requires a per-mesh index buffer")
+                    .buffer,
+                mesh.index_count,
+                mesh.vertex_count,
+            ));
+        }
+        self.last_skin_coverage_frame.dispatches_total = dispatches.len() as u32;
+    }
+
+    /// Create the skin slots this frame's new entities need and queue their BLAS
+    /// BUILDs into `first_sight_builds` for [`Self::record_first_sight_builds`].
+    fn prepare_first_sight_builds(
+        &mut self,
+        dispatches: &[SkinDispatch],
+        first_sight_builds: &mut Vec<SkinBlasBuild>,
+    ) {
+        let skin_pipeline = self.skin_pipeline;
+        let alloc = self.alloc;
+        let accel = &mut *self.accel;
+
+        // First-sight setup: for each entity that doesn't
+        // yet have a SkinSlot OR a skinned BLAS, create
+        // the slot (CPU-only) and queue the BLAS BUILD
+        // onto the per-frame `cmd` via the batched on-cmd
+        // builder below. The steady-state compute dispatch
+        // (further down) serves as the prime for the
+        // newly-allocated slot — it writes the current
+        // pose into the slot's output buffer before the
+        // COMPUTE→AS_BUILD barrier, so the queued BUILD
+        // reads valid vertex data.
+        //
+        // #679 / AS-8-9 — also re-enter this path for
+        // entities whose BLAS has refit too many times
+        // and degraded BVH traversal quality.
+        // #5194 — build-then-swap: the entity is queued for
+        // a fresh BUILD while the OLD entry stays live. The
+        // pre-fix form dropped the BLAS first and let
+        // `needs_blas` turn true, so a BUILD failure
+        // (result-buffer / AS create / scratch grow under
+        // VRAM pressure) left the actor out of the TLAS
+        // until an unrelated eviction cleared
+        // `failed_skin_blas`. Now the TLAS keeps instancing
+        // the old entry and Phase 4's drop-before-insert
+        // (#2481) retires it only after the replacement is
+        // recorded; the slot's output buffer is preserved
+        // either way (compute keeps streaming poses through
+        // it), so only the BLAS object itself is replaced.
+        //
+        // #911 / REN-D5-NEW-02 — Pre-fix this loop paid
+        // 2 fence-waits per first-sight entity (one-time
+        // submit for compute prime + one-time submit for
+        // sync BLAS BUILD), stalling `draw_frame` by
+        // 2 × N queue waits on multi-NPC spawn frames.
+        // The on-cmd batched builder eliminates both
+        // host waits — every first-sight BUILD now
+        // submits as part of the per-frame command
+        // buffer that already carries the steady-state
+        // compute dispatch, scratch-serialise barriers,
+        // refit loop and TLAS build. Two-pass scratch
+        // sizing inside
+        // `build_skinned_blas_batched_on_cmd` keeps the
+        // shared `blas_scratch_buffer` device address
+        // stable across every recorded build in the
+        // batch (the failure mode of the naive
+        // "record N back-to-back, each inline-resizing
+        // scratch" path).
+        for &(entity_id, _push, idx_buffer, idx_count, vertex_count) in dispatches {
+            let mut needs_slot = !self.skin_slots.contains_key(&entity_id);
+
+            // #1297 / #1298 (DIM12-A-01) — reconcile an existing
+            // slot's allocated capacity against the live mesh
+            // vertex_count. If the entity's mesh_handle was remapped
+            // to a different-vertex-count mesh, the slot's output
+            // buffer (sized at create_slot time) is mis-sized, and
+            // the compute dispatch — bounded only by
+            // `push.vertex_count`, not the slot capacity — would
+            // write past the buffer (OOB). Destroy + recreate the
+            // slot and drop the now-stale paired skinned BLAS so
+            // `create_slot` re-allocs to the new size. Immediate
+            // destroy is safe here: the wait-on-both-in-flight-
+            // fences at the top of `draw_frame` (line ~234) has
+            // retired every command buffer referencing this slot's
+            // buffer. Symmetric with the BLAS-side
+            // `validate_refit_counts` guard.
+            if !needs_slot {
+                let stale_vc = self
+                    .skin_slots
+                    .get(&entity_id)
+                    .map(|s| s.vertex_count())
+                    .filter(|&slot_vc| {
+                        super::super::skin_compute::skin_slot_capacity_stale(slot_vc, vertex_count)
+                    });
+                if let Some(slot_vc) = stale_vc {
+                    log::info!(
+                        "skin_compute slot for entity {entity_id} sized {slot_vc} verts \
+                         but mesh now has {vertex_count} (mesh remap) — recreating slot \
+                         to avoid OOB compute write (#1298)"
+                    );
+                    if let Some(slot) = self.skin_slots.remove(&entity_id) {
+                        skin_pipeline.destroy_slot(self.device, alloc, slot);
+                    }
+                    accel.drop_skinned_blas(entity_id);
+                    needs_slot = true;
+                }
+            }
+
+            let rebuild_due = accel.should_rebuild_skinned_blas(entity_id);
+            if rebuild_due {
+                log::info!(
+                    "skin_compute BLAS rebuild for entity {entity_id} — \
+                     refit chain reached {} frames, queueing fresh BUILD \
+                     with swap-on-success (#679 / #5194)",
+                    accel
+                        .skinned_blas_entry(entity_id)
+                        .map(|e| e.refit_count)
+                        .unwrap_or(0),
+                );
+            }
+            let needs_blas = accel.skinned_blas_entry(entity_id).is_none();
+            if !needs_slot && !needs_blas && !rebuild_due {
+                continue;
+            }
+            // Skip retry on entities whose previous attempt
+            // failed — `failed_skin_slots` is cleared on any
+            // LRU eviction (capacity opened), so a real change
+            // in pool occupancy un-suppresses the retry
+            // naturally. Pre-#900 the failure path re-fired
+            // `create_slot` every frame and re-logged the
+            // WARN, observed at 58 WARN / 300 frames on
+            // post-M41-EQUIP Prospector. The suppression
+            // happens *before* the attempt counter so the
+            // coverage gauge reports "real attempts made this
+            // frame" rather than "entities the loop visited."
+            if needs_slot && self.failed_skin_slots.contains(&entity_id) {
+                continue;
+            }
+            // #2802 — the BLAS sibling of the gate above.
+            // A failed first-sight build leaves the slot
+            // behind, so `needs_slot` is false from the next
+            // frame on and the slot gate can never suppress
+            // it; without this the entity re-ran the size
+            // query + build every frame and logged two WARNs
+            // per frame (build + the refit that then finds no
+            // BLAS). Same clear rule: LRU eviction re-opens
+            // the retry.
+            if needs_blas && self.failed_skin_blas.contains(&entity_id) {
+                continue;
+            }
+            self.last_skin_coverage_frame.first_sight_attempted += 1;
+            if needs_slot {
+                match skin_pipeline.create_slot(self.device, alloc, vertex_count) {
+                    Ok(slot) => {
+                        self.skin_slots.insert(entity_id, slot);
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "skin_compute create_slot failed for entity {entity_id}: {e} \
+                             — skinned RT shadow disabled for this entity (raster unaffected)"
+                        );
+                        self.failed_skin_slots.insert(entity_id);
+                        continue;
+                    }
+                }
+            }
+            if needs_blas || rebuild_due {
+                let Some(slot) = self.skin_slots.get(&entity_id) else {
+                    continue;
+                };
+                first_sight_builds.push((
+                    entity_id,
+                    slot.output_buffer.buffer,
+                    vertex_count,
+                    idx_buffer,
+                    idx_count,
+                ));
+            } else {
+                // Slot was missing but BLAS already existed —
+                // structurally impossible today (slot+BLAS are
+                // paired on insert and slot eviction also drops
+                // the BLAS). Counted as a successful first-sight
+                // pass so the coverage gauge stays sound if a
+                // future refactor decouples the pair.
+                self.last_skin_coverage_frame.first_sight_succeeded += 1;
+            }
+        }
+    }
+
+    /// Record the skin compute dispatch loop inside its `SkinDispatch` timer
+    /// bracket, skipping entities whose pose is unchanged.
+    fn record_skin_dispatches(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        dispatches: &[SkinDispatch],
+        buffers: SkinDispatchBuffers,
+        pose_dirty: &rustc_hash::FxHashSet<EntityId>,
+    ) {
+        let skin_pipeline = self.skin_pipeline;
+        // #1194 — bracket the skin compute dispatch
+        // loop. START sits before the per-entity
+        // dispatches; END sits after the loop body
+        // (before the COMPUTE→AS_BUILD barrier so
+        // the bracket measures only the dispatches
+        // themselves, not the barrier transition cost
+        // which lands inside the BLAS refit window).
+        if let Some(ref mut timers) = self.gpu_timers {
+            timers.cmd_start(TimerPass::SkinDispatch, self.device, cmd, frame);
+        }
+        // SAFETY: `cmd` is recording; `skin_pipeline`, each `slot`'s descriptors, and the global vertex / bone input buffers are live for this frame. The pipeline is bound ONCE for the whole batch below (#4205, `SkinComputePipeline::bind`); each `dispatch` binds only that entity's slot descriptor set at the COMPUTE bind point (pinned by `slot_dispatch_does_not_rebind_the_pipeline_per_entity`). The loop records sequentially with no concurrent use of `cmd`.
+        unsafe {
+            // #4205 — one pipeline bind for the whole batch,
+            // taken lazily so a frame whose every entity hits
+            // the skip gate below records no bind at all.
+            let mut bound = None;
+            for &(entity_id, push, _, _, _) in dispatches {
+                let Some(slot) = self.skin_slots.get_mut(&entity_id) else {
+                    continue;
+                };
+                // #643 / MEM-2-1 — bump LRU first
+                // (before the skip gate) so the
+                // eviction sweep below sees this
+                // entity as "active this frame" even
+                // when the dispatch is skipped.
+                slot.last_used_frame =
+                    super::super::skin_compute::skin_lru_stamp(self.frame_counter);
+                // #4294 — no `MorphSlot` LRU bump here. This loop skips hidden,
+                // slot-less and non-RT-capable entities, and a `MorphSlot` is never
+                // rebuilt once reaped; `VulkanContext::refresh_morph_slot_lru` stamps
+                // it from entity liveness instead.
+
+                // #1195 / PERF-DIM7-01 — skip the
+                // dispatch when the entity's pose is
+                // unchanged AND the output buffer is
+                // already populated. First-sight slots
+                // always fall through to the dispatch
+                // below (their `has_populated_output`
+                // is still false).
+                let is_dirty = pose_dirty.contains(&entity_id);
+                if slot.has_populated_output && !is_dirty {
+                    self.last_skin_coverage_frame.dispatches_skipped += 1;
+                    continue;
+                }
+                let bound = bound.get_or_insert_with(|| skin_pipeline.bind(self.device, cmd));
+                skin_pipeline.dispatch(bound, self.device, cmd, slot, frame, buffers, push);
+                // #3991 — the "populated" bit is what the
+                // NEXT frame's skip gate reads, and it is only
+                // true once this frame's dispatch has actually
+                // executed. Setting it here, at record time,
+                // makes it true for a command buffer
+                // `draw_frame`'s three tail `Err` sites may
+                // still discard — after which the slot's
+                // output buffer is treated as populated while
+                // holding whatever it held before, and its
+                // BLAS is refit against that.
+                //
+                // Latched instead; promoted after
+                // `queue_submit` returns `Ok`. Only entities
+                // whose bit this dispatch would newly set are
+                // recorded, so a rollback cannot clear a bit an
+                // earlier successful frame established.
+                if !slot.has_populated_output {
+                    self.skin_pending_populated.push(entity_id);
+                }
+            }
+        }
+        // #1194 — END of skin compute dispatch bracket
+        // (before the COMPUTE→AS_BUILD barrier).
+        if let Some(ref mut timers) = self.gpu_timers {
+            timers.cmd_end(TimerPass::SkinDispatch, self.device, cmd, frame);
+        }
+    }
+
+    /// Publish the skin outputs, record the first-sight BLAS BUILDs and the refit
+    /// loop, then hand the results to the TLAS build. The order here is the
+    /// barrier chain's contract; each step's comment says why it sits where it does.
+    fn record_builds_and_refits(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        dispatches: &[SkinDispatch],
+        first_sight_builds: &[SkinBlasBuild],
+        built_this_frame: &mut FxHashSet<EntityId>,
+        pose_dirty: &rustc_hash::FxHashSet<EntityId>,
+    ) {
+        // SAFETY: `cmd` is recording. The COMPUTE_SHADER_WRITE -> (AS_BUILD | FRAGMENT)_READ barrier sequences the skin outputs before they are read as BLAS build inputs and before triangle.frag / water.frag dereference them via `skinnedVertexAddress` (#2403); the first-sight builds and refits share `blas_scratch_buffer` and self-emit AS_WRITE->AS_WRITE scratch-serialize barriers between builds; the closing AS_BUILD_WRITE -> AS_BUILD_READ barrier hands refit results to the TLAS build below.
+        unsafe {
+            // Compute writes (skinned vertex output
+            // buffers) → AS build input reads. Covers
+            // both the first-sight BUILD batch below
+            // and the refit loop further down — both
+            // read the freshly-written output buffers
+            // as BLAS-build vertex input.
+            // COMPUTE_SHADER → ACCELERATION_STRUCTURE_BUILD_KHR
+            // | FRAGMENT_SHADER.
+            // Skinned vertex output is a BLAS-build INPUT, so the
+            // dst access is SHADER_READ (the spec's build-input
+            // access), NOT ACCELERATION_STRUCTURE_READ. #1436.
+            //
+            // #2403 / CHAIN2-D2-01 — the FRAGMENT_SHADER dst bit
+            // covers the *second* consumer this buffer acquired
+            // in #2219: `GpuInstance.skinnedVertexAddress` is a
+            // raw `GL_EXT_buffer_reference` address that
+            // `getHitTriWorldPositions` (ray_hit.glsl, included
+            // by triangle.frag / water.frag) dereferences for
+            // secondary-ray hits on skinned actors. The AS
+            // barriers that follow are AS_WRITE → AS_READ, whose
+            // src access scope does not include this compute
+            // SHADER_WRITE, so before this widening nothing in
+            // the skin chain published the write to the fragment
+            // stage. It happened to work only because the
+            // cluster-cull pass emits a trailing *global*
+            // COMPUTE/SHADER_WRITE → FRAGMENT/SHADER_READ
+            // barrier later in `draw_frame` — but that lives
+            // inside `if let Some(ref cc) = self.cluster_cull`,
+            // and `ClusterCullPipeline::new` failure degrades to
+            // `None` without gating the RT path. Cluster-cull
+            // absent + a skinned actor seen through glass or
+            // water was therefore a genuine read-after-write
+            // hazard. Widening the dst here makes the
+            // dependency this chain's own, and purely additive:
+            // a wider dst stage mask can only add execution
+            // dependencies, never remove one.
+            //
+            // #3582 — `COMPUTE_SHADER` joins the dst mask for
+            // the same reason #2403 added `FRAGMENT_SHADER`:
+            // a new consumer appeared. `caustic_splat.comp`
+            // dereferences `hit.skinnedVertexAddress` through
+            // its own inline `SkinnedVertexRef` block (added
+            // by `9bf7d024`) rather than through
+            // `include/ray_hit.glsl`, so an include-graph
+            // trace still comes back clean while the deref
+            // exists — which is how the 2026-08-14 audit
+            // cleared this exact missing bit one day before
+            // it became wrong. Execution order was already
+            // established by chaining (skin compute ->
+            // AS_BUILD here, AS_BUILD -> COMPUTE in
+            // `draw.rs`); what was missing was purely memory
+            // VISIBILITY to COMPUTE/SHADER_READ. Every
+            // intervening barrier was walked in command
+            // order: none covers `COMPUTE`/`SHADER_WRITE` ->
+            // `COMPUTE`/`SHADER_READ`. The one that would
+            // (`post_passes.rs`'s volumetrics barrier) runs
+            // AFTER the caustic pass and is gated behind the
+            // volumetrics triple.
+            memory_barrier(
+                self.device,
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::AccessFlags::SHADER_WRITE,
+                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR
+                    | vk::PipelineStageFlags::FRAGMENT_SHADER
+                    | vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::AccessFlags::SHADER_READ,
+            );
+            // #911 — first-sight BLAS BUILDs piggyback
+            // on the per-frame `cmd` rather than each
+            // paying a host fence-wait. The compute
+            // dispatch above served as the prime for
+            // every newly-allocated slot in
+            // `first_sight_builds`; the
+            // COMPUTE→AS_BUILD barrier just emitted
+            // hands those writes to the build inputs.
+            // The helper sizes the shared scratch from
+            // each entity's max of BUILD and UPDATE
+            // scratch (#5195 — the spec does not bound
+            // updateScratchSize by buildScratchSize),
+            // grows `blas_scratch_buffer` ONCE to the
+            // max demand of the batch, then records each
+            // build with an internal scratch-serialise
+            // barrier (`AS_WRITE→AS_WRITE`) between
+            // iterations so the shared scratch is
+            // safely sequenced. The first refit
+            // iteration below emits its own
+            // scratch-serialise barrier as well
+            // (#983 / REN-D8-NEW-15), covering the
+            // BUILD-batch → first-refit transition.
+            if !first_sight_builds.is_empty() {
+                self.record_first_sight_builds(cmd, first_sight_builds, built_this_frame);
+            }
+            // Each `refit_skinned_blas` call shares
+            // `blas_scratch_buffer` with every other
+            // refit in this loop AND with any BUILD
+            // that ran earlier this frame — the
+            // first-sight batch above (same `cmd`,
+            // post-#911) and any `build_blas_batched`
+            // cell-load (separate submission). Vulkan
+            // spec on `scratchData` requires an
+            // AS_WRITE → AS_WRITE serialise barrier
+            // between every pair of AS-builds that
+            // share scratch, regardless of submission
+            // boundary (the host fence-wait is a
+            // host-side dependency only and does NOT
+            // establish device-side memory ordering
+            // for the next submission). Emitting the
+            // barrier before EVERY iteration covers
+            // both refit→refit (#642), the
+            // cross-submission BUILD→first-refit case
+            // (#644 / MEM-2-2), and the same-cmd
+            // BUILD-batch→first-refit case introduced
+            // by #911 (the batched on-cmd builder
+            // leaves an AS_WRITE in flight). The
+            // redundant first-iteration barrier is
+            // essentially free when the cmd has no
+            // prior AS-build — same-stage
+            // AS_WRITE↔AS_WRITE on a queue with no
+            // in-flight build work.
+            // #1194 — bracket the skinned-BLAS refit loop.
+            // START is just before the loop body; END
+            // is right after the AS_BUILD→AS_BUILD
+            // barrier closes the refit window.
+            if let Some(ref mut timers) = self.gpu_timers {
+                timers.cmd_start(TimerPass::BlasRefit, self.device, cmd, frame);
+            }
+            self.record_skinned_refits(cmd, dispatches, built_this_frame, pose_dirty);
+            // BLAS refit writes → TLAS build reads.
+            // ACCELERATION_STRUCTURE_BUILD_KHR → ACCELERATION_STRUCTURE_BUILD_KHR
+            memory_barrier(
+                self.device,
+                cmd,
+                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
+                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+            );
+        }
+        // #1194 — END of skinned-BLAS refit bracket
+        // (after the AS_BUILD→AS_BUILD barrier).
+        if let Some(ref mut timers) = self.gpu_timers {
+            timers.cmd_end(TimerPass::BlasRefit, self.device, cmd, frame);
+        }
+    }
+
+    /// Record the batched first-sight BLAS BUILDs onto the per-frame `cmd`, marking
+    /// each success in `built_this_frame` and routing each failure to its retry policy.
+    fn record_first_sight_builds(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        first_sight_builds: &[SkinBlasBuild],
+        built_this_frame: &mut FxHashSet<EntityId>,
+    ) {
+        let alloc = self.alloc;
+        let accel = &mut *self.accel;
+        let results =
+            accel.build_skinned_blas_batched_on_cmd(self.device, alloc, cmd, first_sight_builds);
+        for (entity_id, result) in results {
+            match result {
+                Ok(()) => {
+                    self.last_skin_coverage_frame.first_sight_succeeded += 1;
+                    // D6-05 / #1812 — mark this
+                    // entity so the refit loop
+                    // below skips it: the BUILD
+                    // just recorded already
+                    // produced a complete BLAS
+                    // from the exact same vertex
+                    // data a refit would re-read.
+                    // A failed build does NOT get
+                    // marked — it leaves no BLAS
+                    // behind, so the refit's own
+                    // `accel.has_skinned_blas`
+                    // check still governs that
+                    // entity unchanged.
+                    built_this_frame.insert(entity_id);
+                }
+                // #2802 — record the failure so the
+                // retry is suppressed until an LRU
+                // eviction re-opens it: one WARN per
+                // pressure episode instead of one per
+                // frame, per entity.
+                //
+                // #5194 — a forced-REBUILD failure is
+                // the different case: build-then-swap
+                // left the entity's pre-swap BLAS
+                // live, so keep it refitting (the
+                // degraded BVH the rebuild was fixing
+                // is the pre-fix failure mode's
+                // alternative, not a new cost) and
+                // reset its refit_count so the retry
+                // comes after another full refit
+                // cycle instead of every frame. Only
+                // a genuine first-sight failure — no
+                // entry at all — parks the entity in
+                // `failed_skin_blas`.
+                Err(e) => {
+                    if accel.skinned_blas_entry(entity_id).is_some() {
+                        log::warn!(
+                            "skin_compute BLAS rebuild failed for entity {entity_id}: {e} \
+                                 — keeping the live BLAS refitting (degraded BVH); \
+                                 retry after another refit cycle (#5194)"
+                        );
+                        accel.reset_skinned_blas_refit_count(entity_id);
+                    } else {
+                        log::warn!(
+                                "skin_compute first-sight BLAS build failed for entity {entity_id}: {e} \
+                                 — skinned RT disabled for this entity until an eviction frees capacity \
+                                 (raster unaffected)"
+                            );
+                        self.failed_skin_blas.insert(entity_id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Record the UPDATE-mode refit of each entity whose pose changed.
+    ///
+    /// # Safety
+    /// `cmd` must be recording, with the skin output publish barrier already
+    /// emitted. `refit_skinned_blas` self-emits its scratch-serialize barrier; the
+    /// caller closes the refit window with the AS_BUILD -> AS_BUILD barrier.
+    unsafe fn record_skinned_refits(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        dispatches: &[SkinDispatch],
+        built_this_frame: &FxHashSet<EntityId>,
+        pose_dirty: &rustc_hash::FxHashSet<EntityId>,
+    ) {
+        let accel = &mut *self.accel;
+        for &(entity_id, _, idx_buffer, idx_count, vertex_count) in dispatches {
+            let Some(slot) = self.skin_slots.get(&entity_id) else {
+                continue;
+            };
+            // #1196 / PERF-DIM7-02 — paired refit
+            // gate. Same predicate as the dispatch
+            // skip above: if the entity's pose was
+            // unchanged this frame AND the slot
+            // already has a populated output AND a
+            // live BLAS, skip the refit. The BLAS
+            // still references the same output
+            // buffer; nothing changed underneath
+            // it. The skip uses the same
+            // `pose_dirty` set so the two decisions
+            // can't diverge — the "split decisions
+            // are the trap" warning from the audit.
+            //
+            // D6-05 / #1812 — first-sight entities
+            // are always dirty, so the predicate
+            // above alone can't catch them; they
+            // used to fall through to a full UPDATE
+            // against the exact vertex data their
+            // BUILD (above, same `cmd`) just
+            // consumed — pure wasted work, not a
+            // correctness requirement. Skip them via
+            // `built_this_frame` instead.
+            let is_dirty = pose_dirty.contains(&entity_id);
+            if built_this_frame.contains(&entity_id)
+                || (slot.has_populated_output && !is_dirty && accel.has_skinned_blas(entity_id))
+            {
+                // Skip path mirrors the dispatch
+                // skip — counts via `dispatches_skipped`
+                // is the dispatch's responsibility;
+                // refit just falls through silently.
+                continue;
+            }
+            // #2802 — an entity with no BLAS cannot be
+            // refitted: `refit_skinned_blas` submits
+            // `mode = UPDATE` against an existing
+            // structure, so it would fail its "no
+            // skinned BLAS for entity" lookup and WARN.
+            // That state means this frame's first-sight
+            // build failed or was suppressed, and the
+            // first-sight path owns the retry — skip
+            // silently rather than counting an attempt
+            // that could never succeed. This is also
+            // what makes `refits_attempted` match its
+            // documented meaning ("entities with a slot
+            // AND an existing BLAS").
+            if !accel.has_skinned_blas(entity_id) {
+                continue;
+            }
+            // Past the slot gate → coverage counts a
+            // real refit attempt. Entities without a
+            // slot land in `slots_failed` instead.
+            self.last_skin_coverage_frame.refits_attempted += 1;
+            // Scratch-serialize barrier is now self-emitted at the
+            // top of refit_skinned_blas (blas_skinned.rs:555, #983).
+            // Removed the redundant caller-side emit (#1095 / REN-D12-002).
+            match accel.refit_skinned_blas(
+                self.device,
+                cmd,
+                entity_id,
+                crate::vulkan::acceleration::SkinnedBlasGeometry {
+                    vertex_address: slot.output_address(),
+                    vertex_count,
+                    index_buffer: idx_buffer,
+                    index_count: idx_count,
+                },
+            ) {
+                Ok(()) => {
+                    self.last_skin_coverage_frame.refits_succeeded += 1;
+                }
+                Err(e) => {
+                    log::warn!("skin_compute BLAS refit failed for entity {entity_id}: {e}");
+                    continue;
+                }
+            }
+        }
+    }
+
+    /// Release skin slots and skinned BLAS for despawned entities and for entries
+    /// past the idle threshold, then re-open the failed-build retries if that freed
+    /// anything.
+    fn evict_idle_skin_slots(&mut self) {
+        let skin_pipeline = self.skin_pipeline;
+        let alloc = self.alloc;
+        let accel = &mut *self.accel;
+        // #643 / MEM-2-1 — drop SkinSlots (and the matching
+        // skinned BLAS) for entities whose `last_used_frame`
+        // trails the current draw by more than
+        // `MAX_FRAMES_IN_FLIGHT` frames. Mirrors
+        // `evict_unused_blas`'s LRU pattern: the threshold
+        // guarantees no in-flight command buffer still
+        // references the descriptor sets / output buffer /
+        // BLAS, so synchronous destroy is safe — no
+        // deferred-destroy queue needed.
+        //
+        // Pre-fix the `skin_slots` HashMap and the
+        // `skinned_blas` map only ever had entries
+        // *inserted* (draw.rs first-sight loop) or *drained
+        // wholesale on Drop* (context/mod.rs). On long
+        // sessions that streamed through several
+        // worldspaces, every NPC ever rendered stayed
+        // resident; the FREE_DESCRIPTOR_SET pool would
+        // exhaust well before the player's exterior
+        // population caught up.
+        let min_idle = MAX_FRAMES_IN_FLIGHT as u64 + 1;
+        let now = self.frame_counter as u64;
+        // #1003 — drain `pending_skin_unload_victims` populated by
+        // `cell_loader::unload_cell`. These entities have been
+        // despawned; their slots and per-skinned BLAS must be
+        // released NOW (post-fence-wait, so no in-flight
+        // command buffer still references the output buffer).
+        let mut evictees: Vec<EntityId> = std::mem::take(self.pending_skin_unload_victims);
+        // Continue with the regular eviction filter for entries
+        // that aged out via the idle policy (the original path
+        // that protects against entity-still-alive-but-not-
+        // drawn scenarios — camera moved off-screen, etc.).
+        evictees.extend(self.skin_slots.iter().filter_map(|(&eid, slot)| {
+            super::super::skin_compute::should_evict_skin_slot(slot.last_used_frame, now, min_idle)
+                .then_some(eid)
+        }));
+        if !evictees.is_empty() {
+            log::debug!(
+                "skin_slots eviction: dropping {} idle SkinSlot(s) and matching skinned BLAS",
+                evictees.len()
+            );
+            for eid in evictees {
+                if let Some(slot) = self.skin_slots.remove(&eid) {
+                    skin_pipeline.destroy_slot(self.device, alloc, slot);
+                }
+                accel.drop_skinned_blas(eid);
+            }
+            // Capacity opened up — un-suppress retry on every
+            // entity that previously failed. Cheap (the set
+            // caps at `skinned_count - SKIN_MAX_SLOTS`, zero
+            // on healthy scenes) and correct: each cleared
+            // entry will retry once next frame; if its
+            // retry succeeds, it allocates a slot, otherwise
+            // it re-enters the cache via the failure path.
+            // See #900.
+            self.failed_skin_slots.clear();
+            // #2802 — same event, same reason: a failed BLAS
+            // build is a memory-pressure signal, and eviction is
+            // what changes that pressure.
+            self.failed_skin_blas.clear();
+        }
     }
 }
 
@@ -1135,6 +1283,75 @@ mod skin_publish_barrier_consumer_tests {
 // live-Vulkan-device path, so (mirroring `skin_dispatch_ran_ordering_tests`
 // above) this pins the fix at the source level rather than exercising it
 // end-to-end.
+// #6708 — the phases are helpers now, so their order is one line per phase in
+// two functions. Pin it: this is the skin chain's barrier contract.
+#[cfg(test)]
+mod skin_chain_phase_order_tests {
+    fn assert_in_order(body: &str, what: &str, needles: &[&str]) {
+        let mut last = 0;
+        for needle in needles {
+            let at = body[last..]
+                .find(needle)
+                .unwrap_or_else(|| panic!("{what}: `{needle}` missing or out of order"));
+            last += at + needle.len();
+        }
+    }
+
+    #[test]
+    fn the_recorder_runs_its_phases_in_order() {
+        let src = crate::source_scan::production_text(include_str!("skinned_blas_refit.rs"));
+        assert_in_order(
+            crate::source_scan::function_text(src, "fn record_skinned_blas_refit("),
+            "record_skinned_blas_refit",
+            &[
+                "self.skin_dispatch_ran = true;",
+                "if self.bind_inverse_upload_failed {",
+                "chain.collect_skin_dispatches(",
+                "chain.prepare_first_sight_builds(",
+                "chain.record_skin_dispatches(",
+                "chain.record_builds_and_refits(",
+                "self.scratch.skin_built_this_frame_scratch = built_this_frame;",
+                "chain.evict_idle_skin_slots();",
+                "self.evict_idle_morph_slots();",
+                "self.last_skin_coverage_frame.cpu_skin_chain_ns =",
+            ],
+        );
+    }
+
+    #[test]
+    fn the_barriers_bracket_the_builds_and_refits_in_order() {
+        let src = crate::source_scan::production_text(include_str!("skinned_blas_refit.rs"));
+        assert_in_order(
+            crate::source_scan::function_text(src, "fn record_builds_and_refits("),
+            "record_builds_and_refits",
+            &[
+                // COMPUTE -> AS_BUILD publish: the prime both phases below read.
+                "vk::PipelineStageFlags::COMPUTE_SHADER,",
+                "self.record_first_sight_builds(",
+                "timers.cmd_start(TimerPass::BlasRefit,",
+                "self.record_skinned_refits(",
+                // AS_BUILD -> AS_BUILD: hands the results to the TLAS build.
+                "vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,",
+                "timers.cmd_end(TimerPass::BlasRefit,",
+            ],
+        );
+    }
+
+    #[test]
+    fn the_dispatch_bracket_closes_before_the_publish_barrier() {
+        let src = crate::source_scan::production_text(include_str!("skinned_blas_refit.rs"));
+        assert_in_order(
+            crate::source_scan::function_text(src, "fn record_skin_dispatches("),
+            "record_skin_dispatches",
+            &[
+                "timers.cmd_start(TimerPass::SkinDispatch,",
+                "skin_pipeline.dispatch(",
+                "timers.cmd_end(TimerPass::SkinDispatch,",
+            ],
+        );
+    }
+}
+
 #[cfg(test)]
 mod skin_built_this_frame_skip_tests {
     #[test]
@@ -1145,7 +1362,7 @@ mod skin_built_this_frame_skip_tests {
             .find("built_this_frame.insert(entity_id);")
             .expect("draw_frame must mark successfully-built entities in built_this_frame (#1812)");
         let ok_arm_pos = src
-            .find("Ok(()) => {\n                                            self.last_skin_coverage_frame.first_sight_succeeded")
+            .find("Ok(()) => {\n                    self.last_skin_coverage_frame.first_sight_succeeded")
             .expect("the first-sight build result match must have an Ok(()) arm");
         // #5194 — the Err arm now discriminates a forced-rebuild failure
         // (live entry kept, refit counter reset) from a genuine first-sight
@@ -1171,8 +1388,17 @@ mod skin_built_this_frame_skip_tests {
         let refits_attempted_pos = src
             .find("self.last_skin_coverage_frame.refits_attempted += 1;")
             .expect("the refit loop must count attempted refits");
+        // The two loops are separate helpers, so what orders them is the call
+        // sequence in `record_builds_and_refits`, not their place in this file.
+        let driver = crate::source_scan::function_text(src, "fn record_builds_and_refits(");
+        let builds_call = driver
+            .find("self.record_first_sight_builds(")
+            .expect("the first-sight builds must be recorded from record_builds_and_refits");
+        let refits_call = driver
+            .find("self.record_skinned_refits(")
+            .expect("the refits must be recorded from record_builds_and_refits");
         assert!(
-            insert_pos < refit_gate_pos,
+            insert_pos < refit_gate_pos && builds_call < refits_call,
             "built_this_frame must be populated by the build-results loop before \
              the refit loop reads it"
         );
@@ -1326,20 +1552,32 @@ mod skin_eviction_runs_without_global_vertex_buffer_tests {
     fn morph_eviction_drain_sits_outside_the_skin_compute_accel_guard() {
         let src = crate::source_scan::production_text(include_str!("skinned_blas_refit.rs"));
 
-        let guard_open_pos = src
+        let recorder = crate::source_scan::function_text(src, "fn record_skinned_blas_refit(");
+        let guard_open_pos = recorder
             .find("if let (Some(skin_pipeline), Some(ref mut accel)) =")
             .expect("the skin_compute + accel_manager guard must exist");
-        // Last statement inside that guard, followed by its three closing
+        // Last statement inside that guard, followed by its two closing
         // braces. Everything after this point is outside the guard.
-        let guard_close_pos = src
-            .find("self.failed_skin_blas.clear();\n                }\n            }\n        }")
+        let guard_close_pos = recorder
+            .find("chain.evict_idle_skin_slots();\n            }\n        }")
             .expect(
-                "the (skin_compute, accel_manager) guard must close after the \
-                 failed_skin_blas clear, with no morph eviction still nested inside it",
+                "the (skin_compute, accel_manager) guard must close right after the \
+                 skin eviction, with no morph eviction still nested inside it",
             );
-        let morph_drain_pos = src
-            .find("let mut morph_evictees: Vec<EntityId> =")
-            .expect("the pending_morph_unload_victims drain must exist");
+        let morph_drain_pos = recorder
+            .find("self.evict_idle_morph_slots();")
+            .expect("the pending_morph_unload_victims drain must run from the recorder");
+        // The drain itself must need neither guarded option, or calling it from
+        // outside the guard would prove nothing.
+        let morph = crate::source_scan::function_text(src, "fn evict_idle_morph_slots(");
+        assert!(
+            morph.contains("let mut morph_evictees: Vec<EntityId> ="),
+            "evict_idle_morph_slots must drain pending_morph_unload_victims"
+        );
+        assert!(
+            !morph.contains("self.skin_compute") && !morph.contains("self.accel_manager"),
+            "a MorphSlot needs only the device and the allocator to be destroyed (#3374)"
+        );
 
         assert!(
             guard_open_pos < guard_close_pos,
@@ -1359,12 +1597,13 @@ mod skin_eviction_runs_without_global_vertex_buffer_tests {
     fn eviction_drain_sits_outside_the_input_buffer_bone_buffer_guard() {
         let src = crate::source_scan::production_text(include_str!("skinned_blas_refit.rs"));
 
-        let guard_open_pos = src
+        let recorder = crate::source_scan::function_text(src, "fn record_skinned_blas_refit(");
+        let guard_open_pos = recorder
             .find("if let (Some((input_buffer, input_size)), Some(bone_buf)) =")
             .expect("the dispatch-loop guard on (global_vert_buf, bone_buffer) must exist");
         // The guard's body ends right after the scratch-cluster restore;
-        // its closing brace must appear before the eviction drain starts.
-        let guard_close_pos = src
+        // its closing brace must appear before the eviction call.
+        let guard_close_pos = recorder
             .find(
                 "self.scratch.skin_built_this_frame_scratch = built_this_frame;\n                }",
             )
@@ -1372,13 +1611,21 @@ mod skin_eviction_runs_without_global_vertex_buffer_tests {
                 "the (input_buffer, bone_buf) guard must close immediately after the \
                  scratch-cluster restore, with no eviction code still nested inside it (#2494)",
             );
-        let drain_pos = src
-            .find("let mut evictees: Vec<EntityId> =")
-            .expect("the pending_skin_unload_victims drain must exist");
-        let lru_sweep_pos = src
-            .find("evictees.extend(self.skin_slots.iter().filter_map(")
-            .expect("the SkinSlot LRU sweep must exist");
-        let skin_chain_ns_pos = src
+        // The drain and the sweep both live in `evict_idle_skin_slots`, so that
+        // call is what has to sit outside the guard.
+        let eviction_call_pos = recorder
+            .find("chain.evict_idle_skin_slots();")
+            .expect("the recorder must run the skin eviction pass");
+        let eviction = crate::source_scan::function_text(src, "fn evict_idle_skin_slots(");
+        assert!(
+            eviction.contains("let mut evictees: Vec<EntityId> ="),
+            "the pending_skin_unload_victims drain must exist"
+        );
+        assert!(
+            eviction.contains("evictees.extend(self.skin_slots.iter().filter_map("),
+            "the SkinSlot LRU sweep must exist"
+        );
+        let skin_chain_ns_pos = recorder
             .find("self.last_skin_coverage_frame.cpu_skin_chain_ns =")
             .expect(
                 "record_skinned_blas_refit must record its elapsed time as the last thing \
@@ -1391,7 +1638,7 @@ mod skin_eviction_runs_without_global_vertex_buffer_tests {
             "sanity: guard open must precede its own close"
         );
         assert!(
-            guard_close_pos < drain_pos,
+            guard_close_pos < eviction_call_pos,
             "pending_skin_unload_victims must be drained OUTSIDE the \
              (global_vert_buf, bone_buffer) guard — otherwise a frame with no \
              global vertex buffer (before first upload, or mid geometry-SSBO \
@@ -1400,12 +1647,7 @@ mod skin_eviction_runs_without_global_vertex_buffer_tests {
              slots stay resident (#2494)"
         );
         assert!(
-            guard_close_pos < lru_sweep_pos,
-            "the SkinSlot LRU idle sweep must also sit outside the \
-             (global_vert_buf, bone_buffer) guard (#2494)"
-        );
-        assert!(
-            drain_pos < skin_chain_ns_pos && lru_sweep_pos < skin_chain_ns_pos,
+            eviction_call_pos < skin_chain_ns_pos,
             "the eviction drain/sweep must still run before the function \
              returns, inside the outer (skin_pipeline, accel, alloc) guards \
              it actually depends on"
@@ -1460,14 +1702,21 @@ mod bind_inverse_upload_failure_blas_gate_tests {
         // garbage into its output, set `has_populated_output`, and then next
         // frame's pose-dirty skip would leave that garbage in place for the
         // build to consume — the defect would survive the fix.
-        let create_slot_pos = src
-            .find("match skin_pipeline.create_slot(&self.device, alloc, vertex_count) {")
-            .expect("the first-sight path must still create skin-compute slots");
-        let build_push_pos = src
-            .find("first_sight_builds.push((")
-            .expect("the first-sight path must still queue BUILD entries");
+        let first_sight = crate::source_scan::function_text(src, "fn prepare_first_sight_builds(");
         assert!(
-            gate_pos < create_slot_pos && gate_pos < build_push_pos,
+            first_sight
+                .contains("match skin_pipeline.create_slot(self.device, alloc, vertex_count) {"),
+            "the first-sight path must still create skin-compute slots"
+        );
+        assert!(
+            first_sight.contains("first_sight_builds.push(("),
+            "the first-sight path must still queue BUILD entries"
+        );
+        let first_sight_call_pos = src
+            .find("chain.prepare_first_sight_builds(")
+            .expect("the recorder must run the first-sight phase");
+        assert!(
+            gate_pos < first_sight_call_pos,
             "the bind_inverses gate must precede both `create_slot` and the first-sight BUILD \
              push: onboarding the entity and only skipping the build would mark a garbage \
              output buffer populated, and the pose-dirty skip would then hand that garbage to \

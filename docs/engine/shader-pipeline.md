@@ -153,7 +153,13 @@ is not named here.
                            skin-palette timer bracket.
 2  skin_palette.comp    ─┐ compute
 3  skin_vertices.comp   ─┘ skinned BLAS input ready
-4  AccelerationManager   ─  BLAS rebuild / refit + TLAS build
+4  AccelerationManager   ─  BLAS rebuild / refit + TLAS build. The skinned half is
+                           `record_skinned_blas_refit`, in recording order:
+                           `record_skin_dispatches` (compute, in its timer bracket),
+                           then `record_builds_and_refits`: COMPUTE → AS_BUILD |
+                           FRAGMENT | COMPUTE publish barrier,
+                           `record_first_sight_builds`, `record_skinned_refits`,
+                           then the AS_WRITE → AS_READ hand-off to the TLAS build.
 4b [Barrier]            ─  ACCELERATION_STRUCTURE_BUILD_KHR /
                            ACCELERATION_STRUCTURE_WRITE_KHR → FRAGMENT_SHADER |
                            COMPUTE_SHADER / ACCELERATION_STRUCTURE_READ_KHR.
