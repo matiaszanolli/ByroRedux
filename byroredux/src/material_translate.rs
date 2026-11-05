@@ -1639,32 +1639,6 @@ mod tests {
         assert!(world.get::<NoSorter>(entity).is_none());
     }
 
-    /// #2490 — both spawn paths must reach the markers through the single
-    /// boundary, which since #6690 is the shared spawn step. Re-introducing an
-    /// inline `AlphaBlend` literal at either site is the exact regression this
-    /// consolidation removes.
-    #[test]
-    fn both_spawn_sites_derive_markers_through_this_boundary() {
-        const SHARED_STEP_RS: &str = include_str!("scene/mesh_entity.rs");
-        const NIF_LOADER_RS: &str = include_str!("scene/nif_loader.rs");
-        const MESH_INSTANCE_RS: &str = include_str!("cell_loader/spawn/mesh_instance.rs");
-
-        assert!(
-            SHARED_STEP_RS.contains("attach_blend_and_facing_markers("),
-            "scene/mesh_entity.rs must derive its markers at the NIFAL boundary"
-        );
-        for (src, label) in [
-            (SHARED_STEP_RS, "scene/mesh_entity.rs"),
-            (NIF_LOADER_RS, "scene/nif_loader.rs"),
-            (MESH_INSTANCE_RS, "cell_loader/spawn/mesh_instance.rs"),
-        ] {
-            assert!(
-                !src.contains("AlphaBlend {"),
-                "{label} re-introduced an inline AlphaBlend literal"
-            );
-        }
-    }
-
     #[test]
     fn mesh_water_zero_normal_handle_uses_procedural_sentinel() {
         let material = Material::default();

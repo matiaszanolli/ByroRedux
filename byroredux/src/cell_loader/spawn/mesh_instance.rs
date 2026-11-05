@@ -1589,6 +1589,12 @@ mod tests {
     /// same lane. Only the loose-NIF caller (`scene/nif_loader.rs`,
     /// `light_data = None`) is genuinely non-ESM, and passes `Emitter`'s
     /// `1.0` default explicitly.
+    ///
+    /// #6692 — kept as a text guard on purpose. Unlike the guards #6690 made
+    /// redundant, this one never compared two copies: the shared
+    /// `spawn_mesh_entity` step attaches no light, and each site below still
+    /// stands alone in its own file, so a behavioural test of that step cannot
+    /// see them.
     #[test]
     fn every_ligh_spawn_site_consumes_the_canonical_falloff_lane() {
         let here = include_str!("mesh_instance.rs");
@@ -1677,63 +1683,6 @@ mod tests {
                 .count(),
             1,
             "mesh_instance.rs must keep exactly the ESM-fallback site (#4514)"
-        );
-    }
-
-    /// REN-6-2026-09-20-02 (#4529) — both static spawn paths must build the
-    /// `MaterialTextureHandles` component through the one shared producer,
-    /// and the channel-presence derivation must live only in that producer.
-    /// The duplicated resolve → normal_has_alpha/tint_has_alpha → insert
-    /// block that used to sit in this file and `scene/nif_loader.rs` is the
-    /// #2444/#2300 duplicate-construction class: a presence lane added to
-    /// one copy and not the other lands only on NIF-loaded or only on
-    /// REFR-overlaid meshes. Driving either path live needs a
-    /// `VulkanContext`, so the wiring is pinned at source level — the same
-    /// shape as `morph_spawn_uses_mesh_handle_shared_delta_cache` above.
-    #[test]
-    fn both_spawn_paths_build_material_texture_handles_through_one_producer() {
-        let here = include_str!("mesh_instance.rs");
-        // Production-only: this test's own source quotes the scanned
-        // literals, and the split at the test module keeps them out of the
-        // scanned half.
-        let production = byroredux_core::source_scan::production_text(here);
-        let nif_loader = include_str!("../../scene/nif_loader.rs");
-        let shared_step = include_str!("../../scene/mesh_entity.rs");
-        let producer = include_str!("../../asset_provider/texture.rs");
-
-        // The shared step constructs through the producer exactly once (#6690).
-        // `build_material_texture_handles(` can only match the call, not the
-        // file's import line.
-        assert_eq!(
-            shared_step
-                .matches("build_material_texture_handles(")
-                .count(),
-            1,
-            "the shared spawn step must construct MaterialTextureHandles through \
-             the shared producer (#4529)"
-        );
-        for (label, src) in [("cell", production.as_ref()), ("loose-NIF", nif_loader)] {
-            assert_eq!(
-                src.matches("build_material_texture_handles(").count(),
-                0,
-                "the {label} spawn path must go through the shared spawn step (#6690)"
-            );
-        }
-        // …and neither retains an inline presence derivation.
-        assert!(
-            !production.contains("handle_has_alpha(") && !nif_loader.contains("handle_has_alpha("),
-            "channel-presence flags are derived only inside \
-             build_material_texture_handles; an inline derivation at a spawn \
-             site is the divergence #4529 closed"
-        );
-
-        // The producer keeps owning both presence lanes, derived from the
-        // handles it resolved itself.
-        assert!(
-            producer.contains("handle_has_alpha(texture_handles.normal)")
-                && producer.contains("handle_has_alpha(texture_handles.tint)"),
-            "the shared producer must derive normal + tint presence from the \
-             handles it resolved (#4529)"
         );
     }
 

@@ -1487,4 +1487,27 @@ mod tests {
         }
         assert!(handles.secondary_values().all(|&handle| handle != 0));
     }
+
+    /// REN-6-2026-09-20-02 (#4529) — the channel-presence lanes are derived here,
+    /// from the handles this producer resolved itself, so a new lane lands on
+    /// NIF-loaded and REFR-overlaid meshes together (the #2444/#2300
+    /// duplicate-construction class). A text pin because the producer needs a
+    /// `VulkanContext`; #6692 moved it here from the two-file spawn-parity guard.
+    #[test]
+    fn the_producer_derives_presence_from_the_handles_it_resolved() {
+        let producer = byroredux_core::source_scan::function_text(
+            include_str!("texture.rs"),
+            "pub(crate) fn build_material_texture_handles(",
+        );
+        for needle in [
+            "handle_has_alpha(texture_handles.normal)",
+            "handle_has_alpha(texture_handles.tint)",
+        ] {
+            assert!(
+                producer.contains(needle),
+                "build_material_texture_handles must derive its presence lane through \
+                 `{needle}` (#4529)"
+            );
+        }
+    }
 }

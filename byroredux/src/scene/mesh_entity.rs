@@ -727,4 +727,67 @@ mod tests {
             0
         );
     }
+
+    /// #6692 — what a test of the shared step cannot see is whether the spawn
+    /// paths still use it, because both need a device. So this pins the shape:
+    /// each path calls the step once and attaches nothing to the mesh entity
+    /// itself, and the step keeps the two boundaries it owns. A path that grows
+    /// its own copy of a component or a material read fails here, which is the
+    /// drift #2490, #4529 and #2444/#2300 each had to close by hand.
+    #[test]
+    fn both_spawn_paths_attach_through_the_shared_step() {
+        use byroredux_core::source_scan::function_text;
+
+        let shared_step = function_text(
+            include_str!("mesh_entity.rs"),
+            "pub(crate) fn spawn_mesh_entity(",
+        );
+        for owned in [
+            "translate_material_with_provenance(",
+            "resolve_texture_with_clamp(",
+            "build_material_texture_handles(",
+        ] {
+            assert_eq!(
+                shared_step.matches(owned).count(),
+                1,
+                "spawn_mesh_entity must call `{owned}` exactly once"
+            );
+        }
+
+        for (label, path) in [
+            (
+                "spawn_nif_mesh",
+                function_text(include_str!("nif_loader.rs"), "fn spawn_nif_mesh("),
+            ),
+            (
+                "spawn_mesh_instance",
+                function_text(
+                    include_str!("../cell_loader/spawn/mesh_instance.rs"),
+                    "pub(super) fn spawn_mesh_instance(",
+                ),
+            ),
+        ] {
+            assert_eq!(
+                path.matches("spawn_mesh_entity(").count(),
+                1,
+                "{label} must attach its mesh through spawn_mesh_entity, once"
+            );
+            for own in [
+                "world.insert(entity,",
+                "attach_blend_and_facing_markers(",
+                "attach_mesh_water(",
+                "build_material_texture_handles(",
+                "handle_has_alpha(",
+                "resolve_texture_with_clamp(",
+                "translate_material",
+                "AlphaBlend {",
+            ] {
+                assert!(
+                    !path.contains(own),
+                    "{label} holds its own `{own}`: this belongs in the shared step, or the \
+                     two paths can drift apart again (#6690)"
+                );
+            }
+        }
+    }
 }
