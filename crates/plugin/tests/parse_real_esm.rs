@@ -2222,6 +2222,30 @@ fn parse_rate_fnv_esm() {
             })
             .unwrap_or_else(|| panic!("{editor_id} missing from items"))
     };
+    // The skill each weapon uses (DNAM@104, an actor-value code). Equip type (`ETYP`) is not it.
+    let weapon_skill = |editor_id: &str| {
+        index
+            .items
+            .values()
+            .find_map(|item| match &item.kind {
+                byroredux_plugin::esm::records::ItemKind::Weapon { skill_actor_value, .. }
+                    if item.common.editor_id == editor_id =>
+                {
+                    Some(*skill_actor_value)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{editor_id} missing from items"))
+    };
+    for (editor_id, skill) in [
+        ("Weap10mmPistol", 41),
+        ("WeapKnifeCombat", 38),
+        ("WeapGrenadeFrag", 35),
+        ("WeapPowerFist", 45),
+        ("Fists", 45),
+    ] {
+        assert_eq!(weapon_skill(editor_id), Some(skill), "{editor_id}");
+    }
     // (AP, base-to-hit): 10mm 17/15, laser rifle 18/45, hunting rifle
     // 40/42, sniper 27/16, minigun 30/45, super sledge 38/45 and ripper
     // 65/27 (melee weapons author a base chance too; their sight FOV at

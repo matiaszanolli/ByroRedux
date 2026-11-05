@@ -501,7 +501,7 @@ pub enum ItemKind {
     Ammo { damage, dt_mult, spread, casing_form, clip_rounds },
     Armor { biped_flags, dt, dr, health, slot_mask },
     Weapon { ammo_form, damage, clip_size, anim_type, ap_cost,
-             skill_form, min_spread, spread, crit_mult, reload_anim },
+             equip_type, skill_actor_value, min_spread, spread, crit_mult, reload_anim },
 }
 ```
 

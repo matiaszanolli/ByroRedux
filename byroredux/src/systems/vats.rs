@@ -271,7 +271,8 @@ const PART_FAN_OFFSETS: [f32; 3] = [0.0, 18.0, -18.0];
 struct VatsWeapon {
     base_to_hit: f32,
     ap_cost: f32,
-    skill_form: u32,
+    /// The AVIF of the skill the weapon uses; `None` when the load order does not name one.
+    skill_form: Option<u32>,
 }
 
 fn resolve_weapon(
@@ -283,7 +284,7 @@ fn resolve_weapon(
     let ItemKind::Weapon {
         ap_cost,
         vats_base_to_hit,
-        skill_form,
+        skill_actor_value,
         ..
     } = &index.items.get(&base_form_id)?.kind
     else {
@@ -296,7 +297,10 @@ fn resolve_weapon(
     Some(VatsWeapon {
         base_to_hit: *vats_base_to_hit,
         ap_cost: if *ap_cost > 0.0 { *ap_cost } else { world.resource::<VatsModel>().ap.attack_pistol },
-        skill_form: *skill_form,
+        // `DNAM`'s skill is an actor-value code; `ActorValues` is keyed by the code's AVIF.
+        skill_form: skill_actor_value.and_then(|code| {
+            byroredux_scripting::obscript_actor_values::actor_value_form(world, code as f32)
+        }),
     })
 }
 
@@ -352,21 +356,20 @@ pub(crate) fn vats_scan(world: &World) {
     let Some(weapon) = resolve_weapon(world, &index, player) else {
         return;
     };
-    // A weapon that names no skill (`skill_form == 0`) is priced at the
-    // neutral skill, not at the absent-AV default 0 — which would read as
-    // "unskilled" and halve the chance. A skill the player does not carry
-    // keeps the neutral value too — whether the `ActorValues` component is
-    // absent altogether or merely lacks that entry (`ActorValues::current`
-    // reads 0.0 for an absent entry, so the entry is looked up, #6441). A
-    // carried skill that really is 0 stays 0.
-    let skill = if weapon.skill_form == 0 {
-        NEUTRAL_SKILL
-    } else {
-        world
-            .get::<ActorValues>(player)
-            .and_then(|avs| avs.get(weapon.skill_form).map(|av| av.current()))
-            .unwrap_or(NEUTRAL_SKILL)
-    };
+    // A weapon that names no skill is priced at the neutral skill, not at the
+    // absent-AV default 0 — which would read as "unskilled" and halve the
+    // chance. A skill the player does not carry keeps the neutral value too —
+    // whether the `ActorValues` component is absent altogether or merely lacks
+    // that entry (`ActorValues::current` reads 0.0 for an absent entry, so the
+    // entry is looked up, #6441). A carried skill that really is 0 stays 0.
+    let skill = weapon
+        .skill_form
+        .and_then(|form| {
+            world
+                .get::<ActorValues>(player)
+                .and_then(|avs| avs.get(form).map(|av| av.current()))
+        })
+        .unwrap_or(NEUTRAL_SKILL);
     let excluded_body = world
         .query::<byroredux_physics::RapierHandles>()
         .and_then(|handles| handles.get(player).map(|h| h.body));
@@ -760,6 +763,9 @@ mod scan_tests {
     use byroredux_core::ecs::components::InventoryIndex;
     use byroredux_plugin::esm::records::{BptdPart, BptdRecord, GameSetting, SettingValue};
 
+    /// The fixture weapon's skill AVIF, which its `DNAM` code 41 resolves to.
+    const GUNS_AVIF: u32 = 0x40BB;
+
     /// A scan-ready world: player at the origin with an equipped 10mm
     /// (65 % base / 17 AP), one settler-class NPC 512 BU ahead wired to
     /// the DefaultBodyPartData slot, camera behind the player.
@@ -831,9 +837,22 @@ mod scan_tests {
             byroredux_plugin::esm::records::ItemRecord {
                 form_id: 0x0434F,
                 common: byroredux_plugin::esm::records::common::CommonItemFields::default(),
-                kind: ItemKind::weapon_stub(22, 12).with_weapon_vats_stats(17.0, 65.0, 0x40BB),
+                kind: ItemKind::weapon_stub(22, 12).with_weapon_vats_stats(17.0, 65.0).with_weapon_skill(41),
             },
         );
+        // The 10mm's skill code 41 is the record `AVSmallGuns` (FNV's "Guns").
+        index.actor_values.insert(
+            GUNS_AVIF,
+            byroredux_plugin::esm::records::AvifRecord {
+                form_id: GUNS_AVIF,
+                editor_id: "AVSmallGuns".into(),
+                ..Default::default()
+            },
+        );
+        world.insert_resource(byroredux_scripting::ScriptGame(
+            byroredux_plugin::esm::reader::GameKind::Fallout3NV,
+        ));
+        world.insert_resource(byroredux_scripting::actor_value_names::ActorValueNames::from_index(&index));
         world.insert_resource(crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(
             index,
         )));
@@ -900,7 +919,7 @@ mod scan_tests {
     /// skill is honoured, including a real 0.
     #[test]
     fn an_uncarried_weapon_skill_prices_at_the_neutral_skill() {
-        const SKILL: u32 = 0x40BB; // the fixture weapon's skill AVIF
+        const SKILL: u32 = GUNS_AVIF;
         let torso_chance = |world: &World, npc: EntityId| {
             vats_scan(world);
             world
@@ -926,6 +945,37 @@ mod scan_tests {
         assert!(unskilled < neutral, "a carried skill of 0 stays unskilled: {unskilled} vs {neutral}");
     }
 
+    /// The shot is priced at the skill the weapon's own `DNAM` names, read from the player: more Guns
+    /// helps the 10mm, and another skill does not.
+    #[test]
+    fn the_weapons_own_skill_prices_the_shot() {
+        const MELEE_AVIF: u32 = 0x40BC;
+        let torso_chance = |world: &World, npc: EntityId| {
+            vats_scan(world);
+            world
+                .resource::<VatsState>()
+                .targets
+                .iter()
+                .find(|t| t.entity == npc && t.part_name == "Torso")
+                .expect("the torso is priced")
+                .hit_chance
+        };
+        let (world, npc) = scan_world();
+        let player = world.resource::<PlayerEntity>().0.unwrap();
+        let set = |form: u32, value: f32| {
+            world.query_mut::<ActorValues>().unwrap().get_mut(player).unwrap().set_base(form, value);
+        };
+        let neutral = torso_chance(&world, npc);
+        set(MELEE_AVIF, 100.0);
+        assert_eq!(torso_chance(&world, npc), neutral, "another skill does not price the shot");
+        set(GUNS_AVIF, 100.0);
+        let skilled = torso_chance(&world, npc);
+        assert!(skilled > neutral, "Guns 100 beats the neutral 50: {skilled} vs {neutral}");
+        set(GUNS_AVIF, 20.0);
+        let green = torso_chance(&world, npc);
+        assert!(green < neutral, "Guns 20 falls short of the neutral 50: {green} vs {neutral}");
+    }
+
     #[test]
     fn degraded_actor_without_a_limb_table_gets_one_implicit_part() {
         let (mut world, npc) = scan_world();
@@ -936,7 +986,7 @@ mod scan_tests {
             byroredux_plugin::esm::records::ItemRecord {
                 form_id: 0x0434F,
                 common: byroredux_plugin::esm::records::common::CommonItemFields::default(),
-                kind: ItemKind::weapon_stub(22, 12).with_weapon_vats_stats(17.0, 65.0, 0),
+                kind: ItemKind::weapon_stub(22, 12).with_weapon_vats_stats(17.0, 65.0),
             },
         );
         world.insert_resource(crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(

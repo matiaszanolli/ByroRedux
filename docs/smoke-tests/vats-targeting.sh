@@ -24,8 +24,8 @@ ENGINE_PID=""
 TIMEOUT=90
 
 stop_engine() {
-    [ -n "$ENGINE_PID" ] && kill "$ENGINE_PID" 2>/dev/null
-    wait "$ENGINE_PID" 2>/dev/null
+    [ -n "$engine_pid" ] && kill "$engine_pid" 2>/dev/null
+    wait "$engine_pid" 2>/dev/null
 }
 trap stop_engine EXIT
 trap 'exit 130' INT
@@ -105,6 +105,25 @@ grep -Eq "part=(Head|Torso|Body) hit=[1-9][0-9]*%" "$LOG_DIR/02b-rescan.out" \
     || fail "no live-priced limb table after aiming the camera (all parts 0 %?)"
 grep -Fq "ap=17" "$LOG_DIR/02b-rescan.out" \
     || fail "parts not priced at the 10mm's authored AP (17)"
+
+# 3b — The shot is priced at the shooter's own skill, the one the weapon's DNAM names: the 10mm's
+# code 41 is AVSmallGuns (0x4B9, FNV's "Guns"). A price that ignores it would not move here.
+torso_hit() { sed -nE "s/.*entity=$TARGET_ENTITY part=Torso hit=([0-9]+)%.*/\1/p" "$1" | head -1; }
+debug_command "player.status" "$LOG_DIR/02c-player.out"
+PLAYER_ENTITY=$(grep -oE "player=[0-9]+" "$LOG_DIR/02c-player.out" | head -1 | cut -d= -f2)
+[ -n "$PLAYER_ENTITY" ] || fail "player.status named no player"
+BOOT_HIT=$(torso_hit "$LOG_DIR/02b-rescan.out")
+debug_command "setav $PLAYER_ENTITY 0x4B9 5
+vats.scan
+vats.status" "$LOG_DIR/02d-green.out"
+GREEN_HIT=$(torso_hit "$LOG_DIR/02d-green.out")
+debug_command "setav $PLAYER_ENTITY 0x4B9 100
+vats.scan
+vats.status" "$LOG_DIR/02e-expert.out"
+EXPERT_HIT=$(torso_hit "$LOG_DIR/02e-expert.out")
+[ -n "$BOOT_HIT" ] && [ -n "$GREEN_HIT" ] && [ -n "$EXPERT_HIT" ] || fail "no Torso price for entity $TARGET_ENTITY"
+echo "smoke[vats-targeting]: Torso hit: boot ${BOOT_HIT}%, Guns 5 ${GREEN_HIT}%, Guns 100 ${EXPERT_HIT}%"
+(( EXPERT_HIT > GREEN_HIT )) || fail "Guns 100 (${EXPERT_HIT}%) does not beat Guns 5 (${GREEN_HIT}%): the skill is not pricing the shot"
 
 # 4 — Queue the torso and confirm: AP charged, attack executed.
 debug_command "vats.queue Torso

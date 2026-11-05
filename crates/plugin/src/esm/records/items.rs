@@ -233,8 +233,10 @@ pub enum ItemKind {
         /// distance, skill and screen percentage. `0.0` on games whose DNAM
         /// layout is not decoded yet.
         vats_base_to_hit: f32,
-        /// Skill required form (AVIF).
-        skill_form: u32,
+        /// `ETYP`, the equipment type: an `EQUP` FormID on Skyrim and later, and on FO3/FNV an enum
+        /// (xEdit `wbEquipTypeEnum`, FalloutNV.esm holds 0-7), not a form at all. Nothing here names
+        /// a skill; that is [`Self::Weapon`]'s `skill_actor_value`.
+        equip_type: u32,
         /// The actor-value code of the skill the weapon uses: FO3/FNV `DNAM`
         /// offset 104, an `i32` (xEdit `Skill`, `wbActorValueEnum`). FalloutNV.esm
         /// holds 34 Energy Weapons, 35 Explosives, 38 Melee Weapons, 41 Guns and
@@ -285,7 +287,7 @@ impl ItemKind {
             anim_type: 0,
             ap_cost: 0.0,
             vats_base_to_hit: 0.0,
-            skill_form: 0,
+            equip_type: 0,
             skill_actor_value: None,
             min_spread: 0.0,
             spread: 0.0,
@@ -315,13 +317,12 @@ impl ItemKind {
         self
     }
 
-    /// Set a [`Self::weapon_stub`]'s VATS stats: AP cost, base to-hit percent
-    /// and the required-skill form. No-op on any other kind.
-    pub fn with_weapon_vats_stats(mut self, ap: f32, to_hit: f32, skill: u32) -> Self {
-        if let ItemKind::Weapon { ap_cost, vats_base_to_hit, skill_form, .. } = &mut self {
+    /// Set a [`Self::weapon_stub`]'s VATS stats: AP cost and base to-hit percent. No-op on any
+    /// other kind.
+    pub fn with_weapon_vats_stats(mut self, ap: f32, to_hit: f32) -> Self {
+        if let ItemKind::Weapon { ap_cost, vats_base_to_hit, .. } = &mut self {
             *ap_cost = ap;
             *vats_base_to_hit = to_hit;
-            *skill_form = skill;
         }
         self
     }
@@ -373,7 +374,7 @@ pub fn parse_weap(
     let mut oblivion_type = 0u8;
     let mut ap_cost = 0.0f32;
     let mut vats_base_to_hit = 0.0f32;
-    let mut skill_form = 0u32;
+    let mut equip_type = 0u32;
     let mut skill_actor_value = None;
     let mut min_spread = 0.0f32;
     let mut spread = 0.0f32;
@@ -590,7 +591,7 @@ pub fn parse_weap(
             b"DESC" => {} // description string (we don't store it yet)
             // #3715 — embedded equip-type FormID (an EQUP record).
             b"ETYP" => {
-                skill_form = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
+                equip_type = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }
             // #3724 — gated on the full 8-byte leading shape rather than
             // relying on the three lenient/strict reads' own truncation
@@ -623,7 +624,7 @@ pub fn parse_weap(
             anim_type,
             ap_cost,
             vats_base_to_hit,
-            skill_form,
+            equip_type,
             skill_actor_value,
             min_spread,
             spread,
@@ -1506,14 +1507,14 @@ mod tests {
     fn weapon_stub_and_setters_pin_only_their_fields() {
         let stub = ItemKind::weapon_stub(22, 12);
         let ItemKind::Weapon {
-            ammo_form, damage, clip_size, anim_type, ap_cost, vats_base_to_hit, skill_form,
+            ammo_form, damage, clip_size, anim_type, ap_cost, vats_base_to_hit, equip_type,
             skill_actor_value, min_spread, spread, crit_mult, reach, speed, oblivion_type, reload_anim, vats,
         } = stub.clone()
         else {
             panic!("weapon_stub builds a Weapon");
         };
         assert_eq!((damage, clip_size), (22, 12));
-        assert_eq!((ammo_form, anim_type, skill_form, reload_anim, oblivion_type), (0, 0, 0, 0, 0));
+        assert_eq!((ammo_form, anim_type, equip_type, reload_anim, oblivion_type), (0, 0, 0, 0, 0));
         assert_eq!((ap_cost, vats_base_to_hit, min_spread, spread, reach, speed), (0.0, 0.0, 0.0, 0.0, 0.0, 0.0));
         assert_eq!(crit_mult, 1.0);
         assert!(vats.is_none());
@@ -1524,12 +1525,12 @@ mod tests {
         };
         assert_eq!(skill_actor_value, Some(38));
 
-        let ItemKind::Weapon { speed, ap_cost, vats_base_to_hit, skill_form, damage, .. } =
-            stub.clone().with_weapon_speed(1.5).with_weapon_vats_stats(17.0, 65.0, 0x40BB)
+        let ItemKind::Weapon { speed, ap_cost, vats_base_to_hit, damage, .. } =
+            stub.clone().with_weapon_speed(1.5).with_weapon_vats_stats(17.0, 65.0)
         else {
             panic!("setters keep the variant");
         };
-        assert_eq!((speed, ap_cost, vats_base_to_hit, skill_form, damage), (1.5, 17.0, 65.0, 0x40BB, 22));
+        assert_eq!((speed, ap_cost, vats_base_to_hit, damage), (1.5, 17.0, 65.0, 22));
 
         // Not a weapon: returned unchanged.
         let ammo = ItemKind::Misc;
@@ -1838,6 +1839,15 @@ mod tests {
         assert_eq!(parse(&dnam[..107]), None, "too short");
         dnam[104..108].copy_from_slice(&(-1i32).to_le_bytes());
         assert_eq!(parse(&dnam), None, "no skill");
+        // `ETYP` is the equip type, an enum on these games: it must not read as the skill.
+        dnam[104..108].copy_from_slice(&38i32.to_le_bytes());
+        let both = [sub(b"ETYP", 3i32.to_le_bytes()), sub(b"DNAM", &dnam)];
+        let ItemKind::Weapon { equip_type, skill_actor_value, .. } =
+            parse_weap(0x100, &both, GameKind::Fallout3NV, &None).kind
+        else {
+            panic!("expected Weapon kind");
+        };
+        assert_eq!((equip_type, skill_actor_value), (3, Some(38)));
         // Another game's DNAM has another layout: the same bytes mean nothing there.
         dnam[104..108].copy_from_slice(&38i32.to_le_bytes());
         let skyrim = parse_weap(0x100, &[sub(b"DNAM", &dnam)], GameKind::Skyrim, &None);
@@ -2152,7 +2162,7 @@ mod tests {
                 clip_size,
                 anim_type,
                 ap_cost,
-                skill_form,
+                skill_actor_value,
                 reach,
                 speed,
                 ..
@@ -2162,7 +2172,7 @@ mod tests {
                 assert_eq!(clip_size, 12);
                 assert_eq!(anim_type, 9);
                 assert!((ap_cost - 28.0).abs() < 1e-6);
-                assert_eq!(skill_form, 0, "unverified FO4 Skill slot stays unencoded");
+                assert_eq!(skill_actor_value, None, "unverified FO4 Skill slot stays unencoded");
                 assert!(
                     (speed - 1.25).abs() < 1e-6,
                     "speed at DNAM offset 4 (#3096)"
@@ -2850,15 +2860,15 @@ mod tests {
         }
     }
 
-    /// #3715 — WEAP `ETYP`'s `skill_form` was read raw.
+    /// #3715 — WEAP `ETYP` was read raw.
     #[test]
-    fn weap_etyp_skill_form_is_remapped() {
+    fn weap_etyp_equip_type_is_remapped() {
         let remap = Some(FormIdRemap::regular(2, vec![0]));
         let subs = vec![sub(b"ETYP", 0x0100_4444u32.to_le_bytes())];
         let item = parse_weap(0x3000, &subs, GameKind::Skyrim, &remap);
         match item.kind {
-            ItemKind::Weapon { skill_form, .. } => {
-                assert_eq!(skill_form, 0x0200_4444);
+            ItemKind::Weapon { equip_type, .. } => {
+                assert_eq!(equip_type, 0x0200_4444);
             }
             _ => panic!("expected Weapon kind"),
         }

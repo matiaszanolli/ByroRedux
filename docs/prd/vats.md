@@ -1,6 +1,6 @@
 # VATS and Action Points — Product Requirements
 
-**Status**: ACTIVE (2026-11-03). Revision 5 files the tracking issues. Revision 4 recorded the owner's §10 decisions, every one the recommendation. Revision 3 folded in review round 2
+**Status**: ACTIVE (2026-11-05). Revision 6 records the skill term reading the player's real skill. Revision 5 files the tracking issues. Revision 4 recorded the owner's §10 decisions, every one the recommendation. Revision 3 folded in review round 2
 (HEAD re-measured on 2026-11-03: limb-condition values are already seeded
 and restored on FO3/FNV, `BPND` is only partly decoded and FO4's not at
 all, no path leaves VATS on death or cell change; the FO4 weapon layout
@@ -141,7 +141,7 @@ table, and this section then links there.
 | 3 | Limb tables | shipped (FO3/FNV data, partial) | `BptdPart` decodes the 84-byte FO3/FNV `BPND` through offset 20 (damage multiplier, flags, part type, health percent, actor value, to-hit chance, explosion chance, debris, explosion); the gore, hit-reaction and impact-data fields past offset 20 are not decoded (`crates/plugin/src/esm/records/misc/equipment.rs:156-160`), and FO4's 101-byte `BPND` is left undecoded (`equipment.rs:294-299`, #6465). The scan reads name, target bone and to-hit chance only |
 | 4 | Weapon AP cost and base VATS chance | shipped (data) | `ItemKind::Weapon { ap_cost, vats_base_to_hit, .. }`, FO3/FNV `DNAM` offsets 68 and 40 (`crates/plugin/src/esm/records/items.rs`) |
 | 5 | Mode machine and world freeze | shipped | `vats_mode_system`, entry gates in `vats_entry_refusal`; the scale is applied in `byroredux/src/app_events.rs` |
-| 6 | Targeting scan | shipped, partial | `vats_scan`: engage distance, bone positions, a three-ray occlusion fan (`PART_FAN_OFFSETS`), neutral skill 50 fallback; melee weapons priced like ranged ones |
+| 6 | Targeting scan | shipped, partial | `vats_scan`: engage distance, bone positions, a three-ray occlusion fan (`PART_FAN_OFFSETS`), the player's skill for the weapon's `DNAM` skill code, neutral 50 where either is missing; melee weapons priced like ranged ones |
 | 7 | AP-gated queue and confirm | shipped | `vats_queue_part`, `vats_confirm`, `vats_cancel`; shots at one target fold into one `HitEvent` plus `HitShots` |
 | 8 | Live gate | shipped | `docs/smoke-tests/vats-targeting.sh` (FNV, plumbing scope stated in its header) |
 | 9 | To-hit ground truth | open (#6403) | `to_hit_chance_matches_recorded_in_game_percentages` is `#[ignore]`d with an empty `GROUND_TRUTH` |
@@ -837,3 +837,4 @@ Each needs the project owner. The recommendation is the first option.
 | 3 | 2026-11-03 | Review round 2 folded in: HEAD re-measured at `8fb9b21d8` (VATS-LIMB-001 already met on FO3/FNV, §3.2 rows 3/10/14 and new row 15, VATS-MODE-003 exit paths, VATS-UI-004 no highlight state, line references, Starfield `fVATS*` count); VATS-FO4-005 AP layout settled from xEdit and the to-hit input made a verify; new VATS-FO4-007 (race-linked FO4 limb tables); VATS-FO4-006 and VATS-MODE-001 made observable; VATS-LIMB-006 re-sourced to GECK *Movement Settings* and split into new VATS-LIMB-010/011 (*Gun Spread Formula* / *Weapon Damage Formula*); VATS-PLAY-002 split into new VATS-PLAY-010; new VATS-UI-007 (VATS menu does not pause the world, against Game UI `GUI-REG-010`); VATS-LIMB-005 FO3/FNV un-cripple and VATS-TOHIT-005 unarmed reach made verify items; VATS-NG-006 re-based on *GetVATSMode*; FNV pause sourced; VATS-UI-001/005 conditional on Game UI Q1, VATS-UI-002 observable; CAMS/CPTH layout cited to xEdit; GetVATSMode/GetVATSValue indices; §6 row 8 (gore); scenarios name data and AP observable; Phase 5/6 dependencies; Q1/Q2/Q3/Q5 consequences, Q2 limb and playback scope; save design in Related and the map | claude: revise |
 | 4 | 2026-11-03 | Owner decisions Q1–Q3 and Q5 recorded, every one the recommendation; withdrawn Q4 closed against PERK-HOOK-003 (Perk Entry Points PRD, approved the same day) | owner: approved |
 | 5 | 2026-11-03 | → ACTIVE: parent #6350 and phase issues #6644–#6650 filed; the Phase 0 verify items are acceptance criteria of #6644 | — |
+| 6 | 2026-11-05 | §3 row 6: the to-hit skill term reads the player's skill for the weapon's `DNAM` @104 code. It had read `ETYP`, an equip-type enum on FO3/FNV, so every weapon priced at the neutral 50 | claude: revise |
