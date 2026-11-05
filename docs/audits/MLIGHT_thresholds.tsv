@@ -15,3 +15,46 @@ L4	A7	lambert-box	box_floor	rel_error_p95	3	1.561	0.00193	0.50	0.50193	2x frozen
 L4	A7	lambert-box	box_back	rel_error_p95	3	1.339	0.00147	0.50	0.50147	2x frozen floor	as box_floor
 L4	A7	lambert-box	box_ceiling	rel_error_p95	3	1.622	0.000621	0.50	0.500621	2x frozen floor	as box_floor
 L4	A8	lambert-box-closeup	all_geometry	ssao_relative_change	3	-0.0054	0.0000606	0	0.0000606	2x frozen floor	self-consistency gate: threshold is the floor (RLT-GI-004)
+L1	A4	penumbra	umbra_band	visibility_error_mean	3	2.83e-07	1.96e-08	0.0005	0.0005	2x frozen floor	visibility, see note A4
+L1	A4	penumbra	umbra_band	visibility_error_p95	3	0	0	0.002	0.002	2x frozen floor	visibility, see note A4
+L1	A4	penumbra	lit_band	visibility_error_mean	3	0.000891	2.29e-07	0.0005	0.0005	2x frozen floor	visibility, see note A4
+L1	A4	penumbra	lit_band	visibility_error_p95	3	0.000898	8.76e-12	0.002	0.002	2x frozen floor	visibility, see note A4
+L1	A4	penumbra-sun	umbra_band	visibility_error_mean	3	0.000648	2.68e-06	0.0005	0.000503	2x frozen floor	visibility, see note A4
+L1	A4	penumbra-sun	umbra_band	visibility_error_p95	3	0.00337	4.26e-05	0.002	0.00204	2x frozen floor	visibility, see note A4
+L1	A4	penumbra-sun	lit_band	visibility_error_mean	3	0.00113	3.18e-06	0.0005	0.000503	2x frozen floor	visibility, see note A4
+L1	A4	penumbra-sun	lit_band	visibility_error_p95	3	0.00412	6.48e-05	0.002	0.00206	2x frozen floor	visibility, see note A4
+L2	A5	filtered_direct	con_plank_band	visibility_error_mean	3	0.00378	0.00016	0.002	0.00216	2x frozen floor	visibility, see note A5
+L2	A5	filtered_direct	con_plank_band	visibility_error_p95	3	0.0189	0.00133	0.01	0.0113	2x frozen floor	visibility, see note A5
+L2	A5	filtered_direct	con_block_band	visibility_error_mean	3	0.000723	2.8e-07	done	0.000723	2x frozen floor	done: baseline accepted (see note A5); threshold = frozen floor + baseline
+L2	A5	filtered_direct	con_block_band	visibility_error_p95	3	0.000939	1.91e-07	done	0.000939	2x frozen floor	done: baseline accepted (see note A5); threshold = frozen floor + baseline
+L2	A5	filtered_direct	con_cube_band	visibility_error_mean	3	0.00123	2.85e-05	done	0.00126	2x frozen floor	done: baseline accepted (see note A5); threshold = frozen floor + baseline
+L2	A5	filtered_direct	con_cube_band	visibility_error_p95	3	0.00102	4.12e-05	done	0.00106	2x frozen floor	done: baseline accepted (see note A5); threshold = frozen floor + baseline
+L2	A5	filtered_direct	con_panel_band	visibility_error_mean	3	0.00141	1.82e-05	done	0.00143	2x frozen floor	done: baseline accepted (see note A5); threshold = frozen floor + baseline
+L2	A5	filtered_direct	con_panel_band	visibility_error_p95	3	0.000962	7.63e-07	done	0.000962	2x frozen floor	done: baseline accepted (see note A5); threshold = frozen floor + baseline
+L2	A5	filtered_direct	con_proxy_band	visibility_error_mean	3	0.0012	2.81e-05	done	0.00123	2x frozen floor	done: baseline accepted (see note A5); threshold = frozen floor + baseline
+L2	A5	filtered_direct	con_proxy_band	visibility_error_p95	3	0.00586	0.000314	done	0.00618	2x frozen floor	done: baseline accepted (see note A5); threshold = frozen floor + baseline
+L1	A3	penumbra-pan	during_motion	excess_over_hold_max	3	+0.0242	0.0372	0.02	0.02	see note T	temporal, note T
+L1	A3	penumbra-pan	post_stop_16	excess_over_hold	3	+0.0248	0.0358	0.01	0.01	see note T	temporal, note T
+L1	A14	penumbra-moving	from_frame_80	excess_over_hold_max	3	+0.0792	0.0482	0.05	0.05	see note T	temporal, note T
+#
+# Frozen 2026-11-05 at Phase 3 entry, steps 2-3 (#6603, rev 20). Baselines are
+# docs/audits/MLIGHT_phase3_entry_41b74db49.tsv (A3, A5 and the local-light A4
+# rung) and docs/audits/MLIGHT_phase3_shd007_A2A4_sun.tsv (the sun-rung A4,
+# re-measured after RLT-SHD-007 narrowed the sun cone from 61 to 14 px).
+# Owner decisions (2026-11-05):
+# note A4: band budgets are 5e-4 mean / 2e-3 p95 of the unoccluded luminance, a visibility
+#   argument: one 8-bit step is about 1.7 % at mid-grey and 3 % in shadow, so the p95 budget is
+#   about an eighth of a step at mid-grey and the mean budget less. Strictly below the sun-rung baselines (mean
+#   6.5e-4 / 1.1e-3, p95 3.4e-3 / 4.1e-3). Local-light umbra is already ~0 and is held.
+# note A5: the 2 cm plank takes a budget (mean 2e-3 / p95 1e-2, about half its baseline);
+#   block, cube, panel and the skinned proxy are declared done. The plank is as large with the
+#   filter off (4.0e-3 / 2.1e-2), so the filter is not its cause.
+# note T: temporal metrics are the excess of the moving capture's temporal error over the
+#   hold-from-frame-0 control (--bench-camera-hold-at); frozen_floor is that control's own
+#   value (cold start + sampling noise) at the worst frame. A3: the maximum over frames
+#   32-112 and the value 16 frames after the stop (settled within 1 % RMSE, about a quarter
+#   second). A14: frames before 80 carry the run's cold start and are reported, not gated.
+#   An excess metric's threshold is its budget (the floor is already subtracted). The excess's own seed-pair noise is not yet measured; the 2x-floor drift margin is
+#   carried over from rev 13 and is provisional for these rows.
+# Not decided (report-only until the owner writes them): A2 penumbra width, A4 thin-rod
+#   shadow (mean 8.7e-3 / p95 2.3e-2), and the A14 frames before 80.
