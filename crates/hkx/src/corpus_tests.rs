@@ -7,7 +7,7 @@
 //! instead of skipping green, and a set `BYROREDUX_<GAME>_DATA` override is binding (#3850).
 
 use crate::animation::MAX_TRANSFORM_SAMPLES;
-use crate::behavior::MAX_GRAPH_STEPS;
+use crate::behavior::{StateMachine, MAX_GRAPH_STEPS, MAX_INLINED_REFERENCES, MAX_INLINED_WEIGHT};
 use crate::packfile::Packfile;
 use crate::{
     behavior_graph_steps, decode_animation, decode_behavior_graph, decode_character, decode_project, decode_skeleton,
@@ -129,21 +129,40 @@ fn fallout_4_animations_archive_census_is_exact() {
     assert_eq!(files.len(), 121 + 328 + 222 + 235 + 14_370 + 43 + 1, "every .hkx is accounted for");
 }
 
+/// How many references `machine` and the machines nested in it name without having inlined them.
+fn references_left(machine: &StateMachine) -> usize {
+    machine
+        .states
+        .iter()
+        .map(|state| {
+            let content = &state.content;
+            let left = (0..content.behavior_references.len())
+                .filter(|ordinal| !content.reference_machines.get(*ordinal).is_some_and(Option::is_some))
+                .count();
+            left + content.machines.iter().map(references_left).sum::<usize>()
+        })
+        .sum()
+}
+
 /// The behavior graphs and characters of the same archive: all decode, and the largest takes 245,831
-/// steps (leaf tables charged since #6211) - the figure `MAX_GRAPH_STEPS` is set 8x above.
+/// steps (leaf tables charged since #6211) - the figure `MAX_GRAPH_STEPS` is set 8x above. Every graph
+/// then inlines every reference it names, the way `actor_graph.rs` resolves them, with room to spare
+/// in both budgets: 49 of the 64 resolves and 275,217 of the 2 M weight (#6593).
 #[test]
 #[ignore = "needs Fallout 4 game data on disk"]
 fn fallout_4_behavior_graph_census_is_exact() {
     let Some(archive) = fallout_4_animations() else { return };
     let names: Vec<String> = archive.list_files().iter().map(|name| name.to_string()).collect();
     let (mut behaviors, mut characters, mut max_steps, mut worst) = (0, 0, 0, String::new());
+    let mut graphs = BTreeMap::new();
     for (path, bytes) in hkx_files(&names, &mut |name| archive.extract(name).ok()) {
         if path.contains("\\behaviors\\") {
-            decode_behavior_graph(&bytes).unwrap_or_else(|error| panic!("{path}: {error}"));
+            let graph = decode_behavior_graph(&bytes).unwrap_or_else(|error| panic!("{path}: {error}"));
             let steps = behavior_graph_steps(&bytes).unwrap();
             if steps > max_steps {
-                (max_steps, worst) = (steps, path);
+                (max_steps, worst) = (steps, path.clone());
             }
+            graphs.insert(path, graph);
             behaviors += 1;
         } else if path.contains("\\characters\\") {
             decode_character(&bytes).unwrap_or_else(|error| panic!("{path}: {error}"));
@@ -153,6 +172,29 @@ fn fallout_4_behavior_graph_census_is_exact() {
     assert_eq!((behaviors, characters), (328, 222));
     assert_eq!((max_steps, worst.as_str()), (245_831, "meshes\\actors\\character\\_1stperson\\behaviors\\gunbehavior.hkx"));
     assert!(max_steps * 8 <= MAX_GRAPH_STEPS, "the step cap keeps 8x headroom over the shipped maximum");
+
+    let (mut max_resolves, mut worst_resolves, mut max_weight, mut worst_weight) = (0, "", 0, "");
+    for (path, graph) in &graphs {
+        let directory = &path[..path.rfind("\\behaviors\\").unwrap()];
+        let mut resolves = 0;
+        let mut inlined = graph.clone();
+        let weight = inlined.inline_references_spending(&mut |reference| {
+            resolves += 1;
+            let reference = reference.trim_start_matches(['\\', '/']).replace('/', "\\").to_ascii_lowercase();
+            graphs.get(&format!("{directory}\\{reference}")).cloned()
+        });
+        assert_eq!(inlined.machine.as_ref().map_or(0, references_left), 0, "{path} left a reference out");
+        if resolves > max_resolves {
+            (max_resolves, worst_resolves) = (resolves, path.as_str());
+        }
+        if weight > max_weight {
+            (max_weight, worst_weight) = (weight, path.as_str());
+        }
+    }
+    assert_eq!((max_resolves, worst_resolves), (49, "meshes\\actors\\character\\behaviors\\meleebehavior.hkx"));
+    assert_eq!((max_weight, worst_weight), (275_217, "meshes\\actors\\character\\_1stperson\\behaviors\\bigguns_gunwrappingbehavior.hkx"));
+    assert!(max_resolves * 13 <= MAX_INLINED_REFERENCES * 10, "the resolve cap keeps 1.3x headroom over the shipped maximum");
+    assert!(max_weight * 7 <= MAX_INLINED_WEIGHT, "the weight cap keeps 7x headroom over the shipped maximum");
 }
 
 /// Skyrim SE's behavior graphs: 420 decode (the largest takes 3,329 steps); the three that do not are

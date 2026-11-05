@@ -577,7 +577,8 @@ pub struct BlendChild {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BoneWeights {
     pub weights: Arc<Vec<f32>>,
-    /// `(bone index, variable)` for each element a variable supplies.
+    /// `(bone index, variable)` for each element a variable supplies: one entry a bone, in bone
+    /// order.
     pub bound: Vec<(usize, usize)>,
 }
 
@@ -724,8 +725,8 @@ impl StateMachine {
 
 /// How many sub-behaviors [`BehaviorGraph::inline_references`] pulls in before it stops
 /// (a graph can refer to the same few behaviors from many states).
-const MAX_INLINED_REFERENCES: usize = 64;
-/// #6212 — the total weight ([`machine_weight`]: states, transitions, clips, modifiers) every
+pub(crate) const MAX_INLINED_REFERENCES: usize = 64;
+/// #6212 — the total weight ([`graph_weight`]: everything a resolve copies) every
 /// sub-behavior inlined into one graph may add, together. [`MAX_GRAPH_STEPS`] bounds one decode
 /// and every unit weighed here cost at least one step to decode, so the inlined volume stays
 /// within one maximal graph's worth however the references repeat.
@@ -734,7 +735,16 @@ const MAX_INLINED_REFERENCES: usize = 64;
 /// unless the weigh counts what the decode charged for: a clip's triggers and a modifier's leaf
 /// tables are charged per entry, so [`machine_weight`] counts them too (it used to weigh a clip
 /// or a modifier list as 1 while each held up to ~a million owned entries).
-const MAX_INLINED_WEIGHT: usize = MAX_GRAPH_STEPS;
+///
+/// #6593 — that list was written out by hand and missed tables twice, so a bone-binding table or a
+/// tree of bare references still weighed next to nothing. [`graph_weight`] and the functions under
+/// it now weigh every entry a resolve deep-copies, and they name each field of what they walk with
+/// no `..`: a new table does not compile until it is weighed or set aside here. (Rows counted by a
+/// table's length, like a transition or a clip trigger, are not walked, so this does not reach a
+/// table added inside one.) An entry owns at most one string, and strings are capped at 256 bytes,
+/// so entries bound the bytes too. The shipped graphs spend at most 275,217 (Fallout 4's
+/// gun-wrapping behaviors), about 7.2x under this.
+pub(crate) const MAX_INLINED_WEIGHT: usize = MAX_GRAPH_STEPS;
 
 /// What inlining may still spend (#6212): resolves and weight, shared by the whole recursion,
 /// and the references being inlined above the current one (a reference already on that stack
@@ -857,7 +867,8 @@ fn offset_machine_modifier_ids(machine: &mut StateMachine, offset: u32) {
 /// A clip's size for [`machine_weight`]: itself and the clip triggers it keeps (up to 1,024 a
 /// clip), each of which the decode charged a step for (#6479).
 fn clip_weight(clip: &StateClip) -> usize {
-    1 + clip.triggers.len()
+    let StateClip { animation: _, mode: _, playback_speed: _, start_time: _, user_fraction: _, triggers, playback_speed_variable: _ } = clip;
+    1 + triggers.len()
 }
 
 /// A modifier's size for [`machine_weight`]: itself, the leaf tables it owns (assign-variable
@@ -873,40 +884,71 @@ fn modifier_weight(node: &ModifierNode) -> usize {
         Modifier::ModifyOnce { on_activate, on_deactivate } => {
             on_activate.iter().chain(on_deactivate.iter()).map(|inner| modifier_weight(inner)).sum()
         }
-        Modifier::EventsFromRange { ranges, .. } => ranges.len(),
+        Modifier::EventsFromRange { input: _, input_variable: _, lower_bound: _, ranges } => ranges.len(),
         Modifier::EvaluateExpression { expressions } => expressions.len(),
-        Modifier::EventDriven { inner, .. } => inner.as_ref().map_or(0, |inner| modifier_weight(inner)),
+        Modifier::EventDriven { activate: _, deactivate: _, active_by_default: _, inner } => {
+            inner.as_ref().map_or(0, |inner| modifier_weight(inner))
+        }
         Modifier::List(children) => children.iter().map(|child| modifier_weight(child)).sum(),
-        Modifier::EventOnDeactivate { .. }
-        | Modifier::EventEveryNEvents { .. }
-        | Modifier::Timer { .. }
-        | Modifier::RandomAlarm { .. }
-        | Modifier::TimeStep { .. } => 0,
+        Modifier::EventOnDeactivate { event: _ }
+        | Modifier::EventEveryNEvents { check: _, send: _, count: _ }
+        | Modifier::Timer { alarm_seconds: _, event: _ }
+        | Modifier::RandomAlarm { min_seconds: _, max_seconds: _, event: _, reset: _ }
+        | Modifier::TimeStep { variable: _ } => 0,
     }
 }
 
-/// A machine's size for [`MAX_INLINED_WEIGHT`]: its states, transitions, clips, sequences and
-/// modifiers, nested machines included (a machine a generator holds is counted through both the
-/// generator and the flattened list: an over-count, never an under-count).
-fn machine_weight(machine: &mut StateMachine) -> usize {
-    let mut weight = 1 + machine.wildcard.len();
-    for state in &mut machine.states {
-        weight += 1
-            + state.transitions.len()
-            + state.clip.as_ref().map_or(0, clip_weight)
-            + state.content.blended_clips.iter().map(clip_weight).sum::<usize>()
-            + state.content.sequences.len();
-        if let Some(generator) = &mut state.content.generator {
-            let mut nodes = 0usize;
-            generator.for_each_clip_mut(&mut |clip| nodes += clip_weight(clip));
-            generator.for_each_modifier_mut(&mut |modifier| nodes += modifier_weight(modifier));
-            weight += nodes;
+/// A generator tree's size for [`machine_weight`]: every node, each with what it holds (#6593). A
+/// node that holds nothing else still weighs 1, because a resolve deep-copies it. The tree's clips
+/// and sequences are copies of their own, apart from the state's flattened lists.
+fn generator_weight(generator: &Generator) -> usize {
+    1 + match generator {
+        Generator::Clip(clip) => clip_weight(clip),
+        Generator::Sequence(_) | Generator::Machine(_) | Generator::Reference(_) => 0,
+        Generator::Blender(blender) => {
+            let Blender { parametric: _, cyclic: _, sync: _, parameter: _, parameter_variable: _, min_cyclic: _, max_cyclic: _, children } = blender;
+            children.iter().map(blend_child_weight).sum()
         }
-        for inner in &mut state.content.machines {
-            weight += machine_weight(inner);
+        Generator::Selector { index: _, index_variable: _, children } => children.iter().map(generator_weight).sum(),
+        Generator::Modified { modifiers, inner } => {
+            modifiers.iter().map(|modifier| modifier_weight(modifier)).sum::<usize>() + inner.as_deref().map_or(0, generator_weight)
         }
     }
-    weight
+}
+
+/// A blender child's size: itself, the bones a variable drives, and its generator. `weights` is an
+/// `Arc` every copy shares and nothing rewrites, so a resolve does not copy it.
+fn blend_child_weight(child: &BlendChild) -> usize {
+    let BlendChild { weight: _, weight_variable: _, bone_weights, bone_weights_variable: _, generator } = child;
+    let bound = bone_weights.as_ref().map_or(0, |BoneWeights { weights: _, bound }| bound.len());
+    1 + bound + generator_weight(generator)
+}
+
+/// A state's size: its transitions, clips, sequences, references and generator tree, and the
+/// machines nested in it. `reference_machines` is one word per reference, so the references cover it.
+fn state_weight(state: &State) -> usize {
+    let State { id: _, name: _, transitions, clip, content } = state;
+    let StateContent { sequences, machines, blended_clips, behavior_references, reference_machines: _, generator } = content;
+    1 + transitions.len()
+        + clip.as_ref().map_or(0, clip_weight)
+        + blended_clips.iter().map(clip_weight).sum::<usize>()
+        + sequences.len()
+        + behavior_references.len()
+        + generator.as_ref().map_or(0, generator_weight)
+        + machines.iter().map(machine_weight).sum::<usize>()
+}
+
+/// A machine's size for [`MAX_INLINED_WEIGHT`]: its wildcard transitions and its states.
+fn machine_weight(machine: &StateMachine) -> usize {
+    let StateMachine { start_state: _, start_state_variable: _, states, wildcard } = machine;
+    1 + wildcard.len() + states.iter().map(state_weight).sum::<usize>()
+}
+
+/// A loaded graph's size for [`MAX_INLINED_WEIGHT`]: its machine, and the name tables a resolve
+/// copies along with it (the decode's step budget does not charge those, so its caps are their bound).
+fn graph_weight(graph: &BehaviorGraph) -> usize {
+    let BehaviorGraph { variables, events, machine } = graph;
+    variables.len() + events.len() + machine.as_ref().map_or(0, machine_weight)
 }
 
 /// How many machines deep `machine` goes: itself and the longest chain of machines nested in
@@ -1009,8 +1051,15 @@ impl BehaviorGraph {
     /// transitions. `resolve` loads a referenced behavior by the path it names; a
     /// reference it cannot load is left as it was.
     pub fn inline_references(&mut self, resolve: &mut dyn FnMut(&str) -> Option<BehaviorGraph>) {
+        self.inline_references_spending(resolve);
+    }
+
+    /// [`Self::inline_references`], reporting how much of [`MAX_INLINED_WEIGHT`] it spent: the
+    /// corpus census keeps that well under the budget for the shipped graphs.
+    pub(crate) fn inline_references_spending(&mut self, resolve: &mut dyn FnMut(&str) -> Option<BehaviorGraph>) -> usize {
         let mut budget = InlineBudget { references: MAX_INLINED_REFERENCES, weight: MAX_INLINED_WEIGHT, stack: Vec::new() };
         self.inline_references_with(resolve, &mut budget);
+        MAX_INLINED_WEIGHT - budget.weight
     }
 
     fn inline_machine(
@@ -1044,7 +1093,7 @@ impl BehaviorGraph {
                 // #6212 — charge the loaded graph before anything recurses into it, against one
                 // weight budget for the whole inline: every resolve is a full copy, and the
                 // copies a recursion holds are live at once.
-                let weight = inner.machine.as_mut().map_or(0, machine_weight);
+                let weight = graph_weight(&inner);
                 let Some(left) = budget.weight.checked_sub(weight) else {
                     budget.weight = 0;
                     break;
@@ -1290,6 +1339,9 @@ fn read_bone_weights(file: &Packfile, array_object: usize, walk: &mut Walk) -> R
     if let Some(set) = file.object_pointer(array_object + BINDABLE_BINDING_SET) {
         let (bindings, count) = array(file, set + BINDING_SET_BINDINGS, MAX_VARIABLES, "bone weight bindings")?;
         walk.charge(count)?;
+        // A bone has one driving variable (#6593). The runtime applies bindings in order, so the
+        // last one naming a bone is the one that shows, and the others need not be kept.
+        let mut drivers = vec![None; weights.len()];
         for index in 0..count {
             let element = bindings + index * BINDING_STRIDE;
             if !string(file, element + BINDING_MEMBER_PATH, "binding member")?.eq_ignore_ascii_case("boneWeights") {
@@ -1298,11 +1350,12 @@ fn read_bone_weights(file: &Packfile, array_object: usize, walk: &mut Walk) -> R
             let variable = file.u32(element + BINDING_VARIABLE_INDEX, "binding variable")? as i32;
             let offset = file.u32(element + BINDING_OFFSET_IN_ARRAY, "binding array offset")?;
             if let (Ok(variable), Some(bone)) = (usize::try_from(variable), bone_of_binding(offset)) {
-                if bone < weights.len() {
-                    bound.push((bone, variable));
+                if let Some(driver) = drivers.get_mut(bone) {
+                    *driver = Some(variable);
                 }
             }
         }
+        bound = drivers.into_iter().enumerate().filter_map(|(bone, variable)| Some((bone, variable?))).collect();
     }
     Ok(BoneWeights { weights: Arc::new(weights), bound })
 }
@@ -2288,25 +2341,107 @@ mod tests {
             StateContent { generator: Some(Generator::Modified { modifiers: vec![list], inner: None }), ..Default::default() },
         );
         let heavy = BehaviorGraph { variables: Vec::new(), events: Vec::new(), machine: Some(machine_of(0, vec![heavy_state])) };
-        assert!(machine_weight(heavy.clone().machine.as_mut().unwrap()) > 500 * 1000, "the tables are in the weight");
+        assert!(graph_weight(&heavy) > 500 * 1000, "the tables are in the weight");
 
         let references: Vec<String> = (0..MAX_INLINED_REFERENCES).map(|index| format!("Heavy{index}.hkx")).collect();
-        let mut parent = BehaviorGraph {
-            variables: Vec::new(),
-            events: Vec::new(),
-            machine: Some(machine_of(
-                0,
-                vec![state_of(0, None, StateContent { behavior_references: references, ..Default::default() })],
-            )),
-        };
+        let (inlined, resolved) = inline_into_a_parent(&heavy, references);
+        assert!((1..=MAX_INLINED_WEIGHT / (500 * 1000)).contains(&inlined), "{inlined} inlined copies of a ~500k-entry behavior");
+        assert!(resolved <= inlined + 1, "{resolved} resolves: loading stops once the budget is spent");
+    }
+
+    /// A parent whose one state names `references`, each resolving to `heavy`: how many copies it
+    /// inlined and how many resolves that took.
+    fn inline_into_a_parent(heavy: &BehaviorGraph, references: Vec<String>) -> (usize, usize) {
+        let content = StateContent { behavior_references: references, ..Default::default() };
+        let mut parent = BehaviorGraph { variables: Vec::new(), events: Vec::new(), machine: Some(machine_of(0, vec![state_of(0, None, content)])) };
         let mut resolved = 0;
         parent.inline_references(&mut |_| {
             resolved += 1;
             Some(heavy.clone())
         });
-        let inlined = parent.machine.unwrap().states[0].content.reference_machines.iter().flatten().count();
-        assert!((1..=MAX_INLINED_WEIGHT / (500 * 1000)).contains(&inlined), "{inlined} inlined copies of a ~500k-entry behavior");
-        assert!(resolved <= inlined + 1, "{resolved} resolves: loading stops once the budget is spent");
+        (parent.machine.unwrap().states[0].content.reference_machines.iter().flatten().count(), resolved)
+    }
+
+    /// #6593 — the worst bone-binding table the decode can build: about 976 blender children fit
+    /// the step budget with 1,024 bones each driven by a variable, and a child whose generator is a
+    /// sequence used to weigh 0 however large its table. 64 references held 64 deep copies; the
+    /// audit's 390 children of 4,096 bindings each, before the decode kept one entry a bone,
+    /// measured +1.5 GiB and 2 s.
+    #[test]
+    fn a_blender_childs_bone_bindings_are_weighed_by_what_they_hold() {
+        let child = BlendChild {
+            weight: 1.0,
+            weight_variable: None,
+            bone_weights: Some(BoneWeights { weights: Arc::new(vec![1.0; 1024]), bound: (0..1024).map(|bone| (bone, 0)).collect() }),
+            bone_weights_variable: None,
+            generator: Generator::Sequence("Seq".into()),
+        };
+        let blender = Blender { parametric: false, cyclic: false, sync: false, parameter: 0.0, parameter_variable: None, min_cyclic: 0.0, max_cyclic: 0.0, children: vec![child; 976] };
+        let content = StateContent { sequences: vec!["Seq".into(); 976], generator: Some(Generator::Blender(blender)), ..Default::default() };
+        let heavy = BehaviorGraph { variables: Vec::new(), events: Vec::new(), machine: Some(machine_of(0, vec![state_of(0, None, content)])) };
+        assert!(graph_weight(&heavy) > 976 * 1024, "the bindings are in the weight");
+
+        let (inlined, resolved) = inline_into_a_parent(&heavy, vec!["Heavy.hkx".to_owned(); MAX_INLINED_REFERENCES]);
+        assert_eq!((inlined, resolved), (1, 2), "the second copy does not fit the budget");
+    }
+
+    /// #6593 — a tree of references is weighed by what it holds too, and only the weight can stop
+    /// it. When every one names the sub-behavior itself, the ancestor stack cuts each without
+    /// spending a resolve, so nothing else limits the copies: a tree of 900,000 such references (a
+    /// shape two levels of shared selector children reach within the step budget) used to weigh 2
+    /// and measured +6.9 GiB and 10 s over 64 inlines.
+    #[test]
+    fn a_tree_of_references_to_itself_is_weighed_by_what_it_holds() {
+        let selector = |children| Generator::Selector { index: 0, index_variable: None, children };
+        let leaves: Vec<Generator> = (0..1000).map(Generator::Reference).collect();
+        let content = StateContent {
+            behavior_references: vec!["Self.hkx".to_owned(); 500 * 1000],
+            generator: Some(selector(vec![selector(leaves); 500])),
+            ..Default::default()
+        };
+        let heavy = BehaviorGraph { variables: Vec::new(), events: Vec::new(), machine: Some(machine_of(0, vec![state_of(0, None, content)])) };
+        assert!(graph_weight(&heavy) > 2 * 500 * 1000, "the references and the nodes are in the weight");
+
+        let (inlined, resolved) = inline_into_a_parent(&heavy, vec!["Self.hkx".to_owned(); MAX_INLINED_REFERENCES]);
+        assert_eq!((inlined, resolved), (1, 2), "the second copy does not fit the budget");
+    }
+
+    /// #6593 — the weight is one for each entry a resolve deep-copies, table by table. The bone
+    /// weights themselves are an `Arc` the copies share, so their 1,024 entries are not in it.
+    #[test]
+    fn a_graphs_weight_counts_every_table_a_resolve_copies() {
+        let child = BlendChild {
+            weight: 1.0,
+            weight_variable: None,
+            bone_weights: Some(BoneWeights { weights: Arc::new(vec![1.0; 1024]), bound: vec![(0, 0); 7] }),
+            bone_weights_variable: None,
+            generator: Generator::Sequence("Seq".into()),
+        };
+        let blender = Blender { parametric: false, cyclic: false, sync: false, parameter: 0.0, parameter_variable: None, min_cyclic: 0.0, max_cyclic: 0.0, children: vec![child] };
+        let selector = Generator::Selector { index: 0, index_variable: None, children: vec![Generator::Blender(blender), Generator::Reference(0)] };
+        let timer = Arc::new(ModifierNode { id: 0, kind: Modifier::Timer { alarm_seconds: 1.0, event: 0 } });
+        let generator = Generator::Modified { modifiers: vec![timer], inner: Some(Box::new(selector)) };
+        let blended = state_of(1, Some("B.hkt"), StateContent::default()).clip.unwrap();
+        let content = StateContent {
+            sequences: vec!["Seq".into(); 5],
+            behavior_references: vec!["R.hkx".into(); 6],
+            blended_clips: vec![blended],
+            machines: vec![machine_of(0, Vec::new())],
+            generator: Some(generator),
+            ..Default::default()
+        };
+        let mut state = state_of(0, Some("A.hkt"), content);
+        state.transitions = vec![Transition::default(); 4];
+        let mut machine = machine_of(0, vec![state]);
+        machine.wildcard = vec![Transition::default(); 2];
+        let variable = Variable { name: "V".into(), kind: VariableKind::Real, initial: 0.0 };
+        let graph = BehaviorGraph { variables: vec![variable; 2], events: vec!["E".into(); 3], machine: Some(machine) };
+
+        let names = 2 + 3;
+        let machine = 1 + 2;
+        let state = 1 + 4 + 1 + 1 + 5 + 6 + 1; // transitions, both clips, sequences, references, nested machine
+        let tree = 1 + 1 + 1 + 1 + 1 + 7 + 1 + 1; // modified, timer, selector, blender, child, bound, sequence, reference
+        assert_eq!(graph_weight(&graph), names + machine + state + tree);
     }
 
     /// Event and variable names join the parent's table case-insensitively, the first spelling
@@ -2373,40 +2508,50 @@ mod tests {
         assert_eq!(bone_of_binding(u32::MAX), None, "-1");
     }
 
-    /// A Havok 2010 `hkbBoneWeightArray` of two weights, bound by one `boneWeights` binding
-    /// of variable 3 to the element `offset_plus_one` names.
-    fn bone_weight_array(offset_plus_one: u32) -> Vec<u8> {
-        let mut builder = PackfileBuilder { data: vec![0u8; 0x200], ..Default::default() };
+    /// The `(bone, variable)` table of a Havok 2010 `hkbBoneWeightArray` of two weights with one
+    /// `boneWeights` binding for each `(variable, offsetInArrayPlusOne)`.
+    fn bone_bindings_read(bindings: &[(u32, u32)]) -> Vec<(usize, usize)> {
+        let mut builder = PackfileBuilder { data: vec![0u8; 0x300], ..Default::default() };
         // The array object at 0: weights at +0x30 (local pointer to 0x100, count 2), bindings at +0x10.
         builder.local.push((BONE_WEIGHTS as u32, 0x100));
         builder.data[BONE_WEIGHTS + 8..BONE_WEIGHTS + 12].copy_from_slice(&2u32.to_le_bytes());
         builder.data[0x100..0x104].copy_from_slice(&0.25f32.to_le_bytes());
         builder.data[0x104..0x108].copy_from_slice(&0.75f32.to_le_bytes());
         builder.global.push((BINDABLE_BINDING_SET as u32, 1, 0x140));
-        // The binding set at 0x140: one binding at 0x180.
+        // The binding set at 0x140: its bindings from 0x180.
         builder.local.push(((0x140 + BINDING_SET_BINDINGS) as u32, 0x180));
-        builder.data[0x140 + BINDING_SET_BINDINGS + 8..0x140 + BINDING_SET_BINDINGS + 12].copy_from_slice(&1u32.to_le_bytes());
-        // The binding: member path "boneWeights" (a string at 0x1C0), variable 3, the offset.
-        builder.data[0x1C0..0x1CC].copy_from_slice(b"boneWeights\0");
-        builder.local.push(((0x180 + BINDING_MEMBER_PATH) as u32, 0x1C0));
-        builder.data[0x180 + BINDING_VARIABLE_INDEX..0x180 + BINDING_VARIABLE_INDEX + 4].copy_from_slice(&3u32.to_le_bytes());
-        builder.data[0x180 + BINDING_OFFSET_IN_ARRAY..0x180 + BINDING_OFFSET_IN_ARRAY + 4].copy_from_slice(&offset_plus_one.to_le_bytes());
+        builder.data[0x140 + BINDING_SET_BINDINGS + 8..0x140 + BINDING_SET_BINDINGS + 12].copy_from_slice(&(bindings.len() as u32).to_le_bytes());
+        // Each binding: member path "boneWeights" (a string at 0x2C0), the variable, the offset.
+        builder.data[0x2C0..0x2CC].copy_from_slice(b"boneWeights\0");
+        for (index, (variable, offset_plus_one)) in bindings.iter().enumerate() {
+            let binding = 0x180 + index * BINDING_STRIDE;
+            builder.local.push(((binding + BINDING_MEMBER_PATH) as u32, 0x2C0));
+            builder.data[binding + BINDING_VARIABLE_INDEX..binding + BINDING_VARIABLE_INDEX + 4].copy_from_slice(&variable.to_le_bytes());
+            builder.data[binding + BINDING_OFFSET_IN_ARRAY..binding + BINDING_OFFSET_IN_ARRAY + 4].copy_from_slice(&offset_plus_one.to_le_bytes());
+        }
         builder.local.sort_unstable();
         builder.global.sort_unstable();
-        builder.build()
+        let bytes = builder.build();
+        let file = Packfile::parse(&bytes).expect("a well-formed packfile");
+        read_bone_weights(&file, 0, &mut Walk::new(MAX_GRAPH_STEPS)).expect("the array decodes").bound
     }
 
     #[test]
     fn a_bone_weight_binding_with_an_overflowing_offset_is_ignored_not_a_panic() {
-        let read = |offset| {
-            let bytes = bone_weight_array(offset);
-            let file = Packfile::parse(&bytes).expect("a well-formed packfile");
-            read_bone_weights(&file, 0, &mut Walk::new(MAX_GRAPH_STEPS)).expect("the array decodes").bound
-        };
+        let read = |offset| bone_bindings_read(&[(3, offset)]);
         assert_eq!(read(2), [(1, 3)], "the second weight is driven by variable 3");
         assert!(read(0x8000_0000).is_empty());
         assert!(read(0).is_empty());
         assert!(read(3).is_empty(), "past the two weights");
+    }
+
+    /// #6593 — a bone has one driving variable however many bindings name it. They apply in order,
+    /// so the last stands, as it did when the runtime walked the whole list; a binding with no
+    /// variable names nothing and leaves the bone's driver alone.
+    #[test]
+    fn a_bones_repeated_bindings_keep_the_last_variable() {
+        assert_eq!(bone_bindings_read(&[(3, 2), (5, 2), (7, 1), (9, 2)]), [(0, 7), (1, 9)]);
+        assert_eq!(bone_bindings_read(&[(5, 2), (u32::MAX, 2)]), [(1, 5)]);
     }
 
     /// A Havok 2014 packfile of `lists` `hkbModifierList`s: list `i` holds `fan` entries, each
