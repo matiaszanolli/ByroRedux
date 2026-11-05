@@ -26,6 +26,7 @@
 //! }
 //! ```
 
+pub mod lod_family;
 mod archive;
 mod ba2;
 mod csg;

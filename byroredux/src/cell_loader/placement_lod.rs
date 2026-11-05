@@ -1069,4 +1069,142 @@ mod tests {
              MeshResolver, not call the no-resolver import_nif_scene overload",
         );
     }
+
+    /// #6636 / DLOD-GATE-007 — the Oblivion `.lod` census behind PRD `distant-lod-completion` §3.1 F6 / F7:
+    /// every base the 9 889 vanilla `distantlod\*.lod` groups name, split by what `Oblivion.esm` says the
+    /// base is (a TREE, or a STAT with or without a shipped `_far.nif`), with its placement count. The
+    /// PRD's figures were hand-run once; this pins them.
+    ///
+    ///   cargo test -p byroredux --bin byroredux oblivion_lod_census -- --ignored --nocapture
+    #[test]
+    #[ignore = "needs Oblivion game data on disk"]
+    fn oblivion_lod_census() {
+        use byroredux_bsa::BsaArchive;
+        use byroredux_plugin::esm::{parse_esm, test_paths};
+        use std::collections::{BTreeMap, HashSet};
+
+        let dir = test_paths::oblivion_data_dir();
+        let (Ok(bytes), Ok(meshes)) = (
+            std::fs::read(test_paths::oblivion_esm()),
+            BsaArchive::open(dir.join("Oblivion - Meshes.bsa").to_str().unwrap()),
+        ) else {
+            test_paths::require_or_skip("Oblivion.esm / Oblivion - Meshes.bsa");
+            return;
+        };
+        let index = parse_esm(&bytes).expect("parse Oblivion.esm");
+        let far: HashSet<String> = meshes
+            .list_files()
+            .iter()
+            .map(|f| f.to_ascii_lowercase().replace('/', "\\"))
+            .filter(|f| f.ends_with("_far.nif"))
+            .collect();
+
+        // base FormID -> placements, over every `.lod` file.
+        let mut placements: BTreeMap<u32, usize> = BTreeMap::new();
+        let mut files = 0usize;
+        for name in meshes.list_files() {
+            let lower = name.to_ascii_lowercase().replace('/', "\\");
+            if !(lower.starts_with("distantlod\\") && lower.ends_with(".lod")) {
+                continue;
+            }
+            files += 1;
+            // `toddland` is the documented degenerate file; a parse error is a skipped file, as in the loader.
+            let Ok(groups) = parse_placement_lod(&meshes.extract(name).unwrap()) else { continue };
+            for g in groups {
+                *placements.entry(g.base_form_id).or_default() += g.placements.len();
+            }
+        }
+
+        let (mut tree, mut stat_far, mut stat_full, mut other) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
+        for (&base, &n) in &placements {
+            if index.trees.contains_key(&base) {
+                tree.insert(base, n);
+            } else if let Some(stat) = index.cells.statics.get(&base) {
+                let has_far = far_nif_path(&stat.model_path).is_some_and(|p| far.contains(&p));
+                if has_far { &mut stat_far } else { &mut stat_full }.insert(base, n);
+            } else {
+                other.insert(base, n);
+            }
+        }
+        for (base, n) in &stat_full {
+            let stat = &index.cells.statics[base];
+            eprintln!("  STAT without _far.nif: {base:08X} {} model={:?} placements={n}", stat.editor_id, stat.model_path);
+        }
+        let sum = |m: &BTreeMap<u32, usize>| m.values().sum::<usize>();
+        eprintln!(
+            "Oblivion .lod: {files} files; TREE bases {} ({} placements); STAT with _far.nif {} ({}); STAT without {} ({}); unresolved {} ({})",
+            tree.len(), sum(&tree), stat_far.len(), sum(&stat_far), stat_full.len(), sum(&stat_full), other.len(), sum(&other)
+        );
+        assert_eq!(files, 9_889);
+        assert_eq!((tree.len(), sum(&tree)), (82, 98_661), "F7: the TREE groups");
+        assert_eq!((stat_far.len(), sum(&stat_far)), (118, 901), "F6: STAT bases with a _far.nif");
+        assert_eq!((stat_full.len(), sum(&stat_full)), (8, 29), "F6 / Q6: STAT bases without one");
+        assert!(other.is_empty(), "every .lod base resolves to a TREE or STAT: {other:?}");
+    }
+
+    /// #6636 / V2 — what a distant Oblivion tree is drawn with: the `textures\\trees\\billboards\\` DDS set
+    /// against the TREE bases the `.lod` groups instance (their `MODL` stem and `ICON`).
+    ///
+    ///   cargo test -p byroredux --bin byroredux oblivion_tree_billboard_census -- --ignored --nocapture
+    #[test]
+    #[ignore = "needs Oblivion game data on disk"]
+    fn oblivion_tree_billboard_census() {
+        use byroredux_bsa::BsaArchive;
+        use byroredux_plugin::esm::{parse_esm, test_paths};
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let dir = test_paths::oblivion_data_dir();
+        let (Ok(bytes), Ok(meshes), Ok(textures)) = (
+            std::fs::read(test_paths::oblivion_esm()),
+            BsaArchive::open(dir.join("Oblivion - Meshes.bsa").to_str().unwrap()),
+            BsaArchive::open(dir.join("Oblivion - Textures - Compressed.bsa").to_str().unwrap()),
+        ) else {
+            test_paths::require_or_skip("Oblivion.esm and its archives");
+            return;
+        };
+        let index = parse_esm(&bytes).expect("parse Oblivion.esm");
+        let billboards: BTreeSet<String> = textures
+            .list_files()
+            .iter()
+            .map(|f| f.to_ascii_lowercase().replace('/', "\\"))
+            .filter(|f| f.starts_with("textures\\trees\\billboards\\") && f.ends_with(".dds"))
+            .collect();
+        let mut lod_trees: BTreeSet<u32> = BTreeSet::new();
+        for name in meshes.list_files() {
+            let lower = name.to_ascii_lowercase().replace('/', "\\");
+            if lower.starts_with("distantlod\\") && lower.ends_with(".lod") {
+                if let Ok(groups) = parse_placement_lod(&meshes.extract(name).unwrap()) {
+                    lod_trees.extend(groups.iter().map(|g| g.base_form_id).filter(|b| index.trees.contains_key(b)));
+                }
+            }
+        }
+        // Pair each LOD tree base with a billboard by the `.spt` stem, then by the ICON stem.
+        let stem = |p: &str| p.rsplit(['\\', '/']).next().unwrap_or("").rsplit_once('.').map_or(String::new(), |(s, _)| s.to_ascii_lowercase());
+        let by_name: BTreeMap<String, &String> = billboards
+            .iter()
+            .map(|b| (stem(b), b))
+            .collect();
+        let (mut by_spt, mut by_icon, mut neither) = (0, 0, Vec::new());
+        for base in &lod_trees {
+            let tree = &index.trees[base];
+            if by_name.contains_key(&stem(&tree.model_path)) {
+                by_spt += 1;
+            } else if by_name.contains_key(&stem(&tree.leaf_texture)) {
+                by_icon += 1;
+            } else {
+                neither.push(format!("{} model={:?} icon={:?}", tree.editor_id, tree.model_path, tree.leaf_texture));
+            }
+        }
+        eprintln!(
+            "Oblivion billboards: {} DDS in textures\\trees\\billboards\\; {} TREE bases in .lod groups: {by_spt} pair by .spt stem, {by_icon} by ICON stem, {} neither",
+            billboards.len(), lod_trees.len(), neither.len()
+        );
+        for n in neither.iter().take(10) {
+            eprintln!("  unpaired: {n}");
+        }
+        // V2 / DLOD-TREE-003: the original's distant tree texture is `trees\\billboards\\<.spt stem>.dds`, one
+        // per instanced TREE base (the `ICON` leaf texture is not what pairs).
+        assert_eq!(billboards.len(), 118, "the billboard DDS set DLOD-TREE-003 quotes");
+        assert_eq!((lod_trees.len(), by_spt, by_icon, neither.len()), (82, 82, 0, 0));
+    }
 }

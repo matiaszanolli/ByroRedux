@@ -29,6 +29,10 @@
 //! beside the `.btr`/`.bto` quads, Starfield's `meshes\lod\generated\`
 //! NIFs, and the `lodsettings\*.lod` worldspace descriptors.
 //!
+//! #6636 — the family matching lives in `byroredux_bsa::lod_family` (shared with the
+//! `lod_family_census` test), and now also names the Fallout `.dtl` / `treetypes.lst`
+//! distant-tree files and the FO3/FNV `.dlodsettings` descriptors.
+//!
 //! Usage:
 //!   cargo run -p byroredux-bsa --example probe_lod_corpus -- <ARCHIVE> [ARCHIVE ...]
 
@@ -65,28 +69,9 @@ impl AnyArchive {
     }
 }
 
-/// #4737 — the Creation family: `meshes\terrain\<ws>\` holds the
-/// per-quad baked terrain (`.btr`) beside its `objects\` folder of
-/// object-LOD (`.bto`) and (Skyrim, #4933) its `trees\` folder of tree-LOD
-/// (`.btt`). Level-first stem: `<ws>.<L>.<x>.<y>`. Returns
-/// `(worldspace, extension, level)` for a quad name, `None` otherwise.
-fn creation_quad(l: &str) -> Option<(&str, &str, &str)> {
-    let rest = l.strip_prefix("meshes\\terrain\\")?;
-    let (world, file) = rest.split_once('\\')?;
-    let (stem, ext) = file.rsplit_once('.')?;
-    if !matches!(ext, "btr" | "bto" | "btt") {
-        return None;
-    }
-    // <ws>.<L>.<x>.<y> — the level is the second dot field; anything else
-    // is not a quadtree quad name.
-    let name = stem.rsplit('\\').next()?;
-    if name.split('.').count() < 4 {
-        return None;
-    }
-    Some((world, ext, name.split('.').nth(1)?))
-}
-
 fn main() {
+    use byroredux_bsa::lod_family::{classify, is_high_variant, normalize, LodFamily};
+    use std::collections::BTreeMap;
     let mut total = 0usize;
     for path in std::env::args().skip(1) {
         let archive = match AnyArchive::open(&path) {
@@ -96,138 +81,35 @@ fn main() {
                 continue;
             }
         };
-        let mut lod = 0usize;
-        let mut blocks: std::collections::BTreeMap<
-            String,
-            std::collections::BTreeMap<String, usize>,
-        > = Default::default();
-        let mut terrain: std::collections::BTreeMap<
-            String,
-            std::collections::BTreeMap<String, usize>,
-        > = Default::default();
-        let mut far_nif = 0usize;
-        let mut distantlod = 0usize;
+        let mut per_family: BTreeMap<LodFamily, usize> = BTreeMap::new();
+        let mut per_world: BTreeMap<(LodFamily, String), BTreeMap<String, usize>> = BTreeMap::new();
         let mut high_variant = 0usize;
-        let mut creation = 0usize;
-        let mut generated = 0usize;
-        let mut lodsettings = 0usize;
-        let mut treelod_atlas = 0usize;
-        let mut tree_lists = 0usize;
         let mut matched = 0usize;
-        let mut creation_terrain: std::collections::BTreeMap<
-            String,
-            std::collections::BTreeMap<String, usize>,
-        > = Default::default();
-        let mut creation_objects: std::collections::BTreeMap<
-            String,
-            std::collections::BTreeMap<String, usize>,
-        > = Default::default();
-        let mut creation_trees: std::collections::BTreeMap<
-            String,
-            std::collections::BTreeMap<String, usize>,
-        > = Default::default();
         for f in archive.list_files() {
-            // #4737 — BA2 names use `/`; the Creation matcher below keys on
-            // the BSA-style backslash form.
-            let l = f.to_ascii_lowercase().replace('/', "\\");
-            // #4933 — one hit per file for `TOTAL`, however many of the
-            // (overlapping, e.g. `.high.`) family counters it bumps.
-            let mut is_lod = false;
-            if l.ends_with("_far.nif") {
-                far_nif += 1;
-                is_lod = true;
-            }
-            if l.contains("distantlod\\") {
-                distantlod += 1;
-                is_lod = true;
-            }
-            // #4933 — Starfield's LOD corpus: generated NIFs under
-            // `meshes\lod\generated\` (no `.btr`/`.bto` quads at all).
-            if l.starts_with("meshes\\lod\\generated\\") && l.ends_with(".nif") {
-                generated += 1;
-                is_lod = true;
-            }
-            // #4933 — the per-worldspace `lodsettings\<ws>.lod` descriptors.
-            if l.starts_with("lodsettings\\") && l.ends_with(".lod") {
-                lodsettings += 1;
-                is_lod = true;
-            }
-            // #4913 — the tree-LOD family's two non-quad members: the
-            // per-worldspace billboard atlases
-            // (`textures\terrain\<ws>\trees\<ws>treelod.dds`) and the `.lst`
-            // tree species lists (Skyrim ships 386 `.btt` + 9 `.lst` + the
-            // atlases in `Meshes1.bsa`).
-            if l.starts_with("textures\\terrain\\")
-                && l.contains("\\trees\\")
-                && l.contains("treelod")
-            {
-                treelod_atlas += 1;
-                is_lod = true;
-            }
-            if l.starts_with("meshes\\terrain\\") && l.ends_with(".lst") {
-                tree_lists += 1;
-                is_lod = true;
-            }
-            // #4468 — the Fallout-legacy DLC archives bake a second,
-            // higher-detail object-quad variant beside the plain form
-            // (FO3 `Anchorage - Main.bsa` 60, FNV `LonesomeRoad -
-            // Main.bsa` 19); count it so the variant stays visible in
-            // the census.
-            if l.contains(".high.") {
+            let l = normalize(f);
+            if is_high_variant(&l) {
                 high_variant += 1;
             }
-            if let Some((world, ext, level)) = creation_quad(&l) {
-                creation += 1;
-                is_lod = true;
-                let bucket = match ext {
-                    "btt" => &mut creation_trees,
-                    "bto" => &mut creation_objects,
-                    _ => &mut creation_terrain,
-                };
-                *bucket
-                    .entry(world.to_string())
+            let hits = classify(&l);
+            // One hit per file for the total, however many families claim it.
+            matched += usize::from(!hits.is_empty());
+            for hit in hits {
+                *per_family.entry(hit.family).or_default() += 1;
+                *per_world
+                    .entry((hit.family, hit.world.unwrap_or_else(|| "-".to_owned())))
                     .or_default()
-                    .entry(level.to_string())
+                    .entry(hit.level.unwrap_or_else(|| "-".to_owned()))
                     .or_default() += 1;
             }
-            if !l.contains("landscape\\lod\\") {
-                matched += usize::from(is_lod);
-                continue;
-            }
-            lod += 1;
-            matched += 1;
-            let rest = &l[l.find("landscape\\lod\\").unwrap() + "landscape\\lod\\".len()..];
-            let world = rest.split('\\').next().unwrap_or("?").to_string();
-            let level = rest
-                .rsplit('.')
-                .find(|s| s.starts_with("level"))
-                .unwrap_or_else(|| {
-                    rest.split('.')
-                        .find(|s| s.starts_with("level"))
-                        .unwrap_or("?")
-                })
-                .to_string();
-            let bucket = if rest.contains("\\blocks\\") {
-                &mut blocks
-            } else {
-                &mut terrain
-            };
-            *bucket.entry(world).or_default().entry(level).or_default() += 1;
         }
-        println!(
-            "{path}\n  landscape\\lod entries={lod}  _far.nif={far_nif}  distantlod={distantlod}  .high.={high_variant}  meshes\\terrain .btr/.bto/.btt={creation}  meshes\\lod\\generated={generated}  lodsettings={lodsettings}  treelod atlases={treelod_atlas}  .lst={tree_lists}"
-        );
-        for (label, map) in [
-            ("terrain", &terrain),
-            ("blocks ", &blocks),
-            ("btr    ", &creation_terrain),
-            ("bto    ", &creation_objects),
-            ("btt    ", &creation_trees),
-        ] {
-            for (world, levels) in map {
-                let n: usize = levels.values().sum();
-                println!("    {label} {world}: {n}  {levels:?}");
-            }
+        let summary: Vec<String> = per_family
+            .iter()
+            .map(|(family, n)| format!("{}={n}", family.label()))
+            .collect();
+        println!("{path}\n  {}  .high.={high_variant}", summary.join("  "));
+        for ((family, world), levels) in &per_world {
+            let n: usize = levels.values().sum();
+            println!("    {:<14} {world}: {n}  {levels:?}", family.label());
         }
         total += matched;
     }
