@@ -2704,3 +2704,55 @@ fn fact_crime_tab_round_trips_for_skyrim() {
     // Below the 12-byte base the record is not a CRVA.
     assert!(parse_fact_crime(&[sub(b"CRVA", &crva[..11])], &None).is_none());
 }
+
+/// `SRAF`: a u16 role and a u16 perspective.
+fn sraf(role: u16, perspective: u16) -> Vec<u8> {
+    let mut bytes = role.to_le_bytes().to_vec();
+    bytes.extend_from_slice(&perspective.to_le_bytes());
+    bytes
+}
+
+/// #6621 — every game's real layout: one `SADD` ahead of the first entry, kept
+/// on the record. Starfield is the case to pin: xEdit nests `SADD` in its entry
+/// struct, yet SFBGS050.esm's 41-entry RACE 0202BB78 authors a single one, and
+/// the entries after it belong to the same additive race.
+#[test]
+fn race_subgraph_additive_race_stays_on_the_record() {
+    let additive = 0x0000_347Du32.to_le_bytes();
+    let subs = [
+        sub(b"SADD", &additive),
+        sub(b"SAKD", &0x0000_0C01u32.to_le_bytes()),
+        sub(b"SGNM", b"first.hkx\0"),
+        sub(b"SRAF", &sraf(1, 0)),
+        sub(b"SGNM", b"second.hkx\0"),
+        sub(b"SRAF", &sraf(0, 1)),
+    ];
+    for game in [GameKind::Fallout4, GameKind::Fallout76, GameKind::Starfield] {
+        let race = parse_race(0x20, &subs, game, &None);
+        assert_eq!(race.subgraph_additive, Some(0x347D), "{game:?}");
+        assert_eq!(race.subgraph_data.len(), 2, "{game:?}");
+        assert_eq!(race.subgraph_data[0].behavior_graph, "first.hkx", "{game:?}");
+        assert_eq!(race.subgraph_data[0].actor_keywords, [0x0C01], "{game:?}");
+        assert_eq!(race.subgraph_data[0].role, SubgraphRole::Weapon, "{game:?}");
+        assert_eq!(race.subgraph_data[1].role, SubgraphRole::Mt, "{game:?}");
+        assert!(race.subgraph_data[1].first_person, "{game:?}");
+    }
+}
+
+/// #6621 — the `SRAF` role enum per game: 3 and the Starfield-only 5-7.
+#[test]
+fn race_subgraph_role_enum_follows_the_game() {
+    let role_of = |raw, game| {
+        let subs = [sub(b"SRAF", &sraf(raw, 0))];
+        parse_race(0x22, &subs, game, &None).subgraph_data[0].role
+    };
+    assert_eq!(role_of(3, GameKind::Fallout4), SubgraphRole::Idle);
+    assert_eq!(role_of(3, GameKind::Fallout76), SubgraphRole::LinkingOnly);
+    assert_eq!(role_of(3, GameKind::Starfield), SubgraphRole::LinkingOnly);
+    assert_eq!(role_of(4, GameKind::Starfield), SubgraphRole::Pipboy);
+    assert_eq!(role_of(5, GameKind::Starfield), SubgraphRole::MtGeneration);
+    assert_eq!(role_of(6, GameKind::Starfield), SubgraphRole::WeaponGeneration);
+    assert_eq!(role_of(7, GameKind::Starfield), SubgraphRole::FurnitureGeneration);
+    assert_eq!(role_of(5, GameKind::Fallout4), SubgraphRole::Other(5));
+    assert_eq!(role_of(8, GameKind::Starfield), SubgraphRole::Other(8));
+}

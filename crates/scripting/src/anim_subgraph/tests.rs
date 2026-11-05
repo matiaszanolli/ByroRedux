@@ -191,3 +191,25 @@ fn vanilla_fo4_archetype_npcs_select_their_entries() {
     assert!(checked > 100, "the corpus has 726 archetype NPCs");
     assert!(named > checked / 2, "most selections are the archetype's own entry");
 }
+
+/// #6621 — `SADD` adds the whole race's entries, on every game that authors it
+/// (FO4's DLCRobot adds 122 from one, Starfield's SFBGS050 adds 41 from one).
+#[test]
+fn an_additive_race_adds_all_its_entries() {
+    let mut index = EsmIndex::default();
+    index.races.insert(HUMAN, RaceRecord { form_id: HUMAN, subgraph_data: vec![entry(&[], "own")], ..Default::default() });
+    index.races.insert(
+        TEMPLATE,
+        RaceRecord {
+            form_id: TEMPLATE,
+            subgraph_additive: Some(HUMAN),
+            subgraph_data: vec![entry(&[], "added-a"), entry(&[], "added-b")],
+            ..Default::default()
+        },
+    );
+    let graphs = |race| -> Vec<String> {
+        effective_entries(&index, race).into_iter().map(|entry| entry.behavior_graph).collect()
+    };
+    assert_eq!(graphs(HUMAN), ["own", "added-a", "added-b"]);
+    assert_eq!(graphs(TEMPLATE), ["added-a", "added-b"], "adding is one way");
+}

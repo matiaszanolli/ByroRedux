@@ -187,7 +187,12 @@ pub struct RaceRecord {
     /// FO4+ `SRAC`: the race whose subgraph data this race uses as its own
     /// (a reskin keeps the template's animations).
     pub subgraph_template: Option<u32>,
-    /// FO4+ `SADD`: the race this race's subgraph data is added to.
+    /// FO4+ `SADD`: the race this race's subgraph data is added to. One per
+    /// record on every game: xEdit's Starfield definition nests it in the
+    /// *Subgraph Data* entry struct, but all 17 Starfield races that author
+    /// it (every `.esm` installed, #6621) hold exactly one, ahead of the first
+    /// entry, which is where FO4 and FO76 put theirs. Those races run to 41
+    /// entries, so it cannot be read as belonging to the first alone.
     pub subgraph_additive: Option<u32>,
     /// FO4+ subgraph data (`SAKD`/`SGNM`/`SAPT`/`STKD`/`SRAF` groups).
     pub subgraph_data: Vec<SubgraphData>,
@@ -231,28 +236,44 @@ impl BleedoutData {
 const SF_DAT2_BLEEDOUT_OFFSET: usize = 160;
 
 /// The role of a subgraph entry: when its behavior graph and animations load
-/// (xEdit `wbRACE` `SRAF` role enum; CK *Subgraphs* page).
+/// (xEdit `wbRACE` `SRAF` role enum; CK *Subgraphs* page). The enum differs by
+/// game: value 3 is *Idle* on FO4 but *Linking Only* on FO76 and Starfield, and
+/// only Starfield names 5-7.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SubgraphRole {
     /// No weapon readied; the role `ChangeAnimArchetype` / `ChangeAnimFlavor` change.
     Mt,
     Weapon,
     Furniture,
+    /// FO4's value 3.
     Idle,
+    /// FO76's and Starfield's value 3.
+    LinkingOnly,
     Pipboy,
-    /// A role value xEdit's table does not name.
+    /// Starfield's value 5.
+    MtGeneration,
+    /// Starfield's value 6.
+    WeaponGeneration,
+    /// Starfield's value 7.
+    FurnitureGeneration,
+    /// A role value xEdit's table does not name for the game.
     Other(u16),
 }
 
 impl SubgraphRole {
-    fn from_raw(raw: u16) -> Self {
-        match raw {
-            0 => Self::Mt,
-            1 => Self::Weapon,
-            2 => Self::Furniture,
-            3 => Self::Idle,
-            4 => Self::Pipboy,
-            other => Self::Other(other),
+    fn from_raw(raw: u16, game: GameKind) -> Self {
+        use GameKind::{Fallout76, Starfield};
+        match (raw, game) {
+            (0, _) => Self::Mt,
+            (1, _) => Self::Weapon,
+            (2, _) => Self::Furniture,
+            (3, Fallout76 | Starfield) => Self::LinkingOnly,
+            (3, _) => Self::Idle,
+            (4, _) => Self::Pipboy,
+            (5, Starfield) => Self::MtGeneration,
+            (6, Starfield) => Self::WeaponGeneration,
+            (7, Starfield) => Self::FurnitureGeneration,
+            (other, _) => Self::Other(other),
         }
     }
 }
@@ -841,7 +862,7 @@ pub fn parse_race(
                     behavior_graph: pending.behavior_graph,
                     animation_paths: pending.animation_paths,
                     target_keywords: pending.target_keywords,
-                    role: SubgraphRole::from_raw(role),
+                    role: SubgraphRole::from_raw(role, game),
                     first_person: perspective != 0,
                 });
             }
