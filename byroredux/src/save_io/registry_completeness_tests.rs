@@ -815,6 +815,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ScriptAlphaApplied", "M47.3 — the SetActorAlpha values already written to meshes; rebuilt from the saved ledger on the first frame"),
         ("FleeState", "M47.3 — a ForceFlee under way; it lasts seconds and a save keeps the actor standing"),
         ("UiMenuState", "M47.3 — which UI pages are open, republished every frame by the app"),
+        ("MenuCodes", "#6620 — the MenuMode codes that differ by game, re-selected from the load order every boot"),
         ("TrapMotionSamples", "M47.3 — last positions of traps and the actors touching them, to measure relative speed"),
         ("KnockbackForceMax", "M47.3 — fKnockbackForceMax, read from the records at every content load"),
         ("KnockedDown", "M47.3 — an actor down after PushActorAway; the ragdoll it follows is not saved either"),

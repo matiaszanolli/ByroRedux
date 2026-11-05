@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::{EntityId, TotalTime, World};
 use byroredux_core::math::Vec3;
+use byroredux_plugin::esm::reader::GameKind;
+use byroredux_plugin::esm::records::EsmIndex;
 use byroredux_scripting::obscript_more::{EngineQueries, TrapContact};
 
 /// What the pause/UI layer has open this frame, published by the app each frame. `NOT_SAVED_BY_DESIGN`:
@@ -69,10 +71,48 @@ pub(crate) fn publish_ui_menus(world: &World, ui: Option<&byroredux_debug_ui::De
     }
 }
 
-/// GECK *MenuMode* codes (page *MenuTypes*): 1 the "main four" (inventory here), 2 any other menu, 3 the
-/// console; and the specific menus 1001 Message, 1002 Inventory, 1007 Loading, 1009 Dialog, 1013 Pause,
-/// 1053 Barter. `0` asks about any menu. A menu the engine has no screen for is never open.
+/// The specific-menu codes that differ by game, selected once when the load order is installed (#6620). Only
+/// the barter screen today; the full per-game table belongs to `docs/prd/game-ui-integration.md`, GUI-REG-002.
+/// `NOT_SAVED_BY_DESIGN`: re-derived from the load order every boot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MenuCodes {
+    barter: u32,
+}
+
+impl Default for MenuCodes {
+    fn default() -> Self {
+        Self::FALLOUT
+    }
+}
+
+impl Resource for MenuCodes {}
+
+impl MenuCodes {
+    /// xEdit `wbMenuModeEnum` (`wbDefinitionsCommon.pas`) 1008 `IsTES4('Container/Barter', 'Container')`, and CS
+    /// *MenuTypes* "1008 = Container, Barter".
+    const OBLIVION: Self = Self { barter: 1008 };
+    /// xEdit `wbMenuModeEnum` 1053 `IsFO3('Barter', '')`.
+    const FALLOUT: Self = Self { barter: 1053 };
+
+    fn for_game(game: GameKind) -> Self {
+        match game {
+            GameKind::Oblivion => Self::OBLIVION,
+            _ => Self::FALLOUT,
+        }
+    }
+}
+
+/// Select the load order's menu codes.
+pub(crate) fn install_menu_codes(world: &mut World, index: &EsmIndex) {
+    world.insert_resource(MenuCodes::for_game(index.game));
+}
+
+/// *MenuMode* codes (GECK and CS page *MenuTypes*): 1 the "main four" (inventory here), 2 any other menu, 3 the
+/// console; and the specific menus 1001 Message, 1002 Inventory, 1007 Loading, 1009 Dialog, 1013 Pause, plus
+/// the game's barter code ([`MenuCodes`]). `0` asks about any menu. A menu the engine has no screen for is never
+/// open.
 fn menu_open(world: &World, kind: u32) -> bool {
+    let codes = world.try_resource::<MenuCodes>().map(|codes| *codes).unwrap_or_default();
     let ui = world.try_resource::<UiMenuState>().map(|state| *state).unwrap_or_default();
     let message = ui.message_box || world.try_resource::<crate::notifications::MessageBoxQueue>().is_some_and(|boxes| !boxes.0.is_empty());
     let barter = ui.barter || world.try_resource::<crate::barter::ActiveBarter>().is_some_and(|barter| barter.is_open());
@@ -87,7 +127,7 @@ fn menu_open(world: &World, kind: u32) -> bool {
         1007 => loading,
         1009 => ui.dialogue,
         1013 => ui.pause,
-        1053 => barter,
+        code if code == codes.barter => barter,
         _ => false,
     }
 }
@@ -204,6 +244,7 @@ fn player_airborne(world: &World) -> bool {
 /// Install the queries and their state.
 pub(crate) fn install(world: &mut World) {
     world.init_resource::<UiMenuState>();
+    world.init_resource::<MenuCodes>();
     world.init_resource::<TrapMotionSamples>();
     world.insert_resource(EngineQueries {
         line_of_sight: Some(crate::systems::actor_has_line_of_sight),
@@ -235,6 +276,30 @@ mod tests {
         *world.resource_mut::<UiMenuState>() = UiMenuState { console: true, ..Default::default() };
         assert!(menu_open(&world, 3) && menu_open(&world, 0));
         assert!(!menu_open(&world, 1080), "a menu with no screen here is never open");
+    }
+
+    /// #6620 — the barter screen answers the load order's code and no other: 1008 on Oblivion (where 1053 is
+    /// not a code), 1053 on FO3/FNV (where 1008 is the container screen, which has no page here).
+    #[test]
+    fn the_barter_code_is_selected_by_the_load_order() {
+        let world_for = |game| {
+            let mut world = World::new();
+            install(&mut world);
+            install_menu_codes(&mut world, &EsmIndex { game, ..Default::default() });
+            *world.resource_mut::<UiMenuState>() = UiMenuState { barter: true, ..Default::default() };
+            world
+        };
+        let oblivion = world_for(GameKind::Oblivion);
+        assert!(menu_open(&oblivion, 1008), "Oblivion's barter code");
+        assert!(!menu_open(&oblivion, 1053), "not a code on Oblivion");
+        assert!(menu_open(&oblivion, 0) && menu_open(&oblivion, 2), "still a menu");
+        let fallout = world_for(GameKind::Fallout3NV);
+        assert!(menu_open(&fallout, 1053), "FO3/FNV's barter code");
+        assert!(!menu_open(&fallout, 1008), "1008 is the container screen on FO3/FNV");
+        // With the barter screen shut, its code is shut on both.
+        let closed = world_for(GameKind::Oblivion);
+        *closed.resource_mut::<UiMenuState>() = UiMenuState::default();
+        assert!(!menu_open(&closed, 1008));
     }
 
     /// #6576 — a workbench is a menu (so "any menu" and "some other menu" are open) but not the Pause menu,
