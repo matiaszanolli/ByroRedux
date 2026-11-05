@@ -676,13 +676,37 @@ fn blended_surfaces_collide_only_where_collision_was_authored() {
 #[test]
 #[ignore = "needs Fallout New Vegas game data on disk"]
 fn fnv_light_vfx_sheets_synthesize_no_collider() {
-    let meshes = byroredux_plugin::esm::test_paths::fnv_data_dir().join("Fallout - Meshes.bsa");
+    assert_census_vfx_sheets_synthesize_no_collider(
+        byroredux_plugin::esm::test_paths::fnv_data_dir(),
+        &["fxlightbeam", "fxglowsimp", "fxbrightspot", "indfxlightrays"],
+    );
+}
+
+/// #6560 — the FO3 leg of #6459. FO3 has the most placements of these sheets (151 STAT bases, ~19,089
+/// REFRs in the 2026-10-27 census, about 2.8x FNV's), and a change to how `BSShaderNoLightingProperty`
+/// + `NiAlphaProperty` canonicalise on BSVER 34 would put solid light shafts back at all of them.
+///
+///   cargo test -p byroredux --bin byroredux fo3_light_vfx -- --ignored
+#[test]
+#[ignore = "needs Fallout 3 game data on disk"]
+fn fo3_light_vfx_sheets_synthesize_no_collider() {
+    assert_census_vfx_sheets_synthesize_no_collider(
+        byroredux_plugin::esm::test_paths::fo3_data_dir(),
+        &["fxlightbeam", "fxglowsimp", "fxbrightspot"],
+    );
+}
+
+/// Every mesh of every `meshes\effects\` NIF in the game's `Fallout - Meshes.bsa` whose path contains
+/// one of `wanted` is an unlit blended sheet, and so fails `render_geometry_can_collide`. The kind and
+/// alpha are checked as well: #6555's `blended_overlay` also rejects these collision-less NIFs, so the
+/// predicate alone would stay green if the canonical `NO_LIGHTING` kind regressed.
+fn assert_census_vfx_sheets_synthesize_no_collider(data_dir: std::path::PathBuf, wanted: &[&str]) {
+    let meshes = data_dir.join("Fallout - Meshes.bsa");
     if !meshes.is_file() {
         byroredux_plugin::esm::test_paths::require_or_skip(&format!("{meshes:?}"));
         return;
     }
     let archive = byroredux_bsa::BsaArchive::open(&meshes).unwrap();
-    let wanted = ["fxlightbeam", "fxglowsimp", "fxbrightspot", "indfxlightrays"];
     let mut checked = 0usize;
     for path in archive.list_files() {
         let lower = path.to_ascii_lowercase();
@@ -694,6 +718,11 @@ fn fnv_light_vfx_sheets_synthesize_no_collider() {
         let mut pool = byroredux_core::string::StringPool::new();
         let imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);
         for mesh in &imported.meshes {
+            assert_eq!(
+                (mesh.material.material_kind, mesh.material.has_alpha),
+                (byroredux_renderer::MATERIAL_KIND_NO_LIGHTING, true),
+                "{path}: no longer canonicalises as an unlit blended sheet"
+            );
             assert!(
                 !render_geometry_can_collide(&mesh.material, authoring),
                 "{path}: an unlit blended VFX sheet would synthesize a solid collider"

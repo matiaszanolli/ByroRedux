@@ -85,6 +85,8 @@ bin installed_default_idle_clips_exist_in_the_meshes_archive
 bin installed_fallout_spawner_shells_resolve_a_model
 # #6459 - FNV light-beam / glow VFX sheets synthesize no collider
 bin fnv_light_vfx_sheets_synthesize_no_collider
+# #6560 - the FO3 leg of #6459 (151 bases, ~19,089 REFRs)
+bin fo3_light_vfx_sheets_synthesize_no_collider
 # #6555 - Oblivion cobwebs / hanging crud / FX sheets (blended, no authored collision) synthesize no collider
 bin oblivion_cobwebs_and_fx_sheets_synthesize_no_collider
 # nif whole-corpus harnesses that cite closed-HIGH fixes but sit
