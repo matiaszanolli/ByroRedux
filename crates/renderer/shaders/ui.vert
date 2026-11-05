@@ -1,7 +1,8 @@
 #version 450
-// REN-2026-07-28-02 / #2219 — GpuInstance grew a uint64_t member; this
-// mirror never dereferences it, but the type must be recognized to keep
-// the struct byte-for-byte identical to the other 4 declaration sites.
+#extension GL_GOOGLE_include_directive : require
+// REN-2026-07-28-02 / #2219 — `include/gpu_instance.glsl` declares `uint64_t`
+// members, so the type must be recognized even where a lane is never
+// dereferenced.
 #extension GL_EXT_buffer_reference : require
 #extension GL_ARB_gpu_shader_int64 : require
 
@@ -13,34 +14,10 @@
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec2 inUV;
 
-// `GpuInstance` layout mirror of triangle.{vert,frag} for struct-size
-// lockstep. The UI vertex stage reads `textureIndex` (not `materialId`) —
-// UI draws bypass the MaterialBuffer and sample the bindless texture
-// directly via `textureIndex`. (#1065 / REN-D14-NEW-05)
-struct GpuInstance {
-    mat4 model;
-    uint textureIndex;     // offset 64 — diffuse / albedo (kept for parity)
-    uint boneOffset;       // offset 68
-    uint vertexOffset;     // offset 72
-    uint indexOffset;      // offset 76
-    uint vertexCount;      // offset 80
-    uint flags;            // offset 84
-    uint materialId;       // offset 88
-    float ior;             // offset 92 — per-draw optical IOR (read by caustic_splat.comp)
-    float avgAlbedoR;      // offset 96 — kept for caustic_splat.comp
-    float avgAlbedoG;      // offset 100
-    float avgAlbedoB;      // offset 104
-    uint surfaceId;        // offset 108 — stable temporal-shadow identity
-    uint64_t skinnedVertexAddress; // offset 112 — #2219, unused here
-    uvec2 _reserved;               // offset 120 -> total 128
-    uint64_t morphDeltaAddress;  // offset 128 — #3231, unused here
-    uint64_t morphWeightAddress; // offset 136 — #3231, unused here
-    uint morphTargetCount;       // offset 144 — #3231, unused here
-    // Deliberately three scalar uints, NOT uvec3 — see gpu_types.rs.
-    uint _reserved2a; // offset 148
-    uint _reserved2b; // offset 152
-    uint _reserved2c; // offset 156 -> total 160
-};
+// The UI vertex stage reads `textureIndex` (not `materialId`) — UI draws
+// bypass the MaterialBuffer and sample the bindless texture directly via
+// `textureIndex`. (#1065 / REN-D14-NEW-05)
+#include "include/gpu_instance.glsl"
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
     GpuInstance instances[];

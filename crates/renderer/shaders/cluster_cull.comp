@@ -35,12 +35,7 @@
 
 layout(local_size_x = THREADS_PER_CLUSTER, local_size_y = 1, local_size_z = 1) in;
 
-struct GpuLight {
-    vec4 position_radius;
-    vec4 color_type;
-    vec4 direction_angle;
-    vec4 params;  // x = falloff, y = source radius, z = visibility bits, w = attenuation model
-};
+#include "include/gpu_light.glsl"
 
 layout(std430, set = 0, binding = 0) readonly buffer LightBuffer {
     uint lightCount;
@@ -80,10 +75,7 @@ layout(set = 0, binding = 1) uniform CameraUBO {
                           // pressure — consumers must fall back, see raytrace.glsl)
 };
 
-struct ClusterEntry {
-    uint offset;
-    uint count;
-};
+#include "include/cluster_entry.glsl"
 
 layout(std430, set = 0, binding = 2) writeonly buffer ClusterGrid {
     ClusterEntry clusters[];

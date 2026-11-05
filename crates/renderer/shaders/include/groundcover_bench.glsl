@@ -11,18 +11,7 @@
 //
 // Requires `#include "include/shader_constants.glsl"` first.
 
-/// One resident exterior terrain cell. `layer` is the array slice of the
-/// path-B textures; the index of this record IS that layer.
-struct BenchCell {
-    /// Y-up world XZ of the cell's (row 0, col 0) vertex.
-    vec2 originXZ;
-    /// `GpuInstance.vertex_offset` for the terrain mesh covering this cell —
-    /// path A's locator. Rebuilt every frame host-side, because the mesh
-    /// registry compacts and a cached offset would silently point at another
-    /// mesh's vertices (see `MeshRegistry::compact`).
-    uint vertexOffset;
-    uint pad0;
-};
+#include "include/groundcover_bench_cell.glsl"
 
 /// One 512-unit ground-cover chunk (§4: 8×8 per exterior cell).
 struct BenchChunk {

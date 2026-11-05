@@ -254,7 +254,7 @@ First step: `cargo test -p byroredux-renderer gpu_material gpu_instance gpu_came
   returns id `0` with a one-shot warn; `upload_materials` `debug_assert`s and clamps with `.min(MAX_MATERIALS)` —
   keep both in lockstep.
 - `GpuInstance.material_id` indexes the SSBO with NO GPU bounds check — the CPU must guarantee in-range (CRITICAL).
-- `ui.vert` MaterialBuffer read offsets stay in lockstep with `bindings.glsl`'s `GpuMaterial` / `GpuInstance`
+- `ui.vert` MaterialBuffer read offsets stay in lockstep with `bindings.glsl`'s `GpuMaterial` / `gpu_instance.glsl`'s `GpuInstance`
   (`triangle.frag` `#include`s it; #785 was a stale-hunk regression). Standing lockstep rule: `GpuInstance` in
   `bindings.glsl` plus its standalone shader copies change together.
 

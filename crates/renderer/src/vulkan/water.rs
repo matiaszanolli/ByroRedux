@@ -79,7 +79,7 @@ pub(crate) const WATER_VERT_SPV: &[u8] = include_bytes!("../../shaders/water.ver
 pub(crate) const WATER_FRAG_SPV: &[u8] = include_bytes!("../../shaders/water.frag.spv");
 
 /// Canonical GPU material payload for one water draw. Layout matches
-/// `WaterParams` in both water shaders exactly (23 std430 vec4 slots).
+/// `WaterParams` (`include/water_params.glsl`) exactly (23 std430 vec4 slots).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct GpuWaterParams {
@@ -1142,34 +1142,15 @@ mod tests {
 
     #[test]
     fn water_vertex_shader_keeps_the_full_material_array_stride() {
+        // The vertex stage selects a material by index, so it has to read the
+        // same 368-byte record as Rust and water.frag. Sharing the declaration
+        // is what guarantees it; `gpu_water_params_rust_and_glsl_copies_stay_in_lockstep`
+        // pins that declaration to Rust.
         let src = include_str!("../../shaders/water.vert");
         assert!(
-            src.contains("vec4 absorption;")
-                && src.contains("vec4 concentration;")
-                && src.contains("vec4 noise_falloff;")
-                && src.contains("vec4 normal_falloff;")
-                && src.contains("vec4 displacement;")
-                && src.contains("vec4 ripple;")
-                && src.contains("vec4 underwater;")
-                && src.contains("vec4 alpha;")
-                && src.contains("vec4 optical;"),
-            "water.vert must declare the trailing material slots so indexed\n\
-             WaterParams elements retain the 368-byte std430 stride used by\n\
-             Rust and water.frag"
-        );
-        assert!(
-            src.contains("float dHeightDx")
-                && src.contains("float dHeightDz")
-                && src.contains("localNormal = normalize(vec3(-dHeightDx"),
-            "water.vert must derive normals from the authored vertex-wave slope"
-        );
-        assert!(
-            src.contains("float waveRateA = clamp(length(water.scroll.xy)")
-                && src.contains("float waveRateB = clamp(length(water.scroll.zw)")
-                && src.contains("frequency * waveRateA")
-                && src.contains("frequency * waveRateB"),
-            "water.vert must let the shared weather/water scroll velocity drive
-             the geometric wave rate as well as fragment normal motion"
+            src.contains("#include \"include/water_params.glsl\""),
+            "water.vert must read WaterParams from the shared header so indexed \
+             elements retain the 368-byte std430 stride used by Rust and water.frag"
         );
     }
 
@@ -1402,7 +1383,8 @@ mod tests {
     #[test]
     fn water_fragment_shader_uses_authored_underwater_response() {
         let src = include_str!("../../shaders/water.frag");
-        assert!(src.contains("vec4 underwater;"));
+        let params = include_str!("../../shaders/include/water_params.glsl");
+        assert!(params.contains("vec4 underwater;"));
         assert!(src.contains("cameraUnderwater"));
         assert!(src.contains("dot(cameraPos.xyz - vWorldPos, Nsurface) < 0.0"));
         assert!(src.contains("push.scroll_c.z"));

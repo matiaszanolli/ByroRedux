@@ -496,8 +496,9 @@ the volumetric fog tint therefore carry linear-light RGB.
 
 One std430 record per active water draw. The buffer starts at a small initial
 capacity and grows geometrically; the retired 186-entry / ~64 KiB uniform-buffer
-cap and its 64-byte headroom no longer exist. Rust, `water.vert`, and
-`water.frag` are field-order checked by
+cap and its 64-byte headroom no longer exist. Rust and
+`include/water_params.glsl`, the one GLSL declaration, which both water stages
+include, are field-order checked by
 `gpu_water_params_rust_and_glsl_copies_stay_in_lockstep`, which also pins the
 unsized SSBO declaration in both shader stages.
 
@@ -529,7 +530,10 @@ unsized SSBO declaration in both shader stages.
 
 ### `GpuInstance` — 160 bytes, SSBO (Set 1, Binding 4)
 
-One entry per draw call (up to `MAX_INSTANCES` = 262 144).
+One entry per draw call (up to `MAX_INSTANCES` = 262 144). Declared once in
+GLSL, in the struct-only `include/gpu_instance.glsl`, so any stage on any
+descriptor layout can include it; `shared_gpu_structs_are_declared_once` fails
+on a second declaration.
 
 The buffer is not allocated at that ceiling. Each frame slot's instance SSBO
 and its binding-18 previous-model partner start at `INITIAL_INSTANCE_CAPACITY`
@@ -830,8 +834,8 @@ descriptor set layout, bindings 0-10 (`depthTex`, `normalTex`, `meshIdTex`, its
 own `LightBuffer`, its own `CameraUBO`, its own `InstanceBuffer`, TLAS,
 `causticAccum`, `CausticParams`, and its own `GlobalVertices`/`GlobalIndices`).
 It binds neither the bindless Set 0 nor the scene Set 1, which is *why* it
-declares its own `GpuInstance` mirror and its own vertex/index SSBOs rather
-than reusing Set 1's. Those private mirrors are outside the Set-1 lockstep
+declares its own `InstanceBuffer` block and its own vertex/index SSBOs rather
+than reusing Set 1's. Those private bindings are outside the Set-1 lockstep
 guards — assuming otherwise is the class of mistake that produced #3829.
 
 #4019 — until then the table above credited `caustic`/`caustic_splat` with

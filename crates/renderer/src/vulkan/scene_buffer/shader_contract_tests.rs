@@ -279,164 +279,128 @@ fn selected_ray_probe_is_bounded_and_captures_the_detailed_shadow_query() {
     assert!(publish_barrier.contains("vk::AccessFlags::HOST_READ"));
 }
 
-/// Every GLSL file that declares its own `struct GpuInstance`, shared by the
-/// three tests that scan the copies: the #417 field-presence check, the #2748
-/// lockstep check and the #3231 vec3 guard.
-///
-/// One list rather than one per test, because that is how the sixth copy
-/// (`groundcover_models.comp`, `aabd99a05`) was added to the lockstep test's
-/// private list and missed by both siblings (#4850) — the vec3 rule being the
-/// one whose violation produced a silent device-lost hang. Each test still runs
-/// `assert_mirror_list_is_complete` against this list, so a seventh declaration
-/// fails all three until it is added here.
-const GPU_INSTANCE_GLSL_MIRRORS: &[(&str, &str)] = &[
-    // #1583/#1590 — the `struct GpuInstance` declaration was lifted out of
-    // `triangle.frag` into this shared header (`triangle.frag` now
-    // `#include`s it). The other five mirrors below still embed their own copy.
+const GPU_INSTANCE_GLSL: &str = include_str!("../../../shaders/include/gpu_instance.glsl");
+const GPU_LIGHT_GLSL: &str = include_str!("../../../shaders/include/gpu_light.glsl");
+const CLUSTER_ENTRY_GLSL: &str = include_str!("../../../shaders/include/cluster_entry.glsl");
+const RESERVOIR_GLSL: &str = include_str!("../../../shaders/include/reservoir.glsl");
+const WATER_PARAMS_GLSL: &str = include_str!("../../../shaders/include/water_params.glsl");
+const BENCH_CELL_GLSL: &str = include_str!("../../../shaders/include/groundcover_bench_cell.glsl");
+
+/// Structs several shaders share, each with the struct-only header that
+/// declares it.
+const SHARED_GPU_STRUCT_HEADERS: &[(&str, &str, &str)] = &[
     (
-        "include/bindings.glsl",
-        include_str!("../../../shaders/include/bindings.glsl"),
+        "struct GpuInstance",
+        "include/gpu_instance.glsl",
+        GPU_INSTANCE_GLSL,
+    ),
+    ("struct GpuLight", "include/gpu_light.glsl", GPU_LIGHT_GLSL),
+    (
+        "struct ClusterEntry",
+        "include/cluster_entry.glsl",
+        CLUSTER_ENTRY_GLSL,
+    ),
+    ("struct Reservoir", "include/reservoir.glsl", RESERVOIR_GLSL),
+    (
+        "struct WaterParams",
+        "include/water_params.glsl",
+        WATER_PARAMS_GLSL,
     ),
     (
-        "triangle.vert",
-        include_str!("../../../shaders/triangle.vert"),
-    ),
-    ("ui.vert", include_str!("../../../shaders/ui.vert")),
-    // #1498 / REN2-13 — water.vert consumes `model` for vertex displacement;
-    // it was omitted from the presence guard even though its layout matched.
-    ("water.vert", include_str!("../../../shaders/water.vert")),
-    (
-        "caustic_splat.comp",
-        include_str!("../../../shaders/caustic_splat.comp"),
-    ),
-    // #4413 — the ground-cover model tier writes plants as ordinary
-    // `GpuInstance`s into the tail of the main instance buffer, so its copy
-    // has to keep the stride byte-identical.
-    (
-        "groundcover_models.comp",
-        include_str!("../../../shaders/groundcover_models.comp"),
+        "struct BenchCell",
+        "include/groundcover_bench_cell.glsl",
+        BENCH_CELL_GLSL,
     ),
 ];
 
-/// Regression: #417 — every shader that declares its own copy of
-/// `struct GpuInstance` must name required fields correctly (originally
-/// the final u32 slot as `materialKind`, not `_pad1` or any other legacy
-/// placeholder; R1 Phase 6 later moved `materialKind` off this struct
-/// entirely — see the field-presence loop below for what's still
-/// checked). The Rust side guards offsets via
-/// `gpu_instance_field_offsets_match_shader_contract`; this test is
-/// presence-only (`src.contains(...)`) — it does NOT check field order
-/// or that all six mirrors match each other or the Rust struct. That
-/// full lockstep guard is `gpu_instance_glsl_copies_stay_in_lockstep`
-/// (#2748 / REN-D3-2026-08-12-01); this test stays as a cheap
-/// complementary check for the specific stale-name / missing-field /
-/// reintroduced-stale-field regressions it was written against.
-///
-/// Walks the shaders tree at compile time via `include_str!` —
-/// works in `cargo test` even on machines that don't have
-/// glslangValidator installed, and catches the missed-rename
-/// failure mode from #417 (caustic_splat.comp still said
-/// `uint _pad1;` after the triangle.* / ui.vert rename).
+/// These structs were hand-copied into each shader, and the copies drifted more
+/// than once (#417, #1916, #2748, #4850). The copies existed because the shared
+/// `bindings.glsl` also declares the main pass's descriptor sets, which a shader
+/// on another layout cannot include. So this pins both halves: a second
+/// declaration fails here, and so does a resource declared in one of these
+/// headers, which would bring back the reason to copy.
 #[test]
-fn every_shader_struct_gpu_instance_names_expected_fields() {
-    // #4850 — the discovery leg the lockstep test already had: without it a
-    // new copy is simply never scanned for the stale names below.
-    assert_mirror_list_is_complete(
-        "struct GpuInstance",
-        GPU_INSTANCE_GLSL_MIRRORS,
-        "#417 / #4850",
+fn shared_gpu_structs_are_declared_once() {
+    for (decl, header, src) in SHARED_GPU_STRUCT_HEADERS {
+        assert_eq!(
+            shader_sources_declaring(decl, false),
+            [*header],
+            "`{decl}` must be declared only in `{header}`: `#include` it instead of copying it."
+        );
+        let declares_resource = src.lines().any(|line| {
+            let code = line.split("//").next().unwrap_or_default();
+            code.contains("layout") || code.contains("uniform")
+        });
+        assert!(
+            !declares_resource,
+            "{header} must stay struct-only: a descriptor binding here stops shaders on other \
+             layouts from including it."
+        );
+    }
+}
+
+/// Regression: #417 — the declaration must name its required fields, and must
+/// not regain a stale name. Presence-only (`src.contains(...)`): field order and
+/// agreement with Rust are `gpu_instance_glsl_field_order_matches_rust_struct`.
+/// This stays as a cheap complementary check for the specific stale-name /
+/// missing-field regressions it was written against. `include_str!`, so it works
+/// on machines without glslangValidator.
+#[test]
+fn gpu_instance_glsl_names_expected_fields() {
+    assert!(
+        !GPU_INSTANCE_GLSL.contains("uint _pad1"),
+        "GpuInstance slot is still named `_pad1` — the pre-#417 layout."
     );
-    for (name, src) in GPU_INSTANCE_GLSL_MIRRORS {
+    for needle in [
+        // R1 Phase 3 — material table indirection.
+        "materialId",
+        // Stable temporal-shadow identity, in the former avg-albedo padding lane.
+        "surfaceId",
+        // #2219 — skinned-instance deformed-vertex buffer address.
+        "skinnedVertexAddress",
+    ] {
         assert!(
-            src.contains("struct GpuInstance"),
-            "{name} no longer declares `struct GpuInstance` — update \
-                 the sync list at feedback_shader_struct_sync.md"
+            GPU_INSTANCE_GLSL.contains(needle),
+            "GpuInstance must declare `{needle}` (R1 Phase 3+)."
         );
-        // R1 Phase 6 — `material_kind` moved off `GpuInstance`
-        // into the `MaterialBuffer` SSBO. The assertion that
-        // every shader's per-instance struct names a final
-        // `materialKind` slot (#417) no longer applies.
-        // `include/bindings.glsl` is the only source that declares a
-        // `GpuMaterial` block at all (see binding 13 below);
-        // `triangle.frag` #includes it.
+    }
+    // R1 Phase 6 — these names lived on `GpuInstance` before the material-table
+    // collapse. A reappearance means the refactor is being undone.
+    let body = extract_struct_body(GPU_INSTANCE_GLSL, "struct GpuInstance")
+        .expect("include/gpu_instance.glsl must declare `struct GpuInstance`");
+    for stale in [
+        "parallaxMapIndex",
+        "parallaxHeightScale",
+        "parallaxMaxPasses",
+        "envMapIndex",
+        "envMaskIndex",
+        "uvOffsetU",
+        "uvScaleU",
+        "materialAlpha",
+        "skinTintR",
+        "hairTintR",
+        "multiLayerEnvmapStrength",
+        "eyeLeftCenterX",
+        "eyeCubemapScale",
+        "eyeRightCenterX",
+        "multiLayerInnerThickness",
+        "multiLayerRefractionScale",
+        "multiLayerInnerScaleU",
+        "sparkleR",
+        "sparkleIntensity",
+        "diffuseR",
+        "ambientR",
+        "falloffStartAngle",
+        "falloffStopAngle",
+        "falloffStartOpacity",
+        "falloffStopOpacity",
+        "softFalloffDepth",
+    ] {
         assert!(
-            !src.contains("uint _pad1"),
-            "{name}: GpuInstance slot is still named `_pad1` — \
-                 the shader has the pre-#417 layout (Shader Struct \
-                 Sync invariant #318 / #417)."
+            !body.contains(stale),
+            "per-material field `{stale}` reappeared on `struct GpuInstance` — R1 Phase 6 \
+             dropped it. Read it from `materials[gpuInstance.materialId]` instead."
         );
-        // R1 Phase 6 — these fields were migrated to the
-        // `MaterialBuffer` SSBO and dropped from `GpuInstance`.
-        // `material_kind` is now read as `materials[id].materialKind`
-        // and `materialId` is the only material-table-related
-        // slot left on the per-instance struct.
-        for needle in [
-            // R1 Phase 3 — material table indirection. Every shader
-            // copy declares the slot so the std430 stride stays
-            // byte-identical across the four.
-            "materialId",
-            // Stable temporal-shadow identity. Must occupy the former
-            // avg-albedo padding lane in every mirror.
-            "surfaceId",
-            // #2219 — skinned-instance deformed-vertex buffer address.
-            // Every mirror must declare it (even the 4 that never
-            // dereference it) so the std430 stride stays byte-identical.
-            "skinnedVertexAddress",
-        ] {
-            assert!(
-                src.contains(needle),
-                "{name}: GpuInstance must declare `{needle}` (R1 Phase 3+). \
-                     Every copy updates in lockstep — see the \
-                     feedback_shader_struct_sync memory note."
-            );
-        }
-        // R1 Phase 6 — these names lived on `GpuInstance` before
-        // the material-table collapse. A reappearance means the
-        // refactor is being undone.
-        for stale in [
-            "parallaxMapIndex",
-            "parallaxHeightScale",
-            "parallaxMaxPasses",
-            "envMapIndex",
-            "envMaskIndex",
-            "uvOffsetU",
-            "uvScaleU",
-            "materialAlpha",
-            "skinTintR",
-            "hairTintR",
-            "multiLayerEnvmapStrength",
-            "eyeLeftCenterX",
-            "eyeCubemapScale",
-            "eyeRightCenterX",
-            "multiLayerInnerThickness",
-            "multiLayerRefractionScale",
-            "multiLayerInnerScaleU",
-            "sparkleR",
-            "sparkleIntensity",
-            "diffuseR",
-            "ambientR",
-            "falloffStartAngle",
-            "falloffStopAngle",
-            "falloffStartOpacity",
-            "falloffStopOpacity",
-            "softFalloffDepth",
-        ] {
-            // The names CAN appear on the `GpuMaterial` mirror
-            // declarations — what's forbidden is reappearance on
-            // `struct GpuInstance` after Phase 6 dropped them.
-            let gi_start = src.find("struct GpuInstance");
-            let gi_end = gi_start.and_then(|s| src[s..].find('}').map(|e| s + e));
-            if let (Some(s), Some(e)) = (gi_start, gi_end) {
-                let gi_block = &src[s..e];
-                assert!(
-                    !gi_block.contains(stale),
-                    "{name}: per-material field `{stale}` reappeared on \
-                         `struct GpuInstance` — R1 Phase 6 dropped it. \
-                         Read it from `materials[gpuInstance.materialId]` \
-                         instead."
-                );
-            }
-        }
     }
 }
 
@@ -1861,8 +1825,8 @@ fn the_specular_aa_filter_is_evaluated_outside_the_per_light_loop() {
 /// `GpuInstance`, green suite throughout, because it wore its own name. Its
 /// fix guarded that one struct. `fa5c4191`'s commit message even records
 /// seeing `FogClusterEntry` and `CombustionLightMoment` as the same shape —
-/// verified in sync once, then not guarded — and `ClusterEntry`, which has
-/// **three** GLSL copies, was not part of even that check.
+/// verified in sync once, then not guarded — and `ClusterEntry`, which had
+/// three GLSL copies, was not part of even that check.
 ///
 /// `CombustionLightMoment` needs the field-ORDER leg, not just a stride: the
 /// shader writes by name (`atomicAdd(combustionLightMoments[b].weighted_x, …)`)
@@ -1872,8 +1836,6 @@ fn the_specular_aa_filter_is_evaluated_outside_the_per_light_loop() {
 #[test]
 fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
     let volumetrics_comp = crate::source_scan::volumetrics_inject_glsl();
-    let cluster_cull = include_str!("../../../shaders/cluster_cull.comp");
-    let bindings = include_str!("../../../shaders/include/bindings.glsl");
     // #5094 — GpuFogClusterEntry moved to volumetrics/fog_clusters.rs; the
     // driver file is still scanned for the rest of its mirrors.
     let volumetrics_rs = format!(
@@ -1905,29 +1867,9 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
 
     const NO_ALIASES: &[NameAlias] = &[];
     for (label, glsl_src, glsl_decl, rust_src, rust_decl, aliases) in [
-        // Three GLSL copies against one Rust struct — comparing each to the
-        // same reference also proves the three agree with each other, which is
-        // the multi-copy shape `GpuInstance` and `GpuLight` each already have
-        // a test for.
         (
-            "ClusterEntry (cluster_cull.comp, the writer)",
-            cluster_cull,
-            "struct ClusterEntry",
-            compute_rs,
-            "struct ClusterEntry",
-            NO_ALIASES,
-        ),
-        (
-            "ClusterEntry (bindings.glsl, the fragment reader)",
-            bindings,
-            "struct ClusterEntry",
-            compute_rs,
-            "struct ClusterEntry",
-            NO_ALIASES,
-        ),
-        (
-            "ClusterEntry (volumetrics_inject.comp, the fog reader)",
-            volumetrics_comp,
+            "ClusterEntry",
+            CLUSTER_ENTRY_GLSL,
             "struct ClusterEntry",
             compute_rs,
             "struct ClusterEntry",
@@ -2017,19 +1959,10 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             "struct GpuGroundCoverChunk",
             &[("active", "slotActive")],
         ),
-        // The #4052 bench's records. `BenchCell` is declared twice — once in the
-        // shared header, once in the bake shader — and both feed the same buffer.
+        // The #4052 bench's records.
         (
-            "BenchCell (include/groundcover_bench.glsl)",
-            groundcover_bench_glsl,
-            "struct BenchCell",
-            groundcover_bench_rs,
-            "struct GpuBenchCell",
-            NO_ALIASES,
-        ),
-        (
-            "BenchCell (groundcover_bench_bake.comp)",
-            groundcover_bench_bake,
+            "BenchCell",
+            BENCH_CELL_GLSL,
             "struct BenchCell",
             groundcover_bench_rs,
             "struct GpuBenchCell",
@@ -2256,11 +2189,11 @@ fn every_shader_struct_is_classified() {
     const CLASSIFIED: &[(&str, MirrorClass)] = &[
         (
             "GpuInstance",
-            Guarded("gpu_instance_glsl_copies_stay_in_lockstep"),
+            Guarded("gpu_instance_glsl_field_order_matches_rust_struct"),
         ),
         (
             "GpuLight",
-            Guarded("gpu_light_glsl_copies_stay_in_lockstep"),
+            Guarded("gpu_light_glsl_field_order_matches_rust_struct"),
         ),
         (
             "GpuMaterial",
@@ -2325,10 +2258,10 @@ fn every_shader_struct_is_classified() {
             Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
         ),
         // Rust holds a byte stride (`RESERVOIR_STRIDE`), not a mirrored
-        // struct; the guard pins both GLSL copies to each other and to it.
+        // struct; the guard pins the GLSL record to it.
         (
             "Reservoir",
-            Guarded("reservoir_glsl_copies_stay_in_lockstep"),
+            Guarded("reservoir_glsl_is_scalars_at_the_host_stride"),
         ),
         // #6270 — the push-constant blocks. The walk below reads
         // `layout(push_constant) uniform <Name>` as well as `struct`: they are
@@ -2883,7 +2816,7 @@ fn parse_glsl_struct_fields_typed(src: &str, decl: &str) -> Vec<(String, String)
     out
 }
 
-/// The water record is duplicated in Rust and both shader stages. Keep the
+/// The water record is declared in Rust and in one shared GLSL header. Keep the
 /// field order and the growable std430 binding shape as one checked contract;
 /// a size-only assertion cannot detect two same-sized fields being swapped.
 #[test]
@@ -2892,29 +2825,16 @@ fn gpu_water_params_rust_and_glsl_copies_stay_in_lockstep() {
     let vert_src = include_str!("../../../shaders/water.vert");
     let frag_src = include_str!("../../../shaders/water.frag");
 
-    // #3564 — water.vert / water.frag are the only mirrors today; pin the set
-    // so a third reader cannot be added outside this field-order comparison.
-    assert_mirror_list_is_complete(
-        "struct WaterParams",
-        &[("water.vert", vert_src), ("water.frag", frag_src)],
-        "#3564",
-    );
-
     let rust_fields = parse_rust_struct_fields(rust_src, "pub struct GpuWaterParams");
-    let vert_fields = parse_glsl_struct_fields(vert_src, "struct WaterParams");
-    let frag_fields = parse_glsl_struct_fields(frag_src, "struct WaterParams");
+    let glsl_fields = parse_glsl_struct_fields(WATER_PARAMS_GLSL, "struct WaterParams");
     assert_eq!(
         rust_fields.len(),
         23,
         "GpuWaterParams must remain 23 vec4 slots"
     );
     assert_eq!(
-        vert_fields, rust_fields,
-        "water.vert WaterParams field order drifted"
-    );
-    assert_eq!(
-        frag_fields, rust_fields,
-        "water.frag WaterParams field order drifted"
+        glsl_fields, rust_fields,
+        "include/water_params.glsl WaterParams field order drifted"
     );
 
     const SSBO_DECL: &str = "layout(std430, set = 2, binding = 1) readonly buffer WaterParamsBlock";
@@ -3383,7 +3303,7 @@ fn perturb_normal_guards_post_projection_tangent_length() {
     );
 }
 
-// ── GpuLight four-way GLSL lockstep (#1916) ──
+// ── GLSL declaration discovery (#3564) ──
 
 /// Every shader source under `crates/renderer/shaders/` that **declares**
 /// `decl` (e.g. `"struct GpuInstance"`), discovered by walking the directory
@@ -3522,82 +3442,13 @@ fn strip_struct_body(body: &str) -> Vec<String> {
         .collect()
 }
 
-/// #1916 — `struct GpuLight` is hand-duplicated across four GLSL sources:
-/// `include/bindings.glsl` (the shared copy `triangle.frag` `#include`s),
-/// `cluster_cull.comp`, `caustic_splat.comp`, and (since commit `977eb95a`)
-/// `volumetrics_inject.comp`. That fourth copy was never added to the
-/// `gpu_types.rs` doc-comment enumeration, and no test pinned the four
-/// declarations against each other — a future `GpuLight` field change
-/// could update three copies and silently leave the volumetrics fog pass
-/// reading a stale layout (wrong light color/position feeding the fog
-/// glow). Walks all four sources at compile time (`include_str!`, no
-/// glslangValidator dependency) and asserts their stripped field lists
-/// are byte-identical.
-///
-/// #3763 (SAFE-2026-08-30-D6-02) — this used to be the ONLY leg: mirror-
-/// vs-mirror across the four GLSL copies, never against `gpu_types.rs`.
-/// `GpuMaterial` and `GpuInstance` both have a second leg
-/// (`gpu_material_glsl_field_order_matches_rust_struct`,
-/// `gpu_instance_glsl_copies_stay_in_lockstep`'s own second half) that
-/// catches a Rust-only field append/reorder; `GpuLight` had none, so that
-/// exact class of drift shipped green. Adds it here, reusing the same
-/// `parse_rust_struct_fields`/`normalize_ident` machinery
-/// `gpu_instance_glsl_copies_stay_in_lockstep` uses.
+/// #1916 / #3763 (SAFE-2026-08-30-D6-02) — the GLSL `GpuLight` must match the
+/// Rust `#[repr(C)]` struct field for field, in declaration order. Drift has no
+/// compile error: it feeds wrong light colour and position to every pass that
+/// reads lights.
 #[test]
-fn gpu_light_glsl_copies_stay_in_lockstep() {
-    const SOURCES: &[(&str, &str)] = &[
-        (
-            "include/bindings.glsl",
-            include_str!("../../../shaders/include/bindings.glsl"),
-        ),
-        (
-            "cluster_cull.comp",
-            include_str!("../../../shaders/cluster_cull.comp"),
-        ),
-        (
-            "caustic_splat.comp",
-            include_str!("../../../shaders/caustic_splat.comp"),
-        ),
-        (
-            "include/volumetrics_bindings.glsl",
-            include_str!("../../../shaders/include/volumetrics_bindings.glsl"),
-        ),
-    ];
-
-    assert_mirror_list_is_complete("struct GpuLight", SOURCES, "#1916 / #3564");
-
-    let mut reference: Option<(&str, Vec<String>)> = None;
-    for (name, src) in SOURCES {
-        let body = extract_struct_body(src, "struct GpuLight")
-            .unwrap_or_else(|| panic!("{name}: no longer declares `struct GpuLight`"));
-        let fields = strip_struct_body(body);
-        assert!(
-            fields.len() >= 4,
-            "{name}: parsed only {} GpuLight field lines — parser likely broke",
-            fields.len()
-        );
-        match &reference {
-            None => reference = Some((name, fields)),
-            Some((ref_name, ref_fields)) => {
-                assert_eq!(
-                    ref_fields, &fields,
-                    "GpuLight layout mismatch: `{ref_name}` vs `{name}`. All four GLSL copies of \
-                     `struct GpuLight` must declare identical fields in the same order (Shader \
-                     Struct Sync invariant, #1916) — a drift here silently corrupts light data \
-                     for whichever copy lags behind."
-                );
-            }
-        }
-    }
-
-    // Second leg (#3763): the shared GLSL field list must also match the
-    // Rust `#[repr(C)]` struct's declaration order. `strip_struct_body`
-    // above kept full "type name;" lines for the mirror-vs-mirror
-    // comparison; re-parse one representative source into bare field
-    // names via `parse_glsl_struct_fields` (leg 1 already proved all four
-    // are identical, so any one source stands in for all of them).
-    let (_, first_src) = SOURCES[0];
-    let glsl_typed = parse_glsl_struct_fields_typed(first_src, "struct GpuLight");
+fn gpu_light_glsl_field_order_matches_rust_struct() {
+    let glsl_typed = parse_glsl_struct_fields_typed(GPU_LIGHT_GLSL, "struct GpuLight");
     let rust_typed =
         parse_rust_struct_fields_typed(include_str!("gpu_types.rs"), "pub struct GpuLight");
     assert_glsl_matches_rust(
@@ -3605,71 +3456,22 @@ fn gpu_light_glsl_copies_stay_in_lockstep() {
         &glsl_typed,
         &rust_typed,
         &[],
-        "The Rust `struct GpuLight` (gpu_types.rs) and its four GLSL mirrors must stay in \
+        "The Rust `struct GpuLight` (gpu_types.rs) and `include/gpu_light.glsl` must stay in \
          lockstep, field for field in the Rust `#[repr(C)]` struct's order — see #3763 / \
          SAFE-2026-08-30-D6-02.",
     );
 }
 
-// ── GpuInstance six-way GLSL lockstep (#2748 / REN-D3-2026-08-12-01) ──
+// ── GpuInstance GLSL against Rust (#2748 / REN-D3-2026-08-12-01) ──
 
-/// #2748 — `struct GpuInstance` is hand-duplicated across **six** GLSL
-/// sources (`include/bindings.glsl`, `triangle.vert`, `ui.vert`,
-/// `water.vert`, `caustic_splat.comp`, `groundcover_models.comp`), the
-/// largest mirror fan-out of any GPU struct in the codebase. Its only prior guard,
-/// `every_shader_struct_gpu_instance_names_expected_fields` below, is
-/// presence-only (`src.contains(...)`) — it never compared the
-/// declarations to each other or to the Rust struct, and never checked
-/// field order or completeness. `caustic_splat.comp` uses a multi-name
-/// declaration (`float avgAlbedoR, avgAlbedoG, avgAlbedoB;`) where every
-/// other mirror uses three separate lines, so this walks each source
-/// through `parse_glsl_struct_fields` (which already understands
-/// multi-name declarations, unlike the raw-line `strip_struct_body` used
-/// for `GpuLight`) rather than comparing stripped source text directly.
-///
-/// First asserts all six mirrors declare an identical field list, name
-/// and order alike; then reuses `parse_rust_struct_fields` /
-/// `normalize_ident` (the same #1657 machinery
-/// `gpu_material_glsl_field_order_matches_rust_struct` uses) to assert
-/// that shared list matches the Rust `#[repr(C)] struct GpuInstance`
-/// field order in `gpu_types.rs` — the same two-leg coverage
-/// `GpuMaterial` and `GpuLight` already have.
+/// #2748 — the GLSL `GpuInstance` must match the Rust `#[repr(C)]` struct field
+/// for field, in declaration order (the offset source of truth, pinned
+/// separately by `gpu_instance_field_offsets_match_shader_contract`).
+/// `gpu_instance_glsl_names_expected_fields` is presence-only, so it cannot see a
+/// reorder.
 #[test]
-fn gpu_instance_glsl_copies_stay_in_lockstep() {
-    assert_mirror_list_is_complete(
-        "struct GpuInstance",
-        GPU_INSTANCE_GLSL_MIRRORS,
-        "#2748 / #3564",
-    );
-
-    let mut reference: Option<(&str, Vec<String>)> = None;
-    for (name, src) in GPU_INSTANCE_GLSL_MIRRORS {
-        let fields = parse_glsl_struct_fields(src, "struct GpuInstance");
-        assert!(
-            fields.len() >= 14,
-            "{name}: parsed only {} GpuInstance field(s) — parser likely broke",
-            fields.len()
-        );
-        match &reference {
-            None => reference = Some((name, fields)),
-            Some((ref_name, ref_fields)) => {
-                assert_eq!(
-                    ref_fields, &fields,
-                    "GpuInstance layout mismatch: `{ref_name}` vs `{name}`. Every GLSL copy \
-                     of `struct GpuInstance` must declare identical fields in the same order \
-                     (Shader Struct Sync invariant, #2748 / REN-D3-2026-08-12-01) — a drift here \
-                     silently corrupts per-instance data for whichever copy lags behind."
-                );
-            }
-        }
-    }
-
-    // Second leg: the shared GLSL field list must also match the Rust
-    // `#[repr(C)]` struct's declaration order (the offset source of
-    // truth, pinned separately by
-    // `gpu_instance_field_offsets_match_shader_contract`).
-    let (_, first_src) = GPU_INSTANCE_GLSL_MIRRORS[0];
-    let glsl_typed = parse_glsl_struct_fields_typed(first_src, "struct GpuInstance");
+fn gpu_instance_glsl_field_order_matches_rust_struct() {
+    let glsl_typed = parse_glsl_struct_fields_typed(GPU_INSTANCE_GLSL, "struct GpuInstance");
     let rust_typed =
         parse_rust_struct_fields_typed(include_str!("gpu_types.rs"), "pub struct GpuInstance");
     assert_glsl_matches_rust(
@@ -3677,8 +3479,8 @@ fn gpu_instance_glsl_copies_stay_in_lockstep() {
         &glsl_typed,
         &rust_typed,
         &[],
-        "The Rust `struct GpuInstance` (gpu_types.rs) and its six GLSL mirrors must stay in \
-         lockstep, field for field in the Rust `#[repr(C)]` struct's order — see #2748 / \
+        "The Rust `struct GpuInstance` (gpu_types.rs) and `include/gpu_instance.glsl` must stay \
+         in lockstep, field for field in the Rust `#[repr(C)]` struct's order — see #2748 / \
          REN-D3-2026-08-12-01.",
     );
 }
@@ -3700,39 +3502,28 @@ fn gpu_instance_glsl_copies_stay_in_lockstep() {
 /// via their own established "all scalars" convention this test can't
 /// see past struct boundaries to verify generically.
 #[test]
-fn gpu_instance_glsl_declarations_never_use_a_3_component_vector_type() {
-    // #4850 — this guard used to scan a private five-entry list with no
-    // discovery leg, so the sixth copy (`groundcover_models.comp`) was never
-    // checked: the lockstep test compares field NAMES only, so a `uvec3` in
-    // its tail lanes kept names and order identical and passed everything.
-    assert_mirror_list_is_complete(
-        "struct GpuInstance",
-        GPU_INSTANCE_GLSL_MIRRORS,
-        "#3231 / #4850",
-    );
-    for (name, src) in GPU_INSTANCE_GLSL_MIRRORS {
-        let body = extract_struct_body(src, "struct GpuInstance")
-            .unwrap_or_else(|| panic!("{name}: source must declare `struct GpuInstance`"));
-        // Strip `//` line comments first (same as parse_glsl_struct_fields_typed)
-        // so an explanatory comment merely NAMING the forbidden type —
-        // e.g. "NOT uvec3" — doesn't trip this as a false positive.
-        let code_only: String = body
-            .lines()
-            .map(|line| match line.find("//") {
-                Some(i) => &line[..i],
-                None => line,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        for needle in ["vec3", "ivec3", "uvec3"] {
-            assert!(
-                !code_only.contains(needle),
-                "{name}: `struct GpuInstance` declares a `{needle}` field — 3-component \
-                 vectors are 16-byte-aligned under std430 and will desync the array stride \
-                 from the tightly-packed Rust struct (#3231). Use separate scalar fields \
-                 instead, matching every other padding lane in this struct."
-            );
-        }
+fn gpu_instance_glsl_never_uses_a_3_component_vector_type() {
+    let body = extract_struct_body(GPU_INSTANCE_GLSL, "struct GpuInstance")
+        .expect("include/gpu_instance.glsl must declare `struct GpuInstance`");
+    // Strip `//` line comments first (same as parse_glsl_struct_fields_typed)
+    // so an explanatory comment merely NAMING the forbidden type —
+    // e.g. "NOT uvec3" — doesn't trip this as a false positive.
+    let code_only: String = body
+        .lines()
+        .map(|line| match line.find("//") {
+            Some(i) => &line[..i],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    for needle in ["vec3", "ivec3", "uvec3"] {
+        assert!(
+            !code_only.contains(needle),
+            "`struct GpuInstance` declares a `{needle}` field — 3-component vectors are \
+             16-byte-aligned under std430 and will desync the array stride from the \
+             tightly-packed Rust struct (#3231). Use separate scalar fields instead, matching \
+             every other padding lane in this struct."
+        );
     }
 }
 
@@ -3765,10 +3556,9 @@ fn std430_struct_size(fields: &[(String, String)]) -> usize {
 /// deliberate prefix-mirror of `GpuInstance` bound to the very same per-frame
 /// instance SSBO (binding 19, written by
 /// `VolumetricsPipeline::write_boundary_geometry`). Because it carries its own
-/// struct NAME, it sits outside `gpu_instance_glsl_copies_stay_in_lockstep` —
-/// whose SOURCES list is hardcoded, and whose `assert_mirror_list_is_complete`
-/// discovery half greps for the literal `struct GpuInstance` and so cannot see
-/// it either. It was a sixth, untracked mirror.
+/// struct NAME, it sits outside `shared_gpu_structs_are_declared_once`, which
+/// greps for the literal `struct GpuInstance` and so cannot see it. It was an
+/// untracked mirror.
 ///
 /// It went stale exactly that way: #3231 grew `GpuInstance` 128 → 160 B and
 /// this mirror kept its single 16-byte `_boundaryTail`, leaving a 128-byte
@@ -3829,7 +3619,7 @@ fn gpu_boundary_instance_stride_matches_gpu_instance() {
 // ── CameraUBO five-way GLSL lockstep (#3684 / PERF-D4-2026-08-30-04) ──
 
 /// #3684 — `struct GpuCamera` (declared in GLSL as `uniform CameraUBO { ... }`)
-/// is hand-duplicated across the same five sources `GpuInstance` is
+/// is hand-duplicated across five sources
 /// (`include/bindings.glsl`, `triangle.vert`, `water.vert`,
 /// `cluster_cull.comp`, `caustic_splat.comp`), but — unlike `GpuInstance`,
 /// `GpuLight`, and `GpuMaterial` — had no lockstep test at all: only a
@@ -8025,50 +7815,20 @@ fn shadowable_light_radiance_splits_transmission_lobes_from_traced_visibility() 
     );
 }
 
-/// Every GLSL declaration of `struct Reservoir`. `shadow_filter.comp` keeps
-/// its own copy because it cannot include `bindings.glsl` (that header
-/// declares the main pass's descriptor sets).
-const RESERVOIR_GLSL_MIRRORS: &[(&str, &str)] = &[
-    (
-        "include/bindings.glsl",
-        include_str!("../../../shaders/include/bindings.glsl"),
-    ),
-    (
-        "shadow_filter.comp",
-        include_str!("../../../shaders/shadow_filter.comp"),
-    ),
-];
-
-/// #6317 — `struct Reservoir` has two GLSL copies: the one the main pass
-/// writes (`bindings.glsl`) and the one the shadow filter decodes
-/// (`shadow_filter.comp`). Name-matching classification passed the second
-/// copy, and `reservoir_stride_matches_shader` asserts the Rust stride
-/// against a literal. A field moved in one copy, for example the packed
-/// normal out of `pad0`, would leave the filter reading ratio and guides
-/// from the wrong lanes. The copies must declare identical fields in the
-/// same order, every field a 4-byte scalar (no std430 vector alignment), and
-/// the whole struct must be exactly the host's `RESERVOIR_STRIDE`.
+/// #6317 — Rust holds no mirror of the reservoir record, only the byte stride
+/// `RESERVOIR_STRIDE`, and `reservoir_stride_matches_shader` asserts that against
+/// a literal. This is the leg that ties the GLSL record to the host: every field
+/// a 4-byte scalar (no std430 vector alignment) and the whole struct exactly
+/// `RESERVOIR_STRIDE`.
 #[test]
-fn reservoir_glsl_copies_stay_in_lockstep() {
-    assert_mirror_list_is_complete("struct Reservoir", RESERVOIR_GLSL_MIRRORS, "#6317");
-
-    let (ref_name, ref_src) = RESERVOIR_GLSL_MIRRORS[0];
-    let reference = parse_glsl_struct_fields_typed(ref_src, "struct Reservoir");
+fn reservoir_glsl_is_scalars_at_the_host_stride() {
+    let fields = parse_glsl_struct_fields_typed(RESERVOIR_GLSL, "struct Reservoir");
     assert!(
-        reference.len() >= 8,
-        "{ref_name}: parsed only {} Reservoir field(s) — parser likely broke",
-        reference.len()
+        fields.len() >= 8,
+        "parsed only {} Reservoir field(s) — parser likely broke",
+        fields.len()
     );
-    for (name, src) in &RESERVOIR_GLSL_MIRRORS[1..] {
-        assert_eq!(
-            parse_glsl_struct_fields_typed(src, "struct Reservoir"),
-            reference,
-            "Reservoir layout mismatch: `{ref_name}` vs `{name}`. Both GLSL copies must \
-             declare identical fields in the same order (#6317)."
-        );
-    }
-
-    for (ty, field) in &reference {
+    for (ty, field) in &fields {
         assert!(
             matches!(ty.as_str(), "uint" | "float" | "int"),
             "Reservoir.{field} is `{ty}`: the host sizes the buffer as packed 4-byte \
@@ -8076,7 +7836,7 @@ fn reservoir_glsl_copies_stay_in_lockstep() {
         );
     }
     assert_eq!(
-        reference.len() as u64 * 4,
+        fields.len() as u64 * 4,
         crate::vulkan::restir::RESERVOIR_STRIDE,
         "the GLSL `struct Reservoir` must be exactly RESERVOIR_STRIDE bytes"
     );

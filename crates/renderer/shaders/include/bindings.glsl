@@ -10,66 +10,7 @@ layout(set = 0, binding = 0) uniform sampler2D textures[];
 // image view is never consumed through the sampler2D type above.
 layout(set = 0, binding = 1) uniform samplerCube cubemaps[];
 
-// Per-instance data from the instance SSBO. R1 Phase 6 collapsed the
-// per-material fields onto the `MaterialBuffer` SSBO indexed by
-// `materialId`; what's left is strictly per-DRAW data. Each draw's
-// gl_InstanceIndex maps to one entry containing the model matrix,
-// mesh refs, flags, materialId, and avgAlbedo (kept for caustic).
-//
-// CRITICAL: all scalars, NO vec3 (vec3 has 16-byte alignment in
-// std430, which would mismatch the tightly-packed Rust #[repr(C)]
-// struct).
-struct GpuInstance {
-    mat4 model;            // offset 0,  64 bytes
-    uint textureIndex;     // offset 64 — diffuse / albedo
-    uint boneOffset;       // offset 68
-    uint vertexOffset;     // offset 72
-    uint indexOffset;      // offset 76
-    uint vertexCount;      // offset 80
-    // offset 84: per-instance bit flags + packed fields.
-    //   bit 0      — non-uniform scale (#273)
-    //   bit 1      — NiAlphaProperty blend bit (#263)
-    //   bit 2      — caustic source (#321)
-    //   bit 3      — terrain splat (#470); enables the ATXT blend loop
-    //                against `terrainTiles[]`
-    //   bits 16-31 — terrain tile index (only meaningful with bit 3),
-    //                unpacked via INSTANCE_TERRAIN_TILE_SHIFT/_MASK
-    uint flags;
-    uint materialId;       // offset 88 — index into MaterialBuffer SSBO (R1)
-    float ior;             // offset 92 — per-draw optical IOR (read by caustic_splat.comp)
-    float avgAlbedoR;      // offset 96 — kept for caustic_splat.comp (set 0 reads, not migrated)
-    float avgAlbedoG;      // offset 100
-    float avgAlbedoB;      // offset 104
-    uint surfaceId;        // offset 108 — stable temporal-shadow identity
-    // REN-2026-07-28-02 / #2219 — GPU address of this entity's skinned-
-    // vertex output buffer (position-only, SKIN_OUTPUT_STRIDE_FLOATS
-    // floats/vertex, already absolute world space). `0` for rigid
-    // instances (boneOffset == 0). Dereferenced via the SkinnedVertexRef
-    // buffer_reference type below by ray_hit.glsl's hit-normal helpers
-    // instead of the bind-pose vertexData SSBO, which otherwise produces
-    // a bind-pose-shaped normal at the entity's root transform for every
-    // animated actor's secondary rays (reflection/shadow/refraction).
-    uint64_t skinnedVertexAddress; // offset 112, 8 bytes
-    uvec2 _reserved;               // offset 120, 8 bytes -> total 128
-    // #3231 — GPU morph-target blending. `morphDeltaAddress` points at
-    // `targetCount` groups of `vertexCount` `vec4` position deltas (xyz,
-    // w unused); `morphWeightAddress` points at `targetCount` scalar
-    // floats, re-uploaded every frame from `AnimatedMorphWeights`. Both
-    // `0` when this entity has no morph data (rigid instances, or
-    // skinned instances whose mesh carries no `NiGeomMorpherController`
-    // — the overwhelming majority). Dereferenced via the MorphDeltaRef /
-    // MorphWeightRef buffer_reference types below.
-    uint64_t morphDeltaAddress;  // offset 128, 8 bytes
-    uint64_t morphWeightAddress; // offset 136, 8 bytes
-    uint morphTargetCount;       // offset 144, 4 bytes
-    // Deliberately three scalar uints, NOT uvec3 — see the matching
-    // Rust field doc (gpu_types.rs) for why: uvec3 is 16-byte-aligned
-    // under std430 (same footgun as vec3), which desyncs the array
-    // stride the shader computes from the one the CPU uploads with.
-    uint _reserved2a; // offset 148, 4 bytes
-    uint _reserved2b; // offset 152, 4 bytes
-    uint _reserved2c; // offset 156, 4 bytes -> total 160
-};
+#include "include/gpu_instance.glsl"
 
 // REN-2026-07-28-02 / #2219 — buffer_reference handle for
 // `GpuInstance.skinnedVertexAddress`. Requires `GL_EXT_buffer_reference`
@@ -285,12 +226,7 @@ layout(std430, set = 1, binding = 13) readonly buffer MaterialBuffer {
 // material *features*, not source formats (the `BGSM_` prefix was
 // dropped in the Stage 3 rollout).
 
-struct GpuLight {
-    vec4 position_radius;  // xyz = position, w = radius
-    vec4 color_type;       // rgb=color, w=type (0=point, 1=spot, 2=directional)
-    vec4 direction_angle;  // xyz = direction, w = spot angle cosine
-    vec4 params;           // x = falloff, y = source radius, z = visibility bits, w = attenuation model
-};
+#include "include/gpu_light.glsl"
 
 layout(std430, set = 1, binding = 0) readonly buffer LightBuffer {
     uint lightCount;
@@ -337,10 +273,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
 layout(set = 1, binding = 2) uniform accelerationStructureEXT topLevelAS;
 
 // Clustered lighting data (written by cluster_cull.comp each frame).
-struct ClusterEntry {
-    uint offset;
-    uint count;
-};
+#include "include/cluster_entry.glsl"
 
 layout(std430, set = 1, binding = 5) readonly buffer ClusterGrid {
     ClusterEntry clusters[];
@@ -819,25 +752,7 @@ layout(set = 1, binding = 14) uniform DalcCubeUBO {
 // estimate accumulates effective samples across frames instead of
 // re-randomising every frame (the un-denoised WRS crawl). Gated by
 // DBG_DISABLE_RESTIR; the legacy per-frame WRS path stays compiled for A/B.
-struct Reservoir {
-    uint  lightAndSurface; // low 10b light index, high 22b surface ID
-    float W;           // unbiased contribution weight (w_sum / (M * pHat))
-    float M;           // effective sample count (capped)
-    float histLenAndDepth; // bitcast packHalf2x16(history length, camera distance)
-    float accumR;      // accumulated direct-shadow ratio (shaded / unshadowed,
-    float accumG;      //   #4942) — R, G, B; triangle.frag rescales it by
-    float accumB;      //   the current frame's unshadowed sum
-    float pad0;        // geometric normal: octEncode → packSnorm2x16 → float
-                       // bits. Consumed by temporal + spatial rejection;
-                       // kept the struct at 32 B pre-#6250.
-    uint  occluderSurface; // #6250 — the selected shadow ray's BLOCKER's
-                       // stable surface ID (0 when the ray found no blocker
-                       // this frame). Next frame's reprojection taints the
-                       // pixel when this surface appears in binding 25's
-                       // moved set, so a mover's first moving frame — and a
-                       // teleport — clears the deep tail on the pixels it
-                       // used to shadow. std430 stride 36 B.
-};
+#include "include/reservoir.glsl"
 
 // writeonly (#5062): triangle.frag only ever stores this frame's reservoirs;
 // reads come through ReservoirPrevBuffer next frame. Keeps sync validation

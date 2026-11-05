@@ -38,8 +38,8 @@ use anyhow::Result;
 use ash::vk;
 
 /// Bytes per [`Reservoir`] — must match the `struct Reservoir` std430 layout
-/// in `shaders/include/bindings.glsl` (9 × 4-byte scalars: the 32-B
-/// pre-#6250 reservoir plus the recorded blocker's stable surface ID).
+/// in `shaders/include/reservoir.glsl`: 9 × 4-byte scalars (the pre-#6250
+/// 32-B record plus the recorded blocker's stable surface ID).
 /// Pinned by [`tests::reservoir_stride_matches_shader`].
 pub const RESERVOIR_STRIDE: vk::DeviceSize = 36;
 
@@ -348,7 +348,7 @@ mod tests {
     use super::*;
 
     /// The Rust-side stride must match the std430 `struct Reservoir` in
-    /// `bindings.glsl` (9 scalars × 4 bytes). If the shader struct grows,
+    /// `include/reservoir.glsl` (9 scalars × 4 bytes). If the shader struct grows,
     /// this and the GLSL must move together.
     #[test]
     fn reservoir_stride_matches_shader() {
@@ -845,8 +845,8 @@ mod tests {
     #[test]
     fn spatial_reuse_requires_same_surface_depth_and_normal() {
         let src = include_str!("../../shaders/triangle.frag");
-        let bindings = include_str!("../../shaders/include/bindings.glsl");
-        assert!(bindings.contains("float histLenAndDepth;"));
+        let reservoir = include_str!("../../shaders/include/reservoir.glsl");
+        assert!(reservoir.contains("float histLenAndDepth;"));
         assert!(
             src.contains("rnSurfaceId == surfaceId")
                 && src.contains("spatialDepthCompatible")

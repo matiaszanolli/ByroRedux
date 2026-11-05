@@ -138,7 +138,7 @@ pub struct BenchCellInput {
     pub vertex_offset: u32,
 }
 
-/// GPU mirror of `BenchCell` in `include/groundcover_bench.glsl`.
+/// GPU mirror of `BenchCell` in `include/groundcover_bench_cell.glsl`.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct GpuBenchCell {

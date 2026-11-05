@@ -1,9 +1,8 @@
 #version 460
 #extension GL_EXT_ray_query : require
 #extension GL_GOOGLE_include_directive : require
-// `GpuInstance` carries 64-bit device addresses; this shader writes them as
-// zero, but the type must be recognised to keep the struct byte-identical to
-// the other declaration sites (`gpu_instance_glsl_copies_stay_in_lockstep`).
+// `include/gpu_instance.glsl` carries 64-bit device addresses; this shader
+// writes them as zero, but the type must be recognised.
 #extension GL_EXT_buffer_reference : require
 #extension GL_ARB_gpu_shader_int64 : require
 
@@ -65,30 +64,7 @@ layout(local_size_x = GROUNDCOVER_MODEL_WORKGROUP, local_size_y = 1, local_size_
 
 #include "include/groundcover_scene.glsl"
 
-// Must match Rust `GpuInstance` exactly (see include/bindings.glsl).
-struct GpuInstance {
-    mat4 model;            // offset 0,  64 bytes
-    uint textureIndex;     // offset 64
-    uint boneOffset;       // offset 68
-    uint vertexOffset;     // offset 72
-    uint indexOffset;      // offset 76
-    uint vertexCount;      // offset 80
-    uint flags;            // offset 84
-    uint materialId;       // offset 88
-    float ior;             // offset 92
-    float avgAlbedoR;      // offset 96
-    float avgAlbedoG;      // offset 100
-    float avgAlbedoB;      // offset 104
-    uint surfaceId;        // offset 108
-    uint64_t skinnedVertexAddress; // offset 112
-    uvec2 _reserved;               // offset 120
-    uint64_t morphDeltaAddress;  // offset 128
-    uint64_t morphWeightAddress; // offset 136
-    uint morphTargetCount;       // offset 144
-    uint _reserved2a; // offset 148
-    uint _reserved2b; // offset 152
-    uint _reserved2c; // offset 156 -> total 160
-};
+#include "include/gpu_instance.glsl"
 
 /// One authored record. Mirrors Rust `GpuGroundCoverModelRecord`.
 struct GcModelRecord {

@@ -1,9 +1,9 @@
 #version 460
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_GOOGLE_include_directive : require
-// REN-2026-07-28-02 / #2219 — GpuInstance grew a uint64_t member; this
-// mirror never dereferences it, but the type must be recognized to keep
-// the struct byte-for-byte identical to the other 4 declaration sites.
+// REN-2026-07-28-02 / #2219 — `include/gpu_instance.glsl` declares `uint64_t`
+// members, so the type must be recognized even where a lane is never
+// dereferenced.
 #extension GL_EXT_buffer_reference : require
 #extension GL_ARB_gpu_shader_int64 : require
 
@@ -36,48 +36,19 @@ layout(location = 8) in vec4 inTangent;
 // src/shader_constants_data.rs (same value as
 // crates/core/src/ecs/components/skinned_mesh.rs::MAX_BONES_PER_MESH).
 
-// Per-instance data from the instance SSBO. R1 Phase 6 collapsed the
-// per-material fields onto the `MaterialBuffer` SSBO indexed by
-// `materialId`; what's left is strictly per-DRAW (model + mesh refs +
-// flags + materialId + caustic-source avgAlbedo). Must match Rust
-// GpuInstance layout exactly — all scalars, no vec3.
-struct GpuInstance {
-    mat4 model;            // 64 bytes
-    uint textureIndex;     // offset 64 — diffuse / albedo
-    uint boneOffset;       // offset 68
-    uint vertexOffset;     // offset 72
-    uint indexOffset;      // offset 76
-    uint vertexCount;      // offset 80
-    uint flags;            // offset 84 — bit 0: non-uniform scale, bit 1: alpha blend, bit 2: caustic source, bit 3 + bits 16..32: terrain splat
-    uint materialId;       // offset 88 — index into MaterialBuffer SSBO (R1)
-    float ior;             // offset 92 — per-draw optical IOR (read by caustic_splat.comp)
-    float avgAlbedoR;      // offset 96 — kept for caustic_splat.comp (set 0 reads, not migrated)
-    float avgAlbedoG;      // offset 100
-    float avgAlbedoB;      // offset 104
-    uint surfaceId;        // offset 108 — stable temporal-shadow identity
-    uint64_t skinnedVertexAddress; // offset 112 — #2219, unused here
-    uvec2 _reserved;               // offset 120 -> total 128
-    // #3231 — GPU morph-target blending. See the matching field doc in
-    // include/bindings.glsl; unlike skinnedVertexAddress this mirror
-    // DOES dereference these (via MorphDeltaRef / MorphWeightRef below)
-    // so the primary rasterized image shows morph deformation, not just
-    // the compute-output-derived BLAS/RT secondary paths.
-    uint64_t morphDeltaAddress;  // offset 128
-    uint64_t morphWeightAddress; // offset 136
-    uint morphTargetCount;       // offset 144
-    // Deliberately three scalar uints, NOT uvec3 — see gpu_types.rs.
-    uint _reserved2a; // offset 148
-    uint _reserved2b; // offset 152
-    uint _reserved2c; // offset 156 -> total 160
-};
+// Per-instance data from the instance SSBO. Unlike the other vertex stages,
+// this one DOES dereference the morph addresses (via MorphDeltaRef /
+// MorphWeightRef below) so the primary rasterized image shows morph
+// deformation, not just the compute-output-derived BLAS/RT secondary paths.
+#include "include/gpu_instance.glsl"
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
     GpuInstance instances[];
 };
 
 // #3231 — mirrors include/bindings.glsl's MorphDeltaRef / MorphWeightRef.
-// See that file for the layout doc; kept in lockstep by
-// `gpu_instance_glsl_copies_stay_in_lockstep` only checking the
+// See that file for the layout doc.
+// `gpu_instance_glsl_field_order_matches_rust_struct` checks only the
 // GpuInstance struct itself, so these buffer_reference blocks are NOT
 // part of that automated check — verify by hand against bindings.glsl
 // if either changes.

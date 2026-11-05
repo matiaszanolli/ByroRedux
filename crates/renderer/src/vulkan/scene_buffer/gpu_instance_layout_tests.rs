@@ -15,17 +15,10 @@ use std::mem::offset_of;
 use std::mem::size_of;
 
 /// Regression guard for the Shader Struct Sync invariant (#318 / #417).
-/// The `GpuInstance` struct is duplicated across **five** GLSL
-/// sources — `include/bindings.glsl` (the shared copy `triangle.frag`
-/// `#include`s since #1583/#1590), `triangle.vert`, `ui.vert`, (since
-/// the caustic pass #321) `caustic_splat.comp`, and (#1498)
-/// `water.vert` — and must stay
-/// byte-for-byte identical with the Rust definition. Any drift here
-/// silently corrupts per-instance data on the GPU. Verified offsets
-/// come from the explicit `// offset N` comments inside those shaders.
-/// See the `feedback_shader_struct_sync` memory note for the lockstep
-/// update protocol (grep for `struct GpuInstance` in the shaders tree
-/// before touching this struct).
+/// `shaders/include/gpu_instance.glsl` declares `GpuInstance` for every shader,
+/// and must stay byte-for-byte identical with the Rust definition. Any drift here
+/// silently corrupts per-instance data on the GPU. Verified offsets come from the
+/// explicit `// offset N` comments inside that header.
 #[test]
 fn gpu_instance_is_160_bytes_std430_compatible() {
     // R1 Phase 6 collapsed the per-material fields onto the
@@ -77,11 +70,9 @@ fn gpu_camera_is_368_bytes() {
         );
 }
 
-/// #3763 (SAFE-2026-08-30-D6-02) — `GpuLight` is hand-duplicated across
-/// four GLSL sources (`include/bindings.glsl`, `cluster_cull.comp`,
-/// `caustic_splat.comp`, `volumetrics_inject.comp`,
-/// `gpu_light_glsl_copies_stay_in_lockstep` in `shader_contract_tests.rs`
-/// pins those four against each other), but unlike `GpuInstance` (160 B)
+/// #3763 (SAFE-2026-08-30-D6-02) —
+/// `gpu_light_glsl_field_order_matches_rust_struct` in `shader_contract_tests.rs`
+/// pins the GLSL field list, but unlike `GpuInstance` (160 B)
 /// and `GpuCamera` (368 B) had no `size_of` pin against the Rust struct at
 /// all. Four `[f32; 4]` fields (`position_radius` / `color_type` /
 /// `direction_angle` / `params`) = 64 B; a fifth `uvec4 history_id` rode

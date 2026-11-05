@@ -1,9 +1,9 @@
 #version 460
 #extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_nonuniform_qualifier : require
-// REN-2026-07-28-02 / #2219 — GpuInstance grew a uint64_t member; this
-// mirror never dereferences it, but the type must be recognized to keep
-// the struct byte-for-byte identical to the other 4 declaration sites.
+// REN-2026-07-28-02 / #2219 — `include/gpu_instance.glsl` declares `uint64_t`
+// members, so the type must be recognized even where a lane is never
+// dereferenced.
 #extension GL_EXT_buffer_reference : require
 #extension GL_ARB_gpu_shader_int64 : require
 
@@ -49,39 +49,8 @@ layout(location = 8) in vec4 inTangent;      // xyz = tangent, w = bitangent sig
 // ── Per-instance SSBO (shared with triangle pipeline) ─────────────────
 // We only consume `model`; the rest of the GpuInstance fields are
 // not driven by the water material path (which lives in push
-// constants — see water.frag). Layout must match the Rust struct
-// at `crates/renderer/src/vulkan/scene_buffer/gpu_types.rs`
-// byte-for-byte — the 160-byte invariant is pinned by
-// `gpu_instance_is_160_bytes_std430_compatible` at
-// `crates/renderer/src/vulkan/scene_buffer/gpu_instance_layout_tests.rs`.
-// (The struct grew to 128 B when #2219 added `skinnedVertexAddress`, then
-// to 160 B when #3231 added the morph-target address/count fields; this
-// mirror's body tracks it, only the comment kept quoting the old size.)
-// Path moved from `vulkan/instance.rs` during the Session-34 split (#1187).
-struct GpuInstance {
-    mat4 model;
-    uint textureIndex;
-    uint boneOffset;
-    uint vertexOffset;
-    uint indexOffset;
-    uint vertexCount;
-    uint flags;
-    uint materialId;
-    float ior;             // offset 92 — per-draw optical IOR (read by caustic_splat.comp)
-    float avgAlbedoR;
-    float avgAlbedoG;
-    float avgAlbedoB;
-    uint surfaceId;
-    uint64_t skinnedVertexAddress; // offset 112 — #2219, unused here
-    uvec2 _reserved;               // offset 120 -> total 128
-    uint64_t morphDeltaAddress;  // offset 128 — #3231, unused here
-    uint64_t morphWeightAddress; // offset 136 — #3231, unused here
-    uint morphTargetCount;       // offset 144 — #3231, unused here
-    // Deliberately three scalar uints, NOT uvec3 — see gpu_types.rs.
-    uint _reserved2a; // offset 148
-    uint _reserved2b; // offset 152
-    uint _reserved2c; // offset 156 -> total 160
-};
+// constants — see water.frag).
+#include "include/gpu_instance.glsl"
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
     GpuInstance instances[];
@@ -115,54 +84,7 @@ layout(set = 1, binding = 1) uniform CameraUBO {
 // Set 2 binding 1 is shared with water.frag. Vertex visibility is enabled
 // so authored amplitude/frequency can affect the silhouette as well as the
 // fragment normal, while the indexed record keeps the push block compact.
-struct WaterParams {
-    vec4 timing;
-    vec4 flow;
-    vec4 shallow;
-    vec4 deep;
-    vec4 scroll;
-    // xy = authored/flow scroll for the third normal layer; zw = underwater
-    // fog near/far.
-    vec4 scroll_c;
-    vec4 tune;
-    vec4 misc;
-    vec4 tint_reflect;
-    uvec4 noise_indices;
-    // x = authored NAM4 UV scale; yzw = authored NAM2/3/4 amplitude scales.
-    vec4 detail;
-    // x = authored Skyrim noise-falloff distance; y = Blend Normals gate;
-    // z = Starfield surface roughness; w = Skyrim Specular Radius.
-    vec4 noise_falloff;
-    // xyz = shallow/deep/surface-effect normal falloff multipliers.
-    vec4 normal_falloff;
-    // x = displacement starting size, y = radial falloff, z = dampener.
-    vec4 displacement;
-    // x/y/z/w = reflection/refraction/normal/specular depth weights.
-    vec4 depth;
-    // x/y/z/w = refraction/local-specular/reflection/sun-specular controls.
-    vec4 effects;
-    // x/y/z = Starfield per-channel extinction coefficients; w = precipitation *
-    // authored rain-response (0..4). Not a free slot — same trap as
-    // VolumetricsParams.render_origin.w / GpuCamera.render_origin.w.
-    // Keep these trailing slots in lockstep with water.frag and
-    // GpuWaterParams so every array element uses the same 368-byte std430
-    // stride when the vertex shader selects a water material by index.
-    vec4 absorption;
-    // Starfield phytoplankton, sediment, yellow matter, oceanness.
-    vec4 concentration;
-    // xy = transient ripple center, z = intensity, w = radius.
-    vec4 ripple;
-    // rgb = authored underwater tint, a = underwater fog amount.
-    vec4 underwater;
-    // x/y = shallow/deep alpha, z/w = shallow/deep distance thresholds.
-    vec4 alpha;
-    // xy = authored mesh-water UV offset; z = flow-map index bit-cast;
-    // w = authored flow-map scale.
-    vec4 uv_offset;
-    // x = FO4+/Creation-2 WATR Depth Amount; y = WaterNormalEncoding
-    // (0 tangent normal, 1 offset noise); zw reserved.
-    vec4 optical;
-};
+#include "include/water_params.glsl"
 layout(std430, set = 2, binding = 1) readonly buffer WaterParamsBlock {
     WaterParams params[];
 } waterParams;

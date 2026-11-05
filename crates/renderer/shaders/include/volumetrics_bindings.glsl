@@ -82,18 +82,12 @@ layout(set = 0, binding = 2) uniform accelerationStructureEXT topLevelAS;
 
 // Phase 2b — point/spot light in-scattering. Bindings 3/4/5 mirror the
 // SAME per-frame lights SSBO + cluster grid + light-index list
-// `cluster_cull.comp` builds for the fragment shader (struct layouts
-// copied from `include/bindings.glsl`'s `GpuLight` / `ClusterEntry` —
-// not `#include`d wholesale since that file's bindings are numbered
-// for the fragment shader's own descriptor set, not this compute
-// shader's). Written per-frame via
+// `cluster_cull.comp` builds for the fragment shader (`include/bindings.glsl`
+// itself is not `#include`d since that file's bindings are numbered for the
+// fragment shader's own descriptor set, not this compute shader's). Written
+// per-frame via
 // `VolumetricsPipeline::write_lights_and_clusters`.
-struct GpuLight {
-    vec4 position_radius; // xyz = position, w = radius
-    vec4 color_type;       // rgb = color, w = type (0=point, 1=spot, 2=directional)
-    vec4 direction_angle;  // xyz = direction, w = spot angle cosine
-    vec4 params;           // x = falloff, y = source radius, z = visibility bits, w = attenuation model
-};
+#include "include/gpu_light.glsl"
 
 layout(std430, set = 0, binding = 3) readonly buffer LightBuffer {
     uint lightCount;
@@ -102,10 +96,7 @@ layout(std430, set = 0, binding = 3) readonly buffer LightBuffer {
     GpuLight lights[];
 };
 
-struct ClusterEntry {
-    uint offset;
-    uint count;
-};
+#include "include/cluster_entry.glsl"
 
 layout(std430, set = 0, binding = 4) readonly buffer ClusterGrid {
     ClusterEntry clusters[];
@@ -233,8 +224,8 @@ layout(std430, set = 0, binding = 18) buffer CombustionLightMomentBuffer {
 // the exact 160-byte std430 stride of the canonical Rust `GpuInstance`.
 //
 // This is a deliberate prefix-mirror under its own name, so it sits outside
-// `gpu_instance_glsl_copies_stay_in_lockstep`'s SOURCES list (which keys on
-// the literal `struct GpuInstance`). The stride is instead pinned by
+// `shared_gpu_structs_are_declared_once` (which keys on the literal
+// `struct GpuInstance`). The stride is instead pinned by
 // `gpu_boundary_instance_stride_matches_gpu_instance` — the tail exists only
 // to make the stride right, so agreeing on the total size is the whole
 // contract. Growing `GpuInstance` without growing the tail here misaligns

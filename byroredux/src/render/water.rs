@@ -183,7 +183,7 @@ pub(super) fn reemit_water_planes(
             None => ([1.0, 0.0, 0.0], 0.0),
         };
 
-        // ABI: matches `WaterParams` in `shaders/water.frag`.
+        // ABI: matches `WaterParams` in `shaders/include/water_params.glsl`.
         // Each vec4 maps to one std140 slot — see
         // `crates/renderer/src/vulkan/water.rs::GpuWaterParams` for
         // the layout contract.

@@ -1,6 +1,7 @@
 # Wet Surface and Storm Accumulation — Product Requirements
 
-**Status**: PROPOSED (2026-11-01). Revision 2, same day, folds in review
+**Status**: PROPOSED (2026-11-05). Revision 3 records `GpuInstance` moving
+into one struct-only header. Revision 2 (2026-11-01) folds in review
 round 1 (water-contact writers and NPC coverage corrected at HEAD, GPU
 transport realigned with the ROADMAP row and the M59 PRD, M59 ownership of
 MATO and puddle decals, BGSM porosity, per-entity exposure, split
@@ -200,7 +201,7 @@ with weather) is not documented in any source above. It is listed as
 - **WET-NG-003.** No fluid simulation of water running over surfaces, no
   rivulets or drip particles; the coating is a scalar field per surface.
 - **WET-NG-004.** No new render pass or pipeline, and no growth of
-  `DrawCommand` or of the hand-mirrored `GpuInstance` declarations — the
+  `DrawCommand` or of the `GpuInstance` lockstep surface — the
   ROADMAP M61 row sizes the work "like M59's material-slot approach
   (`GpuMaterial` extension, no `DrawCommand`/shader-lockstep growth)". How
   the per-entity value reaches the GPU within that bound is Q1.
@@ -399,7 +400,7 @@ with weather) is not documented in any source above. It is listed as
 - **WET-PERF-002.** `GpuInstance` MUST stay at 160 bytes with every GLSL
   declaration MDL-GPU-001 enumerates (including the stride-only
   `GpuBoundaryInstance` mirror) unchanged, pinned by `gpu_instance_is_160_bytes_std430_compatible`
-  and `gpu_instance_glsl_copies_stay_in_lockstep` passing unmodified (the
+  and `gpu_instance_glsl_field_order_matches_rust_struct` passing unmodified (the
   M59 PRD's MDL-GPU-001 applied to M61), unless the owner takes Q1's
   alternative A and amends the ROADMAP row.
 - **WET-PERF-003.** With rain forced on a bench-of-record exterior, the
@@ -587,7 +588,7 @@ under cover.
 
 1. **Q1 — How does per-entity state reach the GPU?** The ROADMAP M61 row
    sizes M61 with "no `DrawCommand`/shader-lockstep growth", and the M59
-   PRD holds `GpuInstance` and its six GLSL declarations fixed
+   PRD holds `GpuInstance` and its GLSL declarations fixed
    (MDL-GPU-001); per-material parameters go to `GpuMaterial` either way
    (WET-MAT-004). Recommended: a per-instance side buffer of packed
    channels, uploaded in the same order as the instance SSBO and declared
@@ -652,3 +653,4 @@ under cover.
 |---|---|---|---|
 | 1 | 2026-11-01 | First draft | — |
 | 2 | 2026-11-01 | Review round 1 folded in: water-contact writers and NPC coverage corrected at HEAD, Q1 realigned with the ROADMAP row's no-lockstep sizing and the M59 PRD (side buffer recommended), M59 links (MDL-GPU, Q1, Q6, MDL-DEC-008), BGSM porosity, per-entity exposure (WET-COV-006), WET-MAT-001 and WET-WATER-001 split (WET-MAT-008..011, WET-WATER-007), Lagarde/xEdit wording, acceptance 4 made runnable; coordinator cross-PRD sync (sibling links and citations) | claude: revise |
+| 3 | 2026-11-05 | `GpuInstance` moved into one struct-only header: WET-NG-004, WET-PERF-002 and Q1 follow MDL-GPU-001's new definition and the renamed guard. No requirement changes | — |

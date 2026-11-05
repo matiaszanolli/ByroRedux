@@ -1,6 +1,7 @@
 # Material and Decal Layering — Product Requirements
 
-**Status**: PROPOSED (2026-11-01). Revision 2, same day, folds in review
+**Status**: PROPOSED (2026-11-05). Revision 3 records `GpuInstance` moving
+into one struct-only header. Revision 2 (2026-11-01) folds in review
 round 1 (GPU lane-allocation rule for M56 / M57 / M59 / M61, the seventh
 `GpuInstance` mirror, lobe location corrected at HEAD, Starfield `PDCL`,
 impact-decal data precedence, Skyrim surface-material mapping, split
@@ -92,7 +93,7 @@ of its GLSL mirrors (§5.1).
 | **Decal data** | The `DODT` payload of a TXST or IPCT record (UESP *Skyrim Mod:Mod File Format/TXST*, */IPCT*): width and height ranges, depth, shininess, parallax scale and passes, flags, colour. Decoded today as `DecalData` (`crates/plugin/src/esm/cell/base_objects.rs`). |
 | **Detail normal layer** | A tiling normal map blended over the base normal for close-range surface grain. Not the existing *detail map*, which modulates albedo (nif.xml `DETAIL_MAP`: "combined with base map for added detail"). |
 | **Anisotropy enable bit** | Skyrim `SLSF2` / FO4 `F4SF2` bit 21 `Anisotropic_Lighting` (nif.xml), and BGSM `bAnisoLighting` (Material-Editor `MaterialLib/BGSM.cs`). On FO3/FNV the same bit position is `Alpha_Decal` (nif.xml `BSShaderFlags2`). |
-| **Lockstep surface** | The GLSL declarations that hand-mirror the Rust `GpuInstance` ([Shader Pipeline](../engine/shader-pipeline.md#gpuinstance--160-bytes-ssbo-set-1-binding-4)): the six literal `struct GpuInstance` copies listed in `GPU_INSTANCE_GLSL_MIRRORS` (`scene_buffer/shader_contract_tests.rs`) plus the stride-only prefix mirror `GpuBoundaryInstance` in `include/volumetrics_bindings.glsl`. Growing it, or renaming a lane in it, is the cost the ROADMAP row forbids. |
+| **Lockstep surface** | The GLSL declarations that mirror the Rust `GpuInstance` ([Shader Pipeline](../engine/shader-pipeline.md#gpuinstance--160-bytes-ssbo-set-1-binding-4)): the one literal `struct GpuInstance` declaration in `include/gpu_instance.glsl` plus the stride-only prefix mirror `GpuBoundaryInstance` in `include/volumetrics_bindings.glsl`. Growing it, or renaming a lane in it, is the cost the ROADMAP row forbids. |
 | **Per-material lane** | A `GpuMaterial` field, or a bit of its `materialFlags` word, written once per material by the translate step. One GLSL declaration (`include/bindings.glsl`). |
 | **Per-instance side buffer** | A GPU struct array, parallel to the instance SSBO and indexed by the same instance index, declared once in GLSL; the route for per-entity state that changes at runtime (MDL-GPU-005). |
 | **Lane-allocation rule** | The §5.1 table that says which of the above a new piece of GPU-visible state takes; owned by this PRD for M56, M57, M59 and M61. |
@@ -218,16 +219,15 @@ The siblings' claims under this rule, as their rev 2 texts state them:
 - **MDL-GPU-001.** `GpuInstance` MUST stay at 160 bytes with no field
   added and no reserved lane (`_reserved`, `_reserved2a..c` in
   `scene_buffer/gpu_types.rs`) renamed or repurposed, at every declaration
-  of the lockstep surface: the six literal copies (`include/bindings.glsl`,
-  `triangle.vert`, `water.vert`, `ui.vert`, `caustic_splat.comp`,
-  `groundcover_models.comp`) and the `GpuBoundaryInstance` prefix mirror
+  of the lockstep surface: `include/gpu_instance.glsl` and the
+  `GpuBoundaryInstance` prefix mirror
   (`include/volumetrics_bindings.glsl`). Every commit under M56, M57, M59
   or M61 MUST pass, unmodified, `gpu_instance_is_160_bytes_std430_compatible`,
   `gpu_instance_field_offsets_match_shader_contract`,
   `gpu_instance_does_not_re_expand_with_per_material_fields`,
-  `gpu_instance_glsl_copies_stay_in_lockstep` (which also fails on a
-  seventh literal declaration, through `assert_mirror_list_is_complete`)
-  and `gpu_boundary_instance_stride_matches_gpu_instance`. Repurposing a
+  `gpu_instance_glsl_field_order_matches_rust_struct`,
+  `shared_gpu_structs_are_declared_once` (which fails on a second literal
+  declaration) and `gpu_boundary_instance_stride_matches_gpu_instance`. Repurposing a
   reserved lane is an owner decision that amends the ROADMAP row, not a
   route this rule offers.
 - **MDL-GPU-002.** Every per-material lane M56, M57, M59 or M61 adds MUST
@@ -776,3 +776,4 @@ Each needs the project owner. The recommendation is the first option.
 |---|---|---|---|
 | 1 | 2026-11-01 | First draft | — |
 | 2 | 2026-11-01 | Review round 1 folded in: GPU lane-allocation rule for M56 / M57 / M59 / M61 (§5.1 table, MDL-GPU-001/002/003/005 generalized, MDL-GPU-008..010 new), `GpuBoundaryInstance` mirror and offset / stride tests in MDL-GPU-001, anisotropic lobe location corrected to `pbr.glsl`, Starfield `PDCL` (L3, MDL-AUTH-009, §7.1), IPCT `DODT` precedence (MDL-AUTH-005), Skyrim Havok material → MATT verify (MDL-IMP-004), MDL-DEC-008 written as a citable contract (MDL-DEC-010/011), MDL-DEC-004 and MDL-DET-004 split (MDL-DEC-009, MDL-DET-006), Q5 aligned with hair-shading, sibling links | claude: revise |
+| 3 | 2026-11-05 | `GpuInstance` moved into one struct-only header: the lockstep-surface definition and MDL-GPU-001 name `include/gpu_instance.glsl` instead of the six copies, and MDL-GPU-001 cites the renamed guards. The 160-byte budget and every lane rule are unchanged | — |

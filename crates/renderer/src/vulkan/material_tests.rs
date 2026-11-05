@@ -1256,7 +1256,7 @@ mod r1_phase6_retirement_pin {
     #[test]
     fn gpu_instance_declares_none_of_the_retired_lanes() {
         const GPU_TYPES_RS: &str = include_str!("scene_buffer/gpu_types.rs");
-        const BINDINGS_GLSL: &str = include_str!("../../shaders/include/bindings.glsl");
+        const GPU_INSTANCE_GLSL: &str = include_str!("../../shaders/include/gpu_instance.glsl");
 
         let start = GPU_TYPES_RS
             .find("pub struct GpuInstance {")
@@ -1264,10 +1264,10 @@ mod r1_phase6_retirement_pin {
         let body = &GPU_TYPES_RS[start..];
         let body = &body[..body.find("\n}").expect("the struct body must close")];
 
-        let glsl_start = BINDINGS_GLSL
+        let glsl_start = GPU_INSTANCE_GLSL
             .find("struct GpuInstance")
-            .expect("bindings.glsl must still declare GpuInstance");
-        let glsl_body = &BINDINGS_GLSL[glsl_start..];
+            .expect("gpu_instance.glsl must still declare GpuInstance");
+        let glsl_body = &GPU_INSTANCE_GLSL[glsl_start..];
         let glsl_body = &glsl_body[..glsl_body.find("\n}").expect("the GLSL struct must close")];
 
         for (glsl_field, rust_field) in RETIRED {
@@ -1279,7 +1279,7 @@ mod r1_phase6_retirement_pin {
             );
             assert!(
                 !glsl_body.contains(glsl_field),
-                "bindings.glsl's `GpuInstance` declares `{glsl_field}` — R1 Phase 6 \
+                "gpu_instance.glsl's `GpuInstance` declares `{glsl_field}` — R1 Phase 6 \
                  moved it to `GpuMaterial`, and the two sides must stay in lockstep \
                  (#3868)",
             );

@@ -56,8 +56,8 @@ a working checkout and want to understand or change engine internals.
 | [Game UI Integration — PRD](../prd/game-ui-integration.md) | ui, menuxml, byroredux | ACTIVE (2026-11-03). M48 remainder: method behaviour, gfx stubs, fonts, menu stack, Papyrus/ECS callbacks, HUD meters |
 | [Volumetric Lighting — PRD](../prd/volumetric-lighting.md) | renderer, plugin, byroredux | PROPOSED (2026-11-01). M55 remainder: REGN height fog, exterior light shafts, combustion boundary follow-ups |
 | [Reference-Quality Post-Process — PRD](../prd/reference-post-process.md) | renderer | PROPOSED (2026-11-01). M58 remainder: bloom filter and placement vs the upscaler, DOF, motion blur, 3D LUT grading, authored IMGS/IMAD lens fields |
-| [Material and Decal Layering — PRD](../prd/material-decal-layering.md) | renderer, nif, byroredux | PROPOSED (2026-11-01). M59: decal projection, micro-detail normals, anisotropic specular, RT decals in GI |
-| [Wet Surface and Storm Accumulation — PRD](../prd/wet-surface-accumulation.md) | renderer, byroredux, plugin | PROPOSED (2026-11-01). M61: wet / snow / radstorm grime surface states driven by water contact and WTHR |
+| [Material and Decal Layering — PRD](../prd/material-decal-layering.md) | renderer, nif, byroredux | PROPOSED (2026-11-05). M59: decal projection, micro-detail normals, anisotropic specular, RT decals in GI |
+| [Wet Surface and Storm Accumulation — PRD](../prd/wet-surface-accumulation.md) | renderer, byroredux, plugin | PROPOSED (2026-11-05). M61: wet / snow / radstorm grime surface states driven by water contact and WTHR |
 | [Subsurface Scattering — PRD](../prd/subsurface-scattering.md) | renderer, byroredux | PROPOSED (2026-11-01). M56: Burley SSS for skin and organics, eye cornea refraction |
 | [Hair and Fur Shading — PRD](../prd/hair-shading.md) | renderer, nif, byroredux | PROPOSED (2026-11-01). M57: Marschner / Disney hair BRDF, RT hair shadows with stochastic transparency |
 | [Reference-Quality Lighting — PRD](../prd/reference-lighting.md) | renderer, byroredux | ACTIVE (2026-11-02). M-LIGHT: RT soft penumbras, contact shadows, per-cell IBL probe, multi-bounce GI |
@@ -73,7 +73,7 @@ a working checkout and want to understand or change engine internals.
 | [glTF and USD Asset Export — PRD](../prd/asset-export.md) | nif, bsa, byroredux | PROPOSED (2026-11-01). M80: round-trip vanilla meshes and materials to glTF/USD and back as a plugin |
 | [Visual Scripting — PRD](../prd/visual-scripting.md) | scripting, sdk | PROPOSED (2026-11-01). M81: behavior-tree node graph over the M47.0 event hooks |
 | [Asset Preprocessing Pipeline — PRD](../prd/asset-preprocessing.md) | bsa, renderer, byroredux | PROPOSED (2026-11-01). M82: one-shot bake of BSA/BA2 into a memory-mappable native bundle |
-| [GPU-Driven Rendering — PRD](../prd/gpu-driven-rendering.md) | renderer | PROPOSED (2026-11-01). M52: mesh/task shaders, GPU culling, GPU-generated indirect draws |
+| [GPU-Driven Rendering — PRD](../prd/gpu-driven-rendering.md) | renderer | PROPOSED (2026-11-05). M52: mesh/task shaders, GPU culling, GPU-generated indirect draws |
 | [Virtual Geometry — PRD](../prd/virtual-geometry.md) | renderer, nif | PROPOSED (2026-11-01). M53: cluster mesh format with simplification chain and GPU cluster selection |
 | [Sandboxed Linked Mods](sandboxed-linked-mods.md) | mod-runtime; plugin, scripting, core, save, ui (planned links) | Implemented isolated Component Model host foundation plus requirements for typed engine/mod links, C++ portability, ECS barriers, persistence, and high-count profiles |
 | [ESM Records](esm-records.md) | plugin | Cell loading, items, NPCs, factions, leveled lists |

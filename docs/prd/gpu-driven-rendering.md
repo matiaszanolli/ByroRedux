@@ -1,6 +1,7 @@
 # GPU-Driven Rendering — Product Requirements
 
-**Status**: PROPOSED (2026-11-01). Revision 2, same day, folds in review
+**Status**: PROPOSED (2026-11-05). Revision 3 records `GpuInstance` moving
+into one struct-only header. Revision 2 (2026-11-01) folds in review
 round 1 (bench-harness columns the evidence needs, the ECS change-tracking
 state read from code instead of left as a verify item, the indirect-grouping
 and draw-site line corrections, meshoptimizer size guidance and the
@@ -438,13 +439,10 @@ table in the commit that moves a stage.
 ### 5.8 Shader contracts (`GDR-SH`)
 
 - **GDR-SH-001.** A new shader that reads `GpuInstance` MUST obtain it by
-  `#include "include/bindings.glsl"` and MUST NOT declare its own copy, so
-  the hand-mirrored set the material-decal PRD pins (`MDL-GPU-001`) does
-  not grow. Where a copy is unavoidable (a header-incompatible binding
-  layout, stated in the design), it MUST be added to
-  `GPU_INSTANCE_GLSL_MIRRORS` (`scene_buffer/shader_contract_tests.rs:292`)
-  in the same commit; `assert_mirror_list_is_complete` already fails the
-  build on an unlisted declaration.
+  `#include "include/gpu_instance.glsl"` and MUST NOT declare its own copy,
+  so the lockstep surface the material-decal PRD pins (`MDL-GPU-001`) does
+  not grow. The header is struct-only, so no binding layout rules it out;
+  `shared_gpu_structs_are_declared_once` fails on a second declaration.
 - **GDR-SH-002.** Any new cull-input or meshlet struct shared between Rust
   and GLSL MUST have a size-and-offset test in `shader_contract_tests.rs`
   and use only scalar and vec4-equivalent fields, per the `GpuInstance`
@@ -544,8 +542,7 @@ A scenario passes when:
    passes, and `gdr.stats` reports zero upload bytes on a static pinned
    frame of every bench scene (`GDR-SCN-002`, `GDR-SCN-006`).
 6. **Shader contracts.** `cargo test -p byroredux-renderer
-   gpu_instance_glsl_copies_stay_in_lockstep` passes with any new
-   declaring shader in the mirror list (`GDR-SH-001`).
+   shared_gpu_structs_are_declared_once` passes (`GDR-SH-001`).
 7. **Performance.** The bench matrix on the default path, against a
    same-machine `cpu`-path control, shows no wall-time regression beyond
    the control's run range on any scene (`GDR-G-003`) and the phase's
@@ -732,3 +729,4 @@ table instead of a hand-written entity figure.
 |---|---|---|---|
 | 1 | 2026-11-01 | First draft | — |
 | 2 | 2026-11-01 | Review round 1 folded in: bench TSV columns and the pre/post-fence CPU split, ECS change tracking read from code (`GDR-V-006` withdrawn), indirect-grouping and line corrections, meshoptimizer / Wihlidal / Gamebryo citations narrowed, `GpuInstance` lockstep (`GDR-SH-001`, `GDR-SH-005`), texture-streaming readback (`GDR-IND-006`), `GDR-RT-004` fields, `GDR-V-007`, Q6 boundary; coordinator cross-PRD sync (sibling links and citations) | claude: revise |
+| 3 | 2026-11-05 | `GpuInstance` moved into one struct-only header: GDR-SH-001 includes `include/gpu_instance.glsl`, and its allowance for a listed copy is gone because no binding layout can rule that header out. The Phase exit check cites `shared_gpu_structs_are_declared_once` | — |

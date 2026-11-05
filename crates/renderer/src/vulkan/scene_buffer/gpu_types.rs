@@ -135,21 +135,15 @@ pub type GpuPreviousModel = [[f32; 4]; 4];
 /// 16 bytes (same as vec4), which would silently mismatch a tightly-packed
 /// `#[repr(C)]` Rust struct where `[f32; 3]` is only 12 bytes.
 ///
-/// **Shader Struct Sync**: the matching `struct GpuInstance` declaration
-/// in `include/bindings.glsl` (pulled into `triangle.frag` via `#include`
-/// since #1583/#1590 — `triangle.frag` itself no longer declares its own
-/// copy) plus five standalone hand-mirrored copies — `triangle.vert`,
-/// `ui.vert`, `caustic_splat.comp`, `water.vert` (#1498), and
-/// `groundcover_models.comp` (`aabd99a05`) — MUST be updated in lockstep
-/// (6 declaration sites total). When you add, remove, or reorder a field
-/// here, update all six GLSL copies to
-/// match: `gpu_instance_glsl_copies_stay_in_lockstep` (#2748 /
-/// REN-D3-2026-08-12-01, in `shader_contract_tests.rs`) parses
-/// every mirror's field list at compile time and asserts they're
-/// byte-for-byte identical to each other AND in the same order as this
-/// struct's field declarations. `every_shader_struct_gpu_instance_names_expected_fields`
-/// is an older, narrower complementary check for a few specific
-/// stale/required field names.
+/// **Shader Struct Sync**: the one GLSL declaration is
+/// `shaders/include/gpu_instance.glsl`, included by every shader that reads or
+/// writes instances. When you add, remove, or reorder a field here, update it to
+/// match and recompile the shaders that include it:
+/// `gpu_instance_glsl_field_order_matches_rust_struct` (#2748 /
+/// REN-D3-2026-08-12-01, in `shader_contract_tests.rs`) parses its field list and
+/// asserts it's in the same order as this struct's field declarations.
+/// `gpu_instance_glsl_names_expected_fields` is an older, narrower complementary
+/// check for a few specific stale/required field names.
 ///
 /// Layout: 160 bytes per instance, 16-byte aligned (10×16). R1 Phase 6
 /// collapsed the per-material fields (texture indices, PBR scalars,
@@ -362,11 +356,8 @@ impl Default for GpuInstance {
 
 /// GPU-side light struct (64 bytes, std430 layout).
 ///
-/// Shader Struct Sync: every shader that declares `struct GpuLight`
-/// must mirror this layout (currently `include/bindings.glsl`
-/// — `#include`d by `triangle.frag` — plus the standalone copies in
-/// `cluster_cull.comp`, `caustic_splat.comp`, and `volumetrics_inject.comp`,
-/// #1916). The trailing
+/// Shader Struct Sync: the one GLSL declaration is
+/// `shaders/include/gpu_light.glsl` (#1916). The trailing
 /// `params` vec4 was added in lockstep with the LIGH
 /// `falloff_exponent` plumb-through — pre-fix the shader applied
 /// a hardcoded `1/(1 + 0.01*d)` linear attenuation that ignored
