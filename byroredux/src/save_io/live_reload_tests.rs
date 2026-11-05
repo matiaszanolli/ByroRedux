@@ -910,7 +910,31 @@ fn live_load_drain_discards_the_outgoing_sessions_requests() {
         item: 0xF,
         count: 3,
     }]));
+    // #6508 — an F9 taken inside VATS must not bring the loaded session up frozen on stale entity ids.
+    let stale_part = crate::components::VatsTargetPart {
+        entity: byroredux_core::ecs::EntityId::from(9u32),
+        part_index: 0,
+        part_name: "Torso".into(),
+        hit_chance: 50.0,
+        ap_cost: 20.0,
+    };
+    world.insert_resource(crate::components::VatsState {
+        mode: crate::components::VatsMode::TargetSelect,
+        ap_reserved: 30.0,
+        targets: vec![stale_part.clone()],
+        queue: vec![stale_part],
+        roll_state: 0xDEAD_BEEF,
+    });
+    assert_eq!(world.resource::<crate::components::VatsState>().world_time_scale(), 0.0);
     discard_outgoing_session_requests(&world);
+    {
+        let vats = world.resource::<crate::components::VatsState>();
+        assert_eq!(vats.mode, crate::components::VatsMode::None, "VATS mode ends");
+        assert!(vats.targets.is_empty() && vats.queue.is_empty(), "stale entity-keyed lists are dropped");
+        assert_eq!(vats.ap_reserved, 0.0);
+        assert_eq!(vats.world_time_scale(), 1.0, "the loaded world must not stay frozen");
+        assert_eq!(vats.roll_state, 0xDEAD_BEEF, "the replayable die sequence is kept");
+    }
     assert!(world.resource::<byroredux_scripting::jail::PendingEvidenceDeposits>().0.is_empty(), "queued deposits are dropped");
     assert_eq!(world.resource::<crate::crafting::ActiveCrafting>().0, None, "the crafting session ends");
     assert_eq!(world.resource::<crate::crafting::CraftingRequest>().0, None, "a queued bench is dropped");

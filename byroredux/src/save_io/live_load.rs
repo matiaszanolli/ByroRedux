@@ -492,6 +492,15 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     if let Some(mut hits) = world.try_resource_mut::<crate::systems::mines::PendingMineHits>() {
         hits.clear();
     }
+    // #6508 — VATS targeting mode. `VatsState` is entity-keyed (targets and queue name the
+    // outgoing session's despawned actors) and, in `TargetSelect`, publishes `world_time_scale() == 0`,
+    // so an F9 taken inside VATS would bring the loaded world up frozen with a stale target list (and
+    // `vats.confirm` would charge the loaded player's AP and raise `HitEvent`s on dead ids). A cold-start
+    // load cannot be in VATS; leaving it here makes the in-process load match (#5435). `exit_all` keeps
+    // `roll_state`, so the replayable die sequence is unaffected.
+    if let Some(mut vats) = world.try_resource_mut::<crate::components::VatsState>() {
+        vats.exit_all();
+    }
     crate::crafting::end_crafting(world);
     if let Some(mut request) = world.try_resource_mut::<crate::crafting::CraftingRequest>() {
         request.0 = None;

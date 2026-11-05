@@ -456,7 +456,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("BenchMover", "a bench-only moving blocker (RLT-SHD-010) placed by step_bench_movers from the bench frame index; spawned only by the penumbra-moving reference rung, which has no save path"),
         // ── #6350 VATS session state ────────────────────────────────
         ("VatsModel", "re-derived at load from the load order's GMSTs by build_vats_model; saving it would freeze a mod's tuning across load-order changes"),
-        ("VatsState", "transient targeting-mode state (mode + scan + queue); dies with the session like vanilla — the AP pool persists through ActorValues"),
+        ("VatsState", "transient targeting-mode state (mode + scan + queue), keyed by the session's EntityIds; an in-process load ends it in discard_outgoing_session_requests (#6508) so the loaded world is never frozen on stale ids, a cold start never has one — the AP pool persists through ActorValues"),
         ("VatsClock", "per-frame unscaled-dt escape hatch stamped in app_events; meaningless across sessions"),
         // ── crates/core/src outside ecs/components/ (#3166) ───────
         ("StringPool", "serialized specially as Snapshot.strings so FixedString symbol order is restored before component columns"),
@@ -761,7 +761,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("EncounterLevelRules", "M47.2 — encounter zones' level bounds + the fLeveledActorMult* difficulty settings for CalculateEncounterLevel; rebuilt from the load order every boot"),
         ("ConditionForms", "M47.2 — Starfield CNDF condition lists for ConditionForm.IsTrue; rebuilt from the load order every boot"),
         ("BribeRules", "M47.2 — Skyrim's bribe-formula settings and actor values for GetBribeAmount; rebuilt from the load order every boot"),
-        ("PendingEvidenceDeposits", "confiscated stolen goods (the Oblivion PayFine / GoToJail path) queued for a jail's StolenGoods chest, drained by evidence_deposit_system within the frame; the ObScriptLedger's saved evidence is the durable record until delivered, and a load discards the queue (#6573). Faction.SendPlayerToJail does not queue: it deposits synchronously through EvidenceChestDeposit and removes goods only once the chest took them"),
+        ("PendingEvidenceDeposits", "confiscated stolen goods (the Oblivion PayFine / GoToJail path) queued for a jail's StolenGoods chest, drained by evidence_deposit_system on the NEXT frame's Update (the INFO / stage-result producers run after the consumer, so the queue straddles the frame boundary a save or load drains on); the ObScriptLedger's saved evidence is the durable record until delivered, and a load discards the queue (#6573). Faction.SendPlayerToJail does not queue: it deposits synchronously through EvidenceChestDeposit and removes goods only once the chest took them"),
         ("EvidenceChestDeposit", "the engine's deposit-into-a-placed-reference function Faction.SendPlayerToJail calls (loaded chest directly, an unloaded one parked); installed at boot (#6573)"),
         ("JailTable", "the load order's jails (linked interior / exterior PrisonMarker door pairs) for PayFine / GoToJail; rebuilt from the records every boot"),
         ("GuardClasses", "the load order's CLAS forms flagged Guard (Oblivion), for IsGuard / IsTurnArrest; rebuilt from the records every boot"),
