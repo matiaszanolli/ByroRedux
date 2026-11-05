@@ -154,6 +154,29 @@ fn oblivion_fame_infamy_and_bounty_are_read_and_changed() {
     assert_eq!(value(run(&world, 0x1074, &[], &c)), 50.0);
 }
 
+/// #6510 — the crime-gold trio and `GetGold` are `[ActorID.]` commands. `GlarthirRef.ModCrimeGold 5000` (MS38
+/// "Paranoia") used to add 5000 to the PLAYER's bounty, which `rush_wanted_player` then turned into every guard
+/// force-greeting the player; `martinref.SetCrimeGold 0` wiped the player's real bounty.
+#[test]
+fn caller_scoped_crime_gold_never_touches_the_players_bounty() {
+    let (world, ..) = world(GameKind::Oblivion);
+    let player_scope = ctx(None);
+    run(&world, 0x1075, &nums(&[40.0]), &player_scope);
+    // A named actor, placed (ACTOR) or not loaded at all (an unresolvable form): all three decline.
+    for caller in [ACTOR, 0x0007_FFFF] {
+        let c = ctx(Some(caller));
+        assert_eq!(run(&world, 0x1076, &nums(&[5000.0]), &c), Action::Declined, "ModCrimeGold on {caller:#x}");
+        assert_eq!(run(&world, 0x1075, &nums(&[0.0]), &c), Action::Declined, "SetCrimeGold on {caller:#x}");
+        assert_eq!(run(&world, 0x1074, &[], &c), Action::Declined, "GetCrimeGold on {caller:#x}");
+    }
+    assert_eq!(world.try_resource::<ObScriptLedger>().unwrap().crime_gold, 40, "the player's bounty is untouched");
+    // The player addressed by reference (`Player.ModCrimeGold`) and by default scope both still act on it.
+    let player_ref = ctx(Some(crate::PLAYER_REFERENCE));
+    assert!(is_done(&run(&world, 0x1076, &nums(&[10.0]), &player_ref)));
+    assert_eq!(value(run(&world, 0x1074, &[], &player_ref)), 50.0);
+    assert_eq!(value(run(&world, 0x1074, &[], &player_scope)), 50.0);
+}
+
 #[test]
 fn oblivion_faction_crime_flags_are_set_and_read_per_faction() {
     let (world, ..) = world(GameKind::Oblivion);
@@ -209,7 +232,7 @@ fn state_nothing_reads_back_declines_instead_of_reporting_done() {
 #[test]
 fn crime_gold_saturates_instead_of_overflowing() {
     let (world, ..) = world(GameKind::Oblivion);
-    let c = ctx(Some(ACTOR));
+    let c = ctx(Some(crate::PLAYER_REFERENCE));
     for _ in 0..2 {
         run(&world, 0x1076, &nums(&[i32::MAX as f32]), &c);
     }
@@ -733,6 +756,23 @@ fn get_gold_counts_gold001_in_the_players_inventory() {
     inventory.push(ItemStack::new(0x1234, 3));
     world.insert(player, inventory);
     assert_eq!(value(run(&world, 0x1030, &[], &ctx(None))), 120.0);
+}
+
+/// #6510 — `OrumGangCourier1Ref.GetGold` is that actor's purse, not the player's.
+#[test]
+fn get_gold_on_a_named_actor_counts_that_actors_gold() {
+    use byroredux_core::ecs::components::ItemStack;
+    let (mut world, actor, _, player) = world(GameKind::Oblivion);
+    let mut purse = Inventory::new();
+    purse.push(ItemStack::new(0x0F, 120));
+    world.insert(player, purse);
+    let mut courier = Inventory::new();
+    courier.push(ItemStack::new(0x0F, 7));
+    world.insert(actor, courier);
+    assert_eq!(value(run(&world, 0x1030, &[], &ctx(Some(ACTOR)))), 7.0, "the named actor's gold");
+    assert_eq!(value(run(&world, 0x1030, &[], &ctx(Some(crate::PLAYER_REFERENCE)))), 120.0, "Player.GetGold");
+    assert_eq!(value(run(&world, 0x1030, &[], &ctx(None))), 120.0, "no caller: the player");
+    assert_eq!(run(&world, 0x1030, &[], &ctx(Some(0x0007_FFFF))), Action::Declined, "an unloaded actor");
 }
 
 #[test]

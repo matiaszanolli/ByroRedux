@@ -6,7 +6,7 @@ use byroredux_core::ecs::components::{ActorValues, FactionRanks, Inventory};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 
-use super::state::caller_or_player;
+use super::state::{caller_or_player, names_other_actor};
 use super::{answer, caller, done, flag, ledger, ledger_mut, player, store, MenuRequest, PendingMenus};
 use crate::obscript_actions::{Action, Context};
 use crate::obscript_cmd::{Command, Games};
@@ -570,11 +570,14 @@ fn cmd_10a9(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _c
     }
 }
 
-// CS *GetGold*: the player's gold — the count of `Gold001`.
-fn get_gold(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
-    match player(world) {
-        Some(player) => {
-            answer(world.get::<Inventory>(player).map_or(0.0, |inventory| inventory.count_of(crate::guards::CURRENCY_FORM) as f32))
+// CS *[ActorID.]GetGold*: "the actor's gold" — the count of `Gold001` in the calling actor's inventory, the
+// player's when no other actor is named (#6510: it used to ignore the caller and always count the player's,
+// so the Orum courier's `goldCount` was the player's purse). An actor that is not loaded declines.
+fn get_gold(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
+    let holder = if names_other_actor(ctx) { caller(world, ctx).map(|(_, entity)| entity) } else { player(world) };
+    match holder {
+        Some(holder) => {
+            answer(world.get::<Inventory>(holder).map_or(0.0, |inventory| inventory.count_of(crate::guards::CURRENCY_FORM) as f32))
         }
         None => Action::Declined,
     }

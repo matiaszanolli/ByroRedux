@@ -31,17 +31,37 @@ fn cmd_10f8(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _c
     done(format!("ModPCFame {}", num(args, 0)))
 }
 
-// CS *GetCrimeGold* / *SetCrimeGold* / *ModCrimeGold*: the player's bounty.
-fn get_crime_gold(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
+/// Whether `ctx` names an actor other than the player: an explicit or defaulted `Ref.Cmd` whose reference
+/// is not the player's. No caller is the player's scope, as is the player's own reference (CS
+/// `[ActorID.]Cmd` syntax). The caller is NOT resolved to a live entity: an unloaded actor still is not
+/// the player, so a command naming one must never fall through to the player's state (#6510).
+pub(super) fn names_other_actor(ctx: &Context) -> bool {
+    ctx.caller.filter(|&form| form != 0).is_some_and(|form| form != crate::PLAYER_REFERENCE)
+}
+
+// CS *GetCrimeGold* / *SetCrimeGold* / *ModCrimeGold*: "the current crime gold on an actor". Only the
+// player's bounty is modelled (`ObScriptLedger.crime_gold`), so a call naming any other actor declines
+// instead of reading or editing the player's (#6510): `GlarthirRef.ModCrimeGold 5000` (MS38) must not
+// make every guard rush the player. `guards::bounty_of` answers 0 for a non-player on the condition side.
+fn get_crime_gold(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
+    if names_other_actor(ctx) {
+        return Action::Declined;
+    }
     answer(ledger(world, |l| l.crime_gold).unwrap_or(0) as f32)
 }
 
-fn cmd_1075(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
+fn cmd_1075(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
+    if names_other_actor(ctx) {
+        return Action::Declined;
+    }
     ledger_mut(world, |l| l.crime_gold = num(args, 0) as i32);
     done(format!("SetCrimeGold {}", num(args, 0)))
 }
 
-fn cmd_1076(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
+fn cmd_1076(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
+    if names_other_actor(ctx) {
+        return Action::Declined;
+    }
     ledger_mut(world, |l| l.mod_crime_gold(num(args, 0) as i32));
     done(format!("ModCrimeGold {}", num(args, 0)))
 }
