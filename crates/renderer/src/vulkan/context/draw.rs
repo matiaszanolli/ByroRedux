@@ -118,6 +118,7 @@ impl VulkanContext {
         // #3991 — the submit-time counterpart. Reset here for the same reason,
         // and set only once `queue_submit` has returned `Ok`. Everything the
         // skin chain commits is latched between these two points.
+        crate::vulkan::gpu_timers::CKPT_FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.skin_state_submitted = false;
         self.skin_pending_populated.clear();
         self.discard_pending_skip_clear_latches(); // #5956

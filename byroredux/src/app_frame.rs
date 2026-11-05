@@ -941,6 +941,9 @@ impl App {
                 }
                 Err(e) => {
                     log::error!("Draw failed: {e:#}");
+                    if let Ok(q) = ctx.graphics_queue.lock() {
+                        byroredux_renderer::vulkan::gpu_timers::ckpt_dump(*q);
+                    }
                     event_loop.exit();
                 }
             }

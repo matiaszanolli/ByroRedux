@@ -867,6 +867,7 @@ pub fn create_logical_device(
         .chain(RT_EXTENSIONS)
         .map(|e| e.as_ptr())
         .collect();
+    extensions.push(ash::nv::device_diagnostic_checkpoints::NAME.as_ptr()); // TEMP #6608
     if caps.memory_budget_supported {
         extensions.push(ash::ext::memory_budget::NAME.as_ptr());
         log::info!("Enabling VK_EXT_memory_budget for live VRAM usage queries");
@@ -1023,6 +1024,7 @@ pub fn create_logical_device(
             .create_device(physical_device, &create_info, None)
             .context("Failed to create logical device")?
     };
+    let _ = crate::vulkan::gpu_timers::CKPT.set(ash::nv::device_diagnostic_checkpoints::Device::new(instance, &device)); // TEMP #6608
 
     // #1759 / TD7-002 — `buffer::aligned_flush_range` rounds non-coherent
     // host-visible flush ranges up to a hardcoded `NON_COHERENT_ATOM_SIZE`
