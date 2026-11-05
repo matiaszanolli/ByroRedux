@@ -242,10 +242,17 @@ mod tests {
         }
         assert!(!game_data_required());
         require_or_skip("a missing master"); // skips: must not panic
+        // SAFETY: same argument as the `remove_var` above (#6507). The only
+        // in-crate `require_or_skip` / `game_data_required` readers are
+        // `#[ignore]`d real-data tests, so none runs in the default test
+        // process while this test holds the variable. Under `--include-ignored`
+        // the race is real; run this module's tests alone (`-- test_paths`) or
+        // single-threaded there.
         unsafe {
             std::env::set_var(REQUIRE_GAME_DATA_ENV, "0");
         }
         assert!(!game_data_required(), "`0` means not required");
+        // SAFETY: as the `set_var(.., "0")` above.
         unsafe {
             std::env::set_var(REQUIRE_GAME_DATA_ENV, "1");
         }
@@ -271,10 +278,13 @@ mod tests {
     /// hardcoded dev-machine Steam path and results from a *different*
     /// install entirely.
     ///
-    /// The strict switch's other half (`BYROREDUX_REQUIRE_GAME_DATA`) is
-    /// deliberately not unit-tested: it is read process-globally by every
-    /// resolver in the workspace, so setting it here would turn every
-    /// concurrently-running real-data test in this binary into a panic.
+    /// The strict switch's other half (`BYROREDUX_REQUIRE_GAME_DATA`) is NOT
+    /// exercised here: it is read process-globally by every resolver in the
+    /// workspace, so setting it from this test would turn every
+    /// concurrently-running real-data test in this binary into a panic. It is
+    /// covered by `require_or_skip_fails_only_when_the_strict_lane_asks_for_game_data`
+    /// (#6184), which is only sound because every in-crate reader of that
+    /// variable is `#[ignore]`d (#6507).
     #[test]
     #[should_panic(expected = "is not a directory")]
     fn an_explicitly_set_override_that_is_not_a_directory_fails_loudly() {
