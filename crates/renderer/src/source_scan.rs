@@ -12,6 +12,41 @@ pub(crate) use byroredux_core::source_scan::production_text_or_whole;
 pub(crate) use byroredux_core::source_scan::rust_files;
 pub(crate) use byroredux_core::source_scan::strip_test_modules;
 
+/// `src` with its `//` line comments and `/* */` block comments removed, so a
+/// scan cannot be corrupted by commented-out code or by a `;` or `{` in prose.
+/// A line comment keeps its newline, and a block comment leaves one space, so
+/// the code around each stays separated.
+#[cfg(test)]
+pub(crate) fn strip_glsl_comments(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i = (i + 2).min(bytes.len());
+                out.push(b' ');
+            }
+            _ => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    // Comment delimiters are ASCII and every other byte is copied, so cutting
+    // whole comments out of valid UTF-8 cannot split a character.
+    String::from_utf8(out).expect("removing whole comments keeps UTF-8 valid")
+}
+
 /// `volumetrics_inject.comp` with its shared combustion includes
 /// (`volumetrics_bindings`, `combustion_sources`, `combustion_transport`, and the
 /// `local_grid_params` / `combustion_medium` they pull in)

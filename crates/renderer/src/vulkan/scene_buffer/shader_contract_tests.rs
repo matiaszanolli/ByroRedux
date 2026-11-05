@@ -2763,8 +2763,7 @@ fn parse_rust_struct_fields_typed(src: &str, decl: &str) -> Vec<(String, String)
 
 /// Ordered field names of a GLSL struct declaration (e.g.
 /// `"struct GpuMaterial"` / `"struct GpuInstance"`), parsed from a GLSL
-/// source file. Handles multi-name declarations (`float a, b, c;`) and
-/// skips `//`/`///` comment lines.
+/// source file. See [`parse_glsl_member_list_typed`] for what counts as a field.
 fn parse_glsl_struct_fields(src: &str, decl: &str) -> Vec<String> {
     parse_glsl_struct_fields_typed(src, decl)
         .into_iter()
@@ -2777,6 +2776,18 @@ fn parse_glsl_struct_fields(src: &str, decl: &str) -> Vec<String> {
 /// discarding it. #2688 / SAFE-D6-01: the name-only parser can't catch a
 /// `uint`<->`float` reinterpretation that preserves field order and size.
 fn parse_glsl_struct_fields_typed(src: &str, decl: &str) -> Vec<(String, String)> {
+    let body =
+        extract_struct_body(src, decl).unwrap_or_else(|| panic!("source must declare `{decl}`"));
+    parse_glsl_member_list_typed(body)
+}
+
+/// Ordered (type, name) pairs of a GLSL member list: the text between a
+/// block's braces. Comments are stripped and the text split on `;`, so every
+/// declaration counts wherever the line breaks fall (#6683): `float a; float b;`
+/// and a declaration wrapped across lines both return all their names, as does
+/// `float a, b, c;`. Preprocessor lines are dropped first, because they end with
+/// no `;` and would otherwise hide the declaration after them.
+fn parse_glsl_member_list_typed(body: &str) -> Vec<(String, String)> {
     const TYPES: &[&str] = &[
         "float", "uint", "int", "bool", "vec2", "vec3", "vec4", "mat2", "mat3", "mat4",
         // GpuInstance-only types (#2219 skinned_vertex_address + padding;
@@ -2787,25 +2798,20 @@ fn parse_glsl_struct_fields_typed(src: &str, decl: &str) -> Vec<(String, String)
         // silently accept.
         "uint64_t", "uvec2", "uvec4",
     ];
-    let body =
-        extract_struct_body(src, decl).unwrap_or_else(|| panic!("source must declare `{decl}`"));
+    let code = crate::source_scan::strip_glsl_comments(body);
+    let code = code
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
     let mut out = Vec::new();
-    for raw in body.lines() {
-        // Drop any trailing line comment first (also collapses `///` /
-        // `//` doc lines to empty so they're skipped).
-        let line = match raw.find("//") {
-            Some(i) => &raw[..i],
-            None => raw,
-        }
-        .trim();
-        let Some(semi) = line.find(';') else { continue };
-        let decl = line[..semi].trim();
-        let mut parts = decl.splitn(2, char::is_whitespace);
-        let ty = parts.next().unwrap_or("");
+    for decl in code.split(';') {
+        let Some((ty, rest)) = decl.trim().split_once(char::is_whitespace) else {
+            continue;
+        };
         if !TYPES.contains(&ty) {
             continue;
         }
-        let Some(rest) = parts.next() else { continue };
         for piece in rest.split(',') {
             let id = piece.trim();
             if is_ident(id) {
@@ -2814,6 +2820,50 @@ fn parse_glsl_struct_fields_typed(src: &str, decl: &str) -> Vec<(String, String)
         }
     }
     out
+}
+
+/// #6683 — the parser read one declaration per line, so the second of two
+/// declarations on a line was invisible to every guard built on it.
+#[test]
+fn glsl_member_parser_returns_every_declaration_however_it_is_laid_out() {
+    let src = "struct S {\n\
+        \x20   float a; float b; // trailing; comment with a semicolon\n\
+        \x20   /* float hidden; */ vec4 c, d;\n\
+        \x20   // uint alsoHidden;\n\
+        #ifdef SOME_GATE\n\
+        \x20   uint e;\n\
+        #endif\n\
+        \x20   uint f,\n\
+        \x20        g;\n\
+        };\n";
+    let fields = parse_glsl_struct_fields_typed(src, "struct S");
+    let expected: Vec<(String, String)> = [
+        ("float", "a"),
+        ("float", "b"),
+        ("vec4", "c"),
+        ("vec4", "d"),
+        ("uint", "e"),
+        ("uint", "f"),
+        ("uint", "g"),
+    ]
+    .iter()
+    .map(|(ty, name)| ((*ty).to_string(), (*name).to_string()))
+    .collect();
+    assert_eq!(fields, expected);
+}
+
+/// #6683 — the field-order guard has to see a swap between two declarations
+/// that share a line, not only one between lines.
+#[test]
+#[should_panic(expected = "ORDER/NAME mismatch")]
+fn field_order_fault_on_a_shared_line_fails_the_guard() {
+    let rust = parse_rust_struct_fields_typed(
+        "pub struct S {\n    pub a: f32,\n    pub b: f32,\n}\n",
+        "pub struct S",
+    );
+    let glsl =
+        parse_glsl_struct_fields_typed("struct S {\n    float b; float a;\n};\n", "struct S");
+    assert_glsl_matches_rust("S", &glsl, &rust, &[], "injected shared-line swap");
 }
 
 /// The water record is declared in Rust and in one shared GLSL header. Keep the
@@ -3505,7 +3555,7 @@ fn gpu_instance_glsl_field_order_matches_rust_struct() {
 fn gpu_instance_glsl_never_uses_a_3_component_vector_type() {
     let body = extract_struct_body(GPU_INSTANCE_GLSL, "struct GpuInstance")
         .expect("include/gpu_instance.glsl must declare `struct GpuInstance`");
-    // Strip `//` line comments first (same as parse_glsl_struct_fields_typed)
+    // Strip `//` line comments first (as parse_glsl_member_list_typed does)
     // so an explanatory comment merely NAMING the forbidden type —
     // e.g. "NOT uvec3" — doesn't trip this as a false positive.
     let code_only: String = body

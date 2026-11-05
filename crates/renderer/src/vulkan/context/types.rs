@@ -1113,37 +1113,6 @@ mod early_fragment_kind_tests {
 
     use super::*;
 
-    /// Strip `//` line comments and `/* */` block comments (byte-wise; the
-    /// file is UTF-8 with smart quotes in comments) so brace counting
-    /// cannot be corrupted by commented-out code.
-    fn strip_glsl_comments(src: &str) -> Vec<u8> {
-        let bytes = src.as_bytes();
-        let mut out = Vec::with_capacity(bytes.len());
-        let mut i = 0;
-        while i < bytes.len() {
-            match bytes[i] {
-                b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
-                    while i < bytes.len() && bytes[i] != b'\n' {
-                        i += 1;
-                    }
-                }
-                b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
-                    i += 2;
-                    while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                        i += 1;
-                    }
-                    i = (i + 2).min(bytes.len());
-                    out.push(b' ');
-                }
-                _ => {
-                    out.push(bytes[i]);
-                    i += 1;
-                }
-            }
-        }
-        out
-    }
-
     /// Kind value a `materialKind ==` comparison names. `None` means the
     /// token is a constant this test does not know; the caller then treats
     /// the branch as admitted (kind 0) so the test fails loudly instead of
@@ -1167,7 +1136,10 @@ mod early_fragment_kind_tests {
 
     #[test]
     fn early_fragment_kinds_have_no_discard_or_depth_write_path() {
-        let src = strip_glsl_comments(include_str!("../../../shaders/triangle.frag"));
+        let src = crate::source_scan::strip_glsl_comments(include_str!(
+            "../../../shaders/triangle.frag"
+        ))
+        .into_bytes();
 
         // An early fragment test makes the fixed-function depth write happen
         // before the shader body; any `gl_FragDepth` write would be
