@@ -96,6 +96,9 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     // (the underwater god rays' sun scale, #6415); zw reserved.
     uvec4 sky_aperture_count;
     SkyAperture sky_apertures[MAX_COMPOSITE_SKY_APERTURES];
+    // The forward view-projection inv_view_proj inverts (#6486), appended last: the underwater
+    // god-ray march projects its sun-visibility taps through it, so it must not invert per pixel.
+    mat4 view_proj;
 } params;
 layout(set = 0, binding = 4) uniform sampler2D depthTex;     // depth buffer
 layout(set = 0, binding = 5) uniform usampler2DArray causticTex; // RGB in three R32_UINT layers (#321)
@@ -908,7 +911,7 @@ vec3 underwaterGodRays(vec3 viewDir, vec3 sunDirection, float rayLength, float j
     float cosine = dot(travel, -viewDir);
     float phase = (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * cosine, 1.5);
 
-    mat4 viewProj = inverse(params.inv_view_proj);
+    mat4 viewProj = params.view_proj;
     vec3 toSun = -travel;
     const int steps = int(UNDERWATER_GODRAY_STEPS);
     float k = 2.0 / span;

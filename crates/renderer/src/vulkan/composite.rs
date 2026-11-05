@@ -265,6 +265,12 @@ pub struct CompositeParams {
     pub sky_aperture_count: [u32; 4],
     /// Authored window planes in render-origin-relative coordinates.
     pub sky_apertures: [CompositeSkyAperture; MAX_SKY_APERTURES],
+    /// The forward view-projection `inv_view_proj` inverts (#6486), appended last so
+    /// every earlier offset is unchanged. The underwater god-ray march projects its
+    /// sun-visibility taps through it; `composite.frag` used to `inverse()` the
+    /// inverse per submerged pixel (~150 flops x every pixel under water). Derived
+    /// from `inv_view_proj` on the CPU, once per frame, in `build_composite_params`.
+    pub view_proj: [[f32; 4]; 4],
 }
 
 // SAFETY: every field is a 16-byte lane. `sky_aperture_count` is `[u32; 4]`;
@@ -1948,12 +1954,35 @@ mod composite_params_layout_tests {
         assert_eq!(offset_of!(CompositeSkyAperture, camera_local_origin), 0);
         assert_eq!(offset_of!(CompositeSkyAperture, half_extents), 16);
         assert_eq!(offset_of!(CompositeSkyAperture, inverse_rotation), 32);
+        // #6486 — `view_proj` follows the aperture array (appended last).
+        assert_eq!(
+            offset_of!(CompositeParams, view_proj),
+            528 + MAX_SKY_APERTURES * 48
+        );
         assert_eq!(
             size_of::<CompositeParams>(),
-            528 + MAX_SKY_APERTURES * 48,
-            "CompositeParams window-plane array must match the GLSL UBO"
+            528 + MAX_SKY_APERTURES * 48 + 64,
+            "CompositeParams window-plane array + view_proj must match the GLSL UBO"
         );
         assert!(size_of::<CompositeParams>() <= 16 * 1024);
+    }
+
+    /// #6486 — the god-ray march reads the forward matrix from the UBO. A shader-side
+    /// `inverse()` of `inv_view_proj` recomputes a 4x4 inverse for every submerged
+    /// pixel; it must not come back (the CPU already holds the matrix).
+    #[test]
+    fn composite_shader_never_inverts_a_matrix_per_pixel() {
+        let shader = include_str!("../../shaders/composite.frag");
+        let code: String = shader
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !code.contains("inverse("),
+            "composite.frag must read a matrix from CompositeParams, not invert one per pixel (#6486)"
+        );
+        assert!(code.contains("mat4 viewProj = params.view_proj;"));
     }
 
     #[test]

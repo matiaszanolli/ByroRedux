@@ -920,8 +920,11 @@ pub(super) fn build_composite_params(
     let mut sky_apertures = [super::super::composite::CompositeSkyAperture::default();
         super::super::composite::MAX_SKY_APERTURES];
     let mut aperture_count = 0usize;
+    // The forward view-projection `inv_vp_arr` inverts, once on the CPU: the aperture projection
+    // below and the shader's underwater god-ray march both need it, and the shader used to
+    // `inverse()` it per submerged pixel (#6486).
+    let view_proj = byroredux_core::math::Mat4::from_cols_array_2d(&inv_vp_arr).inverse();
     if !is_exterior && interior_portal_sky {
-        let aperture_view_proj = byroredux_core::math::Mat4::from_cols_array_2d(&inv_vp_arr).inverse();
         for volume in sky_aperture_volumes {
             if (volume.center_shape[3] != crate::shader_constants::FOG_VOLUME_SHAPE_BOX as f32
                 && volume.center_shape[3]
@@ -941,7 +944,7 @@ pub(super) fn build_composite_params(
                 volume,
                 byroredux_core::math::Vec3::from_array(camera_pos),
                 render_origin,
-                aperture_view_proj,
+                view_proj,
             ) else {
                 continue;
             };
@@ -1060,6 +1063,7 @@ pub(super) fn build_composite_params(
             0,
         ],
         sky_apertures,
+        view_proj: view_proj.to_cols_array_2d(),
     }
 }
 
