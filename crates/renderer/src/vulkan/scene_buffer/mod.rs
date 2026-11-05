@@ -32,7 +32,7 @@ pub use gpu_types::{
     GpuCamera, GpuDalcCube, GpuInstance, GpuLight, GpuPreviousModel, GpuTerrainTile,
 };
 pub use light_history::sort_lights_by_priority_with_ids;
-pub use ray_budget::{GpuRayBudget, RtLodTelemetry};
+pub use ray_budget::{GpuRayBudget, RtLodTelemetry, SHADOW_FILTER_MAX_ITERATIONS};
 
 #[cfg(test)]
 mod destroy_coverage_tests;

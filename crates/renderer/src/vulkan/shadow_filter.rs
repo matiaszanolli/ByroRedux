@@ -28,6 +28,7 @@ use super::descriptors::{
 use super::image::{GpuImage, GpuImageDesc};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::restir::ReservoirBuffers;
+use super::scene_buffer::SHADOW_FILTER_MAX_ITERATIONS;
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::GpuUploadCtx;
 use crate::shader_constants::{WORKGROUP_X, WORKGROUP_Y};
@@ -37,10 +38,25 @@ use ash::vk;
 
 const SHADOW_FILTER_COMP_SPV: &[u8] = include_bytes!("../../shaders/shadow_filter.comp.spv");
 
-/// A-trous iterations: strides 1, 2 (a 6-pixel reach with the 5x5 kernel).
-const ITERATIONS: u32 = 2;
+/// The chain's reach in pixels after `iterations` à-trous iterations of the
+/// 5x5 kernel (strides 1, 2, 4, 8; two taps either side): `2 * (2^n - 1)`,
+/// the penumbra radius's ceiling (PAF-003).
+pub fn chain_reach(iterations: u32) -> f32 {
+    2.0 * ((1u32 << iterations) - 1) as f32
+}
 
-/// Ratio ping-pong and correction images: RGBA16F (alpha unused).
+/// Pixels spanned per unit of view distance, `2 tan(fov_y / 2) / height`
+/// (PAF section 3.2); 0 when the extent or field of view is unusable, which
+/// makes the shader fall back to the full chain reach.
+pub fn pixel_angle(fov_y_radians: f32, height: u32) -> f32 {
+    if height == 0 || !fov_y_radians.is_finite() || fov_y_radians <= 0.0 {
+        return 0.0;
+    }
+    2.0 * (0.5 * fov_y_radians).tan() / height as f32
+}
+
+/// Ratio ping-pong and correction images: RGBA16F. The ratio images carry
+/// the pixel's kernel radius in pixels in alpha (PAF-005).
 const FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 
 /// Screen-sized bytes per pixel this pass allocates per frame-in-flight:
@@ -57,6 +73,8 @@ struct Push {
     screen: [u32; 2],
     step: u32,
     flags: u32,
+    pixel_angle: f32,
+    reach_max: f32,
 }
 
 // SAFETY: `#[repr(C)]`, all-`u32` fields tiling the 16-byte block with no
@@ -82,6 +100,10 @@ pub struct ShadowFilterPipeline {
     frames: Vec<FrameImages>,
     width: u32,
     height: u32,
+    /// The camera's vertical field of view, set each frame by
+    /// [`Self::set_camera_fov_y`] for the pixel footprint (PAF section 3.2);
+    /// 0 until a camera is seen, which makes the shader use the full reach.
+    fov_y_radians: f32,
 }
 
 impl ShadowFilterPipeline {
@@ -105,6 +127,7 @@ impl ShadowFilterPipeline {
             frames: Vec::new(),
             width,
             height,
+            fov_y_radians: 0.0,
         };
         if let Err(e) = partial.new_inner(ctx, pipeline_cache, reservoirs, mesh_id_views) {
             // SAFETY: nothing created so far has been submitted.
@@ -339,6 +362,11 @@ impl ShadowFilterPipeline {
         self.frames[frame].delta.view
     }
 
+    /// Record this frame's camera field of view (vertical, radians).
+    pub fn set_camera_fov_y(&mut self, fov_y_radians: f32) {
+        self.fov_y_radians = fov_y_radians;
+    }
+
     /// Record the filter chain. Infallible, like `SvgfPipeline::dispatch`.
     ///
     /// The main pass writes `reservoirsCurr` (and U beside it) from the
@@ -352,7 +380,11 @@ impl ShadowFilterPipeline {
         cmd: vk::CommandBuffer,
         frame: usize,
         reservoirs: &ReservoirBuffers,
+        iterations: u32,
     ) {
+        let iterations = iterations.clamp(1, SHADOW_FILTER_MAX_ITERATIONS);
+        let pixel_angle = pixel_angle(self.fov_y_radians, self.height);
+        let reach_max = chain_reach(iterations);
         let images = &self.frames[frame];
         let reservoir_barrier = vk::BufferMemoryBarrier::default()
             .src_access_mask(vk::AccessFlags::SHADER_WRITE)
@@ -387,8 +419,8 @@ impl ShadowFilterPipeline {
                 &[self.descriptor_sets[frame]],
                 &[],
             );
-            for iter in 0..ITERATIONS {
-                let last = iter + 1 == ITERATIONS;
+            for iter in 0..iterations {
+                let last = iter + 1 == iterations;
                 // Iteration 0 reads the raw ratio and writes B; afterwards
                 // the source alternates (B -> A -> B ...).
                 let source_b = iter % 2 == 1;
@@ -406,6 +438,8 @@ impl ShadowFilterPipeline {
                     screen: [self.width, self.height],
                     step: 1 << iter,
                     flags,
+                    pixel_angle,
+                    reach_max,
                 };
                 device.cmd_push_constants(
                     cmd,
@@ -508,6 +542,8 @@ impl ShadowFilterPipeline {
 
 #[cfg(test)]
 mod tests {
+    use super::{chain_reach, pixel_angle};
+
     /// #6249 — the filter must gate every guide (and the centre pixel) on
     /// the slot's owner being the visible surface: the mesh-ID attachment
     /// sampled at binding 5, checked for stable history and compared against
@@ -586,5 +622,89 @@ mod tests {
             window.contains("may_be_in_flight") && window.contains("std::mem::forget(filter)"),
             "the shadow filter resize arm must leak the pass when the layout submit may be in flight (#6063)"
         );
+    }
+
+    /// CPU mirror of `penumbraWidthFromBlocker` (include/shadow_common.glsl),
+    /// written from the two closed forms of PAF section 3.1; the text pins
+    /// below keep the GLSL on the same expressions.
+    fn width_local(t: f32, light_distance: f32, radius: f32) -> f32 {
+        // Fernando 2005: (dReceiver - dBlocker) * wLight / dBlocker, with
+        // dReceiver - dBlocker = t and dBlocker = dL - t.
+        t * (2.0 * radius) / (light_distance - t)
+    }
+    fn width_directional(t: f32, theta: f32) -> f32 {
+        t * 2.0 * theta.tan()
+    }
+
+    /// PAF-001 closed forms. A point light of radius 8 at 400 units with a
+    /// blocker 100 units from the receiver: 100 * 16 / 300; a sun of 0.0047
+    /// rad behind a blocker 50 units away: 50 * 2 tan(0.0047). The test also
+    /// shows the 14 px figure the sun rung's reference measures (RLT-SHD-007):
+    /// 2 tan(theta) = 2 * 0.0047 gives a 0.47 unit penumbra per 50 units.
+    #[test]
+    fn penumbra_width_matches_the_two_closed_forms() {
+        assert!((width_local(100.0, 400.0, 8.0) - 16.0 * 100.0 / 300.0).abs() < 1e-5);
+        assert!((width_directional(50.0, 0.0047) - 50.0 * 2.0 * 0.0047_f32.tan()).abs() < 1e-6);
+        // A contact (t -> 0) has no penumbra, a distant blocker a wide one.
+        assert!(width_local(0.5, 400.0, 8.0) < width_local(200.0, 400.0, 8.0));
+        let glsl = include_str!("../../shaders/include/shadow_common.glsl");
+        let body = &glsl[glsl.find("float penumbraWidthFromBlocker(").expect("PAF-001 fn")..];
+        for expr in [
+            "if (!(blockerT > 0.0)) return 0.0;",
+            "blockerT * 2.0 * sourceRadius / max(lightDistance - blockerT, 1e-3)",
+            "blockerT * 2.0 * tan(sunAngularRadius)",
+        ] {
+            assert!(body.contains(expr), "shadow_common.glsl lost `{expr}`");
+        }
+    }
+
+    #[test]
+    fn chain_reach_and_pixel_angle_follow_the_design() {
+        // PAF-007: strides 1, 2, 4, 8 reach 2 + 4 + 8 + 16 = 30; the
+        // two-iteration floor keeps today's 6.
+        assert_eq!(chain_reach(2), 6.0);
+        assert_eq!(chain_reach(3), 14.0);
+        assert_eq!(chain_reach(4), 30.0);
+        // PAF section 3.2: f = 2 z tan(fov / 2) / H per unit distance.
+        let angle = pixel_angle(std::f32::consts::FRAC_PI_2, 1000);
+        assert!((angle - 0.002).abs() < 1e-7);
+        assert_eq!(pixel_angle(0.0, 1000), 0.0);
+        assert_eq!(pixel_angle(f32::NAN, 1000), 0.0);
+        assert_eq!(pixel_angle(1.0, 0), 0.0);
+    }
+
+    /// PAF-001 / PAF-005: the width is the f16 in the HIGH half of
+    /// `directUnshadowed[].y`; the filter reads exactly that lane, and the
+    /// ratio images carry the radius in alpha from iteration 0 on.
+    #[test]
+    fn the_width_lane_the_main_pass_writes_is_the_one_the_filter_reads() {
+        let frag = include_str!("../../shaders/triangle.frag");
+        assert!(
+            frag.contains("packHalf2x16(vec2(unshadowedU.b,\n                            min(selectedPenumbraWidth, 65504.0)))"),
+            "triangle.frag must pack the penumbra width beside U.b in the high half of .y"
+        );
+        let comp = include_str!("../../shaders/shadow_filter.comp");
+        assert!(
+            comp.contains("unpackHalf2x16(unshadowed[uint(q.y) * pc.screen.x + uint(q.x)].y).y"),
+            "shadow_filter.comp must read the high half of .y"
+        );
+        // The unshadowed read for U takes the LOW half of .y.
+        assert!(comp.contains("unpackHalf2x16(packedU.y).x"));
+        assert!(comp.contains("vec4(filtered, radius)"));
+        assert_eq!(crate::shader_constants::SHADOW_FILTER_PENUMBRA_RADIUS_SCALE, 0.25);
+    }
+
+    /// The Rust push block and the GLSL block are the same 24 bytes.
+    #[test]
+    fn push_constants_match_the_shader_block() {
+        assert_eq!(std::mem::size_of::<super::Push>(), 24);
+        let comp = include_str!("../../shaders/shadow_filter.comp");
+        let block = &comp[comp.find("layout(push_constant) uniform Push {").expect("push block")..];
+        let block = &block[..block.find("} pc;").expect("block end")];
+        let order = ["uvec2 screen;", "uint step;", "uint flags;", "float pixelAngle;", "float reachMax;"];
+        let mut at = 0;
+        for field in order {
+            at += block[at..].find(field).unwrap_or_else(|| panic!("push field `{field}` out of order"));
+        }
     }
 }

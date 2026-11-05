@@ -3026,6 +3026,10 @@ void main() {
     uint selectedRayVisibilityMask = 0u;
     uint selectedRayHitInstance = 0xFFFFFFFFu;
     float selectedRayHitDistance = uintBitsToFloat(0x7F800000u);
+    // PAF-001: world-space penumbra width of the selected light at this
+    // pixel (0 = lit this frame, or no shadow ray). Stored for
+    // shadow_filter.comp beside the unshadowed radiance.
+    float selectedPenumbraWidth = 0.0;
     vec3 selectedRayOrigin = vec3(0.0);
     vec3 selectedRayDirection = vec3(0.0);
     float selectedRayTMin = 0.0;
@@ -4095,6 +4099,9 @@ void main() {
                     // below still refines further over parked frames via 1/N.)
                     int shadowRayCount = int(clamp(rayBudget.directShadowSamples, 1u, uint(MAX_DIRECT_SHADOW_SAMPLES)));
                     vec3 transmissionSum = vec3(0.0);
+                    float occluderDistanceSum = 0.0;
+                    float occluderCount = 0.0;
+                    float occluderLightDistance = 0.0;
                     for (int sr = 0; sr < int(MAX_DIRECT_SHADOW_SAMPLES); sr++) {
                         if (sr >= shadowRayCount) break;
                         vec2 dRand = ditheredSequence2(uvec2(gl_FragCoord.xy),
@@ -4127,6 +4134,10 @@ void main() {
                         }
                         float rayTMax = max(rayDist, 0.01);
                         vec3 sampleTransmission;
+                        // PAF-001: every sample reports its blocker distance;
+                        // sample 0 also feeds the selected-ray debug record
+                        // and the mover taint below.
+                        float sampleHitDistance = uintBitsToFloat(0x7F800000u);
                         if (sr == 0) {
                             sampleTransmission = traceLightTransmittanceDetailed(
                                 i,
@@ -4137,17 +4148,32 @@ void main() {
                                 selectedRayHitInstance,
                                 selectedRayHitDistance
                             );
+                            sampleHitDistance = selectedRayHitDistance;
                             selectedRayDebugValid = true;
                             selectedRayOrigin = rayOrigin;
                             selectedRayDirection = rayDir;
                             selectedRayTMin = 0.0;
                             selectedRayTMax = rayTMax;
                         } else {
-                            sampleTransmission = traceLightTransmittance(
-                                i, rayOrigin, rayDir, rayTMax);
+                            uint sampleMask;
+                            uint sampleInstance;
+                            sampleTransmission = traceLightTransmittanceDetailed(
+                                i, rayOrigin, rayDir, rayTMax,
+                                sampleMask, sampleInstance, sampleHitDistance);
                         }
                         transmissionSum += sampleTransmission;
+                        if (!isinf(sampleHitDistance)) {
+                            occluderDistanceSum += sampleHitDistance;
+                            occluderCount += 1.0;
+                            if (lightType < 1.5) {
+                                occluderLightDistance = length(lightPos - rayOrigin);
+                            }
+                        }
                     }
+                    selectedPenumbraWidth = penumbraWidthFromBlocker(
+                        occluderCount > 0.0 ? occluderDistanceSum / occluderCount : -1.0,
+                        lightType < 1.5, occluderLightDistance,
+                        max(lights[i].params.y, 1.0), skyTint.w);
                     vec3 transmissionFrame = transmissionSum / float(shadowRayCount);
                     // Fade the SHADOW, not the light: at shadowFade == 1 this is
                     // the measured visibility, at shadowFade == 0 it is 1.0
@@ -4373,7 +4399,8 @@ void main() {
                     vec3 unshadowedU = min(restirUnshadowedSum, vec3(65504.0));
                     directUnshadowed[pixelIdx] = uvec2(
                         packHalf2x16(unshadowedU.rg),
-                        packHalf2x16(vec2(unshadowedU.b, 0.0)));
+                        packHalf2x16(vec2(unshadowedU.b,
+                            min(selectedPenumbraWidth, 65504.0))));
                 }
             }
         }

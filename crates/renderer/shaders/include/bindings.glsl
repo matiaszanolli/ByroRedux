@@ -777,7 +777,7 @@ layout(std430, set = 1, binding = 11) coherent buffer RayBudgetBuffer {
     uint maxShadedHits;
     uint volumetricLightCap;
     uint qualityTier;
-    uint _rayBudgetReserved;
+    uint shadowFilterIterations; // PAF-007; CPU-consumed, word kept for layout
     uint rtLodFragments;
     uint rtLodBin0;
     uint rtLodBin1;

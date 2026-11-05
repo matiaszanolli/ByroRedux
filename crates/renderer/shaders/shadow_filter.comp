@@ -5,7 +5,8 @@
 #include "include/mesh_id.glsl"
 #include "include/oct_codec.glsl"
 
-// Direct-shadow spatial filter: an edge-aware 5x5 B3 a-trous chain over the
+// Direct-shadow spatial filter (penumbra-aware, PAF-001..009 in
+// docs/engine/penumbra-aware-shadow-filter.md): an edge-aware 5x5 B3 a-trous chain over the
 // per-pixel ReSTIR shadow ratio (`accum`, the Heitz-2018 ratio the direct
 // term is shaded by: Lo += U * accum). The ratio EMA filters shadows
 // temporally only; with the camera moving it runs at a 16-frame / 0.1-floor
@@ -69,7 +70,18 @@ layout(push_constant) uniform Push {
     // bit 1: the source image is ratioB (else ratioA);
     // bit 2: last iteration (write the correction, not a ratio image).
     uint flags;
+    // World units one pixel spans per unit of view distance, 2 tan(fov_y/2) / H
+    // (PAF section 3.2). 0 disables the penumbra radius: every pixel then
+    // uses the chain's full reach, which is the pre-PAF behaviour.
+    float pixelAngle;
+    // The chain's reach in pixels at this frame's iteration count (PAF-003's
+    // R_max) = 2 * (2^iterations - 1).
+    float reachMax;
 } pc;
+
+// The PAF-003 / PAF-005 constants (minimum radius, radius scale, blocker search
+// window) are SHADOW_FILTER_RADIUS_MIN, SHADOW_FILTER_PENUMBRA_RADIUS_SCALE and
+// SHADOW_FILTER_SEARCH_HALF / _STRIDE in shader_constants_data.rs.
 
 struct ShadowFilterGuide {
     bool valid;
@@ -117,19 +129,62 @@ vec3 sourceRatioAt(ivec2 q) {
     return ((pc.flags & 2u) != 0u ? imageLoad(ratioB, q) : imageLoad(ratioA, q)).rgb;
 }
 
+float sourceRadiusAt(ivec2 q) {
+    return ((pc.flags & 2u) != 0u ? imageLoad(ratioB, q) : imageLoad(ratioA, q)).a;
+}
+
 bool inScreen(ivec2 q) {
     return q.x >= 0 && q.y >= 0 && q.x < int(pc.screen.x) && q.y < int(pc.screen.y);
 }
 
-void storeResult(ivec2 p, vec3 filtered, vec3 raw, uint idx, float strength) {
+// PAF-001: this pixel's penumbra width in world units, an f16 in the high half
+// of `directUnshadowed[].y` (triangle.frag writes it; 0 = lit or no ray).
+float penumbraWidthAt(ivec2 q) {
+    return unpackHalf2x16(unshadowed[uint(q.y) * pc.screen.x + uint(q.x)].y).y;
+}
+
+// PAF-005: Fernando's blocker search, in screen space. Averages the width over
+// the valid, surface-owning neighbours that saw an occluder this frame,
+// weighted by the normal and distance edge stops, and projects it to a kernel
+// radius in pixels (PAF section 3.2: R = w / 2f, f = view distance * pixelAngle).
+// A pixel with no neighbour reporting a width is outside every penumbra and
+// gets SHADOW_FILTER_RADIUS_MIN.
+float penumbraRadius(ivec2 p, ShadowFilterGuide gp, float slope) {
+    if (pc.pixelAngle <= 0.0) return pc.reachMax;
+    float sum = 0.0;
+    float wSum = 0.0;
+    for (int dy = -int(SHADOW_FILTER_SEARCH_HALF); dy <= int(SHADOW_FILTER_SEARCH_HALF); dy++) {
+        for (int dx = -int(SHADOW_FILTER_SEARCH_HALF); dx <= int(SHADOW_FILTER_SEARCH_HALF); dx++) {
+            ivec2 q = p + ivec2(dx, dy) * int(SHADOW_FILTER_SEARCH_STRIDE);
+            if (!inScreen(q)) continue;
+            float width = penumbraWidthAt(q);
+            if (!(width > 0.0)) continue;
+            ShadowFilterGuide gq = guideAt(q);
+            if (!gq.valid) continue;
+            float wN = pow(max(dot(gp.normal, gq.normal), 0.0), SHADOW_FILTER_NORMAL_POWER);
+            float expected = slope * length(vec2(dx, dy)) * float(SHADOW_FILTER_SEARCH_STRIDE);
+            float wZ = exp(-abs(gq.dist - gp.dist)
+                / (SHADOW_FILTER_DEPTH_SLOPE_SCALE * expected + 0.5
+                   + SHADOW_FILTER_DEPTH_REL_TOL * gp.dist));
+            float w = wN * wZ;
+            sum += w * width;
+            wSum += w;
+        }
+    }
+    if (wSum <= 1e-6) return SHADOW_FILTER_RADIUS_MIN;
+    float footprint = max(gp.dist * pc.pixelAngle, 1e-6);
+    return clamp(SHADOW_FILTER_PENUMBRA_RADIUS_SCALE * sum / wSum / (2.0 * footprint), SHADOW_FILTER_RADIUS_MIN, pc.reachMax);
+}
+
+void storeResult(ivec2 p, vec3 filtered, vec3 raw, uint idx, float strength, float radius) {
     if ((pc.flags & 4u) != 0u) {
         uvec2 packedU = unshadowed[idx];
         vec3 U = vec3(unpackHalf2x16(packedU.x), unpackHalf2x16(packedU.y).x);
         imageStore(outDelta, p, vec4(U * strength * (filtered - raw), 0.0));
     } else if ((pc.flags & 2u) != 0u) {
-        imageStore(ratioA, p, vec4(filtered, 0.0));
+        imageStore(ratioA, p, vec4(filtered, radius));
     } else {
-        imageStore(ratioB, p, vec4(filtered, 0.0));
+        imageStore(ratioB, p, vec4(filtered, radius));
     }
 }
 
@@ -143,7 +198,7 @@ void main() {
         // Nothing claimed this pixel (sky, blend-only, unlit), or the slot's
         // owner is not the visible surface (#6249): no ratio to filter and
         // nothing for composite to correct.
-        storeResult(p, vec3(0.0), vec3(0.0), idx, 0.0);
+        storeResult(p, vec3(0.0), vec3(0.0), idx, 0.0, SHADOW_FILTER_RADIUS_MIN);
         return;
     }
     vec3 raw = rawRatioAt(p);
@@ -163,6 +218,20 @@ void main() {
         }
     }
 
+    // The kernel radius is decided once, in the first iteration, and carried
+    // in the ratio images' alpha channel (the blocker search reads only this
+    // frame's width, so it never changes between iterations).
+    float radius = (pc.flags & 1u) != 0u ? penumbraRadius(p, gp, slope) : sourceRadiusAt(p);
+    // PAF-008: an iteration whose stride exceeds R passes the pixel through, so
+    // a narrow penumbra stops early and a wide one uses the whole chain.
+    if (float(pc.step) > radius) {
+        float strengthPass = clamp(SHADOW_FILTER_CONFIDENT_HISTORY / max(gp.histLen, 1.0), 0.0, 1.0);
+        storeResult(p, cP, raw, idx, strengthPass, radius);
+        return;
+    }
+    // PAF-008: a Gaussian over the tap's screen offset, sigma = R / 2.
+    float invTwoSigmaSq = 1.0 / (0.5 * radius * radius);
+
     const float h[3] = float[3](0.375, 0.25, 0.0625);
     vec3 sum = vec3(0.0);
     float wSum = 0.0;
@@ -180,7 +249,9 @@ void main() {
             vec3 cQ = sourceRatioAt(q);
             vec3 dC = abs(cQ - cP);
             float wR = exp(-max(max(dC.r, dC.g), dC.b) / SHADOW_FILTER_RATIO_SIGMA);
-            float w = h[abs(dx)] * h[abs(dy)] * wN * wZ * wR;
+            vec2 offsetPx = vec2(dx, dy) * float(pc.step);
+            float wG = pc.pixelAngle > 0.0 ? exp(-dot(offsetPx, offsetPx) * invTwoSigmaSq) : 1.0;
+            float w = h[abs(dx)] * h[abs(dy)] * wN * wZ * wR * wG;
             sum += w * cQ;
             wSum += w;
         }
@@ -188,5 +259,5 @@ void main() {
     vec3 filtered = wSum > 1e-6 ? sum / wSum : cP;
     // Confidence: a long-converged ratio needs no spatial filtering.
     float strength = clamp(SHADOW_FILTER_CONFIDENT_HISTORY / max(gp.histLen, 1.0), 0.0, 1.0);
-    storeResult(p, filtered, raw, idx, strength);
+    storeResult(p, filtered, raw, idx, strength, radius);
 }

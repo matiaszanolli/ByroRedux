@@ -771,6 +771,9 @@ impl VulkanContext {
         self.history.prev_camera_position = camera_pos;
         self.history.prev_render_origin = [render_origin.x, render_origin.y, render_origin.z];
         self.history.prev_cam_forward = active_dof.cam_forward;
+        if let Some(filter) = self.post.shadow_filter.as_mut() {
+            filter.set_camera_fov_y(active_dof.camera_fov_y);
+        }
 
         // #1874 diagnostic — ghosted diagonal double-image investigation.
         // Cheap, stateless (uses only locals already computed above) trace

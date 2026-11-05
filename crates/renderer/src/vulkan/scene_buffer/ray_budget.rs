@@ -1,5 +1,11 @@
 //! GPU-time-driven ray allocation shared by surface and volumetric lighting.
 
+/// PAF-007: the direct-shadow filter's à-trous iteration range. The floor
+/// is the pre-penumbra-aware chain (strides 1, 2: a 6 px reach); the
+/// ceiling adds strides 4 and 8 (a 30 px reach) at ray quality tier 3.
+pub const SHADOW_FILTER_MIN_ITERATIONS: u32 = 2;
+pub const SHADOW_FILTER_MAX_ITERATIONS: u32 = 4;
+
 /// Shader contract for scene set 1, binding 11.
 ///
 /// The first word remains the atomic glass-work telemetry counter. The
@@ -17,7 +23,10 @@ pub struct GpuRayBudget {
     pub max_shaded_hits: u32,
     pub volumetric_light_cap: u32,
     pub quality_tier: u32,
-    pub reserved: u32,
+    /// PAF-007: à-trous iterations the direct-shadow filter runs this frame
+    /// (strides 1, 2, 4, 8; reach 2·(2^n − 1) px). Read by the CPU
+    /// dispatch only; the shader copy keeps the word so the layout holds.
+    pub shadow_filter_iterations: u32,
     pub lod_fragments: u32,
     pub lod_bin_0: u32,
     pub lod_bin_1: u32,
@@ -41,7 +50,7 @@ impl GpuRayBudget {
             self.max_shaded_hits,
             self.volumetric_light_cap,
             self.quality_tier,
-            self.reserved,
+            self.shadow_filter_iterations,
             self.lod_fragments,
             self.lod_bin_0,
             self.lod_bin_1,
@@ -61,6 +70,7 @@ impl GpuRayBudget {
         max_shaded_hits: u32,
         volumetric_light_cap: u32,
         quality_tier: u32,
+        shadow_filter_iterations: u32,
     ) -> Self {
         Self {
             ray_count: 0,
@@ -70,7 +80,7 @@ impl GpuRayBudget {
             max_shaded_hits,
             volumetric_light_cap,
             quality_tier,
-            reserved: 0,
+            shadow_filter_iterations,
             lod_fragments: 0,
             lod_bin_0: 0,
             lod_bin_1: 0,
@@ -209,9 +219,26 @@ impl AdaptiveRayBudget {
                 0,
                 2,
                 0,
+                SHADOW_FILTER_MIN_ITERATIONS,
             ),
-            1 => GpuRayBudget::settings(GLASS_RAY_BUDGET / 4, 2, 3, 1, 4, 1),
-            2 => GpuRayBudget::settings(GLASS_RAY_BUDGET / 2, 4, 4, 2, 6, 2),
+            1 => GpuRayBudget::settings(
+                GLASS_RAY_BUDGET / 4,
+                2,
+                3,
+                1,
+                4,
+                1,
+                SHADOW_FILTER_MIN_ITERATIONS,
+            ),
+            2 => GpuRayBudget::settings(
+                GLASS_RAY_BUDGET / 2,
+                4,
+                4,
+                2,
+                6,
+                2,
+                SHADOW_FILTER_MIN_ITERATIONS + 1,
+            ),
             // #3879 — the tier-3 arm is the shader-side ceiling. Every
             // field now reads the same constant the GLSL `#define` is
             // generated from, so raising one actually widens the loop
@@ -223,6 +250,7 @@ impl AdaptiveRayBudget {
                 MAX_SHADED_HITS,
                 MAX_FROXEL_LIGHTS,
                 MAX_RAY_QUALITY_TIER,
+                SHADOW_FILTER_MAX_ITERATIONS,
             ),
         }
     }
@@ -231,6 +259,18 @@ impl AdaptiveRayBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PAF-007: the filter's iteration count per tier.
+    #[test]
+    fn shadow_filter_iterations_grow_with_the_tier() {
+        let iters: Vec<u32> = (0..=3)
+            .map(|t| AdaptiveRayBudget::settings_for_tier(t).shadow_filter_iterations)
+            .collect();
+        assert_eq!(iters, [2, 2, 3, 4], "PAF-007: the floor keeps today's 6 px reach");
+        assert!(iters
+            .iter()
+            .all(|n| (SHADOW_FILTER_MIN_ITERATIONS..=SHADOW_FILTER_MAX_ITERATIONS).contains(n)));
+    }
 
     /// #2686 / SAFE-D7-01 — every tier's `glass_ray_limit` must derive from
     /// `GLASS_RAY_BUDGET`, not an independently hand-maintained literal that

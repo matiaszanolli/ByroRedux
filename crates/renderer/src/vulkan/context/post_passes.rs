@@ -498,7 +498,18 @@ impl VulkanContext {
             timers.cmd_start(TimerPass::ShadowFilter, &self.device, cmd, frame);
         }
         if let Some(filter) = self.shadow_filter_active() {
-            filter.dispatch(&self.device, cmd, frame, &self.reservoir_buffers);
+            // PAF-007: the per-tier iteration count rides the ray budget.
+            let iterations = self
+                .scene_buffers
+                .current_ray_budget(self.renderer_config.rt_test_ray_quality_tier)
+                .shadow_filter_iterations;
+            filter.dispatch(
+                &self.device,
+                cmd,
+                frame,
+                &self.reservoir_buffers,
+                iterations,
+            );
         }
         if let Some(ref mut timers) = self.gpu_timers {
             timers.cmd_end(TimerPass::ShadowFilter, &self.device, cmd, frame);

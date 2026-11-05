@@ -175,6 +175,20 @@ pub const SHADOW_FILTER_CONFIDENT_HISTORY: f32 = 16.0;
 // the distance as quantization, or it reads the steps as depth edges and
 // bands flat floors.
 pub const SHADOW_FILTER_DEPTH_REL_TOL: f32 = 0.004;
+// Penumbra-aware reach (PAF-003 / PAF-005, docs/engine/penumbra-aware-shadow-filter.md).
+// The smallest kernel radius in pixels, so a sharp edge is still denoised
+// across its own pixel.
+pub const SHADOW_FILTER_RADIUS_MIN: f32 = 1.0;
+// Fraction of the geometric radius w / 2f the kernel uses. The design's full
+// half-penumbra measured too wide against A4 on the narrow sun penumbra (14 px
+// 10-90 %): the chain's blur sigma reached 5-9 px and bled into the bands just
+// outside it (sun-rung lit band 1.1e-3 -> 3.7e-3, width error 0.010 -> 0.020;
+// 0.5 still 1.05e-3 / 0.013). A quarter keeps every sun-rung A4 band inside
+// its budget (PRD section 12, revision 22).
+pub const SHADOW_FILTER_PENUMBRA_RADIUS_SCALE: f32 = 0.25;
+// The blocker search window: (2 * HALF + 1)^2 taps at this stride in pixels.
+pub const SHADOW_FILTER_SEARCH_HALF: u32 = 4;
+pub const SHADOW_FILTER_SEARCH_STRIDE: u32 = 2;
 
 // `GpuCamera.dof_params.w`: the history mode `restir_history_mode` encodes
 // and `triangle.frag` decodes with two thresholds only — "camera parked" is
@@ -2753,6 +2767,10 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float SHADOW_FILTER_RATIO_SIGMA),
     shader_define!(Float SHADOW_FILTER_CONFIDENT_HISTORY),
     shader_define!(Float SHADOW_FILTER_DEPTH_REL_TOL),
+    shader_define!(Float SHADOW_FILTER_RADIUS_MIN),
+    shader_define!(Float SHADOW_FILTER_PENUMBRA_RADIUS_SCALE),
+    shader_define!(Uint SHADOW_FILTER_SEARCH_HALF),
+    shader_define!(Uint SHADOW_FILTER_SEARCH_STRIDE),
     shader_define!(Float HISTORY_MODE_MOVING),
     shader_define!(Float HISTORY_MODE_PARKED),
     shader_define!(Float HISTORY_MODE_SCENE_STATIC),

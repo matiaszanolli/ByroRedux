@@ -1,6 +1,6 @@
 # Penumbra-Aware Shadow Filter — Design
 
-**Status**: PROPOSED (2026-11-02). Written in M-LIGHT Phase 0 (#6596) to
+**Status**: IMPLEMENTED (2026-11-05, #6603), with the deviations in §7; PAF-011 (the radius debug view) is not built yet. Proposed 2026-11-02. Written in M-LIGHT Phase 0 (#6596) to
 satisfy [RLT-SHD-003](../prd/reference-lighting.md#52-soft-shadows-and-penumbrae-rlt-shd);
 implemented in Phase 3 (#6603), after that phase's entry baselines
 (A2–A5, A14) are published, so the change is measured against them.
@@ -161,3 +161,20 @@ f16 lane it writes is the one `shadow_filter.comp` reads.
 | P1 | Whether one frame's blocker search is stable enough under motion | A3 / A14 at Phase 3; if not, PAF-006's 40-byte reservoir |
 | P2 | Whether the isotropic kernel over-blurs grazing floors measurably | A2's profile lines on the floor rung |
 | P3 | Behaviour where two lights' penumbrae overlap in one cluster (one ratio per cluster, #5020) | A4 on a two-light variant if the single-light rungs pass |
+
+## 7. As built (2026-11-05)
+
+What differs from §3, and why. Measurements are the A2 / A4 gate at tier 3
+against the post-RLT-SHD-007 baseline (`docs/audits/MLIGHT_phase3_shd007_A2A4_sun.tsv`).
+
+| Item | Design | Built | Why |
+|---|---|---|---|
+| Radius scale | R = w ⁄ 2f | R = **0.25** · w ⁄ 2f (`SHADOW_FILTER_PENUMBRA_RADIUS_SCALE`) | At 1.0 the chain's blur σ reached 5–9 px against a 14 px sun penumbra: sun-rung A4 lit band 1.1e-3 → 3.7e-3, width error 0.010 → 0.020. 0.5 still gave 1.05e-3 / 0.013. 0.25 puts all four sun-rung bands inside the owner budgets (umbra 2.0e-4 / 9.2e-4, lit 4.3e-4 / 1.6e-3). 0.125 is better still (2.7e-5 / 3.6e-6, 1.1e-4 / 6.7e-4) and is the next value to try if a later gate wants the margin. |
+| Blocker search | a separate first pass (PAF-005) | folded into iteration 0 | The width is read from `directUnshadowed`, which does not change between iterations, so the search needs no pass of its own; the radius it produces rides the ratio images' alpha channel to the later iterations. |
+| Width per pixel | mean over the occluded samples (PAF-001) | the same, every sample now uses the detailed trace | Sample 0 alone would have left a tier-3 pixel with one distance in four. |
+| Iteration gate | skip when stride > R (PAF-008) | the same | — |
+| Iteration count | a `GpuRayBudget` field (PAF-007) | `shadow_filter_iterations`, in the word that was `reserved` | Tiers 0–3 run 2, 2, 3, 4; the CPU dispatch reads it, the shader copy keeps the word. |
+| Pixel footprint | 2z tan(fov ⁄ 2) ⁄ H | the same; the fov reaches the pass through `ShadowFilterPipeline::set_camera_fov_y` | An unset fov (0) falls back to the chain's full reach with no Gaussian. |
+
+Not built: PAF-011 (the radius debug view), the anisotropic kernel (PAF-004,
+as designed), and the A13 cost measurement (PAF-010).
