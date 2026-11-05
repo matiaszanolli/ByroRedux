@@ -256,7 +256,9 @@ is not named here.
                            COMPUTE / SHADER_WRITE → DRAW_INDIRECT|VERTEX|
                            FRAGMENT|TRANSFER / INDIRECT_COMMAND_READ|
                            SHADER_READ|TRANSFER_READ.
-6  [Main render pass]   ─  raster (BEGIN → END, `record_geometry_pass`):
+6  [Main render pass]   ─  raster (BEGIN → END, `record_geometry_pass`), in order:
+                           `record_main_batches` (`record_batch_draws` per batch),
+                           `record_water_surfaces`, `record_groundcover_blades`:
      triangle.vert / .frag  geometry + RT ray-queries. Certified opaque
                             batches (`DrawCommand::allows_early_fragment_
                             tests`: no blend, no alpha test, material kind

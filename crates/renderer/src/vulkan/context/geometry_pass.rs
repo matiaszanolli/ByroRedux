@@ -12,6 +12,27 @@ use super::frame_params::{DrawBatch, group_state, needs_two_sided_blend_split, s
 use super::{DrawCommand, VulkanContext};
 use ash::vk;
 
+/// The raster state the batch loop and the ground-cover model tier track, so each
+/// emits a state change only when the value differs. The sentinels it starts from
+/// are documented where `record_main_batches` builds it.
+struct BatchRasterState {
+    last_pipeline_key: PipelineKey,
+    last_render_layer: Option<byroredux_core::ecs::components::RenderLayer>,
+    last_z_test: bool,
+    last_z_write: bool,
+    last_z_function: u8,
+    last_cull_mode: Option<vk::CullModeFlags>,
+}
+
+/// How `record_batch_draws` issues a batch's draws. Fixed for the whole pass.
+#[derive(Clone, Copy)]
+struct BatchDrawPath {
+    global_bound: bool,
+    use_indirect: bool,
+    indirect_buffer: vk::Buffer,
+    indirect_stride: u32,
+}
+
 impl VulkanContext {
     /// Record the main geometry render pass into the open per-frame
     /// command buffer (#1748). Extracted verbatim from `draw_frame` — the
@@ -31,97 +52,134 @@ impl VulkanContext {
     ) {
         // SAFETY: `cmd` is recording (begin_command_buffer succeeded above) and `framebuffers[frame]` / `render_pass` / pipeline layout + descriptor sets / global VB+IB are all live for this frame. `cmd_begin_render_pass` opens the pass; viewport/scissor/cull/depth dynamic state is set before any draw; all binds use the GRAPHICS bind point with the matching `pipeline_layout`; `cmd` is recorded by this thread only and `end_command_buffer` closes it. The fence wait at frame start guarantees no in-flight frame is still using this buffer or its bound resources.
         unsafe {
+            self.begin_main_render_pass(cmd, frame, render_pass_begin);
+            self.record_main_batches(cmd, frame, batches);
+            self.record_water_surfaces(cmd, frame, draw_commands, water_commands, instance_map);
+            self.record_groundcover_blades(cmd, frame);
+
+            self.device.cmd_end_render_pass(cmd);
             if let Some(ref mut timers) = self.gpu_timers {
-                timers.cmd_start(TimerPass::MainRender, &self.device, cmd, frame);
+                timers.cmd_end(TimerPass::MainRender, &self.device, cmd, frame);
             }
-            self.device
-                .cmd_begin_render_pass(cmd, render_pass_begin, vk::SubpassContents::INLINE);
+        }
+    }
 
-            // No unconditional pipeline bind here — the batch loop below
-            // initializes `last_pipeline_key` to a sentinel Blended value
-            // so the first real batch always rebinds to its own pipeline.
-            // An opaque bind at this point would always be discarded. #507.
-            //
-            // The Scaleform overlay used to be the tail of this pass; #3426
-            // moved it into `presentation.rs` so it composites after
-            // tone-mapping and upscale instead of entering the G-buffer.
+    /// Open the main render pass and set what holds for all of it: viewport, scissor
+    /// and the two per-frame descriptor sets.
+    ///
+    /// # Safety
+    /// `cmd` must be recording, outside a render pass, with `render_pass_begin`,
+    /// the pipeline layout and both descriptor sets live for this frame.
+    unsafe fn begin_main_render_pass(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        render_pass_begin: &vk::RenderPassBeginInfo,
+    ) {
+        if let Some(ref mut timers) = self.gpu_timers {
+            timers.cmd_start(TimerPass::MainRender, &self.device, cmd, frame);
+        }
+        self.device
+            .cmd_begin_render_pass(cmd, render_pass_begin, vk::SubpassContents::INLINE);
 
-            // Dynamic viewport + scissor.
-            let viewports = [vk::Viewport {
-                x: 0.0,
-                y: 0.0,
-                width: self.frame_extents.render.width as f32,
-                height: self.frame_extents.render.height as f32,
-                min_depth: 0.0,
-                max_depth: 1.0,
-            }];
-            self.device.cmd_set_viewport(cmd, 0, &viewports);
+        // No unconditional pipeline bind here — the batch loop below
+        // initializes `last_pipeline_key` to a sentinel Blended value
+        // so the first real batch always rebinds to its own pipeline.
+        // An opaque bind at this point would always be discarded. #507.
+        //
+        // The Scaleform overlay used to be the tail of this pass; #3426
+        // moved it into `presentation.rs` so it composites after
+        // tone-mapping and upscale instead of entering the G-buffer.
 
-            let scissors = [vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent: self.frame_extents.render,
-            }];
-            self.device.cmd_set_scissor(cmd, 0, &scissors);
+        // Dynamic viewport + scissor.
+        let viewports = [vk::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: self.frame_extents.render.width as f32,
+            height: self.frame_extents.render.height as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        }];
+        self.device.cmd_set_viewport(cmd, 0, &viewports);
 
-            // Bind the bindless texture descriptor set (set 0) — once per frame.
-            let texture_set = self.texture_registry.descriptor_set(frame);
-            self.device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline_layout,
-                0,
-                &[texture_set],
-                &[],
-            );
+        let scissors = [vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: self.frame_extents.render,
+        }];
+        self.device.cmd_set_scissor(cmd, 0, &scissors);
 
-            // Bind the scene descriptor set (set 1) — once per frame.
-            let scene_set = self.scene_buffers.descriptor_set(frame);
-            self.device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline_layout,
-                1,
-                &[scene_set],
-                &[],
-            );
+        // Bind the bindless texture descriptor set (set 0) — once per frame.
+        let texture_set = self.texture_registry.descriptor_set(frame);
+        self.device.cmd_bind_descriptor_sets(
+            cmd,
+            vk::PipelineBindPoint::GRAPHICS,
+            self.pipeline_layout,
+            0,
+            &[texture_set],
+            &[],
+        );
 
-            // ── Draw loop ─────────────────────────────────────────────
-            //
-            // Two paths depending on what the device supports:
-            //
-            // 1. **Multi-draw indirect** (#309) — when the device
-            //    exposes `multiDrawIndirect` (universally supported on
-            //    desktop Vulkan 1.0+) and the global VB/IB is bound,
-            //    we group consecutive batches sharing
-            //    `(pipeline_key, render_layer)` into one
-            //    `cmd_draw_indexed_indirect` call reading N
-            //    `VkDrawIndexedIndirectCommand` entries from the
-            //    per-frame indirect buffer. Pipeline / depth-bias
-            //    state transitions still split groups (necessary —
-            //    dynamic state changes between draws).
-            //
-            // 2. **Per-batch fallback** — used when the device doesn't
-            //    expose `multiDrawIndirect` or when the global VB/IB
-            //    isn't bound (e.g. the spinning-cube demo before the
-            //    scene SSBO is built). One `cmd_draw_indexed` per
-            //    batch, same behavior as pre-#309.
-            //
-            // The indirect buffer has already been filled + flushed
-            // above when `gpu_instances.upload_instances(...)` ran —
-            // see the `indirect_draws` build-up where each batch
-            // pushes one `VkDrawIndexedIndirectCommand` entry.
-            let mut last_pipeline_key = PipelineKey::Blended {
+        // Bind the scene descriptor set (set 1) — once per frame.
+        let scene_set = self.scene_buffers.descriptor_set(frame);
+        self.device.cmd_bind_descriptor_sets(
+            cmd,
+            vk::PipelineBindPoint::GRAPHICS,
+            self.pipeline_layout,
+            1,
+            &[scene_set],
+            &[],
+        );
+    }
+
+    /// Record the opaque and blended triangle batches, the ground-cover model tier
+    /// between them, and their timer intervals.
+    ///
+    /// # Safety
+    /// `cmd` must be recording inside the render pass `begin_main_render_pass` opened.
+    unsafe fn record_main_batches(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        batches: &[DrawBatch],
+    ) {
+        // ── Draw loop ─────────────────────────────────────────────
+        //
+        // Two paths depending on what the device supports:
+        //
+        // 1. **Multi-draw indirect** (#309) — when the device
+        //    exposes `multiDrawIndirect` (universally supported on
+        //    desktop Vulkan 1.0+) and the global VB/IB is bound,
+        //    we group consecutive batches sharing
+        //    `(pipeline_key, render_layer)` into one
+        //    `cmd_draw_indexed_indirect` call reading N
+        //    `VkDrawIndexedIndirectCommand` entries from the
+        //    per-frame indirect buffer. Pipeline / depth-bias
+        //    state transitions still split groups (necessary —
+        //    dynamic state changes between draws).
+        //
+        // 2. **Per-batch fallback** — used when the device doesn't
+        //    expose `multiDrawIndirect` or when the global VB/IB
+        //    isn't bound (e.g. the spinning-cube demo before the
+        //    scene SSBO is built). One `cmd_draw_indexed` per
+        //    batch, same behavior as pre-#309.
+        //
+        // The indirect buffer has already been filled + flushed
+        // above when `gpu_instances.upload_instances(...)` ran —
+        // see the `indirect_draws` build-up where each batch
+        // pushes one `VkDrawIndexedIndirectCommand` entry.
+        let mut raster = BatchRasterState {
+            last_pipeline_key: PipelineKey::Blended {
                 src: u8::MAX,
                 dst: u8::MAX,
                 wireframe: false,
                 preserve_opaque_gbuffer: false,
-            };
+            },
             // `Option` so the first batch always emits an explicit
             // `cmd_set_depth_bias` rather than relying on the
             // pipeline-default-zero matching the bias of the first
             // batch's layer (brittle when the first batch is, say, a
             // decal).
-            let mut last_render_layer: Option<byroredux_core::ecs::components::RenderLayer> = None;
+            last_render_layer: None,
             // #398 — extended dynamic depth state. Vulkan requires the
             // dynamic state to be set BEFORE any draw call when the
             // pipeline declares the corresponding `vk::DynamicState`.
@@ -129,9 +187,9 @@ impl VulkanContext {
             // first batch's "did this change?" check sees a sensible
             // baseline. Sentinel `last_z_function = u8::MAX` forces an
             // explicit set on the first batch regardless of value.
-            let mut last_z_test = true;
-            let mut last_z_write = true;
-            let mut last_z_function: u8 = u8::MAX;
+            last_z_test: true,
+            last_z_write: true,
+            last_z_function: u8::MAX,
             // CULL_MODE is declared dynamic on EVERY draw-loop pipeline
             // (see `pipeline.rs::dynamic_states` for both the opaque and
             // blend variants — the "must be dynamic on every pipeline"
@@ -147,636 +205,674 @@ impl VulkanContext {
             // first batch wanted NONE (two-sided vegetation/foliage
             // on exterior cells) — it issued BACK and then the
             // per-batch helper immediately overrode it with NONE.
-            let mut last_cull_mode: Option<vk::CullModeFlags> = None;
-            // #664 — per-mesh-fallback VB/IB bind cache. Only consulted
-            // on the `global_bound == false` path (early-startup or any
-            // future failure mode). The two-sided alpha-blend split at
-            // line ~1442 calls `dispatch_direct` twice for the same
-            // batch, so without this cache the per-mesh fallback issued
-            // two redundant binds per split batch. `u32::MAX` is the
-            // never-bound sentinel — `MeshHandle` is `u32` and 0 is a
-            // valid handle.
-            let mut last_bound_mesh_handle: u32 = u32::MAX;
+            last_cull_mode: None,
+        };
+        // #664 — per-mesh-fallback VB/IB bind cache. Only consulted
+        // on the `global_bound == false` path (early-startup or any
+        // future failure mode). The two-sided alpha-blend split at
+        // line ~1442 calls `dispatch_direct` twice for the same
+        // batch, so without this cache the per-mesh fallback issued
+        // two redundant binds per split batch. `u32::MAX` is the
+        // never-bound sentinel — `MeshHandle` is `u32` and 0 is a
+        // valid handle.
+        let mut last_bound_mesh_handle: u32 = u32::MAX;
 
-            // Pre-loop depth state initialization — only the two fields whose
-            // per-batch trackers use a real sentinel (not a "force-first" value):
-            //
-            //   depth_test/write: `last_z_test = true`, `last_z_write = true`.
-            //   When the first batch also wants true, the per-batch check skips
-            //   (`true != true` is false) — without this pre-loop set, those
-            //   dynamic states would never fire on a pure-opaque-first frame.
-            //
-            //   depth_bias and depth_compare_op are NOT pre-set here:
-            //   - depth_bias: `last_render_layer = None` ⇒ the per-batch
-            //     `set_cull_and_bias` helper fires unconditionally on the first
-            //     batch, covering the Vulkan "must be set before first draw"
-            //     requirement. The pre-set was pure waste (#955 / REN-D5-NEW-04).
-            //   - depth_compare_op: `last_z_function = u8::MAX` ⇒ the first batch
-            //     always fires `cmd_set_depth_compare_op` since u8::MAX matches no
-            //     real Gamebryo compare op (#955). Mirrors `#912` / REN-D5-NEW-03
-            //     which removed the redundant pre-set for `cmd_set_cull_mode`.
-            self.device.cmd_set_depth_test_enable(cmd, true);
-            self.device.cmd_set_depth_write_enable(cmd, true);
-            // #912 / REN-D5-NEW-03 — pre-#912 this issued
-            // `cmd_set_cull_mode(BACK)` unconditionally. The per-batch
-            // `set_cull` helper now covers the "must be set before
-            // first draw" Vulkan requirement: the first batch's call
-            // fires (`last_cull_mode == None`) and the helper updates
-            // the tracking. Removing the unconditional set saves one
-            // wasted state change per frame whenever the first batch
-            // wants NONE (exterior cells often start with two-sided
-            // vegetation / foliage).
+        // Pre-loop depth state initialization — only the two fields whose
+        // per-batch trackers use a real sentinel (not a "force-first" value):
+        //
+        //   depth_test/write: `last_z_test = true`, `last_z_write = true`.
+        //   When the first batch also wants true, the per-batch check skips
+        //   (`true != true` is false) — without this pre-loop set, those
+        //   dynamic states would never fire on a pure-opaque-first frame.
+        //
+        //   depth_bias and depth_compare_op are NOT pre-set here:
+        //   - depth_bias: `last_render_layer = None` ⇒ the per-batch
+        //     `set_cull_and_bias` helper fires unconditionally on the first
+        //     batch, covering the Vulkan "must be set before first draw"
+        //     requirement. The pre-set was pure waste (#955 / REN-D5-NEW-04).
+        //   - depth_compare_op: `last_z_function = u8::MAX` ⇒ the first batch
+        //     always fires `cmd_set_depth_compare_op` since u8::MAX matches no
+        //     real Gamebryo compare op (#955). Mirrors `#912` / REN-D5-NEW-03
+        //     which removed the redundant pre-set for `cmd_set_cull_mode`.
+        self.device.cmd_set_depth_test_enable(cmd, true);
+        self.device.cmd_set_depth_write_enable(cmd, true);
+        // #912 / REN-D5-NEW-03 — pre-#912 this issued
+        // `cmd_set_cull_mode(BACK)` unconditionally. The per-batch
+        // `set_cull` helper now covers the "must be set before
+        // first draw" Vulkan requirement: the first batch's call
+        // fires (`last_cull_mode == None`) and the helper updates
+        // the tracking. Removing the unconditional set saves one
+        // wasted state change per frame whenever the first batch
+        // wants NONE (exterior cells often start with two-sided
+        // vegetation / foliage).
 
-            // Bind the global geometry buffer once for all scene draws.
-            // Each batch uses global_index_offset / global_vertex_offset
-            // to index into this single buffer, eliminating per-mesh
-            // vertex/index buffer rebinding (~200 rebinds/frame → 1). #294.
-            let global_bound = if let (Some(gvb), Some(gib)) = (
-                self.mesh_registry.global_vertex_buffer.as_ref(),
-                self.mesh_registry.global_index_buffer.as_ref(),
-            ) {
-                self.device
-                    .cmd_bind_vertex_buffers(cmd, 0, &[gvb.buffer], &[0]);
-                self.device
-                    .cmd_bind_index_buffer(cmd, gib.buffer, 0, vk::IndexType::UINT32);
-                true
-            } else {
-                false
-            };
+        // Bind the global geometry buffer once for all scene draws.
+        // Each batch uses global_index_offset / global_vertex_offset
+        // to index into this single buffer, eliminating per-mesh
+        // vertex/index buffer rebinding (~200 rebinds/frame → 1). #294.
+        let global_bound = if let (Some(gvb), Some(gib)) = (
+            self.mesh_registry.global_vertex_buffer.as_ref(),
+            self.mesh_registry.global_index_buffer.as_ref(),
+        ) {
+            self.device
+                .cmd_bind_vertex_buffers(cmd, 0, &[gvb.buffer], &[0]);
+            self.device
+                .cmd_bind_index_buffer(cmd, gib.buffer, 0, vk::IndexType::UINT32);
+            true
+        } else {
+            false
+        };
 
-            // #2504 / D12-2026-08-07-02 — `indirect_upload_ok` is set fresh
-            // each frame right after `upload_indirect_draws` in `draw.rs`;
-            // `false` means this frame's upload failed, so fall back to
-            // direct draws rather than issue `cmd_draw_indexed_indirect`
-            // over a stale/uninitialized buffer.
-            // #2751 — `batches.len()` is the fourth limb: the loop below
-            // derives `byte_offset` from `i` over this exact slice, so a
-            // count the indirect buffer can't hold must reject the path
-            // outright rather than record a read past the allocation.
-            let use_indirect = should_use_indirect_draws(
-                global_bound,
-                // #4827 — both `multiDrawIndirect` AND
-                // `drawIndirectFirstInstance`: every batch after the first has
-                // a non-zero `firstInstance` in its indirect command.
-                self.device_caps.indirect_draws_supported(),
-                self.indirect_upload_ok,
-                batches.len(),
-            );
-            let indirect_buffer = self.scene_buffers.indirect_buffer(frame);
-            let indirect_stride = std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32;
+        // #2504 / D12-2026-08-07-02 — `indirect_upload_ok` is set fresh
+        // each frame right after `upload_indirect_draws` in `draw.rs`;
+        // `false` means this frame's upload failed, so fall back to
+        // direct draws rather than issue `cmd_draw_indexed_indirect`
+        // over a stale/uninitialized buffer.
+        // #2751 — `batches.len()` is the fourth limb: the loop below
+        // derives `byte_offset` from `i` over this exact slice, so a
+        // count the indirect buffer can't hold must reject the path
+        // outright rather than record a read past the allocation.
+        let use_indirect = should_use_indirect_draws(
+            global_bound,
+            // #4827 — both `multiDrawIndirect` AND
+            // `drawIndirectFirstInstance`: every batch after the first has
+            // a non-zero `firstInstance` in its indirect command.
+            self.device_caps.indirect_draws_supported(),
+            self.indirect_upload_ok,
+            batches.len(),
+        );
+        let indirect_buffer = self.scene_buffers.indirect_buffer(frame);
+        let indirect_stride = std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32;
+        let path = BatchDrawPath {
+            global_bound,
+            use_indirect,
+            indirect_buffer,
+            indirect_stride,
+        };
 
-            // Precompute indirect-buffer state for batch `i`. Returns
-            // `(pipe, render_layer)` — consecutive batches sharing the
-            // tuple form one indirect group. `render_layer` covers the
-            // depth-bias state-change boundary that pre-#renderlayer
-            // was split between `is_decal` and `needs_depth_bias` —
-            // the per-layer ladder makes this a single key slot.
-            // #1581 / F1 — the indirect-merge key is `group_state` (module
-            // fn, unit-tested): it must include EVERY dynamic state set once
-            // from the group leader, or the leader's state wrongly applies to
-            // the whole merged group.
+        // Precompute indirect-buffer state for batch `i`. Returns
+        // `(pipe, render_layer)` — consecutive batches sharing the
+        // tuple form one indirect group. `render_layer` covers the
+        // depth-bias state-change boundary that pre-#renderlayer
+        // was split between `is_decal` and `needs_depth_bias` —
+        // the per-layer ladder makes this a single key slot.
+        // #1581 / F1 — the indirect-merge key is `group_state` (module
+        // fn, unit-tested): it must include EVERY dynamic state set once
+        // from the group leader, or the leader's state wrongly applies to
+        // the whole merged group.
 
-            // #1258 / PERF-D3-NEW-03 — snapshot post-merge batch count.
-            // Surfaced via `DebugStats::batch_count` and the `stats`
-            // command so the next perf audit can distinguish "12k
-            // DrawCommands" (input to the batcher) from "200 batches"
-            // (actual GPU draw upper bound) from "20 indirect calls"
-            // (post-grouping; bumped in the branches below).
-            self.last_draw_call_stats.batch_count = batches.len() as u32;
+        // #1258 / PERF-D3-NEW-03 — snapshot post-merge batch count.
+        // Surfaced via `DebugStats::batch_count` and the `stats`
+        // command so the next perf audit can distinguish "12k
+        // DrawCommands" (input to the batcher) from "200 batches"
+        // (actual GPU draw upper bound) from "20 indirect calls"
+        // (post-grouping; bumped in the branches below).
+        self.last_draw_call_stats.batch_count = batches.len() as u32;
 
-            // #4413 — the ground-cover model tier draws with the opaque
-            // pipeline, so its shapes go in before the first blended batch:
-            // a transparent surface in front of a plant must blend over it.
-            let mut groundcover_models_drawn = false;
-            // Sorted raster batches put all opaque/alpha-tested draws before
-            // blended draws. Time their existing boundary without changing
-            // indirect groups, draw order, or synchronization.
-            let mut triangle_phase = batches.first().and_then(|batch| {
-                matches!(batch.pipeline_key, PipelineKey::Opaque { .. })
-                    .then_some(GeometryTimerPhase::MainOpaque)
-            });
-            let mut phase_draw_start = self.last_draw_call_stats.indirect_call_count;
-            if let (Some(timers), Some(phase)) = (&mut self.gpu_timers, triangle_phase) {
-                timers.cmd_geometry_phase_start(&self.device, cmd, frame, phase);
-                if matches!(phase, GeometryTimerPhase::MainOpaque) {
-                    timers.cmd_opaque_fragment_invocations_start(&self.device, cmd, frame);
-                }
+        // #4413 — the ground-cover model tier draws with the opaque
+        // pipeline, so its shapes go in before the first blended batch:
+        // a transparent surface in front of a plant must blend over it.
+        let mut groundcover_models_drawn = false;
+        // Sorted raster batches put all opaque/alpha-tested draws before
+        // blended draws. Time their existing boundary without changing
+        // indirect groups, draw order, or synchronization.
+        let mut triangle_phase = batches.first().and_then(|batch| {
+            matches!(batch.pipeline_key, PipelineKey::Opaque { .. })
+                .then_some(GeometryTimerPhase::MainOpaque)
+        });
+        let mut phase_draw_start = self.last_draw_call_stats.indirect_call_count;
+        if let (Some(timers), Some(phase)) = (&mut self.gpu_timers, triangle_phase) {
+            timers.cmd_geometry_phase_start(&self.device, cmd, frame, phase);
+            if matches!(phase, GeometryTimerPhase::MainOpaque) {
+                timers.cmd_opaque_fragment_invocations_start(&self.device, cmd, frame);
             }
-            let mut i = 0;
-            while i < batches.len() {
-                let batch = &batches[i];
-                if !groundcover_models_drawn
-                    && matches!(batch.pipeline_key, PipelineKey::Blended { .. })
-                {
-                    if self.last_draw_call_stats.indirect_call_count > phase_draw_start {
-                        if let (Some(timers), Some(phase)) = (&mut self.gpu_timers, triangle_phase)
-                        {
-                            timers.cmd_geometry_phase_end(&self.device, cmd, frame, phase);
-                        }
+        }
+        let mut i = 0;
+        while i < batches.len() {
+            let batch = &batches[i];
+            if !groundcover_models_drawn
+                && matches!(batch.pipeline_key, PipelineKey::Blended { .. })
+            {
+                if self.last_draw_call_stats.indirect_call_count > phase_draw_start {
+                    if let (Some(timers), Some(phase)) = (&mut self.gpu_timers, triangle_phase) {
+                        timers.cmd_geometry_phase_end(&self.device, cmd, frame, phase);
                     }
-                    if matches!(triangle_phase, Some(GeometryTimerPhase::MainOpaque)) {
-                        if let Some(timers) = &mut self.gpu_timers {
-                            timers.cmd_opaque_fragment_invocations_end(&self.device, cmd, frame);
-                        }
+                }
+                if matches!(triangle_phase, Some(GeometryTimerPhase::MainOpaque)) {
+                    if let Some(timers) = &mut self.gpu_timers {
+                        timers.cmd_opaque_fragment_invocations_end(&self.device, cmd, frame);
                     }
-                    groundcover_models_drawn = true;
-                    self.draw_groundcover_models(
+                }
+                groundcover_models_drawn = true;
+                self.draw_groundcover_models(cmd, frame, global_bound, &mut raster);
+                // Models belong to their own raster interval, between
+                // the opaque and blended triangle intervals.
+                triangle_phase = Some(GeometryTimerPhase::MainBlended);
+                phase_draw_start = self.last_draw_call_stats.indirect_call_count;
+                if let Some(timers) = &mut self.gpu_timers {
+                    timers.cmd_geometry_phase_start(
+                        &self.device,
                         cmd,
                         frame,
-                        global_bound,
-                        &mut last_pipeline_key,
-                        &mut last_render_layer,
-                        &mut last_z_test,
-                        &mut last_z_write,
-                        &mut last_z_function,
-                        &mut last_cull_mode,
+                        GeometryTimerPhase::MainBlended,
                     );
-                    // Models belong to their own raster interval, between
-                    // the opaque and blended triangle intervals.
-                    triangle_phase = Some(GeometryTimerPhase::MainBlended);
-                    phase_draw_start = self.last_draw_call_stats.indirect_call_count;
-                    if let Some(timers) = &mut self.gpu_timers {
-                        timers.cmd_geometry_phase_start(
-                            &self.device,
-                            cmd,
-                            frame,
-                            GeometryTimerPhase::MainBlended,
-                        );
-                    }
                 }
+            }
 
-                // Switch pipeline when rendering mode changes.
-                // Two-sided rendering uses dynamic `cmd_set_cull_mode`
-                // (issued elsewhere in the draw loop based on
-                // `draw_cmd.two_sided`), not a separate pipeline (#930).
-                if batch.pipeline_key != last_pipeline_key {
-                    let pipe = match batch.pipeline_key {
-                        PipelineKey::Opaque {
-                            early_tests: true, ..
-                        } => self.pipeline_early,
-                        PipelineKey::Opaque {
-                            wireframe: false,
-                            early_tests: false,
-                        } => self.pipeline,
-                        // Wireframe falls back to FILL on devices
-                        // without `fillModeNonSolid`. #869.
-                        PipelineKey::Opaque {
-                            wireframe: true,
-                            early_tests: false,
-                        } => self.pipeline_wireframe.unwrap_or(self.pipeline),
-                        PipelineKey::Blended {
-                            src,
-                            dst,
-                            wireframe,
-                            preserve_opaque_gbuffer,
-                        } => {
-                            // Always present after the pre-population
-                            // pass above. If creation failed earlier we
-                            // fall back to the opaque pipeline rather
-                            // than skipping the draw entirely — better
-                            // a wrong-blend visible mesh than a vanished
-                            // one. See #392.
-                            let wireframe =
-                                wireframe && self.device_caps.fill_mode_non_solid_supported;
-                            *self
-                                .blend_pipeline_cache
-                                .get(&(src, dst, wireframe, preserve_opaque_gbuffer))
-                                .unwrap_or(&self.pipeline)
-                        }
-                    };
-                    self.device
-                        .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipe);
-                    last_pipeline_key = batch.pipeline_key;
-                }
+            self.bind_batch_state(cmd, batch, &mut raster);
 
-                // #renderlayer — per-layer depth bias from
-                // `RenderLayer::depth_bias()`. The Vulkan formula is
-                //   bias = constant_factor × r + slope_factor × |max_dz/dxy|
-                // where `r` is the smallest representable depth at the
-                // fragment (≈ 2⁻²⁴ ≈ 6e-8 for D32_SFLOAT around mid-
-                // depth). The `Decal` anchor (-64, -2) lifts coplanar
-                // overlays into the ~4e-6 normalised-depth range
-                // (Bethesda D3D scale for decal polygon offset);
-                // `Architecture` is zero (the surfaces other layers
-                // sit on top of); `Clutter` and `Actor` are
-                // intermediate. Per-layer table is the single source
-                // of truth — modifying it does NOT require touching
-                // this site.
-                if last_render_layer != Some(batch.render_layer) {
-                    let (bias_const, clamp, bias_slope) = batch.render_layer.depth_bias();
-                    self.device
-                        .cmd_set_depth_bias(cmd, bias_const, clamp, bias_slope);
-                    last_render_layer = Some(batch.render_layer);
-                }
+            i = self.record_batch_draws(
+                cmd,
+                batches,
+                i,
+                path,
+                &mut raster.last_cull_mode,
+                &mut last_bound_mesh_handle,
+            );
+        }
 
-                // #398 — extended dynamic depth state. Emit only on
-                // change so consecutive batches sharing depth state pay
-                // zero state-change cost. Sky domes / viewmodels / glow
-                // halos that author `z_write=0` now actually skip the
-                // depth write instead of z-fighting world geometry.
-                if batch.z_test != last_z_test {
-                    self.device.cmd_set_depth_test_enable(cmd, batch.z_test);
-                    last_z_test = batch.z_test;
-                }
-                if batch.z_write != last_z_write {
-                    self.device.cmd_set_depth_write_enable(cmd, batch.z_write);
-                    last_z_write = batch.z_write;
-                }
-                if batch.z_function != last_z_function {
-                    // #3308 — `depth_compare_op`, not the raw
-                    // `gamebryo_to_vk_compare_op`: the authored Z-test has to
-                    // be mirrored when the depth buffer runs far→0, or every
-                    // material's authored occlusion semantics invert.
-                    self.device
-                        .cmd_set_depth_compare_op(cmd, depth_compare_op(batch.z_function));
-                    last_z_function = batch.z_function;
-                }
+        if self.last_draw_call_stats.indirect_call_count > phase_draw_start {
+            if let (Some(timers), Some(phase)) = (&mut self.gpu_timers, triangle_phase) {
+                timers.cmd_geometry_phase_end(&self.device, cmd, frame, phase);
+            }
+        }
+        if matches!(triangle_phase, Some(GeometryTimerPhase::MainOpaque)) {
+            if let Some(timers) = &mut self.gpu_timers {
+                timers.cmd_opaque_fragment_invocations_end(&self.device, cmd, frame);
+            }
+        }
+        if !groundcover_models_drawn {
+            self.draw_groundcover_models(cmd, frame, global_bound, &mut raster);
+        }
+    }
 
-                // Classify the batch's cull-mode requirement.
-                //
-                // Every pipeline declares CULL_MODE as dynamic (so the
-                // state persists across pipeline transitions — per
-                // Vulkan spec a bind to a pipeline without the dynamic
-                // state would invalidate prior cmd_set_cull_mode), so
-                // we must emit the target cull per-batch even for
-                // opaque draws. The per-batch cost is a single u32
-                // host command.
-                //
-                // Two-sided alpha-blend batches are rendered in two
-                // passes — FRONT cull first (draws back faces, which
-                // write depth), then BACK cull (draws front faces,
-                // which blend on top). Without the split, a single
-                // CULL_NONE draw would put front and back triangles in
-                // arbitrary index order; TAA subpixel jitter then
-                // flips the depth winner per frame, producing
-                // cross-hatch moiré on glass. See Phase 1 of Tier C
-                // glass plan + `docs/issues/glass-investigation/`.
-                let two_sided = batch.two_sided;
-                let needs_split = needs_two_sided_blend_split(batch);
-                // Opaque & single-sided-blend cull target — used by
-                // every branch below except the split two-sided blend.
-                let default_cull = if two_sided {
-                    vk::CullModeFlags::NONE
-                } else {
-                    vk::CullModeFlags::BACK
+    /// Bring pipeline, depth bias and depth state up to what `batch` needs, emitting
+    /// only what changed. Cull mode is set per draw by `record_batch_draws`.
+    ///
+    /// # Safety
+    /// `cmd` must be recording inside the main render pass.
+    unsafe fn bind_batch_state(
+        &self,
+        cmd: vk::CommandBuffer,
+        batch: &DrawBatch,
+        raster: &mut BatchRasterState,
+    ) {
+        // Switch pipeline when rendering mode changes.
+        // Two-sided rendering uses dynamic `cmd_set_cull_mode`
+        // (issued elsewhere in the draw loop based on
+        // `draw_cmd.two_sided`), not a separate pipeline (#930).
+        if batch.pipeline_key != raster.last_pipeline_key {
+            let pipe = match batch.pipeline_key {
+                PipelineKey::Opaque {
+                    early_tests: true, ..
+                } => self.pipeline_early,
+                PipelineKey::Opaque {
+                    wireframe: false,
+                    early_tests: false,
+                } => self.pipeline,
+                // Wireframe falls back to FILL on devices
+                // without `fillModeNonSolid`. #869.
+                PipelineKey::Opaque {
+                    wireframe: true,
+                    early_tests: false,
+                } => self.pipeline_wireframe.unwrap_or(self.pipeline),
+                PipelineKey::Blended {
+                    src,
+                    dst,
+                    wireframe,
+                    preserve_opaque_gbuffer,
+                } => {
+                    // Always present after the pre-population
+                    // pass above. If creation failed earlier we
+                    // fall back to the opaque pipeline rather
+                    // than skipping the draw entirely — better
+                    // a wrong-blend visible mesh than a vanished
+                    // one. See #392.
+                    let wireframe = wireframe && self.device_caps.fill_mode_non_solid_supported;
+                    *self
+                        .blend_pipeline_cache
+                        .get(&(src, dst, wireframe, preserve_opaque_gbuffer))
+                        .unwrap_or(&self.pipeline)
+                }
+            };
+            self.device
+                .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipe);
+            raster.last_pipeline_key = batch.pipeline_key;
+        }
+
+        // #renderlayer — per-layer depth bias from
+        // `RenderLayer::depth_bias()`. The Vulkan formula is
+        //   bias = constant_factor × r + slope_factor × |max_dz/dxy|
+        // where `r` is the smallest representable depth at the
+        // fragment (≈ 2⁻²⁴ ≈ 6e-8 for D32_SFLOAT around mid-
+        // depth). The `Decal` anchor (-64, -2) lifts coplanar
+        // overlays into the ~4e-6 normalised-depth range
+        // (Bethesda D3D scale for decal polygon offset);
+        // `Architecture` is zero (the surfaces other layers
+        // sit on top of); `Clutter` and `Actor` are
+        // intermediate. Per-layer table is the single source
+        // of truth — modifying it does NOT require touching
+        // this site.
+        if raster.last_render_layer != Some(batch.render_layer) {
+            let (bias_const, clamp, bias_slope) = batch.render_layer.depth_bias();
+            self.device
+                .cmd_set_depth_bias(cmd, bias_const, clamp, bias_slope);
+            raster.last_render_layer = Some(batch.render_layer);
+        }
+
+        // #398 — extended dynamic depth state. Emit only on
+        // change so consecutive batches sharing depth state pay
+        // zero state-change cost. Sky domes / viewmodels / glow
+        // halos that author `z_write=0` now actually skip the
+        // depth write instead of z-fighting world geometry.
+        if batch.z_test != raster.last_z_test {
+            self.device.cmd_set_depth_test_enable(cmd, batch.z_test);
+            raster.last_z_test = batch.z_test;
+        }
+        if batch.z_write != raster.last_z_write {
+            self.device.cmd_set_depth_write_enable(cmd, batch.z_write);
+            raster.last_z_write = batch.z_write;
+        }
+        if batch.z_function != raster.last_z_function {
+            // #3308 — `depth_compare_op`, not the raw
+            // `gamebryo_to_vk_compare_op`: the authored Z-test has to
+            // be mirrored when the depth buffer runs far→0, or every
+            // material's authored occlusion semantics invert.
+            self.device
+                .cmd_set_depth_compare_op(cmd, depth_compare_op(batch.z_function));
+            raster.last_z_function = batch.z_function;
+        }
+    }
+
+    /// Draw the batch at `i`, plus any later batches that can share its indirect
+    /// group, and return the index of the next batch to draw.
+    ///
+    /// # Safety
+    /// `cmd` must be recording inside the main render pass, with `batches[i]`'s state
+    /// bound by `bind_batch_state`.
+    unsafe fn record_batch_draws(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        batches: &[DrawBatch],
+        mut i: usize,
+        path: BatchDrawPath,
+        last_cull_mode: &mut Option<vk::CullModeFlags>,
+        last_bound_mesh_handle: &mut u32,
+    ) -> usize {
+        let BatchDrawPath {
+            global_bound,
+            use_indirect,
+            indirect_buffer,
+            indirect_stride,
+        } = path;
+        let batch = &batches[i];
+
+        // Classify the batch's cull-mode requirement.
+        //
+        // Every pipeline declares CULL_MODE as dynamic (so the
+        // state persists across pipeline transitions — per
+        // Vulkan spec a bind to a pipeline without the dynamic
+        // state would invalidate prior cmd_set_cull_mode), so
+        // we must emit the target cull per-batch even for
+        // opaque draws. The per-batch cost is a single u32
+        // host command.
+        //
+        // Two-sided alpha-blend batches are rendered in two
+        // passes — FRONT cull first (draws back faces, which
+        // write depth), then BACK cull (draws front faces,
+        // which blend on top). Without the split, a single
+        // CULL_NONE draw would put front and back triangles in
+        // arbitrary index order; TAA subpixel jitter then
+        // flips the depth winner per frame, producing
+        // cross-hatch moiré on glass. See Phase 1 of Tier C
+        // glass plan + `docs/issues/glass-investigation/`.
+        let two_sided = batch.two_sided;
+        let needs_split = needs_two_sided_blend_split(batch);
+        // Opaque & single-sided-blend cull target — used by
+        // every branch below except the split two-sided blend.
+        let default_cull = if two_sided {
+            vk::CullModeFlags::NONE
+        } else {
+            vk::CullModeFlags::BACK
+        };
+
+        let set_cull = |target: vk::CullModeFlags, last: &mut Option<vk::CullModeFlags>| {
+            if *last != Some(target) {
+                self.device.cmd_set_cull_mode(cmd, target);
+                *last = Some(target);
+            }
+        };
+
+        // Dispatch helper — one direct draw of `batch`. Factored
+        // so we can call it twice for the two-sided alpha-blend
+        // split without duplicating the global-bound / per-mesh
+        // fallback paths.
+        //
+        // #664 — `last_bound` threads through so the per-mesh
+        // fallback elides VB/IB rebinds when consecutive
+        // dispatches share `mesh_handle` (the two-sided
+        // alpha-blend split is the dominant case).
+        //
+        // #2766 — returns whether a draw was actually recorded, so
+        // the two early-out arms below (missing mesh, per-mesh
+        // buffers absent) don't get counted into
+        // `indirect_call_count`. Both are reachable on the
+        // `global_bound == false` path only, where the metric would
+        // otherwise be an upper bound rather than the GPU-draw count
+        // it is documented as.
+        let dispatch_direct = |this: &Self, last_bound: &mut u32| -> bool {
+            if global_bound {
+                this.device.cmd_draw_indexed(
+                    cmd,
+                    batch.index_count,
+                    batch.instance_count,
+                    batch.global_index_offset,
+                    batch.global_vertex_offset,
+                    batch.first_instance,
+                );
+                true
+            } else {
+                // Per-mesh fallback (global SSBO not bound this frame).
+                // A global-only scene mesh (distant terrain LOD, #1370)
+                // carries no per-mesh buffers — skip it; it draws via
+                // the global buffer once `rebuild_geometry_ssbo` runs
+                // (≤1-frame distant pop-in, invisible).
+                let Some(mesh) = this.mesh_registry.get(batch.mesh_handle) else {
+                    return false;
                 };
-
-                let set_cull = |target: vk::CullModeFlags, last: &mut Option<vk::CullModeFlags>| {
-                    if *last != Some(target) {
-                        self.device.cmd_set_cull_mode(cmd, target);
-                        *last = Some(target);
-                    }
+                let (Some(vb), Some(ib)) =
+                    (mesh.vertex_buffer.as_ref(), mesh.index_buffer.as_ref())
+                else {
+                    return false;
                 };
+                if batch.mesh_handle != *last_bound {
+                    this.device
+                        .cmd_bind_vertex_buffers(cmd, 0, &[vb.buffer], &[0]);
+                    this.device
+                        .cmd_bind_index_buffer(cmd, ib.buffer, 0, vk::IndexType::UINT32);
+                    *last_bound = batch.mesh_handle;
+                }
+                this.device.cmd_draw_indexed(
+                    cmd,
+                    batch.index_count,
+                    batch.instance_count,
+                    0,
+                    0,
+                    batch.first_instance,
+                );
+                true
+            }
+        };
 
-                // Dispatch helper — one direct draw of `batch`. Factored
-                // so we can call it twice for the two-sided alpha-blend
-                // split without duplicating the global-bound / per-mesh
-                // fallback paths.
-                //
-                // #664 — `last_bound` threads through so the per-mesh
-                // fallback elides VB/IB rebinds when consecutive
-                // dispatches share `mesh_handle` (the two-sided
-                // alpha-blend split is the dominant case).
-                //
-                // #2766 — returns whether a draw was actually recorded, so
-                // the two early-out arms below (missing mesh, per-mesh
-                // buffers absent) don't get counted into
-                // `indirect_call_count`. Both are reachable on the
-                // `global_bound == false` path only, where the metric would
-                // otherwise be an upper bound rather than the GPU-draw count
-                // it is documented as.
-                let dispatch_direct = |this: &Self, last_bound: &mut u32| -> bool {
-                    if global_bound {
-                        this.device.cmd_draw_indexed(
-                            cmd,
-                            batch.index_count,
-                            batch.instance_count,
-                            batch.global_index_offset,
-                            batch.global_vertex_offset,
-                            batch.first_instance,
-                        );
-                        true
-                    } else {
-                        // Per-mesh fallback (global SSBO not bound this frame).
-                        // A global-only scene mesh (distant terrain LOD, #1370)
-                        // carries no per-mesh buffers — skip it; it draws via
-                        // the global buffer once `rebuild_geometry_ssbo` runs
-                        // (≤1-frame distant pop-in, invisible).
-                        let Some(mesh) = this.mesh_registry.get(batch.mesh_handle) else {
-                            return false;
+        if needs_split {
+            // Two-sided alpha-blend: back faces first, then
+            // front faces. Fall out of indirect grouping —
+            // two-sided blend batches must draw each mesh
+            // back+front adjacently, which
+            // `cmd_draw_indexed_indirect` over a group can't
+            // express without interleaving meshes.
+            set_cull(vk::CullModeFlags::FRONT, last_cull_mode);
+            let back = dispatch_direct(self, last_bound_mesh_handle);
+            set_cull(vk::CullModeFlags::BACK, last_cull_mode);
+            let front = dispatch_direct(self, last_bound_mesh_handle);
+            // #1258 — two-sided split emits 2 direct draws, #2766 —
+            // unless the fallback skipped them. Both calls see the
+            // same batch so they agree, but counting each keeps the
+            // metric derived from what was recorded rather than from
+            // an assumption about the pair.
+            self.last_draw_call_stats.indirect_call_count += u32::from(back) + u32::from(front);
+            i += 1;
+        } else if use_indirect {
+            set_cull(default_cull, last_cull_mode);
+            // Gather consecutive batches that share the current
+            // `(pipeline_key, render_layer)` tuple — each one is
+            // already represented in the indirect buffer as one
+            // VkDrawIndexedIndirectCommand. A single
+            // `cmd_draw_indexed_indirect` call dispatches all N.
+            //
+            // Two-sided blend batches are excluded above (`needs_split`
+            // draws them directly) and can't reach this branch.
+            // `group_state` now captures two_sided + depth state, so a
+            // group is homogeneous in every leader-set dynamic state —
+            // the leader's cull/depth applies correctly to all of it.
+            let key = group_state(batch);
+            let mut end = i + 1;
+            while end < batches.len() && group_state(&batches[end]) == key {
+                end += 1;
+            }
+            let group_size = (end - i) as u32;
+            let byte_offset = (i * indirect_stride as usize) as vk::DeviceSize;
+            self.device.cmd_draw_indexed_indirect(
+                cmd,
+                indirect_buffer,
+                byte_offset,
+                group_size,
+                indirect_stride,
+            );
+            // #1258 — one indirect call dispatches `group_size`
+            // batches; surfaced grouping ratio = batch_count /
+            // indirect_call_count.
+            self.last_draw_call_stats.indirect_call_count += 1;
+            i = end;
+        } else {
+            // Direct-draw fallback: global VB/IB bound or
+            // per-mesh fallback inside `dispatch_direct`.
+            set_cull(default_cull, last_cull_mode);
+            // #1258 — direct fallback emits 1 draw per batch; #2766 —
+            // zero when the per-mesh fallback found no buffers to
+            // draw from (a global-only distant-LOD mesh, #1370).
+            if dispatch_direct(self, last_bound_mesh_handle) {
+                self.last_draw_call_stats.indirect_call_count += 1;
+            }
+            i += 1;
+        }
+        i
+    }
+
+    /// Draw every `WaterPlane` through the water pipeline, when RT is live.
+    ///
+    /// # Safety
+    /// `cmd` must be recording inside the main render pass, after the triangle batches.
+    unsafe fn record_water_surfaces(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        draw_commands: &[DrawCommand],
+        water_commands: &[WaterDrawCommand],
+        instance_map: &[Option<u32>],
+    ) {
+        // ── Water surfaces ────────────────────────────────────────
+        //
+        // After all opaque + alpha-blend triangle batches have
+        // submitted but before the UI overlay, render every
+        // `WaterPlane` ECS entity through the dedicated water
+        // pipeline. Each `WaterDrawCommand` carries its own push
+        // constants (material + flow + time); the bound set 0 +
+        // set 1 from the triangle path stay compatible because
+        // the water pipeline layout uses the same set layouts.
+        //
+        // State note: the last opaque/blend pipeline already left
+        // depth-test on and depth-write off (blend pipelines
+        // disable depth-write). We still re-issue the dynamic
+        // state defensively — if a frame somehow has only opaque
+        // geometry preceding the water, depth-write would be ON
+        // and water would corrupt the depth buffer.
+        //
+        // Cull mode: water pipeline declares it DYNAMIC (#1071 /
+        // F-WAT-11) — the caller is now required to emit
+        // `cmd_set_cull_mode(NONE)` before the draw. Done explicitly
+        // below regardless of the per-batch coalescing helper's
+        // `last_cull_mode` state because water is rendered through
+        // a separate, water-specific dispatch loop that doesn't
+        // route through the main per-batch helper.
+        // #1561 — water.frag traces RT rays (TLAS at set=1 binding=2)
+        // with no `sceneFlags.x` runtime guard, so the water draw must not
+        // run when RT isn't live: a frame whose TLAS wasn't written would
+        // trace a stale/unwritten structure. Gate on the same
+        // `tlas_written[frame]` signal that drives `rt_flag`/`sceneFlags.x`
+        // everywhere else (the shader-side `sceneFlags.x < 0.5` early-out —
+        // mirroring caustic_splat.comp — remains a follow-up needing
+        // RenderDoc verification). The device half of the old gate
+        // (`ray_query_supported`) is constant `true` since #3759 (#4894).
+        let rt_live = self.scene_buffers.tlas_written[frame];
+        if !water_commands.is_empty() && rt_live {
+            // #1026 / F-WAT-05 — pin the no-resort contract right
+            // before consuming `wc.instance_index`. The app's
+            // render code records the position into `draw_commands`
+            // at emit time; any future re-sort between that emit
+            // and this consumer would silently desync the recorded
+            // index from the actual SSBO slot. The assertion
+            // compiles out in release builds (the forward-compat
+            // trap is documented next to the sort site in
+            // `byroredux/src/render.rs`).
+            debug_assert!(
+                super::super::water::water_commands_match_draw_slots(water_commands, draw_commands,),
+                "WaterDrawCommand instance_index desynced from draw_commands — \
+                 was draw_commands re-sorted after the water emit? See #1026 / F-WAT-05.",
+            );
+            if let Some(ref water) = self.water {
+                if water.params_ready(frame) {
+                    self.device.cmd_set_depth_test_enable(cmd, true);
+                    self.device.cmd_set_depth_write_enable(cmd, false);
+                    self.device
+                        .cmd_set_depth_compare_op(cmd, default_depth_compare_op());
+                    // #1071 / F-WAT-11 — water pipeline declares CULL_MODE dynamic.
+                    // Emit the runtime override here so the draw uses NONE (water
+                    // surfaces are visible from above and below the camera plane).
+                    self.device.cmd_set_cull_mode(cmd, vk::CullModeFlags::NONE);
+                    // #2175 / D2-04 — pipeline + all three descriptor sets
+                    // are identical for every plane in the pass, so bind
+                    // them once here rather than once per plane. The only
+                    // per-plane state left in the loop is the mesh's
+                    // vertex/index buffers and the push constants, neither
+                    // of which disturbs pipeline or descriptor bindings.
+                    water.bind_pass(
+                        &self.device,
+                        cmd,
+                        frame, // #1255 — selects set 2 per-FIF water-caustic descriptor
+                        self.texture_registry.descriptor_set(frame), // #1258 — set 0
+                        self.scene_buffers.descriptor_set(frame), // #1258 — set 1
+                    );
+                    let mut water_drawn = false;
+                    for (water_index, wc) in water_commands.iter().enumerate() {
+                        // `wc.instance_index` is a `draw_commands`
+                        // position; the SSBO slot is its `instance_map`
+                        // entry. A plane whose draw got no slot this
+                        // frame has no model matrix to read — skip it.
+                        let Some(instance_slot) = water_instance_slot(wc, instance_map) else {
+                            continue;
                         };
-                        let (Some(vb), Some(ib)) =
-                            (mesh.vertex_buffer.as_ref(), mesh.index_buffer.as_ref())
-                        else {
-                            return false;
-                        };
-                        if batch.mesh_handle != *last_bound {
-                            this.device
+                        if let Some(mesh) = self.mesh_registry.get(wc.mesh_handle) {
+                            // #2505 / D12-2026-08-07-03 — no live path
+                            // registers a water plane global-only today
+                            // (mirrors the `dispatch_direct` closure above,
+                            // #956 / REN-D5-NEW-05), but the precondition
+                            // is a call-site convention, not a type-level
+                            // guarantee. A future WATAL water-LOD tier that
+                            // did would otherwise panic mid-render-pass
+                            // with `cmd` still open — skip gracefully
+                            // instead.
+                            let (Some(vb), Some(ib)) =
+                                (mesh.vertex_buffer.as_ref(), mesh.index_buffer.as_ref())
+                            else {
+                                static ONCE: std::sync::Once = std::sync::Once::new();
+                                ONCE.call_once(|| {
+                                    log::warn!(
+                                        "Water mesh has no per-mesh vertex/index buffer \
+                                     (global-only) — skipping water draw. #2505"
+                                    );
+                                });
+                                continue;
+                            };
+                            self.device
                                 .cmd_bind_vertex_buffers(cmd, 0, &[vb.buffer], &[0]);
-                            this.device.cmd_bind_index_buffer(
+                            self.device.cmd_bind_index_buffer(
                                 cmd,
                                 ib.buffer,
                                 0,
                                 vk::IndexType::UINT32,
                             );
-                            *last_bound = batch.mesh_handle;
+                            if !water_drawn {
+                                if let Some(timers) = &mut self.gpu_timers {
+                                    timers.cmd_geometry_phase_start(
+                                        &self.device,
+                                        cmd,
+                                        frame,
+                                        GeometryTimerPhase::MainWater,
+                                    );
+                                }
+                                water_drawn = true;
+                            }
+                            water.record_draw(
+                                &self.device,
+                                cmd,
+                                water_index as u32,
+                                mesh.index_count,
+                                instance_slot,
+                            );
                         }
-                        this.device.cmd_draw_indexed(
-                            cmd,
-                            batch.index_count,
-                            batch.instance_count,
-                            0,
-                            0,
-                            batch.first_instance,
-                        );
-                        true
                     }
-                };
+                    if water_drawn {
+                        if let Some(timers) = &mut self.gpu_timers {
+                            timers.cmd_geometry_phase_end(
+                                &self.device,
+                                cmd,
+                                frame,
+                                GeometryTimerPhase::MainWater,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 
-                if needs_split {
-                    // Two-sided alpha-blend: back faces first, then
-                    // front faces. Fall out of indirect grouping —
-                    // two-sided blend batches must draw each mesh
-                    // back+front adjacently, which
-                    // `cmd_draw_indexed_indirect` over a group can't
-                    // express without interleaving meshes.
-                    set_cull(vk::CullModeFlags::FRONT, &mut last_cull_mode);
-                    let back = dispatch_direct(self, &mut last_bound_mesh_handle);
-                    set_cull(vk::CullModeFlags::BACK, &mut last_cull_mode);
-                    let front = dispatch_direct(self, &mut last_bound_mesh_handle);
-                    // #1258 — two-sided split emits 2 direct draws, #2766 —
-                    // unless the fallback skipped them. Both calls see the
-                    // same batch so they agree, but counting each keeps the
-                    // metric derived from what was recorded rather than from
-                    // an assumption about the pair.
-                    self.last_draw_call_stats.indirect_call_count +=
-                        u32::from(back) + u32::from(front);
-                    i += 1;
-                } else if use_indirect {
-                    set_cull(default_cull, &mut last_cull_mode);
-                    // Gather consecutive batches that share the current
-                    // `(pipeline_key, render_layer)` tuple — each one is
-                    // already represented in the indirect buffer as one
-                    // VkDrawIndexedIndirectCommand. A single
-                    // `cmd_draw_indexed_indirect` call dispatches all N.
-                    //
-                    // Two-sided blend batches are excluded above (`needs_split`
-                    // draws them directly) and can't reach this branch.
-                    // `group_state` now captures two_sided + depth state, so a
-                    // group is homogeneous in every leader-set dynamic state —
-                    // the leader's cull/depth applies correctly to all of it.
-                    let key = group_state(batch);
-                    let mut end = i + 1;
-                    while end < batches.len() && group_state(&batches[end]) == key {
-                        end += 1;
-                    }
-                    let group_size = (end - i) as u32;
-                    let byte_offset = (i * indirect_stride as usize) as vk::DeviceSize;
-                    self.device.cmd_draw_indexed_indirect(
-                        cmd,
-                        indirect_buffer,
-                        byte_offset,
-                        group_size,
-                        indirect_stride,
-                    );
-                    // #1258 — one indirect call dispatches `group_size`
-                    // batches; surfaced grouping ratio = batch_count /
-                    // indirect_call_count.
-                    self.last_draw_call_stats.indirect_call_count += 1;
-                    i = end;
-                } else {
-                    // Direct-draw fallback: global VB/IB bound or
-                    // per-mesh fallback inside `dispatch_direct`.
-                    set_cull(default_cull, &mut last_cull_mode);
-                    // #1258 — direct fallback emits 1 draw per batch; #2766 —
-                    // zero when the per-mesh fallback found no buffers to
-                    // draw from (a global-only distant-LOD mesh, #1370).
-                    if dispatch_direct(self, &mut last_bound_mesh_handle) {
-                        self.last_draw_call_stats.indirect_call_count += 1;
-                    }
-                    i += 1;
-                }
-            }
-
-            if self.last_draw_call_stats.indirect_call_count > phase_draw_start {
-                if let (Some(timers), Some(phase)) = (&mut self.gpu_timers, triangle_phase) {
-                    timers.cmd_geometry_phase_end(&self.device, cmd, frame, phase);
-                }
-            }
-            if matches!(triangle_phase, Some(GeometryTimerPhase::MainOpaque)) {
-                if let Some(timers) = &mut self.gpu_timers {
-                    timers.cmd_opaque_fragment_invocations_end(&self.device, cmd, frame);
-                }
-            }
-            if !groundcover_models_drawn {
-                self.draw_groundcover_models(
+    /// Draw the EXAL ground-cover blades.
+    ///
+    /// # Safety
+    /// `cmd` must be recording inside the main render pass, after water.
+    unsafe fn record_groundcover_blades(&mut self, cmd: vk::CommandBuffer, frame: usize) {
+        // EXAL ground cover (#4054 / #4055). Inside the main pass, after
+        // opaque geometry and water: §5 Stage 1 makes grass receive-only
+        // but *rasterized here*, so it is lit and shadowed by the same
+        // lights and the same TLAS as everything else. Drawn after water
+        // because a blade below a water plane must be composited under it.
+        //
+        // Restore the depth state the water block above left dynamic —
+        // blades are opaque and write depth so they occlude each other.
+        //
+        // Depth and cull are STATIC on this pipeline (opaque, depth-write
+        // on, two-sided) rather than inherited from the dynamic state the
+        // water block above leaves behind — a blade ribbon has no inside,
+        // and a pipeline that took its cull mode from whatever ran last
+        // would blank half the field the first time the water branch was
+        // skipped. Viewport and scissor stay dynamic and are already set
+        // for the pass.
+        if let Some(ref gc) = self.groundcover {
+            if let Some(timers) = &mut self.gpu_timers {
+                timers.cmd_geometry_phase_start(
+                    &self.device,
                     cmd,
                     frame,
-                    global_bound,
-                    &mut last_pipeline_key,
-                    &mut last_render_layer,
-                    &mut last_z_test,
-                    &mut last_z_write,
-                    &mut last_z_function,
-                    &mut last_cull_mode,
+                    GeometryTimerPhase::GroundcoverBladeDraw,
                 );
             }
-
-            // ── Water surfaces ────────────────────────────────────────
-            //
-            // After all opaque + alpha-blend triangle batches have
-            // submitted but before the UI overlay, render every
-            // `WaterPlane` ECS entity through the dedicated water
-            // pipeline. Each `WaterDrawCommand` carries its own push
-            // constants (material + flow + time); the bound set 0 +
-            // set 1 from the triangle path stay compatible because
-            // the water pipeline layout uses the same set layouts.
-            //
-            // State note: the last opaque/blend pipeline already left
-            // depth-test on and depth-write off (blend pipelines
-            // disable depth-write). We still re-issue the dynamic
-            // state defensively — if a frame somehow has only opaque
-            // geometry preceding the water, depth-write would be ON
-            // and water would corrupt the depth buffer.
-            //
-            // Cull mode: water pipeline declares it DYNAMIC (#1071 /
-            // F-WAT-11) — the caller is now required to emit
-            // `cmd_set_cull_mode(NONE)` before the draw. Done explicitly
-            // below regardless of the per-batch coalescing helper's
-            // `last_cull_mode` state because water is rendered through
-            // a separate, water-specific dispatch loop that doesn't
-            // route through the main per-batch helper.
-            // #1561 — water.frag traces RT rays (TLAS at set=1 binding=2)
-            // with no `sceneFlags.x` runtime guard, so the water draw must not
-            // run when RT isn't live: a frame whose TLAS wasn't written would
-            // trace a stale/unwritten structure. Gate on the same
-            // `tlas_written[frame]` signal that drives `rt_flag`/`sceneFlags.x`
-            // everywhere else (the shader-side `sceneFlags.x < 0.5` early-out —
-            // mirroring caustic_splat.comp — remains a follow-up needing
-            // RenderDoc verification). The device half of the old gate
-            // (`ray_query_supported`) is constant `true` since #3759 (#4894).
-            let rt_live = self.scene_buffers.tlas_written[frame];
-            if !water_commands.is_empty() && rt_live {
-                // #1026 / F-WAT-05 — pin the no-resort contract right
-                // before consuming `wc.instance_index`. The app's
-                // render code records the position into `draw_commands`
-                // at emit time; any future re-sort between that emit
-                // and this consumer would silently desync the recorded
-                // index from the actual SSBO slot. The assertion
-                // compiles out in release builds (the forward-compat
-                // trap is documented next to the sort site in
-                // `byroredux/src/render.rs`).
-                debug_assert!(
-                    super::super::water::water_commands_match_draw_slots(
-                        water_commands,
-                        draw_commands,
-                    ),
-                    "WaterDrawCommand instance_index desynced from draw_commands — \
-                     was draw_commands re-sorted after the water emit? See #1026 / F-WAT-05.",
-                );
-                if let Some(ref water) = self.water {
-                    if water.params_ready(frame) {
-                        self.device.cmd_set_depth_test_enable(cmd, true);
-                        self.device.cmd_set_depth_write_enable(cmd, false);
-                        self.device
-                            .cmd_set_depth_compare_op(cmd, default_depth_compare_op());
-                        // #1071 / F-WAT-11 — water pipeline declares CULL_MODE dynamic.
-                        // Emit the runtime override here so the draw uses NONE (water
-                        // surfaces are visible from above and below the camera plane).
-                        self.device.cmd_set_cull_mode(cmd, vk::CullModeFlags::NONE);
-                        // #2175 / D2-04 — pipeline + all three descriptor sets
-                        // are identical for every plane in the pass, so bind
-                        // them once here rather than once per plane. The only
-                        // per-plane state left in the loop is the mesh's
-                        // vertex/index buffers and the push constants, neither
-                        // of which disturbs pipeline or descriptor bindings.
-                        water.bind_pass(
-                            &self.device,
-                            cmd,
-                            frame, // #1255 — selects set 2 per-FIF water-caustic descriptor
-                            self.texture_registry.descriptor_set(frame), // #1258 — set 0
-                            self.scene_buffers.descriptor_set(frame), // #1258 — set 1
-                        );
-                        let mut water_drawn = false;
-                        for (water_index, wc) in water_commands.iter().enumerate() {
-                            // `wc.instance_index` is a `draw_commands`
-                            // position; the SSBO slot is its `instance_map`
-                            // entry. A plane whose draw got no slot this
-                            // frame has no model matrix to read — skip it.
-                            let Some(instance_slot) = water_instance_slot(wc, instance_map) else {
-                                continue;
-                            };
-                            if let Some(mesh) = self.mesh_registry.get(wc.mesh_handle) {
-                                // #2505 / D12-2026-08-07-03 — no live path
-                                // registers a water plane global-only today
-                                // (mirrors the `dispatch_direct` closure above,
-                                // #956 / REN-D5-NEW-05), but the precondition
-                                // is a call-site convention, not a type-level
-                                // guarantee. A future WATAL water-LOD tier that
-                                // did would otherwise panic mid-render-pass
-                                // with `cmd` still open — skip gracefully
-                                // instead.
-                                let (Some(vb), Some(ib)) =
-                                    (mesh.vertex_buffer.as_ref(), mesh.index_buffer.as_ref())
-                                else {
-                                    static ONCE: std::sync::Once = std::sync::Once::new();
-                                    ONCE.call_once(|| {
-                                        log::warn!(
-                                            "Water mesh has no per-mesh vertex/index buffer \
-                                         (global-only) — skipping water draw. #2505"
-                                        );
-                                    });
-                                    continue;
-                                };
-                                self.device
-                                    .cmd_bind_vertex_buffers(cmd, 0, &[vb.buffer], &[0]);
-                                self.device.cmd_bind_index_buffer(
-                                    cmd,
-                                    ib.buffer,
-                                    0,
-                                    vk::IndexType::UINT32,
-                                );
-                                if !water_drawn {
-                                    if let Some(timers) = &mut self.gpu_timers {
-                                        timers.cmd_geometry_phase_start(
-                                            &self.device,
-                                            cmd,
-                                            frame,
-                                            GeometryTimerPhase::MainWater,
-                                        );
-                                    }
-                                    water_drawn = true;
-                                }
-                                water.record_draw(
-                                    &self.device,
-                                    cmd,
-                                    water_index as u32,
-                                    mesh.index_count,
-                                    instance_slot,
-                                );
-                            }
-                        }
-                        if water_drawn {
-                            if let Some(timers) = &mut self.gpu_timers {
-                                timers.cmd_geometry_phase_end(
-                                    &self.device,
-                                    cmd,
-                                    frame,
-                                    GeometryTimerPhase::MainWater,
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-
-            // EXAL ground cover (#4054 / #4055). Inside the main pass, after
-            // opaque geometry and water: §5 Stage 1 makes grass receive-only
-            // but *rasterized here*, so it is lit and shadowed by the same
-            // lights and the same TLAS as everything else. Drawn after water
-            // because a blade below a water plane must be composited under it.
-            //
-            // Restore the depth state the water block above left dynamic —
-            // blades are opaque and write depth so they occlude each other.
-            //
-            // Depth and cull are STATIC on this pipeline (opaque, depth-write
-            // on, two-sided) rather than inherited from the dynamic state the
-            // water block above leaves behind — a blade ribbon has no inside,
-            // and a pipeline that took its cull mode from whatever ran last
-            // would blank half the field the first time the water branch was
-            // skipped. Viewport and scissor stay dynamic and are already set
-            // for the pass.
-            if let Some(ref gc) = self.groundcover {
+            let drawn = gc.record_draw(
+                &self.device,
+                cmd,
+                frame,
+                self.texture_registry.descriptor_set(frame),
+                self.scene_buffers.descriptor_set(frame),
+            );
+            if drawn {
                 if let Some(timers) = &mut self.gpu_timers {
-                    timers.cmd_geometry_phase_start(
+                    timers.cmd_geometry_phase_end(
                         &self.device,
                         cmd,
                         frame,
                         GeometryTimerPhase::GroundcoverBladeDraw,
                     );
                 }
-                let drawn = gc.record_draw(
-                    &self.device,
-                    cmd,
-                    frame,
-                    self.texture_registry.descriptor_set(frame),
-                    self.scene_buffers.descriptor_set(frame),
-                );
-                if drawn {
-                    if let Some(timers) = &mut self.gpu_timers {
-                        timers.cmd_geometry_phase_end(
-                            &self.device,
-                            cmd,
-                            frame,
-                            GeometryTimerPhase::GroundcoverBladeDraw,
-                        );
-                    }
-                }
-            }
-
-            self.device.cmd_end_render_pass(cmd);
-            if let Some(ref mut timers) = self.gpu_timers {
-                timers.cmd_end(TimerPass::MainRender, &self.device, cmd, frame);
             }
         }
     }
@@ -790,18 +886,12 @@ impl VulkanContext {
     /// written into the main instance buffer's tail by
     /// `record_groundcover_models`; the global VB/IB must be bound, since
     /// the draws index the global pools.
-    #[allow(clippy::too_many_arguments)]
     fn draw_groundcover_models(
         &mut self,
         cmd: vk::CommandBuffer,
         frame: usize,
         global_bound: bool,
-        last_pipeline_key: &mut PipelineKey,
-        last_render_layer: &mut Option<byroredux_core::ecs::components::RenderLayer>,
-        last_z_test: &mut bool,
-        last_z_write: &mut bool,
-        last_z_function: &mut u8,
-        last_cull_mode: &mut Option<vk::CullModeFlags>,
+        raster: &mut BatchRasterState,
     ) {
         if !global_bound {
             return;
@@ -833,38 +923,38 @@ impl VulkanContext {
         // descriptor sets and the global VB/IB bound; `buffer` is the tier's
         // indirect buffer, made visible to DRAW_INDIRECT by its emit barrier.
         unsafe {
-            if *last_pipeline_key != opaque {
+            if raster.last_pipeline_key != opaque {
                 self.device
                     .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
-                *last_pipeline_key = opaque;
+                raster.last_pipeline_key = opaque;
             }
             for (index, shape) in shapes.iter().enumerate() {
-                if *last_render_layer != Some(shape.render_layer) {
+                if raster.last_render_layer != Some(shape.render_layer) {
                     let (constant, clamp, slope) = shape.render_layer.depth_bias();
                     self.device.cmd_set_depth_bias(cmd, constant, clamp, slope);
-                    *last_render_layer = Some(shape.render_layer);
+                    raster.last_render_layer = Some(shape.render_layer);
                 }
-                if shape.z_test != *last_z_test {
+                if shape.z_test != raster.last_z_test {
                     self.device.cmd_set_depth_test_enable(cmd, shape.z_test);
-                    *last_z_test = shape.z_test;
+                    raster.last_z_test = shape.z_test;
                 }
-                if shape.z_write != *last_z_write {
+                if shape.z_write != raster.last_z_write {
                     self.device.cmd_set_depth_write_enable(cmd, shape.z_write);
-                    *last_z_write = shape.z_write;
+                    raster.last_z_write = shape.z_write;
                 }
-                if shape.z_function != *last_z_function {
+                if shape.z_function != raster.last_z_function {
                     self.device
                         .cmd_set_depth_compare_op(cmd, depth_compare_op(shape.z_function));
-                    *last_z_function = shape.z_function;
+                    raster.last_z_function = shape.z_function;
                 }
                 let cull = if shape.two_sided {
                     vk::CullModeFlags::NONE
                 } else {
                     vk::CullModeFlags::BACK
                 };
-                if *last_cull_mode != Some(cull) {
+                if raster.last_cull_mode != Some(cull) {
                     self.device.cmd_set_cull_mode(cmd, cull);
-                    *last_cull_mode = Some(cull);
+                    raster.last_cull_mode = Some(cull);
                 }
                 self.device.cmd_draw_indexed_indirect(
                     cmd,
@@ -911,7 +1001,7 @@ mod tests {
             "dispatch_direct must report whether it recorded a draw (#2766)"
         );
         assert!(
-            production.contains("if dispatch_direct(self, &mut last_bound_mesh_handle) {"),
+            production.contains("if dispatch_direct(self, last_bound_mesh_handle) {"),
             "the direct-fallback arm must count only on a recorded draw (#2766)"
         );
         assert!(
@@ -927,13 +1017,80 @@ mod tests {
     }
 }
 
+// #6710 — the phases are helpers now, so their order is one line per phase. Pin
+// it: draw order and the render pass's open and close depend on it.
+#[cfg(test)]
+mod geometry_pass_phase_order_tests {
+    fn assert_in_order(body: &str, what: &str, needles: &[&str]) {
+        let mut last = 0;
+        for needle in needles {
+            let at = body[last..]
+                .find(needle)
+                .unwrap_or_else(|| panic!("{what}: `{needle}` missing or out of order"));
+            last += at + needle.len();
+        }
+    }
+
+    #[test]
+    fn the_pass_runs_its_phases_in_order() {
+        let src = crate::source_scan::production_text(include_str!("geometry_pass.rs"));
+        assert_in_order(
+            crate::source_scan::function_text(src, "fn record_geometry_pass("),
+            "record_geometry_pass",
+            &[
+                "self.begin_main_render_pass(",
+                "self.record_main_batches(",
+                // Water composites over the triangles, and a blade below a water
+                // plane must composite under it.
+                "self.record_water_surfaces(",
+                "self.record_groundcover_blades(",
+                "cmd_end_render_pass(cmd);",
+                "timers.cmd_end(TimerPass::MainRender,",
+            ],
+        );
+    }
+
+    #[test]
+    fn the_begin_phase_opens_the_pass_inside_its_timer_bracket() {
+        let src = crate::source_scan::production_text(include_str!("geometry_pass.rs"));
+        assert_in_order(
+            crate::source_scan::function_text(src, "fn begin_main_render_pass("),
+            "begin_main_render_pass",
+            &[
+                "timers.cmd_start(TimerPass::MainRender,",
+                ".cmd_begin_render_pass(",
+                "cmd_set_viewport(",
+                "cmd_set_scissor(",
+                "cmd_bind_descriptor_sets(",
+            ],
+        );
+    }
+
+    #[test]
+    fn each_batch_binds_its_state_before_it_draws() {
+        let src = crate::source_scan::production_text(include_str!("geometry_pass.rs"));
+        assert_in_order(
+            crate::source_scan::function_text(src, "fn record_main_batches("),
+            "record_main_batches",
+            &[
+                "while i < batches.len() {",
+                // The model tier draws with the opaque pipeline, ahead of the first
+                // blended batch's own state.
+                "self.draw_groundcover_models(cmd, frame, global_bound, &mut raster);",
+                "self.bind_batch_state(cmd, batch, &mut raster);",
+                "i = self.record_batch_draws(",
+            ],
+        );
+    }
+}
+
 #[cfg(test)]
 mod record_geometry_pass_size_pin_tests {
     /// #5096 (regression of #4342) — `record_geometry_pass` regrew to 763
     /// (+131) because only `draw_frame` had a budget. Pinned at its
     /// 2026-10-06 measured size: move new work into a helper and record the
     /// decision instead of raising the pin.
-    const RECORD_GEOMETRY_PASS_LINE_PIN: usize = 761;
+    const RECORD_GEOMETRY_PASS_LINE_PIN: usize = 30;
 
     fn function_line_count(source: &str, declaration: &str) -> usize {
         let start = source

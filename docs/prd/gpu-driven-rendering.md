@@ -1,6 +1,7 @@
 # GPU-Driven Rendering — Product Requirements
 
-**Status**: PROPOSED (2026-11-05). Revision 3 records `GpuInstance` moving
+**Status**: PROPOSED (2026-11-05). Revision 4 re-points the `geometry_pass.rs`
+citations after the #6710 split. Revision 3 records `GpuInstance` moving
 into one struct-only header. Revision 2 (2026-11-01) folds in review
 round 1 (bench-harness columns the evidence needs, the ECS change-tracking
 state read from code instead of left as a verify item, the indirect-grouping
@@ -157,7 +158,7 @@ table in the commit that moves a stage.
 | 3 | TLAS membership | CPU, same loop | `visibility::ray_exclusion` → `tlas_exclusion`; off-frustum draws stay TLAS members unless `frustum_only_rt` is set (`static_meshes.rs:1446`). Counted per reason in `TlasPolicyCounts` (the `tlas-policy:` bench row). |
 | 4 | Draw sort | CPU | `draw_sort_key` (`render/mod.rs:756`), `par_sort_unstable_by_key` above a size threshold (`render/mod.rs:954`); tests in `draw_sort_key_tests.rs`. |
 | 5 | Instance SSBO and batching | CPU, after the fence wait | `build_and_upload_instances` (`context/build_and_upload_instances.rs:288`) writes one `GpuInstance` per `DrawCommand`, including off-frustum TLAS members, and merges consecutive same-mesh draws in `push_or_extend_batch` (`:1079`); draws with `in_raster == false` or water get a slot but no batch (`:415`). Counted in the `ssbo=` bench token. |
-| 6 | Indirect commands | CPU-written | `upload_indirect_draws` (`scene_buffer/upload.rs:977`), content-hash dirty-gated; one `cmd_draw_indexed_indirect` per consecutive run of equal `group_state` keys (`context/geometry_pass.rs:527-541`); two-sided alpha-blend batches leave the grouping and draw direct, back faces then front (`:496-513`); all of it used only when `indirect_draws_supported()` (multiDrawIndirect + drawIndirectFirstInstance, `device.rs:275`). |
+| 6 | Indirect commands | CPU-written | `upload_indirect_draws` (`scene_buffer/upload.rs:977`), content-hash dirty-gated; one `cmd_draw_indexed_indirect` per consecutive run of equal `group_state` keys (`context/geometry_pass.rs:638-651`); two-sided alpha-blend batches leave the grouping and draw direct, back faces then front (`:607-623`); all of it used only when `indirect_draws_supported()` (multiDrawIndirect + drawIndirectFirstInstance, `device.rs:275`). |
 | 7 | Draw count read by the GPU | — | None. `drawIndirectCount` is not in the enabled `PhysicalDeviceVulkan12Features` chain (`device.rs:936`); no `*IndirectCount` call exists in `crates/renderer/src`. |
 | 8 | GPU-generated indirect draws | GPU | Ground cover only: `groundcover_scatter.comp` writes one `VkDrawIndirectCommand` per chunk and `groundcover/frame.rs:635` draws them with `cmd_draw_indirect`. |
 | 9 | Mesh / task shaders | — | None: no `VK_EXT_mesh_shader` reference in `crates/` or `byroredux/`. [EXAL Ground Cover § 12.15](../engine/exal-groundcover.md#1215-the-2026-10-overhaul-curve-blades-chunk-lod-terrain-matched-light-authored-density) item (d) records the decision not to build one for ground cover. |
@@ -333,7 +334,7 @@ table in the commit that moves a stage.
   alpha-blended groups it MUST preserve `draw_sort_key` order, or keep
   blended draws on CPU-written commands (design choice, recorded in the
   Phase 0 design). Two-sided alpha-blend batches MUST keep their
-  back-then-front direct draws (`geometry_pass.rs:496-513`) on every path.
+  back-then-front direct draws (`geometry_pass.rs:607-623`) on every path.
 - **GDR-IND-004.** The indirect region per group MUST be sized so that a
   frame with every instance raster-visible fits; overflow MUST clamp and
   log, as `upload_indirect_draws` does today for `MAX_INDIRECT_DRAWS`.
@@ -730,3 +731,4 @@ table instead of a hand-written entity figure.
 | 1 | 2026-11-01 | First draft | — |
 | 2 | 2026-11-01 | Review round 1 folded in: bench TSV columns and the pre/post-fence CPU split, ECS change tracking read from code (`GDR-V-006` withdrawn), indirect-grouping and line corrections, meshoptimizer / Wihlidal / Gamebryo citations narrowed, `GpuInstance` lockstep (`GDR-SH-001`, `GDR-SH-005`), texture-streaming readback (`GDR-IND-006`), `GDR-RT-004` fields, `GDR-V-007`, Q6 boundary; coordinator cross-PRD sync (sibling links and citations) | claude: revise |
 | 3 | 2026-11-05 | `GpuInstance` moved into one struct-only header: GDR-SH-001 includes `include/gpu_instance.glsl`, and its allowance for a listed copy is gone because no binding layout can rule that header out. The Phase exit check cites `shared_gpu_structs_are_declared_once` | — |
+| 4 | 2026-11-05 | Re-pointed the `geometry_pass.rs` citations after #6710 split `record_geometry_pass`; no requirement changed | — |
