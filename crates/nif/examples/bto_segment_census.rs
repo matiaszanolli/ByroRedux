@@ -17,17 +17,93 @@
 //!   * levels 8 and 16: exactly **1** segment on every sub-mesh — no
 //!     sub-quad granularity at all.
 //!
-//! Usage: `cargo run --release -p byroredux-nif --example bto_segment_census -- <archive>`
-use byroredux_bsa::BsaArchive;
+//! #6636 (V6, V7) — the census reads BA2 as well as BSA (the FO4 `.bto` quads), and `--blocks` runs it over
+//! the Fallout 3 / New Vegas `landscape\lod\<ws>\blocks\*.nif` quads, where there is no segment data to read:
+//! it prints the NIF block-type histogram instead, so "do those quads partition one per cell" is answered
+//! by what the files contain.
+//!
+//! Usage: `cargo run --release -p byroredux-nif --example bto_segment_census -- [--blocks] <archive>`
+use byroredux_bsa::{Ba2Archive, BsaArchive};
 use std::collections::BTreeMap;
 
+/// Either archive family, picked by the leading magic.
+enum Archive {
+    Bsa(BsaArchive),
+    Ba2(Ba2Archive),
+}
+
+impl Archive {
+    fn open(path: &str) -> Self {
+        let mut magic = [0u8; 4];
+        std::io::Read::read_exact(&mut std::fs::File::open(path).unwrap(), &mut magic).unwrap();
+        if &magic == b"BTDX" {
+            Self::Ba2(Ba2Archive::open(path).unwrap())
+        } else {
+            Self::Bsa(BsaArchive::open(path).unwrap())
+        }
+    }
+
+    fn list_files(&self) -> Vec<&str> {
+        match self {
+            Self::Bsa(a) => a.list_files(),
+            Self::Ba2(a) => a.list_files(),
+        }
+    }
+
+    fn extract(&self, path: &str) -> std::io::Result<Vec<u8>> {
+        match self {
+            Self::Bsa(a) => a.extract(path),
+            Self::Ba2(a) => a.extract(path),
+        }
+    }
+}
+
+/// V7 — the block-type histogram of every `landscape\lod\<ws>\blocks\*.nif` quad in `archive`.
+fn blocks_census(archive: &Archive) {
+    let mut types: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let (mut files, mut segmented) = (0usize, 0usize);
+    for f in archive.list_files() {
+        let l = f.to_ascii_lowercase().replace('/', "\\");
+        if !(l.contains("landscape\\lod\\") && l.contains("\\blocks\\") && l.ends_with(".nif")) {
+            continue;
+        }
+        let Ok(bytes) = archive.extract(f) else { continue };
+        let Ok(scene) = byroredux_nif::parse_nif(&bytes) else { continue };
+        files += 1;
+        let mut has_segments = false;
+        for block in &scene.blocks {
+            let name = block.block_type_name();
+            *types.entry(name).or_default() += 1;
+            has_segments |= name.contains("Segment") || name.contains("SubIndex");
+        }
+        segmented += usize::from(has_segments);
+    }
+    println!("# {files} blocks\\*.nif quads, {segmented} with any segmented / sub-index block");
+    let mut rows: Vec<_> = types.into_iter().collect();
+    rows.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+    for (t, c) in rows {
+        println!("  {c:7}  {t}");
+    }
+}
+
 fn main() {
-    let bsa = std::env::args().nth(1).expect("usage: <archive>");
-    let archive = BsaArchive::open(&bsa).unwrap();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let blocks = args.first().is_some_and(|a| a == "--blocks");
+    if blocks {
+        args.remove(0);
+    }
+    let bsa = args.first().expect("usage: [--blocks] <archive>").clone();
+    let archive = Archive::open(&bsa);
+    if blocks {
+        blocks_census(&archive);
+        return;
+    }
     // level -> segment-count -> occurrences
     let mut by_level: BTreeMap<u32, BTreeMap<u32, usize>> = BTreeMap::new();
     let mut submesh_names: BTreeMap<String, usize> = BTreeMap::new();
     let mut files = 0usize;
+    // Level-4 sub-meshes whose segments' primitive counts sum to the mesh's triangle count (a partition).
+    let (mut partitioned, mut level4) = (0usize, 0usize);
     for f in archive.list_files() {
         let l = f.to_ascii_lowercase();
         if !l.ends_with(".bto") {
@@ -52,6 +128,11 @@ fn main() {
                 *submesh_names.entry(n.to_string()).or_insert(0) += 1;
             }
             if let Some(d) = m.bs_sub_index.as_ref() {
+                if level == 4 {
+                    level4 += 1;
+                    let sum: u32 = d.segments.iter().map(|s| s.num_primitives).sum();
+                    partitioned += usize::from(sum as usize == m.indices.len() / 3);
+                }
                 *by_level
                     .entry(level)
                     .or_default()
@@ -60,7 +141,7 @@ fn main() {
             }
         }
     }
-    println!("# {files} .bto files");
+    println!("# {files} .bto files; level-4 sub-meshes whose segments partition their triangles: {partitioned} of {level4}");
     for (level, counts) in &by_level {
         let max = counts.keys().max().copied().unwrap_or(0);
         let total: usize = counts.values().sum();

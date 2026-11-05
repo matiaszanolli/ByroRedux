@@ -423,3 +423,251 @@ fn expected(title: &str) -> Measured {
         other => panic!("no pinned figures for {other}"),
     }
 }
+
+// ── byte censuses over the Fallout descriptor and tree files (V3, V8) ───────────────────────────────────
+
+/// Every file of `archives` the classifier puts in one of `families`: `(classified hit, bytes)`.
+fn extract_family(
+    dir: &Path,
+    archives: &[&str],
+    families: &[LodFamily],
+) -> Option<Vec<(byroredux_bsa::lod_family::LodHit, String, Vec<u8>)>> {
+    let mut out = Vec::new();
+    for name in archives {
+        let path = dir.join(name);
+        if !path.is_file() {
+            test_paths::require_or_skip(&format!("archive {path:?}"));
+            return None;
+        }
+        let archive = BsaArchive::open(path.to_str().unwrap()).unwrap();
+        for file in archive.list_files() {
+            for hit in classify(file) {
+                if families.contains(&hit.family) {
+                    out.push((hit, file.to_string(), archive.extract(file).unwrap()));
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
+fn u32_at(b: &[u8], o: usize) -> u32 {
+    u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
+}
+
+fn i16_at(b: &[u8], o: usize) -> i16 {
+    i16::from_le_bytes(b[o..o + 2].try_into().unwrap())
+}
+
+/// V3 / DLOD-TREE-004 — what the bytes of FO3's distant-tree files say.
+///
+/// * `treetypes.lst`: a `u32` entry count, then 32-byte entries (a `u32` index counting 0, 1, 2, … and seven
+///   `f32`). 10 of the 11 shipped files are exactly `4 + 32 × count` bytes; `wasteland`'s header says 8 and the
+///   file holds 9 entries, one more than it declares.
+/// * `.dtl`: a `u32` chunk count, then per chunk a `u32` tree type, a `u32` record count (at most 114) and that
+///   many 32-byte records `{x, y, z, scale: f32, f32, base FormID: u32, chunk index: u32, 0xFFFFFF00}`. 70 of the
+///   108 files are exactly that; the other 38 (all `wasteland` and one DLC file) carry bytes after their declared
+///   chunks that the header does not account for, the same way `wasteland`'s `.lst` carries an undeclared entry.
+///   Whatever those trailing bytes are is NOT established here (filed apart, #6678).
+#[test]
+#[ignore = "needs the vanilla Fallout 3 archives on disk"]
+fn fallout3_tree_file_layouts() {
+    let dir = test_paths::fo3_data_dir();
+    let title = &TITLES[1];
+    let archives: Vec<&str> = title.base.iter().chain(title.dlc).copied().collect();
+    let Some(files) = extract_family(&dir, &archives, &[LodFamily::FalloutTreeDtl, LodFamily::FalloutTreeTypes]) else {
+        return;
+    };
+
+    let (mut lst_total, mut lst_exact, mut lst_indexed) = (0, 0, 0);
+    let mut lst_off = Vec::new();
+    let (mut dtl_total, mut dtl_exact) = (0, 0);
+    let mut dtl_off = 0;
+    for (hit, file, bytes) in &files {
+        match hit.family {
+            LodFamily::FalloutTreeTypes => {
+                lst_total += 1;
+                let n = u32_at(bytes, 0) as usize;
+                if bytes.len() == 4 + 32 * n {
+                    lst_exact += 1;
+                } else {
+                    lst_off.push(format!("{}: header {n}, {} entries", hit.world.as_deref().unwrap(), (bytes.len() - 4) / 32));
+                }
+                // The index field counts 0, 1, 2, … in file order.
+                let entries = (bytes.len() - 4) / 32;
+                lst_indexed += usize::from((0..entries).all(|i| u32_at(bytes, 4 + 32 * i) == i as u32));
+            }
+            _ => {
+                dtl_total += 1;
+                let (mut o, n) = (4usize, u32_at(bytes, 0));
+                for _ in 0..n {
+                    let (_ty, count) = (u32_at(bytes, o), u32_at(bytes, o + 4) as usize);
+                    assert!(count <= 114, "{file}: a chunk of {count} records");
+                    o += 8 + 32 * count;
+                }
+                if o == bytes.len() {
+                    dtl_exact += 1;
+                } else {
+                    assert!(o < bytes.len(), "{file}: the declared chunks overrun the file");
+                    dtl_off += 1;
+                }
+            }
+        }
+    }
+    eprintln!("treetypes.lst: {lst_exact}/{lst_total} exact, {lst_indexed} indexed 0..n, off: {lst_off:?}; .dtl: {dtl_exact}/{dtl_total} exact, {dtl_off} with trailing bytes");
+    assert_eq!((lst_total, lst_exact, lst_indexed), (11, 10, 11));
+    assert_eq!(lst_off, ["wasteland: header 8, 9 entries"]);
+    assert_eq!((dtl_total, dtl_exact, dtl_off), (108, 70, 38));
+}
+
+/// V8 / DLOD-BAND-003, -004 — the 24-byte `.dlodsettings` descriptor against the quads each worldspace authors.
+///
+/// Layout: `u32 4`, `u32 top level`, `u32 4 × top level`, `i16` SW cell x, y, `i16` NE cell x, y, `u32` 4 or 8. Over
+/// all 53 vanilla descriptors (FO3 28, FNV 25, base game and DLC):
+///
+/// | relation | holds for |
+/// |---|---|
+/// | first `u32` is 4 | 53 |
+/// | third `u32` is 4 × the second | 51 |
+/// | second `u32` is the highest authored level | 46 (49 at or above it) |
+/// | the SW cell is an authored quad's own corner | 48 |
+/// | every authored quad sits on the lattice anchored at the SW cell (`(x − sw) % level == 0`) | 46 |
+/// | last `u32` is the lowest authored level | 50 |
+/// | the NE cell is the far corner of the authored quads | 4 (it is the worldspace's cell extent, not the LOD's) |
+///
+/// So the SW cell is NOT a universal lattice origin: 7 descriptors (FO3 `dcworld01`, `dcworld06`, `dcworld12`,
+/// `dcworld17`, `dlc02baileyscrossroads`, `paradisefalls`, `washmontop`) have quads off it, and every FNV descriptor
+/// is on it.
+#[test]
+#[ignore = "needs the vanilla Fallout 3 and New Vegas archives on disk"]
+fn dlodsettings_descriptors_against_the_authored_quads() {
+    use std::collections::BTreeSet;
+    let mut tally: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut off_lattice: BTreeSet<String> = BTreeSet::new();
+    for title in [&TITLES[1], &TITLES[2]] {
+        let dir = (title.data_dir)();
+        if !dir.is_dir() {
+            test_paths::require_or_skip(&format!("{} install", title.name));
+            return;
+        }
+        let archives: Vec<&str> = title.base.iter().chain(title.dlc).copied().collect();
+        let Some(files) = extract_family(
+            &dir,
+            &archives,
+            &[LodFamily::DlodSettings, LodFamily::LegacyTerrain, LodFamily::LegacyBlocks],
+        ) else {
+            return;
+        };
+        // world -> every authored quad (x, y, level)
+        let mut quads: BTreeMap<String, BTreeSet<(i32, i32, i32)>> = BTreeMap::new();
+        for (hit, _, _) in &files {
+            if let (Some(world), Some(level), Some((x, y))) = (&hit.world, &hit.level, hit.cell) {
+                if let Some(level) = level.strip_prefix("level").and_then(|l| l.parse().ok()) {
+                    quads.entry(world.clone()).or_default().insert((x, y, level));
+                }
+            }
+        }
+        for (hit, file, bytes) in files.iter().filter(|(h, _, _)| h.family == LodFamily::DlodSettings) {
+            assert_eq!(bytes.len(), 24, "{file}");
+            let world = hit.world.as_deref().unwrap();
+            let q = &quads[world];
+            let (a, top, extent) = (u32_at(bytes, 0), u32_at(bytes, 4) as i32, u32_at(bytes, 8));
+            let (sw, _ne) = ((i16_at(bytes, 12) as i32, i16_at(bytes, 14) as i32), (i16_at(bytes, 16), i16_at(bytes, 18)));
+            let last = u32_at(bytes, 20) as i32;
+            let (highest, lowest) = (q.iter().map(|q| q.2).max().unwrap(), q.iter().map(|q| q.2).min().unwrap());
+            *tally.entry("descriptors").or_default() += 1;
+            *tally.entry("first is 4").or_default() += usize::from(a == 4);
+            *tally.entry("third is 4x second").or_default() += usize::from(extent == 4 * top as u32);
+            *tally.entry("second is the highest level").or_default() += usize::from(top == highest);
+            *tally.entry("second is at or above it").or_default() += usize::from(top >= highest);
+            *tally.entry("last is the lowest level").or_default() += usize::from(last == lowest);
+            *tally.entry("SW is a quad corner").or_default() += usize::from(q.iter().any(|q| (q.0, q.1) == sw));
+            let on_lattice = q.iter().all(|&(x, y, l)| (x - sw.0).rem_euclid(l) == 0 && (y - sw.1).rem_euclid(l) == 0);
+            *tally.entry("all quads on the SW lattice").or_default() += usize::from(on_lattice);
+            if !on_lattice {
+                off_lattice.insert(world.to_owned());
+            }
+        }
+    }
+    eprintln!("{tally:?}\noff the SW lattice: {off_lattice:?}");
+    let expect = |k: &str, n: usize| assert_eq!(tally[k], n, "{k}");
+    expect("descriptors", 53);
+    expect("first is 4", 53);
+    expect("third is 4x second", 51);
+    expect("second is the highest level", 46);
+    expect("second is at or above it", 49);
+    expect("last is the lowest level", 50);
+    expect("SW is a quad corner", 48);
+    expect("all quads on the SW lattice", 46);
+    let off: Vec<&str> = off_lattice.iter().map(String::as_str).collect();
+    assert_eq!(
+        off,
+        ["dcworld01", "dcworld06", "dcworld12", "dcworld17", "dlc02baileyscrossroads", "paradisefalls", "washmontop"]
+    );
+}
+
+/// V9 / DLOD-BAND-005 — every `WRLD` `NAMA` ("Distant LOD Multiplier") the vanilla masters author.
+#[test]
+#[ignore = "needs the vanilla Skyrim SE and Fallout 4 masters on disk"]
+fn worldspace_distant_lod_multiplier_census() {
+    use byroredux_plugin::esm::reader::EsmReader;
+    let mut report = Vec::new();
+    for (title, dir, masters) in [
+        ("Skyrim SE", test_paths::skyrim_se_data_dir(), &["Skyrim.esm", "Update.esm", "Dawnguard.esm", "HearthFires.esm", "Dragonborn.esm"][..]),
+        (
+            "Fallout 4",
+            test_paths::fo4_data_dir(),
+            &["Fallout4.esm", "DLCRobot.esm", "DLCCoast.esm", "DLCNukaWorld.esm", "DLCworkshop01.esm", "DLCworkshop02.esm", "DLCworkshop03.esm"][..],
+        ),
+    ] {
+        for master in masters {
+            let path = dir.join(master);
+            let Ok(bytes) = std::fs::read(&path) else {
+                test_paths::require_or_skip(&format!("{title} master {path:?}"));
+                continue;
+            };
+            let mut reader = EsmReader::new(&bytes);
+            reader.read_file_header().unwrap();
+            let (mut worlds, mut authored): (usize, Vec<(String, f32)>) = (0, Vec::new());
+            reader
+                .for_each_record(bytes.len(), Some(b"WRLD"), |_, subs| {
+                    worlds += 1;
+                    if let Some(nama) = subs.iter().find(|s| s.sub_type == *b"NAMA") {
+                        let edid = subs
+                            .iter()
+                            .find(|s| s.sub_type == *b"EDID")
+                            .map(|s| String::from_utf8_lossy(&s.data).trim_end_matches('\0').to_owned())
+                            .unwrap_or_default();
+                        authored.push((edid, f32::from_le_bytes(nama.data[..4].try_into().unwrap())));
+                    }
+                })
+                .unwrap();
+            report.push((master.to_string(), worlds, authored));
+        }
+    }
+    // (master, WRLD records, NAMA records, those that are not 1.0)
+    let summary: Vec<(String, usize, usize, Vec<(String, f32)>)> = report
+        .iter()
+        .map(|(m, w, a)| (m.clone(), *w, a.len(), a.iter().filter(|(_, v)| *v != 1.0).cloned().collect()))
+        .collect();
+    for row in &summary {
+        eprintln!("{row:?}");
+    }
+    // V9: every vanilla worldspace authors the field and every one authors 1.0, except Skyrim's three closed cities
+    // (WhiterunWorld, WindhelmWorld, MarkarthWorld) and AlftandWorld at 0.25.
+    // Nothing published says what the multiplier scales (the CK / FO4 CK wikis list the field with no description;
+    // the UESP record page calls it "unknown float"), so it stays an unconsumed, documented field.
+    for (master, worlds, authored, odd) in &summary {
+        assert_eq!(worlds, authored, "{master}: NAMA on every WRLD");
+        if master == "Skyrim.esm" {
+            assert_eq!((*worlds, odd.len()), (37, 4), "{odd:?}");
+        }
+        let skyrim_family = ["Skyrim.esm", "Update.esm", "Dawnguard.esm", "HearthFires.esm", "Dragonborn.esm"].contains(&master.as_str());
+        if skyrim_family {
+            let city = ["WhiterunWorld", "WindhelmWorld", "MarkarthWorld", "AlftandWorld"];
+            assert!(odd.iter().all(|(w, v)| *v == 0.25 && city.contains(&w.as_str())), "{master}: {odd:?}");
+        } else {
+            assert!(odd.is_empty(), "{master}: {odd:?}");
+        }
+    }
+}

@@ -67,13 +67,22 @@ impl LodFamily {
     }
 }
 
-/// One classified file: its family, worldspace (when the path names one) and
-/// quad level (when the file name carries one).
+/// One classified file: its family, worldspace (when the path names one), quad
+/// level (when the file name carries one) and quad SW cell (the legacy
+/// `….level<L>.x<X>.y<Y>.…` names and the Creation `<ws>.<L>.<X>.<Y>.…` names).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LodHit {
     pub family: LodFamily,
     pub world: Option<String>,
     pub level: Option<String>,
+    pub cell: Option<(i32, i32)>,
+}
+
+/// The `x<X>.y<Y>` pair of a legacy quad name.
+fn legacy_cell(rest: &str) -> Option<(i32, i32)> {
+    let x = rest.split('.').find_map(|f| f.strip_prefix('x')?.parse().ok())?;
+    let y = rest.split('.').find_map(|f| f.strip_prefix('y')?.parse().ok())?;
+    Some((x, y))
 }
 
 /// Normalise an archive path to the lowercase backslash form [`classify`] reads.
@@ -101,53 +110,59 @@ fn legacy_level(rest: &str) -> Option<&str> {
 pub fn classify(path: &str) -> Vec<LodHit> {
     let l = normalize(path);
     let mut hits = Vec::new();
-    let mut push = |family, world: Option<&str>, level: Option<&str>| {
+    let mut push = |family, world: Option<&str>, level: Option<&str>, cell: Option<(i32, i32)>| {
         hits.push(LodHit {
             family,
             world: world.map(str::to_owned),
             level: level.map(str::to_owned),
+            cell,
         });
     };
 
     if l.ends_with("_far.nif") {
-        push(LodFamily::FarNif, None, None);
+        push(LodFamily::FarNif, None, None, None);
     }
     if let Some(rest) = l.strip_prefix("distantlod\\") {
         if rest.ends_with(".lod") {
             // `<ws>_<x>_<y>.lod`: the worldspace is everything before the last two `_` fields.
             let stem = rest.trim_end_matches(".lod");
             let world = stem.rsplitn(3, '_').nth(2).unwrap_or(stem);
-            push(LodFamily::OblivionLod, Some(world), None);
+            push(LodFamily::OblivionLod, Some(world), None, None);
         }
     }
     if l.starts_with("meshes\\lod\\generated\\") && l.ends_with(".nif") {
-        push(LodFamily::GeneratedLod, None, None);
+        push(LodFamily::GeneratedLod, None, None, None);
     }
     if let Some(rest) = l.strip_prefix("lodsettings\\") {
         if let Some(world) = rest.strip_suffix(".dlodsettings") {
-            push(LodFamily::DlodSettings, Some(world), None);
+            push(LodFamily::DlodSettings, Some(world), None, None);
         } else if let Some(world) = rest.strip_suffix(".lod") {
-            push(LodFamily::LodSettingsLod, Some(world), None);
+            push(LodFamily::LodSettingsLod, Some(world), None, None);
         }
     }
     if l.starts_with("textures\\terrain\\") && l.contains("\\trees\\") && l.contains("treelod") {
         let world = l["textures\\terrain\\".len()..].split('\\').next();
-        push(LodFamily::TreeLodAtlas, world, None);
+        push(LodFamily::TreeLodAtlas, world, None, None);
     }
     if let Some(rest) = l.strip_prefix("meshes\\terrain\\") {
         let (world, file) = rest.split_once('\\').unwrap_or((rest, ""));
         if file.ends_with(".lst") {
-            push(LodFamily::CreationTreeList, Some(world), None);
+            push(LodFamily::CreationTreeList, Some(world), None, None);
         } else if let Some((stem, ext)) = file.rsplit_once('.') {
             // `<ws>.<L>.<x>.<y>`: the level is the second dot field; anything with fewer
             // fields is not a quadtree quad name.
             let name = stem.rsplit('\\').next().unwrap_or(stem);
             if name.split('.').count() >= 4 {
                 let level = name.split('.').nth(1);
+                let cell = name
+                    .split('.')
+                    .nth(2)
+                    .and_then(|x| x.parse().ok())
+                    .zip(name.split('.').nth(3).and_then(|y| y.parse().ok()));
                 match ext {
-                    "btr" => push(LodFamily::CreationTerrainBtr, Some(world), level),
-                    "bto" => push(LodFamily::CreationObjectsBto, Some(world), level),
-                    "btt" => push(LodFamily::CreationTreesBtt, Some(world), level),
+                    "btr" => push(LodFamily::CreationTerrainBtr, Some(world), level, cell),
+                    "bto" => push(LodFamily::CreationObjectsBto, Some(world), level, cell),
+                    "btt" => push(LodFamily::CreationTreesBtt, Some(world), level, cell),
                     _ => {}
                 }
             }
@@ -157,16 +172,17 @@ pub fn classify(path: &str) -> Vec<LodHit> {
         let rest = &l[idx + "landscape\\lod\\".len()..];
         let world = rest.split('\\').next();
         let level = legacy_level(rest);
+        let cell = legacy_cell(rest);
         if l.starts_with("meshes\\") && rest.contains("\\trees\\") {
             if rest.ends_with("\\treetypes.lst") {
-                push(LodFamily::FalloutTreeTypes, world, None);
+                push(LodFamily::FalloutTreeTypes, world, None, None);
             } else if rest.ends_with(".dtl") {
-                push(LodFamily::FalloutTreeDtl, world, level);
+                push(LodFamily::FalloutTreeDtl, world, level, cell);
             }
         } else if rest.contains("\\blocks\\") {
-            push(LodFamily::LegacyBlocks, world, level);
+            push(LodFamily::LegacyBlocks, world, level, cell);
         } else {
-            push(LodFamily::LegacyTerrain, world, level);
+            push(LodFamily::LegacyTerrain, world, level, cell);
         }
     }
     hits
@@ -207,6 +223,16 @@ mod tests {
             assert_eq!(hit.world.as_deref(), *world, "{path}");
             assert_eq!(hit.level.as_deref(), *level, "{path}");
         }
+    }
+
+    #[test]
+    fn quad_names_carry_their_sw_cell() {
+        assert_eq!(
+            one("meshes\\landscape\\lod\\wasteland\\blocks\\wasteland.level8.x-24.y16.nif").cell,
+            Some((-24, 16))
+        );
+        assert_eq!(one("meshes\\terrain\\tamriel\\tamriel.4.-8.12.btr").cell, Some((-8, 12)));
+        assert_eq!(one("distantlod\\tamriel_28_-27.lod").cell, None);
     }
 
     #[test]

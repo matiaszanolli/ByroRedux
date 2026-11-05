@@ -294,3 +294,87 @@ fn tree_lod_corpus_parses_and_resolves_every_species() {
     assert_eq!(exact, 380, "six Solstheim files carry trailing bytes (#5186)");
     assert_eq!(unresolved, 0, "every tree's species is listed in its worldspace's .lst");
 }
+
+/// #6636 / V4 (DLOD-TREE-008) — what a `.btt` record's `ref_form_id` names, against `Skyrim.esm`: whether it is the
+/// FormID of a placed TREE reference, whether that reference's cell holds the baked position, and whether the
+/// quad covers that cell. This decides the key per-tree retirement can use (the REFR FormID, or the cell).
+///
+///   cargo test -p byroredux --bin byroredux tree_lod_ref_form_id_census -- --ignored --nocapture
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn tree_lod_ref_form_id_census() {
+    use byroredux_plugin::esm::{parse_esm, test_paths};
+    use std::collections::HashMap;
+
+    let dir = test_paths::skyrim_se_data_dir();
+    let (Ok(bytes), Ok(archive)) = (
+        std::fs::read(dir.join("Skyrim.esm")),
+        byroredux_bsa::BsaArchive::open(dir.join("Skyrim - Meshes1.bsa").to_str().unwrap()),
+    ) else {
+        test_paths::require_or_skip("Skyrim.esm / Skyrim - Meshes1.bsa");
+        return;
+    };
+    let index = parse_esm(&bytes).expect("parse Skyrim.esm");
+    // REFR FormID -> (worldspace, cell, base, position)
+    let mut refs: HashMap<u32, (&str, (i32, i32), u32, [f32; 3])> = HashMap::new();
+    for (ws, cells) in &index.cells.exterior_cells {
+        for (cell, data) in cells {
+            for r in &data.references {
+                refs.insert(r.form_id, (ws.as_str(), *cell, r.base_form_id, r.position));
+            }
+        }
+    }
+    // References held by a worldspace's persistent cell are not in any grid cell.
+    let persistent: std::collections::HashSet<u32> = index
+        .cells
+        .worldspace_persistent_cells
+        .values()
+        .flat_map(|cell| cell.references.iter().map(|r| r.form_id))
+        .collect();
+    let (mut total, mut resolved, mut tree_base, mut cell_matches, mut quad_covers, mut near, mut zero) =
+        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    let (mut dlc_unresolved, mut other_ws, mut persistent_refs) = (0usize, 0usize, 0usize);
+    let mut distinct: std::collections::HashSet<u32> = Default::default();
+    for file in archive.list_files() {
+        let Some((ws, qx, qy)) = parse_tree_quad_name(file) else { continue };
+        let btt = parse_btt(&archive.extract(file).unwrap()).unwrap();
+        for t in &btt.trees {
+            total += 1;
+            distinct.insert(t.ref_form_id);
+            zero += usize::from(t.ref_form_id == 0);
+            let Some(&(ref_ws, cell, base, pos)) = refs.get(&t.ref_form_id) else {
+                // Not in Skyrim.esm: a DLC reference (load-order byte 01+), which this census does not load.
+                dlc_unresolved += usize::from(t.ref_form_id >> 24 != 0);
+                persistent_refs += usize::from(persistent.contains(&t.ref_form_id));
+                continue;
+            };
+            if ref_ws != ws {
+                other_ws += 1;
+                if other_ws <= 3 {
+                    eprintln!("  ref {:08X} in `{ref_ws}`, .btt worldspace `{ws}`", t.ref_form_id);
+                }
+            }
+            resolved += usize::from(ref_ws == ws);
+            tree_base += usize::from(index.trees.contains_key(&base));
+            let baked_cell = ((t.position[0] / 4096.0).floor() as i32, (t.position[1] / 4096.0).floor() as i32);
+            cell_matches += usize::from(cell == baked_cell);
+            quad_covers += usize::from((qx..qx + 4).contains(&cell.0) && (qy..qy + 4).contains(&cell.1));
+            let d = ((pos[0] - t.position[0]).powi(2) + (pos[1] - t.position[1]).powi(2)).sqrt();
+            near += usize::from(d < 1.0);
+        }
+    }
+    eprintln!(
+        "Skyrim .btt: {total} trees ({} distinct ref ids, {zero} zero); resolve to a Skyrim.esm REFR in their worldspace: {resolved}; \
+         REFR base is a TREE: {tree_base}; REFR's cell == baked position's cell: {cell_matches}; quad covers the REFR's cell: {quad_covers}; \
+         baked position within 1 unit of the REFR's: {near}; unresolved with a DLC load-order byte: {dlc_unresolved}; resolve in another worldspace: {other_ws}; unresolved but held by a persistent cell: {persistent_refs}",
+        distinct.len()
+    );
+    // V4: a record's `ref_form_id` IS the FormID of the placed TREE reference it bakes: every one that resolves
+    // lies at the baked position, in the baked position's cell (one reference sits on the edge of its quad), and
+    // every one that does not resolve is a DLC reference this census does not load (1 709), a reference held by a
+    // worldspace's persistent cell (3), or absent from `Skyrim.esm`'s parsed references with a base-game load-order
+    // byte (83, cause not examined: possibly deleted or superseded references).
+    assert_eq!((total, distinct.len(), zero), (43_333, 43_333, 0));
+    assert_eq!((resolved, tree_base, cell_matches, quad_covers, near), (41_538, 41_538, 41_538, 41_537, 41_538));
+    assert_eq!((dlc_unresolved, persistent_refs, total - resolved - dlc_unresolved - persistent_refs), (1_709, 3, 83));
+}
