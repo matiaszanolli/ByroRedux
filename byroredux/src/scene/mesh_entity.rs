@@ -35,6 +35,33 @@ use crate::components::{
 };
 use crate::material_translate::{MeshWaterSource, ResolvedPaths};
 
+/// Whether `mesh` is a dismemberment cap, which neither spawn path draws.
+///
+/// M41.0 Phase 1b.x — FO3 / FNV actor body and outfit NIFs ship dismemberment-cap
+/// sub-meshes alongside the visible geometry. The legacy engine shows them only
+/// once a body part is severed; with no dismemberment system yet, they would render
+/// as bloody geometry at the joints and neck. Identified by their body-part data
+/// rather than by name: the old name list (`bodycaps` / `limbcaps` / `meatneck01` /
+/// `meathead01`) missed outfit caps such as `outfitf.nif`'s `headmeat` / `bodymeat`,
+/// which drew a gore band under every clothed NPC's chin.
+///
+/// #6691 — the cell path asks too. A placed armor with no world model draws its worn
+/// outfit mesh, caps included. No shipped FO3 or FNV reference does
+/// (`dismemberment_cap_census_tests`), but nothing stops a mod's.
+///
+/// Each path asks this before it uploads, not inside [`spawn_mesh_entity`]: by then
+/// the geometry is on the GPU and the caller holds a handle nothing would release.
+pub(crate) fn is_hidden_dismemberment_cap(mesh: &ImportedMesh) -> bool {
+    let is_cap = mesh.is_dismemberment_cap();
+    if is_cap {
+        log::debug!(
+            "Phase 1b.x: skipping dismemberment cap '{}' until dismemberment exists",
+            mesh.name.as_deref().unwrap_or(""),
+        );
+    }
+    is_cap
+}
+
 /// One imported mesh, ready to become an entity. Its geometry is already on the
 /// GPU as `mesh_handle`.
 pub(crate) struct MeshEntitySpawn<'a> {
@@ -788,6 +815,55 @@ mod tests {
                      two paths can drift apart again (#6690)"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn caps_are_hidden_and_other_skinned_meshes_are_not() {
+        let with_parts = |triangle_body_parts| {
+            let mut mesh = mesh(LARGE_BOUND);
+            mesh.skin = Some(byroredux_nif::import::ImportedSkin {
+                triangle_body_parts,
+                ..Default::default()
+            });
+            mesh
+        };
+        assert!(is_hidden_dismemberment_cap(&with_parts(vec![101, 201])));
+        assert!(!is_hidden_dismemberment_cap(&with_parts(vec![0, 101])));
+        assert!(!is_hidden_dismemberment_cap(&mesh(LARGE_BOUND)));
+    }
+
+    /// #6691 — the two paths used to differ here: only the NIF path filtered caps.
+    /// The gate has to come before the first registry call on both, because a mesh
+    /// that is uploaded or acquired and then skipped leaks its handle. Text, because
+    /// both upload stages need a device.
+    #[test]
+    fn both_spawn_paths_hide_caps_before_touching_the_mesh_registry() {
+        use byroredux_core::source_scan::function_text;
+
+        for (label, body) in [
+            (
+                "spawn_nif_mesh",
+                function_text(include_str!("nif_loader.rs"), "fn spawn_nif_mesh("),
+            ),
+            (
+                "prepare_mesh_upload_range",
+                function_text(
+                    include_str!("../cell_loader/spawn/mesh_instance.rs"),
+                    "pub(super) fn prepare_mesh_upload_range(",
+                ),
+            ),
+        ] {
+            let gate = body
+                .find("is_hidden_dismemberment_cap(mesh)")
+                .unwrap_or_else(|| panic!("{label} must ask the shared cap gate"));
+            let registry = body
+                .find("ctx.mesh_registry")
+                .unwrap_or_else(|| panic!("{label} no longer reaches the mesh registry"));
+            assert!(
+                gate < registry,
+                "{label} must hide caps before it reaches the mesh registry"
+            );
         }
     }
 }

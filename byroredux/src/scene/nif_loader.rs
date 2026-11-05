@@ -21,7 +21,10 @@ use byroredux_core::math::{Mat4, Quat, Vec3};
 use byroredux_core::string::StringPool;
 use byroredux_renderer::{SceneMeshUpload, Vertex, VulkanContext};
 
-use super::mesh_entity::{spawn_mesh_entity, MeshEntitySpawn, MeshPlacement, MeshWaterPlacement};
+use super::mesh_entity::{
+    is_hidden_dismemberment_cap, spawn_mesh_entity, MeshEntitySpawn, MeshPlacement,
+    MeshWaterPlacement,
+};
 use crate::asset_provider::{
     build_material_provider, build_texture_provider, derive_present_normal_map_path,
     merge_external_material, resolve_texture, MaterialProvider, TextureProvider,
@@ -1053,21 +1056,8 @@ fn spawn_nif_mesh(
     phantom_bounds: Option<([f32; 3], [f32; 3])>,
     blas_specs: &mut Vec<(u32, u32, u32)>,
 ) -> bool {
-    // M41.0 Phase 1b.x — FO3 / FNV actor body and outfit NIFs ship
-    // dismemberment-cap sub-meshes alongside the visible geometry. The
-    // legacy engine shows them only once a body part is severed; with no
-    // dismemberment system yet, they would render as bloody geometry at
-    // the joints and neck. Identified by their body-part data rather than
-    // by name: the old name list (`bodycaps` / `limbcaps` / `meatneck01` /
-    // `meathead01`) missed outfit caps such as `outfitf.nif`'s
-    // `headmeat` / `bodymeat`, which drew a gore band under every clothed
-    // NPC's chin.
     let mesh_name = mesh.name.as_deref().unwrap_or("");
-    if mesh.is_dismemberment_cap() {
-        log::debug!(
-            "Phase 1b.x: skipping dismemberment cap '{}' until dismemberment exists",
-            mesh_name,
-        );
+    if is_hidden_dismemberment_cap(mesh) {
         return false;
     }
 

@@ -151,6 +151,9 @@ pub struct AddonData {
 pub struct StaticObject {
     pub form_id: u32,
     pub editor_id: String,
+    /// The model a placed reference draws: `MODL`, or the world model `MOD2` on
+    /// `ARMO` and `CLOT`, whose `MODL` is the worn mesh (#6691). Empty for a
+    /// model-less record.
     pub model_path: String,
     /// The base record's four-CC type (STAT, MSTT, NPC_, …). Drives
     /// [`RenderLayer`](byroredux_core::ecs::components::RenderLayer)

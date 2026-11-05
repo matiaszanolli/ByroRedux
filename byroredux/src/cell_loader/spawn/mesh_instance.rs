@@ -9,7 +9,8 @@
 
 use super::*;
 use crate::scene::mesh_entity::{
-    spawn_mesh_entity, MeshEntitySpawn, MeshPlacement, MeshWaterPlacement,
+    is_hidden_dismemberment_cap, spawn_mesh_entity, MeshEntitySpawn, MeshPlacement,
+    MeshWaterPlacement,
 };
 use byroredux_core::string::FixedString;
 use byroredux_nif::import::{
@@ -678,6 +679,8 @@ pub(super) enum PreparedMeshUpload {
     FogGroup(std::sync::Arc<[byroredux_core::ecs::FogVolume]>),
     Ready { handle: u32, fresh_for_rt: bool },
     Failed,
+    /// Deliberately not drawn: a dismemberment cap (#6691).
+    Hidden,
 }
 
 struct FreshMeshUpload {
@@ -759,6 +762,10 @@ pub(super) fn prepare_mesh_upload_range(
         .take(range.end)
         .skip(range.start)
     {
+        if is_hidden_dismemberment_cap(mesh) {
+            prepared[sub_mesh_index] = PreparedMeshUpload::Hidden;
+            continue;
+        }
         if let Some(volumes) = &beam_volumes[sub_mesh_index] {
             prepared[sub_mesh_index] = PreparedMeshUpload::FogGroup(volumes.clone());
             continue;
@@ -1093,7 +1100,7 @@ pub(super) fn spawn_mesh_instance(
             handle,
             fresh_for_rt,
         } => (handle, fresh_for_rt),
-        PreparedMeshUpload::Failed => return false,
+        PreparedMeshUpload::Failed | PreparedMeshUpload::Hidden => return false,
     };
     if fresh_for_rt {
         blas_specs.push((

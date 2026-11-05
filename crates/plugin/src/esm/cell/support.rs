@@ -22,7 +22,17 @@ use crate::esm::reader::{GameKind, SubRecord};
 /// ADDN `DATA`/`DNAM` payload — those would produce an empty
 /// `StaticObject` that the cell loader ignores anyway.
 ///
-/// Only the top-level `MODL` is read (#1576 / SF-D4-03). Some Starfield
+/// `ARMO` and Oblivion's `CLOT` are the exception to "the model is `MODL`": they
+/// author a biped mesh and a world model per gender, and a placed reference draws
+/// the world model. xEdit's `wbDefinitions{TES4,FO3,FNV}.pas` lay them out as
+/// `MODL`/`MOD3` (biped) and `MOD2`/`MOD4` (world); on Skyrim and later `MODL` is
+/// an ARMA FormID and `MOD2`/`MOD4` stay the world models. The worn mesh belongs
+/// to the typed item (`CommonItemFields::model_path`, read by the equip path). No
+/// shipped master authors `MOD4` without `MOD2`, so `MOD2` alone decides, and a
+/// record with no `MOD2` keeps what it has: its biped `MODL` before Skyrim, nothing
+/// after (Oblivion 2 ARMO + 3 CLOT, FO3 14, FNV 36 keep a worn mesh, #6691).
+///
+/// Otherwise only the top-level `MODL` is read (#1576 / SF-D4-03). Some Starfield
 /// STAT/ACTI/ARMO forms with no `MODL` DO carry a model reference inside
 /// a `BFCB`/`BFCE`-tagged `TESModel_Component` in their generic
 /// `BaseFormComponents` array instead — confirmed against the
@@ -52,8 +62,10 @@ pub(crate) fn build_static_object_from_subs(
     // `EsmIndex::armor_addons`; the cell-side StaticObject has no gender/race
     // context and must therefore not reinterpret it as a mesh path (#3056).
     let is_armor = record_type == b"ARMO";
+    let has_world_model = is_armor || record_type == b"CLOT";
     let mut editor_id = String::new();
     let mut model_path = String::new();
+    let mut world_model = None;
     let mut light_data = None;
     let mut addon_index: Option<i32> = None;
     let mut addon_dnam: Option<(u16, u16)> = None;
@@ -88,10 +100,19 @@ pub(crate) fn build_static_object_from_subs(
                 }
             }
             b"MODL" if is_armor && sub.data.len() == 4 => {
-                // Consumed by `parse_armo` as an ARMA FormID. ARMO records
-                // are inventory definitions, not world-placement meshes, so
-                // there is no StaticObject path to populate here.
+                // Consumed by `parse_armo` as an ARMA FormID: a worn mesh, not
+                // what a placed reference draws. That is `MOD2`, below.
             }
+            b"MOD2" if has_world_model => match read_mesh_path(&sub.data) {
+                Ok(p) if !p.is_empty() => world_model = Some(p),
+                Ok(_) => {}
+                Err(bad) => log::warn!(
+                    "{} {:08X}: corrupt MOD2 mesh path (control bytes), ignoring it: {:?}",
+                    std::str::from_utf8(record_type).unwrap_or("????"),
+                    form_id,
+                    bad,
+                ),
+            },
             b"MODL" => match read_mesh_path(&sub.data) {
                 Ok(p) => model_path = p,
                 // #1620 — a MODL holding control bytes is a non-string value
@@ -376,6 +397,10 @@ pub(crate) fn build_static_object_from_subs(
     } else {
         None
     };
+
+    if let Some(world_model) = world_model {
+        model_path = world_model;
+    }
 
     if !model_path.is_empty() || light_data.is_some() || addon_data.is_some() {
         Some(StaticObject {
@@ -1346,10 +1371,86 @@ mod starfield_armo_modl_tests {
         ];
 
         // ARMO's FormID is consumed by `parse_armo` and resolved through the
-        // ARMA table. The cell-side extractor has no placement mesh for an
-        // inventory definition, so it must simply decline the StaticObject
-        // without logging the generic #1620 corrupt-path warning.
+        // ARMA table. With no world model the cell-side extractor has no
+        // placement mesh, so it must simply decline the StaticObject without
+        // logging the generic #1620 corrupt-path warning.
         assert!(build_static_object_from_subs(0x42, b"ARMO", false, &subs, &None).is_none());
+    }
+
+    fn model_of(record_type: &[u8; 4], subs: &[(&[u8; 4], &[u8])]) -> String {
+        let subs: Vec<SubRecord> = subs
+            .iter()
+            .map(|(sub_type, data)| SubRecord {
+                sub_type: **sub_type,
+                data: data.to_vec(),
+            })
+            .collect();
+        build_static_object_from_subs(0x42, record_type, false, &subs, &None)
+            .expect("a record with a model path")
+            .model_path
+    }
+
+    /// #6691 — a placed armor draws `MOD2`, not its biped `MODL`: the worn mesh
+    /// carries dismemberment caps and hangs in its bind pose.
+    #[test]
+    fn placed_armor_and_clothing_take_the_world_model_over_the_biped_mesh() {
+        for record_type in [b"ARMO", b"CLOT"] {
+            assert_eq!(
+                model_of(
+                    record_type,
+                    &[
+                        (b"MODL", b"armor\\kings\\m.nif\0"),
+                        (b"MOD2", b"armor\\kings\\go.nif\0"),
+                        (b"MOD3", b"armor\\kings\\f.nif\0"),
+                        (b"MOD4", b"armor\\kings\\go_f.nif\0"),
+                    ],
+                ),
+                "armor\\kings\\go.nif"
+            );
+        }
+    }
+
+    /// Skyrim+ `MODL` is an ARMA FormID, and `MOD2` is still the world model.
+    #[test]
+    fn a_formid_modl_armor_takes_its_world_model() {
+        let arma = 0x0012_3456u32.to_le_bytes();
+        assert_eq!(
+            model_of(
+                b"ARMO",
+                &[(b"MODL", &arma), (b"MOD2", b"armor\\iron\\go.nif\0")]
+            ),
+            "armor\\iron\\go.nif"
+        );
+    }
+
+    /// FO3 14 and FNV 36 ARMO author no world model and keep their biped mesh. Any
+    /// dismemberment cap on one is the spawn paths' shared gate to hide.
+    #[test]
+    fn an_armor_without_a_world_model_keeps_its_biped_mesh() {
+        assert_eq!(
+            model_of(b"ARMO", &[(b"MODL", b"armor\\m.nif\0")]),
+            "armor\\m.nif"
+        );
+        assert_eq!(
+            model_of(b"ARMO", &[(b"MODL", b"armor\\m.nif\0"), (b"MOD2", b"\0")]),
+            "armor\\m.nif",
+            "an empty MOD2 is no world model"
+        );
+    }
+
+    /// `MOD2` means something else on other records, so only these two take it.
+    #[test]
+    fn other_records_ignore_mod2() {
+        assert_eq!(
+            model_of(
+                b"WEAP",
+                &[
+                    (b"MODL", b"weapons\\gun.nif\0"),
+                    (b"MOD2", b"weapons\\1st.nif\0")
+                ]
+            ),
+            "weapons\\gun.nif"
+        );
     }
 }
 

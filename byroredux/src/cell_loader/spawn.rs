@@ -1814,6 +1814,8 @@ use mesh_instance::{
 };
 
 #[cfg(test)]
+mod dismemberment_cap_census_tests;
+#[cfg(test)]
 mod synthesize_trimesh_tests;
 
 /// #4198 / PERF-D3-2026-09-11-03 — the static-BLAS batch in
