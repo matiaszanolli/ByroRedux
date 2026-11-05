@@ -78,7 +78,7 @@ pub struct GpuTerrainTile {
     /// A global setting, broadcast to every live tile by
     /// `VulkanContext::set_terrain_height_blend_band`, riding the slot that
     /// was the std430 tail pad (the stride was 208 at #6196, 224 since #6197) rather than growing the
-    /// camera UBO and its five mirrors.
+    /// camera UBO.
     pub height_blend_band: f32,
     /// #6197 — near-camera terrain parallax occlusion, three more global
     /// settings broadcast like the band above by
@@ -573,10 +573,8 @@ pub struct GpuCamera {
     /// see #2750 / REN-D3-2026-08-12-02 (this doc previously said
     /// `zw = reserved (0)`, which invited a future author to repurpose a
     /// lane two consumers already depend on). Written in
-    /// `vulkan/context/assemble_camera_and_lights.rs`; all five GLSL `CameraUBO` mirrors
-    /// (`include/bindings.glsl`, `triangle.vert`, `water.vert`,
-    /// `cluster_cull.comp`, `caustic_splat.comp`) must carry this same
-    /// comment.
+    /// `vulkan/context/assemble_camera_and_lights.rs`; the GLSL member list
+    /// (`include/camera_ubo_members.glsl`) must carry this same comment.
     pub dof_params: [f32; 4],
     /// **Camera-relative render origin** (#markarth-precision). xyz = the
     /// world-space origin all GPU clip-space math is performed relative to;
@@ -603,8 +601,8 @@ pub struct GpuCamera {
     /// #1489) so motion vectors stay valid — temporal history is NOT reset.
     ///
     /// Consumers (#1492, corrected #2753 / REN-D10-03): every `CameraUBO`
-    /// re-declarer carries the field for layout parity; the ones that USE
-    /// it are `triangle.vert` (subtracts it when building the pre-rebased
+    /// block carries the field through the shared member list; the ones that
+    /// USE it are `triangle.vert` (subtracts it when building the pre-rebased
     /// model matrix — since #1496 it no longer reconstructs absolute
     /// position itself, only emits `fragWorldPosRel`), `triangle.frag`
     /// (now the busiest consumer: absolute `fragWorldPos = fragWorldPosRel

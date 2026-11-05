@@ -67,36 +67,8 @@ layout(std430, set = 1, binding = 18) readonly buffer PreviousModelBuffer {
 };
 
 // Camera UBO (set 1, binding 1) — per-frame, shared across all draws.
-// MUST match `GpuCamera` in `crates/renderer/src/vulkan/scene_buffer/gpu_types.rs`
-// in both field order AND field count. Pre-#1028 (R-D6-01) this block
-// terminated at `jitter`, omitting the trailing `skyTint` field that
-// `GpuCamera` carries. The vertex shader didn't consume `skyTint` so
-// the truncation was benign, but any future vertex-stage effect that
-// reads `skyTint` would silently OOB-read off the end of the bound
-// UBO range — a latent footgun the audit flagged.
 layout(set = 1, binding = 1) uniform CameraUBO {
-    mat4 viewProj;
-    mat4 prevViewProj;   // Previous frame's view-projection for motion vectors.
-    mat4 invViewProj;    // Precomputed inverse(viewProj) for world reconstruction.
-    vec4 cameraPos;
-    vec4 sceneFlags;
-    vec4 screen;
-    vec4 fog;
-    vec4 jitter;         // xy = sub-pixel TAA jitter in NDC, z = bitcast<f32>(render_debug_flags), w = is_exterior flag. #1125.
-    vec4 skyTint;        // xyz = TOD/weather zenith colour, w = sun angular radius. #1028 / #1089.
-    vec4 sunDirection;
-    vec4 dofParams;      // x = aperture half-radius (0.0 = pinhole), y = focus_dist, z = atten knee frac, w = history mode (0 moving, 1 parked, 2 parked + scene-static, 3 parked + rig-geometry-static under flicker; restir_history_mode).
-    vec4 renderOrigin;   // #markarth-precision — xyz = camera-relative render origin (cell-grid snapped); add to worldPos_rel for the absolute world position. w = FSR reset diagnostic.
-    uvec4 renderDebug;   // x = structured RENDER_DEBUG_* mode; y = RT LOD scale; z = LOD telemetry; w = packed weather surface (low 16 wetness, high 16 snow).
-    // #3323 — EXTERIOR TOD zenith colour, live even on interior cells.
-    // Consumed only by triangle.frag's window-portal escape; declared
-    // here to keep the five CameraUBO mirrors byte-identical
-    // (feedback_shader_struct_sync.md).
-    vec4 exteriorSkyTint; // xyz = live exterior zenith colour, w = sky-cubemap
-                          // ready flag (1.0 once `sky_cube.comp` has baked into
-                          // set 1 / binding 20 this frame; 0.0 if the bake is
-                          // absent, e.g. it failed to initialise under VRAM
-                          // pressure — consumers must fall back, see raytrace.glsl)
+#include "include/camera_ubo_members.glsl"
 };
 
 // Bone palette SSBO (set 1, binding 3) — skinning matrices for the

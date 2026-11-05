@@ -20,7 +20,7 @@ use anyhow::Result;
 /// Pack the two normalized weather-surface channels into the structured
 /// debug lane of `GpuCamera`. Keeping this as two u16 values gives the
 /// terrain shader enough precision for gradual wetting/melting without
-/// changing the CameraUBO size or any of its five GLSL mirrors.
+/// changing the CameraUBO size or its GLSL member list.
 pub(super) fn pack_weather_surface(wetness: f32, snow: f32) -> u32 {
     fn pack(value: f32) -> u32 {
         if value.is_finite() {

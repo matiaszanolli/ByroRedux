@@ -57,28 +57,7 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
 };
 
 layout(set = 1, binding = 1) uniform CameraUBO {
-    mat4 viewProj;
-    mat4 prevViewProj;
-    mat4 invViewProj;
-    vec4 cameraPos;
-    vec4 sceneFlags;
-    vec4 screen;
-    vec4 fog;
-    vec4 jitter;
-    vec4 skyTint;
-    vec4 sunDirection;
-    vec4 dofParams;      // x = aperture half-radius (0.0 = pinhole), y = focus_dist, z = atten knee frac, w = history mode (0 moving, 1 parked, 2 parked + scene-static, 3 parked + rig-geometry-static under flicker; restir_history_mode).
-    vec4 renderOrigin;   // #markarth-precision — xyz = camera-relative render origin; add to worldPos_rel for the absolute world position. w = FSR one-frame-reset flag (NOT padding — #2164/L-10).
-    uvec4 renderDebug;   // x = structured RENDER_DEBUG_* mode; y = RT LOD scale; z = LOD telemetry; w = packed weather surface (low 16 wetness, high 16 snow).
-    // #3323 — EXTERIOR TOD zenith colour, live even on interior cells.
-    // Consumed only by triangle.frag's window-portal escape; declared
-    // here to keep the five CameraUBO mirrors byte-identical
-    // (feedback_shader_struct_sync.md).
-    vec4 exteriorSkyTint; // xyz = live exterior zenith colour, w = sky-cubemap
-                          // ready flag (1.0 once `sky_cube.comp` has baked into
-                          // set 1 / binding 20 this frame; 0.0 if the bake is
-                          // absent, e.g. it failed to initialise under VRAM
-                          // pressure — consumers must fall back, see raytrace.glsl)
+#include "include/camera_ubo_members.glsl"
 };
 
 // Set 2 binding 1 is shared with water.frag. Vertex visibility is enabled

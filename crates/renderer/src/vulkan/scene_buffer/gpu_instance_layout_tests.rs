@@ -45,11 +45,12 @@ fn gpu_instance_is_160_bytes_std430_compatible() {
 /// `jitter`, `sky_tint`, `sun_direction` (#1210 Phase A+B),
 /// `dof_params`, `render_origin` (#markarth-precision), `render_debug`,
 /// `exterior_sky_tint` (#3323).
-/// Every shader that re-declares `CameraUBO` (`triangle.vert`,
+/// Every shader that declares `CameraUBO` (`triangle.vert`,
 /// `triangle.frag`, `water.vert`, `water.frag`, `cluster_cull.comp`,
 /// `caustic_splat.comp`) must match this size — pre-#1028 some
 /// were a `vec4` short, which this test would not have caught (no
-/// Rust-side drift) but the audit did; the `.spv`-level check is the
+/// Rust-side drift) but the audit did. Since #6682 they all take their
+/// members from `include/camera_ubo_members.glsl`; the `.spv`-level check is the
 /// `uniform_block_size_by_name` reflection pin in `reflect.rs`. This
 /// pin at least catches the Rust-side regression so the doc-
 /// comment stays honest. (#1492 — an earlier revision of this doc
@@ -62,11 +63,11 @@ fn gpu_camera_is_368_bytes() {
             size_of::<GpuCamera>(),
             368,
             "GpuCamera must be 368 B (352 B + 16 B exterior_sky_tint vec4, #3323) to match \
-             the CameraUBO declaration in every re-declaring shader (triangle.vert, triangle.frag, \
+             the CameraUBO declaration in every declaring shader (triangle.vert, triangle.frag, \
              water.vert, water.frag, cluster_cull.comp, caustic_splat.comp — each pinned against the \
              shipped .spv by the reflect.rs uniform_block_size_by_name check, which also covers the \
              include-only consumers skin_vertices/ssao/volumetrics_inject). exterior_sky_tint is \
-             APPENDED at the end; every re-declarer must carry the full field list through it."
+             APPENDED at the end of include/camera_ubo_members.glsl, the list they all share."
         );
 }
 

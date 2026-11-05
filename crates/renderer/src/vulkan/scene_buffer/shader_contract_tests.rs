@@ -3666,134 +3666,56 @@ fn gpu_boundary_instance_stride_matches_gpu_instance() {
     );
 }
 
-// ── CameraUBO five-way GLSL lockstep (#3684 / PERF-D4-2026-08-30-04) ──
+// ── CameraUBO: one member list, five blocks (#3684, #6682) ──
 
-/// #3684 — `struct GpuCamera` (declared in GLSL as `uniform CameraUBO { ... }`)
-/// is hand-duplicated across five sources
-/// (`include/bindings.glsl`, `triangle.vert`, `water.vert`,
-/// `cluster_cull.comp`, `caustic_splat.comp`), but — unlike `GpuInstance`,
-/// `GpuLight`, and `GpuMaterial` — had no lockstep test at all: only a
-/// `size_of::<GpuCamera>() == 368` pin and a SPIR-V block-SIZE reflection
-/// check, both blind to a within-size field reorder (`skyTint` ↔
-/// `sunDirection` — two adjacent `vec4`s in a struct that is entirely
-/// `vec4`s) or a type flip (`uvec4 renderDebug` → `vec4`, whose bits are
-/// read back via `floatBitsToUint`/`bitcast`). #2688 established that
-/// exact type-flip class as byte-lethal for `GpuMaterial`; the camera had
-/// no equivalent guard.
-///
-/// Reuses the same two-leg pattern `GpuLight`/`GpuInstance` established:
-/// mirror-vs-mirror across the five GLSL copies via `strip_struct_body`
-/// (CameraUBO has no multi-name declarations, so the simpler raw-line
-/// comparison `GpuLight` uses is sufficient — `parse_glsl_struct_fields`'s
-/// multi-name handling `GpuInstance` needs isn't required here), then a
-/// second, TYPED leg against the Rust `#[repr(C)] struct GpuCamera` that
-/// checks name, order, AND scalar/array type via
-/// [`rust_glsl_scalar_type_matches`] — extended by this same fix to
-/// recognize `GpuCamera`'s `[f32; 4]`/`[u32; 4]`/`[[f32; 4]; 4]` shapes,
-/// which no prior struct in this file needed (`GpuMaterial` is bare
-/// scalars only).
-///
-/// #4028 (REN-2026-09-06-D3-04) — also calls
-/// [`assert_mirror_list_is_complete_after_layout`], the `layout(...)`-aware
-/// variant of [`assert_mirror_list_is_complete`] / [`shader_sources_declaring`]:
-/// the strict start-of-line prefix match those use matches a plain
-/// `struct X {` declaration but not `layout(set = N, binding = M) uniform
-/// CameraUBO {` — the `layout(...)` qualifier always precedes it. The
-/// default helper stays strict (used by three other structs' lockstep
-/// tests) so `skin_vertices.comp`'s comment *mentioning* `struct
-/// GpuInstance` while declaring none still doesn't match; the `_after_layout`
-/// variant strips one leading `layout(...)` before the same prefix test, so
-/// a sixth shader adding `CameraUBO` without joining this SOURCES list is
-/// now a test failure instead of a silent gap.
+/// The one declaration of the `CameraUBO` members. It carries no block syntax,
+/// because each shader binds the camera at its own set and binding.
+const CAMERA_UBO_MEMBERS_GLSL: &str =
+    include_str!("../../../shaders/include/camera_ubo_members.glsl");
+
+/// Two `GpuCamera` fields are named differently on purpose: the GLSL side names
+/// things by what a shader author reads at the call site, the Rust side by what
+/// the CPU struct field is. Recorded here rather than loosening the check, so any
+/// OTHER name mismatch still fails.
+const CAMERA_NAME_ALIASES: &[NameAlias] = &[("position", "cameraPos"), ("flags", "sceneFlags")];
+
+/// `struct GpuCamera` is declared in GLSL as the members of `uniform CameraUBO`.
+/// #3684 — this block had only a `size_of` pin and a SPIR-V block-SIZE
+/// reflection check, both blind to a within-size reorder (`skyTint` ↔
+/// `sunDirection`, adjacent `vec4`s in a struct that is almost entirely `vec4`s)
+/// or a type flip (`uvec4 renderDebug` → `vec4`, whose bits are read back through
+/// a bitcast). #2688 established that type flip as byte-lethal for `GpuMaterial`.
+/// So compare name, order and type against the Rust `#[repr(C)]` struct, the
+/// offset source of truth.
 #[test]
-fn camera_ubo_glsl_copies_stay_in_lockstep() {
-    const SOURCES: &[(&str, &str)] = &[
-        (
-            "include/bindings.glsl",
-            include_str!("../../../shaders/include/bindings.glsl"),
-        ),
-        (
-            "triangle.vert",
-            include_str!("../../../shaders/triangle.vert"),
-        ),
-        ("water.vert", include_str!("../../../shaders/water.vert")),
-        (
-            "cluster_cull.comp",
-            include_str!("../../../shaders/cluster_cull.comp"),
-        ),
-        (
-            "caustic_splat.comp",
-            include_str!("../../../shaders/caustic_splat.comp"),
-        ),
-    ];
-
-    // #4028 — mirror-discovery leg: fail if a shader declares `uniform
-    // CameraUBO {` (behind its `layout(...)` qualifier) without being in
-    // SOURCES above, the same guard `GpuLight`/`GpuInstance`/`GpuTerrainTile`
-    // already have.
-    assert_mirror_list_is_complete_after_layout("uniform CameraUBO {", SOURCES, "#3684");
-
-    let mut reference: Option<(&str, Vec<String>)> = None;
-    for (name, src) in SOURCES {
-        let body = extract_struct_body(src, "uniform CameraUBO {")
-            .unwrap_or_else(|| panic!("{name}: no longer declares `uniform CameraUBO {{`"));
-        let fields = strip_struct_body(body);
-        assert!(
-            fields.len() >= 13,
-            "{name}: parsed only {} CameraUBO field lines — parser likely broke",
-            fields.len()
-        );
-        match &reference {
-            None => reference = Some((name, fields)),
-            Some((ref_name, ref_fields)) => {
-                assert_eq!(
-                    ref_fields, &fields,
-                    "CameraUBO layout mismatch: `{ref_name}` vs `{name}`. Every GLSL copy \
-                     of `uniform CameraUBO` must declare identical fields in the same order \
-                     (Shader Struct Sync invariant, #3684) — a drift here silently corrupts \
-                     camera data (view/projection matrices, lighting, motion vectors) for \
-                     whichever copy lags behind."
-                );
-            }
-        }
-    }
-
-    // Second leg: name, order, AND type against the Rust `#[repr(C)]`
-    // struct — the offset source of truth.
-    let (_, first_src) = SOURCES[0];
-    let glsl_typed = parse_glsl_struct_fields_typed(first_src, "uniform CameraUBO {");
-    let rust_src = include_str!("gpu_types.rs");
-    let rust_typed = parse_rust_struct_fields_typed(rust_src, "pub struct GpuCamera");
-
-    // #3684 — two fields are named differently on purpose between the Rust
-    // struct and every GLSL mirror: Rust `position` is GLSL `cameraPos`,
-    // and Rust `flags` is GLSL `sceneFlags`. Both are consistent across
-    // all five GLSL copies (this test's own first leg already proved
-    // that), so they're a deliberate naming choice — the GLSL side names
-    // things by what a shader author reads at the call site, the Rust
-    // side by what the CPU struct field is. Recorded explicitly here
-    // rather than silently loosening the check, so any OTHER field name
-    // mismatch (a real drift) still fails loud.
-    const KNOWN_NAME_ALIASES: &[NameAlias] = &[("position", "cameraPos"), ("flags", "sceneFlags")];
+fn camera_ubo_members_match_gpu_camera() {
+    let glsl_typed = parse_glsl_member_list_typed(CAMERA_UBO_MEMBERS_GLSL);
+    let rust_typed =
+        parse_rust_struct_fields_typed(include_str!("gpu_types.rs"), "pub struct GpuCamera");
     assert_glsl_matches_rust(
         "GpuCamera",
         &glsl_typed,
         &rust_typed,
-        KNOWN_NAME_ALIASES,
-        "The Rust `struct GpuCamera` (gpu_types.rs) and its five GLSL `CameraUBO` mirrors must \
-         stay in lockstep, field for field in the Rust `#[repr(C)]` struct's order — see #3684. \
-         A within-size type reinterpretation (e.g. `uvec4` <-> `vec4`) preserves field order and \
-         struct size but corrupts the value read through the mismatched type (the #2688 \
-         GpuMaterial precedent for this exact class of defect).",
+        CAMERA_NAME_ALIASES,
+        "`include/camera_ubo_members.glsl` must declare the Rust `struct GpuCamera` (gpu_types.rs) \
+         field for field, in the `#[repr(C)]` struct's order — see #3684. A within-size type \
+         reinterpretation (e.g. `uvec4` <-> `vec4`) preserves field order and struct size but \
+         corrupts the value read through the mismatched type (the #2688 GpuMaterial precedent \
+         for this exact class of defect).",
     );
+}
 
-    // #4957 — `groundcover_blade.vert` binds the same camera UBO under another
-    // block name, `GcCameraUBO`, declaring only `GpuCamera`'s first lanes
-    // (through `jitter`) with `gc`-prefixed names. Its only pin was a
-    // reflected block SIZE, blind to a swap among the three same-typed `mat4`
-    // lanes (projecting blades with the previous frame's matrix) or the `vec4`
-    // lanes. Compare it as a PREFIX mirror: names (with `gc` dropped), order
-    // and type against the Rust struct's first `len` fields.
+/// #4957 — `groundcover_blade.vert` binds the same camera UBO under another
+/// block name, `GcCameraUBO`, declaring only `GpuCamera`'s first lanes (through
+/// `jitter`) with `gc`-prefixed names. Its only pin was a reflected block SIZE,
+/// blind to a swap among the three same-typed `mat4` lanes (projecting blades
+/// with the previous frame's matrix) or the `vec4` lanes. Compare it as a PREFIX
+/// mirror: names (with `gc` dropped), order and type against the Rust struct's
+/// first `len` fields.
+#[test]
+fn gc_camera_ubo_is_a_prefix_of_gpu_camera() {
+    let rust_typed =
+        parse_rust_struct_fields_typed(include_str!("gpu_types.rs"), "pub struct GpuCamera");
     let blade_src = include_str!("../../../shaders/groundcover_blade.vert");
     let gc_typed: Vec<(String, String)> =
         parse_glsl_struct_fields_typed(blade_src, "uniform GcCameraUBO {")
@@ -3817,18 +3739,78 @@ fn camera_ubo_glsl_copies_stay_in_lockstep() {
         "GcCameraUBO (prefix of GpuCamera)",
         &gc_typed,
         &rust_typed[..gc_typed.len()],
-        KNOWN_NAME_ALIASES,
+        CAMERA_NAME_ALIASES,
         "groundcover_blade.vert's `GcCameraUBO` reads the scene camera UBO at set 1 binding 1 \
          and must declare GpuCamera's leading fields in the Rust struct's order with the same \
          types (#4957). A swap among viewProj / prevViewProj / invViewProj keeps the block size \
          and silently projects the blades with the wrong matrix.",
     );
+}
 
-    // #4957 — discovery: every camera-UBO-shaped block must be one of the
-    // mirrors checked above. The name-anchored leg only sees `uniform
-    // CameraUBO {`; this one also catches a renamed block (`…CameraUBO`) or
-    // any block bound where the main pass binds the camera (set 1 binding 1).
-    let mut expected: Vec<(String, String)> = SOURCES
+/// #6682 — each `CameraUBO` block supplies only its set and binding and takes its
+/// members from one header, so adding a field means editing that header and
+/// recompiling. This pins all of it:
+///
+/// - the table below covers every shader that declares the block (#4028);
+/// - each block's body is exactly the `#include`, so a member cannot be added to,
+///   or left out of, one shader alone;
+/// - the header stays members-only, so no shader needs a copy to get its own
+///   binding, which is why the five copies existed;
+/// - no other file declares the block's last member, which is what a pasted copy
+///   under another block name would do;
+/// - every camera-UBO-shaped block is this one or the `GcCameraUBO` prefix (#4957).
+#[test]
+fn camera_ubo_members_are_declared_once() {
+    const HEADER: &str = "include/camera_ubo_members.glsl";
+    const BLOCKS: &[(&str, &str)] = &[
+        (
+            "include/bindings.glsl",
+            include_str!("../../../shaders/include/bindings.glsl"),
+        ),
+        (
+            "triangle.vert",
+            include_str!("../../../shaders/triangle.vert"),
+        ),
+        ("water.vert", include_str!("../../../shaders/water.vert")),
+        (
+            "cluster_cull.comp",
+            include_str!("../../../shaders/cluster_cull.comp"),
+        ),
+        (
+            "caustic_splat.comp",
+            include_str!("../../../shaders/caustic_splat.comp"),
+        ),
+    ];
+
+    assert_mirror_list_is_complete_after_layout("uniform CameraUBO {", BLOCKS, "#6682");
+
+    let directive = format!("#include \"{HEADER}\"");
+    for (name, src) in BLOCKS {
+        let body = extract_struct_body(src, "uniform CameraUBO {")
+            .unwrap_or_else(|| panic!("{name}: no longer declares `uniform CameraUBO {{`"));
+        assert_eq!(
+            crate::source_scan::strip_glsl_comments(body).trim(),
+            directive,
+            "{name}: the `CameraUBO` block must hold only `{directive}`. Add a member to \
+             {HEADER}, which every block shares, not to one shader's block."
+        );
+    }
+
+    let code = crate::source_scan::strip_glsl_comments(CAMERA_UBO_MEMBERS_GLSL);
+    for forbidden in ["layout", "uniform", "{", "}", "#include"] {
+        assert!(
+            !code.contains(forbidden),
+            "{HEADER} must stay a bare member list, but its code contains `{forbidden}`: each \
+             shader's block supplies the qualifiers and braces."
+        );
+    }
+    assert_eq!(
+        shader_sources_declaring("vec4 exteriorSkyTint;", false),
+        [HEADER],
+        "only {HEADER} may declare the `CameraUBO` members: `#include` it instead of copying them"
+    );
+
+    let mut expected: Vec<(String, String)> = BLOCKS
         .iter()
         .map(|(n, _)| ((*n).to_string(), "CameraUBO".to_string()))
         .collect();
@@ -3838,8 +3820,9 @@ fn camera_ubo_glsl_copies_stay_in_lockstep() {
         camera_shaped_uniform_blocks(),
         expected,
         "a shader declares a camera-UBO-shaped uniform block (a `…CameraUBO` name or \
-         `layout(set = 1, binding = 1) uniform`) that camera_ubo_glsl_copies_stay_in_lockstep \
-         does not check — add it as a full or prefix mirror (#4957)"
+         `layout(set = 1, binding = 1) uniform`) that this test and \
+         gc_camera_ubo_is_a_prefix_of_gpu_camera do not check: include the shared member list \
+         or add it as a prefix mirror (#4957)"
     );
 }
 
@@ -7477,33 +7460,24 @@ fn direct_shadow_rays_orient_their_origin_toward_the_light() {
 
 /// #5022 — since #4942 `dofParams.w` carries a 0/1/2 history mode, not a
 /// binary `camera_static` flag. Layout tests cannot see a semantic change to
-/// an existing lane, so pin the lane text in every `CameraUBO` mirror: a
+/// an existing lane, so pin the lane text in the `CameraUBO` member list: a
 /// reader keyed on `== 1.0` would silently miss the scene-static parked state.
 #[test]
-fn every_camera_ubo_mirror_describes_dof_w_as_the_history_mode() {
-    let mirrors = [
-        ("include/bindings.glsl", include_str!("../../../shaders/include/bindings.glsl")),
-        ("triangle.vert", include_str!("../../../shaders/triangle.vert")),
-        ("water.vert", include_str!("../../../shaders/water.vert")),
-        ("cluster_cull.comp", include_str!("../../../shaders/cluster_cull.comp")),
-        ("caustic_splat.comp", include_str!("../../../shaders/caustic_splat.comp")),
-    ];
-    for (name, src) in mirrors {
-        let line = src
-            .lines()
-            .find(|l| l.contains("vec4 dofParams;"))
-            .unwrap_or_else(|| panic!("{name}: no `vec4 dofParams;` member"));
-        assert!(
-            line.contains("w = history mode (0 moving, 1 parked, 2 parked + scene-static"),
-            "{name}: dofParams.w comment must describe the #4942 history mode: {line}"
-        );
-        // #5532 — mode 3 (#5369) must be in every mirror; the prefix match
-        // above stayed green when it was missing.
-        assert!(
-            line.contains("3 parked + rig-geometry-static under flicker"),
-            "{name}: dofParams.w comment must describe history mode 3 (#5369): {line}"
-        );
-    }
+fn camera_ubo_members_describe_dof_w_as_the_history_mode() {
+    let line = CAMERA_UBO_MEMBERS_GLSL
+        .lines()
+        .find(|l| l.contains("vec4 dofParams;"))
+        .expect("include/camera_ubo_members.glsl: no `vec4 dofParams;` member");
+    assert!(
+        line.contains("w = history mode (0 moving, 1 parked, 2 parked + scene-static"),
+        "dofParams.w comment must describe the #4942 history mode: {line}"
+    );
+    // #5532 — mode 3 (#5369) must be described too; the prefix match above stays
+    // green when it is missing.
+    assert!(
+        line.contains("3 parked + rig-geometry-static under flicker"),
+        "dofParams.w comment must describe history mode 3 (#5369): {line}"
+    );
 }
 
 /// #4903 — the density field's affinity factor composes the BTXT base first

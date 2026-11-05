@@ -44,35 +44,8 @@ layout(std430, set = 0, binding = 0) readonly buffer LightBuffer {
     GpuLight lights[];
 };
 
-// MUST match `GpuCamera` in `scene_buffer/gpu_types.rs` — both field order
-// AND field count. Cluster cull only consumes `viewProj` / `invViewProj`
-// today, so the pre-#1028 missing `skyTint` was benign, but the
-// block declaration size must equal the bound UBO range for the
-// sibling-consumer audit (#1028 / R-D6-01) to hold across all 6
-// shaders that re-declare this struct.
 layout(set = 0, binding = 1) uniform CameraUBO {
-    mat4 viewProj;
-    mat4 prevViewProj;  // Must match GpuCamera in scene_buffer/gpu_types.rs. See #256.
-    mat4 invViewProj;   // Precomputed inverse(viewProj) for world reconstruction.
-    vec4 cameraPos;     // xyz = world position, w = frame counter
-    vec4 sceneFlags;    // x = RT enabled, yzw = ambient color
-    vec4 screen;        // x = width, y = height, z = fog near, w = fog far
-    vec4 fog;           // xyz = linear-light fog radiance RGB, w = fog enabled
-    vec4 jitter;        // xy = sub-pixel TAA jitter in NDC, z = bitcast<f32>(render_debug_flags), w = is_exterior. #1125.
-    vec4 skyTint;       // xyz = TOD/weather zenith colour, w = sun angular radius. #1028 / #1089.
-    vec4 sunDirection;
-    vec4 dofParams;      // x = aperture half-radius (0.0 = pinhole), y = focus_dist, z = atten knee frac, w = history mode (0 moving, 1 parked, 2 parked + scene-static, 3 parked + rig-geometry-static under flicker; restir_history_mode).
-    vec4 renderOrigin;   // #markarth-precision — xyz = camera-relative render origin; added in ndcToWorld so cluster AABBs are ABSOLUTE world (the light SSBO positions are absolute). w = FSR one-frame-reset flag (NOT padding — #2164/L-10).
-    uvec4 renderDebug;   // x = structured RENDER_DEBUG_* mode; y = RT LOD scale; z = LOD telemetry; w = packed weather surface (low 16 wetness, high 16 snow).
-    // #3323 — EXTERIOR TOD zenith colour, live even on interior cells.
-    // Consumed only by triangle.frag's window-portal escape; declared
-    // here to keep the five CameraUBO mirrors byte-identical
-    // (feedback_shader_struct_sync.md).
-    vec4 exteriorSkyTint; // xyz = live exterior zenith colour, w = sky-cubemap
-                          // ready flag (1.0 once `sky_cube.comp` has baked into
-                          // set 1 / binding 20 this frame; 0.0 if the bake is
-                          // absent, e.g. it failed to initialise under VRAM
-                          // pressure — consumers must fall back, see raytrace.glsl)
+#include "include/camera_ubo_members.glsl"
 };
 
 #include "include/cluster_entry.glsl"
