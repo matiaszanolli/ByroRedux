@@ -694,13 +694,10 @@ mod blas_scratch_realloc_order_tests {
     /// growth site on the M40 streaming hot path).
     #[test]
     fn static_batch_growth_allocates_before_retiring_the_old_scratch() {
-        let phase2 = BLAS_STATIC_RS
+        let phase2 = crate::source_scan::function_text(BLAS_STATIC_RS, "fn ensure_batch_scratch(")
             .split("if need_new_scratch {")
             .nth(1)
-            .expect("build_blas_batched's Phase-2 growth block must exist")
-            .split("let raw_scratch = unsafe {")
-            .next()
-            .expect("Phase 2 must still be followed by the scratch address lookup");
+            .expect("build_blas_batched's Phase-2 growth block must exist");
         let alloc = phase2
             .find("let new_scratch = match GpuBuffer::create_device_local_uninit(")
             .expect("Phase 2 must allocate its replacement into a local (#4884)");
@@ -765,7 +762,14 @@ fn static_batched_build_emits_a_scratch_barrier_before_its_first_build() {
     let submit = SRC
         .find("let build_result = submit_one_time(")
         .expect("build_blas_batched's one-time submission must exist");
-    let body = &SRC[submit..];
+    assert!(
+        SRC[submit..]
+            .split("if let Err(e) = build_result {")
+            .next()
+            .is_some_and(|closure| closure.contains("self.record_batch_builds(")),
+        "the build submission must record through record_batch_builds"
+    );
+    let body = crate::source_scan::function_text(SRC, "fn record_batch_builds(");
     let loop_at = body
         .find("for (i, p) in prepared.iter().enumerate()")
         .expect("the build loop must exist");

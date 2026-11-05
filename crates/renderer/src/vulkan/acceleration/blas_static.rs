@@ -32,6 +32,74 @@ type CompactedBlas = (
     u32,
 );
 
+/// One mesh's Phase 1 output in a static BLAS batch: its uncompacted result
+/// buffer and acceleration structure, plus what the later phases need to build
+/// and register it. Owned by [`AccelerationManager::build_blas_batched`], which
+/// is responsible for it on every exit.
+struct PreparedBlas {
+    mesh_handle: u32,
+    accel: vk::AccelerationStructureKHR,
+    buffer: GpuBuffer,
+    /// `vk::AccelerationStructureGeometryKHR<'a>` carries a
+    /// PHANTOM lifetime from ash's typed builder API — the
+    /// compiler can't see that every union field used in the
+    /// `BLAS-from-device-buffer` path is value-typed (`u64`
+    /// device addresses + small enums), so without an
+    /// annotation the borrow checker would tie the struct's
+    /// lifetime to the local `triangles_data` Vec. We fill
+    /// only `device_address: u64` (no host pointers, no Rust
+    /// references) so the `'static` claim is sound.
+    ///
+    /// **Future-proof invariant**: every `.geometry()`-reachable
+    /// field must remain value-typed. Adding a host-pointer
+    /// variant or a `&[T]` body would make this UB with no
+    /// compiler warning. See #580 / SAFE-21.
+    geometry: vk::AccelerationStructureGeometryKHR<'static>,
+    primitive_count: u32,
+    /// Per-mesh scratch size from Phase 1 sizing — stored so the
+    /// final `BlasEntry` can remember it for
+    /// `shrink_blas_scratch_to_fit` (#495). Max across meshes is
+    /// tracked separately in `max_scratch_size` for the single
+    /// shared build scratch allocation.
+    build_scratch_size: vk::DeviceSize,
+    /// #907 — counts captured here so the final `BlasEntry`
+    /// can pin them for the refit-counts VUID check. Static
+    /// BLAS never refit so these are read-only telemetry on
+    /// the resulting entry; included for symmetry with the
+    /// skinned path that DOES validate against them.
+    vertex_count: u32,
+    index_count: u32,
+}
+
+/// Destroy every prepared original (and the compaction query pool,
+/// once it exists) on an error exit before any build was submitted.
+/// #4883 — the Phase 1 result-buffer, Phase 2 scratch and Phase 3
+/// query-pool `?` exits used to drop `prepared` as plain memory:
+/// each `GpuBuffer` hit the #656 Drop net (a debug-build panic) and
+/// each raw `vk::AccelerationStructureKHR`, which has no `Drop`,
+/// leaked on every retried batch.
+///
+/// SAFETY: callers pass only handles no command buffer references —
+/// nothing in `prepared` has been recorded yet, and the pool is
+/// destroyed only after a submission that failed or never happened.
+unsafe fn unwind_prepared(
+    accel_loader: &ash::khr::acceleration_structure::Device,
+    device: &ash::Device,
+    allocator: &SharedAllocator,
+    prepared: Vec<PreparedBlas>,
+    query_pool: Option<vk::QueryPool>,
+) {
+    for mut p in prepared {
+        // SAFETY: see the function contract — owned, unreferenced.
+        unsafe { accel_loader.destroy_acceleration_structure(p.accel, None) };
+        p.buffer.destroy(device, allocator);
+    }
+    if let Some(pool) = query_pool {
+        // SAFETY: see the function contract.
+        unsafe { device.destroy_query_pool(pool, None) };
+    }
+}
+
 impl AccelerationManager {
     /// Queue a BLAS for deferred destruction.
     ///
@@ -313,72 +381,275 @@ impl AccelerationManager {
         // via subtle counter-semantics bugs before (#920, #1449).
         self.frame_counter = self.frame_counter.wrapping_add(1);
 
-        let vertex_stride = std::mem::size_of::<Vertex>() as vk::DeviceSize;
-
         // Phase 1: Query sizes and allocate result buffers for all meshes.
-        struct PreparedBlas {
-            mesh_handle: u32,
-            accel: vk::AccelerationStructureKHR,
-            buffer: GpuBuffer,
-            /// `vk::AccelerationStructureGeometryKHR<'a>` carries a
-            /// PHANTOM lifetime from ash's typed builder API — the
-            /// compiler can't see that every union field used in the
-            /// `BLAS-from-device-buffer` path is value-typed (`u64`
-            /// device addresses + small enums), so without an
-            /// annotation the borrow checker would tie the struct's
-            /// lifetime to the local `triangles_data` Vec. We fill
-            /// only `device_address: u64` (no host pointers, no Rust
-            /// references) so the `'static` claim is sound.
-            ///
-            /// **Future-proof invariant**: every `.geometry()`-reachable
-            /// field must remain value-typed. Adding a host-pointer
-            /// variant or a `&[T]` body would make this UB with no
-            /// compiler warning. See #580 / SAFE-21.
-            geometry: vk::AccelerationStructureGeometryKHR<'static>,
-            primitive_count: u32,
-            /// Per-mesh scratch size from Phase 1 sizing — stored so the
-            /// final `BlasEntry` can remember it for
-            /// `shrink_blas_scratch_to_fit` (#495). Max across meshes is
-            /// tracked separately in `max_scratch_size` for the single
-            /// shared build scratch allocation.
-            build_scratch_size: vk::DeviceSize,
-            /// #907 — counts captured here so the final `BlasEntry`
-            /// can pin them for the refit-counts VUID check. Static
-            /// BLAS never refit so these are read-only telemetry on
-            /// the resulting entry; included for symmetry with the
-            /// skinned path that DOES validate against them.
-            vertex_count: u32,
-            index_count: u32,
+        let (prepared, max_scratch_size) =
+            self.prepare_static_blas_batch(device, allocator, meshes)?;
+
+        // #3979 — the admission gate can decline every mesh in the batch
+        // (already over budget on entry, nothing left to evict). Bail before
+        // Phase 2: a zero-length batch would size the scratch buffer to
+        // nothing and then create a query pool with `queryCount == 0`, which
+        // VUID-VkQueryPoolCreateInfo-queryCount-02763 forbids outright.
+        if prepared.is_empty() {
+            return Ok(0);
         }
 
-        /// Destroy every prepared original (and the compaction query pool,
-        /// once it exists) on an error exit before any build was submitted.
-        /// #4883 — the Phase 1 result-buffer, Phase 2 scratch and Phase 3
-        /// query-pool `?` exits used to drop `prepared` as plain memory:
-        /// each `GpuBuffer` hit the #656 Drop net (a debug-build panic) and
-        /// each raw `vk::AccelerationStructureKHR`, which has no `Drop`,
-        /// leaked on every retried batch.
-        ///
-        /// SAFETY: callers pass only handles no command buffer references —
-        /// nothing in `prepared` has been recorded yet, and the pool is
-        /// destroyed only after a submission that failed or never happened.
-        unsafe fn unwind_prepared(
-            accel_loader: &ash::khr::acceleration_structure::Device,
-            device: &ash::Device,
-            allocator: &SharedAllocator,
-            prepared: Vec<PreparedBlas>,
-            query_pool: Option<vk::QueryPool>,
+        // Phase 2: Ensure scratch buffer is large enough. Grow-only
+        // policy via shared helper — see #60 / #424 SIBLING. Pad by
+        // `scratch_alignment_padding` so the shared device address can be
+        // rounded up to `scratch_align` below (#1386).
+        if let Err(e) = self.ensure_batch_scratch(device, allocator, max_scratch_size) {
+            // SAFETY: nothing in `prepared` has been recorded (#4883).
+            unsafe { unwind_prepared(&self.accel_loader, device, allocator, prepared, None) };
+            return Err(e);
+        }
+
+        // Round the raw device address up to `scratch_align` so the
+        // address shared by every recorded build in this batch satisfies
+        // VUID-…-pInfos-03715 in release too (the headroom above absorbs
+        // the shift). No-op on aligned drivers. See #1386 / #659.
+        // SAFETY: the shared scratch buffer was created with
+        // SHADER_DEVICE_ADDRESS; the returned address is rounded up to
+        // `scratch_align` below into the padding reserved above.
+        let raw_scratch = unsafe {
+            device.get_buffer_device_address(
+                &vk::BufferDeviceAddressInfo::default()
+                    .buffer(self.blas_scratch_buffer.as_ref().unwrap().buffer),
+            )
+        };
+        let scratch_address = align_scratch_address(raw_scratch, self.scratch_align);
+
+        // Phase 3: Create query pool for compacted size readback.
+        let n = prepared.len() as u32;
+        let query_pool_info = vk::QueryPoolCreateInfo::default()
+            .query_type(vk::QueryType::ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR)
+            .query_count(n);
+        // SAFETY: `query_pool_info` is fully initialized and device is
+        // live; the returned pool is owned and destroyed below.
+        let query_pool = match unsafe { device.create_query_pool(&query_pool_info, None) } {
+            Ok(pool) => pool,
+            Err(e) => {
+                // SAFETY: nothing in `prepared` has been recorded (#4883).
+                unsafe { unwind_prepared(&self.accel_loader, device, allocator, prepared, None) };
+                return Err(e).context("Failed to create compaction query pool");
+            }
+        };
+        // Reset the query pool before use (required by Vulkan spec).
+        // SAFETY: `query_pool` was just created with `n` queries; the
+        // reset range [0, n) is in bounds; no query is in use yet.
+        unsafe {
+            device.reset_query_pool(query_pool, 0, n);
+        }
+
+        // Phase 4: Record builds + compaction size queries into one command buffer.
+        let build_result = submit_one_time(device, queue, command_pool, transfer_fence, |cmd| {
+            self.record_batch_builds(device, cmd, &prepared, query_pool, scratch_address);
+            Ok(())
+        });
+
+        if let Err(e) = build_result {
+            // #5201 — #4891's policy: a failure at `vkQueueSubmit` or the
+            // fence wait leaves the build command buffer possibly still
+            // executing. Destroying the ASes it writes and its query pool
+            // then races in-flight GPU work, so conservatively leak instead
+            // (the device is already failing; a bounded leak outlives it by
+            // nothing). `prepared` holds `GpuBuffer`s with Drop impls —
+            // `mem::forget` skips them, leaking the allocations. The query
+            // pool is a raw handle: leaking it means simply not destroying
+            // it here.
+            if super::super::texture::OneTimeCommandError::may_be_in_flight(&e) {
+                std::mem::forget(prepared);
+                return Err(e);
+            }
+            // SAFETY: the build submission failed before `vkQueueSubmit`
+            // (#4891 NotSubmitted — allocate/begin/record/end/fence setup),
+            // so no in-flight command buffer references `prepared` or
+            // `query_pool`; both are owned here; device is live.
+            unsafe {
+                unwind_prepared(
+                    &self.accel_loader,
+                    device,
+                    allocator,
+                    prepared,
+                    Some(query_pool),
+                )
+            };
+            return Err(e);
+        }
+
+        // Phases 5 + 6: Read back compacted sizes, then allocate compacted
+        // destination buffers + acceleration structures. A helper, so
+        // that any mid-loop allocation failure can roll back
+        // the partial compact-side state plus the still-owned `prepared`
+        // originals and the `query_pool`. Pre-#316 these `?` exits leaked
+        // every Vulkan handle whose Drop relies on the explicit `destroy`
+        // calls in phase 7. Mirrors the build/copy-phase cleanup pattern
+        // at lines 733-745 / 815-832.
+        //
+        // #2926 / PERF-D3-02 — `compact_accels` is owned by the CALLER of
+        // the helper and passed in by `&mut`, NOT declared inside it.
+        // #316's rollback reached `prepared` + the query pool only: every
+        // compacted `vk::AccelerationStructureKHR` an earlier iteration had
+        // already pushed was dropped as plain memory on both of the
+        // helper's early exits (the `create_device_local_uninit` `?` and
+        // the `create_acceleration_structure` `bail!`). `GpuBuffer` has a
+        // `Drop` safety net (#656) that reclaims the buffer; the raw
+        // acceleration-structure handle has no `Drop` impl at all and
+        // leaked for the process lifetime — the same reasoning as #2481,
+        // on the one path (allocator OOM) where leaking makes the *next*
+        // attempt fail sooner. Owning the vec outside means whatever the
+        // helper managed to allocate survives the error and is visible to
+        // the rollback arm below.
+        let mut compact_accels: Vec<CompactedBlas> = Vec::with_capacity(prepared.len());
+        let (total_before, total_after) = match self.alloc_compact(
+            device,
+            allocator,
+            &prepared,
+            query_pool,
+            &mut compact_accels,
         ) {
+            Ok(v) => v,
+            Err(e) => {
+                // Roll back: destroy whatever compaction destinations were
+                // already allocated (#2926 — the helper's own early exits
+                // leave them in `compact_accels`; only the failing
+                // iteration's not-yet-pushed buffer is cleaned up inside),
+                // then the originals (phase 7's job on the happy path) and
+                // the query pool. Mirrors the `copy_result` failure arm
+                // below, which has always walked both vecs correctly.
+                for (_, accel, mut buf, _, _, _) in compact_accels {
+                    // SAFETY: the compaction allocation failed before any copy
+                    // was recorded, so no in-flight command buffer references
+                    // this compacted `accel`; each accel + buffer is owned by
+                    // `compact_accels`; device is live.
+                    unsafe {
+                        self.accel_loader
+                            .destroy_acceleration_structure(accel, None);
+                    }
+                    buf.destroy(device, allocator);
+                }
+                for mut p in prepared {
+                    // SAFETY: the compaction allocation failed before any copy was
+                    // recorded, so no in-flight command buffer references `p.accel`;
+                    // each accel + buffer is owned by `prepared`; device is live.
+                    unsafe {
+                        self.accel_loader
+                            .destroy_acceleration_structure(p.accel, None);
+                    }
+                    p.buffer.destroy(device, allocator);
+                }
+                // SAFETY: `query_pool` is the live pool created above; device is
+                // live; no in-flight command buffer references it on this path.
+                unsafe {
+                    device.destroy_query_pool(query_pool, None);
+                }
+                return Err(e);
+            }
+        };
+
+        // Record compaction copies in a second command buffer.
+        let copy_result = submit_one_time(device, queue, command_pool, transfer_fence, |cmd| {
+            for (i, (_, compact_accel, _, _, _, _)) in compact_accels.iter().enumerate() {
+                let copy_info = vk::CopyAccelerationStructureInfoKHR::default()
+                    .src(prepared[i].accel)
+                    .dst(*compact_accel)
+                    .mode(vk::CopyAccelerationStructureModeKHR::COMPACT);
+
+                // SAFETY: `cmd` is recording; `prepared[i].accel` (src) was built
+                // and the compaction barrier ordered its write; `*compact_accel`
+                // (dst) was sized from the queried compacted size; no other
+                // in-flight build aliases either handle.
+                unsafe {
+                    self.accel_loader
+                        .cmd_copy_acceleration_structure(cmd, &copy_info);
+                }
+            }
+            Ok(())
+        });
+
+        // Destroy the query pool — no longer needed.
+        // SAFETY: the compaction-size queries have been read back; the
+        // pool is no longer referenced by any command buffer; device is
+        // live.
+        unsafe {
+            device.destroy_query_pool(query_pool, None);
+        }
+
+        if let Err(e) = copy_result {
+            // #5201 — same #4891 branch as the build arm above: on a
+            // submit/fence-wait failure the compaction copies may still be
+            // executing, so leak both vecs rather than destroy ASes the GPU
+            // is still writing. (The query pool was already destroyed above
+            // — nothing in the copy command buffer references it, so that
+            // destroy is safe under both failure classes.)
+            if super::super::texture::OneTimeCommandError::may_be_in_flight(&e) {
+                std::mem::forget(prepared);
+                std::mem::forget(compact_accels);
+                return Err(e);
+            }
+            // Clean up both original and compact structures on failure.
             for mut p in prepared {
-                // SAFETY: see the function contract — owned, unreferenced.
-                unsafe { accel_loader.destroy_acceleration_structure(p.accel, None) };
+                // SAFETY: the copy submission failed before `vkQueueSubmit`
+                // (#4891 NotSubmitted), so no in-flight command buffer
+                // references `p.accel`; each accel + buffer is owned by
+                // `prepared`; device is live.
+                unsafe {
+                    self.accel_loader
+                        .destroy_acceleration_structure(p.accel, None);
+                }
                 p.buffer.destroy(device, allocator);
             }
-            if let Some(pool) = query_pool {
-                // SAFETY: see the function contract.
-                unsafe { device.destroy_query_pool(pool, None) };
+            for (_, accel, mut buf, _, _, _) in compact_accels {
+                // SAFETY: the copy submission failed before `vkQueueSubmit`
+                // (#4891 NotSubmitted), so the compacted `accel` was never
+                // read by any in-flight command buffer; each accel + buffer
+                // is owned by `compact_accels`; device is live.
+                unsafe {
+                    self.accel_loader
+                        .destroy_acceleration_structure(accel, None);
+                }
+                buf.destroy(device, allocator);
             }
+            return Err(e);
         }
+
+        // Phase 7: Destroy originals, store compacted entries.
+        let count = self.commit_compacted_batch(device, allocator, prepared, compact_accels);
+
+        let savings_pct = if total_before > 0 {
+            100.0 * (1.0 - total_after as f64 / total_before as f64)
+        } else {
+            0.0
+        };
+        // #4198 sibling — this runs once per caller batch: once per placed
+        // reference during a cell load (hundreds of lines per cell) and once
+        // per recovery chunk. The per-cell total is the `Static BLAS:` line in
+        // the cell summary; this one is for drilling into a single batch.
+        log::debug!(
+            "Batched BLAS build: {} meshes, compacted {:.1} KB → {:.1} KB ({:.0}% savings)",
+            count,
+            total_before as f64 / 1024.0,
+            total_after as f64 / 1024.0,
+            savings_pct,
+        );
+        Ok(count)
+    }
+
+    /// Phase 1 of [`Self::build_blas_batched`]: size every mesh, run the budget's
+    /// eviction and admission checks, and create each admitted mesh's result buffer
+    /// and acceleration structure.
+    ///
+    /// Returns the prepared originals, which no command buffer references yet, and
+    /// the largest build scratch among them. A list shorter than `meshes` means the
+    /// admission gate declined the tail (#3979). On failure everything prepared so
+    /// far has already been unwound (#4883).
+    fn prepare_static_blas_batch(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        meshes: &[BlasBuildSource],
+    ) -> Result<(Vec<PreparedBlas>, vk::DeviceSize)> {
+        let vertex_stride = std::mem::size_of::<Vertex>() as vk::DeviceSize;
 
         let mut prepared: Vec<PreparedBlas> = Vec::with_capacity(meshes.len());
         let mut max_scratch_size: vk::DeviceSize = 0;
@@ -683,19 +954,18 @@ impl AccelerationManager {
             });
         }
 
-        // #3979 — the admission gate can decline every mesh in the batch
-        // (already over budget on entry, nothing left to evict). Bail before
-        // Phase 2: a zero-length batch would size the scratch buffer to
-        // nothing and then create a query pool with `queryCount == 0`, which
-        // VUID-VkQueryPoolCreateInfo-queryCount-02763 forbids outright.
-        if prepared.is_empty() {
-            return Ok(0);
-        }
+        Ok((prepared, max_scratch_size))
+    }
 
-        // Phase 2: Ensure scratch buffer is large enough. Grow-only
-        // policy via shared helper — see #60 / #424 SIBLING. Pad by
-        // `scratch_alignment_padding` so the shared device address can be
-        // rounded up to `scratch_align` below (#1386).
+    /// Phase 2 of [`Self::build_blas_batched`]: grow the shared scratch buffer to
+    /// hold this batch. On failure the old buffer is untouched and the caller
+    /// unwinds the batch.
+    fn ensure_batch_scratch(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        max_scratch_size: vk::DeviceSize,
+    ) -> Result<()> {
         let scratch_size = max_scratch_size + scratch_alignment_padding(self.scratch_align);
         let need_new_scratch = scratch_needs_growth(
             self.blas_scratch_buffer.as_ref().map(|b| b.size),
@@ -729,12 +999,8 @@ impl AccelerationManager {
             ) {
                 Ok(new_scratch) => new_scratch,
                 Err(e) => {
-                    // SAFETY: nothing in `prepared` has been recorded (#4883).
                     // The old scratch is untouched, so skinned refits keep
-                    // working; only this batch is abandoned.
-                    unsafe {
-                        unwind_prepared(&self.accel_loader, device, allocator, prepared, None)
-                    };
+                    // working; the caller abandons only this batch (#4883).
                     return Err(e).context("BLAS batch scratch buffer");
                 }
             };
@@ -745,414 +1011,245 @@ impl AccelerationManager {
             self.blas_scratch_buffer = Some(new_scratch);
         }
 
-        // Round the raw device address up to `scratch_align` so the
-        // address shared by every recorded build in this batch satisfies
-        // VUID-…-pInfos-03715 in release too (the headroom above absorbs
-        // the shift). No-op on aligned drivers. See #1386 / #659.
-        // SAFETY: the shared scratch buffer was created with
-        // SHADER_DEVICE_ADDRESS; the returned address is rounded up to
-        // `scratch_align` below into the padding reserved above.
-        let raw_scratch = unsafe {
-            device.get_buffer_device_address(
-                &vk::BufferDeviceAddressInfo::default()
-                    .buffer(self.blas_scratch_buffer.as_ref().unwrap().buffer),
-            )
-        };
-        let scratch_address = align_scratch_address(raw_scratch, self.scratch_align);
+        Ok(())
+    }
 
-        // Phase 3: Create query pool for compacted size readback.
-        let n = prepared.len() as u32;
-        let query_pool_info = vk::QueryPoolCreateInfo::default()
-            .query_type(vk::QueryType::ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR)
-            .query_count(n);
-        // SAFETY: `query_pool_info` is fully initialized and device is
-        // live; the returned pool is owned and destroyed below.
-        let query_pool = match unsafe { device.create_query_pool(&query_pool_info, None) } {
-            Ok(pool) => pool,
-            Err(e) => {
-                // SAFETY: nothing in `prepared` has been recorded (#4883).
-                unsafe { unwind_prepared(&self.accel_loader, device, allocator, prepared, None) };
-                return Err(e).context("Failed to create compaction query pool");
-            }
-        };
-        // Reset the query pool before use (required by Vulkan spec).
-        // SAFETY: `query_pool` was just created with `n` queries; the
-        // reset range [0, n) is in bounds; no query is in use yet.
-        unsafe {
-            device.reset_query_pool(query_pool, 0, n);
+    /// Phase 4 of [`Self::build_blas_batched`]: record every build and the
+    /// compaction-size queries into one command buffer.
+    fn record_batch_builds(
+        &self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        prepared: &[PreparedBlas],
+        query_pool: vk::QueryPool,
+        scratch_address: vk::DeviceAddress,
+    ) {
+        // #4177 / CONC-D1-01 — self-emit one scratch-serialise barrier
+        // before the FIRST build, exactly as `refit_skinned_blas` (#983)
+        // and `build_skinned_blas_batched_on_cmd` (#1300) already do.
+        //
+        // `blas_scratch_buffer` is one shared allocation with three
+        // writers: this batched static build, skinned first-sight
+        // builds, and skinned refits. This site was the only one of the
+        // three whose `i == 0` build was unguarded — the in-loop
+        // `i > 0` barrier below serialises this batch against itself but
+        // says nothing about a *prior* submission's writes.
+        //
+        // That prior submission is reachable on ordinary frames, not
+        // just at load: `build_blas_batched` runs from `step_streaming`
+        // and `restore_missing_static_blas_for_draws`, both before
+        // `draw_frame`'s top-of-frame `wait_for_fences`, so a previous
+        // frame's skinned BUILD/refit against this same scratch address
+        // may still be executing. The hazard is a write-after-write on
+        // the shared scratch, and it exists only in steady state (when
+        // `scratch_needs_growth` is false and the allocation is reused).
+        //
+        // Deliberately shipped without validation-layer confirmation,
+        // which is not an oversight: `ScratchUser::CrossSubmissionBuild\
+        // WithFenceWait`'s own documentation records that validation
+        // layers reason per-submission and do NOT flag this class, so
+        // the callee-side self-emit is the only safety net. The
+        // host fence-wait `submit_one_time` performs establishes a
+        // host-side dependency only. See #983 / #1140 /
+        // `requires_scratch_serialize_barrier_before`.
+        //
+        // The `i > 0` barrier below still handles serialisation within
+        // this batch, so each build is preceded by exactly one barrier.
+        if !prepared.is_empty() {
+            self.record_scratch_serialize_barrier(device, cmd);
         }
-
-        // Phase 4: Record builds + compaction size queries into one command buffer.
-        let build_result = submit_one_time(device, queue, command_pool, transfer_fence, |cmd| {
-            // #4177 / CONC-D1-01 — self-emit one scratch-serialise barrier
-            // before the FIRST build, exactly as `refit_skinned_blas` (#983)
-            // and `build_skinned_blas_batched_on_cmd` (#1300) already do.
-            //
-            // `blas_scratch_buffer` is one shared allocation with three
-            // writers: this batched static build, skinned first-sight
-            // builds, and skinned refits. This site was the only one of the
-            // three whose `i == 0` build was unguarded — the in-loop
-            // `i > 0` barrier below serialises this batch against itself but
-            // says nothing about a *prior* submission's writes.
-            //
-            // That prior submission is reachable on ordinary frames, not
-            // just at load: `build_blas_batched` runs from `step_streaming`
-            // and `restore_missing_static_blas_for_draws`, both before
-            // `draw_frame`'s top-of-frame `wait_for_fences`, so a previous
-            // frame's skinned BUILD/refit against this same scratch address
-            // may still be executing. The hazard is a write-after-write on
-            // the shared scratch, and it exists only in steady state (when
-            // `scratch_needs_growth` is false and the allocation is reused).
-            //
-            // Deliberately shipped without validation-layer confirmation,
-            // which is not an oversight: `ScratchUser::CrossSubmissionBuild\
-            // WithFenceWait`'s own documentation records that validation
-            // layers reason per-submission and do NOT flag this class, so
-            // the callee-side self-emit is the only safety net. The
-            // host fence-wait `submit_one_time` performs establishes a
-            // host-side dependency only. See #983 / #1140 /
-            // `requires_scratch_serialize_barrier_before`.
-            //
-            // The `i > 0` barrier below still handles serialisation within
-            // this batch, so each build is preceded by exactly one barrier.
-            if !prepared.is_empty() {
+        for (i, p) in prepared.iter().enumerate() {
+            if i > 0 {
                 self.record_scratch_serialize_barrier(device, cmd);
             }
-            for (i, p) in prepared.iter().enumerate() {
-                if i > 0 {
-                    self.record_scratch_serialize_barrier(device, cmd);
-                }
 
-                let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
-                    .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-                    .flags(STATIC_BLAS_FLAGS)
-                    .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-                    .dst_acceleration_structure(p.accel)
-                    .geometries(std::slice::from_ref(&p.geometry))
-                    .scratch_data(vk::DeviceOrHostAddressKHR {
-                        device_address: scratch_address,
-                    });
+            let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+                .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
+                .flags(STATIC_BLAS_FLAGS)
+                .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+                .dst_acceleration_structure(p.accel)
+                .geometries(std::slice::from_ref(&p.geometry))
+                .scratch_data(vk::DeviceOrHostAddressKHR {
+                    device_address: scratch_address,
+                });
 
-                let range_info = vk::AccelerationStructureBuildRangeInfoKHR::default()
-                    .primitive_count(p.primitive_count)
-                    .primitive_offset(0)
-                    .first_vertex(0);
+            let range_info = vk::AccelerationStructureBuildRangeInfoKHR::default()
+                .primitive_count(p.primitive_count)
+                .primitive_offset(0)
+                .first_vertex(0);
 
-                // SAFETY: `cmd` is recording (inside `submit_one_time`); the
-                // shared scratch is sized to `max_scratch_size` + alignment
-                // padding and the per-build scratch ranges are serialized by the
-                // barrier at the loop head; `p.accel` is freshly created and not
-                // referenced by any other in-flight build; geometry handles live.
-                unsafe {
-                    self.accel_loader.cmd_build_acceleration_structures(
-                        cmd,
-                        &[build_info],
-                        &[std::slice::from_ref(&range_info)],
-                    );
-                }
-            }
-
-            // Barrier: all builds must complete before querying compacted sizes.
-            // AS_BUILD_KHR → AS_BUILD_KHR (WRITE → READ for compaction query).
-            // SAFETY: `cmd` is recording; the barrier serializes all preceding
-            // AS builds (WRITE) against the compaction-size queries (READ) that
-            // follow on the same command buffer.
+            // SAFETY: `cmd` is recording (inside `submit_one_time`); the
+            // shared scratch is sized to `max_scratch_size` + alignment
+            // padding and the per-build scratch ranges are serialized by the
+            // barrier at the loop head; `p.accel` is freshly created and not
+            // referenced by any other in-flight build; geometry handles live.
             unsafe {
-                memory_barrier(
-                    device,
+                self.accel_loader.cmd_build_acceleration_structures(
                     cmd,
-                    vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                    vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
-                    vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                    vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+                    &[build_info],
+                    &[std::slice::from_ref(&range_info)],
                 );
             }
-
-            // Query compacted sizes for all built BLAS.
-            let accel_handles: Vec<vk::AccelerationStructureKHR> =
-                prepared.iter().map(|p| p.accel).collect();
-            // SAFETY: `cmd` is recording; every `accel` in `accel_handles` was
-            // built earlier on this command buffer and the barrier above orders
-            // the build writes before this read; `query_pool` holds `n` slots.
-            unsafe {
-                self.accel_loader
-                    .cmd_write_acceleration_structures_properties(
-                        cmd,
-                        &accel_handles,
-                        vk::QueryType::ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
-                        query_pool,
-                        0,
-                    );
-            }
-
-            Ok(())
-        });
-
-        if let Err(e) = build_result {
-            // #5201 — #4891's policy: a failure at `vkQueueSubmit` or the
-            // fence wait leaves the build command buffer possibly still
-            // executing. Destroying the ASes it writes and its query pool
-            // then races in-flight GPU work, so conservatively leak instead
-            // (the device is already failing; a bounded leak outlives it by
-            // nothing). `prepared` holds `GpuBuffer`s with Drop impls —
-            // `mem::forget` skips them, leaking the allocations. The query
-            // pool is a raw handle: leaking it means simply not destroying
-            // it here.
-            if super::super::texture::OneTimeCommandError::may_be_in_flight(&e) {
-                std::mem::forget(prepared);
-                return Err(e);
-            }
-            // SAFETY: the build submission failed before `vkQueueSubmit`
-            // (#4891 NotSubmitted — allocate/begin/record/end/fence setup),
-            // so no in-flight command buffer references `prepared` or
-            // `query_pool`; both are owned here; device is live.
-            unsafe {
-                unwind_prepared(
-                    &self.accel_loader,
-                    device,
-                    allocator,
-                    prepared,
-                    Some(query_pool),
-                )
-            };
-            return Err(e);
         }
 
-        // Phases 5 + 6: Read back compacted sizes, then allocate compacted
-        // destination buffers + acceleration structures. Wrapped in a
-        // closure so that any mid-loop allocation failure can roll back
-        // the partial compact-side state plus the still-owned `prepared`
-        // originals and the `query_pool`. Pre-#316 these `?` exits leaked
-        // every Vulkan handle whose Drop relies on the explicit `destroy`
-        // calls in phase 7. Mirrors the build/copy-phase cleanup pattern
-        // at lines 733-745 / 815-832.
-        //
-        // #2926 / PERF-D3-02 — `compact_accels` is owned by the CALLER of
-        // the closure and passed in by `&mut`, NOT declared inside it.
-        // #316's rollback reached `prepared` + the query pool only: every
-        // compacted `vk::AccelerationStructureKHR` an earlier iteration had
-        // already pushed was dropped as plain memory on both of the
-        // closure's early exits (the `create_device_local_uninit` `?` and
-        // the `create_acceleration_structure` `bail!`). `GpuBuffer` has a
-        // `Drop` safety net (#656) that reclaims the buffer; the raw
-        // acceleration-structure handle has no `Drop` impl at all and
-        // leaked for the process lifetime — the same reasoning as #2481,
-        // on the one path (allocator OOM) where leaking makes the *next*
-        // attempt fail sooner. Owning the vec outside means whatever the
-        // closure managed to allocate survives the error and is visible to
-        // the rollback arm below.
-        let mut compact_accels: Vec<CompactedBlas> = Vec::with_capacity(prepared.len());
-        let mut alloc_compact = |compact_accels: &mut Vec<CompactedBlas>| -> Result<(u64, u64)> {
-            let mut compacted_sizes = vec![0u64; prepared.len()];
-            // SAFETY: the WAIT flag blocks until all `n` compaction-size
-            // queries written above are available; `compacted_sizes` has one
-            // slot per query; device + pool are live.
-            unsafe {
-                device
-                    .get_query_pool_results(
-                        query_pool,
-                        0,
-                        &mut compacted_sizes,
-                        vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT,
-                    )
-                    .context("Failed to read compaction query results")?;
-            }
-
-            let total_before: u64 = prepared.iter().map(|p| p.buffer.size).sum();
-            let total_after: u64 = compacted_sizes.iter().sum();
-
-            // #2927 / PERF-D3-03 — the real static-BLAS peak for this
-            // batch. The Phase-1 `pending_bytes` ledger (which drove the
-            // mid-batch `should_evict_mid_batch` checks) stopped at
-            // `total_before`: it never saw the compaction destinations,
-            // which are a SECOND full set of buffers allocated below while
-            // every Phase-1 original is still live (they aren't destroyed
-            // until Phase 7, after the copy submission retires). True peak
-            // residency is therefore `static_blas_bytes + total_before +
-            // total_after`, ~1.5× what the budget was being tested
-            // against, and there was no eviction check anywhere inside
-            // this phase — the one that pushes residency to its maximum.
-            //
-            // Unlike the Phase-1 loop, this needs no interval amortization
-            // and no per-iteration re-check: `get_query_pool_results` above
-            // has already handed us every compacted size, so the exact peak
-            // is known here, before a single destination is allocated. One
-            // pre-emptive call with the true figure is both cheaper and
-            // strictly more effective than the per-N-iterations sampling
-            // #1792 installed upstream. No-op when under budget (the callee
-            // early-returns), which is every case on a 12 GB card; this is a
-            // 6 GB-RT-minimum-target path, like the rest of `blas_budget_bytes`.
-            self.evict_unused_blas(device, allocator, total_before.saturating_add(total_after));
-
-            // Tuple: (mesh_handle, compacted accel, compacted buffer,
-            // build_scratch_size, vertex_count, index_count). Scratch
-            // size is propagated from `prepared` so the final
-            // `BlasEntry` can remember what scratch this mesh consumed
-            // at build time (#495); vertex/index counts are propagated
-            // for the refit-counts VUID check (#907 — static BLAS
-            // never refit but we pin the counts for symmetry).
-            for (i, p) in prepared.iter().enumerate() {
-                let compact_size = compacted_sizes[i];
-
-                let compact_buffer = GpuBuffer::create_device_local_uninit(
-                    device,
-                    allocator,
-                    compact_size,
-                    vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
-                        | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-                )?;
-
-                let compact_accel_info = vk::AccelerationStructureCreateInfoKHR::default()
-                    .buffer(compact_buffer.buffer)
-                    .size(compact_size)
-                    .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL);
-
-                // SAFETY: `compact_accel_info` references `compact_buffer.buffer`,
-                // just created with ACCELERATION_STRUCTURE_STORAGE_KHR and live;
-                // device outlives the call. On failure the local buffer is
-                // destroyed before bailing.
-                let compact_accel = unsafe {
-                    match self
-                        .accel_loader
-                        .create_acceleration_structure(&compact_accel_info, None)
-                    {
-                        Ok(a) => a,
-                        Err(e) => {
-                            // Buffer was created in this iteration but not
-                            // yet pushed into `compact_accels`, so the outer
-                            // cleanup loop (which since #2926 does exist and
-                            // does walk `compact_accels`) won't see it —
-                            // destroy it locally before bubbling so the OOM
-                            // path is leak-free. Earlier iterations' entries
-                            // are already in `compact_accels` and are the
-                            // rollback arm's responsibility.
-                            let mut b = compact_buffer;
-                            b.destroy(device, allocator);
-                            anyhow::bail!("Failed to create compact BLAS: {e}");
-                        }
-                    }
-                };
-
-                compact_accels.push((
-                    p.mesh_handle,
-                    compact_accel,
-                    compact_buffer,
-                    p.build_scratch_size,
-                    p.vertex_count,
-                    p.index_count,
-                ));
-            }
-
-            Ok((total_before, total_after))
-        };
-
-        let (total_before, total_after) = match alloc_compact(&mut compact_accels) {
-            Ok(v) => v,
-            Err(e) => {
-                // Roll back: destroy whatever compaction destinations were
-                // already allocated (#2926 — the closure's own early exits
-                // leave them in `compact_accels`; only the failing
-                // iteration's not-yet-pushed buffer is cleaned up inside),
-                // then the originals (phase 7's job on the happy path) and
-                // the query pool. Mirrors the `copy_result` failure arm
-                // below, which has always walked both vecs correctly.
-                for (_, accel, mut buf, _, _, _) in compact_accels {
-                    // SAFETY: the compaction allocation failed before any copy
-                    // was recorded, so no in-flight command buffer references
-                    // this compacted `accel`; each accel + buffer is owned by
-                    // `compact_accels`; device is live.
-                    unsafe {
-                        self.accel_loader
-                            .destroy_acceleration_structure(accel, None);
-                    }
-                    buf.destroy(device, allocator);
-                }
-                for mut p in prepared {
-                    // SAFETY: the compaction allocation failed before any copy was
-                    // recorded, so no in-flight command buffer references `p.accel`;
-                    // each accel + buffer is owned by `prepared`; device is live.
-                    unsafe {
-                        self.accel_loader
-                            .destroy_acceleration_structure(p.accel, None);
-                    }
-                    p.buffer.destroy(device, allocator);
-                }
-                // SAFETY: `query_pool` is the live pool created above; device is
-                // live; no in-flight command buffer references it on this path.
-                unsafe {
-                    device.destroy_query_pool(query_pool, None);
-                }
-                return Err(e);
-            }
-        };
-
-        // Record compaction copies in a second command buffer.
-        let copy_result = submit_one_time(device, queue, command_pool, transfer_fence, |cmd| {
-            for (i, (_, compact_accel, _, _, _, _)) in compact_accels.iter().enumerate() {
-                let copy_info = vk::CopyAccelerationStructureInfoKHR::default()
-                    .src(prepared[i].accel)
-                    .dst(*compact_accel)
-                    .mode(vk::CopyAccelerationStructureModeKHR::COMPACT);
-
-                // SAFETY: `cmd` is recording; `prepared[i].accel` (src) was built
-                // and the compaction barrier ordered its write; `*compact_accel`
-                // (dst) was sized from the queried compacted size; no other
-                // in-flight build aliases either handle.
-                unsafe {
-                    self.accel_loader
-                        .cmd_copy_acceleration_structure(cmd, &copy_info);
-                }
-            }
-            Ok(())
-        });
-
-        // Destroy the query pool — no longer needed.
-        // SAFETY: the compaction-size queries have been read back; the
-        // pool is no longer referenced by any command buffer; device is
-        // live.
+        // Barrier: all builds must complete before querying compacted sizes.
+        // AS_BUILD_KHR → AS_BUILD_KHR (WRITE → READ for compaction query).
+        // SAFETY: `cmd` is recording; the barrier serializes all preceding
+        // AS builds (WRITE) against the compaction-size queries (READ) that
+        // follow on the same command buffer.
         unsafe {
-            device.destroy_query_pool(query_pool, None);
+            memory_barrier(
+                device,
+                cmd,
+                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
+                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+            );
         }
 
-        if let Err(e) = copy_result {
-            // #5201 — same #4891 branch as the build arm above: on a
-            // submit/fence-wait failure the compaction copies may still be
-            // executing, so leak both vecs rather than destroy ASes the GPU
-            // is still writing. (The query pool was already destroyed above
-            // — nothing in the copy command buffer references it, so that
-            // destroy is safe under both failure classes.)
-            if super::super::texture::OneTimeCommandError::may_be_in_flight(&e) {
-                std::mem::forget(prepared);
-                std::mem::forget(compact_accels);
-                return Err(e);
-            }
-            // Clean up both original and compact structures on failure.
-            for mut p in prepared {
-                // SAFETY: the copy submission failed before `vkQueueSubmit`
-                // (#4891 NotSubmitted), so no in-flight command buffer
-                // references `p.accel`; each accel + buffer is owned by
-                // `prepared`; device is live.
-                unsafe {
-                    self.accel_loader
-                        .destroy_acceleration_structure(p.accel, None);
-                }
-                p.buffer.destroy(device, allocator);
-            }
-            for (_, accel, mut buf, _, _, _) in compact_accels {
-                // SAFETY: the copy submission failed before `vkQueueSubmit`
-                // (#4891 NotSubmitted), so the compacted `accel` was never
-                // read by any in-flight command buffer; each accel + buffer
-                // is owned by `compact_accels`; device is live.
-                unsafe {
-                    self.accel_loader
-                        .destroy_acceleration_structure(accel, None);
-                }
-                buf.destroy(device, allocator);
-            }
-            return Err(e);
+        // Query compacted sizes for all built BLAS.
+        let accel_handles: Vec<vk::AccelerationStructureKHR> =
+            prepared.iter().map(|p| p.accel).collect();
+        // SAFETY: `cmd` is recording; every `accel` in `accel_handles` was
+        // built earlier on this command buffer and the barrier above orders
+        // the build writes before this read; `query_pool` holds `n` slots.
+        unsafe {
+            self.accel_loader
+                .cmd_write_acceleration_structures_properties(
+                    cmd,
+                    &accel_handles,
+                    vk::QueryType::ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+                    query_pool,
+                    0,
+                );
+        }
+    }
+
+    /// Phases 5 + 6 of [`Self::build_blas_batched`]: read back the compacted sizes,
+    /// run the budget check against the real peak, and allocate the compaction
+    /// destinations into the caller's `compact_accels`. Returns the batch's size
+    /// before and after compaction.
+    fn alloc_compact(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        prepared: &[PreparedBlas],
+        query_pool: vk::QueryPool,
+        compact_accels: &mut Vec<CompactedBlas>,
+    ) -> Result<(u64, u64)> {
+        let mut compacted_sizes = vec![0u64; prepared.len()];
+        // SAFETY: the WAIT flag blocks until all `n` compaction-size
+        // queries written above are available; `compacted_sizes` has one
+        // slot per query; device + pool are live.
+        unsafe {
+            device
+                .get_query_pool_results(
+                    query_pool,
+                    0,
+                    &mut compacted_sizes,
+                    vk::QueryResultFlags::TYPE_64 | vk::QueryResultFlags::WAIT,
+                )
+                .context("Failed to read compaction query results")?;
         }
 
-        // Phase 7: Destroy originals, store compacted entries.
+        let total_before: u64 = prepared.iter().map(|p| p.buffer.size).sum();
+        let total_after: u64 = compacted_sizes.iter().sum();
+
+        // #2927 / PERF-D3-03 — the real static-BLAS peak for this
+        // batch. The Phase-1 `pending_bytes` ledger (which drove the
+        // mid-batch `should_evict_mid_batch` checks) stopped at
+        // `total_before`: it never saw the compaction destinations,
+        // which are a SECOND full set of buffers allocated below while
+        // every Phase-1 original is still live (they aren't destroyed
+        // until Phase 7, after the copy submission retires). True peak
+        // residency is therefore `static_blas_bytes + total_before +
+        // total_after`, ~1.5× what the budget was being tested
+        // against, and there was no eviction check anywhere inside
+        // this phase — the one that pushes residency to its maximum.
+        //
+        // Unlike the Phase-1 loop, this needs no interval amortization
+        // and no per-iteration re-check: `get_query_pool_results` above
+        // has already handed us every compacted size, so the exact peak
+        // is known here, before a single destination is allocated. One
+        // pre-emptive call with the true figure is both cheaper and
+        // strictly more effective than the per-N-iterations sampling
+        // #1792 installed upstream. No-op when under budget (the callee
+        // early-returns), which is every case on a 12 GB card; this is a
+        // 6 GB-RT-minimum-target path, like the rest of `blas_budget_bytes`.
+        self.evict_unused_blas(device, allocator, total_before.saturating_add(total_after));
+
+        // Tuple: (mesh_handle, compacted accel, compacted buffer,
+        // build_scratch_size, vertex_count, index_count). Scratch
+        // size is propagated from `prepared` so the final
+        // `BlasEntry` can remember what scratch this mesh consumed
+        // at build time (#495); vertex/index counts are propagated
+        // for the refit-counts VUID check (#907 — static BLAS
+        // never refit but we pin the counts for symmetry).
+        for (i, p) in prepared.iter().enumerate() {
+            let compact_size = compacted_sizes[i];
+
+            let compact_buffer = GpuBuffer::create_device_local_uninit(
+                device,
+                allocator,
+                compact_size,
+                vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
+                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            )?;
+
+            let compact_accel_info = vk::AccelerationStructureCreateInfoKHR::default()
+                .buffer(compact_buffer.buffer)
+                .size(compact_size)
+                .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL);
+
+            // SAFETY: `compact_accel_info` references `compact_buffer.buffer`,
+            // just created with ACCELERATION_STRUCTURE_STORAGE_KHR and live;
+            // device outlives the call. On failure the local buffer is
+            // destroyed before bailing.
+            let compact_accel = unsafe {
+                match self
+                    .accel_loader
+                    .create_acceleration_structure(&compact_accel_info, None)
+                {
+                    Ok(a) => a,
+                    Err(e) => {
+                        // Buffer was created in this iteration but not
+                        // yet pushed into `compact_accels`, so the outer
+                        // cleanup loop (which since #2926 does exist and
+                        // does walk `compact_accels`) won't see it —
+                        // destroy it locally before bubbling so the OOM
+                        // path is leak-free. Earlier iterations' entries
+                        // are already in `compact_accels` and are the
+                        // rollback arm's responsibility.
+                        let mut b = compact_buffer;
+                        b.destroy(device, allocator);
+                        anyhow::bail!("Failed to create compact BLAS: {e}");
+                    }
+                }
+            };
+
+            compact_accels.push((
+                p.mesh_handle,
+                compact_accel,
+                compact_buffer,
+                p.build_scratch_size,
+                p.vertex_count,
+                p.index_count,
+            ));
+        }
+
+        Ok((total_before, total_after))
+    }
+
+    /// Phase 7 of [`Self::build_blas_batched`]: destroy the originals and register
+    /// the compacted entries. Returns how many were registered.
+    fn commit_compacted_batch(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        prepared: Vec<PreparedBlas>,
+        compact_accels: Vec<CompactedBlas>,
+    ) -> usize {
         for mut p in prepared {
             // SAFETY: the compaction copy completed (the `submit_one_time`
             // fence has retired), so no command buffer still references the
@@ -1220,23 +1317,7 @@ impl AccelerationManager {
             self.blas_map_generation = self.blas_map_generation.wrapping_add(1);
         }
 
-        let savings_pct = if total_before > 0 {
-            100.0 * (1.0 - total_after as f64 / total_before as f64)
-        } else {
-            0.0
-        };
-        // #4198 sibling — this runs once per caller batch: once per placed
-        // reference during a cell load (hundreds of lines per cell) and once
-        // per recovery chunk. The per-cell total is the `Static BLAS:` line in
-        // the cell summary; this one is for drilling into a single batch.
-        log::debug!(
-            "Batched BLAS build: {} meshes, compacted {:.1} KB → {:.1} KB ({:.0}% savings)",
-            count,
-            total_before as f64 / 1024.0,
-            total_after as f64 / 1024.0,
-            savings_pct,
-        );
-        Ok(count)
+        count
     }
 
     /// Evict unused BLAS entries when static BLAS memory (plus any

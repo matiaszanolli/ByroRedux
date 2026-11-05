@@ -90,39 +90,38 @@ mod blas_compaction_rollback_tests {
     /// (`create_device_local_uninit`'s `?` and the
     /// `create_acceleration_structure` `bail!`) must not strand the
     /// compaction destinations earlier iterations already allocated. A
-    /// `vk::AccelerationStructureKHR` has no `Drop` impl, so a
-    /// closure-owned `compact_accels` leaked one handle per already-
+    /// `vk::AccelerationStructureKHR` has no `Drop` impl, so an
+    /// `alloc_compact`-owned `compact_accels` leaked one handle per already-
     /// compacted mesh — on the one path (OOM) where leaking makes the
     /// next attempt fail sooner. The vec must therefore be owned by the
     /// caller and walked by the rollback arm.
     #[test]
     fn alloc_compact_failure_destroys_already_compacted_structures() {
-        let decl = BLAS_STATIC_RS
+        let orchestrator =
+            crate::source_scan::function_text(BLAS_STATIC_RS, "pub fn build_blas_batched(");
+        let decl = orchestrator
             .find(
                 "let mut compact_accels: Vec<CompactedBlas> = Vec::with_capacity(prepared.len());",
             )
             .expect(
                 "`compact_accels` must be declared OUTSIDE `alloc_compact` so the \
-                 rollback arm can see what the closure allocated before it failed (#2926)",
+                 rollback arm can see what the helper allocated before it failed (#2926)",
             );
-        let closure = BLAS_STATIC_RS
-            .find("let mut alloc_compact = |compact_accels: &mut Vec<CompactedBlas>|")
-            .expect(
-                "`alloc_compact` must take `compact_accels` by `&mut` rather than \
-                 owning it (#2926)",
-            );
+        let helper = crate::source_scan::function_text(BLAS_STATIC_RS, "fn alloc_compact(");
         assert!(
-            decl < closure,
-            "the caller-owned vec must be declared before the closure that fills it"
+            helper.contains("compact_accels: &mut Vec<CompactedBlas>,"),
+            "`alloc_compact` must take `compact_accels` by `&mut` rather than \
+             owning it (#2926)"
         );
 
-        let err_arm = BLAS_STATIC_RS[closure..]
-            .find("match alloc_compact(&mut compact_accels)")
-            .map(|p| p + closure)
+        let err_arm = orchestrator
+            .find("match self.alloc_compact(")
             .expect("the call site must pass the caller-owned vec in");
-        // The rollback arm for the compaction-allocation failure runs
-        // before the `prepared` rollback that #316 already had.
-        let compact_cleanup = BLAS_STATIC_RS[err_arm..]
+        assert!(
+            decl < err_arm,
+            "the caller-owned vec must be declared before the helper that fills it"
+        );
+        let compact_cleanup = orchestrator[err_arm..]
             .find("for (_, accel, mut buf, _, _, _) in compact_accels {")
             .map(|p| p + err_arm)
             .expect(
@@ -130,7 +129,7 @@ mod blas_compaction_rollback_tests {
                  destination already allocated — each is a raw \
                  vk::AccelerationStructureKHR with no Drop impl (#2926)",
             );
-        let prepared_cleanup = BLAS_STATIC_RS[err_arm..]
+        let prepared_cleanup = orchestrator[err_arm..]
             .find("for mut p in prepared {")
             .map(|p| p + err_arm)
             .expect("the #316 `prepared` rollback must still run on this arm");
@@ -638,16 +637,50 @@ mod memory_budget_eviction_census_tests {
 mod batched_build_unwind_tests {
     const BLAS_STATIC_RS: &str = include_str!("../blas_static.rs");
 
-    fn build_body() -> &'static str {
-        let at = BLAS_STATIC_RS
-            .find("pub fn build_blas_batched(")
-            .expect("build_blas_batched");
-        // Phases 1-4 end where the compaction closure takes over; the
-        // closure has its own #316 / #2926 rollback.
-        let end = BLAS_STATIC_RS[at..]
+    fn build_body() -> String {
+        use crate::source_scan::function_text;
+        let orchestrator = function_text(BLAS_STATIC_RS, "pub fn build_blas_batched(");
+        // Phases 1-4 end where the compaction phase takes over; it has its
+        // own #316 / #2926 rollback. Phases 1 and 2 are helpers, so their exits
+        // are part of this scan.
+        let end = orchestrator
             .find("let mut compact_accels")
             .expect("compaction phase marker");
-        &BLAS_STATIC_RS[at..at + end]
+        [
+            function_text(BLAS_STATIC_RS, "unsafe fn unwind_prepared("),
+            &orchestrator[..end],
+            function_text(BLAS_STATIC_RS, "fn prepare_static_blas_batch("),
+            function_text(BLAS_STATIC_RS, "fn ensure_batch_scratch("),
+        ]
+        .concat()
+    }
+
+    /// The phases are helpers, so their order is one line per phase here. A
+    /// phase moved past its neighbour would strand the exits this module pins.
+    #[test]
+    fn the_orchestrator_runs_its_phases_in_order() {
+        let body = crate::source_scan::function_text(BLAS_STATIC_RS, "pub fn build_blas_batched(");
+        let mut last = 0;
+        for needle in [
+            "self.prepare_static_blas_batch(",
+            "if prepared.is_empty() {",
+            "self.ensure_batch_scratch(",
+            ".create_query_pool(",
+            ".reset_query_pool(",
+            "let build_result = submit_one_time(",
+            "self.record_batch_builds(",
+            "if let Err(e) = build_result {",
+            "match self.alloc_compact(",
+            "let copy_result = submit_one_time(",
+            "device.destroy_query_pool(query_pool, None);",
+            "if let Err(e) = copy_result {",
+            "self.commit_compacted_batch(",
+        ] {
+            let at = body[last..]
+                .find(needle)
+                .unwrap_or_else(|| panic!("`{needle}` missing or out of order"));
+            last += at + needle.len();
+        }
     }
 
     #[test]
