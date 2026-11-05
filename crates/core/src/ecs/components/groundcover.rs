@@ -704,6 +704,113 @@ impl Resource for WindField {}
 /// blade scale above.
 pub const MAX_WIND_SPEED: f32 = 220.0;
 
+/// Speed the wind field's pattern (flow noise, local gusts) is advected
+/// downwind at, as a multiple of [`WindField::speed`]. Gust *fronts* travel
+/// faster than the air; a factor of 1 makes the pattern appear frozen relative
+/// to the air it describes. Lives here so the GLSL consumers and the
+/// SpeedTree sway read one value.
+pub const WIND_ADVECTION_SCALE: f32 = 1.6;
+
+// ── Local gusts ─────────────────────────────────────────────────────────
+//
+// Short, localised gusts on top of the field's steady strength and its global
+// gust wave: a pulse a few seconds long and a few hundred units across that
+// drifts downwind and fades, so one patch of meadow or one tree bends harder
+// than its neighbours for a moment. Gamebryo's wind has no such term. The
+// shape, sizes and rates are art direction (recorded as such in EXAL
+// `exal-groundcover.md` §8), not sourced values.
+//
+// Stateless: a pure function of position and time (`local_gust`), mirrored
+// line for line by `byroGcLocalGust` in `groundcover_wind.glsl`, so grass and
+// trees see the same gust with no per-object state. Cells of
+// `WIND_GUST_CELL_UNITS` tile the downwind-advected frame; each cell holds at
+// most one gust per `WIND_GUST_PERIOD_S` slot, centred in the cell's middle
+// band and sized so it never reaches a neighbouring cell (centre in
+// `[0.3, 0.7]`, radius `0.3`) — a point therefore evaluates one cell.
+/// Edge of the gust lattice cell, world units (~9 m).
+pub const WIND_GUST_CELL_UNITS: f32 = 1100.0;
+/// Gust radius as a fraction of the cell edge.
+pub const WIND_GUST_RADIUS_FRACTION: f32 = 0.3;
+/// Seconds per gust slot of a cell.
+pub const WIND_GUST_PERIOD_S: f32 = 6.0;
+/// Seconds a gust lasts inside its slot (a sin² rise and fall).
+pub const WIND_GUST_DURATION_S: f32 = 2.4;
+/// Share of (cell, slot) pairs that actually carry a gust.
+pub const WIND_GUST_PROBABILITY: f32 = 0.6;
+/// Extra wind strength at a gust's peak, as a multiple of the steady
+/// strength: `strength * (1 + GAIN * gust)`, then clamped by the consumer.
+pub const WIND_GUST_GAIN: f32 = 1.0;
+/// Strength a gust adds even in dead-calm weather, as a fraction of
+/// [`MAX_WIND_SPEED`]: gusts apply in every game and weather, and only their
+/// intensity varies with the weather's wind (the legacy `WTHR` wind byte is a
+/// single baked number, and some weathers author none).
+pub const WIND_GUST_CALM_FLOOR: f32 = 0.10;
+/// Slowest a gust drifts, in wind-speed units, so a gust in calm air still
+/// travels instead of hanging over one spot.
+pub const WIND_GUST_MIN_DRIFT_SPEED: f32 = 40.0;
+/// The steady wind `strength` (in `[0, 1]`) with a local `gust` folded in:
+/// `strength * (1 + GAIN * gust) + CALM_FLOOR * gust`, clamped to `[0, 1]`.
+/// Mirrored inline by `byroGcWindBendFraction`.
+pub fn gusted_strength(strength: f32, gust: f32) -> f32 {
+    (strength * (1.0 + WIND_GUST_GAIN * gust) + WIND_GUST_CALM_FLOOR * gust).clamp(0.0, 1.0)
+}
+
+/// `lowbias32` (Wellons): a cheap, well-mixed 32-bit integer hash. The GLSL
+/// mirror uses the same constants with `uint` wrap-around arithmetic.
+fn gust_mix(mut x: u32) -> u32 {
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x7feb_352d);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x846c_a68b);
+    x ^= x >> 16;
+    x
+}
+
+/// Hash of a lattice cell and a salt, as a float in `[0, 1)`.
+fn gust_unit(cell: [i32; 2], salt: u32) -> f32 {
+    let h = gust_mix((cell[0] as u32) ^ gust_mix((cell[1] as u32) ^ salt.wrapping_mul(0x9E37_79B9)));
+    (h >> 8) as f32 * (1.0 / 16_777_216.0)
+}
+
+/// Salt for a cell's slot-independent phase offset.
+pub const WIND_GUST_PHASE_SALT: u32 = 0xB16B_00B5;
+
+/// The local gust at world `xz` and `time_s`, in `[0, 1]`, for a wind that
+/// blows toward `direction` (unit) at `speed`. `0` means no gust here now.
+/// Callers fold it in as `strength * (1 + WIND_GUST_GAIN * local_gust(..))`.
+pub fn local_gust(direction: [f32; 2], speed: f32, xz: [f32; 2], time_s: f32) -> f32 {
+    let along = xz[0] * direction[0] + xz[1] * direction[1];
+    let across = -xz[0] * direction[1] + xz[1] * direction[0];
+    let drift = speed.max(WIND_GUST_MIN_DRIFT_SPEED);
+    let u = along - drift * WIND_ADVECTION_SCALE * time_s;
+    let q = [u / WIND_GUST_CELL_UNITS, across / WIND_GUST_CELL_UNITS];
+    let cell = [q[0].floor() as i32, q[1].floor() as i32];
+    let f = [q[0] - cell[0] as f32, q[1] - cell[1] as f32];
+
+    let clock = time_s / WIND_GUST_PERIOD_S + gust_unit(cell, WIND_GUST_PHASE_SALT);
+    let slot = clock.floor();
+    let phase = clock - slot;
+    let salt = (slot as i32 as u32).wrapping_mul(4);
+    if gust_unit(cell, salt) >= WIND_GUST_PROBABILITY {
+        return 0.0;
+    }
+    let seconds = phase * WIND_GUST_PERIOD_S;
+    if seconds >= WIND_GUST_DURATION_S {
+        return 0.0;
+    }
+    let centre = [
+        0.3 + 0.4 * gust_unit(cell, salt.wrapping_add(1)),
+        0.3 + 0.4 * gust_unit(cell, salt.wrapping_add(2)),
+    ];
+    let d = ((f[0] - centre[0]).powi(2) + (f[1] - centre[1]).powi(2)).sqrt()
+        / WIND_GUST_RADIUS_FRACTION;
+    let spatial = (1.0 - d * d).max(0.0);
+    let spatial = spatial * spatial;
+    let envelope = (std::f32::consts::PI * seconds / WIND_GUST_DURATION_S).sin();
+    let amplitude = 0.6 + 0.4 * gust_unit(cell, salt.wrapping_add(3));
+    (envelope * envelope * spatial * amplitude).clamp(0.0, 1.0)
+}
+
 fn normalise_or_east(v: [f32; 2]) -> [f32; 2] {
     let len_sq = v[0] * v[0] + v[1] * v[1];
     if !len_sq.is_finite() || len_sq < 1e-12 {

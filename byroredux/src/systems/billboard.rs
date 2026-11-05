@@ -53,7 +53,12 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
             .try_resource::<TotalTime>()
             .map(|time| time.0)
             .unwrap_or(elapsed);
-        let wind_active = wind.speed > 1.0e-4 || wind.gust_amplitude > 1.0e-4;
+        // Always on: local gusts (`groundcover::local_gust`) apply in every
+        // weather, calm included — only their intensity varies with the wind —
+        // and they move with the clock, so the marked trees are re-bent each
+        // frame. The cost is the handful of `SpeedTreeWind` trees, not every
+        // billboard (the stationary-camera branch below walks only that set).
+        let wind_active = true;
         // Compare the complete field, not only its active/inactive state:
         // weather transitions can change direction, speed, or gust shape
         // while both endpoints remain windy. SpeedTree canopies must respond
@@ -221,6 +226,17 @@ fn apply_speedtree_wind(
     let gust = if gust.is_finite() { gust.max(0.0) } else { 0.0 };
     let strength =
         (gust / byroredux_core::ecs::components::groundcover::MAX_WIND_SPEED).clamp(0.0, 1.0);
+    // Short, localised gust on top of the steady strength: the same function the
+    // grass shader mirrors, so a tree and the grass under it surge together.
+    let strength = byroredux_core::ecs::components::groundcover::gusted_strength(
+        strength,
+        byroredux_core::ecs::components::groundcover::local_gust(
+            wind.direction,
+            wind.speed,
+            [position.x, position.z],
+            elapsed,
+        ),
+    );
     let wind_dir = Vec2::new(wind.direction[0], wind.direction[1]);
     let wind_dir = if wind_dir.length_squared() > 1.0e-6 {
         wind_dir.normalize()

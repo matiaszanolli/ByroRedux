@@ -341,3 +341,67 @@ fn union_colour_is_the_density_weighted_mean_of_listed_record_colours() {
     assert_eq!(cover.union_colour(&[3, 99]), None);
     assert_eq!(cover.union_colour(&[]), None);
 }
+
+/// The local gust is bounded, deterministic, localised (a minority of points
+/// are inside a gust at any moment, and some are), and travels downwind with
+/// the advected frame.
+#[test]
+fn local_gust_is_bounded_deterministic_and_localised() {
+    let dir = [1.0, 0.0];
+    let speed = 120.0;
+    let mut active = 0usize;
+    let total = 40_000usize;
+    for i in 0..total {
+        let x = (i % 200) as f32 * 61.0;
+        let z = (i / 200) as f32 * 61.0;
+        let g = local_gust(dir, speed, [x, z], 123.4);
+        assert!((0.0..=1.0).contains(&g), "gust {g} out of range at ({x}, {z})");
+        assert_eq!(g, local_gust(dir, speed, [x, z], 123.4), "pure function");
+        active += usize::from(g > 0.05);
+    }
+    let share = active as f32 / total as f32;
+    assert!((0.01..0.30).contains(&share), "gust share {share} is not localised");
+}
+
+#[test]
+fn a_local_gust_travels_downwind_with_the_wind() {
+    let dir = [0.0, 1.0];
+    let speed = 100.0;
+    // Find a point inside a gust, then follow it: the same gust sits
+    // `speed * ADVECTION * dt` further downwind a moment later.
+    let t0 = 40.0;
+    let mut found = None;
+    'search: for i in 0..400 {
+        for j in 0..400 {
+            let p = [i as f32 * 23.0, j as f32 * 23.0];
+            if local_gust(dir, speed, p, t0) > 0.5 {
+                found = Some(p);
+                break 'search;
+            }
+        }
+    }
+    let p = found.expect("a gust core exists somewhere in 9 km x 9 km");
+    let dt = 0.5;
+    let moved = [p[0], p[1] + speed.max(WIND_GUST_MIN_DRIFT_SPEED) * WIND_ADVECTION_SCALE * dt];
+    let before = local_gust(dir, speed, p, t0);
+    let after = local_gust(dir, speed, moved, t0 + dt);
+    assert!(after > 0.5 * before, "gust did not follow the wind: {before} -> {after}");
+}
+
+/// Gusts apply in every weather: a dead-calm field still gusts (a calm-air
+/// floor), a gust never reverses or exceeds the bend range, and a stronger wind
+/// gusts harder — the intensity, not the presence, depends on the weather.
+#[test]
+fn gusts_apply_in_calm_air_and_only_their_intensity_scales_with_wind() {
+    assert_eq!(gusted_strength(0.0, 0.0), 0.0, "no gust, no wind: still air");
+    let calm = gusted_strength(0.0, 1.0);
+    assert!((calm - WIND_GUST_CALM_FLOOR).abs() < 1e-6, "calm-air gust peak {calm}");
+    assert!(gusted_strength(0.5, 1.0) > gusted_strength(0.5, 0.0), "gust adds strength");
+    assert!(gusted_strength(0.5, 1.0) > calm, "stronger wind gusts harder");
+    assert_eq!(gusted_strength(0.9, 1.0), 1.0, "clamped to the bend range");
+    // Calm air still produces gust cores to apply the floor to.
+    let any = (0..300)
+        .flat_map(|i| (0..300).map(move |j| [i as f32 * 31.0, j as f32 * 31.0]))
+        .any(|p| local_gust([1.0, 0.0], 0.0, p, 57.0) > 0.5);
+    assert!(any, "a calm field has gusts too");
+}

@@ -593,6 +593,33 @@ things half is §12.4 / Phase 7.
 
 ---
 
+### 8.1 Local gusts
+
+Gamebryo's wind is one baked number per weather (`WTHR`'s wind byte) plus a
+global gust wave, so the whole field breathes together. On top of that the field
+carries **short, localised gusts**: a pulse about 2.4 s long and ~330 units
+(radius) across that drifts downwind and fades, so one patch of meadow or one
+tree bends harder than its neighbours for a moment. They apply in **every game
+and every weather**; only the intensity depends on the weather's wind.
+
+- **Stateless.** `groundcover::local_gust(direction, speed, xz, time)` in core is
+  a pure function of position and time; `byroGcLocalGust` in
+  `groundcover_wind.glsl` mirrors it line for line (same `lowbias32` hash), and
+  the SpeedTree sway (`billboard.rs`) calls the Rust copy, so a tree and the grass
+  under it surge together. The authored-model plants share
+  `byroGcWindBendFraction` and get it too.
+- **Lattice.** Cells of 1100 units tile the downwind-advected frame; each cell
+  carries at most one gust per 6 s slot (60 % of slots do), centred in the
+  cell's middle band with radius 0.3 of the edge so it never reaches a
+  neighbouring cell (a point evaluates one cell).
+- **Intensity.** `strength' = strength * (1 + 1.0 * gust) + 0.10 * gust`,
+  clamped (`gusted_strength`): the multiplicative term scales with the weather,
+  the 0.10 floor means even dead-calm weather gusts, and gusts drift at no less
+  than 40 units/s so calm-air gusts still travel.
+- **Provenance.** Cell size, radius, period, duration, probability, gain, floor
+  and drift are art direction, not sourced values.
+
+
 ## 9. Rollout order
 
 Each phase is independently useful and independently reviewable.

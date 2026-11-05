@@ -800,7 +800,28 @@ pub const GROUNDCOVER_WIND_MAX_BEND: f32 = 0.7;
 /// Speed the wind field is advected downwind at, as a multiple of
 /// `WindField::speed`. Gust *fronts* travel faster than the air; a factor of 1
 /// makes the pattern appear frozen relative to the air it describes.
-pub const GROUNDCOVER_WIND_ADVECTION_SCALE: f32 = 1.6;
+pub const GROUNDCOVER_WIND_ADVECTION_SCALE: f32 =
+    byroredux_core::ecs::components::groundcover::WIND_ADVECTION_SCALE;
+/// Local-gust constants (see `groundcover::local_gust`): the GLSL mirror reads
+/// the core values, so grass and SpeedTree sway cannot drift apart.
+pub const GROUNDCOVER_GUST_CELL_UNITS: f32 =
+    byroredux_core::ecs::components::groundcover::WIND_GUST_CELL_UNITS;
+pub const GROUNDCOVER_GUST_RADIUS_FRACTION: f32 =
+    byroredux_core::ecs::components::groundcover::WIND_GUST_RADIUS_FRACTION;
+pub const GROUNDCOVER_GUST_PERIOD_S: f32 =
+    byroredux_core::ecs::components::groundcover::WIND_GUST_PERIOD_S;
+pub const GROUNDCOVER_GUST_DURATION_S: f32 =
+    byroredux_core::ecs::components::groundcover::WIND_GUST_DURATION_S;
+pub const GROUNDCOVER_GUST_PROBABILITY: f32 =
+    byroredux_core::ecs::components::groundcover::WIND_GUST_PROBABILITY;
+pub const GROUNDCOVER_GUST_GAIN: f32 =
+    byroredux_core::ecs::components::groundcover::WIND_GUST_GAIN;
+pub const GROUNDCOVER_GUST_CALM_FLOOR: f32 =
+    byroredux_core::ecs::components::groundcover::WIND_GUST_CALM_FLOOR;
+pub const GROUNDCOVER_GUST_MIN_DRIFT_SPEED: f32 =
+    byroredux_core::ecs::components::groundcover::WIND_GUST_MIN_DRIFT_SPEED;
+pub const GROUNDCOVER_GUST_PHASE_SALT: u32 =
+    byroredux_core::ecs::components::groundcover::WIND_GUST_PHASE_SALT;
 /// The secondary wind mode's non-integer frequency ratio.
 ///
 /// The ground-cover credibility track's Step 6 calls for a second mode at
@@ -2808,6 +2829,15 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float GROUNDCOVER_WIND_NOISE_UNITS),
     shader_define!(Float GROUNDCOVER_WIND_MAX_BEND),
     shader_define!(Float GROUNDCOVER_WIND_ADVECTION_SCALE),
+    shader_define!(Float GROUNDCOVER_GUST_CELL_UNITS),
+    shader_define!(Float GROUNDCOVER_GUST_RADIUS_FRACTION),
+    shader_define!(Float GROUNDCOVER_GUST_PERIOD_S),
+    shader_define!(Float GROUNDCOVER_GUST_DURATION_S),
+    shader_define!(Float GROUNDCOVER_GUST_PROBABILITY),
+    shader_define!(Float GROUNDCOVER_GUST_GAIN),
+    shader_define!(Float GROUNDCOVER_GUST_CALM_FLOOR),
+    shader_define!(Float GROUNDCOVER_GUST_MIN_DRIFT_SPEED),
+    shader_define!(Uint GROUNDCOVER_GUST_PHASE_SALT),
     shader_define!(Float GROUNDCOVER_WIND_HARMONIC_FREQUENCY_MULTIPLIER),
     shader_define!(Float GROUNDCOVER_WIND_SECONDARY_AMPLITUDE),
     shader_define!(Float GROUNDCOVER_WIND_LATERAL_FRACTION),
