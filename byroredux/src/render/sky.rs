@@ -371,6 +371,30 @@ mod tests {
         }
     }
 
+    /// M-LIGHT RLT-SHD-007 / Q3 — the exterior sun carries the radius the EXAL
+    /// translate step set (physical), while an interior's own directional key
+    /// keeps `SkyParams::default()`'s 0.020 rad even when a physical-radius
+    /// `SkyParamsRes` survives the transition into it.
+    #[test]
+    fn exterior_sun_radius_is_physical_and_interior_keeps_the_key_default() {
+        let physical = crate::env_translate::SUN_ANGULAR_RADIUS;
+        let physical_sky = || {
+            let mut sky = stale_exterior_daytime_sky();
+            sky.sun_angular_radius = physical;
+            sky
+        };
+
+        let mut exterior = World::new();
+        exterior.insert_resource(physical_sky());
+        assert_eq!(build_sky_params(&exterior).sun_angular_radius, physical);
+
+        let mut interior = World::new();
+        interior.insert_resource(interior_lighting(None));
+        interior.insert_resource(physical_sky());
+        assert_eq!(build_sky_params(&interior).sun_angular_radius, 0.020);
+        assert_eq!(SkyParams::default().sun_angular_radius, 0.020);
+    }
+
     /// REN-D18-01 / #2226 — a stale exterior `SkyParamsRes` surviving a
     /// transition into an interior cell must not leak *any* field, not
     /// just `dalc_cube`. Every non-cube field must fall back to

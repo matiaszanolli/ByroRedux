@@ -940,9 +940,11 @@ impl Default for SkyParams {
             // No exterior sun: the cloud march receives ambient only.
             sun_illuminance: [0.0; 3],
             // Tangent-plane half-radius (rad) for PCSS-lite shadow
-            // disk jitter. Matches the pre-#1023 hardcoded shader
-            // constant so behaviour is unchanged unless a caller
-            // overrides it. See SkyParams::sun_angular_radius doc.
+            // disk jitter. This default is what an interior's own
+            // directional light (the cell's XCLL key, which has no physical
+            // source) is shaded with: 0.020 rad, kept by M-LIGHT Q3. The
+            // exterior sun is built with the physical radius by the EXAL
+            // translate step. See SkyParams::sun_angular_radius doc.
             sun_angular_radius: 0.020,
             is_exterior: false,
             cloud_scroll: [0.0, 0.0],

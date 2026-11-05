@@ -58,9 +58,20 @@ pub(super) const SUN_SIZE_COS: f32 = 0.9995;
 /// modules already sit downstream of; `weather.rs` re-exports it under the
 /// producer-side name.
 pub(crate) const SUN_INTENSITY_PEAK: f32 = 4.0;
-/// Tangent-plane half-radius of the directional disk in radians (~1.15°);
-/// drives PCSS-lite shadow jitter (#1023). Pre-EXAL hardcoded constant.
-pub(super) const SUN_ANGULAR_RADIUS: f32 = 0.020;
+/// Tangent-plane half-radius of the exterior sun's disk in radians; drives
+/// PCSS-lite shadow jitter (#1023) and the reference scene's sun sphere
+/// (`cornell/mitsuba_export.rs`), so the engine and the reference share one
+/// value (M-LIGHT RLT-SHD-007, Q3 decided 2026-11-02).
+///
+/// The physical value: the Sun's apparent diameter from Earth is 1 919 arc
+/// seconds ([NASA Sun Fact Sheet](https://nssdc.gsfc.nasa.gov/planetary/factsheet/sunfact.html)),
+/// a radius of 959.5″ = 0.004652 rad (~0.27°). It was 0.020 rad for every
+/// directional light, about 4.3× the physical cone.
+///
+/// Only the exterior sky is built here. An interior's own directional light is
+/// the cell's XCLL key, which has no physical source, and keeps the renderer's
+/// `SkyParams::default()` radius of 0.020 rad.
+pub(crate) const SUN_ANGULAR_RADIUS: f32 = 959.5 * std::f32::consts::PI / (180.0 * 3600.0);
 
 /// Pre-resolved cloud + sun-sprite bindless handles for [`translate_sky`].
 /// The caller resolves these through the texture registry (the only
@@ -928,7 +939,7 @@ mod tests {
         assert_eq!(sky.sun_direction, sun_dir);
         assert_eq!(sky.sun_size, 0.9995);
         assert_eq!(sky.sun_intensity, 4.0);
-        assert_eq!(sky.sun_angular_radius, 0.020);
+        assert_eq!(sky.sun_angular_radius, SUN_ANGULAR_RADIUS);
         assert!(sky.is_exterior);
         // DALC is populated per-frame by weather_system, not at translate.
         assert!(sky.current_dalc_cube.is_none());

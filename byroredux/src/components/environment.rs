@@ -856,11 +856,11 @@ pub(crate) struct SkyParamsRes {
     pub(crate) sun_color: [f32; 3],
     pub(crate) sun_size: f32,
     pub(crate) sun_intensity: f32,
-    /// Tangent-plane half-radius of the directional-light disk in
-    /// radians. Drives PCSS-lite shadow jitter in triangle.frag (#1023
-    /// / REN-D20-NEW-01). Default 0.020 (~1.15°) matches the pre-fix
-    /// hardcoded shader const; future per-cell / per-TOD tuning will
-    /// drive this from CLMT / weather metadata.
+    /// Tangent-plane half-radius of the exterior sun's disk in radians.
+    /// Drives PCSS-lite shadow jitter in triangle.frag (#1023 /
+    /// REN-D20-NEW-01). Set once by the EXAL translate step to the physical
+    /// radius (`SUN_ANGULAR_RADIUS`, M-LIGHT RLT-SHD-007); interiors do not
+    /// read it for their own directional key (see `build_sky_params`).
     pub(crate) sun_angular_radius: f32,
     pub(crate) is_exterior: bool,
     /// Cloud layer 0 UV tile scale. `0.0` disables clouds (shader skips the sample).

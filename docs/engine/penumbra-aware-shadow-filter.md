@@ -60,7 +60,7 @@ the source's diameter, the world-space penumbra width is:
 | Light | Width *w* | Inputs at HEAD |
 |---|---|---|
 | Local (point, spot) | *t* · 2*r* ⁄ max(*d*<sub>L</sub> − *t*, ε) | *r* = `GpuLight.params.y` (floor 1.0 unit) |
-| Directional | *t* · 2 tan θ | θ = the sun cone carried in `skyTint.w` (0.020 rad at HEAD; the exterior value Q3 sets) |
+| Directional | *t* · 2 tan θ | θ = the sun cone carried in `skyTint.w` (0.0047 rad for the exterior sun since RLT-SHD-007; 0.020 rad for an interior key) |
 
 Behind a straight edge this is the full (0–100 %) penumbra; the PRD's A2
 fits the 10–90 % width of the measured visibility, about 0.69 of it for a
