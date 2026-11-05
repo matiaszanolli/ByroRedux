@@ -75,8 +75,8 @@ pub(crate) const SOURCES: &str = concat!(
     include_str!("registries.rs"),
     include_str!("cli.rs"),
     // Last: `build_scheduler` is an 18-line orchestrator that registers
-    // nothing itself, and the four test modules sharing its file must trail
-    // every registration they read.
+    // nothing itself, and the test modules sharing its file must trail every
+    // registration they read.
     include_str!("schedule/mod.rs"),
 );
 
@@ -586,7 +586,6 @@ mod sources_ordering_tests {
     /// The source-shape modules that truncate `SOURCES` at their own `mod`
     /// declaration. Stored without the `mod ` prefix on purpose.
     const TRUNCATING_TEST_MODULES: &[&str] = &[
-        "fragment_activation_order_tests",
         "scheduler_timings_gate_tests",
         "system_access_declaration_tests",
         "ambient_locomotion_default_on_tests",
@@ -600,16 +599,29 @@ mod sources_ordering_tests {
     /// `TRUNCATING_TEST_MODULES` for completeness before this: the list was
     /// hand-maintained, and it was already one module short in practice
     /// (see below) with nothing catching it.
-    const NON_SENTINEL_TEST_MODULES: &[(&str, &str)] = &[(
-        "scheduler_access_report_tests",
-        "calls build_scheduler() directly and asserts on its runtime \
-         access_report() — no include_str!/text-scan of its own, so \
-         nothing about its body could be mistaken for a production \
-         registration by another scan. #4088: this module already existed \
-         without being in TRUNCATING_TEST_MODULES or anywhere else — this \
-         entry documents that as deliberate rather than leaving it \
-         silently unaccounted for.",
-    )];
+    const NON_SENTINEL_TEST_MODULES: &[(&str, &str)] = &[
+        (
+            "scheduler_access_report_tests",
+            "calls build_scheduler() directly and asserts on its runtime \
+             access_report() — no include_str!/text-scan of its own, so \
+             nothing about its body could be mistaken for a production \
+             registration by another scan. #4088: this module already existed \
+             without being in TRUNCATING_TEST_MODULES or anywhere else — this \
+             entry documents that as deliberate rather than leaving it \
+             silently unaccounted for.",
+        ),
+        (
+            "schedule_order",
+            "#6684: the helper the ordering guards use to read the built \
+             schedule. It scans no text and registers nothing.",
+        ),
+        (
+            "fragment_activation_order_tests",
+            "#6684: reads the built schedule through schedule_order, so it no \
+             longer truncates SOURCES. It names systems bare, not with the \
+             paths registrations use, so PER_FILE_WITNESS cannot match it.",
+        ),
+    ];
 
     /// One distinctive registration per production file, so each is
     /// independently proven present rather than the concatenation merely
@@ -617,13 +629,21 @@ mod sources_ordering_tests {
     const PER_FILE_WITNESS: &[(&str, &str)] = &[
         ("world.rs", "world.insert_resource(DeltaTime(0.0));"),
         ("schedule/early.rs", "timer_tick_system"),
-        ("schedule/update/player_animation.rs", "combat_damage_system"),
+        // Spelled as registered: the ordering guards in schedule/mod.rs name
+        // this system and late.rs's witness bare, ahead of the first sentinel.
+        (
+            "schedule/update/player_animation.rs",
+            "crate::combat::combat_damage_system",
+        ),
         (
             "schedule/post_update.rs",
             "make_world_bound_propagation_system",
         ),
         ("schedule/physics.rs", "physics_sync_system"),
-        ("schedule/late.rs", "extension_cell_load_dispatch_system"),
+        (
+            "schedule/late.rs",
+            "crate::extensions::extension_cell_load_dispatch_system",
+        ),
         ("registries.rs", "known_conflict_count()"),
         ("cli.rs", "fn expand_game_profile_args"),
     ];
@@ -665,7 +685,7 @@ mod sources_ordering_tests {
 
     /// #4088 — `TRUNCATING_TEST_MODULES` was hand-maintained with no check
     /// that it names every `#[cfg(test)] mod` in `schedule/mod.rs` (the file
-    /// deliberately last in `SOURCES`, sharing its own four test modules).
+    /// deliberately last in `SOURCES`, sharing its own test modules).
     /// It was already incomplete in practice:
     /// `scheduler_access_report_tests` exists in that file and was in
     /// neither `TRUNCATING_TEST_MODULES` nor any exemption list — this test

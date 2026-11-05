@@ -47,6 +47,134 @@ pub(crate) fn build_scheduler() -> Scheduler {
     scheduler
 }
 
+/// Run order of the built schedule, for the ordering guards in this file (#6684).
+///
+/// `build_scheduler()` registers function pointers and access declarations only,
+/// so it needs no window, device or world, and `access_report()` lists what was
+/// really registered. Reading that instead of the registration text means moving
+/// a registration between files cannot break a guard or leave it checking nothing.
+#[cfg(test)]
+mod schedule_order {
+    use byroredux_core::ecs::{AccessReport, Stage, StageReport};
+
+    /// Where one system sits in the built schedule.
+    #[derive(Clone, Copy, Debug)]
+    pub(super) struct SchedulePosition {
+        stage: Stage,
+        /// Position in the stage's report rows: the parallel batch, then the
+        /// exclusives in the order they run.
+        index: usize,
+        exclusive: bool,
+    }
+
+    impl SchedulePosition {
+        /// Whether this system finishes before `later` starts. Stages run in
+        /// order, and within a stage the parallel batch runs before the
+        /// exclusives. Two parallel systems in one stage overlap, so neither runs
+        /// before the other whatever order they were registered in.
+        pub(super) fn runs_before(self, later: Self) -> bool {
+            match self.stage.cmp(&later.stage) {
+                std::cmp::Ordering::Less => true,
+                std::cmp::Ordering::Greater => false,
+                std::cmp::Ordering::Equal => later.exclusive && self.index < later.index,
+            }
+        }
+    }
+
+    /// A system's own name, without its module path or a `make_*` constructor's
+    /// `{{closure}}` suffix. Guards match this exactly, because a substring match
+    /// on `audio_system` would also find `water_audio_system`.
+    pub(super) fn bare_name(full: &str) -> &str {
+        let path = full.strip_suffix("::{{closure}}").unwrap_or(full);
+        path.rsplit("::").next().unwrap_or(path)
+    }
+
+    pub(super) struct BuiltSchedule(AccessReport);
+
+    impl BuiltSchedule {
+        pub(super) fn new() -> Self {
+            Self(super::build_scheduler().access_report())
+        }
+
+        /// The position of the one system named `system`. A name that is missing
+        /// or ambiguous panics rather than skipping the check, so a rename cannot
+        /// leave a guard green while checking nothing.
+        pub(super) fn position(&self, system: &str) -> SchedulePosition {
+            let mut found = self.0.stages.iter().flat_map(|stage| {
+                stage
+                    .systems
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, row)| bare_name(&row.name) == system)
+                    .map(|(index, row)| SchedulePosition {
+                        stage: stage.stage,
+                        index,
+                        exclusive: row.is_exclusive,
+                    })
+            });
+            let position = found.next().unwrap_or_else(|| {
+                panic!(
+                    "`{system}` is not in the built schedule: it was renamed, removed, or gated \
+                     off by the environment (BYRO_NO_AI_LOCOMOTION drops the AI movers)"
+                )
+            });
+            assert!(
+                found.next().is_none(),
+                "more than one system in the built schedule is named `{system}`"
+            );
+            position
+        }
+
+        pub(super) fn stage(&self, stage: Stage) -> &StageReport {
+            self.0
+                .stages
+                .iter()
+                .find(|report| report.stage == stage)
+                .unwrap_or_else(|| panic!("the built schedule has no {stage:?} stage"))
+        }
+    }
+
+    /// The rule no reorder of today's schedule can exercise, because every
+    /// system these guards name is exclusive: parallel systems have no order.
+    #[test]
+    fn runs_before_follows_stages_and_exclusives_not_parallel_registration_order() {
+        let at = |stage, index, exclusive| SchedulePosition {
+            stage,
+            index,
+            exclusive,
+        };
+        let parallel_a = at(Stage::Late, 0, false);
+        let parallel_b = at(Stage::Late, 1, false);
+        let exclusive_a = at(Stage::Late, 2, true);
+        let exclusive_b = at(Stage::Late, 3, true);
+
+        assert!(!parallel_a.runs_before(parallel_b) && !parallel_b.runs_before(parallel_a));
+        assert!(parallel_b.runs_before(exclusive_a) && !exclusive_a.runs_before(parallel_b));
+        assert!(exclusive_a.runs_before(exclusive_b) && !exclusive_b.runs_before(exclusive_a));
+
+        let earlier_stage = at(Stage::Update, 9, true);
+        assert!(earlier_stage.runs_before(parallel_a) && !parallel_a.runs_before(earlier_stage));
+    }
+
+    #[test]
+    fn bare_name_drops_the_module_path_and_closure_suffix() {
+        assert_eq!(
+            bare_name("byroredux::systems::wander::make_wander_system::{{closure}}"),
+            "make_wander_system"
+        );
+        assert_eq!(
+            bare_name("byroredux_scripting::cleanup::event_cleanup_system"),
+            "event_cleanup_system"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "is not in the built schedule")]
+    fn position_panics_on_a_name_the_schedule_does_not_hold() {
+        BuiltSchedule::new().position("audio");
+    }
+}
+
 #[cfg(test)]
 mod fragment_activation_order_tests {
     //! SCR-D6-NEW11-01 / #2654 — `quest_fragment_dispatch` is the last
@@ -58,41 +186,30 @@ mod fragment_activation_order_tests {
     //! while `fragment_activation_flush_system` stays registered ahead of
     //! every consumer.
     //!
-    //! Static source check, matching this file's existing
-    //! `include_str!` convention: the live boot path wants a Vulkan device
-    //! and on-disk game data, which is out of `cargo test` scope.
+    //! This module's guards read the built schedule through [`schedule_order`],
+    //! not the registration text.
 
-    const BOOT_SRC: &str = crate::boot::SOURCES;
+    use super::schedule_order::{bare_name, BuiltSchedule};
+    use byroredux_core::ecs::Stage;
 
     #[test]
     fn activation_flush_is_scheduled_before_every_activate_event_consumer() {
-        let setup = BOOT_SRC
-            .split("mod fragment_activation_order_tests")
-            .next()
-            .expect("split always yields a first segment");
-
-        let pos = |needle: &str| {
-            setup
-                .find(needle)
-                .unwrap_or_else(|| panic!("`{needle}` is no longer registered in boot/schedule/"))
-        };
-
-        // Match the *registration* sites, not the `fn` definitions above them.
+        let schedule = BuiltSchedule::new();
+        let flush = schedule.position("fragment_activation_flush_system");
         // #4712 / #4116 — `container_loot_system` and
         // `mg07_on_activate_dispatch` are real Update-stage consumers too;
         // the former was registered ahead of the flush, so a scripted
         // container/pickup `Activate()` never looted.
-        let flush = pos("byroredux_scripting::fragment_activation_flush_system");
         for consumer in [
-            "crate::inventory::container_loot_system",
-            "Stage::Update, rumble_on_activate_dispatch)",
-            "Stage::Update, quest_advance_dispatch)",
-            "byroredux_scripting::two_state_activator_system",
-            "Stage::Update, mg07_on_activate_dispatch)",
-            "byroredux_scripting::reference_script_event_system",
+            "container_loot_system",
+            "rumble_on_activate_dispatch",
+            "quest_advance_dispatch",
+            "two_state_activator_system",
+            "mg07_on_activate_dispatch",
+            "reference_script_event_system",
         ] {
             assert!(
-                flush < pos(consumer),
+                flush.runs_before(schedule.position(consumer)),
                 "fragment_activation_flush_system must be scheduled before `{consumer}`, or \
                  fragment `<Ref>.Activate()` silently no-ops again (#2654)"
             );
@@ -100,8 +217,9 @@ mod fragment_activation_order_tests {
 
         // And the producer still has to run after the advance that feeds it.
         assert!(
-            pos("Stage::Update, quest_advance_dispatch)")
-                < pos("Stage::Update, quest_fragment_dispatch)"),
+            schedule
+                .position("quest_advance_dispatch")
+                .runs_before(schedule.position("quest_fragment_dispatch")),
             "quest_fragment_dispatch consumes QuestStageAdvanced and must stay after \
              quest_advance_dispatch"
         );
@@ -114,42 +232,33 @@ mod fragment_activation_order_tests {
     /// darts hurt nobody.
     #[test]
     fn hit_event_consumers_run_after_every_producer() {
-        let setup = BOOT_SRC
-            .split("mod fragment_activation_order_tests")
-            .next()
-            .expect("split always yields a first segment");
-        let pos = |needle: &str| {
-            setup
-                .find(needle)
-                .unwrap_or_else(|| panic!("`{needle}` is no longer registered in boot/schedule/"))
-        };
+        let schedule = BuiltSchedule::new();
         for consumer in [
-            "crate::combat::combat_damage_system,",
-            "byroredux_scripting::hit_event_system)",
+            "combat_damage_system",
+            "hit_event_system",
             // #5991 — a consumer of the marker too: its OnHit delivery
-            "byroredux_scripting::reference_script_hit_system)",
+            "reference_script_hit_system",
             // #6293 — the ObScript `OnHit` / `OnHitWith` consumer, split out of
             // `obscript_object_system` so it lands after the producers
-            "byroredux_scripting::obscript_objects::obscript_hit_system)",
+            "obscript_hit_system",
         ] {
             for producer in [
                 // the VM effect flush (`ProcessTrapHit`) queues inside the script systems,
                 // and this system lands the queue as `HitEvent`s (#5872)
-                "byroredux_scripting::pending_trap_hit_flush_system",
-                "byroredux_scripting::reference_script_event_system",
-                "byroredux_scripting::alias_script_event_system",
-                "crate::systems::projectiles::projectile_flight_system",
-                "crate::combat::combat_input_system,",
-                "crate::systems::make_npc_combat_ai_system()",
+                "pending_trap_hit_flush_system",
+                "reference_script_event_system",
+                "alias_script_event_system",
+                "projectile_flight_system",
+                "combat_input_system",
+                "make_npc_combat_ai_system",
                 // #6580 — a mine blast hits every actor in its radius (M43 placed mines)
-                "crate::systems::mines::mine_system",
+                "mine_system",
             ] {
-                // #5875 — `pos` panics on a producer that is no longer
-                // registered, like a missing consumer: skipping it would leave
-                // this guard green while checking nothing after a rename.
                 assert!(
-                    pos(producer) < pos(consumer),
-                    "`{consumer}` must be registered after the `HitEvent` producer `{producer}`"
+                    schedule
+                        .position(producer)
+                        .runs_before(schedule.position(consumer)),
+                    "`{consumer}` must run after the `HitEvent` producer `{producer}`"
                 );
             }
         }
@@ -158,73 +267,60 @@ mod fragment_activation_order_tests {
     /// #5872 — the queue is flushed after the script systems that fill it.
     #[test]
     fn trap_hit_flush_runs_after_the_script_systems_that_queue_into_it() {
-        let setup = BOOT_SRC
-            .split("mod fragment_activation_order_tests")
-            .next()
-            .expect("split always yields a first segment");
-        let pos = |needle: &str| {
-            setup
-                .find(needle)
-                .unwrap_or_else(|| panic!("`{needle}` is no longer registered in boot/schedule/"))
-        };
-        let flush = pos("byroredux_scripting::pending_trap_hit_flush_system");
+        let schedule = BuiltSchedule::new();
+        let flush = schedule.position("pending_trap_hit_flush_system");
         for producer in [
-            "byroredux_scripting::reference_script_event_system",
-            "byroredux_scripting::alias_script_event_system",
-            "byroredux_scripting::quest_fragment_dispatch",
+            "reference_script_event_system",
+            "alias_script_event_system",
+            "quest_fragment_dispatch",
         ] {
-            assert!(pos(producer) < flush, "`{producer}` must be registered before the trap-hit flush");
+            assert!(
+                schedule.position(producer).runs_before(flush),
+                "`{producer}` must run before the trap-hit flush"
+            );
         }
     }
 
     #[test]
     fn extension_event_adapters_run_before_transient_cleanup() {
-        let setup = BOOT_SRC
-            .split("mod fragment_activation_order_tests")
-            .next()
-            .expect("split always yields a first segment");
-        let pos = |needle: &str| {
-            setup
-                .rfind(needle)
-                .unwrap_or_else(|| panic!("{needle} is no longer registered in boot/schedule/"))
-        };
+        const CLEANUP: &str = "event_cleanup_system";
+        const SETTING_APPLY: &str = "extension_setting_write_apply_system";
+        const CUSTOM: &str = "extension_custom_event_dispatch_system";
+        const CATALOG: &str = "extension_content_catalog_sync_system";
+        const INPUT_BINDINGS: &str = "extension_input_bindings_sync_system";
+        const LEGACY: &str = "legacy_obscript_load_order_system";
+        const PAPYRUS: &str = "papyrus_provider_system";
+        const ACTIVATION: &str = "extension_activation_dispatch_system";
 
-        let settings = pos("crate::extensions::extension_engine_settings_sync_system");
-        let catalog = pos("crate::extensions::extension_content_catalog_sync_system");
-        let input_bindings = pos("crate::extensions::extension_input_bindings_sync_system");
-        let legacy = pos("byroredux_scripting::legacy_obscript_load_order_system");
-        let papyrus = pos("byroredux_scripting::papyrus_provider_system");
-        let custom = pos("crate::extensions::extension_custom_event_dispatch_system");
-        let activation = pos("crate::extensions::extension_activation_dispatch_system");
-        let cell_load = pos("crate::extensions::extension_cell_load_dispatch_system");
-        let equipment = pos("crate::extensions::extension_equipment_dispatch_system");
-        let input = pos("crate::extensions::extension_input_dispatch_system");
-        let session = pos("crate::extensions::extension_session_dispatch_system");
-        let hit = pos("crate::extensions::extension_hit_dispatch_system");
-        let update = pos("crate::extensions::extension_update_dispatch_system");
-        let setting_apply = pos("crate::extensions::extension_setting_write_apply_system");
-        let cleanup = pos("byroredux_scripting::event_cleanup_system");
-        assert!(
-            settings < custom
-                && catalog < custom
-                && catalog < input_bindings
-                && input_bindings < legacy
-                && catalog < legacy
-                && legacy < cleanup
-                && legacy < papyrus
-                && papyrus < cleanup
-                && custom < activation
-                && custom < cleanup
-                && activation < cleanup
-                && cell_load < cleanup
-                && equipment < cleanup
-                && input < cleanup
-                && session < cleanup
-                && hit < cleanup
-                && update < setting_apply
-                && setting_apply < cleanup,
-            "extension callbacks must run before transient marker cleanup"
-        );
+        let schedule = BuiltSchedule::new();
+        for (earlier, later) in [
+            ("extension_engine_settings_sync_system", CUSTOM),
+            (CATALOG, CUSTOM),
+            (CATALOG, INPUT_BINDINGS),
+            (INPUT_BINDINGS, LEGACY),
+            (CATALOG, LEGACY),
+            (LEGACY, PAPYRUS),
+            (LEGACY, CLEANUP),
+            (PAPYRUS, CLEANUP),
+            (CUSTOM, ACTIVATION),
+            (CUSTOM, CLEANUP),
+            (ACTIVATION, CLEANUP),
+            ("extension_cell_load_dispatch_system", CLEANUP),
+            ("extension_equipment_dispatch_system", CLEANUP),
+            ("extension_input_dispatch_system", CLEANUP),
+            ("extension_session_dispatch_system", CLEANUP),
+            ("extension_hit_dispatch_system", CLEANUP),
+            ("extension_update_dispatch_system", SETTING_APPLY),
+            (SETTING_APPLY, CLEANUP),
+        ] {
+            assert!(
+                schedule
+                    .position(earlier)
+                    .runs_before(schedule.position(later)),
+                "`{earlier}` must run before `{later}`: extension callbacks must run before \
+                 transient marker cleanup"
+            );
+        }
     }
 
     /// #3952 — the scene→quest→continuation chain is load-bearing and was
@@ -243,32 +339,23 @@ mod fragment_activation_order_tests {
     /// without anyone noticing.
     #[test]
     fn scene_and_fragment_dispatch_chain_stays_in_dependency_order() {
-        let setup = BOOT_SRC
-            .split("mod fragment_activation_order_tests")
-            .next()
-            .expect("split always yields a first segment");
-        let pos = |needle: &str| {
-            setup
-                .find(needle)
-                .unwrap_or_else(|| panic!("`{needle}` is no longer registered in boot/"))
-        };
-
-        let scene_playback = pos("byroredux_scripting::scene_playback_system");
-        let scene_fragment = pos("byroredux_scripting::scene_fragment_dispatch_system");
-        let quest_fragment = pos("Stage::Update, quest_fragment_dispatch)");
-        let continuation = pos("byroredux_scripting::fragment_continuation_system");
+        let schedule = BuiltSchedule::new();
+        let scene_playback = schedule.position("scene_playback_system");
+        let scene_fragment = schedule.position("scene_fragment_dispatch_system");
+        let quest_fragment = schedule.position("quest_fragment_dispatch");
+        let continuation = schedule.position("fragment_continuation_system");
 
         assert!(
-            scene_playback < scene_fragment,
+            scene_playback.runs_before(scene_fragment),
             "scene_fragment_dispatch consumes what scene_playback emits"
         );
         assert!(
-            scene_fragment < quest_fragment,
+            scene_fragment.runs_before(quest_fragment),
             "quest_fragment_dispatch consumes the QuestStageAdvanced markers \
              scene_fragment_dispatch can produce"
         );
         assert!(
-            quest_fragment < continuation,
+            quest_fragment.runs_before(continuation),
             "fragment_continuation resumes tails suspended by the dispatchers, \
              so it must run after both of them in the same frame"
         );
@@ -282,52 +369,23 @@ mod fragment_activation_order_tests {
     /// thinks to add to that list.
     #[test]
     fn transient_cleanup_is_the_last_late_exclusive() {
-        let setup = BOOT_SRC
-            .split("mod fragment_activation_order_tests")
-            .next()
-            .expect("split always yields a first segment");
-
-        let cleanup = setup
-            .rfind("byroredux_scripting::event_cleanup_system")
-            .expect("event_cleanup_system is no longer registered in boot/");
-
-        // Every `add_exclusive*` call whose stage argument is `Stage::Late`
-        // has to sit before it. The stage often lands on the following
-        // line for the `_with_access` form, so look ahead past it.
-        let mut scan = 0usize;
-        let mut checked = 0usize;
-        while let Some(rel) = setup[scan..].find("add_exclusive") {
-            let at = scan + rel;
-            scan = at + "add_exclusive".len();
-            // A byte window, cut back to a character boundary (comments carry non-ASCII).
-            let mut window_end = setup.len().min(at + 200);
-            while !setup.is_char_boundary(window_end) {
-                window_end -= 1;
-            }
-            let window = &setup[at..window_end];
-            let Some(stage_rel) = window.find("Stage::") else {
-                continue;
-            };
-            if !window[stage_rel..].starts_with("Stage::Late") {
-                continue;
-            }
-            checked += 1;
-            // No `continue` for `at >= cleanup`: that is precisely the
-            // failing case. The cleanup registration's own `add_exclusive`
-            // token sits *before* the system path on the same line, so it
-            // satisfies this comparison without needing an exemption — and
-            // an exemption here would have made the assert unfalsifiable.
-            assert!(
-                at < cleanup,
-                "a Stage::Late exclusive is registered after event_cleanup_system \
-                 (byte {at} vs {cleanup}); the markers it drains would be gone \
-                 before that system reads them"
-            );
-        }
+        let schedule = BuiltSchedule::new();
+        let exclusives: Vec<&str> = schedule
+            .stage(Stage::Late)
+            .systems
+            .iter()
+            .filter(|row| row.is_exclusive)
+            .map(|row| bare_name(&row.name))
+            .collect();
         assert!(
-            checked > 5,
-            "expected to inspect the Late exclusives, found {checked} — the scan \
-             is broken, not the schedule"
+            exclusives.len() > 5,
+            "expected to inspect the Late exclusives, found {exclusives:?}"
+        );
+        assert_eq!(
+            exclusives.last().copied(),
+            Some("event_cleanup_system"),
+            "event_cleanup_system must be the last Late exclusive, or the markers it drains are \
+             gone before the systems after it read them: {exclusives:?}"
         );
     }
 }
@@ -452,34 +510,29 @@ mod ambient_locomotion_default_on_tests {
         );
     }
 
+    /// Unlike the two text pins above, this reads the built schedule: walk
+    /// playback's order against the movers holds whichever file registers them.
+    /// The movers register only while `BYRO_NO_AI_LOCOMOTION` is unset, so run
+    /// this test without it.
     #[test]
     fn walk_animation_registers_after_all_seven_movers() {
-        let setup = BOOT_SRC
-            .split("mod ambient_locomotion_default_on_tests")
-            .next()
-            .expect("split always yields a first segment");
-
-        let walk_anim = setup
-            .rfind("crate::systems::make_npc_walk_animation_system()")
-            .expect("npc_walk_animation_system is no longer registered in boot/schedule/");
+        let schedule = super::schedule_order::BuiltSchedule::new();
+        let walk_anim = schedule.position("make_npc_walk_animation_system");
         for mover in [
-            "crate::systems::make_wander_system()",
-            "crate::systems::make_travel_system()",
-            "crate::systems::make_follow_system()",
-            "crate::systems::make_escort_system()",
-            "crate::systems::make_guard_system()",
-            "crate::systems::make_flee_package_system()",
-            "crate::systems::make_find_package_system()",
-            "crate::systems::make_patrol_system()",
+            "make_wander_system",
+            "make_travel_system",
+            "make_follow_system",
+            "make_escort_system",
+            "make_guard_system",
+            "make_flee_package_system",
+            "make_find_package_system",
+            "make_patrol_system",
             // #5430 — the Eat/Sleep walk-then-seat mover.
-            "crate::systems::make_eat_sleep_system()",
+            "make_eat_sleep_system",
         ] {
-            let at = setup
-                .rfind(mover)
-                .unwrap_or_else(|| panic!("{mover} is no longer registered in boot/schedule/"));
             assert!(
-                at < walk_anim,
-                "{mover} must register before npc_walk_animation_system — the \
+                schedule.position(mover).runs_before(walk_anim),
+                "{mover} must run before npc_walk_animation_system — the \
                  walk classifier reads this frame's post-locomotion position"
             );
         }
