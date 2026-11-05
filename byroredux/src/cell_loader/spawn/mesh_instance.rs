@@ -8,7 +8,9 @@
 //! was widened.
 
 use super::*;
-use byroredux_core::ecs::SpeedTreeWind;
+use crate::scene::mesh_entity::{
+    spawn_mesh_entity, MeshEntitySpawn, MeshPlacement, MeshWaterPlacement,
+};
 use byroredux_core::string::FixedString;
 use byroredux_nif::import::{
     slot_to_colocated_role, slot_to_role, TextureRole, TextureSlotContext,
@@ -1036,7 +1038,8 @@ fn resolve_shared_geometry(
 /// fallback) for one imported sub-mesh. Returns `true` when an entity
 /// was spawned (the caller then increments its placement count); a
 /// failed GPU upload returns `false`, mirroring the pre-split `continue`.
-/// Split out of `spawn_placed_instances` (#2057).
+/// Split out of `spawn_placed_instances` (#2057). The material-to-component
+/// sequence is the shared [`spawn_mesh_entity`] (#6690).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_mesh_instance(
     world: &mut World,
@@ -1051,7 +1054,7 @@ pub(super) fn spawn_mesh_instance(
     synthesized_collision_proxy: &mut bool,
     node_parent: Option<(byroredux_core::ecs::EntityId, super::super::graph_nodes::MeshNodeLocal)>,
 ) -> bool {
-    use byroredux_core::ecs::{Name, Parent};
+    use byroredux_core::ecs::Parent;
     let PlacementCtx {
         // #3510 — consumed in `prepare_mesh_uploads`, which runs before this
         // per-instance spawn; nothing here needs it.
@@ -1100,66 +1103,15 @@ pub(super) fn spawn_mesh_instance(
         ));
     }
 
-    // Pre-resolved texture slot paths from the single-lock
-    // pre-pass above (#882). Cloned per-mesh because the Material
-    // ECS component owns its `Option<String>` fields and the
-    // resolved-paths Vec stays alive across this iteration; the
-    // alternative — moving paths out of `resolved_paths[i]` — would
-    // need a swap-with-default to keep the Vec indexable for the
-    // texture-handle resolves below. Per-slot clone is one
-    // allocation per populated slot per mesh, same as the pre-fix
-    // `resolve_owned(...).clone()` pattern at the Material struct
-    // construction site.
-    let eff_textures = paths.textures.clone();
-    let eff_texture_path = eff_textures.base_color.clone();
-    let eff_material_path = paths.material_path.clone();
     // #4290 — every raw-material read below sees the swap target's merged
     // material when a REFR material swap fired for this shape.
     let source_material = paths.material(mesh);
-
-    // Canonical material translation — the single boundary that
-    // resolves a raw `ImportedMesh` into the engine `Material`
-    // (PBR resolved, glass classified once, flag union packed).
-    // The cell path contributes the REFR-overlay model-space-normals
-    // bit as `extra_material_flags`; everything else is shared with
-    // the loose-NIF path. See `material_translate.rs`.
-    //
-    // #2571 / OBL-D5-01 — computed here, ahead of the texture-clamp
-    // resolve just below, so every `texture_clamp_mode`/`src_blend_mode`/
-    // `dst_blend_mode` read for the rest of this function goes through
-    // this one canonical `Material` instead of re-reading the raw
-    // `mesh.material` tier at each use site.
+    // The cell path contributes the REFR-overlay model-space-normals bit to the
+    // canonical translation; everything else is shared with the loose-NIF path.
     let extra_material_flags = refr_overlay
         .filter(|o| o.model_space_normals)
         .map(|_| byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS)
         .unwrap_or(0);
-    // #5230 — the provenance variant: the spawn-time resolvers below need
-    // to know when the glass classifier forced a deliberate mirror state,
-    // so they do not read its 0.04 floor as a BGSM clamp-floor pin.
-    let (material, translate_provenance) =
-        crate::material_translate::translate_material_with_provenance(
-            source_material,
-            mesh.name.as_deref(),
-            crate::material_translate::ResolvedPaths {
-                textures: eff_textures.clone(),
-                material_path: eff_material_path.clone(),
-                source_base_color: paths.source_base_color.clone(),
-            },
-            extra_material_flags,
-        );
-
-    // Load texture (shared resolve: cache → BSA → fallback).
-    // #610 — pass the diffuse-slot `TexClampMode` so the bindless
-    // descriptor's sampler picks the matching `VkSamplerAddressMode`
-    // pair. CLAMP-authored decals / scope reticles / Oblivion
-    // architecture trim no longer render with the legacy
-    // REPEAT/REPEAT bleed.
-    let tex_handle = resolve_texture_with_clamp(
-        ctx,
-        tex_provider,
-        eff_texture_path.as_deref(),
-        material.texture_clamp_mode,
-    );
 
     // #544 — mesh entities now sit in the NIF-local frame and
     // descend from the placement root. The transform-propagation
@@ -1213,19 +1165,6 @@ pub(super) fn spawn_mesh_instance(
         );
     }
 
-    let entity = world.spawn();
-    // NIF-local Transform for hierarchy propagation; world-space
-    // GlobalTransform for first-tick consumers. See #544.
-    // M47.2 — a mesh of an animated prop hangs from its NiNode, at the
-    // transform the hierarchical import gives it relative to that node.
-    match node_parent {
-        Some((_, local)) => world.insert(entity, Transform::new(local.translation, local.rotation, local.scale)),
-        None => world.insert(entity, Transform::new(nif_pos, nif_quat, mesh.scale)),
-    }
-    world.insert(
-        entity,
-        GlobalTransform::new(final_pos, final_rot, final_scale),
-    );
     // #3231 / #4399 — GPU morph-target slots are created only where the
     // canonical read gate (`bone_offset != 0`, which requires a
     // `SkinnedMesh` on the entity) can actually fire. This cell path
@@ -1237,240 +1176,62 @@ pub(super) fn spawn_mesh_instance(
     // [`try_spawn_morph_slot`], called from the loose-NIF / NPC path in
     // `scene/nif_loader.rs` where the `SkinnedMesh` is actually built;
     // when #2440 lands a cell-path `SkinnedMesh`, call it there too.
-    // #1213 / D1-NEW-02 — seed LocalBound from the mesh-local
-    // bounding sphere (`ImportedMesh.local_bound_center`,
-    // `.local_bound_radius`, both extracted by the NIF importer
-    // from `NiTriShapeData.center` / `BsTriShape.center` or
-    // computed from vertex positions). The bounds-propagation
-    // system at `byroredux/src/systems/bounds.rs:43-66` reads
-    // this row and produces a world-space `WorldBound` each
-    // frame; pre-#1213 no LocalBound row was ever inserted, so
-    // every WorldBound stayed at the component default (zero
-    // sphere) and downstream culling / RT-budget / cell-bounds
-    // consumers fell through to coarser approximations.
-    world.insert(
-        entity,
-        LocalBound::new(
-            Vec3::new(
-                mesh.local_bound_center[0],
-                mesh.local_bound_center[1],
-                mesh.local_bound_center[2],
-            ),
-            mesh.local_bound_radius,
-        ),
-    );
-    // Sibling to the LocalBound insert above. `bounds.rs` Pass 1 at
-    // line 61-63 only *updates* a pre-existing `WorldBound` row —
-    // it does not insert one — so a missing seed row means the
-    // entity stays at `WorldBound::default()` (zero sphere) and is
-    // invisible to ray-cast picking, frustum culling, and the
-    // skinned-LRU bounds heuristic. The propagation pass overwrites
-    // this `ZERO` with the real value on the next tick.
-    world.insert(entity, WorldBound::ZERO);
-    // #1235 / LC-D1-NEW-01 — attach SceneFlags for parity with the
-    // loose-NIF loader (`scene/nif_loader.rs:789-791`). APP_CULLED
-    // shapes never reach this point (filtered import-side in
-    // `walk/mod.rs`); the remaining NiAVObject bits ride through
-    // for downstream consumers.
-    if mesh.flags != 0 {
-        world.insert(entity, SceneFlags::from_nif(mesh.flags));
-    }
-    // #2206 / NIFAL-D4-02 — per-mesh parity with the loose-NIF loader
-    // (`scene/nif_loader.rs`'s `node.billboard_mode` attach). The flat
-    // cell-loader walk spawns one entity per mesh with no node entities
-    // at all, so the nearest-ancestor `NiBillboardNode` mode set by
-    // `walk_node_flat` rides on the mesh itself instead of a node.
-    if let Some(raw) = mesh.billboard_mode {
-        world.insert(entity, Billboard::new(BillboardMode::from_nif(raw)));
-    }
-    // SpeedTree's neutral runtime response is cached on the placement import,
-    // while the billboard mode is carried by each placeholder mesh. Attach
-    // both components to the render child consumed by the billboard system.
-    if let Some((response, stiffness)) = cached.speedtree_wind {
-        world.insert(entity, SpeedTreeWind::new(response, stiffness));
-    }
-    // Parent/Children edge → embedded animation clip's subtree
-    // walk discovers this mesh through `placement_root`.
-    let mesh_parent = node_parent.map_or(placement_root, |(node, _)| node);
-    world.insert(entity, Parent(mesh_parent));
-    crate::helpers::add_child(world, mesh_parent, entity);
-    // Name from `ImportedMesh.name` so the clip's node-keyed
-    // channels (`FixedString` interned at parse time, #340)
-    // resolve through `build_subtree_name_map` to this entity.
-    // Pre-#544 the cell-loader path skipped this insert, so even
-    // if `Parent` had been wired the channels would have failed
-    // their name lookup and silently no-op'd.
-    //
-    // Pre-#882 this site re-acquired a `world.resource_mut::<
-    // StringPool>()` write lock per mesh. The intern is now done
-    // in the pre-pass above; this site only consumes the cached
-    // `FixedString`.
-    if let Some(sym) = paths.name_sym {
-        world.insert(entity, Name(sym));
-    }
-    world.insert(entity, MeshHandle(mesh_handle));
-    world.insert(entity, TextureHandle(tex_handle));
-    // `material` was computed above, ahead of the texture-clamp resolve.
-    // `world.insert` below moves it, so pull copies of the small Copy
-    // fields the rest of this function still reads (#2571).
-    let material_kind = material.material_kind;
-    let mesh_water = material.is_water_shader;
-    let canonical_clamp_mode = material.texture_clamp_mode;
-    let canonical_src_blend_mode = material.src_blend_mode;
-    let canonical_dst_blend_mode = material.dst_blend_mode;
-    // #3073 (NIFAL-D1) — read the already-resolved canonical values
-    // instead of re-deriving `.unwrap_or(0.04)` / `.unwrap_or(4.0)` from
-    // the raw `mesh.material` tier at the `MaterialTextureHandles` insert
-    // below.
-    let canonical_parallax_height_scale = material.parallax_height_scale;
-    let canonical_parallax_max_passes = material.parallax_max_passes;
-    world.insert(entity, material);
-    // PERF-D3-NEW-02 / #1136 — classify FX-decoration meshes at spawn
-    // time so build_render_data can skip them via a component query
-    // instead of running 6 substring scans per draw per frame.
-    if let Some(ref tp) = eff_texture_path {
-        if texture_path_is_fx_mesh(tp, material_kind) {
-            world.insert(entity, IsFxMesh);
-        }
-    }
-    // Resolve every secondary semantic role with the SAME authored clamp mode
-    // as base colour, and derive the channel-presence flags, through the one
-    // shared producer (#4529) so structures, clutter, actors, and exterior
-    // statics cannot drift against the loose-NIF spawn path.
-    let texture_handles = build_material_texture_handles(
+    let entity = spawn_mesh_entity(
+        world,
         ctx,
         tex_provider,
-        &eff_textures,
-        tex_handle,
-        canonical_clamp_mode,
-        canonical_parallax_height_scale,
-        canonical_parallax_max_passes,
-    );
-    world.insert(entity, texture_handles);
-    if mesh_water {
-        crate::material_translate::attach_mesh_water(
-            world,
-            entity,
-            texture_handles.textures.normal,
-            texture_handles.textures.flow,
-            crate::material_translate::MeshWaterSource {
-                name: mesh.name.as_deref(),
-                positions: &mesh.positions,
-                indices: &mesh.indices,
-                position: final_pos,
-                rotation: final_rot,
-                scale: final_scale,
-                local_bound_center: Vec3::new(
-                    mesh.local_bound_center[0],
-                    mesh.local_bound_center[1],
-                    mesh.local_bound_center[2],
-                ),
-                local_bound_radius: mesh.local_bound_radius,
-                phantom_bounds: cached.phantom_bounds,
-                root_transform: (ref_pos, ref_rot, ref_scale),
+        MeshEntitySpawn {
+            mesh,
+            source_material,
+            mesh_handle,
+            // Pre-resolved texture slot paths from the single-lock pre-pass above
+            // (#882). Cloned per mesh because the Material ECS component owns its
+            // `Option<String>` fields and the resolved-paths Vec stays alive
+            // across this iteration.
+            paths: crate::material_translate::ResolvedPaths {
+                textures: paths.textures.clone(),
+                material_path: paths.material_path.clone(),
+                source_base_color: paths.source_base_color.clone(),
             },
-        );
-    }
-    world.insert(
-        entity,
-        MaterialTextureDebugInfo {
-            paths: eff_textures,
-            sources: paths.sources,
-            clamp_mode: canonical_clamp_mode,
+            texture_sources: paths.sources,
+            extra_material_flags,
+            placement: MeshPlacement {
+                // NIF-local Transform for hierarchy propagation; world-space
+                // GlobalTransform for first-tick consumers. See #544.
+                // M47.2 — a mesh of an animated prop hangs from its NiNode, at the
+                // transform the hierarchical import gives it relative to that node.
+                transform: match node_parent {
+                    Some((_, local)) => {
+                        Transform::new(local.translation, local.rotation, local.scale)
+                    }
+                    None => Transform::new(nif_pos, nif_quat, mesh.scale),
+                },
+                global_transform: GlobalTransform::new(final_pos, final_rot, final_scale),
+                // The base layer comes from the REFR's record type
+                // (`stat.record_type.render_layer()`). Architecture (zero bias) is
+                // the safe default for the rare "neither base nor mesh hints an
+                // overlay" path.
+                base_layer,
+                layer_bound_radius: mesh.local_bound_radius * ref_scale,
+                parent: Some(node_parent.map_or(placement_root, |(node, _)| node)),
+                // Pre-#882 this site re-acquired a `world.resource_mut::<
+                // StringPool>()` write lock per mesh. The intern is now done in the
+                // pre-pass above; this site only consumes the cached `FixedString`.
+                name: paths.name_sym,
+                // SpeedTree's neutral runtime response is cached on the placement
+                // import, while the billboard mode is carried by each placeholder
+                // mesh.
+                speedtree_wind: cached.speedtree_wind,
+                water: MeshWaterPlacement {
+                    position: final_pos,
+                    rotation: final_rot,
+                    scale: final_scale,
+                    phantom_bounds: cached.phantom_bounds,
+                    root_transform: (ref_pos, ref_rot, ref_scale),
+                },
+            },
         },
     );
-    // #1480 / REN-D22-NEW-01 — resolve the normal-alpha-as-spec roughness
-    // ONCE into the canonical Material now that MaterialTextureHandles is
-    // attached, instead of recomputing it per
-    // draw in the render path. Reads the same components the renderer
-    // reads, so the value is identical — only canonical + tooling-visible.
-    // #2606 — pass the "a real BGSM authored the PBR scalars" signal so the
-    // legacy fallback cannot clobber them.
-    crate::material_translate::resolve_normal_alpha_spec_roughness(
-        world,
-        entity,
-        source_material.bgsm_pbr_scalars_authored,
-    );
-    // #2826 (REN-D19-02) — same "resolve once from MaterialTextureHandles"
-    // pattern, for whether the model-space normal map's blue channel
-    // carries authored Z.
-    crate::material_translate::resolve_msn_z_source(world, entity);
-    // #3905 (NIFAL-2026-09-05-D1-01) — same pattern again, for a BGSM
-    // pinned at the near-mirror clamp floor whose authored gloss map did
-    // not resolve. Must run AFTER MaterialTextureHandles is attached:
-    // the whole point is to use the shader's resolved-handle predicate
-    // rather than the merge boundary's authored-path one.
-    // #5230 — exempt the classifier's forced mirror panes: their 0.04 is
-    // deliberate, not a clamp-floor pin.
-    crate::material_translate::resolve_unresolved_gloss_neutral_roughness(
-        world,
-        entity,
-        source_material.bgsm_pbr_scalars_authored,
-        translate_provenance.mirror_pane_forced,
-    );
-    // #2490 — the blend/decal/facing markers derive from the raw
-    // `ImportedMaterial` at the same single boundary the `Material`
-    // literal does, so this path cannot diverge from the loose-NIF path.
-    crate::material_translate::attach_blend_and_facing_markers(
-        world,
-        entity,
-        source_material,
-        canonical_src_blend_mode,
-        canonical_dst_blend_mode,
-    );
-    // #renderlayer — derive the per-entity content-class layer.
-    // Base layer comes from the REFR's record type
-    // (`stat.record_type.render_layer()`); two per-mesh signals then
-    // escalate it, so a coplanar overlay wins its z-fight against the
-    // surface beneath:
-    //   - `mesh.material.is_decal` (NIF-flagged decals — blood splats,
-    //     scorch marks) → `RenderLayer::Decal`, the strongest bias;
-    //   - `mesh.material.alpha_test` (alpha-tested rugs / posters / fences /
-    //     cutout foliage) → `RenderLayer::Clutter`, a gentle bias, and only
-    //     when the base was Architecture.
-    // Architecture (zero bias) is the safe default for the rare "neither
-    // base nor mesh hints an overlay" path.
-    //
-    // #2446 (MAT-D3-04) — this comment used to name `alpha_test_func != 0`
-    // as the second signal and `Decal` as its output. Both wrong, and the
-    // field half is the one that matters: `alpha_test_func` defaults to
-    // `6` (GREATEREQUAL) on every imported material whether or not testing
-    // is on, so gating on it would escalate every architectural mesh in the
-    // cell — the exact bug `render_layer_with_decal_escalation`'s doc and
-    // its `alpha_test_disabled_does_not_escalate_regardless_of_default_func`
-    // test exist to keep out.
-    //
-    // Pre-#renderlayer this site also inserted a `Decal` marker
-    // component when `mesh.material.is_decal` — that marker is retired now
-    // that `RenderLayer::Decal` carries the same signal end-to-end.
-    {
-        use byroredux_core::ecs::components::{
-            escalate_small_static_to_clutter, render_layer_with_decal_escalation,
-        };
-        // Small-STAT escalation runs first so decorative clutter
-        // authored as STAT (paper piles, folders, clipboards on
-        // desks — Bethesda's record-type classifier can't tell
-        // these from architectural STATs without spatial extent)
-        // gets the Clutter bias before the decal gate sees it.
-        // Decal escalation still wins for alpha-tested overlays
-        // and NIF-flagged decals regardless of size.
-        //
-        // The post-escalation layer is the RENDER-z-bias signal
-        // (`RenderLayer` ECS component). #1294 moved the collision
-        // trimesh-fallback gate below off this post-escalation
-        // layer onto `base_layer` so SF sub-decomposed architecture
-        // (per-LOD per-material sub-meshes < 50 units each, but
-        // composing into a 1000-unit wall) doesn't get its
-        // collider stripped on a render-side optimization.
-        let layer =
-            escalate_small_static_to_clutter(base_layer, mesh.local_bound_radius * ref_scale);
-        let layer = render_layer_with_decal_escalation(
-            layer,
-            source_material.is_decal,
-            source_material.alpha_test,
-        );
-        world.insert(entity, layer);
-    }
 
     // F3 (2026-05-27) — synthesize a static TriMesh collider from
     // the render geometry when the NIF authored NO bhk collision.
@@ -1937,27 +1698,27 @@ mod tests {
         // scanned half.
         let production = byroredux_core::source_scan::production_text(here);
         let nif_loader = include_str!("../../scene/nif_loader.rs");
+        let shared_step = include_str!("../../scene/mesh_entity.rs");
         let producer = include_str!("../../asset_provider/texture.rs");
 
-        // Each site constructs through the producer exactly once —
-        // `build_material_texture_handles(` can only match the call, not
-        // either file's import line.
+        // The shared step constructs through the producer exactly once (#6690).
+        // `build_material_texture_handles(` can only match the call, not the
+        // file's import line.
         assert_eq!(
-            production
+            shared_step
                 .matches("build_material_texture_handles(")
                 .count(),
             1,
-            "the cell-loader spawn path must construct MaterialTextureHandles \
-             through the shared producer (#4529)"
+            "the shared spawn step must construct MaterialTextureHandles through \
+             the shared producer (#4529)"
         );
-        assert_eq!(
-            nif_loader
-                .matches("build_material_texture_handles(")
-                .count(),
-            1,
-            "the loose-NIF spawn path must construct MaterialTextureHandles \
-             through the shared producer (#4529)"
-        );
+        for (label, src) in [("cell", production.as_ref()), ("loose-NIF", nif_loader)] {
+            assert_eq!(
+                src.matches("build_material_texture_handles(").count(),
+                0,
+                "the {label} spawn path must go through the shared spawn step (#6690)"
+            );
+        }
         // …and neither retains an inline presence derivation.
         assert!(
             !production.contains("handle_has_alpha(") && !nif_loader.contains("handle_has_alpha("),

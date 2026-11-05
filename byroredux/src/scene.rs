@@ -1471,6 +1471,7 @@ fn launch_archive_menu(
 }
 
 mod character_spawn;
+pub(crate) mod mesh_entity;
 mod nif_loader;
 pub(crate) use character_spawn::{
     plan_character_spawn, CharacterSpawnPlan, character_spawn_center_y, floor_probe_lift,

@@ -135,10 +135,10 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
                 return;
             };
             for (entity, tree_wind) in swq.iter() {
-                // Defensive: every production `SpeedTreeWind` insert site
-                // (mesh_instance.rs, nif_loader.rs) attaches `Billboard` in
-                // the same statement group, so this should never miss in
-                // practice. Guard kept in case a future producer attaches
+                // Defensive: the production `SpeedTreeWind` insert site
+                // (scene/mesh_entity.rs) attaches `Billboard` in the same
+                // statement group, so this should never miss in practice.
+                // Guard kept in case a future producer attaches
                 // `SpeedTreeWind` to an entity without `Billboard`.
                 let Some(billboard) = bq.get(entity) else {
                     continue;

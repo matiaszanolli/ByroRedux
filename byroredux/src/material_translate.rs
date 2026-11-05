@@ -43,7 +43,7 @@
 //!
 //! All three Phase-2 resolvers are called from **every [`translate_material`]
 //! caller that attaches `MaterialTextureHandles`**, immediately after that
-//! attachment (`scene/nif_loader.rs`, `cell_loader/spawn/mesh_instance.rs`).
+//! attachment (`scene/mesh_entity.rs`, the shared spawn step, #6690).
 //!
 //! #3465 — this used to say "both spawn sites", which stopped identifying the
 //! set when a third production caller landed. `cell_loader/placement_lod.rs`
@@ -1037,8 +1037,8 @@ pub(crate) fn attach_blend_and_facing_markers(
 /// **Phase-2 resolver coverage (#4264):** `resolve_normal_alpha_spec_roughness`
 /// — the spawn-time write-back of the normal-alpha-as-spec roughness
 /// scalar — is invoked only on the two spawn paths that carry a source
-/// `ImportedMaterial` (`scene/nif_loader.rs` for loose NIFs,
-/// `cell_loader/spawn/mesh_instance.rs` for cell references). The three
+/// `ImportedMaterial` (the loose-NIF and cell-reference paths, through
+/// `scene/mesh_entity.rs`). The three
 /// exterior terrain spawners that use this boundary
 /// (`cell_loader/terrain.rs`, `cell_loader/terrain_lod.rs`,
 /// `cell_loader/terrain_lod_btr.rs`) deliberately do NOT call it: the
@@ -1314,8 +1314,8 @@ pub(crate) fn normal_alpha_spec_roughness(
 /// [`normal_alpha_spec_roughness`]). Call after all three components are
 /// attached to `entity`.
 ///
-/// Scope (#4264): the loose-NIF (`scene/nif_loader.rs`) and cell-reference
-/// (`cell_loader/spawn/mesh_instance.rs`) spawn paths call this; the three
+/// Scope (#4264): the loose-NIF and cell-reference spawn paths call this,
+/// through `scene/mesh_entity.rs`; the three
 /// exterior terrain spawners (`terrain.rs`, `terrain_lod.rs`,
 /// `terrain_lod_btr.rs`) deliberately do not — see
 /// [`translate_texture_only_material`]'s Phase-2-coverage paragraph for
@@ -1639,23 +1639,25 @@ mod tests {
         assert!(world.get::<NoSorter>(entity).is_none());
     }
 
-    /// #2490 — both spawn sites must reach the markers through the single
-    /// boundary. Re-introducing an inline `AlphaBlend` literal at either
-    /// site is the exact regression this consolidation removes, and nothing
-    /// else in the crate can see the two paths diverge.
+    /// #2490 — both spawn paths must reach the markers through the single
+    /// boundary, which since #6690 is the shared spawn step. Re-introducing an
+    /// inline `AlphaBlend` literal at either site is the exact regression this
+    /// consolidation removes.
     #[test]
     fn both_spawn_sites_derive_markers_through_this_boundary() {
+        const SHARED_STEP_RS: &str = include_str!("scene/mesh_entity.rs");
         const NIF_LOADER_RS: &str = include_str!("scene/nif_loader.rs");
         const MESH_INSTANCE_RS: &str = include_str!("cell_loader/spawn/mesh_instance.rs");
 
+        assert!(
+            SHARED_STEP_RS.contains("attach_blend_and_facing_markers("),
+            "scene/mesh_entity.rs must derive its markers at the NIFAL boundary"
+        );
         for (src, label) in [
+            (SHARED_STEP_RS, "scene/mesh_entity.rs"),
             (NIF_LOADER_RS, "scene/nif_loader.rs"),
             (MESH_INSTANCE_RS, "cell_loader/spawn/mesh_instance.rs"),
         ] {
-            assert!(
-                src.contains("attach_blend_and_facing_markers("),
-                "{label} must derive its markers at the NIFAL boundary"
-            );
             assert!(
                 !src.contains("AlphaBlend {"),
                 "{label} re-introduced an inline AlphaBlend literal"
@@ -2553,7 +2555,8 @@ mod tests {
     /// spawn paths in the tree — `spawn/mesh_instance.rs`, every REFR the
     /// engine places, and `scene/nif_loader.rs`, every loose-NIF draw — were
     /// outside the only thing standing behind that instruction. Both route
-    /// correctly today; neither was guarded.
+    /// correctly today; neither was guarded. (#6690 — both now spawn through
+    /// `scene/mesh_entity.rs`, which holds the one insert this scan sees.)
     ///
     /// Now walks [`SPAWNER_ROOTS`] recursively. Two scan rules earn their
     /// keep, and both were derived by running the scan rather than assumed:
@@ -2725,12 +2728,14 @@ mod tests {
         for required in [
             "cell_loader/object_lod.rs",
             "cell_loader/placement_lod.rs",
-            "cell_loader/spawn/mesh_instance.rs",
             "cell_loader/terrain.rs",
             "cell_loader/terrain_lod.rs",
             "cell_loader/terrain_lod_btr.rs",
             "cell_loader/water.rs",
-            "scene/nif_loader.rs",
+            // #6690 — the one insert behind `cell_loader/spawn/mesh_instance.rs`
+            // (every REFR the engine places) and `scene/nif_loader.rs` (every
+            // loose-NIF draw).
+            "scene/mesh_entity.rs",
         ] {
             assert!(
                 checked_files
@@ -3364,9 +3369,8 @@ mod canonical_completeness_harness {
     fn kitchen_sink_source() -> ImportedMaterial {
         ImportedMaterial {
             // #3462 — the NIFAL↔WATAL seam marker. `is_water_shader` is the
-            // sole gate both spawn sites read to decide whether to call
-            // `attach_mesh_water` (`scene/nif_loader.rs`,
-            // `cell_loader/spawn/mesh_instance.rs`), so a copy silently
+            // sole gate the shared spawn step reads to decide whether to call
+            // `attach_mesh_water` (`scene/mesh_entity.rs`), so a copy silently
             // changed to `false` deletes every mesh-authored water plane in
             // every game. It is a plain copy at *this* boundary (nothing in
             // `translate_material` or `classify_glass_into_material_with_provenance` branches

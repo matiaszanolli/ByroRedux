@@ -118,7 +118,9 @@ PKIN/SCOL containers, calls `parse_and_import_nif` (cached per-NIF), and
 dispatches to `spawn_placed_instances` (`byroredux/src/cell_loader/spawn.rs`)
 — the function that actually calls `world.spawn()` and inserts components:
 mesh entities (`spawn_mesh_instance`,
-`byroredux/src/cell_loader/spawn/mesh_instance.rs` →
+`byroredux/src/cell_loader/spawn/mesh_instance.rs`, whose
+material-to-component sequence is the `spawn_mesh_entity` step it shares with
+the loose-NIF path, `byroredux/src/scene/mesh_entity.rs` →
 `Transform`/`GlobalTransform`/`MeshHandle`), light entities
 (`spawn_nif_lights`), particle emitters (`spawn_particle_emitters`),
 collision entities. Every entity spawned in the load gets `CellRoot`

@@ -8,8 +8,8 @@
 
 use byroredux_core::ecs::components::{FormIdComponent, Locked};
 use byroredux_core::ecs::{
-    BSXFlags, Billboard, BillboardMode, GlobalTransform, LightSource, LocalBound, MeshHandle,
-    SceneFlags, TextureHandle, Transform, World, WorldBound,
+    BSXFlags, Billboard, GlobalTransform, LightSource, SceneFlags, TextureHandle, Transform, World,
+    WorldBound,
 };
 use byroredux_core::form_id::{FormIdPair, FormIdPool};
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
@@ -19,13 +19,10 @@ use byroredux_renderer::{MeshUploadSource, SceneMeshUpload, VulkanContext};
 use std::time::{Duration, Instant};
 
 use crate::asset_provider::{
-    build_material_texture_handles, derive_normal_map_path, derive_present_normal_map_path,
-    resolve_texture, resolve_texture_with_clamp, MaterialProvider, TextureProvider,
+    derive_normal_map_path, derive_present_normal_map_path, resolve_texture, MaterialProvider,
+    TextureProvider,
 };
-use crate::components::{
-    texture_path_is_fx_mesh, DoorTeleport, IsFxMesh, MaterialTextureDebugInfo,
-    MaterialTextureSource,
-};
+use crate::components::{DoorTeleport, MaterialTextureSource};
 
 use super::nif_import_registry::CachedNifImport;
 use super::references::attach_light_flicker_if_needed;
@@ -1103,7 +1100,7 @@ fn spawn_placement_root(
     // flags a billboard mode on the cache entry instead of on the mesh.
     // No producer sets `placement_root_billboard` today — #3076 moved
     // the SpeedTree billboard onto the renderable mesh itself
-    // (`mesh_instance.rs` attaches `Billboard` alongside the mesh), so
+    // (`scene/mesh_entity.rs` attaches `Billboard` alongside the mesh), so
     // this branch is currently unreachable.
     if let Some(mode) = cached.placement_root_billboard {
         world.insert(placement_root, Billboard::new(mode));

@@ -257,7 +257,7 @@ pub(crate) struct CachedNifImport {
     /// a seam for a future `NiBillboardNode`-rooted NIF producer, not a
     /// live path today. #3076 moved the SpeedTree billboard from the
     /// placement root onto the renderable mesh itself
-    /// (`mesh_instance.rs` attaches `Billboard` alongside the mesh), so
+    /// (`scene/mesh_entity.rs` attaches `Billboard` alongside the mesh), so
     /// `import_spt_scene` now builds its root with
     /// `placeholder_root_node(/* billboard */ false)` and this field is
     /// structurally `None` at every construction site in the tree — its

@@ -120,8 +120,9 @@ reviewable helpers:
   `WaterVolume` once, including canonical foam-by-kind.
 
 Both consumers—`cell_loader/spawn/mesh_instance.rs::spawn_mesh_instance` and
-`scene/nif_loader.rs::load_nif_bytes_with_skeleton`—call
-`attach_mesh_water`. Mesh-water damage remains deliberately parked at
+`scene/nif_loader.rs::load_nif_bytes_with_skeleton`—reach `attach_mesh_water`
+through the spawn step they share, `scene/mesh_entity.rs::spawn_mesh_entity`.
+Mesh-water damage remains deliberately parked at
 `damage_per_second = 0.0`: neither NIF water shader property authors a gameplay
 hazard, unlike ESM WATR/XNAM content. See `docs/engine/watal.md` for the shared
 rendering/physics contract.

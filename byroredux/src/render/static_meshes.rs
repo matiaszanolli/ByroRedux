@@ -938,14 +938,11 @@ fn build_static_draw_command(
     // predicate, additional mesh-name + BGEM-glass triggers,
     // forces roughness to 0.10 so any future render-side
     // roughness gate would also fire), and a Material-creation-
-    // site audit confirmed both spawn sites
-    // (`cell_loader/spawn/mesh_instance.rs` and
-    // `scene/nif_loader.rs`, each at their
-    // `material_translate::translate_material` call) route
-    // through the classifier before `world.insert`. #3465 —
-    // named by symbol rather than line, per #1114: the cell-path
-    // site moved out of `cell_loader/spawn.rs` under #2057 and
-    // neither original line number resolved any more.
+    // site audit confirmed the spawn step both paths share
+    // (`scene/mesh_entity.rs::spawn_mesh_entity`, at its
+    // `material_translate` call) routes through the classifier
+    // before `world.insert`. #3465 — named by symbol rather than
+    // line, per #1114.
     // Pre-deletion the heuristic also required the texture-
     // path keyword and the same alpha/metal/!decal gates,
     // gated by `roughness < 0.4` — every entity that would

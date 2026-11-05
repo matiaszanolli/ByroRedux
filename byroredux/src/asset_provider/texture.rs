@@ -911,10 +911,10 @@ pub(crate) fn resolve_material_texture_handles_with_clamp(
 /// [`crate::components::MaterialTextureHandles`] component: resolve every
 /// secondary role with the material's authored clamp mode, then derive the
 /// channel-presence flags from the handles actually acquired. Both static
-/// spawn paths (loose-NIF `scene/nif_loader.rs` and cell-loader
-/// `cell_loader/spawn/mesh_instance.rs`) construct through here, so a new
-/// presence lane lands on NIF-loaded and REFR-overlaid meshes together —
-/// the divergence this closes was the audit's finding.
+/// spawn paths construct through here, by way of their shared step
+/// (`scene/mesh_entity.rs`), so a new presence lane lands on NIF-loaded and
+/// REFR-overlaid meshes together — the divergence this closes was the audit's
+/// finding.
 pub(crate) fn build_material_texture_handles(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,

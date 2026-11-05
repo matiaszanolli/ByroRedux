@@ -12,23 +12,21 @@
 
 use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};
 use byroredux_core::ecs::storage::EntityId;
+use byroredux_core::ecs::components::RenderLayer;
 use byroredux_core::ecs::{
-    BSBound, BSXFlags, Billboard, BillboardMode, GlobalTransform, LocalBound, MeshHandle, Name,
-    Parent, SceneFlags, SkinnedMesh, SpeedTreeWind, TextureHandle, Transform, World, WorldBound,
-    MAX_BONES_PER_MESH,
+    BSBound, BSXFlags, Billboard, BillboardMode, GlobalTransform, Name, Parent, SceneFlags,
+    SkinnedMesh, SpeedTreeWind, TextureHandle, Transform, World, MAX_BONES_PER_MESH,
 };
 use byroredux_core::math::{Mat4, Quat, Vec3};
 use byroredux_core::string::StringPool;
 use byroredux_renderer::{SceneMeshUpload, Vertex, VulkanContext};
 
+use super::mesh_entity::{spawn_mesh_entity, MeshEntitySpawn, MeshPlacement, MeshWaterPlacement};
 use crate::asset_provider::{
-    build_material_provider, build_material_texture_handles, build_texture_provider,
-    derive_present_normal_map_path, merge_external_material, resolve_texture,
-    resolve_texture_with_clamp, MaterialProvider, TextureProvider,
+    build_material_provider, build_texture_provider, derive_present_normal_map_path,
+    merge_external_material, resolve_texture, MaterialProvider, TextureProvider,
 };
-use crate::components::{
-    texture_path_is_fx_mesh, IsFxMesh, MaterialTextureDebugInfo, MaterialTextureSource,
-};
+use crate::components::MaterialTextureSource;
 use crate::helpers::add_child;
 
 /// Spawned node entities keyed by NIF node name.
@@ -1029,8 +1027,8 @@ pub(crate) fn npc_source_geometry_shareable(mesh: &byroredux_nif::import::Import
 }
 
 /// Spawn one `ImportedMesh` from a loaded NIF: GPU upload, texture-role
-/// resolution, canonical material translation, bounds, skinning binding and
-/// the parent link (#3858).
+/// resolution and skinning binding (#3858). The material-to-component sequence
+/// is the shared [`spawn_mesh_entity`] (#6690).
 ///
 /// Returns whether the mesh produced an entity — `false` for the three skip
 /// paths that were `continue` when this was the body of `Phase 3`'s loop
@@ -1364,55 +1362,6 @@ fn spawn_nif_mesh(
         texture_sources.base_color = MaterialTextureSource::RuntimeOverride;
     }
 
-    // Canonical material translation — same single boundary the
-    // cell-loader path uses, so loose-NIF materials are resolved
-    // identically. No REFR overlay on the loose path → no extra
-    // material flags. See `material_translate.rs`.
-    //
-    // #2571 / OBL-D5-01 — computed here, ahead of the texture-clamp
-    // resolve just below (now that `owned_textures` is finalized), so
-    // every `texture_clamp_mode`/`src_blend_mode`/`dst_blend_mode` read
-    // for the rest of this loop iteration goes through this one
-    // canonical `Material` instead of re-reading the raw
-    // `mesh.material` tier at each use site. `world.insert` further
-    // down moves `material`, so pull copies of the small Copy fields
-    // this loop iteration still needs afterward.
-    // #5230 — the provenance variant: the spawn-time resolver below needs
-    // to know when the glass classifier forced a deliberate mirror state,
-    // so it does not read its 0.04 floor as a BGSM clamp-floor pin.
-    let (material, translate_provenance) =
-        crate::material_translate::translate_material_with_provenance(
-            &mesh.material,
-            mesh.name.as_deref(),
-            crate::material_translate::ResolvedPaths {
-                textures: owned_textures.clone(),
-                material_path: owned_material_path.clone(),
-                // #4229 — loose-NIF load has no REFR texture-slot overlay at
-                // all, so `owned_textures` is always the mesh's own path;
-                // `None` correctly disables the overlay-divergence check.
-                source_base_color: None,
-            },
-            0,
-        );
-    let material_kind = material.material_kind;
-    let mesh_water = material.is_water_shader;
-    let canonical_clamp_mode = material.texture_clamp_mode;
-    let canonical_src_blend_mode = material.src_blend_mode;
-    let canonical_dst_blend_mode = material.dst_blend_mode;
-    // #3073 (NIFAL-D1) — read the already-resolved canonical values
-    // instead of re-deriving `.unwrap_or(0.04)` / `.unwrap_or(4.0)`
-    // from the raw `mesh.material` tier at the `MaterialTextureHandles`
-    // insert below.
-    let canonical_parallax_height_scale = material.parallax_height_scale;
-    let canonical_parallax_max_passes = material.parallax_max_passes;
-
-    let tex_handle = resolve_texture_with_clamp(
-        ctx,
-        tex_provider,
-        owned_textures.base_color.as_deref(),
-        canonical_clamp_mode,
-    );
-
     let quat = Quat::from_xyzw(
         mesh.rotation[0],
         mesh.rotation[1],
@@ -1424,185 +1373,53 @@ fn spawn_nif_mesh(
         mesh.translation[1],
         mesh.translation[2],
     );
+    let name = mesh
+        .name
+        .as_deref()
+        .map(|name| world.resource_mut::<StringPool>().intern(name));
 
-    let entity = world.spawn();
-    world.insert(entity, Transform::new(translation, quat, mesh.scale));
-    world.insert(entity, GlobalTransform::IDENTITY);
-    world.insert(entity, MeshHandle(mesh_handle));
-    world.insert(entity, TextureHandle(tex_handle));
-
-    // Attach bounding data (#217): LocalBound captures the mesh-local
-    // sphere; WorldBound is a placeholder filled in by the bound
-    // propagation system once GlobalTransform has been computed.
-    world.insert(
-        entity,
-        LocalBound::new(
-            Vec3::new(
-                mesh.local_bound_center[0],
-                mesh.local_bound_center[1],
-                mesh.local_bound_center[2],
-            ),
-            mesh.local_bound_radius,
-        ),
-    );
-    world.insert(entity, WorldBound::ZERO);
-    // #2490 — the blend/decal/facing markers derive from the raw
-    // `ImportedMaterial` at the same single boundary the `Material`
-    // literal does, so this path cannot diverge from the REFR path.
-    crate::material_translate::attach_blend_and_facing_markers(
+    let entity = spawn_mesh_entity(
         world,
-        entity,
-        &mesh.material,
-        canonical_src_blend_mode,
-        canonical_dst_blend_mode,
-    );
-    // #renderlayer — loose-NIF path has no REFR base record, so
-    // the base layer defaults to Architecture (zero bias). The
-    // per-mesh escalation still applies regardless of how the mesh
-    // was spawned: `is_decal` → `RenderLayer::Decal`, `alpha_test`
-    // (cutout fringes) → `RenderLayer::Clutter`. (#2446 — this said
-    // `alpha_test_func` and `Decal` for both; see
-    // `render_layer_with_decal_escalation`'s doc for why the func
-    // value, which defaults to `6`, cannot be the gate.)
-    // NPC body / head / armor meshes
-    // overwrite this with Actor in `npc_spawn::tag_descendants_as_actor`
-    // after the spawn returns. Pre-#renderlayer this site also
-    // inserted a `Decal` marker — retired in favour of
-    // `RenderLayer::Decal`.
-    {
-        use byroredux_core::ecs::components::{
-            escalate_small_static_to_clutter, render_layer_with_decal_escalation, RenderLayer,
-        };
-        // Loose-NIF spawn: no REFR, so no ref_scale to apply —
-        // the mesh's local bound is its world bound. Same small-
-        // STAT → Clutter rule as cell_loader so loose-loaded
-        // desk papers don't z-fight against the desk loaded
-        // alongside them.
-        let layer =
-            escalate_small_static_to_clutter(RenderLayer::Architecture, mesh.local_bound_radius);
-        let layer = render_layer_with_decal_escalation(
-            layer,
-            mesh.material.is_decal,
-            mesh.material.alpha_test,
-        );
-        world.insert(entity, layer);
-    }
-    // Carry `NiAVObject.flags` across — gameplay systems branch on
-    // DISABLE_SORTING / SELECTIVE_UPDATE / DISPLAY_OBJECT bits
-    // without touching the NIF source. APP_CULLED shapes never
-    // reach this point (filtered import-side in walk.rs). See #222.
-    if mesh.flags != 0 {
-        world.insert(entity, SceneFlags::from_nif(mesh.flags));
-    }
-    // #2527 / NIF-D4-2026-08-07-01 — mirror of
-    // `cell_loader/spawn.rs`'s per-mesh billboard attach (#2206).
-    // The `NiBillboardNode`'s own container entity (spawned above,
-    // ~line 469) is typically an empty node, a separate ECS entity
-    // from the actual geometry linked via Parent/Children —
-    // `make_billboard_system` writes `GlobalTransform.rotation`
-    // directly on that container, which `make_transform_propagation_
-    // system` never re-walks into (it reseeds from the
-    // `Transform`-dirty set, not the billboard write), so the
-    // rotation never reached the child mesh. Attach directly to the
-    // mesh entity instead of relying on parent→child propagation.
-    if let Some(raw) = mesh.billboard_mode {
-        world.insert(entity, Billboard::new(BillboardMode::from_nif(raw)));
-        if is_spt {
-            world.insert(entity, SpeedTreeWind::new(1.0, 0.0));
-        }
-    }
-    // `material` was computed earlier in this loop iteration, ahead of
-    // the texture-clamp resolve.
-    world.insert(entity, material);
-    // PERF-D3-NEW-02 / #1136 — mirror of the cell_loader::spawn path.
-    if let Some(ref tp) = owned_textures.base_color {
-        if texture_path_is_fx_mesh(tp, material_kind) {
-            world.insert(entity, IsFxMesh);
-        }
-    }
-
-    // Resolve all secondary roles with the same authored sampler addressing
-    // mode as base colour, and derive the channel-presence flags, through the
-    // one shared producer (#4529) — the exact constructor used by placed cell
-    // meshes, eliminating the old loose-NIF/material-slot divergence.
-    let texture_handles = build_material_texture_handles(
         ctx,
         tex_provider,
-        &owned_textures,
-        tex_handle,
-        canonical_clamp_mode,
-        canonical_parallax_height_scale,
-        canonical_parallax_max_passes,
-    );
-    world.insert(entity, texture_handles);
-    if mesh_water {
-        crate::material_translate::attach_mesh_water(
-            world,
-            entity,
-            texture_handles.textures.normal,
-            texture_handles.textures.flow,
-            crate::material_translate::MeshWaterSource {
-                name: mesh.name.as_deref(),
-                positions: &mesh.positions,
-                position: translation,
-                indices: &mesh.indices,
-                rotation: quat,
-                scale: mesh.scale,
-                local_bound_center: Vec3::new(
-                    mesh.local_bound_center[0],
-                    mesh.local_bound_center[1],
-                    mesh.local_bound_center[2],
-                ),
-                local_bound_radius: mesh.local_bound_radius,
-                phantom_bounds,
-                // A loose NIF's root node entity sits at the root transform
-                // the phantom bounds already include.
-                root_transform: (Vec3::ZERO, Quat::IDENTITY, 1.0),
+        MeshEntitySpawn {
+            mesh,
+            source_material: &mesh.material,
+            mesh_handle,
+            paths: crate::material_translate::ResolvedPaths {
+                textures: owned_textures,
+                material_path: owned_material_path,
+                // #4229 — loose-NIF load has no REFR texture-slot overlay at
+                // all, so the textures are always the mesh's own paths; `None`
+                // correctly disables the overlay-divergence check.
+                source_base_color: None,
             },
-        );
-    }
-    world.insert(
-        entity,
-        MaterialTextureDebugInfo {
-            paths: owned_textures,
-            sources: texture_sources,
-            clamp_mode: canonical_clamp_mode,
+            texture_sources,
+            // No REFR overlay on the loose path → no extra material flags.
+            extra_material_flags: 0,
+            placement: MeshPlacement {
+                transform: Transform::new(translation, quat, mesh.scale),
+                global_transform: GlobalTransform::IDENTITY,
+                // #renderlayer — the loose-NIF path has no REFR base record, so
+                // the base layer defaults to Architecture (zero bias), and no
+                // ref_scale to apply: the mesh's local bound is its world bound.
+                base_layer: RenderLayer::Architecture,
+                layer_bound_radius: mesh.local_bound_radius,
+                parent: mesh.parent_node.map(|parent_idx| node_entities[parent_idx]),
+                name,
+                speedtree_wind: (is_spt && mesh.billboard_mode.is_some()).then_some((1.0, 0.0)),
+                water: MeshWaterPlacement {
+                    position: translation,
+                    rotation: quat,
+                    scale: mesh.scale,
+                    phantom_bounds,
+                    // A loose NIF's root node entity sits at the root transform
+                    // the phantom bounds already include.
+                    root_transform: (Vec3::ZERO, Quat::IDENTITY, 1.0),
+                },
+            },
         },
     );
-    // #1480 / REN-D22-NEW-01 — resolve the normal-alpha-as-spec roughness
-    // ONCE into the canonical Material now that MaterialTextureHandles is
-    // attached (mirrors the cell-loader spawn
-    // path), instead of recomputing it per draw in the render path.
-    // #2606 — pass the "a real BGSM authored the PBR scalars" signal so
-    // the legacy fallback cannot clobber them.
-    crate::material_translate::resolve_normal_alpha_spec_roughness(
-        world,
-        entity,
-        mesh.material.bgsm_pbr_scalars_authored,
-    );
-    // #2826 (REN-D19-02) — same pattern, for whether the model-space
-    // normal map's blue channel carries authored Z.
-    crate::material_translate::resolve_msn_z_source(world, entity);
-    // #3905 (NIFAL-2026-09-05-D1-01) — same pattern again, for a BGSM
-    // pinned at the near-mirror clamp floor whose authored gloss map did
-    // not resolve. Must run AFTER MaterialTextureHandles is attached:
-    // the whole point is to use the shader's resolved-handle predicate
-    // rather than the merge boundary's authored-path one.
-    // #5230 — exempt the classifier's forced mirror panes: their 0.04 is
-    // deliberate, not a clamp-floor pin.
-    crate::material_translate::resolve_unresolved_gloss_neutral_roughness(
-        world,
-        entity,
-        mesh.material.bgsm_pbr_scalars_authored,
-        translate_provenance.mirror_pane_forced,
-    );
-
-    if let Some(ref name) = mesh.name {
-        let mut pool = world.resource_mut::<StringPool>();
-        let sym = pool.intern(name);
-        drop(pool);
-        world.insert(entity, Name(sym));
-    }
 
     // Skinning binding, if the NIF authored one (#3858).
     let skin_attached = attach_nif_skin_binding(world, entity, mesh, external_skeleton, node_by_name);
@@ -1618,12 +1435,6 @@ fn spawn_nif_mesh(
     // never met on any entity and the whole #3231 feature was inert.
     if skin_attached {
         crate::cell_loader::spawn::mesh_instance::try_spawn_morph_slot(ctx, entity, mesh, mesh_handle);
-    }
-    // Set up parent relationship.
-    if let Some(parent_idx) = mesh.parent_node {
-        let parent_entity = node_entities[parent_idx];
-        world.insert(entity, Parent(parent_entity));
-        add_child(world, parent_entity, entity);
     }
 
     log::info!(
