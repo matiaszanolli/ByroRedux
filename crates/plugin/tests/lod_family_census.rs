@@ -9,19 +9,19 @@
 //! Skips without game data (the strict lane, `BYROREDUX_REQUIRE_GAME_DATA=1`,
 //! turns a missing install or archive into a failure). Opt in with:
 //! ```sh
-//! cargo test -p byroredux-bsa --test lod_family_census -- --ignored --nocapture
+//! cargo test -p byroredux-plugin --test lod_family_census -- --ignored --nocapture
 //! ```
 //! `LOD_CENSUS_PRINT=1` prints the measured tables in the form pinned below.
 
 use byroredux_bsa::lod_family::{classify, LodFamily};
 use byroredux_bsa::{Ba2Archive, BsaArchive};
+use byroredux_plugin::esm::test_paths;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 struct Title {
     name: &'static str,
-    env: &'static str,
-    default: &'static str,
+    data_dir: fn() -> PathBuf,
     /// The base game's archives, by file name.
     base: &'static [&'static str],
     /// The official DLC archives, by file name. Counted apart: the PRD's §3.1 figures are base-game
@@ -32,15 +32,13 @@ struct Title {
 const TITLES: &[Title] = &[
     Title {
         name: "Oblivion",
-        env: "BYROREDUX_OBLIVION_DATA",
-        default: "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data",
+        data_dir: test_paths::oblivion_data_dir,
         base: &["Oblivion - Meshes.bsa", "Oblivion - Misc.bsa", "Oblivion - Textures - Compressed.bsa"],
         dlc: &["DLCShiveringIsles - Meshes.bsa", "DLCShiveringIsles - Textures.bsa"],
     },
     Title {
         name: "Fallout 3",
-        env: "BYROREDUX_FO3_DATA",
-        default: "/mnt/data/SteamLibrary/steamapps/common/Fallout 3 goty/Data",
+        data_dir: test_paths::fo3_data_dir,
         base: &["Fallout - Meshes.bsa", "Fallout - Misc.bsa", "Fallout - Textures.bsa"],
         dlc: &[
             "Anchorage - Main.bsa",
@@ -52,15 +50,13 @@ const TITLES: &[Title] = &[
     },
     Title {
         name: "Fallout New Vegas",
-        env: "BYROREDUX_FNV_DATA",
-        default: "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data",
+        data_dir: test_paths::fnv_data_dir,
         base: &["Fallout - Meshes.bsa", "Fallout - Misc.bsa", "Fallout - Textures.bsa", "Fallout - Textures2.bsa"],
         dlc: &["DeadMoney - Main.bsa", "HonestHearts - Main.bsa", "OldWorldBlues - Main.bsa", "LonesomeRoad - Main.bsa"],
     },
     Title {
         name: "Skyrim SE",
-        env: "BYROREDUX_SKYRIMSE_DATA",
-        default: "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+        data_dir: test_paths::skyrim_se_data_dir,
         base: &[
             "Skyrim - Meshes0.bsa",
             "Skyrim - Meshes1.bsa",
@@ -79,8 +75,7 @@ const TITLES: &[Title] = &[
     },
     Title {
         name: "Fallout 4",
-        env: "BYROREDUX_FO4_DATA",
-        default: "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data",
+        data_dir: test_paths::fo4_data_dir,
         base: &[
             "Fallout4 - Meshes.ba2",
             "Fallout4 - MeshesExtra.ba2",
@@ -98,22 +93,12 @@ const TITLES: &[Title] = &[
     },
 ];
 
-fn strict() -> bool {
-    std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0")
-}
-
 fn data_dir(title: &Title) -> Option<PathBuf> {
-    if let Some(v) = std::env::var(title.env).ok().filter(|s| !s.is_empty()) {
-        let p = PathBuf::from(&v);
-        assert!(p.is_dir(), "{} points to {v:?}, which is not a directory", title.env);
-        return Some(p);
+    let dir = (title.data_dir)();
+    if dir.is_dir() {
+        return Some(dir);
     }
-    let p = PathBuf::from(title.default);
-    if p.is_dir() {
-        return Some(p);
-    }
-    assert!(!strict(), "BYROREDUX_REQUIRE_GAME_DATA is set but {} has no install at {p:?}", title.name);
-    eprintln!("[{}] skipping: no install at {p:?}", title.name);
+    test_paths::require_or_skip(&format!("{} at {dir:?}", title.name));
     None
 }
 
@@ -135,8 +120,7 @@ fn census(title: &Title, dir: &Path, archives: &[&str]) -> Option<Census> {
     for name in archives {
         let path = dir.join(name);
         if !path.is_file() {
-            assert!(!strict(), "BYROREDUX_REQUIRE_GAME_DATA is set but {path:?} is not a file");
-            eprintln!("[{}] skipping: {path:?} not found", title.name);
+            test_paths::require_or_skip(&format!("{} archive {path:?}", title.name));
             return None;
         }
         for file in list_files(&path) {

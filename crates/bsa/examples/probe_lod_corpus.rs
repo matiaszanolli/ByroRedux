@@ -30,7 +30,7 @@
 //! NIFs, and the `lodsettings\*.lod` worldspace descriptors.
 //!
 //! #6636 — the family matching lives in `byroredux_bsa::lod_family` (shared with the
-//! `lod_family_census` test), and now also names the Fallout `.dtl` / `treetypes.lst`
+//! `lod_family_census` test (`crates/plugin/tests/`)), and now also names the Fallout `.dtl` / `treetypes.lst`
 //! distant-tree files and the FO3/FNV `.dlodsettings` descriptors.
 //!
 //! Usage:

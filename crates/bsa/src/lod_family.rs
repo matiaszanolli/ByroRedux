@@ -1,7 +1,7 @@
 //! Distant-LOD file families, recognised by archive path (#6636, DLOD-GATE-007).
 //!
 //! One classifier for the census example (`examples/probe_lod_corpus.rs`) and
-//! the checked-in `lod_family_census` test (`tests/lod_family_census.rs`), so
+//! the checked-in `lod_family_census` test (`crates/plugin/tests/lod_family_census.rs`), so
 //! the two cannot disagree about which file belongs to which family. Names are
 //! the engine's own archive spellings, lowercased and with `/` read as `\`
 //! (BA2 tables use `/`).
