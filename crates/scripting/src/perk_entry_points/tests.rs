@@ -366,3 +366,208 @@ fn unsupported_games_and_non_numeric_functions_are_not_tabulated() {
     );
     assert!(PerkEntryTable::from_index(&idx).is_empty());
 }
+
+// ── PERK-SUB-002 / -003: the weapon and Damage Threshold target subjects ─────
+
+const MELEE_WEAPONS: u32 = 38;
+const EXPLOSIVES: u32 = 35;
+const GUNS: u32 = 41;
+const UNARMED: u32 = 45;
+const IS_WEAPON_SKILL_TYPE: u32 = 109;
+const IS_IN_LIST: u32 = 372;
+const GET_IS_ID: u32 = 72;
+const KNIFE: u32 = 0x4000;
+const PISTOL: u32 = 0x4001;
+const GRENADE: u32 = 0x4002;
+const FISTS: u32 = 0x1F4;
+const SHOTGUN_LIST: u32 = 0x4100;
+const DEFENDER_HOOK: u8 = fnv::MODIFY_DAMAGE_THRESHOLD_DEFENDER;
+const ATTACKER_HOOK: u8 = fnv::MODIFY_DAMAGE_THRESHOLD_ATTACKER;
+
+fn is_skill(skill: u32) -> Condition {
+    Condition { param_1: skill, ..condition(IS_WEAPON_SKILL_TYPE, 1.0) }
+}
+
+/// An FNV load order with the three test weapons, plus `Fists` at its real FormID.
+fn fnv_arsenal(perks: Vec<PerkRecord>) -> EsmIndex {
+    use byroredux_plugin::esm::records::{FlstRecord, ItemKind, ItemRecord};
+    let mut idx = index(GameKind::Fallout3NV, perks);
+    for (form_id, skill) in [(KNIFE, MELEE_WEAPONS), (PISTOL, GUNS), (GRENADE, EXPLOSIVES), (FISTS, UNARMED)] {
+        idx.items.insert(
+            form_id,
+            ItemRecord {
+                form_id,
+                common: Default::default(),
+                kind: ItemKind::weapon_stub(10, 1).with_weapon_skill(skill),
+            },
+        );
+    }
+    idx.form_lists.insert(
+        SHOTGUN_LIST,
+        FlstRecord { form_id: SHOTGUN_LIST, entries: vec![PISTOL], ..Default::default() },
+    );
+    idx
+}
+
+fn equip(world: &mut World, actor: EntityId, base_form_id: u32) {
+    use byroredux_core::ecs::components::{EquippedWeapon, InventoryIndex};
+    world.register::<EquippedWeapon>();
+    world.insert(actor, EquippedWeapon { inventory_index: InventoryIndex(0), base_form_id, damage: 1.0, reach: 0.0, speed: 0.0 });
+}
+
+/// `world_with`, plus the game and the form lists a real load order installs. The owner is an actor;
+/// the second entity is a second actor with no perks.
+fn fnv_world(idx: &EsmIndex, owned: &[(u32, u8)]) -> (World, EntityId, EntityId) {
+    let (mut world, owner) = world_with(idx, owned);
+    world.insert_resource(crate::ScriptGame(GameKind::Fallout3NV));
+    crate::form_lists::install_form_lists(&mut world, idx);
+    world.insert(owner, ActorValues::default());
+    let other = world.spawn();
+    world.insert(other, ActorValues::default());
+    (world, owner, other)
+}
+
+/// PERK-SUB-002 / §7.2 A2 — Piercing Strike's shape: hook 58, `Subtract`, a weapon tab that only the
+/// attacker's melee or unarmed weapons pass.
+#[test]
+fn weapon_tab_subject_answers_weapon_form() {
+    let idx = fnv_arsenal(vec![perk(
+        1,
+        vec![entry_point(0, 0, ATTACKER_HOOK, 1, float(15.0), vec![tab(1, vec![is_skill(MELEE_WEAPONS)])])],
+    )]);
+    let (mut world, attacker, target) = fnv_world(&idx, &[(1, 1)]);
+    equip(&mut world, attacker, KNIFE);
+    assert_eq!(compose_damage_threshold(&world, attacker, target, 20.0), 5.0, "a melee weapon passes");
+    equip(&mut world, attacker, PISTOL);
+    assert_eq!(compose_damage_threshold(&world, attacker, target, 20.0), 20.0, "a gun does not");
+}
+
+/// Shotgun Surgeon's shape: `IsInList` on the weapon tab reads the lent base form, which has no
+/// FormID of its own for the ObScript getter to call on.
+#[test]
+fn weapon_tab_answers_form_list_membership() {
+    let in_list = Condition { param_1: SHOTGUN_LIST, ..condition(IS_IN_LIST, 1.0) };
+    let idx = fnv_arsenal(vec![perk(
+        1,
+        vec![entry_point(0, 0, ATTACKER_HOOK, 1, float(10.0), vec![tab(1, vec![in_list])])],
+    )]);
+    let (mut world, attacker, target) = fnv_world(&idx, &[(1, 1)]);
+    equip(&mut world, attacker, PISTOL);
+    assert_eq!(compose_damage_threshold(&world, attacker, target, 20.0), 10.0, "in the list");
+    equip(&mut world, attacker, KNIFE);
+    assert_eq!(compose_damage_threshold(&world, attacker, target, 20.0), 20.0, "not in the list");
+}
+
+/// PERK-SUB-002's verify item — Stonewall's shape: hook 56's owner is the actor hit, and its Target tab
+/// tests the attack, so it names the attacker. The defender's own weapon must not answer.
+#[test]
+fn hook_56_target_tab_names_the_attacker() {
+    let idx = fnv_arsenal(vec![perk(
+        1,
+        vec![entry_point(0, 0, DEFENDER_HOOK, 2, float(5.0), vec![tab(2, vec![is_skill(MELEE_WEAPONS)])])],
+    )]);
+    let (mut world, defender, attacker) = fnv_world(&idx, &[(1, 1)]);
+    equip(&mut world, attacker, KNIFE);
+    equip(&mut world, defender, PISTOL);
+    assert_eq!(compose_damage_threshold(&world, attacker, defender, 10.0), 15.0, "hit by a knife");
+    equip(&mut world, attacker, PISTOL);
+    equip(&mut world, defender, KNIFE);
+    assert_eq!(compose_damage_threshold(&world, attacker, defender, 10.0), 10.0, "shot, holding a knife");
+}
+
+/// A bare-handed actor attacks with `Fists` (Unarmed, on the weapon tab and when asked as an actor). A
+/// creature's natural attack and a non-actor have no weapon form, so they answer nothing.
+#[test]
+fn bare_hands_answer_as_fists_and_creatures_answer_nothing() {
+    use byroredux_core::ecs::components::CreatureActor;
+    let idx = fnv_arsenal(vec![
+        perk(1, vec![entry_point(0, 0, ATTACKER_HOOK, 1, float(15.0), vec![tab(1, vec![is_skill(UNARMED)])])]),
+        perk(2, vec![entry_point(0, 0, DEFENDER_HOOK, 2, float(5.0), vec![tab(2, vec![is_skill(UNARMED)])])]),
+    ]);
+    let (mut world, puncher, defender) = fnv_world(&idx, &[(1, 1)]);
+    assert_eq!(compose_damage_threshold(&world, puncher, defender, 20.0), 5.0, "weapon tab");
+    let mut perks = Perks::default();
+    perks.set_rank(2, 1);
+    world.insert(defender, perks);
+    assert_eq!(compose_damage_threshold(&world, puncher, defender, 20.0), 10.0, "target tab too");
+
+    let creature = world.spawn();
+    world.insert(creature, ActorValues::default());
+    world.register::<CreatureActor>();
+    world.insert(creature, CreatureActor);
+    assert_eq!(compose_damage_threshold(&world, creature, defender, 20.0), 20.0, "a creature");
+    let trap = world.spawn();
+    assert_eq!(compose_damage_threshold(&world, trap, defender, 20.0), 20.0, "a trap");
+}
+
+/// The loan ends with the composition: a candidate left on the scratch entity would be a placeless
+/// alias candidate (#6571).
+#[test]
+fn the_weapon_loan_is_taken_back() {
+    let idx = fnv_arsenal(vec![perk(
+        1,
+        vec![entry_point(0, 0, ATTACKER_HOOK, 1, float(15.0), vec![tab(1, vec![is_skill(MELEE_WEAPONS)])])],
+    )]);
+    let (mut world, attacker, target) = fnv_world(&idx, &[(1, 1)]);
+    equip(&mut world, attacker, KNIFE);
+    compose_damage_threshold(&world, attacker, target, 20.0);
+    compose_outgoing_damage(&world, attacker, target, 20.0);
+    let subject = world.resource::<WeaponSubject>().0;
+    assert!(!world.has::<crate::scene::SceneAliasCandidate>(subject));
+}
+
+/// Demolition Expert's shape on the weapon-damage hook, which supplies the target tab as well.
+#[test]
+fn outgoing_damage_reads_the_weapon_tab() {
+    let idx = fnv_arsenal(vec![perk(
+        1,
+        vec![entry_point(0, 0, DAMAGE, 3, float(2.0), vec![tab(1, vec![is_skill(EXPLOSIVES)])])],
+    )]);
+    let (mut world, attacker, target) = fnv_world(&idx, &[(1, 1)]);
+    equip(&mut world, attacker, GRENADE);
+    assert_eq!(compose_outgoing_damage(&world, attacker, target, 10.0), 20.0, "an explosive");
+    equip(&mut world, attacker, PISTOL);
+    assert_eq!(compose_outgoing_damage(&world, attacker, target, 10.0), 10.0, "a gun");
+}
+
+/// Skyrim authors its weapon tabs on the base form too (the Ebony Blade's `GetIsID`). The same subject
+/// answers there, on both of its damage hooks.
+#[test]
+fn skyrim_weapon_tab_reads_the_lent_base_form() {
+    let is_blade = Condition { param_1: KNIFE, ..condition(GET_IS_ID, 1.0) };
+    let idx = index(
+        GameKind::Skyrim,
+        vec![perk(
+            1,
+            vec![entry_point(0, 0, skyrim::MOD_ATTACK_DAMAGE, 3, float(2.0), vec![tab(1, vec![is_blade])])],
+        )],
+    );
+    let (mut world, attacker) = world_with(&idx, &[(1, 1)]);
+    world.insert_resource(crate::ScriptGame(GameKind::Skyrim));
+    world.insert(attacker, ActorValues::default());
+    let target = world.spawn();
+    equip(&mut world, attacker, KNIFE);
+    assert_eq!(compose_outgoing_damage(&world, attacker, target, 10.0), 20.0);
+    equip(&mut world, attacker, PISTOL);
+    assert_eq!(compose_outgoing_damage(&world, attacker, target, 10.0), 10.0);
+}
+
+/// `IsWeaponSkillType` is modeled only where a weapon decode names the skill. Elsewhere it stays out of
+/// the fail-closed gates rather than reading "no skill" from an empty table, and Oblivion's 109 is
+/// another function altogether.
+#[test]
+fn is_weapon_skill_type_is_modeled_on_fallout_alone() {
+    let weapon_cond = is_skill(MELEE_WEAPONS);
+    for (game, modeled) in [
+        (GameKind::Fallout3NV, true),
+        (GameKind::Oblivion, false),
+        (GameKind::Skyrim, false),
+        (GameKind::Fallout4, false),
+        (GameKind::Fallout76, false),
+        (GameKind::Starfield, false),
+    ] {
+        let mut world = World::new();
+        world.insert_resource(crate::ScriptGame(game));
+        assert_eq!(crate::condition::is_modeled(&world, &weapon_cond), modeled, "{game:?}");
+    }
+}

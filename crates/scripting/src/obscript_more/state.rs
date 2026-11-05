@@ -473,13 +473,10 @@ fn cmd_1116(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ct
 // GECK *IsInList <form list>*: 1 when the reference's base object is in the list.
 fn cmd_1174(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
     match (caller(world, ctx), form_arg(args, 0)) {
-        (Some((_, entity)), Some(list)) => {
-            let base = world.get::<crate::scene::SceneAliasCandidate>(entity).map(|c| c.base_form_id).unwrap_or(0);
-            match crate::form_lists::forms_of(world, list, &[]) {
-                Some(forms) => flag(base != 0 && forms.contains(&base)),
-                None => Action::Declined,
-            }
-        }
+        (Some((_, entity)), Some(list)) => match crate::form_lists::base_is_in_list(world, entity, list) {
+            Some(in_list) => flag(in_list),
+            None => Action::Declined,
+        },
         _ => Action::Declined,
     }
 }

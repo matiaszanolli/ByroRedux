@@ -41,8 +41,10 @@
 //!   is the perk owner; the other tabs are subjects the *calculation* supplies
 //!   (the weapon, the target, the attacker, …). A tab whose subject the caller
 //!   did not supply and that carries conditions makes the entry inapplicable —
-//!   the engine cannot tell whether the weapon is a one-hander, and guessing
-//!   "yes" would hand every perk bonus to every weapon.
+//!   guessing "yes" would hand every perk bonus to every weapon. A weapon is not
+//!   an entity, so the weapon tab's subject is [`WeaponSubject`], a scratch entity
+//!   lent the attacker's weapon base form for one composition
+//!   (`docs/prd/perk-entry-points.md`, PERK-SUB-002, §10 Q4).
 //! * **Priority.** Entries compose in ascending priority, ties in the order the
 //!   actor's perks and the record's entries were authored. The Skyrim CK says a
 //!   higher number "takes precedence" while the Fallout 4 CK says the lower
@@ -68,7 +70,7 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
 use byroredux_core::character::PerkEntryPointDialect;
 use byroredux_plugin::esm::records::{
-    ActorValueRef, EsmIndex, PerkConditionTab, PerkEntryBody, PerkFunctionData,
+    ActorValueRef, EsmIndex, ItemKind, PerkConditionTab, PerkEntryBody, PerkFunctionData,
 };
 
 use crate::condition::{evaluate, ConditionContext};
@@ -246,6 +248,76 @@ impl PerkEntryTable {
     }
 }
 
+/// The scratch entity an attacker's weapon base form is lent to, so weapon-tab conditions have a
+/// subject. Created once at boot by [`install_weapon_subject`]. `NOT_SAVED_BY_DESIGN`.
+#[derive(Debug, Clone, Copy)]
+pub struct WeaponSubject(pub EntityId);
+
+impl Resource for WeaponSubject {}
+
+/// Create the scratch [`WeaponSubject`].
+pub fn install_weapon_subject(world: &mut World) {
+    world.register::<crate::scene::SceneAliasCandidate>();
+    let subject = world.spawn();
+    world.insert_resource(WeaponSubject(subject));
+}
+
+/// Run `f` with `subject` standing for `base_form` in conditions, then take the loan back: a
+/// `SceneAliasCandidate` left on a scratch entity would be a standing, placeless alias candidate for
+/// `refresh_scene_actor_bindings`, which checks no liveness or position (#6571). No two compositions
+/// may lend one subject at once: every lender today runs in an exclusive system or a console command,
+/// so none overlaps another. The caller must hold no storage guard.
+pub(crate) fn lend_base_form<R>(world: &World, subject: EntityId, base_form: u32, f: impl FnOnce() -> R) -> R {
+    if let Some(mut candidates) = world.query_mut::<crate::scene::SceneAliasCandidate>() {
+        candidates.insert(
+            subject,
+            crate::scene::SceneAliasCandidate { base_form_id: base_form, ..Default::default() },
+        );
+    }
+    let result = f();
+    if let Some(mut candidates) = world.query_mut::<crate::scene::SceneAliasCandidate>() {
+        candidates.remove(subject);
+    }
+    result
+}
+
+/// Each weapon base's skill, an actor-value code (`ItemKind::Weapon`'s `skill_actor_value`). Empty on
+/// games whose weapon decode has no skill. `NOT_SAVED_BY_DESIGN`: re-derived from the load order every
+/// boot.
+#[derive(Debug, Default, Clone)]
+pub struct WeaponSkillTable(HashMap<u32, u32>);
+
+impl Resource for WeaponSkillTable {}
+
+impl WeaponSkillTable {
+    /// The skill of the weapon base `form_id`, if the table knows it.
+    pub fn skill(&self, form_id: u32) -> Option<u32> {
+        self.0.get(&form_id).copied()
+    }
+
+    fn from_index(index: &EsmIndex) -> Self {
+        Self(
+            index
+                .items
+                .iter()
+                .filter_map(|(&form_id, item)| match item.kind {
+                    ItemKind::Weapon { skill_actor_value: Some(skill), .. } => Some((form_id, skill)),
+                    _ => None,
+                })
+                .collect(),
+        )
+    }
+}
+
+/// Run `f` with `attacker`'s weapon as a condition subject; `None` when it has no weapon form.
+fn with_attacker_weapon<R>(world: &World, attacker: EntityId, f: impl FnOnce(Option<EntityId>) -> R) -> R {
+    let subject = world.try_resource::<WeaponSubject>().map(|subject| subject.0);
+    match (subject, crate::condition::attacking_weapon(world, attacker)) {
+        (Some(subject), Some(weapon)) => lend_base_form(world, subject, weapon, || f(Some(subject))),
+        _ => f(None),
+    }
+}
+
 /// FNV hooks whose function 1 subtracts (`epftSubtract` in xEdit).
 fn is_subtract_hook(dialect: PerkEntryPointDialect, entry_point: u8) -> bool {
     dialect == PerkEntryPointDialect::Fallout3NV && matches!(entry_point, 53 | 56 | 58)
@@ -320,18 +392,19 @@ pub fn compose_outgoing_damage(
     let dialect = world
         .try_resource::<PerkEntryTable>()
         .map_or(PerkEntryPointDialect::None, |table| table.dialect());
-    let subjects = [None, Some(target)];
-    match dialect {
-        PerkEntryPointDialect::Fallout3NV => {
+    if dialect == PerkEntryPointDialect::None {
+        return base;
+    }
+    with_attacker_weapon(world, attacker, |weapon| {
+        let subjects = [weapon, Some(target)];
+        if dialect == PerkEntryPointDialect::Fallout3NV {
             compose_entry_point(world, attacker, fnv::CALCULATE_WEAPON_DAMAGE, base, &subjects)
-        }
-        PerkEntryPointDialect::Skyrim => {
+        } else {
             let modded =
                 compose_entry_point(world, attacker, skyrim::MOD_ATTACK_DAMAGE, base, &subjects);
             compose_entry_point(world, attacker, skyrim::CALCULATE_WEAPON_DAMAGE, modded, &subjects)
         }
-        PerkEntryPointDialect::None => base,
-    }
+    })
 }
 
 /// The Damage Threshold `target` holds against `attacker`'s strike once both
@@ -340,11 +413,13 @@ pub fn compose_outgoing_damage(
 /// hit; modifies the DT of the player" — then `(attacker)` (58) on the
 /// attacker's, "run when an enemy is hit; modifies the DT of the enemy". Both
 /// hooks carry three tabs: the perk owner, then xEdit FNV's `epcWeaponTarget`,
-/// 1 the weapon and 2 the target. Vanilla conditions there are weapon-skill and
-/// weapon-list tests (tab 1: Piercing Strike, Shotgun Surgeon, Companion Suite;
-/// tab 2: Stonewall, Hit the Deck). Weapons are not entities and this call
-/// supplies neither subject, so an entry with conditions on either tab does not
-/// apply. Games without a table return `base`.
+/// 1 the weapon and 2 the target. The weapon on both is the attacker's
+/// (PERK-SUB-002). Hook 58's target is the actor hit. Hook 56's owner is the actor
+/// hit, so its target is the attacker: its only authored tab-2 conditions are
+/// Stonewall's and Hit the Deck's `IsWeaponSkillType`, and their descriptions say
+/// "against all Melee Weapons and Unarmed attacks" and "against any and all
+/// Explosives", the attack and not the defender's own weapon.
+/// Games without a table return `base`.
 pub fn compose_damage_threshold(
     world: &World,
     attacker: EntityId,
@@ -357,21 +432,22 @@ pub fn compose_damage_threshold(
     if dialect != PerkEntryPointDialect::Fallout3NV {
         return base;
     }
-    let subjects = [None, None];
-    let defended = compose_entry_point(
-        world,
-        target,
-        fnv::MODIFY_DAMAGE_THRESHOLD_DEFENDER,
-        base,
-        &subjects,
-    );
-    compose_entry_point(
-        world,
-        attacker,
-        fnv::MODIFY_DAMAGE_THRESHOLD_ATTACKER,
-        defended,
-        &subjects,
-    )
+    with_attacker_weapon(world, attacker, |weapon| {
+        let defended = compose_entry_point(
+            world,
+            target,
+            fnv::MODIFY_DAMAGE_THRESHOLD_DEFENDER,
+            base,
+            &[weapon, Some(attacker)],
+        );
+        compose_entry_point(
+            world,
+            attacker,
+            fnv::MODIFY_DAMAGE_THRESHOLD_ATTACKER,
+            defended,
+            &[weapon, Some(target)],
+        )
+    })
 }
 
 /// `actor`'s carry capacity (M47.2 encumbrance): its CarryWeight `base`
@@ -394,6 +470,7 @@ pub fn install_perk_entry_points(world: &mut World, index: &EsmIndex) -> usize {
     let table = PerkEntryTable::from_index(index);
     let count = table.len();
     world.insert_resource(table);
+    world.insert_resource(WeaponSkillTable::from_index(index));
     count
 }
 

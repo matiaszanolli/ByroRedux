@@ -14,6 +14,13 @@ pub(super) fn register_combat(scheduler: &mut Scheduler) {
         Stage::Update,
         crate::combat::combat_input_system,
         Access::new()
+            // PERK-SUB-002 — the outgoing-damage composition: its table, the owner's perks, the
+            // `Add Range` draw, and the scratch weapon subject it lends a base form to.
+            .reads_resource::<byroredux_scripting::perk_entry_points::PerkEntryTable>()
+            .reads::<byroredux_core::character::Perks>()
+            .writes_resource::<byroredux_scripting::story_manager::StoryManagerRng>()
+            .reads_resource::<byroredux_scripting::perk_entry_points::WeaponSubject>()
+            .writes::<byroredux_scripting::SceneAliasCandidate>()
             .reads_resource::<ActionState>()
             .reads_resource::<crate::systems::PlayerEntity>()
             .reads_resource::<crate::systems::PlayerMode>()
@@ -96,10 +103,23 @@ pub(super) fn register_combat(scheduler: &mut Scheduler) {
     // producer-before-consumer HitEvent contract — scheduled after the
     // player's own attack input and before `combat_damage_system` resolves
     // the frame's HitEvents.
+    register_npc_combat_ai(scheduler);
+}
+
+/// The NPC combat AI row and its declared access. A helper of its own so `register_combat` stays
+/// within its size pin; it is called at the exact point in the registration order the system needs.
+fn register_npc_combat_ai(scheduler: &mut Scheduler) {
     scheduler.add_exclusive_with_access(
         Stage::Update,
         crate::systems::make_npc_combat_ai_system(),
         Access::new()
+            // PERK-SUB-002 — the outgoing-damage composition: its table, the owner's perks, the
+            // `Add Range` draw, and the scratch weapon subject it lends a base form to.
+            .reads_resource::<byroredux_scripting::perk_entry_points::PerkEntryTable>()
+            .reads::<byroredux_core::character::Perks>()
+            .writes_resource::<byroredux_scripting::story_manager::StoryManagerRng>()
+            .reads_resource::<byroredux_scripting::perk_entry_points::WeaponSubject>()
+            .writes::<byroredux_scripting::SceneAliasCandidate>()
             .reads_resource::<byroredux_physics::PhysicsWorld>()
             .reads_resource::<byroredux_core::character::MeleeDamageConfig>()
             .reads_resource::<byroredux_core::character::CharacterRuleset>()

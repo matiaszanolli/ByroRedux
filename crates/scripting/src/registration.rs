@@ -80,6 +80,7 @@ pub fn register(world: &mut World) {
     skills::install(world);
     words_of_power::install(world);
     tempering::install(world);
+    perk_entry_points::install_weapon_subject(world);
     // M47.2 — Papyrus animation event registrations (saved).
     world.init_resource::<AnimationEventRegistrations>();
     // M47.2 — Papyrus hit event registrations (saved).

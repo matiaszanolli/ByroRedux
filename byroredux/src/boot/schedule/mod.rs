@@ -705,6 +705,9 @@ mod system_access_declaration_tests {
     // silently narrow the scan to whichever fragment landed there. catalog.rs
     // goes LAST because its trailing `#[cfg(test)]` rows-walk module is where
     // `production()` splits the text — everything the walk needs precedes it.
+    /// The perk compositions combat calls, which lend the weapon subject (PERK-SUB-002).
+    const PERK_ENTRY_POINTS_SRC: &str =
+        include_str!("../../../../crates/scripting/src/perk_entry_points.rs");
     const CONDITION_SRC: &str = concat!(
         include_str!("../../../../crates/scripting/src/condition/eval.rs"),
         include_str!("../../../../crates/scripting/src/condition/eval/actor.rs"),
@@ -1207,6 +1210,7 @@ mod system_access_declaration_tests {
         assert_declares_everything_it_acquires(
             &[
                 (COMBAT_AI_SRC, "npc_combat_ai_system_inner"),
+                (PERK_ENTRY_POINTS_SRC, "compose_outgoing_damage"),
                 (AI_PACKAGE_SRC, "suspend_ambient_behavior_for_combat"),
             ],
             "make_npc_combat_ai_system",
@@ -1253,6 +1257,7 @@ mod system_access_declaration_tests {
         assert_declares_everything_it_acquires(
             &[
                 (COMBAT_SRC, "combat_damage_system"),
+                (PERK_ENTRY_POINTS_SRC, "compose_damage_threshold"),
                 // `armor::mitigate` -> `totals` -> the smithing quality of each worn piece.
                 (ARMOR_SRC, "mitigate"),
                 (SMITHING_SRC, "stack_quality"),

@@ -346,6 +346,12 @@ pub enum ConditionFunction {
     /// `GetHasNote(note) → f32` (#6460): 1.0 when the player has the Pip-Boy note `param_1`. FO3 /
     /// FNV index **382**; the ObScript getter's body. Reads no Run-On.
     GetHasNote,
+    /// `IsWeaponSkillType(actor value) → f32`: 1.0 when the Run-On's weapon uses the skill
+    /// `param_1` names, an actor-value code. The Run-On is a weapon (GECK *IsWeaponSkillType*), or
+    /// an actor, which answers for the weapon it attacks with: FNV hook 56 authors it on its Target
+    /// tab, the attacker (Stonewall, Hit the Deck). FO3 / FNV only: only their weapon decode names
+    /// the skill, see [`FOREIGN_INDICES`], and Oblivion's 109 takes no argument.
+    IsWeaponSkillType,
     /// `IsInList(form_list) → f32` (#6460): 1.0 when the Run-On actor's base is in `param_1`. FO3 /
     /// FNV index **372**; the ObScript getter's body.
     IsInList,
@@ -588,6 +594,7 @@ const ROWS: &[Row] = &[
     Row { func: ConditionFunction::IsChild, indices: &[365], name: "IsChild", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetTalkedToPC, indices: &[50], name: "GetTalkedToPC", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetHasNote, indices: &[382], name: "GetHasNote", first_param_form_id: true, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::IsWeaponSkillType, indices: &[109], name: "IsWeaponSkillType", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::IsInList, indices: &[372], name: "IsInList", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetLocked, indices: &[5], name: "GetLocked", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetCurrentTime, indices: &[18], name: "GetCurrentTime", first_param_form_id: false, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
@@ -677,6 +684,9 @@ const OBLIVION_DIALECT: &[(u32, ConditionFunction)] = &[
 /// FO76 or Starfield definition has been read, so nothing claims the index is
 /// foreign there.
 const FOREIGN_INDICES: &[(u32, &[GameKind])] = &[
+    // `IsWeaponSkillType` reads the skill only the FO3 / FNV weapon decode carries. On Oblivion 109 is
+    // `GetWeaponSkillType`, a different function with no argument.
+    (109, &[GameKind::Oblivion, GameKind::Skyrim, GameKind::Fallout4, GameKind::Fallout76, GameKind::Starfield]),
     // `GetCrimeGold(faction)` is 459 on Skyrim and later; FO3 / FNV author it as `GetActorCrimePlayerEnemy`.
     (459, &[GameKind::Fallout3NV]),
     // `IsGuard` is the same function in every game, but only Oblivion, FO3 and FNV
@@ -755,7 +765,7 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 101] = [
+    pub const CATALOG: [ConditionFunction; 102] = [
         Self::GetDistance,
         Self::GetQuestVariable,
         Self::GetActorValue,
@@ -824,6 +834,7 @@ impl ConditionFunction {
         Self::IsChild,
         Self::GetTalkedToPC,
         Self::GetHasNote,
+        Self::IsWeaponSkillType,
         Self::IsInList,
         Self::GetLocked,
         Self::GetCurrentTime,
@@ -1103,6 +1114,7 @@ mod tests {
                 ConditionFunction::IsChild |
                 ConditionFunction::GetTalkedToPC |
                 ConditionFunction::GetHasNote |
+                ConditionFunction::IsWeaponSkillType |
                 ConditionFunction::IsInList |
                 ConditionFunction::GetLocked |
                 ConditionFunction::GetCurrentTime |

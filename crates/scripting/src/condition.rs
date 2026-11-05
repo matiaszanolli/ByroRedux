@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **101 functions** at their canonical CTDA
+//! lineage. This catalog ships **102 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -97,7 +97,8 @@
 //! | 365   | IsChild                | the ObScript getter (FO3/FNV; Oblivion's 365 is below) |
 //! | 50    | GetTalkedToPC          | the ObScript getter (Oblivion, FO3/FNV) |
 //! | 382   | GetHasNote             | the ObScript getter (FO3/FNV) |
-//! | 372   | IsInList               | the ObScript getter (FO3/FNV) |
+//! | 109   | IsWeaponSkillType      | `WeaponSkillTable`, the weapon or the actor's weapon (FO3/FNV) |
+//! | 372   | IsInList               | the Run-On's base against `FormLists` (FO3/FNV) |
 //! | 5     | GetLocked              | the ObScript getter (Oblivion, FO3/FNV) |
 //! | 18    | GetCurrentTime         | the ObScript getter (Oblivion, FO3/FNV) |
 //! | 32    | GetInSameCell          | the ObScript getter (Oblivion, FO3/FNV) |
@@ -161,7 +162,7 @@ pub use eval::{
     evaluate_script_getter, is_modeled, resolve_entity_by_global_form_id,
     uses_obscript_quest_variables, ActorValueView,
 };
-pub(crate) use eval::{function_of, health_percentage, item_count};
+pub(crate) use eval::{attacking_weapon, function_of, health_percentage, item_count};
 pub use requirement::{subject_requirement, IdentityTest, SubjectRequirement};
 
 #[cfg(test)]

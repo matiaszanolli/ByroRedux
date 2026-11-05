@@ -64,28 +64,17 @@ pub fn tempering_multiplier(world: &World, owner: EntityId, item_base: u32, ench
         return 1.0;
     };
     // Lend the item's base form to the scratch subject and its enchantment to the context.
-    if let Some(mut candidates) = world.query_mut::<crate::scene::SceneAliasCandidate>() {
-        candidates.insert(subject, crate::scene::SceneAliasCandidate { base_form_id: item_base, ..Default::default() });
-    }
-    if let Some(mut item) = world.try_resource_mut::<TemperingItem>() {
-        item.enchanted = enchanted;
-    }
-    let value = crate::perk_entry_points::compose_entry_point(
-        world,
-        owner,
-        crate::perk_entry_points::skyrim::MOD_TEMPERING_HEALTH,
-        1.0,
-        &[Some(subject)],
-    );
-    if let Some(mut item) = world.try_resource_mut::<TemperingItem>() {
-        item.enchanted = false;
-    }
-    // Take the loan back: a `SceneAliasCandidate` left on the scratch entity would be a standing, placeless
-    // alias candidate for `refresh_scene_actor_bindings`, which checks no liveness or position (#6571).
-    if let Some(mut candidates) = world.query_mut::<crate::scene::SceneAliasCandidate>() {
-        candidates.remove(subject);
-    }
-    value
+    crate::perk_entry_points::lend_base_form(world, subject, item_base, || {
+        with_item_enchanted(world, enchanted, || {
+            crate::perk_entry_points::compose_entry_point(
+                world,
+                owner,
+                crate::perk_entry_points::skyrim::MOD_TEMPERING_HEALTH,
+                1.0,
+                &[Some(subject)],
+            )
+        })
+    })
 }
 
 #[cfg(test)]

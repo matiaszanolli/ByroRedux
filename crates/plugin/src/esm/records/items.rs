@@ -235,6 +235,12 @@ pub enum ItemKind {
         vats_base_to_hit: f32,
         /// Skill required form (AVIF).
         skill_form: u32,
+        /// The actor-value code of the skill the weapon uses: FO3/FNV `DNAM`
+        /// offset 104, an `i32` (xEdit `Skill`, `wbActorValueEnum`). FalloutNV.esm
+        /// holds 34 Energy Weapons, 35 Explosives, 38 Melee Weapons, 41 Guns and
+        /// 45 Unarmed among others. `None` on games whose layout is not decoded,
+        /// and on a record too short to carry it.
+        skill_actor_value: Option<u32>,
         /// Min spread (radians).
         min_spread: f32,
         /// Spread (radians).
@@ -280,6 +286,7 @@ impl ItemKind {
             ap_cost: 0.0,
             vats_base_to_hit: 0.0,
             skill_form: 0,
+            skill_actor_value: None,
             min_spread: 0.0,
             spread: 0.0,
             crit_mult: 1.0,
@@ -296,6 +303,14 @@ impl ItemKind {
     pub fn with_weapon_speed(mut self, new_speed: f32) -> Self {
         if let ItemKind::Weapon { speed, .. } = &mut self {
             *speed = new_speed;
+        }
+        self
+    }
+
+    /// Set a [`Self::weapon_stub`]'s skill actor-value code. No-op on any other kind.
+    pub fn with_weapon_skill(mut self, skill: u32) -> Self {
+        if let ItemKind::Weapon { skill_actor_value, .. } = &mut self {
+            *skill_actor_value = Some(skill);
         }
         self
     }
@@ -359,6 +374,7 @@ pub fn parse_weap(
     let mut ap_cost = 0.0f32;
     let mut vats_base_to_hit = 0.0f32;
     let mut skill_form = 0u32;
+    let mut skill_actor_value = None;
     let mut min_spread = 0.0f32;
     let mut spread = 0.0f32;
     let mut crit_mult = 1.0f32;
@@ -464,6 +480,14 @@ pub fn parse_weap(
                 // payload by index so a short record leaves the 0.0 default (modded
                 // records must parse, never fail).
                 vats_base_to_hit = sub.data.get(40).map_or(0.0, |&chance| f32::from(chance));
+                // Offset 104 — Skill (i32, xEdit `wbActorValueEnum`). Every vanilla
+                // record is long enough (FNV 136-204 bytes, FO3 120-136). By index
+                // for the same reason as above.
+                skill_actor_value = sub
+                    .data
+                    .get(104..108)
+                    .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                    .and_then(|skill| u32::try_from(skill).ok());
                 // Offset 68 — Action Points (f32), the regular VATS cost: xEdit's
                 // "Override - Action Points", authored on exactly the records with
                 // Flags 2 `0x8` set and 0 (the engine default) on the rest (FNV 203
@@ -600,6 +624,7 @@ pub fn parse_weap(
             ap_cost,
             vats_base_to_hit,
             skill_form,
+            skill_actor_value,
             min_spread,
             spread,
             crit_mult,
@@ -1482,7 +1507,7 @@ mod tests {
         let stub = ItemKind::weapon_stub(22, 12);
         let ItemKind::Weapon {
             ammo_form, damage, clip_size, anim_type, ap_cost, vats_base_to_hit, skill_form,
-            min_spread, spread, crit_mult, reach, speed, oblivion_type, reload_anim, vats,
+            skill_actor_value, min_spread, spread, crit_mult, reach, speed, oblivion_type, reload_anim, vats,
         } = stub.clone()
         else {
             panic!("weapon_stub builds a Weapon");
@@ -1492,6 +1517,12 @@ mod tests {
         assert_eq!((ap_cost, vats_base_to_hit, min_spread, spread, reach, speed), (0.0, 0.0, 0.0, 0.0, 0.0, 0.0));
         assert_eq!(crit_mult, 1.0);
         assert!(vats.is_none());
+        assert_eq!(skill_actor_value, None);
+
+        let ItemKind::Weapon { skill_actor_value, .. } = stub.clone().with_weapon_skill(38) else {
+            panic!("setters keep the variant");
+        };
+        assert_eq!(skill_actor_value, Some(38));
 
         let ItemKind::Weapon { speed, ap_cost, vats_base_to_hit, skill_form, damage, .. } =
             stub.clone().with_weapon_speed(1.5).with_weapon_vats_stats(17.0, 65.0, 0x40BB)
@@ -1791,6 +1822,26 @@ mod tests {
             }
             _ => panic!("expected Weapon kind"),
         }
+    }
+
+    /// FO3/FNV DNAM offset 104 is the weapon's skill (xEdit `Skill`, an actor-value `i32`): 38 on a
+    /// melee weapon, and no skill at all on a record too short to carry it or a negative value.
+    #[test]
+    fn fallout_dnam_decodes_the_weapon_skill() {
+        let parse = |dnam: &[u8]| match parse_weap(0x100, &[sub(b"DNAM", dnam)], GameKind::Fallout3NV, &None).kind {
+            ItemKind::Weapon { skill_actor_value, .. } => skill_actor_value,
+            _ => panic!("expected Weapon kind"),
+        };
+        let mut dnam = vec![0u8; 136];
+        dnam[104..108].copy_from_slice(&38i32.to_le_bytes());
+        assert_eq!(parse(&dnam), Some(38));
+        assert_eq!(parse(&dnam[..107]), None, "too short");
+        dnam[104..108].copy_from_slice(&(-1i32).to_le_bytes());
+        assert_eq!(parse(&dnam), None, "no skill");
+        // Another game's DNAM has another layout: the same bytes mean nothing there.
+        dnam[104..108].copy_from_slice(&38i32.to_le_bytes());
+        let skyrim = parse_weap(0x100, &[sub(b"DNAM", &dnam)], GameKind::Skyrim, &None);
+        assert!(matches!(skyrim.kind, ItemKind::Weapon { skill_actor_value: None, .. }));
     }
 
     /// #6350 / #6449 — the FO3/FNV DNAM slots the VATS model consumes: base

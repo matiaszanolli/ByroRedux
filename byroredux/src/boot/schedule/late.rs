@@ -551,6 +551,9 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
         bridged_script_getter_reads(Access::new())
             .reads::<byroredux_scripting::ActivateEvent>()
             .reads::<byroredux_scripting::SceneAliasCandidate>()
+            // `IsWeaponSkillType`: the actor's weapon and its skill.
+            .reads::<byroredux_core::ecs::components::EquippedWeapon>()
+            .reads_resource::<byroredux_scripting::perk_entry_points::WeaponSkillTable>()
             .reads::<byroredux_core::ecs::components::Dead>()
             // #5043 / #5017 — combatant and unconscious NPCs refuse dialogue.
             .reads::<byroredux_scripting::AiCombatState>()

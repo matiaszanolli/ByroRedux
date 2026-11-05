@@ -1,6 +1,7 @@
 # Perk Entry Points — Product Requirements
 
-**Status**: ACTIVE (2026-11-03). Revision 5 files the tracking issues.
+**Status**: ACTIVE (2026-11-05). Revision 6 settles hook 56's Target tab and
+records PERK-SUB-002 shipped. Revision 5 files the tracking issues.
 Revision 4 recorded the owner's §10 decisions, every one the
 recommendation. Revision 3 folded in review round 2:
 every §3.3 claim re-read at HEAD; Skyrim perk fragments (PERK-DEC-011) and
@@ -133,7 +134,7 @@ An entry on a Consumed hook is, at a given call site, one of:
 | Class | Meaning |
 |---|---|
 | **Fireable** | Every tab that carries conditions has a supplied subject, and every condition is one the M47.1 evaluator models. |
-| **Subject-gated** | A conditioned tab has no subject at this call site (today: every weapon tab, and the target tab of FNV hooks 56 and 58). The entry does not fire. |
+| **Subject-gated** | A conditioned tab has no subject at this call site (today: the weapon tab of every hook but the weapon-damage and Damage Threshold ones, and any weapon tab on a creature's natural attack). The entry does not fire. |
 | **Unmodelled** | A condition function the evaluator does not model (`condition::is_modeled` is false). The entry does not fire. |
 
 Both non-fireable classes are fail-closed today (`tabs_pass` in
@@ -173,7 +174,7 @@ are generated from it and this table keeps only the record and body rows.
 | R1 | Composition | `PerkEntryTable` built from `EsmIndex.perks` per load order, not saved (`registry_completeness_tests.rs`, `PerkEntryTable` row); `compose_entry_point` per [scripting.md](../engine/scripting.md#perk-entry-points-m472) |
 | R2 | Dialects | `Fallout3NV`, `Skyrim`; FO4, FO76 and Starfield rows carry `None` (`CharacterRulesProfile` in `profile.rs`), so their table is empty |
 | R3 | Consumed hooks | Weapon damage (`combat.rs`, `compose_outgoing_damage`), kill XP hook 9 and skill points hook 10 (`combat.rs`), FNV Damage Threshold 56/58 (`compose_damage_threshold`), carry weight (`encumbrance.rs`), Skyrim buy/sell 8/60 (`barter.rs`), Skyrim tempering 76 (`crates/scripting/src/tempering.rs`) |
-| R4 | Weapon and DT target tabs | The weapon tab is never supplied: `compose_outgoing_damage` passes `[None, Some(target)]`; `compose_damage_threshold` passes `[None, None]`, so FNV hooks 56/58's target tab goes unsupplied too |
+| R4 | Weapon and DT target tabs | Supplied since rev 6: `compose_outgoing_damage` and `compose_damage_threshold` lend the attacker's weapon to `WeaponSubject`, and FNV hooks 56/58 get their target tab. Every other hook's weapon tab is still unsupplied |
 | R5 | Ability body | No consumer: `Effect::ChangePerk` only sets the rank (`fragment/effects/actor_lists.rs`) |
 | R6 | Quest body | No consumer |
 | R7 | Value-entry fragments (FO4) | Not reported by composition; `perk.run` is the only source (`fragment/perk.rs`) |
@@ -361,10 +362,15 @@ Skyrim `wbDefinitionsTES5.pas` and FO4 `wbDefinitionsFO4.pas`
   and on the Damage Threshold hooks 56 and 58 the target tab's subject MUST
   be supplied as well (xEdit FNV `wbPERKEntryPoints` gives both
   `epcWeaponTarget`: Perk Owner, Weapon, Target). Hook 56's owner is the actor
-  hit, so **Phase 0: verify** which actor its Target tab names, from the tab-2
-  conditions `CENSUS_ENTRY_POINT=56` lists on `FalloutNV.esm`. Today neither
-  tab is supplied (R4), so weapon-conditioned entries — most of the damage
-  perks — are Subject-gated. The mechanism is §10 Q4.
+  hit, and its Target tab names the attacker: `CENSUS_ENTRY_POINT=56` on
+  `FalloutNV.esm` lists two tab-2 entries, Stonewall ("against all Melee Weapons
+  and Unarmed attacks") and Hit the Deck ("against any and all Explosives"), both
+  `IsWeaponSkillType`, which only reads as the attack if Target is the attacker. A
+  bare-handed actor's weapon is the `Fists` record (`0x1F4`, skill 45 Unarmed, in
+  `Fallout3.esm` and `FalloutNV.esm`); that the original lends it is inferred from
+  the record and those descriptions, not from a source that says so. A creature's
+  natural attack has no weapon form, so its weapon tabs are Subject-gated. The
+  mechanism is §10 Q4. Shipped in rev 6 (R4).
 - **PERK-SUB-003.** A weapon subject MUST answer the weapon-form conditions the
   census finds on weapon tabs (Phase 0 lists them) and MUST be Unmodelled for
   any condition on per-instance weapon state it cannot answer, never a guessed
@@ -672,7 +678,7 @@ authored hook with a state and a source. Close the **Phase 0: verify** items
 | Skyrim fragment index ↔ `EPF3` index | PERK-DEC-011 |
 | FO4 priority case | PERK-DIA-004 |
 | Per-hook tab subjects (Skyrim, FO4) | PERK-SUB-001 |
-| Hook 56's Target tab | PERK-SUB-002 |
+| Hook 56's Target tab (settled in rev 6: the attacker) | PERK-SUB-002 |
 | FNV hooks 39 / 40 | PERK-HOOK-005 |
 | FO4 *Run Immediately* timing | PERK-HOOK-007 |
 | FO4 weapon-damage hook | PERK-HOOK-010 |
@@ -865,3 +871,4 @@ Each needs the project owner. The recommendation is the first option.
 | 3 | 2026-11-03 | Review round 2 folded in: §3.3 re-read at HEAD (DT target tab unsupplied, `embedded_script_at`, Skyrim fragments D13); Skyrim perk fragments PERK-DEC-011 and the activate run path PERK-HOOK-012; `EPF2` split out as PERK-DEC-012; Skyrim "Not Used" hooks Inert PERK-HOOK-011; activate entries player-only and FO4 Run Immediately verify; PERK-DEC-008 and FO3/FNV ability-rank verify items closed from xEdit and GECK *Perk Entry*; DT target subject and hook-56 verify; census rule consistent with Starfield decode-only; HEAD states on DEC-010, DX-004, DX-005; §6 rows 1, 6, 7, 8 sourced, row 9 added, row 6 pointed at Q7; Phase 0 verify list as a table; Q1 (M47.2 closed), Q3, Q4 (shared scratch entity), Q5 (`MessageBox` page, sources), Q7 (saved `ActorValues`, idempotent `add_spell`) | claude: revise |
 | 4 | 2026-11-03 | Owner decisions Q1–Q7 recorded, every one the recommendation; ROADMAP's M24.2 row now points here (Q1) | owner: approved |
 | 5 | 2026-11-03 | → ACTIVE: parent #6635 and phase issues #6651, #6652, #6654, #6657, #6659 filed; the Phase 0 verify items are acceptance criteria of #6651 | — |
+| 6 | 2026-11-05 | PERK-SUB-002 shipped ahead of Phases 0-2 at the owner's request, for the FNV perks that had no effect: hook 56's Target tab settled from the census, `IsWeaponSkillType` modeled from the newly decoded `DNAM` skill, R4 and §3.2 updated | claude: revise |

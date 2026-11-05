@@ -236,6 +236,13 @@ fn register_combat_damage_system(scheduler: &mut Scheduler) {
             .reads::<byroredux_scripting::ActorProtection>()
             .reads::<byroredux_scripting::SceneAliasCandidate>()
             .reads_resource::<byroredux_scripting::ActorBaseProtectionOverrides>()
+            // PERK-SUB-002 — the Damage Threshold composition: its table, the owners' perks, the
+            // `Add Range` draw, and the scratch weapon subject it lends a base form to.
+            .reads_resource::<byroredux_scripting::perk_entry_points::PerkEntryTable>()
+            .reads::<byroredux_core::character::Perks>()
+            .writes_resource::<byroredux_scripting::story_manager::StoryManagerRng>()
+            .reads_resource::<byroredux_scripting::perk_entry_points::WeaponSubject>()
+            .writes::<byroredux_scripting::SceneAliasCandidate>()
             .writes::<byroredux_scripting::Bleedout>()
             .reads_resource::<byroredux_scripting::BleedoutRules>()
             .reads_resource::<byroredux_scripting::SceneQuestAliasRegistry>()

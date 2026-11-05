@@ -15,7 +15,7 @@ mod actor;
 mod global;
 mod reference;
 
-pub(crate) use actor::{health_percentage, item_count};
+pub(crate) use actor::{attacking_weapon, health_percentage, item_count};
 
 use super::catalog::{
     index_is_foreign_in, ConditionFunction,
@@ -623,7 +623,6 @@ pub fn evaluate_function(
         ConditionFunction::IsChild
         | ConditionFunction::GetTalkedToPC
         | ConditionFunction::GetHasNote
-        | ConditionFunction::IsInList
         | ConditionFunction::GetLocked
         | ConditionFunction::GetCurrentTime
         | ConditionFunction::GetInSameCell
@@ -644,6 +643,14 @@ pub fn evaluate_function(
         | ConditionFunction::IsOwner
         | ConditionFunction::GetHitLocation => {
             vm_getter_value(function, condition, entity, world)
+        }
+        // Not through the getter: a scratch subject carrying a lent base form has no FormID for it
+        // to call on, and this needs only the base (#6460's body, shared).
+        ConditionFunction::IsInList => truth(
+            crate::form_lists::base_is_in_list(world, entity, condition.param_1).unwrap_or(false),
+        ),
+        ConditionFunction::IsWeaponSkillType => {
+            truth(actor::weapon_skill_of(world, entity) == Some(condition.param_1))
         }
         // #6251 — the state the ObScript getters of the same index read.
         ConditionFunction::GetDisabled => truth(

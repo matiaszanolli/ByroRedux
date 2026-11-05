@@ -79,6 +79,15 @@ impl FormListAdditions {
 
 /// `list`'s forms as scripts see them: the record's, then the added ones, with
 /// the `pending` edits of a run still in flight applied on top.
+/// GECK *IsInList*: whether `entity`'s **base object** is in `list`. `None` when `list` is not a form list.
+pub(crate) fn base_is_in_list(world: &World, entity: byroredux_core::ecs::storage::EntityId, list: u32) -> Option<bool> {
+    let base = world
+        .get::<crate::scene::SceneAliasCandidate>(entity)
+        .map_or(0, |candidate| candidate.base_form_id);
+    let forms = forms_of(world, list, &[])?;
+    Some(base != 0 && forms.contains(&base))
+}
+
 pub fn forms_of(world: &World, list: u32, pending: &[FormListChange]) -> Option<Vec<u32>> {
     let mut forms = world.try_resource::<FormLists>()?.get(list)?.to_vec();
     let mut additions = world

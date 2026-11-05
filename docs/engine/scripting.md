@@ -336,10 +336,15 @@ zero decode mismatches on FalloutNV / Fallout3 / Skyrim):
   Value" in the GECK and subtracts (`WeaponHandling`, `PiercingStrike`).
 - **Condition tabs** (`PRKC`): tab 0 is the perk owner, the rest are subjects the
   calculation supplies. A conditioned tab with no supplied subject, or a
-  condition the evaluator does not model, keeps the entry from firing — the
-  engine cannot say the weapon is a one-hander, and guessing would give every
-  weapon the bonus. Equipped weapons are not entities today, so weapon-tab
-  entries (e.g. `DemolitionExpert`) are inert until they are.
+  condition the evaluator does not model, keeps the entry from firing — guessing
+  would give every weapon the bonus. Equipped weapons are not entities, so the
+  weapon-damage and Damage Threshold compositions lend the attacker's weapon base
+  form to a scratch entity (`WeaponSubject`) for one composition, which answers
+  `IsWeaponSkillType`, `IsInList`, `GetIsID` and `HasKeyword`; a bare-handed actor
+  lends `Fists` (`0x1F4`), and a creature's natural attack has no subject. On the
+  Damage Threshold hooks the target tab is supplied too: on hook 56, whose owner is
+  the actor hit, it names the attacker. Weapon tabs on any other hook stay
+  unsupplied (PRD PERK-SUB-002).
 - **Priority** composes ascending (ties: the actor's perk order, then the
   record's entry order). The two CKs disagree on which number "takes
   precedence"; no vanilla FO3/FNV entry has a non-zero priority, and on Skyrim

@@ -594,6 +594,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("AttractionBook", "the attraction keywords with their rules and the object / NPC bases that carry them; rebuilt from the records every boot (M43)"),
         ("AttractionState", "per-pair attraction reaction timers and the scan clock; ambient scheduling a load re-arms (M43)"),
         ("TemperingItem", "whether the item being improved is enchanted, set for the length of one condition evaluation and cleared; never outlives a call (M43)"),
+        ("WeaponSubject", "the scratch entity an attacker's weapon base form is lent to for one perk composition; it holds nothing between compositions, same posture as TemperingSubject"),
+        ("WeaponSkillTable", "each weapon base's skill, re-derived from the load order by install_perk_entry_points every boot, same posture as PerkEntryTable"),
         ("TemperingSubject", "the scratch entity an item's base form is lent to so item-tab perk conditions have a subject; created at boot (M43)"),
         ("ArmorBook", "every armor record's base rating and type (Skyrim only), for the armor damage reduction; rebuilt from the records every boot (M43)"),
         ("StoryManagerRng", "selection RNG for random node policies (#5366 Phase 3); which radiant a post-load pick chooses is not state anything reads back"),

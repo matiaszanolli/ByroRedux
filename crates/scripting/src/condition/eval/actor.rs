@@ -241,3 +241,30 @@ pub(crate) fn health_percentage(world: &World, actor: EntityId) -> Option<f32> {
     let ceiling = actor_value_view(world, actor, health, ActorValueView::Undamaged);
     Some(if ceiling > 0.0 { (current / ceiling).clamp(0.0, 1.0) } else { 0.0 })
 }
+
+/// The `Fists` weapon record a bare-handed actor attacks with: FormID `0x1F4` in both `Fallout3.esm`
+/// and `FalloutNV.esm`, skill 45 Unarmed.
+const UNARMED_WEAPON_FORM: u32 = 0x1F4;
+
+/// The weapon base `actor` attacks with: what it has equipped, else its fists. `None` for what has no
+/// weapon form to answer with: a creature's natural attack, and anything that is not an actor (a trap).
+pub(crate) fn attacking_weapon(world: &World, actor: EntityId) -> Option<u32> {
+    if let Some(weapon) = world.get::<byroredux_core::ecs::components::EquippedWeapon>(actor) {
+        return Some(weapon.base_form_id);
+    }
+    let bare_handed = world.has::<byroredux_core::ecs::components::ActorValues>(actor)
+        && !world.has::<byroredux_core::ecs::components::CreatureActor>(actor);
+    bare_handed.then_some(UNARMED_WEAPON_FORM)
+}
+
+/// The skill `entity`'s weapon uses (`IsWeaponSkillType`): a weapon's own, by its base form, or the one
+/// an actor attacks with. `None` when it has no weapon or the table does not know it.
+pub(crate) fn weapon_skill_of(world: &World, entity: EntityId) -> Option<u32> {
+    let base = world
+        .get::<crate::scene::SceneAliasCandidate>(entity)
+        .map(|candidate| candidate.base_form_id);
+    let attacking = attacking_weapon(world, entity);
+    let table = world.try_resource::<crate::perk_entry_points::WeaponSkillTable>()?;
+    base.and_then(|base| table.skill(base))
+        .or_else(|| attacking.and_then(|weapon| table.skill(weapon)))
+}
