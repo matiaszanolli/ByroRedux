@@ -133,6 +133,17 @@ fn save_type_sources() -> Vec<PathBuf> {
         manifest.join("../crates/core/src/lighting.rs"),
         manifest.join("../crates/sdk/src/identity.rs"),
         manifest.join("../crates/sdk/src/script_function.rs"),
+        // #6509 — `MotionType` is the payload of the saved
+        // `ReferenceMotionTypeState` (`HashMap<u32, MotionType>`). Its file
+        // qualified through the registered `RigidBodyData` until #6237
+        // unregistered that type; every derive in the file is
+        // `inspect`-gated, so it then left the scan silently. Renaming or
+        // removing a `MotionType` variant would have moved no fingerprint
+        // while making every save with a `SetMotionType` override unloadable.
+        // Side effect: the file's other serde types (`CollisionShape`,
+        // `RigidBodyData`) are fingerprinted too, although neither is saved
+        // any more — an edit to them demands a baseline refresh, not a bump.
+        manifest.join("../crates/core/src/ecs/components/collision.rs"),
     ]);
     candidates.sort();
     candidates.dedup();
@@ -413,6 +424,23 @@ fn the_shape_scan_sees_the_whole_attribute_block() {
              walk regressed to the nearest-#[ read"
         );
     }
+}
+
+/// #6509 — `MotionType` is serialized inside the saved
+/// `ReferenceMotionTypeState`, but its file's derives are `inspect`-gated, so
+/// it only reaches the scan through the explicit nested-payload list. Pin that
+/// it contributes a shape: dropping the list entry would let a variant rename
+/// pass every guard while making saves with a `SetMotionType` override
+/// unloadable.
+#[test]
+fn the_shape_scan_sees_the_motion_type_payload() {
+    let shapes = normalized_serialized_shapes();
+    assert!(
+        shapes
+            .iter()
+            .any(|shape| shape.contains("enumMotionType")),
+        "MotionType must contribute a serialized shape (#6509)"
+    );
 }
 
 /// #5403 — the block walk's two edges on one synthetic source: a save
@@ -1165,7 +1193,11 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // field on a registered resource (when a node last started a quest, for the node-level `HNAM` window).
     // Item quality — v122 is a genuine bump: `ItemInstance::quality` (the Skyrim tempering level) is a new
     // required field on the registered `ItemInstancePool`.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x0639_f33a_066d_0ab1;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xaf7b_b6fa_607b_402f;
+    // #6509 — refreshed WITHOUT a major bump: `core/src/ecs/components/collision.rs`
+    // re-entered the shape scan (explicit nested-payload list) so `MotionType`,
+    // the payload of the saved `ReferenceMotionTypeState`, is fingerprinted
+    // again. No saved shape changed; only the set of scanned declarations.
     // 2026-10-15 (#5585) — refreshed WITHOUT a major bump: the `save_io.rs`
     // split (d7c47d741) moved `PlayerPose` to `save_io/player.rs`. The hash
     // keys each shape by its file, so the move alone shifted it; a dump of
@@ -1456,6 +1488,7 @@ fn source_discovery_follows_registry_and_nested_save_modules() {
         "core/src/lighting.rs",
         "sdk/src/identity.rs",
         "sdk/src/script_function.rs",
+        "core/src/ecs/components/collision.rs",
     ] {
         assert!(
             sources.iter().any(|path| path.ends_with(suffix)),
