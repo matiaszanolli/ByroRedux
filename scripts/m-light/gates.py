@@ -5,11 +5,11 @@ Runs the engine's Cornell reference rungs, exports each scene to Mitsuba 3,
 renders the converged reference (cached, RLT-REF-015), and computes the
 Cornell gates on linear captures (RLT-REF-007):
 
-  A2   penumbra width             (RLT-SHD-001; report until the L1 budget)
-  A4   filter bands and thin rod  (RLT-SHD-004; report until the L1 budget)
-  A3   penumbra under camera pan  (RLT-SHD-002; report until the L1 budgets)
-  A5   contact bands              (RLT-CON-001…008; report until the L2 budget)
-  A14  moving blocker             (RLT-SHD-010; report until the L1 budgets)
+  A2   penumbra width             (RLT-SHD-001; width undecided, reported)
+  A4   filter bands and thin rod  (RLT-SHD-004; bands gated by the threshold table, rod reported)
+  A3   penumbra under camera pan  (RLT-SHD-002; excess over the hold control, gated by the threshold table)
+  A5   contact bands              (RLT-CON-001…008; gated by the threshold table at tier 3)
+  A14  moving blocker             (RLT-SHD-010; excess over the hold control from frame 80, gated by the threshold table)
   A7   GI deficit                 (RLT-GI-002; report until Q5's cache)
   A8   traced share free of SSAO  (RLT-GI-004)
   A15  calibration and materials  (RLT-REF-010, RLT-REF-014)
@@ -20,7 +20,9 @@ Every metric is written to manifest.tsv with its noise floor on both sides
 (RLT-REF-004, RLT-REF-006): each side is captured twice with different
 sampling seeds (`--rt-test-seed-offset` on the engine, the sampler seed on
 Mitsuba) and the combined floor is the root-sum-square of the two sides.
-No factor is ever applied to an image; emitters are scaled at export
+Rows named in docs/audits/MLIGHT_thresholds.tsv are judged against their
+frozen floor, budget and drift margin (RLT-REF-006, Q6); every other row is
+`report`. No factor is ever applied to an image; emitters are scaled at export
 (k_exp, docs/engine/path-tracing.md §2.1).
 
 Needs a Python with Mitsuba 3 and NumPy (a developer tool, never an engine
@@ -308,6 +310,7 @@ class Row:
     floor_reference: float
     passed: str = ""
     threshold: str = ""
+    frozen_floor: str = ""
 
     @property
     def floor_combined(self) -> float:
@@ -333,7 +336,7 @@ def write_manifest(path: Path, rows: list[tuple[Row, str]], ctx: Context) -> Non
             values = [
                 row.gate, row.case, row.region, row.metric, f"{row.value:.6g}",
                 f"{row.floor_engine:.3g}", f"{row.floor_reference:.3g}", f"{row.floor_combined:.3g}",
-                "", row.threshold, row.passed, str(ctx.tier), str(ctx.engine_frames),
+                row.frozen_floor, row.threshold, row.passed, str(ctx.tier), str(ctx.engine_frames),
                 ctx.engine_seeds, str(ctx.reference_spp), ctx.reference_seeds, ctx.k_exp, key,
                 ctx.revision, ctx.gpu,
             ]
@@ -1105,8 +1108,9 @@ def temporal_error(moving: np.ndarray, parked: np.ndarray, mask: np.ndarray) -> 
 def gate_temporal(engine: Engine, store: ReferenceStore, ctx: Context, spp: int, gates: set[str]):
     """A14 moving blocker (RLT-SHD-010) and A3 camera pan (RLT-SHD-002):
     the engine's `final` during and after a motion against itself parked and
-    converged at the same frame of the same path. Report-only until the L1
-    budgets. No reference: both sides carry the same indirect bias."""
+    converged at the same frame of the same path. The per-frame rows are
+    reported; the excess rows over the hold control are what the threshold
+    table gates. No reference: both sides carry the same indirect bias."""
     del store, spp
     rows = []
     stop = TEMPORAL_MOTION - 1
@@ -1170,15 +1174,108 @@ def gate_temporal(engine: Engine, store: ReferenceStore, ctx: Context, spp: int,
             held = engine.sequence(f"{gate}_{rung}_held_f{frame}", rung, ctx.tier, [frame], frame + 4,
                                    extra + ["--bench-camera-hold-at", str(frame)])
             cold[frame] = temporal_error(load_exr(held[frame][0]), parked[frame], mask_for(parked[frame]))
+        # The excess over the hold control, which the Q6 budgets are written
+        # against (docs/audits/MLIGHT_thresholds.tsv): the value minus the
+        # control's own error at the same frame.
+        excess: dict[int, tuple[float, float]] = {}
         for frame in motion + post:
             image = load_exr(moving[frame][0])
             reference = parked[parked_at[frame]]
             phase = "during" if frame <= stop else f"post_stop_{frame - stop}"
-            row = Row(gate, f"{rung}-{phase}", f"frame_{frame}", "temporal_error",
-                      temporal_error(image, reference, mask_for(reference)), cold.get(frame, floor_e), 0.0,
-                      passed="report")
-            rows.append((row, ""))
+            control = cold.get(frame, floor_e)
+            value = temporal_error(image, reference, mask_for(reference))
+            rows.append((Row(gate, f"{rung}-{phase}", f"frame_{frame}", "temporal_error",
+                             value, control, 0.0, passed="report"), ""))
+            excess[frame] = (value - control, control)
+        rows += temporal_excess_rows(gate, excess, motion, stop)
     return rows
+
+
+# Frames before this carry the run's cold start and are reported, not gated.
+A14_GATED_FROM_FRAME = 80
+# The post-stop sample the A3 settle budget reads: stop + 16.
+A3_SETTLE_OFFSET = 16
+
+
+def temporal_excess_rows(gate: str, excess: dict[int, tuple[float, float]], motion: list[int], stop: int):
+    """The rows the threshold table gates for A3 and A14: the worst excess over
+    the hold control during motion, and (A3) the excess once settled."""
+    def worst(frames: list[int]):
+        frame = max(frames, key=lambda f: excess[f][0])
+        return excess[frame]
+
+    def row(case: str, region: str, metric: str, pick):
+        value, control = pick
+        return (Row(gate, case, region, metric, value, control, 0.0, passed="report"), "")
+
+    if gate == "A3":
+        return [
+            row("penumbra-pan", "during_motion", "excess_over_hold_max", worst(motion)),
+            row("penumbra-pan", "post_stop_16", "excess_over_hold", excess[stop + A3_SETTLE_OFFSET]),
+        ]
+    if gate == "A14":
+        gated = [f for f in motion if f >= A14_GATED_FROM_FRAME]
+        return [row("penumbra-moving", "from_frame_80", "excess_over_hold_max", worst(gated))]
+    return []
+
+
+# ── Threshold table (RLT-REF-006, Q6) ────────────────────────────────────
+
+THRESHOLD_TABLE = REPO / "docs" / "audits" / "MLIGHT_thresholds.tsv"
+
+# A floor of exactly zero (a band whose two seeded captures agree bit for bit)
+# would fail any drift margin proportional to it. This is the smallest floor
+# increase the drift check treats as a rise, well under every budget in the
+# table (the smallest is 5e-4).
+DRIFT_EPSILON = 1e-6
+
+
+def load_thresholds(path: Path = THRESHOLD_TABLE) -> dict[tuple[str, str, str, str, str], dict[str, str]]:
+    """The owner's frozen floors and budgets, keyed by gate, rung, region,
+    metric and tier. Comment lines start with `#`; the first other line is the
+    column header."""
+    table: dict[tuple[str, str, str, str, str], dict[str, str]] = {}
+    header: list[str] | None = None
+    for line in path.read_text().splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        fields = line.split("\t")
+        if header is None:
+            header = fields
+            continue
+        record = dict(zip(header, fields))
+        table[(record["gate"], record["rung"], record["region"], record["metric"], record["tier"])] = record
+    return table
+
+
+def threshold_key(row: Row, tier: int) -> tuple[str, str, str, str, str]:
+    """A manifest row's table key. A5 names its tier in the case
+    (`filtered_direct-tier3`); every other gate runs at the context's tier."""
+    case, row_tier = row.case, str(tier)
+    base, sep, suffix = case.rpartition("-tier")
+    if sep and suffix.isdigit():
+        case, row_tier = base, suffix
+    return (row.gate, case, row.region, row.metric, row_tier)
+
+
+def apply_thresholds(rows: list[tuple[Row, str]], tier: int,
+                     table: dict[tuple[str, str, str, str, str], dict[str, str]]) -> None:
+    """Judge every row the table names: the metric within its threshold, and
+    the re-measured floor within `frozen_floor + drift margin` (RLT-REF-006).
+    The margin is `2x frozen floor` throughout, so the floor may reach
+    3x the frozen one (plus DRIFT_EPSILON). Rows the table does not name stay
+    `report`."""
+    for row, _ in rows:
+        record = table.get(threshold_key(row, tier))
+        if record is None:
+            continue
+        threshold = float(record["threshold"])
+        frozen = float(record["frozen_floor"])
+        row.frozen_floor = f"{frozen:.3g}"
+        row.threshold = f"<={threshold:.4g} and floor<={3 * frozen + DRIFT_EPSILON:.3g}"
+        within = row.value <= threshold
+        steady = row.floor_combined <= 3 * frozen + DRIFT_EPSILON
+        row.passed = "yes" if within and steady else "no"
 
 
 # ── Driver ───────────────────────────────────────────────────────────────
@@ -1256,6 +1353,7 @@ def main() -> int:
     if "SHD-005" in gates:
         rows += gate_reservoir_clamp(engine, store, ctx, args.spp)
 
+    apply_thresholds(rows, ctx.tier, load_thresholds())
     manifest = out / "manifest.tsv"
     write_manifest(manifest, rows, ctx)
     wall = time.monotonic() - t_start
