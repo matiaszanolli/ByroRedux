@@ -98,7 +98,8 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 ///     ownership of an ambient fight — #5046; taken after the
 ///     `AiCombatState` guard drops), `PlayerMoveRequest` (write,
 ///     `Effect::MovePlayerTo` — M47.2; taken alone, the engine drains it),
-///     `Perks` (write, `Effect::ChangePerk` — M47.2), `ActorValueNames`
+///     `PerkEntryTable` (read, released before `Perks`, `Effect::ChangePerk` —
+///     #6619), `Perks` (write, `Effect::ChangePerk` — M47.2), `ActorValueNames`
 ///     (read, released before `ActorValues`, `Effect::SetActorValueNamed` and
 ///     `Effect::DamageActorValue` — M47.2), `SceneAliasCandidate` (read, `Effect::SetBaseProtection`'s
 ///     actor base — M47.2), `EditorLocation` (read,

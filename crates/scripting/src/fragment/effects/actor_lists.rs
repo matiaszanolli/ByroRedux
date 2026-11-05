@@ -26,6 +26,10 @@ pub(super) fn apply_actor_lists_effect(
                 deferred.speaker,
             )?;
             let perk = resolve_property_form_id(vmad, perk.property_name())?;
+            // #6619 — released before `Perks` is taken.
+            let rank_cap = world
+                .try_resource::<crate::perk_entry_points::PerkEntryTable>()
+                .and_then(|table| table.add_perk_rank_cap(perk));
             // `Perks` is direct component storage, written in place like
             // `ActorValues` above.
             let mut perks = world.query_mut::<byroredux_core::character::Perks>()?;
@@ -35,8 +39,15 @@ pub(super) fn apply_actor_lists_effect(
             let owned = perks.get_mut(actor).expect("present or inserted");
             if !*add {
                 owned.remove(perk);
-            } else if owned.rank(perk) == 0 {
-                owned.set_rank(perk, 1);
+            } else {
+                let rank = owned.rank(perk);
+                if rank == 0 {
+                    owned.set_rank(perk, 1);
+                } else if let Some(cap) = rank_cap {
+                    // A perk already at Num Ranks is rejected and keeps its
+                    // rank, which is the cap the sources' rule implies.
+                    let _ = owned.try_set_rank(perk, rank.saturating_add(1), cap);
+                }
             }
             None
         }

@@ -143,6 +143,9 @@ pub struct PerkEntryTable {
     dialect: PerkEntryPointDialect,
     perks: HashMap<u32, Arc<Vec<PerkEntryPointEntry>>>,
     rank_limits: HashMap<u32, u8>,
+    /// #6619 — the profile's `add_perk_raises_rank` row, read once here. A
+    /// game with no composed entries (FO4) still has the rank rule.
+    add_raises_rank: bool,
 }
 
 impl Resource for PerkEntryTable {}
@@ -155,6 +158,7 @@ impl PerkEntryTable {
         // #5921 — the numbering is the character profile's row, not a game
         // match.
         let dialect = index.character_rules.perk_entry_points();
+        let add_raises_rank = index.character_rules.add_perk_raises_rank();
         let rank_limits = index
             .perks
             .iter()
@@ -165,6 +169,7 @@ impl PerkEntryTable {
                 dialect,
                 perks: HashMap::new(),
                 rank_limits,
+                add_raises_rank,
             };
         }
         let mut perks = HashMap::new();
@@ -201,6 +206,7 @@ impl PerkEntryTable {
             dialect,
             perks,
             rank_limits,
+            add_raises_rank,
         }
     }
 
@@ -226,6 +232,17 @@ impl PerkEntryTable {
     /// value-math entries. `None` means the FormID is not a known PERK.
     pub fn num_ranks(&self, perk_form_id: u32) -> Option<u8> {
         self.rank_limits.get(&perk_form_id).copied()
+    }
+
+    /// The rank cap a scripted `AddPerk` raises a held perk towards (#6619).
+    /// `None` when it must not raise: the game's sources do not say it does,
+    /// or the FormID is not a known PERK, so there is no Num Ranks to honour.
+    pub fn add_perk_rank_cap(&self, perk_form_id: u32) -> Option<u8> {
+        if self.add_raises_rank {
+            self.num_ranks(perk_form_id)
+        } else {
+            None
+        }
     }
 }
 

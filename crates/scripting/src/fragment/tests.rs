@@ -2213,8 +2213,9 @@ fn item_count_from_a_global_reads_it_when_applied() {
     assert_eq!(inventory.items[0].count, 7, "7.9 truncates toward zero");
 }
 
-/// M47.2 — `AddPerk` grants rank 1 (an owned perk keeps its rank) and
-/// `RemovePerk` drops it, creating `Perks` on an actor that has none.
+/// M47.2 — `AddPerk` grants rank 1 and `RemovePerk` drops it, creating `Perks`
+/// on an actor that has none. With no perk table there is no Num Ranks to
+/// honour, so a held perk keeps its rank (#6619 pins the raise itself).
 #[test]
 fn perk_changes_apply_to_the_actors_perks() {
     use byroredux_core::character::Perks;
@@ -2273,6 +2274,193 @@ fn perk_changes_apply_to_the_actors_perks() {
     emit_advance(&world, Q, 20);
     quest_fragment_dispatch_system(&world);
     assert_eq!(world.get::<Perks>(actor).unwrap().rank(PERK), 0);
+}
+
+/// #6619 — one stage fragment adding a perk `adds` times on a world loaded
+/// under `rules`, starting from rank `start`, with `num_ranks` authored.
+/// Returns the rank the actor ends with.
+fn rank_after_scripted_adds(
+    rules: byroredux_core::character::CharacterRulesProfile,
+    num_ranks: u8,
+    start: u8,
+    adds: usize,
+) -> u8 {
+    use byroredux_core::character::Perks;
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+    use byroredux_plugin::esm::records::PerkRecord;
+    const ACTOR: u32 = 0x0000_6400;
+    const PERK: u32 = 0x0000_6500;
+    let mut world = fixture();
+    world.register::<Perks>();
+    let mut index = byroredux_plugin::esm::records::EsmIndex {
+        character_rules: rules,
+        ..Default::default()
+    };
+    index.perks.insert(
+        PERK,
+        PerkRecord {
+            form_id: PERK,
+            num_ranks,
+            ..Default::default()
+        },
+    );
+    crate::perk_entry_points::install_perk_entry_points(&mut world, &index);
+    let actor = spawn_with_form_id(&mut world, ACTOR);
+    let mut owned = Perks::default();
+    owned.set_rank(PERK, start);
+    world.insert(actor, owned);
+    let object = |name: &str, form_id| ScriptProperty {
+        name: name.into(),
+        status: 1,
+        value: PropertyValue::Object { form_id, alias: -1 },
+    };
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance {
+                    name: "QF_Test".into(),
+                    status: 0,
+                    properties: vec![object("Actor", ACTOR), object("Perk", PERK)],
+                }],
+            },
+        );
+        let add = Effect::ChangePerk {
+            actor: crate::translate::effects::ActorRef::Object(ObjectRef::Property("Actor".into())),
+            perk: ObjectRef::Property("Perk".into()),
+            add: true,
+        };
+        frags.insert(Q, 10, vec![add; adds]);
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+    quest_fragment_dispatch_system(&world);
+    let rank = world.get::<Perks>(actor).map_or(0, |perks| perks.rank(PERK));
+    rank
+}
+
+/// #6619 — GECK *AddPerk* "Increments the rank of the specified perk"; FO4 CK
+/// *Perk* "Each time a perk is added to an Actor the perk's rank will increase".
+#[test]
+fn add_perk_raises_the_rank_of_a_held_perk_on_fallout() {
+    use byroredux_core::character::CharacterRulesProfile as Rules;
+    for rules in [Rules::FALLOUT3, Rules::FALLOUT_NEW_VEGAS, Rules::FALLOUT4] {
+        assert_eq!(rank_after_scripted_adds(rules, 3, 0, 1), 1, "{}: first add", rules.name());
+        assert_eq!(rank_after_scripted_adds(rules, 3, 0, 2), 2, "{}: second add", rules.name());
+        assert_eq!(rank_after_scripted_adds(rules, 3, 1, 2), 3, "{}: from a held rank", rules.name());
+    }
+}
+
+/// #6619 — the raise stops at Num Ranks, and a held rank is never lowered by
+/// an add even when it already sits past the authored cap.
+#[test]
+fn add_perk_stops_at_num_ranks() {
+    use byroredux_core::character::CharacterRulesProfile as Rules;
+    let rules = Rules::FALLOUT_NEW_VEGAS;
+    assert_eq!(rank_after_scripted_adds(rules, 2, 2, 1), 2, "add at the cap");
+    assert_eq!(rank_after_scripted_adds(rules, 2, 0, 5), 2, "adds past the cap");
+    assert_eq!(rank_after_scripted_adds(rules, 2, 4, 1), 4, "held past the cap");
+    assert_eq!(rank_after_scripted_adds(rules, 1, 1, 1), 1, "single-rank perk");
+}
+
+/// #6619 — no source says a Skyrim `AddPerk` raises a rank (CK *Perk* marks
+/// Num Ranks "Not applicable" and entry Rank "Not used"), so it stays set-once.
+/// Pinned so the open question is settled deliberately, not by drift.
+#[test]
+fn add_perk_keeps_a_held_rank_where_no_source_says_otherwise() {
+    use byroredux_core::character::CharacterRulesProfile as Rules;
+    for rules in [Rules::SKYRIM, Rules::FALLOUT76, Rules::STARFIELD] {
+        assert_eq!(rank_after_scripted_adds(rules, 3, 0, 1), 1, "{}: first add", rules.name());
+        assert_eq!(rank_after_scripted_adds(rules, 3, 1, 2), 1, "{}: held add", rules.name());
+    }
+}
+
+/// #6619 — a raised rank reaches the rank-matched entry points: FNV's second
+/// `AddPerk` swaps the rank-0 entry for the rank-1 entry in the composition.
+#[test]
+fn raised_perk_rank_reaches_entry_point_composition() {
+    use byroredux_core::character::{CharacterRulesProfile, Perks};
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+    use byroredux_plugin::esm::records::{PerkEntry, PerkEntryBody, PerkFunctionData, PerkRecord};
+    const ACTOR: u32 = 0x0000_6400;
+    const PERK: u32 = 0x0000_6500;
+    const HOOK: u8 = crate::perk_entry_points::fnv::CALCULATE_WEAPON_DAMAGE;
+    let mult_at_rank = |rank: u8, mult: f32| PerkEntry {
+        rank,
+        priority: 0,
+        body: PerkEntryBody::EntryPoint {
+            entry_point_index: HOOK,
+            function: 3,
+            tab_count: 3,
+            param_type: 1,
+            function_data: PerkFunctionData::Float(mult),
+            formatter: Vec::new(),
+            extra_flags: Vec::new(),
+        },
+        condition_tabs: Vec::new(),
+    };
+    let mut world = fixture();
+    world.register::<Perks>();
+    let mut index = byroredux_plugin::esm::records::EsmIndex {
+        character_rules: CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+        ..Default::default()
+    };
+    index.perks.insert(
+        PERK,
+        PerkRecord {
+            form_id: PERK,
+            num_ranks: 2,
+            entries: vec![mult_at_rank(0, 2.0), mult_at_rank(1, 3.0)],
+            ..Default::default()
+        },
+    );
+    crate::perk_entry_points::install_perk_entry_points(&mut world, &index);
+    let actor = spawn_with_form_id(&mut world, ACTOR);
+    let object = |name: &str, form_id| ScriptProperty {
+        name: name.into(),
+        status: 1,
+        value: PropertyValue::Object { form_id, alias: -1 },
+    };
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance {
+                    name: "QF_Test".into(),
+                    status: 0,
+                    properties: vec![object("Actor", ACTOR), object("Perk", PERK)],
+                }],
+            },
+        );
+        let add = || Effect::ChangePerk {
+            actor: crate::translate::effects::ActorRef::Object(ObjectRef::Property("Actor".into())),
+            perk: ObjectRef::Property("Perk".into()),
+            add: true,
+        };
+        frags.insert(Q, 10, vec![add()]);
+        frags.insert(Q, 20, vec![add()]);
+    }
+    let compose = |world: &World| {
+        crate::perk_entry_points::compose_entry_point(world, actor, HOOK, 10.0, &[Some(actor)])
+    };
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+    quest_fragment_dispatch_system(&world);
+    assert_eq!(compose(&world), 20.0, "rank 1 applies the rank-0 entry");
+    world.resource_mut::<QuestStageState>().set_stage(Q, 20);
+    emit_advance(&world, Q, 20);
+    quest_fragment_dispatch_system(&world);
+    assert_eq!(compose(&world), 30.0, "rank 2 applies the rank-1 entry");
 }
 
 /// M47.2 — `G = S + offset` reads the source global when it applies.

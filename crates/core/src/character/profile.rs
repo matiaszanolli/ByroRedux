@@ -264,6 +264,17 @@ pub struct CharacterRulesProfile {
     barter: Option<BarterModel>,
     /// #5921 — the perk entry-point numbering.
     perk_entry_points: PerkEntryPointDialect,
+    /// #6619 — a scripted `AddPerk` on a perk the actor already holds raises
+    /// its rank by one, up to `PERK` Num Ranks. `true` only where a source
+    /// says so: FO3/FNV (GECK *AddPerk*: "Increments the rank of the specified
+    /// perk") and FO4 (FO4 CK *Perk*: "Each time a perk is added to an Actor
+    /// the perk's rank will increase"). Skyrim is the open question: CK
+    /// *AddPerk - Actor* says nothing about ranks and CK *Perk* marks Num
+    /// Ranks "Not applicable" and entry Rank "Not used", so it keeps the rank
+    /// until a primary source settles it (`docs/prd/perk-entry-points.md`,
+    /// PERK-BODY-001 and PERK-GATE-004). Oblivion has no perks; FO76 and
+    /// Starfield have no source.
+    add_perk_raises_rank: bool,
     /// #6227 — level-cap raises the executable applies, not a master: each
     /// `(master stem, levels)` adds its levels to the cap (after the
     /// `iMaxCharacterLevel` overlay) when a plugin of that stem is loaded.
@@ -297,6 +308,7 @@ impl CharacterRulesProfile {
         essential_death_time_secs: None,
         barter: None,
         perk_entry_points: PerkEntryPointDialect::None,
+        add_perk_raises_rank: false,
         level_cap_raises: &[],
         crime: None,
         vats: None,
@@ -320,6 +332,7 @@ impl CharacterRulesProfile {
         essential_death_time_secs: Some(10.0),
         barter: None,
         perk_entry_points: PerkEntryPointDialect::None,
+        add_perk_raises_rank: false,
         level_cap_raises: &[],
         crime: Some(CrimeModel::OBLIVION),
         vats: None,
@@ -352,6 +365,7 @@ impl CharacterRulesProfile {
         essential_death_time_secs: Some(10.0),
         barter: None,
         perk_entry_points: PerkEntryPointDialect::Fallout3NV,
+        add_perk_raises_rank: true,
         level_cap_raises: &[],
         crime: None,
         vats: Some(VatsModel::FALLOUT3),
@@ -383,6 +397,7 @@ impl CharacterRulesProfile {
         essential_death_time_secs: Some(10.0),
         barter: None,
         perk_entry_points: PerkEntryPointDialect::Fallout3NV,
+        add_perk_raises_rank: true,
         // #6227 — each story add-on raises the cap by 5 (Fallout wiki *Level*:
         // "each of the four add-ons raises the level cap by 5 levels"; Dead
         // Money's / Honest Hearts' load MESGs: "Your level cap has been
@@ -429,6 +444,7 @@ impl CharacterRulesProfile {
             perk_hooks: Some((SKYRIM_MOD_BUY_PRICES, SKYRIM_MOD_SELL_PRICES)),
         }),
         perk_entry_points: PerkEntryPointDialect::Skyrim,
+        add_perk_raises_rank: false,
         level_cap_raises: &[],
         crime: Some(CrimeModel::SKYRIM),
         vats: None,
@@ -466,6 +482,7 @@ impl CharacterRulesProfile {
             perk_hooks: None,
         }),
         perk_entry_points: PerkEntryPointDialect::None,
+        add_perk_raises_rank: true,
         level_cap_raises: &[],
         crime: None,
         vats: None,
@@ -495,6 +512,7 @@ impl CharacterRulesProfile {
         essential_death_time_secs: None,
         barter: None,
         perk_entry_points: PerkEntryPointDialect::None,
+        add_perk_raises_rank: false,
         level_cap_raises: &[],
         crime: None,
         vats: None,
@@ -528,6 +546,7 @@ impl CharacterRulesProfile {
         essential_death_time_secs: None,
         barter: None,
         perk_entry_points: PerkEntryPointDialect::None,
+        add_perk_raises_rank: false,
         level_cap_raises: &[],
         crime: None,
         vats: None,
@@ -626,6 +645,12 @@ impl CharacterRulesProfile {
         self.perk_entry_points
     }
 
+    /// #6619 — whether a scripted `AddPerk` on a held perk raises its rank.
+    #[must_use]
+    pub const fn add_perk_raises_rank(self) -> bool {
+        self.add_perk_raises_rank
+    }
+
     /// #6227 — the levels the executable adds to the cap for the loaded
     /// plugins (file names, any case, with or without extension).
     #[must_use]
@@ -720,6 +745,25 @@ mod tests {
         let skyrim = CharacterRulesProfile::SKYRIM.barter().unwrap();
         assert_eq!(skyrim.perk_hooks, Some((8, 60)));
         assert_eq!(CharacterRulesProfile::FALLOUT4.barter().unwrap().perk_hooks, None);
+    }
+
+    /// #6619 — only the games whose sources say so raise a held perk's rank on
+    /// a scripted `AddPerk`; Skyrim is an open question, not a `false` finding.
+    #[test]
+    fn add_perk_rank_row_is_stated_on_every_profile() {
+        let rows = [
+            (CharacterRulesProfile::NONE, false),
+            (CharacterRulesProfile::OBLIVION, false),
+            (CharacterRulesProfile::FALLOUT3, true),
+            (CharacterRulesProfile::FALLOUT_NEW_VEGAS, true),
+            (CharacterRulesProfile::SKYRIM, false),
+            (CharacterRulesProfile::FALLOUT4, true),
+            (CharacterRulesProfile::FALLOUT76, false),
+            (CharacterRulesProfile::STARFIELD, false),
+        ];
+        for (profile, raises) in rows {
+            assert_eq!(profile.add_perk_raises_rank(), raises, "{}", profile.name());
+        }
     }
 
     /// #6426 — the `crime` and `radiation_gauge` rows: only Oblivion and
