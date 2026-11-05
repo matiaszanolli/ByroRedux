@@ -45,7 +45,7 @@ pub use sync::{
     SpawnCensusAuthoring, SpawnCensusEntry, SpawnCensusProbe, SpawnProbeVerdict,
 };
 pub use water::{
-    authored_wave_height_over_bed, authored_wave_height_with_weather, buoyancy_force, nearest_surface_distance,
+    authored_wave_height_over_bed, authored_wave_height_with_weather, buoyancy_force, local_current, nearest_surface_distance,
     submerged_fraction, weather_wave_adjustment, wind_force, PhysicsWaterConstants,
     WaterContactScratch,
 };

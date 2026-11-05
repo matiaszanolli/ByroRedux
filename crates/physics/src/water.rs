@@ -496,6 +496,23 @@ fn refract_swell(heading: [f32; 2], shore_dir: [f32; 2], refraction: f32) -> [f3
     turn_toward(heading, shore_dir, refraction * t * t * (3.0 - 2.0 * t))
 }
 
+/// The current as it runs at `(x, z)` over a plane of `kind` (#6488): a river or rapids is faster over
+/// the deep channel and runs along the banks ([`WaterFlow::over_bed`]), exactly as `water.frag` shows
+/// it; every other kind, water with no bed, and a point outside the bed keep the plane's `flow`.
+///
+/// The ONE rule behind both water samplers: the dynamic-body path (current force and the published
+/// `WaterContact::flow`) and the kinematic player's (`player_water_state` -> `player_current_drift`).
+/// Anything a plane's flow is read through must go through here, or the swimmer and the barrel beside
+/// them are pushed by different currents (the two-samplers rule; #4691, #5357).
+pub fn local_current(kind: WaterKind, flow: WaterFlow, bed: Option<&WaterBedField>, x: f32, z: f32) -> WaterFlow {
+    match (kind, bed) {
+        (WaterKind::River | WaterKind::Rapids, Some(bed)) => {
+            bed.sample_baked(x, z).map_or(flow, |sample| flow.over_bed(sample))
+        }
+        _ => flow,
+    }
+}
+
 /// [`authored_wave_height_with_weather`] over a known bed: the wind-driven swell
 /// (`WaterMaterial::swell`) shoals, turns toward the shore and breaks exactly
 /// as `water.vert` does, and the authored ripple pair is capped by the same
@@ -1265,12 +1282,7 @@ fn apply_buoyancy_with_scratch(
                     // it; every other kind, and water with no bed, keeps the
                     // plane's flow.
                     let local_flow = s.flow.map(|flow| {
-                        match (s.kind, s.bed.as_ref()) {
-                            (WaterKind::River | WaterKind::Rapids, Some(bed)) => bed
-                                .sample_baked(reference_point.x, reference_point.z)
-                                .map_or(flow, |sample| flow.over_bed(sample)),
-                            _ => flow,
-                        }
+                        local_current(s.kind, flow, s.bed.as_ref(), reference_point.x, reference_point.z)
                     });
                     if frac > 0.0 {
                         if let Some(b) = pw.bodies.get_mut(t.handles.body) {
@@ -2906,6 +2918,28 @@ mod tests {
             .expect("dry transition keeps a contact breadcrumb");
         assert_eq!(cleared.submerged_fraction, 0.0);
         assert!(cleared.surface_entity.is_none());
+    }
+
+    /// #6488 — `local_current` is the one rule both water samplers read a plane's flow through:
+    /// only a river or rapids over a bed that covers the point is reshaped.
+    #[test]
+    fn local_current_reshapes_only_rivers_over_a_covering_bed() {
+        use byroredux_core::ecs::components::water::{WaterBedField, WaterKind, WATER_RIVER_SPEED_MIN};
+        let flow = WaterFlow::new([1.0, 0.0, 0.0], 8.0);
+        let shallow = WaterBedField::new([-100.0, -100.0], 100.0, 3, vec![0.0; 9]).unwrap();
+        for kind in [WaterKind::River, WaterKind::Rapids] {
+            let local = local_current(kind, flow, Some(&shallow), 0.0, 0.0);
+            assert!((local.speed - 8.0 * WATER_RIVER_SPEED_MIN).abs() < 1.0e-4, "{kind:?}: {}", local.speed);
+        }
+        // Outside the bed, no bed, and every other kind: the plane's flow, untouched.
+        for (kind, bed, x) in [
+            (WaterKind::River, Some(&shallow), 5000.0),
+            (WaterKind::River, None, 0.0),
+            (WaterKind::Calm, Some(&shallow), 0.0),
+        ] {
+            let local = local_current(kind, flow, bed, x, 0.0);
+            assert_eq!((local.direction, local.speed), (flow.direction, flow.speed), "{kind:?} at x={x}");
+        }
     }
 
     /// The current carries a floating body at the speed the channel runs there:

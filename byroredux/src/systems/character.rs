@@ -1259,8 +1259,9 @@ fn placed_current_flow_at(world: &World, pos: Vec3) -> Option<WaterFlow> {
 /// `apply_buoyancy_with_scratch` selects `MotionType::Dynamic` plus ragdoll
 /// bones only). The placed-`WaterCurrentVolume` arm is resolved separately
 /// (#3974/#5129): the marker never enters this state — the published
-/// [`WaterContact`] carries the plane column's own flow, exactly what the
-/// dynamic path's contact write publishes (`flow: s.flow`), and the marker
+/// [`WaterContact`] carries the plane column's flow at the swimmer
+/// (`byroredux_physics::local_current`, #6488), exactly what the dynamic
+/// path's contact write publishes (`flow: local_flow`), and the marker
 /// reaches the player through [`player_current_drift`] composed as plane ×
 /// submerged fraction + marker × 1.0 (#4691/#5357). A marker with no plane
 /// column under it produces no state here and reaches the player through the
@@ -1339,7 +1340,7 @@ fn player_water_state(
             continue;
         }
         let distance = (surface_y - pos.y).abs();
-        // #4691 — the plane column's own flow, verbatim. The marker's
+        // #4691 — the plane column's own flow. The marker's
         // current is deliberately NOT folded in here (#5357): the dynamic
         // path scales the plane's drag by the submerged fraction and the
         // marker's at 1.0, so folding them into one vector forces one
@@ -1347,8 +1348,23 @@ fn player_water_state(
         // silently discounted the marker the moment the player started
         // swimming. `player_current_drift` composes the two sources with
         // their own scales, and `sync_player_water_contact` publishes this
-        // plane-only flow, matching the dynamic contact write's `s.flow`.
-        let flow = flow_q.as_ref().and_then(|q| q.get(entity).copied());
+        // plane-only flow, matching the dynamic contact write's `local_flow`.
+        //
+        // #6488 — the plane's flow *as it runs at the swimmer*: a River /
+        // Rapids current is slower over the shallows and turns along the
+        // bank (`WaterFlow::over_bed`), through the same
+        // `byroredux_physics::local_current` the dynamic path uses, so the
+        // swimmer and the barrel beside them feel one current and the
+        // published `WaterContact.flow` agrees across the column.
+        let flow = flow_q.as_ref().and_then(|q| q.get(entity).copied()).map(|flow| {
+            byroredux_physics::local_current(
+                plane.kind,
+                flow,
+                bed_q.as_ref().and_then(|q| q.get(entity)),
+                pos.x,
+                pos.z,
+            )
+        });
         if best.as_ref().is_none_or(|candidate| distance < candidate.1) {
             best = Some((
                 PlayerWaterState {
@@ -2094,6 +2110,65 @@ mod tests {
             damped,
             raw
         );
+    }
+
+    /// #6488 — the two-samplers rule for the river current: over a shallow bed
+    /// a swimmer is pushed by the same slowed, bank-turned flow as the barrel
+    /// beside them (`WaterFlow::over_bed`), not by the plane's full authored
+    /// flow, and the state the contact publishes carries that same vector.
+    #[test]
+    fn a_river_current_over_a_shallow_bed_matches_the_dynamic_bodys_flow() {
+        use byroredux_core::ecs::components::water::{WaterBedField, WATER_RIVER_SPEED_MIN};
+
+        let authored = WaterFlow::new([1.0, 0.0, 0.0], 8.0);
+        let build = |kind: WaterKind| {
+            let mut world = World::new();
+            world.register::<WaterPlane>();
+            world.register::<WaterVolume>();
+            world.register::<WaterFlow>();
+            world.register::<WaterBedField>();
+            let plane = world.spawn();
+            world.insert(
+                plane,
+                WaterPlane { kind, material: WaterMaterial::default(), damage_per_second: 0.0 },
+            );
+            world.insert(
+                plane,
+                WaterVolume { min: [-100.0, -100.0, -100.0], max: [100.0, 0.0, 100.0] },
+            );
+            world.insert(plane, authored);
+            // Depth 0 everywhere: the waterline, where a river runs at its slowest.
+            world.insert(
+                plane,
+                WaterBedField::new([-1000.0, -1000.0], 100.0, 21, vec![0.0; 21 * 21]).unwrap(),
+            );
+            world
+        };
+        let pos = Vec3::new(0.0, -5.0, 0.0);
+
+        let river = build(WaterKind::River);
+        let flow = sample_player_water(&river, pos, 32.0).expect("in the column").flow.expect("river flows");
+        let bed = river
+            .query::<WaterBedField>()
+            .and_then(|q| q.get(river.query::<WaterPlane>().unwrap().iter().next().unwrap().0).cloned())
+            .unwrap();
+        let dynamic =
+            byroredux_physics::local_current(WaterKind::River, authored, Some(&bed), pos.x, pos.z);
+        assert_eq!(
+            (flow.direction, flow.speed),
+            (dynamic.direction, dynamic.speed),
+            "player and dynamic samplers resolve one current"
+        );
+        assert!(
+            (flow.speed - authored.speed * WATER_RIVER_SPEED_MIN).abs() < 1.0e-3,
+            "a waterline river runs at WATER_RIVER_SPEED_MIN of the plane speed: {}",
+            flow.speed
+        );
+
+        // Every other kind keeps the plane's flow verbatim, bed or no bed.
+        let lake = build(WaterKind::Calm);
+        let calm = sample_player_water(&lake, pos, 32.0).expect("in the column").flow.expect("flow kept");
+        assert_eq!((calm.direction, calm.speed), (authored.direction, authored.speed));
     }
 
     /// #5129 — a placed current box that extends past its plane's XZ
