@@ -177,10 +177,13 @@ fn cmd_11c2(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ct
     }
 }
 
-// GECK *SendTrespassAlarm <actor>*: a trespass crime nobody records: the faction-enemy flag is what
-// a crime-tracking faction sets on a major crime, and a trespass is not one. Accepted, no effect.
+// GECK *SendTrespassAlarm <actor>*: "sends out a trespass alarm as if someone had reported the player
+// trespassing". `CrimeKnowledge` carries `CrimeKind::Trespass` and the guard rush reads it, but nothing
+// routes this command into it yet, so it declines (counted in `unknown_commands`) instead of reporting a
+// no-op as done (#6511, the #6190 ledger-honesty rule). Wire it to the crime runtime when trespass is
+// modelled.
 fn cmd_115c(_world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
-    done("SendTrespassAlarm")
+    Action::Declined
 }
 
 // ── disposition (Oblivion): *ModDisposition* declines — nothing in the engine reads an NPC's

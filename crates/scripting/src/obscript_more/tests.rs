@@ -227,6 +227,8 @@ fn state_nothing_reads_back_declines_instead_of_reporting_done() {
         "SetQuestObject"
     );
     assert_eq!(run(&fnv_world, 0x1155, &nums(&[100.0]), &c), Action::Declined, "SetItemValue");
+    // #6511 — a trespass alarm nothing records (six FalloutNV.esm calls: Gomorrah, Ultra-Luxe, Wrangler).
+    assert_eq!(run(&fnv_world, 0x115c, &refs(&[crate::PLAYER_REFERENCE]), &c), Action::Declined, "SendTrespassAlarm");
 }
 
 #[test]
