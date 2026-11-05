@@ -496,6 +496,7 @@ the `tex-stream:` bench line.
 | Skyrim SE WhiterunBanneredMare | 399.0 → 54.8 | 1 787 → 1 309 | 268 | 50 | 0 / 0 / 0 | 352 = 352 / none |
 | Oblivion AnvilHeinrichOakenHallsHouse | 15.9 → 10.5 | 467 → 403 | 57 | 22 | 0 / 0 / 0 | 251 = 251 / none |
 | FO3 MegatonMoriartysSaloon | 36.8 → 17.3 | 414 → 341 | 225 | 26 | 0 / 0 / 0 | 195 = 195 / none |
+| Starfield citycydoniamainlevel | 1 370.8 → 116.4 | 10 754 → 9 580 | 3 512 | 53 | 0 / 0 / 0 | 898 = 898 / 9 = 9 |
 
 ### 12.2 Budget adherence (A8)
 
@@ -507,6 +508,7 @@ set. "Above" is resident less floors and **whole** textures (PRD §8).
 | FO4 MedTek | 120 / 100 | 121.7 / 101.7 | 46.7 / 26.7 | 0 / 49, 0 / 65 | none (control: none) |
 | FNV Prospector | 30 / 24 | 30.4 / 24.4 | 12.1 / 6.1 | 0 / 42, 0 / 54 | none |
 | Skyrim SE Bannered Mare | 40 / 30 | 40.5 / 30.5 | 19.8 / 9.9 | 0 / 39, 0 / 45 | none |
+| Starfield cydonia main level | 100 / 85 | 101.8 / 86.8 | 31.3 / 16.3 | 0 / 37, 0 / 48 | 9 (control: 9) |
 
 Resident runs about 1.7 % over the budget figure because the budget counts
 payload bytes and the allocation rounds up (§7.2). The Skyrim 30 MiB row
@@ -551,9 +553,15 @@ first read 12 promotions, 5 evictions and churn 5; see §7.2 for what changed.
 
 ### 12.5 Not met
 
-- **Starfield `citycydoniamainlevel`** (A6–A8) was not run: the cell needs
-  more host RAM than the dev box had free (5–9 GiB of 29), and an
-  out-of-memory kill takes the desktop session with it.
+- **Starfield `citycydoniamainlevel`** (A6–A8) ran on 2026-11-05 once the box had
+  the RAM (323 314 entities, 6 837 meshes; the engine peaks at ~16 GiB RSS and
+  the host dipped to 1.6–2.0 GiB available, so run it with nothing else open and
+  a memory guard). Same shape as the other games: 898 `textures=` in both arms,
+  9 unique missing textures in every arm (control and both budgets), 874
+  tail-only against 2 whole-file floor reads, one settle restart. The
+  "Above floors+whole" figure at budget 100 is 31.3 MiB and at 85 it is 16.3;
+  the 37 and 48 declines are the budget refusing promotions, which `tex.residency`
+  also counts as deficits while a budget is pinned.
 - **A11** (reflection A/B, FO4 MedTek at its default pose, 400-frame stepped
   captures, three per arm): on-versus-off mean absolute difference 0.083–0.099
   of 255 against 0.063–0.073 between equal arms; p99 of the per-pixel channel
@@ -566,5 +574,22 @@ first read 12 promotions, 5 evictions and churn 5; see §7.2 for what changed.
   the forced-level-0 run. A time-pinned capture is needed before A11 can be
   called met or failed; the pose also is not mirror-like, so it does not test
   the secondary-ray bias this requirement exists for.
+  **Repeat, 2026-11-05, time-pinned** (`--bench-mode renderer-static`, so the
+  clock is frozen, 400 frames, same MedTek cell, camera at (-1536, 70, -768)
+  pitched down 0.2, two captures per arm): equal arms still differ by mean 0.133
+  (~200 000 pixels, p99 2), on-versus-off by 0.195–0.207 (p99 3), so freezing
+  time did not remove the arm-to-arm noise or the residue above it. The
+  Laplacian variance of the frames is the same in both arms (259.1 / 259.3 off,
+  258.4 / 258.2 on), so nothing got blurrier. The pose is still not mirror-like:
+  `render.debug material_lobe` shows every visible surface dielectric except a
+  few papers, so no reflected texture is on screen. A mirror pose has to be found
+  in another FO4 cell, with a metal or glass surface facing a texture-rich wall.
+- **Open question for A11's real subject.** A reflected ray samples with the
+  explicit LOD `mipBias` (`raytrace.glsl`, `sampleRayHitBase`), which is the
+  roughness-scaled blur level counted from the *full* chain. On a texture whose
+  top `k` levels are not resident the view starts at chain level `k`, so a
+  rough reflection (`mipBias > 0`) reads chain level `mipBias + k`, `k` levels
+  too coarse, and a smooth one (`mipBias = 0`) reads level `k`. §3.2 only
+  argued the `mipBias = 0` case. Not measured; it needs the mirror pose above.
 - **Streaming on by default** (the Phase 4 switch flip) is withheld until the
   gates above close.
