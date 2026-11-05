@@ -251,7 +251,9 @@ RLT-REF-018), and the `filtered_direct` / `traced_share` views
 - **Temporal capture.** `--linear-capture-tap post-taa` and
   `--linear-capture-at F1,F2,…`, which needs a `{frame}` in the path.
 - **Bench clock.** `--bench-camera-length N` and
-  `--bench-camera-freeze-at F`. The camera path and every `BenchMover`
+  `--bench-camera-freeze-at F` (travel the path to F, then hold: the
+  converged reference) and `--bench-camera-hold-at F` (the pose at F from
+  frame 0: the no-motion control). The camera path and every `BenchMover`
   blocker share this clock.
 - **Export frame.** `--export-mitsuba-frame F`.
 

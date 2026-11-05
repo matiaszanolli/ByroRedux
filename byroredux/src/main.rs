@@ -737,7 +737,7 @@ struct App {
     /// every pre-existing bench does. See `bench_camera`.
     bench_camera: Option<crate::bench_camera::BenchCameraPath>,
     /// Path length and freeze frame shared by the camera path and every
-    /// `BenchMover` (`--bench-camera-length`, `--bench-camera-freeze-at`).
+    /// `BenchMover` (`--bench-camera-length`, `--bench-camera-freeze-at`, `--bench-camera-hold-at`).
     bench_path: crate::bench_camera::BenchPathClock,
     /// Camera pose the bench path starts from — captured on the first bench
     /// frame rather than read from the CLI, so a path composes with whatever

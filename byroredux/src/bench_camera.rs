@@ -410,6 +410,12 @@ pub struct BenchPathClock {
     pub length: Option<u32>,
     /// `--bench-camera-freeze-at F`: hold the path at frame F from then on.
     pub freeze_at: Option<u32>,
+    /// `--bench-camera-hold-at F`: evaluate the path at frame F from frame 0,
+    /// so the run never moves and its accumulators fill on a static scene.
+    /// This is the control for a moving capture (A3 / A14, M-LIGHT): unlike
+    /// `freeze_at`, which still travels the path up to F, a hold run carries
+    /// no motion history at all. Wins over `freeze_at` when both are given.
+    pub hold_at: Option<u32>,
 }
 
 impl BenchPathClock {
@@ -425,6 +431,7 @@ impl BenchPathClock {
         Ok(Self {
             length: number("--bench-camera-length")?.filter(|n| *n > 0),
             freeze_at: number("--bench-camera-freeze-at")?,
+            hold_at: number("--bench-camera-hold-at")?,
         })
     }
 
@@ -432,7 +439,12 @@ impl BenchPathClock {
     /// `frame` of a `run_frames` run.
     pub fn frame_and_length(self, frame: u32, run_frames: u32) -> (u32, u32) {
         let length = self.length.unwrap_or(run_frames).max(1);
-        (self.freeze_at.map_or(frame, |f| frame.min(f)), length)
+        let at = match (self.hold_at, self.freeze_at) {
+            (Some(held), _) => held,
+            (None, Some(frozen)) => frame.min(frozen),
+            (None, None) => frame,
+        };
+        (at, length)
     }
 
     /// Path progress in [0, 1], held at 1 past the end (the hold segment).
@@ -892,24 +904,32 @@ mod tests {
 
     #[test]
     fn path_clock_holds_after_its_length_and_at_its_freeze_frame() {
-        let clock = BenchPathClock { length: Some(11), freeze_at: None };
+        let clock = BenchPathClock { length: Some(11), ..Default::default() };
         assert_eq!(clock.progress(0, 100), 0.0);
         assert_eq!(clock.progress(5, 100), 0.5);
         assert_eq!(clock.progress(10, 100), 1.0);
         assert_eq!(clock.progress(60, 100), 1.0, "the hold segment");
-        let frozen = BenchPathClock { length: Some(11), freeze_at: Some(4) };
+        let frozen = BenchPathClock { length: Some(11), freeze_at: Some(4), ..Default::default() };
         assert_eq!(frozen.progress(90, 300), clock.progress(4, 100));
         assert_eq!(BenchPathClock::default().frame_and_length(7, 50), (7, 50));
+        // The hold control sits at the pose from frame 0: it never travels the
+        // path, where a freeze at the same frame still does.
+        let held = BenchPathClock { length: Some(11), hold_at: Some(4), ..Default::default() };
+        assert_eq!(held.progress(0, 100), clock.progress(4, 100));
+        assert_eq!(held.progress(90, 300), clock.progress(4, 100));
+        assert_ne!(frozen.progress(0, 300), held.progress(0, 300));
+        let both = BenchPathClock { hold_at: Some(4), freeze_at: Some(9), ..held };
+        assert_eq!(both.frame_and_length(0, 100), (4, 11));
     }
 
     #[test]
     fn path_clock_parses_its_flags() {
-        let args: Vec<String> = ["--bench-camera-length", "120", "--bench-camera-freeze-at", "30"]
+        let args: Vec<String> = ["--bench-camera-length", "120", "--bench-camera-freeze-at", "30", "--bench-camera-hold-at", "12"]
             .iter()
             .map(|s| s.to_string())
             .collect();
         let clock = BenchPathClock::from_args(&args).unwrap();
-        assert_eq!((clock.length, clock.freeze_at), (Some(120), Some(30)));
+        assert_eq!((clock.length, clock.freeze_at, clock.hold_at), (Some(120), Some(30), Some(12)));
         let bad: Vec<String> = ["--bench-camera-length", "x"].iter().map(|s| s.to_string()).collect();
         assert!(BenchPathClock::from_args(&bad).is_err());
     }

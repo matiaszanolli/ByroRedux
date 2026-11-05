@@ -5,3 +5,4 @@ revision=41b74db49 (worktree clean of tracked changes; untracked .claude/issues 
 gpu=NVIDIA GeForce RTX 4070 Ti 580.178.04
 mitsuba=3.9.1 variant=cuda_ad_rgb, 1024 spp, seeds 0,1; engine tier 3, 64 frames, seeds 0,1; references cached (16), wall 1115.9 s
 status=every row is `report`; no threshold exists until the owner writes the L1 / L2 budgets (Q6)
+A3_A14=rows re-measured after the control fix (target/m-light-phase3-entry-b, wall 620.5 s, same revision plus the --bench-camera-hold-at change); the first run's floors were the moving run itself

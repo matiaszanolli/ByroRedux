@@ -1145,11 +1145,14 @@ def gate_temporal(engine: Engine, store: ReferenceStore, ctx: Context, spp: int,
                 f"{gate}_{rung}_parked_f{frame}", rung, "final", 0, ctx.tier,
                 extra=extra + ["--bench-camera-freeze-at", str(frame)],
                 bench_frames=frame + PARKED_SETTLE, bench_mode="renderer-stepped"))
-        # The floor: the same single-frame captures with the path parked at
-        # the stop from frame 0, against the same converged reference — what
-        # per-frame sampling noise alone contributes.
+        # The floor: the same single-frame captures with the path held at
+        # the stop pose from frame 0 (`--bench-camera-hold-at`: no motion
+        # history; `--bench-camera-freeze-at` still travels the path up to its
+        # frame, so as a control it is the moving run itself), against the
+        # same converged reference — what per-frame sampling noise alone
+        # contributes.
         still = engine.sequence(f"{gate}_{rung}_still", rung, ctx.tier, post, bench_frames,
-                                extra + ["--bench-camera-freeze-at", str(stop)])
+                                extra + ["--bench-camera-hold-at", str(stop)])
 
         def mask_for(reference):
             return floor if gate == "A14" else erode(luminance(reference) > 1e-4, ERODE_PX)
@@ -1165,7 +1168,7 @@ def gate_temporal(engine: Engine, store: ReferenceStore, ctx: Context, spp: int,
         cold = {}
         for frame in motion:
             held = engine.sequence(f"{gate}_{rung}_held_f{frame}", rung, ctx.tier, [frame], frame + 4,
-                                   extra + ["--bench-camera-freeze-at", str(frame)])
+                                   extra + ["--bench-camera-hold-at", str(frame)])
             cold[frame] = temporal_error(load_exr(held[frame][0]), parked[frame], mask_for(parked[frame]))
         for frame in motion + post:
             image = load_exr(moving[frame][0])
