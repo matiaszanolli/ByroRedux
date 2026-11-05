@@ -1,6 +1,6 @@
 # Distant LOD Completion — Product Requirements
 
-**Status**: ACTIVE (2026-11-03). Revision 5 files the tracking issues. Revision 4 recorded the owner's §10 decisions, every one the recommendation. Revision 3 folded in review round 2:
+**Status**: ACTIVE (2026-11-05). Revision 6 records the Phase 0 census results (§9.1). Revision 5 files the tracking issues. Revision 4 recorded the owner's §10 decisions, every one the recommendation. Revision 3 folded in review round 2:
 every HEAD claim re-checked on 2026-11-03, Skyrim's tree-LOD shape and the
 Distant LOD Multiplier sub-record sourced, the far-field-shadow non-goal
 aligned with the Reference Lighting PRD's decided Q4, descriptors given
@@ -140,7 +140,7 @@ run's `lod-coverage:` line replaces it.
 | F3 | Heightmap synth fallback | all five | LAND | Drawn | `terrain_lod.rs` |
 | F4 | Combined objects `.bto` | Skyrim, FO4 | `meshes\terrain\<ws>\objects\` | Drawn, gapped | `object_lod.rs` (`ObjectLodScheme::BakedBto`); whole-quad exclusion against resident cells |
 | F5 | Fallout `blocks\` combined quads | FO3, FNV | `meshes\landscape\lod\<ws>\blocks\` | Drawn, gapped | `ObjectLodScheme::FalloutLegacyBlocks` (#3321), selected from `LegacyLodQuadIndex` (#5222) |
-| F6 | Oblivion `.lod` placements, STAT groups → `_far.nif` | Oblivion | 9 889 `.lod`; 118 STAT bases with a `_far.nif` (901 placements), 4 without (6) | Drawn; invisible to the gate | `placement_lod.rs`; full-model fallback for a base with no `_far.nif` (Q6); left out of `update_lod_coverage` by its doc comment (`streaming_helpers.rs:331-336`) |
+| F6 | Oblivion `.lod` placements, STAT groups → `_far.nif` | Oblivion | 9 889 `.lod`; 118 STAT bases with a `_far.nif` (901 placements), 8 without (29) | Drawn; invisible to the gate | `placement_lod.rs`; full-model fallback for a base with no `_far.nif` (Q6); left out of `update_lod_coverage` by its doc comment (`streaming_helpers.rs:331-336`) |
 | F7 | Oblivion `.lod` placements, TREE groups | Oblivion | 82 TREE bases, 98 661 placements: the large majority of all `.lod` placements | **Unconsumed** | `spawn_placement_lod_cell` (`placement_lod.rs:528`) resolves a group's base through `record_index.cells.statics`, which TREE records also populate (`dispatch_world_placement.rs:64-67`). A TREE's `MODL` is a bare `.spt` name (`references/import.rs:337-341`), so `far_nif_path` returns `None`, the `meshes\`-prefixed full path resolves in no archive, and the group reaches `None => continue` (`placement_lod.rs:548`) |
 | F8 | Skyrim tree billboards `.btt` + `<ws>.lst` + `treelod` atlas | Skyrim | 386 level-4 `.btt` (`tree_lod.rs` module docs) | Drawn, gapped; invisible to the gate | `tree_lod.rs` (#4913, `a9384f9c0`); whole-quad exclusion (`footprint_intersects_full_detail`, pinned by `full_detail_cells_veto_the_quads_they_touch`); not counted by `update_lod_coverage` |
 | F9 | FO3 distant trees `.dtl` + `treetypes.lst` | FO3 | 75 `.dtl` + 4 `.lst` in `Fallout - Meshes.bsa` (71 at level 8, 4 at level 4), plus 33 `.dtl` + 7 `.lst` across Anchorage, BrokenSteel, PointLookout and ThePitt | **Unconsumed** | no reader: `.dtl` and `treetypes` appear nowhere in the code |
@@ -319,12 +319,11 @@ Cross-cutting state, the same date:
 - **DLOD-TREE-004.** FO3 `.dtl` files and their `treetypes.lst` MUST parse
   bounds-checked, as `parse_btt` does. The `#[ignore]` corpus test
   `dtl_corpus_parses_and_resolves_every_species` MUST parse every `.dtl` file
-  DLOD-GATE-007 finds in the FO3 base and DLC archives (108 in the
-  2026-11-01 census) and resolve every species. **Phase 0: verify** the
-  layout (V3). The one-off census suggested a `.btt`-like header (a `u32`
-  group count, then a type index and a count per group), records that do not
-  fit the 32-byte `.btt` stride, and 36-byte `.lst` entries; none of this is
-  established.
+  DLOD-GATE-007 finds in the FO3 base and DLC archives (108, confirmed) and
+  resolve every species. The layout is established except for the trailing
+  bytes of 38 files (V3, §9.1, #6678): a `u32` chunk count, then chunks of
+  `u32` type, `u32` count and 32-byte records; `treetypes.lst` entries are 32
+  bytes (a `u32` index and seven `f32`), not 36.
 - **DLOD-TREE-005.** The `GameKind::Fallout3NV` tree ring MUST take its
   reach from `[TerrainManager] fTreeLoadDistance`, converted with
   `cells_from_bu` as the Skyrim ring is. The shipped FO3 and FNV
@@ -393,12 +392,12 @@ Cross-cutting state, the same date:
   the whole quad. Today this holds (`LodBandSelection::exclude_within`,
   `refine_within`, `lod_bands.rs`).
 - **DLOD-OBJ-004.** FO4 level-4 `.bto` quads SHOULD get the treatment of
-  DLOD-OBJ-002. **Phase 0: verify** that FO4's segment tables partition one
-  segment per cell; the census covered Skyrim only (V6).
-- **DLOD-OBJ-005.** FO3/FNV `blocks\` quads SHOULD get the treatment of
-  DLOD-OBJ-002 if their `BSSegmentedTriShape` segments partition per cell.
-  nif.xml defines the block's segment count as the "Number of segments in
-  the square grid". **Phase 0: verify** the partition on the corpus (V7).
+  DLOD-OBJ-002. Verified (V6, §9.1): FO4's level-4 sub-meshes partition their
+  triangles one segment per cell, 713 of 713, as Skyrim's do.
+- **DLOD-OBJ-005.** FO3/FNV `blocks\` quads MUST keep the whole-quad treatment: they have no per-cell lever (V7,
+  §9.1): each is one `NiTriShape` with no `BSSegmentedTriShape` or sub-index
+  block, in all 422 FO3 and 355 FNV quads read. They keep the whole-quad
+  treatment of DLOD-OBJ-003: Phase 3 cannot close their moat per cell.
 - **DLOD-OBJ-006.** A per-cell draw MUST NOT rely on per-REFR identity or on
   the VWD flag. The bake carries neither
   ([EXAL §5.2](../engine/exal.md#52-the-lodprovider-trait-gamevariant-for-lod),
@@ -434,16 +433,19 @@ Cross-cutting state, the same date:
   the default full-detail radius (DLOD-BAND-007, Q7).
 - **DLOD-BAND-003.** The FO3/FNV `.dlodsettings` descriptor MUST be read
   once per streaming state on the LOD source worldspace, as
-  `resolve_lod_grid_origin` reads `<ws>.lod`. **Phase 0: verify** the layout
-  (V8). The one-off census read `wasteland.dlodsettings` as 24 bytes that
-  decode plausibly as `4`, `32`, `128` (`u32`), then `-64, -64` and `63, 63`
-  (`i16` pairs), then `4` (`u32`); the field meanings are unestablished.
-- **DLOD-BAND-004.** If V8 shows the descriptor's SW cell is the quad
-  lattice origin, legacy quad selection MUST use it in place of the
-  residue-majority prune (#5387) and the coverage tie-break (#5520). The
-  test `dlodsettings_origin_tiles_every_authored_quad` MUST pass over every
-  vanilla FO3 and FNV descriptor DLOD-GATE-007 finds (24 in the 2026-11-01
-  census).
+  `resolve_lod_grid_origin` reads `<ws>.lod`. The layout is established
+  (§9.1, V8): `u32 4`, `u32` top level, `u32` 4 x top level, `i16` SW x, y,
+  `i16` NE x, y, `u32` 4 or 8.
+- **DLOD-BAND-004.** V8 shows the descriptor's SW cell is the quad lattice
+  origin for 46 of the 53 vanilla descriptors and not for seven FO3
+  worldspaces (§9.1), so it is not a universal replacement. Legacy quad
+  selection MUST use the SW cell as the lattice origin where every authored
+  quad tiles on it, and MUST keep the residue-majority prune (#5387) and the
+  coverage tie-break (#5520) for a descriptor that does not (or has none).
+  The test `dlodsettings_origin_tiles_every_authored_quad` MUST assert that
+  split over every vanilla FO3 and FNV descriptor (24 base-game, 53 with
+  DLC): all 25 FNV descriptors and 21 FO3 ones tile, the seven named in §9.1
+  do not.
 - **DLOD-BAND-005.** The worldspace "Distant LOD Multiplier" (CK wiki,
   *World Menu*; FO4 CK wiki, *WorldSpace*) MAY scale the object ring. xEdit
   defines it as the WRLD `NAMA` float on Skyrim and FO4
@@ -651,6 +653,34 @@ tracks.
 | V13 | Are FO4 trees part of the `.bto` bake? | FO4 CK wiki or xLODGen documentation, plus a census of `.bto` sub-mesh texture paths |
 | V14 | How the original measures the `[TerrainManager]` distances (metric, reference point on a quad), where it applies `fSplitDistanceMult`, and whether FO3/FNV `fBlockLoadDistance` bounds the LOD ring | A published source (CK / GECK wiki, an INI reference); else the documented reading stands under Q5 |
 
+### 9.1 Phase 0 results (2026-11-05)
+
+The censuses are `#[ignore]` tests run on the owner's machine (`crates/plugin/tests/lod_family_census.rs`,
+`byroredux/src/cell_loader/placement_lod.rs` and `tree_lod_tests.rs`, `crates/nif/examples/bto_segment_census.rs`);
+the written sources are the local wiki dumps and the StepMods pages cited. Every §3.1 *Vanilla data* figure and
+every count a requirement repeats from it reproduced, except one: F6's STAT bases without a `_far.nif` are 8 with
+29 placements, not 4 with 6 (corrected in §3.1 and Q6). The 118 `trees\billboards\` DDS, F7's 82 TREE bases and
+98 661 placements, F6's 118 with a `_far.nif` and 901, the 108 FO3 `.dtl`, the 24 base-game descriptors (15 FO3,
+9 FNV; 53 with DLC), the 386 `.btt` and the 75 + 33 `.dtl` / 4 + 7 `.lst` split all match. MegatonWorld has no
+`.dtl` and no `.dlodsettings`.
+
+| V | Answer | Source |
+|---|---|---|
+| V1 | **Partly settled; the owner rules on the rest.** The `…City` variants do apply in closed-city worldspaces: UESP, *Oblivion Mod:Oblivion.ini*: "Does the same thing as uGridDistantTreeRange when you are inside a closed city worldspace" (`uGridDistantCountCity` likewise, default 4). Radius vs diameter has no second source; the only wording is UESP's "15 cells out the world will appear to drop off suddenly", which reads as a radius. | UESP page only, so Q7's ruling stands as the risk owner |
+| V2 | The original's distant tree texture is `textures\trees\billboards\<.spt stem>.dds`: all 82 TREE bases the `.lod` groups instance pair one-to-one with a billboard by `.spt` stem (0 by `ICON`), out of 118 billboards. Its size is not documented. | `oblivion_tree_billboard_census` |
+| V3 | **Partly settled; the rest is #6678.** `treetypes.lst` is a `u32` count and 32-byte entries (a `u32` index 0, 1, 2, … and seven `f32`; 10 of 11 exact, `wasteland` declares 8 and holds 9). `.dtl` is a `u32` chunk count then chunks of `u32` type, `u32` record count (at most 114) and 32-byte records `{x, y, z, scale, f32, base FormID, chunk index, 0xFFFFFF00}`; 70 of 108 are exact, 38 carry undeclared trailing bytes. Not the 36-byte `.lst` entries or the `.btt`-unlike records the one-off census suggested. | `fallout3_tree_file_layouts`; #6678 |
+| V4 | A `.btt` record's `ref_form_id` is the FormID of the placed TREE reference it bakes: 43 333 distinct ids; 41 538 resolve in `Skyrim.esm`, all to a TREE base, at the baked position (within 1 unit) and in its cell; 1 709 are DLC references, 3 sit in a persistent cell, 83 are absent from the parsed references (cause not examined). Whether the original hides LOD trees one at a time is not documented; the key is available either way. | `tree_lod_ref_form_id_census` |
+| V5 | **Not settled by a source: the crossed cards stay an interpretation for Oblivion and FO3.** UESP's TREE record page calls `BNAM` "Billboard dimensions" (the near tree), and its TES4LODGen page is a stub with no description of the LOD tree shape. DLOD-TREE-010's rustdoc note applies. | UESP *Mod File Format/TREE*, *TES4LODGen* |
+| V6 | FO4 level-4 `.bto` quads partition their triangles one segment per cell: 713 of 713 sub-meshes (Skyrim 1 856 of 1 856), at most 16 segments; levels 8, 16 and 32 have exactly 1. | `bto_segment_census` |
+| V7 | **No.** FO3/FNV `blocks\` quads (FO3 422, FNV 355 read) are one `NiTriShape` under a `BSMultiBoundNode` each; none holds a segmented or sub-index block, so there is no per-cell lever (DLOD-OBJ-005's premise fails) and the whole quad stays the unit. | `bto_segment_census --blocks` |
+| V8 | The 24-byte layout is `u32 4`, `u32` top level, `u32` 4 x top level, `i16` SW cell x, y, `i16` NE cell x, y, `u32` 4 or 8. Over all 53 descriptors the first is 4 (53), the third is 4 x the second (51), the second is the highest authored level (46), the last the lowest (50), and the SW cell is an authored quad's corner (48). **The SW cell is not a universal lattice origin**: every authored quad is on its lattice for 46 of 53; 7 FO3 worldspaces (`dcworld01`, `dcworld06`, `dcworld12`, `dcworld17`, `dlc02baileyscrossroads`, `paradisefalls`, `washmontop`) are not. FNV: all 25 are. The NE cell is the world's cell extent, not the quads'. | `dlodsettings_descriptors_against_the_authored_quads` |
+| V9 | Every vanilla WRLD of `Skyrim.esm`, its DLC and `Fallout4.esm` + DLC authors `NAMA`, all 1.0 except WhiterunWorld, WindhelmWorld, MarkarthWorld and AlftandWorld at 0.25. What it scales is not published (the CK and FO4 CK wiki pages list it with no description; UESP calls it "unknown float"). | `worldspace_distant_lod_multiplier_census` |
+| V10 | On FO4 `fTreeLoadDistance` is "believed to be unused by the game"; it "used to set the maximum distance that tree LOD was loaded in Skyrim". What it bounds on FO3 / FNV is not documented, so DLOD-TREE-005's reading (the `.dtl` ring's reach) stays an interpretation. | StepMods, *Fallout4Prefs INI / TerrainManager* |
+| V11 | Yes. Skyrim LE's base archives hold 5 618 LOD names in the same families; all but one (a `labyrinthianmazeworld` `.bto`) exist under the same name in SE. SE adds 5 459 names for the DLC worldspaces, which LE ships in its DLC archives (not read). | `skyrim_le_ships_the_same_lod_family_names_as_se` |
+| V12 | A missing or bad `_far.NIF` makes the distant object black, not invisible (UESP, *PCS Library / All distant (lod) objects turn black*); the CS wiki tutorial says the game "will automatically seek out" the `_far.nif`. Neither describes a missing file exactly; Q6's full-model fallback stands. | UESP *PCS Library*; CS wiki *Visible When Distant Tutorial* |
+| V13 | FO4 `.bto` sub-meshes name only `textures\terrain\<ws>\` atlases (980 sub-meshes: commonwealth 922, sanctuaryhillsworld 48, diamondcity 10); none names a tree texture. Two FO4 worldspaces (`diamondcity`, `sanctuaryhillsworld`) ship a tree `.lst` with no `.btt`. No CK or xLODGen page was found to confirm what the bake holds. | `bto_segment_census --textures` |
+| V14 | **Not settled by a source: the documented reading stands under Q5.** The published INI guides name `fBlockLevel<N>Distance` as the "maximum distance" of each object LOD level and `fSplitDistanceMult` the "distance multiplier for landscape LOD levels" (default 0.75), without a metric, reference point or units; `fBlockLoadDistance` is not explained. | StepMods, *Fallout4Prefs INI / TerrainManager* |
+
 **Phase 1 — The gate sees every ring.** Ships DLOD-GATE-001 to -008 and
 DLOD-BAND-001, measured on today's families. Exit: all five boundary
 profiles print the extended line; Skyrim's `tree_resident` is nonzero; the
@@ -739,11 +769,11 @@ A11 pass, and the three-scene before/after table is published.
    ladder and its documented reading are final (DLOD-BAND-006).
 6. **Q6 — Oblivion VWD objects with no `_far.nif`.** The CS wiki says such
    an object "will not be visible in the game from distant" (*Visible When
-   Distant Tutorial*; V12 seeks a second source). Recommended: keep drawing
+   Distant Tutorial*; V12: UESP's *PCS Library* says a missing `_far.NIF` turns the distant object black, not invisible). Recommended: keep drawing
    the full model (DLOD-OBJ-007). Consequence: a VWD flag always means
    "visible at distance", at the cost of full meshes at range; on vanilla
-   data the 2026-11-01 census puts it at 4 bases and 6 placements (§3.1, a
-   Phase 0 figure until DLOD-GATE-007). Alternative: match the original and
+   data `oblivion_lod_census` (DLOD-GATE-007) counts 8 bases and 29
+   placements (§3.1; the 2026-11-01 hand census said 4 and 6). Alternative: match the original and
    skip them. Consequence: behaviour becomes faithful for mods, but the
    modder's flag then does nothing without a `_far.nif`.
    **Decided** (2026-11-03): the recommendation — keep drawing the full
@@ -818,3 +848,4 @@ marked otherwise:
 | 3 | 2026-11-03 | Review round 2 folded in: HEAD re-checked on 2026-11-03 (stale line anchors in F7, TREE-003, DEPTH-002; family-predicate tests already cover all six variants, GATE-008; FO3/FNV ladder models `fSplitDistanceMult` and clamps at 64 cells, BAND-001, BAND-006, §6 rows 3 and 8; depth baseline lives under `DEFAULT_RENDER_DISTANCE` and names no pose, DEPTH-001; `m-exteriors.sh` pins `--upscaler taa`, DEPTH-005, A10); Skyrim tree-LOD shape sourced from DynDOLOD (TREE-010, V5, §6 row 2, Q3) and per-reference unload hint (TREE-008, V4); `NAMA` sourced from xEdit (BAND-005, V9); `fTreeLoadDistance` meaning made a verify item (TREE-005, V10); new V14; Read state for descriptors (§3, F10, G-001, metrics); F6 marked invisible to the gate; GATE-006 scoped per worldspace; GATE-007 extends `probe_lod_corpus`; NG-010 cites the Reference Lighting PRD's decided Q4; Q2 and Q6 sourced and given explicit consequences; new BAND-007 and Q7 (rings inside the full-detail radius) | claude: revise |
 | 4 | 2026-11-03 | Owner decisions Q1–Q7 recorded, every one the recommendation | owner: approved |
 | 5 | 2026-11-03 | → ACTIVE: parent #6633 and phase issues #6636, #6637, #6638, #6639, #6640, #6642 filed; the Phase 0 verify items are acceptance criteria of #6636 | — |
+| 6 | 2026-11-05 | Phase 0 census figures reproduced (§9.1): F6's STAT bases without a `_far.nif` are 8 / 29, not 4 / 6; V1–V14 answered or filed (#6678); DLOD-BAND-004's premise (the `.dlodsettings` SW cell as the lattice origin) holds for 46 of 53 descriptors, DLOD-OBJ-005's (segmented `blocks\` quads) for none | — |

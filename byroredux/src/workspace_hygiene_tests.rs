@@ -1340,8 +1340,8 @@ fn example_targets_hold_their_per_crate_ceilings() {
         ("fsr3-sys", 1, 284),
         ("hkx", 14, 863),
         ("menuxml", 1, 197),
-        // #6636 — `bto_segment_census` reads BA2 and gains `--blocks` (V6, V7).
-        ("nif", 38, 4370),
+        // #6636 — `bto_segment_census` reads BA2 and gains `--blocks` and `--textures` (V6, V7, V13).
+        ("nif", 38, 4405),
         // M43 — +1: `pex_list_fns.rs`, which prints a script's typed function signatures; it read the
         // FO4 `OnStory*` event payloads out of `Quest.pex` (docs/engine/story-manager.md §6.4).
         ("pex", 4, 1241),

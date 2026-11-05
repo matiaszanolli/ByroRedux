@@ -22,7 +22,7 @@
 //! it prints the NIF block-type histogram instead, so "do those quads partition one per cell" is answered
 //! by what the files contain.
 //!
-//! Usage: `cargo run --release -p byroredux-nif --example bto_segment_census -- [--blocks] <archive>`
+//! Usage: `cargo run --release -p byroredux-nif --example bto_segment_census -- [--blocks | --textures] <archive>`
 use byroredux_bsa::{Ba2Archive, BsaArchive};
 use std::collections::BTreeMap;
 
@@ -86,16 +86,51 @@ fn blocks_census(archive: &Archive) {
     }
 }
 
+/// V13 — the diffuse texture and `.bgsm` material paths every `.bto` sub-mesh names, grouped by their first four
+/// path components, with the number naming a tree asset (`tree` anywhere in the path).
+fn textures_census(archive: &Archive) {
+    let mut prefixes: BTreeMap<String, usize> = BTreeMap::new();
+    let (mut meshes, mut tree_named) = (0usize, 0usize);
+    for f in archive.list_files() {
+        if !f.to_ascii_lowercase().ends_with(".bto") {
+            continue;
+        }
+        let Ok(bytes) = archive.extract(f) else { continue };
+        let Ok(scene) = byroredux_nif::parse_nif(&bytes) else { continue };
+        let mut pool = byroredux_core::string::StringPool::new();
+        for m in byroredux_nif::import::import_nif(&scene, &mut pool) {
+            meshes += 1;
+            for path in [m.material.textures.base_color, m.material.material_path].into_iter().flatten() {
+                let path = pool.resolve(path).unwrap_or("").to_ascii_lowercase().replace('/', "\\");
+                tree_named += usize::from(path.contains("tree"));
+                let prefix: Vec<&str> = path.split('\\').take(4).collect();
+                *prefixes.entry(prefix.join("\\")).or_default() += 1;
+            }
+        }
+    }
+    println!("# {meshes} .bto sub-meshes; {tree_named} texture / material paths mention `tree`");
+    let mut rows: Vec<_> = prefixes.into_iter().collect();
+    rows.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+    for (p, c) in rows.iter().take(12) {
+        println!("  {c:6}  {p}");
+    }
+}
+
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let blocks = args.first().is_some_and(|a| a == "--blocks");
-    if blocks {
+    let textures = args.first().is_some_and(|a| a == "--textures");
+    if blocks || textures {
         args.remove(0);
     }
-    let bsa = args.first().expect("usage: [--blocks] <archive>").clone();
+    let bsa = args.first().expect("usage: [--blocks | --textures] <archive>").clone();
     let archive = Archive::open(&bsa);
     if blocks {
         blocks_census(&archive);
+        return;
+    }
+    if textures {
+        textures_census(&archive);
         return;
     }
     // level -> segment-count -> occurrences

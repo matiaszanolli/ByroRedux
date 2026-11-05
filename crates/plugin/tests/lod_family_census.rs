@@ -671,3 +671,45 @@ fn worldspace_distant_lod_multiplier_census() {
         }
     }
 }
+
+/// V11 (PRD §7.1 Skyrim) — does Skyrim LE ship the same LOD family names as SE? `BYROREDUX_SKYRIM_LE_DATA`
+/// names the LE `Data` folder (default: the Wine prefix the dev machine keeps it in).
+#[test]
+#[ignore = "needs the Skyrim LE and SE archives on disk"]
+fn skyrim_le_ships_the_same_lod_family_names_as_se() {
+    use std::collections::BTreeSet;
+    let le_dir = std::env::var("BYROREDUX_SKYRIM_LE_DATA").ok().filter(|s| !s.is_empty()).map_or_else(
+        || {
+            PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                .join("Games/skyrim-original/drive_c/Program Files (x86)/The Elder Scrolls V Skyrim/Data")
+        },
+        PathBuf::from,
+    );
+    let se_dir = test_paths::skyrim_se_data_dir();
+    if !le_dir.is_dir() || !se_dir.is_dir() {
+        test_paths::require_or_skip("Skyrim LE and SE installs");
+        return;
+    }
+    let names = |dir: &Path, archives: &[&str]| -> BTreeSet<(String, Option<String>, Option<String>, Option<(i32, i32)>)> {
+        archives
+            .iter()
+            .flat_map(|a| list_files(&dir.join(a)))
+            .flat_map(|f| classify(&f))
+            .map(|h| (h.family.label().to_owned(), h.world, h.level, h.cell))
+            .collect()
+    };
+    let le = names(&le_dir, &["Skyrim - Meshes.bsa", "Skyrim - Misc.bsa", "Skyrim - Textures.bsa"]);
+    let se = names(&se_dir, &TITLES[3].base.iter().copied().collect::<Vec<_>>());
+    let only_le: Vec<_> = le.difference(&se).collect();
+    let only_se: Vec<_> = se.difference(&le).collect();
+    eprintln!("LE {} LOD names, SE {}; only LE: {}, only SE: {}", le.len(), se.len(), only_le.len(), only_se.len());
+    for x in only_le.iter().take(5) {
+        eprintln!("  only LE: {x:?}");
+    }
+    // V11: LE's base archives hold 5,618 LOD names; all but one exist under the same name in SE (SE also folds the
+    // DLC worldspaces' LOD into its main archives, 5,459 more names, which LE ships in its DLC archives, not read here).
+    assert_eq!((le.len(), only_le.len()), (5_618, 1));
+    assert_eq!(only_le[0].1.as_deref(), Some("labyrinthianmazeworld"));
+    let families = |s: &BTreeSet<(String, Option<String>, Option<String>, Option<(i32, i32)>)>| s.iter().map(|x| x.0.clone()).collect::<BTreeSet<_>>();
+    assert_eq!(families(&le), families(&se), "the same families in both editions");
+}

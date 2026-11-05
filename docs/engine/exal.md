@@ -569,6 +569,56 @@ producers. `.btr`/`.bto`/`_far.nif` all parse with the **existing NIF parser**
 exact `BSTriShape`/`BSSubIndexTriShape` block flavour inside per-game `.bto`
 (Q2, MEDIUM confidence).
 
+### 5.2.1 Distant tree families and per-tree retirement (M35, DLOD-TREE)
+
+Three titles author distant trees, each in its own container; the engine draws
+all of them through the one representation `tree_lod.rs` builds (decision Q3,
+DLOD-TREE-006): one mesh per LOD file, `IsLodTerrain`, alpha-tested upright
+cards. Per-game differences stop at the parse and translate step; no
+tree-specific branch reaches the renderer. Evidence: PRD
+[`distant-lod-completion`](../prd/distant-lod-completion.md) §9.1, reproduced by
+the `lod_family_census` tests (DLOD-GATE-007).
+
+| Family | Container | Record | State |
+|---|---|---|---|
+| Skyrim (F8) | `meshes\terrain\<ws>\trees\<ws>.4.<x>.<y>.btt` + `<ws>.lst` + `treelod` atlas | `.btt`: `u32` group count, then `u32` species, `u32` count, 24-byte records `{x, y, z, yaw, scale, REFR FormID}`; `.lst` gives each species' size and atlas rect | Drawn (`tree_lod.rs`) |
+| Oblivion (F7) | the `distantlod\<ws>_<x>_<y>.lod` placement groups whose base is a TREE (82 bases, 98 661 placements: most of all `.lod` placements) | the same groups F6 reads (`parse_placement_lod`); the texture is `textures\trees\billboards\<.spt stem>.dds`, one per instanced TREE base (118 shipped) | Unconsumed: such a group resolves to a bare `.spt` name and is skipped |
+| Fallout 3 (F9) | `meshes\landscape\lod\<ws>\trees\<ws>.level<L>.x<X>.y<Y>.dtl` + `treetypes.lst` | `.dtl`: `u32` chunk count, then chunks of `u32` tree type, `u32` count (at most 114), 32-byte records `{x, y, z, scale, f32, base FormID, chunk index, 0xFFFFFF00}`; `treetypes.lst`: `u32` count and 32-byte entries (`u32` index, seven `f32`) | Unconsumed. 38 of 108 `.dtl` and `wasteland`'s `.lst` carry bytes the headers do not declare (#6678) |
+
+FNV and FO4 author no tree family: FNV has no `lod\<ws>\trees\` folder in
+any archive and shares `GameKind::Fallout3NV` with FO3, so its ring finds no
+`.dtl` and spawns nothing (DLOD-TREE-009); FO4's `.bto` sub-meshes name only
+`textures\terrain\<ws>\` atlases, and `tree_lod_supported` is `false`.
+
+**Interpretations.** The crossed-card shape is sourced for Skyrim only
+(DynDOLOD's *Tree LOD* help: two double-sided planes intersecting at 90
+degrees, upright). For Oblivion and FO3 no document describes the distant tree's
+shape (V5), so the cards are an interpretation, not the engine's draw, and the
+rustdoc that builds them says so (DLOD-TREE-010). What `fTreeLoadDistance`
+bounds on FO3 / FNV is undocumented (on FO4 it is believed unused, V10), so
+its use as the `.dtl` ring's reach is also an interpretation. Oblivion's
+`uGridDistantTreeRange` (15) and its `…City` variant (4, closed-city worldspaces
+only) come from UESP; whether they are radii or diameters has no second source
+(V1).
+
+**Per-tree retirement (DLOD-TREE-008).** Today a tree file whose footprint
+touches a resident full-detail cell is vetoed whole
+(`full_detail_cells_veto_the_quads_they_touch`), which leaves a moat of
+non-resident cells without trees. The `.btt` record carries the key to do
+better: its `u32` is the FormID of the placed TREE reference it bakes. Of the
+43 333 vanilla Skyrim records, 41 538 resolve in `Skyrim.esm`, every one to a
+TREE base, at the baked position and in the baked position's cell; the rest
+are DLC references (1 709), a persistent cell's (3), or not in the parsed
+references (83, not examined). So a loader that retires LOD trees can key on
+the reference FormID, or on the cell of the baked position, and the two agree.
+Whether the original hides LOD trees one at a time is not documented; the CK
+wiki records only a custom-worldspace bug where tree LOD "will not disappear,
+even if you move close to a tree", and DynDOLOD's help lists "tree LOD does not
+unload for references added by ESL flagged plugins", which points at a
+per-reference key without stating one. Oblivion's `.lod` placements and FO3's
+`.dtl` records carry a base FormID but no reference FormID, so they retire by
+cell only; a per-tree key is a Skyrim-and-later capability.
+
 ### 5.3 Why a trait here but a `GameKind` table in §4
 
 The §4 quirks are *scalar decisions* (one height, one flag) — a match arm is the

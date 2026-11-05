@@ -1318,6 +1318,52 @@ real spatial-emitter design decision, not just dispatch plumbing) and
 item 3 (pathfinding — recommended as its own follow-up issue given its
 size).
 
+## Reversed-Z depth (M35 Phase 5)
+
+Distant terrain and the LOD objects standing on it share one depth buffer, so
+depth precision is the floor between them. The renderer implements both
+mappings behind one constant: `ACTIVE_DEPTH_MAPPING` (`camera.rs`) ships
+`DepthMapping::Conventional`, and the reversed mapping is complete and tested
+but off. [PRD `distant-lod-completion`](../prd/distant-lod-completion.md)
+(DLOD-DEPTH-001 to -006, decision Q4) turns it on once its far-decade gain is
+measured, on all five exterior titles at once, because the depth convention is
+renderer-wide.
+
+**Order of work.**
+
+1. *Baseline (DLOD-DEPTH-001).* Capture `depth.stats` at pinned
+   `--camera-pos` / `--camera-forward` poses on three scenes: the FNV
+   satellite-dish scene, Skyrim Tamriel and FO4 Commonwealth. The table in
+   `DEFAULT_RENDER_DISTANCE`'s rustdoc covers the FNV scene only, by
+   description; it grows to all three, each row with its pose coordinates.
+2. *The flip (DLOD-DEPTH-002).* One commit: `ACTIVE_DEPTH_MAPPING` becomes
+   `DepthMapping::Reversed`, with the regenerated
+   `include/shader_constants.glsl` and every recompiled `.spv` it changes.
+   `BYRO_REVERSED_Z` is generated from the constant by
+   `crates/renderer/build.rs`, never hand-edited;
+   `the_shader_depth_convention_matches_the_engine_constant` passes, the
+   shipped-mapping test is replaced by its reversed twin, and
+   `scripts/check-shader-artifacts.sh` proves byte-identical SPIR-V.
+3. *Gain (DLOD-DEPTH-003, A9).* At each pose the far decade's distinct depth
+   codes after the flip exceed the conventional baseline.
+4. *No regression (DLOD-DEPTH-004, -005, A10).* `m-exteriors.sh all static`,
+   `all boundary`, `all cycle` and `all water` return the same per-profile
+   verdicts as a same-machine control, under both `--upscaler taa` and the
+   default `fsr3` (whose `depth_inverted` flag is one of the converted
+   sites). The script passes `--upscaler taa` in every mode today, so the
+   FSR half needs an upscaler override added to it first.
+5. *Cost (DLOD-DEPTH-006, A11).* Bench-of-record frame times stay within the
+   noise of a same-machine control.
+
+**Reading the result.** A9 is a precision measurement, not a visual one: it
+says nothing about whether LOD terrain and the objects on it stop z-fighting
+at range, which is what the flip is for. Capture the boundary frames under
+both mappings and have the owner judge them (the project rule that visual
+judgment is the owner's applies).
+
+The tracking issue for the flip is #6642 (M35 Phase 5), independent of the
+LOD phases and free to run in parallel with them.
+
 ## Verification policy
 
 - Pure selection/delta/ownership rules stay in `cargo test`.
