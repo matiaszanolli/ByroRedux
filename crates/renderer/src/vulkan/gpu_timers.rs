@@ -1146,7 +1146,6 @@ impl GpuPerFrameTimers {
         cmd: vk::CommandBuffer,
         frame: usize,
     ) {
-        ckpt_mark(cmd, pass as u64, 0);
         let row = pass.row();
         // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
         unsafe {
@@ -1162,7 +1161,6 @@ impl GpuPerFrameTimers {
         cmd: vk::CommandBuffer,
         frame: usize,
     ) {
-        ckpt_mark(cmd, pass as u64, 1);
         let row = pass.row();
         // SAFETY: `cmd` is recording; pool is live; slot is within QUERIES_PER_FRAME.
         unsafe {
@@ -1725,30 +1723,5 @@ mod tests {
             !body.contains(")?"),
             "a bare `?` in the TIMESTAMP loop leaks the pools created so far (#4998)"
         );
-    }
-}
-
-
-// TEMP #6608 diagnostics (never committed).
-pub static CKPT: std::sync::OnceLock<ash::nv::device_diagnostic_checkpoints::Device> = std::sync::OnceLock::new();
-pub static CKPT_FRAME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-pub fn ckpt_mark(cmd: vk::CommandBuffer, pass: u64, end: u64) {
-    if let Some(d) = CKPT.get() {
-        let f = CKPT_FRAME.load(std::sync::atomic::Ordering::Relaxed);
-        let v = (f << 16) | (pass << 1) | end | (1u64 << 62);
-        unsafe { d.cmd_set_checkpoint(cmd, v as usize as *const std::ffi::c_void) };
-    }
-}
-pub fn ckpt_dump(queue: vk::Queue) {
-    let Some(d) = CKPT.get() else { return };
-    unsafe {
-        let n = d.get_queue_checkpoint_data_len(queue);
-        let mut out = vec![vk::CheckpointDataNV::default(); n];
-        d.get_queue_checkpoint_data(queue, &mut out);
-        log::error!("CKPT count={n} current_frame={}", CKPT_FRAME.load(std::sync::atomic::Ordering::Relaxed));
-        for c in &out {
-            let v = c.p_checkpoint_marker as usize as u64 & !(1u64 << 62);
-            log::error!("CKPT stage={:?} frame={} pass={} end={}", c.stage, v >> 16, (v & 0xffff) >> 1, v & 1);
-        }
     }
 }

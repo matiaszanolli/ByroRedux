@@ -142,6 +142,12 @@ binding edges the window-event path resolves, joining the canonical deferred
   standoff, the restored door opens again, and the exterior quicksave
   survives a graceful-quit restart (`--load`, grid + pose). PASS on FNV
   2026-10-01.
+- `p5-door-round-trip.sh` (port 19880) — out of the fixture's interior and
+  back in through the far door, both by `door.teleport` from
+  `interaction.status`, under the headless display. Fails on a device loss or
+  on a Skyrim exterior that never dispatched ground cover, which is the hazard
+  the route exists for (#6608). PASS on Skyrim SE, FO3 and FO4 2026-11-05. No
+  FNV route: its arrival stands past interaction reach from the door.
 - `p5-soak.sh` (port 19873, `BYROREDUX_SOAK_MINUTES`, default 30) — repeated
   per-cycle control walks, F5, door transition out, F9 session replacement
   back in; fails on panic, stuck transition, lost player control, or RSS

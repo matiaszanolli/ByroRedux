@@ -573,46 +573,46 @@ impl App {
             // `GpuInstance.vertex_offset`, which only the live `MeshRegistry`
             // can resolve, and #4052 settled that it must be resolved every
             // frame (the registry compacts).
-            // While the loading stage owns the frame there is no world
-            // camera to collect against (the world's draws are filtered
-            // out), so ground-cover collection would stage against a
-            // camera nothing renders from. The bench feature and the
-            // cover are incompatible by construction.
-            if self.loading_screen.active_stage().is_none() {
-                collect_and_prepare_groundcover(
-                    &self.world,
-                    ctx,
-                    &frame,
-                    GroundCoverScratch {
-                        residency: &mut self.groundcover_residency,
-                        collect: &mut self.groundcover_collect_scratch,
-                        cells: &mut self.groundcover_cells,
-                        chunks: &mut self.groundcover_chunks,
-                        species: &mut self.groundcover_species,
-                        species_table: &mut self.groundcover_species_table,
-                        species_table_signature: &mut self.groundcover_species_table_signature,
-                        disturbers: &mut self.groundcover_disturbers,
-                        detail_atlas: &mut self.groundcover_detail_atlas,
-                        truncation_logged: &mut self.groundcover_truncation_logged,
-                        debug_points: self.groundcover_debug_points,
-                        off: self.groundcover_off,
-                    },
-                );
+            // While the loading stage owns the frame there is no world camera to
+            // collect against, so ground cover stages nothing, as in an interior.
+            // Skipping `prepare` instead re-dispatches the last exterior frame's
+            // chunks over the destination's rebuilt SSBO: a GPU hang (#6608). The
+            // bench feature and the cover are incompatible by construction.
+            let groundcover_off =
+                self.groundcover_off || self.loading_screen.active_stage().is_some();
+            collect_and_prepare_groundcover(
+                &self.world,
+                ctx,
+                &frame,
+                GroundCoverScratch {
+                    residency: &mut self.groundcover_residency,
+                    collect: &mut self.groundcover_collect_scratch,
+                    cells: &mut self.groundcover_cells,
+                    chunks: &mut self.groundcover_chunks,
+                    species: &mut self.groundcover_species,
+                    species_table: &mut self.groundcover_species_table,
+                    species_table_signature: &mut self.groundcover_species_table_signature,
+                    disturbers: &mut self.groundcover_disturbers,
+                    detail_atlas: &mut self.groundcover_detail_atlas,
+                    truncation_logged: &mut self.groundcover_truncation_logged,
+                    debug_points: self.groundcover_debug_points,
+                    off: groundcover_off,
+                },
+            );
 
-                // #4413 — the authored-model tier, fed the template draws
-                // `build_render_data` just built (their materials are interned in
-                // this frame's table, which `draw_frame` has not uploaded yet).
-                prepare_groundcover_models(
-                    &self.world,
-                    ctx,
-                    &mut self.cover_template_draws,
-                    &mut self.groundcover_model_records,
-                    &mut self.groundcover_model_selection,
-                    &self.groundcover_collect_scratch.cell_covers,
-                    &mut self.groundcover_model_records_key,
-                    self.groundcover_off,
-                );
-            }
+            // #4413 — the authored-model tier, fed the template draws
+            // `build_render_data` just built (their materials are interned in
+            // this frame's table, which `draw_frame` has not uploaded yet).
+            prepare_groundcover_models(
+                &self.world,
+                ctx,
+                &mut self.cover_template_draws,
+                &mut self.groundcover_model_records,
+                &mut self.groundcover_model_selection,
+                &self.groundcover_collect_scratch.cell_covers,
+                &mut self.groundcover_model_records_key,
+                groundcover_off,
+            );
 
             // Tick and render the UI overlay. The Oblivion MenuXml HUD
             // (M48.4) owns the overlay when live; otherwise this is the
@@ -941,9 +941,6 @@ impl App {
                 }
                 Err(e) => {
                     log::error!("Draw failed: {e:#}");
-                    if let Ok(q) = ctx.graphics_queue.lock() {
-                        byroredux_renderer::vulkan::gpu_timers::ckpt_dump(*q);
-                    }
                     event_loop.exit();
                 }
             }
@@ -1781,6 +1778,36 @@ mod host_method_diagnostic_tests {
 /// instead, mirroring that sibling test's technique on the caller side.
 #[cfg(test)]
 mod skin_dispatch_ran_rollback_scope_tests {
+    /// #6608 — `record_scatter` re-dispatches whatever `prepare` last staged, so
+    /// a loading-stage frame has to stage nothing rather than skip `prepare`:
+    /// skipping it kept the last exterior frame's chunks and vertex-SSBO binding
+    /// dispatching across the destination's geometry rebuild, and that hung the
+    /// GPU on Skyrim's exterior to interior door.
+    #[test]
+    fn a_loading_stage_frame_takes_the_groundcover_off_path() {
+        let src = byroredux_core::source_scan::production_text(include_str!("app_frame.rs"));
+        assert!(
+            src.contains("self.groundcover_off || self.loading_screen.active_stage().is_some()"),
+            "the loading stage must drive ground cover's off path"
+        );
+        assert!(
+            src.contains("off: groundcover_off,"),
+            "the scatter must read the frame's off decision, not the bare CLI switch"
+        );
+        assert!(
+            !src.contains("if self.loading_screen.active_stage().is_none() {"),
+            "ground-cover prepare must not be gated away while the stage owns the frame"
+        );
+        let models = src
+            .split("&mut self.groundcover_model_records_key,")
+            .nth(1)
+            .expect("the model tier's prepare must stay in render_one_frame");
+        assert!(
+            models.trim_start().starts_with("groundcover_off,"),
+            "the model tier must read the same off decision as the scatter"
+        );
+    }
+
     #[test]
     fn rollback_check_runs_before_the_ok_err_match_not_inside_the_ok_arm() {
         let src = include_str!("app_frame.rs");

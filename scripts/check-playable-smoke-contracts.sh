@@ -63,7 +63,7 @@ echo "playable-smoke-contracts: PASS -- data neutralisation covers every harness
 # #6547 — the three FNV P5 hardening gates (door transition, F5/F9 quicksave, soak) load the shared fixture
 # and call smoke_require_data like p5-save-restart, so they run through this loop too.
 for name in p0-door-interaction p1-character-traversal p2-melee-core p5-save-restart w1-water-traversal w2-dynamic-water \
-    p5-door-transition p5-f5-f9-quicksave p5-soak; do
+    p5-door-transition p5-door-round-trip p5-f5-f9-quicksave p5-soak; do
     smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
     for game in "${GAMES[@]}"; do
         unset FIXTURE_GATES
