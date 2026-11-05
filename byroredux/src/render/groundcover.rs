@@ -477,6 +477,8 @@ pub(crate) fn collect_groundcover_frame(
                 base_affinity: cover.base_affinity,
                 terrain_tile_slot: cover.terrain_tile_slot,
                 base_diffuse_index: cover.base_diffuse_index,
+                layer_grass_colour: cover.layer_grass_colour,
+                base_grass_colour: cover.base_grass_colour,
                 cover_masks: cover_masks_for_cell(
                     cover_form_ids,
                     localised,
@@ -601,6 +603,15 @@ pub(crate) fn collect_groundcover_frame(
                     // #5174 — couples blades to the base on cells with no
                     // tile (a base and no ATXT paint).
                     base_diffuse_index: cell.base_diffuse_index,
+                    layer_grass_colour0: cell.layer_grass_colour[0],
+                    layer_grass_colour1: cell.layer_grass_colour[1],
+                    layer_grass_colour2: cell.layer_grass_colour[2],
+                    layer_grass_colour3: cell.layer_grass_colour[3],
+                    layer_grass_colour4: cell.layer_grass_colour[4],
+                    layer_grass_colour5: cell.layer_grass_colour[5],
+                    layer_grass_colour6: cell.layer_grass_colour[6],
+                    layer_grass_colour7: cell.layer_grass_colour[7],
+                    base_grass_colour: cell.base_grass_colour,
                 });
                 scratch.cell_covers.push(cell.cover_masks);
                 let index = (cells.len() - 1) as u32;
@@ -741,6 +752,9 @@ pub(crate) struct EntityCell {
     terrain_tile_slot: u32,
     /// The BTXT base diffuse handle, 0 when unresolved (#5174).
     base_diffuse_index: u32,
+    /// Grass colour per lane / for the base (linear RGB, `a` = known).
+    layer_grass_colour: [[f32; 4]; TERRAIN_SPLAT_LAYERS as usize],
+    base_grass_colour: [f32; 4],
     /// #4906 — which authored records each lane's textures list; the model
     /// tier's per-cell slice of the selection buffer.
     cover_masks: CellCoverMasks,
@@ -1443,6 +1457,7 @@ mod tests {
                 uniform_scaling: false,
                 fit_to_slope: true,
                 nominal_height: None,
+                mean_colour: None,
             }],
             grid_spacing: 80.0,
             climate: Climate::Temperate,

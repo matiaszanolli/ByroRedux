@@ -1147,6 +1147,10 @@ struct CoverDensityInputs {
     base_affinity: f32,
     authored_grass: [Vec<u32>; TERRAIN_SPLAT_LAYERS as usize],
     base_authored_grass: Vec<u32>,
+    /// Linear-RGB colour of the grass each lane's texture grows, `a = 1` when
+    /// known and `0` when not (see [`AuthoredCover::union_colour`]).
+    layer_grass_colour: [[f32; 4]; TERRAIN_SPLAT_LAYERS as usize],
+    base_grass_colour: [f32; 4],
 }
 
 fn cover_density_inputs(
@@ -1200,6 +1204,8 @@ fn cover_density_inputs(
     // without that data are unchanged. The same lane rate the authored-model
     // tier uses, so both read one authored truth.
     let (mut layer_affinity, mut base_affinity) = (layer_affinity, base_affinity);
+    let mut layer_grass_colour = [[0.0f32; 4]; TERRAIN_SPLAT_LAYERS as usize];
+    let mut base_grass_colour = [0.0f32; 4];
     if let Some(cover) = world
         .try_resource::<byroredux_core::ecs::components::groundcover::AuthoredCover>()
         .filter(|cover| cover.localised)
@@ -1218,8 +1224,24 @@ fn cover_density_inputs(
                 *affinity = cover.union_density(grasses);
             }
         }
+        // The colour of the grass each texture grows, read from the records'
+        // own textures: the blade tier takes it instead of a built palette.
+        for ((colour, grasses), layer) in layer_grass_colour
+            .iter_mut()
+            .zip(authored_grass.iter())
+            .zip(splat_layers.layers.iter())
+        {
+            if layer.ltex_form_id.is_some() {
+                if let Some([r, g, b]) = cover.union_colour(grasses) {
+                    *colour = [r, g, b, 1.0];
+                }
+            }
+        }
         if normalize_base_ltex(base_ltex).is_some() {
             base_affinity = cover.union_density(&base_authored_grass);
+            if let Some([r, g, b]) = cover.union_colour(&base_authored_grass) {
+                base_grass_colour = [r, g, b, 1.0];
+            }
         }
     }
     CoverDensityInputs {
@@ -1227,6 +1249,8 @@ fn cover_density_inputs(
         base_affinity,
         authored_grass,
         base_authored_grass,
+        layer_grass_colour,
+        base_grass_colour,
     }
 }
 
@@ -1418,6 +1442,8 @@ pub(super) fn spawn_terrain_mesh(
         base_affinity,
         authored_grass,
         base_authored_grass,
+        layer_grass_colour,
+        base_grass_colour,
     } = cover_density_inputs(
         world,
         &splat_layers,
@@ -1590,6 +1616,8 @@ pub(super) fn spawn_terrain_mesh(
             water_y: cover_water_y,
             authored_grass,
             base_authored_grass,
+            layer_grass_colour,
+            base_grass_colour,
             // #4056 — the slot §12.3's ground-colour coupling reads the
             // cell's layer diffuse indices from. The core sentinel (not 0)
             // when there is no splat terrain: a valid slot can be 0.
@@ -1667,6 +1695,7 @@ mod tests {
                 uniform_scaling: true,
                 fit_to_slope: false,
                 nominal_height: None,
+                mean_colour: None,
             }],
             grid_spacing: 80.0,
             climate: Climate::Temperate,

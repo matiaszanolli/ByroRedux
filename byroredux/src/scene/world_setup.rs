@@ -223,7 +223,7 @@ pub(crate) fn apply_worldspace_weather(
         wctx.climate.as_ref(),
         wctx.default_weather.as_ref(),
     );
-    install_ground_cover(world, wctx);
+    install_ground_cover(world, tex_provider, wctx);
 }
 
 /// Install the canonical lighting / sky / weather resources for one
@@ -967,7 +967,11 @@ fn sanitize_wind(wind: WindField) -> WindField {
 /// authored-model tier (#4413), resolved here into `AuthoredCover` for the
 /// same climate. `GroundCoverPalette::resolve` guarantees a non-empty
 /// palette, so the scatter pass never sees an empty one.
-fn install_ground_cover(world: &mut World, wctx: &cell_loader::ExteriorWorldContext) {
+fn install_ground_cover(
+    world: &mut World,
+    tex_provider: &TextureProvider,
+    wctx: &cell_loader::ExteriorWorldContext,
+) {
     use crate::groundcover_translate::{
         resolve_palette_for_chain, resolve_wind, resolve_wind_with_direction,
     };
@@ -1019,7 +1023,13 @@ fn install_ground_cover(world: &mut World, wctx: &cell_loader::ExteriorWorldCont
         wctx.record_index.game,
         palette.climate,
     ) {
-        Some(cover) => {
+        Some(mut cover) => {
+            // The blade tier takes its colour from these records' own textures.
+            crate::cell_loader::spawn::authored_cover_colour::fill_mean_colours(
+                world,
+                tex_provider,
+                &mut cover,
+            );
             log::info!(
                 target: "engine::groundcover",
                 "Authored ground cover for '{}': {} of {} GRAS records placeable, grid {} units, {}",

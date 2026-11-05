@@ -1908,7 +1908,9 @@ over the root along the up axis and carries 5-30% of the lean per blade
 toward its tip. Wind, lean and interaction still act on the control point and tip
 only, at both clock samples. Default blades were made 1.5x taller at this point (temperate 9-21,
 arid 6-13.5 units); the temperate default has since been retuned to 11-26
-(`c9433d501`, see §12.16).
+(`c9433d501`, see §12.16). Both defaults' lengths were then doubled on a visual review
+("grass would look better at about twice its length"): temperate 22-52 (mean 37), arid
+12-27 units; widths unchanged. A taste call, not a sourced figure.
 
 **LOD (§6 is superseded where it differs).** A 512-unit chunk draws at exactly one
 tier chosen from the camera distance to its centre (`include/groundcover_lod.glsl`,

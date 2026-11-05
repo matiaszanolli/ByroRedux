@@ -102,6 +102,13 @@ pub(crate) struct TerrainCoverInputs {
     /// ground wherever no splat layer paints, like `base_affinity` for the
     /// density field.
     pub(crate) base_authored_grass: Vec<u32>,
+    /// Linear-RGB colour of the grass each lane's texture grows — the mean of
+    /// its listed `GRAS` records' own textures (`AuthoredCover::union_colour`)
+    /// — with `a = 1` when known, `0` when not (the shader then falls back to
+    /// the ground's own colour). Same lane order as `layer_affinity`.
+    pub(crate) layer_grass_colour: [[f32; 4]; TERRAIN_SPLAT_LAYERS as usize],
+    /// The BTXT base's grass colour, same encoding.
+    pub(crate) base_grass_colour: [f32; 4],
 }
 impl Component for TerrainCoverInputs {
     type Storage = SparseSetStorage<Self>;

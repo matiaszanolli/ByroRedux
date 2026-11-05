@@ -476,6 +476,13 @@ pub const GROUNDCOVER_CLUMP_MEAN: f32 = 0.468;
 /// `TINT_VARIATION`. Art direction, recorded as such.
 pub const GROUNDCOVER_CLUMP_HEIGHT_VARIATION: f32 = 0.20;
 pub const GROUNDCOVER_CLUMP_TINT_VARIATION: f32 = 0.08;
+/// Meadow-scale blade-height field: a smooth value-noise field of this period
+/// (world units) scales blade height by `1 +- HEIGHT_FIELD_VARIATION` (the
+/// noise is concentrated near its middle, so the realised swing is about half
+/// that), giving patches of taller and shorter grass. Art direction, recorded
+/// as such, not a sourced value.
+pub const GROUNDCOVER_HEIGHT_FIELD_UNITS: f32 = 280.0;
+pub const GROUNDCOVER_HEIGHT_FIELD_VARIATION: f32 = 0.6;
 
 /// `distance_fade` — tier 0's outer range and where the fade begins (§6).
 ///
@@ -843,21 +850,22 @@ pub const GROUNDCOVER_MAX_WIDTH_MULTIPLIER: f32 = 4.0;
 /// retune by #4378; its empirical status is recorded in EXAL §12.12.
 pub const GROUNDCOVER_COLOUR_JITTER_MIN: f32 = 0.82;
 pub const GROUNDCOVER_COLOUR_JITTER_MAX: f32 = 1.18;
-/// Luminance anchor of a blade's albedo to the terrain it grows from (#5719's
-/// grass overhaul, lighting phase). Measured cause of "blades glow": the arid
-/// and temperate palettes carry *linear* albedos of 0.3-0.5 while the splat
-/// terrain under them is a dark 0.05-0.15, and composite lights both with the
-/// same terrain GI (`indirect * outAlbedo`), so a blade returned 3-6x the
-/// terrain's radiance in sun and in shadow alike. The blade's HUE still comes
-/// from the species palette; its LUMINANCE is the terrain's own at the root,
-/// times these ratios (base, tip). They are art-direction defaults, not
-/// sourced values: a blade is not darker than its soil at the root (sheath
-/// shading is §12.1's job) and rises a little toward the sky-facing tip.
-pub const GROUNDCOVER_BASE_LUMA_RATIO: f32 = 0.75;
-pub const GROUNDCOVER_TIP_LUMA_RATIO: f32 = 1.10;
-/// Bound on the anchor's brightening gain (a near-black ground sample must not
-/// blow a palette hue up to white).
-pub const GROUNDCOVER_LUMA_ANCHOR_MAX_GAIN: f32 = 4.0;
+/// The one brightness every blade's albedo is normalised to (linear
+/// reflectance). A blade's colour is the ground's chroma (EXAL §12.3); its
+/// brightness is deliberately NOT derived from the ground, so lighting alone
+/// shapes it. 0.10 is the middle of the 0.05-0.15 reflectance range of real
+/// grass that the previous luminance-anchor's measurement of the "blades
+/// glow" fault quoted; it is an art-direction default, not a sourced value.
+pub const GROUNDCOVER_NEUTRAL_LUMA: f32 = 0.10;
+/// Multiplier on the terrain-UV derivatives the blade's ground-colour sample
+/// uses. The ground colour is an average over a wider footprint than one
+/// texel (16x = four mip levels up), so no blade inherits a single speck of
+/// the soil's detail. Art-direction default, not a sourced value.
+pub const GROUNDCOVER_GROUND_COLOUR_FOOTPRINT: f32 = 16.0;
+/// Chroma push on the ground colour: a multiple of its OKLab chroma at
+/// constant hue and lightness (1.0 = the ground's own saturation).
+/// Art-direction default, not a sourced value.
+pub const GROUNDCOVER_CHROMA_VIBRANCE: f32 = 1.35;
 
 // ── The light response (§12.1, §12.2, §12.5, §12.6; #4057) ──────────────
 //
@@ -2789,6 +2797,8 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float GROUNDCOVER_CLUMP_MEAN),
     shader_define!(Float GROUNDCOVER_CLUMP_HEIGHT_VARIATION),
     shader_define!(Float GROUNDCOVER_CLUMP_TINT_VARIATION),
+    shader_define!(Float GROUNDCOVER_HEIGHT_FIELD_UNITS),
+    shader_define!(Float GROUNDCOVER_HEIGHT_FIELD_VARIATION),
     shader_define!(Float GROUNDCOVER_FADE_START),
     shader_define!(Float CLOUD_REF_WIDTH),
     shader_define!(Float CLOUD_TILE_SCALE_LAYER_0),
@@ -2813,9 +2823,9 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float GROUNDCOVER_MAX_WIDTH_MULTIPLIER),
     shader_define!(Float GROUNDCOVER_COLOUR_JITTER_MIN),
     shader_define!(Float GROUNDCOVER_COLOUR_JITTER_MAX),
-    shader_define!(Float GROUNDCOVER_BASE_LUMA_RATIO),
-    shader_define!(Float GROUNDCOVER_TIP_LUMA_RATIO),
-    shader_define!(Float GROUNDCOVER_LUMA_ANCHOR_MAX_GAIN),
+    shader_define!(Float GROUNDCOVER_NEUTRAL_LUMA),
+    shader_define!(Float GROUNDCOVER_GROUND_COLOUR_FOOTPRINT),
+    shader_define!(Float GROUNDCOVER_CHROMA_VIBRANCE),
     HeaderLine::Blank,
     HeaderLine::Comment("Ground-cover light response (§12.1/12.2/12.5/12.6, #4057)"),
     shader_define!(Float GROUNDCOVER_CANOPY_EXTINCTION_K),

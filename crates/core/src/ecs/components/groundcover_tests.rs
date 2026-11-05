@@ -255,6 +255,7 @@ fn record(form_id: u32, density: f32) -> AuthoredCoverRecord {
         uniform_scaling: true,
         fit_to_slope: false,
         nominal_height: None,
+        mean_colour: None,
     }
 }
 
@@ -315,4 +316,28 @@ fn the_clamped_blade_length_draw_is_narrower_than_the_matched_moments() {
         assert!((0.05..0.065).contains(&max_share), "~5.6 % at the maximum, got {:.1} %", max_share * 100.0);
         assert!((0.010..0.025).contains(&min_share), "~1.7 % at the minimum, got {:.1} %", min_share * 100.0);
     }
+}
+
+/// A ground texture's grass colour is the density-weighted mean of the listed
+/// records' own texture colours; records without a colour (rocks, unreadable
+/// models) and unlisted ids contribute nothing, and an all-colourless list is
+/// `None` so the caller falls back to the ground rather than a fabricated tint.
+#[test]
+fn union_colour_is_the_density_weighted_mean_of_listed_record_colours() {
+    let mut a = record(1, 0.75);
+    a.mean_colour = Some([0.4, 0.2, 0.0]);
+    let mut b = record(2, 0.25);
+    b.mean_colour = Some([0.0, 0.2, 0.4]);
+    let rock = record(3, 1.0); // no colour: opaque mesh
+    let cover = AuthoredCover {
+        records: vec![a, b, rock],
+        grid_spacing: 80.0,
+        climate: Climate::Temperate,
+        localised: true,
+        generation: AuthoredCover::next_generation(),
+    };
+    let c = cover.union_colour(&[1, 2, 3, 99]).expect("two coloured records");
+    assert!((c[0] - 0.3).abs() < 1e-6 && (c[1] - 0.2).abs() < 1e-6 && (c[2] - 0.1).abs() < 1e-6, "{c:?}");
+    assert_eq!(cover.union_colour(&[3, 99]), None);
+    assert_eq!(cover.union_colour(&[]), None);
 }

@@ -1809,6 +1809,7 @@ pub(crate) mod mesh_instance;
 // #4413 — authored ground-cover templates, spawned through the same
 // `mesh_instance` path as a placed reference.
 pub(crate) mod authored_cover;
+pub(crate) mod authored_cover_colour;
 mod precombined;
 pub(super) use precombined::PrecombinedPlacement;
 use mesh_instance::{

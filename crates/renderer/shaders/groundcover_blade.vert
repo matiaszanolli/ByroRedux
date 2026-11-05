@@ -186,6 +186,44 @@ layout(location = 21) flat out uint vTerrainBaseIndex;
 /// [0,1) tone of the clump this blade belongs to (warm <-> cool), constant over
 /// the clump — the colour half of the per-clump variation.
 layout(location = 22) out float vClumpTone;
+/// Linear-RGB colour of the grass the ground under this blade's root grows —
+/// the mean of the listed `GRAS` records' own textures, mixed over the root's
+/// splat layers in the terrain's own ordered-mix order (see
+/// `byroGcGrassColour`); `a` = 1 when any listed record supplied one, 0
+/// otherwise (the fragment then reads the ground's own colour). `flat`: it is
+/// the root's value, constant over the blade.
+layout(location = 23) flat out vec4 vGrassColour;
+
+vec4 byroGcLayerGrassColour(GroundCoverCell c, uint i) {
+    switch (i) {
+        case 0u: return c.layerGrassColour0;
+        case 1u: return c.layerGrassColour1;
+        case 2u: return c.layerGrassColour2;
+        case 3u: return c.layerGrassColour3;
+        case 4u: return c.layerGrassColour4;
+        case 5u: return c.layerGrassColour5;
+        case 6u: return c.layerGrassColour6;
+        default: return c.layerGrassColour7;
+    }
+}
+
+/// The grass colour under a root: the BTXT base's, then each splat lane mixed
+/// over it by its weight — the same ordered mix the terrain shades with, with
+/// lanes that name no coloured record dropping out instead of pulling the
+/// colour toward black. rgb is the mean over the known mass, a = 1 when any
+/// mass was known.
+vec4 byroGcGrassColour(GroundCoverCell c, vec4 splat0, vec4 splat1) {
+    // (colour * known mass, known mass)
+    vec4 acc = c.baseGrassColour.a > 0.5 ? vec4(c.baseGrassColour.rgb, 1.0) : vec4(0.0);
+    for (uint i = 0u; i < TERRAIN_SPLAT_LAYERS; ++i) {
+        float w = i < TERRAIN_SPLAT_LANES_PER_WORD
+            ? splat0[i]
+            : splat1[i - TERRAIN_SPLAT_LANES_PER_WORD];
+        vec4 lane = byroGcLayerGrassColour(c, i);
+        acc = acc * (1.0 - w) + (lane.a > 0.5 ? vec4(lane.rgb * w, w) : vec4(0.0));
+    }
+    return acc.a > 1.0e-3 ? vec4(acc.rgb / acc.a, 1.0) : vec4(0.0);
+}
 
 // The scene set already binds CameraUBO at set 1 / binding 1.  Only the
 // leading fields through `jitter` are declared here; the descriptor's full
@@ -392,7 +430,15 @@ void main() {
     float clumpHeight = 1.0 + GROUNDCOVER_CLUMP_HEIGHT_VARIATION
         * (2.0 * gcSeedStream(clumpSeed, 11u) - 1.0);
     vClumpTone = gcSeedStream(clumpSeed, 12u);
-    float height = byroGcBladeLength(sp, seed) * clumpHeight * chunk.entryProgress;
+    // Meadow-scale height field: smooth noise over `GROUNDCOVER_HEIGHT_FIELD_UNITS`
+    // so whole patches stand taller or shorter than their neighbours. Per-blade
+    // and per-clump draws only vary at blade / 600-unit scale around one mean,
+    // which reads as an evenly mown lawn at distance. A pure function of the
+    // blade's world position, so it is stable frame to frame and across tiers.
+    float heightField = 1.0 + GROUNDCOVER_HEIGHT_FIELD_VARIATION
+        * (2.0 * byroGcFbm(base.xz / GROUNDCOVER_HEIGHT_FIELD_UNITS + vec2(17.3, 41.9)) - 1.0);
+    float height = byroGcBladeLength(sp, seed) * clumpHeight * heightField
+        * chunk.entryProgress;
     float width = mix(sp.sizeRange.z, sp.sizeRange.w, gcSeedStream(seed, 1u));
     float stiffness = clamp(sp.baseColour.a, 0.0, 1.0);
 
@@ -436,6 +482,9 @@ void main() {
         ? cell.terrainTileSlot
         : GROUNDCOVER_NO_TERRAIN_TILE;
     vTerrainBaseIndex = ground.valid ? cell.baseDiffuseIndex : 0u;
+    vGrassColour = ground.valid
+        ? byroGcGrassColour(cell, ground.splat0, ground.splat1)
+        : vec4(0.0);
     // Inverse of `cell_loader/terrain.rs`'s UV authoring: `u = col/32 *
     // TILES`, `v = (1 - row/32) * TILES`, with `col = (base.x - ox)/128`
     // and `row = (oz - base.z)/128` — the same grid mapping

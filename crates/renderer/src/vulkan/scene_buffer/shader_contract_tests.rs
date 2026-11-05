@@ -7818,8 +7818,21 @@ fn blade_ground_colour_uses_the_shared_terrain_splat_chain() {
         .expect("no-tile arm terminates");
     assert!(
         no_tile_arm.contains("textures[nonuniformEXT(vTerrainBaseIndex)]")
-            && no_tile_arm.contains("albedo = mix(albedo, groundAlbedo, coupling);"),
-        "the no-tile arm samples the cell's base and applies the same coupling (#5174)"
+            && no_tile_arm.contains("rootGroundAlbedo = groundAlbedo;"),
+        "the no-tile arm samples the cell's base and hands it to the shared \
+         ground-colour step (#5174)"
+    );
+    // The one place the ground's colour reaches the blade: coupling-weighted
+    // chroma at a single neutral brightness, so every arm above feeds the same
+    // blend and lighting alone decides how bright the blade reads.
+    assert!(
+        blade.contains("if (haveGrassColour || haveRootGround) {")
+            && blade.contains("vGrassColour.rgb")
+            && blade.contains("clamp(sp.tipColour.a, 0.0, 1.0)")
+            && blade.contains("byroOklabToLinearInGamut(")
+            && blade.contains("GROUNDCOVER_NEUTRAL_LUMA"),
+        "blade.frag must blend the ground's chroma by the species coupling at \
+         GROUNDCOVER_NEUTRAL_LUMA (EXAL §12.3)"
     );
     let blade_vert = include_str!("../../../shaders/groundcover_blade.vert");
     assert!(

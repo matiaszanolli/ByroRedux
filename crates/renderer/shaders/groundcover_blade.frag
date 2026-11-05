@@ -50,6 +50,9 @@ layout(location = 19) in vec4 vTerrainSplat1;
 layout(location = 20) flat in uint vTerrainTileSlot;
 layout(location = 21) flat in uint vTerrainBaseIndex;
 layout(location = 22) in float vClumpTone;
+/// Mean colour of the grass this ground grows (linear RGB), `a` = known —
+/// from the listed `GRAS` records' own textures; see the vertex stage.
+layout(location = 23) flat in vec4 vGrassColour;
 
 layout(location = 0) out vec4 outColor;
 layout(location = 2) out vec2 outMotion;
@@ -71,6 +74,60 @@ layout(location = 7) out float outFsrTransparency;
 layout(std430, set = 2, binding = 6) readonly buffer GcSpeciesBuffer {
     GroundCoverSpecies gcSpecies[];
 };
+
+// ── OKLab (Ottosson 2020, "A perceptual color space for image processing") ──
+//
+// The blade colour is built in OKLab because it separates the three things
+// this pass wants to set independently: lightness (fixed, neutral), hue (the
+// ground's, preserved exactly) and chroma (the ground's, pushed for vibrance).
+// The same operations in RGB shift hue and clip.
+vec3 byroLinearToOklab(vec3 c) {
+    float l = 0.4122214708 * c.r + 0.5363325363 * c.g + 0.0514459929 * c.b;
+    float m = 0.2119034982 * c.r + 0.6806995451 * c.g + 0.1073969566 * c.b;
+    float s = 0.0883024619 * c.r + 0.2817188376 * c.g + 0.6299787005 * c.b;
+    l = pow(max(l, 0.0), 1.0 / 3.0);
+    m = pow(max(m, 0.0), 1.0 / 3.0);
+    s = pow(max(s, 0.0), 1.0 / 3.0);
+    return vec3(
+        0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+        1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+        0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s);
+}
+
+vec3 byroOklabToLinear(vec3 lab) {
+    float l = lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z;
+    float m = lab.x - 0.1055613458 * lab.y - 0.0638541728 * lab.z;
+    float s = lab.x - 0.0894841775 * lab.y - 1.2914855480 * lab.z;
+    l = l * l * l;
+    m = m * m * m;
+    s = s * s * s;
+    return vec3(
+         4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+        -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+        -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s);
+}
+
+/// Linear RGB for lightness `L` and chroma plane `ab`, with the chroma pulled
+/// toward grey just far enough to land inside the sRGB gamut — hue and
+/// lightness are kept, so a vibrance push saturates instead of clipping.
+vec3 byroOklabToLinearInGamut(float L, vec2 ab) {
+    vec3 rgb = byroOklabToLinear(vec3(L, ab));
+    if (min(rgb.r, min(rgb.g, rgb.b)) >= 0.0) {
+        return rgb;
+    }
+    float lo = 0.0;
+    float hi = 1.0;
+    for (int i = 0; i < 6; ++i) {
+        float mid = 0.5 * (lo + hi);
+        vec3 c = byroOklabToLinear(vec3(L, ab * mid));
+        if (min(c.r, min(c.g, c.b)) >= 0.0) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return max(byroOklabToLinear(vec3(L, ab * lo)), vec3(0.0));
+}
 
 void main() {
     // No LOD discard: the segment tier is chosen per chunk and geomorphed in the
@@ -106,8 +163,13 @@ void main() {
     // painted-layer average only where the base is unresolved. A cell with a
     // base and no ATXT paint has no terrain tile; its blades couple to the
     // base alone, so no root-colour step appears at its border (#5174).
-    vec2 terrainUvDx = dFdx(vTerrainUv);
-    vec2 terrainUvDy = dFdy(vTerrainUv);
+    // Widened by `GROUNDCOVER_GROUND_COLOUR_FOOTPRINT`: the ground's colour
+    // under a blade is the AVERAGE of the soil around it, not the one texel
+    // beneath the root. A per-texel sample hands every blade its own speck of
+    // the leaf-litter detail (stray red / blue blades); the larger gradient
+    // makes `textureGrad` read the mip whose texel covers that wider area.
+    vec2 terrainUvDx = dFdx(vTerrainUv) * GROUNDCOVER_GROUND_COLOUR_FOOTPRINT;
+    vec2 terrainUvDy = dFdy(vTerrainUv) * GROUNDCOVER_GROUND_COLOUR_FOOTPRINT;
     // The terrain's own colour at the blade root, when it could be resolved;
     // the luminance anchor below reads it once the branches have run.
     vec3 rootGroundAlbedo = vec3(0.0);
@@ -137,8 +199,6 @@ void main() {
             vec3 groundAlbedo = byroTerrainSplatAlbedo(
                 baseRGB, vTerrainUv, terrainUvDx, terrainUvDy,
                 groundSplat0, groundSplat1, groundTile);
-            float coupling = clamp(sp.tipColour.a, 0.0, 1.0) * (1.0 - vBladeT);
-            albedo = mix(albedo, groundAlbedo, coupling);
             rootGroundAlbedo = groundAlbedo;
             haveRootGround = true;
         } else {
@@ -159,8 +219,6 @@ void main() {
                 weightSum += w;
             }
             if (weightSum > 0.0) {
-                float coupling = clamp(sp.tipColour.a, 0.0, 1.0) * (1.0 - vBladeT);
-                albedo = mix(albedo, groundAlbedo / weightSum, coupling);
                 rootGroundAlbedo = groundAlbedo / weightSum;
                 haveRootGround = true;
             }
@@ -171,33 +229,40 @@ void main() {
         vec3 groundAlbedo = textureGrad(
             textures[nonuniformEXT(vTerrainBaseIndex)],
             vTerrainUv, terrainUvDx, terrainUvDy).rgb;
-        float coupling = clamp(sp.tipColour.a, 0.0, 1.0) * (1.0 - vBladeT);
-        albedo = mix(albedo, groundAlbedo, coupling);
         rootGroundAlbedo = groundAlbedo;
         haveRootGround = true;
     }
 
-    // ── Luminance anchor to the terrain ─────────────────────────────────
+    // ── Colour from the ground, brightness neutral ──────────────────────
     //
-    // The hue is the species'; the brightness is the ground's. Without this the
-    // palette's linear albedo (0.3-0.5) is lit by the SAME terrain GI as dirt
-    // that is 0.05-0.15, so every blade returns several times the terrain's
-    // radiance — in sun and in a rock's shadow alike, which is the "self-lit"
-    // look (the direct terms are not the cause: removing them leaves it).
-    // See `GROUNDCOVER_BASE_LUMA_RATIO`.
-    if (haveRootGround) {
-        // What the terrain shows at the root is its splat texture mixed toward
-        // the species grass-detail colour by the SAME `d_ground` the blade
-        // carries (`triangle.frag`'s detail layer), not the texture alone: in a
-        // dense sward the ground is palette-coloured, and anchoring to the bare
-        // soil texture there turned the blades black.
-        vec3 paletteMid = 0.5 * (sp.baseColour.rgb + sp.tipColour.rgb);
-        vec3 terrainAlbedo = mix(rootGroundAlbedo, paletteMid, clamp(vDGround, 0.0, 1.0));
-        float groundLuma = dot(terrainAlbedo, LUMA_REC709);
-        float bladeLuma = max(dot(albedo, LUMA_REC709), 1.0e-4);
-        float wanted = groundLuma * mix(
-            GROUNDCOVER_BASE_LUMA_RATIO, GROUNDCOVER_TIP_LUMA_RATIO, vBladeT);
-        albedo *= min(wanted / bladeLuma, GROUNDCOVER_LUMA_ANCHOR_MAX_GAIN);
+    // The blade's COLOUR is calculated, not authored: the terrain's own
+    // composition under the root (BTXT base + painted layers), averaged over a
+    // wide footprint in linear light (the mip chain's box filter, which is the
+    // physically right way to average reflectance), then blended with the
+    // species gradient by the species coupling weight (§12.3; 1.0 on the
+    // built-in species, so the ground alone decides). It is carried in OKLab:
+    // lightness is set to one neutral value, `GROUNDCOVER_NEUTRAL_LUMA`'s
+    // lightness, so the scene's lighting, §12.1 occlusion and §12.5 canopy
+    // shadow decide how bright the result reads; hue is the ground's; chroma is
+    // the ground's times `GROUNDCOVER_CHROMA_VIBRANCE`, pulled back into gamut
+    // along constant hue and lightness. (Anchoring to the ground's luminance,
+    // as this block used to, made blades under a dark forest floor black
+    // *before* any light touched them: the ground's darkness counted twice.)
+    // The best source for the colour is the grass the ground is *listed* to
+    // grow (the records' own textures); the ground's own composition is the
+    // fallback where no record supplies one — snow, bare rock, a worldspace
+    // with no texture-to-grass links.
+    bool haveGrassColour = vGrassColour.a > 0.5;
+    if (haveGrassColour || haveRootGround) {
+        vec3 paletteLab = byroLinearToOklab(albedo);
+        vec3 groundLab = byroLinearToOklab(haveGrassColour ? vGrassColour.rgb : rootGroundAlbedo);
+        // A (near-)black ground sample has no reliable chroma to hand on.
+        vec2 groundAb = groundLab.x > 0.1
+            ? groundLab.yz * GROUNDCOVER_CHROMA_VIBRANCE
+            : paletteLab.yz;
+        vec2 ab = mix(paletteLab.yz, groundAb, clamp(sp.tipColour.a, 0.0, 1.0));
+        albedo = byroOklabToLinearInGamut(
+            pow(GROUNDCOVER_NEUTRAL_LUMA, 1.0 / 3.0), ab);
     }
 
     // Per-blade colour jitter. A field of identically-coloured blades reads as

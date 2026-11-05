@@ -111,9 +111,22 @@ pub struct GpuGroundCoverCell {
     /// terrain tile (a base and no ATXT paint) — previously the `pad2` slot,
     /// so the record stays 64 B (#5174).
     pub base_diffuse_index: u32,
+    /// Linear-RGB colour of the grass each splat layer's texture grows
+    /// (`a` = 1 known, 0 unknown), same lane order as `affinity0/1`. Read by
+    /// the blade stage to colour the grass like the records it replaces.
+    pub layer_grass_colour0: [f32; 4],
+    pub layer_grass_colour1: [f32; 4],
+    pub layer_grass_colour2: [f32; 4],
+    pub layer_grass_colour3: [f32; 4],
+    pub layer_grass_colour4: [f32; 4],
+    pub layer_grass_colour5: [f32; 4],
+    pub layer_grass_colour6: [f32; 4],
+    pub layer_grass_colour7: [f32; 4],
+    /// The BTXT base's grass colour, same encoding.
+    pub base_grass_colour: [f32; 4],
 }
-// SAFETY: `#[repr(C)]` over `f32`/`u32` only, explicitly padded to 64 bytes
-// with named fields, so every byte is initialised by a field write.
+// SAFETY: `#[repr(C)]` over `f32`/`u32` only, explicitly padded to 208 bytes
+// (13 x 16) with named fields, so every byte is initialised by a field write.
 unsafe impl NoUninit for GpuGroundCoverCell {}
 
 /// Sentinel for [`GpuGroundCoverCell::terrain_tile_slot`] — re-exported from
@@ -473,7 +486,7 @@ mod tests {
     /// numbers, wrong ground.
     #[test]
     fn gpu_records_match_their_std430_layout() {
-        assert_eq!(std::mem::size_of::<GpuGroundCoverCell>(), 64);
+        assert_eq!(std::mem::size_of::<GpuGroundCoverCell>(), 208);
         assert_eq!(std::mem::size_of::<GpuGroundCoverChunk>(), 32);
         assert_eq!(std::mem::size_of::<GpuGroundCoverSpecies>(), 80);
         // §4's blade record is "~16 bytes". Nothing on the host writes one,

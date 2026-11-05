@@ -241,8 +241,8 @@ impl GroundCoverSpecies {
     /// Guarantees that a game supplying no vegetation data at all still renders
     /// organic ground cover, which is the stated "generic" requirement (§7
     /// precedence 3). Sizes are in Gamebryo units, where an exterior cell is
-    /// 4096 across and a human is ~128 tall — so an 11–26 unit blade (mean 18.5)
-    /// is shin-height. (It was 6–14, ankle-height, and read as stubble; raised
+    /// 4096 across and a human is ~128 tall — so a 22–52 unit blade (mean 37)
+    /// is knee-height. (It was 6–14, ankle-height, and read as stubble; raised
     /// 1.5x to 9–21 on review, with the width raised 1.25x so the taller blade
     /// does not turn into a needle, then retuned to 11–26 / 1.2–2.35 — about
     /// 1.25x taller and 1.35x wider again — for a fuller sward.)
@@ -259,9 +259,12 @@ impl GroundCoverSpecies {
         // the near field read as thin separate needles over bare ground. More
         // projected blade area per blade fills the sward without touching the
         // scatter's candidate budget or the blade arena sizes.
-        height_range: (11.0, 26.0),
-        blade_length_mean: moment_matched_length((11.0, 26.0)).0,
-        blade_length_cv: moment_matched_length((11.0, 26.0)).1,
+        // Doubled to 22–52 (mean 37) on a "grass would look better at about
+        // twice its length" review; widths deliberately left at 1.2–2.35. The
+        // moment-matched mean/CV below follow the range, so the CV is unchanged.
+        height_range: (22.0, 52.0),
+        blade_length_mean: moment_matched_length((22.0, 52.0)).0,
+        blade_length_cv: moment_matched_length((22.0, 52.0)).1,
         width_range: (1.2, 2.35),
         // Base is the sheath: paler and a touch warmer than the lamina. It is
         // NOT a darkened tip — see the field's doc and §12.1. Keep the
@@ -279,15 +282,18 @@ impl GroundCoverSpecies {
         sheen: 0.32,
         bend_stiffness: 0.35,
         cover_affinity: 1.0,
-        ground_coupling: 0.25,
+        // 1.0: blade colour is the ground's chroma, calculated in the shader
+        // (`groundcover_blade.frag`, EXAL §12.3); the palette above only
+        // matters where no terrain sample resolves.
+        ground_coupling: 1.0,
         climate_weight: ClimateWeights::UNIFORM,
     };
 
     /// Sparse arid scrub — shorter, wider, stiffer, and yellowed.
     pub const DEFAULT_ARID: Self = Self {
-        height_range: (6.0, 13.5),
-        blade_length_mean: moment_matched_length((6.0, 13.5)).0,
-        blade_length_cv: moment_matched_length((6.0, 13.5)).1,
+        height_range: (12.0, 27.0),
+        blade_length_mean: moment_matched_length((12.0, 27.0)).0,
+        blade_length_cv: moment_matched_length((12.0, 27.0)).1,
         width_range: (1.1, 2.25),
         colour_gradient: [[0.40, 0.36, 0.14], [0.52, 0.46, 0.24]],
         transmission_colour: [0.62, 0.46, 0.12],
@@ -470,6 +476,14 @@ pub struct AuthoredCoverRecord {
     pub fit_to_slope: bool,
     /// The model's authored height, when the record carries one.
     pub nominal_height: Option<f32>,
+    /// Mean colour of the record's own diffuse texture, **linear** RGB: the
+    /// alpha-cut pixels' average (the cards' visible area), decoded from the
+    /// archive when the worldspace is entered. `None` for an opaque mesh (a
+    /// rock, not a plant), a model with no readable texture, or before the
+    /// host has filled it. It is the colour the blade tier takes from the
+    /// ground (`union_colour`), so the procedural grass matches the cards it
+    /// replaces without a hand-built palette.
+    pub mean_colour: Option<[f32; 3]>,
 }
 
 /// The worldspace's authored-model tier: its records and the grid their
@@ -520,6 +534,37 @@ impl AuthoredCover {
             .map(|at| 1.0 - self.records[at].density.clamp(0.0, 1.0))
             .product();
         (1.0 - none_grow).clamp(0.0, 1.0)
+    }
+}
+
+impl AuthoredCover {
+    /// The colour of the grass a ground texture grows: the mean of its listed
+    /// records' [`AuthoredCoverRecord::mean_colour`], weighted by each
+    /// record's `density` (a record that grows on more of the ground
+    /// contributes more of what the eye sees there). `None` when no listed
+    /// record carries a colour — an unlisted or bare layer, so the caller
+    /// falls back to the ground's own colour rather than inventing one.
+    pub fn union_colour(&self, grasses: &[u32]) -> Option<[f32; 3]> {
+        let (mut sum, mut weight) = ([0.0f32; 3], 0.0f32);
+        for form_id in grasses {
+            let Some(at) = self
+                .records
+                .binary_search_by_key(form_id, |record| record.form_id)
+                .ok()
+            else {
+                continue;
+            };
+            let record = &self.records[at];
+            let Some(colour) = record.mean_colour else {
+                continue;
+            };
+            let w = record.density.clamp(0.0, 1.0);
+            for (acc, c) in sum.iter_mut().zip(colour) {
+                *acc += w * c;
+            }
+            weight += w;
+        }
+        (weight > 0.0).then(|| sum.map(|c| c / weight))
     }
 }
 

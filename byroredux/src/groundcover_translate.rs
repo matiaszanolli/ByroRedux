@@ -419,6 +419,8 @@ fn authored_cover_record(gras: &GrasRecord) -> Option<AuthoredCoverRecord> {
         uniform_scaling: gras.scales_uniformly(),
         fit_to_slope: gras.fits_to_slope(),
         nominal_height: gras.nominal_height(),
+        // Filled by the host once the worldspace's archives are in hand.
+        mean_colour: None,
     })
 }
 

@@ -45,6 +45,21 @@ struct GroundCoverCell {
     /// ground-colour coupling roots blades in it on cells with no terrain
     /// tile (a base and no ATXT paint). Previously `pad2` (#5174).
     uint baseDiffuseIndex;
+    /// Linear-RGB colour of the grass each splat layer's texture grows —
+    /// the mean of its listed `GRAS` records' own textures — in the same layer
+    /// order as `affinity0/1`; `a` = 1 when known, 0 when not. The blade stage
+    /// mixes these by the root's splat weights (§12.3), so the procedural
+    /// grass is the colour of the cards it replaces.
+    vec4 layerGrassColour0;
+    vec4 layerGrassColour1;
+    vec4 layerGrassColour2;
+    vec4 layerGrassColour3;
+    vec4 layerGrassColour4;
+    vec4 layerGrassColour5;
+    vec4 layerGrassColour6;
+    vec4 layerGrassColour7;
+    /// The BTXT base's grass colour, same encoding.
+    vec4 baseGrassColour;
 };
 
 /// One 512-unit ground-cover chunk — §4's unit of dispatch, culling and LOD.
