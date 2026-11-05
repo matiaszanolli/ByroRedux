@@ -865,7 +865,7 @@ pub const GROUNDCOVER_GROUND_COLOUR_FOOTPRINT: f32 = 16.0;
 /// Chroma push on the ground colour: a multiple of its OKLab chroma at
 /// constant hue and lightness (1.0 = the ground's own saturation).
 /// Art-direction default, not a sourced value.
-pub const GROUNDCOVER_CHROMA_VIBRANCE: f32 = 1.35;
+pub const GROUNDCOVER_CHROMA_VIBRANCE: f32 = 1.6;
 
 // ── The light response (§12.1, §12.2, §12.5, §12.6; #4057) ──────────────
 //

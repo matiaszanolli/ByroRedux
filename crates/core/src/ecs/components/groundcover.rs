@@ -265,7 +265,10 @@ impl GroundCoverSpecies {
         height_range: (22.0, 52.0),
         blade_length_mean: moment_matched_length((22.0, 52.0)).0,
         blade_length_cv: moment_matched_length((22.0, 52.0)).1,
-        width_range: (1.2, 2.35),
+        // 1.2–2.35 widened 1.4x to 1.7–3.3 with the doubled length: at the old
+        // width a 22–52 unit blade is a needle and the dark ground shows
+        // through the gaps, which reads as transparent grass.
+        width_range: (1.7, 3.3),
         // Base is the sheath: paler and a touch warmer than the lamina. It is
         // NOT a darkened tip — see the field's doc and §12.1. Keep the
         // fallback deliberately olive rather than the old saturated yellow
