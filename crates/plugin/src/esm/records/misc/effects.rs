@@ -429,27 +429,44 @@ pub struct ExplRecord {
     pub form_id: u32,
     pub editor_id: String,
     pub full_name: String,
-    /// Damage in HP per direct hit (f32): `DATA` offset 4 on FO3/FNV, offset 28 on Skyrim and Fallout 4.
+    /// Damage in HP per direct hit (f32), where [`expl_data_layout`] finds it in `DATA`.
     pub damage: f32,
-    /// Explosion blast radius in game units (f32): `DATA` offset 8 on FO3/FNV, the single
-    /// `Radius` at 32 on Skyrim, and Fallout 4's `Outer Radius` at 36.
+    /// Explosion blast radius in game units (f32): the one radius a record authors, or its `Outer Radius`
+    /// when it authors two.
     pub radius: f32,
-    /// Fallout 4's `Inner Radius` (`DATA` offset 32); equal to [`Self::radius`] on every other game, which
-    /// author one radius.
+    /// `Inner Radius` where a record authors one (Fallout 4 from form version 97); otherwise equal to
+    /// [`Self::radius`].
     pub inner_radius: f32,
 }
 
-/// FO3 / FNV `EXPL` `DATA` (xEdit `wbEXPL`): Force at 0, then the damage here and the radius after it. Decoded
-/// through the radius (8..12).
-const EXPL_FO3_FNV_DAMAGE: usize = 4;
-const EXPL_FO3_FNV_DATA_LEN: usize = 12;
+/// Force-first `EXPL` `DATA` (FO3 / FNV `wbEXPL`, and Skyrim's oldest forms): Force at 0, then the damage here, the
+/// radius after it, and the Light form id at 12.
+const EXPL_FORCE_FIRST_DAMAGE: usize = 4;
+/// Forms-first `EXPL` `DATA` (Skyrim and Fallout 4 `wbEXPL`): six form ids (light, two sounds, impact data set,
+/// placed object, spawn projectile) fill 0..24, the force sits at 24, then the damage here and the radii after it.
+const EXPL_FORMS_FIRST_DAMAGE: usize = 28;
+/// These layouts are gated on the form version in the record header, which the record walker does not keep.
+/// `DATA` only grows with form version, so its length gives the same answer on every shipped master (raw census,
+/// #6562). Skyrim below form version 30 is still force-first (40-44 B; xEdit's layout carries a note that
+/// `FireStormExplosion02` contradicts it) and forms-first from here up.
+const EXPL_SKYRIM_FORMS_FIRST_MIN_LEN: usize = 48;
+/// Fallout 4 authors `Inner Radius` from form version 97 (xEdit `wbFromVersion(97, ...)`): 52-60 B without it,
+/// and from here up with it, where it takes the word the one radius sat in and pushes `Outer Radius` along.
+const EXPL_INNER_RADIUS_MIN_LEN: usize = 64;
 
-/// Skyrim and Fallout 4 `EXPL` `DATA` (xEdit `wbEXPL`): six form ids (light, two sounds, impact data set, placed
-/// object, spawn projectile) fill 0..24, the force sits at 24, then the damage here. The radius follows:
-/// Skyrim's single `Radius` at 32, Fallout 4's `Inner Radius` at 32 and `Outer Radius` at 36.
-const EXPL_SKYRIM_FO4_DAMAGE: usize = 28;
-/// Through Fallout 4's `Outer Radius` (36..40), the last field decoded.
-const EXPL_SKYRIM_FO4_DATA_LEN: usize = 40;
+/// Where an `EXPL` `DATA` of `len` bytes keeps its damage, and whether the words after it are `Inner Radius` and
+/// `Outer Radius` rather than the one radius. `None` for a game with no `EXPL` `DATA` layout: Oblivion has no `EXPL`,
+/// and Starfield authors `ENAM` instead.
+fn expl_data_layout(game: crate::esm::reader::GameKind, len: usize) -> Option<(usize, bool)> {
+    use crate::esm::reader::GameKind;
+    match game {
+        GameKind::Fallout3NV | GameKind::Fallout76 => Some((EXPL_FORCE_FIRST_DAMAGE, false)),
+        GameKind::Skyrim if len < EXPL_SKYRIM_FORMS_FIRST_MIN_LEN => Some((EXPL_FORCE_FIRST_DAMAGE, false)),
+        GameKind::Skyrim => Some((EXPL_FORMS_FIRST_DAMAGE, false)),
+        GameKind::Fallout4 => Some((EXPL_FORMS_FIRST_DAMAGE, len >= EXPL_INNER_RADIUS_MIN_LEN)),
+        GameKind::Oblivion | GameKind::Starfield => None,
+    }
+}
 
 pub fn parse_expl(form_id: u32, subs: &[SubRecord], game: crate::esm::reader::GameKind) -> ExplRecord {
     let mut out = ExplRecord {
@@ -465,28 +482,20 @@ pub fn parse_expl(form_id: u32, subs: &[SubRecord], game: crate::esm::reader::Ga
     out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
-            // Skyrim and Fallout 4: the `EXPL_SKYRIM_FO4_*` layout above.
-            b"DATA" if matches!(game, crate::esm::reader::GameKind::Skyrim | crate::esm::reader::GameKind::Fallout4) && sub.data.len() >= EXPL_SKYRIM_FO4_DATA_LEN => {
-                let mut r = SubReader::new(&sub.data);
-                r.skip_to_or_eof(EXPL_SKYRIM_FO4_DAMAGE);
-                out.damage = r.f32_or_default();
-                if game == crate::esm::reader::GameKind::Fallout4 {
-                    out.inner_radius = r.f32_or_default();
-                    out.radius = r.f32_or_default();
-                } else {
-                    out.radius = r.f32_or_default();
-                    out.inner_radius = out.radius;
+            b"DATA" => {
+                let Some((damage_at, two_radii)) = expl_data_layout(game, sub.data.len()) else {
+                    continue;
+                };
+                // A body too short to reach its last radius word is not decoded.
+                let radius_words = if two_radii { 2 } else { 1 };
+                if sub.data.len() < damage_at + 4 + radius_words * 4 {
+                    continue;
                 }
-            }
-            // FO3 / FNV (xEdit `wbEXPL`): Force (0), Damage (4), Radius (8), then the Light form id (12) — the
-            // old arm started at 8, so it stored the radius as the damage and the light's form id, read as
-            // an f32, as the radius (#6541).
-            b"DATA" if sub.data.len() >= EXPL_FO3_FNV_DATA_LEN => {
                 let mut r = SubReader::new(&sub.data);
-                r.skip_or_eof(EXPL_FO3_FNV_DAMAGE);
+                r.skip_to_or_eof(damage_at);
                 out.damage = r.f32_or_default();
-                out.radius = r.f32_or_default();
-                out.inner_radius = out.radius;
+                out.inner_radius = r.f32_or_default();
+                out.radius = if two_radii { r.f32_or_default() } else { out.inner_radius };
             }
             _ => {}
         }
@@ -786,6 +795,70 @@ mod tests {
         data[36..40].copy_from_slice(&500.0f32.to_le_bytes());
         let e = parse_expl(0xEECE9, &[sub(b"EDID", b"fragMineExplosion\0"), sub(b"DATA", &data)], crate::esm::reader::GameKind::Fallout4);
         assert_eq!((e.damage, e.inner_radius, e.radius), (100.0, 100.0, 500.0));
+    }
+
+    /// An `EXPL` `DATA` image of `len` bytes holding `floats` as consecutive words from offset `at`.
+    fn expl_data(len: usize, at: usize, floats: &[f32]) -> Vec<u8> {
+        let mut data = vec![0u8; len];
+        for (i, value) in floats.iter().enumerate() {
+            data[at + i * 4..at + i * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        data
+    }
+
+    /// #6562 — Fallout 4 authors `Inner Radius` from form version 97, so the shorter, older `DATA` has its one
+    /// radius in the word the newer form gives the inner one. Force onward, read from `Fallout4.esm`.
+    #[test]
+    fn fallout4_expl_reads_the_radius_its_form_version_authors() {
+        for (name, len, floats, damage, inner, outer) in [
+            // Form version 63 / 88 / 95, no `Inner Radius`.
+            ("FakeForce300Explosion", 52, [300.0, 0.0, 512.0, 0.0, 0.1], 0.0, 512.0, 512.0),
+            ("FakeForce200Explosion", 56, [200.0, 0.0, 128.0, 0.0, 0.1], 0.0, 128.0, 128.0),
+            ("CarNukeTEST", 60, [20000.0, 200.0, 550.0, 10000.0, 0.3], 200.0, 550.0, 550.0),
+            // Form version 99: the first length with `Inner Radius`.
+            ("MirelurkHunterSpitExplosion", 64, [0.0, 0.0, 0.0, 200.0, 0.0], 0.0, 0.0, 200.0),
+        ] {
+            let subs = [sub(b"DATA", expl_data(len, 24, &floats))];
+            let e = parse_expl(1, &subs, crate::esm::reader::GameKind::Fallout4);
+            assert_eq!((e.damage, e.inner_radius, e.radius), (damage, inner, outer), "{name}");
+        }
+    }
+
+    /// #6562's sibling — Skyrim below form version 30 keeps the FO3 / FNV force-first layout, with `Inner Radius`
+    /// never authored. `FireStormExplosion02` (form version 28) has its impact data set `0x00026113` at 28, where
+    /// the forms-first decode would read it as the damage. Values read from `Skyrim.esm`.
+    #[test]
+    fn skyrims_oldest_expl_forms_keep_the_force_first_layout() {
+        let mut fire_storm = expl_data(44, 0, &[100.0, 25.0, 360.0]);
+        fire_storm[24..28].copy_from_slice(&1024.0f32.to_le_bytes());
+        fire_storm[28..32].copy_from_slice(&0x0002_6113u32.to_le_bytes());
+        let e = parse_expl(0x0008_77F9, &[sub(b"DATA", fire_storm)], crate::esm::reader::GameKind::Skyrim);
+        assert_eq!((e.damage, e.inner_radius, e.radius), (25.0, 360.0, 360.0));
+
+        // Form version 30, the first forms-first length, and the 52-byte full form.
+        let trap = expl_data(48, 24, &[0.0, 50.0, 60.0, 25.0]);
+        let e = parse_expl(0x000A_036F, &[sub(b"DATA", trap)], crate::esm::reader::GameKind::Skyrim);
+        assert_eq!((e.damage, e.inner_radius, e.radius), (50.0, 60.0, 60.0));
+        let nudge = expl_data(52, 24, &[1.0, 0.0, 96.0]);
+        let e = parse_expl(0x000C_800D, &[sub(b"DATA", nudge)], crate::esm::reader::GameKind::Skyrim);
+        assert_eq!((e.damage, e.inner_radius, e.radius), (0.0, 96.0, 96.0));
+    }
+
+    /// A body that stops before its last radius word, and a game with no `EXPL` `DATA` layout, decode nothing
+    /// rather than reading the words at some other game's offsets.
+    #[test]
+    fn expl_data_without_a_layout_or_its_radius_stays_zero() {
+        use crate::esm::reader::GameKind;
+        let floats = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        for (game, len) in [
+            (GameKind::Fallout4, 32),
+            (GameKind::Fallout3NV, 8),
+            (GameKind::Oblivion, 36),
+            (GameKind::Starfield, 36),
+        ] {
+            let e = parse_expl(1, &[sub(b"DATA", expl_data(36, 0, &floats)[..len].to_vec())], game);
+            assert_eq!((e.damage, e.inner_radius, e.radius), (0.0, 0.0, 0.0), "{game:?} {len} B");
+        }
     }
 
     #[test]

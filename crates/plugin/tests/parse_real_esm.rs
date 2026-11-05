@@ -267,15 +267,65 @@ fn fnv_expl_damage_and_radius_decode_at_xedits_offsets() {
         eprintln!("[FNV/EXPL] skipping: game data unavailable");
         return;
     };
-    let bytes = std::fs::read(data.join("FalloutNV.esm")).expect("read FalloutNV.esm");
-    let index = parse_esm(&bytes).expect("parse FalloutNV.esm");
-    for (form, name, damage, radius) in [
-        (0x0007_078B_u32, "MineFragExplosion", 100.0_f32, 192.0_f32),
-        (0x0010_9A0F, "MineNVPowderChargeExplosion", 75.0, 192.0),
-        (0x0013_0044, "C4Explosion", 250.0, 512.0),
-    ] {
-        let expl = index.explosions.get(&form).unwrap_or_else(|| panic!("{name} ({form:08X}) is in FalloutNV.esm"));
-        assert_eq!((expl.damage, expl.radius, expl.inner_radius), (damage, radius, radius), "{name}");
+    assert_expl_rows(
+        &data.join("FalloutNV.esm"),
+        &[
+            (0x0007_078B, "MineFragExplosion", 100.0, 192.0, 192.0),
+            (0x0010_9A0F, "MineNVPowderChargeExplosion", 75.0, 192.0, 192.0),
+            (0x0013_0044, "C4Explosion", 250.0, 512.0, 512.0),
+        ],
+    );
+}
+
+/// #6562 — Fallout 4's `DATA` carries `Inner Radius` only from form version 97. 15 of the 238 `Fallout4.esm`
+/// `EXPL` are older, with the one radius where the rest have the inner one.
+#[test]
+#[ignore = "needs FO4 game data on disk"]
+fn fo4_expl_radii_follow_the_form_version() {
+    let Some(data) = data_dir(test_paths::FO4_ENV, test_paths::FO4_DEFAULT) else {
+        eprintln!("[FO4/EXPL] skipping: game data unavailable");
+        return;
+    };
+    assert_expl_rows(
+        &data.join("Fallout4.esm"),
+        &[
+            (0x0002_FC46, "FakeForce300Explosion", 0.0, 512.0, 512.0),
+            (0x000C_1C15, "FakeForce200Explosion", 0.0, 128.0, 128.0),
+            (0x000D_B85B, "CarNukeTEST", 200.0, 550.0, 550.0),
+            (0x000A_8AFD, "MirelurkHunterSpitExplosion", 0.0, 0.0, 200.0),
+            (0x000E_ECE9, "fragMineExplosion", 100.0, 100.0, 500.0),
+        ],
+    );
+}
+
+/// #6562's sibling — Skyrim's `EXPL` below form version 30 still has the FO3 / FNV force-first `DATA`.
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn skyrim_expl_old_forms_keep_the_force_first_layout() {
+    let Some(data) = data_dir(test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT) else {
+        eprintln!("[Skyrim/EXPL] skipping: game data unavailable");
+        return;
+    };
+    assert_expl_rows(
+        &data.join("Skyrim.esm"),
+        &[
+            (0x0008_77F9, "FireStormExplosion02", 25.0, 360.0, 360.0),
+            (0x0007_8C57, "fakeForceBall1024", 0.0, 1024.0, 1024.0),
+            (0x000A_036F, "TrapPoisonGasExplosion01", 50.0, 60.0, 60.0),
+            (0x000C_800D, "fakeForceBallNudge", 0.0, 96.0, 96.0),
+        ],
+    );
+}
+
+/// Parse `master` and check its `EXPL` rows `(form, editor id, damage, inner radius, outer radius)`, whose values
+/// are read from the master's raw bytes.
+fn assert_expl_rows(master: &std::path::Path, rows: &[(u32, &str, f32, f32, f32)]) {
+    let bytes = std::fs::read(master).unwrap_or_else(|e| panic!("read {master:?}: {e}"));
+    let index = parse_esm(&bytes).unwrap_or_else(|e| panic!("parse {master:?}: {e}"));
+    for &(form, name, damage, inner, outer) in rows {
+        let expl = index.explosions.get(&form).unwrap_or_else(|| panic!("{name} ({form:08X}) is in {master:?}"));
+        assert_eq!(expl.editor_id, name, "{form:08X}");
+        assert_eq!((expl.damage, expl.inner_radius, expl.radius), (damage, inner, outer), "{name}");
     }
 }
 
