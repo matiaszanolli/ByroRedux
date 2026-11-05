@@ -87,8 +87,8 @@ impl VatsState {
         }
     }
 
-    /// Leave every mode, refunding any un-executed AP reservation.
-    /// `refund` applies the refund to the player's AP pool.
+    /// Leave every mode and drop any un-executed AP reservation, without
+    /// refunding it.
     pub(crate) fn exit_all(&mut self) {
         self.mode = VatsMode::None;
         self.targets.clear();

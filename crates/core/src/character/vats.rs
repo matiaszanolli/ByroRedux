@@ -382,7 +382,7 @@ impl VatsModel {
 /// One to-hit evaluation: a weapon, a body part, a range, a shooter.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VatsHitInput {
-    /// Weapon Base VATS To-Hit Chance, percent (0-100; `WEAP` DNAM @28).
+    /// Weapon Base VATS To-Hit Chance, percent (0-100; `WEAP` DNAM @40, #6449).
     pub weapon_base_to_hit: f32,
     /// Body part base hit chance, percent (0-100, 255 = "always";
     /// `BPTD` BPND @6).
@@ -613,7 +613,7 @@ mod tests {
     ///    term is the skill-50 neutral point.
     /// 3. Spawn the fixture target: `player.placeatme 000E32D7`
     ///    (a Goodsprings settler — DefaultBodyPartData limb table).
-    /// 4. Equip the 10mm pistol (`0000434F`, base 65 %, AP 17).
+    /// 4. Equip the 10mm pistol (`0000434F`, base 15 %, AP 17).
     /// 5. Stand at the listed distance (`tdt` + `getdistance player`,
     ///    or pace it: 64 units ≈ one meter) with the listed part fully
     ///    visible and no obstruction.
@@ -631,7 +631,7 @@ mod tests {
             // (
             //     "10mm pistol, torso, 512 units, Guns 50, full visibility",
             //     VatsHitInput {
-            //         weapon_base_to_hit: 65.0,
+            //         weapon_base_to_hit: 15.0,
             //         part_to_hit: 100.0,
             //         distance: 512.0,
             //         skill: 50.0,
@@ -641,7 +641,7 @@ mod tests {
             //     0.0, // ← replace with the in-game display
             // ),
         ];
-        let model = VatsModel::FALLOUT3.with_gmst(|name| {
+        let model = VatsModel::FALLOUT_NV.with_gmst(|name| {
             // Fill from the load order's GMSTs when capturing; vanilla
             // values equal the compiled defaults, so `|_| None` is
             // correct for a clean vanilla run.

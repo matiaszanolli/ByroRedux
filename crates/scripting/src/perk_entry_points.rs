@@ -97,7 +97,7 @@ pub mod skyrim {
     pub const MOD_SNEAK_ATTACK_MULT: u8 = 18;
     pub const MOD_ATTACK_DAMAGE: u8 = 35;
     pub const MOD_INCOMING_DAMAGE: u8 = 36;
-    /// `Mod Tempering Health` (xEdit `wbPerkEntryPoints`, TES5 index 76): what the Smithing material perks
+    /// `Mod Tempering Health` (xEdit `wbEntryPointsEnum`, TES5 index 76): what the Smithing material perks
     /// (Steel Smithing and kin) multiply when improving an item.
     pub const MOD_TEMPERING_HEALTH: u8 = 76;
 }
@@ -339,10 +339,12 @@ pub fn compose_outgoing_damage(
 /// (defender)` (56) on the target's perks — the GECK's "run when the player is
 /// hit; modifies the DT of the player" — then `(attacker)` (58) on the
 /// attacker's, "run when an enemy is hit; modifies the DT of the enemy". Both
-/// hooks carry three tabs whose 1 and 2 are weapons (vanilla conditions there
-/// are weapon-skill and weapon-list tests: Stonewall, Hit the Deck, Piercing
-/// Strike), and weapons are not entities, so those tabs go unsupplied.
-/// Games without a table return `base`.
+/// hooks carry three tabs: the perk owner, then xEdit FNV's `epcWeaponTarget`,
+/// 1 the weapon and 2 the target. Vanilla conditions there are weapon-skill and
+/// weapon-list tests (tab 1: Piercing Strike, Shotgun Surgeon, Companion Suite;
+/// tab 2: Stonewall, Hit the Deck). Weapons are not entities and this call
+/// supplies neither subject, so an entry with conditions on either tab does not
+/// apply. Games without a table return `base`.
 pub fn compose_damage_threshold(
     world: &World,
     attacker: EntityId,

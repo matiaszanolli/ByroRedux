@@ -1821,13 +1821,13 @@ mod tests {
 
     #[test]
     fn non_gamemode_blocks_are_skipped_and_globals_route_through_host() {
-        // Begin MenuMode (block 9): set x to 1 — must not run.
+        // Begin OnHitWith: set x to 1 — must not run.
         // Begin GameMode: set G1 to 7 — routes to the host's global write.
         let mut bytes = (0x1du16).to_le_bytes().to_vec();
         bytes.extend_from_slice(&0u16.to_le_bytes());
-        let menu_body = set_stmt(b's', 1, b"1 ", 0);
-        bytes.extend(begin(9, menu_body.len() as u32));
-        bytes.extend(menu_body);
+        let other_body = set_stmt(b's', 1, b"1 ", 0);
+        bytes.extend(begin(BLOCK_ON_HIT_WITH, other_body.len() as u32));
+        bytes.extend(other_body);
         bytes.extend(simple_stmt(0x11));
         let gm_body = set_stmt(b'G', 1, b"7 ", 0);
         bytes.extend(begin(BLOCK_GAME_MODE, gm_body.len() as u32));
@@ -1842,7 +1842,7 @@ mod tests {
         assert_eq!(outcome, BlockOutcome::Completed);
         assert!(
             state.locals.is_empty(),
-            "MenuMode body must be skipped, locals = {:?}",
+            "the OnHitWith body must be skipped, locals = {:?}",
             state.locals
         );
         let global_writes: Vec<_> = host

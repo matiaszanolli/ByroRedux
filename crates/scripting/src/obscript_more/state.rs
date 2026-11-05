@@ -558,12 +558,12 @@ fn is_riding_horse(_world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptV
 }
 
 // GECK *IsLimbGone <limb>*: "tests if an actor has had a particular limb dismembered" — the engine
-// keeps no dismemberment, so none is gone. *GetKillingBlowLimb*: -1 for a living actor; a corpse's
-// killing blow location is not kept.
-fn get_killing_blow_limb(_world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
+// keeps no dismemberment, so none is gone.
+fn is_limb_gone(_world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
     flag(false)
 }
 
+// GECK *GetKillingBlowLimb*: -1 for a living actor; a corpse's killing blow location is not kept.
 fn cmd_11f0(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
     match caller(world, ctx) {
         Some((_, actor)) if !world.has::<Dead>(actor) => answer(-1.0),
@@ -738,7 +738,7 @@ pub(crate) const STATE_COMMANDS: &[Command] = &[
     Command { id: 0x122e, games: Games::Fallout, needs_caller: false, handler: has_loaded3_d },
     Command { id: 0x11d0, games: Games::Fallout, needs_caller: false, handler: cmd_11d0 },
     Command { id: 0x1147, games: Games::Oblivion, needs_caller: false, handler: is_riding_horse },
-    Command { id: 0x118e, games: Games::Fallout, needs_caller: false, handler: get_killing_blow_limb },
+    Command { id: 0x118e, games: Games::Fallout, needs_caller: false, handler: is_limb_gone },
     Command { id: 0x11f0, games: Games::Fallout, needs_caller: false, handler: cmd_11f0 },
     Command { id: 0x1203, games: Games::Fallout, needs_caller: false, handler: cmd_1203 },
     Command { id: 0x11ef, games: Games::Fallout, needs_caller: false, handler: cmd_11ef },

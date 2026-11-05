@@ -295,8 +295,9 @@ pub fn parse_bptd(
                 // #6465 — this is the 84-byte FO3 / FNV (and Skyrim) dialect. FO4's BPND is 101
                 // bytes with a different layout: decoding it here made every field garbage and fed
                 // bogus FormIDs (float 1.0 = 0x3F800000) through `remap_fid`, 152 false warnings on a
-                // vanilla load. Leave it undecoded until a sourced FO4 layout is in hand; the name
-                // run (BPTN / BPNN / BPNT / BPNI) is kept.
+                // vanilla load. It stays undecoded here; its layout is xEdit
+                // `wbDefinitionsFO4.pas:7693-7760` and decoding it is `docs/prd/vats.md`
+                // VATS-FO4-007. The name run (BPTN / BPNN / BPNT / BPNI) is kept.
                 if d.len() <= BPND_LEGACY_LEN {
                     let u16_at = |o: usize| d.get(o..o + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]));
                     part.damage_mult = f32_at(0);

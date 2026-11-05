@@ -5,10 +5,10 @@
 //! since M42.10** (kill-switch: `BYRO_NO_AI_LOCOMOTION=1`), alongside the
 //! other five locomotion procedures.
 //!
-//! Real Bethesda Patrol packages walk a route defined by linked
-//! patrol-idle markers — data this codebase decodes nowhere (it lives
-//! outside `PACK`'s own sub-records; see `crates/plugin`'s
-//! `PROCEDURE_PATROL` doc). Absent that, there is nothing to distinguish
+//! Real Bethesda Patrol packages walk a route defined by linked references
+//! — data outside `PACK`'s own sub-records (`XLKR`, decoded since #5223; see
+//! `crates/plugin`'s `PROCEDURE_PATROL` doc) that this system does not follow
+//! yet. Until it does, there is nothing to distinguish
 //! v0 Patrol from Wander: both reduce to "walk to a random point within a
 //! radius, pause, repeat" with no target-reference resolution. Rather than
 //! duplicate `wander_system` under a new name (a straight copy-paste that

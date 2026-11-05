@@ -34,13 +34,14 @@
 //! alpha-tested shadow caster, so the near part of the ring does cost RT
 //! budget (a quad's bound spans up to ~16k BU).
 //!
-//! **This is an interpretation, not the engine's draw.** The engine's tree
-//! LOD billboards face the camera; here the quads are static. A crossed pair
-//! needs no vertex-shader billboarding and keeps motion vectors honest (a
-//! camera-facing quad would have to special-case its previous-frame
-//! transform), at the price of a visible plan-view X on a very close
-//! approach. The record's rotation orients the cross. The alpha cutoff
-//! ([`TREE_LOD_ALPHA_CUTOFF`]) is likewise not sourced.
+//! The shape is the game's own: DynDOLOD's *Tree LOD* help says "The tree LOD
+//! billboard texture is shown on 2 double sided planes intersecting each other
+//! at a 90 degree angle", upright with "No x or y rotation angles". A crossed
+//! pair needs no vertex-shader billboarding and keeps motion vectors honest,
+//! at the price of a visible plan-view X on a very close approach. The
+//! record's rotation orients the cross. **The alpha cutoff
+//! ([`TREE_LOD_ALPHA_CUTOFF`]) is an interpretation, not the engine's draw:**
+//! it is not sourced.
 //!
 //! ## Which quads
 //!

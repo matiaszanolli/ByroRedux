@@ -95,7 +95,8 @@ pub struct AllocatorResource(pub SharedAllocator);
 
 impl Resource for AllocatorResource {}
 
-/// Constant-after-init VRAM budget snapshot. Holds both the aggregate
+/// VRAM budget snapshot: heap capacities that are constant after init, plus
+/// the last live usage sample. Holds both the aggregate
 /// VRAM capacity (sum of `DEVICE_LOCAL` heaps) and the smallest single
 /// `DEVICE_LOCAL` heap — the tighter cap on hybrid laptops that expose
 /// two `DEVICE_LOCAL` heaps through the same Vulkan device.
@@ -104,8 +105,9 @@ impl Resource for AllocatorResource {}
 /// sampler and any future budgeting heuristic can compute `used /
 /// budget` without round-tripping to `vkGetPhysicalDeviceMemoryProperties`
 /// on each read. Use [`Self::sample`] to construct from a live instance
-/// and physical-device handle. The values never change after device
-/// selection, so refreshing is unnecessary — this is a strict cache.
+/// and physical-device handle. The capacities never change after device
+/// selection; the `live_heap_*` fields do, refreshed through
+/// [`Self::update_live`] from `VulkanContext::sample_live_memory_budget`.
 pub struct GpuMemoryBudget {
     /// Sum of `VkMemoryHeap.size` across every `DEVICE_LOCAL` heap.
     pub total_vram_bytes: u64,

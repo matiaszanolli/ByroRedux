@@ -534,9 +534,12 @@ fn spawn_placement_lod_cell(
         // Prefer the dedicated `_far.nif`; fall back to the FULL model when
         // none is shipped. Vanilla Oblivion ships a `_far.nif` for only ~130
         // landmark objects (castle walls, towers, bridges) — every other
-        // VWD object in a `.lod` renders its full mesh at distance, which is
-        // what the real engine does. Skipping them (the pre-fix behaviour)
-        // left almost every cell with no distant geometry.
+        // VWD object in a `.lod` renders its full mesh at distance. That is an
+        // engine decision, not parity: the CS wiki's *Visible When Distant
+        // Tutorial* says such an object "will not be visible in the game from
+        // distant" (`docs/prd/distant-lod-completion.md`, DLOD-OBJ-007, Q6,
+        // V12). Skipping them (the pre-fix behaviour) left almost every cell
+        // with no distant geometry.
         let (mesh_path, far_bytes) = match far_nif_path(&stat.model_path)
             .and_then(|p| tex_provider.extract_mesh(&p).map(|b| (p, b)))
         {

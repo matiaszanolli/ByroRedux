@@ -283,10 +283,10 @@ pub struct PerkEntry {
     /// perks (e.g. Skyrim's One-handed tree) define one entry per
     /// rank, each with stronger function data.
     pub rank: u8,
-    /// Priority order — higher value runs first when multiple entries
-    /// on different perks target the same Entry Point. Mod the actor's
-    /// perks by priority, then evaluate in descending order. Per
-    /// `perk_system.md`.
+    /// Priority order when multiple entries on different perks target the
+    /// same Entry Point. They compose in ascending order, so a higher value
+    /// applies later (`compose_order_key`; the `perk_entry_points` module docs
+    /// in `byroredux-scripting` say why).
     pub priority: u8,
     /// The body — Quest / Ability / EntryPoint variant.
     pub body: PerkEntryBody,
@@ -442,23 +442,14 @@ pub fn parse_perk(
     for sub in subs {
         match &sub.sub_type {
             b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
-            // PERK-level DATA: trait + (level OR num_ranks per-game) +
-            // playable + hidden + level/trailing. The leading byte is
-            // game-shared; trailing bytes are read defensively when
-            // present.
+            // PERK-level DATA: trait + level + num_ranks + playable + hidden
+            // on FO3, FNV, Skyrim and FO4 (xEdit `wbDefinitionsTES5.pas:5918-5925`
+            // and its siblings); bytes a short record omits read as zero.
+            // Starfield's DATA differs and is still read in this order
+            // (`docs/prd/perk-entry-points.md`, PERK-DEC-009).
             b"DATA" if matches!(block, PerkBlock::None) && !sub.data.is_empty() => {
                 let mut r = SubReader::new(&sub.data);
                 out.is_trait = r.u8_or_default() != 0;
-                // FO3/FNV layout: trait + level + num_ranks + playable + hidden.
-                // Skyrim layout:   trait + num_ranks + playable + hidden + level.
-                // The schemas overlap on `trait` and disagree past that.
-                // Without a GameKind dispatch wired through here, capture
-                // num_ranks / playable / hidden positionally per FO3/FNV
-                // (the more common shape across the catalogues sampled);
-                // Skyrim consumers that need the strict layout can rev
-                // this to a per-game arm when the per-game ESM dispatch
-                // lands. The first-byte `trait` reads correctly either
-                // way, which is the load-bearing field.
                 let _level = r.u8_or_default();
                 out.num_ranks = r.u8_or_default();
                 out.playable = r.u8_or_default() != 0;

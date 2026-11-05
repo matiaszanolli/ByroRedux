@@ -160,17 +160,20 @@ pub const NEAR_PLANE_BU_SCALE: f32 = 5.0;
 ///
 /// # Flipping it
 ///
-/// Flipping this to [`DepthMapping::Reversed`] requires **two** edits, not
-/// one, because SPIR-V is precompiled and checked in:
+/// Flipping this to [`DepthMapping::Reversed`] is one edit and a rebuild.
+/// `BYRO_REVERSED_Z` is generated from this constant, so nothing else is edited
+/// by hand, but SPIR-V is precompiled and checked in:
 ///
-/// 1. this constant, and
-/// 2. `BYRO_REVERSED_Z` in `crates/renderer/shaders/include/depth_convention.glsl`,
-///    followed by recompiling the shaders that include it.
+/// 1. edit this constant,
+/// 2. run `cargo build -p byroredux-renderer`, whose build script regenerates
+///    `crates/renderer/shaders/include/shader_constants.glsl`,
+/// 3. recompile every shader that includes `depth_convention.glsl`, and
+/// 4. run `scripts/check-shader-artifacts.sh`.
 ///
 /// `the_shader_depth_convention_matches_the_engine_constant` (in the
-/// renderer's shader-contract suite) fails the build if those two disagree,
-/// so the pair cannot drift — a flip that forgets the shaders is caught by
-/// `cargo test`, not by a black frame.
+/// renderer's shader-contract suite) fails if the generated header disagrees
+/// with this constant, and the script in step 4 fails on stale SPIR-V, so a
+/// flip that forgets the shaders is caught before it reaches a black frame.
 ///
 /// Then validate on hardware with the gate #3308 step 2 built: run
 /// `depth.stats` before and `depth.stats reversed` after, and compare the
@@ -1347,8 +1350,8 @@ mod tests {
     fn the_shipped_depth_mapping_is_conventional() {
         // The conversion is present but deliberately not enabled: reversed-Z's
         // failure modes are invisible to `cargo test`. If this ever flips, the
-        // shader define has to flip in the same commit — see
-        // `ACTIVE_DEPTH_MAPPING`'s doc.
+        // generated shader define and the SPIR-V have to be rebuilt in the same
+        // commit — see `ACTIVE_DEPTH_MAPPING`'s doc.
         assert_eq!(ACTIVE_DEPTH_MAPPING, DepthMapping::Conventional);
     }
 

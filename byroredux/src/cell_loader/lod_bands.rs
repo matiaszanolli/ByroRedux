@@ -26,7 +26,7 @@
 //! | `fBlockLevel1Distance` | 90000 | 90000 |
 //! | `fBlockLevel2Distance` | *(absent)* | 110000 |
 //! | `fBlockMaximumDistance` | 250000 | 250000 |
-//! | `fTreeLoadDistance` | 75000 | *(absent)* |
+//! | `fTreeLoadDistance` | 75000 | 75000 |
 //!
 //! `fBlockLevel<i>Distance` is the distance beyond which level-`LOD_LEVELS[i]`
 //! quads are replaced by the next coarser level — i.e. it is the *refine*
@@ -38,9 +38,12 @@
 //! [`LodBandLadder::coarsest_level`] derives that from the ladder instead of
 //! hardcoding a per-game level cap.
 //!
-//! `fSplitDistanceMult` (1.5 at Ultra) is deliberately **not** modelled: its
-//! exact application point in the vanilla terrain manager is unverified, and
-//! guessing it would move every band boundary.
+//! `fSplitDistanceMult` (1.5 at Ultra) is deliberately **not** modelled on the
+//! Skyrim and FO4 ladders: its exact application point in their terrain manager
+//! is unverified, and guessing it would move every band boundary. The FO3/FNV
+//! ladder does use it, because those games author no `fBlockLevel<i>Distance`
+//! and the multiplier is what generates their boundaries
+//! ([`FALLOUT_LEGACY_REFINE_BU`]).
 //!
 //! ## Two distance metrics, deliberately
 //!
@@ -113,8 +116,9 @@ const ULTRA_MAX_DISTANCE_BU: f32 = 250_000.0;
 /// Skyrim's `[TerrainManager] fTreeLoadDistance` in BU — how far the distant
 /// tree billboards (`.btt`, #4913) draw. 75000 in `Ultra.ini`, `High.ini` and
 /// `Medium.ini` alike (12500 at `Low`); the same Ultra tier the ladder above
-/// is read from. FO4 and FO76 bake their trees into the `.bto` and author no
-/// such setting.
+/// is read from. FO4 and FO76 bake their trees into the `.bto`, so there is no
+/// separate ring for the setting to bound; FO4's `Ultra.ini` still authors
+/// `fTreeLoadDistance=75000` and FO76's INIs do not.
 const SKYRIM_ULTRA_TREE_LOAD_BU: f32 = 75_000.0;
 
 /// How many cells out the distant tree-billboard ring reaches (#4913), or

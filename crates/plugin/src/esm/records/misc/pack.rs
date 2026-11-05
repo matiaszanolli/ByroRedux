@@ -359,9 +359,10 @@ pub const PROCEDURE_SANDBOX: u32 = 12;
 pub const PROCEDURE_WANDER: u32 = 5;
 
 /// FO3/FNV package procedure-type index for `Patrol` — authored real
-/// Bethesda Patrol packages walk a route defined by linked patrol-idle
-/// markers, none of which this codebase decodes anywhere (that data lives
-/// outside `PACK`'s own sub-records). Absent that, v0 Patrol reduces to
+/// Bethesda Patrol packages walk a route defined by linked references. That
+/// data lives outside `PACK`'s own sub-records: `XLKR` on the placed
+/// references, decoded by `esm::cell::walkers` (#5223) but not yet followed by
+/// the Patrol runtime. Until it is, v0 Patrol reduces to
 /// exactly `Wander`'s random-point-in-`PLDT`-radius algorithm — not a
 /// distinct runtime, just a second procedure type routed onto the same
 /// oscillating-walk core (`systems::wander`'s shared helper). See
