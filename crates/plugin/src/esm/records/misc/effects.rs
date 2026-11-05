@@ -144,10 +144,10 @@ pub struct ProjRecord {
     pub lifetime: f32,
     /// "Explosion - Alt. Trigger - Proximity" (xEdit `wbPROJ`): how close a target must come for an
     /// alternate-trigger projectile — a mine — to go off. `DATA` offset 28 on FO3/FNV/Skyrim, `DNAM`
-    /// offset 24 on Fallout 4. `0.0` when not authored.
+    /// offset 24 on Fallout 4 and 76. `0.0` when not authored.
     pub alt_trigger_proximity: f32,
     /// "Explosion - Alt. Trigger - Timer": seconds before an alternate-trigger projectile goes off by itself
-    /// (`DATA` 32 / Fallout 4 `DNAM` 28).
+    /// (`DATA` 32 / Fallout 4 and 76 `DNAM` 28).
     pub alt_trigger_timer: f32,
 }
 
@@ -184,15 +184,15 @@ const PROJ_DATA_MIN_LEN: usize = 12;
 const PROJ_DATA_ALT_TRIGGER_PROXIMITY: usize = 28;
 const PROJ_DATA_IMPACT_FORCE: usize = 52;
 const PROJ_DATA_COLLISION_RADIUS: usize = 72;
-/// Fallout 4's `PROJ` `DNAM` (xEdit `wbDefinitionsFO4.pas` `wbPROJ`), through the lifetime at 72..76, the last
-/// field decoded.
-const PROJ_FO4_DNAM_LEN: usize = 76;
-/// `DNAM` field offsets: flags u16 and type u16, gravity, speed, range and the two lights come first (FO4 drops
-/// the tracer chance); then the alt-trigger proximity (timer 28, explosion 32), the impact force, and the
+/// Fallout 4 and Fallout 76's `PROJ` `DNAM` (xEdit `wbDefinitions{FO4,FO76}.pas` `wbPROJ`, the same 93 bytes on both
+/// with an empty `DATA`), through the lifetime at 72..76, the last field decoded.
+const PROJ_DNAM_LEN: usize = 76;
+/// `DNAM` field offsets: flags u16 and type u16, gravity, speed, range and the two lights come first (`DATA`'s
+/// tracer chance is gone); then the alt-trigger proximity (timer 28, explosion 32), the impact force, and the
 /// collision radius (lifetime 72).
-const PROJ_FO4_DNAM_ALT_TRIGGER_PROXIMITY: usize = 24;
-const PROJ_FO4_DNAM_IMPACT_FORCE: usize = 48;
-const PROJ_FO4_DNAM_COLLISION_RADIUS: usize = 68;
+const PROJ_DNAM_ALT_TRIGGER_PROXIMITY: usize = 24;
+const PROJ_DNAM_IMPACT_FORCE: usize = 48;
+const PROJ_DNAM_COLLISION_RADIUS: usize = 68;
 
 pub fn parse_proj(
     form_id: u32,
@@ -245,8 +245,11 @@ pub fn parse_proj(
                     out.lifetime = r.f32_or_default();
                 }
             }
-            // Fallout 4 moved the struct to `DNAM`; its layout is the `PROJ_FO4_DNAM_*` offsets above.
-            b"DNAM" if game == crate::esm::reader::GameKind::Fallout4 && sub.data.len() >= PROJ_FO4_DNAM_LEN => {
+            // Fallout 4 moved the struct to `DNAM` and Fallout 76 kept it there: the `PROJ_DNAM_*` offsets above.
+            b"DNAM"
+                if matches!(game, crate::esm::reader::GameKind::Fallout4 | crate::esm::reader::GameKind::Fallout76)
+                    && sub.data.len() >= PROJ_DNAM_LEN =>
+            {
                 let mut r = SubReader::new(&sub.data);
                 let flags = r.u16_or_default();
                 let kind = r.u16_or_default();
@@ -254,14 +257,14 @@ pub fn parse_proj(
                 out.gravity = r.f32_or_default();
                 out.muzzle_speed = r.f32_or_default();
                 out.range = r.f32_or_default();
-                r.skip_to_or_eof(PROJ_FO4_DNAM_ALT_TRIGGER_PROXIMITY);
+                r.skip_to_or_eof(PROJ_DNAM_ALT_TRIGGER_PROXIMITY);
                 out.alt_trigger_proximity = r.f32_or_default();
                 out.alt_trigger_timer = r.f32_or_default();
                 let explosion = r.u32_or_default();
                 out.explosion = if explosion == 0 { 0 } else { remap_fid(explosion, remap) };
-                r.skip_to_or_eof(PROJ_FO4_DNAM_IMPACT_FORCE);
+                r.skip_to_or_eof(PROJ_DNAM_IMPACT_FORCE);
                 out.impact_force = r.f32_or_default();
-                r.skip_to_or_eof(PROJ_FO4_DNAM_COLLISION_RADIUS);
+                r.skip_to_or_eof(PROJ_DNAM_COLLISION_RADIUS);
                 out.collision_radius = r.f32_or_default();
                 out.lifetime = r.f32_or_default();
             }
@@ -434,7 +437,7 @@ pub struct ExplRecord {
     /// Explosion blast radius in game units (f32): the one radius a record authors, or its `Outer Radius`
     /// when it authors two.
     pub radius: f32,
-    /// `Inner Radius` where a record authors one (Fallout 4 from form version 97); otherwise equal to
+    /// `Inner Radius` where a record authors one (Fallout 4 and 76 from form version 97); otherwise equal to
     /// [`Self::radius`].
     pub inner_radius: f32,
 }
@@ -442,17 +445,23 @@ pub struct ExplRecord {
 /// Force-first `EXPL` `DATA` (FO3 / FNV `wbEXPL`, and Skyrim's oldest forms): Force at 0, then the damage here, the
 /// radius after it, and the Light form id at 12.
 const EXPL_FORCE_FIRST_DAMAGE: usize = 4;
-/// Forms-first `EXPL` `DATA` (Skyrim and Fallout 4 `wbEXPL`): six form ids (light, two sounds, impact data set,
-/// placed object, spawn projectile) fill 0..24, the force sits at 24, then the damage here and the radii after it.
+/// Forms-first `EXPL` `DATA` (Skyrim, Fallout 4 and Fallout 76 `wbEXPL`): six form ids (light, two sounds, impact
+/// data set, placed object, spawn projectile) fill 0..24, the force sits at 24, then the damage here and the radii
+/// after it.
 const EXPL_FORMS_FIRST_DAMAGE: usize = 28;
+/// Fallout 76's `Damage Curve Table` form id takes 24 and pushes the force and everything after it along one word.
+const EXPL_FO76_CURVE_TABLE_DAMAGE: usize = 32;
 /// These layouts are gated on the form version in the record header, which the record walker does not keep.
 /// `DATA` only grows with form version, so its length gives the same answer on every shipped master (raw census,
 /// #6562). Skyrim below form version 30 is still force-first (40-44 B; xEdit's layout carries a note that
 /// `FireStormExplosion02` contradicts it) and forms-first from here up.
 const EXPL_SKYRIM_FORMS_FIRST_MIN_LEN: usize = 48;
-/// Fallout 4 authors `Inner Radius` from form version 97 (xEdit `wbFromVersion(97, ...)`): 52-60 B without it,
+/// Fallout 4 and 76 author `Inner Radius` from form version 97 (xEdit `wbFromVersion(97, ...)`): 52-60 B without it,
 /// and from here up with it, where it takes the word the one radius sat in and pushes `Outer Radius` along.
 const EXPL_INNER_RADIUS_MIN_LEN: usize = 64;
+/// Fallout 76 authors the `Damage Curve Table` from form version 150 (xEdit `wbFromVersion(150, ...)`): the 84-byte
+/// full form below that (`ExplosionRailwayRifleStaggerSmall`, version 128) has none, every longer form has it.
+const EXPL_FO76_CURVE_TABLE_MIN_LEN: usize = 88;
 
 /// Where an `EXPL` `DATA` of `len` bytes keeps its damage, and whether the words after it are `Inner Radius` and
 /// `Outer Radius` rather than the one radius. `None` for a game with no `EXPL` `DATA` layout: Oblivion has no `EXPL`,
@@ -460,10 +469,11 @@ const EXPL_INNER_RADIUS_MIN_LEN: usize = 64;
 fn expl_data_layout(game: crate::esm::reader::GameKind, len: usize) -> Option<(usize, bool)> {
     use crate::esm::reader::GameKind;
     match game {
-        GameKind::Fallout3NV | GameKind::Fallout76 => Some((EXPL_FORCE_FIRST_DAMAGE, false)),
+        GameKind::Fallout3NV => Some((EXPL_FORCE_FIRST_DAMAGE, false)),
         GameKind::Skyrim if len < EXPL_SKYRIM_FORMS_FIRST_MIN_LEN => Some((EXPL_FORCE_FIRST_DAMAGE, false)),
         GameKind::Skyrim => Some((EXPL_FORMS_FIRST_DAMAGE, false)),
-        GameKind::Fallout4 => Some((EXPL_FORMS_FIRST_DAMAGE, len >= EXPL_INNER_RADIUS_MIN_LEN)),
+        GameKind::Fallout76 if len >= EXPL_FO76_CURVE_TABLE_MIN_LEN => Some((EXPL_FO76_CURVE_TABLE_DAMAGE, true)),
+        GameKind::Fallout4 | GameKind::Fallout76 => Some((EXPL_FORMS_FIRST_DAMAGE, len >= EXPL_INNER_RADIUS_MIN_LEN)),
         GameKind::Oblivion | GameKind::Starfield => None,
     }
 }
@@ -842,6 +852,58 @@ mod tests {
         let nudge = expl_data(52, 24, &[1.0, 0.0, 96.0]);
         let e = parse_expl(0x000C_800D, &[sub(b"DATA", nudge)], crate::esm::reader::GameKind::Skyrim);
         assert_eq!((e.damage, e.inner_radius, e.radius), (0.0, 96.0, 96.0));
+    }
+
+    /// #6563 — Fallout 76's `EXPL` has the Fallout 4 layout until the `Damage Curve Table` (form version 150, 88 B+)
+    /// pushes it along a word. `crExplosionGrenadePumpkin` used to decode at the FO3 offsets, taking its first sound's
+    /// form id for a denormal damage and its empty second sound for a radius of 0. Values read from `SeventySix.esm`.
+    #[test]
+    fn fallout76_expl_skips_the_damage_curve_table_from_its_form_version() {
+        // Form version 210: light, first sound, impact data set and curve table are all set.
+        let mut pumpkin = expl_data(96, 28, &[550.0, 1.0, 150.0, 500.0, 1000.0]);
+        pumpkin[0..4].copy_from_slice(&0x000D_8F99u32.to_le_bytes());
+        pumpkin[4..8].copy_from_slice(&0x0053_03F7u32.to_le_bytes());
+        pumpkin[12..16].copy_from_slice(&0x0001_F5B0u32.to_le_bytes());
+        pumpkin[24..28].copy_from_slice(&0x0076_E9C4u32.to_le_bytes());
+        let e = parse_expl(0x0086_321C, &[sub(b"DATA", pumpkin)], crate::esm::reader::GameKind::Fallout76);
+        assert_eq!((e.damage, e.inner_radius, e.radius), (1.0, 150.0, 500.0));
+
+        // Form version 197 (92 B) and 164 (88 B): the first lengths with the curve table, here unset.
+        for len in [88, 92] {
+            let acid = expl_data(len, 28, &[100.0, 0.0, 150.0, 250.0, 800.0]);
+            let e = parse_expl(1, &[sub(b"DATA", acid)], crate::esm::reader::GameKind::Fallout76);
+            assert_eq!((e.damage, e.inner_radius, e.radius), (0.0, 150.0, 250.0), "{len} B");
+        }
+
+        // Form version 128: the 84-byte full form has no curve table, so the force sits at 24.
+        let stagger = expl_data(84, 24, &[1.0, 1.0, 100.0, 100.0]);
+        let e = parse_expl(0x0021_5E08, &[sub(b"DATA", stagger)], crate::esm::reader::GameKind::Fallout76);
+        assert_eq!((e.damage, e.inner_radius, e.radius), (1.0, 100.0, 100.0));
+    }
+
+    /// #6563 — Fallout 76's `PROJ` keeps the struct in the same 93-byte `DNAM` as Fallout 4, with an empty `DATA`, so
+    /// the flags, range, alt trigger and explosion all read from there. `ProjectileStormbossFragMine` from
+    /// `SeventySix.esm`.
+    #[test]
+    fn a_fallout76_mine_projectile_decodes_from_its_dnam() {
+        let mut dnam = vec![0u8; 93];
+        dnam[0..2].copy_from_slice(&0x600Eu16.to_le_bytes());
+        dnam[2..4].copy_from_slice(&2u16.to_le_bytes());
+        dnam[4..8].copy_from_slice(&3.5f32.to_le_bytes());
+        dnam[8..12].copy_from_slice(&1600.0f32.to_le_bytes());
+        dnam[12..16].copy_from_slice(&15000.0f32.to_le_bytes());
+        dnam[24..28].copy_from_slice(&235.0f32.to_le_bytes());
+        dnam[28..32].copy_from_slice(&1.6f32.to_le_bytes());
+        dnam[32..36].copy_from_slice(&0x0077_B4BEu32.to_le_bytes());
+        dnam[68..72].copy_from_slice(&5.0f32.to_le_bytes());
+        dnam[72..76].copy_from_slice(&100.0f32.to_le_bytes());
+        let subs = [sub(b"EDID", b"ProjectileStormbossFragMine\0"), sub(b"DATA", b""), sub(b"DNAM", &dnam)];
+        let p = parse_proj(0x0075_D8D5, &subs, crate::esm::reader::GameKind::Fallout76, &None);
+        assert_eq!((p.projectile_flags(), p.projectile_type()), (0x600E, 2));
+        assert_eq!((p.gravity, p.muzzle_speed, p.range), (3.5, 1600.0, 15000.0));
+        assert_eq!((p.alt_trigger_proximity, p.alt_trigger_timer, p.explosion), (235.0, 1.6, 0x0077_B4BE));
+        assert_eq!((p.collision_radius, p.lifetime), (5.0, 100.0));
+        assert!(p.is_proximity_mine());
     }
 
     /// A body that stops before its last radius word, and a game with no `EXPL` `DATA` layout, decode nothing

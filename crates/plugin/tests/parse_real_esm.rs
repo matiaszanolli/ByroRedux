@@ -317,9 +317,35 @@ fn skyrim_expl_old_forms_keep_the_force_first_layout() {
     );
 }
 
+/// #6563 — Fallout 76's `EXPL` shifts a word at the `Damage Curve Table` (form version 150), and its `PROJ` keeps the
+/// struct in `DNAM`: the 530 projectiles decode, 24 of them mines, and a mine's blast reads as itself.
+#[test]
+#[ignore = "needs FO76 game data on disk"]
+fn fo76_expl_and_proj_decode_their_own_layouts() {
+    let Some(data) = data_dir(test_paths::FO76_ENV, test_paths::FO76_DEFAULT) else {
+        eprintln!("[FO76/EXPL] skipping: game data unavailable");
+        return;
+    };
+    let index = assert_expl_rows(
+        &data.join("SeventySix.esm"),
+        &[
+            (0x0021_5E08, "ExplosionRailwayRifleStaggerSmall", 1.0, 100.0, 100.0),
+            (0x0069_2A08, "Moon_ExplosionNukaAcid", 0.0, 150.0, 250.0),
+            (0x0086_321C, "crExplosionGrenadePumpkin", 1.0, 150.0, 500.0),
+            (0x0077_B4BE, "ExplosionStormbossFragMine", 1.0, 100.0, 500.0),
+        ],
+    );
+    let mine = index.projectiles.get(&0x0075_D8D5).expect("ProjectileStormbossFragMine is in SeventySix.esm");
+    assert_eq!((mine.alt_trigger_proximity, mine.alt_trigger_timer, mine.explosion), (235.0, 1.6, 0x0077_B4BE));
+    assert_eq!(index.projectiles.values().filter(|p| p.is_proximity_mine()).count(), 24);
+}
+
 /// Parse `master` and check its `EXPL` rows `(form, editor id, damage, inner radius, outer radius)`, whose values
-/// are read from the master's raw bytes.
-fn assert_expl_rows(master: &std::path::Path, rows: &[(u32, &str, f32, f32, f32)]) {
+/// are read from the master's raw bytes. Hands back the index for any further checks.
+fn assert_expl_rows(
+    master: &std::path::Path,
+    rows: &[(u32, &str, f32, f32, f32)],
+) -> byroredux_plugin::esm::records::EsmIndex {
     let bytes = std::fs::read(master).unwrap_or_else(|e| panic!("read {master:?}: {e}"));
     let index = parse_esm(&bytes).unwrap_or_else(|e| panic!("parse {master:?}: {e}"));
     for &(form, name, damage, inner, outer) in rows {
@@ -327,6 +353,7 @@ fn assert_expl_rows(master: &std::path::Path, rows: &[(u32, &str, f32, f32, f32)
         assert_eq!(expl.editor_id, name, "{form:08X}");
         assert_eq!((expl.damage, expl.inner_radius, expl.radius), (damage, inner, outer), "{name}");
     }
+    index
 }
 
 /// #2905 — FNAM is a display/coercion hint; FLTV is always an IEEE f32.
