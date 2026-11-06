@@ -9,35 +9,31 @@ use byroredux_core::math::{Quat, Vec2, Vec3};
 /// Billboard system factory — returns a closure with a cached camera pose.
 ///
 /// Each frame the closure checks whether the camera position or forward
-/// direction changed since last frame. When neither moved (static scene,
-/// camera parked) the entire billboard loop is skipped, preventing
-/// `get_mut` from arming `GlobalTransform`'s TRACK_CHANGES dirty set for
-/// every billboard entity. Without this gate, `world_bound_propagation`'s
-/// incremental-bounds fast path was defeated every frame in billboard-heavy
-/// cells (vegetation impostors, sprite quads) — see #1374.
-///
-/// Behavior is identical to a per-frame plain function when the camera does
-/// move: all billboard rotations are recomputed and written exactly as
-/// before.
-///
-/// Wind reopens that gate (a stationary camera must still see canopies
-/// respond to weather), so #1374's guarantee cannot rest on the early-out
-/// alone outdoors: `WindField` is installed for every exterior worldspace
-/// from the WTHR wind byte, which is non-zero for most vanilla weathers.
-/// The two motivations are therefore served by two passes (#3192):
+/// direction changed since last frame. A `SpeedTreeWind` canopy is re-bent
+/// every frame regardless — local gusts (`groundcover::local_gust`) apply in
+/// every weather, calm included, and move with the clock — so the camera pose
+/// only decides *which set* is walked, preventing `get_mut` from arming
+/// `GlobalTransform`'s TRACK_CHANGES dirty set for every billboard entity.
+/// Without that split, `world_bound_propagation`'s incremental-bounds fast
+/// path was defeated every frame in billboard-heavy cells (vegetation
+/// impostors, sprite quads) — see #1374, #3192:
 ///
 /// * **camera moved** — walk every `Billboard`; all of their rotations are
 ///   stale by definition.
-/// * **camera parked, wind live** — walk the `SpeedTreeWind` set instead and
-///   intersect it with `Billboard`. Only marked trees can change, so nothing
-///   else is fetched mutably and the dirty set stays empty for the rest.
+/// * **camera parked** — walk the `SpeedTreeWind` set instead and intersect it
+///   with `Billboard`. Only marked trees can change, so nothing else is
+///   fetched mutably and the dirty set stays empty for the rest. This pass
+///   has no wind-state gate: the marked trees are dirtied every frame, in
+///   calm weather too (#6722 — the gate this replaced went dead when local
+///   gusts landed, 69a3b0b30). The marked set is one placeholder per `.spt`
+///   REFR in the loaded grid; its per-frame cost has not been measured, and a
+///   gate should come back only with a measurement behind it.
 ///
 /// Mirrors Gamebryo's `NiBillboardNode::UpdateWorldBound`. See #225.
 pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
     // Sentinel: `None` on first frame so the loop always runs once.
     let mut last_cam: Option<(Vec3, Vec3)> = None;
     let mut elapsed = 0.0_f32;
-    let mut last_wind: Option<WindField> = None;
     move |world: &World, dt: f32| {
         elapsed = (elapsed + dt.max(0.0)).max(0.0);
         let wind = world
@@ -53,18 +49,6 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
             .try_resource::<TotalTime>()
             .map(|time| time.0)
             .unwrap_or(elapsed);
-        // Always on: local gusts (`groundcover::local_gust`) apply in every
-        // weather, calm included — only their intensity varies with the wind —
-        // and they move with the clock, so the marked trees are re-bent each
-        // frame. The cost is the handful of `SpeedTreeWind` trees, not every
-        // billboard (the stationary-camera branch below walks only that set).
-        let wind_active = true;
-        // Compare the complete field, not only its active/inactive state:
-        // weather transitions can change direction, speed, or gust shape
-        // while both endpoints remain windy. SpeedTree canopies must respond
-        // on that frame even when the camera is stationary.
-        let wind_state_changed = last_wind != Some(wind);
-        last_wind = Some(wind);
         // Active camera lookup (position + forward).
         let Some(active) = world.try_resource::<ActiveCamera>() else {
             return;
@@ -90,15 +74,13 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
         let cam_forward = cam_global.rotation * -Vec3::Z;
 
         // Camera-motion gate (#1374): when neither camera position nor
-        // forward direction changed since last frame, every billboard
-        // rotation is still correct from the prior frame — skip the loop.
-        // Exact equality is appropriate here: the camera transform is
-        // written by camera_follow_system / fly_camera_system with no
-        // floating-point accumulation.
+        // forward direction changed since last frame, every ordinary
+        // billboard rotation is still correct from the prior frame — only the
+        // wind-driven `SpeedTreeWind` set is walked below. Exact equality is
+        // appropriate here: the camera transform is written by
+        // camera_follow_system / fly_camera_system with no floating-point
+        // accumulation.
         let camera_changed = last_cam != Some((cam_pos, cam_forward));
-        if !camera_changed && !wind_active && !wind_state_changed {
-            return;
-        }
         last_cam = Some((cam_pos, cam_forward));
 
         let bq = world.query::<Billboard>();
@@ -110,7 +92,6 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
             cam_pos,
             cam_forward,
             wind,
-            wind_active,
             wind_time,
         };
 
@@ -125,12 +106,12 @@ pub(crate) fn make_billboard_system() -> impl FnMut(&World, f32) + Send + Sync {
         } else {
             // Wind-only refresh (#3192). A stationary camera leaves ordinary
             // billboards bit-identical, so drive this pass from the
-            // `SpeedTreeWind` set — the handful of marked trees — rather than
-            // walking every `Billboard` to discard all but that subset. The
-            // discarded majority is the whole billboard population of a
-            // vegetation-heavy exterior (grass and FX impostors), and `wind`
-            // is non-zero for most vanilla weathers, so this branch is the
-            // steady state outdoors, not an edge case.
+            // `SpeedTreeWind` set — the marked trees — rather than walking
+            // every `Billboard` to discard all but that subset. The discarded
+            // majority is the whole billboard population of a
+            // vegetation-heavy exterior (grass and FX impostors). Local gusts
+            // make this branch the steady state in every exterior weather,
+            // not an edge case.
             let Some(swq) = swq.as_ref() else {
                 return;
             };
@@ -156,7 +137,6 @@ struct BillboardPass {
     cam_pos: Vec3,
     cam_forward: Vec3,
     wind: WindField,
-    wind_active: bool,
     wind_time: f32,
 }
 
@@ -191,7 +171,7 @@ fn update_billboard(
     // the shared weather wind while ordinary billboards remain
     // unaffected. Phase is world-position seeded, keeping nearby
     // trees in sync while avoiding lockstep.
-    if let (true, Some(tree_wind)) = (pass.wind_active, tree_wind) {
+    if let Some(tree_wind) = tree_wind {
         new_rot = apply_speedtree_wind(
             new_rot,
             global.translation,
@@ -454,8 +434,11 @@ mod tests {
         );
     }
 
+    /// A wind change must reach a tree while the camera is parked. There is no
+    /// wind-state gate to test (#6722); this pins the *output* of the stationary
+    /// pass, which fails if that pass stops re-bending marked trees.
     #[test]
-    fn active_weather_direction_change_rebends_stationary_speedtree() {
+    fn wind_direction_change_rebends_stationary_speedtree() {
         let mut world = World::new();
         let camera = world.spawn();
         world.insert(camera, Transform::IDENTITY);
@@ -497,8 +480,54 @@ mod tests {
 
         assert_ne!(
             before, after,
-            "a stationary camera must not suppress active-to-active wind changes"
+            "a stationary camera must not suppress wind changes"
         );
+    }
+
+    /// #6722 — local gusts apply in calm weather (69a3b0b30), so a parked camera
+    /// under `WindField::CALM` still re-writes a marked tree and leaves an
+    /// ordinary billboard alone. Re-introducing a calm-weather early-out makes
+    /// this fail, which turns that into a conscious, measured decision.
+    #[test]
+    fn parked_camera_in_calm_weather_still_rebends_marked_tree_only() {
+        let mut world = World::new();
+        let camera = world.spawn();
+        world.insert(camera, Transform::IDENTITY);
+        world.insert(camera, GlobalTransform::IDENTITY);
+        world.insert(camera, Camera::default());
+        world.insert_resource(ActiveCamera(camera));
+
+        let sprite = world.spawn();
+        world.insert(
+            sprite,
+            GlobalTransform::new(Vec3::new(4.0, 0.0, 8.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(sprite, Billboard::new(BillboardMode::BsRotateAboutUp));
+
+        let tree = world.spawn();
+        world.insert(
+            tree,
+            GlobalTransform::new(Vec3::new(12.0, 0.0, 8.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(tree, Billboard::new(BillboardMode::BsRotateAboutUp));
+        world.insert(tree, SpeedTreeWind::new(1.0, 0.0));
+        world.insert_resource(WindField::CALM);
+
+        let mut system = make_billboard_system();
+        system(&world, 0.0);
+        world
+            .query_mut::<GlobalTransform>()
+            .unwrap()
+            .storage_mut()
+            .take_dirty();
+        system(&world, 0.5);
+        let dirty = world
+            .query_mut::<GlobalTransform>()
+            .unwrap()
+            .storage_mut()
+            .take_dirty();
+        assert!(!dirty.contains(&sprite));
+        assert!(dirty.contains(&tree));
     }
 
     #[test]
