@@ -391,3 +391,11 @@ pub fn register_saved_location_clear_state(registry: &mut byroredux_save::SaveRe
     // M47.2 — cleared locations (dead bosses, script SetCleared).
     registry.register_resource::<LocationClearState>("LocationClearState");
 }
+
+/// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.
+pub fn install(world: &mut byroredux_core::ecs::World) {
+    // M47.2 — cleared locations (saved).
+    world.init_resource::<LocationClearState>();
+    // M47.2 — quest location-alias bindings (saved, like the ledger above).
+    world.init_resource::<LocationAliasBindings>();
+}

@@ -109,6 +109,12 @@ pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
     registry.register_resource::<ReferenceFlags>("ReferenceFlags");
 }
 
+/// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.
+pub fn install(world: &mut byroredux_core::ecs::World) {
+    // M47.2 — flags scripts set on references (saved).
+    world.init_resource::<ReferenceFlags>();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

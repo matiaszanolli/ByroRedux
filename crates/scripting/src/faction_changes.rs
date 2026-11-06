@@ -129,6 +129,13 @@ pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
     registry.register_resource::<ScriptedFactionChanges>("ScriptedFactionChanges");
 }
 
+/// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.
+pub fn install(world: &mut byroredux_core::ecs::World) {
+    // M47.2 — the scripted faction-membership ledger (saved; a restore
+    // replaces this default).
+    world.init_resource::<ScriptedFactionChanges>();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

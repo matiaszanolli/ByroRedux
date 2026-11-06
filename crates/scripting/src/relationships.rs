@@ -124,6 +124,12 @@ pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
     registry.register_resource::<ScriptedRelationships>("ScriptedRelationships");
 }
 
+/// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.
+pub fn install(world: &mut byroredux_core::ecs::World) {
+    // M47.2 — script relationship ranks (saved).
+    world.init_resource::<ScriptedRelationships>();
+}
+
 #[cfg(test)]
 mod tests {
     /// M43 — `CHRR` carries both actors and the old / new rank, and only a real change raises it.

@@ -29,3 +29,8 @@ pub struct ProjectileLaunch {
 pub struct PendingProjectileLaunches(pub Vec<ProjectileLaunch>);
 
 impl Resource for PendingProjectileLaunches {}
+
+/// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.
+pub fn install(world: &mut byroredux_core::ecs::World) {
+    world.init_resource::<PendingProjectileLaunches>();
+}

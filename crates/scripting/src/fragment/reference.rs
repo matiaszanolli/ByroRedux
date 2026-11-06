@@ -965,6 +965,14 @@ fn relay_engine_events(world: &World, markers: Markers) {
     }
 }
 
+/// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.
+pub(super) fn install_reference(world: &mut byroredux_core::ecs::World) {
+    // M47.2 — what the reference scripts last saw of the actors (transient).
+    world.init_resource::<ActorWatch>();
+    // M47.2 — unload events awaiting their frame (transient).
+    world.init_resource::<PendingUnloadDeliveries>();
+}
+
 #[cfg(test)]
 mod delivered_event_list_tests {
     use super::*;

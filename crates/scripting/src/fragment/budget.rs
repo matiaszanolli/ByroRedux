@@ -186,6 +186,13 @@ pub(crate) fn defer(
     Ok(())
 }
 
+/// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.
+pub(super) fn install_budget(world: &mut byroredux_core::ecs::World) {
+    // M47.2 — the Papyrus interpreter's per-frame allowance (#5763); transient,
+    // renewed by `event_cleanup_system` at the end of every frame.
+    world.init_resource::<VmFrameBudget>();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

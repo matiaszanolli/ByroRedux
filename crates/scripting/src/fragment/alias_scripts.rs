@@ -284,6 +284,14 @@ pub(super) fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
     registry.register_resource::<AliasScriptOwners>("AliasScriptOwners");
 }
 
+/// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.
+pub(super) fn install_alias_scripts(world: &mut byroredux_core::ecs::World) {
+    // M47.2 — alias scripts: the authored ones (derived) and their owner ids
+    // and started quests (saved).
+    world.init_resource::<QuestAliasScripts>();
+    world.init_resource::<AliasScriptOwners>();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

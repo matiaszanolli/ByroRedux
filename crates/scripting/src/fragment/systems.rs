@@ -205,6 +205,12 @@ pub fn register(world: &mut World) {
     world.insert_resource(PendingPerkEntries::default());
     world.insert_resource(PendingTerminalSelections::default());
     world.insert_resource(ActivePackages::default());
+    // #6706 — the fragment submodules own their resources.
+    alias_scripts::install_alias_scripts(world);
+    reference::install_reference(world);
+    anim_events::install_anim_events(world);
+    hits::install_hits(world);
+    budget::install_budget(world);
 }
 
 /// Execute the lowered Papyrus fragments emitted by scene playback this

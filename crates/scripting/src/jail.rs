@@ -493,6 +493,11 @@ fn request_move(world: &World, reference: u32) -> bool {
     }
 }
 
+/// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.
+pub fn install(world: &mut byroredux_core::ecs::World) {
+    world.init_resource::<PendingEvidenceDeposits>();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

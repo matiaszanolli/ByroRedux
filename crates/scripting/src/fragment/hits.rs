@@ -284,6 +284,12 @@ pub(super) fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
     registry.register_resource::<HitRegistrations>("HitRegistrations");
 }
 
+/// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.
+pub(super) fn install_hits(world: &mut byroredux_core::ecs::World) {
+    // M47.2 — Papyrus hit event registrations (saved).
+    world.init_resource::<HitRegistrations>();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

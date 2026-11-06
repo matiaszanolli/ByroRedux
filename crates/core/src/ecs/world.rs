@@ -689,6 +689,13 @@ impl World {
         }
     }
 
+    /// How many distinct resource types are installed. A setup path that moves
+    /// between modules can pin "the same resources are present" with this and a
+    /// spot check, which `try_resource` alone cannot (#6706).
+    pub fn resource_count(&self) -> usize {
+        self.resources.len()
+    }
+
     /// Remove a global resource, returning it if it existed.
     ///
     /// # Panics

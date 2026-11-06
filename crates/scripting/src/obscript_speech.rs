@@ -113,6 +113,12 @@ pub fn obscript_speech_system(world: &World, dt: f32) {
     }
 }
 
+/// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.
+pub fn install(world: &mut byroredux_core::ecs::World) {
+    // M47.3 — the lines scripts made actors say (`Say` / `SayTo`; not saved).
+    world.init_resource::<PendingScriptedLines>();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

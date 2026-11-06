@@ -60,6 +60,13 @@ pub fn install_weather_classifications(world: &mut World, index: &EsmIndex) -> u
     count
 }
 
+/// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.
+pub fn install(world: &mut byroredux_core::ecs::World) {
+    // M47.2 — the weather scripts can ask about (derived).
+    world.init_resource::<CurrentWeather>();
+    world.init_resource::<WeatherClassifications>();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

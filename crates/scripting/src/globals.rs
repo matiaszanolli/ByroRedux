@@ -218,6 +218,11 @@ pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
     registry.register_resource::<Globals>("Globals");
 }
 
+/// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.
+pub fn install(world: &mut byroredux_core::ecs::World) {
+    world.init_resource::<GameCalendar>();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

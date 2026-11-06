@@ -60,3 +60,9 @@ pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
     // FormID; dropped when their quest stops.
     registry.register_resource::<AliasOverrides>("AliasOverrides");
 }
+
+/// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.
+pub fn install(world: &mut byroredux_core::ecs::World) {
+    // M47.2 — scripted ForceRefTo / Clear alias overrides (saved).
+    world.init_resource::<AliasOverrides>();
+}

@@ -1,8 +1,8 @@
 //! #5806 — the scripting crate's world setup, split out of `lib.rs`
 //! (which stays the public re-export facade). Every M47.2 subsystem
-//! registers its default resource here; the `world.init_resource::<T>()`
-//! calls replace the three-line insert-if-absent blocks this function
-//! used to spell 37 times.
+//! registers its default resource through its own `install` (#6706; each
+//! calls `world.init_resource::<T>()`, which replaced the three-line
+//! insert-if-absent blocks this function used to spell 37 times).
 
 use crate::*;
 use byroredux_core::ecs::World;
@@ -12,41 +12,23 @@ use byroredux_core::ecs::World;
 /// Call during setup so that `query_mut()` works for event markers
 /// before any entity has triggered an event.
 pub fn register(world: &mut World) {
-    world.insert_resource(CompatibilityRegistry::default());
-    // M47.3 — the lines scripts made actors say (`Say` / `SayTo`; not saved).
-    world.init_resource::<crate::obscript_speech::PendingScriptedLines>();
-    // M47.2 — the scripted faction-membership ledger (saved; a restore
-    // replaces this default).
-    world.init_resource::<ScriptedFactionChanges>();
-    // M47.2 — script relationship ranks (saved).
-    world.init_resource::<ScriptedRelationships>();
-    // M47.2 — cleared locations (saved).
-    world.init_resource::<LocationClearState>();
-    // M47.2 — scripted AddToMap (saved).
-    world.init_resource::<MapMarkers>();
+    compatibility::install(world);
+    obscript_speech::install(world);
+    faction_changes::install(world);
+    relationships::install(world);
+    location::install(world);
+    map_markers::install(world);
     // M47.2 — scripted IncrementStat misc stats and AddAchievement awards
     // (saved): `misc_stats` installs both (#5802).
     misc_stats::install(world);
-    world.init_resource::<crate::globals::GameCalendar>();
-    // M47.2 — alias scripts: the authored ones (derived) and their owner ids
-    // and started quests (saved).
-    world.init_resource::<QuestAliasScripts>();
-    world.init_resource::<AliasScriptOwners>();
-    // M47.2 — what the reference scripts last saw of the actors (transient).
-    world.init_resource::<ActorWatch>();
-    // M47.2 — unload events awaiting their frame (transient).
-    world.init_resource::<PendingUnloadDeliveries>();
-    // M47.2 — Fallout 4 / Starfield input enable layers (saved).
-    world.init_resource::<InputLayers>();
-    // M47.2 — flags scripts set on references (saved).
-    world.init_resource::<ReferenceFlags>();
-    // M47.2 — Sound.Play requests awaiting the host (transient).
-    world.init_resource::<PendingParentActivations>();
-    world.init_resource::<PendingDetectionEvents>();
-    world.init_resource::<PendingProjectileLaunches>();
-    world.init_resource::<PendingSoundPlays>();
-    // M47.2 — ProcessTrapHit requests awaiting the Update flush (transient).
-    world.init_resource::<PendingTrapHits>();
+    globals::install(world);
+    input_layers::install(world);
+    reference_flags::install(world);
+    activate_parents::install(world);
+    detection_events::install(world);
+    projectile_requests::install(world);
+    sound_requests::install(world);
+    trap_hit_requests::install(world);
     // M47.2 — reference owners, faction crime gold and crime factions: each
     // subsystem installs its own resources (#5802).
     ownership::install(world);
@@ -55,7 +37,7 @@ pub fn register(world: &mut World) {
     crate::obscript_state::install(world);
     crate::obscript_ledger::install(world);
     crate::crime_knowledge::install(world);
-    world.init_resource::<crate::jail::PendingEvidenceDeposits>();
+    jail::install(world);
     crate::challenges::install(world);
     crate::obscript_more::install(world);
     crate::magic_effects::install(world);
@@ -66,9 +48,7 @@ pub fn register(world: &mut World) {
     // M47.2 — form lists scripts read (derived) and the forms scripts added to
     // them (saved): `form_lists` installs both (#5802).
     form_lists::install(world);
-    // M47.2 — the weather scripts can ask about (derived).
-    world.init_resource::<CurrentWeather>();
-    world.init_resource::<WeatherClassifications>();
+    weather_state::install(world);
     // M47.2 — keyword data scripts attached to locations (saved, #5802).
     location_keyword_data::install(world);
     // M47.2 — destructible objects' damage and stage changes, SetBribed /
@@ -81,29 +61,18 @@ pub fn register(world: &mut World) {
     words_of_power::install(world);
     tempering::install(world);
     perk_entry_points::install_weapon_subject(world);
-    // M47.2 — Papyrus animation event registrations (saved).
-    world.init_resource::<AnimationEventRegistrations>();
-    // M47.2 — Papyrus hit event registrations (saved).
-    world.init_resource::<HitRegistrations>();
     // M47.2 — scripted SetLinkedRef links, ChangeAnimArchetype assignments and
     // Starfield SetScanned / AddToMapScanned flags: each subsystem installs its
     // own resources (#5802). The form-list additions come with `form_lists`.
     linked_refs::install(world);
     animation_graph::install(world);
     scanning::install(world);
-    // M47.2 — script-filled reference-collection alias members (saved).
-    world.init_resource::<AliasCollections>();
+    alias_collections::install(world);
     // M47.2 — scripted SetPlayerTeammate / SetDoingFavor flags (saved, #5802).
     followers::install(world);
-    // M47.2 — scripted ForceRefTo / Clear alias overrides (saved).
-    world.init_resource::<AliasOverrides>();
+    alias_overrides::install(world);
     // M47.2 — created-object references (saved, like the ledger above; #5802).
     created_references::install(world);
-    // M47.2 — quest location-alias bindings (saved, like the ledger above).
-    world.init_resource::<LocationAliasBindings>();
-    // M47.2 — the Papyrus interpreter's per-frame allowance (#5763); transient,
-    // renewed by `event_cleanup_system` at the end of every frame.
-    world.init_resource::<VmFrameBudget>();
     world.register::<ActivateEvent>();
     world.register::<NativeActivation>();
     world.register::<HitEvent>();
@@ -181,4 +150,58 @@ pub fn register(world: &mut World) {
     // surface live at runtime. See docs/engine/m47-0-design.md.
     papyrus_demo::register(world);
     log::info!("Scripting subsystem initialized (ECS events + timers + papyrus_demo)");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #6706 — `register` moved its direct resource setup into per-subsystem
+    /// `install` functions. The count is the resource set `register` produced
+    /// before the move (138); the list is the types it used to initialise by
+    /// hand, so a dropped `install` call fails by name rather than by count alone.
+    #[test]
+    fn register_installs_the_same_resource_set() {
+        let mut world = World::new();
+        register(&mut world);
+        assert_eq!(world.resource_count(), 138, "the resource set `register` installs changed");
+
+        macro_rules! present {
+            ($($ty:path),+ $(,)?) => {$(
+                assert!(
+                    world.try_resource::<$ty>().is_some(),
+                    concat!(stringify!($ty), " is no longer installed by `register`")
+                );
+            )+};
+        }
+        present!(
+        crate::obscript_speech::PendingScriptedLines,
+        crate::faction_changes::ScriptedFactionChanges,
+        crate::relationships::ScriptedRelationships,
+        crate::location::LocationClearState,
+        crate::map_markers::MapMarkers,
+        crate::globals::GameCalendar,
+        crate::fragment::QuestAliasScripts,
+        crate::fragment::AliasScriptOwners,
+        crate::fragment::ActorWatch,
+        crate::fragment::PendingUnloadDeliveries,
+        crate::input_layers::InputLayers,
+        crate::reference_flags::ReferenceFlags,
+        crate::activate_parents::PendingParentActivations,
+        crate::detection_events::PendingDetectionEvents,
+        crate::projectile_requests::PendingProjectileLaunches,
+        crate::sound_requests::PendingSoundPlays,
+        crate::trap_hit_requests::PendingTrapHits,
+        crate::jail::PendingEvidenceDeposits,
+        crate::weather_state::CurrentWeather,
+        crate::weather_state::WeatherClassifications,
+        crate::fragment::AnimationEventRegistrations,
+        crate::fragment::HitRegistrations,
+        crate::alias_collections::AliasCollections,
+        crate::alias_overrides::AliasOverrides,
+        crate::location::LocationAliasBindings,
+        crate::fragment::VmFrameBudget,
+        crate::compatibility::CompatibilityRegistry,
+        );
+    }
 }

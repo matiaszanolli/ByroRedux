@@ -187,5 +187,11 @@ pub fn activate_parent_relay_system(world: &World, dt: f32) {
     }
 }
 
+/// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.
+pub fn install(world: &mut byroredux_core::ecs::World) {
+    // M47.2 — Sound.Play requests awaiting the host (transient).
+    world.init_resource::<PendingParentActivations>();
+}
+
 #[cfg(test)]
 mod tests;

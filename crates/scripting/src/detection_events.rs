@@ -42,6 +42,11 @@ impl PendingDetectionEvents {
     }
 }
 
+/// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.
+pub fn install(world: &mut byroredux_core::ecs::World) {
+    world.init_resource::<PendingDetectionEvents>();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

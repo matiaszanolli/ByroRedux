@@ -60,6 +60,12 @@ pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
     registry.register_resource::<AliasCollections>("AliasCollections");
 }
 
+/// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.
+pub fn install(world: &mut byroredux_core::ecs::World) {
+    // M47.2 — script-filled reference-collection alias members (saved).
+    world.init_resource::<AliasCollections>();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

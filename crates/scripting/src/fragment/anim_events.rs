@@ -208,3 +208,9 @@ pub(super) fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
     // M47.2 — Papyrus hit event registrations.
     registry.register_resource::<AnimationEventRegistrations>("AnimationEventRegistrations");
 }
+
+/// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.
+pub(super) fn install_anim_events(world: &mut byroredux_core::ecs::World) {
+    // M47.2 — Papyrus animation event registrations (saved).
+    world.init_resource::<AnimationEventRegistrations>();
+}

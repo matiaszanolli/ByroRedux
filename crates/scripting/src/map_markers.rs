@@ -142,6 +142,12 @@ pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
     registry.register_resource::<MapMarkers>("MapMarkers");
 }
 
+/// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.
+pub fn install(world: &mut byroredux_core::ecs::World) {
+    // M47.2 — scripted AddToMap (saved).
+    world.init_resource::<MapMarkers>();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
