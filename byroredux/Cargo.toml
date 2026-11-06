@@ -94,3 +94,8 @@ ash = { workspace = true }
 tempfile = "3"
 wat = { workspace = true }
 semver = { workspace = true }
+# Test-only (#6685): `boot::schedule::acquisitions` parses system bodies into a
+# syntax tree to find what each one acquires, instead of searching their text.
+# Dev-scoped, so no release build compiles it. Already in Cargo.lock as a
+# transitive dependency of the proc-macro crates.
+syn = { version = "2", features = ["full", "visit"] }

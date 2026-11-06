@@ -593,6 +593,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "syn 2.0.119",
  "sysinfo",
  "tempfile",
  "thiserror 2.0.18",

@@ -548,7 +548,7 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
     scheduler.add_exclusive_with_access(
         Stage::Late,
         crate::systems::npc_dialogue::make_npc_dialogue_selection_system(),
-        bridged_script_getter_reads(Access::new())
+        fragment_effect_family_access(bridged_script_getter_reads(Access::new()))
             .reads::<byroredux_scripting::ActivateEvent>()
             .reads::<byroredux_scripting::SceneAliasCandidate>()
             // `IsWeaponSkillType`: the actor's weapon and its skill.
@@ -908,4 +908,35 @@ fn bridged_script_getter_reads(access: Access) -> Access {
         .reads_resource::<byroredux_scripting::fragment::ScriptUpdates>()
         .reads_resource::<byroredux_scripting::map_markers::MapMarkers>()
         .reads_resource::<byroredux_scripting::map_markers::AuthoredMapMarkers>()
+}
+
+/// #6685 — the effect families `apply_effect` dispatches to, for
+/// `make_npc_dialogue_selection_system`'s row. The callee walk used to stop one
+/// hop short of them; the syntax-tree scan, started at
+/// `DeferredFragmentEffects::apply_at_depth`, reads their bodies and found
+/// these undeclared. The row is exclusive, so nothing mis-scheduled — it is the
+/// promotion baseline and the `sys.accesses` view.
+///
+/// `apply_ai_combat_effect`: combat state and the ambient-engagement marker.
+/// `apply_placement_effect`: the moved reference's `Transform` and
+/// `EditorLocation`, and the player's `PlayerMoveRequest`.
+/// `apply_vehicle_cinematic_effect`: tether, motion-type and cinematic state.
+/// `apply_lock_effect`: `Locked`. `apply_scene_effect`: the scene start/stop
+/// markers. `apply_player_control_effect`: the player-control flags.
+/// `apply_inventory_effect`: the equip-item catalog read.
+fn fragment_effect_family_access(access: Access) -> Access {
+    access
+        .writes::<byroredux_scripting::AiCombatState>()
+        .writes::<byroredux_scripting::AmbientEngagement>()
+        .writes::<byroredux_core::ecs::Transform>()
+        .reads::<byroredux_scripting::EditorLocation>()
+        .writes_resource::<byroredux_scripting::PlayerMoveRequest>()
+        .writes::<byroredux_scripting::ActorCinematicState>()
+        .writes::<byroredux_scripting::HorseTetherState>()
+        .writes::<byroredux_scripting::MotionTypeChangeRequest>()
+        .writes::<byroredux_core::ecs::components::Locked>()
+        .writes::<byroredux_scripting::SceneStartRequest>()
+        .writes::<byroredux_scripting::SceneStopRequest>()
+        .writes_resource::<byroredux_scripting::PlayerControlState>()
+        .reads_resource::<byroredux_scripting::EquipItemCatalog>()
 }

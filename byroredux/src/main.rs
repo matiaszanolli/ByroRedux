@@ -9,6 +9,8 @@
 #[global_allocator]
 static DHAT_ALLOC: dhat::Alloc = dhat::Alloc;
 
+#[cfg(test)]
+mod acquisition_scan;
 mod anim_convert;
 mod app_events;
 mod app_frame;

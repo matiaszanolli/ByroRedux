@@ -682,6 +682,8 @@ mod scheduler_access_report_tests {
 /// `World` with a provider runtime installed.
 #[cfg(test)]
 mod system_access_declaration_tests {
+    use crate::acquisition_scan::{self as acquisitions, Acquired, Mode};
+
     const BOOT_SRC: &str = crate::boot::SOURCES;
     const EXECUTE_SRC: &str =
         include_str!("../../../../crates/scripting/src/papyrus_provider/execute.rs");
@@ -883,290 +885,46 @@ mod system_access_declaration_tests {
         ),
     ];
 
-    /// Production text only. Splitting on a bare `#[cfg(test)]` truncates at
-    /// the first `#[cfg(test)] use` / `#[cfg(test)] fn` instead — which in
-    /// `systems/animation.rs` sits at line 21 and would hide the entire
-    /// file, so the scan would silently find nothing.
-    fn production(src: &str) -> &str {
-        byroredux_core::source_scan::production_text_or_whole(src)
-    }
-
-    /// `boot.rs` up to this module, so the module's own mentions of a system
-    /// name cannot be what a scan finds.
-    fn boot_setup() -> &'static str {
-        BOOT_SRC
-            .split("mod system_access_declaration_tests")
-            .next()
-            .expect("split always yields a first segment")
-    }
-
-    /// Balanced-paren slice of the `add_*_with_access(` call that registers
-    /// `system`.
-    ///
-    /// #4064 — anchored on the call's *registration target* (the argument
-    /// after `Stage::X`), not on the first textual occurrence of the name.
-    /// The old `setup.find(system)` would happily land on a `use` import or
-    /// a comment: `player_controller_system`'s block names
-    /// `physics_sync_system` in prose, and anchoring on that mention
-    /// compared one system's acquisitions against another's declaration.
-    fn declaration(system: &str) -> String {
-        let setup = boot_setup();
-        // Needle composed at runtime so this function's own source text
-        // cannot satisfy the scan it performs.
-        let open = format!("_with_access{}", "(");
-        let mut cursor = 0usize;
-        while let Some(found) = setup[cursor..].find(&open) {
-            let paren = cursor + found + open.len() - 1;
-            let mut depth = 0usize;
-            let mut end = paren;
-            for (offset, ch) in setup[paren..].char_indices() {
-                match ch {
-                    '(' => depth += 1,
-                    ')' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            end = paren + offset;
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            let block = &setup[paren..=end];
-            let target = block
-                .lines()
-                .skip(1)
-                .map(str::trim)
-                .find(|line| {
-                    !line.is_empty() && !line.starts_with("Stage::") && !line.starts_with("//")
-                })
-                .unwrap_or("")
-                .trim_end_matches(',')
-                .trim_end_matches("()");
-            if target.rsplit("::").next() == Some(system) {
-                return block.to_owned();
-            }
-            cursor = paren + 1;
-        }
-        panic!("{system}: no `add_*_with_access` registration found in boot/schedule/");
-    }
-
-    /// Body of `name` in `src`, delimited by the closing brace at the
-    /// function's own indentation.
-    fn fn_body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
-        let start = [format!("fn {name}("), format!("fn {name}<")]
-            .iter()
-            .filter_map(|needle| src.find(needle.as_str()))
-            .min()?;
-        let line_start = src[..start].rfind('\n').map_or(0, |i| i + 1);
-        let indent = &src[line_start..start];
-        let indent = if indent.trim().is_empty() { indent } else { "" };
-        let terminator = format!("\n{indent}}}");
-        let end = src[start..]
-            .find(&terminator)
-            .map_or(src.len(), |i| start + i + terminator.len());
-        Some(&src[start..end])
-    }
-
-    /// Every storage/resource type acquired inside `body`.
-    fn acquired_in(body: &str, types: &mut Vec<String>) {
-        // #6362 — `PlayerEntity::get(world)` is the one read of that resource
-        // and lives in another file, so the turbofish scan below cannot see
-        // it. A call is the acquisition. The needle is composed at run time so
-        // this file does not contain it, and a longer name that merely ends in
-        // it (`PapyrusPlayerEntity::get`) is a different resource.
-        let accessor = format!("{}{}", "PlayerEntity::", "get(");
-        let reads_player = body.match_indices(accessor.as_str()).any(|(at, _)| {
-            !body[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_')
-        });
-        if reads_player
-            && !types.iter().any(|t| t == "PlayerEntity=read" || t == "PlayerEntity=write")
-        {
-            types.push("PlayerEntity=read".to_owned());
-        }
-        // `.query_mut::<crate::Foo>()` -> `Foo`. Needle composed at runtime.
-        // #4573 — mode is part of the record: a WRITE acquisition
-        // (query_mut / resource_mut / try_resource_mut) must be declared
-        // with `.writes::<T>()` specifically, not merely named.
-        let open = format!("{}{}", "::", "<");
-        for (index, _) in body.match_indices(open.as_str()) {
-            let before = &body[..index];
-            // #4994 — `world.get::<T>` / `world.has::<T>` take the storage
-            // read lock too, and `get_mut::<T>` a write; the scan used to
-            // see only the query/resource forms.
-            // #4821 — the ambient/death teardown helpers take the storage
-            // through a generic `query_mut::<T>` the scan cannot resolve
-            // (`T` is the helper's own parameter), so their turbofish call
-            // sites are the acquisition.
-            let generic_write =
-                before.ends_with("remove_component") || before.ends_with("insert_component");
-            let is_write = before.ends_with("query_mut")
-                || before.ends_with("resource_mut")
-                || before.ends_with("try_resource_mut")
-                || before.ends_with(".get_mut")
-                || generic_write;
-            let is_acquire = ["query", "query_mut", "resource", "resource_mut"]
-                .iter()
-                .any(|form| before.ends_with(form) || before.ends_with(&format!("try_{form}")))
-                || [".get", ".get_mut", ".has"]
-                    .iter()
-                    .any(|form| before.ends_with(form))
-                || generic_write;
-            if !is_acquire {
-                continue;
-            }
-            let tail = &body[index + open.len()..];
-            let Some(close) = tail.find('>') else {
-                continue;
-            };
-            let path = &tail[..close];
-            // `$Comp` is a macro metavariable, not a type.
-            if path.is_empty() || path.contains(' ') || path.starts_with('$') {
-                continue;
-            }
-            let short = path.rsplit("::").next().unwrap_or(path).to_owned();
-            // #4573 — a write subsumes a read of the same type; record the
-            // strongest mode. ("write" sorts after "read" lexicographically
-            // is NOT relied on; explicit check.)
-            let entry = if is_write {
-                format!("{short}=write")
-            } else {
-                format!("{short}=read")
-            };
-            let read_form = format!("{short}=read");
-            let write_form = format!("{short}=write");
-            if types.contains(&entry)
-                || (!is_write && types.contains(&write_form))
-            {
-                continue;
-            }
-            if is_write && types.contains(&read_form) {
-                let at = types.iter().position(|t| *t == read_form).unwrap();
-                types[at] = entry;
-            } else {
-                types.push(entry);
-            }
-        }
-    }
-
-    /// Acquisitions of `entry` plus every function it calls that is defined
-    /// in the same file, to `MAX_DEPTH` hops.
-    fn acquired(src: &str, entry: &str) -> Vec<String> {
-        const MAX_DEPTH: usize = 3;
-        const NOT_CALLS: &[&str] = &[
-            "if", "match", "for", "while", "fn", "return", "assert", "panic",
-        ];
-        let src = production(src);
-        let mut types: Vec<String> = Vec::new();
-        let mut seen: Vec<String> = Vec::new();
-        let mut pending: Vec<(String, usize)> = vec![(entry.to_owned(), 0)];
-        while let Some((name, depth)) = pending.pop() {
-            if seen.contains(&name) {
-                continue;
-            }
-            seen.push(name.clone());
-            let Some(body) = fn_body(src, &name) else {
-                continue;
-            };
-            acquired_in(body, &mut types);
-            if depth == MAX_DEPTH {
-                continue;
-            }
-            for (index, _) in body.match_indices('(') {
-                let head = &body[..index];
-                // Char-aware scan: a non-ASCII delimiter (comments use ·, —,
-                // θ, …) is multi-byte, so advancing a raw byte index by 1
-                // lands mid-character and panics the slice. Step by the
-                // found char's own length instead.
-                let callee_start = head
-                    .char_indices()
-                    .rev()
-                    .find(|(_, c)| !(c.is_ascii_alphanumeric() || *c == '_'))
-                    .map_or(0, |(i, c)| i + c.len_utf8());
-                let callee = &head[callee_start..];
-                if callee.is_empty()
-                    || !callee.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
-                    || NOT_CALLS.contains(&callee)
-                    || callee == name
-                {
-                    continue;
-                }
-                if fn_body(src, callee).is_some() {
-                    pending.push((callee.to_owned(), depth + 1));
-                }
+    /// Every storage/resource the listed `(source, entry)` pairs acquire: each
+    /// entry's body plus the same-file functions it calls (see
+    /// [`acquisitions::acquired`]), read from the parsed syntax tree.
+    fn surface(sources: &[(&'static str, &'static str)]) -> Acquired {
+        let mut types = Acquired::new();
+        for (src, entry) in sources {
+            for (ty, mode) in acquisitions::acquired(&acquisitions::parse(src), entry) {
+                let slot = types.entry(ty).or_insert(mode);
+                *slot = (*slot).max(mode);
             }
         }
         types
     }
 
-    fn assert_declares_everything_it_acquires(sources: &[(&str, &str)], system: &str) {
-        let mut types: Vec<String> = Vec::new();
-        for (src, entry) in sources {
-            for ty in acquired(src, entry) {
-                if !types.contains(&ty) {
-                    types.push(ty);
-                }
-            }
+    fn mode_label(mode: Mode) -> &'static str {
+        match mode {
+            Mode::Read => "read",
+            Mode::Write => "write",
         }
+    }
+
+    fn assert_declares_everything_it_acquires(
+        sources: &[(&'static str, &'static str)],
+        system: &str,
+    ) {
+        let types = surface(sources);
         assert!(
             types.len() > 1,
             "{system}: the acquisition scan found only {types:?} — the \
              extraction broke, not the declaration"
         );
-        let declared = declaration(system);
-        // #4573 — strip `//` comment lines before matching, match whole
-        // identifiers (a `Transform` acquisition is no longer satisfied by
-        // `.reads::<GlobalTransform>()`), and require a WRITE acquisition
-        // to be declared with `.writes::<T>()` specifically.
-        let declared_code: Vec<&str> = declared
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("//"))
-            .collect();
-        let declared_code = declared_code.join("\n");
-        let missing: Vec<&String> = types
+        let declared = acquisitions::declaration(&acquisitions::parse(BOOT_SRC), system);
+        // #4573 — a type is matched by its last path segment, whole (a
+        // `Transform` acquisition is not satisfied by `.reads::<GlobalTransform>()`),
+        // and a WRITE acquisition must be declared with `.writes::<T>()`
+        // specifically.
+        let missing: Vec<String> = types
             .iter()
-            .filter(|ty| {
-                let (name, mode) = ty
-                    .split_once('=')
-                    .unwrap_or((ty.as_str(), "read"));
-                // Both checks are path-suffix aware: a declaration may
-                // spell the type as a full path
-                // (`.writes::<byroredux_physics::CharacterController>()`),
-                // so match on the line's last path segment.
-                let named = declared_code
-                    .lines()
-                    .any(|line| line.contains("::<") && {
-                        let t = line.trim();
-                        let inner = t
-                            .trim_start_matches(".reads_resource")
-                            .trim_start_matches(".writes_resource")
-                            .trim_start_matches(".reads")
-                            .trim_start_matches(".writes")
-                            .trim_start_matches("::<")
-                            .trim_end_matches(',')
-                            .trim_end_matches(">()");
-                        inner.rsplit("::").next() == Some(name)
-                    });
-                let write_declared = declared_code
-                    .lines()
-                    .any(|line| {
-                        let t = line.trim();
-                        if !t.starts_with(".writes_resource") && !t.starts_with(".writes") {
-                            return false;
-                        }
-                        let inner = t
-                            .trim_start_matches(".writes_resource")
-                            .trim_start_matches(".writes")
-                            .trim_start_matches("::<")
-                            .trim_end_matches(',')
-                            .trim_end_matches(">()");
-                        inner.rsplit("::").next() == Some(name)
-                    });
-                match mode {
-                    "write" => !named || !write_declared,
-                    _ => !named,
-                }
-            })
+            .filter(|(ty, mode)| !declared.covers(ty, **mode))
+            .map(|(ty, mode)| format!("{ty}={}", mode_label(*mode)))
             .collect();
         assert!(
             missing.is_empty(),
@@ -1187,42 +945,38 @@ mod system_access_declaration_tests {
     /// `get` recognition) fails here instead of silently narrowing the guard.
     #[test]
     fn cross_file_hops_and_get_forms_reach_their_acquisitions() {
-        let surface = |system: &str| -> Vec<String> {
+        let surface_of = |system: &str| -> Acquired {
             let (_, sources) = PARALLEL_SYSTEMS
                 .iter()
                 .find(|(name, _)| *name == system)
                 .unwrap_or_else(|| panic!("{system} left PARALLEL_SYSTEMS"));
-            let mut types = Vec::new();
-            for (src, entry) in sources.iter() {
-                for ty in acquired(src, entry) {
-                    if !types.contains(&ty) {
-                        types.push(ty);
-                    }
-                }
-            }
-            types
+            surface(sources)
         };
-        let physics = surface("physics_sync_system");
+        let physics = surface_of("physics_sync_system");
         assert!(
-            physics.iter().any(|t| t == "WaterContact=write"),
+            physics.get("WaterContact") == Some(&Mode::Write),
             "physics_sync_system's buoyancy hop (water.rs apply_buoyancy) is no longer \
              scanned: {physics:?}"
         );
-        let player = surface("player_controller_system");
-        for needle in ["PhysicsWorld=write", "PendingDeathReconciliations=write", "WindField=read"] {
+        let player = surface_of("player_controller_system");
+        for (needle, mode) in [
+            ("PhysicsWorld", Mode::Write),
+            ("PendingDeathReconciliations", Mode::Write),
+            ("WindField", Mode::Read),
+        ] {
             assert!(
-                player.iter().any(|t| t == needle),
-                "player_controller_system's scan lost `{needle}` — a cross-file hop \
+                player.get(needle) == Some(&mode),
+                "player_controller_system's scan lost `{needle}={mode:?}` — a cross-file hop \
                  (physics set_* helpers / combat.rs / water.rs) was dropped: {player:?}"
             );
         }
         assert!(
-            player.iter().any(|t| t == "ActorVitals=read" || t == "ActorVitals=write"),
+            player.contains_key("ActorVitals"),
             "the scan no longer sees `world.get::<T>` acquisitions: {player:?}"
         );
-        let animation = surface("make_animation_system");
+        let animation = surface_of("make_animation_system");
         assert!(
-            animation.iter().any(|t| t.starts_with("Children=")),
+            animation.contains_key("Children"),
             "make_animation_system's anim_convert.rs hop is no longer scanned: {animation:?}"
         );
     }
@@ -1238,10 +992,7 @@ mod system_access_declaration_tests {
     /// registration must not be able to land outside it.
     #[test]
     fn the_parallel_system_table_covers_every_parallel_registration() {
-        let setup = boot_setup();
-        // Needle composed at runtime — see `declaration`.
-        let needle = format!("add_to_with_access{}", "(");
-        let registered = setup.matches(needle.as_str()).count();
+        let registered = acquisitions::parallel_registration_count(&acquisitions::parse(BOOT_SRC));
         assert_eq!(
             registered,
             PARALLEL_SYSTEMS.len(),
@@ -1382,6 +1133,12 @@ mod system_access_declaration_tests {
                 (NPC_DIALOGUE_SRC, "npc_dialogue_selection_system_inner"),
                 (FRAGMENT_SYSTEMS_SRC, "apply_spoken_info_fragment"),
                 (FRAGMENT_EFFECTS_SRC, "apply_fragment_guard_free"),
+                // The deferred-effects flush is four hops from the entry
+                // (`apply_fragment_guard_free` → `apply_fragment_guard_free_as` →
+                // `DeferredFragmentEffects::apply` → `apply_at_depth` → `flush_*`),
+                // past the callee walk's depth, and every `flush_*` takes its own
+                // resource write. Listed so the walk starts at the flush.
+                (FRAGMENT_EFFECTS_SRC, "apply_at_depth"),
                 (SCRIPTING_SCENE_SRC, "mark_scene_actor_bindings_dirty"),
                 (DIALOGUE_VOICE_SRC, "play_line_voice"),
                 (STORY_EVENTS_SRC, "raise_hello_story_event"),
