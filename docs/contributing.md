@@ -103,6 +103,25 @@ public type or function without one, add a short one — `cargo doc` is only
 as useful as the comments feeding it.
 
 ---
+## Comments
+
+A comment states the rule the code follows **today**, and why. Add the issue number
+when it helps a reader find the discussion (`(#3976)`), but leave the story of how
+the code got here to `git log` and the issue itself: no "used to", "pre-#NNNN this
+did", "the first fix added", or before/after narration, and no restating what the
+next line plainly does.
+
+- Apply this as you touch code. Do not rewrite comments in bulk; a comment-only
+  commit should be one file (or one function) at a time, and its diff should show
+  only comment lines changing.
+- Some tests pin comment text (`get_distance_variant_keeps_its_doc_comment`,
+  `module_doc_covers_the_buoyancy_phase_and_its_ordering`, and the scans listed in the
+  `CLASSIFICATION.md` of the source-scan triage issues #6686 to #6689). Search for the
+  file name in `include_str!` / `read_to_string` before editing, and run the tests that
+  read it afterwards.
+- Function-size budgets count code lines only (blank and comment-only lines are free,
+  #6720), so documenting a function never breaks its pin.
+
 ## Tests
 
 ### Unit tests (no GPU, no game data — run in CI)

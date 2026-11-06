@@ -53,11 +53,6 @@ struct SkinChain<'a> {
 }
 
 impl VulkanContext {
-    /// Record the M29 GPU pre-skin + per-skinned-entity BLAS refit into the
-    /// open per-frame command buffer (#1748). Extracted verbatim from
-    /// `draw_frame` — runs after the bone-palette upload and before the
-    /// TLAS build, which picks up the freshly-refit BLAS via `self`. The
-    /// internal `unsafe` scopes, barriers, and recording order are unchanged.
     /// #3991 / #917 — promote everything this frame's skin recording latched,
     /// now that `queue_submit` has returned `Ok`.
     ///
@@ -115,11 +110,9 @@ impl VulkanContext {
         }
     }
 
-    /// Record the M29 GPU pre-skin + per-skinned-entity BLAS refit into the
-    /// open per-frame command buffer (#1748). Extracted verbatim from
-    /// `draw_frame` — runs after the bone-palette upload and before the
-    /// TLAS build, which picks up the freshly-refit BLAS via `self`. The
-    /// internal `unsafe` scopes, barriers, and recording order are unchanged.
+    /// Record the M29 GPU pre-skin + per-skinned-entity BLAS refit into the open per-frame
+    /// command buffer (#1748). Runs after the bone-palette upload and before the TLAS build,
+    /// which picks up the freshly refit BLAS through `self`.
     pub(super) fn record_skinned_blas_refit(
         &mut self,
         cmd: vk::CommandBuffer,
@@ -129,94 +122,57 @@ impl VulkanContext {
     ) {
         // ── M29 Phase 2: GPU pre-skin + per-skinned-entity BLAS refit ─
         //
-        // Runs AFTER bone palette upload (compute reads it) and BEFORE
-        // TLAS build (TLAS picks up the freshly-refit BLAS, zero-lag
-        // RT). For each draw with `bone_offset != 0`:
-        //   - First sight: synchronous compute prime + synchronous BLAS
-        //     BUILD (with `ALLOW_UPDATE`) via two one-time command
-        //     buffers. Brief stall on the very first frame an NPC
-        //     appears; M40 cell streaming will eventually preload.
-        //   - Steady state: dispatch compute into the frame cmd buffer,
-        //     barrier (COMPUTE_WRITE → AS_BUILD_INPUT_READ), then
-        //     refit the per-entity BLAS (UPDATE mode, src == dst).
-        //     Final AS_BUILD_WRITE → AS_BUILD_INPUT_READ barrier hands
-        //     fresh BLAS to TLAS below.
+        // Order: after the bone-palette upload (compute reads it), before the TLAS build (the TLAS
+        // sees the refit BLAS with zero lag). For each draw with `bone_offset != 0`:
+        //   - First sight: synchronous compute prime + synchronous BLAS BUILD (`ALLOW_UPDATE`)
+        //     through two one-time command buffers. One stall on the frame an NPC first appears.
+        //   - Steady state: compute dispatch into the frame command buffer, barrier
+        //     (COMPUTE_WRITE → AS_BUILD_INPUT_READ), then per-entity BLAS refit (UPDATE, src == dst).
+        //     A final AS_BUILD_WRITE → AS_BUILD_INPUT_READ barrier hands the BLAS to the TLAS.
         //
-        // #661 / SY-4 / #1436 (VKC-007): AS-build INPUT reads (the skinned
-        // vertex output fed to the BLAS build) use `SHADER_READ` at the
-        // AS_BUILD stage — the access the Vulkan spec assigns to build inputs.
-        // Reading an acceleration STRUCTURE — a BLAS during the TLAS build, or
-        // the TLAS during a ray query — is the separate
-        // `ACCELERATION_STRUCTURE_READ_KHR`, retained on those barriers.
-        // The earlier `ACCELERATION_STRUCTURE_READ_KHR`-for-inputs form was a
-        // sync1 shortcut on the assumption the two flags were aliased;
-        // synchronization validation disproved it (a compute/copy→build RAW
-        // hazard on the input buffer), so input barriers now carry SHADER_READ.
+        // Barrier access (#661, #1436): AS-build *input* reads (the skinned vertex output) use
+        // `SHADER_READ` at the AS_BUILD stage; reading an acceleration *structure* (a BLAS during
+        // the TLAS build, the TLAS during a ray query) uses `ACCELERATION_STRUCTURE_READ_KHR`. The
+        // two are not aliases: synchronization validation reports a compute/copy → build RAW hazard
+        // when inputs are barriered with the structure-read flag.
         //
-        // Skips entirely when `skin_compute` / `accel_manager` are None
-        // (no RT) or no draws are skinned.
+        // Skipped entirely when `skin_compute` / `accel_manager` are None (no RT) or nothing is
+        // skinned.
         //
-        // #1796 / D6-02 — reaching this function at all proves `draw_frame`
-        // got past both early-return guards, so the CPU-side pose hash
-        // commit made earlier this frame (in `build_render_data`, before
-        // `draw_frame` was even called) is safe to keep. Set unconditionally,
-        // before the `Some`/`Some` gate below, since the absence of RT /
-        // skin_compute means there's no dispatch to protect either way.
+        // `dispatch_ran` is set here, before the `Some`/`Some` gate: reaching this function proves
+        // `draw_frame` passed both early-return guards, so the pose-hash commit `build_render_data`
+        // made earlier this frame is safe to keep (#1796). Without RT there is no dispatch to
+        // protect either way.
         self.skin.dispatch_ran = true;
 
-        // #3976 / D9-01 — the BLAS half of the `bind_inverses` upload-failure
-        // path. `dispatch_skin_and_cluster` drains the pending first-sight
-        // uploads *before* this function runs; when
-        // `upload_pending_bind_inverses` fails it latches
-        // `bind_inverse_upload_failed`, returns `pending_capped = 0`, and the
-        // `if pending_capped > 0` guard skips
-        // `record_pending_bind_inverse_copies` — so those slots of
-        // `bind_inverses_persistent` are never written. `skin_palette.comp`
-        // still dispatches over the dense slot range, so their palettes are
-        // `boneWorld × UNDEFINED`, and `skin_vertices.comp` skins from those
-        // palettes.
+        // `bind_inverses` upload failed this frame (#3976): skip the whole skinned-BLAS pass.
         //
-        // `709de0e6` (#3569) fixed the *bookkeeping* half — the drained
-        // entries are requeued instead of lost — but nothing stopped this
-        // frame from consuming the memory. Building or refitting an
-        // acceleration structure out of undefined device memory is the
-        // CRITICAL case in `_audit-severity.md`'s AS row: the vertex
-        // positions can be NaN/Inf, and a first-sight BUILD then persists
-        // through every subsequent UPDATE-mode refit until the rebuild
-        // threshold, so a single failed upload poisons that entity's BVH for
-        // hundreds of frames.
+        // `dispatch_skin_and_cluster` drains the pending first-sight uploads before this runs. If
+        // `upload_pending_bind_inverses` fails it latches `bind_inverse_upload_failed` and the
+        // copies are not recorded, so those `bind_inverses_persistent` slots stay unwritten while
+        // `skin_palette.comp` still dispatches over the dense slot range. Their palettes are
+        // `boneWorld × UNDEFINED`, and `skin_vertices.comp` skins from them. Building or
+        // refitting an acceleration structure from undefined device memory is the CRITICAL case in
+        // `_audit-severity.md`: positions can be NaN/Inf, and a first-sight BUILD persists through
+        // every UPDATE refit until the rebuild threshold.
         //
-        // The skip is deliberately whole-frame rather than per-entity. The
-        // failure is wholesale (`upload_pending_bind_inverses` returns `Err`
-        // for the entire batch, not per slot), and the affected
-        // `bind_inverses` slots come from `SkinSlotPool` while the gate below
-        // keys on skin-compute slots — the two are distinct, so there is no
-        // cheap entity-level mapping from "this upload failed" to "this
-        // entity's palette is garbage". Skipping the whole skinned-BLAS pass
-        // costs one frame of stale-but-valid RT geometry (every BLAS keeps
-        // the contents it was built from last frame, when the palette was
-        // sound) — the same degrade the idle-pose skip path at
-        // `has_populated_output` already accepts, and strictly better than
-        // building from undefined memory.
+        // The skip is whole-frame, not per-entity: the failure is wholesale (`Err` for the batch),
+        // and the affected slots belong to `SkinSlotPool` while the gate below keys on skin-compute
+        // slots, so there is no cheap per-entity mapping. The cost is one frame of stale-but-valid
+        // RT geometry, the same degrade the idle-pose skip already accepts.
         //
-        // Correctness of the retry depends on NOT onboarding the entity
-        // here: returning before `create_slot` means no skin-compute slot is
-        // created, no dispatch writes garbage into it, and
-        // `has_populated_output` stays false. Gating only the BUILD would
-        // create the slot, dispatch garbage into it, mark it populated, and
-        // then next frame's pose-dirty skip would leave that garbage in place
-        // for the build to consume — the bug would survive the fix.
+        // Do not onboard the entity here. Returning before `create_slot` leaves no skin-compute
+        // slot, so no garbage is dispatched and `has_populated_output` stays false; gating only the
+        // BUILD would create and populate the slot, and the next frame's pose-dirty skip would
+        // leave the garbage in place for the build to consume.
         //
-        // `skin.dispatch_ran` is already set above, and `app_frame.rs`'s
-        // rollback is `!skin.dispatch_ran || bind_inverse_upload_failed`, so
-        // the second limb still fires and #3569's requeue still runs.
+        // `dispatch_ran` is already set, and `app_frame.rs`'s rollback is
+        // `!skin.dispatch_ran || bind_inverse_upload_failed`, so the second limb still fires and
+        // the requeue (#3569) still runs.
         if self.skin.bind_inverse_upload_failed {
-            // `Once`-gated, matching this subsystem's `failed_skin_slots` /
-            // `overflow_warned` convention: the requeue retries every frame,
-            // so an un-gated warn here would spam once per frame for as long
-            // as the allocation pressure lasts (the shape #4049 reports on the
-            // sibling path). The upload-failure site itself already logs each
-            // occurrence, so nothing is lost by reporting the skip once.
+            // `Once`-gated like `failed_skin_slots` / `overflow_warned`: the requeue retries every
+            // frame, so an ungated warn would repeat for as long as allocation pressure lasts. The
+            // upload-failure site already logs each occurrence.
             static SKIP_WARNED: std::sync::Once = std::sync::Once::new();
             SKIP_WARNED.call_once(|| {
                 log::warn!(
@@ -234,17 +190,15 @@ impl VulkanContext {
             (self.skin.compute.as_ref(), self.accel_manager.as_mut())
         {
             if let Some(ref alloc) = self.allocator {
-                // Sub-block: limit borrow scope on `mesh_registry` /
-                // `scene_buffers`. Skin-chain reads are immutable
-                // through this block.
+                // Sub-block: limits the borrow scope on `mesh_registry` / `scene_buffers`, which
+                // the skin chain only reads.
                 let global_vert_buf = self
                     .mesh_registry
                     .global_vertex_buffer
                     .as_ref()
                     .map(|b| (b.buffer, b.size));
-                // #2743 — read alongside `global_vert_buf` so the
-                // dispatch's descriptor cache key can tell a recycled
-                // `vk::Buffer` handle apart from an unchanged one.
+                // Read with `global_vert_buf` so the dispatch's descriptor cache key can tell a
+                // recycled `vk::Buffer` handle from an unchanged one (#2743).
                 let input_generation = self.mesh_registry.geometry_generation();
                 let bone_buffer = self
                     .scene_buffers
@@ -272,57 +226,39 @@ impl VulkanContext {
                 if let (Some((input_buffer, input_size)), Some(bone_buf)) =
                     (global_vert_buf, bone_buffer)
                 {
-                    // Walk draw_commands once — collect unique skinned
-                    // entities + their per-mesh metadata. Multiple
-                    // draws of the same entity (rare; instanced rendering
-                    // would hit this) coalesce on entity_id.
+                    // One walk of `draw_commands` collects the unique skinned entities and their
+                    // per-mesh metadata; repeated draws of one entity coalesce on `entity_id`.
                     //
-                    // #1133 / PERF-D7-NEW-01 — `mem::take` from the
-                    // `skin_*_scratch` cluster on `self`, drop the
-                    // amortized capacity back at the end of the
-                    // skinned block (line ~911). Matches the pattern
-                    // documented at `context/mod.rs::Per-frame scratch
-                    // cluster`.
+                    // The `skin_*_scratch` cluster on `self` is `mem::take`n here and handed back at
+                    // the end of this block, keeping its capacity across frames (#1133; see
+                    // `context/mod.rs`, "Per-frame scratch cluster").
                     let mut seen = std::mem::take(&mut self.scratch.skin_dispatch_seen_scratch);
                     seen.clear();
                     let mut dispatches = std::mem::take(&mut self.scratch.skin_dispatches_scratch);
                     dispatches.clear();
                     chain.collect_skin_dispatches(draw_commands, &mut seen, &mut dispatches);
 
-                    // #1133 — sibling scratch; same lifetime as `seen` /
-                    // `dispatches`. Replaced back into self at end of block.
+                    // Sibling scratch, same lifetime as `seen` / `dispatches`.
                     let mut first_sight_builds =
                         std::mem::take(&mut self.scratch.skin_first_sight_builds_scratch);
                     first_sight_builds.clear();
-                    // D6-05 / #1812 — sibling scratch tracking entities
-                    // whose BLAS gets a fresh BUILD this frame, so the
-                    // refit loop below can skip the redundant UPDATE.
+                    // Entities whose BLAS gets a fresh BUILD this frame, so the refit loop skips the
+                    // redundant UPDATE (#1812).
                     let mut built_this_frame =
                         std::mem::take(&mut self.scratch.skin_built_this_frame_scratch);
                     built_this_frame.clear();
                     chain.prepare_first_sight_builds(&dispatches, &mut first_sight_builds);
 
-                    // Per-frame steady-state: dispatch compute for
-                    // every registered skinned slot (refresh output
-                    // buffer with current pose), then barrier, then
-                    // refit BLAS.
+                    // Steady state: dispatch compute for every registered skinned slot (refresh the
+                    // output buffer with the current pose), barrier, then refit the BLAS.
                     //
-                    // #1195 / PERF-DIM7-01 — dispatch is gated on the
-                    // per-entity pose-dirty bit. Idle skinned entities
-                    // (no bone movement since the previous frame) skip
-                    // the GPU dispatch entirely; the output buffer
-                    // already holds last frame's pose and the BLAS
-                    // already references it.
-                    //
-                    // Safety: the skip path is gated on
-                    // `slot.has_populated_output` — first-sight slots
-                    // (output buffer uninitialised) MUST dispatch
-                    // unconditionally, otherwise the BLAS would refit
-                    // against garbage memory. The flag is set true the
-                    // first time we actually dispatch for the slot.
-                    // The LRU bump happens on the skip path too so
-                    // quiescent slots aren't reaped by the eviction
-                    // sweep.
+                    // The dispatch is gated on the per-entity pose-dirty bit (#1195): an idle skinned
+                    // entity skips it, because its output buffer already holds last frame's pose and
+                    // the BLAS already references it. The skip is valid only for slots with
+                    // `has_populated_output`; a first-sight slot (output uninitialised) must dispatch,
+                    // or the BLAS would refit against garbage. The flag is set the first time a slot
+                    // actually dispatches. The LRU bump also happens on the skip path, so quiescent
+                    // slots are not reaped by the eviction sweep.
                     if !dispatches.is_empty() {
                         chain.record_skin_dispatches(
                             cmd,
@@ -347,51 +283,34 @@ impl VulkanContext {
                         );
                     }
 
-                    // #1133 — return the skin-path scratches to `self`.
-                    // Same shape as the gpu_instances / batches replace
-                    // at the end of build_render_data → SSBO upload.
+                    // Return the skin-path scratches to `self`, as the gpu_instances / batches
+                    // replace does at the end of build_render_data → SSBO upload (#1133).
                     self.scratch.skin_dispatch_seen_scratch = seen;
                     self.scratch.skin_dispatches_scratch = dispatches;
                     self.scratch.skin_first_sight_builds_scratch = first_sight_builds;
                     self.scratch.skin_built_this_frame_scratch = built_this_frame;
                 }
 
-                // #2494 — hoisted out of the `(global_vert_buf, bone_buffer)`
-                // guard above. This eviction pass only needs `skin_pipeline`
-                // / `accel` / `alloc`, all already in scope from the outer
-                // guards; nesting it inside the dispatch-loop guard meant a
-                // frame with no global vertex buffer (before the first
-                // upload, or mid geometry-SSBO rebuild) or no bone buffer
-                // for this frame index dropped no SkinSlots and no skinned
-                // BLAS at all, even for entities the cell loader already
-                // despawned via `pending_skin_unload_victims`.
+                // Outside the `(global_vert_buf, bone_buffer)` guard on purpose (#2494): eviction needs
+                // only `skin_pipeline` / `accel` / `alloc`. Nested inside the dispatch guard, a frame
+                // with no global vertex buffer (before the first upload, or mid geometry-SSBO rebuild)
+                // or no bone buffer for this frame index dropped no SkinSlots and no skinned BLAS, even
+                // for entities the cell loader had already despawned via `pending_skin_unload_victims`.
                 chain.evict_idle_skin_slots();
             }
         }
-        // #3374 — the `MorphSlot` eviction pass runs OUTSIDE the
-        // `skin_compute` + `accel_manager` guard above. It is a sibling of the
-        // skin eviction it used to be nested beside, but it needs neither of
-        // those: a `MorphSlot` owns two plain `GpuBuffer`s and no descriptor
-        // sets by explicit design (`morph_compute`'s module doc), so
-        // `destroy` wants only the device and the allocator.
-        //
-        // `MorphSlot`s are created with no such gate (the only condition is a
-        // skinned mesh with non-empty morph targets), so leaving the drain
-        // inside meant that any configuration where `skin_compute` or
-        // `accel_manager` is `None` — an RT-less device, or a skin-pipeline
-        // creation failure — accumulated morph delta buffers for the whole
-        // session with no bound and no drain. That is the #2494 mistake one
-        // nesting level out; not reachable in a supported configuration today
-        // (the main geometry pipeline needs `bufferDeviceAddress`, which is
-        // enabled only alongside ray queries), but the RT-optional path is a
-        // plausible future and this coupling is not load-bearing.
+        // The `MorphSlot` eviction pass runs outside the `skin_compute` + `accel_manager` guard above
+        // (#3374). It needs neither: a `MorphSlot` owns two plain `GpuBuffer`s and no descriptor sets
+        // (`morph_compute`'s module doc), so `destroy` wants only the device and the allocator.
+        // `MorphSlot`s are created without that gate, so draining inside it would let an RT-less
+        // device, or a skin-pipeline creation failure, accumulate morph delta buffers for the whole
+        // session. Not reachable in a supported configuration today (the main geometry pipeline needs
+        // `bufferDeviceAddress`, enabled only alongside ray queries), but the coupling is not
+        // load-bearing.
         self.evict_idle_morph_slots();
-        // #2803 — the host-side cost of the whole skinned chain
-        // (dispatch loop + first-sight builds + refits + eviction),
-        // measured since M29 but discarded until this counter gave it a
-        // consumer. Surfaced through `SkinCoverageStats` /
-        // `skin.coverage`; distinct from the GPU brackets (#1194), which
-        // time the device work this function only records.
+        // Host-side cost of the whole skinned chain (dispatch loop + first-sight builds + refits +
+        // eviction), surfaced through `SkinCoverageStats` / `skin.coverage` (#2803). The GPU
+        // brackets (#1194) time the device work this function only records.
         self.skin.last_skin_coverage_frame.cpu_skin_chain_ns = skin_t0.elapsed().as_nanos() as u64;
     }
 
