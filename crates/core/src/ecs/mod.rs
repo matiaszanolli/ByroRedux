@@ -56,8 +56,8 @@ pub use resources::{
     TextureResidencyTelemetry, TotalTime, UpscalerTelemetry,
 };
 pub use scheduler::{
-    AccessReport, Scheduler, SchedulerSystemTimings, Stage, StageConflictRow, StageReport,
-    SystemAccessRow,
+    AccessReport, ScheduleOrderError, Scheduler, SchedulerSystemTimings, Stage, StageConflictRow,
+    StageReport, SystemAccessRow,
 };
 pub use sparse_set::SparseSetStorage;
 pub use storage::DynStorage;

@@ -116,6 +116,135 @@ impl StageData {
 
 pub struct Scheduler {
     stages: BTreeMap<Stage, StageData>,
+    /// Named ordering constraints, applied by [`Scheduler::resolve_order`] (#6702).
+    constraints: Vec<OrderConstraint>,
+    /// `true` while a constraint has been added since the last successful
+    /// resolve; [`Scheduler::run`] resolves before it runs.
+    order_dirty: bool,
+}
+
+/// `first` runs before `second` (#6702).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OrderConstraint {
+    first: String,
+    second: String,
+}
+
+/// Why [`Scheduler::resolve_order`] refused a set of constraints. The schedule
+/// is left exactly as it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScheduleOrderError {
+    /// A constraint names a system that is not registered.
+    UnknownSystem {
+        name: String,
+        /// The constraint it appears in, as `first -> second`.
+        constraint: String,
+    },
+    /// The constraint asks for an order the stage and phase order forbids:
+    /// stages run in order, and a stage's exclusive phase follows its
+    /// parallel phase.
+    ContradictsStageOrder { first: String, second: String },
+    /// The constraints in one stage phase form a cycle.
+    Cycle {
+        stage: Stage,
+        exclusive: bool,
+        /// The systems on the cycle.
+        systems: Vec<String>,
+    },
+}
+
+impl std::fmt::Display for ScheduleOrderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownSystem { name, constraint } => {
+                write!(
+                    f,
+                    "ordering constraint `{constraint}` names unknown system `{name}`"
+                )
+            }
+            Self::ContradictsStageOrder { first, second } => write!(
+                f,
+                "ordering constraint `{first} -> {second}` contradicts the stage order \
+                 (stages run in order, and a stage's exclusive phase follows its parallel phase)"
+            ),
+            Self::Cycle {
+                stage,
+                exclusive,
+                systems,
+            } => write!(
+                f,
+                "ordering constraints form a cycle in the {stage:?} stage's {} phase: {}",
+                if *exclusive { "exclusive" } else { "parallel" },
+                systems.join(", ")
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ScheduleOrderError {}
+
+/// Where one registered system sits.
+#[derive(Clone, Copy)]
+struct SystemSlot {
+    stage: Stage,
+    exclusive: bool,
+    index: usize,
+}
+
+/// The order of `0..n` that honors `edges` (`(a, b)`: `a` before `b`) and moves
+/// as little as it must: systems are placed in registration order, and placing
+/// one first places whatever must precede it. A system no constraint touches
+/// keeps its place among its neighbours, and with no edges the result is the
+/// identity. `Err` holds the indices on the cycle found.
+fn stable_order(n: usize, edges: &[(usize, usize)]) -> Result<Vec<usize>, Vec<usize>> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Mark {
+        Unvisited,
+        Placing,
+        Placed,
+    }
+
+    fn place(
+        node: usize,
+        predecessors: &[Vec<usize>],
+        marks: &mut [Mark],
+        stack: &mut Vec<usize>,
+        order: &mut Vec<usize>,
+    ) -> Result<(), Vec<usize>> {
+        match marks[node] {
+            Mark::Placed => return Ok(()),
+            Mark::Placing => {
+                let start = stack.iter().position(|&n| n == node).unwrap_or(0);
+                return Err(stack[start..].to_vec());
+            }
+            Mark::Unvisited => {}
+        }
+        marks[node] = Mark::Placing;
+        stack.push(node);
+        for &before in &predecessors[node] {
+            place(before, predecessors, marks, stack, order)?;
+        }
+        stack.pop();
+        marks[node] = Mark::Placed;
+        order.push(node);
+        Ok(())
+    }
+
+    let mut predecessors = vec![Vec::new(); n];
+    for &(before, after) in edges {
+        predecessors[after].push(before);
+    }
+    for list in &mut predecessors {
+        list.sort_unstable();
+        list.dedup();
+    }
+    let mut marks = vec![Mark::Unvisited; n];
+    let mut order = Vec::with_capacity(n);
+    let mut stack = Vec::new();
+    for node in 0..n {
+        place(node, &predecessors, &mut marks, &mut stack, &mut order)?;
+    }
+    Ok(order)
 }
 
 /// World resource — per-system wall-time of the most recent
@@ -157,7 +286,148 @@ impl Scheduler {
     pub fn new() -> Self {
         Self {
             stages: BTreeMap::new(),
+            constraints: Vec::new(),
+            order_dirty: false,
         }
+    }
+
+    /// Require that system `first` runs before system `second` (#6702).
+    ///
+    /// Names are [`System::name`]. Both must sit in the same stage and phase for
+    /// the constraint to move anything; a constraint across stages or phases is
+    /// either already guaranteed by the stage order or rejected by
+    /// [`Scheduler::resolve_order`]. A name shared by several registrations
+    /// (closures of one signature) constrains all of them.
+    ///
+    /// Nothing is reordered until [`Scheduler::resolve_order`] (or the next
+    /// [`Scheduler::run`], which calls it). Without constraints, order is
+    /// registration order, exactly as before.
+    pub fn run_before(&mut self, first: &str, second: &str) -> &mut Self {
+        self.constraints.push(OrderConstraint {
+            first: first.to_string(),
+            second: second.to_string(),
+        });
+        self.order_dirty = true;
+        self
+    }
+
+    /// Require that system `second` runs after system `first`: the same
+    /// constraint as [`Scheduler::run_before`], spelled from the later system's
+    /// side so a subsystem can say what it follows.
+    pub fn run_after(&mut self, second: &str, first: &str) -> &mut Self {
+        self.run_before(first, second)
+    }
+
+    /// Reorder each stage phase to satisfy the constraints added by
+    /// [`Scheduler::run_before`] / [`Scheduler::run_after`].
+    ///
+    /// The sort is stable: a system no constraint touches keeps its place
+    /// relative to its neighbours in registration order, and with no constraints
+    /// nothing moves. An unknown name, a constraint the stage order forbids, or
+    /// a cycle is an error, and the schedule is left unchanged. Calling it
+    /// again is harmless.
+    pub fn resolve_order(&mut self) -> Result<(), ScheduleOrderError> {
+        let mut slots: BTreeMap<&str, Vec<SystemSlot>> = BTreeMap::new();
+        for (stage, data) in &self.stages {
+            for (exclusive, entries) in [(false, &data.parallel), (true, &data.exclusive)] {
+                for (index, entry) in entries.iter().enumerate() {
+                    slots
+                        .entry(entry.system.name())
+                        .or_default()
+                        .push(SystemSlot {
+                            stage: *stage,
+                            exclusive,
+                            index,
+                        });
+                }
+            }
+        }
+
+        let mut edges: BTreeMap<(Stage, bool), Vec<(usize, usize)>> = BTreeMap::new();
+        for constraint in &self.constraints {
+            let label = format!("{} -> {}", constraint.first, constraint.second);
+            let lookup = |name: &str| {
+                slots
+                    .get(name)
+                    .ok_or_else(|| ScheduleOrderError::UnknownSystem {
+                        name: name.to_string(),
+                        constraint: label.clone(),
+                    })
+            };
+            let firsts = lookup(&constraint.first)?;
+            let seconds = lookup(&constraint.second)?;
+            for first in firsts {
+                for second in seconds {
+                    let (a, b) = (
+                        (first.stage, first.exclusive),
+                        (second.stage, second.exclusive),
+                    );
+                    match a.cmp(&b) {
+                        std::cmp::Ordering::Less => {}
+                        std::cmp::Ordering::Greater => {
+                            return Err(ScheduleOrderError::ContradictsStageOrder {
+                                first: constraint.first.clone(),
+                                second: constraint.second.clone(),
+                            });
+                        }
+                        std::cmp::Ordering::Equal => {
+                            edges
+                                .entry(a)
+                                .or_default()
+                                .push((first.index, second.index));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Plan every phase before touching any, so an error leaves the
+        // schedule as it was.
+        let mut plans = Vec::new();
+        for ((stage, exclusive), phase_edges) in &edges {
+            let data = &self.stages[stage];
+            let entries = if *exclusive {
+                &data.exclusive
+            } else {
+                &data.parallel
+            };
+            match stable_order(entries.len(), phase_edges) {
+                Ok(order) => plans.push((*stage, *exclusive, order)),
+                Err(stuck) => {
+                    return Err(ScheduleOrderError::Cycle {
+                        stage: *stage,
+                        exclusive: *exclusive,
+                        systems: stuck
+                            .into_iter()
+                            .map(|i| entries[i].system.name().to_string())
+                            .collect(),
+                    });
+                }
+            }
+        }
+        for (stage, exclusive, order) in plans {
+            let data = self
+                .stages
+                .get_mut(&stage)
+                .expect("planned from this stage");
+            let entries = if exclusive {
+                &mut data.exclusive
+            } else {
+                &mut data.parallel
+            };
+            let mut taken: Vec<Option<SystemEntry>> =
+                std::mem::take(entries).into_iter().map(Some).collect();
+            *entries = order
+                .into_iter()
+                .map(|i| {
+                    taken[i]
+                        .take()
+                        .expect("a permutation places each system once")
+                })
+                .collect();
+        }
+        self.order_dirty = false;
+        Ok(())
     }
 
     /// Add a system to [`Stage::Update`] (backward-compatible default).
@@ -473,6 +743,14 @@ impl Scheduler {
     /// the partial-write — a deliberate, non-trivial design, not a drop-in
     /// guard. Deferred as a medium-term quality item.
     pub fn run(&mut self, world: &World, dt: f32) {
+        // #6702 — constraints added since the schedule was last resolved. A bad
+        // constraint is a bug in the registration, so fail fast like a panicking
+        // system (see the policy above).
+        if self.order_dirty {
+            if let Err(error) = self.resolve_order() {
+                panic!("Scheduler: {error}");
+            }
+        }
         // Phase 11 — per-system wall-time tracker. Each system
         // pushes `(name, ns)` here as it completes; final list is
         // sorted desc + handed off to the
@@ -1036,6 +1314,239 @@ mod tests {
         });
 
         scheduler.run(&world, 0.0);
+    }
+
+    // ── Named ordering constraints (#6702) ───────────────────────────────
+
+    struct Named(&'static str);
+
+    impl System for Named {
+        fn run(&mut self, _world: &World, _dt: f32) {}
+        fn name(&self) -> &'static str {
+            self.0
+        }
+    }
+
+    struct Logging {
+        name: &'static str,
+        log: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    }
+
+    impl System for Logging {
+        fn run(&mut self, _world: &World, _dt: f32) {
+            self.log.lock().unwrap().push(self.name);
+        }
+        fn name(&self) -> &'static str {
+            self.name
+        }
+    }
+
+    fn scheduler_of(names: &[&'static str]) -> Scheduler {
+        let mut scheduler = Scheduler::new();
+        for name in names {
+            scheduler.add_to(Stage::Update, Named(name));
+        }
+        scheduler
+    }
+
+    #[test]
+    fn no_constraints_keep_registration_order() {
+        let mut scheduler = Scheduler::new();
+        scheduler.add_to(Stage::Late, Named("late_a"));
+        scheduler.add_to(Stage::Early, Named("early_a"));
+        scheduler.add_to(Stage::Update, Named("c"));
+        scheduler.add_to(Stage::Update, Named("a"));
+        scheduler.add_to(Stage::Update, Named("b"));
+        scheduler.add_exclusive(Stage::Update, Named("x2"));
+        scheduler.add_exclusive(Stage::Update, Named("x1"));
+        let before: Vec<String> = scheduler
+            .system_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        scheduler.resolve_order().unwrap();
+        let after: Vec<String> = scheduler
+            .system_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(before, after);
+        assert_eq!(after, ["early_a", "c", "a", "b", "x2", "x1", "late_a"]);
+    }
+
+    #[test]
+    fn run_before_moves_the_earlier_system_ahead() {
+        let mut scheduler = scheduler_of(&["a", "b", "c"]);
+        scheduler.run_before("c", "a");
+        scheduler.resolve_order().unwrap();
+        assert_eq!(scheduler.system_names(), ["c", "a", "b"]);
+    }
+
+    #[test]
+    fn run_after_moves_the_later_system_behind() {
+        let mut scheduler = scheduler_of(&["a", "b", "c"]);
+        scheduler.run_after("b", "c");
+        scheduler.resolve_order().unwrap();
+        assert_eq!(scheduler.system_names(), ["a", "c", "b"]);
+    }
+
+    #[test]
+    fn a_satisfied_constraint_moves_nothing() {
+        let mut scheduler = scheduler_of(&["a", "b", "c"]);
+        scheduler.run_before("a", "c").run_after("c", "b");
+        scheduler.resolve_order().unwrap();
+        assert_eq!(scheduler.system_names(), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn a_chain_of_constraints_orders_transitively() {
+        let mut scheduler = scheduler_of(&["a", "b", "c", "d"]);
+        scheduler.run_before("d", "c").run_before("c", "a");
+        scheduler.resolve_order().unwrap();
+        assert_eq!(scheduler.system_names(), ["d", "c", "a", "b"]);
+    }
+
+    #[test]
+    fn resolving_twice_is_idempotent() {
+        let mut scheduler = scheduler_of(&["a", "b", "c"]);
+        scheduler.run_before("c", "a");
+        scheduler.resolve_order().unwrap();
+        scheduler.resolve_order().unwrap();
+        assert_eq!(scheduler.system_names(), ["c", "a", "b"]);
+    }
+
+    #[test]
+    fn an_unknown_name_is_an_error_and_the_schedule_is_untouched() {
+        let mut scheduler = scheduler_of(&["a", "b"]);
+        scheduler.run_before("b", "a").run_before("ghost", "a");
+        let error = scheduler.resolve_order().unwrap_err();
+        assert_eq!(
+            error,
+            ScheduleOrderError::UnknownSystem {
+                name: "ghost".into(),
+                constraint: "ghost -> a".into(),
+            }
+        );
+        assert_eq!(scheduler.system_names(), ["a", "b"]);
+        scheduler.run_after("a", "ghost");
+        assert!(matches!(
+            scheduler.resolve_order(),
+            Err(ScheduleOrderError::UnknownSystem { .. })
+        ));
+    }
+
+    #[test]
+    fn a_cycle_is_an_error_and_the_schedule_is_untouched() {
+        let mut scheduler = scheduler_of(&["a", "b", "c"]);
+        scheduler
+            .run_before("c", "a")
+            .run_before("a", "b")
+            .run_before("b", "a");
+        match scheduler.resolve_order().unwrap_err() {
+            ScheduleOrderError::Cycle {
+                stage,
+                exclusive,
+                systems,
+            } => {
+                assert_eq!(stage, Stage::Update);
+                assert!(!exclusive);
+                assert!(systems.contains(&"a".to_string()) && systems.contains(&"b".to_string()));
+            }
+            other => panic!("expected a cycle, got {other:?}"),
+        }
+        assert_eq!(scheduler.system_names(), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn a_system_ordered_before_itself_is_a_cycle() {
+        let mut scheduler = scheduler_of(&["a", "b"]);
+        scheduler.run_before("a", "a");
+        assert!(matches!(
+            scheduler.resolve_order(),
+            Err(ScheduleOrderError::Cycle { .. })
+        ));
+    }
+
+    #[test]
+    fn constraints_across_stages_and_phases_are_checked_against_the_stage_order() {
+        let mut scheduler = Scheduler::new();
+        scheduler.add_to(Stage::Early, Named("early"));
+        scheduler.add_to(Stage::Late, Named("late"));
+        scheduler.add_to(Stage::Late, Named("late_parallel"));
+        scheduler.add_exclusive(Stage::Late, Named("late_exclusive"));
+
+        // Already guaranteed: nothing moves.
+        scheduler.run_before("early", "late");
+        scheduler.run_before("late_parallel", "late_exclusive");
+        scheduler.resolve_order().unwrap();
+        assert_eq!(
+            scheduler.system_names(),
+            ["early", "late", "late_parallel", "late_exclusive"]
+        );
+
+        // Forbidden: a later stage cannot run first.
+        scheduler.run_before("late", "early");
+        assert_eq!(
+            scheduler.resolve_order().unwrap_err(),
+            ScheduleOrderError::ContradictsStageOrder {
+                first: "late".into(),
+                second: "early".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn the_exclusive_phase_is_ordered_and_runs_in_that_order() {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut scheduler = Scheduler::new();
+        for name in ["first", "second", "third"] {
+            scheduler.add_exclusive(
+                Stage::Late,
+                Logging {
+                    name,
+                    log: log.clone(),
+                },
+            );
+        }
+        scheduler.run_after("first", "third");
+        scheduler.run(&World::new(), 0.0);
+        assert_eq!(*log.lock().unwrap(), ["third", "first", "second"]);
+    }
+
+    #[test]
+    fn run_resolves_pending_constraints_and_fails_fast_on_a_bad_one() {
+        let result = std::panic::catch_unwind(|| {
+            let mut scheduler = scheduler_of(&["a"]);
+            scheduler.run_before("ghost", "a");
+            scheduler.run(&World::new(), 0.0);
+        });
+        assert!(
+            result.is_err(),
+            "an unresolvable constraint must not be skipped"
+        );
+    }
+
+    #[test]
+    fn constraints_keep_declared_access_attached_to_the_moved_system() {
+        let mut scheduler = Scheduler::new();
+        scheduler.add_to_with_access(
+            Stage::Update,
+            Named("reader"),
+            Access::new().reads::<Health>(),
+        );
+        scheduler.add_to_with_access(
+            Stage::Update,
+            Named("writer"),
+            Access::new().writes::<Health>(),
+        );
+        scheduler.run_before("writer", "reader");
+        scheduler.resolve_order().unwrap();
+        let report = scheduler.access_report();
+        let rows = &report.stages[0].systems;
+        assert_eq!(rows[0].name, "writer");
+        assert_eq!(rows[0].declared.as_ref().unwrap().components_write.len(), 1);
+        assert_eq!(rows[1].name, "reader");
+        assert_eq!(rows[1].declared.as_ref().unwrap().components_read.len(), 1);
     }
 
     // ── run_exclusive_named: the paused-mode drain path (#5141) ──────────

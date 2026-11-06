@@ -44,6 +44,11 @@ pub(crate) fn build_scheduler() -> Scheduler {
     register_post_update_systems(&mut scheduler);
     register_physics_systems(&mut scheduler);
     register_late_systems(&mut scheduler);
+    // #6702 — apply any named `run_before` / `run_after` constraints the
+    // registrations added. With none, this reorders nothing.
+    scheduler
+        .resolve_order()
+        .unwrap_or_else(|error| panic!("the system schedule's ordering is invalid: {error}"));
     scheduler
 }
 
