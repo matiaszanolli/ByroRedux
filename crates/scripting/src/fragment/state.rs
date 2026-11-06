@@ -964,6 +964,62 @@ pub fn fragment_idle_forms(world: &World) -> HashSet<u32> {
     out
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub(super) fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // M47.2 — script BlockActivation, by reference FormID (outlives cells).
+    registry.register_resource::<ReferenceActivationBlocks>("ReferenceActivationBlocks");
+}
+
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub(super) fn register_saved_fragment_execution_queue(registry: &mut byroredux_save::SaveRegistry) {
+    // #2381 / SAVE-D1-16 — suspended `Utility.Wait`/
+    // `WaitForActors3DLoaded` fragment continuations. Every nested
+    // type (`Effect`/`ActorRef`/`ObjectRef`/`QuestRef`/
+    // `ScriptInstanceData` and friends) audited field-by-field for
+    // FixedString/EntityId hazards — none found, all plain data
+    // (FormIDs as u32, property names as owned String). Pre-fix a
+    // save taken mid-`Utility.Wait` silently dropped the queued
+    // effect chain the wait was gating.
+    registry.register_resource::<FragmentExecutionQueue>("FragmentExecutionQueue");
+}
+
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub(super) fn register_saved_reference_enable_state(registry: &mut byroredux_save::SaveRegistry) {
+    registry.register_resource::<ReferenceEnableState>("ReferenceEnableState");
+    // #4136 — the lock ledger's sibling. `Effect::SetLocked` /
+    // `SetLockLevel` (#3159) made `Locked` runtime-mutable with nothing
+    // persisting the change: absent from this registry, and re-stamped
+    // from the plugin's authored XLOC on every cell load. Keyed by
+    // local FormID and consulted by `cell_loader::spawn`, so it
+    // survives both a save/load and an in-session cell revisit — the
+    // latter being why this is a resource and not a saved `Locked`
+    // column, since cell unload despawns the entity that would carry
+    // one. Plain `u8` / `Option<u32>` payloads, no session-local
+    // handles.
+    registry.register_resource::<ReferenceLockState>("ReferenceLockState");
+    // #4334 — the once-only-script ledger, third sibling of the same
+    // shape: `onlyOnce` triggers park their script in a terminal
+    // `GotoState` without disabling the reference, and the parked
+    // state must survive both a save/load and an in-session cell
+    // revisit so the attach path does not re-arm them. Plain local
+    // FormID keys, no session-local handles.
+    registry.register_resource::<ReferenceScriptState>("ReferenceScriptState");
+    // #6237 — the motion-type ledger, fourth sibling. A script's
+    // `SetMotionType` changes bodies that are separate collision entities
+    // (`PhysicsSourceForm`, never `FormIdComponent`), so the former
+    // `RigidBodyData` column (#2379) had nothing to overlay on a live load
+    // and stored one dead row per resident collider; cell unload despawns
+    // them too. Keyed by local FormID and applied by `cell_loader::spawn`
+    // to every collider of the placement. Plain `MotionType` payloads.
+    registry.register_resource::<ReferenceMotionTypeState>("ReferenceMotionTypeState");
+}
+
 #[cfg(test)]
 mod reference_lock_state_tests {
     use super::{LockOverride, ReferenceLockState};

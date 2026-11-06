@@ -1719,3 +1719,14 @@ pub fn running_quest_bound_entities_cached(world: &World) -> FxHashSet<EntityId>
     }
     bound
 }
+
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub(super) fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // QUST alias CNTO injections are permanent. Preserve their grant
+    // ledger so the derived alias refresh after load cannot duplicate
+    // already-saved inventory stacks. Faction bookkeeping inside this
+    // resource is serde-skipped and re-derived from static QUST data.
+    registry.register_resource::<QuestAliasInjectionState>("QuestAliasInjectionState");
+}

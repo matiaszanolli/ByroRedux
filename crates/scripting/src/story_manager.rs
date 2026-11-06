@@ -1398,6 +1398,20 @@ fn hours_gate_open(window: f32, last_fire: Option<f32>, now: f64) -> bool {
     }
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // #5366 Phase 3 — Story Manager node-policy state (do-all fired
+    // marks, RNAM reset timestamps), so a quickload cannot resurrect
+    // a radiant the pre-save world already fired.
+    registry.register_resource::<StoryManagerNodeState>("StoryManagerNodeState");
+    // #5394 — an SM-started quest restores as running and its starting
+    // event is never raised again, so its `FromEvent` aliases can only
+    // re-fill from this record (reference slots persist as FormIds).
+    registry.register_resource::<StoryEventAliasFill>("StoryEventAliasFill");
+}
+
 #[cfg(test)]
 mod tests {
     /// #6003 — phase A holds `StoryManagerNodeState` while its conditions read

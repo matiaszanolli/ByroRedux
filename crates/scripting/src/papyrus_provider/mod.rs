@@ -128,3 +128,9 @@ pub use runtime::*;
 
 #[cfg(test)]
 mod tests;
+
+// #6705 — saved columns of this facade's private modules, registered from the binary's `build_save_registry`.
+#[cfg(feature = "save")]
+pub fn register_ir_saved(registry: &mut byroredux_save::SaveRegistry) {
+    ir::register_saved(registry);
+}

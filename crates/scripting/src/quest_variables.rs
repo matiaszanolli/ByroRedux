@@ -188,6 +188,24 @@ impl QuestScriptObjects {
     }
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // M47.2 — quest-script property writes (`kmyQuest.Flag = 1`) that
+    // `GetVMQuestVariable` dialogue / package / scene conditions read;
+    // only the writes serialize (the VMAD defaults are re-derived).
+    registry.register_resource::<QuestScriptVariables>("QuestScriptVariables");
+}
+
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved_quest_script_objects(registry: &mut byroredux_save::SaveRegistry) {
+    // M47.2 — the Papyrus VM's object script variables.
+    registry.register_resource::<QuestScriptObjects>("QuestScriptObjects");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

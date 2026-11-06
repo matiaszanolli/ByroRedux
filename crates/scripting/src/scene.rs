@@ -208,3 +208,9 @@ pub fn mark_scene_actor_bindings_dirty(world: &World) {
 mod playback_tests;
 #[cfg(test)]
 mod quest_alias_tests;
+
+// #6705 — saved columns of this facade's private modules, registered from the binary's `build_save_registry`.
+#[cfg(feature = "save")]
+pub fn register_quest_alias_saved(registry: &mut byroredux_save::SaveRegistry) {
+    quest_alias::register_saved(registry);
+}

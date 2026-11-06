@@ -794,6 +794,16 @@ pub struct DialogueSurfaceState {
 
 impl Resource for DialogueSurfaceState {}
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // #5367 Phase L — spoken Say-Once INFO bookkeeping: a said line
+    // stays disqualified after an F5/F9 cycle, exactly the
+    // quest-state contract beside it.
+    registry.register_resource::<DialogueSpokenInfoForms>("DialogueSpokenInfoForms");
+}
+
 #[cfg(test)]
 mod tests {
     use crate::papyrus_demo::PapyrusPlayerEntity;

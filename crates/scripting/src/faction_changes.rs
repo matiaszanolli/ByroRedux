@@ -120,6 +120,15 @@ pub fn reapply_scripted_faction_changes(world: &World, entity: EntityId, referen
     ledger.replay(reference, ranks);
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // M47.2 — scripted AddToFaction / RemoveFromFaction / SetFactionRank,
+    // replayed over the record-derived `FactionRanks` at spawn and load.
+    registry.register_resource::<ScriptedFactionChanges>("ScriptedFactionChanges");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

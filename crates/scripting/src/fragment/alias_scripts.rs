@@ -276,6 +276,14 @@ pub(super) fn alias_owner_vmad(world: &World, owner: u32, script: &str) -> Optio
         .map(|attached| (*attached.vmad).clone())
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub(super) fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // M47.2 — alias script owner ids and the quests whose alias scripts started.
+    registry.register_resource::<AliasScriptOwners>("AliasScriptOwners");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -750,6 +750,35 @@ pub fn register(world: &mut World) {
     world.init_resource::<HitShaderKicks>();
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // #2380 / SAVE-D1-15 — MQ101 cinematic fragment-effect state. Both
+    // carry `EntityId` fields (`vehicle`/`horse`), the same
+    // session-local-reference hazard as `FollowState`/`EscortState`
+    // above — full `register_component` only, never
+    // `MUTABLE_DELTA_COLUMNS`. Live-mutated by Papyrus PlayIdle/
+    // SetVehicle/TetherToHorse fragment effects with no reload
+    // re-derivation (quest_fragment_dispatch_system is edge-triggered
+    // and doesn't replay on load, disproving #2294's assumption for
+    // these two).
+    registry.register_component::<ActorCinematicState>("ActorCinematicState");
+    registry.register_component::<HorseTetherState>("HorseTetherState");
+}
+
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved_cinematic_presentation_state(registry: &mut byroredux_save::SaveRegistry) {
+    // #2380 / SAVE-D1-15 — MQ101 cinematic presentation state
+    // (sitting rotation, animation-event registrations, active IMAD
+    // applications). No `EntityId`/`FixedString` anywhere.
+    // `image_space_modifier_catalog` is static ESM data that rides
+    // along redundantly (see the type's own doc comment).
+    registry.register_resource::<CinematicPresentationState>("CinematicPresentationState");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -469,6 +469,30 @@ impl PapyrusProviderHandler {
     }
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub(super) fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // Provider-bearing OnLoad/OnActivate/OnTriggerEnter/OnUpdate handlers
+    // retain typed locals plus their lowered route/tail while suspended at
+    // Utility.Wait.
+    //
+    // #4139 — this comment used to end "All nested identities are stable
+    // manifest strings; no EntityId or process-local handles cross the
+    // save boundary." That is false, and it is why this column was
+    // registered without a rebind step: `locals` is a
+    // `BTreeMap<String, ScriptValue>`, and `ScriptValue::Entity` carries
+    // an `EntityRef` — a handle the SDK's own doc calls "never a raw ECS
+    // slot ... scoped to a world_generation so a stale one is
+    // rejectable", i.e. process-local by definition. The route/tail and
+    // principal halves of the claim are correct; the locals half was not.
+    //
+    // Continuations carrying such a local are dropped on load rather
+    // than resumed — see `drop_entity_bound_continuations` and the call
+    // site in `execute_pending_save_loads`.
+    registry.register_resource::<PapyrusProviderContinuationQueue>("PapyrusProviderContinuationQueue");
+}
+
 #[cfg(test)]
 mod entity_bound_continuation_tests {
     use super::*;

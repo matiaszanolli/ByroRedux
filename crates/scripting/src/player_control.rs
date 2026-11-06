@@ -293,6 +293,30 @@ pub fn register(world: &mut World) {
     world.init_resource::<PlayerControlState>();
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // #2292 / SAVE-D1-09 — `Actor.SetRestrained` per-actor lock. Plain
+    // bool, delta-safe. Pre-fix a save taken while an NPC was restrained
+    // silently freed it on reload. #5052 — replacing: the first
+    // `SetRestrained` inserts it lazily on the process-lifetime player,
+    // so loading a save with no row must clear a live restraint rather
+    // than leave the player unable to move.
+    registry.register_replacing_component::<ActorControlState>("ActorControlState");
+}
+
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved_player_control_state(registry: &mut byroredux_save::SaveRegistry) {
+    // #2292 / SAVE-D1-09 — `Game.EnablePlayerControls`/
+    // `DisablePlayerControls` lock state. Plain bool/i32 fields,
+    // delta-safe. Pre-fix a save taken mid-scripted-sequence (controls
+    // locked) silently reset to all-enabled on reload.
+    registry.register_resource::<PlayerControlState>("PlayerControlState");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

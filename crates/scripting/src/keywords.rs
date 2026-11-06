@@ -177,5 +177,13 @@ pub fn register(world: &mut World) {
     world.init_resource::<ScriptedKeywords>();
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // M47.2 — script AddKeyword / RemoveKeyword changes.
+    registry.register_resource::<ScriptedKeywords>("ScriptedKeywords");
+}
+
 #[cfg(test)]
 mod tests;

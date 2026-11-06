@@ -134,6 +134,14 @@ pub fn install_map_markers(world: &mut World, index: &EsmIndex) -> usize {
     count
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // M47.2 — script AddToMap (discovered / fast-travel markers).
+    registry.register_resource::<MapMarkers>("MapMarkers");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

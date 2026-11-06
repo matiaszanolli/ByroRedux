@@ -322,6 +322,17 @@ pub fn apply_modifiers(values: &mut ActorValues, modifiers: &[ConstantModifier],
     }
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // #4415 — the actor's spells. Stamped at spawn from SPLO and mutated
+    // by AddSpell / RemoveSpell; the ActorValues column above already
+    // carries the permanent changes those spells made, so the two must
+    // round-trip together.
+    registry.register_component::<SpellList>("SpellList");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

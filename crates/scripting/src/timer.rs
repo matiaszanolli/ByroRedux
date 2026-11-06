@@ -68,6 +68,13 @@ pub fn timer_tick_system(world: &World, dt: f32) {
     }
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    registry.register_component::<ScriptTimer>("ScriptTimer");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

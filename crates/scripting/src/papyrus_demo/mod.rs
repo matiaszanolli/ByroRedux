@@ -417,5 +417,17 @@ pub fn rumble_tick_system(world: &World, dt: f32) {
     }
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // #2382 / SAVE-D1-17 — `defaultRumbleOnActivate`'s live
+    // Active/Busy/Inactive state machine + wait countdown. Flat enum
+    // + f32/bool fields, delta-safe. Pre-fix a mid-wait or
+    // already-one-shot-fired lever silently reset to `Active` on
+    // reload, letting a spent trap/lever re-fire.
+    registry.register_component::<RumbleOnActivate>("RumbleOnActivate");
+}
+
 #[cfg(test)]
 mod tests;

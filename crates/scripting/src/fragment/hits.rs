@@ -277,6 +277,13 @@ pub fn hit_event_system(world: &World, _dt: f32) {
     flush_advances(world, advances);
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub(super) fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    registry.register_resource::<HitRegistrations>("HitRegistrations");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

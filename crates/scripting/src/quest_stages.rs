@@ -1424,6 +1424,26 @@ pub fn quest_terminal_stage_system(world: &World, _dt: f32) {
     }
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // #1862 / SAVE-07 — quest stage/objective progress is live gameplay
+    // state (Papyrus `SetStage`/`GetStage`/`GetStageDone` and
+    // `SetObjectiveDisplayed`/`SetObjectiveCompleted`/`SetObjectiveFailed`),
+    // mutated every frame by real recognizer-emitted scripts
+    // (quest_advance, dlc2_ttr4a, mg07_door). Pre-fix it silently reverted
+    // to default on every save/load.
+    registry.register_resource::<QuestStageState>("QuestStageState");
+}
+
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved_quest_objective_state(registry: &mut byroredux_save::SaveRegistry) {
+    registry.register_resource::<QuestObjectiveState>("QuestObjectiveState");
+}
+
 #[cfg(test)]
 mod tests {
     use crate::papyrus_demo::PapyrusPlayerEntity;

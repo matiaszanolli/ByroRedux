@@ -292,5 +292,21 @@ pub fn register(world: &mut World) {
     world.init_resource::<ActorBaseProtectionOverrides>();
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // M47.2 — an essential actor saved mid-bleedout reloads still down.
+    registry.register_replacing_component::<Bleedout>("Bleedout");
+}
+
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved_actor_base_protection_overrides(registry: &mut byroredux_save::SaveRegistry) {
+    // M47.2 — script ActorBase.SetEssential / SetProtected.
+    registry.register_resource::<ActorBaseProtectionOverrides>("ActorBaseProtectionOverrides");
+}
+
 #[cfg(test)]
 mod tests;

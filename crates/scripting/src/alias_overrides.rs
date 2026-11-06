@@ -51,3 +51,12 @@ impl AliasOverrides {
         self.by_quest.retain(|quest, _| running(*quest));
     }
 }
+
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // M47.2 — scripted ForceRefTo / Clear alias overrides, by reference
+    // FormID; dropped when their quest stops.
+    registry.register_resource::<AliasOverrides>("AliasOverrides");
+}

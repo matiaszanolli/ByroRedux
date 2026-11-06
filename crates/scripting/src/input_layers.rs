@@ -154,6 +154,14 @@ impl InputLayers {
     }
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // M47.2 — InputEnableLayer handles and the controls they disable.
+    registry.register_resource::<InputLayers>("InputLayers");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

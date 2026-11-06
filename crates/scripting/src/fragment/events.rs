@@ -313,3 +313,11 @@ pub(super) fn relay_remote(world: &World, sender: u32, event: &str, args: &[VmSt
     };
     enqueue(world, &registrants, sender, args);
 }
+
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub(super) fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // M47.2 — Papyrus custom / remote event registrations.
+    registry.register_resource::<EventRegistrations>("EventRegistrations");
+}

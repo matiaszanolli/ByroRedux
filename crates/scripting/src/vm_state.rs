@@ -173,6 +173,17 @@ pub fn two_state_activator_system(world: &World, _dt: f32) {
     }
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // #2291 — levers, switches, and puzzle doors recognized as
+    // default2StateActivator mutate both the state machine and its
+    // CTDA-visible VM variables at runtime. Both are delta-safe.
+    registry.register_component::<TwoStateActivator>("TwoStateActivator");
+    registry.register_component::<ScriptVariables>("ScriptVariables");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

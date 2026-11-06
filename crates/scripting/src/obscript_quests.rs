@@ -1053,6 +1053,14 @@ pub fn obscript_quest_tick_system(world: &World, dt: f32) {
 }
 
 /// Host-level behaviour of [`ObScriptCommandHost`] on synthetic calls.
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // M47.3 — the ObScript quest scripts' local variables.
+    registry.register_resource::<ObScriptQuestLocals>("ObScriptQuestLocals");
+}
+
 #[cfg(test)]
 mod host_tests {
     use super::*;

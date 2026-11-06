@@ -116,6 +116,14 @@ pub fn relationship_rank(world: &World, a: EntityId, b: EntityId) -> i8 {
     }
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // M47.2 — script SetRelationshipRank changes.
+    registry.register_resource::<ScriptedRelationships>("ScriptedRelationships");
+}
+
 #[cfg(test)]
 mod tests {
     /// M43 — `CHRR` carries both actors and the old / new rank, and only a real change raises it.

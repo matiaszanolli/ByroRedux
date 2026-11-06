@@ -201,3 +201,10 @@ pub fn animation_event_system(world: &World, _dt: f32) {
     }
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub(super) fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // M47.2 — Papyrus hit event registrations.
+    registry.register_resource::<AnimationEventRegistrations>("AnimationEventRegistrations");
+}

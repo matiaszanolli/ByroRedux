@@ -208,6 +208,16 @@ pub fn sync_game_clock_globals(world: &byroredux_core::ecs::World, day: u64, hou
     }
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // MQ101's startup fragment writes GameHour before advancing to stage
+    // 10. GLOB values are mutable game state, so a save/load must retain
+    // the scripted value instead of silently restoring the ESM default.
+    registry.register_resource::<Globals>("Globals");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

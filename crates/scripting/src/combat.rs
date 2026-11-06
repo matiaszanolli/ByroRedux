@@ -286,6 +286,17 @@ pub fn register(world: &mut World) {
     world.init_resource::<FactionRelations>();
 }
 
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // #4414 — scripted faction reactions (`Faction.SetEnemy`), which the
+    // ambient hostility system now reads. Keyed by portable `FormRef`
+    // (plugin identity + local object id), never a load-order slot, so
+    // a reload under a changed load order still names the same factions.
+    registry.register_resource::<FactionRelations>("FactionRelations");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

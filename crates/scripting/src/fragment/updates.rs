@@ -427,3 +427,12 @@ pub fn script_update_system(world: &World, dt: f32, game_hours: Option<f64>) {
     }
     flush_advances(world, advances);
 }
+
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub(super) fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // M47.2 — Papyrus RegisterForUpdate / RegisterForSingleUpdate (and
+    // the GameTime pair) registrations and the clocks they count.
+    registry.register_resource::<ScriptUpdates>("ScriptUpdates");
+}

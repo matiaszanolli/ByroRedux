@@ -373,3 +373,21 @@ pub fn install_location_table(world: &mut World, index: &EsmIndex) -> usize {
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    // M47.2 — quest location-alias bindings. A "Find Matching Location"
+    // fill picks at random, so a reload must keep the pick rather than
+    // re-roll it.
+    registry.register_resource::<LocationAliasBindings>("LocationAliasBindings");
+}
+
+/// #6705 — this subsystem's saved column(s). Called by the binary's `build_save_registry` in its
+/// row order (the schema fingerprint is order-sensitive).
+#[cfg(feature = "save")]
+pub fn register_saved_location_clear_state(registry: &mut byroredux_save::SaveRegistry) {
+    // M47.2 — cleared locations (dead bosses, script SetCleared).
+    registry.register_resource::<LocationClearState>("LocationClearState");
+}

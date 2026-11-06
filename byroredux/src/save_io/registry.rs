@@ -233,6 +233,13 @@ impl Resource for PendingSaveLoadSlot {}
 /// derived data (`GlobalTransform`, `WorldBound`), GPU handles
 /// (`MeshHandle`, `TextureHandle`, `SkinnedMesh`), and transient event
 /// markers are reconstructed on load, never serialised.
+///
+/// #6705 — a scripting subsystem's saved columns are registered by its own
+/// `register_saved` (`SaveRegistry::schema_fingerprint` hashes components and
+/// resources in registration order, so each call sits where its rows sat). What
+/// is spelled here are the rows whose type cannot do that: core types
+/// (`byroredux-core` sits below `byroredux-save`), the physics character
+/// controller, and the binary crate's own state.
 pub fn build_save_registry() -> SaveRegistry {
     use byroredux_core::animation::{AnimationPlayer, AnimationStack};
     use byroredux_core::ecs::components::{
@@ -241,230 +248,147 @@ pub fn build_save_registry() -> SaveRegistry {
         Parent, PatrolState, Seated, Transform, TravelState, Traveled, WanderState,
     };
     use byroredux_core::ecs::resources::ItemInstancePool;
-    use byroredux_scripting::papyrus_demo::RumbleOnActivate;
-    use byroredux_scripting::quest_stages::{QuestObjectiveState, QuestStageState};
-    use byroredux_scripting::{
-        ActorCinematicState, ActorControlState, CinematicPresentationState, FragmentExecutionQueue,
-        Globals, HorseTetherState, PapyrusProviderContinuationQueue, PlayerControlState,
-        QuestAliasInjectionState, ReferenceEnableState, ReferenceLockState, ReferenceMotionTypeState, ReferenceScriptState,
-        ScriptTimer, ScriptVariables,
-        TwoStateActivator,
-    };
 
     use crate::cell_loader::{CurrentCellContext, CurrentExteriorContext};
     use crate::components::GameTimeRes;
 
     let mut r = SaveRegistry::new();
-    r.register_component::<Transform>("Transform")
-        .register_component::<Name>("Name")
-        .register_component::<Parent>("Parent")
-        .register_component::<Children>("Children")
-        .register_component::<Inventory>("Inventory")
-        .register_component::<EquipmentSlots>("EquipmentSlots")
-        .register_component::<LightSource>("LightSource")
-        .register_component::<LightFlicker>("LightFlicker")
-        .register_component::<AnimationPlayer>("AnimationPlayer")
-        .register_component::<AnimationStack>("AnimationStack")
-        .register_component::<ScriptTimer>("ScriptTimer")
-        // #2291 — levers, switches, and puzzle doors recognized as
-        // default2StateActivator mutate both the state machine and its
-        // CTDA-visible VM variables at runtime. Both are delta-safe.
-        .register_component::<TwoStateActivator>("TwoStateActivator")
-        .register_component::<ScriptVariables>("ScriptVariables")
-        // #1834 — layered actor values (SPECIAL / skills / resistances /
-        // resources / derived). Stamped at NPC spawn from class auto-calc and
-        // mutated live by `setav`/`modav`; pre-fix a save/load silently
-        // reverted every edited/permanent/temporary/damage layer to the
-        // re-derived spawn base. Also a MUTABLE_DELTA_COLUMN (delta-safe).
-        .register_component::<ActorValues>("ActorValues")
-        .register_replacing_component::<byroredux_core::character::Perks>("Perks")
-        // M47.2 — kill experience accumulates `xp` and rolls levels, so
-        // #2947's re-derived exemption (and its `validate_progression_state`
-        // guard) ended.
-        .register_replacing_component::<byroredux_core::character::LevelUpPoints>(
-            "LevelUpPoints",
-        )
-        .register_replacing_component::<byroredux_core::character::CharacterLevel>(
-            "CharacterLevel",
-        )
-        .register_replacing_component::<byroredux_core::ecs::components::TimedRestorations>("TimedRestorations")
-        // #4415 — the actor's spells. Stamped at spawn from SPLO and mutated
-        // by AddSpell / RemoveSpell; the ActorValues column above already
-        // carries the permanent changes those spells made, so the two must
-        // round-trip together.
-        .register_component::<byroredux_scripting::SpellList>("SpellList")
-        // #3027 (SAVE-D1-2026-08-16-02) — registered (so a hand load of an
-        // older save still resolves the column), but deliberately absent
-        // from `MUTABLE_DELTA_COLUMNS` below: despite the name/field
-        // reading like a live HP value, `ActorVitals.health` is a stable
-        // per-game AVIF FormID key (see the type's own doc comment,
-        // `crates/core/src/ecs/components/actor_values.rs`), stamped once
-        // at NPC spawn from static game data and never mutated at runtime
-        // — combat damage writes through `ActorValues` (already a delta
-        // column) using this FormID as the lookup key, not through this
-        // struct. Mid-session health changes already survive a reload via
-        // that path; this is write-once/re-derivable, the same shape as
-        // `CharacterLevel` below, just not listed in
-        // `REDERIVED_NOT_SAVED` because it's plain-registered (not the
-        // save-omitted case that allowlist tracks).
-        .register_component::<ActorVitals>("ActorVitals")
-        .register_component::<EquippedWeapon>("EquippedWeapon")
-        // #5027 — replacing: the process-lifetime player outlives the cell
-        // reload, so an additive overlay left a pre-load death standing on a
-        // save where the player was alive. Saved absence on a FormID-matched
-        // actor is authoritative; resident NPCs respawn alive regardless.
-        .register_replacing_component::<Dead>("Dead")
-        // #2014 / SAVE-D1-NEW-01 — the seven M42 AI-procedure runtime-state
-        // components. Continuously-updated state (WanderState/PatrolState/
-        // GuardState) is cosmetically self-correcting if lost (the owning
-        // system re-derives `home`/`anchor` from the actor's post-reload
-        // position on its next tick), but the terminal one-shot markers
-        // (Traveled/Escorted/Seated) are not: losing them makes an
-        // already-finished NPC silently redo its Travel/Escort/Seat
-        // behavior. All nine ride full register_component (restore_world
-        // preserves entity ids verbatim); see MUTABLE_DELTA_COLUMNS below
-        // for which additionally get the live-overlay fast path.
-        .register_component::<WanderState>("WanderState")
-        .register_component::<TravelState>("TravelState")
-        .register_component::<Traveled>("Traveled")
-        .register_component::<FollowState>("FollowState")
-        .register_component::<EscortState>("EscortState")
-        .register_component::<Escorted>("Escorted")
-        .register_component::<GuardState>("GuardState")
-        .register_component::<PatrolState>("PatrolState")
-        .register_component::<Seated>("Seated")
-        // #2380 / SAVE-D1-15 — MQ101 cinematic fragment-effect state. Both
-        // carry `EntityId` fields (`vehicle`/`horse`), the same
-        // session-local-reference hazard as `FollowState`/`EscortState`
-        // above — full `register_component` only, never
-        // `MUTABLE_DELTA_COLUMNS`. Live-mutated by Papyrus PlayIdle/
-        // SetVehicle/TetherToHorse fragment effects with no reload
-        // re-derivation (quest_fragment_dispatch_system is edge-triggered
-        // and doesn't replay on load, disproving #2294's assumption for
-        // these two).
-        .register_component::<ActorCinematicState>("ActorCinematicState")
-        .register_component::<HorseTetherState>("HorseTetherState")
-        // #2292 / SAVE-D1-09 — `Actor.SetRestrained` per-actor lock. Plain
-        // bool, delta-safe. Pre-fix a save taken while an NPC was restrained
-        // silently freed it on reload. #5052 — replacing: the first
-        // `SetRestrained` inserts it lazily on the process-lifetime player,
-        // so loading a save with no row must clear a live restraint rather
-        // than leave the player unable to move.
-        .register_replacing_component::<ActorControlState>("ActorControlState")
-        // M47.2 — an essential actor saved mid-bleedout reloads still down.
-        .register_replacing_component::<byroredux_scripting::Bleedout>("Bleedout")
-        // M47.3 — a package a quest script gave an actor reloads still its package.
-        .register_replacing_component::<byroredux_scripting::script_packages::ScriptPackage>("ScriptPackage")
-        .register_component::<byroredux_physics::CharacterController>("CharacterController")
-        // #2378 / SAVE-D1-13 — the `mat.set` debug console command
-        // live-mutates a Material's PBR scalars/colors/material_kind at
-        // runtime, the same class of gap #1834 fixed for `ActorValues`
-        // (also debug-command-mutated via `setav`/`modav`). Every field
-        // is a plain scalar / `Option<String>` / nested plain-data struct
-        // (no FixedString / EntityId), delta-safe for the full round-trip
-        // registry. Deliberately NOT added to `MUTABLE_DELTA_COLUMNS`
-        // below: unlike a per-actor state machine, Material sits on
-        // nearly every rendered entity in a cell, so a live-load overlay
-        // would replace every mesh's freshly-NIF-imported material with
-        // whatever was captured at save time — a far bigger blast radius
-        // than the narrow "one debug-edited entity" case this fixes.
-        // `mat.set` edits still survive a full save/load (the primary
-        // ask), just not the fast live-reload-and-overlay path.
-        .register_component::<Material>("Material")
-        // #2382 / SAVE-D1-17 — `defaultRumbleOnActivate`'s live
-        // Active/Busy/Inactive state machine + wait countdown. Flat enum
-        // + f32/bool fields, delta-safe. Pre-fix a mid-wait or
-        // already-one-shot-fired lever silently reset to `Active` on
-        // reload, letting a spent trap/lever re-fire.
-        .register_component::<RumbleOnActivate>("RumbleOnActivate")
-        .register_form_id_component("FormIdComponent")
-        .register_resource::<ItemInstancePool>("ItemInstancePool")
-        .register_resource::<crate::cell_loader::reference_state::PersistentReferenceStates>(
-            "PersistentReferenceStates",
-        )
-        // M45.1 — the cell identity + plugin set the save was taken in,
-        // so `load` knows which cell to reload before applying deltas.
-        .register_resource::<CurrentCellContext>("CurrentCellContext")
-        // EX-09/17 item 4 — the exterior-mode counterpart to
-        // `CurrentCellContext`: worldspace/grid/radius identity for a save
-        // taken mid-exterior-streaming, so `load` can rebuild the same
-        // `WorldStreamingState` instead of rejecting exterior saves outright.
-        .register_resource::<CurrentExteriorContext>("CurrentExteriorContext")
-        // M45.1 refinement — where the player was standing + looking, so
-        // `load` restores the pose instead of the cell's default spawn.
-        .register_resource::<PlayerPose>("PlayerPose")
-        // M34 day/night completion — the clock is mutable gameplay state:
-        // weather advances it every frame and `time.*` controls can change
-        // hour/rate/day. Restoring after the cell reload lets the next
-        // weather tick re-derive sky, fog, sun, and directional lighting.
-        .register_resource::<GameTimeRes>("GameTimeRes")
-        .register_resource::<byroredux_core::ecs::resources::HardcoreMode>("HardcoreMode")
-        // #1862 / SAVE-07 — quest stage/objective progress is live gameplay
-        // state (Papyrus `SetStage`/`GetStage`/`GetStageDone` and
-        // `SetObjectiveDisplayed`/`SetObjectiveCompleted`/`SetObjectiveFailed`),
-        // mutated every frame by real recognizer-emitted scripts
-        // (quest_advance, dlc2_ttr4a, mg07_door). Pre-fix it silently reverted
-        // to default on every save/load.
-        .register_resource::<QuestStageState>("QuestStageState")
-        // #5366 Phase 3 — Story Manager node-policy state (do-all fired
-        // marks, RNAM reset timestamps), so a quickload cannot resurrect
-        // a radiant the pre-save world already fired.
-        .register_resource::<byroredux_scripting::StoryManagerNodeState>(
-            "StoryManagerNodeState",
-        )
-        // #5394 — an SM-started quest restores as running and its starting
-        // event is never raised again, so its `FromEvent` aliases can only
-        // re-fill from this record (reference slots persist as FormIds).
-        .register_resource::<byroredux_scripting::StoryEventAliasFill>(
-            "StoryEventAliasFill",
-        )
-        .register_resource::<QuestObjectiveState>("QuestObjectiveState")
-        // M47.2 — quest-script property writes (`kmyQuest.Flag = 1`) that
-        // `GetVMQuestVariable` dialogue / package / scene conditions read;
-        // only the writes serialize (the VMAD defaults are re-derived).
-        .register_resource::<byroredux_scripting::QuestScriptVariables>(
-            "QuestScriptVariables",
-        )
-        // M47.2 — scripted AddToFaction / RemoveFromFaction / SetFactionRank,
-        // replayed over the record-derived `FactionRanks` at spawn and load.
-        .register_resource::<byroredux_scripting::ScriptedFactionChanges>(
-            "ScriptedFactionChanges",
-        )
-        // M47.2 — quest location-alias bindings. A "Find Matching Location"
-        // fill picks at random, so a reload must keep the pick rather than
-        // re-roll it.
-        .register_resource::<byroredux_scripting::LocationAliasBindings>(
-            "LocationAliasBindings",
-        );
+    // Core types: `byroredux-core` sits below `byroredux-save`, so they cannot register themselves (#6705).
+    r.register_component::<Transform>("Transform");
+    r.register_component::<Name>("Name");
+    r.register_component::<Parent>("Parent");
+    r.register_component::<Children>("Children");
+    r.register_component::<Inventory>("Inventory");
+    r.register_component::<EquipmentSlots>("EquipmentSlots");
+    r.register_component::<LightSource>("LightSource");
+    r.register_component::<LightFlicker>("LightFlicker");
+    r.register_component::<AnimationPlayer>("AnimationPlayer");
+    r.register_component::<AnimationStack>("AnimationStack");
+    byroredux_scripting::timer::register_saved(&mut r);
+    byroredux_scripting::vm_state::register_saved(&mut r);
+    // Core types: `byroredux-core` sits below `byroredux-save`, so they cannot register themselves (#6705).
+    // #1834 — layered actor values (SPECIAL / skills / resistances /
+    // resources / derived). Stamped at NPC spawn from class auto-calc and
+    // mutated live by `setav`/`modav`; pre-fix a save/load silently
+    // reverted every edited/permanent/temporary/damage layer to the
+    // re-derived spawn base. Also a MUTABLE_DELTA_COLUMN (delta-safe).
+    r.register_component::<ActorValues>("ActorValues");
+    r.register_replacing_component::<byroredux_core::character::Perks>("Perks");
+    // M47.2 — kill experience accumulates `xp` and rolls levels, so
+    // #2947's re-derived exemption (and its `validate_progression_state`
+    // guard) ended.
+    r.register_replacing_component::<byroredux_core::character::LevelUpPoints>("LevelUpPoints");
+    r.register_replacing_component::<byroredux_core::character::CharacterLevel>("CharacterLevel");
+    r.register_replacing_component::<byroredux_core::ecs::components::TimedRestorations>("TimedRestorations");
+    byroredux_scripting::magic::register_saved(&mut r);
+    // Core types: `byroredux-core` sits below `byroredux-save`, so they cannot register themselves (#6705).
+    // #3027 (SAVE-D1-2026-08-16-02) — registered (so a hand load of an
+    // older save still resolves the column), but deliberately absent
+    // from `MUTABLE_DELTA_COLUMNS` below: despite the name/field
+    // reading like a live HP value, `ActorVitals.health` is a stable
+    // per-game AVIF FormID key (see the type's own doc comment,
+    // `crates/core/src/ecs/components/actor_values.rs`), stamped once
+    // at NPC spawn from static game data and never mutated at runtime
+    // — combat damage writes through `ActorValues` (already a delta
+    // column) using this FormID as the lookup key, not through this
+    // struct. Mid-session health changes already survive a reload via
+    // that path; this is write-once/re-derivable, the same shape as
+    // `CharacterLevel` below, just not listed in
+    // `REDERIVED_NOT_SAVED` because it's plain-registered (not the
+    // save-omitted case that allowlist tracks).
+    r.register_component::<ActorVitals>("ActorVitals");
+    r.register_component::<EquippedWeapon>("EquippedWeapon");
+    // #5027 — replacing: the process-lifetime player outlives the cell
+    // reload, so an additive overlay left a pre-load death standing on a
+    // save where the player was alive. Saved absence on a FormID-matched
+    // actor is authoritative; resident NPCs respawn alive regardless.
+    r.register_replacing_component::<Dead>("Dead");
+    // #2014 / SAVE-D1-NEW-01 — the seven M42 AI-procedure runtime-state
+    // components. Continuously-updated state (WanderState/PatrolState/
+    // GuardState) is cosmetically self-correcting if lost (the owning
+    // system re-derives `home`/`anchor` from the actor's post-reload
+    // position on its next tick), but the terminal one-shot markers
+    // (Traveled/Escorted/Seated) are not: losing them makes an
+    // already-finished NPC silently redo its Travel/Escort/Seat
+    // behavior. All nine ride full register_component (restore_world
+    // preserves entity ids verbatim); see MUTABLE_DELTA_COLUMNS below
+    // for which additionally get the live-overlay fast path.
+    r.register_component::<WanderState>("WanderState");
+    r.register_component::<TravelState>("TravelState");
+    r.register_component::<Traveled>("Traveled");
+    r.register_component::<FollowState>("FollowState");
+    r.register_component::<EscortState>("EscortState");
+    r.register_component::<Escorted>("Escorted");
+    r.register_component::<GuardState>("GuardState");
+    r.register_component::<PatrolState>("PatrolState");
+    r.register_component::<Seated>("Seated");
+    byroredux_scripting::cinematic::register_saved(&mut r);
+    byroredux_scripting::player_control::register_saved(&mut r);
+    byroredux_scripting::bleedout::register_saved(&mut r);
+    byroredux_scripting::script_packages::register_saved(&mut r);
+    // Physics type: `byroredux-physics` has no `byroredux-save` dependency (#6705).
+    r.register_component::<byroredux_physics::CharacterController>("CharacterController");
+    // Core types: `byroredux-core` sits below `byroredux-save`, so they cannot register themselves (#6705).
+    // #2378 / SAVE-D1-13 — the `mat.set` debug console command
+    // live-mutates a Material's PBR scalars/colors/material_kind at
+    // runtime, the same class of gap #1834 fixed for `ActorValues`
+    // (also debug-command-mutated via `setav`/`modav`). Every field
+    // is a plain scalar / `Option<String>` / nested plain-data struct
+    // (no FixedString / EntityId), delta-safe for the full round-trip
+    // registry. Deliberately NOT added to `MUTABLE_DELTA_COLUMNS`
+    // below: unlike a per-actor state machine, Material sits on
+    // nearly every rendered entity in a cell, so a live-load overlay
+    // would replace every mesh's freshly-NIF-imported material with
+    // whatever was captured at save time — a far bigger blast radius
+    // than the narrow "one debug-edited entity" case this fixes.
+    // `mat.set` edits still survive a full save/load (the primary
+    // ask), just not the fast live-reload-and-overlay path.
+    r.register_component::<Material>("Material");
+    byroredux_scripting::papyrus_demo::register_saved(&mut r);
+    // Core types: `byroredux-core` sits below `byroredux-save`, so they cannot register themselves (#6705).
+    r.register_form_id_component("FormIdComponent");
+    r.register_resource::<ItemInstancePool>("ItemInstancePool");
+    // Binary-crate types register here (#6705).
+    r.register_resource::<crate::cell_loader::reference_state::PersistentReferenceStates>("PersistentReferenceStates");
+    // M45.1 — the cell identity + plugin set the save was taken in,
+    // so `load` knows which cell to reload before applying deltas.
+    r.register_resource::<CurrentCellContext>("CurrentCellContext");
+    // EX-09/17 item 4 — the exterior-mode counterpart to
+    // `CurrentCellContext`: worldspace/grid/radius identity for a save
+    // taken mid-exterior-streaming, so `load` can rebuild the same
+    // `WorldStreamingState` instead of rejecting exterior saves outright.
+    r.register_resource::<CurrentExteriorContext>("CurrentExteriorContext");
+    // M45.1 refinement — where the player was standing + looking, so
+    // `load` restores the pose instead of the cell's default spawn.
+    r.register_resource::<PlayerPose>("PlayerPose");
+    // M34 day/night completion — the clock is mutable gameplay state:
+    // weather advances it every frame and `time.*` controls can change
+    // hour/rate/day. Restoring after the cell reload lets the next
+    // weather tick re-derive sky, fog, sun, and directional lighting.
+    r.register_resource::<GameTimeRes>("GameTimeRes");
+    // Core types: `byroredux-core` sits below `byroredux-save`, so they cannot register themselves (#6705).
+    r.register_resource::<byroredux_core::ecs::resources::HardcoreMode>("HardcoreMode");
+    byroredux_scripting::quest_stages::register_saved(&mut r);
+    byroredux_scripting::story_manager::register_saved(&mut r);
+    byroredux_scripting::quest_stages::register_saved_quest_objective_state(&mut r);
+    byroredux_scripting::quest_variables::register_saved(&mut r);
+    byroredux_scripting::faction_changes::register_saved(&mut r);
+    byroredux_scripting::location::register_saved(&mut r);
     // M47.2 — Created Object "At" references: identity, base and
     // placement, so a quest's created reference respawns in its cell.
     byroredux_scripting::created_references::register_saved(&mut r);
-    r
-        // M47.2 — scripted ForceRefTo / Clear alias overrides, by reference
-        // FormID; dropped when their quest stops.
-        .register_resource::<byroredux_scripting::AliasOverrides>("AliasOverrides")
-        // M47.2 — script BlockActivation, by reference FormID (outlives cells).
-        .register_resource::<byroredux_scripting::ReferenceActivationBlocks>(
-            "ReferenceActivationBlocks",
-        )
-        // M47.2 — script AddToMap (discovered / fast-travel markers).
-        .register_resource::<byroredux_scripting::MapMarkers>("MapMarkers")
-        // M47.2 — cleared locations (dead bosses, script SetCleared).
-        .register_resource::<byroredux_scripting::LocationClearState>("LocationClearState")
-        // M47.2 — script SetRelationshipRank changes.
-        .register_resource::<byroredux_scripting::ScriptedRelationships>("ScriptedRelationships")
-        // M47.2 — the Papyrus VM's object script variables.
-        .register_resource::<byroredux_scripting::QuestScriptObjects>("QuestScriptObjects")
-        // M47.2 — Papyrus RegisterForUpdate / RegisterForSingleUpdate (and
-        // the GameTime pair) registrations and the clocks they count.
-        .register_resource::<byroredux_scripting::ScriptUpdates>("ScriptUpdates");
+    byroredux_scripting::alias_overrides::register_saved(&mut r);
+    byroredux_scripting::fragment::register_state_saved(&mut r);
+    byroredux_scripting::map_markers::register_saved(&mut r);
+    byroredux_scripting::location::register_saved_location_clear_state(&mut r);
+    byroredux_scripting::relationships::register_saved(&mut r);
+    byroredux_scripting::quest_variables::register_saved_quest_script_objects(&mut r);
+    byroredux_scripting::fragment::register_updates_saved(&mut r);
     // M47.2 — Game.IncrementStat misc stats and Game.AddAchievement awards.
     byroredux_scripting::misc_stats::register_saved(&mut r);
     // M47.2 — ObjectReference.SetLinkedRef links.
     byroredux_scripting::linked_refs::register_saved(&mut r);
-    r
-        // M47.3 — the ObScript quest scripts' local variables.
-        .register_resource::<byroredux_scripting::obscript_quests::ObScriptQuestLocals>("ObScriptQuestLocals");
+    byroredux_scripting::obscript_quests::register_saved(&mut r);
     // M47.2 — SetActorOwner / SetFactionOwner, faction crime gold and
     // Actor.SetCrimeFaction: each subsystem registers its own column (#5802),
     // here, at its place in the row order the schema fingerprint hashes.
@@ -491,125 +415,34 @@ pub fn build_save_registry() -> SaveRegistry {
     byroredux_scripting::form_lists::register_saved(&mut r);
     // M47.2 — ObjectReference.SetLocRefType assignments.
     byroredux_scripting::loc_ref_types::register_saved(&mut r);
-    r
-        // M47.2 — alias script owner ids and the quests whose alias scripts started.
-        .register_resource::<byroredux_scripting::AliasScriptOwners>("AliasScriptOwners")
-        // M47.2 — Papyrus hit event registrations.
-        .register_resource::<byroredux_scripting::AnimationEventRegistrations>("AnimationEventRegistrations");
+    byroredux_scripting::fragment::register_alias_scripts_saved(&mut r);
+    byroredux_scripting::fragment::register_anim_events_saved(&mut r);
     // M47.2 — destructible references' damage.
     byroredux_scripting::destruction::register_saved(&mut r);
-    r.register_resource::<byroredux_scripting::HitRegistrations>("HitRegistrations");
+    byroredux_scripting::fragment::register_hits_saved(&mut r);
     // M47.2 — Location.SetKeywordData data.
     byroredux_scripting::location_keyword_data::register_saved(&mut r);
-    r
-        // M47.2 — SetNoFavorAllowed / SetActorCause flags.
-        .register_resource::<byroredux_scripting::ReferenceFlags>("ReferenceFlags")
-        // M47.2 — InputEnableLayer handles and the controls they disable.
-        .register_resource::<byroredux_scripting::InputLayers>("InputLayers");
+    byroredux_scripting::reference_flags::register_saved(&mut r);
+    byroredux_scripting::input_layers::register_saved(&mut r);
     // M47.2 — Actor.SetPlayerTeammate / SetDoingFavor flags.
     byroredux_scripting::followers::register_saved(&mut r);
-    r
-        // M47.2 — Papyrus distance-event registrations.
-        .register_resource::<byroredux_scripting::DistanceWatches>("DistanceWatches")
-        // M47.2 — script-filled RefCollectionAlias members.
-        .register_resource::<byroredux_scripting::AliasCollections>("AliasCollections")
-        // M47.2 — Papyrus custom / remote event registrations.
-        .register_resource::<byroredux_scripting::EventRegistrations>("EventRegistrations");
+    byroredux_scripting::fragment::register_distance_saved(&mut r);
+    byroredux_scripting::alias_collections::register_saved(&mut r);
+    byroredux_scripting::fragment::register_events_saved(&mut r);
     // M47.2 — Game.AdvanceSkill's banked usage XP per skill.
     byroredux_scripting::skills::register_saved(&mut r);
     // M43 — Game.TeachWord / UnlockWord: the words of power the player has.
     byroredux_scripting::words_of_power::register_saved(&mut r);
-    r
-        // M47.2 — script AddKeyword / RemoveKeyword changes.
-        .register_resource::<byroredux_scripting::keywords::ScriptedKeywords>("ScriptedKeywords")
-        // M47.2 — script ActorBase.SetEssential / SetProtected.
-        .register_resource::<byroredux_scripting::ActorBaseProtectionOverrides>(
-            "ActorBaseProtectionOverrides",
-        )
-        // #5367 Phase L — spoken Say-Once INFO bookkeeping: a said line
-        // stays disqualified after an F5/F9 cycle, exactly the
-        // quest-state contract beside it.
-        .register_resource::<byroredux_scripting::DialogueSpokenInfoForms>(
-            "DialogueSpokenInfoForms",
-        )
-        // MQ101's startup fragment writes GameHour before advancing to stage
-        // 10. GLOB values are mutable game state, so a save/load must retain
-        // the scripted value instead of silently restoring the ESM default.
-        .register_resource::<Globals>("Globals")
-        // QUST alias CNTO injections are permanent. Preserve their grant
-        // ledger so the derived alias refresh after load cannot duplicate
-        // already-saved inventory stacks. Faction bookkeeping inside this
-        // resource is serde-skipped and re-derived from static QUST data.
-        .register_resource::<QuestAliasInjectionState>("QuestAliasInjectionState")
-        // #2292 / SAVE-D1-09 — `Game.EnablePlayerControls`/
-        // `DisablePlayerControls` lock state. Plain bool/i32 fields,
-        // delta-safe. Pre-fix a save taken mid-scripted-sequence (controls
-        // locked) silently reset to all-enabled on reload.
-        .register_resource::<PlayerControlState>("PlayerControlState")
-        // #2381 / SAVE-D1-16 — suspended `Utility.Wait`/
-        // `WaitForActors3DLoaded` fragment continuations. Every nested
-        // type (`Effect`/`ActorRef`/`ObjectRef`/`QuestRef`/
-        // `ScriptInstanceData` and friends) audited field-by-field for
-        // FixedString/EntityId hazards — none found, all plain data
-        // (FormIDs as u32, property names as owned String). Pre-fix a
-        // save taken mid-`Utility.Wait` silently dropped the queued
-        // effect chain the wait was gating.
-        .register_resource::<FragmentExecutionQueue>("FragmentExecutionQueue")
-        // Provider-bearing OnLoad/OnActivate/OnTriggerEnter/OnUpdate handlers
-        // retain typed locals plus their lowered route/tail while suspended at
-        // Utility.Wait.
-        //
-        // #4139 — this comment used to end "All nested identities are stable
-        // manifest strings; no EntityId or process-local handles cross the
-        // save boundary." That is false, and it is why this column was
-        // registered without a rebind step: `locals` is a
-        // `BTreeMap<String, ScriptValue>`, and `ScriptValue::Entity` carries
-        // an `EntityRef` — a handle the SDK's own doc calls "never a raw ECS
-        // slot ... scoped to a world_generation so a stale one is
-        // rejectable", i.e. process-local by definition. The route/tail and
-        // principal halves of the claim are correct; the locals half was not.
-        //
-        // Continuations carrying such a local are dropped on load rather
-        // than resumed — see `drop_entity_bound_continuations` and the call
-        // site in `execute_pending_save_loads`.
-        .register_resource::<PapyrusProviderContinuationQueue>("PapyrusProviderContinuationQueue")
-        .register_resource::<ReferenceEnableState>("ReferenceEnableState")
-        // #4136 — the lock ledger's sibling. `Effect::SetLocked` /
-        // `SetLockLevel` (#3159) made `Locked` runtime-mutable with nothing
-        // persisting the change: absent from this registry, and re-stamped
-        // from the plugin's authored XLOC on every cell load. Keyed by
-        // local FormID and consulted by `cell_loader::spawn`, so it
-        // survives both a save/load and an in-session cell revisit — the
-        // latter being why this is a resource and not a saved `Locked`
-        // column, since cell unload despawns the entity that would carry
-        // one. Plain `u8` / `Option<u32>` payloads, no session-local
-        // handles.
-        .register_resource::<ReferenceLockState>("ReferenceLockState")
-        // #4334 — the once-only-script ledger, third sibling of the same
-        // shape: `onlyOnce` triggers park their script in a terminal
-        // `GotoState` without disabling the reference, and the parked
-        // state must survive both a save/load and an in-session cell
-        // revisit so the attach path does not re-arm them. Plain local
-        // FormID keys, no session-local handles.
-        .register_resource::<ReferenceScriptState>("ReferenceScriptState")
-        // #6237 — the motion-type ledger, fourth sibling. A script's
-        // `SetMotionType` changes bodies that are separate collision entities
-        // (`PhysicsSourceForm`, never `FormIdComponent`), so the former
-        // `RigidBodyData` column (#2379) had nothing to overlay on a live load
-        // and stored one dead row per resident collider; cell unload despawns
-        // them too. Keyed by local FormID and applied by `cell_loader::spawn`
-        // to every collider of the placement. Plain `MotionType` payloads.
-        .register_resource::<ReferenceMotionTypeState>("ReferenceMotionTypeState")
-        // #2380 / SAVE-D1-15 — MQ101 cinematic presentation state
-        // (sitting rotation, animation-event registrations, active IMAD
-        // applications). No `EntityId`/`FixedString` anywhere.
-        // `image_space_modifier_catalog` is static ESM data that rides
-        // along redundantly (see the type's own doc comment).
-        .register_resource::<CinematicPresentationState>("CinematicPresentationState")
-        // #4414 — scripted faction reactions (`Faction.SetEnemy`), which the
-        // ambient hostility system now reads. Keyed by portable `FormRef`
-        // (plugin identity + local object id), never a load-order slot, so
-        // a reload under a changed load order still names the same factions.
-        .register_resource::<byroredux_scripting::FactionRelations>("FactionRelations");
+    byroredux_scripting::keywords::register_saved(&mut r);
+    byroredux_scripting::bleedout::register_saved_actor_base_protection_overrides(&mut r);
+    byroredux_scripting::dialogue::register_saved(&mut r);
+    byroredux_scripting::globals::register_saved(&mut r);
+    byroredux_scripting::scene::register_quest_alias_saved(&mut r);
+    byroredux_scripting::player_control::register_saved_player_control_state(&mut r);
+    byroredux_scripting::fragment::register_state_fragment_execution_queue_saved(&mut r);
+    byroredux_scripting::papyrus_provider::register_ir_saved(&mut r);
+    byroredux_scripting::fragment::register_state_reference_enable_state_saved(&mut r);
+    byroredux_scripting::cinematic::register_saved_cinematic_presentation_state(&mut r);
+    byroredux_scripting::combat::register_saved(&mut r);
     r
 }
