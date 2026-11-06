@@ -540,24 +540,24 @@ pub(crate) fn run() -> Result<()> {
     app.groundcover.bench = groundcover_bench;
     app.groundcover.debug_points = groundcover_debug_points;
     app.groundcover.off = groundcover_off;
-    app.screenshot_path = screenshot_path;
-    app.linear_capture = linear_capture;
-    app.export_mitsuba_dir =
+    app.capture.screenshot_path = screenshot_path;
+    app.capture.linear_capture = linear_capture;
+    app.capture.export_mitsuba_dir =
         parse_string_arg(&args, "--export-mitsuba").map(std::path::PathBuf::from);
-    app.export_mitsuba_frame = match parse_string_arg(&args, "--export-mitsuba-frame") {
+    app.capture.export_mitsuba_frame = match parse_string_arg(&args, "--export-mitsuba-frame") {
         None => 0,
         Some(text) => text
             .parse::<u32>()
             .map_err(|_| anyhow::anyhow!("--export-mitsuba-frame '{text}' is not a frame index"))?,
     };
-    app.material_dump_path =
+    app.capture.material_dump_path =
         parse_string_arg(&args, "--material-dump").map(std::path::PathBuf::from);
     app.bench.capture = bench_capture;
     app.bench.camera = bench_camera;
     app.bench.path =
         crate::bench_camera::BenchPathClock::from_args(&args).map_err(anyhow::Error::msg)?;
-    app.camera_pos_override = camera_pos;
-    app.camera_forward_override = camera_forward;
+    app.capture.camera_pos_override = camera_pos;
+    app.capture.camera_forward_override = camera_forward;
     event_loop.run_app(&mut app)?;
 
     Ok(())

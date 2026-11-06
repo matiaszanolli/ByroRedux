@@ -21,6 +21,7 @@ mod bench_camera;
 mod bench_capture;
 mod bench_state;
 mod boot;
+mod capture_state;
 pub(crate) mod cell_loader;
 mod cli_args;
 mod combat;
@@ -618,43 +619,8 @@ struct App {
     /// M39 — re-reads the levels texture promotions need
     /// (`texture_streamer`); created the first frame streaming is on.
     texture_streamer: Option<texture_streamer::TextureStreamer>,
-    /// When set, request a screenshot on the bench-exit frame and
-    /// write the PNG to this path before quitting. Requires
-    /// `bench.frames_target` to be set (otherwise there is no
-    /// deterministic capture frame). See `--screenshot`.
-    screenshot_path: Option<String>,
-    /// `--linear-capture PATH [--linear-capture-frames N]`: on the
-    /// bench-exit frame, average the next N frames of composite's
-    /// scene-linear output (before bloom, exposure, grading and tone
-    /// mapping) and write a 32-bit-float RGB OpenEXR to PATH (M-LIGHT
-    /// RLT-REF-007, M51 PTR-OUT-001). The presented PNG of `--screenshot`
-    /// is a separate artefact and unchanged.
-    linear_capture: Option<crate::linear_capture::LinearCaptureCli>,
-    /// `--export-mitsuba DIR` (M51 PTR-VAL-004): write the Cornell reference
-    /// scene to a Mitsuba 3 directory after the first rendered frame.
-    export_mitsuba_dir: Option<std::path::PathBuf>,
-    /// `--export-mitsuba-frame F`: export after bench frame F is drawn
-    /// rather than the first (M-LIGHT RLT-EXP-001: a mid-animation pose).
-    export_mitsuba_frame: u32,
-    /// `--material-dump PATH` (M-LIGHT A9, RLT-IBL-008): the loaded scene's
-    /// material classes, written after the first rendered frame.
-    material_dump_path: Option<std::path::PathBuf>,
-    /// Optional override for the computed initial camera position —
-    /// `--camera-pos x,y,z`. Applied during scene setup before the
-    /// first frame. None = use the default auto-frame-scene placement.
-    camera_pos_override: Option<(f32, f32, f32)>,
-    /// Optional override for the initial camera forward vector —
-    /// `--camera-forward x,y,z`. Will be normalized at scene setup.
-    /// Requires `camera_pos_override` to have meaning.
-    camera_forward_override: Option<(f32, f32, f32)>,
-    /// Set once the bench-exit path fires the screenshot request.
-    /// Prevents re-requesting on every frame while we pump the
-    /// capture / encode pipeline.
-    screenshot_requested: bool,
-    /// Remaining frames to wait for the PNG result before giving up.
-    /// Decremented each AboutToWait pass while the result slot is
-    /// empty.
-    screenshot_deadline_frames: u32,
+    /// One-off output and camera-override CLI state (#6696). See [`crate::capture_state::CaptureState`].
+    capture: crate::capture_state::CaptureState,
     /// World cell streaming state (M40 Phase 1a). `None` outside
     /// `--esm + --grid` exterior mode. When `Some`, every
     /// `about_to_wait` tick reads `ActiveCamera` translation, diffs
@@ -1120,17 +1086,9 @@ impl App {
             bench: Default::default(),
             groundcover: Default::default(),
             ui: Default::default(),
+            capture: Default::default(),
             tlas_policy: Default::default(),
             texture_streamer: None,
-            screenshot_path: None,
-            linear_capture: None,
-            export_mitsuba_dir: None,
-            export_mitsuba_frame: 0,
-            material_dump_path: None,
-            camera_pos_override: None,
-            camera_forward_override: None,
-            screenshot_requested: false,
-            screenshot_deadline_frames: 0,
             streaming: None,
             geometry_deferred_since: None,
             interior_transition: None,
@@ -1173,8 +1131,8 @@ impl App {
             &mut self.ui.texture_handle,
             &mut self.ui.hud,
             &mut self.ui.scaleform_hud,
-            self.camera_pos_override,
-            self.camera_forward_override,
+            self.capture.camera_pos_override,
+            self.capture.camera_forward_override,
             &mut self.streaming,
         );
     }

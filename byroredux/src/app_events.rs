@@ -504,8 +504,8 @@ impl App {
         // encodes the PNG. We re-enter this branch up to
         // SCREENSHOT_DEADLINE_FRAMES times before giving
         // up.
-        if let Some(path) = self.screenshot_path.clone() {
-            if !self.screenshot_requested {
+        if let Some(path) = self.capture.screenshot_path.clone() {
+            if !self.capture.screenshot_requested {
                 if let Some(bridge) = self
                     .world
                     .try_resource::<byroredux_core::ecs::ScreenshotBridge>()
@@ -524,11 +524,11 @@ impl App {
                         eprintln!(
                             "screenshot: bridge already claimed (debug-server owns it) — skipping CLI capture"
                         );
-                        self.screenshot_path = None;
+                        self.capture.screenshot_path = None;
                     } else {
                         drop(bridge);
-                        self.screenshot_requested = true;
-                        self.screenshot_deadline_frames = 60;
+                        self.capture.screenshot_requested = true;
+                        self.capture.screenshot_deadline_frames = 60;
                         return true; // keep running frames
                     }
                 }
@@ -552,8 +552,8 @@ impl App {
                     }
                     Err(e) => eprintln!("screenshot: failed to write {}: {e}", path),
                 }
-            } else if self.screenshot_deadline_frames > 0 {
-                self.screenshot_deadline_frames -= 1;
+            } else if self.capture.screenshot_deadline_frames > 0 {
+                self.capture.screenshot_deadline_frames -= 1;
                 return true; // keep pumping
             } else {
                 eprintln!("screenshot: timed out waiting for PNG result",);
@@ -592,18 +592,18 @@ impl App {
         // Runs at `render_one_frame`'s tail, after the drawn frame's count
         // advanced: `count == F + 1` means frame F is the one just drawn,
         // whose ECS state (bone transforms, camera) this exports.
-        if self.bench.frames_count <= self.export_mitsuba_frame {
+        if self.bench.frames_count <= self.capture.export_mitsuba_frame {
             return;
         }
         // M-LIGHT A9 (RLT-IBL-008) — the material-class dump shares this
         // first-rendered-frame hook.
-        if let Some(path) = self.material_dump_path.take() {
+        if let Some(path) = self.capture.material_dump_path.take() {
             match crate::material_dump::write_material_dump(&self.world, &path) {
                 Ok(rows) => println!("material-dump: wrote {} ({rows} rows)", path.display()),
                 Err(e) => eprintln!("material-dump: failed: {e}"),
             }
         }
-        let (Some(dir), Some(ctx)) = (self.export_mitsuba_dir.take(), self.renderer.as_ref()) else {
+        let (Some(dir), Some(ctx)) = (self.capture.export_mitsuba_dir.take(), self.renderer.as_ref()) else {
             return;
         };
         let outcome = crate::cornell::mitsuba_export::gather_export_scene(
@@ -640,7 +640,7 @@ impl App {
     /// Drive `--linear-capture` (see `linear_capture`). Returns `true` while
     /// the capture still owes frames, like `advance_screenshot_request`.
     fn advance_linear_capture(&mut self) -> bool {
-        let (Some(capture), Some(ctx)) = (self.linear_capture.as_mut(), self.renderer.as_mut())
+        let (Some(capture), Some(ctx)) = (self.capture.linear_capture.as_mut(), self.renderer.as_mut())
         else {
             return false;
         };
@@ -2176,12 +2176,18 @@ mod app_scratch_telemetry_coverage_tests {
     /// it holds, and which field names belong inside it rather than on `App`.
     /// A field matching the predicate on `App` itself would quietly rebuild the
     /// sprawl the group replaced.
-    const APP_STATE_GROUPS: [(&str, &str, fn(&str) -> bool); 3] = [
+    const APP_STATE_GROUPS: [(&str, &str, fn(&str) -> bool); 4] = [
         ("bench", "crate::bench_state::BenchState", |n| {
             n.starts_with("bench_") || n == "pending_soak_cycle"
         }),
         ("groundcover", "crate::groundcover_state::GroundCoverState", |n| {
             n.starts_with("groundcover_") || n == "cover_template_draws"
+        }),
+        ("capture", "crate::capture_state::CaptureState", |n| {
+            n.starts_with("screenshot_")
+                || n.starts_with("export_mitsuba_")
+                || n.ends_with("_override")
+                || matches!(n, "linear_capture" | "material_dump_path")
         }),
         ("ui", "crate::ui_state::UiState", |n| {
             n.starts_with("ui_")

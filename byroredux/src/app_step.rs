@@ -881,7 +881,7 @@ impl App {
         }
         let frame = self.bench.frames_count;
         let pose = self.bench.camera_applied_pose;
-        if let (Some(capture), Some(ctx)) = (self.linear_capture.as_mut(), self.renderer.as_mut()) {
+        if let (Some(capture), Some(ctx)) = (self.capture.linear_capture.as_mut(), self.renderer.as_mut()) {
             if capture.advance_sequence(ctx, frame) {
                 if let Some(pose) = pose {
                     // Full precision: the gates rebuild this frame's view from it.
