@@ -93,7 +93,7 @@ pub(crate) fn scripted_sound_system(world: &World, _dt: f32) {
         return;
     }
     let Some(index) = world
-        .try_resource::<crate::cell_loader::LoadedCellIndex>()
+        .try_resource::<crate::components::LoadedCellIndex>()
         .map(|index| index.0.clone())
     else {
         return;
@@ -182,7 +182,7 @@ mod tests {
         let mut index = EsmIndex::default();
         index.sounds.insert(0x10, record(0x10, true, &["fx\\loop.wav"]));
         index.sounds.insert(0x11, record(0x11, false, &["fx\\a.wav", "fx\\b.wav"]));
-        world.insert_resource(crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(index)));
+        world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(index)));
         let mover = world.spawn();
         world.insert(mover, GlobalTransform::default());
         world.resource_mut::<PendingSoundPlays>().0.extend([

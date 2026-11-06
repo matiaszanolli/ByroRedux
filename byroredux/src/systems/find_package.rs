@@ -263,7 +263,7 @@ fn drive_find_packages(
     scratch: &mut FindScratch,
     behaviors: &[(EntityId, FindPackageBehavior)],
 ) {
-    let Some(index) = world.try_resource::<crate::cell_loader::LoadedCellIndex>().map(|i| i.0.clone()) else {
+    let Some(index) = world.try_resource::<crate::components::LoadedCellIndex>().map(|i| i.0.clone()) else {
         return;
     };
     // Taken out of the scratch for the pass: `search` reads the rest of it while it fills the memo.
@@ -511,7 +511,7 @@ mod tests {
         world.register::<CreatureActor>();
         world.register::<ActorValues>();
         world.register::<Dead>();
-        world.insert_resource(crate::cell_loader::LoadedCellIndex(Arc::new(index())));
+        world.insert_resource(crate::components::LoadedCellIndex(Arc::new(index())));
         world.insert_resource(FormIdPool::new());
         world.insert_resource(ItemInstancePool::new());
         world.insert_resource(crate::cell_loader::reference_state::PersistentReferenceStates::default());

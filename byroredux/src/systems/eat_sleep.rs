@@ -480,13 +480,13 @@ pub(crate) fn resolve_anchor(
 fn cell_is_resident(world: &World, cell_form_id: u32) -> bool {
     // Each guard drops before the next is taken.
     let Some(key) = world
-        .try_resource::<crate::cell_loader::CurrentCellContext>()
+        .try_resource::<crate::components::CurrentCellContext>()
         .map(|context| context.cell_editor_id.to_ascii_lowercase())
     else {
         return false;
     };
     world
-        .try_resource::<crate::cell_loader::LoadedCellIndex>()
+        .try_resource::<crate::components::LoadedCellIndex>()
         .is_some_and(|index| {
             index
                 .0

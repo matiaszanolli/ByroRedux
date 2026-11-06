@@ -237,7 +237,7 @@ mod tests {
 
 // ── Phase 3c: the targeting scan, the queue, and execution ──────────
 
-use crate::cell_loader::LoadedCellIndex;
+use crate::components::LoadedCellIndex;
 use crate::components::VatsTargetPart;
 use crate::interaction::camera_ray;
 use byroredux_core::character::VatsHitInput;
@@ -853,7 +853,7 @@ mod scan_tests {
             byroredux_plugin::esm::reader::GameKind::Fallout3NV,
         ));
         world.insert_resource(byroredux_scripting::actor_value_names::ActorValueNames::from_index(&index));
-        world.insert_resource(crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(
+        world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(
             index,
         )));
 
@@ -989,7 +989,7 @@ mod scan_tests {
                 kind: ItemKind::weapon_stub(22, 12).with_weapon_vats_stats(17.0, 65.0),
             },
         );
-        world.insert_resource(crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(
+        world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(
             index,
         )));
         vats_scan(&world);

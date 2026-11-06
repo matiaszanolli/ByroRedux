@@ -63,7 +63,7 @@ use byroredux_scripting::{
 };
 use rustc_hash::FxHashSet;
 
-use crate::cell_loader::LoadedCellIndex;
+use crate::components::LoadedCellIndex;
 use crate::systems::PlayerEntity;
 
 /// One selectable entry in the NPC's owned-topic list — the DIALs of the
@@ -963,7 +963,7 @@ fn speaker_full_name(world: &World, npc: EntityId) -> String {
         return String::new();
     };
     world
-        .try_resource::<crate::cell_loader::LoadedCellIndex>()
+        .try_resource::<crate::components::LoadedCellIndex>()
         .and_then(|index| index.0.npcs.get(&base).map(|record| record.full_name.clone()))
         .unwrap_or_default()
 }
@@ -1082,7 +1082,7 @@ mod tests {
         world.register::<byroredux_scripting::SceneAliasCandidate>();
         let mut index = EsmIndex::default();
         index.npcs.insert(0x1000, NpcRecord { form_id: 0x1000, full_name: "Eltrys".into(), ..Default::default() });
-        world.insert_resource(crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(index)));
+        world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(index)));
         let known = world.spawn();
         world.insert(
             known,
@@ -1282,7 +1282,7 @@ mod tests {
             ..Default::default()
         }];
         index.dialogues.insert(TOPIC_RUMORS, rumors);
-        world.insert_resource(crate::cell_loader::LoadedCellIndex(Arc::new(index)));
+        world.insert_resource(crate::components::LoadedCellIndex(Arc::new(index)));
         let mut globals = byroredux_scripting::Globals::default();
         globals.set(GLOBAL, 1.0);
         world.insert_resource(globals);
@@ -1317,7 +1317,7 @@ mod tests {
         index
             .dialogues
             .insert(TOPIC_RUMORS, fixture_second_topic());
-        world.insert_resource(crate::cell_loader::LoadedCellIndex(Arc::new(index)));
+        world.insert_resource(crate::components::LoadedCellIndex(Arc::new(index)));
     }
 
     /// Install the quest's alias 1 (forced to `reference`) and start the
@@ -1369,7 +1369,7 @@ mod tests {
     const INFO_GREETING: u32 = 0x30_00C9;
     const INFO_GREETING_BYE: u32 = 0x30_00CA;
 
-    fn greeting_index(with_goodbye: bool) -> crate::cell_loader::LoadedCellIndex {
+    fn greeting_index(with_goodbye: bool) -> crate::components::LoadedCellIndex {
         let bye_info = InfoRecord {
             form_id: INFO_GREETING_BYE,
             response_text: "Go away, stranger.".to_string(),
@@ -1402,7 +1402,7 @@ mod tests {
             },
         );
         let _ = with_goodbye;
-        crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(index))
+        crate::components::LoadedCellIndex(std::sync::Arc::new(index))
     }
 
     /// #5367 Phase G — a patron bound to no running quest still opens a
@@ -2237,7 +2237,7 @@ mod tests {
             ] {
                 index.dialogue_branches.insert(branch.form_id, branch);
             }
-            world.insert_resource(crate::cell_loader::LoadedCellIndex(Arc::new(index)));
+            world.insert_resource(crate::components::LoadedCellIndex(Arc::new(index)));
         }
 
         fn activate(blocking_speaker: u32) -> (World, EntityId) {
@@ -2343,7 +2343,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        world.insert_resource(crate::cell_loader::LoadedCellIndex(Arc::new(index)));
+        world.insert_resource(crate::components::LoadedCellIndex(Arc::new(index)));
     }
 
     /// #5271 — the INFO whose own quest is stopped must not speak just

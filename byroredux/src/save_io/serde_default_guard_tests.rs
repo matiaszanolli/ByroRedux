@@ -1193,7 +1193,12 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // field on a registered resource (when a node last started a quest, for the node-level `HNAM` window).
     // Item quality — v122 is a genuine bump: `ItemInstance::quality` (the Skyrim tempering level) is a new
     // required field on the registered `ItemInstancePool`.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xaf7b_b6fa_607b_402f;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xf8aa_20c0_a161_5567;
+    // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
+    // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
+    // `components/indices.rs`, and each shape string is keyed by its file path.
+    // The normalized declarations are byte-identical before and after, so no
+    // saved column decodes differently; only the path half of the key moved.
     // #6509 — refreshed WITHOUT a major bump: `core/src/ecs/components/collision.rs`
     // re-entered the shape scan (explicit nested-payload list) so `MotionType`,
     // the payload of the saved `ReferenceMotionTypeState`, is fingerprinted

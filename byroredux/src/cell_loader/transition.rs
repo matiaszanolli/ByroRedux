@@ -43,43 +43,7 @@ use crate::asset_provider::{MaterialProvider, TextureProvider};
 use crate::components::DoorTeleport;
 use crate::zup_yup::{position_zup_to_yup, rotation_zup_to_yup_quat};
 
-/// Plugin-load configuration captured at engine boot. The transition
-/// orchestrator re-uses this to call `load_cell_with_masters` for the
-/// destination cell without re-parsing CLI args. Set by the boot path
-/// in `scene::setup_scene` whenever a `--esm`-driven cell load runs;
-/// absent otherwise (loose-NIF / sweet-roll modes).
-///
-/// Fields mirror the CLI arg shape so the trigger site reading this
-/// resource can hand it straight to [`PendingCellTransition`].
-#[derive(Clone, Debug)]
-pub struct LoadedPluginSet {
-    /// Repeatable `--master <path>` args in CLI order.
-    pub masters: Vec<String>,
-    /// The `--esm <path>` value.
-    pub esm_path: String,
-}
 
-impl Resource for LoadedPluginSet {}
-
-/// Identity of the interior cell currently loaded, plus the plugin set it
-/// came from — everything a save needs to reload the same cell.
-///
-/// Set by [`super::load::load_cell_with_masters`] on every interior load;
-/// the M45 save registry serialises it as a resource column so `load`
-/// can re-issue the same `TransitionDestination::Interior` before applying
-/// saved component deltas. Absent in loose-NIF / exterior-streaming modes
-/// (no single interior cell identity).
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
-pub struct CurrentCellContext {
-    /// Cell editor-ID (the `--cell` value / transition destination key).
-    pub cell_editor_id: String,
-    /// Main ESM path (the `--esm` value).
-    pub esm_path: String,
-    /// Master plugin paths in load order (the repeated `--master` values).
-    pub masters: Vec<String>,
-}
-
-impl Resource for CurrentCellContext {}
 
 /// `true` while an interior-cell transition is mid-flight — the window in
 /// which the live `World` has **neither** `CurrentCellContext` nor
@@ -137,41 +101,10 @@ pub struct CurrentCellRoot(pub Option<EntityId>);
 
 impl Resource for CurrentCellRoot {}
 
-/// Identity of the exterior worldspace/grid currently streaming — the
-/// `CurrentCellContext` equivalent for exterior sessions (EX-09/17 item 4).
-///
-/// `WorldStreamingState` (the thing that actually knows worldspace/grid/
-/// radius) lives on `App`, not as a `World` resource — it can't, since the
-/// streaming driver needs to borrow it alongside `VulkanContext` and the
-/// asset providers every frame, and `SaveCommand::execute` only ever sees
-/// `&World`. This resource is the deliberately-thin mirror: just the
-/// identity fields a save/load round-trip needs, kept in sync at every
-/// point that starts, moves, or tears down exterior streaming (see
-/// [`crate::scene::begin_exterior_streaming`], which sets this after every
-/// fresh exterior session, `App::step_streaming`'s grid-crossing update,
-/// and [`crate::streaming_helpers::drain_streaming_state`], which clears
-/// it — the exterior mirror of [`clear_current_interior_identity`] below).
-///
-/// Absent in loose-NIF / interior modes, same posture as `CurrentCellContext`
-/// being absent in exterior mode — the two are mutually exclusive, matching
-/// `WorldStreamingState`/`CurrentCellRoot`'s existing either-or contract.
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
-pub struct CurrentExteriorContext {
-    /// Lowercase worldspace EDID (`ExteriorWorldContext::worldspace_key`).
-    pub worldspace_key: String,
-    /// Main ESM path (the `--esm` value).
-    pub esm_path: String,
-    /// Master plugin paths in load order (the repeated `--master` values).
-    pub masters: Vec<String>,
-    /// Player's current grid cell — `WorldStreamingState::last_player_grid`.
-    pub grid: (i32, i32),
-    /// Load radius the session was streaming at.
-    pub radius_load: i32,
-    /// Unload radius the session was streaming at.
-    pub radius_unload: i32,
-}
+// #6715 — `LoadedPluginSet`, `CurrentCellContext` and `CurrentExteriorContext` live in
+// `components::indices` so `systems` can read them without naming the loader; this path stays.
+pub(crate) use crate::components::{CurrentCellContext, CurrentExteriorContext, LoadedPluginSet};
 
-impl Resource for CurrentExteriorContext {}
 
 /// Clear the exterior identity mirror. Called from
 /// [`crate::streaming_helpers::drain_streaming_state`] — the same choke

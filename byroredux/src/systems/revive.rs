@@ -111,7 +111,7 @@ pub(crate) fn stand_up(world: &World, actor: EntityId) -> Vec<String> {
 /// Give `actor` back its [`AmbientPackageRuntime`] (death removes it): its resolved PKID stack, no winner
 /// yet, a first-tick confirmation due.
 fn rearm_ai(world: &World, actor: EntityId) -> bool {
-    let Some(index) = world.try_resource::<crate::cell_loader::LoadedCellIndex>().map(|index| index.0.clone()) else {
+    let Some(index) = world.try_resource::<crate::components::LoadedCellIndex>().map(|index| index.0.clone()) else {
         return false;
     };
     let Some(base) = world.get::<byroredux_scripting::SceneAliasCandidate>(actor).map(|candidate| candidate.base_form_id) else {

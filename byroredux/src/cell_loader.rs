@@ -89,15 +89,16 @@ pub(crate) mod unload;
 mod water;
 mod work_budget;
 
-pub use index::LoadedCellIndex;
+pub(crate) use index::LoadedCellIndex;
 pub use interior_spawn::SpawnPose;
 pub use transition::{
     log_transition_header, queue_door_transition,
     queue_transition_to_reference, reposition_camera,
-    take_pending_transition, unload_current_interior, CellTransitionInFlight, CurrentCellContext,
-    CurrentCellRoot, CurrentExteriorContext, InteriorCellRequest, LoadedPluginSet,
+    take_pending_transition, unload_current_interior, CellTransitionInFlight,
+    CurrentCellRoot, InteriorCellRequest,
     PendingCellTransitionSlot, TransitionDestination,
 };
+pub(crate) use transition::{CurrentCellContext, CurrentExteriorContext, LoadedPluginSet};
 // #3891 — these three have no call site by name, but each is load-bearing
 // and the compiler cannot see why, so the allow is scoped to exactly them
 // with the reason attached:

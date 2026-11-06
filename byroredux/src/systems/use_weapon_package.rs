@@ -76,7 +76,7 @@ pub(crate) fn use_weapon_package_system(world: &World, _dt: f32) {
         return;
     }
     let Some(index) = world
-        .try_resource::<crate::cell_loader::LoadedCellIndex>()
+        .try_resource::<crate::components::LoadedCellIndex>()
         .map(|index| index.0.clone())
     else {
         return;
@@ -160,7 +160,7 @@ mod tests {
         world.register::<Dead>();
         world.register::<FormIdComponent>();
         world.register::<GlobalTransform>();
-        world.insert_resource(crate::cell_loader::LoadedCellIndex(Arc::new(weapon_index(30))));
+        world.insert_resource(crate::components::LoadedCellIndex(Arc::new(weapon_index(30))));
         let mut pool = FormIdPool::new();
         let fid = pool.intern(FormIdPair {
             plugin: PluginId::from_filename("FalloutNV.esm"),

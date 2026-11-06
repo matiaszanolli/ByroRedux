@@ -223,7 +223,7 @@ fn voice_owner(world: &World, form_id: u32) -> Option<(String, u32)> {
         .try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()?
         .resolve(form_id)?;
     let (masters, esm_path) = {
-        let set = world.try_resource::<crate::cell_loader::LoadedPluginSet>()?;
+        let set = world.try_resource::<crate::components::LoadedPluginSet>()?;
         (set.masters.clone(), set.esm_path.clone())
     };
     masters
@@ -370,7 +370,7 @@ pub(crate) fn play_line_voice(
     // transform-less NPC does no archive work either.
     let position = world.get::<GlobalTransform>(npc).map(|t| t.translation)?;
     let index = world
-        .try_resource::<crate::cell_loader::LoadedCellIndex>()?
+        .try_resource::<crate::components::LoadedCellIndex>()?
         .0
         .clone();
     // NPC → base → VTCK → voice-type EDID (the archive folder).
@@ -776,7 +776,7 @@ mod tests {
         use crate::cell_loader::load_order::{GlobalFormIdResolver, LoadOrder};
         use byroredux_plugin::esm::reader::GlobalSlot;
         let mut world = World::new();
-        world.insert_resource(crate::cell_loader::LoadedPluginSet {
+        world.insert_resource(crate::components::LoadedPluginSet {
             masters: vec!["/data/FalloutNV.esm".into()],
             esm_path: "/data/DeadMoney.esm".into(),
         });
@@ -894,8 +894,8 @@ mod tests {
                 full_name: String::new(),
             },
         );
-        world.insert_resource(crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(index)));
-        world.insert_resource(crate::cell_loader::LoadedPluginSet {
+        world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(index)));
+        world.insert_resource(crate::components::LoadedPluginSet {
             masters: vec!["/data/FalloutNV.esm".into()],
             esm_path: "/data/FalloutNV.esm".into(),
         });

@@ -23,34 +23,9 @@
 //! here threads the orphan rule without forcing plugin to take a
 //! reverse dependency.
 
-use std::sync::Arc;
-
-use byroredux_core::ecs::Resource;
-use byroredux_plugin::esm::records::EsmIndex;
-
-/// World-resource wrapper around the parsed [`EsmIndex`] for the
-/// currently-loaded scene. Set by both cell-load entry points after the
-/// ESM parse completes. The cell table itself is `.0.cells`.
-///
-/// **Why the whole index and not just `EsmCellIndex`** (#3415): the
-/// exterior context already owns an `Arc<EsmIndex>`
-/// (`ExteriorWorldContext::record_index`), and an `Arc` cannot be
-/// projected onto one of its fields — so a resource holding
-/// `Arc<EsmCellIndex>` could only be built there by deep-cloning every
-/// cell / static / TXST map in the load order. Widening the payload lets
-/// the exterior arm hand over a refcount bump, and costs the interior arm
-/// nothing: it owns its `EsmIndex` outright and moves it into the `Arc`.
-/// The exterior path has kept the full index resident for the whole
-/// session since it was written, so this is the profile that was already
-/// proven on the same games, applied to both arms.
-///
-/// Read-only after insertion — the parsed index is treated as
-/// immutable scene metadata; subsequent cell loads (e.g. through an
-/// XTEL portal) replace the resource wholesale rather than mutating in
-/// place, so the borrow patterns stay simple.
-pub struct LoadedCellIndex(pub Arc<EsmIndex>);
-
-impl Resource for LoadedCellIndex {}
+// #6715 — the resource lives in `components::indices` so `systems` can read the cell index
+// without naming the loader; the loader keeps this path.
+pub(crate) use crate::components::LoadedCellIndex;
 
 #[cfg(test)]
 mod boot_arm_coverage_tests {

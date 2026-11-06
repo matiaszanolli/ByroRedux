@@ -177,7 +177,7 @@ pub(crate) fn projectile_launch_system(world: &World, _dt: f32) {
         return;
     }
     let Some(index) = world
-        .try_resource::<crate::cell_loader::LoadedCellIndex>()
+        .try_resource::<crate::components::LoadedCellIndex>()
         .map(|index| index.0.clone())
     else {
         return;

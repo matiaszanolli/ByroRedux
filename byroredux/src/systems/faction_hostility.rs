@@ -371,7 +371,7 @@ fn ambush_gates(world: &World) -> std::collections::HashMap<EntityId, AmbushGate
         return Default::default();
     };
     let player_override = world
-        .try_resource::<crate::cell_loader::LoadedCellIndex>()
+        .try_resource::<crate::components::LoadedCellIndex>()
         .and_then(|index| index.0.game_setting_float("fAmbushOverRideRadiusforPlayerDetection"))
         .filter(|radius| radius.is_finite() && *radius > 0.0)
         .unwrap_or(AMBUSH_PLAYER_OVERRIDE_RADIUS);

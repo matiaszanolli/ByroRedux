@@ -55,7 +55,7 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
         Some(runs) if !runs.is_empty() => runs.iter().map(|(actor, run)| (actor, *run)).collect(),
         _ => return,
     };
-    let Some(index) = world.try_resource::<crate::cell_loader::LoadedCellIndex>().map(|index| index.0.clone()) else {
+    let Some(index) = world.try_resource::<crate::components::LoadedCellIndex>().map(|index| index.0.clone()) else {
         return;
     };
     // Unconscious / bleeding out / knocked down or fleeing / `SetActorsAI 0`: collected before the loop
@@ -177,7 +177,7 @@ pub(crate) fn reset_inventory_system(world: &World, _dt: f32) {
     if asked.is_empty() {
         return;
     }
-    let Some(index) = world.try_resource::<crate::cell_loader::LoadedCellIndex>().map(|index| index.0.clone()) else {
+    let Some(index) = world.try_resource::<crate::components::LoadedCellIndex>().map(|index| index.0.clone()) else {
         return;
     };
     for entity in asked {
@@ -480,7 +480,7 @@ mod tests {
                 kind: ItemKind::weapon_stub(3, 30).with_weapon_speed(1.0),
             },
         );
-        world.insert_resource(crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(index)));
+        world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(index)));
         world.insert_resource(FormIdPool::new());
         let place = |world: &mut World, local: u32, at: Vec3| {
             let id = world.resource_mut::<FormIdPool>().intern(FormIdPair {

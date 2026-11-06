@@ -3,11 +3,13 @@
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::Resource;
 use byroredux_core::string::FixedString;
+use byroredux_plugin::esm::records::EsmIndex;
 // #5173 — the per-lane ground-cover arrays below size from the same splat
 // constant the terrain tile + shader loops size from, so a lane bump cannot
 // leave this component silently 8-wide while the rest of the chain moves.
 use rustc_hash::FxHashMap;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Cached name→entity mapping for the animation system.
 ///
@@ -102,3 +104,101 @@ impl NameIndex {
         }
     }
 }
+
+/// World-resource wrapper around the parsed [`EsmIndex`] for the
+/// currently-loaded scene. Set by both cell-load entry points after the
+/// ESM parse completes. The cell table itself is `.0.cells`.
+///
+/// **Why the whole index and not just `EsmCellIndex`** (#3415): the
+/// exterior context already owns an `Arc<EsmIndex>`
+/// (`ExteriorWorldContext::record_index`), and an `Arc` cannot be
+/// projected onto one of its fields — so a resource holding
+/// `Arc<EsmCellIndex>` could only be built there by deep-cloning every
+/// cell / static / TXST map in the load order. Widening the payload lets
+/// the exterior arm hand over a refcount bump, and costs the interior arm
+/// nothing: it owns its `EsmIndex` outright and moves it into the `Arc`.
+/// The exterior path has kept the full index resident for the whole
+/// session since it was written, so this is the profile that was already
+/// proven on the same games, applied to both arms.
+///
+/// Read-only after insertion — the parsed index is treated as
+/// immutable scene metadata; subsequent cell loads (e.g. through an
+/// XTEL portal) replace the resource wholesale rather than mutating in
+/// place, so the borrow patterns stay simple.
+pub struct LoadedCellIndex(pub Arc<EsmIndex>);
+
+impl Resource for LoadedCellIndex {}
+
+/// Plugin-load configuration captured at engine boot. The transition
+/// orchestrator re-uses this to call `load_cell_with_masters` for the
+/// destination cell without re-parsing CLI args. Set by the boot path
+/// in `scene::setup_scene` whenever a `--esm`-driven cell load runs;
+/// absent otherwise (loose-NIF / sweet-roll modes).
+///
+/// Fields mirror the CLI arg shape so the trigger site reading this
+/// resource can hand it straight to `PendingCellTransition`.
+#[derive(Clone, Debug)]
+pub struct LoadedPluginSet {
+    /// Repeatable `--master <path>` args in CLI order.
+    pub masters: Vec<String>,
+    /// The `--esm <path>` value.
+    pub esm_path: String,
+}
+
+impl Resource for LoadedPluginSet {}
+
+/// Identity of the interior cell currently loaded, plus the plugin set it
+/// came from — everything a save needs to reload the same cell.
+///
+/// Set by `load_cell_with_masters` on every interior load;
+/// the M45 save registry serialises it as a resource column so `load`
+/// can re-issue the same `TransitionDestination::Interior` before applying
+/// saved component deltas. Absent in loose-NIF / exterior-streaming modes
+/// (no single interior cell identity).
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct CurrentCellContext {
+    /// Cell editor-ID (the `--cell` value / transition destination key).
+    pub cell_editor_id: String,
+    /// Main ESM path (the `--esm` value).
+    pub esm_path: String,
+    /// Master plugin paths in load order (the repeated `--master` values).
+    pub masters: Vec<String>,
+}
+
+impl Resource for CurrentCellContext {}
+
+/// Identity of the exterior worldspace/grid currently streaming — the
+/// `CurrentCellContext` equivalent for exterior sessions (EX-09/17 item 4).
+///
+/// `WorldStreamingState` (the thing that actually knows worldspace/grid/
+/// radius) lives on `App`, not as a `World` resource — it can't, since the
+/// streaming driver needs to borrow it alongside `VulkanContext` and the
+/// asset providers every frame, and `SaveCommand::execute` only ever sees
+/// `&World`. This resource is the deliberately-thin mirror: just the
+/// identity fields a save/load round-trip needs, kept in sync at every
+/// point that starts, moves, or tears down exterior streaming (see
+/// `scene::begin_exterior_streaming`, which sets this after every
+/// fresh exterior session, `App::step_streaming`'s grid-crossing update,
+/// and `streaming_helpers::drain_streaming_state`, which clears
+/// it — the exterior mirror of `clear_current_interior_identity` below).
+///
+/// Absent in loose-NIF / interior modes, same posture as `CurrentCellContext`
+/// being absent in exterior mode — the two are mutually exclusive, matching
+/// `WorldStreamingState`/`CurrentCellRoot`'s existing either-or contract.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct CurrentExteriorContext {
+    /// Lowercase worldspace EDID (`ExteriorWorldContext::worldspace_key`).
+    pub worldspace_key: String,
+    /// Main ESM path (the `--esm` value).
+    pub esm_path: String,
+    /// Master plugin paths in load order (the repeated `--master` values).
+    pub masters: Vec<String>,
+    /// Player's current grid cell — `WorldStreamingState::last_player_grid`.
+    pub grid: (i32, i32),
+    /// Load radius the session was streaming at.
+    pub radius_load: i32,
+    /// Unload radius the session was streaming at.
+    pub radius_unload: i32,
+}
+
+impl Resource for CurrentExteriorContext {}

@@ -16,7 +16,7 @@
 //! unchanged. The resolved LCTN rides on the event as `L2` (new) with
 //! the previous fire's as `L1` (old).
 
-use crate::cell_loader::{CurrentCellContext, CurrentExteriorContext, LoadedCellIndex};
+use crate::components::{CurrentCellContext, CurrentExteriorContext, LoadedCellIndex};
 use crate::systems::character::PlayerEntity;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
