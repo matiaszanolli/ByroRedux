@@ -116,6 +116,9 @@ pub(crate) use crate::components::{CurrentCellContext, CurrentExteriorContext, L
 /// between a teardown and its following rebuild — same as `CurrentCellRoot`
 /// briefly reading `None` mid-transition today.
 pub(crate) fn clear_current_exterior_identity(world: &mut byroredux_core::ecs::World) {
+    // #6717 — stays a call into `systems`: ending the scripted music layer is runtime behaviour
+    // owned by `script_requests` (it holds the fade constant) and must run at this cell-leave
+    // choke point (#6226); there is no translation content to move down.
     crate::systems::script_requests::stop_script_music(world);
     world.remove_resource::<CurrentExteriorContext>();
 }
@@ -356,7 +359,8 @@ pub fn unload_current_interior(
     world: &mut byroredux_core::ecs::World,
     ctx: &mut byroredux_renderer::VulkanContext,
 ) {
-    // #6226 — a scripted `PlayMusic` track belongs to the cell it was played in.
+    // #6226 — a scripted `PlayMusic` track belongs to the cell it was played in. (Stays a call into
+    // `systems` for the reason given at `clear_current_exterior_identity`, #6717.)
     crate::systems::script_requests::stop_script_music(world);
     let prev_root = world.try_resource::<CurrentCellRoot>().and_then(|r| r.0);
     if let Some(prev) = prev_root {
@@ -537,6 +541,9 @@ pub(crate) fn finish_interior_cell_load(
     );
     world.insert_resource(result.region_ambient);
     reposition_camera(world, dest_pos, dest_rot);
+    // #6717 — stays a call into `systems`: it is player-physics runtime (capsule probe, body and
+    // camera placement) that shares `scene::probe_walkable_floor_near` with the cold-start ladder,
+    // so the door-arrival ladder cannot drift from the boot ladder.
     crate::systems::ground_character_body_at(world, dest_pos);
     dest_pos
 }

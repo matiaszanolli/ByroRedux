@@ -54,7 +54,7 @@ fn cinematic_retained_entities(world: &World) -> HashSet<EntityId> {
 /// when non-empty.
 fn player_owned_entities(world: &World) -> HashSet<EntityId> {
     let mut protected = HashSet::new();
-    if let Some(player) = world.try_resource::<crate::systems::PlayerEntity>() {
+    if let Some(player) = world.try_resource::<crate::components::PlayerEntity>() {
         if let Some(entity) = player.0 {
             protected.insert(entity);
         }
@@ -1313,7 +1313,7 @@ mod cinematic_retention_tests {
         let cart = world.spawn();
         let player = world.spawn();
         world.insert(cart, Children(vec![player]));
-        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert_resource(crate::components::PlayerEntity(Some(player)));
         world.insert_resource(CinematicReAdoption { pending: vec![cart] });
 
         assert_eq!(take_pending_readoption_victims(&mut world), vec![cart]);
@@ -1595,7 +1595,7 @@ mod victim_drain_tests {
     #[test]
     fn player_owned_entities_covers_the_rig_and_its_subtree() {
         use byroredux_core::ecs::components::{ActiveCamera, Children};
-        use crate::systems::PlayerEntity;
+        use crate::components::PlayerEntity;
         use crate::player_body::PlayerBodyRootEntity;
 
         let bare = World::new();

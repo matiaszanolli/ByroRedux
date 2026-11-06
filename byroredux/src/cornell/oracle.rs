@@ -622,7 +622,7 @@ pub(crate) fn setup_cornell_oracle_scene(
         // Exercise the actual game boundary: FO4's NonShadow Spotlight is
         // a cone with FULL material-aware RT visibility, despite its name.
         let geometry = if spot {
-            crate::systems::translate_light(
+            crate::light_translate::translate_light(
                 &byroredux_plugin::esm::cell::LightData {
                     radius: 8.0,
                     color: [1.0; 3],
@@ -639,7 +639,7 @@ pub(crate) fn setup_cornell_oracle_scene(
                 Quat::from_rotation_arc(Vec3::X, -Vec3::from_array(ORACLE_LIGHT_DIRECTION)),
             )
         } else {
-            crate::systems::LightGeometry::default()
+            crate::light_translate::LightGeometry::default()
         };
         let mut light = LightSource::from_legacy_world_units(
             8.0,

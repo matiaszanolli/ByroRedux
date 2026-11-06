@@ -223,7 +223,7 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
     if world.try_resource::<PersistentReferenceStates>().is_none() {
         return;
     }
-    let player = crate::systems::PlayerEntity::get(world);
+    let player = crate::components::PlayerEntity::get(world);
     // #4616 — one guard per component per call, not a TypeId lookup +
     // tracked read per probe per victim. #4982 — and only ONE guard live at
     // a time: each probe is its own pass over the surviving victims. Holding

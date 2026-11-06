@@ -840,6 +840,8 @@ fn advance_actor_synth(
                 if synth_idx == 0 {
                     stamp_quest_reference(world, root, placed_ref, load_order);
                     // M43 — the Story Manager's `OAAT` (Actor Attach).
+                    // #6717 — stays a call into `systems`: it raises a Story Manager event against the
+                    // live `SmTree`, runtime behaviour owned by `story_events`, not translation.
                     crate::systems::story_events::raise_actor_attach_story_event(world, root);
                     // #4814 — an authored corpse ("Starts Dead"):
                     // dead from its first frame, through the same

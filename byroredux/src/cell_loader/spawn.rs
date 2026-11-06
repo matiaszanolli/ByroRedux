@@ -1452,6 +1452,9 @@ fn spawn_particle_emitters(
         // through the single shared boundary. Parallel to the loose-NIF site
         // in scene/nif_loader.rs — both call the same helper so the two load
         // paths can't diverge.
+        // #6717 — stays a call into `systems`: the overlay boundary shares `apply_emitter_params`,
+        // the force-field conversion and its in-file scan/tests with `systems::particle`, and the
+        // loose-NIF loader calls it from the same place. Moving the cluster is its own change.
         crate::systems::apply_emitter_overlays(
             &mut preset,
             &em.color_curve,

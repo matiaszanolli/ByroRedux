@@ -504,6 +504,9 @@ pub(crate) fn restore_actor_snapshot(
                     let Some(furn_g) = gq.get(furniture) else {
                         return restored;
                     };
+                    // #6717 — stays a call into `systems`: a restored seated actor must land on
+                    // exactly the transform the live sandbox/eat-sleep systems give it, so the
+                    // restore reuses their one implementation instead of a second copy.
                     crate::systems::sandbox::seat_world_transform(furn_g, marker)
                 };
                 let (sit_handle, hold_time) = world

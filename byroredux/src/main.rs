@@ -49,6 +49,7 @@ mod inventory;
 mod notifications;
 mod objectives;
 mod hud;
+mod light_translate;
 mod linear_capture;
 mod list_cells;
 mod material_dump;

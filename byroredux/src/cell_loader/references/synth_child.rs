@@ -283,21 +283,21 @@ fn attach_esm_light(
     ref_pos: Vec3,
     ref_rot: Quat,
 ) {
-    let geometry = crate::systems::translate_light(ld, game, ref_rot);
+    let geometry = crate::light_translate::translate_light(ld, game, ref_rot);
     world.insert(
         entity,
         LightSource::from_legacy_world_units(
             light_radius_or_default(ld.radius),
             ld.color,
             ld.flags,
-            crate::systems::canonical_light_falloff_exponent(game, ld.falloff_exponent),
+            crate::light_translate::canonical_light_falloff_exponent(game, ld.falloff_exponent),
             geometry.kind,
             geometry.direction,
             geometry.outer_angle,
-            crate::systems::canonical_light_shadow_flags(game, ld.flags, ld.starfield_light_type),
+            crate::light_translate::canonical_light_shadow_flags(game, ld.flags, ld.starfield_light_type),
         ),
     );
-    let animation_flags = crate::systems::canonical_light_animation_flags(game, ld.flags);
+    let animation_flags = crate::light_translate::canonical_light_animation_flags(game, ld.flags);
     attach_light_flicker_if_needed(world, entity, ld, ref_pos, animation_flags);
 }
 
@@ -807,7 +807,7 @@ pub(super) fn spawn_synth_child(
     let light_geometry = stat
         .light_data
         .as_ref()
-        .map(|ld| crate::systems::translate_light(ld, game, ref_rot))
+        .map(|ld| crate::light_translate::translate_light(ld, game, ref_rot))
         .unwrap_or_default();
     let (placement_root, count, spawn_stats) = spawn_placed_instances(
         world,
@@ -820,11 +820,11 @@ pub(super) fn spawn_synth_child(
         stat.light_data.as_ref(),
         stat.light_data
             .as_ref()
-            .map(|ld| crate::systems::canonical_light_animation_flags(game, ld.flags))
+            .map(|ld| crate::light_translate::canonical_light_animation_flags(game, ld.flags))
             .unwrap_or(0),
         stat.light_data
             .as_ref()
-            .map(|ld| crate::systems::canonical_light_shadow_flags(game, ld.flags, ld.starfield_light_type))
+            .map(|ld| crate::light_translate::canonical_light_shadow_flags(game, ld.flags, ld.starfield_light_type))
             .unwrap_or(0),
         light_geometry.kind,
         light_geometry.direction,
@@ -836,7 +836,7 @@ pub(super) fn spawn_synth_child(
         // as k=1.0 instead of k=2.0.
         stat.light_data
             .as_ref()
-            .map(|ld| crate::systems::canonical_light_falloff_exponent(game, ld.falloff_exponent))
+            .map(|ld| crate::light_translate::canonical_light_falloff_exponent(game, ld.falloff_exponent))
             .unwrap_or(1.0),
         refr_overlay.as_ref(),
         clip_handle,

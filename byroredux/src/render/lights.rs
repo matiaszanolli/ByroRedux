@@ -758,7 +758,7 @@ mod gi_light_priority_tests {
             for (flags, light_type) in [(0, 0), (0x400, 0), (0x800, 0), (0x1000, 0), (0, 1), (0, 2)]
             {
                 let projection =
-                    crate::systems::canonical_light_shadow_flags(game, flags, light_type);
+                    crate::light_translate::canonical_light_shadow_flags(game, flags, light_type);
                 let mut world = World::new();
                 spawn_point_light_with_flags(&mut world, [0.0; 3], [1.0; 3], 256.0, projection);
                 let mut lights = Vec::new();

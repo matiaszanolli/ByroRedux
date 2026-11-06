@@ -714,7 +714,7 @@ fn spawn_nif_lights_consumes_the_canonical_ligh_falloff_lane() {
         (GameKind::Skyrim, 1.0),
     ] {
         let mut world = World::new();
-        let falloff = crate::systems::canonical_light_falloff_exponent(game, ligh.falloff_exponent);
+        let falloff = crate::light_translate::canonical_light_falloff_exponent(game, ligh.falloff_exponent);
         spawn_nif_lights(
             &mut world,
             &lamp(),

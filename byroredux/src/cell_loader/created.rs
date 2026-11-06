@@ -67,7 +67,7 @@ pub(crate) fn placement_at_position(world: &World, position_zup: [f32; 3]) -> Op
 
 /// The player's cell and position, for a reference created at the player.
 fn player_placement(world: &World) -> Option<CreatedPlacement> {
-    let player = crate::systems::PlayerEntity::get(world)?;
+    let player = crate::components::PlayerEntity::get(world)?;
     let position_zup = byroredux_core::math::coord::yup_to_zup_pos(
         world.get::<GlobalTransform>(player)?.translation.to_array(),
     );
