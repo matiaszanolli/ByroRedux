@@ -100,30 +100,3 @@ pub(crate) struct BenchState {
     /// rendered frame of a finite bench run (see `bench_capture`).
     pub(crate) capture: Option<crate::bench_capture::FrameSequenceCapture>,
 }
-
-#[cfg(test)]
-mod tests {
-    /// #6693 — bench state has one home. A new `bench_*` field on `App` would
-    /// quietly rebuild the 22-field sprawl this struct replaced.
-    #[test]
-    fn app_declares_no_bench_fields_of_its_own() {
-        let main_src = include_str!("main.rs");
-        let header = "\nstruct App {";
-        let start = main_src.find(header).expect("`struct App` not found") + header.len();
-        let body = &main_src[start..];
-        let body = &body[..body.find("\n}\n").expect("`struct App` is never closed")];
-        assert!(
-            body.contains("\n    bench: crate::bench_state::BenchState,"),
-            "App must hold its bench state in the `bench` field"
-        );
-        let strays: Vec<&str> = body
-            .lines()
-            .map(str::trim_start)
-            .filter(|l| !l.starts_with("//") && l.starts_with("bench_"))
-            .collect();
-        assert!(
-            strays.is_empty(),
-            "bench fields belong on BenchState, not App: {strays:?}"
-        );
-    }
-}

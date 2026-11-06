@@ -68,34 +68,3 @@ pub(crate) struct GroundCoverState {
     /// failure is reported once rather than every frame.
     pub(crate) bench_started: bool,
 }
-
-#[cfg(test)]
-mod tests {
-    /// #6694 — ground-cover state has one home. A new `groundcover_*` field
-    /// (or a stray `cover_template_draws`) on `App` would rebuild the sprawl
-    /// this struct replaced.
-    #[test]
-    fn app_declares_no_ground_cover_fields_of_its_own() {
-        let main_src = include_str!("main.rs");
-        let header = "\nstruct App {";
-        let start = main_src.find(header).expect("`struct App` not found") + header.len();
-        let body = &main_src[start..];
-        let body = &body[..body.find("\n}\n").expect("`struct App` is never closed")];
-        assert!(
-            body.contains("\n    groundcover: crate::groundcover_state::GroundCoverState,"),
-            "App must hold its ground-cover state in the `groundcover` field"
-        );
-        let strays: Vec<&str> = body
-            .lines()
-            .map(str::trim_start)
-            .filter(|l| {
-                !l.starts_with("//")
-                    && (l.starts_with("groundcover_") || l.starts_with("cover_template_draws"))
-            })
-            .collect();
-        assert!(
-            strays.is_empty(),
-            "ground-cover fields belong on GroundCoverState, not App: {strays:?}"
-        );
-    }
-}

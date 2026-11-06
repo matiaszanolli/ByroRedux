@@ -73,6 +73,7 @@ mod systems;
 mod terrain_height;
 mod texture_streamer;
 mod ui_input;
+mod ui_state;
 #[cfg(test)]
 mod workspace_hygiene_tests;
 
@@ -545,51 +546,8 @@ struct App {
     world: World,
     scheduler: Scheduler,
     last_frame: Instant,
-    ui_manager: Option<UiManager>,
-    /// MenuXml HUD (M48.4 Oblivion / M48.5 FO3-FNV legacy-UI track).
-    /// Mutually exclusive with the Scaleform overlay in practice:
-    /// `--hud` is the pre-Skyrim route, `--menu` the Skyrim+/FO4 one,
-    /// and the frame tick prefers whichever is live.
-    hud: Option<hud::MenuXmlHud>,
-    /// Scaleform HUD driver (M48.6 Skyrim `--hud` route). Owns the
-    /// response handlers + push cadence for a `hudmenu.swf` launched
-    /// into `ui_manager`; `None` unless `--hud` matched a Skyrim
-    /// install.
-    scaleform_hud: Option<scaleform_hud::ScaleformHudDriver>,
-    /// Window-system state used to translate events into Scaleform space.
-    ui_input_state: ui_input::UiInputState,
-    /// Texture handle for the UI overlay (registered in the texture registry).
-    ui_texture_handle: Option<u32>,
-    /// `(menu, host method)` pairs already reported by the per-frame Scaleform
-    /// drain, so repeated calls report once without suppressing the same
-    /// missing handler when a second menu needs it (#2714 / #3155). Bounded by
-    /// `byroredux_ui::MAX_DISTINCT_HOST_METHOD_NAMES` (#2964) — this mirrors
-    /// the bridge's own movie-keyed diagnostic sets, so it needs the same
-    /// cap for the same reason: an unbounded-by-construction set keyed by a
-    /// string untrusted ActionScript content chooses.
-    ui_reported_host_methods: std::collections::HashSet<(String, String)>,
-    /// One-shot latch for the `ui_reported_host_methods` cap warning.
-    ui_reported_host_methods_capped: bool,
-    /// Last `UiManager::dropped_host_calls()` reading the per-frame Scaleform
-    /// drain observed (#2969). `drain_calls`' contract is that a full batch
-    /// must be read together with the drop counter — the batch may not be
-    /// contiguous — and nothing outside `crates/ui` read it. Latched rather
-    /// than compared against zero so the warning fires on each *increase*,
-    /// not every frame after the first eviction; a decrease means a new menu
-    /// brought a fresh bridge, not that calls were un-dropped.
-    ///
-    /// #3772 — this latches a bare number, not the *identity* of the bridge
-    /// that produced it, so a swap landing on a frame where the new bridge
-    /// has already evicted N < the old latch reads as "un-dropped" (a
-    /// decrease) instead of "different menu" — the new menu's first N drops
-    /// are silently absorbed. [`Self::ui_dropped_host_calls_menu`] pairs the
-    /// latch with the menu name that produced it so a swap is an *explicit*
-    /// reset (`app_frame.rs`), not an inferred one.
-    ui_dropped_host_calls: u64,
-    /// The menu name [`Self::ui_dropped_host_calls`] was last latched
-    /// against. `None` before the first Scaleform drain. See
-    /// `ui_dropped_host_calls`'s doc (#3772).
-    ui_dropped_host_calls_menu: Option<String>,
+    /// UI overlay and HUD state (#6695). See [`crate::ui_state::UiState`].
+    ui: crate::ui_state::UiState,
     /// Reusable per-frame draw command buffer (cleared each frame, allocation retained).
     draw_commands: Vec<DrawCommand>,
     /// EXAL ground-cover scratch, caches and switches (#6694). See
@@ -747,9 +705,6 @@ struct App {
     /// from `&self.world`, which `DebugUiState::run`'s closure
     /// can't reach.
     debug_ui_refresh_entities: bool,
-    /// #4612 — the always-on HUD's objective list, rebuilt only when quest
-    /// state changes; lent to each frame's `PanelSnapshot`.
-    objective_hud_cache: objectives::ObjectiveHudCache,
     /// #1584 — persistent scratch sets for the per-frame `meshes_in_use` /
     /// `textures_in_use` dedup walk in `about_to_wait`. Hoisted off the hot
     /// path so it `clear()`+reuses them instead of allocating two fresh
@@ -1141,15 +1096,6 @@ impl App {
             world,
             scheduler,
             last_frame: Instant::now(),
-            ui_manager: None,
-            hud: None,
-            scaleform_hud: None,
-            ui_input_state: ui_input::UiInputState::default(),
-            ui_texture_handle: None,
-            ui_reported_host_methods: std::collections::HashSet::new(),
-            ui_reported_host_methods_capped: false,
-            ui_dropped_host_calls: 0,
-            ui_dropped_host_calls_menu: None,
             draw_commands: Vec::new(),
             frame_work_deadline: None,
             water_commands: Vec::new(),
@@ -1173,6 +1119,7 @@ impl App {
             material_table: byroredux_renderer::MaterialTable::new(),
             bench: Default::default(),
             groundcover: Default::default(),
+            ui: Default::default(),
             tlas_policy: Default::default(),
             texture_streamer: None,
             screenshot_path: None,
@@ -1197,7 +1144,6 @@ impl App {
             debug_ui: None,
             pending_player_messages,
             debug_ui_refresh_entities: false,
-            objective_hud_cache: objectives::ObjectiveHudCache::default(),
             in_use_mesh_scratch: std::collections::HashSet::new(),
             in_use_tex_scratch: std::collections::HashSet::new(),
             last_redraw_end: None,
@@ -1223,10 +1169,10 @@ impl App {
         scene::setup_scene(
             &mut self.world,
             ctx,
-            &mut self.ui_manager,
-            &mut self.ui_texture_handle,
-            &mut self.hud,
-            &mut self.scaleform_hud,
+            &mut self.ui.manager,
+            &mut self.ui.texture_handle,
+            &mut self.ui.hud,
+            &mut self.ui.scaleform_hud,
             self.camera_pos_override,
             self.camera_forward_override,
             &mut self.streaming,
@@ -1241,7 +1187,7 @@ impl App {
         // writer and it sits behind the focus gate, so without this a modifier
         // pressed or released while the menu is unfocused is never observed.
         // Cache only: nothing is dispatched to the menu from here.
-        ui_input::cache_window_state(event, &mut self.ui_input_state);
+        ui_input::cache_window_state(event, &mut self.ui.input_state);
 
         if ui_input::is_debug_overlay_key(event) {
             return false;
@@ -1252,7 +1198,7 @@ impl App {
             .as_ref()
             .map(Window::inner_size)
             .unwrap_or_default();
-        let Some(ui_manager) = self.ui_manager.as_mut() else {
+        let Some(ui_manager) = self.ui.manager.as_mut() else {
             return false;
         };
         if !ui_manager.has_input_focus() {
@@ -1262,7 +1208,7 @@ impl App {
         let ui_size = (ui_manager.width, ui_manager.height);
         let dispatch = ui_input::dispatch_window_event(
             event,
-            &mut self.ui_input_state,
+            &mut self.ui.input_state,
             window_size,
             ui_size,
             |event| {
@@ -1300,7 +1246,7 @@ impl App {
         if self.loading_screen.active()
             || !self.window.as_ref().is_some_and(Window::has_focus)
             || self
-                .ui_manager
+                .ui.manager
                 .as_ref()
                 .is_some_and(UiManager::has_input_focus)
         {

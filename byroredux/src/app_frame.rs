@@ -348,7 +348,7 @@ impl App {
                     byroredux_debug_ui::SHOW_OBJECTIVES_SETTING_ID,
                     true,
                 ),
-                objectives: self.objective_hud_cache.lend(&self.world),
+                objectives: self.ui.objective_hud_cache.lend(&self.world),
                 ..Default::default()
             }
         };
@@ -368,7 +368,7 @@ impl App {
         if bench_window_open {
             snapshot.show_crosshair = false;
             snapshot.vitals = None;
-            self.objective_hud_cache
+            self.ui.objective_hud_cache
                 .give_back(snapshot.objectives.take());
         }
         self.debug_ui_refresh_entities = false;
@@ -377,7 +377,7 @@ impl App {
             snapshot.show_crosshair = false;
             snapshot.interaction_prompt = None;
             snapshot.vitals = None;
-            self.objective_hud_cache
+            self.ui.objective_hud_cache
                 .give_back(snapshot.objectives.take());
         }
 
@@ -404,7 +404,7 @@ impl App {
             } else {
                 (None, byroredux_debug_ui::PanelOutputs::default())
             };
-        self.objective_hud_cache
+        self.ui.objective_hud_cache
             .give_back(snapshot.objectives.take());
 
         let (resume_game, quit_game) = apply_debug_ui_outputs(
@@ -620,7 +620,7 @@ impl App {
             let ui_t0 = Instant::now();
             let ui_tex = if self.loading_screen.active() {
                 self.loading_screen.texture()
-            } else if self.hud.is_some() {
+            } else if self.ui.hud.is_some() {
                 // Read the control resource before mutably borrowing the
                 // HUD renderer (disjoint-field borrows, but the resource
                 // read is cheap and keeps the tick function parameter-clean).
@@ -629,21 +629,21 @@ impl App {
                     .try_resource::<crate::hud::HudControl>()
                     .map(|control| *control)
                     .unwrap_or_default();
-                let hud = self.hud.as_mut().expect("is_some checked above");
+                let hud = self.ui.hud.as_mut().expect("is_some checked above");
                 tick_hud_overlay(hud, &self.world, ctx, frame.cam_forward, &control)
             } else {
                 tick_ui_overlay(
                     &self.world,
                     ctx,
-                    &mut self.ui_manager,
+                    &mut self.ui.manager,
                     frame.cam_forward,
-                    self.scaleform_hud.as_mut(),
+                    self.ui.scaleform_hud.as_mut(),
                     UiOverlayState {
-                        texture_handle: self.ui_texture_handle,
-                        dropped_host_calls: &mut self.ui_dropped_host_calls,
-                        dropped_host_calls_menu: &mut self.ui_dropped_host_calls_menu,
-                        reported_host_methods: &mut self.ui_reported_host_methods,
-                        reported_host_methods_capped: &mut self.ui_reported_host_methods_capped,
+                        texture_handle: self.ui.texture_handle,
+                        dropped_host_calls: &mut self.ui.dropped_host_calls,
+                        dropped_host_calls_menu: &mut self.ui.dropped_host_calls_menu,
+                        reported_host_methods: &mut self.ui.reported_host_methods,
+                        reported_host_methods_capped: &mut self.ui.reported_host_methods_capped,
                     },
                 )
             };

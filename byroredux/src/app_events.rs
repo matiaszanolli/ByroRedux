@@ -1441,7 +1441,7 @@ impl ApplicationHandler for App {
         }
         if let DeviceEvent::MouseMotion { delta } = event {
             let ui_focused = self
-                .ui_manager
+                .ui.manager
                 .as_ref()
                 .is_some_and(UiManager::has_input_focus);
             let native_ui_focused = self
@@ -1498,7 +1498,7 @@ impl ApplicationHandler for App {
         // Keep the engine-owned UI compatibility snapshot current before the
         // scheduler runs provider callbacks. The manager is main-thread-only,
         // so this small projection is the bridge into the sandbox host.
-        if let Some(ui) = self.ui_manager.as_ref() {
+        if let Some(ui) = self.ui.manager.as_ref() {
             crate::extensions::extension_ui_menu_sync(
                 &self.world,
                 Some(ui.menu_name.as_str()),
@@ -1518,7 +1518,7 @@ impl ApplicationHandler for App {
         if self.loading_screen.active()
             || native_ui_focused
             || self
-                .ui_manager
+                .ui.manager
                 .as_ref()
                 .is_some_and(UiManager::has_input_focus)
         {
@@ -2030,7 +2030,7 @@ mod app_scratch_telemetry_coverage_tests {
     /// Container fields of `App` that are deliberately not per-frame scratch.
     const NOT_SCRATCH: [(&str, &str); 3] = [
         (
-            "ui_reported_host_methods",
+            "ui.reported_host_methods",
             "a dedup set capped by MAX_DISTINCT_HOST_METHOD_NAMES (#2964), not a per-frame buffer",
         ),
         (
@@ -2048,13 +2048,14 @@ mod app_scratch_telemetry_coverage_tests {
     /// `<App field>.<struct field>`. A container inside a group is covered the
     /// same way a top-level one is: a row, or a `NOT_SCRATCH` entry under the
     /// dotted name (`bench.cpu_frame_ms`).
-    const SCRATCH_GROUPS: [(&str, &str); 3] = [
+    const SCRATCH_GROUPS: [(&str, &str); 4] = [
         (
             "GroundCoverCollectScratch",
             include_str!("render/groundcover.rs"),
         ),
         ("BenchState", include_str!("bench_state.rs")),
         ("GroundCoverState", include_str!("groundcover_state.rs")),
+        ("UiState", include_str!("ui_state.rs")),
     ];
 
     const CONTAINERS: [&str; 6] = [
@@ -2171,6 +2172,40 @@ mod app_scratch_telemetry_coverage_tests {
         }
     }
 
+    /// `App` state groups (#6680): the `App` field that holds each one, the type
+    /// it holds, and which field names belong inside it rather than on `App`.
+    /// A field matching the predicate on `App` itself would quietly rebuild the
+    /// sprawl the group replaced.
+    const APP_STATE_GROUPS: [(&str, &str, fn(&str) -> bool); 3] = [
+        ("bench", "crate::bench_state::BenchState", |n| {
+            n.starts_with("bench_") || n == "pending_soak_cycle"
+        }),
+        ("groundcover", "crate::groundcover_state::GroundCoverState", |n| {
+            n.starts_with("groundcover_") || n == "cover_template_draws"
+        }),
+        ("ui", "crate::ui_state::UiState", |n| {
+            n.starts_with("ui_")
+                || matches!(n, "hud" | "scaleform_hud" | "objective_hud_cache")
+        }),
+    ];
+
+    #[test]
+    fn app_state_groups_own_their_fields() {
+        let app_fields = fields(struct_body(include_str!("main.rs"), "\nstruct App {"));
+        let mut problems = Vec::new();
+        for (group, path, belongs_in_group) in APP_STATE_GROUPS {
+            match app_fields.iter().find(|(n, _)| n == group) {
+                Some((_, ty)) if ty == path => {}
+                Some((_, ty)) => problems.push(format!("`App::{group}` is `{ty}`, not `{path}`")),
+                None => problems.push(format!("`App::{group}: {path}` is missing")),
+            }
+            for (name, _) in app_fields.iter().filter(|(n, _)| belongs_in_group(n)) {
+                problems.push(format!("`App::{name}` belongs on `{path}` (App::{group})"));
+            }
+        }
+        assert!(problems.is_empty(), "\n{}", problems.join("\n"));
+    }
+
     #[test]
     fn every_container_field_of_app_is_a_scratch_row_or_named_not_scratch() {
         let main_src = include_str!("main.rs");
@@ -2202,6 +2237,7 @@ mod app_scratch_telemetry_coverage_tests {
             "skin_offsets",
             "groundcover",
             "bench",
+            "ui",
         ] {
             assert!(
                 names.contains(&sentinel),
