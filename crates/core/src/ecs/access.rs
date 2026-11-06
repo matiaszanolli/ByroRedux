@@ -99,6 +99,16 @@ impl Access {
         self
     }
 
+    /// Hand this declaration to `declare`, which adds a subsystem's own
+    /// claims and returns it (#6701). The subsystem exports a
+    /// `fn(Access) -> Access` beside the resources it owns, and the
+    /// registration spells `.with(subsystem::access)` at the position the
+    /// claims used to sit, so the declared order — and `access_report()` —
+    /// does not change.
+    pub fn with(self, declare: fn(Access) -> Access) -> Self {
+        declare(self)
+    }
+
     /// Total number of declared accesses across all four bags.
     pub fn len(&self) -> usize {
         self.components_read.len()
@@ -385,6 +395,33 @@ mod tests {
             }
             other => panic!("expected Conflict, got {:?}", other),
         }
+    }
+
+    fn clock_and_health(access: Access) -> Access {
+        access.reads::<Health>().writes_resource::<Clock>()
+    }
+
+    #[test]
+    fn with_applies_a_subsystems_declaration_in_place() {
+        let direct = Access::new()
+            .reads::<Position>()
+            .reads::<Health>()
+            .writes_resource::<Clock>()
+            .writes::<Position>();
+        let delegated = Access::new()
+            .reads::<Position>()
+            .with(clock_and_health)
+            .writes::<Position>();
+        let names = |a: &Access| {
+            [
+                &a.components_read,
+                &a.components_write,
+                &a.resources_read,
+                &a.resources_write,
+            ]
+            .map(|bag| bag.iter().map(|e| e.type_name).collect::<Vec<_>>())
+        };
+        assert_eq!(names(&delegated), names(&direct));
     }
 
     #[test]

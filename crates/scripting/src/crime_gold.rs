@@ -30,6 +30,15 @@ pub fn install(world: &mut World) {
     world.init_resource::<FactionCrimeGold>();
 }
 
+/// #6701 — what a spoken line's crime-gold natives take: the per-faction
+/// ledger, read and written. Called through `Access::with` by the row that
+/// runs those natives.
+pub fn crime_gold_access(access: byroredux_core::ecs::Access) -> byroredux_core::ecs::Access {
+    access
+        .reads_resource::<FactionCrimeGold>()
+        .writes_resource::<FactionCrimeGold>()
+}
+
 /// #5802 — this subsystem's saved column. Called by the binary's
 /// `build_save_registry` in its row order (the schema fingerprint is
 /// order-sensitive).

@@ -705,6 +705,15 @@ mod system_access_declaration_tests {
     const COMBAT_AI_SRC: &str = include_str!("../../systems/combat_ai.rs");
     const LOOT_SRC: &str = include_str!("../../inventory/loot.rs");
     const CRIME_SRC: &str = include_str!("../../crime.rs");
+    // #6701 — the subsystem files whose `fn(Access) -> Access` a registration
+    // hands to `Access::with`. The guard follows a `.with(path)` into these;
+    // a `.with` into a file not listed here leaves its types undeclared, which
+    // the guard reports.
+    const DELEGATED_ACCESS_SRC: &str = concat!(
+        include_str!("../../../../crates/scripting/src/crime_faction.rs"),
+        include_str!("../../../../crates/scripting/src/crime_gold.rs"),
+        include_str!("../../../../crates/scripting/src/ownership.rs"),
+    );
     const ARMOR_SRC: &str = include_str!("../../armor.rs");
     const CRAFTING_SRC: &str = include_str!("../../crafting.rs");
     const LOCKPICK_SRC: &str = include_str!("../../lockpick.rs");
@@ -916,7 +925,11 @@ mod system_access_declaration_tests {
             "{system}: the acquisition scan found only {types:?} — the \
              extraction broke, not the declaration"
         );
-        let declared = acquisitions::declaration(&acquisitions::parse(BOOT_SRC), system);
+        let declared = acquisitions::declaration_with_delegates(
+            &acquisitions::parse(BOOT_SRC),
+            &[&acquisitions::parse(DELEGATED_ACCESS_SRC)],
+            system,
+        );
         // #4573 — a type is matched by its last path segment, whole (a
         // `Transform` acquisition is not satisfied by `.reads::<GlobalTransform>()`),
         // and a WRITE acquisition must be declared with `.writes::<T>()`

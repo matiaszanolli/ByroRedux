@@ -152,8 +152,16 @@ struct Index<'a> {
 
 impl<'a> Index<'a> {
     fn build(file: &'a File) -> Self {
+        Self::build_all(&[file])
+    }
+
+    /// An index over several files, so a declaration can be followed into a
+    /// subsystem's own file (`Access::with`, #6701).
+    fn build_all(files: &[&'a File]) -> Self {
         let mut index = Self::default();
-        index.visit_file(file);
+        for file in files {
+            index.visit_file(file);
+        }
         index
     }
 
@@ -458,6 +466,9 @@ const ACCESS_CALLS: &[(&str, bool)] = &[
     ("writes_resource", true),
 ];
 
+/// The `Access` combinator that delegates a declaration to a function.
+const ACCESS_WITH: &str = "with";
+
 /// Collects the `reads` / `writes` calls of an `Access` expression, and of the
 /// helper functions it passes the access through (`bridged_script_getter_reads(
 /// Access::new())` declares in its own body, not in the registration).
@@ -465,6 +476,20 @@ struct AccessChain<'a, 'ast> {
     declared: Declared,
     index: &'a Index<'ast>,
     followed: HashSet<String>,
+}
+
+impl<'a, 'ast> AccessChain<'a, 'ast> {
+    /// Read the body of every function named `name`, once.
+    fn follow(&mut self, name: String) {
+        let index = self.index;
+        if let Some(definitions) = index.fns.get(&name) {
+            if self.followed.insert(name) {
+                for definition in definitions {
+                    self.visit_block(definition.block);
+                }
+            }
+        }
+    }
 }
 
 impl<'ast> Visit<'ast> for AccessChain<'_, 'ast> {
@@ -484,20 +509,25 @@ impl<'ast> Visit<'ast> for AccessChain<'_, 'ast> {
                 }
             }
         }
+        // #6701 — `Access::with(subsystem::access)` hands the access to a
+        // function the subsystem owns. The function is passed, not called, so
+        // `visit_expr_call` never sees it; follow the path argument.
+        if name == ACCESS_WITH {
+            for arg in &call.args {
+                if let Expr::Path(path) = arg {
+                    if let Some(last) = path.path.segments.last() {
+                        self.follow(last.ident.to_string());
+                    }
+                }
+            }
+        }
         visit::visit_expr_method_call(self, call);
     }
 
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
         if let Expr::Path(path) = &*call.func {
             if let Some(last) = path.path.segments.last() {
-                let name = last.ident.to_string();
-                if let Some(definitions) = self.index.fns.get(&name) {
-                    if self.followed.insert(name) {
-                        for definition in definitions {
-                            self.visit_block(definition.block);
-                        }
-                    }
-                }
+                self.follow(last.ident.to_string());
             }
         }
         visit::visit_expr_call(self, call);
@@ -574,7 +604,20 @@ pub(crate) fn parallel_registration_count(file: &File) -> usize {
 /// prose, and anchoring on that compared one system's acquisitions against
 /// another's declaration (#4064).
 pub(crate) fn declaration(file: &File, system: &str) -> Declared {
-    let index = Index::build(file);
+    declaration_with_delegates(file, &[], system)
+}
+
+/// [`declaration`], where the registration may delegate part of its `Access`
+/// to functions defined in `delegates` (`Access::with(crime_gold::access)`,
+/// #6701). The registration is still found in `file` alone.
+pub(crate) fn declaration_with_delegates(
+    file: &File,
+    delegates: &[&File],
+    system: &str,
+) -> Declared {
+    let mut files = vec![file];
+    files.extend_from_slice(delegates);
+    let index = Index::build_all(&files);
     for (_, call) in registrations(file) {
         let (Some(target), Some(access)) = (call.args.iter().nth(1), call.args.iter().last())
         else {
@@ -874,6 +917,51 @@ mod tests {
         assert!(declared.covers("ViaOuter", Mode::Write));
         assert!(declared.covers("ViaInner", Mode::Read));
         assert!(!declared.covers("NotCalled", Mode::Read));
+    }
+
+    /// #6701 — `.with(subsystem::access)` passes the function, so the scan must
+    /// follow a path argument, and only into the delegate files it was given.
+    #[test]
+    fn a_declaration_delegated_through_with_is_read_and_a_removal_is_seen() {
+        let boot = syn::parse_file(
+            "fn build(scheduler: &mut Scheduler) {
+                scheduler.add_exclusive_with_access(
+                    Stage::Late,
+                    delegating_system,
+                    Access::new().reads::<Direct>().with(crime::crime_access).with(helper),
+                );
+            }
+            fn helper(access: Access) -> Access { access.writes::<ViaHelper>() }",
+        )
+        .expect("fixture parses");
+        let subsystem = syn::parse_file(
+            "pub fn crime_access(access: Access) -> Access {
+                access.reads_resource::<Gold>().writes_resource::<Gold>()
+            }
+            pub fn other_access(access: Access) -> Access { access.writes::<NotWith>() }",
+        )
+        .expect("fixture parses");
+        let declared = declaration_with_delegates(&boot, &[&subsystem], "delegating_system");
+        assert!(declared.covers("Direct", Mode::Read));
+        assert!(declared.covers("Gold", Mode::Write), "delegated rows are read");
+        assert!(declared.covers("ViaHelper", Mode::Write));
+        assert!(
+            !declared.covers("NotWith", Mode::Read),
+            "a delegate function nobody passes to `.with` is not part of the row"
+        );
+
+        // The injected fault: the delegate loses its declaration.
+        let removed = syn::parse_file(
+            "pub fn crime_access(access: Access) -> Access { access }",
+        )
+        .expect("fixture parses");
+        let declared = declaration_with_delegates(&boot, &[&removed], "delegating_system");
+        assert!(
+            !declared.covers("Gold", Mode::Write),
+            "a declaration removed from the delegate must fail the guard"
+        );
+        // Without the delegate file at all, nothing is silently assumed.
+        assert!(!declaration(&boot, "delegating_system").covers("Gold", Mode::Read));
     }
 
     #[test]

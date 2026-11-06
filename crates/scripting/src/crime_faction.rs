@@ -178,6 +178,15 @@ pub fn install(world: &mut World) {
     world.init_resource::<CrimeFactionOverrides>();
 }
 
+/// #6701 — what a spoken line's `SetCrimeFaction` / `GetCrimeFaction` take: the
+/// script overrides, read and written. Called through `Access::with` by the row
+/// that runs those natives.
+pub fn crime_faction_access(access: byroredux_core::ecs::Access) -> byroredux_core::ecs::Access {
+    access
+        .reads_resource::<CrimeFactionOverrides>()
+        .writes_resource::<CrimeFactionOverrides>()
+}
+
 /// #5802 — this subsystem's saved column, `Actor.SetCrimeFaction`. Called by
 /// the binary's `build_save_registry` in its row order (the schema
 /// fingerprint is order-sensitive).

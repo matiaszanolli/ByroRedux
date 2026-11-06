@@ -754,9 +754,9 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .writes_resource::<byroredux_scripting::LinkedRefOverrides>()
             // M47.3 — a package or topic condition's GetQuestVariable.
             .reads_resource::<byroredux_scripting::obscript_quests::ObScriptQuestLocals>()
-            // M47.2 — a spoken line's SetCrimeFaction / GetCrimeFaction.
-            .reads_resource::<byroredux_scripting::CrimeFactionOverrides>()
-            .writes_resource::<byroredux_scripting::CrimeFactionOverrides>()
+            // M47.2 — a spoken line's SetCrimeFaction / GetCrimeFaction (#6701:
+            // the subsystem declares its own).
+            .with(byroredux_scripting::crime_faction::crime_faction_access)
             // M47.2 — a spoken line's SetBribed / IsIntimidated, ChangeAnimArchetype
             // and SetScanned / AddToMapScanned.
             .reads_resource::<byroredux_scripting::SpeechcraftOutcomes>()
@@ -765,11 +765,10 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .writes_resource::<byroredux_scripting::AnimArchetypeOverrides>()
             .reads_resource::<byroredux_scripting::ScannedReferences>()
             .writes_resource::<byroredux_scripting::ScannedReferences>()
-            // M47.2 — a spoken line's SetFactionOwner and crime gold natives.
-            .reads_resource::<byroredux_scripting::OwnerOverrides>()
-            .writes_resource::<byroredux_scripting::OwnerOverrides>()
-            .reads_resource::<byroredux_scripting::FactionCrimeGold>()
-            .writes_resource::<byroredux_scripting::FactionCrimeGold>()
+            // M47.2 — a spoken line's SetFactionOwner and crime gold natives
+            // (#6701: each subsystem declares its own).
+            .with(byroredux_scripting::ownership::ownership_access)
+            .with(byroredux_scripting::crime_gold::crime_gold_access)
             // M47.2 — a spoken line's FormList.AddForm / GetSize / HasForm.
             .reads_resource::<byroredux_scripting::FormListAdditions>()
             .writes_resource::<byroredux_scripting::FormListAdditions>()

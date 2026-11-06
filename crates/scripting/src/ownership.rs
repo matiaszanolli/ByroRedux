@@ -78,6 +78,16 @@ pub fn install(world: &mut World) {
     world.init_resource::<OwnerOverrides>();
 }
 
+/// #6701 — what a spoken line's `SetFactionOwner` / `SetActorOwner` and the
+/// `IsOwner` guard take: the script overrides, read and written. Called through
+/// `Access::with` by the row that runs those natives, so the claim lives beside
+/// the resource.
+pub fn ownership_access(access: byroredux_core::ecs::Access) -> byroredux_core::ecs::Access {
+    access
+        .reads_resource::<OwnerOverrides>()
+        .writes_resource::<OwnerOverrides>()
+}
+
 /// #5802 — this subsystem's saved column, `SetActorOwner` /
 /// `SetFactionOwner`. Called by the binary's `build_save_registry` in its
 /// row order (the schema fingerprint is order-sensitive).
