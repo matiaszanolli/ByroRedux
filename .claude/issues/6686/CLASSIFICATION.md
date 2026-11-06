@@ -33,3 +33,29 @@ no behavioural form exists, and I found none the doc was wrong about.
 test names: `save_io/live_reload_tests.rs` (7), `systems/character.rs` (6),
 `app_step.rs` (6), `app_frame.rs` (6), `systems/cinematic.rs` (4),
 `cell_loader/load.rs` (4).
+
+## Second pass — the six files the first pass listed as "read first" (2026-11-06)
+
+**Scope:** `save_io/live_reload_tests.rs` (7), `systems/character.rs` (6), `app_step.rs` (6),
+`app_frame.rs` (7, of which two have no doc), `systems/cinematic.rs` (4),
+`cell_loader/load.rs` (4) = 34 sites. **Every row is classified "by doc"**: from the
+test's name and doc comment, not verified assert by assert. Together with the first pass
+that is 176 of 301 sites; about 125 remain unclassified.
+
+| File | Sites | Class | Basis |
+|---|---|---|---|
+| `save_io/live_reload_tests.rs` | 7 | device/data | Each pins a step order inside `execute_pending_save_loads`, which needs a live `VulkanContext` and archives (#3789/#4135, #5060, #6081, #5435, #6083, #6238, #6239). The docs say so for #3789 and #5435. |
+| `systems/character.rs` | `momentum_is_cleared_through_one_method`, `…_leaves_authored_water_damage_to_water_damage_system`, `the_swim_decisions_stay_in_pinnable_helpers`, `the_production_probe_gate_calls_the_pinned_predicate`, `the_ground_probe_screens_its_grounded_half_on_the_walkable_normal` | syntax | The docs state the reason: `character_controller_system` has no test caller, and the pins keep a pure predicate in the path. The predicate's own truth table already runs. |
+| `systems/character.rs` | `player_water_state_samples_weather_once_before_water_queries` | syntax (lock order) | Pins where a resource guard is taken relative to water storage (#3265). A runtime check would be `BYRO_LOCK_ORDER_CHECK`, which is a graph over a whole run, not a unit test. |
+| `app_step.rs` | `the_save_drain_publishes_…`, `texture_swaps_flush_the_uploads_they_queue`, `interior_transition_uses_the_shared_budgeted_apply_job`, `upscaler_switch_failure_exits_the_event_loop`, `static_blas_recovery_runs_between_frames_…` | device/data | `App` step methods that take a renderer or an event loop. |
+| `app_step.rs` | `scene_centroid_distance_acquires_global_transform_before_mesh_handle` | syntax (lock order) | #3695, same reasoning as above. |
+| `app_frame.rs` | `between_frames_is_captured_before_draw_frame_runs`, the three rollback tests, `render_one_frame_does_not_assert_on_material_overflow_count`, `a_loading_stage_frame_takes_the_groundcover_off_path` | device/data | `render_one_frame` order; needs a `VulkanContext`. `prepare_groundcover_models` (L1217) has no doc and was **not read**. |
+| `systems/cinematic.rs` | `text_key_query_is_acquired_before_the_string_pool`, `the_scene_registry_guard_is_released_before_the_quest_acquisitions`, `scene_trigger_router_evaluates_no_conditions_under_the_stages_guard` | syntax (lock order) | #3446, #3937, #6008: a guard's scope against other acquisitions. #6085's `acquisition_scan` covers acquisition *sets*, not intra-function guard scope. |
+| `systems/cinematic.rs` | `the_router_calls_the_gates_shared_eligibility_predicate` | syntax | #4333: "pin the call, not the copy". |
+| `cell_loader/load.rs` | `every_animation_route_installs_the_combat_family_too`, `interior_apply_job_is_budgeted_and_reclaimable`, `interior_water_spawns_before_the_reference_load_flush`, `the_synchronous_interior_load_runs_the_apply_job` | device/data | The docs say each is "CI-reachable without a Vulkan device or shipped ESM archives" only as a source check. |
+
+**Replaced in this pass:** none. No doc names a behavioural alternative, and the
+renderer-or-archive dependency each one states is real.
+
+**Not done:** the acceptance criterion "every scan classed replaceable has a behavioural
+test" cannot be met until the remaining ~125 sites are classified, so #6686 stays open.
