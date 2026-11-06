@@ -548,6 +548,235 @@ struct OverlayResources {
     egui_pending_output: Option<(egui::Context, egui::FullOutput)>,
 }
 
+/// GPU skinning and morph state (#6697): the palette + skin compute pipelines, the
+/// per-entity skin and morph slot pools with their failure latches and unload
+/// queues, and the bind-inverse upload health flags.
+///
+/// Host-side state apart from the two pipelines, which `teardown.rs` destroys
+/// through `skin.compute` at the point it always destroyed `skin_compute`.
+#[derive(Default)]
+pub struct SkinningState {
+    /// M29 GPU pre-skinning compute pipeline. `None` when RT is
+    /// unsupported (no skinned-BLAS path to feed). Per-skinned-entity
+    /// SkinSlots live in `skin_slots`; first-sight registration +
+    /// per-frame dispatch + BLAS refit happen inside `draw_frame`.
+    pub compute: Option<super::skin_compute::SkinComputePipeline>,
+    /// M29.5 — GPU bone-palette compute pipeline. Reads the per-frame
+    /// `bone_world[]` + `bind_inverses[]` input SSBOs (held on
+    /// [`SceneBuffers`]) and writes the existing palette SSBO that
+    /// [`skin_compute`] (M29.3, RT) + raster `triangle.vert` consume.
+    /// `None` when RT is unsupported — matches [`skin_compute`]'s
+    /// gating. With the orphaned legacy `upload_bones` path now
+    /// removed (M29.5 cleanup), a `None` here means the palette
+    /// buffer is never written, raster reads uninitialised data,
+    /// and skinned content renders as garbage. The engine's
+    /// VRAM-baseline policy makes RT mandatory, so this is treated
+    /// as dead-on-arrival rather than a supported degradation.
+    pub palette: Option<super::skin_compute::SkinPaletteComputePipeline>,
+    /// Per-skinned-entity SkinSlot — owns the skinned-vertex output
+    /// buffer + per-frame descriptor sets. Populated lazily on first
+    /// sight in draw_frame; entries are torn down on Drop. M40 cell
+    /// streaming will eventually reclaim slots whose entities are
+    /// despawned mid-session.
+    ///
+    /// #3061 — `FxHashMap`. `draw_frame`'s skinned pass probes this once per
+    /// skinned draw command per frame; the key is an engine-generated
+    /// `EntityId`, never attacker-chosen, so SipHash-1-3 buys nothing here.
+    pub slots:
+        FxHashMap<byroredux_core::ecs::storage::EntityId, super::skin_compute::SkinSlot>,
+    /// #3231 — per-skinned-entity `MorphSlot` (shared delta + private
+    /// weight buffer for GPU morph-target blending). Deliberately separate from
+    /// `skin_slots` — see `morph_compute`'s module doc for why.
+    /// Populated once at spawn time (not lazily like `skin_slots` —
+    /// the morph-target delta data only exists in `ImportedMesh` at
+    /// that point); entries are torn down on Drop or explicit
+    /// cell-unload despawn.
+    ///
+    /// #3061 SIBLING — `FxHashMap` for the same reason as `skin_slots`:
+    /// `draw.rs` probes it per draw command per frame.
+    pub morph_slots:
+        FxHashMap<byroredux_core::ecs::storage::EntityId, super::morph_compute::MorphSlot>,
+    /// Mesh-handle keyed weak references to the immutable morph delta
+    /// allocations held by `morph_slots`. Weak entries make the cache a
+    /// lookup index, not an additional VRAM owner: the last entity slot's
+    /// `MorphSlot::destroy` destroys the delta buffer, and the dead key is
+    /// pruned by the eviction pass. That destroy has to go through
+    /// `Arc::try_unwrap`, not `Arc::get_mut` — these `Weak`s are still alive
+    /// while it runs (#4838).
+    pub(crate) morph_delta_cache: FxHashMap<u32, Weak<super::morph_compute::MorphDelta>>,
+    /// Entities whose `create_slot` call returned `OUT_OF_POOL_MEMORY`
+    /// (or otherwise errored) on a prior frame — gate the retry path
+    /// in `draw_frame` against this set so a single failure logs one
+    /// WARN instead of N (one per frame for the duration of the
+    /// bench, observed at 58 WARN / 300 frames pre-fix on Prospector
+    /// post-#896 B.2). Cleared whenever any LRU eviction frees a
+    /// slot, since capacity opening up means a previously-failing
+    /// entity's next attempt could now succeed. A stale entry cannot
+    /// poison a re-issued id because `EntityId`s are **never recycled** —
+    /// `World::spawn` is monotonic and `despawn` does not reclaim (#372).
+    /// `EntityId` is a bare `u32` with no generation field
+    /// (`crates/core/src/ecs/storage.rs`); the owning invariant, and the
+    /// reason it is deliberately not generational, is documented on
+    /// `World::spawn` in `crates/core/src/ecs/world.rs`. Every
+    /// entity-keyed renderer cache here (`skin_slots`, `morph_slots`,
+    /// `failed_skin_slots`, `failed_skin_blas`, the
+    /// `pending_*_unload_victims` lists) rests on that same never-recycled
+    /// rule — not on generational tagging, which the ECS does not have.
+    /// See #900, #3375.
+    ///
+    /// Drop contract (REN-D7-NEW-03): purely host-side state, no
+    /// Vulkan handles or device memory involved — the HashSet
+    /// destructor at context teardown is sufficient, no explicit
+    /// clear required. Adding entries that hold device-side
+    /// resources here would invalidate this contract.
+    /// #3061 — `FxHashSet`; gated once per skinned entity per frame.
+    pub failed_skin_slots: FxHashSet<byroredux_core::ecs::storage::EntityId>,
+    /// Entities whose first-sight `build_skinned_blas_batched_on_cmd`
+    /// returned an error on a prior frame — the BLAS sibling of
+    /// [`SkinningState::failed_skin_slots`] (#2802 / REN-D9-2026-08-12-03).
+    ///
+    /// The slot set gates *slot allocation* only, and a build failure
+    /// leaves the slot behind, so `needs_slot` is false on the next
+    /// frame and that gate never fires. The entity therefore re-entered
+    /// the size query + build every frame and logged **two** WARNs per
+    /// frame: the build failure itself, plus the refit that then could
+    /// not find the BLAS the build never produced. Both fire precisely
+    /// under the VRAM pressure that caused the failure.
+    ///
+    /// Cleared with `failed_skin_slots` on any LRU eviction — the same
+    /// "capacity opened up, retry once" rule, for the same reason (an
+    /// AS allocation failure is a memory-pressure signal, and eviction
+    /// is the event that changes it).
+    ///
+    /// Drop contract: same as `failed_skin_slots` — host-side ids only,
+    /// no Vulkan handles.
+    /// #3061 — `FxHashSet`, as `failed_skin_slots`.
+    pub failed_skin_blas: FxHashSet<byroredux_core::ecs::storage::EntityId>,
+    /// Cell-unload victims pending skin-slot teardown. Populated by
+    /// `unload_cell`, drained by the per-frame eviction pass at the
+    /// top of `draw_frame` (after the fence wait that retires any
+    /// in-flight command buffer referencing the slot's output buffer).
+    ///
+    /// **Why a queue and not immediate `destroy_slot`** (#1003):
+    /// `skin_pipeline.destroy_slot` is unconditional and synchronous —
+    /// caller must guarantee no in-flight command buffer references
+    /// the slot's output buffer. The eviction pass already runs
+    /// post-fence-wait and is therefore safe. `unload_cell` runs
+    /// outside `draw_frame` and pre-fix relied on the eviction pass
+    /// catching despawned entities within ~3 frames; cell-unload-
+    /// without-render-tick (headless smoke tests, paused world)
+    /// silently retained slots indefinitely. Routing through this
+    /// queue makes the teardown window deterministic.
+    ///
+    /// **Drop contract**: tinier than `skin_slots` because each entry
+    /// is a `u32`-shaped `EntityId`; the actual slot is held in
+    /// `skin_slots` until drain. The eviction pass moves the entry
+    /// out of `skin_slots` and into `destroy_slot` in a single step,
+    /// so any race between `unload_cell` and `Drop` resolves cleanly
+    /// (a victim queued but not drained still has its slot in
+    /// `skin_slots`, which `Drop` tears down via the bulk `skin_slots`
+    /// drain in `teardown.rs::destroy_allocator_owned_resources`).
+    pub pending_skin_unload_victims: Vec<byroredux_core::ecs::storage::EntityId>,
+    /// #3231 — the `morph_slots` sibling of `pending_skin_unload_victims`.
+    /// Same reasoning, same drain site (folded into the same eviction
+    /// pass in `skinned_blas_refit.rs` rather than a separate sweep,
+    /// since `MorphSlot` lifetime already tracks `SkinSlot`'s 1:1 —
+    /// v1 only creates a `MorphSlot` for a mesh that also has skin
+    /// data, see `mesh_instance::spawn_mesh_instance`). No `failed_*`
+    /// sibling — unlike `SkinSlot`, `MorphSlot` has no lazy first-sight
+    /// retry path to gate; a spawn-time create failure just logs and
+    /// leaves the entity with no slot for its lifetime.
+    pub pending_morph_unload_victims: Vec<byroredux_core::ecs::storage::EntityId>,
+    /// Per-frame counters for the skinned-BLAS coverage path, written
+    /// by `draw_frame` and copied into the [`byroredux_core::ecs::
+    /// SkinCoverageStats`] resource by [`Self::fill_skin_coverage_stats`].
+    /// #2112 / D6-01 — reset at the top of `draw_frame`, before the
+    /// early-return framebuffers-empty guard (same reasoning as
+    /// `skin.dispatch_ran` below), so a bailed frame reads zero instead
+    /// of retaining the previous frame's counts.
+    pub last_skin_coverage_frame: super::skin_compute::SkinCoverageFrame,
+    /// #1796 / D6-02 — set `false` at the top of every `draw_frame` call,
+    /// flipped `true` only once `record_skinned_blas_refit` actually runs
+    /// (i.e. `draw_frame` got past both early-return guards: the empty-
+    /// framebuffers check and `ERROR_OUT_OF_DATE_KHR`). The CPU-side pose
+    /// hash commit (`SkinSlotPool::try_mark_pose_dirty`, called from
+    /// `build_render_data` *before* `draw_frame`) runs unconditionally,
+    /// so an early return leaves the dirty-gate baseline advanced past a
+    /// dispatch that never happened. The caller checks this flag after
+    /// `draw_frame` returns and calls `SkinSlotPool::
+    /// rollback_pending_pose_commits` when it reads `false`, undoing the
+    /// premature commit so the next frame's comparison stays honest.
+    pub dispatch_ran: bool,
+    /// #3991 — the **submit-time** counterpart to `skin.dispatch_ran`, which is
+    /// a **record-time** latch and was being read as if it were this.
+    ///
+    /// `record_skinned_blas_refit` sets `skin.dispatch_ran` at its top, on the
+    /// argument that reaching it proves `draw_frame` got past both early-return
+    /// guards. That was true of the guards it was written for (#1796) and of
+    /// the ones #2522 widened it to — all of which sit *above* that call. It is
+    /// not true of `draw_frame`'s three **tail** `Err` sites, which sit below
+    /// it: `end_command_buffer`, `reset_fences` and `queue_submit`. On any of
+    /// them the command buffer is discarded and nothing recorded this frame
+    /// executes, yet `skin.dispatch_ran` still reads `true`.
+    ///
+    /// Set only after `queue_submit` returns `Ok`, so a caller asking "did this
+    /// frame's skin work actually reach the GPU" gets an honest answer. #917
+    /// established the pattern ~30 lines below the submit for SVGF, TAA,
+    /// volumetrics, FSR and the rigid-model history swap; the skin chain never
+    /// adopted it.
+    pub state_submitted: bool,
+    /// #3991 — entities whose `SkinSlot::has_populated_output` this frame's
+    /// recording would newly set, held until `queue_submit` succeeds.
+    ///
+    /// Only entities whose bit is still `false` are recorded, so a rollback can
+    /// never clear a bit an earlier successful frame established.
+    pub(super) pending_populated: Vec<byroredux_core::ecs::storage::EntityId>,
+    /// #3569 / D9-01 — sibling latch to `skin.dispatch_ran` above, for the
+    /// gap that flag doesn't cover: `draw_frame` *reaching* the first-sight
+    /// `bind_inverses` upload but the upload itself failing
+    /// (`upload_pending_bind_inverses` returns `Err` — host-visible map or
+    /// flush failure). `record_skinned_blas_refit` still runs afterward and
+    /// sets `skin.dispatch_ran = true`, so without this flag the caller's
+    /// `!ctx.skin.dispatch_ran` requeue check never fires and the entries
+    /// `SkinSlotPool::drain_pending` already removed from the pool are lost
+    /// for good — the entity's palette source stays undefined for its
+    /// remaining residency. Reset to `false` alongside `skin.dispatch_ran`
+    /// at the top of `draw_frame`; set `true` only in the
+    /// `upload_pending_bind_inverses` error arm. The caller widens its
+    /// rollback check to
+    /// `!ctx.skin.state_submitted || ctx.skin.bind_inverse_upload_failed` — #3991
+    /// moved the first half from `skin.dispatch_ran` to the submit-time flag,
+    /// which subsumes it: the submit-time flag is only ever set on a frame
+    /// that both reached the skin section and submitted successfully.
+    pub bind_inverse_upload_failed: bool,
+    /// #4049 (REN-2026-09-06-D9-03) — one-shot latch for the
+    /// `upload_pending_bind_inverses` failure log, matching this subsystem's
+    /// own `SkinSlotPool::overflow_warned` convention: every sibling failure
+    /// path here (`failed_skin_slots` / #900, `failed_skin_blas` / #2802,
+    /// `overflow_warned`) logs once and counts silently afterward.
+    /// `#3569`'s requeue retries this upload every frame until it succeeds,
+    /// so without this latch a persistent failure (OOM on the upload heap,
+    /// device-lost in progress) would `warn!` once per frame per failing
+    /// batch for as long as the condition lasts, and bury the diagnostically
+    /// useful FIRST occurrence in the flood. Never reset — same
+    /// session-lifetime semantics as `overflow_warned`.
+    pub bind_inverse_upload_warned: bool,
+    /// See [`SkinningState::bind_inverse_upload_warned`]. Incremented on every
+    /// `upload_pending_bind_inverses` failure (not just the first), so the
+    /// magnitude survives the log going silent; surfaced via
+    /// `SkinCoverageStats::bind_inverse_upload_failures` / `skin.coverage`.
+    pub bind_inverse_upload_failure_count: u32,
+    /// D6-04 / #1811 — consecutive frames where no skinned entity's pose
+    /// changed and no `bind_inverses` upload was pending. Reset to `0` on
+    /// any dirty frame; once it exceeds `MAX_FRAMES_IN_FLIGHT`, every
+    /// per-frame `bone_world` buffer copy has already been refreshed with
+    /// today's (unchanged) values at least once, so the bone_world upload,
+    /// its device copy, and the `skin_palette.comp` dispatch are all safe
+    /// to skip until the next dirty frame. See `draw_frame`'s bone_world
+    /// upload section for the read side.
+    pub clean_skin_frames: u32,
+}
+
 pub struct VulkanContext {
     // Vulkan objects are destroyed explicitly by `Drop` (`teardown.rs`),
     // not by this field order. Rust's implicit field drop runs only after
@@ -812,11 +1041,8 @@ pub struct VulkanContext {
     /// the same `MeshRegistry` the draw path reads. See
     /// `groundcover_bench.rs`'s module docs.
     pub groundcover_bench_cells: Vec<GroundcoverBenchCellHandle>,
-    /// M29 GPU pre-skinning compute pipeline. `None` when RT is
-    /// unsupported (no skinned-BLAS path to feed). Per-skinned-entity
-    /// SkinSlots live in `skin_slots`; first-sight registration +
-    /// per-frame dispatch + BLAS refit happen inside `draw_frame`.
-    pub skin_compute: Option<super::skin_compute::SkinComputePipeline>,
+    /// GPU skinning and morph state (#6697). See [`SkinningState`].
+    pub skin: SkinningState,
     /// Per-pass GPU timer (#1194 / PERF-DIM7-INSTR). Brackets the
     /// skin compute dispatch loop, skinned BLAS refit loop, and TAA
     /// compute dispatch with `VkQueryPool` TIMESTAMP queries. `None`
@@ -827,140 +1053,6 @@ pub struct VulkanContext {
     /// summary so PERF-DIM7-01 / -02 / -03 (#1195 / #1196 / #1197)
     /// can be measured rather than guessed.
     pub gpu_timers: Option<super::gpu_timers::GpuPerFrameTimers>,
-    /// M29.5 — GPU bone-palette compute pipeline. Reads the per-frame
-    /// `bone_world[]` + `bind_inverses[]` input SSBOs (held on
-    /// [`SceneBuffers`]) and writes the existing palette SSBO that
-    /// [`skin_compute`] (M29.3, RT) + raster `triangle.vert` consume.
-    /// `None` when RT is unsupported — matches [`skin_compute`]'s
-    /// gating. With the orphaned legacy `upload_bones` path now
-    /// removed (M29.5 cleanup), a `None` here means the palette
-    /// buffer is never written, raster reads uninitialised data,
-    /// and skinned content renders as garbage. The engine's
-    /// VRAM-baseline policy makes RT mandatory, so this is treated
-    /// as dead-on-arrival rather than a supported degradation.
-    pub skin_palette: Option<super::skin_compute::SkinPaletteComputePipeline>,
-    /// Per-skinned-entity SkinSlot — owns the skinned-vertex output
-    /// buffer + per-frame descriptor sets. Populated lazily on first
-    /// sight in draw_frame; entries are torn down on Drop. M40 cell
-    /// streaming will eventually reclaim slots whose entities are
-    /// despawned mid-session.
-    ///
-    /// #3061 — `FxHashMap`. `draw_frame`'s skinned pass probes this once per
-    /// skinned draw command per frame; the key is an engine-generated
-    /// `EntityId`, never attacker-chosen, so SipHash-1-3 buys nothing here.
-    pub skin_slots:
-        FxHashMap<byroredux_core::ecs::storage::EntityId, super::skin_compute::SkinSlot>,
-    /// #3231 — per-skinned-entity `MorphSlot` (shared delta + private
-    /// weight buffer for GPU morph-target blending). Deliberately separate from
-    /// `skin_slots` — see `morph_compute`'s module doc for why.
-    /// Populated once at spawn time (not lazily like `skin_slots` —
-    /// the morph-target delta data only exists in `ImportedMesh` at
-    /// that point); entries are torn down on Drop or explicit
-    /// cell-unload despawn.
-    ///
-    /// #3061 SIBLING — `FxHashMap` for the same reason as `skin_slots`:
-    /// `draw.rs` probes it per draw command per frame.
-    pub morph_slots:
-        FxHashMap<byroredux_core::ecs::storage::EntityId, super::morph_compute::MorphSlot>,
-    /// Mesh-handle keyed weak references to the immutable morph delta
-    /// allocations held by `morph_slots`. Weak entries make the cache a
-    /// lookup index, not an additional VRAM owner: the last entity slot's
-    /// `MorphSlot::destroy` destroys the delta buffer, and the dead key is
-    /// pruned by the eviction pass. That destroy has to go through
-    /// `Arc::try_unwrap`, not `Arc::get_mut` — these `Weak`s are still alive
-    /// while it runs (#4838).
-    pub(crate) morph_delta_cache: FxHashMap<u32, Weak<super::morph_compute::MorphDelta>>,
-    /// Entities whose `create_slot` call returned `OUT_OF_POOL_MEMORY`
-    /// (or otherwise errored) on a prior frame — gate the retry path
-    /// in `draw_frame` against this set so a single failure logs one
-    /// WARN instead of N (one per frame for the duration of the
-    /// bench, observed at 58 WARN / 300 frames pre-fix on Prospector
-    /// post-#896 B.2). Cleared whenever any LRU eviction frees a
-    /// slot, since capacity opening up means a previously-failing
-    /// entity's next attempt could now succeed. A stale entry cannot
-    /// poison a re-issued id because `EntityId`s are **never recycled** —
-    /// `World::spawn` is monotonic and `despawn` does not reclaim (#372).
-    /// `EntityId` is a bare `u32` with no generation field
-    /// (`crates/core/src/ecs/storage.rs`); the owning invariant, and the
-    /// reason it is deliberately not generational, is documented on
-    /// `World::spawn` in `crates/core/src/ecs/world.rs`. Every
-    /// entity-keyed renderer cache here (`skin_slots`, `morph_slots`,
-    /// `failed_skin_slots`, `failed_skin_blas`, the
-    /// `pending_*_unload_victims` lists) rests on that same never-recycled
-    /// rule — not on generational tagging, which the ECS does not have.
-    /// See #900, #3375.
-    ///
-    /// Drop contract (REN-D7-NEW-03): purely host-side state, no
-    /// Vulkan handles or device memory involved — the HashSet
-    /// destructor at context teardown is sufficient, no explicit
-    /// clear required. Adding entries that hold device-side
-    /// resources here would invalidate this contract.
-    /// #3061 — `FxHashSet`; gated once per skinned entity per frame.
-    pub failed_skin_slots: FxHashSet<byroredux_core::ecs::storage::EntityId>,
-    /// Entities whose first-sight `build_skinned_blas_batched_on_cmd`
-    /// returned an error on a prior frame — the BLAS sibling of
-    /// [`Self::failed_skin_slots`] (#2802 / REN-D9-2026-08-12-03).
-    ///
-    /// The slot set gates *slot allocation* only, and a build failure
-    /// leaves the slot behind, so `needs_slot` is false on the next
-    /// frame and that gate never fires. The entity therefore re-entered
-    /// the size query + build every frame and logged **two** WARNs per
-    /// frame: the build failure itself, plus the refit that then could
-    /// not find the BLAS the build never produced. Both fire precisely
-    /// under the VRAM pressure that caused the failure.
-    ///
-    /// Cleared with `failed_skin_slots` on any LRU eviction — the same
-    /// "capacity opened up, retry once" rule, for the same reason (an
-    /// AS allocation failure is a memory-pressure signal, and eviction
-    /// is the event that changes it).
-    ///
-    /// Drop contract: same as `failed_skin_slots` — host-side ids only,
-    /// no Vulkan handles.
-    /// #3061 — `FxHashSet`, as `failed_skin_slots`.
-    pub failed_skin_blas: FxHashSet<byroredux_core::ecs::storage::EntityId>,
-    /// Cell-unload victims pending skin-slot teardown. Populated by
-    /// `unload_cell`, drained by the per-frame eviction pass at the
-    /// top of `draw_frame` (after the fence wait that retires any
-    /// in-flight command buffer referencing the slot's output buffer).
-    ///
-    /// **Why a queue and not immediate `destroy_slot`** (#1003):
-    /// `skin_pipeline.destroy_slot` is unconditional and synchronous —
-    /// caller must guarantee no in-flight command buffer references
-    /// the slot's output buffer. The eviction pass already runs
-    /// post-fence-wait and is therefore safe. `unload_cell` runs
-    /// outside `draw_frame` and pre-fix relied on the eviction pass
-    /// catching despawned entities within ~3 frames; cell-unload-
-    /// without-render-tick (headless smoke tests, paused world)
-    /// silently retained slots indefinitely. Routing through this
-    /// queue makes the teardown window deterministic.
-    ///
-    /// **Drop contract**: tinier than `skin_slots` because each entry
-    /// is a `u32`-shaped `EntityId`; the actual slot is held in
-    /// `skin_slots` until drain. The eviction pass moves the entry
-    /// out of `skin_slots` and into `destroy_slot` in a single step,
-    /// so any race between `unload_cell` and `Drop` resolves cleanly
-    /// (a victim queued but not drained still has its slot in
-    /// `skin_slots`, which `Drop` tears down via the bulk `skin_slots`
-    /// drain in `teardown.rs::destroy_allocator_owned_resources`).
-    pub pending_skin_unload_victims: Vec<byroredux_core::ecs::storage::EntityId>,
-    /// #3231 — the `morph_slots` sibling of `pending_skin_unload_victims`.
-    /// Same reasoning, same drain site (folded into the same eviction
-    /// pass in `skinned_blas_refit.rs` rather than a separate sweep,
-    /// since `MorphSlot` lifetime already tracks `SkinSlot`'s 1:1 —
-    /// v1 only creates a `MorphSlot` for a mesh that also has skin
-    /// data, see `mesh_instance::spawn_mesh_instance`). No `failed_*`
-    /// sibling — unlike `SkinSlot`, `MorphSlot` has no lazy first-sight
-    /// retry path to gate; a spawn-time create failure just logs and
-    /// leaves the entity with no slot for its lifetime.
-    pub pending_morph_unload_victims: Vec<byroredux_core::ecs::storage::EntityId>,
-    /// Per-frame counters for the skinned-BLAS coverage path, written
-    /// by `draw_frame` and copied into the [`byroredux_core::ecs::
-    /// SkinCoverageStats`] resource by [`Self::fill_skin_coverage_stats`].
-    /// #2112 / D6-01 — reset at the top of `draw_frame`, before the
-    /// early-return framebuffers-empty guard (same reasoning as
-    /// `skin_dispatch_ran` below), so a bailed frame reads zero instead
-    /// of retaining the previous frame's counts.
-    pub last_skin_coverage_frame: super::skin_compute::SkinCoverageFrame,
     /// Per-frame draw-call counts written by `draw_frame` and read by
     /// the app's per-frame stats wiring to populate `DebugStats`. Distinct
     /// from the input `DrawCommand` count (which lives on the caller side
@@ -971,86 +1063,6 @@ pub struct VulkanContext {
     /// Reset at the top of `draw_frame`; populated after the batch
     /// merge + indirect-grouping passes.
     pub last_draw_call_stats: DrawCallStats,
-    /// #1796 / D6-02 — set `false` at the top of every `draw_frame` call,
-    /// flipped `true` only once `record_skinned_blas_refit` actually runs
-    /// (i.e. `draw_frame` got past both early-return guards: the empty-
-    /// framebuffers check and `ERROR_OUT_OF_DATE_KHR`). The CPU-side pose
-    /// hash commit (`SkinSlotPool::try_mark_pose_dirty`, called from
-    /// `build_render_data` *before* `draw_frame`) runs unconditionally,
-    /// so an early return leaves the dirty-gate baseline advanced past a
-    /// dispatch that never happened. The caller checks this flag after
-    /// `draw_frame` returns and calls `SkinSlotPool::
-    /// rollback_pending_pose_commits` when it reads `false`, undoing the
-    /// premature commit so the next frame's comparison stays honest.
-    pub skin_dispatch_ran: bool,
-    /// #3991 — the **submit-time** counterpart to `skin_dispatch_ran`, which is
-    /// a **record-time** latch and was being read as if it were this.
-    ///
-    /// `record_skinned_blas_refit` sets `skin_dispatch_ran` at its top, on the
-    /// argument that reaching it proves `draw_frame` got past both early-return
-    /// guards. That was true of the guards it was written for (#1796) and of
-    /// the ones #2522 widened it to — all of which sit *above* that call. It is
-    /// not true of `draw_frame`'s three **tail** `Err` sites, which sit below
-    /// it: `end_command_buffer`, `reset_fences` and `queue_submit`. On any of
-    /// them the command buffer is discarded and nothing recorded this frame
-    /// executes, yet `skin_dispatch_ran` still reads `true`.
-    ///
-    /// Set only after `queue_submit` returns `Ok`, so a caller asking "did this
-    /// frame's skin work actually reach the GPU" gets an honest answer. #917
-    /// established the pattern ~30 lines below the submit for SVGF, TAA,
-    /// volumetrics, FSR and the rigid-model history swap; the skin chain never
-    /// adopted it.
-    pub skin_state_submitted: bool,
-    /// #3991 — entities whose `SkinSlot::has_populated_output` this frame's
-    /// recording would newly set, held until `queue_submit` succeeds.
-    ///
-    /// Only entities whose bit is still `false` are recorded, so a rollback can
-    /// never clear a bit an earlier successful frame established.
-    pub(super) skin_pending_populated: Vec<byroredux_core::ecs::storage::EntityId>,
-    /// #3569 / D9-01 — sibling latch to `skin_dispatch_ran` above, for the
-    /// gap that flag doesn't cover: `draw_frame` *reaching* the first-sight
-    /// `bind_inverses` upload but the upload itself failing
-    /// (`upload_pending_bind_inverses` returns `Err` — host-visible map or
-    /// flush failure). `record_skinned_blas_refit` still runs afterward and
-    /// sets `skin_dispatch_ran = true`, so without this flag the caller's
-    /// `!ctx.skin_dispatch_ran` requeue check never fires and the entries
-    /// `SkinSlotPool::drain_pending` already removed from the pool are lost
-    /// for good — the entity's palette source stays undefined for its
-    /// remaining residency. Reset to `false` alongside `skin_dispatch_ran`
-    /// at the top of `draw_frame`; set `true` only in the
-    /// `upload_pending_bind_inverses` error arm. The caller widens its
-    /// rollback check to
-    /// `!ctx.skin_state_submitted || ctx.bind_inverse_upload_failed` — #3991
-    /// moved the first half from `skin_dispatch_ran` to the submit-time flag,
-    /// which subsumes it: the submit-time flag is only ever set on a frame
-    /// that both reached the skin section and submitted successfully.
-    pub bind_inverse_upload_failed: bool,
-    /// #4049 (REN-2026-09-06-D9-03) — one-shot latch for the
-    /// `upload_pending_bind_inverses` failure log, matching this subsystem's
-    /// own `SkinSlotPool::overflow_warned` convention: every sibling failure
-    /// path here (`failed_skin_slots` / #900, `failed_skin_blas` / #2802,
-    /// `overflow_warned`) logs once and counts silently afterward.
-    /// `#3569`'s requeue retries this upload every frame until it succeeds,
-    /// so without this latch a persistent failure (OOM on the upload heap,
-    /// device-lost in progress) would `warn!` once per frame per failing
-    /// batch for as long as the condition lasts, and bury the diagnostically
-    /// useful FIRST occurrence in the flood. Never reset — same
-    /// session-lifetime semantics as `overflow_warned`.
-    pub bind_inverse_upload_warned: bool,
-    /// See [`Self::bind_inverse_upload_warned`]. Incremented on every
-    /// `upload_pending_bind_inverses` failure (not just the first), so the
-    /// magnitude survives the log going silent; surfaced via
-    /// `SkinCoverageStats::bind_inverse_upload_failures` / `skin.coverage`.
-    pub bind_inverse_upload_failure_count: u32,
-    /// D6-04 / #1811 — consecutive frames where no skinned entity's pose
-    /// changed and no `bind_inverses` upload was pending. Reset to `0` on
-    /// any dirty frame; once it exceeds `MAX_FRAMES_IN_FLIGHT`, every
-    /// per-frame `bone_world` buffer copy has already been refreshed with
-    /// today's (unchanged) values at least once, so the bone_world upload,
-    /// its device copy, and the `skin_palette.comp` dispatch are all safe
-    /// to skip until the next dirty frame. See `draw_frame`'s bone_world
-    /// upload section for the read side.
-    pub clean_skin_frames: u32,
     /// 1×1 white "AO = 1.0" stand-in for scene binding 7, and a 1×1
     /// storage sink for `WaterPipeline` set 2 (#2141 / #2142).
     ///
@@ -2071,12 +2083,12 @@ mod rigid_history_hasher_tests {
                  #1368 / #2174 / #2923 / #3045)",
             );
         }
-        // `skin_slots` and `morph_slots` wrap across two lines under rustfmt,
+        // `skin.slots` and `morph_slots` wrap across two lines under rustfmt,
         // so match their declarations rather than a single-line `field: ty,`.
         for (field, decl) in [
             (
                 "skin_slots",
-                "pub skin_slots:\n        FxHashMap<byroredux_core::ecs::storage::EntityId, \
+                "pub slots:\n        FxHashMap<byroredux_core::ecs::storage::EntityId, \
                  super::skin_compute::SkinSlot>,",
             ),
             (
@@ -2333,5 +2345,89 @@ mod fsr_startup_failure_promotes_to_taa_tests {
             "the promotion must run before the constructor returns — a caller \
              must never observe the pre-promotion, reduced-extent state"
         );
+    }
+}
+
+/// #6680 — `VulkanContext` state groups. Each group's fields live on its own
+/// struct; a field of the same name declared on the context again would
+/// quietly rebuild the 100-field sprawl the group replaced (and shadow the
+/// group's copy at every `self.<name>` site that predates it).
+#[cfg(test)]
+mod field_group_tests {
+    /// `(context field, its type, the names that now live inside it)`.
+    const GROUPS: [(&str, &str, &[&str]); 1] = [(
+        "skin",
+        "SkinningState",
+        &[
+            "skin_compute",
+            "skin_palette",
+            "skin_slots",
+            "morph_slots",
+            "morph_delta_cache",
+            "failed_skin_slots",
+            "failed_skin_blas",
+            "pending_skin_unload_victims",
+            "pending_morph_unload_victims",
+            "last_skin_coverage_frame",
+            "skin_dispatch_ran",
+            "skin_state_submitted",
+            "skin_pending_populated",
+            "clean_skin_frames",
+            "bind_inverse_upload_failed",
+            "bind_inverse_upload_warned",
+            "bind_inverse_upload_failure_count",
+        ],
+    )];
+
+    /// `(name, type text)` of each field declared directly on `VulkanContext`:
+    /// the lines at the struct's own indent, so a doc comment, a continuation
+    /// line or a nested type cannot read as one.
+    fn context_fields() -> Vec<(String, String)> {
+        let src = crate::source_scan::production_text(include_str!("mod.rs"));
+        let header = "\npub struct VulkanContext {\n";
+        let body = &src[src.find(header).expect("`pub struct VulkanContext` not found") + header.len()..];
+        let body = &body[..body.find("\n}\n").expect("`VulkanContext` is never closed")];
+        body.lines()
+            .filter_map(|line| {
+                let rest = line.strip_prefix("    ")?;
+                if rest.starts_with(' ') || rest.starts_with("//") {
+                    return None;
+                }
+                let rest = rest
+                    .strip_prefix("pub(crate) ")
+                    .or_else(|| rest.strip_prefix("pub(super) "))
+                    .or_else(|| rest.strip_prefix("pub "))
+                    .unwrap_or(rest);
+                let (name, ty) = rest.split_once(':')?;
+                name.chars()
+                    .all(|c| c.is_alphanumeric() || c == '_')
+                    .then(|| (name.to_string(), ty.trim().trim_end_matches(',').to_string()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn context_state_groups_own_their_fields() {
+        let fields = context_fields();
+        // Liveness: a parser that found nothing would pass vacuously.
+        assert!(
+            fields.iter().any(|(n, _)| n == "post") && fields.len() > 60,
+            "the VulkanContext field scan no longer works; fix it first ({} fields)",
+            fields.len()
+        );
+        let mut problems = Vec::new();
+        for (group, ty, owned) in GROUPS {
+            match fields.iter().find(|(n, _)| n == group) {
+                Some((_, t)) if t == ty => {}
+                Some((_, t)) => problems.push(format!("`VulkanContext::{group}` is `{t}`, not `{ty}`")),
+                None => problems.push(format!("`VulkanContext::{group}: {ty}` is missing")),
+            }
+            for name in owned {
+                if fields.iter().any(|(n, _)| n == name) {
+                    problems.push(format!("`VulkanContext::{name}` belongs on `{ty}` (`{group}`)"));
+                }
+            }
+        }
+        assert!(problems.is_empty(), "\n{}", problems.join("\n"));
     }
 }

@@ -1445,7 +1445,7 @@ pub(crate) fn try_spawn_morph_slot(
     let (deltas, target_count) = flatten_morph_targets(morph_targets, mesh.positions.len());
     match ctx.create_morph_slot_for_mesh(mesh_handle, &deltas, target_count, vertex_count) {
         Ok(slot) => {
-            ctx.morph_slots.insert(entity, slot);
+            ctx.skin.morph_slots.insert(entity, slot);
         }
         Err(e) => {
             log::warn!(

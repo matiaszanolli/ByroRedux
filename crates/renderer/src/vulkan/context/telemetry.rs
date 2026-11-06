@@ -462,7 +462,7 @@ impl VulkanContext {
     /// for diagnostic spot-checks via `byro-dbg`, not a stable
     /// regression key.
     pub fn fill_skin_coverage_stats(&self, stats: &mut byroredux_core::ecs::SkinCoverageStats) {
-        let f = self.last_skin_coverage_frame;
+        let f = self.skin.last_skin_coverage_frame;
         stats.dispatches_total = f.dispatches_total;
         stats.dispatches_skipped = f.dispatches_skipped;
         stats.first_sight_attempted = f.first_sight_attempted;
@@ -586,23 +586,23 @@ impl VulkanContext {
             stats.gpu_shadow_filter_active = false;
             stats.gpu_cloud_shadow_active = false;
         }
-        stats.slots_active = self.skin_slots.len() as u32;
-        stats.slot_pool_capacity = if self.skin_compute.is_some() {
+        stats.slots_active = self.skin.slots.len() as u32;
+        stats.slot_pool_capacity = if self.skin.compute.is_some() {
             SKIN_MAX_SLOTS
         } else {
             0
         };
-        stats.slots_failed = self.failed_skin_slots.len() as u32;
+        stats.slots_failed = self.skin.failed_skin_slots.len() as u32;
         // #4049 — cumulative count, not a per-frame gauge: the upload can
         // fail on frame N and succeed on frame N+1 without the pool being
         // reallocated, unlike `failed_skin_slots`'s "cleared on eviction"
         // shape, so there is no natural point to zero this at.
-        stats.bind_inverse_upload_failures = self.bind_inverse_upload_failure_count;
+        stats.bind_inverse_upload_failures = self.skin.bind_inverse_upload_failure_count;
         let (morph_slots, morph_bytes) = self.morph_memory_usage();
         stats.morph_slots = morph_slots;
         stats.morph_bytes = morph_bytes;
         stats.failed_entity_ids.clear();
-        for &eid in self.failed_skin_slots.iter().take(16) {
+        for &eid in self.skin.failed_skin_slots.iter().take(16) {
             stats.failed_entity_ids.push(eid);
         }
     }

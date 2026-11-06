@@ -1522,7 +1522,7 @@ mod tests {
         let reset = src
             .find("self.frame_counter = 0;")
             .expect("recreate_screen_passes must still zero frame_counter (#913)");
-        let rebase = src.find("for slot in self.skin_slots.values_mut()").expect(
+        let rebase = src.find("for slot in self.skin.slots.values_mut()").expect(
             "zeroing frame_counter must be paired with a rebase of the \
                  SkinSlot LRU stamps that are measured against it (#2925)",
         );
@@ -1538,13 +1538,13 @@ mod tests {
         // new epoch's first stamp instead, so dead slots age out normally.
         let rebase_arm = &src[rebase..];
         let rebase_arm = &rebase_arm[..rebase_arm
-            .find("for slot in self.morph_slots.values_mut()")
+            .find("for slot in self.skin.morph_slots.values_mut()")
             .expect("the MorphSlot sibling rebase must follow (#3231)")];
         assert!(
             rebase_arm.contains("last_used_frame = epoch_stamp"),
             "the SkinSlot rebase must stamp the new epoch's first stamp (#4969)"
         );
-        let morph = src.find("for slot in self.morph_slots.values_mut()").unwrap();
+        let morph = src.find("for slot in self.skin.morph_slots.values_mut()").unwrap();
         let epoch = src
             .find(
                 "let epoch_stamp = crate::vulkan::skin_compute::skin_lru_stamp(self.frame_counter);",

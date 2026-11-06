@@ -429,7 +429,7 @@ impl SkinSlotPool {
     /// since the last `clear_pose_dirty` — i.e. this frame's commits.
     ///
     /// Call this when the renderer reports it did not reach the skin
-    /// dispatch section this frame (`VulkanContext::skin_dispatch_ran ==
+    /// dispatch section this frame (`VulkanContext::skin.dispatch_ran ==
     /// false`): the CPU-side hash pass already ran and advanced the
     /// baseline before `draw_frame` was even called, so without this
     /// rollback an unchanged pose on the *next* frame would read "not

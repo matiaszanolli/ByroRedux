@@ -70,11 +70,11 @@ impl VulkanContext {
     /// from memory that was never built.
     ///
     /// The fourth, the `SkinSlotPool`'s pose-hash commits, lives in the caller
-    /// (`byroredux`) and reads [`Self::skin_state_submitted`], which this sets.
+    /// (`byroredux`) and reads `skin.state_submitted`, which this sets.
     pub(super) fn promote_skin_frame_state(&mut self, frame: usize) {
         self.scene_buffers.promote_bone_world_writes(frame);
-        for entity_id in std::mem::take(&mut self.skin_pending_populated) {
-            if let Some(slot) = self.skin_slots.get_mut(&entity_id) {
+        for entity_id in std::mem::take(&mut self.skin.pending_populated) {
+            if let Some(slot) = self.skin.slots.get_mut(&entity_id) {
                 slot.has_populated_output = true;
             }
         }
@@ -82,14 +82,14 @@ impl VulkanContext {
             accel.commit_provisional_skinned_blas();
         }
         // Only now is the record-time latch a submit-time fact.
-        self.skin_state_submitted = self.skin_dispatch_ran;
+        self.skin.state_submitted = self.skin.dispatch_ran;
     }
 
     /// #3991 — undo everything [`Self::promote_skin_frame_state`] would have
     /// promoted, because the command buffer carrying this frame's skin work was
     /// discarded by one of `draw_frame`'s three tail `Err` sites.
     ///
-    /// `skin_state_submitted` is left `false`, which is what makes the caller's
+    /// `skin.state_submitted` is left `false`, which is what makes the caller's
     /// `SkinSlotPool` rollback fire.
     pub(super) fn rollback_skin_frame_state(&mut self, frame: usize) {
         // Dropping the latch IS the rollback: the slot states were never
@@ -98,7 +98,7 @@ impl VulkanContext {
         self.scene_buffers.discard_bone_world_promotion(frame);
         // The list holds only entities whose bit was still `false`, so nothing
         // an earlier successful frame established is cleared here.
-        self.skin_pending_populated.clear();
+        self.skin.pending_populated.clear();
         if let Some(ref mut accel) = self.accel_manager {
             // TLAS identity/address caches are committed when recording its
             // build. Abandoning that recording must also prevent UPDATE from
@@ -162,7 +162,7 @@ impl VulkanContext {
         // `draw_frame` was even called) is safe to keep. Set unconditionally,
         // before the `Some`/`Some` gate below, since the absence of RT /
         // skin_compute means there's no dispatch to protect either way.
-        self.skin_dispatch_ran = true;
+        self.skin.dispatch_ran = true;
 
         // #3976 / D9-01 — the BLAS half of the `bind_inverses` upload-failure
         // path. `dispatch_skin_and_cluster` drains the pending first-sight
@@ -207,10 +207,10 @@ impl VulkanContext {
         // then next frame's pose-dirty skip would leave that garbage in place
         // for the build to consume — the bug would survive the fix.
         //
-        // `skin_dispatch_ran` is already set above, and `app_frame.rs`'s
-        // rollback is `!skin_dispatch_ran || bind_inverse_upload_failed`, so
+        // `skin.dispatch_ran` is already set above, and `app_frame.rs`'s
+        // rollback is `!skin.dispatch_ran || bind_inverse_upload_failed`, so
         // the second limb still fires and #3569's requeue still runs.
-        if self.bind_inverse_upload_failed {
+        if self.skin.bind_inverse_upload_failed {
             // `Once`-gated, matching this subsystem's `failed_skin_slots` /
             // `overflow_warned` convention: the requeue retries every frame,
             // so an un-gated warn here would spam once per frame for as long
@@ -231,7 +231,7 @@ impl VulkanContext {
 
         let skin_t0 = Instant::now();
         if let (Some(skin_pipeline), Some(ref mut accel)) =
-            (self.skin_compute.as_ref(), self.accel_manager.as_mut())
+            (self.skin.compute.as_ref(), self.accel_manager.as_mut())
         {
             if let Some(ref alloc) = self.allocator {
                 // Sub-block: limit borrow scope on `mesh_registry` /
@@ -260,13 +260,13 @@ impl VulkanContext {
                     accel,
                     alloc,
                     mesh_registry: &self.mesh_registry,
-                    morph_slots: &self.morph_slots,
-                    skin_slots: &mut self.skin_slots,
-                    failed_skin_slots: &mut self.failed_skin_slots,
-                    failed_skin_blas: &mut self.failed_skin_blas,
-                    pending_skin_unload_victims: &mut self.pending_skin_unload_victims,
-                    skin_pending_populated: &mut self.skin_pending_populated,
-                    last_skin_coverage_frame: &mut self.last_skin_coverage_frame,
+                    morph_slots: &self.skin.morph_slots,
+                    skin_slots: &mut self.skin.slots,
+                    failed_skin_slots: &mut self.skin.failed_skin_slots,
+                    failed_skin_blas: &mut self.skin.failed_skin_blas,
+                    pending_skin_unload_victims: &mut self.skin.pending_skin_unload_victims,
+                    skin_pending_populated: &mut self.skin.pending_populated,
+                    last_skin_coverage_frame: &mut self.skin.last_skin_coverage_frame,
                     gpu_timers: self.gpu_timers.as_mut(),
                 };
                 if let (Some((input_buffer, input_size)), Some(bone_buf)) =
@@ -392,7 +392,7 @@ impl VulkanContext {
         // consumer. Surfaced through `SkinCoverageStats` /
         // `skin.coverage`; distinct from the GPU brackets (#1194), which
         // time the device work this function only records.
-        self.last_skin_coverage_frame.cpu_skin_chain_ns = skin_t0.elapsed().as_nanos() as u64;
+        self.skin.last_skin_coverage_frame.cpu_skin_chain_ns = skin_t0.elapsed().as_nanos() as u64;
     }
 
     /// #3374 — drop `MorphSlot`s for despawned entities and for entries past the
@@ -410,8 +410,8 @@ impl VulkanContext {
             // stamp source: morph stamps come from entity liveness
             // (`refresh_morph_slot_lru`, #4294), not this dispatch loop.
             let mut morph_evictees: Vec<EntityId> =
-                std::mem::take(&mut self.pending_morph_unload_victims);
-            morph_evictees.extend(self.morph_slots.iter().filter_map(|(&eid, slot)| {
+                std::mem::take(&mut self.skin.pending_morph_unload_victims);
+            morph_evictees.extend(self.skin.morph_slots.iter().filter_map(|(&eid, slot)| {
                 super::super::skin_compute::should_evict_skin_slot(
                     slot.last_used_frame,
                     now,
@@ -425,7 +425,7 @@ impl VulkanContext {
                     morph_evictees.len()
                 );
                 for eid in morph_evictees {
-                    if let Some(slot) = self.morph_slots.remove(&eid) {
+                    if let Some(slot) = self.skin.morph_slots.remove(&eid) {
                         slot.destroy(&self.device, alloc);
                     }
                 }
@@ -433,7 +433,7 @@ impl VulkanContext {
             // The cache holds weak lookup entries only, but prune dead keys
             // here so a session that streams many unique morph meshes does
             // not grow the CPU-side index without bound.
-            self.morph_delta_cache
+            self.skin.morph_delta_cache
                 .retain(|_, delta| delta.strong_count() != 0);
         }
     }
@@ -1304,8 +1304,8 @@ mod skin_chain_phase_order_tests {
             crate::source_scan::function_text(src, "fn record_skinned_blas_refit("),
             "record_skinned_blas_refit",
             &[
-                "self.skin_dispatch_ran = true;",
-                "if self.bind_inverse_upload_failed {",
+                "self.skin.dispatch_ran = true;",
+                "if self.skin.bind_inverse_upload_failed {",
                 "chain.collect_skin_dispatches(",
                 "chain.prepare_first_sight_builds(",
                 "chain.record_skin_dispatches(",
@@ -1313,7 +1313,7 @@ mod skin_chain_phase_order_tests {
                 "self.scratch.skin_built_this_frame_scratch = built_this_frame;",
                 "chain.evict_idle_skin_slots();",
                 "self.evict_idle_morph_slots();",
-                "self.last_skin_coverage_frame.cpu_skin_chain_ns =",
+                "self.skin.last_skin_coverage_frame.cpu_skin_chain_ns =",
             ],
         );
     }
@@ -1502,14 +1502,14 @@ mod skin_chain_timing_is_consumed_tests {
         // `cargo fmt` re-wrapping the statement can't fail the test for
         // a cosmetic reason.
         let store_pos = src
-            .find("self.last_skin_coverage_frame.cpu_skin_chain_ns =")
+            .find("self.skin.last_skin_coverage_frame.cpu_skin_chain_ns =")
             .expect(
                 "record_skinned_blas_refit must store its elapsed time on \
                  `last_skin_coverage_frame` so `fill_skin_coverage_stats` can surface \
                  it (#2803)",
             );
         assert!(
-            src[store_pos..].starts_with("self.last_skin_coverage_frame.cpu_skin_chain_ns =")
+            src[store_pos..].starts_with("self.skin.last_skin_coverage_frame.cpu_skin_chain_ns =")
                 && src[store_pos..]
                     .lines()
                     .take(2)
@@ -1575,7 +1575,7 @@ mod skin_eviction_runs_without_global_vertex_buffer_tests {
             "evict_idle_morph_slots must drain pending_morph_unload_victims"
         );
         assert!(
-            !morph.contains("self.skin_compute") && !morph.contains("self.accel_manager"),
+            !morph.contains("self.skin.compute") && !morph.contains("self.accel_manager"),
             "a MorphSlot needs only the device and the allocator to be destroyed (#3374)"
         );
 
@@ -1626,7 +1626,7 @@ mod skin_eviction_runs_without_global_vertex_buffer_tests {
             "the SkinSlot LRU sweep must exist"
         );
         let skin_chain_ns_pos = recorder
-            .find("self.last_skin_coverage_frame.cpu_skin_chain_ns =")
+            .find("self.skin.last_skin_coverage_frame.cpu_skin_chain_ns =")
             .expect(
                 "record_skinned_blas_refit must record its elapsed time as the last thing \
                  it does (#2803 gave the measurement a consumer; it is still the anchor \
@@ -1676,20 +1676,20 @@ mod bind_inverse_upload_failure_blas_gate_tests {
         // the cut a removed guard still "matches" its own search string.
         let src = production_source();
 
-        let gate_pos = src.find("if self.bind_inverse_upload_failed {").expect(
+        let gate_pos = src.find("if self.skin.bind_inverse_upload_failed {").expect(
             "record_skinned_blas_refit must skip the skinned-BLAS pass when a pending \
                  bind_inverses upload failed — `skin_palette.comp` computes those slots as \
                  `boneWorld × UNDEFINED`, and building an acceleration structure from the \
                  vertices skinned against them is the CRITICAL AS case (#3976)",
         );
 
-        // The gate must sit AFTER `skin_dispatch_ran = true`, or the early
+        // The gate must sit AFTER `skin.dispatch_ran = true`, or the early
         // return would leave the flag false and `app_frame.rs`'s rollback
-        // (`!skin_dispatch_ran || bind_inverse_upload_failed`) would fire on
+        // (`!skin.dispatch_ran || bind_inverse_upload_failed`) would fire on
         // the wrong limb — harmless today, but it would make the requeue
         // depend on which limb tripped rather than on the failure itself.
         let dispatch_ran_pos = src
-            .find("self.skin_dispatch_ran = true;")
+            .find("self.skin.dispatch_ran = true;")
             .expect("record_skinned_blas_refit must still set skin_dispatch_ran (#1796)");
         assert!(
             dispatch_ran_pos < gate_pos,
@@ -1727,7 +1727,7 @@ mod bind_inverse_upload_failure_blas_gate_tests {
     #[test]
     fn the_skip_warning_is_once_gated() {
         let src = production_source();
-        let gate_pos = src.find("if self.bind_inverse_upload_failed {").unwrap();
+        let gate_pos = src.find("if self.skin.bind_inverse_upload_failed {").unwrap();
         let tail = &src[gate_pos..];
         let body_end = tail.find("\n        }").unwrap_or(tail.len());
         let body = &tail[..body_end];

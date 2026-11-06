@@ -1024,7 +1024,7 @@ impl VulkanContext {
         // back to the bind-pose hit-normal path is consistent with
         // what the rest of the RT pipeline does for that draw.
         let slot_address = (draw_cmd.bone_offset != 0)
-            .then(|| self.skin_slots.get(&draw_cmd.entity_id))
+            .then(|| self.skin.slots.get(&draw_cmd.entity_id))
             .flatten()
             // #2402 — the slot must have been sized for THIS mesh. The
             // refit path's capacity reconciliation skips non-RT-capable
@@ -1052,7 +1052,7 @@ impl VulkanContext {
         // v1-scoped to skinned meshes only (`bone_offset != 0`),
         // matching MorphSlot's current spawn-time creation site.
         let morph_slot_fields = (draw_cmd.bone_offset != 0)
-            .then(|| self.morph_slots.get(&draw_cmd.entity_id))
+            .then(|| self.skin.morph_slots.get(&draw_cmd.entity_id))
             .flatten()
             .filter(|slot| {
                 morph_slot_backs_mesh(

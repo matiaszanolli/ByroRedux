@@ -868,7 +868,7 @@ impl App {
             // record-time latch reads `true`. The submit-time flag subsumes the
             // old condition: it is only ever set on a frame that both reached
             // the skin section and submitted successfully.
-            if !ctx.skin_state_submitted || ctx.bind_inverse_upload_failed {
+            if !ctx.skin.state_submitted || ctx.skin.bind_inverse_upload_failed {
                 self.skin_slot_pool.rollback_pending_pose_commits();
                 self.skin_slot_pool
                     .requeue_pending(std::mem::take(&mut pending_for_requeue));
@@ -1816,7 +1816,7 @@ mod skin_dispatch_ran_rollback_scope_tests {
             .find("let draw_result = ctx.draw_frame(FrameInputs {")
             .expect("render_one_frame must call draw_frame and capture its Result (#2522)");
         let rollback_check_pos = src
-            .find("if !ctx.skin_state_submitted || ctx.bind_inverse_upload_failed {")
+            .find("if !ctx.skin.state_submitted || ctx.skin.bind_inverse_upload_failed {")
             .expect(
                 "render_one_frame must check skin_state_submitted for rollback (#1791/#1796/#3991)",
             );
@@ -1860,7 +1860,7 @@ mod bind_inverse_upload_failed_rollback_tests {
         let src = include_str!("app_frame.rs");
 
         assert!(
-            src.contains("if !ctx.skin_state_submitted || ctx.bind_inverse_upload_failed {"),
+            src.contains("if !ctx.skin.state_submitted || ctx.skin.bind_inverse_upload_failed {"),
             "the rollback check must widen to bind_inverse_upload_failed \
              alongside the skin-state flag, or a failed first-sight \
              bind_inverses upload is never requeued. (#3569)"
@@ -1895,7 +1895,7 @@ mod skin_state_submitted_rollback_tests {
              one of draw_frame's three tail Err sites (#3991)"
         );
         assert!(
-            src.contains("if !ctx.skin_state_submitted || ctx.bind_inverse_upload_failed {"),
+            src.contains("if !ctx.skin.state_submitted || ctx.skin.bind_inverse_upload_failed {"),
             "the rollback must gate on the SUBMIT-time `skin_state_submitted` \
              (#3991)"
         );

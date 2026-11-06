@@ -45,8 +45,8 @@ impl VulkanContext {
         // `MAX_FRAMES_IN_FLIGHT + 1` sweep threshold in
         // `SkinSlotPool::sweep` / `build_skinned_palettes`).
         let skin_state_dirty = !pose_dirty.is_empty() || !bind_inverse_pending_uploads.is_empty();
-        self.clean_skin_frames = next_clean_skin_frames(self.clean_skin_frames, skin_state_dirty);
-        let skip_skin_gpu_refresh = should_skip_skin_gpu_refresh(self.clean_skin_frames);
+        self.skin.clean_skin_frames = next_clean_skin_frames(self.skin.clean_skin_frames, skin_state_dirty);
+        let skip_skin_gpu_refresh = should_skip_skin_gpu_refresh(self.skin.clean_skin_frames);
 
         // M29.5/M29.6 — upload bone_world (per-frame) and any pending
         // first-sight bind_inverses (write-once persistent SSBO). The
@@ -105,10 +105,10 @@ impl VulkanContext {
                     // and buries the diagnostically useful FIRST occurrence.
                     // `bind_inverse_upload_failure_count` keeps the magnitude
                     // (surfaced via `skin.coverage`) after the log goes silent.
-                    self.bind_inverse_upload_failure_count =
-                        self.bind_inverse_upload_failure_count.saturating_add(1);
-                    if !self.bind_inverse_upload_warned {
-                        self.bind_inverse_upload_warned = true;
+                    self.skin.bind_inverse_upload_failure_count =
+                        self.skin.bind_inverse_upload_failure_count.saturating_add(1);
+                    if !self.skin.bind_inverse_upload_warned {
+                        self.skin.bind_inverse_upload_warned = true;
                         log::warn!(
                             "Failed to upload pending bind_inverses: {e} (subsequent \
                              consecutive failures are counted, not logged — see \
@@ -118,12 +118,12 @@ impl VulkanContext {
                     // #3569 / D9-01 — `bind_inverse_pending_uploads` was
                     // already irrevocably drained from `SkinSlotPool` before
                     // this call. `record_skinned_blas_refit` (later this
-                    // same frame) sets `skin_dispatch_ran = true`
+                    // same frame) sets `skin.dispatch_ran = true`
                     // unconditionally, so without this latch the caller's
-                    // `!skin_dispatch_ran` requeue check never fires and
+                    // `!skin.dispatch_ran` requeue check never fires and
                     // these entries are lost for good. Reset alongside
-                    // `skin_dispatch_ran` at the top of `draw_frame`.
-                    self.bind_inverse_upload_failed = true;
+                    // `skin.dispatch_ran` at the top of `draw_frame`.
+                    self.skin.bind_inverse_upload_failed = true;
                     0
                 })
         } else {
@@ -162,7 +162,7 @@ impl VulkanContext {
         // COMPUTE_SHADER_WRITE → (COMPUTE | VERTEX | FRAGMENT) SHADER_READ
         // barrier on the palette buffer after the dispatch so all
         // downstream consumers see well-defined data.
-        if let Some(ref mut skin_palette) = self.skin_palette {
+        if let Some(ref mut skin_palette) = self.skin.palette {
             let bone_dispatch_bytes = self.scene_buffers.bone_world_dispatch_bytes(frame);
             // Each palette slot is one mat4 = 64 B. Skip the dispatch
             // entirely when there are no skinned bones this frame —
@@ -666,9 +666,9 @@ impl VulkanContext {
 /// Regression for #3569 / D9-01. A failed first-sight `bind_inverses`
 /// upload must latch `bind_inverse_upload_failed = true` in the same
 /// `unwrap_or_else` arm that logs the warning — otherwise the caller's
-/// `!skin_dispatch_ran || bind_inverse_upload_failed` rollback check in
+/// `!skin.dispatch_ran || bind_inverse_upload_failed` rollback check in
 /// `app_frame.rs` never sees the failure (`record_skinned_blas_refit`,
-/// later this same frame, unconditionally sets `skin_dispatch_ran =
+/// later this same frame, unconditionally sets `skin.dispatch_ran =
 /// true`), and the entries `SkinSlotPool::drain_pending` already removed
 /// are lost for good.
 #[cfg(test)]
@@ -682,7 +682,7 @@ mod bind_inverse_upload_failure_latch_tests {
             .expect(
             "dispatch_skin_and_cluster must warn on upload_pending_bind_inverses failure (#3569)",
         );
-        let latch_pos = src.find("self.bind_inverse_upload_failed = true;").expect(
+        let latch_pos = src.find("self.skin.bind_inverse_upload_failed = true;").expect(
             "the upload_pending_bind_inverses failure arm must set \
                  bind_inverse_upload_failed = true, or the requeue signal \
                  is silently lost (#3569)",
@@ -717,7 +717,7 @@ mod bind_inverse_upload_failure_is_rate_limited_tests {
         let src = crate::source_scan::production_text(include_str!("dispatch_skin_and_cluster.rs"));
 
         assert!(
-            src.contains("if !self.bind_inverse_upload_warned {"),
+            src.contains("if !self.skin.bind_inverse_upload_warned {"),
             "the failure arm must gate its warn!() behind a one-shot latch \
              (bind_inverse_upload_warned), matching SkinSlotPool::overflow_warned \
              and the failed_skin_slots/failed_skin_blas convention — an \
@@ -733,12 +733,12 @@ mod bind_inverse_upload_failure_is_rate_limited_tests {
         // The counter must be incremented UNCONDITIONALLY (every failure),
         // not just inside the `if !warned` branch — a source-scan proxy for
         // that is: the increment line must appear textually BEFORE the
-        // `if !self.bind_inverse_upload_warned {` gate that guards the warn.
+        // `if !self.skin.bind_inverse_upload_warned {` gate that guards the warn.
         let inc_pos = src
-            .find("self.bind_inverse_upload_failure_count.saturating_add(1);")
+            .find("self.skin.bind_inverse_upload_failure_count.saturating_add(1);")
             .expect("increment must still exist under this exact spelling");
         let gate_pos = src
-            .find("if !self.bind_inverse_upload_warned {")
+            .find("if !self.skin.bind_inverse_upload_warned {")
             .expect("the one-shot gate must still exist under this exact spelling");
         assert!(
             inc_pos < gate_pos,

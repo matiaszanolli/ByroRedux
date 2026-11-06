@@ -30,10 +30,10 @@ impl VulkanContext {
         // counters on both skin compute pipelines. The dispatch
         // bodies bump these only when they actually call
         // `vkUpdateDescriptorSets`; steady state stays at 0.
-        if let Some(ref p) = self.skin_compute {
+        if let Some(ref p) = self.skin.compute {
             p.reset_descriptor_writes_counter();
         }
-        if let Some(ref p) = self.skin_palette {
+        if let Some(ref p) = self.skin.palette {
             p.reset_descriptor_writes_counter();
         }
 

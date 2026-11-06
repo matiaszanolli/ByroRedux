@@ -1489,7 +1489,7 @@ impl VulkanContext {
         // shutdown. With a real stamp, live slots re-stamp as before and dead
         // or idle ones age out on the normal threshold in the new epoch.
         let epoch_stamp = crate::vulkan::skin_compute::skin_lru_stamp(self.frame_counter);
-        for slot in self.skin_slots.values_mut() {
+        for slot in self.skin.slots.values_mut() {
             slot.last_used_frame = epoch_stamp;
         }
         // #3231 — same epoch-rebase, `MorphSlot` sibling: its eviction
@@ -1497,7 +1497,7 @@ impl VulkanContext {
         // `frame_counter` clock via the same `should_evict_skin_slot`
         // call, so it's exposed to the exact same stale-stamp hazard
         // described above.
-        for slot in self.morph_slots.values_mut() {
+        for slot in self.skin.morph_slots.values_mut() {
             slot.last_used_frame = epoch_stamp;
         }
 

@@ -82,8 +82,8 @@ impl VulkanContext {
         // and every `skin_slots.insert` sits inside a `skin_compute` guard);
         // pinned by `skin_slot_drain_is_not_nested_under_skin_compute_tests`
         // so a device-lost recovery or RT-optional path cannot reintroduce it.
-        for (_eid, mut slot) in std::mem::take(&mut self.skin_slots) {
-            if let Some(ref skin) = self.skin_compute {
+        for (_eid, mut slot) in std::mem::take(&mut self.skin.slots) {
+            if let Some(ref skin) = self.skin.compute {
                 skin.destroy_slot(&self.device, alloc, slot);
             } else {
                 slot.destroy(&self.device, alloc);
@@ -93,10 +93,10 @@ impl VulkanContext {
         // mesh-shared delta. Destroying every slot destroys the delta with the
         // last one, even though the weak cache still indexes it (#4838); the
         // cache is only an index and is cleared after its owners are gone.
-        for (_eid, slot) in std::mem::take(&mut self.morph_slots) {
+        for (_eid, slot) in std::mem::take(&mut self.skin.morph_slots) {
             slot.destroy(&self.device, alloc);
         }
-        self.morph_delta_cache.clear();
+        self.skin.morph_delta_cache.clear();
         if let Some(ref mut accel) = self.accel_manager {
             // Pre-drain per-skinned-entity BLAS via the
             // `pending_destroy_blas` queue so the
@@ -147,7 +147,7 @@ impl VulkanContext {
             // bench's pipelines, sets, images or buffers.
             unsafe { bench.destroy(&self.device, alloc) };
         }
-        if let Some(ref mut sc) = self.skin_compute {
+        if let Some(ref mut sc) = self.skin.compute {
             sc.destroy(&self.device);
         }
         // NOTE: `skin_palette` + `gpu_timers` teardown was
@@ -315,7 +315,7 @@ impl Drop for VulkanContext {
                 // guaranteed by the `device_wait_idle()` at the top.
                 timers.destroy(&self.device);
             }
-            if let Some(ref mut sp) = self.skin_palette {
+            if let Some(ref mut sp) = self.skin.palette {
                 // M29.5 — palette compute pipeline. No per-slot
                 // allocations to drain (single dispatch per frame, not
                 // per-skinned-entity), so destroy is unconditional.
@@ -520,8 +520,8 @@ impl Drop for VulkanContext {
 #[cfg(test)]
 mod skin_slot_drain_is_not_nested_under_skin_compute_tests {
     /// The drain must be a bare `for` over `std::mem::take(&mut
-    /// self.skin_slots)`, not a loop inside `if let Some(ref skin) =
-    /// self.skin_compute`.
+    /// self.skin.slots)`, not a loop inside `if let Some(ref skin) =
+    /// self.skin.compute`.
     ///
     /// `SkinSlot::destroy` needs only the device and the allocator; only the
     /// `free_descriptor_sets` half needs the pipeline, and pool destruction
@@ -535,17 +535,17 @@ mod skin_slot_drain_is_not_nested_under_skin_compute_tests {
         let src = crate::source_scan::production_text(include_str!("teardown.rs"));
 
         let drain_pos = src
-            .find("for (_eid, mut slot) in std::mem::take(&mut self.skin_slots)")
+            .find("for (_eid, mut slot) in std::mem::take(&mut self.skin.slots)")
             .expect(
                 "the skin_slots drain must be an unconditional `for` over the take — \
-                 re-nesting it under `if let Some(ref skin) = self.skin_compute` leaks \
+                 re-nesting it under `if let Some(ref skin) = self.skin.compute` leaks \
                  every output buffer and its allocator Arc clone on any configuration \
                  where the pipeline is None (#3657, the #3374 shape for the skin half)",
             );
         // The pipeline is still consulted, but only for the descriptor-set
         // free, and only from *inside* the loop body.
         let guarded_free_pos = src[drain_pos..]
-            .find("if let Some(ref skin) = self.skin_compute {")
+            .find("if let Some(ref skin) = self.skin.compute {")
             .map(|off| drain_pos + off)
             .expect("the descriptor-set free must still be gated on the pipeline");
         let fallback_pos = src[drain_pos..]
@@ -566,7 +566,7 @@ mod skin_slot_drain_is_not_nested_under_skin_compute_tests {
         // free_descriptor_sets above is a
         // VUID-vkFreeDescriptorSets-descriptorPool-parameter violation.
         let pipeline_destroy_pos = src
-            .find("if let Some(ref mut sc) = self.skin_compute {\n            sc.destroy(&self.device);")
+            .find("if let Some(ref mut sc) = self.skin.compute {\n            sc.destroy(&self.device);")
             .expect("the SkinComputePipeline destroy must exist");
         assert!(
             drain_pos < pipeline_destroy_pos,

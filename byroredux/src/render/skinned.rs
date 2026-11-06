@@ -311,7 +311,7 @@ pub(super) fn update_morph_weights(world: &World, ctx: &mut byroredux_renderer::
     let Some(weights_q) = world.query::<AnimatedMorphWeights>() else {
         return;
     };
-    for (&entity, slot) in ctx.morph_slots.iter_mut() {
+    for (&entity, slot) in ctx.skin.morph_slots.iter_mut() {
         let Some(weights) = weights_q.get(entity) else {
             continue;
         };

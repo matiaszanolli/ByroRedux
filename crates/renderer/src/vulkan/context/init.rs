@@ -937,25 +937,14 @@ impl VulkanContext {
             // view of the CLI.
             groundcover_bench: None,
             groundcover_bench_cells: Vec::new(),
-            skin_compute,
+            // Everything but the two pipelines starts empty (`Default`).
+            skin: SkinningState {
+                compute: skin_compute,
+                palette: skin_palette,
+                ..Default::default()
+            },
             gpu_timers,
-            skin_palette,
-            skin_slots: FxHashMap::default(),
-            morph_slots: FxHashMap::default(),
-            morph_delta_cache: FxHashMap::default(),
-            failed_skin_slots: FxHashSet::default(),
-            failed_skin_blas: FxHashSet::default(),
-            pending_skin_unload_victims: Vec::new(),
-            pending_morph_unload_victims: Vec::new(),
-            last_skin_coverage_frame: super::super::skin_compute::SkinCoverageFrame::default(),
             last_draw_call_stats: DrawCallStats::default(),
-            skin_dispatch_ran: false,
-            skin_state_submitted: false,
-            skin_pending_populated: Vec::new(),
-            bind_inverse_upload_failed: false,
-            bind_inverse_upload_warned: false,
-            bind_inverse_upload_failure_count: 0,
-            clean_skin_frames: 0,
             post: PostChain {
                 sky_cube,
                 ssao,

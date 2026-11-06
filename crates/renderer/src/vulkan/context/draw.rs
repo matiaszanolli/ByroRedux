@@ -18,7 +18,7 @@ impl VulkanContext {
     /// Publish CPU-staged morph weights after the dual-fence wait has proven
     /// no prior submission can still read their mapped buffers (#3244).
     pub(super) fn flush_pending_morph_weights(&mut self) -> Result<()> {
-        for (&entity, slot) in &mut self.morph_slots {
+        for (&entity, slot) in &mut self.skin.morph_slots {
             slot.flush_pending_weights(&self.device)
                 .with_context(|| format!("flush MorphSlot weights for entity {entity}"))?;
         }
@@ -32,7 +32,7 @@ impl VulkanContext {
     /// `MorphSlot` cannot take its liveness from the skin dispatch loop.
     pub fn refresh_morph_slot_lru(&mut self, is_live: impl Fn(EntityId) -> bool) {
         crate::vulkan::skin_compute::refresh_live_slot_stamps(
-            self.morph_slots
+            self.skin.morph_slots
                 .iter_mut()
                 .map(|(&entity, slot)| (entity, &mut slot.last_used_frame)),
             crate::vulkan::skin_compute::skin_lru_stamp(self.frame_counter),
@@ -113,25 +113,25 @@ impl VulkanContext {
             pose_dirty,
         } = inputs;
         // #1796 / D6-02 — reset before either early-return guard below so
-        // a bailed frame reads `false`; see the field doc on `skin_dispatch_ran`.
-        self.skin_dispatch_ran = false;
+        // a bailed frame reads `false`; see the field doc on `skin.dispatch_ran`.
+        self.skin.dispatch_ran = false;
         // #3991 — the submit-time counterpart. Reset here for the same reason,
         // and set only once `queue_submit` has returned `Ok`. Everything the
         // skin chain commits is latched between these two points.
-        self.skin_state_submitted = false;
-        self.skin_pending_populated.clear();
+        self.skin.state_submitted = false;
+        self.skin.pending_populated.clear();
         self.discard_pending_skip_clear_latches(); // #5956
-        // #3569 / D9-01 — reset alongside `skin_dispatch_ran`: this frame's
+        // #3569 / D9-01 — reset alongside `skin.dispatch_ran`: this frame's
         // upload hasn't happened yet, so any stale `true` from a previous
         // frame's failure must not leak into this frame's rollback check.
-        self.bind_inverse_upload_failed = false;
-        // #2112 / D6-01 — same reasoning as `skin_dispatch_ran` above: reset
+        self.skin.bind_inverse_upload_failed = false;
+        // #2112 / D6-01 — same reasoning as `skin.dispatch_ran` above: reset
         // before the early-return guard so a bailed frame reads zero
         // instead of retaining the previous frame's counters. Frame without
         // a skinned section (no RT, no bone buffer) also reads zero.
         // Section-local increments below populate `last_skin_coverage_frame`;
         // `fill_skin_coverage_stats` snapshots it after `Scheduler::run`.
-        self.last_skin_coverage_frame = super::super::skin_compute::SkinCoverageFrame::default();
+        self.skin.last_skin_coverage_frame = super::super::skin_compute::SkinCoverageFrame::default();
         // Reset per-frame draw-call counts. Populated after the batch
         // merge (`batch_count`) and inside the indirect-grouping draw
         // loop below (`indirect_call_count`). Read by the app's stats
@@ -620,7 +620,7 @@ impl VulkanContext {
             }
         }
         // #3991 — the site that gives this frame's whole recording its meaning.
-        // `skin_state_submitted` stays `false`, which is what the caller's
+        // `skin.state_submitted` stays `false`, which is what the caller's
         // rollback of the CPU-side pose commits reads.
         if let Some(e) = submit_failed {
             self.rollback_skin_frame_state(frame);
@@ -1106,7 +1106,7 @@ mod framebuffers_empty_guard_tests {
     }
 }
 
-/// Regression for #1796 / D6-02. `skin_dispatch_ran` must be reset
+/// Regression for #1796 / D6-02. `skin.dispatch_ran` must be reset
 /// `false` before both of `draw_frame`'s early-return guards (empty
 /// framebuffers, `ERROR_OUT_OF_DATE_KHR`) and only flipped `true` once
 /// `record_skinned_blas_refit` — the function that actually reads
@@ -1117,7 +1117,7 @@ mod framebuffers_empty_guard_tests {
 #[cfg(test)]
 mod skin_dispatch_ran_ordering_tests {
     /// #3991 / REN-2026-09-06-D4-01. `record_skinned_blas_refit` sets
-    /// `skin_dispatch_ran` at its top, and the three sites below sit *under*
+    /// `skin.dispatch_ran` at its top, and the three sites below sit *under*
     /// that call: `end_command_buffer`, `reset_fences` and `queue_submit`. On
     /// any of them the command buffer is discarded and nothing recorded this
     /// frame executes, so every commit the skin chain made during recording
@@ -1253,10 +1253,10 @@ mod skin_dispatch_ran_ordering_tests {
     fn the_submit_time_flag_is_reset_alongside_the_record_time_latch() {
         let src = super::draw_frame_body();
         let record_reset = src
-            .find("self.skin_dispatch_ran = false;")
+            .find("self.skin.dispatch_ran = false;")
             .expect("draw_frame must reset skin_dispatch_ran (#1796)");
         let submit_reset = src
-            .find("self.skin_state_submitted = false;")
+            .find("self.skin.state_submitted = false;")
             .expect("draw_frame must reset skin_state_submitted (#3991)");
         let fb_guard = src
             .find("if self.swapchain.framebuffers.is_empty() {")
@@ -1266,7 +1266,7 @@ mod skin_dispatch_ran_ordering_tests {
         // promotion — never at recording time, which is the bug this fixes.
         let refit = crate::source_scan::production_text(include_str!("skinned_blas_refit.rs"));
         assert!(
-            refit.contains("self.skin_state_submitted = self.skin_dispatch_ran;"),
+            refit.contains("self.skin.state_submitted = self.skin.dispatch_ran;"),
             "the submit-time flag must be derived from the record-time latch \
              inside promote_skin_frame_state, and nowhere else (#3991)"
         );
@@ -1277,7 +1277,7 @@ mod skin_dispatch_ran_ordering_tests {
         let src = super::draw_frame_body();
 
         let reset_pos = src
-            .find("self.skin_dispatch_ran = false;")
+            .find("self.skin.dispatch_ran = false;")
             .expect("draw_frame must reset skin_dispatch_ran to false (#1796)");
         let fb_guard_pos = src
             .find("if self.swapchain.framebuffers.is_empty() {")
@@ -1333,7 +1333,7 @@ mod skin_dispatch_ran_ordering_tests {
 }
 
 /// Regression for #3569 / D9-01. `bind_inverse_upload_failed` must be
-/// reset `false` in lockstep with `skin_dispatch_ran` — both guard the
+/// reset `false` in lockstep with `skin.dispatch_ran` — both guard the
 /// same rollback check in `app_frame.rs`, and a stale `true` surviving
 /// from a previous frame's failure would force an unnecessary requeue
 /// every frame after.
@@ -1344,10 +1344,10 @@ mod bind_inverse_upload_failed_reset_tests {
         let src = super::draw_frame_body();
 
         let skin_reset_pos = src
-            .find("self.skin_dispatch_ran = false;")
+            .find("self.skin.dispatch_ran = false;")
             .expect("draw_frame must reset skin_dispatch_ran to false (#1796)");
         let upload_failed_reset_pos = src
-            .find("self.bind_inverse_upload_failed = false;")
+            .find("self.skin.bind_inverse_upload_failed = false;")
             .expect("draw_frame must reset bind_inverse_upload_failed to false (#3569)");
         let fb_guard_pos = src
             .find("if self.swapchain.framebuffers.is_empty() {")

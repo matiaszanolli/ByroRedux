@@ -80,7 +80,7 @@ impl VulkanContext {
         );
 
         let cached = self
-            .morph_delta_cache
+            .skin.morph_delta_cache
             .get(&mesh_handle)
             .and_then(Weak::upgrade);
         let (delta, cache_new) = if let Some(delta) = cached {
@@ -88,7 +88,7 @@ impl VulkanContext {
         } else {
             // Remove a dead weak entry before replacing it so a long session
             // that revisits meshes does not retain stale cache keys.
-            self.morph_delta_cache.remove(&mesh_handle);
+            self.skin.morph_delta_cache.remove(&mesh_handle);
             let upload_ctx = crate::upload_ctx!(self);
             (
                 Arc::new(super::super::morph_compute::MorphDelta::create(
@@ -111,7 +111,7 @@ impl VulkanContext {
         ) {
             Ok(slot) => {
                 if cache_new {
-                    self.morph_delta_cache
+                    self.skin.morph_delta_cache
                         .insert(mesh_handle, Arc::downgrade(&delta));
                 }
                 Ok(slot)
@@ -134,13 +134,13 @@ impl VulkanContext {
     /// counted once per entity slot.
     pub fn morph_memory_usage(&self) -> (u32, u64) {
         let delta_bytes = self
-            .morph_delta_cache
+            .skin.morph_delta_cache
             .values()
             .filter_map(Weak::upgrade)
             .map(|delta| delta.byte_size());
-        let weight_bytes = self.morph_slots.values().map(|slot| slot.weight_bytes());
+        let weight_bytes = self.skin.morph_slots.values().map(|slot| slot.weight_bytes());
         (
-            self.morph_slots.len() as u32,
+            self.skin.morph_slots.len() as u32,
             morph_memory_bytes(delta_bytes, weight_bytes),
         )
     }

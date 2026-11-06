@@ -568,17 +568,17 @@ fn release_entities_timed(
     // unload runs outside the per-frame fence boundary).
     queue_skin_unload_victims(
         &victims,
-        |eid| ctx.skin_slots.contains_key(&eid),
-        &mut ctx.pending_skin_unload_victims,
-        &mut ctx.failed_skin_slots,
+        |eid| ctx.skin.slots.contains_key(&eid),
+        &mut ctx.skin.pending_skin_unload_victims,
+        &mut ctx.skin.failed_skin_slots,
     );
     // #3231 — same leak this cell-unload-without-a-render-tick fix
     // closed for `skin_slots` (#1003) applies to `morph_slots`: it has
     // no lazy retry cache to reconcile, so a direct filter+push is
     // enough (no `queue_skin_unload_victims` reuse needed).
     for &eid in &victims {
-        if ctx.morph_slots.contains_key(&eid) {
-            ctx.pending_morph_unload_victims.push(eid);
+        if ctx.skin.morph_slots.contains_key(&eid) {
+            ctx.skin.pending_morph_unload_victims.push(eid);
         }
     }
     // Same cache-shape fix for textures. Descriptor fallback writes still run
