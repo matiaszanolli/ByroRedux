@@ -59,3 +59,29 @@ renderer-or-archive dependency each one states is real.
 
 **Not done:** the acceptance criterion "every scan classed replaceable has a behavioural
 test" cannot be met until the remaining ~125 sites are classified, so #6686 stays open.
+
+## Third pass — the next six files by site count (2026-11-06)
+
+**Census:** outside the 13 files classified so far, `rg -c 'include_str!\(|read_to_string\('` finds **216 lines
+in 87 files**. That counts every read, including `SOURCES` concat rows and reads that feed a check, so it is
+an upper bound on scans, not a scan count. This pass takes the six biggest files (the counts below are
+those lines). Classified **by doc comment only**; five reads had no doc and were not classified.
+
+| File | Lines | Test(s) | Class | Basis |
+|---|---|---|---|---|
+| `material_translate.rs` | 11 | `anisotropic_rationale_matches_what_the_source_formats_carry` (#3613), `documented_texture_role_list_matches_the_struct` (#3465) | prose | The docs say they keep a rationale comment and two hand-written texture-role lists in `nifal.md` and the audit SKILL honest against the struct. A comment or document is the subject. |
+| `material_translate.rs` | | `every_exterior_spawner_inserts_a_boundary_material` (#2444) | device/data | Doc: the spawners need a live `VulkanContext` (mesh upload, texture resolve). |
+| `material_translate.rs` | | `every_source_derived_material_field_is_pinned_by_a_test` (#3462) | syntax | Meta-completeness: checks that each `source.X → material.X` line has a test that reverts it. The pinned object is the test file's text. |
+| `workspace_hygiene_tests.rs` | 10 | 8 repo lints: self-described disposable examples, string literals with a 6+ space run, `classify_pbr` mentions framed as historic, README/ROADMAP line ceilings, example-target counts, real-data pin lanes, the live-schedule table | prose / syntax | These lint the repository tree (docs, comments, file layout), not engine behaviour. None has a runtime form. `every_registered_system_is_named_in_the_live_schedule_table` reads a document against the registered names: the document is the subject. |
+| `extensions/mod.rs` | 9 | not classified | | Only `sdk_input_action` carries a read, and it has no doc. Not read. |
+| `streaming_tests.rs` | 6 | `the_starved_arm_closes_the_boundary_and_arms_the_retry` (#6093), `every_lod_ring_gates_on_admission_and_never_caches_a_refusal` (#6092) | device/data (first), syntax (second) | The first pins a caller's handling that "no verdict test reaches": it runs inside the streaming step with a renderer. The second pins that each LOD ring classifies a no-block attempt before caching it. Both docs say a verdict test cannot see it. |
+| `save_io/serde_default_guard_tests.rs` | 6 | not classified | | Not read. They fingerprint the serialized shape of saved types by file path; the subject is source text (see the #6715 baseline note in that file). |
+| `npc_spawn/mod.rs` | 6 | not classified | | Only a module doc was found at the first read. Not read. |
+| `cell_loader/spawn/mesh_instance.rs` | 6 | `morph_spawn_uses_mesh_handle_shared_delta_cache`, `morph_slot_creation_is_reachable_end_to_end` (#4399), `every_ligh_spawn_site_consumes_the_canonical_falloff_lane` (#4514, #6692) | device/data, syntax | The morph pair spans spawn sites that need a device; #6692's own note keeps the falloff scan on purpose, because the shared step attaches no light and each site stands alone. |
+
+**Replaced in this pass:** none.
+
+**Tally.** 176 of 301 sites were classified after the second pass. This pass classifies about 20 more by doc
+and leaves about 28 lines in these six files unread. The remaining ~150 lines are in 81 files, mostly one to
+five each. The issue's acceptance cannot be met by reading alone: each unread site needs its test body read
+to confirm the doc, and any that turn out replaceable need a behavioural test and an injected fault.
