@@ -1,6 +1,6 @@
 # Reference-Quality Lighting — Product Requirements
 
-**Status**: ACTIVE (2026-11-06). Revision 26; the change history is in
+**Status**: ACTIVE (2026-11-06). Revision 27; the change history is in
 §12. Every decision in §10 is decided and every Phase 0 verify item is
 closed or filed as an issue.
 
@@ -684,11 +684,30 @@ live in the rung subsection of the exporter design (Related table).
   `--bench-camera` moves only the camera (`byroredux/src/boot/mod.rs`).
 - **RLT-SHD-011.** A moving-light variant of RLT-SHD-010 SHOULD be added,
   since ReSTIR's temporal reuse is stressed hardest when the light moves.
-- **RLT-SHD-012.** (withdrawn, rev 26) A cosine-weighted shadow visibility
-  was proposed in rev 25 as the fix for the normal-mapped floor's plank bias
-  and measured not to be it: weighting each ray's transmission by cos(N,
-  ray) over cos(N, L) moves nothing on the plank (§12, revision 26). The
-  bias stays open under RLT-CON-001 and RLT-CON-007.
+- **RLT-SHD-012.** The visibility a light's traced shadow rays report MUST be
+  the cosine-weighted occluded fraction of its emitter, the quantity §2
+  defines as shadowed over unshadowed luminance and the reference computes,
+  not the unweighted fraction of rays that arrive. Each ray's transmission
+  is weighted by the receiver's shading normal dotted with that sample's
+  offset vector, over the same dot with the emitter centre's. The vectors
+  are taken UNNORMALISED, so the weight is linear in the disk offset and its
+  mean over the disk is exactly 1: a pixel no occluder touches keeps
+  visibility 1 and the unshadowed image (A8, A15) does not move (normalising
+  each ray first leaves a second-order deficit of about (R / d)² / 4 on every
+  lit pixel). Where the centre cosine is within twice the disk's angular
+  reach of the horizon, or under a floor, the horizon clips the disk and the
+  ratio is undefined: the weight is 1 there, and the rest is capped. The sun's
+  tangent-plane jitter (RLT-SHD-007) takes the same weight. Both fragment
+  variants, `triangle.frag.spv` and the opaque early-test
+  `triangle_early.frag.spv` (`-DBYRO_OPAQUE_EARLY_TESTS=1`), MUST be rebuilt
+  from the source; opaque geometry runs the second. The A5 run MUST read its
+  reference at a sample count where the reference's own noise is under the
+  band budget: one 1024-spp render leaves the plank band a mean error of
+  3.2e-3 and a p95 of 1.7e-2 from reference noise alone (rev 27). The cap and
+  the floor are Phase 3 verify items, set by the gates, not chosen here.
+  At HEAD on 2026-11-06 `triangle.frag` averages the binary hits of K
+  emitter-disk-jittered rays with equal weight and shades toward the light's
+  centre; measured effect of the weight in rev 27.
 
 ### 5.3 Contact shadows (`RLT-CON`)
 
@@ -1147,7 +1166,7 @@ scenarios need the user's own installed data; nothing is checked in.
 | A2 | Penumbra width | gate | new test `cornell_penumbra_width_matches_reference` in `cornell_rt_oracle.rs` (local light and sun rungs) | none + reference | RLT-SHD-001, RLT-SHD-007 |
 | A3 | Penumbra under camera motion | self-consistency gate (temporal error) | new test `cornell_panned_penumbra_is_temporally_stable` (engine moving vs engine parked and converged at the same pose) | none | RLT-SHD-002, RLT-SHD-006 |
 | A4 | Filter bands and thin rod | gate (visibility error) | new test `cornell_shadow_filter_bands_match_reference` | none + reference | RLT-SHD-004, RLT-SHD-009 |
-| A5 | Contact bands | gate (visibility error) | new test `cornell_contact_bands_match_reference` (block, cube, plank, normal-mapped floor, alpha-tested caster, skinned proxy mid-animation in the RLT-REF-017 mode) | none + reference | RLT-CON-001…003, RLT-CON-006…008, RLT-REF-017 |
+| A5 | Contact bands | gate (visibility error) | new test `cornell_contact_bands_match_reference` (block, cube, plank, normal-mapped floor, alpha-tested caster, skinned proxy mid-animation in the RLT-REF-017 mode) | none + reference | RLT-CON-001…003, RLT-CON-006…008, RLT-SHD-012, RLT-REF-017 |
 | A6 | Sky IBL energy | gate | new test `cornell_sun_ibl_sweep_matches_reference` (probe-only sky rung, L5 sweep, specular-only and Lambertian probes) | none + reference | RLT-IBL-001…004, RLT-REF-021 |
 | A7 | GI deficit | report (gate once Q5's mechanism lands, RLT-GI-003) | `scripts/m-light-gates.sh --gates A7` on the Lambertian `--cornell-reference lambert-box` rung: tiers 0–3 pinned, plus the clamp off (`--rt-test-no-gi-clamp`) and the RT-LOD gate off at tier 3; deficit, mean and 95th-percentile relative error per region with both sides' floors in the RLT-REF-004 manifest | none + reference | RLT-GI-002, RLT-GI-003, RLT-GI-006, RLT-GI-010 |
 | A8 | Traced share free of SSAO | gate | `scripts/m-light-gates.sh --gates A8`: the `traced_share` view with and without `DBG_DISABLE_AO` (`0x800`) on the box rung | none | RLT-GI-004, RLT-GI-009 |
@@ -1306,7 +1325,7 @@ normal-map convention and the normal-mapped validation plane
 calibration rung (RLT-REF-010); and the penumbra, contact and
 moving-blocker rungs. Entry baseline: A2–A5 and A14, with RLT-SHD-005 and
 RLT-SHD-006 published. Then RLT-SHD-003 (penumbra-aware reach),
-RLT-SHD-007 per Q3, RLT-SHD-004, RLT-SHD-010, RLT-CON-001…003 and
+RLT-SHD-007 per Q3, RLT-SHD-004, RLT-SHD-010, RLT-SHD-012, RLT-CON-001…003 and
 RLT-CON-006…008, and RLT-CON-004 if Q4 takes Alternative A. Exit: A2–A5
 and A14 pass at their thresholds, A11 passes under the phase's change
 declaration, and A13 shows the phase within its Q8 ceiling.
@@ -1594,3 +1613,4 @@ Each needs the project owner. The recommendation is the first option.
 | 24 | 2026-11-06 | Phase 3, A5 plank: the systematic part is the normal-mapped floor (#6603), measured, no code change. (1) Mid-penumbra value, `direct_only`, tier 3, seed 0, signed engine-minus-reference visibility binned by the reference's visibility: the local-light penumbra rung reads -0.001 to -0.0034 across 0.05-0.75 (-0.4 to -1.2 % of the reference, mean over the rung -0.0003), an order of magnitude under the plank's -0.04 beside its long edge, so the emitter model is not the cause; the sun rung reads +0.007 to +0.011 across 0.05-0.95 (+0.7 to +8 %, 0 outside the penumbra), the opposite sign, a separate open observation. (2) The contact rung re-run with the floor's normal map removed on both sides (the exported `scene.xml` reduced to its inner diffuse BSDF; the engine with `DBG_BYPASS_NORMAL_MAP`): the plank's signed mean error falls from -1.4e-3 to -8e-5 and its mean from 3.6e-3 to 1.9e-3; p95 falls from 2.0e-2 to 1.3e-2. The residual is unsigned scatter (mean inside the 2e-3 budget, p95 still over 1e-2) and is not explained. (3) Mechanism, from `triangle.frag` (4072-4183): the shadow rays are jittered across the emitter disk and their binary hits averaged unweighted, while the radiance is evaluated toward the light's centre `L`. Mitsuba weights each emitter sample by the cosine at that sample, so its visibility (§2: shadowed over unshadowed luminance) is cosine-weighted; on a perturbed normal the cosine varies across the disk more, and the occluded part of the disk is not the average part. This fits (1) and (2) but is not yet tested by an estimator that weights each ray by cos(N, ray) over cos(N, L). Any such change alters every light on every title (A11, A13) and needs a requirement here first; it is not made in this revision | — |
 | 25 | 2026-11-06 | RLT-SHD-012 added (#6721, a child of #6603): the visibility of a light's shadow rays is the cosine-weighted occluded fraction of the emitter, as the reference computes it, bounded where the centre cosine is small (§5.2, §9 Phase 3, A5). It is a requirement inside this PRD and not a PRD of its own: it is one crate and one shader path, it details how to meet the L1 / L2 promise already approved, and it meets none of the standard's T1-T5 triggers. Scope stated in the requirement: it is expected to remove the normal-mapped floor's plank bias (rev 24) and not the sun rung's +0.01 excess. Acceptance is the plank budget of rev 20 on the normal-mapped floor with the flat-floor control reported, A8 / A15 unmoved, A11 under the phase declaration, and A13 within its ceiling | — |
 | 26 | 2026-11-06 | RLT-SHD-012 withdrawn (#6721): the cosine-weighting mechanism of revs 24-25 is refuted by a direct test. Implemented as designed in `triangle.frag`'s main shadow-ray loop (each ray's transmission times cos(N, ray) / cos(N, L), applied above a centre cosine of 0.1 and capped at 4), the A5 plank reads bit-for-bit what it read before (flat 1.91e-3 / 1.34e-2, normal-mapped 3.61e-3 / 1.96e-2, signed -1.42e-3 unchanged to five digits). Two probes show why: forcing the weight to 0.5 darkens the capture by 1.6 % (so the loop is reached and the new SPIR-V is the one running), and amplifying the weight's deviation from 1 twenty-fold moves the mean luminance by 0.04 %, so the real weights are within about 2 % of 1 (the contact emitter is 0.1 m at about 2.6 m, 0.038 rad) and average to 1. A weighting that small cannot produce a 5-20 % deficit. The change was reverted. What stands from rev 24: the penumbra rung's interior is within -0.4 to -1.2 % (not the emitter model), ReSTIR reuse is not involved, the ray origin is not a coarse bias, and the plank's signed bias disappears when the floor's normal map is removed on both renderers, so the cause is in how a perturbed shading normal meets a partly occluded emitter, in the engine or in the reference's `normalmap` BSDF, and is not yet found. Next: a per-pixel dump of the engine's N, L and visibility at the outlier pixels (rev 23 lists them) against Mitsuba's shading frame there, or a RenderDoc capture; and a tiny-radius emitter control to separate disk integration from the normal | — |
+| 27 | 2026-11-06 | RLT-SHD-012 reinstated and measured (#6721); revision 26 was wrong. Opaque geometry runs `triangle_early.frag.spv` (the same source with `-DBYRO_OPAQUE_EARLY_TESTS=1`); the rev 25-26 test recompiled only `triangle.frag.spv`, so the floor never ran the weighted code, and the "bit-for-bit unchanged" result and the 0.5 and 20x probes measured the other variant. What is established: (a) the engine's visibility is identical on a flat and a normal-mapped floor (mean shift -2e-5 over the 930 partial-shadow pixels of the plank band) while the reference's rises by +4.9e-3, so the reference carries the cosine weighting and the engine does not; (b) with the weight in both variants the engine's visibility on those pixels rises by +5.4e-3 and the gap to the reference falls from 5.5e-3 to -1e-5, and the plank band's signed error from -1.42e-3 to +1e-5; (c) in the unfiltered `direct_only` view the penumbra rung then matches the reference to within 4e-4 in every visibility bin, fully lit included (-1e-5); (d) normalising each ray before the ratio (the first form tried) put the A4 penumbra lit band at 2.2e-3 and regressed the A5 non-plank bands further; the unnormalised, linear weight brings the lit band to 9.2e-4, still above the rev 22 baseline. The plank's remaining error is the reference's own noise: two 1024-spp renders differ by a mean 4.5e-3 per pixel in the band (a single render about 3.2e-3, p95 about 1.7e-2), matching the engine's remaining 3.4e-3 / 1.7e-2, and 256 engine frames in place of 64 move it only 3.43e-3 -> 3.22e-3. Gates against the rev 22 baseline (`MLIGHT_phase3_shd003_gates.tsv`), tier 3: A2 widths improve (local 0.00098-0.00149 -> 0.00004-0.00025, sun 0.0052-0.0056 -> 0.0044-0.0048); filtered penumbra-rung bins 0.1-0.7 go from -0.0018 / -0.0032 / -0.0039 to +0.00005 / -0.00033 / -0.00088; the lit-side tail (0.97-0.9999) is unchanged at about -0.0022 to -0.0029, the filter's own error; the plank 3.76e-3 / 1.90e-2 -> 3.53e-3 / 1.71e-2; A8 and A16 pass. Rows that move the wrong way against thresholds frozen on the biased sampler: A4 penumbra lit band mean 4.3e-4 -> 9.2e-4 (threshold 5e-4) and p95 9.0e-4 -> 1.39e-3, sun lit band mean 4.3e-4 -> 7.7e-4, A5 cube and panel p95 (9.3e-4 -> 1.24e-3 and 1.43e-3) pass -> no, and the block, cube, panel and proxy means +3e-4 to +4e-4; fully lit pixels in the filtered view read -9.2e-4 against -5.3e-4. Re-tuning `SHADOW_FILTER_PENUMBRA_RADIUS_SCALE` to 0.15 and 0.08 leaves the penumbra lit band at 9.1e-4 and 8.9e-4 and A5 unchanged, but cuts the sun rung's width error to 0.0015 and 0.0009 and its umbra p95 to about 0: the radius is not the lever for the lit band. Not applied. A15 is not affected and already fails at HEAD: `cal-sun` reads 0.99679 with and without this change (0.99927 at Phase 1a), and `normal-plane-azimuth2` 0.99846 as before. The change is in the working tree, not committed: the lit-band thresholds are the owner's (Q6) and are decided against the exact sampler | — |
