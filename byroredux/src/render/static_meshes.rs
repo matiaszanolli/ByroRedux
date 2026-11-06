@@ -323,9 +323,9 @@ struct StaticDrawQueries<'w> {
     two_sided_q: Option<QueryRead<'w, TwoSided>>,
     no_sorter_q: Option<QueryRead<'w, NoSorter>>,
     vis_q: Option<QueryRead<'w, AnimatedVisibility>>,
-    appearance_hidden: Option<QueryRead<'w, crate::npc_spawn::loot_appearance::NpcAppearanceHidden>>,
-    picked_up: Option<QueryRead<'w, crate::inventory::PickedUp>>,
-    first_person_hidden: Option<QueryRead<'w, crate::player_body::HiddenFirstPerson>>,
+    appearance_hidden: Option<QueryRead<'w, crate::components::NpcAppearanceHidden>>,
+    picked_up: Option<QueryRead<'w, crate::components::PickedUp>>,
+    first_person_hidden: Option<QueryRead<'w, crate::components::HiddenFirstPerson>>,
     mat_q: Option<QueryRead<'w, Material>>,
     cover_template_q: Option<QueryRead<'w, crate::components::AuthoredCoverTemplate>>,
     anim_uv_q: Option<QueryRead<'w, AnimatedUvTransform>>,
@@ -395,13 +395,13 @@ impl<'w> StaticDrawQueries<'w> {
         let two_sided_q = world.query::<TwoSided>();
         let no_sorter_q = world.query::<NoSorter>();
         let vis_q = world.query::<AnimatedVisibility>();
-        let appearance_hidden = world.query::<crate::npc_spawn::loot_appearance::NpcAppearanceHidden>();
+        let appearance_hidden = world.query::<crate::components::NpcAppearanceHidden>();
         // P3 — picked-up placements stay resident but draw nothing (the item is
         // in the player's inventory; the tombstone keeps a respawned copy gone).
-        let picked_up = world.query::<crate::inventory::PickedUp>();
+        let picked_up = world.query::<crate::components::PickedUp>();
         // P3 player body — first-person hides the body meshes (the camera sits
         // inside them); same consult contract as `NpcAppearanceHidden`.
-        let first_person_hidden = world.query::<crate::player_body::HiddenFirstPerson>();
+        let first_person_hidden = world.query::<crate::components::HiddenFirstPerson>();
         let mat_q = world.query::<Material>();
         // #4413 — authored ground-cover templates: built like any draw (so their
         // material is interned this frame) but handed to the model tier.

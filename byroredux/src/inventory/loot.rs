@@ -412,15 +412,8 @@ pub(crate) fn is_pickup_target(world: &World, entity: byroredux_core::ecs::Entit
         .is_some_and(|catalog| catalog.is_pickup_base(base))
 }
 
-/// Marker on a placement whose item the player already picked up. Keeps the
-/// entity resident-but-hidden (render + interaction skip it) and re-parks a
-/// `picked_up` tombstone on cell eviction so a respawned copy stays gone.
-/// Never serialized itself — the tombstone row is the durable half.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct PickedUp;
-impl Component for PickedUp {
-    type Storage = SparseSetStorage<Self>;
-}
+// #6714 — the marker lives in `components::visibility` so the render collector reads it from the lowest layer.
+pub(crate) use crate::components::PickedUp;
 
 /// Authored stack size of an item placement — the REFR's `XCNT` (#4706).
 /// Stamped on the placement root at spawn only when the REFR authors one;

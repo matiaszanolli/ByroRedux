@@ -21,6 +21,8 @@ mod audio;
 mod tuning;
 mod ai_anim;
 mod navmesh;
+mod player;
+mod visibility;
 
 pub(crate) use render::*;
 pub(crate) use vats::*;
@@ -32,6 +34,8 @@ pub(crate) use audio::*;
 pub(crate) use tuning::*;
 pub(crate) use ai_anim::*;
 pub(crate) use navmesh::*;
+pub(crate) use player::*;
+pub(crate) use visibility::*;
 
 #[cfg(test)]
 mod fx_hash_guard_tests {

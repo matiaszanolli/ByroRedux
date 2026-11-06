@@ -88,19 +88,8 @@ pub(crate) struct PlayerBodyRootEntity(pub(crate) Option<EntityId>);
 
 impl Resource for PlayerBodyRootEntity {}
 
-/// Marker on each mesh entity under the player body root while the camera is
-/// first-person. Consumed by the render collection passes beside
-/// `NpcAppearanceHidden`/`PickedUp` (skinned palettes + static draw loop).
-/// Kept as a component rather than a per-frame resource consult so the two
-/// render sites pay exactly the per-mesh query cost they already do, and so
-/// equip-event hides (`NpcAppearanceHidden`) never fight the view toggle —
-/// the two markers compose.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct HiddenFirstPerson;
-
-impl Component for HiddenFirstPerson {
-    type Storage = SparseSetStorage<Self>;
-}
+// #6714 — the marker lives in `components::visibility` beside the other render-skip markers.
+pub(crate) use crate::components::HiddenFirstPerson;
 
 /// Imported humanoid skeletons walk with local +Z as forward (the NPC
 /// locomotion turn is `atan2(Δx, Δz)` → `from_rotation_y`, which points

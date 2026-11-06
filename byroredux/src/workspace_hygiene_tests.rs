@@ -1193,8 +1193,9 @@ fn no_source_hand_spells_the_player_entity_read() {
     let needle = ["PlayerEntity>()", ".and_then("].concat();
     let mut found = Vec::new();
     visit_workspace_rs_files(&manifest.join("src"), &mut |path, contents| {
-        // The accessor itself is the one legitimate spelling; this file quotes the shape.
-        if path.ends_with("systems/character.rs") || path.ends_with("workspace_hygiene_tests.rs") {
+        // The accessor itself is the one legitimate spelling (it moved from `systems/character.rs`
+        // to `components/player.rs` in #6714); this file quotes the shape.
+        if path.ends_with("components/player.rs") || path.ends_with("workspace_hygiene_tests.rs") {
             return;
         }
         // Whitespace-insensitive: rustfmt splits the chain across lines.

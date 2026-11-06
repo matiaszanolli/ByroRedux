@@ -112,7 +112,7 @@ pub(super) fn reemit_water_planes(
         .or_else(|| weather.as_ref().map(|w| w.tod_hours));
     drop(weather);
     let night_factor = match (game_hour, tod_hours) {
-        (Some(hour), Some(hours)) => crate::systems::weather::night_factor_for_hour(hour, hours),
+        (Some(hour), Some(hours)) => crate::env_translate::night_factor_for_hour(hour, hours),
         // Interior and synthetic worlds without a weather resource retain
         // the daytime/base palette rather than inventing a second clock.
         _ => 0.0,

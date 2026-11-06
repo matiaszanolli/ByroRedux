@@ -347,7 +347,7 @@ mod tests {
         // `is_exterior: true`). Every field is deliberately non-default
         // so the regression test below can prove none of them leak.
         SkyParamsRes {
-            tod_hours: crate::systems::weather::DEFAULT_TOD_HOURS,
+            tod_hours: crate::env_translate::FB_TOD_HOURS,
             zenith_color: [0.3, 0.5, 0.9],
             horizon_color: [0.8, 0.8, 0.9],
             lower_color: [0.4, 0.4, 0.45],

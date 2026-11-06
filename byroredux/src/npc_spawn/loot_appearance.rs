@@ -129,12 +129,8 @@ impl Component for NpcLootAppearance {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// Separate from animation visibility: a NIF controller must not reveal a
-/// staged body part or superseded outfit. Applied only to mesh entities.
-pub(crate) struct NpcAppearanceHidden;
-impl Component for NpcAppearanceHidden {
-    type Storage = SparseSetStorage<Self>;
-}
+// #6714 — the marker lives in `components::visibility` so the render collector reads it from the lowest layer.
+pub(crate) use crate::components::NpcAppearanceHidden;
 
 pub(super) fn install(
     world: &mut World,

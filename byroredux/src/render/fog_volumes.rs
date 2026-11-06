@@ -162,11 +162,11 @@ fn gpu_volume_from_ecs_with_explosion_age(
     // render_origin rebase bug) far enough from the origin to silently
     // degrade into visible jitter/banding.
     debug_assert!(
-        center.abs().max_element() < crate::cell_loader::references::RT_ABSOLUTE_PRECISION_CEILING,
+        center.abs().max_element() < crate::components::RT_ABSOLUTE_PRECISION_CEILING,
         "fog volume center {center:?} reaches the RT absolute-space f32 \
          precision ceiling ({:.0} u): see #1495 / #2235 / \
          docs/engine/shader-pipeline.md.",
-        crate::cell_loader::references::RT_ABSOLUTE_PRECISION_CEILING,
+        crate::components::RT_ABSOLUTE_PRECISION_CEILING,
     );
 
     let shape = match bounds.shape {
@@ -545,7 +545,7 @@ mod tests {
             source: FogSource::ParticleEmitter,
         };
         let far_translation =
-            Vec3::splat(crate::cell_loader::references::RT_ABSOLUTE_PRECISION_CEILING * 2.0);
+            Vec3::splat(crate::components::RT_ABSOLUTE_PRECISION_CEILING * 2.0);
         let transform = GlobalTransform::new(far_translation, Quat::IDENTITY, 1.0);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             gpu_volume_from_ecs(volume, transform)

@@ -43,12 +43,14 @@ mod climate;
 mod fallback;
 mod lod;
 mod sky_weather;
+mod tod;
 mod water;
 
 pub(crate) use climate::*;
 pub(crate) use fallback::*;
 pub(crate) use lod::*;
 pub(crate) use sky_weather::*;
+pub(crate) use tod::*;
 pub(crate) use water::*;
 
 /// `PNAM` parent-use flags — which fields a child worldspace takes from its

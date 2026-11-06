@@ -149,21 +149,9 @@ impl ReferenceLoadJob {
     }
 }
 
-/// #1495 / REN2-10 — RT absolute-space f32 precision ceiling, in world
-/// units. TLAS instance transforms, skinned BLAS vertices, and the ray
-/// origins reconstructed in `triangle.frag` all live in ABSOLUTE world
-/// space (the TLAS is absolute by design; the raster path is rebased to
-/// render-origin-relative via `#markarth-precision`, but RT is not). At
-/// `|world| ≈ 2^20 = 1_048_576` the f32 ULP is `2^-3 = 0.125 u`, which
-/// reaches the upper RT bias/tMin margin (~0.15 u) — shadow / reflection
-/// rays start self-intersecting or leaking. Headroom thins earlier
-/// (~0.5 M, where the 0.0156 u ULP loses its 2–3× cushion over the tight
-/// 0.05 u margin), so this ceiling is the hard upper bound, not the
-/// onset. Vanilla worldspaces top out far below it (Skyrim Tamriel
-/// ≈ ±233 k), so a cell past it is a future mega-worldspace that would
-/// silently degrade RT. See docs/engine/shader-pipeline.md "Coordinate
-/// Spaces & Precision".
-pub(crate) const RT_ABSOLUTE_PRECISION_CEILING: f32 = 1_048_576.0; // 2^20
+// #6714 — the RT precision ceiling lives in `components::render`, where the render collector's fog-volume
+// clamp reads it; this path stays valid for the cell loader.
+pub(crate) use crate::components::RT_ABSOLUTE_PRECISION_CEILING;
 
 /// Whether a precombined CSG bake may replace this REFR entirely.
 ///

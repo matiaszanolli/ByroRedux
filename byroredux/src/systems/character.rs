@@ -32,31 +32,9 @@ use byroredux_core::math::{Quat, Vec3};
 use crate::components::InputState;
 use crate::interaction::{ActionState, InputAction};
 
-/// Resource pointing at the player character entity, so other systems
-/// (camera follow, audio listener attach, future quest-marker
-/// distance computations) can find the player without walking the
-/// `CharacterController` storage.
-///
-/// `None` means the engine isn't in player mode. Set when `scene` creates the
-/// player rig. The body is intentionally not cell-owned, so it and this
-/// process-local pointer survive live cell reloads.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct PlayerEntity(pub Option<EntityId>);
-
-impl Resource for PlayerEntity {}
-
-impl PlayerEntity {
-    /// The player character entity, or `None` when the resource is absent or
-    /// the engine is not in player mode (#6362).
-    ///
-    /// The one read of this resource. It is NOT synchronised with the
-    /// scripting crate's `PapyrusPlayerEntity` (`PapyrusPlayerEntity::get`), which
-    /// differs in FlyCam, so a flow that crosses the crate boundary reads the
-    /// pair knowingly rather than by hand-spelling either.
-    pub fn get(world: &World) -> Option<EntityId> {
-        world.try_resource::<PlayerEntity>().and_then(|player| player.0)
-    }
-}
+// #6714 — `PlayerEntity` lives in `components::player` so the render collector can read it
+// without naming `systems`; the path stays valid here for the systems that already use it.
+pub(crate) use crate::components::PlayerEntity;
 
 /// Engine-wide mode flag. Set at scene-setup based on CLI flags +
 /// scene type (interior cell / exterior grid → Character;

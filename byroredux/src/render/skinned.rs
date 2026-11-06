@@ -80,14 +80,14 @@ pub(super) fn build_skinned_palettes(
 ) {
     let gt_q = world.query::<GlobalTransform>();
     let skin_q = world.query::<SkinnedMesh>();
-    let appearance_hidden = world.query::<crate::npc_spawn::loot_appearance::NpcAppearanceHidden>();
+    let appearance_hidden = world.query::<crate::components::NpcAppearanceHidden>();
     // P3 — picked-up placements stay resident but draw nothing (see the
     // matching consult in `static_meshes.rs`).
-    let picked_up = world.query::<crate::inventory::PickedUp>();
+    let picked_up = world.query::<crate::components::PickedUp>();
     // P3 player body — the first-person camera sits inside the body, so its
     // meshes carry `HiddenFirstPerson` until the view switches to third
     // person (`player_body::set_player_view`).
-    let first_person_hidden = world.query::<crate::player_body::HiddenFirstPerson>();
+    let first_person_hidden = world.query::<crate::components::HiddenFirstPerson>();
     let (Some(gt_q), Some(skin_q)) = (gt_q, skin_q) else {
         return;
     };
