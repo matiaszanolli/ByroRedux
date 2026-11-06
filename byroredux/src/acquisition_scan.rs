@@ -57,6 +57,10 @@ const ACQUIRE_FORMS: &[(&str, Mode)] = &[
     ("get_mut", Mode::Write),
     ("remove_component", Mode::Write),
     ("insert_component", Mode::Write),
+    // #6707 — `fragment/effects/deferred.rs`'s `drain_into_resource::<R, _>(..)` takes
+    // `try_resource_mut::<R>()` inside a generic helper, where the type is a parameter
+    // the scan skips, so the call site is the acquisition.
+    ("drain_into_resource", Mode::Write),
 ];
 
 /// The resource whose one read is a plain call, `PlayerEntity::get(world)`,
@@ -894,6 +898,24 @@ mod tests {
         );
 
         assert!(declaration(&file, "exclusive_one").covers("Ex", Mode::Write));
+    }
+
+    /// #6707 — a flush routed through the generic helper still acquires its resource at the call
+    /// site, and the helper's own generic `R` is not reported as a type.
+    #[test]
+    fn a_flush_through_the_drain_helper_acquires_the_resource_it_names() {
+        let found = scan(
+            "impl Deferred {
+                fn flush_events(&mut self, world: &World) {
+                    drain_into_resource::<super::EventRegistrations, _>(world, &mut self.events, |r, e| r.add(e));
+                }
+            }
+            fn drain_into_resource<R: Resource, T>(world: &World, queue: &mut Vec<T>, mut apply: impl FnMut(&mut R, T)) {
+                if let Some(mut resource) = world.try_resource_mut::<R>() { let _ = &mut resource; }
+            }",
+            "flush_events",
+        );
+        assert_eq!(modes(&found), [("EventRegistrations", Mode::Write)]);
     }
 
     /// `bridged_script_getter_reads(Access::new())` declares in its own body.

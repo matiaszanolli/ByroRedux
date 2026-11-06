@@ -280,6 +280,29 @@ pub(super) struct DeferredProviderFragmentStep {
     pub(super) tail: Vec<Effect>,
 }
 
+/// Drain `queue` into resource `R` (#6707). The shared shape of the flushes below: nothing
+/// queued is nothing done, a resource that is absent drops the queued items (the queue still
+/// empties), and otherwise `apply` runs on each item in queue order under one write lock.
+///
+/// The resource is named by the call's turbofish, which is where the access-declaration
+/// guard reads it (`acquisition_scan::ACQUIRE_FORMS` lists this helper by name), so a flush
+/// routed through here is as visible to that scan as a direct `try_resource_mut::<R>()`.
+fn drain_into_resource<R: byroredux_core::ecs::resource::Resource, T>(
+    world: &World,
+    queue: &mut Vec<T>,
+    mut apply: impl FnMut(&mut R, T),
+) {
+    if queue.is_empty() {
+        return;
+    }
+    if let Some(mut resource) = world.try_resource_mut::<R>() {
+        for item in queue.drain(..) {
+            apply(&mut resource, item);
+        }
+    }
+    queue.clear();
+}
+
 impl DeferredFragmentEffects {
     /// Snapshot fragment resources before acquiring the quest-state guards.
     ///
@@ -591,69 +614,39 @@ impl DeferredFragmentEffects {
     }
 
     fn flush_event_requests(&mut self, world: &World) {
-        if !self.event_requests.is_empty() {
-            if let Some(mut registrations) = world.try_resource_mut::<super::EventRegistrations>() {
-                for (owner, script, request) in self.event_requests.drain(..) {
-                    registrations.request(owner, &script, &request);
-                }
-            }
-            self.event_requests.clear();
-        }
+        drain_into_resource::<super::EventRegistrations, _>(world, &mut self.event_requests, |registrations, (owner, script, request)| {
+                registrations.request(owner, &script, &request);
+        });
     }
 
     fn flush_alias_collections(&mut self, world: &World) {
-        if !self.alias_collections.is_empty() {
-            if let Some(mut collections) = world.try_resource_mut::<crate::AliasCollections>() {
-                for (key, members) in self.alias_collections.drain(..) {
-                    collections.set(key, members);
-                }
-            }
-            self.alias_collections.clear();
-        }
+        drain_into_resource::<crate::AliasCollections, _>(world, &mut self.alias_collections, |collections, (key, members)| {
+                collections.set(key, members);
+        });
     }
 
     fn flush_location_keyword_changes(&mut self, world: &World) {
-        if !self.location_keyword_changes.is_empty() {
-            if let Some(mut data) = world.try_resource_mut::<crate::LocationKeywordData>() {
-                for (location, keyword, value) in self.location_keyword_changes.drain(..) {
-                    data.set(location, keyword, value);
-                }
-            }
-            self.location_keyword_changes.clear();
-        }
+        drain_into_resource::<crate::LocationKeywordData, _>(world, &mut self.location_keyword_changes, |data, (location, keyword, value)| {
+                data.set(location, keyword, value);
+        });
     }
 
     fn flush_reference_flag_changes(&mut self, world: &World) {
-        if !self.reference_flag_changes.is_empty() {
-            if let Some(mut flags) = world.try_resource_mut::<crate::ReferenceFlags>() {
-                for change in self.reference_flag_changes.drain(..) {
-                    flags.apply(change);
-                }
-            }
-            self.reference_flag_changes.clear();
-        }
+        drain_into_resource::<crate::ReferenceFlags, _>(world, &mut self.reference_flag_changes, |flags, change| {
+                flags.apply(change);
+        });
     }
 
     fn flush_owner_changes(&mut self, world: &World) {
-        if !self.owner_changes.is_empty() {
-            if let Some(mut owners) = world.try_resource_mut::<crate::OwnerOverrides>() {
-                for (reference, owner) in self.owner_changes.drain(..) {
-                    owners.set(reference, owner);
-                }
-            }
-            self.owner_changes.clear();
-        }
+        drain_into_resource::<crate::OwnerOverrides, _>(world, &mut self.owner_changes, |owners, (reference, owner)| {
+                owners.set(reference, owner);
+        });
     }
 
     fn flush_crime_gold_changes(&mut self, world: &World) {
-        if !self.crime_gold_changes.is_empty() {
-            if let Some(mut gold) = world.try_resource_mut::<crate::FactionCrimeGold>() {
-                for change in self.crime_gold_changes.drain(..) {
-                    gold.apply(change);
-                }
-            }
-            self.crime_gold_changes.clear();
-        }
+        drain_into_resource::<crate::FactionCrimeGold, _>(world, &mut self.crime_gold_changes, |gold, change| {
+                gold.apply(change);
+        });
     }
 
     fn flush_jail_sends(&mut self, world: &World) {
@@ -705,52 +698,32 @@ impl DeferredFragmentEffects {
     }
 
     fn flush_hit_requests(&mut self, world: &World) {
-        if !self.hit_requests.is_empty() {
-            if let Some(mut registrations) = world.try_resource_mut::<super::HitRegistrations>() {
-                for (owner, script, request) in self.hit_requests.drain(..) {
-                    registrations.request(owner, &script, &request);
-                }
-            }
-            self.hit_requests.clear();
-        }
+        drain_into_resource::<super::HitRegistrations, _>(world, &mut self.hit_requests, |registrations, (owner, script, request)| {
+                registrations.request(owner, &script, &request);
+        });
     }
 
     fn flush_animation_event_requests(&mut self, world: &World) {
-        if !self.animation_event_requests.is_empty() {
-            if let Some(mut registrations) = world.try_resource_mut::<super::AnimationEventRegistrations>() {
-                for (owner, script, request) in self.animation_event_requests.drain(..) {
-                    registrations.request(owner, &script, &request);
-                }
-            }
-            self.animation_event_requests.clear();
-        }
+        drain_into_resource::<super::AnimationEventRegistrations, _>(world, &mut self.animation_event_requests, |registrations, (owner, script, request)| {
+                registrations.request(owner, &script, &request);
+        });
     }
 
     fn flush_distance_requests(&mut self, world: &World) {
-        if !self.distance_requests.is_empty() {
-            if let Some(mut watches) = world.try_resource_mut::<super::DistanceWatches>() {
-                for (owner, script, request) in self.distance_requests.drain(..) {
-                    watches.request(owner, &script, request);
-                }
-            }
-            self.distance_requests.clear();
-        }
+        drain_into_resource::<super::DistanceWatches, _>(world, &mut self.distance_requests, |watches, (owner, script, request)| {
+                watches.request(owner, &script, request);
+        });
     }
 
     fn flush_follower_changes(&mut self, world: &World) {
-        if !self.follower_changes.is_empty() {
-            if let Some(mut state) = world.try_resource_mut::<crate::FollowerState>() {
-                for (actor, change) in self.follower_changes.drain(..) {
-                    match change {
-                        FollowerChange::Teammate { teammate, can_do_favor } => {
-                            state.set_teammate(actor, teammate, can_do_favor)
-                        }
-                        FollowerChange::DoingFavor(doing) => state.set_doing_favor(actor, doing),
+        drain_into_resource::<crate::FollowerState, _>(world, &mut self.follower_changes, |state, (actor, change)| {
+                match change {
+                    FollowerChange::Teammate { teammate, can_do_favor } => {
+                        state.set_teammate(actor, teammate, can_do_favor)
                     }
+                    FollowerChange::DoingFavor(doing) => state.set_doing_favor(actor, doing),
                 }
-            }
-            self.follower_changes.clear();
-        }
+        });
     }
 
     fn flush_created_references(&mut self, world: &World) {
@@ -767,82 +740,54 @@ impl DeferredFragmentEffects {
     }
 
     fn flush_linked_ref_changes(&mut self, world: &World) {
-        if !self.linked_ref_changes.is_empty() {
-            if let Some(mut links) = world.try_resource_mut::<crate::LinkedRefOverrides>() {
-                for (source, keyword, target) in self.linked_ref_changes.drain(..) {
-                    links.set(source, keyword, target);
-                }
-            }
-            self.linked_ref_changes.clear();
-        }
+        drain_into_resource::<crate::LinkedRefOverrides, _>(world, &mut self.linked_ref_changes, |links, (source, keyword, target)| {
+                links.set(source, keyword, target);
+        });
     }
 
     fn flush_crime_faction_changes(&mut self, world: &World) {
-        if !self.crime_faction_changes.is_empty() {
-            if let Some(mut overrides) = world.try_resource_mut::<crate::CrimeFactionOverrides>() {
-                for (actor, faction) in self.crime_faction_changes.drain(..) {
-                    overrides.set(actor, faction);
-                }
-            }
-            self.crime_faction_changes.clear();
-        }
+        drain_into_resource::<crate::CrimeFactionOverrides, _>(world, &mut self.crime_faction_changes, |overrides, (actor, faction)| {
+                overrides.set(actor, faction);
+        });
     }
 
     fn flush_speechcraft_changes(&mut self, world: &World) {
-        if !self.speechcraft_changes.is_empty() {
-            if let Some(mut outcomes) = world.try_resource_mut::<crate::SpeechcraftOutcomes>() {
-                for (actor, outcome, flagged) in self.speechcraft_changes.drain(..) {
-                    outcomes.set(actor, outcome, flagged);
-                }
-            }
-            self.speechcraft_changes.clear();
-        }
+        drain_into_resource::<crate::SpeechcraftOutcomes, _>(world, &mut self.speechcraft_changes, |outcomes, (actor, outcome, flagged)| {
+                outcomes.set(actor, outcome, flagged);
+        });
     }
 
     fn flush_scanned_changes(&mut self, world: &World) {
-        if !self.scanned_changes.is_empty() {
-            if let Some(mut scanned) = world.try_resource_mut::<crate::ScannedReferences>() {
-                for (reference, flagged) in self.scanned_changes.drain(..) {
-                    scanned.set(reference, flagged);
-                }
-            }
-            self.scanned_changes.clear();
-        }
+        drain_into_resource::<crate::ScannedReferences, _>(world, &mut self.scanned_changes, |scanned, (reference, flagged)| {
+                scanned.set(reference, flagged);
+        });
     }
 
     fn flush_anim_archetype_changes(&mut self, world: &World) {
-        if !self.anim_archetype_changes.is_empty() {
-            if let Some(mut overrides) = world.try_resource_mut::<crate::AnimArchetypeOverrides>() {
-                for (actor, keyword) in self.anim_archetype_changes.drain(..) {
-                    overrides.set(actor, keyword);
-                }
-            }
-            self.anim_archetype_changes.clear();
-        }
+        drain_into_resource::<crate::AnimArchetypeOverrides, _>(world, &mut self.anim_archetype_changes, |overrides, (actor, keyword)| {
+                overrides.set(actor, keyword);
+        });
     }
 
     fn flush_form_list_changes(&mut self, world: &World) {
-        if !self.form_list_changes.is_empty() {
-            if let Some(mut additions) = world.try_resource_mut::<crate::FormListAdditions>() {
-                for change in self.form_list_changes.drain(..) {
-                    additions.apply(change);
-                }
-            }
-            self.form_list_changes.clear();
-        }
+        drain_into_resource::<crate::FormListAdditions, _>(world, &mut self.form_list_changes, |additions, change| {
+                additions.apply(change);
+        });
     }
 
     fn flush_loc_ref_type_changes(&mut self, world: &World) {
-        if !self.loc_ref_type_changes.is_empty() {
-            if let Some(mut types) = world.try_resource_mut::<crate::LocRefTypeOverrides>() {
-                for (reference, ref_type) in self.loc_ref_type_changes.drain(..) {
-                    types.set(reference, ref_type);
-                }
-            }
-            self.loc_ref_type_changes.clear();
-            // An alias may now fill by the new type.
-            crate::scene::mark_scene_actor_bindings_dirty(world);
+        if self.loc_ref_type_changes.is_empty() {
+            return;
         }
+        drain_into_resource::<crate::LocRefTypeOverrides, _>(
+            world,
+            &mut self.loc_ref_type_changes,
+            |types, (reference, ref_type)| {
+                types.set(reference, ref_type);
+            },
+        );
+        // An alias may now fill by the new type.
+        crate::scene::mark_scene_actor_bindings_dirty(world);
     }
 
     fn flush_skill_advances(&mut self, world: &World) {
@@ -861,27 +806,17 @@ impl DeferredFragmentEffects {
     }
 
     fn flush_achievements(&mut self, world: &World) {
-        if !self.achievements.is_empty() {
-            if let Some(mut awarded) = world.try_resource_mut::<crate::Achievements>() {
-                for id in self.achievements.drain(..) {
-                    if awarded.award(id) {
-                        log::info!("achievement {id} awarded");
-                    }
+        drain_into_resource::<crate::Achievements, _>(world, &mut self.achievements, |awarded, id| {
+                if awarded.award(id) {
+                    log::info!("achievement {id} awarded");
                 }
-            }
-            self.achievements.clear();
-        }
+        });
     }
 
     fn flush_misc_stats(&mut self, world: &World) {
-        if !self.misc_stats.is_empty() {
-            if let Some(mut stats) = world.try_resource_mut::<crate::MiscStats>() {
-                for (stat, amount) in self.misc_stats.drain(..) {
-                    stats.increment(&stat, amount);
-                }
-            }
-            self.misc_stats.clear();
-        }
+        drain_into_resource::<crate::MiscStats, _>(world, &mut self.misc_stats, |stats, (stat, amount)| {
+                stats.increment(&stat, amount);
+        });
     }
 
     fn flush_player_xp(&mut self, world: &World) {
@@ -915,14 +850,9 @@ impl DeferredFragmentEffects {
     }
 
     fn flush_star_map_changes(&mut self, world: &World) {
-        if !self.star_map_changes.is_empty() {
-            if let Some(mut markers) = world.try_resource_mut::<crate::MapMarkers>() {
-                for (marker, visible) in self.star_map_changes.drain(..) {
-                    markers.set_star_map_visible(marker, visible);
-                }
-            }
-            self.star_map_changes.clear();
-        }
+        drain_into_resource::<crate::MapMarkers, _>(world, &mut self.star_map_changes, |markers, (marker, visible)| {
+                markers.set_star_map_visible(marker, visible);
+        });
     }
 
     fn flush_map_markers(&mut self, world: &World) {
@@ -1011,13 +941,9 @@ impl DeferredFragmentEffects {
     }
 
     fn flush_reference_enable_changes(&mut self, world: &World) {
-        if !self.reference_enable_changes.is_empty() {
-            if let Some(mut state) = world.try_resource_mut::<ReferenceEnableState>() {
-                for (form_id, enabled) in self.reference_enable_changes.drain(..) {
-                    state.set_enabled(form_id, enabled);
-                }
-            }
-        }
+        drain_into_resource::<ReferenceEnableState, _>(world, &mut self.reference_enable_changes, |state, (form_id, enabled)| {
+                state.set_enabled(form_id, enabled);
+        });
     }
 
     fn flush_reference_lock_changes(&mut self, world: &World) {
@@ -1061,45 +987,41 @@ impl DeferredFragmentEffects {
     }
 
     fn flush_cinematic_presentation(&mut self, world: &World) {
-        if !self.cinematic_presentation.is_empty() {
-            if let Some(mut state) = world.try_resource_mut::<crate::CinematicPresentationState>() {
-                for effect in self.cinematic_presentation.drain(..) {
-                    match effect {
-                        DeferredCinematicPresentationEffect::SetSittingRotation(degrees) => {
-                            state.sitting_rotation_degrees = degrees;
-                        }
-                        DeferredCinematicPresentationEffect::RegisterPlayerAnimationEvent {
+        drain_into_resource::<crate::CinematicPresentationState, _>(world, &mut self.cinematic_presentation, |state, effect| {
+                match effect {
+                    DeferredCinematicPresentationEffect::SetSittingRotation(degrees) => {
+                        state.sitting_rotation_degrees = degrees;
+                    }
+                    DeferredCinematicPresentationEffect::RegisterPlayerAnimationEvent {
+                        event,
+                        quest,
+                        image_space_modifiers,
+                    } => {
+                        state.register_player_animation_event(
                             event,
                             quest,
                             image_space_modifiers,
-                        } => {
-                            state.register_player_animation_event(
-                                event,
-                                quest,
-                                image_space_modifiers,
-                            );
-                        }
-                        DeferredCinematicPresentationEffect::SetInChargen {
+                        );
+                    }
+                    DeferredCinematicPresentationEffect::SetInChargen {
+                        disable_saving,
+                        disable_waiting,
+                        show_controls_disabled_message,
+                    } => {
+                        state.set_in_chargen(
                             disable_saving,
                             disable_waiting,
                             show_controls_disabled_message,
-                        } => {
-                            state.set_in_chargen(
-                                disable_saving,
-                                disable_waiting,
-                                show_controls_disabled_message,
-                            );
-                        }
-                        DeferredCinematicPresentationEffect::ShowRaceMenu => {
-                            state.show_race_menu();
-                        }
-                        DeferredCinematicPresentationEffect::RequestSave { auto } => {
-                            state.request_save(auto);
-                        }
+                        );
+                    }
+                    DeferredCinematicPresentationEffect::ShowRaceMenu => {
+                        state.show_race_menu();
+                    }
+                    DeferredCinematicPresentationEffect::RequestSave { auto } => {
+                        state.request_save(auto);
                     }
                 }
-            }
-        }
+        });
     }
 
     fn flush_faction_changes(&mut self, world: &World) {
