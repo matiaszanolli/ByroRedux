@@ -1166,7 +1166,7 @@ fn prepare_groundcover_models(
     off: bool,
 ) {
     use byroredux_renderer::vulkan::groundcover_models::GroundCoverModelFrame;
-    if ctx.groundcover_models.is_none() {
+    if ctx.exterior.groundcover_models.is_none() {
         return;
     }
     let spacing = if off {
@@ -1223,7 +1223,7 @@ fn collect_and_prepare_groundcover(
     frame: &crate::render::RenderFrameView,
     gc: GroundCoverScratch<'_>,
 ) {
-    if ctx.groundcover.is_some() && !gc.off {
+    if ctx.exterior.groundcover.is_some() && !gc.off {
         let groundcover_dt = world.try_resource::<DeltaTime>().map_or(0.0, |dt| dt.0);
         // The horizontal half field of view the view wedge is cut from:
         // `tan(h/2) = tan(v/2) * aspect`.
@@ -1332,7 +1332,7 @@ fn collect_and_prepare_groundcover(
             chunks_truncated,
         };
         ctx.prepare_groundcover(&input);
-    } else if ctx.groundcover.is_some() {
+    } else if ctx.exterior.groundcover.is_some() {
         // `--groundcover-off`. An empty chunk list is what `prepare`
         // already treats as "nothing to scatter", so the off switch is
         // the same code path an interior takes — no second branch in

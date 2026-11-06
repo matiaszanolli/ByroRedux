@@ -540,7 +540,7 @@ impl VulkanContext {
         // not a handle resolved before the build could resize it, and never
         // the stale one a failed build leaves behind (#4779).
         let tlas = self.ray_query_tlas(frame);
-        if let Some(ref mut gc) = self.groundcover {
+        if let Some(ref mut gc) = self.exterior.groundcover {
             gc.record_scatter(&self.device, cmd, frame, tlas, self.gpu_timers.as_mut());
         }
 
@@ -557,12 +557,12 @@ impl VulkanContext {
         frame: usize,
         main_instances: u32,
     ) {
-        if let Some(ref mut tier) = self.groundcover_models {
+        if let Some(ref mut tier) = self.exterior.groundcover_models {
             tier.clear_frame();
         }
         let tlas = self.ray_query_tlas(frame);
         let Some(inputs) = self
-            .groundcover
+            .exterior.groundcover
             .as_ref()
             .and_then(|gc| gc.model_scatter_inputs(frame, tlas))
         else {
@@ -572,7 +572,7 @@ impl VulkanContext {
         let tail_capacity = capacity.saturating_sub(main_instances);
         let instance_buffer = self.scene_buffers.instance_buffers()[frame].buffer;
         let previous_model_buffer = self.scene_buffers.previous_model_buffers()[frame].buffer;
-        if let Some(ref mut tier) = self.groundcover_models {
+        if let Some(ref mut tier) = self.exterior.groundcover_models {
             tier.record(
                 &self.device,
                 cmd,
@@ -617,7 +617,7 @@ impl VulkanContext {
     /// Returns immediately on every frame of a normal run — `groundcover_bench`
     /// is `None` unless `--bench-groundcover-sampling` created it.
     fn record_groundcover_bench(&mut self, cmd: vk::CommandBuffer, frame: usize) {
-        if self.groundcover_bench.is_none() {
+        if self.exterior.groundcover_bench.is_none() {
             return;
         }
         // The global vertex SSBO is path A's whole subject. It does not exist
@@ -637,7 +637,7 @@ impl VulkanContext {
         // at a stale offset, which would read another mesh's vertices as
         // terrain and quietly change the numbers.
         let cells: Vec<super::super::groundcover_bench::BenchCellInput> = self
-            .groundcover_bench_cells
+            .exterior.groundcover_bench_cells
             .iter()
             .filter_map(|cell| {
                 self.mesh_registry.get(cell.mesh_id).map(|mesh| {
@@ -649,7 +649,7 @@ impl VulkanContext {
             })
             .collect();
 
-        let Some(bench) = self.groundcover_bench.as_mut() else {
+        let Some(bench) = self.exterior.groundcover_bench.as_mut() else {
             return;
         };
         bench.record(

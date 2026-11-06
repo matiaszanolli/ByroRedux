@@ -434,7 +434,7 @@ impl VulkanContext {
             // it with `None` here would leak the blade arena, the field images
             // and the descriptor pool. `record_draw` skips on the null
             // pipeline the failed rebuild leaves behind.
-            if let Some(groundcover) = self.groundcover.as_mut() {
+            if let Some(groundcover) = self.exterior.groundcover.as_mut() {
                 if let Err(e) = groundcover.recreate_draw_pipelines(
                     &self.device,
                     self.pipeline_cache,
@@ -2250,7 +2250,7 @@ mod tests {
             "a failed ground-cover rebuild must report itself"
         );
         assert!(
-            !arm.contains("self.groundcover = None"),
+            !arm.contains("self.exterior.groundcover = None"),
             "dropping the pipeline object leaks everything it owns — it has no `Drop`, \
              and `record_draw` already skips on the null pipeline a failed rebuild leaves"
         );

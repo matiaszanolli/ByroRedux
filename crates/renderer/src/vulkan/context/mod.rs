@@ -920,6 +920,54 @@ pub(super) struct RenderDiagnostics {
     image_health_total: (u64, u64),
 }
 
+/// Exterior-only renderer state (#6700): the EXAL ground-cover pipeline, its
+/// authored-model tier and its sampling bench, and the resident terrain-tile slots.
+///
+/// The ground-cover pipeline, model tier and bench own Vulkan objects. `teardown.rs`
+/// destroys each through `exterior.<name>` at the point it always destroyed the
+/// bare field, so the reverse-order chain is unchanged.
+pub struct ExteriorState {
+    /// EXAL ground cover — the scatter pass and its draw (#4054 / #4055).
+    /// `None` when the device lacks ray_query (the blade shader traces the
+    /// same shadow ray `water.frag` does) or when pipeline creation failed;
+    /// ground cover then simply does not render.
+    pub groundcover: Option<super::groundcover::GroundCoverPipeline>,
+    /// EXAL ground cover §12.12 Phase C — the authored-model tier (#4413).
+    /// `None` exactly when `groundcover` is, or when its creation failed.
+    pub groundcover_models: Option<super::groundcover_models::GroundCoverModelTier>,
+    /// EXAL ground-cover §11.1 terrain-attribute sampling bench (#4052).
+    /// `None` on every normal run — created only by
+    /// `--bench-groundcover-sampling`, because it owns ~3.5 MB of baked
+    /// attribute textures and four pipelines no production path touches.
+    pub groundcover_bench: Option<super::groundcover_bench::GroundcoverBench>,
+    /// Resident exterior terrain cells for the frame the bench is about to
+    /// measure, published by the app before `draw_frame`. Empty on interiors
+    /// and on every frame of a run without the flag.
+    ///
+    /// Carries the mesh handle rather than a resolved vertex offset: the
+    /// registry compacts, so the offset is looked up at dispatch time from
+    /// the same `MeshRegistry` the draw path reads. See
+    /// `groundcover_bench.rs`'s module docs.
+    pub groundcover_bench_cells: Vec<GroundcoverBenchCellHandle>,
+    /// Cell-load-time registry of active terrain splat tiles. Parallel
+    /// to the mesh / texture registries; maps a tile slot (0..1023) to
+    /// its 8 bindless texture indices. Uploaded to the `GpuTerrainTile`
+    /// SSBO once per cell load and referenced by fragment shaders via
+    /// `(instance.flags >> 16) & 0xFFFF`. Vacant slots are tracked in
+    /// a free list. See #470.
+    terrain_tiles: Vec<Option<scene_buffer::GpuTerrainTile>>,
+    /// LIFO free list of vacant terrain tile slots.
+    terrain_tile_free_list: Vec<u32>,
+    /// Set when `allocate_terrain_tile` / `free_terrain_tile` mutated
+    /// the slab. Checked on the next `draw_frame`, which uploads the
+    /// fresh high-water prefix into the single DEVICE_LOCAL SSBO and clears
+    /// the flag. Pre-#497 this was a per-frame-in-flight countdown against a
+    /// HOST_VISIBLE double-buffered SSBO; the buffer is static until the next
+    /// cell transition so a single DEVICE_LOCAL allocation is the correct
+    /// shape.
+    terrain_tiles_dirty: bool,
+}
+
 pub struct VulkanContext {
     // Vulkan objects are destroyed explicitly by `Drop` (`teardown.rs`),
     // not by this field order. Rust's implicit field drop runs only after
@@ -1132,28 +1180,8 @@ pub struct VulkanContext {
     pub scene_buffers: scene_buffer::SceneBuffers,
     pub accel_manager: Option<AccelerationManager>,
     pub cluster_cull: Option<ClusterCullPipeline>,
-    /// EXAL ground cover — the scatter pass and its draw (#4054 / #4055).
-    /// `None` when the device lacks ray_query (the blade shader traces the
-    /// same shadow ray `water.frag` does) or when pipeline creation failed;
-    /// ground cover then simply does not render.
-    pub groundcover: Option<super::groundcover::GroundCoverPipeline>,
-    /// EXAL ground cover §12.12 Phase C — the authored-model tier (#4413).
-    /// `None` exactly when `groundcover` is, or when its creation failed.
-    pub groundcover_models: Option<super::groundcover_models::GroundCoverModelTier>,
-    /// EXAL ground-cover §11.1 terrain-attribute sampling bench (#4052).
-    /// `None` on every normal run — created only by
-    /// `--bench-groundcover-sampling`, because it owns ~3.5 MB of baked
-    /// attribute textures and four pipelines no production path touches.
-    pub groundcover_bench: Option<super::groundcover_bench::GroundcoverBench>,
-    /// Resident exterior terrain cells for the frame the bench is about to
-    /// measure, published by the app before `draw_frame`. Empty on interiors
-    /// and on every frame of a run without the flag.
-    ///
-    /// Carries the mesh handle rather than a resolved vertex offset: the
-    /// registry compacts, so the offset is looked up at dispatch time from
-    /// the same `MeshRegistry` the draw path reads. See
-    /// `groundcover_bench.rs`'s module docs.
-    pub groundcover_bench_cells: Vec<GroundcoverBenchCellHandle>,
+    /// Ground-cover and terrain-tile state (#6700). See [`ExteriorState`].
+    pub exterior: ExteriorState,
     /// GPU skinning and morph state (#6697). See [`SkinningState`].
     pub skin: SkinningState,
     /// Per-pass GPU timer (#1194 / PERF-DIM7-INSTR). Brackets the
@@ -1260,23 +1288,6 @@ pub struct VulkanContext {
     /// CPU-side. The existing instanced batching from #272 collapses all
     /// per-frame particle draws into a single instanced cmd_draw_indexed.
     pub particle_quad_handle: Option<u32>,
-    /// Cell-load-time registry of active terrain splat tiles. Parallel
-    /// to the mesh / texture registries; maps a tile slot (0..1023) to
-    /// its 8 bindless texture indices. Uploaded to the `GpuTerrainTile`
-    /// SSBO once per cell load and referenced by fragment shaders via
-    /// `(instance.flags >> 16) & 0xFFFF`. Vacant slots are tracked in
-    /// a free list. See #470.
-    terrain_tiles: Vec<Option<scene_buffer::GpuTerrainTile>>,
-    /// LIFO free list of vacant terrain tile slots.
-    terrain_tile_free_list: Vec<u32>,
-    /// Set when `allocate_terrain_tile` / `free_terrain_tile` mutated
-    /// the slab. Checked on the next `draw_frame`, which uploads the
-    /// fresh high-water prefix into the single DEVICE_LOCAL SSBO and clears
-    /// the flag. Pre-#497 this was a per-frame-in-flight countdown against a
-    /// HOST_VISIBLE double-buffered SSBO; the buffer is static until the next
-    /// cell transition so a single DEVICE_LOCAL allocation is the correct
-    /// shape.
-    terrain_tiles_dirty: bool,
 
     pub allocator: Option<SharedAllocator>,
     /// One-shot latch for the allocator's high-memory warning. Sampling is
@@ -2378,7 +2389,7 @@ mod fsr_startup_failure_promotes_to_taa_tests {
 #[cfg(test)]
 mod field_group_tests {
     /// `(context field, its type, the names that now live inside it)`.
-    const GROUPS: [(&str, &str, &[&str]); 3] = [
+    const GROUPS: [(&str, &str, &[&str]); 4] = [
         (
         "skin",
         "SkinningState",
@@ -2433,6 +2444,19 @@ mod field_group_tests {
                 "image_health_buffers",
                 "image_health_last",
                 "image_health_total",
+            ],
+        ),
+        (
+            "exterior",
+            "ExteriorState",
+            &[
+                "groundcover",
+                "groundcover_models",
+                "groundcover_bench",
+                "groundcover_bench_cells",
+                "terrain_tiles",
+                "terrain_tile_free_list",
+                "terrain_tiles_dirty",
             ],
         ),
     ];

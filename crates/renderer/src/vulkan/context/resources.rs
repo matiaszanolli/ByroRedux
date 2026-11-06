@@ -152,17 +152,17 @@ impl VulkanContext {
     /// registry is full — caller falls back to the single-texture
     /// path. See #470.
     pub fn allocate_terrain_tile(&mut self, tile: GpuTerrainTile) -> Option<u32> {
-        let slot = self.terrain_tile_free_list.pop()?;
+        let slot = self.exterior.terrain_tile_free_list.pop()?;
         let idx = slot as usize;
-        debug_assert!(idx < self.terrain_tiles.len());
-        self.terrain_tiles[idx] = Some(tile);
-        self.terrain_tiles_dirty = true;
+        debug_assert!(idx < self.exterior.terrain_tiles.len());
+        self.exterior.terrain_tiles[idx] = Some(tile);
+        self.exterior.terrain_tiles_dirty = true;
         Some(slot)
     }
 
     /// The live record in terrain tile `slot`, or `None` when it is vacant.
     pub fn terrain_tile(&self, slot: u32) -> Option<&GpuTerrainTile> {
-        self.terrain_tiles.get(slot as usize)?.as_ref()
+        self.exterior.terrain_tiles.get(slot as usize)?.as_ref()
     }
 
     /// Edit the live record in terrain tile `slot` in place and schedule the
@@ -172,11 +172,11 @@ impl VulkanContext {
     /// maps in as they finish generating (#6195); whatever handles the edit
     /// stores become the tile's to release.
     pub fn update_terrain_tile(&mut self, slot: u32, edit: impl FnOnce(&mut GpuTerrainTile)) -> bool {
-        let Some(Some(tile)) = self.terrain_tiles.get_mut(slot as usize) else {
+        let Some(Some(tile)) = self.exterior.terrain_tiles.get_mut(slot as usize) else {
             return false;
         };
         edit(tile);
-        self.terrain_tiles_dirty = true;
+        self.exterior.terrain_tiles_dirty = true;
         true
     }
 
@@ -187,13 +187,13 @@ impl VulkanContext {
     pub fn set_groundcover_detail_atlas(&mut self, handle: u32, species_count: u32) {
         let value = [handle, species_count, 0, 0];
         let mut changed = false;
-        for tile in self.terrain_tiles.iter_mut().flatten() {
+        for tile in self.exterior.terrain_tiles.iter_mut().flatten() {
             if tile.groundcover_detail_atlas != value {
                 tile.groundcover_detail_atlas = value;
                 changed = true;
             }
         }
-        self.terrain_tiles_dirty |= changed;
+        self.exterior.terrain_tiles_dirty |= changed;
     }
 
     /// #6196 — publish the height-blend transition band to every live LAND
@@ -201,13 +201,13 @@ impl VulkanContext {
     /// so the steady state costs one compare per resident tile.
     pub fn set_terrain_height_blend_band(&mut self, band: f32) {
         let mut changed = false;
-        for tile in self.terrain_tiles.iter_mut().flatten() {
+        for tile in self.exterior.terrain_tiles.iter_mut().flatten() {
             if tile.height_blend_band != band {
                 tile.height_blend_band = band;
                 changed = true;
             }
         }
-        self.terrain_tiles_dirty |= changed;
+        self.exterior.terrain_tiles_dirty |= changed;
     }
 
     /// #6197 — publish the terrain parallax settings to every live LAND
@@ -216,7 +216,7 @@ impl VulkanContext {
     /// every frame; marks the SSBO dirty only on a real change.
     pub fn set_terrain_parallax(&mut self, depth: f32, fade_start: f32, fade_end: f32) {
         let mut changed = false;
-        for tile in self.terrain_tiles.iter_mut().flatten() {
+        for tile in self.exterior.terrain_tiles.iter_mut().flatten() {
             if tile.parallax_depth != depth
                 || tile.parallax_fade_start != fade_start
                 || tile.parallax_fade_end != fade_end
@@ -227,7 +227,7 @@ impl VulkanContext {
                 changed = true;
             }
         }
-        self.terrain_tiles_dirty |= changed;
+        self.exterior.terrain_tiles_dirty |= changed;
     }
 
     /// Publish the distance at which near terrain is fully softened toward the
@@ -235,13 +235,13 @@ impl VulkanContext {
     /// LAND tile. Called every frame; marks the SSBO dirty only on a change.
     pub fn set_terrain_lod_soften_end(&mut self, end: f32) {
         let mut changed = false;
-        for tile in self.terrain_tiles.iter_mut().flatten() {
+        for tile in self.exterior.terrain_tiles.iter_mut().flatten() {
             if tile.lod_soften_end != end {
                 tile.lod_soften_end = end;
                 changed = true;
             }
         }
-        self.terrain_tiles_dirty |= changed;
+        self.exterior.terrain_tiles_dirty |= changed;
     }
 
     /// Release a terrain tile slot back to the free list and schedule
@@ -256,9 +256,9 @@ impl VulkanContext {
     /// when the slot is out of range or already vacant. See #627.
     pub fn free_terrain_tile(&mut self, slot: u32) -> Option<GpuTerrainTile> {
         release_terrain_tile_slot(
-            &mut self.terrain_tiles,
-            &mut self.terrain_tile_free_list,
-            &mut self.terrain_tiles_dirty,
+            &mut self.exterior.terrain_tiles,
+            &mut self.exterior.terrain_tile_free_list,
+            &mut self.exterior.terrain_tiles_dirty,
             slot,
         )
     }
@@ -352,7 +352,7 @@ impl VulkanContext {
     /// why the EX-08 soak (#2374) tracks it as an exact-return class: a
     /// surplus here is also a surplus of leaked texture references.
     pub fn occupied_terrain_tile_count(&self) -> usize {
-        self.terrain_tiles.iter().filter(|t| t.is_some()).count()
+        self.exterior.terrain_tiles.iter().filter(|t| t.is_some()).count()
     }
 
     /// Populate `dest` with the current terrain tile prefix, filling holes
@@ -371,7 +371,7 @@ impl VulkanContext {
         &mut self,
         dest: &mut Vec<GpuTerrainTile>,
     ) -> bool {
-        fill_terrain_tiles(&self.terrain_tiles, &mut self.terrain_tiles_dirty, dest)
+        fill_terrain_tiles(&self.exterior.terrain_tiles, &mut self.exterior.terrain_tiles_dirty, dest)
     }
     /// Build BLAS for multiple meshes in a single GPU submission.
     ///
@@ -736,7 +736,7 @@ impl VulkanContext {
         samples_per_thread: u32,
         blades_per_chunk: u32,
     ) -> anyhow::Result<()> {
-        if self.groundcover_bench.is_some() {
+        if self.exterior.groundcover_bench.is_some() {
             return Ok(());
         }
         let allocator = self
@@ -750,7 +750,7 @@ impl VulkanContext {
             samples_per_thread,
             blades_per_chunk,
         )?;
-        self.groundcover_bench = Some(bench);
+        self.exterior.groundcover_bench = Some(bench);
         Ok(())
     }
 
@@ -772,7 +772,7 @@ impl VulkanContext {
             .unwrap_or(ash::vk::Buffer::null());
         let frame = self.current_frame;
         let device = self.device.clone();
-        if let Some(ref mut gc) = self.groundcover {
+        if let Some(ref mut gc) = self.exterior.groundcover {
             gc.prepare(&device, frame, vertex_buffer, input);
         }
     }
@@ -785,7 +785,7 @@ impl VulkanContext {
         input: &super::super::groundcover_models::GroundCoverModelFrame<'_>,
     ) {
         let frame = self.current_frame;
-        if let Some(ref mut tier) = self.groundcover_models {
+        if let Some(ref mut tier) = self.exterior.groundcover_models {
             tier.prepare(
                 &self.device,
                 frame,
@@ -800,25 +800,25 @@ impl VulkanContext {
     pub fn groundcover_model_stats(
         &self,
     ) -> Option<super::super::groundcover_models::GroundCoverModelStats> {
-        self.groundcover_models.as_ref().map(|tier| tier.stats())
+        self.exterior.groundcover_models.as_ref().map(|tier| tier.stats())
     }
 
     /// `groundcover:` telemetry row for the bench summary, or `None` when the
     /// pipeline was never created.
     pub fn groundcover_stats(&self) -> Option<super::super::groundcover::GroundCoverStats> {
-        self.groundcover.as_ref().map(|gc| gc.stats())
+        self.exterior.groundcover.as_ref().map(|gc| gc.stats())
     }
 
     /// Publish the frame's resident exterior terrain cells for the bench.
     /// No-op (bar the clear) when the bench was never enabled.
     pub fn set_groundcover_bench_cells(&mut self, cells: Vec<GroundcoverBenchCellHandle>) {
-        self.groundcover_bench_cells = cells;
+        self.exterior.groundcover_bench_cells = cells;
     }
 
     /// `groundcover-bench:` summary lines, or empty when the bench was never
     /// enabled or never got a frame with resident terrain.
     pub fn groundcover_bench_report(&self) -> Vec<String> {
-        self.groundcover_bench
+        self.exterior.groundcover_bench
             .as_ref()
             .map(|b| b.report_lines())
             .unwrap_or_default()
@@ -829,7 +829,7 @@ impl VulkanContext {
     /// interior, measured nothing" — a report of all-zero rows would
     /// otherwise read as a result.
     pub fn groundcover_bench_has_samples(&self) -> bool {
-        self.groundcover_bench
+        self.exterior.groundcover_bench
             .as_ref()
             .is_some_and(|b| b.has_samples())
     }

@@ -127,21 +127,21 @@ impl VulkanContext {
         // #4054 / #4055 — the ground-cover scatter + draw pipelines and
         // their buffers (chunk/cell/species per frame slot, plus the shared
         // blade / indirect / counter allocations).
-        if let Some(ref mut gc) = self.groundcover {
+        if let Some(ref mut gc) = self.exterior.groundcover {
             // SAFETY: same contract as every sibling here — `device_wait_idle`
             // ran at the top of `Drop`.
             unsafe { gc.destroy(&self.device, alloc) };
         }
         // #4413 — the authored-model tier: pipeline, per-slot uploads and the
         // shared placement slab / counters / indirect draws.
-        if let Some(ref mut tier) = self.groundcover_models {
+        if let Some(ref mut tier) = self.exterior.groundcover_models {
             // SAFETY: `device_wait_idle` ran at the top of `Drop`.
             unsafe { tier.destroy(&self.device, alloc) };
         }
         // #4052 — the §11.1 sampling bench. Allocator-owned (three array
         // images, a raster target and its per-frame record buffers), so it
         // belongs in this block rather than the allocator-independent one.
-        if let Some(ref mut bench) = self.groundcover_bench {
+        if let Some(ref mut bench) = self.exterior.groundcover_bench {
             // SAFETY: same contract as every sibling here — `device_wait_idle`
             // ran at the top of `Drop`, so nothing in flight references the
             // bench's pipelines, sets, images or buffers.

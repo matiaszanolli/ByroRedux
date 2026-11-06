@@ -848,7 +848,7 @@ impl VulkanContext {
         // would blank half the field the first time the water branch was
         // skipped. Viewport and scissor stay dynamic and are already set
         // for the pass.
-        if let Some(ref gc) = self.groundcover {
+        if let Some(ref gc) = self.exterior.groundcover {
             if let Some(timers) = &mut self.gpu_timers {
                 timers.cmd_geometry_phase_start(
                     &self.device,
@@ -897,7 +897,7 @@ impl VulkanContext {
             return;
         }
         let Some((buffer, shapes)) = self
-            .groundcover_models
+            .exterior.groundcover_models
             .as_ref()
             .and_then(|tier| tier.shape_draws())
         else {

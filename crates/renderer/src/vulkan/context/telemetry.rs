@@ -432,7 +432,7 @@ impl VulkanContext {
         }
         // #4922 — the ground-cover model tier's per-frame record / shape lists.
         let [records, shapes] = self
-            .groundcover_models
+            .exterior.groundcover_models
             .as_ref()
             .map(|tier| tier.scratch_telemetry())
             .unwrap_or([(0, 0, 0); 2]);

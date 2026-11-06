@@ -918,25 +918,27 @@ impl VulkanContext {
             },
             pipeline_layout: pipelines.layout,
             particle_quad_handle: None,
-            terrain_tiles: vec![None; scene_buffer::MAX_TERRAIN_TILES],
-            // Free list seeded with every slot in reverse order so
-            // `pop()` returns slots in ascending order (deterministic
-            // test behaviour).
-            terrain_tile_free_list: (0..scene_buffer::MAX_TERRAIN_TILES as u32).rev().collect(),
-            terrain_tiles_dirty: false,
+            exterior: ExteriorState {
+                terrain_tiles: vec![None; scene_buffer::MAX_TERRAIN_TILES],
+                // Free list seeded with every slot in reverse order so
+                // `pop()` returns slots in ascending order (deterministic
+                // test behaviour).
+                terrain_tile_free_list: (0..scene_buffer::MAX_TERRAIN_TILES as u32).rev().collect(),
+                terrain_tiles_dirty: false,
+                groundcover,
+                groundcover_models,
+                // #4052 — created on demand by
+                // `VulkanContext::enable_groundcover_bench`, not here: the
+                // harness is `--bench-groundcover-sampling` only and init has no
+                // view of the CLI.
+                groundcover_bench: None,
+                groundcover_bench_cells: Vec::new(),
+            },
             mesh_registry,
             texture_registry,
             scene_buffers,
             accel_manager,
             cluster_cull,
-            groundcover,
-            groundcover_models,
-            // #4052 — created on demand by
-            // `VulkanContext::enable_groundcover_bench`, not here: the
-            // harness is `--bench-groundcover-sampling` only and init has no
-            // view of the CLI.
-            groundcover_bench: None,
-            groundcover_bench_cells: Vec::new(),
             // Everything but the two pipelines starts empty (`Default`).
             skin: SkinningState {
                 compute: skin_compute,

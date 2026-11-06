@@ -696,7 +696,7 @@ impl VulkanContext {
         // #4413 — plus the ground-cover model tier's tail, which its compute
         // pass writes after this list once the frame has placements.
         let model_tail = self
-            .groundcover_models
+            .exterior.groundcover_models
             .as_ref()
             .map_or(0, |tier| tier.tail_request());
         self.grow_instance_ssbos(frame, gpu_instances.len() + model_tail);
