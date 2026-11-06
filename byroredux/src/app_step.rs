@@ -566,7 +566,7 @@ impl App {
     ///
     /// Runs before the scheduler so the pose the systems observe — and the
     /// one `build_render_data` turns into this frame's view matrix — is the
-    /// pose for this frame index. Normal paths use `bench_frames_count` so a
+    /// pose for this frame index. Normal paths use `bench.frames_count` so a
     /// capture at frame N is comparable across upscaler presets. `grid-cross`
     /// uses a logical path frame that pauses while the current full-detail +
     /// LOD handoff is active; otherwise a faster renderer gives streaming less
@@ -578,9 +578,9 @@ impl App {
     /// harness measure the detector rather than the recovery it is supposed
     /// to be testing.
     pub(crate) fn seed_bench_camera_origin(&mut self) {
-        if self.bench_camera.is_none()
-            || self.bench_frames_target.is_none()
-            || self.bench_camera_origin.is_some()
+        if self.bench.camera.is_none()
+            || self.bench.frames_target.is_none()
+            || self.bench.camera_origin.is_some()
         {
             return;
         }
@@ -602,10 +602,10 @@ impl App {
             position: transform.translation,
             forward: transform.rotation * -byroredux_core::math::Vec3::Z,
         };
-        self.bench_camera_origin = Some(origin);
-        let path = self.bench_camera.expect("bench camera checked above");
+        self.bench.camera_origin = Some(origin);
+        let path = self.bench.camera.expect("bench camera checked above");
         let total_frames = self
-            .bench_frames_target
+            .bench.frames_target
             .expect("bench frame target checked above");
         log::info!(
             "bench camera '{path}' over {total_frames} frames from ({:.2}, {:.2}, {:.2})",
@@ -734,15 +734,15 @@ impl App {
     }
 
     fn step_bench_camera_pose(&mut self) {
-        if !crate::bench::harness_active(self.bench_summary_printed) {
+        if !crate::bench::harness_active(self.bench.summary_printed) {
             // `--bench-hold` is an interactive inspection session once the
             // finite measurement is complete. Drop the last harness pose so
             // neither this phase nor the post-scheduler restore can pin the
             // fly/player camera after input has moved it.
-            self.bench_camera_applied_pose = None;
+            self.bench.camera_applied_pose = None;
             return;
         }
-        let (Some(path), Some(total_frames)) = (self.bench_camera, self.bench_frames_target) else {
+        let (Some(path), Some(total_frames)) = (self.bench.camera, self.bench.frames_target) else {
             return;
         };
         self.seed_bench_camera_origin();
@@ -756,7 +756,7 @@ impl App {
 
         // Seeded immediately after scene setup, before the startup scheduler
         // can replace an explicit CLI pose with the character's eye transform.
-        let Some(origin) = self.bench_camera_origin else {
+        let Some(origin) = self.bench.camera_origin else {
             return;
         };
 
@@ -771,7 +771,7 @@ impl App {
         );
         let (frame, total_frames) = if uses_streaming_clock {
             (
-                self.bench_camera_path_frame
+                self.bench.camera_path_frame
                     .min(total_frames.saturating_sub(1)),
                 total_frames,
             )
@@ -780,22 +780,22 @@ impl App {
             // before the run does (the hold segment), and
             // `--bench-camera-freeze-at` parks the path for a converged
             // reference at one of its poses.
-            self.bench_path
-                .frame_and_length(self.bench_frames_count, total_frames)
+            self.bench.path
+                .frame_and_length(self.bench.frames_count, total_frames)
         };
         // Lazy one-shot: physics is empty at seed time (see
         // `measure_bench_subject_distance`), so the first stepped frame with a
         // populated collision world resolves the subject distance and every
         // later frame reuses it — a per-frame re-cast would make the orbit
         // radius drift as the camera moves, which is not a fixed-radius orbit.
-        if self.bench_camera_subject_distance.is_none() {
+        if self.bench.camera_subject_distance.is_none() {
             if let Some((distance, source)) = self.measure_bench_subject_distance(origin) {
-                self.bench_camera_subject_distance = Some(distance);
+                self.bench.camera_subject_distance = Some(distance);
                 log::info!("bench camera subject distance {distance:.1} BU ({source})");
             }
         }
         let subject_distance = self
-            .bench_camera_subject_distance
+            .bench.camera_subject_distance
             .unwrap_or(crate::bench_camera::BenchCameraPath::FALLBACK_SUBJECT_DISTANCE_BU);
         let pose = path.pose(
             frame,
@@ -804,7 +804,7 @@ impl App {
             origin.forward,
             subject_distance,
         );
-        self.bench_camera_applied_pose = Some(pose);
+        self.bench.camera_applied_pose = Some(pose);
         self.apply_bench_camera_pose(active, pose);
 
         if path.is_cut_frame(frame, total_frames) {
@@ -818,7 +818,7 @@ impl App {
         // the sample itself waits for streaming to go quiet (below), because
         // the return frame is not necessarily a settled one.
         if let Some(cycle) = path.soak_cycle_completed(frame, total_frames) {
-            self.pending_soak_cycle = Some(cycle);
+            self.bench.pending_soak_cycle = Some(cycle);
         }
 
         if uses_streaming_clock {
@@ -831,12 +831,12 @@ impl App {
             // reachability classes swing with whichever cells happen to have
             // their entities attached, even though residency never moved.
             if !boundary_in_progress {
-                if let Some(cycle) = self.pending_soak_cycle.take() {
+                if let Some(cycle) = self.bench.pending_soak_cycle.take() {
                     self.record_soak_ownership_cycle(cycle);
                 }
             }
-            self.bench_camera_path_frame = crate::bench_camera::advance_grid_cross_frame(
-                self.bench_camera_path_frame,
+            self.bench.camera_path_frame = crate::bench_camera::advance_grid_cross_frame(
+                self.bench.camera_path_frame,
                 total_frames,
                 boundary_in_progress,
             );
@@ -876,11 +876,11 @@ impl App {
     /// frame's capture before its draw, on the frame index the bench paths
     /// read, so the capture shows the pose they chose for it.
     fn step_linear_capture_sequence(&mut self) {
-        if !crate::bench::harness_active(self.bench_summary_printed) {
+        if !crate::bench::harness_active(self.bench.summary_printed) {
             return;
         }
-        let frame = self.bench_frames_count;
-        let pose = self.bench_camera_applied_pose;
+        let frame = self.bench.frames_count;
+        let pose = self.bench.camera_applied_pose;
         if let (Some(capture), Some(ctx)) = (self.linear_capture.as_mut(), self.renderer.as_mut()) {
             if capture.advance_sequence(ctx, frame) {
                 if let Some(pose) = pose {
@@ -901,16 +901,16 @@ impl App {
     ///
     /// [`BenchMover`]: crate::bench_camera::BenchMover
     fn step_bench_movers(&mut self) {
-        let Some(run_frames) = self.bench_frames_target else {
+        let Some(run_frames) = self.bench.frames_target else {
             return;
         };
-        if !crate::bench::harness_active(self.bench_summary_printed) {
+        if !crate::bench::harness_active(self.bench.summary_printed) {
             return;
         }
         let Some(movers) = self.world.query::<crate::bench_camera::BenchMover>() else {
             return;
         };
-        let t = self.bench_path.progress(self.bench_frames_count, run_frames);
+        let t = self.bench.path.progress(self.bench.frames_count, run_frames);
         let placed: Vec<_> = movers
             .iter()
             .map(|(entity, mover)| (entity, mover.start.lerp(mover.end, t)))
@@ -966,7 +966,7 @@ impl App {
     /// camera sync. This deliberately does not advance `grid-cross` or signal
     /// a second cut; it only restores the transform selected above.
     pub(crate) fn restore_bench_camera_pose(&self) {
-        let Some(pose) = self.bench_camera_applied_pose else {
+        let Some(pose) = self.bench.camera_applied_pose else {
             return;
         };
         let Some(active) = self

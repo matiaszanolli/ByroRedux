@@ -534,9 +534,9 @@ pub(crate) fn run() -> Result<()> {
             .resource_mut::<crate::components::RenderDebugControl>()
             .pending_mode = Some(mode);
     }
-    app.bench_mode = bench_mode;
-    app.bench_frames_target = bench_frames;
-    app.bench_hold = bench_hold;
+    app.bench.mode = bench_mode;
+    app.bench.frames_target = bench_frames;
+    app.bench.hold = bench_hold;
     app.groundcover_bench = groundcover_bench;
     app.groundcover_debug_points = groundcover_debug_points;
     app.groundcover_off = groundcover_off;
@@ -552,9 +552,9 @@ pub(crate) fn run() -> Result<()> {
     };
     app.material_dump_path =
         parse_string_arg(&args, "--material-dump").map(std::path::PathBuf::from);
-    app.bench_capture = bench_capture;
-    app.bench_camera = bench_camera;
-    app.bench_path =
+    app.bench.capture = bench_capture;
+    app.bench.camera = bench_camera;
+    app.bench.path =
         crate::bench_camera::BenchPathClock::from_args(&args).map_err(anyhow::Error::msg)?;
     app.camera_pos_override = camera_pos;
     app.camera_forward_override = camera_forward;

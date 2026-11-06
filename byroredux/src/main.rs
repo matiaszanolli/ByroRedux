@@ -19,6 +19,7 @@ mod barter;
 mod bench;
 mod bench_camera;
 mod bench_capture;
+mod bench_state;
 mod boot;
 pub(crate) mod cell_loader;
 mod cli_args;
@@ -655,26 +656,9 @@ struct App {
     /// across frames — same scratch-buffer pattern as the others
     /// above (#243 / #253 / #509).
     material_table: byroredux_renderer::MaterialTable,
-    /// Named benchmark timing/camera contract. Present for every finite
-    /// `--bench-frames` run, including legacy invocations resolved onto a
-    /// canonical mode in `boot::run`.
-    bench_mode: Option<crate::bench::BenchMode>,
-    /// When `Some(N)`, run exactly N frames then print a `bench:` line
-    /// to stdout and exit. See `--bench-frames` in main() and #366.
-    bench_frames_target: Option<u32>,
-    /// When `true` and `bench_frames_target` is set, the engine keeps
-    /// running after the bench summary lands instead of exiting —
-    /// gives `byro-dbg` a window to attach and drive console commands
-    /// against the loaded scene. Set via `--bench-hold`. Surfaced by
-    /// the FNV-D5 audit's coverage gap (`docs/audits/
-    /// AUDIT_FNV_2026-05-08.md`).
-    bench_hold: bool,
-    /// Set once the bench summary has been printed so the per-tick
-    /// re-entry into the bench-exit branch under `--bench-hold` skips
-    /// the print + screenshot path on every subsequent tick. Without
-    /// this guard `--bench-hold` would dump the summary line on every
-    /// `about_to_wait` and the screenshot path would re-fire forever.
-    bench_summary_printed: bool,
+    /// Bench-window state — CLI contract, timing accumulators, camera path,
+    /// frame capture (#6693). See [`crate::bench_state::BenchState`].
+    bench: crate::bench_state::BenchState,
     /// #4053 — last frame's TLAS-membership verdicts, by reason, stashed off
     /// `RenderFrameView` so the bench summary (which prints from
     /// `about_to_wait`, after the frame has been consumed) can report them.
@@ -728,70 +712,9 @@ struct App {
     /// Latched once `enable_groundcover_bench` has been attempted, so a
     /// failure is reported once rather than every frame.
     groundcover_bench_started: bool,
-    /// Frames rendered since startup. Paired with `bench_frames_target`
-    /// to drive the automated benchmark exit, and — via `--bench-camera` —
-    /// to index the deterministic camera path.
-    bench_frames_count: u32,
-    /// Deterministic camera path driven during a `--bench-frames` run.
-    /// `None` leaves the authored pose alone, which is the default and what
-    /// every pre-existing bench does. See `bench_camera`.
-    bench_camera: Option<crate::bench_camera::BenchCameraPath>,
-    /// Path length and freeze frame shared by the camera path and every
-    /// `BenchMover` (`--bench-camera-length`, `--bench-camera-freeze-at`, `--bench-camera-hold-at`).
-    bench_path: crate::bench_camera::BenchPathClock,
-    /// Camera pose the bench path starts from — captured on the first bench
-    /// frame rather than read from the CLI, so a path composes with whatever
-    /// the scene (or `--camera-pos`) authored.
-    bench_camera_origin: Option<crate::bench_camera::CameraPose>,
-    /// Pose selected by `step_bench_camera` for the current frame. Character
-    /// camera sync also runs in the scheduler, so the post-scheduler phase
-    /// reapplies this exact pose before streaming and rendering.
-    bench_camera_applied_pose: Option<crate::bench_camera::CameraPose>,
-    /// Distance in BU from the bench camera's seeded origin to the geometry it
-    /// looks at, measured once by a forward ray cast on the first stepped
-    /// frame with a populated collision world. `Orbit`'s radius and `Dolly`'s
-    /// travel derive from it. `None` until measured — physics is still empty
-    /// when `seed_bench_camera_origin` runs.
-    bench_camera_subject_distance: Option<f32>,
-    /// Logical path frame for `grid-cross`. Unlike rendered-frame count this
-    /// pauses while a boundary transaction is active, making each measured
-    /// handoff independent of GPU frame rate and preventing the benchmark
-    /// itself from superseding correct-but-slower streaming work.
-    bench_camera_path_frame: u32,
-    /// Soak traversal awaiting an ownership sample (EX-08 / #2374).
-    ///
-    /// The camera reaching the origin is not by itself a settled moment: the
-    /// logical clock pauses while a boundary transaction runs, so the frame a
-    /// cycle completes on can land mid-apply. Sampling there reads a
-    /// half-torn-down world and makes reachability counts (`meshes_in_use`)
-    /// alternate between phases while actual residency (`meshes_live_slots`)
-    /// stays flat — a false leak. The cycle index parks here until streaming
-    /// reports no boundary in progress.
-    pending_soak_cycle: Option<u32>,
-    /// Wall-clock start of the bench window (set on first bench frame).
-    /// Used to compute real elapsed time independent of the rolling stats
-    /// window, which measures per-AboutToWait dt and can miss CPU phases.
-    bench_start: Option<Instant>,
-    /// Accumulated nanoseconds spent in scheduler.run() during the bench.
-    bench_systems_ns: u64,
-    /// Number of about_to_wait ticks recorded during the bench window
-    /// (distinct from bench_frames_count which counts render frames).
-    bench_systems_ticks: u64,
-    /// Accumulated nanoseconds in build_render_data() alone.
-    bench_build_render_ns: u64,
-    /// Accumulated nanoseconds in UI tick + render + texture upload.
-    bench_ui_ns: u64,
-    /// Accumulated nanoseconds spent in draw_frame() alone.
-    bench_render_ns: u64,
-    /// Per-phase draw_frame breakdown accumulated over the bench window.
-    bench_frame_timings: byroredux_renderer::FrameTimings,
-    /// Whole `about_to_wait` CPU wall samples, one per rendered bench frame.
-    /// Retained only for the explicit finite bench window so p50/p95/max can
-    /// expose boundary stutter that an average FPS line hides.
-    bench_cpu_frame_ms: Vec<f64>,
     /// When set, request a screenshot on the bench-exit frame and
     /// write the PNG to this path before quitting. Requires
-    /// `bench_frames_target` to be set (otherwise there is no
+    /// `bench.frames_target` to be set (otherwise there is no
     /// deterministic capture frame). See `--screenshot`.
     screenshot_path: Option<String>,
     /// `--linear-capture PATH [--linear-capture-frames N]`: on the
@@ -810,13 +733,6 @@ struct App {
     /// `--material-dump PATH` (M-LIGHT A9, RLT-IBL-008): the loaded scene's
     /// material classes, written after the first rendered frame.
     material_dump_path: Option<std::path::PathBuf>,
-    /// M-LIGHT RLT-PERF-005 — adaptive RT tier histogram over the bench
-    /// window past the warm-up, and the last frame sampled.
-    bench_rt_tier_hist: [u32; 4],
-    bench_rt_tier_sampled_frame: u32,
-    /// `--bench-capture-every N --bench-capture-dir DIR`: PNG of every Nth
-    /// rendered frame of a finite bench run (see `bench_capture`).
-    bench_capture: Option<crate::bench_capture::FrameSequenceCapture>,
     /// Optional override for the computed initial camera position —
     /// `--camera-pos x,y,z`. Applied during scene setup before the
     /// first frame. None = use the default auto-frame-scene placement.
@@ -1311,9 +1227,7 @@ impl App {
             ),
             skin_offsets: rustc_hash::FxHashMap::default(),
             material_table: byroredux_renderer::MaterialTable::new(),
-            bench_mode: None,
-            bench_frames_target: None,
-            bench_hold: false,
+            bench: Default::default(),
             tlas_policy: Default::default(),
             groundcover_cells: Vec::new(),
             groundcover_chunks: Vec::new(),
@@ -1330,31 +1244,11 @@ impl App {
             groundcover_off: false,
             groundcover_bench: None,
             groundcover_bench_started: false,
-            bench_summary_printed: false,
-            bench_frames_count: 0,
-            bench_camera: None,
-            bench_path: Default::default(),
-            bench_camera_origin: None,
-            bench_camera_applied_pose: None,
-            bench_camera_subject_distance: None,
-            bench_camera_path_frame: 0,
-            pending_soak_cycle: None,
-            bench_start: None,
-            bench_systems_ns: 0,
-            bench_systems_ticks: 0,
-            bench_build_render_ns: 0,
-            bench_ui_ns: 0,
-            bench_render_ns: 0,
-            bench_frame_timings: byroredux_renderer::FrameTimings::default(),
-            bench_cpu_frame_ms: Vec::new(),
             screenshot_path: None,
             linear_capture: None,
             export_mitsuba_dir: None,
             export_mitsuba_frame: 0,
             material_dump_path: None,
-            bench_rt_tier_hist: [0; 4],
-            bench_rt_tier_sampled_frame: 0,
-            bench_capture: None,
             camera_pos_override: None,
             camera_forward_override: None,
             screenshot_requested: false,

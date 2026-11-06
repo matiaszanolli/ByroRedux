@@ -363,8 +363,8 @@ impl App {
         // Without the target check this would suppress the HUD in every
         // ordinary non-bench session too, since `harness_active` only
         // means "the summary hasn't printed".
-        let bench_window_open = self.bench_frames_target.is_some()
-            && crate::bench::harness_active(self.bench_summary_printed);
+        let bench_window_open = self.bench.frames_target.is_some()
+            && crate::bench::harness_active(self.bench.summary_printed);
         if bench_window_open {
             snapshot.show_crosshair = false;
             snapshot.vitals = None;
@@ -425,7 +425,7 @@ impl App {
             if let Some((egui_ctx, output)) = egui_frame {
                 ctx.submit_egui_frame(egui_ctx, output);
             }
-            let is_benching = self.bench_frames_target.is_some();
+            let is_benching = self.bench.frames_target.is_some();
 
             let brd_t0 = Instant::now();
             let mut frame = build_render_data(
@@ -444,7 +444,7 @@ impl App {
                 ctx.particle_quad_handle,
             );
             if is_benching {
-                self.bench_build_render_ns += brd_t0.elapsed().as_nanos() as u64;
+                self.bench.build_render_ns += brd_t0.elapsed().as_nanos() as u64;
             }
             // #3231/#3244 — stage this frame's morph weights for every live
             // `MorphSlot`; draw_frame publishes them after its fence wait.
@@ -648,7 +648,7 @@ impl App {
                 )
             };
             if is_benching {
-                self.bench_ui_ns += ui_t0.elapsed().as_nanos() as u64;
+                self.bench.ui_ns += ui_t0.elapsed().as_nanos() as u64;
             }
 
             let is_interior = self
@@ -908,9 +908,9 @@ impl App {
                         cpu_t.between_frames_ms = between_frames_ns as f32 * NS_TO_MS;
                     }
                     if is_benching {
-                        self.bench_render_ns += render_t0.elapsed().as_nanos() as u64;
+                        self.bench.render_ns += render_t0.elapsed().as_nanos() as u64;
                         if let Some(ft) = frame_timings {
-                            let b = &mut self.bench_frame_timings;
+                            let b = &mut self.bench.frame_timings;
                             b.fence_wait_ns += ft.fence_wait_ns;
                             b.tlas_build_ns += ft.tlas_build_ns;
                             b.ssbo_build_ns += ft.ssbo_build_ns;
@@ -922,10 +922,10 @@ impl App {
                             b.cmd_record_ns += ft.cmd_record_ns;
                             b.submit_present_ns += ft.submit_present_ns;
                         }
-                        if self.bench_start.is_none() {
-                            self.bench_start = Some(Instant::now());
+                        if self.bench.start.is_none() {
+                            self.bench.start = Some(Instant::now());
                         }
-                        self.bench_frames_count += 1;
+                        self.bench.frames_count += 1;
                     }
                     if needs_recreate {
                         if let Some(ref win) = self.window {

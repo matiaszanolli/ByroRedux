@@ -185,31 +185,31 @@ impl App {
             &self.bone_world,
         );
         let bench_mode = self
-            .bench_mode
+            .bench.mode
             .expect("every finite benchmark resolves a named mode");
         let bench_camera = self
-            .bench_camera
+            .bench.camera
             .map_or_else(|| "free".to_owned(), |path| path.to_string());
         let stats = self.world.resource::<DebugStats>();
         let elapsed_secs = self
-            .bench_start
+            .bench.start
             .map(|t| t.elapsed().as_secs_f64())
             .unwrap_or(1.0);
-        let wall_fps = self.bench_frames_count as f64 / elapsed_secs;
-        let wall_ms = elapsed_secs * 1000.0 / self.bench_frames_count as f64;
+        let wall_fps = self.bench.frames_count as f64 / elapsed_secs;
+        let wall_ms = elapsed_secs * 1000.0 / self.bench.frames_count as f64;
         let [frame_p50_ms, frame_p95_ms, frame_max_ms] =
-            bench_frame_distribution(&self.bench_cpu_frame_ms);
-        let n = self.bench_frames_count as f64;
-        let ticks_per_frame = self.bench_systems_ticks as f64 / n;
-        let systems_ms = if self.bench_systems_ticks > 0 {
-            self.bench_systems_ns as f64 / self.bench_systems_ticks as f64 / 1e6
+            bench_frame_distribution(&self.bench.cpu_frame_ms);
+        let n = self.bench.frames_count as f64;
+        let ticks_per_frame = self.bench.systems_ticks as f64 / n;
+        let systems_ms = if self.bench.systems_ticks > 0 {
+            self.bench.systems_ns as f64 / self.bench.systems_ticks as f64 / 1e6
         } else {
             0.0
         };
-        let brd_ms = self.bench_build_render_ns as f64 / n / 1e6;
-        let ui_ms = self.bench_ui_ns as f64 / n / 1e6;
-        let draw_ms = self.bench_render_ns as f64 / n / 1e6;
-        let ft = &self.bench_frame_timings;
+        let brd_ms = self.bench.build_render_ns as f64 / n / 1e6;
+        let ui_ms = self.bench.ui_ns as f64 / n / 1e6;
+        let draw_ms = self.bench.render_ns as f64 / n / 1e6;
+        let ft = &self.bench.frame_timings;
         let fence_ms = ft.fence_wait_ns as f64 / n / 1e6;
         // #3629 — the HOST-side TLAS build cost, from
         // `FrameTimings`. Printed as `cpu_tlas_ms=` (renamed from
@@ -320,7 +320,7 @@ impl App {
             bench_mode.gate_label(),
             bench_mode.dt_label(),
             bench_camera,
-            self.bench_frames_count,
+            self.bench.frames_count,
             wall_fps,
             wall_ms,
             frame_p50_ms,
@@ -409,10 +409,10 @@ impl App {
             // M-LIGHT RLT-PERF-005 — appended (#3629 rule): frames spent at
             // each adaptive tier after the warm-up; the settled tier is the
             // mode, the oscillation the share at any other tier.
-            self.bench_rt_tier_hist[0],
-            self.bench_rt_tier_hist[1],
-            self.bench_rt_tier_hist[2],
-            self.bench_rt_tier_hist[3],
+            self.bench.rt_tier_hist[0],
+            self.bench.rt_tier_hist[1],
+            self.bench.rt_tier_hist[2],
+            self.bench.rt_tier_hist[3],
             BENCH_RT_TIER_WARMUP_FRAMES,
         );
         if let Some(line) = rt_integrity_line {
@@ -567,11 +567,11 @@ impl App {
     /// `rt_tier_hist`. Called once per `render_one_frame`; a call that did not
     /// advance the bench frame count samples nothing.
     pub(crate) fn sample_bench_rt_tier(&mut self) {
-        let frame = self.bench_frames_count;
-        if frame == self.bench_rt_tier_sampled_frame {
+        let frame = self.bench.frames_count;
+        if frame == self.bench.rt_tier_sampled_frame {
             return;
         }
-        self.bench_rt_tier_sampled_frame = frame;
+        self.bench.rt_tier_sampled_frame = frame;
         if frame <= BENCH_RT_TIER_WARMUP_FRAMES {
             return;
         }
@@ -581,7 +581,7 @@ impl App {
                 .current_ray_budget(ctx.renderer_config.rt_test_ray_quality_tier)
                 .quality_tier
                 .min(3) as usize;
-            self.bench_rt_tier_hist[tier] += 1;
+            self.bench.rt_tier_hist[tier] += 1;
         }
     }
 
@@ -592,7 +592,7 @@ impl App {
         // Runs at `render_one_frame`'s tail, after the drawn frame's count
         // advanced: `count == F + 1` means frame F is the one just drawn,
         // whose ECS state (bone transforms, camera) this exports.
-        if self.bench_frames_count <= self.export_mitsuba_frame {
+        if self.bench.frames_count <= self.export_mitsuba_frame {
             return;
         }
         // M-LIGHT A9 (RLT-IBL-008) — the material-class dump shares this
@@ -654,11 +654,11 @@ impl App {
     /// while a capture is still in flight, so the bench summary waits for it.
     fn advance_frame_sequence_capture(&mut self) -> bool {
         use byroredux_core::ecs::resources::SCREENSHOT_OWNER_CLI;
-        let Some(target) = self.bench_frames_target else {
+        let Some(target) = self.bench.frames_target else {
             return false;
         };
-        let frame = self.bench_frames_count;
-        let Some(cap) = self.bench_capture.as_mut() else {
+        let frame = self.bench.frames_count;
+        let Some(cap) = self.bench.capture.as_mut() else {
             return false;
         };
         let Some(bridge) = self
@@ -705,7 +705,7 @@ impl App {
     /// One line at the end of a capture run: how many frames landed and whether
     /// the sequence has gaps.
     fn report_frame_sequence_capture(&self) {
-        if let Some(cap) = self.bench_capture.as_ref() {
+        if let Some(cap) = self.bench.capture.as_ref() {
             println!(
                 "bench-capture: wrote {} frames to {} (every {}), {} skipped",
                 cap.written,
@@ -1161,7 +1161,7 @@ impl ApplicationHandler for App {
         // an exterior-streaming benchmark mid-run. Keep lifecycle/rendering
         // events live, but quarantine gameplay input until the summary. A
         // `--bench-hold` session releases this guard immediately afterward.
-        if crate::bench::harness_owns_input(self.bench_mode, self.bench_summary_printed)
+        if crate::bench::harness_owns_input(self.bench.mode, self.bench.summary_printed)
             && matches!(
                 &event,
                 WindowEvent::KeyboardInput { .. }
@@ -1436,7 +1436,7 @@ impl ApplicationHandler for App {
         _device_id: DeviceId,
         event: DeviceEvent,
     ) {
-        if crate::bench::harness_owns_input(self.bench_mode, self.bench_summary_printed) {
+        if crate::bench::harness_owns_input(self.bench.mode, self.bench.summary_printed) {
             return;
         }
         if let DeviceEvent::MouseMotion { delta } = event {
@@ -1536,8 +1536,8 @@ impl ApplicationHandler for App {
             // Continue the scheduler's debug drain while holding simulation
             // time still; gameplay input is cleared above on every load tick.
             0.0
-        } else if crate::bench::harness_active(self.bench_summary_printed) {
-            self.bench_mode.map_or_else(
+        } else if crate::bench::harness_active(self.bench.summary_printed) {
+            self.bench.mode.map_or_else(
                 || {
                     // Preserve the environment override for non-benchmark
                     // tools. Finite benches resolve it once into a named mode
@@ -1647,9 +1647,9 @@ impl ApplicationHandler for App {
             }
         }
         let atw_scheduler_ns = systems_t0.elapsed().as_nanos() as u64;
-        if self.bench_frames_target.is_some() && self.renderer.is_some() {
-            self.bench_systems_ns += atw_scheduler_ns;
-            self.bench_systems_ticks += 1;
+        if self.bench.frames_target.is_some() && self.renderer.is_some() {
+            self.bench.systems_ns += atw_scheduler_ns;
+            self.bench.systems_ticks += 1;
         }
 
         // Post-scheduler phase starts here (Phase 10 bracket).
@@ -1762,10 +1762,10 @@ impl ApplicationHandler for App {
         if self.window.is_some() && self.renderer.is_some() {
             self.render_one_frame(event_loop);
         }
-        if self.bench_frames_target.is_some() {
-            let samples = self.bench_cpu_frame_ms.len() as u32;
-            if samples < self.bench_frames_count {
-                self.bench_cpu_frame_ms
+        if self.bench.frames_target.is_some() {
+            let samples = self.bench.cpu_frame_ms.len() as u32;
+            if samples < self.bench.frames_count {
+                self.bench.cpu_frame_ms
                     .push(atw_pre_t0.elapsed().as_secs_f64() * 1000.0);
             }
         }
@@ -1775,11 +1775,11 @@ impl ApplicationHandler for App {
         // The renderer must be up (bench counts start after the first
         // real frame); a `--bench-frames N` that never renders (window
         // creation fails, etc.) does nothing here.
-        if let Some(target) = self.bench_frames_target {
+        if let Some(target) = self.bench.frames_target {
             if self.renderer.is_some() {
                 // Guard: under `--bench-hold` we re-enter this branch on
                 // every `about_to_wait` tick once the bench window has
-                // closed; without the `bench_summary_printed` flag the
+                // closed; without the `bench.summary_printed` flag the
                 // summary would dump per-tick and the screenshot path
                 // would re-fire forever.
                 // Both streaming paths run on the logical clock, so both must
@@ -1787,7 +1787,7 @@ impl ApplicationHandler for App {
                 // done — otherwise a soak would end mid-boundary and report the
                 // in-flight cell as a leaked owner.
                 let uses_streaming_clock = matches!(
-                    self.bench_camera,
+                    self.bench.camera,
                     Some(crate::bench_camera::BenchCameraPath::GridCross)
                         | Some(crate::bench_camera::BenchCameraPath::GridSoak)
                 );
@@ -1797,14 +1797,14 @@ impl ApplicationHandler for App {
                         .as_ref()
                         .is_some_and(|state| state.telemetry.boundary_in_progress());
                     crate::bench_camera::grid_cross_complete(
-                        self.bench_camera_path_frame,
+                        self.bench.camera_path_frame,
                         target,
                         boundary_in_progress,
                     )
                 } else {
-                    self.bench_frames_count >= target
+                    self.bench.frames_count >= target
                 };
-                if path_complete && !self.bench_summary_printed && !capture_in_flight {
+                if path_complete && !self.bench.summary_printed && !capture_in_flight {
                     self.emit_bench_summary();
 
                     if self.advance_screenshot_request() {
@@ -1835,9 +1835,9 @@ impl ApplicationHandler for App {
                     // attach and run console commands against the loaded
                     // scene. See `--bench-hold` in main() and the FNV-D5
                     // audit's coverage gap.
-                    self.bench_summary_printed = true;
+                    self.bench.summary_printed = true;
                     self.report_frame_sequence_capture();
-                    if !self.bench_hold {
+                    if !self.bench.hold {
                         event_loop.exit();
                     } else if let Some(endpoint) = self.debug_server_endpoint() {
                         eprintln!(
@@ -2034,7 +2034,7 @@ mod app_scratch_telemetry_coverage_tests {
             "a dedup set capped by MAX_DISTINCT_HOST_METHOD_NAMES (#2964), not a per-frame buffer",
         ),
         (
-            "bench_cpu_frame_ms",
+            "bench.cpu_frame_ms",
             "one sample per rendered frame of the finite --bench window, dropped at exit",
         ),
         (
@@ -2045,11 +2045,16 @@ mod app_scratch_telemetry_coverage_tests {
 
     /// Structs an `App` field can hold whose own container fields are scratch,
     /// with the source that declares them. A row is named
-    /// `<App field>.<struct field>`.
-    const SCRATCH_GROUPS: [(&str, &str); 1] = [(
-        "GroundCoverCollectScratch",
-        include_str!("render/groundcover.rs"),
-    )];
+    /// `<App field>.<struct field>`. A container inside a group is covered the
+    /// same way a top-level one is: a row, or a `NOT_SCRATCH` entry under the
+    /// dotted name (`bench.cpu_frame_ms`).
+    const SCRATCH_GROUPS: [(&str, &str); 2] = [
+        (
+            "GroundCoverCollectScratch",
+            include_str!("render/groundcover.rs"),
+        ),
+        ("BenchState", include_str!("bench_state.rs")),
+    ];
 
     const CONTAINERS: [&str; 6] = [
         "Vec",
@@ -2160,6 +2165,7 @@ mod app_scratch_telemetry_coverage_tests {
             "groundcover_model_records",
             "skin_offsets",
             "groundcover_collect_scratch",
+            "bench",
         ] {
             assert!(
                 names.contains(&sentinel),
@@ -2168,6 +2174,7 @@ mod app_scratch_telemetry_coverage_tests {
         }
 
         let mut problems = Vec::new();
+        let mut group_fields_seen: Vec<String> = Vec::new();
         for (name, ty) in &app_fields {
             if is_container(ty) {
                 let excused = NOT_SCRATCH.iter().any(|(field, _)| field == name);
@@ -2183,11 +2190,17 @@ mod app_scratch_telemetry_coverage_tests {
                 SCRATCH_GROUPS.iter().find(|(g, _)| *g == head(ty))
             {
                 let inner = fields(struct_body(group_src, &format!("struct {group} {{")));
+                group_fields_seen.extend(inner.iter().map(|(f, _)| format!("{name}.{f}")));
                 for (field, field_ty) in inner.iter().filter(|(_, t)| is_container(t)) {
-                    if !rows.contains(&format!("\"{name}.{field}\"")) {
+                    let dotted = format!("{name}.{field}");
+                    let excused = NOT_SCRATCH.iter().any(|(f, _)| *f == dotted);
+                    let has_row = rows.contains(&format!("\"{dotted}\""));
+                    if excused && has_row {
+                        problems.push(format!("`{dotted}` is both a row and in NOT_SCRATCH"));
+                    } else if !excused && !has_row {
                         problems.push(format!(
                             "`{group}::{field}: {field_ty}` (App::{name}) has no \
-                             `\"{name}.{field}\"` row"
+                             `\"{dotted}\"` row and is not in NOT_SCRATCH"
                         ));
                     }
                 }
@@ -2202,7 +2215,7 @@ mod app_scratch_telemetry_coverage_tests {
         // An entry naming a field that is gone would silently excuse a future
         // field of the same name.
         for (field, _) in NOT_SCRATCH {
-            if !names.contains(&field) {
+            if !names.contains(&field) && !group_fields_seen.iter().any(|f| f == field) {
                 problems.push(format!(
                     "NOT_SCRATCH names `{field}`, which is no longer an App field"
                 ));

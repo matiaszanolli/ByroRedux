@@ -1245,7 +1245,7 @@ Character-mode player at the Bannered Mare (its `ActorValues` proven live by a
 exact colors `panels/hud.rs` paints: bars present in both, the objective title
 appearing only after the fragment displayed objective 10. Two real defects
 the first captures exposed and closed: the bench-window HUD suppression keyed
-on `bench_frames_target` (which stays set through `--bench-hold`, so the bars
+on `bench.frames_target` (which stays set through `--bench-hold`, so the bars
 could never render in any smoke-style session — it now keys on
 `harness_active`, keeping automatic `--screenshot` bench captures HUD-free),
 and smoke cleanup now kills the port-listener orphan (a leaked engine's
