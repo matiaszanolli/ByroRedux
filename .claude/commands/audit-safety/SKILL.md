@@ -20,17 +20,20 @@ a dimension whose Paths have no commits since the last `AUDIT_SAFETY_*` report.
 
 Census recipe: `grep -rwo unsafe <crate>/src | wc -l` for tokens, `grep -rnE 'unsafe[[:space:]]*\{' <crate>/src`
 for blocks — **read the hits**: word counts also match prose (`byroredux` reports 5 tokens and
-only 2 real blocks). Re-measured 2026-10-31 at 8985a2e99 (948 / 717 / 102 / 44 at eae8fd740 on 2026-10-27; 945 / 713 / 102 / 44 at dcad3669d on 2026-10-24; 943 tokens / 716 blocks / 100 `unsafe fn` / 38 impls at 1be33af66 on 2026-10-21; 941 / 717 / 35 at ae557b935 on 2026-10-20; 922 / 704 at f4ae42a6f on 2026-10-15; #5593 (c6d36b4e7) removed eleven; #5273 removed five earlier):
+only 2 real blocks). Re-measured 2026-11-06 at 66c85af80 (900 / 669 / 102 / 44 at 8985a2e99 on 2026-10-31; 948 / 717 / 102 / 44 at eae8fd740 on 2026-10-27; 945 / 713 / 102 / 44 at dcad3669d on 2026-10-24; 943 tokens / 716 blocks / 100 `unsafe fn` / 38 impls at 1be33af66 on 2026-10-21; 941 / 717 / 35 at ae557b935 on 2026-10-20; 922 / 704 at f4ae42a6f on 2026-10-15; #5593 (c6d36b4e7) removed eleven; #5273 removed five earlier):
 
-- `crates/renderer/src`: **900** word tokens — 669 `unsafe {`
-  blocks, 102 declared `unsafe fn` (the loose `grep 'unsafe fn'` reads ~145: prose and source-scan
-  strings; the newest is `texture::submit_initial_layouts`, #6146), 44 `unsafe impl` (every one a `NoUninit`, the
+- `crates/renderer/src`: **936** word tokens — 688 `unsafe {`
+  blocks, 116 declared `unsafe fn` (`grep -E '^\s*(pub(\([a-z]+\))?\s+)?unsafe fn'`; the loose `grep 'unsafe fn'` reads ~165: prose and source-scan
+  strings; the newest are `texture::submit_initial_layouts`, #6146, and the local-grid / linear-capture record fns), 45 `unsafe impl` (every one a `NoUninit`, the
   `buffer.rs` primitive macro and `[T; N]` blanket included; newest: `NoUninit for ScatterPush` / `BladePush` / `BenchPush`, #6033 02b828fff, then #6270
   dedf6c0d6 added `Push` (shadow filter), `AtrousPush`, `WaterPush`, `PresentationPushConstants` and both skin push structs
   and routed those casts plus the geometry / morph-weight / bind-inverse bulk views through `byte_view`, dropping their
-  hand-rolled `from_raw_parts` blocks), ~770 `SAFETY` mentions. Growth since 10-15 is two new
+  hand-rolled `from_raw_parts` blocks), ~790 `SAFETY` mentions. Growth since 10-15 is new
   passes — `vulkan/shadow_filter.rs` (9 blocks + `unsafe fn destroy`) and the SKYAL cloud-shadow bake
-  `vulkan/sky_cube/cloud_shadow.rs` (5 + `unsafe fn record` / `destroy`, c231f5b5f) — plus `descriptors::clamp_sampler`
+  `vulkan/sky_cube/cloud_shadow.rs` (5 + `unsafe fn record` / `destroy`, c231f5b5f); since 10-31 the world-space combustion local
+  grid `vulkan/volumetrics/local_grid.rs` (15 blocks, #6533 / d3e3acc7b) and the M-LIGHT scene-linear capture
+  `vulkan/context/linear_capture.rs` (3, 75b4024df), +5 in `context/helpers.rs`, while `screenshot.rs` / `depth_capture.rs`
+  lost four each to a shared readback helper — plus `descriptors::clamp_sampler`
   (`unsafe fn`, #5809 31f4919d5, which first spliced it between `memory_barrier`'s doc and item, leaving the wrong fn
   carrying the `# Safety`; restored by #6064 2a6f8be2b with a doc-splice guard); #5717 (d3225bb2f) removed the last
   `CStr::from_ptr` block (`vulkan/instance.rs` layer check). Net shrinks: #5593 swapped twelve local `try_or_cleanup!` macros and the per-FIF
@@ -42,7 +45,7 @@ only 2 real blocks). Re-measured 2026-10-31 at 8985a2e99 (948 / 717 / 102 / 44 a
   `vulkan/groundcover/{construct,frame}.rs` (16 + 10 today). #6358 (0288f468d) turned `vulkan/gpu_timers.rs`'s 50 per-pass `cmd_<pass>_start/_end` methods into
   `cmd_start` / `cmd_end` over `TimerPass` table rows, taking it from 66 blocks (the old densest file) to 18 — the −48 block drop is that
   consolidation, not removed unsafe surface. Densest files: `vulkan/acceleration/blas_static.rs` (29), `vulkan/context/resize.rs` (28),
-  `vulkan/groundcover_bench.rs` (26), `vulkan/composite.rs` (25), `vulkan/svgf.rs` (22). Compare against the previous
+  `vulkan/groundcover_bench.rs` (26), `vulkan/composite.rs` (26), `vulkan/svgf.rs` (22), `vulkan/presentation.rs` (21). Compare against the previous
   report, not this text.
 - Tail: `crates/fsr3-sys` 10 blocks in `src` (one is the test-only `byro_fsr3_abi_layout` probe; Dim 1) plus 20 in the
   `examples/vulkan_context_smoke.rs` harness, `crates/nif` 1
@@ -137,7 +140,8 @@ First step: `cargo test -p byroredux rapier_release && grep -rn 'DeferredDestroy
   mesh vertex/index buffers (`mesh.rs`), retired instance SSBOs (`scene_buffer/buffers.rs`), BLAS entries and
   BLAS scratch (`acceleration/mod.rs`). Textures use a different mechanism: per-entry `pending_destroy` drained
   by `TextureRegistry::tick_deferred_destroy` (`texture_registry/release.rs`, backlog published as
-  `texture_pending_destroy_count`). All ticks run AFTER the in-flight fence wait
+  `texture_pending_destroy_count`); M39 promotions, demotions and evictions retire the replaced image through that same
+  queue (`texture_registry/upload.rs`, TXS-RES-004) — an immediate destroy of a replaced mip chain is UAF. All ticks run AFTER the in-flight fence wait
   (`context/sync_and_acquire_frame.rs`) and shutdown drains; a missed drain leaks GPU memory, a too-early
   destroy is UAF (CRITICAL). Skin-compute resources use no shared queue — verify their own path when touched.
 - **Texture refs on cell unload**: every component that stores a `resolve_texture` handle must be read by
@@ -198,7 +202,7 @@ First step: `grep -rn undocumented_unsafe_blocks crates` (expect the one `deny` 
   `cargo build` / `cargo test`. Since #5121 (530c9e7aa) the workspace step runs `--keep-going` and a dedicated step
   (`cargo clippy -p byroredux-renderer --no-deps -- -D clippy::undocumented_unsafe_blocks`) re-lints the renderer on
   its own closure, so an upstream crate's new-toolchain clippy failure can no longer disarm the gate — confirm both survive. Confirm the `deny` is
-  present and unescaped. The lint sees `unsafe {}` blocks only: `unsafe fn` bodies and the 44 renderer `unsafe impl`s
+  present and unescaped. The lint sees `unsafe {}` blocks only: `unsafe fn` bodies and the 45 renderer `unsafe impl`s
   need a justification found by reading. Crates outside the renderer have no such lint — sweep comment-less blocks
   there by hand (at 2026-10-10 all commented in `fsr3-sys`, `nif`, `core`, `pex`, `byro-launcher` and `byroredux`); a
   comment-less block is MEDIUM.
@@ -280,8 +284,8 @@ First step: `cargo test -p byroredux-renderer shader_constants && cargo test -p 
   excess entities fall back to bind pose rather than over-indexing; tests in
   `byroredux/src/render/bone_palette_overflow_tests.rs`.
 - **First-sight `bind_inverses` requeue (#3569/#3991)**: `app_frame.rs` rolls back pose commits and requeues
-  pending uploads when `!ctx.skin_state_submitted || ctx.bind_inverse_upload_failed`. `skin_state_submitted` is the
-  SUBMIT-time latch (set only after `queue_submit` returns `Ok`); reading the record-time `skin_dispatch_ran`
+  pending uploads when `!ctx.skin.state_submitted || ctx.skin.bind_inverse_upload_failed` (the skinning fields moved into `SkinningState`, #6697). `skin.state_submitted` is the
+  SUBMIT-time latch (set only after `queue_submit` returns `Ok`); reading the record-time `skin.dispatch_ran`
   instead loses palettes on the three tail `Err` sites of `draw_frame`. Verify the check and latch resets survive.
 - Starfield content is walkable (Cydonia): do not dismiss spawn/animation safety with "no SF content exercises this".
 

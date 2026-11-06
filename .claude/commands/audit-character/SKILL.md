@@ -50,16 +50,15 @@ ruleset.md` — **the authority for every constant**; a coefficient no capture s
 **Known-open — do NOT re-file** (confirm still true):
 - FNV/FO3 **tag-skill per-level** formula undocumented, deferred; CLAS SPECIAL lives in `ATTR`, not `DATA`.
 - FO3/FNV AP (and Crit/Melee/Unarmed) NPC scope is unsourced: those rows ship `.player_only()` as the
-  documented conservative choice (#2937, closed as documented), disclosed in place and pinned.
+  documented conservative choice (#2937, closed as documented), disclosed in place and pinned; the GECK's per-actor wording for `fAVDActionPointsBase/Mult` is a recorded weak lead only, scope stays `player_only` (#6436 `87c9b9eb2`).
 - VATS (#6350, open umbrella): the AP pool, its regen, the mode machine with world freeze, the targeting scan and the AP-gated
   queue/confirm (die roll per shot through the combat funnel, same-target hits folded into one `HitEvent`) are live for FO3/FNV
   (`3dc16208e`..`1fb7e6f56`). Still absent, so not findings: a VATS menu, per-part damage routing / limb health, playback + camera,
-  Concentrated Fire's perk accuracy. `vats.enter` shares the key's entry gates through `vats_entry_refusal` and `vats.scan/queue/confirm` refuse outside VATS (#6469 `9d82dc616`); a weapon's base to-hit is the `u8` at `WEAP` `DNAM`@40 and the VATS sub-record's AP is the *special* attack's (`WeaponVats::special_attack_ap`), a regular attack charges `DNAM`@68 or the engine default (#6449/#6450 `e97707b14`). The to-hit operation order is **reconstructed, not captured**; its ground-truth test is
+  Concentrated Fire's perk accuracy. `vats.enter` shares the key's entry gates through `vats_entry_refusal` and `vats.scan/queue/confirm` refuse outside VATS (#6469 `9d82dc616`); a weapon's base to-hit is the `u8` at `WEAP` `DNAM`@40 and the VATS sub-record's AP is the *special* attack's (`WeaponVats::special_attack_ap`), a regular attack charges `DNAM`@68 or the engine default (#6449/#6450 `e97707b14`). The skill term reads the player's value for the weapon's own `DNAM`@104 actor-value code through its AVIF, a weapon or player without one (a carried 0 stays 0) pricing at `NEUTRAL_SKILL` 50 (`a9748e54c`, #6441 `bb60b15cf`); FNV Damage Threshold applies once per shot, the same-target fold carrying the count in a transient `HitShots` beside the `HitEvent` (#6440 `e669918ad`). The to-hit operation order is **reconstructed, not captured**; its ground-truth test is
   `#[ignore]`d pending recorded scenarios (#6403, open) — never let the reconstruction arbitrate itself.
 - Regen: `pool_regen_tick_system` is live for FO3/FNV **ActionPoints only** — `build_vats_model` returns a `PoolRegenConfig` carrying
   the `ActionPointsRegen` lane, installed on the first FO3/FNV cell load (`cell_loader/references/mod.rs`; #6374 `68f200ec4`
-  retired the "zero production insertion sites" claim). The Fatigue/Magicka/Willpower lanes stay inert (ids `0`; no Fallout actor
-  carries AV 0) and every other game never inserts the config; `affliction_tick_system` still has no scheduler registration.
+  retired the "zero production insertion sites" claim). The Fatigue/Magicka/Willpower lanes stay inert (`PoolRegenConfig`'s ids are `Option<u32>`, `None` today, #6430 `a10bb9764` — they were `0`, which a stray AV 0 would have armed) and every other game never inserts the config; `affliction_tick_system` still has no scheduler registration.
   Verify both, and that prose says "AP only" rather than "inert"/"live" wholesale (Dim 5 doc sweep). Level-up is no longer absent: M47.2's
   `grant_experience` (`byroredux/src/combat.rs`, shared by Fallout kill experience, `levelup xp` and Skyrim
   `Game.AdvanceSkill` rank-ups via `xp_from_skill_rank`) rolls levels through `LevelingModel::roll_levels` up to
@@ -67,8 +66,8 @@ ruleset.md` — **the authority for every constant**; a coefficient no capture s
   Skyrim a perk point + a pool pick (#5916 `612bd179e`); only classic-TES `SkillUse` has no XP-driven roll.
 - Oblivion `RulesetBuilder::None` is deliberate (no AVIF pre-FO3 → no resolver); pinned by
   `oblivion_still_has_no_runtime_ruleset_and_that_is_deliberate`. FO76/Starfield: captures, no builders.
-- Open (verified 2026-10-31) — cite, do not re-file: #4137 (two `template_flags` bits with no consumer — Script 0x0200, Def Pack List 0x0400;
-  the other four listed gained `ResolvedNpc` terminals, `eae8fd740`), #4232 (`effective_actor_level` returns 0 verbatim), #6403 (VATS to-hit ground truth). #4415 (magic runtime) is closed (`9813af435`). The 2026-09-19 report's
+- Open (verified 2026-11-06) — cite, do not re-file: #4137 (two `template_flags` bits with no consumer — Script 0x0200, Def Pack List 0x0400;
+  the other four listed gained `ResolvedNpc` terminals, `eae8fd740`), #6403 (VATS to-hit ground truth). #4232 (`effective_actor_level` returns 0 verbatim) is closed (`4fbff2c6c`, see Dim 4). #4415 (magic runtime) is closed (`9813af435`). The 2026-09-19 report's
   #4452-#4457/#4459-#4463 are all closed — regression checks now. Verify with `gh issue view` before citing.
 
 ## Parameters
@@ -118,7 +117,7 @@ First step: `grep -rn 'GameKind\|\.game ==\|game_kind' crates/core/src/character
   `ROSTER_CASES` + `assert_rosters_resolve` (`crates/plugin/tests/parse_real_esm.rs`, `#[ignore]`d
   real-master corpus gate) — a new roster/derived output without a `ROSTER_CASES` entry is untested by
   construction.
-- **Profile rows must be sourced**: a row for an unwired family may not claim a wire format without a
+- **Profile rows must be sourced**: `BarterModel`'s FO4 2.5/1.5 and Skyrim 2.4/1.4 curve ends are the *executables'* setting defaults, not the masters' 3.5/2.0 and 3.3/2.0 — do not "correct" them toward the master values (#6442 `e41fb357c`). A row for an unwired family may not claim a wire format without a
   capture line (FO76/Starfield were reset to `NpcStatModel::None`, #4453); the same holds for `vital_pools`
   (per-profile roster since #4679 — a consumer-side `GameKind` pool list is the regression); the "blocked, not forgotten" comment pattern
   (Oblivion arm) is the template; Starfield's pool roster is `("O2", "Oxygen")`, the AVIF EDID its master
@@ -131,7 +130,7 @@ Paths: `crates/core/src/character/{derived,fallout,tes,skyrim,resistance}.rs`, `
 First step: `cargo test -p byroredux-core character::derived character::fallout character::tes character::skyrim`
 - **Every coefficient vs its capture** (bias, `c_a`, `c_b`, cross term, cap, `RoundMode`), citing the
   document line. FO4 Health `floor(77.5 + 4.5·END + 2.5·L + 0.5·L·END)` is the only cross-term row; a
-  non-zero cross term elsewhere is a red flag. Rounding modes are per-source (FO4 sourced; FO3/FNV ship
+  non-zero cross term elsewhere is a red flag. Rounding modes are per-source (FO4 sourced — the Endurance page's `floor` is what the code implements, the Health page's 93.5 is the unrounded example, the 0.5 HP difference is unadjudicated, #6432 `6b637eacb`; FO3/FNV ship
   `None`, exact on their integer domain) — "obviously round/floor" is the guess this audit catches (#4451).
 - **Sentinels**: uncapped cap is `f32::INFINITY` (no table may rely on cap-0 = uncapped);
   `DerivedInput` `0` = unused, `u32::MAX` = level — no path may build a real FormID equal to either.
@@ -139,7 +138,7 @@ First step: `cargo test -p byroredux-core character::derived character::fallout 
   deferral. A row with no scope annotation in its capture is *unsourced* (#4450: documented + pinned);
   every consumer that evaluates for an arbitrary entity must check scope
   (`crates/scripting/src/condition/eval.rs` and, since #4452,
-  `melee_damage_charal_bonus` do). `PlayerOnly` rows are evaluated for the
+  `melee_damage_charal_bonus` do). Oblivion's Health/Magicka/Fatigue rows are `player_only` by analogy to the Fallout baked-pool convention — the capture states no pool scope, so UNsourced (#6431 `576dbe973`, `oblivion_pool_rows_are_player_only_pending_a_source`). `PlayerOnly` rows are evaluated for the
   player only (stamped #4674, refreshed per frame since #5039) — verify no NPC path reaches them. FO3/FNV
   shared-row scopes cite the GECK *Stats Tab — NPC* page (#5240 `3826c2792`,
   `fo3_fnv_geck_npc_page_scopes_the_shared_derived_rows`); Melee Damage is annotated CONFLICTED and kept
@@ -150,7 +149,7 @@ First step: `cargo test -p byroredux-core character::derived character::fallout 
   (`formula_is_thirty_six_bytes_and_copy`).
 - **Siblings**: `combat.rs` (`modified_skill` Luck 0.4, `oblivion_weapon_damage_multiplier`,
   `oblivion_hand_to_hand_damage` cross-term) vs `charal-oblivion-ruleset.md` "Complete Damage Formula";
-  `stealth.rs` (`detection_score`/`classify`) vs `charal-fnv-fo3-ruleset.md` "Sneak Detection". Perspective
+  `stealth.rs` (`detection_score`/`classify`) vs `charal-fnv-fo3-ruleset.md` "Sneak Detection"; Skyrim armor skill scaling lives in `byroredux/src/armor.rs`, which derives its coefficients from `LIGHT_ARMOR_RATING_COEFF`/`ARMOR_SKILL_RATING_COEFF_NPC` (`skyrim.rs`, the only home of UESP's 0.4/1.5, #6568 `a858df844`) — the `DamageResist` derived row is not what feeds it, and a restated literal in `armor.rs` is the regression. Perspective
   traps: UESP's "Opponent…" names are attacker-relative; the code reads the *wearer's* own skill (#4449).
   `detection_score` transcribes the source's squared attenuation unclamped: past `MaxDist` it rises again (`d = 2·MaxDist` scores like `d = 0`), so
   `DetectionInputs::distance <= locale.max_distance()` is a documented caller precondition (#6433 `7e9678fd8`,
@@ -185,7 +184,7 @@ First step: `cargo test -p byroredux-core character::leveling character::regen c
   the GMST overlay, summing `level_cap_raises` (FNV only: `DeadMoney`/`HonestHearts`/`OldWorldBlues`/`LonesomeRoad`, +5 each, matched
   on the loaded file's stem from `EsmIndex::plugin_files`; no master authors it — `iMaxCharacterLevel` is in `FalloutNV.esm` alone);
   an uncapped model stays uncapped (`raise_cap_lifts_only_a_capped_curve`). Oblivion attribute-bonus banding + 10-major-skill-ups; Skyrim pool base 100, +10/level
-  (`SKYRIM_POOL_BASE`, `pool_pick_gain`); `Perks::try_set_rank` rejects out-of-range rather than clamping.
+  (`SKYRIM_POOL_BASE`, `pool_pick_gain`); `Perks::try_set_rank` rejects out-of-range rather than clamping. A scripted `AddPerk` on a held perk raises its rank (capped at `num_ranks`, never lowered) only where `CharacterRulesProfile::add_perk_raises_rank` says so — FO3/FNV (GECK) and FO4 (CK), `false` on Skyrim (sources silent, an open question) and FO76/Starfield — read once into `PerkEntryTable` (#6619 `2d9c5802c`, `add_perk_rank_row_is_stated_on_every_profile`); a consumer-side game test is the regression.
 - **Regen tick**: fixed-60 Hz (`POOL_REGEN_DT`), backlog clamped (`MAX_REGEN_SUBSTEPS`), zero-dt cannot
   spin; the scheduler access declaration matches the body (`/audit-concurrency` Dim 4 owns the rule).
   AP lane unit: `fActionPointsRestoreRate` is per second on FO3 (4) but per *frame* on FNV (0.06); `VatsModel::ap_regen_per_second`
@@ -216,8 +215,7 @@ Paths: `byroredux/src/npc_spawn*`, `crates/plugin/src/esm/records/{actor_value_d
 First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_sites_are_enumerated_and_pinned; git log --since=<last report> --format='%h %cs %s' -- <Paths>`
 - **One derivation, one implementation** (the class that keeps recurring): `effective_actor_level` lives
   once in `actor/mod.rs` and is `.max(0)` on the non-multiplier branch — a second copy or a `.max(1)` (also
-  in `examples/`) is the regression (#3171/#4095); `pc_level_mult_actors_resolve_to_calc_min_not_the_raw_
-  multiplier` calls it through the plugin crate. TPLT template inheritance: FO4 authors a per-flag `TPTA`
+  in `examples/`) is the regression (#3171/#4095); `pc_level_mult_actors_resolve_to_calc_min_not_the_raw_multiplier` calls it through the plugin crate. It stays unfloored on purpose; the level-0 hole is closed one tier up (#4232 `4fbff2c6c`): `ResolvedNpc::level()` backfills a terminal level of 0 from `stats_pick_level` — the authored entry level of the deepest LVLN pick the Use-Stats walk went through — so gear/spell expansion no longer resolves every list at level 0; an authored level or a list-less chain is unchanged (a `.max(1)` in `effective_actor_level` itself is still the regression). TPLT template inheritance: FO4 authors a per-flag `TPTA`
   Template Actors array (`NpcRecord::template_actors: [u32; 13]`, 0 = use the `TPLT` default) and
   `walk_inherited_records` picks the flag's own entry when non-zero (#5498 `99c22a8db`; FO4-only data, no game
   branch — pinned by `crates/plugin/src/equip.rs` tests). Since #4457 the population boundary resolves
@@ -225,16 +223,16 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   `base_data` terminal for "Use Base Data", `TEMPLATE_FLAG_USE_BASE_DATA`, which carries Essential/Protected —
   decoded per game in `parse_npc` into `NpcRecord::essential`/`protected` since #5921, so `ActorProtection::from_record`
   takes no game)
-  and consumers read the resolved type; the guard pins production `resolve_inherited_*` calls per file (two left, both pre-spawn
-  race boundaries: `cell_loader/references/mod.rs` and `player_body.rs`, the latter joined in #5047
+  and consumers read the resolved type; the guard pins production `resolve_inherited_*` calls per file (one left, the pre-spawn
+  race boundary `cell_loader/references/mod.rs`; `player_body.rs` joined in #5047
   `c20dcdb04`, which also moved the player's level/Background/outfit reads onto the Use-Stats/Use-Traits/
-  Use-Inventory terminals) — a new direct call or a raw `npc.<field>` read is the recurrence
+  Use-Inventory terminals, and left again when #6435 `218948853` routed its race and walk-clip gender through `traits_terminal`, expected count 0) — a new direct call or a raw `npc.<field>` read is the recurrence
   (fix-by-addition made it worse in #4086). Verify the enumerated count moved only deliberately, and that new reads honor `template_flags` rather than overwriting inherited values (only Script 0x0200 and Def Pack List 0x0400 still lack a consumer: #4137; Skyrim's Use Keywords 0x1000 gained a `keywords_terminal`, #6515 `26850aa5f`).
 - **Base-FormID readers of Use-Traits fields** (#6228 `b76a74e45`): sex/voice/race for readers that hold a base FormID rather than a
   spawn's `ResolvedNpc` go through `equip::traits_terminal` — the dialogue voice key (`systems/dialogue_voice.rs`), `ActorBaseTraits`
   (`GetIsSex`/`GetSex`/`GetVoiceType`/`GetLeveledActorBase`, which is its own arm now, not an alias of `GetActorBase`), the gendered
-  animation subgraph (`crates/scripting/src/anim_subgraph.rs`). `GetActorBase().GetSex()` deliberately stays the shell's. The
-  `resolve_inherited_call_sites_are_enumerated_and_pinned` test also asserts all three call `traits_terminal(`; a new reader of
+  animation subgraph (`crates/scripting/src/anim_subgraph.rs`), the `HasKeyword` base table (`crates/scripting/src/keywords.rs`) and the player body's race/walk-clip gender (`byroredux/src/player_body.rs`, #6435). `GetActorBase().GetSex()` deliberately stays the shell's. The
+  `resolve_inherited_call_sites_are_enumerated_and_pinned` test also asserts all five call `traits_terminal(`; a new reader of
   `NpcRecord` sex/voice/race that reads the placed shell is the recurrence.
 - **Writers vs stamps (silent no-op class)**: for every writer that gates on a component
   (`consume_item`/`restoration_system`/drowning gate on player `ActorValues`+`ActorVitals`), find a

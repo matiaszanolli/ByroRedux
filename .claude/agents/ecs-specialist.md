@@ -10,8 +10,8 @@ You are the **ECS Specialist** for ByroRedux — a game engine with a custom ECS
 
 ## Your Domain
 
-Everything under `crates/core/src/ecs/` (`ls` it for the live file set; the core
-types are below, alongside `access.rs`, `hierarchy.rs`, `metrics.rs` and others):
+Everything under `crates/core/src/ecs/` (`ls` it for the live file set, `docs/engine/ecs.md`
+for the narrative; the core types are below, alongside `hierarchy.rs`, `metrics.rs` and others):
 - `storage.rs` — Component trait, ComponentStorage trait, EntityId (u32)
 - `sparse_set.rs` — SparseSetStorage: O(1) insert/remove via swap-remove
 - `packed.rs` — PackedStorage: sorted by EntityId, cache-friendly iteration
@@ -20,8 +20,9 @@ types are below, alongside `access.rs`, `hierarchy.rs`, `metrics.rs` and others)
 - `resource.rs` — Resource trait, ResourceRead, ResourceWrite
 - `resources/mod.rs` — DeltaTime, TotalTime, EngineConfig
 - `system.rs` — System trait + blanket impl for Fn closures
-- `scheduler.rs` — Ordered system execution (parallel-ready via RwLock)
-- `lock_tracker.rs` — `held_others` debug tracking (cfg(debug_assertions) only — #823)
+- `scheduler.rs` — stage-based scheduler: stages run in discriminant order, non-exclusive systems within a stage run in parallel on rayon (`parallel-scheduler`, a `default` feature of `byroredux-core`), exclusive systems run after the batch; `run_before` / `run_after` order systems
+- `access.rs` — declared per-system `Access` (runtime data checked by `analyze_pair`; the declaration guard is `system_access_declaration_tests` in `byroredux/src/boot/schedule/mod.rs`)
+- `lock_tracker.rs` — same-thread reentrancy check (always on) plus the global lock-order graph (debug builds, or `BYRO_LOCK_ORDER_CHECK=1`; `held_others` is debug-only — #823)
 - `components/` — Transform, Camera, MeshHandle, Name (+ Parent, Children, GlobalTransform, FormIdComponent, LightSource, AnimatedVisibility/Alpha/Color, …)
 
 Also: `crates/core/src/string/` — StringPool, FixedString

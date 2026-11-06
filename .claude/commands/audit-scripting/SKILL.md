@@ -29,7 +29,7 @@ Dim 2's lock rules cover both.
 
 ## Scope
 
-`crates/scripting/src/` (~119k LOC incl. tests; re-measure with `find crates/scripting/src -name '*.rs' | xargs wc -l`): `translate/` (`mod`, `source`, `archetype`, `compose`, `effects`, `tables`,
+`crates/scripting/src/` (~121k LOC incl. tests; re-measure with `find crates/scripting/src -name '*.rs' | xargs wc -l`): `translate/` (`mod`, `source`, `archetype`, `compose`, `effects`, `tables`,
 `recognizers/{quest_stage_gate,rumble,two_state_activator}`); `fragment.rs` + `fragment/{effects,populate,
 state,systems}.rs` with the per-family appliers in `fragment/effects/{resolve,deferred,inventory,placement,scene,lock,
 player_control,vehicle_cinematic,ai_combat,quest_scoped,evaluate,guards,quest_vars,actor_values,actor_lists,
@@ -55,16 +55,19 @@ in its module doc; each is a `FORMAT_MAJOR` question for `/audit-save`): `quest_
 `obscript{,_runtime,_vm,_quests,_results,_objects,_cmd,_actions,_actor_values,_anim,_speech,_state,_ledger,_more}.rs`
 + `obscript_effects/` (`mod.rs` the effect table + shared helpers; `getters`/`inventory`/`combat`/`actor_state`/`world_state`/`presentation`, #6355 `aa29774ec`) + `obscript_more/` with its sibling runtimes `magic_effects.rs`
 (caster runtime), `magic_shaders.rs`, `script_packages.rs`, `challenges.rs` (Dim 6); `registration.rs` (the crate's
-`register`, #5806); `papyrus_provider/`,
+`register`, #5806 — a flat list of per-subsystem `install(world)` calls since #6706 `70e58334f`, pinned by
+`register_installs_the_same_resource_set`); `papyrus_provider/`,
 `compatibility.rs`; `papyrus_demo/` (reference scripts/test fixtures; `ScriptRegistry` is the pre-Skyrim
 `SCRI`→`SCPT` extension point — boot no longer seeds it). Engine side: `byroredux/src/cell_loader/references/
 {attach,synth_child}.rs`, `cell_loader/{spawn,exterior,unload,created,graph_nodes}.rs` + `cell_loader/exterior/{persistent,apply_job}.rs` (#6271 split of the exterior hub; `created.rs` places/spawns
 Created Object "At" references; `graph_nodes.rs` keeps the NiNode tree of graph-animated props), `asset_provider/script.rs`
-(`attach_vm_reference_script`, `check_running_quest_alias_scripts`, `ProviderScriptLibrary`, `DecompiledPexCache`),
+(`attach_vm_reference_script`, `check_running_quest_alias_scripts`, `ProviderScriptLibrary`, `DecompiledPexCache`,
+`ensure_obscript_tables`), `scene/scene_runtime.rs` (`populate_scene_runtime` — the ObScript quest/object/item installs, ambient
+packages and the quest-fragment walk — and `materialize_scene_actor_alias_stubs`; both left `asset_provider/script.rs` in #6716 `6413d542b`),
 `asset_provider/{object_graph,actor_graph}.rs`,
 `systems/{cinematic,npc_dialogue,forcegreet,story_events,scripted_sound,trap_hits,projectiles,archetype_idle}.rs`
-(consumers of the VM's request markers), the M43 Story Manager producers `systems/{random_conversation,attraction,mines,dead_body,iron_sights}.rs` (registered in `boot/schedule/update/quest_scene.rs`) and `commands/story_actions.rs` (their console doors) and the M47.3 ObScript request consumers
-`systems/{script_requests,script_queries,revive,knockdown,flee,magic_shader,head_look}.rs`, `commands/quest.rs` (`sm.event`, `dialogue.forcegreet`), `boot/schedule/`, plus `crates/plugin/src/esm/records/{index,
+(consumers of the VM's request markers), the M43 Story Manager producers `systems/{random_conversation,attraction,mines,dead_body,iron_sights}.rs` (registered in `boot/schedule/update/quest_scene/story_manager.rs`) and `commands/story_actions.rs` (their console doors) and the M47.3 ObScript request consumers
+`systems/{script_requests,script_queries,revive,knockdown,flee,magic_shader,head_look}.rs`, `commands/quest.rs` (`sm.event`, `dialogue.forcegreet`), `boot/schedule/` (one `register_*` file per subsystem under `update/<domain>/`, `late/` and `post_update/`, #6703/#6704 `22e0f71fc`/`49aa54e36`; a cross-subsystem order the old file position stood for is a named `run_after`/`run_before` constraint beside the later system, #6702 `065aac9c4`; `Access::with` lets a subsystem export its own declarations, #6701 `c22a9d410`), plus `crates/plugin/src/esm/records/{index,
 script_instance}.rs` (VMAD retention; decode is `/audit-esm`).
 
 Ground truth: `docs/engine/scripting.md` (the M47.2 sections — "The Papyrus VM", "The frame budget", "Reference
@@ -77,17 +80,35 @@ since shipped; still real gaps — world-query search across unloaded data, cond
 injected packages/spells/keywords/names/voice-type/combat overlays — don't re-file as discoveries), crate docstrings
 (`translate/mod.rs`, `fragment.rs`, `fragment/vm/`, `fragment/budget.rs`, `cleanup.rs` marker house rules).
 
-**Known-open — cite, don't re-file** (verified 2026-10-31 with `gh issue view`): #5764 (interpreter deferral ~0.8 µs a delivery; a value-called function or an
+**Known-open — cite, don't re-file** (verified 2026-11-06 with `gh issue view`): #5764 (interpreter deferral ~0.8 µs a delivery; a value-called function or an
 array/struct-holding frame cannot suspend — the budget-split residual; its idle-walk half shipped as `11685934d`,
 Dim 2),
-#5586 (the `mq101_conformance` example's oversized `run` — its premise is dead: `run` is 44 lines and #6360 `01f48c929`
-split the 2 184-line file into `crates/scripting/examples/mq101_conformance/{main,ast_probe,scenes,packages,scripts,fragments,report}.rs`, longest
-function now 164 lines (`scenes.rs::check_scene_runtime`); the issue is still open — debt, not runtime), #5802 (hub-file growth; subsystems are migrating to their own `install` + `register_saved`, sliced in
-`bde3478db`/`e619dbbaf` — `/audit-tech-debt`). #4113 is open but lives in `crates/papyrus`/`crates/pex`
-(`/audit-papyrus`). Closed since the 2026-10-27 sync: #6355 (*obscript_effects.rs* crossed 2 000 LOC after the #6139 table conversion — now
+#5802 (hub-file growth; every subsystem migrating to its own `install` + `register_saved` + `register_*_systems` file is a slice —
+`bde3478db`/`e619dbbaf`, `93bcda9bc`, and the Part-of commits #6701-#6707 `c22a9d410`..`5c983ecd0`: `register_late_systems` is a flat
+14-call list, the Update domains and `register_post_update_systems` are flat call lists into one file per subsystem,
+`Scheduler::run_before`/`run_after` replace file position as the order carrier — `/audit-tech-debt`). #4113 is open but lives in `crates/papyrus`/`crates/pex`
+(`/audit-papyrus`). Closed since the 2026-10-31 sync: #5586 (the `mq101_conformance` example's oversized `run` — fixed
+`d7c47d741` (`run` 44 lines, one `check_*` per stage), then #6360 `01f48c929` split the file into
+`crates/scripting/examples/mq101_conformance/{main,ast_probe,scenes,packages,scripts,fragments,report}.rs`; longest
+function ~165 lines, `scenes.rs::check_scene_runtime`; the issue was closed 2026-11-03), #6688 (the scripting crate's Pattern-B
+marker scans became runs of the consumers — `every_documented_pattern_b_marker_drains_in_its_named_consumer`,
+`pattern_b_markers_survive_event_cleanup`, `byroredux/src/systems/request_drain_tests.rs`, `58caf1799`; Dim 3), #6684/#6685
+(the schedule-order guards read the built schedule — `build_scheduler()` / `access_report()`, `2a02c5446` — and
+`system_access_declaration_tests` reads acquisitions from a `syn` tree in `byroredux/src/acquisition_scan.rs`, depth 3
+same-file callees, `c98a4552f`; Dim 2), #6554/#6558/#6545 (CTDA getters the ObScript VM already answered
+catalogued — `CATALOG` 88 → 102 with #6657's `IsWeaponSkillType`, Oblivion's four `OBLIVION_CONDITION_GETTERS`,
+`6dec5c4a9`/`612f876f9`/`d3db6fd58`; Dim 3), #6570 (CTDA 659 foreign on Fallout 4, `57a49a4d4`), #6571
+(`tempering_multiplier` takes back the `SceneAliasCandidate` it lends, `9e033a595`), #6572 (`CHRR` queues on
+`DeferredFragmentEffects::relationship_events` and raises at the flush, not under the quest guards, `076de275e`), #6573
+(`SendPlayerToJail` deposits into the evidence chest before taking anything, `81332fc38`) and #6569 (declines with no
+`CrimeModel`, `dcc3dc681`), #6510/#6511 (Oblivion's caller-scoped crime-gold getters honour the caller, `a48017e7b`;
+`SendTrespassAlarm` declines, `baa93fe87`), #6615 (`select_info` takes a short `QuestStageState` read per question, not a
+body-long one, `6af13ef37`), #6619 (a scripted `AddPerk` raises a held perk's rank on FO3/FNV/FO4, `2d9c5802c`), #6620
+(`MenuMode` answers Oblivion's barter code 1008 from a `MenuCodes` resource, `16d9e18f3`), #6716 (`populate_scene_runtime` /
+`materialize_scene_actor_alias_stubs` live in `scene/scene_runtime.rs`, `6413d542b`). Closed since the 2026-10-27 sync: #6355 (*obscript_effects.rs* crossed 2 000 LOC after the #6139 table conversion — now
 `obscript_effects/`, `aa29774ec`), #6460 (ten FO3/FNV script getters — `IsChild` 365, `GetTalkedToPC` 50, `GetHasNote` 382,
 `IsInList` 372, `GetLocked` 5, `GetCurrentTime` 18, `GetInSameCell` 32, `GetBaseActorValue` 277, `GetDestructionStage` 471,
-`GetMapMarkerVisible` 492 — are `CATALOG` rows read through the ObScript getter's own body, `vm_getter_command`; modeled on FO3/FNV only,
+`GetMapMarkerVisible` 492 — are `CATALOG` rows read through the ObScript getter's own body, `vm_getter_command`; modeled on FO3/FNV only (Oblivion for four of them since #6554),
 `102e4f5cd`; Oblivion's 365 `GetPlayerInSEWorld` moved to `OBLIVION_DIALECT`), #6478 (`IgnoreCrime` 0x10ab, `GetIgnoreCrime` 0x10c0,
 `SetEnemy` 0x1078, `SetAlly` 0x1079 and `SendAssaultAlarm` 0x105f are `Games::Fallout` rows: as `Games::Any` they shadowed Oblivion's
 `IsPlayerInJail` / `CloseCurrentOblivionGate` / `PositionWorld` / `PositionCell` / `Yield`, `598067e2a`,
@@ -284,7 +305,12 @@ Guards: `boot/schedule/mod.rs` — `scene_and_fragment_dispatch_chain_stays_in_d
 `fragment_activation_order_tests`, `hit_event_consumers_run_after_every_producer`,
 `every_parallel_system_declares_everything_it_acquires`,
 `papyrus_provider_system_…`/`legacy_obscript_load_order_system_declares_everything_it_acquires`,
-`build_scheduler_reports_zero_access_conflicts`; and `fragment/tests.rs::{nested_lock_contract_documents_
+`build_scheduler_reports_zero_access_conflicts`. The order guards read the *built* schedule — `build_scheduler()` +
+`access_report()` through the `schedule_order` helper, which matches an exact system name and panics on a missing one
+(#6684 `2a02c5446`; two parallel systems in one stage count as unordered) — not registration text; the
+`…declares_everything_it_acquires` guards still read `boot::SOURCES`, now through the `syn` visitor in
+`byroredux/src/acquisition_scan.rs` (#6685 `c98a4552f`: comments, strings and `#[cfg(test)]` cannot match; same-file callees to
+depth 3; `drain_into_resource` is listed as a write acquisition, #6707). Also `fragment/tests.rs::{nested_lock_contract_documents_
 apply_effect_itself, the_nested_lock_residual_list_names_every_type_apply_effect_acquires}` (source scans over
 `fragment::SOURCES`: `apply_effect`'s doc block must name every type its per-family helpers acquire).
 - **Nested-lock safety is exclusive scheduling.** `apply_effect` (`fragment/effects.rs`, ~120 lines: every arm
@@ -364,10 +390,14 @@ apply_effect_itself, the_nested_lock_residual_list_names_every_type_apply_effect
   Int-typed natives (`GetStage`, `GetItemCount`, `GetRelationshipRank`, `GetLevel`, `RandomInt`, a truncated
   `GetValueInt`) return `Value::Int` and a typed local keeps its declared numeric type, so `i / 10` and string
   concatenation match the compiled Int/Float split the decompiler erased (#6216 `8dee19ed4`).
-  Two natives defer instead of acting in place: `Faction.SendPlayerToJail` pushes `DeferredFragmentEffects::jail_sends` and
-  `Game.TeachWord`/`UnlockWord` (`Effect::ObtainWord`) push `word_gains`, both flushed with the deferred batch once the quest guards drop
-  (`jail::send_player_to_jail` raises `ARRT`/`JAIL`, `words_of_power::obtain_word` raises `NVPE`; a fake jail moves nobody) — neither may
-  take a second resource lock under the pair.
+  Anything that raises a Story Manager event or touches a resource outside the quest pair defers onto `DeferredFragmentEffects`
+  (`fragment/effects/deferred.rs`; ~50 queues, flushed in a fixed order by `apply_at_depth` once the quest guards drop, most through
+  the shared `drain_into_resource` helper, #6707): `Faction.SendPlayerToJail` → `jail_sends` and `Game.TeachWord`/`UnlockWord`
+  (`Effect::ObtainWord`) → `word_gains` (`jail::send_player_to_jail` raises `ARRT`/`JAIL` and declines with no `CrimeModel`, #6569
+  `dcc3dc681`, and deposits into the evidence chest before taking a stack, #6573 `81332fc38`; `words_of_power::obtain_word` raises
+  `NVPE`; a fake jail moves nobody), `SetRelationshipRank` and the VM friend-rank native → `relationship_events` (`CHRR`, #6572
+  `076de275e`) — none may take a second resource lock under the pair; a new native that calls a `raise_*_story_event` inline is the
+  recurrence.
   Natives are not interpreted here: `classify_native_{effect,value,guard}` re-use the lowering's primitive table
   and `apply_effects` applies the result, so Dim 1's per-primitive rules and this dimension's lock inventory apply
   to every VM native unchanged. Bounds: `MAX_STEPS` = 100 000 statements per *logical* run (the budget's
@@ -426,12 +456,17 @@ apply_effect_itself, the_nested_lock_residual_list_names_every_type_apply_effect
 ### Dimension 3: Event Runtime — Markers, Timers, Conditions, Triggers
 Paths: `crates/scripting/src/{events,cleanup,timer,recurring_update,condition,trigger,vm_state,player_control}.rs`, `crates/scripting/src/papyrus_demo/quest_advance.rs`, the marker producers/consumers in the M47.2 request modules (`*_requests.rs`, `havok_impulse.rs`, `activate_parents.rs`)
 First step: `cargo test -p byroredux-scripting -- cleanup:: condition:: trigger:: recurring_update:: quest_advance`
-Guards: `cleanup.rs::every_drained_marker_is_a_documented_pattern_a_marker`,
-`every_documented_pattern_b_marker_drains_in_its_named_consumer` (row-checks each Pattern-B row — `OnDeathEvent`,
-`HavokImpulseRequest`, `MotionTypeChangeRequest` and the seven ObScript request markers — `OnResetEvent`,
-`PickIdleRequest`, `FleeRequest`, `PushActorRequest`, `ReviveRequest`, `UseWeaponRequest`, `ResetInventoryRequest` —
-included — against its consumer's production text only, #5996 `11bb9f1c3`, #6267 `cf7380e27`; `OnResetEvent` drains
-ahead of `collect_due`'s no-instances early returns), `cleanup_removes_all_event_types`;
+Guards: `cleanup.rs::every_drained_marker_is_a_documented_pattern_a_marker` (the one remaining doc-vs-body text pin),
+`every_documented_pattern_b_marker_drains_in_its_named_consumer` and `pattern_b_markers_survive_event_cleanup` — behavioural
+since #6688 `58caf1799`: the first raises each scripting-crate marker (`OnDeathEvent`, the scene / dialogue / package batches
+and requests, `StoryEvent`, `TwoStateTransitionBatch`), runs its named consumer and expects it gone (the old source scan was
+satisfied by a producer's `query_mut::<T>` insert just as well); the second runs `event_cleanup_system` and expects every
+Pattern-B marker still present. The binary crate's request consumers (`HavokImpulseRequest`, `MotionTypeChangeRequest`,
+`PickIdleRequest`, `FleeRequest`, `PushActorRequest`, `ReviveRequest`, `UseWeaponRequest`, `ResetInventoryRequest`) are run in
+`byroredux/src/systems/request_drain_tests.rs`; `OnResetEvent`'s private consumer in
+`obscript_objects.rs::the_reset_marker_is_taken_even_when_nothing_has_a_script` (it drains ahead of `collect_due`'s
+no-instances early returns, #6267 `cf7380e27`) — a new Pattern-B row needs its consumer run in one of those, not a text row.
+Also `cleanup_removes_all_event_types`;
 `boot/schedule/mod.rs::{transient_cleanup_is_the_last_late_exclusive, activation_flush_is_scheduled_before_every_activate_event_consumer, extension_event_adapters_run_before_transient_cleanup}`.
 - **Marker lifetime — two sanctioned patterns** (module doc of `cleanup.rs` is authoritative): **A** = listed in
   `event_cleanup_system` for markers with no single owner (last system in `Stage::Late`); **B** = drained
@@ -470,7 +505,7 @@ the resolve and before the drain is the recurrence).
   reads `is_running` alone — a stopped/completed/failed quest is not running, #5636 `aac92c6ca`; the plugin-side
   `param1_is_form_id` load-order remap mirrors the catalog by index, with rows for 56/71/74 and an exhaustive
   mirror test, #5637 `722c06a76`; M47.2 grew `CATALOG` to 48, #5778 `71e488a26` to 52, #5750/#6251/the crime
-getters to 77 and #6460 `102e4f5cd` + the tempering read to 88 (the array length is the live count; #6251 `f57c75616` added 35 `GetDisabled`, 47 `GetItemCount`
+getters to 77, #6460 `102e4f5cd` + the tempering read to 88, #6558 `612f876f9` +9 to 97, #6545 `d3db6fd58` +4 to 101 and #6657's `IsWeaponSkillType` (109, FO3/FNV) to 102 (the array length is the live count; #6251 `f57c75616` added 35 `GetDisabled`, 47 `GetItemCount`
 (a form list sums its members), 64 `GetIsCreature`, 84 `GetDeadCount`, 131 `GetPCIsSex`, 289 `IsInCombat`, FNV's
 420/421 `GetObjectiveCompleted`/`Displayed`, 431 `GetHealthPercentage`, 546 `GetQuestCompleted`; #5750 `20d01cd6c`
 426/427 `GetIsVoiceType` and 700 `IsCommandedActor`; the crime commits the `GetCrimeGold`/`GetCrime`/`IsGuard`/
@@ -495,7 +530,7 @@ getters to 77 and #6460 `102e4f5cd` + the tempering read to 88 (the array length
   consumable branches through `evaluate_modeled`, #5993 `9b6dcf872`;
   every such check goes through the one game-aware `condition::is_modeled` — fn 79 `GetQuestVariable` reads
   `ObScriptQuestLocals` on Oblivion/FO3/FNV and stays unmodeled on FO4/Starfield where 79 is another function,
-  `f67d82b3c`; catalogued indices another game reuses — 125, 131, 403, 426/427, 431, 449, 459, 533, 550, 555, 630 — are unmodeled there (`FOREIGN_INDICES`, per-game rows), #5990 `9f418b4fa`; the ten #6460 getters (`vm_getter_command`) are modeled only where `obscript_cmd::getter_answers_conditions` finds the VM's row (FO3/FNV); an untranslatable `GetActorValue` index is unmodeled), and
+  `f67d82b3c`; catalogued indices another game reuses — 109, 125, 131, 403, 426/427, 431, 449, 459, 533, 550, 555, 630, 659 (FO4 `HasVMScript`, #6570 `57a49a4d4`) — are unmodeled there (`FOREIGN_INDICES`, per-game rows), #5990 `9f418b4fa`; the VM-bridged getters (`vm_getter_command`: the ten of #6460 plus #6558's nine and #6545's four, 23 in all) are modeled only where `obscript_cmd::getter_answers_conditions` finds the VM's row — FO3/FNV, and Oblivion for the four `OBLIVION_CONDITION_GETTERS` (5/18/32/50, #6554 `6dec5c4a9`); an untranslatable `GetActorValue` index is unmodeled), and
   a new intrusive consumer that trusts the fail-open pass is the finding; `RunOn`
   resolution declines (condition fails) on an unresolvable target rather than defaulting to the subject; a
   wrong sentinel flips a condition. `crates/plugin/src/consumables.rs` borrows fn-586 semantics by profile
@@ -553,7 +588,7 @@ Untrusted-Input: Yes — `.pex` bytes come from possibly-modded archives.
   set. Verifying coverage against only the first few accessor arms re-derives a closed gap.
 - **Every identity-only actor/reference stub must attach scripts.** All `spawn_logical_quest_reference`
   callers outside `synth_child.rs` — the persistent-worldspace loop in `cell_loader/exterior/persistent.rs` and
-  `materialize_scene_actor_alias_stubs` in `asset_provider/script.rs` — go through
+  `materialize_scene_actor_alias_stubs` in `scene/scene_runtime.rs` — go through
   `spawn_logical_quest_reference_with_scripts` (attaches once per `reference_form_id`, #4112/#4331; the source
   pin in `cell_loader/references/source_pin_tests.rs` rejects the bare spelling and scans production text only,
   #5650 `a7e05dd7b`). Identity-only entities get `OnInit` alone: `attach_script_for_refr` takes `has_3d` and inserts
@@ -647,7 +682,9 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   *Quest Conditions* tab, #5734 `6709eb65e`) — memoised per quest per call, an uncatalogued function fails the gate
   closed (a hijacker gated only by functions we cannot read must not win on priority; on Oblivion that once declined 87 % of
   INFOs until #5778 `71e488a26` catalogued the gate functions — re-run `condition/tests.rs::oblivion_quest_level_dialogue_gates_census`, `#[ignore]`d, after any catalog change), and the list is cloned out and its guard released before `evaluate` (the `QuestStageState` ↔
-  `DialogueQuestConditions` cycle, `8e4c6e40a`); an INFO whose own CTDA set holds any term `is_modeled` rejects is
+  `DialogueQuestConditions` cycle, `8e4c6e40a`); `select_info` never holds `QuestStageState` across an `evaluate` either — the
+  running-quest check takes a short read per question, because `GetStageDone` re-reads the resource and a body-long read was a
+  recursive read behind a parked writer on every FNV force-greet (#6615 `6af13ef37`, pinned by a per-thread warning counter); an INFO whose own CTDA set holds any term `is_modeled` rejects is
   declined outright (#5752 `bd85de5ea`); then `select_info`
   collects every passing candidate — the first wins, and a Random first INFO rolls within its positional
   Random stack (ended by the next passing non-Random INFO or a Random End, #5397 `0436bea5c`) through the seeded
@@ -681,10 +718,13 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   `f0c683ef1`). Every opened conversation raises an `AHEL` story event; `raise_hello_story_event` resolves the
   location *before* taking the `StoryEvent` guard and the open sites scope their `LoadedCellIndex` read to a clone
   (#5372 `1c15a2270` — the `LoadedCellIndex → StoryEvent → LoadedCellIndex` cycle). The `npc_dialogue_selection`
-  Access row declares the cross-file voice and AHEL hops, and the declaration scan lists `dialogue_voice.rs`,
-  `story_events.rs` and the condition evaluator (`evaluate_function`, 18 storages/resources incl. the
-  `StoryManagerRng` write) explicitly (#5414 `9d8fd4cc9`, #5649 `197a9e245` — the same-file callee walk cannot
-  follow a hop into another file). A replaced or closed line cuts its voice (`stop_line_voice` →
+  Access row declares the cross-file voice and AHEL hops, and the declaration scan
+  (`npc_dialogue_selection_declares_everything_the_spoken_fragment_path_acquires`) lists `dialogue_voice.rs`,
+  `story_events.rs`, the condition evaluator (`evaluate_function`, incl. the `StoryManagerRng` write and what the VM-bridged
+  getters read) and `apply_at_depth` (the deferred flush, four hops from the entry) explicitly (#5414 `9d8fd4cc9`, #5649
+  `197a9e245`, #6685 `c98a4552f` — the same-file callee walk cannot follow a hop into another file); the row's
+  fragment-effect claims live in `fragment_effect_family_access`, and the crime-faction / crime-gold / ownership claims in
+  functions those subsystems export through `Access::with` (#6701 `c22a9d410`), which the scan follows into the delegate files. A replaced or closed line cuts its voice (`stop_line_voice` →
   `AudioWorld::stop_sounds_for`; #5432 `40b77828b`). Talk-candidate filtering (`populate_candidates`, `byroredux/src/interaction.rs`)
   takes each alias-resource guard alone and builds bulk sets per storage (`running_quest_bound_entities`;
   #5025 `2a1a7a362` closed two ABBA cycles, #5109 `83d52707e`) — a guard nest reintroduced there reddens the
@@ -719,7 +759,7 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   resources: `StoryManagerNodeState` and `StoryEventAliasFill` (the CLOC location cursor is session-local and reset on every save load, #5435 `557ead21d`; #5394 `03e51dfad`, column added at FORMAT_MAJOR 35 — the R1/R2
   slots persist as reference FormIds and re-resolve among resident candidates, session `EntityId`s serde-skipped;
   `story_event_alias_fill_survives_save_load_as_reference_forms`); `SmTree`/cursors/clock/RNG are
-  not-saved-by-design, so a quickload cannot re-fire spent radiants. Update ordering (the M43 polling producers — `register_random_conversations` in `boot/schedule/update/quest_scene.rs` — and the CLOC producer → dispatcher →
+  not-saved-by-design, so a quickload cannot re-fire spent radiants. Update ordering (the M43 polling producers — `register_random_conversations` in `boot/schedule/update/quest_scene/story_manager.rs` — and the CLOC producer → dispatcher →
   `quest_alias_refresh_system`, ambient installer → `forcegreet_system`) is pinned by
   `story_dispatch_and_forcegreet_update_ordering_is_pinned` (`byroredux/src/scheduler_access_tests.rs`, #5415).
   Producers: `KILL` (`raise_kill_story_event`, called from all four live death producers — combat, NPC and
@@ -741,7 +781,7 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   `LEVL`/`ASSU`/`AIPL`/`REMP`/`CRFT`/`OAAT` in `systems/story_events.rs` (`raise_*_story_event`; an integer payload rides
   `ScriptedStoryEvent { keyword: 0, .. }`, which reads as no `K1`) and `LCLD` beside `CLOC` in `emit_change_location_on_key_change`;
   `DEAD` (`dead_body.rs`), `IRON` (`iron_sights.rs`), `TMEE` (`mines.rs`), `AOBJ` (`attraction.rs`), `LOCK`/`HACK`
-  (`byroredux/src/lockpick.rs`), and in the scripting crate `CAST` (`magic_effects.rs`), `CHRR` (`relationships.rs`), `SKIL`
+  (`byroredux/src/lockpick.rs`), and in the scripting crate `CAST` (`magic_effects.rs`), `CHRR` (`relationships.rs`; raised at the deferred flush, not under the quest guards, #6572 `076de275e`), `SKIL`
   (`skills.rs`), `NVPE` (`words_of_power.rs`) and `JAIL`/`ARRT`/`ESJA` (`jail.rs`). `MNAM`/`XNAM` (Num quests to run /
   Max concurrent) are consumed — a pass starts up to *Num quests to run* pool quests and stops at the running-pool cap, re-checked
   when phase B starts a second event's pick in one frame (`max_concurrent_holds_across_events_in_one_frame`); the FO4+
@@ -929,7 +969,12 @@ SCTX frontend (`ScriptSource::Obscript` placeholder).
   storing it in the saved `ObScriptLedger` and reporting done (`AddTopic`, `ModDisposition`, `SetQuestObject`,
   `SetItemValue` were removed; `GetTalkedToPC` is written by `apply_selection`). Mod-supplied accumulators saturate
   (`ModCrimeGold`/`ModDisposition`, #6187 `50e743a56`). The compiled and source `If`/`ElseIf`/`Else` line forms share one
-  `parse_conditional` recursion that enforces `MAX_LEGACY_OBSCRIPT_NESTING` once (#6159 `3c553b7ca`).
+  `parse_conditional` recursion that enforces `MAX_LEGACY_OBSCRIPT_NESTING` once (#6159 `3c553b7ca`). Same rule since 2026-11: `SendTrespassAlarm` declines
+until trespass is routed into the crime runtime (#6511 `baa93fe87`); Oblivion's caller-scoped `GetCrimeGold` / `SetCrimeGold` /
+`ModCrimeGold` / `GetGold` honour the calling reference — no caller or the player's own keeps the player path, any other named
+actor declines (crime gold) or counts that actor's own `Gold001` (`GetGold`), and an unloaded caller never falls through to the
+player (#6510 `a48017e7b`); `MenuMode` reads its per-game codes from the `MenuCodes` resource, so Oblivion answers barter 1008
+(#6620 `16d9e18f3`).
 - **Object and item scripts** (`obscript_objects.rs`, M47.3 phase 2; live gate `docs/smoke-tests/m47-3-obscript.sh`
   on FNV): a placed reference whose base carries an `SCRI` gets an `ObScriptInstance` at attach; blocks run on the
   events the engine already raises — `GameMode` every frame per loaded scripted reference (not an `UnloadedReferenceStub` / `RemoteSceneActorStub`, #6220; the

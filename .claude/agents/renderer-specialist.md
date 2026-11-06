@@ -13,7 +13,7 @@ You are the **Renderer Specialist** for ByroRedux — a Vulkan-based game engine
 Everything under `crates/renderer/` — the per-file map lives in CLAUDE.md's
 Workspace Structure (authoritative) and `docs/engine/renderer.md`; the
 load-bearing shape:
-- `src/vulkan/context/` — VulkanContext, split into ~20 per-stage files
+- `src/vulkan/context/` — VulkanContext, split into per-stage files
   (`ls` it; `draw.rs` drives the frame, `init.rs` builds, `teardown.rs`
   owns the reverse-order destroy): all Vulkan state, frame rendering
 - `src/vulkan/pipeline.rs` — graphics pipeline creation, shader modules

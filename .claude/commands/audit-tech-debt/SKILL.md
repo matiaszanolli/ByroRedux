@@ -78,16 +78,16 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
      echo "test files >2000 total LOC (lower priority, separate bucket): $(find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l)"
    } > /tmp/audit/tech-debt/baseline.txt
    ```
-   Measured 2026-10-31 at 8985a2e99 (diff direction only, re-run, never quote): markers 38 (18 are `XXXX` false positives — three
-   are the `--type XXXX` usage placeholder in `crates/plugin/examples/dump_wths_refl.rs` — 16 the FO4 `HACK` terminal
-   FourCC (M43's `byroredux/src/lockpick.rs` and its tests/doc comments, up from 2), 3 quoted upstream FIXMEs, 1 documented `TBD` — Dim 5;
+   Measured 2026-11-06 at 66c85af80 (diff direction only, re-run, never quote; the 2026-10-31 figures at 8985a2e99 are in parentheses): markers 40 (38) (18 are `XXXX` false positives — three
+   are the `--type XXXX` usage placeholder in `crates/plugin/examples/dump_wths_refl.rs` — 18 (16) the FO4 `HACK` terminal
+   FourCC (M43's `byroredux/src/lockpick.rs`, `byroredux/src/interaction.rs`, `byroredux/src/commands/story_actions.rs`, two comment mentions under `byroredux/src/boot/schedule/`, and the `crates/plugin/tests/parse_real_esm.rs` pair), 3 quoted upstream FIXMEs, 1 documented `TBD` — Dim 5;
    **zero** real TODOs: the two in `byroredux/src/loading_screen.rs` (tracked by #6194 since #6181, 51f97f708) were rewritten as
    a stated "what the P6 cover does not model" doc by 729fbab1f, closing #6194 — a fresh real TODO is notable),
-   `allow(dead_code)` 39 (41 on 2026-10-25, #6397/#6398 retired two; 12 of them are `cfg(test)` TypeId-only markers in `crates/core/src/ecs/lock_tracker.rs`, c5113f0d9 —
-   not debt), `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 382 (373 on 2026-10-27, 368 on 2026-10-24, 363 on 2026-10-21, 352 on 2026-10-20, 322 on 2026-10-15; tools-inclusive —
+   `allow(dead_code)` 38 (39; 41 on 2026-10-25, #6397/#6398 retired two; 12 of them are `cfg(test)` TypeId-only markers in `crates/core/src/ecs/lock_tracker.rs`, c5113f0d9 —
+   not debt), `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 405 (382 on 2026-10-31, 373 on 2026-10-27, 368 on 2026-10-24, 363 on 2026-10-21, 352 on 2026-10-20, 322 on 2026-10-15; tools-inclusive —
    earlier reports scoped to `crates`+`byroredux` read lower; none runs on a hosted runner),
-   production >2000 LOC: **2** — `crates/renderer/src/shader_constants_data.rs` (3169, a data table, Dim 1) and
-   *crates/debug-ui/src/panels.rs* (2086, crossed from 1938 on the M43 dialogue-page / crafting / drop-and-cast panels, 041d57333..c2742a901), since split by #6578 into `panels/{snapshots,hud,game_menu,studio}.rs` (largest child `studio.rs`, 881 prod LOC; `game_menu.rs` 749). The
+   production >2000 LOC: **1** (2) — `crates/renderer/src/shader_constants_data.rs` (3375, 3169 on 10-31; a data table, Dim 1). The other 2026-10-31 entry,
+   *crates/debug-ui/src/panels.rs* (2086, crossed from 1938 on the M43 dialogue-page / crafting / drop-and-cast panels, 041d57333..c2742a901), was split by #6578 (37c845ee6, closed) into `panels/{snapshots,hud,game_menu,studio}.rs` (largest child `studio.rs`, 881 prod LOC; `game_menu.rs` 749). The
    other 2026-10-25 entry, `crates/scripting/examples/mq101_conformance/`, was split by #6360 (01f48c929, largest child ~530). Three left the list through real splits since 2026-10-25:
    `crates/audio/src/` (#6140, b2e542eee — `lib.rs` is a ~200-LOC hub over `dsp`/`world`/`components`/`system`/`cache`, largest child ~610),
    `crates/nif/src/import/types/` (#6141, 5559074be — eight files, largest ~575) and `crates/scripting/src/obscript_effects/`
@@ -98,23 +98,23 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    `crates/scripting/src/fragment/effects.rs` (#5468) before them. **Split-hub hazard:** a path-scoped `git log` / `grep` on a hub
    file silently sees only the hub (`git log -- byroredux/src/save_io.rs` returned 0 commits where the directory returned 24);
    scope Dim 1 deltas to the `<stem>/` directory and measure a split by its children, not by the parent shrinking. Watch-list
-   within 5%: `crates/plugin/src/esm/records/misc/world.rs` (1910); just under the band:
-   `crates/renderer/src/mesh.rs` (1864), `byroredux/src/asset_provider/material/merge.rs` (1860),
-   `crates/nif/src/import/material/mod.rs` (1857), `byroredux/src/app_events.rs` (1833). `byroredux/src/inventory/` (#6356, 258c6d9b2, largest child ~790)
+   within 5%: `byroredux/src/app_events.rs` (1979, up from 1833 on 10-31; 21 lines from the band, the most urgent row), `crates/plugin/src/esm/records/misc/world.rs` (1914); just under the band:
+   `byroredux/src/asset_provider/material/merge.rs` (1860), `crates/nif/src/import/material/mod.rs` (1857), `crates/hkx/src/behavior.rs` (1826),
+   `crates/renderer/src/vulkan/context/build_and_upload_instances.rs` (1825). `crates/renderer/src/mesh.rs` (1864) left the list when #6520 (cd78f9efe) split the pool-limit policy and the primitive generators out (1412). `byroredux/src/inventory/` (#6356, 258c6d9b2, largest child ~790)
    and `byroredux/src/npc_spawn/` (#6357, 613c7f46e, largest child ~1460) were split on 2026-10-28; measure them by children.
-   `crates/renderer/src/vulkan/gpu_timers.rs` (1929 on 2026-10-25) fell to 1703 when #6358 (0288f468d) made the per-pass brackets
-   `TimerPass` table rows.
-   `crates/renderer/src/vulkan/context/init.rs` (1950 on 2026-10-25) left the band — 3e6f6b66a (#6143) split the frame and
+   `crates/renderer/src/vulkan/gpu_timers.rs` (1929 on 2026-10-25) fell when #6358 (0288f468d) made the per-pass brackets
+   `TimerPass` table rows (1195 prod LOC on 2026-11-06).
+   `crates/renderer/src/vulkan/context/init.rs` (1950 on 2026-10-25, 1112 on 2026-11-06) left the band — 3e6f6b66a (#6143) split the frame and
    Vulkan drivers into `init_stages.rs` and the per-stage `context/` files, each pinned by `function_size_pin_tests.rs`;
    the instance list is regenerated every audit from `dim1_big.txt` — trust the recipe and the count delta over the names;
-   test-heavy >2000: 91.
+   test-heavy >2000: 90 (91).
    A raw whole-repo grep for `#[ignore]` also matches markdown prose — keep `--include='*.rs'`.
 
 ## Phase 2: Dimension Agents
 
 Ordered by debt impact: complexity and duplication compound across every edit; doc/audit rot misdirects the *next*
 audit; markers and dead code are cheap. Recent yield (`grep -h '\*\*Dimension\*\*' docs/audits/AUDIT_TECH_DEBT_*.md`):
-Dims 2, 1, 3 dominate (then 8, 4; 7, 9) — counted over all 42 reports on 2026-10-31; 5 and 6 rarely surface real debt. Each agent writes `/tmp/audit/tech-debt/dim_<N>.md`.
+Dims 2, 1, 3 dominate (then 8, 4; 7, 9) — counted over all 43 reports on 2026-11-06; 5 and 6 rarely surface real debt. Each agent writes `/tmp/audit/tech-debt/dim_<N>.md`.
 
 ### Dimension 1: File / Function / Module Complexity
 Paths: all `.rs` under `crates/`, `byroredux/`, `tools/`
@@ -131,7 +131,11 @@ find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*' -exec wc 
 ```
 The recipe output is authoritative. A file that once split can re-cross (a previously-split file that grew back is a
 live finding); a file that dips under by incidental shrinkage is still a candidate — only an actual split removes one;
-and files within ~5% of the line (check the snapshot) are worth naming as watch-list rows. Function-level splits inside
+and files within ~5% of the line (check the snapshot) are worth naming as watch-list rows. Function-level size budgets (`function_line_count`, `crates/core/src/source_scan.rs`) count CODE lines only — blank and
+comment-only lines are free since #6720 (d7320311b) — so a documented function never breaks its pin and a pin figure
+quoted from before that commit is not comparable; the pins sit in `scheduler_access_tests.rs`,
+`crates/renderer/src/vulkan/context/function_size_pin_tests.rs`, `crates/nif/src/anim/function_size_pin_tests.rs` and
+`crates/physics/src/function_size_pin_tests.rs`. Function-level splits inside
 a file and file-level splits are independent signals — a `register_*_systems` / phase-helper extraction does not move
 its host file across the line.
 
@@ -162,7 +166,10 @@ across `crates/plugin/src/esm/records/`; AI-procedure systems sharing scaffoldin
 tables; source-scan helpers (`production_text`, `production_text_or_whole`, `strip_test_modules`, `count_identifier`) have ONE
 home, `crates/core/src/source_scan.rs` (#5100, 655b317c9; #5469, 334458b3f routed the ~40 surviving inline cuts through it) — a
 re-copied cut in a test module is a regression; `no_source_scan_cuts_with_the_weak_cfg_test_needle`
-(`byroredux/src/workspace_hygiene_tests.rs`) fails a new weak `#[cfg(test)]` find/split outside its allowlist — and, since #6370 (594c843e2), a hand-written `mod tests {` find/split too. The Z-up→Y-up conversion has one home, `crates/core/src/math/coord.rs` (`zup_to_yup_pos`,
+(`byroredux/src/workspace_hygiene_tests.rs`) fails a new weak `#[cfg(test)]` find/split outside its allowlist — and, since #6370 (594c843e2), a hand-written `mod tests {` find/split too. A whole-`Children` worklist walk has one home, `byroredux_core::ecs::collect_subtree` (visited set + `HierarchyTraversalGuard` budget, #5513);
+`no_production_code_hand_rolls_a_children_walk` (`byroredux/src/workspace_hygiene_tests.rs`, #6577 fb6ec8afe) counts `.extend(children.0`
+pushes outside the collector and ragdoll's two #4572-guarded walks, and the workspace-wide hygiene scans share one root walk
+(`production_scan_roots` / `is_test_source`, bin + `crates/*` + `tools/`, #6522 3ccc57db6) — a scan that re-spells its own root list is a regression. The Z-up→Y-up conversion has one home, `crates/core/src/math/coord.rs` (`zup_to_yup_pos`,
 `zup_to_yup_quat_wxyz`); re-exports elsewhere are not leaks — a genuine reimplementation would live outside that file.
 
 ### Dimension 3: Stale Documentation & Comments
@@ -190,9 +197,17 @@ auto-eligible findings (trivial). Guards that already police a class — aim at 
   prose), so a splice that does not open with a name still needs a reviewer: sweep the commits' hunks that add an item
   directly below a doc block.
 - **Status-doc line ceilings**: `readme_and_roadmap_hold_their_line_ceilings` (`byroredux/src/workspace_hygiene_tests.rs`,
-  #5332) fails README.md > 600 or ROADMAP.md > 800 lines (`wc -l` agrees with it). ROADMAP.md read 808 at 8985a2e99 after
-  43252c859 had trimmed it to 800 — a red hygiene test there is a finding (trim, do not raise the cap). The `docs/engine/game-loop.md`
-  live-schedule table is pinned to name the VATS / package / crime systems (#6378, 31c0da40c; the pin moved to the same file in 43252c859).
+  #5332) fails README.md > 600 or ROADMAP.md > 800 lines (`wc -l` agrees with it). ROADMAP.md reads 798 and README.md 589 on 2026-11-06 (808 at 8985a2e99, before 43252c859 trimmed it) — a red hygiene test there is a finding (trim, do not raise the cap). The `docs/engine/game-loop.md`
+  live-schedule table must name EVERY registered system: `every_registered_system_is_named_in_the_live_schedule_table`
+  (`byroredux/src/workspace_hygiene_tests.rs`, #6583 4b13fd4d6, superseding #6378's by-name list) reads each `scheduler.add*`
+  call under `boot/schedule/` from disk, so a new per-subsystem file is covered automatically; it matches whole identifiers.
+- **Comment rule** (#6719, 27dcf26db; `docs/contributing.md` § Comments): a comment states the rule the code follows today and
+  why, with an issue number if useful — no "used to", "pre-#NNNN this did", "the first fix added" or before/after narration, and
+  no restating the next line. Comment-only rewrites go one file or function per commit with a diff that shows only comment
+  lines changing, and only after searching for tests that pin comment text (`get_distance_variant_keeps_its_doc_comment`,
+  `module_doc_covers_the_buoyancy_phase_and_its_ordering`, the scans in the source-scan triage records). Report history-narrating comments as
+  LOW doc-rot with the file as the unit; the first pass was `crates/renderer/src/vulkan/context/skinned_blas_refit.rs`
+  (`record_skinned_blas_refit`, ~160 comment lines → 80). Not a sweep target for a bulk rewrite.
 - **Deleted `Material::classify_pbr`**: `no_source_file_frames_the_deleted_classify_pbr_as_live`
   (`byroredux/src/workspace_hygiene_tests.rs`) fails a doc that names it as live. The survivors are the free fn
   `classify_pbr_keyword` and `Material::resolve_pbr`.
@@ -298,11 +313,11 @@ cargo machete --with-metadata 2>/dev/null || echo "cargo machete not installed �
   renderer-only `undocumented_unsafe_blocks` re-lint, #5121; the toolchain is pinned at 1.96.0 by `rust-toolchain.toml` since #5308 (b24cb46b6) after floating
   `stable` let rustc 1.99's *chunks_exact_to_as_chunks* wave turn the gate red for four days — rustc 1.96 (800802516) and 1.98
   (530c9e7aa) raised lints on untouched code too; a toolchain bump is now a deliberate commit, and the distro cargo ignores
-  the pin; wasmtime 49's MSRV is exactly 1.96.0, 15a6b1d2d, so the pin can rise but not fall). The blocking gate went red again on untouched code and was re-zeroed by #6222 (fde8836dd, 2026-10-27, exit 0 on 1.96.0). A red gate is a finding:
+  the pin; wasmtime 49's MSRV is exactly 1.96.0, 15a6b1d2d, so the pin can rise but not fall). The blocking gate went red again on untouched code and was re-zeroed by #6222 (fde8836dd, 2026-10-27, exit 0 on 1.96.0) and again by #6582 (72673394b, 2026-11-02, nine sites hidden behind the first three failing crates). A red gate is a finding:
   list each failing lint and file, plus the crates it left unlinted — `--keep-going` lints every crate that still
   compiles, but a crate red under clippy leaves its dependents unchecked (a red `byroredux-nif` skips the bin).
   CI also runs `--all-targets --keep-going` as a NON-blocking step (`continue-on-error`, #5621, a3ccd68fb: test/example-target
-  lints re-accumulate on active days; both forms were re-zeroed in 9896b1cf7 / 8b0b922f5 and again by #5849 / #5850, 251d491ef, and by #6193, bbda0c975, after 42 sites re-accrued — three deny-level `erasing_op` — and #6394, 6a73c6075) — a red non-blocking step is a
+  lints re-accumulate on active days; both forms were re-zeroed in 9896b1cf7 / 8b0b922f5 and again by #5849 / #5850, 251d491ef, and by #6193, bbda0c975, after 42 sites re-accrued — three deny-level `erasing_op` — and #6394, 6a73c6075, and #6492, cf620dcaf, when six audited sites had grown to twenty) — a red non-blocking step is a
   lower-priority bucket, not a gate failure (the workspace example build itself went red once, the #3894 class, 530c9e7aa). Check every
   `#[allow(clippy::…)]` carries a reason comment (the house style for `too_many_arguments`) — enforced since #5622
   (c4975b1ab) by `every_clippy_allow_carries_a_reason` (`byroredux/src/workspace_hygiene_tests.rs`: a trailing comment, a
@@ -336,6 +351,15 @@ grep -RInE '^[[:space:]]*#\[ignore' --include='*.rs' crates byroredux tools | gr
   compiles. A closed-HIGH guard test that is `#[ignore]`d but absent from the list is the MEDIUM row above (#6224, 6adf6b5d8 appended four such rows;
   `/fix-issue`'s completeness checklist now has a PINS line). The runner counts passes with `scripts/count-passed-tests.sh`
   (per-binary `test result: ok. N passed` sums, #6319, 718c7b836), since counting `test NAME ... ok` lines misreads a printing test.
+- **Source-scan tests** (a `#[test]` that `include_str!`s or reads a `.rs` file and searches its text): a standing test-gap
+  bucket under triage, with per-issue records at `.claude/issues/<N>/CLASSIFICATION.md` — #6686 (binary, OPEN: about 150 of 301 sites
+  still unclassified after three passes), #6687 (renderer, OPEN: ~314 unclassified), #6688 (scripting, closed, 58caf1799 ran the
+  Pattern-B marker consumers instead of scanning them) and #6689 (nif/plugin/physics, closed, 8124d9594). Classes: device/data (needs Vulkan, the
+  winit loop or game data — keep), runtime (replaceable by running the code), prose, syntax, input (a read that feeds a check). A scan whose
+  property a behavioural test can state is the finding (precedents: #6685 turned the system-access scan into a `syn` walk,
+  `byroredux/src/acquisition_scan.rs`; #6684 made seven schedule-order guards read the built schedule; 27c61842f replaced three renderer scans);
+  a new scan needs a doc stating why no runtime form exists. Read the record before filing, and add to the
+  record, not a new issue; the renderer's per-file self-include baseline (`a_new_self_scan_goes_through_production_text_or_is_reviewed_into_the_baseline`, `crates/renderer/src/source_scan.rs`) must move down in the same commit as a scan it counts.
 - Most `#[ignore]`s gate Vulkan / game-data / audio tests — not debt. Triage the remainder: does a reason name an issue
   (`gh issue view N`), and if it guards a closed CRITICAL/HIGH fix → MEDIUM.
 - Tests with only smoke assertions (`assert!(result.is_ok())`); commented-out assertions in passing tests; tests that

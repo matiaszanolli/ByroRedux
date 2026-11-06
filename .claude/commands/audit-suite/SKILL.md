@@ -66,7 +66,7 @@ Each is just `--area` over these paths (neighbors apply):
 | `volumetrics-deep` / `bloom-deep` / `skin-deep` | `crates/renderer/src/vulkan/volumetrics.rs` / `bloom.rs` / `skin_compute.rs` + `acceleration/blas_skinned.rs` |
 | `nif-deep` / `nifal-deep` | `crates/nif/` / `byroredux/src/material_translate.rs` `crates/nif/src/import/` |
 | `esm-deep` / `character-deep` / `physics-deep` | `crates/plugin/` / `crates/core/src/character/` / `crates/physics/` `byroredux/src/ragdoll.rs` |
-| `ui-deep` / `audio-deep` / `save-deep` | `crates/ui/` `crates/menuxml/` `byroredux/src/{hud,scaleform_hud,ui_input,objectives}.rs` / `crates/audio/` / `crates/save/` `byroredux/src/save_io/` |
+| `ui-deep` / `audio-deep` / `save-deep` | `crates/ui/` `crates/menuxml/` `byroredux/src/{hud,scaleform_hud,ui_input,ui_state,objectives}.rs` / `crates/audio/` / `crates/save/` `byroredux/src/save_io/` |
 | `scripting-deep` / `speedtree-deep` | `crates/{scripting,pex,papyrus}/` / `crates/spt/` |
 | `streaming-deep` | `byroredux/src/streaming/` `byroredux/src/npc_spawn/` `byroredux/src/cell_loader/` |
 | `exterior-deep` / `gameplay-deep` / `parsers-deep` / `tooling-deep` | the new owners' `Paths:` lines |

@@ -45,8 +45,9 @@ Read `.claude/commands/_audit-common.md` and `.claude/commands/_audit-severity.m
 - `byroredux/src/cell_loader/references/synth_child.rs` (`.spt` dispatch) →
   `references/import.rs` (`parse_and_import_spt`, `resolve_spt_model_path`,
   `resolve_tree_icon_path`); `cell_loader/nif_import_registry.rs` (`spt_cache_key`,
-  `CachedNifImport.speedtree_wind`); `cell_loader/spawn/mesh_instance.rs` (attaches `Billboard`
-  from `mesh.billboard_mode` and `SpeedTreeWind`, routes through `translate_material`);
+  `CachedNifImport.speedtree_wind`); `cell_loader/spawn/mesh_instance.rs` (supplies `cached.speedtree_wind`
+  and routes through `translate_material`) into the shared `scene/mesh_entity.rs::attach_mesh_components` (attaches `Billboard`
+  from `mesh.billboard_mode` and `SpeedTreeWind`, ee2862cda #6690);
   `byroredux/src/streaming/pre_parse.rs` (skips `.spt` in prefetch via `is_spt_model_path`, a byte-level
   suffix test — a `&str` byte-index slice there panicked on a trailing U+FFFD, fixed in c83e4837a, #5137).
 - `byroredux/src/scene/nif_loader.rs` — the `--tree` loose route: a **parallel** path calling
@@ -147,7 +148,7 @@ First step: `cargo test -p byroredux-spt placeholder`
 **Output**: `/tmp/audit/speedtree/dim_2.md`
 
 ### Dimension 3: TREE → Billboard Wiring (highest report yield)
-Paths: `byroredux/src/cell_loader/references/{synth_child,import}.rs`, `byroredux/src/cell_loader/{nif_import_registry,spawn/mesh_instance}.rs`, `byroredux/src/systems/billboard.rs`, `crates/plugin/src/esm/records/tree.rs`
+Paths: `byroredux/src/cell_loader/references/{synth_child,import}.rs`, `byroredux/src/cell_loader/{nif_import_registry,spawn/mesh_instance}.rs`, `byroredux/src/scene/mesh_entity.rs`, `byroredux/src/systems/billboard.rs`, `crates/plugin/src/esm/records/tree.rs`
 First step: `cargo test -p byroredux parse_and_import_spt` and, with data, `cargo test -p byroredux vanilla_tree -- --ignored`
 **Guards**: `references/import_tests.rs` — `vanilla_tree_models_all_resolve` and
 `vanilla_tree_icons_all_resolve` (env-gated corpus gates), the pure-closure resolver tests
@@ -177,12 +178,12 @@ the attach, 811499b65, #5360; exits 0 on SKIP without data — run and reported 
   `attach_light_offset = None`).
 - **Billboard attach is at mesh level**: `import_spt_scene` sets
   `mesh.billboard_mode = Some(BILLBOARD_MODE_BS_ROTATE_ABOUT_UP)` and the functional insert is
-  `spawn/mesh_instance.rs`'s `if let Some(raw) = mesh.billboard_mode` (without it the quad spawns
+  `scene/mesh_entity.rs::attach_mesh_components`'s `if let Some(raw) = mesh.billboard_mode` (shared by both spawn paths since ee2862cda, #6690) (without it the quad spawns
   static). `placement_root_billboard` is a dead seam for SpeedTree (no producer sets it;
   `spawn.rs` consumer is unreachable) — target findings at the mesh-level insert.
 - **Wind**: placeholders carry `SpeedTreeWind::new(1.0, 0.0)` (neutral; cached as
-  `CachedNifImport.speedtree_wind`, attached in `mesh_instance.rs` and both loose-route sites in
-  `nif_loader.rs`). `apply_speedtree_wind` in `billboard.rs` bends the canopy from the shared
+  `CachedNifImport.speedtree_wind`, attached in `attach_mesh_components` — fed by `mesh_instance.rs` and the `nif_loader.rs` mesh route — and by the node-level
+  `NiBillboardNode` insert in `nif_loader.rs`). `apply_speedtree_wind` in `billboard.rs` bends the canopy from the shared
   `WindField`: gust is clamped to a finite non-negative value before use (#3194), response/stiffness
   clamped, keyed off the `SpeedTreeWind` marker rather than one billboard enum.
   `WindField.direction` is engine-xz "blows toward" (#4729): the bend axis tips the crown

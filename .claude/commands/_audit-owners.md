@@ -73,7 +73,9 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/plugin/src/esm/records/lmsw.rs` | esm, nifal, performance Dim 7; starfield, fo4 | MEDIUM |
 | `crates/plugin/src/esm/records/actor/npc.rs` | esm, character Dim 4, performance Dim 7; per-game | HIGH |
 | `crates/plugin/src/esm/cell/support.rs` | esm, physics, performance Dim 7; per-game | HIGH |
+| `crates/plugin/tests/lod_family_census.rs` | esm, exterior; oblivion, fo3, fnv | MEDIUM |
 | `crates/plugin/` | esm, performance Dim 7; per-game | HIGH |
+| `crates/bsa/src/lod_family.rs` | parsers, exterior; oblivion, fo3, fnv | MEDIUM |
 | `crates/bsa/src/read_at.rs` | parsers, concurrency Dim 7 | MEDIUM |
 | `crates/bsa/` | parsers; per-game | HIGH |
 | `crates/bgsm/` | parsers, nifal; fo4 | MEDIUM |
@@ -143,9 +145,8 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/cell_loader/precombined` | fo4; performance | HIGH |
 | `byroredux/src/cell_loader/spawn.rs` | physics, per-game, performance | MEDIUM |
 | `byroredux/src/cell_loader/spawn/precombined.rs` | fo4, performance | MEDIUM |
-| `byroredux/src/cell_loader/spawn/authored_cover.rs` | exterior | MEDIUM |
+| `byroredux/src/cell_loader/spawn/authored_cover` | exterior | MEDIUM |
 | `byroredux/src/cell_loader/transition.rs` | audio Dim 3, gameplay, save; per-game, performance | MEDIUM |
-| `byroredux/src/cell_loader/material_flags.rs` | nifal, starfield; per-game, performance | MEDIUM |
 | `byroredux/src/cell_loader/unload.rs` | ecs Dim 7, save Dim 5, concurrency Dim 5, performance; per-game | HIGH |
 | `byroredux/src/cell_loader/exterior` | exterior, ecs Dim 7, performance; per-game | HIGH |
 | `byroredux/src/cell_loader/load.rs` | ecs Dim 7, performance; per-game | HIGH |
@@ -153,12 +154,14 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/cell_loader/{created,graph_nodes}.rs` | scripting, gameplay, performance; per-game | MEDIUM |
 | `byroredux/src/cell_loader` | per-game; performance | MEDIUM |
 | `byroredux/src/material_translate.rs` | nifal | HIGH |
+| `byroredux/src/material_flags.rs` | nifal, starfield; per-game, performance | MEDIUM |
 | `byroredux/src/ragdoll_installed_tests.rs` | physics, nif Dim 5; skyrim, fo4, starfield | MEDIUM |
 | `byroredux/src/ragdoll` | physics; skyrim, fo4, starfield, fo3, fnv | HIGH |
 | `byroredux/src/npc_spawn/seam_blend` | nifal, gameplay; oblivion, fo3, fnv | MEDIUM |
 | `byroredux/src/npc_spawn/loot_appearance.rs` | gameplay, save Dim 1, nifal; skyrim | MEDIUM |
 | `byroredux/src/npc_spawn/ai_package.rs` | gameplay, scripting Dim 5, performance Dim 7, concurrency Dim 7; per-game | MEDIUM |
 | `byroredux/src/npc_spawn` | gameplay, character Dim 4, performance Dim 7, concurrency Dim 7; per-game | MEDIUM |
+| `byroredux/src/systems/request_drain_tests.rs` | scripting, gameplay, ecs, performance | MEDIUM |
 | `byroredux/src/systems/water.rs` | exterior, physics | MEDIUM |
 | `byroredux/src/systems/weather.rs` | exterior | MEDIUM |
 | `byroredux/src/systems/character.rs` | physics Dim 4+5; gameplay, character | MEDIUM |
@@ -185,7 +188,8 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/render/` | renderer, performance, concurrency Dim 7 | MEDIUM |
 | `byroredux/src/boot/` | concurrency Dim 4, ecs Dim 5, tooling | HIGH |
 | `byroredux/src/scheduler_access_tests.rs` | concurrency, ecs | HIGH |
-| `byroredux/src/save_io/live_load.rs` | save, scripting | MEDIUM |
+| `byroredux/src/acquisition_scan.rs` | concurrency, ecs; tech-debt (test-only `syn` scanner) | HIGH |
+| `byroredux/src/save_io/live_load.rs` | save, scripting, gameplay Dim 7 | MEDIUM |
 | `byroredux/src/save_io` | save | MEDIUM |
 | `byroredux/src/{barter,encumbrance}` | gameplay Dim 1, scripting Dim 5, character Dim 1, ecs | MEDIUM |
 | `byroredux/src/crime.rs` | gameplay, character, scripting Dim 5, save Dims 1-2; oblivion, skyrim | MEDIUM |
@@ -226,6 +230,8 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/asset_provider/material/` | nifal Dim 8, parsers, renderer Dim 6, performance Dim 3; fo4, starfield | HIGH |
 | `byroredux/src/asset_provider/terrain_height.rs` | exterior Dim 2, parsers | MEDIUM |
 | `byroredux/src/asset_provider/` | parsers; per-game | MEDIUM |
+| `byroredux/src/scene/scene_runtime.rs` | scripting, gameplay; per-game | MEDIUM |
+| `byroredux/src/scene/mesh_entity.rs` | nifal, speedtree, renderer; per-game | MEDIUM |
 | `byroredux/src/scene/character_spawn.rs` | gameplay, physics Dim 4; per-game | MEDIUM |
 | `byroredux/src/scene/world_setup.rs` | exterior, performance Dim 7; per-game | MEDIUM |
 | `byroredux/src/scene.rs` | per-game, ui Dim 6 | MEDIUM |
@@ -242,6 +248,12 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/scene_import_cache.rs` | performance, nifal | MEDIUM |
 | `byroredux/src/parsed_nif_cache.rs` | performance, nif | MEDIUM |
 | `byroredux/src/anim_convert.rs` | nifal Dim 7, ecs Dim 9 | MEDIUM |
+| `byroredux/src/zup_yup.rs` | nifal, ecs; per-game | MEDIUM |
+| `byroredux/src/light_translate.rs` | nifal, renderer; per-game | MEDIUM |
+| `byroredux/src/material_dump.rs` | renderer Dim 12, nifal | LOW |
+| `byroredux/src/ui_state.rs` | ui, ecs | MEDIUM |
+| `byroredux/src/groundcover_state.rs` | exterior, ecs | MEDIUM |
+| `byroredux/src/capture_state.rs` | ecs, tooling | LOW |
 | `byroredux/src/workspace_hygiene_tests.rs` | tech-debt | LOW |
 | `byroredux/src/app_events.rs` | ui, ecs | MEDIUM |
 | `byroredux/src/app_frame.rs` | renderer, performance, concurrency, ui Dim 5+6 | HIGH |
@@ -256,8 +268,10 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/helpers.rs` | ecs | LOW |
 | `byroredux/src/main.rs` | ecs, tooling, ui Dim 6 | MEDIUM |
 | `byroredux/src/` | ecs | MEDIUM |
+| `byroredux/tests/m_light_gates.rs` | renderer Dim 2+7+12, runtime, regression | LOW |
 | `byroredux/tests/` | regression, runtime | LOW |
 | `byroredux/examples/` | tooling | LOW |
+| `scripts/m-light` | renderer Dim 2+7+12, runtime, performance | LOW |
 | `scripts/renderer-eval-groundcover.sh` | exterior, runtime | LOW |
 | `scripts/check-byro-dbg-harness-contracts.sh` | runtime, tooling | LOW |
 | `scripts/package-release.sh` | tooling, tech-debt (release packaging) | LOW |

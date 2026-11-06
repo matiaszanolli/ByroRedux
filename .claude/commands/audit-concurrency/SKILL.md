@@ -84,7 +84,7 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
   device-idle-equivalent only at `MAX_FRAMES_IN_FLIGHT == 2`. The wait is a known throughput cost (dominates GPU-bound
   frames), not a sync bug: narrowing it is tracked as #5365 (open; preconditions: per-FIF or deferred-destroy riders, the
   SVGF previous-slot G-buffer read's in-command-buffer barrier — #282 is closed on the wait, the barrier is still owed — and a
-  `BYRO_VALIDATION=1` run on both upscaler modes) — do not re-file it. Guard: the const-assert in `sync.rs`
+  `BYRO_VALIDATION=1` run on both upscaler modes; the rider list also names `linear_capture_staging` since M-LIGHT RLT-REF-007) — do not re-file it. Guard: the const-assert in `sync.rs`
   (#870), `the_all_slots_wait_argument_is_pinned` (the rider list; re-derive it in the same change that narrows the wait) and
   `frames_in_flight_contract_names_every_dependent_resource` (#3643) — confirm none
   is `#[ignore]`d and a FIF bump would fail them. `image_available[frame]` must not be reused while an
@@ -116,7 +116,13 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
   `rgba_updates_use_the_frame_command_buffer_and_keep_descriptors`,
   `only_the_submitted_recording_consumes_its_pixels`. The HUD's `texture_handles: [u32; 3]` rotation is now a
   driver choice, not hazard protection. Check the extent-change path (new image, old one deferred) and that
-  the staging slot is not rewritten while its frame is in flight.
+  the staging slot is not rewritten while its frame is in flight. M39 texture promotions ARE a per-frame blocking
+  one-time submit by design: `VulkanContext::update_texture_streaming` (`context/telemetry.rs`, called before
+  `draw_frame`) runs `flush_pending_promotions` through the same sub-batch fence-wait path as first uploads
+  (`texture_registry/upload.rs`), bounded by `MAX_PROMOTION_UPLOAD_BYTES_PER_FRAME` and `MAX_RESIDENCY_CHANGES_PER_FRAME`
+  (`texture_registry/budget.rs`). Check it takes the graphics-queue Mutex only around the submit, uses the persistent
+  `transfer_fence`, and that the new images' descriptor writes reach the frame's slot at its `begin_frame`
+  (23f4aeee3 replays the deferred write against the live view, not the one queued); a second submit site per frame is the finding.
 **Output**: `/tmp/audit/concurrency/dim_1.md`
 
 ### Dimension 2: Compute → AS → Fragment Chains
@@ -164,6 +170,12 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
 - **Exposure meter** (`exposure_meter.rs`): post-bloom composite → `exposure_meter.comp` → this frame's
   `ExposureResource` slot, sampled unconditionally by `presentation.frag` and the FSR dispatch — the slot
   write must be published before both consumers, in fixed mode too.
+- **Combustion local grid (#6533, d3e3acc7b).** `volumetrics/local_grid.rs` `record_frame` (the `volumetrics_local_sim.comp`
+  atlas sim, Stage B2 of `VolumetricsPipeline::dispatch`) runs BEFORE the froxel injection, which reads this frame's atlas
+  and writes the irradiance field; Stage F's `composite_barriers` (atlas state + optical + irradiance, COMPUTE → FRAGMENT)
+  and `record_publish_bricks` publish them to composite's close-range fire march. The atlas / irradiance images
+  are double-buffered per FIF slot like the froxel fields. Sim → inject visibility, and what a skipped / neutral frame
+  leaves in the atlas, are for a `BYRO_VALIDATION` capture, not reading.
 - **MaterialBuffer SSBO.** upload is `HOST_WRITE → VERTEX/FRAGMENT_READ`, before draw recording; flag only if it moves into a mid-frame compute path.
 - **Volumetrics skip path (#4780, fixed d213521ef).** The #3685 skip-clear latch owns only the GPU clear
   (`record_neutral_frame`), and it (with the caustic twin) is staged in `pending_*_cleared_on_skip` and promoted only
@@ -179,7 +191,7 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
 
 ### Dimension 3: ECS Lock Ordering & Deadlock (system level)
 Paths: `crates/core/src/ecs/{world,lock_tracker}.rs`, `byroredux/src/systems/`, `byroredux/src/extensions/`, `.github/workflows/ci.yml`
-First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` and the same with `-p byroredux-scripting` — the binary's graph is where every recent cycle lived (#4982–#4984, #5025, #5371, #5372, #5535, #5954, #6101, #6208, #6209; core alone stays green) — then CI's `lock-order-check` form, `cargo test --workspace --no-fail-fast --exclude byroredux-ui`. A nonzero failure count is a hard regression
+First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` and the same with `-p byroredux-scripting` — the binary's graph is where every recent cycle lived (#4982–#4984, #5025, #5371, #5372, #5535, #5954, #6101, #6208, #6209, #6561, #6618; core alone stays green) — then CI's `lock-order-check` form, `cargo test --workspace --no-fail-fast --exclude byroredux-ui`. A nonzero failure count is a hard regression
 Machinery — TypeId-sorted pairs, tracker-scope arming, `lock_tracker` internals (check-before-insert,
 `GRAPH` poison recovery, recursive-read warning) and poison resolution — is `/audit-ecs` Dim 1; do not
 re-audit it here. This dimension owns how *systems* use it.
@@ -220,7 +232,13 @@ re-audit it here. This dimension owns how *systems* use it.
   systems: `idle_clip_playback_system` / `idle_resume_system` took `AnimationClipRegistry` under their `AnimationPlayer` guard
   while `animation_system_inner` holds the registry outermost (#6208, 1e37a7536 — resolve clip facts under one registry
   read, drop it, then take the player guard); the unload walk held `ParticleEmitter` across a `TextureHandle` read (#6209,
-  a49073cc9); `find_package` held a `SceneAliasCandidate` query across `is_pickup_target` (→ `InventoryCatalog`) and
+  a49073cc9); `material_rows` took `Material` then `MeshHandle` as two independent read queries (#6618, 2b9571e02);
+  `improve_plan` held the player's `Inventory` guard while `stack_quality` took `ItemInstancePool`, the reverse of the save
+  path's pool-then-Inventory order (#6561, 3c9dca757); `SetRelationshipRank` raised `CHRR` inside the quest-stage /
+  objective pair, so the raise now queues on `DeferredFragmentEffects` and fires at the flush (#6572, 076de275e);
+  `select_info` held `QuestStageState` across `evaluate()`, a recursive read behind a possibly-parked writer (#6615,
+  6af13ef37 — the tracker now prints the first holder's stack under `RUST_BACKTRACE`, and skips the benign
+  `CommandRegistry` re-read in `help`, #6617 bcab15f47); `find_package` held a `SceneAliasCandidate` query across `is_pickup_target` (→ `InventoryCatalog`) and
   `flee_package` read `AiCombatState` under `Transform` (ce22fcbcf — read cross-lock state before taking the guard). Attribution recipe: a temporary edge logger
   in `record_and_check`, `--test-threads=1 --nocapture`; fix by gathering under one guard, dropping it, then composing.
 - **`FormIdPool`'s entity index is a leaf mutex (#6338, ab3a604bf).** `FormIdPool::entity_with_local` rebuilds a lazily
@@ -264,19 +282,27 @@ The access model and the mechanical declaration guard (`system_access_declaratio
 `sys.accesses` (`byroredux/src/commands/world_info.rs`) is the operator view of the same report.
 **Checklist**:
 - **Confirm the proof is live**: the two tests above are not `#[ignore]`d, the report's non-vacuity floors
-  (≥9 parallel systems, ≥7 pairs) still hold, and `PARALLEL_SYSTEMS.len()` equals the `add_to_with_access(` count. Update registration order lives in `byroredux/src/boot/schedule/update/` — five contiguous order segments called in file order since #6359 (4ab5766e3), each pinned by `per_frame_driver_functions_stay_within_their_size_pins`; a cross-stage ordering test reads those files in `boot::SOURCES` order, so a system moved between segments changes its sequence.
-- **Blind spots of the guard** (audit by hand): the scan reads turbofish `query` / `query_mut` / `resource` /
-  `resource_mut` (+ `try_`), `world.get` / `get_mut` / `has` and generic `remove_component` /
+  (≥9 parallel systems, ≥7 pairs) still hold, and `PARALLEL_SYSTEMS.len()` equals the `add_to_with_access` registration count (`the_parallel_system_table_covers_every_parallel_registration`). Registration lives in `byroredux/src/boot/schedule/`: `register_update_systems` is five contiguous order segments called in file order (#6359, 4ab5766e3), and since #5802's wave the segment functions, `register_post_update_systems` and `register_late_systems` are flat lists of calls into one file per subsystem (`update/<domain>/`, `post_update/`, `late/` — #6703 22e0f71fc, #6704 49aa54e36; the Late hub pin fell 858 → 16), each hub pinned by `per_frame_driver_functions_stay_within_their_size_pins` (code lines only, #6720). Order that file position used to carry is now a named constraint beside the later system: `Scheduler::run_before` / `run_after`, applied by `resolve_order` (#6702, 065aac9c4; an unknown name, a forbidden cross-stage/phase edge or a cycle panics at `build_scheduler`). A moved system keeps its declared access (`Access::with` lets a subsystem export its own declarations, #6701), so after any such move diff `system_names()` / `access_report()`. The ordering guards in `boot/schedule/mod.rs` (`schedule_order`) read the BUILT schedule, not registration text (#6684, 2a02c5446): `runs_before` counts two parallel systems in one stage as unordered, and a renamed or env-gated-off name panics rather than passing (`BYRO_NO_AI_LOCOMOTION` drops the AI movers). The kill-switch / timing pins stay text scans because they cover env-gated source branches.
+- **Blind spots of the guard** (audit by hand): since #6685 (c98a4552f) the scan is a `syn` syntax-tree walk
+  (`byroredux/src/acquisition_scan.rs`, test-only; `syn` is a dev-dependency of the bin) — comments, strings and
+  `#[cfg(test)]` items cannot match, a helper's acquisitions are followed through the call (depth-limited), a
+  function-pointer spelling counts, macro arguments are parsed as expressions with a token-walk fallback, and the
+  declaration side reads the registration's access expression (following helpers like `bridged_script_getter_reads` and
+  `.with(delegate)` paths). It still reads turbofish `query` / `query_mut` / `resource` / `resource_mut` (+ `try_`),
+  `world.get` / `get_mut` / `has`, `PlayerEntity::get`, `drain_into_resource` (#6707) and generic `remove_component` /
   `insert_component` (#4994, #4821) — not `query_2_mut`, `resource_2_mut` or inferred types; it follows calls
   within a listed file but cross-file hops only where `PARALLEL_SYSTEMS` lists them (#4994,
-  `cross_file_hops_and_get_forms_reach_their_acquisitions`); closures and macros; exclusive systems (five are
-  scanned — `npc_combat_ai_system`, `papyrus_provider_system`, `legacy_obscript_load_order_system`,
+  `cross_file_hops_and_get_forms_reach_their_acquisitions`); closures; exclusive systems (eight have their own
+  scan — `npc_combat_ai_system`, `interaction_system`, `container_loot_system` and `combat_damage_system` (#6546,
+  5129240c4: M43 made their rows under-declare), `papyrus_provider_system`, `legacy_obscript_load_order_system`,
   `equipment_appearance_system` (its mid-life import surface, #5069), and
   `npc_dialogue_selection_system`, whose scan follows the spoken-INFO fragment path into the scripting crate, #5307,
   `apply_selection`'s voice / AHEL hops `play_line_voice` + `raise_hello_story_event`, #5414 9d8fd4cc9, and the condition
-  evaluator `evaluate_function` — 18 acquisitions incl. the `StoryManagerRng` write, #5649 197a9e245;
+  evaluator `evaluate_function` — 18 acquisitions incl. the `StoryManagerRng` write, #5649 197a9e245, and the
+  deferred-effects flush `apply_at_depth`, which the old over-reading text scan reached by accident and the syntax walk
+  lists explicitly, exposing 13 undeclared types now carried by `fragment_effect_family_access`, #6685;
   others only by the non-empty-access tests, e.g. `footstep_declares_its_physics_reads`, #5556). The table and these scans live in `system_access_declaration_tests`
-  (`byroredux/src/boot/schedule/mod.rs`).
+  (`byroredux/src/boot/schedule/mod.rs`; `PARALLEL_SYSTEMS.len()` is checked against `parallel_registration_count`, a method-call count).
   An under-declared parallel system makes `known_conflict_count() == 0` unsound (the same-session
   `fly_camera_system` `GlobalTransform` write is the precedent, commit ac1d44f5c; #5641, 17a84f442, was the drowning
   death in `player_controller_system` raising the KILL story event without declaring `StoryEvent` + the cell-context
@@ -387,7 +413,7 @@ First step: `grep -n 'load-bearing' -B4 -A12 crates/renderer/src/vulkan/context/
 **Output**: `/tmp/audit/concurrency/dim_6.md`
 
 ### Dimension 7: Worker Threads & Thread-Safety Bounds
-Paths: `byroredux/src/streaming/`, `byroredux/src/asset_provider/texture_prefetch.rs`, `byroredux/src/terrain_height.rs`, `byroredux/src/cell_loader/load_order.rs`, `byroredux/src/render/mod.rs`, `crates/bsa/src/read_at.rs`, `crates/debug-server/src/{listener,system}.rs`, `crates/renderer/src/vulkan/allocator.rs`, `crates/ui/src/player.rs`, `crates/audio/src/`
+Paths: `byroredux/src/streaming/`, `byroredux/src/texture_streamer.rs`, `byroredux/src/asset_provider/texture_prefetch.rs`, `byroredux/src/terrain_height.rs`, `byroredux/src/cell_loader/load_order.rs`, `byroredux/src/render/mod.rs`, `crates/bsa/src/read_at.rs`, `crates/debug-server/src/{listener,system}.rs`, `crates/renderer/src/vulkan/allocator.rs`, `crates/ui/src/player.rs`, `crates/audio/src/`
 First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs' crates byroredux tools | grep -v test` (a new worker thread outside this list is a coverage gap)
 **Checklist**:
 - **Streaming worker shutdown.** `WorldStreamingState::shutdown` takes the `worker` handle first, then
@@ -409,6 +435,13 @@ First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs'
   `ArchiveStamp` matches — length + mtime everywhere, plus `(dev, ino, ctime)` on Unix, since a same-length rewrite that
   restores the mtime otherwise served another entry's bytes as `Ok` (#5663, 04036a6fb); the path-keyed Starfield CDB caches
   in `asset_provider/material/cdb.rs` are documented process-lifetime and never re-stamped.
+  M39 texture promotions read archives on `TextureStreamer`'s own 2-thread rayon pool (`texture_streamer.rs`,
+  `texture-stream-N`; `step` lands finished `FinishedRead`s over an `mpsc` channel and starts at most
+  `MAX_READS_IN_FLIGHT`; the registry's `queue_promotion_bytes` runs on the main thread). It owns its own
+  `TextureProvider`, so the shared archive registry's `ArchiveStamp` rule applies. The pool job calls
+  `extract_texture_from` with no `catch_unwind` / `spawn_guarded`, unlike the terrain-height and stream-parse pools: a
+  panicking read aborts the process under rayon's spawned-job rule and leaves its handle in `in_flight` — check any
+  new panic path under that call.
   Streamed NIFs' textures are prefetched on the stream pool (`prefetch_textures`, `PrefetchStore`): a panicking
   read must still complete its slot, and a withdrawn key must not be waited on. Terrain-layer height maps (#6195)
   generate on their own 2-thread rayon pool (`TerrainHeightService`, `terrain_height.rs`) over a cloned

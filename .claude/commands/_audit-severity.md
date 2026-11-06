@@ -67,8 +67,8 @@ Code quality, maintainability, hardening opportunities.
 | Exterior/EXAL translation done at render time or per-game in a shader (NIFAL-style boundary violation) | HIGH |
 
 > **NIFAL rows** (the canonical-translation rows above) gate the single
-> `ImportedMesh → Material` boundary in `byroredux/src/material_translate.rs`
-> (`translate_material`). A wrong translation there is silently wrong across
+> `ImportedMaterial → Material` boundary in `byroredux/src/material_translate.rs`
+> (`translate_material`, whose input is deliberately narrower than `ImportedMesh`). A wrong translation there is silently wrong across
 > *every* game because `Material::metalness` / `roughness` are plain resolved
 > `f32` (`Material::resolve_pbr`, `crates/core/src/ecs/components/material.rs`)
 > with no per-draw classifier fallback to mask it — hence the HIGH minimum.

@@ -25,13 +25,15 @@ progress** — frame as CRITICAL/HIGH per `_audit-severity.md` (data loss is CRI
 `build_form_id_remap`, `apply_deltas`), `disk.rs` (`write_slot`, `slots_by_recency`, `SaveRing`),
 `validate.rs` (`validate_world` + 6 sub-checks). Tests: `crates/save/tests/round_trip.rs`.
 
-**Engine side** (`byroredux/src/save_io/`): `build_save_registry` (the curated type set — since #5802
-`bde3478db` it also calls per-subsystem `register_saved(&mut registry)` delegates in `crates/scripting/src/`
-(`ownership`, `crime_gold`, `crime_faction`, `obscript_state`, `obscript_ledger`, `crime_knowledge`, `challenges`,
-`magic_effects`, `speechcraft`, `loc_ref_types`, `destruction`, `skills` — `loc_ref_types` onward `e619dbbaf`, which splits the
-builder chain at each — plus `linked_refs`, `animation_graph`, `scanning`, `form_lists`, `0f11a98e9`, and `words_of_power` (M43, v120, after `skills`); #5802 stays open for
-the remaining slices), each at its rows' former position, because `schema_fingerprint` hashes rows in registration order — moving a
-delegate call is a `SchemaMismatch` for every existing save),
+**Engine side** (`byroredux/src/save_io/`): `build_save_registry` (the curated type set — a scripting subsystem's
+saved columns live in its own module's `register_saved(&mut registry)` (`crates/scripting/src/*`, 45 modules, ~51 call
+sites in the hub; extracted in slices from #5802 `bde3478db` through `93bcda9bc`, then #6705 `15e498420` moved 47 more rows
+out of the hub). The hub keeps 37 rows, each with a stated reason: core types and the FormId column (`byroredux-core` sits
+below `byroredux-save`), the physics `CharacterController`, and the binary crate's own state. Each delegate is called at its
+rows' former position, because `schema_fingerprint` hashes rows in registration order — moving a delegate call is a
+`SchemaMismatch` for every existing save, and `the_schema_fingerprint_is_pinned` now fails it; where a module's columns sit
+in separate runs of the order it exports `register_saved_<column>` too. Umbrella #5802 is still open for the other hub
+files),
 `MUTABLE_DELTA_COLUMNS` (**second** hardcoded list driving the live overlay), `PRE_RELOAD_RESOURCES`,
 `SaveCommand`/`SaveInfoCommand`/`LoadCommand`, `PendingPlayerSaveActions` (F5/F9/pause-menu ingress),
 `quickload_latest`, `execute_pending_save_loads` (+ `reload_interior_session`/`reload_exterior_session`),
@@ -62,7 +64,7 @@ finds >0 items, and it fails when the invariant is broken.
 |---|---|
 | `registry_completeness_tests::every_component_or_resource_impl_is_saved_or_explicitly_allowlisted` | every `Component`/`Resource` impl in any `crates/*/src` (roots **discovered**, not listed) + `byroredux/src` is registered XOR in `NOT_SAVED_BY_DESIGN` with a reason; `PlayerNotifications`, `PickedUp` etc. are classified there |
 | `serde_default_guard_tests::serde_default_on_saved_struct_requires_format_major_bump` | any `#[serde(default)]` on a save-participating type (skip-only fields exempt) |
-| `serde_default_guard_tests::saved_type_shape_changes_require_format_major_bump` | hash of every `#[derive(..Serialize..)]` struct/enum body in `save_type_sources()` — discovered files that carry a `cfg_attr(feature = "save"` derive or define a registered type, plus seven explicit nested-payload files (since #5059 `945be7dc6`: `lighting.rs`, `crates/sdk` `identity.rs` / `script_function.rs`); registered names are read from `save_io/registry.rs` and from every scanned file that defines `fn register_saved(` (#5802) — vs `BASELINE_SHAPE_FINGERPRINT`/`BASELINE_MAJOR`; the attribute scan reads the whole contiguous attribute block, so a save derive above a plain `#[derive(..)]` is seen (#5403 `e19cb0491`) |
+| `serde_default_guard_tests::saved_type_shape_changes_require_format_major_bump` | hash of every `#[derive(..Serialize..)]` struct/enum body in `save_type_sources()` — discovered files that carry a `cfg_attr(feature = "save"` derive or define a registered type, plus eight explicit non-turbofish / nested-payload files (`form_id.rs` ×2, `string/mod.rs`, `script_instance.rs`; since #5059 `945be7dc6`: `lighting.rs`, `crates/sdk` `identity.rs` / `script_function.rs`; since #6509 `c72ecafad`: `collision.rs`, whose `MotionType` is the payload of the saved `ReferenceMotionTypeState` and had silently left the scan when #6237 unregistered `RigidBodyData`); registered names are read from `save_io/registry.rs` and from every scanned file that defines `fn register_saved(` (#5802) — vs `BASELINE_SHAPE_FINGERPRINT`/`BASELINE_MAJOR`; the attribute scan reads the whole contiguous attribute block, so a save derive above a plain `#[derive(..)]` is seen (#5403 `e19cb0491`) |
 | `serde_default_guard_tests::set_in_chargen_renames_still_decode_v23_keys` | `serde(alias)` rename path stays decodable |
 | `round_trip_tests::delta_columns_carry_only_session_stable_fields` | no `FixedString`/`EntityId`/session handle in a `MUTABLE_DELTA_COLUMNS` type |
 | `round_trip_tests::delta_columns_removed_at_runtime_have_a_load_reconciler` | every delta column with a production removal site has a declared reconciler or "NoReconcilerNeeded" reason |
@@ -72,7 +74,8 @@ finds >0 items, and it fails when the invariant is broken.
 | `live_reload_tests::{saved_resources_are_restored_before_the_cell_reload, pre_reload_restore_must_not_install_saved_item_instance_pool_early}` | pre-reload resource subset, #4135 |
 | `live_reload_tests::{an_aborted_load_hands_the_live_ledgers_back, the_drain_captures_before_the_pre_reload_restore_and_reinstates_on_abort}` | `LiveReloadLedgers` (one field per `PRE_RELOAD_RESOURCES` entry, kept in step by a source guard) captured before the pre-reload restore and reinstated on every abort (#6081 `b5a205715`) |
 | `live_reload_tests::live_load_drain_discards_the_outgoing_sessions_script_events` | the teardown's queued `OnCellDetach`/`OnUnload` deliveries are discarded and `ActorWatch` re-baselined after the session replacement (#6083 `4b8e62d87`) |
-| `live_reload_tests::{live_load_drain_discards_the_cell_resets_its_reload_raised, live_load_drain_discards_the_outgoing_sessions_requests}` | the reload's own `note_player_entered_cell` must not leave `PendingCellResets` queued against the outgoing clock (#6238 `078df54e1`, `discard_pending_cell_resets`), and the value-keyed request queues (`PlayerMoveRequest`, `PendingPlayerXp`, `PendingSkillAdvances`, `PendingSleep`, `PendingMusic`, `PendingScriptMessages`, `MessageBoxQueue`) straddling the drain are cleared (#6239 `337bf25c8`, `discard_outgoing_session_requests`) |
+| `live_reload_tests::{live_load_drain_discards_the_cell_resets_its_reload_raised, live_load_drain_discards_the_outgoing_sessions_requests}` | the reload's own `note_player_entered_cell` must not leave `PendingCellResets` queued against the outgoing clock (#6238 `078df54e1`, `discard_pending_cell_resets`), and the value-keyed request queues (`PlayerMoveRequest`, `PendingPlayerXp`, `PendingSkillAdvances`, `PendingSleep`, `PendingMusic`, `PendingScriptMessages`, `MessageBoxQueue`) straddling the drain are cleared (#6239 `337bf25c8`, `discard_outgoing_session_requests`); the same sweep now also clears `PendingEvidenceDeposits` (#6573 `81332fc38`) and `PendingMineHits` (#6540 `bdaf75c66`), ends `VatsState` mode via `exit_all()` keeping `roll_state` (#6508 `5a423316f` — an F9 inside VATS left the loaded world frozen on despawned targets) and drops the crafting session, `CraftingRequest` and `PendingDroppedItems` (#6574 `375d48c6d`) |
+| `registry_completeness_tests::every_component_or_resource_impl_is_saved_or_explicitly_allowlisted` (tail) | #6574: a `NOT_SAVED_BY_DESIGN` reason that says "a load discards" / "The load drain ends" its type must be named in the body of `discard_outgoing_session_requests` — a claim the sweep does not back fails (the generic guard the earlier audits asked for) |
 | `registry_completeness_tests::the_schema_fingerprint_is_pinned` | `BASELINE_SCHEMA_FINGERPRINT` vs `build_save_registry().schema_fingerprint()`: a registration-row reorder (the #5802 slices' risk) or a column add/remove/rename fails CI instead of rejecting every save (#6296 `5a3f571f4`) |
 | `registry_completeness_tests::every_delta_column_is_parked_or_explicitly_not` | the **third** list: every `MUTABLE_DELTA_COLUMNS` entry is parked in a named `ReferenceState`/`ScriptState` field (`cell_loader/reference_state.rs`), carried by `ActorStreamSnapshot`, or on `NOT_PARKED` with a reason; every parked field maps to a column or `FIELDS_WITHOUT_A_COLUMN` (#6085 `3b9060701`); no `NOT_PARKED` reason may read `UNAUDITED` — the marker's last row, `Escorted`, is parked now (#6294 `f3ab49f55`) |
 | `command_queue_tests::{a_save_taken_mid_cell_transition_is_refused_not_written, a_save_taken_while_chargen_disables_saving_is_refused_not_written, quicksave_ring_cursor_does_not_advance_on_validation_abort, player_save_actions_wait_for_the_quiescent_fifo_drain, quickload_empty_errors_and_corrupt_newest_falls_back}` | save-side refusal gates, ring, quiescent drain |
@@ -186,7 +189,7 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
 ### Dimension 2: Format & Schema Discipline (registry fidelity + `FORMAT_MAJOR`)
 Paths: `crates/save/src/{snapshot,registry}.rs`, `save_io/serde_default_guard_tests.rs`, `crates/save/Cargo.toml`, `crates/core/Cargo.toml`
 First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git log --since=<last report> --format='%h %cs %s' -- crates/save/src/snapshot.rs`
-- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`: 122 as of 2026-10-31, with one `vN -> vN+1`
+- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`: 122 as of 2026-11-06, with one `vN -> vN+1`
   entry per bump from v22 on, contiguous since #5459 `a4ccf3b27` restored the v32→v33 entry (#5367 `14cff35ae`, new saved
   resource `DialogueSpokenInfoForms`) and pinned it with `the_bump_ledger_is_contiguous_and_current`. Recent anchors: v36 Wave 4 `RigidBodyData.surface_material`, v37 #5542
   widened it `u8`→`u32`, v38 #5300 re-keyed `DialogueSpokenInfoForms` to a (speaker ref, INFO) pair, and v39–v104
@@ -337,7 +340,8 @@ First step: read `execute_pending_save_loads` top to bottom against the sequence
   `discard_pending_cell_resets` (the reload's cell-root `note_player_entered_cell` calls ran against the outgoing
   `CellVisits`/clock; the restored `CellVisits` is authoritative, #6238 `078df54e1`) → `discard_outgoing_session_requests`
   (value-keyed `PlayerMoveRequest` / XP / skill / sleep / music / message-box queues that would otherwise apply in the
-  loaded world and be kept by the next save, #6239 `337bf25c8`)
+  loaded world and be kept by the next save, #6239 `337bf25c8`; plus jail-evidence deposits, mine hits, VATS mode, the crafting session
+  and pending dropped items, #6573 / #6540 / #6508 / #6574; the test pins all but the mine queue)
   → `restore_extension_state` → wholesale
   `restore_resources` **again** (idempotent; re-asserts `CurrentCellContext`/`PlayerPose`; the second call is
   not redundant) → `restore_resident` (parked rows for resident placements, #4695; followed by `combat::release_held_dead_actor_reconciliations`, which hands a corpse's held reconciliation to the Late-stage sink now that its placement is resident, #6133 `1e2c1d30e`) → `drop_entity_bound_continuations` on `PapyrusProviderContinuationQueue` (session-local

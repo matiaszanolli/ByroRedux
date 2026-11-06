@@ -145,7 +145,7 @@ First step: `cargo test -p byroredux-pex -- decompile::`; with game data: `cargo
 - **Recursion**: `MAX_REBUILD_DEPTH = 1024` in `control_flow.rs` (`boolean.rs` derives it — not restated);
   both rebuilds return `RecursionLimit` (`rebuild_rejects_excessive_recursion_depth` exists in *both* files).
   It and `MAX_EXPR_DEPTH` (256) compose additively (~1,280) and independent edits erode the margin
-  (#4113 still open, verified 2026-10-31) — check any change to either constant.
+  (#4113 still open, verified 2026-11-06) — check any change to either constant.
 - **`lower.rs` totality**: `lower_expr`/`lower_stmt` never panic on any `NodeKind`; intentional lossy lowerings
   matter only if a recognizer keys on the lost info: statement-shaped node as sub-expression → `NoneLit`
   (should be unreachable), `is` → `Cast`, `lower_binary_op` default arm →
@@ -215,9 +215,9 @@ First step: `cargo test -p byroredux-papyrus -- depth chain the_two_parser_depth
   explicit `skip_newlines()` or a bracket-bounded list. `expect()` / `expect_ident()` still skip newlines, so
   a keyword's **mandatory operand** goes through `expect_same_line` / `expect_raw` / `expect_ident_raw`
   (`parser/mod.rs`; #5021, `3b7ffa670`): declaration names, the `Extends` target, the `(` after a function
-  name, `State` after `Auto`, the If/ElseIf/While condition start, and `New`'s type and `[` — #5331 `fd5aa4ead`,
+  name, `State` after `Auto`, the If/ElseIf/While condition start, `New`'s type and `[` — #5331 `fd5aa4ead`,
   `parse_new_expr`; the `[` is optional only for an `Object` type, where a same-line `new S` is FO4's
-  `Expr::NewStruct`, and every segment after a qualified name's `:` (`parse_qualified_ident` → `expect_ident_raw`,
+  `Expr::NewStruct` — the type operand of `as` / `is` (#5445 `cc3f80e55`, `parse_cast`/`parse_is`; `x as` then `Actor` on the next line once parsed clean), and every segment after a qualified name's `:` (`parse_qualified_ident` → `expect_ident_raw`,
   #5885 `3081d23f2`: ScriptName/Extends/Import/event sender/types; `a_namespaced_parent_on_the_next_line_is_still_not_the_parent`) — pinned by
   `a_mandatory_operand_on_the_next_line_is_an_error`, `auto_on_its_own_line_does_not_make_an_auto_state`,
   `extends_with_its_target_on_the_next_line_sets_no_parent`, `single_line_forms_of_the_5021_sites_still_parse`.

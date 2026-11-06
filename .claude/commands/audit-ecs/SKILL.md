@@ -66,7 +66,13 @@ adherence and CI detector coverage are `/audit-concurrency` Dim 3 and Dim 5.
   an `.expect` blinds the detector after its first correct catch); a recursive read is a deduplicated
   `log::warn!`, not a reject (#2386/#3249: `recursive_read_warns_once_and_continues`), and it names the *user's*
   call site because `Location::caller()` is captured in `track_read` itself, outside the `LOCKS.with` closure
-  (#6502 `2f82711c9`, `recursive_read_warning_names_the_users_call_site`); the `held_others`
+  (#6502 `2f82711c9`, `recursive_read_warning_names_the_users_call_site`); the warning prints the second read's stack when
+  `RUST_BACKTRACE` is set, which names the first guard's holder, and a per-thread counter
+  (`recursive_read_warnings_on_this_thread`, `pub`, #6615 `6af13ef37`) lets a test in another crate assert a path takes no
+  nested read (`select_info` held `QuestStageState` across `evaluate()`, which re-reads it); `CommandRegistry` is the one
+  type whose read re-entry is contractual (`help` under a dispatch) and is skipped by `recursive_read_is_permitted` so it
+  does not spend the type-per-thread warning budget (#6617 `bcab15f47`,
+  `the_command_registry_may_be_re_read_without_a_warning`; a write still panics); the `held_others`
   snapshot is gated on `cfg(debug_assertions)` AND `global_order::is_enabled()` (#823/#3680) so a
   detector-off debug build allocates nothing.
 - **Poison**: every acquisition resolves `PoisonError` through `storage_lock_poisoned` /
@@ -80,7 +86,7 @@ Paths: `crates/core/src/ecs/{packed,sparse_set,storage}.rs`, `crates/core/src/ec
 First step: `grep -rn 'type Storage = PackedStorage' crates byroredux --include='*.rs' | grep -v test`
 
 - **PackedStorage census**: production users are exactly `Transform`, `GlobalTransform`, `WorldBound`,
-  `SceneFlags`. Any other `PackedStorage` component is a finding unless it is read every frame by
+  `SceneFlags` (plus test-only types in `packed.rs` / `scheduler.rs`). Any other `PackedStorage` component is a finding unless it is read every frame by
   renderer/physics/animation. Everything sparse (actors, markers, events) is `SparseSetStorage`.
 - **SparseSetStorage**: swap-remove repoints the sparse slot of the entity moved into the gap;
   removing the last element takes the no-swap path; re-insert overwrites in place (`swap_remove`,
@@ -168,6 +174,9 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/core/
   #6366 `f6c7c534e` converted the last five hand-spelled copies, and `no_source_spells_insert_default_if_absent_by_hand`
   in `byroredux/src/workspace_hygiene_tests.rs` scans the bin and every crate so a fourth spelling fails the build — a
   site inserting a *configured* value, such as `TerrainHeightService`, is legitimately different).
+  `World::resource_count()` (#6706 `70e58334f`) exists so `register_installs_the_same_resource_set` can pin the
+  scripting crate's `register` to the 138 resources it produced before it became a flat list of per-subsystem `install`
+  calls; a resource dropped from an `install` shows up there, not as a missing-resource panic at first use.
 - **Read accessors, one spelling each**: the bin reads the player entity only through `PlayerEntity::get(world)`
   (`byroredux/src/systems/character.rs`, #6362 `67722b6e4` — it replaced 66 hand-spelled reads, and
   `no_source_hand_spells_the_player_entity_read` keeps it so). It is deliberately NOT synchronised with the scripting
@@ -188,16 +197,16 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/core/
 - `OwnershipTracker` / `ReclaimPolicy` (`resources/ownership.rs`): the EX-08 soak-gate accounting.
   Check each owner class's policy is honest — `Monotonic` only for identity watermarks (entity ids,
   mesh/texture slot-vector lengths), `Exact` for anything that must return to baseline after unload,
-  `Bounded` for documented caches, `Occupancy` only for per-frame camera-pose samples (the two ground-cover
-  classes; a strictly increasing series must also rise past `OCCUPANCY_GROWTH_TOLERANCE_PERMILLE` of its first
-  sample, #6058 `adaa7a263`). A leaking class reclassified `Bounded`/`Monotonic`/`Occupancy` to turn the gate
+  `Bounded` for documented caches, `Occupancy` only for series that legitimately move with the camera (the two ground-cover
+  classes, and `texture_resident_bytes` — M39 streaming promotes and evicts with what is wanted; a strictly increasing
+  series must also rise past `OCCUPANCY_GROWTH_TOLERANCE_PERMILLE` of its first sample, #6058 `adaa7a263`). A leaking class reclassified `Bounded`/`Monotonic`/`Occupancy` to turn the gate
   green is the finding.
 - `DeltaTime` is stamped once per frame by the main loop (`byroredux/src/app_events.rs`); a system that
   writes it or `TotalTime` is a finding.
 
 ### 5. System & Scheduler Wiring, Declared Access
 
-Paths: `crates/core/src/ecs/{scheduler,access,system}.rs`, `byroredux/src/boot/schedule/`, `byroredux/src/boot/registries.rs`, `byroredux/src/scheduler_access_tests.rs`
+Paths: `crates/core/src/ecs/{scheduler,access,system}.rs`, `byroredux/src/boot/schedule/` (77 files), `byroredux/src/boot/registries.rs`, `byroredux/src/scheduler_access_tests.rs`
 First step: `cargo test -p byroredux -- system_access_declaration_tests scheduler_access` then `rg -n '^\s*scheduler\.add_to\(' byroredux/src/boot/schedule/` (must be empty)
 
 Stages: `Early → Update → PostUpdate → Physics → Late` (`Stage`, discriminants 0..=4, ordered by
@@ -208,6 +217,18 @@ orchestrator (`boot/schedule/update/mod.rs`) over five ordered segment functions
 `register_script_runtime`, `register_player_and_animation`; #6359 `4ab5766e3`) — registration order is the producer →
 consumer contract, so a new system joins the segment whose slot it fills, and the per-function size pins in
 `per_frame_driver_functions_stay_within_their_size_pins` (`scheduler_access_tests.rs`) catch a segment regrowing.
+Since #6703 `22e0f71fc` / #6704 `49aa54e36` (umbrella #5802, still open) the segment functions, `register_post_update_systems`
+and `register_late_systems` are flat lists of calls into one file per subsystem (`update/<domain>/*.rs`, `post_update/*.rs`,
+`late/*.rs`; the pins are now single digits, 16 for Late), each a contiguous run of the old sequence, and `boot::SOURCES`
+(`boot/mod.rs`) `include_str!`s every one with a `PER_FILE_WITNESS` so the text-scan guards still read every row — **a new
+subsystem file missing from `SOURCES` is invisible to those guards**, so confirm each file under `boot/schedule/` is listed.
+Orders that used to be file position are named constraints: `Scheduler::run_before` / `run_after` + `resolve_order`
+(`crates/core/src/ecs/scheduler.rs`, #6702 `065aac9c4`; applied per stage phase, stable, so a constraint-free schedule is
+unchanged; an unknown name, a stage-forbidden constraint or a cycle is an error that leaves the schedule untouched, and
+`run` fails fast on one). Audit a new constraint for the by-name coupling it adds (a renamed system now errors in `resolve_order`, not silently). `Access::with(fn(Access) -> Access)` (#6701 `c22a9d410`) lets a subsystem export its own declaration
+(`crime_faction_access`, `crime_gold_access`, `ownership_access` on the dialogue row); the acquisition scan follows a
+function passed to `.with` into the delegate files (`declaration_with_delegates`, `byroredux/src/acquisition_scan.rs`), so
+moving a claim into a delegate must not drop it from the scan's reach.
 
 - **The `Access` model**: `Access::new().reads::<T>().writes::<U>().reads_resource::<R>()…`;
   declared / declared-empty / undeclared (`None`). `AccessConflict` has exactly `None`,
@@ -278,7 +299,12 @@ consumer contract, so a new system joins the segment whose slot it fills, and th
   `reference_script_hit_system` (#5991) and the ObScript `obscript_hit_system` (split out of
   `obscript_object_system`, #6293 `6208348f7`) — or `event_cleanup_system`
   drains the hit unseen — dart-trap and projectile damage never landed until `ee6468fd1`, now pinned by
-  `hit_event_consumers_run_after_every_producer`. A new producer outside that list needs a name in the test.
+  `hit_event_consumers_run_after_every_producer` (`mine_system`, #6580/#6540, is a producer). Since #6684 `2a02c5446` the
+  seven schedule-order guards read the **built** schedule (`build_scheduler()` + `access_report()` through the
+  `schedule_order` helper, exact system names, panic on a missing name; two parallel systems in one stage count as
+  unordered) rather than where registration text sits in `SOURCES`; the kill-switch and timing pins stay text scans because
+  they cover environment-gated branches, and the movers need `BYRO_NO_AI_LOCOMOTION` unset. A new producer outside that
+  list needs a name in the test.
 
 ### 6. Hot-Path Performance Invariants (regression guards)
 
@@ -407,7 +433,9 @@ blending, root-motion split and text-key dispatch, driven by an ECS system.
   handle after unload is a no-op, never a panic or OOB read. Same for `NamedSequences`
   (`animation/named_sequences.rs`, M47.3 `f3380f6c8`): a placed object's sequence-name → clip-handle table,
   shared via `Arc` across every placement of the model and re-stamped at spawn (unsaved), read by ObScript
-  `PlayGroup` / `IsAnimPlaying`.
+  `PlayGroup` / `IsAnimPlaying`. A model with sequences but no Idle/SpecialIdle gets a *stopped* `AnimationPlayer` parked on
+  the first listed sequence at spawn (#6610 `873fe3bcb`) so `PlayGroup` has a player to retarget — check that a stopped
+  player never advances or emits root motion.
 - **Time advance**: `advance_time` (`player.rs`) / `advance_stack` (`stack.rs`) handle `dt == 0`,
   negative/NaN `dt` and a zero-length clip without divide-by-zero or an endless loop; `CycleType` is
   applied per clip.
