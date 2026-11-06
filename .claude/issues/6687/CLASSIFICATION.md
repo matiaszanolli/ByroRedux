@@ -24,7 +24,7 @@ name and doc comment only, **not verified assert by assert**.
 | `acceleration/tests/predicates_tests.rs` 1220 | `ensure_tlas_state_consumes_the_shrink_request_past_the_commit_point` | device/shader | Order of a flag clear against a fallible Vulkan sequence; a pure helper would not enforce where it is called. |
 | `texture.rs` 1735 | `staging_overrun_is_a_release_error` | syntax (order half) | The `Result` half already runs; the scan pins that the check precedes the first recorded barrier. |
 | `texture.rs` 1927 | `rgba_overwrite_validates_against_creation_extent` | syntax | The pure gate (`validate_rgba_upload`) is tested; this pins that `can_update_rgba` compares against the stored extent, which needs a `Texture` (a device). |
-| `gpu_instance_layout_tests.rs` | `the_doc_names_the_file_that_holds_the_per_frame_eviction_call` | prose | A doc names a file. |
+| `acceleration/tests/blas_static_tests.rs` 587 | `the_doc_names_the_file_that_holds_the_per_frame_eviction_call` | prose | Read. `memory-budget.md` must name the file holding the per-frame `evict_unused_blas(` call; the pointer is the whole claim. |
 
 ## Classified by doc/name only
 
