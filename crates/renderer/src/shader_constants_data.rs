@@ -186,6 +186,14 @@ pub const SHADOW_FILTER_RADIUS_MIN: f32 = 1.0;
 // 0.5 still 1.05e-3 / 0.013). A quarter keeps every sun-rung A4 band inside
 // its budget (PRD section 12, revision 22).
 pub const SHADOW_FILTER_PENUMBRA_RADIUS_SCALE: f32 = 0.25;
+// RLT-SHD-012 (docs/prd/reference-lighting.md): each shadow ray's transmission is
+// weighted by the receiver's cosine at that emitter sample over its cosine at the
+// centre. The weight applies only where the centre cosine exceeds the larger of
+// MIN_CENTRE and twice the disk's angular reach (below that the horizon clips the
+// disk and the ratio is undefined: weight 1), and is capped at MAX so a grazing
+// pixel cannot speckle. Provisional: set by the gates (issue #6721).
+pub const SHADOW_COS_WEIGHT_MIN_CENTRE: f32 = 0.1;
+pub const SHADOW_COS_WEIGHT_MAX: f32 = 4.0;
 // The blocker search window: (2 * HALF + 1)^2 taps at this stride in pixels.
 pub const SHADOW_FILTER_SEARCH_HALF: u32 = 4;
 pub const SHADOW_FILTER_SEARCH_STRIDE: u32 = 2;
@@ -2769,6 +2777,8 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float SHADOW_FILTER_DEPTH_REL_TOL),
     shader_define!(Float SHADOW_FILTER_RADIUS_MIN),
     shader_define!(Float SHADOW_FILTER_PENUMBRA_RADIUS_SCALE),
+    shader_define!(Float SHADOW_COS_WEIGHT_MIN_CENTRE),
+    shader_define!(Float SHADOW_COS_WEIGHT_MAX),
     shader_define!(Uint SHADOW_FILTER_SEARCH_HALF),
     shader_define!(Uint SHADOW_FILTER_SEARCH_STRIDE),
     shader_define!(Float HISTORY_MODE_MOVING),

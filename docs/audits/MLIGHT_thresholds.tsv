@@ -16,21 +16,21 @@ L4	A7	lambert-box	box_back	rel_error_p95	3	1.339	0.00147	0.50	0.50147	2x frozen 
 L4	A7	lambert-box	box_ceiling	rel_error_p95	3	1.622	0.000621	0.50	0.500621	2x frozen floor	as box_floor
 L4	A8	lambert-box-closeup	all_geometry	ssao_relative_change	3	-0.0054	0.0000606	0	0.0000606	2x frozen floor	self-consistency gate: threshold is the floor (RLT-GI-004)
 L1	A4	penumbra	umbra_band	visibility_error_mean	3	2.83e-07	1.96e-08	0.0005	0.0005	2x frozen floor	visibility, see note A4
-L1	A4	penumbra	umbra_band	visibility_error_p95	3	0	0	0.002	0.002	2x frozen floor	visibility, see note A4
-L1	A4	penumbra	lit_band	visibility_error_mean	3	0.000891	2.29e-07	0.0005	0.0005	2x frozen floor	visibility, see note A4
-L1	A4	penumbra	lit_band	visibility_error_p95	3	0.000898	8.76e-12	0.002	0.002	2x frozen floor	visibility, see note A4
+L1	A4	penumbra	umbra_band	visibility_error_p95	3	0	1.54e-06	0.002	0.002	2x frozen floor	visibility, see note A4
+L1	A4	penumbra	lit_band	visibility_error_mean	3	0.000891	8.31e-07	0.001	0.001	2x frozen floor	visibility, see note A4
+L1	A4	penumbra	lit_band	visibility_error_p95	3	0.000898	1.48e-06	0.002	0.002	2x frozen floor	visibility, see note A4
 L1	A4	penumbra-sun	umbra_band	visibility_error_mean	3	0.000648	2.68e-06	0.0005	0.000503	2x frozen floor	visibility, see note A4
 L1	A4	penumbra-sun	umbra_band	visibility_error_p95	3	0.00337	4.26e-05	0.002	0.00204	2x frozen floor	visibility, see note A4
-L1	A4	penumbra-sun	lit_band	visibility_error_mean	3	0.00113	3.18e-06	0.0005	0.000503	2x frozen floor	visibility, see note A4
+L1	A4	penumbra-sun	lit_band	visibility_error_mean	3	0.00113	3.71e-06	0.001	0.001	2x frozen floor	visibility, see note A4
 L1	A4	penumbra-sun	lit_band	visibility_error_p95	3	0.00412	6.48e-05	0.002	0.00206	2x frozen floor	visibility, see note A4
 L2	A5	filtered_direct	con_plank_band	visibility_error_mean	3	0.00378	0.00016	0.002	0.00216	2x frozen floor	visibility, see note A5
 L2	A5	filtered_direct	con_plank_band	visibility_error_p95	3	0.0189	0.00133	0.01	0.0113	2x frozen floor	visibility, see note A5
 L2	A5	filtered_direct	con_block_band	visibility_error_mean	3	0.000723	2.8e-07	done	0.000723	2x frozen floor	done: baseline accepted (see note A5); threshold = frozen floor + baseline
-L2	A5	filtered_direct	con_block_band	visibility_error_p95	3	0.000939	1.91e-07	done	0.000939	2x frozen floor	done: baseline accepted (see note A5); threshold = frozen floor + baseline
+L2	A5	filtered_direct	con_block_band	visibility_error_p95	3	0.00115	2.03e-05	done	0.00117	2x frozen floor	done: baseline accepted (see note A5); threshold = frozen floor + baseline
 L2	A5	filtered_direct	con_cube_band	visibility_error_mean	3	0.00123	2.85e-05	done	0.00126	2x frozen floor	done: baseline accepted (see note A5); threshold = frozen floor + baseline
-L2	A5	filtered_direct	con_cube_band	visibility_error_p95	3	0.00102	4.12e-05	done	0.00106	2x frozen floor	done: baseline accepted (see note A5); threshold = frozen floor + baseline
+L2	A5	filtered_direct	con_cube_band	visibility_error_p95	3	0.00124	4.12e-05	done	0.00128	2x frozen floor	done: baseline accepted (see note A5); threshold = frozen floor + baseline
 L2	A5	filtered_direct	con_panel_band	visibility_error_mean	3	0.00141	1.82e-05	done	0.00143	2x frozen floor	done: baseline accepted (see note A5); threshold = frozen floor + baseline
-L2	A5	filtered_direct	con_panel_band	visibility_error_p95	3	0.000962	7.63e-07	done	0.000962	2x frozen floor	done: baseline accepted (see note A5); threshold = frozen floor + baseline
+L2	A5	filtered_direct	con_panel_band	visibility_error_p95	3	0.00142	2.4e-05	done	0.00144	2x frozen floor	done: baseline accepted (see note A5); threshold = frozen floor + baseline
 L2	A5	filtered_direct	con_proxy_band	visibility_error_mean	3	0.0012	2.81e-05	done	0.00123	2x frozen floor	done: baseline accepted (see note A5); threshold = frozen floor + baseline
 L2	A5	filtered_direct	con_proxy_band	visibility_error_p95	3	0.00586	0.000314	done	0.00618	2x frozen floor	done: baseline accepted (see note A5); threshold = frozen floor + baseline
 L1	A3	penumbra-pan	during_motion	excess_over_hold_max	3	+0.0242	0.0372	0.02	0.02	see note T	temporal, note T
@@ -58,3 +58,15 @@ L1	A14	penumbra-moving	from_frame_80	excess_over_hold_max	3	+0.0792	0.0482	0.05	
 #   carried over from rev 13 and is provisional for these rows.
 # Not decided (report-only until the owner writes them): A2 penumbra width, A4 thin-rod
 #   shadow (mean 8.7e-3 / p95 2.3e-2), and the A14 frames before 80.
+#
+# Revised 2026-11-06 (rev 28, #6721). RLT-SHD-012 made the traced visibility match the
+# reference, so the rows frozen against the old, biased sampler were re-measured at tier 3
+# (docs/audits/MLIGHT_phase3_shd012_gates.tsv) and these rows re-frozen: A4 local-light
+# umbra p95 and lit p95 (floors 0 and 8.8e-12 drifted: the filter's seed noise changed, the
+# values are 2.4e-4 and 1.4e-3); A4 lit-band mean on both rungs, budget 5e-4 -> 1e-3 (values
+# 9.2e-4 local, 7.7e-4 sun: the filter's own lit-side bleed, 5 % of one 8-bit step at
+# mid-grey, the same 8.9e-4 the fixed-reach filter showed at Phase 3 entry; the 4.3e-4 of rev
+# 22 was measured against a sampler that read the penumbra interior 0.2-0.4 % dark); A5
+# block, cube and panel p95 re-baselined by the done-row rule (threshold = frozen floor +
+# accepted baseline). The A5 references are now rendered at 16 x the A2 / A4 sample count:
+# the plank passes its unchanged budget (mean 1.6e-3, p95 6.5e-3).

@@ -201,11 +201,41 @@ fn shadow_ray_disk_samples_are_dithered_low_discrepancy() {
         .split_once("int shadowRayCount = int(clamp(rayBudget.directShadowSamples")
         .expect("the ReSTIR finalize shadow-ray loop")
         .1;
-    let finalize = &finalize[..finalize.find("transmissionSum += sampleTransmission;").expect("loop tail")];
+    let finalize = &finalize[..finalize.find("transmissionSum += sampleTransmission").expect("loop tail")];
     assert!(
         finalize.contains("ditheredSequence2(")
             && !finalize.contains("hash2_pixel_frame("),
         "the finalize shadow rays must draw dithered samples, not the white hash"
+    );
+}
+
+/// RLT-SHD-012: each shadow ray's transmission is weighted by the receiver's
+/// cosine at its emitter sample over the centre's, taken on the UNNORMALISED
+/// offset vectors. Linear in the disk offset, the weight's mean over the disk
+/// is exactly 1, so an unoccluded pixel keeps visibility 1. Normalising each
+/// ray first leaves a second-order deficit on every lit pixel (it put the A4
+/// penumbra lit band at 2.2e-3 against 9.2e-4), and weighting only
+/// `triangle.frag.spv` leaves opaque geometry, which runs the early-test
+/// variant, unweighted (`scripts/check-shader-artifacts.sh` rebuilds both).
+#[test]
+fn shadow_ray_transmission_is_cosine_weighted_on_unnormalised_vectors() {
+    let triangle = include_str!("../../../shaders/triangle.frag");
+    let finalize = triangle
+        .split_once("int shadowRayCount = int(clamp(rayBudget.directShadowSamples")
+        .expect("the ReSTIR finalize shadow-ray loop")
+        .1;
+    let finalize = &finalize[..finalize.find("transmissionSum += sampleTransmission").expect("loop tail")];
+    assert!(
+        finalize.contains("dot(N, shadowSampleVec)") && finalize.contains("dot(N, shadowCentreVec)"),
+        "the cosine weight must be dot(N, sample offset) over dot(N, centre offset)"
+    );
+    assert!(
+        !finalize.contains("dot(N, rayDir)"),
+        "the weight must not use the normalised ray direction"
+    );
+    assert!(
+        triangle.contains("transmissionSum += sampleTransmission * shadowCosWeight;"),
+        "each ray's transmission must take the weight"
     );
 }
 

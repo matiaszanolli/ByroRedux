@@ -104,6 +104,8 @@ def scene_digest(scene_dir: Path) -> str:
     return h.hexdigest()
 
 
+MAX_SPP_PER_RENDER = 2048  # 1280x720 at 16384 spp overflows the CUDA wavefront; 1024 is proven
+
 RECIPES = {
     # PRD §3.4 in Mitsuba terms (docs/engine/path-tracing.md §2.3).
     "direct": {"max_depth": 2},
@@ -132,7 +134,15 @@ class ReferenceStore:
             return load_exr(path), key
         t0 = time.monotonic()
         scene = mi.load_file(str(scene_dir / "scene.xml"), **RECIPES[recipe])
-        image = mi.render(scene, spp=spp, seed=seed)
+        if spp <= MAX_SPP_PER_RENDER:
+            image = mi.render(scene, spp=spp, seed=seed)
+        else:
+            # One render allocates width x height x spp lanes; past a few
+            # thousand samples the CUDA wavefront overflows. Average
+            # independent chunks, each on its own seed.
+            chunks = -(-spp // MAX_SPP_PER_RENDER)
+            image = sum(np.array(mi.render(scene, spp=MAX_SPP_PER_RENDER, seed=seed * 100003 + i))
+                        for i in range(chunks)) / chunks
         bitmap = mi.Bitmap(image)
         self.cache.mkdir(parents=True, exist_ok=True)
         bitmap.write(str(path))
@@ -311,6 +321,9 @@ class Row:
     passed: str = ""
     threshold: str = ""
     frozen_floor: str = ""
+    # Set where a gate renders its references at a different sample count than
+    # the run's (A5, CONTACT_REFERENCE_SPP_FACTOR); the manifest records it.
+    reference_spp: int | None = None
 
     @property
     def floor_combined(self) -> float:
@@ -337,7 +350,7 @@ def write_manifest(path: Path, rows: list[tuple[Row, str]], ctx: Context) -> Non
                 row.gate, row.case, row.region, row.metric, f"{row.value:.6g}",
                 f"{row.floor_engine:.3g}", f"{row.floor_reference:.3g}", f"{row.floor_combined:.3g}",
                 row.frozen_floor, row.threshold, row.passed, str(ctx.tier), str(ctx.engine_frames),
-                ctx.engine_seeds, str(ctx.reference_spp), ctx.reference_seeds, ctx.k_exp, key,
+                ctx.engine_seeds, str(row.reference_spp or ctx.reference_spp), ctx.reference_seeds, ctx.k_exp, key,
                 ctx.revision, ctx.gpu,
             ]
             out.write("\t".join(values) + "\n")
@@ -904,6 +917,12 @@ def gate_penumbra(engine: Engine, store: ReferenceStore, ctx: Context, spp: int,
 # ── Contact: A5 (Phase 3) ────────────────────────────────────────────────
 
 CONTACT_TIERS = (1, 2, 3)  # RLT-CON-001: tiers 1-3, an exception to Q7's tier-3 rule
+# The plank band is the one contact band full of partially shadowed pixels, and
+# a single 1024-spp Mitsuba render carries a per-pixel visibility noise of about
+# 3.2e-3 mean / 1.7e-2 p95 there (two seeds differ by 4.5e-3 mean), as much as
+# the engine's whole converged error and over the plank's budget (2e-3 / 1e-2).
+# Sixteen times the samples quarters it (PRD section 12, revision 28).
+CONTACT_REFERENCE_SPP_FACTOR = 16
 
 
 def band_mask(positions: np.ndarray, receiver: np.ndarray, band) -> np.ndarray:
@@ -930,6 +949,7 @@ def gate_contact(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
     the casters removed. Report-only until the owner sets the L2 budget.
     """
     del ctx
+    spp *= CONTACT_REFERENCE_SPP_FACTOR
     rows = []
     rung_name = "contact"
     export = engine.out / "scenes" / rung_name
@@ -975,6 +995,8 @@ def gate_contact(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
                     rows.append((Row("A5", case, band[0], "band_pixels", float(mask.sum()), 0.0, 0.0,
                                      passed="report"), key))
     rows += contact_mid_animation(engine, store, spp)
+    for row, _ in rows:
+        row.reference_spp = spp
     return rows
 
 

@@ -4109,6 +4109,12 @@ void main() {
                         vec2 diskSample = concentricDiskSample(dRand.x, dRand.y);
                         vec3 rayDir;
                         float rayDist;
+                        // RLT-SHD-012 — the sample's offset vector and the
+                        // centre's, UNNORMALISED, and the disk's angular
+                        // reach seen from the fragment (the weight below).
+                        vec3 shadowSampleVec;
+                        vec3 shadowCentreVec;
+                        float shadowDiskReach;
                         if (lightType < 1.5) {
                             // #3575 — the emitter disk is `params.y`, the
                             // canonical source radius the CPU already derived
@@ -4121,6 +4127,9 @@ void main() {
                                 lightPos + (Tb * diskSample.x + Bb * diskSample.y) * lightDiskRadius;
                             rayDir = normalize(jitteredTarget - rayOrigin);
                             rayDist = length(jitteredTarget - rayOrigin) - 0.1;
+                            shadowSampleVec = jitteredTarget - rayOrigin;
+                            shadowCentreVec = lightPos - rayOrigin;
+                            shadowDiskReach = lightDiskRadius / length(shadowCentreVec);
                         } else {
                             // Tangent-plane disk jitter, valid only for α < ~0.05
                             // rad — same approximation as the legacy-WRS arm's
@@ -4131,8 +4140,30 @@ void main() {
                                 L + (Tb * diskSample.x + Bb * diskSample.y) * sunAngularRadius;
                             rayDir = normalize(jitteredDir);
                             rayDist = DIRECTIONAL_SHADOW_TRACE_DISTANCE;
+                            shadowSampleVec = jitteredDir;
+                            shadowCentreVec = L;
+                            shadowDiskReach = sunAngularRadius;
                         }
                         float rayTMax = max(rayDist, 0.01);
+                        // RLT-SHD-012 — the reference weights each emitter
+                        // sample by the receiver's cosine at that sample; the
+                        // radiance below is evaluated toward the centre, so a
+                        // ray's transmission takes that cosine over the
+                        // centre's. The ratio is taken on the UNNORMALISED
+                        // offset vectors: it is linear in the disk offset, so
+                        // its mean over the disk is exactly 1 and a pixel no
+                        // occluder touches keeps visibility 1 (normalising
+                        // each ray first leaves a second-order ~(R/d)^2 / 4
+                        // deficit on every lit pixel). The horizon clips the
+                        // disk where the centre cosine is within the disk's
+                        // reach, and the ratio explodes as the centre cosine
+                        // falls: weight 1 there, and cap the rest.
+                        float shadowCosCentre = dot(N, shadowCentreVec) / length(shadowCentreVec);
+                        float shadowCosWeight =
+                            shadowCosCentre > max(SHADOW_COS_WEIGHT_MIN_CENTRE, 2.0 * shadowDiskReach)
+                            ? min(max(dot(N, shadowSampleVec), 0.0) / dot(N, shadowCentreVec),
+                                  SHADOW_COS_WEIGHT_MAX)
+                            : 1.0;
                         vec3 sampleTransmission;
                         // PAF-001: every sample reports its blocker distance;
                         // sample 0 also feeds the selected-ray debug record
@@ -4161,7 +4192,7 @@ void main() {
                                 i, rayOrigin, rayDir, rayTMax,
                                 sampleMask, sampleInstance, sampleHitDistance);
                         }
-                        transmissionSum += sampleTransmission;
+                        transmissionSum += sampleTransmission * shadowCosWeight;
                         if (!isinf(sampleHitDistance)) {
                             occluderDistanceSum += sampleHitDistance;
                             occluderCount += 1.0;
