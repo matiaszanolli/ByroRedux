@@ -109,9 +109,7 @@ layout(std430, set = 0, binding = 10) readonly buffer GlobalIndices {
     uint indexData[];
 };
 
-layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer SkinnedVertexRef {
-    float data[];
-};
+#include "include/buffer_references.glsl"
 
 // Per-dispatch mode. The host runs the splat pipeline twice with a parked
 // camera: once with decayOnly=1 (every pixel multiplies its accumulator by

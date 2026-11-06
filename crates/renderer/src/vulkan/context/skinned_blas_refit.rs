@@ -862,9 +862,9 @@ impl SkinChain<'_> {
             // #3582 — `COMPUTE_SHADER` joins the dst mask for
             // the same reason #2403 added `FRAGMENT_SHADER`:
             // a new consumer appeared. `caustic_splat.comp`
-            // dereferences `hit.skinnedVertexAddress` through
-            // its own inline `SkinnedVertexRef` block (added
-            // by `9bf7d024`) rather than through
+            // dereferences `hit.skinnedVertexAddress` in its
+            // own code through `SkinnedVertexRef` (added by
+            // `9bf7d024`) rather than through
             // `include/ray_hit.glsl`, so an include-graph
             // trace still comes back clean while the deref
             // exists — which is how the 2026-08-14 audit

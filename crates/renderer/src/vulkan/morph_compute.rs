@@ -73,9 +73,8 @@ impl MorphDelta {
 /// carries `ImportedMesh.morph_targets`. The immutable delta allocation is
 /// shared by all instances of the mesh; the weight buffer is private to this
 /// entity. Both addresses are dereferenced in-shader via `buffer_reference`
-/// (`MorphDeltaRef` / `MorphWeightRef` in `skin_vertices.comp` /
-/// `triangle.vert` / `include/bindings.glsl`) — there are no descriptor sets
-/// to manage, unlike `SkinSlot`.
+/// (`MorphDeltaRef` / `MorphWeightRef` in `include/buffer_references.glsl`) — there
+/// are no descriptor sets to manage, unlike `SkinSlot`.
 pub struct MorphSlot {
     /// Static per-target-per-vertex position deltas, uploaded ONCE at
     /// creation from the owning mesh's `ImportedMesh.morph_targets`.

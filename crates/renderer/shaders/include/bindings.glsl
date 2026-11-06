@@ -12,25 +12,9 @@ layout(set = 0, binding = 1) uniform samplerCube cubemaps[];
 
 #include "include/gpu_instance.glsl"
 
-// REN-2026-07-28-02 / #2219 — buffer_reference handle for
-// `GpuInstance.skinnedVertexAddress`. Requires `GL_EXT_buffer_reference`
-// enabled in the including shader (triangle.frag / water.frag).
-layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer SkinnedVertexRef {
-    float data[];
-};
-
-// #3231 — buffer_reference handles for `GpuInstance.morphDeltaAddress` /
-// `.morphWeightAddress`. Requires `GL_EXT_buffer_reference` (same
-// extension `SkinnedVertexRef` above already needs). `MorphDeltaRef` is
-// `vec4`-aligned (not `vec3`) for the same std430 reason every other
-// struct in this file avoids `vec3` — `data[target * vertexCount +
-// localVertexIndex].xyz` is the per-vertex delta; `.w` is unused padding.
-layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer MorphDeltaRef {
-    vec4 data[];
-};
-layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer MorphWeightRef {
-    float data[];
-};
+// The buffer_reference types. Requires `GL_EXT_buffer_reference` enabled in the
+// including shader (triangle.frag / water.frag).
+#include "include/buffer_references.glsl"
 
 layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
     GpuInstance instances[];

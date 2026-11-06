@@ -285,9 +285,11 @@ const CLUSTER_ENTRY_GLSL: &str = include_str!("../../../shaders/include/cluster_
 const RESERVOIR_GLSL: &str = include_str!("../../../shaders/include/reservoir.glsl");
 const WATER_PARAMS_GLSL: &str = include_str!("../../../shaders/include/water_params.glsl");
 const BENCH_CELL_GLSL: &str = include_str!("../../../shaders/include/groundcover_bench_cell.glsl");
+const BUFFER_REFERENCES_GLSL: &str =
+    include_str!("../../../shaders/include/buffer_references.glsl");
 
-/// Structs several shaders share, each with the struct-only header that
-/// declares it.
+/// Structs and `buffer_reference` blocks several shaders share, each with the
+/// header that declares it and nothing that binds a resource.
 const SHARED_GPU_STRUCT_HEADERS: &[(&str, &str, &str)] = &[
     (
         "struct GpuInstance",
@@ -311,6 +313,21 @@ const SHARED_GPU_STRUCT_HEADERS: &[(&str, &str, &str)] = &[
         "include/groundcover_bench_cell.glsl",
         BENCH_CELL_GLSL,
     ),
+    (
+        "buffer SkinnedVertexRef",
+        "include/buffer_references.glsl",
+        BUFFER_REFERENCES_GLSL,
+    ),
+    (
+        "buffer MorphDeltaRef",
+        "include/buffer_references.glsl",
+        BUFFER_REFERENCES_GLSL,
+    ),
+    (
+        "buffer MorphWeightRef",
+        "include/buffer_references.glsl",
+        BUFFER_REFERENCES_GLSL,
+    ),
 ];
 
 /// These structs were hand-copied into each shader, and the copies drifted more
@@ -319,24 +336,55 @@ const SHARED_GPU_STRUCT_HEADERS: &[(&str, &str, &str)] = &[
 /// on another layout cannot include. So this pins both halves: a second
 /// declaration fails here, and so does a resource declared in one of these
 /// headers, which would bring back the reason to copy.
+///
+/// #6681 — a `buffer_reference` block needs a `layout(...)` of its own, and that
+/// one is allowed: it declares a type and binds nothing, so it does not stop a
+/// shader on another layout from including the header.
 #[test]
 fn shared_gpu_structs_are_declared_once() {
     for (decl, header, src) in SHARED_GPU_STRUCT_HEADERS {
+        // A `buffer` block's name sits behind its qualifiers; a `struct` starts the line.
+        let behind_qualifiers = decl.starts_with("buffer ");
         assert_eq!(
-            shader_sources_declaring(decl, false),
+            shader_sources_declaring(decl, behind_qualifiers),
             [*header],
             "`{decl}` must be declared only in `{header}`: `#include` it instead of copying it."
         );
         let declares_resource = src.lines().any(|line| {
             let code = line.split("//").next().unwrap_or_default();
-            code.contains("layout") || code.contains("uniform")
+            code.contains("uniform")
+                || code.contains("binding")
+                || (code.contains("layout") && !code.contains("layout(buffer_reference"))
         });
         assert!(
             !declares_resource,
-            "{header} must stay struct-only: a descriptor binding here stops shaders on other \
-             layouts from including it."
+            "{header} must not bind a resource: a descriptor binding here stops shaders on \
+             other layouts from including it."
         );
     }
+}
+
+/// #6681 — a copy of a `buffer_reference` block is found however its qualifiers are
+/// written, and a forward declaration, which defines nothing, is not counted.
+#[test]
+fn block_qualifiers_are_stripped_in_any_order() {
+    for code in [
+        "layout(buffer_reference, std430) readonly buffer X {",
+        "layout(buffer_reference) buffer X {",
+        "readonly layout(buffer_reference) buffer X {",
+        "layout(buffer_reference) readonly coherent buffer X {",
+        "buffer X {",
+    ] {
+        assert_eq!(strip_leading_block_qualifiers(code), "buffer X {", "{code}");
+    }
+    assert_eq!(
+        strip_leading_block_qualifiers("layout(buffer_reference) buffer X;"),
+        "buffer X;"
+    );
+    assert_eq!(
+        strip_leading_block_qualifiers("uniform CameraUBO {"),
+        "uniform CameraUBO {"
+    );
 }
 
 /// Regression: #417 — the declaration must name its required fields, and must
@@ -3405,7 +3453,7 @@ fn shader_sources_declaring(decl: &str, allow_layout_prefix: bool) -> Vec<String
                 };
                 let code = code.trim_start();
                 let code = if allow_layout_prefix {
-                    strip_leading_layout_qualifier(code)
+                    strip_leading_block_qualifiers(code)
                 } else {
                     code
                 };
@@ -3439,6 +3487,27 @@ fn strip_leading_layout_qualifier(code: &str) -> &str {
     match rest.find(')') {
         Some(i) => rest[i + 1..].trim_start(),
         None => code,
+    }
+}
+
+/// #6681 — every `layout(...)` and memory qualifier ahead of a block's own keyword,
+/// which GLSL accepts in any order, so `shader_sources_declaring` sees
+/// `readonly layout(buffer_reference) buffer X {` as `buffer X {`.
+fn strip_leading_block_qualifiers(code: &str) -> &str {
+    const MEMORY_QUALIFIERS: [&str; 5] =
+        ["readonly", "writeonly", "restrict", "coherent", "volatile"];
+    let mut rest = code;
+    loop {
+        let stripped = strip_leading_layout_qualifier(rest);
+        let stripped = MEMORY_QUALIFIERS
+            .iter()
+            .find_map(|qualifier| stripped.strip_prefix(qualifier))
+            .filter(|after| after.starts_with([' ', '\t']))
+            .map_or(stripped, str::trim_start);
+        if stripped.len() == rest.len() {
+            return rest;
+        }
+        rest = stripped;
     }
 }
 

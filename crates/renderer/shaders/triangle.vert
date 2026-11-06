@@ -46,18 +46,7 @@ layout(std430, set = 1, binding = 4) readonly buffer InstanceBuffer {
     GpuInstance instances[];
 };
 
-// #3231 — mirrors include/bindings.glsl's MorphDeltaRef / MorphWeightRef.
-// See that file for the layout doc.
-// `gpu_instance_glsl_field_order_matches_rust_struct` checks only the
-// GpuInstance struct itself, so these buffer_reference blocks are NOT
-// part of that automated check — verify by hand against bindings.glsl
-// if either changes.
-layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer MorphDeltaRef {
-    vec4 data[];
-};
-layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer MorphWeightRef {
-    float data[];
-};
+#include "include/buffer_references.glsl"
 
 // Previous rigid transforms aligned to the CURRENT frame's sorted instance
 // array. Keeping this separate avoids expanding GpuInstance for fragment and

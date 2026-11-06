@@ -41,7 +41,7 @@ struct GpuInstance {
     // vertex output buffer (position-only, SKIN_OUTPUT_STRIDE_FLOATS
     // floats/vertex, already absolute world space). `0` for rigid
     // instances (boneOffset == 0). Dereferenced via `SkinnedVertexRef`
-    // (include/bindings.glsl) by ray_hit.glsl's hit-normal helpers
+    // (include/buffer_references.glsl) by ray_hit.glsl's hit-normal helpers
     // instead of the bind-pose vertexData SSBO, which otherwise produces
     // a bind-pose-shaped normal at the entity's root transform for every
     // animated actor's secondary rays (reflection/shadow/refraction).
@@ -54,8 +54,7 @@ struct GpuInstance {
     // `0` when this entity has no morph data (rigid instances, or
     // skinned instances whose mesh carries no `NiGeomMorpherController`
     // — the overwhelming majority). Dereferenced via the MorphDeltaRef /
-    // MorphWeightRef buffer_reference types (include/bindings.glsl,
-    // triangle.vert, skin_vertices.comp).
+    // MorphWeightRef buffer_reference types (include/buffer_references.glsl).
     uint64_t morphDeltaAddress;  // offset 128, 8 bytes
     uint64_t morphWeightAddress; // offset 136, 8 bytes
     uint morphTargetCount;       // offset 144, 4 bytes
