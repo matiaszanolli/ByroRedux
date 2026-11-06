@@ -1286,7 +1286,7 @@ fn per_frame_driver_functions_stay_within_their_size_pins() {
         (UPDATE_QUEST_RS, "fn register_quest_story_scene_and_packages(", 195),
         (UPDATE_SCRIPT_RS, "fn register_script_runtime(", 150),
         (UPDATE_PLAYER_RS, "fn register_player_and_animation(", 285),
-        (LATE_RS, "fn register_late_systems(", 858),
+        (LATE_RS, "fn register_late_systems(", 16),
     ] {
         let measured = byroredux_core::source_scan::function_line_count(source, declaration);
         assert!(

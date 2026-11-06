@@ -183,6 +183,13 @@ impl std::fmt::Display for ScheduleOrderError {
 
 impl std::error::Error for ScheduleOrderError {}
 
+/// The name the scheduler knows `system` by, for [`Scheduler::run_before`] and
+/// [`Scheduler::run_after`]. A function item's name is its path, so a subsystem
+/// names the systems it orders against without spelling the path as a string.
+pub fn system_name<S: System>(system: &S) -> &'static str {
+    system.name()
+}
+
 /// Where one registered system sits.
 #[derive(Clone, Copy)]
 struct SystemSlot {
