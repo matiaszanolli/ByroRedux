@@ -90,14 +90,14 @@ impl VulkanContext {
                 pixel[0], pixel[1], extent.width, extent.height
             ));
         }
-        let generation = self.next_selected_ray_probe_generation.max(1);
-        self.next_selected_ray_probe_generation = generation.wrapping_add(1).max(1);
-        self.pending_selected_ray_probe = Some(SelectedRayProbeRequest { generation, pixel });
+        let generation = self.diag.next_selected_ray_probe_generation.max(1);
+        self.diag.next_selected_ray_probe_generation = generation.wrapping_add(1).max(1);
+        self.diag.pending_selected_ray_probe = Some(SelectedRayProbeRequest { generation, pixel });
         Ok(generation)
     }
 
     pub fn take_selected_ray_probe_result(&mut self) -> Option<SelectedRayProbeResult> {
-        self.selected_ray_probe_result.take()
+        self.diag.selected_ray_probe_result.take()
     }
 }
 

@@ -634,10 +634,10 @@ impl VulkanContext {
         // (post fence-wait) call re-confirms it idle.
         self.texture_registry.note_frame_submitted(frame);
         if self
-            .pending_selected_ray_probe
+            .diag.pending_selected_ray_probe
             .is_some_and(|request| Some(request.generation) == armed_selected_ray_probe_generation)
         {
-            self.pending_selected_ray_probe = None;
+            self.diag.pending_selected_ray_probe = None;
         }
 
         // #917 / REN-D10-NEW-03 — advance SVGF + TAA `frames_since_

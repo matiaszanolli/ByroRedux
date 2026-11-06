@@ -998,9 +998,15 @@ impl VulkanContext {
             transfer_fence,
             command_buffers,
             frame_sync,
-            image_health_buffers,
-            image_health_last: (0, 0),
-            image_health_total: (0, 0),
+            diag: RenderDiagnostics {
+                image_health_buffers,
+                image_health_last: (0, 0),
+                image_health_total: (0, 0),
+                pending_selected_ray_probe: None,
+                selected_ray_probe_result: None,
+                selected_ray_probe_entity_maps: Default::default(),
+                next_selected_ray_probe_generation: 1,
+            },
             current_frame: 0,
             renderer_config,
             frame_extents,
@@ -1012,10 +1018,6 @@ impl VulkanContext {
             volumetric_time_seconds: 0.0,
             render_debug_flags: parse_render_debug_flags_env(),
             render_debug_mode: parse_render_debug_mode_env(),
-            pending_selected_ray_probe: None,
-            selected_ray_probe_result: None,
-            selected_ray_probe_entity_maps: Default::default(),
-            next_selected_ray_probe_generation: 1,
             // REND-#1451 — default knee = 0.5 (authored radius at half
             // the cull radius). `light_atten_legacy` starts false; the
             // env path (`BYROREDUX_RENDER_DEBUG=0x1000`) can still force

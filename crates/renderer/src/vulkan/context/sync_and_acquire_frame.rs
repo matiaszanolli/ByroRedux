@@ -106,8 +106,8 @@ impl VulkanContext {
             Ok(Some(record)) => {
                 let mut result =
                     super::super::render_debug::SelectedRayProbeResult::from_gpu(record);
-                self.selected_ray_probe_entity_maps[frame].resolve(&mut result);
-                self.selected_ray_probe_result = Some(result);
+                self.diag.selected_ray_probe_entity_maps[frame].resolve(&mut result);
+                self.diag.selected_ray_probe_result = Some(result);
             }
             Ok(None) => {}
             Err(error) => log::warn!("selected-ray probe readback failed: {error}"),

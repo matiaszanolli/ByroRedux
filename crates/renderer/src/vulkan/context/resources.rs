@@ -297,7 +297,7 @@ impl VulkanContext {
         // Split-borrow: `invalidate_if_needed`/`flush_if_needed` take the
         // device, which lives on `self` alongside the buffer vec.
         let device = self.device.clone();
-        let Some(buffer) = self.image_health_buffers.get_mut(frame) else {
+        let Some(buffer) = self.diag.image_health_buffers.get_mut(frame) else {
             return;
         };
         // Before the read. A failure here means the counters may be stale, so
@@ -324,15 +324,15 @@ impl VulkanContext {
             log::warn!("image-health counter reset flush failed: {e}");
         }
 
-        self.image_health_last = (rgb, alpha);
-        self.image_health_total.0 = self.image_health_total.0.saturating_add(u64::from(rgb));
-        self.image_health_total.1 = self.image_health_total.1.saturating_add(u64::from(alpha));
+        self.diag.image_health_last = (rgb, alpha);
+        self.diag.image_health_total.0 = self.diag.image_health_total.0.saturating_add(u64::from(rgb));
+        self.diag.image_health_total.1 = self.diag.image_health_total.1.saturating_add(u64::from(alpha));
         if rgb != 0 || alpha != 0 {
             log::warn!(
                 "image health: {rgb} non-finite RGB pixel(s), {alpha} non-finite alpha pixel(s) \
                  in the pre-tonemap scene (frame slot {frame}); running total {}/{}",
-                self.image_health_total.0,
-                self.image_health_total.1,
+                self.diag.image_health_total.0,
+                self.diag.image_health_total.1,
             );
         }
     }
@@ -341,7 +341,7 @@ impl VulkanContext {
     /// `((rgb, alpha), (rgb, alpha))`. Surfaced by `r.health` and the bench
     /// summary so the exterior smoke gate can hard-fail on a non-zero total.
     pub fn image_health(&self) -> ((u32, u32), (u64, u64)) {
-        (self.image_health_last, self.image_health_total)
+        (self.diag.image_health_last, self.diag.image_health_total)
     }
 
     /// Number of occupied terrain tile slots.

@@ -1754,7 +1754,7 @@ impl VulkanContext {
         // render-pass HDR output) stays in dispatch().
 
         let selected_ray_probe_request = self
-            .pending_selected_ray_probe
+            .diag.pending_selected_ray_probe
             .map(|request| (request.generation, request.pixel));
         if let Err(error) = self.scene_buffers.arm_selected_ray_probe(
             &self.device,
@@ -1774,7 +1774,7 @@ impl VulkanContext {
                 .as_ref()
                 .filter(|_| self.tlas_built_this_frame)
                 .map(|accel| accel.tlas_entity_ids_scratch.as_slice());
-            self.selected_ray_probe_entity_maps[frame]
+            self.diag.selected_ray_probe_entity_maps[frame]
                 .capture(*armed_selected_ray_probe_generation, entity_ids);
         }
     }

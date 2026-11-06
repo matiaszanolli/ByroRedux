@@ -56,7 +56,7 @@ impl VulkanContext {
         // the allocation is returned while the allocator is still live.
         // SAFETY: device idle by this fn's contract, and `alloc` is the
         // allocator these buffers were created from.
-        for mut buffer in self.image_health_buffers.drain(..) {
+        for mut buffer in self.diag.image_health_buffers.drain(..) {
             buffer.destroy(&self.device, alloc);
         }
         // M29 — destroy SkinSlots BEFORE the SkinComputePipeline

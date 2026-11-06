@@ -1364,7 +1364,7 @@ impl VulkanContext {
         // The health counter buffers are not swapchain-sized and deliberately
         // outlive the recreate — the rebuilt pipeline rebinds the same ones.
         let health_handles: Vec<ash::vk::Buffer> =
-            self.image_health_buffers.iter().map(|b| b.buffer).collect();
+            self.diag.image_health_buffers.iter().map(|b| b.buffer).collect();
         self.post.presentation = Some(
             super::super::presentation::PresentationPipeline::new(
                 &self.device,

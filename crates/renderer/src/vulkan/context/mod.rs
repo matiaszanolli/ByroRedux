@@ -879,6 +879,47 @@ pub struct PostPassState {
     pending_volumetrics_cleared_on_skip: Option<bool>,
 }
 
+/// Render diagnostics (#6699): the selected-entity ray probe's request, result and
+/// per-slot entity maps, and the per-frame image-health counter buffers with their
+/// last/total readings.
+///
+/// Only `image_health_buffers` owns device memory; `teardown.rs` frees it through
+/// `diag.image_health_buffers` at the point it always freed `image_health_buffers`.
+pub(super) struct RenderDiagnostics {
+    pub(super) pending_selected_ray_probe: Option<super::render_debug::SelectedRayProbeRequest>,
+    pub(super) selected_ray_probe_result: Option<super::render_debug::SelectedRayProbeResult>,
+    /// #4978 — per frame slot, the SSBO→entity map a probe armed in that
+    /// slot must resolve its hit against at readback.
+    pub(super) selected_ray_probe_entity_maps:
+        [super::render_debug::SelectedRayProbeEntityMap; MAX_FRAMES_IN_FLIGHT],
+    pub(super) next_selected_ray_probe_generation: u32,
+    /// Per-frame image-health counter buffers (EX-05 / #2736).
+    ///
+    /// Two `u32`s each — non-finite RGB pixels, non-finite alpha pixels —
+    /// written atomically by `presentation.frag` and read back on this slot's
+    /// next fence wait, then CPU-zeroed at that same point.
+    ///
+    /// #2740 (REN-D4-04) — a fence signal only guarantees the *device*-side
+    /// access scope has completed; it does NOT by itself make that write
+    /// host-visible on a non-coherent memory type (that needs an explicit
+    /// `vkInvalidateMappedMemoryRanges`). This buffer's host read/write is
+    /// safe with no barrier ONLY because `create_host_visible` allocates
+    /// `MemoryLocation::CpuToGpu`, and gpu-allocator 0.27's `CpuToGpu` preset
+    /// requires `HOST_COHERENT` (not merely prefers it) — see
+    /// `collect_image_health`'s doc comment (`context/resources.rs`) for the
+    /// full explanation. That is a property of this specific allocator
+    /// version, not a Vulkan-spec guarantee from the fence alone.
+    ///
+    /// Owned here rather than by `PresentationPipeline` because they must
+    /// survive a swapchain recreate, which rebuilds that pipeline wholesale.
+    image_health_buffers: Vec<super::buffer::GpuBuffer>,
+    /// Last completed frame's counters, `(non_finite_rgb, non_finite_alpha)`.
+    image_health_last: (u32, u32),
+    /// Running total since process start, so a transient NaN that appears on
+    /// one frame is still visible to a gate that samples later.
+    image_health_total: (u64, u64),
+}
+
 pub struct VulkanContext {
     // Vulkan objects are destroyed explicitly by `Drop` (`teardown.rs`),
     // not by this field order. Rust's implicit field drop runs only after
@@ -969,13 +1010,8 @@ pub struct VulkanContext {
     /// Mutually-exclusive named correctness view. `LegacyFlags` preserves
     /// launch-time categorical selectors until `render.debug` chooses a mode.
     pub render_debug_mode: super::render_debug::RenderDebugMode,
-    pub(super) pending_selected_ray_probe: Option<super::render_debug::SelectedRayProbeRequest>,
-    pub(super) selected_ray_probe_result: Option<super::render_debug::SelectedRayProbeResult>,
-    /// #4978 — per frame slot, the SSBO→entity map a probe armed in that
-    /// slot must resolve its hit against at readback.
-    pub(super) selected_ray_probe_entity_maps:
-        [super::render_debug::SelectedRayProbeEntityMap; MAX_FRAMES_IN_FLIGHT],
-    pub(super) next_selected_ray_probe_generation: u32,
+    /// Ray-probe and image-health diagnostics (#6699). See [`RenderDiagnostics`].
+    pub(super) diag: RenderDiagnostics,
     /// REND-#1451 — live-tunable point/spot attenuation knee fraction,
     /// uploaded into `GpuCamera.dof_params.z`. `knee = kneeFrac × cull
     /// radius` is the authored radius where the physical near-zone
@@ -1065,31 +1101,6 @@ pub struct VulkanContext {
 
     // ── Depth capture (#3308) ───────────────────────────────────────
     frame_sync: FrameSync,
-    /// Per-frame image-health counter buffers (EX-05 / #2736).
-    ///
-    /// Two `u32`s each — non-finite RGB pixels, non-finite alpha pixels —
-    /// written atomically by `presentation.frag` and read back on this slot's
-    /// next fence wait, then CPU-zeroed at that same point.
-    ///
-    /// #2740 (REN-D4-04) — a fence signal only guarantees the *device*-side
-    /// access scope has completed; it does NOT by itself make that write
-    /// host-visible on a non-coherent memory type (that needs an explicit
-    /// `vkInvalidateMappedMemoryRanges`). This buffer's host read/write is
-    /// safe with no barrier ONLY because `create_host_visible` allocates
-    /// `MemoryLocation::CpuToGpu`, and gpu-allocator 0.27's `CpuToGpu` preset
-    /// requires `HOST_COHERENT` (not merely prefers it) — see
-    /// `collect_image_health`'s doc comment (`context/resources.rs`) for the
-    /// full explanation. That is a property of this specific allocator
-    /// version, not a Vulkan-spec guarantee from the fence alone.
-    ///
-    /// Owned here rather than by `PresentationPipeline` because they must
-    /// survive a swapchain recreate, which rebuilds that pipeline wholesale.
-    image_health_buffers: Vec<super::buffer::GpuBuffer>,
-    /// Last completed frame's counters, `(non_finite_rgb, non_finite_alpha)`.
-    image_health_last: (u32, u32),
-    /// Running total since process start, so a transient NaN that appears on
-    /// one frame is still visible to a gate that samples later.
-    image_health_total: (u64, u64),
     command_buffers: Vec<vk::CommandBuffer>,
     command_pool: vk::CommandPool,
     /// Dedicated pool for one-time upload/transfer commands, separate from
@@ -2367,7 +2378,7 @@ mod fsr_startup_failure_promotes_to_taa_tests {
 #[cfg(test)]
 mod field_group_tests {
     /// `(context field, its type, the names that now live inside it)`.
-    const GROUPS: [(&str, &str, &[&str]); 2] = [
+    const GROUPS: [(&str, &str, &[&str]); 3] = [
         (
         "skin",
         "SkinningState",
@@ -2409,6 +2420,19 @@ mod field_group_tests {
                 "volumetrics_cleared_on_skip",
                 "pending_caustic_cleared_on_skip",
                 "pending_volumetrics_cleared_on_skip",
+            ],
+        ),
+        (
+            "diag",
+            "RenderDiagnostics",
+            &[
+                "pending_selected_ray_probe",
+                "selected_ray_probe_result",
+                "selected_ray_probe_entity_maps",
+                "next_selected_ray_probe_generation",
+                "image_health_buffers",
+                "image_health_last",
+                "image_health_total",
             ],
         ),
     ];
