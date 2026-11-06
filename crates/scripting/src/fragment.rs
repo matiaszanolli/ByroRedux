@@ -180,49 +180,41 @@ pub fn register_state_reference_enable_state_saved(registry: &mut byroredux_save
     state::register_saved_reference_enable_state(registry);
 }
 
-// #6705 — saved columns of this facade's private modules, registered from the binary's `build_save_registry`.
 #[cfg(feature = "save")]
 pub fn register_state_fragment_execution_queue_saved(registry: &mut byroredux_save::SaveRegistry) {
     state::register_saved_fragment_execution_queue(registry);
 }
 
-// #6705 — saved columns of this facade's private modules, registered from the binary's `build_save_registry`.
 #[cfg(feature = "save")]
 pub fn register_events_saved(registry: &mut byroredux_save::SaveRegistry) {
     events::register_saved(registry);
 }
 
-// #6705 — saved columns of this facade's private modules, registered from the binary's `build_save_registry`.
 #[cfg(feature = "save")]
 pub fn register_distance_saved(registry: &mut byroredux_save::SaveRegistry) {
     distance::register_saved(registry);
 }
 
-// #6705 — saved columns of this facade's private modules, registered from the binary's `build_save_registry`.
 #[cfg(feature = "save")]
 pub fn register_hits_saved(registry: &mut byroredux_save::SaveRegistry) {
     hits::register_saved(registry);
 }
 
-// #6705 — saved columns of this facade's private modules, registered from the binary's `build_save_registry`.
 #[cfg(feature = "save")]
 pub fn register_anim_events_saved(registry: &mut byroredux_save::SaveRegistry) {
     anim_events::register_saved(registry);
 }
 
-// #6705 — saved columns of this facade's private modules, registered from the binary's `build_save_registry`.
 #[cfg(feature = "save")]
 pub fn register_alias_scripts_saved(registry: &mut byroredux_save::SaveRegistry) {
     alias_scripts::register_saved(registry);
 }
 
-// #6705 — saved columns of this facade's private modules, registered from the binary's `build_save_registry`.
 #[cfg(feature = "save")]
 pub fn register_updates_saved(registry: &mut byroredux_save::SaveRegistry) {
     updates::register_saved(registry);
 }
 
-// #6705 — saved columns of this facade's private modules, registered from the binary's `build_save_registry`.
 #[cfg(feature = "save")]
 pub fn register_state_saved(registry: &mut byroredux_save::SaveRegistry) {
     state::register_saved(registry);
