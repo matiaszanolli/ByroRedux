@@ -28,10 +28,9 @@
 use byroredux_core::math::{Quat, Vec3};
 use std::collections::VecDeque;
 
-/// Walk speed (world units/second). Engine default — no authored
-/// equivalent exists in PACK data, so this is a plain constant subject to
-/// tuning, not a value derived from game content.
-pub(crate) const LOCOMOTION_WALK_SPEED: f32 = 100.0;
+// #6711 — the constant lives in `components::ai_anim` beside `WalkSpeed::or_default`,
+// its fallback reader, so `components` does not reach up into `systems`.
+pub(crate) use crate::components::LOCOMOTION_WALK_SPEED;
 
 /// #5587 — the fallback radius (world units) every M42 AI procedure uses
 /// when its `PACK` data authors no radius (a missing PLDT or radius 0):

@@ -21,16 +21,10 @@ use byroredux_plugin::esm::reader::GameKind;
 use byroredux_terrain_height as th;
 use std::path::{Path, PathBuf};
 
-/// The textures one terrain layer's height can come from, each an
-/// archive-canonical path, in [`run_job`]'s priority order. Also the key the
-/// service tracks a layer's height by, so two layers painting the same
-/// texture set share one map.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct LayerHeightSources {
-    pub(crate) authored: Option<String>,
-    pub(crate) normal: Option<String>,
-    pub(crate) diffuse: Option<String>,
-}
+// #6711 — the struct is `components::LayerHeightSources` (the terrain entity's
+// `TerrainLayerHeights` holds it); the constructor stays here because it
+// canonicalises paths with `canonical_texture_key`.
+pub(crate) use crate::components::LayerHeightSources;
 
 impl LayerHeightSources {
     /// `None` when there is nothing to generate from at all.

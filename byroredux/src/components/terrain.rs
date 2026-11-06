@@ -114,6 +114,17 @@ impl Component for TerrainCoverInputs {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// The textures one terrain layer's height can come from, each an
+/// archive-canonical path, in [`run_job`]'s priority order. Also the key the
+/// service tracks a layer's height by, so two layers painting the same
+/// texture set share one map.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct LayerHeightSources {
+    pub(crate) authored: Option<String>,
+    pub(crate) normal: Option<String>,
+    pub(crate) diffuse: Option<String>,
+}
+
 /// Which textures each lane of a LAND tile takes its height map from
 /// (#6195): the BTXT base, then the splat lanes in vertex order. Kept on the
 /// terrain entity so a map that finishes generating after the cell spawned
@@ -121,9 +132,8 @@ impl Component for TerrainCoverInputs {
 /// every layer's height source.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TerrainLayerHeights {
-    pub(crate) base: Option<crate::asset_provider::terrain_height::LayerHeightSources>,
-    pub(crate) layers:
-        [Option<crate::asset_provider::terrain_height::LayerHeightSources>; TERRAIN_SPLAT_LAYERS as usize],
+    pub(crate) base: Option<LayerHeightSources>,
+    pub(crate) layers: [Option<LayerHeightSources>; TERRAIN_SPLAT_LAYERS as usize],
 }
 impl Component for TerrainLayerHeights {
     type Storage = SparseSetStorage<Self>;

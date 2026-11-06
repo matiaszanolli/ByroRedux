@@ -123,6 +123,11 @@ impl Component for WalkAnimation {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Walk speed (world units/second). Engine default — no authored
+/// equivalent exists in PACK data, so this is a plain constant subject to
+/// tuning, not a value derived from game content.
+pub(crate) const LOCOMOTION_WALK_SPEED: f32 = 100.0;
+
 /// M42.11 — an actor's authored locomotion speed (world units/second),
 /// derived once at spawn from its walk clip's accumulation-root travel
 /// (`AnimationClip::authored_horizontal_speed`, sanity-clamped) and read
@@ -143,7 +148,7 @@ impl WalkSpeed {
     /// one spelling of that fallback (it was hand-rolled at nine call
     /// sites, each a chance to pick a different default).
     pub(crate) fn or_default(walk_speed: Option<&Self>) -> f32 {
-        walk_speed.map_or(crate::systems::locomotion::LOCOMOTION_WALK_SPEED, |s| s.0)
+        walk_speed.map_or(LOCOMOTION_WALK_SPEED, |s| s.0)
     }
 }
 
