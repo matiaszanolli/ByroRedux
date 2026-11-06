@@ -910,8 +910,13 @@ mod rigid_motion_contract_tests {
 /// (#4604's defect class, again in #4842). Slicing to the method's own extent
 /// excludes every test module.
 #[cfg(test)]
+fn draw_source() -> &'static str {
+    include_str!("draw.rs")
+}
+
+#[cfg(test)]
 fn draw_frame_body() -> &'static str {
-    let src = include_str!("draw.rs");
+    let src = draw_source();
     let start = src
         .find("\n    pub fn draw_frame(")
         .expect("draw_frame must still exist under this signature");
@@ -1447,10 +1452,11 @@ mod draw_frame_size_budget_tests {
         );
     }
 
-    /// Headroom over `draw_frame`'s length after #4767's extraction (704
-    /// lines). Raise it only alongside a deliberate decision, not to absorb
-    /// an inline addition.
-    const DRAW_FRAME_LINE_BUDGET: usize = 720;
+    /// Headroom over `draw_frame`'s length after #4767's extraction, in lines of
+    /// CODE (#6720: it was 720 total lines, 409 of them code; blank and comment
+    /// lines no longer count). Raise it only alongside a deliberate decision,
+    /// not to absorb an inline addition.
+    const DRAW_FRAME_LINE_BUDGET: usize = 409;
 
     /// #5087 (regression of #4767) — the function budget above could not see
     /// growth landing in the pure helpers above `draw_frame` (`build_composite_params`,
@@ -1501,10 +1507,10 @@ mod draw_frame_size_budget_tests {
     /// its own phase file (`context/<phase>.rs`) instead.
     #[test]
     fn draw_frame_stays_within_its_line_budget() {
-        let lines = super::draw_frame_body().matches('\n').count() + 1;
+        let lines = crate::source_scan::function_line_count(super::draw_source(), "pub fn draw_frame(");
         assert!(
             lines <= DRAW_FRAME_LINE_BUDGET,
-            "draw_frame is {lines} lines (budget {DRAW_FRAME_LINE_BUDGET}); move the new \
+            "draw_frame is {lines} code lines (budget {DRAW_FRAME_LINE_BUDGET}); move the new \
              work into a context/<phase>.rs sibling like sync_and_acquire_frame.rs or \
              shrink_frame_scratch.rs rather than raising the budget (#4767)"
         );

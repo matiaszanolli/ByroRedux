@@ -12,9 +12,9 @@ fn buoyancy_driver_stays_within_its_size_pin() {
     let measured = function_line_count(include_str!("water.rs"), "fn apply_buoyancy_with_scratch(");
     assert!(
         measured <= PIN,
-        "`apply_buoyancy_with_scratch` carries {measured} lines (pin {PIN}) — move the new work \
+        "`apply_buoyancy_with_scratch` carries {measured} code lines (pin {PIN}) — move the new work \
          into a helper rather than raising the pin (#6143)"
     );
 }
 
-const PIN: usize = 710;
+const PIN: usize = 441;

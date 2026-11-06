@@ -2400,27 +2400,9 @@ mod size_pin_tests {
     // verbatim group helpers (texture slots / scalars / alpha+addressing);
     // the fn is now the resolve + translation + orchestration it always
     // claimed to be.
-    const MERGE_BGSM_ARM_LINE_PIN: usize = 360;
+    const MERGE_BGSM_ARM_LINE_PIN: usize = 95;
 
-    fn function_line_count(source: &str, declaration: &str) -> usize {
-        let start = source
-            .find(declaration)
-            .unwrap_or_else(|| panic!("`{declaration}` not found"));
-        let body = &source[start..];
-        let mut depth: i32 = 0;
-        let mut began = false;
-        for (i, line) in body.lines().enumerate() {
-            depth += line.matches('{').count() as i32;
-            depth -= line.matches('}').count() as i32;
-            if line.contains('{') {
-                began = true;
-            }
-            if began && depth <= 0 {
-                return i + 1;
-            }
-        }
-        panic!("`{declaration}` never closed");
-    }
+    use byroredux_core::source_scan::function_line_count;
 
     #[test]
     fn merge_bgsm_arm_stays_within_its_size_pin() {

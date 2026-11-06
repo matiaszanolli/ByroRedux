@@ -18,11 +18,11 @@ fn embedded_animation_importer_stays_within_its_size_pins() {
         let measured = function_line_count(src, declaration);
         assert!(
             measured <= pin,
-            "`{declaration}` carries {measured} lines (pin {pin}) — move the new work into a \
+            "`{declaration}` carries {measured} code lines (pin {pin}) — move the new work into a \
              helper rather than raising the pin (#6143)"
         );
     }
 }
 
-const PIN_DRIVER: usize = 145;
-const PIN_CONTROLLER: usize = 305;
+const PIN_DRIVER: usize = 106;
+const PIN_CONTROLLER: usize = 232;

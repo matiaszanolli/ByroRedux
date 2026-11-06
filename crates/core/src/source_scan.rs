@@ -200,15 +200,31 @@ fn module_end(src: &str) -> Option<usize> {
     None
 }
 
-/// Lines in the function whose header begins with `signature` — from the
-/// signature's own line through the line holding the closing brace of its
-/// body. The body's extent is found by brace depth, skipping string, raw-string
-/// and char literals and `//` comments, so a `{}` format placeholder cannot end
-/// it early. For the function-size pins that stop a split function from
-/// quietly regrowing (#6143); `signature` must be unique enough to name one
-/// function. Panics if it is not found or never closes.
+/// Lines of code in the function whose header begins with `signature`: the
+/// lines from the signature's own line through the line holding the closing
+/// brace of its body, **minus blank lines and comment-only lines** (`//`, `///`,
+/// `//!`). The body's extent is found by brace depth, skipping string,
+/// raw-string and char literals and `//` comments, so a `{}` format placeholder
+/// cannot end it early. For the function-size pins that stop a split function
+/// from quietly regrowing (#6143): they budget logic, so documenting a function
+/// can no longer break its pin while adding code still does (#6720).
+/// `signature` must be unique enough to name one function. Panics if it is not
+/// found or never closes.
 pub fn function_line_count(src: &str, signature: &str) -> usize {
-    function_text(src, signature).matches('\n').count() + 1
+    code_line_count(function_text(src, signature))
+}
+
+/// Lines of `text` that are neither blank nor comment-only. A line whose first
+/// non-space characters are `//` is a comment; a trailing `//` after code does
+/// not make the line one. Block comments (`/* */`) are not recognised — none of
+/// the budgeted functions use them.
+pub fn code_line_count(text: &str) -> usize {
+    text.lines()
+        .filter(|line| {
+            let line = line.trim_start();
+            !line.is_empty() && !line.starts_with("//")
+        })
+        .count()
 }
 
 /// The text of the function whose header begins with `signature`, from the
@@ -522,18 +538,33 @@ mod tests {
     }
 
     /// #6143 — the size pins count a function from its signature line to the
-    /// line of its closing brace, counting only braces that are code.
+    /// line of its closing brace, counting only braces that are code. #6720 —
+    /// and only lines of code: blank and comment-only lines are free.
     #[test]
     fn function_line_count_spans_signature_to_closing_brace() {
         let src = "fn before() {}\n\n/// docs are not counted\npub(super) fn target(\n    a: u32,\n) -> u32 {\n\
                    \x20   let s = \"}\";\n    // }\n    let c = '{';\n    format!(\"{x}\");\n    a\n}\nfn after() {}\n";
-        assert_eq!(function_line_count(src, "fn target("), 9);
+        // Signature line through closing brace is 9 lines; the `// }` comment line is not code.
+        assert_eq!(function_line_count(src, "fn target("), 8);
         assert_eq!(function_line_count(src, "fn before("), 1);
         // #6494 — the same extent as text: the order pins search inside it.
         let target = function_text(src, "fn target(");
         assert!(target.starts_with("fn target(") && target.ends_with("    a\n}"));
         assert!(!target.contains("fn after("));
         assert_eq!(function_text(src, "fn before("), "fn before() {}");
+    }
+
+    /// #6720 — adding a comment or a blank line never moves the count; adding a
+    /// code line always does.
+    #[test]
+    fn function_line_count_ignores_blank_and_comment_lines() {
+        let bare = "fn f() {\n    let a = 1;\n    a\n}\n";
+        let commented = "fn f() {\n    // why\n\n    /// doc-style\n    let a = 1; // trailing\n    //! inner\n    a\n}\n";
+        let grown = "fn f() {\n    let a = 1;\n    let b = 2;\n    a\n}\n";
+        assert_eq!(function_line_count(bare, "fn f("), 4);
+        assert_eq!(function_line_count(commented, "fn f("), 4, "comments and blanks are free");
+        assert_eq!(function_line_count(grown, "fn f("), 5, "a code line is counted");
+        assert_eq!(code_line_count("  // c\n\n  x\n  y // t\n"), 2);
     }
 
     #[test]

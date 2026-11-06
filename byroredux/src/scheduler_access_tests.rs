@@ -1244,7 +1244,8 @@ fn paused_frame_drain_names_the_system_through_the_shared_constant() {
 /// a helper/module and say so here, not raise the pin. Sizes are counted by
 /// `byroredux_core::source_scan::function_line_count` — declaration line
 /// through the line of the closing brace, braces in literals and comments
-/// ignored.
+/// ignored, and blank and comment-only lines NOT counted (#6720): the pins
+/// budget code.
 #[test]
 fn per_frame_driver_functions_stay_within_their_size_pins() {
     const STATIC_MESHES_RS: &str = include_str!("render/static_meshes.rs");
@@ -1266,21 +1267,21 @@ fn per_frame_driver_functions_stay_within_their_size_pins() {
         // about_to_wait was 822 when #4342 was filed and 1044 by #5096;
         // #6143 moved the bench summary, the screenshot state machine and the
         // telemetry refresh out into `App` methods.
-        (APP_EVENTS_RS, "fn about_to_wait(", 410),
+        (APP_EVENTS_RS, "fn about_to_wait(", 219),
         // render_one_frame: #4342 extracted it to 591; +125 since.
-        (APP_FRAME_RS, "fn render_one_frame(", 716),
+        (APP_FRAME_RS, "fn render_one_frame(", 494),
         // #6143 — 1031 lines before the query bundle and the DrawCommand build
         // moved into `StaticDrawQueries` / `build_static_draw_command`.
-        (STATIC_MESHES_RS, "fn collect_static_mesh_draws(", 160),
-        (STATIC_MESHES_RS, "fn build_static_draw_command(", 640),
+        (STATIC_MESHES_RS, "fn collect_static_mesh_draws(", 112),
+        (STATIC_MESHES_RS, "fn build_static_draw_command(", 323),
         // #6143 — 580 lines before the actor arm and the synth expansion moved
         // out; nesting 9 -> 5.
-        (REFERENCES_RS, "fn load_references_budgeted(", 420),
-        (REFERENCES_RS, "fn advance_actor_synth(", 215),
+        (REFERENCES_RS, "fn load_references_budgeted(", 256),
+        (REFERENCES_RS, "fn advance_actor_synth(", 151),
         // Not extracted by #6143 (a placement is one long straight-line
         // spawn); pinned at its 2026-10-26 size so growth is deliberate.
-        (SYNTH_CHILD_RS, "fn spawn_synth_child(", 605),
-        (UPDATE_MOD_RS, "fn register_update_systems(", 10),
+        (SYNTH_CHILD_RS, "fn spawn_synth_child(", 388),
+        (UPDATE_MOD_RS, "fn register_update_systems(", 7),
         (UPDATE_INTERACTION_RS, "fn register_interaction_and_crime(", 7),
         (UPDATE_COMBAT_RS, "fn register_combat(", 6),
         (UPDATE_QUEST_RS, "fn register_quest_story_scene_and_packages(", 14),
@@ -1291,7 +1292,7 @@ fn per_frame_driver_functions_stay_within_their_size_pins() {
         let measured = byroredux_core::source_scan::function_line_count(source, declaration);
         assert!(
             measured <= pin,
-            "`{declaration}` carries {measured} lines (pin {pin}) — move the new work into a helper or module and record the decision, rather than raising the pin (#5096 / #6143)"
+            "`{declaration}` carries {measured} code lines (pin {pin}) — move the new work into a helper or module and record the decision, rather than raising the pin (#5096 / #6143)"
         );
     }
 }

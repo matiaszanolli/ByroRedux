@@ -1090,27 +1090,9 @@ mod record_geometry_pass_size_pin_tests {
     /// (+131) because only `draw_frame` had a budget. Pinned at its
     /// 2026-10-06 measured size: move new work into a helper and record the
     /// decision instead of raising the pin.
-    const RECORD_GEOMETRY_PASS_LINE_PIN: usize = 30;
+    const RECORD_GEOMETRY_PASS_LINE_PIN: usize = 28;
 
-    fn function_line_count(source: &str, declaration: &str) -> usize {
-        let start = source
-            .find(declaration)
-            .unwrap_or_else(|| panic!("`{declaration}` not found"));
-        let body = &source[start..];
-        let mut depth: i32 = 0;
-        let mut began = false;
-        for (i, line) in body.lines().enumerate() {
-            depth += line.matches('{').count() as i32;
-            depth -= line.matches('}').count() as i32;
-            if line.contains('{') {
-                began = true;
-            }
-            if began && depth <= 0 {
-                return i + 1;
-            }
-        }
-        panic!("`{declaration}` never closed");
-    }
+    use crate::source_scan::function_line_count;
 
     #[test]
     fn record_geometry_pass_stays_within_its_size_pin() {
