@@ -250,14 +250,25 @@ pub fn register_newcomers_and_refresh_queries(world: &World) -> usize {
 /// mid-session would produce a log with an unannounced gap in it.
 fn profile_phases() -> bool {
     static PROFILE: OnceLock<bool> = OnceLock::new();
-    *PROFILE.get_or_init(|| std::env::var_os("BYRO_PROFILE").is_some())
+    env_flag_once(&PROFILE, PROFILE_VAR)
 }
 
 /// `BYRO_PROFILE_FALLERS` — one-shot awake-faller dump. See
 /// [`profile_phases`] for why this is cached (#2881).
 fn profile_fallers() -> bool {
     static PROFILE_FALLERS: OnceLock<bool> = OnceLock::new();
-    *PROFILE_FALLERS.get_or_init(|| std::env::var_os("BYRO_PROFILE_FALLERS").is_some())
+    env_flag_once(&PROFILE_FALLERS, PROFILE_FALLERS_VAR)
+}
+
+const PROFILE_VAR: &str = "BYRO_PROFILE";
+const PROFILE_FALLERS_VAR: &str = "BYRO_PROFILE_FALLERS";
+
+/// Whether `name` is set in the environment, looked up the first time `cell` is
+/// asked and never again. One helper for both flags, so the cache is the helper's
+/// property — tested on its own (#6689) — rather than two accessors each hoped to
+/// have kept their `OnceLock`.
+fn env_flag_once(cell: &OnceLock<bool>, name: &str) -> bool {
+    *cell.get_or_init(|| std::env::var_os(name).is_some())
 }
 
 // ── #1698 awake-faller diagnostic ───────────────────────────────────────
@@ -2633,27 +2644,34 @@ mod tick_documentation_tests {
              hoist the flag into a OnceLock accessor like `profile_phases` \
              (#2881)"
         );
-        // Both accessors must actually cache, not merely wrap the lookup.
-        for accessor in ["fn profile_phases", "fn profile_fallers"] {
-            let start = src.find(accessor).expect("accessor present");
-            let body = &src[start..start + 400];
-            assert!(
-                body.contains("OnceLock"),
-                "`{accessor}` must cache its lookup (#2881)"
-            );
-        }
     }
 
-    /// The two accessors must agree with the environment they were built
-    /// from. Cheap, but it stops a copy-paste that reads the same variable
-    /// name twice from going unnoticed.
+    /// The cache behind both flags, run: the first lookup reads the environment,
+    /// a change afterwards is not seen, and a fresh cell reads it again. Replaces
+    /// a search of the accessors' source for `OnceLock` (#6689).
     #[test]
-    fn profile_accessors_read_their_own_variables() {
-        let src = crate::source_scan::production_text(include_str!("sync.rs"));
-        assert!(src.contains(r#"var_os("BYRO_PROFILE")"#));
-        assert!(src.contains(r#"var_os("BYRO_PROFILE_FALLERS")"#));
-        // Both are absent from this test process, so both must be false —
-        // and, being cached, must stay stable across calls.
+    fn an_env_flag_is_read_once_and_then_cached() {
+        const VAR: &str = "BYRO_TEST_ENV_FLAG_ONCE_6689";
+        std::env::remove_var(VAR);
+        let cell = std::sync::OnceLock::new();
+        assert!(!super::env_flag_once(&cell, VAR), "unset reads as false");
+        std::env::set_var(VAR, "1");
+        assert!(
+            !super::env_flag_once(&cell, VAR),
+            "a flag that flipped mid-session must not be seen: the lookup is cached (#2881)"
+        );
+        let fresh = std::sync::OnceLock::new();
+        assert!(super::env_flag_once(&fresh, VAR), "a fresh cell reads the variable it is given");
+        std::env::remove_var(VAR);
+    }
+
+    /// The two flags are different variables, one a prefix of the other — a
+    /// copy-paste that reads the same name twice would make `BYRO_PROFILE_FALLERS`
+    /// inert.
+    #[test]
+    fn the_two_profile_flags_name_different_variables() {
+        assert_eq!(super::PROFILE_VAR, "BYRO_PROFILE");
+        assert_eq!(super::PROFILE_FALLERS_VAR, "BYRO_PROFILE_FALLERS");
         assert_eq!(super::profile_phases(), super::profile_phases());
         assert_eq!(super::profile_fallers(), super::profile_fallers());
     }
