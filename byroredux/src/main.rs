@@ -79,6 +79,7 @@ mod ui_input;
 mod ui_state;
 #[cfg(test)]
 mod workspace_hygiene_tests;
+mod zup_yup;
 
 use anyhow::Result;
 use byroredux_core::console::CommandRegistry;

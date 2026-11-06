@@ -28,7 +28,7 @@ use byroredux_plugin::esm;
 
 use crate::asset_provider::MaterialProvider;
 
-use super::euler_zup_to_quat_yup_refr;
+use crate::zup_yup::euler_zup_to_quat_yup_refr;
 
 /// Per-REFR texture overlay computed from XATO / XTNM / XTXR sub-records
 /// (#584). A populated overlay overrides specific texture slots of the

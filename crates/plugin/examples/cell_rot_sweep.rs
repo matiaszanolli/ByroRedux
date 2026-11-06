@@ -8,7 +8,7 @@
 //!
 //! Modes are defined once in
 //! [`byroredux_core::math::coord::euler_zup_to_quat_yup_mode`] — the same
-//! function `byroredux/src/cell_loader/euler.rs`'s `--rotation-mode N`
+//! function `byroredux/src/zup_yup.rs`'s `--rotation-mode N`
 //! dispatcher calls. #2438 / COORD-5: this example used to hand-copy all
 //! four formulas, so a retune of the dispatcher would have left the
 //! sweep reporting conclusions about a convention the engine no longer

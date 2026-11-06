@@ -58,7 +58,6 @@ use crate::components::{
 };
 
 pub(crate) mod created;
-mod euler;
 mod exterior;
 mod graph_nodes;
 mod index;
@@ -94,9 +93,9 @@ mod work_budget;
 pub use index::LoadedCellIndex;
 pub use interior_spawn::SpawnPose;
 pub use transition::{
-    log_transition_header, position_zup_to_yup, queue_door_transition,
+    log_transition_header, queue_door_transition,
     queue_transition_to_reference, reposition_camera,
-    rotation_zup_to_yup_quat, take_pending_transition, unload_current_interior, CellTransitionInFlight, CurrentCellContext,
+    take_pending_transition, unload_current_interior, CellTransitionInFlight, CurrentCellContext,
     CurrentCellRoot, CurrentExteriorContext, InteriorCellRequest, LoadedPluginSet,
     PendingCellTransitionSlot, TransitionDestination,
 };
@@ -151,8 +150,6 @@ pub(crate) use refr::{
 #[cfg(test)]
 pub(crate) use refr::expand_scol_placements;
 
-pub(crate) use euler::euler_zup_to_quat_yup_refr;
-pub use euler::set_refr_rotation_mode_diag;
 
 pub(crate) use exterior::{
     begin_worldspace_persistent_cell, ensure_persistent_actor_stubs,

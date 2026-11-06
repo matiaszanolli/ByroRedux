@@ -153,7 +153,7 @@ REFR records carry positions and Euler rotations in **Bethesda's Z-up
 clockwise** convention. The loader converts each into a Y-up
 `(Vec3, Quat, f32)` triplet — the position axis swap is
 `(X, Z, -Y)` and the rotation goes through
-[`euler_zup_to_quat_yup_refr()`](../../byroredux/src/cell_loader/euler.rs)
+[`euler_zup_to_quat_yup_refr()`](../../byroredux/src/zup_yup.rs)
 (REFR variant; there is also a plain `euler_zup_to_quat_yup` used by
 non-REFR call sites). The conversion is the documented CW→CCW transform
 in [Coordinate System](coordinate-system.md); the `--rotation-mode`

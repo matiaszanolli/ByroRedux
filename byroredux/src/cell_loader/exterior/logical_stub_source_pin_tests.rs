@@ -46,7 +46,7 @@ fn logical_actor_stubs_spawn_through_the_shared_transform_bearing_helper() {
          the base record's SCRI/VMAD and the ACHR's own VMAD (#4112)"
     );
     assert!(
-        src.contains("transition::position_zup_to_yup(placed.position)"),
+        src.contains("zup_yup::position_zup_to_yup(placed.position)"),
         "the stub must be given the REFR's own placement, converted the same \
          way the reference loader converts it"
     );

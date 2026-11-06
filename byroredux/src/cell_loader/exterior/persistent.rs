@@ -175,8 +175,8 @@ impl PersistentCellApplyJob {
                 placed,
                 &wctx.load_order,
                 &wctx.record_index,
-                super::super::transition::position_zup_to_yup(placed.position),
-                super::super::transition::rotation_zup_to_yup_quat(placed.rotation),
+                crate::zup_yup::position_zup_to_yup(placed.position),
+                crate::zup_yup::rotation_zup_to_yup_quat(placed.rotation),
                 placed.scale,
             );
             // #6220 — its home cell is not loaded: its script runs no `GameMode`.
@@ -602,8 +602,8 @@ pub(crate) fn ensure_persistent_actor_stubs(
             placed,
             &wctx.load_order,
             &wctx.record_index,
-            super::super::transition::position_zup_to_yup(placed.position),
-            super::super::transition::rotation_zup_to_yup_quat(placed.rotation),
+            crate::zup_yup::position_zup_to_yup(placed.position),
+            crate::zup_yup::rotation_zup_to_yup_quat(placed.rotation),
             placed.scale,
         );
         spawned += 1;

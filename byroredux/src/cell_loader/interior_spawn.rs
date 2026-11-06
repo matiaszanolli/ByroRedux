@@ -28,7 +28,7 @@
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm::cell::{EsmCellIndex, PlacedRef};
 
-use super::transition::{position_zup_to_yup, rotation_zup_to_yup_quat};
+use crate::zup_yup::{position_zup_to_yup, rotation_zup_to_yup_quat};
 
 /// EDID of the base STAT vanilla `coc` places the player on. Matched
 /// case-insensitively, as every EDID lookup in the loader is.

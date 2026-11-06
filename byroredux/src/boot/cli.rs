@@ -445,7 +445,7 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
 }
 
 /// `--rotation-mode N` — the REFR Euler→Y-up diagnostic switch (see
-/// `cell_loader::euler_zup_to_quat_yup_refr` for what each mode means).
+/// `zup_yup::euler_zup_to_quat_yup_refr` for what each mode means).
 ///
 /// Returned **unclamped** (#4126): an out-of-range value must reach
 /// `euler_zup_to_quat_yup_mode`'s own `_ =>` arm, which falls back to the

@@ -63,7 +63,7 @@ use byroredux_renderer::VulkanContext;
 use crate::asset_provider::{resolve_texture_with_clamp, TextureProvider};
 use crate::components::IsLodTerrain;
 
-use super::euler::euler_zup_to_quat_yup_refr;
+use crate::zup_yup::euler_zup_to_quat_yup_refr;
 use super::exterior::ExteriorWorldContext;
 use super::lod_support::{
     classify_lod_attempt, release_lod_gpu_resources, retain_resident, sort_lod_coords_nearest,

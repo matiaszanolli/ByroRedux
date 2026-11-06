@@ -20,7 +20,7 @@ use crate::asset_provider::{MaterialProvider, TextureProvider};
 use crate::components::VisibleWhenDistant;
 use crate::npc_spawn::{NpcSpawnJob, NpcSpawnProgress};
 
-use super::euler::euler_zup_to_quat_yup_refr;
+use crate::zup_yup::euler_zup_to_quat_yup_refr;
 use super::load_order::{self, plugin_for_form_id, LoadOrder};
 use super::nif_import_registry::{canonical_model_path_key, CachedNifImport, NifImportRegistry};
 use super::refr::{

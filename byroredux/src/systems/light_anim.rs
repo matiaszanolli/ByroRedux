@@ -548,7 +548,7 @@ mod tests {
     #[test]
     fn translate_light_direction_matches_refr_rotation_of_model_direction() {
         let ld = light_data(LIGHT_FLAG_SPOT, 90.0);
-        let ref_rot = crate::cell_loader::euler_zup_to_quat_yup_refr(0.25, 0.4, 0.0);
+        let ref_rot = crate::zup_yup::euler_zup_to_quat_yup_refr(0.25, 0.4, 0.0);
         let geom = translate_light(&ld, GameKind::Skyrim, ref_rot);
         let expected = ref_rot * byroredux_core::math::Vec3::new(1.0, 0.0, 0.0);
         assert!((geom.direction[0] - expected.x).abs() < 1e-6);

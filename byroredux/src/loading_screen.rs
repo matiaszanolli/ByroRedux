@@ -513,7 +513,7 @@ fn stage_pose(screen: &LoadScreenRecord, transform: Option<&LoadScreenTransform>
     let (translation_zup, rotation, scale) = match transform {
         Some(trns) => (
             trns.translation,
-            crate::cell_loader::euler_zup_to_quat_yup_refr(
+            crate::zup_yup::euler_zup_to_quat_yup_refr(
                 trns.rotation_rad[0],
                 trns.rotation_rad[1],
                 trns.rotation_rad[2],
@@ -527,7 +527,7 @@ fn stage_pose(screen: &LoadScreenRecord, transform: Option<&LoadScreenTransform>
                 .unwrap_or([0.0; 3]);
             (
                 screen.initial_translation.unwrap_or([0.0; 3]),
-                crate::cell_loader::euler_zup_to_quat_yup_refr(
+                crate::zup_yup::euler_zup_to_quat_yup_refr(
                     deg[0].to_radians(),
                     deg[1].to_radians(),
                     deg[2].to_radians(),
@@ -865,7 +865,7 @@ mod tests {
         // conversion (#5229).
         assert_eq!(
             pose.rotation,
-            crate::cell_loader::euler_zup_to_quat_yup_refr(
+            crate::zup_yup::euler_zup_to_quat_yup_refr(
                 90f32.to_radians(),
                 0.0,
                 0.0

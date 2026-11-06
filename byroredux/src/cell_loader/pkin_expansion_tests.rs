@@ -14,6 +14,7 @@
 //! does not bake: its PKIN REFRs instance the template cell (#5489) —
 //! the CELL-typed CNAM behaviour is pinned at the bottom.
 use super::*;
+use crate::zup_yup::euler_zup_to_quat_yup_refr;
 use byroredux_plugin::esm::cell::{CellData, EsmCellIndex, PlacedRef};
 use super::refr_texture_overlay_tests::empty_placed_ref;
 use byroredux_plugin::esm::records::{PkinRecord, ScolPart, ScolPlacement, ScolRecord};

@@ -1456,7 +1456,7 @@ pub(crate) fn populate_scene_runtime(
                 ));
                 reference_directions.push((
                     placed.form_id,
-                    crate::cell_loader::rotation_zup_to_yup_quat(placed.rotation)
+                    crate::zup_yup::rotation_zup_to_yup_quat(placed.rotation)
                         * -byroredux_core::math::Vec3::Z,
                 ));
             }
@@ -1598,8 +1598,8 @@ pub(crate) fn materialize_scene_actor_alias_stubs(
                 &placed,
                 load_order,
                 index,
-                crate::cell_loader::position_zup_to_yup(placed.position),
-                crate::cell_loader::rotation_zup_to_yup_quat(placed.rotation),
+                crate::zup_yup::position_zup_to_yup(placed.position),
+                crate::zup_yup::rotation_zup_to_yup_quat(placed.rotation),
                 placed.scale,
             );
         log::debug!(

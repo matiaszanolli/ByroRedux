@@ -190,7 +190,7 @@ against a formula derived from the helper's own assumption.
 
 REFR placement does **not** call the canonical helper directly; it goes
 through a runtime A/B dispatcher in
-[`byroredux/src/cell_loader/euler.rs`](../../byroredux/src/cell_loader/euler.rs)
+[`byroredux/src/zup_yup.rs`](../../byroredux/src/zup_yup.rs)
 (`euler_zup_to_quat_yup_refr`) so an operator can re-triage candidate
 conventions without rewiring the engine. `--rotation-mode N` (default `0`,
 parsed by `rotation_mode_arg` in `byroredux/src/boot/cli.rs`); any value
@@ -259,7 +259,7 @@ independently at the import boundary:
 `cell_loader.rs` was split into the
 [`byroredux/src/cell_loader/`](../../byroredux/src/cell_loader/) directory;
 REFR placement now lives in `references/` / `refr.rs`, the spawn
-composition in `spawn.rs`, and the Euler dispatcher in `euler.rs`.
+composition in `spawn.rs`, and the Euler dispatcher in `zup_yup.rs`.
 
 Each REFR (placed reference) has a Z-up position and Euler rotation. These
 are converted to Y-up (`byroredux/src/cell_loader/references/mod.rs`):

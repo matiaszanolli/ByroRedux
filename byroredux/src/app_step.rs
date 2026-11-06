@@ -1638,9 +1638,9 @@ impl App {
                         // the arrival cell coherent; here we still want the
                         // XTEL-authored pose, not its terrain centre.
                         let dest_pos =
-                            cell_loader::position_zup_to_yup(pending.destination_position_zup);
+                            crate::zup_yup::position_zup_to_yup(pending.destination_position_zup);
                         let dest_rot =
-                            cell_loader::rotation_zup_to_yup_quat(pending.destination_rotation_zup);
+                            crate::zup_yup::rotation_zup_to_yup_quat(pending.destination_rotation_zup);
                         cell_loader::reposition_camera(&mut self.world, dest_pos, dest_rot);
                         // #1874 — without a body move here,
                         // `camera_follow_system` snaps the camera back
