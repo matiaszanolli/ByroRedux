@@ -290,7 +290,7 @@ impl VulkanContext {
         // framing this comment used to repeat here was mathematically
         // false and misidentified which sample % 8 misses; do not re-quote
         // it, the real reason for 16 over 8 is not re-derived.
-        // #1932 / TAA-D13-01 — gate on `!self.taa_failed` too, matching the
+        // #1932 / TAA-D13-01 — gate on `!self.post_state.taa_failed` too, matching the
         // dispatch gate above and `upload_params`. Without it, a permanent
         // TAA failure would leave composite reading raw un-resolved HDR
         // (per #479's fallback) while geometry kept rendering with a
@@ -303,7 +303,7 @@ impl VulkanContext {
                 // before TAA, so it then holds no temporal reconstruction.
                 let jitter_active = taa_jitter_gate(
                     self.post.taa.is_some(),
-                    self.taa_failed,
+                    self.post_state.taa_failed,
                     crate::shader_constants::render_debug_requires_raw_output(
                         self.render_debug_flags,
                         self.render_debug_mode.shader_value(),
@@ -311,7 +311,7 @@ impl VulkanContext {
                 );
                 let (jx, jy) = taa_jitter(
                     jitter_active,
-                    self.taa_failed,
+                    self.post_state.taa_failed,
                     self.frame_counter,
                     self.frame_extents.render.width as f32,
                     self.frame_extents.render.height as f32,
@@ -788,7 +788,7 @@ impl VulkanContext {
             "camera frame={} static={} svgf_recovery_frames={} render_origin_delta=({:.3},{:.3},{:.3}) vp_max_abs_delta={:.6}",
             self.frame_counter,
             camera_static,
-            self.svgf_recovery_frames,
+            self.post_state.svgf_recovery_frames,
             origin_delta[0],
             origin_delta[1],
             origin_delta[2],

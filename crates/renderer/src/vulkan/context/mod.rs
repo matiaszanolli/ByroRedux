@@ -777,6 +777,108 @@ pub struct SkinningState {
     pub clean_skin_frames: u32,
 }
 
+/// Post-pass runtime state (#6698): the exposure/tonemap settings the engine pushes
+/// each frame, and the degraded-pass latches and skip-clear bookkeeping.
+///
+/// The sibling of [`PostChain`], not part of it: `PostChain` is the pipelines,
+/// built and destroyed together, while everything here is per-frame state that
+/// survives a pipeline rebuild (its own docs call that out). Nothing here owns a
+/// Vulkan handle, so `teardown.rs` never names it.
+pub struct PostPassState {
+    /// Permanent-failure latch for the TAA compute pass. Set on the
+    /// first `taa.upload_params` error in a session, through
+    /// `latch_taa_failure` (#3981) — `TaaPipeline::dispatch` records
+    /// `ash` commands only and cannot fail, so the param-UBO write is
+    /// the pass's one real failure point. When set: the TAA
+    /// dispatch is skipped on every subsequent frame (and on the
+    /// failing frame itself, since the upload runs first), while
+    /// composite keeps sampling the raw HDR attachment directly
+    /// (#3572 — no rebind involved), so the picture keeps updating
+    /// without temporal AA instead of freezing on whatever TAA last
+    /// wrote. Reset in `recreate_swapchain` since all pass resources
+    /// are rebuilt there. See #479.
+    pub taa_failed: bool,
+    /// Same latch for SVGF, and set from the same place — the first
+    /// `svgf.upload_params` error, `SvgfPipeline::dispatch` being
+    /// infallible for the same reason (#3981). Composite keeps
+    /// sampling the stale indirect on subsequent frames (rebinding
+    /// to raw-indirect is more invasive and deferred until a real
+    /// lost-device repro). See #479 SIBLING.
+    pub svgf_failed: bool,
+    /// Frames remaining in the SVGF temporal-α recovery window. When
+    /// non-zero, the SVGF temporal pass uses an elevated α (0.5) for
+    /// both color and moments so the noisy current frame gets more
+    /// weight after a discontinuity (cell load, weather flip, fast
+    /// camera turn). Decremented once per `draw_frame`. The cell
+    /// loader / weather system bumps this via
+    /// [`VulkanContext::signal_temporal_discontinuity`]. Schied 2017 §4 floor
+    /// (0.2) takes over once the counter reaches 0. See #674 / DEN-4.
+    pub svgf_recovery_frames: u32,
+    /// Stage 1 (RENDERING-PLAN.md) — exposure-meter failure latch, set from
+    /// the first `exposure_meter.upload_params` error via
+    /// `latch_exposure_meter_failure` (the #3981 discipline; the dispatch
+    /// itself records `ash` commands only). Milder degradation than the
+    /// TAA/SVGF siblings: presentation and FSR keep sampling the per-frame
+    /// exposure slots (cleared to `DEFAULT_EXPOSURE` at init), so the frame
+    /// stays correctly graded — exposure just stops tracking the scene or
+    /// the fixed setting. Not reset on resize: the failure is a mapped-write
+    /// fault, not a resource loss.
+    pub exposure_meter_failed: bool,
+    /// Stage 1 — exposure mode and tuning, pushed from the engine's
+    /// `ExposureTuning` resource each frame (console/CLI mutable). `auto`
+    /// meters the post-bloom scene (Frostbite EV100); `fixed` writes
+    /// `exposure_fixed` unchanged. Compensation is photographic stops
+    /// (positive = darker) applied inside the auto target; adaptation speed
+    /// is the exponential time constant in seconds (0 = snap).
+    pub exposure_auto: bool,
+    pub exposure_fixed: f32,
+    pub exposure_compensation_stops: f32,
+    pub exposure_adaptation_seconds: f32,
+    /// Stage 1 — active display transform (ACES default; AgX behind
+    /// `--tonemap agx` / the `tonemap` console command). Mirrors in
+    /// `tonemap.rs`; presentation dispatches on its `shader_value()`.
+    pub tonemap: crate::tonemap::TonemapOp,
+    /// Same latch for the caustic scatter pass. Unlike SVGF/TAA's
+    /// "keeps sampling stale content" degradation, the caustic skip path
+    /// (this latch, or a frame with no TLAS yet) explicitly clears its
+    /// accumulator slot instead — see [`Self::caustic_cleared_on_skip`]
+    /// and #2507. See #479 SIBLING.
+    pub caustic_failed: bool,
+    /// Per-frame-in-flight latch: `true` once this slot's caustic
+    /// accumulator has been cleared for the current skip streak (#2507).
+    /// Composite samples `causticTex` with no validity gate, so a skipped
+    /// dispatch (TLAS absent, or `caustic_failed`) must clear the slot
+    /// rather than leave its last-written, camera-motion-blind contents
+    /// to be re-composited every subsequent frame. Reset to `false` the
+    /// moment a real dispatch runs (so the *next* skip streak clears
+    /// again) and on resize (fresh slot images, stale latch state would
+    /// otherwise skip the needed post-resize clear).
+    pub caustic_cleared_on_skip: [bool; MAX_FRAMES_IN_FLIGHT],
+    /// Per-frame-in-flight latch for the volumetrics gate-off arm (#3685) —
+    /// same shape as [`Self::caustic_cleared_on_skip`], reusing the same
+    /// pure `skip_clear_decision` state machine. `record_volumetrics_pass`
+    /// skips its dispatch whenever `requires_dispatch` is false (no medium,
+    /// no fog volumes, no lingering combustion) or the TLAS/cluster/geometry
+    /// inputs aren't ready yet; composite reads the integrated froxel
+    /// volume unconditionally every frame, so the first skip of a streak
+    /// still needs a neutral-frame clear — this latch is what stops every
+    /// *subsequent* skip in that streak from re-clearing an already-zero
+    /// volume. Reset to `false` the moment a real dispatch runs (or fails —
+    /// see the comment at the call site) and on resize.
+    pub volumetrics_cleared_on_skip: [bool; MAX_FRAMES_IN_FLIGHT],
+    /// #5956 — the latch values `record_caustic_splat_pass` /
+    /// `record_volumetrics_pass` computed for this frame's slot, held until
+    /// `queue_submit` returns `Ok` and only then written into
+    /// [`Self::caustic_cleared_on_skip`] / [`Self::volumetrics_cleared_on_skip`].
+    /// The skip-clear recorded a `vkCmdClearColorImage`; if one of
+    /// `draw_frame`'s tail `Err` sites discards the command buffer the clear
+    /// never runs, and a latch committed at record time would suppress it on
+    /// the retry (same class as #3991 / #917). `None` = this frame recorded no
+    /// decision. Reset at the top of `draw_frame`.
+    pending_caustic_cleared_on_skip: Option<bool>,
+    pending_volumetrics_cleared_on_skip: Option<bool>,
+}
+
 pub struct VulkanContext {
     // Vulkan objects are destroyed explicitly by `Drop` (`teardown.rs`),
     // not by this field order. Rust's implicit field drop runs only after
@@ -1092,102 +1194,12 @@ pub struct VulkanContext {
     /// rendering for the rest of the session (same robustness policy
     /// as every other optional pipeline in the renderer).
     pub water: Option<WaterPipeline>,
-    /// Permanent-failure latch for the TAA compute pass. Set on the
-    /// first `taa.upload_params` error in a session, through
-    /// `latch_taa_failure` (#3981) — `TaaPipeline::dispatch` records
-    /// `ash` commands only and cannot fail, so the param-UBO write is
-    /// the pass's one real failure point. When set: the TAA
-    /// dispatch is skipped on every subsequent frame (and on the
-    /// failing frame itself, since the upload runs first), while
-    /// composite keeps sampling the raw HDR attachment directly
-    /// (#3572 — no rebind involved), so the picture keeps updating
-    /// without temporal AA instead of freezing on whatever TAA last
-    /// wrote. Reset in `recreate_swapchain` since all pass resources
-    /// are rebuilt there. See #479.
-    pub taa_failed: bool,
-    /// Same latch for SVGF, and set from the same place — the first
-    /// `svgf.upload_params` error, `SvgfPipeline::dispatch` being
-    /// infallible for the same reason (#3981). Composite keeps
-    /// sampling the stale indirect on subsequent frames (rebinding
-    /// to raw-indirect is more invasive and deferred until a real
-    /// lost-device repro). See #479 SIBLING.
-    pub svgf_failed: bool,
+    /// Post-pass settings and degraded-pass state (#6698). See [`PostPassState`].
+    pub post_state: PostPassState,
     /// `r.shadowfilter on|off` — runtime A/B switch for the direct-shadow
     /// spatial filter (on by default). Off skips its dispatch and zeroes
     /// composite's `caustic_flags.y`, so the image is exactly unfiltered.
     pub(super) shadow_filter_enabled: bool,
-    /// Frames remaining in the SVGF temporal-α recovery window. When
-    /// non-zero, the SVGF temporal pass uses an elevated α (0.5) for
-    /// both color and moments so the noisy current frame gets more
-    /// weight after a discontinuity (cell load, weather flip, fast
-    /// camera turn). Decremented once per `draw_frame`. The cell
-    /// loader / weather system bumps this via
-    /// [`Self::signal_temporal_discontinuity`]. Schied 2017 §4 floor
-    /// (0.2) takes over once the counter reaches 0. See #674 / DEN-4.
-    pub svgf_recovery_frames: u32,
-    /// Stage 1 (RENDERING-PLAN.md) — exposure-meter failure latch, set from
-    /// the first `exposure_meter.upload_params` error via
-    /// `latch_exposure_meter_failure` (the #3981 discipline; the dispatch
-    /// itself records `ash` commands only). Milder degradation than the
-    /// TAA/SVGF siblings: presentation and FSR keep sampling the per-frame
-    /// exposure slots (cleared to `DEFAULT_EXPOSURE` at init), so the frame
-    /// stays correctly graded — exposure just stops tracking the scene or
-    /// the fixed setting. Not reset on resize: the failure is a mapped-write
-    /// fault, not a resource loss.
-    pub exposure_meter_failed: bool,
-    /// Stage 1 — exposure mode and tuning, pushed from the engine's
-    /// `ExposureTuning` resource each frame (console/CLI mutable). `auto`
-    /// meters the post-bloom scene (Frostbite EV100); `fixed` writes
-    /// `exposure_fixed` unchanged. Compensation is photographic stops
-    /// (positive = darker) applied inside the auto target; adaptation speed
-    /// is the exponential time constant in seconds (0 = snap).
-    pub exposure_auto: bool,
-    pub exposure_fixed: f32,
-    pub exposure_compensation_stops: f32,
-    pub exposure_adaptation_seconds: f32,
-    /// Stage 1 — active display transform (ACES default; AgX behind
-    /// `--tonemap agx` / the `tonemap` console command). Mirrors in
-    /// `tonemap.rs`; presentation dispatches on its `shader_value()`.
-    pub tonemap: crate::tonemap::TonemapOp,
-    /// Same latch for the caustic scatter pass. Unlike SVGF/TAA's
-    /// "keeps sampling stale content" degradation, the caustic skip path
-    /// (this latch, or a frame with no TLAS yet) explicitly clears its
-    /// accumulator slot instead — see [`Self::caustic_cleared_on_skip`]
-    /// and #2507. See #479 SIBLING.
-    pub caustic_failed: bool,
-    /// Per-frame-in-flight latch: `true` once this slot's caustic
-    /// accumulator has been cleared for the current skip streak (#2507).
-    /// Composite samples `causticTex` with no validity gate, so a skipped
-    /// dispatch (TLAS absent, or `caustic_failed`) must clear the slot
-    /// rather than leave its last-written, camera-motion-blind contents
-    /// to be re-composited every subsequent frame. Reset to `false` the
-    /// moment a real dispatch runs (so the *next* skip streak clears
-    /// again) and on resize (fresh slot images, stale latch state would
-    /// otherwise skip the needed post-resize clear).
-    pub caustic_cleared_on_skip: [bool; MAX_FRAMES_IN_FLIGHT],
-    /// Per-frame-in-flight latch for the volumetrics gate-off arm (#3685) —
-    /// same shape as [`Self::caustic_cleared_on_skip`], reusing the same
-    /// pure `skip_clear_decision` state machine. `record_volumetrics_pass`
-    /// skips its dispatch whenever `requires_dispatch` is false (no medium,
-    /// no fog volumes, no lingering combustion) or the TLAS/cluster/geometry
-    /// inputs aren't ready yet; composite reads the integrated froxel
-    /// volume unconditionally every frame, so the first skip of a streak
-    /// still needs a neutral-frame clear — this latch is what stops every
-    /// *subsequent* skip in that streak from re-clearing an already-zero
-    /// volume. Reset to `false` the moment a real dispatch runs (or fails —
-    /// see the comment at the call site) and on resize.
-    pub volumetrics_cleared_on_skip: [bool; MAX_FRAMES_IN_FLIGHT],
-    /// #5956 — the latch values `record_caustic_splat_pass` /
-    /// `record_volumetrics_pass` computed for this frame's slot, held until
-    /// `queue_submit` returns `Ok` and only then written into
-    /// [`Self::caustic_cleared_on_skip`] / [`Self::volumetrics_cleared_on_skip`].
-    /// The skip-clear recorded a `vkCmdClearColorImage`; if one of
-    /// `draw_frame`'s tail `Err` sites discards the command buffer the clear
-    /// never runs, and a latch committed at record time would suppress it on
-    /// the retry (same class as #3991 / #917). `None` = this frame recorded no
-    /// decision. Reset at the top of `draw_frame`.
-    pending_caustic_cleared_on_skip: Option<bool>,
-    pending_volumetrics_cleared_on_skip: Option<bool>,
     /// Reused volume list shared by the volumetric dispatch gate and injection.
     volumetric_fog_scratch: Vec<super::volumetrics::GpuFogVolume>,
     pipeline_cache: vk::PipelineCache,
@@ -1426,7 +1438,7 @@ impl VulkanContext {
     /// ~30 frames at 60 FPS while SVGF's elevated-α window already
     /// faded. See #801.
     pub fn signal_temporal_discontinuity(&mut self, frames: u32) {
-        self.svgf_recovery_frames = self.svgf_recovery_frames.max(frames);
+        self.post_state.svgf_recovery_frames = self.post_state.svgf_recovery_frames.max(frames);
         if let Some(ref mut taa) = self.post.taa {
             taa.signal_history_reset();
         }
@@ -2355,7 +2367,8 @@ mod fsr_startup_failure_promotes_to_taa_tests {
 #[cfg(test)]
 mod field_group_tests {
     /// `(context field, its type, the names that now live inside it)`.
-    const GROUPS: [(&str, &str, &[&str]); 1] = [(
+    const GROUPS: [(&str, &str, &[&str]); 2] = [
+        (
         "skin",
         "SkinningState",
         &[
@@ -2377,7 +2390,28 @@ mod field_group_tests {
             "bind_inverse_upload_warned",
             "bind_inverse_upload_failure_count",
         ],
-    )];
+    ),
+        (
+            "post_state",
+            "PostPassState",
+            &[
+                "exposure_auto",
+                "exposure_fixed",
+                "exposure_compensation_stops",
+                "exposure_adaptation_seconds",
+                "tonemap",
+                "taa_failed",
+                "svgf_failed",
+                "caustic_failed",
+                "exposure_meter_failed",
+                "svgf_recovery_frames",
+                "caustic_cleared_on_skip",
+                "volumetrics_cleared_on_skip",
+                "pending_caustic_cleared_on_skip",
+                "pending_volumetrics_cleared_on_skip",
+            ],
+        ),
+    ];
 
     /// `(name, type text)` of each field declared directly on `VulkanContext`:
     /// the lines at the struct's own indent, so a doc comment, a continuation

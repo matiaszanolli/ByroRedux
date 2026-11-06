@@ -1619,7 +1619,7 @@ impl VulkanContext {
         // machine is host-side and depends on `svgf_recovery_frames`
         // (advanced at end-of-tick); it does NOT depend on anything
         // produced by the render pass below.
-        if !self.svgf_failed {
+        if !self.post_state.svgf_failed {
             if let Some(ref mut svgf) = self.post.svgf {
                 // #3995 — `scene_static` is passed in so the recovery window
                 // can veto the progressive-accumulation drop.
@@ -1636,10 +1636,10 @@ impl VulkanContext {
                 // itself: `GpuCamera`'s w lane that `triangle.frag` reads for
                 // its knee still gets the bare camera flag above).
                 let decision = crate::vulkan::svgf::next_svgf_temporal_alpha(
-                    self.svgf_recovery_frames,
+                    self.post_state.svgf_recovery_frames,
                     svgf_history_valid,
                 );
-                self.svgf_recovery_frames = decision.next_recovery_frames;
+                self.post_state.svgf_recovery_frames = decision.next_recovery_frames;
                 // SAFETY: `svgf`'s host-visible param buffer for `frame` is live and not in use by an in-flight frame (the fence wait at frame start guarantees the prior use of this slot completed); the host write is made visible to the compute pass by the bulk HOST->COMPUTE barrier below.
                 if let Err(e) = unsafe {
                     svgf.upload_params(
@@ -1652,7 +1652,7 @@ impl VulkanContext {
                     )
                 } {
                     // #3981 — latch, don't just warn. `record_svgf_pass`'s
-                    // `!self.svgf_failed` gate then skips this frame's
+                    // `!self.post_state.svgf_failed` gate then skips this frame's
                     // dispatch rather than denoising against a param UBO
                     // holding a previous frame's alpha (or nothing at all on
                     // a slot's first use). `SvgfPipeline::dispatch` records
@@ -1662,7 +1662,7 @@ impl VulkanContext {
                         "SVGF parameter upload failed — pass disabled for the \
                          rest of the session: {e}"
                     );
-                    self.svgf_failed = true;
+                    self.post_state.svgf_failed = true;
                 }
             }
         }
@@ -1671,7 +1671,7 @@ impl VulkanContext {
         // upload_params writes the host-visible param_buffers[frame];
         // the HOST→COMPUTE dependency is covered by the bulk barrier's
         // dst_stage = COMPUTE_SHADER, so no per-dispatch barrier is needed.
-        if !self.taa_failed {
+        if !self.post_state.taa_failed {
             // The `taa` borrow ends at the `upload_params` call, which is
             // what lets the error arm take `&mut self` for the latch.
             let gamma = self
@@ -1694,7 +1694,7 @@ impl VulkanContext {
         // above. The pass's one fallible step; a failure latches the meter
         // off for the session (exposure freezes at the slots' last value —
         // fixed and auto alike — rather than metering against stale params).
-        if !self.exposure_meter_failed {
+        if !self.post_state.exposure_meter_failed {
             let upload = self
                 .post
                 .exposure_meter
@@ -1705,9 +1705,9 @@ impl VulkanContext {
                         frame,
                         super::super::exposure_meter::MeterParams {
                             mode: [
-                                if self.exposure_auto { 1.0 } else { 0.0 },
-                                self.exposure_fixed,
-                                self.exposure_compensation_stops,
+                                if self.post_state.exposure_auto { 1.0 } else { 0.0 },
+                                self.post_state.exposure_fixed,
+                                self.post_state.exposure_compensation_stops,
                                 // #4590 — alpha over THIS SLOT's update
                                 // interval, not one frame's dt: the meter
                                 // reads back the same per-FIF texel it last
@@ -1719,7 +1719,7 @@ impl VulkanContext {
                                 super::super::exposure::adaptation_alpha(
                                     frame_delta_seconds
                                         * crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT as f32,
-                                    self.exposure_adaptation_seconds,
+                                    self.post_state.exposure_adaptation_seconds,
                                 ),
                             ],
                             limits: [

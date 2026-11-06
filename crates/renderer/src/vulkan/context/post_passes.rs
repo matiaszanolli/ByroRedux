@@ -116,8 +116,8 @@ impl VulkanContext {
     /// whose submit failed) never promotes a decision for a clear that did not
     /// reach the queue.
     pub(super) fn discard_pending_skip_clear_latches(&mut self) {
-        self.pending_caustic_cleared_on_skip = None;
-        self.pending_volumetrics_cleared_on_skip = None;
+        self.post_state.pending_caustic_cleared_on_skip = None;
+        self.post_state.pending_volumetrics_cleared_on_skip = None;
         // #6291 — the ground-cover interaction field's ping-pong flip is the
         // same class of record-time decision about GPU work.
         if let Some(gc) = self.groundcover.as_mut() {
@@ -133,11 +133,11 @@ impl VulkanContext {
         if let Some(gc) = self.groundcover.as_mut() {
             gc.promote_field_commit(); // #6291
         }
-        if let Some(latch) = self.pending_caustic_cleared_on_skip.take() {
-            self.caustic_cleared_on_skip[frame] = latch;
+        if let Some(latch) = self.post_state.pending_caustic_cleared_on_skip.take() {
+            self.post_state.caustic_cleared_on_skip[frame] = latch;
         }
-        if let Some(latch) = self.pending_volumetrics_cleared_on_skip.take() {
-            self.volumetrics_cleared_on_skip[frame] = latch;
+        if let Some(latch) = self.post_state.pending_volumetrics_cleared_on_skip.take() {
+            self.post_state.volumetrics_cleared_on_skip[frame] = latch;
         }
     }
 
@@ -451,7 +451,7 @@ impl VulkanContext {
             }
 
             let mut filter_dispatched = false;
-            if !self.svgf_failed {
+            if !self.post_state.svgf_failed {
                 // Captured before the &mut self.post.svgf borrow: the à-trous
                 // pass reads DBG_DISABLE_ATROUS out of the same render-debug
                 // bitmask the fragment shader sees (env-set; console legacy
@@ -540,7 +540,7 @@ impl VulkanContext {
     /// all, and the accumulator is screen-space (doesn't track camera
     /// motion), so a skipped frame (this latch, or no TLAS yet) explicitly
     /// clears the slot instead of leaving stale content to be re-composited
-    /// every subsequent frame — see [`super::VulkanContext::caustic_cleared_on_skip`]
+    /// every subsequent frame — see [`super::PostPassState::caustic_cleared_on_skip`]
     /// and #2507. See #479 SIBLING.
     ///
     /// # Safety
@@ -569,7 +569,7 @@ impl VulkanContext {
             // the shader's `sceneFlags.x < 0.5` early-out — pre-#640 the
             // dispatch ran every frame regardless and the shader paid full
             // ray-query cost against unwritten / stale TLAS state.
-            let ran = if !self.caustic_failed {
+            let ran = if !self.post_state.caustic_failed {
                 // Deliberately the raw handle, not `ray_query_tlas` (#4779):
                 // on a failed-build frame the stale AS is bound but never
                 // traced — `rt_flag` was cleared via
@@ -603,7 +603,7 @@ impl VulkanContext {
                                 log::error!(
                                     "Caustic dispatch failed — pass disabled for the rest of the session: {e}"
                                 );
-                                self.caustic_failed = true;
+                                self.post_state.caustic_failed = true;
                                 false
                             }
                         }
@@ -619,9 +619,9 @@ impl VulkanContext {
             // of re-compositing a frozen, camera-motion-blind accumulator
             // pattern every subsequent frame. See `skip_clear_decision`.
             let (should_clear, next_latch) =
-                skip_clear_decision(ran, self.caustic_cleared_on_skip[frame]);
+                skip_clear_decision(ran, self.post_state.caustic_cleared_on_skip[frame]);
             // #5956 — promoted by `draw_frame` once `queue_submit` succeeds.
-            self.pending_caustic_cleared_on_skip = Some(next_latch);
+            self.post_state.pending_caustic_cleared_on_skip = Some(next_latch);
             if should_clear {
                 caustic.clear_for_skip(&self.device, cmd, frame);
             }
@@ -996,9 +996,9 @@ impl VulkanContext {
                     // #2507-shaped latch, shared with the caustic pass —
                     // see `skip_clear_decision`.
                     let (should_clear, next_latch) =
-                        skip_clear_decision(ran, self.volumetrics_cleared_on_skip[frame]);
+                        skip_clear_decision(ran, self.post_state.volumetrics_cleared_on_skip[frame]);
                     // #5956 — promoted by `draw_frame` once `queue_submit` succeeds.
-                    self.pending_volumetrics_cleared_on_skip = Some(next_latch);
+                    self.post_state.pending_volumetrics_cleared_on_skip = Some(next_latch);
                     if should_clear {
                         vol.record_neutral_frame(&self.device, cmd, frame);
                     } else if !ran {
@@ -1064,7 +1064,7 @@ impl VulkanContext {
         // SAFETY: `cmd` is recording outside a render pass, and the TAA,
         // composite, and timer resources are live for the current `frame`.
         unsafe {
-            if !self.taa_failed {
+            if !self.post_state.taa_failed {
                 if let Some(ref mut taa) = self.post.taa {
                     // #1194 — bracket the TAA compute dispatch.
                     if let Some(ref mut timers) = self.gpu_timers {
@@ -1099,7 +1099,7 @@ impl VulkanContext {
     /// at all on a slot's first use.
     ///
     /// Ordering note: `build_and_upload_instances` runs before
-    /// `record_post_passes`, so `record_taa_pass`'s `!self.taa_failed` gate
+    /// `record_post_passes`, so `record_taa_pass`'s `!self.post_state.taa_failed` gate
     /// picks this up in the SAME frame and skips the resolve entirely; the
     /// `#1932` un-jitter gate in `assemble_camera_and_lights` picks it up on
     /// the next.
@@ -1108,7 +1108,7 @@ impl VulkanContext {
             "TAA parameter upload failed — the frame tail blits the composite \
              scene through un-resolved for the rest of the session: {error}"
         );
-        self.taa_failed = true;
+        self.post_state.taa_failed = true;
         // #3572 — composite samples the raw HDR attachment directly (no
         // TAA-output rebind exists to undo), so the #4006 deferred-rebind
         // latch this arm used to schedule is retired with the composite-side
@@ -1141,7 +1141,7 @@ impl VulkanContext {
             "Exposure-meter parameter upload failed — exposure is frozen at the \
              last written value for the rest of the session: {error}"
         );
-        self.exposure_meter_failed = true;
+        self.post_state.exposure_meter_failed = true;
     }
 
     /// SSAO compute pass (#2258 / TD1-080, extracted from
@@ -1224,7 +1224,7 @@ impl VulkanContext {
     /// between the main render pass end and `end_command_buffer`, at the
     /// fixed position `record_post_passes` calls it from.
     fn record_exposure_meter_pass(&mut self, cmd: vk::CommandBuffer, frame: usize) {
-        if self.exposure_meter_failed {
+        if self.post_state.exposure_meter_failed {
             return;
         }
         // #4591 — the raw-debug gate every later post pass carries. In auto
@@ -1424,7 +1424,7 @@ impl VulkanContext {
             // and the raw/native-blit fallback keep the scene image. The
             // raw-output gate mirrors record_taa_pass: under a raw view the
             // resolve never ran, so its output must not be consumed.
-            let taa_resolved = !self.taa_failed
+            let taa_resolved = !self.post_state.taa_failed
                 && self.post.taa.is_some()
                 && !crate::shader_constants::render_debug_requires_raw_output(
                     self.render_debug_flags,
@@ -1610,7 +1610,7 @@ impl VulkanContext {
                         // Stage 1 — display-transform selection; the exposure
                         // itself arrives via `exposureTex` (binding 2), the
                         // same texel the FSR dispatch normalized against.
-                        tonemap_op: self.tonemap.shader_value(),
+                        tonemap_op: self.post_state.tonemap.shader_value(),
                     },
                     overlay,
                 );
@@ -1977,7 +1977,7 @@ mod tests {
         let body = &src[fn_start..fn_end];
 
         assert!(
-            body.contains("skip_clear_decision(ran, self.volumetrics_cleared_on_skip[frame])"),
+            body.contains("skip_clear_decision(ran, self.post_state.volumetrics_cleared_on_skip[frame])"),
             "record_volumetrics_pass must route its skip decision through \
              the shared latch — see #3685"
         );
@@ -2013,7 +2013,7 @@ mod tests {
         let body = taa_failure_body(src);
 
         assert!(
-            body.contains("self.taa_failed = true;"),
+            body.contains("self.post_state.taa_failed = true;"),
             "latch_taa_failure must still latch taa_failed — the needle this \
              test scopes its check around has moved or been renamed"
         );
@@ -2050,7 +2050,7 @@ mod tests {
             .expect("build_and_upload_instances must still upload SVGF params");
         let arm = &caller[start..start + 1400.min(caller.len() - start)];
         assert!(
-            arm.contains("self.svgf_failed = true;"),
+            arm.contains("self.post_state.svgf_failed = true;"),
             "the svgf.upload_params error arm must latch svgf_failed — a bare \
              warn! leaves record_svgf_pass denoising against stale parameters \
              (#3981)"

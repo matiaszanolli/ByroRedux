@@ -2002,7 +2002,7 @@ mod unsubmitted_dispatch_tests {
         const POST_PASSES_RS: &str = include_str!("context/post_passes.rs");
         let production = byroredux_core::source_scan::production_text_or_whole(POST_PASSES_RS);
         let after_svgf = production
-            .split_once("self.svgf")
+            .split_once("self.post_state.svgf_failed")
             .expect("record_post_passes no longer dispatches SVGF")
             .1;
         assert!(

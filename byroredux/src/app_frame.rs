@@ -717,11 +717,11 @@ impl App {
                 .world
                 .try_resource::<crate::components::ExposureTuning>()
             {
-                ctx.exposure_auto = exposure.auto;
-                ctx.exposure_fixed = exposure.fixed_exposure;
-                ctx.exposure_compensation_stops = exposure.compensation_stops;
-                ctx.exposure_adaptation_seconds = exposure.adaptation_seconds;
-                ctx.tonemap = if exposure.agx {
+                ctx.post_state.exposure_auto = exposure.auto;
+                ctx.post_state.exposure_fixed = exposure.fixed_exposure;
+                ctx.post_state.exposure_compensation_stops = exposure.compensation_stops;
+                ctx.post_state.exposure_adaptation_seconds = exposure.adaptation_seconds;
+                ctx.post_state.tonemap = if exposure.agx {
                     byroredux_renderer::TonemapOp::Agx
                 } else {
                     byroredux_renderer::TonemapOp::Aces
@@ -738,8 +738,8 @@ impl App {
             // frames; auto adaptation resumes (0.5 s τ) on the first
             // destination frame.
             if self.loading_screen.active_stage().is_some() {
-                ctx.exposure_auto = false;
-                ctx.exposure_fixed = crate::loading_screen::STAGE_EXPOSURE_LINEAR;
+                ctx.post_state.exposure_auto = false;
+                ctx.post_state.exposure_fixed = crate::loading_screen::STAGE_EXPOSURE_LINEAR;
             }
             let frame_time_delta_ms = self
                 .world

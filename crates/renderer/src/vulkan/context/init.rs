@@ -968,28 +968,30 @@ impl VulkanContext {
             placeholder_caustic_sink,
             reservoir_buffers,
             water,
-            taa_failed: false,
-            svgf_failed: false,
+            post_state: PostPassState {
+                taa_failed: false,
+                svgf_failed: false,
+                svgf_recovery_frames: 0,
+                // Stage 1 — exposure/tonemap runtime state, seeded from the
+                // application-parsed config (CLI flags) and live-mutable via the
+                // engine's ExposureTuning resource push each frame.
+                exposure_meter_failed: false,
+                exposure_auto: renderer_config.auto_exposure,
+                exposure_fixed: super::super::exposure::DEFAULT_EXPOSURE,
+                exposure_compensation_stops: 0.0,
+                // 0.5 s eye-adaptation constant: fast enough to track a door
+                // transition without strobing, slow enough that per-frame meter
+                // jitter from the MC residual doesn't pump the exposure (#5158;
+                // live-tunable via `exposure speed <sec>`).
+                exposure_adaptation_seconds: super::super::exposure::DEFAULT_ADAPTATION_SECONDS,
+                tonemap: renderer_config.tonemap,
+                caustic_failed: false,
+                caustic_cleared_on_skip: [false; MAX_FRAMES_IN_FLIGHT],
+                volumetrics_cleared_on_skip: [false; MAX_FRAMES_IN_FLIGHT],
+                pending_caustic_cleared_on_skip: None,
+                pending_volumetrics_cleared_on_skip: None,
+            },
             shadow_filter_enabled: true,
-            svgf_recovery_frames: 0,
-            // Stage 1 — exposure/tonemap runtime state, seeded from the
-            // application-parsed config (CLI flags) and live-mutable via the
-            // engine's ExposureTuning resource push each frame.
-            exposure_meter_failed: false,
-            exposure_auto: renderer_config.auto_exposure,
-            exposure_fixed: super::super::exposure::DEFAULT_EXPOSURE,
-            exposure_compensation_stops: 0.0,
-            // 0.5 s eye-adaptation constant: fast enough to track a door
-            // transition without strobing, slow enough that per-frame meter
-            // jitter from the MC residual doesn't pump the exposure (#5158;
-            // live-tunable via `exposure speed <sec>`).
-            exposure_adaptation_seconds: super::super::exposure::DEFAULT_ADAPTATION_SECONDS,
-            tonemap: renderer_config.tonemap,
-            caustic_failed: false,
-            caustic_cleared_on_skip: [false; MAX_FRAMES_IN_FLIGHT],
-            volumetrics_cleared_on_skip: [false; MAX_FRAMES_IN_FLIGHT],
-            pending_caustic_cleared_on_skip: None,
-            pending_volumetrics_cleared_on_skip: None,
             volumetric_fog_scratch: Vec::new(),
             command_pool,
             transfer_pool,
