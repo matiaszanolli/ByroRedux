@@ -23,6 +23,8 @@ pub(crate) mod script_requests;
 pub(crate) mod archetype_idle;
 pub(crate) mod eat_sleep;
 mod cinematic;
+#[cfg(test)]
+mod request_drain_tests;
 pub(crate) mod magic_shader;
 pub(crate) mod head_look;
 pub(crate) mod revive;

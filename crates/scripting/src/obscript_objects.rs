@@ -891,6 +891,26 @@ mod tests {
         assert!(!src.contains("std::collections::{HashMap, HashSet}"));
     }
 
+    /// #6267 — `OnResetEvent` is Pattern B: `collect_due` takes it first, ahead of its
+    /// early returns, so a marker on an entity with no script instance (or with no
+    /// scripts attached at all) is not stranded for the next frame. Behavioural; the
+    /// documented-consumer check in `cleanup.rs` cannot reach this private fn (#6688).
+    #[test]
+    fn the_reset_marker_is_taken_even_when_nothing_has_a_script() {
+        use crate::obscript_state::OnResetEvent;
+        let mut world = World::new();
+        crate::register(&mut world);
+        let entity = world.spawn();
+        world.insert(entity, OnResetEvent);
+        assert!(world.query::<OnResetEvent>().is_some_and(|marks| !marks.is_empty()));
+
+        assert!(collect_due(&world).is_empty(), "no instance has anything to run");
+        assert!(
+            world.query::<OnResetEvent>().is_none_or(|marks| marks.is_empty()),
+            "`collect_due` must take the reset marker even though it has no instance to deliver it to"
+        );
+    }
+
     const REF: u32 = 0x0002_0001;
     const SCRIPT: u32 = 0x0003_0001;
 

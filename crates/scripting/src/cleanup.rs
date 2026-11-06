@@ -133,10 +133,11 @@ pub fn event_cleanup_system(world: &World, _dt: f32) {
 }
 
 /// Regression for #2672. The module doc's two-pattern contract is only
-/// worth having if it stays true, and both halves of it are checkable from
-/// source: every `drain_component::<T>` below must appear in the Pattern-A
-/// prose, and every marker the doc lists as Pattern-B must actually be
-/// drained by the consumer it names.
+/// worth having if it stays true: every `drain_component::<T>` below must
+/// appear in the Pattern-A prose (checked from the doc text, which is all
+/// that can be), and every marker the doc lists as Pattern-B must really be
+/// drained by the consumer it names and left alone by the cleanup system
+/// (both run, #6688).
 #[cfg(test)]
 mod contract_tests {
     /// The module doc and the system body are two lists of the same set.
@@ -169,137 +170,171 @@ mod contract_tests {
         }
     }
 
-    /// Each Pattern-B marker must really be drained by the consumer the doc
-    /// names. A marker that silently moved to `event_cleanup_system`, or
-    /// lost its drain entirely, would leave the table describing a contract
+    use crate::event_cleanup_system;
+    use byroredux_core::ecs::storage::Component;
+    use byroredux_core::ecs::world::World;
+
+    fn present<T: Component>(world: &World) -> bool {
+        world.query::<T>().is_some_and(|query| !query.is_empty())
+    }
+
+    /// A world with the crate's storages registered and one entity carrying
+    /// `marker` — the frame a producer has just raised it.
+    fn raised<T: Component>(marker: T) -> World {
+        let mut world = World::new();
+        crate::register(&mut world);
+        let entity = world.spawn();
+        world.insert(entity, marker);
+        assert!(present::<T>(&world), "the fixture failed to raise the marker");
+        world
+    }
+
+    /// Each Pattern-B marker the doc lists must really be drained by the
+    /// consumer it names. Behavioural: raise the marker, run the consumer,
+    /// and it is gone. A marker that silently moved to `event_cleanup_system`,
+    /// or lost its drain entirely, would leave the table describing a contract
     /// the code no longer implements — the exact rot #2672 filed.
+    ///
+    /// This replaces a text scan for the drain call in the consumer's source,
+    /// which a producer's `query_mut::<T>` insert satisfied just as well (#6688).
+    /// The binary crate's request consumers (`take_requests`) are covered by
+    /// `byroredux/src/systems/request_drain_tests.rs`.
     #[test]
     fn every_documented_pattern_b_marker_drains_in_its_named_consumer() {
-        // `drain_site` is the exact call the consumer makes. Most use the
-        // shared `drain::<T>` helper; `vm_state` hand-rolls the same removal
-        // in a named `drain_transitions`, which is why the needle is per-row
-        // rather than derived from the marker name.
-        for (marker, consumer_src, drain_site) in [
-            (
-                "SceneStartRequest",
-                include_str!("scene/playback.rs"),
-                "drain::<SceneStartRequest>",
-            ),
-            (
-                "SceneStopRequest",
-                include_str!("scene/playback.rs"),
-                "drain::<SceneStopRequest>",
-            ),
-            (
-                "SceneActionCompletionBatch",
-                include_str!("scene/playback.rs"),
-                "drain::<SceneActionCompletionBatch>",
-            ),
-            (
-                "DialoguePresentationEventBatch",
-                include_str!("dialogue.rs"),
-                "drain::<DialoguePresentationEventBatch>",
-            ),
-            (
-                "DialogueLineCompletionBatch",
-                include_str!("dialogue.rs"),
-                "drain::<DialogueLineCompletionBatch>",
-            ),
-            (
-                "ScenePackageEventBatch",
-                include_str!("package.rs"),
-                "drain::<ScenePackageEventBatch>",
-            ),
-            (
-                "ScenePackageCompletionBatch",
-                include_str!("package.rs"),
-                "drain::<ScenePackageCompletionBatch>",
-            ),
-            (
-                "EvaluatePackageRequest",
-                include_str!("package.rs"),
-                "drain::<EvaluatePackageRequest>",
-            ),
-            (
-                "StoryEvent",
-                include_str!("story_manager.rs"),
-                "drain::<StoryEvent>",
-            ),
-            (
-                "TwoStateTransitionBatch",
-                include_str!("vm_state.rs"),
-                "query_mut::<TwoStateTransitionBatch>",
-            ),
-            (
-                "OnDeathEvent",
-                include_str!("fragment/reference.rs"),
-                "drain::<crate::OnDeathEvent>",
-            ),
-            // The two physics markers' consumers live in the binary crate. The binary's request
-            // systems drain through `systems::take_requests` (#6150), which removes what it returns.
-            (
-                "HavokImpulseRequest",
-                include_str!("../../../byroredux/src/systems/cinematic.rs"),
-                "take_requests::<byroredux_scripting::HavokImpulseRequest>(world)",
-            ),
-            (
-                "MotionTypeChangeRequest",
-                include_str!("../../../byroredux/src/systems/cinematic.rs"),
-                "take_requests::<MotionTypeChangeRequest>(world)",
-            ),
-            // #6267 — the ObScript request markers.
-            (
-                "OnResetEvent",
-                include_str!("obscript_objects.rs"),
-                "query_mut::<crate::obscript_state::OnResetEvent>",
-            ),
-            (
-                "PickIdleRequest",
-                include_str!("../../../byroredux/src/systems/cinematic.rs"),
-                "take_requests::<byroredux_scripting::PickIdleRequest>(world)",
-            ),
-            (
-                "FleeRequest",
-                include_str!("../../../byroredux/src/systems/flee.rs"),
-                "take_requests::<FleeRequest>(world)",
-            ),
-            (
-                "PushActorRequest",
-                include_str!("../../../byroredux/src/systems/knockdown.rs"),
-                "take_requests::<PushActorRequest>(world)",
-            ),
-            (
-                "ReviveRequest",
-                include_str!("../../../byroredux/src/systems/revive.rs"),
-                "take_requests::<ReviveRequest>(world)",
-            ),
-            (
-                "UseWeaponRequest",
-                include_str!("../../../byroredux/src/systems/script_requests.rs"),
-                "take_requests::<UseWeaponRequest>(world)",
-            ),
-            (
-                "ResetInventoryRequest",
-                include_str!("../../../byroredux/src/systems/script_requests.rs"),
-                "take_requests::<ResetInventoryRequest>(world)",
-            ),
-        ] {
-            // Production code only: a test module that merely mentions the
-            // drain must not satisfy the pin.
-            let consumer_src = byroredux_core::source_scan::production_text_or_whole(consumer_src);
+        use crate::dialogue::{DialogueLineCompletionBatch, DialoguePresentationEventBatch};
+        use crate::package::{
+            EvaluatePackageRequest, ScenePackageCompletionBatch, ScenePackageEventBatch,
+        };
+        use crate::scene::playback::{
+            SceneActionCompletionBatch, SceneStartRequest, SceneStopRequest,
+        };
+        use crate::story_manager::StoryEvent;
+        use crate::vm_state::TwoStateTransitionBatch;
+
+        fn drains<T: Component>(marker: &str, raised_marker: T, consumer: impl FnOnce(&World)) {
+            let world = raised(raised_marker);
+            consumer(&world);
             assert!(
-                consumer_src.contains(drain_site),
-                "`{marker}` is documented as Pattern B (self-draining in its \
-                 own consumer) but that consumer no longer drains it — \
-                 either restore the drain or move it to \
+                !present::<T>(&world),
+                "`{marker}` is documented as Pattern B (self-draining in its own consumer) but \
+                 that consumer left it in place — either restore the drain or move it to \
                  `event_cleanup_system` and update the module doc (#2672)"
             );
+        }
+
+        drains("SceneStartRequest", SceneStartRequest, |w| crate::scene_playback_system(w, 0.0));
+        drains("SceneStopRequest", SceneStopRequest, |w| crate::scene_playback_system(w, 0.0));
+        drains("SceneActionCompletionBatch", SceneActionCompletionBatch(vec![0]), |w| {
+            crate::scene_playback_system(w, 0.0)
+        });
+        drains(
+            "DialoguePresentationEventBatch",
+            DialoguePresentationEventBatch::default(),
+            |w| crate::scene_dialogue_system(w, 0.0),
+        );
+        drains("DialogueLineCompletionBatch", DialogueLineCompletionBatch(vec![0]), |w| {
+            crate::scene_dialogue_system(w, 0.0)
+        });
+        drains("ScenePackageEventBatch", ScenePackageEventBatch::default(), |w| {
+            crate::scene_package_system(w, 0.0)
+        });
+        drains("ScenePackageCompletionBatch", ScenePackageCompletionBatch(vec![0]), |w| {
+            crate::scene_package_system(w, 0.0)
+        });
+        drains("EvaluatePackageRequest", EvaluatePackageRequest, |w| {
+            crate::scene_package_system(w, 0.0)
+        });
+        drains(
+            "StoryEvent",
+            StoryEvent {
+                mnemonic: *b"KILL",
+                reference_1: 0,
+                reference_2: None,
+                location_1: None,
+                location_2: None,
+                scripted: Default::default(),
+            },
+            |w| crate::story_manager_dispatch_system(w),
+        );
+        drains("TwoStateTransitionBatch", TwoStateTransitionBatch::default(), |w| {
+            crate::vm_state::two_state_activator_system(w, 0.0)
+        });
+        drains("OnDeathEvent", crate::OnDeathEvent { killer: None }, |w| {
+            crate::fragment::reference_script_event_system(w, 0.0)
+        });
+        // `OnResetEvent`'s consumer (`collect_due`) is private to
+        // `obscript_objects`; its drain is tested there.
+    }
+
+    /// The other half of Pattern B: a marker owned by its consumer must NOT also
+    /// be drained by `event_cleanup_system` — "pick one pattern" (#2672). Raise
+    /// each one, run the end-of-frame cleanup, and it is still there for its
+    /// consumer. Replaces `!include_str!("cleanup.rs").contains(..)`, which only
+    /// saw the one spelling `drain_component::<T>` and none of its aliases.
+    #[test]
+    fn pattern_b_markers_survive_event_cleanup() {
+        use crate::dialogue::{DialogueLineCompletionBatch, DialoguePresentationEventBatch};
+        use crate::obscript_more::{FleeRequest, PushActorRequest, ResetInventoryRequest};
+        use crate::obscript_more::UseWeaponRequest;
+        use crate::obscript_state::{OnResetEvent, ReviveRequest};
+        use crate::package::{
+            EvaluatePackageRequest, ScenePackageCompletionBatch, ScenePackageEventBatch,
+        };
+        use crate::scene::playback::{
+            SceneActionCompletionBatch, SceneStartRequest, SceneStopRequest,
+        };
+        use crate::story_manager::StoryEvent;
+        use crate::vm_state::TwoStateTransitionBatch;
+
+        fn survives<T: Component>(marker: &str, raised_marker: T) {
+            let world = raised(raised_marker);
+            event_cleanup_system(&world, 0.0);
             assert!(
-                !include_str!("cleanup.rs").contains(&format!("drain_component::<{marker}>")),
-                "`{marker}` is drained BOTH by its consumer and by \
-                 `event_cleanup_system` — pick one pattern (#2672)"
+                present::<T>(&world),
+                "`{marker}` is Pattern B (drained by its own consumer) but \
+                 `event_cleanup_system` removed it before the consumer could (#2672)"
             );
         }
+
+        survives("SceneStartRequest", SceneStartRequest);
+        survives("SceneStopRequest", SceneStopRequest);
+        survives("SceneActionCompletionBatch", SceneActionCompletionBatch(vec![0]));
+        survives("DialoguePresentationEventBatch", DialoguePresentationEventBatch::default());
+        survives("DialogueLineCompletionBatch", DialogueLineCompletionBatch(vec![0]));
+        survives("ScenePackageEventBatch", ScenePackageEventBatch::default());
+        survives("ScenePackageCompletionBatch", ScenePackageCompletionBatch(vec![0]));
+        survives("EvaluatePackageRequest", EvaluatePackageRequest);
+        survives(
+            "StoryEvent",
+            StoryEvent {
+                mnemonic: *b"KILL",
+                reference_1: 0,
+                reference_2: None,
+                location_1: None,
+                location_2: None,
+                scripted: Default::default(),
+            },
+        );
+        survives("TwoStateTransitionBatch", TwoStateTransitionBatch::default());
+        survives("OnDeathEvent", crate::OnDeathEvent { killer: None });
+        survives("HavokImpulseRequest", crate::HavokImpulseRequest { vector: [0.0; 3] });
+        survives(
+            "MotionTypeChangeRequest",
+            crate::MotionTypeChangeRequest {
+                motion_type: byroredux_core::ecs::components::MotionType::Static,
+                allow_activate: false,
+            },
+        );
+        survives("OnResetEvent", OnResetEvent);
+        survives("PickIdleRequest", crate::PickIdleRequest);
+        survives("FleeRequest", FleeRequest);
+        survives("PushActorRequest", PushActorRequest { from: 0, force: 0.0 });
+        survives("ReviveRequest", ReviveRequest);
+        survives(
+            "UseWeaponRequest",
+            UseWeaponRequest { weapon: 0, target: 0, shots: 1, harmless: false },
+        );
+        survives("ResetInventoryRequest", ResetInventoryRequest);
     }
 }
 
