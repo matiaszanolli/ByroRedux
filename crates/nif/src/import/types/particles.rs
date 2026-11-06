@@ -67,7 +67,7 @@ pub struct ImportedParticleEmitter {
     /// system's own shader/property chain, when it binds one. Mirrors
     /// [`ImportedMaterial::effect_shader`]: the scene builder packs it into
     /// `ParticleEmitter::effect_shader_flags` at the importer boundary
-    /// (`cell_loader::pack_effect_shader_flags`), which is what carries
+    /// (`material_flags::pack_effect_shader_flags`), which is what carries
     /// BGEM palette-remap / `EFFECT_SOFT` / `EFFECT_LIT` through to the
     /// particle draws. Pre-#2610 the walker built this data and dropped it,
     /// so every particle `DrawCommand` shipped `effect_shader_flags: 0`.

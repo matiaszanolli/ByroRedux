@@ -303,19 +303,9 @@ pub(crate) fn bgem_uses_thin_glass_behavior(bgem: &BgemFile) -> bool {
 /// #951 / SAFE-26 — bounded-cache caps for `MaterialProvider`. Sized to
 /// comfortably hold the unique BGEM/BGSM-ref count of any single vanilla
 /// cell (~100s) plus a few cells of streaming residency.
-/// The roughness a near-mirror BGSM falls back to when no gloss map can
-/// modulate the clamp floor per-texel (#3639). Matches the neutral
-/// `classify_pbr_keyword`'s arms already use
-/// (`crates/core/src/ecs/components/material.rs`) rather than inventing a
-/// second "no data" convention. Shared with
-/// `material_translate::resolve_unresolved_gloss_neutral_roughness`, which
-/// owns the authored-but-unresolvable half of the same rule (#3905).
-pub(crate) const NEAR_MIRROR_NEUTRAL_ROUGHNESS: f32 = 0.5;
-
-/// The floor `(1.0 - smoothness).clamp(..)` pins a near-mirror BGSM to. A
-/// material still sitting exactly here at spawn has had no gloss map recover
-/// it, which is what [`NEAR_MIRROR_NEUTRAL_ROUGHNESS`] exists to fix (#3905).
-pub(crate) const NEAR_MIRROR_ROUGHNESS_FLOOR: f32 = 0.04;
+// #6712 — the near-mirror roughness constants live in `material_translate`, the
+// canonical boundary that owns the authored-but-unresolvable half of the same rule.
+use crate::material_translate::{NEAR_MIRROR_NEUTRAL_ROUGHNESS, NEAR_MIRROR_ROUGHNESS_FLOOR};
 
 /// Narrow a BGSM/BGEM `src_blend`/`dst_blend` value to the `u8` the
 /// Gamebryo `NiAlphaProperty` blend-factor field (and

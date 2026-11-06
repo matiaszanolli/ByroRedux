@@ -262,7 +262,7 @@ pub(super) fn emit_particles(
                 // `EFFECT_SOFT`, `EFFECT_LIT`, lighting-influence byte).
                 // Packed into the canonical `material_flag::EFFECT_*`
                 // layout at the importer boundary by
-                // `cell_loader::pack_effect_shader_flags`, so this is a
+                // `material_flags::pack_effect_shader_flags`, so this is a
                 // verbatim forward — never a re-derive from the BGEM.
                 // Pre-#2610 this was a hardcoded `0`, dropping every
                 // BGEM-authored particle effect flag. The palette bits stay
@@ -356,7 +356,7 @@ mod quantize_fade_tests {
     /// #2610 (FO4-D7-05) — a BGEM-authored emitter's effect-shader flags
     /// must reach the particle `DrawCommand`. The word is packed into the
     /// canonical `material_flag::EFFECT_*` layout at the importer boundary
-    /// (`cell_loader::pack_effect_shader_flags`); the renderer forwards it
+    /// (`material_flags::pack_effect_shader_flags`); the renderer forwards it
     /// verbatim. Pre-fix this was a hardcoded `0`, so every BGEM particle
     /// palette-remap / soft / lit bit was dropped.
     #[test]

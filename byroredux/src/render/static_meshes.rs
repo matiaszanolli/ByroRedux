@@ -1315,7 +1315,7 @@ fn build_static_draw_command(
         vertex_color_emissive: mat.is_some_and(|m| m.vertex_color_mode == 1),
         // #890 Stage 2 — packed BSEffect flag bits captured
         // at importer ingestion (see
-        // `cell_loader::pack_effect_shader_flags`). Layout
+        // `material_flags::pack_effect_shader_flags`). Layout
         // matches `GpuMaterial::material_flags` so
         // `to_gpu_material` ORs the word straight in.
         effect_shader_flags: mat.map(|m| m.effect_shader_flags).unwrap_or(0),

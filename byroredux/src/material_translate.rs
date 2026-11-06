@@ -2,7 +2,7 @@
 //!
 //! [`translate_material`] is the **single base-material** site that turns a raw,
 //! per-game [`ImportedMaterial`] (with BGSM/BGEM already merged into it by
-//! [`crate::asset_provider`]'s `merge_external_material`) into the engine's
+//! `asset_provider`'s `merge_external_material`) into the engine's
 //! canonical [`Material`] ECS component. Every consumer downstream of
 //! `Material` reads game-agnostic, fully-resolved data — the per-game
 //! quirks are resolved here, exactly once. This is the material slice of
@@ -13,7 +13,7 @@
 //! pass — see **The boundary is two-phase** below (#2330).
 //!
 //! Before this module existed, the `Material` struct literal was built
-//! verbatim at two sites — [`crate::cell_loader`]'s `spawn` (REFR cell
+//! verbatim at two sites — `cell_loader`'s `spawn` (REFR cell
 //! placement) and [`crate::scene`]'s `nif_loader` (loose-NIF load) —
 //! ~110 near-identical lines each, kept in sync by hand. That
 //! duplication was itself a translation leak: a field added to one site
@@ -593,9 +593,9 @@ pub(crate) struct MaterialTranslateProvenance {
 /// Resolution performed here (the "single source of truth"):
 ///   - all material scalars / colors / flags copied across;
 ///   - `effect_shader_flags` packed as the union of the BSEffectShader
-///     SLSF bits ([`crate::cell_loader::pack_effect_shader_flags`]), the
+///     SLSF bits ([`crate::material_flags::pack_effect_shader_flags`]), the
 ///     BGSM v>2 PBR/translucency/model-space-normals bits
-///     ([`crate::cell_loader::pack_imported_material_flags`]), any
+///     ([`crate::material_flags::pack_imported_material_flags`]), any
 ///     `extra_material_flags` the caller supplies (the cell loader's
 ///     REFR-overlay model-space-normals bit; `0` for loose-NIF loads),
 ///     and the `_msn`-name classifier (#4548): a normal slot whose
@@ -780,9 +780,9 @@ pub(crate) fn translate_material_with_provenance(
         // `_msn`-name classifier (#4548). All four contributors target
         // the same `material_flag::*` layout so a single OR yields the
         // word `GpuMaterial.material_flags` consumes.
-        effect_shader_flags: crate::cell_loader::pack_effect_shader_flags(
+        effect_shader_flags: crate::material_flags::pack_effect_shader_flags(
             source.effect_shader.as_ref(),
-        ) | crate::cell_loader::pack_imported_material_flags(source)
+        ) | crate::material_flags::pack_imported_material_flags(source)
             | extra_material_flags
             | msn_name_flag,
         // #1147 Phase 2b — BGSM v>=8 translucency suite; only meaningful
@@ -1363,6 +1363,20 @@ pub(crate) fn resolve_normal_alpha_spec_roughness(
     }
 }
 
+/// The roughness a near-mirror BGSM falls back to when no gloss map can
+/// modulate the clamp floor per-texel (#3639). Matches the neutral
+/// `classify_pbr_keyword`'s arms already use
+/// (`crates/core/src/ecs/components/material.rs`) rather than inventing a
+/// second "no data" convention. Shared with
+/// [`unresolved_gloss_neutral_roughness`], which
+/// owns the authored-but-unresolvable half of the same rule (#3905).
+pub(crate) const NEAR_MIRROR_NEUTRAL_ROUGHNESS: f32 = 0.5;
+
+/// The floor `(1.0 - smoothness).clamp(..)` pins a near-mirror BGSM to. A
+/// material still sitting exactly here at spawn has had no gloss map recover
+/// it, which is what [`NEAR_MIRROR_NEUTRAL_ROUGHNESS`] exists to fix (#3905).
+pub(crate) const NEAR_MIRROR_ROUGHNESS_FLOOR: f32 = 0.04;
+
 /// #3905 (NIFAL-2026-09-05-D1-01) — the resolved-state half of #3639's
 /// near-mirror fallback. Returns the neutral roughness when a BGSM material
 /// is still pinned at the clamp floor and no gloss map RESOLVED to modulate
@@ -1412,8 +1426,7 @@ pub(crate) fn unresolved_gloss_neutral_roughness(
     if gloss_map_index != 0 {
         return None;
     }
-    (roughness <= crate::asset_provider::NEAR_MIRROR_ROUGHNESS_FLOOR)
-        .then_some(crate::asset_provider::NEAR_MIRROR_NEUTRAL_ROUGHNESS)
+    (roughness <= NEAR_MIRROR_ROUGHNESS_FLOOR).then_some(NEAR_MIRROR_NEUTRAL_ROUGHNESS)
 }
 
 /// Apply [`unresolved_gloss_neutral_roughness`] once at spawn, after
@@ -4222,7 +4235,6 @@ mod overlay_pbr_divergence_tests {
 #[cfg(test)]
 mod unresolved_gloss_neutral_tests {
     use super::*;
-    use crate::asset_provider::{NEAR_MIRROR_NEUTRAL_ROUGHNESS, NEAR_MIRROR_ROUGHNESS_FLOOR};
 
     /// #3905 — the population the #3639 boundary check structurally cannot
     /// see: a gloss map WAS authored (so `smooth_spec.is_none()` is false and

@@ -68,7 +68,6 @@ mod legacy_lod_index;
 mod lod_bands;
 mod lod_coverage;
 mod lod_support;
-mod material_flags;
 mod nif_import_registry;
 mod object_lod;
 mod object_sequences;
@@ -219,7 +218,6 @@ pub(crate) use unload::release_victim_item_instances;
 #[cfg(test)]
 pub(crate) use unload::release_victim_rapier_bodies;
 pub(crate) use load::note_player_entered_cell;
-pub(crate) use material_flags::{pack_effect_shader_flags, pack_imported_material_flags};
 
 #[cfg(test)]
 mod attach_points_spawn_tests;

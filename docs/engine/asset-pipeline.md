@@ -381,9 +381,9 @@ data; the per-game quirks resolve here exactly once.
 
 - copy all material scalars / colours / flags across;
 - pack `effect_shader_flags` as the union of the BSEffectShader SLSF
-  bits ([`cell_loader::pack_effect_shader_flags`](../../byroredux/src/cell_loader.rs)),
+  bits ([`material_flags::pack_effect_shader_flags`](../../byroredux/src/material_flags.rs)),
   the BGSM v>2 PBR / translucency / model-space-normals bits
-  ([`cell_loader::pack_imported_material_flags`](../../byroredux/src/cell_loader.rs)),
+  ([`material_flags::pack_imported_material_flags`](../../byroredux/src/material_flags.rs)),
   any caller-supplied `extra_material_flags` (the cell loader passes
   the REFR-overlay model-space-normals bit; loose-NIF loads pass `0`),
   and the `_msn`-name classifier (#4548): a normal slot whose resolved

@@ -72,7 +72,7 @@ pub fn apply_emitter_params(
 /// `min(authored, MAX_PARTICLES_CEILING)` (#3344); `effect_shader` packs
 /// the authored `BSEffectShaderProperty` payload into
 /// `preset.effect_shader_flags` via
-/// [`crate::cell_loader::pack_effect_shader_flags`] (#2610 / #3589) — this
+/// [`crate::material_flags::pack_effect_shader_flags`] (#2610 / #3589) — this
 /// one is unconditional, not gated on `Some`, since `pack_effect_shader_
 /// flags(None) == 0` already matches every preset's zero default. A
 /// `None`/empty input on every other field leaves the preset default in
@@ -161,7 +161,7 @@ pub fn apply_emitter_overlays(
     // preset initialises `effect_shader_flags` to 0, so an absent authored
     // payload (`pack_effect_shader_flags(None) == 0`) is a no-op overwrite,
     // not a behavioural change.
-    preset.effect_shader_flags = crate::cell_loader::pack_effect_shader_flags(effect_shader);
+    preset.effect_shader_flags = crate::material_flags::pack_effect_shader_flags(effect_shader);
     // #3590 / #4044 — the LUT those palette bits select, folded into the
     // same boundary as the flags that enable them. Previously hand-copied
     // (byte-identical) at both spawn sites with a "Mirrored in the sibling
@@ -813,7 +813,7 @@ mod tests {
         // 9. effect_shader → packed canonical flag word
         assert_eq!(
             preset.effect_shader_flags,
-            crate::cell_loader::pack_effect_shader_flags(Some(&effect))
+            crate::material_flags::pack_effect_shader_flags(Some(&effect))
         );
         assert_ne!(preset.effect_shader_flags, 0, "fixture sanity");
         // 10. greyscale_lut

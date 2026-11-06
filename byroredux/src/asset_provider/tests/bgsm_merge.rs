@@ -1327,8 +1327,8 @@ fn bgem_merge_keeps_nif_effect_palette_bits_and_packs_the_remap() {
         "the BGEM's own enable bit must not be skipped when the NIF filled the LUT"
     );
 
-    let flags = crate::cell_loader::pack_effect_shader_flags(mesh.material.effect_shader.as_ref())
-        | crate::cell_loader::pack_imported_material_flags(&mesh.material);
+    let flags = crate::material_flags::pack_effect_shader_flags(mesh.material.effect_shader.as_ref())
+        | crate::material_flags::pack_imported_material_flags(&mesh.material);
     assert_ne!(flags & EFFECT_PALETTE_COLOR, 0);
     assert_ne!(flags & EFFECT_PALETTE_ALPHA, 0);
 }
@@ -1360,8 +1360,8 @@ fn bgem_palette_bits_survive_a_nif_supplied_greyscale_lut() {
 
     assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
 
-    let flags = crate::cell_loader::pack_effect_shader_flags(mesh.material.effect_shader.as_ref())
-        | crate::cell_loader::pack_imported_material_flags(&mesh.material);
+    let flags = crate::material_flags::pack_effect_shader_flags(mesh.material.effect_shader.as_ref())
+        | crate::material_flags::pack_imported_material_flags(&mesh.material);
     assert_ne!(flags & EFFECT_PALETTE_ALPHA, 0);
     assert_eq!(flags & EFFECT_PALETTE_COLOR, 0, "only the alpha variant was authored");
 }
@@ -2008,7 +2008,7 @@ fn bgem_merge_forwards_soft_particle_depth() {
         es.lighting_influence, 255,
         "1.0 influence → 255 on u8 payload"
     );
-    let flags = crate::cell_loader::pack_effect_shader_flags(Some(&es));
+    let flags = crate::material_flags::pack_effect_shader_flags(Some(&es));
     assert_ne!(
         flags & EFFECT_SOFT,
         0,
