@@ -43,3 +43,19 @@ name and doc comment only, **not verified assert by assert**.
 a decision that `acceleration/predicates.rs` shows can be a tested function;
 moving them must not change call order, so they need the `BYRO_VALIDATION=1`
 check before they land.
+
+## Correction to "Candidates for pure-function extraction next" (2026-11-06)
+
+I read the three named tests' bodies. **None is a candidate: each decision is already a pure function,
+and the scan pins only that the recorder calls it.**
+
+| Test | Pure function already in place | What the scan still pins | Class |
+|---|---|---|---|
+| `caustic_sun_transmittance_applies_the_cloud_column_only_outdoors` | `caustic_sun_transmittance(exterior, column)`, asserted by value in the same test | the exact `record_caustic_splat_pass(…, sky_params.is_exterior)` argument at the call site | device/shader |
+| `record_bloom_pass_skips_raw_correctness_views_before_dispatch` | `render_debug_requires_raw_output(flags, mode)` | the call precedes `bloom.dispatch(` and a `return;` sits between | device/shader (order) |
+| `record_volumetrics_pass_routes_skip_clears_through_the_shared_latch` | `skip_clear_decision(ran, cleared)` | the call is made with that latch field, and `record_neutral_frame` has one call site | device/shader (order) |
+
+So the earlier pass's claim that these three can lose their scans by extraction was wrong. Their remaining
+scans pin call wiring inside `&mut VulkanContext` recorders, which no device-free test reaches. #6687 stays
+open: ~314 sites are still unclassified and the no-extraction finding above narrows where to look. The next
+useful reads are the `svgf.rs` and `sync.rs` call-structure pins, in that order.
