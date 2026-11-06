@@ -92,13 +92,13 @@ use byroredux_nif::import::{ImportedMesh, MeshResolver};
 use byroredux_nif::scene::NifScene;
 use byroredux_plugin::esm::cell::CellData;
 use byroredux_renderer::vulkan::context::VulkanContext;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::nif_import_registry::{CachedNifImport, NifImportRegistry};
 use super::spawn::spawn_placed_instances;
 use super::FrameTimeBudget;
+use crate::asset_provider::material::open_geometry_csg;
 use crate::asset_provider::{MaterialProvider, TextureProvider};
 
 /// COORD-04 / #4939 — `byroredux-bsa` re-declares the exterior cell size
@@ -798,42 +798,6 @@ fn resolve_precombine_owner<'a>(
         Some(&path) if idx == 0 => (path, None),
         Some(&path) => (path, Some(super::load_order::plugin_basename_lc(path))),
         None => (fallback, None),
-    }
-}
-
-/// Open the `<Plugin> - Geometry.csg` blob that sits next to `plugin_path`
-/// in the Data directory (M49). The caller passes the cell's *owning*
-/// plugin path (resolved via [`resolve_precombine_owner`]) so the CSG named for
-/// the cell's master (`Fallout4 - Geometry.csg`, `DLCCoast - Geometry.csg`,
-/// …) is opened rather than the last-loaded plugin's. Returns `None` when
-/// the plugin has no companion CSG (non-FO4 content, or a plugin that
-/// authored no shared precombines) — the caller then falls back to per-REFR
-/// rendering.
-pub(crate) fn open_geometry_csg(plugin_path: &str) -> Option<CsgArchive> {
-    let p = Path::new(plugin_path);
-    let dir = p.parent()?;
-    let stem = p.file_stem()?.to_str()?;
-    let csg_path = dir.join(format!("{stem} - Geometry.csg"));
-    if !csg_path.is_file() {
-        return None;
-    }
-    match CsgArchive::open(&csg_path) {
-        Ok(a) => {
-            log::info!(
-                "PreCombined: opened CSG '{}' ({} objects, {} chunks)",
-                csg_path.display(),
-                a.num_objects(),
-                a.num_chunks(),
-            );
-            Some(a)
-        }
-        Err(e) => {
-            log::warn!(
-                "PreCombined: failed to open CSG '{}': {e}",
-                csg_path.display()
-            );
-            None
-        }
     }
 }
 

@@ -41,7 +41,7 @@ pub(crate) use merge::{merge_external_material, MergeOutcome};
 // `asset_provider` and its test siblings, not the whole crate. Re-exported at
 // that same width so the eviction tests in `tests/starfield_mat.rs` keep
 // reaching it without widening the surface.
-pub(crate) use provider::{build_material_provider, MaterialProvider};
+pub(crate) use provider::{build_material_provider, open_geometry_csg, MaterialProvider};
 // Test-only (#5010): the diagnostic wording/silence contract, reached from
 // `tests/bgsm_diagnostics.rs`.
 #[cfg(test)]

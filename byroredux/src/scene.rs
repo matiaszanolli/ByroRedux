@@ -194,7 +194,9 @@ pub(crate) fn flush_pending_loose_textures(ctx: &mut VulkanContext) {
     }
 }
 
+mod scene_runtime;
 mod world_setup;
+pub(crate) use scene_runtime::{materialize_scene_actor_alias_stubs, populate_scene_runtime};
 // Re-export the streaming setup helpers so the M40 Phase 2 cell-
 // transition orchestrator in `main.rs::App::step_cell_transition` can
 // reuse them on Interior→Exterior swaps — same boot-path code, no

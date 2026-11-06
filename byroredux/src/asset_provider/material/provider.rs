@@ -278,6 +278,44 @@ pub(crate) const MAX_FAILED_PATHS: usize = 1024;
 /// sized to cover a whole streaming working set rather than a cell's.
 pub(crate) const MAX_MAGIC_CACHE_ENTRIES: usize = 4096;
 
+// #6716 — archive-level: `<Plugin> - Geometry.csg` is found by path and opened, no cell logic. It
+// used to live in `cell_loader::precombined`, which made this layer call upward for it.
+/// Open the `<Plugin> - Geometry.csg` blob that sits next to `plugin_path`
+/// in the Data directory (M49). The caller passes the cell's *owning*
+/// plugin path (resolved via `resolve_precombine_owner`) so the CSG named for
+/// the cell's master (`Fallout4 - Geometry.csg`, `DLCCoast - Geometry.csg`,
+/// …) is opened rather than the last-loaded plugin's. Returns `None` when
+/// the plugin has no companion CSG (non-FO4 content, or a plugin that
+/// authored no shared precombines) — the caller then falls back to per-REFR
+/// rendering.
+pub(crate) fn open_geometry_csg(plugin_path: &str) -> Option<byroredux_bsa::CsgArchive> {
+    let p = std::path::Path::new(plugin_path);
+    let dir = p.parent()?;
+    let stem = p.file_stem()?.to_str()?;
+    let csg_path = dir.join(format!("{stem} - Geometry.csg"));
+    if !csg_path.is_file() {
+        return None;
+    }
+    match byroredux_bsa::CsgArchive::open(&csg_path) {
+        Ok(a) => {
+            log::info!(
+                "PreCombined: opened CSG '{}' ({} objects, {} chunks)",
+                csg_path.display(),
+                a.num_objects(),
+                a.num_chunks(),
+            );
+            Some(a)
+        }
+        Err(e) => {
+            log::warn!(
+                "PreCombined: failed to open CSG '{}': {e}",
+                csg_path.display()
+            );
+            None
+        }
+    }
+}
+
 impl MaterialProvider {
     /// #5821 — record a failed material path once: the #1430
     /// half-eviction on cap, the insert, the order-queue push and the
@@ -337,7 +375,7 @@ impl MaterialProvider {
         if let Some(cached) = self.csg_cache.get(plugin_path) {
             return cached.clone();
         }
-        let opened = crate::cell_loader::precombined::open_geometry_csg(plugin_path).map(Arc::new);
+        let opened = open_geometry_csg(plugin_path).map(Arc::new);
         self.csg_cache
             .insert(plugin_path.to_owned(), opened.clone());
         opened

@@ -1460,7 +1460,7 @@ pub(crate) fn assemble_exterior_streaming(
         ),
         std::sync::Arc::clone(&wctx.load_order),
     );
-    crate::asset_provider::populate_scene_runtime(world, &wctx.record_index);
+    crate::scene::populate_scene_runtime(world, &wctx.record_index);
     crate::asset_provider::populate_idle_clip_runtime(world, &wctx.record_index, &tex_provider);
     crate::asset_provider::populate_object_graphs(world, &tex_provider);
     crate::asset_provider::populate_skyrim_walk_clip(world, &wctx.record_index, &tex_provider);
@@ -1497,7 +1497,7 @@ pub(crate) fn assemble_exterior_streaming(
     // table (`terrain_lod_layout` / `ObjectLodScheme` are the shape to copy
     // if a second scoped scene needs a second arm).
     if state.wctx.record_index.game == byroredux_plugin::esm::reader::GameKind::Skyrim {
-        crate::asset_provider::materialize_scene_actor_alias_stubs(
+        crate::scene::materialize_scene_actor_alias_stubs(
             world,
             &state.wctx.record_index,
             &state.wctx.load_order,

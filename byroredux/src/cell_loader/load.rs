@@ -761,7 +761,7 @@ impl InteriorCellApplyJob {
         let navmesh_first = world.next_entity_id();
         crate::components::spawn_navmesh_tiles(world, &cell.navmeshes);
         stamp_cell_root_range(world, cell_root, navmesh_first, world.next_entity_id());
-        crate::asset_provider::populate_scene_runtime(world, &index);
+        crate::scene::populate_scene_runtime(world, &index);
         crate::asset_provider::populate_idle_clip_runtime(world, &index, tex_provider);
         crate::asset_provider::populate_object_graphs(world, tex_provider);
         crate::asset_provider::populate_skyrim_walk_clip(world, &index, tex_provider);
