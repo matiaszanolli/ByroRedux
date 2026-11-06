@@ -3,18 +3,10 @@
 //! The largest stage, and the one carrying the nested dispatch shims that
 //! adapt per-game runtimes to the scheduler's `fn(&World, f32)` shape.
 
-use byroredux_core::ecs::{Access, ActiveCamera, Scheduler, Stage, Transform, World};
-use byroredux_core::string::StringPool;
+use byroredux_core::ecs::Scheduler;
 
-/// Reached as `super::ai_locomotion_enabled()` by `quest_scene`: the `mod.rs` source scan pins that spelling.
+/// Reached as `super::ai_locomotion_enabled()` by `quest_scene`'s force-greet subsystem: the `mod.rs` source scan pins that spelling.
 use super::ai_locomotion_enabled;
-
-use crate::interaction::{
-    ActionState, InteractionCandidateScratch, InteractionState, InteractionTrace,
-};
-use crate::systems::{
-    animate_lights_system, loading_model_turntable_system, make_animation_system, spin_system,
-};
 
 mod combat;
 mod interaction_and_crime;

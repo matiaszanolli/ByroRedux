@@ -1281,11 +1281,11 @@ fn per_frame_driver_functions_stay_within_their_size_pins() {
         // spawn); pinned at its 2026-10-26 size so growth is deliberate.
         (SYNTH_CHILD_RS, "fn spawn_synth_child(", 605),
         (UPDATE_MOD_RS, "fn register_update_systems(", 10),
-        (UPDATE_INTERACTION_RS, "fn register_interaction_and_crime(", 225),
-        (UPDATE_COMBAT_RS, "fn register_combat(", 160),
-        (UPDATE_QUEST_RS, "fn register_quest_story_scene_and_packages(", 195),
-        (UPDATE_SCRIPT_RS, "fn register_script_runtime(", 150),
-        (UPDATE_PLAYER_RS, "fn register_player_and_animation(", 285),
+        (UPDATE_INTERACTION_RS, "fn register_interaction_and_crime(", 7),
+        (UPDATE_COMBAT_RS, "fn register_combat(", 6),
+        (UPDATE_QUEST_RS, "fn register_quest_story_scene_and_packages(", 14),
+        (UPDATE_SCRIPT_RS, "fn register_script_runtime(", 16),
+        (UPDATE_PLAYER_RS, "fn register_player_and_animation(", 14),
         (LATE_RS, "fn register_late_systems(", 16),
     ] {
         let measured = byroredux_core::source_scan::function_line_count(source, declaration);
