@@ -34,6 +34,7 @@ mod env_translate;
 mod extensions;
 mod fog;
 mod game_profiles;
+mod groundcover_state;
 mod groundcover_translate;
 mod helpers;
 mod interaction;
@@ -591,17 +592,9 @@ struct App {
     ui_dropped_host_calls_menu: Option<String>,
     /// Reusable per-frame draw command buffer (cleared each frame, allocation retained).
     draw_commands: Vec<DrawCommand>,
-    /// #4413 — this frame's authored ground-cover template draws (record,
-    /// built draw), for the ground-cover model tier. Retained like
-    /// `draw_commands`.
-    cover_template_draws: Vec<(u32, DrawCommand)>,
-    /// #4413 — the model tier's records and table. #4922 — derived once per
-    /// installed `AuthoredCover`, not per frame; `groundcover_model_records_key`
-    /// says which one they were derived from.
-    groundcover_model_records:
-        Vec<byroredux_renderer::vulkan::groundcover_models::GpuGroundCoverModelRecord>,
-    groundcover_model_selection: Vec<u32>,
-    groundcover_model_records_key: Option<crate::render::groundcover::GroundCoverModelRecordsKey>,
+    /// EXAL ground-cover scratch, caches and switches (#6694). See
+    /// [`crate::groundcover_state::GroundCoverState`].
+    groundcover: crate::groundcover_state::GroundCoverState,
     /// #4180 — the cooperative work deadline `step_streaming` computed this
     /// iteration, handed on to `step_static_blas_restore` so both between-
     /// frames stages share one allowance instead of each starting a fresh
@@ -664,54 +657,9 @@ struct App {
     /// `about_to_wait`, after the frame has been consumed) can report them.
     /// Zero on a frame that never reached `build_render_data`.
     tlas_policy: crate::render::static_meshes::TlasPolicyCounts,
-    /// EXAL ground cover (#4054). Per-frame scatter input, kept as App-owned
-    /// scratch so the allocations persist across frames — same pattern as
-    /// `draw_commands` and the light buffers.
-    groundcover_cells: Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverCell>,
-    groundcover_chunks: Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverChunk>,
-    /// Camera-centred fixed-slab ownership for ground-cover chunks.  Kept on
-    /// the app, not rebuilt in the render collector, so a chunk retains its
-    /// blade-arena slot until it genuinely leaves the residency ring.
-    groundcover_residency: crate::render::groundcover::GroundCoverResidency,
-    groundcover_collect_scratch: crate::render::groundcover::GroundCoverCollectScratch,
-    /// One-shot warning latch for an actual ground-cover capacity fault. Ring
-    /// fill-in is normal and is never logged as truncation.
-    groundcover_truncation_logged: bool,
     /// M39 — re-reads the levels texture promotions need
     /// (`texture_streamer`); created the first frame streaming is on.
     texture_streamer: Option<texture_streamer::TextureStreamer>,
-    /// Bindless generated Tier-3 atlas and the palette signature currently in
-    /// it. The handle is updated in place on a worldspace palette change, so
-    /// it never grows the registry during travel.
-    groundcover_detail_atlas: Option<(u32, u64)>,
-    groundcover_species: Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverSpecies>,
-    /// The scatter's species selection table (§7), rebuilt alongside
-    /// `groundcover_species` each frame from the palette's climate weights.
-    /// #4609 — rebuilt only when `groundcover_species_table_signature`
-    /// moves (palette or climate change), not every frame.
-    groundcover_species_table: Vec<u32>,
-    /// #4609 — the O(species) cache key the species-table rebuild is gated
-    /// on.
-    groundcover_species_table_signature: u64,
-    /// §12.4's per-frame disturber list (#4058). Caller-owned scratch, so the
-    /// allocation persists across frames like the chunk and cell vectors.
-    groundcover_disturbers: Vec<byroredux_renderer::vulkan::groundcover::GpuGroundCoverDisturber>,
-    /// Render the accepted candidate points instead of blades. §9's Phase 1
-    /// view: "this is where the distribution is judged, before any blade
-    /// exists". Set by `--groundcover-debug-points`.
-    groundcover_debug_points: bool,
-    /// Skip ground cover entirely (`--groundcover-off`). The A/B switch for a
-    /// feature that changes every exterior frame.
-    groundcover_off: bool,
-    /// EXAL ground-cover §11.1 terrain-attribute sampling bench (#4052).
-    /// `Some` under `--bench-groundcover-sampling`, carrying the two sample
-    /// counts the flag can tune. The renderer-side harness is created on the
-    /// first frame that has a device, and the per-frame terrain publication
-    /// is skipped entirely while this is `None`.
-    groundcover_bench: Option<crate::bench::GroundcoverBenchConfig>,
-    /// Latched once `enable_groundcover_bench` has been attempted, so a
-    /// failure is reported once rather than every frame.
-    groundcover_bench_started: bool,
     /// When set, request a screenshot on the bench-exit frame and
     /// write the PNG to this path before quitting. Requires
     /// `bench.frames_target` to be set (otherwise there is no
@@ -1203,10 +1151,6 @@ impl App {
             ui_dropped_host_calls: 0,
             ui_dropped_host_calls_menu: None,
             draw_commands: Vec::new(),
-            cover_template_draws: Vec::new(),
-            groundcover_model_records: Vec::new(),
-            groundcover_model_selection: Vec::new(),
-            groundcover_model_records_key: None,
             frame_work_deadline: None,
             water_commands: Vec::new(),
             gpu_lights: Vec::new(),
@@ -1228,22 +1172,9 @@ impl App {
             skin_offsets: rustc_hash::FxHashMap::default(),
             material_table: byroredux_renderer::MaterialTable::new(),
             bench: Default::default(),
+            groundcover: Default::default(),
             tlas_policy: Default::default(),
-            groundcover_cells: Vec::new(),
-            groundcover_chunks: Vec::new(),
-            groundcover_residency: Default::default(),
-            groundcover_collect_scratch: Default::default(),
-            groundcover_truncation_logged: false,
             texture_streamer: None,
-            groundcover_detail_atlas: None,
-            groundcover_species: Vec::new(),
-            groundcover_species_table: Vec::new(),
-            groundcover_species_table_signature: 0,
-            groundcover_disturbers: Vec::new(),
-            groundcover_debug_points: false,
-            groundcover_off: false,
-            groundcover_bench: None,
-            groundcover_bench_started: false,
             screenshot_path: None,
             linear_capture: None,
             export_mitsuba_dir: None,

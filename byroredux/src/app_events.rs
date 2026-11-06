@@ -40,19 +40,19 @@ fn groundcover_collect_scratch_rows(
     gc: &crate::render::groundcover::GroundCoverCollectScratch,
 ) -> [ScratchRow; 9] {
     [
-        vec_row("groundcover_collect_scratch.resident_cells", &gc.resident_cells),
-        vec_row("groundcover_collect_scratch.candidates", &gc.candidates),
-        map_row("groundcover_collect_scratch.emitted", &gc.emitted),
-        vec_row("groundcover_collect_scratch.disturber_found", &gc.disturber_found),
-        vec_row("groundcover_collect_scratch.layout_order", &gc.layout_order),
+        vec_row("groundcover.collect_scratch.resident_cells", &gc.resident_cells),
+        vec_row("groundcover.collect_scratch.candidates", &gc.candidates),
+        map_row("groundcover.collect_scratch.emitted", &gc.emitted),
+        vec_row("groundcover.collect_scratch.disturber_found", &gc.disturber_found),
+        vec_row("groundcover.collect_scratch.layout_order", &gc.layout_order),
         // #4906 — the model tier's per-cell cover masks and the cover's record
         // FormID index.
-        vec_row("groundcover_collect_scratch.cell_covers", &gc.cell_covers),
-        vec_row("groundcover_collect_scratch.cover_form_ids", &gc.cover_form_ids),
+        vec_row("groundcover.collect_scratch.cell_covers", &gc.cell_covers),
+        vec_row("groundcover.collect_scratch.cover_form_ids", &gc.cover_form_ids),
         // The view wedge's grow-in policy: the resident-cell sets of the
         // previous and the current frame.
-        set_row("groundcover_collect_scratch.previous_cells", &gc.previous_cells),
-        set_row("groundcover_collect_scratch.current_cells", &gc.current_cells),
+        set_row("groundcover.collect_scratch.previous_cells", &gc.previous_cells),
+        set_row("groundcover.collect_scratch.current_cells", &gc.current_cells),
     ]
 }
 
@@ -471,7 +471,7 @@ impl App {
         // rather than folded into the `bench:` line because there
         // are five of them and each carries its own sample count;
         // an existing `bench:` extractor sees nothing new.
-        if self.groundcover_bench.is_some() {
+        if self.groundcover.bench.is_some() {
             if let Some(ref ctx) = self.renderer {
                 if ctx.groundcover_bench_has_samples() {
                     for line in ctx.groundcover_bench_report() {
@@ -839,12 +839,12 @@ impl App {
             // at the bottom of this file, which derives that set from
             // `main.rs`. The ground-cover collectors, the ground-cover model
             // tier and the handle-dedup sets used to have no row at all.
-            let gc = &self.groundcover_collect_scratch;
+            let gc = &self.groundcover.collect_scratch;
             tlm.rows.extend([
                 vec_row("draw_commands", &self.draw_commands),
-                vec_row("cover_template_draws", &self.cover_template_draws),
-                vec_row("groundcover_model_records", &self.groundcover_model_records),
-                vec_row("groundcover_model_selection", &self.groundcover_model_selection),
+                vec_row("groundcover.cover_template_draws", &self.groundcover.cover_template_draws),
+                vec_row("groundcover.model_records", &self.groundcover.model_records),
+                vec_row("groundcover.model_selection", &self.groundcover.model_selection),
                 vec_row("water_commands", &self.water_commands),
                 vec_row("gpu_lights", &self.gpu_lights),
                 vec_row("light_ids", &self.light_ids),
@@ -852,11 +852,11 @@ impl App {
                 vec_row("light_sort_scratch", &self.light_sort_scratch),
                 vec_row("bone_world", &self.bone_world),
                 map_row("skin_offsets", &self.skin_offsets),
-                vec_row("groundcover_cells", &self.groundcover_cells),
-                vec_row("groundcover_chunks", &self.groundcover_chunks),
-                vec_row("groundcover_species", &self.groundcover_species),
-                vec_row("groundcover_species_table", &self.groundcover_species_table),
-                vec_row("groundcover_disturbers", &self.groundcover_disturbers),
+                vec_row("groundcover.cells", &self.groundcover.cells),
+                vec_row("groundcover.chunks", &self.groundcover.chunks),
+                vec_row("groundcover.species", &self.groundcover.species),
+                vec_row("groundcover.species_table", &self.groundcover.species_table),
+                vec_row("groundcover.disturbers", &self.groundcover.disturbers),
                 // `GroundCoverCollectScratch`'s containers, one row each.
                 // They live in `groundcover_collect_scratch_rows` so
                 // `about_to_wait` stays inside its size pin (#5096).
@@ -2048,12 +2048,13 @@ mod app_scratch_telemetry_coverage_tests {
     /// `<App field>.<struct field>`. A container inside a group is covered the
     /// same way a top-level one is: a row, or a `NOT_SCRATCH` entry under the
     /// dotted name (`bench.cpu_frame_ms`).
-    const SCRATCH_GROUPS: [(&str, &str); 2] = [
+    const SCRATCH_GROUPS: [(&str, &str); 3] = [
         (
             "GroundCoverCollectScratch",
             include_str!("render/groundcover.rs"),
         ),
         ("BenchState", include_str!("bench_state.rs")),
+        ("GroundCoverState", include_str!("groundcover_state.rs")),
     ];
 
     const CONTAINERS: [&str; 6] = [
@@ -2134,6 +2135,42 @@ mod app_scratch_telemetry_coverage_tests {
         CONTAINERS.contains(&head(ty))
     }
 
+    /// Every container field of the group struct `ty` held at the dotted path
+    /// `path` must be a `"<path>.<field>"` row or a `NOT_SCRATCH` entry of the
+    /// same name. A field that is itself a group is walked the same way, so
+    /// `groundcover.collect_scratch.candidates` is checked as a path of three.
+    fn check_group(
+        path: &str,
+        ty: &str,
+        rows: &str,
+        seen: &mut Vec<String>,
+        problems: &mut Vec<String>,
+    ) {
+        let (group, group_src) = SCRATCH_GROUPS
+            .iter()
+            .find(|(g, _)| *g == head(ty))
+            .expect("check_group is only called for a listed group");
+        let inner = fields(struct_body(group_src, &format!("struct {group} {{")));
+        seen.extend(inner.iter().map(|(f, _)| format!("{path}.{f}")));
+        for (field, field_ty) in &inner {
+            let dotted = format!("{path}.{field}");
+            if is_container(field_ty) {
+                let excused = NOT_SCRATCH.iter().any(|(f, _)| *f == dotted);
+                let has_row = rows.contains(&format!("\"{dotted}\""));
+                if excused && has_row {
+                    problems.push(format!("`{dotted}` is both a row and in NOT_SCRATCH"));
+                } else if !excused && !has_row {
+                    problems.push(format!(
+                        "`{group}::{field}: {field_ty}` (App::{path}) has no \
+                         `\"{dotted}\"` row and is not in NOT_SCRATCH"
+                    ));
+                }
+            } else if SCRATCH_GROUPS.iter().any(|(g, _)| *g == head(field_ty)) {
+                check_group(&dotted, field_ty, rows, seen, problems);
+            }
+        }
+    }
+
     #[test]
     fn every_container_field_of_app_is_a_scratch_row_or_named_not_scratch() {
         let main_src = include_str!("main.rs");
@@ -2162,9 +2199,8 @@ mod app_scratch_telemetry_coverage_tests {
         let names: Vec<&str> = app_fields.iter().map(|(n, _)| n.as_str()).collect();
         for sentinel in [
             "draw_commands",
-            "groundcover_model_records",
             "skin_offsets",
-            "groundcover_collect_scratch",
+            "groundcover",
             "bench",
         ] {
             assert!(
@@ -2186,24 +2222,14 @@ mod app_scratch_telemetry_coverage_tests {
                         "`App::{name}: {ty}` has no ScratchTelemetry row and is not in NOT_SCRATCH"
                     ));
                 }
-            } else if let Some((group, group_src)) =
-                SCRATCH_GROUPS.iter().find(|(g, _)| *g == head(ty))
-            {
-                let inner = fields(struct_body(group_src, &format!("struct {group} {{")));
-                group_fields_seen.extend(inner.iter().map(|(f, _)| format!("{name}.{f}")));
-                for (field, field_ty) in inner.iter().filter(|(_, t)| is_container(t)) {
-                    let dotted = format!("{name}.{field}");
-                    let excused = NOT_SCRATCH.iter().any(|(f, _)| *f == dotted);
-                    let has_row = rows.contains(&format!("\"{dotted}\""));
-                    if excused && has_row {
-                        problems.push(format!("`{dotted}` is both a row and in NOT_SCRATCH"));
-                    } else if !excused && !has_row {
-                        problems.push(format!(
-                            "`{group}::{field}: {field_ty}` (App::{name}) has no \
-                             `\"{dotted}\"` row and is not in NOT_SCRATCH"
-                        ));
-                    }
-                }
+            } else if SCRATCH_GROUPS.iter().any(|(g, _)| *g == head(ty)) {
+                check_group(
+                    name,
+                    ty,
+                    &rows,
+                    &mut group_fields_seen,
+                    &mut problems,
+                );
             } else if head(ty).ends_with("Scratch") {
                 problems.push(format!(
                     "`App::{name}: {ty}` looks like a scratch group; add it to SCRATCH_GROUPS \

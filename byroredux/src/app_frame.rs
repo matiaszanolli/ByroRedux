@@ -431,7 +431,7 @@ impl App {
             let mut frame = build_render_data(
                 &self.world,
                 &mut self.draw_commands,
-                &mut self.cover_template_draws,
+                &mut self.groundcover.cover_template_draws,
                 &mut self.water_commands,
                 &mut self.gpu_lights,
                 &mut self.light_ids,
@@ -457,8 +457,8 @@ impl App {
 
             // #4052 — EXAL ground cover §11.1; no-ops without `--bench-groundcover-sampling`.
             drive_groundcover_bench(
-                self.groundcover_bench,
-                &mut self.groundcover_bench_started,
+                self.groundcover.bench,
+                &mut self.groundcover.bench_started,
                 &self.world,
                 ctx,
             );
@@ -579,23 +579,23 @@ impl App {
             // chunks over the destination's rebuilt SSBO: a GPU hang (#6608). The
             // bench feature and the cover are incompatible by construction.
             let groundcover_off =
-                self.groundcover_off || self.loading_screen.active_stage().is_some();
+                self.groundcover.off || self.loading_screen.active_stage().is_some();
             collect_and_prepare_groundcover(
                 &self.world,
                 ctx,
                 &frame,
                 GroundCoverScratch {
-                    residency: &mut self.groundcover_residency,
-                    collect: &mut self.groundcover_collect_scratch,
-                    cells: &mut self.groundcover_cells,
-                    chunks: &mut self.groundcover_chunks,
-                    species: &mut self.groundcover_species,
-                    species_table: &mut self.groundcover_species_table,
-                    species_table_signature: &mut self.groundcover_species_table_signature,
-                    disturbers: &mut self.groundcover_disturbers,
-                    detail_atlas: &mut self.groundcover_detail_atlas,
-                    truncation_logged: &mut self.groundcover_truncation_logged,
-                    debug_points: self.groundcover_debug_points,
+                    residency: &mut self.groundcover.residency,
+                    collect: &mut self.groundcover.collect_scratch,
+                    cells: &mut self.groundcover.cells,
+                    chunks: &mut self.groundcover.chunks,
+                    species: &mut self.groundcover.species,
+                    species_table: &mut self.groundcover.species_table,
+                    species_table_signature: &mut self.groundcover.species_table_signature,
+                    disturbers: &mut self.groundcover.disturbers,
+                    detail_atlas: &mut self.groundcover.detail_atlas,
+                    truncation_logged: &mut self.groundcover.truncation_logged,
+                    debug_points: self.groundcover.debug_points,
                     off: groundcover_off,
                 },
             );
@@ -606,11 +606,11 @@ impl App {
             prepare_groundcover_models(
                 &self.world,
                 ctx,
-                &mut self.cover_template_draws,
-                &mut self.groundcover_model_records,
-                &mut self.groundcover_model_selection,
-                &self.groundcover_collect_scratch.cell_covers,
-                &mut self.groundcover_model_records_key,
+                &mut self.groundcover.cover_template_draws,
+                &mut self.groundcover.model_records,
+                &mut self.groundcover.model_selection,
+                &self.groundcover.collect_scratch.cell_covers,
+                &mut self.groundcover.model_records_key,
                 groundcover_off,
             );
 
@@ -1787,7 +1787,7 @@ mod skin_dispatch_ran_rollback_scope_tests {
     fn a_loading_stage_frame_takes_the_groundcover_off_path() {
         let src = byroredux_core::source_scan::production_text(include_str!("app_frame.rs"));
         assert!(
-            src.contains("self.groundcover_off || self.loading_screen.active_stage().is_some()"),
+            src.contains("self.groundcover.off || self.loading_screen.active_stage().is_some()"),
             "the loading stage must drive ground cover's off path"
         );
         assert!(
@@ -1799,7 +1799,7 @@ mod skin_dispatch_ran_rollback_scope_tests {
             "ground-cover prepare must not be gated away while the stage owns the frame"
         );
         let models = src
-            .split("&mut self.groundcover_model_records_key,")
+            .split("&mut self.groundcover.model_records_key,")
             .nth(1)
             .expect("the model tier's prepare must stay in render_one_frame");
         assert!(

@@ -537,9 +537,9 @@ pub(crate) fn run() -> Result<()> {
     app.bench.mode = bench_mode;
     app.bench.frames_target = bench_frames;
     app.bench.hold = bench_hold;
-    app.groundcover_bench = groundcover_bench;
-    app.groundcover_debug_points = groundcover_debug_points;
-    app.groundcover_off = groundcover_off;
+    app.groundcover.bench = groundcover_bench;
+    app.groundcover.debug_points = groundcover_debug_points;
+    app.groundcover.off = groundcover_off;
     app.screenshot_path = screenshot_path;
     app.linear_capture = linear_capture;
     app.export_mitsuba_dir =
