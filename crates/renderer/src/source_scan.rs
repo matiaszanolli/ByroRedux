@@ -158,7 +158,7 @@ mod tests {
         ("vulkan/svgf.rs", 4),
         ("vulkan/sync.rs", 1),
         ("vulkan/taa.rs", 1),
-        ("vulkan/texture.rs", 2),
+        ("vulkan/texture.rs", 1),
         // water.rs 2→1 (#5100): the pass-bind-hoist scan now goes through
         // `production_text`; the remaining self-read is the blend-table /
         // module-doc pin, a whole-file doc audit by design.

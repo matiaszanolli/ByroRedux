@@ -3182,16 +3182,10 @@ fn hash_gpu_material_fields_covers_every_gpu_material_field() {
          MaterialTable::intern_by_hash would silently collapse two materials that \
          differ only there onto one table slot in release builds (#3568 / #4201)."
     );
-
-    // And it must stay a hash of the whole struct rather than drift back to a
-    // hand-maintained field list, which is how #3568 happened.
-    let rust_src = include_str!("../material.rs");
-    let hash_body = extract_fn_body(rust_src, "fn hash_gpu_material_fields")
-        .expect("material.rs must declare `hash_gpu_material_fields`");
-    assert!(
-        hash_body.contains("h.write(mat.as_bytes());"),
-        "hash_gpu_material_fields must hash the struct's full byte view (#4201)"
-    );
+    // The byte-flip loop above is the whole property: a hash that drifted back to a
+    // hand-kept field list (how #3568 happened) leaves some byte uncovered and fails
+    // there. A search of `material.rs` for the call that hashes the byte view only
+    // proxied it (#6687).
 }
 
 /// #2770 / REN-D1-03 — `MATERIAL_KIND_*` values exist in two independent

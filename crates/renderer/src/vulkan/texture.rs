@@ -574,17 +574,7 @@ impl Texture {
         // mod-authorable, and a truncated-but-plausible DDS must fail the
         // upload (checkerboard fallback / queued-upload drop) instead of
         // panicking the engine.
-        ensure!(
-            pixel_data.len() as u64 >= total_size,
-            "DDS pixel data too small: {} bytes for {}x{} {:?} {} mips from level {} ({} expected)",
-            pixel_data.len(),
-            meta.width,
-            meta.height,
-            meta.format,
-            meta.mip_count,
-            first_mip,
-            total_size,
-        );
+        check_dds_payload(pixel_data.len(), total_size, meta, first_mip)?;
 
         let image_size = total_size as vk::DeviceSize;
 
@@ -887,6 +877,30 @@ struct DdsImage {
     extent: vk::Extent3D,
     level_count: u32,
     view_kind: TextureViewKind,
+}
+
+/// #4511 — the pixel payload must cover the copy regions it will be read for. A
+/// returned error in every build, not an `assert!`: the input is mod-authorable,
+/// and a truncated-but-plausible DDS must fail the upload (checkerboard fallback /
+/// queued-upload drop) instead of panicking the engine.
+fn check_dds_payload(
+    payload_bytes: usize,
+    regions_total: u64,
+    meta: &super::dds::DdsMetadata,
+    first_mip: u32,
+) -> Result<()> {
+    ensure!(
+        payload_bytes as u64 >= regions_total,
+        "DDS pixel data too small: {} bytes for {}x{} {:?} {} mips from level {} ({} expected)",
+        payload_bytes,
+        meta.width,
+        meta.height,
+        meta.format,
+        meta.mip_count,
+        first_mip,
+        regions_total,
+    );
+    Ok(())
 }
 
 /// TXS-UP-002 — the copy regions of one upload must address no byte past
@@ -1796,26 +1810,24 @@ mod dds_upload_guard_tests {
         );
     }
 
-    /// #4511 — the payload-length gate in `record_dds_upload` must be a
-    /// returned error (`ensure!`), not a release `assert!`: a
-    /// truncated-but-plausible DDS has to fail the upload (checkerboard
-    /// fallback / queued-upload drop) rather than panic the engine.
+    /// #4511 — a truncated-but-plausible DDS must fail the upload with a
+    /// returned error (checkerboard fallback / queued-upload drop), never panic
+    /// the engine. The gate is `check_dds_payload`, which the upload calls with the
+    /// region walk's total; here it is run on payloads that are short, exact and
+    /// long (replaces a search of the source for `ensure!` ahead of the message).
     #[test]
-    fn dds_payload_check_is_an_error_not_a_release_assert() {
-        let src = include_str!("texture.rs");
-        let pos = src
-            .find("DDS pixel data too small")
-            .expect("payload-length gate message must exist");
-        let pre = &src[pos.saturating_sub(160)..pos];
-        assert!(
-            pre.contains("ensure!("),
-            "the DDS payload gate must be anyhow ensure! (returned error); \
-             found: {pre}",
-        );
-        assert!(
-            !pre.contains("assert!("),
-            "the DDS payload gate regressed to a release assert!: {pre}",
-        );
+    fn a_truncated_dds_payload_is_a_returned_error_not_a_panic() {
+        let m = meta(4, 4, 1, 1, false);
+        let (_, total) = build_dds_copy_regions(&m, 0);
+        assert!(total > 1, "the fixture must have a payload to truncate");
+        let exact = total as usize;
+        assert!(check_dds_payload(exact, total, &m, 0).is_ok());
+        assert!(check_dds_payload(exact + 4096, total, &m, 0).is_ok(), "a longer payload is read in part");
+        for short in [0, exact - 1] {
+            let err = check_dds_payload(short, total, &m, 0).expect_err("a short payload must fail");
+            assert!(err.to_string().contains("DDS pixel data too small"), "{err}");
+            assert!(err.to_string().contains(&format!("({total} expected)")), "{err}");
+        }
     }
 
     /// #4854 — allocation/view creation must clean up while the image has

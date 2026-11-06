@@ -8,7 +8,6 @@
 //! GLSL semantics rather than struct layout — moved to [`super::shader_contract_tests`]
 //! under #2977.
 
-use super::shader_contract_tests::parse_rust_struct_fields;
 use super::*;
 use ash::vk;
 use std::mem::offset_of;
@@ -144,66 +143,48 @@ fn gpu_instance_field_offsets_match_shader_contract() {
 /// stay green through that; only a name check catches it.
 #[test]
 fn gpu_instance_does_not_re_expand_with_per_material_fields() {
-    const GPU_TYPES_RS: &str = include_str!("gpu_types.rs");
-
-    // Per-material state that lives on `GpuMaterial` (see
-    // `vulkan/material.rs`) and must not reappear per-draw. Deliberately
-    // excludes the three material-shaped fields `GpuInstance` keeps on
-    // purpose: `texture_index` (per-draw base texture, and also a legitimate
-    // `GpuMaterial` member), `ior`, and `avg_albedo_*` (read by the caustic
-    // compute pass off its own descriptor set).
-    const COLLAPSED_ONTO_MATERIAL_TABLE: &[&str] = &[
-        "roughness",
-        "metalness",
-        "material_flags",
-        "material_kind",
-        "material_alpha",
-        "emissive_mult",
-        "emissive_r",
-        "emissive_g",
-        "emissive_b",
-        "specular_strength",
-        "specular_r",
-        "specular_g",
-        "specular_b",
-        "diffuse_r",
-        "diffuse_g",
-        "diffuse_b",
-        "ambient_r",
-        "ambient_g",
-        "ambient_b",
-        "alpha_threshold",
-        "alpha_test_func",
-        "normal_map_index",
-        "glow_map_index",
-        "dark_map_index",
-        "detail_map_index",
-        "gloss_map_index",
-        "parallax_map_index",
-        "env_map_index",
-        "env_mask_index",
-        "parallax_height_scale",
-        "parallax_max_passes",
-        "uv_offset_u",
-        "uv_offset_v",
-        "uv_scale_u",
-        "uv_scale_v",
-    ];
-
-    let fields = parse_rust_struct_fields(GPU_TYPES_RS, "pub struct GpuInstance");
-    assert!(
-        !fields.is_empty(),
-        "failed to parse GpuInstance's fields — the guard below would be vacuous"
-    );
-    for banned in COLLAPSED_ONTO_MATERIAL_TABLE {
-        assert!(
-            !fields.iter().any(|f| f == banned),
-            "`GpuInstance.{banned}` is per-MATERIAL state that R1 Phase 6 collapsed \
-             onto the MaterialTable SSBO — reintroducing it per-draw undoes that \
-             dedup (fields: {fields:?}). If this is deliberate, the material-table \
-             rationale in `gpu_types.rs` needs rewriting first (#2433)."
-        );
+    // Compile-time and exhaustive: destructuring a `GpuInstance` with every
+    // field named and no `..` stops compiling the moment a field is added,
+    // removed or renamed — including a per-material field written over one of
+    // the reserved padding words, which the size and offset pins let through
+    // (#2433, #6687). It replaces a search of `gpu_types.rs` for 45 banned
+    // names, which saw only the spellings on the list.
+    //
+    // Per-material state lives on `GpuMaterial` (`vulkan/material.rs`) and must
+    // not reappear per draw: roughness, metalness, material flags/kind/alpha,
+    // the emissive / specular / diffuse / ambient colours, the alpha test, the
+    // normal / glow / dark / detail / gloss / parallax / env map indices, the
+    // parallax and UV-transform parameters. Deliberately kept here:
+    // `texture_index` (the per-draw base texture), `ior`, and `avg_albedo_*`
+    // (read by the caustic compute pass off its own descriptor set). If a field
+    // is added on purpose, add it below and say which of these it is.
+    #[allow(dead_code)]
+    fn reviewed_fields(instance: &GpuInstance) {
+        let GpuInstance {
+            model: _,
+            texture_index: _,
+            bone_offset: _,
+            vertex_offset: _,
+            index_offset: _,
+            vertex_count: _,
+            flags: _,
+            material_id: _,
+            ior: _,
+            avg_albedo_r: _,
+            avg_albedo_g: _,
+            avg_albedo_b: _,
+            surface_id: _,
+            skinned_vertex_address: _,
+            _reserved: _,
+            morph_delta_address: _,
+            morph_weight_address: _,
+            morph_target_count: _,
+            _reserved2a: _,
+            _reserved2b: _,
+            _reserved2c: _,
+        } = instance;
     }
+    let _ = reviewed_fields;
 }
 
 /// Regression: #309 — `VkDrawIndexedIndirectCommand` is a Vulkan-
