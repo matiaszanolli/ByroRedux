@@ -49,9 +49,15 @@ pub fn modified_skill(skill: f32, luck: f32) -> f32 {
 /// `weapon_skill` is the governing weapon-type skill (Blade/Blunt/Marksman).
 /// Both `Attribute` and the Luck-chained [`modified_skill`] are clamped to
 /// `[0, 100]` before use — UESP states this explicitly ("Attribute and
-/// ModifiedSkill are constrained between 0 and 100"). The caller multiplies
-/// this by `BaseWeaponDamage` and the weapon-condition ratio (equipment-layer
-/// inputs this module deliberately does not own — see the module docs).
+/// ModifiedSkill are constrained between 0 and 100"). The leading `0.5` is
+/// `fDamageWeaponMult`. The caller multiplies this by `BaseWeaponDamage` and by
+/// the weapon-condition factor `fDamageWeaponConditionBase + ratio ·
+/// fDamageWeaponConditionMult` (`0.5 + 0.5 · ratio`, with `ratio` the weapon's
+/// current health over its base health), **not** by the raw ratio: together
+/// with the leading `0.5` the condition term is `(r + 1) / 4`, so a worn weapon
+/// at `r = 0` still deals a quarter of the attribute-and-skill product where a
+/// raw-ratio multiply would give `0.5 · r` (#6762). Both are equipment-layer
+/// inputs this module deliberately does not own — see the module docs.
 #[must_use]
 pub fn oblivion_weapon_damage_multiplier(attribute: f32, weapon_skill: f32, luck: f32) -> f32 {
     let attribute = attribute.clamp(0.0, 100.0);
