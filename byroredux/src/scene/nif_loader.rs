@@ -188,16 +188,21 @@ pub(crate) fn load_nif_bytes(
     tex_provider: &TextureProvider,
     mat_provider: Option<&mut MaterialProvider>,
 ) -> (usize, Option<EntityId>) {
-    let (count, root, _local_map) = load_nif_bytes_with_skeleton(
+    // The loose / console / loading-screen / Studio route spawns props, not
+    // people: it takes the `Prop` admission tier, the same one the cell route
+    // gives a placed model (#6518). The NPC and gear entry points below stay
+    // on `Actor`.
+    let (count, root, _local_map) = load_nif_with_skeleton_from(
         world,
         ctx,
-        data,
+        || Some(std::borrow::Cow::Borrowed(data)),
         label,
         tex_provider,
         mat_provider,
         None,
         None,
         None,
+        byroredux_renderer::GeometryAdmissionClass::Prop,
     );
     (count, root)
 }
@@ -450,6 +455,9 @@ pub(super) fn parse_import_and_merge(
 /// Variant of [`load_nif_bytes`] used by NPC spawn (M41.0 Phase 1b)
 /// when assembling skeleton + body + head from three separate NIFs.
 ///
+/// Its meshes upload under the `Actor` geometry-admission tier (#6518);
+/// [`load_nif_bytes`] is the `Prop` route.
+///
 /// `external_skeleton`: when `Some(map)`, every skinning-bone name
 /// lookup tries the external map first, falling back to this NIF's
 /// local nodes. The body and head NIFs each spawn their own
@@ -502,6 +510,7 @@ pub(crate) fn load_nif_bytes_with_skeleton(
         external_skeleton,
         diffuse_override,
         pre_spawn_hook,
+        byroredux_renderer::GeometryAdmissionClass::Actor,
     )
 }
 
@@ -536,6 +545,7 @@ pub(crate) fn load_nif_extracting_with_skeleton(
         external_skeleton,
         diffuse_override,
         pre_spawn_hook,
+        byroredux_renderer::GeometryAdmissionClass::Actor,
     );
     (!missing).then_some(loaded)
 }
@@ -564,6 +574,9 @@ fn load_nif_with_skeleton_from<'a>(
     // monomorphisation-cheap; static-dispatch isn't worth a
     // generic parameter for a load-time call.
     pre_spawn_hook: Option<&mut dyn FnMut(&mut byroredux_nif::import::ImportedScene)>,
+    // Which geometry-pool tier the meshes upload under (#6518): `Actor` for
+    // the NPC / gear entry points, `Prop` for the loose-NIF route.
+    admission: byroredux_renderer::GeometryAdmissionClass,
 ) -> (
     usize,
     Option<EntityId>,
@@ -593,6 +606,7 @@ fn load_nif_with_skeleton_from<'a>(
             diffuse_override,
             external_skeleton,
             is_spt,
+            admission,
             &node_entities,
             &node_by_name,
             imported.phantom_bounds,
@@ -1051,6 +1065,7 @@ fn spawn_nif_mesh(
     diffuse_override: Option<&str>,
     external_skeleton: Option<&NodeByName>,
     is_spt: bool,
+    admission: byroredux_renderer::GeometryAdmissionClass,
     node_entities: &[EntityId],
     node_by_name: &NodeByName,
     phantom_bounds: Option<([f32; 3], [f32; 3])>,
@@ -1214,11 +1229,13 @@ fn spawn_nif_mesh(
             // upload_scene_mesh registers the vertices/indices into the
             // global geometry SSBO that RT ray queries sample for
             // reflection UVs. See #371.
-            // Actors (the player and NPC bodies) are their own admission tier:
-            // above props, below the ground, so a full pool refuses distant
-            // props before people and people before terrain.
+            // The caller's admission tier (#6518). Actors (the player and NPC
+            // bodies) are their own tier: above props, below the ground, so a
+            // full pool refuses distant props before people and people before
+            // terrain. This function also spawns loose / console / loading-screen
+            // NIFs, which are props: they take the `Prop` tier like the cell route.
             let handle = match ctx.mesh_registry.with_admission_class(
-                byroredux_renderer::GeometryAdmissionClass::Actor,
+                admission,
                 |registry| {
                     registry.upload_scene_mesh(upload_ctx, &vertices, &mesh.indices, for_rt, None)
                 },
@@ -1865,6 +1882,56 @@ mod skinned_blas_gate_tests {
         assert!(attach < push, "the spec is queued after the skin binding is known");
         let gate = body[..push].rfind("if queue_static_blas && !skin_attached").expect("the push is gated on the skin");
         assert!(gate > attach && push - gate < 120, "the gate sits directly on the push");
+    }
+}
+
+/// #6518 - the geometry-pool admission tier follows the caller, not the
+/// function that happens to do the upload. `spawn_nif_mesh` is the spawn tail of
+/// every NIF route, so a hard-coded `Actor` there admitted a loose / console /
+/// loading-screen / Studio NIF (and a `.spt` placeholder) on the people's reserve
+/// while the cell route admits the same model as a `Prop`. (`spawn_nif_mesh`
+/// needs a Vulkan device, so the wiring is pinned on the source.)
+#[cfg(test)]
+mod admission_tier_tests {
+    fn production() -> String {
+        byroredux_core::source_scan::strip_test_modules(include_str!("nif_loader.rs"))
+    }
+
+    fn function_body<'a>(source: &'a str, signature: &str) -> &'a str {
+        let (_, rest) = source.split_once(signature).unwrap_or_else(|| panic!("{signature} must exist"));
+        rest.split_once("\n}\n").map(|(body, _)| body).unwrap_or(rest)
+    }
+
+    #[test]
+    fn the_upload_tier_is_the_callers_not_a_literal_inside_the_spawn_tail() {
+        let source = production();
+        let spawn = function_body(&source, "fn spawn_nif_mesh(");
+        assert!(
+            spawn.contains("with_admission_class(\n                admission,"),
+            "spawn_nif_mesh uploads under the tier its caller passed"
+        );
+        assert!(
+            !spawn.contains("GeometryAdmissionClass::"),
+            "no tier literal inside spawn_nif_mesh: the loose route would inherit it"
+        );
+    }
+
+    #[test]
+    fn the_loose_route_is_a_prop_and_the_npc_entry_points_are_actors() {
+        let source = production();
+        let loose = function_body(&source, "pub(crate) fn load_nif_bytes(");
+        assert!(loose.contains("GeometryAdmissionClass::Prop"), "load_nif_bytes admits as Prop");
+        assert!(!loose.contains("GeometryAdmissionClass::Actor"));
+        for signature in [
+            "pub(crate) fn load_nif_bytes_with_skeleton(",
+            "pub(crate) fn load_nif_extracting_with_skeleton(",
+        ] {
+            let body = function_body(&source, signature);
+            assert!(
+                body.contains("GeometryAdmissionClass::Actor"),
+                "{signature} is the NPC / gear entry point and admits as Actor"
+            );
+        }
     }
 }
 
