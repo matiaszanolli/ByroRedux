@@ -542,7 +542,14 @@ melee ×1. A weapon's GECK Override-tab AP replaces the standard.
 | `fVATSCriticalChanceBonus` | not authored (wiki default 15) | 5 |
 | `fVATSFortuneOdds` | not authored | 0.1 (not modelled) |
 
-**Wiki-only defaults** (neither master authors them): `fVATSHitChanceMult` 1,
+**Authored identically by both masters** (probe, #6766; the GECK *VATS Settings*
+page lists the same values): `fVATSDistanceFactor` 2, `fVATSScreenPercentFactor` 1,
+`fVATSShotLongBurstTime` 1.75, `fVATSMeleeWarpDistanceMult` 0.32,
+`fVATSH2HWarpDistanceMult` 0.27, `fVATSParalyzePalmChance` 0.3,
+`fVATSPlaybackDelay` 0.17, `fVATSStrangerOdds` 0.1, `iVATSStrangerMaxHP` 150,
+`fVATSStrangerDistance` 164.
+
+**Wiki-only defaults** (neither master authors these eleven, and only these): `fVATSHitChanceMult` 1,
 `fVATSMaxChance` 95, `fVATSMaxEngageDistance` 5000, `fVATSMeleeMaxDistance` 300,
 `fVATSMeleeReachMult` 2, `fVATSStealthMult` 0.5, `fVATSAutomaticMeleeDamageMult` 2,
 `fVATSDestructibleMult` 1.25, `fVATSShotBurstTime` 0.43, `fVATSSkillFactor` 1,

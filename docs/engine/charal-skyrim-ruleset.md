@@ -857,8 +857,11 @@ profile, `FactionCrime` parsed from the `FACT` Crime tab
   is seven days ... You will serve the maximum sentence for any bounty 700 or
   higher." `CrimeModel::max_sentence_days` (#6757), `Some(7.0)` on Skyrim and
   `None` on Oblivion (uncapped); read by `SendPlayerToJail`'s `JailSentence`.
+- **Jail, built.** `Faction.SendPlayerToJail` (#6569, #6573) sends the player
+  to the faction's `JAIL` exterior marker, moves the held goods into its `PLCN`
+  container, raises the Story Manager's arrest event and starts a
+  `JailSentence`; `serve_sentence` advances the clock (`crates/scripting/src/jail.rs`).
 - **Not built.** Skyrim's guards (the `IsGuardFaction` arrest / kill AI and
-  `GuardDialogueFaction` dialogue), jail (`JAIL` / `STOL` / `PLCN` / `JOUT` are
-  parsed and unused), the Papyrus `PayCrimeGold` / `SendPlayerToJail` natives'
-  engine side, bounty collectors, trespass warnings, and removing a bounty
+  `GuardDialogueFaction` dialogue), the Papyrus `PayCrimeGold` native's engine
+  side, bounty collectors, trespass warnings, and removing a bounty
   when the last witness dies.

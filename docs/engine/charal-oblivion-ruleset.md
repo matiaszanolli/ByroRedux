@@ -836,7 +836,7 @@ The two executable-derived facts `CharacterRulesProfile::OBLIVION` carries (#592
 Sources: CS wiki *Crime Overview*, *iCrimeGoldXX*, *fCrimeGoldSteal*,
 *GetPCFactionSteal*; UESP *Oblivion:Crime*. Built as
 `character::CrimeModel` (`crates/core/src/character/crime.rs`), a
-`CharacterRulesProfile` row (`crime()`, Oblivion only) with the load order's
+`CharacterRulesProfile` row (`crime()`, Oblivion and Skyrim: `CrimeModel::OBLIVION` / `CrimeModel::SKYRIM`) with the load order's
 GMSTs overriding the defaults, consumed by `byroredux/src/crime.rs`.
 
 | Crime | Bounty | Built |
