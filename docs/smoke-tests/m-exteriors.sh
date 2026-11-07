@@ -38,6 +38,7 @@
 #
 # Useful overrides:
 #   BYROREDUX_SMOKE_FRAMES=10
+#   BYROREDUX_EXTERIOR_UPSCALER=taa|default|<mode>   (default taa; `default` = the engine's fsr3)
 #   BYROREDUX_BOUNDARY_FRAMES=900
 #   BYROREDUX_SOAK_FRAMES=1800
 #   BYRO_DEBUG_PORT=9987
@@ -119,6 +120,7 @@ case "$MODE" in
         ;;
 esac
 TIMEOUT_SECONDS="${BYROREDUX_SMOKE_TIMEOUT:-240}"
+EXTERIOR_UPSCALER="${BYROREDUX_EXTERIOR_UPSCALER:-taa}"
 # #4491 cycle-mode composite_term pixel floors ("sky responds to the sun"
 # in pixels). MIN_SUN_DELTA: minimum noon-vs-night pre-tonemap mean luminance
 # delta. NOON_MIN_SD: the ~10/255 (0.039) washout line — a noon frame flatter
@@ -319,7 +321,16 @@ run_profile () {
     # live frame here — their only guards are shader-text `contains` scans.
     # The rendered-mask verdict is human-only (EXAL-GC §12.14 upscaler
     # contract).
-    local bench_args=(--bench-frames "$BENCH_FRAMES" --bench-hold --screenshot "$screenshot" --upscaler taa)
+    #
+    # #6642 / DLOD-DEPTH-005 — `BYROREDUX_EXTERIOR_UPSCALER` overrides that: `taa`
+    # (the default, as above), `default` to omit the flag and take the engine's
+    # own default (fsr3), or any other `--upscaler` value. The reversed-Z flip is
+    # gated under both `taa` and `default`, because FSR3's `depth_inverted` flag is
+    # one of the converted sites and only the real upscaler exercises it.
+    local bench_args=(--bench-frames "$BENCH_FRAMES" --bench-hold --screenshot "$screenshot")
+    if [[ "$EXTERIOR_UPSCALER" != default ]]; then
+        bench_args+=(--upscaler "$EXTERIOR_UPSCALER")
+    fi
     if [[ "$MODE" == boundary ]]; then
         bench_args+=(--bench-mode renderer-stepped --bench-camera grid-cross --fly)
     elif [[ "$MODE" == soak ]]; then
