@@ -680,8 +680,8 @@ fn starfield_constellation_textures_ba2_v2_dx10_extracts_zlib_dds() {
 // ── #4665 (PAR-D4-2026-09-21-03) — the missing corpus sweeps ─────────
 
 /// #4665 — every FO76 `.ba2` must open and yield a non-empty listing.
-/// FO76's Data holds 40 `.ba2` files after the 2026-09-20 archive
-/// rewrite (including the `SeventySix - GeneratedTextures0N.ba2` DX10
+/// FO76's Data held 40 `.ba2` files after the 2026-09-20 archive
+/// rewrite (43 after the 2026-10-24 patch; the census is a floor, #6482) (including the `SeventySix - GeneratedTextures0N.ba2` DX10
 /// family this crate had never exercised), and none had a test.
 #[test]
 #[ignore = "needs FO76 game data on disk"]
@@ -721,11 +721,25 @@ fn fo76_ba2_corpus_opens_and_lists() {
         }
         opened += 1;
     }
-    assert_eq!(opened, 40, "FO76 BA2 archive census changed");
     eprintln!("[FO76] opened {opened} BA2 archives, {entries} entries, {extracted} extracted, {} errors", errors.len());
-    assert_eq!(entries, 679_240, "FO76 BA2 file census changed");
+    // #6482 — the extract-everything check runs BEFORE the census, and the census
+    // is a floor. FO76 is a live-service title: the 2026-10-24 patch took the
+    // archive count from 40 to 43, and an exact pin run first hid whether the
+    // rewritten archives still extracted. A shortfall is a real loss; growth reads
+    // as "corpus changed, re-measure".
     assert_eq!(extracted, entries, "not every FO76 BA2 entry extracted: {errors:?}");
+    assert!(opened >= FO76_BA2_ARCHIVE_FLOOR, "FO76 BA2 archive census fell below {FO76_BA2_ARCHIVE_FLOOR}: {opened}");
+    assert!(entries >= FO76_BA2_ENTRY_FLOOR, "FO76 BA2 file census fell below {FO76_BA2_ENTRY_FLOOR}: {entries}");
+    if opened != FO76_BA2_ARCHIVE_MEASURED {
+        eprintln!("[FO76] archive count is {opened} (last measured {FO76_BA2_ARCHIVE_MEASURED}) — corpus changed; re-measure");
+    }
 }
+
+/// #6482 — floors from the 2026-09-20 measurement.
+const FO76_BA2_ARCHIVE_FLOOR: usize = 40;
+/// The archive count at the last re-measure (2026-10-24 patch); informational only.
+const FO76_BA2_ARCHIVE_MEASURED: usize = 43;
+const FO76_BA2_ENTRY_FLOOR: u64 = 679_240;
 
 /// #5903 — pin the complete FO4 BA2 listing before the full extraction sweep.
 #[test]

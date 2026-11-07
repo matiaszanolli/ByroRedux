@@ -473,14 +473,6 @@ fn parse_rate_fo76_materials_corpus() {
     for (path, err) in stats.failures.iter().take(10) {
         eprintln!("  FAIL {path}: {err}");
     }
-    assert_eq!(
-        stats.total, 29_991,
-        "unexpected number of material files in SeventySix - Materials.ba2"
-    );
-    assert_eq!(
-        stats.json_text, 2,
-        "the FO76 Material-Editor JSON allowlist changed"
-    );
     // The audit measured 29,989/29,991 OK with exactly 2 known JSON files;
     // both exceptions are accounted for above, so the remainder must be
     // spotless.
@@ -504,7 +496,33 @@ fn parse_rate_fo76_materials_corpus() {
         stats.clean + stats.json_text == stats.total,
         "every file must be clean-parse or accounted JSON"
     );
+    // #6482 — the count checks run LAST and the total is a floor. FO76 is a
+    // live-service title: an exact pin breaks on every patch and, run first,
+    // hid whether the parse still held (the 2026-10-24 patch shipped 30,078
+    // against a pinned 29,991 with a fully clean parse). A shortfall is a real
+    // loss; growth reads as "corpus changed, re-measure".
+    assert!(
+        stats.total >= FO76_MATERIAL_FLOOR,
+        "SeventySix - Materials.ba2 shrank below the {FO76_MATERIAL_FLOOR} material files measured on 2026-10-24: {}",
+        stats.total
+    );
+    if stats.total != FO76_MATERIAL_MEASURED {
+        eprintln!(
+            "[FO76] material count is {} (last measured {FO76_MATERIAL_MEASURED}) — corpus changed; re-measure and update the constant",
+            stats.total
+        );
+    }
+    assert_eq!(
+        stats.json_text, 2,
+        "the FO76 Material-Editor JSON allowlist changed"
+    );
 }
+
+/// #6482 — the floor for `SeventySix - Materials.ba2`'s `.bgsm`/`.bgem` count: the
+/// 2026-09 measurement (the count before FO76's 2026-10-24 patch).
+const FO76_MATERIAL_FLOOR: usize = 29_991;
+/// The count at the last re-measure (2026-10-24 patch); informational only.
+const FO76_MATERIAL_MEASURED: usize = 30_078;
 
 /// #5011 — the gate's own predicate, runnable without game data: clean and
 /// lossy-only parses are not drift; leftover bytes and an over-ceiling
