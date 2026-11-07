@@ -87,6 +87,16 @@ enum MissingCollisionFallback {
 /// 6,726 under `meshes\effects\`.) An unlit *opaque* mesh (a sign, a screen)
 /// is still solid.
 ///
+/// #6519 — a Starfield `BSEffectShaderProperty` that is only a material-reference
+/// stub never fills `effect_shader` (its fields are placeholders, #2353), yet the
+/// import still tags it [`MATERIAL_KIND_EFFECT_SHADER`] — so the kind, not the
+/// payload, is the effect-ness signal that survives the stub (88 stubs in 66 NIFs:
+/// glow strips, LED spots, console screens, glass panes). Glass panes among them
+/// are decided with the rest: an effect-shader surface is a sheet, never a body,
+/// exactly as on Skyrim and FO76 where the same property fills `effect_shader`.
+///
+/// [`MATERIAL_KIND_EFFECT_SHADER`]: byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
+///
 /// #6555 — Oblivion has neither signal: its cobwebs, hanging crud and FX sheets
 /// (light beams, clouds, ground mist) are lit `NiAlphaProperty`-blended meshes
 /// with `material_kind == 0`, the same material a rug or a glass pane has. What
@@ -109,6 +119,7 @@ fn render_geometry_can_collide(
     !material.is_decal
         && !material.alpha_test
         && material.effect_shader.is_none()
+        && material.material_kind != byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER
         && material.material_kind != byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION
         && !unlit_blended_sheet
         && !blended_overlay

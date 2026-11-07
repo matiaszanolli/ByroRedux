@@ -603,6 +603,16 @@ fn effect_shader_sheets_do_not_synthesize_collision() {
     };
     assert!(!render_geometry_can_collide(&effect, PACKED));
 
+    // #6519 — a Starfield material-reference stub never fills `effect_shader`;
+    // the kind tag the stub arm still sets is what marks it.
+    let stub = ImportedMaterial {
+        effect_shader: None,
+        material_kind: byroredux_renderer::MATERIAL_KIND_EFFECT_SHADER,
+        ..Default::default()
+    };
+    assert!(!render_geometry_can_collide(&stub, PACKED));
+    assert!(!render_geometry_can_collide(&stub, none));
+
     let decal = ImportedMaterial { is_decal: true, ..Default::default() };
     assert!(!render_geometry_can_collide(&decal, PACKED));
 
