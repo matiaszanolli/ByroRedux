@@ -2022,7 +2022,7 @@ mod unit_tests {
             "sunTermLive must test both factors of the sun in-scatter term"
         );
         let inscatter = shader
-            .find("(global_scattering_coef + interiorShaftDust) * phase * params.sun_color.rgb * visibility")
+            .find("(global_scattering_coef + interiorShaftDust + openSkySunDust) * phase * params.sun_color.rgb * visibility")
             .expect("sun in-scatter term");
         assert!(
             gate < inscatter,
