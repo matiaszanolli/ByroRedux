@@ -36,7 +36,16 @@ pub(crate) fn setup_godray_lab_scene(
         sky.sun_direction = [0.0, 1.0, 0.0];
         sky.sun_color = [1.0, 0.95, 0.85];
         sky.sun_intensity = 6.0;
+        // An interior's volumetric sun is the outdoor palette's `sun_illuminance`, built from the
+        // weather's sunlight colour (#4909); a lab has no weather system, so give it one. The value is
+        // the radiance the gate's thresholds were written against (the old `sun_color x sun_intensity`,
+        // about 6), NOT a real weather colour: authored sunlight colours are around 0..1, at which this
+        // room's shaft reads centre delta 8 instead of 45 (#6730). A real cell is lit by the real one.
+        sky.weather.sunlight_color = [6.0, 5.7, 5.1];
     }
+    // The froxel pass reads the interior's Show Sky flag as its "open sky" gate; real cells set it from
+    // the CELL record. #4902 removed the render-loop fallback that supplied it, so the lab states it.
+    world.insert_resource(crate::components::InteriorSkyExposureRes(true));
 
     let neutral = TextureHandle(ctx.texture_registry.neutral_fallback());
     let mut builder = MeshBuilder::new(ctx);
