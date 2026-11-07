@@ -26,9 +26,9 @@ files, issue dirs) live in [Project Stats](#project-stats) only.
 **Gates.** `rust-toolchain.toml` pins rustc 1.96.0 (#5308), which is also the
 bin crate's MSRV since wasmtime 49. 11 961 tests pass and 1 fails (2026-11-06):
 `corpus_filters_route_through_is_nif_entry`, tripped by a hand-rolled `.nif` filter at
-`bto_segment_census.rs:67` (`6a4ec5b62`). CI on `main` is red since `03f9d2158` (clippy);
-`55ba81e20` also fails that test and the lock-order detector (`BYRO_LOCK_ORDER_CHECK=1`;
-a bare `cargo test` skips it). Last green `305af7beb`. The bench-of-record below (`d9a201c71`, 2026-10-22) was refreshed with a same-machine control and shows HEAD 1–9% slower than the outgoing record (R6a-regress-23). Its older open
+`bto_segment_census.rs:67` (`6a4ec5b62`). CI on `main` has been red since `03f9d2158` (clippy,
+fixed in the commit after the Session 109 close); `55ba81e20` also fails that test and the
+lock-order detector (`BYRO_LOCK_ORDER_CHECK=1`; a bare `cargo test` skips it). Last green `305af7beb`. The bench-of-record below (`d9a201c71`, 2026-10-22) was refreshed with a same-machine control and shows HEAD 1–9% slower than the outgoing record (R6a-regress-23). Its older open
 regression, **R6a-regress-22**, was the bench camera moving with `b9e961eeb`'s
 interior spawn ladder, not renderer code (#5128, 2026-09-30); a small residual
 stays open — the top-of-frame all-slots fence wait that dominates GPU-bound
