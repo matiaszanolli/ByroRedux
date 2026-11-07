@@ -11,8 +11,8 @@
 #define BYRO_SHADER_CONSTANTS_GLSL
 
 // Depth-buffer convention (#3308)
-#define BYRO_REVERSED_Z 0
-#define BYRO_DEPTH_CLEAR 1.0
+#define BYRO_REVERSED_Z 1
+#define BYRO_DEPTH_CLEAR 0.0
 
 // Rec. 709 luma weights, linear sRGB (#4347)
 #define LUMA_REC709 vec3(0.2126, 0.7152, 0.0722)

@@ -588,12 +588,7 @@ starts from the corrected state.
    decoupling the full-detail spawn radius from `radius_unload` (reintroducing
    the #1866 overlap risk) plus real-game visual validation — scope as its
    own follow-up issue rather than folding into EX-10/11 closure.
-9. [ ] **Reversed-Z** — deliberately deferred (documented in
-   `camera.rs:34-64`); touches SSAO/SVGF/TAA/composite/water/FSR3 and needs
-   a GPU capture gate. The measurement work items 2 already did (far-plane
-   sizing, depth-resolution-at-distance) is exactly the data that follow-up
-   issue needs — file it separately given the blast radius, don't fold it
-   into this one.
+9. [x] **Reversed-Z** — shipped by #6642 (M35 Phase 5, 2026-11-07); see "Reversed-Z depth" below for the gate results.
 
 **First action**: refresh ROADMAP.md's M35 row and this section (done as
 part of landing this plan) so the starting line is accurate before any of
@@ -1322,12 +1317,38 @@ size).
 
 Distant terrain and the LOD objects standing on it share one depth buffer, so
 depth precision is the floor between them. The renderer implements both
-mappings behind one constant: `ACTIVE_DEPTH_MAPPING` (`camera.rs`) ships
-`DepthMapping::Conventional`, and the reversed mapping is complete and tested
-but off. [PRD `distant-lod-completion`](../prd/distant-lod-completion.md)
-(DLOD-DEPTH-001 to -006, decision Q4) turns it on once its far-decade gain is
-measured, on all five exterior titles at once, because the depth convention is
-renderer-wide.
+mappings behind one constant: `ACTIVE_DEPTH_MAPPING` (`camera.rs`), which has
+shipped `DepthMapping::Reversed` since #6642 (2026-11-07, DLOD-DEPTH-002);
+`Conventional` stays implemented as the A/B reference. [PRD
+`distant-lod-completion`](../prd/distant-lod-completion.md) (DLOD-DEPTH-001 to
+-006, decision Q4) turned it on once its far-decade gain was measured, on all
+five exterior titles at once, because the depth convention is renderer-wide.
+
+**Result (2026-11-07, RTX 4070 Ti, control = `8e30e66e1`).**
+
+- *A9 / DLOD-DEPTH-001, -003.* Far decade (100 000-400 000 BU) distinct depth
+  codes, same pose before and after, 1280x720: FNV 407 -> 6 427 (6 438 / 6 511
+  samples), Skyrim 14 -> 119 (121 / 119), FO4 498 -> 22 920 (23 047 / 23 016).
+  Poses and flags are in `ACTIVE_DEPTH_MAPPING`'s rustdoc; three pre-flip
+  captures agree within 2%.
+- *A10 / DLOD-DEPTH-004, -005.* `m-exteriors.sh all static|boundary|cycle|water`
+  under `--upscaler taa` and the default fsr3 (`BYROREDUX_EXTERIOR_UPSCALER`),
+  flipped build against a same-machine control build. `static`, `boundary` and
+  `water` return identical per-profile verdicts in all four combinations (the FO3
+  boundary seam gate is red in both, #6500). `cycle` is intermittent in both
+  states: Oblivion's night capture comes back blank under fsr3 in every control
+  and flipped run, and the `composite_term` sun-cycle check fails on a different
+  profile from run to run (control: FO3, Skyrim, FNV; flipped: Oblivion, Skyrim,
+  FO3), over one matrix run plus three repeats per upscaler per state.
+- *A11 / DLOD-DEPTH-006.* `scripts/fsr-bench-matrix.sh 3 300`, 75 runs each,
+  control then flipped on the same machine: identical draw counts on every
+  scene, frame time unchanged or lower on all 25 scene/config pairs (-0.3% to
+  -11.6%, medians), so no cost beyond the noise.
+
+A9 is a precision measurement, not a visual one: whether LOD terrain and the
+objects on it stop z-fighting at range is the owner's call from boundary frames
+under both mappings. The "order of work" below is the procedure that was
+followed.
 
 **Order of work.**
 

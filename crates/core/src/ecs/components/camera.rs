@@ -76,8 +76,8 @@ use super::transform::Transform;
 ///   745 BU is still ~10 m of depth quantisation at the ring, which distant
 ///   LOD objects standing on LOD terrain sit well inside.
 ///
-///   It is now **implemented but not enabled** (#3308). Every site the
-///   investigation found is converted and derives from
+///   It is now **enabled** (#6642, DLOD-DEPTH-002; built under #3308). Every
+///   site the investigation found is converted and derives from
 ///   [`ACTIVE_DEPTH_MAPPING`]: the projection
 ///   ([`Camera::projection_matrix_with`]), the depth clear, the static
 ///   pipeline compare state, the per-draw-batch dynamic compare state
@@ -89,13 +89,12 @@ use super::transform::Transform;
 ///   (whose SDK already ships the inverted-depth shader permutation — only
 ///   the context flag and the plane ordering needed wiring).
 ///
-///   The constant ships [`DepthMapping::Conventional`], under which every
-///   one of those is bit-for-bit its pre-conversion self, because
-///   reversed-Z's *visual* failure modes remain invisible to `cargo test`
-///   and this project has no RenderDoc GUI integration. What used to be a
-///   multi-session archaeology exercise is now a two-line flip plus a
-///   validation run — see [`ACTIVE_DEPTH_MAPPING`] for both lines and the
-///   gate.
+///   The constant ships [`DepthMapping::Reversed`]. The flip was gated on
+///   hardware, not on `cargo test` (reversed-Z's *visual* failure modes are
+///   invisible to it): the far-decade table below, the exterior smoke matrix
+///   (`m-exteriors.sh` static / boundary / cycle / water under `taa` and the
+///   default `fsr3`) against a same-machine control, and the bench matrix
+///   against its own control. See [`ACTIVE_DEPTH_MAPPING`] for the numbers.
 ///
 ///   The **comparison gate** that work needs does now exist, in both halves:
 ///   [`Camera::analyze_depth_field`] on the CPU side, and the `depth.stats`
@@ -149,37 +148,48 @@ pub const NEAR_PLANE_BU_SCALE: f32 = 5.0;
 /// state, the FSR3 upscaler's `DEPTH_INVERTED` context flag, and — through
 /// the parity test described below — the GLSL side's background tests.
 ///
-/// It ships [`DepthMapping::Conventional`], which is bit-for-bit what the
-/// engine rendered before the conversion: [`DepthMapping::map_z_function`]
-/// is the identity there, `clear_value` is `1.0`, and the projection takes
-/// the unmodified `camera::rh::proj::directx::perspective` path. The conversion is therefore
-/// *present but not enabled* — deliberately, because reversed-Z's failure
-/// modes are invisible to `cargo test` and this project does not ship
-/// render-state changes it cannot see (see the depth-precision policy on
-/// [`DEFAULT_RENDER_DISTANCE`]).
+/// It ships [`DepthMapping::Reversed`] (#6642, DLOD-DEPTH-002): far maps to 0,
+/// near to 1, the depth clear is `0.0`, the compare is `GREATER_OR_EQUAL`, and
+/// [`DepthMapping::map_z_function`] mirrors every authored Gamebryo Z-test
+/// function. [`DepthMapping::Conventional`] stays implemented and tested as the
+/// A/B reference (`depth.stats conventional`, the projection byte-identity test).
 ///
-/// # Flipping it
+/// # Changing it
 ///
-/// Flipping this to [`DepthMapping::Reversed`] is one edit and a rebuild.
 /// `BYRO_REVERSED_Z` is generated from this constant, so nothing else is edited
 /// by hand, but SPIR-V is precompiled and checked in:
 ///
 /// 1. edit this constant,
 /// 2. run `cargo build -p byroredux-renderer`, whose build script regenerates
 ///    `crates/renderer/shaders/include/shader_constants.glsl`,
-/// 3. recompile every shader that includes `depth_convention.glsl`, and
+/// 3. recompile every shader that includes `depth_convention.glsl` (today
+///    `caustic_splat.comp`, `composite.frag`, `ssao.comp`), and
 /// 4. run `scripts/check-shader-artifacts.sh`.
 ///
 /// `the_shader_depth_convention_matches_the_engine_constant` (in the
 /// renderer's shader-contract suite) fails if the generated header disagrees
-/// with this constant, and the script in step 4 fails on stale SPIR-V, so a
-/// flip that forgets the shaders is caught before it reaches a black frame.
+/// with this constant, and the script in step 4 fails on stale SPIR-V.
 ///
-/// Then validate on hardware with the gate #3308 step 2 built: run
-/// `depth.stats` before and `depth.stats reversed` after, and compare the
-/// far decade's `distinct_codes` against the recorded baseline (1 410
-/// samples sharing **104** codes at the 250 000 BU LOD ring).
-pub const ACTIVE_DEPTH_MAPPING: DepthMapping = DepthMapping::Conventional;
+/// # What the flip bought (measured 2026-11-07, RTX 4070 Ti)
+///
+/// Same pose before and after, 1280×720, `--upscaler taa`, `--bench-mode
+/// renderer-static --bench-hold`, then `cam.pos` / `input.look 0 -3` over
+/// `byro-dbg` and `depth.stats` (three pre-flip captures agree within 2%).
+/// All three scenes load `--radius 3` and use `--fly`. Poses are renderer
+/// Y-up coordinates, yaw 0, pitch -3°:
+///
+/// | scene | pose | far decade 100 000–400 000 BU, samples → distinct codes (conventional → reversed) |
+/// |---|---|---|
+/// | FNV `WastelandNV` grid 0,0 (Mojave dish rise) | `2048 9400 -1848` | 6 438 → **407**, then 6 511 → **6 427** |
+/// | Skyrim `Tamriel` grid 2,-4 | `10240 -3600 14536` | 121 → **14**, then 119 → **119** |
+/// | FO4 `Commonwealth` grid 0,0 | `2048 3500 2048` | 23 047 → **498**, then 23 016 → **22 920** |
+///
+/// The 1 000–10 000 and 10 000–100 000 decades move the same way (FNV 61 566 →
+/// 580 914 and 1 382 → 30 930 codes). The older "1 410 samples share **104**
+/// codes" figure in [`DEFAULT_RENDER_DISTANCE`]'s table was taken at a pose
+/// recorded only by description and cannot be reproduced; this table replaces it
+/// as the reproducible baseline.
+pub const ACTIVE_DEPTH_MAPPING: DepthMapping = DepthMapping::Reversed;
 
 /// Perspective camera parameters.
 ///
@@ -1347,12 +1357,11 @@ mod tests {
     }
 
     #[test]
-    fn the_shipped_depth_mapping_is_conventional() {
-        // The conversion is present but deliberately not enabled: reversed-Z's
-        // failure modes are invisible to `cargo test`. If this ever flips, the
-        // generated shader define and the SPIR-V have to be rebuilt in the same
+    fn the_shipped_depth_mapping_is_reversed() {
+        // #6642 / DLOD-DEPTH-002: reversed-Z ships. A change here has to carry
+        // the regenerated shader define and the recompiled SPIR-V in the same
         // commit — see `ACTIVE_DEPTH_MAPPING`'s doc.
-        assert_eq!(ACTIVE_DEPTH_MAPPING, DepthMapping::Conventional);
+        assert_eq!(ACTIVE_DEPTH_MAPPING, DepthMapping::Reversed);
     }
 
     #[test]
@@ -1372,8 +1381,12 @@ mod tests {
             cam.projection_matrix_with(DepthMapping::Conventional),
             expected
         );
-        // ...and the no-argument entry point still resolves to it.
-        assert_eq!(cam.projection_matrix(), expected);
+        // ...and the no-argument entry point resolves to whichever mapping ships
+        // (reversed since #6642), so the conventional path stays the A/B reference.
+        assert_eq!(
+            cam.projection_matrix(),
+            cam.projection_matrix_with(ACTIVE_DEPTH_MAPPING)
+        );
     }
 
     #[test]

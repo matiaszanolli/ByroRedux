@@ -284,13 +284,24 @@ mod tests {
         // The defect, from the other side: read conventionally, the same
         // frame reports no background and four surfaces.
         let conventional = DepthStatsCommand
-            .execute(&world_with_capture(camera, samples), "")
+            .execute(&world_with_capture(camera, samples.clone()), "conventional")
             .lines
             .join("\n");
         assert!(
             conventional.contains("mapping=conventional-Z")
                 && conventional.contains("background(cleared)=0"),
             "this is what an 'after' run used to produce silently: {conventional}"
+        );
+
+        // No argument follows the mapping the build ships (reversed since #6642),
+        // so the default decode of this reversed frame is the correct one.
+        let default = DepthStatsCommand
+            .execute(&world_with_capture(camera, samples), "")
+            .lines
+            .join("\n");
+        assert!(
+            default.contains("mapping=reversed-Z") && default.contains("background(cleared)=3"),
+            "the default must be the shipped mapping: {default}"
         );
     }
 
@@ -432,7 +443,9 @@ mod tests {
             vec![1.0; 4], // z >= 1.0 — every sample is background/cleared
         );
 
-        let output = DepthStatsCommand.execute(&world, "").lines.join("\n");
+        // Explicitly conventional: the capture above (z >= 1.0) is background
+        // under that decode, whichever mapping the build ships.
+        let output = DepthStatsCommand.execute(&world, "conventional").lines.join("\n");
         assert!(
             !output.contains("degenerate camera"),
             "a well-formed camera must not be reported as degenerate: {output}"

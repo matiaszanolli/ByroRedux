@@ -108,8 +108,8 @@ frames (#5365, the tracked throughput half of closed #4606/#5117).
   done is checked.
 - Texture streaming (M39) is off by default (`render.texture_streaming`) until its open gates close:
   the A11 reflection A/B, a clean FO4 A9 soak and the default flip
-  ([results](docs/engine/texture-streaming.md#12-measured-results-2026-11-04)). Reversed-Z ships `Conventional` until
-  validated on hardware (#3308).
+  ([results](docs/engine/texture-streaming.md#12-measured-results-2026-11-04)). Reversed-Z is the shipped depth mapping
+  (#6642, 2026-11-07; far-decade table on `ACTIVE_DEPTH_MAPPING`).
 - Oblivion's CHARAL ruleset is built but unwired: `Oblivion.esm` has no AVIF
   records, so a legacy actor-value resolver comes first
   ([`charal.md`](docs/engine/charal.md)).
