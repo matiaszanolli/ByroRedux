@@ -726,6 +726,71 @@ mod tests {
         );
     }
 
+    /// #6742 — `LocalGridParams` (`include/local_grid_params.glsl`) is the
+    /// combustion local grid's hand-mirrored std140 block, read by the froxel
+    /// inject pass (binding 26) and by composite's local fire march
+    /// (binding 12) from one host struct, `GpuLocalGridParams`. Its six
+    /// members are all vec4-class, so a transposition or a retyped lane would
+    /// keep the size and every binding shape intact: pin the block size in
+    /// both shaders and each member's offset and order against `offset_of!`,
+    /// as `volumetrics_params_member_offsets_match_host_struct` does for
+    /// `VolumetricsParams`.
+    #[test]
+    fn local_grid_params_block_matches_the_host_struct_in_both_consumers() {
+        use std::mem::offset_of;
+
+        use crate::vulkan::volumetrics::GpuLocalGridParams;
+        let host_size = std::mem::size_of::<GpuLocalGridParams>() as u32;
+        let consumers: &[(&str, &[u8])] = &[
+            (
+                "volumetrics_inject.comp",
+                include_bytes!("../../shaders/volumetrics_inject.comp.spv"),
+            ),
+            (
+                "composite.frag",
+                include_bytes!("../../shaders/composite.frag.spv"),
+            ),
+        ];
+        let host: [(&str, u32); 6] = [
+            ("boxes", offset_of!(GpuLocalGridParams, boxes) as u32),
+            ("info", offset_of!(GpuLocalGridParams, info) as u32),
+            ("sun_dir", offset_of!(GpuLocalGridParams, sun_dir) as u32),
+            ("sun_radiance", offset_of!(GpuLocalGridParams, sun_radiance) as u32),
+            ("phase", offset_of!(GpuLocalGridParams, phase) as u32),
+            ("render_origin", offset_of!(GpuLocalGridParams, render_origin) as u32),
+        ];
+        for (name, spv) in consumers {
+            let size = uniform_block_size_by_name(spv, "LocalGridParams")
+                .unwrap_or_else(|e| panic!("{name}: reflect LocalGridParams failed: {e}"))
+                .unwrap_or_else(|| panic!("{name}: declares no LocalGridParams block"));
+            assert_eq!(
+                size, host_size,
+                "{name}.spv LocalGridParams is {size} B but GpuLocalGridParams is {host_size} B"
+            );
+            let members = uniform_block_member_offsets_by_name(spv, "LocalGridParams")
+                .unwrap_or_else(|e| panic!("{name}: reflect LocalGridParams members failed: {e}"))
+                .unwrap_or_else(|| panic!("{name}: declares no LocalGridParams block"));
+            assert_eq!(
+                members.len(),
+                host.len(),
+                "{name}: LocalGridParams grew or lost a member — update this pin, the \
+                 host struct and local_grid_params.glsl together"
+            );
+            for ((shader_name, shader_offset), (rust_name, rust_offset)) in
+                members.iter().zip(host)
+            {
+                assert_eq!(
+                    shader_name, rust_name,
+                    "{name}: member order diverged where the host writes {rust_name}"
+                );
+                assert_eq!(
+                    *shader_offset, rust_offset,
+                    "{name}: {rust_name} is read at {shader_offset} B but written at {rust_offset} B"
+                );
+            }
+        }
+    }
+
     /// Regression: #1493. The volumetrics UBOs grew a `render_origin`
     /// vec4 for #markarth-precision but — unlike `CameraUBO` (#1447) —
     /// had no committed-`.spv` block-size pin, only `validate_set_layout`
