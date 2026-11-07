@@ -6815,6 +6815,47 @@ fn fo3_use_land_data_children_inherit_the_wasteland_landscape() {
     );
 }
 
+/// #6594 — Skyrim's seven "Use Land Data" child worldspaces (parent Tamriel `0x3C`) author their
+/// cells with no LAND of their own for the most part; before the Skyrim gate was lifted those
+/// cells had no terrain and no ground collision. The audit census over `Skyrim.esm` (SE): 308
+/// LAND-less cells, every one with LAND in the parent at the same grid — WhiterunWorld 106,
+/// WindhelmWorld 55, RiftenWorld 17, SolitudeWorld 42, WhiterunDragonsreachWorld 48,
+/// WindhelmPitWorldspace 28, KatariahWorld 12. The counts are the pin.
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn skyrim_use_land_data_children_inherit_tamriels_landscape() {
+    let Some(data) = data_dir(test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT) else {
+        eprintln!("[SKYRIM LAND] skipping: game data unavailable");
+        return;
+    };
+    let mut index = parse_esm(&std::fs::read(data.join("Skyrim.esm")).unwrap()).unwrap();
+    let land_less = |index: &byroredux_plugin::esm::records::EsmIndex, world: &str| {
+        index
+            .cells
+            .exterior_cells
+            .get(world)
+            .map_or(0, |cells| cells.values().filter(|cell| cell.landscape.is_none()).count())
+    };
+    let worlds = [
+        ("whiterunworld", 106),
+        ("windhelmworld", 55),
+        ("riftenworld", 17),
+        ("solitudeworld", 42),
+        ("whiterundragonsreachworld", 48),
+        ("windhelmpitworldspace", 28),
+        ("katariahworld", 12),
+    ];
+    let before: Vec<usize> = worlds.iter().map(|(world, _)| land_less(&index, world)).collect();
+    let filled = index.cells.inherit_parent_landscapes();
+    eprintln!("[SKYRIM LAND] filled {filled}");
+    for ((world, expected), before) in worlds.iter().zip(before) {
+        let after = land_less(&index, world);
+        eprintln!("[SKYRIM LAND] {world}: {before} LAND-less -> {after}");
+        assert_eq!(before - after, *expected, "{world}: cells filled from Tamriel");
+    }
+    assert_eq!(filled, 308, "all seven children together");
+}
+
 /// #6464 — FO4's "Use Land Data" child worldspaces (Goodneighbor, plus DLCNukaWorld's
 /// NukaWorldMarket and NukaWorldAmphitheater) author their cells with no LAND of their own;
 /// without the #5505 inheritance those cells have no ground. Fallout4.esm alone carries

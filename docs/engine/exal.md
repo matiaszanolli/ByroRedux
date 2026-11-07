@@ -148,14 +148,18 @@ is the city's real position in Tamriel (BrumaWorld's LAND sits at cells
 (4..8, 34..38)). `EsmCellIndex::inherit_parent_landscapes` copies the `WNAM`
 chain's LAND into each of the child's own LAND-less cells at the same
 coordinate (1,040 cells over the 30 vanilla children), once after the load
-order is merged and for Oblivion, FO3/FNV and FO4 only (`needs_exterior_processing`;
+order is merged and for Oblivion, FO3/FNV, Skyrim and FO4 only (`needs_exterior_processing`;
 #6089 measured the FO3 "Use Land Data" children co-located on the Wasteland's
 grid; #6464 measured FO4's: `NukaWorldMarket` (median |dz| 69 against the
 parent's VHGT vs 448+ for shifted controls) and `NukaWorldAmphitheater` (168 vs
 713+) are decisive, while `Goodneighbor`'s dense city leaves its median
-inconclusive — consistent, not visually confirmed; and the shared parse cache
-re-parses an interior-first index of any of these games for an exterior
-session, #6407) — not measured on the Skyrim or Starfield children. The ring beyond the cells a child authors is the
+inconclusive — consistent, not visually confirmed; #6594 measured Skyrim's seven Tamriel
+children: 308 LAND-less cells, every one with LAND in the parent at the same grid
+(WhiterunWorld 106 of 113, WindhelmWorld 55, RiftenWorld 17, SolitudeWorld 42,
+WhiterunDragonsreachWorld 48, WindhelmPitWorldspace 28, KatariahWorld 12), the children's own
+LAND matching Tamriel's at the same coordinate (median |dz| 0-488) and not a shifted one (312-2,376);
+the step runs on every shared parse, so an interior-first session reuses its index, #6591) —
+not measured on the Starfield or Fallout 76 children. The ring beyond the cells a child authors is the
 parent-keyed distant-LOD ring (#5496, `lod_worldspace_key`). Open, unsourced
 from the data files: whether vanilla also draws the parent's placed objects
 around a city, and whether the empty ring is full LAND or LOD in the original;

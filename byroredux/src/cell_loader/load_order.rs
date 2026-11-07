@@ -610,6 +610,7 @@ fn needs_exterior_processing(game: esm::reader::GameKind) -> bool {
         game,
         esm::reader::GameKind::Oblivion
             | esm::reader::GameKind::Fallout3NV
+            | esm::reader::GameKind::Skyrim
             | esm::reader::GameKind::Fallout4
     )
 }
@@ -627,7 +628,12 @@ fn needs_exterior_processing(game: esm::reader::GameKind) -> bool {
 /// and `NukaWorldAmphitheater` (168 vs 713+) are decisive; `Goodneighbor`'s
 /// dense city makes its median inconclusive but 14 % of its statics sit within
 /// 48 units of the Commonwealth terrain vs 0.8-4 % for the controls. 29
-/// LAND-less content cells across the three had no ground before. Idempotent,
+/// LAND-less content cells across the three had no ground before. #6594 — and on
+/// Skyrim's seven Tamriel children (Whiterun, Windhelm, Riften, Solitude, the
+/// Dragonsreach and Windhelm-pit worldspaces, Katariah): 308 LAND-less cells whose
+/// parent has LAND at the same grid; the children's own LAND matches Tamriel's at
+/// the same coordinate (median |dz| 0-488) and not a shifted one (312-2,376).
+/// Idempotent,
 /// only fills LAND-less cells of inheriting children and costs a walk over the
 /// exterior cells (no re-parse), so it runs on every shared parse, interior
 /// first or not (#6591); a no-op on every other game.
@@ -1952,7 +1958,7 @@ mod shared_parse_tests {
     #[test]
     fn one_parse_serves_an_interior_session_and_then_an_exterior_one() {
         use esm::reader::GameKind;
-        for game in [GameKind::Oblivion, GameKind::Fallout3NV, GameKind::Fallout4] {
+        for game in [GameKind::Oblivion, GameKind::Fallout3NV, GameKind::Skyrim, GameKind::Fallout4] {
             let dir = plugin_dir("one-parse");
             let path = write(&dir, "Game.esm", b"game");
             let cache = SharedParseCache::new();
@@ -1973,30 +1979,38 @@ mod shared_parse_tests {
         }
     }
 
-    /// #6089 / #6464 - the "Use Land Data" landscape inheritance runs for the games whose
-    /// children were measured co-located on their parent's grid: Oblivion, FO3/FNV, and FO4
-    /// (NukaWorldMarket / NukaWorldAmphitheater decisive, Goodneighbor consistent). Skyrim
-    /// and Starfield have not been measured.
+    /// #6089 / #6464 / #6594 - the "Use Land Data" landscape inheritance runs for the games whose
+    /// children were measured co-located on their parent's grid: Oblivion, FO3/FNV, FO4
+    /// (NukaWorldMarket / NukaWorldAmphitheater decisive, Goodneighbor consistent) and Skyrim
+    /// (308 LAND-less cells over seven Tamriel children). Fallout 76 and Starfield have not
+    /// been measured.
     #[test]
-    fn use_land_data_children_inherit_on_oblivion_fo3_fnv_and_fo4_only() {
+    fn use_land_data_children_inherit_on_the_measured_games_only() {
         use esm::reader::GameKind;
-        for game in [GameKind::Oblivion, GameKind::Fallout3NV, GameKind::Fallout4] {
+        for game in [
+            GameKind::Oblivion,
+            GameKind::Fallout3NV,
+            GameKind::Skyrim,
+            GameKind::Fallout4,
+        ] {
             assert!(needs_exterior_processing(game), "{game:?}");
         }
-        // Skyrim has not been measured (nothing here claims it does not need it).
-        assert!(!needs_exterior_processing(GameKind::Skyrim));
+        // Not measured (nothing here claims they do not need it).
+        for game in [GameKind::Fallout76, GameKind::Starfield] {
+            assert!(!needs_exterior_processing(game), "{game:?}");
+        }
     }
 
-    /// A game the step does not cover (unmeasured Skyrim) keeps its LAND-less child LAND-less,
+    /// A game the step does not cover (unmeasured Starfield) keeps its LAND-less child LAND-less,
     /// whichever session asked.
     #[test]
     fn an_unmeasured_game_is_left_unprocessed() {
-        let dir = plugin_dir("skyrim-unprocessed");
-        let path = write(&dir, "Skyrim.esm", b"skyrim");
+        let dir = plugin_dir("starfield-unprocessed");
+        let path = write(&dir, "Starfield.esm", b"starfield");
         let cache = SharedParseCache::new();
         let parse = |_: &[&str]| -> anyhow::Result<(esm::records::EsmIndex, LoadOrder)> {
             Ok((
-                index_with_a_land_less_child(esm::reader::GameKind::Skyrim),
+                index_with_a_land_less_child(esm::reader::GameKind::Starfield),
                 LoadOrder::all_regular(Vec::new()),
             ))
         };
