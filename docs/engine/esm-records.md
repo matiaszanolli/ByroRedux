@@ -51,7 +51,7 @@ Source: [`crates/plugin/src/esm/`](../../crates/plugin/src/esm/)
 | Cell tier | `cell/` — `mod.rs` + `helpers.rs` / `support.rs` / `walkers.rs` / `wrld.rs` + `tests/` |
 | Records tier | `records/` — per-category files + `index.rs` (the `EsmIndex` struct) + `grup_walker.rs` (the fused dispatcher's shared helpers) + `misc/` themed-stub split |
 | Walker passes | **One** fused pass (`parse_esm_with_load_order`, #527) — was two pre-Session 12 |
-| Record categories on `EsmIndex::categories()` | ~90 (full list is the single source of truth in [`index.rs`](../../crates/plugin/src/esm/records/index.rs)) |
+| Record categories on `EsmIndex::categories()` | 115 (pinned by the `categories()` length assertion in `records/tests.rs`; full list is the single source of truth in [`index.rs`](../../crates/plugin/src/esm/records/index.rs)) |
 | Plugin-crate `#[test]` fns | ~454 (unit + ignored integration) |
 | Real FNV.esm M24 record total | 13,684 (release-mode parse: ~0.19 s) |
 | Real FO3.esm CREA / LVLC / SCPT | 533 / 60 / ~1500 (observed; floors in `records/tests.rs`) |
@@ -435,16 +435,17 @@ it grew from 18 maps in Session 12 to ~90 today. The struct opens with
 - **Oblivion-unique base records** (#966) — `birthsigns` (BSGN),
   `clothing` (CLOT), `apparatuses` (APPA), `sigil_stones` (SGST),
   `soul_gems` (SLGM).
-- **Typed but unconsumed** (#6180) — seven maps have a full typed parser and
+- **Typed but unconsumed** (#6180) — five maps have a full typed parser and
   are retained for the whole session, but nothing outside `records/` reads
   them yet: `enchantments` (ENCH), `reputations` (REPU),
-  `explosions` (EXPL; only the `probe_form` example reads it),
-  `combat_styles` (CSTY), `impacts` (IPCT), `impact_data_sets` (IPDS) and
-  `recipes` (COBJ). They back cross-reference resolution and the census /
-  probe tooling, so the parsers stay; they are the next consumers to wire
-  (CHARAL for REPU, the AI layer for CSTY, impact effects for IPCT/IPDS).
+  `combat_styles` (CSTY), `impacts` (IPCT) and `impact_data_sets` (IPDS).
+  They back cross-reference resolution and the census / probe tooling, so the
+  parsers stay; they are the next consumers to wire (CHARAL for REPU, the AI
+  layer for CSTY, impact effects for IPCT/IPDS). `explosions` (EXPL, read by
+  `systems/mines.rs`) and `recipes` (COBJ, read by `CraftingBook::from_index`)
+  have since gained readers and left this list.
   This is the typed-parser counterpart of the minimal-stub caveat below —
-  re-check with `grep -rnE '\.(enchantments|reputations|body_parts|recipes|combat_styles|explosions|impact_data_sets|impacts)\b' crates byroredux`
+  re-check with `grep -rnE '\.(enchantments|reputations|body_parts|combat_styles|impact_data_sets|impacts)\b' crates byroredux`
   (minus tests and `records/`) before assuming one has gained a reader.
 - **Long-tail minimal stubs** (#810) — originally 31 record types
   parsed via `parse_minimal_esm_record` (EDID + optional FULL) so
@@ -453,10 +454,14 @@ it grew from 18 maps in Session 12 to ~90 today. The struct opens with
   dedicated typed parser as a real consumer arrived: IMAD (cinematic
   presentation curves, `parse_imad`) and `sounds` (SOUN, `parse_soun`
   — FNAM file-path decode, EX-16 item 1 / #2372's FormID→archive-path
-  prerequisite). 29 remain on the minimal-stub path: audio:
-  ALOC/ANIO/ASPC/CAMS/CPTH/DOBJ/MICN/MSET/MUSC/VTYP; visual/world:
-  AMEF/DEBR/GRAS/LSCR/LSCT/PWAT/RGDL; FNV hardcore: DEHY/HUNG/RADS/SLPD;
-  Caravan/Casino: CCRD/CDCK/CHAL/CHIP/CMNY/CSNO; recipe residuals:
+  prerequisite); MSET (`parse_mset`), MUSC (`parse_musc`), GRAS
+  (`parse_gras`), LSCR (`parse_lscr`), RADS (`parse_rads`) and CHAL
+  (`parse_chal`) have since graduated too. 26 arms remain on the minimal-stub
+  path in `records/dispatch_misc_stub.rs` (the arms that insert only
+  `parse_minimal_esm_record(fid, subs)`): audio:
+  ALOC/ANIO/ASPC/CAMS/CPTH/DOBJ/MICN/VTYP plus the later-added
+  SECH/AOPF; visual/world: AMEF/DEBR/LSCT/PWAT/RGDL plus LCRT; FNV hardcore:
+  DEHY/HUNG/SLPD; Caravan/Casino: CCRD/CDCK/CHIP/CMNY/CSNO; recipe residuals:
   RCCT/RCPE.
 
 `EsmIndex` carries four cross-cutting helpers:

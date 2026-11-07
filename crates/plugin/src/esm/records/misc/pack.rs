@@ -24,7 +24,9 @@ const PKW3_MIN_LEN: usize = 20;
 const PKDT_TYPE: usize = 4;
 /// Skyrim+ `PKDT` (12 bytes, xEdit `wbDefinitionsTES5.pas`): type, interrupt
 /// override, preferred speed and an unknown byte, then the u16 interrupt flags
-/// here. FO3/FNV's 8-byte `PKDT` has no word there.
+/// here. A pre-Skyrim `PKDT` has no interrupt-flags word there: Oblivion's is 8 bytes, and
+/// FO3/FNV's measured 12 (ESM-2026-10-31-03) carries other data at that offset, so the
+/// type-byte 18 / 19 gate (not the length) is what keeps it from being read as one.
 const PKDT_SKYRIM_INTERRUPT_FLAGS: usize = 8;
 /// A Skyrim+ `PKDT` that reaches past the interrupt flags.
 const PKDT_SKYRIM_MIN_LEN: usize = PKDT_SKYRIM_INTERRUPT_FLAGS + 2;

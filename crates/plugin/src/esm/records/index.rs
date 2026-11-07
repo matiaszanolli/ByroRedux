@@ -543,8 +543,7 @@ pub struct EsmIndex {
     /// `EXPL` explosion records — frag grenades, mines, explosive
     /// ammo blast effects. Linked from PROJ via PROJ→EXPL→EFSH.
     ///
-    /// **Parsed and retained, no runtime consumer yet** (#6180): nothing outside this module reads the map. (Only the
-    /// `probe_form` example reads it.)
+    /// Read by the mine system (`systems/mines.rs`) for a mine's blast.
     pub explosions: HashMap<u32, ExplRecord>,
     /// `CSTY` combat-style records — per-NPC AI behavior profile
     /// (aggression, stealth preference, ranged vs melee).
@@ -571,7 +570,7 @@ pub struct EsmIndex {
     /// below), routed to the `MinimalEsmRecord` stub bucket since nothing
     /// consumes it yet.
     ///
-    /// **Parsed and retained, no runtime consumer yet** (#6180): nothing outside this module reads the map.
+    /// Read by the crafting book (`CraftingBook::from_index`, `crafting.rs`).
     pub recipes: HashMap<u32, CobjRecord>,
     /// `FURN` base form → its `KWDA` keywords (Skyrim+; absent for a furniture with none). A crafting
     /// bench is a furniture carrying the keyword a `COBJ`'s `BNAM` names.
