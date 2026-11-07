@@ -124,6 +124,7 @@ also rows in the subsystem table above.
 | [Exterior Readiness Plan](exterior-readiness-plan.md) | byroredux, renderer | Execution plan for a dependable cross-game open-world path |
 | [RT Lighting & Material Recovery](rt-lighting-material-recovery.md) | renderer, byroredux | 2026-08 execution contract for ray-traced lighting and material correctness |
 | [Interior Godrays Status](interior-godrays-status.md) | renderer, byroredux | Hand-off: time-of-day light shafts and sky apertures in interiors (in progress) |
+| [Interior Shaft Openings](interior-shaft-openings.md) | renderer, byroredux | Inventory of interior shaft openings measured in the live engine, and where the census and the engine disagree (VLM-INT-001, partial) |
 | [Dependency Update Follow-ups](dependency-update-followups-plan.md) | all | Follow-ups after the 2026-10 crate update (rapier 0.36, glam 0.33, egui 0.36, kira 0.12, wasmtime 49, Ruffle) |
 | [M27 Phase 1 Survey](m27-phase1-survey.md) | core, byroredux | Per-system read/write/structural-mutation survey behind the scheduler access declarations |
 | [M47.0 Event Hooks Design](m47-0-design.md) | scripting | Event-hooks runtime design, retained for architecture history |
