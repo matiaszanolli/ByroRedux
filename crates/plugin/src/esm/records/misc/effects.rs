@@ -491,23 +491,20 @@ pub fn parse_expl(form_id: u32, subs: &[SubRecord], game: crate::esm::reader::Ga
     out.editor_id = common.editor_id;
     out.full_name = common.full_name;
     for sub in subs {
-        match &sub.sub_type {
-            b"DATA" => {
-                let Some((damage_at, two_radii)) = expl_data_layout(game, sub.data.len()) else {
-                    continue;
-                };
-                // A body too short to reach its last radius word is not decoded.
-                let radius_words = if two_radii { 2 } else { 1 };
-                if sub.data.len() < damage_at + 4 + radius_words * 4 {
-                    continue;
-                }
-                let mut r = SubReader::new(&sub.data);
-                r.skip_to_or_eof(damage_at);
-                out.damage = r.f32_or_default();
-                out.inner_radius = r.f32_or_default();
-                out.radius = if two_radii { r.f32_or_default() } else { out.inner_radius };
+        if &sub.sub_type == b"DATA" {
+            let Some((damage_at, two_radii)) = expl_data_layout(game, sub.data.len()) else {
+                continue;
+            };
+            // A body too short to reach its last radius word is not decoded.
+            let radius_words = if two_radii { 2 } else { 1 };
+            if sub.data.len() < damage_at + 4 + radius_words * 4 {
+                continue;
             }
-            _ => {}
+            let mut r = SubReader::new(&sub.data);
+            r.skip_to_or_eof(damage_at);
+            out.damage = r.f32_or_default();
+            out.inner_radius = r.f32_or_default();
+            out.radius = if two_radii { r.f32_or_default() } else { out.inner_radius };
         }
     }
     out

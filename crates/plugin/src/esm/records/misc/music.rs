@@ -201,7 +201,7 @@ pub fn first_playable_track<'a>(
     musc: &MuscRecord,
     tracks: &'a HashMap<u32, MustRecord>,
 ) -> Option<&'a MustRecord> {
-    fn walk<'a>(form_id: u32, tracks: &'a HashMap<u32, MustRecord>, depth: u32) -> Option<&'a MustRecord> {
+    fn walk(form_id: u32, tracks: &HashMap<u32, MustRecord>, depth: u32) -> Option<&MustRecord> {
         let track = tracks.get(&form_id)?;
         match track.kind {
             MustKind::SingleTrack if !track.file.is_empty() => Some(track),
