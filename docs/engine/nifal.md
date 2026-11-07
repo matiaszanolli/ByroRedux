@@ -856,8 +856,20 @@ first role lands, `starfield_single_channel_kinds_are_parked_by_name_or_canonica
 (the XOR guard beside the lookup-miss pin in `asset_provider/tests/starfield_mat.rs`)
 forces this table and the struct to move together.
 
-**Starfield additive-family blend modes — parked by name (SF-2026-10-09-D6-01,
-#5509, recorded 2026-10-11).** `apply_cdb_material` forwards only
+**Starfield additive-family blend modes — partly forwarded (SF-2026-10-09-D6-01,
+#5509, recorded 2026-10-11; `Additive` / `Multiply` landed 2026-11-07).**
+`apply_cdb_material` now forwards `AlphaBlend` (#5277), `Additive`
+(`has_alpha`, factors `(SRC_ALPHA, ONE)` = Gamebryo `(6, 0)`) and `Multiply`
+(`(DEST_COLOR, ZERO)` = `(4, 1)`), the last two from the FO4 BGSM preset table
+below; pinned by `cdb_blend_mode_tests`. What follows is the original census; the
+**still-parked** modes are `SourceSoftAdditive` (277 shapes),
+`DestinationInvertedSoftAdditive` (29), `DestinationSoftAdditive` (1) and
+`TakeSmaller` (1), which have no local source. The Additive carry-over was
+checked only as far as a render can: `meshes\effects\shipweapons\shipwep_emswirl_projectile_b.nif`
+(`--game starfield --mesh`, vanilla archives) draws a solid dome and three solid
+teal beams before, and a blended swirl with the sky visible behind it after; no
+in-game reference frame exists, so `(SRC_ALPHA, ONE)` against `(ONE, ONE)` is not
+separated by it. Original text: `apply_cdb_material` forwarded only
 `EffectSettingsComponent.BlendingMode == "AlphaBlend"` (#5277). Every other
 authored mode leaves `has_alpha == false`, so the shape takes the opaque,
 depth-writing, lit path and an additive glow sprite draws as a solid card.

@@ -397,9 +397,35 @@ fn apply_cdb_material(
     // `dst_blend_mode`'s (6, 7) defaults, so only `has_alpha` needs
     // setting; any other authored string stays untouched until its
     // mapping is sourced.
-    if cdb_mat.blending_mode.as_deref() == Some("AlphaBlend") {
-        material.has_alpha = true;
-        *touched = true;
+    //
+    // #5509 — `Additive` and `Multiply` are sourced from the same studio's FO4
+    // BGSM preset table (`BaseMaterialFile.cs` `ConvertAlphaBlendMode`:
+    // Additive = (SRC_ALPHA, ONE) = Gamebryo (6, 0), Multiplicative =
+    // (DEST_COLOR, ZERO) = (4, 1)), the same native factors the BGSM arm below
+    // forwards. They cover 182 and 1 vanilla shapes; without them an additive
+    // glow card (ship projectile, pedestal glow) takes the opaque, lit,
+    // depth-writing path. The soft variants (`SourceSoftAdditive` 277 shapes,
+    // `DestinationInvertedSoftAdditive` 29, `DestinationSoftAdditive` 1) and
+    // `TakeSmaller` (1) have no local source and stay parked
+    // (nifal.md, "Starfield additive-family blend modes").
+    match cdb_mat.blending_mode.as_deref() {
+        Some("AlphaBlend") => {
+            material.has_alpha = true;
+            *touched = true;
+        }
+        Some("Additive") => {
+            material.has_alpha = true;
+            material.src_blend_mode = 6; // SRC_ALPHA
+            material.dst_blend_mode = 0; // ONE
+            *touched = true;
+        }
+        Some("Multiply") => {
+            material.has_alpha = true;
+            material.src_blend_mode = 4; // DEST_COLOR
+            material.dst_blend_mode = 1; // ZERO
+            *touched = true;
+        }
+        _ => {}
     }
     // #5283 / #5503 — `EmissiveSettingsComponent` is PARKED: the capture
     // stays in `byroredux_sfmaterial` (Enabled / EmissiveTint /
@@ -2411,5 +2437,59 @@ mod size_pin_tests {
             measured <= MERGE_BGSM_ARM_LINE_PIN,
             "`merge_bgsm_arm` carries {measured} lines (pin {MERGE_BGSM_ARM_LINE_PIN}) — move the new merge arm into a helper and record the decision, rather than raising the pin (#5096)"
         );
+    }
+}
+
+#[cfg(test)]
+mod cdb_blend_mode_tests {
+    use super::apply_cdb_material;
+    use byroredux_nif::import::ImportedMaterial;
+    use byroredux_sfmaterial::CdbMaterial;
+
+    /// Run the CDB arm over a default material for one authored `BlendingMode`.
+    fn merged(mode: Option<&str>) -> (ImportedMaterial, bool) {
+        let mut material = ImportedMaterial::default();
+        let mut pool = byroredux_core::string::StringPool::new();
+        let mut touched = false;
+        let cdb = CdbMaterial {
+            blending_mode: mode.map(str::to_owned),
+            ..Default::default()
+        };
+        apply_cdb_material(&mut material, &cdb, &mut pool, &mut touched, &|_| true);
+        (material, touched)
+    }
+
+    /// #5509 — the additive and multiply modes forward the BGSM preset table's
+    /// factors in Gamebryo's native numbering; `AlphaBlend` keeps the defaults.
+    #[test]
+    fn additive_and_multiply_forward_their_preset_factors() {
+        let (alpha, _) = merged(Some("AlphaBlend"));
+        assert!(alpha.has_alpha);
+        assert_eq!((alpha.src_blend_mode, alpha.dst_blend_mode), (6, 7));
+
+        let (additive, _) = merged(Some("Additive"));
+        assert!(additive.has_alpha, "an additive card must take the blend path");
+        assert_eq!((additive.src_blend_mode, additive.dst_blend_mode), (6, 0), "SRC_ALPHA, ONE");
+
+        let (multiply, _) = merged(Some("Multiply"));
+        assert!(multiply.has_alpha);
+        assert_eq!((multiply.src_blend_mode, multiply.dst_blend_mode), (4, 1), "DEST_COLOR, ZERO");
+    }
+
+    /// #5509 — the modes with no local source stay parked: no guessed blend.
+    #[test]
+    fn unsourced_modes_stay_opaque() {
+        for mode in [
+            "SourceSoftAdditive",
+            "DestinationInvertedSoftAdditive",
+            "DestinationSoftAdditive",
+            "TakeSmaller",
+            "None",
+        ] {
+            let (material, _) = merged(Some(mode));
+            assert!(!material.has_alpha, "{mode} must not set a blend");
+            assert_eq!((material.src_blend_mode, material.dst_blend_mode), (6, 7), "{mode}");
+        }
+        assert!(!merged(None).0.has_alpha);
     }
 }
