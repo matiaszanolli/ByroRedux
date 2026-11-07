@@ -1,7 +1,7 @@
 //! Skyrim's armor-rating model (M43, #6567): what a point of rating blocks, the hidden rating a worn
 //! piece carries, the cap, and how the wearer's armor skill scales a piece.
 //!
-//! The numbers are the executable defaults of six game settings, so a load order that retunes them (an
+//! The numbers are the defaults of seven game settings, so a load order that retunes them (an
 //! armor-rebalance mod, a Creation Club armor change) retunes this model: [`ArmorModel::with_gmst`] overlays
 //! the load-order-merged values, exactly as [`CrimeModel`](super::CrimeModel) and
 //! [`VatsModel`](super::VatsModel) do. The per-game seam is the [`CharacterRulesProfile`](super::CharacterRulesProfile)
@@ -10,7 +10,7 @@
 //!
 //! Sources, CK *Settings* (`ck-uesp-wiki/Category/Settings.wiki`) and UESP *Skyrim:Armor*:
 //!
-//! | Setting | Skyrim.esm | Meaning |
+//! | Setting | Default | Meaning |
 //! |---|---|---|
 //! | `fArmorScalingFactor` | 0.12 | "Each point of armor rating blocks this % of damage." |
 //! | `fArmorBaseFactor` | 0.03 | The hidden armor of a worn piece, a fraction: 0.03 is a 3 % reduction. |
@@ -18,12 +18,16 @@
 //! | `fArmorRatingPCBase` / `fArmorRatingPCMax` | 1.0 / 1.4 | The player's piece rating is multiplied by the first at 0 skill and the second at 100. |
 //! | `fArmorRatingBase` / `fArmorRatingMax` | 1.0 / 2.5 | The same for an NPC. |
 //!
+//! Six of the seven are authored `GMST` records (master-authored, byte-scanned in Skyrim.esm, SE and LE, and the
+//! DLC and Creation Club masters). `fArmorRatingPCBase` is not: no master authors it, and its 1.0 comes only from
+//! the CK *Settings* page. The overlay still reads it so a mod that adds the record retunes the model.
+//!
 //! The multiplier between 0 and 100 skill is linear: `base + (max - base) × skill / 100`, which with the
 //! defaults is UESP's `1 + 0.4 × skill / 100` (player) and `1 + 1.5 × skill / 100` (NPC).
 
 use crate::ecs::resource::Resource;
 
-/// The armor model's six settings. All reduction values are percentages, all multipliers are plain factors.
+/// The armor model's seven settings. All reduction values are percentages, all multipliers are plain factors.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ArmorModel {
     /// `fArmorScalingFactor`: percent of damage blocked per point of displayed rating.
@@ -45,7 +49,8 @@ pub struct ArmorModel {
 impl Resource for ArmorModel {}
 
 impl ArmorModel {
-    /// Skyrim's defaults (`Skyrim.esm`, byte-scanned). The two skill multipliers are built from CHARAL's
+    /// Skyrim's defaults: six master-authored (byte-scanned from `Skyrim.esm`) and `fArmorRatingPCBase`, a CK-page
+    /// default no master authors. The two skill multipliers are built from CHARAL's
     /// coefficients (`skyrim::LIGHT_ARMOR_RATING_COEFF` / `ARMOR_SKILL_RATING_COEFF_NPC`, #6568) so the Light
     /// Armor `DamageResist` row and this model cannot disagree about the player's.
     pub const SKYRIM: Self = Self {

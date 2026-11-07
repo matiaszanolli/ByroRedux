@@ -298,7 +298,10 @@ and for NPCs (`1.5/100`). The numbers are the `ArmorModel` row of the Skyrim
 `CharacterRulesProfile` (`crates/core/src/character/armor.rs`, #6567): `fArmorScalingFactor`
 0.12, `fArmorBaseFactor` 0.03, `fMaxArmorRating` 80 and the PC / NPC rating
 multipliers (`fArmorRatingPCBase` / `PCMax`, `fArmorRatingBase` / `Max`), each
-overlaid with the load order's own GMST so an armor-rebalance mod retunes them,
+overlaid with the load order's own GMST so an armor-rebalance mod retunes them.
+Six of the seven are master-authored (byte-scanned in Skyrim.esm SE and LE, the
+DLC and Creation Club masters); `fArmorRatingPCBase` is a CK *Settings* page
+default (1.0) that no master authors, kept as an overlay for mods that add it,
 installed as a resource by `install_armor_book` (the consumer tests no game).
 The model builds its two skill multipliers from the two coefficients here
 (`LIGHT_ARMOR_RATING_COEFF` and `ARMOR_SKILL_RATING_COEFF_NPC` in `skyrim.rs`)
