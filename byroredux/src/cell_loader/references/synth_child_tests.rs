@@ -670,26 +670,45 @@ fn logical_quest_reference_spawns_identity_and_attaches_scripts() {
     );
 }
 
-/// #6727 — a baked beam card is a STAT whose NIF must be imported so the beam
+/// #6727 / #6731 — a baked beam card is a STAT whose NIF must be imported so the beam
 /// converters can run; the old blanket `fxlight` test returned a bare synth
-/// child and the converters never fired in the live engine.
+/// child and the converters never fired in the live engine. The exemption is
+/// limited to the game kind whose beams were measured (Fallout 3 / NV).
 #[test]
 fn baked_beam_cards_load_their_nif_while_fxlight_sprites_stay_synthetic() {
+    use byroredux_plugin::esm::reader::GameKind;
+    let fnv = GameKind::Fallout3NV;
     for beam in [
         "effects\\ambient\\fxlightbeamsuperwide01.nif",
         "effects\\ambient\\fxlightbeam01.nif",
         "effects\\ambient\\fxlightbeamsvaultwidow02.nif",
         "effects\\ambient\\nvfxlightbeamstreetlight.nif",
     ] {
-        assert!(!is_fxlight_sprite_placement(beam, false), "{beam}");
+        assert!(!is_fxlight_sprite_placement(beam, false, fnv), "{beam}");
     }
     // A LIGH record that points at a beam model is still a light placement.
     assert!(is_fxlight_sprite_placement(
         "effects\\ambient\\fxlightbeam01.nif",
-        true
+        true,
+        fnv
     ));
     // The non-beam fxlight sprites and the ray sheets keep the synthetic path.
-    assert!(is_fxlight_sprite_placement("effects\\fxlightglow01.nif", false));
-    assert!(is_fxlight_sprite_placement("effects\\fxlightrays\\rays01.nif", false));
-    assert!(!is_fxlight_sprite_placement("clutter\\barrel01.nif", false));
+    assert!(is_fxlight_sprite_placement("effects\\fxlightglow01.nif", false, fnv));
+    assert!(is_fxlight_sprite_placement("effects\\fxlightrays\\rays01.nif", false, fnv));
+    assert!(!is_fxlight_sprite_placement("clutter\\barrel01.nif", false, fnv));
+}
+
+/// #6731 — Oblivion ships `fxlightbeam*.nif` too, but its converter coverage and `IsFxMesh`
+/// texture paths are unmeasured, so its beam placements keep the pre-3bb692bbb synthetic path
+/// (and every other game kind does too).
+#[test]
+fn unmeasured_games_keep_the_synthetic_path_for_beam_cards() {
+    use byroredux_plugin::esm::reader::GameKind;
+    for game in [GameKind::Oblivion, GameKind::Skyrim] {
+        assert!(
+            is_fxlight_sprite_placement("effects\\fxlightbeam01.nif", false, game),
+            "{game:?}"
+        );
+        assert!(!is_fxlight_sprite_placement("clutter\\barrel01.nif", false, game));
+    }
 }

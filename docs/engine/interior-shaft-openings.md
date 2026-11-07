@@ -39,6 +39,11 @@ base-ESM census and the live engine disagree. The design and the findings behind
   data (`is_fxlight_sprite_placement`). Measured after the change: `Vault11a` 14 cones for 14 placements,
   `SLAbandonedShack03INT` 5 for 5. A beam card no converter claims is still dropped from the raster by the
   `IsFxMesh` texture rule, so it adds an entity and no draw.
+- **The exemption is limited to `GameKind::Fallout3NV` (#6731).** Oblivion also ships `fxlightbeam*.nif`, but its
+  converter coverage and beam texture paths are unmeasured, so it keeps the synthetic path. FO3 shares the game
+  kind and was measured on 2026-11-07 by running `fnv_baked_beam_converter_coverage` against FO3's
+  `Fallout - Meshes.bsa`: all 22 beam models it lists that exist there convert (`NVFXLightBeamStreetLight` and
+  `FXLightBeamNVStrip` are FNV-only). Widen the gate per game only after the same census.
 - The converted Nellis planes are thin ribbons, so the sun slab through each is about 0.7 m thick. That, with a
   portal sun of about 1.0 and 0.01 / m haze, is why the shaft was invisible before VLM-INT-007 and is faint after it.
 - Not yet inventoried: every other interior in every title. Cells to do first, from the PRD's A9 list: Skyrim

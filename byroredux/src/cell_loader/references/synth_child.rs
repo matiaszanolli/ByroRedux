@@ -281,11 +281,26 @@ pub(super) fn attach_identity_reference_script(
 /// placements in FNV `Vault11a` produced a bare placement root and no volume
 /// (#6727). A beam card the converters decline is still dropped from the
 /// raster by the `IsFxMesh` texture rule, so it costs an entity, not a draw.
-pub(super) fn is_fxlight_sprite_placement(model_lower: &str, has_light_data: bool) -> bool {
+///
+/// The beam exemption is gated on `GameKind::Fallout3NV` (#6731): the converter
+/// coverage was measured there only — FNV in VLM-INT-006, and FO3 (same game
+/// kind, same `Fallout - Meshes.bsa` layout) at 22 of 22 shipped beam models.
+/// Oblivion also ships `fxlightbeam*.nif` but is unmeasured, so it keeps the
+/// synthetic path it had before 3bb692bbb until its beams are censused.
+pub(super) fn is_fxlight_sprite_placement(
+    model_lower: &str,
+    has_light_data: bool,
+    game: byroredux_plugin::esm::reader::GameKind,
+) -> bool {
     if model_lower.contains("fxlightrays") {
         return true;
     }
-    model_lower.contains("fxlight") && (has_light_data || !model_lower.contains("fxlightbeam"))
+    if !model_lower.contains("fxlight") {
+        return false;
+    }
+    let beam_converters_measured =
+        game == byroredux_plugin::esm::reader::GameKind::Fallout3NV;
+    has_light_data || !(beam_converters_measured && model_lower.contains("fxlightbeam"))
 }
 
 /// #5740 — the ESM LIGH → `LightSource` translation the LIGH-only and
@@ -567,7 +582,7 @@ pub(super) fn spawn_synth_child(
         return;
     }
 
-    if is_fxlight_sprite_placement(&model_lower, stat.light_data.is_some()) {
+    if is_fxlight_sprite_placement(&model_lower, stat.light_data.is_some(), game) {
         if let Some(ld) = stat.light_data.as_ref().filter(|_| !placement_disabled) {
             let entity = world.spawn();
             world.insert(entity, Transform::from_translation(ref_pos));
