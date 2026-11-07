@@ -872,126 +872,56 @@ fn fnv_skinning_invariant_check() {
     );
 }
 
+/// `NiSkinData.skin_transform` is the global mesh -> skeleton-root offset. Measured on the FNV
+/// male-body fixture (2026-11-06): six skinned shapes, every one at unit scale; the two "meat" shapes
+/// (`meatneck01`, `meathead01`) carry the large translation `(0.004, -0.290, -112.843)`, the arm/body
+/// caps are at most a few hundredths from the origin, and `limbcaps` is a 180-degree turn about X.
+/// Pinned so a parser or import change that moves any of them is a red test, not a silent dump change
+/// (#6402; the bind-pose invariant test above is what proves the import honours these).
 #[test]
 #[ignore = "requires FNV BSA — opt in with --ignored"]
-fn fnv_dump_global_skin_transform() {
-    // Check what NiSkinData.skin_transform (the global mesh→skeleton-root
-    // offset) actually contains for FNV body NIFs. If non-identity, our
-    // import currently drops it.
-    use byroredux_nif::blocks::skin::NiSkinData;
+fn fnv_global_skin_transforms_match_the_measured_census() {
+    use byroredux_nif::blocks::skin::{BsDismemberSkinInstance, NiSkinData, NiSkinInstance};
     use byroredux_nif::blocks::tri_shape::NiTriShape;
     let bytes = byroredux_bsa::BsaArchive::open(PathBuf::from(FNV_DEFAULT_DATA).join(FNV_MESH_BSA))
         .unwrap()
         .extract(FNV_FIXTURE_NIF)
         .unwrap();
     let scene = byroredux_nif::parse_nif(&bytes).unwrap();
+    let mut seen: Vec<(String, [f32; 3], f32)> = Vec::new();
     for i in 0..scene.blocks.len() {
-        let Some(shape) = scene.get_as::<NiTriShape>(i) else {
-            continue;
-        };
-        let Some(skin_inst_idx) = shape.skin_instance_ref.index() else {
-            continue;
-        };
-        let inst = scene.get_as::<byroredux_nif::blocks::skin::NiSkinInstance>(skin_inst_idx);
-        let inst_dismember =
-            scene.get_as::<byroredux_nif::blocks::skin::BsDismemberSkinInstance>(skin_inst_idx);
-        let data_ref = inst
-            .map(|i| i.data_ref)
-            .or_else(|| inst_dismember.map(|i| i.base.data_ref));
-        let Some(data_ref) = data_ref else { continue };
-        let Some(data_idx) = data_ref.index() else {
-            continue;
-        };
-        let Some(data) = scene.get_as::<NiSkinData>(data_idx) else {
-            continue;
-        };
-        eprintln!(
-            "shape '{}' (block {}): NiSkinData.skin_transform.translation = ({:.3}, {:.3}, {:.3})  scale={:.3}",
-            shape.av.net.name.as_deref().unwrap_or("?"),
-            i,
-            data.skin_transform.translation.x,
-            data.skin_transform.translation.y,
-            data.skin_transform.translation.z,
+        let Some(shape) = scene.get_as::<NiTriShape>(i) else { continue };
+        let Some(skin_inst_idx) = shape.skin_instance_ref.index() else { continue };
+        let data_ref = scene
+            .get_as::<NiSkinInstance>(skin_inst_idx)
+            .map(|inst| inst.data_ref)
+            .or_else(|| scene.get_as::<BsDismemberSkinInstance>(skin_inst_idx).map(|inst| inst.base.data_ref));
+        let Some(data_idx) = data_ref.and_then(|r| r.index()) else { continue };
+        let Some(data) = scene.get_as::<NiSkinData>(data_idx) else { continue };
+        let t = &data.skin_transform.translation;
+        seen.push((
+            shape.av.net.name.as_deref().unwrap_or("?").to_owned(),
+            [t.x, t.y, t.z],
             data.skin_transform.scale,
-        );
-        let r = &data.skin_transform.rotation.rows;
-        eprintln!(
-            "    rotation matrix:  [{:.3} {:.3} {:.3}]  [{:.3} {:.3} {:.3}]  [{:.3} {:.3} {:.3}]",
-            r[0][0], r[0][1], r[0][2], r[1][0], r[1][1], r[1][2], r[2][0], r[2][1], r[2][2],
-        );
+        ));
     }
-}
-
-#[test]
-#[ignore = "requires FNV BSA — opt in with --ignored"]
-fn fnv_vertex_skin_dump_arms1() {
-    // M41.0 Phase 1b.x followup — direct dump of a few sample vertex
-    // skin entries on `Arms:1` so we can hand-verify that bone indices
-    // point at sensible bones (e.g. a chest vertex weights to spine
-    // bones, not to a foot bone). Live runtime probe says all bones
-    // agree across NIFs and the math should work, yet rendering
-    // produces a long-ribbon vertex artifact — the disagreement has
-    // to be in vertex-bone-index assignment.
-    let bytes = byroredux_bsa::BsaArchive::open(PathBuf::from(FNV_DEFAULT_DATA).join(FNV_MESH_BSA))
-        .unwrap()
-        .extract(FNV_FIXTURE_NIF)
-        .unwrap();
-    let scene = byroredux_nif::parse_nif(&bytes).unwrap();
-    let mut pool = byroredux_core::string::StringPool::new();
-    let imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);
-    let arms1 = imported
-        .meshes
-        .iter()
-        .find(|m| m.name.as_deref() == Some("Arms:1"))
-        .expect("Arms:1 must exist");
-    let skin = arms1.skin.as_ref().expect("Arms:1 must be skinned");
-
-    eprintln!("Arms:1 bones (in skin.bones order):");
-    for (i, b) in skin.bones.iter().enumerate() {
-        eprintln!("  [{}] {}", i, b.name);
+    assert_eq!(seen.len(), 6, "skinned shapes in {FNV_FIXTURE_NIF}: {seen:?}");
+    for (name, _, scale) in &seen {
+        assert!((scale - 1.0).abs() < 1e-4, "'{name}' skin_transform scale {scale}");
     }
-
-    let n = arms1.positions.len();
-    eprintln!("\nSample vertex skin assignments (first 8 + 4 from middle):");
-    let sample_indices: Vec<usize> = (0..8).chain((n / 2)..(n / 2 + 4)).collect();
-    for v in sample_indices {
-        let pos = arms1.positions[v];
-        let idx = skin.vertex_bone_indices[v];
-        let w = skin.vertex_bone_weights[v];
-        eprintln!(
-            "  v[{:>3}] pos=({:6.1},{:6.1},{:6.1})  bone_idx={:?}  weights=[{:.2},{:.2},{:.2},{:.2}]  → {} {} {} {}",
-            v,
-            pos[0],
-            pos[1],
-            pos[2],
-            idx,
-            w[0],
-            w[1],
-            w[2],
-            w[3],
-            skin.bones.get(idx[0] as usize).map(|b| b.name.as_ref()).unwrap_or("?"),
-            skin.bones.get(idx[1] as usize).map(|b| b.name.as_ref()).unwrap_or("?"),
-            skin.bones.get(idx[2] as usize).map(|b| b.name.as_ref()).unwrap_or("?"),
-            skin.bones.get(idx[3] as usize).map(|b| b.name.as_ref()).unwrap_or("?"),
-        );
-    }
-
-    // Also: count how many vertices have ANY weight > 0 (i.e. skinned
-    // path active) vs all-zero (rigid fallback).
-    let mut active = 0;
-    let mut zero = 0;
-    for w in &skin.vertex_bone_weights {
-        let s = w[0] + w[1] + w[2] + w[3];
-        if s > 0.001 {
-            active += 1
+    for (name, t, _) in &seen {
+        let meat = name.starts_with("meat");
+        if meat {
+            let want = [0.004_f32, -0.290, -112.843];
+            assert!(
+                t.iter().zip(want).all(|(got, want)| (got - want).abs() < 2e-3),
+                "'{name}' translation {t:?}, measured {want:?}"
+            );
         } else {
-            zero += 1
+            assert!(t.iter().all(|c| c.abs() < 0.1), "'{name}' translation {t:?}, measured near the origin");
         }
     }
-    eprintln!(
-        "\nWeight distribution: {} active, {} all-zero (rigid fallback)",
-        active, zero
-    );
+    assert_eq!(seen.iter().filter(|(name, ..)| name.starts_with("meat")).count(), 2);
 }
 
 #[test]
