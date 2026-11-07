@@ -125,10 +125,10 @@ binding (END −1, Level −1 → the −10 constant). The 15 vanilla infobox `h
 pinned by `fo3_fnv_npc_health_curve_reproduces_the_vanilla_samples` (8 FNV + 7 FO3, inputs
 from the masters' `DATA` bytes) plus 3 end-to-end real-master asserts in
 `fo3_fnv_named_npc_health_matches_the_authored_curve`. The player formulas
-(`fAVDHealthEnduranceMult` = 20, `fAVDHealthLevelMult` = 10 FO3 / 5 FNV) are the separate
+(`fAVDHealthEnduranceMult` = 20, `fAVDHealthLevelMult` = 10 FO3 / 5 FNV; both overlaid from the load order, #6756 — the `100` in `100 + …` is engine-supplied and no master authors it) are the separate
 `Health (player)` row above — NPCs never read them.
 
-Carry Weight: `fAVDCarryWeight{Base=150, Mult=10}` — actor-general (NPCs/companions
+Carry Weight: `fAVDCarryWeightsBase` = 150 (the masters' own spelling, with an `s`) and `fAVDCarryWeightMult` = 10, read from the load order's merged GMSTs with those as fallbacks (#6756) — actor-general (NPCs/companions
 too), same GMST family as FO4 (`Base=200, Mult=10`) and FO76 (`Base=150, Mult=5` —
 full formula `150 + 5·STR`, confirmed directly on re-fetch 2026-07-03, not just the
 mult); FO4 only raised the base, FO76 only lowered the mult. Source: fandom *Carry

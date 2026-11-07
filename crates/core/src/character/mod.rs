@@ -112,7 +112,8 @@ pub use crime::{BountyScope, CrimeKind, CrimeModel};
 pub use vats::{VatsHitInput, VatsModel};
 pub use derived::{DerivedInput, DerivedOutput, DerivedScope, DerivedStatFormula, RoundMode};
 pub use fallout::{
-    fallout3_ruleset, fallout4_ruleset, falloutnv_ruleset, melee_damage_config, MeleeDamageConfig,
+    fallout3_ruleset, fallout3_ruleset_with_gmst, fallout4_ruleset, fallout4_ruleset_with_gmst,
+    falloutnv_ruleset, falloutnv_ruleset_with_gmst, melee_damage_config, MeleeDamageConfig,
 };
 pub use leveling::{LevelReward, LevelingModel};
 pub use profile::{

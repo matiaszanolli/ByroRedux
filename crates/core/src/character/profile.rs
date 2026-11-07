@@ -7,7 +7,7 @@
 //! downstream character consumers read the same table.
 
 use super::{
-    fallout3_ruleset, fallout4_ruleset, falloutnv_ruleset, skyrim_ruleset, CharacterRuleset, CrimeModel,
+    fallout3_ruleset_with_gmst, fallout4_ruleset_with_gmst, falloutnv_ruleset_with_gmst, skyrim_ruleset, CharacterRuleset, CrimeModel,
     SkillSet, VatsModel, ArmorModel,
 };
 
@@ -696,9 +696,9 @@ impl CharacterRulesProfile {
         G: Fn(&str) -> Option<f32>,
     {
         let mut ruleset = match self.ruleset {
-            RulesetBuilder::Fallout3 => fallout3_ruleset(resolve),
-            RulesetBuilder::FalloutNewVegas => falloutnv_ruleset(resolve),
-            RulesetBuilder::Fallout4 => fallout4_ruleset(resolve),
+            RulesetBuilder::Fallout3 => fallout3_ruleset_with_gmst(resolve, &gmst),
+            RulesetBuilder::FalloutNewVegas => falloutnv_ruleset_with_gmst(resolve, &gmst),
+            RulesetBuilder::Fallout4 => fallout4_ruleset_with_gmst(resolve, &gmst),
             RulesetBuilder::Skyrim => skyrim_ruleset(resolve),
             RulesetBuilder::None => return None,
         };

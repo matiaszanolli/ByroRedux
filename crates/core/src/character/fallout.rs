@@ -50,6 +50,37 @@ fn av(form_id: u32) -> DerivedInput {
 
 const LEVEL: DerivedInput = DerivedInput::LEVEL;
 
+/// #6756 — the authored GMST `name` when the load order carries it, else the
+/// compiled-in vanilla `default`. The same overlay contract as
+/// [`LevelingModel::with_gmst`], so a retuned `fAVD*` setting reaches the
+/// derived-stat rows and a vanilla (or synthetic) load order is unchanged.
+#[inline]
+fn setting<G: Fn(&str) -> Option<f32>>(gmst: &G, name: &str, default: f32) -> f32 {
+    gmst(name).unwrap_or(default)
+}
+
+/// FO3/FNV player Health: `100 + fAVDHealthEnduranceMult·END +
+/// fAVDHealthLevelMult·(Level − 1)`, folded into one bilinear row whose bias is
+/// `100 − levelMult` (90 FO3 / 95 FNV). #6756 — both multipliers are authored
+/// GMSTs (`level_mult` is the per-game vanilla fallback, 10 FO3 / 5 FNV); the
+/// `100` is engine-supplied, no master authors it.
+fn player_health<G: Fn(&str) -> Option<f32>>(
+    endurance: DerivedInput,
+    gmst: &G,
+    vanilla_level_mult: f32,
+) -> DerivedStatFormula {
+    let level_mult = setting(gmst, "fAVDHealthLevelMult", vanilla_level_mult);
+    DerivedStatFormula::bilinear(
+        endurance,
+        setting(gmst, "fAVDHealthEnduranceMult", 20.0),
+        LEVEL,
+        level_mult,
+        0.0,
+        100.0 - level_mult,
+    )
+    .player_only()
+}
+
 /// The six derived stats shared verbatim by FO3 and FNV. Carry Weight and
 /// the two resistances are actor-general per the capture document; Critical
 /// Chance, Melee Damage and Unarmed Damage ship `ActorGeneral` as an
@@ -58,15 +89,35 @@ const LEVEL: DerivedInput = DerivedInput::LEVEL;
 /// Action Points. Flipping any of the three is a reviewed edit: cite the
 /// per-stat source in `charal-fnv-fo3-ruleset.md` and update the pinning
 /// test.
-fn add_fnv_fo3_shared<F: Fn(&str) -> Option<u32>>(rs: &mut CharacterRuleset, resolve: &F) {
+fn add_fnv_fo3_shared<F: Fn(&str) -> Option<u32>, G: Fn(&str) -> Option<f32>>(
+    rs: &mut CharacterRuleset,
+    resolve: &F,
+    gmst: &G,
+) {
     let strength = resolve("Strength");
-    // Carry Weight = 150 + 10·STR.
+    // Carry Weight = fAVDCarryWeightsBase + fAVDCarryWeightMult·STR (150 + 10·STR).
+    // #6756 — the masters spell the base `fAVDCarryWeightsBase` (with an `s`);
+    // the FO4 setting is `fAVDCarryWeightBase`.
     if let (Some(out), Some(s)) = (resolve("CarryWeight"), strength) {
-        rs.push_derived(out, DerivedStatFormula::affine(av(s), 10.0, 150.0));
+        rs.push_derived(
+            out,
+            DerivedStatFormula::affine(
+                av(s),
+                setting(gmst, "fAVDCarryWeightMult", 10.0),
+                setting(gmst, "fAVDCarryWeightsBase", 150.0),
+            ),
+        );
     }
-    // Melee Damage = 0.5·STR (additive bonus).
+    // Melee Damage = fAVDMeleeDamageStrengthMult·STR (0.5·STR, additive bonus).
     if let (Some(out), Some(s)) = (resolve("MeleeDamage"), strength) {
-        rs.push_derived(out, DerivedStatFormula::affine(av(s), 0.5, 0.0));
+        rs.push_derived(
+            out,
+            DerivedStatFormula::affine(
+                av(s),
+                setting(gmst, "fAVDMeleeDamageStrengthMult", 0.5),
+                0.0,
+            ),
+        );
     }
     // Critical Chance = Luck·1 %, capped at 10 %. #2936 — on the 0–100
     // percentage scale, not the 0.0–1.0 fraction the source's "×1%" phrasing
@@ -82,9 +133,18 @@ fn add_fnv_fo3_shared<F: Fn(&str) -> Option<u32>>(rs: &mut CharacterRuleset, res
             DerivedStatFormula::affine(av(l), 1.0, 0.0).capped(10.0),
         );
     }
-    // Unarmed Damage = ceil((10 + Unarmed)/20) = ceil(0.5 + 0.05·Unarmed).
+    // Unarmed Damage = ceil(fAVDUnarmedDamageBase + fAVDUnarmedDamageMult·Unarmed)
+    // = ceil((10 + Unarmed)/20) = ceil(0.5 + 0.05·Unarmed).
     if let (Some(out), Some(u)) = (resolve("UnarmedDamage"), resolve("Unarmed")) {
-        rs.push_derived(out, DerivedStatFormula::affine(av(u), 0.05, 0.5).ceiled());
+        rs.push_derived(
+            out,
+            DerivedStatFormula::affine(
+                av(u),
+                setting(gmst, "fAVDUnarmedDamageMult", 0.05),
+                setting(gmst, "fAVDUnarmedDamageBase", 0.5),
+            )
+            .ceiled(),
+        );
     }
     // Affliction-family resistances — FO3/FNV derived percentages
     // `(governing − 1)·k` (Radiation k=2 cap 85 %, Poison k=5 uncapped). The
@@ -140,6 +200,17 @@ pub fn melee_damage_config<F: Fn(&str) -> Option<u32>>(resolve: F) -> Option<Mel
 /// combat-use formula rather than an AVIF-backed derived row: vanilla FO4
 /// authors no `MeleeDamage` AVIF to key such a row.
 pub fn fallout4_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRuleset {
+    fallout4_ruleset_with_gmst(resolve, |_| None)
+}
+
+/// [`fallout4_ruleset`] with the load order's authored `fAVD*` GMSTs overlaid
+/// on the vanilla coefficients (#6756). Health has no authored setting on the
+/// FO4 pages, so it stays compiled in.
+pub fn fallout4_ruleset_with_gmst<F, G>(resolve: F, gmst: G) -> CharacterRuleset
+where
+    F: Fn(&str) -> Option<u32>,
+    G: Fn(&str) -> Option<f32>,
+{
     let mut rs = CharacterRuleset::new(LevelingModel::FO4).with_attributes(AttributeSet::FALLOUT);
     let strength = resolve("Strength");
     // Health = floor(77.5 + 4.5·END + 2.5·L + 0.5·L·END). The floor is the
@@ -154,16 +225,28 @@ pub fn fallout4_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
                 .player_only(),
         );
     }
-    // Action Points = 60 + 10·AGI.
+    // Action Points = fAVDActionPointsBase + fAVDActionPointsMult·AGI (60 + 10·AGI).
     if let (Some(out), Some(a)) = (resolve("ActionPoints"), resolve("Agility")) {
         rs.push_derived(
             out,
-            DerivedStatFormula::affine(av(a), 10.0, 60.0).player_only(),
+            DerivedStatFormula::affine(
+                av(a),
+                setting(&gmst, "fAVDActionPointsMult", 10.0),
+                setting(&gmst, "fAVDActionPointsBase", 60.0),
+            )
+            .player_only(),
         );
     }
-    // Carry Weight = 200 + 10·STR.
+    // Carry Weight = fAVDCarryWeightBase + fAVDCarryWeightMult·STR (200 + 10·STR).
     if let (Some(out), Some(s)) = (resolve("CarryWeight"), strength) {
-        rs.push_derived(out, DerivedStatFormula::affine(av(s), 10.0, 200.0));
+        rs.push_derived(
+            out,
+            DerivedStatFormula::affine(
+                av(s),
+                setting(&gmst, "fAVDCarryWeightMult", 10.0),
+                setting(&gmst, "fAVDCarryWeightBase", 200.0),
+            ),
+        );
     }
     rs
 }
@@ -172,19 +255,33 @@ pub fn fallout4_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
 /// 85 (player — **scope unsourced**, see the `player_only()` call site),
 /// + the shared skill-based stats.
 pub fn fallout3_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRuleset {
+    fallout3_ruleset_with_gmst(resolve, |_| None)
+}
+
+/// [`fallout3_ruleset`] with the load order's authored `fAVD*` GMSTs overlaid
+/// on the vanilla coefficients (#6756).
+pub fn fallout3_ruleset_with_gmst<F, G>(resolve: F, gmst: G) -> CharacterRuleset
+where
+    F: Fn(&str) -> Option<u32>,
+    G: Fn(&str) -> Option<f32>,
+{
     let mut rs = CharacterRuleset::new(LevelingModel::FO3)
         .with_attributes(AttributeSet::FALLOUT)
         .with_skills(SkillSet::FALLOUT3);
     if let (Some(out), Some(e)) = (resolve("Health"), resolve("Endurance")) {
         rs.push_derived(
             out,
-            DerivedStatFormula::bilinear(av(e), 20.0, LEVEL, 10.0, 0.0, 90.0).player_only(),
+            player_health(av(e), &gmst, 10.0),
         );
     }
     if let (Some(out), Some(a)) = (resolve("ActionPoints"), resolve("Agility")) {
         rs.push_derived(
             out,
-            DerivedStatFormula::affine(av(a), 2.0, 65.0)
+            DerivedStatFormula::affine(
+                av(a),
+                setting(&gmst, "fAVDActionPointsMult", 2.0),
+                setting(&gmst, "fAVDActionPointsBase", 65.0),
+            )
                 .capped(85.0)
                 // #2937 — `player_only()` here is UNSOURCED, unlike Health's
                 // above. `charal-fnv-fo3-ruleset.md`'s derived-stat table
@@ -211,7 +308,7 @@ pub fn fallout3_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
                 .player_only(),
         );
     }
-    add_fnv_fo3_shared(&mut rs, &resolve);
+    add_fnv_fo3_shared(&mut rs, &resolve, &gmst);
     rs
 }
 
@@ -219,26 +316,37 @@ pub fn fallout3_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
 /// 95 (player — **scope unsourced**, see [`fallout3_ruleset`]'s AP row for
 /// why), + the shared skill-based stats.
 pub fn falloutnv_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRuleset {
+    falloutnv_ruleset_with_gmst(resolve, |_| None)
+}
+
+/// [`falloutnv_ruleset`] with the load order's authored `fAVD*` GMSTs overlaid
+/// on the vanilla coefficients (#6756).
+pub fn falloutnv_ruleset_with_gmst<F, G>(resolve: F, gmst: G) -> CharacterRuleset
+where
+    F: Fn(&str) -> Option<u32>,
+    G: Fn(&str) -> Option<f32>,
+{
     let mut rs = CharacterRuleset::new(LevelingModel::FNV)
         .with_attributes(AttributeSet::FALLOUT)
         .with_skills(SkillSet::FALLOUT_NV);
     if let (Some(out), Some(e)) = (resolve("Health"), resolve("Endurance")) {
-        rs.push_derived(
-            out,
-            DerivedStatFormula::bilinear(av(e), 20.0, LEVEL, 5.0, 0.0, 95.0).player_only(),
-        );
+        rs.push_derived(out, player_health(av(e), &gmst, 5.0));
     }
     if let (Some(out), Some(a)) = (resolve("ActionPoints"), resolve("Agility")) {
         rs.push_derived(
             out,
-            DerivedStatFormula::affine(av(a), 3.0, 65.0)
+            DerivedStatFormula::affine(
+                av(a),
+                setting(&gmst, "fAVDActionPointsMult", 3.0),
+                setting(&gmst, "fAVDActionPointsBase", 65.0),
+            )
                 .capped(95.0)
                 // #2937 — see fallout3_ruleset's AP row: scope unsourced,
                 // chosen conservatively.
                 .player_only(),
         );
     }
-    add_fnv_fo3_shared(&mut rs, &resolve);
+    add_fnv_fo3_shared(&mut rs, &resolve, &gmst);
     rs
 }
 
@@ -315,6 +423,64 @@ mod tests {
             rs.derived_formula(0x2D1).unwrap().scope,
             DerivedScope::ActorGeneral
         );
+    }
+
+    /// #6756 — every authored `fAVD*` coefficient reaches its derived row, and
+    /// a load order that authors none (or a synthetic fixture) keeps vanilla.
+    #[test]
+    fn retuned_favd_gmsts_reach_the_derived_rows() {
+        let retuned = |name: &str| -> Option<f32> {
+            Some(match name {
+                "fAVDCarryWeightsBase" => 300.0,
+                "fAVDCarryWeightBase" => 400.0,
+                "fAVDCarryWeightMult" => 20.0,
+                "fAVDActionPointsBase" => 80.0,
+                "fAVDActionPointsMult" => 5.0,
+                "fAVDHealthEnduranceMult" => 30.0,
+                "fAVDHealthLevelMult" => 8.0,
+                "fAVDMeleeDamageStrengthMult" => 1.0,
+                "fAVDUnarmedDamageBase" => 2.0,
+                "fAVDUnarmedDamageMult" => 0.1,
+                _ => return None,
+            })
+        };
+        // STR 6, END 5, AGI 4, Unarmed 50, level 3.
+        let avs = ActorValues::from_pairs([
+            (0x05, 6.0),
+            (0x07, 5.0),
+            (0x0A, 4.0),
+            (0x2C, 50.0),
+        ]);
+        let fnv = falloutnv_ruleset_with_gmst(full, retuned);
+        // Health = (100 - 8) + 30·5 + 8·3 = 92 + 150 + 24.
+        assert_eq!(fnv.derived_value(0x2C9, &avs, 3), Some(266.0));
+        assert_eq!(fnv.derived_value(0x2D0, &avs, 3), Some(95.0)); // AP 80 + 5·4 = 100, FNV cap 95
+        assert_eq!(fnv.derived_value(0x2D1, &avs, 3), Some(420.0)); // CW 300 + 20·6
+        assert_eq!(fnv.derived_value(0x2D2, &avs, 3), Some(6.0)); // Melee 1.0·6
+        assert_eq!(fnv.derived_value(0x2D4, &avs, 3), Some(7.0)); // ceil(2 + 0.1·50)
+
+        let fo3 = fallout3_ruleset_with_gmst(full, retuned);
+        assert_eq!(fo3.derived_value(0x2D1, &avs, 3), Some(420.0));
+
+        // FO4 reads the singular `fAVDCarryWeightBase` spelling.
+        let fo4 = fallout4_ruleset_with_gmst(fo4_full, retuned);
+        assert_eq!(fo4.derived_value(0x2D1, &avs, 1), Some(520.0)); // 400 + 20·6
+        assert_eq!(fo4.derived_value(0x2D0, &avs, 1), Some(100.0)); // 80 + 5·4
+
+        // No authored settings → today's vanilla numbers, row for row.
+        let none = |_: &str| -> Option<f32> { None };
+        for (with, plain) in [
+            (falloutnv_ruleset_with_gmst(full, none), falloutnv_ruleset(full)),
+            (fallout3_ruleset_with_gmst(full, none), fallout3_ruleset(full)),
+            (fallout4_ruleset_with_gmst(fo4_full, none), fallout4_ruleset(fo4_full)),
+        ] {
+            for out in 0x2C9..=0x2D6 {
+                assert_eq!(
+                    with.derived_value(out, &avs, 4),
+                    plain.derived_value(out, &avs, 4)
+                );
+            }
+        }
     }
 
     /// #2937 — FO3/FNV Action Points is `player_only` as a deliberate but

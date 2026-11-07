@@ -665,9 +665,15 @@ while). Struck-through items are done; the remaining two are genuinely open.
    fallbacks — only the level curve is GMST-authored; the skill-rank
    coefficient (`xp_per_skill_rank`) is engine-owned, not a
    `fXPPerSkillRank` GMST (#3221: no shipped Skyrim master defines one; the
-   read was withdrawn 2026-08-24). The Fallout derived-skill constants
-   (`SKILL_BASE`, `SKILL_ATTR_MULT`, `SKILL_LUCK_MULT` — the `fAVDSkill*`
-   GMSTs) remain hardcoded and are the remaining GMST seam.
+   read was withdrawn 2026-08-24). The Fallout derived-stat rows (#6756)
+   overlay the authored `fAVD*` settings with the vanilla numbers as
+   fallbacks: `fAVDHealthEnduranceMult` / `fAVDHealthLevelMult`,
+   `fAVDActionPointsBase` / `Mult`, `fAVDCarryWeightsBase` (FO3/FNV spelling)
+   / `fAVDCarryWeightBase` (FO4) and `fAVDCarryWeightMult`,
+   `fAVDMeleeDamageStrengthMult`, `fAVDUnarmedDamageBase` / `Mult`. The
+   Fallout derived-skill constants (`SKILL_BASE`, `SKILL_ATTR_MULT`,
+   `SKILL_LUCK_MULT` — the `fAVDSkill*` GMSTs) remain hardcoded and are the
+   remaining GMST seam.
 7. ~~**TES family**~~ — shipped for Oblivion (`tes.rs`) and Skyrim
    (`skyrim.rs`); Morrowind stays out of scope (not in the compat list).
 8. **Starfield** — roster closed 2026-07-04 (`charal-starfield-ruleset.md`:
