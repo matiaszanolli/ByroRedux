@@ -2372,6 +2372,92 @@ mod composite_params_layout_tests {
 
 #[cfg(test)]
 mod composite_frag_doc_tests {
+    /// #6748 (a) — the shadow filter is decided on the CPU and consumed in two
+    /// places that must agree: `record_shadow_filter` (does the dispatch run)
+    /// and composite's `caustic_flags.y` (does composite add its correction).
+    /// Both go through `shadow_filter_active()`; a second predicate on either
+    /// side makes composite read a correction image nobody wrote, or skip one
+    /// that was. Pin that neither re-derives it from `shadow_filter_enabled`.
+    #[test]
+    fn the_shadow_filter_dispatch_and_the_composite_flag_share_one_predicate() {
+        let post = crate::source_scan::production_text(include_str!(
+            "context/post_passes.rs"
+        ));
+        let record = post
+            .split("fn record_shadow_filter(")
+            .nth(1)
+            .expect("record_shadow_filter must exist")
+            .split("\n    }\n")
+            .next()
+            .unwrap();
+        assert!(
+            record.contains("self.shadow_filter_active()"),
+            "the dispatch must be gated on shadow_filter_active() (#6748)"
+        );
+        assert!(
+            !record.contains("shadow_filter_enabled"),
+            "the dispatch must not re-derive the predicate from shadow_filter_enabled (#6748)"
+        );
+        let upload = crate::source_scan::production_text(include_str!(
+            "context/build_and_upload_instances.rs"
+        ));
+        assert!(
+            upload.contains("shadow_filter_active: self.shadow_filter_active().is_some()"),
+            "composite's flag must come from the same shadow_filter_active() (#6748)"
+        );
+        assert!(
+            !upload.contains("shadow_filter_enabled"),
+            "composite's flag must not re-derive the predicate (#6748)"
+        );
+    }
+
+    /// #6748 (b) — `LOCAL_FIRE_SUNLIT` is a specialization constant: the
+    /// pipeline that folds the sun path out is the same SPIR-V with constant 0
+    /// set false, and the CPU chooses between the two each frame from the
+    /// grid's own `sunlit()`. `composite_frag_spv_matches_recompiled_branch_count`
+    /// sees only the unspecialised module, so pin the id, the two values, the
+    /// pipeline order, the selection and the teardown.
+    #[test]
+    fn the_sunless_composite_pipeline_is_the_same_shader_with_the_constant_false() {
+        let shader = include_str!("../../shaders/composite.frag");
+        assert!(
+            shader.contains("layout(constant_id = 0) const bool LOCAL_FIRE_SUNLIT = true;"),
+            "composite.frag must declare LOCAL_FIRE_SUNLIT as constant_id 0, default true (#6748)"
+        );
+        let host = crate::source_scan::production_text(include_str!("composite.rs"));
+        for needle in [
+            ".constant_id(0)",
+            "let sunlit_data = 1u32.to_ne_bytes();",
+            "let sunless_data = 0u32.to_ne_bytes();",
+            "&[pipeline_info, pipeline_info_sunless]",
+            "partial.pipeline = pipelines[0];",
+            "partial.pipeline_sunless = pipelines[1];",
+            "device.destroy_pipeline(self.pipeline_sunless, None)",
+        ] {
+            assert!(
+                host.contains(needle),
+                "composite.rs lost `{needle}` — the sunlit/sunless specialization pair (#6748)"
+            );
+        }
+        let select = host
+            .split("if local_fire_sunlit {")
+            .nth(1)
+            .expect("dispatch must pick the pipeline from local_fire_sunlit");
+        assert!(
+            select.trim_start().starts_with("self.pipeline\n")
+                && select.contains("self.pipeline_sunless"),
+            "local_fire_sunlit must select the sunlit pipeline, else the sunless one (#6748)"
+        );
+        let post = crate::source_scan::production_text(include_str!(
+            "context/post_passes.rs"
+        ));
+        assert!(
+            post.contains(".is_none_or(|v| v.local_fire_sunlit());")
+                && post.contains("composite.dispatch(&self.device, cmd, frame, bindless_set, local_fire_sunlit)"),
+            "the CPU choice must be the volumetrics grid's local_fire_sunlit() (#6748)"
+        );
+    }
+
     /// #4306 — composite.frag's binding comments once described a 32-step
     /// froxel march, a pre-ACES bloom add and a tone map. None of the three
     /// happens here: the froxel read is `sampleVolumetricColumn`, bloom is
