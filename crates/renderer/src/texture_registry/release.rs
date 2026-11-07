@@ -58,11 +58,7 @@ impl TextureRegistry {
         // checkerboard instead of a freed image view. Current slot is
         // written immediately; other slots queued until their fence
         // signals (#92).
-        let fallback_idx = match old_view_kind {
-            TextureViewKind::D2 => Some(self.fallback_handle),
-            TextureViewKind::Cube => self.cube_fallback_handle,
-        }
-        .map(|h| h as usize);
+        let fallback_idx = self.fallback_source(old_view_kind).map(|h| h as usize);
         if let Some(fallback_idx) = fallback_idx.filter(|&idx| idx < self.textures.len()) {
             if let Some(fallback) = self.textures[fallback_idx].texture.as_ref() {
                 let image_view = fallback.image_view;

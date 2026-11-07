@@ -253,25 +253,39 @@ impl TextureRegistry {
     ) -> Result<TextureHandle> {
         let outcome =
             self.queue_or_hit_for_view(path, dds_bytes, clamp_mode, view_kind, color_space)?;
-        // For a fresh enqueue, redirect the freshly-reserved
-        // descriptor to the fallback checkerboard. Any
-        // GpuInstance.texture_index that resolves to this handle
-        // before the flush samples the checkerboard instead of an
-        // unbound descriptor — same defence `drop_texture` uses on
-        // the release side. Cache hits skip this step (the existing
-        // entry already has its real descriptor wired).
-        if view_kind == TextureViewKind::D2 && matches!(outcome, EnqueueOutcome::Reserved(_)) {
-            let fallback_idx = self.fallback_handle as usize;
-            if fallback_idx < self.textures.len() {
-                if let Some(fallback) = self.textures[fallback_idx].texture.as_ref() {
-                    let image_view = fallback.image_view;
-                    let sampler = fallback.sampler;
-                    let handle = outcome.handle();
-                    self.apply_descriptor_write(device, handle, 0, image_view, sampler);
+        // For a fresh enqueue, redirect the freshly-reserved descriptor to
+        // the dimension-matched fallback (the checkerboard for 2D, the
+        // engine-owned 1x1 cube for a cubemap, #6624). Any
+        // GpuInstance.texture_index that resolves to this handle before the
+        // flush samples the fallback instead of an unwritten descriptor —
+        // same defence `drop_texture` uses on the release side, and the
+        // window is frames long on a yielded cell load. Cache hits skip this
+        // step (the existing entry already has its real descriptor wired).
+        if matches!(outcome, EnqueueOutcome::Reserved(_)) {
+            if let Some(SlotRewrite::Fallback { binding, source }) =
+                self.reserved_slot_fallback(view_kind)
+            {
+                if let Some(fallback) =
+                    self.textures.get(source as usize).and_then(|e| e.texture.as_ref())
+                {
+                    let (image_view, sampler) = (fallback.image_view, fallback.sampler);
+                    self.apply_descriptor_write(device, outcome.handle(), binding, image_view, sampler);
                 }
             }
         }
         Ok(outcome.handle())
+    }
+
+    /// Where a freshly reserved slot of `view_kind` is pointed until its
+    /// upload flushes: the binding of its own dimension and the fallback slot
+    /// that donates the view. `None` when no fallback of that dimension is
+    /// registered. Pure data (the same plan `slot_rewrite` gives a
+    /// `texture: None` slot on resize), so a device-free test pins it (#6624).
+    pub(super) fn reserved_slot_fallback(&self, view_kind: TextureViewKind) -> Option<SlotRewrite> {
+        Some(SlotRewrite::Fallback {
+            binding: view_kind.descriptor_binding(),
+            source: self.fallback_source(view_kind)?,
+        })
     }
 
     /// Pure-Rust queueing core — slot reservation, refcount bumping,
@@ -1545,12 +1559,6 @@ impl TextureRegistry {
             let image_view = texture.image_view;
             let sampler = texture.sampler;
             let binding = texture.view_kind.descriptor_binding();
-            let pin_as_cube_fallback =
-                texture.view_kind == TextureViewKind::Cube && self.cube_fallback_handle.is_none();
-            if pin_as_cube_fallback {
-                self.cube_fallback_handle = Some(handle);
-                self.apply_descriptor_write(device, 0, binding, image_view, sampler);
-            }
             self.apply_descriptor_write(device, handle, binding, image_view, sampler);
 
             // Move the texture into its reserved slot. A residency change
@@ -1571,9 +1579,6 @@ impl TextureRegistry {
                         entry.residency = Some(residency);
                         floor_sources.push((handle, whole, source, header_len));
                     }
-                }
-                if pin_as_cube_fallback {
-                    entry.ref_count = u32::MAX;
                 }
             } else {
                 log::warn!(

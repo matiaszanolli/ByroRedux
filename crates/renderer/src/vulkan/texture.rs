@@ -122,6 +122,33 @@ impl Texture {
         Ok(texture)
     }
 
+    /// A one-texel, six-face cube map of a single colour: the engine-owned
+    /// placeholder every cube slot reads until its real environment map is
+    /// uploaded (`TextureRegistry::set_cube_fallback`, #6624). Goes through the
+    /// same DDS path as an authored cubemap, so it is a real `CUBE`-viewed
+    /// image the `samplerCube` binding accepts.
+    pub fn solid_cube_1x1(
+        ctx: GpuUploadCtx,
+        rgba: [u8; 4],
+        sampler: vk::Sampler,
+        staging_pool: Option<&mut StagingPool>,
+    ) -> Result<Self> {
+        let meta = super::dds::DdsMetadata {
+            width: 1,
+            height: 1,
+            mip_count: 1,
+            format: vk::Format::R8G8B8A8_SRGB,
+            block_size: 4,
+            compressed: false,
+            array_layers: 6,
+            is_cubemap: true,
+            data_offset: 0,
+            expand: None,
+        };
+        let pixels: Vec<u8> = rgba.iter().copied().cycle().take(4 * 6).collect();
+        Self::from_dds_with_mip_chain(ctx, &meta, &pixels, sampler, staging_pool)
+    }
+
     /// Create a texture from a DDS pixel-data payload with its full
     /// authored mip chain.
     ///

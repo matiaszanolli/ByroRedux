@@ -793,6 +793,51 @@ impl TextureRegistry {
         Ok(())
     }
 
+    /// The dimension-matched fallback a reserved, dropped or never-flushed
+    /// slot of `view_kind` reads through: the checkerboard for a 2D slot, the
+    /// engine-owned cube fallback ([`Self::set_cube_fallback`]) for a cube
+    /// one. One definition for the reserve, drop and recreate paths (#6624).
+    fn fallback_source(&self, view_kind: TextureViewKind) -> Option<TextureHandle> {
+        match view_kind {
+            TextureViewKind::D2 => Some(self.fallback_handle),
+            TextureViewKind::Cube => self.cube_fallback_handle,
+        }
+    }
+
+    /// Register the **cube** fallback: a 1x1 six-face environment map that
+    /// every cube slot reads until its real cubemap lands (#6624). Call once
+    /// after [`Self::set_neutral_fallback`]. Without it a freshly reserved
+    /// cube slot sampled an unwritten `PARTIALLY_BOUND` descriptor for every
+    /// frame until the flush, and the first cubemap of a session had no cube
+    /// view to redirect to at all. It is written to its own slot and to slot 0
+    /// of the cube binding (which `resolve_pending_set_writes` resolves to
+    /// it), and ref-pinned like the other fallbacks.
+    pub fn set_cube_fallback(&mut self, device: &ash::Device, cube_texture: Texture) -> Result<()> {
+        anyhow::ensure!(
+            cube_texture.view_kind == TextureViewKind::Cube,
+            "the cube fallback must be a cube texture"
+        );
+        anyhow::ensure!(
+            self.cube_fallback_handle.is_none(),
+            "the cube fallback is registered once"
+        );
+        let handle = self.textures.len() as TextureHandle;
+        let binding = cube_texture.view_kind.descriptor_binding();
+        self.apply_descriptor_write(device, 0, binding, cube_texture.image_view, cube_texture.sampler);
+        self.write_texture_to_all_sets(device, handle, &cube_texture);
+        self.textures.push(TextureEntry {
+            texture: Some(cube_texture),
+            pending_destroy: VecDeque::new(),
+            ref_count: u32::MAX,
+            view_kind: TextureViewKind::Cube,
+            has_alpha: false,
+            avg_rgb: None,
+            residency: None,
+        });
+        self.cube_fallback_handle = Some(handle);
+        Ok(())
+    }
+
     /// Register the **neutral** (white) fallback texture. Call once after
     /// [`Self::set_fallback`]; lands at handle 1. Used for entities whose
     /// NIF authoring intentionally omitted a diffuse texture (alpha-blend
@@ -1232,15 +1277,10 @@ impl TextureRegistry {
             }),
             None => {
                 // Same dimension-matched fallback `drop_released_texture`
-                // redirects through at drop time. `None` only when a Cube
-                // slot predates the first successfully uploaded cubemap —
-                // there is no cube fallback to donate a view, matching the
-                // drop path's behaviour.
-                let source = match entry.view_kind {
-                    TextureViewKind::D2 => Some(self.fallback_handle),
-                    TextureViewKind::Cube => self.cube_fallback_handle,
-                }?;
-                Some(SlotRewrite::Fallback { binding, source })
+                // and `enqueue_dds_for_view` redirect through. `None` only
+                // on a registry whose engine-owned cube fallback was never
+                // registered (`set_cube_fallback`; a device-free test).
+                self.reserved_slot_fallback(entry.view_kind)
             }
         }
     }

@@ -760,10 +760,10 @@ fn none_d2_slot_is_planned_as_a_checkerboard_fallback_rewrite() {
     );
 }
 
-/// Cube slots redirect through binding 1 — but only once a cubemap has
-/// actually been uploaded and pinned as the cube fallback. Before that
-/// there is no cube view to donate, matching `drop_released_texture`'s
-/// `cube_fallback_handle` filter.
+/// Cube slots redirect through binding 1 — but only on a registry that has
+/// its cube fallback (`set_cube_fallback`; the engine registers one at init,
+/// #6624). Without one there is no cube view to donate, matching
+/// `drop_released_texture`'s `cube_fallback_handle` filter.
 #[test]
 fn none_cube_slot_redirects_through_binding_1_only_when_a_cube_fallback_exists() {
     let mut reg = make_registry_for_overflow_test(16, 0);
@@ -782,8 +782,8 @@ fn none_cube_slot_redirects_through_binding_1_only_when_a_cube_fallback_exists()
         "no cube fallback pinned yet — nothing to donate a cube view (#4885)"
     );
 
-    // Pin slot 1 as the cube fallback (the flush does this on the first
-    // successful cubemap upload). Slot 0's plan must now redirect to it.
+    // Register slot 1 as the cube fallback (`set_cube_fallback`). Slot 0's
+    // plan must now redirect to it.
     reg.textures.push(TextureEntry {
         texture: None,
         pending_destroy: VecDeque::new(),
@@ -802,6 +802,68 @@ fn none_cube_slot_redirects_through_binding_1_only_when_a_cube_fallback_exists()
         }),
         "a cube slot must redirect through binding 1 to the pinned cube \
          fallback (#4885)"
+    );
+}
+
+/// #6624 — a freshly reserved CUBE slot is pointed at the cube fallback, as a
+/// reserved 2D slot is at the checkerboard, before `enqueue_dds_for_view`
+/// returns: the reserve-then-flush window spans frames on a yielded cell load,
+/// and `triangle.frag` samples the cube whenever `envMapIndex != 0`. The
+/// decision is the one `enqueue_dds_for_view` applies (`reserved_slot_fallback`).
+#[test]
+fn a_reserved_cube_slot_is_redirected_to_the_cube_fallback() {
+    let mut reg = make_registry_for_overflow_test(16, 0);
+    let slot = |view_kind, ref_count| TextureEntry {
+        texture: None,
+        pending_destroy: VecDeque::new(),
+        ref_count,
+        view_kind,
+        has_alpha: false,
+        avg_rgb: None,
+        residency: None,
+    };
+    reg.textures.push(slot(TextureViewKind::D2, u32::MAX)); // 0: checkerboard
+    reg.textures.push(slot(TextureViewKind::D2, u32::MAX)); // 1: neutral
+    reg.textures.push(slot(TextureViewKind::Cube, u32::MAX)); // 2: cube fallback
+    reg.fallback_handle = 0;
+    reg.neutral_fallback_handle = 1;
+    reg.cube_fallback_handle = Some(2);
+
+    let outcome = reg
+        .queue_or_hit_for_view(
+            "textures/cubemaps/env.dds",
+            vec![0u8; 64],
+            3,
+            TextureViewKind::Cube,
+            TextureColorSpace::Srgb,
+        )
+        .unwrap();
+    assert!(matches!(outcome, EnqueueOutcome::Reserved(3)));
+    assert_eq!(
+        reg.reserved_slot_fallback(TextureViewKind::Cube),
+        Some(SlotRewrite::Fallback { binding: 1, source: 2 }),
+        "a reserved cube slot redirects through binding 1 to the cube fallback"
+    );
+    assert_eq!(
+        reg.reserved_slot_fallback(TextureViewKind::D2),
+        Some(SlotRewrite::Fallback { binding: 0, source: 0 }),
+        "a reserved 2D slot still redirects through binding 0 to the checkerboard"
+    );
+}
+
+/// #6624 — `enqueue_dds_for_view` must apply that redirect for EVERY view
+/// kind: it was gated on `TextureViewKind::D2`, which left a reserved cube
+/// slot's binding-1 descriptor unwritten until the flush. A source scan (the
+/// function needs a device) so the gate cannot come back.
+#[test]
+fn enqueue_applies_the_reserved_slot_redirect_for_every_view_kind() {
+    let production = crate::source_scan::production_text_or_whole(include_str!("texture_registry/upload.rs"));
+    let start = production.find("fn enqueue_dds_for_view(").expect("enqueue_dds_for_view");
+    let body = &production[start..production[start..].find("\n    }\n").map_or(production.len(), |e| start + e)];
+    assert!(body.contains("self.reserved_slot_fallback(view_kind)"), "{body}");
+    assert!(
+        !body.contains("view_kind == TextureViewKind::D2"),
+        "the reserved-slot redirect must not be D2-only (#6624)"
     );
 }
 

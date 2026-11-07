@@ -432,6 +432,24 @@ impl VulkanContext {
         )?;
         texture_registry.set_neutral_fallback(&device, neutral_texture)?;
 
+        // #6624 — the cube counterpart: a 1×1 six-face map every cube slot
+        // reads until its real environment map flushes, so a reserved cube
+        // slot never samples an unwritten `PARTIALLY_BOUND` descriptor.
+        // Opaque black: no reflected light, not a loud placeholder colour
+        // (a missing env map must not read as chrome).
+        let cube_fallback_texture = Texture::solid_cube_1x1(
+            super::super::GpuUploadCtx {
+                device: &device,
+                allocator: &gpu_allocator,
+                queue: &graphics_queue,
+                command_pool: transfer_pool,
+            },
+            [0x00, 0x00, 0x00, 0xFF],
+            texture_registry.shared_sampler,
+            None,
+        )?;
+        texture_registry.set_cube_fallback(&device, cube_fallback_texture)?;
+
         // 12. Scene buffers (light SSBO + camera UBO + TLAS, descriptor set 1)
         let scene_buffers = scene_buffer::SceneBuffers::new(&device, &gpu_allocator)?;
         // M29.5 cleanup — the pre-#921 startup seed of slot-0 identity
