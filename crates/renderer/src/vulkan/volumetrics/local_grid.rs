@@ -1222,8 +1222,9 @@ impl LocalGrid {
         // pipeline's own, living in GENERAL (`initialize_layouts`). The
         // barriers sequence this slot's last reads (two frames ago) before
         // this write and the previous slot's write before this read; the
-        // execution dependency also keeps the froxel inject dispatch recorded
-        // just before from overlapping this bracket.
+        // execution dependency also keeps the compute work recorded before this
+        // bracket from overlapping it (the froxel inject is recorded after the
+        // sim and is ordered by the publish barrier below).
         unsafe {
             device.cmd_pipeline_barrier(
                 cmd,

@@ -216,7 +216,8 @@ const Q_CLOUD_SHADOW_START: u32 = 48;
 const Q_CLOUD_SHADOW_END: u32 = 49;
 /// #6533 stage 1b — the world-space combustion local grid sim. Separate from
 /// the froxel inject bracket so the baseline `volumetrics_inject` numbers keep
-/// their meaning; recorded right after it.
+/// their meaning; recorded just BEFORE it (stage B2 precedes the inject, which
+/// reads this frame's atlas).
 const Q_VOLUMETRICS_LOCAL_SIM_START: u32 = 50;
 const Q_VOLUMETRICS_LOCAL_SIM_END: u32 = 51;
 
@@ -599,7 +600,7 @@ impl TimerPass {
             // #6316 — opens inside the sky-cube bracket.
             Self::CloudShadow => PassRow { start: Q_CLOUD_SHADOW_START, end: Q_CLOUD_SHADOW_END, bit: BIT_CLOUD_SHADOW, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
             Self::VolumetricsIntegrate => PassRow { start: Q_VOLUMETRICS_INTEGRATE_START, end: Q_VOLUMETRICS_INTEGRATE_END, bit: BIT_VOLUMETRICS_INTEGRATE, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
-            // #6533 stage 1b — opens after an execution barrier that retires the inject dispatch.
+            // #6533 stage 1b — opens after an execution barrier that retires the compute work recorded before it; the inject dispatch is recorded after the sim.
             Self::VolumetricsLocalSim => PassRow { start: Q_VOLUMETRICS_LOCAL_SIM_START, end: Q_VOLUMETRICS_LOCAL_SIM_END, bit: BIT_VOLUMETRICS_LOCAL_SIM, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
         }
     }

@@ -41,10 +41,6 @@ impl VulkanContext {
         )
     }
 
-    /// Refresh the world-visible upscaler telemetry. Only rewrites the
-    /// string when the described state actually changed (context creation,
-    /// resize, preset switch, or a latched dispatch failure), so the steady
-    /// state costs one string compare per frame rather than an allocation.
     /// M39 — refresh the world-visible texture residency telemetry that
     /// `tex.residency` prints (TXS-TEL-001).
     pub fn fill_texture_residency_telemetry(
@@ -135,6 +131,10 @@ impl VulkanContext {
         }
     }
 
+    /// Refresh the world-visible upscaler telemetry. Only rewrites the
+    /// string when the described state actually changed (context creation,
+    /// resize, preset switch, or a latched dispatch failure), so the steady
+    /// state costs one string compare per frame rather than an allocation.
     pub fn fill_upscaler_telemetry(&self, telemetry: &mut byroredux_core::ecs::UpscalerTelemetry) {
         // #2821 — carry the bracket's `_active` flag across with the value.
         // `0.0` from an absent timer pool, an upscaler that never dispatched,

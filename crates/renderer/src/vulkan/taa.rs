@@ -88,7 +88,7 @@ const HISTORY_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 
 /// The YCoCg variance clip's width in standard deviations. M-LIGHT
 /// RLT-SHD-006 re-validates it with the shadow filter on, against 1.0, via
-/// `RendererConfig::rt_test_taa_gamma`.
+/// `RendererConfig::rt_test_taa_gamma_bits`.
 pub const TAA_VARIANCE_GAMMA: f32 = 1.5;
 
 #[repr(C)]
