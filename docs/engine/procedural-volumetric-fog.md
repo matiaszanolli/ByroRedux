@@ -524,6 +524,13 @@ and `BYRO_HAZE_FLOOR` / `fog.haze` (the floor).
   bar the shaft reaches between 90 and 110 m and is gone at the 128 m far plane. Why it falls well before the
   plane is not isolated here: the froxel slices thicken with distance, the wall's gaps shrink in the frame, and
   the sun clears the wall top beyond about 70 m, and this sweep does not separate them.
+- **Real-content search, 2026-11-07.** The in-scatter radiance view (`render.debug volumetric_radiance`) at 07:00 on
+  the five fixtures' default spawns shows tree-trunk shadow volumes in the haze (FO3, FO4) and leaf silhouettes
+  at the canopy edge (Oblivion), but no crepuscular beams. The Oblivion leaf shapes are surface coverage: the same
+  capture with `BYRO_SUN_ALPHA=0` differs by at most one level (0.00 % of pixels above three), so the alpha trace
+  does not change that frame. Under the shipped haze a real canopy shaft is not visible at these poses; only the
+  lab shows crisp beams. Whether to raise the exterior floor for content (PRD Q7 was decided at the engine
+  default) is the owner's call, with these captures as the evidence.
 - **Not done yet:** the per-fixture noon and low-sun captures on the other titles (VLM-SH-006), the range and
   cloud-shadow work (VLM-SH-004, -005), and the separate inject and integrate milliseconds (VLM-SH-008; the
   inject figure above is one pose, not the fixture set).
