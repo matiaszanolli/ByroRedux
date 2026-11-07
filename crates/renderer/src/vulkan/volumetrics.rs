@@ -2756,6 +2756,83 @@ mod unit_tests {
         );
     }
 
+    /// #6751 — the local combustion grid has its own temporal state (box
+    /// history, the per-slot atlas table) and #4780's lesson applies to it:
+    /// a skipped or failed volumetrics frame must drop the box history and
+    /// blank the slot's table, and history may be promoted only by the
+    /// completed submit. Each of those is one line a refactor can delete with
+    /// every behavioural test green (they need a device), so pin the three
+    /// call sites and the grid methods they reach.
+    #[test]
+    fn the_local_grid_follows_the_skip_and_completion_wiring() {
+        let host = crate::source_scan::production_text(include_str!("volumetrics.rs"));
+        let skipped = host
+            .split("pub fn record_skipped_frame(")
+            .nth(1)
+            .expect("record_skipped_frame must exist")
+            .split("pub fn ")
+            .next()
+            .unwrap();
+        assert!(
+            skipped.contains("grid.invalidate_history();"),
+            "a skipped frame must drop the local grid's box history, or the next \
+             dispatch resumes from boxes whose atlas slot was never written (#6751)"
+        );
+        let completed = host
+            .split("pub fn mark_frame_completed(")
+            .nth(1)
+            .expect("mark_frame_completed must exist")
+            .split("pub fn ")
+            .next()
+            .unwrap();
+        assert!(
+            completed.contains("grid.mark_frame_completed();"),
+            "box history may be promoted only by the completed submit (#6751)"
+        );
+
+        let grid = crate::source_scan::production_text(include_str!("volumetrics/local_grid.rs"));
+        let grid_completed = grid
+            .split("pub(crate) fn mark_frame_completed(")
+            .nth(1)
+            .expect("LocalGrid::mark_frame_completed must exist")
+            .split("pub(crate) fn ")
+            .next()
+            .unwrap();
+        assert!(
+            grid_completed.contains("self.boxes.commit_history();"),
+            "LocalGrid::mark_frame_completed must commit the box history (#6751)"
+        );
+        let grid_invalidated = grid
+            .split("pub(crate) fn invalidate_history(&mut self) {\n        self.dispatched_this_frame")
+            .nth(1)
+            .expect("LocalGrid::invalidate_history must exist")
+            .split("pub(crate) fn ")
+            .next()
+            .unwrap();
+        assert!(
+            grid_invalidated.contains("self.boxes.invalidate_history();"),
+            "LocalGrid::invalidate_history must drop the box history (#6751)"
+        );
+
+        let caller = crate::source_scan::production_text(include_str!("context/post_passes.rs"));
+        let body = caller
+            .split("fn record_volumetrics_pass(")
+            .nth(1)
+            .expect("record_volumetrics_pass must exist")
+            .split("fn record_taa_pass(")
+            .next()
+            .unwrap();
+        let after_ran = body
+            .split("if !ran {")
+            .last()
+            .expect("record_volumetrics_pass must branch on `!ran`");
+        assert!(
+            after_ran.contains("vol.clear_local_grid_params(&self.device, frame)"),
+            "a frame that did not dispatch must blank the slot's local-grid table so \
+             composite cannot march a stale atlas (#6751)"
+        );
+    }
+
     /// Regression: #4775 / REN-D8-2026-09-23-03. After the linger window the
     /// host sent `dt = 0` while the pass kept dispatching (any fogged
     /// exterior or dusty interior), and the shader carried the ≤ 3 % soot
