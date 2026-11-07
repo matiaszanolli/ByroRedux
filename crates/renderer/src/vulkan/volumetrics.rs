@@ -158,8 +158,10 @@ pub struct VolumetricsParams {
     /// multiplier — 0.0 when `BYRO_BFECC=0` (see
     /// [`bfecc_error_correction_multiplier`]), 1.0 otherwise. z = the
     /// alpha-aware sun trace switch ([`sun_alpha_trace_enabled`], VLM-SH-009),
-    /// 1.0 on. The remaining lane is reserved so this stays a std140 vec4 and
-    /// can grow into height/shear parameters without changing the preceding ABI.
+    /// 1.0 on. w = the open-sky sun dust strength per metre
+    /// ([`open_sky_sun_dust_per_meter`], the `BYRO_SUN_DUST` experiment; 0 = off).
+    /// All four lanes are now in use: a new parameter needs a new vec4, not a
+    /// lane here.
     pub wind_gust: [f32; 4],
 }
 
@@ -187,13 +189,16 @@ pub fn sun_alpha_trace_enabled() -> bool {
 /// (the exterior counterpart of the interior shaft dust, VLM-INT-007). 0 or unset = off. Read once per process.
 pub fn open_sky_sun_dust_per_meter() -> f32 {
     static DUST: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
-    *DUST.get_or_init(|| {
-        std::env::var("BYRO_SUN_DUST")
-            .ok()
-            .and_then(|value| value.parse::<f32>().ok())
-            .filter(|value| value.is_finite() && *value > 0.0)
-            .unwrap_or(0.0)
-    })
+    *DUST.get_or_init(|| parse_sun_dust_per_meter(std::env::var("BYRO_SUN_DUST").ok().as_deref()))
+}
+
+/// The pure half of [`open_sky_sun_dust_per_meter`]: unset, unparseable, non-finite and
+/// non-positive values all mean "off" (0.0).
+fn parse_sun_dust_per_meter(value: Option<&str>) -> f32 {
+    value
+        .and_then(|value| value.trim().parse::<f32>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(0.0)
 }
 
 // SAFETY: every field is `[f32; 4]` or `[[f32; 4]; 4]` — homogeneous
@@ -2003,13 +2008,6 @@ mod unit_tests {
         );
     }
 
-    /// #4793 / #4785 — every sun-visibility ray (opaque, aperture scan,
-    /// glass, rim probes, soot march) sits behind the `sunTermLive` test, so
-    /// a zero-radiance sun (night; interiors' portal sun at night) or a
-    /// froxel with no scattering medium traces none of them. The sun term is
-    /// `scattering_coef * phase * sun_color * visibility` (split into the global and
-    /// species-phase local shares), so the skip is
-    /// output-identical.
     /// `BYRO_SUN_DUST` (open-sky sun dust): the term rides the sun in-scatter alone, so extinction, ambient and
     /// shadowed air cannot move, is shaped to zero at a high sun (flat dust washed a noon frame out entirely),
     /// and is off with the host lane at 0.
@@ -2041,9 +2039,31 @@ mod unit_tests {
             shader.contains("(global_scattering_coef + interiorShaftDust + openSkySunDust) * phase * params.sun_color.rgb * visibility"),
             "the dust must sit inside the sun in-scatter term, multiplied by sun visibility"
         );
-        assert_eq!(open_sky_sun_dust_per_meter(), 0.0, "off unless BYRO_SUN_DUST is set");
     }
 
+    /// The parse behind `BYRO_SUN_DUST`: only a finite, positive number turns the experiment on.
+    /// (Tested on the pure parser — the `OnceLock` wrapper reads the live environment, which a
+    /// developer running the experiment has set.)
+    #[test]
+    fn sun_dust_env_parse_is_off_unless_a_positive_finite_number() {
+        assert_eq!(parse_sun_dust_per_meter(None), 0.0);
+        assert_eq!(parse_sun_dust_per_meter(Some("")), 0.0);
+        assert_eq!(parse_sun_dust_per_meter(Some("abc")), 0.0);
+        assert_eq!(parse_sun_dust_per_meter(Some("0")), 0.0);
+        assert_eq!(parse_sun_dust_per_meter(Some("-1.5")), 0.0);
+        assert_eq!(parse_sun_dust_per_meter(Some("NaN")), 0.0);
+        assert_eq!(parse_sun_dust_per_meter(Some("inf")), 0.0);
+        assert_eq!(parse_sun_dust_per_meter(Some("0.25")), 0.25);
+        assert_eq!(parse_sun_dust_per_meter(Some(" 2 ")), 2.0);
+    }
+
+    /// #4793 / #4785 — every sun-visibility ray (opaque, aperture scan,
+    /// glass, rim probes, soot march) sits behind the `sunTermLive` test, so
+    /// a zero-radiance sun (night; interiors' portal sun at night) or a
+    /// froxel with no scattering medium traces none of them. The sun term is
+    /// `scattering_coef * phase * sun_color * visibility` (split into the global and
+    /// species-phase local shares), so the skip is
+    /// output-identical.
     #[test]
     fn sun_visibility_rays_are_gated_on_a_live_sun_term() {
         let shader = crate::source_scan::volumetrics_inject_glsl();

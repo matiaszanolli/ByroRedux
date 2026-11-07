@@ -768,7 +768,8 @@ mod tests {
     /// to a lane transposition inside `VolumetricsParams`: 13 of its 15
     /// members are same-typed vec4s whose `.w` slots are overloaded
     /// (`render_origin.w` = open-sky bit, `fog_reference.w` = simulation dt,
-    /// `wind_gust.y` = the BYRO_BFECC switch), so swapping any two compiles
+    /// `wind_gust.y` = the BYRO_BFECC switch, `wind_gust.z` = the BYRO_SUN_ALPHA
+    /// switch, `wind_gust.w` = the BYRO_SUN_DUST strength), so swapping any two compiles
     /// clean, keeps the size, and silently re-routes every lane after the
     /// swap — the exact failure mode REN-D8-01 caught in this plumbing. Pin
     /// every member's name and std140 offset in the committed `.spv` against
