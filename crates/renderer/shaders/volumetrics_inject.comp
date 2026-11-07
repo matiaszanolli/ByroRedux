@@ -1110,8 +1110,9 @@ void main() {
         // VLM-SH-009 -- under open sky the binary answer is only a first filter: a ray it calls blocked is
         // re-walked with alpha coverage, so canopy, fences and grates light the air behind their holes.
         // A clear answer needs no second look, and an interior keeps the binary trace (its sun rays reach
-        // the portal through authored apertures, not through cutouts).
-        if (opaqueHit && hasOpenSky) {
+        // the portal through authored apertures, not through cutouts). `wind_gust.z` is the host's same-binary
+        // A/B switch (`BYRO_SUN_ALPHA=0`).
+        if (opaqueHit && hasOpenSky && params.wind_gust.z > 0.5) {
             opaqueHit = sunRayBlockedAlphaAware(ray_origin, ray_dir, DIRECTIONAL_SHADOW_TRACE_DISTANCE);
         }
         float nearestWindowReach = DIRECTIONAL_SHADOW_TRACE_DISTANCE + 1.0;

@@ -156,9 +156,10 @@ pub struct VolumetricsParams {
     pub wind_params: [f32; 4],
     /// x = gust cycles per second. y = BFECC advection error-correction
     /// multiplier — 0.0 when `BYRO_BFECC=0` (see
-    /// [`bfecc_error_correction_multiplier`]), 1.0 otherwise. The remaining
-    /// lanes are reserved so this stays a std140 vec4 and can grow into
-    /// height/shear parameters without changing the preceding ABI.
+    /// [`bfecc_error_correction_multiplier`]), 1.0 otherwise. z = the
+    /// alpha-aware sun trace switch ([`sun_alpha_trace_enabled`], VLM-SH-009),
+    /// 1.0 on. The remaining lane is reserved so this stays a std140 vec4 and
+    /// can grow into height/shear parameters without changing the preceding ABI.
     pub wind_gust: [f32; 4],
 }
 
@@ -173,6 +174,13 @@ pub fn bfecc_error_correction_multiplier() -> f32 {
         Ok(value) if value == "0" => 0.0,
         _ => 1.0,
     })
+}
+
+/// `BYRO_SUN_ALPHA=0` same-binary A/B switch for the alpha-aware sun trace (VLM-SH-009): with it the
+/// froxel sun trace reads every triangle as solid again, as before. Read once per process.
+pub fn sun_alpha_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| !matches!(std::env::var("BYRO_SUN_ALPHA"), Ok(value) if value == "0"))
 }
 
 // SAFETY: every field is `[f32; 4]` or `[[f32; 4]; 4]` — homogeneous

@@ -387,6 +387,7 @@ above).
 --fog-grid-far-m <32..512>    default 128
 BYROREDUX_RENDER_DEBUG_MODE=volume   isolated raw integrated froxel field
 BYRO_BFECC=0                          plain semi-Lagrangian transport (A/B)
+BYRO_SUN_ALPHA=0                      froxel sun trace reads every triangle as solid (A/B, VLM-SH-009)
 ```
 
 An explicit `--froxel-xy-divisor` below what the device can store is raised to
@@ -490,7 +491,11 @@ and `BYRO_HAZE_FLOOR` / `fog.haze` (the floor).
   cutout panel at 129.18 against 129.16 for the same stripes as real holes (an opaque trace read 116.36). Cost on
   FNV Goodsprings, same pose, per-pass `gpu_volumetrics_inject`: 0.18 to 0.26 ms at noon, 0.19 to 0.35 ms at
   07:00, where more froxels are in terrain shadow and take the second walk; finished frames are identical, as
-  no cutout caster is in view. Content with real canopy (Oblivion, Skyrim, FO3 trees) is not yet captured.
+  no cutout caster is in view. `BYRO_SUN_ALPHA=0` is the same-binary A/B switch. Content with real canopy is
+  not yet captured: Skyrim Riverwood at 17:30 and 18:36, three poses (under the sawmill, two west-facing
+  through pines), read identically on and off (0.00 % of pixels differ by more than 4 levels), because the
+  trees there are thin or farther than the froxel range; a pose inside dense broadleaf or a fence line at
+  close range is still needed.
 - **Not done yet:** the per-fixture noon and low-sun captures on the other titles (VLM-SH-006), the range and
   cloud-shadow work (VLM-SH-004, -005), and the separate inject and integrate milliseconds (VLM-SH-008; the
   inject figure above is one pose, not the fixture set).

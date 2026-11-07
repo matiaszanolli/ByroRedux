@@ -959,7 +959,13 @@ impl VulkanContext {
                                     wind_gust[0],
                                     super::super::volumetrics::
                                         bfecc_error_correction_multiplier(),
-                                    wind_gust[2],
+                                    // Lane z: the alpha-aware sun trace switch
+                                    // (`BYRO_SUN_ALPHA=0` reads every triangle as solid).
+                                    if super::super::volumetrics::sun_alpha_trace_enabled() {
+                                        1.0
+                                    } else {
+                                        0.0
+                                    },
                                     wind_gust[3],
                                 ],
                             };
