@@ -524,7 +524,11 @@ The RT visibility replaces cascades (VLM-NG-006).
 - **VLM-INT-006.** Converter coverage MUST be published per game as
   converted placed beam references ÷ placed beam references from
   `crates/plugin/examples/baked_beam_census.rs`, extended to the DLC masters
-  and to FO4 and Starfield, which the handoff says are unsurveyed.
+  and to FO4 and Starfield, which the handoff says are unsurveyed. The ratio MUST be read from a live cell,
+  not from the unit tests: a converter that no loader path reaches measures 0 ÷ N however well its tests pass.
+  Found on 2026-11-07: the `fxlight` early return in `synth_child.rs` kept every FNV `FXLightBeam*` placement from
+  loading its NIF, so all FNV beam converters measured 0 live until the return was narrowed
+  (`Vault11a` 14 ÷ 14, `SLAbandonedShack03INT` 5 ÷ 5 afterwards).
 
 - **VLM-INT-007.** Where the sun's ray has been proven to pass through an authored aperture (a marked
   `SkyAperture` plane or a `LightShaft` cone), the sun term MUST scatter off an engine-supplied shaft dust
@@ -810,3 +814,4 @@ as VLM-NG-006 instead of being reopened.
 | 5 | 2026-11-07 | Phase 2 and 3 first slices landed: VLM-SH-001, -002, -010, -011 (the shaft lab, its gate, the haze floor and its measured default) and VLM-INT-005 (nearest-first aperture cap with a once-per-episode log). §3 row 14 corrected: the interior lab gate A10 is red at HEAD and before this work (#6730). Open under #6726: VLM-SH-003, -004, -005, -006, -007, -008, -009 | — |
 | 6 | 2026-11-07 | VLM-INT-007 added: the interior shaft dust, an engine choice that makes a proven aperture's sun shaft visible. Found with the new `render.debug volumetric_radiance` (the existing `volumetric_term` is opacity-floored) and the `--godray-lab-marked` control, which shows the marked-aperture path itself works (column 40.63 against 40.63 for an open hole, sealed 0.00). VLM-INT-002 now measurable and met on NellisHangar1 | claude: revise |
 | 7 | 2026-11-07 | VLM-SH-003 met: `shaft_lab_golden_frame` pins the exterior shaft lab under the default haze floor (passes unchanged; the solid-wall control differs on 32.6 % of pixels against the 1 % gate). Content measurement redone with exposure settled and a drift control: the floor changes structure (aerial perspective), not brightness; the earlier percentages are withdrawn | — |
+| 8 | 2026-11-07 | VLM-INT-006 clarified: the live ratio, not the unit tests, is the measure. The census-versus-engine reconciliation found the loader's `fxlight` early return starving every FNV `FXLightBeam*` converter; fixed, and `Vault11a`, `SLAbandonedShack03INT` and `HooverDamIntPowerPlant01b` now carry passive cones | — |

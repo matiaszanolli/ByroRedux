@@ -269,6 +269,25 @@ pub(super) fn attach_identity_reference_script(
     }
 }
 
+/// `true` when a placement is an `fxlight*` light sprite that never loads its
+/// NIF: the model name says "fxlight" and the base is not a baked beam card.
+///
+/// A baked beam card (`Effects\Ambient\FXLightBeam*`, `FXLightBeamSuperWide01`,
+/// `FXLightBeamsVaultWidow*`, ...) is a plain STAT with no `LIGH` data, and the
+/// beam converters (`crate::fog::*_beam_volume_from_mesh`, VLM-INT-006) can only
+/// replace it with an analytic medium if its NIF is imported. The blanket
+/// `fxlight` test used to return a logical synth child for these too, so the
+/// converters never ran in the live engine: 14 `FXLightBeamSuperWide01`
+/// placements in FNV `Vault11a` produced a bare placement root and no volume
+/// (#6727). A beam card the converters decline is still dropped from the
+/// raster by the `IsFxMesh` texture rule, so it costs an entity, not a draw.
+pub(super) fn is_fxlight_sprite_placement(model_lower: &str, has_light_data: bool) -> bool {
+    if model_lower.contains("fxlightrays") {
+        return true;
+    }
+    model_lower.contains("fxlight") && (has_light_data || !model_lower.contains("fxlightbeam"))
+}
+
 /// #5740 — the ESM LIGH → `LightSource` translation the LIGH-only and
 /// fxlight branches below shared verbatim: geometry via `translate_light`
 /// (#2439 / NIFAL-D2-01), the per-game falloff / shadow canonicalizers
@@ -548,7 +567,7 @@ pub(super) fn spawn_synth_child(
         return;
     }
 
-    if model_lower.contains("fxlightrays") || model_lower.contains("fxlight") {
+    if is_fxlight_sprite_placement(&model_lower, stat.light_data.is_some()) {
         if let Some(ld) = stat.light_data.as_ref().filter(|_| !placement_disabled) {
             let entity = world.spawn();
             world.insert(entity, Transform::from_translation(ref_pos));

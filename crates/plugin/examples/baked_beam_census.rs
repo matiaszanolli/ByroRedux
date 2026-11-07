@@ -133,12 +133,15 @@ fn main() -> anyhow::Result<()> {
                     if let Some(light) = nearest {
                         let base = &index.cells.statics[&light.base_form_id];
                         println!(
-                            "sample cell={} show_sky={:?} beam={:08X} pos={:?} rot={:?} nearest LIGH={:08X} {} dist={:.0}",
+                            "sample cell={} show_sky={:?} beam={:08X} model={} pos={:?} rot={:?} disabled={} xesp={} nearest LIGH={:08X} {} dist={:.0}",
                             cell.editor_id,
                             cell.show_sky,
                             reference.form_id,
+                            path,
                             reference.position,
                             reference.rotation,
+                            reference.initially_disabled,
+                            reference.enable_parent.is_some(),
                             light.base_form_id,
                             base.editor_id,
                             nearest_squared.sqrt(),

@@ -3,7 +3,7 @@
 //! Extracted from `references/mod.rs`'s inline `mod tests`
 //! (#2409 / TD1-006). Contents unchanged.
 
-use super::synth_child::stamp_visible_when_distant;
+use super::synth_child::{is_fxlight_sprite_placement, stamp_visible_when_distant};
 use super::*;
 // Test-only symbols not referenced by production code in this module
 // (they'd warn as unused at file scope). #1877 split.
@@ -668,4 +668,28 @@ fn logical_quest_reference_spawns_identity_and_attaches_scripts() {
         !world.has::<byroredux_scripting::papyrus_demo::RumbleOnActivate>(second),
         "the duplicate stub must carry no script instance of its own",
     );
+}
+
+/// #6727 — a baked beam card is a STAT whose NIF must be imported so the beam
+/// converters can run; the old blanket `fxlight` test returned a bare synth
+/// child and the converters never fired in the live engine.
+#[test]
+fn baked_beam_cards_load_their_nif_while_fxlight_sprites_stay_synthetic() {
+    for beam in [
+        "effects\\ambient\\fxlightbeamsuperwide01.nif",
+        "effects\\ambient\\fxlightbeam01.nif",
+        "effects\\ambient\\fxlightbeamsvaultwidow02.nif",
+        "effects\\ambient\\nvfxlightbeamstreetlight.nif",
+    ] {
+        assert!(!is_fxlight_sprite_placement(beam, false), "{beam}");
+    }
+    // A LIGH record that points at a beam model is still a light placement.
+    assert!(is_fxlight_sprite_placement(
+        "effects\\ambient\\fxlightbeam01.nif",
+        true
+    ));
+    // The non-beam fxlight sprites and the ray sheets keep the synthetic path.
+    assert!(is_fxlight_sprite_placement("effects\\fxlightglow01.nif", false));
+    assert!(is_fxlight_sprite_placement("effects\\fxlightrays\\rays01.nif", false));
+    assert!(!is_fxlight_sprite_placement("clutter\\barrel01.nif", false));
 }

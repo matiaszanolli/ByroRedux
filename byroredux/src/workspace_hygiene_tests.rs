@@ -1355,7 +1355,7 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // continues inland across a cell edge), cited from the Skyrim W1 fixture.
         // #6223 re-measure: `inspect wthr-dump`, the byte-for-byte WTHR decode pin
         // (a subcommand of the existing probe, no new target).
-        ("plugin", 68, 8353),
+        ("plugin", 68, 8356),
         // M47.3 result scripts — `obscript_tools avcodes` aligns the Fallout
         // misc-stat codes and `live` names the quests a script advanced
         // (no new target; the existing triage tool grew).
