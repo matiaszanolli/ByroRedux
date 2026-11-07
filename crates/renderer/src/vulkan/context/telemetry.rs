@@ -245,6 +245,12 @@ impl VulkanContext {
             elem_size_bytes: size_of::<scene_buffer::GpuPreviousModel>(),
         });
         rows.push(ScratchRow {
+            name: "moved_surface_ids_scratch",
+            len: self.scratch.moved_surface_ids_scratch.len(),
+            capacity: self.scratch.moved_surface_ids_scratch.capacity(),
+            elem_size_bytes: size_of::<u32>(),
+        });
+        rows.push(ScratchRow {
             name: "batches_scratch",
             len: self.scratch.batches_scratch.len(),
             capacity: self.scratch.batches_scratch.capacity(),

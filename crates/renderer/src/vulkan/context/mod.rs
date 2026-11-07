@@ -288,6 +288,12 @@ struct ScratchBuffers {
     current_rigid_models_scratch: FxHashMap<u32, [f32; 16]>,
     /// Previous transforms realigned to this frame's sorted instance indices.
     previous_models_scratch: Vec<scene_buffer::GpuPreviousModel>,
+    /// #6250 / #6485 — the moved stable surface IDs collected while assembling the
+    /// instance list, one push per moved draw. `finish_moved_surface_ids` sorts and
+    /// dedups it once before `upload_moved_surface_ids`, so it holds the unique mover
+    /// count by upload time. Taken and restored inside `build_and_upload_instances`;
+    /// sized by the moved-draw count, so it is shrunk with the other draw-sized scratches.
+    moved_surface_ids_scratch: Vec<u32>,
     /// Per-frame scratch buffer for draw batch metadata. Same lifecycle
     /// as `gpu_instances_scratch`. See issue #243.
     batches_scratch: Vec<frame_params::DrawBatch>,

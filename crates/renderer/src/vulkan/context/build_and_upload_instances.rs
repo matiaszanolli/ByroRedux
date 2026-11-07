@@ -391,7 +391,11 @@ impl VulkanContext {
         // prev-occluder arm matches on the stable ID. Same `surface_id`
         // derivation the GpuInstance write uses, masked to the reservoir's
         // 22-bit surface width so the shader-side compare is exact.
-        let mut moved_surface_ids: Vec<u32> = Vec::new();
+        // #6485 — a persistent scratch (capacity amortizes across frames); deduplicated once
+        // by `finish_moved_surface_ids` before the upload instead of by a linear `contains`
+        // per moved draw.
+        let mut moved_surface_ids = std::mem::take(&mut self.scratch.moved_surface_ids_scratch);
+        moved_surface_ids.clear();
         // #4943 — a rigid instance with no previous model this build (first
         // sight: spawned, enabled, streamed back in). Its own pixels reject
         // history by mesh ID, but the surfaces around it do not.
@@ -736,6 +740,7 @@ impl VulkanContext {
             });
         }
 
+        finish_moved_surface_ids(&mut moved_surface_ids);
         self.upload_instance_and_draw_buffers(
             cmd,
             frame,
@@ -745,6 +750,7 @@ impl VulkanContext {
             materials,
             &batches,
         );
+        self.scratch.moved_surface_ids_scratch = moved_surface_ids;
 
         t.ssbo_build_ns = ssbo_t0.elapsed().as_nanos() as u64;
         // #3467 — drained here rather than measured here: the rebuild runs in
@@ -969,12 +975,11 @@ impl VulkanContext {
             // the mover this frame; the list also covers the pixels
             // it just un-occluded (their prev reservoir recorded it
             // as blocker). Dedup: one entity can submit several
-            // draws, and the list is scanned per reprojection.
+            // draws, and the list is scanned per reprojection, so the duplicates
+            // are removed once after the loop (`finish_moved_surface_ids`, #6485).
             let moved_sid =
                 draw_cmd.entity_id.wrapping_add(1) & crate::shader_constants::RESERVOIR_SURFACE_MASK;
-            if !moved_surface_ids.contains(&moved_sid) {
-                moved_surface_ids.push(moved_sid);
-            }
+            moved_surface_ids.push(moved_sid);
         }
         // Rasterizer-only bits from here down — skipped for draws
         // that will not be rasterized (#1260, narrowed by #3978).
@@ -1807,6 +1812,48 @@ fn clamp_batches_to_instance_capacity(batches: &mut Vec<DrawBatch>, capacity: u3
         batches.retain(|batch| batch.instance_count > 0);
     }
     clamped
+}
+
+/// #6485 — sort and dedup the moved-surface IDs collected one-per-moved-draw. An entity submits
+/// several draws, and the shader scans the list per reprojection, so each ID must appear once.
+/// The sort also makes the over-cap truncation (`RESTIR_MAX_MOVED_SURFACES`, #6493) keep the same
+/// IDs every frame instead of whichever draws sorted first, which suits the temporal taint.
+fn finish_moved_surface_ids(ids: &mut Vec<u32>) {
+    ids.sort_unstable();
+    ids.dedup();
+}
+
+#[cfg(test)]
+mod moved_surface_ids_tests {
+    use super::finish_moved_surface_ids;
+
+    #[test]
+    fn duplicates_collapse_and_the_order_is_stable() {
+        let mut ids = vec![9, 3, 9, 1, 3, 3, 7];
+        finish_moved_surface_ids(&mut ids);
+        assert_eq!(ids, [1, 3, 7, 9]);
+        let mut again = vec![7, 1, 9, 3];
+        finish_moved_surface_ids(&mut again);
+        assert_eq!(again, ids, "the same movers in any draw order give the same list");
+    }
+
+    #[test]
+    fn an_empty_list_stays_empty() {
+        let mut ids = Vec::new();
+        finish_moved_surface_ids(&mut ids);
+        assert!(ids.is_empty());
+    }
+
+    /// The list is a persistent scratch, not a per-build `Vec::new()`, and the producer no longer
+    /// deduplicates with a linear `contains` (#6485).
+    #[test]
+    fn the_list_is_a_persistent_scratch_without_a_linear_dedup() {
+        let src = crate::source_scan::production_text(include_str!("build_and_upload_instances.rs"));
+        assert!(src.contains("std::mem::take(&mut self.scratch.moved_surface_ids_scratch)"));
+        assert!(src.contains("self.scratch.moved_surface_ids_scratch = moved_surface_ids;"));
+        assert!(!src.contains("moved_surface_ids.contains("), "dedup is the sort in finish_moved_surface_ids");
+        assert!(!src.contains("let mut moved_surface_ids: Vec<u32> = Vec::new();"));
+    }
 }
 
 #[cfg(test)]

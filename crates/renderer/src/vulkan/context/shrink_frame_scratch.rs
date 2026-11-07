@@ -65,6 +65,14 @@ impl VulkanContext {
             working_batches,
             512,
         );
+        // #6485 — one push per moved draw before the dedup, so a crowd frame's peak
+        // would otherwise be pinned; the post-dedup `len()` is the working set.
+        let working_movers = self.scratch.moved_surface_ids_scratch.len();
+        super::super::acceleration::shrink_scratch_if_oversized(
+            &mut self.scratch.moved_surface_ids_scratch,
+            working_movers,
+            512,
+        );
         // #4897 — both reserve to a per-frame draw-derived count and were
         // never shrunk, so one large exterior frame pinned their peak for the
         // session. The instance map holds one entry per draw command (its own

@@ -905,6 +905,7 @@ impl VulkanContext {
                 light_resort_scratch: Vec::new(),
                 current_rigid_models_scratch: FxHashMap::default(),
                 previous_models_scratch: Vec::new(),
+                moved_surface_ids_scratch: Vec::new(),
                 batches_scratch: Vec::new(),
                 instance_map_scratch: Vec::new(),
                 palette_plan_scratch: Vec::new(),
