@@ -701,8 +701,10 @@ this is a matter of connecting it to Ruffle, not building it from zero.)
 
 ### Input routing
 
-Loading a menu now grants `UiManager` input focus and closing or replacing it
-sends the corresponding focus transition before dropping the player.
+Loading a menu now grants `UiManager` input focus, and replacing it moves
+focus (`install_player` drops it from the old player before the new one takes
+it). There is no close: `UiManager::close` was deleted with no caller (#2723),
+so a menu stays loaded until another replaces it.
 `byroredux/src/ui_input.rs` translates winit's physical and logical keyboard
 identity, key location, text controls, Unicode input, IME composition, pointer
 coordinates/buttons, and wheel units into `UiInputEvent`. `SwfPlayer` forwards

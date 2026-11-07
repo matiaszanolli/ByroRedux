@@ -62,14 +62,13 @@ locomotion systems that already call `step_toward`
   pathfinder over FO4 content degrades to today's straight-line locomotion
   until that decode lands — a separate, already-tracked gap, not this
   document's problem to solve.
-- **Doors and cover.** The Creation-Engine `NVNM` decoder walks door and
-  cover triangle lists but deliberately does not retain them (`parse_navm`'s
-  doc: "belong to actor traversal and combat cover... this crate has
-  repeatedly paid for fields parsed ahead of a consumer"). The Gamebryo
-  typed form's equivalents (`NVDP`/`NVCA`/`NVGD`) aren't even walked — the
-  `parse_navm` match falls through to `_ => {}` for all three. So on
-  *every* game, a navmesh triangle's door/cover semantics are currently
-  unavailable at any layer. A path can cross a triangle flagged as a door
+- **Doors and cover.** `parse_navm` decodes both forms' door and cover data
+  into `NavmRecord` (#3300): the Gamebryo typed form's `NVDP`/`NVCA`/`NVGD`
+  and the Skyrim-layout `NVNM` lists land in `door_triangles`,
+  `cover_triangles` and `grid_accel` (FO4's packed body is still the
+  retained blob above). Nothing outside the plugin crate reads them, so a
+  navmesh triangle's door/cover semantics are decoded but unused: pathfinding
+  and locomotion have no door or cover awareness. A path can cross a triangle flagged as a door
   boundary without knowing an actor should visibly interact with a door
   first. Not a regression (today's locomotion has no door awareness
   either), but worth being honest that pathfinding doesn't fix it — a door

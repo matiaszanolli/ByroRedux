@@ -484,8 +484,10 @@ per-frame package re-evaluation; anchor is frozen once resolved (a
 
 The sixth consumer of `step_toward` — except `patrol_system` doesn't
 call it directly. Real Bethesda Patrol packages walk a route defined by
-linked patrol-idle markers, data this codebase decodes nowhere (outside
-`PACK`'s own sub-records). Absent that, there is nothing to distinguish
+linked patrol-idle markers. The links are decoded (`XLKR` into
+`PlacedRef.linked_refs`, `crates/plugin/src/esm/cell/walkers.rs`: keyword plus
+target on Skyrim, target only on FO3/FNV, #5223), but Patrol does not follow
+them yet. Absent that, there is nothing to distinguish
 v0 Patrol from Wander: both reduce to "walk to a random point within a
 PLDT radius, pause, repeat," with no target-reference resolution. Rather
 than copy-paste `wander_system`'s ~40-line phase-transition state
