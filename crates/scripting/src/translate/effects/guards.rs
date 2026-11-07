@@ -75,17 +75,26 @@ pub(super) fn int_store_is_exact(value: &Expr) -> bool {
 /// when an operand is provably `Float` (then the whole expression is float
 /// arithmetic, as in Papyrus); an unknown or integer division declines.
 pub(super) fn classify_value(e: &Expr, scope: &Scope) -> Option<ValueExpr> {
-    let mut e = e;
-    while let Expr::Cast { expr, target_type } = e {
-        // #6215 — `x as Int` truncates and `ValueExpr` is `f32` arithmetic with
-        // no truncation: only an operand that is already integral casts exactly.
-        if matches!(target_type.node, byroredux_papyrus::ast::Type::Int) && !provably_int_valued(&expr.node) {
-            return None;
-        }
-        e = &expr.node;
-    }
+    // #6512 — a literal through its casts is exact (`15.5 as Int` is 15,
+    // `2 as Bool` is 1); `as_num` applies each cast's own rule.
     if let Some(value) = as_num(e) {
         return Some(ValueExpr::Literal(value));
+    }
+    let mut e = e;
+    while let Expr::Cast { expr, target_type } = e {
+        use byroredux_papyrus::ast::Type;
+        match target_type.node {
+            // #6215 — `x as Int` truncates and `ValueExpr` is `f32` arithmetic
+            // with no truncation: only an operand that is already integral
+            // casts exactly.
+            Type::Int if !provably_int_valued(&expr.node) => return None,
+            Type::Int | Type::Float => {}
+            // #6512 — `as Bool` turns a number into 0 / 1 and `as String` into
+            // text; `ValueExpr` has neither, so a non-literal operand declines
+            // to the VM rather than reading as the bare number.
+            _ => return None,
+        }
+        e = &expr.node;
     }
     if let Expr::Ident(name) = e {
         let key = name.0.to_ascii_lowercase();
@@ -373,15 +382,44 @@ fn reference_side(e: &Expr, scope: &Scope) -> Option<Option<ActorRef>> {
 fn classify_comparison(atom: &Expr, scope: &Scope) -> Option<(GuardReading, GuardComparison, f32)> {
     if let Expr::BinaryOp { op, left, right } = atom {
         let comparison = GuardComparison::from_op(*op)?;
-        if let (Some(reading), Some(value)) = (guard_reading(&left.node, scope), as_num(&right.node)) {
+        let operand = |e: &Expr| guard_reading(e, scope).filter(|reading| !cast_hides_number(e, reading));
+        if let (Some(reading), Some(value)) = (operand(&left.node), as_num(&right.node)) {
             return Some((reading, comparison, value));
         }
-        if let (Some(value), Some(reading)) = (as_num(&left.node), guard_reading(&right.node, scope)) {
+        if let (Some(value), Some(reading)) = (as_num(&left.node), operand(&right.node)) {
             return Some((reading, comparison.swapped(), value));
         }
         return None;
     }
     Some((guard_reading(atom, scope)?, GuardComparison::Ne, 0.0))
+}
+
+/// #6512 — whether `e` casts a numeric `reading` to `Bool` / `String`, so that
+/// the comparison sees 0 / 1 (or text) where [`guard_reading`] sees the number.
+/// `(G.GetValue() as Bool) == True` is `G != 0`, not `G == 1`. A bare
+/// `If G.GetValue() as Bool` is unaffected: it reads truthiness, which the
+/// `!= 0` the bare form lowers to already is. `as Int` / `as Float` keep the
+/// number ([`guard_reading`] applies the `Int` truncation itself).
+fn cast_hides_number(e: &Expr, reading: &GuardReading) -> bool {
+    use byroredux_papyrus::ast::Type;
+    let numeric = matches!(
+        reading,
+        GuardReading::Stage(_)
+            | GuardReading::Global(_)
+            | GuardReading::GlobalInt(_)
+            | GuardReading::QuestVariable(..)
+            | GuardReading::ItemCount(..)
+            | GuardReading::Distance(..)
+            | GuardReading::RelationshipRank(..)
+    );
+    let mut e = e;
+    while let Expr::Cast { expr, target_type } = e {
+        if numeric && !matches!(target_type.node, Type::Int | Type::Float) {
+            return true;
+        }
+        e = &expr.node;
+    }
+    false
 }
 
 /// The quest a reading's receiver names: `Self` / the owning quest, a bare

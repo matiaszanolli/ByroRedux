@@ -133,14 +133,25 @@ pub fn int_arg(args: &[CallArg], idx: usize) -> Option<i64> {
     }
 }
 
-/// A numeric literal — `Int`/`Float`/`Bool`, unwrapping a `… as Bool`
-/// cast (the `== 1 as Bool` idiom Champollion emits).
+/// A numeric literal — `Int`/`Float`/`Bool`, through a cast the literal
+/// survives exactly (#6512): `as Bool` is the truth of the value (the
+/// `== 1 as Bool` idiom Champollion emits), `as Int` truncates toward zero and
+/// `as Float` keeps it. Any other target (`String`, an object) is not a number.
 pub fn as_num(e: &Expr) -> Option<f32> {
+    use byroredux_papyrus::ast::Type;
     match e {
         Expr::IntLit(n) => Some(*n as f32),
         Expr::FloatLit(f) => Some(*f as f32),
         Expr::BoolLit(b) => Some(if *b { 1.0 } else { 0.0 }),
-        Expr::Cast { expr, .. } => as_num(&expr.node),
+        Expr::Cast { expr, target_type } => {
+            let value = as_num(&expr.node)?;
+            match target_type.node {
+                Type::Bool => Some(if value != 0.0 { 1.0 } else { 0.0 }),
+                Type::Int => Some(value.trunc()),
+                Type::Float => Some(value),
+                _ => None,
+            }
+        }
         Expr::UnaryOp {
             op: UnaryOp::Neg,
             operand,

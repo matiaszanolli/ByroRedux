@@ -4090,6 +4090,54 @@ fn a_truncated_global_guard_lowers_to_exact_float_bounds() {
     assert_eq!(guards("G.GetValueInt() == 12.5"), None);
 }
 
+/// #6512 — an `as Bool` / `as String` cast over a numeric reading changes what
+/// a comparison sees (`(G as Bool) == True` is `G != 0`, not `G == 1`), so the
+/// guard declines to the VM; the bare truthiness form is already exact, and a
+/// literal cast applies its own rule (`15.5 as Int` is 15).
+#[test]
+fn a_bool_cast_over_a_numeric_reading_no_longer_lowers_as_the_bare_number() {
+    let guards = |condition: &str| {
+        let body = first_fn_body(&format!(
+            "ScriptName QF extends Quest\n\
+             GlobalVariable Property G Auto\n\
+             GlobalVariable Property H Auto\n\
+             Function Fragment_0()\n\
+             If {condition}\n\
+             Self.SetStage(40)\n\
+             EndIf\n\
+             EndFunction\n"
+        ));
+        lower_fragment(&body)
+    };
+    for condition in [
+        "(G.GetValue() as Bool) == True",
+        "True == (G.GetValue() as Bool)",
+        "(G.GetValue() as Bool) == (H.GetValue() as Bool)",
+        "(G.GetValue() as Bool) != (H.GetValue() as Bool)",
+        "(Self.GetStage() as Bool) == True",
+    ] {
+        assert_eq!(guards(condition), None, "{condition} must decline");
+    }
+    // The controls: truthiness of the bare atom, an Int/Float cast that keeps
+    // the number, and the same comparisons with no cast all still lower.
+    for condition in [
+        "G.GetValue() as Bool",
+        "!(G.GetValue() as Bool)",
+        "(G.GetValue() as Float) >= 2.0",
+        "G.GetValue() == 1",
+        "G.GetValue() == H.GetValue()",
+        "Self.GetStage() >= 15",
+    ] {
+        assert!(guards(condition).is_some(), "{condition} still lowers");
+    }
+    // A literal cast is exact: `15.5 as Int` is 15, not 15.5; `2 as Bool` is 1.
+    let stage = format!("{:?}", guards("Self.GetStage() >= (15.5 as Int)").expect("lowers"));
+    assert!(stage.contains("15.0") && !stage.contains("15.5"), "{stage}");
+    let truth = format!("{:?}", guards("G.GetValue() == (2 as Bool)").expect("lowers"));
+    assert!(truth.contains("1.0") && !truth.contains("2.0"), "{truth}");
+    assert_eq!(guards("G.GetValue() == (\"1\" as Bool)"), None);
+}
+
 /// #5976: a compound assignment to a declared local is not a re-bind to the
 /// right-hand side (`n += 2` would have lowered as `n = 2`). Every operator
 /// but plain `=` declines; plain `=` still lowers.
