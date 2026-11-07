@@ -436,11 +436,10 @@ pub(crate) fn vats_scan(world: &World) {
                         screen_percent: visible_fraction(
                             world, &bodies_by_target, eye, position, entity, excluded_body,
                         ),
-                        // Always the first shot: the model's Concentrated Fire
-                        // step is the *perk's* bonus ("accuracy gained by the
-                        // perk", GECK iVATSConcentratedFireBonus), so a repeat
-                        // count may only reach it once the player's perk is
-                        // resolved — the perk-gated lane is still open (#6422).
+                        // Always the first shot here: the Concentrated Fire step is
+                        // the *perk's* bonus (GECK iVATSConcentratedFireBonus), and
+                        // which shot a part is depends on what is already queued, so
+                        // `vats_queue_part` prices each repeat (#6422).
                         concentrated_shot: 1,
                     });
                     targets.push(VatsTargetPart {
@@ -594,6 +593,13 @@ fn exceeds_ap(needed: f32, available: f32) -> bool {
     needed.is_nan() || needed > available
 }
 
+/// A queued part's chance for its `prior_shots + 1`-th shot with Concentrated Fire: the model adds
+/// the bonus per earlier shot after every other step and caps at `fVATSMaxChance`, so the first
+/// shot's (already capped) chance plus the bonus, capped again, is exactly what the model gives.
+fn concentrated_repeat_chance(first_shot: f32, prior_shots: usize, model: &VatsModel) -> f32 {
+    (first_shot + model.concentrated_fire_bonus * prior_shots as f32).clamp(0.0, model.max_chance)
+}
+
 /// Queue one part (by entity + part index). The AP reservation
 /// accumulates; the spend happens on confirm. A part the player cannot
 /// pay for on top of what is already reserved is refused (vanilla: the
@@ -617,6 +623,21 @@ pub(crate) fn vats_queue_part(
     else {
         return Err(VatsQueueRefusal::PartGone);
     };
+    // Concentrated Fire (#6422): with the perk, each further shot at a part that is already
+    // queued gains `iVATSConcentratedFireBonus` per earlier shot. The chance is priced here,
+    // where the repeat count is known, so the queue shows what confirm will roll.
+    let mut part = part;
+    let prior_shots = world.try_resource::<VatsState>().map_or(0, |vats| {
+        vats.queue.iter().filter(|q| q.entity == entity && q.part_index == part_index).count()
+    });
+    if prior_shots > 0 {
+        let perk = PlayerEntity::get(world).is_some_and(|player| {
+            byroredux_scripting::perk_entry_points::has_concentrated_fire(world, player)
+        });
+        if let (true, Some(model)) = (perk, world.try_resource::<VatsModel>()) {
+            part.hit_chance = concentrated_repeat_chance(part.hit_chance, prior_shots, &model);
+        }
+    }
     let reserved = world
         .try_resource::<VatsState>()
         .map_or(0.0, |vats| vats.ap_reserved);
@@ -1077,6 +1098,91 @@ mod scan_tests {
         drop(vats);
         assert!(vats_confirm(&world));
         assert!((ap(&world) - 10.0).abs() < 1e-3, "{}", ap(&world));
+    }
+
+    /// Give the fixture's player the vanilla `ConcentratedFire` perk: one unconditional Set 1.0 on FO3/FNV
+    /// entry point 33 (`Has Concentrated Fire`), form 0x44CAF in FalloutNV.esm.
+    fn grant_concentrated_fire(world: &mut World) {
+        use byroredux_core::character::{CharacterRulesProfile, Perks};
+        use byroredux_plugin::esm::reader::GameKind;
+        use byroredux_plugin::esm::records::{PerkEntry, PerkEntryBody, PerkFunctionData, PerkRecord};
+        const CONCENTRATED_FIRE: u32 = 0x0004_4CAF;
+        let mut perk_index = byroredux_plugin::esm::records::EsmIndex {
+            game: GameKind::Fallout3NV,
+            character_rules: CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+            ..Default::default()
+        };
+        perk_index.perks.insert(
+            CONCENTRATED_FIRE,
+            PerkRecord {
+                form_id: CONCENTRATED_FIRE,
+                entries: vec![PerkEntry {
+                    rank: 0,
+                    priority: 0,
+                    body: PerkEntryBody::EntryPoint {
+                        entry_point_index: 33,
+                        function: 1,
+                        tab_count: 1,
+                        param_type: 1,
+                        function_data: PerkFunctionData::Float(1.0),
+                        formatter: Vec::new(),
+                        extra_flags: Vec::new(),
+                    },
+                    condition_tabs: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        );
+        byroredux_scripting::perk_entry_points::install_perk_entry_points(world, &perk_index);
+        let player = world.resource::<PlayerEntity>().0.unwrap();
+        world.register::<Perks>();
+        let mut perks = Perks::default();
+        perks.set_rank(CONCENTRATED_FIRE, 1);
+        world.insert(player, perks);
+    }
+
+    /// #6422 — the model's own worked example (63 % -> 68 % -> 73 %), the cap, and the first shot unchanged.
+    #[test]
+    fn a_repeat_shot_gains_the_bonus_per_earlier_shot_and_caps() {
+        let model = VatsModel::FALLOUT3;
+        assert_eq!(concentrated_repeat_chance(63.0, 0, &model), 63.0);
+        assert_eq!(concentrated_repeat_chance(63.0, 1, &model), 68.0);
+        assert_eq!(concentrated_repeat_chance(63.0, 2, &model), 73.0);
+        assert_eq!(concentrated_repeat_chance(93.0, 3, &model), model.max_chance, "capped at fVATSMaxChance");
+    }
+
+    /// #6422 — without the perk a repeat shot rolls at the scan's chance; with it, each further shot at the
+    /// SAME part gains the bonus, and a different part is its own first shot.
+    #[test]
+    fn concentrated_fire_prices_repeat_shots_at_the_same_part() {
+        let bonus = VatsModel::FALLOUT3.concentrated_fire_bonus;
+        let queued_chances = |perk: bool| {
+            let (mut world, npc) = scan_world();
+            if perk {
+                grant_concentrated_fire(&mut world);
+            }
+            vats_scan(&world);
+            seed_ap(&world, 140.0);
+            let (torso, head) = (torso(&world, npc), {
+                let vats = world.resource::<VatsState>();
+                vats.targets.iter().find(|t| t.entity == npc && t.part_name == "Head").cloned().unwrap()
+            });
+            for part in [&torso, &torso, &head, &torso] {
+                assert_eq!(vats_queue_part(&world, npc, part.part_index), Ok(()));
+            }
+            let chances: Vec<f32> = world.resource::<VatsState>().queue.iter().map(|q| q.hit_chance).collect();
+            (chances, torso.hit_chance, head.hit_chance)
+        };
+
+        let (plain, ..) = queued_chances(false);
+        assert_eq!(plain[0], plain[1]);
+        assert_eq!(plain[1], plain[3], "no perk: repeats roll at the scan's chance");
+
+        let (perked, torso_first, head_first) = queued_chances(true);
+        assert!((perked[0] - torso_first).abs() < 1e-4, "the first shot is unchanged");
+        assert!((perked[1] - (torso_first + bonus).min(95.0)).abs() < 1e-3, "{perked:?}");
+        assert!((perked[2] - head_first).abs() < 1e-4, "another part is its own first shot");
+        assert!((perked[3] - (torso_first + 2.0 * bonus).min(95.0)).abs() < 1e-3, "{perked:?}");
     }
 
     /// Damage already spent (regen has not caught up) shrinks what can be

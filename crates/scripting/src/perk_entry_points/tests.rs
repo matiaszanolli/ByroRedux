@@ -571,3 +571,25 @@ fn is_weapon_skill_type_is_modeled_on_fallout_alone() {
         assert_eq!(crate::condition::is_modeled(&world, &weapon_cond), modeled, "{game:?}");
     }
 }
+
+/// #6422 — vanilla `ConcentratedFire` (FO3 / FNV, form 0x44CAF in FalloutNV.esm) authors one entry:
+/// hook 33, function 1 (Set), 1.0, no conditions. Held, it turns the flag on; unheld, or on a game
+/// with no FO3/FNV dialect, it stays off.
+#[test]
+fn concentrated_fire_is_a_flag_the_perk_sets() {
+    let idx = index(
+        GameKind::Fallout3NV,
+        vec![perk(0x44CAF, vec![entry_point(0, 0, fnv::HAS_CONCENTRATED_FIRE, 1, float(1.0), vec![])])],
+    );
+    let (held, actor) = world_with(&idx, &[(0x44CAF, 1)]);
+    assert!(has_concentrated_fire(&held, actor));
+    let (unheld, actor) = world_with(&idx, &[]);
+    assert!(!has_concentrated_fire(&unheld, actor), "no perk, no flag");
+
+    let skyrim = index(
+        GameKind::Skyrim,
+        vec![perk(0x44CAF, vec![entry_point(0, 0, fnv::HAS_CONCENTRATED_FIRE, 1, float(1.0), vec![])])],
+    );
+    let (world, actor) = world_with(&skyrim, &[(0x44CAF, 1)]);
+    assert!(!has_concentrated_fire(&world, actor), "entry 33 is not this hook outside FO3/FNV");
+}

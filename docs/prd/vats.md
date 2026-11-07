@@ -503,8 +503,10 @@ table, and this section then links there.
   wiki *VATS Settings* example speaks of "a limb", not of a group;
   **Phase 0: verify** by queueing two shots at each of two parts that share
   a condition value (a creature's paired legs) with the perk taken and
-  reading the second shot's chance. Today: `concentrated_shot: 1` is
-  hard-coded (`byroredux/src/systems/vats.rs:441`, #6422).
+  reading the second shot's chance. Today: `vats_queue_part` counts queued shots
+  at the same `BPTD` part (one row per part until VATS-TOHIT-007 groups them) and adds
+  `iVATSConcentratedFireBonus` per earlier shot when the player holds the perk (#6422);
+  the group reading is the open verify item.
 - **VATS-PERK-002.** VATS MUST expose its per-action context (weapon, target,
   targeted part, action, distance, success, critical, fatal) for the
   `GetVATSValue` queries the GECK wiki lists (condition function 408 on

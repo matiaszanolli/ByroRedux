@@ -397,8 +397,9 @@ Skyrim `wbDefinitionsTES5.pas` and FO4 `wbDefinitionsFO4.pas`
   the value is modified to be non-zero, the player will be able to use
   concentrated fire"; *VATS Settings* `iVATSConcentratedFireBonus`). What
   counts as the same target part for the repeat count is the VATS PRD's
-  [VATS-PERK-001](vats.md#57-perk-hooks-vats-perk), not this ID. Today it is
-  fixed at 1 (R9).
+  [VATS-PERK-001](vats.md#57-perk-hooks-vats-perk), not this ID. Today
+  `has_concentrated_fire` composes the hook and `vats_queue_part` prices each repeat
+  shot at the same part (#6422); the scan still prices a part's first shot.
 - **PERK-HOOK-004.** FO3/FNV *Player Kill AP Reward* (35) MUST compose the AP
   restored when a VATS sequence ends with at least one kill, from a base of 0
   (GECK: "Modifies the AP reward from 0 to another value"). Its tabs 1 and 2

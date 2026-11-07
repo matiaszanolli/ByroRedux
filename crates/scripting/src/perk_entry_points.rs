@@ -86,6 +86,9 @@ pub mod fnv {
     pub const ADJUST_EXPERIENCE_POINTS: u8 = 9;
     pub const ADJUST_GAINED_SKILL_POINTS: u8 = 10;
     pub const GET_MAX_CARRY_WEIGHT: u8 = 22;
+    /// `Has Concentrated Fire` (xEdit `wbDefinitionsFNV` / `FO3` entry 33): the vanilla
+    /// `ConcentratedFire` perk authors one Set-to-1.0 entry here.
+    pub const HAS_CONCENTRATED_FIRE: u8 = 33;
     pub const MODIFY_DAMAGE_THRESHOLD_DEFENDER: u8 = 56;
     pub const MODIFY_DAMAGE_THRESHOLD_ATTACKER: u8 = 58;
 }
@@ -462,6 +465,17 @@ pub fn compose_max_carry_weight(world: &World, actor: EntityId, base: f32) -> f3
         PerkEntryPointDialect::None => return base,
     };
     compose_entry_point(world, actor, hook, base, &[None, None])
+}
+
+/// Whether `actor` holds a perk that grants VATS Concentrated Fire (FO3 / FNV entry point 33,
+/// `Has Concentrated Fire`): the hook is a flag, composed from 0 so a perk that Sets it to 1 makes
+/// it true. Vanilla's `ConcentratedFire` authors a single unconditional Set 1.0 at rank 0 in both
+/// masters. Games with no FO3/FNV dialect never have it (#6422).
+pub fn has_concentrated_fire(world: &World, actor: EntityId) -> bool {
+    let fo3_fnv = world
+        .try_resource::<PerkEntryTable>()
+        .is_some_and(|table| table.dialect() == PerkEntryPointDialect::Fallout3NV);
+    fo3_fnv && compose_entry_point(world, actor, fnv::HAS_CONCENTRATED_FIRE, 0.0, &[None, None]) > 0.5
 }
 
 /// Install the [`PerkEntryTable`] for a load order. Returns the number of
