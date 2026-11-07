@@ -228,3 +228,34 @@ fn barter_trades_with_an_unloaded_merchant_chest_and_parks_its_stock() {
     assert_eq!(stock, vec![(SWORD, 1), (GEM, 1)]);
     end_barter(&mut world);
 }
+
+/// #6760 -- the barter price model is the profile's row, not a `GameKind`
+/// match: an FNV-game index with the Skyrim profile installs rules, and a
+/// Skyrim-game index with a profile that has no barter row removes them.
+#[test]
+fn barter_rules_follow_the_profile_not_the_game() {
+    let mut world = World::new();
+    let mut skyrim_profile = EsmIndex {
+        game: GameKind::Fallout3NV,
+        character_rules: CharacterRulesProfile::SKYRIM,
+        ..Default::default()
+    };
+    // The Skyrim row prices off the Speechcraft AVIF.
+    skyrim_profile.actor_values.insert(
+        0x2B,
+        byroredux_plugin::esm::records::AvifRecord {
+            form_id: 0x2B,
+            editor_id: "Speechcraft".into(),
+            ..Default::default()
+        },
+    );
+    install_barter_rules(&mut world, &skyrim_profile);
+    assert!(world.try_resource::<BarterRules>().is_some());
+    let no_row = EsmIndex {
+        game: GameKind::Skyrim,
+        character_rules: CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+        ..Default::default()
+    };
+    install_barter_rules(&mut world, &no_row);
+    assert!(world.try_resource::<BarterRules>().is_none());
+}

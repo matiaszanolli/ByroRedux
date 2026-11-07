@@ -263,3 +263,27 @@ fn without_rules_a_spared_actor_has_no_recovery_time_and_stays_down() {
     bleedout_system(&world, 1_000.0);
     assert!(is_bleeding_out(&world, actor), "a timer-less bleedout never counts down");
 }
+
+/// #6760 -- the essential-death default is the profile's row, not a `GameKind`
+/// match: a Skyrim-game index with the FNV profile gets FNV's 10 s, an FNV-game
+/// index with the Skyrim profile gets Skyrim's 30 s, and a profile with no row
+/// installs nothing whatever the game.
+#[test]
+fn bleedout_defaults_follow_the_profile_not_the_game() {
+    let mut world = World::new();
+    let mut index = EsmIndex {
+        game: GameKind::Skyrim,
+        character_rules: CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+        ..Default::default()
+    };
+    install_bleedout_rules(&mut world, &index);
+    assert_eq!(world.resource::<BleedoutRules>().death_time_secs, 10.0);
+    index.game = GameKind::Fallout3NV;
+    index.character_rules = CharacterRulesProfile::SKYRIM;
+    install_bleedout_rules(&mut world, &index);
+    assert_eq!(world.resource::<BleedoutRules>().death_time_secs, 30.0);
+    index.game = GameKind::Skyrim;
+    index.character_rules = CharacterRulesProfile::STARFIELD;
+    install_bleedout_rules(&mut world, &index);
+    assert!(world.try_resource::<BleedoutRules>().is_none());
+}

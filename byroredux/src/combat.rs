@@ -1896,6 +1896,49 @@ mod tests {
         assert_eq!(state.kills, 0);
     }
 
+    /// #6760 -- `install_experience_rules` follows the profile's kill-experience
+    /// row, not the game: FO3/FNV profiles install the bands (here under a Skyrim
+    /// game), and a profile without kill experience removes a prior install (here
+    /// under an FNV game).
+    #[test]
+    fn experience_rules_follow_the_profile_not_the_game() {
+        use byroredux_core::character::CharacterRulesProfile;
+        use byroredux_plugin::esm::reader::GameKind;
+        use byroredux_plugin::esm::records::{EsmIndex, GameSetting, SettingValue};
+        let mut fnv_profile = EsmIndex {
+            game: GameKind::Skyrim,
+            character_rules: CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+            ..Default::default()
+        };
+        let mut form_id = 0x10;
+        let mut author = |index: &mut EsmIndex, name: String, value: f32| {
+            index.game_settings.insert(
+                form_id,
+                GameSetting { form_id, editor_id: name, value: SettingValue::Float(value) },
+            );
+            form_id += 1;
+        };
+        for band in ["VeryEasy", "Easy", "Average", "Hard", "VeryHard"] {
+            author(&mut fnv_profile, format!("iXPLevelKillNPC{band}"), 5.0);
+            author(&mut fnv_profile, format!("iXPLevelKillCreature{band}"), 5.0);
+            author(&mut fnv_profile, format!("iXPRewardKillOpponent{band}"), 7.0);
+        }
+        author(&mut fnv_profile, "iXPDeathRewardHealthThreshold".into(), 40.0);
+
+        let mut world = World::new();
+        assert!(install_experience_rules(&mut world, &fnv_profile));
+        assert!(world.try_resource::<ExperienceRules>().is_some());
+
+        let mut skyrim_profile = EsmIndex {
+            game: GameKind::Fallout3NV,
+            character_rules: CharacterRulesProfile::SKYRIM,
+            ..Default::default()
+        };
+        skyrim_profile.game_settings = fnv_profile.game_settings.clone();
+        assert!(!install_experience_rules(&mut world, &skyrim_profile));
+        assert!(world.try_resource::<ExperienceRules>().is_none(), "the prior install is removed");
+    }
+
     /// M47.2 — Fallout kill experience: a kill the player made (≥ the health
     /// share) pays the victim's difficulty band, and a level's worth rolls over.
     #[test]

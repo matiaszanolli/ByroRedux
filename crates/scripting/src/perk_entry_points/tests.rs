@@ -593,3 +593,24 @@ fn concentrated_fire_is_a_flag_the_perk_sets() {
     let (world, actor) = world_with(&skyrim, &[(0x44CAF, 1)]);
     assert!(!has_concentrated_fire(&world, actor), "entry 33 is not this hook outside FO3/FNV");
 }
+
+/// #6760 -- the entry-point dialect is the profile's row, not a `GameKind`
+/// match: an index whose game and profile disagree decodes by the profile.
+#[test]
+fn entry_point_dialect_follows_the_profile_not_the_game() {
+    use byroredux_core::character::CharacterRulesProfile;
+    let perks = || vec![perk(0x94EBA, vec![entry_point(0, 0, DAMAGE, 3, float(1.05), vec![])])];
+
+    // A Skyrim-game index carrying the FNV profile composes the FNV hook.
+    let mut idx = index(GameKind::Skyrim, perks());
+    idx.character_rules = CharacterRulesProfile::FALLOUT_NEW_VEGAS;
+    let (world, actor) = world_with(&idx, &[(0x94EBA, 1)]);
+    let out = compose_entry_point(&world, actor, DAMAGE, 20.0, &[]);
+    assert!((out - 21.0).abs() < 1e-5, "{out}");
+
+    // An FNV-game index carrying a no-dialect profile composes nothing.
+    let mut idx = index(GameKind::Fallout3NV, perks());
+    idx.character_rules = CharacterRulesProfile::FALLOUT4;
+    let (world, actor) = world_with(&idx, &[(0x94EBA, 1)]);
+    assert_eq!(compose_entry_point(&world, actor, DAMAGE, 20.0, &[]), 20.0);
+}

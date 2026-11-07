@@ -102,3 +102,26 @@ fn movement_follows_the_effect_once_over() {
     assert_eq!(at(150.0, Some(OverEncumbered::NoSprint)), (1.0, false));
     assert_eq!(at(150.0, None), (1.0, true));
 }
+
+/// #6760 -- the over-encumbrance rule is the profile's row, not a `GameKind`
+/// match: an index whose game and profile disagree follows the profile.
+#[test]
+fn over_encumbrance_follows_the_profile_not_the_game() {
+    let mut world = World::new();
+    let mut skyrim_game = index(GameKind::Skyrim);
+    skyrim_game.character_rules = CharacterRulesProfile::FALLOUT_NEW_VEGAS;
+    install_encumbrance_rules(&mut world, &skyrim_game);
+    assert_eq!(
+        world.resource::<EncumbranceRules>().effect,
+        Some(OverEncumbered::SpeedMult(FALLOUT_MOVE_ENCUM_EFFECT)),
+        "a Skyrim index with the FNV profile slows, it does not block sprinting"
+    );
+    let mut fallout_game = index(GameKind::Fallout3NV);
+    fallout_game.character_rules = CharacterRulesProfile::SKYRIM;
+    install_encumbrance_rules(&mut world, &fallout_game);
+    assert_eq!(
+        world.resource::<EncumbranceRules>().effect,
+        Some(OverEncumbered::NoSprint),
+        "an FNV index with the Skyrim profile blocks sprinting"
+    );
+}
