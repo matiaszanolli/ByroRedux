@@ -436,7 +436,7 @@ void main() {
     // which reads as an evenly mown lawn at distance. A pure function of the
     // blade's world position, so it is stable frame to frame and across tiers.
     float heightField = 1.0 + GROUNDCOVER_HEIGHT_FIELD_VARIATION
-        * (2.0 * byroGcFbm(base.xz / GROUNDCOVER_HEIGHT_FIELD_UNITS + vec2(17.3, 41.9)) - 1.0);
+        * (2.0 * byroGcFbm(base.xz / GROUNDCOVER_HEIGHT_FIELD_UNITS + vec2(GROUNDCOVER_HEIGHT_FIELD_OFFSET_X, GROUNDCOVER_HEIGHT_FIELD_OFFSET_Y)) - 1.0);
     float height = byroGcBladeLength(sp, seed) * clumpHeight * heightField
         * chunk.entryProgress;
     float width = mix(sp.sizeRange.z, sp.sizeRange.w, gcSeedStream(seed, 1u));

@@ -117,7 +117,7 @@ vec3 byroOklabToLinearInGamut(float L, vec2 ab) {
     }
     float lo = 0.0;
     float hi = 1.0;
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < int(GROUNDCOVER_GAMUT_BISECTION_STEPS); ++i) {
         float mid = 0.5 * (lo + hi);
         vec3 c = byroOklabToLinear(vec3(L, ab * mid));
         if (min(c.r, min(c.g, c.b)) >= 0.0) {
@@ -257,7 +257,7 @@ void main() {
         vec3 paletteLab = byroLinearToOklab(albedo);
         vec3 groundLab = byroLinearToOklab(haveGrassColour ? vGrassColour.rgb : rootGroundAlbedo);
         // A (near-)black ground sample has no reliable chroma to hand on.
-        vec2 groundAb = groundLab.x > 0.1
+        vec2 groundAb = groundLab.x > GROUNDCOVER_CHROMA_MIN_LIGHTNESS
             ? groundLab.yz * GROUNDCOVER_CHROMA_VIBRANCE
             : paletteLab.yz;
         vec2 ab = mix(paletteLab.yz, groundAb, clamp(sp.tipColour.a, 0.0, 1.0));

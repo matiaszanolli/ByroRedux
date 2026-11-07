@@ -925,6 +925,19 @@ pub const GROUNDCOVER_GROUND_COLOUR_FOOTPRINT: f32 = 16.0;
 /// constant hue and lightness (1.0 = the ground's own saturation).
 /// Art-direction default, not a sourced value.
 pub const GROUNDCOVER_CHROMA_VIBRANCE: f32 = 1.6;
+/// OKLab lightness below which the ground sample is "near-black": it has no
+/// reliable chroma to hand on, so the blade keeps its own palette chroma
+/// instead of the ground's (#6734). Art-direction default, not a sourced value.
+pub const GROUNDCOVER_CHROMA_MIN_LIGHTNESS: f32 = 0.1;
+/// Bisection steps `byroOklabToLinearInGamut` spends pulling a pushed chroma
+/// back into the sRGB gamut (2^-6 of the chroma, far below an 8-bit step).
+/// Precision of the search, not a look knob (#6734).
+pub const GROUNDCOVER_GAMUT_BISECTION_STEPS: u32 = 6;
+/// Offset of the meadow-scale height field's lattice (world period units), so
+/// the noise does not sit on its own origin. Arbitrary decorrelation values,
+/// not a look knob; any pair gives an equivalent field (#6734).
+pub const GROUNDCOVER_HEIGHT_FIELD_OFFSET_X: f32 = 17.3;
+pub const GROUNDCOVER_HEIGHT_FIELD_OFFSET_Y: f32 = 41.9;
 
 // ── The light response (§12.1, §12.2, §12.5, §12.6; #4057) ──────────────
 //
@@ -2931,6 +2944,10 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float GROUNDCOVER_NEUTRAL_LUMA),
     shader_define!(Float GROUNDCOVER_GROUND_COLOUR_FOOTPRINT),
     shader_define!(Float GROUNDCOVER_CHROMA_VIBRANCE),
+    shader_define!(Float GROUNDCOVER_CHROMA_MIN_LIGHTNESS),
+    shader_define!(Uint GROUNDCOVER_GAMUT_BISECTION_STEPS),
+    shader_define!(Float GROUNDCOVER_HEIGHT_FIELD_OFFSET_X),
+    shader_define!(Float GROUNDCOVER_HEIGHT_FIELD_OFFSET_Y),
     HeaderLine::Blank,
     HeaderLine::Comment("Ground-cover light response (§12.1/12.2/12.5/12.6, #4057)"),
     shader_define!(Float GROUNDCOVER_CANOPY_EXTINCTION_K),

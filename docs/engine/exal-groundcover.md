@@ -1810,6 +1810,17 @@ are named in `shader_constants_data.rs` (rather than left as shader literals)
 so the pending evidence and any eventual retune are reviewable; #4378 moved
 them without changing their values.
 
+#6734 — the 2026-11-04 grass-colour change left three more inline values in
+the blade shaders; they are now named in `shader_constants_data.rs`:
+`GROUNDCOVER_CHROMA_MIN_LIGHTNESS` (0.1, OKLab lightness under which a ground
+sample is "near-black" and the blade keeps its palette chroma; art direction,
+**uncited**), `GROUNDCOVER_GAMUT_BISECTION_STEPS` (6; the precision of the
+in-gamut chroma search, not a look knob) and
+`GROUNDCOVER_HEIGHT_FIELD_OFFSET_X/Y` (17.3 / 41.9; arbitrary decorrelation of
+the height field's lattice from its origin, **uncited**, any pair is
+equivalent). The OKLab matrices in the same file are Ottosson's published
+ones and stay literal as cited math.
+
 The 2026-09-19 post-#4378 literal sweep of all 15 `groundcover_*` GLSL files
 found exactly one numeric arrival since: the R2 constants
 `A1 = 0.7548776662466927` / `A2 = 0.5698402909980532` in

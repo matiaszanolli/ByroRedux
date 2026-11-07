@@ -1718,6 +1718,29 @@ mod tests {
         assert!(radiance_view.contains("sampledVolume.rgb") && !radiance_view.contains("vec3(opacity)"));
     }
 
+    /// #6734 - the blade shaders' tunables are named constants, not inline numbers: the near-black
+    /// ground cutoff, the gamut-search step count and the height-field lattice offset were left inline
+    /// by the grass-colour change. (The OKLab matrices are Ottosson's published ones and stay literal.)
+    #[test]
+    fn groundcover_blade_tunables_are_named_constants() {
+        let frag = crate::source_scan::strip_glsl_comments(include_str!("../shaders/groundcover_blade.frag"));
+        let vert = crate::source_scan::strip_glsl_comments(include_str!("../shaders/groundcover_blade.vert"));
+        let header = include_str!("../shaders/include/shader_constants.glsl");
+        for name in [
+            "GROUNDCOVER_CHROMA_MIN_LIGHTNESS",
+            "GROUNDCOVER_GAMUT_BISECTION_STEPS",
+            "GROUNDCOVER_HEIGHT_FIELD_OFFSET_X",
+            "GROUNDCOVER_HEIGHT_FIELD_OFFSET_Y",
+        ] {
+            assert!(header.contains(&format!("#define {name} ")), "{name} must reach the generated header");
+        }
+        assert!(frag.contains("groundLab.x > GROUNDCOVER_CHROMA_MIN_LIGHTNESS"));
+        assert!(frag.contains("i < int(GROUNDCOVER_GAMUT_BISECTION_STEPS)"));
+        assert!(!frag.contains("groundLab.x > 0.") && !frag.contains("i < 6;"), "an inline tunable came back");
+        assert!(vert.contains("vec2(GROUNDCOVER_HEIGHT_FIELD_OFFSET_X, GROUNDCOVER_HEIGHT_FIELD_OFFSET_Y)"));
+        assert!(!vert.contains("17.3") && !vert.contains("41.9"), "the height-field offset is inline again");
+    }
+
     /// #4026 — the FSR plan's phase-3 status line attributed the 1×1
     /// exposure producer to composite's tone-map, contradicted five lines
     /// later in its own header by phase 4's "presentation pass that owns
