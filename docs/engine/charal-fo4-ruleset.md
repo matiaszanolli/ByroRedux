@@ -546,6 +546,15 @@ rule is uncaptured*, not because the game lacks the mechanic.
 - **Barter.** The executable defaults `fBarterSellMax=0.95` and
   `fBarterBuyMin=1.05` are captured in "Barter Prices" above.
 
+## Perk rows — `add_perk_raises_rank` and the entry-point dialect (#6770)
+
+- **`add_perk_raises_rank` = true.** FO4 CK *Perk*: "Each time a perk is added to an
+  Actor the perk's rank will increase" (`falloutck-uesp-wiki/(main)/Perk.wiki`). A
+  scripted `AddPerk` on a held perk raises its rank by one, up to `PERK` Num Ranks.
+- **`perk_entry_points` = `None`.** FO4's `PERK` entry layout is not decoded, so no
+  entry-point value math is composed for it (`barter` carries no `perk_hooks` for the
+  same reason).
+
 ## NPC SPECIAL storage — RESOLVED (xEdit `Core/wbDefinitionsFO4.pas`, dev-4.1.6)
 
 **Answer: the `PRPS` (Properties) subrecord — an array of `(AVIF FormID, value)`

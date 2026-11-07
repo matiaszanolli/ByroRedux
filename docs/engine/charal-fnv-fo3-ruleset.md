@@ -510,6 +510,19 @@ The Fallout movement penalty when over-encumbered is a **0.4** speed multiplier
 GECK / Creation Kit settings and the Fallout 3 executable defaults, as
 captured by the engine settings tables.
 
+## Perk rows — `add_perk_raises_rank` and the entry-point dialect (#6770)
+
+Two `CharacterRulesProfile::FALLOUT3` / `FALLOUT_NEW_VEGAS` rows, captured here so
+they can be checked against a document.
+
+- **`add_perk_raises_rank` = true.** GECK *AddPerk*: "Increments the rank of the
+  specified perk on an Actor. If the specified Actor doesn't already have the perk,
+  then it will be added with rank 1." (`geck-uesp-wiki/(main)/AddPerk.wiki`). A
+  scripted `AddPerk` on a held perk raises its rank by one, up to `PERK` Num Ranks.
+- **`perk_entry_points` = `Fallout3NV`.** The `PERK` entry-point numbering decoded
+  by `wbDefinitionsFO3.pas` (FNV identical for the wired hooks), the dialect the
+  value-math composition reads (`docs/prd/perk-entry-points.md`).
+
 ## VATS tuning, Action Points regen and the radiation gauge — BUILT (#6350)
 
 `VatsModel` (`crates/core/src/character/vats.rs`) is the FO3/FNV VATS tuning

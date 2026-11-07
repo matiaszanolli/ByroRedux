@@ -822,6 +822,19 @@ here so the row can be checked against a document.
 - **Barter.** The executable defaults `fBarterSellMax=0.95` and
   `fBarterBuyMin=1.05` are captured in "Barter prices" above.
 
+## Perk rows — `add_perk_raises_rank` and the entry-point dialect (#6770)
+
+- **`add_perk_raises_rank` = false — an OPEN QUESTION, not a finding.** No primary
+  source settles whether a scripted `AddPerk` on a held Skyrim perk raises its rank:
+  CK *AddPerk - Actor* says nothing about ranks, CK *Perk* marks Num Ranks "Not
+  applicable" and entry Rank "Not used". Fallout 3 / New Vegas and Fallout 4 do raise
+  it (their captures cite GECK *AddPerk* and FO4 CK *Perk*); Skyrim is **unverified**,
+  so the row keeps the rank until a source says otherwise (`docs/prd/perk-entry-points.md`,
+  PERK-BODY-001 and PERK-GATE-004).
+- **`perk_entry_points` = `Skyrim`.** The `PERK` entry-point numbering decoded by
+  `wbDefinitionsTES5.pas`, which the value-math composition and the barter price
+  hooks read.
+
 ## Crime — fines per crime faction (built), guards and jail (not built)
 
 Sources: CK *Crime*, *Faction* (Crime Tab), *Creating a Custom Crime Faction*,

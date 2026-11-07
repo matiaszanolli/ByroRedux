@@ -281,7 +281,7 @@ scheduler registration), not just present as a buildable function.
 | Runtime leveling (XP grant / level-up) | ✗ | ✓ | ✓ | ~ | ~ | ✗ | ✗ |
 | Pool regen tick (Fatigue/Magicka — Health deliberately unmodelled, Stamina has no row; #4463). FO3/FNV: ActionPoints lane live (#6350), Fatigue/Magicka lanes inert | ✗ inert | ~ AP only | ~ AP only | ✗ inert | ✗ inert | ✗ inert | ✗ inert |
 | Affliction tick (radiation/disease/addiction) | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert |
-| VATS + Action Points runtime (#6350, open) | ✗ | ~ plumbing | ~ plumbing | ✗ | ✗ | ✗ | ✗ |
+| VATS + Action Points runtime (#6350, open). FO3/FNV: console-driven (mode machine with world freeze, targeting scan, AP-gated queue and confirm, Concentrated Fire, damage through the combat funnel, exits on cell change / death / load); no menu, per-limb damage, playback or camera | ✗ | ~ console-driven | ~ console-driven | ✗ | ✗ | ✗ | ✗ |
 
 `oblivion_ruleset()` (`crates/core/src/character/tes.rs`) builds a real
 `CharacterRuleset`, but `CharacterRulesProfile::OBLIVION` still maps to
