@@ -573,7 +573,13 @@ and `BYRO_HAZE_FLOOR` / `fog.haze` (the floor).
   and is the only region tried that stays quiet. So what exists is a mechanism with no tuned default; a value
   chosen from one pose per title would be wrong for the others. A distance fade (full within 20 m, none beyond
   70 m) was tried on the same four cases and reverted: it changed them by under 1.5 levels (Oblivion 15.7 against
-  16.9 at 0.25, FNV 32.2 against 31.7), so the wash is not the far field.
+  16.9 at 0.25, FNV 32.2 against 31.7), so the wash is not the far field. A broader phase lobe for the dust alone
+  (Henyey-Greenstein g = 0.3 instead of the haze's tight forward lobe) was also tried and reverted: it was worse,
+  0.25 giving +24.0 (Oblivion 17:30), +6.6 (Skyrim), +36.8 (FNV g2) and +43.0 (FO4 g2), because the haze's own phase
+  is already tight and the broad lobe adds dust off-axis. Three variants (shaping by elevation, by distance, by phase)
+  leave one that helps, the elevation fade, and it only removes the noon wash. What stays unsolved is that the lit
+  air brightens the frame in step with the shaft contrast; a fix needs the owner's view of how much haze a shaft may
+  cost, or a scene-adaptive exposure-aware gain, neither of which is built.
 - **Not done yet:** the per-fixture noon and low-sun captures on the other titles (VLM-SH-006), the range and
   cloud-shadow work (VLM-SH-004, -005), and the separate inject and integrate milliseconds (VLM-SH-008; the
   inject figure above is one pose, not the fixture set).
