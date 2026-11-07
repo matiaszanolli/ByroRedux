@@ -167,8 +167,11 @@ pub fn parse_fuz(data: &[u8]) -> Option<FuzContainer<'_>> {
 }
 
 /// Walk the embedded `RIFF`/`XWMA` chunk list and lift the `fmt `,
-/// `dpds` and `data` chunks. A chunk whose declared size overflows the
-/// stream ends the walk; a stream without a usable `fmt ` declines.
+/// `dpds` and `data` chunks the way `ffmpeg`'s xWMA demuxer does (#6480): the
+/// FIRST `fmt ` wins, and the walk ends at `data`, so a `fmt ` appended after
+/// the payload cannot relabel what ffmpeg decoded. A chunk whose declared size
+/// overflows the stream ends the walk; a stream without a usable `fmt ` before
+/// its `data` declines.
 pub fn parse_xwma(riff: &[u8]) -> Option<XwmaStream<'_>> {
     if riff.len() < 12 || &riff[0..4] != b"RIFF" || &riff[8..12] != b"XWMA" {
         return None;
@@ -184,7 +187,7 @@ pub fn parse_xwma(riff: &[u8]) -> Option<XwmaStream<'_>> {
             break; // overflowing chunk — walk ends with what decoded
         };
         match cid {
-            b"fmt " if payload.len() >= 16 => {
+            b"fmt " if fmt.is_none() && payload.len() >= 16 => {
                 fmt = Some((
                     u16::from_le_bytes(payload[0..2].try_into().ok()?),
                     u16::from_le_bytes(payload[2..4].try_into().ok()?),
@@ -195,7 +198,10 @@ pub fn parse_xwma(riff: &[u8]) -> Option<XwmaStream<'_>> {
                 ));
             }
             b"dpds" => dpds = payload,
-            b"data" => data = payload,
+            b"data" => {
+                data = payload;
+                break;
+            }
             _ => {}
         }
         // RIFF chunks pad to even sizes; honour the pad byte.
@@ -282,7 +288,7 @@ pub fn fuz_to_wav_bytes(data: &[u8]) -> Result<Vec<u8>, FuzDecodeError> {
     if output.stdout.is_empty() {
         return Err(FuzDecodeError::FfmpegEmptyOutput);
     }
-    Ok(wav_header(output.stdout, stream.channels, stream.sample_rate))
+    wav_header(output.stdout, stream.channels, stream.sample_rate).ok_or(FuzDecodeError::BadXwma)
 }
 
 /// Write the xWMA image to a fresh temp file. `create_new` (`O_EXCL`) refuses an
@@ -395,14 +401,17 @@ fn run_bounded(
 }
 
 /// Wrap raw little-endian s16 PCM in the canonical 44-byte PCM WAV
-/// header (real sizes — safe for a non-seekable producer).
-fn wav_header(pcm: Vec<u8>, channels: u16, sample_rate: u32) -> Vec<u8> {
-    let block_align = channels * 2;
-    let byte_rate = sample_rate * u32::from(block_align);
-    let data_len = pcm.len() as u32;
+/// header (real sizes — safe for a non-seekable producer). `None` when the
+/// stream's own channel count or rate would overflow the header fields (#6480:
+/// `channels * 2` wrapped in release and panicked with overflow checks on).
+fn wav_header(pcm: Vec<u8>, channels: u16, sample_rate: u32) -> Option<Vec<u8>> {
+    let block_align = channels.checked_mul(2)?;
+    let byte_rate = sample_rate.checked_mul(u32::from(block_align))?;
+    let data_len = u32::try_from(pcm.len()).ok()?;
+    let riff_len = data_len.checked_add(36)?;
     let mut wav = Vec::with_capacity(44 + pcm.len());
     wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(&riff_len.to_le_bytes());
     wav.extend_from_slice(b"WAVE");
     wav.extend_from_slice(b"fmt ");
     wav.extend_from_slice(&16u32.to_le_bytes());
@@ -415,7 +424,7 @@ fn wav_header(pcm: Vec<u8>, channels: u16, sample_rate: u32) -> Vec<u8> {
     wav.extend_from_slice(b"data");
     wav.extend_from_slice(&data_len.to_le_bytes());
     wav.extend_from_slice(&pcm);
-    wav
+    Some(wav)
 }
 
 #[cfg(test)]
@@ -465,6 +474,81 @@ mod tests {
     }
 
     const SAMPLE_DATA: &[u8] = &[0xAB; 32];
+
+    /// An XWMA RIFF whose chunks are exactly `chunks`, in order.
+    fn xwma_with(chunks: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut xwma = b"RIFF\0\0\0\0XWMA".to_vec();
+        for (cid, payload) in chunks {
+            xwma.extend_from_slice(*cid);
+            xwma.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            xwma.extend_from_slice(payload);
+            if payload.len() & 1 == 1 {
+                xwma.push(0);
+            }
+        }
+        xwma
+    }
+
+    fn fmt_chunk(tag: u16, channels: u16, rate: u32) -> Vec<u8> {
+        let mut fmt = Vec::new();
+        fmt.extend_from_slice(&tag.to_le_bytes());
+        fmt.extend_from_slice(&channels.to_le_bytes());
+        fmt.extend_from_slice(&rate.to_le_bytes());
+        fmt.extend_from_slice(&4_000u32.to_le_bytes());
+        fmt.extend_from_slice(&1_487u16.to_le_bytes());
+        fmt.extend_from_slice(&16u16.to_le_bytes());
+        fmt
+    }
+
+    /// #6480 — ffmpeg decodes the FIRST `fmt ` and stops at `data`; a `fmt `
+    /// appended after the payload must not relabel the stream.
+    #[test]
+    fn a_fmt_chunk_after_data_does_not_override_the_first() {
+        let xwma = xwma_with(&[
+            (b"fmt ", fmt_chunk(WAVE_FORMAT_WMAUDIO2, 1, 44_100)),
+            (b"data", SAMPLE_DATA.to_vec()),
+            (b"fmt ", fmt_chunk(WAVE_FORMAT_WMAUDIO2, 0x8000, 7)),
+        ]);
+        let stream = parse_xwma(&xwma).expect("leading fmt + data parse");
+        assert_eq!((stream.channels, stream.sample_rate), (1, 44_100));
+        assert_eq!(stream.data, SAMPLE_DATA);
+    }
+
+    /// #6480 — a second `fmt ` BEFORE `data` does not replace the first either
+    /// (the demuxer reads one and skips the rest).
+    #[test]
+    fn the_first_fmt_chunk_wins() {
+        let xwma = xwma_with(&[
+            (b"fmt ", fmt_chunk(WAVE_FORMAT_WMAUDIO2, 2, 22_050)),
+            (b"fmt ", fmt_chunk(WAVE_FORMAT_WMAUDIO2, 6, 48_000)),
+            (b"data", SAMPLE_DATA.to_vec()),
+        ]);
+        let stream = parse_xwma(&xwma).unwrap();
+        assert_eq!((stream.channels, stream.sample_rate), (2, 22_050));
+    }
+
+    /// #6480 — the only `fmt ` sits after `data`: ffmpeg would reject the file,
+    /// so the walk declines instead of labelling the PCM from a late chunk.
+    #[test]
+    fn a_stream_whose_only_fmt_follows_data_declines() {
+        let xwma = xwma_with(&[
+            (b"data", SAMPLE_DATA.to_vec()),
+            (b"fmt ", fmt_chunk(WAVE_FORMAT_WMAUDIO2, 1, 44_100)),
+        ]);
+        assert!(parse_xwma(&xwma).is_none());
+    }
+
+    /// #6480 — header fields that overflow decline instead of wrapping (release)
+    /// or panicking (overflow checks on).
+    #[test]
+    fn wav_header_declines_overflowing_fields() {
+        assert!(wav_header(vec![0; 4], 0x8000, 44_100).is_none(), "channels * 2 overflows u16");
+        assert!(wav_header(vec![0; 4], 0x7FFF, u32::MAX).is_none(), "rate * block_align overflows u32");
+        let ok = wav_header(vec![1, 2, 3, 4], 2, 44_100).expect("ordinary fields");
+        assert_eq!(ok.len(), 44 + 4);
+        assert_eq!(&ok[22..24], &2u16.to_le_bytes());
+        assert_eq!(&ok[28..32], &(44_100u32 * 4).to_le_bytes());
+    }
 
     #[test]
     fn container_and_stream_parse_and_duration() {
