@@ -1257,6 +1257,11 @@ pub const COMBUSTION_LOCAL_LIGHT_PHASE_MIX: f32 = 0.65;
 // is zero at night. 0.04/m is half the dust of the godray lab's room (0.08/m).
 pub const INTERIOR_SHAFT_DUST_PER_METER: f32 = 0.04;
 pub const INTERIOR_SHAFT_DUST_ALBEDO: f32 = 0.9;
+/// Open-sky sun dust (`BYRO_SUN_DUST`) shaping by the sun's elevation sine: full strength at or below the
+/// first, none at or above the second, smooth between. Flat dust washes a noon frame out entirely (measured
+/// 2026-11-07), and a low sun is where a shaft reads.
+pub const SUN_DUST_FULL_BELOW_SUN_SIN: f32 = 0.2;
+pub const SUN_DUST_ZERO_ABOVE_SUN_SIN: f32 = 0.7;
 /// How far past an alpha hole the froxel sun trace restarts its ray (VLM-SH-009), world units: enough to
 /// clear the hit triangle's own plane, far below one froxel.
 pub const SUN_ALPHA_STEP_BU: f32 = 0.1;
@@ -3070,6 +3075,8 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float INTERIOR_SHAFT_DUST_PER_METER),
     shader_define!(Float INTERIOR_SHAFT_DUST_ALBEDO),
     shader_define!(Float SUN_ALPHA_STEP_BU),
+    shader_define!(Float SUN_DUST_FULL_BELOW_SUN_SIN),
+    shader_define!(Float SUN_DUST_ZERO_ABOVE_SUN_SIN),
     shader_define!(Float COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT),
     shader_define!(Float COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT),
     shader_define!(Float COMBUSTION_STEAM_DROPLET_DIAMETER_UM),

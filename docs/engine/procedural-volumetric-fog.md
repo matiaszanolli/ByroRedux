@@ -553,6 +553,14 @@ and `BYRO_HAZE_FLOOR` / `fog.haze` (the floor).
   with no matching extinction is an artistic strength, not a measured dust (the interior uses 0.04); it is flat
   in sun elevation (the floor's horizon gain is not applied); and one pose per title is thin evidence. Recipe:
   `BYRO_SUN_DUST=2.0 BYRO_HOUR=7 byroredux ... --bench-mode renderer-stepped --bench-camera static --screenshot`.
+  **Elevation shaping (same day).** Flat at 1.0 per metre the same dust washes every noon frame out (mean change
+  54 / 54 / 61 / 76 / 30 levels on FNV / FO3 / Oblivion / Skyrim / FO4), though at noon FO3 also shows the shadow of
+  a wire as a dark line across the lit haze. So the dust now fades with the sun's elevation sine,
+  `1 - smoothstep(0.2, 0.7, sun_y)` (full below about 12 degrees, none above about 44). At 2.0 per metre across the
+  five fixtures, 12:00 and 07:00: every noon frame is unchanged (mean absolute change 0.00 to 0.01), Oblivion
+  at 07:00 keeps its canopy shaft (+18.6, 25 % of pixels above 16 levels), FO4 at 07:00 gains a sunlit haze behind
+  the trunks (+9.2, 13 %), FO3 and Skyrim at 07:00 barely move (their visible froxels are not sunlit), and FNV at
+  07:00 does not move. The shaping edges are engine choices for the owner, like the value.
 - **Not done yet:** the per-fixture noon and low-sun captures on the other titles (VLM-SH-006), the range and
   cloud-shadow work (VLM-SH-004, -005), and the separate inject and integrate milliseconds (VLM-SH-008; the
   inject figure above is one pose, not the fixture set).

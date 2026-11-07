@@ -2010,6 +2010,40 @@ mod unit_tests {
     /// `scattering_coef * phase * sun_color * visibility` (split into the global and
     /// species-phase local shares), so the skip is
     /// output-identical.
+    /// `BYRO_SUN_DUST` (open-sky sun dust): the term rides the sun in-scatter alone, so extinction, ambient and
+    /// shadowed air cannot move, is shaped to zero at a high sun (flat dust washed a noon frame out entirely),
+    /// and is off with the host lane at 0.
+    #[test]
+    fn open_sky_sun_dust_rides_the_sun_term_only_and_fades_with_a_high_sun() {
+        use crate::shader_constants::{SUN_DUST_FULL_BELOW_SUN_SIN, SUN_DUST_ZERO_ABOVE_SUN_SIN};
+        assert!(
+            0.0 < SUN_DUST_FULL_BELOW_SUN_SIN
+                && SUN_DUST_FULL_BELOW_SUN_SIN < SUN_DUST_ZERO_ABOVE_SUN_SIN
+                && SUN_DUST_ZERO_ABOVE_SUN_SIN <= 1.0,
+            "the shaping edges must be an increasing pair of elevation sines"
+        );
+        let shader = crate::source_scan::volumetrics_inject_glsl();
+        let decl = shader
+            .find("vec3 openSkySunDust")
+            .expect("the open-sky sun dust must be declared");
+        let declared = &shader[decl..decl + 400];
+        assert!(
+            declared.contains("params.wind_gust.w")
+                && declared.contains("smoothstep(SUN_DUST_FULL_BELOW_SUN_SIN, SUN_DUST_ZERO_ABOVE_SUN_SIN, params.sun_dir.y)"),
+            "the dust must come from the host lane and fade with the sun's elevation sine"
+        );
+        assert_eq!(
+            shader.matches("openSkySunDust").count(),
+            2,
+            "openSkySunDust is declared once and used once, in the sun term; any other use would move the extinction or ambient"
+        );
+        assert!(
+            shader.contains("(global_scattering_coef + interiorShaftDust + openSkySunDust) * phase * params.sun_color.rgb * visibility"),
+            "the dust must sit inside the sun in-scatter term, multiplied by sun visibility"
+        );
+        assert_eq!(open_sky_sun_dust_per_meter(), 0.0, "off unless BYRO_SUN_DUST is set");
+    }
+
     #[test]
     fn sun_visibility_rays_are_gated_on_a_live_sun_term() {
         let shader = crate::source_scan::volumetrics_inject_glsl();
