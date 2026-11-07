@@ -64,7 +64,7 @@ fn blocks_census(archive: &Archive) {
     let (mut files, mut segmented) = (0usize, 0usize);
     for f in archive.list_files() {
         let l = f.to_ascii_lowercase().replace('/', "\\");
-        if !(l.contains("landscape\\lod\\") && l.contains("\\blocks\\") && l.ends_with(".nif")) {
+        if !(l.contains("landscape\\lod\\") && l.contains("\\blocks\\") && byroredux_nif::corpus::is_nif_entry(&l)) {
             continue;
         }
         let Ok(bytes) = archive.extract(f) else { continue };
