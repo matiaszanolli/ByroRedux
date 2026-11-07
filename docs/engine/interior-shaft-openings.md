@@ -45,6 +45,23 @@ base-ESM census and the live engine disagree. The design and the findings behind
   `AbandonedShackInterior`, an Oblivion `CaveDaylight` mine, FO3 Tenpenny, FNV Repcon and Helios, FO4 Concord
   Museum, one Starfield interior.
 
+## FNV converter coverage (VLM-INT-006), measured 2026-11-07
+
+- **What the beams are.** `baked_beam_census` over `FalloutNV.esm`: of the roughly 3,600 baked-beam placements
+  (`FXLightBeam*`, `Brt*`, `W*`, `SuperWide01`, `VaultWidow*`, `RepLightBeams`, `Helios`), every interior
+  population is in a cell with Show Sky off and most sit within 256 BU of a `LIGH` (for example
+  `FXLightBeamBrt04`: 557 interior placements, 472 near a light). They are fixture beams, not sun shafts. The
+  one sun-driven interior in FNV is `NellisHangar1`.
+- **What the converters claim.** `fnv_baked_beam_converter_coverage` (ignored, needs `BYROREDUX_FNV_DATA`) runs
+  the converter chain on the real meshes: 22 of the 24 beam models it lists convert, the exceptions being
+  `NVFXLightBeamStreetLight` (an exterior street light) and `FXLightBeamNVStrip` (deliberately left to the raster,
+  its 81-vertex effect mesh would otherwise draw twice). By placements that is about 99 %.
+- **Before the loader fix that was 0 % live**, because no beam placement loaded its NIF (the `fxlight` early
+  return). So about 3,500 placements gained a passive local-light cone in one change.
+- **Worst case.** `2CCampGolfResort` (286 placements, the busiest) boots with 104 fog volumes against the 512
+  cap, `gpu_volumetrics_inject` 0.68 ms, no log of dropped volumes, and a finished frame without visible artifacts.
+  `JacobstownLodge` (249) and `HooverDamIntOliverArea` (208) were not booted.
+
 ## Next steps
 
 - Reconcile the remaining census placements against live `FogVolume` entities in the cells not yet booted

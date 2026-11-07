@@ -784,3 +784,44 @@ fn deferral_does_not_cap_an_unlimited_registry() {
     assert!(reg.set_eviction_deferred(false).is_empty());
     assert_eq!(reg.len(), 50);
 }
+
+/// VLM-INT-006 — which shipped FNV baked-beam models the converter chain claims, on the real meshes
+/// (the unit tests above use synthetic ones). Prints one `beam-coverage` line per base model and asserts
+/// nothing about the count: the census (`baked_beam_census`) weights each line by its placements.
+///
+/// `BYROREDUX_FNV_DATA=<Data dir> cargo test -p byroredux --bin byroredux --release -- --ignored --nocapture fnv_baked_beam_converter_coverage`
+#[test]
+#[ignore = "needs FalloutNV game data: BYROREDUX_FNV_DATA"]
+fn fnv_baked_beam_converter_coverage() {
+    let Some(data) = std::env::var_os("BYROREDUX_FNV_DATA").filter(|v| !v.is_empty()) else {
+        panic!("set BYROREDUX_FNV_DATA to the Fallout New Vegas Data directory");
+    };
+    let data = std::path::PathBuf::from(data);
+    let meshes_bsa = byroredux_bsa::BsaArchive::open(data.join("Fallout - Meshes.bsa")).expect("meshes bsa");
+    let mut pool = byroredux_core::string::StringPool::new();
+    let models = [
+        "FXLightBeam01", "FXLightBeam02", "FXLightBeam03", "FXLightBeam04", "FXLightBeam05", "FXLightBeam06",
+        "FXLightBeamBrt01", "FXLightBeamBrt02", "FXLightBeamBrt03", "FXLightBeamBrt04", "FXLightBeamBrt05",
+        "FXLightBeamBrt06", "FXLightBeamBrtW01", "FXLightBeamBrtW02", "FXLightBeamBrtW03",
+        "FXLightBeamSuperWide01", "FXLightBeamW01", "FXLightBeamW01Dim", "FXLightBeamW02", "FXLightBeamW03",
+        "FXLightBeamsVaultWidow01", "FXLightBeamsVaultWidow02", "NVFXLightBeamStreetLight",
+        "FXLightBeamNVStrip",
+    ];
+    for model in models {
+        let path = format!("meshes\\effects\\ambient\\{}.nif", model.to_ascii_lowercase());
+        let Ok(bytes) = meshes_bsa.extract(&path) else {
+            println!("beam-coverage {model}: not in the archive");
+            continue;
+        };
+        let scene = byroredux_nif::parse_nif(&bytes).expect("parse");
+        let imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);
+        let mut cached = Arc::try_unwrap(dummy_cached()).ok().unwrap();
+        cached.meshes = imported.meshes;
+        let verdicts: Vec<bool> = cached.beam_volumes(Some(&path)).iter().map(Option::is_some).collect();
+        println!(
+            "beam-coverage {model}: {} mesh(es), converted {:?}",
+            verdicts.len(),
+            verdicts
+        );
+    }
+}
