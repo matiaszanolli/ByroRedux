@@ -300,9 +300,6 @@ pub(crate) fn bgem_uses_thin_glass_behavior(bgem: &BgemFile) -> bool {
     bgem.base.non_occluder && bgem_uses_glass_behavior(bgem)
 }
 
-/// #951 / SAFE-26 — bounded-cache caps for `MaterialProvider`. Sized to
-/// comfortably hold the unique BGEM/BGSM-ref count of any single vanilla
-/// cell (~100s) plus a few cells of streaming residency.
 // #6712 — the near-mirror roughness constants live in `material_translate`, the
 // canonical boundary that owns the authored-but-unresolvable half of the same rule.
 use crate::material_translate::{NEAR_MIRROR_NEUTRAL_ROUGHNESS, NEAR_MIRROR_ROUGHNESS_FLOOR};

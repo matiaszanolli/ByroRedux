@@ -1364,10 +1364,11 @@ pub(crate) fn resolve_normal_alpha_spec_roughness(
 }
 
 /// The roughness a near-mirror BGSM falls back to when no gloss map can
-/// modulate the clamp floor per-texel (#3639). Matches the neutral
-/// `classify_pbr_keyword`'s arms already use
-/// (`crates/core/src/ecs/components/material.rs`) rather than inventing a
-/// second "no data" convention. Shared with
+/// modulate the clamp floor per-texel (#3639). A chosen mid roughness: it equals
+/// `Material::default()`'s roughness and the classifier's skin / body arm
+/// (`crates/core/src/ecs/components/material.rs`), and is **not** the
+/// classifier's no-signal terminal (`PbrMaterial::NO_SIGNAL_NEUTRAL`, 0.85,
+/// #5197). Whether it should be that neutral is an open NIFAL call. Shared with
 /// [`unresolved_gloss_neutral_roughness`], which
 /// owns the authored-but-unresolvable half of the same rule (#3905).
 pub(crate) const NEAR_MIRROR_NEUTRAL_ROUGHNESS: f32 = 0.5;
