@@ -483,8 +483,8 @@ impl AccelerationManager {
         // the partial compact-side state plus the still-owned `prepared`
         // originals and the `query_pool`. Pre-#316 these `?` exits leaked
         // every Vulkan handle whose Drop relies on the explicit `destroy`
-        // calls in phase 7. Mirrors the build/copy-phase cleanup pattern
-        // at lines 733-745 / 815-832.
+        // calls in phase 7. Mirrors the cleanup in the `copy_result` failure
+        // arm below and in the build-phase failure arm.
         //
         // #2926 / PERF-D3-02 — `compact_accels` is owned by the CALLER of
         // the helper and passed in by `&mut`, NOT declared inside it.
@@ -849,15 +849,15 @@ impl AccelerationManager {
             // we reach (vertex / index `device_address: u64`,
             // `vertex_format`, `index_type`, primitive count, etc.) is
             // value-typed; no host pointers, no `&[T]`. The `'static`
-            // annotation on `PreparedBlas::geometry` (line ~610) is
+            // annotation on `PreparedBlas::geometry` is
             // therefore sound regardless of whether `triangles_data`
             // is still in scope.
             //
             // The geometry value itself is consumed inline below to
             // build the per-BLAS sizes query and stored on
-            // `PreparedBlas::geometry` for the Phase 2 batched build
-            // submission. No real cross-Vec borrow lives across that
-            // boundary.
+            // `PreparedBlas::geometry` for the Phase 4 batched build
+            // submission (`record_batch_builds`). No real cross-Vec borrow lives
+            // across that boundary.
             //
             // Pre-#580 this comment claimed both "triangles_data lives
             // for the function" (which would imply a real borrow) and
