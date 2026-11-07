@@ -479,7 +479,8 @@ fn draw_metrics(ui: &mut egui::Ui, snap: Option<&byroredux_core::ecs::MetricsSna
              may be double-counted across adjacent brackets. Brackets that \
              didn't run this cycle (n/a) are excluded, not counted as zero, \
              and child brackets nested inside a listed parent (volumetrics_inject \
-             / volumetrics_integrate inside volumetrics) are shown but not summed.",
+             / volumetrics_integrate / volumetrics_local_sim inside volumetrics) \
+             are shown but not summed.",
     );
     if m.gpu_pass_ms.is_empty() {
         ui.label("(none reported)");
@@ -831,7 +832,7 @@ fn setting_matches(entry: &SettingEntry, filter: &str) -> bool {
 /// `(child, parent)` `gpu_pass_ms` rows whose GPU bracket is recorded
 /// *inside* the parent's, so the parent's time already includes theirs
 /// (#4977): `record_volumetrics_pass` wraps `VolumetricsPipeline::dispatch`,
-/// which stamps the inject and integrate brackets, the direct-shadow
+/// which stamps the inject, integrate and local-grid sim brackets (#6754), the direct-shadow
 /// filter is dispatched inside the SVGF bracket (#5959), and the
 /// cloud-shadow bake is recorded inside the sky-cube one (#6316). Shown as rows,
 /// summed only on a cycle the parent did not run (the filter still runs
@@ -839,6 +840,7 @@ fn setting_matches(entry: &SettingEntry, filter: &str) -> bool {
 const NESTED_GPU_BRACKETS: &[(&str, &str)] = &[
     ("volumetrics_inject", "volumetrics"),
     ("volumetrics_integrate", "volumetrics"),
+    ("volumetrics_local_sim", "volumetrics"),
     ("shadow_filter", "svgf"),
     ("cloud_shadow", "sky_cube"),
 ];
@@ -933,6 +935,26 @@ mod tests {
             gpu_pass_upper_bound_ms(&rows),
             gpu_pass_upper_bound_ms(&parents_only)
         );
+    }
+
+    /// #6754 — the local-grid sim is recorded inside the `volumetrics` bracket
+    /// (`VolumetricsPipeline::dispatch`, stage B2), so a fire scene's Σ must not
+    /// add its time a second time.
+    #[test]
+    fn the_local_grid_sim_is_not_summed_with_the_volumetrics_bracket_that_contains_it() {
+        let rows: std::collections::BTreeMap<String, Option<f32>> = [
+            ("volumetrics".to_string(), Some(1.0)),
+            ("volumetrics_local_sim".to_string(), Some(0.4)),
+            ("composite".to_string(), Some(0.25)),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(gpu_pass_upper_bound_ms(&rows), 1.0 + 0.25);
+        // With the parent absent (a skipped volumetrics cycle) the child
+        // would count on its own, like the shadow filter without SVGF.
+        let orphan: std::collections::BTreeMap<String, Option<f32>> =
+            [("volumetrics_local_sim".to_string(), Some(0.4))].into_iter().collect();
+        assert_eq!(gpu_pass_upper_bound_ms(&orphan), 0.4);
     }
 
     /// #6316 — the cloud-shadow bake is recorded inside the sky-cube bracket,
