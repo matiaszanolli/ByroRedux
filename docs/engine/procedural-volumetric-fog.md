@@ -388,6 +388,7 @@ above).
 BYROREDUX_RENDER_DEBUG_MODE=volume   isolated raw integrated froxel field
 BYRO_BFECC=0                          plain semi-Lagrangian transport (A/B)
 BYRO_SUN_ALPHA=0                      froxel sun trace reads every triangle as solid (A/B, VLM-SH-009)
+BYRO_SUN_DUST=<per metre>             experiment, off by default: extra scattering on the open-sky sun term only
 ```
 
 An explicit `--froxel-xy-divisor` below what the device can store is raised to
@@ -540,6 +541,18 @@ and `BYRO_HAZE_FLOOR` / `fog.haze` (the floor).
   beam), which is the tension VLM-SH-011 asks the owner to weigh. A floor gated to sun-lit froxels might lift the
   shaft without the wash, untested; none is built. Recipe: `BYRO_HAZE_FLOOR=<base>,<gain> BYRO_HOUR=7 byroredux ... --bench-mode
   renderer-stepped --bench-camera static --screenshot`.
+- **Sun-term-only dust on content: the first real-content shaft (`BYRO_SUN_ALPHA` sibling `BYRO_SUN_DUST`,
+  2026-11-07, off by default).** The floor above lifts the sky ambient too, which is the wash. The interior already
+  solves that by adding scattering to the sun term alone (VLM-INT-007); the same term under open sky leaves the
+  extinction, the ambient and the shadowed air alone. Same 07:00 poses, shipped floor, `BYRO_SUN_DUST` per metre:
+  0.01 / 0.03 / 0.08 change Oblivion by 0.5 / 1.3 / 2.7 levels (mean absolute), FO4 by 0.1 / 0.3 / 0.8 and FO3 by
+  0.0 (its visible froxels are not sunlit at that hour); 0.5 gives Oblivion +8.1 and FO4 +4.2, and **2.0 gives a
+  distinct warm shaft under the Oblivion canopy beyond the rock, with the shadowed grass unchanged, and a sunlit
+  haze behind the FO4 trunks** (mean change 18.6 and 11.3 levels, concentrated in the lit air). Cost: none
+  measurable (inject 0.58 and 0.74 ms, as without). Caveats the owner should weigh: 2.0 per metre of scattering
+  with no matching extinction is an artistic strength, not a measured dust (the interior uses 0.04); it is flat
+  in sun elevation (the floor's horizon gain is not applied); and one pose per title is thin evidence. Recipe:
+  `BYRO_SUN_DUST=2.0 BYRO_HOUR=7 byroredux ... --bench-mode renderer-stepped --bench-camera static --screenshot`.
 - **Not done yet:** the per-fixture noon and low-sun captures on the other titles (VLM-SH-006), the range and
   cloud-shadow work (VLM-SH-004, -005), and the separate inject and integrate milliseconds (VLM-SH-008; the
   inject figure above is one pose, not the fixture set).

@@ -1178,9 +1178,14 @@ void main() {
     vec3 interiorShaftDust = viaAuthoredAperture
         ? vec3(INTERIOR_SHAFT_DUST_ALBEDO * INTERIOR_SHAFT_DUST_PER_METER / WORLD_UNITS_PER_METER)
         : vec3(0.0);
+    // Experiment (`BYRO_SUN_DUST`, 0 = off): the same sun-term-only dust under open sky, so a shaft's air
+    // brightens where the sun reaches it and the shadowed air, the ambient and the extinction do not move.
+    vec3 openSkySunDust = params.render_origin.w > 0.5
+        ? vec3(INTERIOR_SHAFT_DUST_ALBEDO * params.wind_gust.w / WORLD_UNITS_PER_METER)
+        : vec3(0.0);
     vec3 inscatter = authored_inscatter
         + local_medium.emission
-        + (global_scattering_coef + interiorShaftDust) * phase * params.sun_color.rgb * visibility
+        + (global_scattering_coef + interiorShaftDust + openSkySunDust) * phase * params.sun_color.rgb * visibility
         + transported_combustion.scattering * transported_sun_phase
             * params.sun_color.rgb * visibility;
 

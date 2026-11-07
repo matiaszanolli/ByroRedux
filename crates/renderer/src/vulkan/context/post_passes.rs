@@ -966,7 +966,7 @@ impl VulkanContext {
                                     } else {
                                         0.0
                                     },
-                                    wind_gust[3],
+                                    super::super::volumetrics::open_sky_sun_dust_per_meter(),
                                 ],
                             };
                             if let Some(ref mut timers) = self.gpu_timers {

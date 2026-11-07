@@ -183,6 +183,19 @@ pub fn sun_alpha_trace_enabled() -> bool {
     *ENABLED.get_or_init(|| !matches!(std::env::var("BYRO_SUN_ALPHA"), Ok(value) if value == "0"))
 }
 
+/// `BYRO_SUN_DUST=<per metre>` experiment: extra scattering that rides the sun term only under open sky
+/// (the exterior counterpart of the interior shaft dust, VLM-INT-007). 0 or unset = off. Read once per process.
+pub fn open_sky_sun_dust_per_meter() -> f32 {
+    static DUST: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *DUST.get_or_init(|| {
+        std::env::var("BYRO_SUN_DUST")
+            .ok()
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or(0.0)
+    })
+}
+
 // SAFETY: every field is `[f32; 4]` or `[[f32; 4]; 4]` — homogeneous
 // vec4-shaped arrays already satisfy the struct's `align(16)`, so no
 // implicit padding is introduced (#3761).
