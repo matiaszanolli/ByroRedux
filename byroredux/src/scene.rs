@@ -407,7 +407,12 @@ fn load_scene_content(
 
     // Cell loading mode: --esm <path> --cell <editor_id> OR --wrld <name> --grid <x>,<y>
     if let Some(sealed) = godray_lab {
-        let (pos, target) = crate::cornell::setup_godray_lab_scene(world, ctx, sealed);
+        let (pos, target) = crate::cornell::setup_godray_lab_scene(
+            world,
+            ctx,
+            sealed,
+            crate::cornell::godray_lab_marked(args),
+        );
         harness_cam = Some((pos, target));
         cam_center = target;
         has_nif_content = true;

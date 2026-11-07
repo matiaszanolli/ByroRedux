@@ -105,7 +105,7 @@ pub(crate) use combustion_lab::{
     setup_combustion_lab_scene,
 };
 pub(crate) use glass_dragon::{glass_dragon_mode, setup_cornell_glass_dragon_scene};
-pub(crate) use godray_lab::{godray_lab_mode, setup_godray_lab_scene};
+pub(crate) use godray_lab::{godray_lab_marked, godray_lab_mode, setup_godray_lab_scene};
 pub(crate) use shaft_lab::{shaft_lab_mode, setup_shaft_lab_scene};
 pub(crate) use oracle::{cornell_oracle_rung, cornell_oracle_world_offset, setup_cornell_oracle_scene};
 pub(crate) use reference::{cornell_reference_rung, cornell_reference_view, setup_reference_scene};
@@ -648,6 +648,11 @@ mod tests {
         assert_eq!(godray_lab_mode(&args(&["--godray-lab-extra"])), None);
         assert_eq!(godray_lab_mode(&args(&["--godray-lab"])), Some(false));
         assert_eq!(godray_lab_mode(&args(&["--godray-lab-sealed"])), Some(true));
+        // The marked-aperture variant is a sealed room with one marked plane (#6727): same roof, plus the plane.
+        assert_eq!(godray_lab_mode(&args(&["--godray-lab-marked"])), Some(true));
+        assert!(godray_lab_marked(&args(&["--godray-lab-marked"])));
+        assert!(!godray_lab_marked(&args(&["--godray-lab-sealed"])));
+        assert!(!godray_lab_marked(&args(&["--godray-lab"])));
     }
 
     #[test]

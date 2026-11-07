@@ -122,6 +122,16 @@ visible at that position.
   streaks seen there on this cell (identical at noon and midnight) are the Nellis beam media's extinction, not
   lit shafts; they say nothing about whether the sun lights them. A radiance-only view is needed to measure
   the sun-through-aperture contribution directly; until then judge a shaft in the finished frame.
+- **The marked-aperture sun path works; the real cell's shafts are physically tiny.** `--godray-lab-marked` is the
+  sealed lab room plus one marked `SkyAperture` plane under its opaque roof and no Show Sky flag (how a converted
+  beam reaches the sun). In `render.debug volumetric_radiance` the column under it reads 40.63, identical to the
+  open hole (40.63), against 0.00 for the sealed control; the finished frame reads 59.26 against 9.68. On
+  `NellisHangar1` the same path gives a noon-minus-midnight radiance difference of about 0 over six cameras around
+  the predicted lit region (best case 0.03% of pixels above 3 levels), with the room's haze at 0.01/m and again
+  with it forced to 0.04/m. The converted planes are thin ribbons (about 8 m x 1.4 m, tilted 40 degrees from
+  vertical, so the sun slab is about 0.7 m thick) and the canonical portal sun is about 1.0 where the lab uses 6:
+  the shaft is real and faint, not missing. A visible one needs more density in the slab or a shaft gain, which is
+  an engine choice like the exterior haze floor (VLM-HF-008).
 - **Not done:** making the sun-driven shaft visible. The owner chose sun-driven beams with a night floor for the
   converted daylight beams (#6727); a first implementation (a `FogProfile::DaylightShaft` medium whose local-light
   in-scatter follows the portal sun) was built and reverted because it was designed on the opacity misreading and

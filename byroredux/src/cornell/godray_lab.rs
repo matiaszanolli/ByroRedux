@@ -8,7 +8,7 @@ use super::*;
 /// negative control. The 200-BU hole is enclosed by a coplanar roof beyond
 /// the shader's 192-BU diagonal rim probes.
 pub(crate) fn godray_lab_mode(args: &[String]) -> Option<bool> {
-    if args.iter().any(|arg| arg == "--godray-lab-sealed") {
+    if args.iter().any(|arg| arg == "--godray-lab-sealed" || arg == "--godray-lab-marked") {
         Some(true)
     } else if args.iter().any(|arg| arg == "--godray-lab") {
         Some(false)
@@ -17,10 +17,18 @@ pub(crate) fn godray_lab_mode(args: &[String]) -> Option<bool> {
     }
 }
 
+/// `--godray-lab-marked`: the sealed room plus ONE marked `SkyAperture` plane under its opaque roof and NO
+/// Show Sky flag, which is how a real cell's converted beam reaches the sun (a legacy opaque shell behind a
+/// marked plane). It separates "the marked-aperture sun path is broken" from "this real cell is" (#6727).
+pub(crate) fn godray_lab_marked(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--godray-lab-marked")
+}
+
 pub(crate) fn setup_godray_lab_scene(
     world: &mut World,
     ctx: &mut VulkanContext,
     sealed: bool,
+    marked: bool,
 ) -> (Vec3, Vec3) {
     install_cornell_lighting(world, true);
     {
@@ -45,7 +53,7 @@ pub(crate) fn setup_godray_lab_scene(
     }
     // The froxel pass reads the interior's Show Sky flag as its "open sky" gate; real cells set it from
     // the CELL record. #4902 removed the render-loop fallback that supplied it, so the lab states it.
-    world.insert_resource(crate::components::InteriorSkyExposureRes(true));
+    world.insert_resource(crate::components::InteriorSkyExposureRes(!marked));
 
     let neutral = TextureHandle(ctx.texture_registry.neutral_fallback());
     let mut builder = MeshBuilder::new(ctx);
@@ -86,5 +94,32 @@ pub(crate) fn setup_godray_lab_scene(
         0.08,
         "godray_room_dust",
     );
+    if marked {
+        // A bounded source plane just under the opaque roof, local +Z up (the converter's own rotation).
+        let rotation = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+        let position = Vec3::new(0.0, roof_y - 12.0, 0.0);
+        let plane = world.spawn();
+        world.insert(plane, Transform::new(position, rotation, 1.0));
+        world.insert(plane, GlobalTransform::new(position, rotation, 1.0));
+        world.insert(
+            plane,
+            FogVolume {
+                bounds: Some(FogBounds {
+                    center: Vec3::ZERO,
+                    rotation: Quat::IDENTITY,
+                    half_extents: Vec3::new(100.0, 100.0, 6.0),
+                    shape: FogShape::Box,
+                }),
+                extinction_per_meter: 0.005,
+                single_scatter_albedo: [0.9; 3],
+                edge_softness: 0.2,
+                profile: FogProfile::SkyAperture,
+                emissive_radiance: [0.0; 3],
+                emission_temperature_k: 0.0,
+                source: FogSource::AuthoredMesh,
+            },
+        );
+        name_entity(world, plane, "godray_marked_plane");
+    }
     (Vec3::new(0.0, 150.0, 270.0), Vec3::new(0.0, 180.0, 0.0))
 }
