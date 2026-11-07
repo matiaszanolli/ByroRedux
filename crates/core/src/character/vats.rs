@@ -384,8 +384,10 @@ impl VatsModel {
 pub struct VatsHitInput {
     /// Weapon Base VATS To-Hit Chance, percent (0-100; `WEAP` DNAM @40, #6449).
     pub weapon_base_to_hit: f32,
-    /// Body part base hit chance, percent (0-100, 255 = "always";
-    /// `BPTD` BPND @6).
+    /// Body part base hit chance, percent (0-100; `BPTD` `BPND` @8, `to_hit_chance`).
+    /// `BPND` @6 is the part's health percent, not this (#6448). No master
+    /// authors a sentinel: a value above 100 is not "always", it scales the
+    /// chain (and is then held to `max_chance`).
     pub part_to_hit: f32,
     /// Shooter-to-part distance in game units.
     pub distance: f32,
@@ -549,14 +551,14 @@ mod tests {
         assert!(m.to_hit_chance(VatsHitInput { part_to_hit: 80.0, ..base }) > mid);
     }
 
-    /// The result never exceeds fVATSMaxChance, including the
-    /// "always" part sentinel (255) and Concentrated Fire stacking.
+    /// The result never exceeds fVATSMaxChance, including a best-case
+    /// shot (full-skill, point-blank, a 100 % part) and Concentrated Fire stacking.
     #[test]
     fn chance_caps_at_max_chance() {
         let m = VatsModel::FALLOUT3;
         let chance = m.to_hit_chance(VatsHitInput {
             weapon_base_to_hit: 100.0,
-            part_to_hit: 255.0,
+            part_to_hit: 100.0,
             distance: 0.0,
             skill: 100.0,
             screen_percent: 1.0,
@@ -591,7 +593,7 @@ mod tests {
         assert!(close(b, a * 0.5), "halved multiplier: {a} → {b}");
         let hot = modded.to_hit_chance(VatsHitInput {
             weapon_base_to_hit: 100.0,
-            part_to_hit: 255.0,
+            part_to_hit: 100.0,
             distance: 0.0,
             skill: 100.0,
             screen_percent: 1.0,
