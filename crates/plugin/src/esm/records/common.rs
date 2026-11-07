@@ -460,6 +460,15 @@ impl CommonItemFields {
     }
 }
 
+/// Every `KWDA` keyword FormID of a record's sub-records, load-order remapped (Skyrim+; empty elsewhere).
+pub fn kwda_keywords(subs: &[crate::esm::reader::SubRecord], remap: &Option<FormIdRemap>) -> Vec<u32> {
+    subs.iter()
+        .filter(|sub| &sub.sub_type == b"KWDA")
+        .flat_map(|sub| sub.data.chunks_exact(4))
+        .map(|raw| remap_fid(u32::from_le_bytes(raw.try_into().expect("four-byte chunk")), remap))
+        .collect()
+}
+
 #[cfg(test)]
 mod mesh_path_tests {
     use super::read_mesh_path;
@@ -768,13 +777,26 @@ mod tests {
         }
         assert!(!is_localized_plugin(), "outer Drop restores baseline");
     }
-}
 
-/// Every `KWDA` keyword FormID of a record's sub-records, load-order remapped (Skyrim+; empty elsewhere).
-pub fn kwda_keywords(subs: &[crate::esm::reader::SubRecord], remap: &Option<FormIdRemap>) -> Vec<u32> {
-    subs.iter()
-        .filter(|sub| &sub.sub_type == b"KWDA")
-        .flat_map(|sub| sub.data.chunks_exact(4))
-        .map(|raw| remap_fid(u32::from_le_bytes(raw.try_into().expect("four-byte chunk")), remap))
-        .collect()
+    /// #6566 - `kwda_keywords` is the one `KWDA` reader: every `KWDA` chunk of four bytes becomes a
+    /// keyword (several sub-records concatenate, a trailing partial chunk is dropped, other
+    /// sub-records are ignored), and the FURN arm calls it instead of re-spelling the loop, so a
+    /// future fix to the helper reaches the keywords that decide what counts as a crafting bench.
+    #[test]
+    fn kwda_keywords_reads_every_kwda_chunk_and_furn_uses_it() {
+        let subs = [
+            sub(b"EDID", b"BenchFurn\0"),
+            sub(b"KWDA", [0x01, 0, 0, 0, 0x02, 0, 0, 0]),
+            sub(b"KWDA", [0x03, 0, 0, 0, 0xFF, 0xEE]),
+            sub(b"KSIZ", [3, 0, 0, 0]),
+        ];
+        assert_eq!(kwda_keywords(&subs, &None), vec![1, 2, 3]);
+        assert!(kwda_keywords(&[sub(b"EDID", b"X\0")], &None).is_empty());
+
+        let furn = include_str!("dispatch_world_placement.rs");
+        let arm = &furn[furn.find("b\"FURN\" =>").expect("the FURN arm")..];
+        let arm = &arm[..arm.find("b\"TREE\" =>").unwrap_or(arm.len())];
+        assert!(arm.contains("kwda_keywords(subs, &remap)"), "the FURN arm must call the helper");
+        assert!(!arm.contains("chunks_exact(4)"), "the FURN arm must not re-spell the KWDA loop");
+    }
 }

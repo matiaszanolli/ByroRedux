@@ -42,15 +42,7 @@ pub(super) fn dispatch_world_placement_group(
         b"FURN" => {
             let remap = reader.get_form_id_remap();
             extract_records_with_modl(reader, end, b"FURN", statics, &mut |fid, subs| {
-                let keywords: Vec<u32> = subs
-                    .iter()
-                    .filter(|sub| &sub.sub_type == b"KWDA")
-                    .flat_map(|sub| sub.data.chunks_exact(4))
-                    .map(|raw| {
-                        let id = u32::from_le_bytes(raw.try_into().expect("four-byte chunk"));
-                        remap.as_ref().map_or(id, |mapping| mapping.remap(id))
-                    })
-                    .collect();
+                let keywords = kwda_keywords(subs, &remap);
                 if !keywords.is_empty() {
                     index.placed_object_keywords.insert(fid, keywords.clone());
                     index.furniture_keywords.insert(fid, keywords);
