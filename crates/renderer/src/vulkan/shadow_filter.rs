@@ -77,8 +77,8 @@ struct Push {
     reach_max: f32,
 }
 
-// SAFETY: `#[repr(C)]`, all-`u32` fields tiling the 16-byte block with no
-// padding. Mirrors the GLSL `Push` block in `shadow_filter.comp`, which
+// SAFETY: `#[repr(C)]`, a `[u32; 2]`, two `u32` and two `f32` (all 4-byte,
+// 4-aligned scalars) tiling the 24-byte block with no padding. Mirrors the GLSL `Push` block in `shadow_filter.comp`, which
 // `name_diverging_glsl_rust_mirrors_stay_in_lockstep` compares field for field.
 unsafe impl super::buffer::NoUninit for Push {}
 
