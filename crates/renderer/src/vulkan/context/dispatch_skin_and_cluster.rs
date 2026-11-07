@@ -298,7 +298,7 @@ impl VulkanContext {
         // Purely additive: the refit site keeps its own emit rather than
         // having it moved here. That leaves two back-to-back identical
         // barriers on skinned frames, which is a no-op for the driver, and
-        // it avoids disturbing the `cmd_blas_refit_end` GPU-timer bracket
+        // it avoids disturbing the `TimerPass::BlasRefit` GPU-timer bracket
         // that barrier sits inside (#1194).
         if self.accel_manager.is_some() {
             // SAFETY: `cmd` is recording. A memory barrier records no
