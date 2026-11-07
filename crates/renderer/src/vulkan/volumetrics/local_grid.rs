@@ -1694,6 +1694,26 @@ mod tests {
         );
     }
 
+    /// #6749 — the ledger's irradiance and brick figures come from the code, not
+    /// from a remembered number (the field is twice the froxel width, which the
+    /// first version of the row missed by 2x).
+    #[test]
+    fn memory_budget_doc_states_the_irradiance_field_and_brick_costs() {
+        const DOC: &str = include_str!("../../../../../docs/engine/memory-budget.md");
+        let extent = vk::Extent3D { width: 160, height: 90, depth: 64 };
+        let mib = irradiance_resident_bytes(extent) / (1024 * 1024);
+        assert!(
+            DOC.contains(&format!("≈ {mib} MiB at 1280×720")),
+            "memory-budget.md must state the {mib} MiB irradiance field at 1280×720 \
+             (`irradiance_resident_bytes`, width doubled by `irradiance_extent`)"
+        );
+        let kib = BRICK_BUFFER_BYTES / 1024;
+        assert!(
+            DOC.contains(&format!("an {kib} KiB device-local occupancy-brick buffer")),
+            "memory-budget.md must state the {kib} KiB brick buffer (`BRICK_BUFFER_BYTES`)"
+        );
+    }
+
     #[test]
     fn resident_vram_is_small_enough_for_the_budget() {
         // 4 boxes of 64^3 cells, three RGBA16F fields, two slots.
