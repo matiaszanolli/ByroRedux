@@ -320,8 +320,9 @@ Cross-cutting state, the same date:
   bounds-checked, as `parse_btt` does. The `#[ignore]` corpus test
   `dtl_corpus_parses_and_resolves_every_species` MUST parse every `.dtl` file
   DLOD-GATE-007 finds in the FO3 base and DLC archives (108, confirmed) and
-  resolve every species. The layout is established except for the trailing
-  bytes of 38 files (V3, §9.1, #6678): a `u32` chunk count, then chunks of
+  resolve every species. The layout is established; the trailing bytes of 38
+  files are never referenced by a declared chunk, so the reader trusts the
+  headers and ignores them (V3, §9.1, #6678): a `u32` chunk count, then chunks of
   `u32` type, `u32` count and 32-byte records; `treetypes.lst` entries are 32
   bytes (a `u32` index and seven `f32`), not 36.
 - **DLOD-TREE-005.** The `GameKind::Fallout3NV` tree ring MUST take its
@@ -668,7 +669,7 @@ every count a requirement repeats from it reproduced, except one: F6's STAT base
 |---|---|---|
 | V1 | **Partly settled; the owner rules on the rest.** The `…City` variants do apply in closed-city worldspaces: UESP, *Oblivion Mod:Oblivion.ini*: "Does the same thing as uGridDistantTreeRange when you are inside a closed city worldspace" (`uGridDistantCountCity` likewise, default 4). Radius vs diameter has no second source; the only wording is UESP's "15 cells out the world will appear to drop off suddenly", which reads as a radius. | UESP page only, so Q7's ruling stands as the risk owner |
 | V2 | The original's distant tree texture is `textures\trees\billboards\<.spt stem>.dds`: all 82 TREE bases the `.lod` groups instance pair one-to-one with a billboard by `.spt` stem (0 by `ICON`), out of 118 billboards. Its size is not documented. | `oblivion_tree_billboard_census` |
-| V3 | **Partly settled; the rest is #6678.** `treetypes.lst` is a `u32` count and 32-byte entries (a `u32` index 0, 1, 2, … and seven `f32`; 10 of 11 exact, `wasteland` declares 8 and holds 9). `.dtl` is a `u32` chunk count then chunks of `u32` type, `u32` record count (at most 114) and 32-byte records `{x, y, z, scale, f32, base FormID, chunk index, 0xFFFFFF00}`; 70 of 108 are exact, 38 carry undeclared trailing bytes. Not the 36-byte `.lst` entries or the `.btt`-unlike records the one-off census suggested. | `fallout3_tree_file_layouts`; #6678 |
+| V3 | **Settled (#6678).** `treetypes.lst` is a `u32` count and 32-byte entries (a `u32` index 0, 1, 2, … and seven `f32`; 10 of 11 exact, `wasteland` declares 8 and holds 9). `.dtl` is a `u32` chunk count then chunks of `u32` type, `u32` record count (at most 114) and 32-byte records `{x, y, z, scale, f32, base FormID, chunk index, 0xFFFFFF00}`; 70 of 108 are exact, 38 carry undeclared trailing bytes that no declared chunk references (every declared record sits in the chunk its index word names, and in every world the highest tree type a declared chunk uses is below the `.lst` header count; `wasteland` 7 against 8), so the reader trusts the headers. Not the 36-byte `.lst` entries or the `.btt`-unlike records the one-off census suggested. | `fallout3_tree_file_layouts`; #6678 |
 | V4 | A `.btt` record's `ref_form_id` is the FormID of the placed TREE reference it bakes: 43 333 distinct ids; 41 538 resolve in `Skyrim.esm`, all to a TREE base, at the baked position (within 1 unit) and in its cell; 1 709 are DLC references, 3 sit in a persistent cell, 83 are absent from the parsed references (cause not examined). Whether the original hides LOD trees one at a time is not documented; the key is available either way. | `tree_lod_ref_form_id_census` |
 | V5 | **Not settled by a source: the crossed cards stay an interpretation for Oblivion and FO3.** UESP's TREE record page calls `BNAM` "Billboard dimensions" (the near tree), and its TES4LODGen page is a stub with no description of the LOD tree shape. DLOD-TREE-010's rustdoc note applies. | UESP *Mod File Format/TREE*, *TES4LODGen* |
 | V6 | FO4 level-4 `.bto` quads partition their triangles one segment per cell: 713 of 713 sub-meshes (Skyrim 1 856 of 1 856), at most 16 segments; levels 8, 16 and 32 have exactly 1. | `bto_segment_census` |

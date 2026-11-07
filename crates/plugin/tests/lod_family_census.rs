@@ -468,7 +468,7 @@ fn i16_at(b: &[u8], o: usize) -> i16 {
 ///   many 32-byte records `{x, y, z, scale: f32, f32, base FormID: u32, chunk index: u32, 0xFFFFFF00}`. 70 of the
 ///   108 files are exactly that; the other 38 (all `wasteland` and one DLC file) carry bytes after their declared
 ///   chunks that the header does not account for, the same way `wasteland`'s `.lst` carries an undeclared entry.
-///   Whatever those trailing bytes are is NOT established here (filed apart, #6678).
+///   Those trailing bytes are never referenced by a declared chunk (asserted below, #6678): a reader trusts the headers.
 #[test]
 #[ignore = "needs the vanilla Fallout 3 archives on disk"]
 fn fallout3_tree_file_layouts() {
@@ -483,11 +483,16 @@ fn fallout3_tree_file_layouts() {
     let mut lst_off = Vec::new();
     let (mut dtl_total, mut dtl_exact) = (0, 0);
     let mut dtl_off = 0;
+    // Per world: the highest tree type a declared chunk names, and the `treetypes.lst` header count.
+    let mut max_type: BTreeMap<String, u32> = BTreeMap::new();
+    let mut lst_count: BTreeMap<String, u32> = BTreeMap::new();
+    let mut idx_mismatches = 0;
     for (hit, file, bytes) in &files {
         match hit.family {
             LodFamily::FalloutTreeTypes => {
                 lst_total += 1;
                 let n = u32_at(bytes, 0) as usize;
+                lst_count.insert(hit.world.clone().unwrap(), n as u32);
                 if bytes.len() == 4 + 32 * n {
                     lst_exact += 1;
                 } else {
@@ -500,9 +505,13 @@ fn fallout3_tree_file_layouts() {
             _ => {
                 dtl_total += 1;
                 let (mut o, n) = (4usize, u32_at(bytes, 0));
-                for _ in 0..n {
-                    let (_ty, count) = (u32_at(bytes, o), u32_at(bytes, o + 4) as usize);
+                for chunk in 0..n {
+                    let (ty, count) = (u32_at(bytes, o), u32_at(bytes, o + 4) as usize);
                     assert!(count <= 114, "{file}: a chunk of {count} records");
+                    let highest = max_type.entry(hit.world.clone().unwrap()).or_default();
+                    *highest = (*highest).max(ty);
+                    // Each record's own chunk-index word (offset 24) names the chunk it sits in.
+                    idx_mismatches += (0..count).filter(|r| u32_at(bytes, o + 8 + 32 * r + 24) != chunk).count();
                     o += 8 + 32 * count;
                 }
                 if o == bytes.len() {
@@ -518,6 +527,19 @@ fn fallout3_tree_file_layouts() {
     assert_eq!((lst_total, lst_exact, lst_indexed), (11, 10, 11));
     assert_eq!(lst_off, ["wasteland: header 8, 9 entries"]);
     assert_eq!((dtl_total, dtl_exact, dtl_off), (108, 70, 38));
+
+    // #6678 -- the bytes past the declared chunks are never referenced, so a reader that trusts the headers loses
+    // nothing: every declared record sits in the chunk its own index word names, and in every world the highest tree
+    // type a declared chunk uses is below the `treetypes.lst` header count (`wasteland` uses 0..=7 against a header
+    // of 8), so the ninth `wasteland` entry and the trailing section name no tree a declared chunk places. What
+    // writes them is not established: the trailing words are not a coherent final chunk (their sections do not
+    // parse as headed chunks, their mask word varies where every declared record carries a constant, and they
+    // start at no record boundary), which reads as stale bytes from an earlier, longer write of the same file.
+    assert_eq!(idx_mismatches, 0, "a declared record's chunk-index word names another chunk");
+    for (world, highest) in &max_type {
+        assert!(*highest < lst_count[world], "{world}: a declared chunk names tree type {highest}, past the {} listed", lst_count[world]);
+    }
+    assert_eq!((max_type["wasteland"], lst_count["wasteland"]), (7, 8));
 }
 
 /// V8 / DLOD-BAND-003, -004 — the 24-byte `.dlodsettings` descriptor against the quads each worldspace authors.
