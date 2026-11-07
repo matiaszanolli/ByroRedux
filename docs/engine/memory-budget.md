@@ -1258,6 +1258,20 @@ allocation code uses — and held to this table by
 
 About 154.6 MB (~147.5 MiB) together, flat across resolutions.
 
+### Diagnostic capture staging (host, on demand) — #6745
+
+Three `GpuToCpu` readback buffers, none of them allocated until the matching
+debug request arrives, grown (never shrunk) to the largest request, and freed at
+teardown (`destroy_screenshot_staging`, `destroy_depth_capture_staging`,
+`destroy_linear_capture_staging`, one shared `destroy_staging_buffer` contract).
+They are host memory, outside the VRAM budget:
+
+| Staging buffer | Sized as | At 1920×1080 |
+|---|---|---:|
+| screenshot (`ensure_screenshot_staging`) | swapchain extent × 4 B (B8G8R8A8) | ~8.3 MB |
+| depth capture (`ensure_depth_capture_staging`) | render extent × 4 B (`D32_SFLOAT`) | ~8.3 MB |
+| scene-linear capture (`ensure_linear_capture_staging`, `SCENE_TEXEL_BYTES` = 8) | render extent × 8 B (RGBA16F) | ~16.6 MB |
+
 ### Not yet ledgered
 
 A grep of this page for the owning subsystem name is the cheapest way to
