@@ -18,7 +18,7 @@
 
 // True when `mode` is a raw structured view. FINAL and LEGACY_FLAGS keep the
 // normal output (legacy bits are triangle.frag's own ablations);
-// COMPOSITE_TERM and VOLUMETRIC_TERM are drawn by composite from the normal
+// COMPOSITE_TERM, VOLUMETRIC_TERM and VOLUMETRIC_RADIANCE are drawn by composite from the normal
 // frame; an out-of-range mode is painted magenta by composite regardless.
 // A caller tests its own views first and recedes for the rest.
 bool renderDebugSurfaceRecedes(uint mode) {
@@ -26,6 +26,7 @@ bool renderDebugSurfaceRecedes(uint mode) {
         && mode != RENDER_DEBUG_LEGACY_FLAGS
         && mode != RENDER_DEBUG_COMPOSITE_TERM
         && mode != RENDER_DEBUG_VOLUMETRIC_TERM
+        && mode != RENDER_DEBUG_VOLUMETRIC_RADIANCE
         && mode <= RENDER_DEBUG_MODE_MAX;
 }
 

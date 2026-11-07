@@ -2213,7 +2213,11 @@ pub const RENDER_DEBUG_TRACED_SHARE: u32 = 17;
 // main pass shades it exactly like `DIRECT_ONLY`; composite adds the
 // correction in its raw-view early return.
 pub const RENDER_DEBUG_FILTERED_DIRECT: u32 = 18;
-pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_FILTERED_DIRECT;
+// The integrated froxel field's RADIANCE alone. `VOLUMETRIC_TERM` outputs `max(1 - exp(-radiance), opacity)`,
+// so wherever a medium is dense it shows the medium's opacity, which does not depend on lighting; this view has
+// no opacity floor, so a shaft's in-scattered light (and its absence) can be measured directly (#6727).
+pub const RENDER_DEBUG_VOLUMETRIC_RADIANCE: u32 = 19;
+pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_VOLUMETRIC_RADIANCE;
 pub const RENDER_DEBUG_LEGACY_FLAGS: u32 = u32::MAX;
 
 pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
@@ -2239,6 +2243,7 @@ pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
     ("RENDER_DEBUG_RESTIR_HISTORY", RENDER_DEBUG_RESTIR_HISTORY),
     ("RENDER_DEBUG_TRACED_SHARE", RENDER_DEBUG_TRACED_SHARE),
     ("RENDER_DEBUG_FILTERED_DIRECT", RENDER_DEBUG_FILTERED_DIRECT),
+    ("RENDER_DEBUG_VOLUMETRIC_RADIANCE", RENDER_DEBUG_VOLUMETRIC_RADIANCE),
     ("RENDER_DEBUG_MODE_MAX", RENDER_DEBUG_MODE_MAX),
     ("RENDER_DEBUG_LEGACY_FLAGS", RENDER_DEBUG_LEGACY_FLAGS),
 ];
@@ -3317,6 +3322,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint RENDER_DEBUG_COMPOSITE_TERM),
     shader_define!(Uint RENDER_DEBUG_RT_LOD),
     shader_define!(Uint RENDER_DEBUG_VOLUMETRIC_TERM),
+    shader_define!(Uint RENDER_DEBUG_VOLUMETRIC_RADIANCE),
     shader_define!(Uint RENDER_DEBUG_MATERIAL_ROLE),
     shader_define!(Uint RENDER_DEBUG_WATER_TERM),
     shader_define!(Uint RENDER_DEBUG_WATER_NORMAL),

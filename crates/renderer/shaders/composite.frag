@@ -964,7 +964,8 @@ void main() {
         ? DBG_VIZ_REQUIRES_RAW_OUTPUT(dbgFlags)
         : (debugMode != RENDER_DEBUG_FINAL
             && debugMode != RENDER_DEBUG_COMPOSITE_TERM
-            && debugMode != RENDER_DEBUG_VOLUMETRIC_TERM);
+            && debugMode != RENDER_DEBUG_VOLUMETRIC_TERM
+            && debugMode != RENDER_DEBUG_VOLUMETRIC_RADIANCE);
     if (rawDebug) {
         // RLT-SHD-009 — the filtered-direct oracle is the one raw view that
         // keeps the shadow filter's correction applied above.
@@ -1263,6 +1264,13 @@ void main() {
             combined = combined * transmittance + aerial;
             fogTransmittance *= transmittance;
         }
+    }
+
+    if (debugMode == RENDER_DEBUG_VOLUMETRIC_RADIANCE) {
+        // The integrated froxel RADIANCE alone, exponentially mapped, with NO opacity floor: a medium that
+        // is dense but unlit stays black, so a sun shaft's light (or its absence) reads directly.
+        outColor = vec4(vec3(1.0) - exp(-max(sampledVolume.rgb, vec3(0.0))), 1.0);
+        return;
     }
 
     if (debugMode == RENDER_DEBUG_VOLUMETRIC_TERM) {

@@ -35,10 +35,12 @@ pub enum RenderDebugMode {
     TracedShare = crate::shader_constants::RENDER_DEBUG_TRACED_SHARE,
     /// M-LIGHT RLT-SHD-009 — direct light with the shadow filter applied.
     FilteredDirect = crate::shader_constants::RENDER_DEBUG_FILTERED_DIRECT,
+    /// The froxel field's radiance with no opacity floor (#6727).
+    VolumetricRadiance = crate::shader_constants::RENDER_DEBUG_VOLUMETRIC_RADIANCE,
 }
 
 impl RenderDebugMode {
-    pub const USER_MODES: [Self; 19] = [
+    pub const USER_MODES: [Self; 20] = [
         Self::Final,
         Self::ShadowVisibility,
         Self::SelectedLight,
@@ -58,6 +60,7 @@ impl RenderDebugMode {
         Self::RestirHistory,
         Self::TracedShare,
         Self::FilteredDirect,
+        Self::VolumetricRadiance,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -82,6 +85,7 @@ impl RenderDebugMode {
             Self::RestirHistory => "restir_history",
             Self::TracedShare => "traced_share",
             Self::FilteredDirect => "filtered_direct",
+            Self::VolumetricRadiance => "volumetric_radiance",
         }
     }
 
@@ -120,6 +124,7 @@ impl FromStr for RenderDebugMode {
             "composite" | "composite_term" => Ok(Self::CompositeTerm),
             "lod" | "rt_lod" => Ok(Self::RtLod),
             "volume" | "volumetric" | "volumetric_term" => Ok(Self::VolumetricTerm),
+            "volumetric_radiance" | "radiance" => Ok(Self::VolumetricRadiance),
             "role" | "material_role" => Ok(Self::MaterialRole),
             "water" | "water_term" => Ok(Self::WaterTerm),
             "water_normal" => Ok(Self::WaterNormal),
@@ -317,6 +322,8 @@ mod tests {
         assert_eq!("direct".parse(), Ok(RenderDebugMode::DirectOnly));
         assert_eq!("rt-lod".parse(), Ok(RenderDebugMode::RtLod));
         assert_eq!("volumetric".parse(), Ok(RenderDebugMode::VolumetricTerm));
+        assert_eq!("volumetric_radiance".parse(), Ok(RenderDebugMode::VolumetricRadiance));
+        assert_eq!("radiance".parse(), Ok(RenderDebugMode::VolumetricRadiance));
         assert_eq!("material-role".parse(), Ok(RenderDebugMode::MaterialRole));
     }
 

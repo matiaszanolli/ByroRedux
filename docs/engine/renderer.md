@@ -823,7 +823,8 @@ mistaken for an occluder hit.
 The operator-facing path is `render.debug <mode>` rather than a compound flag
 word. Modes are `final`, `shadow_visibility`, `selected_light`, `direct_only`,
 `indirect_only`, `material_lobe`, `composite_term`, `rt_lod`, `material_role`,
-`volumetric_term`, `water_term`, `water_normal`, `terrain_lod`, `water_refl`,
+`volumetric_term` (froxel radiance floored by opacity, so a dense unlit medium reads as bright),
+`volumetric_radiance` (the froxel radiance alone, no opacity floor, #6727), `water_term`, `water_normal`, `terrain_lod`, `water_refl`,
 `facing_ratio`, `restir_light`, `traced_share` (the traced GI share as it
 enters `indirectLight`, M-LIGHT RLT-GI-009), `filtered_direct` (`direct_only`
 with the shadow filter's correction, RLT-SHD-009), and `restir_history` (the direct-light

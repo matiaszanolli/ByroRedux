@@ -7485,6 +7485,7 @@ fn main_pass_fragment_shaders_honour_structured_debug_views() {
         "RENDER_DEBUG_LEGACY_FLAGS",
         "RENDER_DEBUG_COMPOSITE_TERM",
         "RENDER_DEBUG_VOLUMETRIC_TERM",
+        "RENDER_DEBUG_VOLUMETRIC_RADIANCE",
     ] {
         assert!(predicate.contains(&format!("mode != {kept}")), "{kept}");
     }

@@ -1713,6 +1713,9 @@ mod tests {
         assert!(src.contains("sampledVolume = vol;"));
         assert!(src.contains("debugMode == RENDER_DEBUG_VOLUMETRIC_TERM"));
         assert!(src.contains("max(mappedRadiance, vec3(opacity))"));
+        // The radiance view has NO opacity floor (#6727): a dense, unlit medium must stay black.
+        let radiance_view = src.split("debugMode == RENDER_DEBUG_VOLUMETRIC_RADIANCE").nth(1).unwrap().split("debugMode == RENDER_DEBUG_VOLUMETRIC_TERM").next().unwrap();
+        assert!(radiance_view.contains("sampledVolume.rgb") && !radiance_view.contains("vec3(opacity)"));
     }
 
     /// #4026 — the FSR plan's phase-3 status line attributed the 1×1
