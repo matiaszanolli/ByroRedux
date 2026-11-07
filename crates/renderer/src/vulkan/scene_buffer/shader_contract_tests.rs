@@ -4063,8 +4063,9 @@ fn lambertian_reference_flag_reaches_light_loop_primary_weight_and_gi_walk() {
 /// - RLT-GI-011: path hits shade emitters through `pathHitEmitterBsdf`, whose
 ///   diffuse lobe carries the primary lobe's PI; the luminance clamp is in the
 ///   same units.
-/// - RLT-GI-012: the GI gate reads the isotropic footprint with the full-range
-///   ceiling, so grazing room surfaces keep their traced GI.
+/// - RLT-GI-012 is deferred to the Q5 radiance cache: the isotropic-footprint
+///   widening cost +3..11 ms on content, so the GI gate stays at its Phase 1b
+///   form and the assertions below pin that, not the widening.
 #[test]
 fn phase2_gi_energy_contracts() {
     let frag = include_str!("../../../shaders/triangle.frag");
