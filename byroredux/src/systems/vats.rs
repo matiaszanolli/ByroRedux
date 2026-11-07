@@ -493,22 +493,29 @@ fn bone_position(world: &World, actor: EntityId, node: &str) -> Option<Vec3> {
 }
 
 /// Every actor-collider body, grouped by the actor it belongs to (#6444): the
-/// bodies a ray may touch without counting as cover. One pass over the physics
-/// handles per scan; the owner lookups run with the `RapierHandles` guard
-/// already dropped.
+/// bodies a ray may touch without counting as cover. Built once per scan from the
+/// sparse `ActorColliderOwner` column (ragdoll bodies only), then one
+/// `RapierHandles` lookup per owned collider, instead of walking every physics
+/// entity the world registered, statics included (#6484). Each guard is dropped
+/// before the next lookup, so no two component locks are held together.
 fn target_bodies_by_owner(world: &World) -> HashMap<EntityId, HashSet<RigidBodyHandle>> {
-    let bodies: Vec<(EntityId, RigidBodyHandle)> = world
-        .query::<byroredux_physics::RapierHandles>()
-        .map(|handles| handles.iter().map(|(owner, handles)| (owner, handles.body)).collect())
+    let owned: Vec<(EntityId, EntityId)> = world
+        .query::<byroredux_physics::ActorColliderOwner>()
+        .map(|owners| owners.iter().map(|(collider, owner)| (collider, owner.0)).collect())
         .unwrap_or_default();
+    group_bodies_by_target(owned.into_iter().filter_map(|(collider, target)| {
+        let body = world.get::<byroredux_physics::RapierHandles>(collider)?.body;
+        Some((target, body))
+    }))
+}
+
+/// Collect `(actor, body)` pairs into each actor's body set.
+fn group_bodies_by_target(
+    pairs: impl IntoIterator<Item = (EntityId, RigidBodyHandle)>,
+) -> HashMap<EntityId, HashSet<RigidBodyHandle>> {
     let mut by_target: HashMap<EntityId, HashSet<RigidBodyHandle>> = HashMap::new();
-    for (owner, body) in bodies {
-        if let Some(target) = world
-            .get::<byroredux_physics::ActorColliderOwner>(owner)
-            .map(|owner| owner.0)
-        {
-            by_target.entry(target).or_default().insert(body);
-        }
+    for (target, body) in pairs {
+        by_target.entry(target).or_default().insert(body);
     }
     by_target
 }
@@ -1182,5 +1189,18 @@ mod scan_tests {
             Some(3),
             "the fold carries its shot count beside the event"
         );
+    }
+
+    /// #6484 — the cover fan's own-body set groups every body of one actor together and keeps
+    /// other actors' bodies out of it.
+    #[test]
+    fn bodies_group_by_their_owning_actor() {
+        use byroredux_physics::RigidBodyHandle;
+        let body = |index| RigidBodyHandle::from_raw_parts(index, 0);
+        let (a, b) = (EntityId::from(1u32), EntityId::from(2u32));
+        let grouped = group_bodies_by_target([(a, body(0)), (b, body(1)), (a, body(2)), (a, body(0))]);
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped[&a], HashSet::from([body(0), body(2)]));
+        assert_eq!(grouped[&b], HashSet::from([body(1)]));
     }
 }
