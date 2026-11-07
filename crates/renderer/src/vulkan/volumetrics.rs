@@ -51,6 +51,8 @@ mod local_grid;
 pub(crate) use local_grid::derived_lights_disabled;
 #[cfg(test)]
 pub(crate) use local_grid::GpuLocalGridParams;
+#[cfg(test)]
+pub(crate) use local_grid::validate_local_grid_layout;
 pub use local_grid::LocalFireViews;
 pub(crate) mod noise;
 

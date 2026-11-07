@@ -587,6 +587,30 @@ pub(crate) fn local_grid_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding
     ]
 }
 
+/// Reflect set 1 of the local grid's two compute shaders (`volumetrics_local_sim.comp`
+/// and `combustion_phase_bake.comp`, which share one layout) against
+/// [`local_grid_layout_bindings`]. Needs no device: `LocalGrid::build` runs it
+/// before creating the layout, and `reflect.rs` runs it in the static layout
+/// test, so a drift fails `cargo test` instead of engine start (#6752).
+pub(crate) fn validate_local_grid_layout() -> Result<()> {
+    validate_set_layout(
+        1,
+        &local_grid_layout_bindings(),
+        &[
+            ReflectedShader {
+                name: "volumetrics_local_sim.comp",
+                spirv: VOLUMETRICS_LOCAL_SIM_COMP_SPV,
+            },
+            ReflectedShader {
+                name: "combustion_phase_bake.comp",
+                spirv: COMBUSTION_PHASE_BAKE_COMP_SPV,
+            },
+        ],
+        "volumetrics_local_grid",
+        &[],
+    )
+}
+
 /// Bindings 26..=31 added to the froxel inject pass's set 0 for the local grid
 /// (the declarations are in `include/volumetrics_bindings.glsl`).
 pub(crate) fn inject_local_grid_bindings() -> Vec<vk::DescriptorSetLayoutBinding<'static>> {
@@ -720,24 +744,9 @@ impl LocalGrid {
         pipeline_cache: vk::PipelineCache,
         inject_set_layout: vk::DescriptorSetLayout,
     ) -> Result<()> {
+        validate_local_grid_layout()
+            .context("local grid layout drifted against volumetrics_local_sim.comp")?;
         let bindings = local_grid_layout_bindings();
-        validate_set_layout(
-            1,
-            &bindings,
-            &[
-                ReflectedShader {
-                    name: "volumetrics_local_sim.comp",
-                    spirv: VOLUMETRICS_LOCAL_SIM_COMP_SPV,
-                },
-                ReflectedShader {
-                    name: "combustion_phase_bake.comp",
-                    spirv: COMBUSTION_PHASE_BAKE_COMP_SPV,
-                },
-            ],
-            "volumetrics_local_grid",
-            &[],
-        )
-        .context("local grid layout drifted against volumetrics_local_sim.comp")?;
 
         // SAFETY: `device` is live; `bindings` outlives the call; the handle is
         // owned by `self` and destroyed in `destroy`.

@@ -1415,6 +1415,10 @@ mod tests {
             crate::vulkan::volumetrics::init::volumetrics_integrate_layout_bindings(),
             "volumetrics_integrate.comp" => crate::vulkan::volumetrics::VOLUMETRICS_INTEGRATE_COMP_SPV,
         );
+        // #6752 — the local combustion grid's own set 1 (the sim and the phase
+        // bake share it); set 0 of the sim is the inject layout checked above.
+        crate::vulkan::volumetrics::validate_local_grid_layout()
+            .unwrap_or_else(|error| panic!("volumetrics_local_grid layout drifted: {error:#}"));
     }
 
     #[test]
