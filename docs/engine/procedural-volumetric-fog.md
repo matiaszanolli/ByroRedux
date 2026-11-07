@@ -571,7 +571,9 @@ and `BYRO_HAZE_FLOOR` / `fog.haze` (the floor).
   air, so the term is a haze-strength dial whose acceptable value depends on the pose, and the shaft is only the
   part of it where an occluder shades the air. The 0.01 to 0.08 range changed the first pose by 0.5 to 2.7 levels
   and is the only region tried that stays quiet. So what exists is a mechanism with no tuned default; a value
-  chosen from one pose per title would be wrong for the others.
+  chosen from one pose per title would be wrong for the others. A distance fade (full within 20 m, none beyond
+  70 m) was tried on the same four cases and reverted: it changed them by under 1.5 levels (Oblivion 15.7 against
+  16.9 at 0.25, FNV 32.2 against 31.7), so the wash is not the far field.
 - **Not done yet:** the per-fixture noon and low-sun captures on the other titles (VLM-SH-006), the range and
   cloud-shadow work (VLM-SH-004, -005), and the separate inject and integrate milliseconds (VLM-SH-008; the
   inject figure above is one pose, not the fixture set).
