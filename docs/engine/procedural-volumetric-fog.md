@@ -561,6 +561,17 @@ and `BYRO_HAZE_FLOOR` / `fog.haze` (the floor).
   at 07:00 keeps its canopy shaft (+18.6, 25 % of pixels above 16 levels), FO4 at 07:00 gains a sunlit haze behind
   the trunks (+9.2, 13 %), FO3 and Skyrim at 07:00 barely move (their visible froxels are not sunlit), and FNV at
   07:00 does not move. The shaping edges are engine choices for the owner, like the value.
+  **Correction, same day: 2.0 per metre is not a usable default.** The same dust on more poses and hours, on
+  versus off (mean absolute change in levels): 17:30 on the original grids FNV 1.8, FO3 6.9, Oblivion 72.1, Skyrim
+  41.3, FO4 9.5; a second grid per title at 07:00 FNV 43.1, FO3 10.7, Oblivion 15.8, Skyrim 25.6, FO4 70.2. Oblivion
+  at 17:30 becomes a golden fog, and FO4 on its second grid a grey one (trunk shadow columns do show inside it).
+  The good 07:00 result above was a pose in which the sunlit air was seen away from the sun. Lowering it does not
+  fix that: on the four strongest cases, 0.25 gives +16.9 (Oblivion 17:30), +4.4 (Skyrim 17:30), +31.7 (FNV g2) and
+  +29.9 (FO4 g2); 0.6 gives +33.3, +11.6, +35.3 and +58.7. Sunlit haze brightens wherever the view crosses lit
+  air, so the term is a haze-strength dial whose acceptable value depends on the pose, and the shaft is only the
+  part of it where an occluder shades the air. The 0.01 to 0.08 range changed the first pose by 0.5 to 2.7 levels
+  and is the only region tried that stays quiet. So what exists is a mechanism with no tuned default; a value
+  chosen from one pose per title would be wrong for the others.
 - **Not done yet:** the per-fixture noon and low-sun captures on the other titles (VLM-SH-006), the range and
   cloud-shadow work (VLM-SH-004, -005), and the separate inject and integrate milliseconds (VLM-SH-008; the
   inject figure above is one pose, not the fixture set).
