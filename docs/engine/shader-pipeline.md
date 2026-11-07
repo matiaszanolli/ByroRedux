@@ -318,10 +318,11 @@ is not named here.
    [COMPUTE→COMPUTE]        ping-pong slots gated each iteration by a
                            COMPUTE→COMPUTE barrier; final (odd count → slot 0)
                            is what composite samples via indirect_view(frame)
-11b shadow_filter.comp ×2 ─ direct-shadow spatial filter: an edge-aware 5x5
-   [FRAG→COMPUTE,          a-trous chain over the ReSTIR shadow ratio, writing
-    COMPUTE→COMPUTE,       the correction composite adds to direct light
-    COMPUTE→FRAG]          (`record_shadow_filter`). Recorded inside the SVGF
+11b shadow_filter.comp ×N ─ direct-shadow spatial filter (N = 2/2/3/4 iterations
+   [FRAG→COMPUTE,          by ray-quality tier, `shadow_filter_iterations`): an
+    COMPUTE→COMPUTE,       edge-aware 5x5 a-trous chain over the ReSTIR shadow ratio, writing
+    COMPUTE→FRAG]          the correction composite adds to direct light
+                           (`record_shadow_filter`). Recorded inside the SVGF
                            timer bracket and in its own nested
                            `shadow_filter_ms` one (#5959); still runs, outside
                            SVGF, when SVGF is absent. A FRAGMENT→COMPUTE
@@ -330,6 +331,20 @@ is not named here.
                            COMPUTE→COMPUTE, the last (the correction)
                            COMPUTE→FRAGMENT for composite
 12 caustic_splat.comp   ─  caustic scatter (`record_caustic_splat_pass`)
+12b volumetrics_local_sim.comp ─ combustion local grid (stage B2 of
+   [TRANSFER→COMPUTE,       `VolumetricsPipeline::dispatch`, recorded BEFORE the
+    COMPUTE→COMPUTE,       froxel inject and inside the `volumetrics` timer
+    COMPUTE→FRAG]          bracket, under its own nested `volumetrics_local_sim`
+                           one): `cmd_fill_buffer` zeroes the occupancy-brick
+                           buffer (TRANSFER→COMPUTE barrier), history-slot
+                           barriers gate each live box's atlas read, one
+                           dispatch per live box, then a publish barrier
+                           (`LocalGrid::record_publish_bricks` for the bricks,
+                           `composite_barriers` for the atlas and the
+                           irradiance field) makes the writes visible to
+                           composite's fragment reads. Skipped frames record
+                           nothing and blank the slot's table
+                           (`clear_local_grid_params`)
 13 volumetrics_inject   ─┐ froxel grid (output consumed by composite,
                            VOLUMETRIC_OUTPUT_CONSUMED = true); reads
                            cluster_cull's cluster grid + light-index list
@@ -349,6 +364,15 @@ is not named here.
                            (`R16G16B16A16_SFLOAT`, `SHADER_READ_ONLY_OPTIMAL`;
                            no tone-map, does NOT write the swapchain; does
                            NOT add bloom — see step 17, #2796)
+16b linear_capture_     ─  [TRANSFER] scene-linear capture tap (M51), recorded
+   record_copy              between composite and bloom only while a
+                           `--linear-capture` request owes frames: composite's
+                           scene image goes SHADER_READ_ONLY → TRANSFER_SRC →
+                           SHADER_READ_ONLY around the copy into the host
+                           staging buffer (two layout round-trip barriers), so
+                           bloom, the meter and TAA see the layout they expect
+                           whether or not a capture ran. Read back at the top
+                           of the NEXT frame after the all-slots fence wait
 17 bloom_downsample ×N   ─┐ bloom pyramid, runs AFTER composite
    bloom_upsample   ×N    │ (`record_bloom_pass`, ordered after
    bloom_apply.comp      ─┘ `record_composite_pass` and before
@@ -374,6 +398,13 @@ is not named here.
                            only). Composite reads the raw HDR attachment
                            directly; TAA's output feeds the
                            upscale/presentation tap below.
+18b linear_capture_    ─  [TRANSFER] the post-TAA scene-linear tap
+   record_copy_post_taa     (`--linear-capture-tap post-taa`), recorded right after a recorded TAA
+                           dispatch and nothing otherwise (a `final` view with no
+                           TAA records no copy): TAA leaves its output in
+                           GENERAL behind a compute-write → shader-read
+                           barrier; the copy only reads it in that layout, so
+                           the upscale tap and next frame's TAA are unaffected
 19 frame_upscaler.record  ─  FSR 3.1 SDK dispatch (`record_upscale_pass`,
                            Quality preset default) or
                            native-blit fallback (`--upscaler taa`) — render-
