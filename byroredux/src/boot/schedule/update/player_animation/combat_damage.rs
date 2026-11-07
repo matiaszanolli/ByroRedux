@@ -92,6 +92,7 @@ fn register_combat_damage_system(scheduler: &mut Scheduler) {
             // #6546 — what M43 and the XP / threshold work made the damage pass acquire.
             // `armor::mitigate`: the armor model's tables and each worn piece's smithing quality.
             .reads_resource::<crate::armor::ArmorBook>()
+            .reads_resource::<byroredux_core::character::ArmorModel>()
             .reads_resource::<byroredux_core::ecs::resources::ItemInstancePool>()
             .reads_resource::<byroredux_scripting::ActorValueNames>()
             .reads_resource::<crate::combat::DamageThresholdRules>()

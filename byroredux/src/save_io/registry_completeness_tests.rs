@@ -598,6 +598,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("WeaponSkillTable", "each weapon base's skill, re-derived from the load order by install_perk_entry_points every boot, same posture as PerkEntryTable"),
         ("TemperingSubject", "the scratch entity an item's base form is lent to so item-tab perk conditions have a subject; created at boot (M43)"),
         ("ArmorBook", "every armor record's base rating and type (Skyrim only), for the armor damage reduction; rebuilt from the records every boot (M43)"),
+        ("ArmorModel", "the profile's armor-rating tuning (Skyrim) with the load order's fArmor* / fMaxArmorRating GMST overlay, installed by install_armor_book on every load — derived configuration (#6567)"),
         ("StoryManagerRng", "selection RNG for random node policies (#5366 Phase 3); which radiant a post-load pick chooses is not state anything reads back"),
         // ── Dialogue trees (#5367) ──────────────────────────────────
         ("DialogueRandomState", "selection RNG; which greeting an old save rolled is not state anything reads back"),

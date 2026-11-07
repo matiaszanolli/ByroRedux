@@ -26,6 +26,8 @@
 //! * [`crime`] — the crime family: [`CrimeModel`], what a crime costs the
 //!   criminal (Oblivion's single bounty and Skyrim's per-crime-faction fines;
 //!   theft, assault and murder).
+//! * [`armor`] — [`ArmorModel`]: Skyrim's armor-rating tuning (the `fArmor*` /
+//!   `fMaxArmorRating` GMST family), load-order-driven (#6567).
 //! * [`vats`] — [`VatsModel`]: the `fVATS*` GMST tuning family and the
 //!   FO3/FNV VATS to-hit chain, load-order-driven (#6350).
 //! * [`resistance`] — the affliction family's resistance half:
@@ -79,6 +81,7 @@
 //! covers their constants under Dimension 2 (CHAR-D6-05, #2962).
 
 pub mod affliction;
+pub mod armor;
 pub mod attribute;
 pub mod components;
 pub mod crime;
@@ -104,6 +107,7 @@ pub use components::{
     Background, CharacterLevel, FactionReputation, FactionStanding, LevelUpPoints, PerkRank,
     Perks,
 };
+pub use armor::ArmorModel;
 pub use crime::{BountyScope, CrimeKind, CrimeModel};
 pub use vats::{VatsHitInput, VatsModel};
 pub use derived::{DerivedInput, DerivedOutput, DerivedScope, DerivedStatFormula, RoundMode};
@@ -163,7 +167,7 @@ mod tests {
             .collect();
         assert_eq!(
             declared.len(),
-            16,
+            17,
             "sub-module count changed — {declared:?}"
         );
         for module in declared {

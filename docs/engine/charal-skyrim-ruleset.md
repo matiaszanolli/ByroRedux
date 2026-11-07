@@ -294,7 +294,13 @@ module, not `character/`.
 **Since built (M43): `byroredux/src/armor.rs`** is that module — per-piece
 rating (both Light and Heavy, `CEILING`, the smithing quality bonus), the
 displayed rating, and the capped damage reduction, for the player (`0.4/100`)
-and for NPCs (`1.5/100`). It reads the two skill coefficients from here
+and for NPCs (`1.5/100`). The numbers are the `ArmorModel` row of the Skyrim
+`CharacterRulesProfile` (`crates/core/src/character/armor.rs`, #6567): `fArmorScalingFactor`
+0.12, `fArmorBaseFactor` 0.03, `fMaxArmorRating` 80 and the PC / NPC rating
+multipliers (`fArmorRatingPCBase` / `PCMax`, `fArmorRatingBase` / `Max`), each
+overlaid with the load order's own GMST so an armor-rebalance mod retunes them,
+installed as a resource by `install_armor_book` (the consumer tests no game).
+The model builds its two skill multipliers from the two coefficients here
 (`LIGHT_ARMOR_RATING_COEFF` and `ARMOR_SKILL_RATING_COEFF_NPC` in `skyrim.rs`)
 instead of restating them (#6568), so the constants have one home. It does not
 read the `DamageResist` derived row built above, and nothing writes the

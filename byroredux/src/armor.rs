@@ -12,9 +12,13 @@
 //!
 //! Every hit the damage pipeline resolves from a weapon, projectile or explosion is physical, so the reduction
 //! applies to all of them; Skyrim only — Fallout uses Damage Threshold / Resistance, which are their own models.
+//! The numbers (0.12 % per point, the hidden 3 %, the 80 % cap, the player / NPC skill multipliers) are the
+//! [`ArmorModel`] a game's `CharacterRulesProfile` row carries, overlaid with the load order's own `fArmor*` /
+//! `fMaxArmorRating` settings (#6567): this module never tests the game.
 //! Not modelled: the perk multipliers on a piece (Custom Fit / Well Fitted, Matching Set, Agile Defender /
 //! Juggernaut) and "armor effects" (Oakflesh and kin), which the page lists as further terms.
 
+use byroredux_core::character::ArmorModel;
 use byroredux_core::ecs::components::{EquipmentSlots, Inventory};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::storage::EntityId;
@@ -23,17 +27,6 @@ use byroredux_plugin::esm::records::{EsmIndex, ItemKind};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Per-point damage reduction (UESP: "each point of armor rating reduces damage by 0.12 %").
-const REDUCTION_PER_RATING: f32 = 0.12;
-/// The hidden reduction a worn piece adds, in percent (a hidden armor rating of 25 × 0.12).
-const HIDDEN_PER_PIECE: f32 = 3.0;
-/// The armor cap, in percent.
-const MAX_REDUCTION: f32 = 80.0;
-/// The armor-skill coefficient for the player and for NPCs, in the `coeff × skill / 100` form
-/// [`item_rating`] takes (UESP's 0.4 and 1.5). CHARAL owns the per-point values (#6568), so a correction
-/// there reaches this model too.
-const SKILL_COEFF_PLAYER: f32 = byroredux_core::character::skyrim::LIGHT_ARMOR_RATING_COEFF * 100.0;
-const SKILL_COEFF_NPC: f32 = byroredux_core::character::skyrim::ARMOR_SKILL_RATING_COEFF_NPC * 100.0;
 /// The `BOD2` biped bit of the body (cuirass) slot — the "chest armor" column of the quality table.
 const BODY_SLOT_BIT: u32 = 0x4;
 
@@ -63,9 +56,20 @@ pub(crate) struct ArmorBook {
 
 impl Resource for ArmorBook {}
 
+/// Install (or clear) the [`ArmorModel`] and the [`ArmorBook`] for a freshly loaded index. The profile's
+/// `armor` row decides whether the game has an armor-rating model at all, the load order's own settings retune
+/// it (#6567); with no row the model resource is removed and the book is empty, so [`totals`] is zero.
 pub(crate) fn install_armor_book(world: &mut World, index: &EsmIndex) -> usize {
-    // Skyrim only: the other games' armor models are not this one.
-    let pieces: HashMap<u32, ArmorPiece> = if index.game == byroredux_plugin::esm::reader::GameKind::Skyrim {
+    let model = index.character_rules.armor().map(|model| model.with_gmst(|name| index.game_setting_float(name)));
+    match model {
+        Some(model) => {
+            world.insert_resource(model);
+        }
+        None => {
+            world.remove_resource::<ArmorModel>();
+        }
+    }
+    let pieces: HashMap<u32, ArmorPiece> = if model.is_some() {
         index
             .items
             .values()
@@ -91,16 +95,6 @@ pub(crate) fn install_armor_book(world: &mut World, index: &EsmIndex) -> usize {
     let count = pieces.len();
     world.insert_resource(ArmorBook { pieces: Arc::new(pieces) });
     count
-}
-
-/// UESP's per-item formula: `CEILING[(base + quality bonus) × (1 + coeff × skill / 100)]`.
-pub(crate) fn item_rating(base: f32, quality_bonus: f32, skill: f32, coeff: f32) -> f32 {
-    ((base + quality_bonus) * (1.0 + coeff * skill / 100.0)).ceil()
-}
-
-/// The damage-reduction percentage for a displayed rating over `pieces` armor pieces worn.
-pub(crate) fn reduction_percent(displayed_rating: f32, pieces: usize) -> f32 {
-    (displayed_rating * REDUCTION_PER_RATING + HIDDEN_PER_PIECE * pieces as f32).clamp(0.0, MAX_REDUCTION)
 }
 
 /// What a wearer's equipment adds up to.
@@ -129,6 +123,9 @@ pub(crate) fn totals(world: &World, wearer: EntityId) -> ArmorTotals {
     let Some(book) = world.try_resource::<ArmorBook>().map(|book| book.pieces.clone()) else {
         return ArmorTotals::default();
     };
+    let Some(model) = world.try_resource::<ArmorModel>().map(|model| *model) else {
+        return ArmorTotals::default();
+    };
     if book.is_empty() {
         return ArmorTotals::default();
     }
@@ -138,7 +135,7 @@ pub(crate) fn totals(world: &World, wearer: EntityId) -> ArmorTotals {
     ) else {
         return ArmorTotals::default();
     };
-    let coeff = if crate::systems::PlayerEntity::get(world) == Some(wearer) { SKILL_COEFF_PLAYER } else { SKILL_COEFF_NPC };
+    let player = crate::systems::PlayerEntity::get(world) == Some(wearer);
     // A piece covering several slots occupies several; it is one piece.
     let mut rows: Vec<u32> = slots.occupants.iter().flatten().map(|index| index.0).collect();
     rows.sort_unstable();
@@ -148,13 +145,13 @@ pub(crate) fn totals(world: &World, wearer: EntityId) -> ArmorTotals {
         let Some(stack) = inventory.items.get(row as usize) else { continue };
         let Some(piece) = book.get(&stack.base_form_id) else { continue };
         let bonus = crate::smithing::armor_bonus(crate::smithing::stack_quality(world, stack), piece.chest);
-        totals.displayed_rating += item_rating(piece.rating, bonus, armor_skill(world, wearer, piece.kind), coeff);
+        totals.displayed_rating += model.item_rating(piece.rating, bonus, armor_skill(world, wearer, piece.kind), player);
         // Clothing and robes carry no hidden rating, so they add no piece.
         if piece.kind != ArmorKind::Clothing {
             totals.pieces += 1;
         }
     }
-    totals.reduction_percent = reduction_percent(totals.displayed_rating, totals.pieces);
+    totals.reduction_percent = model.reduction_percent(totals.displayed_rating, totals.pieces);
     totals
 }
 
@@ -171,37 +168,15 @@ pub(crate) fn mitigate(world: &World, target: EntityId, damage: f32) -> f32 {
 mod tests {
     use super::*;
 
-    /// #6568 — the model reads CHARAL's skill-scaling constants instead of restating them: UESP's `0.4` and
-    /// `1.5` come out of `0.004` / `0.015` exactly, and the player's one is the very constant the Light
-    /// Armor `DamageResist` row is built from.
+    /// #6568 — the Skyrim defaults read CHARAL's skill-scaling constants instead of restating them: UESP's `0.4`
+    /// and `1.5` come out of `0.004` / `0.015`, and the player's one is the very constant the Light Armor
+    /// `DamageResist` row is built from. (The formula itself is pinned in `byroredux_core::character::armor`.)
     #[test]
-    fn the_skill_coefficients_are_charals() {
-        assert_eq!(SKILL_COEFF_PLAYER, 0.4);
-        assert_eq!(SKILL_COEFF_NPC, 1.5);
-        assert_eq!(SKILL_COEFF_PLAYER, byroredux_core::character::skyrim::LIGHT_ARMOR_RATING_COEFF * 100.0);
-    }
-
-    /// UESP's worked figures: the reduction is 0.12 % per displayed point plus 3 % per piece, capped at 80 %, and
-    /// "you'll reach the armor cap at 567 displayed armor rating when wearing all four pieces" — 567 × 0.12 + 12 =
-    /// 80.04.
-    #[test]
-    fn the_reduction_follows_the_uesp_formula_and_cap() {
-        assert!((reduction_percent(100.0, 4) - 24.0).abs() < 1e-4, "100 × 0.12 + 4 × 3");
-        assert_eq!(reduction_percent(0.0, 0), 0.0);
-        assert_eq!(reduction_percent(567.0, 4), 80.0, "the cap, reached at 567 with four pieces");
-        assert_eq!(reduction_percent(5000.0, 4), 80.0);
-        assert!(reduction_percent(566.0, 4) < 80.0);
-    }
-
-    /// The item formula: `CEILING[(base + quality) × (1 + 0.4 × skill/100)]`. Daedric cuirass 49 at 100 Heavy Armor
-    /// is `49 × 1.4 = 68.6` → 69; an NPC's `1.5` coefficient at 50 skill gives `49 × 1.75 = 85.75` → 86; the
-    /// quality bonus joins the base before the skill scales it.
-    #[test]
-    fn an_items_rating_scales_with_skill_and_includes_the_quality_bonus() {
-        assert_eq!(item_rating(49.0, 0.0, 100.0, 0.4), 69.0);
-        assert_eq!(item_rating(49.0, 0.0, 50.0, 1.5), 86.0);
-        assert_eq!(item_rating(49.0, 20.0, 100.0, 0.4), 97.0, "(49 + 20) × 1.4 = 96.6");
-        assert_eq!(item_rating(0.0, 0.0, 100.0, 0.4), 0.0);
+    fn the_skill_multipliers_are_charals() {
+        let model = ArmorModel::SKYRIM;
+        let coeff = byroredux_core::character::skyrim::LIGHT_ARMOR_RATING_COEFF;
+        assert!((model.skill_multiplier(true, 100.0) - (1.0 + coeff * 100.0)).abs() < 1e-6);
+        assert!((model.skill_multiplier(false, 100.0) - 2.5).abs() < 1e-6);
     }
 
     const CUIRASS: u32 = 0x3BA0F;
@@ -211,6 +186,19 @@ mod tests {
     /// improved copy's quality bonus joins the base, the hidden 3 % per piece applies, and the reduction takes its
     /// share of a hit.
     fn wearer(skill: f32, quality: u8, player: bool) -> (World, EntityId) {
+        wearer_with_scaling(skill, quality, player, 0.12)
+    }
+
+    fn armor_gmst(name: &str, value: f32) -> byroredux_plugin::esm::records::GameSetting {
+        byroredux_plugin::esm::records::GameSetting {
+            form_id: 0x1000 + name.len() as u32,
+            editor_id: name.into(),
+            value: byroredux_plugin::esm::records::SettingValue::Float(value),
+        }
+    }
+
+    /// `wearer` with the load order authoring `fArmorScalingFactor = scaling_factor`.
+    fn wearer_with_scaling(skill: f32, quality: u8, player: bool, scaling_factor: f32) -> (World, EntityId) {
         use byroredux_core::ecs::components::{ActorValues, InventoryIndex, ItemStack};
         use byroredux_core::ecs::resources::{ItemInstance, ItemInstancePool};
         let mut world = World::new();
@@ -218,7 +206,12 @@ mod tests {
         world.register::<Inventory>();
         world.register::<EquipmentSlots>();
         world.register::<ActorValues>();
-        let mut index = EsmIndex { game: byroredux_plugin::esm::reader::GameKind::Skyrim, ..Default::default() };
+        let mut index = EsmIndex {
+            game: byroredux_plugin::esm::reader::GameKind::Skyrim,
+            character_rules: byroredux_core::character::CharacterRulesProfile::SKYRIM,
+            ..Default::default()
+        };
+        index.insert_game_setting(armor_gmst("fArmorScalingFactor", scaling_factor));
         index.actor_values.insert(
             HEAVY_ARMOR,
             byroredux_plugin::esm::records::AvifRecord { form_id: HEAVY_ARMOR, editor_id: "AVHeavyArmor".into(), ..Default::default() },
@@ -282,5 +275,43 @@ mod tests {
         let (mut world, _) = wearer(100.0, 0, true);
         let stranger = world.spawn();
         assert_eq!(mitigate(&world, stranger, 100.0), 100.0);
+    }
+
+    /// #6567 — the model is the load order's, not a compiled-in constant: an armor-rebalance mod that retunes
+    /// `fArmorScalingFactor` changes the damage a worn cuirass blocks. 69 displayed × 0.24 + 3 = 19.56 %.
+    #[test]
+    fn a_retuned_scaling_factor_reaches_the_damage_pipeline() {
+        let (world, wearer_entity) = wearer_with_scaling(100.0, 0, true, 0.24);
+        assert!((totals(&world, wearer_entity).reduction_percent - 19.56).abs() < 1e-3);
+        assert!((mitigate(&world, wearer_entity, 100.0) - 80.44).abs() < 1e-2);
+        let (default_world, default_wearer) = wearer(100.0, 0, true);
+        assert!(mitigate(&default_world, default_wearer, 100.0) > mitigate(&world, wearer_entity, 100.0));
+    }
+
+    /// #6567 — whether the model applies is the profile row, not a game test in the consumer: a profile with no
+    /// `armor` row installs no model and an empty book, whatever the index's `game` says, and a later
+    /// install over a model-less index clears the previous game's resource.
+    #[test]
+    fn no_armor_row_means_no_model_and_no_book() {
+        let (mut world, wearer_entity) = wearer(100.0, 0, true);
+        assert!(world.try_resource::<ArmorModel>().is_some());
+        let index = EsmIndex {
+            game: byroredux_plugin::esm::reader::GameKind::Skyrim,
+            character_rules: byroredux_core::character::CharacterRulesProfile::FALLOUT3,
+            ..Default::default()
+        };
+        assert_eq!(install_armor_book(&mut world, &index), 0, "no armor row, no pieces — even on a Skyrim-tagged index");
+        assert!(world.try_resource::<ArmorModel>().is_none(), "the previous load's model is cleared");
+        assert_eq!(totals(&world, wearer_entity), ArmorTotals::default());
+    }
+
+    /// #6567 — the consumer carries no hand-written game test or armor constants of its own.
+    #[test]
+    fn the_consumer_holds_no_game_gate_or_armor_constants() {
+        let production = byroredux_core::source_scan::production_text(include_str!("armor.rs"));
+        assert!(!production.contains("GameKind::"), "the profile row decides, not a game test");
+        for needle in ["REDUCTION_PER_RATING", "HIDDEN_PER_PIECE", "MAX_REDUCTION", "SKILL_COEFF_"] {
+            assert!(!production.contains(needle), "{needle} belongs to ArmorModel");
+        }
     }
 }

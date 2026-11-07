@@ -8,7 +8,7 @@
 
 use super::{
     fallout3_ruleset, fallout4_ruleset, falloutnv_ruleset, skyrim_ruleset, CharacterRuleset, CrimeModel,
-    SkillSet, VatsModel,
+    SkillSet, VatsModel, ArmorModel,
 };
 
 /// A sourced FO3/FNV NPC Health curve (#5238): the record's `DATA` Base
@@ -286,6 +286,11 @@ pub struct CharacterRulesProfile {
     /// wired. A row of its own, so `build_vats_model` never branches on the
     /// game or compares whole profiles.
     vats: Option<VatsModel>,
+    /// #6567 — the armor-rating model (`fArmor*` / `fMaxArmorRating` defaults),
+    /// where one is sourced and wired (Skyrim). A row of its own so the consumer
+    /// (`byroredux/src/armor.rs`) never tests the game: it reads the installed
+    /// `ArmorModel` resource, which exists only where this row does.
+    armor: Option<ArmorModel>,
 }
 
 /// Skyrim's *Mod Buy Prices* / *Mod Sell Prices* entry points
@@ -312,6 +317,7 @@ impl CharacterRulesProfile {
         level_cap_raises: &[],
         crime: None,
         vats: None,
+        armor: None,
     };
 
     pub const OBLIVION: Self = Self {
@@ -336,6 +342,7 @@ impl CharacterRulesProfile {
         level_cap_raises: &[],
         crime: Some(CrimeModel::OBLIVION),
         vats: None,
+        armor: None,
     };
 
     pub const FALLOUT3: Self = Self {
@@ -369,6 +376,7 @@ impl CharacterRulesProfile {
         level_cap_raises: &[],
         crime: None,
         vats: Some(VatsModel::FALLOUT3),
+        armor: None,
     };
 
     pub const FALLOUT_NEW_VEGAS: Self = Self {
@@ -407,6 +415,7 @@ impl CharacterRulesProfile {
         level_cap_raises: &[("DeadMoney", 5), ("HonestHearts", 5), ("OldWorldBlues", 5), ("LonesomeRoad", 5)],
         crime: None,
         vats: Some(VatsModel::FALLOUT_NV),
+        armor: None,
     };
 
     pub const SKYRIM: Self = Self {
@@ -448,6 +457,7 @@ impl CharacterRulesProfile {
         level_cap_raises: &[],
         crime: Some(CrimeModel::SKYRIM),
         vats: None,
+        armor: Some(ArmorModel::SKYRIM),
     };
 
     pub const FALLOUT4: Self = Self {
@@ -486,6 +496,7 @@ impl CharacterRulesProfile {
         level_cap_raises: &[],
         crime: None,
         vats: None,
+        armor: None,
     };
 
     pub const FALLOUT76: Self = Self {
@@ -516,6 +527,7 @@ impl CharacterRulesProfile {
         level_cap_raises: &[],
         crime: None,
         vats: None,
+        armor: None,
     };
 
     pub const STARFIELD: Self = Self {
@@ -550,6 +562,7 @@ impl CharacterRulesProfile {
         level_cap_raises: &[],
         crime: None,
         vats: None,
+        armor: None,
     };
 
     #[must_use]
@@ -637,6 +650,14 @@ impl CharacterRulesProfile {
     #[must_use]
     pub const fn vats(self) -> Option<VatsModel> {
         self.vats
+    }
+
+    /// #6567 — the armor-rating model's compiled-in defaults, `None` where
+    /// the game has no sourced and wired armor rating (everything but
+    /// Skyrim; Fallout uses Damage Threshold / Resistance instead).
+    #[must_use]
+    pub const fn armor(self) -> Option<ArmorModel> {
+        self.armor
     }
 
     /// #5921 — the perk entry-point numbering the game's `PERK`s author.
@@ -763,6 +784,24 @@ mod tests {
         ];
         for (profile, raises) in rows {
             assert_eq!(profile.add_perk_raises_rank(), raises, "{}", profile.name());
+        }
+    }
+
+    /// #6567 — the `armor` row: only Skyrim carries an armor-rating model.
+    /// Compile-time exhaustiveness covers stating a row, not which value.
+    #[test]
+    fn the_armor_row_is_stated_on_every_profile() {
+        assert_eq!(CharacterRulesProfile::SKYRIM.armor(), Some(ArmorModel::SKYRIM));
+        for profile in [
+            CharacterRulesProfile::NONE,
+            CharacterRulesProfile::OBLIVION,
+            CharacterRulesProfile::FALLOUT3,
+            CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+            CharacterRulesProfile::FALLOUT4,
+            CharacterRulesProfile::FALLOUT76,
+            CharacterRulesProfile::STARFIELD,
+        ] {
+            assert_eq!(profile.armor(), None, "{}", profile.name());
         }
     }
 
