@@ -995,6 +995,32 @@ pub fn upload_byte_range(
     }
 }
 
+/// [`upload_byte_range`] applied to `payload`, or `None` when the range runs past
+/// the payload's end. A truncated BC file reaches the upload with a payload
+/// shorter than the chain its header describes; the range is derived from the
+/// header, so slicing with it unchecked panics (#6737). The caller refuses the
+/// upload instead, as it does for a header that fails to parse.
+pub fn upload_payload<'a>(
+    meta: &DdsMetadata,
+    payload: &'a [u8],
+    first_mip: u32,
+    payload_first: u32,
+) -> Option<&'a [u8]> {
+    payload.get(upload_byte_range(meta, first_mip, payload_first, payload.len()))
+}
+
+/// [`level_byte_range_in`] applied to `payload`, or `None` when the range runs
+/// past the payload's end (#6737). `levels.start` must not be below
+/// `payload_first`.
+pub fn level_payload<'a>(
+    meta: &DdsMetadata,
+    payload: &'a [u8],
+    levels: std::ops::Range<u32>,
+    payload_first: u32,
+) -> Option<&'a [u8]> {
+    payload.get(level_byte_range_in(meta, levels, payload_first))
+}
+
 /// Total byte size of all mip levels.
 pub fn total_data_size(meta: &DdsMetadata) -> u64 {
     let mut total = 0u64;
@@ -1910,6 +1936,47 @@ pub(crate) mod tests {
             expand: None,
         };
         assert_eq!(total_data_size(&meta), 48);
+    }
+
+    /// #6737 — a truncated BC payload under a full-chain header must be refused
+    /// by the range helpers, not sliced past its end: the floor-first upload
+    /// derives its range from the header, so an unchecked `&payload[range]`
+    /// panicked the render thread before `check_dds_payload` could return its
+    /// error.
+    #[test]
+    fn a_truncated_bc_payload_yields_no_slice_instead_of_a_panic() {
+        let meta = DdsMetadata {
+            width: 512,
+            height: 512,
+            mip_count: 10,
+            format: vk::Format::BC1_RGBA_SRGB_BLOCK,
+            block_size: 8,
+            compressed: true,
+            array_layers: 1,
+            is_cubemap: false,
+            data_offset: 128,
+            expand: None,
+        };
+        let full = total_data_size(&meta) as usize;
+        let tiny = vec![0u8; 25]; // 24 would be the exact 3-level suffix of a floor read
+        // A header-driven floor start on a payload that is not an exact
+        // level suffix: `payload_first_level` reports 0, so the range is the
+        // whole chain's tail.
+        assert_eq!(payload_first_level(&meta, tiny.len()), 0);
+        assert!(upload_payload(&meta, &tiny, 2, 0).is_none());
+        assert!(level_payload(&meta, &tiny, 2..10, 0).is_none());
+        // A complete payload still slices, floor or whole.
+        let complete = vec![0u8; full];
+        assert_eq!(upload_payload(&meta, &complete, 0, 0).map(<[u8]>::len), Some(full));
+        assert_eq!(
+            upload_payload(&meta, &complete, 2, 0).map(<[u8]>::len),
+            Some(full - level_byte_range(&meta, 0..2).end),
+        );
+        // A BA2 floor read (payload starts at its first level) still slices.
+        let suffix = level_byte_range_in(&meta, 6..10, 0).len();
+        let floor_read = vec![0u8; suffix];
+        assert_eq!(payload_first_level(&meta, suffix), 6);
+        assert_eq!(upload_payload(&meta, &floor_read, 6, 6).map(<[u8]>::len), Some(suffix));
     }
 
     /// M39 regression — a whole upload of a cubemap reads all six faces. The

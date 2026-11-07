@@ -1366,11 +1366,23 @@ impl TextureRegistry {
                             );
                             continue;
                         } else {
-                            &pixel_data[crate::vulkan::dds::level_byte_range_in(
+                            let Some(bytes) = crate::vulkan::dds::level_payload(
                                 &meta,
+                                &pixel_data,
                                 upload_levels,
                                 payload_first,
-                            )]
+                            ) else {
+                                // #6737 — a truncated payload cannot hold the
+                                // levels its header describes; refuse the
+                                // change rather than slice past the end.
+                                log::warn!(
+                                    "Residency change for '{}' needs bytes past the end of its {}-byte payload; dropping it",
+                                    upload.path,
+                                    pixel_data.len(),
+                                );
+                                continue;
+                            };
+                            bytes
                         };
                         match crate::vulkan::texture::Texture::record_dds_residency_change(
                             device,
@@ -1425,12 +1437,23 @@ impl TextureRegistry {
                         .flatten()
                     };
                     let first_mip = floor_first.unwrap_or(0);
-                    let levels = crate::vulkan::dds::upload_byte_range(
+                    // #6737 — the range comes from the header; a truncated
+                    // payload is refused here, before any slice, so the
+                    // size check in `record_dds_upload` is reached by
+                    // well-formed uploads only.
+                    let Some(level_bytes) = crate::vulkan::dds::upload_payload(
                         &meta,
+                        &pixel_data,
                         first_mip,
                         payload_first,
-                        pixel_data.len(),
-                    );
+                    ) else {
+                        log::warn!(
+                            "DDS '{}' payload ({} bytes) is shorter than its header's chain; dropping queued upload",
+                            upload.path,
+                            pixel_data.len(),
+                        );
+                        continue;
+                    };
                     // #1542: a 16/24-bpp `DDPF_RGB` source is CPU-expanded to
                     // R8G8B8A8. Its raw bytes aren't RGBA8 yet, so skip
                     // `average_rgb` for it (it would misread the packed
@@ -1440,7 +1463,7 @@ impl TextureRegistry {
                     if upload.color_space == TextureColorSpace::Srgb && meta.expand.is_none() {
                         if let Some(avg) = crate::vulkan::dds::average_rgb_levels(
                             &meta,
-                            &pixel_data[levels.clone()],
+                            level_bytes,
                             first_mip,
                         ) {
                             if let Some(entry) = self.textures.get_mut(upload.handle as usize) {
@@ -1456,7 +1479,7 @@ impl TextureRegistry {
                             &meta,
                             first_mip,
                             floor_first.is_some(),
-                            &pixel_data[levels],
+                            level_bytes,
                             sampler,
                             self.staging_pool.as_mut(),
                         ) {
