@@ -726,9 +726,10 @@ pub struct VolumetricsPipeline {
     /// recover rigid triangle normals at combustion boundaries.
     boundary_geometry_written: [bool; MAX_FRAMES_IN_FLIGHT],
 
-    /// World-space combustion local grid (tracking #6531, Phase 1 stage 1b):
-    /// simulated alongside the froxel field, not yet drawn. `None` when its
-    /// creation failed, which costs the fire nothing it has today.
+    /// World-space combustion local grid (tracking #6531, Phase 1 stages 1b/1c):
+    /// simulated alongside the froxel field and drawn by composite's close-range
+    /// fire march. `None` when its creation failed; composite then cannot be
+    /// built either (see `local_fire_views`).
     local_grid: Option<local_grid::LocalGrid>,
 }
 
@@ -1560,7 +1561,7 @@ impl VolumetricsPipeline {
         self.integrated_volumes.iter().map(|s| s.view).collect()
     }
 
-    /// Handles composite binds (set 0, bindings 12..=15) to draw the
+    /// Handles composite binds (set 0, bindings 12..=17) to draw the
     /// close-range fire from the world-space local grid (#6533). `None` when
     /// the grid could not be created, in which case composite cannot be built
     /// either: its layout requires the bindings.

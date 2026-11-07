@@ -838,7 +838,7 @@ impl VolumetricsPipeline {
         }
 
         // ── 12. World-space local grid (#6533) ────────────────────────
-        // Required: the inject set's bindings 26..=31 and composite's 12..=15
+        // Required: the inject set's bindings 26..=31 and composite's 12..=17
         // point at its resources, so a missing grid cannot be papered over.
         partial.local_grid = Some(try_or_cleanup!(
             partial,

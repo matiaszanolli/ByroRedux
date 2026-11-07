@@ -433,9 +433,10 @@ pub(super) fn composite_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<
             vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
             vk::ShaderStageFlags::FRAGMENT,
         ),
-        // 12..=15: the world-space combustion local grid's close-range fire
-        // (#6533) — the `LocalGridParams` table, this frame's state and
-        // optical atlas, and the irradiance field that lights them.
+        // 12..=17: the world-space combustion local grid's close-range fire
+        // (#6533) — the `LocalGridParams` table (12), this frame's state and
+        // optical atlas and the irradiance field that lights them (13..=15),
+        // the occupancy bricks (16) and the baked species phase table (17).
         layout_binding(
             12,
             vk::DescriptorType::UNIFORM_BUFFER,

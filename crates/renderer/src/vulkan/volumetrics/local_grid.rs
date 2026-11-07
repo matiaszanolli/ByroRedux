@@ -8,9 +8,11 @@
 //! `volumetrics_local_sim.comp` with the transport shared with the froxel pass
 //! (`include/combustion_transport.glsl`).
 //!
-//! **Stage 1b — simulated, not drawn.** Nothing reads the result yet; it is
-//! reduced to a deterministic state hash (read back one frame-in-flight later)
-//! so the pass can be verified and timed before the ray-march consumes it.
+//! **Stage 1c — simulated and drawn.** Composite's close-range fire march reads
+//! the atlas, the irradiance field, the occupancy bricks and the phase table
+//! (`LocalFireViews`, set 0 bindings 12..=17). The pass is also reduced to a
+//! deterministic state hash (read back one frame-in-flight later) so it can
+//! be verified and timed independently of what draws it.
 //!
 //! The grid is **transient**: it is not part of a save (decided for #6533),
 //! and is rebuilt from the `FogVolume` sources after a load.
@@ -123,8 +125,6 @@ impl LocalBox {
         self.cell * LOCAL_GRID_CELLS as f32
     }
 
-    /// The source sphere sits inside the box with the inner margin clear on
-    /// the sides and bottom (the top is free: that is where the plume goes).
     /// The two boxes' volumes overlap.
     fn overlaps(&self, other: &LocalBox) -> bool {
         (0..3).all(|axis| {
@@ -133,6 +133,8 @@ impl LocalBox {
         })
     }
 
+    /// The source sphere sits inside the box with the inner margin clear on
+    /// the sides and bottom (the top is free: that is where the plume goes).
     fn contains_source(&self, center: [f32; 3], radius: f32) -> bool {
         let edge = self.edge();
         let margin = BOX_INNER_MARGIN * edge;

@@ -1,5 +1,5 @@
 // World-space combustion local grid — simulation pass (tracking #6531,
-// Phase 1 #6533, stage 1b).
+// Phase 1 #6533, stages 1b/1c).
 //
 // Advances the SAME transported combustion model the froxel inject pass runs
 // (`include/combustion_sources.glsl` + `include/combustion_transport.glsl`),
@@ -8,9 +8,9 @@
 // does, so close-range detail no longer depends on the view-depth slice
 // distribution (0.63 m per slice in the first 5 m).
 //
-// Stage 1b only: the result is not read by anything that draws. It is
-// simulated and reduced to a deterministic state hash so the pass can be
-// verified and timed before the ray-march (stage 1c) consumes it.
+// The result is drawn by composite's close-range fire march (stage 1c) and is
+// also reduced to a deterministic state hash, so the pass can be verified and
+// timed independently of what consumes it.
 //
 // One dispatch advances every live box. Boxes are stacked along Z in one
 // atlas image per field: box b owns Z in [b * LOCAL_GRID_DIM, (b + 1) *

@@ -1123,7 +1123,7 @@ impl VulkanContext {
             None => {
                 return Err(anyhow::anyhow!(
                     "Volumetrics local grid absent during resize — \
-                     composite bindings 12..=15 cannot be bound (#6533)."
+                     composite bindings 12..=17 cannot be bound (#6533)."
                 ));
             }
         };

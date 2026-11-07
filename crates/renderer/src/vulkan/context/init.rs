@@ -56,7 +56,7 @@ struct CoreDevice {
     gpu_allocator: SharedAllocator,
 }
 
-/// #6533 — composite's bindings 12..=15 draw the world-space combustion local
+/// #6533 — composite's bindings 12..=17 draw the world-space combustion local
 /// grid's close-range fire, so its resources are as required as the integrated
 /// froxel volume (binding 6): a missing grid cannot be bound around.
 fn local_fire_views_required(
@@ -66,7 +66,7 @@ fn local_fire_views_required(
         .and_then(|v| v.local_fire_views())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "Volumetric local grid unavailable — composite bindings 12..=15 \
+                "Volumetric local grid unavailable — composite bindings 12..=17 \
                  (close-range fire) cannot be bound (#6533)."
             )
         })
