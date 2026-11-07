@@ -864,6 +864,7 @@ mod level_up_tests {
                         function_data: PerkFunctionData::Float(2.0),
                         formatter: Vec::new(),
                         extra_flags: Vec::new(),
+                        details: Default::default(),
                     },
                     condition_tabs: Vec::new(),
                 }],

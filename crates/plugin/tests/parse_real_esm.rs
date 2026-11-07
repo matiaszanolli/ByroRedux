@@ -370,6 +370,58 @@ fn starfield_expl_enam_and_proj_prod_decode() {
     assert_eq!(index.projectiles.len(), 265);
 }
 
+/// #6652 -- the PERK decode residue on the shipped masters: FNV activate entries carry their embedded scripts,
+/// Skyrim's `VMAD` fragments are each keyed by one activate entry's `EPF3` fragment index (PERK-DEC-011's verify),
+/// and Fallout 4's Actor-Value entries decode to an `AVIF` plus a float.
+#[test]
+#[ignore = "needs FNV, Skyrim SE and FO4 game data on disk"]
+fn perk_decode_residue_on_the_shipped_masters() {
+    use byroredux_plugin::esm::records::{PerkEntryBody, PerkFunctionData};
+    let parse = |env, default, master: &str| {
+        let data = data_dir(env, default)?;
+        let bytes = std::fs::read(data.join(master)).ok()?;
+        Some(parse_esm(&bytes).unwrap_or_else(|e| panic!("parse {master}: {e}")))
+    };
+    if let Some(index) = parse(test_paths::FNV_ENV, test_paths::FNV_DEFAULT, "FalloutNV.esm") {
+        let scripts = index
+            .perks
+            .values()
+            .flat_map(|p| &p.entries)
+            .filter(|e| matches!(&e.body, PerkEntryBody::EntryPoint { details, .. } if details.script.is_some()))
+            .count();
+        eprintln!("[FNV/PERK] {scripts} activate entries with an embedded script");
+        assert!(scripts > 0, "FNV's activate entries carry embedded scripts");
+        let levels: Vec<u8> = index.perks.values().map(|p| p.level).collect();
+        assert!(levels.iter().any(|l| *l > 0), "the DATA level byte is kept");
+    }
+    if let Some(index) = parse(test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT, "Skyrim.esm") {
+        let (mut fragments, mut matched) = (0, 0);
+        for perk in index.perks.values() {
+            for fragment in &perk.script_fragments {
+                fragments += 1;
+                matched += usize::from(perk.entries.iter().any(|e| {
+                    matches!(&e.body, PerkEntryBody::EntryPoint { details, .. }
+                        if details.fragment_index.map(u32::from) == Some(fragment.index))
+                }));
+            }
+        }
+        eprintln!("[Skyrim/PERK] {fragments} fragments, {matched} keyed by an entry's EPF3 index");
+        assert_eq!((fragments, matched), (9, 9));
+    }
+    if let Some(index) = parse(test_paths::FO4_ENV, test_paths::FO4_DEFAULT, "Fallout4.esm") {
+        let avif = index
+            .perks
+            .values()
+            .flat_map(|p| &p.entries)
+            .filter(|e| {
+                matches!(&e.body, PerkEntryBody::EntryPoint { function_data: PerkFunctionData::AvifMult { .. }, .. })
+            })
+            .count();
+        eprintln!("[FO4/PERK] {avif} Actor-Value entries decoded to an AVIF plus a float");
+        assert!(avif > 0);
+    }
+}
+
 /// Parse `master` and check its `EXPL` rows `(form, editor id, damage, inner radius, outer radius)`, whose values
 /// are read from the master's raw bytes. Hands back the index for any further checks.
 fn assert_expl_rows(

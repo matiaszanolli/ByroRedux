@@ -1229,6 +1229,7 @@ mod scan_tests {
                         function_data: PerkFunctionData::Float(1.0),
                         formatter: Vec::new(),
                         extra_flags: Vec::new(),
+                        details: Default::default(),
                     },
                     condition_tabs: Vec::new(),
                 }],

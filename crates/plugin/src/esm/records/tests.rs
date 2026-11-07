@@ -3021,6 +3021,12 @@ const EXEMPT_NO_U32_READS: &[(&str, &str)] = &[
 const EXEMPT_JUSTIFIED: &[(&str, &str, &str)] = &[
     (
         "script_instance.rs",
+        "parse_skyrim_perk_fragments",
+        "The one u32 it reads per fragment is the \"Fragment Index\" an activate entry's `EPF3` names, not a FormID; \
+         the scripts section that carries the FormIDs is consumed by `ScriptInstanceData::parse_with_consumed` first.",
+    ),
+    (
+        "script_instance.rs",
         "parse_indexed_fragments",
         "The one u32 it reads is the fragment index (a terminal menu item id), \
          not a FormID; the scripts section that carries the FormIDs is consumed \

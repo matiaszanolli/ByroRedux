@@ -23,6 +23,7 @@ fn entry_point(
             function_data,
             formatter: Vec::new(),
             extra_flags: Vec::new(),
+            details: Default::default(),
         },
         condition_tabs: tabs,
     }

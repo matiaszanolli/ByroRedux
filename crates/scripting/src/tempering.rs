@@ -111,6 +111,7 @@ mod tests {
                 function_data: PerkFunctionData::Float(2.0),
                 formatter: Vec::new(),
                 extra_flags: Vec::new(),
+                details: Default::default(),
             },
             condition_tabs: vec![PerkConditionTab { tab: 1, conditions: vec![has_keyword] }],
         };

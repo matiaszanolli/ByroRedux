@@ -4,6 +4,7 @@ use super::super::common::{
     read_lstring_or_zstring, remap_efid, remap_fid, remap_fid_or_sentinel, CommonNamedFields,
 };
 use super::super::condition::{push_ctda, ConditionList};
+use super::super::script::{embedded_script_at, ScriptRecord};
 use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 use anyhow::Result;
@@ -206,6 +207,31 @@ pub enum PerkFunctionData {
     FormId(u32),
     /// Skyrim `EPFT == 7` — an lstring-table index.
     LString(u32),
+    /// Fallout 4 `EPFT == 8` (and `EPFT == 2` under the Actor-Value functions 5 / 12 / 13 / 14): an `AVIF`
+    /// FormID, not Skyrim's float-encoded index, and the float it is scaled by (xEdit FO4 `wbEPFDDecider`).
+    AvifMult {
+        avif: u32,
+        mult: f32,
+    },
+}
+
+/// What an entry-point entry carries beyond its math (PERK-DEC-005, -007, -008, -012): the script flags of
+/// `EPF3`, the unique entry id of `EPFB`, the activate choice's button label of `EPF2`, and the embedded script
+/// of a Fallout 3 / New Vegas activate entry.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PerkEntryDetails {
+    /// FO4 `EPFB` "Perk Entry ID (unique)": the id a `Fragment_Entry_NN` script fragment is keyed by.
+    pub entry_id: Option<u16>,
+    /// `EPF3` bit 0 "Run Immediately" (on FO3 / FNV the one boolean the `u16` is).
+    pub run_immediately: bool,
+    /// `EPF3` bit 1 "Replace Default" (Skyrim and Fallout 4 only).
+    pub replace_default: bool,
+    /// Skyrim `EPF3` "Fragment Index": the `VMAD` fragment this activate entry runs.
+    pub fragment_index: Option<u16>,
+    /// `EPF2` "Button Label", resolved: a string on FO3 / FNV, an lstring on Skyrim and Fallout 4.
+    pub button_label: String,
+    /// The FO3 / FNV activate entry's embedded script (`SCHR` / `SCDA` / `SCTX` / locals / references).
+    pub script: Option<ScriptRecord>,
 }
 
 /// One body of a `PRKE`/`PRKF` perk entry block. The block opens with
@@ -262,8 +288,10 @@ pub enum PerkEntryBody {
         /// Empty when absent. Captured-on-disk only.
         formatter: Vec<u8>,
         /// EPF3 — script flags (+ fragment index on Skyrim). Empty when
-        /// absent. Captured-on-disk only.
+        /// absent. The raw bytes; [`PerkEntryDetails`] holds them decoded.
         extra_flags: Vec<u8>,
+        /// The decoded `EPF2` / `EPF3` / `EPFB` and the embedded script.
+        details: PerkEntryDetails,
     },
 }
 
@@ -324,6 +352,13 @@ pub struct PerkRecord {
     /// DATA hidden flag — true for engine-only perks (NPC-only
     /// abilities, debug perks).
     pub hidden: bool,
+    /// DATA level byte ("Min Level" in xEdit FNV, "Level" in TES5 and FO4): PERK-DEC-002.
+    pub level: u8,
+    /// The record-level `CTDA` list, the conditions before the first `PRKE` (xEdit `wbConditions` on `PERK` in the
+    /// FO3, FNV, TES5 and FO4 definitions; Starfield has none at record level): PERK-DEC-001.
+    pub conditions: ConditionList,
+    /// `NNAM` "Next Perk" (Skyrim and Fallout 4), `0` when absent: PERK-DEC-004.
+    pub next_perk: u32,
     /// All `PRKE`/`PRKF` entry blocks in authoring order. Each entry
     /// has its own rank/priority and Quest/Ability/EntryPoint body.
     pub entries: Vec<PerkEntry>,
@@ -350,6 +385,8 @@ enum PerkBlock {
         /// Condition tabs accumulated for this entry (`PRKC` opens a tab,
         /// the `CTDA` sub-records that follow fill it).
         tabs: Vec<PerkConditionTab>,
+        /// The embedded-script sub-records of an FO3 / FNV activate entry, in order (PERK-DEC-008).
+        script_subs: Vec<SubRecord>,
     },
 }
 
@@ -374,7 +411,7 @@ fn decode_perk_epfd(
     };
     // TES5: functions 5, 12, 13, 14 take an actor value; FNV/FO3: only 5.
     let takes_actor_value = match game {
-        GameKind::Skyrim => matches!(function, 5 | 12 | 13 | 14),
+        GameKind::Skyrim | GameKind::Fallout4 => matches!(function, 5 | 12 | 13 | 14),
         GameKind::Fallout3NV => function == 5,
         _ => return PerkFunctionData::None,
     };
@@ -386,6 +423,16 @@ fn decode_perk_epfd(
         // rounds it. Vanilla Skyrim's `AlchemySkillBoosts` carries
         // 0x43080000 there; read as an integer that is an index of 1.1
         // billion.
+        // Fallout 4 (PERK-DEC-006): type 2 under the Actor-Value functions, and type 8, are an `AVIF` FormID plus
+        // a float; `wbActorValue` there is a FormID, not Skyrim's float-encoded index.
+        2 if takes_actor_value && game == GameKind::Fallout4 => match (u32_at(0), f32_at(4)) {
+            (Some(avif), Some(mult)) => Some(PerkFunctionData::AvifMult { avif: remap_fid(avif, remap), mult }),
+            _ => None,
+        },
+        8 if game == GameKind::Fallout4 => match (u32_at(0), f32_at(4)) {
+            (Some(avif), Some(mult)) => Some(PerkFunctionData::AvifMult { avif: remap_fid(avif, remap), mult }),
+            _ => None,
+        },
         2 if takes_actor_value => match (f32_at(0), f32_at(4)) {
             (Some(index), Some(mult)) if index.is_finite() && index >= 0.0 => {
                 Some(PerkFunctionData::ActorValueMult {
@@ -403,11 +450,11 @@ fn decode_perk_epfd(
         3 => u32_at(0).map(|id| PerkFunctionData::FormId(remap_fid(id, remap))),
         // Skyrim only: the spell of `Select Spell` / the activate choice.
         // FNV's type 4 is an embedded script with no EPFD.
-        4 | 5 if game == GameKind::Skyrim => {
+        4 | 5 if matches!(game, GameKind::Skyrim | GameKind::Fallout4) => {
             u32_at(0).map(|id| PerkFunctionData::FormId(remap_fid(id, remap)))
         }
         // An lstring-table index, not a FormID: never remapped.
-        7 if game == GameKind::Skyrim => u32_at(0).map(PerkFunctionData::LString),
+        7 if matches!(game, GameKind::Skyrim | GameKind::Fallout4) => u32_at(0).map(PerkFunctionData::LString),
         _ => None,
     };
     decoded.unwrap_or(PerkFunctionData::None)
@@ -434,10 +481,13 @@ pub fn parse_perk(
     out.full_name = common.full_name;
     // Skyrim's PERK fragment section has another layout (a file name, no script
     // entry), which the indexed decoder reads as no fragments.
-    if game != GameKind::Skyrim {
-        if let Some(vmad) = subs.iter().find(|sub| sub.sub_type == *b"VMAD") {
-            out.script_fragments = super::super::script_instance::parse_indexed_fragments(&vmad.data);
-        }
+    if let Some(vmad) = subs.iter().find(|sub| sub.sub_type == *b"VMAD") {
+        out.script_fragments = if game == GameKind::Skyrim {
+            // PERK-DEC-011: keyed by the activate entries' `EPF3` "Fragment Index".
+            super::super::script_instance::parse_skyrim_perk_fragments(&vmad.data)
+        } else {
+            super::super::script_instance::parse_indexed_fragments(&vmad.data)
+        };
     }
     for sub in subs {
         match &sub.sub_type {
@@ -447,13 +497,31 @@ pub fn parse_perk(
             // and its siblings); bytes a short record omits read as zero.
             // Starfield's DATA differs and is still read in this order
             // (`docs/prd/perk-entry-points.md`, PERK-DEC-009).
+            b"DATA" if matches!(block, PerkBlock::None) && !sub.data.is_empty() && game == GameKind::Starfield => {
+                // PERK-DEC-009 -- Starfield's DATA is category, skill group, [crew requirement], flags
+                // (xEdit `wbDefinitionsSF1.pas`; the crew byte is present from size 4): Trait, Playable and
+                // Hidden are bits 0, 1 and 2 of the last byte, and there is no level or rank count (ranks are
+                // the `PRRK` blocks, counted below).
+                if sub.data.len() >= 3 {
+                    let flags = sub.data[sub.data.len().min(4) - 1];
+                    out.is_trait = flags & 0x01 != 0;
+                    out.playable = flags & 0x02 != 0;
+                    out.hidden = flags & 0x04 != 0;
+                }
+            }
             b"DATA" if matches!(block, PerkBlock::None) && !sub.data.is_empty() => {
                 let mut r = SubReader::new(&sub.data);
                 out.is_trait = r.u8_or_default() != 0;
-                let _level = r.u8_or_default();
+                out.level = r.u8_or_default();
                 out.num_ranks = r.u8_or_default();
                 out.playable = r.u8_or_default() != 0;
                 out.hidden = r.u8_or_default() != 0;
+            }
+            // Starfield's ranks are `PRRK` ... `PRRF` blocks (PERK-DEC-009).
+            b"PRRK" if game == GameKind::Starfield => out.num_ranks = out.num_ranks.saturating_add(1),
+            // PERK-DEC-004.
+            b"NNAM" if sub.data.len() >= 4 => {
+                out.next_perk = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }
             // PRKE opens an entry block. Anything still open is
             // dropped silently — a stray PRKE with no closing PRKF on
@@ -470,6 +538,7 @@ pub fn parse_perk(
                     priority,
                     body: None,
                     tabs: Vec::new(),
+                    script_subs: Vec::new(),
                 };
             }
             // Per-entry DATA inside an Open block. Shape depends on
@@ -488,7 +557,9 @@ pub fn parse_perk(
                         // record's condition list.
                         0 if sub.data.len() >= 5 => {
                             let quest_form_id = remap_fid(r.u32_or_default(), remap);
-                            let stage = r.u8_or_default() as u16;
+                            // PERK-DEC-003 -- xEdit declares `Quest Stage` as `itU16`; a five-byte body (the one
+                            // byte this decode used to read) still reads.
+                            let stage = if sub.data.len() >= 6 { r.u16_or_default() } else { u16::from(r.u8_or_default()) };
                             Some(PerkEntryBody::Quest {
                                 quest_form_id,
                                 stage,
@@ -510,6 +581,7 @@ pub fn parse_perk(
                                 function_data: PerkFunctionData::None,
                                 formatter: Vec::new(),
                                 extra_flags: Vec::new(),
+                                details: PerkEntryDetails::default(),
                             })
                         }
                         _ => None,
@@ -557,22 +629,58 @@ pub fn parse_perk(
                     });
                 }
             }
+            // PERK-DEC-007 -- FO4 "Perk Entry ID (unique)".
+            b"EPFB" if sub.data.len() >= 2 => {
+                if let PerkBlock::Open {
+                    body: Some(PerkEntryBody::EntryPoint { details, .. }),
+                    ..
+                } = &mut block
+                {
+                    details.entry_id = Some(SubReader::new(&sub.data).u16_or_default());
+                }
+            }
+            // PERK-DEC-012 -- the activate choice's button label (a string on FO3 / FNV, an lstring elsewhere).
             b"EPF2" => {
                 if let PerkBlock::Open {
-                    body: Some(PerkEntryBody::EntryPoint { formatter, .. }),
+                    body: Some(PerkEntryBody::EntryPoint { formatter, details, .. }),
                     ..
                 } = &mut block
                 {
                     *formatter = sub.data.clone();
+                    details.button_label = read_lstring_or_zstring(&sub.data);
                 }
             }
+            // PERK-DEC-005 -- `Run Immediately` / `Replace Default` flag bits, and Skyrim's fragment index.
             b"EPF3" => {
                 if let PerkBlock::Open {
-                    body: Some(PerkEntryBody::EntryPoint { extra_flags, .. }),
+                    body: Some(PerkEntryBody::EntryPoint { extra_flags, details, .. }),
                     ..
                 } = &mut block
                 {
                     *extra_flags = sub.data.clone();
+                    if sub.data.len() >= 2 {
+                        let mut r = SubReader::new(&sub.data);
+                        let flags = r.u16_or_default();
+                        details.run_immediately = flags & 0x1 != 0;
+                        // FO3 / FNV's `EPF3` is the one boolean; the bit meanings are Skyrim and later.
+                        details.replace_default = game != GameKind::Fallout3NV && flags & 0x2 != 0;
+                        if game == GameKind::Skyrim && sub.data.len() >= 4 {
+                            details.fragment_index = Some(r.u16_or_default());
+                        }
+                    }
+                }
+            }
+            // PERK-DEC-008 -- an FO3 / FNV activate entry's embedded script follows `EPF3`.
+            b"SCHR" | b"SCDA" | b"SCTX" | b"SLSD" | b"SCVR" | b"SCRO" | b"SCRV" => {
+                if let PerkBlock::Open { script_subs, .. } = &mut block {
+                    script_subs.push(sub.clone());
+                }
+            }
+            // PERK-DEC-001 -- before the first `PRKE` a CTDA is the record-level condition list. Starfield has none
+            // there (its conditions sit in the `PRRK` rank blocks, undecoded).
+            b"CTDA" | b"CIS1" | b"CIS2" if matches!(block, PerkBlock::None) => {
+                if game != GameKind::Starfield {
+                    push_ctda(sub, remap, &mut out.conditions);
                 }
             }
             b"CTDA" | b"CIS1" | b"CIS2" => {
@@ -597,11 +705,17 @@ pub fn parse_perk(
                 if let PerkBlock::Open {
                     rank,
                     priority,
-                    body: Some(body),
+                    body: Some(mut body),
                     tabs,
+                    script_subs,
                     ..
                 } = prev
                 {
+                    if game == GameKind::Fallout3NV && !script_subs.is_empty() {
+                        if let PerkEntryBody::EntryPoint { details, .. } = &mut body {
+                            details.script = embedded_script_at(form_id, &script_subs, 0, remap).0;
+                        }
+                    }
                     out.entries.push(PerkEntry {
                         rank,
                         priority,
@@ -1384,6 +1498,7 @@ mod tests {
                 function_data: PerkFunctionData::Float(2.0),
                 formatter: Vec::new(),
                 extra_flags: Vec::new(),
+                details: Default::default(),
             }
         );
         assert!(p.entries[0].condition_tabs.is_empty());
@@ -1530,9 +1645,204 @@ mod tests {
         assert_eq!(decode(GameKind::Fallout3NV, 4, &[1, 2, 3, 4]), PerkFunctionData::None);
         assert_eq!(decode(GameKind::Fallout3NV, 6, b"text\0"), PerkFunctionData::None);
         assert_eq!(
-            decode(GameKind::Fallout4, 1, &1.0f32.to_le_bytes()),
-            PerkFunctionData::None
+            decode(GameKind::Fallout76, 1, &1.0f32.to_le_bytes()),
+            PerkFunctionData::None,
+            "FO76's PERK layout is not established"
         );
+    }
+
+    /// PERK-DEC-006 -- Fallout 4's `EPFD` union: type 1 float, type 2 two floats (an `AVIF` FormID and a float
+    /// under the Actor-Value functions 5 / 12 / 13 / 14), type 3 leveled item, 4 / 5 spell, 7 lstring, 8 `AVIF`.
+    #[test]
+    fn parse_perk_fo4_epfd_shapes() {
+        let decode = |function: u8, param: u8, bytes: Vec<u8>| {
+            let subs = vec![
+                sub(b"PRKE", [2u8, 0, 0]),
+                sub(b"DATA", [0u8, function, 1]),
+                sub(b"EPFT", [param]),
+                sub(b"EPFB", 0x0102u16.to_le_bytes()),
+                sub(b"EPFD", bytes),
+                sub(b"PRKF", []),
+            ];
+            let p = parse_perk(0x3, &subs, GameKind::Fallout4, &None);
+            let PerkEntryBody::EntryPoint { function_data, details, .. } = &p.entries[0].body else {
+                panic!()
+            };
+            assert_eq!(details.entry_id, Some(0x0102), "PERK-DEC-007");
+            function_data.clone()
+        };
+        let two = |a: u32, b: f32| [a.to_le_bytes(), b.to_le_bytes()].concat();
+        assert_eq!(decode(2, 1, 1.5f32.to_le_bytes().to_vec()), PerkFunctionData::Float(1.5));
+        assert_eq!(
+            decode(4, 2, [1.0f32.to_le_bytes(), 5.0f32.to_le_bytes()].concat()),
+            PerkFunctionData::Range { min: 1.0, max: 5.0 }
+        );
+        for function in [5, 12, 13, 14] {
+            assert_eq!(
+                decode(function, 2, two(0x2D4, 0.5)),
+                PerkFunctionData::AvifMult { avif: 0x2D4, mult: 0.5 },
+                "type 2 under function {function} is an AVIF FormID plus a float"
+            );
+        }
+        assert_eq!(decode(1, 8, two(0x2D5, 2.0)), PerkFunctionData::AvifMult { avif: 0x2D5, mult: 2.0 });
+        assert_eq!(decode(8, 3, 0x0A_B0C0u32.to_le_bytes().to_vec()), PerkFunctionData::FormId(0x0A_B0C0));
+        assert_eq!(decode(9, 4, 0x77u32.to_le_bytes().to_vec()), PerkFunctionData::FormId(0x77));
+        assert_eq!(decode(10, 5, 0x78u32.to_le_bytes().to_vec()), PerkFunctionData::FormId(0x78));
+        assert_eq!(decode(15, 7, 0x9u32.to_le_bytes().to_vec()), PerkFunctionData::LString(9));
+    }
+
+    fn test_ctda() -> Vec<u8> {
+        let mut c = vec![0u8; 28];
+        c[4..8].copy_from_slice(&1.0f32.to_le_bytes());
+        c[8..10].copy_from_slice(&0x47u16.to_le_bytes()); // function index
+        c
+    }
+
+    /// PERK-DEC-001, -002 -- the record-level conditions (the CTDAs before the first `PRKE`) and the level byte;
+    /// an entry's own CTDA stays on its tab.
+    #[test]
+    fn parse_perk_keeps_record_conditions() {
+        let subs = vec![
+            sub(b"DATA", [0u8, 7, 2, 1, 0]),
+            sub(b"CTDA", test_ctda()),
+            sub(b"PRKE", [0u8, 0, 0]),
+            sub(b"DATA", [1u8, 0, 0, 0, 5, 0]),
+            sub(b"CTDA", test_ctda()),
+            sub(b"PRKF", []),
+        ];
+        let p = parse_perk(0x3, &subs, GameKind::Skyrim, &None);
+        assert_eq!((p.level, p.num_ranks), (7, 2));
+        assert_eq!(p.conditions.len(), 1, "the CTDA before the first PRKE is the record's");
+        assert_eq!(p.entries[0].condition_tabs.len(), 1);
+        assert_eq!(p.entries[0].condition_tabs[0].conditions.len(), 1);
+    }
+
+    /// PERK-DEC-003 -- a Quest body's stage is the 16-bit field xEdit declares.
+    #[test]
+    fn parse_perk_quest_stage_is_u16() {
+        let mut quest = 0x0010_0020u32.to_le_bytes().to_vec();
+        quest.extend_from_slice(&300u16.to_le_bytes());
+        let subs = vec![sub(b"PRKE", [0u8, 0, 0]), sub(b"DATA", quest), sub(b"PRKF", [])];
+        let p = parse_perk(0x3, &subs, GameKind::Fallout4, &None);
+        assert_eq!(p.entries[0].body, PerkEntryBody::Quest { quest_form_id: 0x0010_0020, stage: 300 });
+    }
+
+    /// PERK-DEC-004 -- `NNAM` "Next Perk".
+    #[test]
+    fn parse_perk_reads_next_perk() {
+        let subs = vec![sub(b"NNAM", 0x0030_0040u32.to_le_bytes())];
+        assert_eq!(parse_perk(0x3, &subs, GameKind::Skyrim, &None).next_perk, 0x0030_0040);
+        assert_eq!(parse_perk(0x3, &[], GameKind::Skyrim, &None).next_perk, 0);
+    }
+
+    /// PERK-DEC-011 -- a Skyrim PERK's `VMAD` fragments are keyed by the index an activate entry's `EPF3` names.
+    #[test]
+    fn parse_perk_skyrim_fragments_key_on_epf3() {
+        let wstring = |v: &mut Vec<u8>, text: &str| {
+            v.extend_from_slice(&(text.len() as u16).to_le_bytes());
+            v.extend_from_slice(text.as_bytes());
+        };
+        let mut vmad = Vec::new();
+        vmad.extend_from_slice(&5i16.to_le_bytes());
+        vmad.extend_from_slice(&2i16.to_le_bytes());
+        vmad.extend_from_slice(&0u16.to_le_bytes());
+        vmad.push(2);
+        wstring(&mut vmad, "PRKF_Test");
+        vmad.extend_from_slice(&1u16.to_le_bytes());
+        vmad.extend_from_slice(&6u32.to_le_bytes());
+        vmad.push(0);
+        wstring(&mut vmad, "PRKF_Test");
+        wstring(&mut vmad, "Fragment_6");
+        let subs = vec![
+            sub(b"VMAD", vmad),
+            sub(b"PRKE", [2u8, 0, 0]),
+            sub(b"DATA", [0u8, 9, 1]),
+            sub(b"EPFT", [4u8]),
+            sub(b"EPF3", [0u8, 0, 6, 0]),
+            sub(b"PRKF", []),
+        ];
+        let p = parse_perk(0x3, &subs, GameKind::Skyrim, &None);
+        assert_eq!(p.script_fragments.len(), 1);
+        let PerkEntryBody::EntryPoint { details, .. } = &p.entries[0].body else { panic!() };
+        assert_eq!(details.fragment_index.map(u32::from), Some(p.script_fragments[0].index));
+    }
+
+    /// PERK-DEC-005, -012 -- `EPF3` decodes per game and `EPF2` is the button label.
+    #[test]
+    fn parse_perk_epf3_and_button_label_decode_per_game() {
+        let entry = |game, epf3: Vec<u8>, epf2: &[u8]| {
+            let subs = vec![
+                sub(b"PRKE", [2u8, 0, 0]),
+                sub(b"DATA", [0u8, 9, 1]),
+                sub(b"EPFT", [4u8]),
+                sub(b"EPF2", epf2),
+                sub(b"EPF3", epf3),
+                sub(b"PRKF", []),
+            ];
+            let p = parse_perk(0x3, &subs, game, &None);
+            let PerkEntryBody::EntryPoint { details, .. } = &p.entries[0].body else { panic!() };
+            details.clone()
+        };
+        // Skyrim: flags 0b11 and fragment index 6.
+        let d = entry(GameKind::Skyrim, vec![3, 0, 6, 0], b"Pick\0");
+        assert_eq!((d.run_immediately, d.replace_default, d.fragment_index), (true, true, Some(6)));
+        assert_eq!(d.button_label, "Pick");
+        // Fallout 4: flags only.
+        let d = entry(GameKind::Fallout4, vec![2, 0], b"Use\0");
+        assert_eq!((d.run_immediately, d.replace_default, d.fragment_index), (false, true, None));
+        // FO3 / FNV: the u16 is the one boolean "Run Immediately", whatever its value.
+        let d = entry(GameKind::Fallout3NV, vec![1, 0], b"Hack\0");
+        assert_eq!((d.run_immediately, d.replace_default, d.button_label.as_str()), (true, false, "Hack"));
+        let d = entry(GameKind::Fallout3NV, vec![2, 0], b"");
+        assert_eq!((d.run_immediately, d.replace_default), (false, false));
+    }
+
+    /// PERK-DEC-009 -- Starfield's `DATA` is category, skill group, [crew], flags with Trait / Playable / Hidden
+    /// in bits 0..2 of the last byte; the rank count is the `PRRK` blocks. It is not read in the FO3 byte order.
+    #[test]
+    fn parse_perk_starfield_data_is_not_read_in_the_fo3_byte_order() {
+        // category 3, skill group 2, crew 1, flags Trait + Playable.
+        let subs = vec![
+            sub(b"DATA", [3u8, 2, 1, 0x03]),
+            sub(b"PRRK", []),
+            sub(b"PRRF", []),
+            sub(b"PRRK", []),
+            sub(b"PRRF", []),
+        ];
+        let p = parse_perk(0x3, &subs, GameKind::Starfield, &None);
+        assert_eq!((p.is_trait, p.playable, p.hidden, p.num_ranks, p.level), (true, true, false, 2, 0));
+        // Without the crew byte the flags are byte 2.
+        let p = parse_perk(0x3, &[sub(b"DATA", [3u8, 2, 0x04])], GameKind::Starfield, &None);
+        assert_eq!((p.is_trait, p.playable, p.hidden), (false, false, true));
+    }
+
+    /// PERK-DEC-008 -- an FO3 / FNV activate entry's embedded script (`SCHR` / `SCDA` / `SCTX`) decodes into the
+    /// `ScriptRecord` the M47.3 interpreter runs.
+    #[test]
+    fn parse_perk_fnv_activate_entry_decodes_its_embedded_script() {
+        let mut schr = vec![0u8; 20];
+        schr[8..12].copy_from_slice(&3u32.to_le_bytes()); // compiled_size
+        let subs = vec![
+            sub(b"PRKE", [2u8, 0, 0]),
+            sub(b"DATA", [0u8, 9, 1]),
+            sub(b"EPFT", [4u8]),
+            sub(b"EPF2", b"Pick\0"),
+            sub(b"EPF3", [1u8, 0]),
+            sub(b"SCHR", schr),
+            sub(b"SCDA", [1u8, 2, 3]),
+            sub(b"SCTX", b"Begin Function { }\nEnd\0"),
+            sub(b"PRKF", []),
+        ];
+        let p = parse_perk(0x00A1_0001, &subs, GameKind::Fallout3NV, &None);
+        let PerkEntryBody::EntryPoint { details, .. } = &p.entries[0].body else { panic!() };
+        let script = details.script.as_ref().expect("the embedded script");
+        assert_eq!(script.form_id, 0x00A1_0001);
+        assert_eq!(script.compiled, vec![1, 2, 3]);
+        // A perk entry without one keeps `None`.
+        let bare = vec![sub(b"PRKE", [2u8, 0, 0]), sub(b"DATA", [0u8, 2, 1]), sub(b"PRKF", [])];
+        let p = parse_perk(1, &bare, GameKind::Fallout3NV, &None);
+        let PerkEntryBody::EntryPoint { details, .. } = &p.entries[0].body else { panic!() };
+        assert!(details.script.is_none());
     }
 
     #[test]

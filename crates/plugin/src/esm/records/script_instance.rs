@@ -833,6 +833,33 @@ pub fn parse_indexed_fragments(vmad: &[u8]) -> Vec<IndexedScriptFragment> {
     out
 }
 
+/// Decode a Skyrim `PERK` `VMAD` fragment section (xEdit TES5 `wbVMADFragmentedPERK`): after the script table,
+/// an `s8` version, the fragment file name, then a `u16` count of fragments, each a `u32` "Fragment Index", one
+/// unknown byte, the script name and the fragment name. Unlike the Fallout 4 / Starfield form there is no script
+/// entry in the section (PERK-DEC-011).
+pub fn parse_skyrim_perk_fragments(vmad: &[u8]) -> Vec<IndexedScriptFragment> {
+    let (_, Some(consumed)) = ScriptInstanceData::parse_with_consumed(vmad) else {
+        return Vec::new();
+    };
+    let Some(section) = vmad.get(consumed..) else {
+        return Vec::new();
+    };
+    let mut c = SubReader::new(section);
+    let (Ok(_version), Ok(_file_name), Ok(count)) = (c.u8(), c.wstring(), c.u16()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        let (Ok(index), Ok(_unknown), Ok(script_name), Ok(fragment_name)) =
+            (c.u32(), c.u8(), c.wstring(), c.wstring())
+        else {
+            break;
+        };
+        out.push(IndexedScriptFragment { index, script_name, fragment_name });
+    }
+    out
+}
+
 /// `count` script entries: name, status byte (version 4+), and the
 /// property table. The bool is `false` when a truncated entry or a
 /// property of unknowable width ended the decode early (what decoded is
@@ -1574,6 +1601,27 @@ mod tests {
         assert_eq!(fragments[0].fragment_name, "Fragment_0");
         assert_eq!(fragments[1].event, PackageFragmentEvent::Change);
         assert_eq!(fragments[1].fragment_name, "Fragment_2");
+    }
+
+    /// PERK-DEC-011 -- a Skyrim PERK fragment section: an s8 version, the file name, a u16 count, then per fragment
+    /// a u32 index, an unknown byte and the script and fragment names. No script entry, unlike the Fallout 4 form.
+    #[test]
+    fn skyrim_perk_fragments_decode_index_script_and_function() {
+        let mut vmad = empty_scripts_prefix();
+        vmad.push(2); // extra bind data version
+        push_wstring(&mut vmad, "PRKF_Test_00012345");
+        vmad.extend_from_slice(&2u16.to_le_bytes());
+        for (index, function) in [(0u32, "Fragment_0"), (3, "Fragment_3")] {
+            vmad.extend_from_slice(&index.to_le_bytes());
+            vmad.push(0);
+            push_wstring(&mut vmad, "PRKF_Test_00012345");
+            push_wstring(&mut vmad, function);
+        }
+        let fragments = parse_skyrim_perk_fragments(&vmad);
+        assert_eq!(fragments.len(), 2);
+        assert_eq!((fragments[1].index, fragments[1].script_name.as_str()), (3, "PRKF_Test_00012345"));
+        assert_eq!(fragments[1].fragment_name, "Fragment_3");
+        assert!(parse_skyrim_perk_fragments(&empty_scripts_prefix()).is_empty(), "no fragment section");
     }
 
     /// A TERM fragment section (xEdit `wbVMADFragmentedPERK`, Fallout 4): an

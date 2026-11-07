@@ -33,6 +33,7 @@ fn main() -> anyhow::Result<()> {
         let mut rank_priority: BTreeMap<(u8, u8), usize> = BTreeMap::new();
         let mut mismatches = Vec::new();
         let (mut quest, mut ability, mut entry_points) = (0usize, 0usize, 0usize);
+        let mut undecoded = 0usize;
         for perk in index.perks.values() {
             for entry in &perk.entries {
                 *rank_priority.entry((entry.rank, entry.priority)).or_default() += 1;
@@ -57,6 +58,7 @@ fn main() -> anyhow::Result<()> {
                             PerkFunctionData::ActorValueMult { .. } => "ActorValueMult",
                             PerkFunctionData::FormId(_) => "FormId",
                             PerkFunctionData::LString(_) => "LString",
+                            PerkFunctionData::AvifMult { .. } => "AvifMult",
                         };
                         *by_param.entry((*param_type, shape)).or_default() += 1;
                         let tab_ids: Vec<i8> =
@@ -70,15 +72,27 @@ fn main() -> anyhow::Result<()> {
                         *tabs.entry((*entry_point_index, tab_ids)).or_default() += 1;
                         // The decoded shape must be what the parameter type
                         // promises.
+                        // Starfield's `EPFD` shapes and `PRRK` rank blocks are not decoded (PERK-DEC-010): an entry
+                        // whose parameter type promises data but decoded to nothing is counted apart, not as a mismatch.
+                        if index.game == GameKind::Starfield
+                            && matches!(function_data, PerkFunctionData::None)
+                            && !matches!(*param_type, 0 | 4 | 6)
+                        {
+                            undecoded += 1;
+                            continue;
+                        }
                         let ok = match (index.game, *param_type, function_data) {
                             (_, 1, PerkFunctionData::Float(_)) => true,
                             (_, 2, PerkFunctionData::Range { .. }) => matches!(function, 4),
                             (_, 2, PerkFunctionData::ActorValueMult { .. }) => {
                                 matches!(function, 5 | 12 | 13 | 14)
                             }
+                            (GameKind::Fallout4, 2 | 8, PerkFunctionData::AvifMult { .. }) => {
+                                *param_type == 8 || matches!(function, 5 | 12 | 13 | 14)
+                            }
                             (_, 3, PerkFunctionData::FormId(_)) => true,
-                            (GameKind::Skyrim, 4 | 5, PerkFunctionData::FormId(_)) => true,
-                            (GameKind::Skyrim, 7, PerkFunctionData::LString(_)) => true,
+                            (GameKind::Skyrim | GameKind::Fallout4, 4 | 5, PerkFunctionData::FormId(_)) => true,
+                            (GameKind::Skyrim | GameKind::Fallout4, 7, PerkFunctionData::LString(_)) => true,
                             (_, 0 | 4 | 6, PerkFunctionData::None) => true,
                             _ => false,
                         };
@@ -202,6 +216,26 @@ fn main() -> anyhow::Result<()> {
             println!("  entry {entry_point:>3} tabs {tab_ids:?}: {n}");
         }
         println!("mismatches: {}", mismatches.len());
+        if index.game == GameKind::Starfield {
+            println!("undecoded (Starfield EPFD, not a mismatch): {undecoded}");
+        }
+        // PERK-DEC-011's Phase 0 verify: every fragment's index equals one activate entry's `EPF3` index (Skyrim) or
+        // `EPFB` (Fallout 4 / Starfield).
+        let (mut fragments, mut matched) = (0usize, 0usize);
+        for perk in index.perks.values() {
+            for fragment in &perk.script_fragments {
+                fragments += 1;
+                let hit = perk.entries.iter().any(|e| match &e.body {
+                    PerkEntryBody::EntryPoint { details, .. } => {
+                        details.fragment_index.map(u32::from) == Some(fragment.index)
+                            || details.entry_id.map(u32::from) == Some(fragment.index)
+                    }
+                    _ => false,
+                });
+                matched += usize::from(hit);
+            }
+        }
+        println!("fragments: {fragments}, matching an entry's index: {matched}");
         for line in mismatches.iter().take(20) {
             println!("  {line}");
         }

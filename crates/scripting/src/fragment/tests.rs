@@ -2403,6 +2403,7 @@ fn raised_perk_rank_reaches_entry_point_composition() {
             function_data: PerkFunctionData::Float(mult),
             formatter: Vec::new(),
             extra_flags: Vec::new(),
+            details: Default::default(),
         },
         condition_tabs: Vec::new(),
     };
