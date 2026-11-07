@@ -1948,7 +1948,24 @@ only, at both clock samples. Default blades were made 1.5x taller at this point 
 arid 6-13.5 units); the temperate default has since been retuned to 11-26
 (`c9433d501`, see §12.16). Both defaults' lengths were then doubled on a visual review
 ("grass would look better at about twice its length"): temperate 22-52 (mean 37), arid
-12-27 units; widths unchanged. A taste call, not a sourced figure.
+12-27 units. The arid width stayed at 1.1-2.25; the temperate width was widened
+1.4x, 1.2-2.35 to 1.7-3.3, with the doubled length (`4c48e5754`, 2026-11-04): at
+22-52 units a 1.2-2.35 blade is a needle and the dark ground shows through the
+gaps, which reads as transparent grass. A taste call, not a sourced figure.
+
+**Blade colour model (2026-11-04, `da6d65dc1`, `4c48e5754`; supersedes the
+luminance anchor described in the colour paragraph above).** A blade's colour is
+the ground's chroma and one neutral brightness: the colour source (the grass
+the ground is listed to grow, `AuthoredCover::union_colour`, else the ground's
+own splat colour) is taken to OKLab, its chroma plane is pushed by
+`GROUNDCOVER_CHROMA_VIBRANCE` (**1.6**, raised from 1.35 in `4c48e5754`; a
+multiple of the chroma at constant hue and lightness, art direction) and
+brought back into the sRGB gamut by `byroOklabToLinearInGamut`, at the single
+lightness `GROUNDCOVER_NEUTRAL_LUMA` (0.10, art direction). The root-luminance
+anchor and the `GROUNDCOVER_BASE/TIP_LUMA_RATIO` constants no longer exist; a
+ground-derived brightness is a regression. Where the ground sample is
+near-black (OKLab L under `GROUNDCOVER_CHROMA_MIN_LIGHTNESS`) the blade keeps its
+palette chroma.
 
 **LOD (§6 is superseded where it differs).** A 512-unit chunk draws at exactly one
 tier chosen from the camera distance to its centre (`include/groundcover_lod.glsl`,

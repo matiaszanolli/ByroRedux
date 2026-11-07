@@ -245,7 +245,10 @@ impl GroundCoverSpecies {
     /// is knee-height. (It was 6–14, ankle-height, and read as stubble; raised
     /// 1.5x to 9–21 on review, with the width raised 1.25x so the taller blade
     /// does not turn into a needle, then retuned to 11–26 / 1.2–2.35 — about
-    /// 1.25x taller and 1.35x wider again — for a fuller sward.)
+    /// 1.25x taller and 1.35x wider again — for a fuller sward; the length was
+    /// then doubled to 22–52 and the width widened 1.4x to 1.7–3.3 with it
+    /// (`docs/engine/exal-groundcover.md` §12.16). The arid species' width is
+    /// unchanged.)
     pub const DEFAULT_TEMPERATE: Self = Self {
         // The earlier 6–14 BU envelope made the fully populated near field
         // read as isolated sprouts at player height. A temperate sward needs
@@ -260,7 +263,7 @@ impl GroundCoverSpecies {
         // projected blade area per blade fills the sward without touching the
         // scatter's candidate budget or the blade arena sizes.
         // Doubled to 22–52 (mean 37) on a "grass would look better at about
-        // twice its length" review; widths deliberately left at 1.2–2.35. The
+        // twice its length" review (the width was widened with it, below). The
         // moment-matched mean/CV below follow the range, so the CV is unchanged.
         height_range: (22.0, 52.0),
         blade_length_mean: moment_matched_length((22.0, 52.0)).0,
