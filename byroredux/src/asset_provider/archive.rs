@@ -54,6 +54,27 @@ const LOOSE_ASSET_ROOTS: [&str; 4] = ["textures", "meshes", "materials", "geomet
 /// ever stops a tree no game could address (#6243).
 const MAX_LOOSE_DEPTH: usize = 32;
 
+/// How many directories one loose index walks in total, links followed. Cycles
+/// are cut by the ancestor stack ([`WalkState`]), which leaves one shape
+/// unbounded: a chain of directories that each link twice to the next walks
+/// 2^n times with no cycle in it. Real layouts (mod managers deploy by link)
+/// stay orders of magnitude under this; the budget only ends a tree built to
+/// blow it (#6243, #6483).
+const MAX_LOOSE_DIRS: usize = 262_144;
+
+/// The loose walk's cycle and work bookkeeping.
+struct WalkState {
+    /// Canonical paths of the directories currently being walked, root first.
+    /// A directory reached again while it is on this stack is a link loop.
+    ancestors: Vec<std::path::PathBuf>,
+    /// Directories walked so far, against [`MAX_LOOSE_DIRS`] (or a test's budget).
+    walked: usize,
+    budget: usize,
+    /// Links cut because they pointed back at an ancestor.
+    loops_cut: usize,
+    budget_hit: bool,
+}
+
 /// Loose files under a game's `Data` directory, indexed by the archive-style
 /// key they override (`textures\landscape\dirt01_d.dds`: lowercase,
 /// backslash-separated, relative to `Data`).
@@ -68,22 +89,51 @@ struct LooseDir {
     files: HashMap<String, std::path::PathBuf>,
 }
 
+/// The keys a loose index of `data_dir` holds under a directory budget, sorted. Test hook for
+/// the bound, which a real tree would need 2^18 directories to reach (#6483).
+#[cfg(test)]
+pub(super) fn loose_keys_bounded(data_dir: &std::path::Path, budget: usize) -> Vec<String> {
+    let mut keys: Vec<String> = LooseDir::index_bounded(data_dir, budget).files.into_keys().collect();
+    keys.sort();
+    keys
+}
+
 impl LooseDir {
     /// Index the asset roots under `data_dir`. Directory-name case is
     /// whatever the install happens to use, so the roots match
     /// case-insensitively.
     fn index(data_dir: &std::path::Path) -> Self {
+        Self::index_bounded(data_dir, MAX_LOOSE_DIRS)
+    }
+
+    fn index_bounded(data_dir: &std::path::Path, budget: usize) -> Self {
         let mut files = HashMap::new();
         let Ok(entries) = std::fs::read_dir(data_dir) else {
             return Self { files };
         };
-        let mut visited = std::collections::HashSet::new();
+        let mut state =
+            WalkState { ancestors: Vec::new(), walked: 0, budget, loops_cut: 0, budget_hit: false };
         let mut collisions = Vec::new();
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
             if LOOSE_ASSET_ROOTS.contains(&name.as_str()) && entry.path().is_dir() {
-                Self::walk(&entry.path(), &name, 0, &mut visited, &mut files, &mut collisions);
+                Self::walk(&entry.path(), &name, 0, &mut state, &mut files, &mut collisions);
             }
+        }
+        if state.budget_hit {
+            log::warn!(
+                "loose index of '{}' stopped after {} directories; links make the tree larger than \
+                 any real layout, so files past that point are not indexed",
+                data_dir.display(),
+                state.budget
+            );
+        }
+        if state.loops_cut > 0 {
+            log::debug!(
+                "loose index of '{}' cut {} link(s) that point back at a directory being walked",
+                data_dir.display(),
+                state.loops_cut
+            );
         }
         if let Some(example) = collisions.first() {
             // The archive readers count and warn on in-archive duplicates
@@ -100,16 +150,20 @@ impl LooseDir {
     }
 
     /// Index `dir` under `key`. Symlinked directories are followed (mod
-    /// managers deploy by link), but each directory is walked once, by its
-    /// canonical path: a link back to an ancestor, or a second link to a
-    /// directory already indexed, is not re-walked. Unguarded, one looping
-    /// link re-indexed its subtree ~40 times (until `ELOOP`) and two made
-    /// ~2^40 `read_dir` calls at boot (#6243).
+    /// managers deploy by link). A link back to a directory on the current
+    /// path (an ancestor stack of canonical paths) is a loop and is cut; a
+    /// second, legitimate link to a directory reached another way is walked
+    /// again and indexed under its own key, so `textures\a` and `textures\b`
+    /// both resolve when both link to one mod directory (#6483). Total work is
+    /// bounded by [`MAX_LOOSE_DIRS`]: unguarded, one looping link re-indexed
+    /// its subtree ~40 times (until `ELOOP`) and two made ~2^40 `read_dir`
+    /// calls at boot (#6243), and the ancestor stack alone does not bound a
+    /// chain of doubled links.
     fn walk(
         dir: &std::path::Path,
         key: &str,
         depth: usize,
-        visited: &mut std::collections::HashSet<std::path::PathBuf>,
+        state: &mut WalkState,
         files: &mut HashMap<String, std::path::PathBuf>,
         collisions: &mut Vec<String>,
     ) {
@@ -119,12 +173,19 @@ impl LooseDir {
         let Ok(canonical) = std::fs::canonicalize(dir) else {
             return;
         };
-        if !visited.insert(canonical) {
+        if state.ancestors.contains(&canonical) {
+            state.loops_cut += 1;
             return;
         }
+        if state.walked >= state.budget {
+            state.budget_hit = true;
+            return;
+        }
+        state.walked += 1;
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
+        state.ancestors.push(canonical);
         for entry in entries.flatten() {
             let child = format!(
                 "{key}\\{}",
@@ -132,7 +193,7 @@ impl LooseDir {
             );
             let path = entry.path();
             if path.is_dir() {
-                Self::walk(&path, &child, depth + 1, visited, files, collisions);
+                Self::walk(&path, &child, depth + 1, state, files, collisions);
             } else if path.is_file() {
                 // `read_dir` order is arbitrary, so a colliding key must
                 // resolve by something stable: the greater path wins, the
@@ -150,6 +211,7 @@ impl LooseDir {
                 }
             }
         }
+        state.ancestors.pop();
     }
 
     fn key(path: &str) -> String {

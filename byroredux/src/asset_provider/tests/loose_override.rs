@@ -125,6 +125,82 @@ fn loose_tier_walks_a_symlink_loop_once() {
     assert_eq!(loose.list_files().len(), 2, "{:?}", loose.list_files());
 }
 
+/// #6483 — two links to one directory are two legitimate paths, and the game
+/// resolves both. The old global visited set indexed the files under whichever
+/// link `read_dir` yielded first and dropped the other, silently.
+#[cfg(unix)]
+#[test]
+fn loose_tier_indexes_a_directory_linked_from_two_places_under_both_keys() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(tmp.path(), "mods/x/tex/shared.dds", b"shared");
+    write(tmp.path(), "textures/own.dds", b"own");
+    let textures = tmp.path().join("textures");
+    std::os::unix::fs::symlink(tmp.path().join("mods/x"), textures.join("a")).unwrap();
+    std::os::unix::fs::symlink(tmp.path().join("mods/x"), textures.join("b")).unwrap();
+
+    let loose = Archive::open_loose(tmp.path()).expect("loose assets present");
+    assert!(loose.contains(r"textures\a\tex\shared.dds"), "{:?}", loose.list_files());
+    assert!(loose.contains(r"textures\b\tex\shared.dds"), "{:?}", loose.list_files());
+    assert!(loose.contains(r"textures\own.dds"));
+    assert_eq!(loose.list_files().len(), 3, "{:?}", loose.list_files());
+}
+
+/// #6483 — a loop that runs through a SECOND directory (a -> b -> a) is cut at the
+/// ancestor, not at "already seen", so both directories still index their files.
+#[cfg(unix)]
+#[test]
+fn loose_tier_cuts_a_two_directory_loop_at_the_ancestor() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(tmp.path(), "textures/a/fa.dds", b"a");
+    write(tmp.path(), "textures/b/fb.dds", b"b");
+    let textures = tmp.path().join("textures");
+    std::os::unix::fs::symlink(textures.join("b"), textures.join("a/to_b")).unwrap();
+    std::os::unix::fs::symlink(textures.join("a"), textures.join("b/to_a")).unwrap();
+
+    // Each directory is reached directly and once through the other's link; the link back
+    // (b/to_a under a/to_b, a/to_b under b/to_a) is the loop and is cut. The budget is not involved.
+    let keys = super::super::archive::loose_keys_bounded(tmp.path(), 1_000);
+    assert_eq!(
+        keys,
+        [
+            r"textures\a\fa.dds",
+            r"textures\a\to_b\fb.dds",
+            r"textures\b\fb.dds",
+            r"textures\b\to_a\fa.dds",
+        ]
+    );
+}
+
+/// #6483 — the ancestor stack alone does not bound a chain of doubled links
+/// (d0 links twice to d1, d1 twice to d2, ...: 2^n walks, no loop in it); the
+/// directory budget does, and the index it returns is partial, not a hang.
+#[cfg(unix)]
+#[test]
+fn loose_tier_bounds_a_chain_of_doubled_links() {
+    let tmp = tempfile::tempdir().unwrap();
+    let depth = 24; // 2^24 walks unbounded
+    for level in 0..=depth {
+        write(tmp.path(), &format!("mods/d{level}/f{level}.dds"), b"x");
+    }
+    for level in 0..depth {
+        for link in ["l0", "l1"] {
+            std::os::unix::fs::symlink(
+                tmp.path().join(format!("mods/d{}", level + 1)),
+                tmp.path().join(format!("mods/d{level}/{link}")),
+            )
+            .unwrap();
+        }
+    }
+    std::fs::create_dir_all(tmp.path().join("textures")).unwrap();
+    std::os::unix::fs::symlink(tmp.path().join("mods/d0"), tmp.path().join("textures/root")).unwrap();
+
+    let keys = super::super::archive::loose_keys_bounded(tmp.path(), 500);
+    // `textures` plus 499 chain directories use the 500-directory budget; each chain directory holds
+    // one file (the links are directories, not files), so exactly 499 files are indexed and the walk
+    // ends instead of making 2^24 passes.
+    assert_eq!(keys.len(), 499, "{keys:?}");
+}
+
 /// Both providers pick the tier up from `--esm` alone.
 #[test]
 fn providers_serve_loose_assets() {
