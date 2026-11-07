@@ -37,6 +37,66 @@ const SMOKE_FALLBACK_ALBEDO: [f32; 3] = [0.72, 0.67, 0.61];
 /// behaviour are exactly the authored ones.
 pub(crate) const BASE_FOG_STRENGTH: f32 = 0.8;
 
+/// #6726 / VLM-SH-010 — the exterior haze floor: a minimum outdoor extinction the engine supplies
+/// so that sunlight shafts are visible on clear weather. This is an ENGINE CHOICE (the owner decided
+/// the PRD's Q7 for it, VLM-HF-008), not an authored value: FNV's clear-weather medium is
+/// 0.000349 / m, about 4.5 % optical depth over the 128 m froxel range, too thin for a shaft to read.
+///
+/// The extinction it asks for, in the GPU's units (after [`BASE_FOG_STRENGTH`]), is
+/// `base × (1 + gain × (1 − sin e)³) × fade(sin e)` for the sun elevation `e`:
+/// the cubed term thickens the haze smoothly toward the horizon, where the slanted path through air and
+/// dust is longer and a low sun's shafts are the long, visible ones; the fade takes it to zero over the
+/// last few degrees around the horizon, so night has none. It only ever RAISES the medium
+/// ([`FogMedium::with_exterior_haze_floor`] takes a maximum), so an authored haze thicker than the floor
+/// keeps its own value, and interiors never see it. The defaults are chosen from captures (VLM-SH-011).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ExteriorHazeFloor {
+    /// Extinction per metre with the sun high; `0` turns the floor off.
+    pub(crate) base_per_meter: f32,
+    /// Extra multiple of `base_per_meter` gained as the sun reaches the horizon.
+    pub(crate) horizon_gain: f32,
+}
+
+impl byroredux_core::ecs::resource::Resource for ExteriorHazeFloor {}
+
+impl ExteriorHazeFloor {
+    pub(crate) const DEFAULT: Self = Self { base_per_meter: 0.0006, horizon_gain: 6.0 };
+    pub(crate) const OFF: Self = Self { base_per_meter: 0.0, horizon_gain: 0.0 };
+
+    /// A diagnostic override from `BYRO_HAZE_FLOOR`: `off`, or `<base_per_m>[,<horizon_gain>]` (same
+    /// ranges as `fog.haze`). Anything else is ignored with a warning and the engine default stands.
+    /// Boot-time only, like the `BYRO_FOG_*` overrides: it lets a capture script launch each variant as
+    /// a fresh, deterministic process without a console session.
+    pub(crate) fn from_env_value(value: &str) -> Option<Self> {
+        let value = value.trim();
+        if value.eq_ignore_ascii_case("off") {
+            return Some(Self::OFF);
+        }
+        let mut parts = value.split(',');
+        let base: f32 = parts.next()?.trim().parse().ok().filter(|v| (0.0..=0.05).contains(v))?;
+        let gain = match parts.next() {
+            None => Self::DEFAULT.horizon_gain,
+            Some(gain) => gain.trim().parse().ok().filter(|v| (0.0..=20.0).contains(v))?,
+        };
+        parts.next().is_none().then_some(Self { base_per_meter: base, horizon_gain: gain })
+    }
+
+    /// The floor's extinction per metre (GPU units) for a sun whose elevation has sine `sun_sin`
+    /// (`sun_direction.y`, the direction TO the sun). Non-finite input gives no floor.
+    pub(crate) fn extinction_per_meter(&self, sun_sin: f32) -> f32 {
+        if !sun_sin.is_finite() || !self.base_per_meter.is_finite() || self.base_per_meter <= 0.0 {
+            return 0.0;
+        }
+        let sin = sun_sin.clamp(-1.0, 1.0);
+        // Zero at and below -0.05 (about three degrees under the horizon), full at 0.10 (about six
+        // degrees above it), smooth between, so dawn and dusk ramp the haze instead of switching it.
+        let t = ((sin + 0.05) / 0.15).clamp(0.0, 1.0);
+        let fade = t * t * (3.0 - 2.0 * t);
+        let low = (1.0 - sin.max(0.0)).powi(3);
+        self.base_per_meter * (1.0 + self.horizon_gain.max(0.0) * low) * fade
+    }
+}
+
 /// Authored fog colour → the radiance the medium in-scatters.
 ///
 /// The legacy fog stage blended the finished pixel toward the fog colour in
@@ -141,6 +201,18 @@ impl FogMedium {
     pub(crate) fn with_sky_aperture_dust_floor(mut self, enabled: bool) -> Self {
         if enabled {
             self.extinction_per_meter = self.extinction_per_meter.max(0.005);
+        }
+        self
+    }
+
+    /// Raise the medium so the GPU integrates at least `floor_per_meter` (the exterior haze floor,
+    /// VLM-SH-010). `floor_per_meter` is in the GPU's units, i.e. AFTER [`BASE_FOG_STRENGTH`] scales
+    /// the medium at the frame boundary, so it is divided back out here. Only raises: a thicker
+    /// authored medium keeps its own coefficient, and a zero or non-finite floor changes nothing.
+    pub(crate) fn with_exterior_haze_floor(mut self, floor_per_meter: f32) -> Self {
+        if floor_per_meter.is_finite() && floor_per_meter > 0.0 {
+            self.extinction_per_meter =
+                self.extinction_per_meter.max(floor_per_meter / BASE_FOG_STRENGTH);
         }
         self
     }
@@ -2639,5 +2711,112 @@ mod scale_height_tests {
         assert!(
             (day.lerp(night, 1.0).scale_height_meters - night.scale_height_meters).abs() < 1e-4
         );
+    }
+}
+
+#[cfg(test)]
+mod exterior_haze_floor_tests {
+    use super::*;
+
+    const FLOOR: ExteriorHazeFloor = ExteriorHazeFloor::DEFAULT;
+
+    /// VLM-SH-010: rises toward the horizon, smoothly. The sine of the elevation falls from 1 (noon)
+    /// to 0.1 (about 6 degrees), and the floor must never fall as it does.
+    #[test]
+    fn the_floor_rises_as_the_sun_lowers() {
+        let mut last = 0.0;
+        for step in 0..=90 {
+            let sin = 1.0 - step as f32 * 0.01; // 1.00 .. 0.10
+            let value = FLOOR.extinction_per_meter(sin);
+            assert!(value >= last - 1e-9, "floor fell from {last} to {value} at sin {sin}");
+            last = value;
+        }
+        let (noon, horizon) = (FLOOR.extinction_per_meter(1.0), FLOOR.extinction_per_meter(0.10));
+        assert!((noon - FLOOR.base_per_meter).abs() < 1e-9, "noon is the base: {noon}");
+        assert!(horizon > noon * 2.0, "a low sun sees clearly thicker haze: {noon} -> {horizon}");
+    }
+
+    /// VLM-SH-010: zero below the horizon at night, with no jump (smooth over the dusk).
+    #[test]
+    fn the_floor_is_zero_at_night_and_ramps_through_dusk() {
+        assert_eq!(FLOOR.extinction_per_meter(-0.05), 0.0);
+        assert_eq!(FLOOR.extinction_per_meter(-0.5), 0.0);
+        assert_eq!(FLOOR.extinction_per_meter(-1.0), 0.0);
+        let mut last = 0.0;
+        for step in 0..=300 {
+            let sin = -0.05 + step as f32 * 0.0005; // -0.05 .. 0.10
+            let value = FLOOR.extinction_per_meter(sin);
+            assert!(value - last < FLOOR.base_per_meter * 0.05, "a {last} -> {value} jump at sin {sin}");
+            last = value;
+        }
+    }
+
+    #[test]
+    fn an_off_floor_and_bad_input_give_nothing() {
+        assert_eq!(ExteriorHazeFloor::OFF.extinction_per_meter(0.5), 0.0);
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(FLOOR.extinction_per_meter(bad), 0.0);
+        }
+        let negative = ExteriorHazeFloor { base_per_meter: -1.0, horizon_gain: 3.0 };
+        assert_eq!(negative.extinction_per_meter(0.5), 0.0);
+    }
+
+    /// VLM-SH-010: it only ever raises the medium. The floor is in the GPU's units, so the frame
+    /// boundary's [`BASE_FOG_STRENGTH`] scale is divided back out: the GPU integrates
+    /// `max(authored * 0.8, floor)`.
+    #[test]
+    fn the_floor_raises_a_thin_medium_and_never_thins_a_thick_one() {
+        let thin = FogMedium { extinction_per_meter: 0.0004, ..FogMedium::DISABLED };
+        let raised = thin.with_exterior_haze_floor(0.001);
+        assert!((raised.extinction_per_meter * BASE_FOG_STRENGTH - 0.001).abs() < 1e-9);
+
+        let thick = FogMedium { extinction_per_meter: 0.01, ..FogMedium::DISABLED };
+        assert_eq!(thick.with_exterior_haze_floor(0.001), thick, "authored haze is untouched");
+        assert_eq!(thin.with_exterior_haze_floor(0.0), thin);
+        assert_eq!(thin.with_exterior_haze_floor(f32::NAN), thin);
+        assert_eq!(thin.with_exterior_haze_floor(-1.0), thin);
+        // Everything but the coefficient is the authored medium's.
+        assert_eq!(raised.single_scatter_albedo, thin.single_scatter_albedo);
+        assert_eq!(raised.scale_height_meters, thin.scale_height_meters);
+    }
+
+    /// The default is meaningful against the measured clear FNV exterior (0.000349 / m on the GPU):
+    /// it raises it at noon and by a clear multiple near the horizon.
+    #[test]
+    fn the_default_lifts_fnvs_clear_weather_medium() {
+        const FNV_CLEAR_GPU: f32 = 0.000349;
+        assert!(FLOOR.extinction_per_meter(1.0) > FNV_CLEAR_GPU);
+        assert!(FLOOR.extinction_per_meter(0.1) > 3.0 * FNV_CLEAR_GPU);
+    }
+
+    /// VLM-SH-010: applied once, at the frame builder, to exteriors only; and reported on `env.health`
+    /// from the same helper that applies it (VLM-SH-011).
+    #[test]
+    fn the_floor_is_applied_to_exteriors_only_at_the_frame_boundary() {
+        let render = include_str!("render/mod.rs");
+        let at = render.find(".with_exterior_haze_floor(").expect("the frame builder applies the floor");
+        let window = &render[at..at + 400];
+        assert!(window.contains("!lighting.is_interior"), "exterior only: {window}");
+        assert!(window.contains("!fog_overridden"), "not under a diagnostic fog override: {window}");
+        assert_eq!(render.matches(".with_exterior_haze_floor(").count(), 1, "one application point");
+        let health = include_str!("commands/env_health.rs");
+        assert!(health.contains("exterior_haze_floor_now"), "env.health reports the applied value");
+    }
+
+    #[test]
+    fn the_env_override_parses_off_a_base_and_a_gain_and_refuses_the_rest() {
+        assert_eq!(ExteriorHazeFloor::from_env_value("off"), Some(ExteriorHazeFloor::OFF));
+        assert_eq!(ExteriorHazeFloor::from_env_value(" OFF "), Some(ExteriorHazeFloor::OFF));
+        assert_eq!(
+            ExteriorHazeFloor::from_env_value("0.002"),
+            Some(ExteriorHazeFloor { base_per_meter: 0.002, horizon_gain: ExteriorHazeFloor::DEFAULT.horizon_gain })
+        );
+        assert_eq!(
+            ExteriorHazeFloor::from_env_value("0.004, 6"),
+            Some(ExteriorHazeFloor { base_per_meter: 0.004, horizon_gain: 6.0 })
+        );
+        for bad in ["", "x", "-1", "0.5", "0.001,99", "0.001,2,3", "nan"] {
+            assert_eq!(ExteriorHazeFloor::from_env_value(bad), None, "{bad:?}");
+        }
     }
 }

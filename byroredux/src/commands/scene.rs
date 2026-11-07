@@ -406,6 +406,63 @@ impl ConsoleCommand for LightAttenCommand {
 /// Mutates the `ExposureTuning` resource; the draw loop pushes it into the
 /// renderer before the next `draw_frame`, so changes land within a frame.
 /// Pair with `--bench-hold` + `byro-dbg`.
+/// `fog.haze` — inspect or retune the exterior haze floor (VLM-SH-010 / VLM-SH-011).
+///
+/// The floor is an engine-supplied minimum outdoor extinction that makes sunlight shafts read on clear
+/// weather. `env.health` reports its live value; this command is how a capture compares floor-off and
+/// floor-on, and how the owner tunes the default.
+pub(crate) struct FogHazeCommand;
+
+impl ConsoleCommand for FogHazeCommand {
+    fn name(&self) -> &str {
+        "fog.haze"
+    }
+
+    fn description(&self) -> &str {
+        "Exterior haze floor: fog.haze | fog.haze off | fog.haze default | fog.haze <base_per_m> [horizon_gain]"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        use crate::fog::ExteriorHazeFloor;
+        const USAGE: &str = "usage: fog.haze [off | default | <base_per_m 0..0.05> [horizon_gain 0..20]]";
+        if world.try_resource::<ExteriorHazeFloor>().is_none() {
+            return CommandOutput::error(
+                "fog.haze: ExteriorHazeFloor resource not present (only in a live render session)",
+            );
+        }
+        let tokens: Vec<&str> = args.split_whitespace().collect();
+        let next = match tokens.as_slice() {
+            [] => None,
+            [one] if one.eq_ignore_ascii_case("off") => Some(ExteriorHazeFloor::OFF),
+            [one] if one.eq_ignore_ascii_case("default") => Some(ExteriorHazeFloor::DEFAULT),
+            [base] | [base, _] => {
+                let Some(base) = base.parse::<f32>().ok().filter(|v| (0.0..=0.05).contains(v)) else {
+                    return CommandOutput::error(USAGE);
+                };
+                let gain = match tokens.get(1) {
+                    None => world.resource::<ExteriorHazeFloor>().horizon_gain,
+                    Some(gain) => match gain.parse::<f32>().ok().filter(|v| (0.0..=20.0).contains(v)) {
+                        Some(gain) => gain,
+                        None => return CommandOutput::error(USAGE),
+                    },
+                };
+                Some(ExteriorHazeFloor { base_per_meter: base, horizon_gain: gain })
+            }
+            _ => return CommandOutput::error(USAGE),
+        };
+        if let Some(next) = next {
+            world_resource_set::<ExteriorHazeFloor>(world, |floor| *floor = next);
+        }
+        let floor = *world.resource::<ExteriorHazeFloor>();
+        CommandOutput::lines(vec![format!(
+            "fog.haze: base={:.6}/m horizon_gain={:.2} live={:.6}/m (exterior only; `env.health` shows it applied)",
+            floor.base_per_meter,
+            floor.horizon_gain,
+            crate::render::exterior_haze_floor_now(world),
+        )])
+    }
+}
+
 pub(crate) struct ExposureCommand;
 impl ConsoleCommand for ExposureCommand {
     fn name(&self) -> &str {
@@ -1632,5 +1689,36 @@ mod mat_set_tests {
                 .glass_refraction_scale,
             0.85
         );
+    }
+
+    /// VLM-SH-011: the floor is retunable at run time; a bad value is refused and changes nothing.
+    #[test]
+    fn fog_haze_retunes_the_floor_and_refuses_bad_values() {
+        use crate::fog::ExteriorHazeFloor;
+        let mut world = World::new();
+        world.insert_resource(ExteriorHazeFloor::DEFAULT);
+        let current = |world: &World| *world.resource::<ExteriorHazeFloor>();
+
+        let shown = FogHazeCommand.execute(&world, "").lines.join("\n");
+        assert!(shown.contains("base=0.000600") && shown.contains("horizon_gain=6.00"), "{shown}");
+        assert_eq!(current(&world), ExteriorHazeFloor::DEFAULT, "a bare query changes nothing");
+
+        FogHazeCommand.execute(&world, "off");
+        assert_eq!(current(&world), ExteriorHazeFloor::OFF);
+        FogHazeCommand.execute(&world, "0.002 4");
+        assert_eq!(current(&world), ExteriorHazeFloor { base_per_meter: 0.002, horizon_gain: 4.0 });
+        FogHazeCommand.execute(&world, "0.001");
+        assert_eq!(
+            current(&world),
+            ExteriorHazeFloor { base_per_meter: 0.001, horizon_gain: 4.0 },
+            "a single value keeps the gain"
+        );
+        for bad in ["nan", "-0.1", "0.5", "0.001 99", "0.001 x", "0.001 2 3", "wat"] {
+            let out = FogHazeCommand.execute(&world, bad);
+            assert!(out.lines.join("\n").contains("usage"), "{bad}: {:?}", out.lines);
+            assert_eq!(current(&world), ExteriorHazeFloor { base_per_meter: 0.001, horizon_gain: 4.0 }, "{bad}");
+        }
+        FogHazeCommand.execute(&world, "default");
+        assert_eq!(current(&world), ExteriorHazeFloor::DEFAULT);
     }
 }

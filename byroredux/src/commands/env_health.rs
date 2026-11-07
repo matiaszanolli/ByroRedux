@@ -547,6 +547,21 @@ impl ConsoleCommand for EnvHealthCommand {
                 },
             ));
         }
+        // VLM-SH-011 — the exterior haze floor's live value: the number the frame builder applies
+        // to an exterior's medium right now (0 indoors, below the horizon, or with the floor off).
+        {
+            let floor = world
+                .try_resource::<crate::fog::ExteriorHazeFloor>()
+                .map_or(crate::fog::ExteriorHazeFloor::DEFAULT, |floor| *floor);
+            let exterior = lighting.as_deref().is_some_and(|lit| !lit.is_interior);
+            lines.push(format!(
+                "env: haze_floor={:.6}/m (exterior only{}; base {:.6}/m, horizon gain {:.2})",
+                if exterior { crate::render::exterior_haze_floor_now(world) } else { 0.0 },
+                if exterior { "" } else { ", inactive here" },
+                floor.base_per_meter,
+                floor.horizon_gain,
+            ));
+        }
         if let Some(sky) = sky.as_deref() {
             lines.push(format!(
                 "env: sun dir=[{:.3}, {:.3}, {:.3}] intensity={:.3}",

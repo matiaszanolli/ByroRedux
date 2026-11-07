@@ -959,6 +959,19 @@ pub(crate) fn sort_draw_commands(draw_commands: &mut [DrawCommand]) -> usize {
     raster_len
 }
 
+/// The exterior haze floor's extinction per metre (GPU units) for the current sun, from the
+/// [`crate::fog::ExteriorHazeFloor`] resource (the engine default when none is installed) and the
+/// live sun elevation. `0` without sky parameters. Shared by the frame builder and `env.health`, so
+/// the value that is reported is the value that is applied (VLM-SH-010, VLM-SH-011).
+pub(crate) fn exterior_haze_floor_now(world: &World) -> f32 {
+    let floor = world
+        .try_resource::<crate::fog::ExteriorHazeFloor>()
+        .map_or(crate::fog::ExteriorHazeFloor::DEFAULT, |floor| *floor);
+    world
+        .try_resource::<crate::components::SkyParamsRes>()
+        .map_or(0.0, |sky| floor.extinction_per_meter(sky.sun_direction[1]))
+}
+
 /// Per-frame view + lighting + sky payload returned by
 /// [`build_render_data`]. The draw command list / GPU light list /
 /// bone palette / skin offsets / material table are written into the
@@ -1392,6 +1405,16 @@ pub(crate) fn build_render_data(
     } else {
         authored_fog_medium
     }
+    // VLM-SH-010 — the exterior haze floor, the exterior counterpart of the interior dust floor below:
+    // an engine-supplied minimum so sunlight shafts read on clear weather. Exterior only, and not when a
+    // diagnostic fog override is steering the medium.
+    .with_exterior_haze_floor(if !fog_overridden
+        && cell_lit.as_ref().is_some_and(|lighting| !lighting.is_interior)
+    {
+        exterior_haze_floor_now(world)
+    } else {
+        0.0
+    })
     .with_sky_aperture_dust_floor(
         !fog_overridden
             && cell_lit.as_ref().is_some_and(|lighting| lighting.is_interior)

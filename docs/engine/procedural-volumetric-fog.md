@@ -446,6 +446,35 @@ reference 160×90×64 grid remain 0.2–0.5 ms inject and
 0.3–0.8 ms integrate. Record inject and integrate separately before treating
 the current combined timer as a final budget verdict.
 
+### Exterior shafts and the haze floor (2026-11-07, #6726)
+
+Measured on an RTX 4070 Ti at 1280×720, TAA, in `renderer-stepped` with a pinned camera, where a repeat
+capture is bit-identical (noise exactly 0). Reproduce with `docs/smoke-tests/exterior-shafts.sh` (the lab)
+and `BYRO_HAZE_FLOOR` / `fog.haze` (the floor).
+
+- **Clear weather is thin.** FNV `WastelandNV` at rest: `gpu_extinction` 0.000349 / m, about 4.5 % optical
+  depth over the 128 m froxel range (`env.health`).
+- **The froxel sun term already resolves shafts.** In `--shaft-lab` (the engine's fallback exterior fog, 0.000622 / m
+  on the GPU, about 1.8 times FNV's clear weather; a 10° sun behind 12 slats, camera on the
+  sun's axis, in-scatter term only) the lit-versus-shadow contrast across the wall is 0.190 with no floor,
+  0.170 at the first default and 0.111 at 0.004 / m; the solid-wall control reads 0.001–0.002. Off the axis
+  (20 m to one side) each view ray crosses the 3 m slat pitch every few metres and averages the stripes
+  away, so the lab's camera sits on the axis and the gate says so.
+- **What a floor buys is absolute brightness, at a cost in relative contrast.** Lit air reads 66, 98, 193 on
+  the term's 8-bit scale at floor off, 0.0015 / m and 0.004 / m, and the contrast falls as above; the
+  side regions of the finished frame darken by 1.5 % and 7.9 %. So the floor's shape is a thin noon value
+  that rises steeply toward the horizon, where long shafts are actually seen (VLM-SH-010).
+- **Default: `0.0006 / m × (1 + 6 × (1 − sin e)³)`, faded to zero around the horizon.** That is 0.0006 / m at
+  noon, 0.0027 / m at a 10° sun and 0.0042 / m at the horizon. It makes the lab's open scene read 0.155
+  against the control's 0.002 (`exterior-shafts.sh` PASS).
+- **Cost to the authored look, FNV Goodsprings, floor off versus default, the same pinned pose:** noon moves
+  the frame by 1.3 / 255 mean absolute (+2.8 % mean luminance, +5.3 % in the sky); sunrise by 7.7 / 255 (a
+  dark frame, so +47 % relative). Both are a faint veil, not a repaint. The owner reviews these
+  (VLM-SH-011); the floor is adjustable at run time.
+- **Not done yet:** the golden frame (VLM-SH-003), the alpha-tested card (VLM-SH-009), the per-fixture noon and
+  low-sun captures on the other titles (VLM-SH-006), the range and cloud-shadow work (VLM-SH-004, -005), and
+  the separate inject and integrate milliseconds (VLM-SH-008).
+
 ## Corpus findings
 
 - The canonical XCLL size map remains game-dispatched and corpus-verified:

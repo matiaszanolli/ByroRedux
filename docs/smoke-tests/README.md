@@ -12,6 +12,14 @@ the opening. Build the debug binary first;
 set `VK_ICD_FILENAMES` and `BYRO_ALLOW_CPU_VULKAN_DEVICE=1` to use lavapipe.
 The captures and logs remain in the printed `/tmp/byro-godray-smoke.*` directory.
 
+`exterior-shafts.sh` is the outdoor counterpart (VLM-SH-001, VLM-SH-002). It captures `--shaft-lab`
+(a low sun behind a row of slats in open sky) and `--shaft-lab-solid` (one unbroken wall, the control)
+in the deterministic `renderer-stepped` mode with only the in-scatter term shown, and requires the open
+scene's lit-versus-shadow contrast across the wall to exceed the control's by more than twice the
+run-to-run noise of a repeated capture, which is exactly zero in that mode. It needs no game data;
+without an engine binary, a display or Python with numpy and Pillow it exits `77`. The captures
+stay in the printed `/tmp/byro-shaft-smoke.*` directory.
+
 Manual / scripted smoke checks that need a Vulkan device and a windowed
 engine instance. Most also need out-of-tree BSA / ESM game data; the controlled
 `interior-godrays.sh` scene does not.

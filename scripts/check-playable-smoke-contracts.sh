@@ -337,6 +337,17 @@ echo "playable-smoke-contracts: PASS -- workflow gate options resolve to scripts
 
 echo "playable-smoke-contracts: PASS"
 
+# #6726 — exterior-shafts.sh reads no game data, so its SKIP != PASS contract is about the host it
+# needs instead (an engine binary, a display, Python with numpy and Pillow): each missing piece must
+# exit 77, never fall through to a pass.
+for needed in 'engine binary not found' 'python3 with numpy and Pillow' 'no X display or xvfb-run'; do
+    grep -Fq -- "$needed" "$ROOT_DIR/docs/smoke-tests/exterior-shafts.sh" \
+        || fail "exterior-shafts.sh lost its SKIP guard for: $needed"
+done
+(( $(grep -c 'exit 77' "$ROOT_DIR/docs/smoke-tests/exterior-shafts.sh") >= 3 )) \
+    || fail "exterior-shafts.sh must exit 77 for each missing host dependency"
+echo "playable-smoke-contracts: PASS -- exterior-shafts.sh skips (77) on a missing host dependency"
+
 # #6461 — a gate script that is in neither the loops above nor this list has an unenforced
 # SKIP != PASS contract: the class recurred three times (#5427, #6057, #6461) because the loops
 # were hand-kept. A new docs/smoke-tests/*.sh must join a loop (it exits 77 on missing data) or,

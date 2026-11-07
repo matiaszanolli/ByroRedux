@@ -100,6 +100,17 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
         light_tuning.legacy = legacy;
     }
     world.insert_resource(light_tuning);
+    // VLM-SH-010 — the exterior haze floor (engine default), retuned live by `fog.haze`.
+    let haze_floor = match std::env::var("BYRO_HAZE_FLOOR") {
+        Ok(value) => crate::fog::ExteriorHazeFloor::from_env_value(&value).unwrap_or_else(|| {
+            log::warn!(
+                "BYRO_HAZE_FLOOR={value:?} is not `off` or `<base_per_m>[,<gain>]`; using the engine default"
+            );
+            crate::fog::ExteriorHazeFloor::DEFAULT
+        }),
+        Err(_) => crate::fog::ExteriorHazeFloor::DEFAULT,
+    };
+    world.insert_resource(haze_floor);
     // Stage 1 (RENDERING-PLAN.md) — color-pipeline tuning, mutated by the
     // `exposure` / `tonemap` console commands and pushed into the renderer
     // each frame. Defaults only: `App::new` re-seeds the auto/agx fields

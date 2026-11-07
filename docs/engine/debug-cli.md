@@ -340,7 +340,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**161**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**162**) grouped by
 purpose:
 
 ```
@@ -429,6 +429,10 @@ skin.dump <entity_id>       → full SkinnedMesh dump — per-bone bind / world 
                              palette matrices, identity-dropout flagging (#841)
 light.dump                  → list active LightSource entities + radius / color
 light.atten                 → inspect or tune live light attenuation
+fog.haze                    → inspect or retune the exterior haze floor (VLM-SH-010):
+                             `fog.haze` | `off` | `default` | `<base_per_m> [gain]`;
+                             `env.health` shows the applied value (`BYRO_HAZE_FLOOR`
+                             seeds it at boot, same forms)
 
 # Gameplay, physics, water, and materials
 interaction.status          → report the current interaction target/state
@@ -1185,6 +1189,7 @@ shipping rule.
 | `BYROREDUX_LAUNCHER_X11` | `byro-launcher` on Linux: force the X11 backend instead of Wayland |
 | `BYRO_RELEASE` / `BYRO_COMMIT` | **Build-time** (`option_env!`), stamped by the release workflow; what `--version` prints. A source build reports itself as one |
 | `BYRO_FOG_NEAR` / `BYRO_FOG_FAR` | Override the authored fog ramp, in game units (finite, ≥ 0; logged when active) |
+| `BYRO_HAZE_FLOOR` | Seed the exterior haze floor (VLM-SH-010): `off`, or `<base_per_m>[,<horizon_gain>]` (0–0.05, 0–20); a bad value warns and keeps the engine default. `fog.haze` retunes it live |
 | `BYRO_INTERIOR_AMBIENT_SCALE` | Replace the `INTERIOR_AMBIENT_SCALE` constant, for ambient sweeps against a reference capture (finite, ≥ 0) |
 | `BYRO_NO_CULL` | Skip the raster frustum test for static meshes (draw everything) |
 | `BYRO_RT_FRUSTUM_ONLY` | Exclude every off-frustum ray candidate from the TLAS. Off-frustum geometry can legitimately cast shadows and appear in reflections, so this changes the image; it exists to measure what the exclusion would cost and save |

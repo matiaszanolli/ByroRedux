@@ -232,6 +232,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(LightAttenCommand);
     // Stage 1 (RENDERING-PLAN.md) — color-pipeline live controls.
     registry.register(ExposureCommand);
+    registry.register(FogHazeCommand);
     registry.register(TonemapCommand);
     registry.register(ScriptActivateCommand);
     registry.register(MatListCommand);
