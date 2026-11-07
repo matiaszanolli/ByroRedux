@@ -13,6 +13,13 @@
 # control's by more than twice the run-to-run noise of a repeated open capture (VLM-SH-002), and clears
 # two absolute bars so a degenerate pair cannot pass on a noise of zero.
 #
+# Alpha-tested cutouts (VLM-SH-009) are measured after the shaft gate by three matched captures:
+# `--shaft-lab-card` (one panel, the odd stripes cut out by alpha), `--shaft-lab-card-geo` (the same
+# stripes as real holes) and `--shaft-lab-card-solid` (one unbroken panel). Their finished frames are
+# identical; the in-scatter term over the hole columns differs only if the froxel sun trace stops at a
+# cutout. The cutout must come within 2 % of the geometry holes. That is KNOWN RED today (the trace is
+# opaque, PRD section 3 row 17), so it is reported and does not fail the run unless BYRO_SHAFT_CARD_GATE=1.
+#
 # Usage: docs/smoke-tests/exterior-shafts.sh
 # BYRO_SHAFT_BIN overrides the engine binary; BYRO_SHAFT_OUT keeps captures in a chosen directory.
 # An X display or xvfb-run, a Vulkan device and python3 with numpy and Pillow are needed.
@@ -67,6 +74,10 @@ capture open_final --shaft-lab final
 capture open_vol --shaft-lab volumetric_term
 capture open_vol_repeat --shaft-lab volumetric_term
 capture solid_vol --shaft-lab-solid volumetric_term
+capture card_vol --shaft-lab-card volumetric_term
+capture cardgeo_final --shaft-lab-card-geo final
+capture cardgeo_vol --shaft-lab-card-geo volumetric_term
+capture cardsolid_vol --shaft-lab-card-solid volumetric_term
 
 python3 - "$OUT" <<'PY'
 import sys
@@ -120,5 +131,50 @@ if failures:
         print("FAIL:", line)
     sys.exit(1)
 print("PASS: exterior shafts")
+PY
+
+BYRO_SHAFT_CARD_GATE="${BYRO_SHAFT_CARD_GATE:-0}" python3 - "$OUT" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+out = Path(sys.argv[1])
+
+
+def load(name):
+    return np.asarray(Image.open(out / f"{name}.png").convert("L"), dtype=np.float32)
+
+
+# The card's body in the 1280x720 frame, and its hole columns (from the geometry variant's finished frame).
+ROWS, COLS = slice(330, 520), slice(520, 760)
+final = load("cardgeo_final")[ROWS, COLS]
+column_mean = final.mean(axis=0)
+stripe = column_mean < (column_mean.min() + column_mean.max()) / 2
+if stripe.sum() < 20 or (~stripe).sum() < 20:
+    print(f"FAIL: could not tell the card's stripes from its holes ({int(stripe.sum())} / {int((~stripe).sum())} columns)")
+    sys.exit(1)
+
+
+def holes(name):
+    return load(name)[ROWS, COLS][:, ~stripe].mean()
+
+
+cutout, geometry, solid = holes("card_vol"), holes("cardgeo_vol"), holes("cardsolid_vol")
+print(f"card holes: cutout {cutout:.2f}  geometry {geometry:.2f}  solid {solid:.2f}")
+if not geometry - solid > 1.0:
+    print("FAIL: the geometry holes show no shaft over the solid panel, so the card cannot be judged")
+    sys.exit(1)
+gap = (geometry - cutout) / geometry
+print(f"VLM-SH-009 cutout-vs-hole gap {gap * 100:.1f} % (bar 2 %)")
+if abs(gap) <= 0.02:
+    print("PASS: the froxel sun trace honours alpha coverage")
+elif os.environ["BYRO_SHAFT_CARD_GATE"] == "1":
+    print("FAIL: VLM-SH-009: the froxel sun trace does not honour alpha coverage")
+    sys.exit(1)
+else:
+    print("KNOWN RED: VLM-SH-009 (#6726): the froxel sun trace does not honour alpha coverage")
 PY
 echo "captures and logs kept in $OUT"

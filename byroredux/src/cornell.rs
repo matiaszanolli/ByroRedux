@@ -106,7 +106,9 @@ pub(crate) use combustion_lab::{
 };
 pub(crate) use glass_dragon::{glass_dragon_mode, setup_cornell_glass_dragon_scene};
 pub(crate) use godray_lab::{godray_lab_marked, godray_lab_mode, setup_godray_lab_scene};
-pub(crate) use shaft_lab::{shaft_lab_mode, setup_shaft_lab_scene};
+pub(crate) use shaft_lab::{
+    setup_shaft_card_lab_scene, setup_shaft_lab_scene, shaft_lab_card_mode, shaft_lab_mode,
+};
 pub(crate) use oracle::{cornell_oracle_rung, cornell_oracle_world_offset, setup_cornell_oracle_scene};
 pub(crate) use reference::{cornell_reference_rung, cornell_reference_view, setup_reference_scene};
 
@@ -663,6 +665,18 @@ mod tests {
         assert_eq!(shaft_lab_mode(&args(&["--godray-lab"])), None, "the interior lab is a different mode");
         assert_eq!(shaft_lab_mode(&args(&["--shaft-lab"])), Some(false));
         assert_eq!(shaft_lab_mode(&args(&["--shaft-lab-solid"])), Some(true));
+    }
+
+    #[test]
+    fn shaft_card_variants_are_exact_and_distinct_from_the_slat_lab() {
+        use super::shaft_lab::{shaft_lab_card_mode, ShaftLabCard};
+        assert_eq!(shaft_lab_card_mode(&args(&[])), None);
+        assert_eq!(shaft_lab_card_mode(&args(&["--shaft-lab"])), None);
+        assert_eq!(shaft_lab_card_mode(&args(&["--shaft-lab-card-extra"])), None);
+        assert_eq!(shaft_lab_card_mode(&args(&["--shaft-lab-card"])), Some(ShaftLabCard::Cutout));
+        assert_eq!(shaft_lab_card_mode(&args(&["--shaft-lab-card-geo"])), Some(ShaftLabCard::Geometry));
+        assert_eq!(shaft_lab_card_mode(&args(&["--shaft-lab-card-solid"])), Some(ShaftLabCard::Solid));
+        assert_eq!(super::shaft_lab::shaft_lab_mode(&args(&["--shaft-lab-card"])), None);
     }
 
     #[test]

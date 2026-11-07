@@ -474,14 +474,17 @@ The RT visibility replaces cascades (VLM-NG-006).
   in the design's
   [measurement table](../engine/procedural-volumetric-fog.md#measurement-table)
   (the table itself asks for this split).
-- **VLM-SH-009.** In the lab's open variant, which MUST include one
-  alpha-tested card, the shaft contrast behind the card's cutout texels MUST
-  exceed that behind its opaque texels by more than twice the run-to-run
-  noise — the backbone's "Cutouts use alpha coverage" rule
-  ([runtime contract](../engine/physical-lighting-backbone.md#runtime-contract))
-  observed in the froxels. Today the froxel sun trace forces opaque
-  traversal (§3 row 17), so this fails at HEAD by construction; **Phase 0:
-  verify** with the lab capture before any trace change.
+- **VLM-SH-009.** The lab MUST include an alpha-tested card in three matched variants (`--shaft-lab-card`,
+  `--shaft-lab-card-geo`, `--shaft-lab-card-solid`): one panel whose odd stripes are cut out by alpha, the
+  same stripes as real holes, and one unbroken panel. Their finished frames are identical, so the in-scatter
+  term over the hole columns differs only where the froxel sun trace stops at a cutout. The cutout panel MUST
+  come within 2 % of the geometry holes (`exterior-shafts.sh`), the backbone's "Cutouts use alpha coverage"
+  rule ([runtime contract](../engine/physical-lighting-backbone.md#runtime-contract)) observed in the froxels.
+  **Phase 0, measured 2026-11-07:** cutout 116.36, geometry 129.16, solid 93.40, a 9.9 % gap, so this fails at
+  HEAD, as the opaque traversal (§3 row 17) predicts. The criterion this requirement first carried, shaft
+  contrast behind cutout texels against behind opaque texels, is withdrawn: it reads 0.106 on an opaque trace,
+  because a view ray through a cutout also sees the lit haze beyond the panel and a ray that ends at an opaque
+  texel does not. Only a see-through reference that is real geometry removes that difference.
 
 - **VLM-SH-010.** The engine MUST supply an exterior haze floor, a minimum
   outdoor extinction recorded as an engine choice under VLM-HF-008 (§10 Q7).
@@ -815,3 +818,4 @@ as VLM-NG-006 instead of being reopened.
 | 6 | 2026-11-07 | VLM-INT-007 added: the interior shaft dust, an engine choice that makes a proven aperture's sun shaft visible. Found with the new `render.debug volumetric_radiance` (the existing `volumetric_term` is opacity-floored) and the `--godray-lab-marked` control, which shows the marked-aperture path itself works (column 40.63 against 40.63 for an open hole, sealed 0.00). VLM-INT-002 now measurable and met on NellisHangar1 | claude: revise |
 | 7 | 2026-11-07 | VLM-SH-003 met: `shaft_lab_golden_frame` pins the exterior shaft lab under the default haze floor (passes unchanged; the solid-wall control differs on 32.6 % of pixels against the 1 % gate). Content measurement redone with exposure settled and a drift control: the floor changes structure (aerial perspective), not brightness; the earlier percentages are withdrawn | — |
 | 8 | 2026-11-07 | VLM-INT-006 clarified: the live ratio, not the unit tests, is the measure. The census-versus-engine reconciliation found the loader's `fxlight` early return starving every FNV `FXLightBeam*` converter; fixed, and `Vault11a`, `SLAbandonedShack03INT` and `HooverDamIntPowerPlant01b` now carry passive cones | — |
+| 9 | 2026-11-07 | VLM-SH-009 reworked and Phase 0 measured: the first criterion (cutout against opaque texels) passes on an opaque trace because of the haze beyond the panel, so it is replaced by a matched-geometry comparison (cutout card against the same stripes as real holes). The lab now has the three variants; the cutout reads 9.9 % below the holes, so the gate is known red until the trace honours alpha | claude: revise |

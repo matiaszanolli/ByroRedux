@@ -18,7 +18,9 @@ in the deterministic `renderer-stepped` mode with only the in-scatter term shown
 scene's lit-versus-shadow contrast across the wall to exceed the control's by more than twice the
 run-to-run noise of a repeated capture, which is exactly zero in that mode. It needs no game data;
 without an engine binary, a display or Python with numpy and Pillow it exits `77`. The captures
-stay in the printed `/tmp/byro-shaft-smoke.*` directory.
+stay in the printed `/tmp/byro-shaft-smoke.*` directory. It then measures the alpha-tested card
+(VLM-SH-009) from three matched captures (`--shaft-lab-card`, `-card-geo`, `-card-solid`), which is
+**known red** and only reported unless `BYRO_SHAFT_CARD_GATE=1`.
 
 Manual / scripted smoke checks that need a Vulkan device and a windowed
 engine instance. Most also need out-of-tree BSA / ESM game data; the controlled

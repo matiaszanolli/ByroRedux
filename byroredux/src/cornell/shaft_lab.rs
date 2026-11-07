@@ -28,6 +28,60 @@ const WALL_THICKNESS_M: f32 = 1.0;
 const GROUND_COLOR: [f32; 3] = [0.34, 0.32, 0.28];
 const WALL_COLOR: [f32; 3] = [0.55, 0.5, 0.45];
 
+/// The alpha-tested card (VLM-SH-009): a thin panel centred on the sun's axis, [`CARD_STRIPES`] vertical
+/// stripes wide. Its texture is opaque on the even stripes and cut out on the odd ones. Three matched
+/// variants share the geometry of the see-through stripes, so the only thing that differs is whether the
+/// sun's ray is stopped there:
+///
+/// - [`ShaftLabCard::Cutout`]: one panel, the odd stripes cut out by alpha (what content ships);
+/// - [`ShaftLabCard::Geometry`]: four slats at the even stripes, the odd stripes real holes (the ground
+///   truth for "the sun passes there");
+/// - [`ShaftLabCard::Solid`]: one unbroken panel (the floor of "the sun is stopped").
+///
+/// A froxel sun trace that honours alpha coverage reads the cutout panel like the geometry one; one that
+/// treats every triangle as opaque reads it like the solid one. `exterior-shafts.sh` reads the difference as
+/// `(cutout - solid) / (geometry - solid)` of the in-scatter term over the card: 1 is alpha-aware, 0 is opaque.
+pub(crate) const CARD_STRIPES: u32 = 7;
+/// Width of one stripe, metres. Wide enough that the camera's near-axial view rays stay inside one lit
+/// or one shadowed slab for most of their length.
+pub(crate) const CARD_STRIPE_WIDTH_M: f32 = 2.0;
+pub(crate) const CARD_HEIGHT_M: f32 = 14.0;
+const CARD_THICKNESS_M: f32 = 0.05;
+const CARD_STRIPE_TEXELS: u32 = 9;
+
+/// The three matched card variants (`--shaft-lab-card`, `--shaft-lab-card-geo`, `--shaft-lab-card-solid`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShaftLabCard {
+    Cutout,
+    Geometry,
+    Solid,
+}
+
+/// Which card variant the arguments select. Exact matches only.
+pub(crate) fn shaft_lab_card_mode(args: &[String]) -> Option<ShaftLabCard> {
+    [
+        ("--shaft-lab-card", ShaftLabCard::Cutout),
+        ("--shaft-lab-card-geo", ShaftLabCard::Geometry),
+        ("--shaft-lab-card-solid", ShaftLabCard::Solid),
+    ]
+    .into_iter()
+    .find(|(flag, _)| args.iter().any(|arg| arg == flag))
+    .map(|(_, variant)| variant)
+}
+
+/// RGBA texels of the card: opaque white on even stripes, alpha 0 on odd ones.
+pub(crate) fn card_stripe_pixels() -> (u32, u32, Vec<u8>) {
+    let (width, height) = (CARD_STRIPES * CARD_STRIPE_TEXELS, 4);
+    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+    for _ in 0..height {
+        for x in 0..width {
+            let cut = (x / CARD_STRIPE_TEXELS) % 2 == 1;
+            pixels.extend_from_slice(&[255, 255, 255, if cut { 0 } else { 255 }]);
+        }
+    }
+    (width, height, pixels)
+}
+
 /// `--shaft-lab` (`Some(false)`, the open variant) or `--shaft-lab-solid` (`Some(true)`, the control).
 /// Exact matches only, so `--shaft-lab-extra` selects nothing.
 pub(crate) fn shaft_lab_mode(args: &[String]) -> Option<bool> {
@@ -47,11 +101,33 @@ pub(crate) fn shaft_lab_sun_direction() -> [f32; 3] {
     [0.0, elevation.sin(), -elevation.cos()]
 }
 
+/// What stands in the sun's path.
+#[derive(Clone, Copy)]
+enum Wall {
+    Slats,
+    Solid,
+    Card(ShaftLabCard),
+}
+
 pub(crate) fn setup_shaft_lab_scene(
     world: &mut World,
     ctx: &mut VulkanContext,
     solid: bool,
 ) -> (Vec3, Vec3) {
+    build_shaft_lab_scene(world, ctx, if solid { Wall::Solid } else { Wall::Slats })
+}
+
+/// The alpha-card lab (VLM-SH-009): the same sky, ground and camera, with the striped card of the chosen
+/// variant in place of the slat wall.
+pub(crate) fn setup_shaft_card_lab_scene(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    card: ShaftLabCard,
+) -> (Vec3, Vec3) {
+    build_shaft_lab_scene(world, ctx, Wall::Card(card))
+}
+
+fn build_shaft_lab_scene(world: &mut World, ctx: &mut VulkanContext, wall: Wall) -> (Vec3, Vec3) {
     use crate::fog::WORLD_UNITS_PER_METER as UPM;
     install_cornell_lighting(world, true);
     let sun = shaft_lab_sun_direction();
@@ -73,7 +149,33 @@ pub(crate) fn setup_shaft_lab_scene(
     )];
     let half_height = WALL_HEIGHT_M * 0.5 * UPM;
     let half_thickness = WALL_THICKNESS_M * 0.5 * UPM;
-    if solid {
+    let mut cutout_card = false;
+    if let Wall::Card(card) = wall {
+        let stripe_half = CARD_STRIPE_WIDTH_M * 0.5 * UPM;
+        let card_half_height = CARD_HEIGHT_M * 0.5 * UPM;
+        let card_half_thickness = CARD_THICKNESS_M * 0.5 * UPM;
+        let first = -(CARD_STRIPES as f32 - 1.0) * 0.5 * CARD_STRIPE_WIDTH_M;
+        match card {
+            ShaftLabCard::Cutout => cutout_card = true,
+            ShaftLabCard::Geometry => {
+                // The even stripes stand, the odd ones are holes.
+                for stripe in (0..CARD_STRIPES).step_by(2) {
+                    slabs.push((
+                        [stripe_half, card_half_height, card_half_thickness],
+                        Vec3::new((first + stripe as f32 * CARD_STRIPE_WIDTH_M) * UPM, card_half_height, 0.0),
+                        WALL_COLOR,
+                        format!("shaft_card_stripe_{stripe}"),
+                    ));
+                }
+            }
+            ShaftLabCard::Solid => slabs.push((
+                [stripe_half * CARD_STRIPES as f32, card_half_height, card_half_thickness],
+                Vec3::new(0.0, card_half_height, 0.0),
+                WALL_COLOR,
+                "shaft_card_solid".to_string(),
+            )),
+        }
+    } else if matches!(wall, Wall::Solid) {
         let half_width = (SHAFT_LAB_SLATS as f32 * SLAT_PITCH_M) * 0.5 * UPM;
         slabs.push((
             [half_width, half_height, half_thickness],
@@ -105,6 +207,28 @@ pub(crate) fn setup_shaft_lab_scene(
         // One upload per entity: unload releases one mesh reference per holder.
         let mesh = builder.box_mesh(half_extents);
         spawn_object(world, mesh, neutral, position, Quat::IDENTITY, matte(color), &name);
+    }
+    if cutout_card {
+        let (width, height, pixels) = card_stripe_pixels();
+        let texture = TextureHandle(builder.register_texture(width, height, pixels));
+        let mesh = builder.box_mesh([
+            CARD_STRIPE_WIDTH_M * CARD_STRIPES as f32 * 0.5 * UPM,
+            CARD_HEIGHT_M * 0.5 * UPM,
+            CARD_THICKNESS_M * 0.5 * UPM,
+        ]);
+        let mut material = matte(WALL_COLOR);
+        material.alpha_test = true;
+        material.alpha_threshold = 0.5;
+        material.alpha_test_func = 6;
+        spawn_object(
+            world,
+            mesh,
+            texture,
+            Vec3::new(0.0, CARD_HEIGHT_M * 0.5 * UPM, 0.0),
+            Quat::IDENTITY,
+            material,
+            "shaft_card",
+        );
     }
     builder.finish();
 
