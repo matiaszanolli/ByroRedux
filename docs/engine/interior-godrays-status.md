@@ -103,6 +103,30 @@ actual architectural opening before using them as portals. A light named
 "Sunlight" is evidence of intended illumination, not proof that sky is
 visible at that position.
 
+## 2026-11-07 findings (VLM-INT, #6727, #6730)
+
+- **The lab had gone stale, not the engine.** `interior-godrays.sh` failed (centre delta 0.0, 43.2 when written)
+  because `--godray-lab` relied on two things the engine stopped supplying to a cell-less harness: the froxel
+  pass's open-sky gate `InteriorSkyExposureRes` (#4902 removed the render-loop fallback) and the portal sun's
+  `weather.sunlight_color` (#4909). The lab now sets both and passes again (centre delta 45.6, side 22.2). At a
+  real weather sunlight colour (about 1, not the lab's 6) the same room reads centre delta 8.
+- **A real cell, FNV `NellisHangar1`, shows no visible sun-driven shaft in the finished frame.** `sky.dump`
+  now prints the portal lane: at noon the interior receives sun dir (0.378, 0.914, 0.148), radiance (1.0, 0.95,
+  0.8), `show_sky=false`; at midnight the radiance is zero. `BYRO_HOUR` is not applied to an interior boot (the
+  midnight frame kept a day sky); use `byro-dbg` `time.set`, and close the Paused menu if it opens over a capture.
+  With a camera under the roof openings, the finished frame differs between `time.set 12` and `time.set 0` only
+  in the sky patch seen through the opening (and TAA edge noise, repeat noise 1.06); no beam is visible in either.
+  VLM-INT-002 therefore fails on this cell as the converters stand.
+- **`render.debug volumetric_term` is not a radiance view.** It outputs `max(1 - exp(-radiance), opacity)`, so
+  where a medium is dense the picture is the medium's opacity, which does not depend on lighting. The diagonal
+  streaks seen there on this cell (identical at noon and midnight) are the Nellis beam media's extinction, not
+  lit shafts; they say nothing about whether the sun lights them. A radiance-only view is needed to measure
+  the sun-through-aperture contribution directly; until then judge a shaft in the finished frame.
+- **Not done:** making the sun-driven shaft visible. The owner chose sun-driven beams with a night floor for the
+  converted daylight beams (#6727); a first implementation (a `FogProfile::DaylightShaft` medium whose local-light
+  in-scatter follows the portal sun) was built and reverted because it was designed on the opacity misreading and
+  could not be shown to change the finished frame.
+
 ## Open work and next experiments
 
 1. **Build an opening inventory, not just a beam-name inventory.** In each
