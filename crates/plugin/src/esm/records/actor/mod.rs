@@ -162,6 +162,19 @@ pub const ACBS_PC_LEVEL_MULT: u32 = 0x0080;
 /// `pc_level_mult_actors_resolve_to_calc_min_not_the_raw_multiplier`'s
 /// `negative` case for the pin.
 ///
+/// #6768 — there are two "actor level" helpers, and the split is deliberate:
+/// this one is the record's own level (unfloored), read for the stats side
+/// (`CharacterLevel`, the Health curve, the player templates, the XP and
+/// Skyrim class-point maths). [`ResolvedNpc::level`](crate::equip::ResolvedNpc::level)
+/// is this value of the Use-Stats terminal, except that a literal `0` reached
+/// through an `LVLN` / `LVLC` pick takes that pick's authored entry level
+/// (#4232); only the leveled-list expansions (gear, spells) read it. About 30
+/// of 3,816 FNV `NPC_` records author level 0 that way, so for those the
+/// gear is expanded at level N while `CharacterLevel` reads 0. Which level
+/// such a terminal should carry for stats is unsourced, so nothing is
+/// invented here: route a consumer through `ResolvedNpc::level` only when the
+/// source says the pick's level applies.
+///
 /// #3081 / #3171 — the SINGLE source of truth, and it lives here, beside the
 /// record it reads, precisely because the two prior copies drifted. The first
 /// (`byroredux/src/inventory.rs`, `09682c71`) had already diverged to

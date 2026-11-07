@@ -207,6 +207,8 @@ pub(super) fn stamp_character_components(world: &mut World, placement_root: Enti
     // Level: the resolved stats source's level (its own when `Use Stats`
     // isn't set or doesn't resolve). NPCs carry no XP.
     //
+    // #6768 — deliberately NOT `resolved.level()`: that backfills a level-0 LVLN pick for the
+    // leveled-list expansions only; which level such a terminal carries for stats is unsourced.
     // #2955 — routed through `effective_actor_level` so a PC-level-multiplier
     // record contributes its ACBS `calcMin`, not the raw multiplier. Writing
     // the multiplier here put 268 FNV / ~190 FO3 base actors two to three

@@ -216,7 +216,10 @@ pub(super) fn build_npc_equip_state<'a>(
     let mut equipped_weapon: Option<EquippedWeapon> = None;
     let mut armor_to_spawn: Vec<ResolvedArmor<'a>> = Vec::new();
     let mut race_skin_mask: Option<u32> = None;
-    // #2955 — same gate as `stamp_character_components`: a PC-level-multiplier
+    // #2955 — same PC-level-multiplier gate as `stamp_character_components`
+    // (both go through `effective_actor_level`; this site then backfills a
+    // level-0 LVLN pick via `resolved.level()`, #4232, which the stats side
+    // deliberately does not, #6768): a PC-level-multiplier
     // record's `level` is not a level, and `expand_leveled_form_id` filters
     // `entry.level <= actor_level` then takes the highest eligible tier, so the
     // raw multiplier made every entry eligible and always drew the top one.
