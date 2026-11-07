@@ -1873,6 +1873,30 @@ fn player_character_template_derives_from_the_player_npc_record() {
         seeded.factions.map(|ranks| ranks.rank(0x1B2A4)),
         Some(Some(0))
     );
+
+    // #6767 — nor do the level and the race/class provenance: Oblivion,
+    // FO76 and Starfield derive nothing, yet their Player is a leveled actor
+    // with a race and a class like every NPC.
+    let mut provenance = EsmIndex::default();
+    provenance.npcs.insert(
+        PLAYER_NPC_FORM_ID,
+        NpcRecord {
+            race_form_id: 0x0007,
+            class_form_id: 0x2000,
+            level: 4,
+            ..Default::default()
+        },
+    );
+    let seeded = build_player_character_template(&provenance);
+    assert!(seeded.values.is_none(), "no AVIFs: nothing derives");
+    assert_eq!(seeded.level, Some(4));
+    assert_eq!(
+        seeded.background,
+        Some(byroredux_core::character::Background {
+            race_form_id: 0x0007,
+            class_form_id: 0x2000,
+        })
+    );
 }
 
 /// #5058 — the post-load reset gives the player the authored record

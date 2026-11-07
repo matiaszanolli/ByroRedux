@@ -342,19 +342,9 @@ pub(super) fn build_player_character_template(index: &EsmIndex) -> PlayerCharact
         .collect();
     let perks = resolved.shell.perks.clone();
     let pairs = byroredux_plugin::esm::records::derive_resolved_actor_values(&resolved, index);
-    if pairs.is_empty() {
-        return PlayerCharacterTemplate {
-            factions,
-            spells,
-            spell_modifiers,
-            racial_spells,
-            perks,
-            ..Default::default()
-        };
-    }
     // #4678 — level + Background ride the same resolved Player record the
-    // derivation just consumed, so the stamps can't disagree with the
-    // values they sit beside. #5047 — from the terminals, exactly like
+    // derivation consumes, so the stamps can't disagree with the values they
+    // sit beside. #5047 — from the terminals, exactly like
     // `stamp_character_components`: level from the Use-Stats source,
     // race from the Use-Traits source, class from the Use-Stats source —
     // a templated Player record then stamps one consistent answer instead
@@ -364,6 +354,22 @@ pub(super) fn build_player_character_template(index: &EsmIndex) -> PlayerCharact
         race_form_id: resolved.r#traits.race_form_id,
         class_form_id: resolved.stats.class_form_id,
     });
+    if pairs.is_empty() {
+        // #6767 — pure record provenance, independent of the derivation:
+        // Oblivion (no AVIF, `NpcStatModel::None`), FO76 and Starfield derive
+        // nothing but their Player still has a level and a race/class, as every
+        // NPC does (`stamp_character_components` is unconditional).
+        return PlayerCharacterTemplate {
+            level: Some(level.max(0) as u16),
+            background,
+            factions,
+            spells,
+            spell_modifiers,
+            racial_spells,
+            perks,
+            ..Default::default()
+        };
+    }
     // The ruleset is optional (profiles that build none); without it the
     // derivation stays the NPC answer, the pre-#4674 behaviour, rather
     // than an invented empty seed.
