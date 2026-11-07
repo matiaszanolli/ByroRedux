@@ -24,11 +24,11 @@ commit. Live state only: when something closes, it becomes a one-liner under
 files, issue dirs) live in [Project Stats](#project-stats) only.
 
 **Gates.** `rust-toolchain.toml` pins rustc 1.96.0 (#5308), which is also the
-bin crate's MSRV since wasmtime 49. 11 961 tests pass and 1 fails (2026-11-06):
-`corpus_filters_route_through_is_nif_entry`, tripped by a hand-rolled `.nif` filter at
-`bto_segment_census.rs:67` (`6a4ec5b62`). CI on `main` has been red since `03f9d2158` (clippy,
-fixed in the commit after the Session 109 close); `55ba81e20` also fails that test and the
-lock-order detector (`BYRO_LOCK_ORDER_CHECK=1`; a bare `cargo test` skips it). Last green `305af7beb`. The bench-of-record below (`d9a201c71`, 2026-10-22) was refreshed with a same-machine control and shows HEAD 1–9% slower than the outgoing record (R6a-regress-23). Its older open
+bin crate's MSRV since wasmtime 49. 11 962 tests pass, 0 fail (2026-11-06, also with
+`BYRO_LOCK_ORDER_CHECK=1`, which a bare `cargo test` skips). CI on `main` was red from
+`03f9d2158` (clippy), `6a4ec5b62` (the NIF corpus guard) and `6390bfb90` (a test-only lock-order
+inversion); all three are fixed locally after the Session 109 close and await a green run.
+Last green `305af7beb`. The bench-of-record below (`d9a201c71`, 2026-10-22) was refreshed with a same-machine control and shows HEAD 1–9% slower than the outgoing record (R6a-regress-23). Its older open
 regression, **R6a-regress-22**, was the bench camera moving with `b9e961eeb`'s
 interior spawn ladder, not renderer code (#5128, 2026-09-30); a small residual
 stays open — the top-of-frame all-slots fence wait that dominates GPU-bound
@@ -714,7 +714,7 @@ Ground-truth as of 2026-11-06, HEAD `9e14af069`: all figures re-counted at the S
 | Rust total lines (all `.rs`, excl. `target/`) | 960 902                  |
 | Source files (`.rs`, excl. `target/`)   | 1734 total · 1629 outside `tests/` dirs (+88 / +87 since the Session 108 close) |
 | Workspace members                       | 35 (count the `[workspace] members` block only; 30 crates — `terrain-height` joined in Session 103 — + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
-| Tests                                   | **11 961 passing, 1 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-11-06; 403 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
+| Tests                                   | **11 962 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-11-06; 403 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
 | Open issue directories                  | 6612 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **562 069** across eight games (Skyrim SE re-measured 2026-09-29 at 33 468 over 8 archives, #3712 added Animations; FO76's tail closed by #3461 and the 2026-10-03 re-measure (#4628) swept 102 980 over 5 of its 20 mesh-bearing archives; Skyrim LE 22 466 gated since fb8173fe0; earlier widenings #3369/#3466, Oblivion DLC #3925, Starfield #4440). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 468 · Skyrim LE 22 466 · FO4 235 082 · FO76 102 980 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on all eight titles (Starfield re-measured 2026-09-24 #4440; FO76's `GeneratedMeshes` truncation tail closed by #3461 and re-measured 2026-10-03, #4628). |
