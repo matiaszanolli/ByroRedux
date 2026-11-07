@@ -342,8 +342,12 @@ rank, +10 pool pick + perk/level; UESP-sourced). Skyrim helpers: `xp_from_skill_
 `pool_pick_gain`. **`skyrim_ruleset(resolve)`** assembles TES V: empty `AttributeSet::SKYRIM`
 (no attributes) + the 18 ungoverned `SkillSet::SKYRIM` skills + `LevelingModel::SKYRIM`, with
 **two derived rows and no attribute-derived pools** — an Armor Rating multiplier
-(`LIGHT_ARMOR_RATING_COEFF` 0.004, player-only scope; the Skyrim armor model itself is
-`byroredux/src/armor.rs`, which reads this constant and `ARMOR_SKILL_RATING_COEFF_NPC` 0.015) and Carry Weight
+(`LIGHT_ARMOR_RATING_COEFF` 0.004, player-only scope, and a coefficient carrier with no reader:
+`actor_value` never composes a `PlayerOnly` `Multiplier` row. The Skyrim armor model is the
+`ArmorModel` row of the Skyrim `CharacterRulesProfile` (`character/armor.rs`, #6567), which
+`byroredux/src/armor.rs` reads and which builds its skill multipliers from this constant and
+`ARMOR_SKILL_RATING_COEFF_NPC` 0.015). Oblivion's `LightArmorRating` / `HeavyArmorRating` rows
+(`tes.rs`) are equally unread: Oblivion has no runtime ruleset yet and Carry Weight
 (`CARRY_WEIGHT_BIAS` 250 + `CARRY_WEIGHT_STAMINA_COEFF` 0.5 × base Stamina). The
 *pools* really are underived: Health/Magicka/Stamina start at `SKYRIM_POOL_BASE` 100
 and grow only by the level pick, which is why Skyrim has no SPECIAL-style

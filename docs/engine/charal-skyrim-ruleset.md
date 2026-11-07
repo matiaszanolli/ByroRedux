@@ -307,9 +307,12 @@ The model builds its two skill multipliers from the two coefficients here
 (`LIGHT_ARMOR_RATING_COEFF` and `ARMOR_SKILL_RATING_COEFF_NPC` in `skyrim.rs`)
 instead of restating them (#6568), so the constants have one home. It does not
 read the `DamageResist` derived row built above, and nothing writes the
-displayed rating into `DamageResist`: that row answers a
-`GetActorValue DamageResist` read only, so the two can disagree (the armor
-model is the Skyrim armor story; the row is a coefficient carrier).
+displayed rating into `DamageResist`. The row has no reader either: it is a
+`PlayerOnly` `Multiplier` row, and `CharacterRuleset::actor_value` composes
+only `ActorGeneral` `Absolute` rows, so a `GetActorValue DamageResist` returns
+the carried entry, never `1 + 0.004 · LightArmor` (#6763). The armor model is
+the whole Skyrim armor story; the row is a tested coefficient carrier with no
+runtime effect.
 
 Also on this page, not skill-derived (equipped-weight-derived, applies
 regardless of armor skill): **movement speed penalty** = `min(15%, TotalEquippedWeight × 3/23)` —
