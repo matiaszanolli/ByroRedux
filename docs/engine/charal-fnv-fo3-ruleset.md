@@ -547,7 +547,7 @@ melee ×1. A weapon's GECK Override-tab AP replaces the standard.
 `fVATSMeleeReachMult` 2, `fVATSStealthMult` 0.5, `fVATSAutomaticMeleeDamageMult` 2,
 `fVATSDestructibleMult` 1.25, `fVATSShotBurstTime` 0.43, `fVATSSkillFactor` 1,
 `iVATSConcentratedFireBonus` 5 (the *perk's* accuracy per extra shot: "+
-[bonus/100]×[current shot − 1]"; not yet plumbed, #6422).
+[bonus/100]×[current shot − 1]"; plumbed since #6422: `vats_queue_part` prices each repeat shot at the same part when the player holds the perk).
 
 **Restore rate — value sourced, unit NOT.** `fActionPointsRestoreRate` is **4**
 in Fallout3.esm and **0.06** in FalloutNV.esm. The engine treats FO3's as per
@@ -560,7 +560,7 @@ regen is off by a large factor and no test can tell.
 **The to-hit chain is reconstructed.** The wiki documents each factor's role and
 the 95 % cap but not the operation order; `VatsModel::to_hit_chance` marks every
 reconstructed step, and its ground-truth test is a placeholder until in-game
-percentages are captured (#6403).
+percentages are captured (#6644, with the numbers in #6645).
 
 **AP scope.** FO3/FNV AP is a player-only derived row (see the Action Points
 note above), so only the player carries an `ActionPoints` value and the regen

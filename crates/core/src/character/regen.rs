@@ -181,11 +181,12 @@ pub struct ActionPointsRegen {
 /// Gated on **two** resources, not one (#2950), and — since #3483 — on
 /// exactly those two:
 ///
-/// * [`PoolRegenConfig`] — per-game resolved AVIF ids, arriving only with
-///   Oblivion's wiring (blocked on the pre-AVIF actor-value resolver,
-///   #3768). Not "when a live [`CharacterRuleset`] lands" — four games
-///   have carried one since #3170/#3848 with no config following, because
-///   the config is Oblivion-shaped (#4460).
+/// * [`PoolRegenConfig`] — per-game resolved AVIF ids. FO3/FNV install it for
+///   their Action Points lane (#6350); the Fatigue/Magicka lanes arrive only
+///   with Oblivion's wiring (blocked on the pre-AVIF actor-value resolver,
+///   #3768). Not "when a live [`CharacterRuleset`] lands" — a ruleset alone
+///   never installs one, because the Fatigue/Magicka lanes are
+///   Oblivion-shaped (#4460).
 /// * [`PoolRegenAccumulator`] — the cross-frame clock, inserted unconditionally
 ///   at boot (`byroredux/src/boot/world.rs`, `build_world`).
 ///

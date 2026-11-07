@@ -244,7 +244,7 @@ waits on that data.
 
 ```rust
 pub struct PoolRegenAccumulator { seconds: f32 }                                   // the fixed 60 Hz clock
-pub struct PoolRegenConfig { fatigue_avif: u32, magicka_avif: u32, willpower_avif: u32,
+pub struct PoolRegenConfig { fatigue_avif: Option<u32>, magicka_avif: Option<u32>, willpower_avif: Option<u32>,
                              action_points: Option<ActionPointsRegen> }                  // per-game resolved AVIF ids + the Fallout AP lane (#6350)
 ```
 
@@ -271,8 +271,9 @@ out of scope):
 first FO3/FNV cell load (#6350), carrying the `ActionPointsRegen` lane: the player's
 `ActionPoints` restores at `fActionPointsRestoreRate` normalized to per-second
 (FO3 4/s; FNV 0.06 per frame × 60 Hz = 3.6/s — see `charal-fnv-fo3-ruleset.md`). Every
-other game never inserts the config, and the Fatigue/Magicka/Willpower lanes stay inert
-even on FO3/FNV (their ids are `0`; no actor carries AV 0). The Oblivion Fatigue/Magicka
+other game never inserts the config, and the Fatigue/Magicka/Willpower lanes are off
+even on FO3/FNV (their ids are `None`, #6430: the lane is disabled outright, not by a sentinel
+id that no actor happens to carry). The Oblivion Fatigue/Magicka
 lanes: the `oblivion_pool_regen_config` builder that once made them was deleted under
 #3848 (`git show e13985dfc` recovers it); re-adding it is blocked on Oblivion's own
 wiring, #3768 (#4460). Same shape as §4.6 for the TES lanes — mechanism ahead of its
@@ -689,7 +690,7 @@ while). Struck-through items are done; the remaining two are genuinely open.
    `CharacterRulesProfile::vats()` row (#6350, `crates/core/src/character/vats.rs`);
    sourcing, the FNV re-tunes and the unverified restore-rate unit are captured in
    `charal-fnv-fo3-ruleset.md` (*VATS tuning, Action Points regen and the radiation
-   gauge*). The to-hit operation order is reconstructed, not captured (#6403).
+   gauge*). The to-hit operation order is reconstructed, not captured (the ground-truth captures are #6644, the numbers the game agrees with #6645).
 
 Each phase ships independently behind `cargo test` (pure derivation + ruleset unit
 tests; no Vulkan, no game data required for the unit layer — real-data validation

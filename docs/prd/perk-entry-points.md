@@ -179,7 +179,7 @@ are generated from it and this table keeps only the record and body rows.
 | R6 | Quest body | No consumer |
 | R7 | Value-entry fragments (FO4) | Not reported by composition; `perk.run` is the only source (`fragment/perk.rs`) |
 | R8 | Taking a perk | `levelup perk` checks perk points and `num_ranks` only ("Perk requirements are not checked here", `commands/gameplay.rs`, `LevelUpCommand`) |
-| R9 | Concentrated Fire | `concentrated_shot: 1` at both scan sites (`systems/vats.rs`, #6422) |
+| R9 | Concentrated Fire | `vats_queue_part` prices each repeat shot (#6422); `concentrated_shot: 1` at both scan sites prices a part's first shot (`systems/vats.rs`) |
 | R10 | Composition trace | `compose_entry_point_traced` exists "for the debug console"; no command calls it |
 | R11 | Hook indices in consumers | `combat.rs` passes `fnv::ADJUST_EXPERIENCE_POINTS` and `fnv::ADJUST_GAINED_SKILL_POINTS` directly; `barter.rs` takes its hooks from the profile row (`BarterModel::perk_hooks`) |
 

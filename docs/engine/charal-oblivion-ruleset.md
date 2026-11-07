@@ -420,8 +420,9 @@ it for their Action Points lane only, #6350): the
 deleted under #3848 (`git show e13985dfc` recovers it), and re-adding it
 is gated on Oblivion's ruleset actually being wired — deliberately
 blocked on the pre-AVIF actor-value resolver (#3768), not on "a live
-`CharacterRuleset` landing" (four games have one since #3170/#3848 with
-no config following, because the Fatigue/Magicka lanes are Oblivion-shaped).
+`CharacterRuleset` landing" (a ruleset alone never installs the config,
+because the Fatigue/Magicka lanes are Oblivion-shaped; FO3/FNV install it
+for the Action Points lane only).
 So the Oblivion lanes are wired and tested but have no live consumer until that
 resolver lands. 5
 new tests (formula match, 60 Hz tick counting, fractional-time carry-over

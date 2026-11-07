@@ -10,7 +10,7 @@ placed in the FO4 wave). Revision 2 (2026-11-01) folded in review round 1.
 Revision 1 was the first draft: the
 #6350 remainder after Phases 1–3 (VATS menu, per-limb damage and limb
 health, playback and camera, Concentrated Fire, the captured to-hit ground
-truth #6403, FO4's slow-motion lane). Statements about how the original engines
+truth #6644, FO4's slow-motion lane). Statements about how the original engines
 behave cite external sources (the GECK and Fallout 4 CK wiki dumps under
 `/mnt/data/src/reference/`, the Fallout wiki, the games' own master files
 read with a stated recipe); a claim that could not be verified is marked
@@ -71,7 +71,7 @@ comes from the load order's game settings with the vanilla value as the
 fallback, and the targeting loop runs from the debug console. What is missing
 is everything the player actually perceives (the menu, the playback, limbs
 that cripple) and the one test that proves the hit chances are the game's
-rather than a plausible reconstruction (#6403).
+rather than a plausible reconstruction (#6644).
 
 The corollary that shapes everything below: **every VATS number is load-order
 data or captured ground truth, never an engine constant**, and every per-game
@@ -144,11 +144,11 @@ table, and this section then links there.
 | 6 | Targeting scan | shipped, partial | `vats_scan`: engage distance, bone positions, a three-ray occlusion fan (`PART_FAN_OFFSETS`), the player's skill for the weapon's `DNAM` skill code, neutral 50 where either is missing; melee weapons priced like ranged ones |
 | 7 | AP-gated queue and confirm | shipped | `vats_queue_part`, `vats_confirm`, `vats_cancel`; shots at one target fold into one `HitEvent` plus `HitShots` |
 | 8 | Live gate | shipped | `docs/smoke-tests/vats-targeting.sh` (FNV, plumbing scope stated in its header) |
-| 9 | To-hit ground truth | open (#6403) | `to_hit_chance_matches_recorded_in_game_percentages` is `#[ignore]`d with an empty `GROUND_TRUTH` |
+| 9 | To-hit ground truth | open (#6644) | `to_hit_chance_matches_recorded_in_game_percentages` is `#[ignore]`d with an empty `GROUND_TRUTH` |
 | 10 | Per-limb damage, crippling | open | `HitEvent` (`crates/scripting/src/events.rs`) carries no body part; no system lowers a limb-condition value or reports a limb crippled |
 | 11 | Playback and camera | open | `CAMS` / `CPTH` decode as EDID + FULL stubs only (`crates/plugin/src/esm/records/dispatch_misc_stub.rs`); `VatsClock` is written each frame and read by nothing |
 | 12 | VATS menu | open | No menu; the loop is console-driven |
-| 13 | Concentrated Fire | open (#6422) | `concentrated_shot: 1` hard-coded in `vats_scan` |
+| 13 | Concentrated Fire | partial (#6422) | `vats_queue_part` prices each repeat shot at the same part when the player holds the perk; `vats_scan` still prices a part's first shot (`concentrated_shot: 1`) |
 | 14 | FO4 lane | open | `CharacterRulesProfile::FALLOUT4` carries `vats: None` and `body_condition_base: None` (`crates/core/src/character/profile.rs:471`, `:442`); FO4 has no model, no AP regen, no slow-motion scale, no limb-condition values and no race-to-`BPTD` link (row 3) |
 | 15 | Limb-condition values (FO3/FNV) | shipped | The profile row's `body_condition_base` is 100 on FO3 and FNV (`profile.rs:345`, `:375`); `actor_value_derive.rs:257-268` seeds the seven GECK body-condition values (`consumables::BODY_CONDITION_VALUES`) on every actor whose derivation produced Health, pinned by `body_condition_seeding_follows_the_profile_not_the_game_kind`; restorative consumables raise them (`crates/plugin/src/consumables.rs:115-124`); they are saved with `ActorValues` |
 
@@ -218,7 +218,7 @@ table, and this section then links there.
   FO3 ground-truth scenario recorded in Phase 0 within ±1 percentage point, in
   `to_hit_chance_matches_recorded_in_game_percentages` with its `#[ignore]`
   removed. Today: the test is ignored and `GROUND_TRUTH` is empty
-  (`crates/core/src/character/vats.rs:626-663`, #6403), at HEAD on 2026-11-03.
+  (`to_hit_chance_matches_recorded_in_game_percentages` in `crates/core/src/character/vats.rs`, #6644), at HEAD on 2026-11-03.
 - **VATS-TOHIT-002.** Each ground-truth row MUST be evaluated with the model
   of the game it was captured on (`VatsModel::FALLOUT_NV` for an FNV capture).
   Today, at HEAD on 2026-11-03: the test's capture procedure is written for

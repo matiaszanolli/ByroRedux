@@ -629,7 +629,7 @@ mod tests {
     /// Until then this is a placeholder, not coverage: with `GROUND_TRUTH`
     /// empty it fails the moment the attribute is removed, and operation
     /// order is unpinned. The captures are an acceptance item of #6350 (the
-    /// VATS runtime umbrella), #6403.
+    /// VATS runtime umbrella), scheduled as #6644 (captures) and #6645 (the numbers).
     #[test]
     #[ignore = "ground-truth captures pending (acceptance item of #6350): record the scenarios below in vanilla FNV, then fill GROUND_TRUTH and remove this attribute"]
     fn to_hit_chance_matches_recorded_in_game_percentages() {
