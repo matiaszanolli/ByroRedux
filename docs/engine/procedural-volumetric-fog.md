@@ -430,6 +430,28 @@ The timer brackets inject plus integrate.
 | Aerial LUT | off | 72×40×64 | included above | analytic fallback active |
 | Aerial LUT | on | — | — | 32³ LUT follow-up |
 
+### Exterior fixtures, inject and integrate separately (VLM-SH-008, 2026-11-07)
+
+RTX 4070 Ti, 1280x720 TAA, default 160x90x64 grid, `renderer-stepped` static camera at each fixture's default
+spawn (`m-exteriors.sh` grids, radius 1), 150 frames, the bench line's `gpu_volumetrics_inject` and
+`gpu_volumetrics_integrate`. "Off" is `BYRO_SUN_ALPHA=0` (the opaque sun trace of before VLM-SH-009).
+
+| Fixture | Inject, noon | Inject, 07:00 | Inject, 07:00, alpha trace off | Integrate |
+|---|---:|---:|---:|---:|
+| FNV WastelandNV (0,0) | 0.418 ms | 0.598 ms | 0.254 ms | 0.020-0.022 ms |
+| FO3 MegatonWorld (-1,-7) | 0.304 ms | 0.398 ms | 0.208 ms | 0.020 ms |
+| Oblivion Tamriel (0,0) | 0.520 ms | 0.583 ms | 0.313 ms | 0.020-0.022 ms |
+| Skyrim SE Tamriel (2,-4) | 0.305 ms | 0.308 ms | 0.197 ms | 0.020-0.022 ms |
+| FO4 Commonwealth (0,0) | 0.768 ms | 0.741 ms | 0.456 ms | 0.021-0.022 ms |
+
+The alpha-aware trace adds 0.11 to 0.34 ms of inject at 07:00 (FNV +0.34, FO3 +0.19, Oblivion +0.27, Skyrim
++0.11, FO4 +0.29): every froxel the binary trace calls blocked is walked again nearest-first. Integrate is
+constant. The finished frames match the off captures to within 0.08 % of pixels differing by more than four
+levels (FO4 the most, max 60 levels; FNV, FO3, Oblivion and Skyrim under 0.01 %). Noon "off" was not run, and
+the Goodsprings pinned-pose figures above (0.18 to 0.26 ms) are a different pose from FNV's spawn here. No
+cheaper structure exists today: the visibility layers do not separate alpha-tested surfaces (the foliage layer
+is the decal render layer), so the second walk cannot be skipped by mask.
+
 The 2026-07-29 Prospector rotation matrix measured 0.100–0.106 ms combined
 inject+integrate after the texture-volume change, versus 0.110–0.125 ms for
 the prior three-octave ALU field. Shipping rotation mode 1 moved from 0.116 to
