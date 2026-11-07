@@ -471,13 +471,16 @@ and `BYRO_HAZE_FLOOR` / `fog.haze` (the floor).
   the frame by 1.3 / 255 mean absolute (+2.8 % mean luminance, +5.3 % in the sky); sunrise by 7.7 / 255 (a
   dark frame, so +47 % relative). Both are a faint veil, not a repaint. The owner reviews these
   (VLM-SH-011); the floor is adjustable at run time.
-- **On content, FNV Goodsprings from the radio-dish pose, floor off versus default, the same engine and paused clock
-  (VLM-SH-006, 2026-11-07):** at 07:00 the finished frame's mean rises 9.5 % (mean absolute difference 14.0 / 255)
-  and the froxel radiance goes from 5.5 to 22.8; at 09:00, 7.0 % (10.0 / 255) and 7.4 to 14.1. The visible effect is
-  atmospheric depth on the distant ridgelines and a lit haze volume with the dish's shadow wedge cut out of it. No
-  crisp beams appear in this scene: one large occluder with no gaps casts a shadow volume, not crepuscular rays, and
-  shafts from cloud gaps are outside the froxel range by the PRD's Q3 decision. A fixture with gaps in its occluders
-  (a tree line, a roofed street) is still needed for VLM-SH-006.
+- **On content, FNV Goodsprings, floor off versus default, exposure settled (VLM-SH-006, 2026-11-07).** At 06:30
+  (sun 6.4 degrees, intensity 1.0), same engine and paused clock, a capture taken 16 s after each change, with an
+  off, default, off sequence as the control: frame mean 131.4 off, 126.9 default, 131.3 off again; mean absolute
+  difference 1.6 / 255 off to off (the noise floor) against 34.5 / 255 off to default. The floor does not change the
+  overall brightness; it changes the structure: crisp distant ridgelines become layered aerial perspective, valley
+  over valley. (An earlier version of this entry quoted +9.5 % and +7.0 % frame-mean gains; they were captured right
+  after a clock jump, before auto-exposure had adapted, and are withdrawn.) No crisp beams appear in the scenes
+  tried (a radio dish, a steel derrick with chain-link, a rock cluster): the lattice and rocks cast shadow volumes
+  in the haze, and shafts from cloud gaps are outside the froxel range by the PRD's Q3 decision. A fixture whose
+  occluder has regular gaps at the camera's distance is still needed for VLM-SH-006 beyond the lab.
 - **Not done yet:** the golden frame (VLM-SH-003), the alpha-tested card (VLM-SH-009), the per-fixture noon and
   low-sun captures on the other titles (VLM-SH-006), the range and cloud-shadow work (VLM-SH-004, -005), and
   the separate inject and integrate milliseconds (VLM-SH-008).
