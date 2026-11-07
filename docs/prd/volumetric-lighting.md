@@ -1,6 +1,6 @@
 # Volumetric Lighting — Product Requirements
 
-**Status**: PROPOSED (2026-11-01). Revision 2, same day, folds in review
+**Status**: ACTIVE (2026-11-07). Revision 4 files the tracking issues. Revision 3 records the owner's §10 decisions: every one the recommendation except Q7, which the owner decided for the exterior haze floor so that the goal, realistic procedural god rays in interiors and exteriors, holds on clear weather (VLM-SH-010, VLM-SH-011). Revision 2, same day, folds in review
 round 1 (two HEAD corrections — the per-cell `XCCM` cross-fade and the
 region records that are read — the authored god-ray records Skyrim SE and
 FO4 carry, the region tie rule and forced-weather lock, the FO4 `LGTM`
@@ -56,6 +56,9 @@ writes the missing design.
 Normative terms **MUST**, **SHOULD** and **MAY** have their RFC 2119
 meanings, as in the related designs. Requirement IDs use the `VLM-` prefix.
 
+
+**Tracking**: #6729 (parent). Phases: #6724 (0), #6725 (1), #6726 (2),
+#6727 (3), #6728 (4).
 ---
 
 ## 1. Product thesis
@@ -480,6 +483,24 @@ The RT visibility replaces cascades (VLM-NG-006).
   traversal (§3 row 17), so this fails at HEAD by construction; **Phase 0:
   verify** with the lab capture before any trace change.
 
+- **VLM-SH-010.** The engine MUST supply an exterior haze floor, a minimum
+  outdoor extinction recorded as an engine choice under VLM-HF-008 (§10 Q7).
+  It MUST raise the global medium's extinction only where the authored
+  extinction is below it, so it never thins authored haze; it MUST be a smooth
+  function of the sun's elevation that rises toward the horizon, where the
+  slanted path through air and dust is longer; and it MUST be zero in an
+  interior, where the interior dust floor already applies, and below the
+  horizon at night.
+- **VLM-SH-011.** The floor's default MUST be chosen from captures and
+  published: on each exterior fixture of §7.2 a noon and a low-sun capture with
+  the floor off and on, the shaft contrast across a named occluder (VLM-SH-006)
+  and the mean luminance change of pixels outside any shaft. The default MUST
+  make the low-sun shaft pass VLM-SH-002's contrast rule and MUST keep the
+  noon non-shaft luminance change inside the tolerance the owner reviews in
+  the capture set, so the floor makes shafts visible without washing out the
+  authored look. The floor MUST be adjustable at run time through the existing
+  volumetrics settings surface and MUST report its live value on `env.health`.
+
 ### 5.4 Interior coverage (`VLM-INT`)
 
 - **VLM-INT-001.** An opening inventory MUST be checked in for the cells of
@@ -676,6 +697,7 @@ Each needs the project owner. The recommendation is the first option.
    phase exits as requirements, with the consequence that the same work is
    tracked twice and the already-reviewed stages need re-review under the
    rubric.
+   **Decided** (2026-11-07): the recommendation — fire stays under the fire plan (#6531); VLM-NG-001 stands.
 2. **Q2 — How is a weather picked from a region's table?** Recommended: the
    highest-chance row, the one rule EXAL already fixes for climates
    (`resolve_default_weather`, #5424), so a cell's weather is deterministic,
@@ -687,6 +709,7 @@ Each needs the project owner. The recommendation is the first option.
    formula, so it starts as a **Phase 0: verify** item), and a scope that
    reaches past M55 into weather simulation — EXAL's one-rule default would
    be reopened for climates too.
+   **Decided** (2026-11-07): the recommendation — the highest-chance row; an unlocked forced weather yields at the next cell crossing (VLM-REG-014).
 3. **Q3 — How far must outdoor shafts reach?** Recommended: the froxel grid
    only — the default far plane, adjustable to the existing
    `--fog-grid-far-m` maximum — with the analytic tail unshadowed; this is
@@ -698,16 +721,19 @@ Each needs the project owner. The recommendation is the first option.
    active). Alternative B: shadowed in-scattering in the analytic tail by a
    ray march against the cloud-shadow map only, giving crepuscular rays from
    clouds but not from terrain.
+   **Decided** (2026-11-07): the recommendation — the froxel grid only, with the analytic tail unshadowed; VLM-SH-004 stays on the camera-column cloud value.
 4. **Q4 — Aerial perspective for geometry.** Recommended: keep the analytic
    tail and give it SKYAL's closed-form air term (VLM-AP-002), adding the
    Hillaire 2020 volume only if VLM-AP-001 fails with it. Alternative: build
    the camera-frustum aerial-perspective volume now (the fog design's
    follow-up 4), which adds a pass and a resident 3D texture before any
    measurement says the analytic tail is insufficient.
+   **Decided** (2026-11-07): the recommendation — the analytic tail gets SKYAL's closed-form air term (VLM-AP-002); the Hillaire 2020 volume only if VLM-AP-001 fails with it.
 
 **Q5** — withdrawn, rev 2. Rev 1 asked whether to build a non-RT cascade
 visibility path; the ROADMAP M55 row already rules it out, so it is cited
 as VLM-NG-006 instead of being reopened.
+**Decided** (2026-11-07): withdrawn at rev 2; settled by VLM-NG-006.
 
 6. **Q6 — Which modern reference sets the parity checklist?** Recommended:
    keep the one ROADMAP's M55 row names, Hillaire's Frostbite volumetrics
@@ -719,12 +745,14 @@ as VLM-NG-006 instead of being reopened.
    UE5 build renders the same content. Alternative B: Red Dead Redemption
    2's atmosphere as a higher bar, which has no public build or
    documentation beyond talks and would make the metric a reading of a talk.
+   **Decided** (2026-11-07): the recommendation — Hillaire's Frostbite volumetrics (SIGGRAPH 2015) stays the one parity reference.
 7. **Q7 — An exterior haze floor if vanilla weather shows no shafts.**
    Recommended: none; shafts appear where the content authors haze, and
    VLM-SH-006 reports where they do not. Alternative: a minimum outdoor
    extinction recorded as an engine choice (VLM-HF-008), like the interior
    `with_sky_aperture_dust_floor`, which makes shafts visible everywhere at
    the cost of thickening every clear exterior beyond its authored look.
+   **Decided** (2026-11-07): the alternative, not the recommendation — the engine supplies a minimum outdoor extinction recorded as an engine choice under VLM-HF-008. It exists so exterior shafts are visible on clear weather, which the owner's goal requires; its form is bounded by VLM-SH-010 so it never thins authored haze and is sun-angle aware, and VLM-SH-011 owns its measurement. The consequence the alternative names (a thicker clear exterior than the authored look) is accepted, and VLM-SH-011 caps it.
 8. **Q8 — What do the authored god-ray records feed?** Recommended: decode
    and census them (VLM-HF-010, -011) and feed nothing into `FogMedium`
    until Phase 0 settles each field's meaning from a source; fields that
@@ -736,6 +764,7 @@ as VLM-NG-006 instead of being reopened.
    documents. Alternative B: declare them a non-goal and skip the decode,
    which saves parser work but leaves VLM-G-002's "whole authored profile"
    short by two record types on two titles.
+   **Decided** (2026-11-07): the recommendation — decode and census the authored god-ray records (VLM-HF-010, -011); feed nothing into `FogMedium` until Phase 0 settles each field's meaning from a source.
 
 ---
 
@@ -767,3 +796,5 @@ as VLM-NG-006 instead of being reopened.
 |---|---|---|---|
 | 1 | 2026-11-01 | First draft | — |
 | 2 | 2026-11-01 | Review round 1 folded in: per-cell `XCCM` cross-fade and region-record reads corrected from HEAD; authored god-ray records (VLM-HF-010, -011, Q8); FO4 `LGTM` tail; region tie rule, `XCCM`-versus-region order and forced-weather lock (VLM-REG-012 to -014); froxel cutout visibility (VLM-SH-009); non-RT cascade cited as ROADMAP-decided (VLM-NG-006, Q5 withdrawn); Q6 keeps ROADMAP's Frostbite reference; REGN no-fog claim cited; sibling PRDs linked | claude: revise |
+| 3 | 2026-11-07 | Owner decisions recorded: Q1–Q4, Q6 and Q8 the recommendation, Q5 closed against VLM-NG-006, **Q7 decided for the exterior haze floor** (new VLM-SH-010, VLM-SH-011). Phase 0 evidence taken the same day on FNV Goodsprings: clear-weather `gpu_extinction` is 0.000349/m, about 4.5 % optical depth over the 128 m froxel range, so the recommendation for Q7 would have left clear-day exterior shafts faint | owner: approved |
+| 4 | 2026-11-07 | → ACTIVE: parent #6729 and phase issues #6724–#6728 filed; Phase 2 carries the haze floor (VLM-SH-010, -011) and Phase 3 the interior coverage the goal needs | — |
