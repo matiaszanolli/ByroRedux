@@ -825,3 +825,102 @@ fn fnv_baked_beam_converter_coverage() {
         );
     }
 }
+
+/// A deterministic mixed registry for the trim tests: every fifth key a per-cell
+/// precombine, every seventh animated (it carries a clip handle), and every
+/// eleventh re-touched so access ticks are not simply insertion order.
+fn mixed_deferred_registry(cap: usize, entries: usize) -> NifImportRegistry {
+    let mut reg = registry_with_cap(cap);
+    let _ = reg.set_eviction_deferred(true);
+    for n in 0..entries {
+        let key = if n % 5 == 0 {
+            format!("meshes\\precombined\\{n:08x}_deadbeef_oc.nif")
+        } else {
+            format!("m{n}.nif")
+        };
+        if n % 7 == 0 {
+            reg.set_clip_handle(key.clone(), n as u32);
+        }
+        let _ = reg.insert(key, Some(dummy_cached()));
+    }
+    let retouch: Vec<String> = (0..entries)
+        .filter(|n| n % 11 == 0)
+        .map(|n| {
+            if n % 5 == 0 {
+                format!("meshes\\precombined\\{n:08x}_deadbeef_oc.nif")
+            } else {
+                format!("m{n}.nif")
+            }
+        })
+        .collect();
+    reg.touch_keys(retouch.iter().map(String::as_str));
+    reg
+}
+
+/// #6590 - the single-pass trim must evict exactly what the one-victim-at-a-time
+/// policy did: precombine without a clip handle first, then any handle-less
+/// entry, then animated ones, oldest tick first within each tier, and hand the
+/// freed clip handles back in that order.
+#[test]
+fn bulk_trim_matches_the_one_victim_at_a_time_policy() {
+    let mut reg = mixed_deferred_registry(40, 300);
+    assert_eq!(reg.len(), 300);
+
+    // Oracle: the pre-#6590 loop, run against a snapshot of the bookkeeping.
+    let mut live: Vec<(String, u64, bool, bool)> = reg
+        .access_tick
+        .iter()
+        .map(|(k, &t)| {
+            (
+                k.clone(),
+                t,
+                reg.clip_handles.contains_key(k),
+                k.ends_with("_oc.nif") && k.contains("\\precombined\\"),
+            )
+        })
+        .collect();
+    let mut expected_freed = Vec::new();
+    while live.len() > 40 {
+        let pick = |pred: &dyn Fn(&(String, u64, bool, bool)) -> bool| {
+            live.iter().enumerate().filter(|(_, e)| pred(e)).min_by_key(|(_, e)| e.1).map(|(i, _)| i)
+        };
+        let i = pick(&|e| e.3 && !e.2)
+            .or_else(|| pick(&|e| !e.2))
+            .or_else(|| pick(&|_| true))
+            .expect("a victim exists");
+        let victim = live.remove(i);
+        if victim.2 {
+            expected_freed.push(reg.clip_handles[&victim.0]);
+        }
+    }
+
+    let freed = reg.set_eviction_deferred(false);
+    assert_eq!(reg.len(), 40);
+    assert_eq!(reg.evictions, 260);
+    let mut kept: Vec<&String> = reg.core.cache.keys().collect();
+    let mut expected_kept: Vec<&String> = live.iter().map(|e| &e.0).collect();
+    kept.sort();
+    expected_kept.sort();
+    assert_eq!(kept, expected_kept, "the same survivors as the one-at-a-time policy");
+    assert_eq!(freed, expected_freed, "the same clip handles, in the same order");
+}
+
+/// #6590 - settling a streaming batch at Fallout 4's working-set shape (about
+/// 10,000 resident against a 2,048 cap) is a single pass over the registry, not
+/// one sweep per eviction. The old loop took about a second per 10,000 entries
+/// in an optimised build (and far longer unoptimised); the bound is loose
+/// enough for a debug build on a loaded machine.
+#[test]
+fn settling_a_fallout_4_sized_batch_is_not_quadratic() {
+    let mut reg = mixed_deferred_registry(2_048, 10_000);
+    assert_eq!(reg.len(), 10_000);
+    let started = std::time::Instant::now();
+    let _ = reg.set_eviction_deferred(false);
+    let elapsed = started.elapsed();
+    assert_eq!(reg.len(), 2_048);
+    assert_eq!(reg.evictions, 10_000 - 2_048);
+    assert!(
+        elapsed < std::time::Duration::from_millis(1_500),
+        "trimming 10,000 entries to 2,048 took {elapsed:?} - the victim choice is no longer a single pass"
+    );
+}

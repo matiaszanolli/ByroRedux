@@ -902,73 +902,93 @@ impl NifImportRegistry {
         self.eviction_deferred
     }
 
+    /// The eviction order of one candidate (#6590): lower evicts first.
+    ///
+    /// Tier 0 is a per-cell precombine with no memoised clip handle (the
+    /// cheapest victim, #6114), tier 1 any other handle-less entry, tier 2 an
+    /// entry carrying a clip handle (#3705: biased away from, but evictable once
+    /// nothing else is). Within a tier the oldest access tick goes first. The
+    /// tiers nest (a tier-0 entry also satisfies tier 1's predicate), so
+    /// "lowest `(tier, tick)`" is exactly what the three successive
+    /// minimum-tick sweeps this replaced picked, one victim at a time.
+    fn eviction_rank(&self, key: &str, tick: u64) -> (u8, u64) {
+        let tier = if self.clip_handles.contains_key(key) {
+            2
+        } else if is_cell_unique_key(key) {
+            0
+        } else {
+            1
+        };
+        (tier, tick)
+    }
+
+    /// The `excess` entries to evict, in eviction order, never choosing
+    /// `protected`. One pass over `access_tick` however large `excess` is
+    /// (#6590): the registry may sit up to `DEFERRED_EVICTION_HEADROOM` x the
+    /// cap past it when a streaming batch settles, and picking those victims
+    /// one at a time was O(excess x N) on the main thread.
+    fn pick_victims(&self, protected: Option<&str>, excess: usize) -> Vec<String> {
+        let candidates = self
+            .access_tick
+            .iter()
+            .filter(|(k, _)| Some(k.as_str()) != protected)
+            .map(|(k, &tick)| (self.eviction_rank(k, tick), k.as_str()));
+        if excess == 1 {
+            // The steady state (one insert past the cap): no allocation.
+            return candidates
+                .min()
+                .map(|(_, k)| vec![k.to_owned()])
+                .unwrap_or_default();
+        }
+        let mut ranked: Vec<((u8, u64), &str)> = candidates.collect();
+        if excess < ranked.len() {
+            ranked.select_nth_unstable(excess - 1);
+            ranked.truncate(excess);
+        }
+        // Eviction order, so the freed clip handles come back oldest first.
+        ranked.sort_unstable();
+        ranked.into_iter().map(|(_, k)| k.to_owned()).collect()
+    }
+
     /// Evict until the registry is within [`Self::effective_cap`], never
     /// choosing `protected` (the entry the calling insert just wrote).
     fn evict_over_cap(&mut self, protected: Option<&str>) -> Vec<u32> {
         let mut freed_clip_handles: Vec<u32> = Vec::new();
         if self.max_entries > 0 {
             let cap = self.effective_cap();
-            while self.core.len() > cap {
-                // #3705 / ECS-2026-08-30-D10-05 — plain LRU has no way to
-                // tell whether a live `AnimationPlayer` / `AnimationLayer`
-                // elsewhere in the `World` still plays a clip handle
-                // memoised here; a still-visible animated REFR whose model
-                // path just happens to be the coldest cache entry gets its
-                // clip silently and permanently emptied by
-                // `AnimationClipRegistry::release` below. A full fix needs
-                // either despawn-aware refcounting against every live
-                // holder or storing the source path on every animation
-                // component so a released clip can self-heal via
-                // `get_or_insert_by_path` — both bigger, riskier changes
-                // than this cache's own eviction policy (the latter also
-                // touches the save format, see #3701's `FORMAT_MAJOR`
-                // bump for the same component family). Short of that,
-                // bias eviction away from entries that carry a memoised
-                // clip handle at all: most cached models author no
-                // embedded controllers, so preferring the non-animated
-                // majority as LRU victims materially cuts the odds of
-                // hitting an animated one, without weakening the cache's
-                // actual memory bound (an all-animated cache still evicts
-                // via plain LRU once every candidate carries a handle).
-                //
-                // O(N) sweep(s) over `access_tick`, same cost class as the
-                // pre-existing plain-LRU scan below.
-                // #6114 — a per-cell precombine entry is the cheapest victim:
-                // it is shared with no other cell, so evicting the oldest one
-                // costs a re-parse only if its own cell is still to apply,
-                // while the models every cell shares stay resident. Left to
-                // plain LRU these (the newest inserts) pushed the shared
-                // statics out.
-                let victim = self
-                    .access_tick
-                    .iter()
-                    .filter(|(k, _)| {
-                        Some(k.as_str()) != protected
-                            && is_cell_unique_key(k)
-                            && !self.clip_handles.contains_key(k.as_str())
-                    })
-                    .min_by_key(|(_, &tick)| tick)
-                    .map(|(k, _)| k.clone())
-                    .or_else(|| {
-                        self.access_tick
-                            .iter()
-                            .filter(|(k, _)| {
-                                Some(k.as_str()) != protected
-                                    && !self.clip_handles.contains_key(k.as_str())
-                            })
-                            .min_by_key(|(_, &tick)| tick)
-                            .map(|(k, _)| k.clone())
-                    })
-                    .or_else(|| {
-                        self.access_tick
-                            .iter()
-                            .filter(|(k, _)| Some(k.as_str()) != protected)
-                            .min_by_key(|(_, &tick)| tick)
-                            .map(|(k, _)| k.clone())
-                    });
-                let Some(victim_key) = victim else {
-                    break;
-                };
+            let excess = self.core.len().saturating_sub(cap);
+            if excess == 0 {
+                return freed_clip_handles;
+            }
+            // #3705 / ECS-2026-08-30-D10-05 — plain LRU has no way to
+            // tell whether a live `AnimationPlayer` / `AnimationLayer`
+            // elsewhere in the `World` still plays a clip handle
+            // memoised here; a still-visible animated REFR whose model
+            // path just happens to be the coldest cache entry gets its
+            // clip silently and permanently emptied by
+            // `AnimationClipRegistry::release` below. A full fix needs
+            // either despawn-aware refcounting against every live
+            // holder or storing the source path on every animation
+            // component so a released clip can self-heal via
+            // `get_or_insert_by_path` — both bigger, riskier changes
+            // than this cache's own eviction policy (the latter also
+            // touches the save format, see #3701's `FORMAT_MAJOR`
+            // bump for the same component family). Short of that,
+            // bias eviction away from entries that carry a memoised
+            // clip handle at all: most cached models author no
+            // embedded controllers, so preferring the non-animated
+            // majority as LRU victims materially cuts the odds of
+            // hitting an animated one, without weakening the cache's
+            // actual memory bound (an all-animated cache still evicts
+            // via plain LRU once every candidate carries a handle).
+            //
+            // #6114 — a per-cell precombine entry is the cheapest victim:
+            // it is shared with no other cell, so evicting the oldest one
+            // costs a re-parse only if its own cell is still to apply,
+            // while the models every cell shares stay resident. Left to
+            // plain LRU these (the newest inserts) pushed the shared
+            // statics out. Both biases are `eviction_rank`'s tiers.
+            for victim_key in self.pick_victims(protected, excess) {
                 if !is_cell_unique_key(&victim_key) && !self.warned_shared_eviction {
                     self.warned_shared_eviction = true;
                     log::warn!(
