@@ -925,6 +925,10 @@ pub(super) fn build_composite_params(
     // `inverse()` it per submerged pixel (#6486).
     let view_proj = byroredux_core::math::Mat4::from_cols_array_2d(&inv_vp_arr).inverse();
     if !is_exterior && interior_portal_sky {
+        // VLM-INT-005: collect every usable aperture with its distance to the camera, then keep the
+        // nearest `MAX_SKY_APERTURES`. The upload used to stop at the cap in iteration order, so in a
+        // cell with more marked openings than the cap the ones that were dropped were whichever came last.
+        let mut candidates: Vec<(f32, super::super::composite::CompositeSkyAperture)> = Vec::new();
         for volume in sky_aperture_volumes {
             if (volume.center_shape[3] != crate::shader_constants::FOG_VOLUME_SHAPE_BOX as f32
                 && volume.center_shape[3]
@@ -937,9 +941,6 @@ pub(super) fn build_composite_params(
             {
                 continue;
             }
-            if aperture_count == sky_apertures.len() {
-                break;
-            }
             let Some(aperture) = super::super::composite::prepare_sky_aperture(
                 volume,
                 byroredux_core::math::Vec3::from_array(camera_pos),
@@ -948,9 +949,16 @@ pub(super) fn build_composite_params(
             ) else {
                 continue;
             };
-            sky_apertures[aperture_count] = aperture;
-            aperture_count += 1;
+            let to_camera = byroredux_core::math::Vec3::from_slice(&volume.center_shape[..3])
+                - byroredux_core::math::Vec3::from_array(camera_pos);
+            candidates.push((to_camera.length_squared(), aperture));
         }
+        let (kept, dropped) = super::sky_apertures::nearest_apertures(candidates, sky_apertures.len());
+        for (slot, aperture) in sky_apertures.iter_mut().zip(&kept) {
+            *slot = *aperture;
+        }
+        aperture_count = kept.len();
+        super::sky_apertures::note_sky_aperture_overflow(dropped, kept.len());
     }
     let dome = pack_sky_dome(
         sky_params,
