@@ -461,6 +461,11 @@ impl ConsoleCommand for SkyDumpCommand {
                 sky.is_exterior, sky.zenith_color, sky.horizon_color, sky.lower_color),
             format!("sky: sun dir={:.3?} color={:.3?} intensity={:.3} size={:.5} illuminance={:.3?}",
                 sky.sun_direction, sky.sun_color, sky.sun_intensity, sky.sun_size, sky.sun_illuminance),
+            // The interior lane the volumetrics actually receive (VLM-INT-002): the portal sun and whether
+            // the froxel pass's open-sky gate is on. Zero radiance here means no sun shaft can exist.
+            format!("sky: portal sun dir={:.3?} radiance={:.3?} show_sky={} portal_palette={}",
+                sky.portal_sun_direction, sky.portal_sun_radiance, sky.interior_show_sky,
+                sky.portal_outdoor_sky.is_some()),
             format!("sky: coverage={:.3} glare={:.3} precipitation={:.2?} thunder={:.2} wind={:.2?}x{:.2}",
                 w.cloud_coverage, w.sun_glare, w.precipitation, w.thunder_frequency,
                 w.wind_direction, w.wind_speed),
