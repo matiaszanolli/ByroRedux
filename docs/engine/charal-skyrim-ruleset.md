@@ -845,6 +845,12 @@ profile, `FactionCrime` parsed from the `FACT` Crime tab
   the faction is the parameter or, with none, the calling actor's crime
   faction. 459 is `GetActorCrimePlayerEnemy` on FO3 / FNV and stays unmodeled
   there. `GetIsCrimeFaction` (152) has no documented meaning and is not built.
+- **Jail sentence.** `bounty / iCrimeDaysInPrisonMod` days (divisor default
+  100, Oblivion's; Skyrim.esm authors no `iCrimeDaysInPrisonMod`), capped at
+  **seven days**: UESP *Skyrim:Crime* (`Crime.wiki:103`) "The maximum sentence
+  is seven days ... You will serve the maximum sentence for any bounty 700 or
+  higher." `CrimeModel::max_sentence_days` (#6757), `Some(7.0)` on Skyrim and
+  `None` on Oblivion (uncapped); read by `SendPlayerToJail`'s `JailSentence`.
 - **Not built.** Skyrim's guards (the `IsGuardFaction` arrest / kill AI and
   `GuardDialogueFaction` dialogue), jail (`JAIL` / `STOL` / `PLCN` / `JOUT` are
   parsed and unused), the Papyrus `PayCrimeGold` / `SendPlayerToJail` natives'

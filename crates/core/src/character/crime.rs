@@ -83,6 +83,12 @@ pub struct CrimeModel {
     /// divided by the value of this setting" (CS wiki, default 100; not
     /// authored by Oblivion.esm).
     pub prison_days_divisor: i32,
+    /// The longest jail sentence in days, `None` where a sentence is not capped.
+    /// UESP *Skyrim:Crime*: "The maximum sentence is seven days ... You will
+    /// serve the maximum sentence for any bounty 700 or higher." Oblivion's
+    /// "one day for every 100 gold" has no cap. An engine rule, not a setting
+    /// the masters author (#6757).
+    pub max_sentence_days: Option<f32>,
     /// `iCrimeAlarmRecDistance`: "the distance from which a crime victim's cries
     /// for help can be heard" (CS wiki, default 4000; Oblivion.esm authors 4000).
     pub alarm_distance: f32,
@@ -119,6 +125,7 @@ impl CrimeModel {
         pickpocket_gold: 25,
         infamy_bounty_step: 1000,
         prison_days_divisor: 100,
+        max_sentence_days: None,
         alarm_distance: 4000.0,
         guards_responding: 4,
         rush_bounty: 500,
@@ -129,9 +136,11 @@ impl CrimeModel {
 
     /// Skyrim's defaults: what a crime faction that ticks "Crime Gold - Use Defaults" fines (UESP
     /// *Skyrim:Crime*: theft half the item's value rounded down, trespass 5, pickpocket 25, assault
-    /// 40, murder 1000). The bounty is per crime faction, and animals witness. The guards and jail
-    /// settings below are Oblivion's and unused here: Skyrim's guards are an AI package.
+    /// 40, murder 1000). The bounty is per crime faction, and animals witness. The guard settings
+    /// below are Oblivion's and unused here: Skyrim's guards are an AI package. A jail sentence is
+    /// Oblivion's bounty / 100 days, capped at seven (UESP *Skyrim:Crime*, #6757).
     pub const SKYRIM: Self = Self {
+        max_sentence_days: Some(7.0),
         scope: BountyScope::CrimeFaction,
         theft_rounds_up: false,
         creatures_witness: true,
@@ -152,6 +161,7 @@ impl CrimeModel {
             pickpocket_gold: Self::authored_gold(&gmst, "iCrimeGoldPickpocket", self.pickpocket_gold),
             infamy_bounty_step: self.infamy_bounty_step,
             prison_days_divisor: Self::authored_gold(&gmst, "iCrimeDaysInPrisonMod", self.prison_days_divisor).max(1),
+            max_sentence_days: self.max_sentence_days,
             alarm_distance: gmst("iCrimeAlarmRecDistance")
                 .filter(|distance| distance.is_finite() && *distance >= 0.0)
                 .unwrap_or(self.alarm_distance),
@@ -169,10 +179,12 @@ impl CrimeModel {
     }
 
     /// The days a jail sentence for `bounty` lasts: `bounty / iCrimeDaysInPrisonMod`
-    /// (CS wiki; UESP: "one day for every 100 gold").
+    /// (CS wiki; UESP: "one day for every 100 gold"), clamped to
+    /// [`Self::max_sentence_days`] where the game caps a sentence.
     #[must_use]
     pub fn sentence_days(self, bounty: i32) -> f32 {
-        bounty.max(0) as f32 / self.prison_days_divisor.max(1) as f32
+        let days = bounty.max(0) as f32 / self.prison_days_divisor.max(1) as f32;
+        self.max_sentence_days.map_or(days, |cap| days.min(cap))
     }
 
     /// The infamy a crime that adds `bounty` earns (see [`Self::infamy_bounty_step`]).
@@ -242,6 +254,19 @@ mod tests {
         assert_eq!(slow.sentence_days(250), 5.0);
         let zero = CrimeModel::OBLIVION.with_gmst(|name| (name == "iCrimeDaysInPrisonMod").then_some(0.0));
         assert_eq!(zero.sentence_days(100), 100.0, "a zero divisor reads as 1, never a division by zero");
+    }
+
+    /// #6757 — UESP *Skyrim:Crime*: "The maximum sentence is seven days ...
+    /// any bounty 700 or higher". Oblivion's sentence has no cap.
+    #[test]
+    fn a_skyrim_sentence_is_capped_at_seven_days_and_oblivions_is_not() {
+        assert_eq!(CrimeModel::SKYRIM.sentence_days(250), 2.5);
+        assert_eq!(CrimeModel::SKYRIM.sentence_days(700), 7.0);
+        assert_eq!(CrimeModel::SKYRIM.sentence_days(5000), 7.0);
+        assert_eq!(CrimeModel::OBLIVION.sentence_days(5000), 50.0);
+        // The cap is an engine rule, not a GMST: a load order's divisor cannot lift it.
+        let slow = CrimeModel::SKYRIM.with_gmst(|name| (name == "iCrimeDaysInPrisonMod").then_some(10.0));
+        assert_eq!(slow.sentence_days(5000), 7.0);
     }
 
     #[test]
