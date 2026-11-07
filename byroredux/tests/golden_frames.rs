@@ -80,6 +80,15 @@ const COMBUSTION_LAB: GoldenCase = GoldenCase {
     scene_args: &["--combustion-lab"],
 };
 
+/// The exterior shaft lab (VLM-SH-001, VLM-SH-003): a low sun behind a row of slats in open sky, under the
+/// engine's default exterior haze floor, game-data independent. It pins the look of an exterior sun shaft and of
+/// the haze that carries it, so a change to the froxel sun term, the haze floor or the sky that quietly erases
+/// the shafts or washes out the scene fails here (`exterior-shafts.sh` is the contrast gate; this is the picture).
+const SHAFT_LAB: GoldenCase = GoldenCase {
+    name: "shaft_lab_60f",
+    scene_args: &["--shaft-lab"],
+};
+
 /// The engine flags every baseline is captured with, and the single source of
 /// truth for both the capture and the staleness check below.
 ///
@@ -116,6 +125,12 @@ fn cube_demo_golden_frame() {
 #[ignore = "requires Vulkan device + release build; opt-in via --ignored"]
 fn combustion_lab_golden_frame() {
     golden_frame(&COMBUSTION_LAB);
+}
+
+#[test]
+#[ignore = "requires Vulkan device + release build; opt-in via --ignored"]
+fn shaft_lab_golden_frame() {
+    golden_frame(&SHAFT_LAB);
 }
 
 fn golden_frame(case: &GoldenCase) {

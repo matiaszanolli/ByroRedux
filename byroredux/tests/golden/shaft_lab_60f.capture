@@ -1,0 +1,9 @@
+# Invocation the sibling golden PNG was captured with (#3849).
+# Regenerate both together: BYROREDUX_REGEN_GOLDEN=1 cargo test --release \
+#   -p byroredux -- --ignored golden
+frames=60
+--bench-mode
+renderer-static
+--upscaler
+taa
+--shaft-lab
