@@ -149,6 +149,10 @@ pub struct ProjRecord {
     /// "Explosion - Alt. Trigger - Timer": seconds before an alternate-trigger projectile goes off by itself
     /// (`DATA` 32 / Fallout 4 and 76 `DNAM` 28).
     pub alt_trigger_timer: f32,
+    /// Starfield only (#6679): the `PROD` flag bits above bit 15 (24 records, e.g.
+    /// `LaserBeamCutterProjectile` `0x51208`), which do not fit the `(type << 16) | flags`
+    /// packing of [`Self::flags`]. The low 16 bits stay in `flags`; `0` everywhere else.
+    pub extended_flags: u16,
 }
 
 impl ProjRecord {
@@ -193,6 +197,58 @@ const PROJ_DNAM_LEN: usize = 76;
 const PROJ_DNAM_ALT_TRIGGER_PROXIMITY: usize = 24;
 const PROJ_DNAM_IMPACT_FORCE: usize = 48;
 const PROJ_DNAM_COLLISION_RADIUS: usize = 68;
+
+/// Starfield's `PROJ` `PROD` (xEdit `wbDefinitionsSF1.pas`; `DATA` is empty on all 265 records): flags are one u32,
+/// then gravity, speed and range, the alt-trigger proximity at 24 (timer 28, explosion 32), the impact force at 44, the
+/// collision radius at 56 and the lifetime at 60.
+const PROD_PROXIMITY: usize = 24;
+const PROD_IMPACT_FORCE: usize = 44;
+const PROD_COLLISION_RADIUS: usize = 56;
+/// A u32-prefixed string sits at 81; after its `n` bytes come the seek strength and the sound activation condition
+/// (8 bytes), then the type byte. A walk that lands exactly on the end of all 265 `Starfield.esm` records.
+const PROD_STRING_AT: usize = 81;
+const PROD_AFTER_STRING_TO_TYPE: usize = 8;
+
+/// Starfield's projectile type is a sequential enum (xEdit: 0 Missile, 1 Lobber, 2 Beam, 3 Flame, 4 Cone, 5 Barrier,
+/// 6 Arrow, 7 Plasma, 8 Emitter), not the bit values [`ProjRecord::projectile_type`] documents for every other game;
+/// each value `k` maps to the bit `1 << k`, which is those documented values (Missile 1, Lobber 2, Beam 4, ...).
+fn starfield_projectile_type(kind: u8) -> u16 {
+    1u16.checked_shl(u32::from(kind)).unwrap_or(0)
+}
+
+/// Decode a Starfield `PROD` onto `out`. A body too short to reach the type byte decodes nothing.
+fn decode_starfield_prod(data: &[u8], out: &mut ProjRecord, remap: &Option<crate::esm::reader::FormIdRemap>) {
+    let Some(len_bytes) = data.get(PROD_STRING_AT..PROD_STRING_AT + 4) else {
+        return;
+    };
+    let string_len = u32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]) as usize;
+    let Some(type_at) = (PROD_STRING_AT + 4)
+        .checked_add(string_len)
+        .and_then(|after| after.checked_add(PROD_AFTER_STRING_TO_TYPE))
+    else {
+        return;
+    };
+    let Some(&kind) = data.get(type_at) else {
+        return;
+    };
+    let mut r = SubReader::new(data);
+    let raw_flags = r.u32_or_default();
+    out.flags = (u32::from(starfield_projectile_type(kind)) << 16) | (raw_flags & 0xFFFF);
+    out.extended_flags = (raw_flags >> 16) as u16;
+    out.gravity = r.f32_or_default();
+    out.muzzle_speed = r.f32_or_default();
+    out.range = r.f32_or_default();
+    r.skip_to_or_eof(PROD_PROXIMITY);
+    out.alt_trigger_proximity = r.f32_or_default();
+    out.alt_trigger_timer = r.f32_or_default();
+    let explosion = r.u32_or_default();
+    out.explosion = if explosion == 0 { 0 } else { remap_fid(explosion, remap) };
+    r.skip_to_or_eof(PROD_IMPACT_FORCE);
+    out.impact_force = r.f32_or_default();
+    r.skip_to_or_eof(PROD_COLLISION_RADIUS);
+    out.collision_radius = r.f32_or_default();
+    out.lifetime = r.f32_or_default();
+}
 
 pub fn parse_proj(
     form_id: u32,
@@ -267,6 +323,10 @@ pub fn parse_proj(
                 r.skip_to_or_eof(PROJ_DNAM_COLLISION_RADIUS);
                 out.collision_radius = r.f32_or_default();
                 out.lifetime = r.f32_or_default();
+            }
+            // Starfield moved the struct to `PROD` (#6679).
+            b"PROD" if matches!(game, crate::esm::reader::GameKind::Starfield) => {
+                decode_starfield_prod(&sub.data, &mut out, remap);
             }
             _ => {}
         }
@@ -465,7 +525,7 @@ const EXPL_FO76_CURVE_TABLE_MIN_LEN: usize = 88;
 
 /// Where an `EXPL` `DATA` of `len` bytes keeps its damage, and whether the words after it are `Inner Radius` and
 /// `Outer Radius` rather than the one radius. `None` for a game with no `EXPL` `DATA` layout: Oblivion has no `EXPL`,
-/// and Starfield authors `ENAM` instead.
+/// and Starfield authors `ENAM` instead (read in [`parse_expl`], #6679).
 fn expl_data_layout(game: crate::esm::reader::GameKind, len: usize) -> Option<(usize, bool)> {
     use crate::esm::reader::GameKind;
     match game {
@@ -477,6 +537,10 @@ fn expl_data_layout(game: crate::esm::reader::GameKind, len: usize) -> Option<(u
         GameKind::Oblivion | GameKind::Starfield => None,
     }
 }
+
+/// Starfield's `EXPL` `ENAM` (164 B at form version 581; xEdit `wbDefinitionsSF1.pas`): two 40-byte sound references put
+/// the Force at 100, then the damage and the two radii (#6679).
+const EXPL_ENAM_DAMAGE: usize = 104;
 
 pub fn parse_expl(form_id: u32, subs: &[SubRecord], game: crate::esm::reader::GameKind) -> ExplRecord {
     let mut out = ExplRecord {
@@ -491,6 +555,17 @@ pub fn parse_expl(form_id: u32, subs: &[SubRecord], game: crate::esm::reader::Ga
     out.editor_id = common.editor_id;
     out.full_name = common.full_name;
     for sub in subs {
+        if &sub.sub_type == b"ENAM" && matches!(game, crate::esm::reader::GameKind::Starfield) {
+            // Damage, Inner Radius, Outer Radius; a body that stops short of the last word is not decoded.
+            if sub.data.len() >= EXPL_ENAM_DAMAGE + 12 {
+                let mut r = SubReader::new(&sub.data);
+                r.skip_to_or_eof(EXPL_ENAM_DAMAGE);
+                out.damage = r.f32_or_default();
+                out.inner_radius = r.f32_or_default();
+                out.radius = r.f32_or_default();
+            }
+            continue;
+        }
         if &sub.sub_type == b"DATA" {
             let Some((damage_at, two_radii)) = expl_data_layout(game, sub.data.len()) else {
                 continue;
@@ -901,6 +976,82 @@ mod tests {
         assert_eq!((p.alt_trigger_proximity, p.alt_trigger_timer, p.explosion), (235.0, 1.6, 0x0077_B4BE));
         assert_eq!((p.collision_radius, p.lifetime), (5.0, 100.0));
         assert!(p.is_proximity_mine());
+    }
+
+    /// #6679 -- Starfield's `EXPL` keeps its struct in a 164-byte `ENAM`: Force @100, Damage @104, Inner Radius @108,
+    /// Outer Radius @112 (`SpaceMineExplosion` `0x0025665D`: 550 / 400 / 15 / 250).
+    #[test]
+    fn a_starfield_explosion_decodes_from_its_enam() {
+        let mut enam = vec![0u8; 164];
+        enam[100..104].copy_from_slice(&550.0f32.to_le_bytes());
+        enam[104..108].copy_from_slice(&400.0f32.to_le_bytes());
+        enam[108..112].copy_from_slice(&15.0f32.to_le_bytes());
+        enam[112..116].copy_from_slice(&250.0f32.to_le_bytes());
+        let subs = [sub(b"EDID", b"SpaceMineExplosion\0"), sub(b"ENAM", &enam)];
+        let e = parse_expl(0x0025_665D, &subs, crate::esm::reader::GameKind::Starfield);
+        assert_eq!((e.damage, e.inner_radius, e.radius), (400.0, 15.0, 250.0));
+        // A body that stops before the Outer Radius word decodes nothing, and other games ignore `ENAM`.
+        let short = [sub(b"ENAM", &enam[..112])];
+        let e = parse_expl(1, &short, crate::esm::reader::GameKind::Starfield);
+        assert_eq!((e.damage, e.inner_radius, e.radius), (0.0, 0.0, 0.0));
+        let e = parse_expl(1, &subs, crate::esm::reader::GameKind::Fallout4);
+        assert_eq!(e.damage, 0.0);
+    }
+
+    /// A Starfield `PROD` with `string_len` bytes in its first string, the type byte after it, and `flags`.
+    fn starfield_prod(flags: u32, kind: u8, string_len: usize) -> Vec<u8> {
+        let type_at = 85 + string_len + 8;
+        let mut prod = vec![0u8; type_at + 1 + 4 + 16];
+        prod[0..4].copy_from_slice(&flags.to_le_bytes());
+        prod[4..8].copy_from_slice(&1.5f32.to_le_bytes());
+        prod[8..12].copy_from_slice(&900.0f32.to_le_bytes());
+        prod[12..16].copy_from_slice(&5000.0f32.to_le_bytes());
+        prod[24..28].copy_from_slice(&250.0f32.to_le_bytes());
+        prod[28..32].copy_from_slice(&0.5f32.to_le_bytes());
+        prod[32..36].copy_from_slice(&0x0025_665Du32.to_le_bytes());
+        prod[44..48].copy_from_slice(&7.0f32.to_le_bytes());
+        prod[56..60].copy_from_slice(&3.0f32.to_le_bytes());
+        prod[60..64].copy_from_slice(&20.0f32.to_le_bytes());
+        prod[81..85].copy_from_slice(&(string_len as u32).to_le_bytes());
+        prod[type_at] = kind;
+        prod
+    }
+
+    /// #6679 -- Starfield's `PROJ` keeps its struct in `PROD` (its `DATA` is empty): one u32 of flags, the alt
+    /// trigger at 24..36, and a type byte behind a u32-prefixed string. `spacemine` (`0x00256683`) is a Lobber
+    /// (enum 1) whose alt-trigger proximity 250 and `SpaceMineExplosion` make it a mine.
+    #[test]
+    fn a_starfield_mine_projectile_decodes_from_its_prod() {
+        let prod = starfield_prod(0x0000_0006, 1, 11);
+        let subs = [sub(b"EDID", b"spacemine\0"), sub(b"DATA", b""), sub(b"PROD", &prod)];
+        let p = parse_proj(0x0025_6683, &subs, crate::esm::reader::GameKind::Starfield, &None);
+        assert_eq!((p.projectile_flags(), p.projectile_type()), (0x0006, 2), "the enum maps to Lobber's bit value");
+        assert_eq!((p.gravity, p.muzzle_speed, p.range), (1.5, 900.0, 5000.0));
+        assert_eq!((p.alt_trigger_proximity, p.alt_trigger_timer, p.explosion), (250.0, 0.5, 0x0025_665D));
+        assert_eq!((p.impact_force, p.collision_radius, p.lifetime), (7.0, 3.0, 20.0));
+        assert!(p.is_proximity_mine());
+    }
+
+    /// The Starfield type enum maps to the documented bit values (Missile 1, Beam 4, Emitter 0x100), and the flag
+    /// bits above 15 ride `extended_flags` rather than colliding with the type word
+    /// (`LaserBeamCutterProjectile` `0x51208`, a Beam).
+    #[test]
+    fn a_starfield_projectile_type_and_high_flags_stay_apart() {
+        let decode = |flags, kind, string_len| {
+            let subs = [sub(b"PROD", starfield_prod(flags, kind, string_len))];
+            parse_proj(1, &subs, crate::esm::reader::GameKind::Starfield, &None)
+        };
+        assert_eq!(decode(0, 0, 0).projectile_type(), 1);
+        assert_eq!(decode(0, 8, 3).projectile_type(), 0x100);
+        let beam = decode(0x0005_1208, 2, 40);
+        assert_eq!((beam.projectile_type(), beam.projectile_flags(), beam.extended_flags), (4, 0x1208, 5));
+        // A body that stops before the type byte decodes nothing.
+        let short = [sub(b"PROD", starfield_prod(0, 1, 11)[..80].to_vec())];
+        let p = parse_proj(1, &short, crate::esm::reader::GameKind::Starfield, &None);
+        assert_eq!((p.flags, p.muzzle_speed), (0, 0.0));
+        // Other games ignore `PROD`.
+        let other = [sub(b"PROD", starfield_prod(6, 1, 11))];
+        assert_eq!(parse_proj(1, &other, crate::esm::reader::GameKind::Fallout4, &None).flags, 0);
     }
 
     /// A body that stops before its last radius word, and a game with no `EXPL` `DATA` layout, decode nothing

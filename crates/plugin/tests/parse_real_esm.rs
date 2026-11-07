@@ -340,6 +340,36 @@ fn fo76_expl_and_proj_decode_their_own_layouts() {
     assert_eq!(index.projectiles.values().filter(|p| p.is_proximity_mine()).count(), 24);
 }
 
+/// #6679 -- Starfield keeps `EXPL` in a 164-byte `ENAM` and `PROJ` in `PROD`: the four explosions' damage and radii
+/// (raw bytes read from `Starfield.esm`), and the placed mines' projectiles reading as mines.
+#[test]
+#[ignore = "needs Starfield game data on disk"]
+fn starfield_expl_enam_and_proj_prod_decode() {
+    let Some(data) = data_dir(test_paths::STARFIELD_ENV, test_paths::STARFIELD_DEFAULT) else {
+        eprintln!("[Starfield/EXPL] skipping: game data unavailable");
+        return;
+    };
+    let index = assert_expl_rows(
+        &data.join("Starfield.esm"),
+        &[
+            (0x000E_574F, "fragGrenadeExplosion", 100.0, 3.5, 8.0),
+            (0x0025_665D, "SpaceMineExplosion", 400.0, 15.0, 250.0),
+            (0x0001_F8C5, "ExplosionGrenadeShell", 50.0, 100.0, 256.0),
+            (0x0015_B07E, "pulseGrenadeExplosion", 0.0, 150.0, 500.0),
+        ],
+    );
+    // (projectile, proximity, timer, explosion)
+    for (form, proximity, timer, explosion) in [
+        (0x0025_6683u32, 250.0f32, 0.5f32, 0x0025_665Du32),
+        (0x0005_AB87, 2.0, 2.0, 0x000E_574F),
+    ] {
+        let proj = index.projectiles.get(&form).unwrap_or_else(|| panic!("{form:08X} is in Starfield.esm"));
+        assert_eq!((proj.alt_trigger_proximity, proj.alt_trigger_timer, proj.explosion), (proximity, timer, explosion));
+        assert!(proj.is_proximity_mine(), "{}", proj.editor_id);
+    }
+    assert_eq!(index.projectiles.len(), 265);
+}
+
 /// Parse `master` and check its `EXPL` rows `(form, editor id, damage, inner radius, outer radius)`, whose values
 /// are read from the master's raw bytes. Hands back the index for any further checks.
 fn assert_expl_rows(
