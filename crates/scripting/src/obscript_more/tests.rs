@@ -660,6 +660,9 @@ fn faction_commands_change_the_reputation_and_the_actors_factions() {
     world.insert(actor, FactionRanks(vec![(FACTION, 1), (FACTION + 1, 0)]));
     assert!(is_done(&run(&world, 0x1214, &[], &ctx(Some(ACTOR)))));
     assert!(world.get::<FactionRanks>(actor).unwrap().0.is_empty(), "RemoveFromAllFactions");
+    // #6758 -- the departure is on the ledger too, so a respawn or save-load does not bring the factions back.
+    let ledger = world.resource::<crate::ScriptedFactionChanges>();
+    assert_eq!(ledger.changes_for(ACTOR), &[(FACTION, None), (FACTION + 1, None)], "RemoveFromAllFactions is recorded");
     // AddReputationExact <repu> <fame 1> <amount>
     run(&world, 0x123b, &[ObScriptValue::Ref(0x77), ObScriptValue::Num(1.0), ObScriptValue::Num(10.0)], &ctx(None));
     run(&world, 0x123b, &[ObScriptValue::Ref(0x77), ObScriptValue::Num(0.0), ObScriptValue::Num(4.0)], &ctx(None));

@@ -76,6 +76,7 @@ use inventory::*;
 use presentation::*;
 use world_state::*;
 
+pub(crate) use actor_state::remove_from_all_factions;
 pub(crate) use getters::GETTER_COMMANDS;
 /// The getter ids are what the tests name their rows by.
 #[cfg(test)]

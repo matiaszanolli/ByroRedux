@@ -16,6 +16,20 @@ pub(super) fn add_to_faction(world: &World, _fallout: bool, cmd: u16, args: &[Ob
     finish_effects(world, cmd, context, caller, &bind, effects)
 }
 
+// GECK *RemoveFromAllFactions*: names no faction, so the effect's faction is unused and the flush
+// records every faction the actor was in as removed (#6758) -- the ledger the Papyrus
+// `RemoveFromAllFactions()` and `AddToFaction` / `RemoveFromFaction` / `SetFactionRank` already feed, so
+// the memberships stay gone across a cell respawn and a save-load.
+pub(crate) fn remove_from_all_factions(world: &World, _fallout: bool, cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
+    let Some((caller, _, bind, me)) = open_actor_effects(world, context) else { return Action::Declined };
+    let effects = vec![Effect::ChangeFaction {
+        actor: me,
+        faction: ObjectRef::Property(String::new()),
+        change: FactionChange::RemoveAll,
+    }];
+    finish_effects(world, cmd, context, caller, &bind, effects)
+}
+
 pub(super) fn add_spell(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
     let Some((caller, _, mut bind, me)) = open_actor_effects(world, context) else { return Action::Declined };
     let effects: Vec<Effect> = {

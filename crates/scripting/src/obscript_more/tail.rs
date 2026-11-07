@@ -2,7 +2,7 @@
 //! the character-creation screens, the math functions, the platform questions, the faction and cell
 //! setters. Each answers from the page that documents it (GECK / CS) or from the engine state it names.
 
-use byroredux_core::ecs::components::{ActorValues, FactionRanks, Inventory};
+use byroredux_core::ecs::components::{ActorValues, Inventory};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 
@@ -10,7 +10,7 @@ use super::state::{caller_or_player, names_other_actor};
 use super::{answer, caller, done, flag, ledger, ledger_mut, player, store, MenuRequest, PendingMenus};
 use crate::obscript_actions::{Action, Context};
 use crate::obscript_cmd::{Command, Games};
-use crate::obscript_effects::{form_arg, live, num};
+use crate::obscript_effects::{form_arg, live, num, remove_from_all_factions};
 use crate::obscript_vm::ObScriptValue;
 
 /// A video a script asked for (`PlayBink`), for a player the engine does not have. `NOT_SAVED_BY_DESIGN`:
@@ -390,21 +390,6 @@ fn cmd_1184(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx
             store(world, cmd, subject, num(args, 1))
         }
         _ => Action::Declined,
-    }
-}
-
-// GECK *RemoveFromAllFactions*.
-fn remove_from_all_factions(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
-    match caller(world, ctx) {
-        Some((_, actor)) => {
-            if let Some(mut ranks) = world.query_mut::<FactionRanks>() {
-                if let Some(factions) = ranks.get_mut(actor) {
-                    factions.0.clear();
-                }
-            }
-            done("RemoveFromAllFactions")
-        }
-        None => Action::Declined,
     }
 }
 
@@ -819,7 +804,7 @@ pub(crate) const TAIL_COMMANDS: &[Command] = &[
     Command { id: 0x1133, games: Games::Fallout, needs_caller: false, handler: cmd_1133 },
     Command { id: 0x1148, games: Games::Fallout, needs_caller: false, handler: dispel_all_spells },
     Command { id: 0x1184, games: Games::Fallout, needs_caller: false, handler: cmd_1184 },
-    Command { id: 0x1214, games: Games::Fallout, needs_caller: false, handler: remove_from_all_factions },
+    Command { id: 0x1214, games: Games::Fallout, needs_caller: true, handler: remove_from_all_factions },
     Command { id: 0x11f5, games: Games::Fallout, needs_caller: false, handler: cmd_11f5 },
     Command { id: 0x11e5, games: Games::Fallout, needs_caller: false, handler: cmd_11e5 },
     Command { id: 0x11df, games: Games::Fallout, needs_caller: false, handler: cmd_11df },
