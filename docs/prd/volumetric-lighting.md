@@ -455,7 +455,11 @@ The RT visibility replaces cascades (VLM-NG-006).
   (`volumetric_sun`) MAY remain.
 - **VLM-SH-005.** Shafts MUST reach the range §10 Q3 decides; the range is
   observable as the farthest occluder distance at which the lab's shaft
-  contrast still passes VLM-SH-002.
+  contrast still passes VLM-SH-002. **Measured 2026-11-07** (`--shaft-lab-distance`, default 128 m grid, the
+  gate's 0.05 bar, open minus solid contrast): 25 m 0.233, 40 m 0.237, 55 m 0.154, 70 m 0.131, 90 m 0.071,
+  110 m 0.031, 128 m 0.004, 150 m 0.001. The shaft passes out to somewhere between 90 and 110 m and is gone at
+  the grid's far plane, so the observable range is about 90 to 100 m of the 128 m grid. Whether that is the range
+  the owner meant by "the froxel grid only" (§10 Q3) is theirs to say.
 - **VLM-SH-006.** On each exterior fixture of §7.2, a noon and a low-sun
   capture under the fixture's vanilla weather MUST be recorded with the
   shaft contrast across a named occluder. **Phase 0: verify** whether
@@ -821,3 +825,4 @@ as VLM-NG-006 instead of being reopened.
 | 8 | 2026-11-07 | VLM-INT-006 clarified: the live ratio, not the unit tests, is the measure. The census-versus-engine reconciliation found the loader's `fxlight` early return starving every FNV `FXLightBeam*` converter; fixed, and `Vault11a`, `SLAbandonedShack03INT` and `HooverDamIntPowerPlant01b` now carry passive cones | — |
 | 9 | 2026-11-07 | VLM-SH-009 reworked and Phase 0 measured: the first criterion (cutout against opaque texels) passes on an opaque trace because of the haze beyond the panel, so it is replaced by a matched-geometry comparison (cutout card against the same stripes as real holes). The lab now has the three variants; the cutout reads 9.9 % below the holes, so the gate is known red until the trace honours alpha | claude: revise |
 | 10 | 2026-11-07 | VLM-SH-009 met: the froxel sun trace honours alpha coverage under open sky (`sunRayBlockedAlphaAware`; material table at binding 32 and the bindless set as the pipeline's second descriptor set). Lab gate: cutout 129.18 against geometry 129.16. Cost on FNV Goodsprings: inject +0.08 ms at noon, +0.15 ms at 07:00 (0.18 to 0.26, 0.19 to 0.35); finished frames identical (no cutout casters in view). Interiors keep the binary trace | claude: revise |
+| 11 | 2026-11-07 | VLM-SH-005 measured: the lab shaft passes the 0.05 bar out to between 90 and 110 m (0.071 at 90 m, 0.031 at 110 m) and vanishes at the 128 m far plane; the lab takes `--shaft-lab-distance <m>` for the sweep. Cloud-shadow sampling (VLM-SH-004) stays on the camera-column value per Q3 | claude: revise |

@@ -419,12 +419,22 @@ fn load_scene_content(
         cam_center = target;
         has_nif_content = true;
     } else if let Some(solid) = shaft_lab {
-        let (pos, target) = crate::cornell::setup_shaft_lab_scene(world, ctx, solid);
+        let (pos, target) = crate::cornell::setup_shaft_lab_scene(
+            world,
+            ctx,
+            solid,
+            crate::cornell::shaft_lab_distance_m(args),
+        );
         harness_cam = Some((pos, target));
         cam_center = target;
         has_nif_content = true;
     } else if let Some(card) = shaft_card_lab {
-        let (pos, target) = crate::cornell::setup_shaft_card_lab_scene(world, ctx, card);
+        let (pos, target) = crate::cornell::setup_shaft_card_lab_scene(
+            world,
+            ctx,
+            card,
+            crate::cornell::shaft_lab_distance_m(args),
+        );
         harness_cam = Some((pos, target));
         cam_center = target;
         has_nif_content = true;

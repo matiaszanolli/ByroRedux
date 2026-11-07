@@ -94,6 +94,20 @@ pub(crate) fn shaft_lab_mode(args: &[String]) -> Option<bool> {
     }
 }
 
+/// Camera distance from the wall, metres, when `--shaft-lab-distance` is absent.
+pub(crate) const SHAFT_LAB_DISTANCE_M: f32 = 55.0;
+
+/// `--shaft-lab-distance <metres>`: how far the camera stands from the wall, for the range sweep
+/// (VLM-SH-005). Absent, unparsable, non-finite or non-positive values fall back to the default, so a
+/// typo never moves the pinned camera of the gate and the golden frame.
+pub(crate) fn shaft_lab_distance_m(args: &[String]) -> f32 {
+    args.windows(2)
+        .find(|pair| pair[0] == "--shaft-lab-distance")
+        .and_then(|pair| pair[1].parse::<f32>().ok())
+        .filter(|metres| metres.is_finite() && *metres > 0.0)
+        .unwrap_or(SHAFT_LAB_DISTANCE_M)
+}
+
 /// The unit direction TO the sun, in the engine's Y-up convention: elevation
 /// [`SHAFT_LAB_SUN_ELEVATION_DEG`], toward `-Z` so the sun stands behind the wall for a camera on `+Z`.
 pub(crate) fn shaft_lab_sun_direction() -> [f32; 3] {
@@ -113,8 +127,9 @@ pub(crate) fn setup_shaft_lab_scene(
     world: &mut World,
     ctx: &mut VulkanContext,
     solid: bool,
+    distance_m: f32,
 ) -> (Vec3, Vec3) {
-    build_shaft_lab_scene(world, ctx, if solid { Wall::Solid } else { Wall::Slats })
+    build_shaft_lab_scene(world, ctx, if solid { Wall::Solid } else { Wall::Slats }, distance_m)
 }
 
 /// The alpha-card lab (VLM-SH-009): the same sky, ground and camera, with the striped card of the chosen
@@ -123,11 +138,17 @@ pub(crate) fn setup_shaft_card_lab_scene(
     world: &mut World,
     ctx: &mut VulkanContext,
     card: ShaftLabCard,
+    distance_m: f32,
 ) -> (Vec3, Vec3) {
-    build_shaft_lab_scene(world, ctx, Wall::Card(card))
+    build_shaft_lab_scene(world, ctx, Wall::Card(card), distance_m)
 }
 
-fn build_shaft_lab_scene(world: &mut World, ctx: &mut VulkanContext, wall: Wall) -> (Vec3, Vec3) {
+fn build_shaft_lab_scene(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    wall: Wall,
+    distance_m: f32,
+) -> (Vec3, Vec3) {
     use crate::fog::WORLD_UNITS_PER_METER as UPM;
     install_cornell_lighting(world, true);
     let sun = shaft_lab_sun_direction();
@@ -238,7 +259,7 @@ fn build_shaft_lab_scene(world: &mut World, ctx: &mut VulkanContext, wall: Wall)
     // ray crosses the 3 m slat pitch every few metres and averages the stripes away. The wall's top
     // (14 m) clears the sun at this range, so the sun disc is hidden and only the beams remain.
     let eye_height = 1.7;
-    let distance = 55.0;
+    let distance = distance_m;
     let rise = distance * SHAFT_LAB_SUN_ELEVATION_DEG.to_radians().tan();
     (
         Vec3::new(0.0, eye_height * UPM, distance * UPM),

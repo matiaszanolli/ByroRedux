@@ -107,7 +107,8 @@ pub(crate) use combustion_lab::{
 pub(crate) use glass_dragon::{glass_dragon_mode, setup_cornell_glass_dragon_scene};
 pub(crate) use godray_lab::{godray_lab_marked, godray_lab_mode, setup_godray_lab_scene};
 pub(crate) use shaft_lab::{
-    setup_shaft_card_lab_scene, setup_shaft_lab_scene, shaft_lab_card_mode, shaft_lab_mode,
+    setup_shaft_card_lab_scene, setup_shaft_lab_scene, shaft_lab_card_mode, shaft_lab_distance_m,
+    shaft_lab_mode,
 };
 pub(crate) use oracle::{cornell_oracle_rung, cornell_oracle_world_offset, setup_cornell_oracle_scene};
 pub(crate) use reference::{cornell_reference_rung, cornell_reference_view, setup_reference_scene};
@@ -677,6 +678,18 @@ mod tests {
         assert_eq!(shaft_lab_card_mode(&args(&["--shaft-lab-card-geo"])), Some(ShaftLabCard::Geometry));
         assert_eq!(shaft_lab_card_mode(&args(&["--shaft-lab-card-solid"])), Some(ShaftLabCard::Solid));
         assert_eq!(super::shaft_lab::shaft_lab_mode(&args(&["--shaft-lab-card"])), None);
+    }
+
+    #[test]
+    fn shaft_lab_distance_falls_back_on_anything_unusable() {
+        use super::shaft_lab::{shaft_lab_distance_m, SHAFT_LAB_DISTANCE_M};
+        assert_eq!(shaft_lab_distance_m(&args(&["--shaft-lab"])), SHAFT_LAB_DISTANCE_M);
+        assert_eq!(shaft_lab_distance_m(&args(&["--shaft-lab-distance", "90"])), 90.0);
+        assert_eq!(shaft_lab_distance_m(&args(&["--shaft-lab", "--shaft-lab-distance", "12.5"])), 12.5);
+        for bad in ["abc", "-3", "0", "inf", "NaN"] {
+            assert_eq!(shaft_lab_distance_m(&args(&["--shaft-lab-distance", bad])), SHAFT_LAB_DISTANCE_M, "{bad}");
+        }
+        assert_eq!(shaft_lab_distance_m(&args(&["--shaft-lab-distance"])), SHAFT_LAB_DISTANCE_M);
     }
 
     #[test]

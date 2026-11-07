@@ -496,6 +496,11 @@ and `BYRO_HAZE_FLOOR` / `fog.haze` (the floor).
   through pines), read identically on and off (0.00 % of pixels differ by more than 4 levels), because the
   trees there are thin or farther than the froxel range; a pose inside dense broadleaf or a fence line at
   close range is still needed.
+- **Shaft range (VLM-SH-005, 2026-11-07).** The exterior lab with the camera at 25 to 150 m
+  (`--shaft-lab-distance`), contrast of the open wall minus the solid control over the wall body: 0.233 (25 m),
+  0.237 (40), 0.154 (55), 0.131 (70), 0.071 (90), 0.031 (110), 0.004 (128), 0.001 (150). Against the gate's 0.05
+  bar the shaft reaches between 90 and 110 m and is gone at the 128 m far plane. It falls well before the plane
+  because the froxel slices thicken with distance and a view ray crosses more slabs.
 - **Not done yet:** the per-fixture noon and low-sun captures on the other titles (VLM-SH-006), the range and
   cloud-shadow work (VLM-SH-004, -005), and the separate inject and integrate milliseconds (VLM-SH-008; the
   inject figure above is one pose, not the fixture set).

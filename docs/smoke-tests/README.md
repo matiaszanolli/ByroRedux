@@ -20,7 +20,8 @@ run-to-run noise of a repeated capture, which is exactly zero in that mode. It n
 without an engine binary, a display or Python with numpy and Pillow it exits `77`. The captures
 stay in the printed `/tmp/byro-shaft-smoke.*` directory. It then measures the alpha-tested card
 (VLM-SH-009) from three matched captures (`--shaft-lab-card`, `-card-geo`, `-card-solid`): the cutout
-panel's in-scatter over the hole columns must come within 2 % of the same stripes as real holes.
+panel's in-scatter over the hole columns must come within 2 % of the same stripes as real holes. The lab also
+takes `--shaft-lab-distance <m>` (default 55) to put the camera elsewhere, for the range sweep of VLM-SH-005.
 
 Manual / scripted smoke checks that need a Vulkan device and a windowed
 engine instance. Most also need out-of-tree BSA / ESM game data; the controlled
