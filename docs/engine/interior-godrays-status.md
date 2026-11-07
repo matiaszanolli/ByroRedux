@@ -137,7 +137,10 @@ visible at that position.
   so nothing changes in a dark room, for the local lights, or at night. On `NellisHangar1` the shaft region (6.6%
   of the frame) reads 28.3 at noon against 21.6 at midnight in the radiance view and 46.4 against 42.1 in the
   finished frame, against repeat noise of 0.16 and 1.06. `interior-godrays.sh` (45.5) and `exterior-shafts.sh`
-  still pass. Still faint in the finished frame: the owner should judge the strength (the constant is one line).
+  still pass. The shaft is faint in the finished frame (about 9 % over its surroundings), and **dust density is not the
+  lever**: 0.10 / m gives the same shaft as 0.04 / m (pose 4, radiance 28.12 against 28.3, finished +4.1 against +4.3
+  levels), so the constant stays at 0.04. What bounds it is the portal sun's radiance (about 1.0) and the slab's
+  thickness (0.7 m), not the haze; a stronger shaft would need a sun gain on the slab, which is an artistic choice.
 - **Superseded:** the owner's earlier decision (sun-driven beams with a night floor, #6727) was made on the opacity
   misreading and a first implementation was reverted; the shaft dust achieves its intent (a shaft that follows the
   sun and is gone at night) on the correct term. The reverted patch is not in the repository.
