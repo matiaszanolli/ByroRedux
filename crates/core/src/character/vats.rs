@@ -623,8 +623,13 @@ mod tests {
     /// Fill one row per scenario, delete this `#[ignore]`, and let the
     /// test fail its first run if the reconstruction is wrong — that
     /// failure is the reconstruction being corrected, not a regression.
+    ///
+    /// Until then this is a placeholder, not coverage: with `GROUND_TRUTH`
+    /// empty it fails the moment the attribute is removed, and operation
+    /// order is unpinned. The captures are an acceptance item of #6350 (the
+    /// VATS runtime umbrella), #6403.
     #[test]
-    #[ignore = "ground-truth captures pending: record the scenarios below in vanilla FNV, then fill GROUND_TRUTH and remove this attribute"]
+    #[ignore = "ground-truth captures pending (acceptance item of #6350): record the scenarios below in vanilla FNV, then fill GROUND_TRUTH and remove this attribute"]
     fn to_hit_chance_matches_recorded_in_game_percentages() {
         /// (label, input, displayed percentage as recorded by hand).
         const GROUND_TRUTH: &[(&str, VatsHitInput, f32)] = &[
