@@ -400,6 +400,17 @@ against the table below; `CausticPipeline::new` / `recreate_on_resize` log it.
 | 2560×1440 | ~88.5 MB | ~118.0 MB |
 | 3840×2160 | ~199.1 MB | ~265.4 MB |
 
+**Compute cost of carrying them (#6341).** `composite.frag` fetches the glass accumulator's three layers
+and the water accumulator once per geometry pixel whenever the water accumulator exists, and the water
+accumulator is cleared every frame. Both are scene-independent, so the whole `gpu_composite` of the
+bench-of-record's interior scenes bounds them: 0.051-0.097 ms at 1280x720 on an RTX 4070 Ti (Cornell
+0.051, Prospector 0.055, MedTek 0.078, Whiterun 0.089, Dugout 0.097; `BENCH_stepped-camera_d9a201c71.tsv`,
+TAA, 3 runs each), with the four fetches a small part of that pass. The issue's own gate for a change
+(an A/B showing at least 0.1 ms) cannot be met at that size, and the water clear is 3.7 MB at 720p. No
+`caustic_content_live` flag or latch was added. Scaled by pixels the whole pass is at most about 0.22 ms at
+1080p; re-open if a bench at 1440p or above shows the fetches, with no water or glass in the cell,
+costing 0.1 ms or more.
+
 ### SSAO
 
 [`ssao.rs`](../../crates/renderer/src/vulkan/ssao.rs) — one R8_UNORM

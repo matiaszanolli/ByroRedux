@@ -251,8 +251,11 @@ view and 0.7-1.2 ms over terrain (large run-to-run variance);
 (2026-10-21, RTX 4070 Ti, TAA, FNV, sun up, coverage 0.4): `gpu_sky_cube`
 0.21-0.23 ms inclusive, of which the nested `gpu_cloud_shadow` bracket is
 0.034 ms, the same in an interior as in an exterior since the map is fixed
-size (#6316). The march scales with pixel count, so the worst
-view at 4K is roughly 10 ms.
+size (#6316). Re-read across the bench-of-record's 75 runs (`BENCH_stepped-camera_d9a201c71.tsv`,
+five scenes, all interior or enclosed): `gpu_cloud_shadow` is 0.034 ms in every one. Gating the bake
+off in interiors was weighed and not done (#6316): it would save at most that 0.034 ms, about 0.3 %
+of an 11 ms frame, and an interior still needs the camera column for the portal sun. The march scales
+with pixel count, so the worst view at 4K is roughly 10 ms.
 
 Still open:
 
