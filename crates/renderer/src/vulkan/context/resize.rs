@@ -990,6 +990,7 @@ impl VulkanContext {
             self.frame_extents.render,
             volumetrics_config,
             max_image_dimension_3d,
+            self.texture_registry.descriptor_set_layout,
         )
         .context("recreate render-resolution froxel volume")?;
         // SAFETY: `new_volumetrics` exclusively owns freshly-created images;

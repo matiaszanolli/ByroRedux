@@ -311,6 +311,22 @@ pub const VERTEX_BONE_INDICES_OFFSET_FLOATS: u32 =
 pub const VERTEX_BONE_WEIGHTS_OFFSET_FLOATS: u32 =
     (std::mem::offset_of!(crate::Vertex, bone_weights) / 4) as u32;
 
+// `GpuMaterial` as a flat word array, for the one shader that reads only a few of its alpha fields and
+// does not declare the struct (`volumetrics_inject.comp`'s alpha-aware sun trace, VLM-SH-009). The
+// struct itself lives in include/bindings.glsl beside the bindless-texture binding that set 0 of that
+// shader cannot share, so it indexes `materialWords[materialId * GPU_MATERIAL_STRIDE_WORDS + WORD]`.
+// Literals, because the build script that generates the header cannot see the host struct;
+// `gpu_material_word_constants_match_the_host_struct` pins each to `size_of` / `offset_of`.
+pub const GPU_MATERIAL_STRIDE_WORDS: u32 = 108;
+pub const MATERIAL_ALPHA_THRESHOLD_WORD: u32 = 11;
+pub const MATERIAL_ALPHA_TEST_FUNC_WORD: u32 = 20;
+pub const MATERIAL_KIND_WORD: u32 = 21;
+pub const MATERIAL_ALPHA_WORD: u32 = 22;
+/// `u` then `v` (the next word).
+pub const MATERIAL_UV_OFFSET_WORD: u32 = 25;
+/// `u` then `v` (the next word).
+pub const MATERIAL_UV_SCALE_WORD: u32 = 27;
+
 // Splat lanes are packed 4×u8 unorm, NOT floats — see the WARNING block above
 // `GlobalVertices` in include/bindings.glsl. Recover with
 // `unpackUnorm4x8(floatBitsToUint(vertexData[base + N]))`; reading them as
@@ -1241,6 +1257,9 @@ pub const COMBUSTION_LOCAL_LIGHT_PHASE_MIX: f32 = 0.65;
 // is zero at night. 0.04/m is half the dust of the godray lab's room (0.08/m).
 pub const INTERIOR_SHAFT_DUST_PER_METER: f32 = 0.04;
 pub const INTERIOR_SHAFT_DUST_ALBEDO: f32 = 0.9;
+/// How far past an alpha hole the froxel sun trace restarts its ray (VLM-SH-009), world units: enough to
+/// clear the hit triangle's own plane, far below one froxel.
+pub const SUN_ALPHA_STEP_BU: f32 = 0.1;
 
 // Multiple-scattering energy compensation for the froxel in-scatter. The
 // injector is single-scatter: every order >= 2 is dropped, which makes
@@ -2820,6 +2839,14 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint VERTEX_UV_OFFSET_FLOATS),
     shader_define!(Uint VERTEX_BONE_INDICES_OFFSET_FLOATS),
     shader_define!(Uint VERTEX_BONE_WEIGHTS_OFFSET_FLOATS),
+    HeaderLine::Comment("GpuMaterial as a flat word array (volumetrics_inject.comp's alpha-aware sun trace)."),
+    shader_define!(Uint GPU_MATERIAL_STRIDE_WORDS),
+    shader_define!(Uint MATERIAL_ALPHA_THRESHOLD_WORD),
+    shader_define!(Uint MATERIAL_ALPHA_TEST_FUNC_WORD),
+    shader_define!(Uint MATERIAL_KIND_WORD),
+    shader_define!(Uint MATERIAL_ALPHA_WORD),
+    shader_define!(Uint MATERIAL_UV_OFFSET_WORD),
+    shader_define!(Uint MATERIAL_UV_SCALE_WORD),
     HeaderLine::Comment("Splat lanes are packed 4x u8 unorm, not floats — recover with"),
     HeaderLine::Comment("unpackUnorm4x8(floatBitsToUint(vertexData[base + N]))."),
     shader_define!(Uint VERTEX_SPLAT0_OFFSET_FLOATS),
@@ -3042,6 +3069,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float COMBUSTION_LOCAL_LIGHT_PHASE_MIX),
     shader_define!(Float INTERIOR_SHAFT_DUST_PER_METER),
     shader_define!(Float INTERIOR_SHAFT_DUST_ALBEDO),
+    shader_define!(Float SUN_ALPHA_STEP_BU),
     shader_define!(Float COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT),
     shader_define!(Float COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT),
     shader_define!(Float COMBUSTION_STEAM_DROPLET_DIAMETER_UM),

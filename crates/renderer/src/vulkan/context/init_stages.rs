@@ -590,6 +590,7 @@ pub(super) fn create_volumetrics(
     physical_device: vk::PhysicalDevice,
     render_extent: vk::Extent2D,
     renderer_config: &RendererConfig,
+    bindless_layout: vk::DescriptorSetLayout,
 ) -> Option<VolumetricsPipeline> {
     // 14a-bis. Procedural volumetrics. Froxel XY derives from the render
     // extent after FSR sizing; Z/reach come from the validated renderer
@@ -609,6 +610,7 @@ pub(super) fn create_volumetrics(
         render_extent,
         renderer_config.volumetrics,
         max_image_dimension_3d,
+        bindless_layout,
     ) {
         Ok(v) => Some(v),
         Err(e) => {

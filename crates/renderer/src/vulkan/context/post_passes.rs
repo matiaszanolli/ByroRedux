@@ -822,6 +822,8 @@ impl VulkanContext {
                                 vertex_buf_size,
                                 geometry_index_buf,
                                 geometry_index_buf_size,
+                                self.scene_buffers.material_buffers()[frame].buffer,
+                                self.scene_buffers.material_buffer_size(),
                             );
                             // Compute→compute visibility: cluster_cull's own
                             // trailing barrier in `draw_frame` only
@@ -968,7 +970,8 @@ impl VulkanContext {
                                 vol.dispatch(&self.device, cmd, frame, &vol_params, fog_volumes,
                                     self.gpu_timers.as_mut(), self.scene_buffers.current_ray_budget(
                                         self.renderer_config.rt_test_ray_quality_tier,
-                                    ).quality_tier, fog_cluster_ns);
+                                    ).quality_tier, fog_cluster_ns,
+                                    self.texture_registry.descriptor_set(frame));
                             if let Some(ref mut timers) = self.gpu_timers {
                                 timers.cmd_end(TimerPass::Volumetrics, &self.device, cmd, frame);
                             }

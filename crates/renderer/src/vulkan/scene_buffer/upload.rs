@@ -1196,6 +1196,17 @@ impl super::buffers::SceneBuffers {
         &self.instance_buffers
     }
 
+    /// The per-frame material tables and the byte range every binding of one covers (the whole
+    /// `MAX_MATERIALS` capacity, as the main pass binds it). The froxel sun trace reads them
+    /// for alpha coverage (VLM-SH-009).
+    pub fn material_buffers(&self) -> &[GpuBuffer] {
+        &self.material_buffers
+    }
+
+    pub fn material_buffer_size(&self) -> vk::DeviceSize {
+        (std::mem::size_of::<super::super::material::GpuMaterial>() * MAX_MATERIALS) as vk::DeviceSize
+    }
+
     /// The previous-model buffers, slot-parallel to [`Self::instance_buffers`].
     /// The ground-cover model tier writes both past the main instance list
     /// (#4413).

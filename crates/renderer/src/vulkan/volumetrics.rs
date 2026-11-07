@@ -734,6 +734,7 @@ impl VolumetricsPipeline {
         mut timers: Option<&mut super::gpu_timers::GpuPerFrameTimers>,
         rt_tier: u32,
         fog_cluster_ns: &mut u64,
+        bindless_set: vk::DescriptorSet,
     ) -> Result<()> {
         // #1105 / REN-D18-003 — injection descriptor binding 2 (TLAS) is
         // not written at construction; caller is required to call
@@ -1046,7 +1047,8 @@ impl VolumetricsPipeline {
             vk::PipelineBindPoint::COMPUTE,
             self.pipeline_layout,
             0,
-            &[self.descriptor_sets[frame]],
+            // set 1 = the TextureRegistry's bindless array (alpha-aware sun trace, VLM-SH-009).
+            &[self.descriptor_sets[frame], bindless_set],
             &[],
         );
         let inj_groups_x = self.extent.width.div_ceil(WORKGROUP_X);
@@ -1636,7 +1638,8 @@ impl VolumetricsPipeline {
         self.lights_written[frame] = true;
     }
 
-    /// Update bindings 19/20/21 with the exact geometry backing this frame's
+    /// Update bindings 19/20/21/32 with the exact geometry (and, for the alpha-aware sun trace, the
+    /// material table) backing this frame's
     /// TLAS. `instance_custom_index` is defined to index the supplied
     /// `instance_buffer`; the vertex/index offsets in that entry address the
     /// two global geometry buffers. This keeps combustion collision response
@@ -1653,7 +1656,14 @@ impl VolumetricsPipeline {
         vertex_buffer_size: vk::DeviceSize,
         index_buffer: vk::Buffer,
         index_buffer_size: vk::DeviceSize,
+        material_buffer: vk::Buffer,
+        material_buffer_size: vk::DeviceSize,
     ) {
+        let material_info = [vk::DescriptorBufferInfo {
+            buffer: material_buffer,
+            offset: 0,
+            range: material_buffer_size,
+        }];
         let instance_info = [vk::DescriptorBufferInfo {
             buffer: instance_buffer,
             offset: 0,
@@ -1674,8 +1684,9 @@ impl VolumetricsPipeline {
             write_storage_buffer(set, 19, &instance_info),
             write_storage_buffer(set, 20, &vertex_info),
             write_storage_buffer(set, 21, &index_info),
+            write_storage_buffer(set, 32, &material_info),
         ];
-        // SAFETY: this frame slot is idle and all three buffers are live for
+        // SAFETY: this frame slot is idle and all four buffers are live for
         // the subsequent dispatch; the descriptor infos outlive the call.
         unsafe { device.update_descriptor_sets(&writes, &[]) };
         self.boundary_geometry_written[frame] = true;

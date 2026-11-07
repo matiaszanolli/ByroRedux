@@ -651,7 +651,7 @@ impl VulkanContext {
             );
         }
 
-        let volumetrics = create_volumetrics(&device, &gpu_allocator, &graphics_queue, transfer_pool, pipeline_cache, &vk_instance, physical_device, render_extent, &renderer_config);
+        let volumetrics = create_volumetrics(&device, &gpu_allocator, &graphics_queue, transfer_pool, pipeline_cache, &vk_instance, physical_device, render_extent, &renderer_config, texture_registry.descriptor_set_layout);
 
         // #3839 — the BLAS budget is constructed before any render extent
         // exists, so it starts unreserved. Now that the froxel grid (and the

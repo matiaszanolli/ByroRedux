@@ -97,6 +97,9 @@ pub(in crate::vulkan) fn volumetrics_inject_layout_bindings(
     .into_iter()
     // 26..=31: the world-space combustion local grid (#6533).
     .chain(local_grid::inject_local_grid_bindings())
+    // 32: the material table, read by the alpha-aware sun trace (VLM-SH-009). Its textures come from
+    // the TextureRegistry's bindless set, the pipeline layout's second set, not from this one.
+    .chain(std::iter::once(compute_binding(32, vk::DescriptorType::STORAGE_BUFFER)))
     .collect()
 }
 
@@ -120,6 +123,7 @@ impl VolumetricsPipeline {
         render_extent: vk::Extent2D,
         config: VolumetricsConfig,
         max_image_dimension_3d: u32,
+        bindless_layout: vk::DescriptorSetLayout,
     ) -> Result<Self> {
         let config = config.validate()?;
         // #4781 — size the images from a divisor the device's 3D limit can
@@ -140,7 +144,15 @@ impl VolumetricsPipeline {
                 fitted.froxel_xy_divisor,
             );
         }
-        let result = Self::new_inner(device, allocator, pipeline_cache, render_extent, fitted).map(
+        let result = Self::new_inner(
+            device,
+            allocator,
+            pipeline_cache,
+            render_extent,
+            fitted,
+            bindless_layout,
+        )
+        .map(
             |mut pipeline| {
                 pipeline.config = config;
                 pipeline
@@ -158,6 +170,7 @@ impl VolumetricsPipeline {
         pipeline_cache: vk::PipelineCache,
         render_extent: vk::Extent2D,
         config: VolumetricsConfig,
+        bindless_layout: vk::DescriptorSetLayout,
     ) -> Result<Self> {
         let extent = froxel_extent(render_extent, config);
         let mut partial = Self {
@@ -540,8 +553,10 @@ impl VolumetricsPipeline {
         partial.pipeline_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_pipeline_layout(
+                    // set 0 = this pipeline's own; set 1 = the TextureRegistry's bindless
+                    // texture array, for the alpha-aware sun trace (VLM-SH-009).
                     &vk::PipelineLayoutCreateInfo::default()
-                        .set_layouts(std::slice::from_ref(&partial.descriptor_set_layout)),
+                        .set_layouts(&[partial.descriptor_set_layout, bindless_layout]),
                     None,
                 )
                 .context("Volumetrics pipeline layout")

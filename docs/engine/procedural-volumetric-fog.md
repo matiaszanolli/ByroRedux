@@ -481,9 +481,19 @@ and `BYRO_HAZE_FLOOR` / `fog.haze` (the floor).
   tried (a radio dish, a steel derrick with chain-link, a rock cluster): the lattice and rocks cast shadow volumes
   in the haze, and shafts from cloud gaps are outside the froxel range by the PRD's Q3 decision. A fixture whose
   occluder has regular gaps at the camera's distance is still needed for VLM-SH-006 beyond the lab.
-- **Not done yet:** the golden frame (VLM-SH-003), the alpha-tested card (VLM-SH-009), the per-fixture noon and
-  low-sun captures on the other titles (VLM-SH-006), the range and cloud-shadow work (VLM-SH-004, -005), and
-  the separate inject and integrate milliseconds (VLM-SH-008).
+- **Alpha-tested cutouts (VLM-SH-009, 2026-11-07).** The froxel sun trace used to read every triangle as solid
+  (`traceShadowBinary`, BLAS built `OPAQUE`), so canopy, fences and grates cast a wall of shadow into the haze
+  where the surface shadow, already alpha-aware, showed holes. Under open sky a sun ray the binary trace calls
+  blocked is now re-walked nearest-first (`sunRayBlockedAlphaAware` in `volumetrics_inject.comp`), stepping past
+  cutout holes through the shared `alphaComparePass` and the shadow transport's eight-layer budget; interiors
+  keep the binary trace. The lab's matched variants (`--shaft-lab-card`, `-card-geo`, `-card-solid`) read the
+  cutout panel at 129.18 against 129.16 for the same stripes as real holes (an opaque trace read 116.36). Cost on
+  FNV Goodsprings, same pose, per-pass `gpu_volumetrics_inject`: 0.18 to 0.26 ms at noon, 0.19 to 0.35 ms at
+  07:00, where more froxels are in terrain shadow and take the second walk; finished frames are identical, as
+  no cutout caster is in view. Content with real canopy (Oblivion, Skyrim, FO3 trees) is not yet captured.
+- **Not done yet:** the per-fixture noon and low-sun captures on the other titles (VLM-SH-006), the range and
+  cloud-shadow work (VLM-SH-004, -005), and the separate inject and integrate milliseconds (VLM-SH-008; the
+  inject figure above is one pose, not the fixture set).
 
 ## Corpus findings
 

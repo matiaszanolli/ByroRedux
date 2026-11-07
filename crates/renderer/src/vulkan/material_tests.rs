@@ -2090,3 +2090,22 @@ mod reservoir_size_claims {
         assert!(stale.is_empty(), "stale 32-byte reservoir claims (live stride is {RESERVOIR_STRIDE}):\n{}", stale.join("\n"));
     }
 }
+
+/// VLM-SH-009 — `volumetrics_inject.comp` reads `GpuMaterial` as flat words through the generated
+/// `*_WORD` constants, which are literals (the build script cannot see this struct). Each must still be
+/// the host struct's own offset, so moving a field there fails here rather than reading the wrong word.
+#[test]
+fn gpu_material_word_constants_match_the_host_struct() {
+    use crate::shader_constants::*;
+    use std::mem::{offset_of, size_of};
+    let word = |bytes: usize| (bytes / 4) as u32;
+    assert_eq!(GPU_MATERIAL_STRIDE_WORDS, word(size_of::<GpuMaterial>()));
+    assert_eq!(MATERIAL_ALPHA_THRESHOLD_WORD, word(offset_of!(GpuMaterial, alpha_threshold)));
+    assert_eq!(MATERIAL_ALPHA_TEST_FUNC_WORD, word(offset_of!(GpuMaterial, alpha_test_func)));
+    assert_eq!(MATERIAL_KIND_WORD, word(offset_of!(GpuMaterial, material_kind)));
+    assert_eq!(MATERIAL_ALPHA_WORD, word(offset_of!(GpuMaterial, material_alpha)));
+    assert_eq!(MATERIAL_UV_OFFSET_WORD, word(offset_of!(GpuMaterial, uv_offset_u)));
+    assert_eq!(MATERIAL_UV_OFFSET_WORD + 1, word(offset_of!(GpuMaterial, uv_offset_v)));
+    assert_eq!(MATERIAL_UV_SCALE_WORD, word(offset_of!(GpuMaterial, uv_scale_u)));
+    assert_eq!(MATERIAL_UV_SCALE_WORD + 1, word(offset_of!(GpuMaterial, uv_scale_v)));
+}

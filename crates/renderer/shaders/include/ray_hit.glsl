@@ -5,6 +5,7 @@
 // GpuMaterial tables, global vertex/index buffers, bindless textures, and
 // generated material/instance flag constants.
 
+#include "alpha_compare.glsl"
 #include "ray_origin.glsl"
 #include "normal_transform.glsl"
 
@@ -398,17 +399,6 @@ vec2 resolveRayHitUV(
 
 vec4 sampleRayHitBase(GpuInstance inst, GpuMaterial mat, vec2 uv, float lod) {
     return textureLod(textures[nonuniformEXT(inst.textureIndex)], uv, lod);
-}
-
-bool alphaComparePass(float alpha, float threshold, uint func) {
-    if (threshold <= 0.0 || func == 0u) return true;
-    if (func == 1u) return alpha < threshold;
-    if (func == 2u) return abs(alpha - threshold) < (1.0 / 255.0);
-    if (func == 3u) return alpha <= threshold;
-    if (func == 4u) return alpha > threshold;
-    if (func == 5u) return abs(alpha - threshold) >= (1.0 / 255.0);
-    if (func == 6u) return alpha >= threshold;
-    return false; // NEVER
 }
 
 bool rayHitHasCoverage(

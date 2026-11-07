@@ -17,8 +17,8 @@
 # `--shaft-lab-card` (one panel, the odd stripes cut out by alpha), `--shaft-lab-card-geo` (the same
 # stripes as real holes) and `--shaft-lab-card-solid` (one unbroken panel). Their finished frames are
 # identical; the in-scatter term over the hole columns differs only if the froxel sun trace stops at a
-# cutout. The cutout must come within 2 % of the geometry holes. That is KNOWN RED today (the trace is
-# opaque, PRD section 3 row 17), so it is reported and does not fail the run unless BYRO_SHAFT_CARD_GATE=1.
+# cutout. The cutout must come within 2 % of the geometry holes (the froxel sun trace honours alpha
+# coverage since the alpha-aware trace of VLM-SH-009: 129.18 against 129.16 where an opaque trace reads 116.36).
 #
 # Usage: docs/smoke-tests/exterior-shafts.sh
 # BYRO_SHAFT_BIN overrides the engine binary; BYRO_SHAFT_OUT keeps captures in a chosen directory.
@@ -133,8 +133,7 @@ if failures:
 print("PASS: exterior shafts")
 PY
 
-BYRO_SHAFT_CARD_GATE="${BYRO_SHAFT_CARD_GATE:-0}" python3 - "$OUT" <<'PY'
-import os
+python3 - "$OUT" <<'PY'
 import sys
 from pathlib import Path
 
@@ -171,10 +170,8 @@ gap = (geometry - cutout) / geometry
 print(f"VLM-SH-009 cutout-vs-hole gap {gap * 100:.1f} % (bar 2 %)")
 if abs(gap) <= 0.02:
     print("PASS: the froxel sun trace honours alpha coverage")
-elif os.environ["BYRO_SHAFT_CARD_GATE"] == "1":
+else:
     print("FAIL: VLM-SH-009: the froxel sun trace does not honour alpha coverage")
     sys.exit(1)
-else:
-    print("KNOWN RED: VLM-SH-009 (#6726): the froxel sun trace does not honour alpha coverage")
 PY
 echo "captures and logs kept in $OUT"
