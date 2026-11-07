@@ -4321,10 +4321,12 @@ void main() {
             // instance that actually blocked the ray (shadow_transport.glsl),
             // not the first committed candidate, so an alpha hole or effect
             // card in front of the real occluder no longer shields it.
-            // Remaining hole, documented: only sample 0 runs the detailed
-            // trace, so with directShadowSamples > 1 a penumbra pixel whose
-            // mover is hit only by samples > 0 taints once the per-frame
-            // K-jitter re-rolls sample 0 onto it — frames, not seconds.
+            // Remaining hole, documented: only sample 0's blocker instance
+            // feeds the taint. Samples > 0 also run the detailed trace (for
+            // the penumbra width) but drop their instance, so with
+            // directShadowSamples > 1 a penumbra pixel whose mover is hit
+            // only by samples > 0 taints once the per-frame K-jitter
+            // re-rolls sample 0 onto it — frames, not seconds.
             bool moverHit = (selectedRayHitInstance != 0xFFFFFFFFu
                 && (instances[selectedRayHitInstance].flags
                     & INSTANCE_FLAG_MOVED_THIS_FRAME) != 0u)
