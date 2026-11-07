@@ -517,6 +517,20 @@ amount).
 **4. Internal glow.** Not designed yet. First measure whether the derived fire
 lights already light smoke from inside (A/B with them off), then decide.
 
+*A/B attempt (2026-11-07, HEAD `2d6af0aeb`, release, tier 3, final frame of s1 /
+s2a / s3a, `BYRO_LOCAL_GRID_DEBUG=no_derived_lights` against unset).* The switch
+works but the whole-frame comparison cannot answer the question: the derived
+lights also light the room, so 99.9 % of pixels change (mean brightness
+122 -> 100 on s1, 106 -> 80 on s2a, 100 -> 74 on s3a; max channel delta 232 /
+152 / 136). The change is the room losing the fire's glow, not smoke. The smoke
+cannot be separated from the walls in these scenes without a view that shows the
+volumetric contribution alone (none exists today: `RenderDebugMode` has no fog
+or volumetrics view). Next step, before any 3b design: add that view, or A/B on a
+scene whose backdrop is the sky. Code reading only: the derived lights join the
+frame light list before upload, and the inject pass reads that list without
+excluding them, so they feed the irradiance field the local march uses; whether
+that is *visibly* internal glow is unmeasured.
+
 **Stages.** 3a species phase + octave eccentricity, shared by the froxel inject
 pass and the local march; 3b internal glow; 3c a steam-and-soot lab scene and
 before/after captures for your review. Cost reported per stage.
