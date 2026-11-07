@@ -531,6 +531,15 @@ and `BYRO_HAZE_FLOOR` / `fog.haze` (the floor).
   does not change that frame. Under the shipped haze a real canopy shaft is not visible at these poses; only the
   lab shows crisp beams. Whether to raise the exterior floor for content (PRD Q7 was decided at the engine
   default) is the owner's call, with these captures as the evidence.
+- **Floor strength on content, 07:00 default spawns (2026-11-07), for the owner's Q7 call.** `BYRO_HAZE_FLOOR`
+  `0.0006,6` (shipped), `0.003,6` and `0.01,6` on FO3, Oblivion and FO4 (the same poses, `renderer-stepped`):
+  frame mean 45.2 / 76.4 / 116.8 (FO3), 46.8 / 58.4 / 79.5 (Oblivion), 56.2 / 69.2 / 93.3 (FO4), mean absolute
+  change from the shipped floor 31 / 72, 12 / 33 and 13 / 37 levels. At `0.01` a lit wedge becomes visible under the
+  Oblivion canopy and the FO4 trunks gain lit columns; at `0.003` the gain is a mild haze with no distinct beam.
+  So a floor strong enough to show shafts on content also lifts the whole frame by tens of levels (a wash, not a
+  beam), which is the tension VLM-SH-011 asks the owner to weigh. A per-scene or sun-gated floor would lift the
+  shaft without the wash; none is built. Recipe: `BYRO_HAZE_FLOOR=<base>,<gain> BYRO_HOUR=7 byroredux ... --bench-mode
+  renderer-stepped --bench-camera static --screenshot`.
 - **Not done yet:** the per-fixture noon and low-sun captures on the other titles (VLM-SH-006), the range and
   cloud-shadow work (VLM-SH-004, -005), and the separate inject and integrate milliseconds (VLM-SH-008; the
   inject figure above is one pose, not the fixture set).
