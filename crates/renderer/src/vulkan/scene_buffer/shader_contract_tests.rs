@@ -7581,6 +7581,188 @@ fn camera_ubo_members_describe_dof_w_as_the_history_mode() {
 /// substituted a fabricated 0.15 for the unpainted base, so 30% dirt over
 /// tundra read as *pure* dirt (0.15) while the terrain showed 70% tundra,
 /// and `LSnow01` bases grew 7.5x their authored grass.
+/// #6735 - the blade tier's grass colour composes exactly like the terrain's ordered mix and like
+/// `byroGcAffinity`: the BTXT base first, then one ordered mix per splat lane in lane order, indexed through
+/// the same vec4-pair split, with lanes that name no coloured record dropping out (not pulling toward black).
+/// And `byroGcLayerGrassColour` maps lane `i` to the host's `layer_grass_colour{i}`, which
+/// `byroredux/src/render/groundcover.rs` fills from `cover_density_inputs`'s `layer_grass_colour[i]`.
+#[test]
+fn groundcover_grass_colour_composes_in_splat_lane_order() {
+    let vert = include_str!("../../../shaders/groundcover_blade.vert");
+    let flat_of = |name: &str| -> String {
+        let body = vert
+            .split(name)
+            .nth(1)
+            .unwrap_or_else(|| panic!("{name} must stay in groundcover_blade.vert"))
+            .split("\n}")
+            .next()
+            .expect("function body terminates");
+        body.split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+    let colour = flat_of("vec4 byroGcGrassColour(");
+    assert!(
+        colour.contains("c.baseGrassColour.a > 0.5 ? vec4(c.baseGrassColour.rgb, 1.0) : vec4(0.0)"),
+        "the walk must start from the BTXT base's colour, known-mass 1: {colour}"
+    );
+    assert!(
+        colour.contains("for (uint i = 0u; i < TERRAIN_SPLAT_LAYERS; ++i)")
+            && colour.matches("acc = acc * (1.0 - w) +").count() == 1,
+        "one ordered mix per splat lane over TERRAIN_SPLAT_LAYERS, as the terrain shades: {colour}"
+    );
+    assert!(
+        colour.contains("? splat0[i] : splat1[i - TERRAIN_SPLAT_LANES_PER_WORD]"),
+        "the weights are indexed through the same vec4-pair split as byroGcAffinity (#5177): {colour}"
+    );
+    assert!(
+        colour.contains("lane.a > 0.5 ? vec4(lane.rgb * w, w) : vec4(0.0)"),
+        "an unknown lane drops out; it must not pull the colour toward black: {colour}"
+    );
+    assert!(
+        colour.contains("acc.a > 1.0e-3 ? vec4(acc.rgb / acc.a, 1.0) : vec4(0.0)"),
+        "rgb is the mean over the known mass, a = 1 only when any mass was known: {colour}"
+    );
+
+    // Lane i of the shader is lane i of the host record, for every lane.
+    let lanes = flat_of("vec4 byroGcLayerGrassColour(");
+    for i in 0..7 {
+        assert!(
+            lanes.contains(&format!("case {i}u: return c.layerGrassColour{i};")),
+            "lane {i} must read layerGrassColour{i}: {lanes}"
+        );
+    }
+    assert!(lanes.contains("default: return c.layerGrassColour7;"));
+    let host = include_str!("../../../../../byroredux/src/render/groundcover.rs");
+    for i in 0..8 {
+        assert!(
+            host.contains(&format!("layer_grass_colour{i}: cell.layer_grass_colour[{i}],")),
+            "the host must fill the GPU cell's lane {i} from the record's lane {i}"
+        );
+    }
+}
+
+/// #6735 - the stateless local gust exists twice (`groundcover::local_gust` in core, read by the SpeedTree
+/// sway, and `byroGcLocalGust` in `include/groundcover_wind.glsl`, read by blades and model plants) and
+/// "must stay in step". There is no CPU run of the GLSL, so this compares what a one-sided edit would
+/// change: every numeric literal of the three functions as a multiset, and the order in which the gust
+/// constants are used. It does not prove the control flow equal (the two were read line by line when this
+/// was written); it catches a changed hash constant, offset, salt multiplier or shift, and a constant swapped
+/// for a neighbour.
+#[test]
+fn local_gust_rust_and_glsl_mirrors_use_the_same_numbers_in_the_same_order() {
+    let rust_src = include_str!("../../../../core/src/ecs/components/groundcover.rs");
+    let glsl_src = include_str!("../../../shaders/include/groundcover_wind.glsl");
+
+    fn body<'a>(src: &'a str, signature: &str) -> &'a str {
+        let at = src.find(signature).unwrap_or_else(|| panic!("{signature} must exist"));
+        let rest = &src[at..];
+        // The function ends at the first closing brace in column 0; the signature (its parameter
+        // types carry digits, like `[f32; 2]`) is not part of the body that is compared.
+        let rest = &rest[..rest.find("\n}").expect("function body terminates") + 2];
+        &rest[rest.find('{').expect("function body opens")..]
+    }
+    let rust = [
+        body(rust_src, "fn gust_mix("),
+        body(rust_src, "fn gust_unit("),
+        body(rust_src, "pub fn local_gust("),
+    ]
+    .join("\n");
+    let glsl = [
+        body(glsl_src, "uint byroGcGustMix("),
+        body(glsl_src, "float byroGcGustUnit("),
+        body(glsl_src, "float byroGcLocalGust("),
+    ]
+    .join("\n");
+
+    let strip_comments = |src: &str| -> String {
+        src.lines().map(|l| l.split("//").next().unwrap_or("")).collect::<Vec<_>>().join("\n")
+    };
+    // Spelling differences between the languages that are not value differences.
+    let rust = strip_comments(&rust).replace("std::f32::consts::PI", "3.14159265358979").replace(".powi(2)", "");
+    let glsl = strip_comments(&glsl);
+
+    // Numeric literals: hex (with `_`, `u`) and decimals, normalised; Rust array indices dropped.
+    fn literals(src: &str, rust: bool) -> Vec<String> {
+        let mut src = src.to_string();
+        if rust {
+            // `cell[0]`, `q[1]`, ...
+            let mut out = String::new();
+            let bytes = src.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'[' {
+                    if let Some(end) = src[i..].find(']') {
+                        if src[i + 1..i + end].chars().all(|c| c.is_ascii_digit()) {
+                            i += end + 1;
+                            continue;
+                        }
+                    }
+                }
+                out.push(bytes[i] as char);
+                i += 1;
+            }
+            src = out;
+        }
+        let chars: Vec<char> = src.chars().collect();
+        let mut found = Vec::new();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            let prev_ident = i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_');
+            if c.is_ascii_digit() && !prev_ident {
+                let start = i;
+                i += 1;
+                while i < chars.len()
+                    && (chars[i].is_ascii_alphanumeric() || chars[i] == '_' || (chars[i] == '.' && chars.get(i + 1).is_some_and(|d| d.is_ascii_digit())))
+                {
+                    i += 1;
+                }
+                let raw: String = chars[start..i].iter().filter(|c| **c != '_').collect::<String>().to_lowercase();
+                let raw = raw.trim_end_matches(|c| c == 'u' || c == 'f' || c == 'i').to_string();
+                let value = if let Some(hex) = raw.strip_prefix("0x") {
+                    u64::from_str_radix(hex.trim_end_matches('u'), 16).map(|v| format!("{v}")).unwrap_or(raw.clone())
+                } else if raw.contains('.') {
+                    raw.parse::<f64>().map(|v| format!("{v}")).unwrap_or(raw.clone())
+                } else {
+                    raw.clone()
+                };
+                found.push(value);
+            } else {
+                i += 1;
+            }
+        }
+        found.sort();
+        found
+    }
+    assert_eq!(
+        literals(&rust, true),
+        literals(&glsl, false),
+        "the Rust and GLSL gust bodies carry different numeric literals - a one-sided edit"
+    );
+
+    // The gust constants, in order of first use per function. Rust `WIND_GUST_X` <-> GLSL `GROUNDCOVER_GUST_X`;
+    // the advection scale is `WIND_ADVECTION_SCALE` <-> `GROUNDCOVER_WIND_ADVECTION_SCALE`.
+    fn constants(src: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for token in src.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+            let name = token
+                .strip_prefix("GROUNDCOVER_GUST_")
+                .map(|rest| format!("GUST_{rest}"))
+                .or_else(|| token.strip_prefix("WIND_GUST_").map(|rest| format!("GUST_{rest}")))
+                .or_else(|| token.strip_prefix("GROUNDCOVER_WIND_ADVECTION_SCALE").map(|_| "ADVECTION_SCALE".to_string()))
+                .or_else(|| (token == "WIND_ADVECTION_SCALE").then(|| "ADVECTION_SCALE".to_string()));
+            if let Some(name) = name {
+                out.push(name);
+            }
+        }
+        // Rust divides `u` and `across` by the cell size in two statements, GLSL divides a `vec2`
+        // once: a repeat of the same constant back to back is the same use.
+        out.dedup();
+        out
+    }
+    assert_eq!(constants(&rust), constants(&glsl), "the gust constants are used in a different order");
+    assert!(!constants(&rust).is_empty(), "the constant scan found nothing - the prefixes drifted");
+}
+
 #[test]
 fn groundcover_affinity_composes_the_base_in_diffuse_loop_order() {
     let density = include_str!("../../../shaders/include/groundcover_density.glsl");

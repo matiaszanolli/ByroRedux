@@ -1667,6 +1667,108 @@ pub(super) fn spawn_terrain_mesh(
 mod tests {
     use super::*;
 
+    /// #6735 - the grass colour of each splat lane is the colour of the grass THAT lane's texture lists, in the
+    /// same lane order as `layer_affinity` (the shader mixes both through the same vec4-pair split): a lane
+    /// naming the engine's default land texture, an unlisted lane and every lane past the layer count stay
+    /// "unknown" (`a = 0`) so `byroGcGrassColour` drops them instead of pulling toward black; the BTXT base takes
+    /// its own texture's list. Records must be sorted by form id (`union_colour` binary-searches them).
+    #[test]
+    fn the_grass_colour_lanes_follow_the_splat_lane_order() {
+        use byroredux_core::ecs::components::groundcover::{
+            AuthoredCover, AuthoredCoverRecord, Climate, ClimateWeights, CoverWaterRule,
+        };
+        const LTEX_RED: u32 = 0x0A01;
+        const LTEX_BLUE: u32 = 0x0A02;
+        const LTEX_BASE: u32 = 0x0A03;
+        const GRASS_RED: u32 = 0x0B01;
+        const GRASS_BLUE: u32 = 0x0B02;
+        const GRASS_BASE: u32 = 0x0B03;
+        let record = |form_id, mean_colour| AuthoredCoverRecord {
+            form_id,
+            editor_id: String::new(),
+            model_path: String::new(),
+            climate_weight: ClimateWeights::UNIFORM,
+            density: 0.5,
+            water_rule: CoverWaterRule::AboveAtLeast,
+            water_distance: 0.0,
+            height_range: 0.0,
+            position_range: 0.0,
+            uniform_scaling: true,
+            fit_to_slope: false,
+            nominal_height: None,
+            mean_colour,
+        };
+        let mut world = World::new();
+        world.insert_resource(AuthoredCover {
+            records: vec![
+                record(GRASS_RED, Some([0.8, 0.1, 0.1])),
+                record(GRASS_BLUE, Some([0.1, 0.1, 0.8])),
+                record(GRASS_BASE, Some([0.1, 0.8, 0.1])),
+            ],
+            grid_spacing: 80.0,
+            climate: Climate::Temperate,
+            localised: true,
+            generation: 1,
+        });
+        let layer = |ltex_form_id| CellSplatLayer {
+            ltex_form_id,
+            cover_affinity: 0.3,
+            diffuse_index: 1,
+            normal_index: 0,
+            specular_index: 0,
+            height_sources: None,
+            per_quadrant_alpha: Default::default(),
+        };
+        // Lane 0 red, lane 1 the default land texture (no GNAM to read), lane 2 blue.
+        let splat_layers = CellSplatLayers {
+            layers: vec![layer(Some(LTEX_RED)), layer(None), layer(Some(LTEX_BLUE))],
+        };
+        let landscape_grasses = HashMap::from([
+            (LTEX_RED, vec![GRASS_RED]),
+            (LTEX_BLUE, vec![GRASS_BLUE]),
+            (LTEX_BASE, vec![GRASS_BASE]),
+        ]);
+        let inputs = cover_density_inputs(
+            &world,
+            &splat_layers,
+            Some(LTEX_BASE),
+            None,
+            &HashMap::new(),
+            &landscape_grasses,
+            None,
+        );
+        assert_eq!(inputs.layer_grass_colour[0], [0.8, 0.1, 0.1, 1.0], "lane 0 is the red lane's grass");
+        assert_eq!(inputs.layer_grass_colour[1], [0.0; 4], "the default land texture lists no grass: unknown");
+        assert_eq!(inputs.layer_grass_colour[2], [0.1, 0.1, 0.8, 1.0], "lane 2 is the blue lane's grass");
+        for lane in 3..TERRAIN_SPLAT_LAYERS as usize {
+            assert_eq!(inputs.layer_grass_colour[lane], [0.0; 4], "lane {lane} is past the layer count: unknown");
+        }
+        assert_eq!(inputs.base_grass_colour, [0.1, 0.8, 0.1, 1.0], "the BTXT base takes its own texture's list");
+        // The affinity chain the colour mixes beside uses the same lanes.
+        assert!((inputs.layer_affinity[0] - 0.5).abs() < 1e-6 && (inputs.layer_affinity[2] - 0.5).abs() < 1e-6);
+
+        // No texture->grass links at all (`localised == false`): every colour lane is unknown.
+        let mut world = World::new();
+        world.insert_resource(AuthoredCover {
+            records: vec![record(GRASS_RED, Some([0.8, 0.1, 0.1]))],
+            grid_spacing: 80.0,
+            climate: Climate::Temperate,
+            localised: false,
+            generation: 1,
+        });
+        let inputs = cover_density_inputs(
+            &world,
+            &splat_layers,
+            Some(LTEX_BASE),
+            None,
+            &HashMap::new(),
+            &landscape_grasses,
+            None,
+        );
+        assert!(inputs.layer_grass_colour.iter().all(|colour| *colour == [0.0; 4]));
+        assert_eq!(inputs.base_grass_colour, [0.0; 4]);
+    }
+
     /// #6411 — on a localised load order the authored `LTEX.GNAM` list replaces a
     /// layer's keyword affinity, but the engine's default land texture (ATXT form 0,
     /// an unauthored BTXT base: `ltex_form_id == None`) has no list to read and keeps
