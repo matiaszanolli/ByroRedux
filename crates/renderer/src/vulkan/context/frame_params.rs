@@ -953,12 +953,10 @@ pub(super) fn build_composite_params(
                 - byroredux_core::math::Vec3::from_array(camera_pos);
             candidates.push((to_camera.length_squared(), aperture));
         }
-        let (kept, dropped) = super::sky_apertures::nearest_apertures(candidates, sky_apertures.len());
-        for (slot, aperture) in sky_apertures.iter_mut().zip(&kept) {
-            *slot = *aperture;
-        }
-        aperture_count = kept.len();
-        super::sky_apertures::note_sky_aperture_overflow(dropped, kept.len());
+        let (kept, dropped) =
+            super::sky_apertures::nearest_apertures(&mut candidates, &mut sky_apertures[..]);
+        aperture_count = kept;
+        super::sky_apertures::note_sky_aperture_overflow(dropped, kept);
     }
     let dome = pack_sky_dome(
         sky_params,

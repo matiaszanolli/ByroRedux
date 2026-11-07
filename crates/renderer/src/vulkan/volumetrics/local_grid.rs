@@ -182,6 +182,19 @@ fn place_box(center: [f32; 3], cell: f32, below: f32) -> [f32; 3] {
     raw.map(|v| (v / snap).floor() * snap)
 }
 
+/// One transported emitter in reach this frame: what `LocalBoxSet::update`
+/// matches to a box or creates a box for.
+struct Source {
+    center: [f32; 3],
+    /// What the box has to contain: the source radius, scaled up for an
+    /// explosion to where its gas goes.
+    radius: f32,
+    wanted: Option<f32>,
+    below: f32,
+    is_explosion: bool,
+    distance_sq: f32,
+}
+
 /// Host-side bookkeeping of which slots of the atlas hold which box.
 ///
 /// Persistent across frames so a box keeps its field; a source that no box
@@ -190,6 +203,10 @@ fn place_box(center: [f32; 3], cell: f32, below: f32) -> [f32; 3] {
 #[derive(Default)]
 pub(crate) struct LocalBoxSet {
     boxes: [Option<LocalBox>; MAX_LOCAL_BOXES],
+    /// `update`'s per-frame source list, kept between frames so a scene with a
+    /// fire in reach does not allocate one every frame (#6753). Only its
+    /// capacity persists: `update` clears it before use.
+    sources: Vec<Source>,
 }
 
 impl LocalBoxSet {
@@ -264,17 +281,12 @@ impl LocalBoxSet {
         now: f32,
         linger_seconds: f32,
     ) {
-        struct Source {
-            center: [f32; 3],
-            /// What the box has to contain: the source radius, scaled up for an
-            /// explosion to where its gas goes.
-            radius: f32,
-            wanted: Option<f32>,
-            below: f32,
-            is_explosion: bool,
-            distance_sq: f32,
-        }
-        let mut sources: Vec<Source> = volumes
+        // Taken out of `self` so the loop below can borrow `self.boxes`
+        // mutably; handed back (capacity kept) after the last use.
+        let mut sources = std::mem::take(&mut self.sources);
+        sources.clear();
+        sources.extend(
+            volumes
             .iter()
             .filter(|volume| is_transport_emitter(volume))
             .filter_map(|volume| {
@@ -308,8 +320,8 @@ impl LocalBoxSet {
                         is_explosion: explosion,
                         distance_sq,
                     })
-            })
-            .collect();
+            }),
+        );
         if local_grid_debug_bits() & DEBUG_ONLY_EXPLOSIONS != 0 {
             sources.retain(|source| source.is_explosion);
         }
@@ -383,6 +395,8 @@ impl LocalBoxSet {
                 *slot = None;
             }
         }
+        sources.clear();
+        self.sources = sources;
     }
 }
 
