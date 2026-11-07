@@ -1202,26 +1202,19 @@ impl CausticPipeline {
             buf.destroy(device, allocator);
         }
         self.param_buffers.clear();
-        if self.pipeline != vk::Pipeline::null() {
-            // SAFETY: `self.pipeline` was built by this `device` in `initialize_layouts`, is non-null (guarded above), and per the whole-function contract is unreferenced by any in-flight command buffer.
-            unsafe { device.destroy_pipeline(self.pipeline, None) };
-            self.pipeline = vk::Pipeline::null();
-        }
-        if self.pipeline_layout != vk::PipelineLayout::null() {
-            // SAFETY: `self.pipeline_layout` was created by this `device`, is non-null (guarded above), and its dependent pipeline is destroyed first (above); no in-flight command references it.
-            unsafe { device.destroy_pipeline_layout(self.pipeline_layout, None) };
-            self.pipeline_layout = vk::PipelineLayout::null();
-        }
-        if self.descriptor_pool != vk::DescriptorPool::null() {
-            // SAFETY: `self.descriptor_pool` was created by this `device`, is non-null (guarded above); destroying it frees all sets allocated from it, none of which are in flight per the whole-function contract.
-            unsafe { device.destroy_descriptor_pool(self.descriptor_pool, None) };
-            self.descriptor_pool = vk::DescriptorPool::null();
-        }
-        if self.descriptor_set_layout != vk::DescriptorSetLayout::null() {
-            // SAFETY: `self.descriptor_set_layout` was created by this `device`, is non-null (guarded above), and its dependent pool/layout users are destroyed first (above).
-            unsafe { device.destroy_descriptor_set_layout(self.descriptor_set_layout, None) };
-            self.descriptor_set_layout = vk::DescriptorSetLayout::null();
-        }
+        // SAFETY: the whole-function contract above (no in-flight work references the pass's
+        // pipeline or pool); `destroy_pass_objects` skips null handles and nulls what it destroys.
+        unsafe {
+            super::descriptors::destroy_pass_objects(
+                device,
+                super::descriptors::PassHandles {
+                    pipeline: &mut self.pipeline,
+                    layout: &mut self.pipeline_layout,
+                    pool: &mut self.descriptor_pool,
+                    set_layout: &mut self.descriptor_set_layout,
+                },
+            )
+        };
         if self.point_sampler != vk::Sampler::null() {
             // SAFETY: `self.point_sampler` was created by this `device`, is non-null (guarded above), and per the whole-function contract is unreferenced by any in-flight command buffer.
             unsafe { device.destroy_sampler(self.point_sampler, None) };

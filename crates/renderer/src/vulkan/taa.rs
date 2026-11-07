@@ -807,42 +807,19 @@ impl TaaPipeline {
             buf.destroy(device, allocator);
         }
         self.param_buffers.clear();
-        if self.pipeline != vk::Pipeline::null() {
-            unsafe {
-                // SAFETY: `self.pipeline` is the live TAA-resolve compute pipeline
-                // created by this `device` (non-null per the guard) and, per the
-                // whole-function contract, unreferenced by any in-flight command buffer.
-                device.destroy_pipeline(self.pipeline, None)
-            };
-            self.pipeline = vk::Pipeline::null();
-        }
-        if self.pipeline_layout != vk::PipelineLayout::null() {
-            unsafe {
-                // SAFETY: `self.pipeline_layout` was created by this `device`
-                // (non-null per the guard); the pipeline that referenced it is
-                // already destroyed above, so no in-flight command buffer uses it.
-                device.destroy_pipeline_layout(self.pipeline_layout, None)
-            };
-            self.pipeline_layout = vk::PipelineLayout::null();
-        }
-        if self.descriptor_pool != vk::DescriptorPool::null() {
-            unsafe {
-                // SAFETY: `self.descriptor_pool` was created by this `device`
-                // (non-null per the guard) and no in-flight command buffer binds
-                // sets allocated from it at teardown.
-                device.destroy_descriptor_pool(self.descriptor_pool, None)
-            };
-            self.descriptor_pool = vk::DescriptorPool::null();
-        }
-        if self.descriptor_set_layout != vk::DescriptorSetLayout::null() {
-            unsafe {
-                // SAFETY: `self.descriptor_set_layout` was created by this `device`
-                // (non-null per the guard) and is no longer referenced now that the
-                // pool and pipeline layout are torn down.
-                device.destroy_descriptor_set_layout(self.descriptor_set_layout, None)
-            };
-            self.descriptor_set_layout = vk::DescriptorSetLayout::null();
-        }
+        // SAFETY: the whole-function contract above (no in-flight work references the pass's
+        // pipeline or pool); `destroy_pass_objects` skips null handles and nulls what it destroys.
+        unsafe {
+            super::descriptors::destroy_pass_objects(
+                device,
+                super::descriptors::PassHandles {
+                    pipeline: &mut self.pipeline,
+                    layout: &mut self.pipeline_layout,
+                    pool: &mut self.descriptor_pool,
+                    set_layout: &mut self.descriptor_set_layout,
+                },
+            )
+        };
         if self.linear_sampler != vk::Sampler::null() {
             unsafe {
                 // SAFETY: `self.linear_sampler` was created by this `device`

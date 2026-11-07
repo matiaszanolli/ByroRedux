@@ -805,6 +805,91 @@ impl DescriptorPoolBuilder {
     }
 }
 
+// ── Compute-pass teardown ───────────────────────────────────────────
+
+/// The four objects a compute pass owns beside its images and buffers, borrowed from the pass so
+/// [`destroy_pass_objects`] can destroy and null them without the pass's struct changing shape
+/// (#6371).
+pub struct PassHandles<'a> {
+    pub pipeline: &'a mut vk::Pipeline,
+    pub layout: &'a mut vk::PipelineLayout,
+    pub pool: &'a mut vk::DescriptorPool,
+    pub set_layout: &'a mut vk::DescriptorSetLayout,
+}
+
+/// Destroy a compute pass's pipeline, pipeline layout, descriptor pool and set layout, in that
+/// (reverse-of-creation) order, skipping each null handle and resetting each destroyed one to null.
+/// The guard-and-null policy is what lets a pass's `destroy` run on the partially-initialised state
+/// `try_or_cleanup!` leaves behind, and makes a second call a no-op. Construction has one home
+/// (`pipeline::create_compute_pipeline`); this is teardown's.
+///
+/// # Safety
+///
+/// `device` must be the device that created every non-null handle, and no in-flight command buffer
+/// may reference the pipeline, or sets allocated from the pool.
+pub unsafe fn destroy_pass_objects(device: &ash::Device, handles: PassHandles<'_>) {
+    if *handles.pipeline != vk::Pipeline::null() {
+        // SAFETY: non-null per the guard, created by `device` per the function contract, and not
+        // referenced by any in-flight command buffer.
+        unsafe { device.destroy_pipeline(*handles.pipeline, None) };
+        *handles.pipeline = vk::Pipeline::null();
+    }
+    if *handles.layout != vk::PipelineLayout::null() {
+        // SAFETY: non-null per the guard; the pipeline that used it is destroyed first (above), and
+        // no in-flight command buffer uses it.
+        unsafe { device.destroy_pipeline_layout(*handles.layout, None) };
+        *handles.layout = vk::PipelineLayout::null();
+    }
+    if *handles.pool != vk::DescriptorPool::null() {
+        // SAFETY: non-null per the guard; destroying the pool frees its sets, none of which an
+        // in-flight command buffer binds per the function contract.
+        unsafe { device.destroy_descriptor_pool(*handles.pool, None) };
+        *handles.pool = vk::DescriptorPool::null();
+    }
+    if *handles.set_layout != vk::DescriptorSetLayout::null() {
+        // SAFETY: non-null per the guard; its pool and pipeline layout are destroyed first (above),
+        // so nothing still references it.
+        unsafe { device.destroy_descriptor_set_layout(*handles.set_layout, None) };
+        *handles.set_layout = vk::DescriptorSetLayout::null();
+    }
+}
+
+#[cfg(test)]
+mod pass_teardown_tests {
+    /// #6371 — the passes migrated onto [`super::destroy_pass_objects`] tear their pipeline, layout,
+    /// pool and set layout down through it, not by hand: the hand-written copies had two guard
+    /// policies (SVGF/TAA/caustic null-guarded, SSAO not), and the guarded one is what the
+    /// `try_or_cleanup!` partial-init path needs. Passes still on the hand-written form are the
+    /// issue's remaining work and are not listed here.
+    #[test]
+    fn migrated_passes_destroy_through_the_shared_helper() {
+        const MIGRATED: [(&str, &str); 4] = [
+            ("svgf.rs", include_str!("svgf.rs")),
+            ("taa.rs", include_str!("taa.rs")),
+            ("ssao.rs", include_str!("ssao.rs")),
+            ("caustic.rs", include_str!("caustic.rs")),
+        ];
+        for (name, src) in MIGRATED {
+            let src = crate::source_scan::production_text_or_whole(src);
+            assert!(
+                src.contains("destroy_pass_objects("),
+                "{name} no longer destroys its compute-pass objects through descriptors::destroy_pass_objects"
+            );
+            for hand_written in [
+                "destroy_pipeline(self.pipeline,",
+                "destroy_pipeline_layout(self.pipeline_layout,",
+                "destroy_descriptor_pool(self.descriptor_pool,",
+                "destroy_descriptor_set_layout(self.descriptor_set_layout,",
+            ] {
+                assert!(
+                    !src.contains(hand_written),
+                    "{name} hand-writes `{hand_written}` again; use destroy_pass_objects (#6371)"
+                );
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
