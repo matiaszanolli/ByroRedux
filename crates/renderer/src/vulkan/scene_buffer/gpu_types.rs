@@ -620,7 +620,9 @@ pub struct GpuCamera {
     /// x = [`RenderDebugMode`](crate::vulkan::render_debug::RenderDebugMode)
     /// shader discriminant; y = optional `f32::to_bits` RT-LOD scale;
     /// z = diagnostic bits: 0 = LOD-counter enable, 1 = bounded-path
-    /// luminance clamp off (`--rt-test-no-gi-clamp`, M-LIGHT RLT-GI-006);
+    /// luminance clamp off (`--rt-test-no-gi-clamp`, M-LIGHT RLT-GI-006),
+    /// 2 = ReSTIR reservoir `W` clamp off (`--rt-test-no-reservoir-clamp`,
+    /// RLT-SHD-005);
     /// w = packed weather surface
     /// (low 16 bits wetness, high 16 bits snow coverage). Kept separate from `jitter.z` so
     /// named mutually-exclusive views do not consume or reinterpret the

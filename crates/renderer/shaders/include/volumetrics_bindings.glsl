@@ -68,7 +68,9 @@ layout(set = 0, binding = 1) uniform VolumetricsParams {
     // x = gust cycles per second. y = BFECC advection error-correction
     // multiplier — the host's BYRO_BFECC same-binary A/B switch (1.0 on,
     // 0.0 off; multiplied into COMBUSTION_BFECC_ERROR_CORRECTION_STRENGTH).
-    // Remaining lanes are reserved.
+    // z = the alpha-aware sun trace switch (host BYRO_SUN_ALPHA, 1.0 on).
+    // w = the open-sky sun dust strength per metre (host BYRO_SUN_DUST
+    // experiment, 0 = off). All four lanes are in use.
     vec4 wind_gust;
 } params;
 

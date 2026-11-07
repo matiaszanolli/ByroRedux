@@ -474,7 +474,7 @@ pub(crate) struct GpuLocalGridParams {
     /// xyz = absolute minimum corner, w = cell edge (world units), per slot.
     pub(crate) boxes: [[f32; 4]; MAX_LOCAL_BOXES],
     /// x = atlas slabs, y = history mask, z = live mask (0 disables every
-    /// consumer for this frame), w unused.
+    /// consumer for this frame), w = the `LOCAL_GRID_DEBUG_*` bits.
     pub(crate) info: [u32; 4],
     /// xyz = direction TO the sun.
     pub(crate) sun_dir: [f32; 4],

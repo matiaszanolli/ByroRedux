@@ -24,7 +24,7 @@
     vec4 sunDirection;
     vec4 dofParams;      // x = aperture half-radius (0.0 = pinhole), y = focus_dist, z = atten knee frac, w = history mode (0 moving, 1 parked, 2 parked + scene-static, 3 parked + rig-geometry-static under flicker; restir_history_mode).
     vec4 renderOrigin;   // #markarth-precision / #1496 — xyz = camera-relative render origin (cell-grid snapped); add it to a render-origin-relative position for the absolute world position. w = FSR one-frame-reset flag (NOT padding — #2164/L-10).
-    uvec4 renderDebug;   // x = structured RENDER_DEBUG_* mode; y = optional bitcast RT LOD scale, z = LOD telemetry enable, w = packed weather surface (low 16 wetness, high 16 snow). Legacy feature-ablation flags remain in jitter.z.
+    uvec4 renderDebug;   // x = structured RENDER_DEBUG_* mode; y = optional bitcast RT LOD scale, z = diagnostic bits (0 = RT-LOD telemetry enable, 1 = bounded-path luminance clamp off, 2 = ReSTIR reservoir W clamp off), w = packed weather surface (low 16 wetness, high 16 snow). Legacy feature-ablation flags remain in jitter.z.
     // #3323 — the EXTERIOR TOD/weather zenith colour, carried even on
     // interior cells. `skyTint` above is `SkyParams::default()` on any
     // interior by design (#1199 / #2226: an interior must never read a

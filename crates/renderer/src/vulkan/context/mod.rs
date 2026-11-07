@@ -1053,9 +1053,11 @@ pub struct VulkanContext {
     ///            distance (Nellis Museum was the canonical
     ///            regression). Set the bit to A/B against suspected
     ///            spec-AA-introduced softness.
-    ///   `0x200` — reserved (the retired interior-only directional-fill
-    ///            diagnostic; direct lighting now shares one BRDF/shadow
-    ///            path across interior and exterior scenes).
+    ///   `0x200` — display the raw SSAO occlusion value the main pass
+    ///            samples (`DBG_VIZ_AO`; recycled from the retired
+    ///            interior-only directional-fill diagnostic).
+    ///   `0x400..=0x80000000` — further `DBG_*` bits; the table in
+    ///            `shader_constants_data.rs` (`DBG_BITS`) is the catalogue.
     /// Env values are parsed as `0xN` hex or plain decimal; absent /
     /// invalid → 0 (all paths active, zero overhead). For ad-hoc
     /// bisection of texture / lighting artifacts. See engineering

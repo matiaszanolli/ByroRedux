@@ -657,18 +657,19 @@ material-level) stay on `GpuInstance.flags`:
 `_TERRAIN_SPLAT`, `_PRESKINNED`, `_FLAT_SHADING`.
 `_LOD_BLOCK`, `_DIFFUSE_ALPHA`.
 
-> **Shader Struct Sync (CRITICAL).** `GpuInstance` is declared at six GLSL
-> sites (`include/bindings.glsl` — shared by `triangle.frag` and
-> `water.frag` — plus standalone hand-mirrored copies in `triangle.vert`,
-> `ui.vert`, `caustic_splat.comp`, `water.vert`, and
-> `groundcover_models.comp`); `GpuCamera` across
-> `triangle.vert/frag`, `water.vert/frag`, `cluster_cull.comp`,
-> `caustic_splat.comp`. Post-R1 the contract narrowed so only
-> `triangle.frag` mirrors the full `GpuMaterial`. The
-> `gpu_instance_is_160_bytes_std430_compatible`, `gpu_camera_is_368_bytes`
-> (the live 368-byte `GpuCamera` layout), and `GpuMaterial`-size tests pin
-> the byte layout; the `feedback_shader_struct_sync` note records the update
-> protocol.
+> **Shader Struct Sync (CRITICAL).** `GpuInstance` is declared once, in the
+> struct-only `include/gpu_instance.glsl`, which `bindings.glsl` (shared by
+> `triangle.frag` and `water.frag`), `triangle.vert`, `ui.vert`,
+> `caustic_splat.comp`, `water.vert` and `groundcover_models.comp` all
+> include (#6681). The `CameraUBO` member list is declared once too, in
+> `include/camera_ubo_members.glsl`; each of its five blocks
+> (`bindings.glsl`, `triangle.vert`, `water.vert`, `cluster_cull.comp`,
+> `caustic_splat.comp`) states only its set/binding and includes the list
+> (#6682). Post-R1 the contract narrowed so only `triangle.frag` mirrors the
+> full `GpuMaterial`. The `gpu_instance_is_160_bytes_std430_compatible`,
+> `gpu_camera_is_368_bytes` (the live 368-byte `GpuCamera` layout), and
+> `GpuMaterial`-size tests pin the byte layout; the
+> `feedback_shader_struct_sync` note records the update protocol.
 
 ## Disney BSDF
 
