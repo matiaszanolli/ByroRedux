@@ -132,10 +132,15 @@ visible at that position.
   vertical, so the sun slab is about 0.7 m thick) and the canonical portal sun is about 1.0 where the lab uses 6:
   the shaft is real and faint, not missing. A visible one needs more density in the slab or a shaft gain, which is
   an engine choice like the exterior haze floor (VLM-HF-008).
-- **Not done:** making the sun-driven shaft visible. The owner chose sun-driven beams with a night floor for the
-  converted daylight beams (#6727); a first implementation (a `FogProfile::DaylightShaft` medium whose local-light
-  in-scatter follows the portal sun) was built and reverted because it was designed on the opacity misreading and
-  could not be shown to change the finished frame.
+- **Interior shaft dust (VLM-INT-007): the shaft is now visible.** Where the sun's ray is proven to pass through an
+  authored aperture, the sun term scatters off an extra 0.04 / m (`INTERIOR_SHAFT_DUST_PER_METER`), sun term only,
+  so nothing changes in a dark room, for the local lights, or at night. On `NellisHangar1` the shaft region (6.6%
+  of the frame) reads 28.3 at noon against 21.6 at midnight in the radiance view and 46.4 against 42.1 in the
+  finished frame, against repeat noise of 0.16 and 1.06. `interior-godrays.sh` (45.5) and `exterior-shafts.sh`
+  still pass. Still faint in the finished frame: the owner should judge the strength (the constant is one line).
+- **Superseded:** the owner's earlier decision (sun-driven beams with a night floor, #6727) was made on the opacity
+  misreading and a first implementation was reverted; the shaft dust achieves its intent (a shaft that follows the
+  sun and is gone at night) on the correct term. The reverted patch is not in the repository.
 
 ## Open work and next experiments
 

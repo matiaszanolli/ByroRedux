@@ -1232,6 +1232,16 @@ pub const COMBUSTION_LOCAL_LIGHT_PHASE_FORWARD_G: f32 = 0.35;
 pub const COMBUSTION_LOCAL_LIGHT_PHASE_BACKWARD_G: f32 = -0.12;
 pub const COMBUSTION_LOCAL_LIGHT_PHASE_MIX: f32 = 0.65;
 
+// Interior shaft dust (VLM-INT-007, an engine choice like the exterior haze floor, VLM-HF-008): where the
+// sun's ray has been PROVEN to pass through an authored aperture (a marked `SkyAperture` plane or a `LightShaft`
+// cone), the sun term scatters off this much extra dust. A converted beam is a thin ribbon (FNV Nellis: about
+// 8 m x 1.4 m, a 0.7 m sun slab) lit by a portal sun of about 1.0 through 0.01/m haze, which is physically
+// right and below what an exposure-adapted frame resolves (measured, #6727). The gain exists only in the lit
+// slab and only in the sun term, so it adds nothing to a dark room, follows the sun's direction and the hour, and
+// is zero at night. 0.04/m is half the dust of the godray lab's room (0.08/m).
+pub const INTERIOR_SHAFT_DUST_PER_METER: f32 = 0.04;
+pub const INTERIOR_SHAFT_DUST_ALBEDO: f32 = 0.9;
+
 // Multiple-scattering energy compensation for the froxel in-scatter. The
 // injector is single-scatter: every order >= 2 is dropped, which makes
 // optically thick smoke read too dark and too contrasty against its own
@@ -3030,6 +3040,8 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float COMBUSTION_LOCAL_LIGHT_PHASE_FORWARD_G),
     shader_define!(Float COMBUSTION_LOCAL_LIGHT_PHASE_BACKWARD_G),
     shader_define!(Float COMBUSTION_LOCAL_LIGHT_PHASE_MIX),
+    shader_define!(Float INTERIOR_SHAFT_DUST_PER_METER),
+    shader_define!(Float INTERIOR_SHAFT_DUST_ALBEDO),
     shader_define!(Float COMBUSTION_MULTISCATTER_OCTAVE1_WEIGHT),
     shader_define!(Float COMBUSTION_MULTISCATTER_OCTAVE2_WEIGHT),
     shader_define!(Float COMBUSTION_STEAM_DROPLET_DIAMETER_UM),

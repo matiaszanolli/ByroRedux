@@ -526,6 +526,15 @@ The RT visibility replaces cascades (VLM-NG-006).
   `crates/plugin/examples/baked_beam_census.rs`, extended to the DLC masters
   and to FO4 and Starfield, which the handoff says are unsurveyed.
 
+- **VLM-INT-007.** Where the sun's ray has been proven to pass through an authored aperture (a marked
+  `SkyAperture` plane or a `LightShaft` cone), the sun term MUST scatter off an engine-supplied shaft dust
+  (`INTERIOR_SHAFT_DUST_PER_METER`, an engine choice recorded under VLM-HF-008, the interior counterpart of
+  VLM-SH-010). It MUST ride the sun term only, so the dark room, the local lights and the night gain nothing from
+  it, and it MUST NOT apply to open sky, glass or rim-probe visibility. Measured on FNV `NellisHangar1` (#6727): the
+  converted planes are thin ribbons (about 8 m x 1.4 m), and without the dust the noon-minus-midnight radiance
+  difference is about 0 over six cameras; with 0.04 / m it is 3.6 to 7.3 % of pixels above 3 levels (max 19), and
+  in the shaft region noon reads 28.3 against 21.6 at midnight (repeat noise 0.16).
+
 ### 5.5 Aerial perspective for distant geometry (`VLM-AP`)
 
 SKYAL already applies Hillaire's Earth atmosphere to cloud layers through a
@@ -799,3 +808,4 @@ as VLM-NG-006 instead of being reopened.
 | 3 | 2026-11-07 | Owner decisions recorded: Q1–Q4, Q6 and Q8 the recommendation, Q5 closed against VLM-NG-006, **Q7 decided for the exterior haze floor** (new VLM-SH-010, VLM-SH-011). Phase 0 evidence taken the same day on FNV Goodsprings: clear-weather `gpu_extinction` is 0.000349/m, about 4.5 % optical depth over the 128 m froxel range, so the recommendation for Q7 would have left clear-day exterior shafts faint | owner: approved |
 | 4 | 2026-11-07 | → ACTIVE: parent #6729 and phase issues #6724–#6728 filed; Phase 2 carries the haze floor (VLM-SH-010, -011) and Phase 3 the interior coverage the goal needs | — |
 | 5 | 2026-11-07 | Phase 2 and 3 first slices landed: VLM-SH-001, -002, -010, -011 (the shaft lab, its gate, the haze floor and its measured default) and VLM-INT-005 (nearest-first aperture cap with a once-per-episode log). §3 row 14 corrected: the interior lab gate A10 is red at HEAD and before this work (#6730). Open under #6726: VLM-SH-003, -004, -005, -006, -007, -008, -009 | — |
+| 6 | 2026-11-07 | VLM-INT-007 added: the interior shaft dust, an engine choice that makes a proven aperture's sun shaft visible. Found with the new `render.debug volumetric_radiance` (the existing `volumetric_term` is opacity-floored) and the `--godray-lab-marked` control, which shows the marked-aperture path itself works (column 40.63 against 40.63 for an open hole, sealed 0.00). VLM-INT-002 now measurable and met on NellisHangar1 | claude: revise |

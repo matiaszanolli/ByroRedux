@@ -1990,7 +1990,7 @@ mod unit_tests {
             "sunTermLive must test both factors of the sun in-scatter term"
         );
         let inscatter = shader
-            .find("global_scattering_coef * phase * params.sun_color.rgb * visibility")
+            .find("(global_scattering_coef + interiorShaftDust) * phase * params.sun_color.rgb * visibility")
             .expect("sun in-scatter term");
         assert!(
             gate < inscatter,
@@ -4393,5 +4393,22 @@ mod memory_budget_ledger_tests {
                 "the Volumetrics host-buffer table lost its `{buffer}` row (#5208)"
             );
         }
+    }
+
+    /// VLM-INT-007 / #6727 — the interior shaft dust is earned only by a ray PROVEN to pass through an
+    /// authored aperture, rides the SUN term alone, and is the one place the shaft gain is applied.
+    #[test]
+    fn interior_shaft_dust_is_earned_by_an_aperture_and_rides_the_sun_term_only() {
+        let shader = include_str!("../../shaders/volumetrics_inject.comp");
+        assert!(shader.contains("viaAuthoredAperture = visibility > 0.5;"), "the opaque-hit aperture arm");
+        assert!(shader.contains("viaAuthoredAperture = authoredAperture;"), "the clear-ray aperture arm");
+        // The declaration plus exactly the two aperture arms: open sky, glass and the rim probes never earn it.
+        assert_eq!(shader.matches("viaAuthoredAperture = ").count(), 3);
+        assert!(shader.contains(
+            "INTERIOR_SHAFT_DUST_ALBEDO * INTERIOR_SHAFT_DUST_PER_METER / WORLD_UNITS_PER_METER"
+        ));
+        // The local-light term keeps the plain coefficient: the dust is the sun shaft's, not the room's.
+        assert!(shader.contains("inscatter += (global_scattering_coef * localPhase"));
+        assert_eq!(shader.matches("interiorShaftDust").count(), 2, "declared once, used once in the sun term");
     }
 }

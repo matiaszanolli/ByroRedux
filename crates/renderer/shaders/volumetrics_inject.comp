@@ -982,6 +982,9 @@ void main() {
     // direction, away from the sun) — #1937.
     vec3 ray_dir = -light_in;
     float visibility = 0.0;
+    // True when the sun reached this froxel THROUGH an authored aperture (a marked plane or a light-shaft
+    // cone), which is what earns it the interior shaft dust below (VLM-INT-007).
+    bool viaAuthoredAperture = false;
     // #4793 / #4785 — `visibility` feeds only the sun in-scatter term
     // `scattering_coef * phase * sun_color * visibility` below, so when either
     // factor is exactly zero every ray here is multiplied away. `sun_color`
@@ -1012,8 +1015,10 @@ void main() {
                 && (clearUntil <= 0.05 || !traceShadowBinary(
                     ray_origin, ray_dir, 0.05, clearUntil, VISIBILITY_MASK_ALL_OPAQUE
                 )) ? 1.0 : 0.0;
+            viaAuthoredAperture = visibility > 0.5;
         } else if (hasOpenSky || authoredAperture) {
             visibility = 1.0;
+            viaAuthoredAperture = authoredAperture;
         } else {
             bool sawGlass = traceArchitecturalWindowGlass(
                 ray_origin, ray_dir, params.volume_params.x
@@ -1056,9 +1061,13 @@ void main() {
         transported_sun_phase = combustionMultiScatterPhase(
             dot(light_in, field_view_dir), transported_albedo, transported_steam);
     }
+    // VLM-INT-007: extra dust in the sun-lit slab of an authored aperture, sun term only (see the constants).
+    vec3 interiorShaftDust = viaAuthoredAperture
+        ? vec3(INTERIOR_SHAFT_DUST_ALBEDO * INTERIOR_SHAFT_DUST_PER_METER / WORLD_UNITS_PER_METER)
+        : vec3(0.0);
     vec3 inscatter = authored_inscatter
         + local_medium.emission
-        + global_scattering_coef * phase * params.sun_color.rgb * visibility
+        + (global_scattering_coef + interiorShaftDust) * phase * params.sun_color.rgb * visibility
         + transported_combustion.scattering * transported_sun_phase
             * params.sun_color.rgb * visibility;
 
