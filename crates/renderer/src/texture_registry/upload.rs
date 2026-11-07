@@ -1265,6 +1265,7 @@ impl TextureRegistry {
         }
         let mut staged: Vec<StagedUpload> = Vec::with_capacity(count);
         let mut failed_changes: Vec<(TextureHandle, u32)> = Vec::new();
+        let mut batch_changes = residency::StagedChanges::default();
 
         // Use the persistent transfer fence (#302) so we don't pay a
         // per-flush vk::Fence create/destroy. `with_one_time_commands_reuse_fence`
@@ -1350,6 +1351,17 @@ impl TextureRegistry {
                         let Some(old_image) = old_image else {
                             log::debug!(
                                 "Skipping stale residency change for '{}' ({change:?})",
+                                upload.path,
+                            );
+                            continue;
+                        };
+                        // #6738 — `entry.residency` moves only when the batch
+                        // installs, so a second change for this handle would
+                        // pass the check above too. It is stale by
+                        // construction; it replans on a later frame.
+                        if !batch_changes.claim(upload.handle) {
+                            log::debug!(
+                                "Skipping second residency change for '{}' in one batch ({change:?})",
                                 upload.path,
                             );
                             continue;
@@ -1578,35 +1590,50 @@ impl TextureRegistry {
                 floor,
             } = s;
 
-            // Write descriptor for the real image view + sampler.
-            let image_view = texture.image_view;
-            let sampler = texture.sampler;
-            let binding = texture.view_kind.descriptor_binding();
-            self.apply_descriptor_write(device, handle, binding, image_view, sampler);
-
-            // Move the texture into its reserved slot. A residency change
-            // replaces the live image, which retires through
-            // `pending_destroy` like any replaced image (TXS-RES-004).
-            if let Some(entry) = self.textures.get_mut(handle as usize) {
-                if let Some(change) = change {
-                    if let Some(residency) = entry.residency.as_mut() {
-                        residency.apply(change);
-                    }
-                    landed_changes.push((handle, change));
-                    if let Some(old) = entry.texture.replace(texture) {
-                        entry.pending_destroy.push_back((current_frame_id, old));
-                    }
-                } else {
-                    entry.texture = Some(texture);
-                    if let Some((residency, whole, source, header_len)) = floor {
-                        entry.residency = Some(residency);
-                        floor_sources.push((handle, whole, source, header_len));
-                    }
+            // #6738 — land a residency change on the tracked residency
+            // *before* anything points at the new image: a change planned
+            // against a range the entry no longer holds is refused, and its
+            // image retires instead of replacing the live one.
+            let refused = change.is_some_and(|change| {
+                self.textures.get_mut(handle as usize).is_some_and(|entry| {
+                    !residency::land_change(entry.residency.as_mut(), change)
+                })
+            });
+            if refused {
+                log::warn!(
+                    "Residency change for handle {handle} no longer matches its residency at install; retiring the new image"
+                );
+                if let Some(entry) = self.textures.get_mut(handle as usize) {
+                    entry.pending_destroy.push_back((current_frame_id, texture));
                 }
             } else {
-                log::warn!(
-                    "flush_pending_uploads: handle {handle} out of bounds; dropping texture"
-                );
+                // Write descriptor for the real image view + sampler.
+                let image_view = texture.image_view;
+                let sampler = texture.sampler;
+                let binding = texture.view_kind.descriptor_binding();
+                self.apply_descriptor_write(device, handle, binding, image_view, sampler);
+
+                // Move the texture into its reserved slot. A residency
+                // change replaces the live image, which retires through
+                // `pending_destroy` like any replaced image (TXS-RES-004).
+                if let Some(entry) = self.textures.get_mut(handle as usize) {
+                    if let Some(change) = change {
+                        landed_changes.push((handle, change));
+                        if let Some(old) = entry.texture.replace(texture) {
+                            entry.pending_destroy.push_back((current_frame_id, old));
+                        }
+                    } else {
+                        entry.texture = Some(texture);
+                        if let Some((residency, whole, source, header_len)) = floor {
+                            entry.residency = Some(residency);
+                            floor_sources.push((handle, whole, source, header_len));
+                        }
+                    }
+                } else {
+                    log::warn!(
+                        "flush_pending_uploads: handle {handle} out of bounds; dropping texture"
+                    );
+                }
             }
 
             // Release staging back to the pool (or destroy if no

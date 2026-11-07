@@ -107,6 +107,35 @@ impl Residency {
     }
 }
 
+/// #6738 — the handles that already have a residency change staged in the
+/// current flush batch.
+///
+/// `queue_residency_change` plans against the entry's *current* residency, so a
+/// promotion whose host read was in flight can queue beside a budget demotion
+/// planned against the same state. The record-time stale check reads
+/// `entry.residency`, which only moves when the batch installs, so it passes
+/// both. The second change for a handle is therefore treated as stale: it
+/// replans against the new state on a later frame, like any change that lost
+/// the race across batches.
+#[derive(Default)]
+pub(crate) struct StagedChanges(std::collections::HashSet<u32>);
+
+impl StagedChanges {
+    /// `true` for the first change claimed for `handle` in this batch.
+    pub(crate) fn claim(&mut self, handle: u32) -> bool {
+        self.0.insert(handle)
+    }
+}
+
+/// Install-time half of the same rule: land `change` on the entry's residency,
+/// or refuse it. A refusal (no tracked residency, or one that no longer holds
+/// the range the change was planned against) means the freshly recorded image
+/// must be retired instead of installed: installing it would leave the live
+/// image and `Residency` describing different level ranges.
+pub(crate) fn land_change(residency: Option<&mut Residency>, change: ResidencyChange) -> bool {
+    residency.is_some_and(|residency| residency.apply(change))
+}
+
 /// One promotion (`new_first < old_first`) or demotion
 /// (`new_first > old_first`): a new image of levels
 /// `[new_first, mip_count)` replaces the image of `[old_first, mip_count)`.
@@ -193,6 +222,30 @@ mod tests {
         assert!(promote.is_promotion());
         assert_eq!(promote.upload_levels(), 0..3);
         assert_eq!(promote.shared_levels(), 3..12);
+    }
+
+    /// #6738 — one handle may stage only one change per flush batch, and an
+    /// install that finds the residency moved underneath it is refused rather
+    /// than applied on top.
+    #[test]
+    fn a_second_change_for_one_handle_is_refused_in_the_batch_and_at_install() {
+        let mut staged = StagedChanges::default();
+        assert!(staged.claim(7));
+        assert!(!staged.claim(7), "the second change for handle 7 is stale");
+        assert!(staged.claim(8), "another handle is independent");
+
+        // Install side: two changes planned against the same state (an
+        // in-flight promotion and a budget demotion that both read level 3) —
+        // the first lands, the second is refused and leaves the residency
+        // where the first put it.
+        let mut r = Residency::at_floor(12, 3, 0);
+        let promote = r.plan(1).expect("promotion planned against level 3");
+        let other = r.plan(2).expect("a second change planned against level 3");
+        assert!(land_change(Some(&mut r), promote));
+        assert_eq!(r.first_resident, 1);
+        assert!(!land_change(Some(&mut r), other), "planned against level 3, now at 1");
+        assert_eq!(r.first_resident, 1);
+        assert!(!land_change(None, promote), "no tracked residency");
     }
 
     #[test]
