@@ -268,6 +268,14 @@ edits would push a file past its cap, trim that same file before
 appending — compress the least load-bearing section or move narrative
 to HISTORY.md / a `docs/` page — and say so in the unified diff.
 
+The caps are enforced by a test, so re-run it after the edits are applied and
+before the session closes (a docs commit that lands the file over its cap turns
+`cargo test` red, #6588):
+
+```bash
+cargo test -q -p byroredux --bin byroredux readme_and_roadmap_hold_their_line_ceilings
+```
+
 Only touch README if:
 
 - A headline bench number used in the opening screenshot caption
