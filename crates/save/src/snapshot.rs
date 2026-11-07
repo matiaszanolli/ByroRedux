@@ -605,7 +605,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v121 -> v122 (item quality): `ItemInstance` gained the required `quality` (the Skyrim tempering level), so
 /// a v121 item instance no longer decodes.
-pub const FORMAT_MAJOR: u16 = 122;
+///
+/// v122 -> v123 (#6759): a new component column, `FactionReputation` (the player's per-faction
+/// fame/infamy from `AddReputation` / `SetReputation`), so a reputation earned by a quest script
+/// survives a load instead of resetting to Neutral.
+pub const FORMAT_MAJOR: u16 = 123;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

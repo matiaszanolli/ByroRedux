@@ -612,3 +612,50 @@ fn real_fallout3_water_survives_disk_load_overlay() {
     disk_round_trip(&index, 0x34051, 1.0);
     disk_round_trip_with_perk(&index, 0x34051, 20.0, Some(0x3131));
 }
+
+/// #6759 -- a reputation a quest script earned (`AddReputation` / `SetReputation`) rides the save, so a
+/// load restores it instead of resetting the player to Neutral; a save taken before any reputation
+/// existed clears one the outgoing session earned (the column is replacing).
+#[test]
+fn faction_reputation_round_trips_through_a_disk_save_and_load() {
+    use byroredux_core::character::FactionReputation;
+    let directory = tempfile::tempdir().unwrap();
+    let index = EsmIndex::default();
+    let mut source = world(&index, directory.path().to_owned());
+    let saved_player = player(&mut source);
+    let mut earned = FactionReputation::default();
+    earned.add_fame(0x77, 12);
+    earned.add_infamy(0x77, 3);
+    for slot in 0..2 {
+        if slot == 0 {
+            source.insert(saved_player, earned.clone());
+        } else {
+            source.remove::<FactionReputation>(saved_player);
+        }
+        let output = SaveCommand.execute(&source, &slot.to_string());
+        assert!(!command_output_is_failure(&output), "{:?}", output.lines);
+    }
+    let mut live = world(&index, directory.path().to_owned());
+    let live_player = player(&mut live);
+    let mut outgoing = FactionReputation::default();
+    outgoing.add_fame(0x99, 50);
+    live.insert(live_player, outgoing);
+    for slot in [0, 1] {
+        let output = LoadCommand.execute(&live, &slot.to_string());
+        assert!(!command_output_is_failure(&output), "{:?}", output.lines);
+        let snapshot = live.resource_mut::<PendingSaveLoadSlot>().snapshot.take().unwrap();
+        let registry = build_save_registry();
+        byroredux_save::validate_snapshot_types(&registry, &snapshot).unwrap();
+        byroredux_save::restore_resources(&mut live, &registry, &snapshot).unwrap();
+        let remap = byroredux_save::build_form_id_remap(&live, &registry, &snapshot);
+        byroredux_save::apply_deltas(&mut live, &registry, &snapshot, &remap, MUTABLE_DELTA_COLUMNS).unwrap();
+        let loaded = live.get::<FactionReputation>(live_player);
+        if slot == 0 {
+            let loaded = loaded.expect("the saved reputation is restored");
+            assert_eq!((loaded.fame(0x77), loaded.infamy(0x77)), (12, 3));
+            assert_eq!(loaded.fame(0x99), 0, "the outgoing session's standing is replaced");
+        } else {
+            assert!(loaded.is_none(), "a save without reputation clears the outgoing one");
+        }
+    }
+}

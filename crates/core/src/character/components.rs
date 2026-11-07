@@ -185,6 +185,7 @@ impl Component for Background {
 /// ::reset`]). 8 bytes (`u32` FormID + two `u16`); the vanilla maximum
 /// threshold is 100, so `u16` is ample headroom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct FactionStanding {
     pub repu_form_id: u32,
     pub fame: u16,
@@ -194,10 +195,13 @@ pub struct FactionStanding {
 /// An actor's per-faction reputation (the [`reputation`](super::reputation)
 /// family's storage half). Player-scoped in practice — NPCs don't accrue it —
 /// but a component so it rides the same ECS / save machinery as the rest of
-/// CHARAL. A contiguous `Vec`: an actor knows a handful of factions, so a
+/// CHARAL (saved as a replacing column since #6759: the scripted
+/// `AddReputation` / `SetReputation` commands and the SDK write it, and nothing
+/// re-derives it). A contiguous `Vec`: an actor knows a handful of factions, so a
 /// linear scan beats a map and stays cache-friendly. Karma needs no analog —
 /// it is already an [`ActorValues`](crate::ecs::components::ActorValues) entry.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct FactionReputation {
     pub entries: Vec<FactionStanding>,
 }

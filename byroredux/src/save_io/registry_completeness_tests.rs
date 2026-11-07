@@ -473,7 +473,6 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ScriptKilledCorpseForms", "derived once per load order from the parsed masters over every cell (#5248), like CharacterRuleset beside it; the dead-state facts it stamps persist through the saved reference rows, and the set is rebuilt on first cell load"),
         ("MeleeDamageConfig", "immutable Fallout combat tuning, idempotently constructed alongside CharacterRuleset on first cell load, not at boot; absent on games authoring no MeleeDamage AVIF (#3092)"),
         ("Background", "derived character-creation metadata with no live production mutator; re-created with the actor"),
-        ("FactionReputation", "forward-latent: no production insertion or mutation site exists yet"),
         ("PoolRegenAccumulator", "fractional fixed-step carry only; canonical pool values live in saved ActorValues and carry is safely re-seeded"),
         ("PoolRegenConfig", "immutable game-profile regeneration tuning, re-derived from the load order by build_vats_model and installed on the first FO3/FNV cell load (#6350); never saved, so a mod's restore rate follows the load order"),
         ("CombatSoundRequests", "diagnostic per-kind count of combat feedback one-shots requested this session (#5148), surfaced by combat.status for the P2 smoke gate; meaningless across a load"),
@@ -1296,6 +1295,10 @@ fn every_delta_column_is_parked_or_explicitly_not() {
             "player progression; the player outlives cell reloads and is never evicted",
         ),
         (
+            "FactionReputation",
+            "player-scoped (obscript_effects::adjust_standing, the SDK AddFame/AddInfamy); the player outlives cell reloads and is never evicted",
+        ),
+        (
             "TimedRestorations",
             "the only production insert is on the player (inventory/); the player is never evicted",
         ),
@@ -1408,7 +1411,9 @@ fn every_delta_column_is_parked_or_explicitly_not() {
 fn the_schema_fingerprint_is_pinned() {
     // Words of power — `KnownWords` joined the registry as a new resource (which words of power the
     // player has obtained), registered after `SkillProgress`.
-    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0xd2b0_3894_ed0d_b7aa;
+    // #6759 — `FactionReputation` joined the registry as a new replacing component column (the player's
+    // per-REPU fame/infamy), registered after `CharacterLevel`.
+    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0xc23a_5d00_9d1f_65e2;
     let actual = build_save_registry().schema_fingerprint();
     assert_eq!(
         actual, BASELINE_SCHEMA_FINGERPRINT,

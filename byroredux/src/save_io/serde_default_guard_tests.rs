@@ -801,7 +801,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 122;
+    const BASELINE_MAJOR: u16 = 123;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1193,7 +1193,10 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // field on a registered resource (when a node last started a quest, for the node-level `HNAM` window).
     // Item quality — v122 is a genuine bump: `ItemInstance::quality` (the Skyrim tempering level) is a new
     // required field on the registered `ItemInstancePool`.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xf8aa_20c0_a161_5567;
+    // #6759 — v123 is a genuine bump: `FactionReputation` (the player's per-REPU fame/infamy) joined the
+    // saved registry as a NEW component column, so a pre-v123 snapshot has no record of a reputation a
+    // quest script earned.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xcc21_79e6_1685_0eca;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

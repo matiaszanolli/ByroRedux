@@ -48,6 +48,8 @@ fn delta_columns_carry_only_session_stable_fields() {
         // Perks: Vec<PerkRank { perk_form_id: u32, rank: u8 }>.
         "Perks",
         "CharacterLevel",
+        // #6759 — FactionReputation: Vec<FactionStanding { repu_form_id: u32, fame: u16, infamy: u16 }>.
+        "FactionReputation",
         // M47.2 — LevelUpPoints: u32 / f32 / u32 / u32 (#5916 pool_picks).
         "LevelUpPoints",
         // TimedRestorations: source/AV u32 FormIDs, f32 rate, f64 time.
