@@ -2126,10 +2126,10 @@ mod tests {
 
         let river = build(WaterKind::River);
         let flow = sample_player_water(&river, pos, 32.0).expect("in the column").flow.expect("river flows");
-        let bed = river
-            .query::<WaterBedField>()
-            .and_then(|q| q.get(river.query::<WaterPlane>().unwrap().iter().next().unwrap().0).cloned())
-            .unwrap();
+        // Resolve the plane's entity first and drop that read before the bed query, so the
+        // test takes WaterPlane then WaterBedField, the order `sample_player_water` takes.
+        let plane_entity = river.query::<WaterPlane>().unwrap().iter().next().unwrap().0;
+        let bed = river.query::<WaterBedField>().and_then(|q| q.get(plane_entity).cloned()).unwrap();
         let dynamic =
             byroredux_physics::local_current(WaterKind::River, authored, Some(&bed), pos.x, pos.z);
         assert_eq!(
