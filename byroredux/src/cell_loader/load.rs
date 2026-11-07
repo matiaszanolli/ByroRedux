@@ -382,7 +382,7 @@ pub fn validate_cell_loadable(
         .chain(std::iter::once(esm_path))
         .collect();
     // Through the memo: the load this validates for then finds the parse resident.
-    let (index, _load_order) = parse_record_indexes_shared(&plugin_paths, false)?;
+    let (index, _load_order) = parse_record_indexes_shared(&plugin_paths)?;
     let cell_key = cell_editor_id.to_ascii_lowercase();
     anyhow::ensure!(
         index.cells.cells.contains_key(&cell_key),
@@ -560,7 +560,7 @@ impl InteriorCellApplyJob {
         let phase_started = Instant::now();
         // #6123 — a door within the session's own plugin set finds its index
         // already parsed; only a different set (or an edited file) parses.
-        let (index, load_order) = parse_record_indexes_shared(&plugin_paths, false)?;
+        let (index, load_order) = parse_record_indexes_shared(&plugin_paths)?;
         phases.esm_parse = phase_started.elapsed();
 
         let cell = find_interior_cell(&index, cell_editor_id)?;

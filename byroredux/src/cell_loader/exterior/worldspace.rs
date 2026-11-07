@@ -250,8 +250,9 @@ pub fn build_exterior_world_context(
         .chain(std::iter::once(esm_path))
         .collect();
     // #6123 — the plugin set the session already parsed is reused as is; the
-    // exterior-only landscape inheritance (#5505) is part of the shared parse.
-    let (record_index, load_order) = parse_record_indexes_shared(&plugin_paths, true)?;
+    // landscape inheritance (#5505) is part of every shared parse, so an
+    // interior-first session reuses its index here without a re-parse (#6591).
+    let (record_index, load_order) = parse_record_indexes_shared(&plugin_paths)?;
     let index = &record_index.cells;
 
     // Best worldspace per `select_worldspace_key`'s documented priority:
