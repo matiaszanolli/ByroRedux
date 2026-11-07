@@ -26,6 +26,13 @@ use byroredux_core::ecs::{EntityId, World};
 /// Exit clears the scan and queue; un-executed AP reservations are the
 /// caller's to refund (Phase 3c's confirm path owns the spend).
 pub(crate) fn vats_mode_system(world: &World, _dt: f32) {
+    // #6625 — a player who died inside a VATS mode (a bleed-out, a hit before
+    // confirm) leaves it: `vats_entry_refusal` only gates ENTERING, and the
+    // frozen world would otherwise stay frozen under a dead player.
+    if vats_active(world) && player_is_dead(world) {
+        end_vats_for_world_change(world);
+        return;
+    }
     let pressed = world
         .try_resource::<ActionState>()
         .is_some_and(|actions| actions.was_pressed(Vats));
@@ -54,6 +61,26 @@ pub(crate) fn vats_mode_system(world: &World, _dt: f32) {
     // Entering is a scan: fill the target list the overlay and queue
     // read. Re-runs (`vats.scan`) re-price against live positions.
     vats_scan(world);
+}
+
+/// Whether the player entity carries `Dead`. A world with no player (fly-cam,
+/// tests) is not dead.
+fn player_is_dead(world: &World) -> bool {
+    PlayerEntity::get(world).is_some_and(|player| world.get::<Dead>(player).is_some())
+}
+
+/// End any VATS mode because the session the targeting state names has
+/// changed under it: an in-process save load, a cell transition (#6625), or
+/// the player's death. `VatsState` is entity-keyed (targets and queue name the
+/// outgoing cell's actors) and publishes a zero world time scale while a mode
+/// is active, so leaving it would freeze the new world and let a confirm
+/// charge AP for the stale queue. Nothing is charged here: AP is spent only by
+/// [`vats_confirm`]. `roll_state` is kept, so the replayable die sequence is
+/// unaffected. Idempotent.
+pub(crate) fn end_vats_for_world_change(world: &World) {
+    if let Some(mut vats) = world.try_resource_mut::<VatsState>() {
+        vats.exit_all();
+    }
 }
 
 /// Why VATS cannot be entered right now, or `None` when it can: the one list
@@ -180,6 +207,81 @@ mod tests {
         press_vats(&world);
         vats_mode_system(&world, 0.0);
         assert_eq!(world.resource::<VatsState>().mode, VatsMode::None);
+    }
+
+    /// A VATS session with a scan and a confirmed-but-unexecuted queue naming entities of the
+    /// current cell, as it stands when the session ends under it.
+    fn vats_with_a_stale_queue(world: &World) {
+        let part = VatsTargetPart {
+            entity: EntityId::from(9u32),
+            part_index: 0,
+            part_name: "Torso".into(),
+            hit_chance: 50.0,
+            ap_cost: 20.0,
+        };
+        let mut vats = world.resource_mut::<VatsState>();
+        vats.mode = VatsMode::TargetSelect;
+        vats.targets = vec![part.clone()];
+        vats.queue = vec![part];
+        vats.ap_reserved = 20.0;
+        vats.roll_state = 0xDEAD_BEEF;
+    }
+
+    fn assert_vats_ended(world: &World) {
+        let vats = world.resource::<VatsState>();
+        assert_eq!(vats.mode, VatsMode::None, "the mode ends");
+        assert!(vats.targets.is_empty() && vats.queue.is_empty(), "the stale entity lists are dropped");
+        assert_eq!(vats.ap_reserved, 0.0, "the reservation is dropped, not charged");
+        assert_eq!(vats.world_time_scale(), 1.0, "the world is not left frozen");
+        assert_eq!(vats.roll_state, 0xDEAD_BEEF, "the replayable die sequence is kept");
+        drop(vats);
+        assert!(!vats_confirm(world), "nothing is left to confirm, so no AP can be charged for it");
+    }
+
+    /// #6625 — player death while in a VATS mode ends it. Entry already refuses a dead player;
+    /// nothing used to look after entry.
+    #[test]
+    fn player_death_ends_vats_mode() {
+        let mut world = armed_world();
+        vats_with_a_stale_queue(&world);
+        // Alive: the per-frame system leaves the mode alone.
+        vats_mode_system(&world, 0.0);
+        assert_eq!(world.resource::<VatsState>().mode, VatsMode::TargetSelect);
+
+        let player = world.resource::<PlayerEntity>().0.unwrap();
+        world.insert(player, Dead);
+        vats_mode_system(&world, 0.0);
+        assert_vats_ended(&world);
+    }
+
+    /// #6625 — a cell transition ends the mode. The dispatch point is `App::step_cell_transition`
+    /// (it needs a window and a device), so this pins the helper it calls and, by source scan,
+    /// that the call precedes the destination dispatch.
+    #[test]
+    fn a_cell_transition_ends_vats_mode() {
+        let world = armed_world();
+        vats_with_a_stale_queue(&world);
+        end_vats_for_world_change(&world);
+        assert_vats_ended(&world);
+        end_vats_for_world_change(&world); // idempotent
+        assert_vats_ended(&world);
+
+        let step = byroredux_core::source_scan::production_text(include_str!("../app_step.rs"));
+        let start = step.find("pub(crate) fn step_cell_transition(").expect("step_cell_transition");
+        let body = &step[start..];
+        let ends = body
+            .find("crate::systems::vats::end_vats_for_world_change(&self.world)")
+            .expect("step_cell_transition must end VATS mode (#6625)");
+        let dispatch = body.find("self.loading_screen.begin(").expect("the destination dispatch");
+        assert!(ends < dispatch, "VATS must end before the destination dispatches");
+    }
+
+    /// #6625 — an in-process save load ends the mode through the same helper (#6508 pins the
+    /// resulting state in `live_reload_tests`; this pins that it is the shared entry point).
+    #[test]
+    fn a_save_load_ends_vats_mode_through_the_shared_helper() {
+        let load = byroredux_core::source_scan::production_text(include_str!("../save_io/live_load.rs"));
+        assert!(load.contains("crate::systems::vats::end_vats_for_world_change(world)"));
     }
 
     /// #6350 — the first reader of the `Control::Vats` input-enable

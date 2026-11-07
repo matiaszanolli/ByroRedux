@@ -1469,6 +1469,12 @@ impl App {
             pending
         };
 
+        // #6625 — a cell transition (door, `coc`, a scripted player `MoveTo`)
+        // unloads the cell VATS's targets and queue name; end the mode before
+        // the destination dispatches, or the new cell comes up frozen under a
+        // stale target list.
+        crate::systems::vats::end_vats_for_world_change(&self.world);
+
         let pending = if !self.loading_screen.active() {
             match self.loading_screen.begin(&mut self.world, ctx, pending) {
                 Ok(()) => {

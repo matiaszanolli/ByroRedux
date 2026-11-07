@@ -498,9 +498,7 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     // `vats.confirm` would charge the loaded player's AP and raise `HitEvent`s on dead ids). A cold-start
     // load cannot be in VATS; leaving it here makes the in-process load match (#5435). `exit_all` keeps
     // `roll_state`, so the replayable die sequence is unaffected.
-    if let Some(mut vats) = world.try_resource_mut::<crate::components::VatsState>() {
-        vats.exit_all();
-    }
+    crate::systems::vats::end_vats_for_world_change(world);
     crate::crafting::end_crafting(world);
     if let Some(mut request) = world.try_resource_mut::<crate::crafting::CraftingRequest>() {
         request.0 = None;
