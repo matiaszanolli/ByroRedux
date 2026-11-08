@@ -168,10 +168,24 @@ pub fn entry_applies_at(entry_rank: u8, held_rank: u8) -> bool {
     held_rank != 0 && entry_rank == held_rank - 1
 }
 
+/// What the level-up menu reads of a `PERK` record (PERK-GATE): not the entries, the record's own fields.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PerkGateRecord {
+    /// `DATA` level ("The minimum player level where this perk becomes available", FO4 CK *Perk*).
+    pub level: u8,
+    /// `DATA` playable: "the perk can be chosen by the player when leveling up" (CK *Perk*).
+    pub playable: bool,
+    /// `NNAM` "Next Perk" ("The Perk used for the next rank", FO4 CK *Perk*), `0` when absent.
+    pub next_perk: u32,
+    /// The record-level conditions ("Level-Up Menu Conditions", FO4 CK *Perk*).
+    pub conditions: byroredux_plugin::esm::records::condition::ConditionList,
+}
+
 /// Perk entry-point entries and authored rank limits, keyed by PERK FormID.
 /// `NOT_SAVED_BY_DESIGN`: re-derived from the load order every boot.
 #[derive(Debug, Default, Clone)]
 pub struct PerkEntryTable {
+    gates: HashMap<u32, Arc<PerkGateRecord>>,
     dialect: PerkEntryPointDialect,
     perks: HashMap<u32, Arc<Vec<PerkEntryPointEntry>>>,
     /// `Quest` / `Ability` entries by perk, in every game that authors them — FO4 included, whose
@@ -199,6 +213,19 @@ impl PerkEntryTable {
             .iter()
             .map(|(&form_id, perk)| (form_id, perk.num_ranks))
             .collect();
+        let gates: HashMap<u32, Arc<PerkGateRecord>> = index
+            .perks
+            .iter()
+            .map(|(&form_id, perk)| {
+                let gate = PerkGateRecord {
+                    level: perk.level,
+                    playable: perk.playable,
+                    next_perk: perk.next_perk,
+                    conditions: perk.conditions.clone(),
+                };
+                (form_id, Arc::new(gate))
+            })
+            .collect();
         let mut bodies = HashMap::new();
         for (&form_id, perk) in &index.perks {
             let entries: Vec<PerkBodyEntry> = perk
@@ -223,6 +250,7 @@ impl PerkEntryTable {
             return Self {
                 dialect,
                 perks: HashMap::new(),
+                gates,
                 bodies,
                 rank_limits,
                 add_raises_rank,
@@ -261,10 +289,16 @@ impl PerkEntryTable {
         Self {
             dialect,
             perks,
+            gates,
             bodies,
             rank_limits,
             add_raises_rank,
         }
+    }
+
+    /// The level-up fields of one `PERK` record. `None` means the FormID is not a known PERK.
+    pub fn gate(&self, perk_form_id: u32) -> Option<&PerkGateRecord> {
+        self.gates.get(&perk_form_id).map(|gate| gate.as_ref())
     }
 
     /// The `Quest` / `Ability` entries of one perk, if it authors any.
@@ -720,6 +754,8 @@ fn apply_op(world: &World, owner: EntityId, op: &PerkOp, value: f32) -> f32 {
 }
 
 mod bodies;
+mod gates;
+pub use gates::{plan_take_perk, PerkRefusal, PerkTake};
 pub use bodies::{perk_body_system, reconcile_perk_bodies, PerkBodyState};
 
 #[cfg(test)]

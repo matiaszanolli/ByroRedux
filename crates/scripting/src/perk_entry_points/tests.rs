@@ -825,3 +825,108 @@ mod bodies {
         assert!(!world.resource::<QuestStageState>().is_started(QuestFormId(QUEST)));
     }
 }
+
+// --- PERK-GATE: taking a perk at the level-up menu -----------------------------------------------
+
+mod gates {
+    use super::*;
+    use byroredux_core::character::CharacterLevel;
+
+    fn gated(form_id: u32, level: u8, playable: bool, num_ranks: u8, next: u32, conditions: Vec<Condition>) -> PerkRecord {
+        PerkRecord { form_id, editor_id: format!("Perk{form_id:X}"), level, playable, num_ranks, next_perk: next, conditions, ..Default::default() }
+    }
+
+    fn player_world(game: GameKind, perks: Vec<PerkRecord>, level: u16, owned: &[(u32, u8)]) -> (World, EntityId) {
+        let idx = index(game, perks);
+        let (mut world, player) = world_with(&idx, owned);
+        world.register::<CharacterLevel>();
+        world.insert(player, CharacterLevel { level, xp: 0 });
+        (world, player)
+    }
+
+    /// PERK-GATE-003.
+    #[test]
+    fn an_unplayable_perk_is_refused() {
+        let (world, player) = player_world(GameKind::Fallout3NV, vec![gated(1, 0, false, 1, 0, vec![])], 10, &[]);
+        assert_eq!(plan_take_perk(&world, player, 1), Err(PerkRefusal::NotPlayable(1)));
+    }
+
+    /// PERK-GATE-002 (and Skyrim, where every vanilla perk authors 0).
+    #[test]
+    fn a_perk_above_the_players_level_is_refused() {
+        for game in [GameKind::Fallout3NV, GameKind::Skyrim] {
+            let (world, player) = player_world(game, vec![gated(1, 6, true, 1, 0, vec![])], 5, &[]);
+            assert_eq!(plan_take_perk(&world, player, 1), Err(PerkRefusal::LevelTooLow { perk: 1, required: 6, level: 5 }));
+            world.query_mut::<CharacterLevel>().unwrap().get_mut(player).unwrap().level = 6;
+            assert_eq!(plan_take_perk(&world, player, 1), Ok(PerkTake { perk: 1, rank: 1, replaces: None, max_rank: 1 }));
+        }
+    }
+
+    /// PERK-GATE-001 / A6 -- the failing condition function is named, and passes once it holds.
+    #[test]
+    fn a_failing_record_condition_is_named() {
+        let (mut world, player) = player_world(GameKind::Fallout3NV, vec![gated(1, 0, true, 1, 0, vec![condition(GET_DEAD, 1.0)])], 10, &[]);
+        let refusal = plan_take_perk(&world, player, 1).unwrap_err();
+        assert_eq!(
+            refusal,
+            PerkRefusal::Condition { perk: 1, index: GET_DEAD, function: "GetDead".into(), modelled: true },
+            "{refusal}"
+        );
+        assert!(refusal.to_string().contains("GetDead"));
+        world.insert(player, Dead);
+        assert!(plan_take_perk(&world, player, 1).is_ok());
+    }
+
+    /// A condition the evaluator cannot read is refused by name, not granted on a guessed 0.0.
+    #[test]
+    fn an_unmodelled_record_condition_is_refused() {
+        let unknown = 0x7FFF;
+        let (world, player) = player_world(GameKind::Fallout3NV, vec![gated(1, 0, true, 1, 0, vec![condition(unknown, 0.0)])], 10, &[]);
+        assert!(matches!(
+            plan_take_perk(&world, player, 1),
+            Err(PerkRefusal::Condition { index, modelled: false, .. }) if index == unknown
+        ));
+    }
+
+    #[test]
+    fn an_unknown_perk_and_a_maxed_perk_are_refused() {
+        let (world, player) = player_world(GameKind::Fallout3NV, vec![gated(1, 0, true, 2, 0, vec![])], 10, &[(1, 2)]);
+        assert_eq!(plan_take_perk(&world, player, 9), Err(PerkRefusal::UnknownPerk(9)));
+        assert_eq!(plan_take_perk(&world, player, 1), Err(PerkRefusal::AtMaxRank { perk: 1, max_rank: 2 }));
+    }
+
+    /// A multi-rank perk with no `NNAM` raises its own rank (FO3/FNV).
+    #[test]
+    fn a_multi_rank_perk_without_a_next_perk_raises_its_rank() {
+        let (world, player) = player_world(GameKind::Fallout3NV, vec![gated(1, 0, true, 3, 0, vec![])], 10, &[(1, 1)]);
+        assert_eq!(plan_take_perk(&world, player, 1), Ok(PerkTake { perk: 1, rank: 2, replaces: None, max_rank: 3 }));
+    }
+
+    /// PERK-GATE-004 -- the next rank is the `NNAM` record, which replaces the held one: Skyrim's chain
+    /// (`LightFingers00 -> 20 -> ...`), ending at a record with no `NNAM`.
+    #[test]
+    fn the_next_rank_of_a_chain_is_the_next_perk() {
+        let chain = vec![gated(1, 0, true, 3, 2, vec![]), gated(2, 0, true, 3, 3, vec![]), gated(3, 0, true, 3, 0, vec![])];
+        let (world, player) = player_world(GameKind::Skyrim, chain, 1, &[(1, 1)]);
+        // Taking the perk again moves up the chain; it does not raise record 1 to rank 2.
+        assert_eq!(plan_take_perk(&world, player, 1), Ok(PerkTake { perk: 2, rank: 1, replaces: Some(1), max_rank: 3 }));
+        // The chain's last record has no next rank and its own Num Ranks of 3 is not a second route.
+        let (world, player) = player_world(GameKind::Skyrim, vec![gated(3, 0, true, 1, 0, vec![])], 1, &[(3, 1)]);
+        assert_eq!(plan_take_perk(&world, player, 3), Err(PerkRefusal::AtMaxRank { perk: 3, max_rank: 1 }));
+    }
+
+    /// Fallout 4's chains are rings: the last rank's `NNAM` is the first record, a lower-level one.
+    #[test]
+    fn a_ring_stops_at_the_link_back_to_a_lower_level_record() {
+        let ring = vec![gated(1, 0, true, 3, 2, vec![]), gated(2, 9, true, 3, 3, vec![]), gated(3, 18, true, 3, 1, vec![])];
+        let (world, player) = player_world(GameKind::Fallout4, ring.clone(), 30, &[(3, 1)]);
+        assert_eq!(plan_take_perk(&world, player, 3), Err(PerkRefusal::AtLastRank { perk: 3 }));
+        // Mid-ring, the next rank still checks the NEXT record's level.
+        let (world, player) = player_world(GameKind::Fallout4, ring.clone(), 10, &[(2, 1)]);
+        assert_eq!(plan_take_perk(&world, player, 2), Err(PerkRefusal::LevelTooLow { perk: 3, required: 18, level: 10 }));
+        // A ring with no level drop is bounded by "already held".
+        let flat = vec![gated(1, 0, true, 2, 2, vec![]), gated(2, 0, true, 2, 1, vec![])];
+        let (world, player) = player_world(GameKind::Fallout4, flat, 5, &[(1, 1), (2, 1)]);
+        assert_eq!(plan_take_perk(&world, player, 1), Err(PerkRefusal::AtLastRank { perk: 1 }));
+    }
+}

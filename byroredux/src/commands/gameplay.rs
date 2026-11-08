@@ -598,8 +598,8 @@ mod tests {
 /// M47.2 — `levelup` — the level-up menu's work, until a menu exists: show
 /// the player's banked level-up rewards, spend skill points on a skill of the
 /// game's roster (one point raises it one, never past 100 — the Fallout
-/// level-up menu's cap), or spend a perk point on a perk rank. Perk
-/// requirements are not checked here.
+/// level-up menu's cap), or spend a perk point on a perk rank (the record's playable flag, minimum level and level-up
+/// conditions gate it, and a `NNAM` chain's next rank replaces the held record; PERK-GATE).
 pub(crate) struct LevelUpCommand;
 
 impl ConsoleCommand for LevelUpCommand {
@@ -706,44 +706,42 @@ impl ConsoleCommand for LevelUpCommand {
                 if rewards.perk_points == 0 {
                     return CommandOutput::error("levelup: no perk points");
                 }
-                let Some(max_rank) = world
-                    .try_resource::<byroredux_scripting::perk_entry_points::PerkEntryTable>()
-                    .and_then(|table| table.num_ranks(perk))
-                else {
-                    return CommandOutput::error(format!("levelup: {perk:08X} is not a known PERK"));
+                // PERK-GATE-001..004: playable, minimum level, level-up conditions and the NNAM chain. A script's
+                // AddPerk and `Effect::ChangePerk` skip all of it (PERK-GATE-005).
+                let take = match byroredux_scripting::perk_entry_points::plan_take_perk(world, player, perk) {
+                    Ok(take) => take,
+                    Err(refusal) => return CommandOutput::error(format!("levelup: {refusal}")),
                 };
-                let rank = {
+                {
                     let Some(mut perks) = world.query_mut::<Perks>() else {
                         return CommandOutput::error("levelup: no perk storage");
                     };
-                    let current_rank = perks.get(player).map_or(0, |owned| owned.rank(perk));
-                    let Some(rank) = current_rank.checked_add(1) else {
-                        return CommandOutput::error(format!(
-                            "levelup: perk {perk:08X} rank cannot increase further"
-                        ));
-                    };
-                    if rank > max_rank {
-                        return CommandOutput::error(format!(
-                            "levelup: perk {perk:08X} is already at its maximum rank ({max_rank})"
-                        ));
-                    }
                     if perks.get_mut(player).is_none() {
                         perks.insert(player, Perks::default());
                     }
                     let owned = perks.get_mut(player).expect("present or inserted");
-                    if !owned.try_set_rank(perk, rank, max_rank) {
+                    if !owned.try_set_rank(take.perk, take.rank, take.max_rank) {
                         return CommandOutput::error(format!(
-                            "levelup: perk {perk:08X} rejected rank {rank} (maximum {max_rank})"
+                            "levelup: perk {:08X} rejected rank {} (maximum {})",
+                            take.perk, take.rank, take.max_rank
                         ));
                     }
-                    rank
-                };
+                    if let Some(previous) = take.replaces {
+                        owned.remove(previous);
+                    }
+                }
+                let (perk, rank) = (take.perk, take.rank);
                 if let Some(mut stored) = world.query_mut::<LevelUpPoints>() {
                     if let Some(stored) = stored.get_mut(player) {
                         stored.perk_points -= 1;
                     }
                 }
-                CommandOutput::line(format!("levelup: perk {perk:08X} now rank {rank}"))
+                match take.replaces {
+                    Some(previous) => CommandOutput::line(format!(
+                        "levelup: perk {previous:08X} -> next rank {perk:08X} (rank {rank})"
+                    )),
+                    None => CommandOutput::line(format!("levelup: perk {perk:08X} now rank {rank}")),
+                }
             }
             // Skyrim's level-up pool pick (#5916): `pool_pick_gain` points into
             // the chosen Health / Magicka / Stamina base, one pick per level.
@@ -876,6 +874,8 @@ mod level_up_tests {
             PerkRecord {
                 form_id: RANKED_PERK,
                 num_ranks: 2,
+                // PERK-GATE-003: `levelup perk` only takes a playable perk.
+                playable: true,
                 ..Default::default()
             },
         );

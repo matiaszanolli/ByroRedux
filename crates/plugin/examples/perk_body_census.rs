@@ -25,6 +25,23 @@ fn main() -> anyhow::Result<()> {
         let mut perks: Vec<_> = index.perks.values().collect();
         perks.sort_by_key(|perk| perk.form_id);
 
+        // `CENSUS_PERK=<EditorID prefix>` dumps the matching perks' DATA bytes and entries.
+        if let Ok(prefix) = std::env::var("CENSUS_PERK") {
+            for perk in perks.iter().filter(|perk| perk.editor_id.starts_with(&prefix)) {
+                println!(
+                    "  {} ({:08X}) ranks {} level {} playable {} next {:08X} conditions {}",
+                    perk.editor_id, perk.form_id, perk.num_ranks, perk.level, perk.playable, perk.next_perk, perk.conditions.len()
+                );
+                for entry in &perk.entries {
+                    match &entry.body {
+                        PerkEntryBody::EntryPoint { entry_point_index, function, function_data, .. } => println!(
+                            "    rank {} hook {entry_point_index} fn {function} {function_data:?}", entry.rank
+                        ),
+                        other => println!("    rank {} {other:?}", entry.rank),
+                    }
+                }
+            }
+        }
         // Ability entries.
         let mut ability_perks = 0usize;
         let mut ability_entries = 0usize;
@@ -92,6 +109,73 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        // NNAM chain shape: links that close a cycle, and whether a closing link is the one whose target has a
+        // lower `DATA` level (the wrap back to the chain's first rank).
+        let (mut cycle_links, mut cycle_links_level_drop, mut level_drop_links, mut self_links) = (0usize, 0usize, 0usize, 0usize);
+        for perk in &perks {
+            if perk.next_perk == 0 {
+                continue;
+            }
+            if perk.next_perk == perk.form_id {
+                self_links += 1;
+            }
+            let level_drop = index.perks.get(&perk.next_perk).is_some_and(|next| next.level < perk.level);
+            level_drop_links += usize::from(level_drop);
+            let mut cursor = perk.next_perk;
+            let mut closes = false;
+            for _ in 0..64 {
+                let Some(next) = index.perks.get(&cursor) else { break };
+                if next.next_perk == perk.form_id {
+                    closes = true;
+                    break;
+                }
+                if next.next_perk == 0 {
+                    break;
+                }
+                cursor = next.next_perk;
+            }
+            if closes {
+                cycle_links += 1;
+                cycle_links_level_drop += usize::from(level_drop);
+            }
+        }
+        // Rings: group the perks on a cycle by their lowest FormID and count the level-drop links per ring.
+        let mut ring_drops: BTreeMap<u32, usize> = BTreeMap::new();
+        let mut seen: BTreeSet<u32> = BTreeSet::new();
+        for perk in &perks {
+            if perk.next_perk == 0 || seen.contains(&perk.form_id) {
+                continue;
+            }
+            let mut ring = vec![perk.form_id];
+            let mut cursor = perk.next_perk;
+            while cursor != perk.form_id && ring.len() < 64 {
+                let Some(next) = index.perks.get(&cursor) else { ring.clear(); break };
+                ring.push(cursor);
+                if next.next_perk == 0 {
+                    ring.clear();
+                    break;
+                }
+                cursor = next.next_perk;
+            }
+            if ring.is_empty() || cursor != perk.form_id {
+                continue;
+            }
+            seen.extend(ring.iter().copied());
+            let key = *ring.iter().min().unwrap();
+            let drops = ring
+                .iter()
+                .filter(|id| {
+                    let this = &index.perks[id];
+                    index.perks.get(&this.next_perk).is_some_and(|next| next.level < this.level)
+                })
+                .count();
+            ring_drops.insert(key, drops);
+        }
+        let uneven = ring_drops.values().filter(|&&drops| drops != 1).count();
+        println!("-- NNAM rings: {} rings, {uneven} with other than exactly one level-drop link", ring_drops.len());
+        println!(
+            "-- NNAM shape: {cycle_links} links sit on a cycle, {level_drop_links} links go to a lower-level perk ({cycle_links_level_drop} of them on a cycle), {self_links} point at themselves"
+        );
         println!("-- Ability: {ability_perks} perks, {ability_entries} entries; entries per rank {ability_rank_hist:?}");
         println!("   perks with Ability entries at more than one rank: {}", ability_multi_rank.len());
         for (editor, form, ranks, at) in ability_multi_rank.iter().take(12) {

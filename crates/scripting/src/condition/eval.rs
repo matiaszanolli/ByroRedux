@@ -757,6 +757,16 @@ pub fn evaluate(conditions: &ConditionList, world: &World, ctx: &ConditionContex
     })
 }
 
+/// The first condition that keeps `conditions` from passing, for a consumer that must *name* it (the
+/// level-up gate, PERK-GATE-001): the first member of the first OR block that no member satisfies.
+/// `None` when the list passes (or is empty).
+pub fn first_failing_condition(conditions: &ConditionList, world: &World, ctx: &ConditionContext) -> Option<usize> {
+    or_blocks(conditions).find_map(|block| {
+        let passes = conditions[block.clone()].iter().any(|condition| evaluate_condition(condition, world, ctx));
+        (!passes).then(|| *block.start())
+    })
+}
+
 /// [`evaluate`] for a consumer that *acts* on a pass: it declines (`false`) on any
 /// term the evaluator cannot honestly read ([`is_modeled`]) instead of letting the
 /// absent-value default `0.0` satisfy an `== 0` / `<=` comparison and run what the
