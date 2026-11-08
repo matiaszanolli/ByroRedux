@@ -410,9 +410,8 @@ First step: `git log --since=<last report> --format='%h %cs %s' -- crates/plugin
 - A placed reference draws the base's **world** model: `ARMO`/`CLOT` `MODL`/`MOD3` are the worn biped meshes (and on Skyrim+ `MODL` is an `ARMA` FormID), so `StaticObject.model_path` takes `MOD2` for them in `cell/support.rs` (a record with no `MOD2` keeps its `MODL` before Skyrim, nothing after; the worn mesh stays on the typed item the equip path reads; `846c36bf0`, #6691 — read as `MODL`, placed armor stood in its bind pose with its gore caps on FO3/FNV and was invisible on Skyrim, 1,683 interior references). Pinned by `placed_armor_and_clothing_take_the_world_model_over_the_biped_mesh`.
 - Lighting-template inheritance is per-field; "absent" and "authored zero" stay distinct.
 - CELL `XCCM` is per-game (`3b28dca71`, #5463): TES4/FO3/FNV = Climate (CLMT) →
-  `CellData.climate_override`; TES5/FO4 = "Sky/Weather from Region" (REGN) → `sky_region`
-  (`xccm_targets_region`, `cell/helpers.rs`; decoded, no consumer yet; FO76/Starfield keep the
-  CLMT reading, no verified xEdit definition). Guards `parse_cell_oblivion_fo3nv_xccm_populates_climate_override`,
+  `CellData.climate_override`; TES5/FO4/FO76/Starfield = "Sky/Weather from Region" (REGN) → `sky_region`
+  (`xccm_targets_region`, `cell/helpers.rs`; FO76 and Starfield joined in #6794 — Starfield 36/36 and FO76 41/41 real cells target a REGN). Guards `parse_cell_oblivion_fo3nv_xccm_populates_climate_override`,
   `parse_cell_tes5_fo4_xccm_is_a_region_not_a_climate`. Regression = a REGN id reaching `climate_override`.
 - **XCLL** is size- and game-validated: `xcll_canonical_sizes(game)`; the ≥92-byte
   ambient-cube arm fires only for Skyrim/FO4/FO76 (Starfield has its own ≥108 arm) — a non-canonical 92+ XCLL on

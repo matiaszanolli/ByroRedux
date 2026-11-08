@@ -210,10 +210,11 @@ impl CellSubrecordFields {
             // XCCM — same tag, different target by game (#5463). xEdit
             // defines it as `'Climate', [CLMT]` on TES4 / FO3 / FNV
             // (#693 / O3-N-05: per-cell climate override) but as
-            // `'Sky/Weather from Region', [REGN]` on TES5 (`wbDefinitionsTES5.pas`)
-            // and FO4 (`wbDefinitionsFO4.pas`). Vanilla Skyrim authors it on
-            // 214 interior cells, every one a REGN. FO76 / Starfield have no
-            // verified definition, so they keep the pre-#5463 CLMT decode.
+            // `'Sky/Weather from Region', [REGN]` on TES5 (`wbDefinitionsTES5.pas`),
+            // FO4 (`wbDefinitionsFO4.pas`), FO76 (`FO76.pas:10724`) and Starfield
+            // (`wbDefinitionsSF1.pas:10685`, 'Cell Sky Region'). Vanilla authors it on
+            // Skyrim 214 / FO4 79 / Starfield 36 / FO76 41 cells, every one a REGN
+            // (#6794).
             b"XCCM" => {
                 let form = read_form_id(reader, &sub.data);
                 if xccm_targets_region(game) {
@@ -333,9 +334,9 @@ impl CellSubrecordFields {
 }
 
 /// Whether CELL `XCCM` is a REGN reference ("Sky/Weather from Region",
-/// TES5 / FO4) rather than a CLMT override (TES4 / FO3 / FNV). #5463.
+/// TES5 and every later game) rather than a CLMT override (TES4 / FO3 / FNV). #5463, #6794.
 pub(super) fn xccm_targets_region(game: GameKind) -> bool {
-    matches!(game, GameKind::Skyrim | GameKind::Fallout4)
+    !matches!(game, GameKind::Oblivion | GameKind::Fallout3NV)
 }
 
 /// Read a 4-byte FormID from a sub-record payload. Returns `None` when

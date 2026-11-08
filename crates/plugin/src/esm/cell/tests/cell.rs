@@ -799,6 +799,8 @@ fn parse_cell_tes5_fo4_xccm_is_a_region_not_a_climate() {
     for game in [
         crate::esm::reader::GameKind::Skyrim,
         crate::esm::reader::GameKind::Fallout4,
+        crate::esm::reader::GameKind::Fallout76,
+        crate::esm::reader::GameKind::Starfield,
     ] {
         let cell = parse_interior_cell_with_xccm(game, 0x000C_5857);
         assert_eq!(cell.sky_region, Some(0x000C_5857), "{game:?}");
