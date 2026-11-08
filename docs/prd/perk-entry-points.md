@@ -259,7 +259,12 @@ Skyrim `wbDefinitionsTES5.pas` and FO4 `wbDefinitionsFO4.pas`
 - **PERK-DEC-003.** A Quest body's stage MUST be read as the 16-bit field xEdit
   declares (`Quest Stage`, `itU16`, in the FO3, FNV, TES5 and FO4
   definitions). Today one byte is read (D7); a test with stage 300 MUST round
-  through `parse_perk` unchanged.
+  through `parse_perk` unchanged. **Measured exception** (`perk_body_census`, 2026-11-08):
+  the FO3 and FNV vanilla bodies carry fill in the byte after the stage
+  (`0xCD`, `0x61`, `0x6C`), so their 35 Quest entries read as 16-bit name no
+  stage of their quest while the low byte names one in every case; Skyrim is
+  the same (#6784). Only Fallout 4 and later read the high byte (104 of its
+  Quest entries name a stage as 16-bit, up to 1610).
 - **PERK-DEC-004.** `NNAM` ("Next Perk", xEdit TES5 and FO4) MUST be stored on
   `PerkRecord` as a FormID passed through `remap_fid`. Today it is not read
   (D8).

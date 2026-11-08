@@ -569,8 +569,15 @@ pub fn parse_perk(
                             // (`wbDefinitionsFNV.pas:5839`), FO4 (`wbDefinitionsFO4.pas:11475`) and FO76
                             // (`wbDefinitionsFO76.pas:12531`), but as `itU8` + 3 unused bytes on Skyrim
                             // (`wbDefinitionsTES5.pas`, `wbPerkDATADecider`): its 8-byte body's byte 5 is not
-                            // a high byte (#6784). A five-byte body still reads its one byte.
-                            let stage = if sub.data.len() >= 6 && game != GameKind::Skyrim {
+                            // a high byte (#6784). FO3 and FNV declare `itU16` too, but their vanilla bodies
+                            // carry fill in byte 5 (`0xCD`, `0x61`, `0x6C`...): `perk_body_census` finds all 35
+                            // Quest entries of Fallout3.esm / FalloutNV.esm whose 16-bit value names no stage of
+                            // the quest while the low byte names one, and 104 more (Fallout 4's, with stages up
+                            // to 1610) whose 16-bit value is the stage. So only Fallout 4 and later read a high
+                            // byte. A five-byte body still reads its one byte.
+                            let stage = if sub.data.len() >= 6
+                                && !matches!(game, GameKind::Skyrim | GameKind::Fallout3NV)
+                            {
                                 r.u16_or_default()
                             } else {
                                 u16::from(r.u8_or_default())
@@ -1750,6 +1757,17 @@ mod tests {
         let subs = vec![sub(b"PRKE", [0u8, 0, 0]), sub(b"DATA", quest), sub(b"PRKF", [])];
         let p = parse_perk(0x3, &subs, GameKind::Skyrim, &None);
         assert_eq!(p.entries[0].body, PerkEntryBody::Quest { quest_form_id: 0x0010_0020, stage: 7 });
+    }
+
+    /// FO3/FNV Quest bodies are a u8 stage + fill: vanilla `IntenseTraining` rank 0 reads `0xCD65` as a u16
+    /// but the quest's stage is 101.
+    #[test]
+    fn parse_perk_fo3nv_quest_stage_is_u8_with_fill_tail() {
+        let mut quest = 0x0010_0020u32.to_le_bytes().to_vec();
+        quest.extend_from_slice(&[101, 0xCD, 0xCD, 0xCD]);
+        let subs = vec![sub(b"PRKE", [0u8, 0, 0]), sub(b"DATA", quest), sub(b"PRKF", [])];
+        let p = parse_perk(0x3, &subs, GameKind::Fallout3NV, &None);
+        assert_eq!(p.entries[0].body, PerkEntryBody::Quest { quest_form_id: 0x0010_0020, stage: 101 });
     }
 
     /// #6789 -- FO76's 2-byte `PRKE` opens an entry block, so the entry's `DATA` and `CTDA` stay off the
