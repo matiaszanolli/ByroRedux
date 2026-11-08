@@ -378,3 +378,131 @@ fn tree_lod_ref_form_id_census() {
     assert_eq!((resolved, tree_base, cell_matches, quad_covers, near), (41_538, 41_538, 41_538, 41_537, 41_538));
     assert_eq!((dlc_unresolved, persistent_refs, total - resolved - dlc_unresolved - persistent_refs), (1_709, 3, 83));
 }
+
+// ── DLOD-TREE-004: Fallout 3 `.dtl` / `treetypes.lst` ────────────────────────────────────────────────
+
+fn dtl_record(x: f32, y: f32, z: f32, scale: f32, unknown: f32, base: u32, chunk: u32) -> Vec<u8> {
+    let mut r = Vec::new();
+    for v in [x, y, z, scale, unknown] {
+        r.extend_from_slice(&v.to_le_bytes());
+    }
+    r.extend_from_slice(&base.to_le_bytes());
+    r.extend_from_slice(&chunk.to_le_bytes());
+    r.extend_from_slice(&0xFFFF_FF00u32.to_le_bytes());
+    r
+}
+
+/// V3 -- a `.dtl` is a chunk count, then per chunk a tree type, a record count and 32-byte records; the
+/// headers are trusted and bytes after the last declared chunk are ignored (38 vanilla files carry them).
+#[test]
+fn parse_dtl_reads_chunks_and_ignores_undeclared_trailing_bytes() {
+    let mut bytes = 2u32.to_le_bytes().to_vec();
+    bytes.extend_from_slice(&3u32.to_le_bytes()); // type 3
+    bytes.extend_from_slice(&2u32.to_le_bytes()); // two records
+    bytes.extend(dtl_record(1.0, 2.0, 3.0, 0.5, 9.0, 0x1000, 0));
+    bytes.extend(dtl_record(4.0, 5.0, 6.0, 1.0, 8.0, 0x1001, 0));
+    bytes.extend_from_slice(&5u32.to_le_bytes()); // type 5
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend(dtl_record(7.0, 8.0, 9.0, 2.0, 7.0, 0x1002, 1));
+    bytes.extend_from_slice(&[0xAB; 13]); // undeclared trailing bytes
+    let trees = parse_dtl(&bytes).expect("a well-formed .dtl parses");
+    assert_eq!(trees.len(), 3);
+    assert_eq!((trees[0].tree_type, trees[0].position, trees[0].scale, trees[0].base_form_id), (3, [1.0, 2.0, 3.0], 0.5, 0x1000));
+    assert_eq!(trees[1].tree_type, 3);
+    assert_eq!((trees[2].tree_type, trees[2].base_form_id, trees[2].unknown), (5, 0x1002, 7.0));
+}
+
+/// An untrusted count is checked against the bytes present, never allocated.
+#[test]
+fn parse_dtl_rejects_truncated_and_oversized_input() {
+    assert!(matches!(parse_dtl(&[]), Err(TreeLodError::Truncated { .. })));
+    let mut huge = 1u32.to_le_bytes().to_vec();
+    huge.extend_from_slice(&1u32.to_le_bytes());
+    huge.extend_from_slice(&u32::MAX.to_le_bytes());
+    assert!(matches!(parse_dtl(&huge), Err(TreeLodError::CountExceedsData { .. })));
+    // A chunk header cut short.
+    let mut short = 1u32.to_le_bytes().to_vec();
+    short.extend_from_slice(&1u32.to_le_bytes());
+    assert!(matches!(parse_dtl(&short), Err(TreeLodError::Truncated { .. })));
+    // Zero chunks is a valid, empty file.
+    assert_eq!(parse_dtl(&0u32.to_le_bytes()).unwrap(), Vec::new());
+}
+
+/// V3 -- `treetypes.lst` is a count and 32-byte entries (an index and seven floats); the header count wins
+/// over a longer body (`wasteland` declares 8 and holds 9).
+#[test]
+fn parse_treetypes_lst_trusts_the_header_count() {
+    let mut bytes = 2u32.to_le_bytes().to_vec();
+    for index in 0..3u32 {
+        bytes.extend_from_slice(&index.to_le_bytes());
+        for k in 0..7 {
+            bytes.extend_from_slice(&((index * 10 + k) as f32).to_le_bytes());
+        }
+    }
+    let list = parse_treetypes_lst(&bytes).expect("a well-formed lst parses");
+    assert_eq!(list.len(), 2, "the third entry is past the declared count");
+    assert_eq!(list[1].index, 1);
+    assert_eq!(list[1].values, [10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0]);
+    let mut over = 5u32.to_le_bytes().to_vec();
+    over.extend_from_slice(&[0u8; 32]);
+    assert!(matches!(parse_treetypes_lst(&over), Err(TreeLodError::CountExceedsData { .. })));
+}
+
+/// A6 / DLOD-TREE-004 -- every vanilla `.dtl` and `treetypes.lst` in the FO3 base and DLC archives parses
+/// and every chunk's tree type resolves in its worldspace's list. Run with:
+///   cargo test -p byroredux --bin byroredux dtl_corpus -- --ignored
+#[test]
+#[ignore = "needs Fallout 3 game data on disk"]
+fn dtl_corpus_parses_and_resolves_every_species() {
+    use byroredux_plugin::esm::test_paths;
+    let dir = test_paths::fo3_data_dir();
+    let names = [
+        "Fallout - Meshes.bsa",
+        "Anchorage - Main.bsa",
+        "BrokenSteel - Main.bsa",
+        "PointLookout - Main.bsa",
+        "ThePitt - Main.bsa",
+    ];
+    let mut lists: std::collections::HashMap<String, (usize, usize)> = Default::default(); // ws -> (entries, archive)
+    let mut dtls: Vec<(String, String, Vec<u8>)> = Vec::new(); // (ws, file, bytes)
+    let mut archives = Vec::new();
+    for name in names {
+        let path = dir.join(name);
+        let Ok(archive) = byroredux_bsa::BsaArchive::open(path.to_str().unwrap()) else {
+            test_paths::require_or_skip(name);
+            return;
+        };
+        archives.push(archive);
+    }
+    for (a, archive) in archives.iter().enumerate() {
+        for file in archive.list_files().into_iter().map(str::to_owned).collect::<Vec<_>>() {
+            let lower = file.to_ascii_lowercase();
+            let Some(rest) = lower.strip_prefix("meshes\\landscape\\lod\\") else { continue };
+            let Some((ws, tail)) = rest.split_once("\\trees\\") else { continue };
+            if tail == "treetypes.lst" {
+                let list = parse_treetypes_lst(&archive.extract(&file).unwrap()).expect("every treetypes.lst parses");
+                let slot = lists.entry(ws.to_owned()).or_insert((0, a));
+                // A DLC list extends a worldspace's; keep the longest.
+                slot.0 = slot.0.max(list.len());
+            } else if tail.ends_with(".dtl") {
+                dtls.push((ws.to_owned(), file.clone(), archive.extract(&file).unwrap()));
+            }
+        }
+    }
+    assert_eq!(dtls.len(), 108, "75 base + 33 DLC .dtl files (DLOD-GATE-007)");
+    let mut trees = 0usize;
+    for (ws, file, bytes) in &dtls {
+        let parsed = parse_dtl(bytes).unwrap_or_else(|e| panic!("{file}: {e}"));
+        let (entries, _) = lists.get(ws).unwrap_or_else(|| panic!("{file}: no treetypes.lst for {ws}"));
+        for tree in &parsed {
+            assert!(
+                (tree.tree_type as usize) < *entries,
+                "{file}: tree type {} is not in {ws}'s {entries}-entry treetypes.lst",
+                tree.tree_type
+            );
+        }
+        trees += parsed.len();
+    }
+    assert!(trees > 0);
+    eprintln!("{} .dtl files, {} worldspace lists, {} trees", dtls.len(), lists.len(), trees);
+}

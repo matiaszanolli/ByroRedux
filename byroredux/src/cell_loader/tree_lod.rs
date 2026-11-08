@@ -174,6 +174,88 @@ pub(crate) fn parse_tree_lst(bytes: &[u8]) -> Result<Vec<TreeLodSpecies>, TreeLo
         .collect()
 }
 
+/// One Fallout 3 `treetypes.lst` entry (DLOD-TREE-004): a `u32` index and seven `f32`. What the seven floats
+/// mean is not established, so they are carried in file order and nothing draws from them yet.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))] // consumed by the FO3 tree ring (#6638 DLOD-TREE-005/-006)
+pub(crate) struct DtlTreeType {
+    pub(crate) index: u32,
+    pub(crate) values: [f32; 7],
+}
+
+/// Parse a Fallout 3 `treetypes.lst`: a `u32` count, then 32-byte entries (`u32` index, seven `f32`), V3 /
+/// #6678. The header count is trusted: `wasteland` declares 8 and holds 9, and the ninth names no tree a
+/// declared `.dtl` chunk places, so bytes past the declared entries are ignored.
+#[cfg_attr(not(test), allow(dead_code))] // consumed by the FO3 tree ring (#6638 DLOD-TREE-005/-006)
+pub(crate) fn parse_treetypes_lst(bytes: &[u8]) -> Result<Vec<DtlTreeType>, TreeLodError> {
+    let count = u32_at(bytes, 0)?;
+    let available = bytes.len() - 4;
+    if (count as usize).saturating_mul(RECORD_BYTES) > available {
+        return Err(TreeLodError::CountExceedsData { count, available });
+    }
+    (0..count as usize)
+        .map(|i| {
+            let at = 4 + i * RECORD_BYTES;
+            let mut values = [0.0f32; 7];
+            for (k, value) in values.iter_mut().enumerate() {
+                *value = f32_at(bytes, at + 4 + k * 4)?;
+            }
+            Ok(DtlTreeType { index: u32_at(bytes, at)?, values })
+        })
+        .collect()
+}
+
+/// One tree a Fallout 3 `.dtl` places (DLOD-TREE-004).
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))] // consumed by the FO3 tree ring (#6638 DLOD-TREE-005/-006)
+pub(crate) struct DtlTree {
+    /// The chunk's tree type, an index into the worldspace's `treetypes.lst`.
+    pub(crate) tree_type: u32,
+    /// World position of the tree's base, Z-up (Bethesda units).
+    pub(crate) position: [f32; 3],
+    pub(crate) scale: f32,
+    /// The fifth `f32` of the record; unexplained (the census finds no use for it), carried in file order.
+    pub(crate) unknown: f32,
+    /// The TREE base object the tree is an instance of.
+    pub(crate) base_form_id: u32,
+}
+
+/// Parse a Fallout 3 `.dtl` (V3 / #6678): a `u32` chunk count, then per chunk a `u32` tree type, a `u32`
+/// record count (at most 114 in the vanilla corpus) and that many 32-byte records
+/// `{x, y, z, scale, f32, base FormID, chunk index, 0xFFFFFF00}`.
+///
+/// The headers are trusted: 38 of the 108 vanilla files carry bytes after the last declared chunk that no
+/// declared chunk references (every declared record sits in the chunk its own index word names), so they are
+/// ignored, not parsed. Every count is checked against the bytes actually present before anything is
+/// allocated.
+#[cfg_attr(not(test), allow(dead_code))] // consumed by the FO3 tree ring (#6638 DLOD-TREE-005/-006)
+pub(crate) fn parse_dtl(bytes: &[u8]) -> Result<Vec<DtlTree>, TreeLodError> {
+    let chunks = u32_at(bytes, 0)?;
+    let mut at = 4usize;
+    let mut trees = Vec::new();
+    for _ in 0..chunks {
+        let tree_type = u32_at(bytes, at)?;
+        let count = u32_at(bytes, at + 4)?;
+        at += 8;
+        let available = bytes.len().saturating_sub(at);
+        if (count as usize).saturating_mul(RECORD_BYTES) > available {
+            return Err(TreeLodError::CountExceedsData { count, available });
+        }
+        trees.reserve(count as usize);
+        for _ in 0..count {
+            trees.push(DtlTree {
+                tree_type,
+                position: [f32_at(bytes, at)?, f32_at(bytes, at + 4)?, f32_at(bytes, at + 8)?],
+                scale: f32_at(bytes, at + 12)?,
+                unknown: f32_at(bytes, at + 16)?,
+                base_form_id: u32_at(bytes, at + 20)?,
+            });
+            at += RECORD_BYTES;
+        }
+    }
+    Ok(trees)
+}
+
 /// One baked tree: where it stands and which species it is.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct TreeLodInstance {
