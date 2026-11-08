@@ -561,9 +561,16 @@ pub fn parse_perk(
                         // record's condition list.
                         0 if sub.data.len() >= 5 => {
                             let quest_form_id = remap_fid(r.u32_or_default(), remap);
-                            // PERK-DEC-003 -- xEdit declares `Quest Stage` as `itU16`; a five-byte body (the one
-                            // byte this decode used to read) still reads.
-                            let stage = if sub.data.len() >= 6 { r.u16_or_default() } else { u16::from(r.u8_or_default()) };
+                            // PERK-DEC-003 -- xEdit declares `Quest Stage` as `itU16` on FNV
+                            // (`wbDefinitionsFNV.pas:5839`), FO4 (`wbDefinitionsFO4.pas:11475`) and FO76
+                            // (`wbDefinitionsFO76.pas:12531`), but as `itU8` + 3 unused bytes on Skyrim
+                            // (`wbDefinitionsTES5.pas`, `wbPerkDATADecider`): its 8-byte body's byte 5 is not
+                            // a high byte (#6784). A five-byte body still reads its one byte.
+                            let stage = if sub.data.len() >= 6 && game != GameKind::Skyrim {
+                                r.u16_or_default()
+                            } else {
+                                u16::from(r.u8_or_default())
+                            };
                             Some(PerkEntryBody::Quest {
                                 quest_form_id,
                                 stage,
@@ -1729,6 +1736,16 @@ mod tests {
         let subs = vec![sub(b"PRKE", [0u8, 0, 0]), sub(b"DATA", quest), sub(b"PRKF", [])];
         let p = parse_perk(0x3, &subs, GameKind::Fallout4, &None);
         assert_eq!(p.entries[0].body, PerkEntryBody::Quest { quest_form_id: 0x0010_0020, stage: 300 });
+    }
+
+    /// #6784 -- Skyrim's Quest body is a u8 stage + 3 unused bytes, so a non-zero unused byte is not a high byte.
+    #[test]
+    fn parse_perk_skyrim_quest_stage_is_u8_with_unused_tail() {
+        let mut quest = 0x0010_0020u32.to_le_bytes().to_vec();
+        quest.extend_from_slice(&[7, 1, 0, 0]);
+        let subs = vec![sub(b"PRKE", [0u8, 0, 0]), sub(b"DATA", quest), sub(b"PRKF", [])];
+        let p = parse_perk(0x3, &subs, GameKind::Skyrim, &None);
+        assert_eq!(p.entries[0].body, PerkEntryBody::Quest { quest_form_id: 0x0010_0020, stage: 7 });
     }
 
     /// PERK-DEC-004 -- `NNAM` "Next Perk".
