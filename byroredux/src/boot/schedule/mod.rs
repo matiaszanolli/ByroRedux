@@ -73,6 +73,11 @@ mod schedule_order {
     }
 
     impl SchedulePosition {
+        /// Whether this is an exclusive system of `stage` (#6812).
+        pub(super) fn is_exclusive_in(self, stage: Stage) -> bool {
+            self.exclusive && self.stage == stage
+        }
+
         /// Whether this system finishes before `later` starts. Stages run in
         /// order, and within a stage the parallel batch runs before the
         /// exclusives. Two parallel systems in one stage overlap, so neither runs
@@ -271,6 +276,38 @@ mod fragment_activation_order_tests {
                     "`{consumer}` must run after the `HitEvent` producer `{producer}`"
                 );
             }
+        }
+    }
+
+    /// #6812 — `VatsState` has one writer, `vats_mode_system`, an Early
+    /// exclusive that must run after this frame's `ActionState` edges. The
+    /// exclusive phase follows Early's parallel batch, so `player_controller_system`'s
+    /// VATS movement gate reads the PREVIOUS frame's mode (and the app loop's `dt`
+    /// scaling reads it before the tick): the world freeze trails the enter/exit
+    /// edge by one frame. That lag is intentional and pinned here, like
+    /// `WindField`'s. Every other `player_can_act` consumer runs in Update or
+    /// later and sees this frame's mode. Do not move the writer to remove the
+    /// lag: it would run before the edges it reacts to.
+    #[test]
+    fn vats_mode_is_written_after_the_early_movement_gate_and_before_its_action_consumers() {
+        let schedule = BuiltSchedule::new();
+        let writer = schedule.position("vats_mode_system");
+        assert!(
+            writer.is_exclusive_in(Stage::Early),
+            "`vats_mode_system` must stay an Early exclusive (it runs after this frame's \
+             `ActionState` edges)"
+        );
+        assert!(
+            schedule
+                .position("player_controller_system")
+                .runs_before(writer),
+            "the accepted one-frame lag: the Early movement gate reads last frame's VatsState"
+        );
+        for consumer in ["combat_input_system", "interaction_system"] {
+            assert!(
+                writer.runs_before(schedule.position(consumer)),
+                "`{consumer}` gates on `player_can_act` and must see this frame's VatsState"
+            );
         }
     }
 

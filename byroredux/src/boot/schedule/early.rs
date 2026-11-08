@@ -114,6 +114,12 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
     // also runs after the parallel batch, i.e. after this frame's
     // `ActionState` edges exist.
     //
+    // #6812 — the accepted lag: `player_controller_system` (parallel, above)
+    // and the app loop's `dt` scaling read `VatsState` BEFORE this runs, so the
+    // movement gate and the world freeze trail the mode edge by one frame. Do
+    // not move this writer to remove it; pinned by
+    // `vats_mode_is_written_after_the_early_movement_gate_and_before_its_action_consumers`.
+    //
     // #6429 — entering VATS runs `vats_scan` (the targeting scan), so the
     // declaration covers the scan's reads too, not just the mode switch's.
     // Exclusive, so this is for the `sys.accesses` report, not for safety.
