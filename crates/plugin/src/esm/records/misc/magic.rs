@@ -531,7 +531,11 @@ pub fn parse_perk(
             // dropped silently — a stray PRKE with no closing PRKF on
             // the prior block is content-corruption rather than a
             // parser bug we should panic on.
-            b"PRKE" if sub.data.len() >= 3 => {
+            // FO76's `PRKE` is Type + Rank only: xEdit comments the Priority byte out
+            // (`wbDefinitionsFO76.pas:17912`, `wbStructSK(PRKE, [1, {2,} 0]`), and all 2,525
+            // `SeventySix.esm` PRKEs are 2 bytes. Requiring 3 left every FO76 entry sub-record to
+            // fall into the record-level `DATA` / `CTDA` arms (#6789).
+            b"PRKE" if sub.data.len() >= if game == GameKind::Fallout76 { 2 } else { 3 } => {
                 let mut r = SubReader::new(&sub.data);
                 let entry_type = r.u8_or_default();
                 let rank = r.u8_or_default();
@@ -1746,6 +1750,26 @@ mod tests {
         let subs = vec![sub(b"PRKE", [0u8, 0, 0]), sub(b"DATA", quest), sub(b"PRKF", [])];
         let p = parse_perk(0x3, &subs, GameKind::Skyrim, &None);
         assert_eq!(p.entries[0].body, PerkEntryBody::Quest { quest_form_id: 0x0010_0020, stage: 7 });
+    }
+
+    /// #6789 -- FO76's 2-byte `PRKE` opens an entry block, so the entry's `DATA` and `CTDA` stay off the
+    /// record-level fields.
+    #[test]
+    fn parse_perk_fo76_two_byte_prke_opens_an_entry() {
+        let mut quest = 0x0010_0020u32.to_le_bytes().to_vec();
+        quest.extend_from_slice(&5u16.to_le_bytes());
+        let subs = vec![
+            sub(b"DATA", [1u8, 3, 2]),        // record-level: trait, level 3, ranks 2 (3 bytes)
+            sub(b"PRKE", [0u8, 0]),           // Quest entry, rank 0 (no priority byte)
+            sub(b"DATA", quest),
+            sub(b"PRKF", []),
+        ];
+        let p = parse_perk(0x3, &subs, GameKind::Fallout76, &None);
+        assert_eq!(p.entries.len(), 1, "the 2-byte PRKE must open a block");
+        assert_eq!(p.level, 3, "the entry DATA must not overwrite the record-level fields");
+        // The same 2-byte PRKE is still too short on the other games.
+        let fo4 = parse_perk(0x3, &subs, GameKind::Fallout4, &None);
+        assert!(fo4.entries.is_empty());
     }
 
     /// PERK-DEC-004 -- `NNAM` "Next Perk".
