@@ -96,7 +96,7 @@ pub(super) fn dispatch_misc_stub_group(
             index.media_sets.insert(fid, parse_mset(fid, subs, &remap));
         })?,
         b"MUSC" => extract_records(reader, end, b"MUSC", &mut |fid, subs| {
-            index.music_types.insert(fid, parse_musc_remapped(fid, subs, game, &remap));
+            index.music_types.insert(fid, parse_musc(fid, subs, game, &remap));
         })?,
         // #3816 — Skyrim's music track: the file and loop points a `MUSC.TNAM` entry names. Era-gated:
         // FO4 / Starfield author `MUST` with another layout, which is not decoded.

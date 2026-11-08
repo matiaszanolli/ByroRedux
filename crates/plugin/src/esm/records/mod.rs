@@ -86,7 +86,7 @@ pub use items::{
     parse_scrl, parse_weap, ItemKind, ItemRecord,
 };
 pub use misc::{
-    parse_musc, parse_musc_remapped, parse_must, first_playable_track, MuscRecord, MustKind, MustLoop, MustRecord, parse_mset, IncidentalMediaSet, MediaSetKind, MediaSetRecord,
+    parse_musc, parse_must, first_playable_track, MuscRecord, MustKind, MustLoop, MustRecord, parse_mset, IncidentalMediaSet, MediaSetKind, MediaSetRecord,
     challenge_kind, parse_chal, ChalRecord, FLAG_RECURRING as CHALLENGE_FLAG_RECURRING,
     FLAG_START_DISABLED as CHALLENGE_FLAG_START_DISABLED,
     active_package, parse_acti, parse_arma, parse_avif, ActorValueRef, MagicArchetype, SpellType,

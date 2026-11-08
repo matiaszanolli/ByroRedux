@@ -47,12 +47,9 @@ impl MuscRecord {
     }
 }
 
-pub fn parse_musc(form_id: u32, subs: &[SubRecord], game: GameKind) -> MuscRecord {
-    parse_musc_remapped(form_id, subs, game, &None)
-}
-
-/// [`parse_musc`] with the plugin's FormID remap applied to Skyrim's `TNAM` track references.
-pub fn parse_musc_remapped(
+/// Decode a `MUSC`, applying the plugin's FormID remap to Skyrim's `TNAM` track references. There is no
+/// remap-free entry point: the record carries FormIDs, so every caller supplies the remap (#6788).
+pub fn parse_musc(
     form_id: u32,
     subs: &[SubRecord],
     game: GameKind,
@@ -229,18 +226,18 @@ mod tests {
             sub(b"FNAM", b"loc\\corporateruins\\mus_loc_corpruins_day_3high.mp3\0"),
             sub(b"ANAM", 6.0f32.to_le_bytes()),
         ];
-        let musc = parse_musc(0x171b4a, &subs, GameKind::Fallout3NV);
+        let musc = parse_musc(0x171b4a, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(musc.editor_id, "musDocMitchellHouse");
         assert_eq!(musc.file, "loc\\corporateruins\\mus_loc_corpruins_day_3high.mp3");
         assert!(musc.looping());
-        let stinger = parse_musc(1, &[sub(b"ANAM", (-0.0001f32).to_le_bytes()), sub(b"FNAM", b"a.mp3\0")], GameKind::Fallout3NV);
+        let stinger = parse_musc(1, &[sub(b"ANAM", (-0.0001f32).to_le_bytes()), sub(b"FNAM", b"a.mp3\0")], GameKind::Fallout3NV, &None);
         assert!(!stinger.looping());
-        assert_eq!(parse_musc(2, &subs, GameKind::Skyrim).file, "", "another game's layout is not read");
+        assert_eq!(parse_musc(2, &subs, GameKind::Skyrim, &None).file, "", "another game's layout is not read");
     }
 
     #[test]
     fn a_truncated_decibel_field_is_skipped_not_indexed() {
-        let truncated = parse_musc(3, &[sub(b"ANAM", [0u8, 0, 0x80])], GameKind::Fallout3NV);
+        let truncated = parse_musc(3, &[sub(b"ANAM", [0u8, 0, 0x80])], GameKind::Fallout3NV, &None);
         assert_eq!(truncated.decibels, 0.0);
     }
 
@@ -267,7 +264,7 @@ mod tests {
             sub(b"WNAM", 4.5f32.to_le_bytes()),
             sub(b"TNAM", tnam),
         ];
-        let musc = parse_musc(0x1234, &subs, GameKind::Skyrim);
+        let musc = parse_musc(0x1234, &subs, GameKind::Skyrim, &None);
         assert_eq!(musc.editor_id, "MUSExploreTundra");
         assert_eq!(musc.flags, 0x0C);
         assert_eq!((musc.priority, musc.ducking_db, musc.fade_secs), (40, 12.0, 4.5));
@@ -299,7 +296,7 @@ mod tests {
 
     #[test]
     fn a_truncated_skyrim_field_is_skipped_not_indexed() {
-        let musc = parse_musc(1, &[sub(b"PNAM", [1u8, 0]), sub(b"WNAM", [0u8, 0])], GameKind::Skyrim);
+        let musc = parse_musc(1, &[sub(b"PNAM", [1u8, 0]), sub(b"WNAM", [0u8, 0])], GameKind::Skyrim, &None);
         assert_eq!((musc.priority, musc.fade_secs), (0, 0.0));
         assert_eq!(parse_must(2, &[sub(b"LNAM", [0u8; 8])], &None).loop_data, None);
     }

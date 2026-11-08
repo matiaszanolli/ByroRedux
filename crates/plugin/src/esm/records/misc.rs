@@ -72,7 +72,7 @@ pub use imagespace::{parse_imad, ImadColorKey, ImadRecord, ImadScalarKey};
 pub use location::{parse_lctn, LctnRecord};
 pub use media_set::{parse_mset, IncidentalMediaSet, MediaSetKind, MediaSetRecord};
 pub use music::{
-    first_playable_track, parse_musc, parse_musc_remapped, parse_must, MuscRecord, MustKind, MustLoop,
+    first_playable_track, parse_musc, parse_must, MuscRecord, MustKind, MustLoop,
     MustRecord, MUSC_ABRUPT_TRANSITION, MUSC_CYCLE_TRACKS, MUSC_DUCKS_CURRENT_TRACK,
     MUSC_MAINTAIN_TRACK_ORDER, MUSC_PLAYS_ONE_SELECTION,
 };
