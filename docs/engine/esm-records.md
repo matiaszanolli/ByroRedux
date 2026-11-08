@@ -51,7 +51,7 @@ Source: [`crates/plugin/src/esm/`](../../crates/plugin/src/esm/)
 | Cell tier | `cell/` — `mod.rs` + `helpers.rs` / `support.rs` / `walkers.rs` / `wrld.rs` + `tests/` |
 | Records tier | `records/` — per-category files + `index.rs` (the `EsmIndex` struct) + `grup_walker.rs` (the fused dispatcher's shared helpers) + `misc/` themed-stub split |
 | Walker passes | **One** fused pass (`parse_esm_with_load_order`, #527) — was two pre-Session 12 |
-| Record categories on `EsmIndex::categories()` | 115 (pinned by the `categories()` length assertion in `records/tests.rs`; full list is the single source of truth in [`index.rs`](../../crates/plugin/src/esm/records/index.rs)) |
+| Record categories on `EsmIndex::categories()` | see the `categories()` length assertion in `records/tests.rs` (117 at 2026-11-08; the test is the source of truth, so this row carries no count that can drift; full list is the single source of truth in [`index.rs`](../../crates/plugin/src/esm/records/index.rs)) |
 | Plugin-crate `#[test]` fns | ~454 (unit + ignored integration) |
 | Real FNV.esm M24 record total | 13,684 (release-mode parse: ~0.19 s) |
 | Real FO3.esm CREA / LVLC / SCPT | 533 / 60 / ~1500 (observed; floors in `records/tests.rs`) |

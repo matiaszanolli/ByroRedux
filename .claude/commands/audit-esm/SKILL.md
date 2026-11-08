@@ -334,7 +334,7 @@ closure, like `dialogues` and `game_settings` — or a reasoned exclusion: `reco
   RACE FO4/FO76/Starfield `SRAC`/`SADD`/`SAKD`/`SGNM`/`SAPT`/`STKD`/`SRAF` subgraph data (`SubgraphRole::from_raw(raw, game)`: value 3 is *Linking Only* on FO76/Starfield and *Idle* on FO4, Starfield 5–7 are Mt/Weapon/FurnitureGeneration; `SADD` stays one-per-race, not per entry — a raw scan of all 55 Starfield masters finds 17 races authoring it once, ahead of the first entry; `40cebd21d`, #6621), `KWDA` on
   `CommonNamedFields`, PERK entry bodies (`PerkEntry`/`PerkEntryBody`, EPFT/EPFD per the
   xEdit layout), and a "Use Base Data" template chain terminal (`ResolvedNpc::base_data`). The
-  `EsmIndex::categories()` count is pinned in `records::tests` (115 at HEAD) — read the live
+  `EsmIndex::categories()` count is pinned in `records::tests` (117 on 2026-11-08) — read the live
   number there; each new map must be a category row or a recorded exclusion. M43 added FO4 `AORU`
   attraction rules (`attraction_rules`, `parse_aoru` in `misc/world.rs`) and the `KWDA` side tables
   `furniture_keywords` (FURN) / `placed_object_keywords` (FURN, FLOR, ACTI, CONT; `kwda_keywords` in
