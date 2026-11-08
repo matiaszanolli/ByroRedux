@@ -62,23 +62,26 @@ beside the maps (`cell_by_form_id`, `locate_refr`, #6125) cost about 13 bytes
 per placed REFR once a lookup first needs them.
 
 Measured with `crates/plugin/examples/esm_dim8_bench` under
-`/usr/bin/time -f %M`, release build (2026-09-09, #4085 — superseding the
-2026-08-30 figures below, which had drifted 8–37% low over the ten days
-between measurements, the expected cost of ~14 decode fixes landing in that
-window; re-run whenever the crate's decoder count moves rather than trusting
-either table):
+`/usr/bin/time -f %M`, release build (refreshed 2026-11-08, #6804 — the
+2026-09-09 table had drifted 6–11% low as PERK entries, EXPL/PROJ, REGN
+polygons, BPTD parts, CRVA and story-manager fields landed; re-run whenever the
+crate's decoder count moves rather than trusting either table). Sizes are MiB.
+Oblivion, Fallout 3, New Vegas and Fallout 4 are direct `%M` readings; Skyrim,
+SeventySix and Starfield were read as rounded GB by the audit and converted, so
+treat those three RSS figures as ±2%. Parse times were taken on a host running
+other builds (load average ≈ 7) and are upper bounds:
 
 | Master | File size | Parse time | Peak RSS | Index ≈ RSS − file |
 |---|---|---|---|---|
-| `Oblivion.esm`   | 265 MB  | 1.79 s | 1 466 MB | ~1.20 GB |
-| `Fallout3.esm`   | 275 MB  | 1.38 s | 1 060 MB | ~0.78 GB |
-| `FalloutNV.esm`  | 234 MB  | 1.27 s |   867 MB | ~0.63 GB |
-| `Skyrim.esm`     | 238 MB  | 1.40 s |   985 MB | ~0.75 GB |
-| `Fallout4.esm`   | 315 MB  | 1.96 s | 1 467 MB | ~1.15 GB |
-| `SeventySix.esm` | 880 MB  | 4.68 s | 3 566 MB | ~2.68 GB |
-| `Starfield.esm`  | 1 390 MB | 5.27 s | 3 434 MB | ~2.05 GB |
+| `Oblivion.esm`   | 265 MB  | ≤ 2.31 s | 1 608 MB | ~1.31 GB |
+| `Fallout3.esm`   | 275 MB  | ≤ 1.77 s | 1 126 MB | ~0.83 GB |
+| `FalloutNV.esm`  | 234 MB  | ≤ 1.53 s |   915 MB | ~0.67 GB |
+| `Skyrim.esm`     | 238 MB  | ≤ 1.76 s | ~1 049 MB | ~0.79 GB |
+| `Fallout4.esm`   | 315 MB  | ≤ 2.41 s | 1 631 MB | ~1.28 GB |
+| `SeventySix.esm` | 880 MB  | ≤ 6.45 s | ~3 996 MB | ~3.04 GB |
+| `Starfield.esm`  | 1 390 MB | ≤ 7.15 s | ~3 729 MB | ~2.28 GB |
 
-Starfield measured for the first time this pass, under a hard `ulimit -v
+Starfield was first measured on 2026-09-09 (3.35 GiB then, ~3.64 GiB on 2026-11-08), under a hard `ulimit -v
 12000000` cap rather than left unrun: 3.35 GiB peak RSS on a 1.36 GiB file,
 close to (slightly better than) the 2026-08-30 extrapolation's "near 4 GB".
 The ~2.5× file→RSS multiplier is stable across the whole lineage.
