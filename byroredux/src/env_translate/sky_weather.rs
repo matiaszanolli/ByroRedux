@@ -97,10 +97,11 @@ pub(crate) fn translate_exterior_cell_lighting(
         // `fog_day_*` distance ramp beside it. Overrides `bare`'s
         // no-height-profile medium fit.
         fog_medium: {
-            let medium = crate::fog::FogMedium::from_legacy_ramp(
+            let medium = crate::fog::FogMedium::from_legacy_ramp_with_power(
                 wthr.fog_day_near,
                 wthr.fog_day_far,
                 Some(wthr.fog_day_max),
+                Some(wthr.fog_day_power),
             );
             match wthr.fog_height {
                 Some(height) => medium.with_authored_height_range(height.day_near_height_range),
@@ -432,15 +433,17 @@ pub(crate) fn translate_weather(
     // `None` (every other game, and the 8 FO4 weathers whose `FNAM` predates
     // the extension) leaves the engine default in place.
     let mut fog_media = [
-        crate::fog::FogMedium::from_legacy_ramp(
+        crate::fog::FogMedium::from_legacy_ramp_with_power(
             wthr.fog_day_near,
             wthr.fog_day_far,
             Some(wthr.fog_day_max),
+            Some(wthr.fog_day_power),
         ),
-        crate::fog::FogMedium::from_legacy_ramp(
+        crate::fog::FogMedium::from_legacy_ramp_with_power(
             wthr.fog_night_near,
             wthr.fog_night_far,
             Some(wthr.fog_night_max),
+            Some(wthr.fog_night_power),
         ),
     ];
     if let Some(height) = wthr.fog_height {

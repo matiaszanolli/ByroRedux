@@ -186,7 +186,28 @@ impl FogMedium {
         far_world: f32,
         max_opacity: Option<f32>,
     ) -> Self {
-        let extinction_per_meter = fit_legacy_fog_extinction(near_world, far_world, max_opacity);
+        Self::from_legacy_ramp_with_power(near_world, far_world, max_opacity, None)
+    }
+
+    /// [`Self::from_legacy_ramp`] with the authored fog power curve (VLM-HF-001).
+    ///
+    /// The fog factor the shipped shaders compute is `saturate((d - near) / (far - near)) ^ power`
+    /// (Fallout: New Vegas's `shaderpackage010.sdp`, read with `scripts/sdp-fog-term.py`; PRD
+    /// VLM-HF-001), so the target transmittance becomes `1 - max_opacity * u^power` with
+    /// `u = (d - near) / (far - near)`. A power of 1 (or `None`) is the linear ramp exactly, so
+    /// every Oblivion record and every power-1 record fits as before (VLM-HF-002).
+    ///
+    /// `d` is the view-space distance here. The shipped vertex shader measures the length of the
+    /// three clip-space coordinates before the perspective divide instead; reproducing that is not
+    /// attempted, and the choice is recorded under VLM-HF-008 (`env.health` prints it).
+    pub(crate) fn from_legacy_ramp_with_power(
+        near_world: f32,
+        far_world: f32,
+        max_opacity: Option<f32>,
+        power: Option<f32>,
+    ) -> Self {
+        let extinction_per_meter =
+            fit_legacy_fog_extinction_with_power(near_world, far_world, max_opacity, power);
         Self {
             extinction_per_meter,
             ..Self::DISABLED
@@ -325,11 +346,24 @@ pub(crate) fn particle_preset(host_name: &str, texture_path: Option<&str>) -> Pa
 }
 
 /// Fit `exp(-σ_t d)` to a legacy linear fog ramp. Returns inverse metres.
+#[cfg(test)]
 pub(crate) fn fit_legacy_fog_extinction(
     near_world: f32,
     far_world: f32,
     max_opacity: Option<f32>,
 ) -> f32 {
+    fit_legacy_fog_extinction_with_power(near_world, far_world, max_opacity, None)
+}
+
+/// [`fit_legacy_fog_extinction`] against the powered ramp `1 - max_opacity * u^power`. A missing,
+/// non-finite or non-positive power is the linear ramp (power 1).
+pub(crate) fn fit_legacy_fog_extinction_with_power(
+    near_world: f32,
+    far_world: f32,
+    max_opacity: Option<f32>,
+    power: Option<f32>,
+) -> f32 {
+    let power = power.filter(|p| p.is_finite() && *p > 0.0).unwrap_or(1.0);
     if !near_world.is_finite() || !far_world.is_finite() {
         return 0.0;
     }
@@ -356,8 +390,8 @@ pub(crate) fn fit_legacy_fog_extinction(
     let golden = (5.0_f32.sqrt() - 1.0) * 0.5;
     let mut x1 = hi - golden * (hi - lo);
     let mut x2 = lo + golden * (hi - lo);
-    let mut f1 = weighted_fit_error(x1.exp(), near_m, far_m, max_opacity);
-    let mut f2 = weighted_fit_error(x2.exp(), near_m, far_m, max_opacity);
+    let mut f1 = weighted_fit_error(x1.exp(), near_m, far_m, max_opacity, power);
+    let mut f2 = weighted_fit_error(x2.exp(), near_m, far_m, max_opacity, power);
 
     for _ in 0..FIT_ITERATIONS {
         if f1 > f2 {
@@ -365,19 +399,19 @@ pub(crate) fn fit_legacy_fog_extinction(
             x1 = x2;
             f1 = f2;
             x2 = lo + golden * (hi - lo);
-            f2 = weighted_fit_error(x2.exp(), near_m, far_m, max_opacity);
+            f2 = weighted_fit_error(x2.exp(), near_m, far_m, max_opacity, power);
         } else {
             hi = x2;
             x2 = x1;
             f2 = f1;
             x1 = hi - golden * (hi - lo);
-            f1 = weighted_fit_error(x1.exp(), near_m, far_m, max_opacity);
+            f1 = weighted_fit_error(x1.exp(), near_m, far_m, max_opacity, power);
         }
     }
 
     let fitted = ((lo + hi) * 0.5).exp();
-    let fitted_error = weighted_fit_error(fitted, near_m, far_m, max_opacity);
-    let clear_error = weighted_fit_error(0.0, near_m, far_m, max_opacity);
+    let fitted_error = weighted_fit_error(fitted, near_m, far_m, max_opacity, power);
+    let clear_error = weighted_fit_error(0.0, near_m, far_m, max_opacity, power);
     if fitted_error < clear_error && fitted.is_finite() {
         fitted
     } else {
@@ -385,15 +419,18 @@ pub(crate) fn fit_legacy_fog_extinction(
     }
 }
 
-fn weighted_fit_error(sigma: f32, near_m: f32, far_m: f32, max_opacity: f32) -> f32 {
+fn weighted_fit_error(sigma: f32, near_m: f32, far_m: f32, max_opacity: f32, power: f32) -> f32 {
     let span = far_m - near_m;
     let mut weighted_squared_error = 0.0;
     let mut weight_sum = 0.0;
     for sample in 0..FIT_SAMPLES {
         let u = (sample as f32 + 0.5) / FIT_SAMPLES as f32;
         let distance = near_m + span * u;
+        // Power 1 keeps the pre-power expression, `1 - (1 - u)`, so the linear fit is bit for bit
+        // what it was (VLM-HF-002); `1 - (1 - u)` is not always `u` in f32.
         let linear_visibility = 1.0 - u;
-        let target_transmittance = 1.0 - max_opacity * (1.0 - linear_visibility);
+        let fog_factor = if power == 1.0 { 1.0 - linear_visibility } else { u.powf(power) };
+        let target_transmittance = 1.0 - max_opacity * fog_factor;
         let predicted_transmittance = (-sigma * distance).exp();
         let weight = 1.0 / (distance * distance).max(1.0e-8);
         let error = predicted_transmittance - target_transmittance;
@@ -1987,8 +2024,8 @@ mod tests {
         let far_m = far_world / WORLD_UNITS_PER_METER;
         assert!(sigma.is_finite() && sigma > 0.0);
         assert!(
-            weighted_fit_error(sigma, near_m, far_m, 1.0)
-                < weighted_fit_error(0.0, near_m, far_m, 1.0)
+            weighted_fit_error(sigma, near_m, far_m, 1.0, 1.0)
+                < weighted_fit_error(0.0, near_m, far_m, 1.0, 1.0)
         );
     }
 
@@ -2648,6 +2685,70 @@ mod tests {
             }
             assert_eq!(medium.emissive_radiance, [0.0; 3]);
             assert_eq!(aperture.emissive_radiance, [0.0; 3]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod fog_power_tests {
+    use super::*;
+
+    const RAMPS: [(f32, f32, Option<f32>); 6] = [
+        (0.0, 8000.0, None),
+        (100.0, 8000.0, Some(1.0)),
+        (0.0, 4000.0, Some(0.6)),
+        (2500.0, 90000.0, None),
+        (0.0, 30000.0, Some(0.85)),
+        (400.0, 1200.0, Some(0.3)),
+    ];
+
+    /// VLM-HF-002: a power of 1 reproduces today's fitted extinction exactly, so every Oblivion
+    /// record (no power field) and every power-1 record is unchanged.
+    #[test]
+    fn unit_fog_power_keeps_the_linear_fit() {
+        for (near, far, max) in RAMPS {
+            let linear = fit_legacy_fog_extinction(near, far, max);
+            for power in [None, Some(1.0)] {
+                let powered = fit_legacy_fog_extinction_with_power(near, far, max, power);
+                assert_eq!(
+                    powered.to_bits(),
+                    linear.to_bits(),
+                    "ramp ({near}, {far}, {max:?}) power {power:?} drifted from the linear fit"
+                );
+                assert_eq!(
+                    FogMedium::from_legacy_ramp_with_power(near, far, max, power),
+                    FogMedium::from_legacy_ramp(near, far, max)
+                );
+            }
+        }
+    }
+
+    /// The GECK page's direction: below 1 pushes the curve toward the near value (more fog
+    /// sooner, so a larger extinction), above 1 toward the far value (less).
+    #[test]
+    fn fog_power_pushes_the_curve_the_way_the_geck_describes() {
+        for (near, far, max) in RAMPS {
+            let linear = fit_legacy_fog_extinction(near, far, max);
+            let toward_near = fit_legacy_fog_extinction_with_power(near, far, max, Some(0.45));
+            let toward_far = fit_legacy_fog_extinction_with_power(near, far, max, Some(2.5));
+            assert!(
+                toward_near > linear && linear > toward_far,
+                "ramp ({near}, {far}, {max:?}): power 0.45 -> {toward_near}, 1 -> {linear}, 2.5 -> {toward_far}"
+            );
+        }
+    }
+
+    /// A power that is absent, non-finite or not above zero is the linear ramp rather than a
+    /// poisoned fit.
+    #[test]
+    fn an_unusable_fog_power_falls_back_to_linear() {
+        let linear = fit_legacy_fog_extinction(0.0, 8000.0, Some(0.9));
+        for bad in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(
+                fit_legacy_fog_extinction_with_power(0.0, 8000.0, Some(0.9), Some(bad)).to_bits(),
+                linear.to_bits(),
+                "power {bad}"
+            );
         }
     }
 }

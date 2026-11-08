@@ -378,8 +378,7 @@ engine. Still open, an in-game observation (filed as #6772), see VLM-REG-002.
   coordinates before the perspective divide, not a view-space distance; whether the engine reproduces that or uses
   view distance is an engine choice to record under VLM-HF-008. The pixel-shader fog (34 `ps_2_x` shaders with `pow`)
   is not read here.
-- **VLM-HF-002.** A power of 1 MUST reproduce today's fitted extinction
-  exactly, so that every Oblivion record (its `WTHR` `FNAM` is day / night
+- **VLM-HF-002.** *Shipped in Phase 1 (`FogMedium::from_legacy_ramp_with_power`, `unit_fog_power_keeps_the_linear_fit`; the power-1 fit is bit-identical).* A power of 1 MUST reproduce today's fitted extinction exactly, so that every Oblivion record (its `WTHR` `FNAM` is day / night
   near and far only,
   [wbDefinitionsTES4.pas L4726-L4731](https://github.com/TES5Edit/TES5Edit/blob/9058a79437367c2cb1b757a9021ab443d743012d/Core/wbDefinitionsTES4.pas#L4726-L4731))
   and every power-1 record is unchanged. Test:

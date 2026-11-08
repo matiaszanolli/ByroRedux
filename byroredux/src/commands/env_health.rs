@@ -578,6 +578,15 @@ impl ConsoleCommand for EnvHealthCommand {
             lines.push(weather_source_line(&installed, index.as_deref().map(|i| &*i.0)));
         }
 
+        // VLM-HF-008 — the choices the engine makes where the content authored none, so a capture
+        // can name them: the fog power curve is fitted against view-space distance (the shipped
+        // vertex shader measures the clip-space xyz length), and overlapping non-override region
+        // weather tables merge and the highest chance wins (VLM-REG-002, pending #6772).
+        lines.push(
+            "env: engine_choices fog_distance=view-space region_non_override=merged-highest-chance"
+                .to_string(),
+        );
+
         // Evidence, not gates — see the module doc on why fog ordering is
         // reported rather than asserted.
         if let Some(lit) = lighting.as_deref() {

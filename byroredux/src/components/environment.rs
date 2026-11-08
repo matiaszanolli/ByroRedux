@@ -146,10 +146,11 @@ impl CellLightingRes {
             fog_color: lit.fog_color,
             fog_near: lit.fog_near,
             fog_far: lit.fog_far,
-            fog_medium: crate::fog::FogMedium::from_legacy_ramp(
+            fog_medium: crate::fog::FogMedium::from_legacy_ramp_with_power(
                 lit.fog_near,
                 lit.fog_far,
                 lit.fog_max,
+                lit.fog_power,
             ),
             directional_fade: lit.directional_fade,
             fog_clip: lit.fog_clip,
