@@ -1363,7 +1363,7 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // M48 Phase 0 (#6643) `info_result_census.rs` (INFO result-script greps `obscript_tools` cannot reach) and
         // M24.2 Phase 2 (#6654) `perk_body_census.rs` (Ability / Quest ranks, DATA level and NNAM per master),
         // both cited from their PRDs.
-        ("plugin", 72, 9351),
+        ("plugin", 72, 9370),
         // M47.3 result scripts — `obscript_tools avcodes` aligns the Fallout
         // misc-stat codes and `live` names the quests a script advanced
         // (no new target; the existing triage tool grew).

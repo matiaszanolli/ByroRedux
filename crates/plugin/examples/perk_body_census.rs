@@ -32,6 +32,12 @@ fn main() -> anyhow::Result<()> {
                     "  {} ({:08X}) ranks {} level {} playable {} next {:08X} conditions {}",
                     perk.editor_id, perk.form_id, perk.num_ranks, perk.level, perk.playable, perk.next_perk, perk.conditions.len()
                 );
+                for condition in &perk.conditions {
+                    println!(
+                        "    condition fn {} {:?} {:?} param1 {:08X} or_next {}",
+                        condition.function_index, condition.comparator, condition.comparand, condition.param_1, condition.or_next
+                    );
+                }
                 for entry in &perk.entries {
                     match &entry.body {
                         PerkEntryBody::EntryPoint { entry_point_index, function, function_data, .. } => println!(
@@ -186,6 +192,19 @@ fn main() -> anyhow::Result<()> {
             .filter(|perk| perk.num_ranks > 1 && perk.entries.iter().any(|e| matches!(e.body, PerkEntryBody::Ability { .. })))
             .count();
         println!("   Ability perks with num_ranks > 1: {ability_multi_num_ranks}");
+        if std::env::var_os("CENSUS_ABILITY_LIST").is_some() {
+            for perk in perks.iter().filter(|perk| perk.entries.iter().any(|e| matches!(e.body, PerkEntryBody::Ability { .. }))) {
+                for e in &perk.entries {
+                    if let PerkEntryBody::Ability { spell_form_id } = &e.body {
+                        let spell = index.spells.get(spell_form_id).map(|s| (s.editor_id.clone(), s.effects.len()));
+                        println!(
+                            "     ABILITY {} ({:08X}) playable {} level {} conditions {} rank {} spell {:08X} {:?}",
+                            perk.editor_id, perk.form_id, perk.playable, perk.level, perk.conditions.len(), e.rank, spell_form_id, spell
+                        );
+                    }
+                }
+            }
+        }
         if std::env::var_os("CENSUS_QUEST_LIST").is_some() {
             for perk in perks.iter().filter(|perk| perk.entries.iter().any(|e| matches!(e.body, PerkEntryBody::Quest { .. }))) {
                 for e in &perk.entries {
