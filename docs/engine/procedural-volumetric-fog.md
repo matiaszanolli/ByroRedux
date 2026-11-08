@@ -606,6 +606,12 @@ and `BYRO_HAZE_FLOOR` / `fog.haze` (the floor).
   and the three workshop masters). VOLI therefore cannot calibrate Fallout 4
   defaults from this corpus. The reusable probe lives at
   `crates/plugin/examples/dump_voli_subs.rs`.
+- The authored fog power's curve form is read from shipped bytecode (2026-11-07, `scripts/sdp-fog-term.py` over
+  FNV's `Shaders/shaderpackage010.sdp`): 121 `vs_2_0` shaders share one fog sequence, `fog = (1 - clamp((FogParam.x - d)
+  / FogParam.y, 0, 1)) ^ FogParam.z` (`add rcp mul max min add log mul exp`), the fog colour passing through unchanged.
+  With `x` = far, `y` = far - near and `z` = power that is `saturate((d - near) / (far - near)) ^ power`. `d` is the
+  length of the clip-space xyz before the divide. The component roles are inferred from the arithmetic; the shader
+  does not name them.
 - God-ray and height-fog census, 2026-11-07
   (`crates/plugin/examples/fog_godray_census.rs`, which extends the VOLI-only
   probe's survey):

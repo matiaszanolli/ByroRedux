@@ -371,10 +371,18 @@ engine. Still open, an in-game observation, see VLM-REG-002.
   it: "Fog effects are calculated as a curve. A value of 1 is linear, less
   that one pushes the curve toward the near value, and a value above 1
   pushes the curve toward the far value" (sic). Today `from_legacy_ramp`
-  takes near, far and maximum opacity only. **Phase 0: verify** the curve's
-  exact form (the wiki gives its direction, not its formula); settled by
-  disassembling the fog term in one title's shipped shader package, or
-  failing that recorded as an engine choice under VLM-HF-008.
+  takes near, far and maximum opacity only. **Phase 0, settled 2026-11-07 by disassembly** (`scripts/sdp-fog-term.py` over
+  Fallout: New Vegas's `Data/Shaders/shaderpackage010.sdp`): 121 of its 198 fog-reading shaders are `vs_2_0`
+  vertex shaders with one identical sequence, in which `FogParam` is read as `c14.xyz` and the result is
+  written to the vertex colour's alpha: `d = length(clip.xyz)`; `t = clamp((FogParam.x - d) * (1 / FogParam.y), 0, 1)`;
+  `fog = exp(log(1 - t) * FogParam.z)`, that is `fog = (1 - t)^power`, with the fog colour passed through
+  unchanged. Read with `x` as the far distance, `y` as far minus near and `z` as the power (the component
+  assignment is the uploader's, inferred from the arithmetic, not read from the shader), `fog = saturate((d - near) / (far - near))^power`:
+  a power of 1 is linear, below 1 raises the fog sooner (toward the near value), above 1 later (toward the far
+  value), which is the GECK page's direction. The distance `d` the shader uses is the length of the three clip-space
+  coordinates before the perspective divide, not a view-space distance; whether the engine reproduces that or uses
+  view distance is an engine choice to record under VLM-HF-008. The pixel-shader fog (34 `ps_2_x` shaders with `pow`)
+  is not read here.
 - **VLM-HF-002.** A power of 1 MUST reproduce today's fitted extinction
   exactly, so that every Oblivion record (its `WTHR` `FNAM` is day / night
   near and far only,
@@ -851,3 +859,4 @@ as VLM-NG-006 instead of being reopened.
 | 15 | 2026-11-07 | Candidate engine choice for the owner, built behind `BYRO_SUN_DUST` and off by default: an open-sky sun-term-only dust, the exterior counterpart of VLM-INT-007. At 2.0 per metre it gave a real-content shaft on one pose (Oblivion canopy, 07:00) without the frame wash of a stronger extinction floor, but more poses and hours show it is not a usable default: 17:30 and second-grid captures change the frame by 10 to 72 levels, and even 0.25 per metre changes four of the strongest cases by 4 to 32 levels (see the fog design doc). Not a decided Q7 value: it is an artistic scattering strength with no matching extinction, one pose per title. Elevation shaping since added (`1 - smoothstep(0.2, 0.7, sun_y)`): across the five fixtures at 2.0 every noon frame is unchanged and the 07:00 shafts remain. Adopting it still needs the owner's choice of value and shaping edges, then a VLM-HF-008 entry | claude: revise |
 | 16 | 2026-11-07 | Phase 0 census landed (#6724): `region_weather_census` and `fog_godray_census`. VLM-REG-012 and -013 moot on Oblivion / FO3 / FNV; VLM-REG-002 not moot (Oblivion 527 equal-Priority cells, FNV 8, FO4 11) and keeps an in-game observation open; VLM-REG-008 revised to the polygon test (`XCLR` is stale in both directions); interior `XCCM`, `VOLI` / `GDRY` / height-fog and per-title placed-beam censuses recorded (the beam denominators for every official master and DLC: [interior-shaft-openings](../engine/interior-shaft-openings.md#placed-beam-census-every-title-and-official-dlc-vlm-int-006-denominators-measured-2026-11-07)) (REG-009, HF-003, -010, -011; EXAL §3.2; fog design corpus findings). Open: HF-001 curve form, HF-003 semantics (matched captures), the REG-002 / replace-vs-add observation, live converter coverage for Oblivion, FO4 and Starfield beams, A6 / A8 baselines | — |
 | 17 | 2026-11-07 | A6 baseline captured (#6724): `docs/smoke-tests/fog-grid-seam.sh`. VLM-HF-007 fails at HEAD on both fixtures (distant regions move 5.0 to 7.1 levels against a repeat noise of at most 0.004 when the grid reach goes 128 m to 512 m; FNV hills left and the whole frame stay under 1). A8's per-pass milliseconds were already recorded in revision 14; its contrast across a named occluder (VLM-SH-006) is not. Found while capturing: `--bench-mode renderer-stepped --bench-camera static` with a pinned `--camera-pos` / `--camera-forward` renders the 3D scene rolled 180 degrees (HUD upright; `system-live` is upright), so the script rotates frames back | — |
+| 18 | 2026-11-07 | VLM-HF-001 settled by disassembly (#6724): FNV's `shaderpackage010.sdp` fog term is `fog = saturate((d - near) / (far - near)) ^ power` in the vertex shader (121 identical sequences), with `d` the clip-space xyz length; `scripts/sdp-fog-term.py` reproduces it. VLM-HF-002 holds by construction (power 1 is the linear ramp). Open: the distance metric as an engine choice (HF-008), and the 34 `pow` pixel shaders | — |
