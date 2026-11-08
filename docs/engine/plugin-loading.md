@@ -117,9 +117,10 @@ identity without any manifest file — the filename alone is enough.
 | **Save-generated** | `0xFF_*` | — | ephemeral, never interned |
 
 `FormIdRemap` + `GlobalSlot` (`crates/plugin/src/esm/reader.rs`, #1554)
-resolve the standard and ESL (`0xFE`) layouts to global slots at parse time.
-The ESH (`0xFD`) layout is not modelled yet — see "Legacy Bridge (removed)"
-below.
+resolve all three layouts to global slots at parse time:
+`GlobalSlot::{Regular, Light, Medium}` (the ESH `0xFD` layout landed in
+#4639) with `FormIdScheme::{Positional, Starfield}` choosing how a plugin's
+master ordinals are read (Starfield's per-kind ordinals, #6118).
 
 ### FormIdPool (ECS Resource)
 
@@ -127,6 +128,8 @@ below.
 pub struct FormIdPool {
     to_runtime: HashMap<FormIdPair, FormId>,
     to_pair: Vec<FormIdPair>,
+    /// Lazily rebuilt `local → entity` index behind `entity_with_local` (#6338).
+    entity_index: Mutex<EntityIndex>,
 }
 ```
 
@@ -307,10 +310,10 @@ Load-order FormID resolution shipped under a different design: `FormIdRemap`
 from its own TES4 header and handed to `parse_esm_with_load_order`. That is
 what `cell_loader/load_order.rs` calls today.
 
-The deleted module was the only code that knew the ESH (`0xFD`, Starfield
-medium master) layout. When a Starfield multi-master load needs it, add that
-layout to `GlobalSlot` rather than reviving a second slot model; the old
-decoder is recoverable from git history before #4384's commit.
+The deleted module once held the only ESH (`0xFD`, Starfield medium master)
+decoder; `GlobalSlot::Medium` and `FormIdScheme::Starfield` now model it in
+the live path (#4639, #6118), so there is nothing to re-add. The old decoder
+is recoverable from git history before #4384's commit.
 
 ---
 
