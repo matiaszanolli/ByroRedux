@@ -205,19 +205,43 @@ impl TextureStreamer {
                 continue;
             }
             let provider = Arc::clone(&self.provider);
-            let done = self.done_tx.clone();
-            self.pool.spawn(move || {
-                let bytes = provider.extract_texture_from(&request.path, request.target);
-                // A closed channel means the streamer is gone; nothing to land.
-                let _ = done.send(FinishedRead {
-                    handle: request.handle,
-                    target: request.target,
-                    bytes,
-                });
+            self.spawn_read(request.handle, request.target, move || {
+                provider.extract_texture_from(&request.path, request.target)
             });
             started += 1;
         }
         (landed, started)
+    }
+
+    /// Run one archive `read` on the pool and report it over the done
+    /// channel. The read runs under `catch_unwind` (#6810): the pool has no
+    /// panic handler, and rayon aborts the process on an unhandled spawned-job
+    /// panic. The read inflates untrusted archive bytes, the class #6119 and
+    /// #6233 guard in the pre-parse and terrain-height pools, so a panic must
+    /// land as an unreadable entry (`bytes: None`) and still send its
+    /// `FinishedRead`, or `step` would keep the handle in `in_flight` forever.
+    fn spawn_read(
+        &self,
+        handle: TextureHandle,
+        target: u32,
+        read: impl FnOnce() -> Option<Vec<u8>> + Send + 'static,
+    ) {
+        let done = self.done_tx.clone();
+        self.pool.spawn(move || {
+            let bytes = std::panic::catch_unwind(std::panic::AssertUnwindSafe(read))
+                .unwrap_or_else(|_| {
+                    log::error!(
+                        "texture promotion read for handle {handle} (level {target}) panicked"
+                    );
+                    None
+                });
+            // A closed channel means the streamer is gone; nothing to land.
+            let _ = done.send(FinishedRead {
+                handle,
+                target,
+                bytes,
+            });
+        });
     }
 }
 
@@ -382,6 +406,28 @@ mod tests {
     use super::*;
 
     const POSE: StreamPose = ([0.0, 1.0, 2.0], [0.0, 0.0, 1.0], 1.2);
+
+    /// A pool read that panics must not abort the process (#6810): the job
+    /// reports an unreadable entry and the `FinishedRead` still arrives, so
+    /// `step` clears `in_flight` and the handle can be requested again.
+    #[test]
+    fn a_panicking_read_is_reported_unreadable_not_fatal() {
+        let streamer = TextureStreamer::new(TextureProvider::new()).expect("pool builds");
+        streamer.spawn_read(7, 2, || panic!("decoder blew up"));
+        let read = streamer
+            .done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the panicking read never reported");
+        assert_eq!((read.handle, read.target), (7, 2));
+        assert!(read.bytes.is_none());
+        // The pool survived the panic and still serves reads.
+        streamer.spawn_read(8, 1, || Some(vec![1, 2, 3]));
+        let read = streamer
+            .done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the pool died with the panicking job");
+        assert_eq!(read.bytes.as_deref(), Some(&[1u8, 2, 3][..]));
+    }
 
     /// The clock starts on the first pose, stops on the first idle frame,
     /// and restarts on a pose change or a newly timed cell load.
