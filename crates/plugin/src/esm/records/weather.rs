@@ -354,10 +354,11 @@ pub struct WeatherRecord {
     /// FO3/FNV weathers carry IMADs per slot instead, and no IMGS — see
     /// [`Self::image_space_modifiers`].
     pub image_spaces: [Option<u32>; 4],
-    /// Skyrim SE `HNAM` "Volumetric Lighting" (VLM-HF-010): the `VOLI` per time of day, Sunrise / Day
-    /// / Sunset / Night (and FO4's four Early / Late slots where a record carries them). `None` =
-    /// NULL slot; the vec is empty when the weather authors none (every pre-SE game, `Skyrim.esm`
-    /// itself). Decoded for the census, consumed by nothing (§10 Q8).
+    /// `HNAM` "Volumetric Lighting" (VLM-HF-010): the `VOLI` per time of day, Sunrise / Day / Sunset /
+    /// Night on Skyrim SE (4 slots), and FO76's 8-slot list (`wbDefinitionsFO76.pas:17917`) with the four
+    /// Early / Late slots (FO4 authors `WGDR` instead). `None` = NULL slot; the vec is empty when the
+    /// weather authors none (every pre-SE game, `Skyrim.esm` itself). Decoded for the census, consumed by
+    /// nothing (§10 Q8).
     pub volumetric_lighting: Vec<Option<u32>>,
     /// FO4 `WGDR` "God Rays" (VLM-HF-011): the `GDRY` per time of day, Sunrise / Day / Sunset /
     /// Night, then Early Sunrise / Late Sunrise / Early Sunset / Late Sunset. `None` = NULL slot;

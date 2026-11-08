@@ -75,7 +75,8 @@ fn float_of(subs: &[SubRecord], tag: &[u8; 4]) -> f32 {
         .unwrap_or_default()
 }
 
-/// Decode a Skyrim SE `VOLI`. A missing sub-record leaves its field at zero.
+/// Decode a Skyrim SE or FO76 `VOLI`. A missing sub-record leaves its field at zero (FO76 never authors
+/// `LNAM`, the phase contribution).
 pub fn parse_voli(form_id: u32, subs: &[SubRecord]) -> VoliRecord {
     VoliRecord {
         form_id,

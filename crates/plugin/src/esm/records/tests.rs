@@ -3556,3 +3556,28 @@ fn must_tracks_are_stored_for_skyrim_fo4_and_fo76_only() {
     assert_eq!(starfield.game, GameKind::Starfield);
     assert!(starfield.music_tracks.is_empty());
 }
+
+/// #6791 -- an FO76 `VOLI` (Skyrim's layout minus `LNAM`) lands in `volumetric_lighting`, so the weather
+/// `HNAM` references resolve; Starfield's reflection-blob `VOLI` stays walked and unstored.
+#[test]
+fn voli_is_stored_for_skyrim_and_fo76_only() {
+    let plugin = |hedr_version: f32| {
+        let mut hedr = hedr_version.to_le_bytes().to_vec();
+        hedr.extend_from_slice(&[0; 8]);
+        let mut data = build_record(b"TES4", 0, &[(b"HEDR", hedr)]);
+        data.extend(wrap_group(
+            b"VOLI",
+            &build_record(
+                b"VOLI",
+                0x55,
+                &[(b"EDID", b"FoVoli\0".to_vec()), (b"CNAM", 2.5f32.to_le_bytes().to_vec())],
+            ),
+        ));
+        data
+    };
+    let fo76 = parse_esm(&plugin(280.0)).unwrap();
+    assert_eq!(fo76.game, GameKind::Fallout76);
+    assert_eq!(fo76.volumetric_lighting[&0x55].intensity, 2.5);
+    let starfield = parse_esm(&plugin(0.96)).unwrap();
+    assert!(starfield.volumetric_lighting.is_empty());
+}

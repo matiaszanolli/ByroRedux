@@ -149,12 +149,13 @@ pub(super) fn dispatch_misc_gameplay_a_group(
         }
         // VLM-HF-010 / -011 — the authored god-ray records: Skyrim SE `VOLI` and FO4 `GDRY`.
         // Decoded for the census and a future consumer; nothing reads them yet (§10 Q8).
-        // Only Skyrim SE's layout (13 single-float sub-records) is decoded: Starfield's `VOLI` is a
+        // Skyrim SE's and FO76's layout (single-float sub-records; FO76 omits `LNAM`, `wbDefinitionsFO76.pas:18855`)
+        // is decoded, so the FO76 weathers' `HNAM` references resolve (#6791). Starfield's `VOLI` is a
         // 1,832-byte `BETH` reflection blob (`REFL`, `BGSVolumetricLighting`, 42 records in
         // `Starfield.esm`), a different record that needs the reflection decoder, so it is walked
         // and not stored rather than misread through Skyrim's tags.
         b"VOLI" => extract_records(reader, end, b"VOLI", &mut |fid, subs| {
-            if game == GameKind::Skyrim {
+            if matches!(game, GameKind::Skyrim | GameKind::Fallout76) {
                 index.volumetric_lighting.insert(fid, parse_voli(fid, subs));
             }
         })?,
