@@ -354,6 +354,15 @@ pub struct WeatherRecord {
     /// FO3/FNV weathers carry IMADs per slot instead, and no IMGS — see
     /// [`Self::image_space_modifiers`].
     pub image_spaces: [Option<u32>; 4],
+    /// Skyrim SE `HNAM` "Volumetric Lighting" (VLM-HF-010): the `VOLI` per time of day, Sunrise / Day
+    /// / Sunset / Night (and FO4's four Early / Late slots where a record carries them). `None` =
+    /// NULL slot; the vec is empty when the weather authors none (every pre-SE game, `Skyrim.esm`
+    /// itself). Decoded for the census, consumed by nothing (§10 Q8).
+    pub volumetric_lighting: Vec<Option<u32>>,
+    /// FO4 `WGDR` "God Rays" (VLM-HF-011): the `GDRY` per time of day, Sunrise / Day / Sunset /
+    /// Night, then Early Sunrise / Late Sunrise / Early Sunset / Late Sunset. `None` = NULL slot;
+    /// empty when the weather authors none. Decoded for the census, consumed by nothing (§10 Q8).
+    pub god_rays: Vec<Option<u32>>,
     /// FO3/FNV `\x00IAD`..`\x05IAD`: the IMAD ("Image Space Adapter") per
     /// time of day, in the NAM0 slot order — Sunrise, Day, Sunset, Night,
     /// then FNV's High Noon and Midnight (xEdit `wbDefinitions{FO3,FNV}.pas`,
@@ -434,6 +443,8 @@ impl Default for WeatherRecord {
             skyrim_precipitation_effect: None,
             skyrim_visual_effect: None,
             image_spaces: [None; 4],
+            volumetric_lighting: Vec::new(),
+            god_rays: Vec::new(),
             image_space_modifiers: [None; SKY_TIME_SLOTS],
             cloud_textures: [None, None, None, None],
             skyrim_cloud_textures: [const { None }; 32],
@@ -715,6 +726,17 @@ fn parse_image_spaces(data: &[u8], remap: &Option<FormIdRemap>) -> [Option<u32>;
         let raw = u32::from_le_bytes(data[slot * 4..slot * 4 + 4].try_into().unwrap());
         (raw != 0).then(|| remap_fid(raw, remap))
     })
+}
+
+/// A per-time-of-day list of FormIDs (`HNAM` volumetric lighting, `WGDR` god rays): one 4-byte
+/// reference per slot, load-order remapped, a NULL slot `None`. A trailing partial word is ignored.
+fn parse_tod_form_list(data: &[u8], remap: &Option<FormIdRemap>) -> Vec<Option<u32>> {
+    data.chunks_exact(4)
+        .map(|word| {
+            let raw = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
+            (raw != 0).then(|| remap_fid(raw, remap))
+        })
+        .collect()
 }
 
 /// Return the exact Creation-era NAM0 `(group_count, tod_slot_count)` for
@@ -1271,6 +1293,15 @@ fn parse_wthr_creation(
             }
             b"IMSP" if sub.data.len() >= 16 => {
                 record.image_spaces = parse_image_spaces(&sub.data, remap);
+            }
+            // VLM-HF-010 / -011 — the per-time-of-day god-ray references: Skyrim SE `HNAM` names
+            // `VOLI`, FO4 `WGDR` names `GDRY` (xEdit `wbWeatherVolumetricLighting` /
+            // `wbWeatherGodRays`). Four slots at least; FO4 carries eight.
+            b"HNAM" if game != GameKind::Starfield && sub.data.len() >= 16 => {
+                record.volumetric_lighting = parse_tod_form_list(&sub.data, remap);
+            }
+            b"WGDR" if game != GameKind::Starfield && sub.data.len() >= 16 => {
+                record.god_rays = parse_tod_form_list(&sub.data, remap);
             }
             // #4069 — NNAM is an RFCT (visual effect) cross-reference.
             b"NNAM" if skyrim => {

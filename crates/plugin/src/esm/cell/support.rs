@@ -73,6 +73,7 @@ pub(crate) fn build_static_object_from_subs(
     let mut script_instance = None;
     let mut script_form_id: u32 = 0;
     let mut xpwr_form_id: Option<u32> = None;
+    let mut god_rays_form: Option<u32> = None;
     let mut destruction: Option<DestructionData> = None;
 
     for sub in subs {
@@ -232,6 +233,8 @@ pub(crate) fn build_static_object_from_subs(
                 } else {
                     0.0
                 };
+                // VLM-HF-011 — `Near Clip` sits at byte 24 of the Skyrim+ layout (xEdit LIGH `DATA`).
+                let near_clip = if is_skyrim_plus_layout { read_f32(24) } else { 0.0 };
                 light_data = Some(LightData {
                     radius,
                     color: [r, g, b],
@@ -242,6 +245,8 @@ pub(crate) fn build_static_object_from_subs(
                     movement_amplitude,
                     fov_degrees,
                     xpwr_form_id: None,
+                    god_rays_form: None,
+                    near_clip,
                     starfield_light_type: 0,
                 });
             }
@@ -355,8 +360,15 @@ pub(crate) fn build_static_object_from_subs(
                     movement_amplitude,
                     fov_degrees,
                     xpwr_form_id: None,
+                    god_rays_form: None,
+                    near_clip: 0.0,
                     starfield_light_type,
                 });
+            }
+            // VLM-HF-011 — FO4 `WGDR`, the light's `GDRY` god-ray profile; remapped like XPWR.
+            b"WGDR" if is_ligh && sub.data.len() >= 4 => {
+                let raw = u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
+                god_rays_form = Some(remap.as_ref().map_or(raw, |r| r.remap(raw)));
             }
             b"XPWR" if is_ligh && sub.data.len() >= 4 => {
                 // #3314 — a REFR reference like any other. No ECS consumer
@@ -385,6 +397,9 @@ pub(crate) fn build_static_object_from_subs(
 
     if let (Some(ref mut ld), Some(form)) = (&mut light_data, xpwr_form_id) {
         ld.xpwr_form_id = Some(form);
+    }
+    if let (Some(ref mut ld), Some(form)) = (&mut light_data, god_rays_form) {
+        ld.god_rays_form = Some(form);
     }
 
     let addon_data = if is_addn && (addon_index.is_some() || addon_dnam.is_some()) {

@@ -2015,7 +2015,9 @@ fn categories_table_row_count_pinned() {
     // Bumped 112 → 114 in M43 (placed_object_keywords — ACTI/FLOR/CONT/FURN `KWDA`; attraction_rules — FO4
     //   AORU, what the attraction-object story event reads).
     // Bumped 114 → 115 in #3816 (music_tracks — Skyrim MUST, what a MUSC `TNAM` lists).
-    assert_eq!(EsmIndex::categories().len(), 115);
+    // Bumped 115 → 117 in #6725 (volumetric_lighting + god_rays — Skyrim SE VOLI and FO4 GDRY, the authored
+    //   god-ray profiles of VLM-HF-010 / -011, decoded for the census and consumed by nothing).
+    assert_eq!(EsmIndex::categories().len(), 117);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring
@@ -2996,6 +2998,8 @@ const EXEMPT_NO_U32_READS: &[(&str, &str)] = &[
     ("misc/character.rs", "parse_eyes"),
     ("global.rs", "parse_glob"),
     ("global.rs", "parse_gmst"),
+    ("god_rays.rs", "parse_gdry"),
+    ("god_rays.rs", "parse_voli"),
     ("misc/character.rs", "parse_hair"),
     ("misc/character.rs", "parse_hdpt"),
     ("misc/character.rs", "parse_idle"),
@@ -3003,7 +3007,6 @@ const EXEMPT_NO_U32_READS: &[(&str, &str)] = &[
     ("misc/effects.rs", "parse_imod"),
     ("misc/effects.rs", "parse_ipct"),
     ("misc/effects.rs", "parse_ipds"),
-    ("misc/world.rs", "parse_lgtm"),
     ("misc/equipment.rs", "parse_minimal_esm_record"),
     ("mswp.rs", "parse_mswp"),
     ("pathgrid.rs", "parse_pgrd"),

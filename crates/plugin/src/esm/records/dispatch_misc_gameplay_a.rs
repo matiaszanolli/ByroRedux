@@ -138,8 +138,28 @@ pub(super) fn dispatch_misc_gameplay_a_group(
         }
         // LGTM lighting templates — consumer lands alongside #379
         // (per-field inheritance fallback on cells without XCLL).
-        b"LGTM" => extract_records(reader, end, b"LGTM", &mut |fid, subs| {
-            index.lighting_templates.insert(fid, parse_lgtm(fid, subs, game));
+        b"LGTM" => {
+            // VLM-HF-011 — `WGDR` is a `GDRY` cross-reference, so it takes the load-order remap.
+            let lgtm_remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"LGTM", &mut |fid, subs| {
+                index
+                    .lighting_templates
+                    .insert(fid, parse_lgtm(fid, subs, game, &lgtm_remap));
+            })?
+        }
+        // VLM-HF-010 / -011 — the authored god-ray records: Skyrim SE `VOLI` and FO4 `GDRY`.
+        // Decoded for the census and a future consumer; nothing reads them yet (§10 Q8).
+        // Only Skyrim SE's layout (13 single-float sub-records) is decoded: Starfield's `VOLI` is a
+        // 1,832-byte `BETH` reflection blob (`REFL`, `BGSVolumetricLighting`, 42 records in
+        // `Starfield.esm`), a different record that needs the reflection decoder, so it is walked
+        // and not stored rather than misread through Skyrim's tags.
+        b"VOLI" => extract_records(reader, end, b"VOLI", &mut |fid, subs| {
+            if game == GameKind::Skyrim {
+                index.volumetric_lighting.insert(fid, parse_voli(fid, subs));
+            }
+        })?,
+        b"GDRY" => extract_records(reader, end, b"GDRY", &mut |fid, subs| {
+            index.god_rays.insert(fid, parse_gdry(fid, subs));
         })?,
         // #624 / #4416 — IMGS image spaces, decoded to the canonical
         // grade per game (`parse_imgs`). CELL.XCIM, WRLD.INAM and

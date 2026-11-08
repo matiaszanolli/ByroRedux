@@ -15,12 +15,12 @@ use super::{
     ExplRecord, EyesRecord, FactionRecord, FlstRecord, GameSetting, GlobalRecord, GrasRecord, HairRecord,
     HdptRecord,
     IdleRecord, ImadRecord, LctnRecord, ImgsRecord, ImodRecord, InfoRecord, IpctRecord, IpdsRecord, ItemRecord,
-    LeveledList, LgtmRecord, LoadScreenRecord, LoadScreenTransform, MesgRecord, MgefRecord,
+    GdryRecord, LeveledList, LgtmRecord, LoadScreenRecord, LoadScreenTransform, MesgRecord, MgefRecord,
     MediaSetRecord, MinimalEsmRecord, MuscRecord, MustRecord, RadiationStageRecord, ResolvedLoadScreenModel,
     NaviRecord, NavmRecord,
     NpcRecord, OtftRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RaceRecord, RegnRecord,
     RepuRecord, ScenRecord, ScriptRecord, SlgmRecord, SmNodeRecord, SounRecord, SpelRecord,
-    TermRecord, TreeRecord, WatrRecord, WeatherRecord, WeatherSettingsRecord,
+    TermRecord, TreeRecord, VoliRecord, WatrRecord, WeatherRecord, WeatherSettingsRecord,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -370,6 +370,12 @@ pub struct EsmIndex {
     /// `LGTM` lighting templates — ties to #379 (per-field inheritance
     /// fallback on cells without XCLL).
     pub lighting_templates: HashMap<u32, LgtmRecord>,
+    /// `VOLI` Skyrim SE volumetric-lighting profiles, referenced by `WTHR` `HNAM` (VLM-HF-010).
+    /// Decoded and censused, consumed by nothing (§10 Q8).
+    pub volumetric_lighting: HashMap<u32, VoliRecord>,
+    /// `GDRY` FO4 god-ray profiles, referenced by `WTHR` / `LGTM` / `LIGH` `WGDR` and `CELL`
+    /// `XGDR` (VLM-HF-011). Decoded and censused, consumed by nothing (§10 Q8).
+    pub god_rays: HashMap<u32, GdryRecord>,
     /// `IMGS` image-space records — Skyrim per-cell HDR / cinematic
     /// tone-map LUTs referenced by `CELL.XCIM`. Pre-#624 the entire
     /// top-level group fell through to the catch-all skip and every
@@ -926,6 +932,8 @@ impl EsmIndex {
             map_category!("condition_forms", condition_forms),
             map_category!("keywords", keywords),
             map_category!("lighting_templates", lighting_templates),
+            map_category!("volumetric_lighting", volumetric_lighting),
+            map_category!("god_rays", god_rays),
             map_category!("image_spaces", image_spaces),
             map_category!("head_parts", head_parts),
             map_category!("eyes", eyes),

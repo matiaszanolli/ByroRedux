@@ -633,6 +633,8 @@ pub(crate) fn setup_cornell_oracle_scene(
                     movement_amplitude: 0.0,
                     falloff_exponent: 1.0,
                     xpwr_form_id: None,
+                    god_rays_form: None,
+                    near_clip: 0.0,
                     starfield_light_type: 0,
                 },
                 byroredux_plugin::esm::reader::GameKind::Fallout4,

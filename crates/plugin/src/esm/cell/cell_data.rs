@@ -103,6 +103,9 @@ pub struct CellData {
     /// yet consumed — the interior sky-from-region consumer is forward
     /// scope. Never a CLMT, so it must not feed `climate_override`.
     pub sky_region: Option<u32>,
+    /// FO4 `XGDR` "God Rays" (GDRY FormID, VLM-HF-011): the cell's god-ray profile. Decoded for the
+    /// census, consumed by nothing (Volumetric Lighting PRD §10 Q8).
+    pub god_rays_form: Option<u32>,
     /// Location (XLCN, FormID — references an LCTN record). Used by
     /// quest / Story Manager systems for "player is in location X"
     /// conditions.

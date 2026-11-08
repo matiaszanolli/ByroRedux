@@ -1360,7 +1360,7 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // `fog_godray_census.rs` (the VOLI / GDRY / height-fog findings of VLM-HF-003, -010, -011),
         // both cited from the PRD and the fog design's corpus findings; the former now calls
         // `RegnRecord::covers_cell` instead of carrying its own geometry (#6725).
-        ("plugin", 70, 9051),
+        ("plugin", 70, 9076),
         // M47.3 result scripts — `obscript_tools avcodes` aligns the Fallout
         // misc-stat codes and `live` names the quests a script advanced
         // (no new target; the existing triage tool grew).

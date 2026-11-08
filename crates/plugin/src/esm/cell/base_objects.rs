@@ -76,6 +76,14 @@ pub struct LightData {
     /// records; that trailer isn't needed for circuit lookup and is
     /// captured as `None` rather than over-reading.
     pub xpwr_form_id: Option<u32>,
+    /// FO4 `WGDR` "God Rays" (VLM-HF-011): the `GDRY` profile this light casts when its "Volumetric
+    /// Light" flag is set (`falloutck-uesp-wiki/(main)/Light.wiki`), load-order remapped. `None` on
+    /// every other record. Decoded for the census, consumed by nothing (PRD §10 Q8).
+    pub god_rays_form: Option<u32>,
+    /// `DATA` bytes 24-27, "Near Clip" (xEdit FO4 / Skyrim LIGH; the Skyrim+ 48-byte layout only, the
+    /// pre-Skyrim 32-byte layout holds Value / Weight there). `0.0` where the record does not carry
+    /// it. The CK ties it to the god-ray profile (VLM-HF-011); nothing reads it yet.
+    pub near_clip: f32,
     /// #4433's evidence predecessor — Starfield `DAT2+56` "Light Type"
     /// enum (`wbDefinitionsSF1.pas`, dev-4.1.6: `0 = Omnidirectional`,
     /// `1 = Shadow Spotlight`, `2 = NonShadow Spotlight`). Starfield moved

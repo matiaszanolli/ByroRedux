@@ -346,6 +346,7 @@ pub(super) fn merge_cell_override(base: &CellData, over: &mut CellData) {
         music_type_enum: _,
         climate_override: _,
         sky_region: _,
+        god_rays_form: _,
         location_form: _,
         encounter_zone_form: _,
         regions: _,

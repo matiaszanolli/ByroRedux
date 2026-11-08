@@ -1449,9 +1449,17 @@ pub struct LgtmRecord {
     /// The height-fog tail (VLM-HF-004): FO4 / FO76 `DATA` bytes 92... Starfield's lives in
     /// [`Self::starfield`].
     pub height_fog: Option<crate::esm::cell::HeightFogTail>,
+    /// FO4 `WGDR` "God Rays" (VLM-HF-011): the template's `GDRY` profile, load-order remapped.
+    /// Decoded for the census, consumed by nothing (Volumetric Lighting PRD §10 Q8).
+    pub god_rays_form: Option<u32>,
 }
 
-pub fn parse_lgtm(form_id: u32, subs: &[SubRecord], game: GameKind) -> LgtmRecord {
+pub fn parse_lgtm(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) -> LgtmRecord {
     let mut out = LgtmRecord {
         form_id,
         ..Default::default()
@@ -1460,7 +1468,7 @@ pub fn parse_lgtm(form_id: u32, subs: &[SubRecord], game: GameKind) -> LgtmRecor
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
@@ -1518,6 +1526,11 @@ pub fn parse_lgtm(form_id: u32, subs: &[SubRecord], game: GameKind) -> LgtmRecor
                     if matches!(game, GameKind::Fallout4 | GameKind::Fallout76) {
                         out.height_fog = crate::esm::cell::decode_creation_height_fog_tail(&sub.data);
                     }
+                }
+            }
+            b"WGDR" if sub.data.len() >= 4 => {
+                if let Ok(form) = SubReader::new(&sub.data).u32() {
+                    out.god_rays_form = Some(remap_fid(form, remap));
                 }
             }
             b"DALC" if sub.data.len() >= 24 => {
@@ -2115,7 +2128,7 @@ mod tests {
             sub(b"DATA", &data),
             sub(b"DALC", &dalc),
         ];
-        let l = parse_lgtm(0xDEAD, &subs, GameKind::Skyrim);
+        let l = parse_lgtm(0xDEAD, &subs, GameKind::Skyrim, &None);
         assert_eq!(l.editor_id, "LgtmInteriorDim");
         assert!((l.ambient[0] - 80.0 / 255.0).abs() < 1e-6);
         assert!((l.directional[1] - 195.0 / 255.0).abs() < 1e-6);
@@ -2245,7 +2258,7 @@ mod tests {
         data.extend_from_slice(&10000.0f32.to_le_bytes()); // 132 far height range
         let subs = vec![sub(b"EDID", b"CommonwealthLgtm\0"), sub(b"DATA", &data)];
         for game in [GameKind::Fallout4, GameKind::Fallout76] {
-            let l = parse_lgtm(0xF04, &subs, game);
+            let l = parse_lgtm(0xF04, &subs, game, &None);
             assert_eq!(l.fog_far, 4000.0, "the shared body still decodes");
             let tail = l.height_fog.expect("a 136-byte DATA carries the tail");
             assert_eq!((tail.near_height_mid, tail.near_height_range), (32.0, 10000.0));
@@ -2254,15 +2267,35 @@ mod tests {
             assert_eq!(tail.high_density_scale, 0.95);
             assert_eq!(tail.far_height_range, Some(10000.0));
         }
-        assert!(parse_lgtm(0xF04, &subs, GameKind::Skyrim).height_fog.is_none());
-        assert!(parse_lgtm(0xF04, &[sub(b"DATA", &data[..92])], GameKind::Fallout4).height_fog.is_none());
+        assert!(parse_lgtm(0xF04, &subs, GameKind::Skyrim, &None).height_fog.is_none());
+        assert!(parse_lgtm(0xF04, &[sub(b"DATA", &data[..92])], GameKind::Fallout4, &None).height_fog.is_none());
+    }
+
+    /// VLM-HF-011: the LGTM `WGDR` names a `GDRY`, load-order remapped like every cross-reference.
+    #[test]
+    fn parse_lgtm_decodes_the_god_ray_reference() {
+        let subs = vec![sub(b"EDID", b"GodRayLgtm\0"), sub(b"DATA", vec![0u8; 20]), sub(b"WGDR", 0x0000_3C5Au32.to_le_bytes())];
+        let l = parse_lgtm(0xF04, &subs, GameKind::Fallout4, &None);
+        assert_eq!(l.god_rays_form, Some(0x3C5A));
+        assert_eq!(parse_lgtm(0xF04, &subs[..2], GameKind::Fallout4, &None).god_rays_form, None);
+        // A DLC plugin authors its own forms as 0x01…; the load order keys them at slot 0x02….
+        let remap = Some(FormIdRemap {
+            plugin_slot: crate::esm::reader::GlobalSlot::Regular(0x02),
+            master_slots: vec![crate::esm::reader::GlobalSlot::Regular(0x00)],
+            scheme: Default::default(),
+        });
+        assert_eq!(
+            parse_lgtm(0xF04, &[sub(b"WGDR", 0x0100_3C5Au32.to_le_bytes())], GameKind::Fallout4, &remap).god_rays_form,
+            Some(0x0200_3C5A),
+            "a reference to the DLC's own record is remapped into its load-order slot"
+        );
     }
 
     #[test]
     fn parse_lgtm_short_data_returns_defaults() {
         // DATA under 20 bytes → all field captures short-circuit.
         let subs = vec![sub(b"EDID", b"ShortLgtm\0"), sub(b"DATA", [1, 2, 3, 4])];
-        let l = parse_lgtm(0xBEEF, &subs, GameKind::Skyrim);
+        let l = parse_lgtm(0xBEEF, &subs, GameKind::Skyrim, &None);
         assert_eq!(l.editor_id, "ShortLgtm");
         assert_eq!(l.ambient, [0.0; 3]);
         assert_eq!(l.fog_near, 0.0);
@@ -2298,7 +2331,7 @@ mod tests {
         data.extend(&[2u8, 0, 0, 0]); // 104: interior type (Ship Cell) + pad
         assert_eq!(data.len(), 108);
         let subs = vec![sub(b"EDID", b"ShipInteriorLT\0"), sub(b"DATA", data)];
-        let l = parse_lgtm(0x6658, &subs, GameKind::Starfield);
+        let l = parse_lgtm(0x6658, &subs, GameKind::Starfield, &None);
         assert_eq!(l.editor_id, "ShipInteriorLT");
         assert_eq!(l.fog_near, 64.0);
         assert_eq!(l.fog_far, 4096.0);

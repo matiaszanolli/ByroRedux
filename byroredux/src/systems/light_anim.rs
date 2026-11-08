@@ -222,6 +222,8 @@ mod tests {
             falloff_exponent: 0.0,
             fov_degrees,
             xpwr_form_id: None,
+            god_rays_form: None,
+            near_clip: 0.0,
             starfield_light_type: 0,
         }
     }

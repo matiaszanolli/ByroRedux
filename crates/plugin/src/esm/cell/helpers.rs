@@ -48,6 +48,8 @@ pub(super) struct CellSubrecordFields {
     pub(super) climate_override: Option<u32>,
     /// #5463 — TES5 / FO4 XCCM, "Sky/Weather from Region" (REGN FormID).
     pub(super) sky_region: Option<u32>,
+    /// VLM-HF-011 — FO4 `XGDR`, the cell's `GDRY` god-ray profile.
+    pub(super) god_rays_form: Option<u32>,
     pub(super) location_form: Option<u32>,
     /// #4173 — XEZN encounter-zone FormID (references an ECZN record;
     /// spawn scaling / faction ownership per cell).
@@ -129,6 +131,8 @@ impl CellSubrecordFields {
             // so the renderer / audio / quest system had no per-cell
             // context.
             b"XCIM" => self.image_space_form = read_form_id(reader, &sub.data),
+            // VLM-HF-011 — FO4 `XGDR` "God Rays": a `GDRY` reference, decoded for the census.
+            b"XGDR" => self.god_rays_form = read_form_id(reader, &sub.data),
             b"XCWT" => self.water_type_form = read_form_id(reader, &sub.data),
             b"XCAS" => self.acoustic_space_form = read_form_id(reader, &sub.data),
             b"XCMO" => self.music_type_form = read_form_id(reader, &sub.data),
@@ -282,6 +286,7 @@ impl CellSubrecordFields {
             music_type_enum,
             climate_override,
             sky_region,
+            god_rays_form,
             location_form,
             encounter_zone_form,
             regions,
@@ -311,6 +316,7 @@ impl CellSubrecordFields {
             music_type_enum,
             climate_override,
             sky_region,
+            god_rays_form,
             location_form,
             encounter_zone_form,
             regions,

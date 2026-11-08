@@ -43,6 +43,7 @@ fn template_with_amber_ambient(form_id: u32) -> LgtmRecord {
         fresnel_power: Some(2.0),
         starfield: None,
         height_fog: None,
+        god_rays_form: None,
     }
 }
 

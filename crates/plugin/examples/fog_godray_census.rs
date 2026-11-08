@@ -142,6 +142,31 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // The same figures through the parsed index (VLM-HF-010 / -011): the decode must agree with the
+    // raw walk below.
+    let cell_god_rays = index
+        .cells
+        .cells
+        .values()
+        .chain(index.cells.exterior_cells.values().flat_map(|c| c.values()))
+        .filter(|c| c.god_rays_form.is_some())
+        .count();
+    println!(
+        "  parsed index: {} VOLI, {} GDRY; weathers with HNAM {} / WGDR {}; CELL XGDR {}; LGTM WGDR {}; LIGH WGDR {}",
+        index.volumetric_lighting.len(),
+        index.god_rays.len(),
+        index.weathers.values().filter(|w| !w.volumetric_lighting.is_empty()).count(),
+        index.weathers.values().filter(|w| !w.god_rays.is_empty()).count(),
+        cell_god_rays,
+        index.lighting_templates.values().filter(|l| l.god_rays_form.is_some()).count(),
+        index
+            .cells
+            .statics
+            .values()
+            .filter(|b| b.light_data.as_ref().is_some_and(|l| l.god_rays_form.is_some()))
+            .count(),
+    );
+
     // ── Part B: raw god-ray records ────────────────────────────────────────────────────────
     let mut reader = EsmReader::new(&bytes);
     let _ = reader.read_file_header()?;

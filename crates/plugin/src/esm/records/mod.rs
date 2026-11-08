@@ -19,6 +19,7 @@ pub mod common;
 pub mod condition;
 pub mod container;
 pub mod global;
+pub mod god_rays;
 pub mod gras;
 pub mod items;
 pub mod list_record;
@@ -74,6 +75,7 @@ pub use container::{
     parse_cont, parse_leveled_list, ContainerRecord, InventoryEntry, LeveledEntry, LeveledList,
 };
 pub use global::{parse_glob, parse_gmst, GameSetting, GlobalRecord, SettingValue};
+pub use god_rays::{parse_gdry, parse_voli, GdryRecord, VoliRecord};
 pub use gras::{
     parse_gras, GrasRecord, GRAS_DATA_LEN, GRAS_FLAG_FIT_TO_SLOPE, GRAS_FLAG_UNIFORM_SCALING,
     GRAS_FLAG_VERTEX_LIGHTING,

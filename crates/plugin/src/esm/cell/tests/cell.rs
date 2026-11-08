@@ -1734,3 +1734,34 @@ fn the_height_fog_tail_follows_the_xcll_size_and_game() {
     let skyrim = parse_interior_xcll(GameKind::Skyrim, &creation_xcll(&creation_height_tail(true)));
     assert!(skyrim.height_fog.is_none(), "the tail is a Creation-title shape, not Skyrim's");
 }
+
+/// VLM-HF-011: a CELL's `XGDR` is its `GDRY` god-ray profile.
+#[test]
+fn parse_cell_xgdr_god_rays() {
+    let mut sub_data = Vec::new();
+    let edid = "GodRayInt\0";
+    sub_data.extend_from_slice(b"EDID");
+    sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(edid.as_bytes());
+    sub_data.extend_from_slice(b"DATA");
+    sub_data.extend_from_slice(&1u16.to_le_bytes());
+    sub_data.push(0x01);
+    sub_data.extend_from_slice(b"XGDR");
+    sub_data.extend_from_slice(&4u16.to_le_bytes());
+    sub_data.extend_from_slice(&0x0050_0009u32.to_le_bytes());
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"CELL");
+    buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes());
+    buf.extend_from_slice(&0xBEADu32.to_le_bytes());
+    buf.extend_from_slice(&[0u8; 8]);
+    buf.extend_from_slice(&sub_data);
+    let mut reader = super::super::super::reader::EsmReader::with_variant(
+        &buf,
+        super::super::super::reader::EsmVariant::Tes5Plus,
+    );
+    let end = buf.len();
+    let mut cells = HashMap::new();
+    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout4).unwrap();
+    assert_eq!(cells.get("godrayint").expect("interior CELL present").god_rays_form, Some(0x0050_0009));
+}

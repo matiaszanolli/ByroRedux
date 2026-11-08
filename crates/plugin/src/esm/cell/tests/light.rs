@@ -269,3 +269,58 @@ fn parse_ligh_decodes_fnv_warm_lights_without_channel_swap() {
         );
     }
 }
+
+/// Build a one-record `LIGH` group from sub-records and parse it into `statics`.
+fn parse_ligh_group(form_id: u32, subs: &[(&[u8; 4], Vec<u8>)]) -> HashMap<u32, super::super::StaticObject> {
+    let mut sub_data = Vec::new();
+    for (tag, data) in subs {
+        sub_data.extend_from_slice(*tag);
+        sub_data.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(data);
+    }
+    let mut ligh = Vec::new();
+    ligh.extend_from_slice(b"LIGH");
+    ligh.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    ligh.extend_from_slice(&0u32.to_le_bytes());
+    ligh.extend_from_slice(&form_id.to_le_bytes());
+    ligh.extend_from_slice(&[0u8; 8]);
+    ligh.extend_from_slice(&sub_data);
+    let mut group = Vec::new();
+    group.extend_from_slice(b"GRUP");
+    group.extend_from_slice(&((24 + ligh.len()) as u32).to_le_bytes());
+    group.extend_from_slice(b"LIGH");
+    group.extend_from_slice(&0u32.to_le_bytes());
+    group.extend_from_slice(&[0u8; 8]);
+    group.extend_from_slice(&ligh);
+    let mut reader = EsmReader::new(&group);
+    let gh = reader.read_group_header().unwrap();
+    let end = reader.group_content_end(&gh);
+    let mut statics = HashMap::new();
+    parse_modl_group(&mut reader, end, &mut statics).unwrap();
+    statics
+}
+
+/// VLM-HF-011: an FO4 `LIGH` carries its `GDRY` in `WGDR` (before or after `DATA`) and its near clip
+/// in the 48-byte `DATA` at byte 24; the 32-byte pre-Skyrim `DATA` has no near clip.
+#[test]
+fn parse_ligh_wgdr_and_near_clip() {
+    let mut data48 = vec![0u8; 48];
+    data48[4..8].copy_from_slice(&256u32.to_le_bytes()); // radius
+    data48[24..28].copy_from_slice(&12.5f32.to_le_bytes()); // near clip
+    let wgdr = 0x0040_0007u32.to_le_bytes().to_vec();
+    for subs in [
+        vec![(b"DATA", data48.clone()), (b"WGDR", wgdr.clone())],
+        vec![(b"WGDR", wgdr.clone()), (b"DATA", data48.clone())],
+    ] {
+        let statics = parse_ligh_group(0xA11, &subs);
+        let ld = statics[&0xA11].light_data.as_ref().expect("light_data populated");
+        assert_eq!(ld.god_rays_form, Some(0x0040_0007), "WGDR folds onto the light whatever its order");
+        assert_eq!(ld.near_clip, 12.5);
+    }
+    let no_wgdr = parse_ligh_group(0xA12, &[(b"DATA", data48)]);
+    assert_eq!(no_wgdr[&0xA12].light_data.as_ref().unwrap().god_rays_form, None);
+    let mut data32 = vec![0u8; 32];
+    data32[24..28].copy_from_slice(&99.0f32.to_le_bytes()); // Value on the pre-Skyrim layout
+    let old = parse_ligh_group(0xA13, &[(b"DATA", data32)]);
+    assert_eq!(old[&0xA13].light_data.as_ref().unwrap().near_clip, 0.0, "bytes 24-27 are not a near clip here");
+}

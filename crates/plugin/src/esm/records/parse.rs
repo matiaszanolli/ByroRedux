@@ -52,7 +52,7 @@ pub const DISPATCH_HANDLED_FOURCCS: &[[u8; 4]] = &[
     *b"CCRD", *b"CDCK", *b"CELL", *b"CHAL", *b"CHIP", *b"CLAS", *b"CLMT", *b"CLOT", *b"CMNY", *b"CNDF",
     *b"COBJ", *b"CONT", *b"CPTH", *b"CREA", *b"CSNO", *b"CSTY", *b"DEBR", *b"DEHY", *b"DIAL",
     *b"DLBR", *b"DOBJ", *b"DOOR", *b"ECZN", *b"EFSH", *b"ENCH", *b"EXPL", *b"EYES", *b"FACT", *b"FLOR",
-    *b"FLST", *b"FURN", *b"GLOB", *b"GMST", *b"GRAS", *b"HAIR", *b"HDPT", *b"HUNG", *b"IDLE",
+    *b"FLST", *b"FURN", *b"GDRY", *b"GLOB", *b"GMST", *b"GRAS", *b"HAIR", *b"HDPT", *b"HUNG", *b"IDLE",
     *b"IDLM", *b"IMAD", *b"IMGS", *b"IMOD", *b"INGR", *b"IPCT", *b"IPDS", *b"KEYM", *b"KYWD", *b"LCRT", *b"LCTN",
     *b"LGTM", *b"LIGH", *b"LMSW", *b"LSCR", *b"LSCT", *b"LTEX", *b"LVLC", *b"LVLI", *b"LVLN", *b"LVSP", *b"MATT", *b"MESG",
     *b"MGEF", *b"MICN", *b"MISC", *b"MOVS", *b"MSET", *b"MSTT", *b"MSWP", *b"MTPT", *b"MUSC", *b"MUST", *b"NAVI",
@@ -60,7 +60,7 @@ pub const DISPATCH_HANDLED_FOURCCS: &[[u8; 4]] = &[
     *b"PWAT", *b"QUST", *b"RACE", *b"RADS", *b"RCCT", *b"RCPE", *b"REGN", *b"RELA", *b"REPU", *b"RGDL",
     *b"SCEN", *b"SCOL", *b"SCPT", *b"SCRL", *b"SECH", *b"SGST", *b"SLGM", *b"SLPD", *b"SMBN",
     *b"SMEN", *b"SMQN", *b"SNDR", *b"SOUN",
-    *b"SPEL", *b"STAT", *b"TACT", *b"TERM", *b"TREE", *b"TRNS", *b"TXST", *b"VTYP", *b"WATR",
+    *b"SPEL", *b"STAT", *b"TACT", *b"TERM", *b"TREE", *b"TRNS", *b"TXST", *b"VOLI", *b"VTYP", *b"WATR",
     *b"WEAP",
     *b"WRLD", *b"WTHS", *b"WTHR",
 ];
@@ -423,7 +423,8 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             }
             b"WTHR" | b"CLMT" | b"SCPT" | b"WATR" | b"NAVI" | b"NAVM" | b"REGN" | b"ECZN" | b"CNDF" | b"KYWD"
             | b"LGTM" | b"IMGS" | b"HDPT" | b"EYES" | b"HAIR" | b"PACK" | b"QUST" | b"DIAL"
-            | b"DLBR" | b"SCEN" | b"MESG" | b"PERK" | b"SMBN" | b"SMEN" | b"SMQN" | b"WTHS" | b"AORU" => {
+            | b"DLBR" | b"SCEN" | b"MESG" | b"PERK" | b"SMBN" | b"SMEN" | b"SMQN" | b"WTHS" | b"AORU"
+            | b"VOLI" | b"GDRY" => {
                 dispatch_misc_gameplay_a::dispatch_misc_gameplay_a_group(
                     &label,
                     &mut reader,
