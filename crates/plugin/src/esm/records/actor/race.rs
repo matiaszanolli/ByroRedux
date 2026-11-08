@@ -267,6 +267,10 @@ impl SubgraphRole {
             (0, _) => Self::Mt,
             (1, _) => Self::Weapon,
             (2, _) => Self::Furniture,
+            // Value 3: Starfield's xEdit copy says `Linking Only`. FO76's two upstream snapshots disagree
+            // (`wbDefinitionsFO76.pas:14390` `Linking Only`, the 2026-10-31 dev copy `Idle` with FO4's five-value
+            // enum), and no `SeventySix.esm` RACE authors role 3 (157 RACEs scanned: roles 0/1/2/4 only), so
+            // the FO76 half is unsettled and unmeasurable (#6793). Revisit when a source or a record settles it.
             (3, Fallout76 | Starfield) => Self::LinkingOnly,
             (3, _) => Self::Idle,
             (4, _) => Self::Pipboy,
