@@ -179,7 +179,7 @@ pub use load::CellLoadResult;
 pub(crate) use load_order::parse_record_indexes_in_load_order;
 pub(crate) use lod_bands::{object_ring_cells, tree_load_cells};
 pub(crate) use lod_coverage::{
-    count_moat_cells, find_full_detail_overlaps, find_overlaps, find_terrain_full_detail_overlaps,
+    count_moat_cells, find_overlaps, find_terrain_full_detail_overlaps,
     ChurnTracker,
 };
 pub(crate) use lod_support::{

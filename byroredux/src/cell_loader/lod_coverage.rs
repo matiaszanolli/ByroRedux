@@ -67,6 +67,7 @@ pub(crate) fn find_overlaps(keys: &[(i32, i32, i32)]) -> u32 {
 /// cell — the cross-scheme boundary `object_lod`/`terrain_lod` both keep
 /// conservative (gated on `radius_unload`, not `radius_load`; #1866/#1871)
 /// specifically to avoid this ever happening.
+#[cfg_attr(not(test), allow(dead_code))] // production counts hole-aware via `find_terrain_full_detail_overlaps`
 pub(crate) fn find_full_detail_overlaps(
     lod_keys: &[(i32, i32, i32)],
     full_cells: &[(i32, i32)],
@@ -108,6 +109,31 @@ pub(crate) fn find_terrain_full_detail_overlaps(
         }
     }
     overlaps
+}
+
+/// Mask of a finest-level (4x4-cell) quad's cells that are resident at full detail: bit
+/// `(cy - qy) * 4 + (cx - qx)` is set for every resident cell `(cx, cy)` inside the quad whose south-west cell
+/// is `(qx, qy)`. `0xFFFF` means the quad is entirely covered by full detail. DLOD-OBJ-002 / DLOD-TREE-008:
+/// a quad that straddles the resident boundary is drawn minus these cells instead of not at all.
+pub(crate) fn quad_resident_mask(qx: i32, qy: i32, resident: &HashSet<(i32, i32)>) -> u16 {
+    let mut mask = 0u16;
+    for dy in 0..4 {
+        for dx in 0..4 {
+            if resident.contains(&(qx + dx, qy + dy)) {
+                mask |= 1u16 << (dy * 4 + dx);
+            }
+        }
+    }
+    mask
+}
+
+/// Which cell of the finest-level quad at `(qx, qy)` the point `(wx, wy)` (world Z-up x and y, Bethesda units)
+/// falls in, as its bit in a [`quad_resident_mask`] mask. `None` outside the quad.
+pub(crate) fn quad_cell_bit(qx: i32, qy: i32, wx: f32, wy: f32) -> Option<u16> {
+    const CELL: f32 = 4096.0;
+    let (cx, cy) = ((wx / CELL).floor() as i32, (wy / CELL).floor() as i32);
+    let (dx, dy) = (cx - qx, cy - qy);
+    ((0..4).contains(&dx) && (0..4).contains(&dy)).then(|| 1u16 << (dy * 4 + dx))
 }
 
 /// DLOD-GATE-005 — count a family's moat cells.
@@ -379,5 +405,24 @@ mod tests {
         assert_eq!(churn.churned(), 0, "leaving is not churn until it returns");
         churn.observe_keys(a);
         assert_eq!(churn.churned(), 1);
+    }
+
+    #[test]
+    fn resident_masks_mark_the_cells_a_finest_quad_holds() {
+        let resident: HashSet<(i32, i32)> = [(4, 8), (5, 8), (7, 11), (0, 0), (9, 9)].into_iter().collect();
+        // Quad (4, 8) covers x 4..=7, y 8..=11: cells (4,8) bit 0, (5,8) bit 1, (7,11) bit 15.
+        assert_eq!(quad_resident_mask(4, 8, &resident), 0b1000_0000_0000_0011);
+        assert_eq!(quad_resident_mask(100, 100, &resident), 0);
+        let all: HashSet<(i32, i32)> = (0..4).flat_map(|y| (0..4).map(move |x| (x, y))).collect();
+        assert_eq!(quad_resident_mask(0, 0, &all), 0xFFFF);
+    }
+
+    #[test]
+    fn a_world_point_maps_to_its_cell_bit() {
+        // Quad SW cell (-8, 4): x -32768..-16384, y 16384..32768.
+        assert_eq!(quad_cell_bit(-8, 4, -32768.0 + 1.0, 16384.0 + 1.0), Some(1));
+        assert_eq!(quad_cell_bit(-8, 4, -32768.0 + 4096.0 * 3.0 + 1.0, 16384.0 + 4096.0 * 3.0 + 1.0), Some(1 << 15));
+        assert_eq!(quad_cell_bit(-8, 4, -32768.0 - 1.0, 16384.0 + 1.0), None, "west of the quad");
+        assert_eq!(quad_cell_bit(-8, 4, -32768.0 + 4096.0 * 4.0, 16384.0), None, "east edge belongs to the next quad");
     }
 }

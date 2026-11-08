@@ -575,3 +575,17 @@ fn dtl_corpus_parses_and_resolves_every_species() {
         "TREE records are `.spt` trees; none of the .dtl trees is one"
     );
 }
+
+/// DLOD-TREE-008 -- a quad that straddles the resident boundary draws the trees of its non-resident cells: a
+/// tree is dropped only when the cell its position falls in is marked.
+#[test]
+fn drop_holed_trees_keeps_the_non_resident_cells_trees() {
+    let tree = |x: f32, y: f32| TreeLodInstance { species: 1, position: [x, y, 0.0], rotation: 0.0, scale: 1.0, ref_form_id: 0 };
+    // Quad SW cell (4, 8): cells x 4..=7, y 8..=11. Cell (4, 8) is bit 0, cell (5, 8) bit 1.
+    let (x0, y0) = (4.0 * 4096.0, 8.0 * 4096.0);
+    let trees = vec![tree(x0 + 10.0, y0 + 10.0), tree(x0 + 4096.0 + 10.0, y0 + 10.0), tree(x0 + 4096.0 * 3.0 + 10.0, y0 + 10.0)];
+    let kept = drop_holed_trees(&trees, 4, 8, 0b11);
+    assert_eq!(kept.len(), 1, "cells (4,8) and (5,8) are resident; only the (7,8) tree stays");
+    assert_eq!(kept[0].position[0], x0 + 4096.0 * 3.0 + 10.0);
+    assert_eq!(drop_holed_trees(&trees, 4, 8, 0).len(), 3, "no mask, no change");
+}

@@ -545,7 +545,7 @@ fn spawn_legacy_tree_unit(
             // The ring owns the atlas reference, so the block carries none (texture_handle 0 is never
             // released).
             let name = format!("<tree-lod billboard atlas {}>", wctx.lod_worldspace_key());
-            let mut block = spawn_tree_lod_mesh(world, ctx, &mesh, atlas_handle, Some(name), &path)?;
+            let mut block = spawn_tree_lod_mesh(world, ctx, &mesh, atlas_handle, Some(name), &path, 0)?;
             block.texture_handle = 0;
             if mesh.skipped > 0 {
                 log::debug!(

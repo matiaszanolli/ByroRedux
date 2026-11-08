@@ -417,6 +417,22 @@ pub(crate) fn tree_quads_in_range(
     quads.into_iter().map(|(_, qy, qx)| (qx, qy)).collect()
 }
 
+/// DLOD-TREE-008 -- the trees of the quad at `(qx, qy)` that stand in a cell `hole_mask` does not mark. A tree
+/// belongs to the cell its base position falls in (world Z-up x and y); a tree outside the quad is kept.
+pub(crate) fn drop_holed_trees(trees: &[TreeLodInstance], qx: i32, qy: i32, hole_mask: u16) -> Vec<TreeLodInstance> {
+    if hole_mask == 0 {
+        return trees.to_vec();
+    }
+    trees
+        .iter()
+        .filter(|tree| {
+            !super::lod_coverage::quad_cell_bit(qx, qy, tree.position[0], tree.position[1])
+                .is_some_and(|bit| hole_mask & bit != 0)
+        })
+        .copied()
+        .collect()
+}
+
 fn footprint_intersects_full_detail(qx: i32, qy: i32, resident: &HashSet<(i32, i32)>) -> bool {
     resident.iter().any(|&(gx, gy)| {
         gx >= qx && gx < qx + TREE_LOD_LEVEL && gy >= qy && gy < qy + TREE_LOD_LEVEL
@@ -447,6 +463,21 @@ impl TreeLodRing {
 
     /// The resident tree-LOD quads that drew something, as `(level, x, y)` footprint keys. An empty
     /// sentinel (a file that failed to parse or held nothing drawable) is left out.
+    /// Every quad the ring has resolved, as `(level, x, y)`: the ones that draw and the empty sentinels, a quad
+    /// whose file holds nothing drawable once the resident cells' trees are left out. For the moat metric, a
+    /// resolved quad with nothing to draw is not a gap.
+    pub(crate) fn resolved_keys(&self) -> Vec<(i32, i32, i32)> {
+        self.blocks.keys().map(|&(qx, qy)| (TREE_LOD_LEVEL, qx, qy)).collect()
+    }
+
+    pub(crate) fn resident_keys_with_holes(&self) -> Vec<((i32, i32, i32), u16)> {
+        self.blocks
+            .iter()
+            .filter(|(_, block)| !block.entities.is_empty())
+            .map(|(&(qx, qy), block)| ((TREE_LOD_LEVEL, qx, qy), block.hole_mask))
+            .collect()
+    }
+
     pub(crate) fn resident_keys(&self) -> Vec<(i32, i32, i32)> {
         self.blocks
             .iter()
@@ -508,13 +539,45 @@ pub(crate) fn stream_tree_lod_blocks(
         .get_or_insert_with(|| scan_tree_quads(tex_provider, &lod_key))
         .clone();
     let resident_full = input.resident_full_cells;
+    // DLOD-TREE-008 — a quad that straddles the resident boundary draws the trees of its non-resident cells
+    // and none of the resident ones (a tree belongs to the cell its position falls in); only a quad whose
+    // every cell is resident is dropped. Before, the whole file was vetoed, leaving a moat of cells with no
+    // trees.
+    let mut hole_masks: std::collections::HashMap<(i32, i32), u16> = std::collections::HashMap::new();
     let keep: HashSet<(i32, i32)> =
         tree_quads_in_range(&all_quads, input.player_grid, range + LOD_BAND_HYSTERESIS_CELLS)
             .into_iter()
-            .filter(|&(qx, qy)| !footprint_intersects_full_detail(qx, qy, resident_full))
+            .filter(|&(qx, qy)| {
+                if !footprint_intersects_full_detail(qx, qy, resident_full) {
+                    return true;
+                }
+                let mask = super::lod_coverage::quad_resident_mask(qx, qy, resident_full);
+                if mask == 0xFFFF {
+                    return false;
+                }
+                hole_masks.insert((qx, qy), mask);
+                true
+            })
             .collect();
 
-    let mut unloaded = 0usize;
+    // A resident quad whose hole mask no longer matches residency is respawned.
+    let stale: Vec<(i32, i32)> = ring
+        .blocks
+        .iter()
+        .filter(|(key, block)| {
+            !block.entities.is_empty() && block.hole_mask != hole_masks.get(key).copied().unwrap_or(0)
+        })
+        .map(|(key, _)| *key)
+        .collect();
+    let mut stale_unloaded = 0usize;
+    for key in stale {
+        if let Some(block) = ring.blocks.remove(&key) {
+            unload_object_lod_block(world, ctx, &block);
+            stale_unloaded += 1;
+        }
+    }
+
+    let mut unloaded = stale_unloaded;
     unloaded += retain_resident(&mut ring.blocks, &keep, |block| {
         if !block.entities.is_empty() {
             unload_object_lod_block(world, ctx, block);
@@ -542,7 +605,8 @@ pub(crate) fn stream_tree_lod_blocks(
             break;
         }
         let path = tree_lod_archive_path(&lod_key, qx, qy);
-        let block = match spawn_tree_lod_quad(world, ctx, tex_provider, &lod_key, &path, &species) {
+        let hole_mask = hole_masks.get(&(qx, qy)).copied().unwrap_or(0);
+        let block = match spawn_tree_lod_quad(world, ctx, tex_provider, &lod_key, &path, &species, (qx, qy, hole_mask)) {
             Some(block) => block,
             None => match classify_lod_attempt(
                 false,
@@ -586,6 +650,7 @@ fn spawn_tree_lod_quad(
     lod_worldspace_key: &str,
     path: &str,
     species: &[TreeLodSpecies],
+    (qx, qy, hole_mask): (i32, i32, u16),
 ) -> Option<ObjectLodBlock> {
     let bytes = tex_provider.extract_mesh(path)?;
     let parsed = match parse_btt(&bytes) {
@@ -595,7 +660,8 @@ fn spawn_tree_lod_quad(
             return None;
         }
     };
-    let mesh = build_tree_lod_mesh(&parsed.trees, species);
+    let trees = drop_holed_trees(&parsed.trees, qx, qy, hole_mask);
+    let mesh = build_tree_lod_mesh(&trees, species);
     if mesh.indices.is_empty() {
         return None;
     }
@@ -605,7 +671,7 @@ fn spawn_tree_lod_quad(
     let atlas = resolve_texture(ctx, tex_provider, Some(atlas_path.as_str()));
     let atlas = if atlas == ctx.texture_registry.fallback() { 0 } else { atlas };
     // The atlas handle is refcounted per quad: it is released with the block.
-    let block = spawn_tree_lod_mesh(world, ctx, &mesh, atlas, Some(atlas_path), path)?;
+    let block = spawn_tree_lod_mesh(world, ctx, &mesh, atlas, Some(atlas_path), path, hole_mask)?;
     if parsed.trailing_bytes > 0 || mesh.skipped > 0 {
         log::debug!(
             "Tree-LOD '{path}': {} trees drawn, {} skipped (no usable species), {} trailing bytes",
@@ -630,6 +696,7 @@ pub(super) fn spawn_tree_lod_mesh(
     atlas: u32,
     atlas_name: Option<String>,
     label: &str,
+    hole_mask: u16,
 ) -> Option<ObjectLodBlock> {
     let handle = match ctx.mesh_registry.with_admission_class(
         byroredux_renderer::GeometryAdmissionClass::Prop,
@@ -679,6 +746,7 @@ pub(super) fn spawn_tree_lod_mesh(
         mesh_handles: vec![handle],
         texture_handle: atlas,
         extra_texture_handles: Vec::new(),
+        hole_mask,
     })
 }
 

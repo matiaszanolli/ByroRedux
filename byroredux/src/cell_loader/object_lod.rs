@@ -95,6 +95,10 @@ pub(crate) struct ObjectLodBlock {
     /// authored paths that happen to resolve to the same underlying handle
     /// each still took their own increment and need their own release.
     pub(crate) extra_texture_handles: Vec<u32>,
+    /// The cells of this (level-4, baked `.bto`) quad that were left out because full detail covers them
+    /// (DLOD-OBJ-002): bit `(cy - qy) * 4 + (cx - qx)`, as [`super::lod_coverage::quad_resident_mask`]. `0` for
+    /// a whole quad. A resident quad whose mask no longer matches the full-detail residency is respawned.
+    pub(crate) hole_mask: u16,
 }
 
 impl ObjectLodBlock {
@@ -107,6 +111,7 @@ impl ObjectLodBlock {
             mesh_handles: Vec::new(),
             texture_handle: 0,
             extra_texture_handles: Vec::new(),
+            hole_mask: 0,
         }
     }
 }
@@ -247,8 +252,24 @@ pub(crate) fn stream_object_lod_blocks(
             },
         )
     };
+    // DLOD-OBJ-002 / -004 — a baked level-4 quad that straddles the resident boundary draws the cells that are
+    // not resident and none of the ones that are (V6: the bake partitions triangles one segment per cell on
+    // Skyrim and FO4). Every other quad keeps the whole-quad exclusion: levels 8 and up ship one segment per
+    // sub-mesh (DLOD-OBJ-003), and FO3/FNV `blocks\` quads have no per-cell lever (V7, DLOD-OBJ-005).
+    let per_cell = matches!(scheme, ObjectLodScheme::BakedBto);
+    let mut hole_masks: HashMap<(i32, i32, i32), u16> = HashMap::new();
     desired.retain(|&(level, qx, qy)| {
-        !quad_intersects_full_detail(level, qx, qy, input.resident_full_cells)
+        if !quad_intersects_full_detail(level, qx, qy, input.resident_full_cells) {
+            return true;
+        }
+        if per_cell && level == 4 {
+            let mask = super::lod_coverage::quad_resident_mask(qx, qy, input.resident_full_cells);
+            if mask != 0xFFFF {
+                hole_masks.insert((level, qx, qy), mask);
+                return true;
+            }
+        }
+        false
     });
     // Closest-first, so a budgeted reconcile fills the near bands before the
     // far ones. Ties break on level so a quad's own band stays grouped.
@@ -264,6 +285,22 @@ pub(crate) fn stream_object_lod_blocks(
 
     let mut spawned = 0usize;
     let mut unloaded = 0usize;
+
+    // A resident quad whose hole mask no longer matches full-detail residency (a cell entered or left the
+    // resident set) is respawned: drop it so it becomes a candidate again below.
+    let stale: Vec<(i32, i32, i32)> = blocks
+        .iter()
+        .filter(|(key, blk)| {
+            !blk.entities.is_empty() && blk.hole_mask != hole_masks.get(key).copied().unwrap_or(0)
+        })
+        .map(|(key, _)| *key)
+        .collect();
+    for key in stale {
+        if let Some(blk) = blocks.remove(&key) {
+            unload_object_lod_block(world, ctx, &blk);
+            unloaded += 1;
+        }
+    }
 
     // Unload quads that left the ring or changed band (skip empty sentinels —
     // nothing to free). A band switch shows up here as the old
@@ -304,6 +341,7 @@ pub(crate) fn stream_object_lod_blocks(
             level,
             qx,
             qy,
+            hole_mask: hole_masks.get(&(level, qx, qy)).copied().unwrap_or(0),
         };
         match spawn_object_lod_quad(world, ctx, tex_provider, wctx, quad) {
             Some(blk) => {
@@ -368,6 +406,40 @@ struct ObjectLodQuadKey {
     level: i32,
     qx: i32,
     qy: i32,
+    /// Cells of a level-4 baked quad to leave out (see [`ObjectLodBlock::hole_mask`]); `0` draws it whole.
+    hole_mask: u16,
+}
+
+/// DLOD-OBJ-002 -- the triangles of a baked level-4 quad that stand in a cell `hole_mask` marks, removed from
+/// `indices`. A triangle belongs to the cell its centroid falls in: the bake partitions triangles one segment
+/// per cell (V6), so every triangle lies in a single cell and a boundary-straddling one is assigned by centroid.
+/// `to_world` carries a vertex position to world Z-up (x, y, z); a triangle whose centroid is outside the quad
+/// is kept.
+pub(crate) fn drop_holed_triangles(
+    positions: &[[f32; 3]],
+    indices: &[u32],
+    to_world: impl Fn([f32; 3]) -> [f32; 3],
+    qx: i32,
+    qy: i32,
+    hole_mask: u16,
+) -> Vec<u32> {
+    if hole_mask == 0 {
+        return indices.to_vec();
+    }
+    let mut kept = Vec::with_capacity(indices.len());
+    for tri in indices.chunks_exact(3) {
+        let corner = |i: u32| positions.get(i as usize).map(|&p| to_world(p));
+        let (Some(a), Some(b), Some(c)) = (corner(tri[0]), corner(tri[1]), corner(tri[2])) else {
+            kept.extend_from_slice(tri);
+            continue;
+        };
+        let (wx, wy) = ((a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0);
+        let holed = super::lod_coverage::quad_cell_bit(qx, qy, wx, wy).is_some_and(|bit| hole_mask & bit != 0);
+        if !holed {
+            kept.extend_from_slice(tri);
+        }
+    }
+    kept
 }
 
 /// Insert one `.bto` sub-mesh's canonical `Material` and its blend / decal /
@@ -467,6 +539,7 @@ fn spawn_object_lod_quad(
         level,
         qx,
         qy,
+        hole_mask,
     } = quad;
     let (path, atlas_path) = object_lod_quad_paths(wctx, scheme, level, qx, qy);
     let bytes = tex_provider.extract_mesh(&path)?;
@@ -542,13 +615,39 @@ fn spawn_object_lod_quad(
             continue;
         }
         let verts = super::lod_support::imported_mesh_to_vertices(mesh);
+        // DLOD-OBJ-002 — leave out the triangles of cells full detail covers. Positions are renderer Y-up
+        // through the sub-mesh's transform; world Z-up is (x, -z, y).
+        let indices = if hole_mask != 0 {
+            let (t, q, s) = (
+                Vec3::from_array(mesh.translation),
+                Quat::from_xyzw(mesh.rotation[0], mesh.rotation[1], mesh.rotation[2], mesh.rotation[3]),
+                mesh.scale,
+            );
+            let kept = drop_holed_triangles(
+                &mesh.positions,
+                &mesh.indices,
+                |p| {
+                    let w = t + q * (Vec3::from_array(p) * s);
+                    [w.x, -w.z, w.y]
+                },
+                qx,
+                qy,
+                hole_mask,
+            );
+            if kept.is_empty() {
+                continue;
+            }
+            kept
+        } else {
+            mesh.indices.clone()
+        };
 
         // Lean global-only upload (no per-mesh buffers / no BLAS) — same path
         // terrain LOD uses: LOD geometry rasterizes from the global SSBO and
         // enters the TLAS only within `LOD_SHADOW_CASTER_DISTANCE`.
         let handle = match ctx.mesh_registry.with_admission_class(
             byroredux_renderer::GeometryAdmissionClass::Prop,
-            |registry| registry.upload_scene_mesh_global_only(&verts, &mesh.indices),
+            |registry| registry.upload_scene_mesh_global_only(&verts, &indices),
         )
         {
             Ok(h) => h,
@@ -677,6 +776,7 @@ fn spawn_object_lod_quad(
         mesh_handles,
         texture_handle: atlas,
         extra_texture_handles,
+        hole_mask,
     };
     if refused || block.entities.is_empty() {
         // #6332 — a refused quad's uploaded sub-meshes leave the pools exactly as they were, so
@@ -1338,6 +1438,29 @@ mod tests {
     /// declared. Oblivion stays `None` (its `DistantLOD\*.lod` placement
     /// lists are `placement_lod`'s, a genuinely different shape); FO3/FNV
     /// moved off `None` under #3321.
+    /// DLOD-OBJ-002 -- a baked level-4 quad that straddles the resident boundary draws the triangles of its
+    /// non-resident cells and none of the resident ones.
+    #[test]
+    fn holed_triangles_are_dropped_by_the_cell_their_centroid_is_in() {
+        // Renderer Y-up -> world Z-up (x, -z, y).
+        let to_world = |p: [f32; 3]| [p[0], -p[2], p[1]];
+        let cell = 4096.0f32;
+        // Quad SW cell (0, 0). Triangle A in cell (0, 0); triangle B in cell (1, 0); triangle C in cell (3, 3).
+        let tri = |cx: f32, cy: f32| {
+            let (x, y) = (cx * cell + 100.0, cy * cell + 100.0);
+            [[x, 5.0, -y], [x + 50.0, 5.0, -y], [x, 5.0, -(y + 50.0)]]
+        };
+        let (a, b, c) = (tri(0.0, 0.0), tri(1.0, 0.0), tri(3.0, 3.0));
+        let positions: Vec<[f32; 3]> = [a, b, c].concat();
+        let indices: Vec<u32> = (0..9).collect();
+        // Cell (0,0) bit 0 and cell (1,0) bit 1 resident.
+        let kept = drop_holed_triangles(&positions, &indices, to_world, 0, 0, 0b11);
+        assert_eq!(kept, vec![6, 7, 8], "only the (3,3) triangle remains");
+        assert_eq!(drop_holed_triangles(&positions, &indices, to_world, 0, 0, 0), indices, "no mask keeps all");
+        // A triangle with an out-of-range index is kept rather than guessed at.
+        assert_eq!(drop_holed_triangles(&positions, &[0, 1, 99], to_world, 0, 0, 0xFFFF), vec![0, 1, 99]);
+    }
+
     #[test]
     fn object_lod_scheme_table() {
         // The scheme / tree-support rows moved to `lod_family_table_covers_every_game` (DLOD-GATE-008).

@@ -90,8 +90,47 @@ lod_absent_families() {
     echo "${absent# }"
 }
 
+# ── DLOD-GATE-005 / #6639: the resident-boundary moat must be closed where a per-cell lever exists ──
+#
+# Skyrim and FO4 bake their level-4 object LOD one segment per cell (V6) and Skyrim its trees one file per
+# 4x4 quad with per-tree positions, so a quad that straddles the resident boundary draws its non-resident
+# cells and the moat reads 0. FO3 and FNV `blocks\` quads are one NiTriShape each (V7, DLOD-OBJ-005) and keep
+# the whole-quad treatment, and Oblivion's rings are per cell: their counts are reported, not failed.
+#
+# Args:  <profile label> <object_moat_cells> <tree_moat_cells>
+# Prints the families whose moat is nonzero on a profile that must have none (empty when none).
+lod_moat_violations() {
+    local label="$1" object="$2" tree="$3" bad=""
+    case "$label" in
+        skyrim) (( object == 0 )) || bad+=" object"; (( tree == 0 )) || bad+=" tree" ;;
+        fo4)    (( object == 0 )) || bad+=" object" ;;
+    esac
+    echo "${bad# }"
+}
+
 if [[ "${1:-}" == "--self-test" ]]; then
     fails=0
+    check_moat() {
+        local want="$1"
+        shift
+        local got
+        got="$(lod_moat_violations "$@")"
+        if [[ "$got" != "$want" ]]; then
+            echo "  self-test FAIL: lod_moat_violations($*) = '$got', want '$want'"
+            fails=1
+        else
+            echo "  ok: lod_moat_violations($*) = '$got'"
+        fi
+    }
+    echo "smoke[m-exteriors]: --self-test — DLOD-GATE-005 moat rule"
+    check_moat "" skyrim 0 0
+    check_moat "object" skyrim 3 0
+    check_moat "tree" skyrim 0 2
+    check_moat "object tree" skyrim 1 1
+    check_moat "" fo4 0 0
+    check_moat "object" fo4 5 0
+    check_moat "" fnv 52 0
+    check_moat "" fo3 15 0
     check_families() {
         local want="$1"
         shift
@@ -946,8 +985,15 @@ EOF
                 else
                     echo "exterior-smoke[$label]: PASS lod coverage: $coverage_line"
                 fi
-                # DLOD-GATE-005 — reported, not yet failing: Phase 3 drives both counts to 0.
-                echo "exterior-smoke[$label]: INFO LOD moat: object_moat_cells=$cov_object_moat tree_moat_cells=$cov_tree_moat"
+                # DLOD-GATE-005 — failing where a per-cell lever exists (Skyrim, FO4), reported elsewhere.
+                local moat_bad
+                moat_bad="$(lod_moat_violations "$label" "$cov_object_moat" "$cov_tree_moat")"
+                if [[ -n "$moat_bad" ]]; then
+                    echo "exterior-smoke[$label]: HARD FAIL - resident-boundary LOD moat ($moat_bad): object_moat_cells=$cov_object_moat tree_moat_cells=$cov_tree_moat"
+                    hard_fail=1
+                else
+                    echo "exterior-smoke[$label]: INFO LOD moat: object_moat_cells=$cov_object_moat tree_moat_cells=$cov_tree_moat"
+                fi
             fi
         fi
 

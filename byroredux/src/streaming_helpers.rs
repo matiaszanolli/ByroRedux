@@ -374,10 +374,17 @@ fn update_lod_coverage(
         .iter()
         .map(|(key, block)| (*key, block.hole_mask))
         .collect();
+    // DLOD-OBJ-002 / DLOD-TREE-008 — a baked level-4 object quad and a tree quad that straddle the resident
+    // boundary are drawn minus the resident cells (their hole masks), so they are counted like the terrain
+    // ring's holed finest blocks: only a cell that is both resident and still drawn is an overlap.
+    let object_keys_with_holes: Vec<((i32, i32, i32), u16)> =
+        state.object_lod_blocks.iter().map(|(key, block)| (*key, block.hole_mask)).collect();
+    let mut tree_keys_with_holes: Vec<((i32, i32, i32), u16)> = state.tree_lod.resident_keys_with_holes();
+    tree_keys_with_holes.extend(state.legacy_tree_lod.resident_keys().into_iter().map(|key| (key, 0)));
     let full_detail_overlaps =
         cell_loader::find_terrain_full_detail_overlaps(&terrain_keys_with_holes, &full_cells)
-            + cell_loader::find_full_detail_overlaps(&object_keys, &full_cells)
-            + cell_loader::find_full_detail_overlaps(&tree_keys, &full_cells);
+            + cell_loader::find_terrain_full_detail_overlaps(&object_keys_with_holes, &full_cells)
+            + cell_loader::find_terrain_full_detail_overlaps(&tree_keys_with_holes, &full_cells);
 
     // EXAL §5.2's VWD culling rule, checked live rather than only by
     // construction: a resident `VisibleWhenDistant` full REFR's cell must
@@ -391,7 +398,8 @@ fn update_lod_coverage(
     // VWD culls against the *object* scheme only (EXAL §5.2), terrain LOD
     // has no discrete-object concept to conflict with.
     let vwd_cells = resident_vwd_refr_cells(world);
-    let vwd_full_model_overlaps = cell_loader::find_full_detail_overlaps(&object_keys, &vwd_cells);
+    let vwd_full_model_overlaps =
+        cell_loader::find_terrain_full_detail_overlaps(&object_keys_with_holes, &vwd_cells);
 
     // Only compare settled snapshots. During a reconcile the finest terrain
     // blocks can be temporarily removed while their resident-cell hole masks
@@ -431,7 +439,7 @@ fn update_lod_coverage(
     let tree_moat_cells = match (cell_loader::tree_load_cells(game), state.tree_lod.authored_quads()) {
         (Some(ring), Some(quads)) => cell_loader::count_moat_cells(
             &resident_full,
-            &tree_keys,
+            &state.tree_lod.resolved_keys(),
             player_grid,
             ring,
             FINEST_QUAD_EDGE,
@@ -1610,6 +1618,7 @@ mod tests {
                 mesh_handles: vec![12, 13],
                 texture_handle: 0,
                 extra_texture_handles: Vec::new(),
+                hole_mask: 0,
             },
         );
         let mut placements: HashMap<(i32, i32), PlacementLodBlock> = HashMap::new();
