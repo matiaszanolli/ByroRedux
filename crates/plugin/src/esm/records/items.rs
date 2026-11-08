@@ -13,6 +13,14 @@ use super::common::{remap_efid, remap_fid, CommonItemFields};
 use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
+/// FO3 / FNV `WEAP` `DNAM` offsets (xEdit `wbDefinitionsFNV.pas` WEAP): Min Spread (f32), Base VATS To-Hit
+/// (u8, percent), Override Action Points (f32) and Skill (i32 actor value). Read forward through one
+/// `SubReader`, a short record leaving the defaults.
+const WEAP_DNAM_MIN_SPREAD: usize = 16;
+const WEAP_DNAM_VATS_TO_HIT: usize = 40;
+const WEAP_DNAM_AP_COST: usize = 68;
+const WEAP_DNAM_SKILL: usize = 104;
+
 mod consumable;
 pub use consumable::ConsumableEffect;
 
@@ -460,7 +468,7 @@ pub fn parse_weap(
                 anim_type = r.u8_or_default();
                 // Bytes 1-15: fields not yet decoded (flags, unknown
                 // counters, etc.).
-                r.skip_or_eof(15);
+                r.skip_to_or_eof(WEAP_DNAM_MIN_SPREAD);
                 // Offset 16 — Min Spread (f32). Pre-#1342 this was
                 // read as `ap_cost: u32`, a type mislabel confirmed by
                 // parsing the Varmint Rifle's raw DNAM: the bytes at
@@ -480,15 +488,13 @@ pub fn parse_weap(
                 // 45, hunting rifle 42, minigun 45, super sledge 45. Read from the
                 // payload by index so a short record leaves the 0.0 default (modded
                 // records must parse, never fail).
-                vats_base_to_hit = sub.data.get(40).map_or(0.0, |&chance| f32::from(chance));
+                r.skip_to_or_eof(WEAP_DNAM_VATS_TO_HIT);
+                vats_base_to_hit = f32::from(r.u8_or_default());
                 // Offset 104 — Skill (i32, xEdit `wbActorValueEnum`). Every vanilla
-                // record is long enough (FNV 136-204 bytes, FO3 120-136). By index
-                // for the same reason as above.
-                skill_actor_value = sub
-                    .data
-                    .get(104..108)
-                    .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-                    .and_then(|skill| u32::try_from(skill).ok());
+                // record is long enough (FNV 136-204 bytes, FO3 120-136); a short
+                // one leaves `None`.
+                // The AP cost at 68 sits between the two, so the reads below run in offset order
+                // (the reader is forward-only).
                 // Offset 68 — Action Points (f32), the regular VATS cost: xEdit's
                 // "Override - Action Points", authored on exactly the records with
                 // Flags 2 `0x8` set and 0 (the engine default) on the rest (FNV 203
@@ -496,8 +502,10 @@ pub fn parse_weap(
                 // rifle 18, hunting rifle 40, sniper 27, minigun 30, super sledge
                 // 38, ripper 65; FO3's column matches (10mm 17, super sledge 38).
                 // The `VATS` sub-record's AP is the melee special attack (#6450).
-                r.skip_or_eof(44);
+                r.skip_to_or_eof(WEAP_DNAM_AP_COST);
                 ap_cost = r.f32_or_default();
+                r.skip_to_or_eof(WEAP_DNAM_SKILL);
+                skill_actor_value = r.i32().ok().and_then(|skill| u32::try_from(skill).ok());
             }
             // FNV `VATS` — the per-weapon VATS inputs, in their own
             // sub-record rather than folded into `DNAM` (#3324). Present on

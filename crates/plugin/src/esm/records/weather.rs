@@ -728,6 +728,9 @@ fn parse_image_spaces(data: &[u8], remap: &Option<FormIdRemap>) -> [Option<u32>;
     })
 }
 
+/// Shortest `HNAM` / `WGDR` body that carries the four time-of-day slots every game authors.
+const WTHR_TOD_FORM_LIST_MIN_LEN: usize = 16;
+
 /// A per-time-of-day list of FormIDs (`HNAM` volumetric lighting, `WGDR` god rays): one 4-byte
 /// reference per slot, load-order remapped, a NULL slot `None`. A trailing partial word is ignored.
 fn parse_tod_form_list(data: &[u8], remap: &Option<FormIdRemap>) -> Vec<Option<u32>> {
@@ -1297,10 +1300,10 @@ fn parse_wthr_creation(
             // VLM-HF-010 / -011 — the per-time-of-day god-ray references: Skyrim SE `HNAM` names
             // `VOLI`, FO4 `WGDR` names `GDRY` (xEdit `wbWeatherVolumetricLighting` /
             // `wbWeatherGodRays`). Four slots at least; FO4 carries eight.
-            b"HNAM" if game != GameKind::Starfield && sub.data.len() >= 16 => {
+            b"HNAM" if game != GameKind::Starfield && sub.data.len() >= WTHR_TOD_FORM_LIST_MIN_LEN => {
                 record.volumetric_lighting = parse_tod_form_list(&sub.data, remap);
             }
-            b"WGDR" if game != GameKind::Starfield && sub.data.len() >= 16 => {
+            b"WGDR" if game != GameKind::Starfield && sub.data.len() >= WTHR_TOD_FORM_LIST_MIN_LEN => {
                 record.god_rays = parse_tod_form_list(&sub.data, remap);
             }
             // #4069 — NNAM is an RFCT (visual effect) cross-reference.

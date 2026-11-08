@@ -138,16 +138,24 @@ impl From<&StarfieldLighting> for HeightFogTail {
     }
 }
 
+/// Offset where the FO4 / FO76 height-fog tail starts in an `XCLL` body or `LGTM` `DATA`; also the
+/// whole length of the shortest (Skyrim-shaped) body, which carries no tail.
+pub(crate) const XCLL_HEIGHT_FOG_TAIL_AT: usize = 92;
+/// Body length from which the near height-fog layer is complete (through High Far Scale at 124).
+pub(crate) const XCLL_HEIGHT_FOG_NEAR_LEN: usize = 128;
+/// Body length from which the far layer (Far Height Mid / Range at 128 / 132) is present as well.
+pub(crate) const XCLL_HEIGHT_FOG_FAR_LEN: usize = 136;
+
 /// Decode the FO4 / FO76 height-fog tail from a whole `XCLL` body or `LGTM` `DATA` (VLM-HF-004).
 /// Both carriers are byte-identical from 92 on: Near Height Mid and Range, the two high-altitude
 /// colours, High Density Scale, the four near / far scales, and (136 bytes and up) Far Height Mid
 /// and Range. `None` below 128 bytes. FO4 ships 92 / 128 / 136-byte XCLLs (579 / 10 / 606 in
 /// `Fallout4.esm`), FO76 136 / 160.
 pub(crate) fn decode_creation_height_fog_tail(body: &[u8]) -> Option<HeightFogTail> {
-    if body.len() < 128 {
+    if body.len() < XCLL_HEIGHT_FOG_NEAR_LEN {
         return None;
     }
-    let mut r = crate::esm::sub_reader::SubReader::new(&body[92..]);
+    let mut r = crate::esm::sub_reader::SubReader::new(&body[XCLL_HEIGHT_FOG_TAIL_AT..]);
     let near_height_mid = r.f32_or_default(); // 92
     let near_height_range = r.f32_or_default(); // 96
     let fog_color_high_near = r.rgb_color().unwrap_or([0.0; 3]); // 100
@@ -157,7 +165,7 @@ pub(crate) fn decode_creation_height_fog_tail(body: &[u8]) -> Option<HeightFogTa
     let fog_far_scale = r.f32_or_default(); // 116
     let fog_high_near_scale = r.f32_or_default(); // 120
     let fog_high_far_scale = r.f32_or_default(); // 124
-    let (far_height_mid, far_height_range) = if body.len() >= 136 {
+    let (far_height_mid, far_height_range) = if body.len() >= XCLL_HEIGHT_FOG_FAR_LEN {
         (Some(r.f32_or_default()), Some(r.f32_or_default())) // 128, 132
     } else {
         (None, None)

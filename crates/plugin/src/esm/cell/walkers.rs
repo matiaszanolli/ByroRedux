@@ -63,8 +63,13 @@ const XCLL_SIZES_OBLIVION: &[usize] = &[28, 32, 36];
 // it would mis-parse 404 FO3 interiors' lighting — the same failure the
 // comment exists to prevent.
 const XCLL_SIZES_FALLOUT_ERA: &[usize] = &[28, 36, 40];
-const XCLL_SIZES_SKYRIM: &[usize] = &[28, 92];
-const XCLL_SIZES_FALLOUT4: &[usize] = &[28, 92, 128, 136];
+const XCLL_SIZES_SKYRIM: &[usize] = &[28, XCLL_HEIGHT_FOG_TAIL_AT];
+const XCLL_SIZES_FALLOUT4: &[usize] = &[
+    28,
+    XCLL_HEIGHT_FOG_TAIL_AT,
+    XCLL_HEIGHT_FOG_NEAR_LEN,
+    XCLL_HEIGHT_FOG_FAR_LEN,
+];
 const XCLL_SIZES_FALLOUT76: &[usize] = &[28, 136, 160];
 const XCLL_SIZES_STARFIELD: &[usize] = &[28, 108];
 

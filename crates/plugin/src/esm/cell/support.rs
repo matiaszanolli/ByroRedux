@@ -194,12 +194,9 @@ pub(crate) fn build_static_object_from_subs(
                 // alone — anything shorter is the pre-Skyrim struct, which
                 // authors no flicker parameters at all.
                 let read_f32 = |off: usize| -> f32 {
-                    f32::from_le_bytes([
-                        sub.data[off],
-                        sub.data[off + 1],
-                        sub.data[off + 2],
-                        sub.data[off + 3],
-                    ])
+                    let mut r = crate::esm::sub_reader::SubReader::new(&sub.data);
+                    r.skip_to_or_eof(off);
+                    r.f32_or_default()
                 };
                 let falloff_exponent = if sub.data.len() >= 20 {
                     read_f32(16)
@@ -296,12 +293,9 @@ pub(crate) fn build_static_object_from_subs(
             // untouched.
             b"DAT2" if is_ligh && sub.data.len() >= 11 => {
                 let read_f32 = |off: usize| -> f32 {
-                    f32::from_le_bytes([
-                        sub.data[off],
-                        sub.data[off + 1],
-                        sub.data[off + 2],
-                        sub.data[off + 3],
-                    ])
+                    let mut r = crate::esm::sub_reader::SubReader::new(&sub.data);
+                    r.skip_to_or_eof(off);
+                    r.f32_or_default()
                 };
                 let radius = read_f32(4);
                 let r = sub.data[8] as f32 / 255.0;
@@ -367,7 +361,7 @@ pub(crate) fn build_static_object_from_subs(
             }
             // VLM-HF-011 — FO4 `WGDR`, the light's `GDRY` god-ray profile; remapped like XPWR.
             b"WGDR" if is_ligh && sub.data.len() >= 4 => {
-                let raw = u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
+                let raw = crate::esm::sub_reader::SubReader::new(&sub.data).u32_or_default();
                 god_rays_form = Some(remap.as_ref().map_or(raw, |r| r.remap(raw)));
             }
             b"XPWR" if is_ligh && sub.data.len() >= 4 => {

@@ -9,6 +9,10 @@ use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 use anyhow::Result;
 
+/// Starfield `PERK` `DATA` is category, skill group, [crew requirement], flags: the crew byte is present from
+/// size 4, and the flags are always the last byte of the first four.
+const PERK_SF_DATA_CREW_LEN: usize = 4;
+
 /// Trait for typed sub-record schema decoding.
 /// Implementers declare the sub-record code and define how to read
 /// their data from a SubReader cursor.
@@ -503,7 +507,7 @@ pub fn parse_perk(
                 // Hidden are bits 0, 1 and 2 of the last byte, and there is no level or rank count (ranks are
                 // the `PRRK` blocks, counted below).
                 if sub.data.len() >= 3 {
-                    let flags = sub.data[sub.data.len().min(4) - 1];
+                    let flags = sub.data[sub.data.len().min(PERK_SF_DATA_CREW_LEN) - 1];
                     out.is_trait = flags & 0x01 != 0;
                     out.playable = flags & 0x02 != 0;
                     out.hidden = flags & 0x04 != 0;

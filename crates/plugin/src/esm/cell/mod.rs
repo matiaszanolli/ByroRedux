@@ -52,7 +52,10 @@ pub use worldspace::{WorldspaceRecord, worldspace_flags};
 
 // `pub(crate)` items siblings reach via `super::` / `crate::esm::cell::`.
 pub(crate) use index::canonical_interior_cell_id;
-pub(crate) use lighting::{decode_creation_height_fog_tail, decode_starfield_lighting_tail};
+pub(crate) use lighting::{
+    decode_creation_height_fog_tail, decode_starfield_lighting_tail, XCLL_HEIGHT_FOG_FAR_LEN,
+    XCLL_HEIGHT_FOG_NEAR_LEN, XCLL_HEIGHT_FOG_TAIL_AT,
+};
 // Private test-build alias: `tests/merge.rs` calls this through
 // `use super::super::*`, exactly as it did when the fn lived in this file.
 #[cfg(test)]

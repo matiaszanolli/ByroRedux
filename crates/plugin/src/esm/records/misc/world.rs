@@ -1371,6 +1371,9 @@ pub struct AttractionRuleRecord {
 /// `AOR2` through the combat-target byte: three f32s and two bool bytes (two unused bytes follow, xEdit
 /// `wbAORU`).
 const AOR2_LEN: usize = 14;
+/// `LGTM` `DATA` offset of the fog-far colour on the Skyrim-shaped body (FO4 / FO76 share it; xEdit `LGTM`
+/// `DATA`): past the head through Fog Power at 36 and the unused 40-71 bundle.
+const LGTM_FOG_FAR_COLOR_AT: usize = 72;
 
 pub fn parse_aoru(form_id: u32, subs: &[SubRecord]) -> AttractionRuleRecord {
     let common = CommonNamedFields::from_subs_with_remap(subs, &None);
@@ -1516,8 +1519,10 @@ pub fn parse_lgtm(
                     out.light_fade_begin = Some(tail_fields.light_fade_begin);
                     out.light_fade_end = Some(tail_fields.light_fade_end);
                     out.starfield = Some(starfield);
-                } else if sub.data.len() >= 92 {
-                    r.skip_or_eof(32);
+                } else if sub.data.len() >= crate::esm::cell::XCLL_HEIGHT_FOG_TAIL_AT {
+                    // The Skyrim-shaped body skips the unused 40-71 bundle: the fog-far
+                    // colour starts at 72.
+                    r.skip_to_or_eof(LGTM_FOG_FAR_COLOR_AT);
                     out.fog_far_color = r.rgb_color().ok();
                     out.fog_max = r.f32().ok();
                     out.light_fade_begin = r.f32().ok();
