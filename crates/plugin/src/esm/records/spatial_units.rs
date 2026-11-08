@@ -231,6 +231,34 @@ pub(super) fn normalize(index: &mut EsmIndex) {
             p.noise_falloff *= UNITS;
         }
     }
+    // #6777 — Starfield EXPL / PROJ / TXST-decal lengths are metric like every
+    // lane above (a rifle bullet's `PROD` authors speed 1000 / range 500, a
+    // frag mine's proximity 2.0, the frag grenade's blast 3.5 / 8.0; read as
+    // BU a mine fires at 3 cm). Lengths and speed ×UNITS; `gravity` (a
+    // multiplier), `lifetime` (seconds) and `impact_force` stay wire-valued.
+    // An unauthored field is the decoder's `0.0` default, which the multiply
+    // leaves at zero. `ExplosionGrenadeShell` (100 / 256) and
+    // `pulseGrenadeExplosion` (150 / 500) author BU-looking values; they are
+    // lifted with the rest, since a per-row exception would key on EditorIDs.
+    for explosion in index.explosions.values_mut() {
+        explosion.radius *= UNITS;
+        explosion.inner_radius *= UNITS;
+    }
+    for projectile in index.projectiles.values_mut() {
+        projectile.muzzle_speed *= UNITS;
+        projectile.range *= UNITS;
+        projectile.collision_radius *= UNITS;
+        projectile.alt_trigger_proximity *= UNITS;
+    }
+    for set in index.cells.texture_sets.values_mut() {
+        if let Some(decal) = &mut set.decal_data {
+            decal.min_width *= UNITS;
+            decal.max_width *= UNITS;
+            decal.min_height *= UNITS;
+            decal.max_height *= UNITS;
+            decal.depth *= UNITS;
+        }
+    }
     // NAVM was drained from cells into this one map before normalization.
     // Opaque packed payloads remain wire data; only decoded geometry is lifted.
     for nav in index.navmeshes.values_mut() {

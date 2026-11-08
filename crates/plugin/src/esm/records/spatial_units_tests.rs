@@ -513,3 +513,75 @@ fn legacy_index_keeps_authored_lgtm_and_xcll_lighting_distances() {
     assert_eq!(light.fog_clip, Some(8192.0));
     assert!(light.starfield.is_none());
 }
+
+/// #6777 — Starfield EXPL / PROJ / TXST-decal lengths are metric and lift once,
+/// like the lighting and water lanes. Dimensionless and time lanes stay wire-valued.
+#[test]
+fn starfield_expl_proj_and_decal_distances_lift_once() {
+    let mut index = EsmIndex {
+        game: GameKind::Starfield,
+        ..Default::default()
+    };
+    index.explosions.insert(
+        1,
+        ExplRecord {
+            radius: 8.0,
+            inner_radius: 3.5,
+            damage: 40.0,
+            ..Default::default()
+        },
+    );
+    index.projectiles.insert(
+        2,
+        ProjRecord {
+            muzzle_speed: 1000.0,
+            range: 500.0,
+            collision_radius: 0.5,
+            alt_trigger_proximity: 2.0,
+            alt_trigger_timer: 3.0,
+            gravity: 0.5,
+            lifetime: 4.0,
+            impact_force: 9.0,
+            ..Default::default()
+        },
+    );
+    index.cells.texture_sets.insert(
+        3,
+        crate::esm::cell::TextureSet {
+            decal_data: Some(crate::esm::cell::DecalData {
+                min_width: 4.0,
+                max_width: 6.0,
+                min_height: 2.0,
+                max_height: 3.0,
+                depth: 1.0,
+                shininess: 50.0,
+                parallax_scale: 0.0,
+                parallax_passes: 0,
+                flags: 0,
+                color: [0; 4],
+            }),
+            ..Default::default()
+        },
+    );
+    crate::esm::records::spatial_units::normalize(&mut index);
+    let e = &index.explosions[&1];
+    assert_eq!((e.radius, e.inner_radius), (8.0 * 70.0, 3.5 * 70.0));
+    assert_eq!(e.damage, 40.0, "damage is HP, not a length");
+    let p = &index.projectiles[&2];
+    assert_eq!(p.muzzle_speed, 1000.0 * 70.0);
+    assert_eq!(p.range, 500.0 * 70.0);
+    assert_eq!(p.collision_radius, 0.5 * 70.0);
+    assert_eq!(p.alt_trigger_proximity, 2.0 * 70.0);
+    assert_eq!((p.alt_trigger_timer, p.gravity, p.lifetime, p.impact_force), (3.0, 0.5, 4.0, 9.0));
+    let d = index.cells.texture_sets[&3].decal_data.as_ref().unwrap();
+    assert_eq!((d.min_width, d.max_width, d.min_height, d.max_height, d.depth), (280.0, 420.0, 140.0, 210.0, 70.0));
+    assert_eq!(d.shininess, 50.0);
+    // Every other game keeps the authored values (#4837 sibling rule).
+    let mut fo4 = EsmIndex {
+        game: GameKind::Fallout4,
+        ..Default::default()
+    };
+    fo4.projectiles.insert(2, ProjRecord { range: 500.0, ..Default::default() });
+    crate::esm::records::spatial_units::normalize(&mut fo4);
+    assert_eq!(fo4.projectiles[&2].range, 500.0);
+}
