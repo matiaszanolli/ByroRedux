@@ -597,9 +597,17 @@ pub fn parse_weap(
                 ammo_form = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }
             b"DESC" => {} // description string (we don't store it yet)
-            // #3715 — embedded equip-type FormID (an EQUP record).
+            // #3715 — embedded equip-type FormID (an EQUP record) from Skyrim on. FO3 and FNV
+            // define it as an s32 enum (`wbEquipTypeEnum`; `wbDefinitionsFNV.pas:3464`,
+            // `wbDefinitionsFO3.pas:2864`), so it stays raw there: remapping a small enum value
+            // through a plugin slot would turn 3 into 0x0N000003 (#6786).
             b"ETYP" => {
-                equip_type = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                equip_type = if matches!(game, GameKind::Fallout3NV | GameKind::Oblivion) {
+                    raw
+                } else {
+                    remap_fid(raw, remap)
+                };
             }
             // #3724 — gated on the full 8-byte leading shape rather than
             // relying on the three lenient/strict reads' own truncation
@@ -2880,5 +2888,17 @@ mod tests {
             }
             _ => panic!("expected Weapon kind"),
         }
+    }
+
+    /// #6786 — on FO3/FNV `ETYP` is an enum: a plugin with masters must not shift it into a slot.
+    #[test]
+    fn weap_etyp_is_a_raw_enum_on_fo3_fnv() {
+        let remap = Some(FormIdRemap::regular(2, vec![0]));
+        let subs = vec![sub(b"ETYP", 3u32.to_le_bytes())];
+        let item = parse_weap(0x3000, &subs, GameKind::Fallout3NV, &remap);
+        let ItemKind::Weapon { equip_type, .. } = item.kind else {
+            panic!("expected Weapon kind");
+        };
+        assert_eq!(equip_type, 3);
     }
 }
