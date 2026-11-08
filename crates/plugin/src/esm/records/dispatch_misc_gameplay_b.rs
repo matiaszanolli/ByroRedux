@@ -62,7 +62,7 @@ pub(super) fn dispatch_misc_gameplay_b_group(
             extract_records(reader, end, b"AVIF", &mut |fid, subs| {
                 index
                     .actor_values
-                    .insert(fid, parse_avif(fid, subs, &avif_remap));
+                    .insert(fid, parse_avif(fid, subs, game, &avif_remap));
             })?;
         }
         // ACTI / TERM #521 — dual-target: typed map for SCRI /

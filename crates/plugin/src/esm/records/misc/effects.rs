@@ -1,7 +1,7 @@
 //! Effects / FX / VATS / impact records.
 
 use super::super::common::{read_lstring_or_zstring, read_zstring, remap_fid, CommonNamedFields};
-use crate::esm::reader::SubRecord;
+use crate::esm::reader::{GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
 /// Actor Value Information record (`AVIF`). Defines the ~30 actor
@@ -44,6 +44,7 @@ pub struct AvifRecord {
 pub fn parse_avif(
     form_id: u32,
     subs: &[SubRecord],
+    game: GameKind,
     remap: &Option<crate::esm::reader::FormIdRemap>,
 ) -> AvifRecord {
     let mut out = AvifRecord {
@@ -60,7 +61,17 @@ pub fn parse_avif(
     for sub in subs {
         match &sub.sub_type {
             b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
-            b"ANAM" => out.abbreviation = read_zstring(&sub.data),
+            // `ANAM` is a `wbString` through Skyrim but a `wbLString` on FO4 and FO76
+            // (`wbDefinitionsFO4.pas:11680`): reading the FO4+ id as text produced garbage, while
+            // reading Skyrim's 3-character abbreviation as an lstring would invent an id (#6800).
+            b"ANAM" => {
+                out.abbreviation = if matches!(game, GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield)
+                {
+                    read_lstring_or_zstring(&sub.data)
+                } else {
+                    read_zstring(&sub.data)
+                }
+            }
             b"CNAM" => out.category = SubReader::new(&sub.data).u32_or_default(),
             b"AVSK" if sub.data.len() >= 16 => {
                 out.skill_scaling = Some(
@@ -671,13 +682,36 @@ mod tests {
             sub(b"CNAM", 1u32.to_le_bytes()), // Combat
             sub(b"AVSK", &avsk),
         ];
-        let a = parse_avif(0x0000_002B, &subs, &None);
+        let a = parse_avif(0x0000_002B, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(a.editor_id, "SmallGuns");
         assert_eq!(a.full_name, "Small Guns");
         assert_eq!(a.abbreviation, "SG");
         assert_eq!(a.category, 1);
         let scaling = a.skill_scaling.expect("AVSK populated for skill records");
         assert_eq!(scaling, [1.0, 0.0, 1.5, 2.0]);
+    }
+
+    /// #6800 -- FO4 / FO76 `ANAM` is an lstring: on a localized plugin its 4-byte id resolves through the
+    /// table, while Skyrim's plain-string 3-character abbreviation stays text.
+    #[test]
+    fn parse_avif_anam_is_an_lstring_from_fo4_and_text_before() {
+        use crate::esm::records::common::{LocalizedPluginGuard, StringsTableGuard};
+        use crate::esm::strings_table::{StringTableSet, StringsTable};
+        let text = b"STR\0";
+        let mut table = Vec::new();
+        for word in [1u32, text.len() as u32, 0x0002_3985, 0] {
+            table.extend_from_slice(&word.to_le_bytes());
+        }
+        table.extend_from_slice(text);
+        let _localized = LocalizedPluginGuard::new(true);
+        let _strings = StringsTableGuard::new(StringTableSet {
+            strings: Some(StringsTable::parse(&table, false).unwrap()),
+            ..Default::default()
+        });
+        let fo4 = parse_avif(1, &[sub(b"ANAM", 0x0002_3985u32.to_le_bytes())], GameKind::Fallout4, &None);
+        assert_eq!(fo4.abbreviation, "STR");
+        let skyrim = parse_avif(1, &[sub(b"ANAM", b"Arm\0")], GameKind::Skyrim, &None);
+        assert_eq!(skyrim.abbreviation, "Arm", "a Skyrim 3-char abbreviation is never a string id");
     }
 
     #[test]
@@ -688,7 +722,7 @@ mod tests {
             sub(b"FULL", b"Strength\0"),
             sub(b"DESC", b"Raw physical power.\0"),
         ];
-        let a = parse_avif(0x0000_0000, &subs, &None);
+        let a = parse_avif(0x0000_0000, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(a.editor_id, "Strength");
         assert_eq!(a.category, 0);
         assert!(a.skill_scaling.is_none());
@@ -1116,14 +1150,14 @@ mod tests {
             sub(b"PNAM", 0x0101u32.to_le_bytes()),
             sub(b"PNAM", 0x0202u32.to_le_bytes()),
         ];
-        let a = parse_avif(0xDEADBEEF, &subs, &None);
+        let a = parse_avif(0xDEADBEEF, &subs, GameKind::Skyrim, &None);
         assert_eq!(a.perks, vec![0x0101, 0x0202]);
     }
 
     #[test]
     fn parse_avif_no_pnam_keeps_perks_empty() {
         let subs = vec![sub(b"EDID", b"Strength\0"), sub(b"FULL", b"Strength\0")];
-        let a = parse_avif(0xDEAD0001, &subs, &None);
+        let a = parse_avif(0xDEAD0001, &subs, GameKind::Skyrim, &None);
         assert!(a.perks.is_empty());
     }
 
