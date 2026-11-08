@@ -683,6 +683,7 @@ dependencies = [
  "byroredux-core",
  "byroredux-debug-protocol",
  "byroredux-papyrus",
+ "byroredux-scripting",
  "log",
  "serde",
  "serde_json",

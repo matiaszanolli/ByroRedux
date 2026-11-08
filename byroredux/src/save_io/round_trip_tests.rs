@@ -2242,3 +2242,98 @@ fn story_manager_node_state_survives_save_load_and_still_gates() {
     }
     let _ = StoryManagerRng::default();
 }
+
+/// PERK-BODY-002 -- a perk-granted ability spell is in the reloaded `SpellList` exactly once, and its value
+/// change is counted once in the reloaded `ActorValues`: both columns are saved, so the reconcile that runs
+/// after the load finds the spell already applied and adds nothing (docs/prd/perk-entry-points.md §10 Q7).
+#[test]
+fn a_perk_granted_ability_survives_save_load_with_one_spell_and_one_value_change() {
+    use byroredux_core::character::Perks;
+    use byroredux_core::ecs::components::ActorValues;
+    use byroredux_plugin::esm::reader::GameKind;
+    use byroredux_plugin::esm::records::{
+        ActorValueRef, AvifRecord, EsmIndex, MagicArchetype, MagicEffectItem, MgefRecord, PerkEntry,
+        PerkEntryBody, PerkRecord, SpelRecord, SpellType, MGEF_FLAG_RECOVER,
+    };
+    use byroredux_scripting::{perk_entry_points, SpellCatalog, SpellList};
+
+    const HEALTH: u32 = 0x0000_02C9;
+    const PERK: u32 = 0x0001_0000;
+    const SPELL: u32 = 0x0000_0020;
+    const FORTIFY: u32 = 0x0000_0010;
+
+    let mut index = EsmIndex { game: GameKind::Fallout3NV, ..Default::default() };
+    index.character_rules = byroredux_core::character::CharacterRulesProfile::FALLOUT_NEW_VEGAS;
+    index.actor_values.insert(HEALTH, AvifRecord { form_id: HEALTH, ..Default::default() });
+    index.magic_effects.insert(
+        FORTIFY,
+        MgefRecord {
+            form_id: FORTIFY,
+            effect_flags: MGEF_FLAG_RECOVER,
+            archetype: Some(MagicArchetype::ValueModifier),
+            primary_actor_value: Some(ActorValueRef::Form(HEALTH)),
+            ..Default::default()
+        },
+    );
+    index.spells.insert(
+        SPELL,
+        SpelRecord {
+            form_id: SPELL,
+            spell_type: SpellType::Ability,
+            effects: vec![MagicEffectItem { effect_form_id: FORTIFY, magnitude: 25.0, area: 0, duration: 0, script_form_id: 0 }],
+            ..Default::default()
+        },
+    );
+    index.perks.insert(
+        PERK,
+        PerkRecord {
+            form_id: PERK,
+            entries: vec![PerkEntry {
+                rank: 0,
+                priority: 0,
+                body: PerkEntryBody::Ability { spell_form_id: SPELL },
+                condition_tabs: Vec::new(),
+            }],
+            ..Default::default()
+        },
+    );
+    let boot = |world: &mut World| {
+        byroredux_scripting::register(world);
+        world.register::<Perks>();
+        world.register::<ActorValues>();
+        perk_entry_points::install_perk_entry_points(world, &index);
+        world.insert_resource(SpellCatalog::from_index(&index));
+    };
+
+    let reg = build_save_registry();
+    let mut src = World::new();
+    src.insert_resource(StringPool::new());
+    src.insert_resource(FormIdPool::new());
+    boot(&mut src);
+    let actor = src.spawn();
+    let mut values = ActorValues::new();
+    values.set_base(HEALTH, 100.0);
+    src.insert(actor, values);
+    src.insert(actor, SpellList::default());
+    let mut perks = Perks::default();
+    perks.set_rank(PERK, 1);
+    src.insert(actor, perks);
+    perk_entry_points::reconcile_perk_bodies(&src);
+    assert_eq!(src.get::<ActorValues>(actor).unwrap().current(HEALTH), 125.0, "the live game applied it once");
+
+    let snap = save_world(&src, &reg).unwrap();
+    let bytes = encode(&snap, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    boot(&mut dst);
+    restore_world(&mut dst, &reg, &decoded).unwrap();
+    // The reconcile a save load triggers (the scheduled system, run twice: nothing is applied again).
+    perk_entry_points::reconcile_perk_bodies(&dst);
+    perk_entry_points::reconcile_perk_bodies(&dst);
+
+    let restored = dst.query::<SpellList>().unwrap().iter().next().map(|(entity, list)| (entity, list.0.clone())).unwrap();
+    assert_eq!(restored.1, vec![SPELL], "the ability is listed exactly once");
+    assert_eq!(dst.get::<ActorValues>(restored.0).unwrap().current(HEALTH), 125.0, "its +25 is counted once");
+}

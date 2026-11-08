@@ -87,6 +87,8 @@ pub fn register(world: &mut World) {
     world.register::<SpellList>();
     // #4415 — the racial SPLO set `AddRaceSpells`/`RemoveRaceSpells` use.
     world.register::<RaceSpells>();
+    // PERK-BODY — what the perk Ability/Quest reconcile last saw of each perk holder.
+    world.register::<crate::perk_entry_points::PerkBodyState>();
     // Canonical event markers. OnInitEvent + OnCellLoadEvent +
     // OnTriggerEnterEvent + EquipmentEventBatch join the existing
     // ActivateEvent / HitEvent / TimerExpired in the script-event

@@ -1360,7 +1360,10 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // `fog_godray_census.rs` (the VOLI / GDRY / height-fog findings of VLM-HF-003, -010, -011),
         // both cited from the PRD and the fog design's corpus findings; the former now calls
         // `RegnRecord::covers_cell` instead of carrying its own geometry (#6725).
-        ("plugin", 70, 9076),
+        // M48 Phase 0 (#6643) `info_result_census.rs` (INFO result-script greps `obscript_tools` cannot reach) and
+        // M24.2 Phase 2 (#6654) `perk_body_census.rs` (Ability / Quest ranks, DATA level and NNAM per master),
+        // both cited from their PRDs.
+        ("plugin", 72, 9267),
         // M47.3 result scripts — `obscript_tools avcodes` aligns the Fallout
         // misc-stat codes and `live` names the quests a script advanced
         // (no new target; the existing triage tool grew).

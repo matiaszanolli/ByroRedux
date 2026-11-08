@@ -141,12 +141,42 @@ pub struct PerkEntryPointEntry {
     pub tabs: Vec<PerkConditionTab>,
 }
 
+/// What a `Quest` or `Ability` entry carries (PERK-BODY): neither is a value on a hook, so neither is in
+/// the composition table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PerkBodyKind {
+    /// "Spells and Abilities added in this way will be removed when the Perk is removed" (CK *Perk*).
+    Ability { spell: u32 },
+    /// "A Quest Perk Entry will start a specified quest and set it to a specified stage" (CK *Perk*).
+    Quest { quest: u32, stage: u16 },
+}
+
+/// One `Quest` / `Ability` entry, resolved for the acquisition path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PerkBodyEntry {
+    /// Zero-based rank the entry is authored for, as [`PerkEntryPointEntry::rank`].
+    pub rank: u8,
+    pub kind: PerkBodyKind,
+    /// Conditions per `PRKC` tab. No vanilla master authors any on a Quest or Ability entry.
+    pub tabs: Vec<PerkConditionTab>,
+}
+
+/// Whether an entry authored for zero-based `entry_rank` applies to an actor holding a perk at the one-based
+/// `held_rank` (`0` = not held). One rule for every body and every hook: an entry is authored once per rank
+/// it applies at (GECK *Perk Entry*, FO4 CK *Perk*), and each rank's entry is the total at that rank.
+pub fn entry_applies_at(entry_rank: u8, held_rank: u8) -> bool {
+    held_rank != 0 && entry_rank == held_rank - 1
+}
+
 /// Perk entry-point entries and authored rank limits, keyed by PERK FormID.
 /// `NOT_SAVED_BY_DESIGN`: re-derived from the load order every boot.
 #[derive(Debug, Default, Clone)]
 pub struct PerkEntryTable {
     dialect: PerkEntryPointDialect,
     perks: HashMap<u32, Arc<Vec<PerkEntryPointEntry>>>,
+    /// `Quest` / `Ability` entries by perk, in every game that authors them — FO4 included, whose
+    /// composition table is empty.
+    bodies: HashMap<u32, Arc<Vec<PerkBodyEntry>>>,
     rank_limits: HashMap<u32, u8>,
     /// #6619 — the profile's `add_perk_raises_rank` row, read once here. A
     /// game with no composed entries (FO4) still has the rank rule.
@@ -169,10 +199,31 @@ impl PerkEntryTable {
             .iter()
             .map(|(&form_id, perk)| (form_id, perk.num_ranks))
             .collect();
+        let mut bodies = HashMap::new();
+        for (&form_id, perk) in &index.perks {
+            let entries: Vec<PerkBodyEntry> = perk
+                .entries
+                .iter()
+                .filter_map(|entry| {
+                    let kind = match entry.body {
+                        PerkEntryBody::Ability { spell_form_id } => PerkBodyKind::Ability { spell: spell_form_id },
+                        PerkEntryBody::Quest { quest_form_id, stage } => {
+                            PerkBodyKind::Quest { quest: quest_form_id, stage }
+                        }
+                        PerkEntryBody::EntryPoint { .. } => return None,
+                    };
+                    Some(PerkBodyEntry { rank: entry.rank, kind, tabs: entry.condition_tabs.clone() })
+                })
+                .collect();
+            if !entries.is_empty() {
+                bodies.insert(form_id, Arc::new(entries));
+            }
+        }
         if dialect == PerkEntryPointDialect::None {
             return Self {
                 dialect,
                 perks: HashMap::new(),
+                bodies,
                 rank_limits,
                 add_raises_rank,
             };
@@ -210,9 +261,20 @@ impl PerkEntryTable {
         Self {
             dialect,
             perks,
+            bodies,
             rank_limits,
             add_raises_rank,
         }
+    }
+
+    /// The `Quest` / `Ability` entries of one perk, if it authors any.
+    pub fn bodies(&self, perk_form_id: u32) -> Option<&[PerkBodyEntry]> {
+        self.bodies.get(&perk_form_id).map(|entries| entries.as_slice())
+    }
+
+    /// How many perks author a `Quest` or `Ability` entry.
+    pub fn body_perk_count(&self) -> usize {
+        self.bodies.len()
     }
 
     /// The entry-point numbering the table was folded under.
@@ -565,7 +627,7 @@ pub fn compose_entry_point_traced(
             };
             for (entry_order, entry) in entries.iter().enumerate() {
                 // `Perks` ranks are one-based; `PRKE` ranks are zero-based.
-                if entry.entry_point == entry_point && *rank != 0 && entry.rank == *rank - 1 {
+                if entry.entry_point == entry_point && entry_applies_at(entry.rank, *rank) {
                     due.push((
                         compose_order_key(entry.priority, perk_order, entry_order),
                         *perk,
@@ -656,6 +718,9 @@ fn apply_op(world: &World, owner: EntityId, op: &PerkOp, value: f32) -> f32 {
         PerkOp::NegativeAbsolute => -value.abs(),
     }
 }
+
+mod bodies;
+pub use bodies::{perk_body_system, reconcile_perk_bodies, PerkBodyState};
 
 #[cfg(test)]
 mod tests;

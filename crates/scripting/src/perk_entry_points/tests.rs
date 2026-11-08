@@ -615,3 +615,213 @@ fn entry_point_dialect_follows_the_profile_not_the_game() {
     let (world, actor) = world_with(&idx, &[(0x94EBA, 1)]);
     assert_eq!(compose_entry_point(&world, actor, DAMAGE, 20.0, &[]), 20.0);
 }
+
+// --- PERK-BODY: Ability and Quest entries follow the actor's perks --------------------------------
+
+mod bodies {
+    use super::*;
+    use crate::magic::{SpellCatalog, SpellList};
+    use crate::quest_stages::{QuestFormId, QuestStageState};
+    use byroredux_plugin::esm::records::{
+        ActorValueRef, MagicArchetype, MagicEffectItem, MgefRecord, SpelRecord, SpellType,
+    };
+
+    const HEALTH: u32 = 0x100;
+    const FORTIFY_HEALTH: u32 = 0x10;
+    /// Fortify Health abilities of 25 and 40: vanilla's authored-per-rank ability shape (FO3 `IronFist`).
+    const ABILITY_RANK_1: u32 = 0x20;
+    const ABILITY_RANK_2: u32 = 0x21;
+    const PERK: u32 = 0x0001_0000;
+    const QUEST: u32 = 0x0002_0000;
+
+    fn ability(rank: u8, spell: u32) -> PerkEntry {
+        PerkEntry { rank, priority: 0, body: PerkEntryBody::Ability { spell_form_id: spell }, condition_tabs: Vec::new() }
+    }
+
+    fn quest_entry(rank: u8, stage: u16) -> PerkEntry {
+        PerkEntry { rank, priority: 0, body: PerkEntryBody::Quest { quest_form_id: QUEST, stage }, condition_tabs: Vec::new() }
+    }
+
+    fn body_world(entries: Vec<PerkEntry>, owned: &[(u32, u8)]) -> (World, EntityId) {
+        let mut idx = index(GameKind::Fallout3NV, vec![perk(PERK, entries)]);
+        idx.actor_values.insert(HEALTH, AvifRecord { form_id: HEALTH, ..Default::default() });
+        idx.magic_effects.insert(
+            FORTIFY_HEALTH,
+            MgefRecord {
+                form_id: FORTIFY_HEALTH,
+                effect_flags: byroredux_plugin::esm::records::MGEF_FLAG_RECOVER, // a persistent fortify, not a per-second change
+                archetype: Some(MagicArchetype::ValueModifier),
+                primary_actor_value: Some(ActorValueRef::Form(HEALTH)),
+                ..Default::default()
+            },
+        );
+        for (form_id, magnitude) in [(ABILITY_RANK_1, 25.0), (ABILITY_RANK_2, 40.0)] {
+            idx.spells.insert(
+                form_id,
+                SpelRecord {
+                    form_id,
+                    spell_type: SpellType::Ability,
+                    effects: vec![MagicEffectItem {
+                        effect_form_id: FORTIFY_HEALTH,
+                        magnitude,
+                        area: 0,
+                        duration: 0,
+                        script_form_id: 0,
+                    }],
+                    ..Default::default()
+                },
+            );
+        }
+        let (mut world, actor) = world_with(&idx, owned);
+        world.insert_resource(SpellCatalog::from_index(&idx));
+        world.insert_resource(QuestStageState::default());
+        world.insert_resource(crate::quest_stages::QuestObjectiveState::default());
+        let mut values = ActorValues::new();
+        values.set_base(HEALTH, 100.0);
+        world.insert(actor, values);
+        world.insert(actor, SpellList::default());
+        (world, actor)
+    }
+
+    fn spells(world: &World, actor: EntityId) -> Vec<u32> {
+        world.get::<SpellList>(actor).map(|list| list.0.clone()).unwrap_or_default()
+    }
+
+    fn health(world: &World, actor: EntityId) -> f32 {
+        world.get::<ActorValues>(actor).unwrap().current(HEALTH)
+    }
+
+    fn set_rank(world: &World, actor: EntityId, rank: u8) {
+        let mut perks = world.query_mut::<Perks>().unwrap();
+        let owned = perks.get_mut(actor).unwrap();
+        owned.remove(PERK);
+        owned.set_rank(PERK, rank);
+    }
+
+    /// PERK-BODY-001 / A2 -- the spell is in the list for as long as the perk is held at the rank the entry is
+    /// authored for, and its value changes come and go with it.
+    #[test]
+    fn ability_entry_spell_follows_the_perk() {
+        let (world, actor) = body_world(vec![ability(0, ABILITY_RANK_1), ability(1, ABILITY_RANK_2)], &[]);
+        reconcile_perk_bodies(&world);
+        assert!(spells(&world, actor).is_empty(), "not held: no spell");
+
+        set_rank(&world, actor, 1);
+        reconcile_perk_bodies(&world);
+        assert_eq!(spells(&world, actor), vec![ABILITY_RANK_1]);
+        assert_eq!(health(&world, actor), 125.0);
+
+        // Rank 2 replaces rank 1's ability: each rank's entry is the total at that rank.
+        set_rank(&world, actor, 2);
+        reconcile_perk_bodies(&world);
+        assert_eq!(spells(&world, actor), vec![ABILITY_RANK_2]);
+        assert_eq!(health(&world, actor), 140.0);
+
+        // Nothing changed: nothing is applied again.
+        reconcile_perk_bodies(&world);
+        assert_eq!(health(&world, actor), 140.0);
+
+        // The perk goes (a script's RemovePerk): the spell goes with it.
+        world.query_mut::<Perks>().unwrap().get_mut(actor).unwrap().remove(PERK);
+        reconcile_perk_bodies(&world);
+        assert!(spells(&world, actor).is_empty());
+        assert_eq!(health(&world, actor), 100.0);
+    }
+
+    /// PERK-BODY-002 -- a reload finds the spell in the saved `SpellList` and its value change in the saved
+    /// `ActorValues`; the first reconcile after it adds neither again.
+    #[test]
+    fn a_reload_finds_the_ability_already_applied() {
+        let (world, actor) = body_world(vec![ability(0, ABILITY_RANK_1)], &[(PERK, 1)]);
+        // What the save holds: the spell listed once and its +25 in the actor values.
+        world.query_mut::<SpellList>().unwrap().get_mut(actor).unwrap().0.push(ABILITY_RANK_1);
+        world.query_mut::<ActorValues>().unwrap().get_mut(actor).unwrap().set_base(HEALTH, 125.0);
+
+        reconcile_perk_bodies(&world);
+        reconcile_perk_bodies(&world);
+        assert_eq!(spells(&world, actor), vec![ABILITY_RANK_1], "listed exactly once");
+        assert_eq!(health(&world, actor), 125.0, "counted once");
+        // And it still leaves with the perk after the reload.
+        world.query_mut::<Perks>().unwrap().get_mut(actor).unwrap().remove(PERK);
+        reconcile_perk_bodies(&world);
+        assert!(spells(&world, actor).is_empty());
+    }
+
+    /// PERK-BODY-004 -- an NPC's perks (stamped from `PRKR` at spawn) grant their abilities like the player's.
+    #[test]
+    fn an_npcs_perk_grants_its_ability() {
+        let (mut world, player) = body_world(vec![ability(0, ABILITY_RANK_1)], &[]);
+        world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(player));
+        let npc = world.spawn();
+        let mut perks = Perks::default();
+        perks.set_rank(PERK, 1);
+        world.insert(npc, perks);
+        world.insert(npc, SpellList::default());
+        reconcile_perk_bodies(&world);
+        assert_eq!(spells(&world, npc), vec![ABILITY_RANK_1]);
+        assert!(spells(&world, player).is_empty(), "the player holds no perk");
+    }
+
+    fn stage(world: &World) -> u16 {
+        world.resource::<QuestStageState>().get_stage(QuestFormId(QUEST))
+    }
+
+    /// PERK-BODY-003 -- gaining the rank a Quest entry is authored for starts the quest at the entry's stage; a
+    /// perk the actor already held when it was first seen (a loaded save) does not fire again.
+    #[test]
+    fn a_quest_entry_fires_when_its_rank_is_gained() {
+        // Vanilla `IntenseTraining`'s shape: one entry per rank, each its own stage of the same quest.
+        let (mut world, player) = body_world(vec![quest_entry(0, 101), quest_entry(1, 102)], &[]);
+        world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(player));
+        reconcile_perk_bodies(&world); // baseline: no perks
+        assert!(!world.resource::<QuestStageState>().is_started(QuestFormId(QUEST)));
+
+        set_rank(&world, player, 1);
+        reconcile_perk_bodies(&world);
+        assert!(world.resource::<QuestStageState>().is_started(QuestFormId(QUEST)));
+        assert_eq!(stage(&world), 101);
+
+        set_rank(&world, player, 2);
+        reconcile_perk_bodies(&world);
+        assert_eq!(stage(&world), 102, "the second rank's entry, not a replay of the first");
+
+        // Nothing changed: no re-fire (the stage is moved by hand and must stay).
+        world.resource_mut::<QuestStageState>().set_stage(QuestFormId(QUEST), 500);
+        reconcile_perk_bodies(&world);
+        assert_eq!(stage(&world), 500);
+    }
+
+    #[test]
+    fn a_perk_held_at_the_first_sight_of_an_actor_is_a_baseline_not_an_acquisition() {
+        let (mut world, player) = body_world(vec![quest_entry(0, 101)], &[(PERK, 1)]);
+        world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(player));
+        reconcile_perk_bodies(&world);
+        assert!(!world.resource::<QuestStageState>().is_started(QuestFormId(QUEST)));
+    }
+
+    #[test]
+    fn only_the_players_perks_start_quests() {
+        let (mut world, player) = body_world(vec![quest_entry(0, 101)], &[]);
+        world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(player));
+        let npc = world.spawn();
+        world.insert(npc, Perks::default());
+        reconcile_perk_bodies(&world); // baselines both
+        world.query_mut::<Perks>().unwrap().get_mut(npc).unwrap().set_rank(PERK, 1);
+        reconcile_perk_bodies(&world);
+        assert!(!world.resource::<QuestStageState>().is_started(QuestFormId(QUEST)));
+    }
+
+    /// A Quest entry whose tab carries a condition nothing supplies a subject for does not fire (the
+    /// fail-closed rule the composer keeps).
+    #[test]
+    fn a_quest_entry_gated_on_an_unsupplied_subject_stays_quiet() {
+        let mut gated = quest_entry(0, 101);
+        gated.condition_tabs = vec![tab(1, vec![condition(GET_DEAD, 0.0)])];
+        let (mut world, player) = body_world(vec![gated], &[]);
+        world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(player));
+        reconcile_perk_bodies(&world);
+        set_rank(&world, player, 1);
+        reconcile_perk_bodies(&world);
+        assert!(!world.resource::<QuestStageState>().is_started(QuestFormId(QUEST)));
+    }
+}

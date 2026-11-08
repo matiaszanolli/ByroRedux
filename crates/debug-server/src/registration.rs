@@ -149,6 +149,7 @@ fn register_faction_reputation(registry: &mut ComponentRegistry) {
 pub fn register_all(registry: &mut ComponentRegistry) {
     use byroredux_core::animation::{AnimationPlayer, AnimationStack};
     use byroredux_core::character::{CharacterLevel, LevelUpPoints, Perks};
+    use byroredux_scripting::SpellList;
     use byroredux_core::ecs::components::*;
     use byroredux_core::ecs::components::water::WaterCurrentVolume;
 
@@ -371,6 +372,8 @@ pub fn register_all(registry: &mut ComponentRegistry) {
     register_component::<Dead>(registry, "Dead", vec![]);
     register_component::<CreatureAttack>(registry, "CreatureAttack", vec!["damage"]);
     register_component::<Perks>(registry, "Perks", vec!["entries"]);
+    // PERK-DX-006 — a perk-granted ability is visible on the actor as a spell in its list.
+    register_component::<SpellList>(registry, "SpellList", vec!["0"]);
     register_component::<CharacterLevel>(registry, "CharacterLevel", vec!["level", "xp"]);
     // M47.2 — banked level-up skill points and perks (the `levelup` command).
     register_component::<LevelUpPoints>(
@@ -535,6 +538,7 @@ mod roster_tests {
             "EquipmentSlots",
             "Inventory",
             "Perks",
+            "SpellList",
         ];
         let mut missing: Vec<_> = requested
             .iter()
@@ -634,6 +638,10 @@ mod roster_tests {
         let missing: Vec<&String> = inspectable
             .iter()
             .filter(|name| {
+                // `FactionReputation` registers through its hand-rolled read-only descriptor.
+                if name.as_str() == "FactionReputation" {
+                    return !registrations.contains("register_faction_reputation(registry);");
+                }
                 let needle = format!("{}{}{}>", "register_component", "::<", name);
                 !registrations.contains(&needle)
             })

@@ -747,6 +747,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("FragmentTable", "M47.2 — the PF_ package and TERM_ terminal fragments the Papyrus VM runs (PackageFragments, TerminalFragments), populated once from the PACK / TERM VMADs and scripts, only read afterward"),
         ("ActivePackages", "M47.2 — each actor's current package, kept from the AI's transition reports (rebuilt at spawn after a load)"),
         ("PendingTerminalSelections", "M47.2 — terminal menu picks the host reports, drained the same frame by terminal_fragment_system"),
+        ("PerkBodyState", "PERK-BODY — what perk_body_system last saw of a perk holder; a reload re-derives it from the saved Perks, and the saved SpellList and ActorValues already carry the ability spell and its value changes"),
         ("PendingPerkEntries", "M47.2 — perk entry runs the host reports, drained the same frame by perk_fragment_system"),
         ("PendingPackageEnds", "M47.2 — package completions the AI reports (Travel arrival), drained the same frame by package_fragment_system"),
         ("PendingPackageTransitions", "M47.2 — package transitions the AI reports, drained the same frame by package_fragment_system"),

@@ -12,6 +12,9 @@ pub(super) fn register_package_fragments_systems(scheduler: &mut Scheduler) {
     scheduler.add_exclusive(Stage::Update, crate::npc_spawn::ambient_ai_package_system);
     // M47.2 — the package transitions it reports run their PF_ fragments.
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::package_fragment_system);
+    // PERK-BODY — a perk's Ability spell and Quest entry follow the actor's `Perks`, whatever changed them
+    // (`levelup perk`, a script's AddPerk, a PRKR stamp, a save load). Exclusive: it applies quest effects.
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::perk_entry_points::perk_body_system);
     // M47.2 — the perk entry runs the host reports run their PRKF_ fragments.
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::perk_fragment_system);
     // M47.2 — the terminal menu picks the host reports run their TERM_ fragments.
