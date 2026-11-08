@@ -67,6 +67,51 @@ base-ESM census and the live engine disagree. The design and the findings behind
   cap, `gpu_volumetrics_inject` 0.68 ms, no log of dropped volumes, and a finished frame without visible artifacts.
   `JacobstownLodge` (249) and `HooverDamIntOliverArea` (208) were not booted.
 
+## Placed beam census, every title and official DLC (VLM-INT-006 denominators), measured 2026-11-07
+
+`cargo run --release -p byroredux-plugin --example baked_beam_census -- <master.esm>`, one master at a time,
+over every official master and DLC found on this machine (Oblivion, Fallout 3 and its five DLCs, Fallout: New
+Vegas and its DLCs, Skyrim SE and its three DLCs, Fallout 4 and its DLCs, Starfield and Shattered Space).
+The census counts placed references whose base model path contains `lightbeam` or `godray`; Skyrim's
+indoor sunlight is authored as `LIGH` placements and is counted separately.
+
+| Master | Beam base models | Interior placements | …in a Show Sky cell | …within 256 BU of a `LIGH` | Exterior placements |
+|---|---|---|---|---|---|
+| `Oblivion.esm` | 9 | 1,249 | 2 | 877 | 10 |
+| `Fallout3.esm` | 24 | 6,363 | 0 | 5,391 | 71 |
+| FO3 DLCs (Anchorage, The Pit, Broken Steel, Point Lookout, Zeta) | 0 | 0 | 0 | 0 | 0 |
+| `FalloutNV.esm` | 30 | 3,051 | 0 | 2,425 | 214 |
+| `DeadMoney.esm` | 3 | 18 | 0 | 5 | 22 |
+| `OldWorldBlues.esm` / `LonesomeRoad.esm` | 2 / 2 | 2 / 1 | 0 | 2 / 0 | 0 |
+| Other FNV DLCs (Honest Hearts, Gun Runners' Arsenal, the five item packs) | 0 | 0 | 0 | 0 | 0 |
+| `Skyrim.esm` | 3 | 1 | 0 | 0 | 0 |
+| `Dawnguard.esm` | 2 | 2 | 2 | 0 | 6 |
+| `Update.esm`, `HearthFires.esm`, `Dragonborn.esm` | 0 | 0 | 0 | 0 | 0 |
+| `Fallout4.esm` | 21 | 1,604 | 657 | 1,578 | 359 |
+| `DLCNukaWorld.esm` | 2 | 51 | 0 | 51 | 0 |
+| `DLCCoast.esm` | 1 | 0 | 0 | 0 | 2 |
+| Other FO4 DLCs (Robot, the three workshops, Ultra High Resolution) | 0 | 0 | 0 | 0 | 0 |
+| `Starfield.esm` | 1 | 0 | 0 | 0 | 1 |
+| `ShatteredSpace.esm` | 0 | 0 | 0 | 0 | 0 |
+
+- **Fixture beams dominate every title but Fallout 4.** Oblivion, FO3 and FNV place their beams in cells with
+  Show Sky off (FO3 0 of 6,363, FNV 0 of 3,051, Oblivion 2 of 1,249), most within 256 BU of a `LIGH`: fixture
+  haze, as the FNV finding above says. **Fallout 4 is the exception**: 657 of its 1,604 interior placements sit in
+  Show Sky cells (`WindowLightBeam` 114 of 114, `FluorescentLightBeam` 142 of 258, `LightBeamThinDustyShort02`
+  130 of 480), and the busiest cell, `DBTechHighSchool01` (83), is one. Fallout 4 is the title where the
+  converted-beam coverage most needs a live measurement.
+- **Skyrim places almost no beam meshes.** `Skyrim.esm` has 1 interior beam
+  (`FXDweCenterLightBeamObservatory.nif` in `Mzulft03`); its indoor sun is 50 sunlight `LIGH` bases placed 853
+  times in interiors (e.g. `AbandonedShackInterior`, `DefaultSunlight01Closer03` and `BounceAmb01NS`), with
+  Dawnguard adding 2 bases and 1 placement.
+- **Starfield and its DLC place one beam**: `Activator_LightBeamTall01` in the exterior cell `POI070Ext02`. By
+  this name filter Starfield has no baked interior beams; a different authoring route (not found by the
+  census) is not ruled out.
+- **Converter coverage is measured only for Fallout 3 / FNV.** `fnv_baked_beam_converter_coverage` lists FNV and
+  FO3 models; Oblivion, Fallout 4 and Starfield beams have no live converted-over-placed ratio yet. Fallout 4's
+  `Effects\Ambient\*LightBeam*.nif` models (21 bases) are the next list to run through it, with the
+  `GameKind` exemption of #6731 widened only after that census.
+
 ## Next steps
 
 - Reconcile the remaining census placements against live `FogVolume` entities in the cells not yet booted
