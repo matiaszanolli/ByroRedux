@@ -70,22 +70,22 @@ use super::lod_support::{
     LodAttemptVerdict, LodReconcileInput, LodWorkBudget,
 };
 
-/// Object-LOD ring radius in **cells** (Chebyshev) for the placement
-/// scheme (Oblivion `.lod`) — the flat, single-ring object-LOD reader for a game with no baked quadtree.
+/// The authored reach of Oblivion's building (placement) LOD: `[General] uGridDistantCount`, 25 in the shipped
+/// `Oblivion_default.ini` (UESP *Oblivion Mod:Oblivion.ini*: "Controls viewable distance for LOD buildings,
+/// ruins, etc.").
+pub(crate) const OBLIVION_GRID_DISTANT_COUNT: i32 = 25;
+
+/// Object-LOD ring radius in **cells** (Chebyshev) for the placement scheme (Oblivion `.lod`) — the flat,
+/// single-ring object-LOD reader for a game with no baked quadtree. Cells within this distance of the player,
+/// and entirely beyond the full-detail ring, load their `.lod`.
 ///
-/// NOT INI-derived (DLOD-BAND-001): no `Oblivion.ini` key is read for it. The authored reach is
-/// `uGridDistantCount` (25 in the shipped `Oblivion_default.ini`, UESP *Oblivion Mod:Oblivion.ini*), whose unit
-/// (radius or diameter, V1) is unsettled; 16 is an engine-chosen ring that predates that key and stays until
-/// DLOD-BAND-002 takes the reach from it. Pinned by `placement_lod_radius_cells_is_the_engine_chosen_16`. Cells within this
-/// distance of the player — and entirely beyond the full-detail ring —
-/// load their `.lod`. This no longer mirrors a same-shaped constant on the
-/// Skyrim/FO4 side: the flat object-LOD ring there was replaced by the
-/// quadtree band ladder in [`super::lod_bands::LodBandLadder`], which
-/// streams multiple discrete levels (4/8/16 for Skyrim) rather than one
-/// flat ring, so the two schemes no longer mirror each other. The
-/// placement scheme correctly stays a flat 16-cell ring — no baked
-/// quadtree exists for Oblivion/FO3/FNV.
-pub(crate) const PLACEMENT_LOD_RADIUS_CELLS: i32 = 16;
+/// INI-derived (DLOD-BAND-002): [`OBLIVION_GRID_DISTANT_COUNT`] read as a **diameter** in cells, like the same
+/// file's `uGridsToLoad=5` (a 5x5 loaded grid): 25 across is a radius of 12. The unit has no second source (V1);
+/// this is the owner's ruling, taken 2026-11-08. The ring used to be an engine-chosen 16; at the default 12-cell
+/// full-detail radius it now spawns only what lies beyond it, which is nothing (Q7, DLOD-BAND-007).
+/// `uGridDistantCountCity` (default 4, closed-city worldspaces) is not modelled. Pinned by
+/// `placement_lod_radius_cells_is_the_ugriddistantcount_diameter_reading`.
+pub(crate) const PLACEMENT_LOD_RADIUS_CELLS: i32 = OBLIVION_GRID_DISTANT_COUNT / 2;
 
 /// One distant-object placement decoded from a `.lod` file. Values are in
 /// the **source** convention (Bethesda Z-up world units, Euler radians,
@@ -951,11 +951,12 @@ mod tests {
         assert!(!spawn.contains("has_mesh(") && !spawn.contains("extract_mesh("));
     }
 
-    /// DLOD-BAND-001 -- the placement ring's 16 cells is an engine-chosen value, not an INI reading; this pins
-    /// it so DLOD-BAND-002's change to `uGridDistantCount` is a deliberate edit.
+    /// DLOD-BAND-001 / -002 -- the placement ring's reach is `uGridDistantCount` (25) read as a diameter, like
+    /// `uGridsToLoad=5` (V1, owner's ruling 2026-11-08): a radius of 12, down from the engine-chosen 16.
     #[test]
-    fn placement_lod_radius_cells_is_the_engine_chosen_16() {
-        assert_eq!(PLACEMENT_LOD_RADIUS_CELLS, 16);
+    fn placement_lod_radius_cells_is_the_ugriddistantcount_diameter_reading() {
+        assert_eq!(OBLIVION_GRID_DISTANT_COUNT, 25);
+        assert_eq!(PLACEMENT_LOD_RADIUS_CELLS, 12);
     }
 
     #[test]

@@ -61,11 +61,16 @@ use super::tree_lod::{
     build_tree_lod_mesh, parse_dtl, spawn_tree_lod_mesh, DtlTree, TreeLodInstance, TreeLodSpecies,
 };
 
-/// Oblivion's `[General] uGridDistantTreeRange` in cells (15 in the shipped `Oblivion_default.ini`; UESP,
-/// *Oblivion Mod:Oblivion.ini*: "the visible distance on trees"). Read as a radius; whether it is a radius
-/// or a diameter has no second source (V1), so this is the documented reading, the risk owned by Q7.
+/// Oblivion's `[General] uGridDistantTreeRange`: 15 in the shipped `Oblivion_default.ini` (UESP, *Oblivion
+/// Mod:Oblivion.ini*: "the visible distance on trees").
+pub(crate) const OBLIVION_GRID_DISTANT_TREE_RANGE: i32 = 15;
+
+/// The tree ring's reach in cells from the player. The INI value is read as a **diameter** in cells, like the
+/// same file's `uGridsToLoad=5` (a 5x5 loaded grid): 15 across is a radius of 7. The unit has no second
+/// source (V1), so this is the owner's ruling on the PRD's risk, taken 2026-11-08. It sits inside the default
+/// 12-cell full-detail radius, so at the default `--radius` the ring draws nothing (DLOD-BAND-007, Q7).
 /// Pinned by `legacy_tree_ranges_are_the_documented_ini_readings`.
-pub(crate) const OBLIVION_TREE_RANGE_CELLS: i32 = 15;
+pub(crate) const OBLIVION_TREE_RANGE_CELLS: i32 = OBLIVION_GRID_DISTANT_TREE_RANGE / 2;
 
 /// Fallout 3's `[TerrainManager] fTreeLoadDistance` in BU (40000 in both the FO3 and FNV `VeryHigh.ini`, line
 /// 26). What the key bounds on these games is undocumented (V10); this reads it as the `.dtl` ring's reach,

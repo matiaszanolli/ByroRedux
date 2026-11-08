@@ -157,9 +157,10 @@ fn a_dtl_quad_with_a_resident_cell_is_vetoed() {
 /// legacy tree container have one.
 #[test]
 fn legacy_tree_ranges_are_the_documented_ini_readings() {
-    assert_eq!(OBLIVION_TREE_RANGE_CELLS, 15, "uGridDistantTreeRange in Oblivion_default.ini");
+    assert_eq!(OBLIVION_GRID_DISTANT_TREE_RANGE, 15, "uGridDistantTreeRange in Oblivion_default.ini");
+    assert_eq!(OBLIVION_TREE_RANGE_CELLS, 7, "read as a diameter, like uGridsToLoad=5 (V1, owner's ruling)");
     assert_eq!(FALLOUT3_TREE_LOAD_BU, 40_000.0, "fTreeLoadDistance in the FO3 / FNV VeryHigh.ini");
-    assert_eq!(legacy_tree_range_cells(GameKind::Oblivion), Some(15));
+    assert_eq!(legacy_tree_range_cells(GameKind::Oblivion), Some(7));
     assert_eq!(legacy_tree_range_cells(GameKind::Fallout3NV), Some(10), "40000 BU / 4096, rounded");
     for game in [GameKind::Skyrim, GameKind::Fallout4, GameKind::Fallout76, GameKind::Starfield] {
         assert_eq!(legacy_tree_family(game), None, "{game:?}");
