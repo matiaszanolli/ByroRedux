@@ -26,13 +26,22 @@ use crate::ecs::storage::Component;
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct UseWeaponPackageBehavior {
+    /// The weapon base, or [`USE_ACTORS_OWN_WEAPON`] for object type 12 (Weapons: Any): the actor's equipped
+    /// weapon, else its first inventory weapon (AIP-UW-008).
     pub weapon_form_id: u32,
     pub target_form_id: u32,
     pub bursts: Option<u32>,
     pub volley_shots: u32,
     /// Do No Damage: the shots hit but harm nothing.
     pub harmless: bool,
+    /// The `PLDT` location and its radius the actor must stand inside before the volley is raised (AIP-UW-001);
+    /// `None` when the package authors none.
+    pub place: Option<(super::eat_sleep::EatSleepLocation, f32)>,
 }
+
+/// [`UseWeaponPackageBehavior::weapon_form_id`] for a package that names a weapon class rather than one weapon:
+/// no weapon base is the null FormID.
+pub const USE_ACTORS_OWN_WEAPON: u32 = 0;
 
 impl Component for UseWeaponPackageBehavior {
     type Storage = SparseSetStorage<Self>;

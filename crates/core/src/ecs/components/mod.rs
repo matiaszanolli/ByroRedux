@@ -80,7 +80,7 @@ pub use flee_package::FleePackageBehavior;
 pub use ambush::AmbushBehavior;
 pub use find_package::{FindActorClass, FindItemKind, FindPackageBehavior, FindProgress, FindTarget};
 pub use guard::{GuardBehavior, GuardState};
-pub use use_weapon_package::{UseWeaponPackageBehavior, UseWeaponPackageStarted};
+pub use use_weapon_package::{UseWeaponPackageBehavior, UseWeaponPackageStarted, USE_ACTORS_OWN_WEAPON};
 pub use hierarchy::{Children, Parent};
 pub use inventory::{
     EquipmentSlots, EquippedWeapon, Inventory, InventoryIndex, ItemInstanceId, ItemStack,

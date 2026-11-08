@@ -103,17 +103,62 @@ fn dialogue_installs_ambient(package: &PackRecord, world: &World) -> bool {
 ///   object-type enum's numbering contradicts the vanilla data), and a
 ///   target-less package fires into the air.
 fn use_weapon_behavior(package: &PackRecord, world: &World) -> Option<UseWeaponPackageBehavior> {
-    if !package_conditions_fully_modeled(&package.conditions, world) {
-        return None;
+    use_weapon_decision(package, world).ok()
+}
+
+/// Why a UseWeapon package does not install (AIP-DX-002, AIP-UW-009).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UseWeaponDecline {
+    UnmodelledCondition,
+    /// No `PKW3` fire data.
+    NoFireData,
+    /// No `PTDT` weapon, or a target kind that is neither a weapon base nor a weapon class.
+    NoWeapon,
+    /// A weapon class whose label is unsettled: 21 and 23 (the fopdoc names contradict the packages that author
+    /// them) and 22 (Melee; decision Q1) stay declined until sourced (AIP-UW-009).
+    UnsourcedSemantics(u32),
+    /// An object type outside the weapon classes.
+    UnsupportedObjectType(u32),
+    /// No `PTD2` target reference: firing along the actor's facing is AIP-UW-007, not built.
+    NoTarget,
+}
+
+impl UseWeaponDecline {
+    fn reason(self) -> String {
+        match self {
+            Self::UnmodelledCondition => "unmodelled-condition".into(),
+            Self::NoFireData => "no-fire-data".into(),
+            Self::NoWeapon => "no-weapon".into(),
+            Self::UnsourcedSemantics(class) => format!("unsourced-semantics (weapon class {class})"),
+            Self::UnsupportedObjectType(raw) => format!("unsupported-object-type {raw}"),
+            Self::NoTarget => "no-target-reference".into(),
+        }
     }
-    let fire = package.use_weapon?;
-    let PackTargetKind::ObjectId(weapon_form_id) = package.target?.target else {
-        return None;
+}
+
+/// The weapon of a UseWeapon `PTDT`: one weapon base, or object type 12 (Weapons: Any) — the actor's own
+/// weapon (AIP-UW-008). Types 21-23 are declined as unsourced (AIP-UW-009).
+fn use_weapon_weapon(target: PackTargetKind, target_type: u32) -> Result<u32, UseWeaponDecline> {
+    match target {
+        PackTargetKind::ObjectId(weapon_form_id) => Ok(weapon_form_id),
+        PackTargetKind::Other(12) if target_type == 2 => Ok(byroredux_core::ecs::components::USE_ACTORS_OWN_WEAPON),
+        PackTargetKind::Other(class @ 21..=23) if target_type == 2 => Err(UseWeaponDecline::UnsourcedSemantics(class)),
+        PackTargetKind::Other(raw) if target_type == 2 => Err(UseWeaponDecline::UnsupportedObjectType(raw)),
+        _ => Err(UseWeaponDecline::NoWeapon),
+    }
+}
+
+fn use_weapon_decision(package: &PackRecord, world: &World) -> Result<UseWeaponPackageBehavior, UseWeaponDecline> {
+    if !package_conditions_fully_modeled(&package.conditions, world) {
+        return Err(UseWeaponDecline::UnmodelledCondition);
+    }
+    let fire = package.use_weapon.ok_or(UseWeaponDecline::NoFireData)?;
+    let weapon = package.target.ok_or(UseWeaponDecline::NoWeapon)?;
+    let weapon_form_id = use_weapon_weapon(weapon.target, weapon.target_type)?;
+    let Some(PackTargetKind::SpecificReference(target_form_id)) = package.target2.map(|target| target.target) else {
+        return Err(UseWeaponDecline::NoTarget);
     };
-    let PackTargetKind::SpecificReference(target_form_id) = package.target2?.target else {
-        return None;
-    };
-    Some(UseWeaponPackageBehavior {
+    Ok(UseWeaponPackageBehavior {
         weapon_form_id,
         target_form_id,
         bursts: (!fire.repeat_fire).then(|| u32::from(fire.bursts).max(1)),
@@ -125,6 +170,8 @@ fn use_weapon_behavior(package: &PackRecord, world: &World) -> Option<UseWeaponP
             0
         },
         harmless: fire.does_no_damage(),
+        // AIP-UW-001: a package that authors a PLDT location is fired from inside it.
+        place: package.location.map(|area| (location_anchor(package.location), area.radius.max(0) as f32)),
     })
 }
 
@@ -994,9 +1041,9 @@ fn install_result(world: &World, package: &PackRecord, registry: &PackageRegistr
             Ok(_) => "installs".to_string(),
             Err(decline) => format!("declines: {}", decline.reason()),
         },
-        PROCEDURE_USE_WEAPON => match use_weapon_behavior(package, world) {
-            Some(_) => "installs".into(),
-            None => "declines: unsourced-or-unmodelled UseWeapon data".to_string(),
+        PROCEDURE_USE_WEAPON => match use_weapon_decision(package, world) {
+            Ok(_) => "installs".into(),
+            Err(decline) => format!("declines: {}", decline.reason()),
         },
         PROCEDURE_DIALOGUE if !dialogue_installs_ambient(package, world) => {
             "declines: dialogue-not-ambient (unmodelled condition, non-player target or Say-To)".to_string()
@@ -2417,6 +2464,7 @@ mod tests {
                 bursts: Some(3),
                 volley_shots: 6,
                 harmless: true,
+                place: None,
             })
         );
 
@@ -2429,7 +2477,7 @@ mod tests {
         // condition list are all declined.
         let mut by_class = shooting(0x102);
         by_class.target = Some(target(2, PackTargetKind::Other(0x16)));
-        assert_eq!(installed(by_class), None, "weapon classes are not decoded");
+        assert_eq!(installed(by_class), None, "weapon sub-classes are not decoded (21-23 are unsourced)");
         let mut into_the_air = shooting(0x103);
         into_the_air.target2 = None;
         assert_eq!(installed(into_the_air), None, "no target: nothing to fire at");
@@ -2445,6 +2493,33 @@ mod tests {
         // ... and a declined UseWeapon package does not shadow the next one.
         let (world, actor) = setup_actor(10.0, vec![unmodeled, pack(0x105, PROCEDURE_GUARD, None)]);
         assert!(world.has::<GuardBehavior>(actor), "the lower package still wins");
+    }
+
+    /// AIP-UW-008 / -009 -- object type 12 installs as the actor's own weapon; 21-23 decline as unsourced and
+    /// other object types as unsupported.
+    #[test]
+    fn a_use_weapon_class_installs_or_declines_with_its_reason() {
+        use byroredux_plugin::esm::records::misc::pack::{PackTarget, PackUseWeapon, PROCEDURE_USE_WEAPON};
+        let shooting = |object_type| {
+            let mut package = pack(0x120, PROCEDURE_USE_WEAPON, None);
+            package.target = Some(PackTarget { target_type: 2, target: PackTargetKind::Other(object_type), count_or_distance: 1 });
+            package.target2 = Some(PackTarget {
+                target_type: 0,
+                target: PackTargetKind::SpecificReference(0x14),
+                count_or_distance: 0,
+            });
+            package.use_weapon = Some(PackUseWeapon { bursts: 1, ..Default::default() });
+            package
+        };
+        let world = World::new();
+        let own = use_weapon_decision(&shooting(12), &world).expect("type 12 installs");
+        assert_eq!(own.weapon_form_id, byroredux_core::ecs::components::USE_ACTORS_OWN_WEAPON);
+        for class in [21, 22, 23] {
+            let decline = use_weapon_decision(&shooting(class), &world).unwrap_err();
+            assert_eq!(decline, UseWeaponDecline::UnsourcedSemantics(class));
+            assert!(decline.reason().starts_with("unsourced-semantics"));
+        }
+        assert_eq!(use_weapon_decision(&shooting(5), &world), Err(UseWeaponDecline::UnsupportedObjectType(5)));
     }
 
     /// FleeNotCombat (procedure 10): `PTDT` becomes the threat and its

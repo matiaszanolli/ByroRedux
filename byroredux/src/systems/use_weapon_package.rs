@@ -21,16 +21,19 @@
 //!
 //! ## v0 scope
 //!
-//! - The actor fires from where it stands: the `PLDT` place to stand and the
-//!   `PLD2` target location (wait until the target is inside it) are not
-//!   modelled, nor is Crouch To Reload, Hold Fire When Blocked or Always Hit.
+//! - The actor waits until it is inside the package's `PLDT` location before the volley is raised
+//!   (AIP-UW-001; it is not walked there). The `PLD2` target location (wait until the target is inside
+//!   it), Crouch To Reload, Hold Fire When Blocked and Always Hit are not modelled.
+//! - Object type 12 (Weapons: Any) fires the actor's equipped weapon, else the first weapon in its inventory
+//!   (AIP-UW-008; a Redux choice, PRD §6 row 14). Types 21-23 stay declined as unsourced (AIP-UW-009).
 //! - The pause between volleys is the weapon's attack interval, not the
 //!   authored `PKW3` pause.
 //! - The request waits for its target to be loaded; a package whose target
 //!   never loads simply never fires.
 
 use byroredux_core::ecs::components::{
-    Dead, UseWeaponPackageBehavior, UseWeaponPackageStarted,
+    Dead, EquippedWeapon, GlobalTransform, Inventory, UseWeaponPackageBehavior, UseWeaponPackageStarted,
+    USE_ACTORS_OWN_WEAPON,
 };
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_plugin::esm::records::{EsmIndex, ItemKind};
@@ -51,6 +54,40 @@ fn requested_shots(behavior: &UseWeaponPackageBehavior, index: &EsmIndex) -> u32
         }
     };
     bursts.saturating_mul(per_burst)
+}
+
+/// The weapon an object-type-12 package fires: the equipped weapon, else the first weapon in the inventory
+/// (AIP-UW-008).
+fn own_weapon(world: &World, actor: EntityId, index: &EsmIndex) -> Option<u32> {
+    if let Some(equipped) = world.get::<EquippedWeapon>(actor) {
+        return Some(equipped.base_form_id);
+    }
+    let inventory = world.get::<Inventory>(actor)?;
+    inventory
+        .items
+        .iter()
+        .filter(|stack| stack.count > 0)
+        .map(|stack| stack.base_form_id)
+        .find(|base| matches!(index.items.get(base).map(|item| &item.kind), Some(ItemKind::Weapon { .. })))
+}
+
+/// Whether `actor` stands inside the package's `PLDT` location (AIP-UW-001). A location that cannot resolve yet
+/// (its reference is not loaded) is not inside.
+fn inside_place(world: &World, actor: EntityId, place: (byroredux_core::ecs::components::EatSleepLocation, f32)) -> bool {
+    use byroredux_core::ecs::components::EatSleepLocation;
+    let (area, radius) = place;
+    let Some(here) = world.get::<GlobalTransform>(actor).map(|t| t.translation) else {
+        return false;
+    };
+    let Some(centre) = super::eat_sleep::resolve_anchor(world, actor, Some(here), area) else {
+        return false;
+    };
+    let radius = match area {
+        EatSleepLocation::InCell(_) => f32::INFINITY,
+        _ if radius > 0.0 => radius,
+        _ => super::locomotion::AI_PACKAGE_DEFAULT_RADIUS,
+    };
+    here.distance(centre) <= radius
 }
 
 pub(crate) fn use_weapon_package_system(world: &World, _dt: f32) {
@@ -81,9 +118,20 @@ pub(crate) fn use_weapon_package_system(world: &World, _dt: f32) {
     else {
         return;
     };
-    for (actor, behavior) in pending {
+    for (actor, mut behavior) in pending {
         if resolve_entity_by_global_form_id(world, behavior.target_form_id).is_none() {
             continue;
+        }
+        // AIP-UW-001: the volley is raised from inside the package's location.
+        if behavior.place.is_some_and(|place| !inside_place(world, actor, place)) {
+            continue;
+        }
+        // AIP-UW-008: a weapon class means the actor's own weapon.
+        if behavior.weapon_form_id == USE_ACTORS_OWN_WEAPON {
+            let Some(weapon) = own_weapon(world, actor, &index) else {
+                continue;
+            };
+            behavior.weapon_form_id = weapon;
         }
         let request = UseWeaponRequest {
             weapon: behavior.weapon_form_id,
@@ -139,6 +187,7 @@ mod tests {
             bursts,
             volley_shots,
             harmless,
+            place: None,
         }
     }
 
@@ -194,6 +243,50 @@ mod tests {
         world.query_mut::<UseWeaponRequest>().unwrap().remove(actor);
         use_weapon_package_system(&world, 0.0);
         assert_eq!(request_of(&world, actor), None, "one request per install");
+    }
+
+    /// AIP-UW-001 -- with a `PLDT` location the volley is raised only once the actor stands inside its radius.
+    #[test]
+    fn the_volley_waits_for_the_place_to_stand() {
+        use byroredux_core::ecs::components::EatSleepLocation;
+        let mut with_place = behavior(Some(1), 1, false);
+        // The location is 500 units from the actor's current position; radius 100.
+        with_place.place = Some((EatSleepLocation::NearCurrentLocation, 100.0));
+        let (mut world, actor) = world_with(with_place, true);
+        world.insert(actor, GlobalTransform::new(Vec3::new(0.0, 0.0, 0.0), Quat::IDENTITY, 1.0));
+        // NearCurrentLocation resolves to the actor's own position: always inside. Use a reference anchor for
+        // the outside case instead.
+        use_weapon_package_system(&world, 0.0);
+        assert!(request_of(&world, actor).is_some(), "standing at the location: the volley is raised");
+
+        let mut outside = behavior(Some(1), 1, false);
+        outside.place = Some((EatSleepLocation::NearReference(0x7777), 100.0));
+        let (mut world, actor) = world_with(outside, true);
+        world.insert(actor, GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
+        use_weapon_package_system(&world, 0.0);
+        assert_eq!(request_of(&world, actor), None, "the place cannot be resolved yet: the actor waits");
+        assert!(!world.has::<UseWeaponPackageStarted>(actor));
+    }
+
+    /// AIP-UW-008 -- object type 12 fires the actor's equipped weapon, else its first inventory weapon; an actor
+    /// with neither does not fire.
+    #[test]
+    fn a_weapon_class_package_fires_the_actors_own_weapon() {
+        use byroredux_core::ecs::components::{Inventory, ItemStack};
+        let mut own = behavior(Some(1), 1, false);
+        own.weapon_form_id = USE_ACTORS_OWN_WEAPON;
+        let (mut world, actor) = world_with(own, true);
+        world.register::<Inventory>();
+        world.register::<EquippedWeapon>();
+        use_weapon_package_system(&world, 0.0);
+        assert_eq!(request_of(&world, actor), None, "no weapon at all: nothing to fire");
+
+        let mut inventory = Inventory::new();
+        inventory.add(ItemStack::new(0xDEAD, 1));
+        inventory.add(ItemStack::new(WEAPON, 1));
+        world.insert(actor, inventory);
+        use_weapon_package_system(&world, 0.0);
+        assert_eq!(request_of(&world, actor).map(|r| r.weapon), Some(WEAPON), "the first inventory weapon (0xDEAD is no weapon)");
     }
 
     #[test]
