@@ -1791,6 +1791,22 @@ void main() {
     // (or glass promotion) for every game, every format — same as
     // legacy NIF content, which keeps `ior = 1.5` (= 0.04 F0)
     // byte-for-byte from `GpuMaterial::default()`. See #1248.
+    // FO3 / FNV (legacy `materialKind` 0) authored environment mapping: the environment MASK is the artist's
+    // per-texel reflectivity — white where the surface is polished metal, black where it is paint, rubber or
+    // wood (FNV pistols, typewriters, gurneys, casino machines). The classifier can only give a material one
+    // scalar, so it puts such a surface in the reflective roughness tier and leaves metalness to this
+    // per-texel blend. Gated on all three authored signals: a bound cube, a bound mask, and the authored
+    // environment-mapping scale (`multiLayerEnvmapStrength` carries `env_map_scale` for every kind but 11;
+    // the legacy import zeroes it unless the Environment_Mapping flag is set). A cube + mask WITHOUT the flag
+    // stay dielectric, as the flag-off original did. Not an `env_map_scale > 0` blanket inference — that was
+    // the rejected "chrome cushion" rule — the mask must also say so, texel by texel.
+    if (mat.materialKind == 0u && mat.envMapIndex != 0u && mat.envMaskIndex != 0u
+        && mat.multiLayerEnvmapStrength > 0.3) {
+        float legacyEnvMask = texture(textures[nonuniformEXT(mat.envMaskIndex)], sampleUV).r;
+        // The conductor value the metal-keyword arm uses (`classify_pbr_keyword`): worn, not mirror, metal.
+        float legacyEnvMaskMetalness = 0.9;
+        metalness = mix(metalness, legacyEnvMaskMetalness, legacyEnvMask);
+    }
     float f0Dielectric = dielectricF0FromIor(mat.ior);
     vec3 F0 = mix(vec3(f0Dielectric), albedo, metalness);
 

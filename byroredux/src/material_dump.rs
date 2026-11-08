@@ -43,6 +43,7 @@ pub(crate) fn material_route(material: &Material) -> &'static str {
         specular_color: material.specular_color,
         specular_authored: material.specular_authored,
         has_gloss_map: material.gloss_map.is_some(),
+        has_env_mask: false,
     })
     .1
     .as_str()

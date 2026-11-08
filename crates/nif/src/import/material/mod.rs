@@ -1459,6 +1459,8 @@ impl MaterialInfo {
                 // `specular_color`, so it can't be reused here.
                 specular_authored: self.specular_authored,
                 has_gloss_map: self.gloss_map.is_some(),
+                // The environment mask is the authored per-texel reflectivity of an env-mapped surface.
+                has_env_mask: self.env_mask.is_some(),
             },
         )
     }

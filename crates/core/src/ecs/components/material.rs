@@ -1010,6 +1010,12 @@ pub struct PbrClassifierInputs<'a> {
     /// architecture read mirror-glossy — Skyrim's spec mask lives in the
     /// normal-map alpha, wired separately).
     pub has_gloss_map: bool,
+    /// Whether the surface ships a dedicated *environment mask* alongside an authored environment map
+    /// (FO3/FNV texture-set slot 5, Oblivion/Skyrim env-mask slots). The mask is the artist's per-texel
+    /// reflectivity: where it is bright the surface reflects. With `env_map_scale > 0.3` (the authored
+    /// environment-mapping flag) it makes the env-map arm below reflective-capable even without an authored
+    /// specular, and the fragment shader weights metalness by the mask texel (`triangle.frag`).
+    pub has_env_mask: bool,
 }
 
 /// Keyword-based PBR classifier formerly shared with the (deleted)
@@ -1206,6 +1212,10 @@ pub fn is_glass_keyword_path(path: &str) -> bool {
     ) || contains_any_ci_word(path, &["gem"])
 }
 
+/// Roughness ceiling of an env-mapped surface that authors an environment mask: the same 0.55 as the
+/// metal keyword arm, below the renderer's `roughness < 0.6` reflection gate.
+pub const ENV_MASK_ROUGHNESS_CEILING: f32 = 0.55;
+
 pub fn classify_pbr_keyword(inputs: PbrClassifierInputs<'_>) -> PbrMaterial {
     classify_pbr_keyword_routed(inputs).0
 }
@@ -1396,7 +1406,14 @@ pub fn classify_pbr_keyword_routed(inputs: PbrClassifierInputs<'_>) -> (PbrMater
     // intent — an env_map_scale-authored surface that already earned
     // a lower roughness (e.g. scale=3.0 → 0.4) keeps it.
     if inputs.env_map_scale > 0.3 {
-        let base_roughness = (1.0 - inputs.env_map_scale * 0.2).clamp(0.35, 0.8);
+        // An authored environment MASK is the artist's per-texel reflectivity (FNV pistols, typewriters,
+        // gurneys, casino machines: 3 576 FNV meshes author mask + scale, and only 591 of them classified
+        // reflective before this ceiling). `1 - scale * 0.2` is 0.8 at the default scale of 1, above the
+        // renderer's reflection gate (`roughness < 0.6`), so the mask never reached the shader. Capping at
+        // `ENV_MASK_ROUGHNESS_CEILING` puts the surface in the reflective tier; the shader then weights
+        // metalness by the mask texel, so the masked-out parts stay dielectric.
+        let mask_ceiling = if inputs.has_env_mask { ENV_MASK_ROUGHNESS_CEILING } else { 1.0 };
+        let base_roughness = (1.0 - inputs.env_map_scale * 0.2).clamp(0.35, 0.8).min(mask_ceiling);
         if !inputs.specular_authored {
             // No bound NiMaterialProperty/BSLightingShaderProperty —
             // `specular_color` is still the unauthored `[1,1,1]` struct
@@ -1546,6 +1563,7 @@ impl Material {
                 // come from the flag, not the color value (#2573).
                 specular_authored: self.specular_authored,
                 has_gloss_map: self.gloss_map.is_some(),
+                has_env_mask: false,
             });
             if self.metalness.is_nan() {
                 self.metalness = pbr.metalness;
@@ -1756,6 +1774,7 @@ mod tests {
             specular_color: m.specular_color,
             specular_authored: false,
             has_gloss_map: m.gloss_map.is_some(),
+            has_env_mask: false,
         })
     }
 
@@ -1768,6 +1787,7 @@ mod tests {
             specular_color: specular,
             specular_authored: true,
             has_gloss_map: m.gloss_map.is_some(),
+            has_env_mask: false,
         })
     }
 
@@ -2066,6 +2086,7 @@ mod tests {
             specular_color: [0.25; 3], // cloth: dark/grey specular → dielectric
             specular_authored: true,
             has_gloss_map: false,
+            has_env_mask: false,
         });
         assert!(
             p.roughness >= 0.6,
@@ -2102,6 +2123,7 @@ mod tests {
                 specular_color: [0.9; 3],
                 specular_authored: true,
                 has_gloss_map: false,
+                has_env_mask: false,
             });
             assert!(
                 p.roughness <= 0.2,
@@ -2143,6 +2165,7 @@ mod tests {
                 specular_color: [0.2; 3],
                 specular_authored: true,
                 has_gloss_map: false,
+                has_env_mask: false,
             });
             assert!(
                 p.roughness > 0.2,
@@ -2205,6 +2228,7 @@ mod tests {
                 specular_color: [0.9; 3],
                 specular_authored: true,
                 has_gloss_map: false,
+                has_env_mask: false,
             });
             assert!(
                 p.roughness > 0.2,
@@ -2302,6 +2326,31 @@ mod tests {
     //   source format. The caller seeds authored (BGSM) values or a
     //   `NaN` sentinel for "fill me from the keyword classifier".
 
+    /// An environment-mapped surface with an authored mask is reflective-capable (roughness under the
+    /// renderer's 0.6 gate) with or without an authored specular; without the mask it keeps the old 0.8.
+    #[test]
+    fn an_authored_env_mask_puts_an_env_mapped_surface_in_the_reflective_tier() {
+        let base = PbrClassifierInputs {
+            texture_path: Some("textures/clutter/office/typewriter01.dds"),
+            glossiness: 70.0,
+            env_map_scale: 1.0,
+            has_normal_map: true,
+            specular_color: [1.0; 3],
+            specular_authored: false,
+            has_gloss_map: false,
+            has_env_mask: false,
+        };
+        assert_eq!(classify_pbr_keyword(base).roughness, 0.8, "no mask: unchanged");
+        let masked = classify_pbr_keyword(PbrClassifierInputs { has_env_mask: true, ..base });
+        assert_eq!(masked.roughness, ENV_MASK_ROUGHNESS_CEILING);
+        assert_eq!(masked.metalness, 0.0, "the shader weights metalness per texel by the mask");
+        let authored = classify_pbr_keyword(PbrClassifierInputs { has_env_mask: true, specular_authored: true, ..base });
+        assert!(authored.roughness <= ENV_MASK_ROUGHNESS_CEILING);
+        // A scale at or below 0.3 is not authored environment mapping, mask or not.
+        let off = classify_pbr_keyword(PbrClassifierInputs { has_env_mask: true, env_map_scale: 0.0, ..base });
+        assert_eq!(off.roughness, PbrMaterial::NO_SIGNAL_NEUTRAL.roughness);
+    }
+
     /// M-LIGHT RLT-IBL-008 — the routed classifier names the arm that
     /// decided, and its material is exactly the unrouted one's.
     #[test]
@@ -2314,6 +2363,7 @@ mod tests {
             specular_color: [1.0; 3],
             specular_authored: false,
             has_gloss_map: false,
+            has_env_mask: false,
         };
         let cases = [
             (PbrClassifierInputs { texture_path: Some("textures/metal/plate.dds"), ..base }, PbrRoute::Keyword),

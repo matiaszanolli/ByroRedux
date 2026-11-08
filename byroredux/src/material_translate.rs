@@ -675,6 +675,7 @@ pub(crate) fn translate_material_with_provenance(
                     specular_color: source.specular_color,
                     specular_authored: source.specular_authored,
                     has_gloss_map: textures.smooth_spec.is_some(),
+                    has_env_mask: textures.environment_mask.is_some(),
                 },
             ),
         )
