@@ -367,10 +367,26 @@ impl StringTableSet {
             .file_stem()
             .unwrap_or_default()
             .to_string_lossy();
-        let strings_dir = plugin_path
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join("Strings");
+        let plugin_dir = plugin_path.parent().unwrap_or(Path::new("."));
+        // #6797 — the directory component gets the same case-insensitive treatment as the file name
+        // below: `strings/` is what archive extractors and mod packagers emit, and an exact-case
+        // `Strings` probe misses it on a case-sensitive filesystem, letting the archive win.
+        let strings_dir = {
+            let exact = plugin_dir.join("Strings");
+            if exact.is_dir() {
+                exact
+            } else {
+                std::fs::read_dir(plugin_dir)
+                    .ok()
+                    .and_then(|entries| {
+                        entries.flatten().find(|entry| {
+                            entry.file_name().to_string_lossy().eq_ignore_ascii_case("Strings")
+                                && entry.path().is_dir()
+                        })
+                    })
+                    .map_or(exact, |entry| entry.path())
+            }
+        };
 
         // #4168 — try every spelling of the language segment, not just
         // the caller's. A loose file still beats an archive entry for the
@@ -781,6 +797,32 @@ fn loose_companion_file_is_found_case_insensitively() {
         Some("Override Sword"),
         "the case-insensitive loose match must supply the table"
     );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// #6797 — the loose-override probe also finds a lowercase `strings/` directory (what archive extractors
+/// emit), not only a case-mismatched file name inside `Strings/`.
+#[test]
+fn loose_companion_file_is_found_in_a_lowercase_strings_directory() {
+    let dir = std::env::temp_dir().join(format!(
+        "byroredux-plugin-ci-strings-dir-{}",
+        std::process::id()
+    ));
+    let plugin = dir.join("TestMod.esm");
+    let strings_dir = dir.join("strings");
+    std::fs::create_dir_all(&strings_dir).unwrap();
+    std::fs::write(
+        strings_dir.join("testmod_english.strings"),
+        build_strings_file(&[(0x0001, "Loose Override")], false),
+    )
+    .unwrap();
+
+    // The archive supplies a different string for the same id: the loose file must win.
+    let archive = build_strings_file(&[(0x0001, "Archive")], false);
+    let set = StringTableSet::load_with_archive(&plugin, "english", |name| {
+        name.to_ascii_lowercase().ends_with(".strings").then(|| archive.clone())
+    });
+    assert_eq!(set.resolve(0x0001), Some("Loose Override"));
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
