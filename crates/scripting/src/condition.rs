@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **102 functions** at their canonical CTDA
+//! lineage. This catalog ships **103 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -103,6 +103,7 @@
 //! | 18    | GetCurrentTime         | the ObScript getter (Oblivion, FO3/FNV) |
 //! | 32    | GetInSameCell          | the ObScript getter (Oblivion, FO3/FNV) |
 //! | 277   | GetBaseActorValue      | the ObScript getter (FO3/FNV) |
+//! | 495   | GetPermanentActorValue | `ActorValues` base + permanent layers (FO3/FNV) |
 //! | 471   | GetDestructionStage    | the ObScript getter (FO3/FNV) |
 //! | 492   | GetMapMarkerVisible    | the ObScript getter (FO3/FNV) |
 //! | 45    | GetDetected            | the ObScript getter (FO3/FNV) |

@@ -877,6 +877,34 @@ mod gates {
         assert!(plan_take_perk(&world, player, 1).is_ok());
     }
 
+    /// FNV's SPECIAL / skill requirements are `GetPermanentActorValue` (495): base plus permanent changes,
+    /// never a temporary modifier (GECK *GetPermanentActorValue*). Swift Learner's shape: INT >= 4.
+    #[test]
+    fn a_permanent_actor_value_requirement_reads_base_and_permanent_layers_only() {
+        const INTELLIGENCE: u32 = 0x100;
+        let needs_int_4 = Condition {
+            function_index: 495,
+            comparator: ComparisonOp::Ge,
+            comparand: ConditionValue::Literal(4.0),
+            run_on: RunOn::Subject,
+            param_1: INTELLIGENCE,
+            ..Default::default()
+        };
+        let (mut world, player) = player_world(GameKind::Fallout3NV, vec![gated(1, 0, true, 1, 0, vec![needs_int_4])], 10, &[]);
+        let mut values = ActorValues::new();
+        values.set_base(INTELLIGENCE, 3.0);
+        world.insert(player, values);
+        let refused = plan_take_perk(&world, player, 1).unwrap_err();
+        assert!(matches!(refused, PerkRefusal::Condition { index: 495, modelled: true, .. }), "{refused}");
+        assert!(refused.to_string().contains("GetPermanentActorValue"), "{refused}");
+        // A chem's +3 is temporary: it does not meet the requirement.
+        world.get_mut::<ActorValues>(player).unwrap().mod_temporary(INTELLIGENCE, 3.0);
+        assert!(plan_take_perk(&world, player, 1).is_err(), "a temporary modifier is not permanent");
+        // A permanent +1 (a skill book, an implant) does.
+        world.get_mut::<ActorValues>(player).unwrap().mod_permanent(INTELLIGENCE, 1.0);
+        assert!(plan_take_perk(&world, player, 1).is_ok());
+    }
+
     /// A condition the evaluator cannot read is refused by name, not granted on a guessed 0.0.
     #[test]
     fn an_unmodelled_record_condition_is_refused() {

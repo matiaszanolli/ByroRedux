@@ -106,7 +106,7 @@ pub fn is_modeled(world: &World, condition: &Condition) -> bool {
         // An authored enum index is readable once it translates to a loaded
         // AVIF (#5989); one that cannot (Oblivion has no AVIFs, an index the
         // record set lacks) is declined by the fail-closed gates.
-        ConditionFunction::GetActorValue => {
+        ConditionFunction::GetActorValue | ConditionFunction::GetPermanentActorValue => {
             crate::actor_value_names::condition_actor_value_form(world, condition.param_1).is_some()
         }
         _ => true,
@@ -439,6 +439,9 @@ pub enum ActorValueView {
     Base,
     /// The ceiling `GetValuePercentage` divides by: everything but damage.
     Undamaged,
+    /// Base plus the permanent layers (`set_override`, `permanent_mod`), no temporary modifier and no
+    /// damage: `GetPermanentActorValue`.
+    Permanent,
 }
 
 /// `entity`'s `avif` actor value as `view` keeps its layers. The current
@@ -482,6 +485,7 @@ pub fn actor_value_view(world: &World, entity: EntityId, avif: u32, view: ActorV
                 ActorValueView::Current => value.current(),
                 ActorValueView::Base => value.base + value.set_override,
                 ActorValueView::Undamaged => value.undamaged(),
+                ActorValueView::Permanent => value.base + value.set_override + value.permanent_mod,
             };
         }
         let mut avs = avs.clone();
@@ -490,6 +494,9 @@ pub fn actor_value_view(world: &World, entity: EntityId, avif: u32, view: ActorV
         if let Some(value) = avs.get(avif).copied() {
             if view == ActorValueView::Base {
                 avs.set_permanent(avif, 0.0);
+                avs.mod_temporary(avif, -value.temporary_mod);
+            }
+            if view == ActorValueView::Permanent {
                 avs.mod_temporary(avif, -value.temporary_mod);
             }
             if view != ActorValueView::Current {
@@ -543,6 +550,11 @@ pub fn evaluate_function(
         ConditionFunction::GetActorValue => {
             crate::actor_value_names::condition_actor_value_form(world, condition.param_1)
                 .map_or(0.0, |avif| actor_value_view(world, entity, avif, ActorValueView::Current))
+        }
+        // GECK *GetPermanentActorValue*: permanent changes included, situational ones not.
+        ConditionFunction::GetPermanentActorValue => {
+            crate::actor_value_names::condition_actor_value_form(world, condition.param_1)
+                .map_or(0.0, |avif| actor_value_view(world, entity, avif, ActorValueView::Permanent))
         }
         ConditionFunction::GetQuestRunning => global::get_quest_running(condition, world),
         ConditionFunction::GetGlobalValue => global::get_global_value(condition, world),

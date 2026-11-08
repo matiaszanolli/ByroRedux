@@ -368,6 +368,14 @@ pub enum ConditionFunction {
     /// unmodified) value of the actor value `param_1` names, by the GECK enum code. FO3 / FNV index
     /// **277**; the ObScript getter's body.
     GetBaseActorValue,
+    /// `GetPermanentActorValue(actor_value) → f32`: the Run-On actor's value with its permanent changes
+    /// and no situational ones — "no bonus from situational perks, equipped items, drugs, etc. Perks
+    /// (e.g. Tag!) and items (e.g. skill books) that add permanent skill increases are included" (GECK
+    /// *GetPermanentActorValue*): base + set override + permanent modifier, no temporary modifier, no
+    /// damage. FO3 / FNV index **495**; `param_1` is the actor-value enum code. FNV's level-up conditions
+    /// are mostly this function (every SPECIAL and skill requirement of a perk), so the level-up gate
+    /// (`levelup perk`, PERK-GATE-001) reads it.
+    GetPermanentActorValue,
     /// `GetDestructionStage → f32` (#6460): the Run-On object's destruction stage. FO3 / FNV index
     /// **471**; the ObScript getter's body.
     GetDestructionStage,
@@ -600,6 +608,7 @@ const ROWS: &[Row] = &[
     Row { func: ConditionFunction::GetCurrentTime, indices: &[18], name: "GetCurrentTime", first_param_form_id: false, reads_run_on_entity: false, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetInSameCell, indices: &[32], name: "GetInSameCell", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetBaseActorValue, indices: &[277], name: "GetBaseActorValue", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetPermanentActorValue, indices: &[495], name: "GetPermanentActorValue", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetDestructionStage, indices: &[471], name: "GetDestructionStage", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetMapMarkerVisible, indices: &[492], name: "GetMapMarkerVisible", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     // #6558 — nine more FO3 / FNV getters the VM answers, bridged the same way.
@@ -704,6 +713,9 @@ const FOREIGN_INDICES: &[(u32, &[GameKind])] = &[
     (659, &[GameKind::Fallout4]),
     (131, &[GameKind::Fallout4, GameKind::Fallout76, GameKind::Starfield]),
     (431, &[GameKind::Starfield]),
+    // `GetPermanentActorValue` is FO3 / FNV's; Skyrim, FO4 and FO76 author 495 as `GetKillingBlowLimb`,
+    // Starfield as `EPMagic_EffectIsDetrimental` (each `wbDefinitions*.pas`).
+    (495, &[GameKind::Skyrim, GameKind::Fallout4, GameKind::Fallout76, GameKind::Starfield]),
 ];
 
 /// Whether CTDA function `index` is a different function in `game` than the
@@ -765,7 +777,7 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 102] = [
+    pub const CATALOG: [ConditionFunction; 103] = [
         Self::GetDistance,
         Self::GetQuestVariable,
         Self::GetActorValue,
@@ -840,6 +852,7 @@ impl ConditionFunction {
         Self::GetCurrentTime,
         Self::GetInSameCell,
         Self::GetBaseActorValue,
+        Self::GetPermanentActorValue,
         Self::GetDestructionStage,
         Self::GetMapMarkerVisible,
         Self::GetDetected,
@@ -1120,6 +1133,7 @@ mod tests {
                 ConditionFunction::GetCurrentTime |
                 ConditionFunction::GetInSameCell |
                 ConditionFunction::GetBaseActorValue |
+                ConditionFunction::GetPermanentActorValue |
                 ConditionFunction::GetDestructionStage |
                 ConditionFunction::GetMapMarkerVisible |
                 ConditionFunction::GetDetected |
