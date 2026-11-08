@@ -218,7 +218,7 @@ pub enum GameKind {
     /// record version 131). SCOL/PKIN/TXST and yet another item schema.
     Fallout4,
     /// Fallout 76 (HEDR is a **live-service value that drifts with game
-    /// patches** — 68.0 → 266.0 → 279.0 over this project's history; see
+    /// patches** — 68.0 → 266.0 → 279.0 → 280.0 over this project's history; see
     /// the sampled-values table in [`GameKind::from_header`]). The band
     /// floor, not the sampled value, is what classifies it.
     Fallout76,
@@ -246,11 +246,12 @@ impl GameKind {
                 //                         the 2011 release, read 2026-09-13)
                 //   Skyrim SE  = 1.71    (bytes 48 e1 da 3f)
                 //   FO76       = 266.0   (bytes 00 00 85 43) on 2026-08-28;
-                //             = 279.0   (bytes 00 80 8b 43) on 2026-09-20 —
+                //             = 279.0   (bytes 00 80 8b 43) on 2026-09-20;
+                //             = 280.0   (TES4 record version 210) on 2026-11-08 —
                 //                         a live-service value that moves with
-                //                         game patches (68.0 → 266.0 → 279.0
-                //                         over the project's history). Never pin
-                //                         it as a constant.
+                //                         game patches (68.0 → 266.0 → 279.0 →
+                //                         280.0 over the project's history).
+                //                         Never pin it as a constant.
                 // Exact float equality is unsafe — match on small bands
                 // that leave clear gaps between the known values.
                 //
@@ -279,7 +280,7 @@ impl GameKind {
                 // weapon's value/weight/damage. See #439 / audit FO3-3-01.
                 if hedr_version >= 60.0 {
                     // Floor deliberately far below every sampled FO76 value
-                    // (68.0 → 266.0 → 279.0; #3405/#4643): nothing else in
+                    // (68.0 → 266.0 → 279.0 → 280.0; #3405/#4643/#6779): nothing else in
                     // the lineage exceeds 1.71, so the whole decade above 60
                     // is free for FO76's outlier scheme.
                     Self::Fallout76
@@ -1803,7 +1804,7 @@ mod tests {
         // No light-master support at all: FO3, FNV, FO76, Skyrim LE.
         assert!(!tes4(0.94, 2, 0x0200).light_master, "FO3");
         assert!(!tes4(1.34, 2, 0x0200).light_master, "FNV");
-        assert!(!tes4(279.0, 209, 0x0200).light_master, "FO76");
+        assert!(!tes4(280.0, 210, 0x0200).light_master, "FO76");
         assert!(!tes4(0.94, 40, 0x0200).light_master, "Skyrim LE");
         // Oblivion's 20-byte-header variant never enters the Tes5Plus
         // table (variant-dispatched to GameKind::Oblivion).
@@ -1867,13 +1868,19 @@ mod tests {
         // FO76 — HEDR is a live-service value that drifts with game
         // patches: 68.0 → 266.0 (read 2026-08-28) → 279.0 (read
         // 2026-09-22 off `SeventySix.esm` / `NW.esm`, TES4 record
-        // version 209 both times). Keep probes at several observed
+        // version 209 both times) → 280.0 (read 2026-11-08, record
+        // version 210, #6779). Keep probes at several observed
         // heights so the band floor stays pinned well below whatever
         // the current patch ships (#3405, #4643).
         assert_eq!(
             GameKind::from_header(EsmVariant::Tes5Plus, 279.0, 209),
             GameKind::Fallout76,
             "FO76 (HEDR=279.0 as of 2026-09-20, rec_ver=209) must classify as Fallout76",
+        );
+        assert_eq!(
+            GameKind::from_header(EsmVariant::Tes5Plus, 280.0, 210),
+            GameKind::Fallout76,
+            "FO76 (HEDR=280.0 as of 2026-11-08, rec_ver=210) must classify as Fallout76",
         );
         assert_eq!(
             GameKind::from_header(EsmVariant::Tes5Plus, 266.0, 209),
