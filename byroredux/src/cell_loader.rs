@@ -113,7 +113,7 @@ pub(crate) use transition::{CurrentCellContext, CurrentExteriorContext, LoadedPl
 pub(crate) use transition::{InteriorCellApply, InteriorCellApplyProgress};
 // #5222 — the Fallout-legacy authored-LOD-quad index; re-exported for
 // `streaming::WorldStreamingState`'s cached field.
-pub(crate) use legacy_lod_index::LegacyLodQuadIndex;
+pub(crate) use legacy_lod_index::{dlodsettings_path, parse_dlodsettings, DlodSettings, LegacyLodQuadIndex};
 #[allow(unused_imports)]
 pub use transition::{PendingCellTransition, QueueDoorTransitionError, QueuedDoorTransition};
 // `clear_current_exterior_identity` is an internal teardown helper (only

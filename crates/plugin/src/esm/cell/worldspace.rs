@@ -146,6 +146,13 @@ pub const PNAM_INHERIT_LAND: u16 = 0x01;
 pub struct WorldspaceRecord {
     /// FormID of the WRLD record itself.
     pub form_id: u32,
+    /// `NAMA` "Distant LOD Multiplier" (Skyrim and FO4; xEdit `wbFloat(NAMA, 'Distant LOD Multiplier')`,
+    /// `wbDefinitionsTES5.pas:10687`, `wbDefinitionsFO4.pas:13152`). `None` when unauthored or not finite.
+    /// Every vanilla Skyrim and FO4 worldspace authors 1.0 except WhiterunWorld, WindhelmWorld, MarkarthWorld
+    /// and AlftandWorld at 0.25 (V9). Decoded only: what it scales is not published (the CK and FO4 CK wiki
+    /// list it without a description), so nothing reads it and the object ring is not scaled by it
+    /// (DLOD-BAND-005 is a MAY).
+    pub distant_lod_multiplier: Option<f32>,
     /// EDID — preserved verbatim. The index keys by `.to_ascii_lowercase()`.
     pub editor_id: String,
     /// Object-bounds SW corner (NAM0) in Bethesda world units (Z-up).

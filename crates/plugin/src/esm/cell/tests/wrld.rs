@@ -652,6 +652,28 @@ fn wrld_dnam_nonfinite_or_huge_water_height_is_none() {
     }
 }
 
+/// DLOD-BAND-005 / V9 -- WRLD `NAMA` "Distant LOD Multiplier" is decoded (0.25 on Whiterun, 1.0 elsewhere); a
+/// non-finite value is dropped rather than carried.
+#[test]
+fn wrld_nama_distant_lod_multiplier_is_decoded() {
+    let wrld = |edid: &[u8], nama: Option<f32>| {
+        let mut subs = vec![(b"EDID", edid.to_vec())];
+        if let Some(v) = nama {
+            subs.push((b"NAMA", v.to_le_bytes().to_vec()));
+        }
+        build_wrld_record(0x0000_0100, &subs)
+    };
+    let buf = build_wrld_group(&[wrld(b"WhiterunWorld\0", Some(0.25))]);
+    let (worldspaces, _c, _e, _persistent) = parse_synthetic_wrld(&buf);
+    assert_eq!(worldspaces["whiterunworld"].distant_lod_multiplier, Some(0.25));
+    let buf = build_wrld_group(&[wrld(b"Tamriel\0", None)]);
+    let (worldspaces, _c, _e, _persistent) = parse_synthetic_wrld(&buf);
+    assert_eq!(worldspaces["tamriel"].distant_lod_multiplier, None);
+    let buf = build_wrld_group(&[wrld(b"Bad\0", Some(f32::NAN))]);
+    let (worldspaces, _c, _e, _persistent) = parse_synthetic_wrld(&buf);
+    assert_eq!(worldspaces["bad"].distant_lod_multiplier, None, "a non-finite multiplier is dropped");
+}
+
 /// #1849 — WRLD `NAM3` (LOD water type FormID) and `NAM4` (LOD water
 /// height f32) previously fell to the walker's `_ => {}` default arm
 /// and were dropped. `OFST` stays in the fixture on purpose: #2454

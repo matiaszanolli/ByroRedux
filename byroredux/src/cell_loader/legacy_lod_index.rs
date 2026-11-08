@@ -29,6 +29,61 @@ use std::collections::{BTreeSet, HashMap};
 
 use crate::asset_provider::TextureProvider;
 
+/// Archive key of a FO3/FNV worldspace's LOD descriptor (DLOD-BAND-003).
+pub(crate) fn dlodsettings_path(lod_worldspace_key: &str) -> String {
+    format!("lodsettings\\{lod_worldspace_key}.dlodsettings")
+}
+
+/// A FO3/FNV `lodsettings\<ws>.dlodsettings` descriptor (V8): 24 bytes, `u32 4`, `u32` top level, `u32`
+/// 4 x top level, `i16` SW cell x, y, `i16` NE cell x, y, `u32` 4 or 8 (the lowest level). Only the south-west
+/// cell is consumed: it is the quad lattice's origin where every authored quad sits on it
+/// ([`Self::tiles`], DLOD-BAND-004). The rest is decoded and carried, with no consumer: the top and lowest levels
+/// are the highest and lowest authored levels for 46 and 50 of 53 vanilla descriptors, and the NE cell is the
+/// worldspace's cell extent, not the LOD's (V8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DlodSettings {
+    pub(crate) top_level: u32,
+    pub(crate) sw: (i32, i32),
+    pub(crate) ne: (i32, i32),
+    pub(crate) lowest_level: u32,
+}
+
+/// Parse one `.dlodsettings`: exactly 24 bytes with the first word 4 (53 of 53 vanilla descriptors). The third
+/// word is 4 x the top level for 51 of them, so it is not checked and is not carried: nothing draws from it.
+/// Anything else is not this layout and yields `None` (untrusted archive input: nothing is read past the 24
+/// bytes).
+pub(crate) fn parse_dlodsettings(bytes: &[u8]) -> Option<DlodSettings> {
+    use byroredux_core::bytes::{le_u16_at, le_u32_at};
+    let le_i16_at = |bytes: &[u8], at: usize| le_u16_at(bytes, at).map(|v| v as i16);
+    if bytes.len() != 24 {
+        return None;
+    }
+    let (first, top) = (le_u32_at(bytes, 0)?, le_u32_at(bytes, 4)?);
+    if first != 4 || top == 0 {
+        return None;
+    }
+    Some(DlodSettings {
+        top_level: top,
+        sw: (i32::from(le_i16_at(bytes, 12)?), i32::from(le_i16_at(bytes, 14)?)),
+        ne: (i32::from(le_i16_at(bytes, 16)?), i32::from(le_i16_at(bytes, 18)?)),
+        lowest_level: le_u32_at(bytes, 20)?,
+    })
+}
+
+impl DlodSettings {
+    /// Whether every quad in `authored` (`(level, qx, qy)`) sits on the lattice anchored at the SW cell:
+    /// `(x - sw_x) % level == 0` and the same for y. True for 46 of the 53 vanilla descriptors (every FNV one
+    /// and 21 FO3 ones); the other seven FO3 worldspaces have leftover quads off it, so the SW cell is not a
+    /// universal origin and those keep the residue-majority prune (DLOD-BAND-004, #5387, #5520). An empty
+    /// quad list tiles vacuously and is reported `false`, so a worldspace with no quads never claims an origin.
+    pub(crate) fn tiles(&self, authored: &[(i32, i32, i32)]) -> bool {
+        !authored.is_empty()
+            && authored.iter().all(|&(level, qx, qy)| {
+                level > 0 && (qx - self.sw.0).rem_euclid(level) == 0 && (qy - self.sw.1).rem_euclid(level) == 0
+            })
+    }
+}
+
 /// One family's authored quads for one worldspace, keyed `(level, qx, qy)`.
 pub(crate) type LegacyQuadSet = BTreeSet<(i32, i32, i32)>;
 
@@ -134,6 +189,15 @@ impl LegacyLodQuadIndex {
             .get(worldspace_key)
             .map(|set| set.iter().copied().collect())
             .unwrap_or_default()
+    }
+
+    /// The lattice origin the worldspace's descriptor gives, when every authored quad of both families sits on
+    /// it ([`DlodSettings::tiles`], DLOD-BAND-004): the descriptor's SW cell. `None` when the worldspace has no
+    /// descriptor, no quads, or leftover quads off the lattice, so selection keeps the residue-majority prune.
+    pub(crate) fn lattice_origin(&self, worldspace_key: &str, descriptor: &DlodSettings) -> Option<(i32, i32)> {
+        let mut all = self.objects_for(worldspace_key);
+        all.extend(self.terrain_for(worldspace_key));
+        descriptor.tiles(&all).then_some(descriptor.sw)
     }
 
     /// Authored terrain colour quads for `worldspace_key`, empty when none.

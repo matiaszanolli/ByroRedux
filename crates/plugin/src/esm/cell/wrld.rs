@@ -166,6 +166,13 @@ pub(crate) fn parse_wrld_group(
                         b"NAM3" if sub.data.len() >= 4 => {
                             record.lod_water_form = read_form_id(reader, &sub.data);
                         }
+                        // NAMA — "Distant LOD Multiplier" (#6640, DLOD-BAND-005): decoded, unconsumed.
+                        b"NAMA" if sub.data.len() >= 4 => {
+                            record.distant_lod_multiplier = crate::esm::sub_reader::SubReader::new(&sub.data)
+                                .f32()
+                                .ok()
+                                .filter(|v| v.is_finite());
+                        }
                         b"NAM4" if sub.data.len() >= 4 => {
                             // Same gate as XCLW / DNAM — the LOD ring uploads
                             // its plane straight to the GPU, so a NaN or

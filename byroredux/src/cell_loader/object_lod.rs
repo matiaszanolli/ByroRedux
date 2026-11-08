@@ -227,12 +227,14 @@ pub(crate) fn stream_object_lod_blocks(
             // objects come from the "Use LOD Data" ancestor.
             .map(|index| index.objects_for(wctx.lod_worldspace_key()))
             .unwrap_or_default();
-        lod_bands::select_authored_lod_quads(
+        lod_bands::select_authored_lod_quads_refining(
             &authored,
             &ladder,
             player_grid,
             selection.world_bounds,
             &lod_source_cell_exists(wctx),
+            -1,
+            input.legacy_lattice_origin,
         )
     } else {
         lod_bands::select_lod_quads(

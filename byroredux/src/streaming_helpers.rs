@@ -186,6 +186,24 @@ pub(crate) fn reconcile_lod_rings(
     {
         state.legacy_lod_quads = Some(cell_loader::LegacyLodQuadIndex::scan(tex_provider.as_ref()));
     }
+    // DLOD-BAND-003 — the FO3/FNV `.dlodsettings` of the LOD source worldspace, read once per streaming state
+    // like `lodsettings\<ws>.lod` above; only the legacy family authors one.
+    if state.legacy_lod_descriptor.is_none() {
+        let descriptor = should_scan_legacy_lod_quads(wctx.record_index.game)
+            .then(|| {
+                let path = cell_loader::dlodsettings_path(&wctx.lod_worldspace_key().to_ascii_lowercase());
+                tex_provider.extract_mesh_exact(&path).and_then(|bytes| cell_loader::parse_dlodsettings(&bytes))
+            })
+            .flatten();
+        state.legacy_lod_descriptor = Some(descriptor);
+    }
+    // DLOD-BAND-004 — the descriptor's SW cell is the lattice origin only where every authored quad tiles on it.
+    let legacy_lattice_origin = state.legacy_lod_descriptor.flatten().and_then(|descriptor| {
+        state
+            .legacy_lod_quads
+            .as_ref()
+            .and_then(|index| index.lattice_origin(&wctx.lod_worldspace_key().to_ascii_lowercase(), &descriptor))
+    });
     let resident_full_cells: HashSet<_> = state.loaded.keys().copied().collect();
     let input = LodReconcileInput {
         tex_provider: tex_provider.as_ref(),
@@ -193,6 +211,7 @@ pub(crate) fn reconcile_lod_rings(
         player_grid,
         lod_grid_origin,
         legacy_lod_quads: state.legacy_lod_quads.as_ref(),
+        legacy_lattice_origin,
         resident_full_cells: &resident_full_cells,
         full_detail_radius: state.radius_unload,
     };

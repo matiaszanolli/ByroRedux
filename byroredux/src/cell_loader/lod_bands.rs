@@ -508,9 +508,15 @@ pub(crate) fn select_lod_quads(
 /// missed). Only when coverage ties too does the smallest `(rx, ry)`
 /// decide, for determinism. Which lattice the shipped game itself loads
 /// is still open (exal.md).
+///
+/// DLOD-BAND-004 — `lattice_origin` is the worldspace descriptor's SW cell when every authored quad tiles on it
+/// (`DlodSettings::tiles`): each level then keeps the residue class that origin names, read from the data the
+/// game authored rather than counted. `None` (no descriptor, or leftover quads off the lattice — seven FO3
+/// worldspaces) keeps the majority prune and the coverage tie-break above.
 fn prune_same_level_overlaps(
     authored: &[(i32, i32, i32)],
     cell_exists: &dyn Fn(i32, i32) -> bool,
+    lattice_origin: Option<(i32, i32)>,
 ) -> Vec<(i32, i32, i32)> {
     let mut levels: Vec<i32> = authored.iter().map(|&(l, _, _)| l).collect();
     levels.sort_unstable();
@@ -545,12 +551,17 @@ fn prune_same_level_overlaps(
                 })
                 .sum()
         };
-        let winner = classes
-            .iter()
-            .filter(|&(_, &count)| count == top)
-            .map(|(&residue, _)| residue)
-            .max_by_key(|&residue| (coverage(residue), std::cmp::Reverse(residue)))
-            .expect("a non-empty level has at least one top-count class");
+        let descriptor_class = lattice_origin
+            .map(|(ox, oy)| (ox.rem_euclid(level), oy.rem_euclid(level)))
+            .filter(|class| classes.contains_key(class));
+        let winner = descriptor_class.unwrap_or_else(|| {
+            classes
+                .iter()
+                .filter(|&(_, &count)| count == top)
+                .map(|(&residue, _)| residue)
+                .max_by_key(|&residue| (coverage(residue), std::cmp::Reverse(residue)))
+                .expect("a non-empty level has at least one top-count class")
+        });
         out.extend(
             authored
                 .iter()
@@ -578,6 +589,7 @@ fn prune_same_level_overlaps(
 ///
 /// Order is deterministic `(level, qy, qx)`; callers re-sort by their own
 /// streaming priorities.
+#[cfg_attr(not(test), allow(dead_code))] // production passes the descriptor origin through `_refining`
 pub(crate) fn select_authored_lod_quads(
     authored: &[(i32, i32, i32)],
     ladder: &LodBandLadder,
@@ -585,7 +597,7 @@ pub(crate) fn select_authored_lod_quads(
     world_bounds: Option<((i32, i32), (i32, i32))>,
     cell_exists: &dyn Fn(i32, i32) -> bool,
 ) -> Vec<(i32, i32, i32)> {
-    select_authored_lod_quads_refining(authored, ladder, player, world_bounds, cell_exists, -1)
+    select_authored_lod_quads_refining(authored, ladder, player, world_bounds, cell_exists, -1, None)
 }
 
 /// [`select_authored_lod_quads`] that also skips every quad above the finest
@@ -600,8 +612,9 @@ pub(crate) fn select_authored_lod_quads_refining(
     world_bounds: Option<((i32, i32), (i32, i32))>,
     cell_exists: &dyn Fn(i32, i32) -> bool,
     refine_within: i32,
+    lattice_origin: Option<(i32, i32)>,
 ) -> Vec<(i32, i32, i32)> {
-    let authored = prune_same_level_overlaps(authored, cell_exists);
+    let authored = prune_same_level_overlaps(authored, cell_exists, lattice_origin);
     let levels: Vec<i32> = {
         let mut ls: Vec<i32> = authored.iter().map(|&(l, _, _)| l).collect();
         ls.sort_unstable();

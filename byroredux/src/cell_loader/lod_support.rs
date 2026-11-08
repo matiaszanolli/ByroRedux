@@ -60,6 +60,11 @@ pub(crate) struct LodReconcileInput<'a> {
     /// (`None` on every other game; scanned once per streaming state).
     /// Object and terrain rings alike select their quads from it.
     pub(crate) legacy_lod_quads: Option<&'a LegacyLodQuadIndex>,
+    /// DLOD-BAND-004 — the worldspace's `.dlodsettings` SW cell, when every authored quad tiles on it; the
+    /// legacy selection then takes its lattice from the descriptor and skips the residue-majority prune.
+    /// `None` for every other game, a worldspace without a descriptor, and the seven FO3 worldspaces whose
+    /// quads are off their descriptor's lattice.
+    pub(crate) legacy_lattice_origin: Option<(i32, i32)>,
     /// Cells whose full-detail representation is actually resident now.
     /// The unload radius is only a possible residency bound, not a promise
     /// that every cell inside it has been populated.

@@ -346,6 +346,7 @@ fn legacy_desired_lod_quads(
     world_bounds: Option<((i32, i32), (i32, i32))>,
     cell_exists: &dyn Fn(i32, i32) -> bool,
     full_detail_radius: i32,
+    lattice_origin: Option<(i32, i32)>,
 ) -> Vec<(i32, i32, i32)> {
     let selected = super::lod_bands::select_authored_lod_quads_refining(
         authored,
@@ -354,6 +355,7 @@ fn legacy_desired_lod_quads(
         world_bounds,
         cell_exists,
         full_detail_radius,
+        lattice_origin,
     );
     // Cell-coverage window around the player, padded one finest tile so
     // boundary tiles are evaluated whole. max_cells is 64 and the tile is
@@ -609,6 +611,7 @@ pub(crate) fn stream_lod_blocks(
                     worldspace_cell_bounds(wctx),
                     &lod_source_cell_exists(wctx),
                     coarse_refine_radius(input.full_detail_radius),
+                    input.legacy_lattice_origin,
                 )
             })
             .unwrap_or_default()
@@ -1952,7 +1955,7 @@ mod tests {
             for px in [0, 2, 6, 9, 13] {
                 let player = (px, py);
                 let select = |refine: i32| {
-                    legacy_desired_lod_quads(&authored, &ladder, player, None, &|_, _| false, refine)
+                    legacy_desired_lod_quads(&authored, &ladder, player, None, &|_, _| false, refine, None)
                 };
                 reached_before_fix |= select(-1).iter().any(|&(level, qx, qy)| {
                     level > LOD_BLOCK_CELLS
@@ -2152,7 +2155,7 @@ mod tests {
         // One authored level-16 quad well east of the player, on an
         // off-(0,0) lattice position for good measure.
         let authored = vec![(16, 20, 4)];
-        let selected = legacy_desired_lod_quads(&authored, &ladder, player, None, &|_, _| false, -1);
+        let selected = legacy_desired_lod_quads(&authored, &ladder, player, None, &|_, _| false, -1, None);
 
         assert!(selected.contains(&(16, 20, 4)), "the authored quad is selected");
         // The player's own ground is served by a completion tile at the
@@ -2185,7 +2188,7 @@ mod tests {
                 full.push((4, qx * 4, qy * 4));
             }
         }
-        let selected_full = legacy_desired_lod_quads(&full, &ladder, player, None, &|_, _| false, -1);
+        let selected_full = legacy_desired_lod_quads(&full, &ladder, player, None, &|_, _| false, -1, None);
         assert!(
             selected_full.iter().all(|q| full.contains(q)),
             "a complete authored tiling needs no invented completion tiles"
