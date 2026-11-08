@@ -70,6 +70,25 @@ pub(crate) fn ability_spells(table: &PerkEntryTable, held: &[PerkRank]) -> Vec<u
     spells
 }
 
+/// The perks in `held` that no `PERK` record in the load order describes.
+pub(crate) fn unknown_perks(table: &PerkEntryTable, held: &[PerkRank]) -> Vec<u32> {
+    held.iter().map(|perk| perk.perk_form_id).filter(|perk| table.gate(*perk).is_none()).collect()
+}
+
+/// True the first time a perk FormID is reported as unknown, then false: a save loaded or a world rebuilt many
+/// times reports each missing record once. Capped so a pathological save cannot grow the set without bound.
+fn first_unknown_perk_report(perk: u32) -> bool {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    const CAP: usize = 4096;
+    static SEEN: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
+    let mut seen = SEEN
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    seen.len() < CAP && seen.insert(perk)
+}
+
 /// The `Quest` entries a change from `old` to `new` acquires: for each perk whose rank rose, the entries
 /// authored for the new rank (and not for the old one).
 pub(crate) fn quest_entries_gained(table: &PerkEntryTable, old: &[PerkRank], new: &[PerkRank]) -> Vec<PerkBodyEntry> {
@@ -111,8 +130,8 @@ pub fn reconcile_perk_bodies(world: &World) {
         if before.as_ref().is_some_and(|state| state.held == held) {
             continue;
         }
-        // The table guard lives for the two derivations alone.
-        let (desired, gained) = {
+        // The table guard lives for the derivations alone.
+        let (desired, gained, unknown) = {
             let Some(table) = world.try_resource::<PerkEntryTable>() else {
                 // No table installed (no plugin loaded): nothing to derive, and nothing to remember.
                 return;
@@ -121,8 +140,14 @@ pub fn reconcile_perk_bodies(world: &World) {
                 Some(state) if Some(actor) == player => quest_entries_gained(&table, &state.held, &held),
                 _ => Vec::new(),
             };
-            (ability_spells(&table, &held), gained)
+            (ability_spells(&table, &held), gained, unknown_perks(&table, &held))
         };
+        // PERK-DX-005: a held perk the load order has no record for contributes nothing, and says so once.
+        for perk in unknown.into_iter().filter(|perk| first_unknown_perk_report(*perk)) {
+            log::warn!(
+                "perk {perk:08X} is held by entity {actor} but the load order has no PERK record for it — it contributes nothing"
+            );
+        }
         let previous = before.as_ref().map(|state| state.granted.clone()).unwrap_or_default();
         for spell in previous.iter().filter(|spell| !desired.contains(spell)) {
             remove_spell(world, actor, *spell);

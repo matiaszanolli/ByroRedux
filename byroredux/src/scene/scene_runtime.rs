@@ -226,10 +226,10 @@ pub(crate) fn populate_scene_runtime(
     if crate::combat::install_experience_rules(world, index) {
         log::info!("Installed kill experience rules");
     }
-    let perk_entry_perks =
-        byroredux_scripting::perk_entry_points::install_perk_entry_points(world, index);
-    if perk_entry_perks > 0 {
-        log::info!("Installed perk entry points: {perk_entry_perks} perks");
+    byroredux_scripting::perk_entry_points::install_perk_entry_points(world, index);
+    // PERK-DX-004 — one line, whatever the perk count (a game with no PERK records says so).
+    if let Some(table) = world.try_resource::<byroredux_scripting::perk_entry_points::PerkEntryTable>() {
+        log::info!("{}", table.summary());
     }
     let mut engine_start_quests = 0usize;
     if index.game == byroredux_plugin::esm::reader::GameKind::Skyrim {

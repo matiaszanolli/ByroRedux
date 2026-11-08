@@ -930,3 +930,227 @@ mod gates {
         assert_eq!(plan_take_perk(&world, player, 1), Err(PerkRefusal::AtLastRank { perk: 1 }));
     }
 }
+
+// --- PERK-HOOK-001/002/011: the hook catalog -----------------------------------------------------
+
+mod catalog {
+    use super::*;
+    use byroredux_core::source_scan::function_text;
+
+    fn workspace_file(path: &str) -> String {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        std::fs::read_to_string(root.join(path)).unwrap_or_else(|e| panic!("{path}: {e}"))
+    }
+
+    /// `pub const NAME: u8 = N;` rows of the `pub mod <module>` block in `perk_entry_points.rs`.
+    fn hook_constants(module: &str) -> Vec<(String, u8)> {
+        let src = include_str!("../perk_entry_points.rs");
+        let start = src.find(&format!("pub mod {module} {{")).unwrap_or_else(|| panic!("pub mod {module}"));
+        let block = &src[start..];
+        let block = &block[..block.find("\n}\n").expect("module closes")];
+        block
+            .lines()
+            .filter_map(|line| {
+                let rest = line.trim().strip_prefix("pub const ")?;
+                let (name, value) = rest.split_once(": u8 = ")?;
+                Some((name.to_string(), value.trim_end_matches(';').parse().ok()?))
+            })
+            .collect()
+    }
+
+    /// PERK-HOOK-001 -- the catalog is dense per dialect, and every hook constant the module names has its row.
+    #[test]
+    fn every_hook_constant_has_a_row_at_its_index() {
+        for (dialect, module, len) in [
+            (PerkEntryPointDialect::Fallout3NV, "fnv", 74usize),
+            (PerkEntryPointDialect::Skyrim, "skyrim", 92),
+        ] {
+            let rows = hooks(dialect);
+            assert_eq!(rows.len(), len, "{dialect:?}: xEdit's table size (docs/prd/perk-entry-points.md §3.4)");
+            for (i, row) in rows.iter().enumerate() {
+                assert_eq!(usize::from(row.index), i, "{dialect:?}: rows are indexed by hook number");
+                assert!(!row.name.is_empty());
+            }
+            let constants = hook_constants(module);
+            assert!(constants.len() >= 6, "{module}: the scan found only {constants:?}");
+            for (name, index) in constants {
+                assert!(hook(dialect, index).is_some(), "{module}::{name} = {index} has no catalog row");
+            }
+        }
+        assert!(hooks(PerkEntryPointDialect::None).is_empty());
+    }
+
+    /// The names the engine already uses agree with xEdit's.
+    #[test]
+    fn hook_constants_match_their_xedit_names() {
+        let name = |dialect, index| hook(dialect, index).unwrap().name;
+        assert_eq!(name(PerkEntryPointDialect::Fallout3NV, fnv::CALCULATE_WEAPON_DAMAGE), "Calculate Weapon Damage");
+        assert_eq!(name(PerkEntryPointDialect::Fallout3NV, fnv::ADJUST_EXPERIENCE_POINTS), "Adjust Experience Points");
+        assert_eq!(name(PerkEntryPointDialect::Fallout3NV, fnv::GET_MAX_CARRY_WEIGHT), "Get Max Carry Weight");
+        assert_eq!(name(PerkEntryPointDialect::Fallout3NV, fnv::HAS_CONCENTRATED_FIRE), "Has Concentrated Fire");
+        assert_eq!(name(PerkEntryPointDialect::Fallout3NV, fnv::MODIFY_DAMAGE_THRESHOLD_DEFENDER), "Modify Damage Threshold (defender)");
+        assert_eq!(name(PerkEntryPointDialect::Skyrim, skyrim::GET_MAX_CARRY_WEIGHT), "Get Max Carry Weight");
+        assert_eq!(name(PerkEntryPointDialect::Skyrim, skyrim::MOD_ATTACK_DAMAGE), "Mod Attack Damage");
+        assert_eq!(name(PerkEntryPointDialect::Skyrim, skyrim::MOD_TEMPERING_HEALTH), "Mod Tempering Health");
+    }
+
+    /// PERK-HOOK-001 -- a Consumed row names `path::function`, and that function's source calls a composer.
+    #[test]
+    fn every_consumed_hook_names_a_function_that_calls_a_composer() {
+        let mut consumed = 0;
+        for dialect in [PerkEntryPointDialect::Fallout3NV, PerkEntryPointDialect::Skyrim] {
+            for row in hooks(dialect) {
+                let HookState::Consumed { site } = row.state else { continue };
+                consumed += 1;
+                let (path, function) = site.split_once("::").unwrap_or_else(|| panic!("{} site `{site}` is not path::function", row.name));
+                let src = workspace_file(path);
+                let body = function_text(&src, &format!("fn {function}("));
+                let calls_a_composer = body.contains("compose_") || body.contains("has_concentrated_fire(");
+                assert!(calls_a_composer, "{dialect:?} hook {} ({}): `{site}` calls no compose_* function", row.index, row.name);
+            }
+        }
+        assert!(consumed >= 12, "the catalog should hold the hooks the engine composes today, found {consumed}");
+    }
+
+    /// PERK-HOOK-002 -- the GECK's seven "Not Implemented" hooks are Inert on `Fallout3NV`.
+    #[test]
+    fn the_gecks_not_implemented_hooks_are_inert() {
+        for name in [
+            "Adjust Range Penalty",
+            "Calculate Inventory AP Cost",
+            "Calculate Weapon Range",
+            "Get Bad Karma",
+            "Get Good Karma",
+            "Get Should Assist",
+            "Get Should Attack",
+        ] {
+            let row = hooks(PerkEntryPointDialect::Fallout3NV).iter().find(|row| row.name == name).unwrap_or_else(|| panic!("{name}"));
+            assert!(
+                matches!(row.state, HookState::Inert { source } if source.contains("GECK Entry Point")),
+                "{name}: {:?}",
+                row.state
+            );
+        }
+    }
+
+    /// PERK-HOOK-011 -- Skyrim's Adjust Limb Damage (4) and Calculate Mine Explode Chance (3).
+    #[test]
+    fn skyrims_not_used_hooks_are_inert() {
+        for (index, name) in [(4u8, "Adjust Limb Damage"), (3, "Calculate Mine Explode Chance")] {
+            let row = hook(PerkEntryPointDialect::Skyrim, index).unwrap();
+            assert_eq!(row.name, name);
+            assert!(matches!(row.state, HookState::Inert { source } if source.contains("CK Perk Entry Point")), "{:?}", row.state);
+        }
+    }
+
+    /// The Q6 hook, the VATS hooks and the activate / leveled-list hooks carry the requirement that builds them.
+    #[test]
+    fn hooks_the_prd_builds_are_pending_under_their_ids() {
+        let pending = |dialect, index| match hook(dialect, index).unwrap().state {
+            HookState::Pending { id } => id,
+            other => panic!("{index}: {other:?}"),
+        };
+        assert_eq!(pending(PerkEntryPointDialect::Fallout3NV, 35), "PERK-HOOK-004");
+        assert_eq!(pending(PerkEntryPointDialect::Fallout3NV, 39), "PERK-HOOK-005");
+        assert_eq!(pending(PerkEntryPointDialect::Fallout3NV, 21), "PERK-HOOK-006");
+        assert_eq!(pending(PerkEntryPointDialect::Fallout3NV, 27), "PERK-HOOK-007");
+        assert_eq!(pending(PerkEntryPointDialect::Skyrim, 14), "PERK-HOOK-007");
+        assert_eq!(pending(PerkEntryPointDialect::Skyrim, 51), "PERK-HOOK-009");
+        assert_eq!(HookState::Pending { id: "X" }.report(), "pending: X");
+    }
+
+    /// FO3/FNV tab subjects are xEdit's `epc*` classes: Calculate Weapon Damage runs on the weapon and the target.
+    #[test]
+    fn fnv_tab_subjects_come_from_xedit() {
+        let subjects = |index| hook(PerkEntryPointDialect::Fallout3NV, index).unwrap().subjects;
+        assert_eq!(subjects(0), Some(&["Weapon", "Target"][..]));
+        assert_eq!(subjects(22), Some(&[][..]), "Get Max Carry Weight has the perk owner alone");
+        assert_eq!(subjects(17), Some(&["Item"][..]));
+        assert_eq!(hook(PerkEntryPointDialect::Skyrim, 0).unwrap().subjects, None, "unsourced until PERK-SUB-001");
+    }
+}
+
+// --- PERK-DX: observability ----------------------------------------------------------------------
+
+mod observability {
+    use super::*;
+    use super::super::bodies::unknown_perks;
+
+    /// PERK-DX-005 -- a held perk with no PERK record is found, contributes nothing, and is reported once.
+    #[test]
+    fn a_held_perk_with_no_record_is_reported_once_and_contributes_nothing() {
+        let idx = index(GameKind::Fallout3NV, vec![perk(1, vec![entry_point(0, 0, DAMAGE, 3, float(2.0), vec![])])]);
+        let (world, actor) = world_with(&idx, &[(1, 1), (0x6055_0001, 1)]);
+        let table = world.resource::<PerkEntryTable>();
+        let held = world.get::<Perks>(actor).unwrap().entries.clone();
+        assert_eq!(unknown_perks(&table, &held), vec![0x6055_0001]);
+        drop(table);
+        assert_eq!(compose_entry_point(&world, actor, DAMAGE, 10.0, &[]), 20.0, "the known perk composes; the unknown adds nothing");
+        // Reconciling twice reports the missing record once (the first call claims the report).
+        super::super::reconcile_perk_bodies(&world);
+        super::super::reconcile_perk_bodies(&world);
+    }
+
+    /// PERK-DX-003 -- every held entry on the hook that did not apply says why.
+    #[test]
+    fn the_traced_composition_says_why_a_held_entry_did_not_apply() {
+        let weapon_only = vec![tab(1, vec![condition(GET_DEAD, 0.0)])];
+        let unknown_function = vec![tab(0, vec![condition(0x7FFF, 0.0)])];
+        let owner_must_be_dead = vec![tab(0, vec![condition(GET_DEAD, 1.0)])];
+        let idx = index(
+            GameKind::Fallout3NV,
+            vec![
+                perk(1, vec![entry_point(0, 0, DAMAGE, 3, float(2.0), vec![])]),
+                perk(2, vec![entry_point(0, 0, DAMAGE, 3, float(3.0), weapon_only)]),
+                perk(3, vec![entry_point(0, 0, DAMAGE, 3, float(5.0), unknown_function)]),
+                perk(4, vec![entry_point(0, 0, DAMAGE, 3, float(7.0), owner_must_be_dead)]),
+                perk(5, vec![entry_point(1, 0, DAMAGE, 3, float(11.0), vec![])]),
+            ],
+        );
+        let (world, actor) = world_with(&idx, &[(1, 1), (2, 1), (3, 1), (4, 1), (5, 1)]);
+        let traced = compose_entry_point_traced(&world, actor, DAMAGE, 10.0, &[]);
+        assert_eq!(traced.value, 20.0);
+        assert_eq!(traced.applied.len(), 1);
+        let reason = |perk| traced.skipped.iter().find(|entry| entry.perk == perk).map(|entry| entry.reason);
+        assert_eq!(reason(2), Some(SkipReason::SubjectGated { tab: 1 }));
+        assert_eq!(reason(3), Some(SkipReason::Unmodelled { function_index: 0x7FFF }));
+        assert_eq!(reason(4), Some(SkipReason::ConditionsNotMet));
+        assert_eq!(reason(5), Some(SkipReason::WrongRank { authored: 1, held: 1 }));
+        assert_eq!(traced.skipped.len(), 4);
+    }
+
+    /// PERK-DX-004 -- the install summary counts entries by what happens to them, and exists with no perks.
+    #[test]
+    fn the_install_summary_counts_entries_by_hook_state() {
+        let idx = index(
+            GameKind::Fallout3NV,
+            vec![
+                perk(1, vec![entry_point(0, 0, DAMAGE, 3, float(2.0), vec![])]),
+                // Hook 5 (Adjust Range Penalty) is Inert; hook 1 is unclassified Pending; hook 22 is Consumed but
+                // function 9 (Add Activate Choice) is not value math.
+                perk(2, vec![entry_point(0, 0, 5, 3, float(1.0), vec![]), entry_point(0, 0, 1, 3, float(1.0), vec![])]),
+                perk(3, vec![entry_point(0, 0, fnv::GET_MAX_CARRY_WEIGHT, 9, float(1.0), vec![])]),
+                perk(4, vec![ability_body(0x20), quest_body(0x30, 10)]),
+            ],
+        );
+        let summary = PerkEntryTable::from_index(&idx).summary().clone();
+        assert_eq!(summary.perks, 4);
+        assert_eq!(summary.entry_point_entries, 4);
+        assert_eq!((summary.composed, summary.skipped_undecoded), (1, 1));
+        assert_eq!((summary.pending, summary.blocked, summary.inert), (1, 0, 1));
+        assert_eq!((summary.ability_entries, summary.quest_entries), (1, 1));
+        let line = summary.to_string();
+        assert!(line.contains("Fallout3NV") && line.contains("1 composed") && line.contains("1 skipped"), "{line}");
+        // No perks at all still yields a line (PERK-DX-004: "including when the perk count is 0").
+        let empty = PerkEntryTable::from_index(&index(GameKind::Skyrim, vec![]));
+        assert!(empty.summary().to_string().contains("Skyrim, 0 perks"), "{}", empty.summary());
+    }
+
+    fn ability_body(spell: u32) -> PerkEntry {
+        PerkEntry { rank: 0, priority: 0, body: PerkEntryBody::Ability { spell_form_id: spell }, condition_tabs: Vec::new() }
+    }
+
+    fn quest_body(quest: u32, stage: u16) -> PerkEntry {
+        PerkEntry { rank: 0, priority: 0, body: PerkEntryBody::Quest { quest_form_id: quest, stage }, condition_tabs: Vec::new() }
+    }
+}

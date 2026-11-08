@@ -168,6 +168,48 @@ pub fn entry_applies_at(entry_rank: u8, held_rank: u8) -> bool {
     held_rank != 0 && entry_rank == held_rank - 1
 }
 
+/// What a load order's perks contribute to composition (PERK-DX-004), counted once at install.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PerkInstallSummary {
+    pub dialect: PerkEntryPointDialect,
+    pub perks: usize,
+    /// Entry-point entries across every perk (`Quest` and `Ability` bodies are counted apart).
+    pub entry_point_entries: usize,
+    /// On a Consumed hook and resolved to value math: the entries a composition can apply.
+    pub composed: usize,
+    /// On a Consumed hook but not value math (a function or parameter shape that did not decode).
+    pub skipped_undecoded: usize,
+    /// On a hook that is not Consumed, by its state.
+    pub pending: usize,
+    pub blocked: usize,
+    pub inert: usize,
+    /// On a dialect with no catalog (FO4, until Phase 4) or an index the catalog has no row for.
+    pub uncatalogued: usize,
+    pub ability_entries: usize,
+    pub quest_entries: usize,
+}
+
+impl std::fmt::Display for PerkInstallSummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "perk entry points: dialect {:?}, {} perks, {} entry-point entries: {} composed, {} skipped (undecoded shape); \
+             on other hooks {} pending / {} blocked / {} inert, {} uncatalogued; bodies {} ability + {} quest",
+            self.dialect,
+            self.perks,
+            self.entry_point_entries,
+            self.composed,
+            self.skipped_undecoded,
+            self.pending,
+            self.blocked,
+            self.inert,
+            self.uncatalogued,
+            self.ability_entries,
+            self.quest_entries,
+        )
+    }
+}
+
 /// What the level-up menu reads of a `PERK` record (PERK-GATE): not the entries, the record's own fields.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PerkGateRecord {
@@ -185,6 +227,7 @@ pub struct PerkGateRecord {
 /// `NOT_SAVED_BY_DESIGN`: re-derived from the load order every boot.
 #[derive(Debug, Default, Clone)]
 pub struct PerkEntryTable {
+    summary: PerkInstallSummary,
     gates: HashMap<u32, Arc<PerkGateRecord>>,
     dialect: PerkEntryPointDialect,
     perks: HashMap<u32, Arc<Vec<PerkEntryPointEntry>>>,
@@ -246,8 +289,34 @@ impl PerkEntryTable {
                 bodies.insert(form_id, Arc::new(entries));
             }
         }
+        let mut summary = PerkInstallSummary { dialect, perks: index.perks.len(), ..Default::default() };
+        for perk in index.perks.values() {
+            for entry in &perk.entries {
+                match &entry.body {
+                    PerkEntryBody::Ability { .. } => summary.ability_entries += 1,
+                    PerkEntryBody::Quest { .. } => summary.quest_entries += 1,
+                    PerkEntryBody::EntryPoint { entry_point_index, function, function_data, .. } => {
+                        summary.entry_point_entries += 1;
+                        match hook(dialect, *entry_point_index).map(|row| row.state) {
+                            None => summary.uncatalogued += 1,
+                            Some(HookState::Consumed { .. }) => {
+                                if resolve_op(index, dialect, *entry_point_index, *function, function_data).is_some() {
+                                    summary.composed += 1;
+                                } else {
+                                    summary.skipped_undecoded += 1;
+                                }
+                            }
+                            Some(HookState::Pending { .. }) => summary.pending += 1,
+                            Some(HookState::Blocked { .. }) => summary.blocked += 1,
+                            Some(HookState::Inert { .. }) => summary.inert += 1,
+                        }
+                    }
+                }
+            }
+        }
         if dialect == PerkEntryPointDialect::None {
             return Self {
+                summary,
                 dialect,
                 perks: HashMap::new(),
                 gates,
@@ -287,6 +356,7 @@ impl PerkEntryTable {
             }
         }
         Self {
+            summary,
             dialect,
             perks,
             gates,
@@ -294,6 +364,11 @@ impl PerkEntryTable {
             rank_limits,
             add_raises_rank,
         }
+    }
+
+    /// What this load order's perks contribute (PERK-DX-004).
+    pub fn summary(&self) -> &PerkInstallSummary {
+        &self.summary
     }
 
     /// The level-up fields of one `PERK` record. `None` means the FormID is not a known PERK.
@@ -602,11 +677,36 @@ pub struct AppliedPerkEntry {
     pub value: f32,
 }
 
+/// Why a held entry on the composed hook did not apply (PERK-DX-003). The first two are the §3.2 classes of
+/// an entry on a Consumed hook that is not **Fireable** at this call site; the rest are the ordinary reasons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkipReason {
+    /// The entry is authored for another rank than the one held (zero-based rank).
+    WrongRank { authored: u8, held: u8 },
+    /// §3.2 **Subject-gated**: a conditioned tab has no subject at this call site (`tab` is the `PRKC` tab).
+    SubjectGated { tab: i8 },
+    /// §3.2 **Unmodelled**: a condition function the M47.1 evaluator does not model (the CTDA function index).
+    Unmodelled { function_index: u32 },
+    /// Fireable, and its conditions evaluated false for this owner and these subjects.
+    ConditionsNotMet,
+}
+
+/// A held entry on the composed hook that did not apply.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkippedPerkEntry {
+    pub perk: u32,
+    pub entry_point: u8,
+    pub op: PerkOp,
+    pub reason: SkipReason,
+}
+
 /// A composed value and the entries that produced it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PerkComposition {
     pub value: f32,
     pub applied: Vec<AppliedPerkEntry>,
+    /// The owner's other entries on this hook, and why each did not apply.
+    pub skipped: Vec<SkippedPerkEntry>,
 }
 
 /// Compose `base` with every entry `owner`'s perks contribute to `entry_point`.
@@ -636,6 +736,7 @@ pub fn compose_entry_point_traced(
     let mut composition = PerkComposition {
         value: base,
         applied: Vec::new(),
+        skipped: Vec::new(),
     };
     // Snapshot everything the walk needs, then let every guard go: the
     // condition evaluator below takes arbitrary component and resource locks.
@@ -651,6 +752,7 @@ pub fn compose_entry_point_traced(
         return composition;
     }
     let mut due: Vec<((u8, usize, usize), u32, PerkEntryPointEntry)> = Vec::new();
+    let mut wrong_rank: Vec<SkippedPerkEntry> = Vec::new();
     {
         let Some(table) = world.try_resource::<PerkEntryTable>() else {
             return composition;
@@ -661,12 +763,22 @@ pub fn compose_entry_point_traced(
             };
             for (entry_order, entry) in entries.iter().enumerate() {
                 // `Perks` ranks are one-based; `PRKE` ranks are zero-based.
-                if entry.entry_point == entry_point && entry_applies_at(entry.rank, *rank) {
+                if entry.entry_point != entry_point {
+                    continue;
+                }
+                if entry_applies_at(entry.rank, *rank) {
                     due.push((
                         compose_order_key(entry.priority, perk_order, entry_order),
                         *perk,
                         entry.clone(),
                     ));
+                } else {
+                    wrong_rank.push(SkippedPerkEntry {
+                        perk: *perk,
+                        entry_point,
+                        op: entry.op.clone(),
+                        reason: SkipReason::WrongRank { authored: entry.rank, held: *rank },
+                    });
                 }
             }
         }
@@ -674,8 +786,21 @@ pub fn compose_entry_point_traced(
     due.sort_by_key(|(key, _, _)| *key);
 
     for (_, perk, entry) in due {
-        if !tabs_pass(world, owner, &entry.tabs, tab_subjects) {
-            continue;
+        match tabs_verdict(world, owner, &entry.tabs, tab_subjects) {
+            TabVerdict::Pass => {}
+            failed => {
+                composition.skipped.push(SkippedPerkEntry {
+                    perk,
+                    entry_point,
+                    op: entry.op,
+                    reason: match failed {
+                        TabVerdict::SubjectGated { tab } => SkipReason::SubjectGated { tab },
+                        TabVerdict::Unmodelled { function_index } => SkipReason::Unmodelled { function_index },
+                        _ => SkipReason::ConditionsNotMet,
+                    },
+                });
+                continue;
+            }
         }
         composition.value = apply_op(world, owner, &entry.op, composition.value);
         composition.applied.push(AppliedPerkEntry {
@@ -685,7 +810,20 @@ pub fn compose_entry_point_traced(
             value: composition.value,
         });
     }
+    composition.skipped.extend(wrong_rank);
     composition
+}
+
+/// How one entry's condition tabs came out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TabVerdict {
+    Pass,
+    /// A conditioned tab has no subject (§3.2 **Subject-gated**).
+    SubjectGated { tab: i8 },
+    /// A condition the evaluator cannot model (§3.2 **Unmodelled**).
+    Unmodelled { function_index: u32 },
+    /// Every subject is supplied and every condition modelled, and the conditions are false.
+    Failed,
 }
 
 /// Every condition tab passes against the subject it runs on.
@@ -695,16 +833,25 @@ fn tabs_pass(
     tabs: &[PerkConditionTab],
     tab_subjects: &[Option<EntityId>],
 ) -> bool {
-    tabs.iter().all(|tab| {
+    tabs_verdict(world, owner, tabs, tab_subjects) == TabVerdict::Pass
+}
+
+/// [`tabs_pass`] with the reason it did not: the first tab that fails decides.
+fn tabs_verdict(
+    world: &World,
+    owner: EntityId,
+    tabs: &[PerkConditionTab],
+    tab_subjects: &[Option<EntityId>],
+) -> TabVerdict {
+    for tab in tabs {
         if tab.conditions.is_empty() {
-            return true;
+            continue;
         }
         // A condition the evaluator cannot model reads as 0.0, which many
         // comparisons satisfy; an entry gated on one must not fire on it
         // (the same fail-closed rule the Story Manager walk applies, #5380).
-        let modeled = tab.conditions.iter().all(|condition| crate::condition::is_modeled(world, condition));
-        if !modeled {
-            return false;
+        if let Some(condition) = tab.conditions.iter().find(|condition| !crate::condition::is_modeled(world, condition)) {
+            return TabVerdict::Unmodelled { function_index: condition.function_index };
         }
         let subject = match usize::try_from(tab.tab) {
             Ok(0) => Some(owner),
@@ -712,12 +859,15 @@ fn tabs_pass(
             Err(_) => None,
         };
         let Some(subject) = subject else {
-            return false;
+            return TabVerdict::SubjectGated { tab: tab.tab };
         };
         let mut context = ConditionContext::for_subject(subject);
         context.target = Some(owner);
-        evaluate(&tab.conditions, world, &context)
-    })
+        if !evaluate(&tab.conditions, world, &context) {
+            return TabVerdict::Failed;
+        }
+    }
+    TabVerdict::Pass
 }
 
 fn av_value(world: &World, owner: EntityId, avif: Option<u32>) -> f32 {
@@ -754,7 +904,9 @@ fn apply_op(world: &World, owner: EntityId, op: &PerkOp, value: f32) -> f32 {
 }
 
 mod bodies;
+mod catalog;
 mod gates;
+pub use catalog::{hook, hooks, Hook, HookState, UNCLASSIFIED};
 pub use gates::{plan_take_perk, PerkRefusal, PerkTake};
 pub use bodies::{perk_body_system, reconcile_perk_bodies, PerkBodyState};
 
