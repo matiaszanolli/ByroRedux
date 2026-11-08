@@ -28,6 +28,7 @@
 //!
 //! - [`lod`] — distant terrain / object LOD + worldspace-default and LOD water;
 //! - [`climate`] — worldspace / climate / default-weather inheritance;
+//! - [`region_weather`] — region weather tables (Volumetric Lighting PRD `VLM-REG`);
 //! - [`water`] — `WATR` → [`WaterMaterial`];
 //! - [`sky_weather`] — sky, sun, cell lighting, weather, image-space sources;
 //! - [`fallback`] — the procedural no-data defaults.
@@ -42,6 +43,7 @@ use byroredux_plugin::esm::cell::WorldspaceRecord;
 mod climate;
 mod fallback;
 mod lod;
+mod region_weather;
 mod sky_weather;
 mod tod;
 mod water;
@@ -49,6 +51,7 @@ mod water;
 pub(crate) use climate::*;
 pub(crate) use fallback::*;
 pub(crate) use lod::*;
+pub(crate) use region_weather::*;
 pub(crate) use sky_weather::*;
 pub(crate) use tod::*;
 pub(crate) use water::*;

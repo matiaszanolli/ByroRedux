@@ -254,9 +254,7 @@ engine. Still open, an in-game observation (filed as #6772), see VLM-REG-002.
   whose section has the Override flag set. Today no non-test code in
   `byroredux/src` reads `RegionDataPayload::Weather` (at HEAD on
   2026-11-01). Test: `region_weather_override_priority_wins` (new).
-- **VLM-REG-002.** When no region of the cell sets Override on a Weather
-  section, the choice among non-override Weather sections MUST follow the
-  original editors' rule. **Phase 0: verify** — none of the three wiki pages
+- **VLM-REG-002.** When no region of the cell sets Override on a Weather section, the rows of every covering non-override section MUST form one table and the highest-chance row MUST win (§10 Q2's rule across the merged table), ties going to the higher section Priority, then the lower region FormID, then the authored row order. *Owner decision 2026-11-07, shipped in Phase 1 as an engine choice recorded under VLM-HF-008 until #6772 observes the original engine.* **Phase 0, census:** none of the three wiki pages
   states which non-override region wins when several overlap. **Census,
   2026-11-07** (`crates/plugin/examples/region_weather_census.rs`, one master at a
   time; exterior cells whose `XCLR` names two or more Weather-carrying regions,
@@ -292,8 +290,7 @@ engine. Still open, an in-game observation (filed as #6772), see VLM-REG-002.
   changes through `apply_cell_climate_override` → `apply_environment`
   (`scene/world_setup.rs:781-784`); the region path MUST reuse that call,
   not a second install path.
-- **VLM-REG-008.** Region membership MUST be read from the cell's `XCLR`
-  list (`CellData::regions`). **Phase 0: verify** — the CK page says "it is
+- **VLM-REG-008.** Region membership MUST be the region's `RPLD` polygon overlapping the cell's square, within the region's own `WNAM` worldspace (`RegnRecord::covers_cell`); the cell's `XCLR` list (`CellData::regions`) MUST NOT be consulted for weather. *Shipped in Phase 1.* **Phase 0, settled:** the CK page says "it is
   the exact shape of the region as drawn in the Region Preview Window that
   will decide its actual area of effect", not the per-cell list. **Census,
   2026-11-07** (same probe; a region covers a cell when its `RPLD` polygon

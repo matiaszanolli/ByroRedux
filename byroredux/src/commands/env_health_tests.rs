@@ -561,3 +561,65 @@ fn non_finite_weather_sky_and_image_space_are_caught() {
         ]
     );
 }
+
+/// VLM-REG-011 — the `weather.source=` line names the source class, the deciding record's EDID and
+/// form ID, and for a region its Priority and Override bit.
+#[test]
+fn weather_source_line_names_the_deciding_record() {
+    use crate::components::InstalledOutdoorEnvironment;
+    use crate::env_translate::{WeatherSource, WeatherSourceClass};
+    use byroredux_plugin::esm::records::{ClimateRecord, EsmIndex, RegnRecord, WeatherRecord};
+
+    let mut index = EsmIndex::default();
+    index.weathers.insert(0xA1, WeatherRecord { form_id: 0xA1, editor_id: "MojaveStorm".into(), ..Default::default() });
+    index.weathers.insert(0xF0, WeatherRecord { form_id: 0xF0, editor_id: "ForcedClear".into(), ..Default::default() });
+    index.regions.insert(0x7, RegnRecord { form_id: 0x7, editor_id: "GoodspringsRegion".into(), ..Default::default() });
+    index.climates.insert(0xC1, ClimateRecord { form_id: 0xC1, editor_id: "MojaveClimate".into(), ..Default::default() });
+
+    let region = InstalledOutdoorEnvironment {
+        climate: Some(0xC1),
+        default_weather: Some(0xA1),
+        forced_weather: None,
+        source: WeatherSource {
+            class: WeatherSourceClass::RegionOverride,
+            region: Some(0x7),
+            priority: Some(70),
+            override_bit: true,
+            climate: Some(0xC1),
+        },
+    };
+    assert_eq!(
+        weather_source_line(&region, Some(&index)),
+        "env: weather.source=region-override weather=MojaveStorm (000000A1) \
+         region=GoodspringsRegion (00000007) priority=70 override=1 climate=MojaveClimate (000000C1)"
+    );
+    // Without an index the line keeps the form IDs, never invents a name.
+    assert_eq!(
+        weather_source_line(&region, None),
+        "env: weather.source=region-override weather=000000A1 region=00000007 priority=70 override=1 climate=000000C1"
+    );
+    let climate = InstalledOutdoorEnvironment {
+        climate: Some(0xC1),
+        default_weather: Some(0xA1),
+        forced_weather: None,
+        source: WeatherSource { class: WeatherSourceClass::Climate, climate: Some(0xC1), ..Default::default() },
+    };
+    assert_eq!(
+        weather_source_line(&climate, Some(&index)),
+        "env: weather.source=climate weather=MojaveStorm (000000A1) climate=MojaveClimate (000000C1)"
+    );
+    // A forced weather names itself, not the weather the cell would have had.
+    let forced = InstalledOutdoorEnvironment {
+        forced_weather: Some(0xF0),
+        source: WeatherSource { class: WeatherSourceClass::Forced, climate: Some(0xC1), ..Default::default() },
+        ..climate
+    };
+    assert_eq!(
+        weather_source_line(&forced, Some(&index)),
+        "env: weather.source=forced weather=ForcedClear (000000F0) climate=MojaveClimate (000000C1)"
+    );
+    assert_eq!(
+        weather_source_line(&InstalledOutdoorEnvironment::default(), None),
+        "env: weather.source=none weather=none"
+    );
+}

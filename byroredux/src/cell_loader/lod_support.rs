@@ -640,6 +640,7 @@ mod tests {
             worldspace_key: worldspace_key.to_string(),
             climate: None,
             default_weather: None,
+            default_weather_source: Default::default(),
             default_water_height: None,
             default_water_type_form: None,
         }

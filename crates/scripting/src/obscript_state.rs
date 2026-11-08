@@ -97,10 +97,10 @@ impl KillRecords {
 
 /// The weather a script forced, and whether it holds ("override flag"). `None` is the climate's own.
 ///
-/// `locked` is recorded and saved but read by nothing: the engine runs one weather per worldspace
-/// and never re-rolls it on its own, so an unlocked force is indistinguishable from a locked one
-/// today. It is kept (not dropped) so a regional weather change can honour the flag without a save
-/// format change.
+/// `locked` keeps a forced weather across cell crossings: an unlocked force yields at the next
+/// crossing into a new exterior cell, when that cell's own weather (a region's table or the
+/// climate's default) takes over; a locked one holds until `ReleaseWeatherOverride`
+/// (Volumetric Lighting PRD VLM-REG-006 / -014, `scene::world_setup::release_unlocked_forced_weather`).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ForcedWeather {

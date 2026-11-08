@@ -53,6 +53,7 @@ fn wctx_with_same_persistent_cell() -> ExteriorWorldContext {
         worldspace_key: "childworld".into(),
         climate: None,
         default_weather: None,
+        default_weather_source: Default::default(),
         default_water_height: None,
         default_water_type_form: None,
     }

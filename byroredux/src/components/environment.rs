@@ -197,8 +197,23 @@ pub(crate) struct InstalledOutdoorEnvironment {
     pub(crate) climate: Option<u32>,
     pub(crate) default_weather: Option<u32>,
     pub(crate) forced_weather: Option<u32>,
+    /// Which authored record chose the weather in effect (VLM-REG-011): printed by `env.health`,
+    /// read by nothing else. A forced weather shows as the `Forced` class; the record that would
+    /// otherwise have chosen is `default_weather`'s.
+    pub(crate) source: crate::env_translate::WeatherSource,
 }
 impl Resource for InstalledOutdoorEnvironment {}
+
+/// The climate and weather the exterior streaming step last applied for the player's cell
+/// (VLM-REG-007: the key a crossing is compared against), before any script-forced weather
+/// replaces it. `weather` is the resolved choice, not the climate's default, so a re-apply after
+/// a forced weather is released returns to the region's weather, not the climate's.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct AppliedWeather {
+    pub(crate) climate: Option<u32>,
+    pub(crate) weather: Option<u32>,
+    pub(crate) source: crate::env_translate::WeatherSource,
+}
 
 /// Resolved ambient-audio directive for the currently resident cell's
 /// highest-priority `REGN` `Sound` entry (EX-16 item 1, #2372). CPU-only —

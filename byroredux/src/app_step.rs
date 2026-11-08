@@ -125,8 +125,8 @@ impl App {
         // M47.2 — animated props the streamed cells spawned get their Havok
         // behavior graph (a cheap no-op while none is waiting).
         crate::asset_provider::populate_object_graphs(&mut self.world, &state.tex_provider);
-        // #2451 / EXAL-03 — a cell may pin its own CLMT via XCCM, which
-        // re-resolves sky + weather (through the same crossfade a
+        // #2451 / EXAL-03 — a cell may pin its own CLMT via XCCM, and its regions may
+        // author a weather table (VLM-REG), which re-resolves sky + weather (through the same crossfade a
         // worldspace change uses) when it differs from what is installed.
         // Deliberately OUTSIDE the `grid_changed` guard below: bootstrap
         // seeds `last_player_grid` before the first step, so a session
@@ -134,13 +134,13 @@ impl App {
         // it until the player left and came back. Each grid cell is
         // resolved once (`climate_override_grid`, #5529) — success or
         // failure — so every other frame costs one `Option` compare.
-        crate::scene::apply_cell_climate_override(
+        crate::scene::apply_cell_weather(
             &mut self.world,
             ctx,
             &state.tex_provider,
             &state.wctx,
             player_grid,
-            &mut state.applied_climate_form,
+            &mut state.applied_weather,
             &mut state.climate_override_grid,
         );
         // ObScript `ForceWeather` / `SetWeather` / `ReleaseWeatherOverride`: re-install the sky when the
@@ -150,7 +150,7 @@ impl App {
             ctx,
             &state.tex_provider,
             &state.wctx,
-            state.applied_climate_form,
+            state.applied_weather,
         );
         // EX-16 item 1 (#2372) — same "outside the grid_changed guard"
         // placement as the climate override immediately above, and for

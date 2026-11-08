@@ -496,6 +496,49 @@ impl ConsoleCommand for SkyDumpCommand {
 /// `world.owners report` already uses for the EX-08 soak.
 pub(crate) struct EnvHealthCommand;
 
+
+/// The `weather.source=` line (VLM-REG-011): the class of record that chose the weather in effect,
+/// the deciding record's EDID and form ID, and for a region its Priority and Override bit. A forced
+/// weather names itself; a region class names its region and the weather it picked; the climate
+/// classes name the climate. EDIDs come from the loaded index when there is one, else the line
+/// carries the form IDs alone.
+pub(super) fn weather_source_line(
+    installed: &crate::components::InstalledOutdoorEnvironment,
+    index: Option<&byroredux_plugin::esm::records::EsmIndex>,
+) -> String {
+    use crate::env_translate::WeatherSourceClass as Class;
+    let source = installed.source;
+    let edid_of = |form: u32, lookup: &dyn Fn(&byroredux_plugin::esm::records::EsmIndex, u32) -> Option<String>| {
+        match index.and_then(|i| lookup(i, form)) {
+            Some(edid) if !edid.is_empty() => format!("{edid} ({form:08X})"),
+            _ => format!("{form:08X}"),
+        }
+    };
+    let weather_form = match source.class {
+        Class::Forced => installed.forced_weather,
+        _ => installed.default_weather,
+    };
+    let weather = weather_form
+        .map(|f| edid_of(f, &|i, f| i.weathers.get(&f).map(|w| w.editor_id.clone())))
+        .unwrap_or_else(|| "none".into());
+    let mut line = format!("env: weather.source={} weather={weather}", source.class.label());
+    if let Some(region) = source.region {
+        line.push_str(&format!(
+            " region={} priority={} override={}",
+            edid_of(region, &|i, f| i.regions.get(&f).map(|r| r.editor_id.clone())),
+            source.priority.map_or_else(|| "-".into(), |p| p.to_string()),
+            u8::from(source.override_bit),
+        ));
+    }
+    if let Some(climate) = source.climate {
+        line.push_str(&format!(
+            " climate={}",
+            edid_of(climate, &|i, f| i.climates.get(&f).map(|c| c.editor_id.clone()))
+        ));
+    }
+    line
+}
+
 impl ConsoleCommand for EnvHealthCommand {
     fn name(&self) -> &str {
         "env.health"
@@ -528,6 +571,12 @@ impl ConsoleCommand for EnvHealthCommand {
             },
             water_planes.len(),
         )];
+
+        // VLM-REG-011 — which record chose the weather in effect. Evidence, not a gate.
+        if let Some(installed) = world.try_resource::<crate::components::InstalledOutdoorEnvironment>() {
+            let index = world.try_resource::<crate::cell_loader::LoadedCellIndex>();
+            lines.push(weather_source_line(&installed, index.as_deref().map(|i| &*i.0)));
+        }
 
         // Evidence, not gates — see the module doc on why fog ordering is
         // reported rather than asserted.

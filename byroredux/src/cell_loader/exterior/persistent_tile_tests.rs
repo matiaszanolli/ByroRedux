@@ -55,6 +55,7 @@ fn wctx() -> ExteriorWorldContext {
         worldspace_key: "wastelandnv".into(),
         climate: None,
         default_weather: None,
+        default_weather_source: Default::default(),
         default_water_height: None,
         default_water_type_form: None,
     }

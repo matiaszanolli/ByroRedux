@@ -328,22 +328,41 @@ pub fn build_exterior_world_context(
                 climate.sunset_end as f32 / 6.0,
             );
         });
-    // #5424 — the whole default-weather rule, WTHS stand-in included,
-    // lives in `resolve_default_weather` so this resolve and the per-cell
-    // XCCM re-resolve pick by the same rule.
-    let default_weather = climate.as_ref().and_then(|climate| {
-        crate::env_translate::resolve_default_weather(climate, &record_index.weathers).map(
-            |(wthr, chance)| {
-                log::info!(
-                    "Default weather: '{}' ({:08X}, chance {})",
-                    wthr.editor_id,
-                    wthr.form_id,
-                    chance,
-                );
-                wthr.clone()
-            },
-        )
+    // #5424 — the whole default-weather rule, WTHS stand-in included, lives in
+    // `resolve_default_weather`; VLM-REG — the regions over the streaming centre's cell choose the
+    // weather before the climate default does (`resolve_cell_weather`, the same call the per-cell
+    // re-resolve makes), so a session that starts inside a region's polygon boots with that
+    // region's weather instead of fading to it on the first frame. The authored GLOB values stand
+    // in for the runtime ones: the scripting `Globals` table is not seeded yet at this point.
+    let worldspace_form = index.worldspaces.get(&worldspace_key).map_or(0, |w| w.form_id);
+    let authored_global = |form: u32| record_index.globals.get(&form).map(|g| g.value.as_f32());
+    let cell_weather = crate::env_translate::resolve_cell_weather(
+        &crate::env_translate::CellWeatherInputs {
+            regions: &record_index.regions,
+            climates: &record_index.climates,
+            weathers: &record_index.weathers,
+            worldspace_form,
+            worldspace_climate: climate_form,
+        },
+        None,
+        (center_x, center_y),
+        &authored_global,
+    );
+    let default_weather = cell_weather.weather.map(|wthr| {
+        log::info!(
+            "Default weather: '{}' ({:08X}, source {}{})",
+            wthr.editor_id,
+            wthr.form_id,
+            cell_weather.source.class.label(),
+            cell_weather
+                .source
+                .region
+                .map(|r| format!(", region {r:08X}"))
+                .unwrap_or_default(),
+        );
+        wthr.clone()
     });
+    let default_weather_source = cell_weather.source;
 
     // Resolve the worldspace-default water once (#1305 / OBL-D6-NEW-02).
     // Oblivion WRLD has no DNAM/height field, so the default height is the
@@ -367,6 +386,7 @@ pub fn build_exterior_world_context(
         worldspace_key,
         climate,
         default_weather,
+        default_weather_source,
         default_water_height,
         default_water_type_form,
     })

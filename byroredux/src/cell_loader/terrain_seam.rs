@@ -94,7 +94,7 @@
 //! session — it is never dropped after spawn. No new cache, no 4.4 KB- vs.
 //! 130 B-per-cell tradeoff: the live checker below just looks the data up
 //! again through the same `record_index` every other live exterior helper
-//! (`scene::apply_cell_region_ambient`, `scene::apply_cell_climate_override`)
+//! (`scene::apply_cell_region_ambient`, `scene::apply_cell_weather`)
 //! already reaches through.
 
 use byroredux_plugin::esm::cell::LandscapeData;

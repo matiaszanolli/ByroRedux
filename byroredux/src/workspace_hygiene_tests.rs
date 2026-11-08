@@ -1355,7 +1355,12 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // continues inland across a cell edge), cited from the Skyrim W1 fixture.
         // #6223 re-measure: `inspect wthr-dump`, the byte-for-byte WTHR decode pin
         // (a subcommand of the existing probe, no new target).
-        ("plugin", 68, 8356),
+        // #6724 Phase 0 re-measure: +2 census probes, `region_weather_census.rs` (the region
+        // weather rules the Volumetric Lighting PRD's VLM-REG verify items rest on) and
+        // `fog_godray_census.rs` (the VOLI / GDRY / height-fog findings of VLM-HF-003, -010, -011),
+        // both cited from the PRD and the fog design's corpus findings; the former now calls
+        // `RegnRecord::covers_cell` instead of carrying its own geometry (#6725).
+        ("plugin", 70, 9043),
         // M47.3 result scripts — `obscript_tools avcodes` aligns the Fallout
         // misc-stat codes and `live` names the quests a script advanced
         // (no new target; the existing triage tool grew).

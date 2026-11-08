@@ -738,12 +738,21 @@ mod default_weather_rule_tests {
         let world_setup_src = byroredux_core::source_scan::strip_test_modules(include_str!(
             "../scene/world_setup.rs"
         ));
+        let region_weather_src = byroredux_core::source_scan::strip_test_modules(include_str!(
+            "region_weather.rs"
+        ));
+        assert!(
+            region_weather_src.contains("resolve_default_weather("),
+            "resolve_cell_weather must keep the shared default-weather rule"
+        );
         for (name, src) in [
             ("cell_loader/exterior.rs", exterior_src.as_str()),
             ("scene/world_setup.rs", world_setup_src.as_str()),
         ] {
+            // VLM-REG: both callers pick through `resolve_cell_weather`, which owns the
+            // `resolve_default_weather` rule (asserted below), so the rule is still one.
             assert!(
-                src.contains("resolve_default_weather("),
+                src.contains("resolve_default_weather(") || src.contains("resolve_cell_weather("),
                 "{name} must route its default-weather pick through the shared rule"
             );
             assert!(

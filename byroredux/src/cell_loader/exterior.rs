@@ -105,6 +105,9 @@ pub struct ExteriorWorldContext {
     /// `CellLightingRes` on the first cell load; subsequent loads
     /// reuse the same resources via the streaming control loop.
     pub default_weather: Option<byroredux_plugin::esm::records::WeatherRecord>,
+    /// Which record chose `default_weather` (VLM-REG-011): the regions over the streaming
+    /// centre's cell, or the climate default. Diagnostic only.
+    pub default_weather_source: crate::env_translate::WeatherSource,
     /// Worldspace-default water height for exterior cells with no XCLW.
     /// `Some(0.0)` for an **Oblivion** worldspace carrying a NAM2 default
     /// water form (Tamriel sea level Z=0 — Oblivion WRLD has no DNAM

@@ -222,6 +222,7 @@ pub(crate) fn apply_worldspace_weather(
         wctx,
         wctx.climate.as_ref(),
         wctx.default_weather.as_ref(),
+        wctx.default_weather_source,
     );
     install_ground_cover(world, tex_provider, wctx);
 }
@@ -231,7 +232,7 @@ pub(crate) fn apply_worldspace_weather(
 ///
 /// Split out of [`apply_worldspace_weather`] (#2451) because the pair is
 /// not always the worldspace's: a cell with an `XCCM` override supplies
-/// its own, via [`apply_cell_climate_override`]. Everything here is
+/// its own, via [`apply_cell_weather`]. Everything here is
 /// climate-scoped — the sky textures, the TOD breakpoints, the weather
 /// crossfade. Ground cover stays with the worldspace wrapper: it is
 /// keyed by the worldspace name chain, not by the climate in effect.
@@ -242,6 +243,7 @@ fn apply_environment(
     wctx: &cell_loader::ExteriorWorldContext,
     climate: Option<&byroredux_plugin::esm::records::ClimateRecord>,
     default_weather: Option<&byroredux_plugin::esm::records::WeatherRecord>,
+    source: crate::env_translate::WeatherSource,
 ) {
     let image_spaces = crate::env_translate::ImageSpaceSources {
         worldspaces: &wctx.record_index.cells.worldspaces,
@@ -255,6 +257,7 @@ fn apply_environment(
         tex_provider,
         climate,
         default_weather,
+        source,
         &wctx.record_index.weathers,
         &image_spaces,
     );
@@ -271,15 +274,27 @@ fn install_environment(
     tex_provider: &TextureProvider,
     climate: Option<&byroredux_plugin::esm::records::ClimateRecord>,
     default_weather: Option<&byroredux_plugin::esm::records::WeatherRecord>,
+    source: crate::env_translate::WeatherSource,
     weathers: &std::collections::HashMap<u32, byroredux_plugin::esm::records::WeatherRecord>,
     image_spaces: &crate::env_translate::ImageSpaceSources<'_>,
 ) {
+    let weather = forced_or(world, weathers, default_weather);
+    // A forced weather that resolved replaced whatever the record chain chose (VLM-REG-006).
+    let forced_in_effect = forced_weather_form(world).is_some_and(|form| weathers.contains_key(&form));
     world.insert_resource(InstalledOutdoorEnvironment {
         climate: climate.map(|c| c.form_id),
         default_weather: default_weather.map(|w| w.form_id),
         forced_weather: forced_weather_form(world),
+        source: if forced_in_effect {
+            crate::env_translate::WeatherSource {
+                class: crate::env_translate::WeatherSourceClass::Forced,
+                climate: climate.map(|c| c.form_id),
+                ..Default::default()
+            }
+        } else {
+            source
+        },
     });
-    let weather = forced_or(world, weathers, default_weather);
     apply_environment_with_sources(world, ctx, tex_provider, climate, weather, image_spaces);
 }
 
@@ -326,7 +341,7 @@ pub(crate) fn apply_forced_weather(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
     wctx: &cell_loader::ExteriorWorldContext,
-    applied_climate: Option<u32>,
+    applied: crate::components::AppliedWeather,
 ) -> bool {
     if !forced_weather_changed(world) {
         return false;
@@ -335,15 +350,28 @@ pub(crate) fn apply_forced_weather(
     let previous = world
         .try_resource::<InstalledOutdoorEnvironment>()
         .and_then(|installed| installed.forced_weather);
-    let climate = applied_climate
+    let climate = applied
+        .climate
         .and_then(|form| wctx.record_index.climates.get(&form))
         .or(wctx.climate.as_ref());
-    let default = climate
-        .and_then(|c| crate::env_translate::resolve_default_weather(c, &wctx.record_index.weathers))
-        .map(|(wthr, _)| wthr)
-        .or(wctx.default_weather.as_ref());
+    // The weather the cell's own chain resolved (VLM-REG: a region's table included), not the
+    // climate's default, so releasing a force returns to what the cell would have had.
+    let (default, source) = match applied.weather.and_then(|form| wctx.record_index.weathers.get(&form)) {
+        Some(weather) => (Some(weather), applied.source),
+        None => (
+            climate
+                .and_then(|c| crate::env_translate::resolve_default_weather(c, &wctx.record_index.weathers))
+                .map(|(wthr, _)| wthr)
+                .or(wctx.default_weather.as_ref()),
+            crate::env_translate::WeatherSource {
+                class: crate::env_translate::WeatherSourceClass::Climate,
+                climate: climate.map(|c| c.form_id),
+                ..Default::default()
+            },
+        ),
+    };
     log::info!("Forced weather {previous:08X?} -> {forced:08X?}: re-applying the exterior sky");
-    apply_environment(world, ctx, tex_provider, wctx, climate, default);
+    apply_environment(world, ctx, tex_provider, wctx, climate, default, source);
     // `ForceWeather` "forces the weather to immediately switch" (GECK): no 8 s fade.
     collapse_weather_transition(world);
     true
@@ -429,6 +457,7 @@ pub(crate) fn apply_forced_weather_in_interior(
             tex_provider,
             climate,
             default,
+            installed.source,
             &index.weathers,
             &image_spaces,
         );
@@ -756,99 +785,148 @@ pub(crate) fn apply_show_sky_interior_climate(
         tex_provider,
         Some(climate),
         Some(weather),
+        crate::env_translate::WeatherSource {
+            class: crate::env_translate::WeatherSourceClass::CellClimate,
+            climate: Some(climate.form_id),
+            ..Default::default()
+        },
         &index.weathers,
         &image_spaces,
     );
     true
 }
 
-/// Re-resolve the climate in effect for the cell the player just entered,
-/// re-applying sky + weather when it differs from what is installed
-/// (#2451 / EXAL-03 — the per-cell `XCCM` hook).
+/// Re-resolve the weather in effect for the cell the player just entered, re-applying sky +
+/// weather when it differs from what is installed (#2451 / EXAL-03 — the per-cell `XCCM` hook —
+/// and the Volumetric Lighting PRD's region weather, VLM-REG).
 ///
-/// `applied_climate` is the CLMT FormID currently driving the installed
-/// resources (`None` = climateless / procedural fallback); the caller owns
-/// it across boundary crossings (`WorldStreamingState::applied_climate_form`,
-/// seeded from the worldspace climate at bootstrap). `evaluated_grid`
-/// (`WorldStreamingState::climate_override_grid`) is the grid cell last
-/// evaluated: each cell is resolved once, success or failure (#5529).
-/// Returns `true` when the environment was re-applied.
+/// The weather is chosen by [`crate::env_translate::resolve_cell_weather`]: the cell's own `XCCM`
+/// climate, else the weather table of the regions whose polygons cover the cell, else the
+/// worldspace climate's default. `applied` is what currently drives the installed resources
+/// (`WorldStreamingState::applied_weather`, seeded at bootstrap); `evaluated_grid`
+/// (`WorldStreamingState::climate_override_grid`) is the grid cell last evaluated: each cell is
+/// resolved once, success or failure (#5529). Returns `true` when the environment was re-applied.
 ///
-/// Runs only on a real climate change, which on vanilla content means
-/// entering or leaving one of the handful of cells that author `XCCM` — so
-/// the common crossing costs one map lookup and a comparison, and a frame
-/// inside an already-evaluated cell costs one `Option` compare. The re-apply
-/// itself goes through [`apply_environment`], so an override transition
-/// gets the same 8-second `WeatherTransitionRes` crossfade and the same
-/// acquire-new-then-release-old sky-texture handling as a worldspace
-/// change; it does not snap.
+/// Crossing into a new cell also releases a forced weather that was set without the override lock
+/// (VLM-REG-014, [`release_unlocked_forced_weather`]); the forced-weather step that runs next
+/// re-installs the cell's own weather.
 ///
-/// Ground cover is deliberately not re-installed: it is keyed by the
-/// worldspace name chain, which a per-cell climate override does not
-/// change.
-pub(crate) fn apply_cell_climate_override(
+/// Runs a resolve only once per grid cell, so the common frame costs one `Option` compare. The
+/// re-apply goes through [`apply_environment`], so a change gets the same 8-second
+/// `WeatherTransitionRes` cross-fade and acquire-new-then-release-old sky-texture handling as a
+/// worldspace change; it does not snap (VLM-REG-007). Ground cover is deliberately not
+/// re-installed: it is keyed by the worldspace name chain.
+pub(crate) fn apply_cell_weather(
     world: &mut World,
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
     wctx: &cell_loader::ExteriorWorldContext,
     player_grid: (i32, i32),
-    applied_climate: &mut Option<u32>,
+    applied: &mut crate::components::AppliedWeather,
     evaluated_grid: &mut Option<(i32, i32)>,
 ) -> bool {
+    let crossing = evaluated_grid.is_some();
     if !claim_climate_evaluation(evaluated_grid, player_grid) {
         return false;
     }
-    let cell = wctx
-        .record_index
+    if crossing {
+        release_unlocked_forced_weather(world);
+    }
+    let index = &wctx.record_index;
+    let cell = index
         .cells
         .exterior_cells
         .get(&wctx.worldspace_key)
         .and_then(|cells| cells.get(&player_grid));
-    let effective = crate::env_translate::resolve_cell_climate(
-        cell.and_then(|c| c.climate_override),
-        wctx.climate.as_ref().map(|c| c.form_id),
-        &wctx.record_index.climates,
-    );
-    if effective == *applied_climate {
-        return false;
-    }
-
-    let climate = effective.and_then(|fid| wctx.record_index.climates.get(&fid));
-    let weather = climate
-        .and_then(|c| crate::env_translate::resolve_default_weather(c, &wctx.record_index.weathers))
-        .map(|(wthr, _chance)| wthr);
-    if climate.is_some() && weather.is_none() {
-        // The override resolves to a CLMT whose weather list is empty or
-        // points at WTHR records this load order never supplied. Applying
-        // it would drop the sky into the procedural fallback — further
-        // from the author's intent than the sky already showing. Leave
-        // `applied_climate` untouched so a different cell is still
-        // re-evaluated; this cell is not retried (`evaluated_grid`, #5529).
+    let resolved = {
+        let globals = world.try_resource::<byroredux_scripting::Globals>();
+        let global_value = |form: u32| match &globals {
+            Some(globals) => globals.0.get(&form).copied(),
+            None => index.globals.get(&form).map(|g| g.value.as_f32()),
+        };
+        crate::env_translate::resolve_cell_weather(
+            &crate::env_translate::CellWeatherInputs {
+                regions: &index.regions,
+                climates: &index.climates,
+                weathers: &index.weathers,
+                worldspace_form: index
+                    .cells
+                    .worldspaces
+                    .get(&wctx.worldspace_key)
+                    .map_or(0, |w| w.form_id),
+                worldspace_climate: wctx.climate.as_ref().map(|c| c.form_id),
+            },
+            cell.and_then(|c| c.climate_override),
+            player_grid,
+            &global_value,
+        )
+    };
+    let next = crate::components::AppliedWeather {
+        climate: resolved.climate.map(|c| c.form_id),
+        weather: resolved.weather.map(|w| w.form_id),
+        source: resolved.source,
+    };
+    if resolved.climate.is_some() && resolved.weather.is_none() {
+        // The climate resolves, but its weather list is empty or points at WTHR records this load
+        // order never supplied. Applying it would drop the sky into the procedural fallback —
+        // further from the author's intent than the sky already showing. Leave `applied`
+        // untouched so a different cell is still re-evaluated; this cell is not retried
+        // (`evaluated_grid`, #5529).
         log::warn!(
-            "Cell ({},{}) climate override {:08X?} resolves no default weather — keeping the \
-             current sky",
+            "Cell ({},{}) climate {:08X?} resolves no weather — keeping the current sky",
             player_grid.0,
             player_grid.1,
-            effective,
+            next.climate,
         );
+        return false;
+    }
+    if next.climate == applied.climate && next.weather == applied.weather {
+        // The same weather by a different record: only the diagnostic changes.
+        if next.source != applied.source {
+            if let Some(mut installed) = world.try_resource_mut::<InstalledOutdoorEnvironment>() {
+                if installed.forced_weather.is_none() {
+                    installed.source = next.source;
+                }
+            }
+            applied.source = next.source;
+        }
         return false;
     }
 
     log::info!(
-        "Cell ({},{}) climate change: {:08X?} → {:08X?} ('{}', weather '{}')",
+        "Cell ({},{}) weather change: climate {:08X?} → {:08X?}, weather {:08X?} → {:08X?} ('{}', source {}{})",
         player_grid.0,
         player_grid.1,
-        *applied_climate,
-        effective,
-        climate.map(|c| c.editor_id.as_str()).unwrap_or("<none>"),
-        weather.map(|w| w.editor_id.as_str()).unwrap_or("<none>"),
+        applied.climate,
+        next.climate,
+        applied.weather,
+        next.weather,
+        resolved.weather.map(|w| w.editor_id.as_str()).unwrap_or("<none>"),
+        next.source.class.label(),
+        next.source.region.map(|r| format!(" region {r:08X}")).unwrap_or_default(),
     );
-    apply_environment(world, ctx, tex_provider, wctx, climate, weather);
-    *applied_climate = effective;
+    apply_environment(world, ctx, tex_provider, wctx, resolved.climate, resolved.weather, next.source);
+    *applied = next;
     true
 }
 
-/// #5529 — whether [`apply_cell_climate_override`] should evaluate
+/// Release a forced weather that was set without the override lock, so the weather the cell's own
+/// chain resolves takes over at the next cell crossing (VLM-REG-014). The locked form (ObScript
+/// `ForceWeather <w> 1`, `weather.force <w> lock`) is left until `ReleaseWeatherOverride`
+/// (VLM-REG-006): the GECK's "If OverrideWeatherFlag is 1, the weather will not change again until
+/// ReleaseWeatherOverride is called". Returns whether a force was released.
+fn release_unlocked_forced_weather(world: &mut World) -> bool {
+    let Some(mut forced) = world.try_resource_mut::<byroredux_scripting::obscript_state::ForcedWeather>() else {
+        return false;
+    };
+    if forced.weather.is_some() && !forced.locked {
+        *forced = byroredux_scripting::obscript_state::ForcedWeather::default();
+        return true;
+    }
+    false
+}
+
+/// #5529 — whether [`apply_cell_weather`] should evaluate
 /// `player_grid`, recording it as evaluated when it should.
 ///
 /// The override is a pure function of the grid cell: `wctx`'s CELL / CLMT /
@@ -873,7 +951,7 @@ fn claim_climate_evaluation(evaluated_grid: &mut Option<(i32, i32)>, player_grid
 ///
 /// #3679 — `RegionAmbientRes::resolve` bottoms out in
 /// `select_active_region_sound`, which collects and sorts a fresh `Vec`;
-/// unlike [`apply_cell_climate_override`] it is NOT cheap enough to run
+/// unlike [`apply_cell_weather`] it is NOT cheap enough to run
 /// unconditionally every frame. `applied_region_ambient` (owned by the
 /// caller's `WorldStreamingState`, same shape as `applied_climate_form`)
 /// caches the resolved value against the `player_grid` it was resolved
@@ -2059,6 +2137,7 @@ mod tests {
             worldspace_key: "test".into(),
             climate: None,
             default_weather: None,
+            default_weather_source: Default::default(),
             default_water_height: None,
             default_water_type_form: None,
         }
@@ -2159,6 +2238,46 @@ mod tests {
         *world.resource_mut::<ForcedWeather>() = ForcedWeather { weather: Some(0xDEAD), locked: true };
         assert_eq!(pick(&world), Some(DEFAULT), "a weather the load order lacks cannot be installed");
         assert_eq!(forced_or(&world, &weathers, None).map(|w| w.form_id), None);
+    }
+
+    /// VLM-REG-006 — a forced weather outranks the weather a region chose, locked or not, exactly
+    /// as it outranks the climate's default: both reach the funnel as its `default_weather`.
+    #[test]
+    fn forced_weather_outranks_region_weather() {
+        use byroredux_scripting::obscript_state::ForcedWeather;
+        use byroredux_plugin::esm::records::WeatherRecord;
+        const REGION_CHOICE: u32 = 0x0000_00A1;
+        const FORCED: u32 = 0x0000_00F0;
+        let weathers = std::collections::HashMap::from([
+            (REGION_CHOICE, WeatherRecord { form_id: REGION_CHOICE, ..Default::default() }),
+            (FORCED, WeatherRecord { form_id: FORCED, ..Default::default() }),
+        ]);
+        let region_choice = weathers.get(&REGION_CHOICE);
+        let mut world = World::new();
+        world.insert_resource(ForcedWeather::default());
+        let pick = |world: &World| forced_or(world, &weathers, region_choice).map(|w| w.form_id);
+        assert_eq!(pick(&world), Some(REGION_CHOICE), "nothing forced: the region's weather");
+        for locked in [false, true] {
+            *world.resource_mut::<ForcedWeather>() = ForcedWeather { weather: Some(FORCED), locked };
+            assert_eq!(pick(&world), Some(FORCED), "forced (locked: {locked}) outranks the region");
+        }
+    }
+
+    /// VLM-REG-014 — a forced weather without the override lock yields at the next cell crossing;
+    /// the locked one holds until `ReleaseWeatherOverride` (VLM-REG-006).
+    #[test]
+    fn unlocked_forced_weather_yields_at_next_crossing() {
+        use byroredux_scripting::obscript_state::ForcedWeather;
+        let mut world = World::new();
+        assert!(!release_unlocked_forced_weather(&mut world), "no resource: nothing to release");
+        world.insert_resource(ForcedWeather::default());
+        assert!(!release_unlocked_forced_weather(&mut world), "nothing forced");
+        *world.resource_mut::<ForcedWeather>() = ForcedWeather { weather: Some(0x33), locked: true };
+        assert!(!release_unlocked_forced_weather(&mut world), "a locked force survives the crossing");
+        assert_eq!(world.resource::<ForcedWeather>().weather, Some(0x33));
+        *world.resource_mut::<ForcedWeather>() = ForcedWeather { weather: Some(0x33), locked: false };
+        assert!(release_unlocked_forced_weather(&mut world), "an unlocked force yields");
+        assert_eq!(*world.resource::<ForcedWeather>(), ForcedWeather::default());
     }
 
     /// #6309 — the sky needs re-installing exactly when the forced weather differs from the one the

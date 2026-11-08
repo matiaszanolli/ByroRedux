@@ -202,7 +202,7 @@ pub(crate) use scene_runtime::{materialize_scene_actor_alias_stubs, populate_sce
 // reuse them on Interior→Exterior swaps — same boot-path code, no
 // duplication. See cell_loader::transition.
 pub(crate) use world_setup::{
-    apply_cell_climate_override, apply_cell_region_ambient, apply_forced_weather, apply_forced_weather_in_interior,
+    apply_cell_region_ambient, apply_cell_weather, apply_forced_weather, apply_forced_weather_in_interior,
     assemble_exterior_streaming, interior_forced_weather_pending,
     apply_show_sky_interior_climate, begin_exterior_streaming, ExteriorBootstrapMode,
 };
