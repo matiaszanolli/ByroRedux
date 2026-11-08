@@ -826,6 +826,41 @@ fn fnv_baked_beam_converter_coverage() {
     }
 }
 
+/// VLM-INT-006 — the same census for any title: which of the listed baked-beam models the converter chain
+/// claims, on the real meshes. The models are the `baked_beam_census` base-model paths (`#6774`).
+/// Prints one `beam-coverage` line per model; asserts nothing about the count.
+///
+/// `BYROREDUX_BEAM_ARCHIVE=<a BSA or BA2 holding the meshes> BYROREDUX_BEAM_MODELS='Effects\\Ambient\\X.nif,…'
+/// cargo test -p byroredux --bin byroredux --release -- --ignored --nocapture baked_beam_converter_coverage`
+#[test]
+#[ignore = "needs game data: BYROREDUX_BEAM_ARCHIVE and BYROREDUX_BEAM_MODELS"]
+fn baked_beam_converter_coverage() {
+    let archive = std::env::var("BYROREDUX_BEAM_ARCHIVE").expect("set BYROREDUX_BEAM_ARCHIVE");
+    let models = std::env::var("BYROREDUX_BEAM_MODELS").expect("set BYROREDUX_BEAM_MODELS");
+    let extract: Box<dyn Fn(&str) -> std::io::Result<Vec<u8>>> = if archive.to_ascii_lowercase().ends_with(".ba2") {
+        let ba2 = byroredux_bsa::Ba2Archive::open(&archive).expect("ba2");
+        Box::new(move |path| ba2.extract(path))
+    } else {
+        let bsa = byroredux_bsa::BsaArchive::open(&archive).expect("bsa");
+        Box::new(move |path| bsa.extract(path))
+    };
+    let mut pool = byroredux_core::string::StringPool::new();
+    for model in models.split(',').map(str::trim).filter(|m| !m.is_empty()) {
+        let lower = model.replace('/', "\\").to_ascii_lowercase();
+        let path = if lower.starts_with("meshes\\") { lower } else { format!("meshes\\{lower}") };
+        let Ok(bytes) = extract(&path) else {
+            println!("beam-coverage {model}: not in the archive");
+            continue;
+        };
+        let scene = byroredux_nif::parse_nif(&bytes).expect("parse");
+        let imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);
+        let mut cached = Arc::try_unwrap(dummy_cached()).ok().unwrap();
+        cached.meshes = imported.meshes;
+        let verdicts: Vec<bool> = cached.beam_volumes(Some(&path)).iter().map(Option::is_some).collect();
+        println!("beam-coverage {model}: {} mesh(es), converted {:?}", verdicts.len(), verdicts);
+    }
+}
+
 /// A deterministic mixed registry for the trim tests: every fifth key a per-cell
 /// precombine, every seventh animated (it carries a clip handle), and every
 /// eleventh re-touched so access ticks are not simply insertion order.

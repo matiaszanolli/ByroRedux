@@ -282,11 +282,15 @@ pub(super) fn attach_identity_reference_script(
 /// (#6727). A beam card the converters decline is still dropped from the
 /// raster by the `IsFxMesh` texture rule, so it costs an entity, not a draw.
 ///
-/// The beam exemption is gated on `GameKind::Fallout3NV` (#6731): the converter
+/// The beam exemption is gated on `GameKind::Fallout3NV` and `Oblivion` (#6731, #6774): the converter
 /// coverage was measured there only — FNV in VLM-INT-006, and FO3 (same game
 /// kind, same `Fallout - Meshes.bsa` layout) at 22 of 22 shipped beam models.
-/// Oblivion also ships `fxlightbeam*.nif` but is unmeasured, so it keeps the
-/// synthetic path it had before 3bb692bbb until its beams are censused.
+/// Oblivion joined in #6774: its `Dungeons\Misc\FX\FXLightBeam*` models were run through the converter
+/// chain on the real meshes (`baked_beam_converter_coverage`): 3 of the 5 `FXLightBeam*` models the gate
+/// governs convert (the other 3 listed models are not `fxlight` names, so they never met the gate), and the
+/// two that do not (`FXLightBeamDust01`, a mesh-less emitter NIF, and `FXLightBeamPink01`) are 89 of the
+/// 1,259 placements, so 92.9 % of Oblivion's beam placements are claimed. Live, `WarehouseCaveGeneric`
+/// (52 placements) boots with 66 `FogVolume` entities.
 pub(super) fn is_fxlight_sprite_placement(
     model_lower: &str,
     has_light_data: bool,
@@ -298,8 +302,8 @@ pub(super) fn is_fxlight_sprite_placement(
     if !model_lower.contains("fxlight") {
         return false;
     }
-    let beam_converters_measured =
-        game == byroredux_plugin::esm::reader::GameKind::Fallout3NV;
+    use byroredux_plugin::esm::reader::GameKind;
+    let beam_converters_measured = matches!(game, GameKind::Fallout3NV | GameKind::Oblivion);
     has_light_data || !(beam_converters_measured && model_lower.contains("fxlightbeam"))
 }
 

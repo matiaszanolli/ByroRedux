@@ -698,13 +698,19 @@ fn baked_beam_cards_load_their_nif_while_fxlight_sprites_stay_synthetic() {
     assert!(!is_fxlight_sprite_placement("clutter\\barrel01.nif", false, fnv));
 }
 
-/// #6731 — Oblivion ships `fxlightbeam*.nif` too, but its converter coverage and `IsFxMesh`
-/// texture paths are unmeasured, so its beam placements keep the pre-3bb692bbb synthetic path
-/// (and every other game kind does too).
+/// #6731 / #6774 — Oblivion's `FXLightBeam*` converter coverage was measured on the real meshes (3 of the 5 models
+/// the gate governs, 92.9 % of its beam placements), so it loads the NIF like FNV / FO3; every game kind not
+/// measured (Skyrim, here) keeps the pre-3bb692bbb synthetic path.
 #[test]
-fn unmeasured_games_keep_the_synthetic_path_for_beam_cards() {
+fn only_measured_games_load_beam_cards_the_rest_keep_the_synthetic_path() {
     use byroredux_plugin::esm::reader::GameKind;
-    for game in [GameKind::Oblivion, GameKind::Skyrim] {
+    for game in [GameKind::Fallout3NV, GameKind::Oblivion] {
+        assert!(
+            !is_fxlight_sprite_placement("effects\\fxlightbeam01.nif", false, game),
+            "{game:?} loads the beam NIF"
+        );
+    }
+    for game in [GameKind::Skyrim, GameKind::Fallout4] {
         assert!(
             is_fxlight_sprite_placement("effects\\fxlightbeam01.nif", false, game),
             "{game:?}"

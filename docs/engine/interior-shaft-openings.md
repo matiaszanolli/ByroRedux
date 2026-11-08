@@ -107,10 +107,19 @@ indoor sunlight is authored as `LIGH` placements and is counted separately.
 - **Starfield and its DLC place one beam**: `Activator_LightBeamTall01` in the exterior cell `POI070Ext02`. By
   this name filter Starfield has no baked interior beams; a different authoring route (not found by the
   census) is not ruled out.
-- **Converter coverage is measured only for Fallout 3 / FNV.** `fnv_baked_beam_converter_coverage` lists FNV and
-  FO3 models; Oblivion, Fallout 4 and Starfield beams have no live converted-over-placed ratio yet. Fallout 4's
-  `Effects\Ambient\*LightBeam*.nif` models (21 bases) are the next list to run through it, with the
-  `GameKind` exemption of #6731 widened only after that census.
+- **Converter coverage, every title (2026-11-08, #6774).** `baked_beam_converter_coverage` (ignored; `BYROREDUX_BEAM_ARCHIVE`
+  and `BYROREDUX_BEAM_MODELS`, the census base-model paths) runs the converter chain on the real meshes of any title:
+  - **Fallout 4**: all 9 placed beam models convert their primary mesh (`EmergencyLightBeam*`, `FluorescentLightBeam*`,
+    `LightBeamThinDusty*`, `WindowLightBeam`; the second mesh of `EmergencyLightBeam01` and `-Set` is not a beam), so
+    about 100 % of its 1,963 placements. They never met the `fxlight` gate (no such name), so they were already live:
+    `DBTechHighSchool01` (83 placements, the busiest Show-Sky beam cell) boots with 238 `FogVolume` entities.
+  - **Oblivion**: of the 8 listed models 6 convert; `FXLightBeamDust01` (a mesh-less emitter NIF, 80 placements) and
+    `FXLightBeamPink01` (9) do not, so 92.9 % of its 1,259 placements. The #6731 gate now includes Oblivion, and live
+    `WarehouseCaveGeneric` (52 placements) boots with 66 `FogVolume` entities. Whether the new volumes read well in the
+    dungeons is the owner's look.
+  - **Skyrim**: 0 of 1 (`FXDweCenterLightBeamObservatory`, five meshes, none claimed); its indoor sun is `LIGH`, not beams.
+  - **Starfield**: 0 of 1 (`Activator_LightBeamTall01` imports no mesh from its NIF; its geometry lives outside it).
+  - Fallout 3 / FNV as above (22 of 22 and 22 of 24).
 
 ## Next steps
 
