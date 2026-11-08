@@ -119,7 +119,7 @@ pub(super) const FALLOUT3_NV_HOOKS: &[Hook] = &[
     Hook { index: 32, name: "Ignore Broken Lock", state: HookState::Pending { id: UNCLASSIFIED }, subjects: Some(&[]) },
     Hook { index: 33, name: "Has Concentrated Fire", state: HookState::Consumed { site: "byroredux/src/systems/vats.rs::vats_queue_part" }, subjects: Some(&[]) },
     Hook { index: 34, name: "Calculate Gun Spread", state: HookState::Pending { id: UNCLASSIFIED }, subjects: Some(&["Weapon"]) },
-    Hook { index: 35, name: "Player Kill AP Reward", state: HookState::Pending { id: "PERK-HOOK-004" }, subjects: Some(&["Weapon", "Target"]) },
+    Hook { index: 35, name: "Player Kill AP Reward", state: HookState::Consumed { site: "byroredux/src/systems/vats.rs::vats_sequence_end_system" }, subjects: Some(&["Weapon", "Target"]) },
     Hook { index: 36, name: "Modify Enemy Critical Hit Chance", state: HookState::Pending { id: UNCLASSIFIED }, subjects: Some(&["Weapon", "Target"]) },
     Hook { index: 37, name: "Reload Speed", state: HookState::Pending { id: UNCLASSIFIED }, subjects: Some(&["Weapon"]) },
     Hook { index: 38, name: "Equip Speed", state: HookState::Pending { id: UNCLASSIFIED }, subjects: Some(&["Weapon"]) },

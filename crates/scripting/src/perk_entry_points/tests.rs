@@ -1078,7 +1078,6 @@ mod catalog {
             HookState::Pending { id } => id,
             other => panic!("{index}: {other:?}"),
         };
-        assert_eq!(pending(PerkEntryPointDialect::Fallout3NV, 35), "PERK-HOOK-004");
         assert_eq!(pending(PerkEntryPointDialect::Fallout3NV, 39), "PERK-HOOK-005");
         assert_eq!(pending(PerkEntryPointDialect::Fallout3NV, 27), "PERK-HOOK-007");
         assert_eq!(pending(PerkEntryPointDialect::Skyrim, 14), "PERK-HOOK-007");

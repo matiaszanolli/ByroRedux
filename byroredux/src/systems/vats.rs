@@ -871,8 +871,40 @@ pub(crate) fn vats_confirm(world: &World) -> bool {
     if let Some(mut vats) = world.try_resource_mut::<VatsState>() {
         vats.roll_state = roll_state;
         vats.exit_all();
+        // PERK-HOOK-004: the sequence is settled once the funnel has resolved its hits.
+        vats.sequence_targets = hits.iter().map(|&(target, _, _)| target).collect();
     }
     true
+}
+
+/// PERK-HOOK-004 — settle a confirmed VATS sequence once the damage funnel has run: when at least one of its
+/// targets died, the player's *Player Kill AP Reward* perks (FO3 / FNV hook 35, composed from a base of 0) restore
+/// that many action points ("Modifies the AP reward from 0 to another value", GECK *Entry Point*). The weapon
+/// and the slain target are the hook's tabs (xEdit FNV `epcWeaponTarget`).
+pub(crate) fn vats_sequence_end_system(world: &World, _dt: f32) {
+    let targets = match world.try_resource_mut::<VatsState>() {
+        Some(mut vats) if !vats.sequence_targets.is_empty() => std::mem::take(&mut vats.sequence_targets),
+        _ => return,
+    };
+    let Some(player) = PlayerEntity::get(world) else {
+        return;
+    };
+    let Some(killed) = targets.iter().copied().find(|&target| world.has::<Dead>(target)) else {
+        return;
+    };
+    let reward = byroredux_scripting::perk_entry_points::compose_player_kill_ap_reward(world, player, killed);
+    if reward <= 0.0 {
+        return;
+    }
+    let Some((ap_avif, _)) = player_ap(world) else {
+        return;
+    };
+    if let Some(mut avs_q) = world.query_mut::<ActorValues>() {
+        if let Some(avs) = avs_q.get_mut(player) {
+            avs.restore(ap_avif, reward);
+        }
+    }
+    log::info!("VATS: a kill restored {reward} action points");
 }
 
 /// Cancel: leave every mode without spending.
@@ -1242,6 +1274,65 @@ mod scan_tests {
         let mut perks = Perks::default();
         perks.set_rank(CONCENTRATED_FIRE, 1);
         world.insert(player, perks);
+    }
+
+    /// PERK-HOOK-004 — a confirmed sequence that kills restores the Player Kill AP Reward (hook 35, base 0); one
+    /// that kills nothing restores nothing, and the sequence is settled once.
+    #[test]
+    fn a_vats_sequence_that_kills_restores_the_kill_ap_reward() {
+        use byroredux_core::character::{CharacterRulesProfile, Perks};
+        use byroredux_plugin::esm::reader::GameKind;
+        use byroredux_plugin::esm::records::{PerkEntry, PerkEntryBody, PerkFunctionData, PerkRecord};
+        const REWARD_PERK: u32 = 0x0004_4CB0;
+        let (mut world, npc) = scan_world();
+        let mut perk_index = byroredux_plugin::esm::records::EsmIndex {
+            game: GameKind::Fallout3NV,
+            character_rules: CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+            ..Default::default()
+        };
+        perk_index.perks.insert(
+            REWARD_PERK,
+            PerkRecord {
+                form_id: REWARD_PERK,
+                entries: vec![PerkEntry {
+                    rank: 0,
+                    priority: 0,
+                    body: PerkEntryBody::EntryPoint {
+                        entry_point_index: byroredux_scripting::perk_entry_points::fnv::PLAYER_KILL_AP_REWARD,
+                        function: 2, // Add Value
+                        tab_count: 3,
+                        param_type: 1,
+                        function_data: PerkFunctionData::Float(15.0),
+                        formatter: Vec::new(),
+                        extra_flags: Vec::new(),
+                        details: Default::default(),
+                    },
+                    condition_tabs: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        );
+        byroredux_scripting::perk_entry_points::install_perk_entry_points(&mut world, &perk_index);
+        let player = world.resource::<PlayerEntity>().0.unwrap();
+        world.register::<Perks>();
+        let mut perks = Perks::default();
+        perks.set_rank(REWARD_PERK, 1);
+        world.insert(player, perks);
+        seed_ap(&world, 80.0);
+        world.query_mut::<ActorValues>().unwrap().get_mut(player).unwrap().apply_damage(0x40AA, 60.0);
+        assert_eq!(ap(&world), 20.0);
+
+        world.resource_mut::<VatsState>().sequence_targets = vec![npc];
+        vats_sequence_end_system(&world, 0.0);
+        assert_eq!(ap(&world), 20.0, "nothing died: no reward");
+        assert!(world.resource::<VatsState>().sequence_targets.is_empty(), "the sequence is settled");
+
+        world.resource_mut::<VatsState>().sequence_targets = vec![npc];
+        world.query_mut::<Dead>().map(|mut dead| dead.insert(npc, Dead));
+        vats_sequence_end_system(&world, 0.0);
+        assert_eq!(ap(&world), 35.0, "a kill restored 15 AP");
+        vats_sequence_end_system(&world, 0.0);
+        assert_eq!(ap(&world), 35.0, "settled once");
     }
 
     /// #6422 — the model's own worked example (63 % -> 68 % -> 73 %), the cap, and the first shot unchanged.

@@ -12,6 +12,12 @@ pub(super) fn register_combat_damage_systems(scheduler: &mut Scheduler) {
 /// The damage pass and its declared access. A helper of its own (#6546) so `register_player_and_animation`
 /// stays within its size pin; it is called at the exact point in the registration order the system always held.
 fn register_combat_damage_system(scheduler: &mut Scheduler) {
+    register_damage_pass(scheduler);
+    // PERK-HOOK-004 — a VATS sequence is settled once the funnel has resolved its hits (Player Kill AP Reward).
+    scheduler.add_exclusive(Stage::Update, crate::systems::vats::vats_sequence_end_system);
+}
+
+fn register_damage_pass(scheduler: &mut Scheduler) {
     scheduler.add_exclusive_with_access(
         Stage::Update,
         crate::combat::combat_damage_system,

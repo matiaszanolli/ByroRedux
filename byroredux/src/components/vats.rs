@@ -71,6 +71,9 @@ pub(crate) struct VatsState {
     /// Session-deterministic LCG state for the execution die rolls —
     /// gates and tests rely on replayable outcomes, not wall-clock rng.
     pub roll_state: u32,
+    /// The targets of the sequence just confirmed, until `vats_sequence_end_system` settles it: the sequence
+    /// "ends with a kill" when one of them is dead then (PERK-HOOK-004). Empty outside a sequence.
+    pub sequence_targets: Vec<byroredux_core::ecs::EntityId>,
 }
 
 impl Resource for VatsState {}

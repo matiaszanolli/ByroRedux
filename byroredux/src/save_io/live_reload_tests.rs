@@ -924,6 +924,7 @@ fn live_load_drain_discards_the_outgoing_sessions_requests() {
         targets: vec![stale_part.clone()],
         queue: vec![stale_part],
         roll_state: 0xDEAD_BEEF,
+        sequence_targets: Vec::new(),
     });
     assert_eq!(world.resource::<crate::components::VatsState>().world_time_scale(), 0.0);
     discard_outgoing_session_requests(&world);

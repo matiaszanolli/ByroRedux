@@ -88,6 +88,8 @@ pub mod fnv {
     pub const GET_MAX_CARRY_WEIGHT: u8 = 22;
     /// `Add Leveled List On Death`: the owner's kill adds the entry's leveled list to the victim.
     pub const ADD_LEVELED_LIST_ON_DEATH: u8 = 21;
+    /// `Player Kill AP Reward`: the AP a VATS sequence that kills restores.
+    pub const PLAYER_KILL_AP_REWARD: u8 = 35;
     /// `Has Concentrated Fire` (xEdit `wbDefinitionsFNV` / `FO3` entry 33): the vanilla
     /// `ConcentratedFire` perk authors one Set-to-1.0 entry here.
     pub const HAS_CONCENTRATED_FIRE: u8 = 33;
@@ -128,6 +130,8 @@ pub enum PerkCalculation {
     TemperingHealth,
     /// *Add Leveled List On Death* (FO3 / FNV 21, Skyrim 9): the leveled lists a kill adds to the victim.
     DeathLeveledList,
+    /// The action points a VATS sequence that kills restores (FO3 / FNV *Player Kill AP Reward*), from a base of 0.
+    PlayerKillApReward,
 }
 
 impl PerkCalculation {
@@ -141,6 +145,7 @@ impl PerkCalculation {
             (Self::MaxCarryWeight, Skyrim) => Some(skyrim::GET_MAX_CARRY_WEIGHT),
             (Self::ConcentratedFire, Fallout3NV) => Some(fnv::HAS_CONCENTRATED_FIRE),
             (Self::TemperingHealth, Skyrim) => Some(skyrim::MOD_TEMPERING_HEALTH),
+            (Self::PlayerKillApReward, Fallout3NV) => Some(fnv::PLAYER_KILL_AP_REWARD),
             (Self::DeathLeveledList, Fallout3NV) => Some(fnv::ADD_LEVELED_LIST_ON_DEATH),
             (Self::DeathLeveledList, Skyrim) => Some(skyrim::ADD_LEVELED_LIST_ON_DEATH),
             _ => None,
@@ -707,6 +712,14 @@ pub fn compose_max_carry_weight(world: &World, actor: EntityId, base: f32) -> f3
 /// masters. Games with no FO3/FNV dialect never have it (#6422).
 pub fn has_concentrated_fire(world: &World, actor: EntityId) -> bool {
     compose_calculation(world, actor, PerkCalculation::ConcentratedFire, 0.0, &[None, None]) > 0.5
+}
+
+/// The action points a VATS sequence that killed `victim` restores for `player` (PERK-HOOK-004): hook 35 composed
+/// from a base of 0, with the player's weapon and the slain target as its tabs. `0` without the hook or a perk.
+pub fn compose_player_kill_ap_reward(world: &World, player: EntityId, victim: EntityId) -> f32 {
+    with_attacker_weapon(world, player, |weapon| {
+        compose_calculation(world, player, PerkCalculation::PlayerKillApReward, 0.0, &[weapon, Some(victim)])
+    })
 }
 
 /// The leveled lists `killer`'s perks add to `victim` on its death (PERK-HOOK-006): each `Add Leveled List`
