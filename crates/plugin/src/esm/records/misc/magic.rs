@@ -496,11 +496,11 @@ pub fn parse_perk(
     for sub in subs {
         match &sub.sub_type {
             b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
-            // PERK-level DATA: trait + level + num_ranks + playable + hidden
-            // on FO3, FNV, Skyrim and FO4 (xEdit `wbDefinitionsTES5.pas:5918-5925`
-            // and its siblings); bytes a short record omits read as zero.
-            // Starfield's DATA differs and is still read in this order
-            // (`docs/prd/perk-entry-points.md`, PERK-DEC-009).
+            // PERK-level DATA. Starfield has its own layout (PERK-DEC-009,
+            // `docs/prd/perk-entry-points.md`), decoded by this arm; the arm after it covers
+            // FO3, FNV, Skyrim and FO4: trait + level + num_ranks + playable + hidden
+            // (xEdit `wbDefinitionsTES5.pas:5918-5925` and its siblings), bytes a short
+            // record omits reading as zero.
             b"DATA" if matches!(block, PerkBlock::None) && !sub.data.is_empty() && game == GameKind::Starfield => {
                 // PERK-DEC-009 -- Starfield's DATA is category, skill group, [crew requirement], flags
                 // (xEdit `wbDefinitionsSF1.pas`; the crew byte is present from size 4): Trait, Playable and

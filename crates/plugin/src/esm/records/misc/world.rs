@@ -744,23 +744,25 @@ pub enum RegionDataPayload {
         ///   `MUSC` itself carries no direct audio path — it's a container
         ///   (playback flags + priority/ducking + fade duration + an array
         ///   of `MUST` "Music Track" FormIDs), and the actual file path +
-        ///   loop-point data live one level further down, in `MUST`. Not
-        ///   decoded here (#3811) — a real feature addition (two new
-        ///   record types plus a track-selection policy for the "Plays One
-        ///   Selection"/"Cycle Tracks" flags), not a doc-fix-sized change.
+        ///   loop-point data live one level further down, in `MUST`. Both
+        ///   are decoded (`misc/music.rs`, `03f9d2158`, #3816 piece 1) and
+        ///   `first_playable_track` resolves this field through
+        ///   `MUSC` → first playable `MUST`; the "Plays One
+        ///   Selection"/"Cycle Tracks" selection policy is not applied.
         /// - **FNV `RDSB`**: `MSET` (Media Set) — census-confirmed 44/44
         ///   (#3787), not `SOUN`. `MSET` is decoded into
         ///   `EsmIndex::media_sets` (`media_set.rs`) but no runtime reads it
         ///   yet — tracked by #3816.
         ///
         /// `dispatch_region_ambient_music` (`byroredux/src/asset_provider/
-        /// audio.rs`) resolves this against the parsed `SounRecord` map
-        /// regardless, so it structurally misses on every game via this
-        /// path — logged once per process rather than treated as a missing
-        /// -archive content gap. Census: #3787 (FNV) / #3811 (Oblivion +
-        /// Skyrim, this doc), both closed doc-only; the runtime for all
-        /// three target types is one open issue, #3816 (FNV's `MSET`
-        /// folded in by #3915).
+        /// audio.rs`) looks the value up as a `SounRecord` first and, for
+        /// Skyrim's `RDMO`, as a `MUSC` (`resolve_music_track_path`). The
+        /// `SOUN` lookup structurally misses for Oblivion's `RDMD` enum and
+        /// FNV's `MSET`-pointing `RDSB`/`RDSI` — logged once per process rather
+        /// than treated as a missing-archive content gap. Census: #3787
+        /// (FNV) / #3811 (Oblivion + Skyrim, this doc), both closed doc-only;
+        /// what remains of the runtime (Oblivion `RDMD`, FNV `MSET`) is the
+        /// open issue #3816.
         music: Option<u32>,
         /// `RDSI` incidental sound form (FNV). Same caveat as `music`
         /// above: census-confirmed 10 of 11 `RDSI` targets are `MSET`, not
