@@ -74,25 +74,27 @@ pub(super) fn create_staging_buffer(
 
 /// Destroy a readback staging buffer and return its allocation.
 ///
-/// The screenshot and depth-capture paths own byte-identical staging buffers
-/// and freed them with byte-identical code under two SAFETY comments that
+/// The screenshot, depth-capture and linear-capture (#6815) paths own
+/// byte-identical staging buffers; the first two freed them with byte-identical code under two SAFETY comments that
 /// justified the same `unsafe` on different grounds. One of the two was wrong
 /// and was corrected in isolation (#3628), leaving the original it was copied
 /// from asserting a caller that has never existed (#4039). Sharing the free —
 /// and therefore the contract — is what stops them diverging a third time.
 ///
 /// # Safety
-/// Both owners have exactly two callers, and neither can leave a submitted
+/// Every owner has exactly two callers, and none can leave a submitted
 /// copy targeting `buffer`:
 ///
 /// - The grow branch of their own `ensure_*_staging`, reached only from
-///   `screenshot_record_copy` / `depth_capture_record_copy`. Those run DURING
+///   `screenshot_record_copy` / `depth_capture_record_copy` and, for linear
+///   capture, `linear_capture_copy_target` (called by `linear_capture_record_copy`
+///   and `linear_capture_record_copy_post_taa`). Those run DURING
 ///   command-buffer recording, not between frames — neither path has a resize
 ///   call site. It is sound regardless, because `draw_frame` waits BOTH
 ///   frames-in-flight fences before recording anything, so every previously
 ///   submitted copy has retired. That both-slots wait is the real invariant
 ///   here; see the `#870` remediation block in `vulkan/sync.rs`, which lists
-///   `screenshot_staging` and `depth_capture_staging` among the resources
+///   `screenshot_staging`, `depth_capture_staging` and `linear_capture_staging` among the resources
 ///   whose safety rests on it. That wait's all-slots ARGUMENT is pinned
 ///   by `the_all_slots_wait_argument_is_pinned` in `sync.rs` (#4601) —
 ///   #3442 landed the all-slots spelling, but its pin only rejects the
@@ -1381,8 +1383,8 @@ mod pipeline_cache_header_tests {
 
 #[cfg(test)]
 mod staging_destroy_contract_tests {
-    /// #4039 (REN-2026-09-06-D5-05) — the screenshot and depth-capture
-    /// staging frees must keep sharing one contract.
+    /// #4039 (REN-2026-09-06-D5-05) — the screenshot, depth-capture and
+    /// linear-capture (#6815) staging frees must keep sharing one contract.
     ///
     /// They were byte-identical code under two SAFETY comments making
     /// different claims. #3628 corrected the depth-capture one and left the
@@ -1397,7 +1399,7 @@ mod staging_destroy_contract_tests {
     /// Re-inlining either free brings the second comment back with it, so
     /// this pins the delegation rather than the prose.
     #[test]
-    fn both_staging_frees_delegate_to_the_shared_helper() {
+    fn every_capture_staging_free_delegates_to_the_shared_helper() {
         for (label, src, needle) in [
             (
                 "screenshot",
@@ -1408,6 +1410,13 @@ mod staging_destroy_contract_tests {
                 "depth_capture",
                 include_str!("depth_capture.rs"),
                 "pub(super) fn destroy_depth_capture_staging(&mut self) {",
+            ),
+            // #6815 — the third twin (75b4024df) delegated from the start, but
+            // no guard noticed; a re-inlined raw free here would have passed.
+            (
+                "linear_capture",
+                include_str!("linear_capture.rs"),
+                "pub(super) fn destroy_linear_capture_staging(&mut self) {",
             ),
         ] {
             let body = src
@@ -1436,6 +1445,7 @@ mod staging_destroy_contract_tests {
         for (label, src) in [
             ("screenshot", include_str!("screenshot.rs")),
             ("depth_capture", include_str!("depth_capture.rs")),
+            ("linear_capture", include_str!("linear_capture.rs")),
         ] {
             assert!(
                 !src.contains("only reached between frames"),
