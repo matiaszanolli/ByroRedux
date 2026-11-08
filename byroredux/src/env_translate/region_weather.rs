@@ -604,4 +604,92 @@ mod tests {
         let none = InteriorSkyInputs { regions: &empty, ..inputs };
         assert!(resolve_interior_region_weather(&none, 6, &no_globals).is_none(), "a region with no Weather table");
     }
+
+    /// A2 / VLM-REG coverage (PRD §8): over every exterior cell of a real master, the share whose
+    /// weather the resolver takes from a region, among the cells a Weather-bearing region polygon
+    /// covers. Prints one line per master and the first few cells that do not resolve to a region,
+    /// with the sections that cover them.
+    ///
+    /// `BYROREDUX_REGION_CENSUS_ESM=<path to a master>  cargo test -p byroredux --bin byroredux
+    /// --release -- --ignored --nocapture region_weather_coverage_census`
+    #[test]
+    #[ignore = "needs a game master: BYROREDUX_REGION_CENSUS_ESM"]
+    fn region_weather_coverage_census() {
+        let Some(path) = std::env::var_os("BYROREDUX_REGION_CENSUS_ESM").filter(|v| !v.is_empty()) else {
+            panic!("set BYROREDUX_REGION_CENSUS_ESM to a master .esm path");
+        };
+        let index = byroredux_plugin::esm::records::parse_esm(&std::fs::read(&path).unwrap()).unwrap();
+        let authored_global = |form: u32| index.globals.get(&form).map(|g| g.value.as_f32());
+        let (mut covered, mut from_region, mut override_src, mut merged_src) = (0usize, 0usize, 0usize, 0usize);
+        let (mut no_weather, mut shown) = (0usize, 0usize);
+        for (key, cells) in &index.cells.exterior_cells {
+            let Some(ws) = index.cells.worldspaces.get(key) else { continue };
+            let worldspace_climate = crate::env_translate::resolve_worldspace_climate(
+                &index.cells.worldspaces,
+                &index.cells.worldspace_climates,
+                key,
+            );
+            let inputs = CellWeatherInputs {
+                regions: &index.regions,
+                climates: &index.climates,
+                weathers: &index.weathers,
+                worldspace_form: ws.form_id,
+                worldspace_climate,
+            };
+            for (&grid, cell) in cells {
+                let covering: Vec<&RegnRecord> = index
+                    .regions
+                    .values()
+                    .filter(|r| {
+                        r.worldspace_form == Some(ws.form_id)
+                            && r.entries.iter().any(|e| e.kind == RegionDataKind::Weather)
+                            && r.covers_cell(grid.0, grid.1)
+                    })
+                    .collect();
+                if covering.is_empty() {
+                    continue;
+                }
+                covered += 1;
+                let resolved = resolve_cell_weather(&inputs, cell.climate_override, grid, &authored_global);
+                match resolved.source.class {
+                    WeatherSourceClass::RegionOverride => {
+                        from_region += 1;
+                        override_src += 1;
+                    }
+                    WeatherSourceClass::RegionMerged => {
+                        from_region += 1;
+                        merged_src += 1;
+                    }
+                    other => {
+                        no_weather += usize::from(resolved.weather.is_none());
+                        if shown < 4 {
+                            shown += 1;
+                            let sections: Vec<String> = covering
+                                .iter()
+                                .flat_map(|r| {
+                                    r.entries.iter().filter(|e| e.kind == RegionDataKind::Weather).map(move |e| {
+                                        let rows = match &e.payload {
+                                            RegionDataPayload::Weather(rows) => rows
+                                                .iter()
+                                                .map(|w| format!("{:X}x{}", w.weather_form, w.chance))
+                                                .collect::<Vec<_>>()
+                                                .join(","),
+                                            _ => String::new(),
+                                        };
+                                        format!("region {:X} prio {} ovr {} rows [{rows}]", r.form_id, e.priority, e.flags & 1)
+                                    })
+                                })
+                                .collect();
+                            println!("  unresolved {key} {grid:?} -> {}: {sections:?}", other.label());
+                        }
+                    }
+                }
+            }
+        }
+        println!(
+            "region-weather-coverage {}: {from_region} of {covered} cells covered by a Weather-bearing region \
+             resolve to a region ({override_src} override, {merged_src} merged); {no_weather} resolve to no weather",
+            std::path::Path::new(&path).file_name().unwrap().to_string_lossy(),
+        );
+    }
 }
