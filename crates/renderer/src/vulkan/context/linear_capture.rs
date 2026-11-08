@@ -45,6 +45,12 @@ pub(super) struct LinearCaptureState {
     job: Option<LinearCaptureJob>,
     staging: Option<(vk::Buffer, gpu_allocator::vulkan::Allocation, vk::DeviceSize)>,
     pending_readback: Option<vk::Extent2D>,
+    /// The copy `linear_capture_record_copy*` just recorded into this frame's
+    /// command buffer, staged until `queue_submit` returns `Ok` (#6811). A
+    /// tail `Err` site discards the command buffer, so promoting at record
+    /// time would arm a readback (and count a frame) for a copy the GPU never
+    /// ran, averaging stale or uninitialised staging bytes into the EXR.
+    pending_copy: Option<vk::Extent2D>,
     outcome: Option<Result<LinearCaptureReport, String>>,
 }
 
@@ -385,7 +391,26 @@ impl VulkanContext {
         Some((extent, *staging_buffer))
     }
 
+    /// Stage the copy just recorded; `promote_linear_capture_copy` commits it
+    /// once the submit succeeded (#6811).
     fn linear_capture_copy_recorded(&mut self, extent: vk::Extent2D) {
+        self.overlay.linear_capture.pending_copy = Some(extent);
+    }
+
+    /// Drop a staged copy whose command buffer never reached the queue. Called
+    /// at the top of `draw_frame`, beside `discard_pending_skip_clear_latches`,
+    /// so a frame that bails or whose submit failed commits nothing (#6811).
+    pub(super) fn discard_pending_linear_capture_copy(&mut self) {
+        self.overlay.linear_capture.pending_copy = None;
+    }
+
+    /// Commit the staged copy: count the recorded frame and arm the readback
+    /// the next frame's `linear_capture_finish_readback` consumes. Runs once
+    /// `queue_submit` has returned `Ok` (#6811), beside `promote_skip_clear_latches`.
+    pub(super) fn promote_linear_capture_copy(&mut self) {
+        let Some(extent) = self.overlay.linear_capture.pending_copy.take() else {
+            return;
+        };
         if let Some(job) = self.overlay.linear_capture.job.as_mut() {
             job.frames_recorded += 1;
             job.extent = Some(extent);

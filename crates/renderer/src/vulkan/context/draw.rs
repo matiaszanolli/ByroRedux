@@ -1221,6 +1221,46 @@ mod skin_dispatch_ran_ordering_tests {
         );
     }
 
+    /// #6811 — linear capture stages its recorded copy and commits it (frame
+    /// count + armed readback) only after `queue_submit` returns `Ok`, through
+    /// the same two hooks as the skip-clear latches (`draw_frame` is at its line
+    /// budget, so it rides `discard_`/`promote_skip_clear_latches` like #6291's
+    /// field flip). Arming at record time let a discarded command buffer average
+    /// stale staging bytes into the EXR.
+    #[test]
+    fn the_linear_capture_copy_is_promoted_after_submit_not_at_record_time() {
+        let post_passes = crate::source_scan::production_text(include_str!("post_passes.rs"));
+        let (_, discard) = post_passes
+            .split_once("fn discard_pending_skip_clear_latches(")
+            .expect("discard_pending_skip_clear_latches must exist");
+        let discard = discard.split_once("\n    }\n").expect("fn body").0;
+        let (_, promote) = post_passes
+            .split_once("fn promote_skip_clear_latches(")
+            .expect("promote_skip_clear_latches must exist");
+        let promote = promote.split_once("\n    }\n").expect("fn body").0;
+        assert!(
+            discard.contains("self.discard_pending_linear_capture_copy();")
+                && promote.contains("self.promote_linear_capture_copy();"),
+            "the capture copy rides discard_/promote_skip_clear_latches (#6811)"
+        );
+
+        // Those hooks are already pinned to the top of draw_frame and below the
+        // last tail Err site by `skip_clear_latches_are_promoted_after_submit_*`.
+        // The record-time function may only stage; the committed state
+        // (`pending_readback`, `frames_recorded`) is written by the promote.
+        let capture = crate::source_scan::production_text(include_str!("linear_capture.rs"));
+        let (_, recorded) = capture
+            .split_once("fn linear_capture_copy_recorded(")
+            .expect("linear_capture_copy_recorded must exist");
+        let recorded = recorded.split_once("\n    }\n").expect("fn body").0;
+        assert!(
+            recorded.contains("pending_copy = Some(extent)")
+                && !recorded.contains("pending_readback")
+                && !recorded.contains("frames_recorded"),
+            "the record-time hook must stage `pending_copy` only (#6811)"
+        );
+    }
+
     /// #6291 — the ground-cover interaction field's ping-pong flip is staged at
     /// record time and committed only after `queue_submit` returns `Ok`, through
     /// the same two hooks as the skip-clear latches. Committing it when the dispatch

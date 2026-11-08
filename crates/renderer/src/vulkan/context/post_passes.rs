@@ -118,6 +118,9 @@ impl VulkanContext {
     pub(super) fn discard_pending_skip_clear_latches(&mut self) {
         self.post_state.pending_caustic_cleared_on_skip = None;
         self.post_state.pending_volumetrics_cleared_on_skip = None;
+        // #6811 — the linear-capture copy is the same class: a record-time
+        // decision ("this frame's copy will be read back") about GPU work.
+        self.discard_pending_linear_capture_copy();
         // #6291 — the ground-cover interaction field's ping-pong flip is the
         // same class of record-time decision about GPU work.
         if let Some(gc) = self.exterior.groundcover.as_mut() {
@@ -130,6 +133,7 @@ impl VulkanContext {
     /// they vouch for is on the queue. A tail `Err` site returns first, with the
     /// staged values dropped, so the retry decides (and clears) again.
     pub(super) fn promote_skip_clear_latches(&mut self, frame: usize) {
+        self.promote_linear_capture_copy(); // #6811
         if let Some(gc) = self.exterior.groundcover.as_mut() {
             gc.promote_field_commit(); // #6291
         }
