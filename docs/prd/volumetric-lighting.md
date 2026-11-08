@@ -1,6 +1,6 @@
 # Volumetric Lighting — Product Requirements
 
-**Status**: ACTIVE (2026-11-07). Revision 4 files the tracking issues. Revision 3 records the owner's §10 decisions: every one the recommendation except Q7, which the owner decided for the exterior haze floor so that the goal, realistic procedural god rays in interiors and exteriors, holds on clear weather (VLM-SH-010, VLM-SH-011). Revision 2, same day, folds in review
+**Status**: ACTIVE (2026-11-08). Revision 4 files the tracking issues. Revision 3 records the owner's §10 decisions: every one the recommendation except Q7, which the owner decided for the exterior haze floor so that the goal, realistic procedural god rays in interiors and exteriors, holds on clear weather (VLM-SH-010, VLM-SH-011). Revision 2, same day, folds in review
 round 1 (two HEAD corrections — the per-cell `XCCM` cross-fade and the
 region records that are read — the authored god-ray records Skyrim SE and
 FO4 carry, the region tie rule and forced-weather lock, the FO4 `LGTM`
