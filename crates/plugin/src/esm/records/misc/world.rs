@@ -708,11 +708,11 @@ pub enum RegionDataPayload {
     /// layout is not established by the corpus.
     Objects(Vec<u32>),
     Weather(Vec<RegionWeather>),
-    /// `RDMP` map name as inline text (Oblivion / FO3 / FNV).
+    /// `RDMP` map name (`wbLString`): inline text on Oblivion / FO3 / FNV, a `.STRINGS` id on a localized
+    /// plugin. Either way it is resolved at parse time through `read_lstring_or_zstring`, because the
+    /// per-plugin string table is gone once the walk ends and the merged index could never resolve a stored id
+    /// (#6799). An id the table lacks surfaces as the `<lstring 0x…>` placeholder.
     Map(String),
-    /// `RDMP` map name as a localised string ID (Skyrim+), resolved against
-    /// the plugin's `.STRINGS` tables rather than stored inline.
-    MapStringId(u32),
     /// `ICON` landscape-texture path.
     Landscape(String),
     /// `RDGS` raw payload — a single 32-byte sample exists (one Oblivion
@@ -1103,7 +1103,6 @@ pub fn parse_regn(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                 }
             }
             RegionDataPayload::Map(_)
-            | RegionDataPayload::MapStringId(_)
             | RegionDataPayload::Landscape(_)
             | RegionDataPayload::Grass(_)
             | RegionDataPayload::Empty => {}
@@ -1173,17 +1172,10 @@ fn apply_region_payload(entry: &mut RegionDataEntry, sig: &[u8], data: &[u8]) {
             entry.payload = RegionDataPayload::Weather(decode_weather_rows(data));
         }
         b"RDMP" => {
-            // Skyrim localises RDMP: the payload is a 4-byte string ID into
-            // the .STRINGS tables rather than inline text, while Oblivion /
-            // FO3 / FNV author a zero-terminated string. Reading the localised
-            // form as text yields control characters, which is exactly what a
-            // corpus sweep showed before this branch existed.
-            if data.len() == 4 {
-                entry.payload =
-                    RegionDataPayload::MapStringId(le_u32_at(data, 0).expect("length checked"));
-            } else {
-                entry.payload = RegionDataPayload::Map(read_zstring(data));
-            }
+            // A localized plugin authors RDMP as a 4-byte `.STRINGS` id, the earlier games as a
+            // zero-terminated string. `read_lstring_or_zstring` keys on the TES4 localized flag (not on
+            // "four bytes"), so a 3-character inline name is never mistaken for an id (#6799).
+            entry.payload = RegionDataPayload::Map(read_lstring_or_zstring(data));
         }
         b"ICON" => entry.payload = RegionDataPayload::Landscape(read_zstring(data)),
         b"RDGS" => entry.payload = RegionDataPayload::Grass(data.to_vec()),
@@ -3172,19 +3164,35 @@ mod regn_tests {
     }
 
     #[test]
-    fn skyrim_localised_map_names_are_string_ids_not_text() {
+    fn skyrim_localised_map_names_resolve_at_parse_time_not_text() {
+        use crate::esm::records::common::{LocalizedPluginGuard, StringsTableGuard};
+        use crate::esm::strings_table::{StringTableSet, StringsTable};
         // Skyrim's RDMP is a 4-byte .STRINGS id; reading it as inline text
-        // yields control characters, which a corpus sweep surfaced as garbage
-        // map names before this branch existed.
+        // yields control characters. It resolves through the plugin's table
+        // while that table is installed (#6799).
+        let text = b"Whiterun Hold\0";
+        let mut table = Vec::new();
+        for word in [1u32, text.len() as u32, 0x0001_1086, 0] {
+            table.extend_from_slice(&word.to_le_bytes());
+        }
+        table.extend_from_slice(text);
+        let _localized = LocalizedPluginGuard::new(true);
+        let _strings = StringsTableGuard::new(StringTableSet {
+            strings: Some(StringsTable::parse(&table, false).unwrap()),
+            ..Default::default()
+        });
         let r = parse_regn(
             1,
             &[rdat(4, 0, 50), sub(b"RDMP", 0x0001_1086u32.to_le_bytes())],
             &None,
         );
-        assert_eq!(
-            r.entries[0].payload,
-            RegionDataPayload::MapStringId(0x0001_1086)
-        );
+        assert_eq!(r.entries[0].payload, RegionDataPayload::Map("Whiterun Hold".to_string()));
+        drop(_strings);
+        drop(_localized);
+
+        // A non-localized plugin's three-character name is text, never an id.
+        let r = parse_regn(1, &[rdat(4, 0, 50), sub(b"RDMP", b"Zoo\0")], &None);
+        assert_eq!(r.entries[0].payload, RegionDataPayload::Map("Zoo".to_string()));
 
         // …while the inline form still parses as text.
         let r = parse_regn(1, &[rdat(4, 0, 50), sub(b"RDMP", b"Arefu\0")], &None);
