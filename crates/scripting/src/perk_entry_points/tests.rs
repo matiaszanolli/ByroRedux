@@ -1182,3 +1182,67 @@ mod observability {
         PerkEntry { rank: 0, priority: 0, body: PerkEntryBody::Quest { quest_form_id: quest, stage }, condition_tabs: Vec::new() }
     }
 }
+
+// --- PERK-DIA-002 / -003: the translation boundary ------------------------------------------------
+
+mod dialect_boundary {
+    use super::*;
+
+    /// PERK-DIA-002 -- a calculation maps to a hook per dialect, and composes to its base where the dialect has none.
+    #[test]
+    fn a_calculation_maps_to_one_hook_per_dialect() {
+        use PerkEntryPointDialect::{Fallout3NV, Skyrim};
+        assert_eq!(PerkCalculation::ExperienceGain.hook(Fallout3NV), Some(9));
+        assert_eq!(PerkCalculation::ExperienceGain.hook(Skyrim), None, "Skyrim levels by skill use");
+        assert_eq!(PerkCalculation::MaxCarryWeight.hook(Fallout3NV), Some(22));
+        assert_eq!(PerkCalculation::MaxCarryWeight.hook(Skyrim), Some(10));
+        assert_eq!(PerkCalculation::TemperingHealth.hook(Skyrim), Some(76));
+        assert_eq!(PerkCalculation::TemperingHealth.hook(Fallout3NV), None);
+
+        let idx = index(GameKind::Skyrim, vec![perk(1, vec![entry_point(0, 0, 9, 3, float(2.0), vec![])])]);
+        let (world, actor) = world_with(&idx, &[(1, 1)]);
+        // Hook 9 is a different hook on Skyrim (Add Leveled List On Death) and no calculation names it for
+        // Experience gain there: the base value comes back whatever perk the actor holds.
+        assert_eq!(compose_calculation(&world, actor, PerkCalculation::ExperienceGain, 100.0, &[]), 100.0);
+    }
+
+    /// No consumer outside the module names a hook constant of a dialect (the translation boundary).
+    #[test]
+    fn no_consumer_outside_the_module_names_a_dialect_hook() {
+        for (name, src) in [
+            ("byroredux/src/combat.rs", include_str!("../../../../byroredux/src/combat.rs")),
+            ("byroredux/src/encumbrance.rs", include_str!("../../../../byroredux/src/encumbrance.rs")),
+            ("byroredux/src/barter.rs", include_str!("../../../../byroredux/src/barter.rs")),
+            ("byroredux/src/systems/vats.rs", include_str!("../../../../byroredux/src/systems/vats.rs")),
+            ("crates/scripting/src/tempering.rs", include_str!("../tempering.rs")),
+        ] {
+            let production = byroredux_core::source_scan::production_text_or_whole(src);
+            assert!(
+                !production.contains("perk_entry_points::fnv::") && !production.contains("perk_entry_points::skyrim::"),
+                "{name} names a per-dialect hook index: name the calculation instead (PerkCalculation)"
+            );
+        }
+    }
+
+    /// PERK-DIA-003 -- the value-function set is the dialect's: 12-14 are Skyrim's, 8-11 are no dialect's.
+    #[test]
+    fn the_value_function_set_is_a_property_of_the_dialect() {
+        use PerkEntryPointDialect::{Fallout3NV, Skyrim};
+        for function in 1..=7u8 {
+            assert!(Fallout3NV.has_value_function(function) && Skyrim.has_value_function(function), "{function}");
+        }
+        for function in [12u8, 13, 14] {
+            assert!(Skyrim.has_value_function(function) && !Fallout3NV.has_value_function(function), "{function}");
+        }
+        for function in [0u8, 8, 9, 10, 11, 15] {
+            assert!(!Fallout3NV.has_value_function(function) && !Skyrim.has_value_function(function), "{function}");
+        }
+        assert!(!PerkEntryPointDialect::None.has_value_function(1));
+        // A function 13 entry on FNV is not composed; on Skyrim it is.
+        let av = PerkFunctionData::ActorValueMult { actor_value: 5, mult: 0.5 };
+        let fnv_idx = index(GameKind::Fallout3NV, vec![perk(1, vec![entry_point(0, 0, DAMAGE, 13, av.clone(), vec![])])]);
+        assert!(PerkEntryTable::from_index(&fnv_idx).entries(1).is_none(), "function 13 is not value math on FNV");
+        let sky_idx = index(GameKind::Skyrim, vec![perk(1, vec![entry_point(0, 0, DAMAGE, 13, av, vec![])])]);
+        assert!(PerkEntryTable::from_index(&sky_idx).entries(1).is_some());
+    }
+}

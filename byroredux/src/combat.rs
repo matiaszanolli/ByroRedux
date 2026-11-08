@@ -656,10 +656,10 @@ fn award_kill_experience(world: &World, victim: EntityId, health_avif: u32) {
     if reward <= 0.0 {
         return;
     }
-    let xp = byroredux_scripting::perk_entry_points::compose_entry_point(
+    let xp = byroredux_scripting::perk_entry_points::compose_calculation(
         world,
         player,
-        byroredux_scripting::perk_entry_points::fnv::ADJUST_EXPERIENCE_POINTS,
+        byroredux_scripting::perk_entry_points::PerkCalculation::ExperienceGain,
         reward,
         &[],
     )
@@ -754,10 +754,10 @@ pub(crate) fn grant_experience(world: &World, player: EntityId, xp: u32) {
         // Hook 10 is Adjust Gained Skill Points on FO3 / FNV only; FO4's
         // level grants no skill points to adjust.
         if points > 0.0 {
-            granted.0 += byroredux_scripting::perk_entry_points::compose_entry_point(
+            granted.0 += byroredux_scripting::perk_entry_points::compose_calculation(
                 world,
                 player,
-                byroredux_scripting::perk_entry_points::fnv::ADJUST_GAINED_SKILL_POINTS,
+                byroredux_scripting::perk_entry_points::PerkCalculation::GainedSkillPoints,
                 points,
                 &[],
             )

@@ -151,6 +151,21 @@ pub enum PerkEntryPointDialect {
     Skyrim,
 }
 
+impl PerkEntryPointDialect {
+    /// Whether the value function `function` (the `DATA` byte) is value math in this dialect: Set 1, Add 2,
+    /// Multiply 3, Add Range 4, Add AV Mult 5, Absolute 6 and Negative Absolute 7 everywhere a dialect exists
+    /// (the GECK / CK *Perk Entry Point* function tables), and Skyrim's Set to AV Mult 12, Multiply AV Mult 13
+    /// and Multiply 1 + AV Mult 14 on top (the function enum of `wbDefinitionsTES5.pas`; FO3 / FNV's table
+    /// ends at 9). PERK-DIA-003: the set is a property of the dialect, not a game test at the decode site.
+    pub const fn has_value_function(self, function: u8) -> bool {
+        match self {
+            Self::None => false,
+            Self::Fallout3NV => matches!(function, 1..=7),
+            Self::Skyrim => matches!(function, 1..=7 | 12..=14),
+        }
+    }
+}
+
 /// A game's barter price model (#5921): the executable defaults the
 /// masters' GMSTs override, by setting name.
 #[derive(Debug, Clone, Copy, PartialEq)]

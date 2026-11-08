@@ -107,6 +107,57 @@ pub mod skyrim {
     pub const MOD_TEMPERING_HEALTH: u8 = 76;
 }
 
+/// An engine calculation a perk can modify (PERK-DIA-002). A consumer names the calculation; the dialect maps it
+/// to a hook index here and nowhere else, so the per-game difference is a row of this table, never a branch in
+/// combat, encumbrance or tempering. A calculation the dialect has no hook for composes to its base value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PerkCalculation {
+    /// The experience a kill awards (FO3 / FNV *Adjust Experience Points*).
+    ExperienceGain,
+    /// The skill points a level-up banks (FO3 / FNV *Adjust Gained Skill Points*).
+    GainedSkillPoints,
+    /// The weight an actor can carry.
+    MaxCarryWeight,
+    /// Whether VATS offers Concentrated Fire (FO3 / FNV *Has Concentrated Fire*), a flag composed from 0.
+    ConcentratedFire,
+    /// The improvement a smithing material perk gives a tempered item (Skyrim *Mod Tempering Health*).
+    TemperingHealth,
+}
+
+impl PerkCalculation {
+    /// The hook index of this calculation in `dialect`, if it has one.
+    pub fn hook(self, dialect: PerkEntryPointDialect) -> Option<u8> {
+        use PerkEntryPointDialect::{Fallout3NV, Skyrim};
+        match (self, dialect) {
+            (Self::ExperienceGain, Fallout3NV) => Some(fnv::ADJUST_EXPERIENCE_POINTS),
+            (Self::GainedSkillPoints, Fallout3NV) => Some(fnv::ADJUST_GAINED_SKILL_POINTS),
+            (Self::MaxCarryWeight, Fallout3NV) => Some(fnv::GET_MAX_CARRY_WEIGHT),
+            (Self::MaxCarryWeight, Skyrim) => Some(skyrim::GET_MAX_CARRY_WEIGHT),
+            (Self::ConcentratedFire, Fallout3NV) => Some(fnv::HAS_CONCENTRATED_FIRE),
+            (Self::TemperingHealth, Skyrim) => Some(skyrim::MOD_TEMPERING_HEALTH),
+            _ => None,
+        }
+    }
+}
+
+/// Compose `base` through the hook of `calculation` in the loaded dialect (PERK-DIA-002); `base` when the world
+/// has no perk table or the dialect has no hook for it. `tab_subjects` are as for [`compose_entry_point`].
+pub fn compose_calculation(
+    world: &World,
+    owner: EntityId,
+    calculation: PerkCalculation,
+    base: f32,
+    tab_subjects: &[Option<EntityId>],
+) -> f32 {
+    let dialect = world
+        .try_resource::<PerkEntryTable>()
+        .map_or(PerkEntryPointDialect::None, |table| table.dialect());
+    match calculation.hook(dialect) {
+        Some(hook) => compose_entry_point(world, owner, hook, base, tab_subjects),
+        None => base,
+    }
+}
+
 /// The value math of one entry, resolved from its function byte and EPFD.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PerkOp {
@@ -505,6 +556,10 @@ fn resolve_op(
     data: &PerkFunctionData,
 ) -> Option<PerkOp> {
     let av = |actor_value: u32| index.resolve_actor_value(ActorValueRef::Index(actor_value));
+    // PERK-DIA-003: the dialect says which functions are value math.
+    if !dialect.has_value_function(function) {
+        return None;
+    }
     Some(match (function, data) {
         (1, PerkFunctionData::Float(x)) if is_subtract_hook(dialect, entry_point) => {
             PerkOp::Subtract(*x)
@@ -522,20 +577,19 @@ fn resolve_op(
         },
         (6, _) => PerkOp::Absolute,
         (7, _) => PerkOp::NegativeAbsolute,
-        // 12-14 exist on Skyrim only (FNV's table ends at 9).
-        (12, PerkFunctionData::ActorValueMult { actor_value, mult }) if dialect == PerkEntryPointDialect::Skyrim => {
+        (12, PerkFunctionData::ActorValueMult { actor_value, mult }) => {
             PerkOp::SetToAvMult {
                 avif: av(*actor_value),
                 mult: *mult,
             }
         }
-        (13, PerkFunctionData::ActorValueMult { actor_value, mult }) if dialect == PerkEntryPointDialect::Skyrim => {
+        (13, PerkFunctionData::ActorValueMult { actor_value, mult }) => {
             PerkOp::MultiplyAvMult {
                 avif: av(*actor_value),
                 mult: *mult,
             }
         }
-        (14, PerkFunctionData::ActorValueMult { actor_value, mult }) if dialect == PerkEntryPointDialect::Skyrim => {
+        (14, PerkFunctionData::ActorValueMult { actor_value, mult }) => {
             PerkOp::MultiplyOnePlusAvMult {
                 avif: av(*actor_value),
                 mult: *mult,
@@ -627,15 +681,7 @@ pub fn compose_damage_threshold(
 /// `actor`'s carry capacity (M47.2 encumbrance): its CarryWeight `base`
 /// through the Get Max Carry Weight entry point (FO3 / FNV 22, Skyrim 10).
 pub fn compose_max_carry_weight(world: &World, actor: EntityId, base: f32) -> f32 {
-    let hook = match world
-        .try_resource::<PerkEntryTable>()
-        .map_or(PerkEntryPointDialect::None, |table| table.dialect())
-    {
-        PerkEntryPointDialect::Fallout3NV => fnv::GET_MAX_CARRY_WEIGHT,
-        PerkEntryPointDialect::Skyrim => skyrim::GET_MAX_CARRY_WEIGHT,
-        PerkEntryPointDialect::None => return base,
-    };
-    compose_entry_point(world, actor, hook, base, &[None, None])
+    compose_calculation(world, actor, PerkCalculation::MaxCarryWeight, base, &[None, None])
 }
 
 /// Whether `actor` holds a perk that grants VATS Concentrated Fire (FO3 / FNV entry point 33,
@@ -643,10 +689,7 @@ pub fn compose_max_carry_weight(world: &World, actor: EntityId, base: f32) -> f3
 /// it true. Vanilla's `ConcentratedFire` authors a single unconditional Set 1.0 at rank 0 in both
 /// masters. Games with no FO3/FNV dialect never have it (#6422).
 pub fn has_concentrated_fire(world: &World, actor: EntityId) -> bool {
-    let fo3_fnv = world
-        .try_resource::<PerkEntryTable>()
-        .is_some_and(|table| table.dialect() == PerkEntryPointDialect::Fallout3NV);
-    fo3_fnv && compose_entry_point(world, actor, fnv::HAS_CONCENTRATED_FIRE, 0.0, &[None, None]) > 0.5
+    compose_calculation(world, actor, PerkCalculation::ConcentratedFire, 0.0, &[None, None]) > 0.5
 }
 
 /// Install the [`PerkEntryTable`] for a load order. Returns the number of

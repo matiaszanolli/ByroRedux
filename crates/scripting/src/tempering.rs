@@ -66,10 +66,10 @@ pub fn tempering_multiplier(world: &World, owner: EntityId, item_base: u32, ench
     // Lend the item's base form to the scratch subject and its enchantment to the context.
     crate::perk_entry_points::lend_base_form(world, subject, item_base, || {
         with_item_enchanted(world, enchanted, || {
-            crate::perk_entry_points::compose_entry_point(
+            crate::perk_entry_points::compose_calculation(
                 world,
                 owner,
-                crate::perk_entry_points::skyrim::MOD_TEMPERING_HEALTH,
+                crate::perk_entry_points::PerkCalculation::TemperingHealth,
                 1.0,
                 &[Some(subject)],
             )
