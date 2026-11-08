@@ -762,6 +762,23 @@ Exit: the inventory, the classified catalog, the design section and the
 verify answers are checked in, and `python3
 scripts/check-prd-conformance.py` passes on the revised PRD.
 
+### 9.1 Phase 0 results so far (2026-11-08, #6643)
+
+Answers measured on this machine's installs with the repository's own tools; each row names the tool so it can be
+re-run. Items not listed here are still open on #6643.
+
+| Item | Answer | Source |
+|---|---|---|
+| GUI-EVT-006 | **`Begin MenuMode` is compiled block type `0x0001`** on Oblivion (42 scripts), Fallout 3 (14) and Fallout: New Vegas (46). **`0x0009` is `OnHitWith`** (Oblivion 31, FO3 11, FNV 17), so the VM test fixture that labels type 9 `MenuMode` is wrong. `Begin MenuMode` blocks carry no numeric code in vanilla: no `MenuMode <code>` call site exists in any FO3 or FNV `SCPT`, quest script or `INFO` result script (the code is the optional filter after `Begin MenuMode`). | `obscript_tools census <ESM>` "block names" on `Oblivion.esm`, `Fallout3.esm`, `FalloutNV.esm`; `obscript_tools dump <ESM> grep:` / `grepq:`; `info_result_census` (7,186 FNV result scripts, 7,185 with source) |
+| GUI-HUD-006 | The default is `[Interface] iSystemColorHUDMainRed` / `Green` / `Blue` = **26 / 255 / 128**, identical in the shipped `Fallout_default.ini` of FO3 and FNV. Siblings: `HUDAlt` 255 / 67 / 42, `Pipboy` 26 / 255 / 128, `System` 26 / 255 / 128, `Terminal` 33 / 231 / 121, `MainMenu` 199 / 255 / 165. | `Fallout_default.ini` of both installs |
+| GUI-FONT-001 | Skyrim's font configuration is **`interface\fontconfig.txt`** in `Skyrim - Interface.bsa`, plus `fontconfig_cn` / `_ja` / `_pl` / `_ru`. CRLF text: `fontlib "Interface\fonts_en.swf"` lines (console, en, cclub) then `map "$ConsoleFont" = "Consolas" Normal` lines mapping a `$`-font class to a face and a weight (`Normal` / `Bold`). Fallout 4 ships the same name (`fontconfig.txt`, `_cn`, `_ja`) in `Fallout4 - Interface.ba2`. | archive listing and extraction of `fontconfig.txt` |
+| GUI-FONT-004 | Skyrim: **`interface\translate_<language>.txt`** with the language spelled out (`english`, `german`, `french`, `italian`, `spanish`, `polish`, `russian`, `chinese`, `japanese`). Fallout 4: the same file with short tags (`en`, `de`, `es`, `esmx`, `fr`, `it`, `ja`, `pl`, `ptbr`, `ru`, `cn`). Format: **UTF-16 little-endian with a BOM, CRLF lines, `$KEY<TAB>value`** (`$10 Mins<TAB>10 Mins`). `Fallout - Misc.bsa` of FO3 and FNV holds no translation or font file; their menu strings are inline in the MenuXml. | `Skyrim - Interface.bsa`, `Fallout4 - Interface.ba2`, both `Fallout - Misc.bsa` listings |
+| A8 fixture | FO4 scripts that call `RegisterForMenuOpenCloseEvent` (and define `OnMenuOpenCloseEvent`) in `Fallout4 - Misc.ba2`: `vaultexitelevatorscript` (also references `RaceMenu`, so it exercises both), `surgeonscript`, `mysteriousstrangerscript`, `tutorialscript`, `audiocontainernoanimscript`, `scriptobject`, and the VR / Hardcore ones `hc_managerscript`, `vftplayerscript`, `vrworkshopparentscript`. **The fixture is `vaultexitelevatorscript`.** | extraction of 7,870 `.pex` with `r5_extract_pex_ba2`, binary string grep |
+| A9 fixtures | **FNV:** `VCG04ActivatorScript` (`SCPT 001164A4`), the character-revision activator, is the only script in FNV's `SCPT`, quest and `INFO` result scripts that calls `ShowRaceMenu` (`Button == 1`, then `SetSPECIALPoints`, `SetTagSkills`, `ShowTraitMenu` through a `MenuMode == 0 && MessageBoxPending` poll). **FO3:** `Vault101ExitScript` (`SCPT 0005CF93`) is the only one. **Skyrim:** `QF_MQ101_0003372B.pex` (`Skyrim - Misc.bsa`) calls `Game.ShowRaceMenu()` from `Fragment_13`, `Fragment_27` and `Fragment_156`, in the shape `SetInChargen; DisablePlayerControls; RemoveAllItems; EquipItem x2; MoveTo; Wait; ShowRaceMenu; Wait; If; EnablePlayerControls`. **Fallout 4** also ships `SF_MQ101_001_MirrorScene_000A7D3C`. The stage numbers bound to the three Skyrim fragments are not mapped yet. | `info_result_census`, `obscript_tools dump`, `mq101_conformance`, `pex_dump_fn` |
+
+New tool: `crates/plugin/examples/info_result_census.rs` greps the `INFO` result scripts of an ObScript-era master
+(`obscript_tools` reads `SCPT` only).
+
 **Phase 1 — Registry and stack.** GUI-REG-001…011, GUI-PAGE-001,
 GUI-EVT-005/006, GUI-OPS-001, GUI-OPS-005. Exit: scenarios 2, 3 and 10
 pass, and scenario 1's floor passes.
