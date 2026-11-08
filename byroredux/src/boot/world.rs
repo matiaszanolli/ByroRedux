@@ -393,6 +393,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(crate::asset_provider::PendingActorGraphs::default());
     world.register::<crate::systems::archetype_idle::ArchetypeIdle>();
     world.insert_resource(crate::components::SeatReservations::default());
+    // AIP-FLG-001 — the 24-hour blocks of Once Per Day packages.
+    world.insert_resource(crate::npc_spawn::package_flags::PackageDayBlocks::default());
     world.insert_resource(crate::components::SandboxSitClip::default());
     // P3 — the inv.equip command's handoff queue, drained through the
     // native menu's canonical apply_action each frame.

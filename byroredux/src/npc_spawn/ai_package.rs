@@ -6,6 +6,7 @@
 //! [`EvaluatePackageRequest`], replacing behavior state only when the winning
 //! PACK FormID actually changes.
 
+use super::package_flags;
 use super::EsmIndex;
 use crate::components::{AmbientPackageRuntime, GameTimeRes, NavPath, SeatReservations};
 use byroredux_core::animation::AnimationPlayer;
@@ -956,6 +957,7 @@ fn select_active_package<'a>(
     world: &World,
     actor: EntityId,
     game_hour: f32,
+    current: Option<u32>,
     packages: impl IntoIterator<Item = &'a PackRecord>,
 ) -> Option<&'a PackRecord> {
     // #2671 — `ConditionContext` gained a `pending_alias_bindings` slot for
@@ -972,7 +974,8 @@ fn select_active_package<'a>(
         day_of_month: day
             .and_then(|day| byroredux_scripting::globals::package_day_of_month(world, day)),
     };
-    byroredux_plugin::esm::records::active_package(packages, clock, |package| {
+    // AIP-FLG: Once Per Day, Must Complete and Continue If PC Near bend the schedule scan; see `package_flags`.
+    package_flags::scan_with_flags(world, actor, clock, current, packages, |package| {
         package_conditions_pass(&package.conditions, world, &context)
             // #5499 / #5722 — skip any Dialogue package the installer
             // would decline: fail-open conditions, non-player targets, or
@@ -1032,12 +1035,16 @@ pub(super) fn apply_ai_package_behavior(
         world,
         placement_root,
         game_hour,
+        None,
         packages_npc
             .ai_packages
             .iter()
             .filter_map(|form_id| index.packages.get(form_id)),
     );
     let active_package_form_id = active.map(|package| package.form_id);
+    if let Some(package) = active {
+        package_flags::note_selected(world, placement_root, package.package_flags, package.form_id);
+    }
     let behavior = active.and_then(|package| {
         let template = package
             .package_template_form_id
@@ -1240,6 +1247,8 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
         return;
     };
     let mut updates = Vec::new();
+    // AIP-FLG-001: the Once Per Day packages that just won, noted once the registry guard is gone.
+    let mut newly_selected: Vec<(EntityId, u32, u32)> = Vec::new();
     for (actor, runtime) in runtimes {
         // QUST ALPC packages override the actor base's PKID stack for as
         // long as the alias remains filled. Stable source ordering avoids
@@ -1281,8 +1290,13 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
             .and_then(|slot| registry.package(slot.package))
             .filter(|package| selectable_by_installer(package, world));
         let active =
-            scripted.or_else(|| select_active_package(world, actor, game_hour, packages.iter().copied()));
+            scripted.or_else(|| {
+                select_active_package(world, actor, game_hour, runtime.active_package_form_id, packages.iter().copied())
+            });
         let active_package_form_id = active.map(|package| package.form_id);
+        if let Some(package) = active.filter(|package| Some(package.form_id) != runtime.active_package_form_id) {
+            newly_selected.push((actor, package.package_flags, package.form_id));
+        }
         let behavior = active.and_then(|package| {
             let template = package
                 .package_template_form_id
@@ -1304,6 +1318,9 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
         ));
     }
     drop(registry);
+    for (actor, flags, package) in newly_selected {
+        package_flags::note_selected(world, actor, flags, package);
+    }
 
     for &(actor, active_id, behavior, changed) in &updates {
         // M47.2 — the package fragments: the old package changed, the new
@@ -1453,7 +1470,7 @@ mod tests {
             let mut time = GameTimeRes::frozen_at(9.0);
             time.day = day;
             world.insert_resource(time);
-            select_active_package(world, actor, 9.0, packages.iter()).map(|p| p.form_id)
+            select_active_package(world, actor, 9.0, None, packages.iter()).map(|p| p.form_id)
         };
         let week: Vec<_> = (0..7).map(|day| winner(&mut world, day)).collect();
         assert_eq!(
@@ -1510,7 +1527,7 @@ mod tests {
             let mut time = GameTimeRes::frozen_at(13.0);
             time.day = day;
             world.insert_resource(time);
-            select_active_package(world, actor, 13.0, packages.iter()).map(|p| p.form_id)
+            select_active_package(world, actor, 13.0, None, packages.iter()).map(|p| p.form_id)
         };
         assert_eq!(winner(&mut world, 0), Some(0x1B), "27 Last Seed");
         assert_eq!(winner(&mut world, 1), Some(0xFF), "the 28th");
