@@ -154,6 +154,37 @@ fn explicit_column_uses_local_floor_instead_of_roof() {
     assert!((plan.body_pos.y - super::character_spawn_center_y(&world, 0.0, cc)).abs() < 0.01);
 }
 
+/// #6814 — `PhysicsWorld` is a sink: nothing may be acquired while its guard
+/// is held. The ground probe used to read `ContactConfig` (inside
+/// `character_spawn_center_y`) under the `PhysicsWorld` guard, recording a
+/// `PhysicsWorld -> ContactConfig` edge. Prime the engine's order
+/// (`ContactConfig` before `PhysicsWorld`, as `register_newcomers` takes it);
+/// under `BYRO_LOCK_ORDER_CHECK=1` the old probe then closes a cycle and the
+/// detector aborts. Without the detector it still pins the probe's result.
+#[test]
+fn ground_probe_reads_contact_config_outside_the_physics_guard() {
+    let mut world = spawn_collision_world();
+    world.insert_resource(byroredux_physics::ContactConfig::DEFAULT);
+    {
+        let _config = world.resource::<byroredux_physics::ContactConfig>();
+        let _physics = world.resource::<byroredux_physics::PhysicsWorld>();
+    }
+    let cc = byroredux_physics::CharacterController::HUMAN;
+    // Not an explicit --camera-pos and no foreground door: the boot-time
+    // `probe_spawn_ground` path.
+    let plan = super::plan_character_spawn(&world, Vec3::new(150.0, 120.0, 100.0), cc, None, false);
+    match plan.ground_probe {
+        GroundProbe::Grounded { surface_y, .. } => {
+            assert!(
+                (plan.body_pos.y - super::character_spawn_center_y(&world, surface_y, cc)).abs()
+                    < 0.01,
+                "the spawn height still comes from the configured kcc offset"
+            );
+        }
+        other => panic!("expected a grounded probe over the test floor, got {other:?}"),
+    }
+}
+
 #[test]
 fn exterior_spawn_skips_persistent_door_in_neighboring_cell() {
     // Regression: interactive `(3,-19)` bootstrap has only that tile's

@@ -276,16 +276,26 @@ fn probe_spawn_ground(
     cam_pos: Vec3,
     cc: byroredux_physics::CharacterController,
 ) -> GroundProbe {
-    let pw = world.resource::<byroredux_physics::PhysicsWorld>();
-    let Some((min, max, collider_count)) = pw.static_colliders_aabb() else {
-        return GroundProbe::NoColliders;
+    // #6814 — `PhysicsWorld` is a sink (nothing is acquired beneath it), so take
+    // both answers from it inside this scope and drop the guard BEFORE
+    // `character_spawn_center_y` reads `ContactConfig`.
+    let (searched_bu, collider_count, floor) = {
+        let pw = world.resource::<byroredux_physics::PhysicsWorld>();
+        let Some((min, max, collider_count)) = pw.static_colliders_aabb() else {
+            return GroundProbe::NoColliders;
+        };
+        let aabb_height = (max[1] - min[1]).max(1.0);
+        let ray_origin = Vec3::new(cam_pos.x, max[1] + 50.0, cam_pos.z);
+        let searched_bu = aabb_height + 100.0;
+        // Runs before the player capsule is spawned, so there is no self-hit to
+        // exclude (#2859).
+        (
+            searched_bu,
+            collider_count,
+            pw.cast_ray_down(ray_origin, searched_bu, None),
+        )
     };
-    let aabb_height = (max[1] - min[1]).max(1.0);
-    let ray_origin = Vec3::new(cam_pos.x, max[1] + 50.0, cam_pos.z);
-    let searched_bu = aabb_height + 100.0;
-    // Runs before the player capsule is spawned, so there is no self-hit to
-    // exclude (#2859).
-    match pw.cast_ray_down(ray_origin, searched_bu, None) {
+    match floor {
         Some(surface_y) => GroundProbe::Grounded {
             x: cam_pos.x,
             z: cam_pos.z,
