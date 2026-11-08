@@ -47,8 +47,8 @@ writes the missing design.
 | Interior shafts, sky apertures, painted-beam converters | [Interior Godrays Status](../engine/interior-godrays-status.md) |
 | Sky, cloud shadows, portal sun, sky-side aerial perspective | [SKYAL](../engine/skyal.md) |
 | Climate / weather translation boundary, base-fog strength choice | [EXAL](../engine/exal.md) |
-| Region weather resolution (`RDWT` tables, Override / Priority, `XCCM` sky-from-region) | **No design yet** — EXAL covers the climate and the region `CNAM` chain only; Phase 0 writes a region-weather section into [EXAL](../engine/exal.md) |
-| Authored god-ray records (Skyrim SE `VOLI`, FO4 `GDRY`) | **No design yet** — Phase 0 adds their census and semantics to the fog design's [corpus findings](../engine/procedural-volumetric-fog.md#corpus-findings) |
+| Region weather resolution (`RDWT` tables, Override / Priority, `XCCM` sky-from-region) | Design input written: [EXAL §3.2](../engine/exal.md#32-region-weather-resolution-vlm-reg-phase-0-census-2026-11-07) records the census; the resolver itself is Phase 1 |
+| Authored god-ray records (Skyrim SE `VOLI`, FO4 `GDRY`) | Census recorded in the fog design's [corpus findings](../engine/procedural-volumetric-fog.md#corpus-findings); decode and semantics are Phase 1 (VLM-HF-010, -011) |
 | Units, emitters, visibility masks, adaptive ray budget | [Physical Lighting Backbone](../engine/physical-lighting-backbone.md) |
 | Per-game engine tiers | [Game Compatibility](../engine/game-compatibility.md) |
 | Path-traced media (majorant, ratio tracking) | [Path Tracing Reference Mode PRD](path-tracing-reference-mode.md) |
@@ -162,7 +162,7 @@ then frozen.
 | 15 | Analytic tail for distant geometry | Shipped, sky agreement open → VLM-AP | `composite.frag` continues the grid boundary radiance, clamped to four times the authored fog luminance |
 | 16 | Aerial-perspective volume (Hillaire 2020) | Open → VLM-AP, §10 Q4 | No aerial LUT in `crates/renderer` (`rg -i "aerial.*lut"` is empty); [measurement table](../engine/procedural-volumetric-fog.md#measurement-table) row "Aerial LUT on" is empty |
 | 17 | Alpha-tested cutouts in the froxel sun trace | Shipped for open sky → VLM-SH-009 | `volumetrics_inject.comp` re-walks a sun ray the binary trace calls blocked (`sunRayBlockedAlphaAware`, open sky only), stepping past alpha holes with the shadow transport's 8-layer budget and the shared `alphaComparePass` (`include/alpha_compare.glsl`). It reads the material table (binding 32, as flat words) and the bindless textures (the pipeline layout's second set). `traceShadowBinary` itself stays opaque (`shadow_common.glsl:35`, BLAS built `OPAQUE`, `blas_static.rs:597`), so interiors and the local-light traces are unchanged |
-| 18 | Authored god-ray profiles (Skyrim SE `VOLI`, FO4 `GDRY`) | Open → VLM-HF-010, -011, §10 Q8 | Not parsed: `rg "VOLI\|GDRY\|WGDR\|XGDR" crates/plugin/src` is empty (only the probe `crates/plugin/examples/dump_voli_subs.rs` exists); the fog design records zero `VOLI` in the FO4 masters ([corpus findings](../engine/procedural-volumetric-fog.md#corpus-findings)) |
+| 18 | Authored god-ray profiles (Skyrim SE `VOLI`, FO4 `GDRY`) | Open → VLM-HF-010, -011, §10 Q8 | Not parsed: `rg "VOLI\|GDRY\|WGDR\|XGDR" crates/plugin/src` is empty (only the probe `crates/plugin/examples/dump_voli_subs.rs` exists); census 2026-11-07 ([corpus findings](../engine/procedural-volumetric-fog.md#corpus-findings)): Skyrim SE `VOLI` is 42 records in `Update.esm` / `Dawnguard.esm` / `Dragonborn.esm` (none in `Skyrim.esm`) with six of nine fields constant; FO4 has no `VOLI` but 61 `GDRY` reached by 63 weathers, 7 cells and 20 lights |
 | 19 | Combustion solid boundary: no-through, inward-normal removal, tangential slip, wall friction, transported overpressure | Shipped; calibration owned elsewhere (fire plan, fog design follow-up 1) | `include/combustion_transport.glsl:896-911` removes the inward normal component and applies `COMBUSTION_WALL_FRICTION_PER_SECOND` (since `715b9230b`); overpressure transport since `2155cc917`. ROADMAP's "boundary-normal slip/pressure response" open item is stale (§11 follow-ups) |
 | 20 | Fire surface-light reach | Owned elsewhere ([fire plan Phase 5](../engine/fire-volumetrics-plan.md#phase-5-fire-as-a-light-source-in-the-ray-traced-path)) | Range is `sqrt(luma / COMBUSTION_LIGHT_CUTOFF_IRRADIANCE)` clamped to `COMBUSTION_LIGHT_MAX_RANGE_METERS` (`crates/renderer/src/vulkan/volumetrics/combustion.rs:177`); [Known Issue](../../ROADMAP.md#correctness-and-content) |
 | 21 | Majorant grid / ratio tracking for path-traced media | Non-goal (VLM-NG-002) | No code (`rg -i "majorant\|ratio.track"` is empty) |
@@ -387,9 +387,7 @@ engine. Still open, an in-game observation, see VLM-REG-002.
   ([wbDefinitionsFO4.pas L15730-L15748](https://github.com/TES5Edit/TES5Edit/blob/9058a79437367c2cb1b757a9021ab443d743012d/Core/wbDefinitionsFO4.pas#L15730-L15748))
   but documents no semantics. **Phase 0: verify** what the near / far
   layers and the density scale mean (two stacked exponentials, a near-to-far
-  distance blend, or a density multiplier above the mid height); settled by
-  a corpus census of the authored values per weather together with matched
-  in-game captures of two weathers that differ only in those fields. Until
+  distance blend, or a density multiplier above the mid height); settled by a corpus census of the authored values per weather together with matched in-game captures of two weathers that differ only in those fields. **Census, 2026-11-07** (`fog_godray_census`): 63 of 71 `Fallout4.esm` weathers carry the layer, in 16 distinct day tuples; the commonest (24 weathers, e.g. `FXNukeWeather`) is the neutral default (near mid 0 / range 10,000, density scale 1.00, far mid 0 / range 10,000); the authored spread is near mid 0 to 1004, near range 1,000 to 25,000, density scale 0.90 to 1.00, far mid -6,400 to 12,000, far range 10,000 to 15,000 (two values). The semantics are still unverified and need the matched captures. Until
   then the fields stay unread, as `height_mid` is today.
 - **VLM-HF-004.** The FO4 and FO76 height-fog tail MUST be decoded from
   both `CELL` `XCLL` and `LGTM` `DATA`. xEdit defines it after the
@@ -431,8 +429,7 @@ engine. Still open, an in-game observation, see VLM-REG-002.
   Lighting" references and the `VOLI` records they name MUST be decoded
   (xEdit:
   [WTHR HNAM L13145-L13150, VOLI L13164-L13178](https://github.com/TES5Edit/TES5Edit/blob/9058a79437367c2cb1b757a9021ab443d743012d/Core/wbDefinitionsTES5.pas#L13145-L13178),
-  both under `IsSSE`). Today neither is parsed. Test:
-  `parse_wthr_sse_hnam_and_voli` (new). Whether any decoded field reaches
+  both under `IsSSE`). Today neither is parsed. Test: `parse_wthr_sse_hnam_and_voli` (new). **Census, 2026-11-07:** the records are in `Update.esm` (36 `VOLI`, 69 weathers with a 16-byte `HNAM`), `Dawnguard.esm` (1 and 15) and `Dragonborn.esm` (5 and 9), not in `Skyrim.esm`, so the decode must run over the merged load order (Dawnguard names 9 distinct `VOLI`, 1 in its own file). Of the nine float fields, six are the same in all 42 records (Custom Color - Contribution 0, Density - Contribution 0.3, Size 10, Wind Speed 15, Falling Speed 0.3, Range Factor 40); only `Intensity` (1.0 to 4.0) and the two phase fields (0.70 to 0.85) vary. Whether any decoded field reaches
   `FogMedium` is §10 Q8; until then each is listed under VLM-HF-009.
 - **VLM-HF-011.** FO4's `GDRY` god-ray records and the four links to them —
   `WTHR` `WGDR` per time of day, `CELL` `XGDR`, `LGTM` `WGDR`, `LIGH` `WGDR`
@@ -445,7 +442,7 @@ engine. Still open, an in-game observation, see VLM-REG-002.
   The Fallout CK documents the light-side use: "Volumetric Light: Whether
   this light should cast Volumetric rays (GodRays)" and "If 'Volumetric
   Light' is checked here you HAVE TO choose the God Ray profile"
-  (`falloutck-uesp-wiki/(main)/Light.wiki`). Today none is parsed. Test:
+  (`falloutck-uesp-wiki/(main)/Light.wiki`). **Census, 2026-11-07** (`Fallout4.esm`): 61 `GDRY` with a 60-byte `DATA` in every record; 63 weathers carry a 32-byte `WGDR` (8 time-of-day slots, 40 weathers non-null, 54 distinct `GDRY`), 7 cells an `XGDR`, 20 lights a `WGDR`, no lighting template one; every reference resolves. `Intensity` runs 0 to 50 (mean 3.5). Today none is parsed. Test:
   `parse_fo4_gdry_and_links` (new). Consumption follows §10 Q8.
 
 ### 5.3 Exterior light shafts (`VLM-SH`)
@@ -854,3 +851,4 @@ as VLM-NG-006 instead of being reopened.
 | 13 | 2026-11-07 | VLM-INT-006 FNV coverage measured on real meshes: 22 of 24 listed beam models convert (about 99 % of placements), all but one population are Show-Sky-off fixture beams beside a local light, and the converters were 0 % live until the `fxlight` loader fix. `2CCampGolfResort`, the busiest cell, runs 104 volumes at 0.68 ms inject. FO3, Oblivion, Skyrim, FO4 and Starfield remain unsurveyed | claude: revise |
 | 14 | 2026-11-07 | VLM-SH-008 recorded: inject and integrate separately on the five exterior fixtures at noon and 07:00 (inject 0.30 to 0.77 ms, integrate 0.02 ms), with the alpha-aware trace's share (+0.11 to +0.34 ms at 07:00) from a same-binary `BYRO_SUN_ALPHA=0` A/B; table in the fog design doc. VLM-SH-006 contrast across a named occluder is not recorded for these default-spawn poses | claude: revise |
 | 15 | 2026-11-07 | Candidate engine choice for the owner, built behind `BYRO_SUN_DUST` and off by default: an open-sky sun-term-only dust, the exterior counterpart of VLM-INT-007. At 2.0 per metre it gave a real-content shaft on one pose (Oblivion canopy, 07:00) without the frame wash of a stronger extinction floor, but more poses and hours show it is not a usable default: 17:30 and second-grid captures change the frame by 10 to 72 levels, and even 0.25 per metre changes four of the strongest cases by 4 to 32 levels (see the fog design doc). Not a decided Q7 value: it is an artistic scattering strength with no matching extinction, one pose per title. Elevation shaping since added (`1 - smoothstep(0.2, 0.7, sun_y)`): across the five fixtures at 2.0 every noon frame is unchanged and the 07:00 shafts remain. Adopting it still needs the owner's choice of value and shaping edges, then a VLM-HF-008 entry | claude: revise |
+| 16 | 2026-11-07 | Phase 0 census landed (#6724): `region_weather_census` and `fog_godray_census`. VLM-REG-012 and -013 moot on Oblivion / FO3 / FNV; VLM-REG-002 not moot (Oblivion 527 equal-Priority cells, FNV 8, FO4 11) and keeps an in-game observation open; VLM-REG-008 revised to the polygon test (`XCLR` is stale in both directions); interior `XCCM` and `VOLI` / `GDRY` / height-fog censuses recorded (REG-009, HF-003, -010, -011; EXAL §3.2; fog design corpus findings). Open: HF-001 curve form, HF-003 semantics (matched captures), the REG-002 / replace-vs-add observation, DLC / FO4 / Starfield beam census, A6 / A8 baselines | — |

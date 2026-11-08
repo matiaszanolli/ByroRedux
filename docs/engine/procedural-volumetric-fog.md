@@ -606,6 +606,33 @@ and `BYRO_HAZE_FLOOR` / `fog.haze` (the floor).
   and the three workshop masters). VOLI therefore cannot calibrate Fallout 4
   defaults from this corpus. The reusable probe lives at
   `crates/plugin/examples/dump_voli_subs.rs`.
+- God-ray and height-fog census, 2026-11-07
+  (`crates/plugin/examples/fog_godray_census.rs`, which extends the VOLI-only
+  probe's survey):
+  - Skyrim SE `VOLI` records and the `WTHR` `HNAM` references to them live in
+    `Update.esm` (36 `VOLI`, 69 weathers each carrying a 16-byte `HNAM`, 64 of 69 with every slot
+    non-null), `Dawnguard.esm` (1 and 15), `Dragonborn.esm` (5 and 9); `Skyrim.esm` and
+    `HearthFires.esm` have none. Dawnguard names 9 distinct `VOLI` of which 1 resolves
+    in its own file, so the rest resolve in `Update.esm`.
+  - Every `VOLI` is a 13-subrecord record of single floats (`CNAM` to `NNAM`). Across the 42 records
+    `Custom Color - Contribution` is 0, `Density - Contribution` 0.3, `Density - Size` 10, `Density -
+    Wind Speed` 15, `Density - Falling Speed` 0.3 and `Sampling Repartition - Range Factor` 40 in every record;
+    only `Intensity` (1.0 to 4.0, 7 distinct in `Update.esm`) and the two phase fields
+    (`Contribution` 0.70 to 0.85, `Scattering` 0.70 to 0.85) vary.
+  - Fallout 4 has no `VOLI` and no `WTHR` `HNAM`. Its god rays are `GDRY` (61 records, `DATA` always 60 bytes: back
+    colour, forward colour, intensity, air / back / forward scale, back phase, air colour, forward phase). They
+    are referenced by 63 weathers' 32-byte `WGDR` (8 time-of-day slots, 40 of 63 weathers non-null; 54
+    distinct `GDRY`), by 7 cells' `XGDR` and by 20 lights' `WGDR`; no `LGTM` carries one. `Intensity` runs 0 to 50
+    (mean 3.5), back colour scale 0.01 to 18, forward colour scale 0.01 to 3, air colour scale 0.001 to 1,
+    forward phase 0.22 to 0.92.
+  - Authored fog power is not an edge case: 140 of 168 day/night values in `Skyrim.esm`'s 84 weathers
+    and 116 of 142 in `Fallout4.esm`'s 71 are not 1.0 (means 0.51 and 0.48, minima 0.20 and 0.07).
+  - FO4's height-fog extension is on 63 of 71 weathers, in 16 distinct day tuples. Near height mid is 0 to
+    1004, near height range 1,000 to 25,000, high density scale 0.90 to 1.00 (5 values), far height mid -6,400
+    to 12,000, far height range 10,000 to 15,000 (2 values). The commonest tuple (24 weathers, including
+    `FXNukeWeather`) is (0, 10000, 1.00, 0, 10000): the neutral default. The semantics of the layers and the scale
+    stay unverified: a census cannot give them, a matched capture of two weathers that differ only in
+    those fields can.
 - FNV `FreesideAtomicWrangler` contains two alpha-over
   `fxsmokewispsthin01.dds` particle emitters under generic
   `SuperSpray01-Emitter` hosts. Both become `FogVolume` entities in the live

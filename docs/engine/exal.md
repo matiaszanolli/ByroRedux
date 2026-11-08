@@ -339,6 +339,58 @@ profiles, cell transitions) scales identically.
 The per-frame `weather_system` stays where it is — it is a *consumer* that samples
 the canonical `WeatherDataRes`, not a translate site. (There is no *SunModel* — see the EXAL-vs-current-code note below; sun state rides `WeatherDataRes`.)
 
+### 3.2 Region weather resolution (VLM-REG, Phase 0 census 2026-11-07)
+
+This section is the design input the Volumetric Lighting PRD (`docs/prd/volumetric-lighting.md` §5.1)
+asked for. It records what the shipped masters contain, so the Phase 1 resolver is built on measured
+cases rather than on the wiki pages' prose. Probe:
+`cargo run --release -p byroredux-plugin --example region_weather_census -- <master.esm> [-v]`
+(one master at a time; a DLC's cells name base-game regions the probe cannot resolve).
+
+**Where weather comes from today.** The worldspace's climate (`WRLD CNAM`, or a cell `XCCM` climate on
+the pre-Skyrim titles) supplies the weather list. A region's `RDAT` Weather section (`RDWT`) is decoded into
+`RegnRecord::entries` and read by no non-test code in `byroredux/src`. The resolver is a `WeatherRecord`
+choice at the EXAL boundary (VLM-REG-010) and must not leak region identity downstream.
+
+**What the masters contain** (exterior cells; "weather region" = a region with at least one Weather section):
+
+| Master | Regions with Weather | Cells with 2+ weather regions | …none overriding, tables differ | …2+ overriding | …top Priority shared | Exterior `XCCM` |
+|---|---|---|---|---|---|---|
+| `Oblivion.esm` | 59 of 211 | 1,201 | 527 (Priorities equal in all 527) | 0 | 0 | 0 |
+| `Fallout3.esm` | 14 of 139 | 1,258 | 0 | 1,258 | 0 | 0 |
+| `FalloutNV.esm` | 31 of 276 | 13 | 8 (Priorities differ) | 0 | 0 | 0 |
+| `Skyrim.esm` | 55 of 317 | 1,940 | 0 | 1,860 | 9 (tables differ) | 0 |
+| `Fallout4.esm` | 30 of 106 | 314 | 11 (Priorities differ) | 222 | 0 | 0 |
+
+Every region carries at most one Weather section. The `RDAT` flags byte on Weather sections is 0 or 1
+(Oblivion 29 / 30, FO3 6 / 8, FNV 12 / 19, Skyrim 23 / 32, FO4 25 / 5), read as the Override bit.
+
+**Consequences for the resolver.**
+
+- The Override-priority rule (VLM-REG-001) decides almost every multi-region cell on FO3, Skyrim and FO4
+  (the 1,258 FO3, 1,860 Skyrim and 222 FO4 overriding overlaps).
+- The non-override overlap (VLM-REG-002) is **not moot** on Oblivion, FNV or FO4, and Oblivion's 527 cases
+  all have equal Priority, so Priority cannot be the tie-break there. No wiki page states the original rule
+  and the census cannot, so an in-game observation (with its save and cell) or an owner decision is still
+  required before Phase 1 fixes it.
+- The tie at the highest overriding Priority (VLM-REG-012) never occurs on Oblivion, FO3 or FNV, so
+  the question is moot for them; Skyrim has 9 such cells (first: Tamriel (-13,26), regions `000C5852`
+  and `000C5858`, Priority 50), where the CK page states the fall-through rule.
+- The order between a cell climate override and region weather (VLM-REG-013) is moot on every master:
+  no exterior cell carries an `XCCM`.
+- Region membership is the region polygon, not the cell's `XCLR` list (VLM-REG-008): over 99 % of
+  Weather-region (cell, region) pairs agree, but `XCLR` omits a covering polygon on Oblivion 1, FO3 23, FNV
+  16, Skyrim 1 and FO4 12 pairs (FO3's Washington-top cells have an empty `XCLR` under a covering
+  polygon), and names a region whose polygon does not touch the cell on Oblivion 24, FO3 28, Skyrim 42 and
+  FO4 88 pairs, only 6 of them within an `RPLI` edge fall-off. The CK page defines the polygon as the area of
+  effect.
+- Interior sky-from-region (VLM-REG-009, Skyrim and FO4 `XCCM` naming a `REGN`): `Skyrim.esm` has 214 such
+  interiors (213 name a region with a Weather section), `Fallout4.esm` 79 (77). On Oblivion and FO3 the tag is
+  a climate on 55 of 1,855 and 1 of 421 interiors; FNV has none.
+
+**Still open.** A region's Weather section replacing, not adding to, the climate list; and the non-override
+tie-break above. Both need an observation of the original engine.
+
 ---
 
 ## 4. The GameVariant doctrine for environment
