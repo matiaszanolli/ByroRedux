@@ -3393,8 +3393,10 @@ fn dispatch_handled_fourccs_matches_the_live_dispatch_arms() {
 /// latter is the tripwire that turns "new dispatch arm landed without
 /// regenerating the baseline" red instead of silent. Regenerate with
 /// `cargo run --release -p byroredux-plugin --example sf_smoke --
-/// <Starfield>/Data/<name>.esm --tsv --recurse` (leaf rows repeat the
-/// top-level flags and are not checked).
+/// <Starfield>/Data/<name>.esm --tsv --recurse`. Leaf rows are checked in the
+/// stale direction only (#6807): a dispatched FourCC may not read `handled=0`
+/// on a leaf row either, since a half-regenerated baseline hides a genuinely
+/// dropped arm behind spurious 0 -> 1 diffs.
 #[test]
 fn sf_esm_baseline_handled_column_tracks_the_dispatch_list() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -3419,13 +3421,14 @@ fn sf_esm_baseline_handled_column_tracks_the_dispatch_list() {
         for line in tsv.lines().filter(|l| !l.starts_with('#')) {
             let cols: Vec<&str> = line.split('\t').collect();
             // columns: scope fourcc grup_count bytes_total immediate_records handled byte_error
-            if cols.first() != Some(&"top") || cols.len() < 7 {
+            let is_leaf = cols.first() == Some(&"leaf");
+            if (cols.first() != Some(&"top") && !is_leaf) || cols.len() < 7 {
                 continue;
             }
             let (fourcc, handled) = (cols[1], cols[5]);
             let is_listed = listed.iter().any(|l| l == fourcc);
             match (handled, is_listed) {
-                ("1", false) => failures.push(format!(
+                ("1", false) if !is_leaf => failures.push(format!(
                     "{name}: {fourcc} claims handled=1 but has no dispatch arm"
                 )),
                 (_, true) if handled != "1" => failures.push(format!(

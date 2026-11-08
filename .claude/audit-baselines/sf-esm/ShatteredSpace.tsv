@@ -204,7 +204,7 @@ leaf	MRPH	44	0	0	0	0
 leaf	MSTT	164	0	0	1	0
 leaf	MTPT	18	0	0	1	0
 leaf	MUSC	19	0	0	1	0
-leaf	MUST	19	0	0	0	0
+leaf	MUST	19	0	0	1	0
 leaf	NAVI	1	0	0	1	0
 leaf	NAVM	29202	0	0	1	0
 leaf	NPC_	679	0	0	1	0
@@ -246,7 +246,7 @@ leaf	SUNP	1	0	0	0	0
 leaf	TERM	76	0	0	1	0
 leaf	TMLM	122	0	0	0	0
 leaf	TRNS	1	0	0	1	0
-leaf	VOLI	2	0	0	0	0
+leaf	VOLI	2	0	0	1	0
 leaf	VTYP	109	0	0	1	0
 leaf	WATR	4	0	0	1	0
 leaf	WEAP	27	0	0	1	0

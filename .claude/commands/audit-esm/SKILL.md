@@ -535,7 +535,7 @@ First step: `cargo run --release -p byroredux-plugin --example esm_dim8_coverage
   subcommands since `b997ea133`, #5856). Unknown-subrecord share is the
   coverage signal per-game audits never compute across the whole file.
 - A decode rate that drops between games is a schema-split suspect — correlate with Dim 4
-  `GameKind` arms. Compare Starfield against the `sf_smoke --tsv` baselines in `.claude/audit-baselines/sf-esm/`
+  `GameKind` arms. Compare Starfield against the `sf_smoke --tsv --recurse` baselines (without `--recurse` only the top rows are emitted and the diff is meaningless) in `.claude/audit-baselines/sf-esm/`
   (regenerated `6cbae341c`, #5758; `sf_esm_baseline_handled_column_tracks_the_dispatch_list` pins
   their handled column to the dispatch list); a drop
   is a regression, not a new finding.

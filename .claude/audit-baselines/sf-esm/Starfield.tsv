@@ -286,7 +286,7 @@ leaf	MRPH	998	0	0	0	0
 leaf	MSTT	1771	0	0	1	0
 leaf	MTPT	877	0	0	1	0
 leaf	MUSC	83	0	0	1	0
-leaf	MUST	235	0	0	0	0
+leaf	MUST	235	0	0	1	0
 leaf	NAVI	1	0	0	1	0
 leaf	NAVM	56576	0	0	1	0
 leaf	NOCM	1	0	0	0	0
@@ -345,7 +345,7 @@ leaf	TODD	14	0	0	0	0
 leaf	TRAV	23	0	0	0	0
 leaf	TRNS	712	0	0	1	0
 leaf	TXST	23	0	0	1	0
-leaf	VOLI	42	0	0	0	0
+leaf	VOLI	42	0	0	1	0
 leaf	VTYP	683	0	0	1	0
 leaf	WATR	15	0	0	1	0
 leaf	WBAR	6	0	0	0	0
