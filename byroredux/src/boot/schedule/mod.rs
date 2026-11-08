@@ -258,6 +258,11 @@ mod fragment_activation_order_tests {
                 "make_npc_combat_ai_system",
                 // #6580 — a mine blast hits every actor in its radius (M43 placed mines)
                 "mine_system",
+                // #6813 — a VATS shot inserts a `HitEvent` per landed target
+                // (`vats_confirm`, reached from the mode machine). Safe today
+                // because it is an Early exclusive and every consumer is in
+                // Update; the pin keeps a stage move honest.
+                "vats_mode_system",
             ] {
                 assert!(
                     schedule
