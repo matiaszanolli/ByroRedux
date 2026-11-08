@@ -87,10 +87,12 @@ pub fn parse_musc_remapped(
                     }
                     b"WNAM" => out.fade_secs = reader.f32().unwrap_or(0.0),
                     b"TNAM" => {
-                        out.tracks = sub
-                            .data
-                            .chunks_exact(4)
-                            .map(|chunk| remap_fid(u32::from_le_bytes(chunk.try_into().unwrap()), remap))
+                        // A body that is not whole words declines (no tracks), never a shorter list.
+                        out.tracks = crate::esm::sub_reader::SubReader::new(&sub.data)
+                            .u32_array()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|id| remap_fid(id, remap))
                             .filter(|track| *track != 0)
                             .collect();
                     }
@@ -175,10 +177,11 @@ pub fn parse_must(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                 }
             }
             b"SNAM" => {
-                out.sub_tracks = sub
-                    .data
-                    .chunks_exact(4)
-                    .map(|chunk| remap_fid(u32::from_le_bytes(chunk.try_into().unwrap()), remap))
+                out.sub_tracks = crate::esm::sub_reader::SubReader::new(&sub.data)
+                    .u32_array()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|id| remap_fid(id, remap))
                     .filter(|track| *track != 0)
                     .collect();
             }

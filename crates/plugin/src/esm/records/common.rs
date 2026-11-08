@@ -364,9 +364,7 @@ impl CommonNamedFields {
                         crate::esm::sub_reader::SubReader::new(&sub.data).u32_or_default();
                     out.script_form_id = remap_fid(raw, remap);
                 }
-                b"KWDA" => out.keywords.extend(sub.data.chunks_exact(4).map(|raw| {
-                    remap_fid(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]), remap)
-                })),
+                b"KWDA" => out.keywords.extend(kwda_words(&sub.data).into_iter().map(|id| remap_fid(id, remap))),
                 b"VMAD" => {
                     // Presence flag unchanged; the decoded attachments +
                     // property bindings are now available alongside it.
@@ -464,9 +462,17 @@ impl CommonItemFields {
 pub fn kwda_keywords(subs: &[crate::esm::reader::SubRecord], remap: &Option<FormIdRemap>) -> Vec<u32> {
     subs.iter()
         .filter(|sub| &sub.sub_type == b"KWDA")
-        .flat_map(|sub| sub.data.chunks_exact(4))
-        .map(|raw| remap_fid(u32::from_le_bytes(raw.try_into().expect("four-byte chunk")), remap))
+        .flat_map(|sub| kwda_words(&sub.data))
+        .map(|id| remap_fid(id, remap))
         .collect()
+}
+
+/// The whole FormID words of a `KWDA` body. A trailing partial word is dropped on purpose (tolerant of a
+/// padded vanilla body, pinned by `kwda_keywords_reads_every_kwda_chunk_and_furn_uses_it`); every FormID
+/// array reads through `SubReader::u32_array` rather than hand-chunking (#6782).
+fn kwda_words(data: &[u8]) -> Vec<u32> {
+    let whole = &data[..data.len() - data.len() % 4];
+    crate::esm::sub_reader::SubReader::new(whole).u32_array().unwrap_or_default()
 }
 
 #[cfg(test)]

@@ -732,13 +732,14 @@ fn parse_image_spaces(data: &[u8], remap: &Option<FormIdRemap>) -> [Option<u32>;
 const WTHR_TOD_FORM_LIST_MIN_LEN: usize = 16;
 
 /// A per-time-of-day list of FormIDs (`HNAM` volumetric lighting, `WGDR` god rays): one 4-byte
-/// reference per slot, load-order remapped, a NULL slot `None`. A trailing partial word is ignored.
+/// reference per slot, load-order remapped, a NULL slot `None`. A body that is not whole words is malformed and
+/// decodes to no slots (#6782).
 fn parse_tod_form_list(data: &[u8], remap: &Option<FormIdRemap>) -> Vec<Option<u32>> {
-    data.chunks_exact(4)
-        .map(|word| {
-            let raw = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
-            (raw != 0).then(|| remap_fid(raw, remap))
-        })
+    crate::esm::sub_reader::SubReader::new(data)
+        .u32_array()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|raw| (raw != 0).then(|| remap_fid(raw, remap)))
         .collect()
 }
 

@@ -129,6 +129,26 @@ impl<'a> SubReader<'a> {
 
     // ── Strict reads (advance only on success) ──────────────────────────
 
+    /// Read the rest of the buffer as little-endian `u32` words (a FormID array: `MUSC.TNAM`, `MUST.SNAM`,
+    /// `WTHR.HNAM` / `WGDR`). A body that is not a whole number of words is a malformed array and errors with
+    /// the cursor unmoved, rather than decoding a shorter valid-looking one (#6782).
+    pub fn u32_array(&mut self) -> Result<Vec<u32>> {
+        let rest = self.rest();
+        if rest.len() % 4 != 0 {
+            bail!(
+                "u32 array of {} bytes at offset {} is not a whole number of words",
+                rest.len(),
+                self.pos
+            );
+        }
+        let words = rest
+            .chunks_exact(4)
+            .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+            .collect();
+        self.pos = self.data.len();
+        Ok(words)
+    }
+
     /// Read the next `n` bytes as a borrowed slice. Errors on truncation.
     /// The slice outlives the reader borrow (`'a`), so a caller can keep it
     /// while reading on.
@@ -327,6 +347,19 @@ impl<'a> SubReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #6782 — a FormID array reads whole words, and a body that is not whole words declines with the
+    /// cursor unmoved instead of decoding a shorter valid-looking array.
+    #[test]
+    fn u32_array_reads_whole_words_and_declines_a_ragged_body() {
+        let mut r = SubReader::new(&[1, 0, 0, 0, 2, 0, 0, 0]);
+        assert_eq!(r.u32_array().unwrap(), vec![1, 2]);
+        assert!(r.is_empty());
+        assert_eq!(SubReader::new(&[]).u32_array().unwrap(), Vec::<u32>::new());
+        let mut ragged = SubReader::new(&[1, 0, 0, 0, 0xFF, 0xEE]);
+        assert!(ragged.u32_array().is_err());
+        assert_eq!(ragged.position(), 0, "a failed array read leaves the reader where it started");
+    }
 
     #[test]
     fn take_wstring_and_counted_read_the_vmad_and_nvnm_shapes() {
