@@ -341,7 +341,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**164**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**165**) grouped by
 purpose:
 
 ```
@@ -468,6 +468,7 @@ dialogue.forcegreet <entity|.> <pack_formid> → install a force-greet onto an N
 sm.event <MNEMONIC> r1=<formid|player> [r2=…] [l1=…] [l2=…] → raise a Story Manager event through the real dispatcher for live gating (#5366)
 inv.add <form_id> [count]   → append items to the player inventory (same append invariants as loot transfer)
 levelup [skill <Skill> <n> | perk <perk_hex> | xp <n>] → show / spend the banked level-up skill points and perks, or grant XP like `rewardxp` (M47.2; capped at 100; `perk` refuses an unplayable perk, one above the player's level, or one whose level-up conditions fail — naming the function — and a NNAM chain's next rank replaces the held record, PERK-GATE)
+pack.ambient [entity|.]     → why an actor runs its package: its list in priority order with schedule / conditions / install-or-decline result, and its walk source; no argument lists every ambient actor (AIP-DX-001/-005/-006)
 perk.hooks [consumed|pending|blocked|inert] → the perk entry-point catalog for the loaded game, one line per hook with its state and call site (PERK-DX-002)
 perk.compose <hook> <base> [entity|player|.] → compose a value through one perk hook: the result, each applied entry with the running value, and each held entry that did not apply with why (PERK-DX-001, -003)
 inv.equip <form_id>         → toggle a player row's equipment state through the native menu's canonical action

@@ -13,6 +13,7 @@
 //!   resources (`env.health`)
 //! - [`gameplay`] — inventory/equipment and persistent-settings diagnostics
 //!   (`inventory.status`, `settings.status`)
+//! - [`pack_ambient`] — why an actor runs its package (`pack.ambient`)
 //! - [`perk`] — the perk hook catalog and the traced composer (`perk.hooks`, `perk.compose`)
 //! - [`depth`] — depth-buffer precision diagnostics (`depth.stats`)
 //! - [`assets`] — texture / mesh / skin diagnostics
@@ -46,6 +47,7 @@ mod depth;
 mod env_health;
 mod gameplay;
 mod hud;
+mod pack_ambient;
 mod perk;
 mod vats;
 mod physics;
@@ -76,6 +78,7 @@ use depth::*;
 use env_health::*;
 use gameplay::*;
 use hud::*;
+use pack_ambient::*;
 use perk::*;
 use vats::*;
 use physics::*;
@@ -177,6 +180,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(PlayerBodyCommand);
     registry.register(InvAddCommand);
     registry.register(LevelUpCommand);
+    registry.register(PackAmbientCommand);
     registry.register(PerkHooksCommand);
     registry.register(PerkComposeCommand);
     registry.register(InvEquipCommand);

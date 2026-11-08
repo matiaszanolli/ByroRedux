@@ -986,6 +986,118 @@ fn select_active_package<'a>(
     })
 }
 
+/// One row of `pack.ambient <entity>` (AIP-DX-001): a package in the actor's priority list and what the
+/// selection and the installer make of it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PackageExplanation {
+    pub(crate) form_id: u32,
+    pub(crate) editor_id: String,
+    /// The `PKDT` procedure type, named.
+    pub(crate) procedure: String,
+    /// Whether the package's schedule is open now (a flag-extended window is reported by `kept`).
+    pub(crate) schedule_open: bool,
+    pub(crate) conditions_pass: bool,
+    pub(crate) conditions_modelled: bool,
+    /// The installer's answer: `installs` or `declines: <reason>`.
+    pub(crate) result: String,
+    /// The package currently winning.
+    pub(crate) winner: bool,
+}
+
+fn procedure_name(package: &PackRecord) -> String {
+    use byroredux_plugin::esm::records::misc::pack::*;
+    if package.is_find() {
+        return "Find".into();
+    }
+    match package.procedure_type {
+        PROCEDURE_FOLLOW => "Follow",
+        PROCEDURE_ESCORT => "Escort",
+        PROCEDURE_EAT => "Eat",
+        PROCEDURE_SLEEP => "Sleep",
+        PROCEDURE_WANDER => "Wander",
+        PROCEDURE_TRAVEL => "Travel",
+        PROCEDURE_ACCOMPANY => "Accompany",
+        PROCEDURE_USE_ITEM_AT => "UseItemAt",
+        PROCEDURE_AMBUSH => "Ambush",
+        PROCEDURE_FLEE_NOT_COMBAT => "FleeNotCombat",
+        PROCEDURE_SANDBOX => "Sandbox",
+        PROCEDURE_PATROL => "Patrol",
+        PROCEDURE_GUARD => "Guard",
+        PROCEDURE_DIALOGUE => "Dialogue",
+        PROCEDURE_USE_WEAPON => "UseWeapon",
+        other => return format!("procedure {other}"),
+    }
+    .into()
+}
+
+/// The actor's ambient package list, in priority order, with each package's schedule, condition and
+/// install result (AIP-DX-001). `None` when the actor has no [`AmbientPackageRuntime`] or no package
+/// catalog is installed.
+pub(crate) fn explain_ambient_packages(world: &World, actor: EntityId) -> Option<Vec<PackageExplanation>> {
+    let runtime = world.get::<AmbientPackageRuntime>(actor).map(|runtime| runtime.clone())?;
+    let registry = world.try_resource::<PackageRegistry>()?;
+    let game_hour = world.try_resource::<GameTimeRes>().map(|time| time.hour).unwrap_or(10.0);
+    let day = world.try_resource::<GameTimeRes>().map(|time| time.day);
+    let clock = byroredux_plugin::esm::records::PackClock {
+        hour: game_hour,
+        weekday: day.and_then(|day| byroredux_scripting::globals::package_weekday(world, day)),
+        day_of_month: day.and_then(|day| byroredux_scripting::globals::package_day_of_month(world, day)),
+    };
+    let context = ConditionContext::for_subject(actor);
+    let mut candidates: Vec<u32> = Vec::new();
+    if let Some(overlays) = world.get::<QuestAliasInjectedOverlays>(actor) {
+        let mut sources: Vec<_> = overlays.0.iter().collect();
+        sources.sort_by_key(|((quest, alias), _)| (quest.0, *alias));
+        candidates.extend(sources.into_iter().flat_map(|(_, injected)| injected.packages.iter().copied()));
+    }
+    for &form_id in &runtime.package_candidates {
+        if !candidates.contains(&form_id) {
+            candidates.push(form_id);
+        }
+    }
+    Some(
+        candidates
+            .iter()
+            .filter_map(|&form_id| registry.package(form_id))
+            .map(|package| {
+                let result = match package.procedure_type {
+                    _ if package.is_find() => match find_decision(package, world) {
+                        Ok(_) => "installs".to_string(),
+                        Err(decline) => format!("declines: {}", decline.reason()),
+                    },
+                    PROCEDURE_USE_WEAPON => match use_weapon_behavior(package, world) {
+                        Some(_) => "installs".into(),
+                        None => "declines: unsourced-or-unmodelled UseWeapon data".to_string(),
+                    },
+                    PROCEDURE_DIALOGUE if !dialogue_installs_ambient(package, world) => {
+                        "declines: dialogue-not-ambient (unmodelled condition, non-player target or Say-To)".to_string()
+                    }
+                    _ => {
+                        let template = package
+                            .package_template_form_id
+                            .and_then(|form_id| registry.package(form_id))
+                            .unwrap_or(package);
+                        match AmbientBehavior::from_package(package, template, runtime.actor_form_id, world) {
+                            Some(_) => "installs".into(),
+                            None => "declines: no runtime for this procedure".to_string(),
+                        }
+                    }
+                };
+                PackageExplanation {
+                    form_id: package.form_id,
+                    editor_id: package.editor_id.clone(),
+                    procedure: procedure_name(package),
+                    schedule_open: package.scheduled_active_at(clock),
+                    conditions_pass: package_conditions_pass(&package.conditions, world, &context),
+                    conditions_modelled: package_conditions_fully_modeled(&package.conditions, world),
+                    result,
+                    winner: runtime.active_package_form_id == Some(package.form_id),
+                }
+            })
+            .collect(),
+    )
+}
+
 /// `BYRO_M42_DEBUG` diagnostics switch, read from the environment once. The
 /// `[m42-tick]` probe runs every frame, and `std::env::var_os` is a global
 /// environ read lock plus a linear scan (#5448).
@@ -2104,6 +2216,30 @@ mod tests {
         assert_eq!(find_decision(&package, &world), Err(FindDecline::NoTarget));
         assert_eq!(find_object_class(18), Some(FindTarget::Kind(FindItemKind::Food)));
         assert_eq!(find_object_class(4), None, "Clothing has no classifier yet");
+    }
+
+    /// AIP-DX-001 -- the explanation lists the actor's packages in priority order with the schedule, the
+    /// conditions and the installer's answer, and flags the winner.
+    #[test]
+    fn the_package_explanation_lists_each_package_with_its_install_result() {
+        use byroredux_plugin::esm::records::misc::pack::PROCEDURE_FIND;
+        use byroredux_plugin::esm::records::PackTarget;
+
+        let mut declined = pack(0x201, PROCEDURE_FIND, None);
+        declined.target = Some(PackTarget { target_type: 2, target: PackTargetKind::Other(8), count_or_distance: 1 });
+        let (mut world, actor) = setup_actor(10.0, vec![declined, pack(0x202, PROCEDURE_GUARD, None)]);
+        world.insert_resource(crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(EsmIndex {
+            game: byroredux_plugin::esm::reader::GameKind::Fallout3NV,
+            ..Default::default()
+        })));
+        let rows = explain_ambient_packages(&world, actor).expect("an ambient actor");
+        assert_eq!(rows.iter().map(|r| r.form_id).collect::<Vec<_>>(), vec![0x201, 0x202]);
+        assert_eq!(rows[0].procedure, "Find");
+        assert_eq!(rows[0].result, "declines: unsupported-object-type 8");
+        assert!(rows[0].schedule_open && rows[0].conditions_pass && rows[0].conditions_modelled);
+        assert!(!rows[0].winner, "the declined Find did not win");
+        assert!(rows[1].winner, "the Guard package behind it did: {rows:?}");
+        assert_eq!(rows[1].result, "installs");
     }
 
     /// UseItemAt (procedure 8) is furniture use in the vanilla data: it takes
