@@ -410,6 +410,7 @@ run_profile () {
         # `input.look` the same way) so the term measures the sky and the sun-lit scene, which is what it is for.
         # (A note out here: a `#` line inside the heredoc would be sent to byro-dbg as a command.)
         env BYRO_DEBUG_PORT="$PORT" "$DEBUG_BIN" > "$debug_log" 2>&1 <<EOF || true
+weather.force ${CYCLE_FORCE_WEATHER:-none} lock
 time.pause
 input.look 0 40
 time.set 06:00
@@ -1135,6 +1136,11 @@ skyrim_run () {
 
     local grid="2,-4"
     if [[ "$MODE" == cycle ]]; then
+        # The cycle's sun-response gate needs a weather the sun reads through. Region weather
+        # (VLM-REG) now gives this cell its authored region weather, `SkyrimOvercastSnow` (region
+        # 0004D7FD), whose overcast sky legitimately barely responds to the clock (noon - night
+        # 0.007 of the 0.02 floor), so the phase forces Skyrim.esm's `SkyrimClear` (0x0000081A).
+        CYCLE_FORCE_WEATHER=0x0000081A
         # BleakfallsBarrowPath: the established WATAL water-adjacent streaming
         # fixture. Static/population baselines retain their historical grid.
         grid="2,-10"
