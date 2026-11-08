@@ -71,8 +71,12 @@ use super::lod_support::{
 };
 
 /// Object-LOD ring radius in **cells** (Chebyshev) for the placement
-/// scheme (Oblivion `.lod`, FO3/FNV legacy blocks) — the flat, single-ring
-/// object-LOD reader for games with no baked quadtree. Cells within this
+/// scheme (Oblivion `.lod`) — the flat, single-ring object-LOD reader for a game with no baked quadtree.
+///
+/// NOT INI-derived (DLOD-BAND-001): no `Oblivion.ini` key is read for it. The authored reach is
+/// `uGridDistantCount` (25 in the shipped `Oblivion_default.ini`, UESP *Oblivion Mod:Oblivion.ini*), whose unit
+/// (radius or diameter, V1) is unsettled; 16 is an engine-chosen ring that predates that key and stays until
+/// DLOD-BAND-002 takes the reach from it. Pinned by `placement_lod_radius_cells_is_the_engine_chosen_16`. Cells within this
 /// distance of the player — and entirely beyond the full-detail ring —
 /// load their `.lod`. This no longer mirrors a same-shaped constant on the
 /// Skyrim/FO4 side: the flat object-LOD ring there was replaced by the
@@ -910,14 +914,11 @@ mod tests {
     /// `stream_placement_lod_blocks` wastes a per-cell archive lookup that
     /// can never resolve (vanilla FO3/FNV archives ship zero `distantlod\`
     /// entries).
+    /// DLOD-BAND-001 -- the placement ring's 16 cells is an engine-chosen value, not an INI reading; this pins
+    /// it so DLOD-BAND-002's change to `uGridDistantCount` is a deliberate edit.
     #[test]
-    fn placement_lod_supported_is_oblivion_only() {
-        assert!(placement_lod_supported(GameKind::Oblivion));
-        assert!(!placement_lod_supported(GameKind::Fallout3NV));
-        assert!(!placement_lod_supported(GameKind::Skyrim));
-        assert!(!placement_lod_supported(GameKind::Fallout4));
-        assert!(!placement_lod_supported(GameKind::Fallout76));
-        assert!(!placement_lod_supported(GameKind::Starfield));
+    fn placement_lod_radius_cells_is_the_engine_chosen_16() {
+        assert_eq!(PLACEMENT_LOD_RADIUS_CELLS, 16);
     }
 
     #[test]

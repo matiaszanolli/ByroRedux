@@ -1340,41 +1340,7 @@ mod tests {
     /// moved off `None` under #3321.
     #[test]
     fn object_lod_scheme_table() {
-        use ObjectLodScheme::{BakedBto, FalloutLegacyBlocks};
-        assert_eq!(object_lod_scheme(GameKind::Skyrim), Some(BakedBto));
-        assert_eq!(object_lod_scheme(GameKind::Fallout4), Some(BakedBto));
-        assert_eq!(
-            object_lod_scheme(GameKind::Fallout3NV),
-            Some(FalloutLegacyBlocks),
-            "FO3/FNV ship a systematic blocks\\ family — see #3321"
-        );
-        assert_eq!(
-            object_lod_scheme(GameKind::Fallout76),
-            Some(BakedBto),
-            "FO76 ships the same .bto family (L4/8/16/32) over appalachia, across \
-             GeneratedMeshes01/02 — see #4736's census"
-        );
-        assert_eq!(object_lod_scheme(GameKind::Oblivion), None);
-        assert_eq!(
-            object_lod_scheme(GameKind::Starfield),
-            None,
-            "Starfield re-verified: zero .bto/.btr in LODMeshes.ba2 (#4488)"
-        );
-        // #4913 — the tree family is Skyrim-only (FO4/FO76 bake trees into
-        // the .bto; Oblivion/FO3/FNV/Starfield ship no .btt family).
-        for game in [
-            GameKind::Oblivion,
-            GameKind::Fallout3NV,
-            GameKind::Fallout4,
-            GameKind::Fallout76,
-            GameKind::Starfield,
-        ] {
-            assert!(
-                !tree_lod_supported(game),
-                "{game:?} must not claim the Skyrim .btt tree family (#4913)"
-            );
-        }
-        assert!(tree_lod_supported(GameKind::Skyrim));
+        // The scheme / tree-support rows moved to `lod_family_table_covers_every_game` (DLOD-GATE-008).
         assert_eq!(
             tree_lod_archive_path("Tamriel", 4, -12),
             "meshes\\terrain\\tamriel\\trees\\tamriel.4.4.-12.btt",

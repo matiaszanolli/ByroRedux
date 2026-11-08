@@ -1296,6 +1296,22 @@ pub struct LodCoverageStats {
     pub terrain_resident: u32,
     /// Resident object LOD quad count at the last sample.
     pub object_resident: u32,
+    /// DLOD-GATE-001 — resident tree-LOD units across every tree family: one per `.btt` or `.dtl` file, and
+    /// one per Oblivion `.lod` cell with at least one TREE group drawn. Empty sentinels (a quad whose file
+    /// held nothing drawable) are not counted.
+    pub tree_resident: u32,
+    /// DLOD-GATE-002 — resident Oblivion placement-LOD cells (the per-cell `_far.nif` scheme).
+    pub placement_resident: u32,
+    /// DLOD-GATE-004 — tree-LOD units that left residency and later returned, with `terrain_churn`'s
+    /// settled-snapshot semantics.
+    pub tree_churn: u32,
+    /// DLOD-GATE-005 — object-LOD moat cells: non-resident cells within one finest-quad edge of the
+    /// resident full-detail set, inside the object ring, covered by no resident object quad and not known to
+    /// be unauthored. Reported, not yet part of [`Self::verdict`]: it reads nonzero until the per-cell
+    /// segment suppression of Phase 3 lands.
+    pub object_moat_cells: u32,
+    /// DLOD-GATE-005 — the same measure for the tree ring.
+    pub tree_moat_cells: u32,
     /// #6093 — distant-LOD quads the last reconcile held back because the
     /// geometry pool was closed to uploads (#6092). The ring has nothing left
     /// it can try, so it reads as complete, but the horizon lost these quads:
@@ -1317,6 +1333,7 @@ impl LodCoverageStats {
             && self.held_back == 0
             && self.terrain_churn == 0
             && self.object_churn == 0
+            && self.tree_churn == 0
         {
             "PASS"
         } else {
@@ -1330,8 +1347,9 @@ impl LodCoverageStats {
     pub fn machine_line(&self) -> String {
         format!(
             "lod-coverage: sampled={} settled={} overlaps={} full_detail_overlaps={} \
-             vwd_full_model_overlaps={} terrain_churn={} object_churn={} terrain_resident={} \
-             object_resident={} held_back={} verdict={}",
+             vwd_full_model_overlaps={} terrain_churn={} object_churn={} tree_churn={} \
+             terrain_resident={} object_resident={} tree_resident={} placement_resident={} \
+             object_moat_cells={} tree_moat_cells={} held_back={} verdict={}",
             u8::from(self.sampled),
             u8::from(self.settled),
             self.overlaps,
@@ -1339,8 +1357,13 @@ impl LodCoverageStats {
             self.vwd_full_model_overlaps,
             self.terrain_churn,
             self.object_churn,
+            self.tree_churn,
             self.terrain_resident,
             self.object_resident,
+            self.tree_resident,
+            self.placement_resident,
+            self.object_moat_cells,
+            self.tree_moat_cells,
             self.held_back,
             self.verdict(),
         )
@@ -1761,6 +1784,34 @@ impl ItemInstancePool {
 
 #[cfg(test)]
 mod tests {
+    /// DLOD-GATE-001..005 -- the `lod-coverage:` line carries the tree, placement and moat fields the
+    /// smoke gate parses, and only churn (not the moat counts, which Phase 3 drives to zero) fails the verdict.
+    #[test]
+    fn lod_coverage_machine_line_carries_the_tree_placement_and_moat_fields() {
+        let mut stats = LodCoverageStats {
+            sampled: true,
+            settled: true,
+            tree_resident: 7,
+            placement_resident: 3,
+            object_moat_cells: 12,
+            tree_moat_cells: 5,
+            ..Default::default()
+        };
+        let line = stats.machine_line();
+        for key in [
+            "tree_resident=7",
+            "placement_resident=3",
+            "tree_churn=0",
+            "object_moat_cells=12",
+            "tree_moat_cells=5",
+        ] {
+            assert!(line.contains(key), "{key} missing from {line}");
+        }
+        assert_eq!(stats.verdict(), "PASS", "a moat is reported, not yet a verdict failure");
+        stats.tree_churn = 1;
+        assert_eq!(stats.verdict(), "FAIL", "tree thrash fails the verdict like terrain and object churn");
+    }
+
     use super::*;
 
     #[test]

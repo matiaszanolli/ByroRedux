@@ -123,6 +123,12 @@ const SKYRIM_ULTRA_TREE_LOAD_BU: f32 = 75_000.0;
 
 /// How many cells out the distant tree-billboard ring reaches (#4913), or
 /// `None` where the game has no separate tree tier.
+/// Outer extent in cells of the object-LOD ring for `game`, `None` where the game ships no object LOD
+/// ladder. The moat metric (DLOD-GATE-005) bounds its candidate cells by this.
+pub(crate) fn object_ring_cells(game: GameKind) -> Option<i32> {
+    LodBandLadder::for_object_game(game).map(|ladder| ladder.max_cells())
+}
+
 pub(crate) fn tree_load_cells(game: GameKind) -> Option<i32> {
     match game {
         GameKind::Skyrim => Some(cells_from_bu(SKYRIM_ULTRA_TREE_LOAD_BU)),
@@ -130,17 +136,24 @@ pub(crate) fn tree_load_cells(game: GameKind) -> Option<i32> {
     }
 }
 
-// Fallout 3's shipped `VeryHigh.ini` uses the legacy terrain-manager names:
-// `fBlockLoadDistanceLow=50000`, `fSplitDistanceMult=1.5`, and
-// `fBlockLoadDistance=125000`. The split multiplier generates the successive
-// quadtree boundaries. Its archives author level-4/8/16/32 quads through
-// +/-64 cells, which is the availability-clamped outer extent. FNV shares the
-// same format and `GameKind`; missing quads subdivide through the common
-// availability predicate — except on the object ring, where a quad whose
-// whole subtree is unbaked coarsens instead (#3502). FNV bakes every
-// worldspace's `blocks\` quads at level 4 and never needs that; FO3 bakes 93
-// of its 366 plain quads at level 8 only.
+/// The FO3/FNV refine distances in BU, in ladder order (DLOD-BAND-001).
+///
+/// INI-derived: Fallout 3's shipped `VeryHigh.ini`, section `[TerrainManager]`, uses the legacy names
+/// `fBlockLoadDistanceLow=50000` and `fSplitDistanceMult=1.5`. The split multiplier generates the successive
+/// quadtree boundaries from the base: `50000 x 1.5^k` = 50 000, 75 000, 112 500 BU. Where the original applies
+/// `fSplitDistanceMult` is not published (V14, PRD Q5), so this is the documented reading, not a verified
+/// reproduction. FNV shares the format and `GameKind`; missing quads subdivide through the common availability
+/// predicate, except on the object ring, where a quad whose whole subtree is unbaked coarsens instead (#3502).
+/// FNV bakes every worldspace's `blocks\` quads at level 4 and never needs that; FO3 bakes 93 of its 366 plain
+/// quads at level 8 only. Pinned by `fallout_legacy_distances_are_the_documented_ini_reading`.
 const FALLOUT_LEGACY_REFINE_BU: &[f32] = &[50_000.0, 75_000.0, 112_500.0];
+/// The FO3/FNV outer ring extent in cells (DLOD-BAND-001).
+///
+/// NOT INI-derived: the authored `[TerrainManager] fBlockLoadDistance=125000` BU is about 31 cells and is not
+/// used. 64 is the archives' own quad extent — FO3/FNV author level-4/8/16/32 quads through +/-64 cells — so
+/// the ring is clamped by what is baked, with the availability predicate trimming it further per worldspace.
+/// Pinned by `fallout_legacy_terrain_uses_all_four_authored_bands` and
+/// `fallout_legacy_distances_are_the_documented_ini_reading`.
 const FALLOUT_LEGACY_MAX_CELLS: i32 = 64;
 
 /// The per-game distance ladder that drives [`select_lod_quads`].
@@ -879,6 +892,20 @@ mod tests {
     fn coarsest_level_follows_the_authored_band_count() {
         assert_eq!(skyrim().coarsest_level(), 16);
         assert_eq!(fo4().coarsest_level(), 32);
+    }
+
+    /// DLOD-BAND-001 -- the FO3/FNV distance constants are the `VeryHigh.ini` reading their rustdoc names:
+    /// `fBlockLoadDistanceLow` 50000 BU stepped by `fSplitDistanceMult` 1.5, and an outer extent of 64 cells
+    /// that is the archives' quad extent, not the authored `fBlockLoadDistance` 125000 BU (about 31 cells).
+    #[test]
+    fn fallout_legacy_distances_are_the_documented_ini_reading() {
+        let base = 50_000.0f32;
+        let split = 1.5f32;
+        let derived: Vec<f32> = (0..3).map(|k| base * split.powi(k)).collect();
+        assert_eq!(derived, FALLOUT_LEGACY_REFINE_BU);
+        assert_eq!(FALLOUT_LEGACY_MAX_CELLS, 64);
+        assert_eq!(cells_from_bu(125_000.0), 31, "the authored fBlockLoadDistance is not the ring extent");
+        assert!(FALLOUT_LEGACY_MAX_CELLS > cells_from_bu(125_000.0));
     }
 
     #[test]

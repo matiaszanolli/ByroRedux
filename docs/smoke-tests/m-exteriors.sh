@@ -60,8 +60,59 @@ fo4_known_seam_crack() {
     [[ "$1" == fo4 && "$2" == 1 && "$3" == 3 && "$4" == "3,0/4,0" ]]
 }
 
+# ── DLOD-GATE-006: a family the profile's worldspace authors must be resident ──
+#
+# #6637 — `lod-coverage:` used to fail on overlaps, churn and `held_back`, but not on an absent
+# family: a ring that never loaded read `resident=0` and passed. Which families a profile's
+# worldspace authors and the engine draws today comes from the PRD `distant-lod-completion` §3.1
+# matrix (the `lod_family_census` test pins the counts):
+#   oblivion  terrain + placement        (no `.bto`; its TREE `.lod` groups are unconsumed until Phase 2)
+#   fo3       terrain                    (MegatonWorld authors no `.dtl`; its object blocks are not pinned)
+#   fnv       terrain + object           (no separate tree family)
+#   skyrim    terrain + object + tree
+#   fo4       terrain + object           (trees are baked into the `.bto`)
+# A family listed here reading 0 is a hard failure; the families pending a later phase are
+# reported as a WARN so they flip to required when their phase lands.
+#
+# Args:  <profile label> <terrain_resident> <object_resident> <placement_resident> <tree_resident>
+# Prints the absent required families, space separated (empty when none).
+lod_absent_families() {
+    local label="$1" terrain="$2" object="$3" placement="$4" tree="$5" absent=""
+    case "$label" in
+        oblivion) (( terrain > 0 )) || absent+=" terrain"; (( placement > 0 )) || absent+=" placement" ;;
+        fo3)      (( terrain > 0 )) || absent+=" terrain" ;;
+        fnv)      (( terrain > 0 )) || absent+=" terrain"; (( object > 0 )) || absent+=" object" ;;
+        skyrim)   (( terrain > 0 )) || absent+=" terrain"; (( object > 0 )) || absent+=" object"
+                  (( tree > 0 )) || absent+=" tree" ;;
+        fo4)      (( terrain > 0 )) || absent+=" terrain"; (( object > 0 )) || absent+=" object" ;;
+    esac
+    echo "${absent# }"
+}
+
 if [[ "${1:-}" == "--self-test" ]]; then
     fails=0
+    check_families() {
+        local want="$1"
+        shift
+        local got
+        got="$(lod_absent_families "$@")"
+        if [[ "$got" != "$want" ]]; then
+            echo "  self-test FAIL: lod_absent_families($*) = '$got', want '$want'"
+            fails=1
+        else
+            echo "  ok: lod_absent_families($*) = '$got'"
+        fi
+    }
+    echo "smoke[m-exteriors]: --self-test — DLOD-GATE-006 absent-family rule"
+    check_families "" skyrim 10 6 0 4
+    check_families "tree" skyrim 10 6 0 0
+    check_families "" fnv 8 5 0 0
+    check_families "object" fnv 8 0 0 0
+    check_families "" fo3 8 0 0 0
+    check_families "terrain" fo3 0 0 0 0
+    check_families "" oblivion 6 0 3 0
+    check_families "placement" oblivion 6 0 0 0
+    check_families "terrain object" fo4 0 0 0 0
     check() {
         local want="$1"
         shift
@@ -843,6 +894,7 @@ EOF
             echo "exterior-smoke[$label]: WARN - lod.coverage reported nothing (pre-#2371 binary, or an interior-only profile)"
         else
             local cov_sampled cov_overlaps cov_full_overlaps cov_vwd_overlaps cov_terrain_churn cov_object_churn cov_held_back
+            local cov_tree_churn cov_terrain_res cov_object_res cov_tree_res cov_placement_res cov_object_moat cov_tree_moat
             cov_sampled="$(grep -oE 'sampled=[01]' <<< "$coverage_line" | cut -d= -f2 || true)"
             cov_overlaps="$(grep -oE 'overlaps=[0-9]+' <<< "$coverage_line" | head -1 | cut -d= -f2 || true)"
             cov_full_overlaps="$(grep -oE 'full_detail_overlaps=[0-9]+' <<< "$coverage_line" | cut -d= -f2 || true)"
@@ -857,20 +909,43 @@ EOF
             # `settled` alone cannot tell a horizon that lost quads from one
             # that filled in.
             cov_held_back="$(grep -oE 'held_back=[0-9]+' <<< "$coverage_line" | cut -d= -f2 || true)"
+            # #6637 — the tree, placement and moat fields (DLOD-GATE-001..005).
+            cov_tree_churn="$(grep -oE 'tree_churn=[0-9]+' <<< "$coverage_line" | cut -d= -f2 || true)"
+            cov_terrain_res="$(grep -oE 'terrain_resident=[0-9]+' <<< "$coverage_line" | cut -d= -f2 || true)"
+            cov_object_res="$(grep -oE 'object_resident=[0-9]+' <<< "$coverage_line" | cut -d= -f2 || true)"
+            cov_tree_res="$(grep -oE 'tree_resident=[0-9]+' <<< "$coverage_line" | cut -d= -f2 || true)"
+            cov_placement_res="$(grep -oE 'placement_resident=[0-9]+' <<< "$coverage_line" | cut -d= -f2 || true)"
+            cov_object_moat="$(grep -oE 'object_moat_cells=[0-9]+' <<< "$coverage_line" | cut -d= -f2 || true)"
+            cov_tree_moat="$(grep -oE 'tree_moat_cells=[0-9]+' <<< "$coverage_line" | cut -d= -f2 || true)"
             if [[ "$cov_sampled" != "1" ]]; then
                 echo "exterior-smoke[$label]: WARN - lod.coverage never sampled (no LOD reconcile ran this traversal)"
             elif [[ ! "$cov_overlaps" =~ ^[0-9]+$ || ! "$cov_full_overlaps" =~ ^[0-9]+$ \
                     || ! "$cov_vwd_overlaps" =~ ^[0-9]+$ \
                     || ! "$cov_terrain_churn" =~ ^[0-9]+$ || ! "$cov_object_churn" =~ ^[0-9]+$ \
-                    || ! "$cov_held_back" =~ ^[0-9]+$ ]]; then
+                    || ! "$cov_held_back" =~ ^[0-9]+$ || ! "$cov_tree_churn" =~ ^[0-9]+$ \
+                    || ! "$cov_terrain_res" =~ ^[0-9]+$ || ! "$cov_object_res" =~ ^[0-9]+$ \
+                    || ! "$cov_tree_res" =~ ^[0-9]+$ || ! "$cov_placement_res" =~ ^[0-9]+$ \
+                    || ! "$cov_object_moat" =~ ^[0-9]+$ || ! "$cov_tree_moat" =~ ^[0-9]+$ ]]; then
                 echo "exterior-smoke[$label]: HARD FAIL - incomplete lod.coverage line: $coverage_line"
                 hard_fail=1
             elif (( cov_overlaps != 0 || cov_full_overlaps != 0 || cov_vwd_overlaps != 0 \
-                    || cov_terrain_churn != 0 || cov_object_churn != 0 || cov_held_back != 0 )); then
+                    || cov_terrain_churn != 0 || cov_object_churn != 0 || cov_tree_churn != 0 \
+                    || cov_held_back != 0 )); then
                 echo "exterior-smoke[$label]: HARD FAIL - LOD coverage violation: $coverage_line"
                 hard_fail=1
             else
-                echo "exterior-smoke[$label]: PASS lod coverage: $coverage_line"
+                # DLOD-GATE-006 — a family the profile's worldspace authors that never loaded.
+                local absent_families
+                absent_families="$(lod_absent_families "$label" "$cov_terrain_res" "$cov_object_res" \
+                    "$cov_placement_res" "$cov_tree_res")"
+                if [[ -n "$absent_families" ]]; then
+                    echo "exterior-smoke[$label]: HARD FAIL - authored LOD family never became resident ($absent_families): $coverage_line"
+                    hard_fail=1
+                else
+                    echo "exterior-smoke[$label]: PASS lod coverage: $coverage_line"
+                fi
+                # DLOD-GATE-005 — reported, not yet failing: Phase 3 drives both counts to 0.
+                echo "exterior-smoke[$label]: INFO LOD moat: object_moat_cells=$cov_object_moat tree_moat_cells=$cov_tree_moat"
             fi
         fi
 

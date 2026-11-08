@@ -356,6 +356,22 @@ pub(crate) struct TreeLodRing {
 }
 
 impl TreeLodRing {
+    /// The worldspace's `.btt` quads (south-west cells of the level-4 files), `None` until the first
+    /// reconcile has scanned the archive name tables.
+    pub(crate) fn authored_quads(&self) -> Option<&[(i32, i32)]> {
+        self.quads.as_deref()
+    }
+
+    /// The resident tree-LOD quads that drew something, as `(level, x, y)` footprint keys. An empty
+    /// sentinel (a file that failed to parse or held nothing drawable) is left out.
+    pub(crate) fn resident_keys(&self) -> Vec<(i32, i32, i32)> {
+        self.blocks
+            .iter()
+            .filter(|(_, block)| !block.entities.is_empty())
+            .map(|(&(qx, qy), _)| (TREE_LOD_LEVEL, qx, qy))
+            .collect()
+    }
+
     /// Forget everything cached and hand back the resident blocks for the
     /// caller to unload (worldspace teardown).
     pub(crate) fn drain(&mut self) -> Vec<ObjectLodBlock> {

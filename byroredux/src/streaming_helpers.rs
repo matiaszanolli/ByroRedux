@@ -287,7 +287,7 @@ pub(crate) fn reconcile_lod_rings(
         state.loaded_residency_changed,
         coverage_sampled,
     ) {
-        update_lod_coverage(world, state, settled);
+        update_lod_coverage(world, state, settled, player_grid);
     } else {
         // `settled` still needs the per-frame write — it tracks whether
         // *this* reconcile call left outstanding work, independent of
@@ -338,13 +338,18 @@ fn update_lod_coverage(
     world: &mut byroredux_core::ecs::World,
     state: &mut streaming::WorldStreamingState,
     settled: bool,
+    player_grid: (i32, i32),
 ) {
     let terrain_keys: Vec<(i32, i32, i32)> = state.lod_blocks.keys().copied().collect();
     let object_keys: Vec<(i32, i32, i32)> = state.object_lod_blocks.keys().copied().collect();
     let full_cells: Vec<(i32, i32)> = state.loaded.keys().copied().collect();
 
-    let overlaps =
-        cell_loader::find_overlaps(&terrain_keys) + cell_loader::find_overlaps(&object_keys);
+    // DLOD-GATE-001/-003/-004 — the tree ring is keyed by south-west cell (every file is a level-4 quad),
+    // so it joins the overlap and churn checks as `(level, x, y)` footprints.
+    let tree_keys: Vec<(i32, i32, i32)> = state.tree_lod.resident_keys();
+    let overlaps = cell_loader::find_overlaps(&terrain_keys)
+        + cell_loader::find_overlaps(&object_keys)
+        + cell_loader::find_overlaps(&tree_keys);
     let terrain_keys_with_holes: Vec<((i32, i32, i32), u16)> = state
         .lod_blocks
         .iter()
@@ -352,7 +357,8 @@ fn update_lod_coverage(
         .collect();
     let full_detail_overlaps =
         cell_loader::find_terrain_full_detail_overlaps(&terrain_keys_with_holes, &full_cells)
-            + cell_loader::find_full_detail_overlaps(&object_keys, &full_cells);
+            + cell_loader::find_full_detail_overlaps(&object_keys, &full_cells)
+            + cell_loader::find_full_detail_overlaps(&tree_keys, &full_cells);
 
     // EXAL §5.2's VWD culling rule, checked live rather than only by
     // construction: a resident `VisibleWhenDistant` full REFR's cell must
@@ -375,7 +381,49 @@ fn update_lod_coverage(
     if settled {
         state.terrain_lod_churn.observe(&state.lod_blocks);
         state.object_lod_churn.observe(&state.object_lod_blocks);
+        state.tree_lod_churn.observe_keys(tree_keys.iter().copied().collect());
     }
+
+    // DLOD-GATE-005 — the moat each ring leaves at the resident boundary. Only the finest-quad edge (4 cells)
+    // reaches beyond a resident cell, so that is the candidate band. An object quad known to be unauthored
+    // (`lod_object_available == false`) and a cell outside every authored `.btt` quad are not moat.
+    let resident_full: std::collections::HashSet<(i32, i32)> = full_cells.iter().copied().collect();
+    let game = state.wctx.record_index.game;
+    const FINEST_QUAD_EDGE: i32 = 4;
+    let object_moat_cells = match cell_loader::object_ring_cells(game) {
+        Some(ring) => {
+            let missing: Vec<(i32, i32, i32)> = state
+                .lod_object_available
+                .iter()
+                .filter(|(_, available)| !**available)
+                .map(|(&key, _)| key)
+                .collect();
+            cell_loader::count_moat_cells(
+                &resident_full,
+                &object_keys,
+                player_grid,
+                ring,
+                FINEST_QUAD_EDGE,
+                |cx, cy| missing.iter().any(|&(level, qx, qy)| cx >= qx && cx < qx + level && cy >= qy && cy < qy + level),
+            )
+        }
+        _ => 0,
+    };
+    let tree_moat_cells = match (cell_loader::tree_load_cells(game), state.tree_lod.authored_quads()) {
+        (Some(ring), Some(quads)) => cell_loader::count_moat_cells(
+            &resident_full,
+            &tree_keys,
+            player_grid,
+            ring,
+            FINEST_QUAD_EDGE,
+            |cx, cy| {
+                !quads
+                    .iter()
+                    .any(|&(qx, qy)| cx >= qx && cx < qx + FINEST_QUAD_EDGE && cy >= qy && cy < qy + FINEST_QUAD_EDGE)
+            },
+        ),
+        _ => 0,
+    };
 
     let mut coverage = world.resource_mut::<byroredux_core::ecs::LodCoverageStats>();
     coverage.sampled = true;
@@ -385,8 +433,17 @@ fn update_lod_coverage(
     coverage.vwd_full_model_overlaps = vwd_full_model_overlaps;
     coverage.terrain_churn = state.terrain_lod_churn.churned();
     coverage.object_churn = state.object_lod_churn.churned();
+    coverage.tree_churn = state.tree_lod_churn.churned();
     coverage.terrain_resident = terrain_keys.len() as u32;
     coverage.object_resident = object_keys.len() as u32;
+    coverage.tree_resident = tree_keys.len() as u32;
+    coverage.placement_resident = state
+        .placement_lod_blocks
+        .values()
+        .filter(|block| !block.entities.is_empty())
+        .count() as u32;
+    coverage.object_moat_cells = object_moat_cells;
+    coverage.tree_moat_cells = tree_moat_cells;
 }
 
 /// Refresh [`byroredux_core::ecs::TerrainSeamStats`] from the currently

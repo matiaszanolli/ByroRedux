@@ -176,8 +176,10 @@ pub use load::CellLoadResult;
 // same masters-first merged index the cell loader builds but stops after
 // the parse phase.
 pub(crate) use load_order::parse_record_indexes_in_load_order;
+pub(crate) use lod_bands::{object_ring_cells, tree_load_cells};
 pub(crate) use lod_coverage::{
-    find_full_detail_overlaps, find_overlaps, find_terrain_full_detail_overlaps, ChurnTracker,
+    count_moat_cells, find_full_detail_overlaps, find_overlaps, find_terrain_full_detail_overlaps,
+    ChurnTracker,
 };
 pub(crate) use lod_support::{
     actor_tier_edge, lod_should_rearm_after_starvation, resolve_lod_grid_origin, ActorTierEdge,

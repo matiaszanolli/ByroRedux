@@ -666,24 +666,42 @@ mod tests {
         )
     }
 
-    /// #2452 / EXAL-04 — Skyrim and FO4 alone ship combined `.bto`/`.btr`.
-    /// #3100 keeps that fact distinct from the older authored landscape-only
-    /// LOD families so neither capability lies about the other.
+    /// DLOD-GATE-008 / A8 -- the one table that answers "which LOD families does each game author", across
+    /// all six `GameKind` variants and every family predicate. It replaces `object_lod_scheme_table`'s
+    /// scheme/tree rows, `placement_lod_supported_is_oblivion_only` and
+    /// `combined_and_legacy_lod_capabilities_are_disjoint` (#2452, #3100, #4913). FO3 and FNV share
+    /// `GameKind::Fallout3NV`, so no predicate can tell them apart; a per-title difference between them comes
+    /// from the archives (DLOD-TREE-009).
     #[test]
-    fn combined_and_legacy_lod_capabilities_are_disjoint() {
-        assert!(combined_lod_supported(GameKind::Skyrim));
-        assert!(combined_lod_supported(GameKind::Fallout4));
-        assert!(!combined_lod_supported(GameKind::Oblivion));
-        assert!(!combined_lod_supported(GameKind::Fallout3NV));
-        assert!(!combined_lod_supported(GameKind::Fallout76));
-        assert!(!combined_lod_supported(GameKind::Starfield));
-
-        assert!(legacy_landscape_lod_supported(GameKind::Oblivion));
-        assert!(legacy_landscape_lod_supported(GameKind::Fallout3NV));
-        assert!(!legacy_landscape_lod_supported(GameKind::Skyrim));
-        assert!(!legacy_landscape_lod_supported(GameKind::Fallout4));
-        assert!(!legacy_landscape_lod_supported(GameKind::Fallout76));
-        assert!(!legacy_landscape_lod_supported(GameKind::Starfield));
+    fn lod_family_table_covers_every_game() {
+        use super::super::object_lod::{object_lod_scheme, tree_lod_supported, ObjectLodScheme};
+        use super::super::placement_lod::placement_lod_supported;
+        use crate::env_translate::{terrain_lod_layout, TerrainLodLayout};
+        use ObjectLodScheme::{BakedBto, FalloutLegacyBlocks};
+        // (game, terrain layout, object scheme, tree family, placement family)
+        let table: [(GameKind, TerrainLodLayout, Option<ObjectLodScheme>, bool, bool); 6] = [
+            (GameKind::Oblivion, TerrainLodLayout::OblivionLegacy, None, false, true),
+            (GameKind::Fallout3NV, TerrainLodLayout::FalloutLegacy, Some(FalloutLegacyBlocks), false, false),
+            (GameKind::Skyrim, TerrainLodLayout::Combined, Some(BakedBto), true, false),
+            (GameKind::Fallout4, TerrainLodLayout::Combined, Some(BakedBto), false, false),
+            // FO76 ships `.bto` objects (L4/8/16/32 over appalachia, #4736) but no terrain family.
+            (GameKind::Fallout76, TerrainLodLayout::None, Some(BakedBto), false, false),
+            // Starfield: zero .bto/.btr in LODMeshes.ba2 (#4488).
+            (GameKind::Starfield, TerrainLodLayout::None, None, false, false),
+        ];
+        for (game, terrain, object, tree, placement) in table {
+            assert_eq!(terrain_lod_layout(game), terrain, "{game:?} terrain layout");
+            assert_eq!(object_lod_scheme(game), object, "{game:?} object scheme");
+            assert_eq!(tree_lod_supported(game), tree, "{game:?} tree family");
+            assert_eq!(placement_lod_supported(game), placement, "{game:?} placement family");
+            // The two derived terrain predicates stay disjoint views of the one layout.
+            assert_eq!(combined_lod_supported(game), terrain == TerrainLodLayout::Combined, "{game:?}");
+            assert_eq!(
+                legacy_landscape_lod_supported(game),
+                matches!(terrain, TerrainLodLayout::OblivionLegacy | TerrainLodLayout::FalloutLegacy),
+                "{game:?}"
+            );
+        }
     }
 
     /// The combined-format predicate and band ladder answer the same question

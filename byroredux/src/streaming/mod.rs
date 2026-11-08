@@ -369,6 +369,8 @@ pub struct WorldStreamingState {
     pub(crate) terrain_lod_churn: crate::cell_loader::ChurnTracker,
     /// Same as `terrain_lod_churn`, for `object_lod_blocks`.
     pub(crate) object_lod_churn: crate::cell_loader::ChurnTracker,
+    /// Same as `terrain_lod_churn`, for the tree ring (DLOD-GATE-004).
+    pub(crate) tree_lod_churn: crate::cell_loader::ChurnTracker,
     /// #4913 — Skyrim's distant tree billboards (`.btt` + `.lst`): resident
     /// level-4 quads, the worldspace's quad list and its species list. Empty
     /// on every other game.
@@ -583,6 +585,7 @@ impl WorldStreamingState {
             lod_grid_origin: None,
             terrain_lod_churn: crate::cell_loader::ChurnTracker::default(),
             object_lod_churn: crate::cell_loader::ChurnTracker::default(),
+            tree_lod_churn: crate::cell_loader::ChurnTracker::default(),
             placement_lod_blocks: HashMap::new(),
             tree_lod: Default::default(),
             lod_water: None,

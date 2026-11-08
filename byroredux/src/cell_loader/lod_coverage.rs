@@ -110,6 +110,49 @@ pub(crate) fn find_terrain_full_detail_overlaps(
     overlaps
 }
 
+/// DLOD-GATE-005 — count a family's moat cells.
+///
+/// A moat cell (PRD §2) is a cell that is not a resident full-detail cell, lies within `edge` cells
+/// (Chebyshev) of one — `edge` is the family's finest quad edge — inside the family's ring (`ring_cells` from
+/// `player`), and is covered by no resident quad of the family. It is the gap whole-quad exclusion leaves at
+/// the resident boundary, which the overlap counters cannot see.
+///
+/// `unauthored(x, y)` marks cells the family has no content for (a confirmed missing quad): those are not a
+/// defect of the join, so they are not counted. `covered` holds the family's resident quads as
+/// `(level, x, y)` south-west-corner rects.
+pub(crate) fn count_moat_cells(
+    resident: &HashSet<(i32, i32)>,
+    covered: &[(i32, i32, i32)],
+    player: (i32, i32),
+    ring_cells: i32,
+    edge: i32,
+    unauthored: impl Fn(i32, i32) -> bool,
+) -> u32 {
+    let mut candidates: HashSet<(i32, i32)> = HashSet::new();
+    for &(rx, ry) in resident {
+        for dx in -edge..=edge {
+            for dy in -edge..=edge {
+                let cell = (rx + dx, ry + dy);
+                if !resident.contains(&cell) {
+                    candidates.insert(cell);
+                }
+            }
+        }
+    }
+    let rects: Vec<(i32, i32, i32, i32)> = covered
+        .iter()
+        .map(|&(level, qx, qy)| quad_rect(qx, qy, level))
+        .collect();
+    candidates
+        .into_iter()
+        .filter(|&(cx, cy)| {
+            (cx - player.0).abs().max((cy - player.1).abs()) <= ring_cells
+                && !rects.iter().any(|&r| rects_overlap(r, quad_rect(cx, cy, 1)))
+                && !unauthored(cx, cy)
+        })
+        .count() as u32
+}
+
 /// Tracks quad keys that left residency and later came back — real thrash
 /// across a traversal, as opposed to `streaming::StreamingTelemetry`'s
 /// `superseded_*` counters, which only catch one in-flight load being
@@ -135,7 +178,12 @@ impl ChurnTracker {
     /// with the scheme's live `HashMap`; `V` is unconstrained so this works
     /// for `LodBlock` and `ObjectLodBlock` alike without a shared trait.
     pub(crate) fn observe<V>(&mut self, resident: &HashMap<(i32, i32, i32), V>) {
-        let current: HashSet<(i32, i32, i32)> = resident.keys().copied().collect();
+        self.observe_keys(resident.keys().copied().collect());
+    }
+
+    /// [`Self::observe`] over an already-built key set, for a ring whose
+    /// residency is not a `(level, x, y)` map (the tree ring, keyed by SW cell).
+    pub(crate) fn observe_keys(&mut self, current: HashSet<(i32, i32, i32)>) {
         for key in self.last_resident.difference(&current) {
             self.ever_evicted.insert(*key);
         }
@@ -301,5 +349,35 @@ mod tests {
 
         assert_eq!(terrain.churned(), 1);
         assert_eq!(object.churned(), 0);
+    }
+
+    #[test]
+    fn moat_cells_are_the_uncovered_ring_cells_beside_the_resident_set() {
+        // One resident cell at the origin, a level-4 quad edge of 4: its 9x9 neighbourhood minus itself.
+        let resident: HashSet<(i32, i32)> = [(0, 0)].into_iter().collect();
+        let all = count_moat_cells(&resident, &[], (0, 0), 100, 4, |_, _| false);
+        assert_eq!(all, 9 * 9 - 1);
+        // A quad covering x 0..=3, y 0..=3 removes the cells it holds, apart from the resident one.
+        let covered = count_moat_cells(&resident, &[(4, 0, 0)], (0, 0), 100, 4, |_, _| false);
+        assert_eq!(covered, 9 * 9 - 1 - 15);
+        // A ring that ends at 2 cells keeps only the 5x5 neighbourhood.
+        let ringed = count_moat_cells(&resident, &[], (0, 0), 2, 4, |_, _| false);
+        assert_eq!(ringed, 5 * 5 - 1);
+        // Cells the family has no content for are not part of the join defect.
+        let unauthored = count_moat_cells(&resident, &[], (0, 0), 100, 4, |x, _| x < 0);
+        assert_eq!(unauthored, 9 * 9 - 1 - 4 * 9);
+        // No resident set, no moat.
+        assert_eq!(count_moat_cells(&HashSet::new(), &[], (0, 0), 100, 4, |_, _| false), 0);
+    }
+
+    #[test]
+    fn observe_keys_matches_observe_for_churn() {
+        let mut churn = ChurnTracker::default();
+        let a: HashSet<(i32, i32, i32)> = [(4, 0, 0)].into_iter().collect();
+        churn.observe_keys(a.clone());
+        churn.observe_keys(HashSet::new());
+        assert_eq!(churn.churned(), 0, "leaving is not churn until it returns");
+        churn.observe_keys(a);
+        assert_eq!(churn.churned(), 1);
     }
 }
