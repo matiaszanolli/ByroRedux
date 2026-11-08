@@ -324,8 +324,15 @@ fn main() -> anyhow::Result<()> {
     let mut interior: HashMap<bool, usize> = HashMap::new();
     let mut with_weather = 0;
     let mut tied_overrides = 0;
-    for cell in index.cells.cells.values() {
+    let mut show_sky = 0;
+    for (key, cell) in &index.cells.cells {
         if let Some(fid) = cell.sky_region {
+            if verbose {
+                println!("  REG-009i {key} region={fid:08X}");
+            }
+            if cell.show_sky == Some(true) {
+                show_sky += 1;
+            }
             *interior.entry(regions.contains_key(&fid)).or_default() += 1;
             if let Some(r) = regions.get(&fid) {
                 let s = weather_sections(r);
@@ -340,6 +347,7 @@ fn main() -> anyhow::Result<()> {
     }
     println!("  REG-009 interior cells naming a region via XCCM: resolved {} unresolved {}; the region carries Weather {} ; >1 overriding section {}",
         interior.get(&true).unwrap_or(&0), interior.get(&false).unwrap_or(&0), with_weather, tied_overrides);
+    println!("  REG-009 of those, Show Sky set: {show_sky}");
     let interior_climate = index.cells.cells.values().filter(|c| c.climate_override.is_some()).count();
     println!("  interior cells with XCCM climate: {interior_climate} of {}", index.cells.cells.len());
     Ok(())

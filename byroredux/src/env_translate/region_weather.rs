@@ -300,6 +300,61 @@ pub(crate) fn resolve_cell_weather<'a>(
         })
 }
 
+/// What [`resolve_interior_region_weather`] reads.
+pub(crate) struct InteriorSkyInputs<'a> {
+    pub(crate) regions: &'a HashMap<u32, RegnRecord>,
+    pub(crate) climates: &'a HashMap<u32, ClimateRecord>,
+    pub(crate) weathers: &'a HashMap<u32, WeatherRecord>,
+    pub(crate) worldspaces: &'a HashMap<String, byroredux_plugin::esm::cell::WorldspaceRecord>,
+    pub(crate) worldspace_climates: &'a HashMap<String, u32>,
+}
+
+/// Resolve an interior's weather from the region its `XCCM` names ("Sky/Weather from Region",
+/// Skyrim / FO4, VLM-REG-009). The region's own Weather table decides, with no polygon and no other
+/// region involved: its highest-chance row, ties to the higher section Priority. The climate that
+/// supplies the sky textures and time-of-day breakpoints is the climate of the worldspace the
+/// region belongs to (`WNAM`). `None` when the region is unknown or authors no usable table, so the
+/// caller keeps whatever sky is showing.
+pub(crate) fn resolve_interior_region_weather<'a>(
+    inputs: &InteriorSkyInputs<'a>,
+    sky_region: u32,
+    global_value: &dyn Fn(u32) -> Option<f32>,
+) -> Option<CellWeather<'a>> {
+    let region = inputs.regions.get(&sky_region)?;
+    let sections: Vec<Section> = region
+        .entries
+        .iter()
+        .filter(|e| e.kind == RegionDataKind::Weather)
+        .filter_map(|e| match &e.payload {
+            RegionDataPayload::Weather(rows) => Some(Section {
+                region: region.form_id,
+                priority: e.priority,
+                is_override: e.flags & 1 != 0,
+                rows,
+            }),
+            _ => None,
+        })
+        .collect();
+    let refs: Vec<&Section> = sections.iter().collect();
+    let (weather, region_form, priority) = best_row(&refs, inputs.weathers, global_value)?;
+    let override_bit = sections.iter().any(|s| s.is_override && s.priority == priority);
+    let climate_form = region.worldspace_form.and_then(|form| {
+        let key = inputs.worldspaces.iter().find(|(_, w)| w.form_id == form).map(|(k, _)| k)?;
+        super::resolve_worldspace_climate(inputs.worldspaces, inputs.worldspace_climates, key)
+    });
+    Some(CellWeather {
+        climate: climate_form.and_then(|f| inputs.climates.get(&f)),
+        weather: Some(weather),
+        source: WeatherSource {
+            class: WeatherSourceClass::InteriorRegion,
+            region: Some(region_form),
+            priority: Some(priority),
+            override_bit,
+            climate: climate_form,
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,5 +569,39 @@ mod tests {
         // An override naming no parsed climate resolves like no override: the region applies.
         let broken = resolve_cell_weather(&inputs(&regions, &climates, &w), Some(0xBAD), (1, 1), &no_globals);
         assert_eq!(broken.weather.map(|x| x.form_id), Some(0xB));
+    }
+
+    /// VLM-REG-009: an interior naming a region takes that region's own table, the sky and
+    /// time-of-day of the climate of the region's worldspace.
+    #[test]
+    fn an_interior_region_takes_its_own_table_and_its_worldspaces_climate() {
+        use byroredux_plugin::esm::cell::WorldspaceRecord;
+        let w = weathers(&[0xA, 0xB]);
+        let climates = HashMap::from([(0xC1, climate(0xC1, 0xA))]);
+        let mut hold = region(5, 50, false, &[(0xA, 30, None), (0xB, 70, None)]);
+        // A polygon far from anywhere: the interior path must not need one.
+        hold.areas.clear();
+        let regions = map(vec![hold]);
+        let worldspaces = HashMap::from([(
+            "tamriel".to_string(),
+            WorldspaceRecord { form_id: WS, editor_id: "Tamriel".into(), ..Default::default() },
+        )]);
+        let worldspace_climates = HashMap::from([("tamriel".to_string(), 0xC1)]);
+        let inputs = InteriorSkyInputs {
+            regions: &regions,
+            climates: &climates,
+            weathers: &w,
+            worldspaces: &worldspaces,
+            worldspace_climates: &worldspace_climates,
+        };
+        let resolved = resolve_interior_region_weather(&inputs, 5, &no_globals).unwrap();
+        assert_eq!(resolved.weather.map(|x| x.form_id), Some(0xB), "the region's highest-chance row");
+        assert_eq!(resolved.climate.map(|c| c.form_id), Some(0xC1), "the region's worldspace climate");
+        assert_eq!(resolved.source.class, WeatherSourceClass::InteriorRegion);
+        assert_eq!(resolved.source.region, Some(5));
+        assert!(resolve_interior_region_weather(&inputs, 0xDEAD, &no_globals).is_none(), "unknown region");
+        let empty = map(vec![RegnRecord { form_id: 6, worldspace_form: Some(WS), ..Default::default() }]);
+        let none = InteriorSkyInputs { regions: &empty, ..inputs };
+        assert!(resolve_interior_region_weather(&none, 6, &no_globals).is_none(), "a region with no Weather table");
     }
 }

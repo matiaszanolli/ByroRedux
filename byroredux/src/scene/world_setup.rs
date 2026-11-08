@@ -752,9 +752,42 @@ pub(crate) fn apply_show_sky_interior_climate(
 ) -> bool {
     let show_sky = cell.show_sky.unwrap_or(false);
     let climate_id = cell.climate_override;
-    let Some((climate, weather)) =
+    // Skyrim / FO4: `XCCM` names a region, and the interior takes its weather from that region's
+    // own table (VLM-REG-009); every interior that does so in the vanilla masters shows the sky
+    // (Skyrim 214 of 214, FO4 79 of 79). Pre-Skyrim `XCCM` is a climate and takes the path below.
+    let region_pick = cell.sky_region.filter(|_| show_sky).and_then(|region| {
+        let globals = world.try_resource::<byroredux_scripting::Globals>();
+        let global_value = |form: u32| match &globals {
+            Some(globals) => globals.0.get(&form).copied(),
+            None => index.globals.get(&form).map(|g| g.value.as_f32()),
+        };
+        crate::env_translate::resolve_interior_region_weather(
+            &crate::env_translate::InteriorSkyInputs {
+                regions: &index.regions,
+                climates: &index.climates,
+                weathers: &index.weathers,
+                worldspaces: &index.cells.worldspaces,
+                worldspace_climates: &index.cells.worldspace_climates,
+            },
+            region,
+            &global_value,
+        )
+    });
+    let (climate, weather, source) = if let Some(pick) = region_pick {
+        (pick.climate, pick.weather.expect("a region pick always carries its weather"), pick.source)
+    } else if let Some((climate, weather)) =
         show_sky_interior_climate(show_sky, climate_id, &index.climates, &index.weathers)
-    else {
+    {
+        (
+            Some(climate),
+            weather,
+            crate::env_translate::WeatherSource {
+                class: crate::env_translate::WeatherSourceClass::CellClimate,
+                climate: Some(climate.form_id),
+                ..Default::default()
+            },
+        )
+    } else {
         if show_sky {
             if let Some(climate_id) = climate_id {
                 if let Some(climate) = index.climates.get(&climate_id) {
@@ -764,6 +797,13 @@ pub(crate) fn apply_show_sky_interior_climate(
                         climate.form_id,
                     );
                 }
+            }
+            if let Some(region) = cell.sky_region {
+                log::warn!(
+                    "Show-Sky interior '{}' names region {:08X} with no usable Weather table — keeping the current sky",
+                    cell.editor_id,
+                    region,
+                );
             }
         }
         return false;
@@ -783,13 +823,9 @@ pub(crate) fn apply_show_sky_interior_climate(
         world,
         ctx,
         tex_provider,
-        Some(climate),
+        climate,
         Some(weather),
-        crate::env_translate::WeatherSource {
-            class: crate::env_translate::WeatherSourceClass::CellClimate,
-            climate: Some(climate.form_id),
-            ..Default::default()
-        },
+        source,
         &index.weathers,
         &image_spaces,
     );
