@@ -764,6 +764,11 @@ pub enum RegionDataPayload {
         /// what remains of the runtime (Oblivion `RDMD`, FNV `MSET`) is the
         /// open issue #3816.
         music: Option<u32>,
+        /// Oblivion / FO3 `RDMD`, kept apart from [`Self::Sound::music`] because it is NOT a FormID: a raw
+        /// `uint32` music-category enum (`0` Default, `1` Public, `2` Dungeon; xEdit
+        /// `wbDefinitionsTES4.pas:4668`, `wbDefinitionsFNV.pas:7861`). Never load-order remapped (#6787); no
+        /// consumer reads it yet (#3816).
+        music_type: Option<u32>,
         /// `RDSI` incidental sound form (FNV). Same caveat as `music`
         /// above: census-confirmed 10 of 11 `RDSI` targets are `MSET`, not
         /// `SOUN` (#3787) — all ten an `Incidental Set`
@@ -1088,6 +1093,8 @@ pub fn parse_regn(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                 music,
                 incidental,
                 sounds,
+                // `RDMD` is a raw enum, not a FormID: it stays unremapped (#6787).
+                music_type: _,
             } => {
                 *music = music.map(|f| remap_fid(f, remap));
                 *incidental = incidental.map(|f| remap_fid(f, remap));
@@ -1203,7 +1210,15 @@ fn apply_region_payload(entry: &mut RegionDataEntry, sig: &[u8], data: &[u8]) {
                 }
             });
         }
-        b"RDMD" | b"RDMO" | b"RDSB" => {
+        b"RDMD" => {
+            let value = le_u32_at(data, 0);
+            merge_sound(entry, |p| {
+                if let RegionDataPayload::Sound { music_type, .. } = p {
+                    *music_type = value;
+                }
+            });
+        }
+        b"RDMO" | b"RDSB" => {
             let value = le_u32_at(data, 0);
             merge_sound(entry, |p| {
                 if let RegionDataPayload::Sound { music, .. } = p {
@@ -1228,6 +1243,7 @@ fn merge_sound(entry: &mut RegionDataEntry, f: impl FnOnce(&mut RegionDataPayloa
     if !matches!(entry.payload, RegionDataPayload::Sound { .. }) {
         entry.payload = RegionDataPayload::Sound {
             music: None,
+            music_type: None,
             incidental: None,
             sounds: Vec::new(),
         };
@@ -2896,6 +2912,7 @@ mod regn_tests {
                 music,
                 incidental,
                 sounds,
+                ..
             } => {
                 assert_eq!(*music, Some(0x99));
                 assert_eq!(*incidental, Some(0x77));
@@ -2903,6 +2920,29 @@ mod regn_tests {
                 assert_eq!(sounds[0].sound_form, 0x0014_1866);
                 assert_eq!(sounds[0].flags, 15);
                 assert_eq!(sounds[0].chance_raw, 200_000);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// #6787 — Oblivion / FO3 `RDMD` is a raw music-category enum: it lands in `music_type` and a
+    /// non-identity load-order remap leaves it alone, while `RDMO` / `RDSB` FormIDs are remapped.
+    #[test]
+    fn rdmd_enum_is_never_remapped_but_rdmo_is() {
+        let remap = Some(crate::esm::reader::FormIdRemap::regular(2, vec![0]));
+        let r = parse_regn(1, &[rdat(7, 0, 50), sub(b"RDMD", 1u32.to_le_bytes())], &remap);
+        match &r.entries[0].payload {
+            RegionDataPayload::Sound { music, music_type, .. } => {
+                assert_eq!(*music_type, Some(1), "the enum stays raw under a slot remap");
+                assert_eq!(*music, None, "an enum is not a music FormID");
+            }
+            other => panic!("{other:?}"),
+        }
+        let r = parse_regn(1, &[rdat(7, 0, 50), sub(b"RDMO", 0x0100_4242u32.to_le_bytes())], &remap);
+        match &r.entries[0].payload {
+            RegionDataPayload::Sound { music, music_type, .. } => {
+                assert_eq!(*music, Some(0x0200_4242));
+                assert_eq!(*music_type, None);
             }
             other => panic!("{other:?}"),
         }
@@ -3596,6 +3636,7 @@ mod navm_tests {
             priority,
             payload: RegionDataPayload::Sound {
                 music,
+                music_type: None,
                 incidental: None,
                 sounds: Vec::new(),
             },
@@ -3628,6 +3669,7 @@ mod navm_tests {
             winner.payload,
             RegionDataPayload::Sound {
                 music: Some(0xAAAA),
+                music_type: None,
                 incidental: None,
                 sounds: Vec::new(),
             }
@@ -3649,6 +3691,7 @@ mod navm_tests {
             winner.payload,
             RegionDataPayload::Sound {
                 music: Some(0xBBBB),
+                music_type: None,
                 incidental: None,
                 sounds: Vec::new(),
             }
@@ -3665,6 +3708,7 @@ mod navm_tests {
             winner.payload,
             RegionDataPayload::Sound {
                 music: Some(0x1111),
+                music_type: None,
                 incidental: None,
                 sounds: Vec::new(),
             },
@@ -3702,6 +3746,7 @@ mod navm_tests {
             winner.payload,
             RegionDataPayload::Sound {
                 music: Some(0x2222),
+                music_type: None,
                 incidental: None,
                 sounds: Vec::new(),
             }

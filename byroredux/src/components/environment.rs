@@ -314,6 +314,7 @@ mod region_ambient_res_tests {
             priority,
             payload: RegionDataPayload::Sound {
                 music,
+                music_type: None,
                 incidental,
                 sounds: Vec::new(),
             },

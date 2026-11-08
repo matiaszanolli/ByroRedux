@@ -2158,6 +2158,7 @@ mod tests {
                     priority: 50,
                     payload: RegionDataPayload::Sound {
                         music: None,
+                        music_type: None,
                         incidental: Some(incidental),
                         sounds: Vec::new(),
                     },
