@@ -270,7 +270,7 @@ impl VulkanContext {
             fog_far,
             fog_extinction_per_meter,
             fog_single_scatter_albedo,
-            fog_scale_height_meters,
+            fog_scale_height_meters, fog_coverage,
             fog_clip,
             fog_power,
             fog_height_reference,

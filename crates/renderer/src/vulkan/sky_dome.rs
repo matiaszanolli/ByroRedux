@@ -429,4 +429,45 @@ mod tests {
             }
         }
     }
+
+    /// VLM-AP-002 — distant geometry fades through the same air function the clouds' aerial perspective
+    /// uses (`sky_air_terms`), toward the same clear-sky colour (`sky_clear_radiance`), so the haze in front
+    /// of a mountain and in front of a cloud at one distance match.
+    #[test]
+    fn analytic_tail_uses_the_sky_air_terms() {
+        assert!(COMPOSITE.contains("sky_air_terms("), "composite.frag must fade geometry through sky_air_terms");
+        assert!(COMPOSITE.contains("sky_clear_radiance("), "composite.frag must fade toward the clear sky");
+        assert!(
+            SKY_GLSL.matches("sky_air_terms(").count() >= 3,
+            "sky.glsl keeps defining and using the one air function (definition, cloud fade, upper plane)"
+        );
+        // The clouds' haze colour is the very function the geometry fades toward, not a copy.
+        assert!(
+            SKY_GLSL.contains("vec3 clear_sky = sky;") && SKY_GLSL.contains("sky_clear_radiance(dome, dir)"),
+            "sky_radiance must take its clear sky from sky_clear_radiance"
+        );
+    }
+
+    /// VLM-HF-007 — the analytic tail's height term clamps at the reference height exactly as the froxel
+    /// inject's `proceduralDensityScale` does, and the host passes the tail the grid's mean noise factor:
+    /// without either, the same ray changes appearance with the grid's reach.
+    #[test]
+    fn the_analytic_tail_and_the_grid_share_one_height_profile() {
+        let inject = include_str!("../../shaders/volumetrics_inject.comp");
+        assert!(
+            inject.contains("max(worldPos.y - refHeight, 0.0)"),
+            "the grid's height term clamps at the reference height; the tail's integral must follow"
+        );
+        assert!(
+            COMPOSITE.contains("exp(-max(aboveStart, 0.0)")
+                && COMPOSITE.contains("crossing")
+                && COMPOSITE.contains("expRunOpticalDepth("),
+            "heightFogOpticalDepth must integrate the clamped profile piecewise"
+        );
+        let frame_params = include_str!("context/frame_params.rs");
+        assert!(
+            frame_params.contains("fog_mean_density_scale(fog_coverage)"),
+            "the tail's coefficient must carry the grid's mean density factor"
+        );
+    }
 }

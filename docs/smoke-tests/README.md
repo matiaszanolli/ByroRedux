@@ -23,13 +23,13 @@ stay in the printed `/tmp/byro-shaft-smoke.*` directory. It then measures the al
 panel's in-scatter over the hole columns must come within 2 % of the same stripes as real holes. The lab also
 takes `--shaft-lab-distance <m>` (default 55) to put the camera elsewhere, for the range sweep of VLM-SH-005.
 
-`fog-grid-seam.sh` is the grid-reach baseline (VLM-HF-007, scenario A6). It pins a camera on FNV (the Goodsprings
+`fog-grid-seam.sh` is the grid-reach gate (VLM-HF-007, scenario A6). It pins a camera on FNV (the Goodsprings
 door arrival pose) and Skyrim (an elevated Whiterun pose), captures each at `--fog-grid-far-m` 128 twice and at
-512 in `renderer-stepped` mode, and prints the mean luminance of the distant regions with the repeat's noise.
-It measures and exits `0` until the analytic tail and the froxel grid share one height profile (`GATE=1` then
-makes a delta above the noise floor plus 1.0 a failure). The three captures per game stay in the printed
-`/tmp/byro-fog-seam.*` directory. It needs FNV and Skyrim SE data (`BYROREDUX_FNV_DATA`,
-`BYROREDUX_SKYRIM_DATA`), a display or `xvfb-run`, and Python with numpy and Pillow; exit `77` when one is missing.
+512 in `renderer-stepped` mode, and prints the mean luminance of the distant regions with the repeat's noise. It
+fails when a distant region moves more than `SEAM_TOLERANCE` levels (default 2.5 of 255) when the grid's reach
+changes; `GATE=0` makes it measure only. The three captures per game stay in the printed `/tmp/byro-fog-seam.*`
+directory. It needs FNV and Skyrim SE data (`BYROREDUX_FNV_DATA`, `BYROREDUX_SKYRIM_DATA`), a display or
+`xvfb-run`, and Python with numpy and Pillow; exit `77` when one is missing.
 
 `exterior-shafts-content.sh` is the A8 measurement on content (VLM-SH-006, #6773). For FNV, FO3, Oblivion, Skyrim and
 FO4 it captures the default-spawn frame and the froxel in-scatter radiance view at 12:00, 07:00 and 17:30 in the

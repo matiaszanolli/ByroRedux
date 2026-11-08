@@ -63,6 +63,7 @@ pub(crate) mod noise;
 pub(crate) use combustion::*;
 pub(crate) use fog_clusters::*;
 pub use fog_clusters::{GpuFogVolume, MAX_GPU_FOG_VOLUMES};
+pub(crate) use noise::fog_mean_density_scale;
 use noise::{
     cached_base_density_noise, cached_detail_density_noise, BASE_NOISE_SIZE, DETAIL_NOISE_SIZE,
 };

@@ -197,6 +197,61 @@ pub(crate) fn cached_detail_density_noise() -> &'static [u8] {
     DETAIL_NOISE_CACHE.get_or_init(|| generate_density_noise(DETAIL_NOISE_SIZE, true))
 }
 
+/// The mean of `proceduralDensityScale`'s noise factor, `mix(0.2, 1.35, density)`, over the whole fog
+/// volume at `coverage` (the shader's clamp to `[0.01, 1]` applied): what the froxel grid's extinction is,
+/// on average, as a multiple of the authored coefficient.
+///
+/// The froxel inject multiplies the medium by that noise factor, and the analytic tail beyond the grid
+/// (`composite.frag`'s `heightFogOpticalDepth`) integrates the authored coefficient with no noise, so with
+/// the factor's mean below 1 the two disagree about the same medium and the distant geometry changes
+/// appearance when the grid's reach does (VLM-HF-007, A6). The host multiplies the tail's coefficient by
+/// this mean so the tail continues the grid's expectation.
+///
+/// Mirrors `sampledDensity` (`volumetrics_inject.comp`) over the base volume's histogram and the detail
+/// volume's, treating the two as independent. The shader samples both with trilinear filtering, which
+/// averages neighbouring texels and leaves the mean unchanged.
+pub(crate) fn fog_mean_density_scale(coverage: f32) -> f32 {
+    const DETAIL_BINS: usize = 32;
+    static HISTOGRAMS: OnceLock<([f64; 256], [f64; DETAIL_BINS])> = OnceLock::new();
+    let (base, detail) = HISTOGRAMS.get_or_init(|| {
+        let mut base = [0.0f64; 256];
+        let texels = cached_base_density_noise();
+        for &t in texels {
+            base[t as usize] += 1.0;
+        }
+        base.iter_mut().for_each(|b| *b /= texels.len() as f64);
+        let mut detail = [0.0f64; DETAIL_BINS];
+        let texels = cached_detail_density_noise();
+        for &t in texels {
+            detail[(t as usize * DETAIL_BINS) / 256] += 1.0;
+        }
+        detail.iter_mut().for_each(|d| *d /= texels.len() as f64);
+        (base, detail)
+    });
+    let coverage = if coverage.is_finite() { coverage.clamp(0.01, 1.0) } else { 0.55 } as f64;
+    let threshold = 1.0 - coverage;
+    let softness = 0.045 + (0.13 - 0.045) * coverage;
+    let erosion_gain = 0.42 + (0.18 - 0.42) * coverage;
+    let smoothstep = |edge0: f64, edge1: f64, x: f64| {
+        let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    let mut mean_density = 0.0;
+    for (b, &p_base) in base.iter().enumerate() {
+        if p_base == 0.0 {
+            continue;
+        }
+        let occupied = smoothstep(threshold - softness, threshold + softness, b as f64 / 255.0);
+        let boundary = 4.0 * occupied * (1.0 - occupied);
+        for (d, &p_detail) in detail.iter().enumerate() {
+            let detail_value = (d as f64 + 0.5) / DETAIL_BINS as f64;
+            let erosion = (1.0 - detail_value) * boundary * erosion_gain;
+            mean_density += p_base * p_detail * (occupied - erosion).clamp(0.0, 1.0);
+        }
+    }
+    (0.2 + (1.35 - 0.2) * mean_density) as f32
+}
+
 /// The base-volume slice the cloud shell reads as its 2D weather map
 /// (`clouds.glsl` `cloud_column_coverage`): texel layer `BASE_NOISE_SIZE / 2`
 /// along the volume's third axis, which the shader samples at the layer's
@@ -508,5 +563,23 @@ mod tests {
             (CLOUD_WEATHER_SLICE as f32 + 0.5) / BASE_NOISE_SIZE as f32,
             "the shader must sample the slice the threshold is measured on"
         );
+    }
+
+    /// The mean fog noise factor spans the shader's `mix(0.2, 1.35, ...)` range, rises with coverage, and sits
+    /// below 1 at the default coverage, which is the disagreement with the unmodulated tail (A6).
+    #[test]
+    fn the_mean_fog_density_scale_follows_coverage() {
+        let mut previous = 0.0f32;
+        for coverage in [0.01, 0.1, 0.3, 0.55, 0.8, 1.0] {
+            let scale = fog_mean_density_scale(coverage);
+            assert!((0.2..=1.35).contains(&scale), "coverage {coverage}: {scale}");
+            assert!(scale >= previous, "coverage {coverage}: {scale} fell below {previous}");
+            previous = scale;
+        }
+        assert!(fog_mean_density_scale(0.01) < 0.35, "almost nothing occupied");
+        assert!(fog_mean_density_scale(1.0) > 1.25, "everything occupied");
+        let default = fog_mean_density_scale(0.55);
+        assert!(default < 1.0, "the default medium is thinner than the tail's unmodulated one: {default}");
+        assert_eq!(fog_mean_density_scale(f32::NAN), fog_mean_density_scale(0.55), "a bad coverage reads as the default");
     }
 }

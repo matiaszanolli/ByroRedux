@@ -818,6 +818,9 @@ pub(super) struct CompositeParamsInputs<'a> {
     /// #3956 — exponential scale height in metres, already defaulted at the
     /// EXAL boundary when the weather authored none.
     pub(super) fog_scale_height_meters: f32,
+    /// The medium's noise coverage (`FogMedium::coverage`); the tail's coefficient takes the mean of the
+    /// grid's coverage-driven noise factor (VLM-HF-007).
+    pub(super) fog_coverage: f32,
     pub(super) fog_clip: f32,
     pub(super) fog_power: f32,
     pub(super) fog_height_reference: f32,
@@ -889,6 +892,7 @@ pub(super) fn build_composite_params(
         fog_extinction_per_meter,
         fog_single_scatter_albedo,
         fog_scale_height_meters,
+        fog_coverage,
         fog_clip,
         fog_power,
         fog_height_reference,
@@ -997,7 +1001,12 @@ pub(super) fn build_composite_params(
             1.0 / 1024.0,
         ],
         height_fog_params: [
-            fog_extinction_per_meter.max(0.0) / super::super::volumetrics::WORLD_UNITS_PER_METER,
+            // The tail integrates the AVERAGE of the medium the froxel grid resolves: the inject
+            // multiplies the coefficient by a noise factor with a mean below 1, so the tail takes the
+            // same mean and a grid of any reach continues into it without a seam (VLM-HF-007).
+            fog_extinction_per_meter.max(0.0)
+                * super::super::volumetrics::fog_mean_density_scale(fog_coverage)
+                / super::super::volumetrics::WORLD_UNITS_PER_METER,
             // #3956 — authored FO4/FO76 altitude profile, or the engine
             // default the EXAL boundary substituted when none was authored.
             fog_scale_height_meters * super::super::volumetrics::WORLD_UNITS_PER_METER,
@@ -1343,6 +1352,7 @@ mod composite_params_tests {
             fog_extinction_per_meter: 0.0,
             fog_single_scatter_albedo: 0.0,
             fog_scale_height_meters: 30.0,
+            fog_coverage: 0.55,
             fog_clip: 0.0,
             fog_power: 0.0,
             fog_height_reference: 0.0,
@@ -1501,6 +1511,7 @@ mod composite_params_tests {
             fog_extinction_per_meter: 0.0,
             fog_single_scatter_albedo: 0.0,
             fog_scale_height_meters: 30.0,
+            fog_coverage: 0.55,
             fog_clip: 0.0,
             fog_power: 0.0,
             fog_height_reference: 0.0,
@@ -1566,6 +1577,7 @@ mod composite_params_tests {
             fog_extinction_per_meter: 0.05,
             fog_single_scatter_albedo: 0.6,
             fog_scale_height_meters: 40.0,
+            fog_coverage: 0.55,
             fog_clip: 111.0,
             fog_power: 222.0,
             fog_height_reference: 50.0,
@@ -1650,6 +1662,7 @@ mod composite_params_tests {
             fog_extinction_per_meter: 0.0,
             fog_single_scatter_albedo: 0.0,
             fog_scale_height_meters: crate::vulkan::volumetrics::DEFAULT_SCALE_HEIGHT_METERS,
+            fog_coverage: 0.55,
             fog_clip: 0.0,
             fog_power: 0.0,
             fog_height_reference: 0.0,

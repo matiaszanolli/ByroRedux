@@ -568,9 +568,22 @@ vec4 localFireMarch(
     return vec4(radiance, transmittance);
 }
 
-// Analytic optical depth for sigma_t(y)=sigma0*exp(-(y-y0)/H).
-// Keep the horizontal-ray branch explicit: the general quotient becomes 0/0
-// as dy/ds approaches zero and was a plausible source of exterior white-outs.
+// Optical depth of a medium with a constant exponential falloff above the reference height,
+// sigma_t(y) = sigma_start * exp(-slope * s) along a ray (slope = dy/ds / H), over `length`.
+// The horizontal branch stays explicit: the general quotient becomes 0/0 as the slope vanishes and was
+// a plausible source of exterior white-outs.
+float expRunOpticalDepth(float sigmaStart, float slope, float length) {
+    if (abs(slope) < 1.0e-6) {
+        return sigmaStart * length;
+    }
+    return max(sigmaStart * (1.0 - exp(-slope * length)) / slope, 0.0);
+}
+
+// Analytic optical depth for sigma_t(y) = sigma0 * exp(-max(y - y0, 0) / H): constant at sigma0 at and
+// below the reference height, an exponential above it. That is exactly the height term the froxel
+// inject applies (`proceduralDensityScale` clamps `worldPos.y - refHeight` at 0), so a ray the grid
+// resolves and the same ray continued here describe one medium (VLM-HF-007). The integral is piecewise
+// at the point where the ray crosses the reference height.
 float heightFogOpticalDepth(
     float sigma0,
     float rayOriginY,
@@ -583,22 +596,29 @@ float heightFogOpticalDepth(
         return 0.0;
     }
     float safeScale = max(scaleHeight, 1.0e-4);
-    float logSigmaAtOrigin = log(sigma0)
-        - (rayOriginY - baseHeight) / safeScale;
-    float sigmaAtOrigin = exp(clamp(logSigmaAtOrigin, -80.0, 80.0));
-    float lengthAlongRay = max(distance, 0.0);
     float slope = rayDirectionY / safeScale;
-    if (abs(slope) < 1.0e-6) {
-        return sigmaAtOrigin * lengthAlongRay;
+    float aboveStart = rayOriginY - baseHeight;
+    // Horizontal (or nearly): one density for the whole run.
+    if (abs(rayDirectionY) < 1.0e-6) {
+        return sigma0 * exp(-max(aboveStart, 0.0) / safeScale) * distance;
     }
-    if (slope > 0.0) {
-        float integral = (1.0 - exp(-slope * lengthAlongRay)) / slope;
-        return max(sigmaAtOrigin * integral, 0.0);
+    // Distance along the ray at which it crosses the reference height.
+    float crossing = (baseHeight - rayOriginY) / rayDirectionY;
+    if (aboveStart >= 0.0) {
+        // Starts above the reference.
+        float sigmaStart = sigma0 * exp(-min(aboveStart / safeScale, 80.0));
+        if (rayDirectionY > 0.0 || crossing >= distance) {
+            return expRunOpticalDepth(sigmaStart, slope, distance);
+        }
+        // Descends through the reference: exponential down to it, constant sigma0 below.
+        return expRunOpticalDepth(sigmaStart, slope, crossing) + sigma0 * (distance - crossing);
     }
-    float endY = rayOriginY + rayDirectionY * lengthAlongRay;
-    float logSigmaAtEnd = log(sigma0) - (endY - baseHeight) / safeScale;
-    float sigmaAtEnd = exp(clamp(logSigmaAtEnd, -80.0, 80.0));
-    return max((sigmaAtEnd - sigmaAtOrigin) / -slope, 0.0);
+    // Starts below the reference.
+    if (rayDirectionY < 0.0 || crossing >= distance) {
+        return sigma0 * distance;
+    }
+    // Rises through the reference: constant sigma0 up to it, exponential above.
+    return sigma0 * crossing + expRunOpticalDepth(sigma0, slope, distance - crossing);
 }
 
 // Per-pixel, per-frame blue-noise rank in (0, 1). Shared by the pre-resolve
@@ -1263,6 +1283,22 @@ void main() {
             vec3 aerial = sourceRadiance * (1.0 - transmittance);
             combined = combined * transmittance + aerial;
             fogTransmittance *= transmittance;
+        }
+
+        // Distant geometry fades toward the sky drawn behind it (VLM-AP-001): the clear air between the
+        // camera and the surface, the same `sky_air_terms` the clouds' aerial perspective uses
+        // (VLM-AP-002), so the haze in front of a ridge and in front of a cloud at one distance
+        // match. Applied to every exterior surface, not only past the grid, so a grid of any reach
+        // leaves it unchanged (VLM-HF-007); the Earth atmosphere's extinction is small enough that
+        // it only shows at the distances the grid cannot reach.
+        if (has_surface && params.depth_params.x > 0.5) {
+            vec3 viewDir = (worldPos - params.camera_pos.xyz) / max(worldDist, 1.0e-6);
+            vec3 airTransmittance;
+            vec3 airInFront;
+            sky_air_terms(viewDir.y, worldDist / WORLD_UNITS_PER_METER, airTransmittance, airInFront);
+            combined = combined * airTransmittance
+                + sky_clear_radiance(build_sky_dome(), viewDir) * airInFront;
+            fogTransmittance *= airTransmittance.x;
         }
     }
 

@@ -373,19 +373,11 @@ vec4 sky_upper_cloud_plane(SkyDome dome, vec3 dir, vec3 haze) {
     return vec4(plane.rgb * extra_transmittance + haze * plane.a * extra_in_front, plane.a);
 }
 
-// Compute sky color from view direction.
-//
-// `cloud_base_noise` / `cloud_detail_noise` are the shared density volumes
-// (`CloudNoiseVolumes`); they are parameters rather than bindings because
-// the two consumers bind them in different descriptor sets. `cloud_jitter`
-// is the cloud march's step offset — see `cloud_march`.
-vec3 sky_radiance(
-    SkyDome dome,
-    vec3 dir,
-    sampler3D cloud_base_noise,
-    sampler3D cloud_detail_noise,
-    float cloud_jitter
-) {
+// The clear-sky radiance in direction `dir`: the horizon-to-zenith gradient with the atmospheric in-scatter,
+// the below-horizon ground tint and the sun's forward-scattering glow, and none of the sources behind the
+// air (disc, stars, moon, aurora) or the cloud layers. This is the haze colour the clouds' aerial
+// perspective fades toward, and the colour distant geometry fades toward (`composite.frag`, VLM-AP-001).
+vec3 sky_clear_radiance(SkyDome dome, vec3 dir) {
     vec3 zenith = dome.sky_zenith.xyz;
     vec3 horizon = dome.sky_horizon.xyz;
     float sun_size = dome.sky_zenith.w;
@@ -454,6 +446,30 @@ vec3 sky_radiance(
     // The haze colour for the aerial perspective: the clear sky in this
     // direction, without the disc, stars, moon or aurora, which are sources
     // behind the air rather than light scattered by it.
+    return sky;
+}
+
+// Compute sky color from view direction.
+//
+// `cloud_base_noise` / `cloud_detail_noise` are the shared density volumes
+// (`CloudNoiseVolumes`); they are parameters rather than bindings because
+// the two consumers bind them in different descriptor sets. `cloud_jitter`
+// is the cloud march's step offset — see `cloud_march`.
+vec3 sky_radiance(
+    SkyDome dome,
+    vec3 dir,
+    sampler3D cloud_base_noise,
+    sampler3D cloud_detail_noise,
+    float cloud_jitter
+) {
+    float sun_size = dome.sky_zenith.w;
+    float sun_intensity = dome.sun_dir.w;
+    vec3 sun_direction = dome.sun_dir.xyz;
+    vec3 sun_col = dome.sun_color.xyz;
+    float elevation = dir.y;
+    float cos_angle = dot(dir, sun_direction);
+    // The clear sky in this direction (the aerial-perspective haze colour).
+    vec3 sky = sky_clear_radiance(dome, dir);
     vec3 clear_sky = sky;
 
     // Sun disc: bright circular spot with a soft edge.

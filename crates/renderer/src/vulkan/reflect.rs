@@ -1099,7 +1099,10 @@ mod tests {
     /// the steam gate out, the table's steam-share gate in): 159, measured by
     /// this test's own counter on the recompiled module. The M-LIGHT
     /// filtered-direct oracle's select in the raw-view return adds one (160,
-    /// RLT-SHD-009), measured the same way. Pins the
+    /// RLT-SHD-009), measured the same way. The tail's height term became the piecewise
+    /// integral that clamps at the reference height like the grid's (VLM-HF-007), which adds
+    /// three branches (164); the sky-air fade of distant geometry (`sky_clear_radiance` shares the
+    /// clear-sky branches with the clouds' haze, VLM-AP-001) adds two (166). Pins the
     /// current count so a future stale-recompile of this file fails
     /// loudly instead of shipping silently, the same failure mode #1447
     /// fixed for `CameraUBO` size.
@@ -1108,8 +1111,8 @@ mod tests {
         let spv = include_bytes!("../../shaders/composite.frag.spv");
         let count = count_branch_conditionals(spv).expect("reflect composite.frag.spv");
         assert_eq!(
-            count, 161,
-            "composite.frag.spv has {count} OpBranchConditional instructions, expected 161 — \
+            count, 166,
+            "composite.frag.spv has {count} OpBranchConditional instructions, expected 166 — \
              the committed .spv looks stale relative to composite.frag; recompile it \
              (glslangValidator -V composite.frag -o composite.frag.spv from \
              crates/renderer/shaders). The raw correctness-debug guard is intentionally \
