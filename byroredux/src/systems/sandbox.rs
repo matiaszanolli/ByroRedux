@@ -587,7 +587,7 @@ mod tests {
             animation_type: anim,
             kind: match anim {
                 2 => FurnitureMarkerKind::Sleep,
-                3 => FurnitureMarkerKind::Lean,
+                4 => FurnitureMarkerKind::Lean,
                 _ => FurnitureMarkerKind::Sit,
             },
         }
@@ -600,7 +600,7 @@ mod tests {
     fn is_sit_marker_modern_sit_and_legacy() {
         assert!(is_sit_marker(&marker([0.0; 3], Some(0.0), 1))); // Skyrim+ sit
         assert!(!is_sit_marker(&marker([0.0; 3], Some(0.0), 2))); // Skyrim+ sleep
-        assert!(!is_sit_marker(&marker([0.0; 3], Some(0.0), 3))); // Skyrim+ lean
+        assert!(!is_sit_marker(&marker([0.0; 3], Some(0.0), 4))); // Skyrim+ lean (AIP-SEAT-003: no seat on a lean marker)
         assert!(is_sit_marker(&marker([0.0; 3], None, 0))); // legacy → sit (v0)
 
         // The resolved `kind` field itself drives the answer, independent

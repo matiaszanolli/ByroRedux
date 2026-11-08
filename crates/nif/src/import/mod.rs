@@ -369,7 +369,7 @@ pub fn extract_furniture_markers(scene: &NifScene) -> Vec<ImportedFurnitureMarke
 
 /// The `furnituremarkerXX` numbers of a bed (CS *GetFurnitureMarkerID*: "1 - 10 for beds").
 const LEGACY_BED_MARKERS: std::ops::RangeInclusive<u8> = 1..=10;
-/// Skyrim+ `AnimationType` for sleeping (`1` Sit, `2` Sleep, `3` Lean).
+/// Skyrim+ `AnimationType` for sleeping (`1` Sit, `2` Sleep, `4` Lean; `3` is undocumented and unused).
 const ANIMATION_TYPE_SLEEP: u16 = 2;
 
 /// Convert one parsed `FurniturePosition` to an [`ImportedFurnitureMarker`]:

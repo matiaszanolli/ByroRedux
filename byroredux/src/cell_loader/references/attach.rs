@@ -62,8 +62,11 @@ pub(crate) fn furniture_component(
                 animation_type: m.animation_type,
                 kind: match m.animation_type {
                     2 => FurnitureMarkerKind::Sleep,
-                    3 => FurnitureMarkerKind::Lean,
-                    // 1 = explicit Skyrim+ Sit; 0 = a legacy (Oblivion/FO3/FNV)
+                    // AIP-SEAT-001: nif.xml documents 4 as the lean `AnimationType`, and the two vanilla lean
+                    // markers (`railleanmarker.nif`, `wallleanmarker.nif`) author it; no vanilla marker
+                    // authors 3 (census over Skyrim's Meshes0 / Meshes1 archives).
+                    4 => FurnitureMarkerKind::Lean,
+                    // 1 = explicit Skyrim+ Sit (3 is undocumented and unused: the Sit default); 0 = a legacy (Oblivion/FO3/FNV)
                     // marker the importer did not read as a bed (beds, position
                     // ref 1..=10, arrive as 2) — the v0 Sit default, the
                     // dominant furniture kind in target cells.
@@ -1127,12 +1130,14 @@ mod furniture_component_tests {
         let furn = furniture_component(&[
             imported(Some(0.0), 1), // Skyrim+ sit
             imported(Some(0.0), 2), // Skyrim+ sleep
-            imported(Some(0.0), 3), // Skyrim+ lean
+            imported(Some(0.0), 4), // Skyrim+ lean (`railleanmarker.nif`)
             imported(None, 0),      // legacy — no AnimationType, v0 default
+            imported(Some(0.0), 3), // undocumented and unused in vanilla: the Sit default
         ]);
         assert_eq!(furn.markers[0].kind, FurnitureMarkerKind::Sit);
         assert_eq!(furn.markers[1].kind, FurnitureMarkerKind::Sleep);
         assert_eq!(furn.markers[2].kind, FurnitureMarkerKind::Lean);
+        assert_eq!(furn.markers[4].kind, FurnitureMarkerKind::Sit, "AnimationType 3 is not Lean (AIP-SEAT-001)");
         assert_eq!(
             furn.markers[3].kind,
             FurnitureMarkerKind::Sit,

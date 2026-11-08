@@ -62,7 +62,7 @@ pub struct FurnitureMarker {
     /// actor — a wrong facing is immediately visible, so it is resolved
     /// against real data then, not guessed here.
     pub heading_z_radians: Option<f32>,
-    /// Skyrim+ `AnimationType`: `1` = Sit, `2` = Sleep, `3` = Lean.
+    /// Skyrim+ `AnimationType`: `1` = Sit, `2` = Sleep, `4` = Lean (nif.xml; `3` is undocumented and unused).
     /// The Oblivion/FO3/FNV path carries no AnimationType field (the
     /// position kind is implied by the referenced `furnituremarkerXX.nif`),
     /// so the importer reads it from that number: `2` for a bed (1 - 10),
