@@ -33,6 +33,8 @@ fn register_combat_damage_system(scheduler: &mut Scheduler) {
             // `Add Range` draw, and the scratch weapon subject it lends a base form to.
             .reads_resource::<byroredux_scripting::perk_entry_points::PerkEntryTable>()
             .reads::<byroredux_core::character::Perks>()
+            // PERK-HOOK-006 — a kill's Add Leveled List On Death entries land in the victim's inventory.
+            .writes::<byroredux_core::ecs::components::Inventory>()
             .writes_resource::<byroredux_scripting::story_manager::StoryManagerRng>()
             .reads_resource::<byroredux_scripting::perk_entry_points::WeaponSubject>()
             .writes::<byroredux_scripting::SceneAliasCandidate>()

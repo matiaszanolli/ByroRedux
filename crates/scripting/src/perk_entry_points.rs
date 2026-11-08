@@ -86,6 +86,8 @@ pub mod fnv {
     pub const ADJUST_EXPERIENCE_POINTS: u8 = 9;
     pub const ADJUST_GAINED_SKILL_POINTS: u8 = 10;
     pub const GET_MAX_CARRY_WEIGHT: u8 = 22;
+    /// `Add Leveled List On Death`: the owner's kill adds the entry's leveled list to the victim.
+    pub const ADD_LEVELED_LIST_ON_DEATH: u8 = 21;
     /// `Has Concentrated Fire` (xEdit `wbDefinitionsFNV` / `FO3` entry 33): the vanilla
     /// `ConcentratedFire` perk authors one Set-to-1.0 entry here.
     pub const HAS_CONCENTRATED_FIRE: u8 = 33;
@@ -99,6 +101,8 @@ pub mod skyrim {
     pub const CALCULATE_MY_CRITICAL_HIT_CHANCE: u8 = 1;
     pub const CALCULATE_MY_CRITICAL_HIT_DAMAGE: u8 = 2;
     pub const GET_MAX_CARRY_WEIGHT: u8 = 10;
+    /// `Add Leveled List On Death` (`wbEntryPointsEnum` index 9).
+    pub const ADD_LEVELED_LIST_ON_DEATH: u8 = 9;
     pub const MOD_SNEAK_ATTACK_MULT: u8 = 18;
     pub const MOD_ATTACK_DAMAGE: u8 = 35;
     pub const MOD_INCOMING_DAMAGE: u8 = 36;
@@ -122,6 +126,8 @@ pub enum PerkCalculation {
     ConcentratedFire,
     /// The improvement a smithing material perk gives a tempered item (Skyrim *Mod Tempering Health*).
     TemperingHealth,
+    /// *Add Leveled List On Death* (FO3 / FNV 21, Skyrim 9): the leveled lists a kill adds to the victim.
+    DeathLeveledList,
 }
 
 impl PerkCalculation {
@@ -135,6 +141,8 @@ impl PerkCalculation {
             (Self::MaxCarryWeight, Skyrim) => Some(skyrim::GET_MAX_CARRY_WEIGHT),
             (Self::ConcentratedFire, Fallout3NV) => Some(fnv::HAS_CONCENTRATED_FIRE),
             (Self::TemperingHealth, Skyrim) => Some(skyrim::MOD_TEMPERING_HEALTH),
+            (Self::DeathLeveledList, Fallout3NV) => Some(fnv::ADD_LEVELED_LIST_ON_DEATH),
+            (Self::DeathLeveledList, Skyrim) => Some(skyrim::ADD_LEVELED_LIST_ON_DEATH),
             _ => None,
         }
     }
@@ -198,6 +206,9 @@ pub struct PerkEntryPointEntry {
 pub enum PerkBodyKind {
     /// "Spells and Abilities added in this way will be removed when the Perk is removed" (CK *Perk*).
     Ability { spell: u32 },
+    /// An `Add Leveled List` function entry (function 8) on a hook: the list the perk owner's kill adds to the
+    /// victim (PERK-HOOK-006). Not value math, so not in the composition table.
+    LeveledList { entry_point: u8, list: u32 },
     /// "A Quest Perk Entry will start a specified quest and set it to a specified stage" (CK *Perk*).
     Quest { quest: u32, stage: u16 },
 }
@@ -331,6 +342,12 @@ impl PerkEntryTable {
                         PerkEntryBody::Quest { quest_form_id, stage } => {
                             PerkBodyKind::Quest { quest: quest_form_id, stage }
                         }
+                        PerkEntryBody::EntryPoint {
+                            entry_point_index,
+                            function: 8,
+                            function_data: PerkFunctionData::FormId(list),
+                            ..
+                        } => PerkBodyKind::LeveledList { entry_point: entry_point_index, list },
                         PerkEntryBody::EntryPoint { .. } => return None,
                     };
                     Some(PerkBodyEntry { rank: entry.rank, kind, tabs: entry.condition_tabs.clone() })
@@ -690,6 +707,46 @@ pub fn compose_max_carry_weight(world: &World, actor: EntityId, base: f32) -> f3
 /// masters. Games with no FO3/FNV dialect never have it (#6422).
 pub fn has_concentrated_fire(world: &World, actor: EntityId) -> bool {
     compose_calculation(world, actor, PerkCalculation::ConcentratedFire, 0.0, &[None, None]) > 0.5
+}
+
+/// The leveled lists `killer`'s perks add to `victim` on its death (PERK-HOOK-006): each `Add Leveled List`
+/// entry on the dialect's *Add Leveled List On Death* hook, at the rank held, whose condition tabs pass with the
+/// victim as the Target subject (tab 1: xEdit FNV `epcTarget`). In perk order, one row per entry. Empty when the
+/// world has no perk table or the dialect has no such hook.
+pub fn compose_death_leveled_lists(world: &World, killer: EntityId, victim: EntityId) -> Vec<u32> {
+    let (hook, held, bodies): (u8, Vec<(u32, u8)>, Vec<(u32, Vec<PerkBodyEntry>)>) = {
+        let Some(table) = world.try_resource::<PerkEntryTable>() else {
+            return Vec::new();
+        };
+        let Some(hook) = PerkCalculation::DeathLeveledList.hook(table.dialect()) else {
+            return Vec::new();
+        };
+        let Some(perks) = world.get::<Perks>(killer) else {
+            return Vec::new();
+        };
+        let held: Vec<(u32, u8)> = perks.entries.iter().map(|perk| (perk.perk_form_id, perk.rank)).collect();
+        let bodies = held
+            .iter()
+            .filter_map(|(perk, _)| table.bodies(*perk).map(|entries| (*perk, entries.to_vec())))
+            .collect();
+        (hook, held, bodies)
+    };
+    let mut lists = Vec::new();
+    for (perk, entries) in bodies {
+        let rank = held.iter().find(|(held_perk, _)| *held_perk == perk).map_or(0, |(_, rank)| *rank);
+        for entry in entries {
+            let PerkBodyKind::LeveledList { entry_point, list } = entry.kind else {
+                continue;
+            };
+            if entry_point == hook
+                && entry_applies_at(entry.rank, rank)
+                && tabs_pass(world, killer, &entry.tabs, &[Some(victim)])
+            {
+                lists.push(list);
+            }
+        }
+    }
+    lists
 }
 
 /// Install the [`PerkEntryTable`] for a load order. Returns the number of

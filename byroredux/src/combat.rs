@@ -449,6 +449,7 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
             );
             outcome.push_str(&reconcile_new_death(world, target));
             award_kill_experience(world, target, vitals.health);
+            add_death_leveled_lists(world, event.aggressor, target);
         }
         if crime {
             crate::crime::report_strike(world, event.aggressor, target, killed);
@@ -617,6 +618,34 @@ fn note_player_damage(world: &World, aggressor: EntityId, target: EntityId, deal
     }
     if let Some(mut dealt_by_player) = world.try_resource_mut::<PlayerDamageDealt>() {
         *dealt_by_player.0.entry(target).or_default() += dealt;
+    }
+}
+
+/// PERK-HOOK-006 — the leveled lists the killer's *Add Leveled List On Death* perks add to the victim: expanded at
+/// the victim's level into its inventory directly, so no inventory-add script event runs (GECK *Entry Point*:
+/// "Adds to the inventory of the target without causing OnAdd blocks to run").
+fn add_death_leveled_lists(world: &World, killer: EntityId, victim: EntityId) {
+    let lists = byroredux_scripting::perk_entry_points::compose_death_leveled_lists(world, killer, victim);
+    if lists.is_empty() {
+        return;
+    }
+    let Some(index) = world.try_resource::<crate::components::LoadedCellIndex>().map(|index| index.0.clone()) else {
+        return;
+    };
+    let level = world
+        .get::<byroredux_core::character::CharacterLevel>(victim)
+        .map_or(1, |level| level.level.max(1));
+    let mut items: Vec<(u32, u32)> = Vec::new();
+    for list in lists {
+        byroredux_plugin::equip::expand_leveled_loot(list, 1, level, &index, &mut items);
+    }
+    let Some(mut inventories) = world.query_mut::<byroredux_core::ecs::components::Inventory>() else {
+        return;
+    };
+    if let Some(inventory) = inventories.get_mut(victim) {
+        for (base, count) in items {
+            inventory.add(byroredux_core::ecs::components::ItemStack::new(base, count));
+        }
     }
 }
 
@@ -1710,6 +1739,61 @@ mod tests {
         assert!((composed - 18.9).abs() < 1e-4, "{composed}");
         // The unperked target hits for the baseline.
         assert_eq!(attack_damage_against(&world, target, aggressor), UNARMED_DAMAGE);
+    }
+
+    /// PERK-HOOK-006 — a kill by a holder of an *Add Leveled List On Death* perk puts the entry's list in the victim's
+    /// inventory, and a victim of an unperked killer gets nothing.
+    #[test]
+    fn a_kill_adds_the_death_perks_leveled_list_to_the_victims_inventory() {
+        use byroredux_core::character::Perks;
+        use byroredux_core::ecs::components::Inventory;
+        use byroredux_plugin::esm::reader::GameKind;
+        use byroredux_plugin::esm::records::{EsmIndex, PerkEntry, PerkEntryBody, PerkFunctionData, PerkRecord};
+        const PERK: u32 = 0x0004_0001;
+        const LOOT: u32 = 0x0004_0002;
+        let (mut world, killer, victim) = damage_fixture(50.0, Some(20.0), false);
+        world.register::<Perks>();
+        world.register::<Inventory>();
+        let mut index = EsmIndex {
+            game: GameKind::Fallout3NV,
+            character_rules: byroredux_core::character::CharacterRulesProfile::FALLOUT_NEW_VEGAS,
+            ..Default::default()
+        };
+        index.perks.insert(
+            PERK,
+            PerkRecord {
+                form_id: PERK,
+                entries: vec![PerkEntry {
+                    rank: 0,
+                    priority: 0,
+                    body: PerkEntryBody::EntryPoint {
+                        entry_point_index: byroredux_scripting::perk_entry_points::fnv::ADD_LEVELED_LIST_ON_DEATH,
+                        function: 8,
+                        tab_count: 2,
+                        param_type: 3,
+                        function_data: PerkFunctionData::FormId(LOOT),
+                        formatter: Vec::new(),
+                        extra_flags: Vec::new(),
+                        details: Default::default(),
+                    },
+                    condition_tabs: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        );
+        byroredux_scripting::perk_entry_points::install_perk_entry_points(&mut world, &index);
+        world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(index)));
+        world.insert(victim, Inventory::new());
+
+        add_death_leveled_lists(&world, killer, victim);
+        assert!(world.get::<Inventory>(victim).unwrap().items.is_empty(), "the killer holds no such perk");
+
+        let mut perks = Perks::default();
+        perks.set_rank(PERK, 1);
+        world.insert(killer, perks);
+        add_death_leveled_lists(&world, killer, victim);
+        let held: Vec<u32> = world.get::<Inventory>(victim).unwrap().items.iter().map(|stack| stack.base_form_id).collect();
+        assert_eq!(held, vec![LOOT], "the list (here a plain item form) is in the victim's inventory");
     }
 
     /// M47.2 — New Vegas Damage Threshold: the target's armor DT absorbs a

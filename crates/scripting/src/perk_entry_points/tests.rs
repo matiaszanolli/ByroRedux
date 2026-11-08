@@ -1080,7 +1080,6 @@ mod catalog {
         };
         assert_eq!(pending(PerkEntryPointDialect::Fallout3NV, 35), "PERK-HOOK-004");
         assert_eq!(pending(PerkEntryPointDialect::Fallout3NV, 39), "PERK-HOOK-005");
-        assert_eq!(pending(PerkEntryPointDialect::Fallout3NV, 21), "PERK-HOOK-006");
         assert_eq!(pending(PerkEntryPointDialect::Fallout3NV, 27), "PERK-HOOK-007");
         assert_eq!(pending(PerkEntryPointDialect::Skyrim, 14), "PERK-HOOK-007");
         assert_eq!(pending(PerkEntryPointDialect::Skyrim, 51), "PERK-HOOK-009");
@@ -1244,5 +1243,52 @@ mod dialect_boundary {
         assert!(PerkEntryTable::from_index(&fnv_idx).entries(1).is_none(), "function 13 is not value math on FNV");
         let sky_idx = index(GameKind::Skyrim, vec![perk(1, vec![entry_point(0, 0, DAMAGE, 13, av, vec![])])]);
         assert!(PerkEntryTable::from_index(&sky_idx).entries(1).is_some());
+    }
+}
+
+// --- PERK-HOOK-006: Add Leveled List On Death ----------------------------------------------------
+
+mod death_lists {
+    use super::*;
+    use super::super::compose_death_leveled_lists;
+
+    const ON_DEATH: u8 = fnv::ADD_LEVELED_LIST_ON_DEATH;
+    const LIST: u32 = 0x0010_0001;
+
+    fn add_list(rank: u8, tabs: Vec<PerkConditionTab>) -> PerkEntry {
+        entry_point(rank, 0, ON_DEATH, 8, PerkFunctionData::FormId(LIST), tabs)
+    }
+
+    /// The killer's perk adds its list for a victim whose Target tab passes, and only at the held rank.
+    #[test]
+    fn a_kill_adds_the_entrys_leveled_list_for_a_victim_the_tabs_accept() {
+        let idx = index(
+            GameKind::Fallout3NV,
+            vec![
+                perk(1, vec![add_list(0, vec![])]),
+                // Target tab: the victim must not be dead already (GetDead == 0) - the victim is alive here.
+                perk(2, vec![add_list(0, vec![tab(1, vec![condition(GET_DEAD, 0.0)])])]),
+                perk(3, vec![add_list(1, vec![])]),
+            ],
+        );
+        let (mut world, killer) = world_with(&idx, &[(1, 1), (2, 1), (3, 1)]);
+        let victim = world.spawn();
+        world.insert(victim, Dead);
+        let lists = compose_death_leveled_lists(&world, killer, victim);
+        // Perk 1 (no tabs) applies; perk 2's Target tab is GetDead == 0 and the victim IS dead: no; perk 3 is
+        // authored for rank 2 and held at rank 1: no.
+        assert_eq!(lists, vec![LIST]);
+        // Not dead: perk 2 applies too.
+        let alive = world.spawn();
+        assert_eq!(compose_death_leveled_lists(&world, killer, alive), vec![LIST, LIST]);
+    }
+
+    #[test]
+    fn nothing_is_added_without_a_hook_a_table_or_perks() {
+        let idx = index(GameKind::Fallout3NV, vec![perk(1, vec![add_list(0, vec![])])]);
+        let (world, killer) = world_with(&idx, &[]);
+        assert!(compose_death_leveled_lists(&world, killer, killer).is_empty(), "no perk held");
+        let bare = World::new();
+        assert!(compose_death_leveled_lists(&bare, 0, 1).is_empty(), "no table");
     }
 }
