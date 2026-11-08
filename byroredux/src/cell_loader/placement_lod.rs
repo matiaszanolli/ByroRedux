@@ -503,9 +503,9 @@ fn spawn_placement_lod_cell(
         wctx.lod_worldspace_key(),
         cx,
         cy,
-        |path| tex_provider.has_mesh(path),
+        |path| tex_provider.has_mesh_exact(path),
     )?;
-    let bytes = tex_provider.extract_mesh(&lod_path)?;
+    let bytes = tex_provider.extract_mesh_exact(&lod_path)?;
     let groups = match parse_placement_lod(&bytes) {
         Ok(g) => g,
         Err(e) => {
@@ -914,6 +914,26 @@ mod tests {
     /// `stream_placement_lod_blocks` wastes a per-cell archive lookup that
     /// can never resolve (vanilla FO3/FNV archives ship zero `distantlod\`
     /// entries).
+    /// DLOD-GATE-006 / #6637 -- `distantlod\<ws>_<x>_<y>.lod` is a top-level archive folder, not under
+    /// `meshes\`. `has_mesh` / `extract_mesh` root every path under `meshes\`, so the lookup missed every
+    /// `.lod` and the Oblivion placement ring was silently empty (`placement_resident=0` on the boundary run,
+    /// 50 after the fix). The cell lookup must use the literal-key variants.
+    #[test]
+    fn placement_lod_cells_are_read_by_their_literal_archive_key() {
+        use crate::asset_provider::normalize_mesh_path;
+        let path = placement_lod_archive_path("Tamriel", 0, 0);
+        assert_eq!(
+            normalize_mesh_path(&path),
+            "meshes\\distantlod\\tamriel_0_0.lod",
+            "the meshes-rooting lookups can never find a top-level distantlod\\ file"
+        );
+        let source = include_str!("placement_lod.rs");
+        let spawn = &source[source.find("fn spawn_placement_lod_cell(").expect("the spawn fn")..];
+        let spawn = &spawn[..spawn.find("let groups = ").expect("the parse step")];
+        assert!(spawn.contains("has_mesh_exact") && spawn.contains("extract_mesh_exact"));
+        assert!(!spawn.contains("has_mesh(") && !spawn.contains("extract_mesh("));
+    }
+
     /// DLOD-BAND-001 -- the placement ring's 16 cells is an engine-chosen value, not an INI reading; this pins
     /// it so DLOD-BAND-002's change to `uGridDistantCount` is a deliberate edit.
     #[test]
