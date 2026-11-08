@@ -245,8 +245,9 @@ All three wikis state that a region's Priority is compared only when its
 Override box is checked, per data tab, and that higher priority wins; only
 the CK page states a tie rule. **Phase 0: verify** that a region's Weather
 section replaces the climate's weather list rather than adding to it — the
-pages describe the region list's chances but none says so outright; settled
-by the same census and in-game observation as VLM-REG-002.
+pages describe the region list's chances but none says so outright. The census
+(`region_weather_census`, 2026-11-07) cannot settle it: it needs the original
+engine. Still open, an in-game observation, see VLM-REG-002.
 
 - **VLM-REG-001.** For an exterior cell, the weather table in effect MUST be
   the Weather section with the highest Priority among the cell's regions
@@ -256,10 +257,16 @@ by the same census and in-game observation as VLM-REG-002.
 - **VLM-REG-002.** When no region of the cell sets Override on a Weather
   section, the choice among non-override Weather sections MUST follow the
   original editors' rule. **Phase 0: verify** — none of the three wiki pages
-  states which non-override region wins when several overlap; settled by a
-  corpus census of overlapping non-override Weather sections in the vanilla
-  masters (if none overlap, the rule is moot and recorded as such) and, if
-  some do, by an in-game observation recorded with its save and cell.
+  states which non-override region wins when several overlap. **Census,
+  2026-11-07** (`crates/plugin/examples/region_weather_census.rs`, one master at a
+  time; exterior cells whose `XCLR` names two or more Weather-carrying regions,
+  none overriding, with differing weather tables): Oblivion 527 cells (of 1,108
+  overlaps), every one with equal Priority on both sections, so Priority cannot
+  decide them; FNV 8, all with different Priorities; FO4 11 (of 75), all with
+  different Priorities; Fallout 3 and Skyrim 0. The rule is **not moot** on
+  Oblivion, FNV or FO4. Still open: the in-game observation recorded with its
+  save and cell, which needs the original engine; until it exists the choice is
+  an owner decision, not an inference.
 - **VLM-REG-003.** When none of the cell's regions authors a Weather
   section, the weather MUST come from the climate exactly as today
   (`resolve_exterior_climate` → `resolve_default_weather`). Test:
@@ -290,17 +297,26 @@ by the same census and in-game observation as VLM-REG-002.
 - **VLM-REG-008.** Region membership MUST be read from the cell's `XCLR`
   list (`CellData::regions`). **Phase 0: verify** — the CK page says "it is
   the exact shape of the region as drawn in the Region Preview Window that
-  will decide its actual area of effect", not the per-cell list; settled by
-  a census comparing each vanilla exterior cell's `XCLR` set with the cells
-  its regions' `RPLI`/`RPLD` polygons cover, per game. If they disagree on
-  any cell carrying a Weather section, this requirement is revised to the
-  polygon test before Phase 1.
+  will decide its actual area of effect", not the per-cell list. **Census,
+  2026-11-07** (same probe; a region covers a cell when its `RPLD` polygon
+  overlaps the cell's 4096-unit square, restricted to the region's own `WNAM`
+  worldspace): the two agree on almost every Weather-region pair (Oblivion 9,892
+  in both; FO3 4,493; FNV 1,589; Skyrim 9,935; FO4 4,234) and disagree on a
+  small, real remainder. Pairs whose polygon holds the cell centre but whose
+  cell `XCLR` omits the region: Oblivion 1, FO3 23, FNV 16, Skyrim 1, FO4 12
+  (FO3's Washington-top cells have an empty `XCLR` under a covering polygon).
+  Pairs `XCLR` names that the polygon does not touch: Oblivion 24, FO3 28,
+  FNV 0, Skyrim 42, FO4 88; the `RPLI` edge fall-off explains only 6 of them
+  (Oblivion). `XCLR` is a stale snapshot in both directions, so the gate's
+  condition is met: **this requirement is revised to the polygon test** (the
+  region polygon covers the cell, per the CK page) before Phase 1, and `XCLR`
+  is not consulted for weather.
 - **VLM-REG-009.** On Skyrim and FO4, an interior whose `XCCM` names a
   region (xEdit: "Sky/Weather from Region",
   [TES5 L6544](https://github.com/TES5Edit/TES5Edit/blob/9058a79437367c2cb1b757a9021ab443d743012d/Core/wbDefinitionsTES5.pas#L6544),
   [FO4 L9052](https://github.com/TES5Edit/TES5Edit/blob/9058a79437367c2cb1b757a9021ab443d743012d/Core/wbDefinitionsFO4.pas#L9052))
   MUST take its portal palette and portal sun from that region's weather
-  table. Today `CellData::sky_region` is decoded and unread. On
+  table. Today `CellData::sky_region` is decoded and unread. Census, 2026-11-07 (`region_weather_census`): Skyrim.esm has 214 such interiors, all naming a region present in the master, 213 of them with a Weather section and none with more than one overriding section; Fallout4.esm has 79, 77 with a Weather section. On
   Oblivion / FO3 / FNV the same tag is a climate
   ([FNV L5236](https://github.com/TES5Edit/TES5Edit/blob/9058a79437367c2cb1b757a9021ab443d743012d/Core/wbDefinitionsFNV.pas#L5236));
   the parser already splits the two readings, so no per-game branch is added
@@ -322,14 +338,22 @@ by the same census and in-game observation as VLM-REG-002.
   highest priority will take effect"). Test:
   `region_weather_priority_tie_falls_through` (new). **Phase 0: verify**
   the rule on Oblivion / FO3 / FNV, whose CS and GECK pages state no tie
-  rule; settled by the VLM-REG-002 census (ties among overlapping overriding
-  Weather sections; if none exist, moot and recorded).
+  rule. **Census, 2026-11-07: moot there.** Cells with two or more overriding
+  Weather sections: Oblivion 0, FNV 0, FO3 1,258, and no FO3 cell shares its
+  highest Priority between two regions. No vanilla Oblivion / FO3 / FNV
+  exterior cell exercises the rule. Skyrim (where the CK page states it) has 9
+  cells whose top Priority is shared by regions with different weather tables
+  (first: Tamriel (-13,26), regions `000C5852` and `000C5858`, Priority 50), which
+  `region_weather_priority_tie_falls_through` should cover with real data; FO4
+  has 0.
 - **VLM-REG-013.** On Oblivion / FO3 / FNV, the order between a cell's
   `XCCM` climate override and its regions' Weather sections MUST follow the
-  original engine's rule. **Phase 0: verify** — no cited page states it;
-  settled by the census counting exterior cells that carry both, and, if
-  any do, by an in-game observation recorded with its save and cell. If
-  none carry both, the order is moot and recorded as such.
+  original engine's rule. **Phase 0: verify** — no cited page states it.
+  **Census, 2026-11-07: moot.** No exterior cell of `Oblivion.esm`,
+  `Fallout3.esm` or `FalloutNV.esm` carries an `XCCM` (0 of 33,540, 41,958 and
+  30,096 cells); the tag appears on interiors only (Oblivion 55 of 1,855, FO3 1
+  of 421, FNV 0 of 388). No vanilla master exercises the order; DLC masters and
+  mods are unsurveyed (the probe resolves one master at a time).
 - **VLM-REG-014.** A forced weather set without the override lock MUST
   yield to the resolved region or climate weather at the next weather
   resolution (the cell crossing of VLM-REG-010). This is the deterministic
