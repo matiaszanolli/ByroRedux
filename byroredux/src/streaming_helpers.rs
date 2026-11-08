@@ -255,20 +255,36 @@ pub(crate) fn reconcile_lod_rings(
         &mut state.tree_lod,
         &mut tree_budget,
     );
+    // #6638 — Oblivion's `.lod` TREE groups and Fallout 3's `.dtl` files: the other tree containers, on
+    // their own allowance (DLOD-PERF-002).
+    let mut legacy_tree_budget = make_budget();
+    let legacy_tree_complete = cell_loader::stream_legacy_tree_lod_blocks(
+        world,
+        ctx,
+        &input,
+        &mut state.legacy_tree_lod,
+        &mut legacy_tree_budget,
+    );
 
     let attempted = terrain_budget.spent()
         + object_budget.spent()
         + placement_budget.spent()
-        + tree_budget.spent();
+        + tree_budget.spent()
+        + legacy_tree_budget.spent();
     let held_back = (terrain_budget.held_back()
         + object_budget.held_back()
         + placement_budget.held_back()
-        + tree_budget.held_back()) as u64;
+        + tree_budget.held_back()
+        + legacy_tree_budget.held_back()) as u64;
     if attempted > 0 {
         flush_pending_lod_textures(ctx);
     }
 
-    let complete = terrain_complete && object_complete && placement_complete && tree_complete;
+    let complete = terrain_complete
+        && object_complete
+        && placement_complete
+        && tree_complete
+        && legacy_tree_complete;
     // #3688 — `update_lod_coverage` and `update_terrain_seam_stats` recompute
     // from scratch (two O(n²) rect scans between them) even on frames where
     // nothing they read changed; their only two console-command readers
@@ -346,7 +362,10 @@ fn update_lod_coverage(
 
     // DLOD-GATE-001/-003/-004 — the tree ring is keyed by south-west cell (every file is a level-4 quad),
     // so it joins the overlap and churn checks as `(level, x, y)` footprints.
-    let tree_keys: Vec<(i32, i32, i32)> = state.tree_lod.resident_keys();
+    let mut tree_keys: Vec<(i32, i32, i32)> = state.tree_lod.resident_keys();
+    // #6638 — the Oblivion / Fallout 3 tree units join the same tree checks (their footprints are cells or
+    // `.dtl` quads, so the overlap and churn arithmetic is unchanged).
+    tree_keys.extend(state.legacy_tree_lod.resident_keys());
     let overlaps = cell_loader::find_overlaps(&terrain_keys)
         + cell_loader::find_overlaps(&object_keys)
         + cell_loader::find_overlaps(&tree_keys);
@@ -747,6 +766,7 @@ pub fn drain_streaming_state(
     state.lod_object_available.clear();
 
     let tree_lod_blocks = state.tree_lod.drain();
+    let (legacy_tree_blocks, legacy_tree_atlas) = state.legacy_tree_lod.drain();
     let (lod_blocks, object_lod_blocks, placement_lod_blocks, lod_water) =
         drain_lod_reclaim_targets(
             &mut state.lod_blocks,
@@ -808,6 +828,11 @@ pub fn drain_streaming_state(
     for block in &tree_lod_blocks {
         cell_loader::unload_object_lod_block(world, ctx, block);
     }
+    // #6638 — the legacy tree units, then the atlas they all sampled (the ring owns its one reference).
+    for block in &legacy_tree_blocks {
+        cell_loader::unload_legacy_tree_block(world, ctx, block);
+    }
+    cell_loader::release_legacy_tree_atlas(ctx, legacy_tree_atlas);
     // #2449 / EXAL-01 — the worldspace-wide LOD water quad carries no
     // `CellRoot` either (same reclaim gap `lod_blocks` had pre-#1536); its
     // only teardown path is here.

@@ -1516,6 +1516,7 @@ mod lod_mesh_provenance_tests {
         ("terrain_lod.rs", include_str!("terrain_lod.rs")),
         ("terrain_lod_btr.rs", include_str!("terrain_lod_btr.rs")),
         ("tree_lod.rs", include_str!("tree_lod.rs")),
+        ("tree_lod_legacy.rs", include_str!("tree_lod_legacy.rs")),
     ];
 
     #[test]

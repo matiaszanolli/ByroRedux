@@ -66,7 +66,7 @@ fo4_known_seam_crack() {
 # family: a ring that never loaded read `resident=0` and passed. Which families a profile's
 # worldspace authors and the engine draws today comes from the PRD `distant-lod-completion` §3.1
 # matrix (the `lod_family_census` test pins the counts):
-#   oblivion  terrain + placement        (no `.bto`; its TREE `.lod` groups are unconsumed until Phase 2)
+#   oblivion  terrain + placement + tree (no `.bto`; the TREE `.lod` groups draw since #6638)
 #   fo3       terrain                    (MegatonWorld authors no `.dtl`; its object blocks are not pinned)
 #   fnv       terrain + object           (no separate tree family)
 #   skyrim    terrain + object + tree
@@ -79,7 +79,8 @@ fo4_known_seam_crack() {
 lod_absent_families() {
     local label="$1" terrain="$2" object="$3" placement="$4" tree="$5" absent=""
     case "$label" in
-        oblivion) (( terrain > 0 )) || absent+=" terrain"; (( placement > 0 )) || absent+=" placement" ;;
+        oblivion) (( terrain > 0 )) || absent+=" terrain"; (( placement > 0 )) || absent+=" placement"
+                  (( tree > 0 )) || absent+=" tree" ;;
         fo3)      (( terrain > 0 )) || absent+=" terrain" ;;
         fnv)      (( terrain > 0 )) || absent+=" terrain"; (( object > 0 )) || absent+=" object" ;;
         skyrim)   (( terrain > 0 )) || absent+=" terrain"; (( object > 0 )) || absent+=" object"
@@ -110,8 +111,9 @@ if [[ "${1:-}" == "--self-test" ]]; then
     check_families "object" fnv 8 0 0 0
     check_families "" fo3 8 0 0 0
     check_families "terrain" fo3 0 0 0 0
-    check_families "" oblivion 6 0 3 0
-    check_families "placement" oblivion 6 0 0 0
+    check_families "" oblivion 6 0 3 5
+    check_families "placement" oblivion 6 0 0 5
+    check_families "tree" oblivion 6 0 3 0
     check_families "terrain object" fo4 0 0 0 0
     check() {
         local want="$1"

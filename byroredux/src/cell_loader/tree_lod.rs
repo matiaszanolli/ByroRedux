@@ -177,7 +177,7 @@ pub(crate) fn parse_tree_lst(bytes: &[u8]) -> Result<Vec<TreeLodSpecies>, TreeLo
 /// One Fallout 3 `treetypes.lst` entry (DLOD-TREE-004): a `u32` index and seven `f32`. What the seven floats
 /// mean is not established, so they are carried in file order and nothing draws from them yet.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(not(test), allow(dead_code))] // consumed by the FO3 tree ring (#6638 DLOD-TREE-005/-006)
+#[cfg_attr(not(test), allow(dead_code))] // read by the A6 corpus test; nothing draws from its floats (unexplained)
 pub(crate) struct DtlTreeType {
     pub(crate) index: u32,
     pub(crate) values: [f32; 7],
@@ -186,7 +186,7 @@ pub(crate) struct DtlTreeType {
 /// Parse a Fallout 3 `treetypes.lst`: a `u32` count, then 32-byte entries (`u32` index, seven `f32`), V3 /
 /// #6678. The header count is trusted: `wasteland` declares 8 and holds 9, and the ninth names no tree a
 /// declared `.dtl` chunk places, so bytes past the declared entries are ignored.
-#[cfg_attr(not(test), allow(dead_code))] // consumed by the FO3 tree ring (#6638 DLOD-TREE-005/-006)
+#[cfg_attr(not(test), allow(dead_code))] // read by the A6 corpus test; a drawn tree needs only its `.dtl` record
 pub(crate) fn parse_treetypes_lst(bytes: &[u8]) -> Result<Vec<DtlTreeType>, TreeLodError> {
     let count = u32_at(bytes, 0)?;
     let available = bytes.len() - 4;
@@ -207,28 +207,29 @@ pub(crate) fn parse_treetypes_lst(bytes: &[u8]) -> Result<Vec<DtlTreeType>, Tree
 
 /// One tree a Fallout 3 `.dtl` places (DLOD-TREE-004).
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(not(test), allow(dead_code))] // consumed by the FO3 tree ring (#6638 DLOD-TREE-005/-006)
 pub(crate) struct DtlTree {
     /// The chunk's tree type, an index into the worldspace's `treetypes.lst`.
     pub(crate) tree_type: u32,
     /// World position of the tree's base, Z-up (Bethesda units).
     pub(crate) position: [f32; 3],
+    /// Yaw in radians (the fourth `f32`; values 0 to 2 pi in the vanilla corpus).
+    pub(crate) rotation: f32,
+    /// Scale multiplier (the fifth `f32`; 0.64 to 1.16 in the corpus sample).
     pub(crate) scale: f32,
-    /// The fifth `f32` of the record; unexplained (the census finds no use for it), carried in file order.
-    pub(crate) unknown: f32,
-    /// The TREE base object the tree is an instance of.
-    pub(crate) base_form_id: u32,
+    /// The placed REFR the tree stands in for: the same `x, y, z, rotation, scale, FormID` record the Skyrim
+    /// `.btt` carries (`TreeLodInstance::ref_form_id`), not a TREE base. #6638 found the earlier "base
+    /// FormID" reading wrong: 32,016 distinct values over 32,275 trees.
+    pub(crate) ref_form_id: u32,
 }
 
 /// Parse a Fallout 3 `.dtl` (V3 / #6678): a `u32` chunk count, then per chunk a `u32` tree type, a `u32`
 /// record count (at most 114 in the vanilla corpus) and that many 32-byte records
-/// `{x, y, z, scale, f32, base FormID, chunk index, 0xFFFFFF00}`.
+/// `{x, y, z, rotation, scale, REFR FormID, chunk index, 0xFFFFFF00}`.
 ///
 /// The headers are trusted: 38 of the 108 vanilla files carry bytes after the last declared chunk that no
 /// declared chunk references (every declared record sits in the chunk its own index word names), so they are
 /// ignored, not parsed. Every count is checked against the bytes actually present before anything is
 /// allocated.
-#[cfg_attr(not(test), allow(dead_code))] // consumed by the FO3 tree ring (#6638 DLOD-TREE-005/-006)
 pub(crate) fn parse_dtl(bytes: &[u8]) -> Result<Vec<DtlTree>, TreeLodError> {
     let chunks = u32_at(bytes, 0)?;
     let mut at = 4usize;
@@ -246,9 +247,9 @@ pub(crate) fn parse_dtl(bytes: &[u8]) -> Result<Vec<DtlTree>, TreeLodError> {
             trees.push(DtlTree {
                 tree_type,
                 position: [f32_at(bytes, at)?, f32_at(bytes, at + 4)?, f32_at(bytes, at + 8)?],
-                scale: f32_at(bytes, at + 12)?,
-                unknown: f32_at(bytes, at + 16)?,
-                base_form_id: u32_at(bytes, at + 20)?,
+                rotation: f32_at(bytes, at + 12)?,
+                scale: f32_at(bytes, at + 16)?,
+                ref_form_id: u32_at(bytes, at + 20)?,
             });
             at += RECORD_BYTES;
         }
@@ -603,15 +604,40 @@ fn spawn_tree_lod_quad(
     let atlas_path = tree_lod_atlas_path(lod_worldspace_key);
     let atlas = resolve_texture(ctx, tex_provider, Some(atlas_path.as_str()));
     let atlas = if atlas == ctx.texture_registry.fallback() { 0 } else { atlas };
+    // The atlas handle is refcounted per quad: it is released with the block.
+    let block = spawn_tree_lod_mesh(world, ctx, &mesh, atlas, Some(atlas_path), path)?;
+    if parsed.trailing_bytes > 0 || mesh.skipped > 0 {
+        log::debug!(
+            "Tree-LOD '{path}': {} trees drawn, {} skipped (no usable species), {} trailing bytes",
+            parsed.trees.len() - mesh.skipped,
+            mesh.skipped,
+            parsed.trailing_bytes,
+        );
+    }
+    Some(block)
+}
 
+/// Upload one tree-LOD mesh and spawn its single alpha-tested entity (DLOD-TREE-006: every tree family
+/// translates into this one representation, so the per-game parse stops before here).
+///
+/// `atlas` is the texture handle the cards sample (`0` = untextured / fallback), `atlas_name` the path the
+/// NIFAL texture-only material records for it, `label` the archive key the upload is attributed to. On a
+/// refused upload the atlas refcount taken by the caller is released and `None` is returned.
+pub(super) fn spawn_tree_lod_mesh(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    mesh: &TreeLodMesh,
+    atlas: u32,
+    atlas_name: Option<String>,
+    label: &str,
+) -> Option<ObjectLodBlock> {
     let handle = match ctx.mesh_registry.with_admission_class(
-            byroredux_renderer::GeometryAdmissionClass::Prop,
-            |registry| registry.upload_scene_mesh_global_only(&mesh.vertices, &mesh.indices),
-        )
-    {
+        byroredux_renderer::GeometryAdmissionClass::Prop,
+        |registry| registry.upload_scene_mesh_global_only(&mesh.vertices, &mesh.indices),
+    ) {
         Ok(handle) => handle,
         Err(e) => {
-            log::warn!("Tree-LOD '{path}' mesh upload failed: {e}");
+            log::warn!("Tree-LOD '{label}' mesh upload failed: {e}");
             let textures: Vec<u32> = (atlas != 0).then_some(atlas).into_iter().collect();
             release_lod_gpu_resources(ctx, &[], &textures);
             return None;
@@ -621,7 +647,7 @@ fn spawn_tree_lod_quad(
         handle,
         byroredux_renderer::MeshUploadSource::Lod,
         false,
-        Some(path),
+        Some(label),
     );
 
     let positions: Vec<[f32; 3]> = mesh.vertices.iter().map(|v| v.position).collect();
@@ -637,9 +663,8 @@ fn spawn_tree_lod_quad(
     world.insert(entity, WorldBound::new(centre, radius));
     // The NIFAL boundary material: a texture-only population with no source
     // record, alpha-tested, drawn from both sides.
-    let mut material = crate::material_translate::translate_texture_only_material(
-        (atlas != 0).then(|| atlas_path.clone()),
-    );
+    let mut material =
+        crate::material_translate::translate_texture_only_material((atlas != 0).then_some(atlas_name).flatten());
     material.alpha_test = true;
     material.alpha_threshold = TREE_LOD_ALPHA_CUTOFF;
     world.insert(entity, material);
@@ -649,14 +674,6 @@ fn spawn_tree_lod_quad(
     // casters (`LOD_SHADOW_CASTER_DISTANCE`) — shared with every LOD.
     world.insert(entity, IsLodTerrain);
 
-    if parsed.trailing_bytes > 0 || mesh.skipped > 0 {
-        log::debug!(
-            "Tree-LOD '{path}': {} trees drawn, {} skipped (no usable species), {} trailing bytes",
-            parsed.trees.len() - mesh.skipped,
-            mesh.skipped,
-            parsed.trailing_bytes,
-        );
-    }
     Some(ObjectLodBlock {
         entities: vec![entity],
         mesh_handles: vec![handle],

@@ -694,6 +694,15 @@ mod tests {
             assert_eq!(object_lod_scheme(game), object, "{game:?} object scheme");
             assert_eq!(tree_lod_supported(game), tree, "{game:?} tree family");
             assert_eq!(placement_lod_supported(game), placement, "{game:?} placement family");
+            // The legacy tree containers (#6638): Oblivion's `.lod` TREE groups, Fallout 3's `.dtl`.
+            let legacy_tree = super::super::tree_lod_legacy::legacy_tree_family(game);
+            assert_eq!(
+                legacy_tree.is_some(),
+                matches!(game, GameKind::Oblivion | GameKind::Fallout3NV),
+                "{game:?} legacy tree family"
+            );
+            // A game never has both a Skyrim-style `.btt` ring and a legacy tree container.
+            assert!(!(tree && legacy_tree.is_some()), "{game:?}");
             // The two derived terrain predicates stay disjoint views of the one layout.
             assert_eq!(combined_lod_supported(game), terrain == TerrainLodLayout::Combined, "{game:?}");
             assert_eq!(

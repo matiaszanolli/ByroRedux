@@ -381,12 +381,12 @@ fn tree_lod_ref_form_id_census() {
 
 // ── DLOD-TREE-004: Fallout 3 `.dtl` / `treetypes.lst` ────────────────────────────────────────────────
 
-fn dtl_record(x: f32, y: f32, z: f32, scale: f32, unknown: f32, base: u32, chunk: u32) -> Vec<u8> {
+fn dtl_record(x: f32, y: f32, z: f32, rotation: f32, scale: f32, refr: u32, chunk: u32) -> Vec<u8> {
     let mut r = Vec::new();
-    for v in [x, y, z, scale, unknown] {
+    for v in [x, y, z, rotation, scale] {
         r.extend_from_slice(&v.to_le_bytes());
     }
-    r.extend_from_slice(&base.to_le_bytes());
+    r.extend_from_slice(&refr.to_le_bytes());
     r.extend_from_slice(&chunk.to_le_bytes());
     r.extend_from_slice(&0xFFFF_FF00u32.to_le_bytes());
     r
@@ -399,17 +399,17 @@ fn parse_dtl_reads_chunks_and_ignores_undeclared_trailing_bytes() {
     let mut bytes = 2u32.to_le_bytes().to_vec();
     bytes.extend_from_slice(&3u32.to_le_bytes()); // type 3
     bytes.extend_from_slice(&2u32.to_le_bytes()); // two records
-    bytes.extend(dtl_record(1.0, 2.0, 3.0, 0.5, 9.0, 0x1000, 0));
-    bytes.extend(dtl_record(4.0, 5.0, 6.0, 1.0, 8.0, 0x1001, 0));
+    bytes.extend(dtl_record(1.0, 2.0, 3.0, 9.0, 0.5, 0x1000, 0));
+    bytes.extend(dtl_record(4.0, 5.0, 6.0, 8.0, 1.0, 0x1001, 0));
     bytes.extend_from_slice(&5u32.to_le_bytes()); // type 5
     bytes.extend_from_slice(&1u32.to_le_bytes());
-    bytes.extend(dtl_record(7.0, 8.0, 9.0, 2.0, 7.0, 0x1002, 1));
+    bytes.extend(dtl_record(7.0, 8.0, 9.0, 7.0, 2.0, 0x1002, 1));
     bytes.extend_from_slice(&[0xAB; 13]); // undeclared trailing bytes
     let trees = parse_dtl(&bytes).expect("a well-formed .dtl parses");
     assert_eq!(trees.len(), 3);
-    assert_eq!((trees[0].tree_type, trees[0].position, trees[0].scale, trees[0].base_form_id), (3, [1.0, 2.0, 3.0], 0.5, 0x1000));
+    assert_eq!((trees[0].tree_type, trees[0].position, trees[0].scale, trees[0].ref_form_id), (3, [1.0, 2.0, 3.0], 0.5, 0x1000));
     assert_eq!(trees[1].tree_type, 3);
-    assert_eq!((trees[2].tree_type, trees[2].base_form_id, trees[2].unknown), (5, 0x1002, 7.0));
+    assert_eq!((trees[2].tree_type, trees[2].ref_form_id, trees[2].rotation), (5, 0x1002, 7.0));
 }
 
 /// An untrusted count is checked against the bytes present, never allocated.
@@ -505,4 +505,73 @@ fn dtl_corpus_parses_and_resolves_every_species() {
     }
     assert!(trees > 0);
     eprintln!("{} .dtl files, {} worldspace lists, {} trees", dtls.len(), lists.len(), trees);
+
+    // DLOD-TREE-006 -- the species a `.dtl` record names is its base FormID, which must be a TREE record the
+    // plugin parsed (the billboard and its size live there).
+    let esm = dir.join("Fallout3.esm");
+    let Ok(esm_bytes) = std::fs::read(&esm) else {
+        test_paths::require_or_skip("Fallout3.esm");
+        return;
+    };
+    let index = byroredux_plugin::esm::parse_esm(&esm_bytes).expect("parse Fallout3.esm");
+    let mut by_base: std::collections::BTreeMap<u32, usize> = Default::default();
+    for (_, _, bytes) in &dtls {
+        for tree in parse_dtl(bytes).unwrap() {
+            *by_base.entry(tree.ref_form_id).or_default() += 1;
+        }
+    }
+    // The record's FormID word is the placed REFR (32,016 distinct values over 32,275 trees), not a TREE
+    // base, exactly as the Skyrim `.btt` carries `ref_form_id`. Its base is the TREE.
+    let mut ref_base: std::collections::HashMap<u32, u32> = Default::default();
+    for cells in index.cells.exterior_cells.values() {
+        for data in cells.values() {
+            for r in &data.references {
+                ref_base.insert(r.form_id, r.base_form_id);
+            }
+        }
+    }
+    for cell in index.cells.worldspace_persistent_cells.values() {
+        for r in &cell.references {
+            ref_base.insert(r.form_id, r.base_form_id);
+        }
+    }
+    // 27,469 of the 32,016 distinct references are placed references in `Fallout3.esm`; the rest are DLC
+    // references this one-master census does not read.
+    let any_ref = by_base.keys().filter(|r| ref_base.contains_key(r)).count();
+    assert!(
+        any_ref * 100 >= by_base.len() * 80,
+        "{any_ref} of {} .dtl references are placed in Fallout3.esm",
+        by_base.len()
+    );
+    // Their bases are STAT records with NIF tree models, not TREE records, and each wasteland species ships
+    // an authored `_lod_flat.nif` (V5 for Fallout 3).
+    let meshes = &archives[0];
+    let flat_files: std::collections::HashSet<String> = meshes
+        .list_files()
+        .into_iter()
+        .map(|f| f.to_ascii_lowercase())
+        .filter(|f| f.ends_with("_lod_flat.nif"))
+        .collect();
+    let mut models: std::collections::BTreeMap<String, usize> = Default::default();
+    for (refr, n) in &by_base {
+        if let Some(base) = ref_base.get(refr) {
+            if let Some(stat) = index.cells.statics.get(base) {
+                *models.entry(stat.model_path.to_ascii_lowercase()).or_default() += n;
+            }
+        }
+    }
+    let tree_models: Vec<(&String, &usize)> = models.iter().filter(|(m, _)| m.starts_with("landscape\\trees\\")).collect();
+    let with_flat: usize = tree_models
+        .iter()
+        .filter(|(m, _)| super::super::tree_lod_legacy::lod_flat_nif_path(m).is_some_and(|p| flat_files.contains(&p)))
+        .map(|(_, n)| **n)
+        .sum();
+    let on_trees: usize = tree_models.iter().map(|(_, n)| **n).sum();
+    eprintln!("{on_trees} dtl trees stand on landscape\\trees models; {with_flat} of them have a _lod_flat.nif");
+    assert!(on_trees > 0 && with_flat * 100 >= on_trees * 95, "the authored flat mesh covers the .dtl trees");
+    assert_eq!(
+        index.trees.values().filter(|t| t.has_speedtree_binary()).count(),
+        index.trees.values().filter(|t| t.billboard_size.is_some()).count(),
+        "TREE records are `.spt` trees; none of the .dtl trees is one"
+    );
 }

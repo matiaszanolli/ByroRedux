@@ -83,6 +83,7 @@ mod terrain;
 mod terrain_lod;
 mod terrain_lod_btr;
 mod tree_lod;
+mod tree_lod_legacy;
 mod terrain_seam;
 mod transition;
 pub(crate) mod unload;
@@ -191,6 +192,9 @@ pub(crate) use object_lod::{
 };
 pub(crate) use partial::finish_partial_import;
 pub(crate) use tree_lod::{stream_tree_lod_blocks, TreeLodRing};
+pub(crate) use tree_lod_legacy::{
+    release_legacy_tree_atlas, stream_legacy_tree_lod_blocks, unload_legacy_tree_block, LegacyTreeRing,
+};
 pub(crate) use placement_lod::{
     stream_placement_lod_blocks, unload_placement_lod_block, PlacementLodBlock,
 };

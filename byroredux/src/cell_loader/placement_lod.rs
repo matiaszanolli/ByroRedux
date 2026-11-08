@@ -513,6 +513,32 @@ fn spawn_placement_lod_cell(
             return None;
         }
     };
+    spawn_placement_groups(world, ctx, tex_provider, wctx, &groups, &|model_path: &str| {
+        // Prefer the dedicated `_far.nif`; fall back to the FULL model when none is shipped (see the
+        // engine-decision note on the full-model fallback below).
+        match far_nif_path(model_path).and_then(|p| tex_provider.extract_mesh(&p).map(|b| (p, b))) {
+            Some(found) => Some(found),
+            None => {
+                let full = full_model_path(model_path);
+                tex_provider.extract_mesh(&full).map(|b| (full, b))
+            }
+        }
+    })
+}
+
+/// Spawn the distant meshes of already-parsed placement `groups` as one [`PlacementLodBlock`]: each group's
+/// base resolves to a STAT model, `pick_mesh` turns that model path into the `(archive key, bytes)` of the
+/// distant mesh to draw (or `None` to skip the group), and every placement instances it. Shared by Oblivion's
+/// per-cell `.lod` files and Fallout 3's `.dtl` trees, whose distant meshes are the authored `_lod_flat.nif`
+/// of each tree model (#6638).
+pub(super) fn spawn_placement_groups(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    wctx: &ExteriorWorldContext,
+    groups: &[PlacementGroup],
+    pick_mesh: &dyn Fn(&str) -> Option<(String, Vec<u8>)>,
+) -> Option<PlacementLodBlock> {
     ctx.allocator.as_ref()?;
     // #6332 — the cell's sub-meshes stand or fall together: if the pool refuses one, the ones
     // already uploaded are taken back without a hole (see `abandon_scene_geometry_group`).
@@ -526,7 +552,7 @@ fn spawn_placement_lod_cell(
     // the whole cell is abandoned and retried when admission reopens.
     let mut refused = false;
 
-    'groups: for group in &groups {
+    'groups: for group in groups {
         // base FormID → STAT model (the same statics table the REFR spawn
         // path reads).
         let Some(stat) = wctx.record_index.cells.statics.get(&group.base_form_id) else {
@@ -544,17 +570,8 @@ fn spawn_placement_lod_cell(
         // distant" (`docs/prd/distant-lod-completion.md`, DLOD-OBJ-007, Q6,
         // V12). Skipping them (the pre-fix behaviour) left almost every cell
         // with no distant geometry.
-        let (mesh_path, far_bytes) = match far_nif_path(&stat.model_path)
-            .and_then(|p| tex_provider.extract_mesh(&p).map(|b| (p, b)))
-        {
-            Some((p, b)) => (p, b),
-            None => {
-                let full = full_model_path(&stat.model_path);
-                match tex_provider.extract_mesh(&full) {
-                    Some(b) => (full, b),
-                    None => continue, // neither far nor full mesh resolvable
-                }
-            }
+        let Some((mesh_path, far_bytes)) = pick_mesh(&stat.model_path) else {
+            continue; // no mesh resolvable for this base
         };
         let far = mesh_path;
         let scene = match byroredux_nif::parse_nif(&far_bytes) {

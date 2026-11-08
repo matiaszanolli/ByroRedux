@@ -375,6 +375,9 @@ pub struct WorldStreamingState {
     /// level-4 quads, the worldspace's quad list and its species list. Empty
     /// on every other game.
     pub(crate) tree_lod: crate::cell_loader::TreeLodRing,
+    /// The Oblivion `.lod` / Fallout 3 `.dtl` tree ring (#6638); `tree_lod`'s sibling for the games whose
+    /// distant trees are authored in another container.
+    pub(crate) legacy_tree_lod: crate::cell_loader::LegacyTreeRing,
     /// Distant **object** LOD cells for Oblivion's placement scheme, keyed
     /// by cell `(x, y)`. Each entry is the cell's
     /// `DistantLOD\*.lod` instanced `_far.nif` meshes (or an empty sentinel
@@ -588,6 +591,7 @@ impl WorldStreamingState {
             tree_lod_churn: crate::cell_loader::ChurnTracker::default(),
             placement_lod_blocks: HashMap::new(),
             tree_lod: Default::default(),
+            legacy_tree_lod: Default::default(),
             lod_water: None,
             authored_cover_root: None,
             pending: HashMap::new(),

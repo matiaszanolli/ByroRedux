@@ -102,7 +102,7 @@ pub(crate) const LOD_BAND_HYSTERESIS_CELLS: i32 = 1;
 
 /// Convert a vanilla `[TerrainManager]` BU distance into whole cells,
 /// rounding to nearest. 60000 BU / 4096 = 14.65 → 15 cells.
-fn cells_from_bu(bu: f32) -> i32 {
+pub(crate) fn cells_from_bu(bu: f32) -> i32 {
     (bu / EXTERIOR_CELL_UNITS).round() as i32
 }
 
