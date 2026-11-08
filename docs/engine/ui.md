@@ -339,6 +339,12 @@ in-place resize path on `TextureTarget`/`WgpuRenderBackend` today) plus a
 texture re-registration call from `main.rs`'s resize handler — tracked as
 follow-up work, not implemented here.
 
+> **Superseded premise (#6643).** At the pinned Ruffle revision
+> `Player::set_viewport_dimensions` does resize in place (it reaches
+> `TextureTarget::resize`), so no teardown is needed; see the Resize part of
+> [Menu registry, stack and path access](#menu-registry-stack-and-path-access-m48-design-phase-0).
+> The stretch described above is still the behaviour today until Phase 1 wires it.
+
 ## Vulkan integration
 
 The UI is drawn at the tail of the **presentation** pass — the
@@ -734,6 +740,186 @@ modal pause/container/Pip-Boy layer. Gamepad translation is also a later slice;
 the input contract intentionally starts with the native keyboard/pointer path
 used by the existing engine loop.
 
+### Menu registry, stack and path access (M48 design, Phase 0)
+
+Design for [`docs/prd/game-ui-integration.md`](../prd/game-ui-integration.md)
+(GUI-REG, GUI-PATH, GUI-XML), written under #6643. **Nothing in this section is
+built yet** except where it says "today". Evidence is in `docs/data/game-ui/`
+(tables named below) and `crates/ui/tests/avm1_path_access_probe.rs`.
+
+#### Registry and stack (GUI-REG-001…011)
+
+- **Where it lives.** A `MenuRegistry` resource in `byroredux-core`
+  (`crates/core/src/ecs/resources/`). Its readers span the scripting crate
+  (`MenuMode`, `Begin MenuMode`, `Utility.IsInMenuMode`), the SDK alias
+  `ui.menu-is-open`, debug-ui and the binary; core is the one crate all of them
+  reach. The registry is state; surfaces (movie, MenuXml document, native page)
+  call one open / close API and own their presentation.
+- **Entry.** `OpenMenu { name, code, surface, flags, opened_frame }`, ordered
+  bottom to top. `name` is the game-facing name; `code` is the numeric
+  `MenuMode` code on Oblivion / FO3 / FNV. `flags` = pauses game, counts toward
+  menu mode, claims input, is HUD, allows saving.
+- **Where flags come from.** The per-game tables
+  `menu-flags-{skyrim,fallout4,fnv-fo3,oblivion}.tsv` and the code tables
+  `menu-codes-{fnv-fo3,oblivion}.tsv`, compiled in and pinned by a parse test.
+  Skyrim and Fallout 4 flags are the `IMenu` bit set (`kPausesGame` 1<<0 …,
+  28 names, same in both); "counts toward menu mode" equals `kPausesGame` there
+  (SKSE64 `UI::numPausesGame`, F4SE `numPauseGame`, CK `IsInMenuMode`), and the
+  HUD carries neither, which is what keeps it out of menu mode (GUI-EVT-006).
+  Oblivion, FO3 and FNV document **no** pause or menu-mode flag anywhere (GECK,
+  CS, xNVSE, xOBSE, xEdit); the only per-menu datum is the XML
+  `<stackingtype>`. Every such row is `engine_default_applied = yes`, and the
+  default is an engine decision, not a sourced value: `&does_not_stack;`
+  (HUDMainMenu, BreathMenu, QuickKeysMenu, HUDSafeZone, …) is an overlay (no
+  pause, no menu mode, no input claim), everything else is modal. Skyrim and
+  Fallout 4 menus no source documents (5 and 11) default to `kNone`
+  (SKSE64 initialises `IMenu` flags to 0) and the table names them, as
+  GUI-REG-004 requires. The VATS menu never pauses on its own account
+  (`VATS-UI-007`), whatever bit a source gives it.
+- **Derived answers.** Input owner = topmost entry that claims input
+  (GUI-REG-009). Pause = any open entry pauses (GUI-REG-010; replaces the
+  per-page `simulation_paused`). Menu mode = any entry counts (ObScript
+  `MenuMode [code]` through the code table, `Begin MenuMode` blocks, Papyrus
+  `Utility.IsInMenuMode`). `UI.IsMenuOpen(name)` = the name is in the stack.
+- **HUD under a modal (GUI-REG-003).** *In the registry and reported open:
+  settled.* Skyrim `UI::IsMenuOpen` is `menu->OnStack()` (`kOnStack`, 1<<6);
+  the HUD's flags (`0x18902`) carry neither `kModal` nor `kPausesGame`.
+  Fallout 4 `UI::GetMenuOpen` is `OnStack()` too. *Drawn: not settled by any
+  public source.* Fallout 4's mechanism is `passesTopMenuTest &&
+  menuCanBeVisible` with `kRendersUnderPauseMenu`; Skyrim's lever is not
+  named; FO3 / FNV's HUD runs a state machine (`HUDMainMenu::HUDStates`) fed by
+  the other menus. Default until measured: the registry keeps the HUD open and
+  nothing hides it; the draw rule is a runtime-measured item (filed).
+- **Surfaces and Q1.** The target surface per menu is derived, not hand-set:
+  `scripts/game-ui-data/join_surfaces.py` appends `target_surface`,
+  `fallback_surface` and the basis to each `menu-inventory-*.tsv`. A movie whose
+  every host call is H1 or H2 takes S1; one H3 call sends the whole menu to its
+  native page (S3) if one exists, else S4 `recorded`, so a menu is never
+  half-alive. Oblivion / FO3 / FNV documents take S2.
+- **Movies (Q3).** `UiManager` becomes a set of players keyed by registry entry.
+  All visible layers render as separate overlay textures in stack order; every
+  player ticks, only the input owner receives `UiInputEvent`. Closing or failing
+  to load returns input to the next owner in the same frame (GUI-REG-007).
+- **One device (GUI-REG-005): already true.** `shared_descriptors()`
+  (`crates/ui/src/player.rs`) creates the wgpu device once per process (#2733);
+  PRD §3.1 row 2 is stale. The registry only has to report the count.
+
+#### Resize (GUI-REG-008)
+
+Ruffle at the pinned revision **does** resize in place, so #2723's premise
+("no in-place resize path") no longer holds: `Player::set_viewport_dimensions`
+calls `WgpuRenderBackend::set_viewport_dimensions`, which calls
+`TextureTarget::resize` (replaces the target) and rebuilds the surface, then
+`Stage::build_matrices` re-lays the stage. The rebuild is therefore:
+
+1. `SwfPlayer::resize(w, h)`: `set_viewport_dimensions`, reallocate
+   `pixel_buffer`, update `width` / `height`, mark dirty.
+2. The engine, after it recreates the swapchain, calls it for every open movie,
+   then re-registers each UI texture at the new extent through the
+   dynamic-RGBA extent-change path (new image, old one deferred, descriptor
+   kept).
+3. MenuXml: `MenuRenderer::set_screen(ScreenTraits::for_width(w))` and a fresh
+   `frame_size()`.
+
+Not exercised here (no engine run). Phase 1's exit test resizes a headless
+player and asserts `dimensions()`, the pixel buffer length and that the movie
+sees `Stage.onResize`.
+
+#### Path access (GUI-PATH-001…005, decision Q2)
+
+**Q2's first question: can an AVM1 adapter reach `_root` members through
+ExternalInterface? Yes.** `crates/ui/tests/avm1_path_access_probe.rs` builds an
+AVM1 movie by hand, registers three callbacks with
+`flash.external.ExternalInterface.addCallback`, and drives them with
+`Player::call_internal_interface` (the call `SwfPlayer::invoke_callback` makes).
+At Ruffle `2edfd97` it reads flat and nested members, reads an object's members,
+writes existing and new members, and invokes a function by path with its return
+value and side effects visible. So Skyrim does not fall back to Alternative A.
+
+What the probe fixes for the real adapter:
+
+- **Injection.** Prepend a `DoAction` to frame 1, the AVM1 twin of the AVM2
+  `DoAbc2` prepend in `avm2_host.rs` (`write_swf` over the parsed tags). The class
+  is reached as `flash.external.ExternalInterface` (`GetVariable "flash"`, then
+  `GetMember "external"`, `"ExternalInterface"`); a bare `ExternalInterface` is
+  compile-time sugar.
+- **Names.** `__byro_path_get(p)`, `__byro_path_set(p, v)`,
+  `__byro_path_call(p, …args)`, all in `RESERVED_ENGINE_CALLBACKS` by exact name
+  (GUI-PATH-004).
+- **Semantics.** `GetVariable` on a dotted path string resolves it, so get is
+  `return eval(p)` and set is `eval(p) = v`; `CallMethod` with an undefined
+  method name calls the function object.
+- **Not proven, the real adapter owns it.** (a) A bare `eval` reads an absent
+  path as `Undefined`/`Null`, indistinguishable from a present `undefined`
+  (pinned by the probe's last test), so the adapter returns a tagged
+  `{found, value}` using `typeof` (GUI-PATH-002). (b) The probe calls functions
+  with no `this`; the adapter must split at the last dot and `CallMethod` on the
+  parent. (c) `_root` / `_global` / `_level0` scoping as SKSE's `UI.*` takes it.
+  (d) A path used before frame 1 has run: the adapter answers `found: false`
+  and the host decides queue-or-refuse per call (GUI-PATH-003).
+- **AVM2.** The same three names exist on the shipped `__byro` adapter pattern,
+  but AS3 has no `eval`; the adapter walks the dotted path from `root` by
+  splitting and indexing. **Not probed in Phase 0.** Phase 2 adds an AVM2 twin of
+  the probe test before building on it (GUI-PATH-001 needs both VMs).
+
+**A finding that may shrink the AVM1 work (not run).** Vanilla Skyrim
+`hudmenu.swf` registers the standard pair `call` and `respond`;
+`GameDelegate.receiveCall` dispatches the first argument through a table that
+`HUDMenu.InitExtensions` fills with 26 keys, among them
+`SetHealthMeterPercent`, `SetMagickaMeterPercent`, `SetStaminaMeterPercent`,
+`SetCompassAngle(aPlayerAngle, aCompassAngle, abShowCompass)`, the crosshair,
+subtitle and notification calls (`hud-feeds-skyrim-se.tsv`). `invoke_callback("call",
+["SetHealthMeterPercent", 35, false])` should therefore reach the same handler a
+native `root.Invoke` reaches, with no injection; `respond` is the reply channel
+for the movie's own `GameDelegate.call(…, scope, callback)` requests, not a push
+surface as the section on the Scaleform HUD says. This is **bytecode only**; Phase
+2 confirms it at runtime first. Path-only members (not in the table):
+`ShowSurvivalElements`, `ShowArrowCount`, `RefreshActivateButtonArt`,
+`RegisterComponents`, and the `CompassTargetDataA` / `ObjectivesA` arrays, so
+compass *markers* still need GUI-PATH-001. Fallout 4 is a different shape: the
+meter feed is the setter `MeterBarWidget.Percent` (0..1, Skyrim's are 0..100) on
+document-relative paths such as `LeftMeters_mc.HPMeter_mc.MeterBar_mc`, and its
+compass widget has **no code** — heading and markers are entirely native, so
+GUI-HUD-005 cannot be built for Fallout 4 from the shipped movie.
+
+#### MenuXml input (GUI-XML-001…003)
+
+`crates/menuxml` has no input handling today and must stay engine-neutral (no
+dependency on the UI or Ruffle crates). Phase 3 adds
+`MenuRenderer::hit_test(x, y) -> Option<TileHit>` and an activation event
+queue; a new binary-side adapter, `byroredux/src/menu_xml_input.rs`, maps
+`UiInputEvent::{MouseMove, MouseDown, MouseUp, KeyDown}` onto them, routed by the
+registry's input owner so one rule covers both tracks. Values a document reads
+go in through `set_override`, `instantiate_template` and `graft_fragment`.
+
+The corpus-gated tests the Phase 3 exit names, in that module, `#[ignore = "needs
+FNV/FO3 game data on disk"]` like `fo3_corpus.rs`:
+`fnv_menu_document_takes_pointer_input` and
+`fo3_menu_document_takes_pointer_input`. Each loads `menus\message_menu.xml`
+through the game's `MenuProfile` (a non-HUD document; the engine builds its
+buttons by instantiating `MM_ButtonTemplate` under `MM_ButtonList`), instantiates
+two buttons, and asserts that (1) `hit_test` at a button's centre returns that
+tile, (2) a `UiInputEvent` down / up pair on it yields exactly one activation for
+it, (3) a pair outside every tile yields none.
+
+#### Strings and fonts the design depends on
+
+- **`-s` strings (GUI-FONT-005).** They are XML entities (`&-sContinue;`), not
+  record references; 618 occurrences across the three corpora and
+  `expand_entity` expands them to nothing today. Each names a built-in game
+  setting whose default text lives in the executable, with the ESM overriding it:
+  only 1 of 102 (FO3) and 1 of 145 (FNV) names has a `GMST` record at all
+  (`sMorphine`), so "resolve through the plugin's game settings" alone would
+  resolve one string per game. The design needs a per-game default-setting table
+  plus ESM override and a case-insensitive lookup (`&-sOK;` is `sOk`). FO3's
+  table is readable from `Fallout3.exe` (1,066 `s*` defaults); **FNV's source is
+  open** because the on-disk executable is packed (filed).
+- **Fallback font (Q5).** Noto Sans (SIL OFL 1.1), Regular and Bold, bundled.
+  It is already installed here as static instances, covers Latin, Latin Extended
+  (Polish), Cyrillic and Greek, and is redistributable. CJK stays a per-language
+  fallback (Noto Sans CJK, OFL) subset at bundling time, not part of the base
+  bundle. The OFL text ships beside the files.
+
 ### Font loading
 
 Bethesda ships custom font SWFs that menus load at startup. The archive
@@ -1026,6 +1212,15 @@ either AVM1 injection into the movie or SkyUI-class menus — whose poll
 protocol (`updateStats`, `RequestPlayerInfo`, 0-100 percents) the
 response handlers registered at launch already answer, and whose
 state callbacks the driver's push table already targets.
+
+> **Phase 0 note (#6643, bytecode only, not yet run).** The registered
+> `call` callback is not passive for the meters: it enters
+> `GameDelegate.receiveCall`, whose table (filled by `HUDMenu.InitExtensions`)
+> holds `SetHealthMeterPercent`, `SetMagickaMeterPercent`,
+> `SetStaminaMeterPercent` and `SetCompassAngle`, so those four may be reachable
+> through `invoke_callback("call", …)` without injection. See
+> [Menu registry, stack and path access](#menu-registry-stack-and-path-access-m48-design-phase-0);
+> Phase 2 confirms it at runtime before the paragraph above is rewritten.
 
 The smoke gate (`docs/smoke-tests/m48-6-skyrim-hud.sh`) gates the boot
 line, `backend=scaleform` + 3-bar pins, the `hud.debug` callback pair +
