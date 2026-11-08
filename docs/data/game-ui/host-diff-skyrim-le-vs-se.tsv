@@ -1,0 +1,62 @@
+method_or_movie	in_se	in_le	note
+movie:interface\bethesdanetlogin.swf	yes	no	SE-only movie (no counterpart in the LE archive); calls 1 host method(s) in SE
+movie:interface\creationclubmenu.swf	yes	no	SE-only movie (no counterpart in the LE archive); calls 1 host method(s) in SE
+movie:interface\fonts_buttons.swf	yes	no	SE-only movie (no counterpart in the LE archive); calls 0 host method(s) in SE
+movie:interface\fonts_cclub.swf	yes	no	SE-only movie (no counterpart in the LE archive); calls 0 host method(s) in SE
+movie:interface\fonts_cn.swf	yes	no	SE-only movie (no counterpart in the LE archive); calls 0 host method(s) in SE
+movie:interface\fonts_ja.swf	yes	no	SE-only movie (no counterpart in the LE archive); calls 0 host method(s) in SE
+movie:interface\fonts_pl.swf	yes	no	SE-only movie (no counterpart in the LE archive); calls 0 host method(s) in SE
+movie:interface\fonts_ru.swf	yes	no	SE-only movie (no counterpart in the LE archive); calls 0 host method(s) in SE
+movie:interface\gfxfontlib.swf	yes	no	SE-only movie (no counterpart in the LE archive); calls 0 host method(s) in SE
+movie:interface\hudmenu.swf	yes	no	LE ships the menu only as interface\exported\hudmenu.gfx (159225 bytes); SE ships both interface\exported\hudmenu.gfx and the .swf
+movie:interface\kinectmenu.swf	yes	no	SE-only movie (no counterpart in the LE archive); calls 0 host method(s) in SE
+movie:interface\loadwaitspinner.swf	yes	no	SE-only movie (no counterpart in the LE archive); calls 0 host method(s) in SE
+movie:interface\logindialog.swf	yes	no	SE-only movie (no counterpart in the LE archive); calls 1 host method(s) in SE
+movie:interface\modmanager.swf	yes	no	SE-only movie (no counterpart in the LE archive); calls 1 host method(s) in SE
+movie:interface\quest_journal.swf	yes	no	LE ships the menu only as interface\exported\quest_journal.gfx (112193 bytes); SE ships both interface\exported\quest_journal.gfx and the .swf
+movie:interface\racesex_menu.swf	yes	no	LE ships the menu only as interface\exported\racesex_menu.gfx (32641 bytes); SE ships both interface\exported\racesex_menu.gfx and the .swf
+movie:interface\safezone.swf	yes	no	LE ships the menu only as interface\exported\safezone.gfx (908 bytes); SE ships both interface\exported\safezone.gfx and the .swf
+movie:interface\streaminginstall.swf	yes	no	SE-only movie (no counterpart in the LE archive); calls 0 host method(s) in SE
+movie:interface\textentry.swf	yes	no	LE ships the menu only as interface\exported\textentry.gfx (15887 bytes); SE ships both interface\exported\textentry.gfx and the .swf
+movie:interface\tutorialmenu.swf	yes	no	LE ships the menu only as interface\exported\tutorialmenu.gfx (25160 bytes); SE ships both interface\exported\tutorialmenu.gfx and the .swf
+method:ActivateJoyConStrapInstruction	yes	no	SE callers (1): interface\startmenu.swf; arity 2; caller present in LE without the call: interface\startmenu.swf
+method:AuxButtonPress	yes	no	SE callers (1): interface\craftingmenu.swf; arity 2; caller present in LE without the call: interface\craftingmenu.swf
+method:ChangeUser	yes	no	SE callers (1): interface\startmenu.swf; arity 2; caller present in LE without the call: interface\startmenu.swf
+method:CharacterSelected	yes	no	SE callers (3): interface\exported\quest_journal.gfx, interface\quest_journal.swf, interface\startmenu.swf; arity 2; caller present in LE without the call: interface\exported\quest_journal.gfx, interface\startmenu.swf
+method:CheckForMouseEquip	yes	no	SE callers (2): interface\containermenu.swf, interface\inventorymenu.swf; arity 4; caller present in LE without the call: interface\containermenu.swf, interface\inventorymenu.swf
+method:ClickCallback	yes	no	SE callers (1): interface\map.swf; arity 2; caller present in LE without the call: interface\map.swf
+method:ConfirmDone	yes	no	SE callers (2): interface\exported\racesex_menu.gfx, interface\racesex_menu.swf; arity 2; caller present in LE without the call: interface\exported\racesex_menu.gfx
+method:CraftButtonPress	yes	no	SE callers (1): interface\craftingmenu.swf; arity 2; caller present in LE without the call: interface\craftingmenu.swf
+method:CreationClub	yes	no	SE callers (1): interface\startmenu.swf; arity 2; caller present in LE without the call: interface\startmenu.swf
+method:CurrentLocationCallback	yes	no	SE callers (1): interface\map.swf; arity 2; caller present in LE without the call: interface\map.swf
+method:DoDeleteSaveUISanityCheck	yes	no	SE callers (1): interface\startmenu.swf; arity 2; caller present in LE without the call: interface\startmenu.swf
+method:DownloadAll	yes	no	SE callers (1): interface\startmenu.swf; arity 2; caller present in LE without the call: interface\startmenu.swf
+method:FirstTimeOunceDataTransferCheck	yes	no	SE callers (1): interface\startmenu.swf; arity 2; caller present in LE without the call: interface\startmenu.swf
+method:ForceStopSaveListLoading	yes	no	SE callers (3): interface\exported\quest_journal.gfx, interface\quest_journal.swf, interface\startmenu.swf; arity 2; caller present in LE without the call: interface\exported\quest_journal.gfx, interface\startmenu.swf
+method:GetMouseButtonForSetDestination	yes	no	SE callers (1): interface\map.swf; arity 4; caller present in LE without the call: interface\map.swf
+method:HELP	yes	no	SE callers (1): interface\startmenu.swf; arity 2; caller present in LE without the call: interface\startmenu.swf
+method:MOD	yes	no	SE callers (1): interface\startmenu.swf; arity 2; caller present in LE without the call: interface\startmenu.swf
+method:ModManager	yes	no	SE callers (2): interface\exported\quest_journal.gfx, interface\quest_journal.swf; arity 2; caller present in LE without the call: interface\exported\quest_journal.gfx
+method:ORBISDeleteSave	yes	no	SE callers (3): interface\exported\quest_journal.gfx, interface\quest_journal.swf, interface\startmenu.swf; arity 2; caller present in LE without the call: interface\exported\quest_journal.gfx, interface\startmenu.swf
+method:OnOunceDataTransfer	yes	no	SE callers (1): interface\startmenu.swf; arity 2; caller present in LE without the call: interface\startmenu.swf
+method:OnPS5DataTransfer	yes	no	SE callers (1): interface\startmenu.swf; arity 2; caller present in LE without the call: interface\startmenu.swf
+method:OpenJournalCallback	yes	no	SE callers (1): interface\map.swf; arity 2; caller present in LE without the call: interface\map.swf
+method:OpenKinectTuner	yes	no	SE callers (2): interface\exported\quest_journal.gfx, interface\quest_journal.swf; arity 2; caller present in LE without the call: interface\exported\quest_journal.gfx
+method:PopulateCharacterList	yes	no	SE callers (3): interface\exported\quest_journal.gfx, interface\quest_journal.swf, interface\startmenu.swf; arity 2; caller present in LE without the call: interface\exported\quest_journal.gfx, interface\startmenu.swf
+method:PopulateCreationClubTopics	yes	no	SE callers (2): interface\exported\quest_journal.gfx, interface\quest_journal.swf; arity 2; caller present in LE without the call: interface\exported\quest_journal.gfx
+method:QuickSave	yes	no	SE callers (2): interface\exported\quest_journal.gfx, interface\quest_journal.swf; arity 2; caller present in LE without the call: interface\exported\quest_journal.gfx
+method:RememberCurrentTabIndex	yes	no	SE callers (2): interface\exported\quest_journal.gfx, interface\quest_journal.swf; arity 2; caller present in LE without the call: interface\exported\quest_journal.gfx
+method:RequestCreationClubText	yes	no	SE callers (2): interface\exported\quest_journal.gfx, interface\quest_journal.swf; arity 2; caller present in LE without the call: interface\exported\quest_journal.gfx
+method:ResetControlsToDefaults_Ounce	yes	no	SE callers (2): interface\exported\quest_journal.gfx, interface\quest_journal.swf; arity 2; caller present in LE without the call: interface\exported\quest_journal.gfx
+method:ShouldShowKinectTunerOption	yes	no	SE callers (2): interface\exported\quest_journal.gfx, interface\quest_journal.swf; arity 4; caller present in LE without the call: interface\exported\quest_journal.gfx
+method:ShouldShowMod	yes	no	SE callers (2): interface\exported\quest_journal.gfx, interface\quest_journal.swf; arity 4; caller present in LE without the call: interface\exported\quest_journal.gfx
+method:Sky10DLCPressed	yes	no	SE callers (1): interface\startmenu.swf; arity 2; caller present in LE without the call: interface\startmenu.swf
+method:StartMouseRotation	yes	no	SE callers (6): interface\bartermenu.swf, interface\containermenu.swf, interface\craftingmenu.swf ...; arity 2; caller present in LE without the call: interface\bartermenu.swf, interface\containermenu.swf, interface\craftingmenu.swf
+method:StartState	yes	no	SE callers (1): interface\startmenu.swf; arity 2; caller present in LE without the call: interface\startmenu.swf
+method:StopMouseRotation	yes	no	SE callers (6): interface\bartermenu.swf, interface\containermenu.swf, interface\craftingmenu.swf ...; arity 2; caller present in LE without the call: interface\bartermenu.swf, interface\containermenu.swf, interface\craftingmenu.swf
+method:ToggleFavorite	no	yes	LE callers (1): interface\containermenu.swf; arity 2; not in SKYRIM_SKYUI_METHODS (crates/ui/src/catalog.rs)
+method:ToggleMapCallback	yes	no	SE callers (1): interface\map.swf; arity 2; caller present in LE without the call: interface\map.swf
+method:UseCurrentCharacterFilter	yes	no	SE callers (2): interface\exported\quest_journal.gfx, interface\quest_journal.swf; arity 2; caller present in LE without the call: interface\exported\quest_journal.gfx
+method:ZoomItemModel	yes	no	SE callers (5): interface\bartermenu.swf, interface\containermenu.swf, interface\giftmenu.swf ...; arity 2; caller present in LE without the call: interface\bartermenu.swf, interface\containermenu.swf, interface\giftmenu.swf
+method:currentState	yes	no	SE callers (1): interface\startmenu.swf; arity 2; caller present in LE without the call: interface\startmenu.swf
+method:myLog	yes	no	SE callers (33): interface\bartermenu.swf, interface\bethesdanetlogin.swf, interface\bookmenu.swf ...; arity 2; caller present in LE without the call: interface\bartermenu.swf, interface\bookmenu.swf, interface\containermenu.swf
