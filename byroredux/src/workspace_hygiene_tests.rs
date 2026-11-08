@@ -1337,7 +1337,9 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // `texture_read_cost.rs` (the Q2 (b) read-cost measurement), plus
         // `dds_mip_scan --floor-edge`; all three produce the tables in
         // docs/engine/texture-streaming.md §2.
-        ("bsa", 18, 1745),
+        // M48 Phase 0 (#6643) re-measure: +1 — `archive_list_all.rs`, which lists every path of a BSA
+        // or BA2 (the menu inventories in docs/data/game-ui/ name it as their source).
+        ("bsa", 19, 1745),
         ("fsr3-sys", 1, 284),
         ("hkx", 14, 863),
         ("menuxml", 1, 197),
@@ -1345,7 +1347,9 @@ fn example_targets_hold_their_per_crate_ceilings() {
         ("nif", 38, 4405),
         // M43 — +1: `pex_list_fns.rs`, which prints a script's typed function signatures; it read the
         // FO4 `OnStory*` event payloads out of `Quest.pex` (docs/engine/story-manager.md §6.4).
-        ("pex", 4, 1241),
+        // M48 Phase 0 (#6643) re-measure: +1 — `pex_find_call.rs`, which lists every call site of a
+        // function across an archive's scripts (the race-menu caller census, race-menu-caller-wait.tsv).
+        ("pex", 5, 1304),
         // #6350 re-measure: +3 corpus probes (probe_bptd — the BPTD spike,
         // probe_weap_dnam — DNAM VATS-slot alignment, probe_gmst_vats — the
         // fVATS/fActionPoints defaults dump). All three carry wiki-pinned
@@ -1363,7 +1367,9 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // M48 Phase 0 (#6643) `info_result_census.rs` (INFO result-script greps `obscript_tools` cannot reach) and
         // M24.2 Phase 2 (#6654) `perk_body_census.rs` (Ability / Quest ranks, DATA level and NNAM per master),
         // both cited from their PRDs.
-        ("plugin", 72, 9370),
+        // M48 Phase 0 (#6643) re-measure: +1 — `menu_gmst_census.rs`, the MenuXml document inventory
+        // and the `&-s` setting-reference census (docs/data/game-ui/menu-string-refs-*.tsv).
+        ("plugin", 73, 9592),
         // M47.3 result scripts — `obscript_tools avcodes` aligns the Fallout
         // misc-stat codes and `live` names the quests a script advanced
         // (no new target; the existing triage tool grew).
@@ -1373,6 +1379,10 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // #6195 — `layer_census.rs`, the real-data check that measured each
         // game's normal-map green convention for terrain height generation.
         ("terrain-height", 1, 150),
+        // M48 Phase 0 (#6643) — three read-only Scaleform censuses whose output is checked in under
+        // docs/data/game-ui/: `host_call_sites.rs` (GUI-HOST-001 call sites), `gfx_extension_census.rs`
+        // (GUI-GFX-003) and `hud_feed_paths.rs` (GUI-HUD-003); each states its re-run command.
+        ("ui", 3, 2276),
     ];
     let by_entry = |root: &std::path::Path| {
         // `crates/<name>/examples` or `byroredux/examples` → crate name.
