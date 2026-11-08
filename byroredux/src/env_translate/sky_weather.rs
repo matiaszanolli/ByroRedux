@@ -96,18 +96,13 @@ pub(crate) fn translate_exterior_cell_lighting(
         // #3956 — day-TOD snapshot, so the day height profile, matching the
         // `fog_day_*` distance ramp beside it. Overrides `bare`'s
         // no-height-profile medium fit.
-        fog_medium: {
-            let medium = crate::fog::FogMedium::from_legacy_ramp_with_power(
-                wthr.fog_day_near,
-                wthr.fog_day_far,
-                Some(wthr.fog_day_max),
-                Some(wthr.fog_day_power),
-            );
-            match wthr.fog_height {
-                Some(height) => medium.with_authored_height_range(height.day_near_height_range),
-                None => medium,
-            }
-        },
+        fog_medium: crate::fog::FogMedium::from_authored_fog(
+            wthr.fog_day_near,
+            wthr.fog_day_far,
+            Some(wthr.fog_day_max),
+            Some(wthr.fog_day_power),
+            wthr.fog_height.map(|h| h.day_near_height_range),
+        ),
         // WTHR-driven exterior lighting; the extended XCLL tail applies to
         // interior cells (and not-yet-wired exterior lighting overrides).
         // #861 / #5814 — `..bare(..)` supplies every optional tail field
@@ -433,23 +428,21 @@ pub(crate) fn translate_weather(
     // `None` (every other game, and the 8 FO4 weathers whose `FNAM` predates
     // the extension) leaves the engine default in place.
     let mut fog_media = [
-        crate::fog::FogMedium::from_legacy_ramp_with_power(
+        crate::fog::FogMedium::from_authored_fog(
             wthr.fog_day_near,
             wthr.fog_day_far,
             Some(wthr.fog_day_max),
             Some(wthr.fog_day_power),
+            wthr.fog_height.map(|h| h.day_near_height_range),
         ),
-        crate::fog::FogMedium::from_legacy_ramp_with_power(
+        crate::fog::FogMedium::from_authored_fog(
             wthr.fog_night_near,
             wthr.fog_night_far,
             Some(wthr.fog_night_max),
             Some(wthr.fog_night_power),
+            wthr.fog_height.map(|h| h.night_near_height_range),
         ),
     ];
-    if let Some(height) = wthr.fog_height {
-        fog_media[0] = fog_media[0].with_authored_height_range(height.day_near_height_range);
-        fog_media[1] = fog_media[1].with_authored_height_range(height.night_near_height_range);
-    }
     for medium in &mut fog_media {
         medium.coverage = coverage;
     }

@@ -1632,3 +1632,105 @@ fn cell_data_default_is_the_absent_everything_cell() {
     assert!(cell.navmeshes.is_empty() && cell.pathgrids.is_empty());
     assert!(cell.ownership.is_none() && cell.regional_color_override.is_none());
 }
+
+
+/// A Skyrim-shaped 92-byte XCLL body (Inherits at 88) with `tail` appended, for FO4 / FO76 shapes.
+fn creation_xcll(tail: &[u8]) -> Vec<u8> {
+    let mut xcll = vec![0u8; 92];
+    xcll[0..4].copy_from_slice(&[80, 82, 85, 0]); // ambient
+    xcll[12..16].copy_from_slice(&100.0f32.to_le_bytes()); // fog near
+    xcll[16..20].copy_from_slice(&9000.0f32.to_le_bytes()); // fog far
+    xcll[36..40].copy_from_slice(&0.5f32.to_le_bytes()); // fog power
+    xcll.extend_from_slice(tail);
+    xcll
+}
+
+/// The height-fog tail the FO4 / FO76 XCLL and LGTM `DATA` carry from byte 92, 136 bytes in all.
+fn creation_height_tail(with_far_height: bool) -> Vec<u8> {
+    let mut tail = Vec::new();
+    tail.extend_from_slice(&64.0f32.to_le_bytes()); // 92 near height mid
+    tail.extend_from_slice(&12000.0f32.to_le_bytes()); // 96 near height range
+    tail.extend_from_slice(&[10, 20, 30, 0]); // 100 fog color high near
+    tail.extend_from_slice(&[40, 50, 60, 0]); // 104 fog color high far
+    tail.extend_from_slice(&0.9f32.to_le_bytes()); // 108 high density scale
+    tail.extend_from_slice(&1.1f32.to_le_bytes()); // 112 fog near scale
+    tail.extend_from_slice(&1.2f32.to_le_bytes()); // 116 fog far scale
+    tail.extend_from_slice(&1.3f32.to_le_bytes()); // 120 fog high near scale
+    tail.extend_from_slice(&1.4f32.to_le_bytes()); // 124 fog high far scale
+    if with_far_height {
+        tail.extend_from_slice(&(-6400.0f32).to_le_bytes()); // 128 far height mid
+        tail.extend_from_slice(&15000.0f32.to_le_bytes()); // 132 far height range
+    }
+    tail
+}
+
+fn parse_interior_xcll(game: crate::esm::reader::GameKind, xcll: &[u8]) -> super::super::CellLighting {
+    let mut sub_data = Vec::new();
+    let edid = "HeightFogInt\0";
+    sub_data.extend_from_slice(b"EDID");
+    sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(edid.as_bytes());
+    sub_data.extend_from_slice(b"DATA");
+    sub_data.extend_from_slice(&1u16.to_le_bytes());
+    sub_data.push(0x01);
+    sub_data.extend_from_slice(b"XCLL");
+    sub_data.extend_from_slice(&(xcll.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(xcll);
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"CELL");
+    buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes());
+    buf.extend_from_slice(&0xCAFEu32.to_le_bytes());
+    buf.extend_from_slice(&[0u8; 8]);
+    buf.extend_from_slice(&sub_data);
+    let mut reader = super::super::super::reader::EsmReader::with_variant(
+        &buf,
+        super::super::super::reader::EsmVariant::Tes5Plus,
+    );
+    let end = buf.len();
+    let mut cells = HashMap::new();
+    parse_cell_group(&mut reader, end, &mut cells, game).unwrap();
+    cells
+        .get("heightfogint")
+        .expect("interior CELL present")
+        .lighting
+        .clone()
+        .expect("XCLL must populate lighting")
+}
+
+/// VLM-HF-004: the FO4 / FO76 XCLL carries the height-fog tail after the Skyrim-shaped body.
+#[test]
+fn parse_cell_fo4_xcll_decodes_height_fog_tail() {
+    use crate::esm::reader::GameKind;
+    for (game, size) in [(GameKind::Fallout4, 136usize), (GameKind::Fallout76, 136)] {
+        let lit = parse_interior_xcll(game, &creation_xcll(&creation_height_tail(true)));
+        assert_eq!(lit.fog_power, Some(0.5), "the shared body still decodes ({game:?}, {size} bytes)");
+        let tail = lit.height_fog.expect("a 136-byte XCLL carries the tail");
+        assert_eq!(tail.near_height_mid, 64.0);
+        assert_eq!(tail.near_height_range, 12000.0);
+        assert_eq!(tail.fog_color_high_near, [10.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0]);
+        assert_eq!(tail.fog_color_high_far, [40.0 / 255.0, 50.0 / 255.0, 60.0 / 255.0]);
+        assert_eq!(tail.high_density_scale, 0.9);
+        assert_eq!(
+            (tail.fog_near_scale, tail.fog_far_scale, tail.fog_high_near_scale, tail.fog_high_far_scale),
+            (1.1, 1.2, 1.3, 1.4)
+        );
+        assert_eq!((tail.far_height_mid, tail.far_height_range), (Some(-6400.0), Some(15000.0)));
+        assert_eq!(lit.height_fog_tail(), Some(tail), "the accessor returns the decoded tail");
+    }
+}
+
+/// FO4's 128-byte XCLL stops before the far height fields; its 92-byte one has no tail at all; a
+/// pre-Skyrim game never reads one.
+#[test]
+fn the_height_fog_tail_follows_the_xcll_size_and_game() {
+    use crate::esm::reader::GameKind;
+    let short = parse_interior_xcll(GameKind::Fallout4, &creation_xcll(&creation_height_tail(false)));
+    let tail = short.height_fog.expect("128 bytes carry the near layer");
+    assert_eq!((tail.near_height_range, tail.far_height_mid, tail.far_height_range), (12000.0, None, None));
+    let none = parse_interior_xcll(GameKind::Fallout4, &creation_xcll(&[]));
+    assert!(none.height_fog.is_none() && none.height_fog_tail().is_none(), "92 bytes: no tail");
+    // Skyrim's 92-byte shape never reads past its body, whatever follows.
+    let skyrim = parse_interior_xcll(GameKind::Skyrim, &creation_xcll(&creation_height_tail(true)));
+    assert!(skyrim.height_fog.is_none(), "the tail is a Creation-title shape, not Skyrim's");
+}

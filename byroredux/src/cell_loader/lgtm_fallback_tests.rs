@@ -42,6 +42,7 @@ fn template_with_amber_ambient(form_id: u32) -> LgtmRecord {
         specular_alpha: Some(0.5),
         fresnel_power: Some(2.0),
         starfield: None,
+        height_fog: None,
     }
 }
 
@@ -88,6 +89,7 @@ fn explicit_xcll_takes_priority_over_lgtm_template() {
         fresnel_power: None,
         inheritance_flags: Some(0),
         starfield: None,
+        height_fog: None,
     });
     cell.lighting_template_form = Some(0x0020_0001);
 
@@ -133,6 +135,7 @@ fn xcll_inheritance_mask_merges_only_selected_lgtm_groups() {
         fresnel_power: Some(0.14),
         inheritance_flags: Some(0x079f),
         starfield: None,
+        height_fog: None,
     });
     cell.lighting_template_form = Some(0x000A_1196);
     let template = template_with_amber_ambient(0x000A_1196);
@@ -185,6 +188,7 @@ fn xcll_full_inheritance_includes_rotation_and_directional_fade() {
         fresnel_power: None,
         inheritance_flags: Some(0x07ff),
         starfield: None,
+        height_fog: None,
     });
     cell.lighting_template_form = Some(0x0020_0001);
     let template = template_with_amber_ambient(0x0020_0001);

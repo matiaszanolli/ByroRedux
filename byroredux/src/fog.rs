@@ -214,6 +214,26 @@ impl FogMedium {
         }
     }
 
+    /// The one translation of an authored fog set into a medium (VLM-HF-005): the distance ramp
+    /// with its maximum opacity and power ([`Self::from_legacy_ramp_with_power`]), and the authored
+    /// near height range when the record carries one ([`Self::with_authored_height_range`]). The
+    /// weather path (`WTHR` `FNAM`) and the cell path (`XCLL` / `LGTM`: the FO4 / FO76 tail and
+    /// Starfield's) both come through here, so a height profile reaches the medium the same way
+    /// wherever it was authored.
+    pub(crate) fn from_authored_fog(
+        near_world: f32,
+        far_world: f32,
+        max_opacity: Option<f32>,
+        power: Option<f32>,
+        near_height_range_world: Option<f32>,
+    ) -> Self {
+        let medium = Self::from_legacy_ramp_with_power(near_world, far_world, max_opacity, power);
+        match near_height_range_world {
+            Some(range) => medium.with_authored_height_range(range),
+            None => medium,
+        }
+    }
+
     /// A clear room can still contain enough dust to reveal a genuine shaft.
     /// Only interiors with an authored shaft or architectural glass use this floor; an
     /// existing stronger XCLL/WTHR medium keeps its translated coefficient.
@@ -2686,6 +2706,45 @@ mod tests {
             assert_eq!(medium.emissive_radiance, [0.0; 3]);
             assert_eq!(aperture.emissive_radiance, [0.0; 3]);
         }
+    }
+}
+
+#[cfg(test)]
+mod authored_fog_tests {
+    use super::*;
+
+    /// VLM-HF-005: the weather and the cell path both translate through `from_authored_fog`, so an
+    /// authored near height range becomes the same scale height either way, and no range keeps the
+    /// engine default.
+    #[test]
+    fn an_authored_height_range_reaches_the_medium_through_one_function() {
+        let with_range = FogMedium::from_authored_fog(0.0, 8000.0, Some(1.0), Some(0.5), Some(10_000.0));
+        let expected = 10_000.0 / byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
+        assert!((with_range.scale_height_meters - expected).abs() < 1e-3);
+        let without = FogMedium::from_authored_fog(0.0, 8000.0, Some(1.0), Some(0.5), None);
+        assert_eq!(without.scale_height_meters, FogMedium::DEFAULT_SCALE_HEIGHT_METERS);
+        // The extinction is the powered fit either way.
+        assert_eq!(
+            with_range.extinction_per_meter,
+            FogMedium::from_legacy_ramp_with_power(0.0, 8000.0, Some(1.0), Some(0.5)).extinction_per_meter
+        );
+        // A range the shader cannot use is ignored, as `with_authored_height_range` says.
+        for bad in [0.0, -5.0, f32::NAN] {
+            assert_eq!(
+                FogMedium::from_authored_fog(0.0, 8000.0, None, None, Some(bad)).scale_height_meters,
+                FogMedium::DEFAULT_SCALE_HEIGHT_METERS
+            );
+        }
+    }
+
+    /// VLM-HF-006: the scale height already interpolates in `lerp`, so a day / night or weather
+    /// cross-fade carries the authored height with no second interpolator.
+    #[test]
+    fn a_cross_fade_carries_the_authored_height() {
+        let day = FogMedium::from_authored_fog(0.0, 8000.0, None, None, Some(10_000.0));
+        let night = FogMedium::from_authored_fog(0.0, 8000.0, None, None, Some(20_000.0));
+        let mid = day.lerp(night, 0.5);
+        assert!((mid.scale_height_meters - (day.scale_height_meters + night.scale_height_meters) * 0.5).abs() < 1e-4);
     }
 }
 

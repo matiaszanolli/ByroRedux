@@ -879,6 +879,7 @@ fn lighting_from_template(template: &esm::records::LgtmRecord) -> esm::cell::Cel
         // as XCLL and is decoded at the parser boundary; forward it so a
         // plugin CELL with LTMP and no XCLL keeps its authored heights.
         starfield: template.starfield.clone(),
+        height_fog: template.height_fog,
     }
 }
 
@@ -1310,6 +1311,7 @@ mod tests {
             fresnel_power: None,
             inheritance_flags: None,
             starfield: None,
+            height_fog: None,
         }
     }
 

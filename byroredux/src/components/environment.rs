@@ -146,11 +146,14 @@ impl CellLightingRes {
             fog_color: lit.fog_color,
             fog_near: lit.fog_near,
             fog_far: lit.fog_far,
-            fog_medium: crate::fog::FogMedium::from_legacy_ramp_with_power(
+            // VLM-HF-004 / -005: the FO4 / FO76 tail's, or Starfield's, near height range reaches
+            // the medium through the same function the weather path uses.
+            fog_medium: crate::fog::FogMedium::from_authored_fog(
                 lit.fog_near,
                 lit.fog_far,
                 lit.fog_max,
                 lit.fog_power,
+                lit.height_fog_tail().map(|h| h.near_height_range),
             ),
             directional_fade: lit.directional_fade,
             fog_clip: lit.fog_clip,
@@ -392,6 +395,7 @@ mod cell_lighting_res_tests {
             fresnel_power: None,
             inheritance_flags: None,
             starfield: None,
+            height_fog: None,
         }
     }
 
@@ -424,6 +428,7 @@ mod cell_lighting_res_tests {
             fresnel_power: Some(2.5),
             inheritance_flags: Some(0),
             starfield: None,
+            height_fog: None,
         }
     }
 
@@ -506,6 +511,7 @@ mod cell_lighting_res_tests {
             fresnel_power: None,
             inheritance_flags: None,
             starfield: None,
+            height_fog: None,
         };
         let res = CellLightingRes::from_cell_lighting(&lit, [0.0, 1.0, 0.0], true);
         assert!(res.directional_fade.is_none());

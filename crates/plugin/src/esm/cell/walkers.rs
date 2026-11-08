@@ -313,6 +313,8 @@ fn parse_cell_group_inner(
                                     specular_alpha: None,
                                     fresnel_power: None,
                                     inheritance_flags: None,
+                                    // Starfield's tail lives in `starfield`; `height_fog_tail()` maps it.
+                                    height_fog: None,
                                     starfield: Some(starfield),
                                 });
                                 // SF XCLL fully decoded — skip the Skyrim path.
@@ -411,6 +413,13 @@ fn parse_cell_group_inner(
                                 inheritance_flags,
                                 // Skyrim/FNV/Oblivion path — no SF tail.
                                 starfield: None,
+                                // FO4 / FO76 carry the height-fog tail after the Skyrim-shaped
+                                // body (VLM-HF-004); every other shape stops before it.
+                                height_fog: if matches!(game, GameKind::Fallout4 | GameKind::Fallout76) {
+                                    super::decode_creation_height_fog_tail(&sub.data)
+                                } else {
+                                    None
+                                },
                             });
                         }
                         // Everything walker-shared falls through to

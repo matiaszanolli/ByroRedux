@@ -1446,6 +1446,9 @@ pub struct LgtmRecord {
     /// Starfield-only height-fog model from the 108-byte DATA tail
     /// (#5002) — same shape as the SF XCLL arm in `cell/walkers.rs`.
     pub starfield: Option<StarfieldLighting>,
+    /// The height-fog tail (VLM-HF-004): FO4 / FO76 `DATA` bytes 92... Starfield's lives in
+    /// [`Self::starfield`].
+    pub height_fog: Option<crate::esm::cell::HeightFogTail>,
 }
 
 pub fn parse_lgtm(form_id: u32, subs: &[SubRecord], game: GameKind) -> LgtmRecord {
@@ -1511,6 +1514,10 @@ pub fn parse_lgtm(form_id: u32, subs: &[SubRecord], game: GameKind) -> LgtmRecor
                     out.fog_max = r.f32().ok();
                     out.light_fade_begin = r.f32().ok();
                     out.light_fade_end = r.f32().ok();
+                    // The same tail as the XCLL's, from byte 92 (VLM-HF-004).
+                    if matches!(game, GameKind::Fallout4 | GameKind::Fallout76) {
+                        out.height_fog = crate::esm::cell::decode_creation_height_fog_tail(&sub.data);
+                    }
                 }
             }
             b"DALC" if sub.data.len() >= 24 => {
@@ -2218,6 +2225,37 @@ mod tests {
         assert!(parse_imgs(0x1, &dnam, GameKind::Oblivion)
             .image_space
             .is_none());
+    }
+
+    /// VLM-HF-004: the FO4 / FO76 `LGTM` `DATA` carries the same height-fog tail as the XCLL, from
+    /// byte 92; a Skyrim LGTM, whatever follows its body, does not.
+    #[test]
+    fn parse_lgtm_fo4_decodes_height_fog_tail() {
+        let mut data = vec![0u8; 92];
+        data[12..16].copy_from_slice(&64.0f32.to_le_bytes()); // fog near
+        data[16..20].copy_from_slice(&4000.0f32.to_le_bytes()); // fog far
+        data.extend_from_slice(&32.0f32.to_le_bytes()); // 92 near height mid
+        data.extend_from_slice(&10000.0f32.to_le_bytes()); // 96 near height range
+        data.extend_from_slice(&[255, 0, 0, 0]); // 100 high near colour
+        data.extend_from_slice(&[0, 255, 0, 0]); // 104 high far colour
+        for scale in [0.95f32, 1.0, 1.0, 1.0, 1.0] {
+            data.extend_from_slice(&scale.to_le_bytes()); // 108.. high density, four scales
+        }
+        data.extend_from_slice(&0.0f32.to_le_bytes()); // 128 far height mid
+        data.extend_from_slice(&10000.0f32.to_le_bytes()); // 132 far height range
+        let subs = vec![sub(b"EDID", b"CommonwealthLgtm\0"), sub(b"DATA", &data)];
+        for game in [GameKind::Fallout4, GameKind::Fallout76] {
+            let l = parse_lgtm(0xF04, &subs, game);
+            assert_eq!(l.fog_far, 4000.0, "the shared body still decodes");
+            let tail = l.height_fog.expect("a 136-byte DATA carries the tail");
+            assert_eq!((tail.near_height_mid, tail.near_height_range), (32.0, 10000.0));
+            assert_eq!(tail.fog_color_high_near, [1.0, 0.0, 0.0]);
+            assert_eq!(tail.fog_color_high_far, [0.0, 1.0, 0.0]);
+            assert_eq!(tail.high_density_scale, 0.95);
+            assert_eq!(tail.far_height_range, Some(10000.0));
+        }
+        assert!(parse_lgtm(0xF04, &subs, GameKind::Skyrim).height_fog.is_none());
+        assert!(parse_lgtm(0xF04, &[sub(b"DATA", &data[..92])], GameKind::Fallout4).height_fog.is_none());
     }
 
     #[test]

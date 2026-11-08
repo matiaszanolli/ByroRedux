@@ -74,6 +74,107 @@ pub struct CellLighting {
     /// `None` (Starfield doesn't author them) and `directional_fade` is
     /// `None` (Starfield reuses byte 28 as [`StarfieldLighting::gravity_scale`]).
     pub starfield: Option<StarfieldLighting>,
+    /// The FO4 / FO76 height-fog tail (Volumetric Lighting PRD VLM-HF-004), bytes 92.. of the XCLL.
+    /// `None` when the record stops before it (every earlier game, the FO4 92-byte shape) and on
+    /// Starfield, whose tail is [`Self::starfield`]. Read both through [`Self::height_fog_tail`].
+    pub height_fog: Option<HeightFogTail>,
+}
+
+impl CellLighting {
+    /// The height-fog model of whichever shape this lighting carries, in the common type: the FO4 /
+    /// FO76 tail, or Starfield's mapped onto it (after the metric lift, so heights are engine units
+    /// on Starfield and wire units on FO4 / FO76, which author them in engine units).
+    pub fn height_fog_tail(&self) -> Option<HeightFogTail> {
+        self.height_fog.or_else(|| self.starfield.as_ref().map(HeightFogTail::from))
+    }
+}
+
+/// The height-fog model after the Skyrim-shaped `XCLL` / `LGTM` body, shared by FO4, FO76 and (mapped
+/// from [`StarfieldLighting`]) Starfield. xEdit names the fields (FO4 `wbDefinitionsFO4.pas`, XCLL
+/// and LGTM `DATA`; FO76 the same) and documents no semantics; the Phase 0 census could not settle
+/// them either (VLM-HF-003, #6771), so only the near height range is consumed today.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HeightFogTail {
+    /// Near-fog height midpoint (bytes 92-95).
+    pub near_height_mid: f32,
+    /// Near-fog height range (bytes 96-99).
+    pub near_height_range: f32,
+    /// High-altitude near-fog colour (bytes 100-102).
+    pub fog_color_high_near: [f32; 3],
+    /// High-altitude far-fog colour (bytes 104-106).
+    pub fog_color_high_far: [f32; 3],
+    /// High-density fog scale (bytes 108-111).
+    pub high_density_scale: f32,
+    /// Fog near scale (bytes 112-115).
+    pub fog_near_scale: f32,
+    /// Fog far scale (bytes 116-119).
+    pub fog_far_scale: f32,
+    /// High-altitude fog near scale (bytes 120-123).
+    pub fog_high_near_scale: f32,
+    /// High-altitude fog far scale (bytes 124-127).
+    pub fog_high_far_scale: f32,
+    /// Far-fog height midpoint (bytes 128-131). `None` on the 128-byte FO4 shape.
+    pub far_height_mid: Option<f32>,
+    /// Far-fog height range (bytes 132-135). `None` on the 128-byte FO4 shape.
+    pub far_height_range: Option<f32>,
+}
+
+impl From<&StarfieldLighting> for HeightFogTail {
+    /// Starfield's tail is the same model at different offsets; one shape for every consumer.
+    fn from(sf: &StarfieldLighting) -> Self {
+        Self {
+            near_height_mid: sf.near_height_mid,
+            near_height_range: sf.near_height_range,
+            fog_color_high_near: sf.fog_color_high_near,
+            fog_color_high_far: sf.fog_color_high_far,
+            high_density_scale: sf.high_density_scale,
+            fog_near_scale: sf.fog_near_scale,
+            fog_far_scale: sf.fog_far_scale,
+            fog_high_near_scale: sf.fog_high_near_scale,
+            fog_high_far_scale: sf.fog_high_far_scale,
+            far_height_mid: Some(sf.far_height_mid),
+            far_height_range: Some(sf.far_height_range),
+        }
+    }
+}
+
+/// Decode the FO4 / FO76 height-fog tail from a whole `XCLL` body or `LGTM` `DATA` (VLM-HF-004).
+/// Both carriers are byte-identical from 92 on: Near Height Mid and Range, the two high-altitude
+/// colours, High Density Scale, the four near / far scales, and (136 bytes and up) Far Height Mid
+/// and Range. `None` below 128 bytes. FO4 ships 92 / 128 / 136-byte XCLLs (579 / 10 / 606 in
+/// `Fallout4.esm`), FO76 136 / 160.
+pub(crate) fn decode_creation_height_fog_tail(body: &[u8]) -> Option<HeightFogTail> {
+    if body.len() < 128 {
+        return None;
+    }
+    let mut r = crate::esm::sub_reader::SubReader::new(&body[92..]);
+    let near_height_mid = r.f32_or_default(); // 92
+    let near_height_range = r.f32_or_default(); // 96
+    let fog_color_high_near = r.rgb_color().unwrap_or([0.0; 3]); // 100
+    let fog_color_high_far = r.rgb_color().unwrap_or([0.0; 3]); // 104
+    let high_density_scale = r.f32_or_default(); // 108
+    let fog_near_scale = r.f32_or_default(); // 112
+    let fog_far_scale = r.f32_or_default(); // 116
+    let fog_high_near_scale = r.f32_or_default(); // 120
+    let fog_high_far_scale = r.f32_or_default(); // 124
+    let (far_height_mid, far_height_range) = if body.len() >= 136 {
+        (Some(r.f32_or_default()), Some(r.f32_or_default())) // 128, 132
+    } else {
+        (None, None)
+    };
+    Some(HeightFogTail {
+        near_height_mid,
+        near_height_range,
+        fog_color_high_near,
+        fog_color_high_far,
+        high_density_scale,
+        fog_near_scale,
+        fog_far_scale,
+        fog_high_near_scale,
+        fog_high_far_scale,
+        far_height_mid,
+        far_height_range,
+    })
 }
 
 /// Starfield-only XCLL fields (offsets within the 108-byte XCLL). The

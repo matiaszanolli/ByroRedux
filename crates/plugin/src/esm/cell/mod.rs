@@ -43,7 +43,7 @@ pub use index::{
     CellRef, EsmCellIndex, OwnedCellRef, parse_esm_cells, parse_esm_cells_with_load_order,
 };
 pub use landscape::{LandscapeData, LandscapeTextureHavok, TerrainQuadrant, TerrainTextureLayer};
-pub use lighting::{CellLighting, StarfieldLighting};
+pub use lighting::{CellLighting, HeightFogTail, StarfieldLighting};
 pub use placed_ref::{
     ActivateParent, CellOwnership, EnableParent, LinkedRef, LockData, PlacedRef, PortalLink,
     PrimitiveBounds, RagdollPoseBone, TeleportDest, TextureSlotSwap,
@@ -52,7 +52,7 @@ pub use worldspace::{WorldspaceRecord, worldspace_flags};
 
 // `pub(crate)` items siblings reach via `super::` / `crate::esm::cell::`.
 pub(crate) use index::canonical_interior_cell_id;
-pub(crate) use lighting::decode_starfield_lighting_tail;
+pub(crate) use lighting::{decode_creation_height_fog_tail, decode_starfield_lighting_tail};
 // Private test-build alias: `tests/merge.rs` calls this through
 // `use super::super::*`, exactly as it did when the fn lived in this file.
 #[cfg(test)]
