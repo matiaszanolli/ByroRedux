@@ -60,11 +60,12 @@ pub struct GdryRecord {
     pub fwd_phase: f32,
 }
 
+/// `GDRY.DATA` is one fixed struct (xEdit `wbDefinitionsFO4.pas` GDRY: 3 + 3 + 1 + 3 + 1 + 3 + 1 floats). A
+/// shorter body is not a plausible record with zeros mid-layout, so it declines (#6783).
+const GDRY_DATA_LEN: usize = 60;
+
 fn edid(subs: &[SubRecord]) -> String {
-    subs.iter()
-        .find(|s| &s.sub_type == b"EDID")
-        .map(|s| String::from_utf8_lossy(&s.data).trim_end_matches('\0').to_string())
-        .unwrap_or_default()
+    super::common::CommonNamedFields::from_subs_with_remap(subs, &None).editor_id
 }
 
 fn float_of(subs: &[SubRecord], tag: &[u8; 4]) -> f32 {
@@ -96,11 +97,11 @@ pub fn parse_voli(form_id: u32, subs: &[SubRecord]) -> VoliRecord {
     }
 }
 
-/// Decode an FO4 `GDRY` from its `DATA` (60 bytes: 15 floats). A `DATA` shorter than that leaves the
-/// fields it does not reach at zero.
+/// Decode an FO4 `GDRY` from its `DATA` (60 bytes: 15 floats). A `DATA` shorter than [`GDRY_DATA_LEN`]
+/// leaves every field at its default; a longer one keeps the first 60 bytes.
 pub fn parse_gdry(form_id: u32, subs: &[SubRecord]) -> GdryRecord {
     let mut out = GdryRecord { form_id, editor_id: edid(subs), ..Default::default() };
-    if let Some(data) = subs.iter().find(|s| &s.sub_type == b"DATA") {
+    if let Some(data) = subs.iter().find(|s| &s.sub_type == b"DATA" && s.data.len() >= GDRY_DATA_LEN) {
         let mut r = SubReader::new(&data.data);
         let rgb = |r: &mut SubReader| [r.f32_or_default(), r.f32_or_default(), r.f32_or_default()];
         out.back_color = rgb(&mut r);
@@ -182,9 +183,9 @@ mod tests {
         assert_eq!(g.intensity, 7.0);
         assert_eq!((g.air_color_scale, g.back_color_scale, g.fwd_color_scale), (3.0, 2.0, 4.0));
         assert_eq!((g.back_phase, g.air_color, g.fwd_phase), (0.15, [0.5, 0.6, 0.7], 0.75));
-        // A short DATA keeps what it reaches and zeroes the rest.
+        // #6783 — a short DATA declines whole: no plausible partial record with zeros mid-layout.
         let short = parse_gdry(1, &[sub(b"DATA", &data[..28])]);
-        assert_eq!((short.intensity, short.air_color_scale, short.back_phase), (7.0, 0.0, 0.0));
+        assert_eq!(short, GdryRecord { form_id: 1, ..Default::default() });
     }
 
     /// VLM-HF-010: the Skyrim SE `WTHR` `HNAM` names one `VOLI` per time of day (Sunrise, Day,
