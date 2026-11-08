@@ -247,7 +247,7 @@ the CK page states a tie rule. **Phase 0: verify** that a region's Weather
 section replaces the climate's weather list rather than adding to it — the
 pages describe the region list's chances but none says so outright. The census
 (`region_weather_census`, 2026-11-07) cannot settle it: it needs the original
-engine. Still open, an in-game observation, see VLM-REG-002.
+engine. Still open, an in-game observation (filed as #6772), see VLM-REG-002.
 
 - **VLM-REG-001.** For an exterior cell, the weather table in effect MUST be
   the Weather section with the highest Priority among the cell's regions
@@ -264,9 +264,7 @@ engine. Still open, an in-game observation, see VLM-REG-002.
   overlaps), every one with equal Priority on both sections, so Priority cannot
   decide them; FNV 8, all with different Priorities; FO4 11 (of 75), all with
   different Priorities; Fallout 3 and Skyrim 0. The rule is **not moot** on
-  Oblivion, FNV or FO4. Still open: the in-game observation recorded with its
-  save and cell, which needs the original engine; until it exists the choice is
-  an owner decision, not an inference.
+  Oblivion, FNV or FO4. Still open (filed as #6772): the in-game observation recorded with its save and cell, which needs the original engine; until it exists the choice is an owner decision, not an inference.
 - **VLM-REG-003.** When none of the cell's regions authors a Weather
   section, the weather MUST come from the climate exactly as today
   (`resolve_exterior_climate` → `resolve_default_weather`). Test:
@@ -395,7 +393,7 @@ engine. Still open, an in-game observation, see VLM-REG-002.
   ([wbDefinitionsFO4.pas L15730-L15748](https://github.com/TES5Edit/TES5Edit/blob/9058a79437367c2cb1b757a9021ab443d743012d/Core/wbDefinitionsFO4.pas#L15730-L15748))
   but documents no semantics. **Phase 0: verify** what the near / far
   layers and the density scale mean (two stacked exponentials, a near-to-far
-  distance blend, or a density multiplier above the mid height); settled by a corpus census of the authored values per weather together with matched in-game captures of two weathers that differ only in those fields. **Census, 2026-11-07** (`fog_godray_census`): 63 of 71 `Fallout4.esm` weathers carry the layer, in 16 distinct day tuples; the commonest (24 weathers, e.g. `FXNukeWeather`) is the neutral default (near mid 0 / range 10,000, density scale 1.00, far mid 0 / range 10,000); the authored spread is near mid 0 to 1004, near range 1,000 to 25,000, density scale 0.90 to 1.00, far mid -6,400 to 12,000, far range 10,000 to 15,000 (two values). The semantics are still unverified and need the matched captures. Until
+  distance blend, or a density multiplier above the mid height); settled by a corpus census of the authored values per weather together with matched in-game captures of two weathers that differ only in those fields. **Census, 2026-11-07** (`fog_godray_census`): 63 of 71 `Fallout4.esm` weathers carry the layer, in 16 distinct day tuples; the commonest (24 weathers, e.g. `FXNukeWeather`) is the neutral default (near mid 0 / range 10,000, density scale 1.00, far mid 0 / range 10,000); the authored spread is near mid 0 to 1004, near range 1,000 to 25,000, density scale 0.90 to 1.00, far mid -6,400 to 12,000, far range 10,000 to 15,000 (two values). The semantics are still unverified and need the matched captures (filed as #6771). Until
   then the fields stay unread, as `height_mid` is today.
 - **VLM-HF-004.** The FO4 and FO76 height-fog tail MUST be decoded from
   both `CELL` `XCLL` and `LGTM` `DATA`. xEdit defines it after the
@@ -420,7 +418,7 @@ engine. Still open, an in-game observation, see VLM-REG-002.
   same height profile: with a pinned camera on an exterior fixture,
   changing `--fog-grid-far-m` from its default to its maximum MUST NOT move
   the mean luminance of pixels beyond the larger far plane by more than the
-  run-to-run noise of a repeated default capture (the regression `composite.frag` records as "the mountains changing appearance when the grid's reach changes"). **Baseline at HEAD, 2026-11-07 (`docs/smoke-tests/fog-grid-seam.sh`): the requirement does not hold.** In `renderer-stepped` mode a repeat capture differs by at most 0.004 levels per region, and moving the grid from 128 m to 512 m shifts the distant regions by: FNV Goodsprings, hills right -5.56, hills left +0.18, sky band -0.63, whole frame -0.54; Skyrim Whiterun elevated pose, terrain haze +5.02, far ridge +7.06, forest +5.47, sky -5.06, whole frame +0.42. The regions are windows over distant content (no depth view exists), not a depth mask.
+  run-to-run noise of a repeated default capture (the regression `composite.frag` records as "the mountains changing appearance when the grid's reach changes"). **Baseline at HEAD, 2026-11-07 (`docs/smoke-tests/fog-grid-seam.sh`): the requirement does not hold.** In `renderer-stepped` mode a repeat capture differs by at most 0.004 levels per region, and moving the grid from 128 m to 512 m shifts the distant regions by: FNV Goodsprings, hills right -5.56, hills left +0.18, sky band -0.63, whole frame -0.54; Skyrim Whiterun elevated pose, terrain haze -4.18, far ridge +6.02, forest +0.02, sky +4.83, whole frame +0.42. The regions are windows over distant content (no depth view exists), not a depth mask.
 - **VLM-HF-008.** Any fog-profile value the engine supplies that the
   content did not author (a default scale height, a curve chosen because
   VLM-HF-001 could not be verified, an exterior dust floor from §10 Q7)
@@ -563,7 +561,7 @@ The RT visibility replaces cascades (VLM-NG-006).
   not from the unit tests: a converter that no loader path reaches measures 0 ÷ N however well its tests pass.
   Found on 2026-11-07: the `fxlight` early return in `synth_child.rs` kept every FNV `FXLightBeam*` placement from
   loading its NIF, so all FNV beam converters measured 0 live until the return was narrowed
-  (`Vault11a` 14 ÷ 14, `SLAbandonedShack03INT` 5 ÷ 5 afterwards). **Denominators, 2026-11-07:** placed beam references for every official master and DLC are in [interior-shaft-openings](../engine/interior-shaft-openings.md#placed-beam-census-every-title-and-official-dlc-vlm-int-006-denominators-measured-2026-11-07); Fallout 4 is the one title with many beams in Show Sky cells (657 of 1,604 interior placements), and only FO3 / FNV have a live converted-over-placed ratio.
+  (`Vault11a` 14 ÷ 14, `SLAbandonedShack03INT` 5 ÷ 5 afterwards). **Denominators, 2026-11-07:** placed beam references for every official master and DLC are in [interior-shaft-openings](../engine/interior-shaft-openings.md#placed-beam-census-every-title-and-official-dlc-vlm-int-006-denominators-measured-2026-11-07); Fallout 4 is the one title with many beams in Show Sky cells (657 of 1,604 interior placements), and only FO3 / FNV have a live converted-over-placed ratio (the rest filed as #6774).
 
 - **VLM-INT-007.** Where the sun's ray has been proven to pass through an authored aperture (a marked
   `SkyAperture` plane or a `LightShaft` cone), the sun term MUST scatter off an engine-supplied shaft dust
@@ -705,10 +703,19 @@ froxel trace (VLM-SH-009). Write the region-weather section into
 [EXAL](../engine/exal.md) and the god-ray findings into the fog design's
 corpus findings. Run the region census probe (read-only example) and the
 `XCCM` interior census; extend `baked_beam_census` to DLC, FO4 and
-Starfield; capture the exterior baseline (A6, A8) at HEAD. Exit: the verify
-list is closed or filed as issues, the two design sections, the census
+Starfield; capture the exterior baseline (A6, A8) at HEAD. Exit: the verify list is closed or filed as issues, the two design sections, the census
 tables and the baseline captures with their per-pass milliseconds are
 checked in, and §10 carries **Decided** on every item.
+
+*Status, 2026-11-07 (#6724).* Closed: VLM-REG-008 (revised to the polygon
+test), -012 and -013 (moot on Oblivion / FO3 / FNV), VLM-HF-001 (curve form
+read from shipped bytecode), VLM-SH-006's extinction question (the haze floor,
+Q7) and VLM-SH-009 (the alpha-aware trace). Filed: VLM-REG-002 and the
+replace-versus-add question (#6772), VLM-HF-003 (#6771), VLM-SH-006's contrast
+across a named occluder (#6773), converter coverage beyond FO3 / FNV (#6774),
+and a bench-harness defect found on the way (#6775). Written: EXAL §3.2, the
+fog design's corpus findings, the beam-census table. Baselines: A6 (fails at
+HEAD, `fog-grid-seam.sh`) and A8's per-pass milliseconds (revision 14).
 
 **Phase 1 — Region weather and the authored profile.** VLM-REG-001 to -014
 and VLM-HF-001 to -011, translation and parser only. Exit: A1, A2, A3, A4
@@ -858,5 +865,6 @@ as VLM-NG-006 instead of being reopened.
 | 14 | 2026-11-07 | VLM-SH-008 recorded: inject and integrate separately on the five exterior fixtures at noon and 07:00 (inject 0.30 to 0.77 ms, integrate 0.02 ms), with the alpha-aware trace's share (+0.11 to +0.34 ms at 07:00) from a same-binary `BYRO_SUN_ALPHA=0` A/B; table in the fog design doc. VLM-SH-006 contrast across a named occluder is not recorded for these default-spawn poses | claude: revise |
 | 15 | 2026-11-07 | Candidate engine choice for the owner, built behind `BYRO_SUN_DUST` and off by default: an open-sky sun-term-only dust, the exterior counterpart of VLM-INT-007. At 2.0 per metre it gave a real-content shaft on one pose (Oblivion canopy, 07:00) without the frame wash of a stronger extinction floor, but more poses and hours show it is not a usable default: 17:30 and second-grid captures change the frame by 10 to 72 levels, and even 0.25 per metre changes four of the strongest cases by 4 to 32 levels (see the fog design doc). Not a decided Q7 value: it is an artistic scattering strength with no matching extinction, one pose per title. Elevation shaping since added (`1 - smoothstep(0.2, 0.7, sun_y)`): across the five fixtures at 2.0 every noon frame is unchanged and the 07:00 shafts remain. Adopting it still needs the owner's choice of value and shaping edges, then a VLM-HF-008 entry | claude: revise |
 | 16 | 2026-11-07 | Phase 0 census landed (#6724): `region_weather_census` and `fog_godray_census`. VLM-REG-012 and -013 moot on Oblivion / FO3 / FNV; VLM-REG-002 not moot (Oblivion 527 equal-Priority cells, FNV 8, FO4 11) and keeps an in-game observation open; VLM-REG-008 revised to the polygon test (`XCLR` is stale in both directions); interior `XCCM`, `VOLI` / `GDRY` / height-fog and per-title placed-beam censuses recorded (the beam denominators for every official master and DLC: [interior-shaft-openings](../engine/interior-shaft-openings.md#placed-beam-census-every-title-and-official-dlc-vlm-int-006-denominators-measured-2026-11-07)) (REG-009, HF-003, -010, -011; EXAL §3.2; fog design corpus findings). Open: HF-001 curve form, HF-003 semantics (matched captures), the REG-002 / replace-vs-add observation, live converter coverage for Oblivion, FO4 and Starfield beams, A6 / A8 baselines | — |
-| 17 | 2026-11-07 | A6 baseline captured (#6724): `docs/smoke-tests/fog-grid-seam.sh`. VLM-HF-007 fails at HEAD on both fixtures (distant regions move 5.0 to 7.1 levels against a repeat noise of at most 0.004 when the grid reach goes 128 m to 512 m; FNV hills left and the whole frame stay under 1). A8's per-pass milliseconds were already recorded in revision 14; its contrast across a named occluder (VLM-SH-006) is not. Found while capturing: `--bench-mode renderer-stepped --bench-camera static` with a pinned `--camera-pos` / `--camera-forward` renders the 3D scene rolled 180 degrees (HUD upright; `system-live` is upright), so the script rotates frames back | — |
+| 17 | 2026-11-07 | A6 baseline captured (#6724): `docs/smoke-tests/fog-grid-seam.sh`. VLM-HF-007 fails at HEAD on both fixtures (distant regions move 4.2 to 6.0 levels against a repeat noise of at most 0.004 when the grid reach goes 128 m to 512 m; FNV hills left, Skyrim forest and both whole frames stay under 1). A8's per-pass milliseconds were already recorded in revision 14; its contrast across a named occluder (VLM-SH-006) is not. Found while capturing: on the FNV pose `--bench-mode renderer-stepped --bench-camera static` renders the 3D scene rolled 180 degrees (HUD upright; `system-live` is upright; the Skyrim pose is upright in both), so the script rotates only the FNV frames back | — |
 | 18 | 2026-11-07 | VLM-HF-001 settled by disassembly (#6724): FNV's `shaderpackage010.sdp` fog term is `fog = saturate((d - near) / (far - near)) ^ power` in the vertex shader (121 identical sequences), with `d` the clip-space xyz length; `scripts/sdp-fog-term.py` reproduces it. VLM-HF-002 holds by construction (power 1 is the linear ramp). Open: the distance metric as an engine choice (HF-008), and the 34 `pow` pixel shaders | — |
+| 19 | 2026-11-07 | Phase 0 closed out (#6724): the census, the two design sections and the baselines are checked in; the verify items still open are filed (#6771 to #6775) and the Phase 0 paragraph of §9 carries the status. Revision 13's "FO3 unsurveyed" is superseded: FO3 was measured through the shared `GameKind` (interior-shaft-openings), and the placed-beam denominators now cover every official master and DLC. Phase 1 inherits two decisions the census forces: the polygon test for region membership (VLM-REG-008) and a fog distance metric (the shipped shader uses the clip-space xyz length, not view distance) to record under VLM-HF-008 | — |

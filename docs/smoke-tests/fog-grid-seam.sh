@@ -9,9 +9,9 @@
 # analytic tail and the grid evaluate one height profile (the Phase 4 exit), flip GATE=1.
 #
 # Both captures use `--bench-mode renderer-stepped --bench-camera static`, where a repeat is
-# deterministic. In that mode a pinned `--camera-pos` / `--camera-forward` renders the 3D scene rolled
-# 180 degrees (the HUD stays upright; `--bench-mode system-live` renders the same pose upright), so
-# the analysis rotates the frame back before reading its regions.
+# deterministic. On the FNV pose that mode renders the 3D scene rolled 180 degrees (the HUD stays
+# upright; `--bench-mode system-live` renders the same pose upright, and the Skyrim pose is upright in
+# both), so the analysis rotates only the FNV frames back before reading their regions.
 #
 # Usage: docs/smoke-tests/fog-grid-seam.sh [fnv|skyrim|all]
 # BYRO_SEAM_BIN overrides the engine binary; BYRO_SEAM_OUT keeps captures in a chosen directory;
@@ -105,9 +105,12 @@ REGIONS = {
 }
 
 
+ROLLED = {"fnv"}  # frames the stepped bench renders rolled 180 degrees
+
+
 def load(label, tag):
     img = np.asarray(Image.open(out / f"{label}_{tag}.png").convert("RGB")).astype(float)
-    return np.rot90(img, 2).mean(axis=2)
+    return (np.rot90(img, 2) if label in ROLLED else img).mean(axis=2)
 
 
 worst = 0.0
