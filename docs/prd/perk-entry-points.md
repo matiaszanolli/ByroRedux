@@ -707,6 +707,24 @@ and 3 pass on every master scenario 1 names.
 PERK-DX, PERK-HOOK-001/002/011. Exit: §7.2 scenarios 2 and 6 pass; the
 catalog test passes.
 
+**Measured answers, found in Phase 2** (`perk_body_census`, 2026-11-08, vanilla Fallout3/FalloutNV/Skyrim/Fallout4 masters;
+these close the Phase 0 verify rows they name):
+
+- *Skyrim Ability rank rule* (PERK-BODY-001): every Skyrim Ability entry is authored at rank 0 and no Ability
+  perk has `num_ranks` above 1, so the shared "entry rank == held rank − 1" rule and the CK's "Rank: not used"
+  agree on every vanilla perk. FO3 has 8 perks with Ability entries at ranks 0/1/2, FNV 2 (`ActionBoy`,
+  `ActionGirl`): the per-rank rule is what they need.
+- *Quest entry timing* (PERK-BODY-003): fires on acquiring the entry's rank, one entry per rank
+  (`IntenseTraining` authors ranks 0-9 with stages 101-110 of one quest). Every vanilla Quest entry has zero
+  condition tabs, so whether tabs gate it is unobservable; they are honoured (fail-closed). The stage byte of an
+  FO3/FNV Quest body is a `u8` with fill after it (PERK-DEC-003 note).
+- *Skyrim's level byte* (PERK-GATE-002): all 375 `Skyrim.esm` perks author level 0, so the level check applies
+  to Skyrim without changing any vanilla perk.
+- *`NNAM` versus `num_ranks`* (PERK-GATE-004): a chain's records each carry the total at their rank
+  (`IronFist01..05` ×1.2…×2.0, `LightFingers00..80`), so the next rank replaces the held record. Skyrim's chains
+  end at a record with no `NNAM`; Fallout 4's are rings whose wrap is the link to a lower-level record in 72 of
+  79 rings (the other seven are bounded by "already held").
+
 **Phase 3 — Subjects and the FO3/FNV/Skyrim hooks.** PERK-DIA-002/003,
 PERK-SUB, PERK-HOOK-003 to -009 and -012. The activate legs need §10 Q5's
 surface; on its recommendation that is the `MessageBox` page, which exists at
