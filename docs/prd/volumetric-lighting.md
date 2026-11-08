@@ -429,7 +429,8 @@ engine. Still open, an in-game observation (filed as #6772), see VLM-REG-002.
   `FogMedium` is §10 Q8; until then each is listed under VLM-HF-009.
 - **VLM-HF-011.** FO4's `GDRY` god-ray records and the four links to them —
   `WTHR` `WGDR` per time of day, `CELL` `XGDR`, `LGTM` `WGDR`, `LIGH` `WGDR`
-  with its near clip — MUST be decoded (xEdit FO4:
+  with its god-ray near clip (`DATA` byte 52, `LightData::god_rays_near_clip`; byte 24 is the
+  separate shadow-bias `Near Clip`, #6795) — MUST be decoded (xEdit FO4:
   [WTHR L15795-L15804](https://github.com/TES5Edit/TES5Edit/blob/9058a79437367c2cb1b757a9021ab443d743012d/Core/wbDefinitionsFO4.pas#L15795-L15804),
   [CELL L9057](https://github.com/TES5Edit/TES5Edit/blob/9058a79437367c2cb1b757a9021ab443d743012d/Core/wbDefinitionsFO4.pas#L9057),
   [LGTM L11680](https://github.com/TES5Edit/TES5Edit/blob/9058a79437367c2cb1b757a9021ab443d743012d/Core/wbDefinitionsFO4.pas#L11680),

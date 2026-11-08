@@ -224,6 +224,7 @@ mod tests {
             xpwr_form_id: None,
             god_rays_form: None,
             near_clip: 0.0,
+            god_rays_near_clip: None,
             starfield_light_type: 0,
         }
     }

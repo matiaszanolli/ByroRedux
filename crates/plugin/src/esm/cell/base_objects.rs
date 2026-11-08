@@ -81,9 +81,14 @@ pub struct LightData {
     /// every other record. Decoded for the census, consumed by nothing (PRD §10 Q8).
     pub god_rays_form: Option<u32>,
     /// `DATA` bytes 24-27, "Near Clip" (xEdit FO4 / Skyrim LIGH; the Skyrim+ 48-byte layout only, the
-    /// pre-Skyrim 32-byte layout holds Value / Weight there). `0.0` where the record does not carry
-    /// it. The CK ties it to the god-ray profile (VLM-HF-011); nothing reads it yet.
+    /// pre-Skyrim 32-byte layout holds Value / Weight there). The general shadow-bias clip distance (FO4
+    /// default 7.2174), NOT the god-ray one (#6795); `0.0` where the record does not carry it. Nothing reads
+    /// it yet.
     pub near_clip: f32,
+    /// FO4 `DATA` bytes 52-55, "God Rays - Near Clip" (xEdit FO4 LIGH, 64-byte layout; vanilla values 0 / 10 /
+    /// 16): where the light's `GDRY` god-ray profile starts (VLM-HF-011). `None` below the 56-byte forms.
+    /// Decoded for the census, consumed by nothing (PRD §10 Q8).
+    pub god_rays_near_clip: Option<f32>,
     /// #4433's evidence predecessor — Starfield `DAT2+56` "Light Type"
     /// enum (`wbDefinitionsSF1.pas`, dev-4.1.6: `0 = Omnidirectional`,
     /// `1 = Shadow Spotlight`, `2 = NonShadow Spotlight`). Starfield moved

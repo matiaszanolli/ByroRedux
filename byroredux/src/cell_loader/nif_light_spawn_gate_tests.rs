@@ -700,6 +700,7 @@ fn spawn_nif_lights_consumes_the_canonical_ligh_falloff_lane() {
         xpwr_form_id: None,
         god_rays_form: None,
         near_clip: 0.0,
+        god_rays_near_clip: None,
         starfield_light_type: 0,
     };
     let lamp = || vec![light_with_color([1.0, 0.9, 0.7])];

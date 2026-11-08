@@ -317,6 +317,16 @@ fn parse_ligh_wgdr_and_near_clip() {
         assert_eq!(ld.god_rays_form, Some(0x0040_0007), "WGDR folds onto the light whatever its order");
         assert_eq!(ld.near_clip, 12.5);
     }
+    // #6795 — the FO4 64-byte form carries a separate "God Rays - Near Clip" at byte 52; byte 24 stays the
+    // shadow-bias clip.
+    let mut data64 = vec![0u8; 64];
+    data64[24..28].copy_from_slice(&7.2174f32.to_le_bytes());
+    data64[52..56].copy_from_slice(&10.0f32.to_le_bytes());
+    let fo4 = parse_ligh_group(0xA14, &[(b"DATA", data64)]);
+    let fo4 = fo4[&0xA14].light_data.as_ref().unwrap();
+    assert_eq!((fo4.near_clip, fo4.god_rays_near_clip), (7.2174, Some(10.0)));
+    let skyrim = parse_ligh_group(0xA15, &[(b"DATA", vec![0u8; 48])]);
+    assert_eq!(skyrim[&0xA15].light_data.as_ref().unwrap().god_rays_near_clip, None);
     let no_wgdr = parse_ligh_group(0xA12, &[(b"DATA", data48)]);
     assert_eq!(no_wgdr[&0xA12].light_data.as_ref().unwrap().god_rays_form, None);
     let mut data32 = vec![0u8; 32];

@@ -232,6 +232,8 @@ pub(crate) fn build_static_object_from_subs(
                 };
                 // VLM-HF-011 — `Near Clip` sits at byte 24 of the Skyrim+ layout (xEdit LIGH `DATA`).
                 let near_clip = if is_skyrim_plus_layout { read_f32(24) } else { 0.0 };
+                // #6795 — the god-ray one is a separate field at byte 52, present from the 56-byte FO4 forms.
+                let god_rays_near_clip = (sub.data.len() >= 56).then(|| read_f32(52));
                 light_data = Some(LightData {
                     radius,
                     color: [r, g, b],
@@ -244,6 +246,7 @@ pub(crate) fn build_static_object_from_subs(
                     xpwr_form_id: None,
                     god_rays_form: None,
                     near_clip,
+                    god_rays_near_clip,
                     starfield_light_type: 0,
                 });
             }
@@ -356,6 +359,7 @@ pub(crate) fn build_static_object_from_subs(
                     xpwr_form_id: None,
                     god_rays_form: None,
                     near_clip: 0.0,
+                    god_rays_near_clip: None,
                     starfield_light_type,
                 });
             }
