@@ -3527,3 +3527,32 @@ fn no_parser_with_a_remap_in_scope_passes_an_identity_remap() {
          (#4175): {offenders:?}"
     );
 }
+
+/// #6790 -- an FO4 `MUST` (Skyrim's layout) lands in `music_tracks`; Starfield's different layout stays out.
+#[test]
+fn must_tracks_are_stored_for_skyrim_fo4_and_fo76_only() {
+    let plugin = |hedr_version: f32| {
+        let mut hedr = hedr_version.to_le_bytes().to_vec();
+        hedr.extend_from_slice(&[0; 8]);
+        let mut data = build_record(b"TES4", 0, &[(b"HEDR", hedr)]);
+        data.extend(wrap_group(
+            b"MUST",
+            &build_record(
+                b"MUST",
+                0x77,
+                &[
+                    (b"EDID", b"FoTrack\0".to_vec()),
+                    (b"CNAM", 0x6ED7_E048u32.to_le_bytes().to_vec()),
+                    (b"ANAM", b"music\\a.wav\0".to_vec()),
+                ],
+            ),
+        ));
+        data
+    };
+    let fo4 = parse_esm(&plugin(1.0)).unwrap();
+    assert_eq!(fo4.game, GameKind::Fallout4);
+    assert_eq!(fo4.music_tracks[&0x77].file, "music\\a.wav");
+    let starfield = parse_esm(&plugin(0.96)).unwrap();
+    assert_eq!(starfield.game, GameKind::Starfield);
+    assert!(starfield.music_tracks.is_empty());
+}

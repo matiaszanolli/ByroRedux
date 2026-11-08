@@ -71,7 +71,9 @@ pub fn parse_musc(
                 }
             }
         }
-        GameKind::Skyrim => {
+        // Skyrim's layout, identical on FO4 and FO76 (`wbDefinitionsFO4.pas:12499`, `wbDefinitionsFO76.pas:13597`):
+        // 111 / 246 vanilla `MUSC` carry `FNAM` + `PNAM` + `WNAM` + `TNAM` there (#6790). Starfield differs.
+        GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 => {
             for sub in subs {
                 let mut reader = SubReader::new(&sub.data);
                 match &sub.sub_type {
@@ -270,6 +272,23 @@ mod tests {
         assert_eq!((musc.priority, musc.ducking_db, musc.fade_secs), (40, 12.0, 4.5));
         assert_eq!(musc.tracks, vec![0x0010_0001, 0x0010_0002]);
         assert_eq!(musc.file, "", "Skyrim FNAM is flags, never a path");
+    }
+
+    /// #6790 -- FO4 and FO76 author `MUSC` with Skyrim's layout; Starfield does not.
+    #[test]
+    fn fo4_and_fo76_musc_decode_like_skyrim_and_starfield_does_not() {
+        let mut pnam = 40u16.to_le_bytes().to_vec();
+        pnam.extend_from_slice(&1200u16.to_le_bytes());
+        let subs = vec![
+            sub(b"FNAM", 0x04u32.to_le_bytes()),
+            sub(b"PNAM", pnam),
+            sub(b"TNAM", 0x0010_0001u32.to_le_bytes()),
+        ];
+        for game in [GameKind::Fallout4, GameKind::Fallout76] {
+            let musc = parse_musc(1, &subs, game, &None);
+            assert_eq!((musc.flags, musc.priority, musc.tracks.clone()), (0x04, 40, vec![0x0010_0001]), "{game:?}");
+        }
+        assert!(parse_musc(1, &subs, GameKind::Starfield, &None).tracks.is_empty());
     }
 
     #[test]

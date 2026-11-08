@@ -98,10 +98,12 @@ pub(super) fn dispatch_misc_stub_group(
         b"MUSC" => extract_records(reader, end, b"MUSC", &mut |fid, subs| {
             index.music_types.insert(fid, parse_musc(fid, subs, game, &remap));
         })?,
-        // #3816 — Skyrim's music track: the file and loop points a `MUSC.TNAM` entry names. Era-gated:
-        // FO4 / Starfield author `MUST` with another layout, which is not decoded.
+        // #3816 — the music track: the file and loop points a `MUSC.TNAM` entry names. Skyrim, FO4 and FO76
+        // share one layout (`wbDefinitionsFO4.pas:12602`, `wbDefinitionsFO76.pas:13685`; 552 / 1,825 vanilla
+        // records, #6790); only Starfield authors `MUST` differently (`MSTF` / `MTSH`, no `ANAM`), and that
+        // layout is not decoded.
         b"MUST" => extract_records(reader, end, b"MUST", &mut |fid, subs| {
-            if game == GameKind::Skyrim {
+            if matches!(game, GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76) {
                 index.music_tracks.insert(fid, parse_must(fid, subs, &remap));
             }
         })?,
