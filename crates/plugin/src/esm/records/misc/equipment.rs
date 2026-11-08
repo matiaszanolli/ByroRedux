@@ -277,9 +277,9 @@ pub fn parse_bptd(
         let d = &sub.data;
         match &sub.sub_type {
             b"BPTN" => part.name = read_lstring_or_zstring(d),
-            b"BPNN" => part.node = read_lstring_or_zstring(d),
-            b"BPNT" => part.vats_target_node = read_lstring_or_zstring(d),
-            b"BPNI" => part.bpni = read_lstring_or_zstring(d),
+            b"BPNN" => part.node = read_zstring(d),
+            b"BPNT" => part.vats_target_node = read_zstring(d),
+            b"BPNI" => part.bpni = read_zstring(d),
             b"BPND" => {
                 // Width-guarded field reads (#3724): a short payload
                 // decodes what it carries and defaults the rest rather
@@ -601,6 +601,28 @@ mod tests {
             &None,
         );
         assert_eq!(a.biped_flags, 0);
+    }
+
+    /// #6796 — `BPNN` / `BPNT` / `BPNI` are plain strings, not lstrings: on a localized plugin a node name that
+    /// is exactly four bytes (`gun\0`) must not become a string-table id; `BPTN` stays an lstring.
+    #[test]
+    fn parse_bptd_node_names_are_plain_strings_on_a_localized_plugin() {
+        use crate::esm::records::common::LocalizedPluginGuard;
+        use crate::esm::strings_table::StringTableSet;
+        let _localized = LocalizedPluginGuard::new(true);
+        let _strings = crate::esm::records::common::StringsTableGuard::new(StringTableSet::default());
+        let mut bpnd = vec![0u8; 84];
+        bpnd[0..4].copy_from_slice(&2.0f32.to_le_bytes());
+        let subs = vec![
+            sub(b"BPTN", b"Barrel\0"),
+            sub(b"BPNN", b"gun\0"),
+            sub(b"BPNT", b"COM\0"),
+            sub(b"BPNI", b"Eye\0"),
+            sub(b"BPND", &bpnd),
+        ];
+        let b = parse_bptd(1, &subs, &None);
+        let part = &b.parts[0];
+        assert_eq!((part.node.as_str(), part.vats_target_node.as_str(), part.bpni.as_str()), ("gun", "COM", "Eye"));
     }
 
     /// #6350 — the pre-VATS stub counted `BPTN` sub-records directly;
