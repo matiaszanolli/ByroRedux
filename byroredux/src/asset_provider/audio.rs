@@ -285,21 +285,19 @@ pub(crate) fn dispatch_region_ambient_music(
     // #3775 — whether the engine should loop this track continuously.
     let looping = music_form.is_some_and(|form_id| sound_loops(sounds, form_id));
     // #3787 (FNV) / #3811 (Oblivion + Skyrim) — `music_form` was authored
-    // (a real REGN chose an ambient directive) but never resolves as a
-    // `SOUN` on any game: Oblivion's `RDMD` is a music-category enum, not
-    // a FormID at all; Skyrim's `RDMO` targets `MUSC`; FNV's `RDSB`/`RDSI`
-    // target `MSET` (Media Set). FO3/FNV `MUSC` is decoded
-    // (`misc/music.rs`, consumed by scripted `PlayMusic`), but no REGN-driven
-    // runtime exists for Skyrim `MUSC`/`MUST` or FNV `MSET` (#3816 tracks them
-    // — #3787 and #3811 closed doc-only, and #3915 folded FNV's `MSET` into
-    // #3816; `MSET` is decoded into `EsmIndex::media_sets`, but no playback
-    // policy reads it yet), so this path is structurally unsupported on every game
-    // rather than a content gap; log it once so "no archive supplied" (silent,
-    // the common case per the doc above) is distinguishable from "an
-    // ambient directive was authored but this engine build can't resolve
-    // its target type at all" — repeated per-region-transition logging
-    // would otherwise flood the log with the same diagnosis every cell
-    // load.
+    // (a real REGN chose an ambient directive) but did not resolve as a
+    // `SOUN`, nor (Skyrim `RDMO` → `MUSC` → first playable `MUST`, above) as
+    // a track. What is left: Oblivion's `RDMD` is a music-category enum, not a
+    // FormID at all; FNV's `RDSB`/`RDSI` target `MSET` (Media Set), decoded into
+    // `EsmIndex::media_sets` but with no playback policy reading it yet (#3816
+    // tracks both; #3787 and #3811 closed doc-only, #3915 folded FNV's `MSET`
+    // into #3816); and a Skyrim `MUSC` with no playable `MUST` is silent. So
+    // this path is unsupported for those cases rather than a content gap; log
+    // it once so "no archive supplied" (silent, the common case per the doc
+    // above) is distinguishable from "an ambient directive was authored but
+    // this engine build can't resolve its target type" — repeated per-region-
+    // transition logging would otherwise flood the log with the same diagnosis
+    // every cell load.
     if music_form.is_some() && resolved.is_none() && music_track.is_none() {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {

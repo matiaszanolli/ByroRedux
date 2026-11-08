@@ -435,17 +435,21 @@ it grew from 18 maps in Session 12 to ~90 today. The struct opens with
 - **Oblivion-unique base records** (#966) — `birthsigns` (BSGN),
   `clothing` (CLOT), `apparatuses` (APPA), `sigil_stones` (SGST),
   `soul_gems` (SLGM).
-- **Typed but unconsumed** (#6180) — five maps have a full typed parser and
+- **Typed but unconsumed** (#6180, #6805) — nine maps have a full typed parser and
   are retained for the whole session, but nothing outside `records/` reads
   them yet: `enchantments` (ENCH), `reputations` (REPU),
-  `combat_styles` (CSTY), `impacts` (IPCT) and `impact_data_sets` (IPDS).
+  `combat_styles` (CSTY), `impacts` (IPCT) and `impact_data_sets` (IPDS), plus
+  four decoded for census or a future consumer: `media_sets` (MSET, what REGN
+  `RDSI`/`RDSB` name; its runtime is the open #3816), `weather_settings` (Starfield
+  WTHS, #5364), `volumetric_lighting` (VOLI) and `god_rays` (GDRY) (the last two
+  PRD `volumetric-lighting.md` §10 Q8).
   They back cross-reference resolution and the census / probe tooling, so the
   parsers stay; they are the next consumers to wire (CHARAL for REPU, the AI
   layer for CSTY, impact effects for IPCT/IPDS). `explosions` (EXPL, read by
   `systems/mines.rs`) and `recipes` (COBJ, read by `CraftingBook::from_index`)
   have since gained readers and left this list.
   This is the typed-parser counterpart of the minimal-stub caveat below —
-  re-check with `grep -rnE '\.(enchantments|reputations|body_parts|combat_styles|impact_data_sets|impacts)\b' crates byroredux`
+  re-check with `grep -rnE '\.(enchantments|reputations|combat_styles|impact_data_sets|impacts|media_sets|weather_settings|volumetric_lighting|god_rays)\b' crates byroredux`
   (minus tests and `records/`) before assuming one has gained a reader.
 - **Long-tail minimal stubs** (#810) — originally 31 record types
   parsed via `parse_minimal_esm_record` (EDID + optional FULL) so

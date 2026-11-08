@@ -340,6 +340,8 @@ pub struct EsmIndex {
     /// templates carry the full `REFL` schema; the other 163 vanilla
     /// records diff against an `RFDP` parent through `RDIF`. A
     /// climate's WSLT rows resolve here.
+    ///
+    /// Typed but unconsumed: nothing outside `records/` reads this map at runtime yet (#6805).
     pub weather_settings: HashMap<u32, WeatherSettingsRecord>,
     /// FO3 / FNV / Oblivion pre-Papyrus SCPT bytecode records (#443).
     /// Every `SCRI` FormID on NPC_ / CONT / item / ACTI records resolves
@@ -625,6 +627,8 @@ pub struct EsmIndex {
     /// `MICN` menu icon.
     pub menu_icons: HashMap<u32, MinimalEsmRecord>,
     /// `MSET` media set (FNV) — what REGN `RDSI`/`RDSB` point at (#3816).
+    ///
+    /// Typed but unconsumed: no runtime reads it yet; that is the open #3816 (#6805).
     pub media_sets: HashMap<u32, MediaSetRecord>,
     /// `MUSC` music type.
     pub music_types: HashMap<u32, MuscRecord>,
