@@ -986,6 +986,39 @@ fn select_active_package<'a>(
     })
 }
 
+/// The installer's answer for `package`: `installs`, or `declines: <reason>` (AIP-DX-001 / -002).
+/// FO3/FNV procedure 11 has no sourced semantics (AIP-CAST-004): it stays without a runtime and says so.
+fn install_result(world: &World, package: &PackRecord, registry: &PackageRegistry, actor_form_id: u32) -> String {
+    match package.procedure_type {
+        _ if package.is_find() => match find_decision(package, world) {
+            Ok(_) => "installs".to_string(),
+            Err(decline) => format!("declines: {}", decline.reason()),
+        },
+        PROCEDURE_USE_WEAPON => match use_weapon_behavior(package, world) {
+            Some(_) => "installs".into(),
+            None => "declines: unsourced-or-unmodelled UseWeapon data".to_string(),
+        },
+        PROCEDURE_DIALOGUE if !dialogue_installs_ambient(package, world) => {
+            "declines: dialogue-not-ambient (unmodelled condition, non-player target or Say-To)".to_string()
+        }
+        PROCEDURE_CAST_MAGIC_UNSOURCED => "declines: unsourced-semantics".to_string(),
+        _ => {
+            let template = package
+                .package_template_form_id
+                .and_then(|form_id| registry.package(form_id))
+                .unwrap_or(package);
+            match AmbientBehavior::from_package(package, template, actor_form_id, world) {
+                Some(_) => "installs".into(),
+                None => "declines: no runtime for this procedure".to_string(),
+            }
+        }
+    }
+}
+
+/// FO3/FNV `PKDT` procedure 11: the GECK / fopdoc name it but no source says what an actor does under it
+/// (AIP-CAST-004, §5.3); a package that uses it is declined with this reason.
+const PROCEDURE_CAST_MAGIC_UNSOURCED: u32 = 11;
+
 /// One row of `pack.ambient <entity>` (AIP-DX-001): a package in the actor's priority list and what the
 /// selection and the installer make of it.
 #[derive(Debug, Clone, PartialEq)]
@@ -1060,29 +1093,7 @@ pub(crate) fn explain_ambient_packages(world: &World, actor: EntityId) -> Option
             .iter()
             .filter_map(|&form_id| registry.package(form_id))
             .map(|package| {
-                let result = match package.procedure_type {
-                    _ if package.is_find() => match find_decision(package, world) {
-                        Ok(_) => "installs".to_string(),
-                        Err(decline) => format!("declines: {}", decline.reason()),
-                    },
-                    PROCEDURE_USE_WEAPON => match use_weapon_behavior(package, world) {
-                        Some(_) => "installs".into(),
-                        None => "declines: unsourced-or-unmodelled UseWeapon data".to_string(),
-                    },
-                    PROCEDURE_DIALOGUE if !dialogue_installs_ambient(package, world) => {
-                        "declines: dialogue-not-ambient (unmodelled condition, non-player target or Say-To)".to_string()
-                    }
-                    _ => {
-                        let template = package
-                            .package_template_form_id
-                            .and_then(|form_id| registry.package(form_id))
-                            .unwrap_or(package);
-                        match AmbientBehavior::from_package(package, template, runtime.actor_form_id, world) {
-                            Some(_) => "installs".into(),
-                            None => "declines: no runtime for this procedure".to_string(),
-                        }
-                    }
-                };
+                let result = install_result(world, package, &registry, runtime.actor_form_id);
                 PackageExplanation {
                     form_id: package.form_id,
                     editor_id: package.editor_id.clone(),
@@ -1416,6 +1427,18 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
                 .unwrap_or(package);
             AmbientBehavior::from_package(package, template, runtime.actor_form_id, world)
         });
+        // AIP-DX-002: the winner that installs nothing says why, once per (re)selection.
+        if let Some(package) = active.filter(|package| behavior.is_none() && !package.is_find()) {
+            log::debug!(
+                "package decline: {:08X} {} procedure {} ({}): {}",
+                package.form_id,
+                package.editor_id,
+                procedure_name(package),
+                package.procedure_type,
+                install_result(world, package, &registry, runtime.actor_form_id)
+                    .trim_start_matches("declines: ")
+            );
+        }
         if m42_debug_enabled() {
             log::warn!(
                 "[m42-eval] actor {actor} -> {:?}",
@@ -2240,6 +2263,16 @@ mod tests {
         assert!(!rows[0].winner, "the declined Find did not win");
         assert!(rows[1].winner, "the Guard package behind it did: {rows:?}");
         assert_eq!(rows[1].result, "installs");
+    }
+
+    /// AIP-CAST-004 -- FO3/FNV procedure 11 has no runtime and says why.
+    #[test]
+    fn procedure_11_declines_as_unsourced() {
+        let (mut world, actor) = setup_actor(10.0, vec![pack(0x301, 11, None)]);
+        world.insert_resource(crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(EsmIndex::default())));
+        let rows = explain_ambient_packages(&world, actor).expect("an ambient actor");
+        assert_eq!(rows[0].result, "declines: unsourced-semantics");
+        assert!(world.get::<GuardBehavior>(actor).is_none());
     }
 
     /// UseItemAt (procedure 8) is furniture use in the vanilla data: it takes
