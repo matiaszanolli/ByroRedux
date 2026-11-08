@@ -23,6 +23,14 @@ stay in the printed `/tmp/byro-shaft-smoke.*` directory. It then measures the al
 panel's in-scatter over the hole columns must come within 2 % of the same stripes as real holes. The lab also
 takes `--shaft-lab-distance <m>` (default 55) to put the camera elsewhere, for the range sweep of VLM-SH-005.
 
+`fog-grid-seam.sh` is the grid-reach baseline (VLM-HF-007, scenario A6). It pins a camera on FNV (the Goodsprings
+door arrival pose) and Skyrim (an elevated Whiterun pose), captures each at `--fog-grid-far-m` 128 twice and at
+512 in `renderer-stepped` mode, and prints the mean luminance of the distant regions with the repeat's noise.
+It measures and exits `0` until the analytic tail and the froxel grid share one height profile (`GATE=1` then
+makes a delta above the noise floor plus 1.0 a failure). The three captures per game stay in the printed
+`/tmp/byro-fog-seam.*` directory. It needs FNV and Skyrim SE data (`BYROREDUX_FNV_DATA`,
+`BYROREDUX_SKYRIM_DATA`), a display or `xvfb-run`, and Python with numpy and Pillow; exit `77` when one is missing.
+
 Manual / scripted smoke checks that need a Vulkan device and a windowed
 engine instance. Most also need out-of-tree BSA / ESM game data; the controlled
 `interior-godrays.sh` scene does not.
