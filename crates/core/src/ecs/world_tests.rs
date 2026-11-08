@@ -913,10 +913,15 @@ fn resource_2_mut_both_writable() {
         b.0 += 20.0;
     }
 
-    let a = world.resource::<ResA>();
-    let b = world.resource::<ResB>();
-    assert!((a.0 - 11.0).abs() < 1e-6);
-    assert!((b.0 - 22.0).abs() < 1e-6);
+    // Read the two values in separate statements: each guard drops at the
+    // end of its statement. Holding `ResA` and `ResB` together in plain
+    // (code) order after the TypeId-sorted `resource_2_mut` above closes a
+    // lock-order cycle whenever `TypeId(ResB) < TypeId(ResA)` — which flips
+    // with the build's dependency set (#6808, same family as #6101).
+    let a = world.resource::<ResA>().0;
+    let b = world.resource::<ResB>().0;
+    assert!((a - 11.0).abs() < 1e-6);
+    assert!((b - 22.0).abs() < 1e-6);
 }
 
 #[test]
