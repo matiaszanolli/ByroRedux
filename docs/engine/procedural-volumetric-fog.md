@@ -580,6 +580,28 @@ and `BYRO_HAZE_FLOOR` / `fog.haze` (the floor).
   leave one that helps, the elevation fade, and it only removes the noon wash. What stays unsolved is that the lit
   air brightens the frame in step with the shaft contrast; a fix needs the owner's view of how much haze a shaft may
   cost, or a scene-adaptive exposure-aware gain, neither of which is built.
+- **Per-fixture noon and low-sun in-scatter (VLM-SH-006, 2026-11-08,
+  `docs/smoke-tests/exterior-shafts-content.sh`).** `render.debug volumetric_radiance` at the five fixtures' default
+  spawns, `renderer-stepped`, 1280x720, linear in-scatter radiance (frame mean / 95th / 5th percentile) and the finished
+  frame's mean level, at 12:00, 07:00 and 17:30:
+
+  | Fixture | 12:00 | 07:00 | 17:30 |
+  |---|---|---|---|
+  | FNV | 0.0205 / 0.0319 / 0.0118; 72.6 | 0.0444 / 0.0690 / 0.0265; 27.8 | 0.0367 / 0.0579 / 0.0211; 30.2 |
+  | FO3 | 0.1167 / 0.1552 / 0.0817; 98.2 | 0.1102 / 0.1461 / 0.0760; 53.4 | 0.1067 / 0.1386 / 0.0774; 45.0 |
+  | Oblivion | 0.0522 / 0.1252 / 0.0185; 63.9 | 0.1043 / 0.2183 / 0.0482; 62.0 | 0.0211 / 0.0565 / 0.0066; 36.8 |
+  | Skyrim | 0.0220 / 0.0414 / 0.0118; 38.5 | 0.0123 / 0.0225 / 0.0079; 9.5 | 0.0261 / 0.0496 / 0.0145; 13.7 |
+  | FO4 | 0.0344 / 0.0732 / 0.0132; 110.8 | 0.0295 / 0.0662 / 0.0118; 47.7 | 0.0361 / 0.0803 / 0.0132; 49.4 |
+
+  The in-scatter responds to the sun on every fixture (FNV roughly doubles at 07:00, Oblivion doubles at 07:00 and
+  falls to 40 % at 17:30, Skyrim at 07:00 halves), but **a shaft contrast across a named occluder cannot be read off
+  these frames.** The view samples the froxel column at each pixel's own depth, so a pole or trunk column (FO3's
+  pole, FO4's trunks) reads darker because its pixels are nearer, with less air accumulated, not because the air
+  behind it is shadowed; a lit and an occluded sample at one depth exist only where an occluder shades air in front
+  of a far surface, and the five default poses have none. The lab (`exterior-shafts.sh`) is the one place the
+  contrast is defined cleanly. VLM-SH-006's "contrast across a named occluder" is therefore restated for the owner
+  as a depth-matched measurement (a pose chosen per fixture where a far wall or terrain behind an occluder is in
+  view), which needs per-fixture pose authoring, not a probe.
 - **Not done yet:** the per-fixture noon and low-sun captures on the other titles (VLM-SH-006), the range and
   cloud-shadow work (VLM-SH-004, -005), and the separate inject and integrate milliseconds (VLM-SH-008; the
   inject figure above is one pose, not the fixture set).

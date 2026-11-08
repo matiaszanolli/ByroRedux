@@ -31,6 +31,13 @@ makes a delta above the noise floor plus 1.0 a failure). The three captures per 
 `/tmp/byro-fog-seam.*` directory. It needs FNV and Skyrim SE data (`BYROREDUX_FNV_DATA`,
 `BYROREDUX_SKYRIM_DATA`), a display or `xvfb-run`, and Python with numpy and Pillow; exit `77` when one is missing.
 
+`exterior-shafts-content.sh` is the A8 measurement on content (VLM-SH-006, #6773). For FNV, FO3, Oblivion, Skyrim and
+FO4 it captures the default-spawn frame and the froxel in-scatter radiance view at 12:00, 07:00 and 17:30 in the
+deterministic `renderer-stepped` mode and prints the frame's mean / p95 / p5 in-scatter radiance with the finished-frame
+mean. It measures and exits `0`: a shaft contrast across a named occluder needs a lit and an occluded sample at one
+depth, which these poses do not offer. Needs the five games' data, a display or `xvfb-run`, a Vulkan device, and Python
+with numpy and Pillow; exit `77` when one is missing.
+
 Manual / scripted smoke checks that need a Vulkan device and a windowed
 engine instance. Most also need out-of-tree BSA / ESM game data; the controlled
 `interior-godrays.sh` scene does not.
