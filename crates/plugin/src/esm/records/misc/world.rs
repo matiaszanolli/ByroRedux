@@ -786,6 +786,56 @@ pub struct RegionArea {
     pub points: Vec<(f32, f32)>,
 }
 
+/// Width of one exterior cell in world units (the grid the region polygons are drawn against).
+const REGION_CELL_UNITS: f32 = 4096.0;
+/// Overlap smaller than this (world units) does not make a region cover a cell.
+const REGION_EDGE_EPSILON: f32 = 0.5;
+
+impl RegionArea {
+    /// Even-odd point-in-polygon test against the area's `RPLD` vertices (world XY).
+    pub fn contains_point(&self, point: (f32, f32)) -> bool {
+        let poly = &self.points;
+        let mut inside = false;
+        let mut j = poly.len().wrapping_sub(1);
+        for i in 0..poly.len() {
+            let (xi, yi) = poly[i];
+            let (xj, yj) = poly[j];
+            if (yi > point.1) != (yj > point.1) && point.0 < (xj - xi) * (point.1 - yi) / (yj - yi) + xi {
+                inside = !inside;
+            }
+            j = i;
+        }
+        inside
+    }
+
+    /// Whether the polygon overlaps the axis-aligned rectangle `[x0, x1] x [y0, y1]`: a vertex
+    /// inside it, a rectangle corner inside the polygon, or an edge crossing a rectangle edge.
+    pub fn overlaps_rect(&self, x0: f32, y0: f32, x1: f32, y1: f32) -> bool {
+        let poly = &self.points;
+        if poly.len() < 3 {
+            return false;
+        }
+        if poly.iter().any(|&(x, y)| x >= x0 && x <= x1 && y >= y0 && y <= y1) {
+            return true;
+        }
+        let corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)];
+        if corners.iter().any(|&c| self.contains_point(c)) {
+            return true;
+        }
+        fn orient(p: (f32, f32), q: (f32, f32), r: (f32, f32)) -> f32 {
+            (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0)
+        }
+        (0..poly.len()).any(|i| {
+            let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+            (0..4).any(|k| {
+                let (c, d) = (corners[k], corners[(k + 1) % 4]);
+                (orient(a, b, c) > 0.0) != (orient(a, b, d) > 0.0)
+                    && (orient(c, d, a) > 0.0) != (orient(c, d, b) > 0.0)
+            })
+        })
+    }
+}
+
 /// Region record (`REGN`). Tags an area of a worldspace (`WNAM`) with a
 /// colour tint, one or more bounding polygons, and a priority-ordered chain
 /// of `RDAT` data entries driving ambient sound, weather, objects and map
@@ -821,6 +871,26 @@ pub struct RegnRecord {
 }
 
 impl RegnRecord {
+    /// Whether one of the region's `RPLD` polygons overlaps exterior cell `(grid_x, grid_y)`.
+    ///
+    /// This is the region's area of effect: the CK page says "it is the exact shape of the region
+    /// as drawn in the Region Preview Window that will decide its actual area of effect", and the
+    /// per-cell `XCLR` list is a stale snapshot of it (Volumetric Lighting PRD VLM-REG-008; the
+    /// 2026-11-07 census found it wrong in both directions on every title). The caller restricts
+    /// regions to the cell's worldspace (`worldspace_form`); coordinates alone cannot.
+    pub fn covers_cell(&self, grid_x: i32, grid_y: i32) -> bool {
+        // The rectangle is inset by half a unit so a polygon that only shares a cell edge (the
+        // usual case: regions are drawn on the cell grid) does not claim the neighbour.
+        let (x0, y0) = (
+            grid_x as f32 * REGION_CELL_UNITS + REGION_EDGE_EPSILON,
+            grid_y as f32 * REGION_CELL_UNITS + REGION_EDGE_EPSILON,
+        );
+        let side = REGION_CELL_UNITS - 2.0 * REGION_EDGE_EPSILON;
+        self.areas
+            .iter()
+            .any(|area| area.overlaps_rect(x0, y0, x0 + side, y0 + side))
+    }
+
     /// Entries of one kind, highest priority first.
     ///
     /// Ties keep authored order (the sort is stable), which is the only
@@ -2774,6 +2844,65 @@ mod regn_tests {
                 ..
             }
         ));
+    }
+
+    fn square_region(x0: f32, y0: f32, x1: f32, y1: f32) -> RegnRecord {
+        RegnRecord {
+            areas: vec![RegionArea {
+                edge_fall_off: 0,
+                points: vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)],
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// VLM-REG-008: a region covers the cells its polygon overlaps, not only the ones whose
+    /// centre it contains, and not the cells beside it.
+    #[test]
+    fn a_region_covers_the_cells_its_polygon_overlaps() {
+        // Cells (1,1) and (2,1) fully, (3,1) by a 1-unit sliver, nothing of (0,1) or (1,3).
+        let r = square_region(4096.0, 4096.0, 12289.0, 8192.0);
+        assert!(r.covers_cell(1, 1));
+        assert!(r.covers_cell(2, 1));
+        assert!(r.covers_cell(3, 1), "a polygon edge inside the cell is an overlap");
+        assert!(!r.covers_cell(0, 1));
+        assert!(!r.covers_cell(1, 3));
+        assert!(!r.covers_cell(1, 0), "sharing only the edge y = 4096 is not coverage");
+    }
+
+    /// A polygon much larger than the cell has no vertex inside it and no edge crossing it; only
+    /// the cell-corner-in-polygon rule finds it.
+    #[test]
+    fn a_region_polygon_larger_than_the_cell_still_covers_it() {
+        let r = square_region(-100_000.0, -100_000.0, 100_000.0, 100_000.0);
+        assert!(r.covers_cell(7, -9));
+    }
+
+    #[test]
+    fn a_concave_region_leaves_its_notch_uncovered() {
+        // An L: the unit square (0..3, 0..3) minus the (1..3, 1..3) cells' block.
+        let u = 4096.0;
+        let r = RegnRecord {
+            areas: vec![RegionArea {
+                edge_fall_off: 0,
+                points: vec![(0.0, 0.0), (3.0 * u, 0.0), (3.0 * u, u), (u, u), (u, 3.0 * u), (0.0, 3.0 * u)],
+            }],
+            ..Default::default()
+        };
+        assert!(r.covers_cell(0, 0));
+        assert!(r.covers_cell(2, 0));
+        assert!(r.covers_cell(0, 2));
+        assert!(!r.covers_cell(2, 2), "the notch");
+    }
+
+    #[test]
+    fn a_region_without_polygons_covers_nothing() {
+        assert!(!RegnRecord::default().covers_cell(0, 0));
+        let degenerate = RegnRecord {
+            areas: vec![RegionArea { edge_fall_off: 0, points: vec![(0.0, 0.0), (9999.0, 9999.0)] }],
+            ..Default::default()
+        };
+        assert!(!degenerate.covers_cell(0, 0), "two points enclose nothing");
     }
 
     #[test]

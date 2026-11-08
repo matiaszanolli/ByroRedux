@@ -26,56 +26,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 const CELL_UNITS: f32 = 4096.0;
 
-type Poly = [(f32, f32)];
-
-fn point_in_poly(p: (f32, f32), poly: &Poly) -> bool {
-    let mut inside = false;
-    let mut j = poly.len().wrapping_sub(1);
-    for i in 0..poly.len() {
-        let (xi, yi) = poly[i];
-        let (xj, yj) = poly[j];
-        if (yi > p.1) != (yj > p.1) && p.0 < (xj - xi) * (p.1 - yi) / (yj - yi) + xi {
-            inside = !inside;
-        }
-        j = i;
-    }
-    inside
-}
-
-fn segments_cross(a: (f32, f32), b: (f32, f32), c: (f32, f32), d: (f32, f32)) -> bool {
-    fn orient(p: (f32, f32), q: (f32, f32), r: (f32, f32)) -> f32 {
-        (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0)
-    }
-    let (o1, o2, o3, o4) = (orient(a, b, c), orient(a, b, d), orient(c, d, a), orient(c, d, b));
-    (o1 > 0.0) != (o2 > 0.0) && (o3 > 0.0) != (o4 > 0.0)
-}
-
-/// Does the polygon overlap the axis-aligned square `[x0,x1]×[y0,y1]`?
-fn poly_overlaps_rect(poly: &Poly, x0: f32, y0: f32, x1: f32, y1: f32) -> bool {
-    if poly.len() < 3 {
-        return false;
-    }
-    if poly.iter().any(|&(x, y)| x >= x0 && x <= x1 && y >= y0 && y <= y1) {
-        return true;
-    }
-    let corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)];
-    if corners.iter().any(|&c| point_in_poly(c, poly)) {
-        return true;
-    }
-    for i in 0..poly.len() {
-        let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
-        for k in 0..4 {
-            if segments_cross(a, b, corners[k], corners[(k + 1) % 4]) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 fn region_contains_cell_centre(r: &RegnRecord, gx: i32, gy: i32) -> bool {
     let c = ((gx as f32 + 0.5) * CELL_UNITS, (gy as f32 + 0.5) * CELL_UNITS);
-    r.areas.iter().any(|a| point_in_poly(c, &a.points))
+    r.areas.iter().any(|a| a.contains_point(c))
 }
 
 fn seg_dist(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -106,13 +59,6 @@ fn nearest_edge_and_falloff(r: &RegnRecord, gx: i32, gy: i32) -> (f32, f32) {
         }
     }
     (best, fall)
-}
-
-fn region_overlaps_cell(r: &RegnRecord, gx: i32, gy: i32) -> bool {
-    let (x0, y0) = (gx as f32 * CELL_UNITS, gy as f32 * CELL_UNITS);
-    r.areas
-        .iter()
-        .any(|a| poly_overlaps_rect(&a.points, x0, y0, x0 + CELL_UNITS, y0 + CELL_UNITS))
 }
 
 /// A region's Weather sections: (priority, override flag, weather table).
@@ -274,7 +220,7 @@ fn main() -> anyhow::Result<()> {
                 .filter(|(_, r)| {
                     // A region belongs to one worldspace (WNAM); same-coordinate regions of
                     // another worldspace are not candidates.
-                    r.worldspace_form == Some(ws_form) && region_overlaps_cell(r, gx, gy)
+                    r.worldspace_form == Some(ws_form) && r.covers_cell(gx, gy)
                 })
                 .map(|(&f, _)| f)
                 .collect();
