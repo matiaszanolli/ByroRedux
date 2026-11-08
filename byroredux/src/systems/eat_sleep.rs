@@ -88,7 +88,7 @@ const ANCHOR_RETRY_SECS: f32 = super::travel::ANCHOR_RETRY_SECS;
 /// One world-space seat: `((furniture entity, marker index), transform)`.
 type Seat = ((EntityId, u32), GlobalTransform);
 
-enum SeatAttempt {
+pub(super) enum SeatAttempt {
     Seated,
     Approach(Vec3),
     Retry,
@@ -98,7 +98,7 @@ enum SeatAttempt {
 /// shared by every Eat/Sleep actor that attempts a seat that frame
 /// (#5449). Backing allocations persist across frames.
 #[derive(Default)]
-struct FrameSeats {
+pub(super) struct FrameSeats {
     sit: Vec<Seat>,
     sit_ready: bool,
     sleep: Vec<Seat>,
@@ -106,7 +106,7 @@ struct FrameSeats {
 }
 
 impl FrameSeats {
-    fn begin_frame(&mut self) {
+    pub(super) fn begin_frame(&mut self) {
         self.sit_ready = false;
         self.sleep_ready = false;
     }
@@ -154,7 +154,7 @@ struct EatSleepScratch {
 /// Which procedure an actor carries this tick — collected first so the
 /// per-actor loop below never holds two behavior storages at once.
 #[derive(Clone, Copy)]
-enum EatOrSleep {
+pub(super) enum EatOrSleep {
     Eat,
     Sleep,
 }
@@ -501,7 +501,7 @@ fn cell_is_resident(world: &World, cell_form_id: u32) -> bool {
 /// sandbox seating path (reservation, root snap, sit-enter park). A marker
 /// beyond the arrival threshold becomes a walk goal; `Retry` means there is
 /// no usable seat yet.
-fn seat_at_marker(
+pub(super) fn seat_at_marker(
     world: &World,
     npc: EntityId,
     kind: EatOrSleep,

@@ -50,7 +50,7 @@ use super::locomotion::{advance_stuck_repick, AI_PACKAGE_DEFAULT_RADIUS, LOCOMOT
 use super::navmesh_path::{apply_walk_step, cached_walk_step};
 use byroredux_core::ecs::components::{
     ActorValues, CreatureActor, Dead, EatSleepLocation, FindItemKind, FindPackageBehavior, FindProgress,
-    FindTarget, GlobalTransform, Transform,
+    FindActorClass, FindTarget, GlobalTransform, Transform,
 };
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::Vec3;
@@ -75,12 +75,26 @@ const ENGAGE: f32 = 384.0;
 /// single-tile pathing a straight line across levels is blocked until then.
 const UNREACHABLE_SECS: f32 = 30.0;
 
-/// The item kind a placed base is, for an object-type search.
+/// The object class a placed base is, for an object-type search: an item record's kind, or the placed
+/// `FLOR` / `FURN` record type (neither has an item record).
 fn item_kind(index: &EsmIndex, base: u32) -> Option<FindItemKind> {
-    match &index.items.get(&base)?.kind {
-        ItemKind::Ammo { .. } => Some(FindItemKind::Ammo),
-        ItemKind::Aid { food: true, .. } => Some(FindItemKind::Food),
-        ItemKind::Aid { .. } => Some(FindItemKind::Alchemy),
+    if let Some(item) = index.items.get(&base) {
+        return match &item.kind {
+            ItemKind::Ammo { .. } => Some(FindItemKind::Ammo),
+            ItemKind::Aid { food: true, .. } => Some(FindItemKind::Food),
+            ItemKind::Aid { .. } => Some(FindItemKind::Alchemy),
+            ItemKind::Armor { .. } => Some(FindItemKind::Armor),
+            ItemKind::Book { .. } => Some(FindItemKind::Book),
+            ItemKind::Ingredient { .. } => Some(FindItemKind::Ingredient),
+            ItemKind::Misc => Some(FindItemKind::Misc),
+            ItemKind::Weapon { .. } => Some(FindItemKind::Weapon),
+            ItemKind::Key => Some(FindItemKind::Key),
+            _ => None,
+        };
+    }
+    match index.cells.statics.get(&base)?.record_type {
+        byroredux_plugin::RecordType::FLOR => Some(FindItemKind::Flora),
+        byroredux_plugin::RecordType::FURN => Some(FindItemKind::Furniture),
         _ => None,
     }
 }
@@ -146,6 +160,8 @@ struct FindScratch {
     behaviors: Vec<(EntityId, FindPackageBehavior)>,
     kinds: KindMemo,
     arrival: FxHashMap<EntityId, Classified>,
+    /// The cell's seat markers, gathered at most once a pass for the furniture Finds (AIP-FIND-001).
+    seats: super::eat_sleep::FrameSeats,
 }
 
 /// An actor's first search comes at a fixed offset inside the period instead of at once, so the
@@ -194,6 +210,7 @@ fn search(
                     && match behavior.target {
                         FindTarget::Base(base) => identity.base_form_id == base,
                         FindTarget::Kind(kind) => kinds.kind(identity.base_form_id) == Some(kind),
+                        FindTarget::Actors(class) => actor_matches_class(world, entity, class),
                         FindTarget::Reference(_) => false,
                     }
             })
@@ -206,15 +223,34 @@ fn search(
             if !still_valid(world, actor, entity, scratch) {
                 return None;
             }
-            // A kind search is for loose items; a base search takes whatever the base is.
-            if matches!(behavior.target, FindTarget::Kind(_)) && !crate::inventory::is_pickup_target(world, entity) {
-                return None;
+            // An item search is for loose items; a base search takes whatever the base is, and a flora or
+            // furniture search takes the placed object itself.
+            if let FindTarget::Kind(kind) = behavior.target {
+                if !matches!(kind, FindItemKind::Flora | FindItemKind::Furniture)
+                    && !crate::inventory::is_pickup_target(world, entity)
+                {
+                    return None;
+                }
             }
             let at = world.get::<GlobalTransform>(entity)?.translation;
             (at.distance(centre) <= radius).then(|| (entity, here.distance(at)))
         })
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(entity, _)| entity)
+}
+
+/// Whether `entity` is an actor of `class` (AIP-FIND-003): creatures carry [`CreatureActor`], NPCs are the
+/// other actors.
+fn actor_matches_class(world: &World, entity: EntityId, class: FindActorClass) -> bool {
+    if !is_actor(world, entity) {
+        return false;
+    }
+    let creature = world.has::<CreatureActor>(entity);
+    match class {
+        FindActorClass::Npcs => !creature,
+        FindActorClass::Creatures => creature,
+        FindActorClass::Any => true,
+    }
 }
 
 fn arm_combat(world: &World, actor: EntityId, target: EntityId) {
@@ -266,6 +302,7 @@ fn drive_find_packages(
     let Some(index) = world.try_resource::<crate::components::LoadedCellIndex>().map(|i| i.0.clone()) else {
         return;
     };
+    scratch.seats.begin_frame();
     // Taken out of the scratch for the pass: `search` reads the rest of it while it fills the memo.
     let mut kinds = std::mem::take(&mut scratch.kinds);
     kinds.bind(&index);
@@ -323,7 +360,7 @@ fn drive_find_packages(
         let (stop_at, on_arrival) = match cached {
             Some(class) => (class.stop_at, class.arrival),
             None => {
-                let (stop_at, arrival) = classify_arrival(world, actor, target);
+                let (stop_at, arrival) = classify_arrival(world, actor, target, &behavior);
                 scratch
                     .arrival
                     .insert(actor, Classified { target, stop_at, arrival, ttl: SEARCH_PERIOD_SECS });
@@ -387,6 +424,33 @@ fn drive_find_packages(
                 }
                 progress.done = true;
             }
+            // Furniture: the actor takes a sit marker of the piece it walked to, through the Eat / Sleep
+            // seating path (reservations, root snap, sit-enter park).
+            Arrival::Seat => match super::eat_sleep::seat_at_marker(
+                world,
+                actor,
+                super::eat_sleep::EatOrSleep::Eat,
+                None,
+                &mut scratch.seats,
+            ) {
+                super::eat_sleep::SeatAttempt::Seated => {
+                    log::info!("Find package: actor {actor} sat down on {target}");
+                    progress.done = true;
+                }
+                // The marker is across the last few steps: walk to it; the next pass seats the actor.
+                super::eat_sleep::SeatAttempt::Approach(marker) => {
+                    let speed = world
+                        .get::<crate::components::WalkSpeed>(actor)
+                        .map_or(LOCOMOTION_WALK_SPEED, |s| s.0);
+                    let step = cached_walk_step(world, actor, current, rotation, marker, 0.0, dt, speed);
+                    apply_walk_step(world, [(actor, step.position, step.rotation)]);
+                }
+                // No usable seat here (taken, or no sit-enter clip, or a creature): try another piece.
+                super::eat_sleep::SeatAttempt::Retry => {
+                    scratch.unreachable.insert((actor, target), UNREACHABLE_SECS);
+                    progress.target = None;
+                }
+            },
             // Stood beside a friendly actor: nothing more to do, and it keeps
             // the target so it follows if they walk off.
             Arrival::Stand => {}
@@ -401,7 +465,11 @@ fn drive_find_packages(
 }
 
 /// How far `actor` goes toward `target`, and what it does there.
-fn classify_arrival(world: &World, actor: EntityId, target: EntityId) -> (f32, Arrival) {
+fn classify_arrival(world: &World, actor: EntityId, target: EntityId, behavior: &FindPackageBehavior) -> (f32, Arrival) {
+    // A furniture search ends seated (AIP-FIND-001); every other class acts on what it finds.
+    if matches!(behavior.target, FindTarget::Kind(FindItemKind::Furniture)) {
+        return (REACH, Arrival::Seat);
+    }
     if is_actor(world, target) {
         let hostile = world.has::<CreatureActor>(target) || actor_would_attack(world, actor, target);
         if hostile {
@@ -420,6 +488,8 @@ fn classify_arrival(world: &World, actor: EntityId, target: EntityId) -> (f32, A
 
 #[derive(Clone, Copy)]
 enum Arrival {
+    /// Sit on a marker of the found furniture.
+    Seat,
     Take,
     Attack,
     Greet,
@@ -627,6 +697,164 @@ mod tests {
         byroredux_scripting::fragment_activation_flush_system(&world, 0.0);
         let event = world.get::<byroredux_scripting::ActivateEvent>(door).map(|e| e.activator);
         assert_eq!(event, Some(actor), "delivered at the head of the next frame");
+    }
+
+    /// A placed-base record of `record_type` (every other field empty).
+    fn static_object(base: u32, record_type: byroredux_plugin::RecordType) -> byroredux_plugin::esm::cell::StaticObject {
+        byroredux_plugin::esm::cell::StaticObject {
+            form_id: base,
+            editor_id: String::new(),
+            model_path: String::new(),
+            record_type,
+            light_data: None,
+            addon_data: None,
+            has_script: false,
+            script_instance: None,
+            script_form_id: 0,
+            visible_when_distant: false,
+            destruction: None,
+        }
+    }
+
+    /// A flora / furniture base is told from its record type, not an item record (AIP-FIND-001/-002).
+    #[test]
+    fn flora_and_furniture_are_told_from_the_placed_record_type() {
+        use byroredux_plugin::RecordType;
+        let mut index = index();
+        for (base, record_type) in [(0x8001, RecordType::FLOR), (0x8002, RecordType::FURN), (0x8003, RecordType::STAT)] {
+            index.cells.statics.insert(base, static_object(base, record_type));
+        }
+        assert_eq!(item_kind(&index, 0x8001), Some(FindItemKind::Flora));
+        assert_eq!(item_kind(&index, 0x8002), Some(FindItemKind::Furniture));
+        assert_eq!(item_kind(&index, 0x8003), None, "a static is neither");
+        let mut with_more_items = index;
+        with_more_items.items.insert(0x8010, item(ItemKind::Misc));
+        with_more_items.items.insert(0x8011, item(ItemKind::Key));
+        assert_eq!(item_kind(&with_more_items, 0x8010), Some(FindItemKind::Misc));
+        assert_eq!(item_kind(&with_more_items, 0x8011), Some(FindItemKind::Key));
+    }
+
+    fn world_with_statics(statics: &[(u32, byroredux_plugin::RecordType)]) -> World {
+        let mut world = world();
+        let mut idx = index();
+        for &(base, record_type) in statics {
+            idx.cells.statics.insert(base, static_object(base, record_type));
+        }
+        world.insert_resource(crate::components::LoadedCellIndex(Arc::new(idx)));
+        world
+    }
+
+    /// AIP-FIND-002 -- a flora search walks to the nearest flora in the area and raises one `ActivateEvent` on
+    /// it with the actor as activator (through the next-frame queue), leaving the nearer non-flora alone.
+    #[test]
+    fn a_flora_search_activates_the_nearest_flora() {
+        use byroredux_plugin::RecordType;
+        let mut world = world_with_statics(&[(0x8001, RecordType::FLOR), (0x8003, RecordType::STAT)]);
+        world.register::<byroredux_scripting::ActivateEvent>();
+        world.insert_resource(byroredux_scripting::PendingFragmentActivations::default());
+        let wall = place(&mut world, 0x8003, 0x401, Vec3::new(40.0, 0.0, 0.0));
+        let bush = place(&mut world, 0x8001, 0x402, Vec3::new(0.0, 0.0, 300.0));
+        let actor = finder(
+            &mut world,
+            FindPackageBehavior {
+                target: FindTarget::Kind(FindItemKind::Flora),
+                count: 1,
+                area: EatSleepLocation::NearCurrentLocation,
+                area_radius: 1000.0,
+            },
+        );
+        run(&world, 160);
+        assert!(world.get::<FindProgress>(actor).is_some_and(|p| p.done), "arrived and finished");
+        byroredux_scripting::fragment_activation_flush_system(&world, 0.0);
+        assert_eq!(world.get::<byroredux_scripting::ActivateEvent>(bush).map(|e| e.activator), Some(actor));
+        assert!(!world.has::<byroredux_scripting::ActivateEvent>(wall), "the static was not the target");
+    }
+
+    /// AIP-FIND-003 -- an NPC-class search picks the nearest live NPC (not a nearer creature) and a
+    /// creature-class search the creature; each is then attacked from engaging distance (a creature is
+    /// always hostile to the actor here).
+    #[test]
+    fn an_actor_class_search_picks_the_nearest_actor_of_that_class() {
+        for (class, expect_creature) in [(FindActorClass::Creatures, true), (FindActorClass::Npcs, false)] {
+            let mut world = world();
+            let creature = place(&mut world, 0x7001, 0x501, Vec3::new(0.0, 0.0, 600.0));
+            world.insert(creature, CreatureActor);
+            world.insert(creature, ActorValues::default());
+            let npc = place(&mut world, 0x7002, 0x502, Vec3::new(0.0, 0.0, 800.0));
+            world.insert(npc, ActorValues::default());
+            let dead = place(&mut world, 0x7003, 0x503, Vec3::new(0.0, 0.0, 100.0));
+            world.insert(dead, ActorValues::default());
+            world.insert(dead, Dead);
+            let actor = finder(
+                &mut world,
+                FindPackageBehavior {
+                    target: FindTarget::Actors(class),
+                    count: 1,
+                    area: EatSleepLocation::NearCurrentLocation,
+                    area_radius: 2000.0,
+                },
+            );
+            run(&world, 60);
+            let picked = world.get::<FindProgress>(actor).and_then(|p| p.target);
+            assert_eq!(picked, Some(if expect_creature { creature } else { npc }), "{class:?}");
+            assert_ne!(picked, Some(dead), "a dead actor is not a target");
+        }
+        let mut world = world();
+        let creature = place(&mut world, 0x7001, 0x501, Vec3::new(0.0, 0.0, 600.0));
+        world.insert(creature, CreatureActor);
+        world.insert(creature, ActorValues::default());
+        let any = finder(
+            &mut world,
+            FindPackageBehavior {
+                target: FindTarget::Actors(FindActorClass::Any),
+                count: 1,
+                area: EatSleepLocation::NearCurrentLocation,
+                area_radius: 2000.0,
+            },
+        );
+        run(&world, 60);
+        assert_eq!(world.get::<FindProgress>(any).and_then(|p| p.target), Some(creature), "Actors: Any takes either class");
+    }
+
+    /// AIP-FIND-001 -- a furniture search walks to the nearest furniture in the area and leaves the actor
+    /// `Seated` on one of its sit markers through the Eat / Sleep seating path; a piece with no free marker
+    /// is skipped for the next nearest.
+    #[test]
+    fn a_furniture_search_leaves_the_actor_seated_on_a_marker_of_the_nearest_piece() {
+        use crate::components::{SandboxSitClip, SeatReservations};
+        use byroredux_core::ecs::components::{Furniture, FurnitureMarker, FurnitureMarkerKind, Seated};
+        use byroredux_plugin::RecordType;
+
+        let mut world = world_with_statics(&[(0x8002, RecordType::FURN)]);
+        world.register::<Seated>();
+        world.register::<Furniture>();
+        world.register::<byroredux_core::animation::AnimationPlayer>();
+        world.insert_resource(SeatReservations::default());
+        world.insert_resource(SandboxSitClip(Some((3, 1.0))));
+        let chair = place(&mut world, 0x8002, 0x601, Vec3::new(0.0, 0.0, 300.0));
+        world.insert(
+            chair,
+            Furniture {
+                markers: vec![FurnitureMarker {
+                    local_offset: [0.0, 0.0, 0.0],
+                    heading_z_radians: None,
+                    animation_type: 1,
+                    kind: FurnitureMarkerKind::Sit,
+                }],
+            },
+        );
+        let actor = finder(
+            &mut world,
+            FindPackageBehavior {
+                target: FindTarget::Kind(FindItemKind::Furniture),
+                count: 1,
+                area: EatSleepLocation::NearCurrentLocation,
+                area_radius: 1000.0,
+            },
+        );
+        run(&world, 200);
+        assert!(world.has::<Seated>(actor), "the actor sat on the chair's marker");
+        assert!(world.get::<FindProgress>(actor).is_some_and(|p| p.done), "the Find is finished once seated");
     }
 
     /// A target the actor cannot reach is dropped, and tried again once the

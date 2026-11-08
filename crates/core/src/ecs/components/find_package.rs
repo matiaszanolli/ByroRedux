@@ -16,16 +16,30 @@ use super::eat_sleep::EatSleepLocation;
 use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::{Component, EntityId};
 
-/// The object types a Find package can search for that the engine can
-/// classify from the item records alone. The `PTDT` object-type numbers are
-/// fopdoc's, and these three agree with the vanilla data; the rest of the
-/// enum (flora, furniture, the weapon classes whose numbering the data
-/// contradicts) is not searched for.
+/// The object classes a Find package can search for that the engine can classify from the base records: the
+/// item records (`ItemKind`) and the placed `FLOR` / `FURN` record types. The `PTDT` object-type numbers are
+/// fopdoc's. The weapon sub-classes (21-23) are not here: their labels are an open Phase 0 verify item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub enum FindItemKind {
+    /// Object type 2: an `ARMO`.
+    Armor,
+    /// Object type 3: a `BOOK`.
+    Book,
+    /// Object type 7: an `INGR`.
+    Ingredient,
+    /// Object type 9: a `MISC`.
+    Misc,
+    /// Object type 10: a `FLOR` placed reference. Not an item: arrival activates it (the harvest).
+    Flora,
+    /// Object type 11: a `FURN` placed reference. Not an item: arrival sits the actor on one of its markers.
+    Furniture,
+    /// Object type 12: a `WEAP` (Weapons: Any).
+    Weapon,
     /// Object type 13.
     Ammo,
+    /// Object type 16: a `KEYM`.
+    Key,
     /// Object type 17: an `ALCH` without the Food Item flag.
     Alchemy,
     /// Object type 18: an `ALCH` with the Food Item flag.
@@ -42,6 +56,21 @@ pub enum FindTarget {
     Base(u32),
     /// `PTDT` type 2: any placed item of this kind, found in the area.
     Kind(FindItemKind),
+    /// `PTDT` type 2, object type 14 (NPCs), 15 (Creatures) or Actors: Any: the nearest loaded live actor of
+    /// that class in the area (GECK *Find Package*: "can also 'find' other actors").
+    Actors(FindActorClass),
+}
+
+/// The actor class of an actor-valued Find target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub enum FindActorClass {
+    /// Object type 14.
+    Npcs,
+    /// Object type 15.
+    Creatures,
+    /// Actors: Any (28 on FNV, 29 in xEdit's FO3 table).
+    Any,
 }
 
 /// Marks an actor that runs the Find procedure.

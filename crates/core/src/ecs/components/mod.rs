@@ -78,7 +78,7 @@ pub use owned::Owned;
 pub use global_transform::GlobalTransform;
 pub use flee_package::FleePackageBehavior;
 pub use ambush::AmbushBehavior;
-pub use find_package::{FindItemKind, FindPackageBehavior, FindProgress, FindTarget};
+pub use find_package::{FindActorClass, FindItemKind, FindPackageBehavior, FindProgress, FindTarget};
 pub use guard::{GuardBehavior, GuardState};
 pub use use_weapon_package::{UseWeaponPackageBehavior, UseWeaponPackageStarted};
 pub use hierarchy::{Children, Parent};

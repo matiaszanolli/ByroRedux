@@ -10,7 +10,7 @@ use super::EsmIndex;
 use crate::components::{AmbientPackageRuntime, GameTimeRes, NavPath, SeatReservations};
 use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::components::{
-    AmbushBehavior, Dead, FindItemKind, FindPackageBehavior, FindProgress, FindTarget, EatBehavior, EatSleepLocation, EatSleepState, EscortBehavior, EscortState, Escorted,
+    AmbushBehavior, Dead, FindActorClass, FindItemKind, FindPackageBehavior, FindProgress, FindTarget, EatBehavior, EatSleepLocation, EatSleepState, EscortBehavior, EscortState, Escorted,
     FollowBehavior,
     FleePackageBehavior, FollowState, GuardBehavior, GuardState, PatrolBehavior, PatrolState, SandboxBehavior, Seated,
     SleepBehavior, TravelBehavior, TravelState, Traveled, UseWeaponPackageBehavior,
@@ -127,25 +127,71 @@ fn use_weapon_behavior(package: &PackRecord, world: &World) -> Option<UseWeaponP
     })
 }
 
-/// What a Find package installs, or `None` when it must not install:
-///
-/// - A package whose conditions could not all be evaluated: Find takes the
-///   actor over to hunt, take or greet, so a fail-open pass (#5376) would send
-///   it off on content the quest has not reached.
-/// - A package with no `PTDT`, or one searching an object type the item
-///   records cannot classify (only Ammo 13, Alchemy 17 and Food 18 are; the
-///   enum's weapon classes are contradicted by the data and the rest have no
-///   record to read).
-fn find_behavior(package: &PackRecord, world: &World) -> Option<FindPackageBehavior> {
-    if !package_conditions_fully_modeled(&package.conditions, world) {
-        return None;
+/// Why a Find package does not install (AIP-DX-002): one `debug` line per decline names the package, its
+/// procedure and this reason.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FindDecline {
+    /// A condition the evaluator cannot model: a fail-open pass (#5376) would send the actor off on content
+    /// the quest has not reached.
+    UnmodelledCondition,
+    /// A package with no `PTDT`.
+    NoTarget,
+    /// The object type is one the engine does not search for (AIP-FIND-005); carries the raw number.
+    UnsupportedObjectType(u32),
+    /// An object-type search on a game whose enum the driver does not read: Oblivion numbers it
+    /// differently (AIP-FIND-006 retires this).
+    UnsupportedGame,
+    /// A target kind a Find cannot take.
+    UnsupportedTarget,
+}
+
+impl FindDecline {
+    fn reason(self) -> String {
+        match self {
+            Self::UnmodelledCondition => "unmodelled-condition".into(),
+            Self::NoTarget => "no-target".into(),
+            Self::UnsupportedObjectType(raw) => format!("unsupported-object-type {raw}"),
+            Self::UnsupportedGame => "unsupported-game".into(),
+            Self::UnsupportedTarget => "unsupported-target".into(),
+        }
     }
-    let target = package.target?;
+}
+
+/// The class a FO3/FNV Find `PTDT` object-type number searches for (fopdoc's enum, 0-27; Actors: Any is 28 in
+/// xEdit's FNV table and 29 in its FO3 table, and no vanilla Find uses the other number on either game, so
+/// both read as Actors: Any). `None` for a type the engine does not search for: 0 None, 1 Activators,
+/// 5 Containers, 6 Doors, 8 Lights, 4 Clothing / 19 / 20 (no record classifier yet), the weapon sub-classes
+/// 21-23 (labels unsettled) and 24-27 Actor Effects (AIP-FIND-005).
+fn find_object_class(object_type: u32) -> Option<FindTarget> {
+    Some(match object_type {
+        2 => FindTarget::Kind(FindItemKind::Armor),
+        3 => FindTarget::Kind(FindItemKind::Book),
+        7 => FindTarget::Kind(FindItemKind::Ingredient),
+        9 => FindTarget::Kind(FindItemKind::Misc),
+        10 => FindTarget::Kind(FindItemKind::Flora),
+        11 => FindTarget::Kind(FindItemKind::Furniture),
+        12 => FindTarget::Kind(FindItemKind::Weapon),
+        13 => FindTarget::Kind(FindItemKind::Ammo),
+        14 => FindTarget::Actors(FindActorClass::Npcs),
+        15 => FindTarget::Actors(FindActorClass::Creatures),
+        16 => FindTarget::Kind(FindItemKind::Key),
+        17 => FindTarget::Kind(FindItemKind::Alchemy),
+        18 => FindTarget::Kind(FindItemKind::Food),
+        28 | 29 => FindTarget::Actors(FindActorClass::Any),
+        _ => return None,
+    })
+}
+
+/// What a Find package installs, or why it must not.
+fn find_decision(package: &PackRecord, world: &World) -> Result<FindPackageBehavior, FindDecline> {
+    if !package_conditions_fully_modeled(&package.conditions, world) {
+        return Err(FindDecline::UnmodelledCondition);
+    }
+    let target = package.target.ok_or(FindDecline::NoTarget)?;
     let (target_kind, count) = match target.target {
         PackTargetKind::SpecificReference(form_id) => (FindTarget::Reference(form_id), 1),
         PackTargetKind::ObjectId(base) => (FindTarget::Base(base), target.count_or_distance.max(1) as u32),
-        PackTargetKind::Other(_) if target.target_type == 2 => {
-            let PackTargetKind::Other(object_type) = target.target else { return None };
+        PackTargetKind::Other(object_type) if target.target_type == 2 => {
             // The object-type numbers are FO3/FNV's: Oblivion numbers the same
             // enum differently (there 13 is Weapons, 17 Soul Gems, 18 Keys), so
             // another game's type search would be misread, not just missed.
@@ -153,24 +199,37 @@ fn find_behavior(package: &PackRecord, world: &World) -> Option<FindPackageBehav
                 .try_resource::<crate::cell_loader::LoadedCellIndex>()
                 .map(|index| index.0.game);
             if game != Some(byroredux_plugin::esm::reader::GameKind::Fallout3NV) {
-                return None;
+                return Err(FindDecline::UnsupportedGame);
             }
-            let kind = match object_type {
-                13 => FindItemKind::Ammo,
-                17 => FindItemKind::Alchemy,
-                18 => FindItemKind::Food,
-                _ => return None,
-            };
-            (FindTarget::Kind(kind), target.count_or_distance.max(1) as u32)
+            let class = find_object_class(object_type).ok_or(FindDecline::UnsupportedObjectType(object_type))?;
+            (class, target.count_or_distance.max(1) as u32)
         }
-        PackTargetKind::Other(_) => return None,
+        PackTargetKind::Other(_) => return Err(FindDecline::UnsupportedTarget),
     };
-    Some(FindPackageBehavior {
+    Ok(FindPackageBehavior {
         target: target_kind,
         count,
         area: location_anchor(package.location),
         area_radius: package.location.map_or(0.0, |area| area.radius.max(0) as f32),
     })
+}
+
+/// [`find_decision`] as the installer and the selection scan use it: the behavior, or `None` with the decline
+/// logged (AIP-DX-002).
+fn find_behavior(package: &PackRecord, world: &World) -> Option<FindPackageBehavior> {
+    match find_decision(package, world) {
+        Ok(behavior) => Some(behavior),
+        Err(decline) => {
+            log::debug!(
+                "package decline: {:08X} {} procedure Find ({}): {}",
+                package.form_id,
+                package.editor_id,
+                package.procedure_type,
+                decline.reason()
+            );
+            None
+        }
+    }
 }
 
 /// Whether selection may pick `package`: a Dialogue-procedure package must be
@@ -1917,7 +1976,7 @@ mod tests {
     /// condition list, is declined.
     #[test]
     fn a_find_package_installs_only_what_the_runtime_can_hunt() {
-        use byroredux_core::ecs::components::{EatSleepLocation, FindItemKind, FindTarget};
+        use byroredux_core::ecs::components::{EatSleepLocation, FindActorClass, FindItemKind, FindTarget};
         use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue};
         use byroredux_plugin::esm::records::misc::pack::PROCEDURE_FIND;
         use byroredux_plugin::esm::records::PackTarget;
@@ -1972,12 +2031,28 @@ mod tests {
             None,
             "18 is Keys in Oblivion's enum, not Food"
         );
-        // Flora (10), furniture (11) and the contradicted weapon classes are not searched for.
-        for unclassified in [10, 11, 21, 22, 23, 28] {
+        // AIP-FIND-001..004: flora, furniture, the actor classes and the item classes install.
+        for (object_type, expected) in [
+            (10, FindTarget::Kind(FindItemKind::Flora)),
+            (11, FindTarget::Kind(FindItemKind::Furniture)),
+            (12, FindTarget::Kind(FindItemKind::Weapon)),
+            (14, FindTarget::Actors(FindActorClass::Npcs)),
+            (15, FindTarget::Actors(FindActorClass::Creatures)),
+            (28, FindTarget::Actors(FindActorClass::Any)),
+            (29, FindTarget::Actors(FindActorClass::Any)),
+            (16, FindTarget::Kind(FindItemKind::Key)),
+        ] {
+            let behavior = installed(finding(0x103, 2, PackTargetKind::Other(object_type), 1))
+                .unwrap_or_else(|| panic!("object type {object_type} installs"));
+            assert_eq!(behavior.target, expected, "object type {object_type}");
+        }
+        // AIP-FIND-005: the types with no runtime (None, Activators, Containers, Doors, Lights, the weapon
+        // sub-classes whose labels are unsettled, Actor Effects, and a number outside the enum) decline.
+        for unsupported in [0, 1, 5, 6, 8, 21, 22, 23, 24, 27, 77] {
             assert_eq!(
-                installed(finding(0x103, 2, PackTargetKind::Other(unclassified), 1)),
+                installed(finding(0x106, 2, PackTargetKind::Other(unsupported), 1)),
                 None,
-                "object type {unclassified} has no record to classify it by"
+                "object type {unsupported} is not searched for"
             );
         }
         // A fail-open conditions pass must not send the actor hunting, nor shadow the next package.
@@ -1991,6 +2066,27 @@ mod tests {
         assert_eq!(installed(unmodeled.clone()), None);
         let (world, actor) = setup_actor(10.0, vec![unmodeled, pack(0x105, PROCEDURE_GUARD, None)]);
         assert!(world.has::<GuardBehavior>(actor), "the lower package still wins");
+    }
+
+    /// AIP-FIND-005 / AIP-DX-002 -- a declined Find names the reason, with the raw object-type number.
+    #[test]
+    fn a_declined_find_names_its_reason() {
+        use byroredux_plugin::esm::records::misc::pack::PROCEDURE_FIND;
+        use byroredux_plugin::esm::records::PackTarget;
+
+        let mut package = pack(0x110, PROCEDURE_FIND, None);
+        package.target = Some(PackTarget { target_type: 2, target: PackTargetKind::Other(8), count_or_distance: 1 });
+        let mut world = World::new();
+        world.insert_resource(crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(EsmIndex {
+            game: byroredux_plugin::esm::reader::GameKind::Fallout3NV,
+            ..Default::default()
+        })));
+        assert_eq!(find_decision(&package, &world), Err(FindDecline::UnsupportedObjectType(8)));
+        assert_eq!(FindDecline::UnsupportedObjectType(8).reason(), "unsupported-object-type 8");
+        package.target = None;
+        assert_eq!(find_decision(&package, &world), Err(FindDecline::NoTarget));
+        assert_eq!(find_object_class(18), Some(FindTarget::Kind(FindItemKind::Food)));
+        assert_eq!(find_object_class(4), None, "Clothing has no classifier yet");
     }
 
     /// UseItemAt (procedure 8) is furniture use in the vanilla data: it takes
