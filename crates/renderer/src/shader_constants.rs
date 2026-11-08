@@ -259,6 +259,9 @@ mod tests {
         ("include/blue_noise.glsl", "BLUE_NOISE_TILE"),
         ("taa.comp", "OFFSETS"),
         ("taa.comp", "N"),
+        // Stage-local velocity ramp for TAA's current-frame weight.
+        ("taa.comp", "TAA_MOTION_ALPHA_MAX"),
+        ("taa.comp", "TAA_MOTION_FULL_PX"),
         // Stage-local sampling / quality tuning, consumed nowhere else.
         ("include/pbr.glsl", "SPECULAR_AA_VARIANCE"),
         ("include/pbr.glsl", "SPECULAR_AA_THRESHOLD"),

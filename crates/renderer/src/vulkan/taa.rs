@@ -871,7 +871,7 @@ mod tests {
             "a fully reactive pixel (water) must bypass history (#4944)"
         );
         assert!(
-            main.contains("float alpha = max(params.params.x, reactive);"),
+            main.contains("float alpha = max(alphaMotion, reactive);"),
             "a partially reactive pixel must raise the current-frame weight (#4944)"
         );
 
@@ -942,7 +942,7 @@ mod tests {
         );
         assert!(
             src.contains(
-                "offscreen || background || disocclusion || surfaceMismatch || alphaBlend"
+                "offscreen || background || disocclusion || alphaBlend"
             ),
             "TAA must reject background, surface-mismatched, and blended history"
         );
@@ -1054,42 +1054,48 @@ mod tests {
         );
     }
 
-    /// Regression for #2760 (REN-D13-02) — a geometry pixel that reprojects
-    /// to a formerly-sky (mesh_id 0) location must NOT hard-reject through
-    /// the ordinary `disocclusion`/`surfaceMismatch` terms (that path
-    /// produces permanent, every-frame edge crawl on exterior geometry/sky
-    /// silhouettes under Halton jitter with a parked camera — both possible
-    /// jitter-driven coverage states reject history, so the pixel never
-    /// stabilizes). Instead it must fall through to the accepted-history
-    /// path with the variance-clip window collapsed to zero width, which
-    /// clips `clampedHist` to exactly the current frame's own neighbourhood
-    /// mean regardless of the untrustworthy reprojected sample.
+    /// Regression for #2760 (REN-D13-02), widened: silhouettes must resolve
+    /// through history, not hard-reject on a centre-tap surface test.
+    ///
+    /// Under Halton jitter a silhouette pixel alternates between two surfaces
+    /// (or surface/sky) every frame; with a parked camera it reprojects to
+    /// itself, so a centre-tap mesh-ID/normal test fails every other frame and
+    /// the raw jittered sample is written — a permanent one-pixel edge crawl
+    /// (mean |Δ| 19/255 on edges vs 2.5 elsewhere, parked Cornell box).
+    /// Three rules keep that from recurring:
+    ///  * geometry reprojecting from sky is box-filtered (zero-width clamp);
+    ///  * the surface is searched for in the 3x3 neighbourhood of the
+    ///    reprojected pixel, mesh ID and normal together;
+    ///  * only sky pixels with no geometry neighbour pass through raw.
     #[test]
-    fn taa_comp_soft_clamps_geometry_reprojecting_from_sky_instead_of_hard_rejecting() {
+    fn taa_comp_resolves_silhouettes_through_a_neighbourhood_surface_search() {
         let src = include_str!("../../shaders/taa.comp");
-        // The reject-list expression itself is unchanged (pinned by the
-        // sibling test above) — this fix changes what `disocclusion` and
-        // `surfaceMismatch` themselves evaluate to, not the list they feed.
         assert!(
-            src.contains("bool disocclusionFromSky = currMid != 0u && prevMid == 0u;"),
-            "must identify the geometry-reprojecting-from-sky case separately from an ordinary \
-             surface-to-surface disocclusion"
-        );
-        assert!(
-            src.contains("bool disocclusion = !disocclusionFromSky && !stableMeshIdsMatch(currMid, prevMid);"),
-            "the sky-transition case must be excluded from the hard-reject disocclusion term"
-        );
-        assert!(
-            src.contains("bool surfaceMismatch = !disocclusionFromSky && dot(currNormal, prevNormal) < 0.85;"),
-            "the sky-transition case must also be excluded from the normal-mismatch reject term, \
-             or the garbage reprojected G-buffer normal at a formerly-sky pixel reintroduces the \
-             same hard reject through this second term"
+            src.contains("bool disocclusionFromSky = !currIsSky && prevMid == 0u;"),
+            "must identify the geometry-reprojecting-from-sky case separately"
         );
         assert!(
             src.contains("float gamma = disocclusionFromSky ? 0.0 : params.params.z;"),
-            "the sky-transition case must collapse the variance-clip window to zero width instead \
-             of hard-rejecting, so accepted history clips to the current frame's own neighbourhood \
-             mean rather than importing the reprojected sky/clear colour"
+            "the sky-transition case must collapse the variance-clip window to zero width"
+        );
+        assert!(
+            src.contains("bool disocclusion = !surfaceFound;")
+                && src.contains("prevPix + ivec2(dx, dy)")
+                && src.contains("octDecode(texelFetch(uPrevNormal, p, 0).rg)"),
+            "surface consistency must be searched over the reprojected 3x3 neighbourhood \
+             (mesh ID + normal), not only at the centre tap, or jittered edges never accumulate"
+        );
+        assert!(
+            src.contains("bool background = currIsSky && !skyEdge;"),
+            "only sky pixels with no geometry neighbour may bypass history; the sky side of a \
+             silhouette must resolve like the geometry side"
+        );
+        assert!(
+            src.contains("float motionPx = length(motion * params.screen.xy);")
+                && src.contains("float alpha = max(alphaMotion, reactive);"),
+            "the current-frame weight must rise with screen-space velocity: resampling history \
+             at a constant 10% blurs moving content (Skyrim orbit sharpness halved without it), \
+             while a parked pixel must keep the base weight so its edges keep accumulating"
         );
     }
 
