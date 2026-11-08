@@ -27,6 +27,11 @@ fn esm_header_selects_one_canonical_character_profile() {
         character_rules_profile(GameKind::Fallout3NV, 1.34),
         CharacterRulesProfile::FALLOUT_NEW_VEGAS
     );
+    // #6780 — a defaulted header (no HEDR → 0.0) is not a detected FO3.
+    assert_eq!(
+        character_rules_profile(GameKind::Fallout3NV, 0.0),
+        CharacterRulesProfile::FALLOUT_NEW_VEGAS
+    );
     assert_eq!(
         character_rules_profile(GameKind::Skyrim, 1.71),
         CharacterRulesProfile::SKYRIM

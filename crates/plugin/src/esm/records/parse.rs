@@ -82,7 +82,9 @@ pub fn parse_esm(data: &[u8]) -> Result<EsmIndex> {
 pub(crate) fn character_rules_profile(game: GameKind, hedr_version: f32) -> CharacterRulesProfile {
     match game {
         GameKind::Oblivion => CharacterRulesProfile::OBLIVION,
-        GameKind::Fallout3NV if hedr_version < 1.0 => CharacterRulesProfile::FALLOUT3,
+        // `0.0` is the "no HEDR read" default (`from_header` then falls back to
+        // `Fallout3NV`), not a detected FO3 header — only a real 0.85/0.94 is FO3 (#6780).
+        GameKind::Fallout3NV if hedr_version > 0.0 && hedr_version < 1.0 => CharacterRulesProfile::FALLOUT3,
         GameKind::Fallout3NV => CharacterRulesProfile::FALLOUT_NEW_VEGAS,
         GameKind::Skyrim => CharacterRulesProfile::SKYRIM,
         GameKind::Fallout4 => CharacterRulesProfile::FALLOUT4,
