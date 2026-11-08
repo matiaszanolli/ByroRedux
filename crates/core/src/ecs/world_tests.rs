@@ -28,6 +28,25 @@ impl Component for Velocity {
     type Storage = PackedStorage<Self>;
 }
 
+// Private fixtures for tests that deliberately hold two component types in
+// plain (code) order. The lock-order detector's graph is process-wide, so a
+// plain-order hold of the shared `Health`/`Position`/`Velocity` pair races,
+// across parallel tests, the TypeId-sorted `query_2_mut` users of the same
+// pair: whichever side records its edge second closes a cycle whenever
+// `TypeId(Position) < TypeId(Health)` (#6809, same family as #6808 / #6101).
+// Nothing may hold the shared fixtures in plain order; use these instead.
+struct PlainA(f32);
+impl Component for PlainA {
+    type Storage = SparseSetStorage<Self>;
+}
+
+struct PlainB {
+    x: f32,
+}
+impl Component for PlainB {
+    type Storage = PackedStorage<Self>;
+}
+
 // ── Basic World operations ──────────────────────────────────────────
 
 #[test]
@@ -338,15 +357,16 @@ fn query_after_register() {
 fn multiple_read_queries_coexist() {
     let mut world = World::new();
     let e = world.spawn();
-    world.insert(e, Health(100.0));
-    world.insert(e, Position { x: 1.0, y: 2.0 });
+    world.insert(e, PlainA(100.0));
+    world.insert(e, PlainB { x: 1.0 });
 
-    // Two reads at the same time — no deadlock, no borrow error.
-    let q_health = world.query::<Health>().unwrap();
-    let q_pos = world.query::<Position>().unwrap();
+    // Two reads at the same time — no deadlock, no borrow error. Private
+    // fixtures: this holds the pair in plain order (#6809).
+    let q_a = world.query::<PlainA>().unwrap();
+    let q_b = world.query::<PlainB>().unwrap();
 
-    assert_eq!(q_health.get(e).unwrap().0, 100.0);
-    assert_eq!(q_pos.get(e).unwrap().x, 1.0);
+    assert_eq!(q_a.get(e).unwrap().0, 100.0);
+    assert_eq!(q_b.get(e).unwrap().x, 1.0);
 }
 
 #[test]
@@ -1236,11 +1256,12 @@ fn resource_write_then_read_same_type_panics() {
 fn query_read_then_write_different_types_ok() {
     let mut world = World::new();
     let e = world.spawn();
-    world.insert(e, Health(100.0));
-    world.insert(e, Position { x: 1.0, y: 2.0 });
+    world.insert(e, PlainA(100.0));
+    world.insert(e, PlainB { x: 1.0 });
 
-    let _read = world.query::<Health>().unwrap();
-    let _write = world.query_mut::<Position>().unwrap();
+    // Private fixtures: this holds the pair in plain order (#6809).
+    let _read = world.query::<PlainA>().unwrap();
+    let _write = world.query_mut::<PlainB>().unwrap();
     // No panic — different types.
 }
 
