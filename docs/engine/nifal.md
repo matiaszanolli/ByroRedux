@@ -895,6 +895,35 @@ lands; the soft variants and `TakeSmaller` have no local source at all.
 Visible effect until then: ship engine flames, weapon projectile glows,
 space-mine glows and the New Atlantis MAST waterfall.
 
+### Synthetic static height — opt-in role written AFTER the boundary (prototype, #6817)
+
+`static_height::bind_synthetic_height` (51ce1c2f9, 997dc05cd) is the one place a
+canonical texture role is filled with data **nobody authored**. A tiling static
+(UV extent above `MIN_TILING_UV_EXTENT`, no authored height map, normal map
+whose seam score passes `MAX_SEAM_EXCEEDANCE`) gets a height map integrated
+from its normal map, plus a UV slide and march budget derived from the mesh's
+UV density. It is **off** unless `render.static_parallax_depth_m` is above 0.
+
+Deliberate exception to "everything is decided in `translate_material`":
+
+- It runs in the shared attach step (`scene/mesh_entity.rs::spawn_mesh_entity`)
+  *after* `translate_material`, because the verdict needs the mesh geometry and a
+  decoded normal map. It writes `MaterialTextureHandles.textures.height`,
+  `parallax_height_scale` and `parallax_max_passes` and stamps
+  `MaterialTextureSource::SyntheticHeight`. `Material.parallax_*` keeps the
+  translate default; the renderer reads the handles, so the draw is consistent,
+  but the canonical `Material` does not describe the synthetic relief.
+- Its gate reads the **carried** material, not the mesh's own: alpha / decal from
+  `source_material` (the REFR material-swap target on the cell path) and
+  model-space normals from the canonical `effect_shader_flags` word (which holds
+  the BGSM bool, the REFR overlay bit and the `_msn` name rule). Pinned by
+  `gate_reads_the_carried_material_not_the_meshes_own` and
+  `the_synthetic_height_gate_is_handed_the_source_material`.
+- Not yet measured, so provisional: `MARCH_PASSES`, `MIN_TILING_UV_EXTENT`, and
+  `MAX_SEAM_EXCEEDANCE` (a starting point just inside the terrain-layer p90 of
+  0.062). The REFR placement scale is not applied to the UV density. All of
+  that is to be settled before the setting leaves prototype.
+
 ### Passthroughs — parked / dropped inventory (surveyed 2026-06-02)
 
 The 2026-06-02 coverage sweep traced every `ImportedScene`/`ImportedNode`/`ImportedMesh`

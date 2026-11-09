@@ -187,6 +187,7 @@ pub(crate) fn spawn_mesh_entity(
         ctx,
         tex_provider,
         mesh,
+        source_material,
         &material,
         &textures,
         &mut texture_handles,
@@ -590,6 +591,26 @@ mod tests {
         assert_eq!(
             *world.get::<RenderLayer>(entity).unwrap(),
             RenderLayer::Decal
+        );
+    }
+
+    /// #6817 — the synthetic-height gate must be handed the entity's carried
+    /// material (`source_material`), not left to read `mesh.material`: the same
+    /// bug class #6690 guards for the markers. The behavioural half is
+    /// `static_height::tests::gate_reads_the_carried_material_not_the_meshes_own`;
+    /// this pins that the shared step actually passes it.
+    #[test]
+    fn the_synthetic_height_gate_is_handed_the_source_material() {
+        let production =
+            byroredux_core::source_scan::production_text(include_str!("mesh_entity.rs"));
+        let call = production
+            .split("bind_synthetic_height(")
+            .nth(1)
+            .expect("spawn_mesh_entity calls bind_synthetic_height");
+        let args = call.split(");").next().unwrap();
+        assert!(
+            args.contains("source_material"),
+            "bind_synthetic_height must receive source_material: {args}"
         );
     }
 

@@ -36,7 +36,7 @@ use byroredux_core::lighting::BETHESDA_UNITS_PER_METER;
 use byroredux_core::settings::builtin::{
     STATIC_PARALLAX_DEPTH_DEFAULT_M, STATIC_PARALLAX_DEPTH_SETTING_ID,
 };
-use byroredux_nif::import::{ImportedMesh, MaterialTextureSet};
+use byroredux_nif::import::{ImportedMaterial, ImportedMesh, MaterialTextureSet};
 use byroredux_renderer::VulkanContext;
 use byroredux_terrain_height as th;
 
@@ -55,6 +55,9 @@ pub(crate) const MAX_SEAM_EXCEEDANCE: f32 = 0.05;
 
 /// UV extent (max over axes of max - min) above which a mesh tiles its texture.
 /// A hair over 1 so a chart mapped once onto 0..1 with rounding does not count.
+/// PROVISIONAL (#6817): the margin is a judgement, not a measurement, and no
+/// census of vanilla UV extents backs it; revisit before the setting leaves
+/// prototype.
 pub(crate) const MIN_TILING_UV_EXTENT: f32 = 1.02;
 
 /// Beyond this, the UVs are corrupt (one FNV mesh authors an extent of ten
@@ -67,6 +70,8 @@ const MAX_HEIGHT_SCALE: f32 = 0.08;
 
 /// March layer budget. The shader spends it near grazing angles and falls to
 /// eight head-on. Walls are seen edge-on far more than terrain is.
+/// PROVISIONAL (#6817): chosen by eye, not measured against a frame-time or
+/// artefact budget; revisit before the setting leaves prototype.
 const MARCH_PASSES: f32 = 16.0;
 
 /// The green convention every measured game reads its normal maps with
@@ -148,18 +153,26 @@ pub(crate) fn height_scale(depth_units: f32, units_per_uv: f32) -> f32 {
 
 /// The geometry and material half of the gate: everything knowable before the
 /// normal map is read. `normal` is the resolved normal-map path.
+///
+/// The material state comes from `source` (the material the entity actually
+/// carries: on the cell path the REFR material-swap target, not `mesh.material`,
+/// #4290) and the canonical `material`, never from the mesh's own raw material
+/// (#6817). The model-space-normals bit is read from the canonical flag word
+/// because that is where the boundary folds in the BGSM bool, the REFR overlay
+/// bit and the `_msn` name rule (#4548); the raw bool alone misses the last two.
 pub(crate) fn mesh_qualifies(
     mesh: &ImportedMesh,
+    source: &ImportedMaterial,
     material: &Material,
     normal: Option<&str>,
 ) -> bool {
-    let m = &mesh.material;
+    use byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS;
     normal.is_some()
         && mesh.skin.is_none()
-        && !m.is_decal
-        && !m.has_alpha
-        && !m.alpha_test
-        && !m.model_space_normals
+        && !source.is_decal
+        && !source.has_alpha
+        && !source.alpha_test
+        && material.effect_shader_flags & MODEL_SPACE_NORMALS == 0
         && material.material_kind == 0
         && {
             let extent = uv_extent(&mesh.uvs);
@@ -184,9 +197,7 @@ fn verdict(
 ) -> Option<CachedHeight> {
     let sources = LayerHeightSources::new(None, Some(normal), None)?;
     let key = sources.normal.clone()?;
-    if world.try_resource::<SyntheticHeights>().is_none() {
-        world.insert_resource(SyntheticHeights::default());
-    }
+    world.init_resource::<SyntheticHeights>();
     if let Some(known) = world.resource::<SyntheticHeights>().verdicts.get(&key) {
         return known.clone();
     }
@@ -230,6 +241,7 @@ pub(crate) fn bind_synthetic_height(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
     mesh: &ImportedMesh,
+    source: &ImportedMaterial,
     material: &Material,
     textures: &MaterialTextureSet<Option<String>>,
     handles: &mut MaterialTextureHandles,
@@ -246,7 +258,7 @@ pub(crate) fn bind_synthetic_height(
     let Some(normal) = textures.normal.as_deref() else {
         return;
     };
-    if !mesh_qualifies(mesh, material, Some(normal)) {
+    if !mesh_qualifies(mesh, source, material, Some(normal)) {
         return;
     }
     let Some(units) = units_per_uv(mesh) else {
@@ -327,33 +339,56 @@ mod tests {
     #[test]
     fn gate_wants_a_tiling_rigid_opaque_lit_mesh_with_a_normal_map() {
         let material = Material::default();
+        let source = ImportedMaterial::default();
         let tiling = quad(280.0, 4.0, 1.0);
-        assert!(mesh_qualifies(&tiling, &material, Some("n.dds")));
-        assert!(!mesh_qualifies(&tiling, &material, None), "no normal map");
+        assert!(mesh_qualifies(&tiling, &source, &material, Some("n.dds")));
+        assert!(!mesh_qualifies(&tiling, &source, &material, None), "no normal map");
         assert!(
-            !mesh_qualifies(&quad(280.0, 1.0, 1.0), &material, Some("n.dds")),
+            !mesh_qualifies(&quad(280.0, 1.0, 1.0), &source, &material, Some("n.dds")),
             "a chart mapped once is not a tiling material"
         );
         assert!(
-            !mesh_qualifies(&quad(280.0, 1.0e7, 1.0), &material, Some("n.dds")),
+            !mesh_qualifies(&quad(280.0, 1.0e7, 1.0), &source, &material, Some("n.dds")),
             "corrupt UVs are not a tiling material"
         );
 
-        let mut blended = quad(280.0, 4.0, 1.0);
-        blended.material.has_alpha = true;
-        assert!(!mesh_qualifies(&blended, &material, Some("n.dds")));
-        let mut decal = quad(280.0, 4.0, 1.0);
-        decal.material.is_decal = true;
-        assert!(!mesh_qualifies(&decal, &material, Some("n.dds")));
-        let mut cutout = quad(280.0, 4.0, 1.0);
-        cutout.material.alpha_test = true;
-        assert!(!mesh_qualifies(&cutout, &material, Some("n.dds")));
+        let blended = ImportedMaterial { has_alpha: true, ..ImportedMaterial::default() };
+        assert!(!mesh_qualifies(&tiling, &blended, &material, Some("n.dds")));
+        let decal = ImportedMaterial { is_decal: true, ..ImportedMaterial::default() };
+        assert!(!mesh_qualifies(&tiling, &decal, &material, Some("n.dds")));
+        let cutout = ImportedMaterial { alpha_test: true, ..ImportedMaterial::default() };
+        assert!(!mesh_qualifies(&tiling, &cutout, &material, Some("n.dds")));
 
         let special = Material {
             material_kind: 11,
             ..Material::default()
         };
-        assert!(!mesh_qualifies(&tiling, &special, Some("n.dds")));
+        assert!(!mesh_qualifies(&tiling, &source, &special, Some("n.dds")));
+    }
+
+    /// #6817 — the gate reads the material the entity carries, not the mesh's own
+    /// raw one: a REFR material swap changes alpha/decal state, and the canonical
+    /// flag word carries model-space normals from the overlay bit and `_msn` name.
+    #[test]
+    fn gate_reads_the_carried_material_not_the_meshes_own() {
+        use byroredux_renderer::vulkan::material::material_flag::MODEL_SPACE_NORMALS;
+        let material = Material::default();
+
+        // Mesh authored blended, swapped to an opaque wall: qualifies.
+        let mut authored_blended = quad(280.0, 4.0, 1.0);
+        authored_blended.material.has_alpha = true;
+        let swapped_opaque = ImportedMaterial::default();
+        assert!(mesh_qualifies(&authored_blended, &swapped_opaque, &material, Some("n.dds")));
+
+        // Mesh authored opaque, swapped to a blended surface: does not.
+        let authored_opaque = quad(280.0, 4.0, 1.0);
+        let swapped_blended = ImportedMaterial { has_alpha: true, ..ImportedMaterial::default() };
+        assert!(!mesh_qualifies(&authored_opaque, &swapped_blended, &material, Some("n.dds")));
+
+        // The canonical flag word (overlay bit / `_msn` name) disqualifies even
+        // though the raw bool is false.
+        let msn = Material { effect_shader_flags: MODEL_SPACE_NORMALS, ..Material::default() };
+        assert!(!mesh_qualifies(&authored_opaque, &swapped_opaque, &msn, Some("n.dds")));
     }
 
     #[test]
