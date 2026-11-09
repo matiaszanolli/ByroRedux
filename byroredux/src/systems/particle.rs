@@ -797,8 +797,16 @@ mod tests {
         assert_eq!(preset.start_size_variation, 6.0);
         // 3. emitter_rate
         assert_eq!(preset.rate, 33.0);
-        // 4. force_fields
+        // 4. force_fields — the Z-up axis [0, 0, -1] reaches the preset as Y-up [0, -1, 0]
+        //    (#6819: a count alone passed with the swap dropped or applied twice).
         assert_eq!(preset.force_fields.len(), 1);
+        match preset.force_fields[0] {
+            ParticleForceField::Gravity { direction, strength, .. } => {
+                assert_eq!(direction, [0.0, -1.0, 0.0]);
+                assert_eq!(strength, 9.81);
+            }
+            ref other => panic!("expected a Gravity field, got {other:?}"),
+        }
         // 5. texture_path
         assert_eq!(
             preset.texture_path.as_deref(),
@@ -985,8 +993,15 @@ mod tests {
         assert!((preset.start_size - 7.5).abs() < 1e-4);
         // Birth rate overlaid.
         assert_eq!(preset.rate, 42.0);
-        // Force fields converted Z-up→Y-up and carried through.
+        // Force fields converted Z-up→Y-up and carried through (#6819: the value, not just the count).
         assert_eq!(preset.force_fields.len(), 1);
+        match preset.force_fields[0] {
+            ParticleForceField::Gravity { direction, strength, .. } => {
+                assert_eq!(direction, [0.0, -1.0, 0.0]);
+                assert_eq!(strength, 9.8);
+            }
+            ref other => panic!("expected a Gravity field, got {other:?}"),
+        }
         // Authored particle budget overlaid, under the ceiling (#3344).
         assert_eq!(preset.max_particles, 64);
         // #2300 — texture_path/src_blend/dst_blend overrides now fold in
@@ -1359,6 +1374,32 @@ mod tests {
         let em = q.get(e).unwrap();
         // unit-dir along X = (1, 0, 0); Δv_x = 1 * 1.0 * 0.1 = 0.1.
         assert!((em.particles.velocities[0][0] - 0.1).abs() < 1e-5);
+    }
+
+    /// #6819 — the Z-up→Y-up axis swap `[x, y, z] → [x, z, -y]` on a vector with three
+    /// distinct components, so a dropped swap, a doubled swap, or a sign slip each give a
+    /// different answer. Strength and decay are carried through untouched.
+    #[test]
+    fn force_field_axes_convert_zup_to_yup_once() {
+        use byroredux_nif::import::ImportedParticleForceField as I;
+        let out = convert_force_fields_zup_to_yup(&[
+            I::Gravity { direction: [1.0, 2.0, 3.0], strength: 4.0, decay: 0.5 },
+            I::Vortex { axis: [1.0, 2.0, 3.0], strength: 6.0, decay: 0.25 },
+        ]);
+        match out[0] {
+            ParticleForceField::Gravity { direction, strength, decay } => {
+                assert_eq!(direction, [1.0, 3.0, -2.0]);
+                assert_eq!((strength, decay), (4.0, 0.5));
+            }
+            ref other => panic!("expected Gravity, got {other:?}"),
+        }
+        match out[1] {
+            ParticleForceField::Vortex { axis, strength, decay } => {
+                assert_eq!(axis, [1.0, 3.0, -2.0]);
+                assert_eq!((strength, decay), (6.0, 0.25));
+            }
+            ref other => panic!("expected Vortex, got {other:?}"),
+        }
     }
 
     /// Empty force_fields list keeps the pre-#984 fast path —
