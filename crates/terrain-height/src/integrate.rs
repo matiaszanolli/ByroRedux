@@ -97,6 +97,57 @@ impl Gradients {
         (total / (w * h) as f64) as f32
     }
 
+    /// Fraction of the slope field's wrap-seam steps that exceed the 99th
+    /// percentile of its interior steps (the step is the slope-vector change
+    /// between neighbouring texels, across the last/first column and row for
+    /// the seam).
+    ///
+    /// [`Self::integrate`] solves on the torus, so a map is only a sound
+    /// source when it tiles. A map that tiles crosses its seam like any other
+    /// texel boundary, so about 1% of its seam steps land above the interior's
+    /// 99th percentile. One whose edges were authored apart jumps there and
+    /// scores far higher, and the jump reads as a ridge along the tile border
+    /// once integrated.
+    ///
+    /// A rank statistic on purpose: a mean-over-mean ratio blows up on the
+    /// many maps that are flat except for a few features (interior mean near
+    /// zero), scoring a map whose seam is as flat as the rest of it as the
+    /// worst of all. A flat map has no step above anything: `0`.
+    pub fn seam_exceedance(&self) -> f32 {
+        let (w, h) = (self.width, self.height);
+        if w < 2 || h < 2 {
+            return 0.0;
+        }
+        let step = |a: usize, b: usize| -> f32 {
+            let dp = self.p[a] - self.p[b];
+            let dq = self.q_y_up[a] - self.q_y_up[b];
+            (dp * dp + dq * dq).sqrt()
+        };
+        let mut seam = Vec::with_capacity(w + h);
+        let mut interior = Vec::with_capacity(2 * w * h);
+        for y in 0..h {
+            for x in 0..w {
+                let here = y * w + x;
+                let right = y * w + (x + 1) % w;
+                let below = ((y + 1) % h) * w + x;
+                let (to_right, to_below) = (step(here, right), step(here, below));
+                if x + 1 == w {
+                    seam.push(to_right)
+                } else {
+                    interior.push(to_right)
+                }
+                if y + 1 == h {
+                    seam.push(to_below)
+                } else {
+                    interior.push(to_below)
+                }
+            }
+        }
+        let rank = ((interior.len() as f32 * 0.99) as usize).min(interior.len() - 1);
+        let (_, &mut p99, _) = interior.select_nth_unstable_by(rank, f32::total_cmp);
+        seam.iter().filter(|&&s| s > p99).count() as f32 / seam.len() as f32
+    }
+
     /// The green convention under which this map is integrable, and how
     /// decisively: `other_curl / chosen_curl` (≥ 1; near 1 means the map
     /// cannot tell, as for a surface that varies along one axis only).
@@ -237,6 +288,51 @@ mod tests {
             };
             assert!(correlation(&truth.data, &g.integrate(wrong, None).data) < 0.9);
         }
+    }
+
+    /// A map baked from a periodic height field crosses its wrap seam like
+    /// any interior boundary; the same slopes read as a non-periodic ramp
+    /// (a chart whose edges were authored apart) jump there.
+    #[test]
+    fn seam_exceedance_separates_tiling_maps_from_unique_edges() {
+        let periodic = bumpy_field(64, 64);
+        let img = bake_normal_map(&periodic, GreenConvention::YDown, 6.0);
+        let tiling = Gradients::from_normal_map(&img.view()).seam_exceedance();
+        assert!(tiling < 0.1, "periodic map: {tiling}");
+
+        // Slope climbs 0 → 1 across the width: smooth inside, a full-range
+        // step back at the seam.
+        let (w, h) = (64usize, 64usize);
+        let g = Gradients {
+            width: w,
+            height: h,
+            p: (0..w * h).map(|i| (i % w) as f32 / w as f32).collect(),
+            q_y_up: vec![0.0; w * h],
+        };
+        assert!(g.seam_exceedance() > 0.4, "ramp: {}", g.seam_exceedance());
+    }
+
+    /// A map that is flat except for a few features must not read as a seam:
+    /// the failure of a mean ratio, whose denominator is near zero there.
+    #[test]
+    fn seam_exceedance_flat_and_sparse_fields_are_not_seams() {
+        let (w, h) = (64usize, 64usize);
+        let flat = Gradients {
+            width: w,
+            height: h,
+            p: vec![0.0; w * h],
+            q_y_up: vec![0.0; w * h],
+        };
+        assert_eq!(flat.seam_exceedance(), 0.0);
+
+        // One bump in the middle, flat border all round.
+        let mut sparse = flat;
+        for y in 28..36 {
+            for x in 28..36 {
+                sparse.p[y * w + x] = ((x * 7 + y * 3) % 5) as f32 * 0.2;
+            }
+        }
+        assert_eq!(sparse.seam_exceedance(), 0.0);
     }
 
     /// Raised bumps integrate as raised, not as dents: the sign of the
