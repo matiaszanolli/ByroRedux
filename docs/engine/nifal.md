@@ -180,6 +180,20 @@ half / BSGeometry UDEC3) all converge to a single `Vec<[f32;3]>` + `Vec<u32>` in
 renderer space. This is the cleanest category — it is the model the others should
 match. No `Option` leaks; the consumer (`MeshRegistry::upload`) is format-agnostic.
 
+**Placement-root replacement (62782dd3b, 7f2d98944; #6820).** One per-game rule
+rewrites a transform on the raw scene before any importer runs: for FO3/FNV and
+FO4 a REFR *replaces* its model's root-node local transform rather than composing
+with it (`placement_replaces_model_root`, `cell_loader/references/import.rs`),
+applied through `prepare_placed_model_scene` → `NifScene::clear_root_transform`
+(`crates/nif/src/scene.rs`). It is a single mutation site on the raw tier, ahead
+of `extract_bsx_flags`, mesh/collision/light/emitter/animation import and the
+scene satellites, so every consumer sees the cleared scene. Oblivion, Skyrim,
+FO76 and Starfield still compose (`placement_replaces_model_root_only_for_verified_games`
+pins the set). Every REFR cache-fill path must route through it — the sync path
+(including SCOL/PKIN children), the streaming worker (`streaming/pre_parse.rs`)
+and `precombined.rs`. Deliberate exemptions: ground-cover templates (not
+placements), LOD, and `_physics.nif`, which must keep its authored root.
+
 ### Skinning — **half-stale (re-verified 2026-09-10): loose-NIF path only, plus a Starfield bone-name sub-slice**
 
 `ImportedSkin` emits **global** bone indices (#613 — partition-local remap done at
@@ -989,9 +1003,10 @@ The material slice was executed this session as the template. Mechanics:
      extra_material_flags: u32) -> Material`. In particular, it cannot inspect an
      `ImportedMesh`; geometry-dependent material translation is excluded by the
      type boundary.
-  3. `byroredux/src/cell_loader.rs::pack_imported_material_flags` is the shared
-     feature-bit packer called inside `translate_material`; despite its module
-     location, it runs for both cell and loose-NIF lowering. Placement-only bits
+  3. `byroredux/src/material_flags.rs::pack_imported_material_flags` is the shared
+     feature-bit packer called inside `translate_material` (it moved out of
+     `cell_loader` beside the translator in #6712); it runs for both cell and
+     loose-NIF lowering. Placement-only bits
      arrive separately through `extra_material_flags`, and the fourth union
      contributor — the `_msn`-name classifier — is a name-keyed rule inside
      `translate_material` itself (see the lowering step 2 note above), not a
@@ -1007,7 +1022,11 @@ The material slice was executed this session as the template. Mechanics:
   canonical material is produced at one boundary" has deliberate
   exemptions:
   - Cornell's synthetic fixtures (the Cornell room lives in
-    `cornell/builders.rs`, outside the spawner scan's roots by choice);
+    `cornell/builders.rs`, outside the spawner scan's roots by choice; the
+    M-LIGHT reference rungs in `cornell/reference.rs` also hand-build a
+    fixture-only `AnimationClip` for their sway proxy — the one canonical clip
+    not produced by `convert_nif_clip` / `convert_hkx_clip`, and every Cornell
+    `MeshHandle` insert still goes through `builders.rs`);
   - `crates/save`'s reconstructed materials (`restore_world` reinserts
     saved `Material`s through the save registry);
   - **EXAL ground cover**: blades shade from `GroundCoverPalette`
@@ -1044,8 +1063,10 @@ The material slice was executed this session as the template. Mechanics:
   | 2 — post-texture | `resolve_unresolved_gloss_neutral_roughness` | `Material::roughness`, when authored BGSM PBR scalars sit at the near-mirror floor and no gloss map *resolved* to modulate them (#3905; the glass classifier's forced mirror panes are exempt, #5230) |
 
   All three Phase-2 resolvers run at **every `translate_material` caller that
-  attaches `MaterialTextureHandles`**, immediately after that attachment
-  (`scene/nif_loader.rs`, `cell_loader/spawn/mesh_instance.rs`). The other two
+  attaches `MaterialTextureHandles`**, immediately after that attachment. Since
+  #6690 that is **one call site**: `attach_mesh_components` in
+  `scene/mesh_entity.rs`, the shared step both `scene/nif_loader.rs` and
+  `cell_loader/spawn/mesh_instance.rs` attach through. The other two
   production callers, `cell_loader/placement_lod.rs` and
   `cell_loader/object_lod.rs` (a caller since #4245), are exempt because they
   attach no `MaterialTextureHandles` and run no BGSM merge. The first two
@@ -1057,8 +1078,10 @@ The material slice was executed this session as the template. Mechanics:
   which stopped identifying the set once the third caller landed).
 
   The texture-only boundary (`translate_texture_only_material*`, used by the
-  exterior terrain / water spawners) has one Phase-2 caller of its own:
-  `cell_loader/terrain_lod_btr.rs` calls `resolve_msn_z_source` (#4632). Its
+  exterior terrain / water spawners) has Phase-2 callers of its own:
+  `cell_loader/terrain_lod_btr.rs` and `cell_loader/terrain_lod.rs` (the
+  synthesized-block path, when it bound a normal map) call `resolve_msn_z_source`
+  (#4632). The `.btr` case is the one that matters: its
   `.btr` NIFs author the model-space-normals bit, and their normal maps are
   DXT5 with an authored, signed blue axis, so `MAT_FLAG_MSN_HAS_AUTHORED_Z` has
   to be resolved from the bound DDS; reconstructing |z| in the shader would
@@ -1142,7 +1165,8 @@ The material slice was executed this session as the template. Mechanics:
      production calls only the `_with_provenance` form.
 - **De-duplication**: the two ~110-line `Material` construction sites
   (`cell_loader/spawn/mesh_instance.rs`, `scene/nif_loader.rs`) now both call
-  the common lowering boundary. A field added in one place can no longer silently
+  the common lowering boundary, and since #6690 both reach it through the one
+  attach step in `scene/mesh_entity.rs`. A field added in one place can no longer silently
   diverge the two load paths.
 - **Renderer**: `render/static_meshes.rs` reads `m.metalness` / `m.roughness`
   directly — no per-draw keyword scan.
