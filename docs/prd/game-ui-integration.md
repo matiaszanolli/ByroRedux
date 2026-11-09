@@ -1,6 +1,7 @@
 # Game UI Integration — Product Requirements
 
-**Status**: ACTIVE (2026-11-08). Revision 6 records the Phase 0 results (§9.1).
+**Status**: ACTIVE (2026-11-09). Revision 7 names an owning issue for every open Phase 0 item (§9.1).
+Revision 6 records the Phase 0 results (§9.1).
 Revision 5 files the tracking issues.
 Revision 4 recorded the owner's §10 decisions, every one the
 recommendation. Revision 3 folded in review round 2:
