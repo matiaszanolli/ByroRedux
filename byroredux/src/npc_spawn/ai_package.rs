@@ -3832,6 +3832,99 @@ mod tests {
         );
     }
 
+    /// AIP-DX-004 — install and decline counts of every package a vanilla master's actors reference through
+    /// `PKID`, by procedure and decline reason, through the production `install_result` (the same answer
+    /// `pack.ambient` prints). Opt-in: needs the game's master on disk, and a missing install FAILS when
+    /// `BYROREDUX_REQUIRE_GAME_DATA` is set, so a skipped run is never reported as a pass.
+    fn report_real_master_package_install_counts(label: &str, game: byroredux_plugin::esm::reader::GameKind, master: std::path::PathBuf) {
+        use std::collections::{BTreeMap, HashSet};
+        if !master.is_file() {
+            byroredux_plugin::esm::test_paths::require_or_skip(&format!("{label} master {}", master.display()));
+            return;
+        }
+        let bytes = std::fs::read(&master).expect("read master");
+        let index = byroredux_plugin::esm::parse_esm(&bytes).expect("parse master");
+
+        // Every distinct package some actor lists in its PKID.
+        let referenced: HashSet<u32> = index.npcs.values().flat_map(|npc| npc.ai_packages.iter().copied()).collect();
+        let mut packages: Vec<PackRecord> = referenced.iter().filter_map(|form_id| index.packages.get(form_id).cloned()).collect();
+        packages.sort_by_key(|package| package.form_id);
+
+        let mut world = World::new();
+        register_runtime(&mut world, 10.0);
+        world.insert_resource(byroredux_scripting::ScriptGame(game));
+        install_package_records(&mut world, index.packages.values().cloned());
+        // `find_decision` reads the game from the loaded index (the object-type enum differs per game).
+        assert_eq!(index.game, game, "{label}: the master parsed as another game");
+        world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(index)));
+        let registry = world.resource::<PackageRegistry>();
+
+        let mut installed = 0usize;
+        // procedure -> decline reason -> count
+        let mut declines: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+        let mut per_procedure: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        for package in &packages {
+            let result = install_result(&world, package, &registry, 0);
+            let entry = per_procedure.entry(procedure_name(package)).or_default();
+            if result == "installs" {
+                installed += 1;
+                entry.0 += 1;
+            } else {
+                entry.1 += 1;
+                *declines.entry(procedure_name(package)).or_default().entry(result).or_default() += 1;
+            }
+        }
+
+        println!("[AIP-DX-004 {label}] {} referenced packages: {installed} install, {} decline", packages.len(), packages.len() - installed);
+        for (procedure, (ok, no)) in &per_procedure {
+            println!("[AIP-DX-004 {label}]   {procedure:<14} {ok:>5} install {no:>5} decline");
+        }
+        for (procedure, reasons) in &declines {
+            for (reason, count) in reasons {
+                println!("[AIP-DX-004 {label}]   decline {procedure}: {reason} x{count}");
+            }
+        }
+
+        assert!(!packages.is_empty(), "{label}: no PKID-referenced package resolved - the census read nothing");
+        assert!(installed > 0, "{label}: nothing installed");
+        // Every decline names a reason; a bare or empty one cannot be read by anyone.
+        for reasons in declines.values() {
+            for reason in reasons.keys() {
+                assert!(reason.starts_with("declines: ") && reason.len() > "declines: ".len(), "{label}: unreadable decline {reason:?}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "needs FalloutNV.esm on disk; parses the whole master"]
+    fn real_fnv_esm_package_install_counts() {
+        report_real_master_package_install_counts(
+            "FNV",
+            byroredux_plugin::esm::reader::GameKind::Fallout3NV,
+            byroredux_plugin::esm::test_paths::fnv_esm(),
+        );
+    }
+
+    #[test]
+    #[ignore = "needs Fallout3.esm on disk; parses the whole master"]
+    fn real_fo3_esm_package_install_counts() {
+        report_real_master_package_install_counts(
+            "FO3",
+            byroredux_plugin::esm::reader::GameKind::Fallout3NV,
+            byroredux_plugin::esm::test_paths::fo3_esm(),
+        );
+    }
+
+    #[test]
+    #[ignore = "needs Oblivion.esm on disk; parses the whole master"]
+    fn real_oblivion_esm_package_install_counts() {
+        report_real_master_package_install_counts(
+            "Oblivion",
+            byroredux_plugin::esm::reader::GameKind::Oblivion,
+            byroredux_plugin::esm::test_paths::oblivion_esm(),
+        );
+    }
+
     /// #5864 — the spawn-time winner is not reported (it is chosen before the
     /// alias overlays / restored clock exist); the first-tick confirmation
     /// reports the confirmed one once, and a later unchanged tick reports
