@@ -353,6 +353,21 @@ pub(crate) fn npc_walk_animation_system(world: &World, dt: f32) {
 
 #[cfg(test)]
 mod tests {
+
+    /// AIP-WALK-004 -- the walk-source lookup stays at the asset boundary: neither walk-animation system names a
+    /// game, so a new game's walk source is a new row of data there and never a branch here.
+    #[test]
+    fn the_walk_animation_systems_do_not_read_the_game() {
+        for (name, src) in [
+            ("systems/walk_anim.rs", include_str!("walk_anim.rs")),
+            ("systems/graph_locomotion.rs", include_str!("graph_locomotion.rs")),
+        ] {
+            let production = byroredux_core::source_scan::production_text_or_whole(src);
+            for needle in ["GameKind", "LoadedCellIndex", ".game ==", ".game !="] {
+                assert!(!production.contains(needle), "{name} reads the game through `{needle}`");
+            }
+        }
+    }
     use super::*;
     use crate::components::AnimationTarget;
 

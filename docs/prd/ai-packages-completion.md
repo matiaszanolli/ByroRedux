@@ -837,6 +837,12 @@ the decode does not yet carry. AIP-FIND-006 / -007 shipped without them: the Obl
 `PackObjectClass` at the plugin decode, Armor (3) and Clothing (5) stay declined because `CLOT` and `ARMO` share one item
 kind, and Soul Gems (17) are no item record.
 
+**Measured, found in Phase 5 (2026-11-09).** All 43 Starfield `MT` subgraph entries name `AnimTextData\Tables\Graphs\*.agx`
+(`NPC_MT_Wrapping.agx`, `CharGen.agx`, `1stPerson_MT_*`, ...), which exist in `Starfield - Animations.ba2`
+(`meshes\animtextdata\tables\graphs\`, 347 `.agx` files) but are not Havok files. AIP-WALK-001's gate is now the data
+test (`is_havok_graph`: a graph the engine can read), not a game check, and Starfield resolves nothing through it until an
+`.agx` reader exists, which no design owns. The Phase 5 exit's Starfield walk source is therefore unmet.
+
 **Phase 5 — Starfield and FO4 locomotion.** AIP-WALK-001, AIP-WALK-002,
 AIP-WALK-004, and the Starfield test of AIP-DX-004. AIP-WALK-002 depends on
 the FO4 `NVNM` body decode, which no design owns (Related; Phase 0 files

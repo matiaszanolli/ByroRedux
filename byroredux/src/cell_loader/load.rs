@@ -765,7 +765,7 @@ impl InteriorCellApplyJob {
         crate::asset_provider::populate_idle_clip_runtime(world, &index, tex_provider);
         crate::asset_provider::populate_object_graphs(world, tex_provider);
         crate::asset_provider::populate_skyrim_walk_clip(world, &index, tex_provider);
-        crate::asset_provider::populate_archetype_idles(world, &index, tex_provider);
+        crate::asset_provider::populate_archetype_idles(world, tex_provider);
         crate::asset_provider::populate_draugr_combat_clips(world, &index, tex_provider);
 
         let cell_name = cell.editor_id.clone();

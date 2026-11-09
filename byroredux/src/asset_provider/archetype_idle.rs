@@ -22,8 +22,7 @@ use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::World;
 use byroredux_core::string::StringPool;
 use byroredux_hkx::{BehaviorGraph, HkxSkeleton};
-use byroredux_plugin::esm::reader::GameKind;
-use byroredux_plugin::esm::records::{EsmIndex, SubgraphData, SubgraphRole};
+use byroredux_plugin::esm::records::{SubgraphData, SubgraphRole};
 use std::collections::HashMap;
 
 /// A subgraph entry's identity for [`ArchetypeIdleClips`]: its behavior graph and
@@ -87,17 +86,29 @@ fn clip_stem(animation: &str) -> Option<String> {
     (!stem.is_empty()).then(|| stem.to_ascii_lowercase())
 }
 
-/// Resolve and register the idle clip of every third-person `MT` subgraph entry.
-/// Fallout 4 only; idempotent through the clip registry. Returns how many entries
-/// resolved a clip.
-pub(crate) fn populate_archetype_idles(world: &mut World, index: &EsmIndex, provider: &TextureProvider) -> usize {
-    if index.game != GameKind::Fallout4 {
-        return 0;
-    }
+/// Whether an `MT` entry's behavior graph is a Havok file the engine can read (AIP-WALK-001: the data test that
+/// replaces a game check). Fallout 4 names `.hkx` behavior graphs; Starfield's entries name `.agx` animation-text
+/// tables (`AnimTextData\Tables\Graphs\NPC_MT_Wrapping.agx`, all 43 of its `MT` entries), a format with no reader.
+fn is_havok_graph(behavior_graph: &str) -> bool {
+    behavior_graph.rsplit_once('.').is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("hkx"))
+}
+
+/// Resolve and register the idle clip of every third-person `MT` subgraph entry whose behavior graph is a Havok
+/// file the engine reads; idempotent through the clip registry. Returns how many entries resolved a clip.
+///
+/// No game is named here (AIP-WALK-001): an index whose `RACE`s author no `MT` entry, or whose entries name a
+/// graph format with no reader, resolves none.
+pub(crate) fn populate_archetype_idles(world: &mut World, provider: &TextureProvider) -> usize {
     let entries: Vec<SubgraphData> = match world.try_resource::<byroredux_scripting::anim_subgraph::SubgraphTable>() {
         Some(table) => table.entries_for(SubgraphRole::Mt).cloned().collect(),
         None => return 0,
     };
+    let unread = entries.iter().filter(|entry| !is_havok_graph(&entry.behavior_graph)).count();
+    if unread > 0 {
+        log::debug!("archetype idle: {unread} MT entries name a graph format with no reader (first: '{}')",
+            entries.iter().find(|entry| !is_havok_graph(&entry.behavior_graph)).map_or("", |entry| entry.behavior_graph.as_str()));
+    }
+    let entries: Vec<SubgraphData> = entries.into_iter().filter(|entry| is_havok_graph(&entry.behavior_graph)).collect();
     if entries.is_empty() {
         return 0;
     }
@@ -178,6 +189,16 @@ fn load_graph(provider: &TextureProvider, path: &str) -> Option<BehaviorGraph> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AIP-WALK-001 -- the data test: FO4's `.hkx` graphs are read, Starfield's `.agx` tables are not.
+    #[test]
+    fn only_a_havok_graph_is_read() {
+        assert!(is_havok_graph(r"Actors\Character\Behaviors\MTBehavior.hkx"));
+        assert!(is_havok_graph("actors/character/behaviors/MTBehavior.HKX"));
+        assert!(!is_havok_graph(r"AnimTextData\Tables\Graphs\NPC_MT_Wrapping.agx"));
+        assert!(!is_havok_graph("hkx"));
+        assert!(!is_havok_graph(""));
+    }
 
     #[test]
     fn project_directory_is_the_part_before_the_behaviors_folder() {

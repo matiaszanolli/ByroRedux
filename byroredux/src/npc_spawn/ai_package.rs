@@ -3938,7 +3938,6 @@ mod tests {
         register_runtime(&mut world, 10.0);
         world.insert_resource(byroredux_scripting::ScriptGame(game));
         install_package_records(&mut world, index.packages.values().cloned());
-        // `find_decision` reads the game from the loaded index (the object-type enum differs per game).
         assert_eq!(index.game, game, "{label}: the master parsed as another game");
         world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(index)));
         let registry = world.resource::<PackageRegistry>();
@@ -3996,6 +3995,36 @@ mod tests {
             "FO3",
             byroredux_plugin::esm::reader::GameKind::Fallout3NV,
             byroredux_plugin::esm::test_paths::fo3_esm(),
+        );
+    }
+
+    #[test]
+    #[ignore = "needs Starfield.esm on disk; parses ~4 GB - run alone"]
+    fn real_starfield_esm_package_install_counts() {
+        report_real_master_package_install_counts(
+            "Starfield",
+            byroredux_plugin::esm::reader::GameKind::Starfield,
+            byroredux_plugin::esm::test_paths::starfield_esm(),
+        );
+    }
+
+    #[test]
+    #[ignore = "needs Fallout4.esm on disk; parses the whole master"]
+    fn real_fo4_esm_package_install_counts() {
+        report_real_master_package_install_counts(
+            "FO4",
+            byroredux_plugin::esm::reader::GameKind::Fallout4,
+            byroredux_plugin::esm::test_paths::fo4_esm(),
+        );
+    }
+
+    #[test]
+    #[ignore = "needs Skyrim.esm on disk; parses the whole master"]
+    fn real_skyrim_esm_package_install_counts() {
+        report_real_master_package_install_counts(
+            "Skyrim",
+            byroredux_plugin::esm::reader::GameKind::Skyrim,
+            byroredux_plugin::esm::test_paths::skyrim_se_esm(),
         );
     }
 
