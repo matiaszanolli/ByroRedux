@@ -45,19 +45,21 @@
 //!   an entity, so the weapon tab's subject is [`WeaponSubject`], a scratch entity
 //!   lent the attacker's weapon base form for one composition
 //!   (`docs/prd/perk-entry-points.md`, PERK-SUB-002, §10 Q4).
-//! * **Priority.** Entries compose in ascending priority, ties in the order the
-//!   actor's perks and the record's entries were authored. The Skyrim CK says a
-//!   higher number "takes precedence" while the Fallout 4 CK says the lower
-//!   number does, and no vanilla FO3/FNV entry has a non-zero priority, so the
-//!   choice is only observable on Skyrim (where a `Set Value` carries the
+//! * **Priority.** FO3/FNV and Skyrim compose in ascending priority, ties in the
+//!   order the actor's perks and the record's entries were authored. The Skyrim
+//!   CK says a higher number "takes precedence" while the Fallout 4 CK says the
+//!   lower number does, and no vanilla FO3/FNV entry has a non-zero priority, so
+//!   the choice is only observable on Skyrim (where a `Set Value` carries the
 //!   high number, e.g. `EagleEye30`'s priority 15 against ×-multipliers at 0 —
-//!   a `Set` that "takes precedence" is one applied last). It is one constant,
-//!   [`compose_order_key`].
+//!   a `Set` that "takes precedence" is one applied last). The direction is a
+//!   property of the dialect ([`PerkEntryPointDialect::composes_descending_priority`],
+//!   PERK-DIA-004): Fallout 4 composes descending, so its lowest number applies
+//!   last. It is one function, [`compose_order_key`].
 //!
 //! The table is built once per load order from `EsmIndex::perks`
 //! ([`install_perk_entry_points`]) and is not saved — it is re-derived from the
-//! masters every boot, like the Story Manager tree. FO3/FNV and Skyrim only:
-//! the other games' `PERK` entry layout is not established, so their table is
+//! masters every boot, like the Story Manager tree. FO3/FNV, Skyrim and Fallout 4
+//! only: the other games' `PERK` entry layout is not established, so their table is
 //! empty and every composition returns its base value.
 
 use std::collections::HashMap;
@@ -95,6 +97,8 @@ pub mod fnv {
     pub const HAS_CONCENTRATED_FIRE: u8 = 33;
     pub const MODIFY_DAMAGE_THRESHOLD_DEFENDER: u8 = 56;
     pub const MODIFY_DAMAGE_THRESHOLD_ATTACKER: u8 = 58;
+    /// `Calculate To Hit Chance`: the GECK runs it "when the player queues a shot in VATS" (§10 Q6).
+    pub const CALCULATE_TO_HIT_CHANCE: u8 = 8;
 }
 
 /// Skyrim entry-point indices (`wbEntryPointsEnum`, xEdit `wbDefinitionsTES5`).
@@ -111,6 +115,24 @@ pub mod skyrim {
     /// `Mod Tempering Health` (xEdit `wbEntryPointsEnum`, TES5 index 76): what the Smithing material perks
     /// (Steel Smithing and kin) multiply when improving an item.
     pub const MOD_TEMPERING_HEALTH: u8 = 76;
+}
+
+/// Fallout 4 entry-point indices (`wbEntryPointsEnum`, xEdit `wbDefinitionsFO4`, 0-157). Only the hooks the
+/// engine consumes are named.
+pub mod fo4 {
+    /// `Add Leveled List On Death`.
+    pub const ADD_LEVELED_LIST_ON_DEATH: u8 = 9;
+    /// `Set Max Carry Weight`.
+    pub const SET_MAX_CARRY_WEIGHT: u8 = 10;
+    /// `Activate`.
+    pub const ACTIVATE: u8 = 14;
+    /// `Mod Weapon Attack Damage`: the outgoing weapon-damage calculation. Of the two FO4 hooks that could be
+    /// it, vanilla `Fallout4.esm` authors 154 entries on this one, every weapon-class perk among them
+    /// (Rifleman, Gunslinger, Heavy Gunner, ...) with a weapon-keyword `HasKeyword` on tab 1; hook 93 holds four,
+    /// all damage-type scoped (`EPIsDamageType` on tab 2: Nuclear Physicist and kin) (PERK-HOOK-010).
+    pub const MOD_WEAPON_ATTACK_DAMAGE: u8 = 35;
+    /// `Mod Typed Weapon Attack Damage`: damage scoped to a damage type, not the outgoing calculation.
+    pub const MOD_TYPED_WEAPON_ATTACK_DAMAGE: u8 = 93;
 }
 
 /// An engine calculation a perk can modify (PERK-DIA-002). A consumer names the calculation; the dialect maps it
@@ -132,25 +154,47 @@ pub enum PerkCalculation {
     DeathLeveledList,
     /// The action points a VATS sequence that kills restores (FO3 / FNV *Player Kill AP Reward*), from a base of 0.
     PlayerKillApReward,
+    /// The damage the perk owner's strike deals, before the target's resistances: FO3 / FNV *Calculate Weapon
+    /// Damage* (0), Skyrim *Mod Attack Damage* (35, "applied to the base weapon damage"), FO4 *Mod Weapon Attack
+    /// Damage* (35).
+    WeaponDamage,
+    /// Skyrim's *Calculate Weapon Damage* (0), the "projected damage to a target", composed after
+    /// [`Self::WeaponDamage`]. FO3 / FNV's hook 0 is [`Self::WeaponDamage`] itself and Fallout 4's index 0 is
+    /// *Mod Breath Timer*, so neither has one.
+    ProjectedWeaponDamage,
+    /// The chance of a VATS shot the player queues (FO3 / FNV *Calculate To Hit Chance*, §10 Q6).
+    VatsHitChance,
 }
 
 impl PerkCalculation {
     /// The hook index of this calculation in `dialect`, if it has one.
     pub fn hook(self, dialect: PerkEntryPointDialect) -> Option<u8> {
-        use PerkEntryPointDialect::{Fallout3NV, Skyrim};
+        use PerkEntryPointDialect::{Fallout3NV, Fallout4, Skyrim};
         match (self, dialect) {
             (Self::ExperienceGain, Fallout3NV) => Some(fnv::ADJUST_EXPERIENCE_POINTS),
             (Self::GainedSkillPoints, Fallout3NV) => Some(fnv::ADJUST_GAINED_SKILL_POINTS),
             (Self::MaxCarryWeight, Fallout3NV) => Some(fnv::GET_MAX_CARRY_WEIGHT),
             (Self::MaxCarryWeight, Skyrim) => Some(skyrim::GET_MAX_CARRY_WEIGHT),
+            (Self::MaxCarryWeight, Fallout4) => Some(fo4::SET_MAX_CARRY_WEIGHT),
             (Self::ConcentratedFire, Fallout3NV) => Some(fnv::HAS_CONCENTRATED_FIRE),
             (Self::TemperingHealth, Skyrim) => Some(skyrim::MOD_TEMPERING_HEALTH),
             (Self::PlayerKillApReward, Fallout3NV) => Some(fnv::PLAYER_KILL_AP_REWARD),
             (Self::DeathLeveledList, Fallout3NV) => Some(fnv::ADD_LEVELED_LIST_ON_DEATH),
             (Self::DeathLeveledList, Skyrim) => Some(skyrim::ADD_LEVELED_LIST_ON_DEATH),
+            (Self::DeathLeveledList, Fallout4) => Some(fo4::ADD_LEVELED_LIST_ON_DEATH),
+            (Self::WeaponDamage, Fallout3NV) => Some(fnv::CALCULATE_WEAPON_DAMAGE),
+            (Self::WeaponDamage, Skyrim) => Some(skyrim::MOD_ATTACK_DAMAGE),
+            (Self::WeaponDamage, Fallout4) => Some(fo4::MOD_WEAPON_ATTACK_DAMAGE),
+            (Self::ProjectedWeaponDamage, Skyrim) => Some(skyrim::CALCULATE_WEAPON_DAMAGE),
+            (Self::VatsHitChance, Fallout3NV) => Some(fnv::CALCULATE_TO_HIT_CHANCE),
             _ => None,
         }
     }
+}
+
+/// The entry-point dialect of the loaded perk table; `None` when the world has no table.
+fn loaded_dialect(world: &World) -> PerkEntryPointDialect {
+    world.try_resource::<PerkEntryTable>().map_or(PerkEntryPointDialect::None, |table| table.dialect())
 }
 
 /// Compose `base` through the hook of `calculation` in the loaded dialect (PERK-DIA-002); `base` when the world
@@ -162,10 +206,7 @@ pub fn compose_calculation(
     base: f32,
     tab_subjects: &[Option<EntityId>],
 ) -> f32 {
-    let dialect = world
-        .try_resource::<PerkEntryTable>()
-        .map_or(PerkEntryPointDialect::None, |table| table.dialect());
-    match calculation.hook(dialect) {
+    match calculation.hook(loaded_dialect(world)) {
         Some(hook) => compose_entry_point(world, owner, hook, base, tab_subjects),
         None => base,
     }
@@ -201,6 +242,9 @@ pub struct PerkEntryPointEntry {
     pub priority: u8,
     pub entry_point: u8,
     pub op: PerkOp,
+    /// Fallout 4 `EPFB` "Perk Entry ID": the id the entry's `Fragment_Entry_NN` script fragment is keyed by
+    /// (PERK-HOOK-008). `None` on every other dialect.
+    pub entry_id: Option<u16>,
     /// Conditions per `PRKC` tab.
     pub tabs: Vec<PerkConditionTab>,
 }
@@ -406,6 +450,7 @@ impl PerkEntryTable {
                     entry_point_index,
                     function,
                     function_data,
+                    details,
                     ..
                 } = &entry.body
                 else {
@@ -421,6 +466,7 @@ impl PerkEntryTable {
                     priority: entry.priority,
                     entry_point: *entry_point_index,
                     op,
+                    entry_id: details.entry_id,
                     tabs: entry.condition_tabs.clone(),
                 });
             }
@@ -577,7 +623,13 @@ fn resolve_op(
     function: u8,
     data: &PerkFunctionData,
 ) -> Option<PerkOp> {
-    let av = |actor_value: u32| index.resolve_actor_value(ActorValueRef::Index(actor_value));
+    let av = |actor_value: u32| {
+        index.resolve_actor_value(if dialect.actor_value_is_form_id() {
+            ActorValueRef::Form(actor_value)
+        } else {
+            ActorValueRef::Index(actor_value)
+        })
+    };
     // PERK-DIA-003: the dialect says which functions are value math.
     if !dialect.has_value_function(function) {
         return None;
@@ -624,36 +676,29 @@ fn resolve_op(
 /// The damage `attacker` deals `target` once the attacker's perks have had
 /// their say.
 ///
-/// FO3/FNV have one hook, `Calculate Weapon Damage` (0). Skyrim has two that
-/// both act on a strike: `Mod Attack Damage` (35), "applied to the base weapon
-/// damage", and `Calculate Weapon Damage` (0), the "projected damage to a
+/// FO3/FNV have one hook, `Calculate Weapon Damage` (0), and so does Fallout 4,
+/// `Mod Weapon Attack Damage` (35; index 0 is `Mod Breath Timer` there). Skyrim has
+/// two that both act on a strike: `Mod Attack Damage` (35), "applied to the base
+/// weapon damage", and `Calculate Weapon Damage` (0), the "projected damage to a
 /// target"; they are composed in that order — the CK describes them but does
 /// not pin their relative order, and vanilla's 58 `Mod Attack Damage` against
 /// 9 `Calculate Weapon Damage` entries are all multiplicative, where order
-/// among them is immaterial. The weapon tab (1) is left unsupplied — equipped
-/// weapons are not entities — so entries conditioned on the weapon do not
-/// fire; the target is tab 2. Games without a table return `base`.
+/// among them is immaterial. The dialect's hooks come from [`PerkCalculation`]
+/// (PERK-DIA-002). The weapon tab (1) is the attacker's weapon where it has a
+/// form (PERK-SUB-002) and the target is tab 2. Games without a table return `base`.
 pub fn compose_outgoing_damage(
     world: &World,
     attacker: EntityId,
     target: EntityId,
     base: f32,
 ) -> f32 {
-    let dialect = world
-        .try_resource::<PerkEntryTable>()
-        .map_or(PerkEntryPointDialect::None, |table| table.dialect());
-    if dialect == PerkEntryPointDialect::None {
+    if loaded_dialect(world) == PerkEntryPointDialect::None {
         return base;
     }
     with_attacker_weapon(world, attacker, |weapon| {
         let subjects = [weapon, Some(target)];
-        if dialect == PerkEntryPointDialect::Fallout3NV {
-            compose_entry_point(world, attacker, fnv::CALCULATE_WEAPON_DAMAGE, base, &subjects)
-        } else {
-            let modded =
-                compose_entry_point(world, attacker, skyrim::MOD_ATTACK_DAMAGE, base, &subjects);
-            compose_entry_point(world, attacker, skyrim::CALCULATE_WEAPON_DAMAGE, modded, &subjects)
-        }
+        let modded = compose_calculation(world, attacker, PerkCalculation::WeaponDamage, base, &subjects);
+        compose_calculation(world, attacker, PerkCalculation::ProjectedWeaponDamage, modded, &subjects)
     })
 }
 
@@ -722,6 +767,17 @@ pub fn compose_player_kill_ap_reward(world: &World, player: EntityId, victim: En
     })
 }
 
+/// The chance, in percent, of the VATS shot `player` queues at `target`, once the player's perks have had their say
+/// (FO3 / FNV *Calculate To Hit Chance*, hook 8; §10 Q6): the GECK runs it "when the player queues a shot in VATS", and
+/// vanilla authors only multipliers on it (Gunslinger, Commando, Sniper ×1.25, Fast Shot ×0.8, Trigger Discipline
+/// ×1.2). Tab 1 is the weapon and tab 2 the target (xEdit FNV `epcWeaponTarget`). The caller owns the cap
+/// (`fVATSMaxChance`): composing can push a chance past it. `chance` where the dialect has no such hook.
+pub fn compose_vats_hit_chance(world: &World, player: EntityId, target: EntityId, chance: f32) -> f32 {
+    with_attacker_weapon(world, player, |weapon| {
+        compose_calculation(world, player, PerkCalculation::VatsHitChance, chance, &[weapon, Some(target)])
+    })
+}
+
 /// The leveled lists `killer`'s perks add to `victim` on its death (PERK-HOOK-006): each `Add Leveled List`
 /// entry on the dialect's *Add Leveled List On Death* hook, at the rank held, whose condition tabs pass with the
 /// victim as the Target subject (tab 1: xEdit FNV `epcTarget`). In perk order, one row per entry. Empty when the
@@ -772,11 +828,18 @@ pub fn install_perk_entry_points(world: &mut World, index: &EsmIndex) -> usize {
     count
 }
 
-/// The composition order of an entry: ascending priority, ties in the order
-/// the actor's perks (`perk_order`) and then the record's entries
-/// (`entry_order`) were authored. See the module docs on why ascending.
-pub fn compose_order_key(priority: u8, perk_order: usize, entry_order: usize) -> (u8, usize, usize) {
-    (priority, perk_order, entry_order)
+/// The composition order of an entry in `dialect`: ascending priority, or descending where the dialect says so
+/// ([`PerkEntryPointDialect::composes_descending_priority`], Fallout 4), ties in the order the actor's perks
+/// (`perk_order`) and then the record's entries (`entry_order`) were authored. Sorted ascending by this key.
+/// See the module docs on why the direction is the dialect's.
+pub fn compose_order_key(
+    dialect: PerkEntryPointDialect,
+    priority: u8,
+    perk_order: usize,
+    entry_order: usize,
+) -> (u8, usize, usize) {
+    let rank = if dialect.composes_descending_priority() { u8::MAX - priority } else { priority };
+    (rank, perk_order, entry_order)
 }
 
 /// An entry that applied during a composition — for the debug console and
@@ -786,6 +849,8 @@ pub struct AppliedPerkEntry {
     pub perk: u32,
     pub entry_point: u8,
     pub op: PerkOp,
+    /// The entry's `EPFB` id, if it has one (PERK-HOOK-008).
+    pub entry_id: Option<u16>,
     /// The running value after this entry.
     pub value: f32,
 }
@@ -835,7 +900,40 @@ pub fn compose_entry_point(
     base: f32,
     tab_subjects: &[Option<EntityId>],
 ) -> f32 {
-    compose_entry_point_traced(world, owner, entry_point, base, tab_subjects).value
+    let composition = compose_entry_point_traced(world, owner, entry_point, base, tab_subjects);
+    report_applied_fragments(world, owner, &composition.applied);
+    composition.value
+}
+
+/// PERK-HOOK-008 — a composition that applies an entry whose `EPFB` id has a bound fragment reports the run, so
+/// [`crate::perk_fragment_system`] runs it: the CK's "Value entries: Run whenever conditions are met" (FO4 CK
+/// *Perk Fragments*). A value entry has no activated reference, so the run has no target. The diagnostic
+/// [`compose_entry_point_traced`] never reports: `perk.compose` must not run a perk's script.
+fn report_applied_fragments(world: &World, owner: EntityId, applied: &[AppliedPerkEntry]) {
+    if !applied.iter().any(|entry| entry.entry_id.is_some()) {
+        return;
+    }
+    let Some(owner_form) = crate::condition::entity_global_form_id(world, owner) else {
+        return;
+    };
+    let Some(fragments) = world.try_resource::<crate::PerkFragments>() else {
+        return;
+    };
+    let runs: Vec<crate::PerkEntryRun> = applied
+        .iter()
+        .filter_map(|entry| {
+            let id = u32::from(entry.entry_id?);
+            let set = fragments.get(entry.perk)?;
+            set.fragments
+                .iter()
+                .any(|(on, _, _)| on.0 == id)
+                .then_some(crate::PerkEntryRun { perk: entry.perk, entry: id, owner: owner_form, target: None })
+        })
+        .collect();
+    drop(fragments);
+    for run in runs {
+        crate::report_perk_entry(world, run);
+    }
 }
 
 /// [`compose_entry_point`] with the applied entries reported.
@@ -870,6 +968,7 @@ pub fn compose_entry_point_traced(
         let Some(table) = world.try_resource::<PerkEntryTable>() else {
             return composition;
         };
+        let dialect = table.dialect();
         for (perk_order, (perk, rank)) in held.iter().enumerate() {
             let Some(entries) = table.perks.get(perk) else {
                 continue;
@@ -881,7 +980,7 @@ pub fn compose_entry_point_traced(
                 }
                 if entry_applies_at(entry.rank, *rank) {
                     due.push((
-                        compose_order_key(entry.priority, perk_order, entry_order),
+                        compose_order_key(dialect, entry.priority, perk_order, entry_order),
                         *perk,
                         entry.clone(),
                     ));
@@ -920,6 +1019,7 @@ pub fn compose_entry_point_traced(
             perk,
             entry_point,
             op: entry.op,
+            entry_id: entry.entry_id,
             value: composition.value,
         });
     }

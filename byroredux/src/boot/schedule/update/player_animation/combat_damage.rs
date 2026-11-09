@@ -43,6 +43,11 @@ fn register_damage_pass(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::ecs::components::Inventory>()
             .writes_resource::<byroredux_scripting::story_manager::StoryManagerRng>()
             .reads_resource::<byroredux_scripting::perk_entry_points::WeaponSubject>()
+            // PERK-HOOK-008 — an applied FO4 entry with a bound fragment reports its run (`PendingPerkEntries`),
+            // looking the owner's reference id up first.
+            .reads_resource::<byroredux_scripting::PerkFragments>()
+            .writes_resource::<byroredux_scripting::PendingPerkEntries>()
+            .reads_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
             .writes::<byroredux_scripting::SceneAliasCandidate>()
             .writes::<byroredux_scripting::Bleedout>()
             .reads_resource::<byroredux_scripting::BleedoutRules>()

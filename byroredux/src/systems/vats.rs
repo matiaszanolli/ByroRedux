@@ -519,6 +519,19 @@ fn resolve_limb_table(
         .filter(|parts| !parts.is_empty())
 }
 
+/// A part's first-shot chance after the player's *Calculate To Hit Chance* perk entries (FO3 / FNV hook 8, the
+/// perk PRD's §10 Q6; `vats.status` shows the composed chance, VATS-PERK-003), held to `fVATSMaxChance` again. A
+/// chance the model zeroed (out of engage range) stays zero: that is a gate, and a perk's additive entry must not
+/// reopen it. The model caps at the maximum after its own steps; whether the original caps again after the perk
+/// is not sourced, and a displayed chance above the setting that names the maximum would be a worse guess.
+fn perk_hit_chance(world: &World, player: EntityId, target: EntityId, model: &VatsModel, chance: f32) -> f32 {
+    if chance <= 0.0 {
+        return chance;
+    }
+    byroredux_scripting::perk_entry_points::compose_vats_hit_chance(world, player, target, chance)
+        .clamp(0.0, model.max_chance)
+}
+
 /// Run the targeting scan: every living actor inside the engage
 /// distance contributes its limb table's parts, each priced through
 /// [`VatsModel::to_hit_chance`] with the equipped weapon. Ranged
@@ -613,20 +626,26 @@ pub(crate) fn vats_scan(world: &World) {
                     if distance > model.max_engage_distance {
                         continue;
                     }
-                    let hit_chance = model.to_hit_chance(VatsHitInput {
-                        weapon_base_to_hit: base_to_hit,
-                        part_to_hit: part.to_hit_chance as f32,
-                        distance,
-                        skill,
-                        screen_percent: visible_fraction(
-                            world, &bodies_by_target, eye, position, entity, excluded_body,
-                        ),
-                        // Always the first shot here: the Concentrated Fire step is
-                        // the *perk's* bonus (GECK iVATSConcentratedFireBonus), and
-                        // which shot a part is depends on what is already queued, so
-                        // `vats_queue_part` prices each repeat (#6422).
-                        concentrated_shot: 1,
-                    });
+                    let hit_chance = perk_hit_chance(
+                        world,
+                        player,
+                        entity,
+                        &model,
+                        model.to_hit_chance(VatsHitInput {
+                            weapon_base_to_hit: base_to_hit,
+                            part_to_hit: part.to_hit_chance as f32,
+                            distance,
+                            skill,
+                            screen_percent: visible_fraction(
+                                world, &bodies_by_target, eye, position, entity, excluded_body,
+                            ),
+                            // Always the first shot here: the Concentrated Fire step is
+                            // the *perk's* bonus (GECK iVATSConcentratedFireBonus), and
+                            // which shot a part is depends on what is already queued, so
+                            // `vats_queue_part` prices each repeat (#6422).
+                            concentrated_shot: 1,
+                        }),
+                    );
                     targets.push(VatsTargetPart {
                         entity,
                         part_index,
@@ -646,16 +665,22 @@ pub(crate) fn vats_scan(world: &World) {
                     entity,
                     part_index: usize::MAX,
                     part_name: "Body".to_string(),
-                    hit_chance: model.to_hit_chance(VatsHitInput {
-                        weapon_base_to_hit: base_to_hit,
-                        part_to_hit: 100.0,
-                        distance: center_distance,
-                        skill,
-                        screen_percent: visible_fraction(
-                            world, &bodies_by_target, eye, center, entity, excluded_body,
-                        ),
-                        concentrated_shot: 1,
-                    }),
+                    hit_chance: perk_hit_chance(
+                        world,
+                        player,
+                        entity,
+                        &model,
+                        model.to_hit_chance(VatsHitInput {
+                            weapon_base_to_hit: base_to_hit,
+                            part_to_hit: 100.0,
+                            distance: center_distance,
+                            skill,
+                            screen_percent: visible_fraction(
+                                world, &bodies_by_target, eye, center, entity, excluded_body,
+                            ),
+                            concentrated_shot: 1,
+                        }),
+                    ),
                     ap_cost,
                     damage_mult: VatsTargetPart::NO_LIMB_DATA.0,
                     body_location: VatsTargetPart::NO_LIMB_DATA.1,
@@ -1339,31 +1364,30 @@ mod scan_tests {
         assert!((ap(&world) - 10.0).abs() < 1e-3, "{}", ap(&world));
     }
 
-    /// Give the fixture's player the vanilla `ConcentratedFire` perk: one unconditional Set 1.0 on FO3/FNV
-    /// entry point 33 (`Has Concentrated Fire`), form 0x44CAF in FalloutNV.esm.
-    fn grant_concentrated_fire(world: &mut World) {
+    /// Give the fixture's player a perk with one unconditional FO3/FNV entry: `function` with `value` on
+    /// entry point `entry_point`.
+    fn grant_hook_perk(world: &mut World, perk: u32, entry_point: u8, function: u8, value: f32) {
         use byroredux_core::character::{CharacterRulesProfile, Perks};
         use byroredux_plugin::esm::reader::GameKind;
         use byroredux_plugin::esm::records::{PerkEntry, PerkEntryBody, PerkFunctionData, PerkRecord};
-        const CONCENTRATED_FIRE: u32 = 0x0004_4CAF;
         let mut perk_index = byroredux_plugin::esm::records::EsmIndex {
             game: GameKind::Fallout3NV,
             character_rules: CharacterRulesProfile::FALLOUT_NEW_VEGAS,
             ..Default::default()
         };
         perk_index.perks.insert(
-            CONCENTRATED_FIRE,
+            perk,
             PerkRecord {
-                form_id: CONCENTRATED_FIRE,
+                form_id: perk,
                 entries: vec![PerkEntry {
                     rank: 0,
                     priority: 0,
                     body: PerkEntryBody::EntryPoint {
-                        entry_point_index: 33,
-                        function: 1,
+                        entry_point_index: entry_point,
+                        function,
                         tab_count: 1,
                         param_type: 1,
-                        function_data: PerkFunctionData::Float(1.0),
+                        function_data: PerkFunctionData::Float(value),
                         formatter: Vec::new(),
                         extra_flags: Vec::new(),
                         details: Default::default(),
@@ -1377,8 +1401,40 @@ mod scan_tests {
         let player = world.resource::<PlayerEntity>().0.unwrap();
         world.register::<Perks>();
         let mut perks = Perks::default();
-        perks.set_rank(CONCENTRATED_FIRE, 1);
+        perks.set_rank(perk, 1);
         world.insert(player, perks);
+    }
+
+    /// Give the fixture's player the vanilla `ConcentratedFire` perk: one unconditional Set 1.0 on FO3/FNV
+    /// entry point 33 (`Has Concentrated Fire`), form 0x44CAF in FalloutNV.esm.
+    fn grant_concentrated_fire(world: &mut World) {
+        grant_hook_perk(world, 0x0004_4CAF, 33, 1, 1.0);
+    }
+
+    /// §10 Q6 — the player's *Calculate To Hit Chance* entries (FO3 / FNV hook 8) scale every scanned part's chance
+    /// (VATS-PERK-003: `vats.status` shows the composed chance), the result stays under `fVATSMaxChance`, and a
+    /// part the model zeroed (out of range) is not reopened.
+    #[test]
+    fn the_to_hit_perks_scale_the_scanned_chance_and_stay_under_the_cap() {
+        let scanned = |factor: Option<f32>| {
+            let (mut world, npc) = scan_world();
+            if let Some(factor) = factor {
+                grant_hook_perk(&mut world, 0x0001_0008, 8, 3, factor);
+            }
+            vats_scan(&world);
+            let vats = world.resource::<VatsState>();
+            let chances: Vec<f32> = vats.targets.iter().filter(|t| t.entity == npc).map(|t| t.hit_chance).collect();
+            chances
+        };
+        let plain = scanned(None);
+        assert!(plain.iter().any(|c| *c > 0.0), "{plain:?}");
+        for (p, h) in plain.iter().zip(scanned(Some(0.5))) {
+            assert!((h - p * 0.5).abs() < 1e-3, "x0.5: {p} -> {h}");
+        }
+        let cap = VatsModel::FALLOUT3.max_chance;
+        for (p, h) in plain.iter().zip(scanned(Some(100.0))) {
+            assert_eq!(h, if *p > 0.0 { cap } else { 0.0 }, "x100: {p} -> {h}");
+        }
     }
 
     /// PERK-HOOK-004 — a confirmed sequence that kills restores the Player Kill AP Reward (hook 35, base 0); one

@@ -725,6 +725,30 @@ these close the Phase 0 verify rows they name):
   end at a record with no `NNAM`; Fallout 4's are rings whose wrap is the link to a lower-level record in 72 of
   79 rings (the other seven are bounded by "already held").
 
+**Measured answers, found in Phases 3 and 4** (`perk_entry_census` and `CENSUS_ENTRY_POINT=<n>` on
+`Fallout4.esm`, `Skyrim.esm`, `FalloutNV.esm`, `Fallout3.esm`, 2026-11-09):
+
+- *FO4 weapon-damage hook* (PERK-HOOK-010): 35, *Mod Weapon Attack Damage*. `Fallout4.esm` authors 154 entries on it, every
+  weapon-class perk among them (`Rifleman`, `Gunslinger`, `HeavyGunner`), with `HasKeyword` weapon-type conditions on tab 1;
+  hook 93, *Mod Typed Weapon Attack Damage*, holds four entries, all scoped by `EPIsDamageType` on tab 2 (`NuclearPhysicist`,
+  `LegendaryRadioactivePerk`, `crRangedDmgPerk`), so it is a damage-type modifier and waits on a damage-type model.
+- *FO4 tab subjects on hook 35* (PERK-SUB-001): tab 1 is the weapon (`HasKeyword`, 108 conditions) and tab 2 the target
+  (`GetIsSex`, `GetInFaction`, `GetIsID`, `GetDead`, `HasKeyword` on the target). Hook 14, *Activate*, authors tab 1 conditions on
+  the activated reference (`HasKeyword`, `GetValue`, `GetDead`). Hooks 9 and 10 have no vanilla entry in `Fallout4.esm`.
+- *FO4 actor-value operand*: Add / Set / Multiply AV Mult entries name an `AVIF` record (`EPFT` 8, `wbActorValue`; the census
+  reads `avif: 2121` = `0x849`), where FO3 / FNV and Skyrim name an index. `PerkEntryPointDialect::actor_value_is_form_id`
+  is the dialect row.
+- *FO4 priority case* (PERK-DIA-004): the census finds hooks 4, 11, 35, 36 and 58 carrying a Set Value entry beside entries at
+  other priorities, so an observable case exists, but which entry wins is the original engine's behaviour and a data census
+  cannot show it. Until an in-game count settles it, the dialect applies the FO4 CK text (the lower number applies last,
+  descending order) as Q2 decides; the verify item stays open.
+- *Hook 8, FO3 / FNV* (§10 Q6): every vanilla entry is a multiplier (`Gunslinger`, `Commando`, `Sniper` ×1.25, `Fast Shot` ×0.8,
+  `Trigger Discipline` ×1.2, `MS08RewardPerk` ×1.1), identical on both games. They compose onto the VATS chance, which the
+  scan holds to `fVATSMaxChance` again; whether the original caps after the perk is not sourced. What "Broken as of 1.1.0035"
+  means, and the community fix that addresses it, are still unfound, so the fix entry cites the GECK note alone.
+- *Concentrated Fire's repeat count* (PERK-HOOK-003): the scan cannot know which shot of a part a queue holds, so
+  `vats_queue_part` composes the flag and prices each repeat (#6422); the scan keeps the first-shot chance.
+
 **Phase 3 — Subjects and the FO3/FNV/Skyrim hooks.** PERK-DIA-002/003,
 PERK-SUB, PERK-HOOK-003 to -009 and -012. The activate legs need §10 Q5's
 surface; on its recommendation that is the `MessageBox` page, which exists at

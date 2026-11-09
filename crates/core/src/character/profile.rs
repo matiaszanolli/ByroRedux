@@ -149,20 +149,41 @@ pub enum PerkEntryPointDialect {
     Fallout3NV,
     /// Skyrim (`wbDefinitionsTES5.pas`).
     Skyrim,
+    /// Fallout 4 (`wbDefinitionsFO4.pas`, `wbEntryPointsEnum` 0-157; PERK-DIA-001).
+    Fallout4,
 }
 
 impl PerkEntryPointDialect {
     /// Whether the value function `function` (the `DATA` byte) is value math in this dialect: Set 1, Add 2,
     /// Multiply 3, Add Range 4, Add AV Mult 5, Absolute 6 and Negative Absolute 7 everywhere a dialect exists
-    /// (the GECK / CK *Perk Entry Point* function tables), and Skyrim's Set to AV Mult 12, Multiply AV Mult 13
-    /// and Multiply 1 + AV Mult 14 on top (the function enum of `wbDefinitionsTES5.pas`; FO3 / FNV's table
-    /// ends at 9). PERK-DIA-003: the set is a property of the dialect, not a game test at the decode site.
+    /// (the GECK / CK *Perk Entry Point* function tables), and Set to AV Mult 12, Multiply AV Mult 13 and
+    /// Multiply 1 + AV Mult 14 on top in Skyrim and Fallout 4 (the function enums of `wbDefinitionsTES5.pas` and
+    /// `wbDefinitionsFO4.pas`, identical; FO3 / FNV's table ends at 9). PERK-DIA-003: the set is a property of
+    /// the dialect, not a game test at the decode site.
     pub const fn has_value_function(self, function: u8) -> bool {
         match self {
             Self::None => false,
             Self::Fallout3NV => matches!(function, 1..=7),
-            Self::Skyrim => matches!(function, 1..=7 | 12..=14),
+            Self::Skyrim | Self::Fallout4 => matches!(function, 1..=7 | 12..=14),
         }
+    }
+
+    /// Whether an entry's actor-value operand (Add / Set / Multiply AV Mult) is an `AVIF` FormID rather than the
+    /// game's actor-value index. Fallout 4's `EPFT` 8 ("AVIF") and `wbActorValue` carry the record; FO3 / FNV and
+    /// Skyrim carry the index their `ActorValue` enum numbers (the vanilla Fallout 4 census reads `avif: 2122` =
+    /// `0x84A`, a record, where Skyrim's reads 6 for One-Handed).
+    pub const fn actor_value_is_form_id(self) -> bool {
+        matches!(self, Self::Fallout4)
+    }
+
+    /// Whether entries compose from the highest priority number down (PERK-DIA-004). FO3 / FNV and Skyrim
+    /// compose ascending: the Skyrim CK says a higher number "takes precedence", i.e. applies last. The Fallout 4
+    /// CK says the opposite ("a perk entry with a lower numbered priority will take precedence"), so its
+    /// entries compose descending and the lowest number applies last. This is the CK text applied under the
+    /// PRD's §10 Q2; no in-game count of an FO4 hook carrying a Set Value entry beside entries at other
+    /// priorities has confirmed it (the census finds such hooks: 4, 11, 35, 36, 58).
+    pub const fn composes_descending_priority(self) -> bool {
+        matches!(self, Self::Fallout4)
     }
 }
 
@@ -503,10 +524,11 @@ impl CharacterRulesProfile {
             buy_floor_setting: "fBarterBuyMax",
             buy_floor: 1.05,
             sell_ceiling: 0.95,
-            // FO4's PERK entry layout is not decoded.
+            // FO4's `wbEntryPointsEnum` carries Mod Buy Prices (8) and Mod Sell Prices (60) like Skyrim's;
+            // barter does not compose them for FO4 yet.
             perk_hooks: None,
         }),
-        perk_entry_points: PerkEntryPointDialect::None,
+        perk_entry_points: PerkEntryPointDialect::Fallout4,
         add_perk_raises_rank: true,
         level_cap_raises: &[],
         crime: None,
@@ -765,7 +787,7 @@ mod tests {
                 Some("Speechcraft"),
                 P::Skyrim,
             ),
-            (CharacterRulesProfile::FALLOUT4, E::None, false, Some(30.0), Some("Charisma"), P::None),
+            (CharacterRulesProfile::FALLOUT4, E::None, false, Some(30.0), Some("Charisma"), P::Fallout4),
             (CharacterRulesProfile::FALLOUT76, E::None, false, None, None, P::None),
             (CharacterRulesProfile::STARFIELD, E::None, false, None, None, P::None),
         ];

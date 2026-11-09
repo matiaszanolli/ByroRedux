@@ -29,6 +29,13 @@ fn register_npc_combat_ai(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::character::Perks>()
             .writes_resource::<byroredux_scripting::story_manager::StoryManagerRng>()
             .reads_resource::<byroredux_scripting::perk_entry_points::WeaponSubject>()
+            // PERK-HOOK-008 — an applied FO4 entry with a bound fragment reports its run (`PendingPerkEntries`),
+            // looking the owner's reference id up first.
+            .reads_resource::<byroredux_scripting::PerkFragments>()
+            .writes_resource::<byroredux_scripting::PendingPerkEntries>()
+            .reads_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
+            .reads::<byroredux_core::ecs::components::FormIdComponent>()
+            .reads_resource::<byroredux_core::form_id::FormIdPool>()
             .writes::<byroredux_scripting::SceneAliasCandidate>()
             .reads_resource::<byroredux_physics::PhysicsWorld>()
             .reads_resource::<byroredux_core::character::MeleeDamageConfig>()

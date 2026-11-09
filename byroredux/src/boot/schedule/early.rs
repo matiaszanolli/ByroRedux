@@ -134,6 +134,13 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
             .reads_resource::<crate::systems::PlayerEntity>()
             .reads::<byroredux_core::ecs::components::Dead>()
             .reads_resource::<byroredux_scripting::input_layers::InputLayers>()
+            // §10 Q6 — the scan prices each part through the owner's Calculate To Hit Chance entries: the
+            // perk table, the owner's perks, the `Add Range` draw and the scratch weapon subject.
+            .reads_resource::<byroredux_scripting::perk_entry_points::PerkEntryTable>()
+            .reads::<byroredux_core::character::Perks>()
+            .writes_resource::<byroredux_scripting::story_manager::StoryManagerRng>()
+            .reads_resource::<byroredux_scripting::perk_entry_points::WeaponSubject>()
+            .writes::<byroredux_scripting::SceneAliasCandidate>()
             // `vats_scan`: the loaded index, weapon + skill, actor roster.
             .reads_resource::<crate::cell_loader::LoadedCellIndex>()
             .reads::<byroredux_core::ecs::components::ActorValues>()

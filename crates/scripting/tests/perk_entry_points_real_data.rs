@@ -19,7 +19,7 @@ use byroredux_plugin::esm::test_paths;
 use byroredux_scripting::perk_entry_points::{
 
     compose_damage_threshold, compose_entry_point, compose_entry_point_traced, compose_outgoing_damage, fnv,
-    install_perk_entry_points,
+    install_perk_entry_points, PerkEntryTable,
 };
 
 mod common;
@@ -226,4 +226,113 @@ fn the_fnv_table_is_populated() {
     let perks = install_perk_entry_points(&mut world, &index);
     // 176 PERK records, 143 entry-point entries: most carry value math.
     assert!(perks > 50, "{perks}");
+}
+
+fn master_index(path: PathBuf) -> Option<EsmIndex> {
+    let bytes = std::fs::read(path).ok()?;
+    byroredux_plugin::esm::parse_esm(&bytes).ok()
+}
+
+/// A combat world for a non-FNV load order: the game, the keyword table the weapon tab's `HasKeyword` reads, and
+/// two actors (the owner and a target).
+fn keyword_world(index: &EsmIndex, owned: &[(u32, u8)]) -> (World, EntityId, EntityId) {
+    let (mut world, owner, other) = combat_world(index, owned);
+    byroredux_scripting::keywords::install_keyword_table(&mut world, index);
+    (world, owner, other)
+}
+
+/// The vanilla weapons that carry any of `keywords`, and one that carries none of them.
+fn weapons_by_keywords(index: &EsmIndex, keywords: &[u32]) -> (u32, u32) {
+    let mut forms: Vec<_> = index.items.values().filter(|item| matches!(item.kind, byroredux_plugin::esm::records::ItemKind::Weapon { .. })).collect();
+    forms.sort_by_key(|item| item.form_id);
+    let with = forms.iter().find(|item| item.common.keywords.iter().any(|k| keywords.contains(k))).expect("a vanilla weapon with the keyword");
+    let without = forms
+        .iter()
+        .find(|item| !item.common.keywords.is_empty() && !item.common.keywords.iter().any(|k| keywords.contains(k)))
+        .expect("a vanilla weapon without it");
+    (with.form_id, without.form_id)
+}
+
+fn perk_id(index: &EsmIndex, editor_id: &str) -> u32 {
+    index
+        .perks
+        .values()
+        .find(|perk| perk.editor_id == editor_id)
+        .unwrap_or_else(|| panic!("{editor_id} is a vanilla perk"))
+        .form_id
+}
+
+/// PERK-DIA-001 / PERK-HOOK-010 on the real records (§7.2 A4, FO4 sibling): the Fallout 4 profile selects the FO4
+/// dialect, and weapon-keyword multipliers on hook 35, named by record, double the damage of the weapons they name
+/// and leave the others alone. `HeavyGunner05` requires keyword `0x4A0A3`; `Rifleman05` requires `0x4A0A1` and
+/// carries `0x4A0A2` / `0x4A0A3` as exclusions (a weapon with `0x4A0A3` is the heavy gunner's, not the rifleman's).
+#[test]
+#[ignore = "needs Fallout4.esm on disk"]
+fn vanilla_fo4_weapon_damage_perks_compose() {
+    let Some(index) = master_index(test_paths::fo4_esm()) else {
+        common::require_or_skip("Fallout4.esm", &test_paths::fo4_esm().display());
+        return;
+    };
+    let weapons = || {
+        let mut forms: Vec<_> = index
+            .items
+            .values()
+            .filter(|item| matches!(item.kind, byroredux_plugin::esm::records::ItemKind::Weapon { .. }))
+            .collect();
+        forms.sort_by_key(|item| item.form_id);
+        forms
+    };
+    let has = |item: &byroredux_plugin::esm::records::ItemRecord, keyword: u32| item.common.keywords.contains(&keyword);
+    let heavy_gun = weapons().into_iter().find(|w| has(w, 0x4A0A3)).expect("a vanilla heavy gun").form_id;
+    let rifle = weapons()
+        .into_iter()
+        .find(|w| has(w, 0x4A0A1) && !has(w, 0x4A0A2) && !has(w, 0x4A0A3))
+        .expect("a vanilla rifle")
+        .form_id;
+    let compose = |editor_id: &str, weapon: u32| {
+        let (mut world, attacker, target) = keyword_world(&index, &[(perk_id(&index, editor_id), 1)]);
+        assert_eq!(world.resource::<PerkEntryTable>().dialect(), byroredux_core::character::PerkEntryPointDialect::Fallout4);
+        equip(&mut world, attacker, weapon);
+        compose_outgoing_damage(&world, attacker, target, 30.0)
+    };
+    assert!((compose("HeavyGunner05", heavy_gun) - 60.0).abs() < 1e-3, "Heavy Gunner, a heavy gun");
+    assert_eq!(compose("HeavyGunner05", rifle), 30.0, "Heavy Gunner, a rifle");
+    assert!((compose("Rifleman05", rifle) - 60.0).abs() < 1e-3, "Rifleman, a rifle");
+    assert_eq!(compose("Rifleman05", heavy_gun), 30.0, "Rifleman, a heavy gun");
+}
+
+/// The Skyrim sibling of the FNV weapon-tab leg: `Armsman40` (x1.6 on four one-handed weapon keywords, hook 35).
+#[test]
+#[ignore = "needs Skyrim.esm on disk"]
+fn vanilla_skyrim_weapon_conditioned_perks_compose() {
+    let Some(index) = master_index(test_paths::skyrim_se_esm()) else {
+        common::require_or_skip("Skyrim.esm", &test_paths::skyrim_se_esm().display());
+        return;
+    };
+    let armsman = [0x0001_E711u32, 0x0001_E712, 0x0001_E713, 0x0001_E714];
+    let (with, without) = weapons_by_keywords(&index, &armsman);
+    let (mut world, attacker, target) = keyword_world(&index, &[(perk_id(&index, "Armsman40"), 1)]);
+    equip(&mut world, attacker, with);
+    let out = compose_outgoing_damage(&world, attacker, target, 10.0);
+    assert!((out - 16.0).abs() < 1e-3, "Armsman, a one-handed weapon: {out}");
+    equip(&mut world, attacker, without);
+    assert_eq!(compose_outgoing_damage(&world, attacker, target, 10.0), 10.0, "Armsman, another weapon");
+}
+
+/// §10 Q6 on the real records: FO3 and FNV compose `Calculate To Hit Chance` (hook 8). Gunslinger x1.25 conditions
+/// on the owner (tab 0), Fast Shot x0.8 on the weapon (tab 1).
+#[test]
+#[ignore = "needs FalloutNV.esm on disk"]
+fn vanilla_fnv_to_hit_perks_compose() {
+    let Some(index) = fnv_index() else {
+        common::require_or_skip("FalloutNV.esm", &"fnv_index()");
+        eprintln!("SKIP: FalloutNV.esm not found");
+        return;
+    };
+    let table_hits = |editor_id: &str| {
+        let (world, player, target) = combat_world(&index, &[(perk_id(&index, editor_id), 1)]);
+        byroredux_scripting::perk_entry_points::compose_vats_hit_chance(&world, player, target, 50.0)
+    };
+    // MS08RewardPerk authors one unconditional x1.1 on hook 8.
+    assert!((table_hits("MS08RewardPerk") - 55.0).abs() < 1e-3);
 }

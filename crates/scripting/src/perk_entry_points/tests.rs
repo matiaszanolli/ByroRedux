@@ -350,7 +350,7 @@ fn add_range_draws_between_its_bounds() {
 #[test]
 fn unsupported_games_and_non_numeric_functions_are_not_tabulated() {
     let record = perk(1, vec![entry_point(0, 0, DAMAGE, 3, float(2.0), vec![])]);
-    assert!(PerkEntryTable::from_index(&index(GameKind::Fallout4, vec![record.clone()])).is_empty());
+    assert!(PerkEntryTable::from_index(&index(GameKind::Starfield, vec![record.clone()])).is_empty());
     assert!(PerkEntryTable::from_index(&index(GameKind::Oblivion, vec![record])).is_empty());
 
     let idx = index(
@@ -611,7 +611,7 @@ fn entry_point_dialect_follows_the_profile_not_the_game() {
 
     // An FNV-game index carrying a no-dialect profile composes nothing.
     let mut idx = index(GameKind::Fallout3NV, perks());
-    idx.character_rules = CharacterRulesProfile::FALLOUT4;
+    idx.character_rules = CharacterRulesProfile::STARFIELD;
     let (world, actor) = world_with(&idx, &[(0x94EBA, 1)]);
     assert_eq!(compose_entry_point(&world, actor, DAMAGE, 20.0, &[]), 20.0);
 }
@@ -992,6 +992,7 @@ mod catalog {
         for (dialect, module, len) in [
             (PerkEntryPointDialect::Fallout3NV, "fnv", 74usize),
             (PerkEntryPointDialect::Skyrim, "skyrim", 92),
+            (PerkEntryPointDialect::Fallout4, "fo4", 158),
         ] {
             let rows = hooks(dialect);
             assert_eq!(rows.len(), len, "{dialect:?}: xEdit's table size (docs/prd/perk-entry-points.md §3.4)");
@@ -1000,7 +1001,7 @@ mod catalog {
                 assert!(!row.name.is_empty());
             }
             let constants = hook_constants(module);
-            assert!(constants.len() >= 6, "{module}: the scan found only {constants:?}");
+            assert!(constants.len() >= 5, "{module}: the scan found only {constants:?}");
             for (name, index) in constants {
                 assert!(hook(dialect, index).is_some(), "{module}::{name} = {index} has no catalog row");
             }
@@ -1026,7 +1027,7 @@ mod catalog {
     #[test]
     fn every_consumed_hook_names_a_function_that_calls_a_composer() {
         let mut consumed = 0;
-        for dialect in [PerkEntryPointDialect::Fallout3NV, PerkEntryPointDialect::Skyrim] {
+        for dialect in [PerkEntryPointDialect::Fallout3NV, PerkEntryPointDialect::Skyrim, PerkEntryPointDialect::Fallout4] {
             for row in hooks(dialect) {
                 let HookState::Consumed { site } = row.state else { continue };
                 consumed += 1;
@@ -1037,7 +1038,7 @@ mod catalog {
                 assert!(calls_a_composer, "{dialect:?} hook {} ({}): `{site}` calls no compose_* function", row.index, row.name);
             }
         }
-        assert!(consumed >= 12, "the catalog should hold the hooks the engine composes today, found {consumed}");
+        assert!(consumed >= 16, "the catalog should hold the hooks the engine composes today, found {consumed}");
     }
 
     /// PERK-HOOK-002 -- the GECK's seven "Not Implemented" hooks are Inert on `Fallout3NV`.
@@ -1189,13 +1190,25 @@ mod dialect_boundary {
     /// PERK-DIA-002 -- a calculation maps to a hook per dialect, and composes to its base where the dialect has none.
     #[test]
     fn a_calculation_maps_to_one_hook_per_dialect() {
-        use PerkEntryPointDialect::{Fallout3NV, Skyrim};
+        use PerkEntryPointDialect::{Fallout3NV, Fallout4, Skyrim};
         assert_eq!(PerkCalculation::ExperienceGain.hook(Fallout3NV), Some(9));
         assert_eq!(PerkCalculation::ExperienceGain.hook(Skyrim), None, "Skyrim levels by skill use");
         assert_eq!(PerkCalculation::MaxCarryWeight.hook(Fallout3NV), Some(22));
         assert_eq!(PerkCalculation::MaxCarryWeight.hook(Skyrim), Some(10));
         assert_eq!(PerkCalculation::TemperingHealth.hook(Skyrim), Some(76));
         assert_eq!(PerkCalculation::TemperingHealth.hook(Fallout3NV), None);
+        // PERK-HOOK-010: Fallout 4 reaches the same calculations through its own indices.
+        assert_eq!(PerkCalculation::MaxCarryWeight.hook(Fallout4), Some(10));
+        assert_eq!(PerkCalculation::DeathLeveledList.hook(Fallout4), Some(9));
+        assert_eq!(PerkCalculation::WeaponDamage.hook(Fallout3NV), Some(0));
+        assert_eq!(PerkCalculation::WeaponDamage.hook(Skyrim), Some(35));
+        assert_eq!(PerkCalculation::WeaponDamage.hook(Fallout4), Some(35), "index 0 is Mod Breath Timer there");
+        assert_eq!(PerkCalculation::ProjectedWeaponDamage.hook(Skyrim), Some(0));
+        assert_eq!(PerkCalculation::ProjectedWeaponDamage.hook(Fallout4), None);
+        assert_eq!(PerkCalculation::VatsHitChance.hook(Fallout3NV), Some(8));
+        assert_eq!(PerkCalculation::VatsHitChance.hook(Skyrim), None);
+        assert_eq!(PerkCalculation::VatsHitChance.hook(Fallout4), None);
+        assert_eq!(PerkCalculation::ExperienceGain.hook(Fallout4), None);
 
         let idx = index(GameKind::Skyrim, vec![perk(1, vec![entry_point(0, 0, 9, 3, float(2.0), vec![])])]);
         let (world, actor) = world_with(&idx, &[(1, 1)]);
@@ -1225,15 +1238,22 @@ mod dialect_boundary {
     /// PERK-DIA-003 -- the value-function set is the dialect's: 12-14 are Skyrim's, 8-11 are no dialect's.
     #[test]
     fn the_value_function_set_is_a_property_of_the_dialect() {
-        use PerkEntryPointDialect::{Fallout3NV, Skyrim};
+        use PerkEntryPointDialect::{Fallout3NV, Fallout4, Skyrim};
         for function in 1..=7u8 {
-            assert!(Fallout3NV.has_value_function(function) && Skyrim.has_value_function(function), "{function}");
+            assert!(
+                Fallout3NV.has_value_function(function) && Skyrim.has_value_function(function) && Fallout4.has_value_function(function),
+                "{function}"
+            );
         }
         for function in [12u8, 13, 14] {
-            assert!(Skyrim.has_value_function(function) && !Fallout3NV.has_value_function(function), "{function}");
+            assert!(Skyrim.has_value_function(function) && Fallout4.has_value_function(function), "{function}");
+            assert!(!Fallout3NV.has_value_function(function), "{function}");
         }
         for function in [0u8, 8, 9, 10, 11, 15] {
-            assert!(!Fallout3NV.has_value_function(function) && !Skyrim.has_value_function(function), "{function}");
+            assert!(
+                !Fallout3NV.has_value_function(function) && !Skyrim.has_value_function(function) && !Fallout4.has_value_function(function),
+                "{function}"
+            );
         }
         assert!(!PerkEntryPointDialect::None.has_value_function(1));
         // A function 13 entry on FNV is not composed; on Skyrim it is.
@@ -1289,5 +1309,221 @@ mod death_lists {
         assert!(compose_death_leveled_lists(&world, killer, killer).is_empty(), "no perk held");
         let bare = World::new();
         assert!(compose_death_leveled_lists(&bare, 0, 1).is_empty(), "no table");
+    }
+}
+
+// --- PERK-DIA-001/004/005, PERK-HOOK-006/008/010: the Fallout 4 dialect ---------------------------
+
+mod fallout4 {
+    use super::*;
+    use super::super::{compose_death_leveled_lists, compose_vats_hit_chance};
+    use crate::papyrus_demo::PapyrusPlayerEntity;
+    use crate::{FragmentSet, PendingPerkEntries, PerkEntryId, PerkEntryRun, PerkFragments};
+
+    const WEAPON_DAMAGE: u8 = fo4::MOD_WEAPON_ATTACK_DAMAGE;
+    /// The AVIF a vanilla FO4 AV-mult entry names by record (`HC_DamageMultPerk`'s is `0x849`).
+    const AVIF: u32 = 0x0000_0849;
+    const PERK: u32 = 0x0003_0000;
+
+    fn fo4_index(perks: Vec<PerkRecord>) -> EsmIndex {
+        index(GameKind::Fallout4, perks)
+    }
+
+    /// PERK-DIA-001 / §7.2 A2 -- the profile row selects the FO4 dialect, and an AV-mult entry names its AVIF by
+    /// record: `HC_DamageMultPerk`'s shape (hook 35, Multiply Actor Value Mult).
+    #[test]
+    fn fo4_dialect_composes_avif_mult() {
+        let mult = PerkFunctionData::ActorValueMult { actor_value: AVIF, mult: 0.1 };
+        let mut idx = fo4_index(vec![perk(1, vec![entry_point(0, 0, WEAPON_DAMAGE, 14, mult, vec![])])]);
+        idx.actor_values.insert(AVIF, AvifRecord::default());
+        let (mut world, actor) = world_with(&idx, &[(1, 1)]);
+        assert_eq!(world.resource::<PerkEntryTable>().dialect(), PerkEntryPointDialect::Fallout4);
+        let mut values = ActorValues::new();
+        values.set_base(AVIF, 5.0);
+        world.insert(actor, values);
+        // 10 x (1 + 5 x 0.1) = 15: the record id reached the actor's value.
+        assert!((compose_entry_point(&world, actor, WEAPON_DAMAGE, 10.0, &[]) - 15.0).abs() < 1e-5);
+
+        // A record the load order lacks contributes nothing.
+        idx.actor_values.clear();
+        let (mut world, actor) = world_with(&idx, &[(1, 1)]);
+        let mut values = ActorValues::new();
+        values.set_base(AVIF, 5.0);
+        world.insert(actor, values);
+        assert_eq!(compose_entry_point(&world, actor, WEAPON_DAMAGE, 10.0, &[]), 10.0);
+    }
+
+    /// PERK-DIA-004 -- the order is the dialect's: Skyrim applies the high number last, Fallout 4 the low one.
+    #[test]
+    fn fo4_composes_descending_priority_where_skyrim_ascends() {
+        let perks = || {
+            vec![
+                perk(1, vec![entry_point(0, 0, 35, 3, float(2.0), vec![])]),
+                perk(2, vec![entry_point(0, 15, 35, 1, float(10.0), vec![])]),
+            ]
+        };
+        let (world, actor) = world_with(&index(GameKind::Skyrim, perks()), &[(1, 1), (2, 1)]);
+        let skyrim = compose_entry_point_traced(&world, actor, 35, 4.0, &[]);
+        assert_eq!(skyrim.applied.iter().map(|a| a.perk).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(skyrim.value, 10.0, "the Set at priority 15 applies last");
+
+        let (world, actor) = world_with(&fo4_index(perks()), &[(1, 1), (2, 1)]);
+        let fo4 = compose_entry_point_traced(&world, actor, 35, 4.0, &[]);
+        assert_eq!(fo4.applied.iter().map(|a| a.perk).collect::<Vec<_>>(), vec![2, 1]);
+        assert_eq!(fo4.value, 20.0, "Set 10 first, then the priority-0 multiplier last");
+
+        // The key itself: Fallout 4 sorts the lower number last, and a tie keeps the actor's perk order.
+        assert!(compose_order_key(PerkEntryPointDialect::Fallout4, 1, 5, 0) > compose_order_key(PerkEntryPointDialect::Fallout4, 2, 0, 0));
+        assert!(compose_order_key(PerkEntryPointDialect::Skyrim, 1, 5, 0) < compose_order_key(PerkEntryPointDialect::Skyrim, 2, 0, 0));
+    }
+
+    /// PERK-DIA-005 -- the FNV subtract table is the `Fallout3NV` dialect's alone.
+    #[test]
+    fn fo4_has_no_subtract_table() {
+        for hook in [53u8, 56, 58] {
+            let record = || vec![perk(1, vec![entry_point(0, 0, hook, 1, float(5.0), vec![])])];
+            let (world, actor) = world_with(&index(GameKind::Fallout3NV, record()), &[(1, 1)]);
+            assert_eq!(compose_entry_point(&world, actor, hook, 20.0, &[]), 15.0, "FNV hook {hook} subtracts");
+            let (world, actor) = world_with(&fo4_index(record()), &[(1, 1)]);
+            assert_eq!(compose_entry_point(&world, actor, hook, 20.0, &[]), 5.0, "FO4 hook {hook}: function 1 sets");
+        }
+    }
+
+    /// PERK-HOOK-010 -- the weapon-damage calculation reaches FO4's hook 35 and not index 0 (`Mod Breath Timer`),
+    /// where Skyrim's index 0 is its second damage hook.
+    #[test]
+    fn fo4_outgoing_damage_composes_hook_35_alone() {
+        let idx = fo4_index(vec![
+            perk(1, vec![entry_point(0, 0, WEAPON_DAMAGE, 3, float(2.0), vec![])]),
+            perk(2, vec![entry_point(0, 0, 0, 3, float(3.0), vec![])]),
+        ]);
+        let (mut world, attacker) = world_with(&idx, &[(1, 1), (2, 1)]);
+        world.insert(attacker, ActorValues::default());
+        let target = world.spawn();
+        assert_eq!(compose_outgoing_damage(&world, attacker, target, 10.0), 20.0);
+    }
+
+    /// PERK-HOOK-010 / -006 -- carry weight (10) and Add Leveled List On Death (9) reach their FO4 indices.
+    #[test]
+    fn fo4_carry_weight_and_death_lists_compose() {
+        const LIST: u32 = 0x0010_0001;
+        let idx = fo4_index(vec![
+            perk(1, vec![entry_point(0, 0, fo4::SET_MAX_CARRY_WEIGHT, 2, float(50.0), vec![])]),
+            perk(2, vec![entry_point(0, 0, fo4::ADD_LEVELED_LIST_ON_DEATH, 8, PerkFunctionData::FormId(LIST), vec![])]),
+        ]);
+        let (mut world, actor) = world_with(&idx, &[(1, 1), (2, 1)]);
+        assert_eq!(compose_max_carry_weight(&world, actor, 200.0), 250.0);
+        let victim = world.spawn();
+        assert_eq!(compose_death_leveled_lists(&world, actor, victim), vec![LIST]);
+        // The same indices mean other hooks on FNV: 10 is Adjust Gained Skill Points, 9 Adjust Experience Points.
+        let fnv = index(GameKind::Fallout3NV, vec![perk(1, vec![entry_point(0, 0, fo4::SET_MAX_CARRY_WEIGHT, 2, float(50.0), vec![])])]);
+        let (world, actor) = world_with(&fnv, &[(1, 1)]);
+        assert_eq!(compose_max_carry_weight(&world, actor, 200.0), 200.0);
+    }
+
+    // PERK-HOOK-008 ----------------------------------------------------------------------------------
+
+    fn with_entry_id(mut entry: PerkEntry, id: u16) -> PerkEntry {
+        if let PerkEntryBody::EntryPoint { details, .. } = &mut entry.body {
+            details.entry_id = Some(id);
+        }
+        entry
+    }
+
+    /// A world whose perk `PERK` binds a fragment to each id in `bound`, owned by the "player" (`0x14`).
+    fn fragment_world(entries: Vec<PerkEntry>, bound: &[u16]) -> (World, EntityId) {
+        let (mut world, actor) = world_with(&fo4_index(vec![perk(PERK, entries)]), &[(PERK, 1)]);
+        world.insert_resource(PapyrusPlayerEntity(actor));
+        world.insert_resource(PerkFragments::default());
+        world.insert_resource(PendingPerkEntries::default());
+        world.resource_mut::<PerkFragments>().insert(
+            PERK,
+            FragmentSet {
+                vmad: None,
+                fragments: bound
+                    .iter()
+                    .map(|&id| (PerkEntryId(u32::from(id)), "PRKF_Test".to_string(), format!("Fragment_Entry_{id:02}")))
+                    .collect(),
+            },
+        );
+        (world, actor)
+    }
+
+    fn reported(world: &World) -> Vec<PerkEntryRun> {
+        world.resource::<PendingPerkEntries>().0.clone()
+    }
+
+    /// An applied FO4 entry whose `EPFB` has a bound fragment is reported with the owner and no target.
+    #[test]
+    fn a_composition_reports_the_applied_entry_that_has_a_fragment() {
+        let entries = vec![
+            with_entry_id(entry_point(0, 0, WEAPON_DAMAGE, 3, float(2.0), vec![]), 3),
+            // Has an id, but the perk binds no fragment to it.
+            with_entry_id(entry_point(0, 0, WEAPON_DAMAGE, 3, float(2.0), vec![]), 4),
+            // No id (not an FO4 entry shape).
+            entry_point(0, 0, WEAPON_DAMAGE, 3, float(2.0), vec![]),
+        ];
+        let (world, actor) = fragment_world(entries, &[3]);
+        assert_eq!(compose_entry_point(&world, actor, WEAPON_DAMAGE, 1.0, &[]), 8.0);
+        assert_eq!(reported(&world), vec![PerkEntryRun { perk: PERK, entry: 3, owner: crate::PLAYER_REFERENCE, target: None }]);
+    }
+
+    /// An entry that did not apply does not run, and the diagnostic trace never runs a perk's script.
+    #[test]
+    fn a_skipped_entry_and_the_trace_report_nothing() {
+        let failing = vec![tab(1, vec![condition(GET_DEAD, 1.0)])];
+        let entries = vec![with_entry_id(entry_point(0, 0, WEAPON_DAMAGE, 3, float(2.0), failing), 3)];
+        let (mut world, actor) = fragment_world(entries, &[3]);
+        let subject = world.spawn();
+        world.insert(subject, ActorValues::default());
+        assert_eq!(compose_entry_point(&world, actor, WEAPON_DAMAGE, 1.0, &[Some(subject)]), 1.0, "the Target tab fails");
+        assert!(reported(&world).is_empty());
+
+        let entries = vec![with_entry_id(entry_point(0, 0, WEAPON_DAMAGE, 3, float(2.0), vec![]), 3)];
+        let (world, actor) = fragment_world(entries, &[3]);
+        let traced = compose_entry_point_traced(&world, actor, WEAPON_DAMAGE, 1.0, &[]);
+        assert_eq!(traced.value, 2.0);
+        assert!(reported(&world).is_empty(), "perk.compose is a read-only diagnostic");
+    }
+
+    // §10 Q6: FO3 / FNV Calculate To Hit Chance --------------------------------------------------------
+
+    /// Gunslinger / Sniper's shape: a multiplier on the VATS chance, conditioned on the weapon (tab 1) or the
+    /// owner. FNV and FO3 compose it; Skyrim and Fallout 4 have no such hook.
+    #[test]
+    fn vats_hit_chance_composes_the_to_hit_perks() {
+        let hit = fnv::CALCULATE_TO_HIT_CHANCE;
+        let idx = fnv_arsenal(vec![
+            perk(1, vec![entry_point(0, 0, hit, 3, float(1.25), vec![tab(1, vec![is_skill(GUNS)])])]),
+            perk(2, vec![entry_point(0, 0, hit, 3, float(0.8), vec![])]),
+        ]);
+        let (mut world, player, target) = fnv_world(&idx, &[(1, 1), (2, 1)]);
+        equip(&mut world, player, PISTOL);
+        assert!((compose_vats_hit_chance(&world, player, target, 60.0) - 60.0).abs() < 1e-3, "x1.25 x0.8");
+        equip(&mut world, player, KNIFE);
+        assert!((compose_vats_hit_chance(&world, player, target, 60.0) - 48.0).abs() < 1e-3, "the gun perk needs a gun");
+
+        // The same entry on Skyrim's index 8 (Mod Buy Prices) is not a hit chance.
+        let sky = index(GameKind::Skyrim, vec![perk(1, vec![entry_point(0, 0, hit, 3, float(1.25), vec![])])]);
+        let (world, player) = world_with(&sky, &[(1, 1)]);
+        assert_eq!(compose_vats_hit_chance(&world, player, player, 60.0), 60.0);
+    }
+
+    /// The catalog row of the hook the Q6 entry builds.
+    #[test]
+    fn the_fo4_catalog_names_what_the_dialect_consumes() {
+        let row = |index| hook(PerkEntryPointDialect::Fallout4, index).unwrap();
+        assert_eq!(row(35).name, "Mod Weapon Attack Damage");
+        assert_eq!(row(35).subjects, Some(&["Weapon", "Target"][..]));
+        assert_eq!(row(93).name, "Mod Typed Weapon Attack Damage");
+        assert!(matches!(row(10).state, HookState::Consumed { .. }) && matches!(row(9).state, HookState::Consumed { .. }));
+        assert!(matches!(row(14).state, HookState::Pending { id: "PERK-HOOK-007" }));
+        assert!(matches!(row(52).state, HookState::Inert { .. }), "Apply Bashing Spell: the FO4 CK says it does not work");
+        assert_eq!(row(52).name, "Apply Bashing Spell");
+        assert_eq!(row(157).name, "Set Fatigue to AP Mult");
+        assert_eq!(
+            hook(PerkEntryPointDialect::Fallout3NV, fnv::CALCULATE_TO_HIT_CHANCE).unwrap().state.name(),
+            "consumed"
+        );
     }
 }
