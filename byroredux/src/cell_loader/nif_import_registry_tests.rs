@@ -826,38 +826,254 @@ fn fnv_baked_beam_converter_coverage() {
     }
 }
 
+/// Mesh extraction over one or more BSA / BA2 archives (comma-separated, searched in order), for the two
+/// ignored beam censuses below.
+type MeshExtractor = Box<dyn Fn(&str) -> std::io::Result<Vec<u8>>>;
+
+fn open_mesh_archives(archives: &str) -> MeshExtractor {
+    let opened: Vec<MeshExtractor> = archives
+        .split(',')
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .map(|archive| -> MeshExtractor {
+            if archive.to_ascii_lowercase().ends_with(".ba2") {
+                let ba2 = byroredux_bsa::Ba2Archive::open(archive).expect("ba2");
+                Box::new(move |path| ba2.extract(path))
+            } else {
+                let bsa = byroredux_bsa::BsaArchive::open(archive).expect("bsa");
+                Box::new(move |path| bsa.extract(path))
+            }
+        })
+        .collect();
+    Box::new(move |path| {
+        let mut last = std::io::Error::new(std::io::ErrorKind::NotFound, path.to_string());
+        for extract in &opened {
+            match extract(path) {
+                Ok(bytes) => return Ok(bytes),
+                Err(e) => last = e,
+            }
+        }
+        Err(last)
+    })
+}
+
+/// The converter chain on a model's real meshes: one entry per mesh, `Some(volumes)` where the chain claims
+/// it. `None` when the model is not in the archives or does not parse. `model` is a mesh-relative path.
+fn beam_volumes_of_model(
+    extract: &MeshExtractor,
+    pool: &mut byroredux_core::string::StringPool,
+    model: &str,
+) -> Option<Vec<Option<Arc<[byroredux_core::ecs::FogVolume]>>>> {
+    let lower = model.replace('/', "\\").to_ascii_lowercase();
+    let path = if lower.starts_with("meshes\\") {
+        lower
+    } else {
+        format!("meshes\\{lower}")
+    };
+    let bytes = extract(&path).ok()?;
+    let scene = byroredux_nif::parse_nif(&bytes).ok()?;
+    let imported = byroredux_nif::import::import_nif_scene(&scene, pool);
+    let mut cached = Arc::try_unwrap(dummy_cached()).ok().unwrap();
+    cached.meshes = imported.meshes;
+    Some(cached.beam_volumes(Some(&path)).to_vec())
+}
+
 /// VLM-INT-006 — the same census for any title: which of the listed baked-beam models the converter chain
 /// claims, on the real meshes. The models are the `baked_beam_census` base-model paths (`#6774`).
 /// Prints one `beam-coverage` line per model; asserts nothing about the count.
 ///
-/// `BYROREDUX_BEAM_ARCHIVE=<a BSA or BA2 holding the meshes> BYROREDUX_BEAM_MODELS='Effects\\Ambient\\X.nif,…'
+/// `BYROREDUX_BEAM_ARCHIVE=<BSAs or BA2s holding the meshes, comma-separated> BYROREDUX_BEAM_MODELS='Effects\\Ambient\\X.nif,…'
 /// cargo test -p byroredux --bin byroredux --release -- --ignored --nocapture baked_beam_converter_coverage`
 #[test]
 #[ignore = "needs game data: BYROREDUX_BEAM_ARCHIVE and BYROREDUX_BEAM_MODELS"]
 fn baked_beam_converter_coverage() {
     let archive = std::env::var("BYROREDUX_BEAM_ARCHIVE").expect("set BYROREDUX_BEAM_ARCHIVE");
     let models = std::env::var("BYROREDUX_BEAM_MODELS").expect("set BYROREDUX_BEAM_MODELS");
-    let extract: Box<dyn Fn(&str) -> std::io::Result<Vec<u8>>> = if archive.to_ascii_lowercase().ends_with(".ba2") {
-        let ba2 = byroredux_bsa::Ba2Archive::open(&archive).expect("ba2");
-        Box::new(move |path| ba2.extract(path))
-    } else {
-        let bsa = byroredux_bsa::BsaArchive::open(&archive).expect("bsa");
-        Box::new(move |path| bsa.extract(path))
-    };
+    let extract = open_mesh_archives(&archive);
     let mut pool = byroredux_core::string::StringPool::new();
     for model in models.split(',').map(str::trim).filter(|m| !m.is_empty()) {
-        let lower = model.replace('/', "\\").to_ascii_lowercase();
-        let path = if lower.starts_with("meshes\\") { lower } else { format!("meshes\\{lower}") };
-        let Ok(bytes) = extract(&path) else {
+        let Some(volumes) = beam_volumes_of_model(&extract, &mut pool, model) else {
             println!("beam-coverage {model}: not in the archive");
             continue;
         };
-        let scene = byroredux_nif::parse_nif(&bytes).expect("parse");
-        let imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);
-        let mut cached = Arc::try_unwrap(dummy_cached()).ok().unwrap();
-        cached.meshes = imported.meshes;
-        let verdicts: Vec<bool> = cached.beam_volumes(Some(&path)).iter().map(Option::is_some).collect();
-        println!("beam-coverage {model}: {} mesh(es), converted {:?}", verdicts.len(), verdicts);
+        let verdicts: Vec<bool> = volumes.iter().map(Option::is_some).collect();
+        println!(
+            "beam-coverage {model}: {} mesh(es), converted {:?}",
+            verdicts.len(),
+            verdicts
+        );
+    }
+}
+
+/// VLM-INT-001 — the sun-path census of a title's interior cells: for each interior cell, how many volumes
+/// the engine's own converter chain would build from its placed models, by whether they can follow the sun.
+///
+/// * `shaft` — `LightShaft` volumes (window cards, Oblivion dungeon cards, Repcon cones): a candidate the sun
+///   can light when a clear ray crosses real geometry;
+/// * `aperture` — `SkyAperture` volumes (a proved source plane: the Nellis hangar);
+/// * `passive` — `Homogeneous` volumes from the beam chain (fixture beams beside local lights, which no sun
+///   reaches). Authored fog meshes (`fog_volume_from_mesh`, always `Homogeneous`) are not counted: they are never
+///   sun-capable, so every sun-capable producer is in `shaft` / `aperture` and only `passive` under-counts;
+/// * `sunlight` — placed `LIGH` bases whose editor id contains `sunlight` (Skyrim's indoor sun, which nothing
+///   converts into a medium, so it is a gap marker, not a sun path).
+///
+/// The classification comes from running the real converter chain on every distinct interior base model's
+/// meshes, so it cannot drift from what the loader builds. Disabled placements are skipped. This predicts the
+/// engine's candidates; whether a clear geometry ray exists is what `interior-shafts-content.sh` measures.
+///
+/// `BYROREDUX_SUNPATH_ESM=<master.esm> BYROREDUX_BEAM_ARCHIVE=<mesh archives, comma-separated>
+/// cargo test -p byroredux --bin byroredux --release -- --ignored --nocapture interior_sun_path_census`
+#[test]
+#[ignore = "needs game data: BYROREDUX_SUNPATH_ESM and BYROREDUX_BEAM_ARCHIVE"]
+fn interior_sun_path_census() {
+    use byroredux_core::ecs::FogProfile;
+    use std::collections::HashMap;
+    let esm = std::env::var("BYROREDUX_SUNPATH_ESM").expect("set BYROREDUX_SUNPATH_ESM");
+    let archive = std::env::var("BYROREDUX_BEAM_ARCHIVE").expect("set BYROREDUX_BEAM_ARCHIVE");
+    let extract = open_mesh_archives(&archive);
+    let index = byroredux_plugin::esm::parse_esm(&std::fs::read(&esm).expect("read esm"))
+        .expect("parse esm");
+    let mut pool = byroredux_core::string::StringPool::new();
+
+    // One chain run per distinct base model placed in any interior cell.
+    let mut models: HashMap<String, [usize; 4]> = HashMap::new(); // path -> [shaft, aperture, passive, unclaimed]
+    let mut parsed = 0usize;
+    for cell in index.cells.cells.values() {
+        for reference in &cell.references {
+            let Some(base) = index.cells.statics.get(&reference.base_form_id) else {
+                continue;
+            };
+            if base.model_path.is_empty() || models.contains_key(&base.model_path) {
+                continue;
+            }
+            let mut tally = [0usize; 4];
+            if let Some(volumes) = beam_volumes_of_model(&extract, &mut pool, &base.model_path) {
+                parsed += 1;
+                for mesh in &volumes {
+                    match mesh {
+                        None => tally[3] += 1,
+                        Some(vs) => {
+                            for v in vs.iter() {
+                                match v.profile {
+                                    FogProfile::LightShaft => tally[0] += 1,
+                                    FogProfile::SkyAperture => tally[1] += 1,
+                                    _ => tally[2] += 1,
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            models.insert(base.model_path.clone(), tally);
+        }
+    }
+    println!(
+        "sunpath: {} distinct interior models, {parsed} parsed",
+        models.len()
+    );
+    let mut claimed: Vec<_> = models
+        .iter()
+        .filter(|(_, t)| t[0] + t[1] + t[2] > 0)
+        .collect();
+    claimed.sort();
+    for (model, t) in &claimed {
+        println!(
+            "sunpath-model shaft={} aperture={} passive={} {model}",
+            t[0], t[1], t[2]
+        );
+    }
+
+    struct Row {
+        cell: String,
+        name: String,
+        show_sky: Option<bool>,
+        shaft: usize,
+        aperture: usize,
+        passive: usize,
+        sunlight: usize,
+        refs: usize,
+    }
+    let mut rows = Vec::new();
+    for cell in index.cells.cells.values() {
+        let mut row = Row {
+            cell: cell.editor_id.clone(),
+            name: cell.display_name.clone().unwrap_or_default(),
+            show_sky: cell.show_sky,
+            shaft: 0,
+            aperture: 0,
+            passive: 0,
+            sunlight: 0,
+            refs: cell.references.len(),
+        };
+        for reference in cell.references.iter().filter(|r| !r.initially_disabled) {
+            let Some(base) = index.cells.statics.get(&reference.base_form_id) else {
+                continue;
+            };
+            if let Some(t) = models.get(&base.model_path) {
+                row.shaft += t[0];
+                row.aperture += t[1];
+                row.passive += t[2];
+            }
+            if base.light_data.is_some() && base.editor_id.to_ascii_lowercase().contains("sunlight")
+            {
+                row.sunlight += 1;
+            }
+        }
+        rows.push(row);
+    }
+    let total = rows.len();
+    let with = |f: &dyn Fn(&Row) -> bool| rows.iter().filter(|r| f(r)).count();
+    println!("sunpath-summary interior_cells={total}");
+    println!(
+        "sunpath-summary cells_with_shaft_or_aperture={}",
+        with(&|r| r.shaft + r.aperture > 0)
+    );
+    println!(
+        "sunpath-summary   of which_aperture={}",
+        with(&|r| r.aperture > 0)
+    );
+    println!(
+        "sunpath-summary   of which_show_sky={}",
+        with(&|r| r.shaft + r.aperture > 0 && r.show_sky == Some(true))
+    );
+    println!(
+        "sunpath-summary cells_passive_only={}",
+        with(&|r| r.shaft + r.aperture == 0 && r.passive > 0)
+    );
+    println!(
+        "sunpath-summary cells_show_sky={}",
+        with(&|r| r.show_sky == Some(true))
+    );
+    println!(
+        "sunpath-summary cells_with_sunlight_lights={}",
+        with(&|r| r.sunlight > 0)
+    );
+    println!(
+        "sunpath-summary cells_show_sky_without_any_medium={}",
+        with(&|r| r.show_sky == Some(true) && r.shaft + r.aperture + r.passive == 0)
+    );
+    rows.sort_by(|a, b| {
+        (b.aperture * 4 + b.shaft)
+            .cmp(&(a.aperture * 4 + a.shaft))
+            .then(b.sunlight.cmp(&a.sunlight))
+            .then(a.cell.cmp(&b.cell))
+    });
+    for r in rows
+        .iter()
+        .filter(|r| r.shaft + r.aperture + r.sunlight > 0)
+        .take(60)
+    {
+        println!(
+            "sunpath-cell {:<34} show_sky={:<10} shaft={:<4} aperture={:<4} passive={:<4} sunlight={:<4} refs={:<5} {:?}",
+            r.cell,
+            format!("{:?}", r.show_sky),
+            r.shaft,
+            r.aperture,
+            r.passive,
+            r.sunlight,
+            r.refs,
+            r.name
+        );
     }
 }
 
