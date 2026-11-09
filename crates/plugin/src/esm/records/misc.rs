@@ -85,7 +85,7 @@ pub use magic::{
 };
 pub use pack::{
     active_package, parse_pack, parse_pack_versioned, ForceGreetLine, PackDataInput, PackDataTarget,
-    PackDataTargetKind, PackClock, PackDataValue, PackDays, PackLocation, PackLocationTarget, PackMonth,
+    PackDataTargetKind, PackClock, PackDataValue, PackDays, PackLocation, PackLocationTarget, PackMonth, PackObjectClass,
     PackProcedure, PackRecord, PackSeason, ZERO_DURATION_DECLINE, PackSchedule, PackTarget, PackTargetKind, PackTopicData, PKDT_INTERRUPT_RANDOM_CONVERSATIONS,
 };
 pub use quest::{

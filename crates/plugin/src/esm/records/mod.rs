@@ -104,7 +104,7 @@ pub use misc::{
     ImodRecord, InfoDataHeader, InfoRecord, IpctRecord, IpdsRecord, LctnRecord, RelaRecord, LgtmRecord, MagicEffectItem, MesgRecord,
     MgefRecord, MinimalEsmRecord, NaviRecord, NavmExternalConnection, NavmRecord, NavmTriangle,
     PackClock, PackDataInput, PackDataTarget, PackDataTargetKind, PackDataValue, PackDays,
-    PackLocation, PackLocationTarget, PackMonth, PackProcedure, PackRecord, PackSchedule, PackSeason, PackTarget, PackTargetKind,
+    PackLocation, PackLocationTarget, PackMonth, PackObjectClass, PackProcedure, PackRecord, PackSchedule, PackSeason, PackTarget, PackTargetKind,
     ZERO_DURATION_DECLINE,
     PackTopicData, PerkConditionTab, PerkEntry, PerkEntryBody, PerkFunctionData, PerkRecord, ProjRecord, QuestAlias, QuestObjective, QuestObjectiveTarget,
     QuestObjectiveTargetKind, QuestStage, QuestStageLogEntry, QustRecord, RadiationStageRecord, RegionArea,

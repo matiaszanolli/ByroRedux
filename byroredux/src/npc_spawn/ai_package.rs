@@ -24,7 +24,7 @@ use byroredux_plugin::esm::records::misc::pack::{
     PROCEDURE_USE_WEAPON,
 };
 use byroredux_plugin::esm::records::{
-    PackDataValue, PackLocation, PackLocationTarget, PackRecord, PackTargetKind,
+    PackDataValue, PackLocation, PackLocationTarget, PackObjectClass, PackRecord, PackTargetKind,
 };
 use byroredux_scripting::condition::ConditionContext;
 use byroredux_scripting::{
@@ -203,9 +203,6 @@ enum FindDecline {
     NoTarget,
     /// The object type is one the engine does not search for (AIP-FIND-005); carries the raw number.
     UnsupportedObjectType(u32),
-    /// An object-type search on a game whose enum the driver does not read: Oblivion numbers it
-    /// differently (AIP-FIND-006 retires this).
-    UnsupportedGame,
     /// A target kind a Find cannot take.
     UnsupportedTarget,
 }
@@ -216,35 +213,32 @@ impl FindDecline {
             Self::UnmodelledCondition => "unmodelled-condition".into(),
             Self::NoTarget => "no-target".into(),
             Self::UnsupportedObjectType(raw) => format!("unsupported-object-type {raw}"),
-            Self::UnsupportedGame => "unsupported-game".into(),
             Self::UnsupportedTarget => "unsupported-target".into(),
         }
     }
 }
 
-/// The class a FO3/FNV Find `PTDT` object-type number searches for (fopdoc's enum, 0-27; Actors: Any is 28 in
-/// xEdit's FNV table and 29 in its FO3 table, and no vanilla Find uses the other number on either game, so
-/// both read as Actors: Any). `None` for a type the engine does not search for: 0 None, 1 Activators,
-/// 5 Containers, 6 Doors, 8 Lights, 4 Clothing / 19 / 20 (no record classifier yet), the weapon sub-classes
-/// 21-23 (labels unsettled) and 24-27 Actor Effects (AIP-FIND-005).
-fn find_object_class(object_type: u32) -> Option<FindTarget> {
-    Some(match object_type {
-        2 => FindTarget::Kind(FindItemKind::Armor),
-        3 => FindTarget::Kind(FindItemKind::Book),
-        7 => FindTarget::Kind(FindItemKind::Ingredient),
-        9 => FindTarget::Kind(FindItemKind::Misc),
-        10 => FindTarget::Kind(FindItemKind::Flora),
-        11 => FindTarget::Kind(FindItemKind::Furniture),
-        12 => FindTarget::Kind(FindItemKind::Weapon),
-        13 => FindTarget::Kind(FindItemKind::Ammo),
-        14 => FindTarget::Actors(FindActorClass::Npcs),
-        15 => FindTarget::Actors(FindActorClass::Creatures),
-        16 => FindTarget::Kind(FindItemKind::Key),
-        17 => FindTarget::Kind(FindItemKind::Alchemy),
-        18 => FindTarget::Kind(FindItemKind::Food),
-        28 | 29 => FindTarget::Actors(FindActorClass::Any),
-        _ => return None,
-    })
+/// The search a canonical object class installs (AIP-FIND-006): the plugin decode has already translated the
+/// game's own object-type number, so nothing here reads the game.
+fn find_target_for(class: PackObjectClass) -> FindTarget {
+    match class {
+        PackObjectClass::Apparatus => FindTarget::Kind(FindItemKind::Apparatus),
+        PackObjectClass::Armor => FindTarget::Kind(FindItemKind::Armor),
+        PackObjectClass::Book => FindTarget::Kind(FindItemKind::Book),
+        PackObjectClass::Container => FindTarget::Kind(FindItemKind::Container),
+        PackObjectClass::Ingredient => FindTarget::Kind(FindItemKind::Ingredient),
+        PackObjectClass::Misc => FindTarget::Kind(FindItemKind::Misc),
+        PackObjectClass::Flora => FindTarget::Kind(FindItemKind::Flora),
+        PackObjectClass::Furniture => FindTarget::Kind(FindItemKind::Furniture),
+        PackObjectClass::Weapon => FindTarget::Kind(FindItemKind::Weapon),
+        PackObjectClass::Ammo => FindTarget::Kind(FindItemKind::Ammo),
+        PackObjectClass::Key => FindTarget::Kind(FindItemKind::Key),
+        PackObjectClass::Alchemy => FindTarget::Kind(FindItemKind::Alchemy),
+        PackObjectClass::Food => FindTarget::Kind(FindItemKind::Food),
+        PackObjectClass::Npcs => FindTarget::Actors(FindActorClass::Npcs),
+        PackObjectClass::Creatures => FindTarget::Actors(FindActorClass::Creatures),
+        PackObjectClass::ActorsAny => FindTarget::Actors(FindActorClass::Any),
+    }
 }
 
 /// What a Find package installs, or why it must not.
@@ -257,17 +251,8 @@ fn find_decision(package: &PackRecord, world: &World) -> Result<FindPackageBehav
         PackTargetKind::SpecificReference(form_id) => (FindTarget::Reference(form_id), 1),
         PackTargetKind::ObjectId(base) => (FindTarget::Base(base), target.count_or_distance.max(1) as u32),
         PackTargetKind::Other(object_type) if target.target_type == 2 => {
-            // The object-type numbers are FO3/FNV's: Oblivion numbers the same
-            // enum differently (there 13 is Weapons, 17 Soul Gems, 18 Keys), so
-            // another game's type search would be misread, not just missed.
-            let game = world
-                .try_resource::<crate::cell_loader::LoadedCellIndex>()
-                .map(|index| index.0.game);
-            if game != Some(byroredux_plugin::esm::reader::GameKind::Fallout3NV) {
-                return Err(FindDecline::UnsupportedGame);
-            }
-            let class = find_object_class(object_type).ok_or(FindDecline::UnsupportedObjectType(object_type))?;
-            (class, target.count_or_distance.max(1) as u32)
+            let class = package.object_class.ok_or(FindDecline::UnsupportedObjectType(object_type))?;
+            (find_target_for(class), target.count_or_distance.max(1) as u32)
         }
         PackTargetKind::Other(_) => return Err(FindDecline::UnsupportedTarget),
     };
@@ -2262,7 +2247,12 @@ mod tests {
             });
             package
         };
-        let installed_in = |game, package: PackRecord| {
+        let installed_in = |game, mut package: PackRecord| {
+            // The plugin decode translates the object type through the game's own enum (AIP-FIND-006); this
+            // fixture builds the record by hand, so it does what the decode does.
+            if let Some(PackTarget { target_type: 2, target: PackTargetKind::Other(raw), .. }) = package.target {
+                package.object_class = PackObjectClass::from_object_type(game, raw);
+            }
             let (mut world, actor) = setup_actor(10.0, vec![package]);
             world.insert_resource(crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(EsmIndex {
                 game,
@@ -2293,14 +2283,45 @@ mod tests {
         let player = installed(finding(0x102, 0, PackTargetKind::SpecificReference(0x14), 0)).expect("the player");
         assert_eq!((player.target, player.count), (FindTarget::Reference(0x14), 1));
 
-        // Oblivion numbers the object types differently, so its type search is declined.
+        // AIP-FIND-006: Oblivion numbers the object types differently (18 is Keys there, not Food), and its
+        // own table installs through the same driver: no game check lives in `find_decision`.
+        let oblivion = byroredux_plugin::esm::reader::GameKind::Oblivion;
+        for (object_type, expected) in [
+            (2, FindTarget::Kind(FindItemKind::Apparatus)),
+            (4, FindTarget::Kind(FindItemKind::Book)),
+            (6, FindTarget::Kind(FindItemKind::Container)),
+            (8, FindTarget::Kind(FindItemKind::Ingredient)),
+            (10, FindTarget::Kind(FindItemKind::Misc)),
+            (11, FindTarget::Kind(FindItemKind::Flora)),
+            (12, FindTarget::Kind(FindItemKind::Furniture)),
+            (13, FindTarget::Kind(FindItemKind::Weapon)),
+            (14, FindTarget::Kind(FindItemKind::Ammo)),
+            (15, FindTarget::Actors(FindActorClass::Npcs)),
+            (16, FindTarget::Actors(FindActorClass::Creatures)),
+            (18, FindTarget::Kind(FindItemKind::Key)),
+            (19, FindTarget::Kind(FindItemKind::Alchemy)),
+            (20, FindTarget::Kind(FindItemKind::Food)),
+        ] {
+            let behavior = installed_in(oblivion, finding(0x10A, 2, PackTargetKind::Other(object_type), 2))
+                .unwrap_or_else(|| panic!("Oblivion object type {object_type} installs"));
+            assert_eq!((behavior.target, behavior.count), (expected, 2), "Oblivion object type {object_type}");
+        }
+        // The Oblivion types with no classifier decline: Armor / Clothing share one item kind, Soul Gems are no
+        // item record, Activators / Doors / Lights are not searched, and the weapon and spell classes wait.
+        for unsupported in [0, 1, 3, 5, 7, 9, 17, 21, 22, 23, 24, 25, 26, 35, 99] {
+            assert_eq!(
+                installed_in(oblivion, finding(0x10B, 2, PackTargetKind::Other(unsupported), 1)),
+                None,
+                "Oblivion object type {unsupported} is not searched for"
+            );
+        }
+        // A game with no object-type table declines the same way, by the raw number.
         assert_eq!(
             installed_in(
-                byroredux_plugin::esm::reader::GameKind::Oblivion,
-                finding(0x10A, 2, PackTargetKind::Other(18), 2)
+                byroredux_plugin::esm::reader::GameKind::Skyrim,
+                finding(0x10C, 2, PackTargetKind::Other(18), 1)
             ),
-            None,
-            "18 is Keys in Oblivion's enum, not Food"
+            None
         );
         // AIP-FIND-001..004: flora, furniture, the actor classes and the item classes install.
         for (object_type, expected) in [
@@ -2356,8 +2377,11 @@ mod tests {
         assert_eq!(FindDecline::UnsupportedObjectType(8).reason(), "unsupported-object-type 8");
         package.target = None;
         assert_eq!(find_decision(&package, &world), Err(FindDecline::NoTarget));
-        assert_eq!(find_object_class(18), Some(FindTarget::Kind(FindItemKind::Food)));
-        assert_eq!(find_object_class(4), None, "Clothing has no classifier yet");
+        // The decode's translation, not the driver's, tells the games apart (AIP-FIND-006).
+        use byroredux_plugin::esm::reader::GameKind::{Fallout3NV, Oblivion};
+        assert_eq!(PackObjectClass::from_object_type(Fallout3NV, 18), Some(PackObjectClass::Food));
+        assert_eq!(PackObjectClass::from_object_type(Oblivion, 18), Some(PackObjectClass::Key));
+        assert_eq!(PackObjectClass::from_object_type(Fallout3NV, 4), None, "Clothing has no classifier yet");
     }
 
     /// AIP-DX-001 -- the explanation lists the actor's packages in priority order with the schedule, the

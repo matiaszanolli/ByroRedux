@@ -81,6 +81,7 @@ use hud::*;
 use pack_ambient::*;
 use perk::*;
 use vats::*;
+#[cfg(test)]
 pub(crate) use vats::format_limbs;
 use physics::*;
 use quest::*;

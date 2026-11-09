@@ -151,6 +151,10 @@ pub struct PackRecord {
     /// M47.2 — the `VMAD` fragment section's Begin / End / Change bindings
     /// ([`parse_package_fragments`]).
     pub script_fragments: Vec<PackageScriptFragment>,
+    /// AIP-FIND-006 — the canonical class of an object-type `PTDT` target (`target_type == 2`), translated
+    /// once at decode through the owning game's own enum ([`PackObjectClass::from_object_type`]). `None` for
+    /// any other target, and for an object type no class names (a driver declines it by the raw number).
+    pub object_class: Option<PackObjectClass>,
 }
 
 /// PACK location data from PLDT — where a package's activity centers.
@@ -342,6 +346,90 @@ pub enum PackTargetKind {
     /// (Linked Reference — undocumented, "??" in the source spec). The
     /// raw union bytes are kept but not interpreted as a FormID.
     Other(u32),
+}
+
+/// The game-agnostic class an object-type `PTDT` names (AIP-FIND-006): the object-type enum is numbered
+/// differently per game, so the number is translated here, once, and no consumer reads the game to interpret it.
+/// Only classes the engine can find from its records are named; any other number is `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackObjectClass {
+    /// An `APPA` (Oblivion).
+    Apparatus,
+    Armor,
+    Book,
+    /// A placed `CONT` (Oblivion: the actor "opens it").
+    Container,
+    Ingredient,
+    Misc,
+    /// A placed `FLOR`.
+    Flora,
+    /// A placed `FURN`.
+    Furniture,
+    /// Weapons: Any.
+    Weapon,
+    Ammo,
+    Key,
+    /// An `ALCH` without the Food Item flag.
+    Alchemy,
+    /// An `ALCH` with the Food Item flag.
+    Food,
+    /// NPCs.
+    Npcs,
+    Creatures,
+    /// Actors: Any (FO3 / FNV).
+    ActorsAny,
+}
+
+impl PackObjectClass {
+    /// The class `object_type` names in `game`'s object-type enum, if the engine searches for it.
+    ///
+    /// * **Fallout 3 / New Vegas** — fopdoc's enum, 0-27; Actors: Any is 28 in xEdit's FNV table and 29 in its FO3
+    ///   table, and no vanilla Find uses the other number on either game, so both read as Actors: Any. 4 Clothing,
+    ///   19 / 20 and the weapon sub-classes 21-23 have no classifier or settled label (AIP-FIND-004, -UW-009).
+    /// * **Oblivion** — xEdit `wbDefinitionsTES4.pas` (0-35): there 13 is Weapons: All, 17 Soul Gems and 18 Keys.
+    ///   3 Armor and 5 Clothing are both unclassifiable: `CLOT` is carried as the same item kind as `ARMO`, so an
+    ///   Armor search would take clothing. 17 Soul Gems are not an item record; 21-25 and the spell classes need
+    ///   weapon and spell classifiers.
+    /// * Every other game: none.
+    pub fn from_object_type(game: GameKind, object_type: u32) -> Option<Self> {
+        match game {
+            GameKind::Fallout3NV => Some(match object_type {
+                2 => Self::Armor,
+                3 => Self::Book,
+                7 => Self::Ingredient,
+                9 => Self::Misc,
+                10 => Self::Flora,
+                11 => Self::Furniture,
+                12 => Self::Weapon,
+                13 => Self::Ammo,
+                14 => Self::Npcs,
+                15 => Self::Creatures,
+                16 => Self::Key,
+                17 => Self::Alchemy,
+                18 => Self::Food,
+                28 | 29 => Self::ActorsAny,
+                _ => return None,
+            }),
+            GameKind::Oblivion => Some(match object_type {
+                2 => Self::Apparatus,
+                4 => Self::Book,
+                6 => Self::Container,
+                8 => Self::Ingredient,
+                10 => Self::Misc,
+                11 => Self::Flora,
+                12 => Self::Furniture,
+                13 => Self::Weapon,
+                14 => Self::Ammo,
+                15 => Self::Npcs,
+                16 => Self::Creatures,
+                18 => Self::Key,
+                19 => Self::Alchemy,
+                20 => Self::Food,
+                _ => return None,
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// `PKDT` Interrupt Flags bit: *Random conversations*.
@@ -1435,6 +1523,12 @@ pub fn parse_pack_versioned(
     }
     out.data_inputs = parse_skyrim_package_data(subs, remap);
     out.procedures = parse_skyrim_procedures(subs, remap);
+    out.object_class = match out.target {
+        Some(PackTarget { target_type: 2, target: PackTargetKind::Other(object_type), .. }) => {
+            PackObjectClass::from_object_type(game, object_type)
+        }
+        _ => None,
+    };
     if let Some(pkcu) = subs.iter().position(|sub| sub.sub_type == *b"PKCU") {
         out.owner_quest_form_id = subs[..pkcu]
             .iter()
@@ -2481,6 +2575,26 @@ mod tests {
             PackTargetKind::SpecificReference(0x0001_2345)
         );
         assert_eq!(target.count_or_distance, 256);
+    }
+
+    /// AIP-FIND-006 -- the object-type number is translated through the owning game's enum at decode: 18 is Food
+    /// on FO3 / FNV and Keys on Oblivion, and a number no class names stays `None`.
+    #[test]
+    fn parse_pack_translates_the_object_type_through_the_games_enum() {
+        let class = |game, target_type, object_type| {
+            let data = ptdt(target_type, object_type, 1);
+            parse_pack(0x1, &[sub(b"PTDT", &data)], &None, game).object_class
+        };
+        assert_eq!(class(GameKind::Fallout3NV, 2, 18), Some(PackObjectClass::Food));
+        assert_eq!(class(GameKind::Oblivion, 2, 18), Some(PackObjectClass::Key));
+        assert_eq!(class(GameKind::Oblivion, 2, 13), Some(PackObjectClass::Weapon));
+        assert_eq!(class(GameKind::Fallout3NV, 2, 13), Some(PackObjectClass::Ammo));
+        assert_eq!(class(GameKind::Oblivion, 2, 6), Some(PackObjectClass::Container));
+        assert_eq!(class(GameKind::Fallout3NV, 2, 6), None, "Containers are not searched on FO3 / FNV");
+        assert_eq!(class(GameKind::Oblivion, 2, 3), None, "Armor shares CLOT's item kind on Oblivion");
+        assert_eq!(class(GameKind::Skyrim, 2, 18), None, "no table for the game");
+        assert_eq!(class(GameKind::Oblivion, 1, 18), None, "an Object ID target carries a FormID, not a type");
+        assert_eq!(class(GameKind::Oblivion, 0, 18), None);
     }
 
     #[test]

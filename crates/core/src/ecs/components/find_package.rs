@@ -17,8 +17,9 @@ use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::{Component, EntityId};
 
 /// The object classes a Find package can search for that the engine can classify from the base records: the
-/// item records (`ItemKind`) and the placed `FLOR` / `FURN` record types. The `PTDT` object-type numbers are
-/// fopdoc's. The weapon sub-classes (21-23) are not here: their labels are an open Phase 0 verify item.
+/// item records (`ItemKind`) and the placed `FLOR` / `FURN` / `CONT` record types. The `PTDT` object-type number
+/// is translated to one of these per game at the plugin decode (`PackObjectClass`, AIP-FIND-006); the weapon
+/// sub-classes (FO3 / FNV 21-23) are not here: their labels are an open Phase 0 verify item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub enum FindItemKind {
@@ -44,6 +45,10 @@ pub enum FindItemKind {
     Alchemy,
     /// Object type 18: an `ALCH` with the Food Item flag.
     Food,
+    /// An `APPA` (Oblivion object type 2).
+    Apparatus,
+    /// A `CONT` placed reference (Oblivion object type 6). Not an item: arrival activates it, "Open it" (CS).
+    Container,
 }
 
 /// What a Find package looks for.

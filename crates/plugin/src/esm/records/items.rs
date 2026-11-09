@@ -1188,15 +1188,22 @@ pub fn parse_alch_for_game(
         });
     // The Food Item flag is read ahead of the consumption-header gates below,
     // which decline addictive and scripted items: those are still food.
-    let food_flag = game == GameKind::Fallout3NV
-        && subs
+    let food_flag = match game {
+        GameKind::Fallout3NV => subs
             .iter()
             .find(|s| &s.sub_type == b"ENIT" && s.data.len() >= 8)
             .is_some_and(|s| {
-            let mut r = SubReader::new(&s.data);
-            r.skip_or_eof(4);
-            r.u32_or_default() & 2 != 0
-        });
+                let mut r = SubReader::new(&s.data);
+                r.skip_or_eof(4);
+                r.u32_or_default() & 2 != 0
+            }),
+        // Oblivion's `ENIT` is Value s32 then a one-byte Flags (bit 1 Food Item, xEdit `wbDefinitionsTES4.pas`).
+        GameKind::Oblivion => subs
+            .iter()
+            .find(|s| &s.sub_type == b"ENIT" && s.data.len() >= 5)
+            .is_some_and(|s| s.data[4] & 2 != 0),
+        _ => false,
+    };
     if let ItemKind::Aid {
         authored_effects,
         food,
@@ -1516,6 +1523,25 @@ pub fn parse_note(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AIP-FIND-006 -- Oblivion's `ENIT` is a Value s32 and a one-byte Flags (bit 1 Food Item); FO3 / FNV's is a
+    /// type word and a flags word. The Find driver tells Alchemy from Food by the flag on both.
+    #[test]
+    fn the_food_item_flag_is_read_from_each_games_enit_layout() {
+        use crate::esm::records::test_support::sub;
+        let food = |game, enit: Vec<u8>| {
+            let item = parse_alch_for_game(1, &[sub(b"ENIT", enit)], game, &None);
+            matches!(item.kind, ItemKind::Aid { food: true, .. })
+        };
+        // Oblivion: value 5, flags 0x02 (Food Item); then flags 0x01 (No Auto-Calculate) alone.
+        assert!(food(GameKind::Oblivion, vec![5, 0, 0, 0, 0x02, 0, 0, 0]));
+        assert!(!food(GameKind::Oblivion, vec![5, 0, 0, 0, 0x01, 0, 0, 0]));
+        // FNV: type 0, flags word 0x02.
+        assert!(food(GameKind::Fallout3NV, vec![0, 0, 0, 0, 0x02, 0, 0, 0, 0, 0, 0, 0]));
+        assert!(!food(GameKind::Fallout3NV, vec![0, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0, 0]));
+        // No other game reads it.
+        assert!(!food(GameKind::Skyrim, vec![0, 0, 0, 0, 0x02, 0, 0, 0, 0, 0, 0, 0]));
+    }
 
     /// #6372 — the stub is "nothing authored" beyond the two fields it takes,
     /// the setters touch only their own fields, and they leave other kinds alone.

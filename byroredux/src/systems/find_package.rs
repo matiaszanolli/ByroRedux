@@ -76,7 +76,7 @@ const ENGAGE: f32 = 384.0;
 const UNREACHABLE_SECS: f32 = 30.0;
 
 /// The object class a placed base is, for an object-type search: an item record's kind, or the placed
-/// `FLOR` / `FURN` record type (neither has an item record).
+/// `FLOR` / `FURN` / `CONT` record type (none has an item record).
 fn item_kind(index: &EsmIndex, base: u32) -> Option<FindItemKind> {
     if let Some(item) = index.items.get(&base) {
         return match &item.kind {
@@ -89,12 +89,14 @@ fn item_kind(index: &EsmIndex, base: u32) -> Option<FindItemKind> {
             ItemKind::Misc => Some(FindItemKind::Misc),
             ItemKind::Weapon { .. } => Some(FindItemKind::Weapon),
             ItemKind::Key => Some(FindItemKind::Key),
+            ItemKind::Apparatus { .. } => Some(FindItemKind::Apparatus),
             _ => None,
         };
     }
     match index.cells.statics.get(&base)?.record_type {
         byroredux_plugin::RecordType::FLOR => Some(FindItemKind::Flora),
         byroredux_plugin::RecordType::FURN => Some(FindItemKind::Furniture),
+        byroredux_plugin::RecordType::CONT => Some(FindItemKind::Container),
         _ => None,
     }
 }
@@ -226,7 +228,7 @@ fn search(
             // An item search is for loose items; a base search takes whatever the base is, and a flora or
             // furniture search takes the placed object itself.
             if let FindTarget::Kind(kind) = behavior.target {
-                if !matches!(kind, FindItemKind::Flora | FindItemKind::Furniture)
+                if !matches!(kind, FindItemKind::Flora | FindItemKind::Furniture | FindItemKind::Container)
                     && !crate::inventory::is_pickup_target(world, entity)
                 {
                     return None;
@@ -721,17 +723,54 @@ mod tests {
     fn flora_and_furniture_are_told_from_the_placed_record_type() {
         use byroredux_plugin::RecordType;
         let mut index = index();
-        for (base, record_type) in [(0x8001, RecordType::FLOR), (0x8002, RecordType::FURN), (0x8003, RecordType::STAT)] {
+        for (base, record_type) in [
+            (0x8001, RecordType::FLOR),
+            (0x8002, RecordType::FURN),
+            (0x8003, RecordType::STAT),
+            (0x8004, RecordType::CONT),
+        ] {
             index.cells.statics.insert(base, static_object(base, record_type));
         }
         assert_eq!(item_kind(&index, 0x8001), Some(FindItemKind::Flora));
         assert_eq!(item_kind(&index, 0x8002), Some(FindItemKind::Furniture));
+        assert_eq!(item_kind(&index, 0x8004), Some(FindItemKind::Container), "AIP-FIND-007: Oblivion type 6");
         assert_eq!(item_kind(&index, 0x8003), None, "a static is neither");
         let mut with_more_items = index;
         with_more_items.items.insert(0x8010, item(ItemKind::Misc));
         with_more_items.items.insert(0x8011, item(ItemKind::Key));
         assert_eq!(item_kind(&with_more_items, 0x8010), Some(FindItemKind::Misc));
         assert_eq!(item_kind(&with_more_items, 0x8011), Some(FindItemKind::Key));
+        with_more_items.items.insert(
+            0x8012,
+            item(ItemKind::Apparatus { apparatus_type: Some(0), quality: Some(1.0), quality_tier: None }),
+        );
+        assert_eq!(item_kind(&with_more_items, 0x8012), Some(FindItemKind::Apparatus));
+    }
+
+    /// AIP-FIND-007 -- an Oblivion container search walks to the nearest container and raises one
+    /// `ActivateEvent` on it with the actor as activator ("Open it", CS Find Package), not a pickup.
+    #[test]
+    fn a_container_search_activates_the_nearest_container() {
+        use byroredux_plugin::RecordType;
+        let mut world = world_with_statics(&[(0x8004, RecordType::CONT), (0x8003, RecordType::STAT)]);
+        world.register::<byroredux_scripting::ActivateEvent>();
+        world.insert_resource(byroredux_scripting::PendingFragmentActivations::default());
+        let wall = place(&mut world, 0x8003, 0x411, Vec3::new(40.0, 0.0, 0.0));
+        let chest = place(&mut world, 0x8004, 0x412, Vec3::new(0.0, 0.0, 300.0));
+        let actor = finder(
+            &mut world,
+            FindPackageBehavior {
+                target: FindTarget::Kind(FindItemKind::Container),
+                count: 1,
+                area: EatSleepLocation::NearCurrentLocation,
+                area_radius: 1000.0,
+            },
+        );
+        run(&world, 160);
+        assert!(world.get::<FindProgress>(actor).is_some_and(|p| p.done), "arrived and finished");
+        byroredux_scripting::fragment_activation_flush_system(&world, 0.0);
+        assert_eq!(world.get::<byroredux_scripting::ActivateEvent>(chest).map(|e| e.activator), Some(actor));
+        assert!(!world.has::<byroredux_scripting::ActivateEvent>(wall));
     }
 
     fn world_with_statics(statics: &[(u32, byroredux_plugin::RecordType)]) -> World {

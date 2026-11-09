@@ -825,6 +825,18 @@ with no package outside a §3 class, `m42-skyrim-ambient.sh` passes, and the
 AIP-SIT-001, AIP-WALK-003 (per Q5). Exit: `m42-oblivion-packages.sh` passes,
 and Oblivion's procedure coverage is published.
 
+**Measured, found in Phase 4 (2026-11-09, `Oblivion.esm`).** The five vanilla CastMagic packages do not carry a
+spell in `PTDT`. Three author a `PTDT` of type 0 (Specific Reference) naming an actor or marker
+(`E3DaedrothCast01PACK` → `E3KvatchArcherREF`, `Dark10NPCRaise01` → `Leafrot02XARef`; neither form is a `SPEL`),
+`Dark10CastPack` / `Dark10CastPack02` author no `PTDT` at all and a `PLDT` of Near Reference on a trigger marker, and
+`TarMeenaPracticeCasting` authors object type 29 (Spells: Range Self) with a Near Editor Location `PLDT`. AIP-CAST-001's
+"cast the `PTDT` spell" therefore has no spell to name for four of the five, and the CS statement it rests on ("the
+target of the package is the spell") contradicts the data; AIP-CAST-001 / -002 are not built until a source says which
+spell an actor picks when the package names a reference. Object type 29's classification needs the `EFIT` range, which
+the decode does not yet carry. AIP-FIND-006 / -007 shipped without them: the Oblivion enum translates to
+`PackObjectClass` at the plugin decode, Armor (3) and Clothing (5) stay declined because `CLOT` and `ARMO` share one item
+kind, and Soul Gems (17) are no item record.
+
 **Phase 5 — Starfield and FO4 locomotion.** AIP-WALK-001, AIP-WALK-002,
 AIP-WALK-004, and the Starfield test of AIP-DX-004. AIP-WALK-002 depends on
 the FO4 `NVNM` body decode, which no design owns (Related; Phase 0 files
