@@ -81,6 +81,7 @@ use hud::*;
 use pack_ambient::*;
 use perk::*;
 use vats::*;
+pub(crate) use vats::format_limbs;
 use physics::*;
 use quest::*;
 use scene::*;
@@ -106,6 +107,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(VatsEnterCommand);
     registry.register(VatsScanCommand);
     registry.register(VatsStatusCommand);
+    registry.register(VatsLimbsCommand);
     registry.register(VatsQueueCommand);
     registry.register(VatsConfirmCommand);
     registry.register(VatsExitCommand);

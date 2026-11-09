@@ -109,6 +109,58 @@ impl ConsoleCommand for VatsStatusCommand {
     }
 }
 
+/// Format a [`crate::systems::vats::LimbReport`] and the actor's dismemberment record as `vats.limbs` prints them.
+pub(crate) fn format_limbs(
+    entity: byroredux_core::ecs::EntityId,
+    report: &crate::systems::vats::LimbReport,
+    record: Option<byroredux_core::character::DismemberRecord>,
+) -> String {
+    let mut out = format!("vats.limbs: entity={entity:?} table={} parts={}", report.table, report.rows.len());
+    for (index, row) in report.rows.iter().enumerate() {
+        let (condition, state) = match row.condition {
+            Some(value) => (format!("{value:.0}"), if row.crippled() { "crippled" } else { "healthy" }),
+            None => ("-".to_string(), "no-condition"),
+        };
+        out.push_str(&format!(
+            "\n  [{index}] {} loc={} dmg_mult={:.2} condition={condition} {state}",
+            row.name, row.body_location, row.damage_mult
+        ));
+    }
+    if let Some(record) = record {
+        let gone: Vec<u8> = (0..=byroredux_core::character::MAX_BODY_LOCATION).filter(|&loc| record.is_gone(loc)).collect();
+        out.push_str(&format!("\n  gone={gone:?} killing_blow={:?}", record.killing_blow));
+    }
+    out
+}
+
+/// `vats.limbs <entity|.>` - an actor's limb table, the condition value each part names (crippled at or below
+/// zero), the parts recorded gone and the killing blow (VATS-LIMB-001, -005, -008). An actor whose limb table did
+/// not resolve says so, which is how modded creatures that lose limb targeting are found (PRD §6 row 4).
+pub(crate) struct VatsLimbsCommand;
+
+impl ConsoleCommand for VatsLimbsCommand {
+    fn name(&self) -> &str {
+        "vats.limbs"
+    }
+    fn description(&self) -> &str {
+        "Report an actor's limb table, per-limb condition (crippled or healthy) and dismemberment: vats.limbs <entity|.>"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let Some(token) = args.split_whitespace().next() else {
+            return CommandOutput::error("usage: vats.limbs <entity|.>");
+        };
+        let entity = match resolve_console_entity(world, token) {
+            Ok(entity) => entity,
+            Err(message) => return CommandOutput::error(format!("vats.limbs: {message}")),
+        };
+        let Some(report) = crate::systems::vats::limb_report(world, entity) else {
+            return CommandOutput::error(format!("vats.limbs: {entity:?} is not an actor with a form id in a loaded load order"));
+        };
+        let record = world.get::<byroredux_core::character::DismemberRecord>(entity).map(|record| *record);
+        CommandOutput::line(format_limbs(entity, &report, record))
+    }
+}
+
 /// `vats.queue <part-name>` — queue every scanned part whose name
 /// matches (case-insensitive), first match if several.
 pub(crate) struct VatsQueueCommand;

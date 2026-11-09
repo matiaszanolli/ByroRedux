@@ -409,6 +409,96 @@ fn resolve_weapon(
     })
 }
 
+/// Whether the actor is a creature, and the `CREA.PNAM` body-part-data form its limb table is linked by (`None`
+/// for a humanoid, which resolves through the engine-reserved default record). The index maps key on the remapped
+/// global form id; the runtime FormId resolves through the pool (`FormIdPool::local_of`).
+fn actor_limb_source(
+    world: &World,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+    entity: EntityId,
+    form_id: byroredux_core::form_id::FormId,
+) -> (bool, Option<u32>) {
+    let is_creature = world.get::<CreatureActor>(entity).is_some();
+    let global_form = world
+        .try_resource::<byroredux_core::form_id::FormIdPool>()
+        .and_then(|pool| pool.local_of(form_id));
+    let body_form = if is_creature {
+        global_form.and_then(|form| index.creatures.get(&form).and_then(|r| r.body_part_form))
+    } else {
+        None
+    };
+    (is_creature, body_form)
+}
+
+/// One body part of an actor's limb table and the limb-condition value it names (`vats.limbs`, VATS-LIMB-001).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LimbRow {
+    pub(crate) name: String,
+    /// `BPND` @5, the body location.
+    pub(crate) body_location: u8,
+    /// `BPND` @0, the damage multiplier.
+    pub(crate) damage_mult: f32,
+    /// The limb-condition value the part names: `None` when the part names none (`255`), the load order has no
+    /// such actor value, or the actor does not carry it.
+    pub(crate) condition: Option<f32>,
+}
+
+impl LimbRow {
+    /// Crippled when the condition is present and at or below zero (GECK *GetVATSValue*).
+    pub(crate) fn crippled(&self) -> bool {
+        self.condition.is_some_and(|value| value <= 0.0)
+    }
+}
+
+/// What `vats.limbs` reports for one actor.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LimbReport {
+    /// Where the limb table came from, or why it did not resolve.
+    pub(crate) table: String,
+    /// The table's parts, empty when it did not resolve (the scan then degrades to one implicit Body part).
+    pub(crate) rows: Vec<LimbRow>,
+}
+
+/// The FO3/FNV actor-value enum range the `BPND` limb-condition byte uses (`25..=31`, Perception ... Brain) and
+/// the condition values it names, in the enum's order.
+fn limb_condition_name(av_enum: u8) -> Option<&'static str> {
+    byroredux_plugin::consumables::BODY_CONDITION_VALUES.get(usize::from(av_enum.checked_sub(25)?)).copied()
+}
+
+/// Report an actor's limb table and the condition value each part names (VATS-LIMB-001, §6 row 4): `None` when
+/// the entity is not an actor with a form id or no record index is loaded. An actor whose table did not resolve
+/// reports so in `table` with no rows - the metric of how many actors lose limb targeting.
+pub(crate) fn limb_report(world: &World, entity: EntityId) -> Option<LimbReport> {
+    let index = world.try_resource::<LoadedCellIndex>()?.0.clone();
+    world.get::<ActorVitals>(entity)?;
+    let form_id = world.get::<FormIdComponent>(entity).map(|form| form.0)?;
+    let (is_creature, body_form) = actor_limb_source(world, &index, entity, form_id);
+    let Some(parts) = resolve_limb_table(&index, body_form, is_creature) else {
+        return Some(LimbReport {
+            table: "unresolved (the scan degrades to one implicit Body part)".into(),
+            rows: Vec::new(),
+        });
+    };
+    let table = match body_form.filter(|_| is_creature) {
+        Some(form) => format!("creature body-part data {form:08X}"),
+        None => "DefaultBodyPartData".into(),
+    };
+    let values = world.get::<ActorValues>(entity);
+    let rows = parts
+        .iter()
+        .map(|part| LimbRow {
+            name: part.name.clone(),
+            body_location: part.part_type,
+            damage_mult: part.damage_mult,
+            condition: limb_condition_name(part.actor_value)
+                .and_then(|name| index.actor_value_form_id(name))
+                .and_then(|avif| values.as_ref().and_then(|values| values.get(avif)))
+                .map(|value| value.current()),
+        })
+        .collect();
+    Some(LimbReport { table, rows })
+}
+
 /// Resolve an actor's limb table: `CREA.PNAM` for creatures, the
 /// engine-reserved `DefaultBodyPartData` slot for humanoids, and `None`
 /// when neither resolves — the caller then degrades to the implicit
@@ -511,17 +601,7 @@ pub(crate) fn vats_scan(world: &World) {
         if center_distance > model.max_engage_distance {
             continue;
         }
-        let is_creature = world.get::<CreatureActor>(entity).is_some();
-        // The index maps key on the remapped global form id; the runtime
-        // FormId resolves through the pool (`FormIdPool::local_of`).
-        let global_form = world
-            .try_resource::<byroredux_core::form_id::FormIdPool>()
-            .and_then(|pool| pool.local_of(form_id));
-        let body_form = if is_creature {
-            global_form.and_then(|form| index.creatures.get(&form).and_then(|r| r.body_part_form))
-        } else {
-            None
-        };
+        let (is_creature, body_form) = actor_limb_source(world, &index, entity, form_id);
         let base_to_hit = weapon.base_to_hit;
         let ap_cost = weapon.ap_cost;
         match resolve_limb_table(&index, body_form, is_creature) {
@@ -1022,6 +1102,12 @@ mod scan_tests {
             },
         );
         // The 10mm's skill code 41 is the record `AVSmallGuns` (FNV's "Guns").
+        for (form_id, name) in [(0x5D5u32, "PerceptionCondition"), (0x5D6, "EnduranceCondition")] {
+            index.actor_values.insert(
+                form_id,
+                byroredux_plugin::esm::records::AvifRecord { form_id, editor_id: name.into(), ..Default::default() },
+            );
+        }
         index.actor_values.insert(
             GUNS_AVIF,
             byroredux_plugin::esm::records::AvifRecord {
@@ -1508,6 +1594,45 @@ mod scan_tests {
             Some(3),
             "the fold carries its shot count beside the event"
         );
+    }
+
+    /// VATS-LIMB-001 - `vats.limbs` reports the limb table, the condition value each part names, and which are
+    /// crippled (at or below zero); a part whose condition the actor does not carry reports none rather than 0.
+    #[test]
+    fn the_limb_report_names_each_parts_condition_and_crippled_state() {
+        let (mut world, npc) = scan_world();
+        // The head names value 25 (Perception condition), the torso 26 (Endurance): cripple the head only.
+        world.insert(npc, ActorValues::from_pairs([(0x5D5, 0.0), (0x5D6, 100.0)]));
+        let report = limb_report(&world, npc).expect("an actor with a form id");
+        assert_eq!(report.table, "DefaultBodyPartData");
+        let rows: Vec<_> = report.rows.iter().map(|r| (r.name.as_str(), r.body_location, r.condition, r.crippled())).collect();
+        assert_eq!(rows, [("Head", 1, Some(0.0), true), ("Torso", 0, Some(100.0), false)]);
+
+        // An actor carrying no such value is not reported crippled: the absent-AV default of 0 is not a limb at 0.
+        world.insert(npc, ActorValues::from_pairs([]));
+        let bare = limb_report(&world, npc).unwrap();
+        assert!(bare.rows.iter().all(|row| row.condition.is_none() && !row.crippled()));
+
+        let text = crate::commands::format_limbs(npc, &report, Some(byroredux_core::character::DismemberRecord { gone: 0b10, killing_blow: Some(1) }));
+        assert!(text.contains("Head loc=1 dmg_mult=2.00 condition=0 crippled"), "{text}");
+        assert!(text.contains("Torso loc=0 dmg_mult=1.00 condition=100 healthy"), "{text}");
+        assert!(text.contains("gone=[1] killing_blow=Some(1)"), "{text}");
+        // A non-actor has no report.
+        let object = world.spawn();
+        assert!(limb_report(&world, object).is_none());
+    }
+
+    /// VATS-LIMB-001 / §6 row 4 - an actor whose limb table does not resolve says so instead of reporting an empty
+    /// table as if it were one.
+    #[test]
+    fn an_actor_with_no_limb_table_reports_it_unresolved() {
+        let (mut world, npc) = scan_world();
+        world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(
+            byroredux_plugin::esm::records::EsmIndex::default(),
+        )));
+        let report = limb_report(&world, npc).unwrap();
+        assert!(report.table.starts_with("unresolved"), "{}", report.table);
+        assert!(report.rows.is_empty());
     }
 
     /// VATS-LIMB-002 / -003 - a landed shot reaches the funnel with the part it struck, at that part's `BPND`
