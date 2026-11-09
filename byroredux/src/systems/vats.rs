@@ -218,6 +218,9 @@ mod tests {
             part_name: "Torso".into(),
             hit_chance: 50.0,
             ap_cost: 20.0,
+            damage_mult: 1.0,
+            body_location: Some(0),
+            limb_actor_value: 255,
         };
         let mut vats = world.resource_mut::<VatsState>();
         vats.mode = VatsMode::TargetSelect;
@@ -550,6 +553,9 @@ pub(crate) fn vats_scan(world: &World) {
                         part_name: part.name.clone(),
                         hit_chance,
                         ap_cost,
+                        damage_mult: part.damage_mult,
+                        body_location: Some(part.part_type),
+                        limb_actor_value: part.actor_value,
                     });
                 }
             }
@@ -571,6 +577,9 @@ pub(crate) fn vats_scan(world: &World) {
                         concentrated_shot: 1,
                     }),
                     ap_cost,
+                    damage_mult: VatsTargetPart::NO_LIMB_DATA.0,
+                    body_location: VatsTargetPart::NO_LIMB_DATA.1,
+                    limb_actor_value: VatsTargetPart::NO_LIMB_DATA.2,
                 });
             }
         }
@@ -791,10 +800,9 @@ pub(crate) fn vats_confirm(world: &World) -> bool {
         }
     }
 
-    // Execute: die roll per shot, then the combat funnel. The damage is
-    // the player's resolved attack damage × the weapon's authored VATS
-    // damage multiplier; per-part routing (BPTD damage mult → limb
-    // condition AVs) is the Phase-4 lane and the smoke gate says so.
+    // Execute: die roll per shot, then the combat funnel. The damage is the player's resolved attack damage ×
+    // the weapon's authored VATS damage multiplier × the struck part's BPTD damage multiplier (VATS-LIMB-003);
+    // routing a hit into the limb-condition actor values (VATS-LIMB-004) waits on its Phase 0 formula.
     let weapon_mult = world
         .get::<EquippedWeapon>(player)
         .and_then(|weapon| {
@@ -809,14 +817,12 @@ pub(crate) fn vats_confirm(world: &World) -> bool {
             }
         })
         .unwrap_or(1.0);
-    // Roll every queued shot first (pure), tallying the landed ones per
-    // target. `HitEvent` is one component per entity, so a second `insert`
-    // for the same target would overwrite the first: shots at one target
-    // fold into a single event carrying their summed damage (#6422), with
-    // the shot count beside it (`HitShots`, #6440) so the combat funnel
-    // applies the target's per-shot defences (Damage Threshold) once per
-    // shot — the Phase-4 per-part routing owns anything finer.
-    let mut landed: Vec<(EntityId, u32)> = Vec::new();
+    // Roll every queued shot first (pure), keeping the landed ones with the part each struck (VATS-LIMB-002).
+    // `HitEvent` is one component per entity, so a second `insert` for the same target would overwrite the
+    // first: the landed shots at one target fold into a single event carrying their summed damage (#6422), with
+    // one `PartStrike` per shot beside it (`HitParts`) so the combat funnel applies the target's per-shot
+    // defences (Damage Threshold) to each shot at its own part-adjusted damage, and sees which part each hit.
+    let mut landed: Vec<(EntityId, Vec<VatsTargetPart>)> = Vec::new();
     for part in &queue {
         roll_state = roll_state
             .wrapping_mul(1_664_525)
@@ -826,33 +832,39 @@ pub(crate) fn vats_confirm(world: &World) -> bool {
             continue;
         }
         match landed.iter_mut().find(|(entity, _)| *entity == part.entity) {
-            Some((_, shots)) => *shots += 1,
-            None => landed.push((part.entity, 1)),
+            Some((_, shots)) => shots.push(part.clone()),
+            None => landed.push((part.entity, vec![part.clone()])),
         }
     }
-    // Per-shot damage is priced against each target (the aggressor's
-    // outgoing perk entry points compose per target), before the
+    // Per-shot damage is priced against each target (the aggressor's outgoing perk entry points compose per
+    // target), then multiplied by the struck part's `BPND` damage multiplier (VATS-LIMB-003), before the
     // `HitEvent` write lock is taken.
-    let hits: Vec<(EntityId, f32, u32)> = landed
+    let hits: Vec<(EntityId, f32, Vec<byroredux_scripting::PartStrike>)> = landed
         .into_iter()
         .map(|(target, shots)| {
-            let shot = (crate::combat::attack_damage_against(world, player, target)
-                * weapon_mult)
-                .max(0.0);
-            (target, shot * shots as f32, shots)
+            let shot = (crate::combat::attack_damage_against(world, player, target) * weapon_mult).max(0.0);
+            let strikes: Vec<_> = shots
+                .iter()
+                .map(|part| byroredux_scripting::PartStrike {
+                    body_location: part.body_location,
+                    limb_actor_value: part.limb_actor_value,
+                    damage: shot * part.damage_mult.max(0.0),
+                })
+                .collect();
+            (target, strikes.iter().map(|strike| strike.damage).sum(), strikes)
         })
         .collect();
     let Some(mut events) = world.query_mut::<byroredux_scripting::HitEvent>() else {
         return false;
     };
-    for &(target, damage, _) in &hits {
+    for (target, damage, _) in &hits {
         events.insert(
-            target,
+            *target,
             byroredux_scripting::HitEvent {
                 aggressor: player,
                 source: player,
                 projectile: 0,
-                damage,
+                damage: *damage,
                 power_attack: false,
                 sneak_attack: false,
                 bash_attack: false,
@@ -861,18 +873,23 @@ pub(crate) fn vats_confirm(world: &World) -> bool {
         );
     }
     drop(events);
-    // Guards are taken one at a time: the shot counts land after the events
-    // guard is released, still before the funnel runs.
+    // Guards are taken one at a time: the shot detail lands after the events guard is released, still before
+    // the funnel runs. `HitShots` keeps its count for any consumer that reads only that.
     if let Some(mut shot_counts) = world.query_mut::<byroredux_scripting::HitShots>() {
-        for &(target, _, shots) in &hits {
-            shot_counts.insert(target, byroredux_scripting::HitShots(shots));
+        for (target, _, strikes) in &hits {
+            shot_counts.insert(*target, byroredux_scripting::HitShots(strikes.len() as u32));
+        }
+    }
+    if let Some(mut parts) = world.query_mut::<byroredux_scripting::HitParts>() {
+        for (target, _, strikes) in &hits {
+            parts.insert(*target, byroredux_scripting::HitParts(strikes.clone()));
         }
     }
     if let Some(mut vats) = world.try_resource_mut::<VatsState>() {
         vats.roll_state = roll_state;
         vats.exit_all();
         // PERK-HOOK-004: the sequence is settled once the funnel has resolved its hits.
-        vats.sequence_targets = hits.iter().map(|&(target, _, _)| target).collect();
+        vats.sequence_targets = hits.iter().map(|(target, _, _)| *target).collect();
     }
     true
 }
@@ -941,6 +958,7 @@ mod scan_tests {
         world.register::<GlobalTransform>();
         world.register::<byroredux_scripting::HitEvent>();
         world.register::<byroredux_scripting::HitShots>();
+        world.register::<byroredux_scripting::HitParts>();
         world.insert_resource(VatsState {
             mode: VatsMode::TargetSelect,
             ..Default::default()
@@ -965,6 +983,7 @@ mod scan_tests {
                         node: "Bip01 Neck1".into(),
                         vats_target_node: "Bip01 Head".into(),
                         damage_mult: 2.0,
+                        part_type: 1,
                         to_hit_chance: 20,
                         actor_value: 25,
                         ..Default::default()
@@ -1489,6 +1508,47 @@ mod scan_tests {
             Some(3),
             "the fold carries its shot count beside the event"
         );
+    }
+
+    /// VATS-LIMB-002 / -003 - a landed shot reaches the funnel with the part it struck, at that part's `BPND`
+    /// damage multiplier: two torso shots (x1) and a head shot (x2) at one target fold into one event whose damage
+    /// is the sum of the part-adjusted shots, with one strike per shot naming its body location.
+    #[test]
+    fn a_vats_hit_carries_the_part_it_struck_at_the_parts_multiplier() {
+        let (world, npc) = scan_world();
+        vats_scan(&world);
+        let mut torso = torso(&world, npc);
+        torso.hit_chance = 100.0;
+        let mut head = world
+            .resource::<VatsState>()
+            .targets
+            .iter()
+            .find(|t| t.entity == npc && t.part_name == "Head")
+            .cloned()
+            .expect("the head is in the scan");
+        head.hit_chance = 100.0;
+        assert_eq!((torso.damage_mult, torso.body_location), (1.0, Some(0)));
+        assert_eq!((head.damage_mult, head.body_location), (2.0, Some(1)), "the scan carries the part data");
+        seed_ap(&world, 140.0);
+        {
+            let mut vats = world.resource_mut::<VatsState>();
+            vats.queue = vec![torso.clone(), head.clone(), torso.clone()];
+            vats.ap_reserved = 2.0 * torso.ap_cost + head.ap_cost;
+        }
+        let player = world.resource::<PlayerEntity>().0.unwrap();
+        let shot = crate::combat::attack_damage_against(&world, player, npc);
+        assert!(shot > 0.0);
+        assert!(vats_confirm(&world));
+        let strikes = world.get::<byroredux_scripting::HitParts>(npc).expect("the volley carries its strikes").0.clone();
+        let locations: Vec<_> = strikes.iter().map(|s| s.body_location).collect();
+        assert_eq!(locations, [Some(0), Some(1), Some(0)], "each shot names the part it struck, in queue order");
+        let damages: Vec<f32> = strikes.iter().map(|s| s.damage).collect();
+        for (got, want) in damages.iter().zip([shot, 2.0 * shot, shot]) {
+            assert!((got - want).abs() < 1e-3, "{damages:?} vs the part-adjusted shots");
+        }
+        let hit = *world.get::<byroredux_scripting::HitEvent>(npc).unwrap();
+        assert!((hit.damage - 4.0 * shot).abs() < 1e-3, "the event totals the part-adjusted shots: {}", hit.damage);
+        assert_eq!(world.get::<byroredux_scripting::HitShots>(npc).map(|s| s.0), Some(3));
     }
 
     /// #6484 — the cover fan's own-body set groups every body of one actor together and keeps

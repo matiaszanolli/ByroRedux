@@ -105,6 +105,7 @@ fn register_damage_pass(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::ActorValueNames>()
             .reads_resource::<crate::combat::DamageThresholdRules>()
             .reads::<byroredux_scripting::HitShots>()
+            .reads::<byroredux_scripting::HitParts>()
             .reads::<crate::ragdoll::RagdollActive>()
             // Kill XP: the rules, the damage the player dealt, and the level / points they raise.
             .reads_resource::<crate::combat::ExperienceRules>()

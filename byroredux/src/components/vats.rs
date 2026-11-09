@@ -53,6 +53,18 @@ pub(crate) struct VatsTargetPart {
     /// The part's AP cost through the equipped weapon (weapon-authored
     /// cost, or the per-anim-type standard).
     pub ap_cost: f32,
+    /// `BPND` @0 - the multiplier on health damage from a hit on this part (VATS-LIMB-003). `1.0` for the implicit
+    /// whole-body target of an actor with no limb table.
+    pub damage_mult: f32,
+    /// `BPND` @5 - the part's body location (VATS-LIMB-002), `None` for the implicit whole-body target.
+    pub body_location: Option<u8>,
+    /// `BPND` @7 - the limb-condition actor value enum the part names (`255` = none).
+    pub limb_actor_value: u8,
+}
+
+impl VatsTargetPart {
+    /// The part that stands in for a whole body when the actor's limb table did not resolve.
+    pub(crate) const NO_LIMB_DATA: (f32, Option<u8>, u8) = (1.0, None, 255);
 }
 
 /// VATS mode state — a `Resource`, transient by design (never saved:

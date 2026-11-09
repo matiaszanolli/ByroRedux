@@ -101,6 +101,33 @@ impl Component for HitShots {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// One landed shot's strike on a body part (VATS-LIMB-002).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PartStrike {
+    /// The part's body location (`BPND` @5, xEdit `wbBodyLocationEnum`: torso 0, head 1, left arm 3, right arm 5,
+    /// left leg 7, right leg 10, brain 13 ...), or `None` for an implicit whole-body target with no limb table.
+    pub body_location: Option<u8>,
+    /// The limb-condition actor value enum the part names (`BPND` @7, `255` = none), for the limb-condition
+    /// lane (VATS-LIMB-004, not built yet).
+    pub limb_actor_value: u8,
+    /// This shot's damage, **already multiplied by the part's `BPND` damage multiplier** (VATS-LIMB-003).
+    pub damage: f32,
+}
+
+/// The per-shot, per-part detail of a [`HitEvent`] that folds several shots (VATS-LIMB-002).
+///
+/// `HitEvent` is one component per entity, so a VATS queue's landed shots at one target fold into a single event
+/// whose `damage` is the summed total; this rides beside it with one [`PartStrike`] per shot, so the combat
+/// funnel can apply the target's per-shot defences to each shot at its own part-adjusted damage and read which
+/// part each landed on. When present it supersedes [`HitShots`] (its length is the shot count). Transient:
+/// drained with the `HitEvent` it describes by `event_cleanup_system`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HitParts(pub Vec<PartStrike>);
+
+impl Component for HitParts {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Fired when an actor enters or re-enters a water surface. The event lands
 /// on the water-plane entity so audio, gameplay and presentation systems can
 /// consume the same source interaction without inventing a second queue.

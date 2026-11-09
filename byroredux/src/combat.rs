@@ -403,17 +403,31 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
             // #6440 — DT is a per-shot defence: a folded VATS volley carries its shot
             // count beside the event, and each shot meets the threshold on its own
             // (`max(d − DT, d·m)` per shot, not `max(N·d − DT, N·d·m)` on the sum).
-            let shots = world
-                .get::<byroredux_scripting::HitShots>(target)
-                .map_or(1, |shots| shots.0.max(1));
-            let per_shot = event.damage.max(0.0) / shots as f32;
-            // Skyrim: the wearer's armor rating takes its share (a no-op where the book is empty).
-            shots as f32
-                * crate::armor::mitigate(
+            // VATS-LIMB-002/-003 - a VATS volley also carries each landed shot's own damage, already multiplied by
+            // the struck part's `BPND` multiplier, so each shot meets the threshold at its own value. Snapshotted
+            // so the component guard dies before the defence reads below take theirs.
+            let strikes = world
+                .get::<byroredux_scripting::HitParts>(target)
+                .map(|parts| parts.0.clone());
+            let mitigated = |per_shot: f32| {
+                // Skyrim: the wearer's armor rating takes its share (a no-op where the book is empty).
+                crate::armor::mitigate(
                     world,
                     target,
                     apply_damage_threshold(world, event.aggressor, target, per_shot),
                 )
+            };
+            match strikes {
+                Some(strikes) if !strikes.is_empty() => {
+                    strikes.iter().map(|strike| mitigated(strike.damage.max(0.0))).sum()
+                }
+                _ => {
+                    let shots = world
+                        .get::<byroredux_scripting::HitShots>(target)
+                        .map_or(1, |shots| shots.0.max(1));
+                    shots as f32 * mitigated(event.damage.max(0.0) / shots as f32)
+                }
+            }
         };
         // Judged before the strike lands: a kill clears the victim's combat state.
         let crime = crate::crime::player_strike_is_crime(world, event.aggressor, target);
@@ -1930,6 +1944,46 @@ mod tests {
         assert!((damage - 6.0).abs() < 1e-4, "3 shots of 10 at DT 15 land for 6, got {damage}");
         let (_, single) = build(None);
         assert!((single - 15.0).abs() < 1e-4, "one 30-damage shot at DT 15 lands for 15, got {single}");
+    }
+
+    /// VATS-LIMB-002 / -003 - a volley that carries its per-shot part strikes meets Damage Threshold at each shot's
+    /// own (part-adjusted) damage: a 5-damage body shot and a 25-damage head shot (a x5 part) at DT 15 and
+    /// `fMinDamMultiplier` 0.2 land for max(5 - 15, 1) + (25 - 15) = 11, where the equal-shot fold of the same 30
+    /// total would land 2 x max(15 - 15, 3) = 6. A hit without `HitParts` keeps the equal-shot reading.
+    #[test]
+    fn damage_threshold_applies_to_each_shot_at_its_own_part_damage() {
+        use byroredux_core::ecs::components::{EquipmentSlots, Inventory, ItemStack};
+        use byroredux_scripting::{HitParts, HitShots, PartStrike};
+        const LEGATE_ARMOR: u32 = 0x0010_0001;
+        let strike = |body_location, damage| PartStrike { body_location: Some(body_location), limb_actor_value: 255, damage };
+        let build = |parts: Option<Vec<PartStrike>>| {
+            let (mut world, _aggressor, target) = damage_fixture(500.0, Some(30.0), false);
+            world.register::<Inventory>();
+            world.register::<EquipmentSlots>();
+            world.register::<HitParts>();
+            world.insert_resource(DamageThresholdRules {
+                actor_value: 0x5FA,
+                min_damage_mult: 0.2,
+                armor_dt: HashMap::from([(LEGATE_ARMOR, 15.0)]),
+            });
+            let mut inventory = Inventory::new();
+            inventory.push(ItemStack::new(LEGATE_ARMOR, 1));
+            world.insert(target, inventory);
+            let mut slots = EquipmentSlots::new();
+            slots.equip(0x4, InventoryIndex(0));
+            world.insert(target, slots);
+            world.insert(target, HitShots(2));
+            if let Some(parts) = parts {
+                world.insert(target, HitParts(parts));
+            }
+            combat_damage_system(&world, 0.0);
+            let damage = world.resource::<CombatState>().last.clone().unwrap().damage;
+            damage
+        };
+        let per_part = build(Some(vec![strike(0, 5.0), strike(1, 25.0)]));
+        assert!((per_part - 11.0).abs() < 1e-4, "5 -> 1 (floor) and 25 -> 10, got {per_part}");
+        let equal_fold = build(None);
+        assert!((equal_fold - 6.0).abs() < 1e-4, "the same 30 folded as two equal 15s lands 6, got {equal_fold}");
     }
 
     /// M47.2 — a script `Kill` takes a plain actor through the death path

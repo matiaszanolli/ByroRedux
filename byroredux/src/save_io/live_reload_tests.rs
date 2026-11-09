@@ -917,6 +917,9 @@ fn live_load_drain_discards_the_outgoing_sessions_requests() {
         part_name: "Torso".into(),
         hit_chance: 50.0,
         ap_cost: 20.0,
+        damage_mult: 1.0,
+        body_location: Some(0),
+        limb_actor_value: 255,
     };
     world.insert_resource(crate::components::VatsState {
         mode: crate::components::VatsMode::TargetSelect,

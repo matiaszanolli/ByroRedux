@@ -69,8 +69,8 @@
 //! to `event_cleanup_system` below.
 
 use crate::events::{
-    ActivateEvent, AnimationTextKeyEvents, EquipmentEventBatch, HitEvent, HitShots, ItemEventBatch,
-    OnCellLoadEvent, OnInitEvent, OnTriggerEnterEvent, OnTriggerLeaveEvent, RippleEvent, SplashEvent,
+    ActivateEvent, AnimationTextKeyEvents, EquipmentEventBatch, HitEvent, HitParts, HitShots,
+    ItemEventBatch, OnCellLoadEvent, OnInitEvent, OnTriggerEnterEvent, OnTriggerLeaveEvent, RippleEvent, SplashEvent,
     TimerExpired,
 };
 use crate::papyrus_demo::mg07_door::UiMessageCommand;
@@ -106,6 +106,7 @@ pub fn event_cleanup_system(world: &World, _dt: f32) {
     drain_component::<crate::NativeActivation>(world);
     drain_component::<HitEvent>(world);
     drain_component::<HitShots>(world);
+    drain_component::<HitParts>(world);
     drain_component::<SplashEvent>(world);
     drain_component::<RippleEvent>(world);
     drain_component::<TimerExpired>(world);
