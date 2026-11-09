@@ -38,6 +38,16 @@ mean. It measures and exits `0`: a shaft contrast across a named occluder needs 
 depth, which these poses do not offer. Needs the five games' data, a display or `xvfb-run`, a Vulkan device, and Python
 with numpy and Pillow; exit `77` when one is missing.
 
+`interior-shafts-content.sh` is A9, the interior day / night pass on real cells (VLM-INT-001 to -003, #6727). For each
+listed cell (FNV, FO3, Oblivion, Skyrim, FO4, Starfield; `shaft` cells and `sealed` controls) it boots the cell held open,
+prints the inventory of fog volumes and sky apertures the engine built, then runs `time.set 12` (two screenshots, the
+repeat gives the noise) and `time.set 0` from a few poses (`cam.tp` onto the cell's volumes, sky apertures first). A
+`shaft` cell passes when the pixels where noon exceeds midnight by more than twice the repeat noise cover at least 0.1 % of
+the frame; a `sealed` control passes when no pose does. It prints the pass count per game, exits `1` on any failure and `77`
+when a dependency is missing, and says that VLM-INT-004 (the door transition) is not run: that needs a door route per
+cell. `--inventory-only` stops after the inventory. Needs the games' data, a display or `xvfb-run`, a Vulkan device and
+Python with numpy and Pillow; it takes tens of minutes. Captures, logs and `results.json` stay in the printed directory.
+
 Manual / scripted smoke checks that need a Vulkan device and a windowed
 engine instance. Most also need out-of-tree BSA / ESM game data; the controlled
 `interior-godrays.sh` scene does not.

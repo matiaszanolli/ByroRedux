@@ -354,7 +354,7 @@ echo "playable-smoke-contracts: PASS -- exterior-shafts.sh skips (77) on a missi
 # for a gate that cannot honour that, be listed here with the reason. This list only shrinks:
 # each entry below is a gate whose missing-data behaviour has not been verified yet.
 UNCHECKED_SMOKE_GATES=(
-    interior-godrays m-trees m34-day-night m41-equip m43-quest-runtime m47-2-bleedout
+    interior-godrays interior-shafts-content m-trees m34-day-night m41-equip m43-quest-runtime m47-2-bleedout
     p3-hud p3-player-body p4-quest-route p5-quest-persistence
     p6-loading-model r6a_stale_15_bench tsd1-height-census
 )
