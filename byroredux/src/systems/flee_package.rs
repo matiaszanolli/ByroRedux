@@ -122,9 +122,10 @@ fn flee_package_system_inner(world: &World, dt: f32, scratch: &mut FleePackageSc
             };
             scratch.steps.push(FleeStep {
                 entity,
+                // VATS-LIMB-006 - crippled legs shorten the stride.
                 speed: crate::components::WalkSpeed::or_default(
                     walk_speed_q.as_ref().and_then(|q| q.get(entity)),
-                ),
+                ) * crate::limbs::locomotion_mult(world, entity),
                 at: transform.translation,
                 rotation: transform.rotation,
                 goal,

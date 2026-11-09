@@ -354,6 +354,13 @@ pub(super) fn load_references_budgeted(
                 world.insert_resource(regen);
             }
         }
+        // VATS-LIMB-006/-011 - the crippled-limb effects, beside the VATS model: present only where the profile
+        // seeds body conditions (FO3/FNV), idempotent-once like the rest.
+        if world.try_resource::<crate::limbs::LimbEffects>().is_none() {
+            if let Some(effects) = crate::limbs::build_limb_effects(record_index) {
+                world.insert_resource(effects);
+            }
+        }
         // #3092 — same idempotent-once construction for the Melee Damage
         // AVIF id `byroredux/src/combat.rs`'s `attack_damage` needs to look
         // the CharacterRuleset row above back up at combat time. Absent on

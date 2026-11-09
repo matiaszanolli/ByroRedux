@@ -977,8 +977,35 @@ pub(crate) fn attack_damage(world: &World, aggressor: EntityId) -> f32 {
         // itself is a separate, deferred gap (#3092's own suggested fix only
         // names Melee Damage); UNARMED_DAMAGE stays the flat engine baseline
         // it always was for the no-weapon case.
-        Some(damage) => damage.max(0.0) + melee_damage_charal_bonus(world, aggressor),
+        Some(damage) => {
+            damage.max(0.0) + melee_damage_charal_bonus(world, aggressor) + melee_arm_condition_penalty(world, aggressor, damage)
+        }
         None => UNARMED_DAMAGE,
+    }
+}
+
+/// VATS-LIMB-011 - `MeleeArmConditionPenalty` of the GECK *Weapon Damage Formula* for the swing `aggressor` is
+/// making: negative when a crippled arm reduces it, `0.0` for a gun, no equipped weapon, healthy arms or a load
+/// order with no limb effects. The weapon's animation type (read from the record) tells a melee weapon from a gun
+/// and a one-handed weapon from a two-handed one.
+fn melee_arm_condition_penalty(world: &World, aggressor: EntityId, base_weapon_damage: f32) -> f32 {
+    let Some(weapon) = world.get::<EquippedWeapon>(aggressor).map(|weapon| weapon.base_form_id) else {
+        return 0.0;
+    };
+    let anim_type = world.try_resource::<crate::components::LoadedCellIndex>().and_then(|index| {
+        match &index.0.items.get(&weapon)?.kind {
+            byroredux_plugin::esm::records::ItemKind::Weapon { anim_type, .. } => Some(*anim_type),
+            _ => None,
+        }
+    });
+    match anim_type {
+        Some(anim_type) if crate::limbs::is_melee_anim_type(anim_type) => crate::limbs::melee_arm_penalty(
+            world,
+            aggressor,
+            base_weapon_damage.max(0.0),
+            crate::limbs::is_two_handed_anim_type(anim_type),
+        ),
+        _ => 0.0,
     }
 }
 
@@ -2359,6 +2386,58 @@ mod tests {
             UNARMED_DAMAGE,
             "no equipped weapon means no Melee Damage bonus, regardless of Strength"
         );
+    }
+
+    /// VATS-LIMB-011 - a crippled arm reduces a melee swing's damage by `MeleeArmConditionPenalty`; healthy arms,
+    /// a gun and a load order without limb effects leave it alone, and the handedness of the weapon decides which
+    /// arm counts.
+    #[test]
+    fn a_crippled_arm_reduces_the_melee_swing() {
+        use byroredux_core::character::LimbEffectModel;
+        use byroredux_core::ecs::components::InventoryIndex;
+        use byroredux_plugin::esm::records::{common::CommonItemFields, EsmIndex, ItemKind, ItemRecord};
+
+        const LEFT_ARM: u32 = 0x5D7;
+        const RIGHT_ARM: u32 = 0x5D8;
+        const ONE_HANDED_MELEE: u32 = 0xA1;
+        const TWO_HANDED_MELEE: u32 = 0xA2;
+        const PISTOL: u32 = 0xA3;
+
+        let mut index = EsmIndex::default();
+        for (form_id, anim_type) in [(ONE_HANDED_MELEE, 1u8), (TWO_HANDED_MELEE, 2), (PISTOL, 3)] {
+            let mut kind = ItemKind::weapon_stub(30, 0);
+            if let ItemKind::Weapon { anim_type: slot, .. } = &mut kind {
+                *slot = anim_type;
+            }
+            index.items.insert(form_id, ItemRecord { form_id, common: CommonItemFields::default(), kind });
+        }
+        let mut world = World::new();
+        world.register::<ActorValues>();
+        world.register::<EquippedWeapon>();
+        world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(index)));
+        let swing = |world: &mut World, weapon: u32, left: f32, right: f32| {
+            let actor = world.spawn();
+            world.insert(actor, ActorValues::from_pairs([(LEFT_ARM, left), (RIGHT_ARM, right)]));
+            world.insert(
+                actor,
+                EquippedWeapon { inventory_index: InventoryIndex(0), base_form_id: weapon, damage: 30.0, reach: 100.0, speed: 1.0 },
+            );
+            attack_damage(world, actor)
+        };
+
+        // No limb effects in the load order: the swing is the weapon's damage.
+        assert_eq!(swing(&mut world, ONE_HANDED_MELEE, 100.0, 0.0), 30.0);
+        world.insert_resource(crate::limbs::LimbEffects::for_tests(LimbEffectModel::FALLOUT, LEFT_ARM, RIGHT_ARM));
+        assert_eq!(swing(&mut world, ONE_HANDED_MELEE, 100.0, 100.0), 30.0, "healthy arms");
+        // The right arm: 30 * (0.2 - 1) / 2 = -12.
+        assert!((swing(&mut world, ONE_HANDED_MELEE, 100.0, 0.0) - 18.0).abs() < 1e-4);
+        assert_eq!(swing(&mut world, ONE_HANDED_MELEE, 0.0, 100.0), 30.0, "a one-handed weapon ignores the left arm");
+        // Two-handed: one crippled arm is half the penalty, whichever arm it is.
+        assert!((swing(&mut world, TWO_HANDED_MELEE, 0.0, 100.0) - 24.0).abs() < 1e-4);
+        assert!((swing(&mut world, TWO_HANDED_MELEE, 100.0, 0.0) - 24.0).abs() < 1e-4);
+        assert!((swing(&mut world, TWO_HANDED_MELEE, 0.0, 0.0) - 18.0).abs() < 1e-4);
+        // A gun is not a melee swing.
+        assert_eq!(swing(&mut world, PISTOL, 0.0, 0.0), 30.0);
     }
 
     /// Regression for #2980. The producer resolved `damage` and the consumer

@@ -33,6 +33,7 @@ mod components;
 mod cornell;
 mod debug_load;
 mod encumbrance;
+mod limbs;
 mod env_translate;
 mod extensions;
 mod fog;

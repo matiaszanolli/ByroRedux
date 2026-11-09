@@ -192,7 +192,7 @@ fn npc_combat_ai_system_inner(world: &World, dt: f32, scratch: &mut CombatAiScra
                         .query::<crate::components::WalkSpeed>()
                         .as_ref()
                         .and_then(|q| q.get(entity)),
-                );
+                ) * crate::limbs::locomotion_mult(world, entity); // VATS-LIMB-006
                 steps.push((
                     decisions.len(),
                     actor_translation,

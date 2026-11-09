@@ -401,6 +401,8 @@ pub(crate) fn oscillating_walk_system_inner<B: OscillatingWalkProcedure>(
             let speed = crate::components::WalkSpeed::or_default(
                 walk_speed_q.as_ref().and_then(|q| q.get(entity)),
             );
+            // VATS-LIMB-006 - crippled legs shorten the stride.
+            let speed = speed * crate::limbs::locomotion_mult(world, entity);
 
             // EX-16 item 3 Phase 4: only bother resolving a path while
             // actually walking this leg — mirrors `guard_system`'s same

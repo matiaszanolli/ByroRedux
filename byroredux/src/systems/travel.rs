@@ -315,6 +315,8 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             let speed = crate::components::WalkSpeed::or_default(
                 walk_speed_q.as_ref().and_then(|q| q.get(entity)),
             );
+            // VATS-LIMB-006 - crippled legs shorten the stride.
+            let speed = speed * crate::limbs::locomotion_mult(world, entity);
             scratch.pending.push(TravelPending {
                 entity,
                 current,

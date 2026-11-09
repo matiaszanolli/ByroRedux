@@ -182,6 +182,8 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
             let speed = crate::components::WalkSpeed::or_default(
                 walk_speed_q.as_ref().and_then(|q| q.get(entity)),
             );
+            // VATS-LIMB-006 - crippled legs shorten the stride.
+            let speed = speed * crate::limbs::locomotion_mult(world, entity);
             let existing_state = state_q.as_ref().and_then(|q| q.get(entity)).copied();
             let (target_entity, state_to_insert) = match existing_state {
                 Some(s) => (s.target_entity, None),

@@ -130,7 +130,8 @@ fn run_flights(world: &World, dt: f32) {
         let me = world.get::<Transform>(actor).map(|t| (t.translation, t.rotation));
         match (me, threat_at) {
             (Some((at, rotation)), Some(threat_at)) if !world.has::<Dead>(actor) && !world.has::<Dead>(state.threat) && at.distance(threat_at) <= reach => {
-                let speed = crate::components::WalkSpeed::or_default(world.query::<crate::components::WalkSpeed>().as_ref().and_then(|q| q.get(actor)));
+                let speed = crate::components::WalkSpeed::or_default(world.query::<crate::components::WalkSpeed>().as_ref().and_then(|q| q.get(actor)))
+                    * crate::limbs::locomotion_mult(world, actor); // VATS-LIMB-006
                 moves.push((actor, state, at, rotation, flight_target(at, threat_at), speed));
             }
             // Out of range, or either of them gone: the flight is over.

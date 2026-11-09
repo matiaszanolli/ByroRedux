@@ -558,6 +558,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("AuthoredDisabledReferences", "the load order's initially-disabled references (the cell loader's own rule); rebuilt from the REFRs by install_authored_disabled_references every boot"),
         ("PendingScriptKills", "script Kill requests queued after the quest guards drop, drained by scripted_kill_system the same or the next frame"),
         ("EncumbranceRules", "the CarryWeight / InventoryWeight AVIFs and the over-encumbered movement effect; rebuilt from the load order by install_encumbrance_rules every boot"),
+        ("LimbEffects", "the crippled-limb settings (leg speed, arm spread and melee) and the four limb-condition AVIF ids; rebuilt from the load order beside VatsModel on every boot"),
         ("PlayerEncumbrance", "the player's carried weight against Carry Weight; re-derived from the inventory by encumbrance_system every frame"),
         ("BleedoutRules", "fEssentialDeathTime / fEssentialHealthPercentReGain; rebuilt from the load order (else the engine defaults) by install_bleedout_rules every boot"),
         ("ActorProtection", "an actor's base Essential / Protected ACBS flags; stamped from the load order at every spawn"),
