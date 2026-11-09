@@ -7,6 +7,8 @@
 //! PACK FormID actually changes.
 
 use super::package_flags;
+
+mod tree;
 use super::EsmIndex;
 use crate::components::{AmbientPackageRuntime, GameTimeRes, NavPath, SeatReservations};
 use byroredux_core::animation::AnimationPlayer;
@@ -424,6 +426,7 @@ impl AmbientBehavior {
         package: &PackRecord,
         template: &PackRecord,
         actor_form_id: u32,
+        actor: Option<EntityId>,
         world: &World,
     ) -> Option<Self> {
         let location_radius = package
@@ -596,78 +599,8 @@ impl AmbientBehavior {
                 None
             }
         } else {
-            Self::from_skyrim_procedure_tree(package, template, actor_form_id)
+            tree::behavior_from_tree(package, template, actor_form_id, actor, world)
         }
-    }
-
-    /// PACKAL Skyrim+ tree/template fallback (`docs/engine/packal.md` §4,
-    /// §5) — packages that fall through every `is_*` check above (those
-    /// all read the FO3/FNV flat `procedure_type` byte, which Skyrim+
-    /// packages don't populate meaningfully). Tries each leaf type PACKAL
-    /// has verified safe against real `Skyrim.esm`, in priority order:
-    ///
-    /// - `"Sandbox"` (§4, shipped first) — a search radius from the first
-    ///   `PackDataValue::Location` input. Highest-value leaf on real data
-    ///   (`DefaultSandboxEditorLocation512` alone covers 307 vanilla NPCs).
-    /// - `"Patrol"` (§5) — a patrol radius from the first
-    ///   `PackDataValue::Float` input. Verified against the real `Patrol`
-    ///   master template (form 0x017723, 701 ambient PKID edges) and 12
-    ///   real per-NPC instances: the radius is consistently the *only*
-    ///   resolved `Float`, never wrapped in a `Location` the way Sandbox's
-    ///   is. `"Wander"` was investigated first and rejected — see §5 for
-    ///   why every real `Wander`-named package either resolves to this
-    ///   same `Sandbox` leaf via a shared `Travel → UnlockDoors → Sandbox`
-    ///   template, or nests `"Wander"` as a narrow non-ambient fallback
-    ///   inside an unrelated template (`UseWeapon`/`Sit`/…) that would be
-    ///   wrong to surface as this actor's ambient behavior.
-    ///
-    /// Both branches share the same known v0 approximation: `.find()`
-    /// picks the first matching leaf without evaluating per-procedure
-    /// `conditions`, so a template with more than one occurrence of the
-    /// same leaf name (real example: `DefaultMasterPackageAllowWander`,
-    /// 2× `Sandbox` + 4× `Patrol` in one 10-entry tree) can pick a
-    /// radius belonging to the wrong branch. Neither leaf needs
-    /// `world`/`actor` context (no live-target or alias resolution), so
-    /// neither needs `SceneActorBindings` (the one piece of
-    /// `crates/scripting::package`'s executor this driver deliberately
-    /// doesn't reuse).
-    fn from_skyrim_procedure_tree(
-        package: &PackRecord,
-        template: &PackRecord,
-        actor_form_id: u32,
-    ) -> Option<Self> {
-        if let Some(leaf) = template
-            .procedures
-            .iter()
-            .find(|procedure| procedure.procedure_type == "Sandbox")
-        {
-            let search_radius = byroredux_scripting::package::procedure_inputs(leaf, package)
-                .into_iter()
-                .find_map(|input| match input.value {
-                    PackDataValue::Location(location) => Some(location.radius as f32),
-                    _ => None,
-                })
-                .filter(|radius| *radius > 0.0);
-            return Some(Self::Sandbox { search_radius });
-        }
-        if let Some(leaf) = template
-            .procedures
-            .iter()
-            .find(|procedure| procedure.procedure_type == "Patrol")
-        {
-            let patrol_radius = byroredux_scripting::package::procedure_inputs(leaf, package)
-                .into_iter()
-                .find_map(|input| match input.value {
-                    PackDataValue::Float(radius) => Some(radius),
-                    _ => None,
-                })
-                .filter(|radius| *radius > 0.0);
-            return Some(Self::Patrol {
-                patrol_radius,
-                actor_form_id,
-            });
-        }
-        None
     }
 
     /// Install this behavior's component(s) on `actor` through `sink`. The one
@@ -1064,8 +997,17 @@ fn install_result(world: &World, package: &PackRecord, registry: &PackageRegistr
                 .package_template_form_id
                 .and_then(|form_id| registry.package(form_id))
                 .unwrap_or(package);
-            match AmbientBehavior::from_package(package, template, actor_form_id, world) {
+            match AmbientBehavior::from_package(package, template, actor_form_id, None, world) {
                 Some(_) => "installs".into(),
+                // AIP-TREE-007: a Skyrim+ tree names the leaves it walked and why none installed.
+                None if !template.procedures.is_empty() => {
+                    match tree::tree_decision(package, template, actor_form_id, None, world) {
+                        Err(declines) if !declines.is_empty() => {
+                            format!("declines: tree leaves: {}", tree::decline_text(&declines))
+                        }
+                        _ => "declines: no runtime for this procedure".to_string(),
+                    }
+                }
                 None => "declines: no runtime for this procedure".to_string(),
             }
         }
@@ -1231,7 +1173,7 @@ pub(super) fn apply_ai_package_behavior(
             .package_template_form_id
             .and_then(|form_id| index.packages.get(&form_id))
             .unwrap_or(package);
-        AmbientBehavior::from_package(package, template, resolved.shell.form_id, world)
+        AmbientBehavior::from_package(package, template, resolved.shell.form_id, None, world)
     });
 
     // M47.2 / #5864 — the spawn-time winner is NOT reported here. It is chosen
@@ -1290,7 +1232,7 @@ pub(crate) fn install_package_now(world: &World, actor: EntityId, package_form_i
             .package_template_form_id
             .and_then(|form_id| registry.package(form_id))
             .unwrap_or(package);
-        AmbientBehavior::from_package(package, template, actor_form_id, world)
+        AmbientBehavior::from_package(package, template, actor_form_id, Some(actor), world)
     };
     clear_ambient_behavior(world, actor);
     if let Some(behavior) = behavior {
@@ -1483,7 +1425,7 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
                 .package_template_form_id
                 .and_then(|form_id| registry.package(form_id))
                 .unwrap_or(package);
-            AmbientBehavior::from_package(package, template, runtime.actor_form_id, world)
+            AmbientBehavior::from_package(package, template, runtime.actor_form_id, Some(actor), world)
         });
         // AIP-DX-002: the winner that installs nothing says why, once per (re)selection.
         if let Some(package) = active.filter(|package| behavior.is_none() && !package.is_find()) {
