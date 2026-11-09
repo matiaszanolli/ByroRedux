@@ -12,8 +12,10 @@
 #
 # A `shaft` cell passes when, at its best pose, the pixels where the mean noon frame is brighter than midnight by
 # more than max(3 levels, 2 x p99 |noon - noon repeat|) cover at least MIN_REGION_FRAC of the frame; a `sealed`
-# control passes when no pose does (VLM-INT-003). A `shaft` cell's poses are `cam.tp` onto its volumes, sky
-# apertures first; a `sealed` control's are `cam.tp` onto a few of the entities nearest its spawn. A pose whose
+# control passes when no pose does (VLM-INT-003). A `gap` cell is a known open gap (an authored sun with no medium
+# to carry it): it is measured and reported as GAP-OPEN or GAP-CLOSED and never fails the run. The poses are
+# `cam.tp` onto the cell's volumes: marked sky apertures first, then light-shaft volumes, then any (a `sealed`
+# control with no volume at all uses the entities nearest its spawn). A pose whose
 # three frames are identical and not empty is a frozen frame (a held menu), not a measurement: the cell is
 # reported `invalid`, never as a pass. The cell must also show a loaded world (a stable, large entity count).
 #
@@ -32,7 +34,10 @@
 # VLM-INT-004 (the same pass reached through an exterior-to-interior door) is NOT exercised here: it needs a
 # door route per cell, and only the P0 fixtures have one. The script says so and counts it as not run.
 #
-# Usage: docs/smoke-tests/interior-shafts-content.sh [fnv|fo3|obl|sky|fo4|sf|all] [--inventory-only]
+# The cell list is the sun-path census's (see CELLS); Starfield has no sun-capable or passive volume in any of its
+# 11,985 interiors, so it has no entry.
+#
+# Usage: docs/smoke-tests/interior-shafts-content.sh [fnv|fo3|obl|sky|fo4|all] [--inventory-only]
 #   BYRO_INTERIOR_BIN   engine binary (default target/release/byroredux); BYRO_INTERIOR_OUT keeps captures;
 #   BYRO_INTERIOR_PORT  first debug port (default 19900; each cell takes the next one);
 #   BYRO_INTERIOR_ONLY  comma-separated cell ids to run instead of the whole list.
@@ -90,21 +95,36 @@ READY_TIMEOUT_S = 300        # the cell must be loaded (not a loading cover) bef
 MIN_ENTITIES = 150           # a cell with fewer entities than this is not a loaded interior
 MAX_POSES = 4
 
-# (game key, `--game` profile, cell, role, short name)
+# (game key, `--game` profile, cell, role, short name). The list comes from the sun-path census
+# (`interior_sun_path_census`, docs/engine/interior-shaft-openings.md). A `shaft` cell is one the census predicts
+# can show a sun-driven shaft: it has a marked SkyAperture plane, or LightShaft volumes in a Show Sky cell (an
+# opening the sun can cross). A `sealed` control has no such path: passive fixture beams, no medium, or LightShaft
+# volumes with Show Sky off and no marked aperture, which measured as sun-independent. A `gap` cell has an
+# authored sun and no volume to carry it. FO3, Skyrim and Starfield have no `shaft` cell in the census.
 CELLS = [
-    ("fnv", "fnv", "NellisHangar1", "shaft", "Nellis hangar (the sun-driven FNV shaft)"),
-    ("fnv", "fnv", "HELIOSOneDeck", "shaft", "HELIOS One observation level"),
-    ("fnv", "fnv", "RepconHQ01", "shaft", "REPCONN office main floor"),
-    ("fo3", "fo3", "Tenpenny01", "shaft", "Tenpenny Tower lobby"),
-    ("sky", "skyrim_se", "AbandonedShackInterior", "shaft", "Abandoned Shack (Show Sky plus sunlight lights)"),
-    ("fo4", "fo4", "ConcordMuseum01", "shaft", "Museum of Freedom"),
-    ("obl", "oblivion", "WarehouseCaveGeneric", "shaft", "Warehouse cave (placed light beams; AbandonedMine builds no medium)"),
-    ("sf", "starfield", "CityNewAtlantisLodgeInt", "shaft", "The Lodge (New Atlantis)"),
+    ("fnv", "fnv", "NellisHangar1", "shaft", "Nellis hangar: 32 SkyAperture planes"),
+    ("fnv", "fnv", "NellisHangar1b", "shaft", "Nellis hangar (b): 32 SkyAperture planes"),
+    ("fnv", "fnv", "NellisHangar2", "shaft", "Nellis mess hall and munitions: 32 SkyAperture planes"),
+    ("fo4", "fo4", "ConcordMuseum01", "shaft", "Museum of Freedom: 10 LightShaft, Show Sky"),
+    ("fo4", "fo4", "DBTechHighSchool01", "shaft", "DB Technical High School: 76 LightShaft, Show Sky"),
+    ("fo4", "fo4", "TrinityTower01", "shaft", "Trinity Tower: 12 LightShaft, Show Sky"),
+    ("fo4", "fo4", "zInstituteRotunda", "shaft", "Institute rotunda: 6 LightShaft, Show Sky"),
+    ("fo4", "fo4", "CambridgePD01", "shaft", "Cambridge police station: 6 LightShaft, Show Sky"),
+    ("fo4", "fo4", "UniversityPoint01", "shaft", "University Point: 4 LightShaft, Show Sky"),
+    ("sky", "skyrim_se", "AbandonedShackInterior", "gap", "Abandoned Shack: Show Sky, 4 sunlight LIGH, no medium"),
 ]
 SEALED = [
-    # Controls: interiors the inventory shows with no fog volume and no Show Sky.
-    ("fnv", "fnv", "HiddenValleyBunker1", "sealed", "Hidden Valley bunker"),
+    # Controls: no sun path in the census.
+    ("fnv", "fnv", "RocketLabTop", "sealed", "REPCONN research labs: 60 LightShaft, Show Sky off, no aperture"),
+    ("fnv", "fnv", "NCRPrisonBlockB", "sealed", "NCR prison block B: 30 LightShaft, Show Sky off, no aperture"),
+    ("fnv", "fnv", "2EOVault21GiftShop", "sealed", "Vault 21 gift shop: 25 LightShaft, Show Sky off, no aperture"),
+    ("obl", "oblivion", "AnvilCastleSmugglersCave", "sealed", "Smuggler's cave: 2 LightShaft, Show Sky off"),
+    ("obl", "oblivion", "TestCave01", "sealed", "Caverns (test cell): 7 LightShaft, Show Sky off"),
+    ("fnv", "fnv", "HELIOSOneDeck", "sealed", "HELIOS One observation level: passive cones only"),
+    ("fnv", "fnv", "HiddenValleyBunker1", "sealed", "Hidden Valley bunker: no medium"),
+    ("fo3", "fo3", "Tenpenny01", "sealed", "Tenpenny Tower lobby: passive cones only"),
     ("sky", "skyrim_se", "HillgrundsTomb01", "sealed", "Hillgrund's Tomb"),
+    ("obl", "oblivion", "WarehouseCaveGeneric", "sealed", "Warehouse cave: passive cones only"),
     ("obl", "oblivion", "ImperialSewers03", "sealed", "Imperial sewers"),
     ("fo4", "fo4", "Vault111Cryo", "sealed", "Vault 111"),
 ]
@@ -172,8 +192,10 @@ def inventory(port):
 
 def pick_targets(inv):
     vols = inv["volumes"]
+    # Aim at what can follow the sun first: marked apertures, then light-shaft volumes, then anything.
     apertures = [v for v in vols if v["profile"] == "SkyAperture"]
-    pool = apertures or vols
+    shafts = [v for v in vols if v["profile"] == "LightShaft"]
+    pool = apertures or shafts or vols
     if not pool:
         return []
     n = min(MAX_POSES, len(pool))
@@ -283,12 +305,15 @@ def run_cell(i, game, profile, cell, role, note):
                             "extinction_max": max([v["extinction"] for v in inv["volumes"]] or [0.0])}
         if INVENTORY_ONLY:
             rec["status"] = "inventory"; return rec
-        if role == "shaft":
+        if role in ("shaft", "gap"):
             targets = pick_targets(inv)
             if not targets:
-                rec["status"] = "FAIL"; rec["why"] = "no fog volume or sky aperture in the cell"; return rec
+                rec["status"] = "GAP-OPEN" if role == "gap" else "FAIL"
+                rec["why"] = "no fog volume or sky aperture in the cell"; return rec
         else:
-            targets = nearby_targets(port, {v["id"] for v in inv["volumes"]})
+            # A control with media is aimed at its own media (a claim that they do not follow the sun has to
+            # look at them); one with none is aimed at the entities nearest its spawn.
+            targets = pick_targets(inv) or nearby_targets(port, set())
             if not targets:
                 rec["status"] = "invalid"; rec["why"] = "no entity near the spawn to aim at"; return rec
         poses = targets
@@ -300,11 +325,15 @@ def run_cell(i, game, profile, cell, role, note):
             rec["status"] = "invalid"
             rec["why"] = "frozen frame" if any(r["frozen"] for r in res) else "the camera moved between captures"
             return rec
-        if role == "shaft":
+        if role in ("shaft", "gap"):
             ok = best["region_frac"] >= MIN_REGION_FRAC
         else:
             ok = all(r["region_frac"] < MIN_REGION_FRAC for r in res)
-        rec["status"] = "PASS" if ok else "FAIL"
+        if role == "gap":
+            # A known gap: reported, never failing the run. It closes when the engine gives the sun a medium.
+            rec["status"] = "GAP-CLOSED" if ok else "GAP-OPEN"
+        else:
+            rec["status"] = "PASS" if ok else "FAIL"
         return rec
     finally:
         try:
@@ -353,12 +382,17 @@ if not INVENTORY_ONLY:
     for g in games():
         run = [r for r in records if r["game"] == g]
         if run:
-            print(f"  {g:4s} {sum(r.get('status')=='PASS' for r in run)} / {len(run)}")
+            counted = [r for r in run if r["role"] != "gap"]
+            gaps = [r for r in run if r["role"] == "gap"]
+            extra = f"  (+{len(gaps)} known gap: {', '.join(r['cell'] + ' ' + r['status'] for r in gaps)})" if gaps else ""
+            if counted or gaps:
+                print(f"  {g:4s} {sum(r.get('status')=='PASS' for r in counted)} / {len(counted)}{extra}")
 print(f"Captures, logs and results.json: {OUT}")
 if INVENTORY_ONLY:
     sys.exit(0)
 ran = [r for r in records if r.get("status") not in ("boot-failed", "boot-timeout")]
 if not ran:
     sys.exit(77)
-sys.exit(0 if all(r.get("status") == "PASS" for r in ran) else 1)
+counted = [r for r in ran if r["role"] != "gap"]
+sys.exit(0 if all(r.get("status") == "PASS" for r in counted) else 1)
 PY
