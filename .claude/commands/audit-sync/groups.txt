@@ -5,7 +5,8 @@
 # Rebalance by the weights prep.sh prints: split a group whose routed-file count dwarfs the rest.
 renderer: renderer
 performance: performance
-safety: safety concurrency tech-debt
+safety: safety concurrency
+tech-debt: tech-debt
 esm: esm legacy-compat regression
 nif: nif nifal speedtree parsers
 ecs: ecs save

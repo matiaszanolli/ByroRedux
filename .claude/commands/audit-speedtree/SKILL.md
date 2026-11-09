@@ -189,7 +189,7 @@ the attach, 811499b65, #5360; exits 0 on SKIP without data — run and reported 
   `WindField.direction` is engine-xz "blows toward" (#4729): the bend axis tips the crown
   **downwind** (same sense as the grass beneath it) and the gust wave travels with the wind —
   pinned in `speedtree_billboard_bends_with_shared_weather_wind` / `reversing_wind_reverses_mean_lean`. The billboard
-  system's scheduler access declares `reads::<SpeedTreeWind>()` (`boot/schedule/late/camera.rs` — the Late-stage registrations moved into `late/` in #6703; `late.rs` is only the hub, so scope `grep` / `git log` to the directory).
+  system's scheduler access declares `reads::<SpeedTreeWind>()` (`boot/schedule/late/camera.rs` — the Late-stage registrations moved into `late/` in 22e0f71fc, #6703 (closed); `late.rs` is only the hub, so scope `grep` / `git log` to the directory).
   `SpeedTreeWind` is rebuilt on import, not saved (`save_io/registry_completeness_tests.rs`).
   Do not project TREE.CNAM into it (unpinned, #3190).
 - `TreeRecord` capture is lossless for what the importer reads (OBND→`bounds`, ICON→`leaf_texture`,

@@ -28,12 +28,11 @@ progress** — frame as CRITICAL/HIGH per `_audit-severity.md` (data loss is CRI
 **Engine side** (`byroredux/src/save_io/`): `build_save_registry` (the curated type set — a scripting subsystem's
 saved columns live in its own module's `register_saved(&mut registry)` (`crates/scripting/src/*`, 45 modules, ~51 call
 sites in the hub; extracted in slices from #5802 `bde3478db` through `93bcda9bc`, then #6705 `15e498420` moved 47 more rows
-out of the hub). The hub keeps 37 rows, each with a stated reason: core types and the FormId column (`byroredux-core` sits
-below `byroredux-save`), the physics `CharacterController`, and the binary crate's own state. Each delegate is called at its
+out of the hub; umbrella #5802 closed 2026-11-07). The hub keeps 39 rows, each with a stated reason: core types and the FormId column (`byroredux-core` sits
+below `byroredux-save`; `FactionReputation` #6759 `8fc1a9ef9` and `DismemberRecord` d50fc1153 are the two newest), the physics `CharacterController`, and the binary crate's own state. Each delegate is called at its
 rows' former position, because `schema_fingerprint` hashes rows in registration order — moving a delegate call is a
 `SchemaMismatch` for every existing save, and `the_schema_fingerprint_is_pinned` now fails it; where a module's columns sit
-in separate runs of the order it exports `register_saved_<column>` too. Umbrella #5802 is still open for the other hub
-files),
+in separate runs of the order it exports `register_saved_<column>` too),
 `MUTABLE_DELTA_COLUMNS` (**second** hardcoded list driving the live overlay), `PRE_RELOAD_RESOURCES`,
 `SaveCommand`/`SaveInfoCommand`/`LoadCommand`, `PendingPlayerSaveActions` (F5/F9/pause-menu ingress),
 `quickload_latest`, `execute_pending_save_loads` (+ `reload_interior_session`/`reload_exterior_session`),
@@ -74,7 +73,7 @@ finds >0 items, and it fails when the invariant is broken.
 | `live_reload_tests::{saved_resources_are_restored_before_the_cell_reload, pre_reload_restore_must_not_install_saved_item_instance_pool_early}` | pre-reload resource subset, #4135 |
 | `live_reload_tests::{an_aborted_load_hands_the_live_ledgers_back, the_drain_captures_before_the_pre_reload_restore_and_reinstates_on_abort}` | `LiveReloadLedgers` (one field per `PRE_RELOAD_RESOURCES` entry, kept in step by a source guard) captured before the pre-reload restore and reinstated on every abort (#6081 `b5a205715`) |
 | `live_reload_tests::live_load_drain_discards_the_outgoing_sessions_script_events` | the teardown's queued `OnCellDetach`/`OnUnload` deliveries are discarded and `ActorWatch` re-baselined after the session replacement (#6083 `4b8e62d87`) |
-| `live_reload_tests::{live_load_drain_discards_the_cell_resets_its_reload_raised, live_load_drain_discards_the_outgoing_sessions_requests}` | the reload's own `note_player_entered_cell` must not leave `PendingCellResets` queued against the outgoing clock (#6238 `078df54e1`, `discard_pending_cell_resets`), and the value-keyed request queues (`PlayerMoveRequest`, `PendingPlayerXp`, `PendingSkillAdvances`, `PendingSleep`, `PendingMusic`, `PendingScriptMessages`, `MessageBoxQueue`) straddling the drain are cleared (#6239 `337bf25c8`, `discard_outgoing_session_requests`); the same sweep now also clears `PendingEvidenceDeposits` (#6573 `81332fc38`) and `PendingMineHits` (#6540 `bdaf75c66`), ends `VatsState` mode via `exit_all()` keeping `roll_state` (#6508 `5a423316f` — an F9 inside VATS left the loaded world frozen on despawned targets) and drops the crafting session, `CraftingRequest` and `PendingDroppedItems` (#6574 `375d48c6d`) |
+| `live_reload_tests::{live_load_drain_discards_the_cell_resets_its_reload_raised, live_load_drain_discards_the_outgoing_sessions_requests}` | the reload's own `note_player_entered_cell` must not leave `PendingCellResets` queued against the outgoing clock (#6238 `078df54e1`, `discard_pending_cell_resets`), and the value-keyed request queues (`PlayerMoveRequest`, `PendingPlayerXp`, `PendingSkillAdvances`, `PendingSleep`, `PendingMusic`, `PendingScriptMessages`, `MessageBoxQueue`) straddling the drain are cleared (#6239 `337bf25c8`, `discard_outgoing_session_requests`); the same sweep now also clears `PendingEvidenceDeposits` (#6573 `81332fc38`) and `PendingMineHits` (#6540 `bdaf75c66`), ends `VatsState` mode via `end_vats_for_world_change` (`systems/vats.rs`: `exit_all()` keeping `roll_state`; #6508 `5a423316f` — an F9 inside VATS left the loaded world frozen on despawned targets; #6625 `6186ab77e` made it the one helper shared with the player-death and cell-transition exits) and drops the crafting session, `CraftingRequest` and `PendingDroppedItems` (#6574 `375d48c6d`) |
 | `registry_completeness_tests::every_component_or_resource_impl_is_saved_or_explicitly_allowlisted` (tail) | #6574: a `NOT_SAVED_BY_DESIGN` reason that says "a load discards" / "The load drain ends" its type must be named in the body of `discard_outgoing_session_requests` — a claim the sweep does not back fails (the generic guard the earlier audits asked for) |
 | `registry_completeness_tests::the_schema_fingerprint_is_pinned` | `BASELINE_SCHEMA_FINGERPRINT` vs `build_save_registry().schema_fingerprint()`: a registration-row reorder (the #5802 slices' risk) or a column add/remove/rename fails CI instead of rejecting every save (#6296 `5a3f571f4`) |
 | `registry_completeness_tests::every_delta_column_is_parked_or_explicitly_not` | the **third** list: every `MUTABLE_DELTA_COLUMNS` entry is parked in a named `ReferenceState`/`ScriptState` field (`cell_loader/reference_state.rs`), carried by `ActorStreamSnapshot`, or on `NOT_PARKED` with a reason; every parked field maps to a column or `FIELDS_WITHOUT_A_COLUMN` (#6085 `3b9060701`); no `NOT_PARKED` reason may read `UNAUDITED` — the marker's last row, `Escorted`, is parked now (#6294 `f3ab49f55`) |
@@ -141,8 +140,8 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
   `FollowState`/`EscortState`/`Seated`/cinematic pair (`EntityId`, registry handles), `ActorVitals`
   (write-once FormID key). A column with an `EntityId`/handle must also be covered by
   `validate_saved_entity_references` (Dim 4).
-- **Replacing columns**: `Perks`, `TimedRestorations`, `Dead`, `ActorControlState` use
-  `register_replacing_component` (the last two since #5027/#5052 `7aa1d7741` — the process-lifetime player
+- **Replacing columns**: `Perks`, `CharacterLevel`, `LevelUpPoints`, `FactionReputation` (#6759), `TimedRestorations`, `Dead`, `ActorControlState`, `DismemberRecord` use
+  `register_replacing_component` (`Dead`/`ActorControlState` since #5027/#5052 `7aa1d7741` — the process-lifetime player
   outlives the reload, so an additive `Dead`/restraint row survived a load into an alive save; pinned by
   `dead_and_restraint_cleared_on_live_player_by_saved_absence`) — saved absence is
   authoritative for FormID-matched entities (empty column kept in the snapshot; a *missing* column is not a
@@ -189,19 +188,19 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
 ### Dimension 2: Format & Schema Discipline (registry fidelity + `FORMAT_MAJOR`)
 Paths: `crates/save/src/{snapshot,registry}.rs`, `save_io/serde_default_guard_tests.rs`, `crates/save/Cargo.toml`, `crates/core/Cargo.toml`
 First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git log --since=<last report> --format='%h %cs %s' -- crates/save/src/snapshot.rs`
-- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`: 122 as of 2026-11-06, with one `vN -> vN+1`
+- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`: 124 as of 2026-11-09, with one `vN -> vN+1`
   entry per bump from v22 on, contiguous since #5459 `a4ccf3b27` restored the v32→v33 entry (#5367 `14cff35ae`, new saved
   resource `DialogueSpokenInfoForms`) and pinned it with `the_bump_ledger_is_contiguous_and_current`. Recent anchors: v36 Wave 4 `RigidBodyData.surface_material`, v37 #5542
   widened it `u8`→`u32`, v38 #5300 re-keyed `DialogueSpokenInfoForms` to a (speaker ref, INFO) pair, and v39–v104
   are almost entirely M47.2 scripting state — new saved resource columns, `Effect` / `FragmentGuard` / `ValueExpr`
   variants and fields reachable through queued fragment continuations (`FragmentExecutionQueue`), `CharacterLevel`
-  v46 (kill XP ended #2947's exemption), `Bleedout` v51, `LevelUpPoints` v53; v105–v122 are gameplay/ObScript
+  v46 (kill XP ended #2947's exemption), `Bleedout` v51, `LevelUpPoints` v53; v105–v124 are gameplay/ObScript
   fields and columns (`Bleedout.remaining_secs` → `Option` v105, parked `ReferenceState.bleedout` v106, M47.3 ObScript
   columns v109–v112, `Material.source_shader_type` v113 #4256, parked `ReferenceState` script package / corpse pose +
   `PersistentReferenceStates` script rows v114 #6071–#6073 `611769b16`, parked `ReferenceState` magic effects /
 `weapon_drawn` / `ignore_crime` + `ScriptState` timer / rumble v115 #6085 `3b9060701`; `RigidBodyData` out,
 `ReferenceMotionTypeState` in v116 #6237 `6765e60eb`; v117 #6190 `ObScriptLedger` lost four unread columns; v118 Oblivion
-jail — `ObScriptLedger.stolen_goods` / `evidence` / `jail`; v119 the `CrimeKnowledge` resource joined the registry; v120 the `KnownWords` resource joined it and `Effect` gained `ObtainWord`; v121 `SmNodeRuntime.last_node_fire_hours`; v122 `ItemInstance.quality`); do not hardcode the number elsewhere). Precedent: v112
+jail — `ObScriptLedger.stolen_goods` / `evidence` / `jail`; v119 the `CrimeKnowledge` resource joined the registry; v120 the `KnownWords` resource joined it and `Effect` gained `ObtainWord`; v121 `SmNodeRuntime.last_node_fire_hours`; v122 `ItemInstance.quality`; v123 #6759 `8fc1a9ef9` the `FactionReputation` replacing column (the stale "no mutation site" exemption); v124 d50fc1153 the `DismemberRecord` replacing column plus a parked `ReferenceState.dismember` field, VATS-LIMB-008/-009); do not hardcode the number elsewhere). Precedent: v112
   (#6050 `5f8bbf454`) — `register_saved` columns landed after a baseline refresh with no bump and the shape guard sat
   red on main; a new registered column's defining file joins the shape scan, so it is a bump here too. Intra-type shape changes need a bump because
   `schema_fingerprint` hashes only column keys (+ replacing policy). A new required field, retyped field, or new `Option` in a saved
@@ -340,7 +339,7 @@ First step: read `execute_pending_save_loads` top to bottom against the sequence
   `discard_pending_cell_resets` (the reload's cell-root `note_player_entered_cell` calls ran against the outgoing
   `CellVisits`/clock; the restored `CellVisits` is authoritative, #6238 `078df54e1`) → `discard_outgoing_session_requests`
   (value-keyed `PlayerMoveRequest` / XP / skill / sleep / music / message-box queues that would otherwise apply in the
-  loaded world and be kept by the next save, #6239 `337bf25c8`; plus jail-evidence deposits, mine hits, VATS mode, the crafting session
+  loaded world and be kept by the next save, #6239 `337bf25c8`; plus jail-evidence deposits, mine hits, VATS mode (`end_vats_for_world_change`), the crafting session
   and pending dropped items, #6573 / #6540 / #6508 / #6574; the test pins all but the mine queue)
   → `restore_extension_state` → wholesale
   `restore_resources` **again** (idempotent; re-asserts `CurrentCellContext`/`PlayerPose`; the second call is

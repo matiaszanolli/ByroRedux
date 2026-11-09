@@ -78,16 +78,16 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
      echo "test files >2000 total LOC (lower priority, separate bucket): $(find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l)"
    } > /tmp/audit/tech-debt/baseline.txt
    ```
-   Measured 2026-11-06 at 66c85af80 (diff direction only, re-run, never quote; the 2026-10-31 figures at 8985a2e99 are in parentheses): markers 40 (38) (18 are `XXXX` false positives — three
+   Measured 2026-11-09 at 88c239b35 (diff direction only, re-run, never quote; the 2026-11-06 figures at 66c85af80 are in parentheses): markers 40 (40) (18 are `XXXX` false positives — three
    are the `--type XXXX` usage placeholder in `crates/plugin/examples/dump_wths_refl.rs` — 18 (16) the FO4 `HACK` terminal
    FourCC (M43's `byroredux/src/lockpick.rs`, `byroredux/src/interaction.rs`, `byroredux/src/commands/story_actions.rs`, two comment mentions under `byroredux/src/boot/schedule/`, and the `crates/plugin/tests/parse_real_esm.rs` pair), 3 quoted upstream FIXMEs, 1 documented `TBD` — Dim 5;
    **zero** real TODOs: the two in `byroredux/src/loading_screen.rs` (tracked by #6194 since #6181, 51f97f708) were rewritten as
    a stated "what the P6 cover does not model" doc by 729fbab1f, closing #6194 — a fresh real TODO is notable),
-   `allow(dead_code)` 38 (39; 41 on 2026-10-25, #6397/#6398 retired two; 12 of them are `cfg(test)` TypeId-only markers in `crates/core/src/ecs/lock_tracker.rs`, c5113f0d9 —
-   not debt), `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 405 (382 on 2026-10-31, 373 on 2026-10-27, 368 on 2026-10-24, 363 on 2026-10-21, 352 on 2026-10-20, 322 on 2026-10-15; tools-inclusive —
+   `allow(dead_code)` 43 (38; 41 on 2026-10-25, #6397/#6398 retired two; 12 of them are `cfg(test)` TypeId-only markers in `crates/core/src/ecs/lock_tracker.rs`, c5113f0d9 —
+   not debt; the five new are four `#[cfg_attr(not(test), allow(dead_code))]` in `byroredux/src/cell_loader/{lod_bands,lod_coverage,tree_lod}.rs` — items production no longer calls and only tests read, a Dim 8 triage row — and one `block` field in `crates/ui/examples/hud_feed_paths.rs`), `unimplemented!/todo!()` **0** (a fresh hit is notable), `#[ignore]` 429 (405 on 2026-11-06, 382 on 2026-10-31, 373 on 2026-10-27, 368 on 2026-10-24, 363 on 2026-10-21, 352 on 2026-10-20, 322 on 2026-10-15; tools-inclusive —
    earlier reports scoped to `crates`+`byroredux` read lower; none runs on a hosted runner),
-   production >2000 LOC: **1** (2) — `crates/renderer/src/shader_constants_data.rs` (3375, 3169 on 10-31; a data table, Dim 1). The other 2026-10-31 entry,
-   *crates/debug-ui/src/panels.rs* (2086, crossed from 1938 on the M43 dialogue-page / crafting / drop-and-cast panels, 041d57333..c2742a901), was split by #6578 (37c845ee6, closed) into `panels/{snapshots,hud,game_menu,studio}.rs` (largest child `studio.rs`, 881 prod LOC; `game_menu.rs` 749). The
+   production >2000 LOC: **2** (1) — `crates/renderer/src/shader_constants_data.rs` (3455, 3375 on 11-06; a data table, Dim 1) and `crates/plugin/src/esm/records/misc/world.rs` (2019, crossed from 1914 on the #6725 region / fog / god-ray decoders and #6781..#6799 fixes, ea5417dc7..8774d1adb — a real finding: a single file, so propose an axis from its record families, not its name). The other 2026-10-31 entry,
+   *crates/debug-ui/src/panels.rs* (2086, crossed from 1938 on the M43 dialogue-page / crafting / drop-and-cast panels, 041d57333..c2742a901), was split by #6578 (37c845ee6, closed) into `panels/{snapshots,hud,game_menu,studio}.rs` (largest child `studio.rs`, 883 prod LOC; `game_menu.rs` 749). The
    other 2026-10-25 entry, `crates/scripting/examples/mq101_conformance/`, was split by #6360 (01f48c929, largest child ~530). Three left the list through real splits since 2026-10-25:
    `crates/audio/src/` (#6140, b2e542eee — `lib.rs` is a ~200-LOC hub over `dsp`/`world`/`components`/`system`/`cache`, largest child ~610),
    `crates/nif/src/import/types/` (#6141, 5559074be — eight files, largest ~575) and `crates/scripting/src/obscript_effects/`
@@ -98,16 +98,16 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    `crates/scripting/src/fragment/effects.rs` (#5468) before them. **Split-hub hazard:** a path-scoped `git log` / `grep` on a hub
    file silently sees only the hub (`git log -- byroredux/src/save_io.rs` returned 0 commits where the directory returned 24);
    scope Dim 1 deltas to the `<stem>/` directory and measure a split by its children, not by the parent shrinking. Watch-list
-   within 5%: `byroredux/src/app_events.rs` (1979, up from 1833 on 10-31; 21 lines from the band, the most urgent row), `crates/plugin/src/esm/records/misc/world.rs` (1914); just under the band:
-   `byroredux/src/asset_provider/material/merge.rs` (1860), `crates/nif/src/import/material/mod.rs` (1857), `crates/hkx/src/behavior.rs` (1826),
-   `crates/renderer/src/vulkan/context/build_and_upload_instances.rs` (1825). `crates/renderer/src/mesh.rs` (1864) left the list when #6520 (cd78f9efe) split the pool-limit policy and the primitive generators out (1412). `byroredux/src/inventory/` (#6356, 258c6d9b2, largest child ~790)
+   within 5%: `byroredux/src/app_events.rs` (1979, up from 1833 on 10-31; 21 lines from the band, the most urgent row); just under the band:
+   `byroredux/src/asset_provider/material/merge.rs` (1887), `crates/nif/src/import/material/mod.rs` (1859), `crates/renderer/src/vulkan/volumetrics.rs` (1851),
+   `crates/renderer/src/vulkan/context/build_and_upload_instances.rs` (1842), `crates/hkx/src/behavior.rs` (1826). `crates/renderer/src/mesh.rs` (1864) left the list when #6520 (cd78f9efe) split the pool-limit policy and the primitive generators out (1412). `byroredux/src/inventory/` (#6356, 258c6d9b2, largest child ~790)
    and `byroredux/src/npc_spawn/` (#6357, 613c7f46e, largest child ~1460) were split on 2026-10-28; measure them by children.
    `crates/renderer/src/vulkan/gpu_timers.rs` (1929 on 2026-10-25) fell when #6358 (0288f468d) made the per-pass brackets
-   `TimerPass` table rows (1195 prod LOC on 2026-11-06).
-   `crates/renderer/src/vulkan/context/init.rs` (1950 on 2026-10-25, 1112 on 2026-11-06) left the band — 3e6f6b66a (#6143) split the frame and
-   Vulkan drivers into `init_stages.rs` and the per-stage `context/` files, each pinned by `function_size_pin_tests.rs`;
+   `TimerPass` table rows (1196 prod LOC on 2026-11-09).
+   `crates/renderer/src/vulkan/context/init.rs` (1950 on 2026-10-25, 1131 on 2026-11-09) left the band — 3e6f6b66a (#6143) split the frame and
+   Vulkan drivers into `init_stages.rs` and the per-stage `context/` files, each pinned by `function_size_pin_tests.rs`, and #6143 closed once #6708/#6709/#6710 (4f6d738d7, 1a0302c8e, d66db4358) moved `record_skinned_blas_refit`, `build_blas_batched` and `record_geometry_pass` onto phase methods inside their pins;
    the instance list is regenerated every audit from `dim1_big.txt` — trust the recipe and the count delta over the names;
-   test-heavy >2000: 90 (91).
+   test-heavy >2000: 92 (90).
    A raw whole-repo grep for `#[ignore]` also matches markdown prose — keep `--include='*.rs'`.
 
 ## Phase 2: Dimension Agents
@@ -197,7 +197,7 @@ auto-eligible findings (trivial). Guards that already police a class — aim at 
   prose), so a splice that does not open with a name still needs a reviewer: sweep the commits' hunks that add an item
   directly below a doc block.
 - **Status-doc line ceilings**: `readme_and_roadmap_hold_their_line_ceilings` (`byroredux/src/workspace_hygiene_tests.rs`,
-  #5332) fails README.md > 600 or ROADMAP.md > 800 lines (`wc -l` agrees with it). ROADMAP.md reads 798 and README.md 589 on 2026-11-06 (808 at 8985a2e99, before 43252c859 trimmed it) — a red hygiene test there is a finding (trim, do not raise the cap). The `docs/engine/game-loop.md`
+  #5332) fails README.md > 600 or ROADMAP.md > 800 lines (`wc -l` agrees with it). ROADMAP.md reads 800 (exactly at the cap, so the next added line trips it) and README.md 589 on 2026-11-09 (798 on 11-06; 808 at 8985a2e99, before 43252c859 trimmed it) — a red hygiene test there is a finding (trim, do not raise the cap). The `docs/engine/game-loop.md`
   live-schedule table must name EVERY registered system: `every_registered_system_is_named_in_the_live_schedule_table`
   (`byroredux/src/workspace_hygiene_tests.rs`, #6583 4b13fd4d6, superseding #6378's by-name list) reads each `scheduler.add*`
   call under `boot/schedule/` from disk, so a new per-subsystem file is covered automatically; it matches whole identifiers.

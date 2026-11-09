@@ -17,14 +17,14 @@ changes gameplay silently — no crash, no validation error, no failing test unl
 
 ## Scope
 
-- `crates/core/src/character/` (16 modules, `mod_docstring_indexes_every_sub_module` pins the count):
+- `crates/core/src/character/` (18 modules, `mod_docstring_indexes_every_sub_module` pins the count):
   `ruleset.rs` (`CharacterRuleset`, the per-game `Resource` seam), `profile.rs` (`CharacterRulesProfile` —
   the single per-game policy row: `NpcStatModel`, `creature_stats`, `body_condition_base`, `vital_pools`,
   `RulesetBuilder`, and since #5921 `3162b21b8` `OverEncumberedRule`, `awards_kill_experience`,
   `essential_death_time_secs`, `BarterModel`, `PerkEntryPointDialect`; later `radiation_gauge` `e9b7bcead`,
-  `level_cap_raises` #6227 `cafd3ccab`, `crime`), `derived.rs` (`DerivedStatFormula`/`DerivedInput`/`DerivedOutput`/`DerivedScope`/
+  `level_cap_raises` #6227 `cafd3ccab`, `crime`, `vats`, `armor`; `PerkEntryPointDialect` has three variants — `Fallout3NV`, `Skyrim`, `Fallout4` — plus `None`, and `add_perk_raises_rank` #6619), `derived.rs` (`DerivedStatFormula`/`DerivedInput`/`DerivedOutput`/`DerivedScope`/
   `RoundMode`), `leveling.rs`, `attribute.rs`/`skill.rs`, `fallout.rs`/`tes.rs`/`skyrim.rs` (per-family
-  ruleset builders), `regen.rs`, `affliction.rs`/`resistance.rs`, `reputation.rs`, `crime.rs` (`CrimeModel` — Oblivion and Skyrim rows; `CrimeKind`, `BountyScope`), `vats.rs` (`VatsModel`/`VatsHitInput` — the `fVATS*`/`fActionPoints*` tuning family + the to-hit chain, FO3/FNV rows, #6350), `components.rs`.
+  ruleset builders), `regen.rs`, `affliction.rs`/`resistance.rs`, `reputation.rs`, `crime.rs` (`CrimeModel` — Oblivion and Skyrim rows; `CrimeKind`, `BountyScope`), `vats.rs` (`VatsModel`/`VatsHitInput` — the `fVATS*`/`fActionPoints*` tuning family + the to-hit chain, FO3/FNV rows, #6350), `limb_effects.rs` (`LimbEffectModel` — crippled-leg speed, crippled-arm melee/gun-spread terms, FO3/FNV; VATS-LIMB-006/-010/-011), `armor.rs` (`ArmorModel` — Skyrim's `fArmor*`/`fMaxArmorRating` row with a GMST overlay, #6567 `cb9faca7d`), `components.rs` (incl. `DismemberRecord`, VATS-LIMB-008/-009).
   Substrate: `crates/core/src/ecs/components/{actor_values,faction_ranks}.rs`.
 - CHARAL-adjacent (not submodules): `crates/core/src/combat.rs` (Oblivion damage math),
   `crates/core/src/stealth.rs` (FO3/FNV sneak detection) — consumer-less or thin today; verify anyway.
@@ -33,7 +33,7 @@ changes gameplay silently — no crash, no validation error, no failing test unl
   actor_value_derive.rs`, `crates/plugin/src/esm/records/actor/mod.rs` (`effective_actor_level`),
   `crates/plugin/src/equip.rs` (`resolve_inherited_*`), `byroredux/src/cell_loader/references/`,
   `byroredux/src/inventory/` (`attach_to_player` stamps the player's `ActorValues`/`ActorVitals`/`CharacterLevel`/
-  `Background`/`SpellList`/`RaceSpells` and reads `CharacterRulesProfile::vital_pools`), `byroredux/src/combat.rs` (`melee_damage_charal_bonus`, `grant_experience`),
+  `Background`/`SpellList`/`RaceSpells` and reads `CharacterRulesProfile::vital_pools`), `byroredux/src/combat.rs` (`melee_damage_charal_bonus`, `grant_experience`), `byroredux/src/{armor,limbs}.rs` (`install_armor_book` reads the profile's `armor` row; `build_limb_effects` — FO3/FNV only, gated on `body_condition_base`),
   `byroredux/src/commands/{actor_value,condition}.rs`, VATS runtime `byroredux/src/systems/vats.rs` + `components/vats.rs` (`VatsState`) +
   `commands/vats.rs` (`vats.*`; `build_vats_model` in `npc_spawn/stamps.rs` is the one installer), `byroredux/src/crime.rs` (installs the `CrimeModel` resource from
   `index.character_rules.crime()`), `crates/scripting/src/{crime_faction,jail}.rs` (crime-faction fines, Oblivion jail).
@@ -51,11 +51,9 @@ ruleset.md` — **the authority for every constant**; a coefficient no capture s
 - FNV/FO3 **tag-skill per-level** formula undocumented, deferred; CLAS SPECIAL lives in `ATTR`, not `DATA`.
 - FO3/FNV AP (and Crit/Melee/Unarmed) NPC scope is unsourced: those rows ship `.player_only()` as the
   documented conservative choice (#2937, closed as documented), disclosed in place and pinned; the GECK's per-actor wording for `fAVDActionPointsBase/Mult` is a recorded weak lead only, scope stays `player_only` (#6436 `87c9b9eb2`).
-- VATS (#6350, open umbrella): the AP pool, its regen, the mode machine with world freeze, the targeting scan and the AP-gated
-  queue/confirm (die roll per shot through the combat funnel, same-target hits folded into one `HitEvent`) are live for FO3/FNV
-  (`3dc16208e`..`1fb7e6f56`). Still absent, so not findings: a VATS menu, per-part damage routing / limb health, playback + camera,
-  Concentrated Fire's perk accuracy. `vats.enter` shares the key's entry gates through `vats_entry_refusal` and `vats.scan/queue/confirm` refuse outside VATS (#6469 `9d82dc616`); a weapon's base to-hit is the `u8` at `WEAP` `DNAM`@40 and the VATS sub-record's AP is the *special* attack's (`WeaponVats::special_attack_ap`), a regular attack charges `DNAM`@68 or the engine default (#6449/#6450 `e97707b14`). The skill term reads the player's value for the weapon's own `DNAM`@104 actor-value code through its AVIF, a weapon or player without one (a carried 0 stays 0) pricing at `NEUTRAL_SKILL` 50 (`a9748e54c`, #6441 `bb60b15cf`); FNV Damage Threshold applies once per shot, the same-target fold carrying the count in a transient `HitShots` beside the `HitEvent` (#6440 `e669918ad`). The to-hit operation order is **reconstructed, not captured**; its ground-truth test is
-  `#[ignore]`d pending recorded scenarios (#6403, open) — never let the reconstruction arbitrate itself.
+- VATS (#6350, open umbrella; phases #6644 captures, #6645 numbers, #6646 limbs): the AP pool, its regen, the mode machine with world freeze, the targeting scan and the AP-gated
+  queue/confirm (die roll per shot through the combat funnel) are live for FO3/FNV (`3dc16208e`..`1fb7e6f56`). Since the last sync: Concentrated Fire prices repeat shots at the same part when the player holds the perk (#6422 `5502c2f97`, `has_concentrated_fire` composes perk entry point 33; the scan still prices a part's first shot); VATS ends on a cell transition and on the player's death through the shared `end_vats_for_world_change` (#6625 `6186ab77e`); a confirmed volley reaches the funnel as a `HitEvent` plus transient `HitShots` and `HitParts` (one `PartStrike` per landed shot at the struck part's `BPND` damage multiplier, DT/armor applied per strike, VATS-LIMB-002/-003 `83e9c6c92`); a killing blow writes the saved `DismemberRecord` that `IsLimbGone`/`GetKillingBlowLimb` read (`d50fc1153`, nothing marks a part gone yet — `mark_gone` has no caller, so `IsLimbGone` answers 0); crippled legs slow the player and every NPC stride and a crippled arm weakens a melee swing (`byroredux/src/limbs.rs`, `bda7fab73`); `vats.limbs` reports a limb table (`532cc486f`); a VATS kill restores the Player Kill AP Reward (`9e88a183b`). Still absent, so not findings: a VATS menu, playback + camera, **routing a hit into the limb-condition actor values** (VATS-LIMB-004 — nothing lowers a limb below its seed, so no limb becomes crippled by play; it waits on its Phase 0 formula), the gun-spread consumer for the crippled-arm term (the engine has no spread computation), FO4 (`vats: None`). `vats.enter` shares the key's entry gates through `vats_entry_refusal` and `vats.scan/queue/confirm` refuse outside VATS (#6469 `9d82dc616`); a weapon's base to-hit is the `u8` at `WEAP` `DNAM`@40 and the VATS sub-record's AP is the *special* attack's (`WeaponVats::special_attack_ap`), a regular attack charges `DNAM`@68 or the engine default (#6449/#6450 `e97707b14`). The skill term reads the player's value for the weapon's own `DNAM`@104 actor-value code through its AVIF, a weapon or player without one (a carried 0 stays 0) pricing at `NEUTRAL_SKILL` 50 (`a9748e54c`, #6441 `bb60b15cf`); FNV Damage Threshold applies once per shot (#6440 `e669918ad`). The to-hit operation order is **reconstructed, not captured**; its ground-truth test is
+  `#[ignore]`d and with an empty `GROUND_TRUTH` pins nothing — a placeholder, not coverage. The captures are an acceptance item of #6350 (#6403 closed that way, `2d6af0aeb`; the Phase 0 capture issue is #6644) — never let the reconstruction arbitrate itself.
 - Regen: `pool_regen_tick_system` is live for FO3/FNV **ActionPoints only** — `build_vats_model` returns a `PoolRegenConfig` carrying
   the `ActionPointsRegen` lane, installed on the first FO3/FNV cell load (`cell_loader/references/mod.rs`; #6374 `68f200ec4`
   retired the "zero production insertion sites" claim). The Fatigue/Magicka/Willpower lanes stay inert (`PoolRegenConfig`'s ids are `Option<u32>`, `None` today, #6430 `a10bb9764` — they were `0`, which a stray AV 0 would have armed) and every other game never inserts the config; `affliction_tick_system` still has no scheduler registration.
@@ -66,8 +64,8 @@ ruleset.md` — **the authority for every constant**; a coefficient no capture s
   Skyrim a perk point + a pool pick (#5916 `612bd179e`); only classic-TES `SkillUse` has no XP-driven roll.
 - Oblivion `RulesetBuilder::None` is deliberate (no AVIF pre-FO3 → no resolver); pinned by
   `oblivion_still_has_no_runtime_ruleset_and_that_is_deliberate`. FO76/Starfield: captures, no builders.
-- Open (verified 2026-11-06) — cite, do not re-file: #4137 (two `template_flags` bits with no consumer — Script 0x0200, Def Pack List 0x0400;
-  the other four listed gained `ResolvedNpc` terminals, `eae8fd740`), #6403 (VATS to-hit ground truth). #4232 (`effective_actor_level` returns 0 verbatim) is closed (`4fbff2c6c`, see Dim 4). #4415 (magic runtime) is closed (`9813af435`). The 2026-09-19 report's
+- Open (verified 2026-11-09) — cite, do not re-file: #4137 (two `template_flags` bits with no consumer — Script 0x0200, Def Pack List 0x0400;
+  the other four listed gained `ResolvedNpc` terminals, `eae8fd740`), #6350 (VATS umbrella, carries the to-hit ground-truth captures; #6403 itself is closed, `2d6af0aeb`). #4232 (`effective_actor_level` returns 0 verbatim) is closed (`4fbff2c6c`, see Dim 4). #4415 (magic runtime) is closed (`9813af435`). The 2026-09-19 report's
   #4452-#4457/#4459-#4463 are all closed — regression checks now. Verify with `gh issue view` before citing.
 
 ## Parameters
@@ -94,14 +92,14 @@ skim dimensions whose Paths did not change (constants only move when a capture o
 
 ### Dimension 1: Ruleset Seam & Doctrine
 Paths: `crates/core/src/character/{ruleset,profile,mod}.rs`, `byroredux/src/npc_spawn/`
-First step: `grep -rn 'GameKind\|\.game ==\|game_kind' crates/core/src/character byroredux/src/npc_spawn* crates/plugin/src/esm/records/actor_value_derive.rs byroredux/src/{encumbrance,barter,combat}.rs crates/scripting/src/{bleedout,perk_entry_points}.rs`
+First step: `grep -rn 'GameKind\|\.game ==\|game_kind' crates/core/src/character byroredux/src/npc_spawn* crates/plugin/src/esm/records/actor_value_derive.rs byroredux/src/{encumbrance,barter,combat,armor,limbs,crime}* crates/scripting/src/{bleedout,perk_entry_points}*`
 - **Doctrine**: the per-game seam is *data in the tables*, never a branch in a consumer. Report every
   `game ==` / `GameKind` / master-name test in CHARAL population or consumers (weight = `/audit-nifal`'s
   render-time per-game branch). Precedents: FO3/FNV body-condition seeding was a raw `GameKind` gate until
   it became `CharacterRulesProfile.body_condition_base` (#4447); five M47.2 consumers (`install_encumbrance_rules`,
   `BarterRules::from_index`, `install_experience_rules`, bleedout's `engine_defaults`, `PerkEntryTable`) matched on
   `GameKind` until #5921 `3162b21b8` moved each table onto a profile row. Every row is an exhaustive struct
-  literal (a new profile cannot compile without stating each); pin `per_game_rule_rows_are_stated_on_every_profile`.
+  literal (a new profile cannot compile without stating each); pin `per_game_rule_rows_are_stated_on_every_profile`. Each consumer also has a test whose index has a `GameKind` and a `CharacterRulesProfile` that disagree, proving the profile wins (#6760 `573f3ced8`: encumbrance, bleedout defaults, perk dialect, barter, `install_experience_rules`) — a new row-reading consumer adds one. The same move retired `armor.rs`'s five bare consts and its `index.game == Skyrim` test (#6567).
 - **Profile-as-oracle**: `CharacterRulesProfile` is the only FO3-vs-FNV discriminator (both are
   `GameKind::Fallout3NV`); non-character consumers (`cell_loader/references/attach.rs::obscript_dialect_for`,
   `crates/plugin/src/consumables.rs` fn-586 gate, and the #5921 rule-row readers above) borrow it. The duty is documented and pinned (#4448) —
@@ -126,12 +124,13 @@ First step: `grep -rn 'GameKind\|\.game ==\|game_kind' crates/core/src/character
 **Output**: `/tmp/audit/character/dim_1.md`
 
 ### Dimension 2: Derived-Stat Formulas
-Paths: `crates/core/src/character/{derived,fallout,tes,skyrim,resistance}.rs`, `crates/core/src/{combat,stealth}.rs`
-First step: `cargo test -p byroredux-core character::derived character::fallout character::tes character::skyrim`
+Paths: `crates/core/src/character/{derived,fallout,tes,skyrim,resistance,armor}.rs`, `crates/core/src/{combat,stealth}.rs`
+First step: `cargo test -p byroredux-core character::derived character::fallout character::tes character::skyrim character::armor`
 - **Every coefficient vs its capture** (bias, `c_a`, `c_b`, cross term, cap, `RoundMode`), citing the
   document line. FO4 Health `floor(77.5 + 4.5·END + 2.5·L + 0.5·L·END)` is the only cross-term row; a
   non-zero cross term elsewhere is a red flag. Rounding modes are per-source (FO4 sourced — the Endurance page's `floor` is what the code implements, the Health page's 93.5 is the unrounded example, the 0.5 HP difference is unadjudicated, #6432 `6b637eacb`; FO3/FNV ship
   `None`, exact on their integer domain) — "obviously round/floor" is the guess this audit catches (#4451).
+- **GMST overlay**: the Fallout rows are `*_ruleset_with_gmst` builders (the no-GMST ones delegate); Health `fAVDHealthEnduranceMult` + `fAVDHealthLevelMult`, Action Points `fAVDActionPointsBase`/`Mult`, Carry Weight `fAVDCarryWeightsBase` (FO3/FNV spelling, with an `s`) / `fAVDCarryWeightBase` (FO4) + `fAVDCarryWeightMult`, Melee `fAVDMeleeDamageStrengthMult`, Unarmed `fAVDUnarmedDamageBase`/`Mult` read the load order over the vanilla numbers (#6756 `6dbf69d65`); the engine-supplied 100 in Health and the `fAVDSkill*` skill constants stay compiled in. A coefficient restated as a literal beside its GMST is the regression.
 - **Sentinels**: uncapped cap is `f32::INFINITY` (no table may rely on cap-0 = uncapped);
   `DerivedInput` `0` = unused, `u32::MAX` = level — no path may build a real FormID equal to either.
 - **Scope contract**: `DerivedScope` (player-only vs actor-general) is what contains the #2937
@@ -147,9 +146,9 @@ First step: `cargo test -p byroredux-core character::derived character::fallout 
   mechanism, no dependency graph); an unpopulated input reads a *documented* default, not accidental 0.
 - `eval` stays allocation-free, no game branch; `DerivedStatFormula` `Copy` + 36 B
   (`formula_is_thirty_six_bytes_and_copy`).
-- **Siblings**: `combat.rs` (`modified_skill` Luck 0.4, `oblivion_weapon_damage_multiplier`,
+- **Siblings**: `combat.rs` (`modified_skill` Luck 0.4, `oblivion_weapon_damage_multiplier` — the condition factor is `fDamageWeaponConditionBase + ratio·fDamageWeaponConditionMult` (0.5 + 0.5·ratio), not the bare ratio, #6762 `7f5e549ec` —
   `oblivion_hand_to_hand_damage` cross-term) vs `charal-oblivion-ruleset.md` "Complete Damage Formula";
-  `stealth.rs` (`detection_score`/`classify`) vs `charal-fnv-fo3-ruleset.md` "Sneak Detection"; Skyrim armor skill scaling lives in `byroredux/src/armor.rs`, which reads the installed `ArmorModel` (`crates/core/src/character/armor.rs`, the profile's `armor` row + the load order's `fArmor*`/`fMaxArmorRating` GMST overlay, #6567), whose skill multipliers derive from `LIGHT_ARMOR_RATING_COEFF`/`ARMOR_SKILL_RATING_COEFF_NPC` (`skyrim.rs`, the only home of UESP's 0.4/1.5, #6568 `a858df844`) — the `DamageResist` derived row is not what feeds it, and a restated literal or a `GameKind` test in `armor.rs` is the regression (`the_consumer_holds_no_game_gate_or_armor_constants`). Perspective
+  `stealth.rs` (`detection_score`/`classify`) vs `charal-fnv-fo3-ruleset.md` "Sneak Detection"; Skyrim armor skill scaling lives in `byroredux/src/armor.rs`, which reads the installed `ArmorModel` (`crates/core/src/character/armor.rs`, the profile's `armor` row + the load order's `fArmor*`/`fMaxArmorRating` GMST overlay, #6567 `cb9faca7d`; six of its seven settings are master-authored, `fArmorRatingPCBase` is a CK Settings-page default no master authors, #6761 `fc41d4818`), whose skill multipliers derive from `LIGHT_ARMOR_RATING_COEFF`/`ARMOR_SKILL_RATING_COEFF_NPC` (`skyrim.rs`, the only home of UESP's 0.4/1.5, #6568 `a858df844`) — the `DamageResist` derived row is not what feeds it, and a restated literal or a `GameKind` test in `armor.rs` is the regression (`the_consumer_holds_no_game_gate_or_armor_constants`). Perspective
   traps: UESP's "Opponent…" names are attacker-relative; the code reads the *wearer's* own skill (#4449).
   `detection_score` transcribes the source's squared attenuation unclamped: past `MaxDist` it rises again (`d = 2·MaxDist` scores like `d = 0`), so
   `DetectionInputs::distance <= locale.max_distance()` is a documented caller precondition (#6433 `7e9678fd8`,
@@ -192,18 +191,18 @@ First step: `cargo test -p byroredux-core character::leveling character::regen c
 - **VATS model** (`vats.rs`): every number resolves load-order-merged GMST -> compiled-in default (`with_gmst`; a bounded family rejects
   out-of-range authored values); `FALLOUT_NV` carries the six re-tunes FalloutNV.esm authors (#6424), FO3 the wiki defaults; the model is the
   profile's `vats()` row (#6423) — `build_vats_model` must not test the game. Check each default against `charal-fnv-fo3-ruleset.md`
-  (*VATS tuning, Action Points regen and the radiation gauge*); steps in `to_hit_chance` marked RECONSTRUCTED stay marked until #6403 lands captures.
+  (*VATS tuning, Action Points regen and the radiation gauge*); steps in `to_hit_chance` marked RECONSTRUCTED stay marked until the #6350 captures land (#6403 closed as a documented placeholder). `VatsHitInput::part_to_hit` is the `BPND`@8 0-100 chance, not a 255 sentinel (#6764 `c100b400c`). **Limb effects** (`limb_effects.rs`): `LimbEffectModel::FALLOUT.with_gmst` — leg speed, arm melee/gun-spread terms from the load order's settings; the crippled test is `condition <= 0` on a *present* value (an absent AV is never a limb at 0); the un-cripple threshold is unverified (VATS-LIMB-005).
 - **Affliction pool** = the *composed* value (`AfflictionTable::pool_value` reads `ActorValues::current`, the layer `GetAV` and the HUD rad gauge read; writers accumulate on `mod_temporary`/`mod_permanent`, the `damage` layer is not the pool — #6428 `cf58dec5a`, `the_rad_gauge_and_the_affliction_pool_read_one_write`); rad accumulation and RADS-stage penalties are unbuilt.
 - **Affliction** = diff-and-reapply (remove previous band's penalty before applying the new one — a
   missing removal compounds); bands half-open and consistent; `band_for` vs `band_by_key` tie-break (#4456).
 - **Resistance/reputation**: `damage_multiplier` clamps `[0, cap]`, never negative (no healing);
   `STANDING_GRID` axes `[infamy][fame]` (transpose = plausible wrong standing); karma/affinity clamp both
-  ends; per-faction `FactionRepThresholds` rows match the capture row-for-row.
+  ends; per-faction `FactionRepThresholds` rows match the capture row-for-row. `FactionReputation` is a saved player column (#6759 `8fc1a9ef9`; `AfflictionStatus` and `Background` still have no production mutator).
 - **Crime** (`crime.rs`): `CrimeModel::OBLIVION` / `SKYRIM` are profile rows (`crime()`; `None` on FO3/FNV/FO4/FO76/Starfield — FO3/FNV
   crime is faction-based and unmodelled), installed as a resource by `byroredux/src/crime.rs`, never a consumer `GameKind` match. Check each
   default against its cited CS/UESP line (`fCrimeGoldSteal` 0.5, attack 40, murder 1000, prison divisor 100, `rush_bounty` 500 =
   Oblivion.esm's authored `iCrimeGoldAttackMin`); `theft_rounds_up` (Oblivion up, min 1 septim; Skyrim down) and the saturating
-  `as i32` casts; `with_gmst` ignores non-finite/negative values. Pins `a_theft_fines_half_the_value_rounded_up_and_never_less_than_one`,
+  `as i32` casts; `with_gmst` ignores non-finite/negative values; Skyrim's jail sentence is capped by `max_sentence_days` = `Some(7.0)` (engine rule, not a GMST; Oblivion `None`, #6757 `a28b85810`). Pins `a_theft_fines_half_the_value_rounded_up_and_never_less_than_one`,
   `skyrim_rounds_a_theft_down_and_keeps_the_bounty_per_crime_faction`. Trespass 5 / pickpocket 25 are `CrimeModel` fields (`trespass_gold`/`pickpocket_gold`, read from `iCrimeGoldTresspass`/`iCrimeGoldPickpocket` in `with_gmst`, #6427 `3a0b6be0a`,
   `the_trespass_and_pickpocket_fines_are_authored_settings`), read by `crates/scripting/src/crime_faction.rs::faction_fine` only where a faction's Crime tab does not author them; a fixed const there is the regression.
 - Every constant here needs a **Source**; regen rates and band thresholds are exactly the numbers typed
@@ -241,7 +240,7 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   `stamp_spell_list`, so `RaceSpells` was absent and the scripted `AddRaceSpells`/`RemoveRaceSpells` pair no-oped
   until `attach_to_player` stamped it from `resolve_racial_spells`). The player now carries `CharacterLevel`/`Background`
   from the resolved Player record (#4678); `CharacterLevel` is saved since M47.2's kill experience (v46),
-  which retired #2947's `validate_progression_state` guard; `LevelUpPoints` is saved too (`38539eee8`). The
+  which retired #2947's `validate_progression_state` guard; `LevelUpPoints` is saved too (`38539eee8`), as are `FactionReputation` (#6759 `8fc1a9ef9`) and the per-actor `DismemberRecord` (`d50fc1153`, parked by the per-placement `ReferenceState` so a corpse keeps its killing blow across a cell unload). The
   player's `FactionRanks` is re-derived from the record (Use-Factions terminal) on load, not saved (#5058
   `be3cd9468`); scripted edits (`FactionRanks::set_rank` / `remove`, Papyrus `SetFactionRank` /
   `RemoveFromFaction`) are instead recorded by reference FormID in the saved `ScriptedFactionChanges` ledger
@@ -319,7 +318,7 @@ First step: `grep -rn 'not yet reachable\|oblivion_pool_regen_config\|when a liv
 - **Coverage matrix** (publish even with zero findings): family × {ruleset implemented, wired, derived
   stats, leveling model, regen wired, affliction wired}. Re-derive wiring from `profile.rs` arms + workspace
   greps, never from prose. Today: FO3/FNV/FO4/Skyrim wired, Oblivion blocked, FO76/Starfield absent; regen
-  live for FO3/FNV AP only (Fatigue/Magicka lanes inert), affliction inert everywhere; VATS runtime FO3/FNV only (Dim 3 known-open list); crime on
+  live for FO3/FNV AP only (Fatigue/Magicka lanes inert), affliction inert everywhere; VATS runtime FO3/FNV only, limb damage routing and crippling-by-play absent (known-open list); Skyrim armor row wired (`armor`), FO4 `vats`/`armor` rows `None`; crime on
   Oblivion/Skyrim rows (FO3/FNV crime is faction-based and unmodelled); "leveling model" is a model, not a runtime.
 - **Wiring events rot prose**: after any commit that wires/unwires a builder or resource, grep for the old
   claim in the `mod.rs` docstring, the capture Status columns (code ahead of capture is doc rot too),

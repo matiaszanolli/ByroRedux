@@ -153,7 +153,10 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
   not flip it, #6031, 21b9743e0; `a_frame_without_a_recorded_dispatch_does_not_advance_the_field`), and
   `promote_field_commit` commits it through `commit_field_state` only after `queue_submit` returns `Ok`, beside
   `promote_skip_clear_latches` (a tail `Err` that discards the command buffer must not mark a half the GPU never wrote as
-  valid, #6291, 96ab07189; `the_groundcover_field_flip_is_promoted_after_submit_not_at_record_time`);
+  valid, #6291, 96ab07189; `the_groundcover_field_flip_is_promoted_after_submit_not_at_record_time`); the M-LIGHT linear
+  capture follows the same shape: `linear_capture_copy_recorded` only stages `pending_copy`, and the frame count + armed
+  readback commit through `discard_` / `promote_skip_clear_latches` after `queue_submit` returns `Ok` (#6811, 8f95465c4;
+  `the_linear_capture_copy_is_promoted_after_submit_not_at_record_time`) — the screenshot and depth-capture twins still arm at record time;
   `sky_cube.rs::record_bake` runs mid-frame (`context/build_and_upload_instances.rs`) — check its
   publish barrier before the first consumer. Evidence is a `BYRO_VALIDATION` capture, not reading.
 - **Passes new since 2026-10-15.** The direct-shadow filter (`shadow_filter.rs`, dispatched inside
@@ -252,7 +255,10 @@ re-audit it here. This dimension owns how *systems* use it.
   transient (#6101, 824c620a5: the quest stage / objective pair in `evaluate_guard_guard_free`, red only in the
   multi-crate `-p byroredux-core -p byroredux-physics -p byroredux-scripting --lib` lane; pinned by
   `try_resource_2_does_not_deadlock_against_resource_2_mut` in `crates/core/src/ecs/world_tests.rs`, which carries
-  `#[cfg_attr(miri, ignore)]` — a lock-order test, not pointer provenance, #6234 5dc642ee7).
+  `#[cfg_attr(miri, ignore)]` — a lock-order test, not pointer provenance, #6234 5dc642ee7). The graph is process-wide, so a
+  core test holding two fixtures in plain code order closes a cycle against any sorted user of the same pair, intermittently
+  (#6808 b88ff14da `resource_2_mut_both_writable`; #6809 80b2a7d56 gave the plain-order query tests private `PlainA` / `PlainB`
+  fixtures — never hold the shared `Health` / `Position` pair in plain order).
 - **A fixture records only the edges its storages allow.** #5372 (1c15a2270) closed
   `LoadedCellIndex → StoryEvent → LoadedCellIndex` (the hello location resolved under the `StoryEvent` guard), which the
   lane never saw because the dialogue fixture lacked the Story Manager storages and `raise_hello_story_event` returned
@@ -329,7 +335,11 @@ The access model and the mechanical declaration guard (`system_access_declaratio
   `event_cleanup_system` drains in Late, so `combat_damage_system` / `hit_event_system` registered ahead of the
   projectile-flight and VM `ProcessTrapHit` producers dropped every dart-trap hit; a registration-order bug the
   access analyzer cannot see; the ObScript `obscript_hit_system` consumer joined the same test as a split-out system, #6293
-  6208348f7), and the spoken-INFO path in Stage::Late must not claim the fragment journal cursor
+  6208348f7; `vats_mode_system`, whose `vats_confirm` inserts a `HitEvent` per landed target, joined the producer list in #6813 —
+  safe because it is an Early exclusive and every consumer is in Update), `vats_mode_is_written_after_the_early_movement_gate_and_before_its_action_consumers`
+  (`VatsState`: the Early parallel `player_controller_system` movement gate and the app loop's `dt` scaling read the PREVIOUS
+  frame's mode, so the world freeze trails the enter/exit edge by one frame by design; the writer is an Early exclusive that must
+  stay after the `ActionState` edges and before `combat_input_system` / `interaction_system`, #6812), and the spoken-INFO path in Stage::Late must not claim the fragment journal cursor
   its same-frame `QuestStageAdvancedBatch` drains unread (#5297, 68a06509a). For any NEW single-writer / multi-reader resource,
   check writer-stage ≤ reader-stage and that a test like these pins it; fix by moving the *consumer* to
   a Late exclusive after the writer, not by moving the writer.
@@ -413,7 +423,7 @@ First step: `grep -n 'load-bearing' -B4 -A12 crates/renderer/src/vulkan/context/
 **Output**: `/tmp/audit/concurrency/dim_6.md`
 
 ### Dimension 7: Worker Threads & Thread-Safety Bounds
-Paths: `byroredux/src/streaming/`, `byroredux/src/texture_streamer.rs`, `byroredux/src/asset_provider/texture_prefetch.rs`, `byroredux/src/terrain_height.rs`, `byroredux/src/cell_loader/load_order.rs`, `byroredux/src/render/mod.rs`, `crates/bsa/src/read_at.rs`, `crates/debug-server/src/{listener,system}.rs`, `crates/renderer/src/vulkan/allocator.rs`, `crates/ui/src/player.rs`, `crates/audio/src/`
+Paths: `byroredux/src/streaming/`, `byroredux/src/texture_streamer.rs`, `byroredux/src/asset_provider/texture_prefetch.rs`, `byroredux/src/terrain_height.rs`, `byroredux/src/asset_provider/material/cdb.rs`, `byroredux/src/cell_loader/load_order.rs`, `byroredux/src/render/mod.rs`, `crates/bsa/src/read_at.rs`, `crates/debug-server/src/{listener,system}.rs`, `crates/renderer/src/vulkan/allocator.rs`, `crates/ui/src/player.rs`, `crates/audio/src/`
 First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs' crates byroredux tools | grep -v test` (a new worker thread outside this list is a coverage gap)
 **Checklist**:
 - **Streaming worker shutdown.** `WorldStreamingState::shutdown` takes the `worker` handle first, then
@@ -434,7 +444,10 @@ First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs'
   The shared-archive registry (`open_shared`, `byroredux/src/asset_provider/archive.rs`) reuses a parsed reader only while its
   `ArchiveStamp` matches — length + mtime everywhere, plus `(dev, ino, ctime)` on Unix, since a same-length rewrite that
   restores the mtime otherwise served another entry's bytes as `Ok` (#5663, 04036a6fb); the path-keyed Starfield CDB caches
-  in `asset_provider/material/cdb.rs` are documented process-lifetime and never re-stamped.
+  in `asset_provider/material/cdb.rs` are documented process-lifetime and never re-stamped. Their index build also runs on a
+  named `sf-cdb-index` prefetch thread (`prefetch_cdb_material_index`): the slot is installed before the thread is queued, so a
+  lookup reaching a still-queued CDB parks on it, a shared build gate serialises prefetch and lazy builds (each holds a ~105 MB
+  blob), a failed spawn falls back to the lazy build, and a panicking build is memoised, not retried per lookup (#5665, 988402d25).
   M39 texture promotions read archives on `TextureStreamer`'s own 2-thread rayon pool (`texture_streamer.rs`,
   `texture-stream-N`; `step` lands finished `FinishedRead`s over an `mpsc` channel and starts at most
   `MAX_READS_IN_FLIGHT`; the registry's `queue_promotion_bytes` runs on the main thread). It owns its own

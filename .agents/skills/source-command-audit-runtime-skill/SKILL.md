@@ -1,6 +1,6 @@
 ---
 name: source-command-audit-runtime-skill
-description: Audit ByroRedux runtime telemetry by driving a headless engine on per-game cells, diffing stats against checked-in baselines, and reporting the state of the smoke / golden-frame gate matrix. Use when the user requests a runtime telemetry, capture, or gate-matrix audit.
+description: Audit ByroRedux runtime telemetry by driving a headless engine on per-game cells, diffing stats against checked-in baselines, and running the smoke gates and real-data pins its change window selects (the whole gate matrix with --full). Use when the user requests a runtime telemetry, capture, or gate-matrix audit.
 ---
 
 # Runtime Telemetry Audit

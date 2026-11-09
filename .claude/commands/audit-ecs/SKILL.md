@@ -40,7 +40,10 @@ the `MeshHandle → Children` edge #5535 removed; #5954 `7a4f6c1a2` gathers firs
 same graph: #5032 `3bc60e0be` made `cinematic_trio_survives_save_load_round_trip` (`save_io/round_trip_tests.rs`)
 and `quest_alias_collection_fill_type_still_declines_not_binds` (`crates/scripting/src/scene/quest_alias_tests.rs`)
 drop their first guard before the second acquisition — a test that holds a `ComponentRef`/`ResourceRead` across
-another acquisition records a back edge exactly like production code.
+another acquisition records a back edge exactly like production code. Core's own `world_tests.rs` did it twice more: #6808 `b88ff14da`
+(`resource_2_mut_both_writable` held `ResA`/`ResB` in code order after the TypeId-sorted `resource_2_mut`) and #6809 `80b2a7d56` (the
+plain-order query tests held the shared `Health`/`Position` pair that `query_2_mut` users take sorted; they now use private
+`PlainA`/`PlainB` fixtures) — the order flips with the build's dependency set, so these reddened only some lanes, ~1 in 100 runs. Nothing may hold a shared fixture pair in plain order.
 
 A wrong lock order is HIGH. This dimension owns the *machinery*; system-level cycles, canonical-order
 adherence and CI detector coverage are `/audit-concurrency` Dim 3 and Dim 5.
@@ -217,9 +220,9 @@ orchestrator (`boot/schedule/update/mod.rs`) over five ordered segment functions
 `register_script_runtime`, `register_player_and_animation`; #6359 `4ab5766e3`) — registration order is the producer →
 consumer contract, so a new system joins the segment whose slot it fills, and the per-function size pins in
 `per_frame_driver_functions_stay_within_their_size_pins` (`scheduler_access_tests.rs`) catch a segment regrowing.
-Since #6703 `22e0f71fc` / #6704 `49aa54e36` (umbrella #5802, still open) the segment functions, `register_post_update_systems`
+Since #6703 `22e0f71fc` / #6704 `49aa54e36` (umbrella #5802, closed 2026-11-07 with the hub split finished by #6705/#6706/#6707) the segment functions, `register_post_update_systems`
 and `register_late_systems` are flat lists of calls into one file per subsystem (`update/<domain>/*.rs`, `post_update/*.rs`,
-`late/*.rs`; the pins are now single digits, 16 for Late), each a contiguous run of the old sequence, and `boot::SOURCES`
+`late/*.rs`; the pins are now 6..=16 lines, 16 for Late), each a contiguous run of the old sequence, and `boot::SOURCES`
 (`boot/mod.rs`) `include_str!`s every one with a `PER_FILE_WITNESS` so the text-scan guards still read every row — **a new
 subsystem file missing from `SOURCES` is invisible to those guards**, so confirm each file under `boot/schedule/` is listed.
 Orders that used to be file position are named constraints: `Scheduler::run_before` / `run_after` + `resolve_order`
@@ -294,13 +297,15 @@ moving a claim into a delegate must not drop it from the scan's reach.
 - Cross-stage sequencing (a consumer in an earlier stage than its producer) is invisible to the
   analyzer — see `/audit-concurrency` Dim 4 for the pinned cases and the by-hand rule. The same blind spot
   covers same-stage order against a one-frame marker: `HitEvent` producers (melee, NPC strike, force-greet,
-  `Weapon.Fire` projectile flight, the VM's `ProcessTrapHit` flush inside the reference/alias script systems)
+  `Weapon.Fire` projectile flight, the VM's `ProcessTrapHit` flush inside the reference/alias script systems, VATS shots via `vats_mode_system`)
   must register before all four consumers — `combat_damage_system`, `hit_event_system`,
   `reference_script_hit_system` (#5991) and the ObScript `obscript_hit_system` (split out of
   `obscript_object_system`, #6293 `6208348f7`) — or `event_cleanup_system`
   drains the hit unseen — dart-trap and projectile damage never landed until `ee6468fd1`, now pinned by
-  `hit_event_consumers_run_after_every_producer` (`mine_system`, #6580/#6540, is a producer). Since #6684 `2a02c5446` the
-  seven schedule-order guards read the **built** schedule (`build_scheduler()` + `access_report()` through the
+  `hit_event_consumers_run_after_every_producer` (`mine_system`, #6580/#6540, and `vats_mode_system`, #6813 `ca0844c89` — an Early exclusive, safe today, pinned against a stage move — are producers). `vats_mode_system` is the single `VatsState` writer and runs in the Early exclusive phase, so
+  `player_controller_system`'s VATS movement gate reads the previous frame's mode — an intended one-frame lag, pinned by
+  `vats_mode_is_written_after_the_early_movement_gate_and_before_its_action_consumers` (#6812 `f6a991435`). Since #6684 `2a02c5446` the
+  eight schedule-order guards read the **built** schedule (`build_scheduler()` + `access_report()` through the
   `schedule_order` helper, exact system names, panic on a missing name; two parallel systems in one stage count as
   unordered) rather than where registration text sits in `SOURCES`; the kill-switch and timing pins stay text scans because
   they cover environment-gated branches, and the movers need `BYRO_NO_AI_LOCOMOTION` unset. A new producer outside that

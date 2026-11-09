@@ -29,7 +29,7 @@ Dim 2's lock rules cover both.
 
 ## Scope
 
-`crates/scripting/src/` (~121k LOC incl. tests; re-measure with `find crates/scripting/src -name '*.rs' | xargs wc -l`): `translate/` (`mod`, `source`, `archetype`, `compose`, `effects`, `tables`,
+`crates/scripting/src/` (~124k LOC incl. tests; re-measure with `find crates/scripting/src -name '*.rs' | xargs wc -l`): `translate/` (`mod`, `source`, `archetype`, `compose`, `effects`, `tables`,
 `recognizers/{quest_stage_gate,rumble,two_state_activator}`); `fragment.rs` + `fragment/{effects,populate,
 state,systems}.rs` with the per-family appliers in `fragment/effects/{resolve,deferred,inventory,placement,scene,lock,
 player_control,vehicle_cinematic,ai_combat,quest_scoped,evaluate,guards,quest_vars,actor_values,actor_lists,
@@ -48,7 +48,7 @@ event delivery), `fragment/{updates,distance,events,hits,anim_events}.rs` (regis
 **native-state stores** the VM's primitives write and conditions read — one small saved module each (CK page quoted
 in its module doc; each is a `FORMAT_MAJOR` question for `/audit-save`): `quest_variables.rs`, `location.rs`,
 `bleedout.rs`, `messages.rs`, `keywords.rs`, `relationships.rs`, `faction_changes.rs`, `alias_overrides.rs`,
-`alias_collections.rs`, `created_references.rs`, `perk_entry_points.rs`, `destruction.rs` and the sibling
+`alias_collections.rs`, `created_references.rs`, `perk_entry_points{,/{bodies,catalog,gates}}.rs` (the hook catalog + gate + body split of #6654), `destruction.rs` and the sibling
 `activate_parents`/`crime_*`/`jail`/`guards`/`followers`/`map_markers`/`menus`/`ownership`/`scanning`/`skills`/`speechcraft`/
 `*_requests`/`tempering`/`words_of_power` files (subsystems migrated by #5802 export their own `install(world)` + `register_saved(registry)`;
 `build_save_registry` calls each at its old row position — the schema fingerprint is order-sensitive); the M47.3 ObScript family
@@ -80,14 +80,15 @@ since shipped; still real gaps — world-query search across unloaded data, cond
 injected packages/spells/keywords/names/voice-type/combat overlays — don't re-file as discoveries), crate docstrings
 (`translate/mod.rs`, `fragment.rs`, `fragment/vm/`, `fragment/budget.rs`, `cleanup.rs` marker house rules).
 
-**Known-open — cite, don't re-file** (verified 2026-11-06 with `gh issue view`): #5764 (interpreter deferral ~0.8 µs a delivery; a value-called function or an
+**Known-open — cite, don't re-file** (verified 2026-11-09 with `gh issue view`): #5764 (interpreter deferral ~0.8 µs a delivery; a value-called function or an
 array/struct-holding frame cannot suspend — the budget-split residual; its idle-walk half shipped as `11685934d`,
 Dim 2),
-#5802 (hub-file growth; every subsystem migrating to its own `install` + `register_saved` + `register_*_systems` file is a slice —
-`bde3478db`/`e619dbbaf`, `93bcda9bc`, and the Part-of commits #6701-#6707 `c22a9d410`..`5c983ecd0`: `register_late_systems` is a flat
-14-call list, the Update domains and `register_post_update_systems` are flat call lists into one file per subsystem,
-`Scheduler::run_before`/`run_after` replace file position as the order carrier — `/audit-tech-debt`). #4113 is open but lives in `crates/papyrus`/`crates/pex`
-(`/audit-papyrus`). Closed since the 2026-10-31 sync: #5586 (the `mq101_conformance` example's oversized `run` — fixed
+#4113 is open but lives in `crates/papyrus`/`crates/pex`
+(`/audit-papyrus`). Closed since the 2026-11-06 sync: #5802 (closed 2026-11-07; hub-file growth — every subsystem migrated to its own
+`install` + `register_saved` + `register_*_systems` file, `bde3478db`/`e619dbbaf`, `93bcda9bc`, and the Part-of commits #6701-#6707
+`c22a9d410`..`5c983ecd0`: `register_late_systems` is a flat 14-call list, the Update domains and `register_post_update_systems` are flat
+call lists into one file per subsystem, `Scheduler::run_before`/`run_after` replace file position as the order carrier). Closed since the
+2026-10-31 sync: #5586 (the `mq101_conformance` example's oversized `run` — fixed
 `d7c47d741` (`run` 44 lines, one `check_*` per stage), then #6360 `01f48c929` split the file into
 `crates/scripting/examples/mq101_conformance/{main,ast_probe,scenes,packages,scripts,fragments,report}.rs`; longest
 function ~165 lines, `scenes.rs::check_scene_runtime`; the issue was closed 2026-11-03), #6688 (the scripting crate's Pattern-B
@@ -96,7 +97,7 @@ marker scans became runs of the consumers — `every_documented_pattern_b_marker
 (the schedule-order guards read the built schedule — `build_scheduler()` / `access_report()`, `2a02c5446` — and
 `system_access_declaration_tests` reads acquisitions from a `syn` tree in `byroredux/src/acquisition_scan.rs`, depth 3
 same-file callees, `c98a4552f`; Dim 2), #6554/#6558/#6545 (CTDA getters the ObScript VM already answered
-catalogued — `CATALOG` 88 → 102 with #6657's `IsWeaponSkillType`, Oblivion's four `OBLIVION_CONDITION_GETTERS`,
+catalogued — `CATALOG` 88 → 102 with #6657's `IsWeaponSkillType` (103 with #6654's `GetPermanentActorValue`), Oblivion's four `OBLIVION_CONDITION_GETTERS`,
 `6dec5c4a9`/`612f876f9`/`d3db6fd58`; Dim 3), #6570 (CTDA 659 foreign on Fallout 4, `57a49a4d4`), #6571
 (`tempering_multiplier` takes back the `SceneAliasCandidate` it lends, `9e033a595`), #6572 (`CHRR` queues on
 `DeferredFragmentEffects::relationship_events` and raises at the flush, not under the quest guards, `076de275e`), #6573
@@ -207,6 +208,8 @@ they cannot see:
   reads, actor/scene/location/map-marker atoms, run-time `Compare`, and (M47.2) `Any` for `||` (`A || (B && C)`;
   a negated `||` is a conjunction, a nested disjunction flattens). Any atom no guard claims returns `None` and the
   whole fragment declines (then Dim 2's VM check gets a chance — a decline here is never a partial lowering).
+  A comparison operand that casts a numeric reading to `Bool`/`String` declines (a cast is no longer transparent, #6512 `62fb2cd6d`,
+  `a_bool_cast_over_a_numeric_reading_no_longer_lowers_as_the_bare_number`); `as_num` applies each cast's own rule to a literal.
   Flat-sequence effect model: `Stmt::ExprStmt → classify_effect_with_providers(..)`, then the quest-script inline /
   `quest_vmad_statement` fallbacks, else decline; locals bind only via `bind_local` (quest / object / player /
   plain, else decline); a named call argument declines instead of binding positionally (#5068). Control flow is
@@ -476,7 +479,7 @@ Also `cleanup_removes_all_event_types`;
   markers must merge, not overwrite** (`SparseSetStorage` = one slot per entity): `QuestStageAdvancedBatch`
   (`push_quest_stage_advances`), `HitEvent` (one row per target: the NPC melee producer holds a strike on an
   already-hit target, #4324; projectile hits ride the `ProcessTrapHit` queue whose flush applies the same hold,
-  #5860 `ea28a35b8` — re-verify after any new producer), `ActivateEvent` (a system running after the Update consumers must queue through `PendingFragmentActivations`, not insert — the Find package's arrival did, so Update `OnActivate` consumers missed it until #6466 `9f783b30f`; Update-stage consumer order pinned by the flush test, which now
+  #5860 `ea28a35b8` — re-verify after any new producer; a VATS queue's folded shots ride the sibling `HitParts` (per-shot `PartStrike`, VATS-LIMB-002, `83e9c6c92`), a Pattern-A marker drained with the `HitEvent` it describes), `ActivateEvent` (a system running after the Update consumers must queue through `PendingFragmentActivations`, not insert — the Find package's arrival did, so Update `OnActivate` consumers missed it until #6466 `9f783b30f`; Update-stage consumer order pinned by the flush test, which now
   lists `container_loot_system` and `mg07_on_activate_dispatch` (#4712/#4116), plus
   `reference_script_event_system`; the Late-stage `npc_dialogue` selection system is a further consumer — it must
   stay before `event_cleanup_system`); `NativeActivation` rides an `ActivateEvent` raised by `Activate(akActivator,
@@ -505,7 +508,7 @@ the resolve and before the drain is the recurrence).
   reads `is_running` alone — a stopped/completed/failed quest is not running, #5636 `aac92c6ca`; the plugin-side
   `param1_is_form_id` load-order remap mirrors the catalog by index, with rows for 56/71/74 and an exhaustive
   mirror test, #5637 `722c06a76`; M47.2 grew `CATALOG` to 48, #5778 `71e488a26` to 52, #5750/#6251/the crime
-getters to 77, #6460 `102e4f5cd` + the tempering read to 88, #6558 `612f876f9` +9 to 97, #6545 `d3db6fd58` +4 to 101 and #6657's `IsWeaponSkillType` (109, FO3/FNV) to 102 (the array length is the live count; #6251 `f57c75616` added 35 `GetDisabled`, 47 `GetItemCount`
+getters to 77, #6460 `102e4f5cd` + the tempering read to 88, #6558 `612f876f9` +9 to 97, #6545 `d3db6fd58` +4 to 101 and #6657's `IsWeaponSkillType` (109, FO3/FNV) to 102 and `GetPermanentActorValue` (495, FO3/FNV, #6654 `3ae93950b`) to 103 (the array length is the live count; #6251 `f57c75616` added 35 `GetDisabled`, 47 `GetItemCount`
 (a form list sums its members), 64 `GetIsCreature`, 84 `GetDeadCount`, 131 `GetPCIsSex`, 289 `IsInCombat`, FNV's
 420/421 `GetObjectiveCompleted`/`Displayed`, 431 `GetHealthPercentage`, 546 `GetQuestCompleted`; #5750 `20d01cd6c`
 426/427 `GetIsVoiceType` and 700 `IsCommandedActor`; the crime commits the `GetCrimeGold`/`GetCrime`/`IsGuard`/
@@ -707,7 +710,8 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   and FO3/FNV ambient package selection, which installs only from a fully-modeled, player-targeted (PTDT 0x14 or
   none) Conversation (`PackRecord::dialogue_type` 0) — #5376 `4e58f241d`, `AmbientBehavior::from_package` in
   `byroredux/src/npc_spawn/ai_package.rs` (`/audit-gameplay`), pinned by `dialogue_ambient_install_declines_unmodeled_offtarget_sayto`;
-  the Skyrim tree dialect has no ambient installer. A failed open consumes the directive (no per-frame retry);
+  the Skyrim+ tree dialect installs a `ForceGreet` leaf from the ambient driver under the same rule (every leaf condition modelled,
+  target the player or absent; `ai_package/tree.rs`, AIP-TREE-005, `88c239b35`). A failed open consumes the directive (no per-frame retry);
   `forcegreet_system` holds every directive while `player_can_act` is false and holds one while the player talks
   to another NPC (consumed if already talking to the greeter) — #5392 `16544d4c9`,
   `dead_player_holds_the_forcegreet_directive`, `open_conversation_holds_or_consumes_the_forcegreet_directive`.
