@@ -39,9 +39,9 @@ depth, which these poses do not offer. Needs the five games' data, a display or 
 with numpy and Pillow; exit `77` when one is missing.
 
 `interior-shafts-content.sh` is A9, the interior day / night pass on real cells (VLM-INT-001 to -003, #6727). For each
-listed cell (FNV, FO3, Oblivion, Skyrim, FO4, Starfield; `shaft` cells and `sealed` controls) it boots the cell held open
+listed cell (the sun-path census's list: `shaft` cells the census predicts can show a shaft, `sealed` controls with no sun path, and `gap` cells with an authored sun and no medium, which are reported and never fail the run) it boots the cell held open
 on the free camera (`--fly`), with the clock paused and the exposure fixed, prints the inventory of fog volumes and sky
-apertures the engine built, then for up to four poses (`cam.tp` onto the cell's volumes, sky apertures first) captures the
+apertures the engine built, then for up to four poses (`cam.tp` onto the cell's volumes: sky apertures first, then light-shaft volumes) captures the
 froxel in-scatter view at `time.set 12`, `time.set 0` and `time.set 12` again. The two noon frames bracket the midnight one,
 so their difference is the noise floor. A `shaft` cell passes when the pixels where noon beats midnight by more than
 max(3 levels, twice that noise) cover at least 0.1 % of the frame; a `sealed` control passes when no pose does. It prints

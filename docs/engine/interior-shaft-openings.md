@@ -121,54 +121,104 @@ indoor sunlight is authored as `LIGH` placements and is counted separately.
   - **Starfield**: 0 of 1 (`Activator_LightBeamTall01` imports no mesh from its NIF; its geometry lives outside it).
   - Fallout 3 / FNV as above (22 of 22 and 22 of 24).
 
-## A9 day / night results (VLM-INT-001 to -003), measured 2026-11-08 (#6727)
+## Sun-path census (VLM-INT-001), measured 2026-11-09 (#6727)
+
+`interior_sun_path_census` (ignored test in `byroredux/src/cell_loader/nif_import_registry_tests.rs`, beside
+`baked_beam_converter_coverage`; `BYROREDUX_SUNPATH_ESM=<master.esm> BYROREDUX_BEAM_ARCHIVE=<mesh archives,
+comma-separated> cargo test -p byroredux --bin byroredux --release -- --ignored --nocapture interior_sun_path_census`)
+runs the engine's own beam converter chain on every distinct interior base model, then counts per interior cell the
+volumes the loader would build:
+
+- `shaft`: `LightShaft` volumes; `aperture`: `SkyAperture` volumes (a proved source plane). The two producers that can
+  follow the sun. Every sun-capable producer is one of these; authored fog meshes are always `Homogeneous`.
+- `passive`: `Homogeneous` volumes from the beam chain: fixture beams beside local lights (authored fog meshes are not
+  counted, so this under-counts).
+- `sunlight`: placed `LIGH` bases with `sunlight` in the editor id (Skyrim's indoor sun, which nothing turns into a
+  medium: a gap marker, not a sun path).
+
+| Game | Interior cells | With `shaft` or `aperture` | …with `aperture` | …in a Show Sky cell | Passive only | Show Sky cells | …with no medium at all | With sunlight `LIGH` |
+|---|---|---|---|---|---|---|---|---|
+| FNV | 388 | 6 | 3 | 0 | 179 | 0 | 0 | 7 |
+| FO3 | 421 | 0 | 0 | 0 | 283 | 2 | 2 | 73 |
+| Oblivion | 1,855 | 4 | 0 | 0 | 225 | 59 | 58 | 0 |
+| Skyrim SE | 590 | 0 | 0 | 0 | 0 | 230 | 230 | 205 |
+| FO4 | 1,195 | 6 | 0 | 6 | 183 | 83 | 29 | 0 |
+| Starfield | 11,985 | 0 | 0 | 0 | 0 | 0 (flag unverified) | 0 | 0 |
+
+The sun-capable models are four: FNV `NVNellisHangarInteriorLightBeam.nif` (4 apertures and 4 passive volumes per
+placement) and `RepLightBeams.nif` (5 `LightShaft` cones), Oblivion `Dungeons\Misc\LightBeam01.NIF`, and FO4
+`WindowLightBeam.nif`. Every other beam model converts to a passive cone or is not claimed.
+
+- **FNV**: the three Nellis hangars (`NellisHangar1`, `1b`, `2`: 32 apertures each) and three `RepLightBeams` cells
+  (`RocketLabTop` 60, `NCRPrisonBlockB` 30, `2EOVault21GiftShop` 25), none in a Show Sky cell.
+- **Oblivion**: `TestJuanGoblinLair` 11, `TestCave01` 7, `AnvilCastleSmugglersCave` 2, `TestShrine` 2 `LightShaft`
+  volumes, none Show Sky. 58 of its 59 Show Sky interiors build no medium.
+- **FO4**: six cells, all Show Sky: `DBTechHighSchool01` 76, `TrinityTower01` 12, `ConcordMuseum01` 10, `CambridgePD01` 6,
+  `zInstituteRotunda` 6, `UniversityPoint01` 4 `LightShaft` volumes. 29 of its 83 Show Sky interiors build no medium.
+- **FO3, Skyrim, Starfield**: no sun-capable volume in any interior. Skyrim has 230 Show Sky interiors and 205 with
+  sunlight `LIGH`, none with a medium; the chain builds no volume in any Starfield interior.
+
+The census only says what the engine would build. A sun-capable volume is not sun-lit: the loader's design needs a
+clear geometry ray through a real opening (see the handoff). The measurement below finds the split.
+
+## A9 day / night results (VLM-INT-001 to -003), measured 2026-11-08 and 09 (#6727)
 
 `docs/smoke-tests/interior-shafts-content.sh` boots each cell held open on the free camera, with the game clock
-paused and the exposure fixed, and for up to four poses (`cam.tp` onto its volumes, sky apertures first; a sealed
-control onto the entities nearest its spawn) captures the froxel in-scatter view at `time.set 12`, `time.set 0` and
-`time.set 12` again. A pose's region is the pixels where the mean noon frame beats midnight by more than
-max(3 levels, 2 x p99 of |noon - noon repeat|); a `shaft` cell passes when its best pose's region is at least 0.1 % of
-the frame, a `sealed` control when no pose reaches that. The in-scatter view is used, not the finished frame, because
-a window or roof hole shows a sky that differs between noon and midnight whether or not any shaft exists. The repeat
-noise is large on many of these cells (p99 up to 34 levels): fixture lights flicker.
+paused and the exposure fixed, and for up to four poses (`cam.tp` onto its volumes: marked apertures first, then
+light-shaft volumes, then any; a control with no volume uses the entities nearest its spawn) captures the froxel
+in-scatter view at `time.set 12`, `time.set 0` and `time.set 12` again. A pose's region is the pixels where the mean
+noon frame beats midnight by more than max(3 levels, 2 x p99 of |noon - noon repeat|); a `shaft` cell passes when its
+best pose's region is at least 0.1 % of the frame, a `sealed` control when no pose reaches that. The in-scatter view
+is used, not the finished frame, because a window or roof hole shows a sky that differs between noon and midnight
+whether or not any shaft exists. The repeat noise is large on many cells (p99 up to 39 levels): fixture lights flicker.
 
-| Game | Cell | Role | Volumes (Show Sky) | Best pose: region / mean dL / max dL / noise p99 | Result |
-|---|---|---|---|---|---|
-| FNV | `NellisHangar1` | shaft | 32 `SkyAperture` + 32 `Homogeneous` (off) | 17.2 % / 26.5 / 54.1 / 8.6 | PASS (all four poses show a region above 0.1 %: 14.4, 5.9, 0.2, 17.2 %) |
-| FNV | `HELIOSOneDeck` | shaft | 14 `Homogeneous` (off) | 0.00 % / 0 / 3.9 / 13.5 | FAIL |
-| FNV | `RepconHQ01` | shaft | 87 `Homogeneous` (off) | 0.04 % / 32.0 / 40.2 / 15.0 | FAIL |
-| FO3 | `Tenpenny01` | shaft | 107 `Homogeneous` (off) | 0.04 % / 84.6 / 85.2 / 26.8 | FAIL |
-| Skyrim | `AbandonedShackInterior` | shaft | 6 `Homogeneous` (on, portal sun 0.51) | 0.00 % / 0 / 3.2 / 6.4 | FAIL |
-| FO4 | `ConcordMuseum01` | shaft | 117 `Homogeneous` + 10 `LightShaft` (on, 0.88) | 91.5 % / 9.3 / 20.7 / 2.8 (one pose of four) | PASS |
-| Oblivion | `WarehouseCaveGeneric` | shaft | 52 `Homogeneous` (off) | 0.00 % / 0 / 1.4 / 1.0 | FAIL |
-| Starfield | `CityNewAtlantisLodgeInt` | shaft | none (off) | no volume to aim at | FAIL |
-| FNV | `HiddenValleyBunker1` | sealed | none | 0.00 % | PASS (no medium, so vacuous) |
-| Skyrim | `HillgrundsTomb01` | sealed | 86 `Homogeneous` (off) | 0.00 % (max dL 20.6 at one pose, under a noise floor of 34) | PASS |
-| Oblivion | `ImperialSewers03` | sealed | 5 `Homogeneous` (off) | 0.00 % | PASS |
-| FO4 | `Vault111Cryo` | sealed | 291 `Homogeneous` (off) | 0.00 % | PASS |
+The first A9 list (the handoff's candidates) failed on cells the census shows have no sun-capable volume (HELIOS One,
+REPCONN HQ, Tenpenny, an Oblivion cave of passive cones). The list is now the census's: a `shaft` cell is one the census
+predicts can show a shaft (a marked aperture, or `LightShaft` volumes in a Show Sky cell), a `sealed` control has no such
+path, and a `gap` cell has an authored sun and no medium.
 
-Pass count per game: FNV 2 of 4, FO3 0 of 1, Skyrim 1 of 2, Oblivion 1 of 2, FO4 2 of 2, Starfield 0 of 1.
+| Role | Cell | Census | Best pose: region / mean dL / noise p99 | Result |
+|---|---|---|---|---|
+| shaft | FNV `NellisHangar1` | 32 apertures | 23.5 % / 18.4 / 5.5 | PASS |
+| shaft | FNV `NellisHangar1b` | 32 apertures | 14.6 % / 21.6 / 6.5 | PASS |
+| shaft | FNV `NellisHangar2` | 32 apertures | 78.4 % / 13.0 / 2.9 | PASS |
+| shaft | FO4 `ConcordMuseum01` | 10 shaft, Show Sky | 92.3 % / 9.3 / 2.8 | PASS |
+| shaft | FO4 `DBTechHighSchool01` | 76 shaft, Show Sky | 3.5 % / 10.4 / 3.1 | PASS (after aiming at its `LightShaft` volumes; aimed at all volumes evenly it showed 0.01 %) |
+| shaft | FO4 `TrinityTower01` | 12 shaft, Show Sky | 4.4 % / 8.9 / 3.7 | PASS |
+| shaft | FO4 `zInstituteRotunda` | 6 shaft, Show Sky | 100 % / 29.5 / 2.0 | PASS |
+| shaft | FO4 `CambridgePD01` | 6 shaft, Show Sky | 42.8 % / 15.8 / 6.0 | PASS |
+| shaft | FO4 `UniversityPoint01` | 4 shaft, Show Sky | 14.4 % / 23.1 / 6.0 | PASS |
+| gap | Skyrim `AbandonedShackInterior` | Show Sky, 4 sunlight `LIGH`, no medium | 0.00 % / 0 / 6.7 | GAP-OPEN |
+| control | FNV `RocketLabTop` | 60 shaft, Show Sky off | 0.00 % (one earlier run 0.60 %, not repeated) | PASS |
+| control | FNV `NCRPrisonBlockB`, `2EOVault21GiftShop` | 30 / 25 shaft, Show Sky off | 0.00 % | PASS |
+| control | Oblivion `AnvilCastleSmugglersCave`, `TestCave01` | 2 / 7 shaft, Show Sky off | 0.00 % | PASS |
+| control | FNV `HELIOSOneDeck`, `HiddenValleyBunker1`; FO3 `Tenpenny01`; Skyrim `HillgrundsTomb01`; Oblivion `WarehouseCaveGeneric`, `ImperialSewers03`; FO4 `Vault111Cryo` | passive or no medium | 0.00 % to 0.01 % | PASS |
+
+Per game: FNV shaft 3 of 3, controls 5 of 5; FO4 shaft 6 of 6, control 1 of 1; Oblivion controls 4 of 4 (no shaft
+cell); FO3 control 1 of 1 (no shaft cell); Skyrim control 1 of 1 and one open gap; Starfield has no entry.
 
 What it shows:
 
-- **Two cells show a sun-driven shaft above the noise**: `NellisHangar1` (the marked-aperture path) and
-  `ConcordMuseum01` (Show Sky on, `LightShaft` cones). Every other `shaft` cell fails, and for most of them that is
-  the content: the HELIOS, REPCONN, Tenpenny and `WarehouseCaveGeneric` volumes are all `Homogeneous` fixture-beam
-  cones beside local lights with Show Sky off, which have no sun path to follow (see the FNV coverage notes above).
-  The A9 list the handoff proposed contains cells of both kinds; the PRD's "each listed cell passes" needs the list
-  narrowed to cells whose census shows a sun path, or the engine to give the others one.
-- **Skyrim's `AbandonedShackInterior` is the real gap.** Show Sky is on, the portal sun is 0.51, and the engine
-  built six passive volumes, yet no pose shows a day / night change in the medium. Its indoor sun is `LIGH` placements,
-  which nothing converts into a medium (see the Skyrim census row above).
-- **Starfield's Lodge builds no medium at all**, and neither does Oblivion's `AbandonedMine` (inventoried, not run).
-  The census found no baked interior beams for Starfield.
-- **The sealed controls hold**: three with passive media (86, 5 and 291 volumes) show no day / night change above
-  their noise, so the procedure does not manufacture shafts from fixture lights.
+- **The census predicts the measurement on this sample.** The nine census-predicted cells all show a sun-driven change
+  above the noise; the five cells with `LightShaft` volumes but Show Sky off and no marked aperture (REPCONN labs, NCR
+  prison, Vault 21 gift shop, two Oblivion caves) show none. The first ten cells measured fixed the rule (a marked
+  aperture, or `LightShaft` in a Show Sky cell); the next four (`NellisHangar1b`, `NellisHangar2`, `CambridgePD01`,
+  `UniversityPoint01`) were predicted before they were measured and all passed. Ten cells is a small sample: it is
+  evidence for the rule, not proof, and a `LightShaft` cell without Show Sky could still pass if a clear ray exists.
+- **The mechanism covers very little.** Nine interiors across the six titles (three in FNV, six of FO4's 1,195) have a
+  candidate the sun can light. FO3, Skyrim and Starfield have none; Skyrim's 230 Show Sky interiors and 205 with
+  sunlight `LIGH`, and Oblivion's 58 Show Sky interiors with no medium, are the gap `AbandonedShackInterior` stands for.
+- **The gate is not noise-free.** Across the runs two controls each showed one marginal false positive (`RocketLabTop`
+  0.60 % once, `Vault111Cryo` 0.19 % once, both in cells with flickering fixture lights) and one cell hit a harness error
+  (`TestCave01`, a screenshot that never appeared). Each passed on repeat. The 0.1 % floor sits close to the noise on
+  cells with flicker.
 - `WarehouseCaveGeneric` booted with 52 `FogVolume` entities here against the 66 recorded under #6774; not reconciled.
 
 Limits: at most four poses per cell, so a FAIL means no sampled pose showed a change, not that none exists. VLM-INT-004
 (the same pass through an exterior-to-interior door) is not run: it needs a door route per cell. VLM-INT-001's
-"geometry evidence that it borders outdoors" is not produced; the inventory above is the volume census, per profile.
+"geometry evidence that it borders outdoors" is not produced beyond Show Sky and the marked plane; the census is
+the volume and flag census, per cell. The census reads the Show Sky flag, which reads 0 for every Starfield interior
+and is unverified there.
 
 ## Next steps
 
@@ -180,4 +230,6 @@ Limits: at most four poses per cell, so a FAIL means no sampled pose showed a ch
 - The day and night pair (VLM-INT-002) is taken for the A9 list above, aimed with `cam.tp` at each volume rather than
   at the slab the noon sun predicts (plane centre minus `t` times the portal sun direction); aiming at the predicted slab
   would sharpen the poses for the marked-aperture cells.
-- Give the A9 list a sun-path census (VLM-INT-001's list), and a door route per listed cell for VLM-INT-004.
+- A door route per listed cell for VLM-INT-004; only the P0 fixtures have one.
+- Decide the gap: Skyrim's sunlight `LIGH` (205 interiors), Oblivion's and FO4's Show Sky interiors with no medium (58
+  and 29) have a sun and nothing to carry it. A converter for them is new engine work, not a list change.
