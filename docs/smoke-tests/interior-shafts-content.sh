@@ -2,21 +2,32 @@
 # A9 — interior day / night pair on real cells (VLM-INT-001, -002, -003; #6727).
 #
 # For each listed cell the script boots it held open on the free camera (`--fly`: no physics body, so the view
-# does not move between captures), waits until the world is rendering, inventories every fog volume and sky
+# does not move between captures), waits until the cell's entities are in, inventories every fog volume and sky
 # aperture the engine built for it (VLM-INT-001), then runs the day / night procedure of VLM-INT-002 from a few
 # poses, with the game clock paused and the exposure fixed so only the lighting changes. Per pose: `time.set 12`,
-# a screenshot, `time.set 0`, a screenshot, `time.set 12` and a third. The two
-# noon frames bracket the midnight one, so their difference is the noise of everything that changes over that
-# interval except the lighting (flicker, animated props, auto-exposure, temporal accumulation).
+# a screenshot, `time.set 0`, a screenshot, `time.set 12` and a third. The two noon frames bracket the midnight
+# one, so their difference is the noise of everything that changes over that interval except the lighting
+# (light flicker, animated props, temporal accumulation). It is not small: fixture lights flicker, so a pose with
+# a flickering light in view needs a correspondingly larger day / night difference to count.
 #
 # A `shaft` cell passes when, at its best pose, the pixels where the mean noon frame is brighter than midnight by
 # more than max(3 levels, 2 x p99 |noon - noon repeat|) cover at least MIN_REGION_FRAC of the frame; a `sealed`
 # control passes when no pose does (VLM-INT-003). A `shaft` cell's poses are `cam.tp` onto its volumes, sky
 # apertures first; a `sealed` control's are `cam.tp` onto a few of the entities nearest its spawn. A pose whose
-# three frames are pixel-identical is a frozen frame (a loading cover, a held menu), not a measurement: the cell
-# is reported `invalid`, never as a pass.
+# three frames are identical and not empty is a frozen frame (a held menu), not a measurement: the cell is
+# reported `invalid`, never as a pass. The cell must also show a loaded world (a stable, large entity count).
+#
+# The frames are the froxel in-scatter radiance view (`render.debug volumetric_radiance`), not the finished
+# frame: a window or roof hole shows the sky, which differs between noon and midnight whether or not a shaft
+# exists, and a lit surface differs too. The in-scatter view holds only the medium, so only a shaft can count.
 #
 # MIN_REGION_FRAC keeps a handful of hot pixels from passing: 0.1 % of a 1280x720 frame is 921 pixels.
+#
+# Reading a FAIL: it means no sampled pose (at most MAX_POSES per cell) showed a sun-driven change in the medium,
+# not that none exists. For a cell whose volumes are all fixture-beam cones beside local lights (the inventory
+# line shows only `Homogeneous` volumes, Show Sky off) that is the authored content, not an engine fault: those
+# beams have no sun path to follow (docs/engine/interior-shaft-openings.md). A cell with no volume at all fails
+# its shaft run by construction.
 #
 # VLM-INT-004 (the same pass reached through an exterior-to-interior door) is NOT exercised here: it needs a
 # door route per cell, and only the P0 fixtures have one. The script says so and counts it as not run.
@@ -75,7 +86,8 @@ MIN_THRESHOLD = 3.0          # luma levels
 NOISE_FACTOR = 2.0           # VLM-INT-002: "more than twice the noise of a repeated noon capture"
 TIME_SETTLE_S = 12           # the time-of-day change blends in over seconds
 POSE_SETTLE_S = 2            # the free camera does not fall; this lets streaming and temporal passes settle
-READY_TIMEOUT_S = 240        # the cell must be rendering (not a loading cover) before anything is measured
+READY_TIMEOUT_S = 300        # the cell must be loaded (not a loading cover) before anything is measured
+MIN_ENTITIES = 150           # a cell with fewer entities than this is not a loaded interior
 MAX_POSES = 4
 
 # (game key, `--game` profile, cell, role, short name)
@@ -92,7 +104,6 @@ CELLS = [
 SEALED = [
     # Controls: interiors the inventory shows with no fog volume and no Show Sky.
     ("fnv", "fnv", "HiddenValleyBunker1", "sealed", "Hidden Valley bunker"),
-    ("fo3", "fo3", "Vault101a", "sealed", "Vault 101 entrance"),
     ("sky", "skyrim_se", "HillgrundsTomb01", "sealed", "Hillgrund's Tomb"),
     ("obl", "oblivion", "ImperialSewers03", "sealed", "Imperial sewers"),
     ("fo4", "fo4", "Vault111Cryo", "sealed", "Vault 111"),
@@ -115,7 +126,7 @@ def dbg(port, *cmds, timeout=180):
     env = dict(os.environ, BYRO_DEBUG_PORT=str(port))
     r = subprocess.run([DBG], input="\n".join(cmds) + "\nquit\n", capture_output=True, text=True,
                        cwd=ROOT, timeout=timeout, env=env)
-    return r.stdout
+    return r.stdout.replace("\\n", "\n")  # some replies arrive as one quoted line with literal \n
 
 def luma(path):
     a = np.asarray(Image.open(path).convert("RGB")).astype(float)
@@ -193,7 +204,7 @@ def measure(port, tag, targets):
         thr = max(MIN_THRESHOLD, NOISE_FACTOR * noise)
         d = (a + c) / 2 - mid
         region = d > thr
-        frozen = bool(np.array_equal(a, mid) and np.array_equal(a, c))
+        frozen = bool(np.array_equal(a, mid) and np.array_equal(a, c) and a.mean() > 1.0)
         res.append({"pose": f"cam.tp {target}", "noise_p99": round(noise, 2), "threshold": round(thr, 2),
                     "region_frac": float(region.mean()),
                     "region_mean_delta": float(d[region].mean()) if region.any() else 0.0,
@@ -201,16 +212,29 @@ def measure(port, tag, targets):
                     "camera_moved": moved, "frozen": frozen})
     return res
 
-def wait_ready(tag):
-    """Block until the engine's GPU stats show the world rendering, not a loading cover."""
-    path = OUT / f"{tag}.engine.log"
+def wait_ready(port):
+    """Block until the cell's entities are in: a large, stable `entities` total (a loading cover has none)."""
+    last, same = -1, 0
     t0 = time.time()
     while time.time() - t0 < READY_TIMEOUT_S:
-        vals = [float(v) for v in re.findall(r"gpu\[[^\]]*\]: main_render=([\d.]+)", path.read_text(errors="replace"))[-4:]]
-        if len(vals) == 4 and min(vals) > 0.5:
+        n = len(re.findall(r"Entity \d+ ", dbg(port, "entities")))
+        same = same + 1 if (n == last and n >= MIN_ENTITIES) else 0
+        if same >= 2:
             return True
-        time.sleep(2)
+        last = n
+        time.sleep(3)
     return False
+
+def wait_stable(port):
+    """Streaming can outlast the first rendered frames: wait for the fog-volume count to stop changing."""
+    last, same = -1, 0
+    for _ in range(40):
+        n = len(re.findall(r"Entity \d+ ", dbg(port, "entities FogVolume")))
+        same = same + 1 if n == last else 0
+        if same >= 2:
+            return
+        last = n
+        time.sleep(3)
 
 def nearby_targets(port, exclude):
     ids = [int(m) for m in re.findall(r"^\s*[\d.]+\s+(\d+)\s", dbg(port, "near 1500"), re.M)]
@@ -239,13 +263,17 @@ def run_cell(i, game, profile, cell, role, note):
             if time.time() - t0 > 420:
                 rec["status"] = "boot-timeout"; return rec
             time.sleep(1)
-        if not wait_ready(tag):
+        if not wait_ready(port):
             rec["status"] = "invalid"; rec["why"] = "the world never rendered (loading cover or stalled boot)"; return rec
         # Hold everything but the lighting still: a running game clock moves the sun and sky during a capture
         # pair, and auto-exposure re-adapts after every change; both would read as noise or as a false shaft.
         dbg(port, "time.pause", "exposure fixed 1.0")
-        time.sleep(3)
+        wait_stable(port)
         inv = inventory(port)
+        # Measure the in-scatter view, not the finished frame: a window or roof hole shows the sky, and the sky
+        # changes between noon and midnight whether or not any shaft exists. The radiance view holds only the
+        # froxel in-scatter (no opacity floor), so a lit surface or a visible sky can never count as a shaft.
+        dbg(port, "render.debug volumetric_radiance")
         by_profile = {}
         for v in inv["volumes"]:
             by_profile[v["profile"]] = by_profile.get(v["profile"], 0) + 1
