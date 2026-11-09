@@ -12,10 +12,11 @@
 //! sandbox seating path (`collect_marker_seats` + `pick_nearest_seat` +
 //! `apply_seat_assignments` — the same reservations, root snap, and
 //! sit-enter final-frame park). Eat seats at **sit** markers; Sleep at
-//! **sleep** markers, falling back to sit markers when a cell's beds
-//! author none — parking the seated pose at the sleep marker's authored
-//! entry position is the documented v0 approximation for the lie-down
-//! clip no archive this engine reads carries.
+//! **sleep** markers only — parking the seated pose at the sleep marker's
+//! authored entry position is the documented v0 approximation for the
+//! lie-down clip no archive this engine reads carries. A sleeper with no
+//! bed marker in range idles at its Sleep location (AIP-SEAT-004, PRD
+//! decision Q3); it never takes a chair.
 //!
 //! #5390 — the Sleep-marker preference used to be reachable on Skyrim+ only:
 //! `FurnitureMarkerKind::Sleep` resolves from `animation_type == 2`, a
@@ -23,10 +24,10 @@
 //! author no such field. The NIF importer now reads it from the
 //! `furnituremarkerXX` a legacy position refers to (1 - 10 are beds, CS
 //! *GetFurnitureMarkerID*), so a cell's beds author sleep markers on every
-//! game and a sleeper takes a bed. The sit fallback below remains for a cell
-//! whose beds author none (and for legacy markers outside 1 - 10, which
-//! stay on the v0 Sit default, so an Eat actor can still take such a marker).
-//! The fallback logs at debug so a live session can see which arm fired.
+//! game and a sleeper takes a bed. Legacy markers outside 1 - 10 stay on the
+//! v0 Sit default, so an Eat actor can still take such a marker. The sit
+//! fallback #5390 added for a cell whose beds author none is retired
+//! (AIP-SEAT-004): a sleeper there idles, logged at debug.
 //!
 //! The walk is the shared KCC-backed locomotion step the other frozen-goal
 //! movers use (#5452): `navmesh_path::cached_walk_step` routes it along the
@@ -527,18 +528,15 @@ pub(super) fn seat_at_marker(
         return SeatAttempt::Retry;
     };
     let is_sleep = matches!(kind, EatOrSleep::Sleep);
-    let use_sleep_markers = is_sleep && !frame_seats.sleep(world).is_empty();
-    if is_sleep && !use_sleep_markers {
-        // #5390 — legacy beds (position ref 1..=10) resolve to Sleep at the
-        // importer; every other legacy marker is the v0 Sit default (see the
-        // module doc). Reaching here means the cell has no bed marker in
-        // range, so the fallback is the nearest sit marker.
-        log::debug!(
-            "[m42] sleep npc={npc}: no Sleep marker in range — \
-             seating at the nearest sit marker"
-        );
-    }
-    let collected: &[Seat] = if use_sleep_markers {
+    // AIP-SEAT-004 (Q3): a sleeper takes a bed or nothing. #5390 resolves legacy beds (position ref 1..=10)
+    // to Sleep at the importer; every other legacy marker is the v0 Sit default (see the module doc), and
+    // the sit fallback that once seated a sleeper on a chair is retired. With no bed in range the actor has
+    // already walked to its Sleep location and idles there, as in the clip-less case above.
+    let collected: &[Seat] = if is_sleep {
+        if frame_seats.sleep(world).is_empty() {
+            log::debug!("[m42] sleep npc={npc}: no Sleep marker in range - idling at the Sleep location");
+            return SeatAttempt::Retry;
+        }
         &frame_seats.sleep
     } else {
         frame_seats.sit(world)
@@ -1106,15 +1104,13 @@ mod tests {
         assert_eq!(seated_at.furniture, bed);
     }
 
-    /// #5390 — the legacy FO3/FNV shape: no marker in the cell can
-    /// resolve `FurnitureMarkerKind::Sleep` (the field keys on
-    /// `animation_type == 2`, a Skyrim+ `BSFurnitureMarker` field;
-    /// legacy markers author 0 and all read as Sit). The sit fallback
-    /// IS the legacy sleep path — the documented v0 contract until
-    /// Phase C decodes `furnituremarkerNN.nif` — so the sleeper seats
-    /// at the nearest sit marker, chairs included.
+    /// AIP-SEAT-004 (decision Q3) — the legacy FO3/FNV shape where no marker
+    /// in the cell resolves `FurnitureMarkerKind::Sleep` (legacy markers
+    /// outside the bed range author 0 and read as Sit). #5390 used to seat
+    /// the sleeper on the nearest chair; that fallback is retired, so the
+    /// sleeper idles at its Sleep location and the chair stays free.
     #[test]
-    fn legacy_sleep_actor_seats_at_the_sit_fallback() {
+    fn a_sleeper_with_no_bed_idles_and_never_takes_a_chair() {
         let (mut world, actor) = setup();
         world.insert_resource(SandboxSitClip(Some((7, 0.5))));
         world.insert(
@@ -1152,13 +1148,12 @@ mod tests {
             },
         );
         eat_sleep_system(&world, 1.0);
-        let seated_at = world
-            .get::<Seated>(actor)
-            .expect("the legacy sleeper seats through the fallback");
-        assert_eq!(
-            seated_at.furniture, chair,
-            "with no decodable Sleep marker the sit fallback is the sleep path"
+        assert!(
+            !world.has::<Seated>(actor),
+            "with no Sleep marker in range the sleeper idles; it does not take the chair"
         );
+        let reservations = world.try_resource::<SeatReservations>().map(|r| r.0.len()).unwrap_or(0);
+        assert_eq!(reservations, 0, "and the chair is left unreserved");
     }
 
     /// #5391 — "near current location" (and every type without an
