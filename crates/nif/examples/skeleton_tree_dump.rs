@@ -1,6 +1,7 @@
 //! #5015 probe: dump a NIF's NiNode hierarchy with each node's LOCAL
 //! translation (Z-up, as authored) and rotation matrix, one JSON line per node:
-//! `{"name":..,"parent":..,"t":[x,y,z],"r":[[..],[..],[..]]}`.
+//! `{"name":..,"parent":..,"t":[x,y,z],"r":[[..],[..],[..]],"block":i,"ci":j}` — `block` is the NIF block
+//! index and `ci` the node's position in its parent's `children` (the order a depth-first walk visits it).
 //!
 //! Lets the XRGD analysis compare a pose entry's parent-relative offset with
 //! the skeleton's own bone offsets (no `serde_json` here; fields are plain).
@@ -14,11 +15,13 @@ fn main() {
     let bytes = std::fs::read(&path).expect("read");
     let scene = byroredux_nif::parse_nif(&bytes).expect("parse");
     let mut parent = vec![None; scene.blocks.len()];
+    let mut child_index = vec![0usize; scene.blocks.len()];
     for (i, _) in scene.blocks.iter().enumerate() {
         if let Some(node) = scene.get_as::<NiNode>(i) {
-            for child in &node.children {
+            for (j, child) in node.children.iter().enumerate() {
                 if let Some(c) = child.index() {
                     parent[c] = Some(i);
+                    child_index[c] = j;
                 }
             }
         }
@@ -33,8 +36,8 @@ fn main() {
         let t = node.av.transform.translation;
         let r = node.av.transform.rotation.rows;
         println!(
-            "{{\"name\":\"{name}\",\"parent\":\"{parent_name}\",\"t\":[{:?},{:?},{:?}],\"r\":{:?}}}",
-            t.x, t.y, t.z, r
+            "{{\"name\":\"{name}\",\"parent\":\"{parent_name}\",\"t\":[{:?},{:?},{:?}],\"r\":{:?},\"block\":{i},\"ci\":{}}}",
+            t.x, t.y, t.z, r, child_index[i]
         );
     }
 }

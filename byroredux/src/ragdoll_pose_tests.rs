@@ -851,10 +851,125 @@ fn the_fo4_body_sets_are_recognised_by_name_only_in_full() {
     assert!(!is_fo4_posable_ragdoll(&names(&FO4_HUMAN_RAGDOLL_BODIES)[..17]));
 }
 
+/// #6065 — the creature rigs that pose by node order are recognised by name, in full, in blob order.
+#[test]
+fn the_fo4_tree_ordered_creature_sets_are_recognised_by_name_only_in_full() {
+    let names = |set: &[&str]| set.iter().map(|n| Some(n.to_string())).collect::<Vec<_>>();
+    let sets: [&[&str]; 8] = [
+        &FO4_BRAHMIN_RAGDOLL_BODIES,
+        &FO4_RADSTAG_RAGDOLL_BODIES,
+        &FO4_YAOGUAI_RAGDOLL_BODIES,
+        &FO4_MIRELURK_RAGDOLL_BODIES,
+        &FO4_RADROACH_RAGDOLL_BODIES,
+        &FO4_MOLERAT_RAGDOLL_BODIES,
+        &FO4_DOG_RAGDOLL_BODIES,
+        &FO4_STINGWING_RAGDOLL_BODIES,
+    ];
+    for set in sets {
+        assert!(is_fo4_tree_ordered_ragdoll(&names(set)), "{} bodies", set.len());
+        assert!(!is_fo4_tree_ordered_ragdoll(&names(&set[..set.len() - 1])), "a body short");
+        assert!(!is_fo4_posable_ragdoll(&names(set)), "a creature set is not an id-mapped set");
+        let mut swapped = names(set);
+        swapped.swap(1, 2);
+        assert!(!is_fo4_tree_ordered_ragdoll(&swapped), "blob order matters");
+    }
+    assert!(!is_fo4_tree_ordered_ragdoll(&names(&FO4_HUMAN_RAGDOLL_BODIES)));
+}
+
+/// The entry that poses body `b` is the one at the body's rank in the skeleton's node order; a trailing marker is
+/// set aside, any other count is refused, and the first body must lead the node order.
+#[test]
+fn fo4_entries_map_to_bodies_by_node_order() {
+    let entries: Vec<_> = (0..4).map(|k| id_entry(0, [0.0, 0.0, 0.1 * k as f32])).collect();
+    // Body 0 leads; bodies 1, 2, 3 sit at node ranks 3, 1, 2.
+    assert_eq!(entries_by_tree_order(&entries, &[0, 3, 1, 2]), Ok(vec![0, 3, 1, 2]));
+    let marker = RagdollPoseBone { bone_id: 0, position: [0.0, 17.0, 10.0], rotation: [0.0; 3] };
+    let mut with_marker = entries.clone();
+    with_marker.push(marker);
+    assert!(entries_by_tree_order(&with_marker, &[0, 1, 2, 3]).is_ok(), "one trailing marker is set aside");
+    assert!(entries_by_tree_order(&entries[..3], &[0, 1, 2, 3]).is_err(), "a body without an entry");
+    let mut stray = entries.clone();
+    stray.push(id_entry(0, [0.1, 0.2, 0.3]));
+    assert!(entries_by_tree_order(&stray, &[0, 1, 2, 3]).is_err(), "a rotated extra entry is not a marker");
+    assert!(entries_by_tree_order(&entries, &[1, 0, 2, 3]).is_err(), "the root body must lead");
+    assert!(entries_by_tree_order(&entries, &[0, 1, 1, 3]).is_err(), "ranks are a permutation");
+}
+
+/// A molerat corpse whose hierarchy branches under the root: the first child's subtree is bodies 10..19 and the
+/// second's is bodies 1..9, so the children-ordered walk (root, 10..19, 1..9) differs from the blob order and from a
+/// reversed-children walk. Entry k carries rotation `0.01 * (k + 1)`, so each bone's result names its entry.
+#[test]
+fn an_fo4_creature_corpse_is_posed_by_node_order() {
+    let (mut world, root, bones) = fo4_pose_world(&FO4_MOLERAT_RAGDOLL_BODIES, &[0; 20]);
+    world.insert(bones[10], Parent(bones[0]));
+    world.insert(bones[9], Children(Vec::new()));
+    world.insert(bones[0], Children(vec![bones[10], bones[1]]));
+    let mut entries: Vec<_> = (0..20).map(|k| id_entry(0, [0.0, 0.0, 0.01 * (k + 1) as f32])).collect();
+    entries.push(RagdollPoseBone { bone_id: 0, position: [0.0, 17.0, 10.0], rotation: [0.0; 3] });
+    assert_eq!(pose_skeleton(&world, root, &entries), Ok(20));
+    let rotation = |bone| world.get::<Transform>(bone).unwrap().rotation;
+    let rank_of = |body: usize| match body {
+        0 => 0,
+        10..=19 => body - 9,
+        _ => body + 10,
+    };
+    for body in 0..20 {
+        assert!(
+            same_rotation(rotation(bones[body]), expected_yup(0.0, 0.0, 0.01 * (rank_of(body) + 1) as f32)),
+            "body {body} is posed by entry {}",
+            rank_of(body)
+        );
+    }
+    assert_eq!(world.get::<Transform>(bones[0]).unwrap().translation, Vec3::ZERO, "the root at the placement");
+}
+
+/// A creature pose whose hierarchy lacks one of the body bones, or whose entry count is wrong, is refused and
+/// changes nothing.
+#[test]
+fn an_fo4_creature_pose_with_a_missing_bone_or_entry_is_refused() {
+    let (mut world, root, bones) = fo4_pose_world(&FO4_MOLERAT_RAGDOLL_BODIES, &[0; 20]);
+    let short: Vec<_> = (0..19).map(|k| id_entry(0, [0.0, 0.0, 0.01 * (k + 1) as f32])).collect();
+    assert!(pose_skeleton(&world, root, &short).is_err());
+    assert_eq!(world.get::<Transform>(bones[3]).unwrap().rotation, Quat::IDENTITY, "nothing was written");
+    // Cut the chain at body 6: bodies 7.. are no longer reachable from the skeleton root, so their rank cannot be found.
+    world.insert(bones[6], Children(Vec::new()));
+    let full: Vec<_> = (0..20).map(|k| id_entry(0, [0.0, 0.0, 0.01 * (k + 1) as f32])).collect();
+    assert!(pose_skeleton(&world, root, &full).is_err(), "a body not reachable from the skeleton root");
+}
+
+/// Each body's rank in the depth-first order of an imported skeleton's nodes, children in node-index order (the
+/// order the loader appends them to `Children`): what [`body_tree_ranks`] sees on the spawned entities.
+fn imported_body_ranks(nodes: &[byroredux_nif::import::ImportedNode], body_names: &[Option<String>]) -> Option<Vec<usize>> {
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+    let mut roots = Vec::new();
+    for (i, node) in nodes.iter().enumerate() {
+        match node.parent_node {
+            Some(parent) => children[parent].push(i),
+            None => roots.push(i),
+        }
+    }
+    let mut order = Vec::new();
+    let mut stack: Vec<usize> = roots.into_iter().rev().collect();
+    while let Some(i) = stack.pop() {
+        order.push(i);
+        stack.extend(children[i].iter().rev());
+    }
+    let mut ranks = vec![usize::MAX; body_names.len()];
+    let mut next = 0;
+    for i in order {
+        let Some(name) = nodes[i].name.as_deref() else { continue };
+        if let Some(b) = body_names.iter().position(|n| n.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(name))) {
+            ranks[b] = next;
+            next += 1;
+        }
+    }
+    (next == body_names.len()).then_some(ranks)
+}
+
 /// #5015 / #6065 — the FO4 pose claim against the real corpus: every Starts-Dead
-/// ACHR of `Fallout4.esm` that authors an `XRGD` pose on the human, feral-ghoul or
-/// super-mutant skeleton resolves through the bone-id mapping, and the rig the
-/// corpse's race loads is one of the three verified body sets.
+/// ACHR of `Fallout4.esm` that authors an `XRGD` pose on a verified skeleton
+/// (human, feral ghoul, super mutant by bone id; the eight creature rigs by node
+/// order) is on a verified body set, and the share that resolves is pinned.
 ///
 ///   cargo test -p byroredux --bin byroredux fo4_xrgd_poses -- --ignored --nocapture
 #[test]
@@ -885,13 +1000,23 @@ fn fo4_xrgd_poses_resolve_against_the_real_skeletons() {
             Some("meshes\\actors\\feralghoul\\characterassets\\skeleton.nif")
         }
         "SuperMutantRace" => Some("meshes\\actors\\supermutant\\characterassets\\skeleton.nif"),
+        // The creature rigs posed by node order (#6065).
+        "BrahminRace" => Some("meshes\\actors\\brahmin\\characterassets\\skeleton.nif"),
+        "RadStagRace" => Some("meshes\\actors\\radstag\\characterassets\\skeleton.nif"),
+        "YaoGuaiRace" => Some("meshes\\actors\\yaoguai\\characterassets\\skeleton.nif"),
+        "MirelurkRace" => Some("meshes\\actors\\mirelurk\\characterassets\\skeleton.nif"),
+        "RadRoachRace" => Some("meshes\\actors\\radroach\\characterassets\\skeleton.nif"),
+        "MoleratRace" => Some("meshes\\actors\\molerat\\characterassets\\skeleton.nif"),
+        "ViciousDogRace" => Some("meshes\\actors\\dogmeat\\characterassets\\skeleton.nif"),
+        "StingwingRace" => Some("meshes\\actors\\stingwing\\characterassets\\skeleton.nif"),
         _ => None,
     };
     // Skeleton → (host bone names, bone ids) in template order.
-    /// Host bone names and bone ids of a skeleton's ragdoll bodies, in template order.
-    type Rig = (Vec<Option<String>>, Vec<Option<u8>>);
+    /// Host bone names, bone ids and node-order ranks of a skeleton's ragdoll bodies, in template order.
+    type Rig = (Vec<Option<String>>, Vec<Option<u8>>, Option<Vec<usize>>);
     let mut rigs: HashMap<&str, Rig> = HashMap::new();
     let (mut corpses, mut posable, mut mapped) = (0usize, 0usize, 0usize);
+    let mut by_race: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
     let mut failures: Vec<String> = Vec::new();
     let mut visit = |r: &byroredux_plugin::esm::cell::PlacedRef| {
         if !r.starts_dead || r.ragdoll_pose.is_empty() {
@@ -900,19 +1025,35 @@ fn fo4_xrgd_poses_resolve_against_the_real_skeletons() {
         let Some(npc) = index.npcs.get(&r.base_form_id) else { return };
         let Some(race) = index.races.get(&npc.race_form_id) else { return };
         let Some(path) = skeleton_of(&race.editor_id) else { return };
-        let (names, ids) = rigs.entry(path).or_insert_with(|| {
+        let (names, ids, ranks) = rigs.entry(path).or_insert_with(|| {
             let bytes = archive.extract(path).expect("the skeleton NIF");
             let scene = byroredux_nif::parse_nif(&bytes).unwrap();
             let ragdoll = byroredux_nif::import::collision::extract_ragdoll(&scene).expect("a ragdoll");
-            (
-                ragdoll.bodies.iter().map(|b| Some(b.bone_name.to_string())).collect(),
-                ragdoll.bodies.iter().map(|b| b.pose_bone_id).collect(),
-            )
+            let names: Vec<Option<String>> = ragdoll.bodies.iter().map(|b| Some(b.bone_name.to_string())).collect();
+            let mut pool = byroredux_core::string::StringPool::new();
+            let imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);
+            let ranks = imported_body_ranks(&imported.nodes, &names);
+            (names, ragdoll.bodies.iter().map(|b| b.pose_bone_id).collect(), ranks)
         });
         corpses += 1;
-        posable += usize::from(is_fo4_posable_ragdoll(names));
-        match entries_by_bone_id(&r.ragdoll_pose, ids) {
-            Ok(_) => mapped += 1,
+        let by_ids = is_fo4_posable_ragdoll(names);
+        let by_tree = is_fo4_tree_ordered_ragdoll(names);
+        posable += usize::from(by_ids || by_tree);
+        let resolved = if by_ids {
+            entries_by_bone_id(&r.ragdoll_pose, ids)
+        } else {
+            match ranks {
+                Some(ranks) => entries_by_tree_order(&r.ragdoll_pose, ranks),
+                None => Err("the imported skeleton lacks a ragdoll body bone".to_owned()),
+            }
+        };
+        let tally = by_race.entry(race.editor_id.clone()).or_default();
+        tally.0 += 1;
+        match resolved {
+            Ok(_) => {
+                mapped += 1;
+                tally.1 += 1;
+            }
             Err(e) => failures.push(format!("{:08x} ({}): {e}", r.form_id, race.editor_id)),
         }
     };
@@ -924,16 +1065,35 @@ fn fo4_xrgd_poses_resolve_against_the_real_skeletons() {
             cell.references.iter().for_each(&mut visit);
         }
     }
-    eprintln!("[fo4] {corpses} human/ghoul/super-mutant-skeleton corpses, {posable} on a verified body set, {mapped} resolve by bone id");
+    eprintln!("[fo4] {corpses} corpses on a verified skeleton, {posable} on a verified body set, {mapped} resolve");
+    for (race, (total, resolved)) in &by_race {
+        eprintln!("  {race:<24} {resolved:>4} of {total:<4}");
+    }
     for f in failures.iter().take(10) {
         eprintln!("  refused: {f}");
     }
-    assert!(corpses > 900, "the human, ghoul and super-mutant corpses were found, got {corpses}");
-    assert_eq!(posable, corpses, "all three rigs are on the verified body sets");
+    assert!(corpses > 1000, "the human, ghoul, super-mutant and creature corpses were found, got {corpses}");
+    assert_eq!(posable, corpses, "every rig is on a verified body set");
     // Measured 2026-10-19: 972 of 987 on the human and ghoul rigs (98.5 %); the 7
     // super mutants all resolve. The rest are ghouls with two unmatched trailing
-    // entries (20 in all) and a few poses that omit a body.
+    // entries (20 in all) and a few poses that omit a body. The creature rigs
+    // (#6065) add ~64 corpses, most of which resolve; their stragglers carry extra
+    // entries (brahmin 41 / 42) or are the 20 poses below.
     assert!(mapped * 100 >= corpses * 95, "at least 95% resolve, got {mapped} of {corpses}");
+    // Measured 2026-11-08, per creature race: (corpses, resolved). The three brahmin that do not resolve author
+    // 41 and 42 entries for 39 bodies.
+    for (race, want) in [
+        ("BrahminRace", (13, 10)),
+        ("MirelurkRace", (3, 3)),
+        ("MoleratRace", (12, 12)),
+        ("RadRoachRace", (5, 5)),
+        ("RadStagRace", (6, 6)),
+        ("StingwingRace", (3, 3)),
+        ("ViciousDogRace", (12, 12)),
+        ("YaoGuaiRace", (5, 5)),
+    ] {
+        assert_eq!(by_race.get(race).copied(), Some(want), "{race}");
+    }
 }
 
 /// The Fallout 3 / New Vegas census behind #6252's pins: a title's dead-base humanoid corpses that

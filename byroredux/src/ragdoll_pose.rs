@@ -65,16 +65,28 @@
 //! checks: each entry's offset length equals its bone's own NIF offset (the
 //! verified rigs sit within 3 % on every bone's median: human 17/17, ghoul
 //! 16/16), and forward kinematics ranks intrinsic XYZ with negated angles first
-//! by lying-body extent. Over the 12 creature races that author a pose, only the
-//! **super mutant** passes (15/16 bones — `SPINE1`, a 3-unit bone, is 10 % off —
-//! and rank 1 over 7 corpses). The rest are *not established*: the molerat's
-//! offsets are exact (17/17) but another convention flattens its corpses more
-//! (rank 7), the radstag and brahmin rank first but 6/29 and 22/37 of their
-//! bones' offsets are off (the phantom legs, necks and tails), the dog, cat,
-//! yaoguai, radroach, mirelurk, stingwing and tripod turret fail one or both,
-//! and the FEV hound passes both on its single corpse, too few for a ranking.
-//! The flatness test discriminates weakly for a quadruped, so those failures
-//! mean "not established", not "wrong". Also unresolved: the ghoul poses with 20
+//! by lying-body extent. **Which entry poses which body is rig-dependent too.** The bone-id claim
+//! below is right where the ids differ (human, ghoul, super mutant), but most creature rigs author
+//! id 0 on nearly every body (a radroach 23 of 25, a stingwing 31 of 31), where it degenerates to the
+//! blob order, and the entries do not follow that: with it brahmin's entry offsets matched the NIF on
+//! 2 of 37 bones, a radroach's on 4 of 21. Entry k poses the k-th ragdoll body bone in the skeleton's
+//! own depth-first order ([`entries_by_tree_order`]), and then every measured bone matches
+//! (brahmin 37/37, radstag 29/29, yaoguai 16/16, mirelurk 22/22, molerat 17/17, stingwing 30/30,
+//! dog 21/21, radroach 20/21 with one 3 % near-miss). **Brahmin, radstag, yaoguai and mirelurk** then
+//! also rank the shipped Euler convention first by lying-body extent, and the radroach does too; they
+//! are admitted ([`FO4_BRAHMIN_RAGDOLL_BODIES`] and friends). **Molerat, dog and stingwing** have exact
+//! offsets but another convention flattens their corpses more (7th, 11th, 11th of 24) — the test that
+//! discriminates weakly for a quadruped — and were admitted on the owner's call (2026-11-08), not on
+//! the verified bar: if their corpses look wrong when lying, that is the first suspect. The joint
+//! pivot as a second offset reference changes no verdict. The cat (17/22), Handy, the FEV hound (one
+//! corpse) and the rigs below stay refused. Under the id claim alone only the super mutant
+//! passed (15/16 bones — `SPINE1`, a 3-unit bone, is 10 % off — and rank 1 over 7 corpses), which
+//! is what hid the creature rigs above: the molerat's offsets were already exact, the radstag and
+//! brahmin ranked first with most offsets "off" (they were being compared against the wrong bones).
+//! The flatness test discriminates weakly for a quadruped, so the molerat, dog, stingwing and cat
+//! failures mean "not established", not "wrong". Also unresolved: the three brahmin corpses with
+//! 41 / 42 entries for 39 bodies; the cat's offsets (17/22, with or without the node order); the
+//! ghoul poses with 20
 //! entries — two carry an all-zero entry and a constant `(0, 40.321, 100)`
 //! entry rotated `(-π, π/2, -π)` after the 18 bodies, six are a debug cell whose
 //! bone ids are all 0, and four (`NationalGuardTrainingYard01`) carry two
@@ -194,7 +206,7 @@
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::{
-    collect_subtree, EntityId, GlobalTransform, Parent, Transform, World,
+    collect_subtree, Children, EntityId, GlobalTransform, Parent, Transform, World,
 };
 use byroredux_core::math::coord::euler_zup_to_quat_yup_mode;
 use byroredux_core::math::{Quat, Vec3};
@@ -478,6 +490,91 @@ pub(crate) const FO4_SUPERMUTANT_RAGDOLL_BODIES: [&str; 17] = [
     "RArm_Hand",
 ];
 
+// ── FO4 creature rigs whose entries follow the skeleton's node order (#6065) ──────────────────────────
+//
+// Their bodies author bone id 0 almost everywhere (a radroach 23 of 25, a stingwing 31 of 31), so the bone-id
+// claim ([`entries_by_bone_id`]) degenerates to the blob order, which is not the entries' order. Entry k poses the
+// k-th ragdoll body bone in the skeleton's own depth-first order ([`entries_by_tree_order`]); on every measured
+// bone the entry's offset length then equals the NIF bone's (`scripts/xrgd-fo4-rigs.py`, `tree` mapping).
+// Each list is the body set in blob (template) order, by bone name.
+
+/// Brahmin: 39 bodies.
+pub(crate) const FO4_BRAHMIN_RAGDOLL_BODIES: [&str; 39] = [
+    "Pelvis", "RLeg1", "LLeg1", "Tail1", "SPINE2", "Sack", "RLeg2", "LLeg2", "Tail2", "Spine4", "RLeg3", "LLeg3",
+    "Tail3", "HubSpine", "RLegToe", "LLegToe", "Tail4", "RNeck1", "LArm1", "LNeck1", "RArm1", "RNeck2", "LArm2",
+    "LNeck2", "RArm2", "RNeck3", "LArm3", "LNeck3", "RArm3", "RHead", "LArmPalm", "LHead", "RArmPalm", "RREar",
+    "RJaw", "RLEar", "LJaw", "LREar", "LLEar",
+];
+
+/// Rad stag: 31 bodies, including the four phantom-leg bodies.
+pub(crate) const FO4_RADSTAG_RAGDOLL_BODIES: [&str; 31] = [
+    "COM", "RLeg_Rear_Thigh", "LLeg_Rear_Thigh", "SPINE1", "RLeg_Rear_Knee", "LLeg_Rear_Knee", "SPINE2",
+    "RLeg_Rear_Ankle", "LLeg_Rear_Ankle", "Spine3", "Ribcage", "LPhantomLeg1", "RPhantomLeg1", "RLeg_Front_Thigh",
+    "LLeg_Front_Thigh", "LNeck1", "RNeck1", "LPhantomLeg2", "RPhantomLeg2", "RLeg_Front_Knee", "LLeg_Front_Knee",
+    "LNeck2", "RNeck2", "RLeg_Front_Ankle", "LLeg_Front_Ankle", "LNeck3", "RNeck3", "LNeck4", "RNeck4", "LNeck5",
+    "RNeck5",
+];
+
+/// Yao guai: 18 bodies.
+pub(crate) const FO4_YAOGUAI_RAGDOLL_BODIES: [&str; 18] = [
+    "COM", "RLeg_Rear_Thigh", "SPINE1", "LLeg_Rear_Thigh", "RLeg_Rear_Knee", "Spine3", "LLeg_Rear_Knee",
+    "RLeg_Rear_Ankle", "Ribcage", "LLeg_Rear_Ankle", "RLeg_Front_Thigh", "LLeg_Front_Thigh", "Neck1",
+    "RLeg_Front_Knee", "LLeg_Front_Knee", "HEAD", "RLeg_Front_Ankle", "LLeg_Front_Ankle",
+];
+
+/// Mirelurk (the common one): 23 bodies.
+pub(crate) const FO4_MIRELURK_RAGDOLL_BODIES: [&str; 23] = [
+    "Pelvis", "RFrontLegThigh", "LFrontLegThigh", "SPINE1", "LBackLegThigh", "RBackLegThigh", "RFrontLegCalf",
+    "LFrontLegCalf", "SPINE2", "LBackLegCalf", "RBackLegCalf", "RFrontLegFoot", "LFrontLegFoot", "Rib",
+    "LBackLegfoot", "RBackLegFoot", "HEAD", "LArmUpper", "RArmUpper", "LArmFore", "RArmFore", "LArmPalm",
+    "RArmPalm",
+];
+
+/// Rad roach: 25 bodies (the root is the skeleton's own misspelt `Pelivis`).
+pub(crate) const FO4_RADROACH_RAGDOLL_BODIES: [&str; 25] = [
+    "Pelivis", "2RLeg1", "2LLeg1", "SPINE1", "RadRoachTail1", "2RLeg2", "2LLeg2", "RWing", "LWing", "1LLeg1",
+    "1RLeg1", "Nick", "0RArm1", "0LArm1", "2RLeg3", "2LLeg3", "1LLeg2", "1RLeg2", "HEAD", "0RArm2", "0LArm2",
+    "1LLeg3", "1RLeg3", "0RArm3", "0LArm3",
+];
+
+/// Molerat: 20 bodies. Admitted on exact offsets (17/17) although its flatness rank is weak (7th of 24).
+pub(crate) const FO4_MOLERAT_RAGDOLL_BODIES: [&str; 20] = [
+    "Pelvis", "Back_LLeg1", "Tail1", "SPINE1", "Back_RLeg1", "Back_LLeg2", "Tail2", "Spine3", "Back_RLeg2",
+    "Back_LLegAnkle", "Tail3", "Neck", "Front_RLeg1", "Front_LLeg1", "Back_RLegAnkle", "HEAD", "Front_RLeg2",
+    "Front_LLeg2", "Front_RLegAnkle", "Front_LLegAnkle",
+];
+
+/// Vicious dog / Dogmeat: 24 bodies. Admitted on exact offsets (21/21) although its flatness rank is weak (11th).
+pub(crate) const FO4_DOG_RAGDOLL_BODIES: [&str; 24] = [
+    "Dogmeat_COM", "Dogmeat_Rear_RLeg1", "Dogmeat_Tail1", "Dogmeat_Spine1", "Dogmeat_Rear_LLeg1",
+    "Dogmeat_Rear_RLeg2", "Dogmeat_Tail3", "Dogmeat_Ribcage", "Dogmeat_Rear_LLeg2", "Dogmeat_Rear_RLegAnkle",
+    "Dogmeat_Tail5", "Dogmeat_Neck1", "Dogmeat_Front_RLeg1", "Dogmeat_Front_LLeg1", "Dogmeat_Rear_LLegAnkle",
+    "Dogmeat_Rear_RLegToe1", "Dogmeat_Head", "Dogmeat_Front_RLeg2", "Dogmeat_Front_LLeg2",
+    "Dogmeat_Rear_LLegToe1", "Dogmeat_Front_RLegAnkle", "Dogmeat_Front_LLegAnkle", "Dogmeat_Front_RLegToe1",
+    "Dogmeat_Front_LLegToe1",
+];
+
+/// Stingwing: 31 bodies. Admitted on exact offsets (30/30) although its flatness rank is weak (11th) and only three
+/// corpses author it.
+pub(crate) const FO4_STINGWING_RAGDOLL_BODIES: [&str; 31] = [
+    "Torso", "R RearWing", "Tail1", "HEAD", "R LArm1", "L FrontWing", "R FrontWing", "M LArm1", "R RArm1",
+    "F RArm1", "M RArm1", "F LArm1", "L RearWing", "Tail2", "R LArm2", "M LArm2", "R RArm2", "F RArm2",
+    "M RArm2", "F LArm2", "Tail3", "R LArmPalm", "M LArmPalm", "R RArmPalm", "F RArmPalm", "M RArmPalm",
+    "F LArmPalm", "Tail4", "Tail5", "Tail6", "Tail7",
+];
+
+/// The FO4 creature rigs posed by node order.
+const FO4_TREE_ORDERED_RAGDOLLS: [&[&str]; 8] = [
+    &FO4_BRAHMIN_RAGDOLL_BODIES,
+    &FO4_RADSTAG_RAGDOLL_BODIES,
+    &FO4_YAOGUAI_RAGDOLL_BODIES,
+    &FO4_MIRELURK_RAGDOLL_BODIES,
+    &FO4_RADROACH_RAGDOLL_BODIES,
+    &FO4_MOLERAT_RAGDOLL_BODIES,
+    &FO4_DOG_RAGDOLL_BODIES,
+    &FO4_STINGWING_RAGDOLL_BODIES,
+];
+
 /// An authored corpse's `XRGD` pose, parked on the actor between spawn and
 /// its death reconciliation, which consumes it. Derived from plugin data on
 /// every spawn, so it is not part of a save.
@@ -623,6 +720,83 @@ pub(crate) fn is_fo4_posable_ragdoll(body_bone_names: &[Option<String>]) -> bool
     sets.into_iter().any(|set| is_body_set(body_bone_names, set))
 }
 
+/// Whether a ragdoll's bodies, by bone name in template order, are exactly one of the FO4 creature sets whose
+/// entries pose the bodies in the skeleton's node order ([`entries_by_tree_order`], #6065).
+pub(crate) fn is_fo4_tree_ordered_ragdoll(body_bone_names: &[Option<String>]) -> bool {
+    FO4_TREE_ORDERED_RAGDOLLS.into_iter().any(|set| is_body_set(body_bone_names, set))
+}
+
+/// FO4 creature rigs: for each ragdoll body (by index), the `XRGD` entry that poses it, when entry k poses the
+/// k-th body bone in the skeleton's depth-first order. `ranks[b]` is body `b`'s position in that order
+/// ([`body_tree_ranks`]). The entries must be exactly the bodies (a trailing marker of the [`body_entries`] family
+/// aside, the one `scripts/xrgd-fo4-rigs.py` strips) and the first one must
+/// pose body 0, the root the placement is applied to; anything else is refused.
+pub(crate) fn entries_by_tree_order(
+    entries: &[RagdollPoseBone],
+    ranks: &[usize],
+) -> Result<Vec<usize>, String> {
+    let bodies = body_entries(entries);
+    if bodies.len() != ranks.len() {
+        return Err(format!(
+            "{} pose entries for {} ragdoll bodies - the entry set does not cover this skeleton",
+            bodies.len(),
+            ranks.len()
+        ));
+    }
+    let mut seen = vec![false; ranks.len()];
+    for &rank in ranks {
+        match seen.get_mut(rank) {
+            Some(slot) if !*slot => *slot = true,
+            _ => return Err("the ragdoll bodies' node order is not a permutation".to_owned()),
+        }
+    }
+    if ranks.first() != Some(&0) {
+        return Err("the first ragdoll body is not the first body in the skeleton's node order".to_owned());
+    }
+    Ok(ranks.to_vec())
+}
+
+/// Each ragdoll body's position among the body bones in the skeleton's depth-first order from `skeleton_root`,
+/// children in their stored order (the NIF's `children` order, which is also the order the importer spawns them in).
+/// The core `collect_subtree` visits children in reverse, so it cannot be used for this.
+pub(crate) fn body_tree_ranks(
+    world: &World,
+    skeleton_root: EntityId,
+    bones: &[EntityId],
+) -> Result<Vec<usize>, String> {
+    let body_of: std::collections::HashMap<EntityId, usize> =
+        bones.iter().enumerate().map(|(b, &bone)| (bone, b)).collect();
+    let mut ranks = vec![usize::MAX; bones.len()];
+    let mut visited = std::collections::HashSet::new();
+    let mut next = 0usize;
+    // The visited set and the budget are the project's hierarchy-walk discipline (#5513): a cyclic or duplicated
+    // `Children` graph from a corrupt save yields a finite answer instead of a hang.
+    let mut guard = byroredux_core::ecs::HierarchyTraversalGuard::new(world.next_entity_id() as usize, 0);
+    let mut stack = vec![skeleton_root];
+    while let Some(entity) = stack.pop() {
+        if !visited.insert(entity) {
+            continue;
+        }
+        if !guard.step() {
+            return Err("the skeleton's hierarchy traversal budget ran out (a cyclic Children graph?)".to_owned());
+        }
+        if let Some(&body) = body_of.get(&entity) {
+            ranks[body] = next;
+            next += 1;
+        }
+        if let Some(children) = world.get::<Children>(entity) {
+            stack.extend(children.0.iter().rev().copied());
+        }
+    }
+    if next != bones.len() {
+        return Err(format!(
+            "only {next} of {} ragdoll bones are in the skeleton's hierarchy",
+            bones.len()
+        ));
+    }
+    Ok(ranks)
+}
+
 /// FO4: for each ragdoll body (by index), the `XRGD` entry that poses it.
 ///
 /// Entries name the bone they pose by `bone_id`, and each body carries the id
@@ -716,6 +890,10 @@ pub(crate) fn pose_skeleton(
             })
             .ok_or("no ragdoll template to pose")?;
         let mapping = entries_by_bone_id(entries, &ids)?;
+        bone_poses_mapped(entries, &mapping)?
+    } else if is_fo4_tree_ordered_ragdoll(&names) {
+        let ranks = body_tree_ranks(world, skeleton_root, &bones)?;
+        let mapping = entries_by_tree_order(entries, &ranks)?;
         bone_poses_mapped(entries, &mapping)?
     } else {
         return Err(

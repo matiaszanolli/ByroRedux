@@ -1218,10 +1218,17 @@ fn no_source_hand_spells_the_player_entity_read() {
 /// month later and no scan saw it. The spelling every such walk shares is pushing a
 /// node's `Children` vector onto the worklist (`.extend(children.0…)`); the allowed
 /// sites are the collector itself and ragdoll's two guarded BFS walks (#4572), pinned
-/// by count so a third walk in `ragdoll.rs` fails too.
+/// by count so a third walk in `ragdoll.rs` fails too, and `ragdoll_pose.rs::body_tree_ranks`
+/// (#6065), the one walk that needs the children visited in their stored order, which
+/// `collect_subtree` (reverse sibling order) cannot give; it carries a visited set and the
+/// same traversal budget.
 #[test]
 fn no_production_code_hand_rolls_a_children_walk() {
-    const ALLOWED: &[(&str, usize)] = &[("crates/core/src/ecs/hierarchy.rs", 1), ("byroredux/src/ragdoll.rs", 4)];
+    const ALLOWED: &[(&str, usize)] = &[
+        ("crates/core/src/ecs/hierarchy.rs", 1),
+        ("byroredux/src/ragdoll.rs", 4),
+        ("byroredux/src/ragdoll_pose.rs", 1),
+    ];
     let needle = [".extend(", "children.0"].concat();
     let mut found = Vec::new();
     let mut seen_allowed = 0;
