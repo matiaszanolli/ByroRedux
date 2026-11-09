@@ -121,6 +121,55 @@ indoor sunlight is authored as `LIGH` placements and is counted separately.
   - **Starfield**: 0 of 1 (`Activator_LightBeamTall01` imports no mesh from its NIF; its geometry lives outside it).
   - Fallout 3 / FNV as above (22 of 22 and 22 of 24).
 
+## A9 day / night results (VLM-INT-001 to -003), measured 2026-11-08 (#6727)
+
+`docs/smoke-tests/interior-shafts-content.sh` boots each cell held open on the free camera, with the game clock
+paused and the exposure fixed, and for up to four poses (`cam.tp` onto its volumes, sky apertures first; a sealed
+control onto the entities nearest its spawn) captures the froxel in-scatter view at `time.set 12`, `time.set 0` and
+`time.set 12` again. A pose's region is the pixels where the mean noon frame beats midnight by more than
+max(3 levels, 2 x p99 of |noon - noon repeat|); a `shaft` cell passes when its best pose's region is at least 0.1 % of
+the frame, a `sealed` control when no pose reaches that. The in-scatter view is used, not the finished frame, because
+a window or roof hole shows a sky that differs between noon and midnight whether or not any shaft exists. The repeat
+noise is large on many of these cells (p99 up to 34 levels): fixture lights flicker.
+
+| Game | Cell | Role | Volumes (Show Sky) | Best pose: region / mean dL / max dL / noise p99 | Result |
+|---|---|---|---|---|---|
+| FNV | `NellisHangar1` | shaft | 32 `SkyAperture` + 32 `Homogeneous` (off) | 17.2 % / 26.5 / 54.1 / 8.6 | PASS (all four poses show a region above 0.1 %: 14.4, 5.9, 0.2, 17.2 %) |
+| FNV | `HELIOSOneDeck` | shaft | 14 `Homogeneous` (off) | 0.00 % / 0 / 3.9 / 13.5 | FAIL |
+| FNV | `RepconHQ01` | shaft | 87 `Homogeneous` (off) | 0.04 % / 32.0 / 40.2 / 15.0 | FAIL |
+| FO3 | `Tenpenny01` | shaft | 107 `Homogeneous` (off) | 0.04 % / 84.6 / 85.2 / 26.8 | FAIL |
+| Skyrim | `AbandonedShackInterior` | shaft | 6 `Homogeneous` (on, portal sun 0.51) | 0.00 % / 0 / 3.2 / 6.4 | FAIL |
+| FO4 | `ConcordMuseum01` | shaft | 117 `Homogeneous` + 10 `LightShaft` (on, 0.88) | 91.5 % / 9.3 / 20.7 / 2.8 (one pose of four) | PASS |
+| Oblivion | `WarehouseCaveGeneric` | shaft | 52 `Homogeneous` (off) | 0.00 % / 0 / 1.4 / 1.0 | FAIL |
+| Starfield | `CityNewAtlantisLodgeInt` | shaft | none (off) | no volume to aim at | FAIL |
+| FNV | `HiddenValleyBunker1` | sealed | none | 0.00 % | PASS (no medium, so vacuous) |
+| Skyrim | `HillgrundsTomb01` | sealed | 86 `Homogeneous` (off) | 0.00 % (max dL 20.6 at one pose, under a noise floor of 34) | PASS |
+| Oblivion | `ImperialSewers03` | sealed | 5 `Homogeneous` (off) | 0.00 % | PASS |
+| FO4 | `Vault111Cryo` | sealed | 291 `Homogeneous` (off) | 0.00 % | PASS |
+
+Pass count per game: FNV 2 of 4, FO3 0 of 1, Skyrim 1 of 2, Oblivion 1 of 2, FO4 2 of 2, Starfield 0 of 1.
+
+What it shows:
+
+- **Two cells show a sun-driven shaft above the noise**: `NellisHangar1` (the marked-aperture path) and
+  `ConcordMuseum01` (Show Sky on, `LightShaft` cones). Every other `shaft` cell fails, and for most of them that is
+  the content: the HELIOS, REPCONN, Tenpenny and `WarehouseCaveGeneric` volumes are all `Homogeneous` fixture-beam
+  cones beside local lights with Show Sky off, which have no sun path to follow (see the FNV coverage notes above).
+  The A9 list the handoff proposed contains cells of both kinds; the PRD's "each listed cell passes" needs the list
+  narrowed to cells whose census shows a sun path, or the engine to give the others one.
+- **Skyrim's `AbandonedShackInterior` is the real gap.** Show Sky is on, the portal sun is 0.51, and the engine
+  built six passive volumes, yet no pose shows a day / night change in the medium. Its indoor sun is `LIGH` placements,
+  which nothing converts into a medium (see the Skyrim census row above).
+- **Starfield's Lodge builds no medium at all**, and neither does Oblivion's `AbandonedMine` (inventoried, not run).
+  The census found no baked interior beams for Starfield.
+- **The sealed controls hold**: three with passive media (86, 5 and 291 volumes) show no day / night change above
+  their noise, so the procedure does not manufacture shafts from fixture lights.
+- `WarehouseCaveGeneric` booted with 52 `FogVolume` entities here against the 66 recorded under #6774; not reconciled.
+
+Limits: at most four poses per cell, so a FAIL means no sampled pose showed a change, not that none exists. VLM-INT-004
+(the same pass through an exterior-to-interior door) is not run: it needs a door route per cell. VLM-INT-001's
+"geometry evidence that it borders outdoors" is not produced; the inventory above is the volume census, per profile.
+
 ## Next steps
 
 - Reconcile the remaining census placements against live `FogVolume` entities in the cells not yet booted
@@ -128,5 +177,7 @@ indoor sunlight is authored as `LIGH` placements and is counted separately.
   the base model, `disabled` and `xesp` for each sample, so a placement the loader withholds is visible.
 - Judge whether the new passive cones read as light shafts or as haze in a finished frame, per cell, before
   the owner reviews them: they are lit by the local light the cone sits beside, not by a sun.
-- Take the day and night pair (VLM-INT-002) on each cell that has at least one marked plane or light-shaft cone,
-  with a camera aimed at the slab the noon sun predicts (plane centre minus `t` times the portal sun direction).
+- The day and night pair (VLM-INT-002) is taken for the A9 list above, aimed with `cam.tp` at each volume rather than
+  at the slab the noon sun predicts (plane centre minus `t` times the portal sun direction); aiming at the predicted slab
+  would sharpen the poses for the marked-aperture cells.
+- Give the A9 list a sun-path census (VLM-INT-001's list), and a door route per listed cell for VLM-INT-004.

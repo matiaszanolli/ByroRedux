@@ -39,14 +39,16 @@ depth, which these poses do not offer. Needs the five games' data, a display or 
 with numpy and Pillow; exit `77` when one is missing.
 
 `interior-shafts-content.sh` is A9, the interior day / night pass on real cells (VLM-INT-001 to -003, #6727). For each
-listed cell (FNV, FO3, Oblivion, Skyrim, FO4, Starfield; `shaft` cells and `sealed` controls) it boots the cell held open,
-prints the inventory of fog volumes and sky apertures the engine built, then runs `time.set 12` (two screenshots, the
-repeat gives the noise) and `time.set 0` from a few poses (`cam.tp` onto the cell's volumes, sky apertures first). A
-`shaft` cell passes when the pixels where noon exceeds midnight by more than twice the repeat noise cover at least 0.1 % of
-the frame; a `sealed` control passes when no pose does. It prints the pass count per game, exits `1` on any failure and `77`
-when a dependency is missing, and says that VLM-INT-004 (the door transition) is not run: that needs a door route per
-cell. `--inventory-only` stops after the inventory. Needs the games' data, a display or `xvfb-run`, a Vulkan device and
-Python with numpy and Pillow; it takes tens of minutes. Captures, logs and `results.json` stay in the printed directory.
+listed cell (FNV, FO3, Oblivion, Skyrim, FO4, Starfield; `shaft` cells and `sealed` controls) it boots the cell held open
+on the free camera (`--fly`), with the clock paused and the exposure fixed, prints the inventory of fog volumes and sky
+apertures the engine built, then for up to four poses (`cam.tp` onto the cell's volumes, sky apertures first) captures the
+froxel in-scatter view at `time.set 12`, `time.set 0` and `time.set 12` again. The two noon frames bracket the midnight one,
+so their difference is the noise floor. A `shaft` cell passes when the pixels where noon beats midnight by more than
+max(3 levels, twice that noise) cover at least 0.1 % of the frame; a `sealed` control passes when no pose does. It prints
+the pass count per game, exits `1` on any failure and `77` when a dependency is missing, and says that VLM-INT-004 (the
+door transition) is not run: that needs a door route per cell. `--inventory-only` stops after the inventory;
+`BYRO_INTERIOR_ONLY=<cell,...>` runs chosen cells. Needs the games' data, a display or `xvfb-run`, a Vulkan device and
+Python with numpy and Pillow; it takes about half an hour. Captures, logs and `results.json` stay in the printed directory.
 
 Manual / scripted smoke checks that need a Vulkan device and a windowed
 engine instance. Most also need out-of-tree BSA / ESM game data; the controlled
