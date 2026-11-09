@@ -8,7 +8,7 @@ use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::Quat;
 use byroredux_plugin::esm::records::ItemKind;
-use byroredux_scripting::obscript_more::{PendingMusic, PendingSleep, ReloadRequest, ResetInventoryRequest, UseWeaponOptions, UseWeaponRequest};
+use byroredux_scripting::obscript_more::{PendingMusic, PendingSleep, ReloadRequest, ResetInventoryRequest, UseWeaponRequest};
 
 // ── UseWeapon ──────────────────────────────────────────────────────────────────────────────────────
 
@@ -513,6 +513,7 @@ pub(crate) fn reload_system(world: &World, _dt: f32) {
 mod tests {
     use super::*;
     use byroredux_core::math::Vec3;
+    use byroredux_scripting::obscript_more::UseWeaponOptions;
 
     /// #6467 — a volley under way ends when its shooter is knocked down or fleeing (`AiSuspended`),
     /// held out by `SetActorsAI 0`, or unconscious; it neither turns the actor nor fires again. A
