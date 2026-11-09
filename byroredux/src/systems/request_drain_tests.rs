@@ -84,7 +84,7 @@ fn revive_system_takes_its_request() {
 fn use_weapon_system_takes_its_request() {
     drains(
         "UseWeaponRequest",
-        UseWeaponRequest { weapon: 0, target: 0, shots: 1, harmless: false },
+        UseWeaponRequest { weapon: 0, target: 0, shots: 1, harmless: false, options: Default::default() },
         |w| super::script_requests::use_weapon_system(w, 0.0),
     );
 }

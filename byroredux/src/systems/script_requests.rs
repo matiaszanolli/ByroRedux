@@ -8,7 +8,7 @@ use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::Quat;
 use byroredux_plugin::esm::records::ItemKind;
-use byroredux_scripting::obscript_more::{PendingMusic, PendingSleep, ReloadRequest, ResetInventoryRequest, UseWeaponRequest};
+use byroredux_scripting::obscript_more::{PendingMusic, PendingSleep, ReloadRequest, ResetInventoryRequest, UseWeaponOptions, UseWeaponRequest};
 
 // ── UseWeapon ──────────────────────────────────────────────────────────────────────────────────────
 
@@ -20,6 +20,8 @@ pub(crate) struct UseWeaponRun {
     cooldown: f32,
     /// Seconds spent unable to use the weapon (the target out of reach or out of sight).
     waited: f32,
+    /// Shots fired in the current volley, for the package's pause between volleys (AIP-UW-005).
+    volley_fired: u32,
 }
 
 /// How long a volley waits for a shot it cannot take before the actor gives up.
@@ -36,8 +38,10 @@ pub(crate) fn facing(dx: f32, dz: f32) -> Quat {
 
 /// `UseWeapon`: the actor turns to its target and uses the weapon on it `shots` times — a ranged weapon
 /// launches its projectile at the target's centre, a melee one strikes while the target is within reach.
-/// The GECK's options (where to stand, crouching to reload, holding fire, always hit, no damage, the
-/// target's place) are not modelled: the actor fires from where it stands.
+/// A UseWeapon *package* adds [`UseWeaponOptions`]: a pause after each volley (AIP-UW-005), Always Hit
+/// (AIP-UW-004) and Hold Fire When Blocked (AIP-UW-003); a request with target 0 fires along the actor's
+/// facing (AIP-UW-007). Where to stand and the target's place are the package system's gates; crouching to
+/// reload is not modelled.
 pub(crate) fn use_weapon_system(world: &World, dt: f32) {
     // Start the volleys the scripts asked for.
     let asked = super::take_requests::<UseWeaponRequest>(world);
@@ -45,7 +49,7 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
         if let Some(mut runs) = world.query_mut::<UseWeaponRun>() {
             for (actor, request) in asked {
                 log::info!("UseWeapon: actor {actor} uses {:08X} on {:08X} x{}", request.weapon, request.target, request.shots);
-                runs.insert(actor, UseWeaponRun { request, cooldown: 0.0, waited: 0.0 });
+                runs.insert(actor, UseWeaponRun { request, cooldown: 0.0, waited: 0.0, volley_fired: 0 });
             }
         } else {
             log::warn!("UseWeapon: the volley storage is not registered");
@@ -69,61 +73,112 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
             end_run(world, actor);
             continue;
         }
-        let target = byroredux_scripting::condition::resolve_entity_by_global_form_id(world, run.request.target);
+        // Target 0 is a package with no `PTD2`: fire along the actor's own facing (AIP-UW-007).
+        let along_facing = run.request.target == 0;
+        let options = run.request.options;
+        let target = if along_facing {
+            None
+        } else {
+            byroredux_scripting::condition::resolve_entity_by_global_form_id(world, run.request.target)
+        };
         let actor_form = byroredux_scripting::obscript_state::reference_form(world, actor);
         let alive = |entity: EntityId| world.get::<ActorVitals>(entity).is_none() || !world.has::<Dead>(entity);
-        let (Some(target), Some(actor_form)) = (target, actor_form) else {
+        let (true, Some(actor_form)) = (along_facing || target.is_some(), actor_form) else {
             log::warn!("UseWeapon: actor {actor} stops: target {:08X} resolved {target:?}, actor reference {actor_form:?}", run.request.target);
             end_run(world, actor);
             continue;
         };
-        if !alive(actor) || !alive(target) || run.request.shots == 0 {
+        if !alive(actor) || target.is_some_and(|target| !alive(target)) || run.request.shots == 0 {
             end_run(world, actor);
             continue;
         }
-        // Face the target.
-        let (Some(from), Some(to)) = (world.get::<GlobalTransform>(actor).map(|t| t.translation), world.get::<GlobalTransform>(target).map(|t| t.translation)) else {
+        let Some(from) = world.get::<GlobalTransform>(actor).map(|t| t.translation) else {
             end_run(world, actor);
             continue;
         };
-        if let Some(mut transforms) = world.query_mut::<Transform>() {
-            if let Some(transform) = transforms.get_mut(actor) {
-                transform.rotation = facing(to.x - from.x, to.z - from.z);
+        // Face the target; with none, the actor keeps its facing.
+        let to = match target {
+            Some(target) => {
+                let Some(to) = world.get::<GlobalTransform>(target).map(|t| t.translation) else {
+                    end_run(world, actor);
+                    continue;
+                };
+                if let Some(mut transforms) = world.query_mut::<Transform>() {
+                    if let Some(transform) = transforms.get_mut(actor) {
+                        transform.rotation = facing(to.x - from.x, to.z - from.z);
+                    }
+                }
+                to
             }
-        }
+            None => from,
+        };
         let cooldown = run.cooldown - dt;
         if cooldown > 0.0 {
             store_run(world, actor, UseWeaponRun { cooldown, ..run });
             continue;
         }
+        // AIP-UW-003: Hold Fire When Blocked waits, without giving up, while a movable object is in the
+        // line of fire.
+        if options.hold_fire_when_blocked && target.is_some_and(|target| crate::systems::movable_object_blocks_fire(world, actor, target)) {
+            store_run(world, actor, UseWeaponRun { cooldown: 0.0, ..run });
+            continue;
+        }
         let weapon = index.items.get(&run.request.weapon).map(|item| &item.kind);
         let fired = match weapon {
             Some(ItemKind::Weapon { ammo_form, .. }) if *ammo_form != 0 => {
-                if crate::systems::projectiles::resolve_shot(&index, run.request.weapon, 0).is_ok() {
+                let launch = |aim_at: u32| {
                     if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingProjectileLaunches>() {
-                        pending.0.push(byroredux_scripting::projectile_requests::ProjectileLaunch { source: actor_form, weapon: run.request.weapon, ammo: 0, aim_at: run.request.target, harmless: run.request.harmless });
+                        pending.0.push(byroredux_scripting::projectile_requests::ProjectileLaunch { source: actor_form, weapon: run.request.weapon, ammo: 0, aim_at, harmless: run.request.harmless });
                     }
-                    true
-                } else if let Ok((weapon_damage, ammo_damage, ..)) = crate::systems::projectiles::resolve_ammunition(&index, run.request.weapon, 0) {
-                    // A gun whose records name no projectile (Fallout's WEAP carries the PROJ, which is not
-                    // decoded yet): the shot lands, for the weapon's and the ammunition's damage, when the
-                    // target is in sight.
-                    let clear = crate::systems::actor_has_line_of_sight(world, actor, target);
-                    if clear {
-                        if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingTrapHits>() {
-                            pending.0.push(byroredux_scripting::TrapHit { target, trap: actor, damage: if run.request.harmless { 0.0 } else { weapon_damage + ammo_damage.max(0.0) } });
+                };
+                let land = |target: EntityId, weapon_damage: f32, ammo_damage: f32| {
+                    if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingTrapHits>() {
+                        pending.0.push(byroredux_scripting::TrapHit { target, trap: actor, damage: if run.request.harmless { 0.0 } else { weapon_damage + ammo_damage.max(0.0) } });
+                    }
+                };
+                match target {
+                    // AIP-UW-007: no target, the shot goes along the facing and lands on nothing.
+                    None => {
+                        if crate::systems::projectiles::resolve_shot(&index, run.request.weapon, 0).is_ok() {
+                            launch(0);
+                        }
+                        true
+                    }
+                    // AIP-UW-004: Always Hit lands the weapon's and ammunition's damage on the target, whatever
+                    // stands in the way. A weapon whose records give no damage to land falls through to the
+                    // ordinary shot.
+                    Some(target) if options.always_hit && crate::systems::projectiles::resolve_ammunition(&index, run.request.weapon, 0).is_ok() => {
+                        if let Ok((weapon_damage, ammo_damage, ..)) = crate::systems::projectiles::resolve_ammunition(&index, run.request.weapon, 0) {
+                            land(target, weapon_damage, ammo_damage);
+                        }
+                        true
+                    }
+                    Some(_) if crate::systems::projectiles::resolve_shot(&index, run.request.weapon, 0).is_ok() => {
+                        launch(run.request.target);
+                        true
+                    }
+                    Some(target) => {
+                        if let Ok((weapon_damage, ammo_damage, ..)) = crate::systems::projectiles::resolve_ammunition(&index, run.request.weapon, 0) {
+                            // A gun whose records name no projectile (Fallout's WEAP carries the PROJ, which is not
+                            // decoded yet): the shot lands, for the weapon's and the ammunition's damage, when the
+                            // target is in sight.
+                            let clear = crate::systems::actor_has_line_of_sight(world, actor, target);
+                            if clear {
+                                land(target, weapon_damage, ammo_damage);
+                            }
+                            clear
+                        } else {
+                            false
                         }
                     }
-                    clear
-                } else {
-                    false
                 }
             }
-            // A melee weapon strikes only what is within its reach.
+            // A melee weapon strikes only what is within its reach; Always Hit strikes whatever the reach, and
+            // with no target the swing meets air.
             Some(ItemKind::Weapon { damage, .. }) => {
                 let reach = crate::combat::attack_reach_bu(world, actor);
-                let near = from.distance(to) <= reach;
-                if near {
+                let near = target.is_none() || options.always_hit || from.distance(to) <= reach;
+                if let (true, Some(target)) = (near, target) {
                     if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingTrapHits>() {
                         pending.0.push(byroredux_scripting::TrapHit { target, trap: actor, damage: if run.request.harmless { 0.0 } else { *damage as f32 } });
                     }
@@ -147,7 +202,15 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
         }
         let remaining = if fired { run.request.shots - 1 } else { run.request.shots };
         let interval = crate::combat::attack_cooldown_seconds(world, actor).max(0.1);
-        store_run(world, actor, UseWeaponRun { request: UseWeaponRequest { shots: remaining, ..run.request }, cooldown: interval, waited });
+        // AIP-UW-005: after a full volley the actor waits the package's pause (never less than the weapon's own
+        // interval), then starts the next.
+        let in_volley = if fired { run.volley_fired + 1 } else { run.volley_fired };
+        let (cooldown, volley_fired) = if fired && options.volley_shots > 0 && in_volley >= options.volley_shots {
+            (interval.max(options.pause_secs), 0)
+        } else {
+            (interval, in_volley)
+        };
+        store_run(world, actor, UseWeaponRun { request: UseWeaponRequest { shots: remaining, ..run.request }, cooldown, waited, volley_fired });
         if remaining == 0 {
             end_run(world, actor);
         }
@@ -500,7 +563,7 @@ mod tests {
         world.insert(knocked_down, AiSuspended);
         world.insert(unconscious, ActorControlState { unconscious: true, ..Default::default() });
         for actor in [standing, knocked_down, unconscious] {
-            world.insert(actor, UseWeaponRequest { weapon: WEAPON, target: TARGET, shots: 5, harmless: false });
+            world.insert(actor, UseWeaponRequest { weapon: WEAPON, target: TARGET, shots: 5, harmless: false, options: Default::default() });
         }
 
         use_weapon_system(&world, 0.016);
@@ -511,6 +574,132 @@ mod tests {
             assert!(!world.has::<UseWeaponRun>(actor), "{name}: the volley ends");
             assert_eq!(world.get::<Transform>(actor).unwrap().rotation, Quat::IDENTITY, "{name}: no turning to the target");
         }
+    }
+
+    /// A world for the UseWeapon package options: one melee weapon, a target at `target_at`, and an actor at
+    /// the origin whose request carries `options` (`target` 0 asks to fire along the facing).
+    fn volley_world(target_at: Vec3, target: u32, shots: u32, options: UseWeaponOptions) -> (World, EntityId) {
+        use byroredux_core::ecs::components::FormIdComponent;
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+        use byroredux_plugin::esm::records::{common::CommonItemFields, EsmIndex, ItemRecord};
+
+        const WEAPON: u32 = 0xA1;
+        const TARGET: u32 = 0x0001_59E2;
+        let mut world = World::new();
+        world.register::<UseWeaponRun>();
+        world.register::<UseWeaponRequest>();
+        world.register::<FormIdComponent>();
+        world.register::<GlobalTransform>();
+        world.register::<Transform>();
+        world.insert_resource(byroredux_scripting::PendingTrapHits::default());
+        let mut index = EsmIndex::default();
+        index.items.insert(
+            WEAPON,
+            ItemRecord { form_id: WEAPON, common: CommonItemFields::default(), kind: ItemKind::weapon_stub(3, 30).with_weapon_speed(1.0) },
+        );
+        world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(index)));
+        world.insert_resource(FormIdPool::new());
+        let place = |world: &mut World, local: u32, at: Vec3| {
+            let id = world.resource_mut::<FormIdPool>().intern(FormIdPair { plugin: PluginId::from_filename("FalloutNV.esm"), local: LocalFormId(local) });
+            let entity = world.spawn();
+            world.insert(entity, FormIdComponent(id));
+            world.insert(entity, Transform::from_translation(at));
+            world.insert(entity, GlobalTransform::new(at, Quat::IDENTITY, 1.0));
+            entity
+        };
+        place(&mut world, TARGET, target_at);
+        let actor = place(&mut world, 0x101, Vec3::ZERO);
+        let target = if target == 0 { 0 } else { TARGET };
+        world.insert(actor, UseWeaponRequest { weapon: WEAPON, target, shots, harmless: false, options });
+        (world, actor)
+    }
+
+    fn hits(world: &World) -> usize {
+        world.resource::<byroredux_scripting::PendingTrapHits>().0.len()
+    }
+
+    /// AIP-UW-005 -- after a full volley the actor waits the package's pause, not just the weapon's interval.
+    #[test]
+    fn a_full_volley_is_followed_by_the_packages_pause() {
+        let near = Vec3::new(10.0, 0.0, 0.0);
+        let paused = UseWeaponOptions { volley_shots: 2, pause_secs: 5.0, ..Default::default() };
+        let (world, actor) = volley_world(near, 1, 6, paused);
+        use_weapon_system(&world, 0.016);
+        let first = *world.get::<UseWeaponRun>(actor).unwrap();
+        assert_eq!(hits(&world), 1, "the first shot of the volley lands");
+        assert!(first.cooldown < 5.0, "mid-volley the wait is the weapon's interval, got {}", first.cooldown);
+        assert_eq!(first.volley_fired, 1);
+        use_weapon_system(&world, first.cooldown + 0.01);
+        let second = *world.get::<UseWeaponRun>(actor).unwrap();
+        assert_eq!(hits(&world), 2);
+        assert!(second.cooldown >= 5.0, "the volley is done: the pause applies, got {}", second.cooldown);
+        assert_eq!(second.volley_fired, 0, "and the next volley starts counting afresh");
+
+        // The same shots with no pause configured keep the weapon's interval throughout.
+        let (world, actor) = volley_world(near, 1, 6, UseWeaponOptions { volley_shots: 2, ..Default::default() });
+        use_weapon_system(&world, 0.016);
+        let cooldown = world.get::<UseWeaponRun>(actor).unwrap().cooldown;
+        use_weapon_system(&world, cooldown + 0.01);
+        assert!(world.get::<UseWeaponRun>(actor).unwrap().cooldown < 5.0);
+    }
+
+    /// AIP-UW-004 -- Always Hit lands the shot on a target out of the weapon's reach; without it the shot misses.
+    #[test]
+    fn always_hit_lands_on_a_target_out_of_reach() {
+        let far = Vec3::new(5000.0, 0.0, 0.0);
+        let (world, _) = volley_world(far, 1, 3, UseWeaponOptions::default());
+        use_weapon_system(&world, 0.016);
+        assert_eq!(hits(&world), 0, "a melee weapon cannot reach 5000 units");
+
+        let (world, actor) = volley_world(far, 1, 3, UseWeaponOptions { always_hit: true, ..Default::default() });
+        use_weapon_system(&world, 0.016);
+        assert_eq!(hits(&world), 1, "Always Hit resolves as a hit on the package target");
+        assert_eq!(world.get::<UseWeaponRun>(actor).unwrap().request.shots, 2);
+    }
+
+    /// AIP-UW-007 -- a request with no target fires along the facing: it runs, spends its shots, hits nothing and
+    /// leaves the actor's facing alone.
+    #[test]
+    fn a_request_with_no_target_fires_along_the_actors_facing() {
+        let (world, actor) = volley_world(Vec3::new(10.0, 0.0, 0.0), 0, 3, UseWeaponOptions::default());
+        use_weapon_system(&world, 0.016);
+        let run = *world.get::<UseWeaponRun>(actor).expect("the volley keeps running with no target");
+        assert_eq!(run.request.shots, 2, "the shot was spent");
+        assert_eq!(hits(&world), 0, "on nothing");
+        assert_eq!(world.get::<Transform>(actor).unwrap().rotation, Quat::IDENTITY, "the actor does not turn");
+    }
+
+    /// AIP-UW-003 -- Hold Fire When Blocked waits, without spending shots or giving up, while a movable object
+    /// is in the line of fire, and fires once it is gone. A fixed wall in the way does not hold fire.
+    #[test]
+    fn hold_fire_when_blocked_waits_for_a_movable_object_to_clear() {
+        use byroredux_physics::PhysicsWorld;
+        let near = Vec3::new(40.0, 0.0, 0.0);
+        let options = UseWeaponOptions { hold_fire_when_blocked: true, ..Default::default() };
+        let (mut world, actor) = volley_world(near, 1, 3, options);
+        let centre = Vec3::Y * crate::npc_spawn::FALLBACK_ACTOR_CAPSULE_CENTRE_HEIGHT;
+        let mut physics = PhysicsWorld::new();
+        // A box between the shooter and the target, made movable (the bin crate cannot name rapier's builders).
+        let crate_body = physics.spawn_fixed_cuboid(Vec3::new(4.0, 40.0, 40.0), centre + Vec3::new(20.0, 0.0, 0.0));
+        physics.set_motion_type(crate_body, byroredux_core::ecs::components::MotionType::Dynamic, false);
+        physics.update_query_pipeline();
+        world.insert_resource(physics);
+
+        for _ in 0..5 {
+            use_weapon_system(&world, 1.0);
+        }
+        assert_eq!(hits(&world), 0, "a crate stands in the line of fire");
+        let run = *world.get::<UseWeaponRun>(actor).expect("holding fire does not end the volley");
+        assert_eq!(run.request.shots, 3, "and spends no shot");
+
+        // The crate is gone.
+        {
+            let mut physics = world.resource_mut::<PhysicsWorld>();
+            assert!(physics.remove_body(crate_body));
+            physics.update_query_pipeline();
+        }
+        use_weapon_system(&world, 1.0);
+        assert_eq!(hits(&world), 1, "the line is clear: the shot is taken");
     }
 
     #[test]

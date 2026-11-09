@@ -5351,6 +5351,33 @@ mod audit_2026_08_13_regressions {
         assert!(!w.line_of_sight_blocked(eye, eye, None));
     }
 
+    /// #6656 AIP-UW-003 — only a movable (dynamic) body is a UseWeapon blocker: a wall, a fixed prop and a
+    /// kinematic actor body are not, and the shooter's and target's own bodies are skipped.
+    #[test]
+    fn only_a_movable_body_blocks_the_line_of_fire() {
+        let mut w = PhysicsWorld::new();
+        let wall = w.bodies.insert(RigidBodyBuilder::fixed().translation(Vec3::new(-100.0, 0.0, 0.0)).build());
+        w.colliders.insert_with_parent(ColliderBuilder::cuboid(4.0, 200.0, 200.0).build(), wall, &mut w.bodies);
+        let crate_body = w.bodies.insert(RigidBodyBuilder::dynamic().translation(Vec3::new(100.0, 52.0, 0.0)).build());
+        w.colliders.insert_with_parent(ColliderBuilder::cuboid(10.0, 10.0, 10.0).build(), crate_body, &mut w.bodies);
+        let actor = w.bodies.insert(RigidBodyBuilder::kinematic_position_based().translation(Vec3::new(300.0, 52.0, 0.0)).build());
+        w.colliders.insert_with_parent(ColliderBuilder::cuboid(10.0, 10.0, 10.0).build(), actor, &mut w.bodies);
+        w.update_query_pipeline();
+
+        let at_y = |x: f32| Vec3::new(x, 52.0, 0.0);
+        // The fixed wall is first on the way west: not movable.
+        assert!(!w.movable_body_blocks_line(at_y(0.0), at_y(-300.0), &[]));
+        // The crate is first on the way east, short of the actor.
+        assert!(w.movable_body_blocks_line(at_y(0.0), at_y(400.0), &[]));
+        // A kinematic actor is not a movable blocker.
+        assert!(!w.movable_body_blocks_line(at_y(200.0), at_y(400.0), &[]));
+        // The crate is skipped when it is the shooter's or target's own body.
+        assert!(!w.movable_body_blocks_line(at_y(0.0), at_y(400.0), &[crate_body]));
+        // A segment that stops short of the crate is clear.
+        assert!(!w.movable_body_blocks_line(at_y(0.0), at_y(50.0), &[]));
+        assert!(!w.movable_body_blocks_line(at_y(0.0), at_y(0.0), &[]));
+    }
+
     // ── #2873 — ground probes must not see an actor's own bones ──────
 
     /// Register a keyframed ragdoll-bone body the way `physics_sync_system`

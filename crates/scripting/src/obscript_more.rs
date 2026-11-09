@@ -30,7 +30,7 @@ pub(crate) use tail::TAIL_COMMANDS;
 pub use tail::{ChildRaces, CellZones, ExitGameRequest, PendingVideos, PlayableRaces};
 pub(crate) use actions::ACTIONS_COMMANDS;
 pub(crate) use extras::EXTRAS_COMMANDS;
-pub use extras::{AshPiles, MusicTrack, MusicTracks, PendingMusic, PendingTextureSwaps, ReloadRequest, TextArguments, TextureSwap, UseWeaponRequest};
+pub use extras::{AshPiles, MusicTrack, MusicTracks, PendingMusic, PendingTextureSwaps, ReloadRequest, TextArguments, TextureSwap, UseWeaponOptions, UseWeaponRequest};
 
 /// The point the crosshair is aimed at, within a reach, in Z-up world units.
 pub type ReticlePointFn = fn(&World, f32) -> Option<[f32; 3]>;

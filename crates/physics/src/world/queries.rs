@@ -417,6 +417,39 @@ impl PhysicsWorld {
             .is_some()
     }
 
+    /// Whether the first solid thing on the segment `from`→`to` is a **movable** (dynamic) body: a barrel,
+    /// a crate, a dropped weapon. This is the "movable object" a UseWeapon package's Hold Fire When
+    /// Blocked yields to (GECK, AIP-UW-003). A wall or fixed prop in the way is not a movable blocker,
+    /// and neither is a kinematic body such as an actor, so the answer differs from
+    /// [`line_of_sight_blocked`](Self::line_of_sight_blocked) on both counts. `excluded_bodies` are the
+    /// shooter and the target, whose own colliders must not count (a dynamic ragdoll target would
+    /// otherwise block its own shot). Same **caller must have called
+    /// [`update_query_pipeline`](Self::update_query_pipeline)** contract as the other probes.
+    pub fn movable_body_blocks_line(
+        &self,
+        from: byroredux_core::math::Vec3,
+        to: byroredux_core::math::Vec3,
+        excluded_bodies: &[rapier3d::prelude::RigidBodyHandle],
+    ) -> bool {
+        let delta = to - from;
+        let distance = delta.length();
+        if distance <= 0.0 || !distance.is_finite() {
+            return false;
+        }
+        let ray = Ray::new(from, delta / distance);
+        let skip = |_: ColliderHandle, collider: &Collider| {
+            !collider
+                .parent()
+                .is_some_and(|body| excluded_bodies.contains(&body))
+        };
+        let filter = QueryFilter::default().exclude_sensors().predicate(&skip);
+        self.queries(filter)
+            .cast_ray(&ray, distance, /* solid = */ true)
+            .and_then(|(collider, _)| self.colliders.get(collider)?.parent())
+            .and_then(|body| self.bodies.get(body))
+            .is_some_and(|body| body.is_dynamic())
+    }
+
     /// Like [`cast_ray_down`](Self::cast_ray_down), but sweeps a capsule of
     /// the given dimensions instead of a zero-width ray. A bare ray can pass
     /// clean through a gap beside a sloped or narrow piece of architecture

@@ -224,6 +224,23 @@ pub(crate) fn sight_is_clear(world: &World, from: Vec3, to: Vec3) -> bool {
         .is_some_and(|physics| physics.line_of_sight_blocked(from, to, player_body))
 }
 
+/// Whether a movable object (a dynamic body: a crate, a barrel, a dropped weapon) is the first solid thing
+/// between `shooter` and `target` (a UseWeapon package's Hold Fire When Blocked, AIP-UW-003). Walls, fixed
+/// props and actors do not count; the shooter's and target's own bodies are skipped. `false` without a
+/// physics world or when either end is unplaced.
+pub(crate) fn movable_object_blocks_fire(world: &World, shooter: EntityId, target: EntityId) -> bool {
+    let Some((from, to)) = sight_points(world, shooter, target) else {
+        return false;
+    };
+    let own_bodies: Vec<_> = world
+        .query::<byroredux_physics::RapierHandles>()
+        .map(|handles| [shooter, target].iter().filter_map(|&entity| handles.get(entity).map(|h| h.body)).collect())
+        .unwrap_or_default();
+    world
+        .try_resource::<byroredux_physics::PhysicsWorld>()
+        .is_some_and(|physics| physics.movable_body_blocks_line(from, to, &own_bodies))
+}
+
 /// Whether `observer` has an unobstructed line of sight to `target`, at any range (ObScript `GetLOS`);
 /// `false` for a dead or unplaced actor.
 pub(crate) fn actor_has_line_of_sight(world: &World, observer: EntityId, target: EntityId) -> bool {

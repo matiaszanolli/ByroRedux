@@ -22,38 +22,46 @@
 //! ## v0 scope
 //!
 //! - The actor waits until it is inside the package's `PLDT` location before the volley is raised
-//!   (AIP-UW-001; it is not walked there). The `PLD2` target location (wait until the target is inside
-//!   it), Crouch To Reload, Hold Fire When Blocked and Always Hit are not modelled.
+//!   (AIP-UW-001; it is not walked there), and the target until it is inside the `PLD2` location
+//!   (AIP-UW-002): both are start gates, checked until the volley is raised, not per shot. A package with no
+//!   `PTD2` fires along the actor's facing (AIP-UW-007). Always Hit (AIP-UW-004), Hold Fire When Blocked
+//!   (AIP-UW-003) and the pause between volleys (AIP-UW-005) ride on the request's [`UseWeaponOptions`] and
+//!   are honoured by [`super::script_requests::use_weapon_system`]. Crouch To Reload (AIP-UW-006) is not
+//!   modelled: it waits on Phase 0 finding a crouched reload pose, and the flag stays unconsumed.
 //! - Object type 12 (Weapons: Any) fires the actor's equipped weapon, else the first weapon in its inventory
 //!   (AIP-UW-008; a Redux choice, PRD §6 row 14). Types 21-23 stay declined as unsourced (AIP-UW-009).
-//! - The pause between volleys is the weapon's attack interval, not the
-//!   authored `PKW3` pause.
+//! - The pause between volleys is the midpoint of the authored `PKW3` pause range (PRD §6 row 5), never
+//!   shorter than the weapon's attack interval.
 //! - The request waits for its target to be loaded; a package whose target
 //!   never loads simply never fires.
 
 use byroredux_core::ecs::components::{
     Dead, EquippedWeapon, GlobalTransform, Inventory, UseWeaponPackageBehavior, UseWeaponPackageStarted,
-    USE_ACTORS_OWN_WEAPON,
+    USE_ACTORS_OWN_WEAPON, USE_FACING_DIRECTION,
 };
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_plugin::esm::records::{EsmIndex, ItemKind};
 use byroredux_scripting::condition::resolve_entity_by_global_form_id;
-use byroredux_scripting::obscript_more::UseWeaponRequest;
+use byroredux_scripting::obscript_more::{UseWeaponOptions, UseWeaponRequest};
 
-/// The shots the package asks for: `u32::MAX` for Repeat Fire.
-fn requested_shots(behavior: &UseWeaponPackageBehavior, index: &EsmIndex) -> u32 {
-    let Some(bursts) = behavior.bursts else {
-        return u32::MAX;
-    };
-    let per_burst = if behavior.volley_shots > 0 {
+/// Shots in one burst: the package's volley (the midpoint of its range), or for Auto Fire a full clip.
+fn shots_per_burst(behavior: &UseWeaponPackageBehavior, index: &EsmIndex) -> u32 {
+    if behavior.volley_shots > 0 {
         behavior.volley_shots
     } else {
         match index.items.get(&behavior.weapon_form_id).map(|item| &item.kind) {
             Some(ItemKind::Weapon { clip_size, .. }) => u32::from(*clip_size).max(1),
             _ => 1,
         }
-    };
-    bursts.saturating_mul(per_burst)
+    }
+}
+
+/// The shots the package asks for: `u32::MAX` for Repeat Fire.
+fn requested_shots(behavior: &UseWeaponPackageBehavior, index: &EsmIndex) -> u32 {
+    match behavior.bursts {
+        Some(bursts) => bursts.saturating_mul(shots_per_burst(behavior, index)),
+        None => u32::MAX,
+    }
 }
 
 /// The weapon an object-type-12 package fires: the equipped weapon, else the first weapon in the inventory
@@ -71,15 +79,15 @@ fn own_weapon(world: &World, actor: EntityId, index: &EsmIndex) -> Option<u32> {
         .find(|base| matches!(index.items.get(base).map(|item| &item.kind), Some(ItemKind::Weapon { .. })))
 }
 
-/// Whether `actor` stands inside the package's `PLDT` location (AIP-UW-001). A location that cannot resolve yet
-/// (its reference is not loaded) is not inside.
-fn inside_place(world: &World, actor: EntityId, place: (byroredux_core::ecs::components::EatSleepLocation, f32)) -> bool {
+/// Whether `subject` (the actor for the `PLDT` location, AIP-UW-001; its target for `PLD2`, AIP-UW-002) stands
+/// inside `place`. A location that cannot resolve yet (its reference is not loaded) is not inside.
+fn inside_place(world: &World, subject: EntityId, place: (byroredux_core::ecs::components::EatSleepLocation, f32)) -> bool {
     use byroredux_core::ecs::components::EatSleepLocation;
     let (area, radius) = place;
-    let Some(here) = world.get::<GlobalTransform>(actor).map(|t| t.translation) else {
+    let Some(here) = world.get::<GlobalTransform>(subject).map(|t| t.translation) else {
         return false;
     };
-    let Some(centre) = super::eat_sleep::resolve_anchor(world, actor, Some(here), area) else {
+    let Some(centre) = super::eat_sleep::resolve_anchor(world, subject, Some(here), area) else {
         return false;
     };
     let radius = match area {
@@ -119,12 +127,25 @@ pub(crate) fn use_weapon_package_system(world: &World, _dt: f32) {
         return;
     };
     for (actor, mut behavior) in pending {
-        if resolve_entity_by_global_form_id(world, behavior.target_form_id).is_none() {
-            continue;
-        }
+        // AIP-UW-007: a package with no target (`USE_FACING_DIRECTION`) fires along the actor's facing and
+        // waits for no one.
+        let target = if behavior.target_form_id == USE_FACING_DIRECTION {
+            None
+        } else {
+            match resolve_entity_by_global_form_id(world, behavior.target_form_id) {
+                Some(target) => Some(target),
+                None => continue,
+            }
+        };
         // AIP-UW-001: the volley is raised from inside the package's location.
         if behavior.place.is_some_and(|place| !inside_place(world, actor, place)) {
             continue;
+        }
+        // AIP-UW-002: and only once the target is inside the `PLD2` target location.
+        if let (Some(target), Some(place)) = (target, behavior.target_place) {
+            if !inside_place(world, target, place) {
+                continue;
+            }
         }
         // AIP-UW-008: a weapon class means the actor's own weapon.
         if behavior.weapon_form_id == USE_ACTORS_OWN_WEAPON {
@@ -138,6 +159,12 @@ pub(crate) fn use_weapon_package_system(world: &World, _dt: f32) {
             target: behavior.target_form_id,
             shots: requested_shots(&behavior, &index),
             harmless: behavior.harmless,
+            options: UseWeaponOptions {
+                volley_shots: shots_per_burst(&behavior, &index),
+                pause_secs: behavior.pause_secs,
+                always_hit: behavior.always_hit,
+                hold_fire_when_blocked: behavior.hold_fire_when_blocked,
+            },
         };
         if let Some(mut requests) = world.query_mut::<UseWeaponRequest>() {
             requests.insert(actor, request);
@@ -188,6 +215,10 @@ mod tests {
             volley_shots,
             harmless,
             place: None,
+            target_place: None,
+            always_hit: false,
+            hold_fire_when_blocked: false,
+            pause_secs: 0.0,
         }
     }
 
@@ -236,7 +267,7 @@ mod tests {
         use_weapon_package_system(&world, 0.0);
         assert_eq!(
             request_of(&world, actor),
-            Some(UseWeaponRequest { weapon: WEAPON, target: TARGET, shots: 10, harmless: true })
+            Some(UseWeaponRequest { weapon: WEAPON, target: TARGET, shots: 10, harmless: true, options: UseWeaponOptions { volley_shots: 5, ..Default::default() } })
         );
         assert!(world.has::<UseWeaponPackageStarted>(actor));
         // The runtime consumes the request; the package must not re-raise it.
@@ -266,6 +297,55 @@ mod tests {
         use_weapon_package_system(&world, 0.0);
         assert_eq!(request_of(&world, actor), None, "the place cannot be resolved yet: the actor waits");
         assert!(!world.has::<UseWeaponPackageStarted>(actor));
+    }
+
+    /// AIP-UW-002 -- with a `PLD2` target location the volley is raised only once the target is inside it.
+    #[test]
+    fn the_volley_waits_for_the_target_location() {
+        use byroredux_core::ecs::components::EatSleepLocation;
+        // Target-relative NearCurrentLocation resolves to the target's own position: always inside.
+        let mut inside = behavior(Some(1), 1, false);
+        inside.target_place = Some((EatSleepLocation::NearCurrentLocation, 100.0));
+        let (world, actor) = world_with(inside, true);
+        use_weapon_package_system(&world, 0.0);
+        assert!(request_of(&world, actor).is_some(), "the target is in its location: fire");
+
+        // A location that cannot be resolved (its reference is not loaded) holds fire.
+        let mut outside = behavior(Some(1), 1, false);
+        outside.target_place = Some((EatSleepLocation::NearReference(0x7777), 100.0));
+        let (world, actor) = world_with(outside, true);
+        use_weapon_package_system(&world, 0.0);
+        assert_eq!(request_of(&world, actor), None, "the target is not in its location: hold fire");
+        assert!(!world.has::<UseWeaponPackageStarted>(actor), "and the package is still to start");
+    }
+
+    /// AIP-UW-007 -- a package with no target still raises its volley, aimed along the actor's facing, and does
+    /// not wait for any reference to load.
+    #[test]
+    fn a_package_with_no_target_raises_its_volley_along_the_facing() {
+        let mut facing = behavior(Some(1), 3, false);
+        facing.target_form_id = USE_FACING_DIRECTION;
+        // The world's target reference is not loaded; a facing shot must not wait for it.
+        let (world, actor) = world_with(facing, false);
+        use_weapon_package_system(&world, 0.0);
+        let request = request_of(&world, actor).expect("fires without a target");
+        assert_eq!(request.target, USE_FACING_DIRECTION);
+        assert_eq!(request.shots, 3);
+    }
+
+    /// AIP-UW-003..005 -- the package's options ride on the request for the firing runtime.
+    #[test]
+    fn the_requests_carry_the_packages_options() {
+        let mut options = behavior(Some(2), 5, false);
+        options.always_hit = true;
+        options.hold_fire_when_blocked = true;
+        options.pause_secs = 4.0;
+        let (world, actor) = world_with(options, true);
+        use_weapon_package_system(&world, 0.0);
+        assert_eq!(
+            request_of(&world, actor).map(|r| r.options),
+            Some(UseWeaponOptions { volley_shots: 5, pause_secs: 4.0, always_hit: true, hold_fire_when_blocked: true })
+        );
     }
 
     /// AIP-UW-008 -- object type 12 fires the actor's equipped weapon, else its first inventory weapon; an actor

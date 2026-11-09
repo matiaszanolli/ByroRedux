@@ -119,7 +119,8 @@ enum UseWeaponDecline {
     UnsourcedSemantics(u32),
     /// An object type outside the weapon classes.
     UnsupportedObjectType(u32),
-    /// No `PTD2` target reference: firing along the actor's facing is AIP-UW-007, not built.
+    /// A `PTD2` that names no specific reference (an object type). A package with no `PTD2` at all fires
+    /// along the actor's facing (AIP-UW-007) and installs.
     NoTarget,
 }
 
@@ -155,8 +156,11 @@ fn use_weapon_decision(package: &PackRecord, world: &World) -> Result<UseWeaponP
     let fire = package.use_weapon.ok_or(UseWeaponDecline::NoFireData)?;
     let weapon = package.target.ok_or(UseWeaponDecline::NoWeapon)?;
     let weapon_form_id = use_weapon_weapon(weapon.target, weapon.target_type)?;
-    let Some(PackTargetKind::SpecificReference(target_form_id)) = package.target2.map(|target| target.target) else {
-        return Err(UseWeaponDecline::NoTarget);
+    let target_form_id = match package.target2.map(|target| target.target) {
+        Some(PackTargetKind::SpecificReference(target_form_id)) => target_form_id,
+        // AIP-UW-007: "fire weapon in the air in the direction they are facing" (GECK).
+        None => byroredux_core::ecs::components::USE_FACING_DIRECTION,
+        Some(_) => return Err(UseWeaponDecline::NoTarget),
     };
     Ok(UseWeaponPackageBehavior {
         weapon_form_id,
@@ -172,6 +176,16 @@ fn use_weapon_decision(package: &PackRecord, world: &World) -> Result<UseWeaponP
         harmless: fire.does_no_damage(),
         // AIP-UW-001: a package that authors a PLDT location is fired from inside it.
         place: package.location.map(|area| (location_anchor(package.location), area.radius.max(0) as f32)),
+        // AIP-UW-002: a package that authors a PLD2 location holds fire until the target is inside it.
+        target_place: package.location2.map(|area| (location_anchor(package.location2), area.radius.max(0) as f32)),
+        always_hit: fire.flags & byroredux_plugin::esm::records::misc::pack::PackUseWeapon::ALWAYS_HIT != 0,
+        hold_fire_when_blocked: fire.flags & byroredux_plugin::esm::records::misc::pack::PackUseWeapon::HOLD_FIRE_WHEN_BLOCKED != 0,
+        // AIP-UW-005: the game picks a pause in [min, max] each time; the midpoint is the deterministic
+        // stand-in (PRD §6 row 5). A non-finite or negative authored value reads as no pause.
+        pause_secs: {
+            let pause = (fire.pause_min + fire.pause_max) * 0.5;
+            if pause.is_finite() && pause > 0.0 { pause } else { 0.0 }
+        },
     })
 }
 
@@ -2465,6 +2479,10 @@ mod tests {
                 volley_shots: 6,
                 harmless: true,
                 place: None,
+                target_place: None,
+                always_hit: false,
+                hold_fire_when_blocked: false,
+                pause_secs: 0.0,
             })
         );
 
@@ -2480,7 +2498,9 @@ mod tests {
         assert_eq!(installed(by_class), None, "weapon sub-classes are not decoded (21-23 are unsourced)");
         let mut into_the_air = shooting(0x103);
         into_the_air.target2 = None;
-        assert_eq!(installed(into_the_air), None, "no target: nothing to fire at");
+        // (AIP-UW-007: a package with no PTD2 installs and fires along the actor's facing; see
+        // `a_use_weapon_package_authors_its_options` for the data.)
+        assert!(installed(into_the_air).is_some(), "no target: fires along the facing");
         let mut unmodeled = shooting(0x104);
         unmodeled.conditions = vec![Condition {
             function_index: 79,
@@ -2493,6 +2513,75 @@ mod tests {
         // ... and a declined UseWeapon package does not shadow the next one.
         let (world, actor) = setup_actor(10.0, vec![unmodeled, pack(0x105, PROCEDURE_GUARD, None)]);
         assert!(world.has::<GuardBehavior>(actor), "the lower package still wins");
+    }
+
+    /// AIP-UW-002..005 / -007 -- the package's own options reach the behavior: the `PLD2` target location,
+    /// Always Hit, Hold Fire When Blocked, the midpoint of the `PKW3` pause, and a missing `PTD2` as a shot along
+    /// the actor's facing.
+    #[test]
+    fn a_use_weapon_package_authors_its_options() {
+        use byroredux_plugin::esm::records::misc::pack::{PackTarget, PackUseWeapon, PROCEDURE_USE_WEAPON};
+        let world = World::new();
+        let package = |flags: u32, pause: (f32, f32), target2: bool, location2: bool| {
+            let mut package = pack(0x300, PROCEDURE_USE_WEAPON, None);
+            package.target = Some(PackTarget {
+                target_type: 1,
+                target: PackTargetKind::ObjectId(0x0017_24F2),
+                count_or_distance: 0,
+            });
+            if target2 {
+                package.target2 = Some(PackTarget {
+                    target_type: 0,
+                    target: PackTargetKind::SpecificReference(0x14),
+                    count_or_distance: 0,
+                });
+            }
+            if location2 {
+                package.location2 = Some(PackLocation {
+                    location_type: 0,
+                    target: PackLocationTarget::NearReference(0x0004_0000),
+                    radius: 300,
+                });
+            }
+            package.use_weapon = Some(PackUseWeapon {
+                flags,
+                volley_fire: true,
+                bursts: 2,
+                volley_min: 2,
+                volley_max: 4,
+                pause_min: pause.0,
+                pause_max: pause.1,
+                ..Default::default()
+            });
+            package
+        };
+
+        let full = use_weapon_decision(
+            &package(PackUseWeapon::ALWAYS_HIT | PackUseWeapon::HOLD_FIRE_WHEN_BLOCKED, (2.0, 6.0), true, true),
+            &world,
+        )
+        .expect("installs");
+        assert!(full.always_hit && full.hold_fire_when_blocked);
+        assert_eq!(full.pause_secs, 4.0, "the midpoint of 2..6");
+        assert_eq!(
+            full.target_place,
+            Some((byroredux_core::ecs::components::EatSleepLocation::NearReference(0x0004_0000), 300.0))
+        );
+
+        let plain = use_weapon_decision(&package(0, (2.0, 6.0), true, false), &world).expect("installs");
+        assert!(!plain.always_hit && !plain.hold_fire_when_blocked, "flags off when unauthored");
+        assert_eq!(plain.target_place, None);
+
+        // AIP-UW-007: no PTD2 at all fires along the facing; a PTD2 that is not a reference still declines.
+        let facing = use_weapon_decision(&package(0, (2.0, 6.0), false, false), &world).expect("installs");
+        assert_eq!(facing.target_form_id, byroredux_core::ecs::components::USE_FACING_DIRECTION);
+        let mut by_type = package(0, (2.0, 6.0), true, false);
+        by_type.target2 = Some(PackTarget { target_type: 1, target: PackTargetKind::Other(5), count_or_distance: 0 });
+        assert_eq!(use_weapon_decision(&by_type, &world), Err(UseWeaponDecline::NoTarget));
+
+        // A garbage authored pause reads as no pause, never as a negative or non-finite wait.
+        let bad = use_weapon_decision(&package(0, (f32::NAN, 1.0), true, false), &world).expect("installs");
+        assert_eq!(bad.pause_secs, 0.0);
     }
 
     /// AIP-UW-008 / -009 -- object type 12 installs as the actor's own weapon; 21-23 decline as unsourced and

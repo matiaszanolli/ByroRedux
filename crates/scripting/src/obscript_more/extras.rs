@@ -88,11 +88,27 @@ impl byroredux_core::ecs::Resource for PendingTextureSwaps {}
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UseWeaponRequest {
     pub weapon: u32,
-    /// The target's reference.
+    /// The target's reference, or 0 to fire along the actor's own facing (AIP-UW-007).
     pub target: u32,
     pub shots: u32,
     /// The shots hit but deal no damage (the PACK's Do No Damage flag).
     pub harmless: bool,
+    /// What only a UseWeapon *package* asks for; the ObScript command leaves it at its default.
+    pub options: UseWeaponOptions,
+}
+
+/// The `PKW3` / flag options of a UseWeapon package (M42 AIP-UW-003..005). The default is the ObScript
+/// command's behaviour: fire on the weapon's attack interval, with no hit guarantee and no blocker check.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct UseWeaponOptions {
+    /// Shots in one volley; the actor pauses [`Self::pause_secs`] after each. 0 fires continuously.
+    pub volley_shots: u32,
+    /// Seconds between volleys (AIP-UW-005).
+    pub pause_secs: f32,
+    /// Always Hit: each shot lands on the target whatever stands in the way (AIP-UW-004).
+    pub always_hit: bool,
+    /// Hold Fire When Blocked: no shot while a movable object is in the line of fire (AIP-UW-003).
+    pub hold_fire_when_blocked: bool,
 }
 
 impl byroredux_core::ecs::storage::Component for UseWeaponRequest {
@@ -215,7 +231,7 @@ fn cmd_119c(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ct
     match (caller(world, ctx), form_arg(args, 0), form_arg(args, 2)) {
         (Some((_, actor)), Some(weapon), Some(target)) => {
             if let Some(mut requests) = world.query_mut::<UseWeaponRequest>() {
-                requests.insert(actor, UseWeaponRequest { weapon, target, shots: num(args, 3).max(1.0) as u32, harmless: false });
+                requests.insert(actor, UseWeaponRequest { weapon, target, shots: num(args, 3).max(1.0) as u32, harmless: false, options: UseWeaponOptions::default() });
             }
             done(format!("UseWeapon {weapon:08X} on {target:08X}"))
         }

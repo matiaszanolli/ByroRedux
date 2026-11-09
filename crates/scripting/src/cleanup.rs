@@ -332,7 +332,7 @@ mod contract_tests {
         survives("ReviveRequest", ReviveRequest);
         survives(
             "UseWeaponRequest",
-            UseWeaponRequest { weapon: 0, target: 0, shots: 1, harmless: false },
+            UseWeaponRequest { weapon: 0, target: 0, shots: 1, harmless: false, options: Default::default() },
         );
         survives("ResetInventoryRequest", ResetInventoryRequest);
     }
