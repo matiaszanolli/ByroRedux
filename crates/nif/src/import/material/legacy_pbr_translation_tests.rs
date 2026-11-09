@@ -225,3 +225,31 @@ fn into_imported_material_keeps_overrides_some_when_any_signal_present() {
     );
     assert!(imported.roughness_override.is_some());
 }
+
+/// #6816 — the production wire for the env-mask classifier input: an authored
+/// `MaterialInfo::env_mask` must reach `classify_legacy_pbr` as `has_env_mask`.
+/// The classifier's own unit test sets the input by hand, so reverting this
+/// adapter line to `false` would otherwise leave every test green.
+#[test]
+fn an_authored_env_mask_reaches_the_classifier_through_the_adapter() {
+    use byroredux_core::ecs::components::material::ENV_MASK_ROUGHNESS_CEILING;
+
+    let mut pool = StringPool::new();
+    let path = pool.intern("textures/clutter/office/typewriter01.dds");
+    let mask = pool.intern("textures/clutter/office/typewriter01_em.dds");
+    let mut info = MaterialInfo::default();
+    info.texture_path = Some(path);
+    info.glossiness = 70.0;
+    info.env_map_scale = 1.0;
+    info.specular_authored = false;
+
+    let without = info.classify_legacy_pbr(&pool);
+    assert_eq!(without.roughness, 0.8, "no mask: the unmasked env-map roughness");
+
+    info.env_mask = Some(mask);
+    let with = info.classify_legacy_pbr(&pool);
+    assert_eq!(
+        with.roughness, ENV_MASK_ROUGHNESS_CEILING,
+        "a bound environment mask must put the surface in the reflective tier"
+    );
+}

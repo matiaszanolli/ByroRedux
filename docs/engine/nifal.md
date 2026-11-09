@@ -1084,6 +1084,23 @@ The material slice was executed this session as the template. Mechanics:
      content — not a backstop for hypothetical future sources. (#1346 / D7-01;
      corrected by #5279, the third copy of the stale claim #4441 fixed in
      rustdoc.)
+     The classifier also reads `PbrClassifierInputs::has_env_mask` (2ed1d91ce,
+     #6816): an env-mapped surface (`env_map_scale > 0.3`) that authors an
+     environment mask is capped at `ENV_MASK_ROUGHNESS_CEILING` (0.55, under the
+     renderer's `roughness < 0.6` reflection gate), and the fragment shader
+     blends metalness toward 0.9 per mask texel for `materialKind == 0`. The
+     input is fed by the two live wires — `MaterialInfo::classify_legacy_pbr`
+     (import) and the overlay recompute in `translate_material_with_provenance`
+     — and not by `resolve_pbr`, whose `Material` carries no mask (it passes
+     `false`; the arm is live only for BGEM / CDB-miss stubs). The wires are
+     pinned by `an_authored_env_mask_reaches_the_classifier_through_the_adapter`
+     and `overlay_recompute_forwards_the_environment_mask_role`; the shader
+     literals by `env_mask_classifier_and_shader_literals_agree`. **Measured
+     population: FNV only** (3,576 meshes author mask + scale, 591 reflective
+     before the ceiling). The rule is not game-gated, so Skyrim kind-1 and FO4
+     non-BGSM shapes that fill the `environment_mask` role take the roughness
+     half too (Skyrim SE `armor/ebony/m/cuirass_0.nif`: 0.8 → 0.55); that
+     population is unmeasured, and the per-texel metalness half is kind-0 only.
   4. classifies glass once, alpha-aware
      (`helpers::classify_glass_into_material_with_provenance`), after the PBR
      resolve so the forced glass roughness wins. The classifier consumes two

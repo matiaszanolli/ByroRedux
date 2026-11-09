@@ -1563,6 +1563,10 @@ impl Material {
                 // come from the flag, not the color value (#2573).
                 specular_authored: self.specular_authored,
                 has_gloss_map: self.gloss_map.is_some(),
+                // `Material` does not carry the environment-mask texture, so this backstop
+                // cannot see it. The arm is only live for the BGEM / Starfield CDB-miss stubs
+                // (they leave both overrides NaN, #4441), which never author a legacy env mask.
+                // The legacy NIF and overlay paths feed the real value (#6816).
                 has_env_mask: false,
             });
             if self.metalness.is_nan() {

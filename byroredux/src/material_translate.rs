@@ -1999,6 +1999,46 @@ mod tests {
         assert_eq!(103u32, byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION);
     }
 
+    /// #6816 — the env-mask rule is decided in two places that must agree: the
+    /// classifier (roughness ceiling, `classify_pbr_keyword`) and the fragment
+    /// shader (per-texel metalness blend). The shader keeps its own literals, so
+    /// pin each coupling: the `> 0.3` authored-scale threshold, the 0.9 conductor
+    /// value the metal keyword arm uses, and that the ceiling sits under the
+    /// shader's reflection gate (`roughness < 0.6`).
+    #[test]
+    fn env_mask_classifier_and_shader_literals_agree() {
+        use byroredux_core::ecs::components::material::{
+            classify_pbr_keyword, PbrClassifierInputs, ENV_MASK_ROUGHNESS_CEILING,
+        };
+        let frag = include_str!("../../crates/renderer/shaders/triangle.frag");
+        assert!(frag.contains("mat.multiLayerEnvmapStrength > 0.3"), "shader authored-scale threshold moved");
+        assert!(frag.contains("legacyEnvMaskMetalness = 0.9"), "shader mask conductor value moved");
+        assert!(frag.contains("roughness < 0.6"), "shader reflection gate moved");
+        assert!(ENV_MASK_ROUGHNESS_CEILING < 0.6, "the ceiling must stay inside the reflection gate");
+
+        let base = PbrClassifierInputs {
+            texture_path: Some("textures/clutter/office/typewriter01.dds"),
+            glossiness: 70.0,
+            env_map_scale: 0.3,
+            has_normal_map: true,
+            specular_color: [1.0; 3],
+            specular_authored: false,
+            has_gloss_map: false,
+            has_env_mask: true,
+        };
+        // The Rust threshold is exclusive at 0.3, like the shader's.
+        assert!(classify_pbr_keyword(base).roughness > ENV_MASK_ROUGHNESS_CEILING);
+        let above = classify_pbr_keyword(PbrClassifierInputs { env_map_scale: 0.31, ..base });
+        assert_eq!(above.roughness, ENV_MASK_ROUGHNESS_CEILING);
+        // The metal keyword arm's conductor value is the shader's mask metalness.
+        let metal = classify_pbr_keyword(PbrClassifierInputs {
+            texture_path: Some("textures/weapons/iron/ironsword.dds"),
+            has_env_mask: false,
+            ..base
+        });
+        assert_eq!(metal.metalness, 0.9);
+    }
+
     #[test]
     fn fire_refraction_uses_sanitized_authored_strength_as_optical_payload() {
         let kind = byroredux_renderer::MATERIAL_KIND_FIRE_REFRACTION;
@@ -4150,6 +4190,47 @@ mod overlay_pbr_divergence_tests {
             material.roughness, 0.7,
             "an overlay swap to a wood-keyword texture must recompute roughness \
              from the new path, not carry over the stale metal classification"
+        );
+    }
+
+    /// #6816 — the overlay-recompute arm of `translate_material_with_provenance`
+    /// feeds `has_env_mask` from the resolved `environment_mask` role. Same
+    /// inputs as the classifier's own unit test, so only the mask wire differs.
+    #[test]
+    fn overlay_recompute_forwards_the_environment_mask_role() {
+        use byroredux_core::ecs::components::material::ENV_MASK_ROUGHNESS_CEILING;
+        let source = ImportedMaterial {
+            material_kind: 0,
+            glossiness: 70.0,
+            env_map_scale: 1.0,
+            specular_authored: false,
+            metalness_override: Some(0.9),
+            roughness_override: Some(0.55),
+            bgsm_pbr_scalars_authored: false,
+            pbr_classified_at_import: true,
+            ..ImportedMaterial::default()
+        };
+        let paths = |mask: Option<&str>| ResolvedPaths {
+            textures: MaterialTextureSet {
+                base_color: Some("textures/clutter/office/typewriter01.dds".to_string()),
+                normal: Some("textures/clutter/office/typewriter01_n.dds".to_string()),
+                environment_mask: mask.map(str::to_string),
+                ..MaterialTextureSet::default()
+            },
+            material_path: None,
+            source_base_color: Some("textures/architecture/metal_wall01.dds".to_string()),
+        };
+        let unmasked = translate_material(&source, Some("Typewriter"), paths(None), 0);
+        assert_eq!(unmasked.roughness, 0.8, "no mask role: the unmasked env-map roughness");
+        let masked = translate_material(
+            &source,
+            Some("Typewriter"),
+            paths(Some("textures/clutter/office/typewriter01_em.dds")),
+            0,
+        );
+        assert_eq!(
+            masked.roughness, ENV_MASK_ROUGHNESS_CEILING,
+            "the recompute arm must forward a resolved environment_mask role"
         );
     }
 
