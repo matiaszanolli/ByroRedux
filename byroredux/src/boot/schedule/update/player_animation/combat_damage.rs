@@ -112,6 +112,8 @@ fn register_damage_pass(scheduler: &mut Scheduler) {
             .writes_resource::<crate::combat::PlayerDamageDealt>()
             .reads_resource::<byroredux_core::character::CharacterRuleset>()
             .writes::<byroredux_core::character::CharacterLevel>()
+            // VATS-LIMB-008: the killing blow's body location, recorded when a hit that names its part kills.
+            .writes::<byroredux_core::character::DismemberRecord>()
             .writes::<byroredux_core::character::LevelUpPoints>()
             // A struck actor's combat state and the ambient package it drops (`clear_ambient_behavior`).
             .writes::<byroredux_scripting::AiCombatState>()

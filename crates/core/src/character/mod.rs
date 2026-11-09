@@ -107,8 +107,8 @@ pub use affliction::{
 };
 pub use attribute::{Attribute, AttributeSet};
 pub use components::{
-    Background, CharacterLevel, FactionReputation, FactionStanding, LevelUpPoints, PerkRank,
-    Perks,
+    Background, CharacterLevel, DismemberRecord, FactionReputation, FactionStanding, LevelUpPoints, PerkRank,
+    Perks, MAX_BODY_LOCATION,
 };
 pub use armor::ArmorModel;
 pub use crime::{BountyScope, CrimeKind, CrimeModel};

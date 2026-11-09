@@ -88,6 +88,9 @@ pub(crate) const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     // player (#5027).
     "EquippedWeapon",
     "Dead",
+    // VATS-LIMB-009 - a u16 bitset of body locations and an optional u8 killing-blow location: no
+    // session-local identity. Replacing: a saved absence clears a live record.
+    "DismemberRecord",
     // #2014 / SAVE-D1-NEW-01 — delta-safe subset of the seven M42
     // AI-procedure runtime-state components: WanderState/TravelState/
     // GuardState/PatrolState are plain Vec3/enum/u32 fields, and
@@ -285,6 +288,11 @@ pub fn build_save_registry() -> SaveRegistry {
     // #6759 — player-scoped like `CharacterLevel` above (the player outlives cell reloads), so a
     // reputation earned by a quest script survives a save/load instead of resetting to Neutral.
     r.register_replacing_component::<byroredux_core::character::FactionReputation>("FactionReputation");
+    // VATS-LIMB-009 - which body locations are recorded gone and where the killing blow landed; written by the
+    // combat funnel and read by `IsLimbGone` / `GetKillingBlowLimb`, nothing re-derives it. Replacing, like
+    // `Dead`: a saved absence really means "no record", so a live actor's record is cleared by a load that
+    // predates it.
+    r.register_replacing_component::<byroredux_core::character::DismemberRecord>("DismemberRecord");
     r.register_replacing_component::<byroredux_core::ecs::components::TimedRestorations>("TimedRestorations");
     byroredux_scripting::magic::register_saved(&mut r);
     // Core types: `byroredux-core` sits below `byroredux-save`, so they cannot register themselves (#6705).

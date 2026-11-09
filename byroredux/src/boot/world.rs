@@ -407,6 +407,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // resolve even before the first walking actor spawns.
     world.register::<crate::components::WalkAnimation>();
     world.register::<crate::components::WalkSpeed>();
+    // VATS-LIMB-008: the dismemberment record the combat funnel writes a killing blow into.
+    world.register::<byroredux_core::character::DismemberRecord>();
     world.register::<crate::components::WalkStuckTimer>();
     world.insert_resource(crate::components::SkyrimWalkClip::default());
 

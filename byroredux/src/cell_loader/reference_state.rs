@@ -52,6 +52,10 @@ struct ReferenceState {
     /// this left a respawned essential NPC standing at ≤ 0 Health, never to
     /// recover. Required: pre-v106 saves are rejected.
     bleedout: Option<byroredux_scripting::Bleedout>,
+    /// VATS-LIMB-008/-009 - the actor's `DismemberRecord` (the body locations it has lost and where its killing
+    /// blow landed). A corpse is respawned from the plugin when its cell reloads, so without this the killing
+    /// blow `GetKillingBlowLimb` reports was forgotten with the eviction. Required: pre-v124 saves are rejected.
+    dismember: Option<byroredux_core::character::DismemberRecord>,
     /// #6072 — the ObScript `AddScriptPackage` slot. A constrained script
     /// package "stays until removed, replaced, evaluated away, or completed"
     /// (GECK), and an eviction is none of those; without it the respawned
@@ -98,6 +102,7 @@ impl ReferenceState {
             perks: None,
             control: None,
             bleedout: None,
+            dismember: None,
             script_package: None,
             dead: false,
             corpse_pose: None,
@@ -274,6 +279,11 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
             state.bleedout = bleedout_q.get(*entity).copied();
         }
     }
+    if let Some(record_q) = world.query::<byroredux_core::character::DismemberRecord>() {
+        for (entity, _, state) in &mut rows {
+            state.dismember = record_q.get(*entity).copied();
+        }
+    }
     if let Some(package_q) = world.query::<byroredux_scripting::script_packages::ScriptPackage>() {
         for (entity, _, state) in &mut rows {
             state.script_package = package_q.get(*entity).copied();
@@ -317,6 +327,7 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
                 && !state.dead
                 && !state.picked_up
                 && state.bleedout.is_none()
+                && state.dismember.is_none()
                 && state.script_package.is_none()
                 && state.magic_effects.is_none()
                 && !state.weapon_drawn
@@ -527,6 +538,9 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
     }
     if let Some(bleedout) = state.bleedout {
         world.insert(entity, bleedout);
+    }
+    if let Some(dismember) = state.dismember {
+        world.insert(entity, dismember);
     }
     // #6072 — before the actor's first ambient tick, which reads the slot
     // ahead of its own stack.
@@ -962,6 +976,7 @@ pub(crate) fn park_unresolved_snapshot_rows(
     let mut controls =
         column::<byroredux_scripting::ActorControlState>(snapshot, "ActorControlState");
     let mut bleedouts = column::<byroredux_scripting::Bleedout>(snapshot, "Bleedout");
+    let mut dismembers = column::<byroredux_core::character::DismemberRecord>(snapshot, "DismemberRecord");
     let mut script_packages =
         column::<byroredux_scripting::script_packages::ScriptPackage>(snapshot, "ScriptPackage");
     let mut transforms = column::<byroredux_core::ecs::Transform>(snapshot, "Transform");
@@ -1020,6 +1035,7 @@ pub(crate) fn park_unresolved_snapshot_rows(
             // scripted wake-up outlives the spawn-time "Starts Unconscious".
             let has_control = controls.contains_key(&old);
             let has_bleedout = bleedouts.contains_key(&old);
+            let has_dismember = dismembers.contains_key(&old);
             let has_script_package = script_packages.contains_key(&old);
             let has_actor_flags = effects.contains_key(&old)
                 || weapon_drawn.contains_key(&old)
@@ -1028,6 +1044,7 @@ pub(crate) fn park_unresolved_snapshot_rows(
                 && !is_dead
                 && !has_control
                 && !has_bleedout
+                && !has_dismember
                 && !has_script_package
                 && !has_actor_flags
                 && !already_parked.contains(&pair)
@@ -1073,6 +1090,7 @@ pub(crate) fn park_unresolved_snapshot_rows(
                     perks: perks.remove(&old),
                     control: controls.remove(&old),
                     bleedout: bleedouts.remove(&old),
+                    dismember: dismembers.remove(&old),
                     script_package: script_packages.remove(&old),
                     dead: is_dead,
                     corpse_pose: transforms
@@ -1135,6 +1153,7 @@ pub(crate) fn mark_picked_up(world: &World, entity: EntityId) {
                     perks: None,
                     control: None,
                     bleedout: None,
+                    dismember: None,
                     script_package: None,
                     dead: false,
                     corpse_pose: None,
@@ -2562,6 +2581,7 @@ mod tests {
         control.set_unconscious(true);
         world.insert(actor, control);
         world.insert(actor, Bleedout { remaining_secs: Some(5.0) });
+        world.insert(actor, byroredux_core::character::DismemberRecord { gone: 0b100, killing_blow: Some(1) });
         world.insert(actor, ScriptPackage { package: 0x0012_3456, constrained: true, running_secs: Some(4.0) });
         world.insert(actor, Dead);
         world.insert(
@@ -2631,6 +2651,7 @@ mod tests {
             perks,
             control,
             bleedout,
+            dismember,
             script_package,
             dead,
             corpse_pose,
@@ -2647,6 +2668,11 @@ mod tests {
         assert_eq!(perks.as_ref().map(|p| p.rank(0xBEEF)), Some(2), "{via}: perks");
         assert!(control.is_some_and(|c| c.unconscious), "{via}: control");
         assert!(bleedout.is_some(), "{via}: bleedout");
+        assert_eq!(
+            dismember.map(|record| (record.gone, record.killing_blow)),
+            Some((0b100, Some(1))),
+            "{via}: dismember"
+        );
         assert!(script_package.is_some(), "{via}: script_package");
         assert!(*dead, "{via}: dead");
         assert!(corpse_pose.is_some(), "{via}: corpse_pose");

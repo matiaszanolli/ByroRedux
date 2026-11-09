@@ -554,17 +554,32 @@ fn is_riding_horse(_world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptV
     flag(false)
 }
 
-// GECK *IsLimbGone <limb>*: "tests if an actor has had a particular limb dismembered" — the engine
-// keeps no dismemberment, so none is gone.
-fn is_limb_gone(_world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
-    flag(false)
+// GECK *IsLimbGone <limb>*: "tests if an actor has had a particular limb dismembered" - answered from the actor's
+// `DismemberRecord` (VATS-LIMB-008): 1 when that body location is recorded gone. An actor with no record has lost
+// nothing; a limb outside the 0..=13 body locations is never gone.
+fn is_limb_gone(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
+    let Some((_, actor)) = caller(world, ctx) else {
+        return flag(false);
+    };
+    let location = num(args, 0);
+    let gone = location >= 0.0
+        && world
+            .get::<byroredux_core::character::DismemberRecord>(actor)
+            .is_some_and(|record| record.is_gone(location as u8));
+    flag(gone)
 }
 
-// GECK *GetKillingBlowLimb*: -1 for a living actor; a corpse's killing blow location is not kept.
+// GECK *GetKillingBlowLimb*: -1 for a living actor, and for a corpse the body location its killing blow struck
+// (`DismemberRecord`, VATS-LIMB-008). A corpse killed by a hit that named no part (a scripted kill, a ranged hit
+// outside VATS) has no recorded location, so the command declines rather than claim "none".
 fn cmd_11f0(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
     match caller(world, ctx) {
         Some((_, actor)) if !world.has::<Dead>(actor) => answer(-1.0),
-        _ => Action::Declined,
+        Some((_, actor)) => match world.get::<byroredux_core::character::DismemberRecord>(actor).and_then(|record| record.killing_blow) {
+            Some(location) => answer(f32::from(location)),
+            None => Action::Declined,
+        },
+        None => Action::Declined,
     }
 }
 

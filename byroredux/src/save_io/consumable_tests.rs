@@ -659,3 +659,51 @@ fn faction_reputation_round_trips_through_a_disk_save_and_load() {
         }
     }
 }
+
+/// VATS-LIMB-009 -- the dismemberment record an actor earned (a limb gone, the killing blow's location) rides the
+/// save, so a load restores it for `IsLimbGone` / `GetKillingBlowLimb`; a save taken before any record existed
+/// clears one the outgoing session wrote (the column is replacing).
+#[test]
+fn dismember_record_round_trips_through_a_disk_save_and_load() {
+    use byroredux_core::character::DismemberRecord;
+    let directory = tempfile::tempdir().unwrap();
+    let index = EsmIndex::default();
+    let mut source = world(&index, directory.path().to_owned());
+    let saved_player = player(&mut source);
+    let mut earned = DismemberRecord::default();
+    earned.mark_gone(5);
+    earned.mark_gone(10);
+    earned.killing_blow = Some(1);
+    for slot in 0..2 {
+        if slot == 0 {
+            source.insert(saved_player, earned);
+        } else {
+            source.remove::<DismemberRecord>(saved_player);
+        }
+        let output = SaveCommand.execute(&source, &slot.to_string());
+        assert!(!command_output_is_failure(&output), "{:?}", output.lines);
+    }
+    let mut live = world(&index, directory.path().to_owned());
+    let live_player = player(&mut live);
+    let mut outgoing = DismemberRecord::default();
+    outgoing.mark_gone(7);
+    live.insert(live_player, outgoing);
+    for slot in [0, 1] {
+        let output = LoadCommand.execute(&live, &slot.to_string());
+        assert!(!command_output_is_failure(&output), "{:?}", output.lines);
+        let snapshot = live.resource_mut::<PendingSaveLoadSlot>().snapshot.take().unwrap();
+        let registry = build_save_registry();
+        byroredux_save::validate_snapshot_types(&registry, &snapshot).unwrap();
+        byroredux_save::restore_resources(&mut live, &registry, &snapshot).unwrap();
+        let remap = byroredux_save::build_form_id_remap(&live, &registry, &snapshot);
+        byroredux_save::apply_deltas(&mut live, &registry, &snapshot, &remap, MUTABLE_DELTA_COLUMNS).unwrap();
+        let loaded = live.get::<DismemberRecord>(live_player).map(|record| *record);
+        if slot == 0 {
+            let loaded = loaded.expect("the saved record is restored");
+            assert_eq!(loaded, earned);
+            assert!(loaded.is_gone(5) && loaded.is_gone(10) && !loaded.is_gone(7), "the outgoing session's limb is replaced");
+        } else {
+            assert!(loaded.is_none(), "a save without a record clears the outgoing one");
+        }
+    }
+}

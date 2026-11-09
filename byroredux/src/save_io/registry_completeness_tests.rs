@@ -1252,6 +1252,7 @@ fn every_delta_column_is_parked_or_explicitly_not() {
         ("Bleedout", "ReferenceState.bleedout"),
         ("ScriptPackage", "ReferenceState.script_package"),
         ("Dead", "ReferenceState.dead"),
+        ("DismemberRecord", "ReferenceState.dismember"),
         ("ActiveMagicEffects", "ReferenceState.magic_effects"),
         ("WeaponDrawn", "ReferenceState.weapon_drawn"),
         ("IgnoreCrime", "ReferenceState.ignore_crime"),
@@ -1418,7 +1419,9 @@ fn the_schema_fingerprint_is_pinned() {
     // player has obtained), registered after `SkillProgress`.
     // #6759 — `FactionReputation` joined the registry as a new replacing component column (the player's
     // per-REPU fame/infamy), registered after `CharacterLevel`.
-    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0xc23a_5d00_9d1f_65e2;
+    // VATS-LIMB-009 - `DismemberRecord` joined the registry as a new additive component column (the body
+    // locations an actor has lost and where its killing blow landed), registered after `FactionReputation`.
+    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x3a16_3345_7a16_fa22;
     let actual = build_save_registry().schema_fingerprint();
     assert_eq!(
         actual, BASELINE_SCHEMA_FINGERPRINT,

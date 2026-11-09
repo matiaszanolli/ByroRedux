@@ -464,6 +464,37 @@ fn the_day_of_week_follows_the_days_run_from_each_games_start() {
 }
 
 #[test]
+fn the_limb_commands_answer_from_the_dismember_record() {
+    use byroredux_core::character::DismemberRecord;
+    use byroredux_core::ecs::components::Dead;
+    let (mut world, actor, ..) = world(GameKind::Fallout3NV);
+    world.register::<DismemberRecord>();
+    world.register::<Dead>();
+    let c = ctx(Some(ACTOR));
+    let nums = |n: f32| [ObScriptValue::Num(n)];
+    // IsLimbGone: nothing recorded -> nothing gone, for any limb including out-of-range ones.
+    assert_eq!(value(run(&world, 0x118e, &nums(5.0), &c)), 0.0);
+    assert_eq!(value(run(&world, 0x118e, &nums(99.0), &c)), 0.0);
+    assert_eq!(value(run(&world, 0x118e, &nums(-1.0), &c)), 0.0);
+    let mut record = DismemberRecord::default();
+    record.mark_gone(5);
+    record.mark_gone(13);
+    world.insert(actor, record);
+    assert_eq!(value(run(&world, 0x118e, &nums(5.0), &c)), 1.0);
+    assert_eq!(value(run(&world, 0x118e, &nums(13.0), &c)), 1.0);
+    assert_eq!(value(run(&world, 0x118e, &nums(3.0), &c)), 0.0, "another limb is still on");
+    assert_eq!(value(run(&world, 0x118e, &nums(14.0), &c)), 0.0, "past the body locations");
+    // GetKillingBlowLimb: -1 alive; a corpse reports the recorded location; a corpse with none declines.
+    assert_eq!(value(run(&world, 0x11f0, &[], &c)), -1.0);
+    world.insert(actor, Dead);
+    assert_eq!(run(&world, 0x11f0, &[], &c), Action::Declined, "a corpse with no recorded blow");
+    let mut record = record;
+    record.killing_blow = Some(1);
+    world.insert(actor, record);
+    assert_eq!(value(run(&world, 0x11f0, &[], &c)), 1.0);
+}
+
+#[test]
 fn the_owner_last_target_is_the_last_actor_the_caller_struck() {
     let (world, ..) = world(GameKind::Fallout3NV);
     let c = ctx(Some(ACTOR));

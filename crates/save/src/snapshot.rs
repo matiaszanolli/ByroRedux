@@ -609,7 +609,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v122 -> v123 (#6759): a new component column, `FactionReputation` (the player's per-faction
 /// fame/infamy from `AddReputation` / `SetReputation`), so a reputation earned by a quest script
 /// survives a load instead of resetting to Neutral.
-pub const FORMAT_MAJOR: u16 = 123;
+///
+/// v123 -> v124 (VATS-LIMB-008/-009): a new component column, `DismemberRecord` (which body locations an
+/// actor has lost and where its killing blow landed), so a v123 save has no record of it and the schema no
+/// longer matches.
+pub const FORMAT_MAJOR: u16 = 124;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

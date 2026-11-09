@@ -373,6 +373,20 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
     }
 }
 
+/// Record the body location a killing blow struck on `target`'s [`DismemberRecord`] (VATS-LIMB-008), creating the
+/// record on first use. A world with no storage for it records nothing.
+fn record_killing_blow(world: &World, target: EntityId, location: u8) {
+    use byroredux_core::character::DismemberRecord;
+    if let Some(mut records) = world.query_mut::<DismemberRecord>() {
+        match records.get_mut(target) {
+            Some(record) => record.killing_blow = Some(location),
+            None => {
+                records.insert(target, DismemberRecord { gone: 0, killing_blow: Some(location) });
+            }
+        }
+    }
+}
+
 /// Same-frame HitEvent → Health damage → death transition.
 pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
     let events: Vec<(EntityId, byroredux_scripting::HitEvent)> = world
@@ -397,18 +411,18 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
         // Damage Threshold (M47.2).
         // M47.2 — a ghost "cannot be harmed by a weapon or spell in any way"
         // (CS / GECK *SetGhost*): the hit lands for nothing.
+        // VATS-LIMB-002/-003 - a VATS volley also carries each landed shot's own damage, already multiplied by the
+        // struck part's `BPND` multiplier, so each shot meets the threshold at its own value. Snapshotted so the
+        // component guard dies before the defence reads below take theirs.
+        let strikes = world
+            .get::<byroredux_scripting::HitParts>(target)
+            .map(|parts| parts.0.clone());
         let damage = if event.blocked || byroredux_scripting::is_ghost(world, target) {
             0.0
         } else {
             // #6440 — DT is a per-shot defence: a folded VATS volley carries its shot
             // count beside the event, and each shot meets the threshold on its own
             // (`max(d − DT, d·m)` per shot, not `max(N·d − DT, N·d·m)` on the sum).
-            // VATS-LIMB-002/-003 - a VATS volley also carries each landed shot's own damage, already multiplied by
-            // the struck part's `BPND` multiplier, so each shot meets the threshold at its own value. Snapshotted
-            // so the component guard dies before the defence reads below take theirs.
-            let strikes = world
-                .get::<byroredux_scripting::HitParts>(target)
-                .map(|parts| parts.0.clone());
             let mitigated = |per_shot: f32| {
                 // Skyrim: the wearer's armor rating takes its share (a no-op where the book is empty).
                 crate::armor::mitigate(
@@ -417,7 +431,7 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
                     apply_damage_threshold(world, event.aggressor, target, per_shot),
                 )
             };
-            match strikes {
+            match &strikes {
                 Some(strikes) if !strikes.is_empty() => {
                     strikes.iter().map(|strike| mitigated(strike.damage.max(0.0))).sum()
                 }
@@ -449,6 +463,11 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
         if killed {
             if let Some(mut dead) = world.query_mut::<Dead>() {
                 dead.insert(target, Dead);
+            }
+            // VATS-LIMB-008 - the part the killing shot struck, for `GetKillingBlowLimb`. The volley's shots land
+            // in queue order, so the last strike is the one that killed.
+            if let Some(location) = strikes.as_ref().and_then(|strikes| strikes.last()).and_then(|strike| strike.body_location) {
+                record_killing_blow(world, target, location);
             }
             // #5366 / #5434 — KILL story event, raised on the slain actor
             // (R1 = victim, R2 = killer; corpus-verified — `WIKill06`
@@ -1984,6 +2003,41 @@ mod tests {
         assert!((per_part - 11.0).abs() < 1e-4, "5 -> 1 (floor) and 25 -> 10, got {per_part}");
         let equal_fold = build(None);
         assert!((equal_fold - 6.0).abs() < 1e-4, "the same 30 folded as two equal 15s lands 6, got {equal_fold}");
+    }
+
+    /// VATS-LIMB-008 - a volley that kills records the body location of its last shot as the killing blow; a
+    /// volley that does not kill, and a kill by a hit that names no part, record nothing.
+    #[test]
+    fn a_killing_volley_records_the_part_of_its_last_shot() {
+        use byroredux_core::character::DismemberRecord;
+        use byroredux_scripting::{HitParts, PartStrike};
+        let strike = |location, damage| PartStrike { body_location: Some(location), limb_actor_value: 255, damage };
+        let run = |health: f32, parts: Option<Vec<PartStrike>>| {
+            let (mut world, _aggressor, target) = damage_fixture(health, Some(30.0), false);
+            world.register::<DismemberRecord>();
+            world.register::<HitParts>();
+            world.insert_resource(PendingDeathReconciliations::default());
+            world.register::<byroredux_scripting::story_manager::StoryEvent>();
+            if let Some(parts) = parts {
+                world.insert(target, HitParts(parts));
+            }
+            combat_damage_system(&world, 0.0);
+            let killed = world.has::<Dead>(target);
+            let record = world.get::<DismemberRecord>(target).map(|record| *record);
+            (killed, record)
+        };
+        let two = || Some(vec![strike(0, 10.0), strike(1, 20.0)]);
+        // 30 damage against 25 health: dead, and the head (the last shot) struck the killing blow.
+        let (killed, record) = run(25.0, two());
+        assert!(killed);
+        assert_eq!(record.and_then(|r| r.killing_blow), Some(1));
+        assert_eq!(record.map(|r| r.gone), Some(0), "nothing is recorded gone");
+        // 30 damage against 500 health: alive, no record.
+        let (killed, record) = run(500.0, two());
+        assert!(!killed && record.is_none());
+        // A kill by a hit that names no part leaves no location to report.
+        let (killed, record) = run(25.0, None);
+        assert!(killed && record.is_none());
     }
 
     /// M47.2 — a script `Kill` takes a plain actor through the death path

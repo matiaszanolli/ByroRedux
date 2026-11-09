@@ -60,6 +60,8 @@ fn delta_columns_carry_only_session_stable_fields() {
         // damage. Dead: empty marker. Neither carries session identity.
         "EquippedWeapon",
         "Dead",
+        // VATS-LIMB-009 - DismemberRecord: u16 body-location bitset + Option<u8> killing-blow location.
+        "DismemberRecord",
         // #2014 — WanderState/PatrolState: home/target Vec3 + WanderPhase
         // enum (Walking, or Paused{remaining: f32}) + pick_count u32.
         // TravelState: destination Vec3. GuardState: anchor Vec3.

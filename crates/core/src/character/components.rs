@@ -192,6 +192,49 @@ pub struct FactionStanding {
     pub infamy: u16,
 }
 
+/// What a hit did to an actor's body that scripts can ask about (VATS-LIMB-008): which body locations are gone and
+/// where the killing blow landed. Saved (VATS-LIMB-009), so a limb recorded gone stays gone across a load.
+///
+/// A body location is the `BPND` part type (xEdit `wbBodyLocationEnum`): torso 0, head 1 (2), left arm 3 (4),
+/// right arm 5 (6), left leg 7 (8, 9), right leg 10 (11, 12), brain 13. `IsLimbGone` answers from [`Self::gone`]
+/// and `GetKillingBlowLimb` from [`Self::killing_blow`] (GECK, body locations -1...13).
+///
+/// The killing blow is recorded whenever a hit that carries its struck part kills (the combat funnel). Nothing
+/// marks a part *gone* yet: whether a hit severs or explodes a part is a chance on the weapon (GECK *Weapons*:
+/// "The weapon will calculate the chance to sever and explode limbs") that the weapon record decode does not
+/// carry, and the engine draws no gore (PRD VATS-NG-005). [`Self::mark_gone`] is the writer a later gore feature
+/// calls; until then `IsLimbGone` honestly answers from a record that only a script or tool fills.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct DismemberRecord {
+    /// Bit `n` set: the part at body location `n` (0..=13) was severed or exploded.
+    pub gone: u16,
+    /// The body location the killing blow struck, once an actor has died of a part hit.
+    pub killing_blow: Option<u8>,
+}
+
+/// The highest body location the record keeps.
+pub const MAX_BODY_LOCATION: u8 = 13;
+
+impl DismemberRecord {
+    /// Whether the part at `location` is recorded gone (a location past 13 never is).
+    #[must_use]
+    pub fn is_gone(&self, location: u8) -> bool {
+        location <= MAX_BODY_LOCATION && self.gone & (1 << location) != 0
+    }
+
+    /// Record the part at `location` as severed or exploded. A location past 13 is ignored.
+    pub fn mark_gone(&mut self, location: u8) {
+        if location <= MAX_BODY_LOCATION {
+            self.gone |= 1 << location;
+        }
+    }
+}
+
+impl Component for DismemberRecord {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// An actor's per-faction reputation (the [`reputation`](super::reputation)
 /// family's storage half). Player-scoped in practice — NPCs don't accrue it —
 /// but a component so it rides the same ECS / save machinery as the rest of
