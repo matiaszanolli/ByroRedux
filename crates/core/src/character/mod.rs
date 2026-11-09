@@ -30,6 +30,8 @@
 //!   `fMaxArmorRating` GMST family), load-order-driven (#6567).
 //! * [`vats`] — [`VatsModel`]: the `fVATS*` GMST tuning family and the
 //!   FO3/FNV VATS to-hit chain, load-order-driven (#6350).
+//! * [`limb_effects`] — [`LimbEffectModel`]: the crippled-limb effects (crippled-leg speed,
+//!   crippled-arm gun spread and melee damage), load-order-driven (VATS-LIMB-006/-010/-011).
 //! * [`resistance`] — the affliction family's resistance half:
 //!   [`Affliction`] descriptors (radiation / poison resistance derivation) +
 //!   the damage-multiplier model.
@@ -89,6 +91,7 @@ pub mod vats;
 pub mod derived;
 pub mod fallout;
 pub mod leveling;
+pub mod limb_effects;
 pub mod profile;
 pub mod regen;
 pub mod reputation;
@@ -109,6 +112,7 @@ pub use components::{
 };
 pub use armor::ArmorModel;
 pub use crime::{BountyScope, CrimeKind, CrimeModel};
+pub use limb_effects::{arm_condition, LimbEffectModel};
 pub use vats::{VatsHitInput, VatsModel};
 pub use derived::{DerivedInput, DerivedOutput, DerivedScope, DerivedStatFormula, RoundMode};
 pub use fallout::{
@@ -168,7 +172,7 @@ mod tests {
             .collect();
         assert_eq!(
             declared.len(),
-            17,
+            18,
             "sub-module count changed — {declared:?}"
         );
         for module in declared {
