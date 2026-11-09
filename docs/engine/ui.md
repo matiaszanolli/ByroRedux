@@ -887,7 +887,7 @@ GUI-HUD-005 cannot be built for Fallout 4 from the shipped movie.
 `crates/menuxml` has no input handling today and must stay engine-neutral (no
 dependency on the UI or Ruffle crates). Phase 3 adds
 `MenuRenderer::hit_test(x, y) -> Option<TileHit>` and an activation event
-queue; a new binary-side adapter, `byroredux/src/menu_xml_input.rs`, maps
+queue; a new binary-side adapter (a `menu_xml_input` module in the `byroredux` crate, not yet written), maps
 `UiInputEvent::{MouseMove, MouseDown, MouseUp, KeyDown}` onto them, routed by the
 registry's input owner so one rule covers both tracks. Values a document reads
 go in through `set_override`, `instantiate_template` and `graft_fragment`.

@@ -798,23 +798,23 @@ New tool: `crates/plugin/examples/info_result_census.rs` greps the `INFO` result
 (`obscript_tools` reads `SCPT` only).
 
 **Open at the Phase 0 exit.** Each is a verify item the public sources and the
-repository's tools could not settle; none blocks Phase 1. Drafts of the issues
-to file are in the Phase 0 hand-off (not yet filed).
+repository's tools could not settle; none blocks Phase 1. Each is owned by the phase issue named in the last
+column or by an issue filed at the Phase 0 exit (#6823-#6826).
 
 | Item | Why open | Owner phase |
 |---|---|---|
-| GUI-REG-003, HUD *drawn* under a modal | No public source names the rule (Skyrim) or its derivation for non-Pause tops (Fallout 4); needs a capture of the original or executable disassembly. The registry default (HUD keeps drawing) stands until measured. | 1 |
-| Fallout 4 compass (GUI-HUD-005) | The widget has no ActionScript and no source documents what native code writes. | 2 |
-| Skyrim `call` callback reaching the vitals and compass angle | Bytecode reading only; confirm at runtime before rewriting the HUD section of ui.md. | 2 |
-| AVM2 path-walk adapter | AS3 has no `eval`; not probed. | 2 |
-| FNV default setting text (GUI-FONT-005) | Packed executable; 42 of 145 names have no value. | 3 |
-| Ruffle's behaviour for the `provisional:` extension rows | Rest on Autodesk semantics, not a Ruffle test. | 3 |
-| Skyrim LE: `ToggleFavorite`, exported `.gfx` HUD path | Small catalog and path-resolution gaps. | 3 (only if LE enters scope) |
-| ObScript `ShowMap` / `ShowDialogSubtitles` queue a `MenuRequest` | Engine bug found by the census (CS / GECK say neither opens a menu). | scripting |
-| QUST stage-0 log-entry conditions (`MQQuickstart`) | Unchecked whether the runtime honours them; if not, the `ShowRaceMenu` placeholder is reachable on an ordinary start. | 5 |
-| Native page residues (barter "gold", HUD diagnostics, `vital_color`, `Form ID` row) | Listed in `native-page-strings.tsv`. | 4 |
-| Skyrim `ShowRaceMenu` return timing | Indirect evidence only (idiom plus the `ShowLimitedRaceMenu` sibling); the native cannot be read from scripts. | 5 |
-| Oblivion / FO3 / FNV flags and elided menu codes | Undocumented in every source; engine default per the ui.md section. | 1 |
+| GUI-REG-003, HUD *drawn* under a modal | No public source names the rule (Skyrim) or its derivation for non-Pause tops (Fallout 4); needs a capture of the original or executable disassembly. The registry default (HUD keeps drawing) stands until measured. | 1 (#6653) |
+| Fallout 4 compass (GUI-HUD-005) | The widget has no ActionScript and no source documents what native code writes. | 2 (#6661) |
+| Skyrim `call` callback reaching the vitals and compass angle | Bytecode reading only; confirm at runtime before rewriting the HUD section of ui.md. | 2 (#6826) |
+| AVM2 path-walk adapter | AS3 has no `eval`; not probed. | 2 (#6826) |
+| FNV default setting text (GUI-FONT-005) | Packed executable; 42 of 145 names have no value. | 3 (#6665) |
+| Ruffle's behaviour for the `provisional:` extension rows | Rest on Autodesk semantics, not a Ruffle test. | 3 (#6826) |
+| Skyrim LE: `ToggleFavorite`, exported `.gfx` HUD path | Small catalog and path-resolution gaps. | 3 (#6826; only if LE enters scope) |
+| ObScript `ShowMap` / `ShowDialogSubtitles` queue a `MenuRequest` | Engine bug found by the census (CS / GECK say neither opens a menu). | scripting (#6823) |
+| QUST stage-0 log-entry conditions (`MQQuickstart`) | Unchecked whether the runtime honours them; if not, the `ShowRaceMenu` placeholder is reachable on an ordinary start. | 5 (#6824) |
+| Native page residues (barter "gold", HUD diagnostics, `vital_color`, `Form ID` row) | Listed in `native-page-strings.tsv`. | 4 (#6825) |
+| Skyrim `ShowRaceMenu` return timing | Indirect evidence only (idiom plus the `ShowLimitedRaceMenu` sibling); the native cannot be read from scripts. | 5 (#6667) |
+| Oblivion / FO3 / FNV flags and elided menu codes | Undocumented in every source; engine default per the ui.md section. | 1 (#6653) |
 
 **Phase 1 — Registry and stack.** GUI-REG-001…011, GUI-PAGE-001,
 GUI-EVT-005/006, GUI-OPS-001, GUI-OPS-005. Exit: scenarios 2, 3 and 10
@@ -993,3 +993,4 @@ Each needs the project owner. The recommendation is the first option.
 | 4 | 2026-11-03 | Owner decisions Q1–Q6 recorded, every one the recommendation | owner: approved |
 | 5 | 2026-11-03 | → ACTIVE: parent #6641 and phase issues #6643, #6653, #6661, #6665, #6666, #6667, #6668 filed; the Phase 0 verify items are acceptance criteria of #6643 | — |
 | 6 | 2026-11-08 | Phase 0 results (§9.1): inventory with Q1 surfaces, flags, codes (FO3 / FNV 1004 = `HUDMainMenu`), classified catalogs, extension census, HUD feeds, `-s` strings, native-page strings, race-menu wait, Skyrim LE and Starfield; Q2's first question answered; Q5 and Q6 results; §3.1 rows 2, 6, 13, 14, 15 corrected; GUI-HOST-001 (H4), GUI-REG-006 and GUI-FONT-005 reworded; ui.md design section | — |
+| 7 | 2026-11-09 | Phase 0 exit: the open verify items each name their owning issue in §9.1 (phase issues, or #6823-#6826 filed for the five no phase issue covered); status line unchanged | — |
