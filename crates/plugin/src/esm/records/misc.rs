@@ -84,9 +84,9 @@ pub use magic::{
     MGEF_FLAG_DETRIMENTAL, MGEF_FLAG_RECOVER,
 };
 pub use pack::{
-    active_package, parse_pack, ForceGreetLine, PackDataInput, PackDataTarget, PackDataTargetKind,
-    PackClock, PackDataValue, PackDays, PackLocation, PackLocationTarget, PackProcedure, PackRecord,
-    PackSchedule, PackTarget, PackTargetKind, PackTopicData, PKDT_INTERRUPT_RANDOM_CONVERSATIONS,
+    active_package, parse_pack, parse_pack_versioned, ForceGreetLine, PackDataInput, PackDataTarget,
+    PackDataTargetKind, PackClock, PackDataValue, PackDays, PackLocation, PackLocationTarget, PackMonth,
+    PackProcedure, PackRecord, PackSeason, ZERO_DURATION_DECLINE, PackSchedule, PackTarget, PackTargetKind, PackTopicData, PKDT_INTERRUPT_RANDOM_CONVERSATIONS,
 };
 pub use quest::{
     parse_qust, AliasFillType, AliasFlags, AliasInjectedData, AliasLinkedAlias, QuestAlias,

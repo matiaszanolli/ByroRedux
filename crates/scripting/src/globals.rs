@@ -93,61 +93,57 @@ impl GameClockGlobals {
             hour: find("GameHour").map(|record| record.form_id),
             days_passed: find("GameDaysPassed").map(|record| record.form_id),
             base_days: value("GameDaysPassed").unwrap_or(0.0),
-            start_date: value("GameYear").zip(value("GameMonth")).zip(value("GameDay")).map(|((year, month), day)| (year, month, day)),
+            start_date: byroredux_plugin::esm::records::calendar::start_date(records),
         }
     }
 }
 
-/// The whole game days the clock has run since the game began, kept beside the clock globals for
-/// `GetDayOfWeek`. `NOT_SAVED_BY_DESIGN`: republished every frame from the saved game clock.
+/// The game calendar: the whole game days the clock has run since the game began, and the weekday the
+/// clock started on. `NOT_SAVED_BY_DESIGN`: `days_elapsed` is republished every frame from the saved game
+/// clock, and `weekday_origin` is resolved from the master at load ([`install_calendar_origin`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GameCalendar {
     pub days_elapsed: u64,
+    /// The weekday (0 Sunday .. 6 Saturday) of day 0, resolved once at load from the master read
+    /// (`byroredux_plugin::esm::records::calendar::weekday_origin`: Oblivion Morndas, Skyrim per edition,
+    /// Fallout's authored start date, ...). `None` where no source establishes it: day constraints on package
+    /// schedules then stay unevaluated and `GetDayOfWeek` counts from Sunday (AIP-SCHED-004). Past the loader
+    /// nothing asks which game it is.
+    pub weekday_origin: Option<u8>,
 }
 
 impl Resource for GameCalendar {}
 
-/// The weekday (0 Sunday .. 6 Saturday) of the proleptic Gregorian date `year-month-day`
-/// (`month` 1..=12), by days-from-civil.
-pub fn gregorian_weekday(year: i64, month: i64, day: i64) -> u32 {
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468; // days since 1970-01-01, a Thursday (4)
-    (days + 4).rem_euclid(7) as u32
-}
+pub use byroredux_plugin::esm::records::calendar::gregorian_weekday;
 
-/// The weekday (0 Sunday .. 6 Saturday) `days_elapsed` whole days into the game. The engine keeps its
-/// own counter that "is not updated when the game date is changed" (CS), advanced each midnight from the
-/// day a new game starts on. Oblivion "always starts on Morndas" (UESP *Calendar*), a 1; Fallout's start
-/// weekday is in the executable and no document gives it, so the new-game date the globals author is
-/// taken to fall on the day the Gregorian calendar says — the only vanilla use (`VFreeformNovacScript`)
-/// compares the day with one it stored, so no epoch is observable. Shared by `GetDayOfWeek` and the
-/// package schedules' Day-of-Week (#6079).
-pub fn day_of_week(world: &byroredux_core::ecs::World, fallout: bool, days_elapsed: u64) -> u32 {
-    let origin = if fallout {
-        world
-            .try_resource::<GameClockGlobals>()
-            .and_then(|clock| clock.start_date)
-            .map_or(0, |(year, month, day)| gregorian_weekday(year as i64, month as i64 + 1, day as i64))
-    } else {
-        1
-    };
+/// The weekday (0 Sunday .. 6 Saturday) `days_elapsed` whole days into the game, from the origin the loader
+/// resolved. The engine keeps its own counter that "is not updated when the game date is changed" (CS),
+/// advanced each midnight from the day a new game starts on. Shared by `GetDayOfWeek` and the package
+/// schedules' Day-of-Week (#6079). Without an established origin it counts from Sunday.
+pub fn day_of_week(world: &byroredux_core::ecs::World, days_elapsed: u64) -> u32 {
+    let origin = world
+        .try_resource::<GameCalendar>()
+        .and_then(|calendar| calendar.weekday_origin)
+        .unwrap_or(0);
     ((u64::from(origin) + days_elapsed) % 7) as u32
 }
 
-/// The weekday package schedules test their Day-of-Week against, `days_elapsed` days into the game —
-/// only where the game's PSDT day enum and calendar are established: Fallout 3 / New Vegas (#6079) and
-/// Oblivion (#6257 — UESP *Mod File Format/PACK* documents the same 0 Sundas .. 6 Loredas, 7..10 group
-/// enum, and its calendar starts on Morndas). `None` elsewhere leaves day constraints unevaluated.
+/// The weekday package schedules test their Day-of-Week against, `days_elapsed` days into the game — `None`
+/// when the loader established no origin for the game, which leaves day constraints unevaluated. It reads the
+/// calendar resource only, never the game kind (AIP-SCHED-004); the origin per game and edition is decided in
+/// `byroredux_plugin::esm::records::calendar::weekday_origin` (Oblivion #6257, Fallout #6079, Skyrim and
+/// Fallout 4 / Starfield per decision Q2).
 pub fn package_weekday(world: &byroredux_core::ecs::World, days_elapsed: u64) -> Option<u32> {
-    use byroredux_plugin::esm::reader::GameKind;
-    match world.try_resource::<crate::ScriptGame>()?.0 {
-        GameKind::Fallout3NV => Some(day_of_week(world, true, days_elapsed)),
-        GameKind::Oblivion => Some(day_of_week(world, false, days_elapsed)),
-        _ => None,
+    let origin = world.try_resource::<GameCalendar>()?.weekday_origin?;
+    Some(((u64::from(origin) + days_elapsed) % 7) as u32)
+}
+
+/// Install the weekday origin the loader resolved from the master into the calendar (AIP-SCHED-004). Called
+/// where the index's other per-game facts are installed.
+pub fn install_calendar_origin(world: &mut byroredux_core::ecs::World, index: &byroredux_plugin::esm::EsmIndex) {
+    world.init_resource::<GameCalendar>();
+    if let Some(mut calendar) = world.try_resource_mut::<GameCalendar>() {
+        calendar.weekday_origin = index.weekday_origin;
     }
 }
 
@@ -242,12 +238,36 @@ mod tests {
         assert_eq!(oblivion_day_of_month(12, 1, 0), None);
     }
 
+    /// AIP-SCHED-001 / -004 — the package schedules' weekday is the origin the loader put on the calendar plus the
+    /// days run; it never asks which game it is. Decision Q2: Skyrim's first day is a Morndas on the launch master
+    /// (HEDR 0.94) and a Sundas on SE / AE (1.71); Fallout 4 and Starfield take the Gregorian weekday of their
+    /// authored start date.
     #[test]
-    fn the_gregorian_weekday_matches_known_dates() {
-        assert_eq!(gregorian_weekday(1970, 1, 1), 4, "a Thursday");
-        assert_eq!(gregorian_weekday(2000, 2, 29), 2, "a Tuesday");
-        assert_eq!(gregorian_weekday(2024, 7, 4), 4, "a Thursday");
-        assert_eq!(gregorian_weekday(2281, 10, 18), 2, "a Tuesday");
+    fn the_package_weekday_is_the_loaders_origin_plus_the_days_run() {
+        use byroredux_plugin::esm::{reader::GameKind, EsmIndex};
+        let weekdays = |game, hedr, date: Option<(f32, f32, f32)>| {
+            let mut world = byroredux_core::ecs::World::new();
+            let index = EsmIndex {
+                weekday_origin: byroredux_plugin::esm::records::calendar::weekday_origin(game, hedr, date),
+                ..Default::default()
+            };
+            install_calendar_origin(&mut world, &index);
+            (0..3).map(|day| package_weekday(&world, day)).collect::<Vec<_>>()
+        };
+        assert_eq!(weekdays(GameKind::Skyrim, 0.94, None), [Some(1), Some(2), Some(3)], "launch edition: Morndas");
+        assert_eq!(weekdays(GameKind::Skyrim, 1.71, None), [Some(0), Some(1), Some(2)], "SE: Sundas");
+        // 2287-10-23 is a Sunday.
+        assert_eq!(weekdays(GameKind::Fallout4, 0.95, Some((2287.0, 9.0, 23.0)))[0], Some(0));
+        assert_eq!(weekdays(GameKind::Starfield, 0.0, Some((2330.0, 0.0, 1.0)))[0], Some(gregorian_weekday(2330, 1, 1)));
+        assert_eq!(weekdays(GameKind::Oblivion, 0.8, None), [Some(1), Some(2), Some(3)]);
+        // A week later is the same weekday.
+        let mut world = byroredux_core::ecs::World::new();
+        install_calendar_origin(&mut world, &EsmIndex { weekday_origin: Some(5), ..Default::default() });
+        assert_eq!((package_weekday(&world, 0), package_weekday(&world, 7)), (Some(5), Some(5)));
+        // No established origin: day constraints stay unevaluated, and a world with no calendar says nothing.
+        assert_eq!(weekdays(GameKind::Fallout76, 0.96, None), [None, None, None]);
+        assert_eq!(weekdays(GameKind::Skyrim, 0.0, None), [None, None, None], "Skyrim with no HEDR read");
+        assert_eq!(package_weekday(&byroredux_core::ecs::World::new(), 3), None);
     }
 
     /// `GameHour` is the game clock: the sync writes it, and a world without the global (or

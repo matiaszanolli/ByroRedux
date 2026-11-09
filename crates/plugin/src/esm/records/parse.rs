@@ -562,6 +562,9 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     // the TX00 diffuse `landscape_textures` carries.
     index.cells.resolve_landscape_texture_sets();
     super::spatial_units::normalize(&mut index);
+    // AIP-SCHED-004: the calendar's weekday origin is decided here, from the master read, and held as one value.
+    index.weekday_origin =
+        super::calendar::weekday_origin(game, file_header.hedr_version, super::calendar::start_date(&index.globals));
 
     // Single source of truth — both this line and `index.total()` walk
     // the same `EsmIndex::categories` table so adding a new record

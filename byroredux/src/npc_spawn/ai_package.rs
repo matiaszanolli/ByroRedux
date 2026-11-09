@@ -1037,6 +1037,9 @@ fn select_active_package<'a>(
         weekday: day.and_then(|day| byroredux_scripting::globals::package_weekday(world, day)),
         day_of_month: day
             .and_then(|day| byroredux_scripting::globals::package_day_of_month(world, day)),
+        // AIP-SCHED-002: no calendar the engine runs yet exposes the month of the year, and no vanilla master
+        // authors a month constraint, so one stays unevaluated (the day-constraint behaviour before #6079).
+        month: None,
     };
     // AIP-FLG: Once Per Day, Must Complete and Continue If PC Near bend the schedule scan; see `package_flags`.
     package_flags::scan_with_flags(world, actor, clock, current, packages, |package| {
@@ -1053,6 +1056,11 @@ fn select_active_package<'a>(
 /// The installer's answer for `package`: `installs`, or `declines: <reason>` (AIP-DX-001 / -002).
 /// FO3/FNV procedure 11 has no sourced semantics (AIP-CAST-004): it stays without a runtime and says so.
 fn install_result(world: &World, package: &PackRecord, registry: &PackageRegistry, actor_form_id: u32) -> String {
+    // AIP-SCHED-003: a window no hour satisfies is never selected, so the installer never runs for it; say why,
+    // with the reason the parser logs when it reads the record.
+    if package.schedule.is_some_and(|schedule| schedule.is_unsatisfiable()) {
+        return format!("declines: {}", byroredux_plugin::esm::records::ZERO_DURATION_DECLINE);
+    }
     match package.procedure_type {
         _ if package.is_find() => match find_decision(package, world) {
             Ok(_) => "installs".to_string(),
@@ -1139,6 +1147,7 @@ pub(crate) fn explain_ambient_packages(world: &World, actor: EntityId) -> Option
         hour: game_hour,
         weekday: day.and_then(|day| byroredux_scripting::globals::package_weekday(world, day)),
         day_of_month: day.and_then(|day| byroredux_scripting::globals::package_day_of_month(world, day)),
+        month: None,
     };
     let context = ConditionContext::for_subject(actor);
     let mut candidates: Vec<u32> = Vec::new();
@@ -1636,6 +1645,30 @@ mod tests {
         }
     }
 
+    /// AIP-SCHED-003 — a zero-duration window stays unselectable and `pack.ambient` names why, whatever the
+    /// procedure would otherwise have done.
+    #[test]
+    fn a_zero_duration_window_is_declined_as_unsourced() {
+        let zero = PackSchedule { start_hour: Some(8), duration_minutes: 0, ..Default::default() };
+        let window = PackSchedule { start_hour: Some(8), duration_minutes: 60, ..Default::default() };
+        let mut world = World::new();
+        world.init_resource::<PackageRegistry>();
+        let registry = world.resource::<PackageRegistry>().clone();
+        for procedure in [PROCEDURE_SANDBOX, PROCEDURE_TRAVEL, PROCEDURE_USE_WEAPON] {
+            let declined = install_result(&world, &pack(0x1, procedure, Some(zero)), &registry, 0);
+            assert!(declined.starts_with("declines: unsourced-semantics"), "{declined}");
+            assert_ne!(
+                install_result(&world, &pack(0x2, procedure, Some(window)), &registry, 0),
+                declined,
+                "an ordinary window is not declined for its schedule"
+            );
+        }
+        // Any-time with no duration is a legitimate window (no start hour), not a zero-length one.
+        let any_time = PackSchedule { start_hour: None, duration_minutes: 0, ..Default::default() };
+        let result = install_result(&world, &pack(0x3, PROCEDURE_SANDBOX, Some(any_time)), &registry, 0);
+        assert!(!result.contains("unsourced"), "{result}");
+    }
+
     /// #6079 — the Primm Prospector Den patrol ships as MWF / TT / SS variants
     /// of one package that all pass the hour test; the first listed used to
     /// win every day. The game calendar's weekday now picks the variant.
@@ -1662,15 +1695,24 @@ mod tests {
             variant(0x3, PackDays::Weekends),
         ];
         let mut world = World::new();
-        world.insert_resource(byroredux_scripting::ScriptGame(GameKind::Fallout3NV));
+        // The weekday origin is whatever the loader put on the calendar (AIP-SCHED-004); the selection never
+        // asks which game it is. `origin` resolves it from the master's facts the way the loader does.
+        let origin = |world: &mut World, game, hedr, date| {
+            let index = byroredux_plugin::esm::EsmIndex {
+                weekday_origin: byroredux_plugin::esm::records::calendar::weekday_origin(game, hedr, date),
+                ..Default::default()
+            };
+            byroredux_scripting::globals::install_calendar_origin(world, &index);
+        };
         let actor = world.spawn();
-        // No start date authored: day 0 falls on a Sunday.
         let winner = |world: &mut World, day: u64| {
             let mut time = GameTimeRes::frozen_at(9.0);
             time.day = day;
             world.insert_resource(time);
             select_active_package(world, actor, 9.0, None, packages.iter()).map(|p| p.form_id)
         };
+        // No start date authored: day 0 falls on a Sunday.
+        origin(&mut world, GameKind::Fallout3NV, 1.34, None);
         let week: Vec<_> = (0..7).map(|day| winner(&mut world, day)).collect();
         assert_eq!(
             week,
@@ -1681,7 +1723,7 @@ mod tests {
 
         // #6257 — Oblivion shares the enum; its calendar starts on Morndas,
         // so day 0 picks the MWF variant and day 6 (Sundas) the weekend one.
-        world.insert_resource(byroredux_scripting::ScriptGame(GameKind::Oblivion));
+        origin(&mut world, GameKind::Oblivion, 0.8, None);
         let week: Vec<_> = (0..7).map(|day| winner(&mut world, day)).collect();
         assert_eq!(
             week,
@@ -1689,9 +1731,22 @@ mod tests {
             "Mor MWF, Tir TT, Mid MWF, Tur TT, Fre MWF, Log SS, Sun SS"
         );
 
-        // A game without an established PSDT calendar leaves the constraint
-        // unevaluated: the first listed package wins every day.
-        world.insert_resource(byroredux_scripting::ScriptGame(GameKind::Skyrim));
+        // AIP-SCHED-001 (decision Q2) — Skyrim's day constraints are evaluated too: the launch master (HEDR
+        // 0.94) starts on a Morndas like Oblivion, SE (1.71) on a Sundas like the Fallout default.
+        origin(&mut world, GameKind::Skyrim, 0.94, None);
+        let week: Vec<_> = (0..7).map(|day| winner(&mut world, day)).collect();
+        assert_eq!(week, [Some(1), Some(2), Some(1), Some(2), Some(1), Some(3), Some(3)], "Skyrim LE");
+        origin(&mut world, GameKind::Skyrim, 1.71, None);
+        let week: Vec<_> = (0..7).map(|day| winner(&mut world, day)).collect();
+        assert_eq!(week, [Some(3), Some(1), Some(2), Some(1), Some(2), Some(1), Some(3)], "Skyrim SE");
+
+        // Fallout 4 / Starfield take the Gregorian weekday of the authored start date (2287-10-23, a Sunday).
+        origin(&mut world, GameKind::Fallout4, 0.95, Some((2287.0, 9.0, 23.0)));
+        assert_eq!(winner(&mut world, 1), Some(1), "Fallout 4: Monday");
+
+        // A master that establishes no origin leaves the constraint unevaluated: the first listed package
+        // wins every day.
+        origin(&mut world, GameKind::Fallout76, 0.96, None);
         assert_eq!(winner(&mut world, 2), Some(1));
     }
 

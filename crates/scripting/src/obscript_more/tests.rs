@@ -441,15 +441,23 @@ fn the_casino_commands_answer_zero_winnings_and_queue_the_screens() {
 
 #[test]
 fn the_day_of_week_follows_the_days_run_from_each_games_start() {
-    use crate::globals::{GameCalendar, GameClockGlobals};
-    let (world, ..) = world(GameKind::Oblivion);
+    use crate::globals::{install_calendar_origin, GameCalendar};
+    use byroredux_plugin::esm::records::calendar::weekday_origin;
+    // `GetDayOfWeek` reads the origin the loader resolved onto the calendar, whichever game it is
+    // (AIP-SCHED-004); the origin per game and edition is `weekday_origin`'s.
+    let install = |world: &mut World, game, hedr, date| {
+        let index = byroredux_plugin::esm::EsmIndex { weekday_origin: weekday_origin(game, hedr, date), ..Default::default() };
+        install_calendar_origin(world, &index);
+    };
     let c = ctx(None);
+    let (mut world, ..) = world(GameKind::Oblivion);
+    install(&mut world, GameKind::Oblivion, 0.8, None);
     assert_eq!(value(run(&world, 0x10aa, &[], &c)), 1.0, "Oblivion starts on Morndas");
     world.try_resource_mut::<GameCalendar>().unwrap().days_elapsed = 6;
     assert_eq!(value(run(&world, 0x10aa, &[], &c)), 0.0, "six days on is Sundas");
     // Fallout: the date the globals author — 2281-10-18, a Tuesday (2) — plus the days run.
     let (mut world, ..) = world_fo();
-    world.insert_resource(GameClockGlobals { start_date: Some((2281.0, 9.0, 18.0)), ..Default::default() });
+    install(&mut world, GameKind::Fallout3NV, 1.34, Some((2281.0, 9.0, 18.0)));
     assert_eq!(value(run(&world, 0x10aa, &[], &c)), 2.0);
     world.try_resource_mut::<GameCalendar>().unwrap().days_elapsed = 3;
     assert_eq!(value(run(&world, 0x10aa, &[], &c)), 5.0);

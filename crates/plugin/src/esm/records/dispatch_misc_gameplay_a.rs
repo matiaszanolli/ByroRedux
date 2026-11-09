@@ -190,10 +190,13 @@ pub(super) fn dispatch_misc_gameplay_a_group(
             // as QUST/PERK) so consumers compare against entities'
             // global FormIdComponents.
             let pack_remap = reader.get_form_id_remap();
-            extract_records(reader, end, b"PACK", &mut |fid, subs| {
-                index
-                    .packages
-                    .insert(fid, parse_pack(fid, subs, &pack_remap, game));
+            // The record header's form version rides along: the `PSDT` month byte is stored +1 from form
+            // version 122 (AIP-SCHED-002).
+            reader.for_each_record(end, Some(b"PACK"), |header, subs| {
+                index.packages.insert(
+                    header.form_id,
+                    parse_pack_versioned(header.form_id, &subs, &pack_remap, game, header.form_version),
+                );
             })?;
         }
         // #2908 / ESM-D4-02 — FO4 nests its entire dialogue/scene tree

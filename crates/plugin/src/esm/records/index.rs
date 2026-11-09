@@ -266,6 +266,9 @@ pub struct EsmIndex {
     /// Canonical character policy selected once from the source master header.
     /// Unlike `game`, this deliberately distinguishes FO3 from New Vegas.
     pub character_rules: byroredux_core::character::CharacterRulesProfile,
+    /// The weekday (0 Sunday .. 6 Saturday) the game clock starts on, resolved once from the master (AIP-SCHED-004,
+    /// [`super::calendar::weekday_origin`]); `None` where no source establishes it.
+    pub weekday_origin: Option<u8>,
     /// #6227 — the plugin file names of the load order (lower-cased, in
     /// order), set by the load-order driver once every plugin is folded in.
     /// Rules the executable keys on a loaded plugin rather than a record
@@ -1523,6 +1526,12 @@ impl EsmIndex {
         if other.total() > 0 {
             self.game = other.game;
         }
+        // AIP-SCHED-004: the calendar's weekday origin is a fact of the base master (its HEDR edition and the start
+        // date it authors); a DLC that authors neither resolves `None` and must not erase it, so the first
+        // established origin wins.
+        if self.weekday_origin.is_none() {
+            self.weekday_origin = other.weekday_origin;
+        }
 
         // #3384 — `character_rules` decides, for every actor in the load
         // order, which skill roster is used, which Health curve seeds
@@ -1639,6 +1648,21 @@ mod tests {
     /// their predecessor (newest nearest), `PNAM == 0` head runs in file
     /// order, dangling predecessors appended — over seeded random master
     /// lists and contributions, including repeated and interleaved ids.
+    /// AIP-SCHED-004 — the weekday origin is the base master's: a DLC that resolves none must not erase it, and a
+    /// later plugin that resolves another must not replace it.
+    #[test]
+    fn the_first_established_weekday_origin_survives_a_merge() {
+        let with = |origin| EsmIndex { weekday_origin: origin, ..Default::default() };
+        let mut merged = with(Some(3));
+        merged.merge_from(with(None));
+        assert_eq!(merged.weekday_origin, Some(3), "a DLC with no origin does not erase the master's");
+        merged.merge_from(with(Some(5)));
+        assert_eq!(merged.weekday_origin, Some(3), "the base master decides");
+        let mut empty = with(None);
+        empty.merge_from(with(Some(2)));
+        assert_eq!(empty.weekday_origin, Some(2), "a master that established none takes the first that does");
+    }
+
     #[test]
     fn batched_info_fold_matches_the_one_at_a_time_fold() {
         let mut seed = 0xD1B5_4A32_D192_ED03u64;
@@ -2067,6 +2091,11 @@ mod tests {
         /// Maps that are deliberately NOT record counts, each with the reason
         /// a reader would otherwise have to reconstruct.
         const EXCLUSIONS: &[(&str, &str)] = &[
+            (
+                "weekday_origin",
+                "AIP-SCHED-004 — one scalar (`Option<u8>`), the weekday the game clock starts on, resolved from \
+                 the master's HEDR and authored start date; first-established wins in `merge_from`; no records",
+            ),
             (
                 "plugin_files",
                 "#6227 — the load order's file names, set by the load-order driver after the fold; no records",

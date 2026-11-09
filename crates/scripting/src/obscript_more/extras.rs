@@ -207,8 +207,8 @@ fn cmd_1254(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ct
 
 // ── calendar ───────────────────────────────────────────────────────────────────────────────
 // GECK / CS *GetDayOfWeek*: 0 Sunday .. 6 Saturday.
-fn get_day_of_week(world: &World, fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
-    answer(crate::globals::day_of_week(world, fallout, elapsed_days(world)) as f32)
+fn get_day_of_week(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
+    answer(crate::globals::day_of_week(world, elapsed_days(world)) as f32)
 }
 
 // ── actors ─────────────────────────────────────────────────────────────────────────────────

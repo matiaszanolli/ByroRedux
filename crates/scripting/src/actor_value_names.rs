@@ -284,6 +284,7 @@ pub fn install_actor_value_names(world: &mut World, index: &EsmIndex) -> usize {
     let count = names.0.len();
     world.insert_resource(names);
     world.insert_resource(ScriptGame(index.game));
+    crate::globals::install_calendar_origin(world, index);
     world.init_resource::<crate::cell_kind::PlayerCellKind>();
     world.insert_resource(crate::idle_names::IdleNames::from_index(index));
     world.insert_resource(crate::obscript_state::ItemTypeCodes::from_index(index));

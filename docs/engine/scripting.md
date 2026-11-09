@@ -2624,7 +2624,7 @@ through physics; the level is 3 or 0), `SendAssaultAlarm` turns the named actor 
 nearest the player — on the player. `Resurrect` revives in place (`revive.rs`: `Dead` and bleedout cleared, health
 back, the ragdoll freed and the bones' collision bodies restored, the idle and the AI package stack re-armed; live:
 Sunny Smiles killed, brought back, standing, the count kept); the get-up animation is not modelled. `DropMe`,
-`RemoveAllTypedItems` (the FOSE type codes), `GetDayOfWeek` (command `0x10aa`; Oblivion's new game starts on Morndas, and Fallout's start weekday is taken from the new-game date the globals author, `globals::day_of_week`), `GetGS` (and `ShowWarning`), `IsSwimming`, `AutoSave`, `GetSitting`
+`RemoveAllTypedItems` (the FOSE type codes), `GetDayOfWeek` (command `0x10aa`; the weekday of day 0 is `GameCalendar::weekday_origin`, resolved once at load by `calendar::weekday_origin` in `crates/plugin` — Oblivion Morndas, Fallout the Gregorian weekday of the authored start date, Skyrim per edition, #6658 — and `globals::day_of_week` adds the days run), `GetGS` (and `ShowWarning`), `IsSwimming`, `AutoSave`, `GetSitting`
 round out the tail. Oblivion's `IsPlayerInJail` (the served-sentence state `jail.rs` keeps, the same one CTDA 171 reads)
 and `GetWeaponAnimType` (the `WEAP` `DATA` type grouped into the CS page's 0 hand-to-hand/staff, 1 one-handed,
 2 two-handed, 3 bow; `ItemKind::Weapon::oblivion_type`) run since 2026-10-30. `obscript.cmd` runs any of these through the real host from the console, which is how the

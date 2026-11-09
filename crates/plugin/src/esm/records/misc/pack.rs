@@ -518,6 +518,60 @@ impl PackDays {
     }
 }
 
+/// The season a PACK schedule can name instead of a month (xEdit `wbPackageScheduleMonthEnum`: Spring (MAM),
+/// Summer (JJA), Autumn (SON), Winter (DJF)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackSeason {
+    Spring,
+    Summer,
+    Autumn,
+    Winter,
+}
+
+/// The month a PACK schedule applies in — `PSDT` byte 0, decoded into one canonical value (AIP-SCHED-002).
+/// xEdit's enum is `-1` Any, `0..=11` January..December (the game's own twelve months by position) and `12..=15`
+/// the four seasons, and it stores the value **+ 1 on records of form version 122 and later**
+/// (`wbPackagePSDTMonthValueToInt` / `wbPackagePSDTMonthValueToStr`), so a stored `0` there is Any. The offset is
+/// applied here, once; nothing past the parser sees a stored byte. Every vanilla master authors Any: `-1` on
+/// Fallout New Vegas and Skyrim, `-1` on the 1,956 Fallout 4 records below version 122 and `0` on the 1,872 at or
+/// above it, `0` on every Starfield record (all at or above it).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PackMonth {
+    #[default]
+    Any,
+    /// One month, 0 (January, Morning Star on Skyrim) .. 11.
+    Month(u8),
+    Season(PackSeason),
+}
+
+impl PackMonth {
+    /// Decode the stored `PSDT` month byte of a record of `form_version`. A value outside `-1..=15` reads as Any.
+    pub fn from_stored(raw: i8, form_version: u16) -> Self {
+        let logical = i16::from(raw) - i16::from(form_version >= 122);
+        match logical {
+            0..=11 => Self::Month(logical as u8),
+            12 => Self::Season(PackSeason::Spring),
+            13 => Self::Season(PackSeason::Summer),
+            14 => Self::Season(PackSeason::Autumn),
+            15 => Self::Season(PackSeason::Winter),
+            _ => Self::Any,
+        }
+    }
+
+    /// True when `month` (0..=11) is the month, or one of the season's three (Spring March-May, Summer
+    /// June-August, Autumn September-November, Winter December-February).
+    pub fn includes(self, month: u32) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Month(m) => month == u32::from(m),
+            Self::Season(PackSeason::Spring) => (2..=4).contains(&month),
+            Self::Season(PackSeason::Summer) => (5..=7).contains(&month),
+            Self::Season(PackSeason::Autumn) => (8..=10).contains(&month),
+            Self::Season(PackSeason::Winter) => matches!(month, 11 | 0 | 1),
+        }
+    }
+}
+
 /// When a package is being asked about: the hour of day and, where the host
 /// has a calendar for the game, the weekday (0 Sunday .. 6 Saturday) and
 /// the day of the month (1-based, #6257). `None` leaves the matching
@@ -528,6 +582,8 @@ pub struct PackClock {
     pub hour: f32,
     pub weekday: Option<u32>,
     pub day_of_month: Option<u32>,
+    /// The month of the year, 0..=11 (AIP-SCHED-002). `None` leaves a month constraint unevaluated.
+    pub month: Option<u32>,
 }
 
 impl From<f32> for PackClock {
@@ -536,6 +592,7 @@ impl From<f32> for PackClock {
             hour,
             weekday: None,
             day_of_month: None,
+            month: None,
         }
     }
 }
@@ -570,6 +627,9 @@ pub struct PackSchedule {
     /// `ImpExRequest02`..`27` family); FO3/FNV author 0 on every package.
     /// Tested like [`Self::days`], against the moment asked about.
     pub date: u8,
+    /// PSDT byte 0: the month (or season) the window applies in, offset-corrected for the record's form version
+    /// (AIP-SCHED-002). Tested against [`PackClock::month`] like [`Self::days`].
+    pub month: PackMonth,
 }
 
 impl PackSchedule {
@@ -624,8 +684,12 @@ impl PackSchedule {
             hour,
             weekday,
             day_of_month,
+            month,
         } = clock.into();
         if weekday.is_some_and(|weekday| !self.days.includes(weekday)) {
+            return false;
+        }
+        if month.is_some_and(|month| !self.month.includes(month)) {
             return false;
         }
         if self.date != 0 && day_of_month.is_some_and(|day| day != u32::from(self.date)) {
@@ -1118,6 +1182,18 @@ pub fn parse_pack(
     remap: &Option<crate::esm::reader::FormIdRemap>,
     game: GameKind,
 ) -> PackRecord {
+    parse_pack_versioned(form_id, subs, remap, game, 0)
+}
+
+/// [`parse_pack`] for a record of a known `form_version` (the record header's): the `PSDT` month byte is stored
+/// +1 from form version 122 (AIP-SCHED-002). `parse_pack` is this with version 0, the pre-122 reading.
+pub fn parse_pack_versioned(
+    form_id: u32,
+    subs: &[SubRecord],
+    remap: &Option<crate::esm::reader::FormIdRemap>,
+    game: GameKind,
+    form_version: u16,
+) -> PackRecord {
     let mut out = PackRecord {
         form_id,
         ..Default::default()
@@ -1243,6 +1319,7 @@ pub fn parse_pack(
                     duration_minutes: if skyrim_era { duration } else { duration.saturating_mul(60) },
                     days: PackDays::from_raw(sub.data[1] as i8),
                     date: sub.data[2],
+                    month: PackMonth::from_stored(sub.data[0] as i8, form_version),
                 };
                 // #3352 — a `time >= 0, duration == 0` PSDT decodes to a
                 // zero-length window that `active_at` can never satisfy, so
@@ -1255,15 +1332,8 @@ pub fn parse_pack(
                 // sentinel value and no enum, so there is no replacement
                 // semantic to adopt without guessing at one. Surfaced rather
                 // than silently swallowed: see `PackSchedule::active_at`.
-                if schedule.is_unsatisfiable() {
-                    log::debug!(
-                        "PACK {:08X} PSDT authors an unsatisfiable schedule \
-                         (start_hour {:?}, duration 0) — the package can never \
-                         be selected at any hour (#3352)",
-                        form_id,
-                        schedule.start_hour,
-                    );
-                }
+                // The decline line (AIP-SCHED-003) is logged once the record is whole and
+                // names the package, below.
                 out.schedule = Some(schedule);
             }
             // FO3/FNV PLDT: Location Type u32, Location union u32
@@ -1378,8 +1448,24 @@ pub fn parse_pack(
             })
             .filter(|form_id| *form_id != 0);
     }
+    // AIP-SCHED-003 / #3352 — a real start hour with a zero duration is a window no hour satisfies, and no source
+    // says what the original engine did with it (xEdit types the field as a bare integer with no sentinel; the
+    // GECK says only that "the schedule cannot be in less than one hour blocks"). It stays unselectable, and this
+    // is its decline line: the same shape as every other (AIP-DX-002), `pack.ambient` prints the same reason.
+    if out.schedule.is_some_and(|schedule| schedule.is_unsatisfiable()) {
+        log::debug!(
+            "package decline: {:08X} {} procedure {}: {}",
+            form_id,
+            out.editor_id,
+            out.procedure_type,
+            ZERO_DURATION_DECLINE,
+        );
+    }
     out
 }
+
+/// The reason an unsatisfiable (zero-duration) schedule window is declined with (AIP-SCHED-003).
+pub const ZERO_DURATION_DECLINE: &str = "unsourced-semantics (zero-duration schedule window)";
 
 #[cfg(test)]
 mod tests {
@@ -1946,6 +2032,89 @@ mod tests {
         );
     }
 
+    /// A Skyrim+ (12-byte) PSDT whose month byte is `month`, any day, 08:00 for 12 hours.
+    fn psdt_with_month(month: u8) -> [u8; 12] {
+        [month, 0xff, 0x00, 0x08, 0x00, 0, 0, 0, 0xd0, 0x02, 0, 0]
+    }
+
+    fn month_of(month: u8, form_version: u16) -> PackMonth {
+        parse_pack_versioned(0x1, &[sub(b"PSDT", psdt_with_month(month))], &None, GameKind::Fallout4, form_version)
+            .schedule
+            .expect("schedule decoded")
+            .month
+    }
+
+    /// AIP-SCHED-002 — the month byte decodes to one canonical value, and the form-version-122 offset (xEdit
+    /// stores month + 1 from there) is applied inside the parser.
+    #[test]
+    fn a_v122_month_zero_is_any() {
+        // Below 122 the byte is the value: -1 is Any, 0 is January.
+        assert_eq!(month_of(0xff, 98), PackMonth::Any);
+        assert_eq!(month_of(0, 98), PackMonth::Month(0), "a stored 0 below 122 is January");
+        assert_eq!(month_of(11, 98), PackMonth::Month(11));
+        // At 122 and later the byte is value + 1: a stored 0 is Any, a stored 1 January.
+        assert_eq!(month_of(0, 122), PackMonth::Any, "a stored 0 at 122 is Any");
+        assert_eq!(month_of(1, 122), PackMonth::Month(0));
+        assert_eq!(month_of(12, 122), PackMonth::Month(11));
+        assert_eq!(month_of(0, 121), PackMonth::Month(0), "121 is still below the offset");
+        assert_eq!(month_of(0, 200), PackMonth::Any, "a later Starfield version keeps the offset");
+    }
+
+    #[test]
+    fn the_psdt_month_decodes_seasons_and_refuses_the_rest_as_any() {
+        assert_eq!(month_of(12, 98), PackMonth::Season(PackSeason::Spring));
+        assert_eq!(month_of(13, 98), PackMonth::Season(PackSeason::Summer));
+        assert_eq!(month_of(14, 98), PackMonth::Season(PackSeason::Autumn));
+        assert_eq!(month_of(15, 98), PackMonth::Season(PackSeason::Winter));
+        assert_eq!(month_of(16, 98), PackMonth::Any, "past the enum");
+        assert_eq!(month_of(13, 122), PackMonth::Season(PackSeason::Spring), "the offset moves seasons too");
+        assert_eq!(month_of(0x80, 98), PackMonth::Any, "a negative byte other than -1");
+        // The old FO3/FNV 8-byte layout carries the byte in the same place.
+        let fnv = [0xff, 0xff, 0x00, 0x08, 12, 0, 0, 0];
+        assert_eq!(
+            parse_pack(0x1, &[sub(b"PSDT", fnv)], &None, GameKind::default()).schedule.unwrap().month,
+            PackMonth::Any
+        );
+    }
+
+    /// AIP-SCHED-002 — a month constraint gates the window when the clock knows the month, and is left
+    /// unevaluated when it does not.
+    #[test]
+    fn psdt_month_gates_the_schedule() {
+        let schedule = |month| PackSchedule { start_hour: None, month, ..Default::default() };
+        let at = |schedule: PackSchedule, month: Option<u32>| {
+            schedule.active_at(PackClock { hour: 12.0, weekday: None, day_of_month: None, month })
+        };
+        let march = schedule(PackMonth::Month(2));
+        assert!(at(march, Some(2)));
+        assert!(!at(march, Some(3)) && !at(march, Some(1)));
+        assert!(at(march, None), "no calendar month: unevaluated, as a day constraint is");
+        assert!(at(schedule(PackMonth::Any), Some(7)));
+
+        let winter = schedule(PackMonth::Season(PackSeason::Winter));
+        assert!([11, 0, 1].into_iter().all(|m| at(winter, Some(m))), "December, January, February");
+        assert!([2, 5, 8, 10].into_iter().all(|m| !at(winter, Some(m))));
+        let spring = schedule(PackMonth::Season(PackSeason::Spring));
+        assert!([2, 3, 4].into_iter().all(|m| at(spring, Some(m))) && !at(spring, Some(5)) && !at(spring, Some(1)));
+        let summer = schedule(PackMonth::Season(PackSeason::Summer));
+        assert!([5, 6, 7].into_iter().all(|m| at(summer, Some(m))) && !at(summer, Some(8)));
+        let autumn = schedule(PackMonth::Season(PackSeason::Autumn));
+        assert!([8, 9, 10].into_iter().all(|m| at(autumn, Some(m))) && !at(autumn, Some(11)));
+    }
+
+    /// AIP-SCHED-003 — a zero-duration window is still unselectable at every hour; its decline reason is the
+    /// shared constant `pack.ambient` prints.
+    #[test]
+    fn a_zero_duration_window_stays_unselectable_with_a_named_reason() {
+        let mut psdt = psdt_with_month(0xff);
+        psdt[8..12].copy_from_slice(&0u32.to_le_bytes());
+        let pack = parse_pack_versioned(0x1, &[sub(b"PSDT", psdt)], &None, GameKind::Skyrim, 44);
+        let schedule = pack.schedule.expect("schedule decoded");
+        assert!(schedule.is_unsatisfiable());
+        assert!((0..24).all(|hour| !schedule.active_at(hour as f32)));
+        assert!(ZERO_DURATION_DECLINE.starts_with("unsourced-semantics"));
+    }
+
     /// #2012 / LC0716-01 — Skyrim+ PSDT is 12 bytes: the same
     /// month/day/date/hour i8 quartet at offsets 0-3, a new `minute` i8
     /// at offset 4, 3 bytes of padding, then `duration` i32 at offset 8
@@ -2040,6 +2209,7 @@ mod tests {
                 hour: 9.0,
                 weekday: Some(weekday),
                 day_of_month: None,
+                month: None,
             })
         };
 
@@ -2082,6 +2252,7 @@ mod tests {
             hour: 13.0,
             weekday: Some(1),
             day_of_month: None,
+            month: None,
         }));
         assert!(mwf.active_at(9.0));
     }
@@ -2102,6 +2273,7 @@ mod tests {
                 hour: 13.0,
                 weekday: Some(3),
                 day_of_month,
+                month: None,
             })
         };
         assert!(at(Some(2)));
@@ -2111,6 +2283,7 @@ mod tests {
             hour: 18.0,
             weekday: None,
             day_of_month: Some(2),
+            month: None,
         }), "the hour window still applies");
 
         let mut any = vec![0xFF, 0xFF, 0, 12];
@@ -2122,6 +2295,7 @@ mod tests {
             hour: 13.0,
             weekday: None,
             day_of_month: Some(day),
+            month: None,
         })));
     }
 
@@ -2143,6 +2317,7 @@ mod tests {
                     hour: 9.0,
                     weekday: Some(weekday),
                     day_of_month: None,
+                    month: None,
                 },
                 |_| true,
             )

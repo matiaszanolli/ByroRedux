@@ -652,6 +652,10 @@ pub struct RecordHeader {
     pub data_size: u32,
     pub flags: u32,
     pub form_id: u32,
+    /// The record's form version (the `u16` at offset 20 of a Skyrim+ record header); `0` on Oblivion, FO3 and
+    /// FNV, whose header carries none. Layouts that moved with the version (the `PSDT` month byte, form
+    /// version 122) read it from here.
+    pub form_version: u16,
 }
 
 impl RecordHeader {
@@ -905,9 +909,17 @@ impl<'a> EsmReader<'a> {
         let flags = self.read_u32();
         let form_id_raw = self.read_u32();
         // Trailing metadata: Oblivion = 4 bytes (vc_info); FO3+ = 8 bytes
-        // (vc_info + unknown + version + unknown). We don't consume any
-        // of it today, just skip past.
-        self.skip(header_size - 16);
+        // (vc_info + unknown + version + unknown). Only the form version of the 8-byte layout is read
+        // (offset 20: the u16 after the u32 version-control info); the rest is skipped.
+        let form_version = if header_size >= 24 && self.remaining() >= header_size - 16 {
+            self.skip(4);
+            let version = u16::from_le_bytes([self.data[self.pos], self.data[self.pos + 1]]);
+            self.skip(header_size - 16 - 4);
+            version
+        } else {
+            self.skip(header_size - 16);
+            0
+        };
         // #445 — remap the record's own FormID through the installed
         // load-order so multi-plugin maps stay collision-free. No-op
         // when no remap is set (single-plugin load).
@@ -929,6 +941,7 @@ impl<'a> EsmReader<'a> {
             data_size,
             flags,
             form_id,
+            form_version,
         })
     }
 
