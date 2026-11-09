@@ -29,7 +29,8 @@
 //!   are honoured by [`super::script_requests::use_weapon_system`]. Crouch To Reload (AIP-UW-006) is not
 //!   modelled: it waits on Phase 0 finding a crouched reload pose, and the flag stays unconsumed.
 //! - Object type 12 (Weapons: Any) fires the actor's equipped weapon, else the first weapon in its inventory
-//!   (AIP-UW-008; a Redux choice, PRD §6 row 14). Types 21-23 stay declined as unsourced (AIP-UW-009).
+//!   (AIP-UW-008; a Redux choice, PRD §6 row 14). Type 22 (Weapons: Melee) does the same restricted to melee animation
+//!   types (AIP-UW-009, decision Q1); 21 and 23 stay declined as unsourced.
 //! - The pause between volleys is the midpoint of the authored `PKW3` pause range (PRD §6 row 5), never
 //!   shorter than the weapon's attack interval.
 //! - The request waits for its target to be loaded; a package whose target
@@ -37,7 +38,7 @@
 
 use byroredux_core::ecs::components::{
     Dead, EquippedWeapon, GlobalTransform, Inventory, UseWeaponPackageBehavior, UseWeaponPackageStarted,
-    USE_ACTORS_OWN_WEAPON, USE_FACING_DIRECTION,
+    USE_ACTORS_OWN_MELEE_WEAPON, USE_ACTORS_OWN_WEAPON, USE_FACING_DIRECTION,
 };
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_plugin::esm::records::{EsmIndex, ItemKind};
@@ -64,19 +65,25 @@ fn requested_shots(behavior: &UseWeaponPackageBehavior, index: &EsmIndex) -> u32
     }
 }
 
-/// The weapon an object-type-12 package fires: the equipped weapon, else the first weapon in the inventory
-/// (AIP-UW-008).
-fn own_weapon(world: &World, actor: EntityId, index: &EsmIndex) -> Option<u32> {
-    if let Some(equipped) = world.get::<EquippedWeapon>(actor) {
-        return Some(equipped.base_form_id);
+/// `WEAP` animation types Melee (1 Hand) and Melee (2 Hand) (xEdit `wbWeaponAnimTypeEnum`); Hand to Hand (0)
+/// is a Phase 0 verify item and does not count.
+const MELEE_ANIM_TYPES: [u8; 2] = [1, 2];
+
+/// The weapon a class package fires: the equipped weapon, else the first weapon in the inventory (AIP-UW-008);
+/// for the melee class (object type 22, AIP-UW-009) only a weapon with a melee animation type.
+fn own_weapon(world: &World, actor: EntityId, index: &EsmIndex, melee_only: bool) -> Option<u32> {
+    let fits = |base: &u32| match index.items.get(base).map(|item| &item.kind) {
+        Some(ItemKind::Weapon { anim_type, .. }) => !melee_only || MELEE_ANIM_TYPES.contains(anim_type),
+        _ => false,
+    };
+    // An equipped weapon outside the class does not stop the actor drawing one of the class from its pack.
+    if let Some(equipped) = world.get::<EquippedWeapon>(actor).map(|e| e.base_form_id) {
+        if !melee_only || fits(&equipped) {
+            return Some(equipped);
+        }
     }
     let inventory = world.get::<Inventory>(actor)?;
-    inventory
-        .items
-        .iter()
-        .filter(|stack| stack.count > 0)
-        .map(|stack| stack.base_form_id)
-        .find(|base| matches!(index.items.get(base).map(|item| &item.kind), Some(ItemKind::Weapon { .. })))
+    inventory.items.iter().filter(|stack| stack.count > 0).map(|stack| stack.base_form_id).find(fits)
 }
 
 /// Whether `subject` (the actor for the `PLDT` location, AIP-UW-001; its target for `PLD2`, AIP-UW-002) stands
@@ -147,9 +154,9 @@ pub(crate) fn use_weapon_package_system(world: &World, _dt: f32) {
                 continue;
             }
         }
-        // AIP-UW-008: a weapon class means the actor's own weapon.
-        if behavior.weapon_form_id == USE_ACTORS_OWN_WEAPON {
-            let Some(weapon) = own_weapon(world, actor, &index) else {
+        // AIP-UW-008 / -009: a weapon class means the actor's own weapon, of that class.
+        if behavior.weapon_form_id == USE_ACTORS_OWN_WEAPON || behavior.weapon_form_id == USE_ACTORS_OWN_MELEE_WEAPON {
+            let Some(weapon) = own_weapon(world, actor, &index, behavior.weapon_form_id == USE_ACTORS_OWN_MELEE_WEAPON) else {
                 continue;
             };
             behavior.weapon_form_id = weapon;
@@ -367,6 +374,48 @@ mod tests {
         world.insert(actor, inventory);
         use_weapon_package_system(&world, 0.0);
         assert_eq!(request_of(&world, actor).map(|r| r.weapon), Some(WEAPON), "the first inventory weapon (0xDEAD is no weapon)");
+    }
+
+    /// AIP-UW-009 (decision Q1) -- object type 22 fires only a melee-class weapon (WEAP animation type Melee 1
+    /// Hand / 2 Hand): the equipped one when it fits, else the first inventory weapon that does. A rifle, a
+    /// pistol, or Hand to Hand is not in the class.
+    #[test]
+    fn a_melee_class_package_fires_only_a_melee_weapon() {
+        use byroredux_core::ecs::components::{Inventory, ItemStack};
+        const RIFLE: u32 = 0xB1;
+        const MELEE_2H: u32 = 0xB2;
+        const FISTS: u32 = 0xB3;
+        let (mut world, actor) = {
+            let mut own = behavior(Some(1), 1, false);
+            own.weapon_form_id = USE_ACTORS_OWN_MELEE_WEAPON;
+            world_with(own, true)
+        };
+        // Replace the fixture's index with one holding the three class-test weapons.
+        let mut index = weapon_index(1);
+        for (base, anim) in [(RIFLE, 5u8), (MELEE_2H, 2), (FISTS, 0)] {
+            let mut kind = ItemKind::weapon_stub(3, 1);
+            if let ItemKind::Weapon { anim_type, .. } = &mut kind {
+                *anim_type = anim;
+            }
+            index.items.insert(base, ItemRecord { form_id: base, common: CommonItemFields::default(), kind });
+        }
+        world.insert_resource(crate::components::LoadedCellIndex(Arc::new(index)));
+        world.register::<Inventory>();
+        world.register::<EquippedWeapon>();
+
+        let mut inventory = Inventory::new();
+        inventory.add(ItemStack::new(RIFLE, 1));
+        inventory.add(ItemStack::new(FISTS, 1));
+        world.insert(actor, inventory);
+        use_weapon_package_system(&world, 0.0);
+        assert_eq!(request_of(&world, actor), None, "a rifle and fists are not melee weapons: nothing to fire");
+
+        let mut inventory = Inventory::new();
+        inventory.add(ItemStack::new(RIFLE, 1));
+        inventory.add(ItemStack::new(MELEE_2H, 1));
+        world.insert(actor, inventory);
+        use_weapon_package_system(&world, 0.0);
+        assert_eq!(request_of(&world, actor).map(|r| r.weapon), Some(MELEE_2H), "the first melee weapon in the pack");
     }
 
     #[test]

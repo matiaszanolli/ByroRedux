@@ -115,7 +115,7 @@ enum UseWeaponDecline {
     /// No `PTDT` weapon, or a target kind that is neither a weapon base nor a weapon class.
     NoWeapon,
     /// A weapon class whose label is unsettled: 21 and 23 (the fopdoc names contradict the packages that author
-    /// them) and 22 (Melee; decision Q1) stay declined until sourced (AIP-UW-009).
+    /// them) stay declined until sourced (AIP-UW-009). 22 (Melee) runs, by decision Q1.
     UnsourcedSemantics(u32),
     /// An object type outside the weapon classes.
     UnsupportedObjectType(u32),
@@ -138,12 +138,15 @@ impl UseWeaponDecline {
 }
 
 /// The weapon of a UseWeapon `PTDT`: one weapon base, or object type 12 (Weapons: Any) — the actor's own
-/// weapon (AIP-UW-008). Types 21-23 are declined as unsourced (AIP-UW-009).
+/// weapon (AIP-UW-008); type 22 (Weapons: Melee) the actor's own melee weapon (AIP-UW-009, decision Q1). Types 21
+/// and 23 are declined as unsourced.
 fn use_weapon_weapon(target: PackTargetKind, target_type: u32) -> Result<u32, UseWeaponDecline> {
     match target {
         PackTargetKind::ObjectId(weapon_form_id) => Ok(weapon_form_id),
         PackTargetKind::Other(12) if target_type == 2 => Ok(byroredux_core::ecs::components::USE_ACTORS_OWN_WEAPON),
-        PackTargetKind::Other(class @ 21..=23) if target_type == 2 => Err(UseWeaponDecline::UnsourcedSemantics(class)),
+        // Decision Q1: 22 (Weapons: Melee) fits its packages and runs; 21 and 23 stay declined until sourced.
+        PackTargetKind::Other(22) if target_type == 2 => Ok(byroredux_core::ecs::components::USE_ACTORS_OWN_MELEE_WEAPON),
+        PackTargetKind::Other(class @ (21 | 23)) if target_type == 2 => Err(UseWeaponDecline::UnsourcedSemantics(class)),
         PackTargetKind::Other(raw) if target_type == 2 => Err(UseWeaponDecline::UnsupportedObjectType(raw)),
         _ => Err(UseWeaponDecline::NoWeapon),
     }
@@ -2495,7 +2498,7 @@ mod tests {
         // condition list are all declined.
         let mut by_class = shooting(0x102);
         by_class.target = Some(target(2, PackTargetKind::Other(0x16)));
-        assert_eq!(installed(by_class), None, "weapon sub-classes are not decoded (21-23 are unsourced)");
+        assert!(installed(by_class).is_some(), "class 22 (Weapons: Melee) installs as the actor's own melee weapon");
         let mut into_the_air = shooting(0x103);
         into_the_air.target2 = None;
         // (AIP-UW-007: a package with no PTD2 installs and fires along the actor's facing; see
@@ -2603,7 +2606,9 @@ mod tests {
         let world = World::new();
         let own = use_weapon_decision(&shooting(12), &world).expect("type 12 installs");
         assert_eq!(own.weapon_form_id, byroredux_core::ecs::components::USE_ACTORS_OWN_WEAPON);
-        for class in [21, 22, 23] {
+        let melee = use_weapon_decision(&shooting(22), &world).expect("type 22 installs (decision Q1)");
+        assert_eq!(melee.weapon_form_id, byroredux_core::ecs::components::USE_ACTORS_OWN_MELEE_WEAPON);
+        for class in [21, 23] {
             let decline = use_weapon_decision(&shooting(class), &world).unwrap_err();
             assert_eq!(decline, UseWeaponDecline::UnsourcedSemantics(class));
             assert!(decline.reason().starts_with("unsourced-semantics"));

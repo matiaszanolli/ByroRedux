@@ -54,6 +54,11 @@ pub struct UseWeaponPackageBehavior {
 /// no weapon base is the null FormID.
 pub const USE_ACTORS_OWN_WEAPON: u32 = 0;
 
+/// [`UseWeaponPackageBehavior::weapon_form_id`] for object type 22 (Weapons: Melee): the actor's own weapon, but
+/// only one whose `WEAP` animation type is Melee (1 Hand) or Melee (2 Hand) (AIP-UW-009, decision Q1). Hand to
+/// Hand does not count until Phase 0 settles it. FormID 1 is never a weapon base.
+pub const USE_ACTORS_OWN_MELEE_WEAPON: u32 = 1;
+
 /// [`UseWeaponPackageBehavior::target_form_id`] for a package that names no target: no reference is the null
 /// FormID.
 pub const USE_FACING_DIRECTION: u32 = 0;
