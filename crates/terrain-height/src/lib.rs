@@ -24,8 +24,10 @@ pub use field::{HeightField, NormalizeRange};
 pub use integrate::{Gradients, GreenConvention};
 
 /// Bumped whenever generation output changes for the same input, so a
-/// cache keyed on it regenerates instead of serving stale maps.
-pub const GENERATOR_VERSION: u32 = 1;
+/// cache keyed on it regenerates instead of serving stale maps. 2: the
+/// metadata gained `seam_exceedance` (the pixels are unchanged; a v1 cache
+/// entry has no seam score, and the static-mesh gate needs one).
+pub const GENERATOR_VERSION: u32 = 2;
 
 /// Largest edge, in texels, of a generated height map. A source larger than
 /// this is box-reduced first. A budget, not a quality limit of the method:
@@ -82,6 +84,13 @@ pub struct HeightMeta {
     /// authored for the other convention.
     pub detected_green: Option<GreenConvention>,
     pub convention_decisiveness: Option<f32>,
+    /// [`HeightSource::Normals`] only: [`Gradients::seam_exceedance`] of the
+    /// source normal map, measured at the size it was integrated. ≈ 0.01 for a
+    /// map that tiles; large when its edges were authored apart, which makes
+    /// the periodic solve ridge along the tile border. The gate for using a
+    /// generated map on geometry that is not a tiling terrain layer.
+    #[serde(default)]
+    pub seam_exceedance: Option<f32>,
 }
 
 /// A generated map: a complete BC4 `.dds` plus its metadata.
@@ -150,6 +159,7 @@ fn meta(source: HeightSource) -> HeightMeta {
         green: None,
         detected_green: None,
         convention_decisiveness: None,
+        seam_exceedance: None,
     }
 }
 
@@ -176,6 +186,7 @@ pub fn from_normal_map(img: &Rgba, green: Option<GreenConvention>) -> Generated 
         meta.green = Some(green);
         meta.detected_green = Some(detected);
         meta.convention_decisiveness = Some(decisiveness);
+        meta.seam_exceedance = Some(gradients.seam_exceedance());
         let sigma = img.width as f32 * NORMALS_HIGHPASS_SIGMA_FRACTION;
         finish(gradients.integrate(green, Some(sigma)), meta)
     })
@@ -199,7 +210,11 @@ pub(crate) mod test_support {
     /// `menuxml::tex` like every other consumer.
     pub fn decode_top_mip(dds: &[u8]) -> Option<HeightField> {
         let image = byroredux_menuxml::tex::Rgba8::decode_dds(dds)?;
-        Some(HeightField::from_red_channel(image.width as usize, image.height as usize, &image.pixels))
+        Some(HeightField::from_red_channel(
+            image.width as usize,
+            image.height as usize,
+            &image.pixels,
+        ))
     }
 
     pub struct OwnedRgba {

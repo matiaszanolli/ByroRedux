@@ -128,7 +128,7 @@ pub(crate) fn spawn_mesh_entity(
         source_material,
         mesh_handle,
         paths,
-        texture_sources,
+        mut texture_sources,
         extra_material_flags,
         placement,
     } = spawn;
@@ -170,7 +170,7 @@ pub(crate) fn spawn_mesh_entity(
     // #3073 (NIFAL-D1) — read the already-resolved canonical parallax values
     // instead of re-deriving `.unwrap_or(0.04)` / `.unwrap_or(4.0)` from the raw
     // material tier.
-    let texture_handles = build_material_texture_handles(
+    let mut texture_handles = build_material_texture_handles(
         ctx,
         tex_provider,
         &textures,
@@ -178,6 +178,19 @@ pub(crate) fn spawn_mesh_entity(
         material.texture_clamp_mode,
         material.parallax_height_scale,
         material.parallax_max_passes,
+    );
+    // Prototype: a tiling wall or rock face that authors no height map gets one
+    // integrated from its normal map. Off unless `render.static_parallax_depth_m`
+    // is above 0; see `static_height`.
+    crate::static_height::bind_synthetic_height(
+        world,
+        ctx,
+        tex_provider,
+        mesh,
+        &material,
+        &textures,
+        &mut texture_handles,
+        &mut texture_sources,
     );
 
     let entity = world.spawn();

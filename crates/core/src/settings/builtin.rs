@@ -49,6 +49,13 @@ pub const TERRAIN_PARALLAX_DEPTH_DEFAULT_M: f32 = 0.08;
 /// plain shading (it starts fading at half of it). 0 disables the effect.
 pub const TERRAIN_PARALLAX_RANGE_SETTING_ID: &str = "render.terrain_parallax_range_m";
 pub const TERRAIN_PARALLAX_RANGE_DEFAULT_M: f32 = 20.0;
+/// Prototype — relief amplitude, in metres, of the parallax generated for
+/// static meshes that author no height map (walls, rock faces, large objects):
+/// the mesh's normal map, integrated (`byroredux-terrain-height`), when it
+/// tiles. Read at mesh spawn, so it applies to cells loaded after the change.
+/// 0 (the default) leaves every static mesh exactly as authored.
+pub const STATIC_PARALLAX_DEPTH_SETTING_ID: &str = "render.static_parallax_depth_m";
+pub const STATIC_PARALLAX_DEPTH_DEFAULT_M: f32 = 0.0;
 
 /// Distance softening of the near terrain toward the look of the distant LOD
 /// ring: 0 = off, 1 = soften from about a third of the ring out (fully
@@ -171,6 +178,21 @@ pub fn register_builtin_settings(registry: &mut SettingsRegistry) -> Result<(), 
          surface is only shifted per pixel, not displaced, so ray-traced \
          shadows and reflections keep the flat ground. 0 turns it off.",
         TERRAIN_PARALLAX_DEPTH_DEFAULT_M,
+        0.0,
+        0.3,
+        0.005,
+        " m",
+    ))?;
+    registry.register(SettingEntry::slider(
+        STATIC_PARALLAX_DEPTH_SETTING_ID,
+        "Rendering",
+        "Static mesh parallax depth (prototype)",
+        "Relief amplitude, in metres, of parallax generated from the normal \
+         map of walls, rock faces and other static meshes that ship no height \
+         map. Only tiling normal maps qualify. The surface is shifted per \
+         pixel, not displaced: silhouettes, shadows and reflections keep the \
+         flat mesh. Applies to cells loaded after the change. 0 turns it off.",
+        STATIC_PARALLAX_DEPTH_DEFAULT_M,
         0.0,
         0.3,
         0.005,

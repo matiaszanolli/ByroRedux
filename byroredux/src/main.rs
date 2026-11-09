@@ -75,6 +75,7 @@ mod streaming;
 mod streaming_helpers;
 mod studio_host;
 mod systems;
+mod static_height;
 mod terrain_height;
 mod texture_streamer;
 mod ui_input;

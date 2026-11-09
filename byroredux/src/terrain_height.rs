@@ -155,7 +155,7 @@ fn service(world: &mut World) -> byroredux_core::ecs::ResourceWrite<'_, TerrainH
 /// Bind `cached` as a texture: the registry's live entry if there is one
 /// (refcount bump), else the cached `.dds` enqueued for the next upload flush.
 /// Heights are data, so linear; terrain tiles, so wrap (`clamp_mode` 3).
-fn acquire_height_texture(ctx: &mut VulkanContext, cached: &CachedHeight) -> u32 {
+pub(crate) fn acquire_height_texture(ctx: &mut VulkanContext, cached: &CachedHeight) -> u32 {
     if let Some(handle) = ctx
         .texture_registry
         .acquire_by_path_with_clamp_and_color_space(

@@ -388,6 +388,9 @@ pub(crate) enum MaterialTextureSource {
     TxstOverride,
     /// The legacy `<base>_n.dds` convention synthesized a normal path.
     DerivedNormal,
+    /// A height map generated from the material's normal map at spawn
+    /// (`static_height`), because the mesh authored none.
+    SyntheticHeight,
     /// A runtime caller replaced an authored path (FaceGen tint, an NPC's race
     /// body / head / eye texture).
     RuntimeOverride,
@@ -403,6 +406,7 @@ impl MaterialTextureSource {
             Self::Mat => "mat",
             Self::TxstOverride => "txst-override",
             Self::DerivedNormal => "derived-normal",
+            Self::SyntheticHeight => "synthetic-height",
             Self::RuntimeOverride => "runtime-override",
         }
     }
