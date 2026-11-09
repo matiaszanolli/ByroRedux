@@ -18,6 +18,12 @@ rig, for every vanilla race that authors a Starts-Dead pose:
            `euler_zup_to_quat_yup_mode(0, ..)` implements) first. Conventions
            that give the same rotation tie, and a tie for first counts.
 
+Which entry poses which body is itself rig-dependent (#6065), so each rig is run under two mappings:
+  ids      the entry's bone id claims the first unclaimed body carrying it (human, ghoul, super mutant).
+  tree     entry k poses the k-th ragdoll body bone in the NIF's node order. Most creature rigs author bone id 0
+           on nearly every body, so `ids` degenerates to the blob order there, and it is not the entries' order.
+The offsets also try the body's joint pivot (the constraint's `pivot_b`) as a second reference; it fixed no rig.
+
 A rig is gated only if it passes BOTH, on enough corpses for the ranking to
 mean something. The flatness test discriminates weakly for quadrupeds (a body
 lying on its side is about as tall as one standing), so a failure there is
@@ -61,6 +67,15 @@ def strip_marker(entries):
 
 def load_rig(name):
     bodies = []
+    # The length of each body's joint pivot in its parent body (the constraint's `pivot_b`, keyed by the
+    # constraint's body a): FO3/FNV's forearms and hands follow it rather than the NIF bone (#6252), so it
+    # is the second reference an entry's offset is tried against.
+    pivot = {}
+    text = open(f'{RIGS_DIR}/rd/{name}.txt').read()
+    for m in re.finditer(r'joint#\d+ a=(\d+) b=\d+ kind=\w+ \{(.*?)\n\}', text, re.S):
+        p = re.search(r'pivot_b: Vec3\(\s*([-\d.e]+),\s*([-\d.e]+),\s*([-\d.e]+),', m.group(2))
+        if p:
+            pivot[int(m.group(1))] = float(np.linalg.norm([float(x) for x in p.groups()]))
     for line in open(f'{RIGS_DIR}/rd/{name}.txt'):
         m = re.match(r'#(\d+) "([^"]+)" bone_id=Some\((\d+)\)', line)
         if m:
@@ -70,7 +85,7 @@ def load_rig(name):
         d = json.loads(line)
         tree[d['name']] = d
         order.append(d['name'])
-    return bodies, tree, order
+    return bodies, tree, order, pivot
 
 
 def claim(ids, bodies):
@@ -114,11 +129,11 @@ by_race = collections.defaultdict(list)
 for r in dead:
     by_race[r['race']].append(r)
 
-print(f'{"race":24} {"skeleton":34} {"corpses":>9} {"offsets":>9} {"FK rank":>8}  verdict')
+print(f'{"race":24} {"skeleton [mapping]":40} {"corpses":>9} {"offsets":>22} {"FK rank":>8}  verdict')
 for race, corpses in sorted(by_race.items(), key=lambda kv: -len(kv[1])):
     # assign: the skeletons whose id multiset matches the most of the race's corpses
     matches = {}
-    for sk, (bodies, _, _) in rigs.items():
+    for sk, (bodies, _, _, _) in rigs.items():
         want = sorted(i for i, _ in bodies)
         n = sum(1 for c in corpses if sorted(int(e[0]) for e in strip_marker(c['entries'])) == want)
         if n:
@@ -133,37 +148,60 @@ for race, corpses in sorted(by_race.items(), key=lambda kv: -len(kv[1])):
         print(f'{race or "(none)":24} {",".join(s.split("__")[0] for s in tied)[:34]:34} {best:>4}/{len(corpses):<4} {"-":>9} {"-":>8}  ambiguous by ids')
         continue
     sk = tied[0]
-    bodies, tree, order = rigs[sk]
+    bodies, tree, order, pivot = rigs[sk]
     want = sorted(i for i, _ in bodies)
-    use = [c for c in corpses if sorted(int(e[0]) for e in strip_marker(c['entries'])) == want]
-    ids = collections.Counter(tuple(int(e[0]) for e in strip_marker(c['entries'])) for c in use)
-    order_ids, _ = ids.most_common(1)[0]
-    use = [c for c in use if tuple(int(e[0]) for e in strip_marker(c['entries'])) == order_ids]
-    bones = [bodies[b][1] for b in claim(order_ids, bodies)]
-    per = collections.defaultdict(list)
-    for c in use:
-        for k, e in enumerate(strip_marker(c['entries'])):
-            if k == 0 or bones[k] not in tree:
-                continue
-            length = float(np.linalg.norm(tree[bones[k]]['t']))
-            if length >= 1.0:
-                per[bones[k]].append(abs(float(np.linalg.norm(e[1:4])) - length) / length)
-    med = {b: float(np.median(v)) for b, v in per.items()}
-    off_bad = {b: round(m, 3) for b, m in med.items() if m > OFFSET_BAR}
-    offsets = f'{len(med) - len(off_bad)}/{len(med)}'
-    results = []
-    for seq in map(''.join, itertools.permutations('xyz')):
-        for intrinsic in (False, True):
-            for sign in (1, -1):
-                ext = []
-                for c in use[:60]:
-                    pos = lying_pose(strip_marker(c['entries']), bones, tree, order, seq, intrinsic, sign)
-                    z = np.array([pos[b][2] for b in bones])
-                    ext.append(z.max() - z.min())
-                results.append((float(np.median(ext)), (seq, intrinsic, sign)))
-    ours = next(e for e, conv in results if conv == OURS)
-    rank = 1 + sum(1 for e, _ in results if e < ours - 1e-6)
-    fk_ok = rank == 1 and len(use) >= MIN_CORPSES_FOR_FK
-    off_ok = not off_bad
-    verdict = 'PASS both' if fk_ok and off_ok else ('PASS (one near-miss: ' + ', '.join(f'{b} {m:.0%}' for b, m in off_bad.items()) + ')') if fk_ok and len(off_bad) <= 1 else 'not established'
-    print(f'{race or "(none)":24} {sk:34} {len(use):>4}/{len(corpses):<4} {offsets:>9} {rank:>8}  {verdict}')
+    body_names = [n for _, n in bodies]
+    # Two ways an entry can name its body. `ids`: the entry's bone id claims the first unclaimed body that
+    # carries it (verified on the human, ghoul and super mutant, whose ids differ). `tree`: entry k poses the
+    # k-th ragdoll body bone in the NIF's own node order. Most creature rigs author bone id 0 on nearly every
+    # body (a radroach 23 of 25, a stingwing 31 of 31), so `ids` degenerates to the blob order there, which
+    # is not the entries' order; the offset lengths settle which mapping a rig follows (#6065).
+    mappings = []
+    use_ids = [c for c in corpses if sorted(int(e[0]) for e in strip_marker(c['entries'])) == want]
+    if use_ids:
+        ids = collections.Counter(tuple(int(e[0]) for e in strip_marker(c['entries'])) for c in use_ids)
+        order_ids, _ = ids.most_common(1)[0]
+        use_ids = [c for c in use_ids if tuple(int(e[0]) for e in strip_marker(c['entries'])) == order_ids]
+        claimed = claim(order_ids, bodies)
+        mappings.append(('ids', use_ids, claimed))
+    tree_bones = [n for n in order if n in set(body_names)]
+    use_tree = [c for c in corpses if len(strip_marker(c['entries'])) == len(tree_bones) == len(bodies)]
+    if use_tree and len(set(tree_bones)) == len(tree_bones):
+        mappings.append(('tree', use_tree, [body_names.index(n) for n in tree_bones]))
+    for mapping, use, claimed in mappings:
+        bones = [bodies[b][1] for b in claimed]
+        per = collections.defaultdict(list)
+        per_piv = collections.defaultdict(list)
+        for c in use:
+            for k, e in enumerate(strip_marker(c['entries'])):
+                if k == 0 or bones[k] not in tree:
+                    continue
+                length = float(np.linalg.norm(tree[bones[k]]['t']))
+                if length >= 1.0:
+                    per[bones[k]].append(abs(float(np.linalg.norm(e[1:4])) - length) / length)
+                plen = pivot.get(claimed[k])
+                if plen is not None and plen >= 1.0:
+                    per_piv[bones[k]].append(abs(float(np.linalg.norm(e[1:4])) - plen) / plen)
+        med = {b: float(np.median(v)) for b, v in per.items()}
+        off_bad = {b: round(m, 3) for b, m in med.items() if m > OFFSET_BAR}
+        offsets = f'{len(med) - len(off_bad)}/{len(med)}'
+        # With the pivot as a second reference: a bone passes if either the NIF offset or the joint pivot fits.
+        med_piv = {b: float(np.median(v)) for b, v in per_piv.items()}
+        either_bad = {b: m for b, m in med.items() if m > OFFSET_BAR and med_piv.get(b, 9.0) > OFFSET_BAR}
+        offsets += f' ({len(med) - len(either_bad)} nif|pivot)'
+        results = []
+        for seq in map(''.join, itertools.permutations('xyz')):
+            for intrinsic in (False, True):
+                for sign in (1, -1):
+                    ext = []
+                    for c in use[:60]:
+                        pos = lying_pose(strip_marker(c['entries']), bones, tree, order, seq, intrinsic, sign)
+                        z = np.array([pos[b][2] for b in bones])
+                        ext.append(z.max() - z.min())
+                    results.append((float(np.median(ext)), (seq, intrinsic, sign)))
+        ours = next(e for e, conv in results if conv == OURS)
+        rank = 1 + sum(1 for e, _ in results if e < ours - 1e-6)
+        fk_ok = rank == 1 and len(use) >= MIN_CORPSES_FOR_FK
+        off_ok = not off_bad
+        verdict = 'PASS both' if fk_ok and off_ok else ('PASS (one near-miss: ' + ', '.join(f'{b} {m:.0%}' for b, m in off_bad.items()) + ')') if fk_ok and len(off_bad) <= 1 else 'not established'
+        print(f'{race or "(none)":24} {sk + " [" + mapping + "]":40} {len(use):>4}/{len(corpses):<4} {offsets:>22} {rank:>8}  {verdict}')
