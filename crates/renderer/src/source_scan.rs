@@ -125,7 +125,7 @@ mod tests {
         // overflow_tests`), same as the sibling #3601 pin in that module —
         // the file's test modules are interleaved with production code, so
         // production_text's first-cut does not apply.
-        ("vulkan/context/build_and_upload_instances.rs", 7),
+        ("vulkan/context/build_and_upload_instances.rs", 6),
         ("vulkan/context/dispatch_skin_and_cluster.rs", 2),
         // +1 (#5087): the file-level LOC budget strips every test module
         // itself (`production_lines` in draw_frame_size_budget_tests), so
