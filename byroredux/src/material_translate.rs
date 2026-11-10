@@ -854,7 +854,7 @@ pub(crate) fn translate_material_with_provenance(
         // (`crates/nif/src/shader_flags.rs`). What no format supplies is the
         // STRENGTH scalar this field wants, so zero here is the no-guessing
         // policy, not an absence of source data. `aniso_lighting` is already
-        // listed in `asset_provider/material.rs`'s inventory of BGSM fields
+        // listed in `asset_provider/material/merge.rs`'s inventory of BGSM fields
         // that decode but have no `ImportedMaterial` sink.
         //
         // Consequence for audits: the Disney anisotropic lobe

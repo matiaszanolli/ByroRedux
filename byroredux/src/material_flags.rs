@@ -10,8 +10,8 @@
 ///
 /// `None` (mesh has no `BSEffectShaderProperty`) yields `0`; the
 /// FO3/FNV `BSShaderNoLightingProperty` path also flows through this
-/// helper at `scene.rs` / `cell_loader.rs` with a `None` arg because
-/// that block lacks the SLSF1/SLSF2 vocabulary entirely.
+/// helper through `translate_material` (`material_translate.rs`) with a
+/// `None` arg because that block lacks the SLSF1/SLSF2 vocabulary entirely.
 ///
 /// Bit layout is pinned by `byroredux_renderer::vulkan::material::material_flag::EFFECT_*`
 /// — see #890 Stage 2.
@@ -285,7 +285,7 @@ mod pack_imported_material_flags_tests {
 
     /// Regression for #1580 — a BGEM's `grayscale_to_palette_alpha` bool
     /// (forwarded onto `bgsm_greyscale_lut_is_alpha` by the BGEM merge arm
-    /// in `asset_provider/material.rs`) must pack `EFFECT_PALETTE_ALPHA`.
+    /// in `asset_provider/material/merge.rs`) must pack `EFFECT_PALETTE_ALPHA`.
     /// When only the alpha bit is authored (color bit left unset), only
     /// EFFECT_PALETTE_ALPHA packs — see
     /// `bgem_both_palette_bits_pack_both_effect_flags` below for the case

@@ -886,7 +886,7 @@ fn bgem_effect_pbr_specular_promotes_imported_material_to_pbr() {
 /// greyscale LUT slot WITHOUT authoring either enable bit
 /// (`grayscale_to_palette_color` / `grayscale_to_palette_alpha`) must leave
 /// `bgsm_greyscale_lut_enabled = false` — the slot is a legal,
-/// always-serialized field, not itself an enable signal. `cell_loader.rs`'s
+/// always-serialized field, not itself an enable signal. `material_flags.rs`'s
 /// `pack_imported_material_flags` gates `EFFECT_PALETTE_COLOR`/`ALPHA` on
 /// this bit, not on the texture's presence.
 #[test]
@@ -2088,7 +2088,7 @@ fn bgem_merge_forwards_grayscale_texture_as_lut_path() {
 
 /// Regression for #1580 — BGEM's `grayscale_to_palette_alpha` bool must
 /// forward alongside the LUT path so `pack_imported_material_flags` (in
-/// `cell_loader.rs`) can pick `EFFECT_PALETTE_ALPHA` over the color
+/// `material_flags.rs`) can pick `EFFECT_PALETTE_ALPHA` over the color
 /// default. Pre-fix the bool had zero consumers outside the parser.
 #[test]
 fn bgem_merge_forwards_grayscale_to_palette_alpha_bool() {

@@ -1663,7 +1663,7 @@ fn merge_bgem_arm(
         // setting both at once), so track them as two separate flags
         // and let `pack_imported_material_flags` OR both
         // EFFECT_PALETTE_COLOR / EFFECT_PALETTE_ALPHA in independently
-        // — see `pack_imported_material_flags` in `cell_loader.rs`.
+        // — see `pack_imported_material_flags` in `material_flags.rs`.
         // Previously `bgsm_greyscale_lut_is_alpha` alone decided
         // COLOR-vs-ALPHA, which silently dropped the color variant
         // whenever a BGEM authored both bits.
