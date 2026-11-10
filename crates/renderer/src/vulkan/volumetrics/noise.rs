@@ -210,7 +210,36 @@ pub(crate) fn cached_detail_density_noise() -> &'static [u8] {
 /// Mirrors `sampledDensity` (`volumetrics_inject.comp`) over the base volume's histogram and the detail
 /// volume's, treating the two as independent. The shader samples both with trilinear filtering, which
 /// averages neighbouring texels and leaves the mean unchanged.
+///
+/// #6831 — a pure function of one scalar that changes only on weather transitions, called every frame
+/// (~9 us for the 8192-iteration f64 mean, measured by the 2026-11-09 performance audit), so the last
+/// result is memoised: one `AtomicU64` holds the sanitised coverage's bits beside the result's bits, a
+/// single word so a reader can never pair one call's key with another's value. A hit is a load and a
+/// compare; a miss recomputes and stores. The cache is transparent -- `fog_mean_density_scale_uncached`
+/// is the definition and a test pins that the two agree for any call order.
 pub(crate) fn fog_mean_density_scale(coverage: f32) -> f32 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Key bits in the high half, value bits in the low half. The initial word's key is a NaN pattern,
+    // which the sanitised coverage (clamped to [0.01, 1], never NaN) can never equal.
+    static MEMO: AtomicU64 = AtomicU64::new(0x7FC0_0000_0000_0000);
+    let key = sanitized_fog_coverage(coverage).to_bits();
+    let word = MEMO.load(Ordering::Relaxed);
+    if (word >> 32) as u32 == key {
+        return f32::from_bits(word as u32);
+    }
+    let value = fog_mean_density_scale_uncached(coverage);
+    MEMO.store(u64::from(key) << 32 | u64::from(value.to_bits()), Ordering::Relaxed);
+    value
+}
+
+/// The coverage the shader and the mean both use: finite values clamp to `[0.01, 1]`, anything else
+/// reads as the default `0.55`.
+fn sanitized_fog_coverage(coverage: f32) -> f32 {
+    if coverage.is_finite() { coverage.clamp(0.01, 1.0) } else { 0.55 }
+}
+
+/// The definition of [`fog_mean_density_scale`]: the full 256 x 32 mean, with no memo.
+pub(crate) fn fog_mean_density_scale_uncached(coverage: f32) -> f32 {
     const DETAIL_BINS: usize = 32;
     static HISTOGRAMS: OnceLock<([f64; 256], [f64; DETAIL_BINS])> = OnceLock::new();
     let (base, detail) = HISTOGRAMS.get_or_init(|| {
@@ -228,7 +257,7 @@ pub(crate) fn fog_mean_density_scale(coverage: f32) -> f32 {
         detail.iter_mut().for_each(|d| *d /= texels.len() as f64);
         (base, detail)
     });
-    let coverage = if coverage.is_finite() { coverage.clamp(0.01, 1.0) } else { 0.55 } as f64;
+    let coverage = f64::from(sanitized_fog_coverage(coverage));
     let threshold = 1.0 - coverage;
     let softness = 0.045 + (0.13 - 0.045) * coverage;
     let erosion_gain = 0.42 + (0.18 - 0.42) * coverage;
@@ -562,6 +591,41 @@ mod tests {
             crate::shader_constants::CLOUD_WEATHER_SLICE_W,
             (CLOUD_WEATHER_SLICE as f32 + 0.5) / BASE_NOISE_SIZE as f32,
             "the shader must sample the slice the threshold is measured on"
+        );
+    }
+
+    /// #6831 — the memo is transparent. Whatever the call order (repeats hit,
+    /// alternation misses, other tests share the one-entry cache from other
+    /// threads), every answer is bit-identical to the unmemoised definition,
+    /// including for the inputs `sanitized_fog_coverage` folds together.
+    #[test]
+    fn the_memoised_fog_mean_density_scale_is_bit_identical_to_the_definition() {
+        let coverages = [
+            0.55f32, 0.55, 0.01, 1.0, 0.0, -3.0, 7.5, f32::NAN, f32::INFINITY,
+            f32::NEG_INFINITY, 0.2, 0.2, 0.9, 0.55,
+        ];
+        for round in 0..3 {
+            for &c in &coverages {
+                assert_eq!(
+                    fog_mean_density_scale(c).to_bits(),
+                    fog_mean_density_scale_uncached(c).to_bits(),
+                    "round {round}, coverage {c}"
+                );
+            }
+        }
+        // Inputs the shader folds to one coverage share one answer (and one key).
+        assert_eq!(
+            fog_mean_density_scale(f32::NAN).to_bits(),
+            fog_mean_density_scale(0.55).to_bits(),
+            "a non-finite coverage reads as the default 0.55"
+        );
+        assert_eq!(
+            fog_mean_density_scale(-1.0).to_bits(),
+            fog_mean_density_scale(0.01).to_bits()
+        );
+        assert_eq!(
+            fog_mean_density_scale(3.0).to_bits(),
+            fog_mean_density_scale(1.0).to_bits()
         );
     }
 
