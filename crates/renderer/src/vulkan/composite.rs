@@ -493,6 +493,14 @@ fn composite_stages<'a>(
     ]
 }
 
+/// The `[sunlit, sunless]` pair out of the handles a failed
+/// `vkCreateGraphicsPipelines` returned for its two infos: the entries that
+/// built, and `VK_NULL_HANDLE` for the ones that failed or were not returned
+/// (#6834).
+fn surviving_pipeline_pair(built: &[vk::Pipeline]) -> [vk::Pipeline; 2] {
+    [0, 1].map(|i| built.get(i).copied().unwrap_or_else(vk::Pipeline::null))
+}
+
 impl CompositePipeline {
     /// Create all HDR intermediate images, the composite render pass +
     /// pipeline, and the per-frame scene-composition framebuffers.
@@ -1137,7 +1145,12 @@ impl CompositePipeline {
                 partial.pipeline = pipelines[0];
                 partial.pipeline_sunless = pipelines[1];
             }
-            Err((_, e)) => {
+            Err((built, e)) => {
+                // #6834 — a multi-pipeline create can report an error and still
+                // return valid handles for the entries that built (the failed
+                // ones are VK_NULL_HANDLE). Hand them to `partial` so its
+                // null-guarded `destroy` frees them instead of leaking.
+                [partial.pipeline, partial.pipeline_sunless] = surviving_pipeline_pair(&built);
                 // SAFETY: cleanup-on-error.
                 unsafe { partial.destroy(device, allocator) };
                 return Err(anyhow::anyhow!("composite graphics pipeline: {e}"));
@@ -2457,6 +2470,38 @@ mod composite_frag_doc_tests {
                 && post.contains("composite.dispatch(&self.device, cmd, frame, bindless_set, local_fire_sunlit)"),
             "the CPU choice must be the volumetrics grid's local_fire_sunlit() (#6748)"
         );
+    }
+
+    /// #6834 — a failed two-pipeline create must not drop the handle that
+    /// built: the error arm adopts every returned handle so `destroy` frees it.
+    #[test]
+    fn a_failed_pipeline_pair_create_keeps_the_pipeline_that_built() {
+        use super::surviving_pipeline_pair;
+        use ash::vk::{self, Handle};
+        let built = vk::Pipeline::from_raw(0xB017);
+        assert_eq!(
+            surviving_pipeline_pair(&[built, vk::Pipeline::null()]),
+            [built, vk::Pipeline::null()],
+            "sunlit built, sunless failed"
+        );
+        assert_eq!(
+            surviving_pipeline_pair(&[vk::Pipeline::null(), built]),
+            [vk::Pipeline::null(), built],
+            "sunless built, sunlit failed"
+        );
+        assert_eq!(
+            surviving_pipeline_pair(&[]),
+            [vk::Pipeline::null(); 2],
+            "a driver that returns nothing leaves both null"
+        );
+        let host = crate::source_scan::production_text(include_str!("composite.rs"));
+        assert!(
+            !host.contains("Err((_, e))"),
+            "the pipeline-pair error arm discards the handles that built (#6834)"
+        );
+        assert!(host.contains(
+            "[partial.pipeline, partial.pipeline_sunless] = surviving_pipeline_pair(&built);"
+        ));
     }
 
     /// #4306 — composite.frag's binding comments once described a 32-step
