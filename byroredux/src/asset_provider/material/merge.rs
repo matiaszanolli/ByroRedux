@@ -1508,6 +1508,27 @@ fn merge_bgsm_arm(
         // 6,552/6,616 FO4 and 25,888/25,888 FO76 BGSMs, so it cannot
         // plausibly mean "unshadowed" and is rightly left alone (#2704's
         // original note already declined it).
+        //
+        // #6848 (FO4-2026-11-10-D2-04) — the remaining parsed-but-unmerged
+        // groups, counted over vanilla Fallout4 (6,616 BGSM / 283 BGEM)
+        // files authoring a non-default value; no visual claim is made:
+        //   * `base.z_buffer_write = false`: 17 BGSM (8 are blended decals,
+        //     which the spawn path already forces to `z_write = false`; the
+        //     other 9 are hair, a sign and a minigun belt); `= true` on 40
+        //     BGEM; `base.z_buffer_test = false`: 1 BGSM / 1 BGEM. The only
+        //     group with a canonical sink on the other side
+        //     (`Material.z_write` / `z_test`, fed from the NIF only; FO4
+        //     BSTriShape carries no NiZBufferProperty). Wire it only after
+        //     a capture shows a difference.
+        //   * `screen_space_reflections`: 17; `wetness_control_ssr`: 2
+        //     (the engine has no SSR pass); `non_occluder`: 138;
+        //     `refraction_falloff`: 7
+        //   * `hair`: 18 (+ `hair_tint_color`), `skin_tint`: 20, `facegen`:
+        //     12, `tree`: 60, `tessellate`: 70, `skew_specular_alpha`: 1,
+        //     `assume_shadowmask`: 12, `enable_editor_alpha_ref`: 258
+        //   * BGEM `emittance_color`; `blood_enabled` / `falloff_enabled`
+        //     (read only by the glass predicate); the `adaptive_emissive_*`
+        //     tuning
     }
     // #3639 — `smoothness == 1.0` lowers `roughness` to the 0.04 clamp
     // floor above (near-mirror dielectric). `triangle.frag` only
