@@ -364,6 +364,21 @@ is not named here.
                            (`R16G16B16A16_SFLOAT`, `SHADER_READ_ONLY_OPTIMAL`;
                            no tone-map, does NOT write the swapchain; does
                            NOT add bloom — see step 17, #2796)
+                           Fog compose: the froxel integral first, then, for a
+                           surface past the grid's reach (`gridFar`), the
+                           beyond-grid analytic tail -- `heightFogOpticalDepth`
+                           integrates the SAME clamped height profile the
+                           inject applies (constant `sigma0` at and below the
+                           reference height, exponential above it; piecewise
+                           at the crossing) with its coefficient scaled by
+                           `fog_mean_density_scale(coverage)`, the mean of the
+                           inject's noise factor, and continues from the grid's
+                           own boundary radiance (#6728, VLM-HF-007). Every
+                           exterior surface then fades toward the sky drawn
+                           behind it through the `sky_air_terms` the clouds'
+                           aerial perspective uses (VLM-AP-001/-002). The host
+                           mirror of the integral, with a numeric oracle, is
+                           `height_fog_optical_depth` (#6829).
 16b linear_capture_     ─  [TRANSFER] scene-linear capture tap (M51), recorded
    record_copy              between composite and bloom only while a
                            `--linear-capture` request owes frames: composite's

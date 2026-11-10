@@ -96,17 +96,6 @@ pub(crate) fn has_transport_emitter(volumes: &[GpuFogVolume]) -> bool {
     volumes.iter().any(is_transport_emitter)
 }
 
-/// Whether `transportCombustion`'s RK2 advection block — the 18-fetch
-/// neighbour gather gated in-shader on `dt > 0.0` — should run this frame.
-/// True while an emitter is present, or while transported soot from a
-/// recently-removed emitter is still within its linger window; false once
-/// both conditions lapse, in which case the caller sends
-/// [`TRANSPORT_EXPIRED_DT`]: the shader's whole RK2 block collapses to a
-/// no-op and the residual field is dropped (#4775). See #3131 (PERF-D5-01):
-/// without this the stencil ran unconditionally, and its most expensive
-/// branch (`incomingDynamicsFromNeighbors`) is itself gated on *low*
-/// combustion activity — so the quiet majority of froxels in every
-/// fog-bearing cell paid the full 18-fetch cost for a uniformly-zero field.
 /// `fog_reference.w` sentinel for "combustion transport has lapsed" (#4775).
 /// A zero `dt` alone means *hold* — a paused frame must not move or decay
 /// the field — so expiry needs its own signal. The inject shader reads any
@@ -159,6 +148,17 @@ pub(crate) fn transport_simulation_dt(combustion_active: bool, simulation_dt: f3
     }
 }
 
+/// Whether `transportCombustion`'s RK2 advection block — the 18-fetch
+/// neighbour gather gated in-shader on `dt > 0.0` — should run this frame.
+/// True while an emitter is present, or while transported soot from a
+/// recently-removed emitter is still within its linger window; false once
+/// both conditions lapse, in which case the caller sends
+/// [`TRANSPORT_EXPIRED_DT`]: the shader's whole RK2 block collapses to a
+/// no-op and the residual field is dropped (#4775). See #3131 (PERF-D5-01):
+/// without this the stencil ran unconditionally, and its most expensive
+/// branch (`incomingDynamicsFromNeighbors`) is itself gated on *low*
+/// combustion activity — so the quiet majority of froxels in every
+/// fog-bearing cell paid the full 18-fetch cost for a uniformly-zero field.
 pub(crate) fn combustion_transport_active(
     fog_volumes: &[GpuFogVolume],
     simulation_time: f32,
@@ -251,24 +251,6 @@ pub(crate) struct FogClusterBuild {
     pub(crate) index_len: usize,
 }
 
-/// #2242 (REN-D16-04) — every call resets every entry's `count` to 0 before
-/// repopulating from `volumes` (and rewrites the touched clusters' offsets:
-/// the index list is packed densely per frame, #4792). There is no incremental/partial update to `count`: a cell
-/// transition that changes the fog-volume list (or shifts the camera-centred
-/// grid origin under it) can never leave a stale nonzero `count` from a
-/// previous frame's call sitting in a cluster cell this frame's rebuild
-/// didn't happen to touch. Combined with `fogVolumeCount` (`upload.count`)
-/// being unconditionally rewritten every frame in `dispatch` below —
-/// including the branch that skips calling this function entirely — this is
-/// why `volumetrics_inject.comp`'s `localFogCluster` early-out is a complete
-/// guard, not a fragile lone line of defense against replaying a previous
-/// cell's local fog. `indices` needs no per-frame reset at all — see the
-/// comment at its `count = 0` reset loop below for why.
-/// Conservative world-space box for cluster assignment. The old enclosing
-/// sphere expanded a tall, narrow beam's horizontal reach to its full height,
-/// so a few authored shafts filled unrelated clusters before nearby media
-/// could enter the bounded list. A rotated local box remains conservative for
-/// spheres, ellipsoids, boxes, and the cone's base-radius cylinder.
 /// Whether `volume` carries analytic shape `id` (a generated `FOG_VOLUME_SHAPE_*`
 /// constant). An exact compare, not an `x.5` threshold, so reordering
 /// `FogShape` cannot silently re-route a shape (#4955). The id is written as
@@ -277,6 +259,11 @@ pub(crate) fn fog_volume_is_shape(volume: &GpuFogVolume, id: u32) -> bool {
     volume.center_shape[3] == id as f32
 }
 
+/// Conservative world-space box for cluster assignment. The old enclosing
+/// sphere expanded a tall, narrow beam's horizontal reach to its full height,
+/// so a few authored shafts filled unrelated clusters before nearby media
+/// could enter the bounded list. A rotated local box remains conservative for
+/// spheres, ellipsoids, boxes, and the cone's base-radius cylinder.
 pub(crate) fn fog_volume_world_aabb_half_extents(volume: &GpuFogVolume) -> Option<[f32; 3]> {
     let extent = Vec3::from_array([
         volume.half_extents_extinction[0],
@@ -482,6 +469,20 @@ pub(crate) fn fog_portal_intersects_cluster(sweep: &FogPortalSweep, cell_min: Ve
     t_far >= t_near
 }
 
+/// #2242 (REN-D16-04) — every call resets every entry's `count` to 0 before
+/// repopulating from `volumes` (and rewrites the touched clusters' offsets:
+/// the index list is packed densely per frame, #4792). There is no incremental/partial update to `count`: a cell
+/// transition that changes the fog-volume list (or shifts the camera-centred
+/// grid origin under it) can never leave a stale nonzero `count` from a
+/// previous frame's call sitting in a cluster cell this frame's rebuild
+/// didn't happen to touch. Combined with `fogVolumeCount` (`upload.count`)
+/// being unconditionally rewritten every frame in `dispatch` below —
+/// including the branch that skips calling this function entirely — this is
+/// why `volumetrics_inject.comp`'s `localFogCluster` early-out is a complete
+/// guard, not a fragile lone line of defense against replaying a previous
+/// cell's local fog. `indices` needs no per-frame reset at all — see the
+/// comment at its `count = 0` reset loop below for why.
+///
 /// `portal_sweep` gates the sun-swept LightShaft/aperture candidate lists
 /// (#4792): their only reader is the inject shader's `localSkyAperture`,
 /// which runs only in sealed interiors and whose visibility result only
