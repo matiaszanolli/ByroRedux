@@ -1517,10 +1517,10 @@ fn merge_bgsm_arm(
     // and the material is stuck at the floor with no per-pixel escape.
     // The walk above is the full template-chain resolution (a parent
     // can still supply the slot the leaf doesn't), so only fall back
-    // once it's had every chance to fill `smooth_spec`. `0.5` matches
-    // the neutral roughness `classify_pbr_keyword`'s arms already use
-    // elsewhere (`crates/core/src/ecs/components/material.rs`) rather
-    // than inventing a second "no data" convention.
+    // once it's had every chance to fill `smooth_spec`. `0.5` is a chosen
+    // mid roughness: it equals `Material::default()`'s and the classifier's
+    // skin / body arm, not the classifier's no-signal terminal (0.85);
+    // whether it should be is the open NIFAL call tracked in #6818.
     //
     // #3905 (NIFAL-2026-09-05-D1-01) — this predicate is the AUTHORED
     // path; the shader escape it restores is gated on the RESOLVED

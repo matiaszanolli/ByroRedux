@@ -1044,7 +1044,8 @@ fn bgsm_merge_falls_back_to_neutral_roughness_when_smoothness_is_one_with_no_glo
         mesh.material.roughness_override,
         Some(0.5),
         "no gloss map anywhere in the chain to recover the floor with — must \
-         fall back to the neutral roughness classify_pbr_keyword's arms use, \
+         fall back to the chosen mid roughness (NEAR_MIRROR_NEUTRAL_ROUGHNESS; \
+         whether it should be the classifier's no-signal neutral is #6818), \
          not stay pinned at 0.04"
     );
 }
