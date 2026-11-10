@@ -554,9 +554,10 @@ Cross-cutting state, the same date:
 | 7 | Whole-quad pop-in at the loaded-area edge (whatever the original does there, unverified) | Per-cell segment suppression at level 4 (Q1) | — | Index sub-range draws are a render-visible change → DLOD-OBJ-002, live-gated by DLOD-GATE-005 |
 | 8 | FO3/FNV author `fBlockLoadDistance=125000` BU (about 31 cells) in `VeryHigh.ini`; what it bounds is unverified | The legacy ring reaches 64 cells, the archives' quad extent (`FALLOUT_LEGACY_MAX_CELLS`) | — | If V14 shows the key bounds the ring, Redux draws FO3/FNV LOD about twice as far, at Prop-tier cost → DLOD-BAND-001, DLOD-PERF-001, Q5 |
 
-The FO3 boundary profile's seam gate is red today on MegatonWorld (#6500,
-out of scope per DLOD-NG-003). Acceptance below reads the `lod-coverage:`
-line, which that failure does not affect.
+The FO3 boundary profile's seam gate tripped on MegatonWorld's authored
+own-LAND seams (#6500, out of scope per DLOD-NG-003); since 2026-11-10 the gate
+exempts exactly those pairs by owner decision (`fo3_known_megaton_seams`).
+Acceptance below reads the `lod-coverage:` line, which that did not affect.
 
 ---
 

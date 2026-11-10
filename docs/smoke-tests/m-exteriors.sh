@@ -60,6 +60,33 @@ fo4_known_seam_crack() {
     [[ "$1" == fo4 && "$2" == 1 && "$3" == 3 && "$4" == "3,0/4,0" ]]
 }
 
+# #6500 — the FO3 boundary fixture (MegatonWorld) trips the seam gate on authored data, not on a
+# loader defect: 11 of the world's 16 cells carry their own LAND, 8 of them sit up to ~12 000 units
+# from the Wasteland's at the same grid (a deliberate drop-off ring), and neighbouring own-LAND cells
+# disagree on 28-33 of the 33 shared edge vertices (`inherit_parent_landscapes` lets an own LAND win;
+# parent-wins would give 0 of 20 dirty pairs, own-wins 17 of 20). The owner chose to exempt it in the
+# gate, as for #3306, and not to change which landscape draws (2026-11-10). Like #3306 this is not a
+# tolerance: the exemption needs the fo3 profile, a `first_dirty_pair` whose two cells both lie inside
+# MegatonWorld's 4x4 footprint (x -2..1, y -8..-5), and a mismatch count that fits whole edges (at most
+# 33 vertices per dirty pair). A seam anywhere else in FO3 (a Wasteland pair, a cell outside the
+# footprint), a mismatch count no whole edges can explain, or any other profile still hard-fails.
+#
+# Args:  <profile label> <pairs_dirty> <height_mismatch_vertices> <first_dirty_pair "ax,ay/bx,by">
+# Returns 0 when the dirty pairs are MegatonWorld's authored seams.
+fo3_known_megaton_seams() {
+    [[ "$1" == fo3 && "$2" =~ ^[0-9]+$ && "$3" =~ ^[0-9]+$ ]] || return 1
+    (( $2 >= 1 && $3 <= 33 * $2 )) || return 1
+    [[ "$4" =~ ^(-?[0-9]+),(-?[0-9]+)/(-?[0-9]+),(-?[0-9]+)$ ]] || return 1
+    local c
+    for c in "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}"; do
+        (( c >= -2 && c <= 1 )) || return 1
+    done
+    for c in "${BASH_REMATCH[2]}" "${BASH_REMATCH[4]}"; do
+        (( c >= -8 && c <= -5 )) || return 1
+    done
+    return 0
+}
+
 # ── DLOD-GATE-006: a family the profile's worldspace authors must be resident ──
 #
 # #6637 — `lod-coverage:` used to fail on overlaps, churn and `held_back`, but not on an absent
@@ -177,6 +204,32 @@ if [[ "${1:-}" == "--self-test" ]]; then
     check reject fo4 1 4 "3,0/4,0"
     check reject fo4 2 3 "3,0/4,0"
     check reject fnv 1 3 "3,0/4,0"
+    check3() {
+        local want="$1"
+        shift
+        local got=reject
+        if fo3_known_megaton_seams "$@"; then got=exempt; fi
+        if [[ "$got" != "$want" ]]; then
+            echo "  self-test FAIL: fo3_known_megaton_seams($*) = $got, want $want"
+            fails=1
+        else
+            echo "  ok: fo3_known_megaton_seams($*) = $got"
+        fi
+    }
+    echo "smoke[m-exteriors]: --self-test — FO3 MegatonWorld authored-seam exemption (#6500)"
+    # The measured boundary run: 5 dirty pairs, 160 vertices, first pair 0,-8/0,-7.
+    check3 exempt fo3 5 160 "0,-8/0,-7"
+    check3 exempt fo3 1 33 "-1,-7/0,-7"
+    # A pair outside the footprint, a Wasteland pair, or no named pair must not hide.
+    check3 reject fo3 5 160 "2,-7/3,-7"
+    check3 reject fo3 5 160 "0,-9/0,-8"
+    check3 reject fo3 5 160 "10,-9/11,-9"
+    check3 reject fo3 5 160 none
+    # More mismatched vertices than whole edges can hold, or no dirty pair at all.
+    check3 reject fo3 1 34 "0,-8/0,-7"
+    check3 reject fo3 0 0 "0,-8/0,-7"
+    # Another profile.
+    check3 reject fnv 5 160 "0,-8/0,-7"
     if (( fails != 0 )); then
         echo "smoke[m-exteriors]: --self-test FAILED"
         exit 1
@@ -1058,6 +1111,10 @@ EOF
                 # hard-fails below, so a new defect cannot hide behind the
                 # known one (`--self-test` exercises the decision).
                 echo "exterior-smoke[$label]: PASS terrain seams (known vanilla Fallout4.esm crack, #3306): $seam_line"
+            elif fo3_known_megaton_seams "$label" "$seam_dirty" "$seam_height_mismatch" "$seam_first_pair"; then
+                # #6500 — MegatonWorld's own LAND is inconsistent with its neighbours' and with the
+                # Wasteland's: authored data (see `fo3_known_megaton_seams`), exempted by owner decision.
+                echo "exterior-smoke[$label]: PASS terrain seams (MegatonWorld's authored own-LAND seams, #6500): $seam_line"
             elif (( seam_dirty != 0 )); then
                 echo "exterior-smoke[$label]: HARD FAIL - terrain seam disagreement: $seam_line"
                 hard_fail=1

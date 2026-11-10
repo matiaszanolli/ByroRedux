@@ -1333,13 +1333,22 @@ five exterior titles at once, because the depth convention is renderer-wide.
   captures agree within 2%.
 - *A10 / DLOD-DEPTH-004, -005.* `m-exteriors.sh all static|boundary|cycle|water`
   under `--upscaler taa` and the default fsr3 (`BYROREDUX_EXTERIOR_UPSCALER`),
-  flipped build against a same-machine control build. `static`, `boundary` and
-  `water` return identical per-profile verdicts in all four combinations (the FO3
-  boundary seam gate is red in both, #6500). `cycle` is intermittent in both
-  states: Oblivion's night capture comes back blank under fsr3 in every control
-  and flipped run, and the `composite_term` sun-cycle check fails on a different
-  profile from run to run (control: FO3, Skyrim, FNV; flipped: Oblivion, Skyrim,
-  FO3), over one matrix run plus three repeats per upscaler per state.
+  flipped build against a same-machine control build. First run (2026-11-07):
+  `static`, `boundary` and `water` identical in all four combinations; `cycle`
+  intermittent in both states (a blank Oblivion night capture under fsr3, a
+  `composite_term` sun-cycle check failing on a different profile per run).
+  **Re-run at HEAD, 2026-11-10 (#6842, #6843, #6500):** four gate defects that
+  were independent of the depth mapping were fixed first: Skyrim's cycle boot
+  frame faced a rock wall (now a pinned sky-facing pose); the cycle sampled each
+  clock phase before the sky had settled (now one session per phase with an 8 s
+  settle); Skyrim's underwater frame sat under `image_health`'s floor with fsr3
+  (now 50 units under the surface looking 10 degrees up); and FO3's boundary seam
+  gate failed on MegatonWorld's authored own-LAND seams (exempted by owner
+  decision, `fo3_known_megaton_seams`, same shape as FO4's #3306). Result, shipped
+  build against HEAD with only the flip reverted: `static`, `boundary` and `water`
+  identical and all PASS in all four combinations; `cycle` PASS on every profile
+  of the shipped build in every run, the control showing two fixture flakes under
+  fsr3 (an FO3 interior-like boot, a Skyrim night/noon inversion; #6843).
 - *A11 / DLOD-DEPTH-006.* `scripts/fsr-bench-matrix.sh 3 300`, 75 runs each,
   control then flipped on the same machine: identical draw counts on every
   scene, frame time unchanged or lower on all 25 scene/config pairs (-0.3% to
