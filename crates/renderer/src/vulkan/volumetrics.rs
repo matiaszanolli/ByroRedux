@@ -347,8 +347,20 @@ pub fn pack_fog_tint(color: [f32; 3]) -> [f32; 4] {
     [tint[0], tint[1], tint[2], peak]
 }
 
-/// Optical depth through an exponential height medium
-/// `sigma_t(y) = sigma0 * exp(-(y - base_height) / scale_height)`.
+/// Optical depth through the height medium
+/// `sigma_t(y) = sigma0 * exp(-max(y - base_height, 0) / scale_height)`:
+/// constant `sigma0` at and below the reference height, an exponential above
+/// it. This is the profile the froxel inject applies (`proceduralDensityScale`
+/// clamps `worldPos.y - refHeight` at 0) and the one `composite.frag`'s
+/// `heightFogOpticalDepth` integrates for the beyond-grid tail (#6728).
+///
+/// Host mirror of `heightFogOpticalDepth` (`shaders/composite.frag`), same
+/// piecewise structure and the same overflow-free end-density form (#6828,
+/// #6829): an exponential run is `(sigma_start - sigma_end) / slope` with both
+/// end densities taken from their own heights, never `sigma_start * exp(+r)`.
+/// `height_fog_optical_depth_matches_a_numeric_integral_of_the_shipped_profile`
+/// is the oracle that holds both this function and, by being the same
+/// arithmetic, the shader.
 ///
 /// The explicit horizontal branch is intentional: evaluating the analytic
 /// quotient at `ray_direction_y → 0` is the classic 0/0 NaN that turns an
@@ -365,21 +377,41 @@ pub fn height_fog_optical_depth(
         return 0.0;
     }
     let safe_scale = scale_height.max(1.0e-4);
-    let log_sigma_at_origin = sigma0.ln() - (ray_origin_y - base_height) / safe_scale;
-    let sigma_at_origin = log_sigma_at_origin.clamp(-80.0, 80.0).exp();
-    let length = distance.max(0.0);
     let slope = ray_direction_y / safe_scale;
-    if slope.abs() < 1.0e-6 {
-        return sigma_at_origin * length;
+    let above_start = ray_origin_y - base_height;
+    // One exponential run given both end densities (shader `expRunOpticalDepth`).
+    let exp_run = |sigma_start: f32, sigma_end: f32, length: f32| -> f32 {
+        if slope.abs() < 1.0e-6 {
+            sigma_start * length
+        } else {
+            ((sigma_start - sigma_end) / slope).max(0.0)
+        }
+    };
+    // Horizontal (or nearly): one density for the whole run.
+    if ray_direction_y.abs() < 1.0e-6 {
+        return sigma0 * (-above_start.max(0.0) / safe_scale).exp() * distance;
     }
-    if slope > 0.0 {
-        let integral = -(-slope * length).exp_m1() / slope;
-        return (sigma_at_origin * integral).max(0.0);
+    // Distance along the ray at which it crosses the reference height.
+    let crossing = (base_height - ray_origin_y) / ray_direction_y;
+    if above_start >= 0.0 {
+        let sigma_start = sigma0 * (-above_start / safe_scale).exp();
+        if ray_direction_y > 0.0 || crossing >= distance {
+            let above_end = (above_start + ray_direction_y * distance).max(0.0);
+            let sigma_end = sigma0 * (-above_end / safe_scale).exp();
+            return exp_run(sigma_start, sigma_end, distance);
+        }
+        // Descends through the reference: exponential down to it (end density
+        // exactly `sigma0`), constant `sigma0` below.
+        return exp_run(sigma_start, sigma0, crossing) + sigma0 * (distance - crossing);
     }
-    let end_y = ray_origin_y + ray_direction_y * length;
-    let log_sigma_at_end = sigma0.ln() - (end_y - base_height) / safe_scale;
-    let sigma_at_end = log_sigma_at_end.clamp(-80.0, 80.0).exp();
-    ((sigma_at_end - sigma_at_origin) / -slope).max(0.0)
+    // Starts below the reference.
+    if ray_direction_y < 0.0 || crossing >= distance {
+        return sigma0 * distance;
+    }
+    // Rises through the reference: constant `sigma0` up to it, exponential above.
+    let above_end = ray_direction_y * (distance - crossing);
+    let sigma_end = sigma0 * (-above_end / safe_scale).exp();
+    sigma0 * crossing + exp_run(sigma0, sigma_end, distance - crossing)
 }
 
 /// Host mirror of `froxelSliceDistance` (`shaders/include/froxel_slices.glsl`).
@@ -3017,6 +3049,97 @@ mod unit_tests {
         let tau = height_fog_optical_depth(0.01, 10_000.0, -1.0, 1.0e8, 0.0, 2_100.0);
         assert!(tau.is_finite());
         assert!(tau >= 0.0);
+    }
+
+    /// f64 reference: Simpson integration of the shipped profile
+    /// `sigma0 * exp(-max(y - base, 0) / H)` along the ray, split at the
+    /// reference-height crossing so each piece is smooth.
+    fn numeric_height_fog_optical_depth(
+        sigma0: f64,
+        origin_y: f64,
+        dir_y: f64,
+        distance: f64,
+        base: f64,
+        scale: f64,
+    ) -> f64 {
+        let density = |s: f64| sigma0 * (-(origin_y + dir_y * s - base).max(0.0) / scale).exp();
+        let simpson = |a: f64, b: f64| -> f64 {
+            if b <= a {
+                return 0.0;
+            }
+            const N: usize = 200_000; // even
+            let h = (b - a) / N as f64;
+            let mut sum = density(a) + density(b);
+            for i in 1..N {
+                sum += density(a + h * i as f64) * if i % 2 == 1 { 4.0 } else { 2.0 };
+            }
+            sum * h / 3.0
+        };
+        let crossing = if dir_y.abs() > 1.0e-12 {
+            (base - origin_y) / dir_y
+        } else {
+            f64::INFINITY
+        };
+        if crossing > 0.0 && crossing < distance {
+            simpson(0.0, crossing) + simpson(crossing, distance)
+        } else {
+            simpson(0.0, distance)
+        }
+    }
+
+    /// #6828 / #6829 — the host function is checked against a numeric integral
+    /// of the profile the grid and the shader share: horizontal, rising and
+    /// descending rays, crossing the reference in both directions, and starts
+    /// from 100+ scale heights up, where the previous form (`sigma_start *
+    /// exp(+r)`, clamped at 80) returned `inf` or a wrong answer.
+    #[test]
+    fn height_fog_optical_depth_matches_a_numeric_integral_of_the_shipped_profile() {
+        const SIGMA0: f32 = 0.002;
+        const SCALE: f32 = 30.0;
+        // (origin height above the reference in scale heights, dir_y, distance)
+        let cases: &[(f32, f32, f32)] = &[
+            (0.0, 0.0, 5_000.0),    // horizontal at the reference
+            (3.0, 0.0, 5_000.0),    // horizontal above it
+            (-2.0, 0.0, 5_000.0),   // horizontal below it (constant sigma0)
+            (2.0, 0.4, 4_000.0),    // rising, above
+            (2.0, -0.2, 200.0),     // descending, stays above
+            (5.0, -0.5, 4_000.0),   // descending through the reference
+            (-3.0, 0.6, 4_000.0),   // rising through the reference
+            (-3.0, -0.6, 4_000.0),  // descending below it
+            (66.7, -0.5, 100_000.0), // large but formerly exact (r < 80)
+            (80.0, -0.5, 100_000.0),
+            (86.7, -0.5, 100_000.0), // formerly 99.5 against a true 5.32
+            (90.0, -0.5, 100_000.0), // formerly inf
+            (166.7, -0.5, 100_000.0),
+            (400.0, -0.9, 1.0e6),
+            (120.0, 0.7, 1.0e6),     // rising from far above: ~0
+        ];
+        for &(r, dir_y, distance) in cases {
+            let origin_y = 10.0 + r * SCALE; // a non-zero reference height too
+            let got = height_fog_optical_depth(SIGMA0, origin_y, dir_y, distance, 10.0, SCALE);
+            assert!(got.is_finite() && got >= 0.0, "r={r} dir={dir_y}: {got}");
+            let want = numeric_height_fog_optical_depth(
+                f64::from(SIGMA0),
+                f64::from(origin_y),
+                f64::from(dir_y),
+                f64::from(distance),
+                10.0,
+                f64::from(SCALE),
+            );
+            // f32 end densities: a few 1e-6 relative on the segment plus the
+            // cancellation in `sigma_start - sigma_end` for shallow slopes.
+            let tolerance = 2.0e-3 * want.max(1.0e-3);
+            assert!(
+                (f64::from(got) - want).abs() <= tolerance,
+                "r={r} dir={dir_y} distance={distance}: host {got} vs numeric {want}"
+            );
+            // Bounded by the profile's own maximum density (a ray cannot be
+            // thicker than sigma0 over its length).
+            assert!(
+                f64::from(got) <= f64::from(SIGMA0) * f64::from(distance) * 1.001,
+                "r={r}: {got} exceeds sigma0 * distance"
+            );
+        }
     }
 
     #[test]

@@ -568,22 +568,27 @@ vec4 localFireMarch(
     return vec4(radiance, transmittance);
 }
 
-// Optical depth of a medium with a constant exponential falloff above the reference height,
-// sigma_t(y) = sigma_start * exp(-slope * s) along a ray (slope = dy/ds / H), over `length`.
-// The horizontal branch stays explicit: the general quotient becomes 0/0 as the slope vanishes and was
-// a plausible source of exterior white-outs.
-float expRunOpticalDepth(float sigmaStart, float slope, float length) {
+// Optical depth of an exponential run, sigma_t(s) = sigmaStart * exp(-slope * s) with
+// slope = dy/ds / H, over `length`, given BOTH end densities: the integral is
+// (sigmaStart - sigmaEnd) / slope. #6828 — the textbook form sigmaStart * (1 - exp(-slope * length))
+// / slope evaluates exp(+r) for a descending ray that starts r = aboveStart / H scale heights up, which
+// overflows fp32 near r = 88.7 (full-opacity fog, or 0 * inf = NaN once sigmaStart underflows). Each
+// end density is exp(-x) of a non-negative height term, so it is in [0, sigma0] by construction and
+// nothing here can overflow. The horizontal branch stays explicit: the quotient becomes 0/0 as the
+// slope vanishes and was a plausible source of exterior white-outs.
+float expRunOpticalDepth(float sigmaStart, float sigmaEnd, float slope, float length) {
     if (abs(slope) < 1.0e-6) {
         return sigmaStart * length;
     }
-    return max(sigmaStart * (1.0 - exp(-slope * length)) / slope, 0.0);
+    return max((sigmaStart - sigmaEnd) / slope, 0.0);
 }
 
 // Analytic optical depth for sigma_t(y) = sigma0 * exp(-max(y - y0, 0) / H): constant at sigma0 at and
 // below the reference height, an exponential above it. That is exactly the height term the froxel
 // inject applies (`proceduralDensityScale` clamps `worldPos.y - refHeight` at 0), so a ray the grid
 // resolves and the same ray continued here describe one medium (VLM-HF-007). The integral is piecewise
-// at the point where the ray crosses the reference height.
+// at the point where the ray crosses the reference height. The host mirror, with a numeric oracle, is
+// `height_fog_optical_depth` in `vulkan/volumetrics.rs` (#6829) -- keep the two in lockstep.
 float heightFogOpticalDepth(
     float sigma0,
     float rayOriginY,
@@ -605,20 +610,27 @@ float heightFogOpticalDepth(
     // Distance along the ray at which it crosses the reference height.
     float crossing = (baseHeight - rayOriginY) / rayDirectionY;
     if (aboveStart >= 0.0) {
-        // Starts above the reference.
-        float sigmaStart = sigma0 * exp(-min(aboveStart / safeScale, 80.0));
+        // Starts above the reference. exp(-aboveStart / H) underflows to 0 far up instead of
+        // overflowing, and the segment's end density is taken from the end height, not from
+        // sigmaStart * exp(r).
+        float sigmaStart = sigma0 * exp(-aboveStart / safeScale);
         if (rayDirectionY > 0.0 || crossing >= distance) {
-            return expRunOpticalDepth(sigmaStart, slope, distance);
+            float aboveEnd = max(aboveStart + rayDirectionY * distance, 0.0);
+            float sigmaEnd = sigma0 * exp(-aboveEnd / safeScale);
+            return expRunOpticalDepth(sigmaStart, sigmaEnd, slope, distance);
         }
-        // Descends through the reference: exponential down to it, constant sigma0 below.
-        return expRunOpticalDepth(sigmaStart, slope, crossing) + sigma0 * (distance - crossing);
+        // Descends through the reference: exponential down to it (its end density is exactly
+        // sigma0), constant sigma0 below.
+        return expRunOpticalDepth(sigmaStart, sigma0, slope, crossing) + sigma0 * (distance - crossing);
     }
     // Starts below the reference.
     if (rayDirectionY < 0.0 || crossing >= distance) {
         return sigma0 * distance;
     }
     // Rises through the reference: constant sigma0 up to it, exponential above.
-    return sigma0 * crossing + expRunOpticalDepth(sigma0, slope, distance - crossing);
+    float aboveEnd = rayDirectionY * (distance - crossing);
+    float sigmaEnd = sigma0 * exp(-aboveEnd / safeScale);
+    return sigma0 * crossing + expRunOpticalDepth(sigma0, sigmaEnd, slope, distance - crossing);
 }
 
 // Per-pixel, per-frame blue-noise rank in (0, 1). Shared by the pre-resolve

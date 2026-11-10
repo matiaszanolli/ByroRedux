@@ -464,6 +464,19 @@ mod tests {
                 && COMPOSITE.contains("expRunOpticalDepth("),
             "heightFogOpticalDepth must integrate the clamped profile piecewise"
         );
+        // #6828 — the overflowing forms must not return: an exponential run is
+        // `(sigmaStart - sigmaEnd) / slope` from the two end densities, never
+        // `sigmaStart * (1 - exp(-slope * length)) / slope` (exp(+r) overflows
+        // fp32 near r = 88.7) and never a `min(.., 80.0)`-clamped sigmaStart.
+        assert!(
+            COMPOSITE.contains("(sigmaStart - sigmaEnd) / slope"),
+            "expRunOpticalDepth must use the end-density form"
+        );
+        assert!(
+            !COMPOSITE.contains("(1.0 - exp(-slope * length))")
+                && !COMPOSITE.contains("min(aboveStart / safeScale, 80.0)"),
+            "the overflowing exp(+r) form of the descending segment is back (#6828)"
+        );
         let frame_params = include_str!("context/frame_params.rs");
         assert!(
             frame_params.contains("fog_mean_density_scale(fog_coverage)"),
