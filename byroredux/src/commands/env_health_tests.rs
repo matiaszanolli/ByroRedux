@@ -452,35 +452,60 @@ fn json_value_is_all_f64(value: &serde_json::Value) -> bool {
     }
 }
 
-/// #4916 — the `WeatherSkyState` / `ImageSpace` analogue of
+/// #4916 / #6686 — the `WeatherSkyState` / `ImageSpace` analogue of
 /// [`water_plane_walk_covers_every_float_field_of_water_material`]. Neither
 /// struct carries a serde derive to leaf-walk, so the walk is tied to the
-/// structs' declared fields by a source scan instead: every declared float
-/// field must be walked by one of the two rules, and every walked name must
-/// still be a real field — the same both-directions contract as #4731, so a
-/// struct addition reaches the `env: FAIL` gate instead of bypassing it, and
-/// a rename cannot leave a stale entry guarding nothing.
+/// structs' declared fields by an exhaustive destructure (no `..`): adding,
+/// removing or renaming a field stops this test building, and the author must
+/// then say here whether the new field is a float the gate must walk. The
+/// float-field tables below are that statement. The same both-directions
+/// contract as #4731 follows: every float field is walked by one of the two
+/// rules, and every walked name is still a float field, so a struct addition
+/// reaches the `env: FAIL` gate instead of bypassing it and a rename cannot
+/// leave a stale entry guarding nothing.
 #[test]
 fn weather_sky_walk_covers_every_float_field_of_the_structs() {
-    let declared = declared_field_names(
-        include_str!("../components/environment.rs"),
-        "WeatherSkyState",
-    );
-    assert!(
-        declared.len() >= 14,
-        "fixture sanity: WeatherSkyState declares its fields; got {declared:?}"
-    );
-    let state = crate::components::WeatherSkyState::default();
+    use crate::components::WeatherSkyState;
+
+    let state = WeatherSkyState::default();
+    // Exhaustive: the compiler enforces that this list is the whole struct.
+    let WeatherSkyState {
+        cloud_coverage: _,
+        cloud_tints: _,
+        precipitation: _,
+        thunder_frequency: _,
+        lightning_color: _,
+        stars_color: _,
+        sunlight_color: _,
+        sun_glare: _,
+        moon_glare: _,
+        aurora_intensity: _,
+        aurora_follows_sun: _,
+        wind_direction: _,
+        wind_direction_authored: _,
+        wind_speed: _,
+    } = state;
+    // The float fields; the two booleans have no non-finite space.
+    let floats = [
+        "cloud_coverage",
+        "cloud_tints",
+        "precipitation",
+        "thunder_frequency",
+        "lightning_color",
+        "stars_color",
+        "sunlight_color",
+        "sun_glare",
+        "moon_glare",
+        "aurora_intensity",
+        "wind_direction",
+        "wind_speed",
+    ];
     let walked: Vec<String> = super::weather_sky_finite_fields(&state)
         .into_iter()
         .chain(super::weather_sky_radiance_fields(&state))
         .map(|(name, _)| name.to_string())
         .collect();
-    for field in &declared {
-        if field == "aurora_follows_sun" || field == "wind_direction_authored" {
-            // The two non-float fields — booleans have no non-finite space.
-            continue;
-        }
+    for field in floats {
         assert!(
             walked
                 .iter()
@@ -493,55 +518,24 @@ fn weather_sky_walk_covers_every_float_field_of_the_structs() {
     for name in &walked {
         let stem = name.split('[').next().unwrap_or(name);
         assert!(
-            declared.iter().any(|field| field == stem),
+            floats.contains(&stem),
             "the weather gate walks `{name}`, which is not a \
-             WeatherSkyState field any more — a stale entry after a rename \
-             (#4916)"
+             WeatherSkyState float field any more — a stale entry after a \
+             rename (#4916)"
         );
     }
 
-    let im_declared = declared_field_names(
-        include_str!("../../../crates/core/src/imagespace.rs"),
-        "ImageSpace",
-    );
-    assert_eq!(
-        im_declared,
-        vec!["saturation", "brightness", "contrast", "tint_color"],
-        "fixture sanity: ImageSpace declares its four fields"
-    );
     let im = byroredux_scripting::ImageSpace::default();
+    let byroredux_scripting::ImageSpace { saturation: _, brightness: _, contrast: _, tint_color: _ } = im;
+    let im_floats = ["saturation", "brightness", "contrast", "tint_color"];
     let im_walked: Vec<String> = super::image_space_fields(&im)
         .into_iter()
         .map(|(name, _)| name.to_string())
         .collect();
-    for field in &im_declared {
+    for field in im_floats {
         assert!(im_walked.iter().any(|name| name == field), "{field}");
     }
-    assert_eq!(im_walked.len(), im_declared.len());
-}
-
-/// Field names declared by `struct <name> { … }` in `src`, doc and line
-/// comments stripped. The trailing space in the needle keeps
-/// `ImageSpace` from matching `ImageSpaceModifier`-style prefixes.
-fn declared_field_names(src: &str, struct_name: &str) -> Vec<String> {
-    let needle = format!("struct {struct_name} ");
-    let start = src
-        .find(&needle)
-        .unwrap_or_else(|| panic!("`{needle}` not found"));
-    let body = &src[start..];
-    let body = &body[..body.find("\n}").expect("struct terminator")];
-    body.lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.starts_with("///") || trimmed.starts_with("//") {
-                return None;
-            }
-            let after_vis = trimmed
-                .strip_prefix("pub(crate) ")
-                .or_else(|| trimmed.strip_prefix("pub "))?;
-            after_vis.split(':').next().map(str::trim).map(str::to_owned)
-        })
-        .collect()
+    assert_eq!(im_walked.len(), im_floats.len());
 }
 
 /// #4916 — the new weather-state rules fire: NaN sunlight colour (the
