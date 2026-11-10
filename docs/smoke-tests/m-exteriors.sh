@@ -220,6 +220,8 @@ EXTERIOR_UPSCALER="${BYROREDUX_EXTERIOR_UPSCALER:-taa}"
 # a fixture legitimately frames low contrast.
 CYCLE_MIN_SUN_DELTA="${BYROREDUX_CYCLE_MIN_SUN_DELTA:-0.02}"
 CYCLE_NOON_MIN_SD="${BYROREDUX_CYCLE_NOON_MIN_SD:-0.039}"
+# Seconds to let sky/fog/exposure settle after each cycle-mode `time.set` before it is sampled (#6842).
+CYCLE_SETTLE_SECONDS="${BYROREDUX_CYCLE_SETTLE_SECONDS:-8}"
 ARTIFACT_DIR="${BYROREDUX_EXTERIOR_ARTIFACT_DIR:-$(mktemp -d /tmp/byro-exterior-smoke.XXXXXX)}"
 SUMMARY="$ARTIFACT_DIR/summary.tsv"
 ACTIVE_PID=""
@@ -501,11 +503,19 @@ run_profile () {
         # spread flat. Look up into the sky before the first capture (pitch is absolute; the water gate uses
         # `input.look` the same way) so the term measures the sky and the sun-lit scene, which is what it is for.
         # (A note out here: a `#` line inside the heredoc would be sent to byro-dbg as a command.)
+        # #6842 — settle after every clock change before sampling it. The sky, fog and auto-exposure
+        # adapt over wall-clock seconds, and byro-dbg replays its script as fast as the engine answers,
+        # so a capture taken right after `time.set` raced the adaptation: Oblivion's second noon read
+        # 0.55 against the first noon's 0.34 in one run and 0.34 against 0.34 in the next, and the
+        # "noise floor" the gate derives from that pair failed the profile. One session per phase.
         env BYRO_DEBUG_PORT="$PORT" "$DEBUG_BIN" > "$debug_log" 2>&1 <<EOF || true
 weather.force ${CYCLE_FORCE_WEATHER:-none} lock
 time.pause
 input.look 0 40
 time.set 06:00
+EOF
+        sleep "$CYCLE_SETTLE_SECONDS"
+        env BYRO_DEBUG_PORT="$PORT" "$DEBUG_BIN" >> "$debug_log" 2>&1 <<EOF || true
 time.show
 env.health
 water.dump
@@ -515,6 +525,9 @@ render.debug composite_term
 screenshot sunrise-composite-term.png
 render.debug final
 time.set 12:00
+EOF
+        sleep "$CYCLE_SETTLE_SECONDS"
+        env BYRO_DEBUG_PORT="$PORT" "$DEBUG_BIN" >> "$debug_log" 2>&1 <<EOF || true
 time.show
 env.health
 water.dump
@@ -524,6 +537,9 @@ render.debug composite_term
 screenshot noon-composite-term.png
 render.debug final
 time.set 23:00
+EOF
+        sleep "$CYCLE_SETTLE_SECONDS"
+        env BYRO_DEBUG_PORT="$PORT" "$DEBUG_BIN" >> "$debug_log" 2>&1 <<EOF || true
 time.show
 env.health
 water.dump
@@ -546,6 +562,9 @@ terrain.seams
 world.owners
 world.owners report
 time.set 12:00
+EOF
+        sleep "$CYCLE_SETTLE_SECONDS"
+        env BYRO_DEBUG_PORT="$PORT" "$DEBUG_BIN" >> "$debug_log" 2>&1 <<EOF || true
 time.show
 render.debug composite_term
 screenshot noon-2-composite-term.png
