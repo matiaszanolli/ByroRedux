@@ -619,14 +619,22 @@ output renders 2560×1440 for **~324 MB**.
 Budget per preset rather than against one ceiling — a single number is true for
 the default and false for a mode nobody targets:
 
-| Configuration | Volumetrics | Fixed floor (all resolution-scaled rows + scene SSBOs) |
-|---|---:|---:|
-| 1080p native | ~183 MB | ~1.10 GB |
-| 4K output, FSR Quality (renders 1440p) | ~324 MB | ~1.55 GB |
-| **4K native** (`--upscaler taa`) | ~730 MB | **~2.32 GB** |
+| Configuration | Volumetrics (6 volumes) | + local grid (irradiance field + atlas, #6837) | Fixed floor (all resolution-scaled rows + scene SSBOs) |
+|---|---:|---:|---:|
+| 1080p native | ~183 MB | ~117 MB | ~1.22 GB |
+| 4K output, FSR Quality (renders 1440p) | ~324 MB | ~168 MB | ~1.72 GB |
+| **4K native** (`--upscaler taa`) | ~730 MB | ~316 MB | **~2.64 GB** |
 
-Native 4K leaves ~1.68 GB for vertices, textures, BLAS and TLAS against a
-~0.97 GB typical FNV interior, so the `< 4 GB` target now holds there too. It
+The local-grid column is the froxel-resolution irradiance image (16 B per froxel
+per slot: radiance and mean light direction side by side, 2 FIF) plus the fixed
+48 MiB of atlas volumes, `local_grid_reservation_bytes`. It is resident whenever
+the pipeline exists, and the BLAS residency reservation bills it
+(`screen_scaled_reservation_bytes`) — until #6837 the reservation carried only
+the six-volume column, so the table's floor and the budget both understated the
+grid by this much. The floor column above is those rows plus this one.
+
+Native 4K leaves ~1.36 GB for vertices, textures, BLAS and TLAS against a
+~0.97 GB typical FNV interior, so the `< 4 GB` target still holds there. It
 was **~4.51 GB — over the ceiling before any content loaded** — at the previous
 `froxel_xy_divisor` of 4.
 
@@ -1334,6 +1342,7 @@ authoritative rather than re-derived.
 | SSAO (2 FIF) | ~4 MB (1080p) | ~17 MB (4K) |
 | Bloom pyramid (2 FIF) | ~11 MB (1080p) | ~44 MB (4K) |
 | Volumetrics froxel grid (6 volumes, 44 B/froxel/slot, 2 FIF) | ~183 MB (1080p native) | **~730 MB (4K native)** — ~81 MB at 1080p / ~324 MB at 4K with FSR Quality |
+| World-space combustion local grid (froxel-resolution irradiance field, 16 B/froxel/slot × 2 FIF, + 48 MiB atlas; #6837) | ~117 MB (1080p native) | ~316 MB (4K native) — ~168 MB at 4K with FSR Quality |
 | FSR 3.1 upscaler output (2 FIF, output resolution) | ~33 MB (1080p) | ~133 MB (4K). Both this row and the SDK's own working memory are now billed to the BLAS residency reservation (#3988); the SDK figure is still allocated outside `gpu-allocator` and so does not appear in `ctx.memory` |
 | Vertex / index pools (one global geometry SSBO generation) | ~208 MB | ~840 MB cap (`VERTEX_POOL_HARD_CAP` 7 M × 104 B + `INDEX_POOL_HARD_CAP` 28 M × 4 B, see [Mesh Registry](#mesh-registry)) |
 | Global geometry SSBO rebuild (#3298 / #3443) | — (idle) | +1× projected — the replacement generation, allocated while the old one still serves draws, so up to ~840 MB at the pool caps (~1.7 GB with the old one). Admitted only while device-local usage stays at or under 80% of the live `VK_EXT_memory_budget` budget, and under 256 MiB without a reading; see [the rebuild section](#global-geometry-ssbo-rebuild-3298--3463). Plus up to 128 MiB retained mesh-side staging (one 64 MiB vertex-chunk entry + one 64 MiB index-chunk entry, #3298's chunked path) |
@@ -1345,7 +1354,7 @@ authoritative rather than re-derived.
 | BLAS structures | ~300 MB | ~1 GB (heavy scene) |
 | TLAS + scratch | ~50 MB | ~256 MB |
 | Pipeline cache blob | < 10 MB | — |
-| **Estimated total** | **~2.18 GB** | **~4.96 GB at native 4K** — #6035 corrected the ReSTIR row to its 44 B/px slot (+49 / +199 MB) and added the shadow-filter row (+100 / +398 MB). every resolution-scaled row at 4K, the fixed-size rows and the scene-SSBO peak, plus the content rows (vertex / index pools, textures, BLAS, TLAS) at their *typical* figures: a typical FNV interior rendered at 4K, not every cap at once. Neither total counts the geometry-rebuild transient or the Scaleform rows. So the pools row's cap correction (~1.66 GB → ~480 MB, #4961; later ~840 MB, below) moved neither total. Includes the fixed volumetric medium/aperture index budget (~6.5 MB). #4300 corrected the scene-SSBO row to its section's own sum (~155 / ~243 MB, from a flat ~223 MB) and added the ~20 MB fixed-size sky / ground-cover row. #3993 added the previously-unledgered composite/depth (~83 MB / ~332 MB) and cluster light-index (~14 MB) rows, and the 4K native peak crosses the < 4 GB target as a result. It was only ever inside that target here by omission; FSR Quality, the shipped default, brings it back well under — see the per-preset table in the Volumetrics section. The MenuXml HUD overlay row (~25 / ~100 MB, REN-D5-2026-09-20-04) was added 2026-09-20 and moved both totals by its own amount. #4892 then collapsed that overlay to one texture (−16.6 / −66.4 MB) and ledgered the dynamic-RGBA staging arenas (+16.6 / +66.4 MB), so neither total moved. #4413 corrected the fixed-size sky / ground-cover row from ~20 MB to its section's own sum (~79 MB): the blade arena had grown to 64 MiB in `7996edf61` without it, and the authored-model tier adds 8.3 MiB. While a worldspace has authored cover the scene-SSBO row also grows by the tier's 14 MiB instance tail |
+| **Estimated total** | **~2.30 GB** | **~5.28 GB at native 4K** — #6837 added the local-grid row above (+117 / +316 MB, from ~2.18 / ~4.96 GB) and bills it to the BLAS reservation. #6035 corrected the ReSTIR row to its 44 B/px slot (+49 / +199 MB) and added the shadow-filter row (+100 / +398 MB). every resolution-scaled row at 4K, the fixed-size rows and the scene-SSBO peak, plus the content rows (vertex / index pools, textures, BLAS, TLAS) at their *typical* figures: a typical FNV interior rendered at 4K, not every cap at once. Neither total counts the geometry-rebuild transient or the Scaleform rows. So the pools row's cap correction (~1.66 GB → ~480 MB, #4961; later ~840 MB, below) moved neither total. Includes the fixed volumetric medium/aperture index budget (~6.5 MB). #4300 corrected the scene-SSBO row to its section's own sum (~155 / ~243 MB, from a flat ~223 MB) and added the ~20 MB fixed-size sky / ground-cover row. #3993 added the previously-unledgered composite/depth (~83 MB / ~332 MB) and cluster light-index (~14 MB) rows, and the 4K native peak crosses the < 4 GB target as a result. It was only ever inside that target here by omission; FSR Quality, the shipped default, brings it back well under — see the per-preset table in the Volumetrics section. The MenuXml HUD overlay row (~25 / ~100 MB, REN-D5-2026-09-20-04) was added 2026-09-20 and moved both totals by its own amount. #4892 then collapsed that overlay to one texture (−16.6 / −66.4 MB) and ledgered the dynamic-RGBA staging arenas (+16.6 / +66.4 MB), so neither total moved. #4413 corrected the fixed-size sky / ground-cover row from ~20 MB to its section's own sum (~79 MB): the blade arena had grown to 64 MiB in `7996edf61` without it, and the authored-model tier adds 8.3 MiB. While a worldspace has authored cover the scene-SSBO row also grows by the tier's 14 MiB instance tail |
 
 The 6 GB RT-minimum and 4 GB whole-renderer target remain design targets.
 Static BLAS residency is separately enforced at 1 GiB, so a Vulkan driver

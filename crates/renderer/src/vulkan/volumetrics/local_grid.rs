@@ -677,6 +677,16 @@ pub(crate) fn irradiance_resident_bytes(extent: vk::Extent3D) -> u64 {
         * MAX_FRAMES_IN_FLIGHT as u64
 }
 
+/// VRAM the local grid holds for a froxel grid of `froxel` extent, whenever the
+/// volumetrics pipeline exists (the grid is built with it, live boxes or not):
+/// the froxel-resolution irradiance field, all slots, plus the fixed atlas
+/// volumes. What `screen_scaled_reservation_bytes` bills beside the six froxel
+/// volumes (#6837, the #3992/#6035 regression class: a new screen-sized
+/// allocation missing from the BLAS residency reservation).
+pub(crate) fn local_grid_reservation_bytes(froxel: vk::Extent3D) -> u64 {
+    irradiance_resident_bytes(froxel).saturating_add(local_grid_resident_bytes())
+}
+
 pub(crate) struct LocalGrid {
     froxel_extent: vk::Extent3D,
     /// Per-frame `LocalGridParams` UBO (host-visible).
@@ -1762,6 +1772,33 @@ mod tests {
             DOC.contains(&format!("an {kib} KiB device-local occupancy-brick buffer")),
             "memory-budget.md must state the {kib} KiB brick buffer (`BRICK_BUFFER_BYTES`)"
         );
+    }
+
+    /// #6837 — the per-preset table and the ledger state what the BLAS
+    /// reservation bills for the local grid, derived from the same size
+    /// functions, so the doc cannot drift from `screen_scaled_reservation_bytes`.
+    #[test]
+    fn memory_budget_doc_states_the_local_grid_reservation_per_preset() {
+        const DOC: &str = include_str!("../../../../../docs/engine/memory-budget.md");
+        let config = crate::vulkan::upscaling::VolumetricsConfig::default();
+        let mb = |w: u32, h: u32| {
+            let froxel = crate::vulkan::volumetrics::froxel_extent(vk::Extent2D { width: w, height: h }, config);
+            (local_grid_reservation_bytes(froxel) as f64 / 1.0e6).round() as u64
+        };
+        for (what, got) in [("1080p native", mb(1920, 1080)), ("4K output with FSR Quality", mb(2560, 1440)), ("4K native", mb(3840, 2160))] {
+            assert!(
+                DOC.contains(&format!("~{got} MB")),
+                "memory-budget.md must state ~{got} MB for the local grid at {what} (`local_grid_reservation_bytes`, #6837)"
+            );
+        }
+        assert_eq!((mb(1920, 1080), mb(2560, 1440), mb(3840, 2160)), (117, 168, 316));
+        assert!(
+            DOC.contains("World-space combustion local grid (froxel-resolution irradiance field"),
+            "the ledger must carry the local-grid row (#6837)"
+        );
+        // The reservation bills it: the helper is called from the predicate.
+        let predicates = crate::source_scan::production_text_or_whole(include_str!("../acceleration/predicates.rs"));
+        assert!(predicates.contains(".saturating_add(local_grid_reservation_bytes(grid))"));
     }
 
     #[test]

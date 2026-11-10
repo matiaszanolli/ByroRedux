@@ -1449,6 +1449,7 @@ fn blas_budget_subtracts_the_resolution_scaled_reservation() {
         use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
         use crate::vulkan::taa::TAA_BYTES_PER_PIXEL;
         use crate::vulkan::volumetrics::{FROXEL_BYTES_PER_SLOT, froxel_extent};
+        use crate::shader_constants::{LOCAL_GRID_DIM, LOCAL_GRID_MAX_BOXES};
 
         // Named here INDEPENDENTLY of the production helper. Deriving both
         // sides from `render_extent_bytes_per_pixel_x1024` would make this a
@@ -1475,9 +1476,19 @@ fn blas_budget_subtracts_the_resolution_scaled_reservation() {
                 * u64::from(grid.depth)
                 * FROXEL_BYTES_PER_SLOT
                 * MAX_FRAMES_IN_FLIGHT as u64;
+            // #6837 — the local grid, named here INDEPENDENTLY of
+            // `local_grid_reservation_bytes` for the same reason as the
+            // per-pass list above: an irradiance image of 2 x RGBA16F (8 B)
+            // per froxel per slot, plus three RGBA16F atlas volumes of
+            // LOCAL_GRID_DIM^3 cells x LOCAL_GRID_MAX_BOXES per slot.
+            let froxels = u64::from(grid.width) * u64::from(grid.height) * u64::from(grid.depth);
+            let atlas_cells = u64::from(LOCAL_GRID_DIM).pow(3) * u64::from(LOCAL_GRID_MAX_BOXES);
+            let local_grid_bytes = (froxels * 2 * 8 + atlas_cells * 8 * 3)
+                * MAX_FRAMES_IN_FLIGHT as u64;
             let pixels = u64::from(extent.width) * u64::from(extent.height);
             let reserved = screen_scaled_reservation_bytes(native(extent), config, 0);
-            let render_extent_terms = reserved - froxel_bytes - upscale_output_bytes(extent);
+            let render_extent_terms =
+                reserved - froxel_bytes - local_grid_bytes - upscale_output_bytes(extent);
             assert_eq!(
                 render_extent_terms,
                 pixels * expected_x1024 / 1024,

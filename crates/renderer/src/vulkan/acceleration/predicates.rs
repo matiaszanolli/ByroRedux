@@ -24,7 +24,9 @@ use crate::vulkan::svgf::SVGF_BYTES_PER_PIXEL;
 use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::vulkan::taa::TAA_BYTES_PER_PIXEL;
 use crate::vulkan::upscaling::{FrameExtentSet, VolumetricsConfig};
-use crate::vulkan::volumetrics::{FROXEL_BYTES_PER_SLOT, froxel_extent};
+use crate::vulkan::volumetrics::{
+    FROXEL_BYTES_PER_SLOT, froxel_extent, local_grid_reservation_bytes,
+};
 use anyhow::{Context, Result};
 use ash::vk;
 use byroredux_core::ecs::storage::EntityId;
@@ -934,7 +936,12 @@ pub(super) fn screen_scaled_reservation_bytes(
         .saturating_mul(FROXEL_BYTES_PER_SLOT)
         .saturating_mul(MAX_FRAMES_IN_FLIGHT as u64);
 
+    // #6837 — the world-space combustion local grid is built with the pipeline:
+    // a froxel-resolution irradiance image per slot (twice the froxel width) and
+    // the fixed atlas volumes. Neither is in `FROXEL_BYTES_PER_SLOT`; the helper
+    // reads the grid's own size functions, so they move with it.
     froxel_bytes
+        .saturating_add(local_grid_reservation_bytes(grid))
         // Every render-extent pass, from its own published constant — see
         // `render_extent_bytes_per_pixel_x1024` for the enumeration and why it
         // is one list rather than a chain of terms here.
