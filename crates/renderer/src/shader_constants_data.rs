@@ -2124,6 +2124,21 @@ pub const LOCAL_GRID_MAX_BOXES: u32 = 4;
 /// Cells per brick edge of the occupancy bricks the sim writes and composite's
 /// march skips empty space with (`LOCAL_GRID_DIM / LOCAL_GRID_BRICK` bricks per box axis).
 pub const LOCAL_GRID_BRICK: u32 = 8;
+/// Workgroup edge (x = y = z) of `volumetrics_local_sim.comp`: the shader's
+/// `layout(local_size_*)` and `vulkan::volumetrics::local_grid`'s dispatch
+/// (`LOCAL_GRID_DIM / this` groups per axis) share this one value (#6833), the
+/// way the froxel passes share `WORKGROUP_X/Y/Z`. It must divide the box edge.
+pub const LOCAL_SIM_WORKGROUP: u32 = 4;
+/// Workgroup width of `combustion_phase_bake.comp` (a 1D dispatch over the
+/// phase table's `COMBUSTION_PHASE_TABLE_WIDTH` columns); shader and host share
+/// it for the same reason as [`LOCAL_SIM_WORKGROUP`] (#6833).
+pub const COMBUSTION_PHASE_BAKE_WORKGROUP: u32 = 64;
+
+const _: () = {
+    // The sim dispatches `LOCAL_GRID_DIM / LOCAL_SIM_WORKGROUP` groups per axis
+    // with no remainder group.
+    assert!(LOCAL_GRID_DIM % LOCAL_SIM_WORKGROUP == 0);
+};
 /// Width, in cells of the box, of the cross-fade at a box face: the local march
 /// fades its density out and the froxels fade theirs in over this distance, so
 /// gas crossing a face is not cut flat.
@@ -3356,6 +3371,8 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint LOCAL_GRID_DIM),
     shader_define!(Uint LOCAL_GRID_MAX_BOXES),
     shader_define!(Uint LOCAL_GRID_BRICK),
+    shader_define!(UintPlain LOCAL_SIM_WORKGROUP),
+    shader_define!(UintPlain COMBUSTION_PHASE_BAKE_WORKGROUP),
     shader_define!(Float LOCAL_GRID_FADE_CELLS),
     shader_define!(Uint LOCAL_GRID_DEBUG_NO_MARCH),
     shader_define!(Uint LOCAL_GRID_DEBUG_NO_HANDOFF),

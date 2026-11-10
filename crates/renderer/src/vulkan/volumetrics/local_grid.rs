@@ -34,7 +34,8 @@ use super::{
 use crate::shader_constants::{
     LOCAL_GRID_BRICK, FOG_VOLUME_PROFILE_EXPLOSION, FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
     FOG_VOLUME_PROFILE_EXPLOSION_OIL, LOCAL_GRID_DEBUG_DENSE_MARCH, LOCAL_GRID_DEBUG_NO_HANDOFF, LOCAL_GRID_DEBUG_NO_SPECIES, LOCAL_GRID_DEBUG_NO_MARCH,
-    COMBUSTION_PHASE_TABLE_WIDTH, LOCAL_GRID_DIM, LOCAL_GRID_MAX_BOXES,
+    COMBUSTION_PHASE_BAKE_WORKGROUP, COMBUSTION_PHASE_TABLE_WIDTH, LOCAL_GRID_DIM,
+    LOCAL_GRID_MAX_BOXES, LOCAL_SIM_WORKGROUP,
 };
 use crate::vulkan::descriptors::{
     clamp_sampler, compute_binding, general_sampled_image_info, storage_image_info,
@@ -48,8 +49,6 @@ pub(crate) const VOLUMETRICS_LOCAL_SIM_COMP_SPV: &[u8] =
 /// Evaluates the species phase lobes into [`LocalGrid`]'s phase table, once.
 const COMBUSTION_PHASE_BAKE_COMP_SPV: &[u8] =
     include_bytes!("../../../shaders/combustion_phase_bake.comp.spv");
-/// Workgroup width in `combustion_phase_bake.comp`.
-const PHASE_BAKE_WORKGROUP: u32 = 64;
 /// The table's rows: soot, then steam.
 const PHASE_TABLE_ROWS: u32 = 2;
 
@@ -62,8 +61,6 @@ pub(crate) const MAX_LOCAL_BOXES: usize = LOCAL_GRID_MAX_BOXES as usize;
 pub(crate) const BRICK_BUFFER_BYTES: u64 = (MAX_LOCAL_BOXES as u64)
     * ((LOCAL_GRID_DIM / LOCAL_GRID_BRICK) as u64).pow(3)
     * 4;
-/// Workgroup edge in `volumetrics_local_sim.comp`.
-const LOCAL_SIM_WORKGROUP: u32 = 4;
 
 /// Cell edges a box can be built with, in metres, finest first. A source gets
 /// the finest one whose box still holds [`BOX_EDGE_PER_SOURCE_RADIUS`] source
@@ -995,7 +992,7 @@ impl LocalGrid {
             );
             device.cmd_dispatch(
                 cmd,
-                COMBUSTION_PHASE_TABLE_WIDTH.div_ceil(PHASE_BAKE_WORKGROUP),
+                COMBUSTION_PHASE_TABLE_WIDTH.div_ceil(COMBUSTION_PHASE_BAKE_WORKGROUP),
                 PHASE_TABLE_ROWS,
                 1,
             );
@@ -1679,6 +1676,49 @@ mod tests {
         // The shader's atlas depth and the host's dispatch/atlas sizing share
         // the generated constants, never literals.
         assert!(shader.contains("LOCAL_GRID_DIM") && shader.contains("LOCAL_GRID_MAX_BOXES"));
+    }
+
+    /// #6833 — the sim and the phase bake take their `local_size` from the
+    /// generated workgroup constants the host divides by, not from literals:
+    /// a literal edit in one place would leave a slab of the atlas (or part of
+    /// the phase table) silently under-dispatched. `check-shader-artifacts.sh`
+    /// proves the committed SPIR-V is built from the generated header.
+    #[test]
+    fn local_grid_compute_passes_take_their_workgroup_size_from_the_shared_constants() {
+        let sim = include_str!("../../../shaders/volumetrics_local_sim.comp");
+        assert!(
+            sim.contains(
+                "layout(local_size_x = LOCAL_SIM_WORKGROUP, local_size_y = LOCAL_SIM_WORKGROUP, \
+                 local_size_z = LOCAL_SIM_WORKGROUP) in;"
+            ),
+            "volumetrics_local_sim.comp must size its workgroup from LOCAL_SIM_WORKGROUP"
+        );
+        let bake = include_str!("../../../shaders/combustion_phase_bake.comp");
+        assert!(
+            bake.contains("layout(local_size_x = COMBUSTION_PHASE_BAKE_WORKGROUP,"),
+            "combustion_phase_bake.comp must size its workgroup from COMBUSTION_PHASE_BAKE_WORKGROUP"
+        );
+        for (name, source) in [("sim", sim), ("phase bake", bake)] {
+            let literal_local_size = source
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .any(|line| {
+                    line.contains("local_size_")
+                        && line.split("local_size_").skip(1).any(|rest| {
+                            rest.split_once('=')
+                                .map(|(_, v)| v.trim_start().starts_with(|c: char| c.is_ascii_digit()))
+                                .unwrap_or(false)
+                                // `local_size_y = 1` / `z = 1` of the 1D bake are intentional.
+                                && !(name == "phase bake" && rest.trim_start().starts_with(['y', 'z']))
+                        })
+                });
+            assert!(!literal_local_size, "{name}: a literal local_size is back (#6833)");
+        }
+        // The host's dispatch counts divide by the same constants.
+        assert_eq!(LOCAL_GRID_CELLS % LOCAL_SIM_WORKGROUP, 0);
+        let host = crate::source_scan::production_text(include_str!("local_grid.rs"));
+        assert!(host.contains("LOCAL_GRID_CELLS / LOCAL_SIM_WORKGROUP"));
+        assert!(host.contains("COMBUSTION_PHASE_TABLE_WIDTH.div_ceil(COMBUSTION_PHASE_BAKE_WORKGROUP)"));
     }
 
     #[test]
