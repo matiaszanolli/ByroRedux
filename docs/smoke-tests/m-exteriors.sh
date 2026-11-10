@@ -451,7 +451,12 @@ run_profile () {
                 # Commonwealth (-4,11): explicit CELL XCWT ExtLakeWater, surface
                 # Y=750, open water >= 590 deep.
                 water_surface_pos="-12416 950 -46592"
-                water_submerged_pos="-12416 500 -46592"
+                # #6843 — the surface is at about y=745 (the 500 pose reads depth 245), so that frame is a flat fogged
+                # wash: linear stddev 0.008 on passing runs and 0.004 on one fsr3 run, against image_health's 0.005
+                # floor (Skyrim's leg had the same failure). 650 is about 95 under: stddev 0.0105-0.011 under both
+                # upscalers, waterline delta unchanged (0.012 fsr3, 0.025 taa, floor 0.01). Shallower poses
+                # (700) and flatter looks raise the variance but pull the waterline delta under its floor on fsr3.
+                water_submerged_pos="-12416 650 -46592"
                 water_look="45 -12"
                 # ExtLakeWater authors underwater fog -6400..1700: nearly
                 # opaque from the eye outward, so look up through Snell's
