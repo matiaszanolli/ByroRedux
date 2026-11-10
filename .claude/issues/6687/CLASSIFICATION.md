@@ -59,3 +59,63 @@ So the earlier pass's claim that these three can lose their scans by extraction 
 scans pin call wiring inside `&mut VulkanContext` recorders, which no device-free test reaches. #6687 stays
 open: ~314 sites are still unclassified and the no-extraction finding above narrows where to look. The next
 useful reads are the `svgf.rs` and `sync.rs` call-structure pins, in that order.
+
+## Second pass — every remaining Rust-source scan (2026-11-10)
+
+**Census.** Counting only reads of Rust files (`include_str!("….rs")` and `read_to_string`), outside the five files
+the first pass took, there are **352 lines in 64 files** after this pass (354 before it: two sites are
+removed by the replacements below). The issue's 445 counts every `include_str!` form and the five named files, so the two figures are
+not comparable. **Method:** each site's enclosing test and its doc comment were listed by script; the doc states the
+reason for almost all of them. Bodies were **read** only where marked *read*; everything else is classified by
+doc/name and was not verified assert by assert, so a wrong doc means a wrong class.
+
+The issue's own rule holds across the board: shader-contract, barrier-order, destroy-order and submit-order scans have
+no device-free alternative and stay. This pass looked for the host-logic minority.
+
+### Replaced (3 tests)
+
+| Test | Was | Now | Injected fault that fails it |
+|---|---|---|---|
+| `context/build_and_upload_instances.rs::ui_instance_idx_is_clamped_to_none_past_max_instances` | searched the function's text for `(idx < MAX_INSTANCES).then_some(idx as u32)` and for the absence of the old capture | `ui_instance_candidate(pushed_at)` is a pure function; the test calls it at `0`, `MAX-1`, `MAX`, `MAX+7` | `<` to `<=` fails the `MAX` case |
+| `…::ui_instance_idx_is_reclamped_to_the_post_grow_slot_capacity` (value half) | searched for the `.filter(|idx| *idx < instance_capacity)` expression | `ui_instance_within_capacity(candidate, capacity)`; `9/10`, `10/10`, `11/10`, `None` | `<` to `<=` fails `10/10` |
+| `acceleration/tests/blas_static_tests.rs::skinned_blas_stays_fx_hashed` | searched `acceleration/mod.rs` for two spellings | an accessor returning `&FxHashMap<EntityId, BlasEntry>`; the hasher is part of the type | `skinned_blas` as a std `HashMap` stops the test module (and the field's own users) compiling |
+
+The order half of #4722 stays a scan (`ui_instance_idx_final_clamp_follows_the_grow_and_the_capacity_read`): a value
+test cannot see where a function is called. The self-scan ratchet baseline for `build_and_upload_instances.rs` drops
+7 to 6. No call order, barrier or timer bracket moved in this pass, so no `BYRO_VALIDATION=1` run was needed for it.
+
+### Classified, by file
+
+| File (sites) | Class | Basis |
+|---|---|---|
+| `context/build_and_upload_instances.rs` (22) | device/shader + syntax | Scratch is persistent, not reserved to draw count (#3675, #6485); flag assembly above the `skip_batch` arm (#3978); the rigid-history latch is order-independent (#4007); grow before upload, TLAS map after the grow and capped (#4833, #6494). All about the body of a `&mut VulkanContext` method. |
+| `shader_constants.rs` (21) | device/shader + prose | The generated header against `shader_constants_data.rs` (#1860); dispatch grids and reductions derive from the generated workgroup size (#2768, #5620); temporal history indexing uses `(f + N - 1) % N` (#2771). Rust against GLSL. |
+| `acceleration/tests/` (30: `blas_static_tests` 16, `scratch_tests` 9, `predicates_tests` 3, `tlas_tests` 2) | device/shader + prose | Budget checks in the compaction and admission loops, scratch-serialise barriers before the first build, the AS-build to ray-query barrier on both `build_tlas` arms; docstrings naming commands and files (#3997). |
+| `context/skinned_blas_refit.rs` (14) | device/shader | Phase order of the recorder, barrier bracket, built-entity marking, eviction drains outside the `(skin_compute, accel_manager)` guard (#3374). This recorder is the subject of #6708. |
+| `caustic.rs` (13) | device/shader | Upload scale against `composite.frag` (#2776); accumulator clears go through one helper and name TRANSFER on both sides; `destroy()` nulls handles. |
+| `context/draw.rs` (13) | device/shader (submit order) | Latches promoted after submit, not at record time (#5956, #6811, #6291); guard before acquire (#4604); resets at the top of `draw_frame`; file-size pins. |
+| `buffer.rs` (12), `image.rs` (2), `taa.rs` (2) | device/shader | Teardown arms null handles and release without a label; the staging pool releases its allocator (#4187); readback location (#2752). All need a device to construct. |
+| `context/helpers.rs` (12) | prose + device/shader | Error pointers name the file that holds the `log::error!`; the G-buffer doc against the render pass's depth final layout; capture staging frees share one helper (#4039). |
+| `skin_compute.rs` (11), `morph_compute.rs` (2), `context/dispatch_skin_and_cluster.rs` (8) | device/shader | BLAS stride, slot-stamp sentinel, descriptor-write cache, pipeline bound once per batch (a type token covers the other half, #4205), AS-write to AS-read barrier at frame scope (#4179), compute passes take the build-gated TLAS (#4779). |
+| `frame_upscaler.rs` (10) | device/shader + prose | FSR teardown outside the allocator guard (#2158); `# Safety` sections on six `unsafe fn` (#2684); every native blit takes the actual source layout (#4592). |
+| Pass files (71): `sky_cube` 10, `volumetrics` 8, `bloom` 7, `volumetrics/noise` 6, `composite` 5, `shadow_filter` 4, `water` 4, `groundcover_models` 4, `presentation` 4, `groundcover/frame` 3, and `local_grid`, `restir`, `sky_dome`, `gbuffer`, `egui_pass`, `cloud_noise` 2 each, `tonemap`, `exposure_meter`, `groundcover/construct`, `volumetrics/init` 1 each | device/shader | Each pins a GLSL structure, a push-constant or UBO field order against Rust, a barrier or stage pair, or a pass's failure latch. The Rust-mirror tests in this set (`tonemap`, `water`) already run their mirror; the scan is what checks the mirror still describes the shader. |
+| `context/` recorders and teardown (40): `resources` 9, `function_size_pin_tests` 7, `resize` 6, `geometry_pass` 5, `shrink_frame_scratch` 4, `sync_and_acquire_frame` 3, `depth_capture` 3, `teardown` 2, `render_debug` 1 | device/shader + size pin | Static BLAS recovery bounded per frame and honouring the deadline; readback invalidation before reading; drain order in teardown; the line-budget pins. |
+| Registries, descriptors, meshes (28): `descriptors` 9, `texture_registry/dynamic_rgba` 7, `texture_registry/mod` 4, `texture_registry_tests` 4, `mesh` 2, `pipeline` 1, `pool_growth_cap_tests` 1 | device/shader + prose | Flush skips released slots; descriptor sets are allocated before the old pool dies (#4886); pool sizes derive from layout bindings; the pool-growth size gate runs before the duplicate allocation. |
+| Device, allocator, timers, buffers (25): `device` 8, `gpu_timers` 5, `allocator` 3, `destroy_coverage_tests` 3, `light_history` 2, and `gpu_instance_layout_tests`, `light_overflow_tests`, `scene_buffer/upload`, `source_scan` 1 each | syntax + prose | Bounded `CStr` readers (#5273); required features against unconditional enables (#4895); allocator-lock acquires confined to helpers; the timer doc table against `QUERIES_PER_FRAME` and the `TimerPass` rows; `light_history.rs` / `upload.rs` hold no std map or `DefaultHasher` (a negative text search); the ratchet itself. |
+| `context/mod.rs` (8), `material_tests.rs` (8) | syntax + prose | Fx hashing of `pose_dirty` and ten `VulkanContext` fields; `fill_scratch_telemetry` covers every scratch field; no stale `GpuMaterial` size in prose. |
+
+Rows sum to 352.
+
+### Candidates that are not done
+
+- **The remaining Fx-hash cluster in `context/mod.rs`** (`pose_dirty_crosses_the_crate_boundary_without_siphash`, the
+  ten `VulkanContext` field spellings, `skin.slots` / `morph_slots`): each is an `FxHashMap` / `FxHashSet` in a declared
+  type, so each could be an accessor ascription like the `skinned_blas` one above. The fields sit in several modules
+  and `skin_slot_pool` is in `core`, so this is a dozen small edits, not one.
+- **`shadow_filter.rs::bytes_per_pixel_matches_frame_images`** counts `: GpuImage,` fields in a struct; an exhaustive
+  destructure would do it without constructing one.
+- The three decisions the first pass named (`caustic_sun_transmittance…`, `record_bloom_pass_skips…`,
+  `record_volumetrics_pass_routes…`) are already pure; nothing new there.
+
+#6687 stays open for the Fx-hash cluster and the destructure; everything else in the inventory is classed, and none of
+the 352 remaining scans has a device-free form I could find in the docs or in the bodies read.
