@@ -549,22 +549,29 @@ fn present_normal_derive_yields_nothing_when_the_sibling_is_absent() {
 /// silently dropped normal map: an authored `Data\Textures\…` diffuse
 /// normalises to `textures\data\textures\…`, present in no archive, so a
 /// sibling that really is there would test absent and the mesh would lose a
-/// normal map it previously got. There is no synthetic archive fixture in
-/// this crate to assert the positive case against, so pin the call instead.
+/// normal map it previously got. The archive is replaced by a probe that
+/// answers for the canonical key alone and records what it was asked (#6686,
+/// which retired the source scan this test used to be).
 #[test]
 fn present_normal_derive_canonicalises_before_probing() {
-    const TEXTURE_RS: &str = include_str!("../texture.rs");
+    use crate::asset_provider::texture::derive_present_normal_map_path_with;
 
-    let body = TEXTURE_RS
-        .split_once("pub(crate) fn derive_present_normal_map_path(")
-        .expect("derive_present_normal_map_path")
-        .1;
-    let end = body.find("\n}\n").unwrap_or(body.len());
-    let body = &body[..end];
-    assert!(
-        body.contains("canonical_texture_key(&derived)"),
-        "the presence probe must canonicalise the derived path the same way \
-         `resolve_texture_view_with_clamp` does, or a present sibling under \
-         an authored `Data\\Textures\\…` path tests absent (#3551 / #3334)",
-    );
+    for diffuse in [
+        r"Data\Textures\clutter\bottle01.dds",
+        r"textures\clutter\bottle01.dds",
+    ] {
+        let mut asked = Vec::new();
+        let found = derive_present_normal_map_path_with(diffuse, |key| {
+            asked.push(key.to_owned());
+            key.eq_ignore_ascii_case(r"textures\clutter\bottle01_n.dds")
+        });
+        assert!(
+            found.is_some(),
+            "{diffuse}: a sibling present under its canonical key must be found; the probe \
+             was asked {asked:?} (#3551 / #3334)",
+        );
+        assert_eq!(asked.len(), 1, "{diffuse}: one archive probe per shape, asked {asked:?}");
+    }
+    // And an absent sibling stays absent.
+    assert_eq!(derive_present_normal_map_path_with(r"textures\clutter\bottle01.dds", |_| false), None);
 }

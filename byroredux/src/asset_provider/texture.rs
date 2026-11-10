@@ -651,10 +651,21 @@ pub(crate) fn derive_present_normal_map_path(
     provider: &TextureProvider,
     diffuse: &str,
 ) -> Option<String> {
+    derive_present_normal_map_path_with(diffuse, |key| provider.has_texture(key))
+}
+
+/// The decision behind [`derive_present_normal_map_path`], with the archive
+/// answer passed in (#3551 / #3334, #6686). The probe is handed the same
+/// canonical key `resolve_texture_view_with_clamp` derives before its own
+/// lookup: probing the raw path would reintroduce the #3334 key drift here as
+/// a silently dropped normal map, because an authored `Data\Textures\…`
+/// diffuse normalises to `textures\data\textures\…`, present in no archive.
+pub(crate) fn derive_present_normal_map_path_with(
+    diffuse: &str,
+    present: impl FnOnce(&str) -> bool,
+) -> Option<String> {
     let derived = derive_normal_map_path(diffuse);
-    provider
-        .has_texture(&canonical_texture_key(&derived))
-        .then_some(derived)
+    present(&canonical_texture_key(&derived)).then_some(derived)
 }
 
 /// Uses Gamebryo's default `WRAP_S_WRAP_T` clamp mode (`3` per
