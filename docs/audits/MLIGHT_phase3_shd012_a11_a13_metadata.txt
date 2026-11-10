@@ -1,0 +1,9 @@
+# RLT-SHD-012 (#6721): A11 content non-regression and A13 cost, 2026-11-10.
+gpu=NVIDIA GeForce RTX 4070 Ti 580.178.04
+control=55ba81e20^ (c3a804d89), release, built in a worktree against the shared target dir
+head=55ba81e20 (the SHD-012 commit), release, built in a second worktree; the working tree's uncommitted files are not in either build
+A11=scripts/m-light-baselines.sh --anchors-only docs/audits/MLIGHT_phase1b_baselines_688f42705.tsv, once per engine (anchor = control, capture = head); scripts/m-light/content.py compare, margin 0.01, tile 32, under docs/audits/MLIGHT_phase3_shd012_declaration.tsv; raw output docs/audits/MLIGHT_phase3_shd012_a11.txt
+A11_without_declaration=cornell 163 of 754 tiles outside tolerance, whiterun 11 of 880, dugout 2 of 833, prospector 0 of 527, medtek 0 of 880; whole-frame mean change cornell +0.0040, whiterun +0.00003, dugout +0.00027
+A13=scripts/m-light-baselines.sh --exit-cost docs/audits/MLIGHT_phase1b_baselines_688f42705.tsv --control-binary <control>; pinned at each scene's Phase 1b settled tier, interleaved with the control, renderer-stepped orbit, 300 frames, 3 runs per side; Q8 ceiling max(5 % of the Phase 1b pinned frame time, 0.25 ms); Cornell reported, not held; table docs/audits/MLIGHT_phase3_shd012_a13.tsv
+A13_whiterun_fsr_7run=the only row over its ceiling in the 3-run pass (+0.53 ms against 0.483, with dugout/fsr-quality reading -0.63 ms in the same pass, so the 3-run spread is wider than the ceiling); re-run with 7 interleaved runs per side: control 10.52 ms, head 10.48 ms, delta -0.04 ms, settled tier 3
+The ceiling is the per-PHASE ceiling, applied here to this one change, so it is conservative.

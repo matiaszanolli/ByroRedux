@@ -1,0 +1,5 @@
+content: cornell: 754 tiles, 0 outside tolerance and declarations (margin 0.01, tile 32)
+content: prospector: 527 tiles, 0 outside tolerance and declarations (margin 0.01, tile 32)
+content: whiterun: 880 tiles, 0 outside tolerance and declarations (margin 0.01, tile 32)
+content: medtek: 880 tiles, 0 outside tolerance and declarations (margin 0.01, tile 32)
+content: dugout: 833 tiles, 0 outside tolerance and declarations (margin 0.01, tile 32)

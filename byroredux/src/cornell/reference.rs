@@ -84,6 +84,12 @@ pub(crate) enum ReferenceRung {
     /// column whose bone an `AnimationPlayer` yaws on a 2 s loop, advancing
     /// under `renderer-stepped`, RLT-REF-017) — each with its contact band.
     Contact,
+    /// RLT-SHD-012's flat-floor control: the contact rung with the floor's
+    /// normal map left off (same casters, emitter, bands and camera). The
+    /// plank's error here is what the sampler and the reference leave when
+    /// no shading normal disagrees with the geometric one, so the
+    /// normal-mapped plank is read against it (#6721).
+    ContactFlat,
 }
 
 /// A penumbra profile line (RLT-SHD-001): on `receiver`, perpendicular to a
@@ -155,6 +161,7 @@ impl ReferenceRung {
             Self::ReservoirClamp => "restir-clamp",
             Self::NormalPlane => "normal-plane",
             Self::Contact => "contact",
+            Self::ContactFlat => "contact-flat",
         }
     }
 }
@@ -170,6 +177,7 @@ const RUNGS: &[ReferenceRung] = &[
     ReferenceRung::ReservoirClamp,
     ReferenceRung::NormalPlane,
     ReferenceRung::Contact,
+    ReferenceRung::ContactFlat,
 ];
 
 /// Penumbra rungs: plate half-extent and height above the floor.
@@ -292,15 +300,25 @@ fn spawn_reference_emitter_sized(world: &mut World, pos: Vec3, intensity: f32, r
 /// The contact rung (RLT-CON-001, -006, -007, -008). Each caster's band
 /// width obeys §2: an upright caster's is at most a tenth of its height, the
 /// plank's is a fixed width no less than its thickness.
-fn setup_contact_rung(world: &mut World, builder: &mut MeshBuilder, neutral: TextureHandle) -> (Vec3, Vec3) {
+///
+/// `normal_mapped` is RLT-CON-007's floor; `false` builds the flat-floor
+/// control (`ReferenceRung::ContactFlat`), the same scene with the map off.
+fn setup_contact_rung(
+    world: &mut World,
+    builder: &mut MeshBuilder,
+    neutral: TextureHandle,
+    normal_mapped: bool,
+) -> (Vec3, Vec3) {
     // RLT-CON-007: the floor carries the Cornell wavy normal map through an
     // authored tangent frame (T = dP/du, w = +1), the frame Mitsuba's
     // `normalmap` builds from the UVs (`path-tracing.md` §2.2).
     let floor = builder.box_mesh_with_uv_tangents([1.5 * M, BOX_WALL_T, 1.5 * M]);
     let floor_entity = spawn_object(world, floor, neutral, Vec3::new(0.0, -BOX_WALL_T, 0.0), Quat::IDENTITY,
         lambert([0.8; 3]), "con_floor");
-    let normal_map = builder.register_texture(16, 16, super::builders::wavy_normal_map_pixels(16));
-    insert_normal_map(world, floor_entity, normal_map);
+    if normal_mapped {
+        let normal_map = builder.register_texture(16, 16, super::builders::wavy_normal_map_pixels(16));
+        insert_normal_map(world, floor_entity, normal_map);
+    }
 
     // (name, half extents in metres, centre x/z, yaw, band width in metres)
     #[allow(clippy::type_complexity)] // the comment above names each element; an alias would only move the naming
@@ -673,7 +691,8 @@ pub(crate) fn setup_reference_scene(
             });
             camera
         }
-        ReferenceRung::Contact => setup_contact_rung(world, &mut builder, neutral),
+        ReferenceRung::Contact => setup_contact_rung(world, &mut builder, neutral, true),
+        ReferenceRung::ContactFlat => setup_contact_rung(world, &mut builder, neutral, false),
         ReferenceRung::NormalPlane => {
             let floor = builder.box_mesh([2.0 * M, BOX_WALL_T, 2.0 * M]);
             spawn_object(world, floor, neutral, Vec3::new(0.0, -BOX_WALL_T, 0.0), Quat::IDENTITY,

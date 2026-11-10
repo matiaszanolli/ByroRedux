@@ -1,0 +1,12 @@
+revision=f1b3c39b69bd-dirty
+gpu=NVIDIA GeForce RTX 4070 Ti 580.178.04
+mitsuba=3.9.1
+variant=cuda_ad_rgb
+tier=3
+engine_frames=64
+reference_spp=1024
+cache=warm
+references_rendered=12
+references_cached=0
+reference_render_seconds=105.7
+wall_seconds=794.8

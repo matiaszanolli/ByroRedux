@@ -1,0 +1,12 @@
+run	scene	config	pinned_tier	control_ms	head_ms	delta_ms	ceiling_ms	cost_pass	settled_tier	rt_tier_hist	tier_pass
+3run	cornell	taa	1	13.780	13.810	+0.030	0.657	yes	1	0/300/0/0	yes
+3run	cornell	fsr-quality	2	10.090	10.190	+0.100	0.495	yes	2	0/0/300/0	yes
+3run	prospector	taa	0	9.870	9.910	+0.040	0.488	yes	0	179/121/0/0	yes
+3run	prospector	fsr-quality	1	10.650	10.820	+0.170	0.528	yes	1	0/200/75/25	yes
+3run	whiterun	taa	1	13.410	13.560	+0.150	0.681	yes	1	0/300/0/0	yes
+3run	whiterun	fsr-quality	3	9.470	10.000	+0.530	0.483	no	3	0/0/0/300	yes
+3run	medtek	taa	0	29.570	30.330	+0.760	1.387	yes	0	300/0/0/0	yes
+3run	medtek	fsr-quality	0	17.510	18.100	+0.590	0.818	yes	0	300/0/0/0	yes
+3run	dugout	taa	0	15.630	15.750	+0.120	0.776	yes	0	300/0/0/0	yes
+3run	dugout	fsr-quality	1	12.760	12.130	-0.630	0.620	yes	1	0/270/30/0	yes
+7run-whiterun-fsr-quality	whiterun	fsr-quality	3	10.520	10.480	-0.040	0.483	yes	3	0/0/0/300	yes

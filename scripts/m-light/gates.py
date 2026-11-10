@@ -8,7 +8,7 @@ Cornell gates on linear captures (RLT-REF-007):
   A2   penumbra width             (RLT-SHD-001; width undecided, reported)
   A4   filter bands and thin rod  (RLT-SHD-004; bands gated by the threshold table, rod reported)
   A3   penumbra under camera pan  (RLT-SHD-002; excess over the hold control, gated by the threshold table)
-  A5   contact bands              (RLT-CON-001…008; gated by the threshold table at tier 3)
+  A5   contact bands              (RLT-CON-001…008; gated by the threshold table at tier 3; the plank also on a flat floor, reported)
   A14  moving blocker             (RLT-SHD-010; excess over the hold control from frame 80, gated by the threshold table)
   A7   GI deficit                 (RLT-GI-002; report until Q5's cache)
   A8   traced share free of SSAO  (RLT-GI-004)
@@ -940,25 +940,47 @@ def band_mask(positions: np.ndarray, receiver: np.ndarray, band) -> np.ndarray:
     return receiver & outer & ~inner
 
 
+# RLT-SHD-012's control: the same rung with the floor's normal map off. The
+# plank is the band the normal map disturbs, so only its row is reported, at
+# the last tier, beside the normal-mapped plank's.
+CONTROL_RUNG = "contact-flat"
+CONTROL_BAND = "con_plank_band"
+
+
 def gate_contact(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
     """A5 contact bands (RLT-CON-001, -002, -006, -007, -008).
 
     Visibility (§2) per caster's contact band, the engine's filtered direct
     view (shadow filter on, RLT-CON-002) and `direct_only` (off) at tiers
     1-3, unjittered, against the reference's direct recipe over the same with
-    the casters removed. Report-only until the owner sets the L2 budget.
+    the casters removed. The threshold table judges the rows it names; the
+    rest are reported. The flat-floor control (RLT-SHD-012, #6721) follows
+    the normal-mapped rows: the plank on the same rung without the map.
     """
     del ctx
     spp *= CONTACT_REFERENCE_SPP_FACTOR
+    rows = contact_band_rows(engine, store, "contact", spp, CONTACT_TIERS, None, "")
+    rows += contact_band_rows(engine, store, CONTROL_RUNG, spp, CONTACT_TIERS[-1:], CONTROL_BAND, "-flatfloor")
+    rows += contact_mid_animation(engine, store, spp)
+    for row, _ in rows:
+        row.reference_spp = spp
+    return rows
+
+
+def contact_band_rows(engine: Engine, store: ReferenceStore, rung_name: str, spp: int, tiers,
+                      only_band: str | None, case_suffix: str):
+    """A5 rows for one contact rung: every band (or `only_band`) at `tiers`.
+
+    `case_suffix` goes on the case name, so the control's rows never share a
+    threshold key with the normal-mapped rung's."""
     rows = []
-    rung_name = "contact"
     export = engine.out / "scenes" / rung_name
     extra = ["--upscaler", "taa", "--rt-test-no-jitter"]
     exported = False
     reference = None
     for view_mode in ("filtered_direct", "direct_only"):
-        for tier in CONTACT_TIERS:
-            name = f"contact_{view_mode}_t{tier}"
+        for tier in tiers:
+            name = f"{rung_name.replace('-', '_')}_{view_mode}_t{tier}"
             shadowed = [load_exr(engine.capture(name, rung_name, view_mode, s, tier, extra=extra,
                                                 export_dir=export if not exported and s == 0 else None))
                         for s in (0, 1)]
@@ -978,6 +1000,8 @@ def gate_contact(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
                 reference = (rung, ref[0][1], positions, receivers, vr)
             rung, key, positions, receivers, vr = reference
             for band in rung.bands:
+                if only_band is not None and band[0] != only_band:
+                    continue
                 receiver_name = band[1]
                 receiver = receivers[receiver_name]
                 mask = band_mask(positions, receiver, band)
@@ -986,17 +1010,14 @@ def gate_contact(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
                 mean, p95 = visibility_error(ve[0], ref_v[0], mask)
                 mean_e, p95_e = visibility_error(ve[1], ref_v[0], mask)
                 mean_r, p95_r = visibility_error(ve[0], ref_v[1], mask)
-                case = f"{view_mode}-tier{tier}"
+                case = f"{view_mode}-tier{tier}{case_suffix}"
                 rows.append((Row("A5", case, band[0], "visibility_error_mean", mean,
                                  abs(mean_e - mean), abs(mean_r - mean), passed="report"), key))
                 rows.append((Row("A5", case, band[0], "visibility_error_p95", p95,
                                  abs(p95_e - p95), abs(p95_r - p95), passed="report"), key))
-                if tier == CONTACT_TIERS[-1] and view_mode == "filtered_direct":
+                if tier == tiers[-1] and view_mode == "filtered_direct":
                     rows.append((Row("A5", case, band[0], "band_pixels", float(mask.sum()), 0.0, 0.0,
                                      passed="report"), key))
-    rows += contact_mid_animation(engine, store, spp)
-    for row, _ in rows:
-        row.reference_spp = spp
     return rows
 
 
