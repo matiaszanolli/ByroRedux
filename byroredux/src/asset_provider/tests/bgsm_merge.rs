@@ -683,9 +683,11 @@ fn bgsm_merge_forwards_alpha_blend_mode() {
         "Multiplicative dst must resolve to ZERO so it doesn't leak through"
     );
 
-    // Case 4: function=0 (None) — the BGSM explicitly says "no
-    // blend." Don't flip has_alpha. Caller's `set_blend` guard
-    // then also prevents a subsequent parent from re-triggering.
+    // Case 4: function=0 (None) — the BGSM authors no blend. Don't
+    // flip has_alpha. (The production merge's `set_blend` guard is only
+    // set by a step with function > 0, so a parent can still supply the
+    // blend — pinned by `bgsm_blend_is_taken_from_the_first_chain_step_
+    // that_authors_one`.)
     let mut has_alpha = false;
     let mut src = 6u8;
     let mut dst = 7u8;
@@ -695,6 +697,105 @@ fn bgsm_merge_forwards_alpha_blend_mode() {
     assert!(!has_alpha, "function=0 must NOT set has_alpha");
     assert_eq!(src, 6, "src untouched when function=0");
     assert_eq!(dst, 7);
+}
+
+/// #6846 — the three vanilla blend triples, driven through the PRODUCTION
+/// merge (`merge_external_material`), not a local copy of its writes: Standard
+/// (6,7) and the two tuples a 0 <-> 1 swap (#1651 / #1823) corrupts, Additive
+/// (6,0) and Multiplicative (4,1). Vanilla authors 81 Additive BGEMs and 8
+/// Multiplicative files (4 BGSM + 4 BGEM).
+#[test]
+fn bgsm_and_bgem_blend_triples_survive_the_production_merge() {
+    use byroredux_bgsm::AlphaBlendMode;
+    let triples: [(u32, u32, u8, u8); 3] = [(6, 7, 6, 7), (6, 0, 6, 0), (4, 1, 4, 1)];
+    for (src, dst, want_src, want_dst) in triples {
+        let blend = AlphaBlendMode {
+            function: 1,
+            src_blend: src,
+            dst_blend: dst,
+        };
+
+        let mut pool = byroredux_core::string::StringPool::new();
+        let mut provider = MaterialProvider::new();
+        let mut bgsm = BgsmFile::default();
+        bgsm.base.alpha_blend_mode = blend.clone();
+        provider.insert_bgsm_for_test(
+            "materials/tests/blend.bgsm",
+            ResolvedMaterial {
+                file: bgsm,
+                parent: None,
+            },
+        );
+        let mut mesh = imported_mesh_with_material_path(&mut pool, "materials/tests/blend.bgsm");
+        assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
+        assert!(mesh.material.has_alpha, "BGSM ({src},{dst}) must set has_alpha");
+        assert_eq!(
+            (mesh.material.src_blend_mode, mesh.material.dst_blend_mode),
+            (want_src, want_dst),
+            "BGSM blend ({src},{dst}) must pass through the merge unchanged"
+        );
+
+        let mut pool = byroredux_core::string::StringPool::new();
+        let mut provider = MaterialProvider::new();
+        let mut bgem = BgemFile::default();
+        bgem.base.alpha_blend_mode = blend;
+        provider.insert_bgem_for_test("materials/tests/blend.bgem", bgem);
+        let mut mesh = imported_mesh_with_material_path(&mut pool, "materials/tests/blend.bgem");
+        assert!(merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false).merged());
+        assert!(mesh.material.has_alpha, "BGEM ({src},{dst}) must set has_alpha");
+        assert_eq!(
+            (mesh.material.src_blend_mode, mesh.material.dst_blend_mode),
+            (want_src, want_dst),
+            "BGEM blend ({src},{dst}) must pass through the merge unchanged"
+        );
+    }
+}
+
+/// #6846 — the chain rule for the blend block: the first step (child-first)
+/// that authors a blend (`function > 0`) wins and a parent cannot override it,
+/// and a `function == 0` leaf does not clear a parent's blend (it authors
+/// nothing, so the walk goes on).
+#[test]
+fn bgsm_blend_is_taken_from_the_first_chain_step_that_authors_one() {
+    use byroredux_bgsm::AlphaBlendMode;
+    let step = |function, src_blend, dst_blend, parent: Option<Arc<ResolvedMaterial>>| {
+        let mut file = BgsmFile::default();
+        file.base.alpha_blend_mode = AlphaBlendMode {
+            function,
+            src_blend,
+            dst_blend,
+        };
+        ResolvedMaterial { file, parent }
+    };
+    let run = |resolved: ResolvedMaterial| {
+        let mut pool = byroredux_core::string::StringPool::new();
+        let mut provider = MaterialProvider::new();
+        provider.insert_bgsm_for_test("materials/tests/chain_blend.bgsm", resolved);
+        let mut mesh =
+            imported_mesh_with_material_path(&mut pool, "materials/tests/chain_blend.bgsm");
+        let _ = merge_external_material(&mut mesh.material, &mut provider, &mut pool, &|_| false);
+        (
+            mesh.material.has_alpha,
+            mesh.material.src_blend_mode,
+            mesh.material.dst_blend_mode,
+        )
+    };
+
+    // Leaf Additive over a Standard parent: the leaf wins.
+    let parent = Arc::new(step(1, 6, 7, None));
+    assert_eq!(run(step(1, 6, 0, Some(parent))), (true, 6, 0));
+
+    // function == 0 leaf over an Additive parent: the parent's blend applies.
+    let parent = Arc::new(step(1, 6, 0, None));
+    assert_eq!(run(step(0, 0, 0, Some(parent))), (true, 6, 0));
+
+    // No step authors a blend: nothing is set, the material keeps its default factors.
+    let unauthored = ImportedMaterial::default();
+    let parent = Arc::new(step(0, 0, 0, None));
+    assert_eq!(
+        run(step(0, 0, 0, Some(parent))),
+        (false, unauthored.src_blend_mode, unauthored.dst_blend_mode)
+    );
 }
 
 /// #1823 — `bgsm_blend_to_gamebryo` performs no translation, only a
