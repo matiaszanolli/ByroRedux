@@ -39,36 +39,41 @@ pub(crate) use visibility::*;
 
 #[cfg(test)]
 mod fx_hash_guard_tests {
-    //! #3677 / PERF-D1-2026-08-30-01 — source-scan pin for `NameIndex.map`
-    //! / `SubtreeCache.map` (`components/indices.rs`) and `build_subtree_name_map`'s
-    //! return type (`anim_convert.rs`, the function that actually
-    //! populates `SubtreeCache.map`'s inner map). Mirrors
-    //! `crates/renderer/src/vulkan/context/mod.rs`'s
-    //! `pose_dirty_crosses_the_crate_boundary_without_siphash` (#2923):
-    //! text-scan, not type-check, so a revert to std's SipHash-1-3 fails
-    //! at `cargo test` instead of silently regressing the hot path.
+    //! #3677 / PERF-D1-2026-08-30-01 — `NameIndex.map` / `SubtreeCache.map`
+    //! (`components/indices.rs`) and `build_subtree_name_map`'s return type
+    //! (`anim_convert.rs`, the function that actually populates
+    //! `SubtreeCache.map`'s inner map) stay on the Fx hasher. These are type
+    //! ascriptions, not text scans (#6686): `FxHashMap<K, V>` names its
+    //! hasher, so a revert to std's SipHash-1-3 stops this module compiling.
+    //! The renderer's `pose_dirty_crosses_the_crate_boundary_without_siphash`
+    //! (#2923) still scans text because its subject sits in another package.
+
+    use byroredux_core::ecs::{EntityId, World};
+    use byroredux_core::string::FixedString;
+    use rustc_hash::FxHashMap;
+
+    fn name_index_hasher(index: &super::NameIndex) -> &FxHashMap<FixedString, EntityId> {
+        &index.map
+    }
+
+    fn subtree_cache_hasher(
+        cache: &super::SubtreeCache,
+    ) -> &FxHashMap<EntityId, FxHashMap<FixedString, EntityId>> {
+        &cache.map
+    }
 
     #[test]
     fn name_index_and_subtree_cache_stay_fx_hash_map() {
-        let src = include_str!("components/indices.rs");
-        assert!(
-            src.contains("pub(crate) map: FxHashMap<FixedString, EntityId>"),
-            "NameIndex.map must stay FxHashMap (#3677)"
-        );
-        assert!(
-            src.contains("pub(crate) map: FxHashMap<EntityId, FxHashMap<FixedString, EntityId>>"),
-            "SubtreeCache.map must stay FxHashMap (#3677)"
-        );
+        // Coercing the item to the annotated pointer type is the check.
+        let _: fn(&super::NameIndex) -> &FxHashMap<FixedString, EntityId> = name_index_hasher;
+        let _: fn(&super::SubtreeCache) -> &FxHashMap<EntityId, FxHashMap<FixedString, EntityId>> =
+            subtree_cache_hasher;
     }
 
     #[test]
     fn build_subtree_name_map_stays_fx_hash_map() {
-        let src = include_str!("anim_convert.rs");
-        assert!(
-            src.contains(") -> FxHashMap<FixedString, EntityId> {"),
-            "build_subtree_name_map must stay FxHashMap (#3677) — it's what \
-             actually populates SubtreeCache.map's inner map"
-        );
+        let _: fn(&World, EntityId) -> FxHashMap<FixedString, EntityId> =
+            crate::anim_convert::build_subtree_name_map;
     }
 
     /// #5198 — `ExposureTuning::default()` must carry the renderer's own
