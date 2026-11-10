@@ -93,7 +93,7 @@ mod work_budget;
 pub(crate) use index::LoadedCellIndex;
 pub use interior_spawn::SpawnPose;
 pub use transition::{
-    log_transition_header, queue_door_transition,
+    destination_cell_label, log_transition_header, queue_door_transition,
     queue_transition_to_reference, reposition_camera,
     take_pending_transition, unload_current_interior, CellTransitionInFlight,
     CurrentCellRoot, InteriorCellRequest,

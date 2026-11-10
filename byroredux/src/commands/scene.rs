@@ -726,6 +726,59 @@ impl ConsoleCommand for DoorTeleportCommand {
         CommandOutput::lines(lines)
     }
 }
+/// `door.list [radius=2000]` — every loaded door with an XTEL destination near
+/// the camera, nearest first, with the cell it leads to. Read-only: unlike
+/// `door.teleport` it queues nothing, so a harness can pick the door that
+/// leads where it wants (the partner of a given interior's exit door) instead
+/// of taking whichever one the camera ray happens to hit.
+pub(crate) struct DoorListCommand;
+impl ConsoleCommand for DoorListCommand {
+    fn name(&self) -> &str {
+        "door.list"
+    }
+    fn description(&self) -> &str {
+        "List loaded teleport doors near the camera with their destination cell (usage: door.list [radius=2000])"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let radius: f32 = args.trim().parse().unwrap_or(2000.0);
+        let Some(cam_entity) = world.try_resource::<ActiveCamera>().map(|a| a.0) else {
+            return CommandOutput::line("ActiveCamera resource not present");
+        };
+        let Some(cam_pos) = world
+            .query::<Transform>()
+            .and_then(|q| q.get(cam_entity).map(|t| t.translation))
+        else {
+            return CommandOutput::line(format!("Camera entity {cam_entity} has no Transform"));
+        };
+        let mut hits: Vec<(f32, EntityId, u32)> = Vec::new();
+        if let (Some(doors), Some(gts)) = (
+            world.query::<DoorTeleport>(),
+            world.query::<GlobalTransform>(),
+        ) {
+            for (entity, door) in doors.iter() {
+                let Some(gt) = gts.get(entity) else { continue };
+                let dist = (gt.translation - cam_pos).length();
+                if dist <= radius {
+                    hits.push((dist, entity, door.destination_form_id));
+                }
+            }
+        }
+        hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut lines = vec![format!(
+            "{} doors within {radius:.0} units of the camera:",
+            hits.len()
+        )];
+        for (dist, entity, form_id) in hits.iter().take(60) {
+            let label = crate::cell_loader::destination_cell_label(world, *form_id)
+                .unwrap_or_else(|| "destination not in the loaded plugin set".into());
+            lines.push(format!(
+                "{dist:>8.1}  door {entity:>6}  -> {form_id:08X}  {label}"
+            ));
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
 /// `script.activate <entity_id>` — M47.0 Phase 4 emit site for
 /// [`ActivateEvent`].
 ///

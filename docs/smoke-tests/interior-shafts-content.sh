@@ -36,7 +36,9 @@
 # interaction path) and then, from the exterior arrival, the partner door back in, so the cell the day / night pass
 # measures was reached by a real exterior-to-interior transition (the exterior's streaming torn down and the
 # interior loaded over it), not by `--cell`. The free camera spawns on the door it came through and arrives on the
-# partner door, so `interaction.status` names each door without any walking. A cell whose exit door does not lead to
+# partner door; `door.list` names the loaded doors with the cell each leads to, so the way back in is the nearest door
+# whose destination is the cell under test (not whichever one the camera ray hits: two hangars' doors can stand
+# side by side), with no walking. A cell whose exit door does not lead to
 # an exterior (the Institute, entered by a teleporter) is reported `no-route`, not failed.
 #
 # The cell list is the sun-path census's (see CELLS); Starfield has no sun-capable or passive volume in any of its
@@ -280,23 +282,27 @@ def nearby_targets(port, exclude):
 def applied(logfile):
     return logfile.read_text(errors="replace").count("Cell transition applied")
 
-def door_target(port):
-    """The door the camera ray hits (`interaction.status`). The free camera spawns and arrives on the door it came
-    through (distance 0), so the first read normally answers; otherwise turn until one is in reach."""
-    for yaw in range(0, 360, 30):
-        m = re.search(r"target=(\d+) kind=Door", dbg(port, "interaction.status"))
-        if m:
-            return int(m.group(1))
-        dbg(port, f"input.look {yaw} 0")
-        time.sleep(1)
-    return None
+DOOR_RE = re.compile(r"^\s*([\d.]+)\s+door\s+(\d+)\s+->\s+[0-9A-Fa-f]+\s+(.*)$", re.M)
 
-def through_door(port, logfile):
-    """`door.teleport` the door in reach and wait for the transition to be applied. Returns (destination, why):
-    the destination label the console resolved, or None and the reason."""
-    door = door_target(port)
-    if door is None:
-        return None, "no door in reach"
+def doors(port):
+    """Every loaded teleport door near the camera as (distance, entity, destination label), nearest first
+    (`door.list`, read-only). Chosen by destination rather than by the camera ray: two doors can stand side by
+    side (the Nellis hangars' exterior doors are 112 units from each other) and the ray takes whichever it hits."""
+    return [(float(d), int(e), lab.strip()) for d, e, lab in DOOR_RE.findall(dbg(port, "door.list 4000"))]
+
+def through_door(port, logfile, want=None):
+    """`door.teleport` a door and wait for the transition to be applied: the nearest one, or with `want` the nearest
+    whose destination is the interior `want`. Returns (destination, why): the destination label the console
+    resolved, or None and the reason."""
+    found = doors(port)
+    if want:
+        found = [d for d in found if d[2].lower() == f"interior '{want.lower()}'"]
+    if not found:
+        if not want:
+            return None, "no door in reach"
+        seen = ", ".join(sorted({d[2] for d in doors(port)})) or "none"
+        return None, f"no door in reach leads to {want} (doors loaded: {seen})"
+    door = found[0][1]
     before = applied(logfile)
     out = dbg(port, f"door.teleport {door}")
     dest = re.search(r"destination cell: ([^\n]*)", out)
@@ -321,14 +327,11 @@ def door_round_trip(port, logfile, cell):
     # The transition is already confirmed applied; an exterior is not asked for a stable entity count (streaming,
     # ground cover and actors keep it moving, so `wait_ready` never settles there), only given time to load.
     time.sleep(DOOR_SETTLE_S)
-    back_dest, why = through_door(port, logfile)
+    back_dest, why = through_door(port, logfile, want=cell)
     if back_dest is None:
-        return None, ("invalid", f"no way back in: {why}")
+        # The exterior's loaded doors were searched for one that leads to this cell: none does within reach.
+        return None, ("no-route", f"no way back in: {why}")
     if cell.lower() not in back_dest.lower():
-        if back_dest.startswith("interior"):
-            # The door at this cell's exterior arrival belongs to another interior. That is evidence the cell has no
-            # exterior door of its own at its exit (it is entered from that interior), not proof that none exists.
-            return None, ("no-route", f"the door at its exterior arrival leads to {back_dest}, not {cell}")
         return None, ("invalid", f"the way back led to {back_dest}, not {cell}")
     time.sleep(DOOR_SETTLE_S)
     return {"out_via": out_dest, "back_via": back_dest}, None

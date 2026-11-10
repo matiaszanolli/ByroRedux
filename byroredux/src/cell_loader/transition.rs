@@ -236,6 +236,33 @@ impl std::fmt::Display for QueueDoorTransitionError {
 
 impl std::error::Error for QueueDoorTransitionError {}
 
+/// The label a transition reports for a cell (`interior 'X'` / `exterior 'W' (gx,gy)`).
+fn cell_label(cell: &byroredux_plugin::esm::cell::OwnedCellRef) -> String {
+    use byroredux_plugin::esm::cell::OwnedCellRef;
+    match cell {
+        OwnedCellRef::Interior { editor_id } => format!("interior '{editor_id}'"),
+        OwnedCellRef::Exterior { worldspace, grid } => {
+            format!("exterior '{worldspace}' ({},{})", grid.0, grid.1)
+        }
+    }
+}
+
+/// The cell placed reference `destination_form_id` lives in, labelled as a
+/// transition to it would report. Read-only: nothing is queued. `None` when
+/// the reference is absent from the loaded plugin set.
+pub fn destination_cell_label(
+    world: &byroredux_core::ecs::World,
+    destination_form_id: u32,
+) -> Option<String> {
+    let index = world.try_resource::<super::index::LoadedCellIndex>()?;
+    let label = index
+        .0
+        .cells
+        .locate_refr(destination_form_id)
+        .map(|(cell, _)| cell_label(&cell.to_owned()));
+    label
+}
+
 /// Resolve a door's destination REFR to its parent cell and enqueue the
 /// existing deferred transition orchestrator.
 ///
@@ -288,30 +315,19 @@ pub fn queue_transition_to_reference(
     drop(plugin_set);
 
     use byroredux_plugin::esm::cell::OwnedCellRef;
-    let (destination, destination_label) = match owned_cell {
-        OwnedCellRef::Interior { editor_id } => {
-            let destination_label = format!("interior '{editor_id}'");
-            (
-                TransitionDestination::Interior {
-                    editor_id,
-                    masters,
-                    esm_path,
-                },
-                destination_label,
-            )
-        }
-        OwnedCellRef::Exterior { worldspace, grid } => {
-            let destination_label = format!("exterior '{worldspace}' ({},{})", grid.0, grid.1);
-            (
-                TransitionDestination::Exterior {
-                    worldspace,
-                    grid,
-                    masters,
-                    esm_path,
-                },
-                destination_label,
-            )
-        }
+    let destination_label = cell_label(&owned_cell);
+    let destination = match owned_cell {
+        OwnedCellRef::Interior { editor_id } => TransitionDestination::Interior {
+            editor_id,
+            masters,
+            esm_path,
+        },
+        OwnedCellRef::Exterior { worldspace, grid } => TransitionDestination::Exterior {
+            worldspace,
+            grid,
+            masters,
+            esm_path,
+        },
     };
 
     let mut slot = world

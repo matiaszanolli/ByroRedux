@@ -206,6 +206,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(WaterDumpCommand);
     registry.register(WaterContactsCommand);
     registry.register(DoorTeleportCommand);
+    registry.register(DoorListCommand);
     registry.register(quest::WeatherForceCommand);
     registry.register(quest::ObScriptCmdCommand);
     registry.register(quest::JailServeCommand);
