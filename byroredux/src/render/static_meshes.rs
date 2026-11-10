@@ -29,7 +29,9 @@ use byroredux_core::ecs::{
     QueryRead, RenderLayer, TextureHandle, World, WorldBound,
 };
 use byroredux_core::math::{Mat4, Vec3};
+use byroredux_nif::import::MaterialTextureSet;
 use byroredux_renderer::vulkan::context::DrawCommand;
+use byroredux_renderer::vulkan::material::supplemental_texture_slot as slot;
 use byroredux_renderer::MaterialTable;
 
 use crate::components::{
@@ -700,6 +702,34 @@ fn shader_variant_payload(material_kind: u32, mat: Option<&Material>) -> ShaderV
     }
 }
 
+/// The supplemental texture lanes of one draw, read from its role set
+/// (#2697, #3911, #6687). Indexed by `supplemental_texture_slot::*` and not
+/// built positionally: a bare `[a, b, c, ...]` literal has no
+/// compiler-enforced link to the constants `DrawCommand::to_gpu_material`
+/// reads it back out through (`crates/renderer/src/vulkan/context/mod.rs`),
+/// so inserting a role mid-list would shift every following slot by one with
+/// no compile error. Each lane carries the role of its own name.
+fn supplemental_texture_indices(texture_indices: &MaterialTextureSet<u32>) -> [u32; slot::COUNT] {
+    let mut lanes = [0u32; slot::COUNT];
+    lanes[slot::TINT] = texture_indices.tint;
+    lanes[slot::INNER_LAYER] = texture_indices.inner_layer;
+    lanes[slot::SPECULAR] = texture_indices.specular;
+    lanes[slot::LIGHTING] = texture_indices.lighting;
+    lanes[slot::FLOW] = texture_indices.flow;
+    lanes[slot::WRINKLE] = texture_indices.wrinkle;
+    lanes[slot::REFLECTANCE] = texture_indices.reflectance;
+    lanes[slot::EMITTANCE_GRADIENT] = texture_indices.emittance_gradient;
+    lanes[slot::DECAL_0] = texture_indices.decals[0];
+    lanes[slot::DECAL_1] = texture_indices.decals[1];
+    lanes[slot::DECAL_2] = texture_indices.decals[2];
+    lanes[slot::DECAL_3] = texture_indices.decals[3];
+    lanes[slot::GLASS_ROUGHNESS_SCRATCH] = texture_indices.glass_roughness_scratch;
+    lanes[slot::GLASS_DIRT_OVERLAY] = texture_indices.glass_dirt_overlay;
+    lanes[slot::LIGHTING_MASK] = texture_indices.lighting_mask;
+    lanes[slot::BACK_LIGHTING] = texture_indices.back_lighting;
+    lanes
+}
+
 /// Build the [`DrawCommand`] for one visible static mesh: texture and material
 /// resolution (animated sinks replacing the authored values), the Skyrim+ shader
 /// variant payload and the supplemental texture lanes. The material id is left
@@ -1056,7 +1086,6 @@ fn build_static_draw_command(
     // every following slot by one with no compile error and
     // no failing test. Index assignment makes the two orders
     // the same source of truth.
-    use byroredux_renderer::vulkan::material::supplemental_texture_slot as slot;
     // #4423 — the tint multiply is gated on a REAL alpha channel:
     // vanilla's `*_sk.dds` maps are BC1, so every sampled `.a`
     // would read 1.0 and the weighted mix would run at full force
@@ -1068,26 +1097,7 @@ fn build_static_draw_command(
     if material_texture_handles.is_some_and(|h| h.tint_has_alpha) {
         texture_indices.tint |= crate::material_translate::TINT_ALPHA_WEIGHT_BIT;
     }
-    let mut supplemental_texture_indices = [0u32; slot::COUNT];
-    supplemental_texture_indices[slot::TINT] = texture_indices.tint;
-    supplemental_texture_indices[slot::INNER_LAYER] = texture_indices.inner_layer;
-    supplemental_texture_indices[slot::SPECULAR] = texture_indices.specular;
-    supplemental_texture_indices[slot::LIGHTING] = texture_indices.lighting;
-    supplemental_texture_indices[slot::FLOW] = texture_indices.flow;
-    supplemental_texture_indices[slot::WRINKLE] = texture_indices.wrinkle;
-    supplemental_texture_indices[slot::REFLECTANCE] = texture_indices.reflectance;
-    supplemental_texture_indices[slot::EMITTANCE_GRADIENT] =
-        texture_indices.emittance_gradient;
-    supplemental_texture_indices[slot::DECAL_0] = texture_indices.decals[0];
-    supplemental_texture_indices[slot::DECAL_1] = texture_indices.decals[1];
-    supplemental_texture_indices[slot::DECAL_2] = texture_indices.decals[2];
-    supplemental_texture_indices[slot::DECAL_3] = texture_indices.decals[3];
-    supplemental_texture_indices[slot::GLASS_ROUGHNESS_SCRATCH] =
-        texture_indices.glass_roughness_scratch;
-    supplemental_texture_indices[slot::GLASS_DIRT_OVERLAY] =
-        texture_indices.glass_dirt_overlay;
-    supplemental_texture_indices[slot::LIGHTING_MASK] = texture_indices.lighting_mask;
-    supplemental_texture_indices[slot::BACK_LIGHTING] = texture_indices.back_lighting;
+    let supplemental_texture_indices = supplemental_texture_indices(&texture_indices);
     DrawCommand {
         mesh_handle: mesh.0,
         texture_handle: tex_handle,
@@ -1506,157 +1516,87 @@ mod tests {
     use super::super::COLOR_FADE_STEPS;
     use super::*;
 
-    /// #3814 — every generic supplemental lane must be populated exactly
-    /// once. The 26-role `MaterialTextureSet` is intentionally a superset:
-    /// ten roles have dedicated `GpuMaterial` fields, while these 16 lanes
-    /// are the shared side-array subset documented at
+    /// #3814 / #3911 / #6687 — every generic supplemental lane carries the
+    /// role of its own name, written exactly once. The 26-role
+    /// `MaterialTextureSet` is intentionally a superset: ten roles have
+    /// dedicated `GpuMaterial` fields, while these 16 lanes are the shared
+    /// side-array subset documented at
     /// `renderer::vulkan::material::supplemental_texture_slot`.
     ///
-    /// This is a source-level contract test because the slot module and this
-    /// crate are separate packages; Rust can type-check an omitted write and
-    /// leave the corresponding GPU index at zero without noticing.
+    /// Every role gets its own non-zero value, so a lane left unwritten reads
+    /// 0, a lane fed from the wrong role reads that role's value, and a
+    /// transposition of two lanes reads each other's. The expected table is
+    /// written here by hand, independent of the function under test; its
+    /// length against `slot::COUNT` and its slot indices being a permutation
+    /// of `0..COUNT` make a new or removed lane fail here.
     #[test]
-    fn every_supplemental_texture_slot_is_written_exactly_once() {
-        let slot_source = include_str!("../../../crates/renderer/src/vulkan/material.rs");
-        let slot_start = slot_source
-            .find("pub mod supplemental_texture_slot {")
-            .expect("supplemental texture slot module must exist");
-        let slot_block = &slot_source[slot_start..];
-        let slot_end = slot_block
-            .find("\n}\n")
-            .expect("supplemental texture slot module must be closed")
-            + 2;
-        let declared = slot_block[..slot_end]
-            .lines()
-            .filter_map(|line| {
-                let declaration = line.trim().strip_prefix("pub const ")?;
-                let (name, _) = declaration.split_once(": usize =")?;
-                (name != "COUNT").then_some(name.to_owned())
-            })
-            .collect::<Vec<_>>();
-
-        let expected_count = byroredux_renderer::vulkan::material::supplemental_texture_slot::COUNT;
+    fn every_supplemental_texture_slot_carries_its_own_role_once() {
+        let roles = MaterialTextureSet::<u32> {
+            tint: 101,
+            inner_layer: 102,
+            specular: 103,
+            lighting: 104,
+            flow: 105,
+            wrinkle: 106,
+            reflectance: 107,
+            emittance_gradient: 108,
+            decals: [109, 110, 111, 112],
+            glass_roughness_scratch: 113,
+            glass_dirt_overlay: 114,
+            lighting_mask: 115,
+            back_lighting: 116,
+            // The roles with dedicated `GpuMaterial` fields: a supplemental
+            // lane fed from one of them is a wrong-role write.
+            base_color: 201,
+            normal: 202,
+            emissive: 203,
+            detail: 204,
+            smooth_spec: 205,
+            dark: 206,
+            height: 207,
+            environment: 208,
+            environment_mask: 209,
+            greyscale_lut: 210,
+            ..Default::default()
+        };
+        let expected: [(usize, u32); 16] = [
+            (slot::TINT, 101),
+            (slot::INNER_LAYER, 102),
+            (slot::SPECULAR, 103),
+            (slot::LIGHTING, 104),
+            (slot::FLOW, 105),
+            (slot::WRINKLE, 106),
+            (slot::REFLECTANCE, 107),
+            (slot::EMITTANCE_GRADIENT, 108),
+            (slot::DECAL_0, 109),
+            (slot::DECAL_1, 110),
+            (slot::DECAL_2, 111),
+            (slot::DECAL_3, 112),
+            (slot::GLASS_ROUGHNESS_SCRATCH, 113),
+            (slot::GLASS_DIRT_OVERLAY, 114),
+            (slot::LIGHTING_MASK, 115),
+            (slot::BACK_LIGHTING, 116),
+        ];
         assert_eq!(
-            declared.len(),
-            expected_count,
-            "the slot module's named lanes and COUNT must stay in lockstep",
+            expected.len(),
+            slot::COUNT,
+            "the supplemental lane table and `slot::COUNT` must stay in lockstep"
         );
-
-        let draw_source = include_str!("static_meshes.rs");
-        let write_start = draw_source
-            .find("let mut supplemental_texture_indices =")
-            .expect("static mesh collection must build supplemental texture indices");
-        let write_block = &draw_source[write_start..];
-        let write_end = write_block
-            .find("\n    DrawCommand {")
-            .expect("supplemental texture writes must precede DrawCommand construction");
-        let write_block = &write_block[..write_end];
-        let marker = "supplemental_texture_indices[slot::";
-        // #3911 — capture the RIGHT-hand side alongside the slot name. The
-        // block wraps long assignments, so a `slot::X =` with no RHS on the
-        // same line takes it from the next non-empty line; the RHS is
-        // normalised to the bare `texture_indices` field path.
-        let lines: Vec<&str> = write_block.lines().collect();
-        let mut assignments: Vec<(String, String)> = Vec::new();
-        for (i, line) in lines.iter().enumerate() {
-            let Some(suffix) = line.trim().strip_prefix(marker) else {
-                continue;
-            };
-            let (slot_name, tail) = suffix
-                .split_once(']')
-                .expect("a supplemental write must close its slot index");
-            let rhs_raw = match tail.split_once('=') {
-                Some((_, rhs)) if !rhs.trim().is_empty() => rhs.trim().to_owned(),
-                // Wrapped assignment: the value is on the following line.
-                _ => lines
-                    .get(i + 1)
-                    .map(|next| next.trim().to_owned())
-                    .expect("a wrapped supplemental write must have a value line"),
-            };
-            let rhs = rhs_raw
-                .trim_end_matches(';')
-                .trim()
-                .strip_prefix("texture_indices.")
-                .unwrap_or_else(|| {
-                    panic!(
-                        "supplemental slot {slot_name} is fed `{rhs_raw}`, which does not \
-                         come from the `texture_indices` role set — a supplemental lane \
-                         must carry a named role, not an ad-hoc handle (#3911)"
-                    )
-                })
-                .to_owned();
-            assignments.push((slot_name.to_owned(), rhs));
+        let mut seen = [false; slot::COUNT];
+        for (lane, _) in expected {
+            assert!(!seen[lane], "lane {lane} is named twice in the expected table");
+            seen[lane] = true;
         }
-        let assigned = assignments
-            .iter()
-            .map(|(slot_name, _)| slot_name.clone())
-            .collect::<Vec<_>>();
+        assert!(seen.iter().all(|s| *s), "the expected table must cover every lane");
 
-        assert_eq!(
-            assigned.len(),
-            declared.len(),
-            "every declared supplemental lane must have exactly one CPU write",
-        );
-        for name in &declared {
+        let lanes = supplemental_texture_indices(&roles);
+        for (lane, want) in expected {
             assert_eq!(
-                assigned
-                    .iter()
-                    .filter(|assigned_name| *assigned_name == name)
-                    .count(),
-                1,
-                "supplemental slot {name} must be written exactly once",
+                lanes[lane], want,
+                "supplemental lane {lane} must carry the role {want}; two roles swapping \
+                 lanes ships the wrong map for the wrong purpose (#3911)"
             );
         }
-        for name in &assigned {
-            assert!(
-                declared.iter().any(|declared_name| declared_name == name),
-                "CPU writes an undeclared supplemental slot {name}",
-            );
-        }
-
-        // #3911 (REN-2026-09-05-D7-04) — ARITY IS NOT CORRESPONDENCE.
-        //
-        // Everything above pins that each declared lane is written exactly
-        // once and that no undeclared lane is written. A TRANSPOSITION —
-        // `[slot::RIM] = texture_indices.back_lighting` next to
-        // `[slot::BACK_LIGHTING] = texture_indices.rim` — satisfies all of it:
-        // both lanes are still written exactly once, both names are still
-        // declared, the count is unchanged. It would surface as the wrong map
-        // sampled for the wrong purpose on some games' content, which is
-        // precisely the failure mode the role vocabulary was introduced to
-        // eliminate, and it would surface as a *visual* defect rather than a
-        // test failure.
-        //
-        // So check the right-hand side too: each `slot::NAME` must be fed the
-        // `texture_indices` field of the same name. The expected RHS is
-        // DERIVED from the slot constant (`INNER_LAYER` → `inner_layer`,
-        // `DECAL_2` → `decals[2]`), not tabulated, so a new lane is covered
-        // the moment it is declared.
-        for (slot_name, rhs) in &assignments {
-            let expected = expected_role_field(slot_name);
-            assert_eq!(
-                rhs, &expected,
-                "supplemental slot::{slot_name} is fed `texture_indices.{rhs}` but its \
-                 role is `texture_indices.{expected}`. Two roles swapping slots keeps \
-                 every arity assertion above green and ships the wrong map for the \
-                 wrong purpose (#3911)",
-            );
-        }
-    }
-
-    /// The `texture_indices` field a supplemental slot constant must be fed.
-    ///
-    /// Derived from the constant's own name so the correspondence check in
-    /// [`every_supplemental_texture_slot_is_written_exactly_once`] covers new
-    /// lanes automatically: `TINT` → `tint`, `GLASS_DIRT_OVERLAY` →
-    /// `glass_dirt_overlay`. The four decal lanes are the one irregular
-    /// shape — they index a single `decals` array rather than having four
-    /// separate fields. See #3911.
-    fn expected_role_field(slot_name: &str) -> String {
-        if let Some(n) = slot_name.strip_prefix("DECAL_") {
-            return format!("decals[{n}]");
-        }
-        slot_name.to_lowercase()
     }
 
     #[test]

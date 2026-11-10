@@ -1110,7 +1110,7 @@ fn intern_overflow_persists_across_clear() {
 /// supplemental role can be transposed.
 ///
 /// `static_meshes.rs` fills `DrawCommand::supplemental_texture_indices` from
-/// the role set, and `every_supplemental_texture_slot_is_written_exactly_once`
+/// the role set, and `every_supplemental_texture_slot_carries_its_own_role_once`
 /// now pins that correspondence. But the array is then projected onto named
 /// `GpuMaterial` fields by `DrawCommand::to_gpu_material`, and *that* mapping
 /// had no correspondence pin either — `tint_map_index:
