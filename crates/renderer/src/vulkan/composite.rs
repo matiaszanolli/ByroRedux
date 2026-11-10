@@ -493,6 +493,26 @@ fn composite_stages<'a>(
     ]
 }
 
+/// Which byte ranges of a [`CompositeParams`] reach the per-frame UBO (#4805,
+/// #6836); `upload_params` writes exactly these, in order.
+///
+/// The shader reads only the first `sky_aperture_count.x` entries of
+/// `sky_apertures`, so the unused tail of the 12 KB aperture array is not
+/// copied or flushed on ordinary frames: the first range carries everything up
+/// to and including the populated apertures. Everything after the array
+/// (`view_proj`) is the second range, which is always written -- a prefix alone
+/// never reaches it, not even with all `MAX_SKY_APERTURES` populated (the prefix
+/// then ends exactly at its offset).
+fn composite_upload_ranges(aperture_count: usize) -> [std::ops::Range<usize>; 2] {
+    let aperture_count = aperture_count.min(MAX_SKY_APERTURES);
+    let prefix = std::mem::offset_of!(CompositeParams, sky_apertures)
+        + aperture_count * std::mem::size_of::<CompositeSkyAperture>();
+    [
+        0..prefix,
+        std::mem::offset_of!(CompositeParams, view_proj)..std::mem::size_of::<CompositeParams>(),
+    ]
+}
+
 /// The `[sunlit, sunless]` pair out of the handles a failed
 /// `vkCreateGraphicsPipelines` returned for its two infos: the entries that
 /// built, and `VK_NULL_HANDLE` for the ones that failed or were not returned
@@ -1472,14 +1492,16 @@ impl CompositePipeline {
         // The shader only reads entries below `sky_aperture_count.x`. Keep
         // the fixed std140 block allocation/layout, but avoid copying and
         // flushing the unused 12 KB aperture tail on ordinary frames.
-        let aperture_count = (params.sky_aperture_count[0] as usize).min(MAX_SKY_APERTURES);
-        let prefix_bytes = std::mem::offset_of!(CompositeParams, sky_apertures)
-            + aperture_count * std::mem::size_of::<CompositeSkyAperture>();
-        self.param_buffers[frame].write_mapped_prefix(
-            device,
-            std::slice::from_ref(params),
-            prefix_bytes,
-        )
+        //
+        // #6836 — the aperture array is NOT the struct's tail: `view_proj`
+        // follows it (appended last by #6486), so a prefix alone never reaches
+        // it (not even with all `MAX_SKY_APERTURES` populated -- the prefix ends
+        // exactly at its offset). The plan below always adds the trailing member.
+        let bytes = crate::vulkan::buffer::byte_view(std::slice::from_ref(params));
+        for range in composite_upload_ranges(params.sky_aperture_count[0] as usize) {
+            self.param_buffers[frame].write_mapped_at(device, range.start, &bytes[range])?;
+        }
+        Ok(())
     }
 
     /// The HDR colour views, one per frame in flight.
@@ -2470,6 +2492,59 @@ mod composite_frag_doc_tests {
                 && post.contains("composite.dispatch(&self.device, cmd, frame, bindless_set, local_fire_sunlit)"),
             "the CPU choice must be the volumetrics grid's local_fire_sunlit() (#6748)"
         );
+    }
+
+    /// #6836 — `view_proj` sits after the aperture array, so the prefix upload
+    /// of #4805 dropped it: the underwater god-ray occlusion taps projected
+    /// through a matrix the host never wrote. Apply the very ranges
+    /// `upload_params` writes to a byte image of a sentinel-filled struct, for
+    /// every aperture count that matters, and require that every byte the
+    /// shader can read arrives while the unused apertures stay skipped.
+    #[test]
+    fn the_composite_upload_reaches_every_byte_the_shader_reads() {
+        use super::{composite_upload_ranges, CompositeParams, CompositeSkyAperture, MAX_SKY_APERTURES};
+        use crate::vulkan::buffer::byte_view;
+        let size = std::mem::size_of::<CompositeParams>();
+        // A struct whose every byte is non-zero, so "never written" (zero in
+        // the destination) is visible anywhere.
+        let params: CompositeParams = {
+            let bytes = vec![0xA5u8; size];
+            // SAFETY: CompositeParams is `repr(C)` plain data (u32/f32 lanes);
+            // every bit pattern is valid.
+            unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const CompositeParams) }
+        };
+        let src = byte_view(std::slice::from_ref(&params));
+        let view_proj = std::mem::offset_of!(CompositeParams, view_proj);
+        for count in [0usize, 1, 7, MAX_SKY_APERTURES, MAX_SKY_APERTURES + 100] {
+            let mut dst = vec![0u8; size];
+            for range in composite_upload_ranges(count) {
+                dst[range.clone()].copy_from_slice(&src[range]);
+            }
+            let used = count.min(MAX_SKY_APERTURES);
+            let apertures_end = std::mem::offset_of!(CompositeParams, sky_apertures)
+                + used * std::mem::size_of::<CompositeSkyAperture>();
+            assert!(dst[..apertures_end].iter().all(|&b| b == 0xA5), "count {count}: header/apertures");
+            assert!(
+                dst[view_proj..].iter().all(|&b| b == 0xA5),
+                "count {count}: view_proj never uploaded (#6836)"
+            );
+            // The unused apertures are still skipped (the point of #4805).
+            assert!(
+                dst[apertures_end..view_proj].iter().all(|&b| b == 0),
+                "count {count}: the unused aperture tail is being copied again"
+            );
+        }
+        // `view_proj` must stay the last field and end the struct, or a member
+        // appended after it would silently fall outside both ranges.
+        assert_eq!(
+            view_proj + std::mem::size_of::<[[f32; 4]; 4]>(),
+            size,
+            "a field was appended after view_proj; extend composite_upload_ranges"
+        );
+        // And the real upload goes through those ranges.
+        let host = crate::source_scan::production_text(include_str!("composite.rs"));
+        assert!(host.contains("for range in composite_upload_ranges("));
+        assert!(!host.contains("write_mapped_prefix"), "upload_params is prefix-only again (#6836)");
     }
 
     /// #6834 — a failed two-pipeline create must not drop the handle that
