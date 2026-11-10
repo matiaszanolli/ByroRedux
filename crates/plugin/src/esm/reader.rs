@@ -652,9 +652,11 @@ pub struct RecordHeader {
     pub data_size: u32,
     pub flags: u32,
     pub form_id: u32,
-    /// The record's form version (the `u16` at offset 20 of a Skyrim+ record header); `0` on Oblivion, FO3 and
-    /// FNV, whose header carries none. Layouts that moved with the version (the `PSDT` month byte, form
-    /// version 122) read it from here.
+    /// The record's form version: the `u16` at offset 20 of any 24-byte record header (Skyrim and later, and
+    /// FO3 / FNV). `0` only on Oblivion, whose 20-byte header carries none. FO3 / FNV
+    /// store a small value there (13 to 15 over the first 3 MB of `FalloutNV.esm`) that nothing keys on, so a
+    /// `form_version == 0` test does not mean "before Skyrim". Layouts that moved with the version (the
+    /// `PSDT` month byte, form version 122) read it from here.
     pub form_version: u16,
 }
 
@@ -1524,6 +1526,25 @@ mod tests {
         let remap = FormIdRemap::regular(3, vec![0]);
         // mod_index 1 == num_masters → self → plugin_index=3.
         assert_eq!(remap.remap(0x0112_3456), 0x0312_3456);
+    }
+
+    /// #6849 — `RecordHeader::form_version` is the `u16` at offset 20 of every
+    /// 24-byte header (so FO3 / FNV return their stored value), and `0` only
+    /// where the header is Oblivion's 20 bytes.
+    #[test]
+    fn form_version_is_read_from_every_24_byte_header_and_is_zero_on_oblivion() {
+        let mut data = build_record(b"STAT", 0x0100_0001, &[]);
+        data[20..22].copy_from_slice(&14u16.to_le_bytes());
+        let header = EsmReader::with_variant(&data, EsmVariant::Tes5Plus)
+            .read_record_header()
+            .unwrap();
+        assert_eq!(header.form_version, 14);
+
+        let data = build_record_for(EsmVariant::Oblivion, b"STAT", 0x0100_0001, &[]);
+        let header = EsmReader::with_variant(&data, EsmVariant::Oblivion)
+            .read_record_header()
+            .unwrap();
+        assert_eq!(header.form_version, 0);
     }
 
     /// Record header read returns the remapped FormID on any installed
