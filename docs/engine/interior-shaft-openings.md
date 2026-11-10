@@ -215,10 +215,35 @@ What it shows:
 - `WarehouseCaveGeneric` booted with 52 `FogVolume` entities here against the 66 recorded under #6774; not reconciled.
 
 Limits: at most four poses per cell, so a FAIL means no sampled pose showed a change, not that none exists. VLM-INT-004
-(the same pass through an exterior-to-interior door) is not run: it needs a door route per cell. VLM-INT-001's
+(the same pass through an exterior-to-interior door) is run for seven of the nine listed cells; see the section below.
+VLM-INT-001's
 "geometry evidence that it borders outdoors" is not produced beyond Show Sky and the marked plane; the census is
 the volume and flag census, per cell. The census reads the Show Sky flag, which reads 0 for every Starfield interior
 and is unverified there.
+
+## A9 through a door (VLM-INT-004), measured 2026-11-09 (#6727)
+
+`BYRO_INTERIOR_ROUTE=door docs/smoke-tests/interior-shafts-content.sh` boots each listed cell as before, then takes its own
+exit door out (`door.teleport`, the console frontend of the E-key path) and, from the exterior arrival, the partner door
+back in, and runs the same day / night pass on the cell that second transition delivered. The free camera spawns and
+arrives on the door it came through, so `interaction.status` names each door with no walking. The exterior leg is given
+30 s to load and is not asked for a stable entity count (a streaming exterior never has one).
+
+| Cell | Result through the door | Best pose: region / noise p99 | Note |
+|---|---|---|---|
+| FNV `NellisHangar1` | PASS | 10.6 % / 9.8 | direct boot: 23.5 % / 5.5 |
+| FNV `NellisHangar2` | PASS | 44.7 % / 6.4 | direct boot: 78.4 % / 2.9 |
+| FO4 `ConcordMuseum01` | PASS | 99.8 % / 2.0 | |
+| FO4 `zInstituteRotunda` | PASS | 100 % / 2.0 | its exit door leads to an exterior |
+| FO4 `UniversityPoint01` | PASS | 24.5 % / 2.0 | |
+| FO4 `DBTechHighSchool01` | PASS | 3.5 % / 3.8 | a first run lost its X server during the transition into the interior (a winit panic on a dropped connection, not an engine fault); the repeat passed |
+| FO4 `TrinityTower01` | PASS, marginal | 0.13 % / 2.1 | the first run read 0.09 %, under the 0.1 % floor, and the repeat 0.13 %; direct boot: 4.4 % |
+| FNV `NellisHangar1b` | not resolved | none | on one run the door at its exterior arrival led to `NellisHangar1`, on the next no door was in reach; no exterior door of its own was found, which is not proof that none exists |
+| FO4 `CambridgePD01` | not resolved | none | the free camera does not spawn within reach of the exit door, so the route cannot start |
+
+Seven of nine pass through the door, one of them narrowly; two are not resolved, and neither is a measured failure of the
+engine. Trinity's gap between the direct boot (4.4 %) and the door route (0.09 to 0.13 %) is on a different best pose
+and is not explained. VLM-INT-004's exit ("every listed cell passing on both routes") is therefore **not met**.
 
 ## Next steps
 
@@ -230,6 +255,8 @@ and is unverified there.
 - The day and night pair (VLM-INT-002) is taken for the A9 list above, aimed with `cam.tp` at each volume rather than
   at the slab the noon sun predicts (plane centre minus `t` times the portal sun direction); aiming at the predicted slab
   would sharpen the poses for the marked-aperture cells.
-- A door route per listed cell for VLM-INT-004; only the P0 fixtures have one.
+- Resolve the two cells the door route could not start for VLM-INT-004 (`NellisHangar1b`, `CambridgePD01`): find the
+  exterior door that leads to each, which needs a door listing with its destination (`door.teleport` fires the
+  transition as it reports it), and explain Trinity's pose-dependent margin.
 - Decide the gap: Skyrim's sunlight `LIGH` (205 interiors), Oblivion's and FO4's Show Sky interiors with no medium (58
   and 29) have a sun and nothing to carry it. A converter for them is new engine work, not a list change.

@@ -31,13 +31,19 @@
 # beams have no sun path to follow (docs/engine/interior-shaft-openings.md). A cell with no volume at all fails
 # its shaft run by construction.
 #
-# VLM-INT-004 (the same pass reached through an exterior-to-interior door) is NOT exercised here: it needs a
-# door route per cell, and only the P0 fixtures have one. The script says so and counts it as not run.
+# VLM-INT-004 (the same pass reached through an exterior-to-interior door) is `BYRO_INTERIOR_ROUTE=door`: after the
+# direct boot the run takes the cell's own exit door out (`door.teleport`, the console frontend of the E-key
+# interaction path) and then, from the exterior arrival, the partner door back in, so the cell the day / night pass
+# measures was reached by a real exterior-to-interior transition (the exterior's streaming torn down and the
+# interior loaded over it), not by `--cell`. The free camera spawns on the door it came through and arrives on the
+# partner door, so `interaction.status` names each door without any walking. A cell whose exit door does not lead to
+# an exterior (the Institute, entered by a teleporter) is reported `no-route`, not failed.
 #
 # The cell list is the sun-path census's (see CELLS); Starfield has no sun-capable or passive volume in any of its
 # 11,985 interiors, so it has no entry.
 #
 # Usage: docs/smoke-tests/interior-shafts-content.sh [fnv|fo3|obl|sky|fo4|all] [--inventory-only]
+#   BYRO_INTERIOR_ROUTE direct (default: `--cell` boot) or door (out through the exit door and back, VLM-INT-004);
 #   BYRO_INTERIOR_BIN   engine binary (default target/release/byroredux); BYRO_INTERIOR_OUT keeps captures;
 #   BYRO_INTERIOR_PORT  first debug port (default 19900; each cell takes the next one);
 #   BYRO_INTERIOR_ONLY  comma-separated cell ids to run instead of the whole list.
@@ -85,6 +91,9 @@ BIN, DBG, OUT = os.environ["BYRO_BIN"], os.environ["BYRO_DBG"], Path(os.environ[
 PORT0 = int(os.environ["BYRO_PORT0"])
 WHICH = os.environ["BYRO_WHICH"]
 INVENTORY_ONLY = os.environ["BYRO_INVENTORY_ONLY"] == "1"
+ROUTE = os.environ.get("BYRO_INTERIOR_ROUTE", "direct")
+if ROUTE not in ("direct", "door"):
+    sys.exit(f"BYRO_INTERIOR_ROUTE must be direct or door, not {ROUTE!r}")
 
 MIN_REGION_FRAC = 0.001      # 0.1 % of the frame
 MIN_THRESHOLD = 3.0          # luma levels
@@ -94,6 +103,8 @@ POSE_SETTLE_S = 2            # the free camera does not fall; this lets streamin
 READY_TIMEOUT_S = 300        # the cell must be loaded (not a loading cover) before anything is measured
 MIN_ENTITIES = 150           # a cell with fewer entities than this is not a loaded interior
 MAX_POSES = 4
+TRANSITION_TIMEOUT_S = 300   # a door's destination (an exterior grid, then the interior again) must load in this time
+DOOR_SETTLE_S = 30           # let the exterior's loading cover lift and its streaming settle before the second door
 
 # (game key, `--game` profile, cell, role, short name). The list comes from the sun-path census
 # (`interior_sun_path_census`, docs/engine/interior-shaft-openings.md). A `shaft` cell is one the census predicts
@@ -266,17 +277,74 @@ def nearby_targets(port, exclude):
     n = min(MAX_POSES, len(ids))
     return [ids[round(i * (len(ids) - 1) / (n - 1))] for i in range(n)]
 
+def applied(logfile):
+    return logfile.read_text(errors="replace").count("Cell transition applied")
+
+def door_target(port):
+    """The door the camera ray hits (`interaction.status`). The free camera spawns and arrives on the door it came
+    through (distance 0), so the first read normally answers; otherwise turn until one is in reach."""
+    for yaw in range(0, 360, 30):
+        m = re.search(r"target=(\d+) kind=Door", dbg(port, "interaction.status"))
+        if m:
+            return int(m.group(1))
+        dbg(port, f"input.look {yaw} 0")
+        time.sleep(1)
+    return None
+
+def through_door(port, logfile):
+    """`door.teleport` the door in reach and wait for the transition to be applied. Returns (destination, why):
+    the destination label the console resolved, or None and the reason."""
+    door = door_target(port)
+    if door is None:
+        return None, "no door in reach"
+    before = applied(logfile)
+    out = dbg(port, f"door.teleport {door}")
+    dest = re.search(r"destination cell: ([^\n]*)", out)
+    if "queued" not in out or not dest:
+        return None, f"door {door} did not queue a transition: {out.strip()[:160]}"
+    t0 = time.time()
+    while applied(logfile) <= before:
+        if time.time() - t0 > TRANSITION_TIMEOUT_S:
+            return None, f"transition through door {door} to {dest.group(1)} never applied"
+        time.sleep(1)
+    return dest.group(1).strip(), None
+
+def door_round_trip(port, logfile, cell):
+    """VLM-INT-004: out through the interior's exit door, then back in through the partner door on the exterior
+    side. Returns (record fields, None) when the interior was reached by an exterior-to-interior transition."""
+    out_dest, why = through_door(port, logfile)
+    if out_dest is None:
+        # No door to take is a property of the cell; a transition that never landed is a failed run.
+        return None, ("no-route" if why == "no door in reach" else "invalid", why)
+    if not out_dest.startswith("exterior"):
+        return None, ("no-route", f"the exit door leads to {out_dest}, not an exterior")
+    # The transition is already confirmed applied; an exterior is not asked for a stable entity count (streaming,
+    # ground cover and actors keep it moving, so `wait_ready` never settles there), only given time to load.
+    time.sleep(DOOR_SETTLE_S)
+    back_dest, why = through_door(port, logfile)
+    if back_dest is None:
+        return None, ("invalid", f"no way back in: {why}")
+    if cell.lower() not in back_dest.lower():
+        if back_dest.startswith("interior"):
+            # The door at this cell's exterior arrival belongs to another interior. That is evidence the cell has no
+            # exterior door of its own at its exit (it is entered from that interior), not proof that none exists.
+            return None, ("no-route", f"the door at its exterior arrival leads to {back_dest}, not {cell}")
+        return None, ("invalid", f"the way back led to {back_dest}, not {cell}")
+    time.sleep(DOOR_SETTLE_S)
+    return {"out_via": out_dest, "back_via": back_dest}, None
+
 def run_cell(i, game, profile, cell, role, note):
     port = PORT0 + i
-    tag = f"{game}_{cell}"
+    tag = f"{game}_{cell}" + ("_door" if ROUTE == "door" else "")
     log = open(OUT / f"{tag}.engine.log", "w")
-    env = dict(os.environ, BYRO_DEBUG_SERVER="1", BYRO_DEBUG_PORT=str(port), RUST_LOG="warn")
+    env = dict(os.environ, BYRO_DEBUG_SERVER="1", BYRO_DEBUG_PORT=str(port),
+               RUST_LOG="warn,byroredux::cell_loader::transition=info,byroredux::app_step=info")  # app_step logs "Cell transition applied"
     for v in ("WAYLAND_DISPLAY", "XDG_SESSION_TYPE"):
         env.pop(v, None)
     proc = subprocess.Popen(runner() + [BIN, "--game", profile, "--cell", cell, "--bench-frames", "60",
                                         "--bench-hold", "--fly", "--window-size", "1280x720"],
                             cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
-    rec = {"game": game, "cell": cell, "role": role, "note": note}
+    rec = {"game": game, "cell": cell, "role": role, "note": note, "route": ROUTE}
     try:
         t0 = time.time()
         while "bench-hold" not in (OUT / f"{tag}.engine.log").read_text(errors="replace"):
@@ -287,6 +355,14 @@ def run_cell(i, game, profile, cell, role, note):
             time.sleep(1)
         if not wait_ready(port):
             rec["status"] = "invalid"; rec["why"] = "the world never rendered (loading cover or stalled boot)"; return rec
+        if ROUTE == "door":
+            fields, bad = door_round_trip(port, OUT / f"{tag}.engine.log", cell)
+            if bad:
+                rec["status"], rec["why"] = bad
+                return rec
+            rec.update(fields)
+            if not wait_ready(port):
+                rec["status"] = "invalid"; rec["why"] = "the interior never rendered after the door transition"; return rec
         # Hold everything but the lighting still: a running game clock moves the sun and sky during a capture
         # pair, and auto-exposure re-adapts after every change; both would read as noise or as a false shaft.
         dbg(port, "time.pause", "exposure fixed 1.0")
@@ -377,12 +453,16 @@ if not INVENTORY_ONLY:
         else:
             print(f"  {r.get('status','?'):4s} {r['game']:4s} {r['cell']:26s} {r['role']:6s} {r.get('why','')}")
     print()
-    print("VLM-INT-004 (door transition): not exercised by this script (no door route per cell).")
+    if ROUTE == "door":
+        print("VLM-INT-004 (door transition): every result above was reached out through the cell's exit door and back "
+              "in through the exterior door; `no-route` is a cell whose exit door does not lead to an exterior.")
+    else:
+        print("VLM-INT-004 (door transition): not exercised on this route; run with BYRO_INTERIOR_ROUTE=door.")
     print("Pass count per game:")
     for g in games():
         run = [r for r in records if r["game"] == g]
         if run:
-            counted = [r for r in run if r["role"] != "gap"]
+            counted = [r for r in run if r["role"] != "gap" and r.get("status") != "no-route"]
             gaps = [r for r in run if r["role"] == "gap"]
             extra = f"  (+{len(gaps)} known gap: {', '.join(r['cell'] + ' ' + r['status'] for r in gaps)})" if gaps else ""
             if counted or gaps:
@@ -393,6 +473,6 @@ if INVENTORY_ONLY:
 ran = [r for r in records if r.get("status") not in ("boot-failed", "boot-timeout")]
 if not ran:
     sys.exit(77)
-counted = [r for r in ran if r["role"] != "gap"]
+counted = [r for r in ran if r["role"] != "gap" and r.get("status") != "no-route"]
 sys.exit(0 if all(r.get("status") == "PASS" for r in counted) else 1)
 PY
