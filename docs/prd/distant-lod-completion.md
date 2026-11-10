@@ -1,6 +1,6 @@
 # Distant LOD Completion — Product Requirements
 
-**Status**: ACTIVE (2026-11-05). Revision 6 records the Phase 0 census results (§9.1). Revision 5 files the tracking issues. Revision 4 recorded the owner's §10 decisions, every one the recommendation. Revision 3 folded in review round 2:
+**Status**: ACTIVE (2026-11-10). Revision 7 records the Phase 4 terrain-LOD calibration (DLOD-TERR-001, -002). Revision 6 records the Phase 0 census results (§9.1). Revision 5 files the tracking issues. Revision 4 recorded the owner's §10 decisions, every one the recommendation. Revision 3 folded in review round 2:
 every HEAD claim re-checked on 2026-11-03, Skyrim's tree-LOD shape and the
 Distant LOD Multiplier sub-record sourced, the far-field-shadow non-goal
 aligned with the Reference Lighting PRD's decided Q4, descriptors given
@@ -474,11 +474,14 @@ Cross-cutting state, the same date:
 - **DLOD-TERR-001.** The Oblivion row of `terrain_lod_albedo_gain` MUST be
   measured with the A/B method its rustdoc records for FNV and FO4: the same
   pose at a small and a large radius, the same screen regions, a control
-  region. The result goes in the rustdoc. Today the row is 1.0, unmeasured
-  (`env_translate/lod.rs`).
+  region. The result goes in the rustdoc. **Done (2026-11-10):** the row stays
+  1.0, measured at median 0.99 of full detail over 48 boxes (control 1.01;
+  `env_translate/lod.rs`).
 - **DLOD-TERR-002.** The Skyrim row (0.36, measured on one Whiterun scene)
   SHOULD be re-measured on two more scenes under different weather or time
-  of day. The rustdoc SHOULD record the spread.
+  of day. The rustdoc SHOULD record the spread. **Done (2026-11-10):**
+  Riverwood (clear, 09:00) median 0.99 and Whiterun (clear, 17:00) median
+  1.00 over 96 boxes each; 0.36 stays and the spread is in the rustdoc.
 - **DLOD-TERR-003.** Legacy distant-terrain geometry MUST stay synthesised
   from LAND (Q2). Today it is (`terrain_lod.rs` module docs).
 
@@ -547,7 +550,7 @@ Cross-cutting state, the same date:
 | 3 | `[TerrainManager]` distances in BU with `fSplitDistanceMult` (shipped `Ultra.ini` / `VeryHigh.ini`); the metric and reference point are unverified | Chebyshev distance to the quad centre; the split multiplier generates FO3/FNV's boundaries and is not modelled on Skyrim/FO4 | — | Bands switch at slightly different distances → DLOD-BAND-006, V14, Q5 |
 | 4 | A VWD object with no `_far.nif` is not visible from a distance (CS wiki, *Visible When Distant Tutorial*) | The full model is drawn as the distant mesh | `_far.nif` packs made only to surface existing VWD flags | Cost of full meshes at range on modded data → DLOD-OBJ-007, Q6, V12 |
 | 5 | Legacy terrain LOD meshes authored per quad, generated from the land: GECK wiki, *World LOD* ("Generate Terrain Meshes: Creates terrain meshes for the world from the local land geometry"); CS wiki, *Landscape LOD Tutorial* (Heightmap Editor, *Generate LOD*) | Geometry synthesised from LAND; only the authored textures are used | — | A mod that ships LOD meshes without matching LAND draws Redux's ground instead → DLOD-TERR-003, Q2 |
-| 6 | The baked LOD diffuse as authored | Skyrim's baked ground scaled by 0.36 (`terrain_lod_albedo_gain`) | Mods that darken LOD textures | Calibrated on one scene → DLOD-TERR-002 |
+| 6 | The baked LOD diffuse as authored | Skyrim's baked ground scaled by 0.36 (`terrain_lod_albedo_gain`) | Mods that darken LOD textures | Calibrated on three scenes, spread about 5% → DLOD-TERR-002 |
 | 7 | Whole-quad pop-in at the loaded-area edge (whatever the original does there, unverified) | Per-cell segment suppression at level 4 (Q1) | — | Index sub-range draws are a render-visible change → DLOD-OBJ-002, live-gated by DLOD-GATE-005 |
 | 8 | FO3/FNV author `fBlockLoadDistance=125000` BU (about 31 cells) in `VeryHigh.ini`; what it bounds is unverified | The legacy ring reaches 64 cells, the archives' quad extent (`FALLOUT_LEGACY_MAX_CELLS`) | — | If V14 shows the key bounds the ring, Redux draws FO3/FNV LOD about twice as far, at Prop-tier cost → DLOD-BAND-001, DLOD-PERF-001, Q5 |
 
@@ -850,3 +853,4 @@ marked otherwise:
 | 4 | 2026-11-03 | Owner decisions Q1–Q7 recorded, every one the recommendation | owner: approved |
 | 5 | 2026-11-03 | → ACTIVE: parent #6633 and phase issues #6636, #6637, #6638, #6639, #6640, #6642 filed; the Phase 0 verify items are acceptance criteria of #6636 | — |
 | 6 | 2026-11-05 | Phase 0 census figures reproduced (§9.1): F6's STAT bases without a `_far.nif` are 8 / 29, not 4 / 6; V1–V14 answered or filed (#6678); DLOD-BAND-004's premise (the `.dlodsettings` SW cell as the lattice origin) holds for 46 of 53 descriptors, DLOD-OBJ-005's (segmented `blocks\` quads) for none | — |
+| 7 | 2026-11-10 | Phase 4 closed: the Oblivion albedo row measured (1.0 stands, median 0.99 over 48 boxes) and Skyrim's 0.36 re-measured on Riverwood and Whiterun at other weather and hours (medians 0.99 and 1.00); §6 row 6 and DLOD-TERR-001/-002 updated | — |

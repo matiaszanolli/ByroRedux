@@ -764,12 +764,14 @@ never in a shader or per game at render time.
 
 - **Albedo gain (`terrain_lod_albedo_gain`).** A per-game table of the
   brightness the baked distant ground takes so it meets the full-detail ground
-  it stands in for. Skyrim **0.36**, measured on one scene (Whiterun, overcast
-  noon, valley as LOD against the same valley at full detail, 24 sample boxes:
-  median 2.01x before, 0.99 after) — a starting point to retune by eye, **not**
-  a corpus calibration. FNV and FO4 **1.0**, measured (within ~±10% of full
-  detail). Oblivion, FO76 and Starfield are 1.0 *unmeasured*, deliberately: the
-  no-guessing policy rules out an unmeasured threshold. The row applies to every
+  it stands in for. Skyrim **0.36**, measured on Whiterun (overcast noon, valley as
+  LOD against the same valley at full detail, 24 sample boxes: median 2.01x
+  before, 0.99 after) and re-measured on Riverwood (clear, 09:00) and Whiterun
+  (clear, 17:00): medians 0.99 and 1.00, per-view spread about 5%. FNV, FO4 and
+  Oblivion **1.0**, measured (within ~±10% of full detail; Oblivion median
+  0.99). FO76 and Starfield are 1.0 *unmeasured*, deliberately: the
+  no-guessing policy rules out an unmeasured threshold, and neither draws
+  distant terrain. The row applies to every
   block wearing a baked quad diffuse, prebaked `.btr` and synth alike, so a row
   measured later for a legacy game reaches its blocks without consumer edits
   (#6453). The tiled-LTEX fallback is the splat terrain's own albedo and takes

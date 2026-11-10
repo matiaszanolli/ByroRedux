@@ -59,9 +59,18 @@ pub(crate) const fn terrain_lod_layout(game: GameKind) -> TerrainLodLayout {
 /// The gain scales albedo only; fog, ambient and specular are not scaled, so
 /// the displayed luminance falls by less than the gain (0.5 left the median at
 /// 1.22x). 0.36 is the linear fit of that measured response that centres the
-/// median on 1.0, and it was re-measured: median 0.99, mean 1.00. One scene
-/// (Whiterun, overcast noon): a starting point to retune by eye, not a corpus
-/// calibration.
+/// median on 1.0, and it was re-measured: median 0.99, mean 1.00 (Whiterun,
+/// overcast noon). The spread was then checked on two more scenes under
+/// different weather and time of day (DLOD-TERR-002, 2026-11-10; Skyrim SE,
+/// fly camera, `weather.force 0x0000081A lock` = `SkyrimClear`, radius 1
+/// against radius 6, the same pose, 8x6 screen boxes over the terrain rows,
+/// control = the sky/haze row): Riverwood (grid 4,-11, clear, 09:00, four
+/// views) put the gained LOD ground at median 0.99 / mean 0.98 of full detail
+/// over 96 boxes (control 1.02); Whiterun (grid 2,-4, clear, 17:00, four
+/// views) at median 1.00 / mean 1.01 over 96 boxes (control 1.00). Per-view
+/// medians run 0.99-1.06, so 0.36 holds within about 5% across the three
+/// scenes and the three lighting conditions; rock-dominated views read the
+/// same as the ground boxes.
 ///
 /// **FNV and FO4: 1.0, measured.** The same A/B (one pose, radius 1 against a
 /// larger radius, same screen regions) put FNV's baked ground at 1.04, 0.99
@@ -71,9 +80,19 @@ pub(crate) const fn terrain_lod_layout(game: GameKind) -> TerrainLodLayout {
 /// correction. FO4 was compared at radius 4: radius 6 exceeds its geometry
 /// pool.
 ///
-/// **Oblivion, FO76, Starfield: 1.0, unmeasured.** No guessed gain: the
-/// project's no-guessing policy rules out an unmeasured threshold, so these
-/// keep the baked look until measured the same way.
+/// **Oblivion: 1.0, measured (DLOD-TERR-001, 2026-11-10).** The same A/B on
+/// Tamriel (grid 10,12, Imperial City's lake shore, fly camera at 7000 units,
+/// 12:00, the region's own weather): one pose at radius 1 and at radius 6,
+/// three views, 8x6 screen boxes over the terrain rows. The baked ground read
+/// 0.96, 0.99 and 1.05 of full detail per view, median 0.99 / mean 1.00 over
+/// 48 boxes (control region, the sky/haze rows, 1.01): no brighter than the
+/// ground it stands in for, so no correction, as on FNV and FO4. The near
+/// foreground boxes read 0.6-0.9 where the larger radius adds grass and props;
+/// they are not ground and are outside the terrain rows.
+///
+/// **FO76, Starfield: 1.0, unmeasured.** No guessed gain: the project's
+/// no-guessing policy rules out an unmeasured threshold, and neither title
+/// draws distant terrain (`TerrainLodLayout::None`).
 pub(crate) const fn terrain_lod_albedo_gain(game: GameKind) -> f32 {
     match game {
         GameKind::Skyrim => 0.36,
@@ -423,7 +442,7 @@ mod tests {
             assert_eq!(
                 terrain_lod_albedo_gain(game),
                 1.0,
-                "{game:?}: measured at 1.0 (FNV, FO4) or unmeasured (the rest)"
+                "{game:?}: measured at 1.0 (Oblivion, FNV, FO4) or unmeasured (FO76, Starfield, no distant terrain)"
             );
         }
     }
