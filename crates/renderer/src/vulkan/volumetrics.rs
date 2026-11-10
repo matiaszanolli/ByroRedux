@@ -520,20 +520,29 @@ pub fn froxel_extent(render_extent: vk::Extent2D, config: VolumetricsConfig) -> 
 /// dimensions, bounded by `maxImageDimension3D` (2048 on Mesa ANV and
 /// lavapipe), not by the 2D limit the render extent itself is checked
 /// against. Returns `config` with the XY divisor raised to the smallest value
-/// whose grid fits `max_image_dimension_3d`; unchanged when it already fits.
-/// The default divisor of 8 covers a 16384-wide render at a 2048 limit, so
-/// this only raises an explicit `--froxel-xy-divisor` below 8 at very large
-/// render extents. A result past the 2..=32 range is left for
-/// [`VolumetricsConfig::validate`] to reject by name.
+/// whose grids fit `max_image_dimension_3d`; unchanged when it already fits.
+///
+/// #6827 — "grids" is plural: the local-grid irradiance image
+/// ([`local_grid::irradiance_extent`]) is `IRRADIANCE_WIDTH_FACTOR` times the
+/// froxel width, so the froxel *width* is bounded by the limit divided by that
+/// factor, not by the limit. The height is only a froxel height.
+///
+/// The default divisor of 8 covers an 8192-wide render at a 2048 limit (a
+/// 16384-wide one needs 16), so this only raises an explicit
+/// `--froxel-xy-divisor` below that at very large render extents. A result
+/// past the 2..=32 range is left for [`VolumetricsConfig::validate`] to reject
+/// by name.
 pub fn fit_froxel_divisor_to_device(
     render_extent: vk::Extent2D,
     config: VolumetricsConfig,
     max_image_dimension_3d: u32,
 ) -> VolumetricsConfig {
+    let limit = max_image_dimension_3d.max(1);
+    let width_limit = (limit / local_grid::IRRADIANCE_WIDTH_FACTOR).max(1);
     let needed = render_extent
         .width
-        .max(render_extent.height)
-        .div_ceil(max_image_dimension_3d.max(1))
+        .div_ceil(width_limit)
+        .max(render_extent.height.div_ceil(limit))
         .max(1);
     VolumetricsConfig {
         froxel_xy_divisor: config.froxel_xy_divisor.max(needed),
@@ -3364,16 +3373,52 @@ mod unit_tests {
             width: MAX_2D,
             height: MAX_2D,
         };
+        // #6827 — every 3D image the pass builds from the froxel grid must fit,
+        // not just the froxel volumes: the local-grid irradiance image is
+        // `IRRADIANCE_WIDTH_FACTOR` times the froxel width.
+        let fits = |render: vk::Extent2D, config: VolumetricsConfig, limit: u32| {
+            let froxel = froxel_extent(render, config);
+            let irradiance = local_grid::irradiance_extent(froxel);
+            froxel.width <= limit
+                && froxel.height <= limit
+                && irradiance.width <= limit
+                && irradiance.height <= limit
+        };
 
-        // The shipped default already fits the largest 2D render extent.
+        // The shipped default (divisor 8) covers an 8192-wide render at a
+        // 2048 limit untouched; its irradiance image is exactly the limit.
         let default = VolumetricsConfig::default();
+        let eight_k = vk::Extent2D {
+            width: 8192,
+            height: 8192,
+        };
         assert_eq!(
-            fit_froxel_divisor_to_device(largest, default, MESA_MAX_3D),
+            fit_froxel_divisor_to_device(eight_k, default, MESA_MAX_3D),
             default,
-            "default divisor × 2048 must cover a 16384-wide render"
+            "default divisor 8 x 1024 covers an 8192-wide render"
+        );
+        assert!(fits(eight_k, default, MESA_MAX_3D));
+        // One more pixel and the doubled irradiance width would pass the limit
+        // even though the froxel width (1025) still fits: the divisor rises.
+        let past = vk::Extent2D {
+            width: 8193,
+            height: 1080,
+        };
+        assert!(
+            froxel_extent(past, default).width <= MESA_MAX_3D,
+            "the froxel alone still fits, which is what #4781 checked"
+        );
+        let fitted = fit_froxel_divisor_to_device(past, default, MESA_MAX_3D);
+        assert_eq!(fitted.froxel_xy_divisor, 9);
+        assert!(fits(past, fitted, MESA_MAX_3D));
+        // A 16384-wide render needs divisor 16 at a 2048 limit.
+        assert_eq!(
+            fit_froxel_divisor_to_device(largest, default, MESA_MAX_3D).froxel_xy_divisor,
+            16
         );
 
-        // Divisor 2 at a 5120-wide render would be a 2560-wide 3D image.
+        // Divisor 2 at a 5120-wide render would be a 2560-wide 3D image; the
+        // doubled irradiance width forces divisor 5 (1024-wide froxels).
         let fine = VolumetricsConfig {
             froxel_xy_divisor: 2,
             ..default
@@ -3383,37 +3428,55 @@ mod unit_tests {
             height: 2880,
         };
         let fitted = fit_froxel_divisor_to_device(wide, fine, MESA_MAX_3D);
-        assert_eq!(fitted.froxel_xy_divisor, 3);
+        assert_eq!(fitted.froxel_xy_divisor, 5);
         assert_eq!(
             [fitted.froxel_z_slices, fitted.grid_far_meters],
             [fine.froxel_z_slices, fine.grid_far_meters]
         );
-        let extent = froxel_extent(wide, fitted);
-        assert!(extent.width <= MESA_MAX_3D && extent.height <= MESA_MAX_3D);
+        assert!(fits(wide, fitted, MESA_MAX_3D));
+        // The report's 2560-wide render at divisor 2 (a 1280-wide froxel, a
+        // 2560-wide irradiance image) is the smallest concrete trigger.
+        let qhd = vk::Extent2D {
+            width: 2560,
+            height: 1440,
+        };
+        assert!(!fits(qhd, fine, MESA_MAX_3D));
+        assert!(fits(
+            qhd,
+            fit_froxel_divisor_to_device(qhd, fine, MESA_MAX_3D),
+            MESA_MAX_3D
+        ));
 
-        // The taller axis is bounded too.
+        // The taller axis is bounded too (a froxel height, not doubled).
         let tall = vk::Extent2D {
             width: 1080,
             height: 8192,
         };
         let fitted = fit_froxel_divisor_to_device(tall, fine, MESA_MAX_3D);
         assert_eq!(fitted.froxel_xy_divisor, 4);
-        assert!(froxel_extent(tall, fitted).height <= MESA_MAX_3D);
+        assert!(fits(tall, fitted, MESA_MAX_3D));
 
-        // Every divisor at every render extent up to the 2D limit fits.
-        for divisor in 2..=32 {
-            let config = VolumetricsConfig {
-                froxel_xy_divisor: divisor,
-                ..default
-            };
-            let fitted = fit_froxel_divisor_to_device(largest, config, MESA_MAX_3D);
-            assert!(
-                fitted.froxel_xy_divisor >= divisor,
-                "never lowers the request"
-            );
-            assert!(fitted.validate().is_ok());
-            let extent = froxel_extent(largest, fitted);
-            assert!(extent.width <= MESA_MAX_3D && extent.height <= MESA_MAX_3D);
+        // Every divisor at every render extent up to the 2D limit fits, on
+        // both the Mesa limit and a smaller hypothetical one.
+        for limit in [MESA_MAX_3D, 4096] {
+            for divisor in 2..=32 {
+                let config = VolumetricsConfig {
+                    froxel_xy_divisor: divisor,
+                    ..default
+                };
+                let fitted = fit_froxel_divisor_to_device(largest, config, limit);
+                assert!(
+                    fitted.froxel_xy_divisor >= divisor,
+                    "never lowers the request"
+                );
+                assert!(fitted.validate().is_ok());
+                assert!(
+                    fits(largest, fitted, limit),
+                    "divisor {divisor} at limit {limit}: froxel {:?} / irradiance {:?}",
+                    froxel_extent(largest, fitted),
+                    local_grid::irradiance_extent(froxel_extent(largest, fitted)),
+                );
+            }
         }
 
         // A device with a larger 3D limit keeps the fine request.

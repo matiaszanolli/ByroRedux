@@ -600,8 +600,10 @@ bounded by `maxImageDimension3D` (2048 on Mesa ANV and lavapipe), not by the
 2D limit the render extent itself is checked against. When an explicit
 `--froxel-xy-divisor` below what fits would create an over-limit image,
 `fit_froxel_divisor_to_device` raises the divisor to the smallest value whose
-grid fits (with a warning), so the tables above are ceilings on such devices —
-the default 8 already covers a 16384-wide render at a 2048 limit.
+grid fits (with a warning), so the tables above are ceilings on such devices.
+The local-grid irradiance image is twice the froxel width (#6827), so the
+froxel width must fit half the limit: the default 8 covers an 8192-wide render
+at a 2048 limit, and a 16384-wide one is raised to 16.
 
 | Render extent | Grid (W×H×64) | Froxels | Total (6 volumes, 2 FIF) |
 |---|---|---:|---:|

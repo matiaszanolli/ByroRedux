@@ -395,8 +395,10 @@ An explicit `--froxel-xy-divisor` below what the device can store is raised to
 the smallest fitting value at pipeline init and on resize (#4781): the grid's
 X/Y are 3D-image dimensions bounded by `maxImageDimension3D` (2048 on Mesa ANV
 and lavapipe), not by the 2D limit the render extent is checked against. The
-default 8 already covers a 16384-wide render at that limit, so this only
-raises sub-8 divisors at very large render extents, with a warning.
+local-grid irradiance image is twice the froxel width (#6827), so the froxel
+width is bounded by half the limit. The default 8 covers an 8192-wide render at
+a 2048 limit (a 16384-wide one is raised to 16), so this only raises sub-8
+divisors at very large render extents, with a warning.
 
 Example:
 

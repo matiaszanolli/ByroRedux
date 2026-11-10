@@ -656,12 +656,19 @@ pub(crate) const fn local_grid_resident_bytes() -> u64 {
     cells * 8 * 3 * MAX_FRAMES_IN_FLIGHT as u64
 }
 
+/// How many froxel widths the irradiance image is wide: radiance and mean
+/// light direction side by side (`include/local_irradiance.glsl`). A 3D image
+/// dimension is bounded by `maxImageDimension3D`, so
+/// `fit_froxel_divisor_to_device` bounds the froxel width by the limit divided
+/// by this (#6827); the two must not drift apart.
+pub(crate) const IRRADIANCE_WIDTH_FACTOR: u32 = 2;
+
 /// The irradiance image's extent for a froxel grid: radiance and mean light
-/// direction side by side, so twice the grid's width
-/// (`include/local_irradiance.glsl`).
+/// direction side by side, so [`IRRADIANCE_WIDTH_FACTOR`] times the grid's
+/// width (`include/local_irradiance.glsl`).
 pub(crate) fn irradiance_extent(froxel: vk::Extent3D) -> vk::Extent3D {
     vk::Extent3D {
-        width: froxel.width * 2,
+        width: froxel.width * IRRADIANCE_WIDTH_FACTOR,
         ..froxel
     }
 }
