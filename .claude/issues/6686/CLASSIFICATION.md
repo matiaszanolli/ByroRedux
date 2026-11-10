@@ -85,3 +85,63 @@ those lines). Classified **by doc comment only**; five reads had no doc and were
 and leaves about 28 lines in these six files unread. The remaining ~150 lines are in 81 files, mostly one to
 five each. The issue's acceptance cannot be met by reading alone: each unread site needs its test body read
 to confirm the doc, and any that turn out replaceable need a behavioural test and an injected fault.
+
+## Fourth pass — every remaining file (2026-11-10)
+
+**Census.** Outside the 20 files classified in passes 1-3, a read of any file (`include_str!` /
+`read_to_string`) is **172 lines in 84 files**; **162 lines in 79 files** of those read Rust source, which is what the
+issue counts. After this pass the Rust-source figure is **155 in 75** (the four files below lose their last scan).
+**Method:** every site's enclosing test and its doc comment were listed by script; the doc states the reason for
+nearly all of them. Bodies were **read** for the ones marked *read*; the rest are "by doc/name" and were not
+verified assert by assert. A doc that says "needs a `VulkanContext`" was taken at its word unless the body showed
+otherwise.
+
+### Replaced (4 tests, 7 sites)
+
+| Test | Was | Now | Injected fault that fails it |
+|---|---|---|---|
+| `render/static_meshes.rs::every_supplemental_texture_slot_is_written_exactly_once` (2 sites + a 60-line text parser) | parsed the lane writes out of the draw builder's source and compared names | `supplemental_texture_indices(&MaterialTextureSet<u32>)` is now a pure function; `every_supplemental_texture_slot_carries_its_own_role_once` gives every role its own non-zero value and checks each lane by hand-written table, the table's length against `slot::COUNT`, and that its lanes are a permutation of `0..COUNT` | `lanes[TINT] = inner_layer` fails lane 0; deleting the `WRINKLE` write fails lane 5 |
+| `components.rs::name_index_and_subtree_cache_stay_fx_hash_map`, `build_subtree_name_map_stays_fx_hash_map` (2 sites) | searched `indices.rs` and `anim_convert.rs` for the type's spelling | function-pointer ascriptions to `FxHashMap<..>`: the hasher is part of the type | `NameIndex.map` as a std `HashMap` stops the test module compiling |
+| `commands/env_health_tests.rs::weather_sky_walk_covers_every_float_field_of_the_structs` (2 sites + `declared_field_names`) | scanned the `WeatherSkyState` / `ImageSpace` declarations for field names | an exhaustive destructure of both structs (no `..`) plus a hand-written float-field table, compared with the gate's walked names in both directions | removing `wind_speed` from the walk fails "not walked"; a new struct field stops the build |
+| `asset_provider/tests/material_path.rs::present_normal_derive_canonicalises_before_probing` (1 site) | searched `texture.rs` for `canonical_texture_key(&derived)` | the decision is `derive_present_normal_map_path_with(diffuse, probe)`; the test hands it a probe that answers only for the canonical key and records what it was asked, for a `Data\Textures\…` and a `textures\…` diffuse | probing the raw `derived` path returns `None` and fails |
+
+All four changed one production file only to expose a pure function or to leave the production body unchanged.
+The `static_meshes.rs` change is the one that touches a hot path (`build_static_draw_command`); the function is a
+straight-line copy of the 16 writes it replaced.
+
+### Classified, by file
+
+Classes as before. **input** = the read feeds a check, it is not itself a scan.
+
+| File (sites) | Class | Basis |
+|---|---|---|
+| `scene/mesh_entity.rs` (6) | device/data + syntax | #6692 / #6691 / #6817: both spawn paths need a device; the pins are "each path calls the step once", "caps are hidden before the first registry call" (a leaked handle), "the gate is handed the carried material". *read the docs.* |
+| `cell_loader/lod_support.rs` (5) | syntax | Rings route eviction through `retain_resident` (#5820), abandon a refused group (#6332), release before an empty return: "which function a ring calls" has no behavioural form short of a device. |
+| `commands_tests.rs` (5) | syntax (lock order), prose, runtime half already there | `lock_order_pin_tests` pin which guards are live across a call (doc: the detector is process-wide); the audit-skill claim (#3996) is prose; `form_id_arguments_parse_hex_through_one_spelling` already runs the parser, and only its tail scans two files for `from_str_radix`. |
+| `main.rs` (5) | input + syntax + device | `stored_upscaler` reads a settings file; the three pins are `App` wiring (event loop and window); `every_bench_gpu_key_is_printed_on_the_bench_line` already runs `bench_gpu_tokens`, and two `APP_EVENTS_RS` needles are what is left. *read.* |
+| `anim_convert.rs` (4) | syntax | #4426 (flip-frame resolve goes through the per-role resolver), spawn sites use the shared sink helpers. |
+| `asset_provider/script.rs` (4) | syntax | #5998 / #6001 / #3939: order of gates inside the VM attach, which "needs a script archive". |
+| `cell_loader/reference_enable_gate_tests.rs` (4), `references/source_pin_tests.rs` (3), `references/synth_child_tests.rs` (1), `scripted_lock_gate_tests.rs` (1) | device/data | Docs: "Those need Vulkan and game data to drive, so pin the wiring in source." |
+| `cell_loader/spawn.rs` (4), `scene/world_setup.rs` (3), `scene.rs` (1), `scene/scene_runtime.rs` (1), `scene/nif_loader.rs` (2), `scene/nif_loader_light_tests.rs` (2), `player_body.rs` (1), `precombined.rs` (1), `precombined_clip_handle_tests.rs` (1), `sky_params_cleanup_tests.rs` (1), `navm_boundary_soak_tests.rs` (1) | device/data | The spawn / install / flush / unload step each pins runs inside a function that takes a `VulkanContext` or a loaded index. |
+| `cell_loader/placement_lod.rs` (2), `terrain_lod.rs` (2), `terrain_lod_btr.rs` (2), `unload.rs` (2), `water.rs` (3) | device/data + syntax | Mesh-resolver threading (#2362), lod water render-only (#4500), rebuild reuses the projection (#5289): the spawners need a device and an archive. |
+| `parsed_nif_cache.rs` (4) | syntax | #6300: a new `parse_nif` call without a `note_scene_health` beside it. |
+| `render/skin_offsets_hasher_tests.rs` (4) | syntax | The spelling of one map type across four files. A type ascription per site would replace it; the sites are `App` and render-collection locals, so it needs a refactor first. Candidate, not done. |
+| `save_io/registry_completeness_tests.rs` (4) | syntax | Enumerates every `impl Component` / `impl Resource` in three directories; Rust cannot enumerate impls at runtime. |
+| `asset_provider/material/merge.rs` (3) | syntax + size pin | One exported fn; the private arms exist; `merge_bgsm_arm` line count (the line-budget item of #6680). |
+| `asset_provider/tests/starfield_mat.rs` (3) | prose + syntax | #4429, #5284: the parked-kinds table in `nifal.md` against `MaterialTextureSet`; the CDB resolve tail has one home. |
+| `bench.rs` (3), `bench_camera.rs` (1) | input + prose | The baselines TSV and `capture.sh` against each other (#4417, #5125); `bench_camera`'s round-trip already runs, the tail pins that the applier calls `pose.rotation()` and no `from_rotation_arc`. *read.* |
+| `systems/debug.rs` (3), `systems/eat_sleep.rs` (3), `systems/walk_anim.rs` (2), `systems/locomotion.rs` (1), `armor.rs` (1) | syntax | Telemetry reaches every consumer; one definition of `entity_global_form_id`; no game read; AI-package defaults have one home; no game gate in the armor consumer. *"no copy" has no behavioural form.* |
+| `systems/script_requests.rs` (2), `systems/vats.rs` (2), `systems/combat_ai.rs` (1), `combat.rs` (1), `ragdoll.rs` (1), `ragdoll_pose_tests.rs` (2), `npc_spawn/resumable/mod.rs` (1), `runtime.rs` (1), `studio_host.rs` (1), `systems/npc_dialogue.rs` (1) | syntax (order, lock order) | Gate before archive lookup, the cell-transition call before dispatch, `PhysicsWorld` acquired between storage passes, a stand-in ragdoll never replaces a decoded one. Lock-order pins are what `BYRO_LOCK_ORDER_CHECK` does not catch per unit test (see pass 2). |
+| `systems/water.rs` (2), `systems/particle.rs` (1), `systems/sandbox.rs` (1), `ui_input.rs` (1), `scaleform_hud.rs` (1), `zup_yup.rs` (1) | syntax | "No scratch map is allocated", "every declared parameter is read" (an unused fn parameter draws no warning), the `.clear()` contract, "the cache path dispatches nothing", the push table's arms. `sandbox.rs` states that the missing piece is a full `World` fixture; `zup_yup.rs` that a value test cannot tell the dispatcher from the plain helper at the shipping default. Both are candidates if a fixture / a non-default mode becomes available. |
+| `render/env_var_cache_tests.rs` (2), `render/skinned.rs` (1), `render/groundcover_hasher_tests.rs` (1) | syntax | `OnceLock`-cached env reads, LRU refresh before an early return, a hasher spelling in production text. |
+| `render/directional_upload_tests.rs` (1), `scene/cloud_tile_scale_tests.rs` (1) | device/shader | Rust against GLSL (`lighting.glsl`, `sky.glsl`). |
+| `fog.rs` (2), `loading_screen.rs` (2), `env_translate/climate.rs` (2), `streaming_helpers.rs` (2), `streaming/pre_parse.rs` (1), `npc_spawn/ai_package.rs` (2) | syntax | Where a floor is applied; teardown routes through the canonical path; one default-weather rule; salvage is queued; lock hoisting ("the result is identical either way, so no behavioural test can see it"); one `OnceLock` env read. |
+| `cell_loader/exterior.rs` (4), `asset_provider/material/mod.rs` (4), `inventory/mod.rs` (4), `cell_loader/index.rs` (2) | input | `SOURCES` / `production_source` concat lists. |
+| `commands/mod.rs` (1), `asset_provider/tests/bgsm_merge.rs` (1), `cell_loader/nif_import_registry.rs` (2) | prose | Command docs against the registry; a deferral marker at two sites; `nifal.md`'s converter list against the chain. |
+| `commands/scene.rs` (1) | input | Reads the `Material` declaration to list its `f32` fields, then **runs** `mat.set` on each. Moving the list to serde would carry the NaN override sentinels as `null`; left. *read.* |
+| `commands/terrain.rs` (1), `extensions/install.rs` (1) | runtime read | A file the code under test writes / reads; not a source scan. |
+| `sf_smoke.rs` (2) | prose + syntax | Report text; `tally_pack_ins` already has a value test. *read.* |
+| `systems/combat_anim.rs` (1), `asset_provider/texture.rs` (2), `asset_provider/tests/archive_precedence.rs` (1) | syntax | Fixture paths against the loader; swap acquires per mesh; a directory walk so "the provider nobody wrote down" is covered. |
+
+**Still open.** Two candidates are named above (`skin_offsets_hasher_tests`, and the `sandbox` / `zup_yup` pair that
+wait on a fixture). Nearly every file is classed by doc, not by reading; if a doc is wrong, the class is wrong.
