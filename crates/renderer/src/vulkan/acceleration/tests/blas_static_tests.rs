@@ -541,24 +541,22 @@ mod tlas_non_finite_integrity_tests {
 /// finding recurred; this is the acceleration module's own.
 #[cfg(test)]
 mod hot_path_hashing_tests {
-    const ACCELERATION_MOD_RS: &str = include_str!("../mod.rs");
+    use super::super::{AccelerationManager, BlasEntry};
+    use byroredux_core::ecs::storage::EntityId;
+
+    /// The accessor's declared return type is the check (#4000, #6687):
+    /// `FxHashMap` names its hasher, so a revert to std's SipHash-1-3 stops
+    /// this module compiling. It replaces two text searches of `mod.rs`.
+    fn skinned_blas_map(manager: &AccelerationManager) -> &rustc_hash::FxHashMap<EntityId, BlasEntry> {
+        &manager.skinned_blas
+    }
 
     /// `skinned_blas` is probed once per skinned draw command in
     /// `build_tlas_instances` and three more times per dirty entity on the
     /// refit path, over a `u32` keyspace.
     #[test]
     fn skinned_blas_stays_fx_hashed() {
-        assert!(
-            ACCELERATION_MOD_RS
-                .contains("skinned_blas: rustc_hash::FxHashMap<EntityId, BlasEntry>"),
-            "skinned_blas must stay `FxHashMap` (#4000) — it is on the \
-             per-frame skinned path, which the guard tests in \
-             `context/mod.rs` claim is Fx-hashed end-to-end"
-        );
-        assert!(
-            !ACCELERATION_MOD_RS.contains("skinned_blas: std::collections::HashMap"),
-            "skinned_blas reverted to std's SipHash-1-3 (#4000)"
-        );
+        let _: fn(&AccelerationManager) -> &rustc_hash::FxHashMap<EntityId, BlasEntry> = skinned_blas_map;
     }
 }
 
