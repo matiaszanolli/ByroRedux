@@ -46,8 +46,9 @@ froxel in-scatter view at `time.set 12`, `time.set 0` and `time.set 12` again. T
 so their difference is the noise floor. A `shaft` cell passes when the pixels where noon beats midnight by more than
 max(3 levels, twice that noise) cover at least 0.1 % of the frame; a `sealed` control passes when no pose does. It prints
 the pass count per game, exits `1` on any failure and `77` when a dependency is missing. `BYRO_INTERIOR_ROUTE=door`
-runs VLM-INT-004: each cell is left through its exit door and re-entered through the exterior door before the pass (a cell
-with no door in reach reports `no-route`). `--inventory-only` stops after the inventory;
+runs VLM-INT-004: each cell is left through its exit door and re-entered through the exterior door that leads to it
+(`door.list` names the loaded doors by destination; a cell with no such door reports `no-route`, and an FO4 exterior
+loads slowly, so the wait for it is up to five minutes). `--inventory-only` stops after the inventory;
 `BYRO_INTERIOR_ONLY=<cell,...>` runs chosen cells. Needs the games' data, a display or `xvfb-run`, a Vulkan device and
 Python with numpy and Pillow; it takes about half an hour. Captures, logs and `results.json` stay in the printed directory.
 

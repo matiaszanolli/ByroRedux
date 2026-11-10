@@ -106,6 +106,7 @@ READY_TIMEOUT_S = 300        # the cell must be loaded (not a loading cover) bef
 MIN_ENTITIES = 150           # a cell with fewer entities than this is not a loaded interior
 MAX_POSES = 4
 TRANSITION_TIMEOUT_S = 300   # a door's destination (an exterior grid, then the interior again) must load in this time
+DOOR_WAIT_S = 300            # how long the exterior streaming has to load the door that leads back in (about 1 fps for FO4 under xvfb)
 DOOR_SETTLE_S = 30           # let the exterior's loading cover lift and its streaming settle before the second door
 
 # (game key, `--game` profile, cell, role, short name). The list comes from the sun-path census
@@ -288,15 +289,22 @@ def doors(port):
     """Every loaded teleport door near the camera as (distance, entity, destination label), nearest first
     (`door.list`, read-only). Chosen by destination rather than by the camera ray: two doors can stand side by
     side (the Nellis hangars' exterior doors are 112 units from each other) and the ray takes whichever it hits."""
-    return [(float(d), int(e), lab.strip()) for d, e, lab in DOOR_RE.findall(dbg(port, "door.list 4000"))]
+    # byro-dbg prints a reply inside quotes, so the closing one lands on the last row's label.
+    return [(float(d), int(e), lab.strip().rstrip('"')) for d, e, lab in DOOR_RE.findall(dbg(port, "door.list 4000"))]
 
 def through_door(port, logfile, want=None):
     """`door.teleport` a door and wait for the transition to be applied: the nearest one, or with `want` the nearest
     whose destination is the interior `want`. Returns (destination, why): the destination label the console
     resolved, or None and the reason."""
-    found = doors(port)
-    if want:
-        found = [d for d in found if d[2].lower() == f"interior '{want.lower()}'"]
+    # An exterior streams its doors in after the transition lands, so the one asked for is polled for.
+    deadline = time.time() + (DOOR_WAIT_S if want else 0)
+    while True:
+        found = doors(port)
+        if want:
+            found = [d for d in found if d[2].lower() == f"interior '{want.lower()}'"]
+        if found or time.time() >= deadline:
+            break
+        time.sleep(5)
     if not found:
         if not want:
             return None, "no door in reach"

@@ -341,7 +341,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**166**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**167**) grouped by
 purpose:
 
 ```
@@ -530,6 +530,10 @@ time.advance <hours>        → advance game hours with multi-day rollover
 
 # World streaming + scripting
 cell.owners                 → list cell ownership diagnostics
+door.list [radius=2000]     → loaded teleport doors near the camera, nearest first,
+                             with the cell each leads to; read-only (queues
+                             nothing), so a harness can pick the door that
+                             leads where it wants
 door.teleport <entity_id>   → inspect a door's XTEL destination (FormID,
                              Z-up position/rotation, resolved parent cell).
                              M40 Phase 2 door-teleport triage

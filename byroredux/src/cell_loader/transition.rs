@@ -695,6 +695,45 @@ mod tests {
         );
     }
 
+    /// `door.list` names where a door leads without queuing the transition: the
+    /// label is the one a real transition reports, and the slot stays empty.
+    #[test]
+    fn destination_cell_label_reads_without_queuing() {
+        use byroredux_plugin::esm::cell::CellData;
+        let mut world = World::new();
+        world.insert_resource(PendingCellTransitionSlot::default());
+        assert_eq!(
+            destination_cell_label(&world, 0x55),
+            None,
+            "no cell index installed: nothing to resolve"
+        );
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        index.cells.cells.insert(
+            "mq101".into(),
+            CellData {
+                form_id: 0x10,
+                editor_id: "MQ101".into(),
+                references: vec![super::super::interior_spawn_tests::placed(
+                    0x55,
+                    0x32,
+                    [1.0, 2.0, 3.0],
+                    [0.0, 0.0, 1.5],
+                )],
+                ..Default::default()
+            },
+        );
+        world.insert_resource(super::super::LoadedCellIndex(std::sync::Arc::new(index)));
+        assert_eq!(
+            destination_cell_label(&world, 0x55).as_deref(),
+            Some("interior 'MQ101'")
+        );
+        assert_eq!(destination_cell_label(&world, 0x99), None);
+        assert!(
+            world.resource::<PendingCellTransitionSlot>().0.is_none(),
+            "a label lookup must not queue a transition"
+        );
+    }
+
     /// M47.2 — a scripted player `MoveTo(<marker>)` to a non-resident
     /// reference queues a transition to the marker's cell, landing at the
     /// marker's own placement (there is no `XTEL` to read).
