@@ -121,7 +121,8 @@ tracked throughput half of closed #4606/#5117).
 - M-LIGHT, reference-quality lighting (#6595): the first feature run under the
   [PRD gate](docs/prd/README.md), ACTIVE since 2026-11-02. Phases 0–2 are closed;
   Phase 3 (#6603) is open: entry gates measured, RLT-SHD-003/-007/-012 built; #6721
-  waits on A11, A13 and a flat-floor control (PRD rev 28).
+  has its flat-floor control, A11 (isolated to the change, declared after the fact) and
+  A13 (within the ceiling) measured, and waits on the owner accepting the declaration (PRD rev 31).
 - Texture streaming (M39, #6626): Phases 0–1 closed 2026-11-03; Phases 2–4 (#6629–#6631) built
   and measured on five games, open on the gates in its [Tier 5 row](#tier-5--renderer-polish-quality-not-capability).
 - Fire, smoke and explosions (#6531, [plan](docs/engine/fire-volumetrics-plan.md)):
