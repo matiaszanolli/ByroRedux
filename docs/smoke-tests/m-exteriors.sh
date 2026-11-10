@@ -364,8 +364,12 @@ run_profile () {
                 # `water_fixture_probe` (plugin example): the whole 3x3 LAND
                 # neighbourhood sits at least this far below the surface.
                 water_surface_pos="22016 -50 40576"
-                water_submerged_pos="22016 -380 40576"
+                # #6843 — 130 units under the surface looking down read a uniform water column (linear stddev 0.014
+                # under taa, 0.004 under fsr3, which smooths the noise under image_health's 0.005 floor). 50 under
+                # the surface and looking 10 degrees up keeps the waterline in frame: 0.009-0.012 under fsr3, 0.032 taa.
+                water_submerged_pos="22016 -300 40576"
                 water_look="0 -15"
+                water_under_look="0 10"
                 water_source="0x000E717C"
                 water_requires_flow=1
                 ;;
