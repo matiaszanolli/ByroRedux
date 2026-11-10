@@ -1869,47 +1869,76 @@ mod tests {
     /// `fog_scale_height_meters, fog_coverage`. Both are `f32`, so it
     /// compiled, and the froxel medium collapsed to a ~1 m ground layer.
     ///
-    /// `record_post_passes` takes ~30 positional arguments, most of them
-    /// same-typed scalars, and the call site names nearly every local after
-    /// its parameter. Pin that convention: every argument spelled as a
-    /// parameter's name must sit in that parameter's position.
-    #[test]
-    fn record_post_passes_named_arguments_match_parameter_positions() {
+    /// Shared body of the #4773 / #6830 positional-argument pins. A call whose
+    /// arguments are same-typed scalars compiles when two are swapped, so every
+    /// argument spelled as a parameter's name must sit in that parameter's
+    /// position. The list is split on top-level commas (comments dropped,
+    /// `&`/`&mut`/`self.` prefixes stripped), so it does not matter how many
+    /// entries share a line -- the original `fog_scale_height_meters,
+    /// fog_coverage,` pair on one line is read like any other. Returns the
+    /// parameter names in order.
+    fn assert_named_arguments_match_parameter_positions(
+        sig_src: &str,
+        sig_marker: &str,
+        call_src: &str,
+        call_marker: &str,
+        min_pinned: usize,
+    ) -> Vec<String> {
         fn ident(token: &str) -> &str {
-            let token = token.trim().trim_end_matches(',').trim_start_matches('&');
+            let token = token.trim().trim_start_matches('&');
+            let token = token.strip_prefix("mut ").unwrap_or(token);
             token.strip_prefix("self.").unwrap_or(token)
         }
+        // Top-level comma-separated entries of the parenthesised list that
+        // starts right after `marker` (which ends in its opening `(`).
+        fn entries(src: &str, marker: &str) -> Vec<String> {
+            let at = src
+                .find(marker)
+                .unwrap_or_else(|| panic!("`{marker}` must still exist under this name"));
+            let body: String = src[at + marker.len()..]
+                .lines()
+                .map(|line| line.split("//").next().unwrap_or(""))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let (mut depth, mut current, mut out) = (1_i32, String::new(), Vec::new());
+            for ch in body.chars() {
+                match ch {
+                    '(' | '[' | '{' | '<' => depth += 1,
+                    ')' | ']' | '}' | '>' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    ',' if depth == 1 => {
+                        out.push(std::mem::take(&mut current));
+                        continue;
+                    }
+                    _ => {}
+                }
+                current.push(ch);
+            }
+            out.push(current);
+            out.into_iter()
+                .map(|e| e.trim().to_string())
+                .filter(|e| !e.is_empty())
+                .collect()
+        }
 
-        let post = include_str!("post_passes.rs");
-        let sig_at = post
-            .find("fn record_post_passes(")
-            .expect("record_post_passes must still exist under this name");
-        let sig = &post[sig_at..];
-        let sig = &sig[..sig.find(") {").expect("signature end")];
-        let params: Vec<&str> = sig
-            .lines()
-            .skip(1)
-            .filter_map(|line| line.trim().split_once(':').map(|(name, _)| name.trim()))
-            .filter(|name| *name != "&mut self" && *name != "&self")
+        let params: Vec<String> = entries(sig_src, sig_marker)
+            .into_iter()
+            .filter(|e| !matches!(e.as_str(), "&mut self" | "&self" | "self"))
+            .filter_map(|e| e.split_once(':').map(|(name, _)| name.trim().to_string()))
             .collect();
-
-        let draw = include_str!("draw.rs");
-        let call_at = draw
-            .find("self.record_post_passes(")
-            .expect("draw_frame must still call record_post_passes");
-        let call = &draw[call_at..];
-        let call = &call[..call.find(");").expect("call end")];
-        let args: Vec<&str> = call
-            .lines()
-            .skip(1)
-            .map(ident)
-            .filter(|arg| !arg.is_empty())
+        let args: Vec<String> = entries(call_src, call_marker)
+            .iter()
+            .map(|e| ident(e).to_string())
             .collect();
 
         assert_eq!(
             args.len(),
             params.len(),
-            "argument/parameter count drifted: args {args:?} params {params:?}"
+            "`{call_marker}` argument/parameter count drifted: args {args:?} params {params:?}"
         );
         let mut pinned = 0;
         for (position, arg) in args.iter().enumerate() {
@@ -1923,15 +1952,69 @@ mod tests {
             }
         }
         assert!(
-            pinned >= 20,
+            pinned >= min_pinned,
             "only {pinned} arguments share a parameter name; pin is vacuous"
         );
-        let fog_scale = params.iter().position(|p| *p == "fog_scale_height_meters");
-        let fog_coverage = params.iter().position(|p| *p == "fog_coverage");
+        params
+    }
+
+    /// `record_post_passes` takes ~30 positional arguments, most of them
+    /// same-typed scalars, and the call site names nearly every local after
+    /// its parameter. Pin that convention: every argument spelled as a
+    /// parameter's name must sit in that parameter's position.
+    #[test]
+    fn record_post_passes_named_arguments_match_parameter_positions() {
+        let params = assert_named_arguments_match_parameter_positions(
+            include_str!("post_passes.rs"),
+            "fn record_post_passes(",
+            include_str!("draw.rs"),
+            "self.record_post_passes(",
+            20,
+        );
         assert!(
-            fog_scale.is_some() && fog_coverage.is_some(),
+            params.iter().any(|p| p == "fog_scale_height_meters")
+                && params.iter().any(|p| p == "fog_coverage"),
             "fog params renamed"
         );
+    }
+
+    /// #6830 — the same pin for the other two calls that carry the adjacent
+    /// `f32` fog lanes (`fog_single_scatter_albedo`, `fog_scale_height_meters`,
+    /// `fog_coverage`, `fog_clip`, `fog_power`, `fog_height_reference`):
+    /// `draw_frame` -> `build_and_upload_instances`, and that function ->
+    /// `upload_frame_parameters`. #6728 threaded `fog_coverage` through both,
+    /// and the swap-prone pair sits on one line there, which the previous
+    /// line-oriented reader could not read.
+    #[test]
+    fn build_and_upload_instances_named_arguments_match_parameter_positions() {
+        let build = include_str!("build_and_upload_instances.rs");
+        let params = assert_named_arguments_match_parameter_positions(
+            build,
+            "fn build_and_upload_instances(",
+            include_str!("draw.rs"),
+            "self.build_and_upload_instances(",
+            20,
+        );
+        // The fog lanes the pin exists for stay in the signature, adjacent and
+        // in the order the shader-side constants assume.
+        let fog = params
+            .iter()
+            .position(|p| p == "fog_scale_height_meters")
+            .expect("fog_scale_height_meters renamed");
+        assert_eq!(params[fog + 1], "fog_coverage", "fog lanes reordered");
+
+        let forwarded = assert_named_arguments_match_parameter_positions(
+            build,
+            "fn upload_frame_parameters(",
+            build,
+            "self.upload_frame_parameters(",
+            15,
+        );
+        let fog = forwarded
+            .iter()
+            .position(|p| p == "fog_scale_height_meters")
+            .expect("fog_scale_height_meters renamed");
+        assert_eq!(forwarded[fog + 1], "fog_coverage", "fog lanes reordered");
     }
 
     /// A real dispatch running must never trigger a clear, and must reset
