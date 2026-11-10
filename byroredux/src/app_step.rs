@@ -935,10 +935,9 @@ impl App {
         active: byroredux_core::ecs::EntityId,
         pose: crate::bench_camera::CameraPose,
     ) {
-        let rotation = byroredux_core::math::Quat::from_rotation_arc(
-            -byroredux_core::math::Vec3::Z,
-            pose.forward,
-        );
+        // #6775 — the yaw/pitch convention, not a shortest arc (see
+        // `CameraPose::rotation`).
+        let rotation = pose.rotation();
         if let Some(mut transforms) = self.world.query_mut::<byroredux_core::ecs::Transform>() {
             if let Some(transform) = transforms.get_mut(active) {
                 transform.translation = pose.position;

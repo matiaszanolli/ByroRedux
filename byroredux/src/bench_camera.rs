@@ -21,7 +21,7 @@
 //! everything that is not the variable under test.
 
 use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
-use byroredux_core::math::Vec3;
+use byroredux_core::math::{Quat, Vec3};
 use std::str::FromStr;
 
 /// One frame of camera motion.
@@ -30,6 +30,27 @@ pub struct CameraPose {
     pub position: Vec3,
     /// Unit forward vector. Always normalized by construction.
     pub forward: Vec3,
+}
+
+impl CameraPose {
+    /// The camera orientation for this pose, built the way the spawn and every
+    /// gameplay frame build theirs: yaw about +Y after pitch about +X, no roll
+    /// (`camera_look_rotation`).
+    ///
+    /// #6775 — this used to be `Quat::from_rotation_arc(-Z, forward)`, the
+    /// shortest arc between two vectors with no up-vector constraint. For a
+    /// forward nearly opposite to -Z it is a ~180 degree turn about an axis
+    /// that is ambiguous at the antiparallel point: the FNV pose
+    /// `--camera-forward 0,0.03,1` turned about +X and rendered upside down,
+    /// while an exact +Z forward took glam's other branch and came out upright.
+    /// For any pitched forward the arc also carries a little roll, so a
+    /// `static` bench pose did not even reproduce the rotation it was seeded
+    /// from (`spawn_initial_camera` seeds from yaw/pitch, #2383).
+    pub fn rotation(&self) -> Quat {
+        let forward = self.forward.try_normalize().unwrap_or(-Vec3::Z);
+        let (yaw, pitch) = crate::scene::yaw_pitch_from_forward(forward);
+        crate::systems::camera_look_rotation(yaw, pitch)
+    }
 }
 
 /// A repeatable camera path, selected by `--bench-camera`.
@@ -472,6 +493,65 @@ impl byroredux_core::ecs::Component for BenchMover {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #6775 — the pinned FNV pose (`--camera-forward 0.0,0.03,1`) rendered
+    /// the scene rolled 180 degrees under `renderer-stepped`. Every pose the
+    /// bench applies must be upright (the camera's up vector keeps a positive
+    /// world-Y component) and look along its forward, whatever the heading.
+    #[test]
+    fn a_bench_pose_is_upright_and_faces_its_forward_for_any_heading() {
+        let near_plus_z = Vec3::new(0.0, 0.03, 1.0).normalize();
+        // The premise: the shortest arc this replaced turns the near-antiparallel
+        // forward upside down, which is the bug.
+        let arc = Quat::from_rotation_arc(-Vec3::Z, near_plus_z);
+        assert!(
+            (arc * Vec3::Y).y < 0.0,
+            "the shortest-arc construction no longer flips this pose; the #6775 \
+             premise changed"
+        );
+
+        let headings = [
+            near_plus_z,
+            Vec3::Z,
+            Vec3::new(0.0, 0.0, -1.0),
+            Vec3::X,
+            -Vec3::X,
+            Vec3::new(0.3, 0.2, 0.9).normalize(),
+            Vec3::new(-0.6, -0.4, 0.7).normalize(),
+            Vec3::new(0.001, 0.0, 1.0).normalize(),
+            Vec3::new(1.0, 0.5, 1.0).normalize(),
+            Vec3::new(0.0, 0.9, 0.1).normalize(),
+        ];
+        for forward in headings {
+            let pose = CameraPose { position: ORIGIN, forward };
+            let rotation = pose.rotation();
+            let looked = rotation * -Vec3::Z;
+            assert!((looked - forward).length() < 1.0e-4, "{forward:?}: looks along {looked:?}");
+            assert!((rotation * Vec3::Y).y > 0.0, "{forward:?}: camera is upside down");
+            // No roll: the right vector stays horizontal.
+            assert!((rotation * Vec3::X).y.abs() < 1.0e-4, "{forward:?}: camera is rolled");
+        }
+    }
+
+    /// The pose applied to a `static` bench is the rotation the camera was
+    /// seeded with: `spawn_initial_camera` builds it from yaw/pitch, so the
+    /// pose's own rotation must round-trip it exactly.
+    #[test]
+    fn a_static_pose_reproduces_the_seeded_yaw_pitch_rotation() {
+        for (yaw, pitch) in [(0.0f32, 0.0f32), (1.2, 0.3), (-2.9, -0.4), (3.1, 0.03), (-3.1, 0.5)] {
+            let seeded = crate::systems::camera_look_rotation(yaw, pitch);
+            let pose = CameraPose { position: ORIGIN, forward: seeded * -Vec3::Z };
+            let rebuilt = pose.rotation();
+            assert!(
+                seeded.angle_between(rebuilt) < 1.0e-4,
+                "yaw {yaw} pitch {pitch}: seeded {seeded:?} vs rebuilt {rebuilt:?}"
+            );
+        }
+        // And the applier uses it: no shortest-arc construction is left.
+        let step = byroredux_core::source_scan::production_text_or_whole(include_str!("app_step.rs"));
+        assert!(step.contains("let rotation = pose.rotation();"));
+        assert!(!step.contains("from_rotation_arc"), "apply_bench_camera_pose is arc-based again (#6775)");
+    }
 
     const ORIGIN: Vec3 = Vec3::new(0.0, 2.0, 10.0);
     const FORWARD: Vec3 = Vec3::new(0.0, 0.0, -1.0);

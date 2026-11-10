@@ -11,9 +11,9 @@
 # GATE=0 turns the script back into a measurement that always exits 0.
 #
 # Both captures use `--bench-mode renderer-stepped --bench-camera static`, where a repeat is
-# deterministic. On the FNV pose that mode renders the 3D scene rolled 180 degrees (the HUD stays
-# upright; `--bench-mode system-live` renders the same pose upright, and the Skyrim pose is upright in
-# both), so the analysis rotates only the FNV frames back before reading their regions.
+# deterministic. (Until #6775 that mode rendered the FNV pose's 3D scene rolled 180 degrees, because the
+# bench applied its pinned forward as a shortest arc; the analysis used to rotate those frames back. The
+# pose is now built from yaw/pitch like every other camera, so a binary older than that fix needs a rebuild.)
 #
 # Usage: docs/smoke-tests/fog-grid-seam.sh [fnv|skyrim|all]
 # BYRO_SEAM_BIN overrides the engine binary; BYRO_SEAM_OUT keeps captures in a chosen directory;
@@ -95,7 +95,7 @@ from PIL import Image
 
 out, near, far, gate, tolerance = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4] == "1", float(sys.argv[5])
 
-# Row / column windows (720p, after undoing the roll) over content that sits well beyond the
+# Row / column windows (720p) over content that sits well beyond the
 # near plane in each pose. They approximate "pixels beyond the larger far plane": no depth view
 # exists, so these are the distant hills, ridges, forest and sky of the named pose.
 REGIONS = {
@@ -107,12 +107,9 @@ REGIONS = {
 }
 
 
-ROLLED = {"fnv"}  # frames the stepped bench renders rolled 180 degrees
-
-
 def load(label, tag):
     img = np.asarray(Image.open(out / f"{label}_{tag}.png").convert("RGB")).astype(float)
-    return (np.rot90(img, 2) if label in ROLLED else img).mean(axis=2)
+    return img.mean(axis=2)
 
 
 worst = 0.0
