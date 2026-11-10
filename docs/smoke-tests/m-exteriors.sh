@@ -1258,6 +1258,7 @@ skyrim_run () {
     profile_ready skyrim "${required[@]}" || return 0
 
     local grid="2,-4"
+    local cycle_pose=()
     if [[ "$MODE" == cycle ]]; then
         # The cycle's sun-response gate needs a weather the sun reads through. Region weather
         # (VLM-REG) now gives this cell its authored region weather, `SkyrimOvercastSnow` (region
@@ -1267,11 +1268,16 @@ skyrim_run () {
         # BleakfallsBarrowPath: the established WATAL water-adjacent streaming
         # fixture. Static/population baselines retain their historical grid.
         grid="2,-10"
+        # #6842 — the spawn pose here faces a dark rock wall, so the boot frame's linear stddev (0.008 under
+        # taa) sits next to image_health's 0.005 floor and falls under it with `--upscaler fsr3` (0.001-0.003).
+        # Pin the engine's own spawn position and pitch it up 40 degrees (forward = yaw 0, i.e. -Z), the same
+        # look as the term captures' `input.look 0 40` (#6612), so the frame carries sky as well as rock.
+        cycle_pose=(--camera-pos 10240,3313.85,39112 --camera-forward 0,0.643,-0.766)
     elif [[ "$MODE" == water ]]; then
         # Riverwood / White River, shared with the W1 traversal fixture.
         grid="4,-11"
     fi
-    local args=(--esm "$esm" --grid "$grid" --radius 1 --wrld Tamriel)
+    local args=(--esm "$esm" --grid "$grid" --radius 1 --wrld Tamriel "${cycle_pose[@]}")
     args+=(--bsa "$SKYRIM_DATA/Skyrim - Meshes0.bsa")
     args+=(--bsa "$SKYRIM_DATA/Skyrim - Meshes1.bsa")
     for archive in "$SKYRIM_DATA"/Skyrim\ -\ Textures{0..8}.bsa; do
