@@ -846,6 +846,9 @@ impl Resource for InteractionTrace {}
 /// E press therefore emits an event and lets scripts observe it in the same
 /// frame; end-of-frame event cleanup remains unchanged.
 pub(crate) fn interaction_system(world: &World, _dt: f32) {
+    // PERK-HOOK-012 — an answered activate-choice box releases its held activation here, in Update before
+    // every OnActivate consumer, as a fresh key press would.
+    crate::perk_activate::resolve_answered_activation(world);
     let activate_pressed = world
         .try_resource::<ActionState>()
         .is_some_and(|state| state.was_pressed(InputAction::Activate));
@@ -857,7 +860,7 @@ pub(crate) fn interaction_system(world: &World, _dt: f32) {
 
     if activate_pressed {
         if let Some(target) = target {
-            activate_target(world, target);
+            activate_target(world, target, true);
         }
     }
 }
@@ -1565,9 +1568,12 @@ pub(crate) fn ray_sphere_distance(origin: Vec3, direction: Vec3, bound: WorldBou
     }
 }
 
-fn activate_target(world: &World, target: InteractionTarget) {
+/// The player activates `target`. With `compose_perks`, the activate entries of the player's perks are
+/// composed first ([`crate::perk_activate`]); the default button of their choice box comes back here
+/// without them, the entries already resolved.
+pub(crate) fn activate_target(world: &World, target: InteractionTarget, compose_perks: bool) {
     // #4701 — a dead player opens no doors and fires no `ActivateEvent`.
-    if !crate::systems::player_can_act(world) || activation_is_blocked(world, target.entity) {
+    if !crate::systems::player_can_act(world) {
         return;
     }
     // #5865 — the refusals come BEFORE the key is spent: a script-blocked
@@ -1576,6 +1582,26 @@ fn activate_target(world: &World, target: InteractionTarget) {
     // even a target (`populate_candidates`); this guards the direct call.
     if activates_only_through_parents(world, target.entity) {
         log::debug!("interaction: entity {} activates only through its parents", target.entity);
+        return;
+    }
+    // PERK-HOOK-007 — before the lock gate: an activate entry may be what opens a lock the player cannot
+    // (Skyrim's `doomTowerPerk` conditions its choice on the target's lock and lock level).
+    if compose_perks {
+        if let Some(player) = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world) {
+            match crate::perk_activate::compose_player_activation(world, player, target) {
+                crate::perk_activate::PerkActivation::Default => {}
+                crate::perk_activate::PerkActivation::Replaced => {
+                    record_perk_activation(world, target, "Run Immediately");
+                    return;
+                }
+                crate::perk_activate::PerkActivation::Offered => {
+                    record_activation(world, target, None, false, "activate choice offered".to_string());
+                    return;
+                }
+            }
+        }
+    }
+    if activation_is_blocked(world, target.entity) {
         return;
     }
     let blocked = byroredux_scripting::default_activation_blocked(world, target.entity);
@@ -1620,7 +1646,24 @@ fn activate_target(world: &World, target: InteractionTarget) {
     } else {
         event_outcome
     };
+    record_activation(world, target, activator, event_emitted, outcome);
+}
 
+/// A perk's activate entry `label` ran in place of the player's activation of `target` (PERK-HOOK-007): the
+/// activation the trace counts, with no `ActivateEvent`.
+pub(crate) fn record_perk_activation(world: &World, target: InteractionTarget, label: &str) {
+    let player = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world);
+    let outcome = format!("perk activate entry {label:?} ran in place of the default activation");
+    record_activation(world, target, player, false, outcome);
+}
+
+fn record_activation(
+    world: &World,
+    target: InteractionTarget,
+    activator: Option<EntityId>,
+    event_emitted: bool,
+    outcome: String,
+) {
     if let Some(mut trace) = world.try_resource_mut::<InteractionTrace>() {
         trace.activation_count = trace.activation_count.saturating_add(1);
         trace.last = Some(InteractionTraceEntry {

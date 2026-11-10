@@ -286,7 +286,7 @@ pub use relationships::{
     install_relationships, relationship_rank, AuthoredRelationships, ScriptedRelationships,
 };
 pub use messages::{
-    install_message_catalog, MessageCatalog, PendingScriptMessages, ScriptMessage,
+    install_message_catalog, MessageAnswer, MessageCatalog, PendingScriptMessages, ScriptMessage,
 };
 pub use bleedout::{
     bleedout_system, install_bleedout_rules, is_bleeding_out, is_essential, is_protected,

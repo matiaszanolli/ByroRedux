@@ -152,7 +152,7 @@ fn text_replacement_fills_globals_aliases_and_leaves_the_rest() {
             text: "Prisoner found 7/20 at 1.50; [...] <Alias.Race=Player>".into(),
             message_box: true,
             buttons: vec!["Ok".into()],
-            source: None,
+            answer: MessageAnswer::Unread,
         }]
     );
 }
@@ -177,7 +177,7 @@ fn obscript_message_boxes_answer_get_button_pressed_once() {
     let shown = world.resource::<PendingScriptMessages>().0.clone();
     assert_eq!(shown[0].text, "Erected by the Grateful Citizens of Bruma, 3E 433.");
     assert_eq!(shown[0].buttons, vec!["Done".to_owned()]);
-    assert_eq!(shown[0].source, Some(quest));
+    assert_eq!(shown[0].answer, MessageAnswer::ObScript(quest));
     assert_eq!(take_button(&world), -1, "not answered yet");
     record_button(&world, 0);
     // The answer is global: the next script to read it may belong to a

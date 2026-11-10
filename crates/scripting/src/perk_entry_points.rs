@@ -99,6 +99,8 @@ pub mod fnv {
     pub const MODIFY_DAMAGE_THRESHOLD_ATTACKER: u8 = 58;
     /// `Calculate To Hit Chance`: the GECK runs it "when the player queues a shot in VATS" (§10 Q6).
     pub const CALCULATE_TO_HIT_CHANCE: u8 = 8;
+    /// `Activate`: "Run when the player activates something" (GECK *Entry Point*).
+    pub const ACTIVATE: u8 = 27;
 }
 
 /// Skyrim entry-point indices (`wbEntryPointsEnum`, xEdit `wbDefinitionsTES5`).
@@ -109,6 +111,8 @@ pub mod skyrim {
     pub const GET_MAX_CARRY_WEIGHT: u8 = 10;
     /// `Add Leveled List On Death` (`wbEntryPointsEnum` index 9).
     pub const ADD_LEVELED_LIST_ON_DEATH: u8 = 9;
+    /// `Activate`: a choice "in addition to the normal activation prompt" (CK *Perk Entry Point*).
+    pub const ACTIVATE: u8 = 14;
     pub const MOD_SNEAK_ATTACK_MULT: u8 = 18;
     pub const MOD_ATTACK_DAMAGE: u8 = 35;
     pub const MOD_INCOMING_DAMAGE: u8 = 36;
@@ -164,6 +168,10 @@ pub enum PerkCalculation {
     ProjectedWeaponDamage,
     /// The chance of a VATS shot the player queues (FO3 / FNV *Calculate To Hit Chance*, §10 Q6).
     VatsHitChance,
+    /// The player's activation of a reference (FO3 / FNV 27, Skyrim 14): its *Add Activate Choice* entries
+    /// (PERK-HOOK-007). Fallout 4's *Activate* (14) has no row yet: its *Run Immediately* timing is a Phase 0
+    /// verify item (the FO4 CK's two pages disagree), so its entries stay Pending until that settles.
+    Activate,
 }
 
 impl PerkCalculation {
@@ -187,6 +195,8 @@ impl PerkCalculation {
             (Self::WeaponDamage, Fallout4) => Some(fo4::MOD_WEAPON_ATTACK_DAMAGE),
             (Self::ProjectedWeaponDamage, Skyrim) => Some(skyrim::CALCULATE_WEAPON_DAMAGE),
             (Self::VatsHitChance, Fallout3NV) => Some(fnv::CALCULATE_TO_HIT_CHANCE),
+            (Self::Activate, Fallout3NV) => Some(fnv::ACTIVATE),
+            (Self::Activate, Skyrim) => Some(skyrim::ACTIVATE),
             _ => None,
         }
     }
@@ -251,13 +261,16 @@ pub struct PerkEntryPointEntry {
 
 /// What a `Quest` or `Ability` entry carries (PERK-BODY): neither is a value on a hook, so neither is in
 /// the composition table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PerkBodyKind {
     /// "Spells and Abilities added in this way will be removed when the Perk is removed" (CK *Perk*).
     Ability { spell: u32 },
     /// An `Add Leveled List` function entry (function 8) on a hook: the list the perk owner's kill adds to the
     /// victim (PERK-HOOK-006). Not value math, so not in the composition table.
     LeveledList { entry_point: u8, list: u32 },
+    /// An `Add Activate Choice` function entry (function 9) on a hook: a choice the player's activation offers
+    /// or runs, and what it runs (PERK-HOOK-007, PERK-HOOK-012). Not value math, so not in the composition table.
+    ActivateChoice { entry_point: u8, choice: Arc<PerkActivateChoice> },
     /// "A Quest Perk Entry will start a specified quest and set it to a specified stage" (CK *Perk*).
     Quest { quest: u32, stage: u16 },
 }
@@ -288,6 +301,9 @@ pub struct PerkInstallSummary {
     pub entry_point_entries: usize,
     /// On a Consumed hook and resolved to value math: the entries a composition can apply.
     pub composed: usize,
+    /// On a Consumed hook and held as a body its consumer reads: a leveled list on *Add Leveled List On
+    /// Death*, an activate choice on *Activate*.
+    pub consumed_bodies: usize,
     /// On a Consumed hook but not value math (a function or parameter shape that did not decode).
     pub skipped_undecoded: usize,
     /// On a hook that is not Consumed, by its state.
@@ -304,12 +320,14 @@ impl std::fmt::Display for PerkInstallSummary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "perk entry points: dialect {:?}, {} perks, {} entry-point entries: {} composed, {} skipped (undecoded shape); \
+            "perk entry points: dialect {:?}, {} perks, {} entry-point entries: {} composed, {} held as bodies \
+             (leveled lists, activate choices), {} skipped (undecoded shape); \
              on other hooks {} pending / {} blocked / {} inert, {} uncatalogued; bodies {} ability + {} quest",
             self.dialect,
             self.perks,
             self.entry_point_entries,
             self.composed,
+            self.consumed_bodies,
             self.skipped_undecoded,
             self.pending,
             self.blocked,
@@ -397,6 +415,16 @@ impl PerkEntryTable {
                             function_data: PerkFunctionData::FormId(list),
                             ..
                         } => PerkBodyKind::LeveledList { entry_point: entry_point_index, list },
+                        PerkEntryBody::EntryPoint {
+                            entry_point_index,
+                            function: 9,
+                            ref function_data,
+                            ref details,
+                            ..
+                        } => PerkBodyKind::ActivateChoice {
+                            entry_point: entry_point_index,
+                            choice: Arc::new(PerkActivateChoice::from_entry(entry.priority, function_data, details)),
+                        },
                         PerkEntryBody::EntryPoint { .. } => return None,
                     };
                     Some(PerkBodyEntry { rank: entry.rank, kind, tabs: entry.condition_tabs.clone() })
@@ -419,6 +447,8 @@ impl PerkEntryTable {
                             Some(HookState::Consumed { .. }) => {
                                 if resolve_op(index, dialect, *entry_point_index, *function, function_data).is_some() {
                                     summary.composed += 1;
+                                } else if is_consumed_body(dialect, *entry_point_index, *function, function_data) {
+                                    summary.consumed_bodies += 1;
                                 } else {
                                     summary.skipped_undecoded += 1;
                                 }
@@ -608,6 +638,17 @@ fn with_attacker_weapon<R>(world: &World, attacker: EntityId, f: impl FnOnce(Opt
     match (subject, crate::condition::attacking_weapon(world, attacker)) {
         (Some(subject), Some(weapon)) => lend_base_form(world, subject, weapon, || f(Some(subject))),
         _ => f(None),
+    }
+}
+
+/// Whether a non-value entry is a body the consumer of its hook reads: `Add Leveled List` (function 8) on the
+/// dialect's *Add Leveled List On Death* hook, `Add Activate Choice` (function 9) on its *Activate* hook.
+fn is_consumed_body(dialect: PerkEntryPointDialect, entry_point: u8, function: u8, data: &PerkFunctionData) -> bool {
+    let on = |calculation: PerkCalculation| calculation.hook(dialect) == Some(entry_point);
+    match function {
+        8 => matches!(data, PerkFunctionData::FormId(_)) && on(PerkCalculation::DeathLeveledList),
+        9 => on(PerkCalculation::Activate),
+        _ => false,
     }
 }
 
@@ -1116,11 +1157,13 @@ fn apply_op(world: &World, owner: EntityId, op: &PerkOp, value: f32) -> f32 {
     }
 }
 
+mod activate;
 mod bodies;
 mod catalog;
 mod gates;
 pub use catalog::{hook, hooks, Hook, HookState, UNCLASSIFIED};
 pub use gates::{plan_take_perk, PerkRefusal, PerkTake};
+pub use activate::{compose_activate_choices, run_activate_choice, ActivateChoiceOffer, ActivateChoiceRun, PerkActivateChoice};
 pub use bodies::{perk_body_system, reconcile_perk_bodies, PerkBodyState};
 
 #[cfg(test)]

@@ -1072,7 +1072,9 @@ mod catalog {
         }
     }
 
-    /// The Q6 hook, the VATS hooks and the activate / leveled-list hooks carry the requirement that builds them.
+    /// The Q6 hook, the VATS hooks and the hooks not yet built carry the requirement that builds them. Fallout 4's
+    /// *Activate* waits on its Run Immediately timing; FO3 / FNV's and Skyrim's are consumed (PERK-HOOK-007), on
+    /// the activated reference as their Target tab.
     #[test]
     fn hooks_the_prd_builds_are_pending_under_their_ids() {
         let pending = |dialect, index| match hook(dialect, index).unwrap().state {
@@ -1080,9 +1082,14 @@ mod catalog {
             other => panic!("{index}: {other:?}"),
         };
         assert_eq!(pending(PerkEntryPointDialect::Fallout3NV, 39), "PERK-HOOK-005");
-        assert_eq!(pending(PerkEntryPointDialect::Fallout3NV, 27), "PERK-HOOK-007");
-        assert_eq!(pending(PerkEntryPointDialect::Skyrim, 14), "PERK-HOOK-007");
+        assert_eq!(pending(PerkEntryPointDialect::Fallout4, fo4::ACTIVATE), "PERK-HOOK-007");
         assert_eq!(pending(PerkEntryPointDialect::Skyrim, 51), "PERK-HOOK-009");
+        for (dialect, index) in [(PerkEntryPointDialect::Fallout3NV, fnv::ACTIVATE), (PerkEntryPointDialect::Skyrim, skyrim::ACTIVATE)] {
+            let row = hook(dialect, index).unwrap();
+            assert_eq!(row.name, "Activate");
+            assert!(matches!(row.state, HookState::Consumed { .. }), "{dialect:?}: {:?}", row.state);
+            assert_eq!(row.subjects, Some(&["Target"][..]));
+        }
         assert_eq!(HookState::Pending { id: "X" }.report(), "pending: X");
     }
 
@@ -1524,6 +1531,186 @@ mod fallout4 {
         assert_eq!(
             hook(PerkEntryPointDialect::Fallout3NV, fnv::CALCULATE_TO_HIT_CHANCE).unwrap().state.name(),
             "consumed"
+        );
+    }
+}
+
+/// PERK-HOOK-007 / PERK-HOOK-012 — the *Activate* hook: which choices an activation offers, and what one runs.
+mod activate_choices {
+    use super::*;
+    use crate::papyrus_demo::PapyrusPlayerEntity;
+    use crate::{FragmentSet, PendingPerkEntries, PerkEntryId, PerkEntryRun, PerkFragments};
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+    use byroredux_plugin::esm::records::{PerkEntryDetails, ScriptRecord, ScriptRef};
+
+    /// `RoboticsExpert` (FalloutNV.esm `00031DC2`).
+    const PERK: u32 = 0x0003_1DC2;
+    const ROBOT: u32 = 0x0001_2345;
+
+    /// An `Add Activate Choice` entry (function 9, `EPFT` 4) on `hook`.
+    fn activate_entry(rank: u8, priority: u8, hook: u8, details: PerkEntryDetails, tabs: Vec<PerkConditionTab>) -> PerkEntry {
+        let mut entry = entry_point(rank, priority, hook, 9, PerkFunctionData::None, tabs);
+        if let PerkEntryBody::EntryPoint { details: slot, param_type, .. } = &mut entry.body {
+            *slot = details;
+            *param_type = 4;
+        }
+        entry
+    }
+
+    fn label(text: &str) -> PerkEntryDetails {
+        PerkEntryDetails { button_label: text.to_owned(), ..Default::default() }
+    }
+
+    /// The target tab of vanilla `RoboticsExpert`, reduced to the one function the fixture world answers: the
+    /// activated reference is not dead.
+    fn alive_target_tab() -> PerkConditionTab {
+        tab(1, vec![condition(GET_DEAD, 0.0)])
+    }
+
+    /// `RoboticsExpert`'s embedded script, bytes verbatim from FalloutNV.esm (`perk_entry_census` with
+    /// `CENSUS_ENTRY_POINT=27`): `SetUnconscious 1`, `player.RewardXP 10`, `ModPCMiscStat "Robots Disabled" 1`.
+    fn robotics_expert_script() -> ScriptRecord {
+        ScriptRecord {
+            compiled: vec![
+                0xf1, 0x10, 0x07, 0x00, 0x01, 0x00, 0x6e, 0x01, 0x00, 0x00, 0x00, //
+                0x1c, 0x00, 0x01, 0x00, 0x77, 0x11, 0x07, 0x00, 0x01, 0x00, 0x6e, 0x0a, 0x00, 0x00, 0x00, //
+                0x37, 0x11, 0x09, 0x00, 0x02, 0x00, 0x16, 0x00, 0x6e, 0x01, 0x00, 0x00, 0x00,
+            ],
+            refs: vec![ScriptRef::Object(crate::PLAYER_REFERENCE)],
+            ..Default::default()
+        }
+    }
+
+    /// The perk owner is the player; `target` is a placed reference `ROBOT`.
+    fn activation_world(idx: &EsmIndex) -> (World, EntityId, EntityId) {
+        let (mut world, player) = world_with(idx, &[(PERK, 1)]);
+        world.insert_resource(PapyrusPlayerEntity(player));
+        world.insert_resource(crate::ScriptGame(idx.game));
+        let mut pool = FormIdPool::new();
+        let form = pool.intern(FormIdPair { plugin: PluginId::from_filename("Test.esm"), local: LocalFormId(ROBOT) });
+        world.insert_resource(pool);
+        world.register::<FormIdComponent>();
+        let target = world.spawn();
+        world.insert(target, FormIdComponent(form));
+        (world, player, target)
+    }
+
+    fn labels(offers: &[ActivateChoiceOffer]) -> Vec<&str> {
+        offers.iter().map(|offer| offer.choice.label.as_str()).collect()
+    }
+
+    /// PERK-HOOK-007 — an `Add Activate Choice` entry on *Activate* is offered when its Target tab (1) passes
+    /// on the activated reference, and not otherwise; the same function on another hook offers nothing, and
+    /// the install summary counts only the first as a body its consumer reads.
+    #[test]
+    fn the_activate_hook_offers_a_choice_for_the_target_its_tabs_accept() {
+        let idx = index(
+            GameKind::Fallout3NV,
+            vec![perk(
+                PERK,
+                vec![
+                    activate_entry(0, 0, fnv::ACTIVATE, label("Deactivate"), vec![alive_target_tab()]),
+                    activate_entry(0, 0, fnv::GET_MAX_CARRY_WEIGHT, label("Not a choice"), vec![]),
+                ],
+            )],
+        );
+        let summary = PerkEntryTable::from_index(&idx).summary().clone();
+        assert_eq!((summary.consumed_bodies, summary.skipped_undecoded), (1, 1), "{summary}");
+        let (mut world, player, target) = activation_world(&idx);
+        assert_eq!(labels(&compose_activate_choices(&world, player, target)), vec!["Deactivate"]);
+        world.insert(target, Dead::default());
+        assert!(compose_activate_choices(&world, player, target).is_empty(), "the Target tab reads the target");
+        // A perk the activator does not hold offers nothing.
+        let stranger = world.spawn();
+        world.insert(stranger, Perks::default());
+        assert!(compose_activate_choices(&world, stranger, target).is_empty());
+    }
+
+    /// The choices follow the entry rank held and the composition order: Skyrim ascends by priority, as
+    /// vanilla `VampireFeed`'s 10 / 20 pair is authored.
+    #[test]
+    fn activate_choices_follow_the_rank_held_and_the_composition_order() {
+        let idx = index(
+            GameKind::Skyrim,
+            vec![perk(
+                PERK,
+                vec![
+                    activate_entry(0, 20, skyrim::ACTIVATE, label("Second"), vec![]),
+                    activate_entry(0, 10, skyrim::ACTIVATE, label("First"), vec![]),
+                    activate_entry(1, 0, skyrim::ACTIVATE, label("Rank two"), vec![]),
+                ],
+            )],
+        );
+        let (world, player, target) = activation_world(&idx);
+        assert_eq!(labels(&compose_activate_choices(&world, player, target)), vec!["First", "Second"]);
+    }
+
+    /// Fallout 4's *Activate* (14) composes nothing until its *Run Immediately* timing is verified (the FO4 CK's
+    /// two pages disagree); its entries stay Pending in the summary.
+    #[test]
+    fn fallout_4_activate_entries_wait_on_their_timing() {
+        let idx = index(GameKind::Fallout4, vec![perk(PERK, vec![activate_entry(0, 0, fo4::ACTIVATE, label("Hack"), vec![])])]);
+        assert_eq!(PerkEntryTable::from_index(&idx).summary().pending, 1);
+        let (world, player, target) = activation_world(&idx);
+        assert!(compose_activate_choices(&world, player, target).is_empty());
+    }
+
+    /// PERK-HOOK-012 (A8) — picking an FO3 / FNV choice runs its embedded script as a reference script on the
+    /// activated reference: vanilla `RoboticsExpert`'s `SetUnconscious 1` shuts down the robot itself.
+    #[test]
+    fn activate_choice_runs_its_entry() {
+        let mut details = label("Deactivate");
+        details.script = Some(robotics_expert_script());
+        let idx = index(GameKind::Fallout3NV, vec![perk(PERK, vec![activate_entry(0, 0, fnv::ACTIVATE, details, vec![])])]);
+        let (mut world, player, target) = activation_world(&idx);
+        // What the ObScript host reads and writes on a booted FO3 / FNV world.
+        world.insert_resource(crate::quest_stages::QuestStageState::default());
+        world.insert_resource(crate::quest_stages::QuestObjectiveState::default());
+        world.insert_resource(crate::obscript_quests::ObScriptQuestTimers::default());
+        world.insert_resource(crate::obscript_quests::ObScriptQuestLocals::default());
+        world.insert_resource(crate::obscript_quests::ObScriptEffectLog::default());
+        let offers = compose_activate_choices(&world, player, target);
+        assert_eq!(offers.len(), 1);
+        let run = run_activate_choice(&world, &offers[0], player, target);
+        assert!(run.script && !run.fragment && !run.spell, "{run:?}");
+        assert!(
+            world.get::<crate::ActorControlState>(target).is_some_and(|state| state.unconscious),
+            "SetUnconscious ran on the activated reference"
+        );
+        assert!(
+            world.get::<crate::ActorControlState>(player).is_none_or(|state| !state.unconscious),
+            "not on the perk owner"
+        );
+    }
+
+    /// PERK-HOOK-012 — a Skyrim entry reports the fragment its `EPF3` index binds, with the player as `akActor`
+    /// and the activated reference as `akTargetRef`; an index the perk binds no fragment to reports nothing.
+    #[test]
+    fn a_skyrim_activate_entry_reports_its_fragment_with_the_target() {
+        let entry = |index: u16| {
+            let mut details = label("Feed");
+            details.fragment_index = Some(index);
+            activate_entry(0, 0, skyrim::ACTIVATE, details, vec![])
+        };
+        let idx = index(GameKind::Skyrim, vec![perk(PERK, vec![entry(0), entry(3)])]);
+        let (mut world, player, target) = activation_world(&idx);
+        world.insert_resource(PendingPerkEntries::default());
+        let mut fragments = PerkFragments::default();
+        fragments.insert(
+            PERK,
+            FragmentSet {
+                vmad: None,
+                fragments: vec![(PerkEntryId(0), "PRKF_Test".to_string(), "Fragment_0".to_string())],
+            },
+        );
+        world.insert_resource(fragments);
+        let offers = compose_activate_choices(&world, player, target);
+        assert!(run_activate_choice(&world, &offers[0], player, target).fragment);
+        assert!(!run_activate_choice(&world, &offers[1], player, target).ran(), "index 3 binds nothing");
+        assert_eq!(
+            world.resource::<PendingPerkEntries>().0,
+            vec![PerkEntryRun { perk: PERK, entry: 0, owner: crate::PLAYER_REFERENCE, target: Some(ROBOT) }]
         );
     }
 }

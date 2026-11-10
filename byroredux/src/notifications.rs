@@ -98,10 +98,17 @@ pub(crate) fn answer_message_box(world: &World, choice: Option<usize>) -> bool {
         let answered = boxes.0.pop_front();
         (answered, !boxes.0.is_empty())
     };
-    if let (Some(answered), Some(choice)) = (answered, choice) {
-        if answered.source.is_some() {
-            byroredux_scripting::messages::record_button(world, choice);
+    match answered.map(|answered| answered.answer) {
+        Some(byroredux_scripting::MessageAnswer::ObScript(_)) => {
+            if let Some(choice) = choice {
+                byroredux_scripting::messages::record_button(world, choice);
+            }
         }
+        // PERK-HOOK-007 — the player's activation waits on this answer.
+        Some(byroredux_scripting::MessageAnswer::ActivateChoice) => {
+            crate::perk_activate::answer_activate_choice(world, choice)
+        }
+        Some(byroredux_scripting::MessageAnswer::Unread) | None => {}
     }
     more
 }
@@ -134,7 +141,7 @@ mod tests {
             text: text.to_owned(),
             message_box,
             buttons: Vec::new(),
-            source: None,
+            answer: byroredux_scripting::MessageAnswer::Unread,
         };
         world.insert_resource(PendingScriptMessages(vec![
             message("Current Bounty: 40", false),
@@ -163,7 +170,7 @@ mod tests {
                     text: format!("Box {i}"),
                     message_box: true,
                     buttons: Vec::new(),
-                    source: None,
+                    answer: byroredux_scripting::MessageAnswer::Unread,
                 })
                 .collect(),
         ));
@@ -177,7 +184,7 @@ mod tests {
             text: "Late".to_owned(),
             message_box: true,
             buttons: Vec::new(),
-            source: None,
+            answer: byroredux_scripting::MessageAnswer::Unread,
         }]));
         route_script_messages(&world);
         assert_eq!(
@@ -198,7 +205,7 @@ mod tests {
             text: "Continue?".to_owned(),
             message_box: true,
             buttons: vec!["Yes".to_owned(), "No".to_owned()],
-            source: Some(QuestFormId(0x0001_C3D0)),
+            answer: byroredux_scripting::MessageAnswer::ObScript(QuestFormId(0x0001_C3D0)),
         }])));
 
         assert!(!answer_message_box(&world, Some(1)));

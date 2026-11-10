@@ -120,6 +120,7 @@ fn main() -> anyhow::Result<()> {
                         function,
                         tab_count,
                         function_data,
+                        details,
                         ..
                     } = &e.body
                     else {
@@ -127,6 +128,31 @@ fn main() -> anyhow::Result<()> {
                     };
                     if *entry_point_index != wanted {
                         continue;
+                    }
+                    // Function 9 is Add Activate Choice: its label, flags and what picking it runs.
+                    if *function == 9 {
+                        println!(
+                            "  activate {} label {:?} run_immediately {} replace_default {} fragment {:?} spell {:?}",
+                            perk.editor_id,
+                            details.button_label,
+                            details.run_immediately,
+                            details.replace_default,
+                            details.fragment_index,
+                            function_data,
+                        );
+                        if let Some(script) = &details.script {
+                            println!(
+                                "    script {} bytes, {} locals, refs {:08X?}",
+                                script.compiled.len(),
+                                script.locals.len(),
+                                script.ref_form_ids
+                            );
+                            for line in script.source.as_deref().unwrap_or("<no SCTX>").lines() {
+                                println!("    | {line}");
+                            }
+                            let hex: Vec<String> = script.compiled.iter().map(|b| format!("{b:02x}")).collect();
+                            println!("    SCDA {}", hex.join(" "));
+                        }
                     }
                     let tabs: Vec<String> = e
                         .condition_tabs

@@ -107,6 +107,16 @@ fn register_interaction_system(scheduler: &mut Scheduler) {
             .reads_resource::<crate::lockpick::LockpickItem>()
             .reads_resource::<byroredux_scripting::SmTree>()
             .writes::<byroredux_scripting::StoryEvent>()
-            .writes_resource::<byroredux_scripting::story_manager::PendingScriptStoryEvents>(),
+            .writes_resource::<byroredux_scripting::story_manager::PendingScriptStoryEvents>()
+            // PERK-HOOK-007 / -012 — `perk_activate`: the player's activate entries are composed (the perk
+            // table, the player's perks, the condition evaluator behind their tabs), a choice opens the box
+            // (the script-message queue) and holds the activation, and what an entry carries runs: the
+            // embedded script on the ObScript host, a fragment report, a spell cast.
+            .reads_resource::<byroredux_scripting::perk_entry_points::PerkEntryTable>()
+            .reads::<byroredux_core::character::Perks>()
+            .writes_resource::<byroredux_scripting::PendingScriptMessages>()
+            .writes_resource::<crate::perk_activate::PendingActivateChoice>()
+            .reads_resource::<byroredux_scripting::PerkFragments>()
+            .writes_resource::<byroredux_scripting::PendingPerkEntries>(),
     );
 }

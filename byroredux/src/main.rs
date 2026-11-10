@@ -48,6 +48,7 @@ mod lockpick;
 mod smithing;
 mod inventory;
 mod notifications;
+mod perk_activate;
 mod objectives;
 mod hud;
 mod light_translate;

@@ -117,9 +117,21 @@ pub struct ScriptMessage {
     pub text: String,
     pub message_box: bool,
     pub buttons: Vec<String>,
-    /// The quest whose script raised a box and reads its answer with
-    /// `GetButtonPressed` (ObScript); `None` when nothing reads it.
-    pub source: Option<QuestFormId>,
+    /// Who reads the box's answer.
+    pub answer: MessageAnswer,
+}
+
+/// Who reads a message box's answer: the button the player picks goes there.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MessageAnswer {
+    /// Nothing reads it (a `Message.Show` box, a notification).
+    #[default]
+    Unread,
+    /// The ObScript quest whose script raised the box reads it with `GetButtonPressed`.
+    ObScript(QuestFormId),
+    /// The player's activate choice (PERK-HOOK-007, Q5): button 0 is the default activation and each later
+    /// button one perk entry; the engine that raised the box keeps what each button runs.
+    ActivateChoice,
 }
 
 /// The last answered ObScript message-box button, consumed by the first
@@ -169,7 +181,7 @@ pub fn show_obscript_message(
             text: substitute_numbers(&message.text, &message.values),
             message_box: message.message_box,
             buttons,
-            source: message.message_box.then_some(quest),
+            answer: if message.message_box { MessageAnswer::ObScript(quest) } else { MessageAnswer::Unread },
         });
     }
 }
@@ -457,7 +469,7 @@ pub fn show_message(world: &World, form_id: u32, args: &[f32]) -> bool {
         text,
         message_box: definition.message_box,
         buttons: definition.buttons,
-        source: None,
+        answer: MessageAnswer::Unread,
     };
     match world.try_resource_mut::<PendingScriptMessages>() {
         Some(mut pending) => {
@@ -491,7 +503,7 @@ pub fn notify(world: &World, text: String) {
             text,
             message_box: false,
             buttons: Vec::new(),
-            source: None,
+            answer: MessageAnswer::Unread,
         });
     }
 }

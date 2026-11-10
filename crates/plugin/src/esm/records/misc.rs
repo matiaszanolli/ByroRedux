@@ -79,7 +79,7 @@ pub use music::{
 pub use relationship::{parse_rela, RelaRecord};
 pub use magic::{
     parse_ench, parse_mgef, parse_mgef_for_game, parse_perk, parse_spel, ActorValueRef, EnchRecord,
-    MagicArchetype, MagicEffectItem, MgefRecord, PerkConditionTab, PerkEntry, PerkEntryBody,
+    MagicArchetype, MagicEffectItem, MgefRecord, PerkConditionTab, PerkEntry, PerkEntryBody, PerkEntryDetails,
     PerkFunctionData, PerkRecord, SpelRecord, SpellType,
     MGEF_FLAG_DETRIMENTAL, MGEF_FLAG_RECOVER,
 };

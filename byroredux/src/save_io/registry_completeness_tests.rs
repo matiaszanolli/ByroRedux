@@ -960,6 +960,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PendingSaveLoadSlot", "one-shot queued-load slot (#1848/SAVE-05), empty except mid-drain — save/load plumbing itself, not save-worthy state"),
         ("PlayerNotifications", "bounded transient save/load and gameplay feedback drained into the HUD/console before the next frame"),
         ("MessageBoxQueue", "script message boxes awaiting the player's answer; presentation of fragments that already ran, like a notification"),
+        ("PendingActivateChoice", "the activation waiting on the activate-choice box (PERK-HOOK-007); presentation of an activation in progress; a load discards it with the box it waits on"),
         ("PapyrusPlayerEntity", "scripting-crate sibling of PlayerEntity (#3710 renamed it off the shared short name), pointing Papyrus's Game pseudo-singleton at the same process-lifetime player body; set from the same call site as PlayerEntity, same process-local-identity posture, not gameplay state"),
         ("PlayerEntity", "points to the process-lifetime player body, which deliberately outlives cell unload; the entity remains valid across live reload and the resource is process-local identity, not gameplay state"),
         ("PlayerInventoryTemplate", "read-only starting loadout rebuilt from the master Player NPC record; live Inventory/EquipmentSlots are saved separately"),

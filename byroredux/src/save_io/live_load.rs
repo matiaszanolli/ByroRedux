@@ -479,6 +479,10 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     if let Some(mut boxes) = world.try_resource_mut::<crate::notifications::MessageBoxQueue>() {
         boxes.0.clear();
     }
+    // PERK-HOOK-007 — the activation the discarded activate-choice box held names the outgoing world's target.
+    if let Some(mut pending) = world.try_resource_mut::<crate::perk_activate::PendingActivateChoice>() {
+        *pending = crate::perk_activate::PendingActivateChoice::default();
+    }
     // #6574 — M43 transients of the same shape. `ActiveCrafting`: a crafting session names the outgoing world's bench entity
     // (ids are not reclaimed, so the page would stay open on a bench that no longer exists and list nothing),
     // and a bench activated this tick is still queued behind the drain. A pending dropped item holds a

@@ -1376,7 +1376,9 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // both cited from their PRDs.
         // M48 Phase 0 (#6643) re-measure: +1 — `menu_gmst_census.rs`, the MenuXml document inventory
         // and the `&-s` setting-reference census (docs/data/game-ui/menu-string-refs-*.tsv).
-        ("plugin", 73, 9592),
+        // PERK-HOOK-007 re-measure: `perk_entry_census` lists an activate entry's `EPF2` label, flags, spell
+        // and embedded script (source and bytes) under `CENSUS_ENTRY_POINT` (no new target; the census grew).
+        ("plugin", 73, 9618),
         // M47.3 result scripts — `obscript_tools avcodes` aligns the Fallout
         // misc-stat codes and `live` names the quests a script advanced
         // (no new target; the existing triage tool grew).

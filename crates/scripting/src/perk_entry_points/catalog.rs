@@ -116,7 +116,7 @@ pub(super) const FALLOUT3_NV_HOOKS: &[Hook] = &[
     Hook { index: 24, name: "Modify Addiction Duration", state: HookState::Pending { id: UNCLASSIFIED }, subjects: Some(&[]) },
     Hook { index: 25, name: "Modify Positive Chem Duration", state: HookState::Pending { id: UNCLASSIFIED }, subjects: Some(&[]) },
     Hook { index: 26, name: "Adjust Drinking Radiation", state: HookState::Pending { id: UNCLASSIFIED }, subjects: Some(&[]) },
-    Hook { index: 27, name: "Activate", state: HookState::Pending { id: "PERK-HOOK-007" }, subjects: Some(&["Target"]) },
+    Hook { index: 27, name: "Activate", state: HookState::Consumed { site: "byroredux/src/perk_activate.rs::compose_player_activation" }, subjects: Some(&["Target"]) },
     Hook { index: 28, name: "Mysterious Stranger", state: HookState::Pending { id: UNCLASSIFIED }, subjects: Some(&[]) },
     Hook { index: 29, name: "Has Paralyzing Palm", state: HookState::Pending { id: UNCLASSIFIED }, subjects: Some(&[]) },
     Hook { index: 30, name: "Hacking Science Bonus", state: HookState::Pending { id: UNCLASSIFIED }, subjects: Some(&[]) },
@@ -180,7 +180,8 @@ pub(super) const SKYRIM_HOOKS: &[Hook] = &[
     Hook { index: 11, name: "Mod Addiction Chance", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
     Hook { index: 12, name: "Mod Addiction Duration", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
     Hook { index: 13, name: "Mod Positive Chem Duration", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
-    Hook { index: 14, name: "Activate", state: HookState::Pending { id: "PERK-HOOK-007" }, subjects: None },
+    // Tab 1 is the activated reference: UESP *Skyrim Mod:Mod File Format/PERK*, "Perk Owner (0) and Target (1)".
+    Hook { index: 14, name: "Activate", state: HookState::Consumed { site: "byroredux/src/perk_activate.rs::compose_player_activation" }, subjects: Some(&["Target"]) },
     Hook { index: 15, name: "Ignore Running During Detection", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
     Hook { index: 16, name: "Ignore Broken Lock", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
     Hook { index: 17, name: "Mod Enemy Critical Hit Chance", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
