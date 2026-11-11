@@ -167,6 +167,57 @@ fn launch_of(
     })
 }
 
+/// The ammunition `player` would load into `weapon`: the first entry of the weapon's ammo list
+/// (or its one ammo form) that the player carries. `None` when they carry none — the gun is empty.
+pub(crate) fn player_ammo_for(
+    world: &World,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+    player: EntityId,
+    weapon: u32,
+) -> Option<u32> {
+    let ammo_form = match index.items.get(&weapon).map(|item| &item.kind) {
+        Some(ItemKind::Weapon { ammo_form, .. }) if *ammo_form != 0 => *ammo_form,
+        _ => return None,
+    };
+    let accepted: Vec<u32> = index.form_lists.get(&ammo_form).map_or_else(|| vec![ammo_form], |list| list.entries.clone());
+    let inventory = world.get::<byroredux_core::ecs::components::Inventory>(player)?;
+    accepted.into_iter().find(|ammo| inventory.items.iter().any(|stack| stack.base_form_id == *ammo && stack.count > 0))
+}
+
+/// The player's shot with `weapon` and `ammo`, from `origin` along `direction` (the camera's aim:
+/// the player capsule keeps an identity rotation, so its forward is not where the player looks).
+/// The same projectile a `Weapon.Fire` makes — the ammunition's `PROJ` speed and range, the
+/// weapon's damage plus the ammunition's — so the hit takes the shared damage path.
+pub(crate) fn player_shot(
+    world: &World,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+    player: EntityId,
+    weapon: u32,
+    ammo: u32,
+    origin: Vec3,
+    direction: Vec3,
+) -> Result<Projectile, String> {
+    let (weapon_damage, ammo_damage, proj) = resolve_shot(index, weapon, ammo)?;
+    let direction = direction.normalize_or_zero();
+    if direction == Vec3::ZERO {
+        return Err("no aim direction".into());
+    }
+    let owners: Vec<_> = world
+        .query::<byroredux_physics::RapierHandles>()
+        .map(|handles| handles.iter().map(|(entity, handles)| (entity, handles.body)).collect())
+        .unwrap_or_default();
+    Ok(Projectile {
+        position: origin + direction * MUZZLE_OFFSET_BU,
+        velocity: direction * proj.muzzle_speed,
+        range_left: if proj.range > 0.0 { proj.range } else { f32::INFINITY },
+        lifetime_left: (proj.lifetime > 0.0).then_some(proj.lifetime),
+        damage: weapon_damage + ammo_damage.max(0.0),
+        shooter: player,
+        radius: proj.collision_radius.max(0.0),
+        launcher_bodies: std::sync::Arc::from(launcher_bodies(world, player, &owners)),
+    })
+}
+
 /// Start this frame's `Weapon.Fire` requests.
 pub(crate) fn projectile_launch_system(world: &World, _dt: f32) {
     let launches = world

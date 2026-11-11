@@ -279,9 +279,36 @@ pub(super) fn apply_inventory_effect(
     }
 }
 
+/// The load order's leveled item lists (`LVLI`), by FormID, for `AddItem` of a list.
+/// `NOT_SAVED_BY_DESIGN`: rebuilt from the records at every content load.
+#[derive(Debug, Default, Clone)]
+pub struct LeveledItemLists(pub std::sync::Arc<std::collections::HashMap<u32, byroredux_plugin::esm::records::LeveledList>>);
+
+impl byroredux_core::ecs::Resource for LeveledItemLists {}
+
+impl LeveledItemLists {
+    pub fn from_index(index: &byroredux_plugin::esm::records::EsmIndex) -> Self {
+        Self(std::sync::Arc::new(index.leveled_items.clone()))
+    }
+}
+
 /// Add `count` of `item_form_id` to `container`'s inventory (creating one: in
 /// Bethesda's runtime every object can receive items), emitting `OnItemAdded`.
+/// A leveled item list is resolved at the receiver's level into the items it
+/// gives, as a container's leveled contents are: New Vegas's starting gear is
+/// `player.additem CondNV9mmPistolLoot 1` (Doc Mitchell's outro), a list, not a
+/// weapon.
 pub fn add_items(world: &World, container: EntityId, item_form_id: u32, count: u32) {
+    let lists = world.try_resource::<LeveledItemLists>().map(|lists| std::sync::Arc::clone(&lists.0));
+    if let Some(lists) = lists.filter(|lists| lists.contains_key(&item_form_id)) {
+        let level = world.get::<byroredux_core::character::CharacterLevel>(container).map_or(1, |level| level.level.max(1));
+        let mut items = Vec::new();
+        byroredux_plugin::equip::expand_leveled_items(item_form_id, count, level, &lists, &mut items);
+        for (item, count) in items {
+            add_items(world, container, item, count);
+        }
+        return;
+    }
     let Some(mut inventories) = world.query_mut::<Inventory>() else {
         log::debug!("fragment AddItem skipped: Inventory component never registered");
         return;
@@ -307,4 +334,39 @@ pub fn add_items(world: &World, container: EntityId, item_form_id: u32, count: u
             stolen: false,
         }],
     );
+}
+
+#[cfg(test)]
+mod leveled_add_tests {
+    use super::*;
+    use byroredux_plugin::esm::records::{LeveledEntry, LeveledList};
+
+    /// `AddItem` of a leveled list gives what the list resolves to at the receiver's level, never
+    /// the list's own form: New Vegas's `player.additem CondNV9mmPistolLoot 1` is the starting
+    /// pistol. Here a list offers a level-1 and a level-10 entry; a level-1 receiver gets the first.
+    #[test]
+    fn adding_a_leveled_list_adds_what_it_resolves_to() {
+        const LIST: u32 = 0x00E3_982;
+        const PISTOL: u32 = 0x0000_E3A1;
+        const RIFLE: u32 = 0x0000_E3A2;
+        let mut world = World::new();
+        world.register::<Inventory>();
+        world.register::<byroredux_core::character::CharacterLevel>();
+        let list = LeveledList {
+            form_id: LIST,
+            entries: vec![
+                LeveledEntry { level: 1, form_id: PISTOL, count: 1 },
+                LeveledEntry { level: 10, form_id: RIFLE, count: 1 },
+            ],
+            editor_id: "CondNV9mmPistolLoot".into(),
+            chance_none: 0,
+            flags: 0,
+        };
+        world.insert_resource(LeveledItemLists(std::sync::Arc::new([(LIST, list)].into_iter().collect())));
+        let player = world.spawn();
+        add_items(&world, player, LIST, 1);
+        let inventory = world.get::<Inventory>(player).unwrap();
+        let held: Vec<(u32, u32)> = inventory.items.iter().map(|stack| (stack.base_form_id, stack.count)).collect();
+        assert_eq!(held, vec![(PISTOL, 1)]);
+    }
 }

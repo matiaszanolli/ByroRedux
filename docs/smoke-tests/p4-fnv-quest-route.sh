@@ -34,7 +34,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fixture.sh"
 smoke_load_fixture p4-fnv-quest-route "${1:-fnv}"
 smoke_require_fixture_fields P4_HEADLINE P4_CELL P4_CAMERA_POS P4_CAMERA_FORWARD \
     P4_QUEST P4_GREETING P4_OPENER_TOPIC P4_OPENER_INFO P4_MET_VARIABLE P4_WORLD_STAGES \
-    P4_FOLLOWUP_INFO P4_FOLLOWUP_TOPIC P4_FOLLOWUP_REPLY_INFO
+    P4_FOLLOWUP_PACKAGE P4_FOLLOWUP_INFO P4_FOLLOWUP_TOPIC P4_FOLLOWUP_REPLY_INFO
 smoke_require_data
 # Engine log lines print FormIDs as eight zero-padded hex digits.
 hex8() { printf '%08X' "$(( $1 ))"; }
@@ -167,6 +167,21 @@ require "$LOG_DIR/chain.quest" "40: displayed=true" \
     "stage 50 displayed the follow-up objective 40"
 
 # ── 4 — Sunny's next force-greet: talk to her, take the follow-up ─────────
+# The package that wins after stage 50 authors a Trigger Location outside the
+# saloon (the fixture names it): GECK *Dialogue Package*, the actor "will stay
+# at the Wait Location until the target enters the Trigger Location". The route
+# gets there by following Sunny out; actors do not cross cells in this engine
+# yet, so the gate proves the hold with the player indoors, then opens the same
+# package's greeting with `dialogue.forcegreet`, which installs it zone-free.
+sunny_id="$(grep -o 'npc [0-9]*' "$LOG_DIR/greeting.status" | head -1 | grep -o '[0-9]*')"
+[[ -n "$sunny_id" ]] || fail "the greeting's status named no NPC"
+sleep 5
+debug_command 'dialogue.status' "$LOG_DIR/hold.status"
+if grep -Fq "info $P4_FOLLOWUP_INFO" "$LOG_DIR/hold.status"; then
+    fail "Sunny's follow-up greeted the player outside her package's Trigger Location"
+fi
+pass "Sunny's follow-up waits for the player at her package's Trigger Location"
+debug_command "dialogue.forcegreet $sunny_id $P4_FOLLOWUP_PACKAGE" "$LOG_DIR/forcegreet.log"
 deadline=$((SECONDS + TIMEOUT))
 until debug_command 'dialogue.status' "$LOG_DIR/followup.status" &&
       grep -Fq "info $P4_FOLLOWUP_INFO" "$LOG_DIR/followup.status"; do

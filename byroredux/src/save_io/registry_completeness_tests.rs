@@ -566,6 +566,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("CreatedReferenceEntities", "the live entity of each spawned created reference; re-derived by step_created_references spawning into loaded cells"),
         ("ActiveLoadOrder", "the load order of the last cell-load entry point; republished by install_form_resolver on every load"),
         ("ExplicitStartPin", "session flag set from the --cell/--grid launch arguments, released by the first key or mouse press; never gameplay state"),
+        ("LeveledItemLists", "the load order's leveled item lists for AddItem of a list; rebuilt from the records by install_actor_value_names every boot"),
         ("ChargenSession", "the character-creation screens asked for and the one open: a menu, presentation state (GUI-EVT-005); a load opens none"),
         ("PlayerBodyRebuildRequest", "a one-frame request to assemble the player's body again after a sex or race change; a load assembles it from the saved CharacterIdentity"),
         ("NewGameStart", "session flag set once from the launch arguments (no named location, or --new-game, and no --load); gates the opening quests an original executable starts on a new game; never gameplay state"),

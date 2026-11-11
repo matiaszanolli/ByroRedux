@@ -1769,6 +1769,63 @@ rads to the pointer position, the fade-in and the label strings is not in the
 XML, and none of the local GECK/UESP references describes it. It stays unwired
 until that mapping is sourced.
 
+### From the beginning — a new game (2026-11-11)
+
+`--game fnv --new-game` (or `--cell GSDocMitchellHouse --new-game` with explicit
+archives) starts New Vegas as the original does, and the route runs from Doc
+Mitchell's house to Goodsprings with no console step a player would not take.
+`docs/smoke-tests/fnv-new-game.sh` gates it end to end.
+
+**The route.** The engine starts the intro quest VCG00 at stage 0 (no record or
+script in the masters starts it; its own `MenuMode` block runs under the
+original's new-game menus): the player is moved to `VCG01PlayerStartMarkerREF`,
+`FNVIntro.bik` is logged (no Bink decoder), and VCG00 hands over to VCG01. Doc's
+lines chain through their End result scripts; the five character-creation screens
+open on a native page (name, sex and race, SPECIAL from the Vit-o-matic, tag
+skills, traits); the player walks to the tester, uses it, sits on the couch for
+the psych test, follows Doc to the exit; Doc's outro gives the Pip-Boy, the
+Vault 21 jumpsuit and the starting gear; VCG01 ends at 200, VCG02 starts, and the
+front door opens onto Goodsprings.
+
+**What the route found** (each fixed, each gated by `fnv-new-game.sh` or a unit test):
+
+- **A stage result script could not write its own quest's variables**
+  (`set VCG00.fTimer to 3` in VCG00's stage 90 was refused as "the running
+  script"). The guard now compares scripts, not owners (`remote_variable`).
+- **Scripted `Say` / `SayTo` lines had nothing to say on FO3/FNV**: the dialogue
+  registry held only SCEN-referenced topics. It now also holds every topic a
+  script names in its `SCRO`s; a said line runs its INFO's Begin and End result
+  scripts (GECK *Category:Dialogue*).
+- **`Begin MenuMode [code]` blocks never ran** (GUI-EVT-006). Quest scripts run
+  them on their own cadence while a matching menu is open, including the frames a
+  native page pauses the world; VCG01 moves 36 → 40 under RaceSex (1036).
+- **The character-creation menus were only logged.** `chargen.rs` opens them on
+  a native page (`GameMenuPage::CharGen`, labels from the records), reports the
+  open one's code to `MenuMode`, and applies the answer: a saved
+  `CharacterIdentity` (name, sex, race; v125), SPECIAL bases, tag skills through
+  `SetPlayerTagSkill`'s path, traits as perks. A sex or race change rebuilds the
+  player's body and reconciles the worn gear. `chargen` answers it from the console.
+- **Per-effect spell conditions and value-less marks.** `PlayerConcussed` was
+  recast every quest tick (its `Concussion` mark never landed, so
+  `HasMagicEffect` stayed 0) and its Perception -4 ignored the effect's
+  `GetActorValue PerceptionCondition <= 0` gate. Lasting marks now land, and an
+  effect's own CTDAs gate its value while it runs.
+- **Player furniture, Travel-to-furniture, ObScript activators.** The player can
+  sit (`IsCurrentFurnitureRef`); a Travel package to a chair seats the actor (CS
+  *Travel Package*); a reference with an ObScript `OnActivate` block is an
+  activation target.
+- **Follow-up lines (`TCFU`).** A finished line with follow-ups says the first
+  that passes — Doc's whole outro.
+- **Equip events from a spoken line were lost** (the gear reconcile ran before
+  dialogue in `Late`); and **a Dialogue package's Trigger Location (`PLD2`) was
+  ignored**, so a far greeter (Bonnie Springs' Melissa) walked at the player
+  and, stuck, greeted from 28,000 units away. `p4-fnv-quest-route.sh` now proves
+  Sunny's follow-up waits at her trigger before driving the greeting.
+
+**Not modelled yet.** The intro movie; face sliders (GUI-NG-005); actors moving
+between cells (VCG02's "Follow Sunny" leaves the saloon); the MenuXml documents
+these screens have in the original (the page stands in, GUI-PAGE-002 / Q4).
+
 ## Work rules
 
 - Capability beats visual polish until P5 closes, unless a rendering defect

@@ -1164,18 +1164,31 @@ pub fn expand_leveled_loot(
     index: &EsmIndex,
     out: &mut Vec<(u32, u32)>,
 ) {
+    expand_leveled_items(form_id, count, level, &index.leveled_items, out);
+}
+
+/// [`expand_leveled_loot`] over the leveled item lists alone, for a caller that
+/// keeps only those (the scripting runtime's `AddItem`). A `form_id` that is no
+/// list comes back as itself.
+pub fn expand_leveled_items(
+    form_id: u32,
+    count: u32,
+    level: u16,
+    lists: &std::collections::HashMap<u32, crate::esm::records::LeveledList>,
+    out: &mut Vec<(u32, u32)>,
+) {
     fn walk(
         form_id: u32,
         count: u32,
         level: u16,
-        index: &EsmIndex,
+        lists: &std::collections::HashMap<u32, crate::esm::records::LeveledList>,
         out: &mut Vec<(u32, u32)>,
         path: &mut Vec<u32>,
     ) {
         if count == 0 {
             return;
         }
-        let Some(list) = index.leveled_items.get(&form_id) else {
+        let Some(list) = lists.get(&form_id) else {
             out.push((form_id, count));
             return;
         };
@@ -1193,7 +1206,7 @@ pub fn expand_leveled_loot(
                     entry.form_id,
                     count.saturating_mul(u32::from(entry.count)),
                     level,
-                    index,
+                    lists,
                     out,
                     path,
                 );
@@ -1203,14 +1216,14 @@ pub fn expand_leveled_loot(
                 entry.form_id,
                 count.saturating_mul(u32::from(entry.count)),
                 level,
-                index,
+                lists,
                 out,
                 path,
             );
         }
         path.pop();
     }
-    walk(form_id, count, level, index, out, &mut Vec::new());
+    walk(form_id, count, level, lists, out, &mut Vec::new());
 }
 
 #[cfg(test)]

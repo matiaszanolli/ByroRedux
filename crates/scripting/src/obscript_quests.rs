@@ -289,6 +289,9 @@ pub struct ObScriptQuestTimers {
     pub runs: HashMap<u32, u32>,
     /// Unknown-command hit counts per quest (diagnostics).
     pub unknown_commands: HashMap<u32, HashMap<u16, u32>>,
+    /// Seconds accumulated toward the next `MenuMode` run per quest; a quest
+    /// runs its first one as soon as a menu opens.
+    pub menu_mode_elapsed: HashMap<u32, f32>,
 }
 
 impl Resource for ObScriptQuestTimers {}
@@ -369,11 +372,12 @@ pub fn run_quest_game_mode(
 /// *MenuMode*; GUI-EVT-006). A no-op on frames no menu is open, and when the
 /// app installed no menu answer ([`crate::obscript_more::EngineQueries`]).
 ///
-/// It runs every frame a menu is up, including the frames a native page
-/// pauses the simulation on, which the app runs it on by name: the original
-/// runs these blocks in menu mode precisely while the world is stopped. New
-/// Vegas's `VCG01` moves from stage 36 to 40 in `Begin MenuMode 1036`, while
-/// the race menu is open.
+/// It runs on the frames a menu is up, including the frames a native page
+/// pauses the simulation on, which the app runs it on by hand: the original
+/// runs these blocks in menu mode precisely while the world is stopped. Each
+/// quest's blocks run on that quest's own script cadence (its delay, as its
+/// GameMode block), not every frame. New Vegas's `VCG01` moves from stage 36
+/// to 40 in `Begin MenuMode 1036`, while the race menu is open.
 pub fn obscript_quest_menu_mode_system(world: &World, dt: f32) {
     use crate::obscript_vm::BLOCK_MENU_MODE;
     let Some(menu_open) = world.try_resource::<crate::obscript_more::EngineQueries>().and_then(|queries| queries.menu_open) else {
@@ -386,7 +390,24 @@ pub fn obscript_quest_menu_mode_system(world: &World, dt: f32) {
         Some(stages) => running_quests_in_order(&stages),
         None => return,
     };
+    let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
     for quest in running {
+        // The quest's cadence, on a timer of its own (GameMode keeps the other).
+        let interval = {
+            let authored = world.try_resource::<QuestScriptTable>().and_then(|table| table.scripts.get(&quest).map(|script| script.authored_delay));
+            let Some(authored) = authored else { continue };
+            let runtime = world.try_resource::<ObScriptQuestLocals>().and_then(|locals| locals.delay_override(quest));
+            quest_script_interval(authored, runtime)
+        };
+        let elapsed = {
+            let Some(mut timers) = world.try_resource_mut::<ObScriptQuestTimers>() else { continue };
+            let slot = timers.menu_mode_elapsed.entry(quest).or_insert(f32::INFINITY);
+            *slot = if slot.is_finite() { *slot + dt } else { interval };
+            if *slot < interval {
+                continue;
+            }
+            std::mem::replace(slot, 0.0)
+        };
         let Some(script) = world
             .try_resource::<QuestScriptTable>()
             .and_then(|table| table.scripts.get(&quest).map(|quest_script| quest_script.script.clone()))
@@ -407,7 +428,7 @@ pub fn obscript_quest_menu_mode_system(world: &World, dt: f32) {
             .try_resource::<ObScriptQuestLocals>()
             .map(|locals| VmState { locals: locals.of(quest), ref_locals: locals.refs_of(quest) })
             .unwrap_or_default();
-        let mut host = ObScriptCommandHost::new(world, quest, None, dt, &script);
+        let mut host = ObScriptCommandHost::new(world, quest, None, elapsed, &script);
         for block in &blocks {
             if let BlockOutcome::Malformed(at) = program.run_at(block, &mut state, &mut host) {
                 log::warn!("ObScript quest {quest:08X}: malformed MenuMode bytecode at {at:#06x}");
@@ -928,10 +949,17 @@ impl ObScriptCommandHost<'_> {
             }
             CMD_SET_QUEST_DELAY => {
                 let seconds = num(1);
-                if let Some(mut locals) = self.world.try_resource_mut::<ObScriptQuestLocals>() {
+                // The effect log records a change: New Vegas's emergency-radio quest sets the
+                // delay it already has on every `MenuMode` run, which would otherwise crowd
+                // every other effect out of the bounded log.
+                let changed = self.world.try_resource_mut::<ObScriptQuestLocals>().is_some_and(|mut locals| {
+                    let changed = locals.delay_override(quest.0) != Some(seconds);
                     locals.set_delay(quest.0, seconds);
+                    changed
+                });
+                if changed {
+                    log(format!("SetQuestDelay {:08X} {seconds}", quest.0));
                 }
-                log(format!("SetQuestDelay {:08X} {seconds}", quest.0));
                 None
             }
             // "does not require the quest to be running"
@@ -1677,8 +1705,9 @@ mod persisted_locals_tests {
         out
     }
 
-    /// GUI-EVT-006 — a quest's `Begin MenuMode 1036` block runs on the frames the race menu
-    /// (code 1036) is open and on no other frame; a block with no code runs under any menu.
+    /// GUI-EVT-006 — a quest's `Begin MenuMode 1036` block runs while the race menu (code 1036)
+    /// is open and at no other time; a block with no code runs under any menu. Each quest's blocks
+    /// run on its own cadence (here a 1 s delay): the first as a menu opens, then a second later.
     #[test]
     fn a_menu_mode_block_runs_while_its_menu_is_open() {
         use crate::obscript_more::EngineQueries;
@@ -1701,7 +1730,7 @@ mod persisted_locals_tests {
                 locals: vec![ScriptLocalVar { index: 1, var_type: 1, name: "counter".into() }],
                 ..Default::default()
             };
-            table.scripts.insert(quest, QuestScript { script: Arc::new(script), quest: QuestFormId(quest), authored_delay: 0.0 });
+            table.scripts.insert(quest, QuestScript { script: Arc::new(script), quest: QuestFormId(quest), authored_delay: 1.0 });
         }
         world.insert_resource(table);
         world.insert_resource(ObScriptQuestLocals::default());
@@ -1719,8 +1748,10 @@ mod persisted_locals_tests {
         OPEN.store(1009, std::sync::atomic::Ordering::Relaxed);
         obscript_quest_menu_mode_system(&world, 0.016);
         assert_eq!((counter(&world, RACE_QUEST), counter(&world, ANY_QUEST)), (0.0, 1.0), "dialogue is not the race menu");
+        obscript_quest_menu_mode_system(&world, 0.5);
+        assert_eq!(counter(&world, ANY_QUEST), 1.0, "not every frame: the quest's own cadence");
         OPEN.store(1036, std::sync::atomic::Ordering::Relaxed);
-        obscript_quest_menu_mode_system(&world, 0.016);
+        obscript_quest_menu_mode_system(&world, 0.5);
         assert_eq!((counter(&world, RACE_QUEST), counter(&world, ANY_QUEST)), (1.0, 2.0));
         OPEN.store(0, std::sync::atomic::Ordering::Relaxed);
     }

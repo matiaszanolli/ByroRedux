@@ -272,6 +272,12 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
         return;
     };
 
+    // A gun fires: one round of the ammunition the player carries, as a projectile along the
+    // camera's aim. A melee weapon (or none) swings below.
+    if fire_player_gun(world, aggressor, origin, direction) {
+        return;
+    }
+
     // Resolve Rapier body ownership before acquiring PhysicsWorld. This keeps
     // component/resource guards non-overlapping and follows the interaction
     // ray's lock order.
@@ -375,6 +381,42 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
 
 /// Record the body location a killing blow struck on `target`'s [`DismemberRecord`] (VATS-LIMB-008), creating the
 /// record on first use. A world with no storage for it records nothing.
+/// Fire the player's equipped gun, if it is one: a weapon that is not a melee type and takes
+/// ammunition. Spends one round the player carries and launches the shot; with none left the
+/// gun clicks empty (a miss naming it). Returns whether the attack was a gun's — `false` leaves
+/// it to the melee swing.
+fn fire_player_gun(world: &World, player: EntityId, origin: byroredux_core::math::Vec3, direction: byroredux_core::math::Vec3) -> bool {
+    let Some(weapon) = world.get::<EquippedWeapon>(player).map(|weapon| weapon.base_form_id) else {
+        return false;
+    };
+    let Some(index) = world.try_resource::<crate::components::LoadedCellIndex>().map(|index| index.0.clone()) else {
+        return false;
+    };
+    let gun = matches!(
+        index.items.get(&weapon).map(|item| &item.kind),
+        Some(byroredux_plugin::esm::records::ItemKind::Weapon { ammo_form, anim_type, .. })
+            if *ammo_form != 0 && !crate::limbs::is_melee_anim_type(*anim_type)
+    );
+    if !gun {
+        return false;
+    }
+    let Some(ammo) = crate::systems::projectiles::player_ammo_for(world, &index, player, weapon) else {
+        record_miss(world, "out of ammunition");
+        return true;
+    };
+    match crate::systems::projectiles::player_shot(world, &index, player, weapon, ammo, origin, direction) {
+        Ok(shot) => {
+            byroredux_scripting::fragment::remove_items(world, player, ammo, 1, None);
+            if let Some(mut active) = world.try_resource_mut::<crate::systems::projectiles::ActiveProjectiles>() {
+                active.0.push(shot);
+            }
+            log::debug!("player fires {weapon:08X} ({ammo:08X})");
+        }
+        Err(why) => record_miss(world, &format!("the shot could not be made: {why}")),
+    }
+    true
+}
+
 fn record_killing_blow(world: &World, target: EntityId, location: u8) {
     use byroredux_core::character::DismemberRecord;
     if let Some(mut records) = world.query_mut::<DismemberRecord>() {
