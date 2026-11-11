@@ -538,7 +538,7 @@ door.list [radius=2000]     → loaded teleport doors near the camera, nearest f
 door.teleport <entity_id>   → inspect a door's XTEL destination (FormID,
                              Z-up position/rotation, resolved parent cell).
                              M40 Phase 2 door-teleport triage
-script.activate <entity_id> → emit an `ActivateEvent` on the entity (M47.0
+script.activate <entity_id|0xREFR> → emit an `ActivateEvent` on the entity (M47.0
                              console-activate path; activator = PlayerEntity
                              resource or 0)
 quest.show / quest.aliases  → inspect quest state, objectives, and aliases
@@ -556,7 +556,7 @@ actor.look <entity|.> <target|none> → force an actor's head to track a referen
 actor.revive <entity|.>      → bring a dead or unconscious actor back like ObScript Resurrect (M47.3)
 magic.effects [entity]       → list the magic effects running on a reference (script effects, timed value changes)
 weather.force <WTHR|none> [lock] → force the exterior weather like ObScript ForceWeather (saved); `none` releases it
-obscript.cmd <caller|none> <id> [args] → run one ObScript command through the real host and print its answer (M47.3)
+obscript.cmd <caller|none> <id> [args] → run one ObScript command through the real host and print its answer (M47.3); the caller may also be a resident reference's `0x<FormID>` (`resolve_console_entity`, shared with `cond`, `setav`, `mesh.info`, `script.activate`)
 jail.serve                  → serve the jail sentence GoToJail started (the same as resting in the cell bed)
 obscript.objects [limit]    → ObScript object scripts attached to placed references: blocks, run counts, declines (M47.3)
 script.requests             → the menus and videos ObScript commands asked for (no UI shows them yet)

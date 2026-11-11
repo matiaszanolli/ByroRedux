@@ -1821,10 +1821,20 @@ front door opens onto Goodsprings.
   ignored**, so a far greeter (Bonnie Springs' Melissa) walked at the player
   and, stuck, greeted from 28,000 units away. `p4-fnv-quest-route.sh` now proves
   Sunny's follow-up waits at her trigger before driving the greeting.
+- **A resident `Enable()` brought nothing in** (#5065's enable edge). VCG02's
+  sarsaparilla bottles are enable children of the initially disabled
+  `VCG02BottleMarkerREF`, which Sunny's line enables while Goodsprings is loaded;
+  they stayed bare roots — no mesh, no body — until the cell reloaded. The
+  enable edge now fills the withheld root in place through the reference loader
+  (`cell_loader::enabled`), so its scripts keep their entity and variables and
+  get the `OnLoad` the original runs when 3D loads. A shot that stops on a bare
+  root collision now reaches the placement's `OnHitWith` through
+  `PhysicsSourceForm`; three pistol shots complete objective 10.
 
 **Not modelled yet.** The intro movie; face sliders (GUI-NG-005); actors moving
-between cells (VCG02's "Follow Sunny" leaves the saloon); the MenuXml documents
-these screens have in the original (the page stands in, GUI-PAGE-002 / Q4).
+between cells (VCG02's Sunny leaves the saloon for the meeting behind it); a live
+`Disable()` (the rest of #5065); the MenuXml documents these screens have in the
+original (the page stands in, GUI-PAGE-002 / Q4).
 
 ## Work rules
 

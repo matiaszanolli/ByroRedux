@@ -92,7 +92,7 @@ docs/smoke-tests/p3-player-body.sh fnv           # FNV: the runtime-path player 
 docs/smoke-tests/p3-hud.sh fnv                   # FNV: HP / AP / RAD + an objective from a stage result script
 docs/smoke-tests/p4-fnv-quest-route.sh           # FNV: Sunny's force-greet -> linked topic -> result scripts start VCG02 -> objective chain
 docs/smoke-tests/p5-fnv-quest-persistence.sh     # FNV: VCG02 + the meeting variable vs F9 + process restart
-docs/smoke-tests/fnv-new-game.sh                 # FNV: --new-game -> intro quest -> the five chargen screens -> Doc Mitchell's opening -> VCG02 -> Goodsprings
+docs/smoke-tests/fnv-new-game.sh                 # FNV: --new-game -> intro quest -> the five chargen screens -> Doc Mitchell's opening -> VCG02 -> Goodsprings -> the bottle-shooting tutorial (live Enable, gunfire)
 docs/smoke-tests/p5-f5-f9-quicksave.sh fnv       # F5/F9 bound-input quicksave/quickload + graceful quit + validation
 docs/smoke-tests/p5-quest-persistence.sh         # Skyrim SE: MS01 objective state vs F9 + process restart
 docs/smoke-tests/p5-door-transition.sh fnv       # save/reload both sides of the P0 door route
