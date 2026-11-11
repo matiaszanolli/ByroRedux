@@ -1,11 +1,13 @@
 # Cross-cell actor travel — Product Requirements
 
-**Status**: APPROVED (2026-11-11). Revision 3 records the owner's approval
+**Status**: ACTIVE (2026-11-11). Revision 4 files the tracking issues. Revision 3 records the owner's approval
 with every §10 decision taken as recommended and folded into the
 requirements (XCT-OFF-001, XCT-DEST-004, XCT-FOL-001). Statements about how
 an original engine, format or tool behaves cite external sources; a claim
 that could not be verified is marked **Phase 0: verify** instead of being
 stated as fact.
+
+**Tracking**: #6850 (parent). Phases: #6851 (0), #6852 (1), #6853 (2), #6854 (3).
 
 **Scope**: an actor whose AI package or script sends it to a reference in
 another space (another interior cell, or another worldspace) gets there.
@@ -410,3 +412,4 @@ every in-scope game.
 | 1 | 2026-11-11 | First draft, at the owner's request (VCG02 found to need an actor to leave an interior) | — |
 | 2 | 2026-11-11 | Review round 1 folded in: logical-identity and save/snapshot HEAD claims, space-not-cell destinations, citations (MoveToPackageLocation, persistence, load-door pathing, process levels, Skyrim change forms, XTEL/PGRD), state model (XCT-ROUTE-004 withdrawn and split), arrival while watched, per-game door links, scenarios and exits, deviations | claude: revise |
 | 3 | 2026-11-11 | Owner approval: Q1–Q3 decided as recommended and folded in (XCT-OFF-001 reworded; XCT-DEST-004, XCT-FOL-001 added) | owner: approved |
+| 4 | 2026-11-11 | APPROVED → ACTIVE: tracking issues filed (#6850 (parent). Phases: #6851 (0), #6852 (1), #6853 (2), #6854 (3)) | — |

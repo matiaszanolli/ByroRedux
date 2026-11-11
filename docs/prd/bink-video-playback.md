@@ -1,11 +1,13 @@
 # Bink video playback — Product Requirements
 
-**Status**: APPROVED (2026-11-11). Revision 3 records the owner's approval
+**Status**: ACTIVE (2026-11-11). Revision 4 files the tracking issues. Revision 3 records the owner's approval
 with every §10 decision taken as recommended and folded into the
 requirements (BIK-DEC-003, BIK-DEC-005, BIK-REQ-005). Statements about how
 an original engine, format or tool behaves cite external sources; a claim
 that could not be verified is marked **Phase 0: verify** instead of being
 stated as fact.
+
+**Tracking**: #6855 (parent). Phases: #6856 (0), #6857 (1), #6858 (2), #6859 (3).
 
 **Scope**: the games' own Bink movies play: the intro and logo movies the
 engine starts, and every movie a script asks for (`PlayBink`). Each plays
@@ -376,3 +378,4 @@ last frame.
 | 1 | 2026-11-11 | First draft, at the owner's request (the FNV new-game route reaches its intro movie) | — |
 | 2 | 2026-11-11 | Review round 1 folded in: Oblivion PlayBink not dispatched + one flag, census fps/track corrections, open Bink 2 decoders (NihAV, FFmpeg patch) and Q1/Q2 alternatives, verify items closed from ESM/INI/CS, headless drivers for scenarios 2–3 (`t:` strings already supported; `video.skip` added), audio-track and BSA verifies, main-menu movie owner, letterbox/mute observables, Phase 2 dependencies, index row | claude: revise |
 | 3 | 2026-11-11 | Owner approval: Q1–Q3 decided as recommended and folded in (BIK-DEC-003 reworded; BIK-DEC-005, BIK-REQ-005 added) | owner: approved |
+| 4 | 2026-11-11 | APPROVED → ACTIVE: tracking issues filed (#6855 (parent). Phases: #6856 (0), #6857 (1), #6858 (2), #6859 (3)) | — |
