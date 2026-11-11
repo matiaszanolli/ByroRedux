@@ -1,13 +1,11 @@
 # Bink video playback — Product Requirements
 
-**Status**: PROPOSED (2026-11-11). Revision 2 folds in review round 1:
-Oblivion's `PlayBink` (not dispatched at HEAD, one flag), the census's frame
-rate and audio-track counts, the open Bink 2 decoders as a verify item,
-verify items closed from the ESM and the default INIs, headless drivers,
-and observables for letterboxing and muting. Statements about how an
-original engine, format or tool behaves cite external sources; a claim that
-could not be verified is marked **Phase 0: verify** instead of being stated
-as fact.
+**Status**: APPROVED (2026-11-11). Revision 3 records the owner's approval
+with every §10 decision taken as recommended and folded into the
+requirements (BIK-DEC-003, BIK-DEC-005, BIK-REQ-005). Statements about how
+an original engine, format or tool behaves cite external sources; a claim
+that could not be verified is marked **Phase 0: verify** instead of being
+stated as fact.
 
 **Scope**: the games' own Bink movies play: the intro and logo movies the
 engine starts, and every movie a script asks for (`PlayBink`). Each plays
@@ -184,6 +182,10 @@ table is replaced by `video.status` once Phase 2 ships.
   Oblivion's new-game intro and Skyrim's logo are named (§3); settled by
   the original's behaviour with the setting changed.
 
+- **BIK-REQ-005.** Engine-started movies MUST play where the original
+  plays them, and a launch flag MUST skip every one of them for development
+  and the gates (Q3).
+
 ### 5.2 Decoding (`BIK-DEC`)
 
 - **BIK-DEC-001.** Bink 1 video MUST decode to frames at the file's
@@ -193,8 +195,11 @@ table is replaced by `video.status` once Phase 2 ships.
   original plays (Skyrim's logo has two, Fallout 4's intro five); settled by
   RAD's published Bink sound-track documentation or by listening to each
   track against the original.
-- **BIK-DEC-003.** Bink 2 video MUST follow decision Q2. Under its
-  recommendation it is **Skipped** with one log line per file.
+- **BIK-DEC-003.** Bink 2 video MUST be **Skipped** with one log line per
+  file until Phase 0 has measured the open Bink 2 decoders (Q2).
+- **BIK-DEC-005.** Decoding MUST go through the system FFmpeg found at run
+  time; the workspace MUST NOT link it, and without it every request MUST be
+  **Skipped** with one log line (Q1).
 - **BIK-DEC-004.** A frame that fails to decode MUST end the movie as
   **Failed** with a log line naming the file and frame, and the game MUST
   continue.
@@ -301,7 +306,8 @@ rows, the open Bink 2 decoders) or file each as an issue; write
 the census is in ROADMAP for every in-scope game, the design is merged, and
 every verify item is closed or filed.
 
-**Phase 1 — The decoder.** BIK-DEC-001, BIK-DEC-002, BIK-DEC-004 under Q1.
+**Phase 1 — The decoder.** BIK-DEC-001, BIK-DEC-002, BIK-DEC-004,
+BIK-DEC-005.
 Exit: acceptance scenario 1 passes for every Bink 1 file of every in-scope
 game, and the decode rate is published.
 
@@ -311,7 +317,8 @@ native-page pause ([Game UI Integration §3.1](game-ui-integration.md#31-state-a
 row 16) and the `audio` crate's streaming playback (M44). Exit: scenarios
 2, 3 and 4 pass.
 
-**Phase 3 — Start sequences.** BIK-REQ-004 for every in-scope game. Exit:
+**Phase 3 — Start sequences.** BIK-REQ-004 and BIK-REQ-005 for every
+in-scope game. Exit:
 a headless boot of Oblivion and of Skyrim plays its start sequence to its
 last frame.
 
@@ -329,6 +336,7 @@ last frame.
    an existing open decoder to Rust (FFmpeg's; NihAV's, whose licence is a
    **Phase 0: verify**); the fastest self-contained route, but the crate
    then carries that decoder's licence inside an MIT project.
+   **Decided** (2026-11-11): as recommended: the system FFmpeg, reached at run time; the MIT code links nothing, and without it a movie is Skipped (BIK-DEC-005).
 2. **Q2 — Bink 2.** Recommended: **Skipped** with a log line until Phase 0
    has measured the open Bink 2 decoders, then decide on that measurement.
    **Phase 0: verify** NihAV's reported Rust decoder
@@ -340,11 +348,13 @@ last frame.
    Starfield's films play, at the cost of an unmeasured decoder and its
    licence. Alternative: play the audio alone over a black screen; the
    player hears a film they cannot see.
+   **Decided** (2026-11-11): as recommended: Bink 2 video is Skipped until Phase 0 has measured the open Bink 2 decoders; the choice is then revisited on that measurement (BIK-DEC-003).
 3. **Q3 — When an engine-started movie plays.** Recommended: at the point
    the original plays it (logo sequence at launch, the intro at a new
    game), with a launch flag that skips them for development and the gates.
    Alternative: only on request (`PlayBink`), never at launch; faster
    starts, but Oblivion's and Skyrim's start sequences never play.
+   **Decided** (2026-11-11): as recommended: engine-started movies play where the original plays them, with a launch flag that skips them (BIK-REQ-005).
 
 ---
 
@@ -365,3 +375,4 @@ last frame.
 |---|---|---|---|
 | 1 | 2026-11-11 | First draft, at the owner's request (the FNV new-game route reaches its intro movie) | — |
 | 2 | 2026-11-11 | Review round 1 folded in: Oblivion PlayBink not dispatched + one flag, census fps/track corrections, open Bink 2 decoders (NihAV, FFmpeg patch) and Q1/Q2 alternatives, verify items closed from ESM/INI/CS, headless drivers for scenarios 2–3 (`t:` strings already supported; `video.skip` added), audio-track and BSA verifies, main-menu movie owner, letterbox/mute observables, Phase 2 dependencies, index row | claude: revise |
+| 3 | 2026-11-11 | Owner approval: Q1–Q3 decided as recommended and folded in (BIK-DEC-003 reworded; BIK-DEC-005, BIK-REQ-005 added) | owner: approved |

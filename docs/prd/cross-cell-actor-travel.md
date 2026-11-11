@@ -1,12 +1,11 @@
 # Cross-cell actor travel — Product Requirements
 
-**Status**: PROPOSED (2026-11-11). Revision 2 folds in review round 1:
-destinations are defined by space (interior cell or worldspace), not grid
-cell; the logical-identity, save and snapshot claims about HEAD are
-corrected; load-door pathing, process levels and change forms are cited; the
-state model is closed. Statements about how an original engine, format or
-tool behaves cite external sources; a claim that could not be verified is
-marked **Phase 0: verify** instead of being stated as fact.
+**Status**: APPROVED (2026-11-11). Revision 3 records the owner's approval
+with every §10 decision taken as recommended and folded into the
+requirements (XCT-OFF-001, XCT-DEST-004, XCT-FOL-001). Statements about how
+an original engine, format or tool behaves cite external sources; a claim
+that could not be verified is marked **Phase 0: verify** instead of being
+stated as fact.
 
 **Scope**: an actor whose AI package or script sends it to a reference in
 another space (another interior cell, or another worldspace) gets there.
@@ -170,6 +169,8 @@ The catalog Phase 0 checks in (§9) replaces rows 1–8 as the dated source.
   instead of walking toward the destination's coordinates in its own space.
 - **XCT-DEST-003.** A destination whose space the load order does not hold
   MUST put the actor in **Unroutable** where it stands.
+- **XCT-DEST-004.** A cross-space destination of a non-persistent actor
+  MUST make it **Unroutable** with reason `not persistent` (Q3).
 
 ### 5.2 Routing through load doors (`XCT-ROUTE`)
 
@@ -206,7 +207,8 @@ The catalog Phase 0 checks in (§9) replaces rows 1–8 as the dated source.
 ### 5.3 Offscreen arrival (`XCT-OFF`)
 
 - **XCT-OFF-001.** An **Offscreen** actor MUST become **Arrived** after the
-  arrival time decision Q1 defines. Low-process actors are processed about
+  time a walk of its route takes (route length ÷ its walk speed), with no
+  positions in between (Q1). Low-process actors are processed about
   every 120 seconds in the original
   ([GECK: GetActorProcessingLevel](https://geck.uesp.net/wiki/GetActorProcessingLevel));
   **Phase 0: verify** how that bounds an unwatched Travel's duration;
@@ -248,7 +250,13 @@ The catalog Phase 0 checks in (§9) replaces rows 1–8 as the dated source.
   ([CK: MoveToPackageLocation](https://ck.uesp.net/wiki/MoveToPackageLocation_-_Actor)),
   across spaces through the ledger.
 
-### 5.5 Reporting (`XCT-RPT`)
+### 5.5 Followers (`XCT-FOL`)
+
+- **XCT-FOL-001.** An actor following or escorting a leader (Follow,
+  Escort, Accompany) MUST pass a load door its leader passes and arrive on
+  the far side with it (Q2).
+
+### 5.6 Reporting (`XCT-RPT`)
 
 - **XCT-RPT-001.** `actor.where <entity|0xREFR>` MUST print the actor's
   current space, pose and §3 state.
@@ -340,7 +348,7 @@ Exit: the census table is in ROADMAP for every in-scope game, the design is
 merged, and every verify item is closed or filed.
 
 **Phase 1 — The ledger and scripted moves.** XCT-DEST-001, XCT-DEST-003,
-XCT-LOC-001 to XCT-LOC-006, XCT-ROUTE-007, XCT-RPT-001. Depends on M45
+XCT-DEST-004, XCT-LOC-001 to XCT-LOC-006, XCT-ROUTE-007, XCT-RPT-001. Depends on M45
 (saves). Exit: acceptance scenarios 2 and 3 pass.
 
 **Phase 2 — Watched travel through one door.** XCT-DEST-002,
@@ -349,7 +357,7 @@ XCT-ROUTE-008, XCT-ROUTE-009. Depends on M42 (packages) and the NAVM pathfinder.
 acceptance scenario 1 passes.
 
 **Phase 3 — Offscreen arrival, multi-hop, the census.** XCT-OFF-001 to
-XCT-OFF-004, XCT-ROUTE-003, XCT-RPT-002, and followers if Q2 takes them in.
+XCT-OFF-004, XCT-ROUTE-003, XCT-RPT-002, XCT-FOL-001.
 Exit: scenario 4 passes and the arrival rate is published in ROADMAP for
 every in-scope game.
 
@@ -364,17 +372,20 @@ every in-scope game.
    starts; simplest, but actors appear where they could not yet be.
    Alternative: simulate the walk offscreen hop by hop at the original's low
    process rate; most faithful, at the cost XCT-NG-002 excludes.
+   **Decided** (2026-11-11): as recommended: an unwatched actor arrives after its route's walk time, with no positions in between (XCT-OFF-001).
 2. **Q2 — Followers and escorts through load doors.** Recommended: in this
    PRD, Phase 3: a companion who follows the player through a load door is
    the most common cross-space move a player sees, and it reuses the ledger
    and the hop. Alternative: a separate PRD; this one ships sooner and
    companions stay behind at every door until then.
+   **Decided** (2026-11-11): as recommended: followers and escorts pass load doors with their leader, in Phase 3 (XCT-FOL-001).
 3. **Q3 — Which actors may change spaces.** Recommended: persistent actors
    only: a reference "must be checked" persistent "to be used in a script"
    ([GECK: Reference](https://geck.uesp.net/wiki/Reference)), so every
    scripted move names one, and the ledger stays small. Alternative: every
    actor; a package-driven move of a generic NPC is kept too, at the cost of
    a ledger row and saved state per such actor.
+   **Decided** (2026-11-11): as recommended: only persistent actors change spaces; any other is Unroutable `not persistent` (XCT-DEST-004).
 
 ---
 
@@ -398,3 +409,4 @@ every in-scope game.
 |---|---|---|---|
 | 1 | 2026-11-11 | First draft, at the owner's request (VCG02 found to need an actor to leave an interior) | — |
 | 2 | 2026-11-11 | Review round 1 folded in: logical-identity and save/snapshot HEAD claims, space-not-cell destinations, citations (MoveToPackageLocation, persistence, load-door pathing, process levels, Skyrim change forms, XTEL/PGRD), state model (XCT-ROUTE-004 withdrawn and split), arrival while watched, per-game door links, scenarios and exits, deviations | claude: revise |
+| 3 | 2026-11-11 | Owner approval: Q1–Q3 decided as recommended and folded in (XCT-OFF-001 reworded; XCT-DEST-004, XCT-FOL-001 added) | owner: approved |
