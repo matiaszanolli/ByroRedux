@@ -273,6 +273,9 @@ pub(crate) fn rebuild_player_body(world: &mut World, ctx: &mut VulkanContext) {
         }
     }
     attach_player_body(world, ctx, player, body_pos, half_height, radius);
+    // The new body wears the record's outfit; make it wear what the player wears now (a script
+    // may have taken the Pip-Boy, or equipped something the record does not list).
+    crate::npc_spawn::loot_appearance::reconcile_worn_gear(world, player);
     set_player_view(world, view);
 }
 

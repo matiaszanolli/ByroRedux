@@ -173,7 +173,7 @@ fn raise_alarm(world: &World, model: CrimeModel, player: EntityId, kind: CrimeKi
         byroredux_scripting::crime_knowledge::note_known(world, guard, byroredux_scripting::PLAYER_REFERENCE, kind, victim);
         if let Some(mut directives) = world.query_mut::<ForceGreetDirective>() {
             if directives.get(guard).is_none() {
-                directives.insert(guard, ForceGreetDirective { topic: None, radius: FORCE_GREET_RADIUS });
+                directives.insert(guard, ForceGreetDirective { topic: None, radius: FORCE_GREET_RADIUS, trigger: None });
             }
         }
     }
@@ -834,7 +834,7 @@ fn rush_wanted_player(world: &World, waiting: &mut std::collections::HashMap<Ent
         }
         if let Some(mut directives) = world.query_mut::<ForceGreetDirective>() {
             if directives.get(guard).is_none() {
-                directives.insert(guard, ForceGreetDirective { topic: None, radius: FORCE_GREET_RADIUS });
+                directives.insert(guard, ForceGreetDirective { topic: None, radius: FORCE_GREET_RADIUS, trigger: None });
                 waiting.insert(guard, RUSH_RETRY_SECS);
             }
         }

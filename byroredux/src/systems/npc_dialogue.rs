@@ -701,7 +701,60 @@ fn npc_dialogue_goodbye_close_check(world: &World) {
     }
 }
 
-/// One activation's computed selection, applied after all reads drop (the
+/// The open line's follow-up (`TCFU`, [`InfoRecord::follow_ups`]): once the speaker has finished a
+/// line that names follow-up INFOs, they say the first one whose gates pass — its speaker, its
+/// conditions, its quest, Say Once — as a line of its own, through the same selection a topic
+/// click makes (its Begin script runs, the outgoing line's End script first). None passing leaves
+/// the conversation as it is. New Vegas's Doc Mitchell gives the player the Pip-Boy, the vault
+/// suit and the starting gear this way, and the last of those lines ends the opening.
+fn npc_dialogue_follow_up(world: &World) {
+    let Some((npc, ends)) = world.try_resource::<DialogueSurfaceState>().and_then(|surface| Some((surface.npc?, surface.line_ends_at?))) else {
+        return;
+    };
+    let now = world.try_resource::<byroredux_core::ecs::resources::TotalTime>().map_or(0.0, |time| time.0);
+    if now < ends || npc_refuses_dialogue(world, npc).is_some() {
+        return;
+    }
+    let Some(current) = world.get::<NpcDialogueTopic>(npc).map(|topic| (topic.topic_form_id, topic.info_form_id)) else {
+        return;
+    };
+    let Some(player) = PlayerEntity::get(world) else {
+        return;
+    };
+    let index = {
+        let Some(index) = world.try_resource::<LoadedCellIndex>() else {
+            return;
+        };
+        index.0.clone()
+    };
+    let Some(follow_ups) = index
+        .dialogues
+        .get(&current.0)
+        .and_then(|record| record.infos.iter().find(|info| info.form_id == current.1))
+        .map(|info| info.follow_ups.clone())
+        .filter(|follow_ups| !follow_ups.is_empty())
+    else {
+        return;
+    };
+    for follow_up in follow_ups {
+        // The topic that owns the follow-up INFO; the line is gated as a topic of one INFO.
+        let Some((record, info)) = index.dialogues.values().find_map(|record| record.infos.iter().find(|info| info.form_id == follow_up).map(|info| (record, info))) else {
+            continue;
+        };
+        let single = DialRecord { form_id: record.form_id, editor_id: record.editor_id.clone(), quest_refs: record.quest_refs.clone(), infos: vec![info.clone()], ..Default::default() };
+        if select_first_info(&single, world, Some(npc), Some(player)).is_none() {
+            continue;
+        }
+        let Some((topic, _)) = select_on_topic(&index, record, info, world, npc, player, &[]) else {
+            continue;
+        };
+        log::info!("npc dialogue: line {:#08X} follows up with {:#08X}", current.1, follow_up);
+        apply_selection(world, npc, topic, record);
+        return;
+    }
+}
+
+/// One activation's computed selection, applied after all reads drop (the/// One activation's computed selection, applied after all reads drop (the
 /// shared two-pass convention of this crate's exclusive systems).
 struct TopicSelection {
     npc: EntityId,
@@ -785,6 +838,8 @@ fn npc_dialogue_selection_system_inner(world: &World, scratch: &mut NpcDialogueS
     // the presentation finishes (before any new selection this frame).
     // Same exclusive lane, same conversation lifecycle owner.
     npc_dialogue_goodbye_close_check(world);
+    // A finished line with follow-ups (`TCFU`) runs on into the next one.
+    npc_dialogue_follow_up(world);
 
     // ── Pass 1: read-only gather + decide. ──
     scratch.selections.clear();
@@ -1508,6 +1563,7 @@ mod tests {
                 ForceGreetDirective {
                     topic: None,
                     radius: crate::systems::forcegreet::FORCE_GREET_RADIUS,
+                    trigger: None,
                 },
             );
         }

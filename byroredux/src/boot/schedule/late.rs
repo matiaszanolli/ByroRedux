@@ -29,8 +29,11 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
     extension_sync::register_extension_sync_systems(scheduler);
     script_hosts::register_script_host_systems(scheduler);
     extension_events::register_extension_event_systems(scheduler);
-    equipment_appearance::register_equipment_appearance_systems(scheduler);
+    // Dialogue before the gear reconcile: a spoken line's result script equips
+    // (`player.equipitem VaultSuit21`, New Vegas's Doc Mitchell), and its equip
+    // events must reach the reconcile before the end-of-Late cleanup drains them.
     npc_dialogue::register_npc_dialogue_systems(scheduler);
+    equipment_appearance::register_equipment_appearance_systems(scheduler);
     extension_dispatch::register_extension_dispatch_systems(scheduler);
     script_cleanup::register_script_cleanup_systems(scheduler);
 }

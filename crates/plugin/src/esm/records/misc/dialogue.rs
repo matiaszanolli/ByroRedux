@@ -331,6 +331,12 @@ pub struct InfoRecord {
     /// dropped entirely pre-fix — 1,044 `Oblivion.esm` INFOs (5.4%)
     /// author at least one and could not unlock the topic they intended.
     pub added_topics: Vec<u32>,
+    /// `TCFU` "Follow Up" refs (xEdit FNV `wbRArray('Follow Up', wbFormIDCk(TCFU, 'Info', [INFO]))`):
+    /// INFOs, not topics — the lines the speaker says next, on its own, once this one is said (the
+    /// first whose conditions pass). New Vegas's Doc Mitchell outro runs on them: `001057E8` ("Here.
+    /// These are yours.") is followed up by `001057E4` (the Pip-Boy), which is followed up by the
+    /// vault suit line for the player's sex. Empty when none.
+    pub follow_ups: Vec<u32>,
     /// `TCLF` "Link From" ref (#3614) — DIAL topics that this INFO's own
     /// topic is reached from, the inverse direction of
     /// [`Self::topic_links`]. Per xEdit's TES4 definitions:
@@ -704,6 +710,11 @@ pub fn parse_info(
                 if let Ok(t) = SubReader::new(&sub.data).u32() {
                     let remapped = remap.as_ref().map_or(t, |r| r.remap(t));
                     out.topic_links.push(remapped);
+                }
+            }
+            b"TCFU" if sub.data.len() >= 4 => {
+                if let Ok(info) = SubReader::new(&sub.data).u32() {
+                    out.follow_ups.push(remap.as_ref().map_or(info, |r| r.remap(info)));
                 }
             }
             // #3614 — "Add topics": DIAL topics this response unlocks.

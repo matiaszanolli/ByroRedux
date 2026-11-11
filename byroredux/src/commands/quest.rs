@@ -1222,6 +1222,7 @@ impl ConsoleCommand for DialogueForceGreetCommand {
                 _ => None,
             },
             radius: 128.0,
+            trigger: None,
         };
         let Some(mut directives) = world.query_mut::<crate::systems::forcegreet::ForceGreetDirective>()
         else {

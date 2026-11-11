@@ -407,7 +407,7 @@ fn drive_find_packages(
                 if let Some(mut directives) = world.query_mut::<super::forcegreet::ForceGreetDirective>() {
                     directives.insert(
                         actor,
-                        super::forcegreet::ForceGreetDirective { topic: None, radius: super::forcegreet::FORCE_GREET_RADIUS },
+                        super::forcegreet::ForceGreetDirective { topic: None, radius: super::forcegreet::FORCE_GREET_RADIUS, trigger: None },
                     );
                 }
                 progress.done = true;
@@ -432,6 +432,7 @@ fn drive_find_packages(
                 world,
                 actor,
                 super::eat_sleep::EatOrSleep::Eat,
+                None,
                 None,
                 &mut scratch.seats,
             ) {

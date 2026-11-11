@@ -47,6 +47,12 @@ pub(crate) struct ForceGreetDirective {
     /// Open distance in Bethesda units (vanilla's force-greet radius
     /// family is 100-200; [`FORCE_GREET_RADIUS`] is the default).
     pub radius: f32,
+    /// A Dialogue package's Trigger Location and its radius: the greeter
+    /// waits until the player is inside it (GECK *Dialogue Package*: the
+    /// actor "will stay at the Wait Location until the target enters the
+    /// Trigger Location, at which point the actor will begin moving
+    /// towards the target"). `None`: no zone, the greeter comes at once.
+    pub trigger: Option<(byroredux_core::ecs::components::EatSleepLocation, f32)>,
 }
 
 impl Component for ForceGreetDirective {
@@ -65,7 +71,7 @@ pub(crate) fn scripted_conversation_system(world: &World, _dt: f32) {
         return;
     };
     for (npc, topic) in requests {
-        directives.insert(npc, ForceGreetDirective { topic, radius: FORCE_GREET_RADIUS });
+        directives.insert(npc, ForceGreetDirective { topic, radius: FORCE_GREET_RADIUS, trigger: None });
     }
 }
 
@@ -167,6 +173,16 @@ fn forcegreet_system_inner(
         let Some(current) = world.get::<GlobalTransform>(npc).map(|t| t.translation) else {
             continue;
         };
+        // A Trigger Location holds the greeter in place until the player
+        // stands in it; an anchor that does not resolve yet holds it too.
+        if let Some((anchor, trigger_radius)) = directive.trigger {
+            let inside = crate::systems::eat_sleep::resolve_anchor(world, npc, Some(current), anchor).is_some_and(|center| {
+                Vec3::new(player_pos.x - center.x, 0.0, player_pos.z - center.z).length() <= trigger_radius
+            });
+            if !inside {
+                continue;
+            }
+        }
         let flat = Vec3::new(player_pos.x - current.x, 0.0, player_pos.z - current.z);
         if flat.length() > directive.radius {
             // #5430 — kill switch: the directive stays pending, the NPC
@@ -337,6 +353,7 @@ mod tests {
             ForceGreetDirective {
                 topic: None,
                 radius: FORCE_GREET_RADIUS,
+                trigger: None,
             },
         );
 
@@ -368,6 +385,39 @@ mod tests {
         );
     }
 
+    /// A Dialogue package's Trigger Location holds its greeter in place: GECK *Dialogue Package*, the
+    /// actor "will stay at the Wait Location until the target enters the Trigger Location". New
+    /// Vegas's `QJMelissaDialoguePackage` (Bonnie Springs) authors one — near her editor location,
+    /// radius 512 — and without it she greeted the player in Goodsprings from 28,000 units away.
+    #[test]
+    fn a_trigger_location_holds_the_greeter_until_the_player_enters_it() {
+        use byroredux_core::ecs::components::{EatSleepLocation, EditorPlacement};
+        let mut world = World::new();
+        world.register::<ForceGreetDirective>();
+        world.register::<GlobalTransform>();
+        world.register::<Transform>();
+        world.register::<EditorPlacement>();
+        let player = world.spawn();
+        world.insert(player, GlobalTransform { translation: Vec3::new(5000.0, 0.0, 0.0), ..Default::default() });
+        world.insert(player, Transform::default());
+        world.insert_resource(crate::systems::character::PlayerEntity(Some(player)));
+        let npc = world.spawn();
+        world.insert(npc, GlobalTransform::default());
+        world.insert(npc, Transform::default());
+        world.insert(npc, EditorPlacement { translation: Vec3::ZERO });
+        world.insert(
+            npc,
+            ForceGreetDirective { topic: None, radius: FORCE_GREET_RADIUS, trigger: Some((EatSleepLocation::NearEditorLocation, 512.0)) },
+        );
+        forcegreet_system(&world, 0.5);
+        assert_eq!(world.get::<Transform>(npc).unwrap().translation, Vec3::ZERO, "the player is outside the zone: the greeter waits");
+        assert!(world.has::<ForceGreetDirective>(npc), "and the greeting stays owed");
+
+        world.query_mut::<GlobalTransform>().unwrap().get_mut(player).unwrap().translation = Vec3::new(400.0, 0.0, 0.0);
+        forcegreet_system(&world, 0.5);
+        assert_ne!(world.get::<Transform>(npc).unwrap().translation, Vec3::ZERO, "inside the zone the greeter comes to the player");
+    }
+
     /// #5430 — with the locomotion kill switch off the approach step is
     /// never taken, yet the directive stays pending (not consumed).
     #[test]
@@ -386,7 +436,7 @@ mod tests {
         world.insert(npc, Transform { translation: start, ..Default::default() });
         world.insert(
             npc,
-            ForceGreetDirective { topic: None, radius: FORCE_GREET_RADIUS },
+            ForceGreetDirective { topic: None, radius: FORCE_GREET_RADIUS, trigger: None },
         );
 
         let mut off = make_forcegreet_system(false);
@@ -427,6 +477,7 @@ mod tests {
             ForceGreetDirective {
                 topic: None,
                 radius: FORCE_GREET_RADIUS,
+                trigger: None,
             },
         );
         (world, player, npc)
@@ -511,6 +562,7 @@ mod tests {
             ForceGreetDirective {
                 topic: None,
                 radius: FORCE_GREET_RADIUS,
+                trigger: None,
             },
         );
         world.insert_resource(byroredux_physics::PhysicsWorld::new());
@@ -548,7 +600,7 @@ mod tests {
         world.insert(npc, Transform { translation: start, ..Default::default() });
         world.insert(
             npc,
-            ForceGreetDirective { topic: None, radius: FORCE_GREET_RADIUS },
+            ForceGreetDirective { topic: None, radius: FORCE_GREET_RADIUS, trigger: None },
         );
 
         let mut tick = make_forcegreet_system(true);

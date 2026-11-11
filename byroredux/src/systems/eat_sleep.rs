@@ -402,7 +402,7 @@ fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch)
                 continue;
             }
         }
-        match seat_at_marker(world, npc, kind, Some(search_radius), &mut scratch.seats) {
+        match seat_at_marker(world, npc, kind, Some(search_radius), None, &mut scratch.seats) {
             SeatAttempt::Seated => {
                 scratch.seat_retry.remove(&npc);
                 super::navmesh_path::clear_cached_path(world, npc);
@@ -501,12 +501,14 @@ fn cell_is_resident(world: &World, cell_form_id: u32) -> bool {
 /// Seat one arrived actor at its procedure's marker kind, reusing the
 /// sandbox seating path (reservation, root snap, sit-enter park). A marker
 /// beyond the arrival threshold becomes a walk goal; `Retry` means there is
-/// no usable seat yet.
+/// no usable seat yet. `furniture` limits the choice to that piece's markers
+/// (a Travel package's destination names the chair it sits on).
 pub(super) fn seat_at_marker(
     world: &World,
     npc: EntityId,
     kind: EatOrSleep,
     radius: Option<f32>,
+    furniture: Option<EntityId>,
     frame_seats: &mut FrameSeats,
 ) -> SeatAttempt {
     // #5495 — creatures never take furniture: the per-cell sit clip's
@@ -540,6 +542,14 @@ pub(super) fn seat_at_marker(
         &frame_seats.sleep
     } else {
         frame_seats.sit(world)
+    };
+    let only: Vec<Seat>;
+    let collected: &[Seat] = match furniture {
+        Some(furniture) => {
+            only = collected.iter().filter(|((piece, _), _)| *piece == furniture).copied().collect();
+            &only
+        }
+        None => collected,
     };
     if collected.is_empty() {
         return SeatAttempt::Retry;

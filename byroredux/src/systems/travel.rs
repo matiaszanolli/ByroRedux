@@ -441,8 +441,60 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
 /// this when wiring the system into the scheduler.
 pub(crate) fn make_travel_system() -> impl FnMut(&World, f32) + Send + Sync {
     let mut scratch = TravelScratch::default();
+    let mut seats = super::eat_sleep::FrameSeats::default();
     move |world: &World, dt: f32| {
         travel_system_inner(world, dt, &mut scratch);
+        seat_arrived_travelers(world, dt, &mut seats);
+    }
+}
+
+/// How far from where a Travel package left an actor the destination furniture's sit marker may
+/// be. Generous: only that piece's markers are candidates, and an actor can arrive standing on
+/// the furniture (Doc Mitchell ends his walk ~220 units above his chair's marker).
+const TRAVEL_SEAT_RADIUS: f32 = super::locomotion::AI_PACKAGE_DEFAULT_RADIUS;
+
+/// A Travel package whose destination is a piece of furniture ends with the actor using it: CS
+/// *Travel Package*, "If a furniture object such as a bed or chair is selected then the actor will
+/// lay in the bed or sit in the chair". Each arrived, unseated traveler whose destination is a seat
+/// takes it through the Eat / Sleep seating path (reservation, root snap, sit-enter park), walking
+/// the last steps to the marker first. New Vegas's opening needs it: the psych test starts once
+/// `DocMitchellREF.IsCurrentFurnitureRef DocMitchellChairREF`, and the package that takes Doc there
+/// is a Travel to `DocMitchellChairREF`.
+fn seat_arrived_travelers(world: &World, dt: f32, seats: &mut super::eat_sleep::FrameSeats) {
+    let arrived: Vec<(EntityId, u32)> = {
+        let (Some(behaviors), Some(traveled)) = (world.query::<TravelBehavior>(), world.query::<Traveled>()) else {
+            return;
+        };
+        let seated = world.query::<byroredux_core::ecs::components::Seated>();
+        behaviors
+            .iter()
+            .filter(|(entity, _)| traveled.contains(*entity) && !seated.as_ref().is_some_and(|q| q.contains(*entity)))
+            .filter_map(|(entity, behavior)| Some((entity, behavior.target_form_id?)))
+            .collect()
+    };
+    if arrived.is_empty() {
+        return;
+    }
+    seats.begin_frame();
+    for (actor, target) in arrived {
+        let Some(furniture) = resolve_entity_by_global_form_id(world, target) else {
+            continue;
+        };
+        if !crate::player_seat::is_seat(world, furniture) {
+            continue;
+        }
+        match super::eat_sleep::seat_at_marker(world, actor, super::eat_sleep::EatOrSleep::Eat, Some(TRAVEL_SEAT_RADIUS), Some(furniture), seats) {
+            super::eat_sleep::SeatAttempt::Seated => log::info!("Travel package: actor {actor} sat down at its destination {target:08X}"),
+            super::eat_sleep::SeatAttempt::Approach(marker) => {
+                let Some((current, rotation)) = world.get::<Transform>(actor).map(|t| (t.translation, t.rotation)) else {
+                    continue;
+                };
+                let speed = world.get::<crate::components::WalkSpeed>(actor).map_or(super::locomotion::LOCOMOTION_WALK_SPEED, |s| s.0);
+                let step = super::navmesh_path::cached_walk_step(world, actor, current, rotation, marker, 0.0, dt, speed);
+                super::navmesh_path::apply_walk_step(world, [(actor, step.position, step.rotation)]);
+            }
+            super::eat_sleep::SeatAttempt::Retry => {}
+        }
     }
 }
 

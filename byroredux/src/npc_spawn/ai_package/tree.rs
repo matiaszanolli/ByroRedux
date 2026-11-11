@@ -247,8 +247,8 @@ fn leaf_behavior(
                 return Err(LeafDecline::UnresolvedInput);
             }
             match package.force_greet(template) {
-                ForceGreetLine::Topic(topic) => Ok(AmbientBehavior::Dialogue { topic: Some(topic) }),
-                ForceGreetLine::GenericGreeting => Ok(AmbientBehavior::Dialogue { topic: None }),
+                ForceGreetLine::Topic(topic) => Ok(AmbientBehavior::Dialogue { topic: Some(topic), trigger: None }),
+                ForceGreetLine::GenericGreeting => Ok(AmbientBehavior::Dialogue { topic: None, trigger: None }),
                 ForceGreetLine::NotAForceGreet => Err(LeafDecline::NoRuntime),
             }
         }
@@ -478,7 +478,7 @@ mod tests {
     fn force_greet_needs_modelled_conditions_and_the_player_and_other_leaves_are_named() {
         let world = world();
         let (package, template) = tree(vec![leaf("ForceGreet", &[], vec![])], vec![]);
-        assert_eq!(decide(&package, &template, None, &world), Ok(AmbientBehavior::Dialogue { topic: None }));
+        assert_eq!(decide(&package, &template, None, &world), Ok(AmbientBehavior::Dialogue { topic: None, trigger: None }));
         let (package, template) = tree(
             vec![leaf("ForceGreet", &[2], vec![])],
             vec![target(2, PackDataTargetKind::SpecificReference(0x99), 0)],

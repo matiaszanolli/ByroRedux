@@ -381,6 +381,8 @@ enum AmbientBehavior {
     /// when a different package wins and this one wins back.
     Dialogue {
         topic: Option<u32>,
+        /// The package's Trigger Location (`PLD2`) and its radius.
+        trigger: Option<(EatSleepLocation, f32)>,
     },
 }
 
@@ -582,6 +584,14 @@ impl AmbientBehavior {
             if dialogue_installs_ambient(package, world) {
                 Some(Self::Dialogue {
                     topic: package.dialogue_topic,
+                    // GECK *Dialogue Package*: with a Trigger Location the actor
+                    // waits "until the target enters the Trigger Location" before
+                    // it moves to greet. `PLD2` is the package's second location,
+                    // as on Ambush; a zero radius names no zone.
+                    trigger: package
+                        .location2
+                        .filter(|location| location.radius > 0)
+                        .map(|location| (location_anchor(Some(location)), location.radius as f32)),
                 })
             } else {
                 log::debug!(
@@ -747,11 +757,12 @@ impl AmbientBehavior {
                     },
                 );
             }
-            Self::Dialogue { topic } => {
+            Self::Dialogue { topic, trigger } => {
                 sink.put(actor,
                     crate::systems::forcegreet::ForceGreetDirective {
                         topic,
                         radius: crate::systems::forcegreet::FORCE_GREET_RADIUS,
+                        trigger,
                     },
                 );
             }
