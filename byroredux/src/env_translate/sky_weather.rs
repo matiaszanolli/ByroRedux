@@ -234,6 +234,44 @@ fn precipitation_components(classification: u8) -> [f32; 2] {
     ]
 }
 
+/// The DATA byte at the slider's "high" end (most frequent lightning).
+/// UESP `Skyrim Mod:Mod File Format/WTHR`: "Frequency 255 low to 15 high".
+const WTHR_LIGHTNING_FREQUENCY_HIGH: u8 = 15;
+/// The DATA byte at the slider's "low" end. 255 is xEdit's default for the
+/// field, and the value almost every fair-weather record keeps.
+const WTHR_LIGHTNING_FREQUENCY_LOW: u8 = 255;
+
+/// Normalised lightning frequency, 0 (none) to 1 (the slider's high end),
+/// from WTHR DATA byte 10 and the SNAM sound list.
+///
+/// **The byte is inverted.** 255 is "low" and 15 is "high", so the old
+/// `byte / 255` read every untouched fair-weather record (Skyrim 77/84,
+/// FNV 50/63, Oblivion 22/37) as full storm. That gave clear skies the storm
+/// cloud deck and its faster drift, and on Oblivion, whose clear weathers all
+/// author a lightning colour, a constant flash. Bytes below 15 are outside
+/// the slider. UESP notes Skyrim's DefaultWeather stores 0 and the CK shows it
+/// as "low", so they map to 0 as well.
+///
+/// **Lightning needs a thunder sound.** The byte alone is not the
+/// "this weather has lightning" signal. FO4 authors 137 on 34 of 36 pleasant
+/// weathers, and FO3/FNV author 50 or 15 on every cloudy one, none of which
+/// storm in vanilla. Classification isn't the signal either: Oblivion's gate
+/// storms are classified none, and UESP's Oblivion Gates page says thunder is
+/// "occasionally heard" there. FO4's radstorms are classified snow. Across the
+/// vanilla masters (Oblivion, FO3, FNV, Skyrim, FO4: 282 WTHRs), the weathers
+/// that storm are exactly the ones whose SNAM lists a Thunder-typed sound, and
+/// no FO3/FNV weather lists one. The CS/GECK/CK wikis say thunder sounds play
+/// "when a lightning strike is initiated by the system". This gate is read off
+/// the data, not documented engine code. See skyal.md, "Weather-driven
+/// cloud morphology".
+pub(crate) fn lightning_frequency(wthr: &WeatherRecord) -> f32 {
+    if !wthr.thunder_sound_authored || wthr.thunder_frequency < WTHR_LIGHTNING_FREQUENCY_HIGH {
+        return 0.0;
+    }
+    f32::from(WTHR_LIGHTNING_FREQUENCY_LOW - wthr.thunder_frequency)
+        / f32::from(WTHR_LIGHTNING_FREQUENCY_LOW - WTHR_LIGHTNING_FREQUENCY_HIGH)
+}
+
 /// Neutral moon-glare for a WTHR that authors no moon-glare colour at all,
 /// and the one declaration behind [`WeatherSkyState::default`]'s
 /// `moon_glare` — the `FB_TOD_HOURS`/`weather::DEFAULT_TOD_HOURS`
@@ -319,7 +357,7 @@ fn weather_sky_state(wthr: &WeatherRecord, tod_slot: usize) -> WeatherSkyState {
         cloud_coverage: fog_coverage_from_weather(wthr.classification),
         cloud_tints,
         precipitation: precipitation_components(wthr.classification),
-        thunder_frequency: wthr.thunder_frequency as f32 / 255.0,
+        thunder_frequency: lightning_frequency(wthr),
         lightning_color,
         stars_color: wthr.sky_colors[SKY_STARS][slot].to_rgb_f32(),
         sunlight_color: wthr.sky_colors[SKY_SUNLIGHT][slot].to_rgb_f32(),
@@ -1100,6 +1138,33 @@ mod tests {
         );
     }
 
+    /// The lightning byte is inverted (255 low, 15 high) and only counts on a
+    /// weather that authors a thunder sound. The vanilla values here are the
+    /// ones that motivated the decode (`lightning_frequency`).
+    #[test]
+    fn lightning_frequency_decodes_the_inverted_byte_behind_a_thunder_sound() {
+        let freq = |byte: u8, thunder_sound: bool| {
+            lightning_frequency(&WeatherRecord {
+                thunder_frequency: byte,
+                thunder_sound_authored: thunder_sound,
+                ..Default::default()
+            })
+        };
+        // The untouched slider (255) and the out-of-range bytes the CK shows
+        // as "low" (Skyrim DefaultWeather's 0) mean no lightning.
+        assert_eq!(freq(255, true), 0.0);
+        assert_eq!(freq(0, true), 0.0);
+        assert_eq!(freq(14, true), 0.0);
+        assert_eq!(freq(15, true), 1.0);
+        // Oblivion gate storm 132, Oblivion Thunderstorm 188, Skyrim storm 246.
+        assert!((freq(132, true) - 123.0 / 240.0).abs() < 1e-6);
+        assert!(freq(188, true) < freq(132, true));
+        assert!(freq(246, true) > 0.0 && freq(246, true) < 0.05);
+        // FO4 pleasant (137) and FO3/FNV cloudy (50) author no thunder sound.
+        assert_eq!(freq(137, false), 0.0);
+        assert_eq!(freq(50, false), 0.0);
+    }
+
     #[test]
     fn translate_weather_copies_fog_wind_and_falls_back_tod_without_climate() {
         let mut w = WeatherRecord {
@@ -1116,6 +1181,7 @@ mod tests {
             | byroredux_plugin::esm::records::weather::WTHR_AURORA_ALWAYS_VISIBLE;
         w.sun_glare = 128;
         w.thunder_frequency = 64;
+        w.thunder_sound_authored = true;
         w.lightning_color = [10, 20, 30];
         w.wind_direction = 90;
         w.cloud_layer_velocities[0] = [32, 16];
@@ -1158,7 +1224,7 @@ mod tests {
         );
         assert_eq!(wd.cloud_layer_alphas[0][1], 0.5);
         assert_eq!(wd.weather.precipitation, [1.0, 0.0]);
-        assert!((wd.weather.thunder_frequency - 64.0 / 255.0).abs() < 1e-6);
+        assert!((wd.weather.thunder_frequency - (255.0 - 64.0) / 240.0).abs() < 1e-6);
         assert_eq!(
             wd.weather.lightning_color,
             [10.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0]

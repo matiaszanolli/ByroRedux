@@ -325,8 +325,15 @@ pub struct WeatherRecord {
     pub precipitation_fade: [u8; 2],
     /// Thunder fade-in/fade-out controls from DATA.
     pub thunder_fade: [u8; 2],
-    /// Thunder/lightning frequency control from DATA.
+    /// Thunder/lightning frequency byte from DATA, raw. The scale is
+    /// inverted: 255 is the slider's "low" end and 15 its "high" end
+    /// (UESP `Skyrim Mod:Mod File Format/WTHR`; xEdit gives FO4 a default of
+    /// 255). Decoded once, in `env_translate::sky_weather`.
     pub thunder_frequency: u8,
+    /// Whether SNAM lists at least one sound of type Thunder
+    /// ([`WTHR_SOUND_TYPE_THUNDER`]). Starfield's WSLD sound list has no type
+    /// field, so it stays `false` there.
+    pub thunder_sound_authored: bool,
     /// Authored lightning flash colour from DATA.
     pub lightning_color: [u8; 3],
     /// Skyrim visual-effect window from DATA.
@@ -433,6 +440,7 @@ impl Default for WeatherRecord {
             precipitation_fade: [0; 2],
             thunder_fade: [0; 2],
             thunder_frequency: 0,
+            thunder_sound_authored: false,
             lightning_color: [0; 3],
             visual_effect_window: [0; 2],
             wind_direction: 0,
@@ -692,6 +700,7 @@ pub fn parse_wthr(
             b"CNAM" => record.cloud_textures[1] = Some(read_zstring(&sub.data)),
             b"ANAM" => record.cloud_textures[2] = Some(read_zstring(&sub.data)),
             b"BNAM" => record.cloud_textures[3] = Some(read_zstring(&sub.data)),
+            b"SNAM" => read_weather_sound(&mut record, &sub.data),
             _ => {}
         }
     }
@@ -856,6 +865,25 @@ const WTHR_LIGHTNING_COLOR_OFFSET: usize = 12;
 const WTHR_VISUAL_EFFECT_WINDOW_OFFSET: usize = 15;
 const WTHR_WIND_DIRECTION_OFFSET: usize = 17;
 const WTHR_WIND_DIRECTION_RANGE_OFFSET: usize = 18;
+
+/// SNAM sound type for thunder: xEdit's `wbWeatherSounds` (shared by
+/// Oblivion, FO3, FNV, Skyrim, FO4 and FO76) is `[FormID sound, u32 type]`
+/// with types Default 0 / Precipitation 1 / Wind 2 / Thunder 3.
+pub const WTHR_SOUND_TYPE_THUNDER: u32 = 3;
+/// Byte offset of the type inside an SNAM entry.
+const WTHR_SOUND_TYPE_OFFSET: usize = 4;
+
+/// Note one SNAM sound entry. Only the thunder type is kept: it is the
+/// signal `env_translate::sky_weather` uses to tell a weather that has
+/// lightning from one that only carries a frequency byte.
+fn read_weather_sound(record: &mut WeatherRecord, data: &[u8]) {
+    let Some(bytes) = data.get(WTHR_SOUND_TYPE_OFFSET..WTHR_SOUND_TYPE_OFFSET + 4) else {
+        return;
+    };
+    if u32::from_le_bytes(bytes.try_into().unwrap()) == WTHR_SOUND_TYPE_THUNDER {
+        record.thunder_sound_authored = true;
+    }
+}
 
 /// Decode the shared WTHR DATA payload. The byte layout is the same for the
 /// legacy records and Skyrim's 19-byte extension; shorter legacy records are
@@ -1263,6 +1291,10 @@ fn parse_wthr_creation(
                 parse_weather_data(&mut record, &sub.data);
                 record.wind_direction_authored = skyrim;
             }
+
+            // SNAM — one typed sound per entry (`wbWeatherSounds`). Starfield
+            // lists its sounds as WSLD instead, with no type.
+            b"SNAM" => read_weather_sound(&mut record, &sub.data),
 
             // Skyrim authored cloud controls, one entry per authored layer.
             // RNAM is the Y component and QNAM is the X component; JNAM
@@ -2433,6 +2465,40 @@ mod tests {
         let w = parse_wthr(0xFACE, &subs, GameKind::Skyrim, &None);
         assert_eq!(w.wind_speed, 25);
         assert_eq!(w.classification, WTHR_CLOUDY);
+    }
+
+    /// A Thunder-typed SNAM marks the weather as having lightning, on both the
+    /// legacy and the Creation-era decoders; precipitation and wind sounds
+    /// do not. Short entries are ignored.
+    #[test]
+    fn parse_wthr_snam_thunder_sound_sets_the_lightning_signal() {
+        let snam = |kind: u32| {
+            let mut entry = 0x0001_2345u32.to_le_bytes().to_vec();
+            entry.extend_from_slice(&kind.to_le_bytes());
+            sub(b"SNAM", entry)
+        };
+        for game in [
+            GameKind::Oblivion,
+            GameKind::Fallout3NV,
+            GameKind::Skyrim,
+            GameKind::Fallout4,
+        ] {
+            let quiet = parse_wthr(
+                1,
+                &[snam(0), snam(1), snam(2), sub(b"SNAM", [3u8, 0, 0])],
+                game,
+                &None,
+            );
+            assert!(
+                !quiet.thunder_sound_authored,
+                "{game:?}: no Thunder-typed entry"
+            );
+            let stormy = parse_wthr(1, &[snam(2), snam(WTHR_SOUND_TYPE_THUNDER)], game, &None);
+            assert!(
+                stormy.thunder_sound_authored,
+                "{game:?}: Thunder-typed entry"
+            );
+        }
     }
 
     #[test]

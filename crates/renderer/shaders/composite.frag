@@ -721,13 +721,17 @@ vec3 weather_precipitation(vec3 color, vec2 uv) {
 
     // Thunder is a sparse, deterministic flash. The event phase is seeded
     // per burst so frequency controls do not turn into a hard metronome.
+    // Frequency sets how often a strike happens, not how bright it is, so
+    // the only gate is zero ("no lightning", `lightning_frequency` in
+    // env_translate/sky_weather.rs). Scaling the flash by frequency left
+    // Skyrim's storms (0.04) and FO4's rain (0.02) with invisible strikes.
     float burst_rate = 0.12 + params.weather_params.z * 2.2;
     float burst_id = floor(time * burst_rate);
     float burst_phase = fract(time * burst_rate);
     float burst_seed = weather_hash21(vec2(burst_id, 37.1));
     float flash = (1.0 - smoothstep(0.0, 0.045, burst_phase))
         * step(0.64, burst_seed)
-        * params.weather_params.z;
+        * step(1.0e-4, params.weather_params.z);
     color += params.weather_lightning.rgb * flash * 0.32;
     return color;
 }

@@ -670,6 +670,38 @@ stratus/cumulonimbus. WTHR’s authored layers and per-TOD tints remain the
 colour/detail authority; an explicit, evidence-backed taxonomy can refine the
 morphology controls later.
 
+**The thunder input is decoded, not divided (2026-11-11).** WTHR DATA byte 10
+is an inverted slider. UESP `Skyrim Mod:Mod File Format/WTHR` gives it as
+"255 low to 15 high", and xEdit's FO4 definition defaults it to 255. The old
+`byte / 255` therefore read every untouched fair-weather record as a full storm.
+That covers Skyrim 77/84, FNV 50/63, Oblivion 22/37 and FO3 15/27. Those skies
+got the storm deck, the 1.7× storm drift (§2.4) and, on Oblivion, whose clear
+weathers all author a lightning colour, a flash about 0.8 times a second.
+`lightning_frequency` (`env_translate/sky_weather.rs`) now maps 255→0 and
+15→1. Bytes below 15, which the CK displays as "low", map to 0.
+
+The byte alone does not say whether a weather has lightning:
+- FO4 authors 137 on 34 of its 36 pleasant weathers.
+- FO3/FNV author 50 or 15 on every cloudy weather.
+- Classification isn't the gate either. Oblivion's gate storms are classified
+  none, yet UESP's Oblivion Gates page has thunder "occasionally heard". FO4's
+  radstorms are classified snow.
+
+In the vanilla masters (Oblivion, FO3, FNV, Skyrim, FO4: 282 WTHRs), the
+weathers that storm are exactly those whose SNAM lists a Thunder-typed (3)
+sound, and no FO3/FNV weather lists one. So a weather without one decodes to
+0. **This gate comes from the data, not from documented engine code.** The
+CS/GECK/CK wikis say only that thunder sounds play "when a lightning strike
+is initiated by the system". Starfield's WSLD sound list has no type, so
+Starfield weathers decode to 0 until that list is understood.
+
+The composite flash (`composite.frag` `weather_precipitation`) now takes
+frequency as a rate only. Its brightness used to scale by frequency, which
+would have erased the decoded Skyrim storms (246 → 0.04) and FO4 rain
+(250 → 0.02). Pinned by
+`lightning_frequency_decodes_the_inverted_byte_behind_a_thunder_sound` and
+`parse_wthr_snam_thunder_sound_sets_the_lightning_signal`.
+
 ### FO3/FNV weather evidence (2026-09-14)
 
 Direct WTHR record inspection confirms that a filename is not a cloud-type
