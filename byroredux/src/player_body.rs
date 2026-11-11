@@ -131,7 +131,7 @@ pub(crate) fn attach_player_body(
     drop(loaded);
     let game = index.game;
     let player_npc_form_id = crate::inventory::player_npc_form_id(game);
-    let Some(npc) = index.npcs.get(&player_npc_form_id).cloned() else {
+    let Some(mut npc) = index.npcs.get(&player_npc_form_id).cloned() else {
         log::warn!(
             "Player body: NPC_ {player_npc_form_id:08X} not in the loaded plugins \
              — staying a bare capsule"
@@ -146,11 +146,21 @@ pub(crate) fn attach_player_body(
     let feet_offset = capsule_half_height + capsule_radius;
     let feet_pos = Vec3::new(body_pos.x, body_pos.y - feet_offset, body_pos.z);
 
+    // The sex and race chosen in character creation stand in for the
+    // record's (`ACBS` female bit 0, `RNAM`).
+    let identity = world.get::<byroredux_core::character::CharacterIdentity>(player).map(|identity| (identity.female, identity.race_form_id));
+    if let Some((female, race)) = identity {
+        npc.acbs_flags = (npc.acbs_flags & !1) | u32::from(female);
+        if race != 0 {
+            npc.race_form_id = race;
+        }
+    }
     // Same race resolution the reference loader feeds `NpcSpawnJob::runtime`
     // (Use-Traits terminal, so a template-authored race wins over the
-    // shell's own RNAM).
+    // shell's own RNAM) — unless the player chose one.
     let traits = byroredux_plugin::equip::traits_terminal(&npc, &index);
-    let race = index.races.get(&traits.race_form_id);
+    let race_form_id = identity.map(|(_, race)| race).filter(|race| *race != 0).unwrap_or(traits.race_form_id);
+    let race = index.races.get(&race_form_id);
 
     let mut job = if game.has_runtime_facegen_recipe() {
         NpcSpawnJob::runtime(&npc, race, game, feet_pos, Quat::IDENTITY, 1.0)
@@ -230,6 +240,40 @@ pub(crate) fn attach_player_body(
         t0.elapsed().as_secs_f64() * 1000.0,
         form = npc.form_id,
     );
+}
+
+/// Asked for when the player's sex or race changed (character creation): the body is
+/// assembled again from the changed record on the next frame with a renderer.
+/// `NOT_SAVED_BY_DESIGN`: a load assembles the body from the saved identity anyway.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct PlayerBodyRebuildRequest(pub(crate) bool);
+
+impl Resource for PlayerBodyRebuildRequest {}
+
+/// Release the player's assembled body through the GPU-aware teardown equipment changes use
+/// and assemble it again, keeping the camera view. A no-op without a player.
+pub(crate) fn rebuild_player_body(world: &mut World, ctx: &mut VulkanContext) {
+    let Some(player) = crate::components::PlayerEntity::get(world) else {
+        return;
+    };
+    let Some((body_pos, half_height, radius)) = world
+        .get::<Transform>(player)
+        .map(|transform| transform.translation)
+        .zip(world.get::<byroredux_physics::CharacterController>(player).map(|controller| (controller.half_height, controller.radius)))
+        .map(|(pos, (half_height, radius))| (pos, half_height, radius))
+    else {
+        return;
+    };
+    let view = world.try_resource::<PlayerCameraView>().map(|view| *view).unwrap_or_default();
+    if let Some(root) = world.try_resource::<PlayerBodyRootEntity>().and_then(|attached| attached.0) {
+        let victims = byroredux_core::ecs::collect_subtree(world, root);
+        crate::cell_loader::unload::release_entities(world, ctx, &victims, "player body rebuild");
+        if let Some(mut attached) = world.try_resource_mut::<PlayerBodyRootEntity>() {
+            attached.0 = None;
+        }
+    }
+    attach_player_body(world, ctx, player, body_pos, half_height, radius);
+    set_player_view(world, view);
 }
 
 /// The half of the attach that needs the assembled root: parent it under the

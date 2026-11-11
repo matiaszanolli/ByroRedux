@@ -566,6 +566,9 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("CreatedReferenceEntities", "the live entity of each spawned created reference; re-derived by step_created_references spawning into loaded cells"),
         ("ActiveLoadOrder", "the load order of the last cell-load entry point; republished by install_form_resolver on every load"),
         ("ExplicitStartPin", "session flag set from the --cell/--grid launch arguments, released by the first key or mouse press; never gameplay state"),
+        ("ChargenSession", "the character-creation screens asked for and the one open: a menu, presentation state (GUI-EVT-005); a load opens none"),
+        ("PlayerBodyRebuildRequest", "a one-frame request to assemble the player's body again after a sex or race change; a load assembles it from the saved CharacterIdentity"),
+        ("NewGameStart", "session flag set once from the launch arguments (no named location, or --new-game, and no --load); gates the opening quests an original executable starts on a new game; never gameplay state"),
         ("PlayerMoveRequest", "a fragment's player MoveTo destination, drained by step_player_move_request the frame it is written, after the load drain; a load discards it (#6239)"),
         ("LocationTable", "the load order's LCTN hierarchy, keywords and cell / editor-location maps; rebuilt by install_location_table every boot"),
         ("PlayerLocation", "the location of the cell the player occupies; republished from the loaded cell every frame by story_change_location_system"),
@@ -1306,6 +1309,10 @@ fn every_delta_column_is_parked_or_explicitly_not() {
             "player-scoped (obscript_effects::adjust_standing, the SDK AddFame/AddInfamy); the player outlives cell reloads and is never evicted",
         ),
         (
+            "CharacterIdentity",
+            "written only on the player, by the character-creation screens (chargen.rs); the player outlives cell reloads and is never evicted",
+        ),
+        (
             "TimedRestorations",
             "the only production insert is on the player (inventory/); the player is never evicted",
         ),
@@ -1422,7 +1429,9 @@ fn the_schema_fingerprint_is_pinned() {
     // per-REPU fame/infamy), registered after `CharacterLevel`.
     // VATS-LIMB-009 - `DismemberRecord` joined the registry as a new additive component column (the body
     // locations an actor has lost and where its killing blow landed), registered after `FactionReputation`.
-    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x3a16_3345_7a16_fa22;
+    // New Vegas new game — `CharacterIdentity` joined the registry as a new replacing component column (the
+    // name, sex and race chosen in character creation), registered after `DismemberRecord`.
+    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x2672_900f_7cd0_7ef8;
     let actual = build_save_registry().schema_fingerprint();
     assert_eq!(
         actual, BASELINE_SCHEMA_FINGERPRINT,

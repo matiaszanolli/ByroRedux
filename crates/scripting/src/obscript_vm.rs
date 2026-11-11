@@ -69,6 +69,11 @@ pub const CMD_SET_REMOTE_VARIABLE: u16 = u16::MAX - 4;
 /// Block type of `Begin GameMode` in the compiled block enum (empirical:
 /// every quest-script GameMode block carries `0x0000`).
 pub const BLOCK_GAME_MODE: u16 = 0;
+/// `Begin MenuMode [code]`: `0x0001` on Oblivion, Fallout 3 and New Vegas, measured
+/// by the same block-name alignment (Game UI Integration PRD §9.1, GUI-EVT-006). The
+/// optional menu code compiles as the block's one numeric argument and becomes its
+/// [`BlockInfo::filter`]; New Vegas's `VCG01` waits on `Begin MenuMode 1036`.
+pub const BLOCK_MENU_MODE: u16 = 0x0001;
 /// `Begin OnActivate`, `OnDeath` and `OnLoad`. The numbering was read off the
 /// vanilla masters by aligning each script's `Begin <name>` lines with its
 /// compiled blocks (`obscript_tools census`, "block names"): Oblivion, Fallout 3
@@ -245,7 +250,8 @@ pub struct BlockInfo {
     /// The compiled block type (`0` GameMode, `2` OnActivate, ...).
     pub block_type: u16,
     /// The one reference the block was written for (`Begin OnTrigger player`
-    /// -> `0x14`), if its `Begin` names one.
+    /// -> `0x14`), if its `Begin` names one; for a [`BLOCK_MENU_MODE`] block,
+    /// the menu code it waits on (`Begin MenuMode 1036` -> `1036`).
     pub filter: Option<u32>,
     /// Offset of the block's first body statement.
     body: usize,
@@ -337,6 +343,8 @@ impl<'a> ObScriptProgram<'a> {
                 let filter = if params < payload_end {
                     match vm.decode_args(params, payload_end)?.first() {
                         Some(ObScriptValue::Ref(form)) if *form != 0 => Some(*form),
+                        // `Begin MenuMode 1036`: the menu code, a number, not a reference.
+                        Some(ObScriptValue::Num(code)) if block_type == BLOCK_MENU_MODE && *code > 0.0 => Some(*code as u32),
                         _ => None,
                     }
                 } else {

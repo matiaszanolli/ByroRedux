@@ -487,6 +487,9 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_scripting::AiSuspended>();
     world.init_resource::<crate::systems::script_requests::ScriptAlphaApplied>();
     world.init_resource::<crate::systems::script_requests::ScriptRequestLog>();
+    // The character-creation screens scripts open, and the body rebuild a changed sex or race asks for.
+    world.init_resource::<crate::chargen::ChargenSession>();
+    world.init_resource::<crate::player_body::PlayerBodyRebuildRequest>();
     world.init_resource::<crate::combat::ChargenWatch>();
     world.init_resource::<crate::systems::magic_shader::ShaderTintRestore>();
     // ObScript `GetDetected`: the sight test the hostility pass uses.

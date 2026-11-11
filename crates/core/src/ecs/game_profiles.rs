@@ -83,6 +83,11 @@ pub struct GameProfileEntry {
     pub new_game_worldspace: Option<String>,
     pub new_game_grid: Option<String>,
     pub new_game_radius: Option<u32>,
+    /// Optional interior boot target used by `--game <key> --new-game`, for
+    /// a game whose opening starts indoors (New Vegas: the intro quest moves
+    /// the player to a marker in `GSDocMitchellHouse`). Wins over the
+    /// worldspace/grid pair when both are set.
+    pub new_game_cell: Option<String>,
     pub sample_cells: Vec<String>,
     /// Alternate releases of the same game whose archives are named
     /// differently — the 2011 Skyrim ships one `Skyrim - Meshes.bsa` where
@@ -115,6 +120,13 @@ impl GameProfileEntry {
     /// out load actions against unconfigured profiles.
     pub fn is_usable(&self) -> bool {
         !self.root.is_empty() && Path::new(&self.root).exists()
+    }
+
+    /// Whether `--new-game` resolves to a location for this profile: an
+    /// interior cell, or a worldspace with a grid cell.
+    pub fn has_new_game_target(&self) -> bool {
+        self.new_game_cell.is_some()
+            || (self.new_game_worldspace.is_some() && self.new_game_grid.is_some())
     }
 
     /// The entry as it applies to the install at `data_dir`: the release

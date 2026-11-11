@@ -6,6 +6,17 @@ use byroredux_core::ecs::{Access, Scheduler, Stage};
 
 /// Player derived stats and pool regeneration.
 pub(super) fn register_player_stats_systems(scheduler: &mut Scheduler) {
+    // The race chosen in character creation back onto the player's
+    // `Background`, where every race reader looks (it is not saved; the
+    // identity is).
+    scheduler.add_exclusive_with_access(
+        Stage::Update,
+        crate::systems::player_identity_sync_system,
+        Access::new()
+            .reads_resource::<crate::systems::PlayerEntity>()
+            .reads::<byroredux_core::character::CharacterIdentity>()
+            .writes::<byroredux_core::character::Background>(),
+    );
     // #5039 — refresh the player's stamped PlayerOnly pools from their
     // current inputs before regen reads them. Exclusive, like its neighbour
     // below: it takes the `CharacterRuleset` → `ActorValues` pair.

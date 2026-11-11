@@ -58,6 +58,8 @@ pub struct PanelSnapshot {
     pub barter: Option<BarterSnapshot>,
     /// The open crafting bench, populated while its page is up.
     pub crafting: Option<CraftingSnapshot>,
+    /// The character-creation screen a script opened, populated while it is up.
+    pub chargen: Option<ChargenSnapshot>,
     /// `(entity_id, name)` pairs. `None` until the operator opens
     /// the Entities panel — populating this on every frame would
     /// be unnecessary work for an overlay that's hidden most of
@@ -74,6 +76,67 @@ pub struct MessageBoxView {
     pub title: String,
     pub text: String,
     pub buttons: Vec<String>,
+}
+
+/// One character-creation screen a script opened (`ShowRaceMenu`, `SetTagSkills`, the
+/// Vit-o-matic's `ShowLoveTesterMenuParams`, …), with the player's current choices.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChargenScreenView {
+    /// The player's name (TextEdit, 1051).
+    Name,
+    /// Sex and race (RaceSex, 1036).
+    RaceSex,
+    /// SPECIAL: spread `points` over the attributes, each within `min..=max`.
+    Special { points: i32, min: i32, max: i32 },
+    /// Tag exactly `count` skills.
+    TagSkills { count: usize },
+    /// Take up to `max` traits.
+    Traits { max: usize },
+}
+
+/// One choice on a character-creation screen: a race, an attribute, a skill or a trait.
+/// `id` is the race or perk FormID, or the actor-value code.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ChargenOption {
+    pub id: u32,
+    pub name: String,
+    pub description: String,
+}
+
+/// The character-creation screen to draw and what the player has now.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChargenSnapshot {
+    pub screen: ChargenScreenView,
+    /// Changes with every screen opened, so the page seeds its draft once per screen.
+    pub serial: u64,
+    /// The screen's title, from the game's settings where it has one.
+    pub title: String,
+    pub name: String,
+    pub female: bool,
+    pub race: u32,
+    pub races: Vec<ChargenOption>,
+    /// The attributes with their current values.
+    pub attributes: Vec<(ChargenOption, i32)>,
+    /// The skills with their current values.
+    pub skills: Vec<(ChargenOption, i32)>,
+    /// The tagged skills' actor-value codes.
+    pub tagged: Vec<u32>,
+    pub traits: Vec<ChargenOption>,
+    /// The traits the player has, by perk FormID.
+    pub chosen_traits: Vec<u32>,
+}
+
+/// What the player accepted on a character-creation screen.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChargenChoice {
+    Name(String),
+    RaceSex { female: bool, race: u32 },
+    /// `(actor-value code, value)` per attribute.
+    Special(Vec<(u32, i32)>),
+    /// The tagged skills' actor-value codes.
+    TagSkills(Vec<u32>),
+    /// The traits taken, by perk FormID.
+    Traits(Vec<u32>),
 }
 
 /// One barter session: the merchant's goods at the player's buying price and
@@ -252,6 +315,8 @@ pub struct PanelOutputs {
     pub barter_actions: Vec<BarterAction>,
     /// Recipes the crafting page asked to craft.
     pub crafting_actions: Vec<CraftingAction>,
+    /// What the player accepted on the open character-creation screen.
+    pub chargen_choice: Option<ChargenChoice>,
     /// Renderer-independent Studio mutations for the host to apply.
     pub studio_commands: Vec<StudioCommand>,
     /// True when the operator asked to refresh the entity list.

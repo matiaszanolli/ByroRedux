@@ -91,6 +91,9 @@ pub(crate) const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     // VATS-LIMB-009 - a u16 bitset of body locations and an optional u8 killing-blow location: no
     // session-local identity. Replacing: a saved absence clears a live record.
     "DismemberRecord",
+    // The player's character-creation choices: an owned `String` name, a bool and a u32 race FormID —
+    // no FixedString, EntityId or session handle.
+    "CharacterIdentity",
     // #2014 / SAVE-D1-NEW-01 — delta-safe subset of the seven M42
     // AI-procedure runtime-state components: WanderState/TravelState/
     // GuardState/PatrolState are plain Vec3/enum/u32 fields, and
@@ -293,6 +296,9 @@ pub fn build_save_registry() -> SaveRegistry {
     // `Dead`: a saved absence really means "no record", so a live actor's record is cleared by a load that
     // predates it.
     r.register_replacing_component::<byroredux_core::character::DismemberRecord>("DismemberRecord");
+    // The name, sex and race the player chose in character creation (New Vegas's opening). Nothing
+    // re-derives a choice; replacing, so a saved absence clears a live identity on the player.
+    r.register_replacing_component::<byroredux_core::character::CharacterIdentity>("CharacterIdentity");
     r.register_replacing_component::<byroredux_core::ecs::components::TimedRestorations>("TimedRestorations");
     byroredux_scripting::magic::register_saved(&mut r);
     // Core types: `byroredux-core` sits below `byroredux-save`, so they cannot register themselves (#6705).

@@ -1410,8 +1410,10 @@ mod tests {
         // A slot the script does not have is declined.
         host.call(CMD_GET_REMOTE_VARIABLE, &[target_ref, ObScriptValue::Num(9.0)], None);
         assert_eq!(host.declined.get(), 1);
-        // The script's own reference is not read this way: its variables are mid-run in the VM.
-        let mut own = ObScriptCommandHost::new(&world, REF, Some(target), 0.0, &script);
+        // The script's own reference is not read this way by that script: its variables are
+        // mid-run in the VM.
+        let running = ScriptRecord { form_id: world.get::<ObScriptInstance>(target).unwrap().script, ..Default::default() };
+        let mut own = ObScriptCommandHost::new(&world, REF, Some(target), 0.0, &running);
         own.call(CMD_GET_REMOTE_VARIABLE, &[target_ref, counter_slot], None);
         assert_eq!(own.declined.get(), 1);
     }
@@ -1572,7 +1574,7 @@ mod tests {
         record.refs = vec![ScriptRef::Object(MGEF_A)];
         let (mut world, target) = world_for(record);
         world.insert_resource(PendingMagicHits::default());
-        let effect = |mgef| CastEffect { mgef, script: 0x99, duration: 1.0, magnitude: 1.0, value: None };
+        let effect = |mgef| CastEffect { mgef, script: 0x99, duration: 1.0, magnitude: 1.0, value: None, conditions: None };
         start_effects(&world, target, None, 0x500, &[effect(MGEF_A)], false);
         magic_hit_system(&world, 0.016);
         assert_eq!(counter(&world, target), 2.0, "the block for MGEF_A and the unparameterised one");

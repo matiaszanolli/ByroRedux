@@ -27,7 +27,7 @@ mod state;
 mod tail;
 pub(crate) use state::STATE_COMMANDS;
 pub(crate) use tail::TAIL_COMMANDS;
-pub use tail::{ChildRaces, CellZones, ExitGameRequest, PendingVideos, PlayableRaces};
+pub use tail::{player_tag_skills, set_player_tag_skill, ChildRaces, CellZones, ExitGameRequest, PendingVideos, PlayableRaces};
 pub(crate) use actions::ACTIONS_COMMANDS;
 pub(crate) use extras::EXTRAS_COMMANDS;
 pub use extras::{AshPiles, MusicTrack, MusicTracks, PendingMusic, PendingTextureSwaps, ReloadRequest, TextArguments, TextureSwap, UseWeaponOptions, UseWeaponRequest};

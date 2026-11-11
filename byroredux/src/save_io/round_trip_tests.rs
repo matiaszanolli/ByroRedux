@@ -62,6 +62,8 @@ fn delta_columns_carry_only_session_stable_fields() {
         "Dead",
         // VATS-LIMB-009 - DismemberRecord: u16 body-location bitset + Option<u8> killing-blow location.
         "DismemberRecord",
+        // CharacterIdentity: an owned String name, a bool and a u32 race FormID.
+        "CharacterIdentity",
         // #2014 — WanderState/PatrolState: home/target Vec3 + WanderPhase
         // enum (Walking, or Paused{remaining: f32}) + pick_count u32.
         // TravelState: destination Vec3. GuardState: anchor Vec3.
@@ -698,6 +700,7 @@ fn the_obscript_runtime_state_survives_save_load_round_trip() {
         ticks: 4,
         locals: vec![(1, 3.0)],
         ref_locals: vec![(2, 0x0100_0004)],
+        suspended: false,
     }]);
     src.insert(actor, effects.clone());
     src.insert(actor, WeaponDrawn);
@@ -2282,7 +2285,7 @@ fn a_perk_granted_ability_survives_save_load_with_one_spell_and_one_value_change
         SpelRecord {
             form_id: SPELL,
             spell_type: SpellType::Ability,
-            effects: vec![MagicEffectItem { effect_form_id: FORTIFY, magnitude: 25.0, area: 0, duration: 0, script_form_id: 0 }],
+            effects: vec![MagicEffectItem { effect_form_id: FORTIFY, magnitude: 25.0, area: 0, duration: 0, script_form_id: 0, conditions: Vec::new() }],
             ..Default::default()
         },
     );

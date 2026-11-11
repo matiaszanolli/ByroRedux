@@ -137,6 +137,8 @@ struct ProfileEntryDe {
     #[serde(default)]
     new_game_radius: Option<u32>,
     #[serde(default)]
+    new_game_cell: Option<String>,
+    #[serde(default)]
     sample_cells: Vec<String>,
     /// `[[profiles.<key>.releases]]` — alternate releases chosen by the
     /// files present. See `GameProfileEntry::releases`.
@@ -185,6 +187,7 @@ impl From<ProfileEntryDe> for GameProfileEntry {
             new_game_worldspace: de.new_game_worldspace,
             new_game_grid: de.new_game_grid,
             new_game_radius: de.new_game_radius,
+            new_game_cell: de.new_game_cell,
             sample_cells: de.sample_cells,
             releases: de.releases.into_iter().map(GameRelease::from).collect(),
         }
@@ -595,6 +598,7 @@ sample_cells = ["GSDocMitchellHouse"]
             new_game_worldspace: p.new_game_worldspace.clone(),
             new_game_grid: p.new_game_grid.clone(),
             new_game_radius: p.new_game_radius,
+            new_game_cell: p.new_game_cell.clone(),
             sample_cells: p.sample_cells.clone(),
             releases: Vec::new(),
         }

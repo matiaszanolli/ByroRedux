@@ -807,14 +807,20 @@ impl ConsoleCommand for ScriptActivateCommand {
         "script.activate"
     }
     fn description(&self) -> &str {
-        "Emit ActivateEvent on an entity (usage: script.activate <entity_id>)"
+        "Emit ActivateEvent on an entity (usage: script.activate <entity_id | 0xREFR>)"
     }
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
         let trimmed = args.trim();
-        let Ok(entity_id) = trimmed.parse::<u32>() else {
+        // A placed reference by its FormID (`0x00103E55`), resolved to its live entity.
+        let by_form = trimmed
+            .strip_prefix("0x")
+            .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+            .and_then(|form| byroredux_scripting::condition::resolve_entity_by_global_form_id(world, form))
+            .map(|entity| entity as u32);
+        let Some(entity_id) = by_form.or_else(|| trimmed.parse::<u32>().ok()) else {
             return CommandOutput::line(format!(
-                "script.activate: failed to parse entity id from `{trimmed}` — \
-                 usage: script.activate <entity_id>"
+                "script.activate: failed to parse an entity id or a resident reference FormID from `{trimmed}` — \
+                 usage: script.activate <entity_id | 0xREFR>"
             ));
         };
 

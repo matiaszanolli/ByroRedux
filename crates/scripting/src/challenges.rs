@@ -210,7 +210,7 @@ fn complete(world: &World, def: &ChalRecord) {
     log::info!("challenge {:08X} {} completed", def.form_id, def.editor_id);
     if def.script_form_id != 0 {
         if let Some(player) = crate::papyrus_demo::PapyrusPlayerEntity::get(world) {
-            let reward = CastEffect { mgef: 0, script: def.script_form_id, duration: 0.0, magnitude: 0.0, value: None };
+            let reward = CastEffect { mgef: 0, script: def.script_form_id, duration: 0.0, magnitude: 0.0, value: None, conditions: None };
             crate::magic_effects::start_effects(world, player, Some(player), def.form_id, &[reward], false);
         }
     }

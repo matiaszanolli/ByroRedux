@@ -235,6 +235,26 @@ impl Component for DismemberRecord {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Who the player made their character in character creation: the name, sex and race
+/// chosen on the screens a game's opening shows (New Vegas's `VCG01`: the TextEdit and
+/// RaceSex menus at Doc Mitchell's). It overrides the base record's sex (`ACBS` female flag)
+/// and race for the actor that carries it, wherever those are read (`GetIsSex`, `GetIsRace`,
+/// the body the player is assembled with). Saved as a replacing column: nothing re-derives a
+/// choice, and the player outlives cell reloads.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct CharacterIdentity {
+    /// The name chosen; empty until the player names the character.
+    pub name: String,
+    pub female: bool,
+    /// The race's FormID.
+    pub race_form_id: u32,
+}
+
+impl Component for CharacterIdentity {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// An actor's per-faction reputation (the [`reputation`](super::reputation)
 /// family's storage half). Player-scoped in practice — NPCs don't accrue it —
 /// but a component so it rides the same ECS / save machinery as the rest of

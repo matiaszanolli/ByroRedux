@@ -100,6 +100,34 @@ pub(crate) fn player_can_act(world: &World) -> bool {
             .is_none_or(|vats| vats.mode == crate::components::VatsMode::None)
 }
 
+/// Keep the player's `Background` race on the race chosen in character creation
+/// ([`CharacterIdentity`](byroredux_core::character::CharacterIdentity)). `Background` is
+/// re-created with the actor from its record and not saved; the identity is saved, so after a
+/// load (or the chargen screen) this puts the chosen race back where every race reader
+/// (`GetIsRace`, `GetPlayerRace`, the alias and crime rules) looks. Writes only on a change.
+pub(crate) fn player_identity_sync_system(world: &World, _dt: f32) {
+    let Some(player) = PlayerEntity::get(world) else {
+        return;
+    };
+    let Some(race) = world
+        .get::<byroredux_core::character::CharacterIdentity>(player)
+        .map(|identity| identity.race_form_id)
+        .filter(|race| *race != 0)
+    else {
+        return;
+    };
+    let Some(mut backgrounds) = world.query_mut::<byroredux_core::character::Background>() else {
+        return;
+    };
+    match backgrounds.get_mut(player) {
+        Some(background) if background.race_form_id != race => background.race_form_id = race,
+        Some(_) => {}
+        None => {
+            backgrounds.insert(player, byroredux_core::character::Background { race_form_id: race, class_form_id: 0 });
+        }
+    }
+}
+
 /// #5039 — keep the player's stamped `PlayerOnly` pools (Health, AP, …)
 /// equal to their formulas as the inputs move. #4674 stamps them into the
 /// base layer so every `ActorValues::current` reader sees them. Without a

@@ -19,6 +19,18 @@ pub(super) fn register_jail_and_evidence_systems(scheduler: &mut Scheduler) {
             .writes_resource::<byroredux_scripting::PlayerMoveRequest>()
             .writes_resource::<crate::notifications::PlayerNotifications>(),
     );
+    // A seat the player activated seats them; moving stands them up (`player_seat.rs`).
+    scheduler.add_exclusive_with_access(
+        Stage::Update,
+        crate::player_seat::player_seat_system,
+        Access::new()
+            .reads_resource::<crate::systems::PlayerEntity>()
+            .reads::<byroredux_scripting::ActivateEvent>()
+            .reads::<byroredux_core::ecs::components::Furniture>()
+            .reads_resource::<crate::interaction::ActionState>()
+            .reads_resource::<byroredux_scripting::PlayerControlState>()
+            .writes::<byroredux_core::ecs::components::Seated>(),
+    );
     // Confiscated goods reach the jail's `StolenGoods` chest, loaded or parked.
     scheduler.add_exclusive_with_access(
         Stage::Update,

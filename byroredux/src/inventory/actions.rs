@@ -147,7 +147,7 @@ pub(super) fn consume_item(world: &mut World, index: u32, form_id: u32) -> Mutat
             );
         }
         if byroredux_scripting::condition::evaluate(&gated.conditions, world, &context) {
-            started.push(gated.effect);
+            started.push(gated.effect.clone());
         }
     }
     let scripted = started;

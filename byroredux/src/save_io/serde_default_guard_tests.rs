@@ -801,7 +801,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 124;
+    const BASELINE_MAJOR: u16 = 125;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1201,7 +1201,12 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // record of either.
     // The parked `ReferenceState` also gained `dismember` (the per-placement store a cell eviction carries), so
     // a corpse keeps its killing blow across a reload.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xa422_790e_5849_17db;
+    // New Vegas new game — v125 is a genuine bump: `CharacterIdentity` (the name, sex and race the player
+    // chose in character creation) joined the saved registry as a NEW component column, so a pre-v125
+    // snapshot has no record of the choices. The saved `ActiveEffect` also gained the required `suspended`
+    // flag (a recovered value given back while the effect's own conditions fail), so a pre-v125 snapshot
+    // cannot say which running effects are suspended.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x32c0_3eb3_605b_0778;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

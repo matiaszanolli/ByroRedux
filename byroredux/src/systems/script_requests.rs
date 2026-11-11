@@ -466,8 +466,18 @@ const REQUEST_LOG_CAP: usize = 64;
 pub(crate) fn script_ui_request_system(world: &World, _dt: f32) {
     use byroredux_scripting::obscript_more::{ExitGameRequest, PendingMenus, PendingVideos};
     let mut lines = Vec::new();
-    if let Some(mut menus) = world.try_resource_mut::<PendingMenus>() {
-        lines.extend(menus.0.drain(..).map(|menu| format!("menu {} form {:08X}", menu.menu, menu.form)));
+    let menus: Vec<_> = world.try_resource_mut::<PendingMenus>().map(|mut menus| menus.0.drain(..).collect()).unwrap_or_default();
+    for menu in menus {
+        // The character-creation screens have a page (`chargen.rs`); the rest are logged.
+        match crate::chargen::ChargenScreen::for_request(menu.menu, menu.form) {
+            Some(screen) => {
+                if let Some(mut session) = world.try_resource_mut::<crate::chargen::ChargenSession>() {
+                    session.request(screen);
+                }
+                log::info!("script request: menu {} opens the character-creation page", menu.menu);
+            }
+            None => lines.push(format!("menu {} form {:08X}", menu.menu, menu.form)),
+        }
     }
     if let Some(mut videos) = world.try_resource_mut::<PendingVideos>() {
         lines.extend(videos.0.drain(..).map(|file| format!("video {file} (no Bink decoder)")));

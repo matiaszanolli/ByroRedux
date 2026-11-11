@@ -49,8 +49,8 @@ pub struct CanonicalSpell {
     /// For a constant spell, the value changes applied while it is on the
     /// actor; empty otherwise.
     pub constant_modifiers: Vec<ConstantModifier>,
-    /// Every effect of the spell the caster runtime models, for `Cast` / `CastImmediateOnSelf` and
-    /// an ability's scripted effects (see `magic_effects`).
+    /// Every effect of the spell that goes on its target ([`CastEffect::lands`]), for `Cast` /
+    /// `CastImmediateOnSelf` and an ability's effects (see `magic_effects`).
     pub effects: Vec<crate::magic_effects::CastEffect>,
 }
 
@@ -141,7 +141,7 @@ pub fn canonical_spell(index: &EsmIndex, form_id: u32) -> CanonicalSpell {
         .effects
         .iter()
         .map(|item| crate::magic_effects::cast_effect(index, item))
-        .filter(|effect| effect.is_modelled())
+        .filter(|effect| effect.lands(constant))
         .collect();
     CanonicalSpell {
         constant,
@@ -225,7 +225,7 @@ pub fn add_spell(world: &World, actor: EntityId, spell: u32) -> bool {
 fn start_constant_script_effects(world: &World, actor: EntityId, spell: u32) {
     let scripted: Vec<crate::magic_effects::CastEffect> = world
         .try_resource::<SpellCatalog>()
-        .and_then(|catalog| catalog.get(spell).filter(|s| s.constant).map(|s| s.effects.iter().filter(|e| e.script != 0).copied().collect()))
+        .and_then(|catalog| catalog.get(spell).filter(|s| s.constant).map(|s| s.effects.iter().filter(|e| e.script != 0).cloned().collect()))
         .unwrap_or_default();
     if !scripted.is_empty() {
         crate::magic_effects::start_effects(world, actor, None, spell, &scripted, true);
@@ -391,7 +391,7 @@ mod tests {
                     magnitude,
                     area: 0,
                     duration: 0,
-                    script_form_id: 0,
+                    script_form_id: 0, conditions: Vec::new(),
                 })
                 .collect(),
             ..Default::default()

@@ -768,6 +768,10 @@ pub struct MagicEffectItem {
     /// `SCIT` — the `SCPT` an ObScript *script effect* runs (its `ScriptEffectStart` / `Update` /
     /// `Finish` blocks); `0` for an effect with no script. Fallout 3 / New Vegas and Oblivion.
     pub script_form_id: u32,
+    /// The effect's own conditions (`CTDA` / `CIS1` / `CIS2` after its `EFIT`): the effect works only
+    /// while they hold. New Vegas's `PlayerConcussed` gates its Perception -4 on
+    /// `GetActorValue PerceptionCondition <= 0`, a crippled head.
+    pub conditions: ConditionList,
 }
 
 /// Accumulator for the EFID → EFIT pair chain shared by `parse_spel` and
@@ -839,6 +843,7 @@ impl MagicEffectAccumulator {
                     area,
                     duration,
                     script_form_id: 0,
+                    conditions: Vec::new(),
                 });
                 self.pending_efid = 0;
             }
@@ -847,6 +852,14 @@ impl MagicEffectAccumulator {
             b"SCIT" if sub.data.len() >= 4 => {
                 if let Some(item) = self.items.last_mut() {
                     item.script_form_id = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
+                }
+            }
+            // A condition after an effect's `EFIT` belongs to that effect (xEdit `wbEffects`:
+            // `EFID`, `EFIT`, then the effect's `CTDA`s). One before any effect, or while an
+            // `EFID` waits for its `EFIT`, has no effect to gate and is dropped.
+            b"CTDA" | b"CTDT" | b"CIS1" | b"CIS2" if self.pending_efid == 0 => {
+                if let Some(item) = self.items.last_mut() {
+                    push_ctda(sub, remap, &mut item.conditions);
                 }
             }
             _ => {}
@@ -903,7 +916,7 @@ pub fn parse_spel(
                     out.spell_flags = flags;
                 }
             }
-            b"EFID" | b"EFIT" | b"SCIT" => effects.feed(sub, remap),
+            b"EFID" | b"EFIT" | b"SCIT" | b"CTDA" | b"CTDT" | b"CIS1" | b"CIS2" => effects.feed(sub, remap),
             _ => {}
         }
     }
@@ -1365,7 +1378,7 @@ pub fn parse_ench(
                     out.enchant_flags = header.enchant_flags;
                 }
             }
-            b"EFID" | b"EFIT" | b"SCIT" => effects.feed(sub, remap),
+            b"EFID" | b"EFIT" | b"SCIT" | b"CTDA" | b"CTDT" | b"CIS1" | b"CIS2" => effects.feed(sub, remap),
             _ => {}
         }
     }
@@ -2290,6 +2303,30 @@ mod tests {
         assert_eq!(s.effects[0].magnitude, 5.0);
         assert_eq!(s.effects[1].effect_form_id, 0xBBBB);
         assert_eq!(s.effects[1].duration, 0);
+    }
+
+    /// A `CTDA` after an effect's `EFIT` gates that effect alone. `FalloutNV.esm` `PlayerConcussed`
+    /// (`SPEL 0006533A`), bytes verbatim: the `Concussion` mark, then Perception -4 under
+    /// `GetActorValue PerceptionCondition (25) <= 0` (type byte `0xA0`: `<=`, Run On Subject).
+    #[test]
+    fn parse_spel_keeps_each_effects_own_conditions() {
+        let hex = |text: &str| (0..text.len()).step_by(2).map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap()).collect::<Vec<u8>>();
+        let subs = vec![
+            sub(b"EDID", b"PlayerConcussed\0"),
+            sub(b"SPIT", &hex("0000000000000000000000000acdcdcd")),
+            sub(b"EFID", &hex("39530600")),
+            sub(b"EFIT", &hex("00000000000000000003cc1200000000ffffffff")),
+            sub(b"EFID", &hex("e32d0300")),
+            sub(b"EFIT", &hex("04000000000000000003cc120000000006000000")),
+            sub(b"CTDA", &hex("a0000000000000000e00000019000000000000000000000000000000")),
+        ];
+        let spell = parse_spel(0x0006_533A, &subs, GameKind::Fallout3NV, &None);
+        assert_eq!(spell.effects.len(), 2);
+        assert!(spell.effects[0].conditions.is_empty(), "the mark is unconditional");
+        assert_eq!(spell.effects[1].magnitude, 4.0);
+        assert_eq!(spell.effects[1].conditions.len(), 1);
+        let condition = &spell.effects[1].conditions[0];
+        assert_eq!((condition.function_index, condition.param_1), (14, 25), "GetActorValue PerceptionCondition");
     }
 
     /// #4131 — `MagicEffectAccumulator::feed`'s EFID remap (#4071) was only

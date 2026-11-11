@@ -159,10 +159,19 @@ pub(super) fn say(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue
         }
     };
     let Some(topic) = topic else { return Action::Declined };
-    let seconds = crate::obscript_speech::say(world, speaker, topic, target).unwrap_or(0.0);
+    let said = crate::obscript_speech::say(world, speaker, topic, target);
+    // The effect log names the line picked, so a stalled script chain shows whether the
+    // speaker had nothing to say or said a line whose ending never came.
+    let line = match said {
+        Some(_) => world
+            .try_resource::<crate::obscript_speech::PendingScriptedLines>()
+            .and_then(|lines| lines.speaking.iter().find(|line| line.speaker == speaker).and_then(|line| line.info.as_ref().map(|info| info.form_id)))
+            .map_or_else(String::new, |info| format!(": INFO {info:08X}")),
+        None => ": nothing to say".to_string(),
+    };
     Action::Done {
-        value: Some(ObScriptValue::Num(seconds)),
-        effect: format!("{} {caller:08X} topic {topic:08X}", if cmd == CMD_SAY { "Say" } else { "SayTo" }),
+        value: Some(ObScriptValue::Num(said.unwrap_or(0.0))),
+        effect: format!("{} {caller:08X} topic {topic:08X}{line}", if cmd == CMD_SAY { "Say" } else { "SayTo" }),
     }
 }
 

@@ -62,6 +62,12 @@ fn register_interaction_system(scheduler: &mut Scheduler) {
             .reads::<byroredux_scripting::AiCombatState>()
             .reads::<byroredux_scripting::ActorControlState>()
             .reads::<byroredux_core::ecs::components::Inventory>()
+            // The seat and ObScript `OnActivate` arms: a seat is a `Furniture` with a sitting
+            // position (none while the player is `Seated`); an activator runs an object script
+            // whose table says it has the block.
+            .reads::<byroredux_core::ecs::components::Seated>()
+            .reads::<byroredux_scripting::obscript_objects::ObScriptInstance>()
+            .reads_resource::<byroredux_scripting::obscript_objects::ObScriptObjectTable>()
             .reads_resource::<ActionState>()
             .reads_resource::<ActiveCamera>()
             .reads_resource::<byroredux_physics::PhysicsWorld>()

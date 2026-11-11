@@ -663,6 +663,7 @@ fn cast_dispel_shader_look_and_resurrect_commands_reach_their_runtimes() {
                 duration: 60.0,
                 magnitude: 25.0,
                 value: Some(ValueEffect { actor_value: HEALTH, amount: 25.0, recover: true }),
+                conditions: None,
             }],
             ..Default::default()
         },

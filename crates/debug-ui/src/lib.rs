@@ -44,7 +44,8 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
 pub use panels::{
-    BarterAction, BarterItemView, BarterSnapshot, CraftingAction, CraftingRecipeView, CraftingSnapshot, DialogueTopicEntryView, DialogueTopicSnapshot, DialogueUiAction, GameMenuPage, GameMenuState,
+    BarterAction, BarterItemView, BarterSnapshot, ChargenChoice, ChargenDraft, ChargenOption, ChargenScreenView,
+    ChargenSnapshot, CraftingAction, CraftingRecipeView, CraftingSnapshot, DialogueTopicEntryView, DialogueTopicSnapshot, DialogueUiAction, GameMenuPage, GameMenuState,
     InteractionPrompt, InventoryAction, InventoryItemView, InventorySnapshot, MessageBoxView,
     ObjectiveView, PanelOutputs, PanelSnapshot, PanelTab, QueuedLoad, VitalBarView,
 };
@@ -322,6 +323,16 @@ impl DebugUiState {
 
     pub fn crafting_menu_visible(&self) -> bool {
         self.game_menu.visible && self.game_menu.page == GameMenuPage::Crafting
+    }
+
+    /// Open the native menu on the character-creation page.
+    pub fn open_chargen_menu(&mut self) {
+        self.game_menu.visible = true;
+        self.game_menu.page = GameMenuPage::CharGen;
+    }
+
+    pub fn chargen_menu_visible(&self) -> bool {
+        self.game_menu.visible && self.game_menu.page == GameMenuPage::CharGen
     }
 
     pub fn barter_menu_visible(&self) -> bool {

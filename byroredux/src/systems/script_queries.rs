@@ -29,6 +29,9 @@ pub(crate) struct UiMenuState {
     pub console: bool,
     /// The loading cover.
     pub loading: bool,
+    /// The menu code of the character-creation screen on the native page (`chargen.rs`): RaceSex
+    /// 1036, TextEdit 1051, Love Tester 1074, CharGen 1048 or the traits menu 1084.
+    pub chargen: Option<u32>,
 }
 
 impl Resource for UiMenuState {}
@@ -52,9 +55,11 @@ fn page_state(game_menu_visible: bool, pages: [bool; 5]) -> UiMenuState {
 /// Read the open pages off the UI and publish them.
 pub(crate) fn publish_ui_menus(world: &World, ui: Option<&byroredux_debug_ui::DebugUiState>, loading: bool) {
     let Some(ui) = ui else { return };
-    let state = UiMenuState {
+    let chargen = ui.chargen_menu_visible().then(|| crate::chargen::open_menu_code(world)).flatten();
+    let mut state = UiMenuState {
         console: ui.visible,
         loading,
+        chargen,
         ..page_state(
             ui.game_menu_visible(),
             [
@@ -66,6 +71,8 @@ pub(crate) fn publish_ui_menus(world: &World, ui: Option<&byroredux_debug_ui::De
             ],
         )
     };
+    // The character-creation page is its own menu, not the Pause menu.
+    state.pause &= chargen.is_none();
     if let Some(mut published) = world.try_resource_mut::<UiMenuState>() {
         *published = state;
     }
@@ -117,7 +124,7 @@ fn menu_open(world: &World, kind: u32) -> bool {
     let message = ui.message_box || world.try_resource::<crate::notifications::MessageBoxQueue>().is_some_and(|boxes| !boxes.0.is_empty());
     let barter = ui.barter || world.try_resource::<crate::barter::ActiveBarter>().is_some_and(|barter| barter.is_open());
     let loading = ui.loading;
-    let other = message || barter || loading || ui.dialogue || ui.pause || ui.crafting;
+    let other = message || barter || loading || ui.dialogue || ui.pause || ui.crafting || ui.chargen.is_some();
     match kind {
         0 => other || ui.inventory || ui.console,
         1 | 1002 => ui.inventory,
@@ -128,6 +135,7 @@ fn menu_open(world: &World, kind: u32) -> bool {
         1009 => ui.dialogue,
         1013 => ui.pause,
         code if code == codes.barter => barter,
+        code if ui.chargen == Some(code) => true,
         _ => false,
     }
 }

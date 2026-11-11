@@ -67,6 +67,9 @@ pub(super) fn parse_effects(
                         area,
                         duration,
                         script_form_id: 0,
+                        // An ingestible keeps its effect conditions on `ConsumableEffect`, with
+                        // the CTDA flag bytes and the fail-closed checks its use applies.
+                        conditions: Vec::new(),
                     },
                     delivery: fallout.then(|| r.u32_or_default()),
                     actor_value_cache: fallout.then(|| r.u32_or_default()),

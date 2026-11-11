@@ -364,6 +364,61 @@ pub fn run_quest_game_mode(
     Some(outcome)
 }
 
+/// Run every running quest script's `Begin MenuMode [code]` blocks whose code
+/// names a menu that is open now, or any menu for a block without a code (GECK
+/// *MenuMode*; GUI-EVT-006). A no-op on frames no menu is open, and when the
+/// app installed no menu answer ([`crate::obscript_more::EngineQueries`]).
+///
+/// It runs every frame a menu is up, including the frames a native page
+/// pauses the simulation on, which the app runs it on by name: the original
+/// runs these blocks in menu mode precisely while the world is stopped. New
+/// Vegas's `VCG01` moves from stage 36 to 40 in `Begin MenuMode 1036`, while
+/// the race menu is open.
+pub fn obscript_quest_menu_mode_system(world: &World, dt: f32) {
+    use crate::obscript_vm::BLOCK_MENU_MODE;
+    let Some(menu_open) = world.try_resource::<crate::obscript_more::EngineQueries>().and_then(|queries| queries.menu_open) else {
+        return;
+    };
+    if !menu_open(world, 0) {
+        return;
+    }
+    let running: Vec<u32> = match world.try_resource::<QuestStageState>() {
+        Some(stages) => running_quests_in_order(&stages),
+        None => return,
+    };
+    for quest in running {
+        let Some(script) = world
+            .try_resource::<QuestScriptTable>()
+            .and_then(|table| table.scripts.get(&quest).map(|quest_script| quest_script.script.clone()))
+        else {
+            continue;
+        };
+        let program = ObScriptProgram::new(&script);
+        let blocks: Vec<_> = program
+            .blocks()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|block| block.block_type == BLOCK_MENU_MODE && block.filter.is_none_or(|code| menu_open(world, code)))
+            .collect();
+        if blocks.is_empty() {
+            continue;
+        }
+        let mut state = world
+            .try_resource::<ObScriptQuestLocals>()
+            .map(|locals| VmState { locals: locals.of(quest), ref_locals: locals.refs_of(quest) })
+            .unwrap_or_default();
+        let mut host = ObScriptCommandHost::new(world, quest, None, dt, &script);
+        for block in &blocks {
+            if let BlockOutcome::Malformed(at) = program.run_at(block, &mut state, &mut host) {
+                log::warn!("ObScript quest {quest:08X}: malformed MenuMode bytecode at {at:#06x}");
+            }
+        }
+        if let Some(mut locals) = world.try_resource_mut::<ObScriptQuestLocals>() {
+            locals.store_state(quest, &state.locals, &state.ref_locals);
+        }
+    }
+}
+
 /// ECS host: lowers the phase-1 command set onto [`QuestStageState`],
 /// [`Globals`], and the effect log. Unknown commands are traced no-ops
 /// returning 0 and counted per quest.
@@ -906,11 +961,23 @@ impl ObScriptCommandHost<'_> {
     /// reference that is not loaded or has no object script, or the script running now (its
     /// own variables are mid-run in the VM, and a second copy here would be overwritten when
     /// the run stores them).
+    ///
+    /// "The script running now" is the script, not the owner: a quest's stage result script
+    /// runs with the quest as its owner but is a program of its own, so its
+    /// `set VCG00.fTimer to 3` must reach VCG00's variables. New Vegas's opening quests drive
+    /// their timers exactly that way.
     fn remote_variable(&self, form: u32, ordinal: u16, write: Option<f32>) -> Option<f32> {
-        if form == 0 || form == self.owner {
+        if form == 0 {
             return None;
         }
-        if self.world.try_resource::<QuestScriptTable>().is_some_and(|table| table.scripts.contains_key(&form)) {
+        let quest_script = self
+            .world
+            .try_resource::<QuestScriptTable>()
+            .and_then(|table| table.scripts.get(&form).map(|quest| quest.script.form_id));
+        if let Some(quest_script) = quest_script {
+            if form == self.owner && quest_script == self.script.form_id {
+                return None;
+            }
             let mut locals = self.world.try_resource_mut::<ObScriptQuestLocals>()?;
             return Some(match write {
                 Some(value) => {
@@ -922,6 +989,9 @@ impl ObScriptCommandHost<'_> {
         }
         let entity = resolve_entity_by_global_form_id(self.world, form)?;
         let script_id = self.world.get::<crate::obscript_objects::ObScriptInstance>(entity)?.script;
+        if form == self.owner && script_id == self.script.form_id {
+            return None;
+        }
         let name = {
             let table = self.world.try_resource::<crate::obscript_objects::ObScriptObjectTable>()?;
             let record = &table.scripts.get(&script_id)?.record;
@@ -1270,6 +1340,37 @@ mod host_tests {
         assert_eq!((declined(&world, READ), declined(&world, WRITE)), (1, 1));
     }
 
+    /// A quest's stage result script runs with the quest as its owner but is not the quest's
+    /// script, so `set VCG00.bRunTimer to 1` in VCG00's own stage 0 reaches VCG00's variables
+    /// (New Vegas's opening stalled at stage 90 without it). The quest's script itself still
+    /// cannot write its own variables remotely: they are mid-run in the VM.
+    #[test]
+    fn a_stage_result_script_writes_its_own_quests_variables() {
+        const WRITE: u16 = crate::obscript_vm::CMD_SET_REMOTE_VARIABLE;
+        const QUEST_SCRIPT: u32 = 0x00CC_0001;
+        let mut world = world();
+        world.insert_resource(ObScriptQuestLocals::default());
+        let quest_script = ScriptRecord { form_id: QUEST_SCRIPT, ..Default::default() };
+        let mut table = QuestScriptTable::default();
+        table.scripts.insert(
+            OWN,
+            QuestScript { script: Arc::new(quest_script.clone()), quest: QuestFormId(OWN), authored_delay: 0.0 },
+        );
+        world.insert_resource(table);
+        let args = [ObScriptValue::Ref(OWN), ObScriptValue::Num(6.0), ObScriptValue::Num(1.0)];
+
+        // A stage item's script carries the quest's form id as its own (`embedded_script_at`).
+        let stage_result = ScriptRecord { form_id: OWN, ..Default::default() };
+        ObScriptCommandHost::new(&world, OWN, None, 0.0, &stage_result).call(WRITE, &args, None);
+        assert_eq!(world.try_resource::<ObScriptQuestLocals>().unwrap().get(OWN, 6), 1.0);
+        assert_eq!(declined(&world, WRITE), 0);
+
+        let args = [ObScriptValue::Ref(OWN), ObScriptValue::Num(6.0), ObScriptValue::Num(5.0)];
+        ObScriptCommandHost::new(&world, OWN, None, 0.0, &quest_script).call(WRITE, &args, None);
+        assert_eq!(world.try_resource::<ObScriptQuestLocals>().unwrap().get(OWN, 6), 1.0, "the running script's own copy");
+        assert_eq!(declined(&world, WRITE), 1);
+    }
+
     /// A caller that is not a live reference cannot be asked: it is a counted
     /// decline, never an invented "alive".
     #[test]
@@ -1556,6 +1657,72 @@ mod persisted_locals_tests {
             &world,
             &crate::condition::ConditionContext::for_subject(subject),
         ));
+    }
+
+    /// `set s1 to s1 + 1` inside `Begin MenuMode [code]`, the code compiled as the block's one
+    /// long argument (`01 00 6e <i32>`), the shape `VCG01`'s `Begin MenuMode 1036` has on disk.
+    fn menu_mode_block(code: Option<i32>) -> Vec<u8> {
+        let mut bytes = set_short_local_to_incremented_value();
+        let assignment_len = u32::from_le_bytes(bytes[6..10].try_into().unwrap());
+        let mut begin_payload = crate::obscript_vm::BLOCK_MENU_MODE.to_le_bytes().to_vec();
+        begin_payload.extend_from_slice(&assignment_len.to_le_bytes());
+        if let Some(code) = code {
+            begin_payload.extend_from_slice(&1u16.to_le_bytes());
+            begin_payload.push(b'n');
+            begin_payload.extend_from_slice(&code.to_le_bytes());
+        }
+        let body = bytes.split_off(10);
+        let mut out = statement(0x10, &begin_payload);
+        out.extend(body);
+        out
+    }
+
+    /// GUI-EVT-006 — a quest's `Begin MenuMode 1036` block runs on the frames the race menu
+    /// (code 1036) is open and on no other frame; a block with no code runs under any menu.
+    #[test]
+    fn a_menu_mode_block_runs_while_its_menu_is_open() {
+        use crate::obscript_more::EngineQueries;
+        use crate::quest_stages::QuestStageState;
+        use byroredux_plugin::esm::reader::GameKind;
+        static OPEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        fn menu_open(_: &World, code: u32) -> bool {
+            let open = OPEN.load(std::sync::atomic::Ordering::Relaxed);
+            open != 0 && (code == 0 || code == open)
+        }
+        const RACE_QUEST: u32 = QUEST;
+        const ANY_QUEST: u32 = QUEST + 1;
+        let mut world = World::new();
+        let mut table = QuestScriptTable::default();
+        for (quest, code) in [(RACE_QUEST, Some(1036)), (ANY_QUEST, None)] {
+            let script = ScriptRecord {
+                form_id: quest,
+                script_type: ScriptType::Quest,
+                compiled: menu_mode_block(code),
+                locals: vec![ScriptLocalVar { index: 1, var_type: 1, name: "counter".into() }],
+                ..Default::default()
+            };
+            table.scripts.insert(quest, QuestScript { script: Arc::new(script), quest: QuestFormId(quest), authored_delay: 0.0 });
+        }
+        world.insert_resource(table);
+        world.insert_resource(ObScriptQuestLocals::default());
+        world.insert_resource(ObScriptQuestTimers::default());
+        world.insert_resource(crate::ScriptGame(GameKind::Fallout3NV));
+        world.insert_resource(EngineQueries { menu_open: Some(menu_open), ..Default::default() });
+        let mut stages = QuestStageState::default();
+        stages.start_quest(QuestFormId(RACE_QUEST), None);
+        stages.start_quest(QuestFormId(ANY_QUEST), None);
+        world.insert_resource(stages);
+        let counter = |world: &World, quest| world.resource::<ObScriptQuestLocals>().get(quest, 1);
+
+        obscript_quest_menu_mode_system(&world, 0.016);
+        assert_eq!((counter(&world, RACE_QUEST), counter(&world, ANY_QUEST)), (0.0, 0.0), "no menu: no MenuMode run");
+        OPEN.store(1009, std::sync::atomic::Ordering::Relaxed);
+        obscript_quest_menu_mode_system(&world, 0.016);
+        assert_eq!((counter(&world, RACE_QUEST), counter(&world, ANY_QUEST)), (0.0, 1.0), "dialogue is not the race menu");
+        OPEN.store(1036, std::sync::atomic::Ordering::Relaxed);
+        obscript_quest_menu_mode_system(&world, 0.016);
+        assert_eq!((counter(&world, RACE_QUEST), counter(&world, ANY_QUEST)), (1.0, 2.0));
+        OPEN.store(0, std::sync::atomic::Ordering::Relaxed);
     }
 }
 

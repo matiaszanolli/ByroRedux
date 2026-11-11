@@ -486,9 +486,14 @@ fn load_scene_content(
         let cell_id = crate::cli_args::parse_string_arg(args, "--cell");
         let grid_str = crate::cli_args::parse_string_arg(args, "--grid");
         // A launch that names its location keeps the player there until they
-        // take control (see `ExplicitStartPin`).
-        world.insert_resource(crate::components::ExplicitStartPin(
-            cell_id.is_some() || grid_str.is_some(),
+        // take control (see `ExplicitStartPin`). `--new-game` names the
+        // opening's location only to load it, so it is a new game, not a pin.
+        let new_game_flag = args.iter().any(|arg| arg == "--new-game");
+        let explicit_location = (cell_id.is_some() || grid_str.is_some()) && !new_game_flag;
+        world.insert_resource(crate::components::ExplicitStartPin(explicit_location));
+        let restoring_save = crate::cli_args::parse_string_arg(args, "--load").is_some();
+        world.insert_resource(crate::components::NewGameStart(
+            !explicit_location && !restoring_save,
         ));
         // #444 — explicit worldspace EDID override. Used with --grid
         // when the ESM defines multiple exterior worldspaces (e.g.

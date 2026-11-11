@@ -2767,6 +2767,7 @@ mod tests {
             ticks: 0,
             locals: Vec::new(),
             ref_locals: Vec::new(),
+            suspended: false,
         }
     }
 

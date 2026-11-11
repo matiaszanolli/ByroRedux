@@ -86,9 +86,15 @@ fn actor_traits(world: &World, entity: EntityId) -> Option<ActorBaseTrait> {
 }
 
 /// Whether the actor `entity` is female (its leveled base's `ACBS` female
-/// flag) — *GetIsSex*, both the script getter and condition 70. `None` when
-/// the entity has no actor base with recorded traits.
+/// flag) — *GetIsSex*, both the script getter and condition 70. The sex the
+/// player chose in character creation ([`CharacterIdentity`]) wins over the
+/// base's. `None` when the entity has neither.
+///
+/// [`CharacterIdentity`]: byroredux_core::character::CharacterIdentity
 pub fn is_female(world: &World, entity: EntityId) -> Option<bool> {
+    if let Some(identity) = world.get::<byroredux_core::character::CharacterIdentity>(entity) {
+        return Some(identity.female);
+    }
     Some(actor_traits(world, entity)?.female)
 }
 

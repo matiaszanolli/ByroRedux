@@ -57,7 +57,7 @@ pub struct ValueEffect {
 }
 
 /// One effect of a spell or ingestible as the runtime needs it.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CastEffect {
     /// The `MGEF` the effect names (in Oblivion, the one its 4-char code resolves to).
     pub mgef: u32,
@@ -67,12 +67,24 @@ pub struct CastEffect {
     pub duration: f32,
     pub magnitude: f32,
     pub value: Option<ValueEffect>,
+    /// The effect's own conditions; it works only while they hold (`None`: always).
+    pub conditions: Option<Arc<byroredux_plugin::esm::records::condition::ConditionList>>,
 }
 
 impl CastEffect {
     /// Whether the effect does something this runtime models.
     pub fn is_modelled(&self) -> bool {
         self.script != 0 || self.value.is_some()
+    }
+
+    /// Whether the effect goes on the actor when cast: anything modelled, and any effect that
+    /// lasts (a duration, or a constant spell's), even one that changes nothing here. Such an
+    /// effect is a mark scripts test with `HasMagicEffect`: New Vegas's `GenericScript` casts
+    /// `PlayerConcussed` until `Player.HasMagicEffect Concussion` holds, and `Concussion` is a
+    /// zero-magnitude effect with no actor value. Without the mark the spell was recast on every
+    /// quest tick and its Perception -4 stacked without end.
+    pub fn lands(&self, indefinite: bool) -> bool {
+        self.is_modelled() || indefinite || self.duration > 0.0
     }
 }
 
@@ -95,7 +107,8 @@ pub fn cast_effect(index: &EsmIndex, item: &MagicEffectItem) -> CastEffect {
         let sign = if mgef.effect_flags & MGEF_FLAG_DETRIMENTAL != 0 { -1.0 } else { 1.0 };
         Some(ValueEffect { actor_value, amount: sign * item.magnitude, recover: mgef.effect_flags & MGEF_FLAG_RECOVER != 0 })
     });
-    CastEffect { mgef: mgef.map_or(item.effect_form_id, |mgef| mgef.form_id), script, duration: item.duration as f32, magnitude: item.magnitude, value }
+    let conditions = (!item.conditions.is_empty()).then(|| Arc::new(item.conditions.clone()));
+    CastEffect { mgef: mgef.map_or(item.effect_form_id, |mgef| mgef.form_id), script, duration: item.duration as f32, magnitude: item.magnitude, value, conditions }
 }
 
 /// The effects of an ingestible (`ALCH`): its authored effect list.
@@ -129,6 +142,9 @@ pub struct ActiveEffect {
     pub locals: Vec<(u16, f32)>,
     /// Its reference variables, by slot (exact form ids).
     pub ref_locals: Vec<(u16, u32)>,
+    /// The effect's conditions do not hold: its recovered value is given back, and no per-second
+    /// change runs, until they do ([`effect_conditions`]).
+    pub suspended: bool,
 }
 
 /// The effects running on an actor.
@@ -187,7 +203,7 @@ pub fn start_effects(world: &World, target: EntityId, caster: Option<EntityId>, 
     let target_form = crate::obscript_state::reference_form(world, target).unwrap_or(0);
     let taken: Vec<ActiveEffect> = effects
         .iter()
-        .filter(|effect| effect.is_modelled())
+        .filter(|effect| effect.lands(indefinite))
         .map(|effect| ActiveEffect {
             source,
             mgef: effect.mgef,
@@ -202,6 +218,7 @@ pub fn start_effects(world: &World, target: EntityId, caster: Option<EntityId>, 
             ticks: 0,
             locals: Vec::new(),
             ref_locals: Vec::new(),
+            suspended: false,
         })
         .collect();
     if taken.is_empty() {
@@ -222,8 +239,8 @@ pub fn start_effects(world: &World, target: EntityId, caster: Option<EntityId>, 
     count
 }
 
-/// Cast `spell` on `target`: every modelled effect of it lands. `false` when the spell is unknown or has
-/// nothing this runtime models.
+/// Cast `spell` on `target`: every effect of it that [lands](CastEffect::lands). `false` when the spell
+/// is unknown or none of its effects lands.
 pub fn cast_spell(world: &World, caster: Option<EntityId>, target: EntityId, spell: u32) -> bool {
     let effects = match world.try_resource::<crate::magic::SpellCatalog>().and_then(|catalog| catalog.get(spell).map(|s| s.effects.clone())) {
         Some(effects) => effects,
@@ -267,6 +284,27 @@ pub fn dispel(world: &World, target: EntityId, source: Option<u32>) -> usize {
         ended += 1;
     }
     ended
+}
+
+/// The conditions of `effect` as its source spell authored them (the per-effect `CTDA`s of the
+/// `SPEL`), looked up by source and effect: they are a property of the record, so a loaded save
+/// reads them again rather than storing them. `None` for an effect with no conditions, or whose
+/// source is not a spell (an ingestible checks its own at use).
+pub fn effect_conditions(world: &World, effect: &ActiveEffect) -> Option<Arc<byroredux_plugin::esm::records::condition::ConditionList>> {
+    let catalog = world.try_resource::<crate::magic::SpellCatalog>()?;
+    catalog.get(effect.source)?.effects.iter().find(|cast| cast.mgef == effect.mgef)?.conditions.clone()
+}
+
+/// Whether `effect`'s conditions hold on `target` (the subject). A condition this runtime cannot
+/// read fails closed, as dialogue and consumables treat one.
+fn effect_conditions_hold(world: &World, target: EntityId, effect: &ActiveEffect) -> bool {
+    let Some(conditions) = effect_conditions(world, effect) else {
+        return true;
+    };
+    if conditions.iter().any(|condition| !crate::condition::is_modeled(world, condition)) {
+        return false;
+    }
+    crate::condition::evaluate(&conditions, world, &crate::condition::ConditionContext::for_subject(target))
 }
 
 /// Whether `target` has an active effect of `mgef` (`HasMagicEffect`).
@@ -333,25 +371,44 @@ pub fn magic_effect_system(world: &World, dt: f32) {
                     }
                 }
             };
+            // The effect's own conditions, read each pass: an effect whose conditions fail does
+            // nothing until they hold (its recovered value is given back meanwhile).
+            let holds = effect_conditions_hold(world, target, &effect);
             if !effect.started {
                 effect.started = true;
                 if let Some(value) = effect.value {
                     if effect.duration <= 0.0 && !effect.indefinite {
                         // Instant: one change of the value itself.
-                        change_value(world, target, |values| {
-                            if value.amount >= 0.0 {
-                                values.restore(value.actor_value, value.amount);
-                            } else {
-                                values.apply_damage(value.actor_value, -value.amount);
-                            }
-                        });
+                        if holds {
+                            change_value(world, target, |values| {
+                                if value.amount >= 0.0 {
+                                    values.restore(value.actor_value, value.amount);
+                                } else {
+                                    values.apply_damage(value.actor_value, -value.amount);
+                                }
+                            });
+                        }
                     } else if value.recover {
-                        change_value(world, target, |values| values.mod_permanent(value.actor_value, value.amount));
+                        if holds {
+                            change_value(world, target, |values| values.mod_permanent(value.actor_value, value.amount));
+                        } else {
+                            effect.suspended = true;
+                        }
                     }
                 }
                 run_blocks(world, &mut effect, BLOCK_SCRIPT_EFFECT_START);
             } else {
                 effect.elapsed += dt;
+                // A recovered value follows its conditions while the effect runs.
+                if let Some(value) = effect.value.filter(|value| value.recover && (effect.duration > 0.0 || effect.indefinite)) {
+                    if effect.suspended && holds {
+                        change_value(world, target, |values| values.mod_permanent(value.actor_value, value.amount));
+                        effect.suspended = false;
+                    } else if !effect.suspended && !holds {
+                        change_value(world, target, |values| values.mod_permanent(value.actor_value, -value.amount));
+                        effect.suspended = true;
+                    }
+                }
             }
             let finished = effect.ending || (!effect.indefinite && effect.elapsed >= effect.duration);
             if !finished || effect.duration > 0.0 {
@@ -362,7 +419,8 @@ pub fn magic_effect_system(world: &World, dt: f32) {
                 let due = effect.elapsed.floor().max(0.0) as u32;
                 let owed = due.saturating_sub(effect.ticks);
                 effect.ticks = effect.ticks.max(due);
-                if owed > 0 {
+                // The seconds that pass while the conditions fail change nothing.
+                if owed > 0 && holds {
                     change_value(world, target, |values| {
                         for _ in 0..owed {
                             if value.amount >= 0.0 {
@@ -376,7 +434,7 @@ pub fn magic_effect_system(world: &World, dt: f32) {
             }
             if finished {
                 run_blocks(world, &mut effect, BLOCK_SCRIPT_EFFECT_FINISH);
-                if let Some(value) = effect.value.filter(|value| value.recover && (effect.duration > 0.0 || effect.indefinite)) {
+                if let Some(value) = effect.value.filter(|value| value.recover && (effect.duration > 0.0 || effect.indefinite) && !effect.suspended) {
                     change_value(world, target, |values| values.mod_permanent(value.actor_value, -value.amount));
                 }
             }
@@ -485,7 +543,7 @@ mod tests {
             0x500,
             SpelRecord {
                 form_id: 0x500,
-                effects: vec![MagicEffectItem { effect_form_id: 0x77, magnitude, area: 0, duration, script_form_id: 0 }],
+                effects: vec![MagicEffectItem { effect_form_id: 0x77, magnitude, area: 0, duration, script_form_id: 0, conditions: Vec::new() }],
                 ..Default::default()
             },
         );
@@ -519,6 +577,66 @@ mod tests {
         magic_effect_system(&world, 2.0);
         assert_eq!(health(&world, target), 70.0);
         assert!(world.get::<ActiveMagicEffects>(target).is_none(), "ended at 3 s");
+    }
+
+    /// A lasting effect that changes nothing here still goes on the target, so `HasMagicEffect` sees it:
+    /// New Vegas's `PlayerConcussed` pairs the zero-magnitude, value-less `Concussion` mark with
+    /// Perception -4, and `GenericScript` recasts it while `Player.HasMagicEffect Concussion == 0`.
+    /// An instant one with nothing to do leaves nothing behind.
+    #[test]
+    fn a_lasting_mark_effect_lands_so_has_magic_effect_sees_it() {
+        const MARK: u32 = 0x78;
+        let mut index = index_with_value_effect(MGEF_FLAG_DETRIMENTAL, 4.0, 315_360_000);
+        index.magic_effects.insert(MARK, MgefRecord { form_id: MARK, archetype: Some(MagicArchetype::ValueModifier), ..Default::default() });
+        index.spells.get_mut(&0x500).unwrap().effects.insert(0, MagicEffectItem { effect_form_id: MARK, magnitude: 0.0, area: 0, duration: 315_360_000, script_form_id: 0, conditions: Vec::new() });
+        index.spells.insert(
+            0x501,
+            SpelRecord { form_id: 0x501, effects: vec![MagicEffectItem { effect_form_id: MARK, magnitude: 0.0, area: 0, duration: 0, script_form_id: 0, conditions: Vec::new() }], ..Default::default() },
+        );
+        let (world, target) = world_with(index);
+        assert!(!has_effect(&world, target, MARK));
+        assert!(cast_spell(&world, None, target, 0x500));
+        assert!(has_effect(&world, target, MARK), "the mark is on the target");
+        assert!(has_effect(&world, target, 0x77));
+        magic_effect_system(&world, 1.0);
+        assert!(has_effect(&world, target, MARK), "and stays for its duration");
+        assert!(!cast_spell(&world, None, target, 0x501), "an instant mark does nothing");
+    }
+
+    /// An effect's own conditions gate its value for as long as it runs: `PlayerConcussed`'s Perception
+    /// -4 waits on a crippled head. Here a Fortify Health +25 that recovers waits on `GetStage QUEST >= 10`:
+    /// nothing while the stage is lower, the bonus once it is reached, given back if it drops, and nothing
+    /// owed at the end of a suspended run.
+    #[test]
+    fn an_effects_conditions_gate_its_value_while_it_runs() {
+        use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue, RunOn};
+        const QUEST: u32 = 0x00AB_0001;
+        let mut index = index_with_value_effect(MGEF_FLAG_RECOVER, 25.0, 10);
+        index.spells.get_mut(&0x500).unwrap().effects[0].conditions = vec![Condition {
+            function_index: 58, // GetStage
+            comparator: ComparisonOp::Ge,
+            comparand: ConditionValue::Literal(10.0),
+            param_1: QUEST,
+            run_on: RunOn::Subject,
+            ..Default::default()
+        }];
+        let (mut world, target) = world_with(index);
+        world.insert_resource(crate::quest_stages::QuestStageState::default());
+        let base = health(&world, target);
+        let stage = |world: &World, stage: u16| world.resource_mut::<crate::quest_stages::QuestStageState>().set_stage(crate::quest_stages::QuestFormId(QUEST), stage);
+
+        assert!(cast_spell(&world, None, target, 0x500));
+        magic_effect_system(&world, 0.0);
+        assert_eq!(health(&world, target), base, "the condition fails: no bonus");
+        stage(&world, 10);
+        magic_effect_system(&world, 1.0);
+        assert_eq!(health(&world, target), base + 25.0, "the condition holds: the bonus");
+        stage(&world, 5);
+        magic_effect_system(&world, 1.0);
+        assert_eq!(health(&world, target), base, "given back while it fails");
+        magic_effect_system(&world, 20.0);
+        assert_eq!(health(&world, target), base, "ending suspended owes nothing back");
+        assert!(world.get::<ActiveMagicEffects>(target).is_none());
     }
 
     fn pending_kills(world: &World) -> Vec<(EntityId, Option<EntityId>, bool)> {
@@ -639,7 +757,7 @@ mod tests {
             0x501,
             SpelRecord {
                 form_id: 0x501,
-                effects: vec![MagicEffectItem { effect_form_id: 0x78, magnitude: 1.0, area: 0, duration: 2, script_form_id: 0x900 }],
+                effects: vec![MagicEffectItem { effect_form_id: 0x78, magnitude: 1.0, area: 0, duration: 2, script_form_id: 0x900, conditions: Vec::new() }],
                 ..Default::default()
             },
         );

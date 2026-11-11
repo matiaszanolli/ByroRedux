@@ -30,3 +30,22 @@ impl ExplicitStartPin {
         }
     }
 }
+
+/// Whether this session began as a new game: the launch named no location
+/// (or passed `--new-game`) and is not restoring a save.
+///
+/// Unlike [`ExplicitStartPin`] this never changes after boot, so a cell load
+/// late in the session still knows how the session began. It gates the
+/// opening quests an original executable starts by itself on a new game
+/// (`install_engine_root_quests`), which must not run over a session that
+/// started in a named cell or from a save. Session state, never saved.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NewGameStart(pub(crate) bool);
+
+impl Resource for NewGameStart {}
+
+impl NewGameStart {
+    pub(crate) fn active(world: &byroredux_core::ecs::World) -> bool {
+        world.try_resource::<Self>().is_some_and(|start| start.0)
+    }
+}

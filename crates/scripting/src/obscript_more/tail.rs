@@ -77,6 +77,11 @@ impl PlayableRaces {
     pub fn contains(&self, race: u32) -> bool {
         self.0.contains(&race)
     }
+
+    /// The playable races' FormIDs, in no particular order.
+    pub fn iter(&self) -> impl Iterator<Item = u32> + '_ {
+        self.0.iter().copied()
+    }
 }
 
 /// The FormIDs of the races whose RACE `DATA` flags carry any bit of `flag`.
@@ -281,17 +286,35 @@ fn reset_xp(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _
 // GECK *SetPlayerTagSkill <skill> <slot 0-2>*: "gives the player a starting bonus in that skill"
 // (`fAVDTagSkillBonus`); the skill it replaces loses its bonus. *IsPlayerTagSkill <skill>*.
 fn cmd_11cd(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    match (player(world), num(args, 1) as i32) {
-        (Some(player), slot @ 0..=2) => {
-            let skill = num(args, 0) as u8;
-            if let Some(Some(previous)) = ledger_mut(world, |l| l.set_tag_skill(slot as u8, skill)) {
-                tag_bonus(world, player, previous, -1.0);
-            }
-            tag_bonus(world, player, skill, 1.0);
-            done(format!("SetPlayerTagSkill {skill} {slot}"))
-        }
+    let (skill, slot) = (num(args, 0) as u8, num(args, 1) as i32);
+    match u8::try_from(slot) {
+        Ok(slot) if set_player_tag_skill(world, skill, slot) => done(format!("SetPlayerTagSkill {skill} {slot}")),
         _ => Action::Declined,
     }
+}
+
+/// Tag skill `skill` (an actor-value code) in tag slot `slot` (0..=2): the skill gains the
+/// starting bonus (`fAVDTagSkillBonus`) and the skill it replaces in that slot loses it —
+/// `SetPlayerTagSkill`, and the tag-skills screen of character creation. `false` without a
+/// player or for a slot past the third.
+pub fn set_player_tag_skill(world: &World, skill: u8, slot: u8) -> bool {
+    let Some(player) = player(world).filter(|_| slot <= 2) else {
+        return false;
+    };
+    let previous = ledger_mut(world, |l| l.set_tag_skill(slot, skill)).flatten();
+    if previous == Some(skill) {
+        return true;
+    }
+    if let Some(previous) = previous {
+        tag_bonus(world, player, previous, -1.0);
+    }
+    tag_bonus(world, player, skill, 1.0);
+    true
+}
+
+/// The player's tagged skills, as actor-value codes in slot order.
+pub fn player_tag_skills(world: &World) -> Vec<u8> {
+    ledger(world, |l| l.tag_skills().collect()).unwrap_or_default()
 }
 
 fn cmd_11ce(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {

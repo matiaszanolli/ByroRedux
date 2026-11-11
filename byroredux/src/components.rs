@@ -7,7 +7,7 @@ mod explicit_start;
 mod projectile_muzzle;
 mod game_time;
 
-pub(crate) use explicit_start::ExplicitStartPin;
+pub(crate) use explicit_start::{ExplicitStartPin, NewGameStart};
 pub(crate) use projectile_muzzle::ProjectileMuzzle;
 pub(crate) use game_time::GameTimeRes;
 

@@ -107,7 +107,7 @@ pub use affliction::{
 };
 pub use attribute::{Attribute, AttributeSet};
 pub use components::{
-    Background, CharacterLevel, DismemberRecord, FactionReputation, FactionStanding, LevelUpPoints, PerkRank,
+    Background, CharacterIdentity, CharacterLevel, DismemberRecord, FactionReputation, FactionStanding, LevelUpPoints, PerkRank,
     Perks, MAX_BODY_LOCATION,
 };
 pub use armor::ArmorModel;

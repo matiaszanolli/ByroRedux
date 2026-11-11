@@ -1023,6 +1023,52 @@ impl App {
         self.present_barter_menu();
         self.present_crafting_menu();
         self.present_script_messages();
+        self.present_chargen();
+        self.step_player_body_rebuild();
+    }
+
+    /// A character-creation screen a script asked for opens on the native page once nothing
+    /// else is up, one at a time; without a native UI there is no one to answer it, so it closes
+    /// unchanged, as an unanswerable message box does.
+    fn present_chargen(&mut self) {
+        // Answered from the console: apply it, and close the page as its own button would.
+        if let Some(rebuild) = crate::chargen::apply_console_answer(&mut self.world) {
+            if rebuild {
+                self.world.resource_mut::<crate::player_body::PlayerBodyRebuildRequest>().0 = true;
+            }
+            if self.debug_ui.as_ref().is_some_and(byroredux_debug_ui::DebugUiState::chargen_menu_visible) {
+                self.resume_from_game_menu();
+            }
+        }
+        let opened = self.world.try_resource_mut::<crate::chargen::ChargenSession>().is_some_and(|mut session| {
+            session.open().is_some() || session.open_next()
+        });
+        if !opened {
+            return;
+        }
+        match self.debug_ui.as_mut() {
+            Some(ui) if ui.chargen_menu_visible() => {}
+            Some(ui) if !ui.game_menu_visible() => {
+                ui.open_chargen_menu();
+                self.release_world_input_for_ui();
+            }
+            Some(_) => {}
+            None => crate::chargen::dismiss(&self.world),
+        }
+    }
+
+    /// The player's sex or race changed: assemble the body again from the new record.
+    fn step_player_body_rebuild(&mut self) {
+        let requested = self
+            .world
+            .try_resource_mut::<crate::player_body::PlayerBodyRebuildRequest>()
+            .is_some_and(|mut request| std::mem::take(&mut request.0));
+        if !requested {
+            return;
+        }
+        if let Some(ctx) = self.renderer.as_mut() {
+            crate::player_body::rebuild_player_body(&mut self.world, ctx);
+        }
     }
 
     /// M43 — a bench the player activated: the crafting page replaces any open page (ending an open

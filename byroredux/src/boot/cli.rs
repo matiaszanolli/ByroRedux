@@ -345,7 +345,8 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
     // args; downstream code doesn't recognise them.
     args = strip_flag_and_value(args, "--game");
     args = strip_flag_and_value(args, "--games-root");
-    args.retain(|arg| arg != "--new-game");
+    // `--new-game` stays: the scene setup reads it to tell the opening's
+    // location from a launch that names one (`ExplicitStartPin`).
 
     // Load profile registry from disk. Same loader the App uses
     // at world init; safe to call before logging is initialised
@@ -405,23 +406,24 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
         let has_location = ["--cell", "--grid", "--wrld"]
             .iter()
             .any(|flag| args.iter().any(|arg| arg == flag));
-        match (&entry.new_game_worldspace, &entry.new_game_grid) {
-            (Some(worldspace), Some(grid)) if !has_location => {
-                args.push("--wrld".to_string());
-                args.push(worldspace.clone());
-                args.push("--grid".to_string());
-                args.push(grid.clone());
-                if !args.iter().any(|arg| arg == "--radius") {
-                    if let Some(radius) = entry.new_game_radius {
-                        args.push("--radius".to_string());
-                        args.push(radius.to_string());
-                    }
+        if !entry.has_new_game_target() {
+            eprintln!("--game {game_key} --new-game: profile has no new-game cell or worldspace/grid");
+        } else if has_location {
+            eprintln!("--new-game: explicit location flags override the profile target");
+        } else if let Some(cell) = &entry.new_game_cell {
+            args.push("--cell".to_string());
+            args.push(cell.clone());
+        } else if let (Some(worldspace), Some(grid)) = (&entry.new_game_worldspace, &entry.new_game_grid) {
+            args.push("--wrld".to_string());
+            args.push(worldspace.clone());
+            args.push("--grid".to_string());
+            args.push(grid.clone());
+            if !args.iter().any(|arg| arg == "--radius") {
+                if let Some(radius) = entry.new_game_radius {
+                    args.push("--radius".to_string());
+                    args.push(radius.to_string());
                 }
             }
-            (Some(_), Some(_)) => {
-                eprintln!("--new-game: explicit location flags override the profile target")
-            }
-            _ => eprintln!("--game {game_key} --new-game: profile has no new-game worldspace/grid"),
         }
     }
 

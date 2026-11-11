@@ -2809,7 +2809,7 @@ fn gated_script_use(condition: byroredux_plugin::esm::records::condition::Condit
         catalog.script_effects.insert(
             0x6000,
             vec![GatedCastEffect {
-                effect: CastEffect { mgef: 20, script: 0x500, duration: 5.0, magnitude: 1.0, value: None },
+                effect: CastEffect { mgef: 20, script: 0x500, duration: 5.0, magnitude: 1.0, value: None, conditions: None },
                 conditions: vec![condition],
             }],
         );

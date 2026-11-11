@@ -125,6 +125,10 @@ default_materials_bsas = []
 # and `NVDLC04Big01` (no match in vanilla; either DLC-only or
 # misspelled). Both caused the cell-load to silently fall through
 # to the empty-default scene with 6 entities.
+# A new game opens indoors: the intro quest VCG00 (started by the engine; no
+# record or script in the masters starts it) moves the player to VCG01PlayerStartMarkerREF in Doc Mitchell's
+# house before VCG01 ("Ain't That a Kick in the Head") runs character creation.
+new_game_cell = "GSDocMitchellHouse"
 sample_cells = [
     "GSDocMitchellHouse",
     "GSProspectorSaloonInterior",

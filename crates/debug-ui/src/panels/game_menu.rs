@@ -17,6 +17,9 @@ pub enum GameMenuPage {
     MessageBox,
     Barter,
     Crafting,
+    /// A character-creation screen a script opened (name, sex and race, SPECIAL, tag skills,
+    /// traits).
+    CharGen,
 }
 
 /// Persistent navigation state for the player-facing native menu.
@@ -27,6 +30,8 @@ pub struct GameMenuState {
     pub selected_section: String,
     pub selected_inventory_category: String,
     pub selected_inventory_index: Option<u32>,
+    /// The open character-creation screen's working choices.
+    pub chargen: super::ChargenDraft,
 }
 
 /// Player-facing pause/settings surface. This deliberately consumes the same
@@ -59,6 +64,7 @@ pub fn draw_game_menu(
         GameMenuPage::MessageBox => "Message",
         GameMenuPage::Barter => "Barter",
         GameMenuPage::Crafting => "Crafting",
+        GameMenuPage::CharGen => "Character",
     };
     Window::new(title)
         .id(Id::new("game_menu_window"))
@@ -75,6 +81,7 @@ pub fn draw_game_menu(
             GameMenuPage::MessageBox => egui::vec2(520.0, 320.0),
             GameMenuPage::Barter => egui::vec2(900.0, 620.0),
             GameMenuPage::Crafting => egui::vec2(900.0, 620.0),
+            GameMenuPage::CharGen => egui::vec2(620.0, 560.0),
         })
         .frame(
             Frame::window(&ctx.global_style())
@@ -97,6 +104,7 @@ pub fn draw_game_menu(
             }
             GameMenuPage::Barter => draw_barter_page(ui, snapshot.barter.as_ref(), state, outputs),
             GameMenuPage::Crafting => draw_crafting_page(ui, snapshot.crafting.as_ref(), state, outputs),
+            GameMenuPage::CharGen => super::chargen::draw_chargen_page(ui, snapshot.chargen.as_ref(), &mut state.chargen, outputs),
         });
 }
 

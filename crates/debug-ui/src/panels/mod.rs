@@ -14,15 +14,18 @@
 //! developer overlay. The public names are re-exported here, so
 //! `panels::draw_hud` and `byroredux_debug_ui::PanelSnapshot` keep their paths.
 
+mod chargen;
 mod game_menu;
 mod hud;
 mod snapshots;
 mod studio;
 
+pub use chargen::ChargenDraft;
 pub use game_menu::{draw_game_menu, GameMenuPage, GameMenuState};
 pub use hud::{draw_hud, draw_loading_tip, draw_player_message};
 pub use snapshots::{
-    BarterAction, BarterItemView, BarterSnapshot, CraftingAction, CraftingRecipeView, CraftingSnapshot,
+    BarterAction, BarterItemView, BarterSnapshot, ChargenChoice, ChargenOption, ChargenScreenView,
+    ChargenSnapshot, CraftingAction, CraftingRecipeView, CraftingSnapshot,
     DialogueTopicEntryView, DialogueTopicSnapshot, DialogueUiAction, InteractionPrompt, InventoryAction,
     InventoryItemView, InventorySnapshot, MessageBoxView, ObjectiveView, PanelOutputs, PanelSnapshot,
     QueuedLoad, VitalBarView,

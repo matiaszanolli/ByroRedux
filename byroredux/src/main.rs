@@ -25,6 +25,7 @@ mod bench_state;
 mod boot;
 mod capture_state;
 pub(crate) mod cell_loader;
+mod chargen;
 mod cli_args;
 mod combat;
 mod commands;
@@ -62,6 +63,7 @@ mod npc_spawn;
 mod ownership_sample;
 mod parsed_nif_cache;
 mod player_body;
+mod player_seat;
 mod ragdoll;
 mod ragdoll_pose;
 mod render;
@@ -1409,6 +1411,7 @@ fn build_debug_ui_snapshot(
         message_box: crate::notifications::front_message_box(world),
         barter: crate::barter::snapshot(world),
         crafting: crate::crafting::snapshot(world),
+        chargen: crate::chargen::snapshot(world),
         entities,
         studio: studio_host::snapshot(world),
     }
@@ -1482,7 +1485,18 @@ fn apply_debug_ui_outputs(
     let mut debug_ui = debug_ui;
     // M47.2 — the answered message box leaves the queue; the page stays up
     // for the next one, and the last answer closes it back to the world.
+    // A character-creation screen closes on its answer, or unchanged when the page is dismissed;
+    // the next screen asked for opens on a later frame (`App::present_chargen`).
+    let chargen_answered = outputs.chargen_choice.is_some();
+    if let Some(choice) = outputs.chargen_choice {
+        if crate::chargen::apply(world, choice) {
+            world.resource_mut::<crate::player_body::PlayerBodyRebuildRequest>().0 = true;
+        }
+    } else if outputs.resume_game && debug_ui.as_deref().is_some_and(byroredux_debug_ui::DebugUiState::chargen_menu_visible) {
+        crate::chargen::dismiss(world);
+    }
     let resume_game = outputs.resume_game
+        || chargen_answered
         || outputs
             .message_box_choice
             .is_some_and(|choice| !crate::notifications::answer_message_box(world, Some(choice)));

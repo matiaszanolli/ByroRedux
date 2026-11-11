@@ -2008,6 +2008,7 @@ mod tests {
                 amount: 25.0,
                 recover: true,
             }),
+            conditions: None,
         };
         assert_eq!(start_effects(&world, npc, None, 0x99, &[buff], false), 1);
         magic_effect_system(&world, 0.0);
@@ -2104,6 +2105,7 @@ mod tests {
                 ticks: 0,
                 locals: Vec::new(),
                 ref_locals: Vec::new(),
+                suspended: false,
             }]),
         );
         let trap = reference(&mut src, "Band.esm", 0x421);
@@ -2608,6 +2610,7 @@ mod tests {
                 ticks: 0,
                 locals: Vec::new(),
                 ref_locals: Vec::new(),
+                suspended: false,
             }]),
         );
         world.insert(actor, WeaponDrawn);

@@ -12,6 +12,49 @@ use crate::asset_provider::{
     populate_terminal_fragments, VmAliasScriptChecks,
 };
 
+/// The DIAL topics the ECS dialogue runtime can be asked to speak: those SCEN
+/// dialogue actions play, and those an ObScript names — a `Say` / `SayTo`
+/// topic is a form the script lists in its `SCRO` references, whether the
+/// script is a `SCPT` record or a quest-stage or INFO result script. Without
+/// the scripted half, FO3 and FNV (no SCEN records) had an empty registry and
+/// every scripted line had nothing to say: New Vegas's opening stalled on
+/// Doc Mitchell's first `SayTo player VCG01Intro`.
+fn live_dialogue_topics(
+    index: &byroredux_plugin::esm::records::EsmIndex,
+) -> std::collections::HashSet<u32> {
+    use byroredux_plugin::esm::records::{ScriptRecord, ScriptRef};
+    let scene_topics = index
+        .scenes
+        .values()
+        .flat_map(|scene| scene.actions.iter().filter_map(|action| action.topic_form_id));
+    let stage_scripts = index
+        .quests
+        .values()
+        .flat_map(|quest| &quest.stages)
+        .flat_map(|stage| &stage.log_entries)
+        .filter_map(|entry| entry.result_script.as_deref());
+    let info_scripts = index
+        .dialogues
+        .values()
+        .flat_map(|topic| &topic.infos)
+        .flat_map(|info| [info.result_script_begin.as_deref(), info.result_script_end.as_deref()])
+        .flatten();
+    let scripts: Vec<&ScriptRecord> = index
+        .scripts
+        .values()
+        .chain(stage_scripts)
+        .chain(info_scripts)
+        .collect();
+    let script_topics = scripts
+        .into_iter()
+        .flat_map(|script| &script.refs)
+        .filter_map(|reference| match reference {
+            ScriptRef::Object(form) if index.dialogues.contains_key(form) => Some(*form),
+            _ => None,
+        });
+    scene_topics.chain(script_topics).collect()
+}
+
 pub(crate) fn populate_scene_runtime(
     world: &mut byroredux_core::ecs::world::World,
     index: &byroredux_plugin::esm::records::EsmIndex,
@@ -261,6 +304,28 @@ pub(crate) fn populate_scene_runtime(
             );
         }
     }
+    if index.game == byroredux_plugin::esm::reader::GameKind::Fallout3NV
+        && crate::components::NewGameStart::active(world)
+    {
+        // New Vegas opens with VCG00 ("Welcome To Fabulous New Vegas"): its
+        // stage 0 moves the player to VCG01PlayerStartMarkerREF in Doc
+        // Mitchell's house, plays FNVIntro.bik and hands over to VCG01, the
+        // character-creation quest. The QUST is not Start Game Enabled and no
+        // record or script in the masters starts it or sets a stage on it;
+        // its own MenuMode block ("if starting at VCG00": stage 0 while the
+        // stage is below 5) runs under the original's new-game menus, which
+        // this engine does not have. So the engine starts it at stage 0, on a
+        // new game only: stage 0 takes the Pip-Boy and the controls, which
+        // would strand a session that began in a named cell or from a save.
+        const VCG00: u32 = 0x0010_2037;
+        if let Some(quest) = index.quests.get(&VCG00).filter(|quest| quest.editor_id.eq_ignore_ascii_case("VCG00")) {
+            engine_start_quests += usize::from(byroredux_scripting::install_engine_start_quest(
+                world,
+                byroredux_scripting::QuestFormId(quest.form_id),
+                Some(0),
+            ));
+        }
+    }
     log::info!(
         "Installed {start_game_quests} Start Game Enabled and {engine_start_quests} engine-root quest definitions"
     );
@@ -302,35 +367,27 @@ pub(crate) fn populate_scene_runtime(
     if package_count > 0 {
         log::info!("Installed {package_count} PACK definitions into the live package runtime");
     }
+    // The ECS dialogue runtime speaks the topics SCEN actions play and the
+    // topics scripts `Say` / `SayTo`. Keep the registry proportional to that
+    // live surface instead of duplicating every ambient/conversation DIAL
+    // retained by EsmIndex.
+    let dialogue_topics = live_dialogue_topics(index);
+    let dialogue_count = byroredux_scripting::install_dialogue_records(
+        world,
+        dialogue_topics
+            .iter()
+            .filter_map(|topic| index.dialogues.get(topic).cloned()),
+    );
+    if dialogue_count > 0 {
+        log::info!(
+            "Installed {dialogue_count} scene- and script-referenced DIAL definitions into the ECS dialogue runtime"
+        );
+    }
     if !index.scenes.is_empty() {
         let trigger_approach_count = populate_quest_trigger_approaches(world, index);
         log::info!(
             "Prepared {trigger_approach_count} actor-specific quest trigger approaches across the parsed load order"
         );
-        // The current runtime consumes dialogue only through SCEN actions.
-        // Keep the registry proportional to that live surface instead of
-        // duplicating every ambient/conversation DIAL retained by EsmIndex.
-        let dialogue_topics: std::collections::HashSet<u32> = index
-            .scenes
-            .values()
-            .flat_map(|scene| {
-                scene
-                    .actions
-                    .iter()
-                    .filter_map(|action| action.topic_form_id)
-            })
-            .collect();
-        let dialogue_count = byroredux_scripting::install_dialogue_records(
-            world,
-            dialogue_topics
-                .iter()
-                .filter_map(|topic| index.dialogues.get(topic).cloned()),
-        );
-        if dialogue_count > 0 {
-            log::info!(
-                "Installed {dialogue_count} scene-referenced DIAL definitions into the ECS dialogue runtime"
-            );
-        }
         let mut package_ids: std::collections::HashSet<u32> = index
             .scenes
             .values()

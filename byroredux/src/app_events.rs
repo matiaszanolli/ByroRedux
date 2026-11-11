@@ -1608,6 +1608,12 @@ impl ApplicationHandler for App {
         if !simulation_paused {
             self.scheduler.run(&self.world, dt);
         } else {
+            // GUI-EVT-006 — a native page pauses the world, but the original
+            // runs `Begin MenuMode` blocks exactly then; the result scripts of
+            // the stages they set run with them, as a SetStage runs its
+            // stage's script at once in the original.
+            byroredux_scripting::obscript_quests::obscript_quest_menu_mode_system(&self.world, wall_dt);
+            byroredux_scripting::obscript_results::obscript_stage_result_system(&self.world, wall_dt);
             // #5141 — the native pause menu used to gate the whole
             // scheduler, taking the debug-server drain with it: commands
             // queued while a Pause/Settings/Inventory page was open sat in

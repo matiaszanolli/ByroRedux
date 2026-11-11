@@ -15,6 +15,13 @@ pub(super) fn register_obscript_quests_systems(scheduler: &mut Scheduler) {
         Stage::Update,
         byroredux_scripting::obscript_quests::obscript_quest_tick_system,
     );
+    // GUI-EVT-006 — the quest scripts' `Begin MenuMode [code]` blocks, on the
+    // frames a menu is open. The paused frames a native page holds run it by
+    // hand (the paused branch in `app_events.rs`), since the scheduler is skipped.
+    scheduler.add_exclusive(
+        Stage::Update,
+        byroredux_scripting::obscript_quests::obscript_quest_menu_mode_system,
+    );
     // M47.3 — the result scripts of the stage items set since the last run
     // (by a quest script above, a dialogue line's script last frame, or the
     // console), then of the stages they set. Its own quest-event subscriber.

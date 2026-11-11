@@ -757,6 +757,9 @@ pub(crate) enum InteractionKind {
     /// A bed the player can rest in to serve a jail sentence
     /// ([`crate::crime::jail_bed_system`]); offered only while serving one.
     Sleep,
+    /// Furniture with a sitting position: activation seats the player
+    /// ([`crate::player_seat`]).
+    Sit,
 }
 
 impl InteractionKind {
@@ -768,6 +771,7 @@ impl InteractionKind {
             Self::Pickup => "Take",
             Self::Npc => "Talk",
             Self::Sleep => "Sleep",
+            Self::Sit => "Sit",
             Self::Craft => "Craft",
         }
     }
@@ -1379,6 +1383,21 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
             candidates.entry(entity).or_insert(InteractionKind::Sleep);
         }
     }
+    // A seat the player can take (New Vegas's opening: Doc Mitchell's couch).
+    for entity in crate::player_seat::seat_entities(world) {
+        candidates.entry(entity).or_insert(InteractionKind::Sit);
+    }
+    // A reference whose ObScript has an `OnActivate` block: activating it runs the block (the
+    // Vit-o-matic Vigor Tester at Doc Mitchell's). Collected under the instance guard, tested after.
+    let scripted: Vec<EntityId> = world
+        .query::<byroredux_scripting::obscript_objects::ObScriptInstance>()
+        .map(|instances| instances.iter().map(|(entity, _)| entity).collect())
+        .unwrap_or_default();
+    for entity in scripted {
+        if byroredux_scripting::obscript_objects::has_activate_block(world, entity) {
+            candidates.entry(entity).or_insert(InteractionKind::Activate);
+        }
+    }
     if let Some(query) = world.query::<byroredux_scripting::papyrus_demo::RumbleOnActivate>() {
         for (entity, script) in query.iter() {
             if matches!(
@@ -1799,7 +1818,7 @@ mod tests {
         world.resource_mut::<ObScriptLedger>().jail = Some(JailSentence { exit_marker: 1, days: 1.0 });
         populate_candidates(&world, &mut candidates);
         assert_eq!(candidates.get(&bed), Some(&InteractionKind::Sleep));
-        assert!(!candidates.contains_key(&chair));
+        assert_eq!(candidates.get(&chair), Some(&InteractionKind::Sit), "a chair is a seat, sentence or not");
         assert_eq!(InteractionKind::Sleep.verb(), "Sleep");
     }
 

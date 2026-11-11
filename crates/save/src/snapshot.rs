@@ -613,7 +613,12 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v123 -> v124 (VATS-LIMB-008/-009): a new component column, `DismemberRecord` (which body locations an
 /// actor has lost and where its killing blow landed), so a v123 save has no record of it and the schema no
 /// longer matches.
-pub const FORMAT_MAJOR: u16 = 124;
+///
+/// v124 -> v125 (New Vegas new game): a new component column, `CharacterIdentity` (the name, sex and race
+/// the player chose in character creation), so a v124 save has no record of the choices and the schema no
+/// longer matches; and the saved `ActiveEffect` gained the required `suspended` flag (a recovered value
+/// given back while the effect's own conditions fail).
+pub const FORMAT_MAJOR: u16 = 125;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

@@ -667,6 +667,7 @@ mod bodies {
                         area: 0,
                         duration: 0,
                         script_form_id: 0,
+                        conditions: Vec::new(),
                     }],
                     ..Default::default()
                 },

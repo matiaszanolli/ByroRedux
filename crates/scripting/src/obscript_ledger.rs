@@ -220,6 +220,11 @@ impl ObScriptLedger {
         self.tag_skills.insert(slot, skill)
     }
 
+    /// The tagged skills, in slot order.
+    pub fn tag_skills(&self) -> impl Iterator<Item = u8> + '_ {
+        self.tag_skills.values().copied()
+    }
+
     pub fn is_tag_skill(&self, skill: u8) -> bool {
         self.tag_skills.values().any(|&tagged| tagged == skill)
     }
