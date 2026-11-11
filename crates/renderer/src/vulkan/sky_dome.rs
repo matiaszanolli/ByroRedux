@@ -282,6 +282,60 @@ mod tests {
         }
     }
 
+    /// The volumetric deck drifts at a real ground speed, downwind, as one
+    /// body. Its advection was `time * 0.00002` in base-lookup units (0.25 m/s
+    /// at full wind, 2-5 cm/s at the vanilla median weathers, so the deck
+    /// looked frozen), it was added to the lookup (which moves the pattern
+    /// upwind, against the #4729 sense), and the erosion took its own
+    /// `wind_offset * 3.0`, sliding the edges through the body.
+    #[test]
+    fn the_cloud_deck_drifts_downwind_in_metres_as_one_body() {
+        let clouds = include_str!("../../shaders/include/clouds.glsl");
+        let body = |name: &str| -> &str {
+            let start = clouds
+                .find(&format!("{name}("))
+                .unwrap_or_else(|| panic!("clouds.glsl lost `{name}`"));
+            let rest = &clouds[start..];
+            &rest[..rest.find("\n}\n").expect("function body is terminated")]
+        };
+
+        let offset = body("vec2 cloud_wind_offset");
+        assert!(
+            offset.contains("CLOUD_MAX_DRIFT_M_PER_S"),
+            "the deck's drift must be the shared m/s figure the textured layers \
+             are capped at: {offset}"
+        );
+        assert!(!offset.contains("0.00002"), "the lookup-unit wind scale is back");
+
+        assert!(
+            body("vec2 cloud_field_xz").contains("position.xz * morphology.x - wind_offset"),
+            "the displacement must be SUBTRACTED from the looked-up position, or the \
+             pattern moves upwind (#4729)"
+        );
+        // Every lookup that carries the wind goes through the one coordinate,
+        // so the weather map, the base shape and the erosion travel together.
+        for function in [
+            "float cloud_column_coverage",
+            "float cloud_base_shape",
+            "float cloud_density",
+        ] {
+            let src = body(function);
+            assert!(
+                src.contains("cloud_field_xz(position, wind_offset, morphology)"),
+                "`{function}` must look up through `cloud_field_xz`"
+            );
+            assert!(
+                !src.contains("+ wind_offset") && !src.contains("wind_offset *"),
+                "`{function}` applies the wind on its own again"
+            );
+        }
+        assert!(
+            !clouds.contains("0.00008") && !clouds.contains("0.0009"),
+            "the noise frequencies must come from shader_constants.glsl, so the \
+             erosion's frequency ratio to the base cannot drift"
+        );
+    }
+
     /// W3.15 (light & shadow campaign) — the SH sky-ambient fallback is
     /// deliberately unoccluded (nine SH coefficients cannot carry local
     /// visibility), so the occlusion duty lives on the CONSUMERS. Pin both

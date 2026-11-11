@@ -282,8 +282,9 @@ Still open:
   Retuning the constants against that signal would be a guess; the
   mapping stands as a defensible engine value like `SUN_SOUTH_TILT`,
   with the texture-alpha provenance recorded here as its citation.
-* **Noise shape frequencies** (`0.00008` / `0.0009` per metre) predate the
-  sourced pass and are not yet justified.
+* **Noise shape frequencies** (`CLOUD_BASE_NOISE_FREQUENCY` 0.00008 /
+  `CLOUD_DETAIL_NOISE_FREQUENCY` 0.0009 per metre, `shader_constants_data.rs`)
+  predate the sourced pass and are not yet justified.
 * **In-shader cloud-shape literals are uncited** (#4314, 2026-09-14 audit
   D18-03; re-confirmed 2026-09-23). New with the SKYAL volumetric pass and
   sourced nowhere — Schneider & Vos's height-gradient discussion states no
@@ -291,10 +292,8 @@ Still open:
   * `cloud_height_gradient` remap breakpoints `0.15`/`0.06` (bottom end)
     and `0.55`/`0.78` (top start, fair/storm mix);
   * erosion strength `erosion * 0.45` and the erosion height blend
-    `height_fraction * 5.0`;
-  * detail-noise advection `wind_offset * 3.0`;
-  * cloud-march wind scale `time * 0.00002`.
-  These shape silhouettes and drift speed; treat them as engine-tuned
+    `height_fraction * 5.0`.
+  These shape silhouettes; treat them as engine-tuned
   values pending a citation, not as reference values from the paper. The
   carried-over 2D literals (tint `0.45`/`0.08`, alpha `0.78`/`0.96`,
   horizon fade `0.015/0.16`) ARE verbatim from the pre-volumetric
@@ -378,9 +377,37 @@ scroll vector down and keeping its heading. The ground speed of a scroll `s` is
 `tile_scale * 20 / CLOUD_UPPER_PLANE_ALTITUDE`; a layer with no texture is left
 alone. The 20 m/s is a calibration chosen with the user ("near real life"), **not
 an authored value**: it silently overrides the WTHR scroll rate, so an authored
-rate that does not match the rendered motion is this cap, not a decode bug. The
-volumetric deck's own wind advection is untouched. Rationale and measurements:
-[`watal.md`](watal.md) (the "sky layers are capped" paragraph).
+rate that does not match the rendered motion is this cap, not a decode bug.
+Rationale and measurements: [`watal.md`](watal.md) (the "sky layers are capped"
+paragraph).
+
+**The volumetric deck drifts at the same figure (2026-11-11).** User report: the
+volumetric clouds never moved. `cloud_wind_offset` advected the field by
+`time * 0.00002` in base-lookup units, which is 0.25 m/s at full wind. A scan of
+every master's WTHR `DATA` byte 0 puts the vanilla medians at 25 (Oblivion,
+Skyrim), 50 (FO3, FNV) and 115 (FO4), so the deck travelled 2-5 cm/s and read as
+frozen. The 20 m/s cap moved into the renderer as `CLOUD_MAX_DRIFT_M_PER_S`
+(`shader_constants_data.rs`; `weather.rs`'s cap now aliases it), and the deck
+now reaches it at full wind: 2 m/s at the Oblivion/Skyrim medians, 4 m/s at
+FO3/FNV's, 9 m/s at FO4's, 14 m/s in the strongest non-FX storms (byte ~178).
+The Creation Kit documents wind speed only as a unitless 0-1, so the mapping is
+this calibration, not a decoded unit. Two more defects in the same term were
+fixed with it:
+
+* **Direction.** The offset was *added* to the lookup, which moves the pattern
+  toward `-direction`, upwind of the grass, trees and water that follow
+  `WindField::direction` (#4729). `cloud_field_xz` now subtracts it.
+* **One body.** The erosion took its own `wind_offset * 3.0` in detail-lookup
+  units. At 11.25x the base frequency that slid the eroded edges through the
+  body at 73% of its speed. Every lookup now scales the one displaced
+  coordinate, so the weather map, the base shape and the erosion move together.
+
+The displacement is in the fair-weather frame and not scaled by
+`morphology.x`. That scale changes continuously through a weather transition,
+and scaling a displacement that grows with session time would sweep the field
+by kilometres after an hour. The cost is that a full-storm deck (scale 0.58)
+travels 1.7x its wind. Pinned by
+`sky_dome::tests::the_cloud_deck_drifts_downwind_in_metres_as_one_body`.
 
 ### 2.4.1 The game's temperature and mood are the base (2026-10-20)
 

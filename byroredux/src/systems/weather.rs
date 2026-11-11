@@ -519,9 +519,11 @@ fn cloud_scroll_vectors(
 /// ground, m/s. Upper-air winds at cirrus heights are 10-30 m/s and rarely
 /// beyond 50, but the legacy scroll rates were authored in UV per second with
 /// no notion of altitude: at the shell's 9 km a 0.015 UV/s scroll under a 0.075
-/// tile scale is ~1 700 m/s. 20 m/s is the user-chosen "near real life" cap
-/// (2026-10-26).
-const CLOUD_LAYER_MAX_DRIFT_M_PER_S: f32 = 20.0;
+/// tile scale is ~1 700 m/s. The value is the renderer's shared cloud-drift
+/// figure, which the volumetric deck reaches at full wind, so the two cloud
+/// tiers cannot drift apart in calibration.
+const CLOUD_LAYER_MAX_DRIFT_M_PER_S: f32 =
+    byroredux_renderer::shader_constants::CLOUD_MAX_DRIFT_M_PER_S;
 
 /// Cap each textured layer's scroll so its ground drift stays within
 /// [`CLOUD_LAYER_MAX_DRIFT_M_PER_S`].

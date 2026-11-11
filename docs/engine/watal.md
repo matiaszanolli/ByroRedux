@@ -629,8 +629,10 @@ cloud layers (`sky_upper_cloud_layer`: `uv = shell_uv * tile_scale + scroll`,
 `shell_uv` in units of the 9 km shell) travelled `scroll / tile_scale * 9000`
 m/s, ~1 700 m/s for Oblivion's layer 0 (tile 0.075) on paper;
 `cap_cloud_layer_drift` now bounds every layer to 20 m/s. The volumetric deck's
-own wind advection is `0.25 m/s` per unit of normalised wind and was not
-touched. Measured sky drift on Skyrim before the cap was ~0.5 deg/s.
+own wind advection was `0.25 m/s` per unit of normalised wind and was not
+touched then; since 2026-11-11 it shares the 20 m/s figure at full wind
+(`CLOUD_MAX_DRIFT_M_PER_S`, skyal.md §2.4). Measured sky drift on Skyrim before
+the cap was ~0.5 deg/s.
 
 **Waves, shores and river motion share one bed field (2026-10-26).** User
 direction: "basic motion physics for rivers, and waves and shores for lakes and

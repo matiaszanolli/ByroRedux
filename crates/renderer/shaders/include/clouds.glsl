@@ -183,17 +183,44 @@ vec3 cloud_authored_colour(SkyDome dome, vec3 fallback) {
     return weight > 1.0e-3 ? weighted / weight : fallback;
 }
 
-// Horizontal advection of the cloud field, in base-noise lookup units. One
-// helper so the sky march and the cloud-shadow bake drift identically.
+// Horizontal advection of the cloud field: how far downwind the wind has
+// carried it since the session began, in metres. One helper so the sky march
+// and the cloud-shadow bake drift identically.
 //
 // The host packs `[dir.x, speed, dir.z, 0]` (`pack_sky_dome` in
 // `context/frame_params.rs`, since #4925), so direction is `.xz` and speed
 // is `.y`. An earlier `.xy * .z` here folded the speed into the direction
 // and used `dir.z` as the speed, so the layer drifted off-axis and stood
 // still under a pure X wind.
+//
+// `.y` is the WTHR wind byte over 255, and full wind moves the deck at
+// CLOUD_MAX_DRIFT_M_PER_S. This used to be `time * 2e-5` in base-lookup
+// units, which is 0.25 m/s at full wind and 2-5 cm/s at the vanilla median
+// weathers, so the deck looked frozen.
+//
+// `.xz` is the way the wind blows TOWARD (`WindField::direction`, #4729), so
+// `cloud_field_xz` SUBTRACTS this: the cloud over a point now is the air that
+// was upwind of it. Adding it, as the lookups used to, moved the deck upwind,
+// against the grass, trees and water under it.
 vec2 cloud_wind_offset(SkyDome dome) {
     float time = dome.weather_params.w;
-    return dome.weather_wind.xz * dome.weather_wind.y * time * 0.00002;
+    return dome.weather_wind.xz * dome.weather_wind.y * CLOUD_MAX_DRIFT_M_PER_S * time;
+}
+
+// The horizontal coordinate every noise lookup reads for a field-space
+// `position`, in metres of the fair-weather field. The weather map, the base
+// shape and the erosion each scale this one coordinate by their own
+// frequency, so a cloud's body and its eroded edges move together. The
+// erosion used to add `wind_offset * 3.0` in its own lookup units; at 11.25x
+// the base frequency that slid the edges through the body at 73% of its speed.
+//
+// The wind is not scaled by `morphology.x`. That scale changes continuously
+// through a weather transition, and scaling a displacement that grows with
+// session time would sweep the whole field by displacement times the change,
+// which is kilometres after an hour of drift. The cost is that a
+// storm-morphology deck (scale 0.58) travels 1 / 0.58 = 1.7x its wind.
+vec2 cloud_field_xz(vec3 position, vec2 wind_offset, vec4 morphology) {
+    return position.xz * morphology.x - wind_offset;
 }
 
 // The world offset of the cloud field. Marches run in camera-relative
@@ -223,7 +250,7 @@ float cloud_column_coverage(
     vec4 morphology,
     sampler3D base_noise
 ) {
-    vec2 weather_uv = position.xz * 0.00008 * morphology.x + wind_offset;
+    vec2 weather_uv = cloud_field_xz(position, wind_offset, morphology) * CLOUD_BASE_NOISE_FREQUENCY;
     float weather = texture(base_noise, vec3(weather_uv, CLOUD_WEATHER_SLICE_W)).r;
     // Stratiform weather fills the sky: the weather map stops gating columns.
     return mix(cloud_remap(weather, threshold, 1.0, 0.0, 1.0), 1.0, morphology.w);
@@ -244,8 +271,8 @@ float cloud_base_shape(
     // The volume is tileable, so a plain scaled world position is a valid
     // lookup; wind advects the whole field horizontally.
     vec3 base_uvw = vec3(
-        position.xz * 0.00008 * morphology.x + wind_offset,
-        position.y * 0.00008
+        cloud_field_xz(position, wind_offset, morphology) * CLOUD_BASE_NOISE_FREQUENCY,
+        position.y * CLOUD_BASE_NOISE_FREQUENCY
     );
     float base = texture(base_noise, base_uvw).r;
 
@@ -280,8 +307,8 @@ float cloud_density(
     // falls off as the base density rises, so it carves wispy boundaries
     // without punching holes through cloud cores.
     vec3 detail_uvw = vec3(
-        position.xz * 0.0009 * morphology.x + wind_offset * 3.0,
-        position.y * 0.0009
+        cloud_field_xz(position, wind_offset, morphology) * CLOUD_DETAIL_NOISE_FREQUENCY,
+        position.y * CLOUD_DETAIL_NOISE_FREQUENCY
     );
     float detail = texture(detail_noise, detail_uvw).r;
     float erosion = mix(detail, 1.0 - detail, clamp(height_fraction * 5.0, 0.0, 1.0));

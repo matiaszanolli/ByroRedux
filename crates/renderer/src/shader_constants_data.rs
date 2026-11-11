@@ -1655,6 +1655,33 @@ pub const CLOUD_EXTINCTION_PER_METER: f32 = 0.12;
 /// [`CLOUD_LAYER_TOP`], so the plane is always behind the deck. At the zenith
 /// the shell maps to the same UVs the former flat `dir.xz / dir.y` plane did.
 pub const CLOUD_UPPER_PLANE_ALTITUDE: f32 = 9000.0;
+/// How fast the wind carries clouds over the ground, m/s: the "near real
+/// life" figure chosen with the user (2026-10-26). Not an authored value: the
+/// Creation Kit gives WTHR wind speed only as a unitless 0-1 ("how windy it
+/// is", `GetWindSpeed`), and the textured layers' scroll rates are UV per
+/// second with no notion of altitude.
+///
+/// Two consumers, one figure:
+/// * the textured WTHR layers on the upper shell are capped at it
+///   (`cap_cloud_layer_drift`, `systems/weather.rs`). Their legacy rates are
+///   ~1 700 m/s on the 9 km shell, so every textured layer under any wind
+///   drifts at this cap;
+/// * the volumetric deck travels at it under full wind (byte 255) and in
+///   proportion below (`clouds.glsl` `cloud_wind_offset`). Over the vanilla
+///   WTHR records (2026-11-11 scan of each master's DATA byte 0) that is
+///   2 m/s at the Oblivion and Skyrim median weathers (byte 25), 4 m/s at
+///   FO3's and FNV's (50), 9 m/s at FO4's (115) and 14 m/s in the strongest
+///   non-FX storms (~178). A storm-morphology deck travels up to 1.7x faster
+///   (`cloud_field_xz`).
+pub const CLOUD_MAX_DRIFT_M_PER_S: f32 = 20.0;
+/// Horizontal (at fair-weather morphology) and vertical frequency of the base
+/// cloud-shape lookup and its weather map, per metre (`clouds.glsl`). The
+/// volume tiles, so the field repeats every 1 / 0.00008 = 12.5 km. Predates
+/// the sourced SKYAL pass and is not yet justified (skyal.md §2.3).
+pub const CLOUD_BASE_NOISE_FREQUENCY: f32 = 0.00008;
+/// Frequency of the high-frequency erosion lookup, per metre (`clouds.glsl`).
+/// Same provenance as [`CLOUD_BASE_NOISE_FREQUENCY`].
+pub const CLOUD_DETAIL_NOISE_FREQUENCY: f32 = 0.0009;
 /// Clear-air extinction for the aerial perspective between the viewer and the
 /// cloud layers (`sky.glsl` `sky_air_optical_depth`). Earth parameters from
 /// Hillaire 2020, "A Scalable and Production Ready Sky and Atmosphere
@@ -1674,7 +1701,7 @@ pub const ATMOSPHERE_MIE_SCALE_HEIGHT: f32 = 1200.0;
 /// dimming factor. Texels per side of the camera-centred square.
 pub const CLOUD_SHADOW_MAP_SIZE: u32 = 512;
 /// Side of that square in metres. The base noise repeats every
-/// 1 / 0.00008 = 12.5 km (`clouds.glsl`), so individual clouds are a few km
+/// 1 / [`CLOUD_BASE_NOISE_FREQUENCY`] = 12.5 km, so individual clouds are a few km
 /// across: 64 km holds several cloud cells around the viewer in every
 /// direction at 125 m per texel, which the bilinear sample resolves into
 /// soft-edged shadows. Receivers beyond it take the edge texel.
@@ -3218,6 +3245,9 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float CLOUD_MS_ECCENTRICITY_FALLOFF),
     shader_define!(Float CLOUD_EXTINCTION_PER_METER),
     shader_define!(Float CLOUD_UPPER_PLANE_ALTITUDE),
+    shader_define!(Float CLOUD_MAX_DRIFT_M_PER_S),
+    shader_define!(Float CLOUD_BASE_NOISE_FREQUENCY),
+    shader_define!(Float CLOUD_DETAIL_NOISE_FREQUENCY),
     shader_define!(Vec3 ATMOSPHERE_RAYLEIGH_EXTINCTION),
     shader_define!(Float ATMOSPHERE_RAYLEIGH_SCALE_HEIGHT),
     shader_define!(Float ATMOSPHERE_MIE_EXTINCTION),
