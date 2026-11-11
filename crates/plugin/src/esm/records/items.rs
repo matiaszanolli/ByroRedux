@@ -17,6 +17,7 @@ use crate::esm::sub_reader::SubReader;
 /// (u8, percent), Override Action Points (f32) and Skill (i32 actor value). Read forward through one
 /// `SubReader`, a short record leaving the defaults.
 const WEAP_DNAM_MIN_SPREAD: usize = 16;
+const WEAP_DNAM_PROJECTILE: usize = 36;
 const WEAP_DNAM_VATS_TO_HIT: usize = 40;
 const WEAP_DNAM_AP_COST: usize = 68;
 const WEAP_DNAM_SKILL: usize = 104;
@@ -241,6 +242,9 @@ pub enum ItemKind {
         /// distance, skill and screen percentage. `0.0` on games whose DNAM
         /// layout is not decoded yet.
         vats_base_to_hit: f32,
+        /// The projectile the weapon fires: FO3/FNV `DNAM` offset 36 (xEdit "Projectile"). `0` where
+        /// not decoded (the ammunition's own `PROJ` is the shot on Skyrim and later).
+        projectile_form: u32,
         /// `ETYP`, the equipment type: an `EQUP` FormID on Skyrim and later, and on FO3/FNV an enum
         /// (xEdit `wbEquipTypeEnum`, FalloutNV.esm holds 0-7), not a form at all. Nothing here names
         /// a skill; that is [`Self::Weapon`]'s `skill_actor_value`.
@@ -295,6 +299,7 @@ impl ItemKind {
             anim_type: 0,
             ap_cost: 0.0,
             vats_base_to_hit: 0.0,
+            projectile_form: 0,
             equip_type: 0,
             skill_actor_value: None,
             min_spread: 0.0,
@@ -382,6 +387,7 @@ pub fn parse_weap(
     let mut oblivion_type = 0u8;
     let mut ap_cost = 0.0f32;
     let mut vats_base_to_hit = 0.0f32;
+    let mut projectile_form = 0u32;
     let mut equip_type = 0u32;
     let mut skill_actor_value = None;
     let mut min_spread = 0.0f32;
@@ -478,6 +484,11 @@ pub fn parse_weap(
                 // TBD (may or may not duplicate the NAM6 spread). Not
                 // stored; NAM6 remains the authoritative spread source.
                 let _offset_20 = r.f32_or_default();
+                // Offset 36 — Projectile (FormID, xEdit `wbFormIDCk('Projectile', [PROJ, NULL])`):
+                // what the weapon fires. Fallout's ammunition names one only in its optional
+                // `DAT2`, and FNV's `Ammo9mm` authors none, so the weapon's is the shot.
+                r.skip_to_or_eof(WEAP_DNAM_PROJECTILE);
+                projectile_form = remap_fid(r.u32_or_default(), remap);
                 // Offset 28 — Sight FOV (f32; xEdit `wbDefinitionsFNV.pas:8749-8755`),
                 // the iron-sights view angle: 0 on every melee weapon, 38-70 on
                 // ranged ones. #6350 mistook it for the base VATS chance; the real
@@ -640,6 +651,7 @@ pub fn parse_weap(
             anim_type,
             ap_cost,
             vats_base_to_hit,
+            projectile_form,
             equip_type,
             skill_actor_value,
             min_spread,
@@ -1549,14 +1561,14 @@ mod tests {
     fn weapon_stub_and_setters_pin_only_their_fields() {
         let stub = ItemKind::weapon_stub(22, 12);
         let ItemKind::Weapon {
-            ammo_form, damage, clip_size, anim_type, ap_cost, vats_base_to_hit, equip_type,
+            ammo_form, damage, clip_size, anim_type, ap_cost, vats_base_to_hit, projectile_form, equip_type,
             skill_actor_value, min_spread, spread, crit_mult, reach, speed, oblivion_type, reload_anim, vats,
         } = stub.clone()
         else {
             panic!("weapon_stub builds a Weapon");
         };
         assert_eq!((damage, clip_size), (22, 12));
-        assert_eq!((ammo_form, anim_type, equip_type, reload_anim, oblivion_type), (0, 0, 0, 0, 0));
+        assert_eq!((ammo_form, anim_type, equip_type, reload_anim, oblivion_type, projectile_form), (0, 0, 0, 0, 0, 0));
         assert_eq!((ap_cost, vats_base_to_hit, min_spread, spread, reach, speed), (0.0, 0.0, 0.0, 0.0, 0.0, 0.0));
         assert_eq!(crit_mult, 1.0);
         assert!(vats.is_none());

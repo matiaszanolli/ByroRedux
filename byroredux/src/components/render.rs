@@ -114,12 +114,12 @@ impl Component for DoorTeleport {
 /// mesh or collider.
 ///
 /// #4820 — interaction reads this, not only the live `ReferenceEnableState`
-/// ledger. A runtime `Enable()` clears the ledger entry, but there is no live
-/// re-spawn, so the root stays invisible and non-solid until its cell next
-/// loads; without the marker it became an invisible Open/Take prompt and a
-/// door that still teleported. Stamped at spawn, never saved: the reload
-/// re-derives it from the same inputs. The live re-spawn is the #5065
-/// tracker (ROADMAP M47 known issues).
+/// ledger: a runtime `Enable()` clears the ledger entry a frame before the
+/// content exists, and without the marker the root was an invisible
+/// Open/Take prompt and a door that still teleported. #5065 — the enable edge
+/// then fills this same root with its content and removes the marker
+/// (`cell_loader::enabled`). Stamped at spawn, never saved: the reload
+/// re-derives it from the same inputs.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PlacementContentWithheld;
 impl Component for PlacementContentWithheld {

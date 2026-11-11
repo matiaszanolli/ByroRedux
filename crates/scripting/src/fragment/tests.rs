@@ -4812,6 +4812,31 @@ fn reference_enable_state_scripted_calls_override_the_authored_default() {
     assert!(!state.is_enabled(0x10));
 }
 
+/// #5065 — the fingerprint the live enable edge waits on moves with every
+/// change a script can make, including a same-frame swap of two references
+/// that leaves both sets the same size, and does not move when nothing does.
+#[test]
+fn reference_enable_state_fingerprint_moves_with_every_change() {
+    let mut state = ReferenceEnableState::default();
+    let empty = state.fingerprint();
+    state.set_enabled(0x10, false);
+    state.set_enabled(0x20, true);
+    let before = state.fingerprint();
+    assert_ne!(before, empty, "an override was added");
+
+    state.set_enabled(0x10, false);
+    assert_eq!(state.fingerprint(), before, "a repeated Disable() changes nothing");
+
+    state.set_enabled(0x10, true);
+    state.set_enabled(0x20, false);
+    assert_ne!(state.fingerprint(), before, "the two references swapped sets");
+
+    let mut same = ReferenceEnableState::default();
+    same.set_enabled(0x20, false);
+    same.set_enabled(0x10, true);
+    assert_eq!(same.fingerprint(), state.fingerprint(), "the order the calls came in does not matter");
+}
+
 /// A VMAD whose object properties bind `(name, form id)` pairs, for the
 /// inventory-effect dispatch tests below.
 fn object_property_vmad(

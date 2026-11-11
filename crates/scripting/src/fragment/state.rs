@@ -442,6 +442,21 @@ impl ReferenceEnableState {
             self.disabled.insert(form_id);
         }
     }
+
+    /// An order-independent digest of every scripted override: a reference
+    /// added, dropped or moved between enabled and disabled moves it. For a
+    /// consumer that only has work when the ledger changes (the live enable
+    /// edge, #5065) — O(overrides), and derived, so nothing about the saved
+    /// shape changes.
+    pub fn fingerprint(&self) -> u64 {
+        use std::hash::BuildHasher;
+        let hasher = std::hash::BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default();
+        self.disabled
+            .iter()
+            .map(|&form_id| (form_id, false))
+            .chain(self.enabled.iter().map(|&form_id| (form_id, true)))
+            .fold(0u64, |digest, entry| digest.wrapping_add(hasher.hash_one(entry)))
+    }
 }
 
 /// #4334 — references whose attached once-only Papyrus script has parked

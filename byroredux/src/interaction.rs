@@ -1440,9 +1440,10 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
         }
     }
     // #4820 — a root spawned disabled (scripted `Disable()` or authored
-    // "Initially Disabled", #4813) has no mesh or collider, and nothing
-    // re-spawns them on a live `Enable()`. It stays out until its cell
-    // reloads, whatever the ledger says now. #5109 — hash-set membership,
+    // "Initially Disabled", #4813) has no mesh or collider. It stays out
+    // until its content exists — a live `Enable()` fills it the next frame
+    // (#5065, `cell_loader::enabled`), whatever the ledger says before that
+    // or its cell reloads. #5109 — hash-set membership,
     // not the O(n·m) `Vec::contains` this retain used to run per candidate.
     let withheld: FxHashSet<EntityId> = world
         .query::<crate::components::PlacementContentWithheld>()
@@ -1463,8 +1464,8 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
     // `DoorTeleport`, `Locked`, container `Inventory`) but spawns nothing
     // visible or solid, so it must not be a candidate either. Read live,
     // so a `Disable()` on a resident reference stops interaction at once
-    // even though its meshes only go on the next load (the live
-    // strip/re-spawn itself is the #5065 tracker).
+    // even though its meshes only go on the next load (the live strip is
+    // the #5065 tracker's remaining half).
     if world
         .try_resource::<byroredux_scripting::ReferenceEnableState>()
         .is_some()

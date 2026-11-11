@@ -62,8 +62,10 @@ pub(crate) fn short(name: &str) -> &str {
 }
 
 /// Resolve a console entity token: `.` → the current [`SelectedRef`] selection
-/// (set by `prid`), otherwise a decimal [`EntityId`]. Shared by the
-/// actor-state commands (`cond`, `setav`, `modav`).
+/// (set by `prid`), `0x<FormID>` → the resident placed reference with that
+/// FormID (`0x00168A92`), otherwise a decimal [`EntityId`]. Shared by the
+/// actor-state commands (`cond`, `setav`, `modav`), `obscript.cmd` and
+/// `script.activate`.
 pub(crate) fn resolve_console_entity(world: &World, tok: &str) -> Result<EntityId, String> {
     if tok == "." {
         return match world.try_resource::<SelectedRef>() {
@@ -73,8 +75,13 @@ pub(crate) fn resolve_console_entity(world: &World, tok: &str) -> Result<EntityI
             None => Err("SelectedRef resource not present".to_string()),
         };
     }
+    if let Some(hex) = tok.strip_prefix("0x").or_else(|| tok.strip_prefix("0X")) {
+        let form = u32::from_str_radix(hex, 16).map_err(|_| format!("bad FormID `{tok}`"))?;
+        return byroredux_scripting::condition::resolve_entity_by_global_form_id(world, form)
+            .ok_or_else(|| format!("no resident reference has FormID {form:08X}"));
+    }
     tok.parse::<EntityId>()
-        .map_err(|_| format!("bad entity `{tok}` (decimal id or `.`)"))
+        .map_err(|_| format!("bad entity `{tok}` (decimal id, 0x<FormID> or `.`)"))
 }
 
 /// Parse a decimal or `0x`-hex `u32` console argument (FormIDs are hex).

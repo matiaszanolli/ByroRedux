@@ -650,6 +650,10 @@ struct App {
     /// last ran for; while every record is placed and it is unchanged the step
     /// has nothing to do (#6125). Session state.
     created_step_key: Option<u64>,
+    /// The enable-ledger fingerprint the enable-edge step last scanned for;
+    /// while it is unchanged no withheld placement can have been enabled
+    /// (#5065). Session state.
+    enabled_step_key: Option<u64>,
     loading_screen: loading_screen::LoadingScreen,
     loot_appearance_loader: npc_spawn::loot_appearance::LootAppearanceLoader,
     gear_import_loader: npc_spawn::loot_appearance::GearImportLoader,
@@ -1103,6 +1107,7 @@ impl App {
             geometry_deferred_since: None,
             interior_transition: None,
             created_step_key: None,
+            enabled_step_key: None,
             loading_screen: loading_screen::LoadingScreen::default(),
             loot_appearance_loader: Default::default(),
             gear_import_loader: Default::default(),

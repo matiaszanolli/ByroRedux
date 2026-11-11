@@ -652,9 +652,9 @@ performance finding. The measured knob table is in
   exists. `Fragment_11`'s `AddRaceSpells()` now lowers onto the player's
   RACE `SPLO` set (#4415, `9813af435`); no live MQ101 replay has re-checked
   it.
-- [ ] **A scripted Enable()/Disable() on a resident reference takes effect on
-  the next cell load only** — the live consumer needs per-placement GPU/physics
-  teardown + a re-spawn path; ledger/gate/interaction agree (*tracked here only*).
+- [ ] **A scripted Disable() on a resident reference takes effect on the next
+  cell load only** — needs per-placement GPU/physics teardown. The enable edge
+  is live: `cell_loader::enabled` fills the withheld root (*tracked here only*).
 - [ ] **`NiStencilProperty` is parsed but never applied** (stencil test off,
   stencil-less `D32_SFLOAT`). Needs per-material stencil variants plus a
   stencil format, so it waits for a consumer (*tracked here only*).

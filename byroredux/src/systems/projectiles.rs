@@ -13,9 +13,13 @@
 //! lifetime. A hit on a live actor queues a [`HitEvent`] for the damage pipeline
 //! (so health, death, bleedout, `OnHit` and the story events all follow) worth
 //! the weapon's damage plus the ammo's (Skyrim: a bow's damage and its arrow's
-//! add). Not modelled, and said so: a projectile with a non-zero gravity (the
-//! unit is unspecified, so it is refused rather than guessed), the projectile
-//! model, impact force on bodies, and the explosion a record names.
+//! add). Not modelled, and said so: a non-hitscan projectile with a non-zero
+//! gravity (the unit is unspecified, so it is refused rather than guessed; a
+//! Hitscan one ray-traces and ignores it outside VATS, GECK *Projectile*), the
+//! projectile model, impact force on bodies, and the explosion a record names.
+//!
+//! The player's gun fires the same projectile (`player_shot`), along the
+//! camera's aim, spending a round of the ammunition the player carries.
 //!
 //! Projectiles are plain data in [`ActiveProjectiles`], not entities: systems
 //! cannot spawn, and nothing here needs a scene node. Transient, never saved.
@@ -31,6 +35,9 @@ use byroredux_plugin::esm::records::ItemKind;
 /// 16-18 BU boxes on FNV humanoids), and a zero-width segment can thread them.
 /// An engine approximation, like the melee corridor — not game data.
 const MIN_HIT_CORRIDOR_BU: f32 = 4.0;
+
+/// `PROJ` `DATA` Flags bit 0, Hitscan (xEdit `wbDefinitionsFNV.pas` / `TES5`).
+const PROJ_FLAG_HITSCAN: u32 = 0x1;
 
 /// How far past the source the projectile starts, so a ray that starts at a wall
 /// opening does not begin inside the wall's own collider.
@@ -82,7 +89,11 @@ pub(crate) fn resolve_shot(
         .projectiles
         .get(&projectile_form)
         .ok_or_else(|| format!("ammo {ammo_form:08X} names no projectile record"))?;
-    if proj.gravity != 0.0 {
+    // GECK *Projectile*: a Hitscan projectile "will instantly ray-trace whether the target is
+    // impacted or not without performing in-flight collision detection and ballistic simulation"
+    // (xEdit: `DATA` Flags bit 0) — its gravity applies only in VATS, so its shot is the straight
+    // line. FNV's bullets are hitscan with a gravity (`9mmBulletProjectile`: 3.0).
+    if proj.gravity != 0.0 && proj.flags & PROJ_FLAG_HITSCAN == 0 {
         return Err(format!(
             "{} has gravity {} and the gravity unit is unspecified",
             proj.editor_id, proj.gravity
@@ -94,16 +105,18 @@ pub(crate) fn resolve_shot(
     Ok((weapon_damage, ammo_damage, proj))
 }
 
-/// The weapon's damage, the ammunition's, the ammunition's form and its projectile form. Fallout's
+/// The weapon's damage, the ammunition's, the ammunition's form and the projectile form. Fallout's
 /// weapons name a form list of the ammo they take (`AmmoList10mm`): the first entry is the ammunition
-/// used when none is named (the GECK says only that the list is what the weapon accepts).
+/// used when none is named (the GECK says only that the list is what the weapon accepts). The
+/// projectile is the ammunition's when it names one (Skyrim and later; Fallout's optional `DAT2`),
+/// else the weapon's (FO3/FNV `WEAP` `DNAM` offset 36 — FNV's `Ammo9mm` names none).
 pub(crate) fn resolve_ammunition(
     index: &byroredux_plugin::esm::records::EsmIndex,
     weapon: u32,
     ammo: u32,
 ) -> Result<(f32, f32, u32, u32), String> {
-    let (weapon_damage, weapon_ammo) = match index.items.get(&weapon).map(|item| &item.kind) {
-        Some(ItemKind::Weapon { damage, ammo_form, .. }) => (*damage as f32, *ammo_form),
+    let (weapon_damage, weapon_ammo, weapon_projectile) = match index.items.get(&weapon).map(|item| &item.kind) {
+        Some(ItemKind::Weapon { damage, ammo_form, projectile_form, .. }) => (*damage as f32, *ammo_form, *projectile_form),
         _ => return Err(format!("{weapon:08X} is not a weapon")),
     };
     let ammo_form = if ammo != 0 { ammo } else { weapon_ammo };
@@ -112,7 +125,10 @@ pub(crate) fn resolve_ammunition(
         return Err("no ammo named and the weapon carries none".into());
     }
     match index.items.get(&ammo_form).map(|item| &item.kind) {
-        Some(ItemKind::Ammo { damage, projectile_form, .. }) => Ok((weapon_damage, *damage, ammo_form, *projectile_form)),
+        Some(ItemKind::Ammo { damage, projectile_form, .. }) => {
+            let projectile = if *projectile_form != 0 { *projectile_form } else { weapon_projectile };
+            Ok((weapon_damage, *damage, ammo_form, projectile))
+        }
         _ => Err(format!("{ammo_form:08X} is not ammunition")),
     }
 }
@@ -365,6 +381,11 @@ pub(crate) fn projectile_flight_system(world: &World, dt: f32) {
                     projectile.shooter,
                     hit_body.and_then(|body| owners.get(&body).copied())
                 );
+                // A hit on an object reaches the object script above the collider: New Vegas's
+                // shooting tutorial counts sarsaparilla bottles in their `Begin OnHitWith` block.
+                let target = target.or_else(|| {
+                    hit_body.and_then(|body| owners.get(&body)).and_then(|collider| scripted_hit_target(world, *collider))
+                });
                 if let Some(target) = target {
                     hits.push((target, projectile.shooter, projectile.damage));
                 }
@@ -434,6 +455,30 @@ fn launcher_bodies(
 }
 
 /// The actor a collider belongs to, if it belongs to one.
+/// The placed reference at or above `collider_entity` (its `Parent` chain) whose ObScript has an
+/// `OnHit` or `OnHitWith` block: the object a projectile that stopped on a non-actor hit, as the
+/// script sees it. `None` for scenery no script listens on.
+///
+/// A NIF's root collision is a bare entity with no `Parent`: it names its placement by
+/// `PhysicsSourceForm` (#1698), so that is followed first — a sarsaparilla bottle's body is one.
+fn scripted_hit_target(world: &World, collider_entity: EntityId) -> Option<EntityId> {
+    use byroredux_scripting::obscript_vm::{BLOCK_ON_HIT, BLOCK_ON_HIT_WITH};
+    let mut at = world
+        .get::<byroredux_core::ecs::components::PhysicsSourceForm>(collider_entity)
+        .and_then(|source| world.find_by_form_id(source.0))
+        .unwrap_or(collider_entity);
+    for _ in 0..MAX_LAUNCHER_HOPS {
+        if let Some(script) = world.get::<byroredux_scripting::obscript_objects::ObScriptInstance>(at).map(|instance| instance.script) {
+            let listens = world.try_resource::<byroredux_scripting::obscript_objects::ObScriptObjectTable>().is_some_and(|table| {
+                table.scripts.get(&script).is_some_and(|object| object.blocks.iter().any(|block| matches!(block.block_type, BLOCK_ON_HIT | BLOCK_ON_HIT_WITH)))
+            });
+            return listens.then_some(at);
+        }
+        at = world.get::<byroredux_core::ecs::Parent>(at)?.0;
+    }
+    None
+}
+
 fn resolve_actor(world: &World, collider_entity: EntityId) -> Option<EntityId> {
     world
         .get::<byroredux_physics::ActorColliderOwner>(collider_entity)
@@ -449,6 +494,50 @@ fn resolve_actor(world: &World, collider_entity: EntityId) -> Option<EntityId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A NIF's root collision is a bare entity that names its placement by `PhysicsSourceForm`
+    /// (no `Parent`): a stopped shot on it reaches the placement's `OnHitWith` script — New Vegas's
+    /// tutorial bottles — while a body no script listens on reaches nothing.
+    #[test]
+    fn a_hit_on_a_bare_collider_reaches_its_placements_hit_script() {
+        use byroredux_core::ecs::components::{FormIdComponent, PhysicsSourceForm};
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+        use byroredux_plugin::esm::records::{ScriptRecord, ScriptType};
+        use byroredux_scripting::obscript_objects::{attach_object_script, install_object_scripts};
+        const SCRIPT: u32 = 0x0010_A1EF;
+        fn statement(op: u16, payload: &[u8]) -> Vec<u8> {
+            let mut out = op.to_le_bytes().to_vec();
+            out.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+            out.extend_from_slice(payload);
+            out
+        }
+        // `ScriptName` / `Begin OnHitWith` / `End`.
+        let mut begin = byroredux_scripting::obscript_vm::BLOCK_ON_HIT_WITH.to_le_bytes().to_vec();
+        begin.extend_from_slice(&0u32.to_le_bytes());
+        let compiled = [statement(0x1d, &[]), statement(0x10, &begin), statement(0x11, &[])].concat();
+        let script = ScriptRecord {
+            form_id: SCRIPT,
+            editor_id: "VCG02TargetSCRIPT".into(),
+            script_type: ScriptType::Object,
+            compiled_size: compiled.len() as u32,
+            compiled,
+            ..Default::default()
+        };
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        assert_eq!(install_object_scripts(&mut world, &std::collections::HashMap::from([(SCRIPT, script)])), 1);
+        let mut pool = FormIdPool::new();
+        let fid = pool.intern(FormIdPair { plugin: PluginId::from_filename("FalloutNV.esm"), local: LocalFormId(0x0010_A202) });
+        world.insert_resource(pool);
+        let bottle = world.spawn();
+        world.insert(bottle, FormIdComponent(fid));
+        assert!(attach_object_script(&mut world, bottle, SCRIPT));
+        let body = world.spawn();
+        world.insert(body, PhysicsSourceForm(fid));
+        assert_eq!(scripted_hit_target(&world, body), Some(bottle));
+        let rock = world.spawn();
+        assert_eq!(scripted_hit_target(&world, rock), None);
+    }
 
     fn dart() -> Projectile {
         Projectile {
@@ -545,6 +634,25 @@ mod tests {
         // Gravity has no specified unit: refused. No ammo anywhere: refused.
         assert!(launch_of(&world, &index_with_dart(0.8), launch).is_err());
         assert!(launch_of(&world, &index_with_dart(0.0), ProjectileLaunch { ammo: 0, ..launch }).is_err());
+    }
+
+    /// FO3/FNV: an ammunition that names no projectile fires the weapon's (`WEAP` `DNAM` offset 36),
+    /// and a Hitscan projectile flies straight whatever its gravity — New Vegas's `Ammo9mm` names
+    /// none, and the 9mm pistol's `9mmBulletProjectile` is Hitscan with gravity 3.0.
+    #[test]
+    fn a_hitscan_bullet_from_the_weapons_projectile_flies_straight() {
+        let mut index = index_with_dart(3.0);
+        if let Some(byroredux_plugin::esm::records::ItemRecord { kind: ItemKind::Ammo { projectile_form, .. }, .. }) = index.items.get_mut(&0xA2) {
+            *projectile_form = 0;
+        }
+        assert!(resolve_shot(&index, 0xA1, 0xA2).is_err(), "no projectile anywhere");
+        if let Some(byroredux_plugin::esm::records::ItemRecord { kind: ItemKind::Weapon { projectile_form, .. }, .. }) = index.items.get_mut(&0xA1) {
+            *projectile_form = 0xA3;
+        }
+        assert!(resolve_shot(&index, 0xA1, 0xA2).is_err(), "gravity without Hitscan is still refused");
+        index.projectiles.get_mut(&0xA3).unwrap().flags = PROJ_FLAG_HITSCAN;
+        let (weapon_damage, ammo_damage, proj) = resolve_shot(&index, 0xA1, 0xA2).expect("a hitscan bullet fires");
+        assert_eq!((weapon_damage, ammo_damage, proj.form_id), (3.0, 2.0, 0xA3));
     }
 
     /// A dart flying into a live actor's collider queues the hit the flush lands

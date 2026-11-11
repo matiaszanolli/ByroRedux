@@ -58,6 +58,7 @@ use crate::components::{
 };
 
 pub(crate) mod created;
+pub(crate) mod enabled;
 mod exterior;
 mod graph_nodes;
 mod index;

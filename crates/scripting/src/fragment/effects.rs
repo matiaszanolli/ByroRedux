@@ -129,7 +129,9 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 ///     from the inventory family and the placement arms, #5986) — `Inventory`,
 ///     `EquipmentSlots`, `EquippedWeapon`, `ItemInstancePool`, and through
 ///     `crate::equipment::{emit_equipment_changes, emit_item_transfers}` the
-///     `EquipmentEventBatch` and `ItemEventBatch` markers
+///     `EquipmentEventBatch` and `ItemEventBatch` markers; `add_items` of a leveled
+///     list first reads `LeveledItemLists` (cloned out and released) and the
+///     receiver's `CharacterLevel`, each alone, before any inventory guard
 ///   - **via the guard / value evaluators** (`evaluate_guard`, `evaluate_value`,
 ///     #5986) — `Dead`, `FollowerState`, `LocationTable`, `MiscStats`,
 ///     `StoryManagerRng` (the `GetRandomPercent` draw) and the `ActorVitals`

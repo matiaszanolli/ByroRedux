@@ -277,6 +277,9 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
     if fire_player_gun(world, aggressor, origin, direction) {
         return;
     }
+    if world.has::<EquippedWeapon>(aggressor) {
+        draw_weapon(world, aggressor);
+    }
 
     // Resolve Rapier body ownership before acquiring PhysicsWorld. This keeps
     // component/resource guards non-overlapping and follows the interaction
@@ -381,6 +384,17 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
 
 /// Record the body location a killing blow struck on `target`'s [`DismemberRecord`] (VATS-LIMB-008), creating the
 /// record on first use. A world with no storage for it records nothing.
+/// An attack with a weapon draws it: the player's `WeaponDrawn` mark (`IsWeaponOut`, which New
+/// Vegas's shooting tutorial bottles test before they count a hit).
+fn draw_weapon(world: &World, player: EntityId) {
+    if world.has::<byroredux_scripting::obscript_state::WeaponDrawn>(player) {
+        return;
+    }
+    if let Some(mut drawn) = world.query_mut::<byroredux_scripting::obscript_state::WeaponDrawn>() {
+        drawn.insert(player, byroredux_scripting::obscript_state::WeaponDrawn);
+    }
+}
+
 /// Fire the player's equipped gun, if it is one: a weapon that is not a melee type and takes
 /// ammunition. Spends one round the player carries and launches the shot; with none left the
 /// gun clicks empty (a miss naming it). Returns whether the attack was a gun's — `false` leaves
@@ -400,6 +414,7 @@ fn fire_player_gun(world: &World, player: EntityId, origin: byroredux_core::math
     if !gun {
         return false;
     }
+    draw_weapon(world, player);
     let Some(ammo) = crate::systems::projectiles::player_ammo_for(world, &index, player, weapon) else {
         record_miss(world, "out of ammunition");
         return true;

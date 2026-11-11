@@ -800,21 +800,20 @@ pub(super) fn spawn_placed_instances(
     // and still rides the normal `CellRootIndex` teardown. What it has is no
     // renderable or collidable content.
     //
-    // KNOWN LIMITATION: this is consulted at spawn, so a `Disable()` on an
-    // already-resident reference takes effect on that cell's next load rather
-    // than immediately. Applying it live means despawning mid-frame, which
-    // has to go through `unload_cell`'s GPU-handle release path or it leaks
-    // mesh/texture refcounts — a separate piece of work, not a widening of
-    // this one.
+    // A live `Enable()` of such a root fills it in place (#5065,
+    // `cell_loader::enabled`). KNOWN LIMITATION: the disable edge is still
+    // consulted only here, so a `Disable()` on an already-resident reference
+    // takes effect on that cell's next load. Applying it live means
+    // despawning mid-frame, which has to go through `unload_cell`'s
+    // GPU-handle release path or it leaks mesh/texture refcounts.
     if placement_disabled {
         log::debug!(
             "REFR {:?} is disabled (ReferenceEnableState / Initially Disabled) — \
              placement root spawned without renderable or collidable content (#3278)",
             placement_form_id_pair,
         );
-        // #4820 — mark the root so interaction never offers it, even after
-        // a live `Enable()` clears the ledger: there is no live re-spawn, so
-        // until the cell reloads it stays invisible and non-solid.
+        // #4820 — mark the root so interaction never offers it until its
+        // content exists; the enable edge (#5065) removes the mark.
         world.insert(placement_root, crate::components::PlacementContentWithheld);
         return (placement_root, 0, PlacementSpawnTimings::default());
     }
@@ -1095,7 +1094,22 @@ fn spawn_placement_root(
     byroredux_core::ecs::EntityId,
     Option<byroredux_core::form_id::FormId>,
 ) {
-    let placement_root = world.spawn();
+    // #1212 / D1-NEW-01 — the placement's form id (stamped as
+    // `FormIdComponent` below). The FormIdPool intern is a single write-lock
+    // per REFR; for cell loads measuring at 800–1000 REFRs (Megaton /
+    // Diamond City), the cost is dominated by the StringPool intern (#882)
+    // one level above this.
+    let placement_fid = placement_form_id_pair.map(|pair| world.resource_mut::<FormIdPool>().intern(pair));
+    // #5065 — a placement spawned disabled whose reference has since been
+    // enabled is filled in its own root: the identity, scripts and script
+    // variables it already has stay where they are.
+    let placement_root = match placement_fid.and_then(|fid| super::enabled::take_realizing_root(world, fid)) {
+        Some(root) => {
+            world.remove::<crate::components::PlacementContentWithheld>(root);
+            root
+        }
+        None => world.spawn(),
+    };
     world.insert(placement_root, Transform::new(ref_pos, ref_rot, ref_scale));
     world.insert(
         placement_root,
@@ -1122,23 +1136,18 @@ fn spawn_placement_root(
     // connect points is the #973 OMOD consumer's job; this lands the data.
     stamp_attach_components(world, placement_root, cached);
     // #1212 / D1-NEW-01 — attach FormIdComponent so console / Papyrus /
-    // debug-server can locate this REFR by its placement form-id. The
-    // FormIdPool intern is a single write-lock per REFR; for cell loads
-    // measuring at 800–1000 REFRs (Megaton / Diamond City), the cost is
-    // dominated by the StringPool intern (#882) one level above this.
+    // debug-server can locate this REFR by its placement form-id.
     //
-    // #1698 — cached here (not just inserted) so the standalone bhk
-    // collision entities spawned below can carry the same form id. Those
+    // #1698 — the id is also returned (not just inserted) so the standalone
+    // bhk collision entities spawned below can carry the same form id. Those
     // entities are NOT children of `placement_root`'s render mesh (they're
     // spawned bare from `cached.collisions`, see the loop's own comment),
     // so without this they're otherwise unresolvable to their source REFR
     // — the runtime `dump_awake_fallers` diagnostic could only ever print
     // `form=? layer=?` for any awake dynamic clutter body.
-    let placement_fid = placement_form_id_pair.map(|pair| {
-        let fid = world.resource_mut::<FormIdPool>().intern(pair);
+    if let Some(fid) = placement_fid {
         world.insert(placement_root, FormIdComponent(fid));
-        fid
-    });
+    }
     // M40 Phase 2 Stage 1 — XTEL portal plumbing. When the REFR carries
     // a teleport destination, stamp a `DoorTeleport` component on the
     // placement root so the console command + future F-key activate

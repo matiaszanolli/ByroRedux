@@ -564,6 +564,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ActorProtection", "an actor's base Essential / Protected ACBS flags; stamped from the load order at every spawn"),
         ("DamageThresholdRules", "New Vegas DT rules (the DT actor value, fMinDamMultiplier, armor DT); rebuilt from the load order by install_damage_threshold_rules every boot"),
         ("CreatedReferenceEntities", "the live entity of each spawned created reference; re-derived by step_created_references spawning into loaded cells"),
+        ("RealizingPlacementRoots", "the withheld roots the reference loader fills while step_enabled_placements runs it (#5065); present only for that call"),
         ("ActiveLoadOrder", "the load order of the last cell-load entry point; republished by install_form_resolver on every load"),
         ("ExplicitStartPin", "session flag set from the --cell/--grid launch arguments, released by the first key or mouse press; never gameplay state"),
         ("LeveledItemLists", "the load order's leveled item lists for AddItem of a list; rebuilt from the records by install_actor_value_names every boot"),

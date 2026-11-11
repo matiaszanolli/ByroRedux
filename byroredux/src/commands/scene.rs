@@ -810,18 +810,14 @@ impl ConsoleCommand for ScriptActivateCommand {
         "Emit ActivateEvent on an entity (usage: script.activate <entity_id | 0xREFR>)"
     }
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
-        let trimmed = args.trim();
-        // A placed reference by its FormID (`0x00103E55`), resolved to its live entity.
-        let by_form = trimmed
-            .strip_prefix("0x")
-            .and_then(|hex| u32::from_str_radix(hex, 16).ok())
-            .and_then(|form| byroredux_scripting::condition::resolve_entity_by_global_form_id(world, form))
-            .map(|entity| entity as u32);
-        let Some(entity_id) = by_form.or_else(|| trimmed.parse::<u32>().ok()) else {
-            return CommandOutput::line(format!(
-                "script.activate: failed to parse an entity id or a resident reference FormID from `{trimmed}` — \
-                 usage: script.activate <entity_id | 0xREFR>"
-            ));
+        // An entity id, or a placed reference by its FormID (`0x00103E55`), resolved to its live entity.
+        let entity_id = match super::shared::resolve_console_entity(world, args.trim()) {
+            Ok(entity) => entity,
+            Err(error) => {
+                return CommandOutput::line(format!(
+                    "script.activate: {error} — usage: script.activate <entity_id | 0xREFR>"
+                ));
+            }
         };
 
         let activator = match crate::interaction::emit_activate_event(world, entity_id) {

@@ -1181,9 +1181,9 @@ impl App {
             }
         }
         cell_loader::created::place_created_references(&self.world);
-        let Some(ctx) = self.renderer.as_mut() else {
+        if self.renderer.is_none() {
             return;
-        };
+        }
         let interior = self
             .world
             .try_resource::<cell_loader::CurrentCellRoot>()
@@ -1199,20 +1199,12 @@ impl App {
                 &byroredux_scripting::CreatedCell::Interior { editor_id },
             );
             if !refs.is_empty() {
-                let args: Vec<String> = crate::cli_args::effective_args();
-                let tex_provider = crate::asset_provider::build_texture_provider(&args);
-                let mut mat_provider = crate::asset_provider::build_material_provider(&args);
-                cell_loader::created::spawn_created_references(
-                    &mut self.world,
-                    ctx,
-                    &tex_provider,
-                    Some(&mut mat_provider),
-                    cell_root,
-                    &refs,
-                );
+                self.spawn_into_loaded_cell(cell_root, |world, ctx, tex_provider, mat_provider| {
+                    cell_loader::created::spawn_created_references(world, ctx, tex_provider, mat_provider, cell_root, &refs);
+                });
             }
         }
-        if let Some(state) = self.streaming.as_mut() {
+        if let Some(state) = self.streaming.as_ref() {
             let worldspace = state.wctx.worldspace_key.clone();
             let loaded: Vec<((i32, i32), byroredux_core::ecs::storage::EntityId)> = state
                 .loaded
@@ -1228,17 +1220,84 @@ impl App {
                     },
                 );
                 if !refs.is_empty() {
-                    cell_loader::created::spawn_created_references(
-                        &mut self.world,
-                        ctx,
-                        &state.tex_provider,
-                        Some(&mut state.mat_provider),
-                        cell_root,
-                        &refs,
-                    );
+                    self.spawn_into_loaded_cell(cell_root, |world, ctx, tex_provider, mat_provider| {
+                        cell_loader::created::spawn_created_references(world, ctx, tex_provider, mat_provider, cell_root, &refs);
+                    });
                 }
             }
         }
+    }
+
+    /// #5065 — the enable edge: a placement spawned disabled whose reference a
+    /// script (or its enable parent's) has since enabled gets its content,
+    /// in its own root, without waiting for its cell to load again
+    /// (`cell_loader::enabled`). Idle — one digest of the enable ledger — until
+    /// the ledger changes.
+    pub(crate) fn step_enabled_placements(&mut self) {
+        if self.interior_transition.is_some() || self.renderer.is_none() {
+            return;
+        }
+        let Some(key) = self
+            .world
+            .try_resource::<byroredux_scripting::ReferenceEnableState>()
+            .map(|state| state.fingerprint())
+        else {
+            return;
+        };
+        if self.enabled_step_key == Some(key) {
+            return;
+        }
+        let found = cell_loader::enabled::enabled_withheld_placements(&self.world);
+        if !found.pending {
+            self.enabled_step_key = Some(key);
+        }
+        for (cell_root, placements) in found.by_cell {
+            let spawned = self.spawn_into_loaded_cell(cell_root, |world, ctx, tex_provider, mat_provider| {
+                cell_loader::enabled::realize_enabled_placements(world, ctx, tex_provider, mat_provider, cell_root, &placements);
+            });
+            if !spawned {
+                log::debug!("{} enabled reference(s) belong to cell root {cell_root}, which is not a loaded cell", placements.len());
+            }
+        }
+    }
+
+    /// Run `spawn` against the loaded cell `cell_root` with the archive
+    /// providers its references load through: fresh ones from the launch
+    /// arguments for the interior, the streaming state's for an exterior grid.
+    /// `false` (and `spawn` not run) without a renderer or when `cell_root` is
+    /// no loaded cell.
+    fn spawn_into_loaded_cell(
+        &mut self,
+        cell_root: byroredux_core::ecs::storage::EntityId,
+        spawn: impl FnOnce(
+            &mut byroredux_core::ecs::World,
+            &mut byroredux_renderer::VulkanContext,
+            &crate::asset_provider::TextureProvider,
+            Option<&mut crate::asset_provider::MaterialProvider>,
+        ),
+    ) -> bool {
+        let Some(ctx) = self.renderer.as_mut() else {
+            return false;
+        };
+        let interior = self
+            .world
+            .try_resource::<cell_loader::CurrentCellRoot>()
+            .and_then(|root| root.0);
+        if interior == Some(cell_root) {
+            let args: Vec<String> = crate::cli_args::effective_args();
+            let tex_provider = crate::asset_provider::build_texture_provider(&args);
+            let mut mat_provider = crate::asset_provider::build_material_provider(&args);
+            spawn(&mut self.world, ctx, &tex_provider, Some(&mut mat_provider));
+            return true;
+        }
+        let Some(state) = self.streaming.as_mut() else {
+            return false;
+        };
+        if !state.loaded.values().any(|cell| cell.cell_root == cell_root) {
+            return false;
+        }
+        spawn(&mut self.world, ctx, &state.tex_provider, Some(&mut state.mat_provider));
+        true
     }
 
     /// ObScript `ForceWeather` / `SetWeather` / `ReleaseWeatherOverride` issued while the player is
@@ -1400,6 +1459,7 @@ impl App {
         // a queued transition this same call dispatches.
         self.step_player_move_request();
         self.step_created_references();
+        self.step_enabled_placements();
         self.step_actor_graphs();
         self.step_kf_idles();
         self.step_texture_swaps();
