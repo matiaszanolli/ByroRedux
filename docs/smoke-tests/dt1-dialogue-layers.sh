@@ -11,6 +11,9 @@
 #      the conversation with the package's topic WITHOUT any
 #      activation, through the same selection path.
 set -euo pipefail
+# The shared harness, for its Xvfb wrapper: the engine runs headless and never
+# opens a window on the desktop it is started from (closing one ended the gate).
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fixture.sh"
 
 PORT="${BYRO_DEBUG_PORT:-19878}"
 TIMEOUT="${BYROREDUX_SMOKE_TIMEOUT:-300}"
@@ -22,6 +25,10 @@ stop_engine() {
         kill -TERM "$engine_pid" 2>/dev/null || true
         wait "$engine_pid" 2>/dev/null || true
         engine_pid=""
+        # The pid is the xvfb-run wrapper; the engine is the port's listener.
+        local orphan
+        orphan=$(ss -tlnp 2>/dev/null | grep ":$PORT " | grep -oP 'pid=\K[0-9]+' | head -1 || true)
+        [[ -z "$orphan" ]] || kill "$orphan" 2>/dev/null || true
     fi
 }
 trap stop_engine EXIT
@@ -92,7 +99,7 @@ wait_log() {
 env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
     BYROREDUX_SETTINGS_PATH="$LOG_DIR/settings.toml" \
     RUST_LOG="warn,byroredux::asset_provider=info,byroredux::systems::dialogue_voice=info" \
-    target/release/byroredux \
+    "${SMOKE_HEADLESS[@]}" target/release/byroredux \
     --game fnv --cell GSDocMitchellHouse \
     --player --bench-frames 30 --bench-hold \
     >"$LOG_DIR/session.stdout" 2>"$LOG_DIR/session.stderr" &
