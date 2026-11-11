@@ -653,7 +653,10 @@ pub fn evaluate_function(
         | ConditionFunction::GetCurrentAIPackage
         | ConditionFunction::GetIsReference
         | ConditionFunction::IsOwner
-        | ConditionFunction::GetHitLocation => {
+        | ConditionFunction::GetHitLocation
+        | ConditionFunction::GetSleeping
+        | ConditionFunction::GetUnconscious
+        | ConditionFunction::GetIsCreatureType => {
             vm_getter_value(function, condition, entity, world)
         }
         // Not through the getter: a scratch subject carrying a lent base form has no FormID for it
@@ -827,7 +830,10 @@ fn vm_getter_value(function: ConditionFunction, condition: &Condition, entity: E
         return 0.0;
     };
     let args = match function {
-        ConditionFunction::GetBaseActorValue => vec![ObScriptValue::Num(condition.param_1 as f32)],
+        // The actor-value code and the creature type are numbers, not forms.
+        ConditionFunction::GetBaseActorValue | ConditionFunction::GetIsCreatureType => {
+            vec![ObScriptValue::Num(condition.param_1 as f32)]
+        }
         f if f.first_param_is_form_id() => vec![ObScriptValue::Ref(condition.param_1)],
         _ => Vec::new(),
     };

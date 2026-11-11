@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **103 functions** at their canonical CTDA
+//! lineage. This catalog ships **106 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -119,6 +119,9 @@
 //! | 136   | GetIsReference         | the ObScript getter (every game) |
 //! | 278   | IsOwner                | the ObScript getter (every game) |
 //! | 391   | GetHitLocation         | the ObScript getter (FO3/FNV) |
+//! | 49    | GetSleeping            | the ObScript getter (FO3/FNV) |
+//! | 242   | GetUnconscious         | the ObScript getter (FO3/FNV) |
+//! | 438   | GetIsCreatureType      | the ObScript getter (FO3/FNV) |
 //! | 116   | GetCrimeGold           | `ObScriptLedger` bounty (Oblivion dialect) |
 //! | 125   | IsGuard                | `GuardClasses`, the `CLAS` Guard flag (Oblivion / FO3 / FNV) |
 //! | 122   | GetCrime               | `CrimeKnowledge` (every game) |

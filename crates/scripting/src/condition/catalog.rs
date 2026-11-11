@@ -422,6 +422,18 @@ pub enum ConditionFunction {
     /// location, so the ObScript getter's body always answers `-1`. FO3 / FNV index **391** (Skyrim and later
     /// author 391 as `IsPC1stPerson`); the bridge's game gate keeps the body from answering there.
     GetHitLocation,
+    /// `GetSleeping → f32` (PERK-HOOK-007): the Run-On actor's sleeping state (GECK *GetSleeping*: 0 not
+    /// sleeping ... 3 is sleeping). FO3 / FNV index **49**; the ObScript getter's body, which answers 3 while
+    /// the actor runs a Sleep package and 0 otherwise (the engine has no getting-ready / waking states).
+    GetSleeping,
+    /// `GetUnconscious → f32` (PERK-HOOK-007): 1.0 while the Run-On actor "has been set to an unconscious
+    /// state using the SetUnconscious function" (GECK *GetUnconscious*). FO3 / FNV index **242**; the
+    /// ObScript getter's body.
+    GetUnconscious,
+    /// `GetIsCreatureType(type) → f32` (PERK-HOOK-007): 1.0 when the Run-On creature is of creature type
+    /// `param_1` (GECK *GetIsCreatureType*; 6 Robot, 5 Feral Ghoul, ...). FO3 / FNV index **438** (Fallout 4,
+    /// Fallout 76 and Starfield author 438 as `HasKey`); the ObScript getter's body.
+    GetIsCreatureType,
     /// Oblivion's `GetCrimeGold` (CTDA **116**; FO3 / FNV author 116 as
     /// `GetMinorCrimeCount`, Skyrim as `IsIntimidatedbyPlayer`, so it answers
     /// only through [`OBLIVION_DIALECT`]). The Run-On actor's bounty: the
@@ -628,6 +640,11 @@ const ROWS: &[Row] = &[
     Row { func: ConditionFunction::GetIsReference, indices: &[136], name: "GetIsReference", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::IsOwner, indices: &[278], name: "IsOwner", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetHitLocation, indices: &[391], name: "GetHitLocation", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    // PERK-HOOK-007 — three more getters the VM answers, bridged the same way: the vanilla FO3 / FNV
+    // *Activate* perks gate on them (`RoboticsExpert`, `MisterSandman`, `GhastlyScavenger`).
+    Row { func: ConditionFunction::GetSleeping, indices: &[49], name: "GetSleeping", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetUnconscious, indices: &[242], name: "GetUnconscious", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::GetIsCreatureType, indices: &[438], name: "GetIsCreatureType", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     // The Oblivion dialect: these answer to no index of their own (the same
     // numbers are other functions in FO3 / FNV / Skyrim); `OBLIVION_DIALECT`
     // maps the Oblivion index to them. Indices and names from xEdit
@@ -716,6 +733,8 @@ const FOREIGN_INDICES: &[(u32, &[GameKind])] = &[
     // `GetPermanentActorValue` is FO3 / FNV's; Skyrim, FO4 and FO76 author 495 as `GetKillingBlowLimb`,
     // Starfield as `EPMagic_EffectIsDetrimental` (each `wbDefinitions*.pas`).
     (495, &[GameKind::Skyrim, GameKind::Fallout4, GameKind::Fallout76, GameKind::Starfield]),
+    // `GetIsCreatureType` is FO3 / FNV's; Fallout 4, Fallout 76 and Starfield author 438 as `HasKey`.
+    (438, &[GameKind::Fallout4, GameKind::Fallout76, GameKind::Starfield]),
 ];
 
 /// Whether CTDA function `index` is a different function in `game` than the
@@ -777,7 +796,7 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 103] = [
+    pub const CATALOG: [ConditionFunction; 106] = [
         Self::GetDistance,
         Self::GetQuestVariable,
         Self::GetActorValue,
@@ -868,6 +887,9 @@ impl ConditionFunction {
         Self::GetIsReference,
         Self::IsOwner,
         Self::GetHitLocation,
+        Self::GetSleeping,
+        Self::GetUnconscious,
+        Self::GetIsCreatureType,
         Self::GetCrimeGold,
         Self::CanPayCrimeGold,
         Self::GetPCFame,
@@ -934,6 +956,9 @@ impl ConditionFunction {
                 | Self::GetIsReference
                 | Self::IsOwner
                 | Self::GetHitLocation
+                | Self::GetSleeping
+                | Self::GetUnconscious
+                | Self::GetIsCreatureType
         )
         .then(|| 0x1000 + self.row().indices[0] as u16)
     }
@@ -1149,6 +1174,9 @@ mod tests {
                 ConditionFunction::GetIsReference |
                 ConditionFunction::IsOwner |
                 ConditionFunction::GetHitLocation |
+                ConditionFunction::GetSleeping |
+                ConditionFunction::GetUnconscious |
+                ConditionFunction::GetIsCreatureType |
                 ConditionFunction::GetCrimeGold |
                 ConditionFunction::CanPayCrimeGold |
                 ConditionFunction::GetPCFame |

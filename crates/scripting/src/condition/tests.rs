@@ -2270,6 +2270,55 @@ fn fo3_fnv_package_and_stance_getters_are_bridged_to_the_vm() {
     assert!(evaluate_condition(&cond_params(244, 0, 0, 1.0), &world, &ctx(actor)), "SetRestrained 1");
 }
 
+/// PERK-HOOK-007 — three more getters the VM answers (GetSleeping 49, GetUnconscious 242, GetIsCreatureType 438)
+/// are bridged like #6558's: modeled on FO3 / FNV only, read against the Run-On actor through the VM's own body.
+/// 438 is `HasKey` from Fallout 4 on, so it is foreign there. The vanilla FO3 / FNV *Activate* perks gate on
+/// all three (`RoboticsExpert`: an awake robot; `MisterSandman`: a sleeper).
+#[test]
+fn the_activate_perk_getters_are_bridged_to_the_vm() {
+    use byroredux_plugin::esm::reader::GameKind::{Fallout3NV, Fallout4, Oblivion, Skyrim};
+    use byroredux_plugin::esm::records::{CreatureStats, EsmIndex, NpcRecord};
+    for index in [49, 242, 438] {
+        let condition = cond(index, ComparisonOp::Eq, 1.0, false);
+        for game in [Fallout3NV, Oblivion, Skyrim, Fallout4] {
+            let mut world = World::new();
+            crate::register(&mut world);
+            world.insert_resource(crate::ScriptGame(game));
+            assert_eq!(is_modeled(&world, &condition), game == Fallout3NV, "{index} on {game:?}");
+        }
+    }
+    assert!(crate::condition::catalog::index_is_foreign_in(438, Fallout4), "438 is HasKey on Fallout 4");
+
+    let (mut world, actor) = getter_world();
+    // GetUnconscious: SetUnconscious's state.
+    assert!(evaluate_condition(&cond_params(242, 0, 0, 0.0), &world, &ctx(actor)));
+    world.insert(actor, crate::ActorControlState { unconscious: true, ..Default::default() });
+    assert!(evaluate_condition(&cond_params(242, 0, 0, 1.0), &world, &ctx(actor)), "SetUnconscious 1");
+    // GetSleeping: 3 while the actor runs a Sleep package.
+    assert!(evaluate_condition(&cond_params(49, 0, 0, 0.0), &world, &ctx(actor)));
+    world.register::<byroredux_core::ecs::components::SleepBehavior>();
+    world.insert(
+        actor,
+        byroredux_core::ecs::components::SleepBehavior {
+            radius: None,
+            location: byroredux_core::ecs::components::EatSleepLocation::NearReference(0),
+            form_id: 0,
+        },
+    );
+    assert!(evaluate_condition(&cond_params(49, 0, 0, 3.0), &world, &ctx(actor)), "asleep");
+    // GetIsCreatureType: the CREA's type, a number parameter (6 Robot).
+    const ROBOT_BASE: u32 = 0x0001_0438;
+    let mut index = EsmIndex::default();
+    index.npcs.insert(
+        ROBOT_BASE,
+        NpcRecord { form_id: ROBOT_BASE, creature_stats: Some(CreatureStats { creature_type: 6, ..Default::default() }), ..Default::default() },
+    );
+    crate::actor_base_traits::install_actor_base_traits(&mut world, &index);
+    world.insert(actor, crate::scene::SceneAliasCandidate { base_form_id: ROBOT_BASE, ..Default::default() });
+    assert!(evaluate_condition(&cond_params(438, 6, 0, 1.0), &world, &ctx(actor)), "a robot");
+    assert!(evaluate_condition(&cond_params(438, 5, 0, 0.0), &world, &ctx(actor)), "not a feral ghoul");
+}
+
 /// #6545 — four more getters the VM answers (GetCurrentAIPackage 110, GetIsReference 136, IsOwner 278,
 /// GetHitLocation 391) are catalogued and read through the VM's own bodies. 391 is `IsPC1stPerson` from Skyrim
 /// on, so it is modeled on FO3 / FNV only; the other three keep their meaning in every game they exist in.
