@@ -1409,6 +1409,16 @@ mod tests {
         world.insert_resource(crate::components::LoadedCellIndex(Arc::new(index)));
     }
 
+    /// The installed index, as `game`: ownership is alias-bound on Skyrim and
+    /// later, every running quest's on FO3 / FNV ([`npc_topic_quests`]).
+    fn as_game(world: &mut World, game: byroredux_plugin::esm::reader::GameKind) {
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        index.game = game;
+        index.dialogues.insert(TOPIC, fixture_topic());
+        index.dialogues.insert(TOPIC_RUMORS, fixture_second_topic());
+        world.insert_resource(crate::components::LoadedCellIndex(Arc::new(index)));
+    }
+
     /// Install the quest's alias 1 (forced to `reference`) and start the
     /// quest running; `refresh` binds the alias live.
     fn install_quest(world: &mut World, reference: u32, alias_id: i32) {
@@ -1817,6 +1827,35 @@ mod tests {
         assert_eq!(topic.speaker_text, "Watch yourself in this city.");
     }
 
+    /// FO3 / FNV quests bind no aliases, so an NPC's topics are every RUNNING
+    /// quest's (the INFO conditions pick the speaker): an NPC no alias fills
+    /// still opens the running quest's topic, and a stopped quest owns none.
+    #[test]
+    fn a_fallout_npc_is_offered_every_running_quests_topics() {
+        let mut world = World::new();
+        world.register::<ActivateEvent>();
+        world.register::<NpcDialogueTopic>();
+        world.register::<SceneAliasCandidate>();
+        world.register::<Dead>();
+        let player = spawn_player(&mut world);
+        let eltrys = spawn_actor(&mut world, SPEAKER_REF, SPEAKER_BASE);
+        install_index(&mut world);
+        as_game(&mut world, byroredux_plugin::esm::reader::GameKind::Fallout3NV);
+        install_quest(&mut world, OTHER_REF, 1);
+        start_quest(&mut world);
+        refresh_scene_actor_bindings(&world);
+        world.insert(eltrys, ActivateEvent { activator: player });
+        npc_dialogue_selection_system(&world);
+        assert!(selected(&world, eltrys).is_some(), "the running quest's topic reaches an NPC no alias fills");
+
+        // The first conversation ends; the quest stops; the NPC is activated again.
+        world.remove::<NpcDialogueTopic>(eltrys);
+        world.insert_resource(QuestStageState::default());
+        world.insert(eltrys, ActivateEvent { activator: player });
+        npc_dialogue_selection_system(&world);
+        assert!(selected(&world, eltrys).is_none(), "a stopped quest owns no topics");
+    }
+
     #[test]
     fn an_unbound_npc_or_stopped_quest_selects_nothing() {
         let mut world = World::new();
@@ -1827,6 +1866,8 @@ mod tests {
         let player = spawn_player(&mut world);
         let eltrys = spawn_actor(&mut world, SPEAKER_REF, SPEAKER_BASE);
         install_index(&mut world);
+        // Skyrim-style ownership: topics ride the quests whose aliases bind the NPC.
+        as_game(&mut world, byroredux_plugin::esm::reader::GameKind::Skyrim);
         // Aliases installed and quest running, but THIS actor's reference is
         // not any alias's fill — no ownership, no dialogue.
         install_quest(&mut world, OTHER_REF, 1);
