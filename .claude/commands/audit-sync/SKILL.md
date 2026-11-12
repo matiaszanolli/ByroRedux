@@ -34,7 +34,7 @@ Look at the printed weights. If one group carries well over ~2× the median of e
 
 ## Phase 2: Fan out
 
-Launch one background `general-purpose` agent per `groups.txt` line, all in a single message. Each prompt contains:
+Launch one background `general-purpose` agent per `groups.txt` line with `model: "sonnet"`, all in a single message. Each prompt contains:
 - an instruction to read `$SCRATCH/BRIEF.md` first and follow it exactly;
 - the exact files the agent owns (`.claude/commands/audit-<skill>/SKILL.md` plus any helper scripts in that directory);
 - the main delta paths for its skills (crates and `byroredux/src` modules from `_audit-owners.md`);

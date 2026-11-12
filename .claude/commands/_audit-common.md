@@ -43,6 +43,11 @@ Severity scale: `.claude/commands/_audit-severity.md`.
 2. Each dimension carries `Paths:` and `First step:` lines. Run `git log --since=D --format='%h %s' -- <Paths>` per dimension. A dimension with **no commits** since D gets one line ("unchanged since D — guard spot-checked") plus its `First step:`; spend the budget on changed dimensions.
 3. `--full` (or an explicit `--focus <dimensions>`) overrides. A first-ever run is always full.
 4. Re-verify a prior finding only via `/audit-regression`; here, dedup against it (below).
+5. **Every dimension agent gets an explicit `model`**: an Agent call without one inherits the session
+   model, and an untyped launch is `general-purpose`. `model: "sonnet"` for a dimension with commits
+   since D (it traces new code and judges it); `model: "haiku"` for an unchanged one (it runs its
+   `First step:` and checks the named symbols still exist). A specialist agent from `.claude/agents/`
+   keeps the model its own file pins.
 
 ## Path-Reference Convention
 
