@@ -71,6 +71,8 @@ fn register_npc_combat_ai(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::ecs::components::TravelBehavior>()
             .writes::<byroredux_core::ecs::components::TravelState>()
             .writes::<byroredux_core::ecs::components::Traveled>()
+            // XCT-ROUTE-001 — `clear_ambient_behavior` drops a Travel's chosen load door with the rest.
+            .writes::<crate::cell_loader::relocated::CrossSpaceHop>()
             .writes::<byroredux_core::ecs::components::FollowBehavior>()
             .writes::<byroredux_core::ecs::components::FollowState>()
             .writes::<byroredux_core::ecs::components::EscortBehavior>()

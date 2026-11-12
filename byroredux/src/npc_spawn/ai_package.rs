@@ -875,6 +875,9 @@ pub(crate) fn clear_ambient_behavior(world: &World, actor: EntityId) {
         remove_component::<TravelBehavior>,
         remove_component::<TravelState>,
         remove_component::<Traveled>,
+        // XCT-ROUTE-001 — the load door a cross-space Travel chose: it belongs to that package's
+        // route, and a handover must not leave it for the next Travel to walk to and pass.
+        remove_component::<crate::cell_loader::relocated::CrossSpaceHop>,
         remove_component::<FollowBehavior>,
         remove_component::<FollowState>,
         remove_component::<EscortBehavior>,
@@ -3087,6 +3090,33 @@ mod tests {
         assert!(
             !world.has::<NavPath>(actor),
             "a stale NavPath must not survive a package-switch handover"
+        );
+    }
+
+    #[test]
+    fn clear_ambient_behavior_removes_cross_space_hop() {
+        use crate::cell_loader::relocated::CrossSpaceHop;
+        let mut world = World::new();
+        world.register::<CrossSpaceHop>();
+        let actor = world.spawn();
+        let door = world.spawn();
+        world.insert(
+            actor,
+            CrossSpaceHop {
+                door,
+                placement: byroredux_scripting::CreatedPlacement {
+                    cell: byroredux_scripting::CreatedCell::Interior { editor_id: "TestCell".to_string() },
+                    position_zup: [0.0; 3],
+                    rotation_zup: [0.0; 3],
+                },
+            },
+        );
+
+        clear_ambient_behavior(&world, actor);
+
+        assert!(
+            !world.has::<CrossSpaceHop>(actor),
+            "a load door chosen for one Travel must not steer, or relocate, the next package"
         );
     }
 
