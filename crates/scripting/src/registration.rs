@@ -161,13 +161,14 @@ mod tests {
 
     /// #6706 — `register` moved its direct resource setup into per-subsystem
     /// `install` functions. The count is the resource set `register` produced
-    /// before the move (138); the list is the types it used to initialise by
-    /// hand, so a dropped `install` call fails by name rather than by count alone.
+    /// before the move (138, +2 for XCT: `ActorRelocations`, `PendingRelocations`, +1 for `PendingNonArmorEquips`); the list is
+    /// the types it used to initialise by hand, so a dropped `install` call fails by name rather
+    /// than by count alone.
     #[test]
     fn register_installs_the_same_resource_set() {
         let mut world = World::new();
         register(&mut world);
-        assert_eq!(world.resource_count(), 138, "the resource set `register` installs changed");
+        assert_eq!(world.resource_count(), 141, "the resource set `register` installs changed");
 
         macro_rules! present {
             ($($ty:path),+ $(,)?) => {$(

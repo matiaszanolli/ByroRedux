@@ -2675,6 +2675,38 @@ fn add_item_merges_same_base_and_appends_new_rows() {
     assert_eq!((merged_row.base_form_id, merged_row.count), (0xABCD, 3));
 }
 
+/// A script's `player.equipitem <weapon>` (VCG02's tutorial hands over a Varmint Rifle that way)
+/// is carried out through the menu's own equip door; armor and absent items are not this path's,
+/// and a weapon that is already wielded is not toggled off.
+#[test]
+fn a_script_weapon_equip_is_queued_through_the_menu_door() {
+    let (mut world, player) = fixture();
+    world.insert_resource(PendingInventoryActions::default());
+    world.insert_resource(byroredux_scripting::PendingNonArmorEquips::default());
+    let request = |world: &World, actor, form| {
+        world.resource_mut::<byroredux_scripting::PendingNonArmorEquips>().0.push((actor, form));
+    };
+
+    // The fixture's row 2 is the Iron Sword; row 0 is armor, row 1 a stack of misc.
+    request(&world, player, 0x9ABC);
+    request(&world, player, 0x1234);
+    request(&world, player, 0xDEAD);
+    request(&world, player + 1, 0x9ABC);
+    drain_pending_inventory_actions(&mut world);
+    assert!(world.resource::<byroredux_scripting::PendingNonArmorEquips>().0.is_empty());
+    {
+        let slots = world.get::<EquipmentSlots>(player).unwrap();
+        assert_eq!(slots.weapon.map(|index| index.0), Some(2), "the sword is wielded through ToggleEquip");
+        assert_eq!(slots.occupants[12], None, "the armor request was not this path's");
+    }
+    assert!(world.get::<EquippedWeapon>(player).is_some(), "and its runtime state follows");
+
+    // Asking again for the wielded weapon must not toggle it off.
+    request(&world, player, 0x9ABC);
+    drain_pending_inventory_actions(&mut world);
+    assert_eq!(world.get::<EquipmentSlots>(player).unwrap().weapon.map(|index| index.0), Some(2));
+}
+
 #[test]
 fn queued_equip_drains_through_the_canonical_action() {
     let (mut world, player) = fixture();

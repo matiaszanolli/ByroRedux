@@ -564,6 +564,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ActorProtection", "an actor's base Essential / Protected ACBS flags; stamped from the load order at every spawn"),
         ("DamageThresholdRules", "New Vegas DT rules (the DT actor value, fMinDamMultiplier, armor DT); rebuilt from the load order by install_damage_threshold_rules every boot"),
         ("CreatedReferenceEntities", "the live entity of each spawned created reference; re-derived by step_created_references spawning into loaded cells"),
+        ("PendingNonArmorEquips", "weapon equips scripts asked for (EquipItem of a non-armor); drained by drain_script_weapon_equips the frame they are raised"),
         ("PendingRelocations", "actor moves raised this frame (a Travel hop, a scripted move); drained by step_actor_relocations into the saved ActorRelocations ledger"),
         ("RelocatedSpawning", "the relocated actors the reference loader is spawning right now (#6852); present only for that call"),
         ("CrossSpaceHop", "a traveler's chosen load door toward another space (XCT-ROUTE-001); chosen again from its package after a load"),

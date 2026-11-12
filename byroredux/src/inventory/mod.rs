@@ -167,9 +167,51 @@ pub(crate) fn queue_drop_by_form_id(world: &World, form_id: u32) -> Result<Strin
     Ok(format!("queued drop of row {index} (form {form_id:08X})"))
 }
 
+/// The weapon equips scripts asked for (`player.equipitem <weapon>`, the VCG02 tutorial's rifle):
+/// the player's row for each is toggled on through the menu's own door, unless that weapon is
+/// already the wielded one. Another actor's request, or an item that is no weapon the player
+/// carries, is logged and dropped (an NPC's wielded weapon is not driven from inventory rows yet).
+fn drain_script_weapon_equips(world: &mut World) {
+    let requests: Vec<_> = world
+        .try_resource_mut::<byroredux_scripting::PendingNonArmorEquips>()
+        .map(|mut pending| std::mem::take(&mut pending.0))
+        .unwrap_or_default();
+    if requests.is_empty() {
+        return;
+    }
+    let player = PlayerEntity::get(world);
+    for (actor, form_id) in requests {
+        let is_weapon = world
+            .try_resource::<InventoryCatalog>()
+            .is_some_and(|catalog| catalog.entries.get(&form_id).is_some_and(|entry| entry.equip_target == Some(EquipTarget::Weapon)));
+        if !is_weapon {
+            log::debug!("script EquipItem {form_id:08X}: not a weapon the inventory can wield");
+            continue;
+        }
+        if Some(actor) != player {
+            log::debug!("script EquipItem {form_id:08X}: entity {actor} is not the player; its wielded weapon is not driven from rows");
+            continue;
+        }
+        let row = world
+            .get::<Inventory>(actor)
+            .and_then(|inventory| inventory.items.iter().position(|stack| stack.base_form_id == form_id && stack.count > 0));
+        let Some(row) = row else {
+            log::debug!("script EquipItem {form_id:08X}: the player does not carry it");
+            continue;
+        };
+        let wielded = world.get::<EquipmentSlots>(actor).is_some_and(|slots| slots.is_equipped(InventoryIndex(row as u32)));
+        if !wielded {
+            if let Some(mut pending) = world.try_resource_mut::<PendingInventoryActions>() {
+                pending.0.push(byroredux_debug_ui::InventoryAction::ToggleEquip { index: row as u32 });
+            }
+        }
+    }
+}
+
 /// Drain the queued inventory actions through the canonical menu door.
 /// Called on the main thread beside the other player-action steps.
 pub(crate) fn drain_pending_inventory_actions(world: &mut World) {
+    drain_script_weapon_equips(world);
     let Some(mut pending) = world.try_resource_mut::<PendingInventoryActions>() else {
         return;
     };

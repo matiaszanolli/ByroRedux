@@ -215,9 +215,12 @@ pub(super) fn apply_inventory_effect(
                 .try_resource::<crate::EquipItemCatalog>()
                 .and_then(|catalog| catalog.slot_mask(item_form_id))
             else {
-                log::debug!(
-                    "fragment EquipItem skipped: item {item_form_id:08X} has no armor biped-slot metadata"
-                );
+                // No armor slot: a weapon (or something that cannot be worn). The binary's
+                // inventory owns the wielded-weapon state, so the request waits for it.
+                log::debug!("fragment EquipItem: item {item_form_id:08X} has no armor biped slot; queued for the inventory");
+                if let Some(mut pending) = world.try_resource_mut::<crate::equipment::PendingNonArmorEquips>() {
+                    pending.0.push((actor, item_form_id));
+                }
                 return None;
             };
             let Some((mut inventories, mut equipment)) =

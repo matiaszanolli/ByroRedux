@@ -112,8 +112,19 @@ pub fn emit_item_transfers(
     }
 }
 
+/// `EquipItem` of something the scripting crate cannot equip itself: an item with no armor biped
+/// slot (`EquipItemCatalog`), which in practice is a weapon. Weapon state (the wielded weapon, its
+/// damage and reach) is derived by the binary's inventory, so the request waits there:
+/// `(actor entity, item base FormID)`, drained by the app the frame it is raised.
+/// `NOT_SAVED_BY_DESIGN`: consumed the frame it is raised.
+#[derive(Debug, Default)]
+pub struct PendingNonArmorEquips(pub Vec<(byroredux_core::ecs::storage::EntityId, u32)>);
+
+impl Resource for PendingNonArmorEquips {}
+
 pub(crate) fn register(world: &mut World) {
     world.init_resource::<EquipItemCatalog>();
+    world.init_resource::<PendingNonArmorEquips>();
 }
 
 #[cfg(test)]

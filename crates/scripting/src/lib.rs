@@ -234,6 +234,7 @@ pub use followers::{FollowerFlag, FollowerFlags, FollowerState};
 pub use misc_stats::{Achievements, MiscStats};
 pub use actor_value_names::{install_actor_value_names, ActorValueNames, ScriptGame};
 pub use alias_overrides::{AliasOverride, AliasOverrides};
+pub use equipment::PendingNonArmorEquips;
 pub use created_references::{
     ActorRelocations, CreatedCell, CreatedDeletion, CreatedPlacement, CreatedReference,
     CreatedReferences, PendingRelocations, ScriptedIds, CREATED_FORM_ID_BASE,
