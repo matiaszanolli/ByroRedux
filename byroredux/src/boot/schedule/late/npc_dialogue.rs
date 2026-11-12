@@ -187,6 +187,8 @@ pub(super) fn register_npc_dialogue_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::QuestScriptInstances>()
             // M47.2 — a spoken line's reference script-variable writes.
             .writes::<byroredux_scripting::ScriptVariables>()
+            // A spoken line's `EquipItem` of a weapon: the request waits for the inventory.
+            .writes_resource::<byroredux_scripting::PendingNonArmorEquips>()
             // M47.2 — a spoken line's SetRelationshipRank and its guard.
             .reads_resource::<byroredux_scripting::AuthoredRelationships>()
             .reads_resource::<byroredux_scripting::ScriptedRelationships>()
