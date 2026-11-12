@@ -34,7 +34,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fixture.sh"
 smoke_load_fixture p4-fnv-quest-route "${1:-fnv}"
 smoke_require_fixture_fields P4_HEADLINE P4_CELL P4_CAMERA_POS P4_CAMERA_FORWARD \
     P4_QUEST P4_GREETING P4_OPENER_TOPIC P4_OPENER_INFO P4_MET_VARIABLE P4_WORLD_STAGES \
-    P4_FOLLOWUP_PACKAGE P4_FOLLOWUP_INFO P4_FOLLOWUP_TOPIC P4_FOLLOWUP_REPLY_INFO
+    P4_FOLLOWUP_PACKAGE P4_FOLLOWUP_INFO P4_FOLLOWUP_TOPIC P4_FOLLOWUP_REPLY_INFO \
+    P4_SUNNY P4_EXIT_DOOR P4_EXIT_PLAYER
 smoke_require_data
 # Engine log lines print FormIDs as eight zero-padded hex digits.
 hex8() { printf '%08X' "$(( $1 ))"; }
@@ -94,7 +95,7 @@ cd "$SMOKE_DATA"
 env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
     BYROREDUX_SETTINGS_PATH="$LOG_DIR/settings.toml" \
     BYROREDUX_SAVE_DIR="$LOG_DIR/saves" \
-    RUST_LOG="warn,byroredux::systems::npc_dialogue=info,byroredux_scripting::obscript_results=info" \
+    RUST_LOG="${P4_RUST_LOG:-warn,byroredux::systems::npc_dialogue=info,byroredux_scripting::obscript_results=info}" \
     "${SMOKE_HEADLESS[@]}" "$ENGINE_BIN" "${SMOKE_ENGINE_ARGS[@]}" \
     --cell "$P4_CELL" --player --radius 1 \
     --camera-pos "$P4_CAMERA_POS" --camera-forward "$P4_CAMERA_FORWARD" \
@@ -167,21 +168,41 @@ require "$LOG_DIR/chain.quest" "40: displayed=true" \
     "stage 50 displayed the follow-up objective 40"
 
 # ── 4 — Sunny's next force-greet: talk to her, take the follow-up ─────────
-# The package that wins after stage 50 authors a Trigger Location outside the
-# saloon (the fixture names it): GECK *Dialogue Package*, the actor "will stay
-# at the Wait Location until the target enters the Trigger Location". The route
-# gets there by following Sunny out; actors do not cross cells in this engine
-# yet, so the gate proves the hold with the player indoors, then opens the same
-# package's greeting with `dialogue.forcegreet`, which installs it zone-free.
+# The opener's Travel package sends Sunny out of the saloon (XCT, docs/prd/
+# cross-cell-actor-travel.md): she passes a load door, the saloon's entity goes
+# with its cell, and she is spawned again at her ledger pose when the player
+# arrives in the exterior. The package that wins after stage 50 authors a
+# Trigger Location outside (the fixture names it): GECK *Dialogue Package*, the
+# actor "will stay at the Wait Location until the target enters the Trigger
+# Location". The gate proves the hold with the player indoors, follows her out
+# through the saloon's door, and opens the same package's greeting with
+# `dialogue.forcegreet` (zone-free, by FormID — the entity is new).
 sunny_id="$(grep -o 'npc [0-9]*' "$LOG_DIR/greeting.status" | head -1 | grep -o '[0-9]*')"
 [[ -n "$sunny_id" ]] || fail "the greeting's status named no NPC"
-sleep 5
+# `wait_for <seconds> <description> <command> <grep -E pattern>` — poll until the command's output matches.
+wait_for() {
+    local seconds="$1" description="$2" command="$3" pattern="$4" deadline=$((SECONDS + $1))
+    until debug_command "$command" "$LOG_DIR/wait.tmp" && grep -Eq -- "$pattern" "$LOG_DIR/wait.tmp"; do
+        kill -0 "$engine_pid" 2>/dev/null || fail "the engine exited waiting for: $description"
+        (( SECONDS < deadline )) || fail "timeout (${seconds}s) waiting for: $description ($(tail -2 "$LOG_DIR/wait.tmp" | tr '\n' ' ' | cut -c1-300))"
+        sleep 2
+        smoke_answer_message_boxes "$LOG_DIR/answer.log"
+    done
+}
+wait_for 60 "Sunny to pass the saloon's door" "actor.where $P4_SUNNY" \
+    "not loaded, in Exterior.*moved from its home cell"
+pass "Sunny's Travel package took her out of the saloon (the ledger puts her in the exterior)"
+sleep 3
 debug_command 'dialogue.status' "$LOG_DIR/hold.status"
 if grep -Fq "info $P4_FOLLOWUP_INFO" "$LOG_DIR/hold.status"; then
     fail "Sunny's follow-up greeted the player outside her package's Trigger Location"
 fi
 pass "Sunny's follow-up waits for the player at her package's Trigger Location"
-debug_command "dialogue.forcegreet $sunny_id $P4_FOLLOWUP_PACKAGE" "$LOG_DIR/forcegreet.log"
+debug_command "script.activate $P4_EXIT_DOOR" "$LOG_DIR/door.log"
+wait_for "$TIMEOUT" "the player outside" player.status "$P4_EXIT_PLAYER"
+wait_for 120 "Sunny spawned outside" "actor.where $P4_SUNNY" "actor [0-9A-F]+: in Exterior"
+pass "the player followed Sunny out; she is spawned at her ledger pose"
+debug_command "dialogue.forcegreet $P4_SUNNY $P4_FOLLOWUP_PACKAGE" "$LOG_DIR/forcegreet.log"
 deadline=$((SECONDS + TIMEOUT))
 until debug_command 'dialogue.status' "$LOG_DIR/followup.status" &&
       grep -Fq "info $P4_FOLLOWUP_INFO" "$LOG_DIR/followup.status"; do
