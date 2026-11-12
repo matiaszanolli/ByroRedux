@@ -131,7 +131,10 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 ///     `crate::equipment::{emit_equipment_changes, emit_item_transfers}` the
 ///     `EquipmentEventBatch` and `ItemEventBatch` markers; `add_items` of a leveled
 ///     list first reads `LeveledItemLists` (cloned out and released) and the
-///     receiver's `CharacterLevel`, each alone, before any inventory guard
+///     receiver's `CharacterLevel`, each alone, before any inventory guard;
+///     `Effect::EquipItem` of an item with no armor slot pushes to
+///     `PendingNonArmorEquips` (write) for the binary's inventory, after the
+///     `EquipItemCatalog` read has been released and with no component guard held
 ///   - **via the guard / value evaluators** (`evaluate_guard`, `evaluate_value`,
 ///     #5986) — `Dead`, `FollowerState`, `LocationTable`, `MiscStats`,
 ///     `StoryManagerRng` (the `GetRandomPercent` draw) and the `ActorVitals`
