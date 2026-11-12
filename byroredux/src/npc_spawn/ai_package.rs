@@ -460,8 +460,18 @@ impl AmbientBehavior {
                 actor_form_id,
             })
         } else if package.is_travel() {
+            // GECK *Travel Package*: "NPCs stop at the edge of the destination
+            // radius". A destination Near Current Location is where the actor
+            // already stands, so it has arrived: a zero radius around its own
+            // position, not the hash-picked point around it that an
+            // unresolvable location falls back to (which walked VCG02's Sunny
+            // out of the shooting-range trigger she is told to stay in).
+            let radius = match location_anchor(package.location) {
+                EatSleepLocation::NearCurrentLocation if location_reference.is_none() => Some(0.0),
+                _ => location_radius,
+            };
             Some(Self::Travel {
-                radius: location_radius,
+                radius,
                 target_form_id: location_reference,
                 actor_form_id,
             })
@@ -2390,6 +2400,27 @@ mod tests {
             world.get::<EatBehavior>(actor).map(|behavior| (behavior.location, behavior.radius)),
             Some((EatSleepLocation::NearReference(0x000A_23CF), None))
         );
+    }
+
+    /// A Travel package to Near Current Location (`PLDT` type 2) has arrived
+    /// where the actor stands — FNV `SunnySmilesStayAtCurrentLocation` — so it
+    /// installs a zero radius, not the hash-picked point around the actor
+    /// that walked Sunny out of her trigger; a reference destination keeps
+    /// its authored radius.
+    #[test]
+    fn a_travel_to_the_current_location_stays_where_it_is() {
+        use byroredux_plugin::esm::records::misc::pack::PROCEDURE_TRAVEL;
+        let mut stay = pack(0x100, PROCEDURE_TRAVEL, None);
+        stay.location = Some(PackLocation { location_type: 2, target: PackLocationTarget::Other(0), radius: 0 });
+        let (world, actor) = setup_actor(10.0, vec![stay]);
+        let behavior = world.get::<TravelBehavior>(actor).map(|behavior| *behavior).expect("Travel installs");
+        assert_eq!((behavior.radius, behavior.target_form_id), (Some(0.0), None));
+
+        let mut go = pack(0x200, PROCEDURE_TRAVEL, None);
+        go.location = Some(PackLocation { location_type: 0, target: PackLocationTarget::NearReference(0x10_A201), radius: 128 });
+        let (world, actor) = setup_actor(10.0, vec![go]);
+        let behavior = world.get::<TravelBehavior>(actor).map(|behavior| *behavior).expect("Travel installs");
+        assert_eq!((behavior.radius, behavior.target_form_id), (Some(128.0), Some(0x10_A201)));
     }
 
     /// Ambush (procedure 9): wait on Guard's runtime at `PLDT`, gate the
