@@ -390,7 +390,7 @@ pub(crate) fn stop_script_music(world: &World) {
 
 /// `relative` (`\\`- or `/`-separated) under `root`, matching each component without regard to case
 /// (the games' files are Windows-cased; this filesystem is not).
-fn find_case_insensitive(root: &std::path::Path, relative: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn find_case_insensitive(root: &std::path::Path, relative: &str) -> Option<std::path::PathBuf> {
     let mut path = root.to_path_buf();
     for component in relative.split(['\\', '/']).filter(|part| !part.is_empty()) {
         let exact = path.join(component);
@@ -460,11 +460,11 @@ impl byroredux_core::ecs::Resource for ScriptRequestLog {}
 
 const REQUEST_LOG_CAP: usize = 64;
 
-/// Move the menus (`ShowMap`, the chargen screens, the casino games ...) and videos (`PlayBink`) scripts
-/// asked for into the log, and carry out `ExitGame` — "plays credits and returns the game to the main
+/// Move the menus (`ShowMap`, the chargen screens, the casino games ...) scripts asked for into the log
+/// (videos, `PlayBink`, are the app's movie player's: `video.rs`), and carry out `ExitGame` — "plays credits and returns the game to the main
 /// menu"; there is no main menu, so the game ends through the orderly shutdown.
 pub(crate) fn script_ui_request_system(world: &World, _dt: f32) {
-    use byroredux_scripting::obscript_more::{ExitGameRequest, PendingMenus, PendingVideos};
+    use byroredux_scripting::obscript_more::{ExitGameRequest, PendingMenus};
     let mut lines = Vec::new();
     let menus: Vec<_> = world.try_resource_mut::<PendingMenus>().map(|mut menus| menus.0.drain(..).collect()).unwrap_or_default();
     for menu in menus {
@@ -478,9 +478,6 @@ pub(crate) fn script_ui_request_system(world: &World, _dt: f32) {
             }
             None => lines.push(format!("menu {} form {:08X}", menu.menu, menu.form)),
         }
-    }
-    if let Some(mut videos) = world.try_resource_mut::<PendingVideos>() {
-        lines.extend(videos.0.drain(..).map(|file| format!("video {file} (no Bink decoder)")));
     }
     if !lines.is_empty() {
         if let Some(mut log) = world.try_resource_mut::<ScriptRequestLog>() {

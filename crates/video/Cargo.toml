@@ -1,0 +1,15 @@
+[package]
+name = "byroredux-video"
+version.workspace = true
+edition.workspace = true
+
+# Movie decoding for the games' own Bink videos (PRD bink-video-playback). The decoder is the
+# system FFmpeg, reached at run time through its command-line tools (BIK-DEC-005): nothing is
+# linked, so the MIT workspace carries no FFmpeg code, and a machine without FFmpeg gets a
+# reported "skipped" movie, never a failure.
+[dependencies]
+thiserror = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

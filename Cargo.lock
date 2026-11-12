@@ -583,6 +583,7 @@ dependencies = [
  "byroredux-spt",
  "byroredux-terrain-height",
  "byroredux-ui",
+ "byroredux-video",
  "dhat",
  "env_logger",
  "image",
@@ -952,6 +953,15 @@ dependencies = [
  "swf 0.3.0 (git+https://github.com/ruffle-rs/ruffle?rev=2edfd97d11897e6cf6301c30cd87e86d774919c1)",
  "url",
  "wgpu",
+]
+
+[[package]]
+name = "byroredux-video"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -388,6 +388,9 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(crate::systems::attraction::AttractionState::default());
     world.insert_resource(byroredux_scripting::jail::JailEscapeWatch::default());
     world.insert_resource(crate::inventory::PendingDroppedItems::default());
+    // The movie player's telemetry and its skip request (`video.status` / `video.skip`).
+    world.insert_resource(crate::video::VideoStatus::default());
+    world.insert_resource(crate::video::VideoControl::default());
     world.insert_resource(crate::crafting::ActiveCrafting::default());
     world.insert_resource(crate::crafting::CraftingRequest::default());
     world.insert_resource(crate::asset_provider::PendingActorGraphs::default());

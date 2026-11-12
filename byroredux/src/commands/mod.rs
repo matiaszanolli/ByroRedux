@@ -65,6 +65,7 @@ mod time;
 mod view;
 mod water;
 mod world_info;
+mod video;
 
 use actor_value::*;
 use anim_archetype::AnimArchetypeCommand;
@@ -95,6 +96,7 @@ use time::*;
 use view::*;
 use water::*;
 use world_info::*;
+use video::{VideoSkipCommand, VideoStatusCommand};
 
 pub(crate) fn build_command_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
@@ -251,6 +253,8 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(ScriptActivateCommand);
     registry.register(ActorWhereCommand);
     registry.register(NavPathCommand);
+    registry.register(VideoStatusCommand);
+    registry.register(VideoSkipCommand);
     registry.register(MatListCommand);
     registry.register(MatDumpCommand);
     registry.register(MatSetCommand);

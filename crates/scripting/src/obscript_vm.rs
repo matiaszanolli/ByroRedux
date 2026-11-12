@@ -2167,6 +2167,40 @@ mod tests {
         assert_eq!(host.calls, vec![(0x1269, vec![ObScriptValue::Ref(0x77)])]);
     }
 
+    /// VCG00's `PlayBink "FNVIntro.bik" 1 1 0 1` (`14 11 24 00 | 05 00 | 0c 00 "FNVIntro.bik" | n1 n1 n0 n1`, bytes
+    /// from `FalloutNV.esm`): a string-form command's text reaches the host through `text_argument`, and the
+    /// value that answers it leads the arguments, the flags after it.
+    #[test]
+    fn a_string_form_commands_text_value_leads_its_other_arguments() {
+        #[derive(Default)]
+        struct Bink {
+            calls: Vec<(u16, Vec<ObScriptValue>)>,
+            texts: Vec<String>,
+        }
+        impl ObScriptHost for Bink {
+            fn call(&mut self, cmd: u16, args: &[ObScriptValue], _: Option<u32>) -> Option<ObScriptValue> {
+                self.calls.push((cmd, args.to_vec()));
+                None
+            }
+            fn text_argument(&mut self, _cmd: u16, text: &str, _rest: &[ObScriptValue]) -> Option<ObScriptValue> {
+                self.texts.push(text.to_owned());
+                Some(ObScriptValue::Num(0.0))
+            }
+        }
+        let file = "FNVIntro.bik";
+        let mut args = vec![5u8, 0];
+        args.extend((file.len() as u16).to_le_bytes());
+        args.extend(file.as_bytes());
+        for flag in [1, 1, 0, 1] {
+            args.extend(na(flag));
+        }
+        let script = script(wrap_body(stmt_call(0x1114, &args)), vec![], vec![]);
+        let mut host = Bink::default();
+        ObScriptProgram::new(&script).run_block(BLOCK_GAME_MODE, &mut VmState::default(), &mut host);
+        assert_eq!(host.texts, vec![file.to_owned()]);
+        assert_eq!(host.calls, vec![(0x1114, [0.0, 1.0, 1.0, 0.0, 1.0].map(ObScriptValue::Num).to_vec())]);
+    }
+
     /// `TrapUpdate` takes no argument: the VM hands the host the trap variables the script declares, by
     /// name, in the documented order (and 0 for a missing one).
     #[test]

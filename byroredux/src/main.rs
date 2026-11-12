@@ -83,6 +83,7 @@ mod static_height;
 mod terrain_height;
 mod texture_streamer;
 mod ui_input;
+mod video;
 mod ui_state;
 #[cfg(test)]
 mod workspace_hygiene_tests;
@@ -658,6 +659,8 @@ struct App {
     /// for (XCT, #6852). Session state.
     relocation_step_key: Option<u64>,
     loading_screen: loading_screen::LoadingScreen,
+    /// The movie player: `PlayBink` requests, full-screen, holding the game (`video.rs`).
+    video: video::VideoPlayer,
     loot_appearance_loader: npc_spawn::loot_appearance::LootAppearanceLoader,
     gear_import_loader: npc_spawn::loot_appearance::GearImportLoader,
     /// One archive-provider set shared by both appearance loaders (#5061) —
@@ -1113,6 +1116,7 @@ impl App {
             enabled_step_key: None,
             relocation_step_key: None,
             loading_screen: loading_screen::LoadingScreen::default(),
+            video: video::VideoPlayer::default(),
             loot_appearance_loader: Default::default(),
             gear_import_loader: Default::default(),
             appearance_providers: Default::default(),
@@ -1202,6 +1206,13 @@ impl App {
             self.release_world_input_for_ui();
         }
         dispatch.captured
+    }
+
+    /// Whether a full-screen cover owns the frame — the loading screen or a movie
+    /// (GECK *PlayBink*: it "appears to stop game time", BIK-PRES-002): simulation time is
+    /// held still and world input is released.
+    fn cover_holds_game(&self) -> bool {
+        self.loading_screen.active() || self.video.active()
     }
 
     /// Clear held gameplay input when a modal menu takes ownership so a key

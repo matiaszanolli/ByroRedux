@@ -118,18 +118,18 @@ the default INIs:
 | Skyrim SE | `Skyrim_Default.ini` names no movie | `BGS_Logo.bik`: **Phase 0: verify** where it is named |
 | Fallout 4 | `Fallout4_Default.ini` names no movie | Papyrus `PlayBink` with the new-game flag (Fallout 4 CK) |
 
-The engine's state at HEAD on 2026-11-11:
+The engine's state at HEAD on 2026-11-11 (after Phases 1 and 2's first part):
 
 | # | Piece | Today | Proof |
 |---|---|---|---|
-| 1 | ObScript `PlayBink` | FO3 / FNV: the file name is recorded and the flags are dropped. Oblivion: not dispatched (the command is registered for Fallout only) | `cmd_1114`, `crates/scripting/src/obscript_more/tail.rs:161-168`, registration `:799` |
-| 2 | Where a request goes | Logged as `video <file> (no Bink decoder)` and drained | `script_ui_request_system`, `byroredux/src/systems/script_requests.rs:482-483` |
+| 1 | ObScript `PlayBink` | FO3 / FNV / Oblivion: a `VideoRequest` carries the file and the four flags (Oblivion's one flag; the rest default). The string's own value leads the VM's argument list, so the flags are read from index 1 | `cmd_1114`, `crates/scripting/src/obscript_more/tail.rs`, registered `Games::Both`; `a_string_form_commands_text_value_leads_its_other_arguments`, `crates/scripting/src/obscript_vm.rs` |
+| 2 | Where a request goes | `step_video` hands it to the movie player, which opens the file under `Video` (any case, `..\` out of it), draws frames full screen, holds game time like the loading cover, ends on the last frame or on Escape / `video.skip` for an interruptable request | `VideoPlayer`, `byroredux/src/video.rs`; `step_video`, `byroredux/src/app_step.rs`; `docs/smoke-tests/fnv-new-game.sh` leg 0 |
 | 3 | Papyrus `Game.PlayBink` | No native | `rg -i playbink crates/scripting/src` finds only the ObScript files |
 | 4 | Start sequence (INI movies) | Not read | `rg -i sintrosequence` finds nothing outside the reference dumps |
-| 5 | Decoder | None | `rg -i 'bink\|ffmpeg'` finds no decoder in the workspace |
+| 5 | Decoder | The system FFmpeg, run as `ffprobe` / `ffmpeg` subprocesses (nothing linked): Bink 1 video and audio; Bink 2 video is reported Skipped. The mute and pause-music flags, and audio kept within a frame of the picture, are not done | `crates/video/src/lib.rs`; `scripts/bink-corpus.sh` |
 
 The census is re-measured by Phase 0's checked-in corpus script; the HEAD
-table is replaced by `video.status` once Phase 2 ships.
+table is replaced by `video.status` once Phase 2 ships entirely.
 
 ---
 
@@ -379,3 +379,4 @@ last frame.
 | 2 | 2026-11-11 | Review round 1 folded in: Oblivion PlayBink not dispatched + one flag, census fps/track corrections, open Bink 2 decoders (NihAV, FFmpeg patch) and Q1/Q2 alternatives, verify items closed from ESM/INI/CS, headless drivers for scenarios 2–3 (`t:` strings already supported; `video.skip` added), audio-track and BSA verifies, main-menu movie owner, letterbox/mute observables, Phase 2 dependencies, index row | claude: revise |
 | 3 | 2026-11-11 | Owner approval: Q1–Q3 decided as recommended and folded in (BIK-DEC-003 reworded; BIK-DEC-005, BIK-REQ-005 added) | owner: approved |
 | 4 | 2026-11-11 | APPROVED → ACTIVE: tracking issues filed (#6855 (parent). Phases: #6856 (0), #6857 (1), #6858 (2), #6859 (3)) | — |
+| 5 | 2026-11-11 | §3 HEAD table refreshed for the shipped decoder, request flags and movie player (BIK-DEC-001/002/004/005, BIK-REQ-001/003, BIK-PRES-001/002/004/006, BIK-RPT-001..003); mute/pause flags, A/V sync, Papyrus native, start sequences open | — |

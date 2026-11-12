@@ -31,6 +31,7 @@ use crate::cell_loader;
 use crate::components::InputState;
 use crate::helpers::world_resource_set;
 use crate::systems::toggle_player_mode;
+use crate::video;
 use crate::App;
 use crate::{bench_frame_distribution, bench_gpu_inactive_token};
 
@@ -1200,6 +1201,12 @@ impl ApplicationHandler for App {
             }
             _ => None,
         };
+        // A movie owns Escape: it ends an interruptable one and does nothing for one that is not
+        // (BIK-PRES-004); either way the pause menu does not open over it.
+        if pressed_key == Some(KeyCode::Escape) && self.video.active() {
+            video::VideoPlayer::request_skip(&self.world);
+            return;
+        }
         let game_menu_open = self
             .debug_ui
             .as_ref()
@@ -1515,7 +1522,7 @@ impl ApplicationHandler for App {
             .debug_ui
             .as_ref()
             .is_some_and(byroredux_debug_ui::DebugUiState::captures_gameplay_input);
-        if self.loading_screen.active()
+        if self.cover_holds_game()
             || native_ui_focused
             || self
                 .ui.manager
@@ -1532,9 +1539,11 @@ impl ApplicationHandler for App {
         // Outside a finite bench, retain BYROREDUX_FIXED_DT as a diagnostic
         // override for tools that do not emit benchmark conclusions.
         let wall_dt = now.duration_since(self.last_frame).as_secs_f32();
-        let dt = if self.loading_screen.active() {
+        let dt = if self.cover_holds_game() {
             // Continue the scheduler's debug drain while holding simulation
             // time still; gameplay input is cleared above on every load tick.
+            // A movie holds the game the same way (GECK *PlayBink*: it "appears to
+            // stop game time", BIK-PRES-002).
             0.0
         } else if crate::bench::harness_active(self.bench.summary_printed) {
             self.bench.mode.map_or_else(

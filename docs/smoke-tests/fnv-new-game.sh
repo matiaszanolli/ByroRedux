@@ -2,7 +2,8 @@
 # New Vegas from the beginning: a new game through Doc Mitchell's opening to Goodsprings.
 #
 #   1. `--new-game` boots Doc Mitchell's house; the engine starts the intro quest VCG00,
-#      whose stage 0 moves the player to VCG01PlayerStartMarkerREF and hands over to VCG01.
+#      whose stage 0 plays FNVIntro.bik, moves the player to VCG01PlayerStartMarkerREF and
+#      hands over to VCG01.
 #   2. Doc's lines chain on their own (SayTo → INFO End result scripts → SetStage).
 #   3. The five character-creation screens open on the native page and are answered
 #      through `chargen` (name, sex/race — VCG01's `Begin MenuMode 1036` moves 36 → 40
@@ -16,7 +17,8 @@
 #      front door leads to Goodsprings, and no far-away greeter opens a conversation there.
 #   (VCG02 itself, from Sunny's line to the bottles, is docs/smoke-tests/fnv-vcg02-route.sh.)
 #
-# Headless (Xvfb). FNV only. The intro movie (FNVIntro.bik) has no decoder and is logged.
+# Headless (Xvfb). FNV only. The intro movie (FNVIntro.bik) plays through the system FFmpeg and
+# is ended with Escape; without FFmpeg it is reported Skipped.
 #
 #   docs/smoke-tests/fnv-new-game.sh
 
@@ -98,6 +100,36 @@ until grep -q 'bench-hold:' "$LOG_DIR/engine.stderr" 2>/dev/null; do
     sleep 0.5
 done
 pass "engine reached the held new game"
+
+# ── 0 — the intro movie VCG00 plays: PlayBink "FNVIntro.bik" 1 1 0 1 (BIK-G-001) ──────────────
+# Interruptable, so Escape (`video.skip`) ends it, as a player's keypress would. A machine without
+# FFmpeg reports the movie Skipped instead (the contract: played or reported, never dropped).
+status_has() {
+    debug_command video.status "$LOG_DIR/video.status"
+    sed 's/\\"/"/g' "$LOG_DIR/video.status" | grep -Eq -- "$1"
+}
+deadline=$((SECONDS + 90))
+until status_has 'playing FNVIntro.bik|last: FNVIntro.bik'; do
+    kill -0 "$engine_pid" 2>/dev/null || fail "engine exited waiting for the intro movie"
+    (( SECONDS < deadline )) || fail "VCG00's PlayBink never reached the movie player ($(tail -2 "$LOG_DIR/video.status" | tr '\n' ' '))"
+    sleep 1
+done
+if status_has 'playing FNVIntro.bik'; then
+    status_has 'interruptable=true mute=true pause_music=false letterbox=true' ||
+        fail "the intro runs with the wrong PlayBink flags ($(grep -o 'playing.*' "$LOG_DIR/video.status" | head -1))"
+    pass "FNVIntro.bik is playing with VCG00's flags (1 1 0 1)"
+    sleep 3
+    debug_command video.skip /dev/null
+    deadline=$((SECONDS + 30))
+    until status_has 'last: FNVIntro.bik Played \(ended early\)'; do
+        (( SECONDS < deadline )) || fail "Escape did not end the interruptable intro ($(grep -o 'video:.*' "$LOG_DIR/video.status" | head -1))"
+        sleep 1
+    done
+    pass "Escape ended the intro early and the route went on"
+else
+    status_has 'last: FNVIntro.bik Skipped' || fail "the intro neither played nor was skipped ($(grep -o 'video:.*' "$LOG_DIR/video.status" | head -1))"
+    pass "FNVIntro.bik was Skipped and reported (no FFmpeg)"
+fi
 
 # ── 1 — the intro quest the engine starts moves the player to Doc's ──────────
 deadline=$((SECONDS + 60))

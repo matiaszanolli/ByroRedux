@@ -46,6 +46,7 @@ byroredux-bgsm = { workspace = true }
 byroredux-sfmaterial = { workspace = true }
 byroredux-facegen = { workspace = true }
 byroredux-audio = { workspace = true }
+byroredux-video = { workspace = true }
 byroredux-physics = { workspace = true }
 byroredux-plugin = { workspace = true }
 byroredux-cxx-bridge = { workspace = true }

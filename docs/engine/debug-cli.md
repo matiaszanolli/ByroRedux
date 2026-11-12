@@ -341,7 +341,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**170**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**172**) grouped by
 purpose:
 
 ```
@@ -557,6 +557,8 @@ actor.revive <entity|.>      → bring a dead or unconscious actor back like ObS
 magic.effects [entity]       → list the magic effects running on a reference (script effects, timed value changes)
 weather.force <WTHR|none> [lock] → force the exterior weather like ObScript ForceWeather (saved); `none` releases it
 actor.where <entity|0xREFR> → where an actor is now: its current cell (its ledger placement once it has moved between spaces), pose, and whether it is routing via a load door (XCT-RPT-001)
+video.status → the movie player: the movie playing (frame/count, PlayBink flags) and how the last request ended: Played, Skipped (no FFmpeg) or Failed (BIK-RPT-001)
+video.skip → Escape sent to the playing movie; it ends if its PlayBink request is interruptable (BIK-RPT-003)
 nav.path <entity|0xREFR> <entity|0xREFR> → the navmesh route the AI movers would take between two references: the resident tile and triangle each lands on, and the waypoint count
 obscript.cmd <caller|none> <id> [args] → run one ObScript command through the real host and print its answer (M47.3); the caller may also be a resident reference's `0x<FormID>` (`resolve_console_entity`, shared with `cond`, `setav`, `mesh.info`, `script.activate`)
 jail.serve                  → serve the jail sentence GoToJail started (the same as resting in the cell bed)

@@ -1299,6 +1299,13 @@ impl App {
         }
     }
 
+    /// BIK (#6855) — the movie player: end the movie that finished or was skipped and start the next
+    /// `PlayBink` request. One resource read while nothing is queued or playing.
+    pub(crate) fn step_video(&mut self) {
+        let window = self.renderer.as_ref().map(|ctx| ctx.swapchain_extent());
+        self.video.step(&self.world, window);
+    }
+
     /// #5065 — the enable edge: a placement spawned disabled whose reference a
     /// script (or its enable parent's) has since enabled gets its content,
     /// in its own root, without waiting for its cell to load again
@@ -1531,6 +1538,7 @@ impl App {
         self.step_player_move_request();
         self.step_created_references();
         self.step_enabled_placements();
+        self.step_video();
         self.step_actor_relocations();
         self.step_actor_graphs();
         self.step_kf_idles();

@@ -13,10 +13,26 @@ use crate::obscript_cmd::{Command, Games};
 use crate::obscript_effects::{form_arg, live, num, remove_from_all_factions};
 use crate::obscript_vm::ObScriptValue;
 
-/// A video a script asked for (`PlayBink`), for a player the engine does not have. `NOT_SAVED_BY_DESIGN`:
+/// One movie a script asked to play (`PlayBink`) with its flags (GECK *PlayBink*: `[interruptable]
+/// [mute audio] [pause music] [letterboxed]`; Oblivion's takes the first only, CS *PlayBink*).
+#[derive(Debug, Clone, PartialEq)]
+pub struct VideoRequest {
+    /// The file under `Data\Video`.
+    pub file: String,
+    /// Escape ends the movie early (default off).
+    pub interruptable: bool,
+    /// The game's world sound is muted for the movie (default on).
+    pub mute_audio: bool,
+    /// The game's music is paused for the movie (default on).
+    pub pause_music: bool,
+    /// A widescreen movie is letterboxed on a narrower screen (default on).
+    pub letterbox: bool,
+}
+
+/// The videos scripts asked for (`PlayBink`), for the app's movie player. `NOT_SAVED_BY_DESIGN`:
 /// drained by the app the frame it is raised.
 #[derive(Debug, Default)]
-pub struct PendingVideos(pub Vec<String>);
+pub struct PendingVideos(pub Vec<VideoRequest>);
 
 impl byroredux_core::ecs::Resource for PendingVideos {}
 
@@ -156,13 +172,24 @@ fn exit_game(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], 
     menu(world, "credits", 0)
 }
 
-// GECK *PlayBink "<file>" [interruptable mute pause letterbox]*: a Bink video from `data\video`; there
-// is no Bink decoder, so the request is recorded.
-fn cmd_1114(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
+// GECK *PlayBink "<file>" [interruptable mute pause letterbox]*: a Bink video from `data\video`, the
+// flags defaulting to 0 1 1 1 (the GECK's syntax line). CS *PlayBink* (Oblivion, the same opcode) has
+// the first flag only; the others keep their defaults. The app's movie player carries the request out.
+fn cmd_1114(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
     let texts = || world.try_resource_mut::<super::TextArguments>().map(|mut texts| std::mem::take(&mut texts.0)).unwrap_or_default();
     let file = texts().into_iter().next().unwrap_or_default();
+    // The VM hands a string-form command's text as the first argument (`decode_string_form`), so the
+    // flags follow it.
+    let flag = |index: usize, default: bool| args.get(index + 1).map_or(default, |value| value.as_num() != 0.0);
+    let request = VideoRequest {
+        file: file.clone(),
+        interruptable: flag(0, false),
+        mute_audio: flag(1, true),
+        pause_music: flag(2, true),
+        letterbox: flag(3, true),
+    };
     if let Some(mut videos) = world.try_resource_mut::<PendingVideos>() {
-        videos.0.push(file.clone());
+        videos.0.push(request);
     }
     done(format!("PlayBink {file}"))
 }
@@ -796,7 +823,7 @@ pub(crate) const TAIL_COMMANDS: &[Command] = &[
     Command { id: 0x126f, games: Games::Fallout, needs_caller: false, handler: cmd_126f },
     Command { id: 0x11fb, games: Games::Fallout, needs_caller: false, handler: cmd_11fb },
     Command { id: 0x11b5, games: Games::Fallout, needs_caller: false, handler: exit_game },
-    Command { id: 0x1114, games: Games::Fallout, needs_caller: false, handler: cmd_1114 },
+    Command { id: 0x1114, games: Games::Both, needs_caller: false, handler: cmd_1114 },
     Command { id: 0x11a7, games: Games::Fallout, needs_caller: false, handler: tune },
     Command { id: 0x1201, games: Games::Fallout, needs_caller: false, handler: reset_pipboy_manager },
     Command { id: 0x124b, games: Games::Fallout, needs_caller: false, handler: cmd_124b },

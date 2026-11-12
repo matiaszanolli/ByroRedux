@@ -618,7 +618,9 @@ impl App {
             // (M48.4) owns the overlay when live; otherwise this is the
             // Ruffle SWF player.
             let ui_t0 = Instant::now();
-            let ui_tex = if self.loading_screen.active() {
+            let ui_tex = if let Some(movie) = self.video.tick(ctx, &self.world) {
+                Some(movie)
+            } else if self.loading_screen.active() {
                 self.loading_screen.texture()
             } else if self.ui.hud.is_some() {
                 // Read the control resource before mutably borrowing the
