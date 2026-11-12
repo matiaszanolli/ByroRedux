@@ -197,6 +197,44 @@ fn quantized_edge_key(a: Vec3, b: Vec3) -> QuantizedEdgeKey {
 /// this needs no winding convention: a triangle has exactly 3 vertices, so
 /// each pair of them is unambiguously one edge regardless of storage
 /// order.
+/// A triangle flag bit per edge — `Edge 0-1 Link`, `Edge 1-2 Link`,
+/// `Edge 2-0 Link` (xEdit `wbNavmeshTriangleFlags`): set, that edge's
+/// neighbour word is an index into the mesh's external links (`NVEX`), not a
+/// triangle of this mesh (xEdit `wbNVTREdgeToStr`).
+const EDGE_LINK_FLAGS: [u32; 3] = [1 << 0, 1 << 1, 1 << 2];
+
+/// The triangles of this same mesh across `tri`'s edges: its edge
+/// neighbours, without an edge whose word is an external link.
+fn internal_neighbours(tri: &NavmTriangle) -> impl Iterator<Item = u16> + '_ {
+    (0..3).filter_map(move |edge| {
+        (tri.flags & EDGE_LINK_FLAGS[edge] == 0)
+            .then_some(tri.edge_neighbours[edge])
+            .flatten()
+    })
+}
+
+/// The links from `navm`'s triangles into other meshes: `(triangle, edge
+/// midpoint, (other mesh, other triangle))` for every edge flagged as an
+/// external link, read through `NVEX`.
+fn external_links(navm: &NavmRecord) -> Vec<(usize, Vec3, (u32, usize))> {
+    let mut links = Vec::new();
+    for (tri_idx, tri) in navm.triangles.iter().enumerate() {
+        for (edge, (a, b)) in triangle_edge_index_pairs(tri).into_iter().enumerate() {
+            if tri.flags & EDGE_LINK_FLAGS[edge] == 0 {
+                continue;
+            }
+            let Some(link) = tri.edge_neighbours[edge].and_then(|index| navm.external_connections.get(index as usize)) else {
+                continue;
+            };
+            let (Some(a), Some(b)) = (vertex_yup(navm, a), vertex_yup(navm, b)) else {
+                continue;
+            };
+            links.push((tri_idx, (a + b) / 2.0, (link.mesh_form, link.triangle as usize)));
+        }
+    }
+    links
+}
+
 fn triangle_edge_index_pairs(tri: &NavmTriangle) -> [(u16, u16); 3] {
     let [a, b, c] = tri.vertices;
     [(a, b), (b, c), (c, a)]
@@ -256,7 +294,16 @@ impl CrossTileGraph {
     fn build<'a>(tiles: impl Iterator<Item = &'a NavmRecord>) -> Self {
         let mut by_key: HashMap<QuantizedEdgeKey, Vec<(CrossTileNode, Vec3, Vec3)>> =
             HashMap::new();
+        let mut edges: HashMap<CrossTileNode, Vec<(CrossTileNode, Vec3)>> = HashMap::new();
         for navm in tiles {
+            // The authored links (`NVEX`), both ways: a tile's border need
+            // not be split the same way as its neighbour's, so the geometric
+            // match below misses most of them.
+            for (tri_idx, midpoint, other) in external_links(navm) {
+                let node = (navm.form_id, tri_idx);
+                edges.entry(node).or_default().push((other, midpoint));
+                edges.entry(other).or_default().push((node, midpoint));
+            }
             for (tri_idx, v_a, v_b) in border_edges(navm) {
                 let (Some(a), Some(b)) = (vertex_yup(navm, v_a), vertex_yup(navm, v_b)) else {
                     continue;
@@ -268,7 +315,6 @@ impl CrossTileGraph {
                 ));
             }
         }
-        let mut edges: HashMap<CrossTileNode, Vec<(CrossTileNode, Vec3)>> = HashMap::new();
         for owners in by_key.values() {
             if owners.len() < 2 {
                 continue; // no match on this edge — the common case
@@ -409,9 +455,7 @@ fn astar_cross_tile_path(
             .get(&current.0)
             .and_then(|navm| navm.triangles.get(current.1))
             .map(|tri| {
-                tri.edge_neighbours
-                    .iter()
-                    .filter_map(|n| *n)
+                internal_neighbours(tri)
                     .map(|n| (current.0, n as usize))
                     .collect::<Vec<_>>()
             })
@@ -549,7 +593,7 @@ fn astar_triangle_path(navm: &NavmRecord, start_tri: usize, goal_tri: usize) -> 
         let Some(tri) = navm.triangles.get(current) else {
             continue;
         };
-        for neighbour in tri.edge_neighbours.iter().filter_map(|n| *n) {
+        for neighbour in internal_neighbours(tri) {
             let neighbour = neighbour as usize;
             if closed.contains(&neighbour) {
                 continue;
@@ -651,6 +695,31 @@ pub(crate) fn path_from_resident_tiles(
     let waypoints =
         cross_tile_corridor_to_waypoints(&navm_by_form, &graph, &corridor, current, goal)?;
     Some(waypoints.into_iter().skip(1).collect())
+}
+
+/// What [`path_from_resident_tiles`] sees for one pair of points: the tile and
+/// triangle each lands on, how many tiles are resident, and the path's
+/// waypoint count. Diagnostic (`nav.path`).
+#[derive(Debug)]
+pub(crate) struct PathProbe {
+    pub(crate) start: Option<(u32, usize)>,
+    pub(crate) goal: Option<(u32, usize)>,
+    pub(crate) resident_tiles: usize,
+    pub(crate) waypoints: Option<usize>,
+}
+
+pub(crate) fn probe_path(
+    tiles: &byroredux_core::ecs::QueryRead<'_, crate::components::NavmeshTile>,
+    from: Vec3,
+    to: Vec3,
+) -> PathProbe {
+    let navms: Vec<&NavmRecord> = tiles.iter().map(|(_, tile)| &tile.0).collect();
+    PathProbe {
+        start: locate_across_tiles(navms.iter().copied(), from),
+        goal: locate_across_tiles(navms.iter().copied(), to),
+        resident_tiles: navms.len(),
+        waypoints: path_from_resident_tiles(tiles, from, to).map(|path| path.len()),
+    }
 }
 
 /// Phase 4 ECS bridge: resolve the waypoint queue a locomotion system
@@ -1168,6 +1237,57 @@ mod tests {
         // `path_from_resident_tiles` never re-includes `current`: just the
         // portal midpoint, then the goal.
         assert_eq!(path, vec![Vec3::new(10.0, 0.0, 5.0), goal]);
+    }
+
+    /// Two tiles whose borders do not coincide (a half-unit gap, so no
+    /// geometric portal matches) are joined by their authored `NVEX` links: an
+    /// edge flagged `Edge N Link` carries an index into the external links,
+    /// not a triangle of its own mesh (xEdit `wbNVTREdgeToStr`). The path
+    /// crosses at the linked edge, and the flagged edge never stands for a
+    /// same-mesh neighbour.
+    #[test]
+    fn path_from_resident_tiles_follows_authored_external_links() {
+        use byroredux_plugin::esm::records::{NavmExternalConnection, NavmTriangle};
+        let tile = |form_id: u32, verts: [[f32; 3]; 4], triangles: Vec<NavmTriangle>, link_to: (u32, u16)| NavmRecord {
+            form_id,
+            vertices: verts.iter().map(|v| yup_to_zup_pos(*v)).collect(),
+            triangles,
+            external_connections: vec![NavmExternalConnection { unknown: 0, mesh_form: link_to.0, triangle: link_to.1 }],
+            ..NavmRecord::default()
+        };
+        // Tile A: x 0..10. Triangle 0's edge 1-2 (x = 10) is the external link.
+        let a = tile(
+            1,
+            [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 0.0, 10.0], [0.0, 0.0, 10.0]],
+            vec![
+                NavmTriangle { vertices: [0, 1, 2], edge_neighbours: [None, Some(0), Some(1)], flags: 1 << 1 },
+                NavmTriangle { vertices: [0, 2, 3], edge_neighbours: [Some(0), None, None], flags: 0 },
+            ],
+            (2, 0),
+        );
+        // Tile B: x 10.5..20.5. Triangle 0's edge 0-1 (x = 10.5) links back.
+        let b = tile(
+            2,
+            [[10.5, 0.0, 0.0], [20.5, 0.0, 0.0], [20.5, 0.0, 10.0], [10.5, 0.0, 10.0]],
+            vec![
+                NavmTriangle { vertices: [3, 0, 2], edge_neighbours: [Some(0), Some(1), None], flags: 1 << 0 },
+                NavmTriangle { vertices: [0, 1, 2], edge_neighbours: [None, None, Some(0)], flags: 0 },
+            ],
+            (1, 0),
+        );
+        assert_eq!(super::internal_neighbours(&a.triangles[0]).collect::<Vec<_>>(), vec![1], "the linked edge is no same-mesh neighbour");
+        let mut world = byroredux_core::ecs::World::new();
+        world.register::<crate::components::NavmeshTile>();
+        for navm in [a, b] {
+            let entity = world.spawn();
+            world.insert(entity, crate::components::NavmeshTile(navm));
+        }
+        let tiles = world.query::<crate::components::NavmeshTile>().expect("NavmeshTile registered");
+        let start = Vec3::new(2.0, 0.0, 8.0); // tile A, triangle 1
+        let goal = Vec3::new(19.0, 0.0, 2.0); // tile B, triangle 1
+        let path = path_from_resident_tiles(&tiles, start, goal).expect("the NVEX link joins the tiles");
+        assert_eq!(path.last(), Some(&goal));
+        assert!(path.contains(&Vec3::new(10.0, 0.0, 5.0)), "the path crosses at the linked edge: {path:?}");
     }
 
     #[test]

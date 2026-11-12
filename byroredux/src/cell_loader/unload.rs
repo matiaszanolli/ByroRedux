@@ -701,6 +701,36 @@ pub(super) fn detach_victims_from_surviving_parents(world: &mut World, victims: 
     }
 }
 
+/// XCT-ROUTE-002 / XCT-ROUTE-007 — take one actor out of the cell it is in,
+/// as a cell unload takes its actors: its parked state (inventory, equipment,
+/// script variables) is captured by FormID, its scripts hear `OnUnload`, its
+/// package is retired, and every entity of its subtree (body parts, skeleton,
+/// bone colliders) and any collider it owns outside it is released through
+/// the GPU-safe path. Its stream snapshot is deliberately not taken: the
+/// actor comes back at its ledger pose in another cell, not where it stood.
+pub(crate) fn evict_actor(world: &mut World, ctx: &mut VulkanContext, actor: EntityId) {
+    let mut victims = byroredux_core::ecs::collect_subtree(world, actor);
+    let owned: Vec<EntityId> = world
+        .query::<byroredux_physics::ActorColliderOwner>()
+        .map(|owners| {
+            owners
+                .iter()
+                .filter(|(_, owner)| owner.0 == actor)
+                .map(|(entity, _)| entity)
+                .collect()
+        })
+        .unwrap_or_default();
+    for entity in owned {
+        if !victims.contains(&entity) {
+            victims.push(entity);
+        }
+    }
+    crate::cell_loader::reference_state::capture(world, &victims);
+    byroredux_scripting::raise_unload_events(world, &victims);
+    byroredux_scripting::retire_active_packages(world, &victims);
+    release_entities(world, ctx, &victims, "relocated actor");
+}
+
 /// #5028 — [`release_entities_timed`] plus the same global finishing pass
 /// (`finish_unload_batch`: sparse-tail handback + BLAS scratch shrink) that
 /// `unload_cell` runs after its victims, so a gear-root release leaves the

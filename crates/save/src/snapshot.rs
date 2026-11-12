@@ -618,7 +618,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// the player chose in character creation), so a v124 save has no record of the choices and the schema no
 /// longer matches; and the saved `ActiveEffect` gained the required `suspended` flag (a recovered value
 /// given back while the effect's own conditions fail).
-pub const FORMAT_MAJOR: u16 = 125;
+///
+/// v125 -> v126 (XCT-LOC-003, #6852): a new resource column, `ActorRelocations` (the cell and pose of each actor
+/// that has moved out of its home cell), so a v125 save cannot say where a moved actor is and the schema no
+/// longer matches.
+pub const FORMAT_MAJOR: u16 = 126;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

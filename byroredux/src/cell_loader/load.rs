@@ -759,7 +759,8 @@ impl InteriorCellApplyJob {
         log::info!("Cell lighting: {:?}", resolved_lighting);
 
         let navmesh_first = world.next_entity_id();
-        crate::components::spawn_navmesh_tiles(world, &cell.navmeshes);
+        // The parser keeps a cell's NAVMs in the global map, not on the cell.
+        crate::components::spawn_navmesh_tiles(world, index.navmeshes_of_cell(cell, None));
         stamp_cell_root_range(world, cell_root, navmesh_first, world.next_entity_id());
         crate::scene::populate_scene_runtime(world, &index);
         crate::asset_provider::populate_idle_clip_runtime(world, &index, tex_provider);

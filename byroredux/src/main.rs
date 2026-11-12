@@ -654,6 +654,9 @@ struct App {
     /// while it is unchanged no withheld placement can have been enabled
     /// (#5065). Session state.
     enabled_step_key: Option<u64>,
+    /// The ledger-and-loaded-cells key the relocated-actor step last spawned
+    /// for (XCT, #6852). Session state.
+    relocation_step_key: Option<u64>,
     loading_screen: loading_screen::LoadingScreen,
     loot_appearance_loader: npc_spawn::loot_appearance::LootAppearanceLoader,
     gear_import_loader: npc_spawn::loot_appearance::GearImportLoader,
@@ -1108,6 +1111,7 @@ impl App {
             interior_transition: None,
             created_step_key: None,
             enabled_step_key: None,
+            relocation_step_key: None,
             loading_screen: loading_screen::LoadingScreen::default(),
             loot_appearance_loader: Default::default(),
             gear_import_loader: Default::default(),

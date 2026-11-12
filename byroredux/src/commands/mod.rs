@@ -249,6 +249,8 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(FogHazeCommand);
     registry.register(TonemapCommand);
     registry.register(ScriptActivateCommand);
+    registry.register(ActorWhereCommand);
+    registry.register(NavPathCommand);
     registry.register(MatListCommand);
     registry.register(MatDumpCommand);
     registry.register(MatSetCommand);

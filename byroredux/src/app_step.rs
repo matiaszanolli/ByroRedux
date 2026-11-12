@@ -1228,6 +1228,77 @@ impl App {
         }
     }
 
+    /// XCT (PRD cross-cell-actor-travel, #6852/#6853) — carry out the actor
+    /// moves raised this frame ([`byroredux_scripting::PendingRelocations`]):
+    /// record each in the ledger and take the actor out of the cell it leaves
+    /// (XCT-ROUTE-002); then spawn every ledgered actor whose cell is loaded
+    /// and who has no entity yet, at its ledger pose (XCT-LOC-002,
+    /// XCT-ROUTE-005). Idle — one key over the ledger and the loaded cells —
+    /// while neither changes.
+    pub(crate) fn step_actor_relocations(&mut self) {
+        if self.interior_transition.is_some() {
+            return;
+        }
+        let requests: Vec<(u32, byroredux_scripting::CreatedPlacement)> = self
+            .world
+            .try_resource_mut::<byroredux_scripting::PendingRelocations>()
+            .map(|mut pending| std::mem::take(&mut pending.0))
+            .unwrap_or_default();
+        for (actor, placement) in requests {
+            log::info!("actor {actor:08X} -> {:?}", placement.cell);
+            if let Some(mut ledger) = self.world.try_resource_mut::<byroredux_scripting::ActorRelocations>() {
+                ledger.relocate(actor, placement);
+            }
+            let resident = byroredux_scripting::condition::resolve_entity_by_global_form_id(&self.world, actor)
+                .filter(|_| cell_loader::relocated::has_live_entity(&self.world, actor));
+            if let (Some(entity), Some(ctx)) = (resident, self.renderer.as_mut()) {
+                cell_loader::unload::evict_actor(&mut self.world, ctx, entity);
+            }
+        }
+        let Some(digest) = self
+            .world
+            .try_resource::<byroredux_scripting::ActorRelocations>()
+            .filter(|ledger| !ledger.is_empty())
+            .map(|ledger| ledger.digest())
+        else {
+            return;
+        };
+        let interior_root = self
+            .world
+            .try_resource::<cell_loader::CurrentCellRoot>()
+            .and_then(|root| root.0);
+        let grids = self.streaming.iter().flat_map(|state| state.loaded.keys().copied());
+        let key = cell_loader::created::mix_key([digest, cell_loader::created::loaded_cells_key(interior_root, grids)]);
+        if self.relocation_step_key == Some(key) {
+            return;
+        }
+        self.relocation_step_key = Some(key);
+        let mut cells: Vec<(byroredux_core::ecs::storage::EntityId, byroredux_scripting::CreatedCell)> = Vec::new();
+        if let Some((cell_root, editor_id)) = interior_root.zip(
+            self.world
+                .try_resource::<cell_loader::CurrentCellContext>()
+                .map(|cell| cell.cell_editor_id.clone()),
+        ) {
+            cells.push((cell_root, byroredux_scripting::CreatedCell::Interior { editor_id }));
+        }
+        if let Some(state) = self.streaming.as_ref() {
+            let worldspace = state.wctx.worldspace_key.clone();
+            cells.extend(state.loaded.iter().map(|(grid, cell)| {
+                (cell.cell_root, byroredux_scripting::CreatedCell::Exterior { worldspace: worldspace.clone(), grid: *grid })
+            }));
+        }
+        for (cell_root, cell) in cells {
+            let refs = cell_loader::relocated::relocated_in(&self.world, &cell, |actor| {
+                cell_loader::relocated::has_live_entity(&self.world, actor)
+            });
+            if !refs.is_empty() {
+                self.spawn_into_loaded_cell(cell_root, |world, ctx, tex_provider, mat_provider| {
+                    cell_loader::created::spawn_relocated(world, ctx, tex_provider, mat_provider, cell_root, &refs);
+                });
+            }
+        }
+    }
+
     /// #5065 — the enable edge: a placement spawned disabled whose reference a
     /// script (or its enable parent's) has since enabled gets its content,
     /// in its own root, without waiting for its cell to load again
@@ -1460,6 +1531,7 @@ impl App {
         self.step_player_move_request();
         self.step_created_references();
         self.step_enabled_placements();
+        self.step_actor_relocations();
         self.step_actor_graphs();
         self.step_kf_idles();
         self.step_texture_swaps();

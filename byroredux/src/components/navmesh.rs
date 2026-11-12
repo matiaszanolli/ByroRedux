@@ -37,15 +37,17 @@ impl Component for NavmeshTile {
 /// between them. Caller is responsible for calling this within the same
 /// `first_entity..last_entity` window its `stamp_cell_root_range` call
 /// covers — this function only spawns entities, it does not stamp them.
-pub(crate) fn spawn_navmesh_tiles(
+pub(crate) fn spawn_navmesh_tiles<'a>(
     world: &mut byroredux_core::ecs::World,
-    navmeshes: &[byroredux_plugin::esm::records::NavmRecord],
+    navmeshes: impl IntoIterator<Item = &'a byroredux_plugin::esm::records::NavmRecord>,
 ) {
+    let mut spawned = false;
     for navm in navmeshes {
         let entity = world.spawn();
         world.insert(entity, NavmeshTile(navm.clone()));
+        spawned = true;
     }
-    if !navmeshes.is_empty() {
+    if spawned {
         bump_navmesh_residency(world);
     }
 }

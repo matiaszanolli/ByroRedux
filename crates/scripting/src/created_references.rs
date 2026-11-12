@@ -78,7 +78,7 @@ impl<'de> serde::Deserialize<'de> for ScriptedIds {
 }
 
 /// The cell a created reference stands in.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub enum CreatedCell {
     /// An interior cell, by editor ID.
@@ -250,18 +250,83 @@ impl CreatedReferences {
     }
 }
 
-/// #5802 — this subsystem's world setup, owned here instead of the crate's
-/// `register` hub: created-object references (saved).
-pub fn install(world: &mut World) {
-    world.init_resource::<CreatedReferences>();
+/// XCT-LOC-001 (PRD cross-cell-actor-travel) — the relocation ledger: where
+/// each persistent actor that has left its home cell for another space now
+/// is, as its cell and pose. The cell loader spawns a ledgered actor there and
+/// never in its home cell (XCT-LOC-002). Keyed by the actor reference's
+/// load-order FormID. Saved (XCT-LOC-003), as the original saves an actor's
+/// moved cell and position (UESP *Save File Format/Location Data*).
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct ActorRelocations {
+    placements: std::collections::BTreeMap<u32, CreatedPlacement>,
 }
 
-/// #5802 — this subsystem's saved column. Called by the binary's
+impl Resource for ActorRelocations {}
+
+impl ActorRelocations {
+    /// Record that `actor` is now at `placement`.
+    pub fn relocate(&mut self, actor: u32, placement: CreatedPlacement) {
+        self.placements.insert(actor, placement);
+    }
+
+    /// Where `actor` is, if it has moved.
+    pub fn placement(&self, actor: u32) -> Option<&CreatedPlacement> {
+        self.placements.get(&actor)
+    }
+
+    pub fn contains(&self, actor: u32) -> bool {
+        self.placements.contains_key(&actor)
+    }
+
+    /// Every moved actor and its placement, in FormID order.
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &CreatedPlacement)> {
+        self.placements.iter().map(|(&actor, placement)| (actor, placement))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.placements.is_empty()
+    }
+
+    /// A digest of which actor is in which cell (not their poses): what the
+    /// spawn step's gate needs to see change.
+    pub fn digest(&self) -> u64 {
+        use std::hash::{BuildHasher, Hash, Hasher};
+        let mut hasher = std::hash::BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default().build_hasher();
+        for (actor, placement) in &self.placements {
+            actor.hash(&mut hasher);
+            placement.cell.hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+}
+
+/// A request to move an actor to another space: a Travel hop through a load
+/// door (XCT-ROUTE-002) or a scripted move. The engine records it in
+/// [`ActorRelocations`], takes the actor out of the cell it leaves and spawns it
+/// in the one it enters once that cell is loaded. `NOT_SAVED_BY_DESIGN`:
+/// drained the frame it is raised.
+#[derive(Debug, Default)]
+pub struct PendingRelocations(pub Vec<(u32, CreatedPlacement)>);
+
+impl Resource for PendingRelocations {}
+
+/// #5802 — this subsystem's world setup, owned here instead of the crate's
+/// `register` hub: created-object references and the relocation ledger
+/// (saved), and the relocation requests.
+pub fn install(world: &mut World) {
+    world.init_resource::<CreatedReferences>();
+    world.init_resource::<ActorRelocations>();
+    world.init_resource::<PendingRelocations>();
+}
+
+/// #5802 — this subsystem's saved columns. Called by the binary's
 /// `build_save_registry` at its place in the row order (the schema
 /// fingerprint is order-sensitive).
 #[cfg(feature = "save")]
 pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
     registry.register_resource::<CreatedReferences>("CreatedReferences");
+    registry.register_resource::<ActorRelocations>("ActorRelocations");
 }
 
 #[cfg(test)]

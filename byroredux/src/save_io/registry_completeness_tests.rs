@@ -564,6 +564,9 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ActorProtection", "an actor's base Essential / Protected ACBS flags; stamped from the load order at every spawn"),
         ("DamageThresholdRules", "New Vegas DT rules (the DT actor value, fMinDamMultiplier, armor DT); rebuilt from the load order by install_damage_threshold_rules every boot"),
         ("CreatedReferenceEntities", "the live entity of each spawned created reference; re-derived by step_created_references spawning into loaded cells"),
+        ("PendingRelocations", "actor moves raised this frame (a Travel hop, a scripted move); drained by step_actor_relocations into the saved ActorRelocations ledger"),
+        ("RelocatedSpawning", "the relocated actors the reference loader is spawning right now (#6852); present only for that call"),
+        ("CrossSpaceHop", "a traveler's chosen load door toward another space (XCT-ROUTE-001); chosen again from its package after a load"),
         ("RealizingPlacementRoots", "the withheld roots the reference loader fills while step_enabled_placements runs it (#5065); present only for that call"),
         ("ActiveLoadOrder", "the load order of the last cell-load entry point; republished by install_form_resolver on every load"),
         ("ExplicitStartPin", "session flag set from the --cell/--grid launch arguments, released by the first key or mouse press; never gameplay state"),
@@ -1433,7 +1436,9 @@ fn the_schema_fingerprint_is_pinned() {
     // locations an actor has lost and where its killing blow landed), registered after `FactionReputation`.
     // New Vegas new game — `CharacterIdentity` joined the registry as a new replacing component column (the
     // name, sex and race chosen in character creation), registered after `DismemberRecord`.
-    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x2672_900f_7cd0_7ef8;
+    // XCT-LOC-003 (#6852) — `ActorRelocations` joined the registry as a new resource (the space and pose of
+    // each actor that has moved out of its home cell), registered after `CreatedReferences`.
+    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x5f44_02c2_bb11_7a12;
     let actual = build_save_registry().schema_fingerprint();
     assert_eq!(
         actual, BASELINE_SCHEMA_FINGERPRINT,

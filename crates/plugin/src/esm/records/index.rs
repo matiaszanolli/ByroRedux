@@ -757,6 +757,34 @@ pub struct EsmIndex {
 }
 
 impl EsmIndex {
+    /// The navmesh tiles of one cell, in FormID order. The parser moves every
+    /// cell's NAVMs into [`Self::navmeshes`] (#1272), so a cell's own
+    /// `navmeshes` list is empty by the time a loader reads it; each record
+    /// names its parent instead: the typed (FO3 / FNV) form its `CELL`
+    /// (`cell_form`), the packed (Skyrim+) form its worldspace and grid for an
+    /// exterior tile. `worldspace_form` is the WRLD of an exterior `cell`,
+    /// `None` for an interior.
+    pub fn navmeshes_of_cell(
+        &self,
+        cell: &super::super::cell::CellData,
+        worldspace_form: Option<u32>,
+    ) -> Vec<&NavmRecord> {
+        let mut tiles: Vec<&NavmRecord> = self
+            .navmeshes
+            .values()
+            .filter(|navm| {
+                navm.cell_form == Some(cell.form_id)
+                    || (navm.grid.is_some()
+                        && navm.grid == cell.grid
+                        && navm
+                            .worldspace_form
+                            .is_some_and(|world| world != 0 && Some(world) == worldspace_form))
+            })
+            .collect();
+        tiles.sort_unstable_by_key(|navm| navm.form_id);
+        tiles
+    }
+
     /// Resolve a Creation-era LSCR's NNAM model reference (Skyrim/FO4)
     /// against this index: the target's cached NIF path via
     /// `cells.statics` (STAT directly, SCOL through its baked `CM*.NIF`),
@@ -1633,6 +1661,45 @@ impl EsmIndex {
 mod tests {
     use super::*;
     use crate::esm::records::{ActiRecord, ScenePhase, SettingValue};
+
+    /// A cell's navmesh tiles come from the global map by their own parent: a
+    /// typed (FO3 / FNV) NAVM by its `CELL`, a packed (Skyrim+) exterior one by
+    /// worldspace and grid. Another cell's, another worldspace's, or an
+    /// interior's packed tile is never handed to the wrong cell.
+    #[test]
+    fn a_cells_navmesh_tiles_are_found_by_their_parent() {
+        use crate::esm::cell::CellData;
+        let navm = |form_id: u32, cell_form: Option<u32>, worldspace_form: Option<u32>, grid: Option<(i32, i32)>| NavmRecord {
+            form_id,
+            cell_form,
+            worldspace_form,
+            grid,
+            ..Default::default()
+        };
+        let mut index = EsmIndex::default();
+        for record in [
+            navm(0x30, Some(0xDAEB9), None, None),
+            navm(0x31, Some(0xDAEB9), None, None),
+            navm(0x32, Some(0xDAEB8), None, None),
+            navm(0x40, None, Some(0x3C), Some((-17, 0))),
+            navm(0x41, None, Some(0x99), Some((-17, 0))),
+            navm(0x42, Some(0x777), Some(0), None),
+        ] {
+            index.navmeshes.insert(record.form_id, record);
+        }
+        let typed = CellData { form_id: 0xDAEB9, grid: Some((-17, 0)), ..Default::default() };
+        let forms = |tiles: Vec<&NavmRecord>| tiles.iter().map(|navm| navm.form_id).collect::<Vec<_>>();
+        assert_eq!(forms(index.navmeshes_of_cell(&typed, None)), vec![0x30, 0x31]);
+        assert_eq!(
+            forms(index.navmeshes_of_cell(&typed, Some(0x3C))),
+            vec![0x30, 0x31, 0x40],
+            "a packed tile of the same worldspace and grid joins it"
+        );
+        let interior = CellData { form_id: 0x777, ..Default::default() };
+        assert_eq!(forms(index.navmeshes_of_cell(&interior, None)), vec![0x42]);
+        let empty = CellData { form_id: 0x1234, ..Default::default() };
+        assert!(index.navmeshes_of_cell(&empty, None).is_empty());
+    }
 
     fn info(form_id: u32, previous_info: u32, text: &str) -> InfoRecord {
         InfoRecord {

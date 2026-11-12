@@ -235,8 +235,9 @@ pub use misc_stats::{Achievements, MiscStats};
 pub use actor_value_names::{install_actor_value_names, ActorValueNames, ScriptGame};
 pub use alias_overrides::{AliasOverride, AliasOverrides};
 pub use created_references::{
-    CreatedCell, CreatedDeletion, CreatedPlacement, CreatedReference, CreatedReferences,
-    ScriptedIds, CREATED_FORM_ID_BASE, SCRIPTED_FORM_ID_BASE,
+    ActorRelocations, CreatedCell, CreatedDeletion, CreatedPlacement, CreatedReference,
+    CreatedReferences, PendingRelocations, ScriptedIds, CREATED_FORM_ID_BASE,
+    SCRIPTED_FORM_ID_BASE,
 };
 pub use load_order::LoadOrderIdentity;
 pub use map_markers::{

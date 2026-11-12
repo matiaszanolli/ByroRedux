@@ -1378,7 +1378,10 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // and the `&-s` setting-reference census (docs/data/game-ui/menu-string-refs-*.tsv).
         // PERK-HOOK-007 re-measure: `perk_entry_census` lists an activate entry's `EPF2` label, flags, spell
         // and embedded script (source and bytes) under `CENSUS_ENTRY_POINT` (no new target; the census grew).
-        ("plugin", 73, 9618),
+        // #6851 (cross-cell actor travel Phase 0) re-measure: `inspect cross-space-census`, the PRD §8
+        // cross-space / multi-hop census over PKID Near Reference destinations and XTEL load doors (a
+        // subcommand of the existing probe, no new target; `wthr-dump`'s game parse became shared).
+        ("plugin", 73, 9796),
         // M47.3 result scripts — `obscript_tools avcodes` aligns the Fallout
         // misc-stat codes and `live` names the quests a script advanced
         // (no new target; the existing triage tool grew).

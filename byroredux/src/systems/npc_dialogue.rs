@@ -117,23 +117,44 @@ impl Component for NpcDialogueTopic {
 
 pub(crate) use byroredux_scripting::DialogueSurfaceState;
 
-/// The player topics an NPC owns through `owned_quests` (the running quests
-/// whose alias bindings name it), ascending by form id — the authored
-/// NPC→topic edge, gathered once per selection. #5037 — Scene, Combat and
-/// Miscellaneous topics are not prompts and never reach the list.
+/// The quests whose topics `npc` can offer. Skyrim and later bind a speaker to
+/// a quest through its aliases: the running quests whose alias bindings name
+/// the NPC. FO3 / FNV quests bind no aliases; a topic's own INFO conditions
+/// (`GetIsID`, faction, ...) pick its speaker, so every running quest's topics
+/// are candidates and the INFO gate decides. Top-level topics are "the list of
+/// default topics; the ones that come up when an info isn't linked to anything
+/// in particular" (GECK *Category:Dialogue*). Oblivion keeps the alias path
+/// until its known-topic set (`AddTopic`) is modelled (#5350).
+fn npc_topic_quests(world: &World, index: &EsmIndex, npc: EntityId) -> Vec<byroredux_scripting::QuestFormId> {
+    if index.game != byroredux_plugin::esm::reader::GameKind::Fallout3NV {
+        return running_quests_binding_entity(world, npc);
+    }
+    let Some(stages) = world.try_resource::<byroredux_scripting::quest_stages::QuestStageState>() else {
+        return Vec::new();
+    };
+    let mut running: Vec<_> = stages
+        .iter()
+        .map(|(quest, _)| quest)
+        .filter(|quest| stages.is_running(*quest))
+        .collect();
+    running.sort_unstable_by_key(|quest| quest.0);
+    running
+}
+
+/// The player topics of `owned_quests` (see [`npc_topic_quests`]), ascending
+/// by form id — the authored NPC→topic edge, gathered once per selection.
+/// #5037 — Scene, Combat and Miscellaneous topics are not prompts and never
+/// reach the list.
 fn owned_topic_records<'a>(
     index: &'a EsmIndex,
     owned_quests: &[byroredux_scripting::QuestFormId],
 ) -> Vec<&'a DialRecord> {
+    let owned: FxHashSet<u32> = owned_quests.iter().map(|quest| quest.0).collect();
     let mut topics: Vec<&DialRecord> = index
         .dialogues
         .values()
         .filter(|record| record.category == DialogueCategory::Topic)
-        .filter(|record| {
-            owned_quests
-                .iter()
-                .any(|quest| record.quest_refs.contains(&quest.0))
-        })
+        .filter(|record| record.quest_refs.iter().any(|quest| owned.contains(quest)))
         .collect();
     topics.sort_unstable_by_key(|record| record.form_id);
     topics
@@ -345,6 +366,15 @@ fn open_conversation<'a>(
         return select_on_topic(index, record, info, world, npc, player, &[]);
     }
     let menu = top_level_menu(index, owned, world, npc, player, None);
+    // FO3 / FNV open on GREETING — the NPC's first line — followed by its
+    // choices or, when it links nowhere, the default Top-level topics.
+    if index.game == byroredux_plugin::esm::reader::GameKind::Fallout3NV {
+        if let Some((greeting, info)) = generic_greeting_record(index).and_then(|greeting| {
+            select_first_info(greeting, world, Some(npc), Some(player)).map(|info| (greeting, info))
+        }) {
+            return select_on_topic(index, greeting, info, world, npc, player, &menu);
+        }
+    }
     if let Some((first, info)) = menu.first().copied() {
         return select_on_topic(index, first, info, world, npc, player, &menu);
     }
@@ -622,7 +652,12 @@ pub(crate) fn forcegreet_open(world: &World, npc: EntityId, topic: Option<u32>) 
     let Some(info) = select_first_info(record, world, Some(npc), Some(player)) else {
         return false;
     };
-    let Some((selected, record)) = select_on_topic(&index, record, info, world, npc, player, &[])
+    // After the force-greet line, its links or, when it links nowhere, the
+    // NPC's default topics — the same list an activation opens with.
+    let owned_quests = npc_topic_quests(world, &index, npc);
+    let owned = owned_topic_records(&index, &owned_quests);
+    let menu = top_level_menu(&index, &owned, world, npc, player, Some((record, info)));
+    let Some((selected, record)) = select_on_topic(&index, record, info, world, npc, player, &menu)
     else {
         return false;
     };
@@ -891,7 +926,7 @@ fn npc_dialogue_selection_system_inner(world: &World, scratch: &mut NpcDialogueS
         if world.get::<SceneAliasCandidate>(npc).is_none() {
             continue;
         }
-        let owned_quests = running_quests_binding_entity(world, npc);
+        let owned_quests = npc_topic_quests(world, &index, npc);
         // #5367 Phase G — an empty owned set no longer ends the walk: the
         // generic greeting still opens a conversation for a quest-less
         // patron. `open_conversation` decides between the two.
@@ -971,12 +1006,11 @@ pub(crate) fn select_topic_by_form_id(
                 .map(|entry| entry.info_form_id)
         })
         .and_then(|info_form_id| record.infos.iter().find(|info| info.form_id == info_form_id));
-    // A topic is selectable when a running quest the NPC is bound to owns it,
-    // or when the open menu offers it: the menu is the spoken line's `TCLT`
-    // links, and on Oblivion / FO3 / FNV — whose quests bind no aliases, so
-    // the NPC owns nothing — the links are the only way a quest topic is ever
-    // reached (Sunny Smiles's greeting links "Back in the Saddle"'s opener).
-    let owned_quests = running_quests_binding_entity(world, npc);
+    // A topic is selectable when one of the NPC's topic quests owns it
+    // ([`npc_topic_quests`]: alias-bound on Skyrim+, every running quest on
+    // FO3 / FNV), or when the open menu offers it (the spoken line's `TCLT`
+    // links, the only route on Oblivion until #5350).
+    let owned_quests = npc_topic_quests(world, &index, npc);
     let owned = owned_topic_records(&index, &owned_quests);
     if offered.is_none() && !owned.iter().any(|owned| owned.form_id == topic_form_id) {
         return Err(format!(

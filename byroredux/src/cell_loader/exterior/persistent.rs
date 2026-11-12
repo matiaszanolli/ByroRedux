@@ -154,6 +154,13 @@ impl PersistentCellApplyJob {
                 return PersistentCellApplyProgress::Pending(self);
             }
             let placed = &self.logical_stub_refs[self.next_logical_stub];
+            // XCT-LOC-002 — an actor the ledger puts in another cell is not
+            // stood in for at its home placement.
+            if crate::cell_loader::relocated::skipped_at_home(world, placed.form_id) {
+                self.next_logical_stub += 1;
+                budget.complete_unit();
+                continue;
+            }
             // #2664 (SCR-D7-NEW11-03) — this used to open-code
             // `stamp_quest_reference`'s body and insert nothing else. Two
             // problems, one of them live: the copy would drift from the

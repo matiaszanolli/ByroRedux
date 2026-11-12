@@ -801,6 +801,118 @@ impl ConsoleCommand for DoorListCommand {
 ///
 /// [`ActivateEvent`]: byroredux_scripting::ActivateEvent
 /// [`papyrus_demo::rumble_on_activate_system`]: byroredux_scripting::papyrus_demo::rumble_on_activate_system
+/// XCT-RPT-001 (#6852) — `actor.where <entity|0xREFR>`: where an actor is
+/// now: its current cell (its ledger placement once it has moved between
+/// spaces, its load-order cell before), its pose, and whether it is walking to
+/// a load door. A FormID answers even while the actor is not loaded.
+pub(crate) struct ActorWhereCommand;
+impl ConsoleCommand for ActorWhereCommand {
+    fn name(&self) -> &str {
+        "actor.where"
+    }
+    fn description(&self) -> &str {
+        "Where an actor is now: current cell, pose, and routing through a load door (usage: actor.where <entity|0xREFR>)"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let token = args.trim();
+        let form = token
+            .strip_prefix("0x")
+            .or_else(|| token.strip_prefix("0X"))
+            .and_then(|hex| u32::from_str_radix(hex, 16).ok());
+        let entity = match form {
+            Some(form) => byroredux_scripting::condition::resolve_entity_by_global_form_id(world, form),
+            None => match super::shared::resolve_console_entity(world, token) {
+                Ok(entity) => Some(entity),
+                Err(error) => return CommandOutput::error(format!("actor.where: {error}")),
+            },
+        };
+        let Some(form) = form.or_else(|| {
+            let id = world.get::<byroredux_core::ecs::components::FormIdComponent>(entity?)?.0;
+            world.try_resource::<byroredux_core::form_id::FormIdPool>()?.local_of(id)
+        }) else {
+            return CommandOutput::error("actor.where: the entity is no placed reference");
+        };
+        let Some(index) = world
+            .try_resource::<crate::cell_loader::LoadedCellIndex>()
+            .map(|index| std::sync::Arc::clone(&index.0))
+        else {
+            return CommandOutput::error("actor.where: no load order");
+        };
+        let moved = world
+            .try_resource::<byroredux_scripting::ActorRelocations>()
+            .is_some_and(|ledger| ledger.contains(form));
+        let cell = crate::cell_loader::relocated::current_cell(world, &index, form)
+            .map_or_else(|| "an unknown cell".to_string(), |cell| format!("{cell:?}"));
+        let live = entity.filter(|_| crate::cell_loader::relocated::has_live_entity(world, form));
+        let state = match live {
+            Some(entity) => match world.get::<crate::cell_loader::relocated::CrossSpaceHop>(entity) {
+                Some(hop) => format!("routing via door entity {} toward {:?}", hop.door, hop.placement.cell),
+                None => "in".to_string(),
+            },
+            None => "not loaded, in".to_string(),
+        };
+        let pose = live
+            .and_then(|entity| world.get::<GlobalTransform>(entity))
+            .map(|t| format!(" at ({:.0}, {:.0}, {:.0})", t.translation.x, t.translation.y, t.translation.z))
+            .unwrap_or_default();
+        CommandOutput::line(format!(
+            "actor {form:08X}: {state} {cell}{pose}{}",
+            if moved { " (moved from its home cell)" } else { "" }
+        ))
+    }
+}
+
+/// `nav.path <from> <to>` — the navmesh route the AI movers would take between
+/// two references (entity or `0xREFR`): the resident tile and triangle each
+/// lands on and the path's waypoint count, or why there is none
+/// ([NAVM Pathfinding §4]).
+pub(crate) struct NavPathCommand;
+impl ConsoleCommand for NavPathCommand {
+    fn name(&self) -> &str {
+        "nav.path"
+    }
+    fn description(&self) -> &str {
+        "The navmesh route between two references: where each lands and the waypoint count (usage: nav.path <entity|0xREFR> <entity|0xREFR>)"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let mut parts = args.split_whitespace();
+        let (Some(from), Some(to)) = (parts.next(), parts.next()) else {
+            return CommandOutput::error("usage: nav.path <entity|0xREFR> <entity|0xREFR>");
+        };
+        let position = |token: &str| -> Result<Vec3, String> {
+            let entity = super::shared::resolve_console_entity(world, token)?;
+            world
+                .get::<GlobalTransform>(entity)
+                .map(|t| t.translation)
+                .ok_or_else(|| format!("entity {entity} has no position"))
+        };
+        let (from, to) = match (position(from), position(to)) {
+            (Ok(from), Ok(to)) => (from, to),
+            (Err(error), _) | (_, Err(error)) => return CommandOutput::error(format!("nav.path: {error}")),
+        };
+        let Some(tiles) = world.query::<crate::components::NavmeshTile>() else {
+            return CommandOutput::line("nav.path: no navmesh tile storage");
+        };
+        let probe = crate::systems::navmesh_path::probe_path(&tiles, from, to);
+        let land = |at: Option<(u32, usize)>| {
+            at.map_or_else(|| "on no resident tile".to_string(), |(navm, tri)| format!("on NAVM {navm:08X} triangle {tri}"))
+        };
+        CommandOutput::line(format!(
+            "from ({:.0}, {:.0}, {:.0}) {} to ({:.0}, {:.0}, {:.0}) {}; {} resident tile(s); {}",
+            from.x,
+            from.y,
+            from.z,
+            land(probe.start),
+            to.x,
+            to.y,
+            to.z,
+            land(probe.goal),
+            probe.resident_tiles,
+            probe.waypoints.map_or_else(|| "no path".to_string(), |n| format!("{n} waypoint(s)"))
+        ))
+    }
+}
+
 pub(crate) struct ScriptActivateCommand;
 impl ConsoleCommand for ScriptActivateCommand {
     fn name(&self) -> &str {

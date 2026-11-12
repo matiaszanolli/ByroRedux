@@ -179,6 +179,9 @@ struct TravelPending {
     /// Authored stride speed (M42.11 `WalkSpeed`), engine default when
     /// absent.
     speed: f32,
+    /// Walking to a load door to pass it (XCT-ROUTE-001): arrival is
+    /// [`DOOR_HOP_REACH`] from the floor in front of it.
+    door_hop: bool,
 }
 
 /// One actor's computed movement/state update for this tick, applied in
@@ -222,7 +225,18 @@ struct TravelScratch {
     pending: Vec<TravelPending>,
     decisions: Vec<TravelDecision>,
     anchor_retry: HashMap<EntityId, f32>,
+    /// XCT-ROUTE-001 — routes chosen this frame, stamped in Pass 2.
+    hops: Vec<(EntityId, crate::cell_loader::relocated::CrossSpaceHop)>,
+    /// **Unroutable** actors (XCT-DEST-003/004), asked again after
+    /// `ANCHOR_RETRY_SECS` rather than every frame: the route is an `O(n)`
+    /// FormID resolve plus a door scan.
+    unroutable: HashMap<EntityId, f32>,
 }
+
+/// How close to the floor in front of a load door a traveler passes it: the
+/// pose is where the engine places someone coming the other way, so it is
+/// reachable, but the walk stops on a collider short of it as often as not.
+const DOOR_HOP_REACH: f32 = 64.0;
 
 /// Drive straight-line walk-to-destination-once locomotion for every
 /// [`TravelBehavior`] actor not yet [`Traveled`]. Registered
@@ -233,9 +247,12 @@ struct TravelScratch {
 fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
     let Some(behavior_q) = world.query::<TravelBehavior>() else {
         scratch.anchor_retry.clear();
+        scratch.unroutable.clear();
         return;
     };
     scratch.anchor_retry.retain(|entity, _| behavior_q.contains(*entity));
+    scratch.unroutable.retain(|entity, _| behavior_q.contains(*entity));
+    scratch.hops.clear();
 
     // ── Pass 1a: resolve destinations (reads only; `resolve_destination`
     // may itself read `GlobalTransform`, so `PhysicsWorld` is NOT acquired
@@ -257,6 +274,7 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
         let tile_q = world.query::<NavmeshTile>();
         let nav_path_q = world.query::<NavPath>();
         let walk_speed_q = world.query::<crate::components::WalkSpeed>();
+        let hop_q = world.query::<crate::cell_loader::relocated::CrossSpaceHop>();
 
         for (entity, behavior) in behavior_q.iter() {
             if traveled_q.as_ref().is_some_and(|q| q.contains(entity)) {
@@ -273,22 +291,49 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
                     s.destination
                 }
                 None => {
-                    if defer_unresolved_reference(
-                        world,
-                        behavior.target_form_id,
-                        entity,
-                        dt,
-                        &mut scratch.anchor_retry,
-                    ) {
-                        continue;
+                    if let Some(wait) = scratch.unroutable.get_mut(&entity) {
+                        *wait -= dt.max(0.0);
+                        if *wait > 0.0 {
+                            continue;
+                        }
+                        scratch.unroutable.remove(&entity);
                     }
-                    resolve_destination(
-                        world,
-                        behavior.target_form_id,
-                        behavior.radius.unwrap_or(TRAVEL_DEFAULT_RADIUS),
-                        behavior.form_id,
-                        current,
-                    )
+                    // XCT-ROUTE-001 — a destination in another space is
+                    // reached through a load door of the actor's own cell.
+                    use crate::cell_loader::relocated::{route_toward, CrossSpaceHop, Route};
+                    match route_toward(world, entity, behavior.target_form_id) {
+                        Route::Door { door, position, placement } => {
+                            scratch.anchor_retry.remove(&entity);
+                            scratch.hops.push((entity, CrossSpaceHop { door, placement }));
+                            position
+                        }
+                        Route::Unroutable(reason) => {
+                            log::info!(
+                                "Travel: actor {entity} cannot reach {:08X}: {reason}",
+                                behavior.target_form_id.unwrap_or(0)
+                            );
+                            scratch.unroutable.insert(entity, ANCHOR_RETRY_SECS);
+                            continue;
+                        }
+                        Route::SameSpace => {
+                            if defer_unresolved_reference(
+                                world,
+                                behavior.target_form_id,
+                                entity,
+                                dt,
+                                &mut scratch.anchor_retry,
+                            ) {
+                                continue;
+                            }
+                            resolve_destination(
+                                world,
+                                behavior.target_form_id,
+                                behavior.radius.unwrap_or(TRAVEL_DEFAULT_RADIUS),
+                                behavior.form_id,
+                                current,
+                            )
+                        }
+                    }
                 }
             };
 
@@ -317,6 +362,8 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             );
             // VATS-LIMB-006 - crippled legs shorten the stride.
             let speed = speed * crate::limbs::locomotion_mult(world, entity);
+            let door_hop = hop_q.as_ref().is_some_and(|q| q.contains(entity))
+                || scratch.hops.iter().any(|(routed, _)| *routed == entity);
             scratch.pending.push(TravelPending {
                 entity,
                 current,
@@ -324,6 +371,7 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
                 destination,
                 waypoints,
                 speed,
+                door_hop,
             });
         }
     }
@@ -365,8 +413,8 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
                 0.0,
                 new_pos.z - p.destination.z,
             );
-            let arrived = horiz_delta.length_squared()
-                <= LOCOMOTION_ARRIVAL_EPSILON * LOCOMOTION_ARRIVAL_EPSILON;
+            let reach = if p.door_hop { DOOR_HOP_REACH } else { LOCOMOTION_ARRIVAL_EPSILON };
+            let arrived = horiz_delta.length_squared() <= reach * reach;
 
             scratch.decisions.push(TravelDecision {
                 entity: p.entity,
@@ -404,6 +452,40 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
     // ── Pass 2: apply writes (each a scoped single-type lock). The shared
     // Transform + NavPath tail (#5580), then this system's own state. ──
     super::navmesh_path::write_back_walk(world, &mut scratch.decisions);
+    if !scratch.hops.is_empty() {
+        if let Some(mut hq) = world.query_mut::<crate::cell_loader::relocated::CrossSpaceHop>() {
+            for (entity, hop) in scratch.hops.drain(..) {
+                hq.insert(entity, hop);
+            }
+        }
+    }
+    // XCT-ROUTE-002 — a traveler that reached its load door passes it: the
+    // move is requested here and carried out by the app's relocation step,
+    // which needs the renderer to take the actor out of its cell. It is
+    // tagged `Traveled` so it stands still until then; the package itself
+    // has not ended (its destination is beyond the door).
+    let passed: Vec<(EntityId, byroredux_scripting::CreatedPlacement)> = scratch
+        .decisions
+        .iter()
+        .filter(|d| d.state.is_none())
+        .filter_map(|d| {
+            let hop = world.get::<crate::cell_loader::relocated::CrossSpaceHop>(d.entity)?;
+            Some((d.entity, hop.placement.clone()))
+        })
+        .collect();
+    if !passed.is_empty() {
+        let forms: Vec<(u32, byroredux_scripting::CreatedPlacement)> = passed
+            .iter()
+            .filter_map(|(entity, placement)| {
+                let id = world.get::<byroredux_core::ecs::components::FormIdComponent>(*entity)?.0;
+                let local = world.try_resource::<byroredux_core::form_id::FormIdPool>()?.local_of(id)?;
+                Some((local, placement.clone()))
+            })
+            .collect();
+        if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingRelocations>() {
+            pending.0.extend(forms);
+        }
+    }
     if let Some(mut sq) = world.query_mut::<TravelState>() {
         for d in &scratch.decisions {
             if let Some(state) = d.state {
@@ -425,7 +507,11 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
     // packages resolve through the procedure tree, which has no Travel leaf
     // yet (`docs/engine/packal.md`), so this is driven only by the synthetic VM
     // test until that lands.
-    for d in scratch.decisions.iter().filter(|d| d.state.is_none()) {
+    for d in scratch
+        .decisions
+        .iter()
+        .filter(|d| d.state.is_none() && !passed.iter().any(|(entity, _)| *entity == d.entity))
+    {
         let package = world
             .get::<crate::components::AmbientPackageRuntime>(d.entity)
             .and_then(|runtime| runtime.active_package_form_id);

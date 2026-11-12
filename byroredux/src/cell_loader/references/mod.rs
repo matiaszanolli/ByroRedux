@@ -176,6 +176,40 @@ pub(crate) fn precombine_can_replace_record(record_type: Option<byroredux_plugin
     )
 }
 
+/// The per-REFR skips ahead of any spawn work in
+/// [`load_references_budgeted`]: whether `placed_ref` is left out of this
+/// cell's load. Moved out of the loop to keep it within its size pin (#5096).
+fn skipped_before_spawn(
+    job: &mut ReferenceLoadJob,
+    world: &World,
+    index: &esm::cell::EsmCellIndex,
+    placed_ref: &esm::cell::PlacedRef,
+    absorbed_refs: &std::collections::HashSet<u32>,
+) -> bool {
+    // XCT-LOC-002 — an actor that has moved to another space is spawned there
+    // by the relocation step, at its ledger pose, never by its home cell's list.
+    if super::relocated::skipped_at_home(world, placed_ref.form_id) {
+        return true;
+    }
+    // #1188 / #5484 — FO4+ PreCombined absorption skip. This REFR's XCRI pair
+    // says the bake tool folded its geometry into the `_oc.nif` for that
+    // pair's hash, and the precombined-spawn pass (earlier in this load)
+    // confirmed that bake drew geometry. Filtering here prevents double
+    // geometry.
+    if absorbed_refs.contains(&placed_ref.form_id) {
+        let record_type = index
+            .statics
+            .get(&placed_ref.base_form_id)
+            .map(|object| object.record_type);
+        if precombine_can_replace_record(record_type) {
+            job.absorbed_skipped += 1;
+            return true;
+        }
+        job.absorbed_interactive_retained += 1;
+    }
+    false
+}
+
 #[cfg(test)]
 mod precombine_absorption_tests {
     use super::precombine_can_replace_record;
@@ -509,24 +543,10 @@ pub(super) fn load_references_budgeted(
             return ReferenceLoadProgress::Pending(job);
         }
         let placed_ref = &refs[job.next_ref];
-
-        // #1188 / #5484 — FO4+ PreCombined absorption skip. This REFR's
-        // XCRI pair says the bake tool folded its geometry into the
-        // `_oc.nif` for that pair's hash, and the precombined-spawn pass
-        // (earlier in this load) confirmed that bake drew geometry.
-        // Filtering here prevents double geometry.
-        if absorbed_refs.contains(&placed_ref.form_id) {
-            let record_type = index
-                .statics
-                .get(&placed_ref.base_form_id)
-                .map(|object| object.record_type);
-            if precombine_can_replace_record(record_type) {
-                job.absorbed_skipped += 1;
-                job.next_ref += 1;
-                budget.complete_unit();
-                continue;
-            }
-            job.absorbed_interactive_retained += 1;
+        if skipped_before_spawn(&mut job, world, index, placed_ref, absorbed_refs) {
+            job.next_ref += 1;
+            budget.complete_unit();
+            continue;
         }
 
         // Convert the outer REFR's placement (Z-up Bethesda → Y-up

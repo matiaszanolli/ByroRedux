@@ -427,6 +427,9 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::ecs::components::TravelBehavior>();
     world.register::<byroredux_core::ecs::components::TravelState>();
     world.register::<byroredux_core::ecs::components::Traveled>();
+    // XCT-ROUTE-001 (#6853) — a traveler's chosen load door toward another
+    // space; `travel_system` inserts it through `query_mut`.
+    world.register::<crate::cell_loader::relocated::CrossSpaceHop>();
 
     // M42.5 — pre-register the Follow marker + runtime-state storages so
     // `follow_system`'s `query::<FollowBehavior>()` skip-scan and
@@ -603,6 +606,7 @@ mod ai_storage_registration_tests {
         "WalkStuckTimer",
         "TravelState",
         "Traveled",
+        "CrossSpaceHop",
         "FollowState",
         "EscortState",
         "Escorted",

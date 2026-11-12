@@ -111,8 +111,17 @@ pub(crate) fn created_work(
     if total == 0 {
         return CreatedWork::Idle;
     }
-    // An order-independent mix of the loaded grids: the set matters, not the
-    // iteration order of the map it came from.
+    CreatedWork::Placed(mix_key([total, deleted, loaded_cells_key(interior, loaded_grids)]))
+}
+
+/// An order-independent key over the loaded cells: the interior root in play
+/// and the set of loaded exterior grids (the set matters, not the iteration
+/// order of the map it came from). Shared by the created-reference and the
+/// relocated-actor steps' gates.
+pub(crate) fn loaded_cells_key(
+    interior: Option<EntityId>,
+    loaded_grids: impl Iterator<Item = (i32, i32)>,
+) -> u64 {
     let (mut count, mut mixed) = (0u64, 0u64);
     for (gx, gy) in loaded_grids {
         count += 1;
@@ -120,12 +129,14 @@ pub(crate) fn created_work(
         mixed ^= h.wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(23);
     }
     let interior = interior.map_or(0, |root| u64::from(root) + 1);
-    let key = [total, deleted, count, mixed, interior]
-        .into_iter()
-        .fold(0xCBF2_9CE4_8422_2325u64, |acc, word| {
-            (acc ^ word).wrapping_mul(0x100_0000_01B3).rotate_left(17)
-        });
-    CreatedWork::Placed(key)
+    mix_key([count, mixed, interior])
+}
+
+/// Fold words into one gate key.
+pub(crate) fn mix_key<const N: usize>(words: [u64; N]) -> u64 {
+    words.into_iter().fold(0xCBF2_9CE4_8422_2325u64, |acc, word| {
+        (acc ^ word).wrapping_mul(0x100_0000_01B3).rotate_left(17)
+    })
 }
 
 /// Place every record that has no placement yet, at its target reference's
@@ -269,33 +280,11 @@ pub(crate) fn spawn_created_references(
     cell_root: EntityId,
     refs: &[PlacedRef],
 ) {
-    let Some(index) = world
-        .try_resource::<super::LoadedCellIndex>()
-        .map(|index| Arc::clone(&index.0))
+    let Some((first, last)) =
+        spawn_into_cell(world, ctx, tex_provider, mat_provider, cell_root, refs, "created references")
     else {
         return;
     };
-    let load_order = world
-        .try_resource::<super::load_order::ActiveLoadOrder>()
-        .map(|order| Arc::clone(&order.0))
-        .unwrap_or_default();
-    let first = world.next_entity_id();
-    super::references::load_references(
-        refs,
-        &index.cells,
-        &index,
-        &index.races,
-        index.game,
-        world,
-        ctx,
-        tex_provider,
-        mat_provider,
-        "created references",
-        &load_order,
-        &HashSet::new(),
-    );
-    let last = world.next_entity_id();
-    super::load::stamp_cell_root_range(world, cell_root, first, last);
     let spawned: Vec<(u32, EntityId)> = world
         .query::<byroredux_scripting::SceneAliasCandidate>()
         .map(|candidates| {
@@ -315,6 +304,66 @@ pub(crate) fn spawn_created_references(
     world.init_resource::<CreatedReferenceEntities>();
     let mut entities = world.resource_mut::<CreatedReferenceEntities>();
     entities.0.extend(spawned);
+}
+
+/// XCT-LOC-002 — spawn ledgered actors (`super::relocated::relocated_in`)
+/// into the loaded cell `cell_root` at their ledger pose, letting them past
+/// the home-cell skip for the length of the load.
+pub(crate) fn spawn_relocated(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
+    cell_root: EntityId,
+    refs: &[PlacedRef],
+) {
+    world.insert_resource(super::relocated::RelocatedSpawning(
+        refs.iter().map(|placed| placed.form_id).collect(),
+    ));
+    spawn_into_cell(world, ctx, tex_provider, mat_provider, cell_root, refs, "relocated actors");
+    world.remove_resource::<super::relocated::RelocatedSpawning>();
+    for placed in refs {
+        log::info!("Spawned relocated actor {:08X} in its current cell", placed.form_id);
+    }
+}
+
+/// Spawn `refs` into the loaded cell `cell_root` through the ordinary
+/// reference loader and stamp what it spawned into that cell, so it unloads
+/// with it. Returns the spawned entity range; `None` without a load order.
+fn spawn_into_cell(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
+    cell_root: EntityId,
+    refs: &[PlacedRef],
+    label: &str,
+) -> Option<(EntityId, EntityId)> {
+    let index = world
+        .try_resource::<super::LoadedCellIndex>()
+        .map(|index| Arc::clone(&index.0))?;
+    let load_order = world
+        .try_resource::<super::load_order::ActiveLoadOrder>()
+        .map(|order| Arc::clone(&order.0))
+        .unwrap_or_default();
+    let first = world.next_entity_id();
+    super::references::load_references(
+        refs,
+        &index.cells,
+        &index,
+        &index.races,
+        index.game,
+        world,
+        ctx,
+        tex_provider,
+        mat_provider,
+        label,
+        &load_order,
+        &HashSet::new(),
+    );
+    let last = world.next_entity_id();
+    super::load::stamp_cell_root_range(world, cell_root, first, last);
+    Some((first, last))
 }
 
 #[cfg(test)]
