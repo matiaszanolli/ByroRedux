@@ -14,9 +14,7 @@
 #   6. The choices hold (GetIsSex / GetIsRace / SPECIAL; Perception is not cut by the
 #      Concussion, whose Perception -4 waits on a crippled head), the jumpsuit is worn, the
 #      front door leads to Goodsprings, and no far-away greeter opens a conversation there.
-#   7. VCG02's shooting tutorial: enabling VCG02BottleMarkerREF (Sunny's line, stood in
-#      for) brings its withheld bottles in live (#5065); three pistol shots run their
-#      `OnHitWith` and complete objective 10.
+#   (VCG02 itself, from Sunny's line to the bottles, is docs/smoke-tests/fnv-vcg02-route.sh.)
 #
 # Headless (Xvfb). FNV only. The intro movie (FNVIntro.bik) has no decoder and is logged.
 #
@@ -28,7 +26,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fixture.sh"
 smoke_load_fixture fnv-new-game fnv
 smoke_require_fixture_fields NG_CELL NG_INTRO_QUEST NG_QUEST NG_START_MARKER NG_NEXT_QUEST \
     NG_TESTER_TRIGGER NG_TESTER NG_COUCH_TRIGGER NG_COUCH NG_EXIT_TRIGGER NG_DOOR NG_DOOR_GRID \
-    NG_NAME NG_RACE NG_TAGS NG_VAULT_SUIT NG_BOTTLE_MARKER NG_BOTTLES NG_PISTOL NG_AMMO
+    NG_NAME NG_RACE NG_TAGS NG_VAULT_SUIT
 smoke_require_data
 
 ROOT_DIR="$SMOKE_ROOT_DIR"
@@ -87,7 +85,7 @@ cd "$SMOKE_DATA"
 env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
     BYROREDUX_SETTINGS_PATH="$LOG_DIR/settings.toml" \
     BYROREDUX_SAVE_DIR="$LOG_DIR/saves" \
-    RUST_LOG="warn,byroredux::app_step=info,byroredux::cell_loader::enabled=info,byroredux::systems::npc_dialogue=info,byroredux::npc_spawn::loot_appearance=info,byroredux_scripting::obscript_results=info,byroredux::player_seat=info,byroredux::systems::travel=info" \
+    RUST_LOG="warn,byroredux::app_step=info,byroredux::systems::npc_dialogue=info,byroredux::npc_spawn::loot_appearance=info,byroredux_scripting::obscript_results=info,byroredux::player_seat=info,byroredux::systems::travel=info" \
     "${SMOKE_HEADLESS[@]}" "$ENGINE_BIN" "${SMOKE_ENGINE_ARGS[@]}" \
     --cell "$NG_CELL" --new-game --bench-frames 30 --bench-hold \
     >"$LOG_DIR/engine.stdout" 2>"$LOG_DIR/engine.stderr" &
@@ -217,45 +215,4 @@ if grep -q '^byro> "npc [0-9]*: topic' "$LOG_DIR/outside.status"; then
 fi
 pass "no greeter opened a conversation from afar"
 
-# ── 7 — the shooting tutorial: bottles a resident Enable() brings in, shot ───
-# Sunny's line enables VCG02BottleMarkerREF while Goodsprings is loaded; its enable
-# children (the bottles) were spawned withheld and must get their content live (#5065).
-debug_command "obscript.cmd $NG_BOTTLE_MARKER 1021" "$LOG_DIR/enable.log"
-first_bottle=${NG_BOTTLES%% *}
-deadline=$((SECONDS + 30))
-until grep -q "Enabled reference $first_bottle: its content spawned" "$LOG_DIR/engine.stderr"; do
-    (( SECONDS < deadline )) || fail "enabling the bottle marker never brought the bottles in ($(cat "$LOG_DIR/enable.log"))"
-    sleep 1
-done
-pass "a resident Enable() of the bottle marker spawns its bottles"
-debug_command "obscript.cmd $player 1002 r:$NG_PISTOL 1
-obscript.cmd $player 1002 r:$NG_AMMO 30" /dev/null
-sleep 1
-debug_command inventory.status "$LOG_DIR/inventory.log"
-grep -q "equipped_weapon=0x$NG_PISTOL" "$LOG_DIR/inventory.log" || debug_command "inv.equip $NG_PISTOL" /dev/null
-sleep 1
-numbers() { grep -o "$1 *([^)]*)" "$2" | head -1 | grep -oE '[-+]?[0-9]+(\.[0-9]+)?' | tr '\n' ' '; }
-for bottle in $NG_BOTTLES; do
-    debug_command "mesh.info 0x$bottle" "$LOG_DIR/bottle.$bottle"
-    read -r bx by bz <<<"$(numbers 'Transform.global: *pos' "$LOG_DIR/bottle.$bottle")"
-    [[ -n "${bz:-}" ]] || fail "bottle $bottle has no placement ($(head -3 "$LOG_DIR/bottle.$bottle"))"
-    debug_command "phys.census $bx $bz 40" "$LOG_DIR/census.$bottle"
-    grep -q "form=0x${bottle#00}" "$LOG_DIR/census.$bottle" || fail "bottle $bottle has no collision body"
-    # Stand 400 units west-north-west of the bottle (clear of the fence it sits on), aim, fire.
-    debug_command "cam.pos $(awk -v x="$bx" -v y="$by" -v z="$bz" 'BEGIN { printf "%.1f %.1f %.1f", x - 382, y + 60, z + 118 }')" /dev/null
-    sleep 4
-    debug_command cam.where "$LOG_DIR/cam.where"
-    read -r cx cy cz <<<"$(numbers 'position:' "$LOG_DIR/cam.where")"
-    debug_command "input.look $(awk -v bx="$bx" -v by="$by" -v bz="$bz" -v cx="$cx" -v cy="$cy" -v cz="$cz" 'BEGIN {
-        dx = bx - cx; dy = by + 6 - cy; dz = bz - cz; deg = 180 / atan2(0, -1)
-        printf "%.2f %.2f", atan2(-dx, -dz) * deg, atan2(dy, sqrt(dx * dx + dz * dz)) * deg }')" /dev/null
-    sleep 1
-    debug_command "input.press attack" /dev/null
-    sleep 3
-done
-debug_command "quest.show $NG_NEXT_QUEST" "$LOG_DIR/vcg02.bottles"
-require "$LOG_DIR/vcg02.bottles" "nTargetCount=3" "three pistol shots hit three bottles (OnHitWith)"
-grep -Eq ' 10: displayed=(true|false) completed=true' "$LOG_DIR/vcg02.bottles" ||
-    fail "the shooting objective (10) did not complete ($(grep ' 10:' "$LOG_DIR/vcg02.bottles"))"
-pass "the shooting objective completes"
-echo "smoke[fnv-new-game]: PASS -- intro -> character creation -> the opening -> Goodsprings -> the shooting tutorial"
+echo "smoke[fnv-new-game]: PASS -- intro -> character creation -> the opening -> Goodsprings"

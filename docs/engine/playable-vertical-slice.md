@@ -1823,18 +1823,36 @@ front door opens onto Goodsprings.
   Sunny's follow-up waits at her trigger before driving the greeting.
 - **A resident `Enable()` brought nothing in** (#5065's enable edge). VCG02's
   sarsaparilla bottles are enable children of the initially disabled
-  `VCG02BottleMarkerREF`, which Sunny's line enables while Goodsprings is loaded;
+  `VCG02BottleMarkerREF`, which Sunny's bark enables while Goodsprings is loaded;
   they stayed bare roots — no mesh, no body — until the cell reloaded. The
   enable edge now fills the withheld root in place through the reference loader
   (`cell_loader::enabled`), so its scripts keep their entity and variables and
   get the `OnLoad` the original runs when 3D loads. A shot that stops on a bare
   root collision now reaches the placement's `OnHitWith` through
-  `PhysicsSourceForm`; three pistol shots complete objective 10.
+  `PhysicsSourceForm`.
+- **Sunny could not leave the saloon** (cross-cell actor travel, PRD
+  `cross-cell-actor-travel`, #6850). VCG02 stage 10 sends her to a marker outside; an
+  actor now routes to a load door of its own cell whose `XTEL` leads into the
+  destination's space, passes it, is recorded in a saved FormID-keyed relocation
+  ledger (`ActorRelocations`, save v126) and is spawned in its new cell at the door's
+  pose, never in its home cell. `actor.where` reports the state. Behind it:
+  exterior and interior NAVM tiles were never made resident (the parser moves every
+  cell's NAVMs into the global map; the loaders read the emptied per-cell lists), and
+  the cross-tile graph ignored the authored `NVEX` links, so Sunny now walks a real
+  route to the shooting range.
+- **Sunny's lines never reached the player.** FO3/FNV quests bind no aliases, so an
+  NPC offered only topics a spoken line linked to; every running quest's topics are
+  now offered (the INFO conditions pick the speaker) and an activation opens on
+  GREETING. A Say-Once line is spent when it starts, not when it is asked for (the
+  range trigger asks twice in one frame); a Travel package to the current location
+  stays where the actor is; and a script's `player.equipitem <weapon>` wields it
+  (the bark hands over a Varmint Rifle). `fnv-vcg02-route.sh` gates all of it.
 
-**Not modelled yet.** The intro movie; face sliders (GUI-NG-005); actors moving
-between cells (VCG02's Sunny leaves the saloon for the meeting behind it); a live
-`Disable()` (the rest of #5065); the MenuXml documents these screens have in the
-original (the page stands in, GUI-PAGE-002 / Q4).
+**Not modelled yet.** The intro movie (PRD `bink-video-playback`, #6855); face
+sliders (GUI-NG-005); an unwatched actor's offscreen arrival and multi-hop routes
+(`cross-cell-actor-travel` Phase 3, #6854); a live `Disable()` (the rest of #5065);
+the MenuXml documents these screens have in the original (the page stands in,
+GUI-PAGE-002 / Q4).
 
 ## Work rules
 
