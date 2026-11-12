@@ -3,11 +3,11 @@ name = "byroredux-video"
 version.workspace = true
 edition.workspace = true
 
-# Movie decoding for the games' own Bink videos (PRD bink-video-playback). The decoder is the
-# system FFmpeg, reached at run time through its command-line tools (BIK-DEC-005): nothing is
-# linked, so the MIT workspace carries no FFmpeg code, and a machine without FFmpeg gets a
-# reported "skipped" movie, never a failure.
+# Movie decoding for the games' own Bink videos (PRD bink-video-playback). Bink 1 (BIKi) video and
+# audio are decoded in process by `mercs2_bink` (MIT, pure Rust, no dependencies), so players need
+# no external tool (BIK-DEC-005). Bink 2 has no open decoder and is reported unsupported.
 [dependencies]
+mercs2_bink = "=0.1.0"
 thiserror = { workspace = true }
 log = { workspace = true }
 

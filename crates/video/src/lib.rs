@@ -1,21 +1,23 @@
 //! Movie decoding for the games' own videos (PRD `bink-video-playback`, #6855).
 //!
-//! The decoder is the system FFmpeg, reached at run time through its command-line tools
-//! (BIK-DEC-005): `ffprobe` measures a file, one `ffmpeg` process decodes its video to raw RGBA
-//! frames on a pipe, and a second extracts its audio to a temporary WAV the audio crate streams.
-//! Nothing is linked, so the MIT workspace carries no FFmpeg code; a machine without FFmpeg
-//! reports [`VideoError::NoFfmpeg`] and the caller marks the movie *skipped*.
+//! Bink 1 (`BIKi`) video and audio are decoded in process by the pure-Rust, MIT-licensed
+//! `mercs2_bink` crate (BIK-DEC-005): no external tool is needed and nothing foreign is linked.
+//! Bink 2 (`KB2`) has no open decoder and any other Bink 1 revision is not supported by that
+//! crate; both are reported [`VideoError::Unsupported`] and the caller marks the movie *skipped*.
 //!
-//! [`Movie::advance`] is the whole playback contract: the caller owns the clock and asks which
-//! frame belongs at a given elapsed time; a decoder that falls behind holds the last frame, one
-//! that runs ahead is held back by a small bounded ring.
+//! A reader thread decodes frames, converts them to RGBA with Bink's own converter and fits them
+//! to the window; the first audio track is decoded up front into a temporary WAV the audio crate
+//! streams. [`Movie::advance`] is the whole playback contract: the caller owns the clock and asks
+//! which frame belongs at a given elapsed time; a decoder that falls behind holds the last
+//! frame, one that runs ahead is held back by a small bounded ring.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, TryRecvError};
 use std::thread::JoinHandle;
+
+use mercs2_bink::{AudioDecoder, VideoDecoder};
 
 /// Decoded frames the reader thread may run ahead of playback.
 const FRAME_RING: usize = 6;
@@ -23,18 +25,19 @@ const FRAME_RING: usize = 6;
 /// What a movie request cannot do.
 #[derive(Debug, thiserror::Error)]
 pub enum VideoError {
-    /// `ffmpeg` / `ffprobe` is not installed or not on `PATH`.
-    #[error("FFmpeg is not installed (ffmpeg / ffprobe not found on PATH)")]
-    NoFfmpeg,
-    /// The file is missing or is no movie FFmpeg can read.
+    /// The movie is in a format this build has no decoder for (Bink 2, another Bink 1 revision,
+    /// an alpha or grayscale plane).
+    #[error("{0}")]
+    Unsupported(String),
+    /// The file is missing or is no movie.
     #[error("cannot read the movie: {0}")]
     Unreadable(String),
-    /// FFmpeg started and failed.
-    #[error("FFmpeg failed: {0}")]
+    /// Decoding started and failed.
+    #[error("decoding failed: {0}")]
     Decode(String),
 }
 
-/// What `ffprobe` measures about a movie.
+/// What the container header says about a movie.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MovieInfo {
     pub width: u32,
@@ -44,74 +47,48 @@ pub struct MovieInfo {
     pub audio_tracks: u32,
 }
 
-/// Whether the FFmpeg tools are installed.
-pub fn ffmpeg_available() -> bool {
-    tool_works("ffmpeg") && tool_works("ffprobe")
-}
-
-fn tool_works(tool: &str) -> bool {
-    Command::new(tool)
-        .arg("-version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
-fn run_tool(tool: &str, args: &[&str], path: &Path) -> Result<String, VideoError> {
-    let output = Command::new(tool)
-        .args(args)
-        .arg(path)
-        .stdin(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => VideoError::NoFfmpeg,
-            _ => VideoError::Decode(format!("{tool}: {error}")),
-        })?;
-    if !output.status.success() {
-        return Err(VideoError::Unreadable(String::from_utf8_lossy(&output.stderr).trim().to_owned()));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-/// `10000000/333333` (or `30`) as frames per second; `0.0` when it is neither.
-fn parse_rate(rate: &str) -> f64 {
-    match rate.split_once('/') {
-        Some((numerator, denominator)) => {
-            let (n, d) = (numerator.trim().parse::<f64>().unwrap_or(0.0), denominator.trim().parse::<f64>().unwrap_or(0.0));
-            if d > 0.0 {
-                n / d
-            } else {
-                0.0
-            }
+/// `mercs2_bink`'s parse error, sorted into what the caller does with it: Bink 2 and other Bink
+/// revisions are *unsupported*, anything else is a damaged file.
+fn container_error(magic: &[u8], detail: String) -> VideoError {
+    match magic {
+        [b'K', b'B', b'2', ..] => VideoError::Unsupported("Bink 2 (KB2) has no decoder in this build".into()),
+        [b'B', b'I', b'K', revision, ..] if *revision != b'i' => {
+            VideoError::Unsupported(format!("Bink 1 revision '{}' has no decoder in this build", char::from(*revision)))
         }
-        None => rate.trim().parse().unwrap_or(0.0),
+        _ => VideoError::Unreadable(detail),
     }
 }
 
-/// Measure `path`: its first video stream's size and frame rate, its length and its audio tracks.
+fn describe(movie: &mercs2_bink::Movie) -> MovieInfo {
+    let fps = if movie.fps.1 > 0 { f64::from(movie.fps.0) / f64::from(movie.fps.1) } else { 0.0 };
+    MovieInfo {
+        width: movie.width,
+        height: movie.height,
+        fps,
+        duration_secs: if fps > 0.0 { f64::from(movie.frame_count) / fps } else { 0.0 },
+        audio_tracks: movie.tracks.len() as u32,
+    }
+}
+
+/// Measure `path` from its container header alone: nothing of the picture is read.
 pub fn probe(path: &Path) -> Result<MovieInfo, VideoError> {
-    let video = run_tool(
-        "ffprobe",
-        &["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,r_frame_rate:format=duration", "-of", "default=noprint_wrappers=1"],
-        path,
-    )?;
-    let field = |key: &str| video.lines().find_map(|line| line.strip_prefix(key)?.strip_prefix('=')).map(str::trim);
-    let width = field("width").and_then(|v| v.parse().ok());
-    let height = field("height").and_then(|v| v.parse().ok());
-    let (Some(width), Some(height)) = (width, height) else {
-        return Err(VideoError::Unreadable("no video stream".into()));
-    };
-    let audio = run_tool("ffprobe", &["-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0"], path)?;
-    Ok(MovieInfo {
-        width,
-        height,
-        fps: field("r_frame_rate").map_or(0.0, parse_rate),
-        duration_secs: field("duration").and_then(|v| v.parse().ok()).unwrap_or(0.0),
-        audio_tracks: audio.lines().filter(|line| !line.trim().is_empty()).count() as u32,
-    })
+    let mut file = std::fs::File::open(path).map_err(|error| VideoError::Unreadable(error.to_string()))?;
+    // The header names the tracks (0x28) and the frame index (0x10); the offset table ends the
+    // part the parser reads.
+    let mut head = [0u8; 0x2c];
+    file.read_exact(&mut head).map_err(|error| VideoError::Unreadable(error.to_string()))?;
+    if &head[..4] != b"BIKi" {
+        return Err(container_error(&head, format!("not a Bink 1 movie: magic {:02x?}", &head[..4])));
+    }
+    let word = |at: usize| u32::from_le_bytes([head[at], head[at + 1], head[at + 2], head[at + 3]]) as usize;
+    let table_end = 0x2c + 12 * word(0x28).min(0x100) + 4 * (word(0x10).min(1_000_000) + 1);
+    let mut bytes = head.to_vec();
+    bytes.resize(table_end, 0);
+    file.read_exact(&mut bytes[0x2c..]).map_err(|error| VideoError::Unreadable(error.to_string()))?;
+    match mercs2_bink::Movie::parse(&bytes) {
+        Ok(movie) => Ok(describe(&movie)),
+        Err(detail) => Err(container_error(&bytes, detail)),
+    }
 }
 
 /// Where a movie's decoded audio waits: one file per movie in the temp directory.
@@ -120,28 +97,111 @@ fn temp_wav_path() -> PathBuf {
     std::env::temp_dir().join(format!("byroredux-movie-{}-{}.wav", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)))
 }
 
-/// Decode `path`'s first audio track to 48 kHz stereo PCM in a temporary WAV.
-fn extract_audio(path: &Path) -> Result<PathBuf, VideoError> {
-    let wav = temp_wav_path();
-    let status = Command::new("ffmpeg")
-        .args(["-v", "error", "-nostdin", "-y", "-i"])
-        .arg(path)
-        .args(["-map", "0:a:0", "-vn", "-ac", "2", "-ar", "48000", "-c:a", "pcm_s16le"])
-        .arg(&wav)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => VideoError::NoFfmpeg,
-            _ => VideoError::Decode(format!("ffmpeg: {error}")),
-        })?;
-    if status.success() {
-        Ok(wav)
-    } else {
-        let _ = std::fs::remove_file(&wav);
-        Err(VideoError::Decode("audio extraction failed".into()))
+/// A canonical 44-byte WAV header for 16-bit PCM.
+fn wav_header(samples: usize, channels: u16, rate: u32) -> [u8; 44] {
+    let data = (samples * 2) as u32;
+    let mut h = [0u8; 44];
+    h[0..4].copy_from_slice(b"RIFF");
+    h[4..8].copy_from_slice(&(36 + data).to_le_bytes());
+    h[8..16].copy_from_slice(b"WAVEfmt ");
+    h[16..20].copy_from_slice(&16u32.to_le_bytes());
+    h[20..22].copy_from_slice(&1u16.to_le_bytes());
+    h[22..24].copy_from_slice(&channels.to_le_bytes());
+    h[24..28].copy_from_slice(&rate.to_le_bytes());
+    h[28..32].copy_from_slice(&(rate * u32::from(channels) * 2).to_le_bytes());
+    h[32..34].copy_from_slice(&(channels * 2).to_le_bytes());
+    h[34..36].copy_from_slice(&16u16.to_le_bytes());
+    h[36..40].copy_from_slice(b"data");
+    h[40..44].copy_from_slice(&data.to_le_bytes());
+    h
+}
+
+/// Decode the movie's first audio track to a temporary WAV. `None` when it has no audio or the
+/// track does not decode (the picture then plays silent, with a warning).
+fn extract_audio(movie: &mercs2_bink::Movie) -> Option<PathBuf> {
+    let track = movie.tracks.first()?;
+    let mut decoder = match AudioDecoder::new(track) {
+        Ok(decoder) => decoder,
+        Err(error) => {
+            log::warn!("video: its first audio track cannot be decoded: {error}");
+            return None;
+        }
+    };
+    let mut pcm: Vec<i16> = Vec::new();
+    for frame in 0..movie.frame_count {
+        let record = movie.split(frame).ok().and_then(|(records, _)| records.first().copied());
+        match record.map(|record| decoder.decode_record(record)) {
+            Some(Ok(samples)) => pcm.extend(samples),
+            Some(Err(error)) => {
+                log::warn!("video: its audio stops at frame {frame}: {error}");
+                break;
+            }
+            None => break,
+        }
     }
+    if pcm.is_empty() {
+        return None;
+    }
+    let wav = temp_wav_path();
+    let written = std::fs::File::create(&wav).and_then(|file| {
+        let mut out = std::io::BufWriter::new(file);
+        out.write_all(&wav_header(pcm.len(), track.channels() as u16, track.rate()))?;
+        for sample in &pcm {
+            out.write_all(&sample.to_le_bytes())?;
+        }
+        out.flush()
+    });
+    match written {
+        Ok(()) => Some(wav),
+        Err(error) => {
+            log::warn!("video: its soundtrack could not be written: {error}");
+            let _ = std::fs::remove_file(&wav);
+            None
+        }
+    }
+}
+
+/// `rgba` (`src` pixels wide and high) fitted into a `dst` frame: centred inside it with black bars
+/// when `letterbox`, stretched to fill it otherwise, bilinearly resampled.
+fn fit(rgba: &[u8], src: (usize, usize), dst: (usize, usize), letterbox: bool) -> Vec<u8> {
+    if src == dst {
+        return rgba.to_vec();
+    }
+    let mut out = vec![0u8; dst.0 * dst.1 * 4];
+    for pixel in out.chunks_exact_mut(4) {
+        pixel[3] = 255;
+    }
+    // The destination rectangle the picture fills.
+    let (rw, rh) = if letterbox {
+        let scale = (dst.0 as f64 / src.0 as f64).min(dst.1 as f64 / src.1 as f64);
+        (((src.0 as f64 * scale).round() as usize).clamp(1, dst.0), ((src.1 as f64 * scale).round() as usize).clamp(1, dst.1))
+    } else {
+        dst
+    };
+    let (x0, y0) = ((dst.0 - rw) / 2, (dst.1 - rh) / 2);
+    // Source column and 8-bit weight for each destination column, computed once.
+    let columns: Vec<(usize, usize, u32)> = (0..rw)
+        .map(|x| {
+            let at = ((x as f64 + 0.5) * src.0 as f64 / rw as f64 - 0.5).clamp(0.0, (src.0 - 1) as f64);
+            let left = at.floor() as usize;
+            (left, (left + 1).min(src.0 - 1), ((at - left as f64) * 256.0) as u32)
+        })
+        .collect();
+    for y in 0..rh {
+        let at = ((y as f64 + 0.5) * src.1 as f64 / rh as f64 - 0.5).clamp(0.0, (src.1 - 1) as f64);
+        let top = at.floor() as usize;
+        let (bottom, wy) = ((top + 1).min(src.1 - 1), ((at - top as f64) * 256.0) as u32);
+        let (row_a, row_b) = (&rgba[top * src.0 * 4..(top + 1) * src.0 * 4], &rgba[bottom * src.0 * 4..(bottom + 1) * src.0 * 4]);
+        let line = &mut out[((y0 + y) * dst.0 + x0) * 4..((y0 + y) * dst.0 + x0 + rw) * 4];
+        for (pixel, &(left, right, wx)) in line.chunks_exact_mut(4).zip(&columns) {
+            for channel in 0..3 {
+                let a = row_a[left * 4 + channel] as u32 * (256 - wx) + row_a[right * 4 + channel] as u32 * wx;
+                let b = row_b[left * 4 + channel] as u32 * (256 - wx) + row_b[right * 4 + channel] as u32 * wx;
+                pixel[channel] = ((a * (256 - wy) + b * wy + 32768) >> 16) as u8;
+            }
+        }
+    }
+    out
 }
 
 /// What a movie shows at a given moment.
@@ -161,7 +221,6 @@ pub struct Movie {
     size: (u32, u32),
     rx: Option<Receiver<Vec<u8>>>,
     reader: Option<JoinHandle<()>>,
-    child: Option<Child>,
     audio: Option<PathBuf>,
     frame: Vec<u8>,
     index: i64,
@@ -170,41 +229,37 @@ pub struct Movie {
 
 impl Movie {
     /// Start decoding `path` into `size` RGBA frames: fitted inside it with black bars when
-    /// `letterbox`, stretched to fill it otherwise. Blocks while the audio track is extracted.
+    /// `letterbox`, stretched to fill it otherwise. Blocks while the audio track is decoded.
     pub fn open(path: &Path, size: (u32, u32), letterbox: bool) -> Result<Self, VideoError> {
-        let info = probe(path)?;
-        let (width, height) = (size.0.max(2), size.1.max(2));
-        let filter = if letterbox {
-            format!("scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black")
-        } else {
-            format!("scale={width}:{height}")
+        let bytes = std::fs::read(path).map_err(|error| VideoError::Unreadable(error.to_string()))?;
+        let (info, audio, mut video) = {
+            let movie = mercs2_bink::Movie::parse(&bytes).map_err(|detail| container_error(&bytes, detail))?;
+            let video = VideoDecoder::new(&movie).map_err(VideoError::Unsupported)?;
+            (describe(&movie), extract_audio(&movie), video)
         };
-        let audio = if info.audio_tracks > 0 { extract_audio(path).ok() } else { None };
-        let mut child = Command::new("ffmpeg")
-            .args(["-v", "error", "-nostdin", "-i"])
-            .arg(path)
-            .args(["-an", "-vf", &filter, "-pix_fmt", "rgba", "-f", "rawvideo", "-"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| match error.kind() {
-                std::io::ErrorKind::NotFound => VideoError::NoFfmpeg,
-                _ => VideoError::Decode(format!("ffmpeg: {error}")),
-            })?;
-        let mut stdout = child.stdout.take().ok_or_else(|| VideoError::Decode("no decoder pipe".into()))?;
-        let frame_bytes = width as usize * height as usize * 4;
+        let (width, height) = (size.0.max(2), size.1.max(2));
         let (tx, rx) = sync_channel::<Vec<u8>>(FRAME_RING);
         let reader = std::thread::Builder::new()
             .name("movie-decode".into())
-            .spawn(move || loop {
-                let mut frame = vec![0u8; frame_bytes];
-                if stdout.read_exact(&mut frame).is_err() || tx.send(frame).is_err() {
-                    break;
+            .spawn(move || {
+                let Ok(movie) = mercs2_bink::Movie::parse(&bytes) else { return };
+                let target = (width as usize, height as usize);
+                for index in 0..movie.frame_count {
+                    let frame = match video.decode(&movie, index) {
+                        Ok(frame) => frame,
+                        Err(error) => {
+                            log::warn!("video: frame {index} does not decode: {error}");
+                            return;
+                        }
+                    };
+                    let rgba = mercs2_bink::rgb::to_rgba(frame);
+                    if tx.send(fit(&rgba, (frame.width as usize, frame.height as usize), target, letterbox)).is_err() {
+                        return;
+                    }
                 }
             })
             .map_err(|error| VideoError::Decode(format!("decoder thread: {error}")))?;
-        Ok(Self { info, size: (width, height), rx: Some(rx), reader: Some(reader), child: Some(child), audio, frame: Vec::new(), index: -1, exhausted: false })
+        Ok(Self { info, size: (width, height), rx: Some(rx), reader: Some(reader), audio, frame: Vec::new(), index: -1, exhausted: false })
     }
 
     /// A movie over frames that already exist (tests).
@@ -213,7 +268,7 @@ impl Movie {
         for frame in frames {
             tx.send(frame).expect("the ring holds every frame");
         }
-        Self { info, size, rx: Some(rx), reader: None, child: None, audio: None, frame: Vec::new(), index: -1, exhausted: false }
+        Self { info, size, rx: Some(rx), reader: None, audio: None, frame: Vec::new(), index: -1, exhausted: false }
     }
 
     pub fn info(&self) -> &MovieInfo {
@@ -280,13 +335,8 @@ impl Movie {
 
 impl Drop for Movie {
     fn drop(&mut self) {
-        // Close the ring first: a reader blocked in `send` wakes with an error. Then kill the
-        // decoder, which closes the pipe a reader blocked in `read` waits on.
+        // Close the ring first: a reader blocked in `send` wakes with an error and ends.
         self.rx = None;
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
@@ -302,15 +352,6 @@ mod tests {
 
     fn info(fps: f64) -> MovieInfo {
         MovieInfo { width: 2, height: 2, fps, duration_secs: 0.0, audio_tracks: 0 }
-    }
-
-    #[test]
-    fn frame_rates_parse_as_fractions_and_plain_numbers() {
-        assert!((parse_rate("10000000/333333") - 30.0).abs() < 0.001, "FNVIntro.bik's rate");
-        assert!((parse_rate("24000/1001") - 23.976).abs() < 0.001);
-        assert_eq!(parse_rate("25"), 25.0);
-        assert_eq!(parse_rate("0/0"), 0.0);
-        assert_eq!(parse_rate("garbage"), 0.0);
     }
 
     /// The clock picks the frame; frames it has passed are dropped; one it has not reached is
@@ -342,14 +383,74 @@ mod tests {
         assert_eq!(movie.advance(0.2), Playhead::Finished, "the decoder closed before frame 2");
     }
 
-    /// BIK-G-002 / acceptance scenario 1: every Bink 1 movie (`BIK` magic) of every installed
-    /// game decodes to its last frame, and the frame count agrees with the probed length.
-    /// `BYROREDUX_STEAM_COMMON=<steamapps/common> cargo test -p byroredux-video --release --
-    /// --ignored --nocapture` (needs FFmpeg and the games).
+    /// A solid `w`×`h` RGBA picture.
+    fn solid(w: usize, h: usize, rgb: [u8; 3]) -> Vec<u8> {
+        (0..w * h).flat_map(|_| [rgb[0], rgb[1], rgb[2], 255]).collect()
+    }
+
     #[test]
-    #[ignore = "needs FFmpeg and the games' Data\\Video folders"]
+    fn a_picture_the_size_of_the_window_is_not_resampled() {
+        let picture: Vec<u8> = (0..4 * 3 * 4).map(|n| n as u8).collect();
+        assert_eq!(fit(&picture, (4, 3), (4, 3), true), picture);
+    }
+
+    #[test]
+    fn letterboxing_centres_the_picture_between_black_bars() {
+        // 4:3 into a square window: the picture is 8 high and 6 rows of bars remain, 3 above and below.
+        let out = fit(&solid(4, 3, [200, 100, 50]), (4, 3), (8, 8), true);
+        let row = |y: usize| &out[y * 8 * 4..(y + 1) * 8 * 4];
+        let all = |y: usize, px: [u8; 4]| row(y).chunks(4).all(|p| p == px);
+        assert!(all(0, [0, 0, 0, 255]) && all(7, [0, 0, 0, 255]), "bars are opaque black");
+        assert!(all(3, [200, 100, 50, 255]), "the picture fills its rows");
+        let bars = (0..8).filter(|&y| all(y, [0, 0, 0, 255])).count();
+        assert_eq!(bars, 2, "a 4:3 picture in a square leaves two rows of bars at this size");
+    }
+
+    #[test]
+    fn without_letterbox_the_picture_fills_the_window() {
+        let out = fit(&solid(4, 3, [9, 8, 7]), (4, 3), (8, 8), false);
+        assert!(out.chunks(4).all(|p| p == [9, 8, 7, 255]));
+    }
+
+    #[test]
+    fn a_wav_header_describes_its_samples() {
+        let h = wav_header(100, 2, 44100);
+        assert_eq!(&h[0..4], b"RIFF");
+        assert_eq!(u32::from_le_bytes(h[4..8].try_into().unwrap()), 36 + 200);
+        assert_eq!(u16::from_le_bytes(h[22..24].try_into().unwrap()), 2);
+        assert_eq!(u32::from_le_bytes(h[24..28].try_into().unwrap()), 44100);
+        assert_eq!(u32::from_le_bytes(h[28..32].try_into().unwrap()), 44100 * 4);
+        assert_eq!(u32::from_le_bytes(h[40..44].try_into().unwrap()), 200);
+    }
+
+    /// Bink 2 and other Bink 1 revisions are reported unsupported, not as damaged files; garbage
+    /// and a missing file are unreadable.
+    #[test]
+    fn formats_without_a_decoder_are_unsupported_and_damage_is_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, bytes: &[u8]| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path
+        };
+        let mut bink2 = b"KB2g".to_vec();
+        bink2.resize(0x80, 0);
+        assert!(matches!(probe(&write("a.bk2", &bink2)), Err(VideoError::Unsupported(reason)) if reason.contains("Bink 2")));
+        assert!(matches!(Movie::open(&write("b.bk2", &bink2), (8, 8), true), Err(VideoError::Unsupported(_))));
+        let mut other = b"BIKb".to_vec();
+        other.resize(0x80, 0);
+        assert!(matches!(probe(&write("c.bik", &other)), Err(VideoError::Unsupported(reason)) if reason.contains("'b'")));
+        assert!(matches!(probe(&write("d.bik", b"not a movie at all, not at all......................")), Err(VideoError::Unreadable(_))));
+        assert!(matches!(probe(&dir.path().join("missing.bik")), Err(VideoError::Unreadable(_))));
+    }
+
+    /// BIK-G-002 / acceptance scenario 1: every Bink 1 movie (`BIKi`) of every installed game
+    /// decodes to its last frame, and the frame count is the header's. Also reports the decode
+    /// speed. `BYROREDUX_STEAM_COMMON=<steamapps/common> cargo test -p byroredux-video --release
+    /// -- --ignored --nocapture` (needs the games).
+    #[test]
+    #[ignore = "needs the games' Data\\Video folders"]
     fn every_installed_bink_1_movie_decodes_to_its_last_frame() {
-        assert!(ffmpeg_available(), "this test needs the FFmpeg tools");
         let Ok(common) = std::env::var("BYROREDUX_STEAM_COMMON") else {
             panic!("set BYROREDUX_STEAM_COMMON to the Steam library's steamapps/common folder");
         };
@@ -369,70 +470,23 @@ mod tests {
                 if std::fs::File::open(&file).and_then(|mut f| f.read_exact(&mut magic)).is_err() || &magic != b"BIK" {
                     continue;
                 }
-                let outcome = Movie::open(&file, (320, 180), true).map(|mut movie| {
-                    let expected = (movie.info().duration_secs * movie.info().fps).round() as i64;
-                    (movie.decode_to_end(), expected)
+                let name = format!("{game}/{}", file.file_name().unwrap().to_string_lossy());
+                let started = std::time::Instant::now();
+                let outcome = probe(&file).and_then(|info| {
+                    let expected = (info.duration_secs * info.fps).round() as u64;
+                    Movie::open(&file, (320, 180), true).map(|mut movie| (movie.decode_to_end(), expected))
                 });
                 match outcome {
-                    Ok((frames, expected)) if frames > 0 && (frames as i64 - expected).abs() <= 3 => {
+                    Ok((frames, expected)) if frames > 0 && frames == expected => {
                         decoded += 1;
-                        println!("ok   {game}/{}: {frames} frames (probed {expected})", file.file_name().unwrap().to_string_lossy());
+                        println!("ok   {name}: {frames} frames in {:.1} s", started.elapsed().as_secs_f64());
                     }
-                    other => failed.push(format!("{game}/{}: {other:?}", file.file_name().unwrap().to_string_lossy())),
+                    other => failed.push(format!("{name}: {other:?}")),
                 }
             }
         }
         println!("{decoded} Bink 1 movies decoded");
         assert!(failed.is_empty(), "movies that did not decode to their last frame: {failed:#?}");
         assert!(decoded > 0, "no Bink 1 movie was found");
-    }
-
-    /// Needs the FFmpeg tools; passes trivially without them (the movie would be skipped).
-    #[test]
-    fn a_generated_movie_probes_decodes_letterboxed_and_yields_its_audio() {
-        if !ffmpeg_available() {
-            eprintln!("skipped: FFmpeg is not installed");
-            return;
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("clip.mkv");
-        let made = Command::new("ffmpeg")
-            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=64x48:rate=10:duration=1", "-f", "lavfi", "-i", "sine=frequency=440:duration=1"])
-            .args(["-c:v", "mpeg4", "-c:a", "pcm_s16le"])
-            .arg(&file)
-            .status()
-            .expect("ffmpeg runs");
-        assert!(made.success(), "the test clip is generated");
-
-        let found = probe(&file).unwrap();
-        assert_eq!((found.width, found.height, found.audio_tracks), (64, 48, 1));
-        assert!((found.fps - 10.0).abs() < 0.01 && (found.duration_secs - 1.0).abs() < 0.2, "{found:?}");
-
-        // 4:3 into a square window: black bars above and below.
-        let mut movie = Movie::open(&file, (96, 96), true).unwrap();
-        assert_eq!(movie.size(), (96, 96));
-        let wav = movie.audio_path().map(Path::to_path_buf).expect("the audio track is extracted");
-        assert!(std::fs::metadata(&wav).unwrap().len() > 44, "a WAV with samples");
-        let started = std::time::Instant::now();
-        let mut shown = 0u64;
-        let mut first_row_black = false;
-        loop {
-            assert!(started.elapsed().as_secs() < 20, "the movie never finished");
-            match movie.advance(started.elapsed().as_secs_f64()) {
-                Playhead::Frame { pixels, new, .. } => {
-                    if new && shown == 0 {
-                        first_row_black = pixels[..96 * 4].chunks(4).all(|px| px[..3] == [0, 0, 0]);
-                    }
-                    shown += u64::from(new);
-                }
-                Playhead::Waiting => {}
-                Playhead::Finished => break,
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(first_row_black, "letterboxing pads the top");
-        assert!((5..=11).contains(&shown), "about ten frames shown at ten fps, got {shown}");
-        drop(movie);
-        assert!(!wav.exists(), "dropping the movie removes its audio file");
     }
 }

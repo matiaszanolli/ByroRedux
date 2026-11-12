@@ -1,12 +1,13 @@
 //! The movie player (PRD `bink-video-playback`, #6855): carries out the `PlayBink` requests scripts
-//! raise (`byroredux_scripting::obscript_more::PendingVideos`) with the system FFmpeg
+//! raise (`byroredux_scripting::obscript_more::PendingVideos`) with the in-process Bink 1 decoder
 //! (`byroredux_video`, BIK-DEC-005).
 //!
 //! A movie plays full-screen through the same overlay quad the loading cover and the HUD use, its
 //! audio on the scripted-music track, and holds the game still while it runs (`dt` is pinned to 0.0
 //! like the loading cover, BIK-PRES-002). Escape ends an interruptable movie (BIK-PRES-004); so does
-//! `video.skip`, which the headless gates drive (BIK-RPT-003). A movie the build cannot decode — no
-//! FFmpeg, no file, a stream FFmpeg rejects — is reported and skipped, never a stall (§3 outcomes).
+//! `video.skip`, which the headless gates drive (BIK-RPT-003). A movie the build cannot decode — Bink 2,
+//! another Bink revision — is reported Skipped and a missing or damaged file Failed, never a stall
+//! (§3 outcomes).
 //!
 //! Not yet carried out: the mute-audio and pause-music flags (BIK-PRES-005) — the movie's own sound
 //! replaces the scripted-music layer, the world's sound keeps playing — and the Papyrus
@@ -25,7 +26,7 @@ use byroredux_video::{Movie, Playhead};
 pub(crate) enum VideoOutcome {
     /// Every frame shown, or ended early by Escape / `video.skip` on an interruptable request.
     Played { ended_early: bool },
-    /// This build cannot decode it (no FFmpeg).
+    /// This build has no decoder for its format (Bink 2, another Bink revision).
     Skipped(String),
     /// The file is missing or did not decode.
     Failed(String),
@@ -121,14 +122,12 @@ impl VideoPlayer {
         let Some(window) = window else {
             return note(world, VideoOutcome::Skipped("there is no window to show it in".into()), &request);
         };
-        if !byroredux_video::ffmpeg_available() {
-            return note(world, VideoOutcome::Skipped("FFmpeg is not installed".into()), &request);
-        }
         let Some(path) = movie_path(&request.file) else {
             return note(world, VideoOutcome::Failed("the file is not under the data folder's Video".into()), &request);
         };
         let movie = match Movie::open(&path, window, request.letterbox) {
             Ok(movie) => movie,
+            Err(byroredux_video::VideoError::Unsupported(reason)) => return note(world, VideoOutcome::Skipped(reason), &request),
             Err(error) => return note(world, VideoOutcome::Failed(error.to_string()), &request),
         };
         let info = movie.info();

@@ -1778,8 +1778,8 @@ Mitchell's house to Goodsprings with no console step a player would not take.
 
 **The route.** The engine starts the intro quest VCG00 at stage 0 (no record or
 script in the masters starts it; its own `MenuMode` block runs under the
-original's new-game menus): `FNVIntro.bik` plays full screen through the system
-FFmpeg (`PlayBink "FNVIntro.bik" 1 1 0 1`: Escape ends it; without FFmpeg it is
+original's new-game menus): `FNVIntro.bik` plays full screen, decoded in the engine
+(`PlayBink "FNVIntro.bik" 1 1 0 1`: Escape ends it; a Bink 2 file is
 reported Skipped), the player is moved to `VCG01PlayerStartMarkerREF`, and VCG00
 hands over to VCG01. Doc's
 lines chain through their End result scripts; the five character-creation screens

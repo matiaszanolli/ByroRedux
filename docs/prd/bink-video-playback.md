@@ -1,6 +1,6 @@
 # Bink video playback — Product Requirements
 
-**Status**: ACTIVE (2026-11-11). Revision 4 files the tracking issues. Revision 3 records the owner's approval
+**Status**: ACTIVE (2026-11-12). Revision 6 re-decides Q1 at the owner's direction: Bink 1 decodes in process, no FFmpeg at run time. Revision 4 files the tracking issues. Revision 3 records the owner's approval
 with every §10 decision taken as recommended and folded into the
 requirements (BIK-DEC-003, BIK-DEC-005, BIK-REQ-005). Statements about how
 an original engine, format or tool behaves cite external sources; a claim
@@ -86,7 +86,7 @@ A movie request ends in one of three outcomes, each reported:
 | Outcome | Meaning | Reported by |
 |---|---|---|
 | **Played** | Every frame decoded and shown, sound with it, or ended early by Escape on an interruptable request | `video.status` (BIK-RPT-001) |
-| **Skipped** | The file's format has no decoder in this build (Bink 2 under Q2's recommendation; Bink 1 when Q1's decoder is absent) | one log line per file and `video.status` |
+| **Skipped** | The file's format has no decoder in this build (Bink 2 under Q2's recommendation; a Bink 1 revision other than `BIKi`) | one log line per file and `video.status` |
 | **Failed** | The file is missing or does not decode | one log line and `video.status`; the game continues |
 
 The corpus below was measured on 2026-11-11 from the installed games
@@ -126,7 +126,7 @@ The engine's state at HEAD on 2026-11-11 (after Phases 1 and 2's first part):
 | 2 | Where a request goes | `step_video` hands it to the movie player, which opens the file under `Video` (any case, `..\` out of it), draws frames full screen, holds game time like the loading cover, ends on the last frame or on Escape / `video.skip` for an interruptable request | `VideoPlayer`, `byroredux/src/video.rs`; `step_video`, `byroredux/src/app_step.rs`; `docs/smoke-tests/fnv-new-game.sh` leg 0 |
 | 3 | Papyrus `Game.PlayBink` | No native | `rg -i playbink crates/scripting/src` finds only the ObScript files |
 | 4 | Start sequence (INI movies) | Not read | `rg -i sintrosequence` finds nothing outside the reference dumps |
-| 5 | Decoder | The system FFmpeg, run as `ffprobe` / `ffmpeg` subprocesses (nothing linked): Bink 1 video and audio; Bink 2 video is reported Skipped. The mute and pause-music flags, and audio kept within a frame of the picture, are not done | `crates/video/src/lib.rs`; `scripts/bink-corpus.sh` |
+| 5 | Decoder | In process, through `mercs2_bink` (Q1, re-decided 2026-11-12): Bink 1 (`BIKi`) video and audio; Bink 2 and other revisions are reported Skipped. The mute and pause-music flags, and audio kept within a frame of the picture, are not done | `crates/video/src/lib.rs`; the ignored corpus test there |
 
 The census is re-measured by Phase 0's checked-in corpus script; the HEAD
 table is replaced by `video.status` once Phase 2 ships entirely.
@@ -199,9 +199,10 @@ table is replaced by `video.status` once Phase 2 ships entirely.
   track against the original.
 - **BIK-DEC-003.** Bink 2 video MUST be **Skipped** with one log line per
   file until Phase 0 has measured the open Bink 2 decoders (Q2).
-- **BIK-DEC-005.** Decoding MUST go through the system FFmpeg found at run
-  time; the workspace MUST NOT link it, and without it every request MUST be
-  **Skipped** with one log line (Q1).
+- **BIK-DEC-005.** Bink 1 MUST decode in process through a pure-Rust,
+  MIT-licensed library, so a player installs no external tool; the workspace
+  MUST NOT link FFmpeg or any native decoder, and a format the library does not
+  decode MUST be **Skipped** with one log line (Q1).
 - **BIK-DEC-004.** A frame that fails to decode MUST end the movie as
   **Failed** with a log line naming the file and frame, and the game MUST
   continue.
@@ -242,7 +243,7 @@ table is replaced by `video.status` once Phase 2 ships entirely.
 | # | Original behaviour | Redux behaviour | Becomes redundant | Risk and its requirement |
 |---|---|---|---|---|
 | 1 | Plays Bink 2 (Fallout 4, Fallout 76, Starfield) through RAD's SDK | Bink 2 video **Skipped** under Q2's recommendation (BIK-NG-001) | — | Fallout 4's intro and S.P.E.C.I.A.L. films do not play. Reported per file (BIK-DEC-003); Q2 names the alternatives |
-| 2 | Decoder built into the game | Decoder from Q1, possibly absent from a build | — | A build without it plays no movie. **Skipped** is reported, never silent (BIK-DEC-003, BIK-RPT-001) |
+| 2 | Decoder built into the game | Q1's library decodes Bink 1 only | — | A format it cannot decode plays no movie. **Skipped** is reported, never silent (BIK-DEC-003, BIK-RPT-001) |
 | 3 | Main menu with a background movie | No main menu, so no menu movie (BIK-NG-004) | — | Unowned: no PRD promises a main menu yet. Recorded here so the gap has a home |
 
 ---
@@ -339,6 +340,19 @@ last frame.
    **Phase 0: verify**); the fastest self-contained route, but the crate
    then carries that decoder's licence inside an MIT project.
    **Decided** (2026-11-11): as recommended: the system FFmpeg, reached at run time; the MIT code links nothing, and without it a movie is Skipped (BIK-DEC-005).
+   **Re-decided** (2026-11-12, owner): ship a basic player inside the engine so
+   players install no tool, using a Rust library where one exists. The choice
+   is `mercs2_bink` 0.1.0 (MIT, pure Rust, no dependencies), pinned: it decodes
+   `BIKi` video and DCT audio, and on all 47 Bink 1 files of Oblivion, Fallout 3,
+   Fallout: New Vegas, Skyrim SE and Fallout 4 every video frame is bit-identical
+   to FFmpeg's, with audio within one 16-bit step apart from 1–2 samples in a
+   file (measured with a probe against the FFmpeg tools, 2026-11-12). It does not
+   decode other Bink 1 revisions, alpha or grayscale planes, or RDFT audio; none
+   occurs in the corpus. **Provenance, for the owner:** its author reports the
+   format description was read out of RAD's `binkw32.dll` with a disassembler and
+   states that no third-party decoder source was read
+   ([SPEC-video.md](https://github.com/Mercenaries-Fan-Build/notes-on-the-released-game),
+   shipped inside the crate); this repository has not verified that claim.
 2. **Q2 — Bink 2.** Recommended: **Skipped** with a log line until Phase 0
    has measured the open Bink 2 decoders, then decide on that measurement.
    **Phase 0: verify** NihAV's reported Rust decoder
@@ -380,3 +394,4 @@ last frame.
 | 3 | 2026-11-11 | Owner approval: Q1–Q3 decided as recommended and folded in (BIK-DEC-003 reworded; BIK-DEC-005, BIK-REQ-005 added) | owner: approved |
 | 4 | 2026-11-11 | APPROVED → ACTIVE: tracking issues filed (#6855 (parent). Phases: #6856 (0), #6857 (1), #6858 (2), #6859 (3)) | — |
 | 5 | 2026-11-11 | §3 HEAD table refreshed for the shipped decoder, request flags and movie player (BIK-DEC-001/002/004/005, BIK-REQ-001/003, BIK-PRES-001/002/004/006, BIK-RPT-001..003); mute/pause flags, A/V sync, Papyrus native, start sequences open | — |
+| 6 | 2026-11-12 | Owner-directed: Q1 re-decided: Bink 1 decodes in process through `mercs2_bink`, no FFmpeg at run time (BIK-DEC-005 reworded; §3 HEAD rows 2 and 5; §5 row 2; provenance note) | — |
