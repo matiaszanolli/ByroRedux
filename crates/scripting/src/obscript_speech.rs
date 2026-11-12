@@ -97,9 +97,12 @@ pub fn say(world: &World, speaker: EntityId, topic: u32, target: Option<EntityId
             seconds,
         )
     };
-    crate::note_info_spoken(world, speaker, line.info.form_id);
     let mut lines = world.try_resource_mut::<PendingScriptedLines>()?;
-    // One line at a time per speaker: a new one replaces the one being spoken.
+    // One line at a time per speaker: a new one replaces the one being spoken. A Say-Once line is
+    // spent when it STARTS ([`obscript_speech_system`]), not when it is asked for: two `SayTo`s in
+    // one frame (New Vegas's shooting-range trigger fires `OnTriggerEnter` and `OnTrigger` together)
+    // choose the same line and the second replaces the first, instead of the first being spent
+    // without its Begin result script ever running.
     lines.speaking.retain(|speaking| speaking.speaker != speaker);
     let info = std::sync::Arc::new(line.info.clone());
     lines.speaking.push(Speaking { speaker, topic_form_id: line.topic_form_id, remaining: seconds, info: Some(info), started: false });
@@ -131,6 +134,11 @@ pub fn obscript_speech_system(world: &World, dt: f32) {
     };
     // The guard is dropped: a result script may `SayTo` again, which pushes a new line.
     for line in &started {
+        // The line is being said now: a Say-Once INFO stops qualifying before its own Begin script
+        // (which may `SayTo` the same topic again) runs.
+        if let Some(info) = &line.info {
+            crate::note_info_spoken(world, line.speaker, info.form_id);
+        }
         run_line_result_script(world, line, true);
     }
     for line in done {
@@ -175,6 +183,47 @@ mod tests {
         // A line of another topic is not the one the voice player timed.
         lines.set_duration(speaker, 8, 9.0);
         assert_eq!(lines.speaking[0].remaining, 1.25);
+    }
+
+    /// A Say-Once line is spent when it starts, not when it is asked for. New Vegas's VCG02
+    /// shooting-range trigger runs `SunnyREF.SayTo Player VCG02SunnyBark` from two blocks in the
+    /// same frame; the topic's first INFO (`10A1E6`, "see those sarsaparilla bottles", whose Begin
+    /// script displays objective 10 and enables the bottles) used to be spent by the first call
+    /// and replaced by the second call's line (`10A1E7`, "Okay, you're on") before it ever ran.
+    #[test]
+    fn two_same_frame_says_choose_the_same_say_once_line_and_it_is_spent_when_it_starts() {
+        use byroredux_plugin::esm::records::{DialRecord, InfoDataHeader};
+        let say_once = |form_id: u32| InfoRecord {
+            form_id,
+            data: Some(InfoDataHeader { flags1: 0x04, ..Default::default() }),
+            ..Default::default()
+        };
+        let mut world = World::new();
+        world.insert_resource(crate::dialogue::DialogueSpokenInfoForms::default());
+        world.insert_resource(DialogueRegistry::from_records([DialRecord {
+            form_id: 0x10A1E0,
+            infos: vec![say_once(0x10A1E6), say_once(0x10A1E7)],
+            ..Default::default()
+        }]));
+        world.insert_resource(PendingScriptedLines::default());
+        let speaker = world.spawn();
+
+        assert!(say(&world, speaker, 0x10A1E0, None).is_some());
+        assert!(say(&world, speaker, 0x10A1E0, None).is_some());
+        {
+            let lines = world.resource::<PendingScriptedLines>();
+            assert_eq!(lines.speaking.len(), 1, "the second call replaces the first");
+            assert_eq!(lines.speaking[0].info.as_ref().map(|info| info.form_id), Some(0x10A1E6), "both chose the first line");
+        }
+        assert!(world.resource::<crate::dialogue::DialogueSpokenInfoForms>().0.is_empty(), "nothing is spent before a line starts");
+
+        obscript_speech_system(&world, 0.1);
+        assert_eq!(world.resource::<crate::dialogue::DialogueSpokenInfoForms>().0.len(), 1, "the started line is spent");
+
+        // The line is under way; a later call finds the next one.
+        assert!(say(&world, speaker, 0x10A1E0, None).is_some());
+        let lines = world.resource::<PendingScriptedLines>();
+        assert_eq!(lines.speaking.last().and_then(|line| line.info.as_ref().map(|info| info.form_id)), Some(0x10A1E7));
     }
 
     /// A scripted line runs its INFO's Begin result script when it starts and its End
