@@ -1351,7 +1351,10 @@ fn example_targets_hold_their_per_crate_ceilings() {
         ("hkx", 14, 863),
         ("menuxml", 1, 197),
         // #6636 — `bto_segment_census` reads BA2 and gains `--blocks` and `--textures` (V6, V7, V13).
-        ("nif", 38, 4405),
+        // NIFAL synthetic-height census (2026-11-08) re-measure: +1 — `synthetic_height_census.rs`, the static-mesh
+        // population a normal-integrated height map could displace (docs/audits/AUDIT_NIFAL_2026-11-08.md);
+        // its `--emit-normals` TSV feeds terrain-height's `tileability_census`. #6065: `skeleton_tree_dump` grew.
+        ("nif", 39, 4763),
         // M43 — +1: `pex_list_fns.rs`, which prints a script's typed function signatures; it read the
         // FO4 `OnStory*` event payloads out of `Quest.pex` (docs/engine/story-manager.md §6.4).
         // M48 Phase 0 (#6643) re-measure: +1 — `pex_find_call.rs`, which lists every call site of a
@@ -1390,7 +1393,9 @@ fn example_targets_hold_their_per_crate_ceilings() {
         ("spt", 6, 1561),
         // #6195 — `layer_census.rs`, the real-data check that measured each
         // game's normal-map green convention for terrain height generation.
-        ("terrain-height", 1, 150),
+        // NIFAL synthetic-height census (2026-11-08) re-measure: +1 — `tileability_census.rs`, which scores each
+        // normal map's wrap-seam exceedance (`Gradients::seam_exceedance`) to decide which materials tile.
+        ("terrain-height", 2, 285),
         // M48 Phase 0 (#6643) — three read-only Scaleform censuses whose output is checked in under
         // docs/data/game-ui/: `host_call_sites.rs` (GUI-HOST-001 call sites), `gfx_extension_census.rs`
         // (GUI-GFX-003) and `hud_feed_paths.rs` (GUI-HUD-003); each states its re-run command.

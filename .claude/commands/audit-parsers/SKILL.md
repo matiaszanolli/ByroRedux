@@ -1,6 +1,6 @@
 ---
-description: "Parser-discipline audit of the non-NIF, non-ESM readers of untrusted game-archive input — BSA/BA2/CSG archives, BGSM/BGEM, Starfield CDB, Havok HKX packfiles, FaceGen sidecars, MenuXml parse side, Steam VDF/ACF"
-argument-hint: "--focus <dimensions> [--crate bsa|bgsm|sfmaterial|hkx|facegen|menuxml|game-detect]"
+description: "Parser-discipline audit of the non-NIF, non-ESM readers of untrusted game-archive input — BSA/BA2/CSG archives, BGSM/BGEM, Starfield CDB, Havok HKX packfiles, FaceGen sidecars, MenuXml parse side, Steam VDF/ACF, Bink 1/2 video + Bink Audio decoders"
+argument-hint: "--focus <dimensions> [--crate bsa|bgsm|sfmaterial|hkx|facegen|menuxml|game-detect|bink2|binkaudio|video]"
 ---
 
 # Parser Discipline Audit (archives, materials, packfiles, sidecars)
@@ -17,6 +17,8 @@ Archives and mod files are attacker-controllable. This skill audits *reader disc
 | `crates/hkx/src/` (`packfile.rs`, `animation.rs`, `behavior.rs`, `expression.rs`) | Havok 2010 packfile (v8), 32-bit LE (Skyrim LE) + 64-bit LE (SE); Havok 2014 packfile (v11, Fallout 4: 0x40-byte section headers after a predicate area, spline type 3, THREECOMP48 rotations, `hkaDefaultAnimatedReferenceFrame`, `hkaLosslessCompressedAnimation` — layout measured from 856 FO4 clips, not sourced, `decode_animation` dispatches both kinds, 2649febc7 #5897); spline + lossless clips, skeletons, behavior graphs / character / project files and their condition-expression text | `byroredux/src/asset_provider/{animation,actor_graph,archetype_idle,object_graph}.rs`, `byroredux/src/systems/graph_locomotion.rs` |
 | `crates/facegen/src/` | `.egm` / `.egt` / `.tri` | `byroredux/src/npc_spawn/resumable/runtime.rs` (EGM only) |
 | `crates/menuxml/src/{parse,tex,font}.rs` | Oblivion/FO3/FNV menu XML (lenient scanner), its own DDS decoder (BC1/2/3/4/5 + DX10-header BC1–5 / RGBA8 / BGRA8 / R8 + masked 8/16/24/32-bpp; BC4/BC5/DX10 added in 5017a64c2 for terrain height maps) and `.fnt` fonts — parse robustness only, the rest is `/audit-ui` | `crates/menuxml/src/menu.rs`; `Rgba8::decode_dds` also feeds `byroredux/src/asset_provider/terrain_height.rs` and `tex.dump` (`commands/assets.rs`) |
+| `crates/bink2/src/`, `crates/binkaudio/src/` (clean-room; read each crate's `CLEANROOM.md` first — the spec is the crate's own `docs/spec/`) | Bink 2 (KB2g / KB2j) container + video bitstream; Bink Audio packets | `crates/video` (`byroredux_video`), driven by `byroredux/src/video.rs` |
+| `crates/video/src/` | Bink 1 through `mercs2_bink`, Bink 2 through the two crates above — container sniff, frame/size bounds before allocation | `byroredux/src/video.rs` (the movie player) |
 | `crates/game-detect/src/{vdf,steam,catalog}.rs` | Steam `libraryfolders.vdf` / `appmanifest_*.acf` (policy: `/audit-tooling` Dim 5) | launcher, `byro-detect` |
 
 **Contract every reader must meet** (a finding violates one): (a) a file-controlled size is bounded *before* memory is reserved; (b) malformed bytes give `Err` with field context — never a panic, abort or unbounded loop; (c) a short/degraded decode is a documented `Ok` + warning or an error, never silent; (d) a real-data sweep exists and cannot go green vacuously.

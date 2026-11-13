@@ -117,6 +117,9 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/save/` | save | MEDIUM |
 | `crates/audio/src/fuz.rs` | audio, parsers; skyrim | MEDIUM |
 | `crates/audio/` | audio | MEDIUM |
+| `crates/bink2/` | parsers, safety, performance | HIGH |
+| `crates/binkaudio/` | parsers, audio, safety | HIGH |
+| `crates/video/` | parsers, ui, audio, concurrency | MEDIUM |
 | `crates/ui/` | ui, safety | MEDIUM |
 | `crates/mod-runtime/` | safety Dim 8 | MEDIUM |
 | `crates/sdk/` | tooling | MEDIUM |
@@ -212,6 +215,9 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/objectives.rs` | gameplay Dim 6, ui, scripting | MEDIUM |
 | `byroredux/src/player_body.rs` | gameplay Dim 1, ecs Dim 9, save, physics Dim 4, concurrency Dim 4 | MEDIUM |
 | `byroredux/src/scaleform_hud.rs` | ui | MEDIUM |
+| `byroredux/src/video.rs` | ui, audio, scripting | MEDIUM |
+| `byroredux/src/chargen.rs` | character, gameplay, ui; fnv | MEDIUM |
+| `byroredux/src/perk_activate.rs` | character, gameplay | MEDIUM |
 | `byroredux/src/ui_input.rs` | ui | MEDIUM |
 | `byroredux/src/streaming/pre_parse.rs` | nif Dim 6, performance Dim 7, concurrency Dim 7, exterior; fo4 | MEDIUM |
 | `byroredux/src/streaming` | performance Dim 7, concurrency Dim 7, exterior; fo4 | MEDIUM |

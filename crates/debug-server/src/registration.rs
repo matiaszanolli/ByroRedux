@@ -148,7 +148,9 @@ fn register_faction_reputation(registry: &mut ComponentRegistry) {
 /// Register all inspectable components with the registry.
 pub fn register_all(registry: &mut ComponentRegistry) {
     use byroredux_core::animation::{AnimationPlayer, AnimationStack};
-    use byroredux_core::character::{CharacterLevel, LevelUpPoints, Perks};
+    use byroredux_core::character::{
+        CharacterIdentity, CharacterLevel, DismemberRecord, LevelUpPoints, Perks,
+    };
     use byroredux_scripting::SpellList;
     use byroredux_core::ecs::components::*;
     use byroredux_core::ecs::components::water::WaterCurrentVolume;
@@ -380,6 +382,14 @@ pub fn register_all(registry: &mut ComponentRegistry) {
         registry,
         "LevelUpPoints",
         vec!["skill_points", "skill_point_fraction", "perk_points"],
+    );
+    // VATS-LIMB-001 / -008 — the parts recorded gone and the killing-blow location (`vats.limbs`).
+    register_component::<DismemberRecord>(registry, "DismemberRecord", vec!["gone", "killing_blow"]);
+    // FNV chargen (VCG01) — the name, sex and race the player chose.
+    register_component::<CharacterIdentity>(
+        registry,
+        "CharacterIdentity",
+        vec!["name", "female", "race_form_id"],
     );
     register_faction_reputation(registry);
 
