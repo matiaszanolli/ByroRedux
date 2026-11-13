@@ -31,7 +31,7 @@ writes the missing design.
 | Pathing across resident navmesh tiles; door data decode | [NAVM Pathfinding](../engine/navmesh-pathfinding.md#2-scope) |
 | FormID-keyed actor state across a despawn | [Stream-boundary state continuity](../engine/stream-boundary-state-continuity.md#3-formid-keyed-state-not-entityid-keyed-state) |
 | Saved state and its restore on load | [Save / load round trip](../engine/save-load-roundtrip.md#6-live-load-apply-m451) |
-| Door routing, the relocation ledger, offscreen arrival | none yet: Phase 0 writes `docs/engine/cross-cell-travel.md` |
+| Door routing, the relocation ledger, offscreen arrival | [Cross-cell actor travel](../engine/cross-cell-travel.md) (Phase 0, #6851) |
 
 Normative terms **MUST**, **SHOULD** and **MAY** have their RFC 2119
 meanings, as in the related designs. Requirement IDs use the `XCT-` prefix.

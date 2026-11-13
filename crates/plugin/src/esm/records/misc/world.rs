@@ -59,7 +59,7 @@ pub fn parse_navi(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     out.editor_id = common.editor_id;
     for sub in subs {
         match &sub.sub_type {
