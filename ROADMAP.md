@@ -20,19 +20,17 @@ commit. Live state only: when something closes, it becomes a one-liner under
 
 ## Status
 
-**Last session close:** Session 110, 2026-11-08. Workspace numbers (tests, LOC,
+**Last session close:** Session 111, 2026-11-13. Workspace numbers (tests, LOC,
 files, issue dirs) live in [Project Stats](#project-stats) only.
 
-**Gates.** `rust-toolchain.toml` pins rustc 1.96.0 (#5308), which is also the bin crate's MSRV since
-wasmtime 49. 12 182 tests pass, 0 fail (2026-11-08; lock-order detector off). CI on `main` is **red at the
-Session 110 close** (last green `305af7beb`). The Session 109 causes are fixed; two new ones remain:
-`cargo clippy` (three errors in `byroredux-plugin`: `large_enum_variant` twice in `misc/magic.rs`,
-`is_multiple_of` in `sub_reader.rs`) and the playable smoke-gate contract loop, which does not neutralise
-`BYROREDUX_SKYRIM_DATA`. The bench-of-record below (`d9a201c71`, 2026-10-22) was refreshed with a same-machine
-control and shows HEAD 1–9% slower than the outgoing record (R6a-regress-23). Its older **R6a-regress-22** was
-the bench camera moving with `b9e961eeb`'s interior spawn ladder, not renderer code (#5128, 2026-09-30); a
-small residual stays open — the top-of-frame all-slots fence wait that dominates GPU-bound frames (#5365, the
-tracked throughput half of closed #4606/#5117).
+**Gates.** `rust-toolchain.toml` pins rustc 1.96.0 (#5308), the bin crate's MSRV since wasmtime 49. CI on
+`main` is **red at the Session 111 close** (last green `305af7beb`): `cargo clippy` (Session 110's three
+`byroredux-plugin` errors — `large_enum_variant` ×2 in `misc/magic.rs`, `is_multiple_of` in `sub_reader.rs` — plus
+`manual_is_multiple_of` in the renderer build script) and the smoke-gate contract loop, which does not neutralise
+`BYROREDUX_SKYRIM_DATA`. The bench-of-record below (`d9a201c71`, 2026-10-22) shows HEAD 1–9% slower than the
+outgoing record under a same-machine control (R6a-regress-23). Its older **R6a-regress-22** was the bench camera
+moving with `b9e961eeb`'s spawn ladder, not renderer code (#5128); a small residual stays open — the top-of-frame
+all-slots fence wait that dominates GPU-bound frames (#5365, the throughput half of closed #4606/#5117).
 
 **What works today.**
 - **Content loading.** Interior cells load and render from unmodified game
@@ -53,7 +51,7 @@ tracked throughput half of closed #4606/#5117).
   godrays / sky apertures (a vertical slice,
   [`interior-godrays-status.md`](docs/engine/interior-godrays-status.md)).
   Exposure is auto-metered by default (`a070baaad`), with ACES or AgX. BLAS
-  compaction and LRU eviction, TLAS refit, GPU skinning.
+  compaction and LRU eviction, TLAS refit, GPU skinning, reversed-Z depth (#6642).
 - **Actors.** NPCs spawn with skeleton, body, FaceGen head and outfit (M41).
   Fourteen AI package procedures run by default (locomotion seven + Eat/Sleep +
   Dialogue + graph locomotion + Flee, UseWeapon, UseItemAt and Find; Accompany
@@ -88,7 +86,8 @@ tracked throughput half of closed #4606/#5117).
   water routing (M44).
 - **UI.** Ruffle-hosted Scaleform menus with Skyrim (AVM1) and FO4 (AVM2) host
   profiles (R4). Native MenuXml HUDs for Oblivion/FO3/FNV, and the vanilla
-  Skyrim/FO4 `hudmenu.swf` via `--hud` (M48.4–M48.7).
+  Skyrim/FO4 `hudmenu.swf` via `--hud` (M48.4–M48.7). `PlayBink` movies play full screen, decoded in
+  process: Bink 1 via `mercs2_bink`, Bink 2 and its audio via the clean-room `bink2` / `binkaudio` crates (#6855).
 
 **What doesn't work yet.**
 - Redux-native plugin loading: the manifest → `DataStore` →
@@ -108,8 +107,7 @@ tracked throughput half of closed #4606/#5117).
   done is checked.
 - Texture streaming (M39) is off by default (`render.texture_streaming`) until its open gates close:
   the A11 reflection A/B, a clean FO4 A9 soak and the default flip
-  ([results](docs/engine/texture-streaming.md#12-measured-results-2026-11-04)). Reversed-Z is the shipped depth mapping
-  (#6642, 2026-11-07; far-decade table on `ACTIVE_DEPTH_MAPPING`).
+  ([results](docs/engine/texture-streaming.md#12-measured-results-2026-11-04)).
 - Oblivion's CHARAL ruleset is built but unwired: `Oblivion.esm` has no AVIF
   records, so a legacy actor-value resolver comes first
   ([`charal.md`](docs/engine/charal.md)).
@@ -118,11 +116,10 @@ tracked throughput half of closed #4606/#5117).
 - The [playable vertical slice](#playable-vertical-slice) is **complete**
   (P0–P5, closed 2026-10-01). Its follow-ons are listed there; none of them
   blocks the slice.
-- M-LIGHT, reference-quality lighting (#6595): the first feature run under the
-  [PRD gate](docs/prd/README.md), ACTIVE since 2026-11-02. Phases 0–2 are closed;
-  Phase 3 (#6603) is open: entry gates measured, RLT-SHD-003/-007/-012 built; #6721
-  has its flat-floor control, A11 (isolated to the change, declared after the fact) and
-  A13 (within the ceiling) measured, and waits on the owner accepting the declaration (PRD rev 31).
+- M-LIGHT (#6595, ACTIVE since 2026-11-02): Phases 0–2 closed; Phase 3 (#6603) has RLT-SHD-003/-007/-012
+  built, and #6721's flat-floor control, A11 and A13 are measured, awaiting the owner (PRD rev 31).
+- Cross-cell actor travel (#6851–#6853, ACTIVE 2026-11-11; VCG02's Sunny through one load door) and
+  Bink video playback (#6855, ACTIVE 2026-11-11; Bink 1 and 2 decode in process).
 - Texture streaming (M39, #6626): Phases 0–1 closed 2026-11-03; Phases 2–4 (#6629–#6631) built
   and measured on five games, open on the gates in its [Tier 5 row](#tier-5--renderer-polish-quality-not-capability).
 - Fire, smoke and explosions (#6531, [plan](docs/engine/fire-volumetrics-plan.md)):
@@ -288,7 +285,6 @@ design doc.
 
 | #     | Milestone | State | Depends on |
 |-------|-----------|-------|------------|
-| M35   | Terrain LOD | **Shipped:** Skyrim/FO4 `.bto` objects and `.btr` terrain on a per-game `Ultra.ini` band ladder (`d96110eb`), with `_n`/`_msn` normal maps. Oblivion `_far.nif` placement LOD (#1726); FO3/FNV `blocks\` quad LOD (#3321). A derived far plane (`9e96a9f9`). The live `terrain.seams` gate in `m-exteriors.sh` (#2371). Skyrim `.btt` tree LOD (#4913), the `.btr` sampling mode (#4912), VWD ring separation and the LAND plausibility guards are shipped. The `lod-coverage:` gate now counts the tree and placement rings and measures the resident-boundary moat (#6637): first boundary-run counts (2026-11-08, `object_moat_cells` / `tree_moat_cells`) are Skyrim 52 / 52 with `tree_resident=94`, FNV 52 / 0, FO3 (MegatonWorld) 112 / 0, FO4 52 / 0, Oblivion 0 / 0; the same run found Oblivion's `placement_resident` at 0 (its `.lod` files were looked up under `meshes\\`) and 50 after the fix. Distant trees now draw on Oblivion (crossed cards from a runtime billboard atlas) and Fallout 3 (the authored `_lod_flat.nif` meshes) (#6638), and the resident-boundary moat is closed per cell at level 4 on Skyrim and FO4 objects and on Skyrim trees (#6639; boundary runs read `object_moat_cells=0`, `tree_moat_cells=0`; FO3/FNV `blocks\\` quads keep the whole-quad treatment, V7, and FNV still reads 52). **Phase 4 closed (2026-11-10, #6640):** the FO3/FNV `.dlodsettings` descriptor is read and its lattice origin used where every quad tiles on it (A7 over all 53 vanilla descriptors); the Oblivion `terrain_lod_albedo_gain` row is measured and stays 1.0 (median 0.99 of full detail over 48 boxes), and Skyrim's 0.36 re-measured on Riverwood and Whiterun at other weather and hours (medians 0.99 and 1.00). The reversed-Z flip is shipped (#6642, `09940503b`; far-decade distinct codes FNV 407 → 6427, Skyrim 14 → 119, FO4 498 → 22920). Every phase of the [PRD](docs/prd/distant-lod-completion.md) (parent #6633) is closed. Phase 0 (#6636) census results are in PRD §9.1. | M32 |
 | M39   | Texture streaming | Mip-chain-aware loading: upload low mips immediately, stream high mips on demand. Memory budget with LRU eviction. **Phases 0–1 closed (2026-11-03):** BA2 chunk and BSA mip census plus design ([`texture-streaming.md`](docs/engine/texture-streaming.md)), mip-range uploads, floor-first residency, `tex.residency`. **Phases 2–4 built (2026-11-04):** BA2 DX10 reads from a mip level down, a streamer pool, a per-frame wanted-mip pass (0.5 ms on MedTek), the `tex-stream:` bench line, a texture budget derived from the live device-local budget with oldest-last-wanted eviction and counted declines (`render.texture_budget_mib`), BSA floors from one extraction. Measured resident texture bytes off → on: FO4 MedTek 766 → 136 MiB, Skyrim Bannered Mare 399 → 55, FNV Prospector 77 → 39, FO3 37 → 17, Oblivion 16 → 10, Starfield 1 371 → 116; floor-ready 3.8 → 1.4 s on MedTek; zero deficits and churn at settle ([tables](docs/engine/texture-streaming.md#12-measured-results-2026-11-04)). **Open gates:** A11, a clean FO4 A9 soak (its `physics_bodies` failure predates M39), default on. [PRD](docs/prd/texture-streaming.md) ACTIVE 2026-11-03, tracking #6626. | — |
 | M29.3 | Pre-skinned raster path | Make `triangle.vert` read pre-skinned vertices from the per-entity `SkinSlot` output instead of doing inline bone blending, and re-add the `VERTEX_BUFFER` usage dropped in #681. This saves ~50 ALU ops per skinned vertex, but makes raster depend on the compute pass. The recorded precondition is that the compute + BLAS-refit chain has proved stable on visible animated content. | `1ae235b`, #681 |
 
@@ -516,7 +512,7 @@ R6 scratch-buffer telemetry (`ctx.scratch`).
 
 **World and streaming**
 M40 world streaming (async pre-parse, LRU BLAS eviction, interior↔exterior
-swap; 2026-05-24).
+swap; 2026-05-24) · M35 terrain and distant LOD on every target (closed 2026-11-10, #6633).
 
 **Scripting, physics, UI, audio, persistence**
 M12 ECS-native scripting foundation (events + timers) ·
@@ -563,8 +559,8 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
   is +0.5–1.2 ms on Cornell, Whiterun and MedTek, unattributed (742-commit
   window: ReSTIR `c2647d468` / `17e0b7464` / `6110b6078`, GI sampling `0b56f1133`,
   SVGF history `1092b5b9e` / `24eb7dba8`, cloud-shadow map `c231f5b5f`). Next:
-  bisect Cornell `gpu_main`. The record is 933 commits old at the Session 110
-  close (renderer paths since: shadow filter `0999490b9` and its reach `a2180dd18`,
+  bisect Cornell `gpu_main`. The record is 1037 commits old at the Session 111
+  close (renderer paths since: synthetic parallax `51ce1c2f9` (off by default), cloud deck drift `ea1f464b9`, shadow filter `0999490b9` and its reach `a2180dd18`,
   shadow-ray cosine weighting `55ba81e20`, ReSTIR taint `bed162262`, water waves/shores
   `7dd294ee3`, geometry-pool caps and admission tiers `bb97be77c` / `22d6e1a80`, terrain
   softening `e71451d08`, the fire local grid `d3e3acc7b`, M-LIGHT GI energy `6f43c9bd4`
@@ -696,7 +692,7 @@ performance finding. The measured knob table is in
 - [ ] **Clippy `--all-targets` carries 20 lints** (2026-10-19): test/example
   targets across `scripting`, `plugin`, `pex`, `hkx`, `sfmaterial` and the bin. The lane is a
   non-blocking CI step (#5621); the blocking `cargo clippy --workspace -- -D
-  warnings` form passes again (#6582, 2026-11-02).
+  warnings` form is red again since Session 110 (see Status → Gates).
 - [ ] **Offline texture-set upscale finalization.** `tools/texture-upscale`
   works end-to-end: set discovery, TOML manifests, an external ESRGAN-family
   pass, companion-map upsampling and provenance. Remaining: per-game/per-role
@@ -707,16 +703,16 @@ performance finding. The measured knob table is in
 
 ## Project Stats
 
-Ground-truth as of 2026-11-08, HEAD `9e88a183b`: all figures re-counted at the Session 110 close.
+Ground-truth as of 2026-11-13, HEAD `3ebecb7ec`: all figures re-counted at the Session 111 close.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | 915 649                       |
-| Rust total lines (all `.rs`, excl. `target/`) | 974 738                  |
-| Source files (`.rs`, excl. `target/`)   | 1751 total · 1646 outside `tests/` dirs (+17 / +17 since the Session 109 close) |
-| Workspace members                       | 35 (count the `[workspace] members` block only; 30 crates — `terrain-height` joined in Session 103 — + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
-| Tests                                   | **12 182 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-11-08; 411 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
-| Open issue directories                  | 6694 (`.claude/issues/`)     |
+| Rust source lines (`src/` dirs)         | 934 790                       |
+| Rust total lines (all `.rs`, excl. `target/`) | 994 549                  |
+| Source files (`.rs`, excl. `target/`)   | 1794 total · 1685 outside `tests/` dirs (+43 / +39 since the Session 110 close) |
+| Workspace members                       | 38 (count the `[workspace] members` block only; 33 crates — `video`, `bink2`, `binkaudio` joined in Session 111 — + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
+| Tests                                   | **12 349 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-11-13, after the closeout's three fixes; 428 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
+| Open issue directories                  | 6724 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **562 069** across eight games (Skyrim SE re-measured 2026-09-29 at 33 468 over 8 archives, #3712 added Animations; FO76's tail closed by #3461 and the 2026-10-03 re-measure (#4628) swept 102 980 over 5 of its 20 mesh-bearing archives; Skyrim LE 22 466 gated since fb8173fe0; earlier widenings #3369/#3466, Oblivion DLC #3925, Starfield #4440). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 468 · Skyrim LE 22 466 · FO4 235 082 · FO76 102 980 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on all eight titles (Starfield re-measured 2026-09-24 #4440; FO76's `GeneratedMeshes` truncation tail closed by #3461 and re-measured 2026-10-03, #4628). |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
@@ -793,6 +789,7 @@ a new claim without one.
 | `byroredux-mod-runtime`       | Sandboxed executable-mod runtime — WebAssembly Components behind semantic host services                        |
 | `byroredux-menuxml`           | Oblivion / FO3 / FNV legacy MenuXml UI — FOLD evaluator, layout, CPU raster (M48.4/M48.5)                      |
 | `byroredux-pex`               | Compiled Papyrus `.pex` reader + decompiler (Skyrim / FO4 / FO76 / Starfield)                                  |
+| `byroredux-video` · `-bink2` · `-binkaudio` | Movie playback: Bink 1 via `mercs2_bink`; clean-room Bink 2 video and Bink Audio decoders (read each `CLEANROOM.md`) |
 | `byroredux-sdk`               | Public tooling APIs — Studio document state, typed edit commands, actor-value snapshots                        |
 | `byroredux` (binary)          | Game loop, cell loader, fly camera, animation system, render data collection, NIFAL translation boundary         |
 | `tools/byro-dbg`              | Standalone debug CLI (TCP client, REPL)                                                                          |
