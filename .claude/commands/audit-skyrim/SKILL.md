@@ -62,7 +62,7 @@ Live numbers (parse rate, bench FPS/entities) come from a fresh harness run or R
 **Output**: `/tmp/audit/skyrim/dim_2.md`
 
 ### Dimension 3: NPC Equip + FaceGen (M41)
-**Subagent**: `general-purpose`
+**Subagent**: `general-purpose`, `model: "sonnet"` (`"haiku"` when unchanged since D, `_audit-common.md` rule 5)
 **Paths**: `byroredux/src/npc_spawn/` (hub `mod.rs` + `stamps` / `fallback_physics` / `skeleton_paths` / `anim_clips` / `equip` / `loot_appearance` / `resumable/`, split from one file in 613c7f46e #6357; `tests.rs` scans the concatenated production files), `crates/plugin/src/equip.rs`, `crates/plugin/src/esm/records/{items.rs,misc/equipment.rs,actor/npc.rs}` (ARMO / ARMA `BODT`/`BOD2`, `NPC_.WNAM`), `byroredux/src/scene/nif_loader.rs` (`select_facegen_diffuse`), `crates/facegen/src/`, `byroredux/src/render/skinned.rs`
 **First step**: `git log --since=<last report> --format='%h %cs %s' -- byroredux/src/npc_spawn crates/plugin/src/equip.rs crates/plugin/src/esm/records/items.rs crates/plugin/src/esm/records/misc/equipment.rs crates/plugin/src/esm/records/actor/npc.rs`
 **Guards**: `docs/smoke-tests/m41-equip.sh skyrim` — hard equip floor 5 on WhiterunBanneredMare (`Inventory` + a *named* `EquipmentSlots` on saadia, brenuin, mikael, sinmir, hulda; amaundmotierreend is authored Initially Disabled and withheld since #4813, and the unnamed player body also carries `EquipmentSlots`, so the floor counts named entities only, f4862a87e #5962); `crates/plugin/src/equip_template_tests.rs` (#4086); `npc_spawn/tests.rs`; `skyrim_armo_reads_bodt_body_template` / `parse_arma_reads_bodt_biped_flags` (#5358); `prebaked_npc_wnam_skin_overrides_the_race_default_and_follows_the_traits_terminal` (#5359). Real-data (`#[ignore]`d): `skyrim_bodt_body_templates_decode_their_biped_masks` (`crates/plugin/src/esm/records/tests.rs`), `skyrim_npc_wnam_skin_census_matches_the_byte_walk` (`crates/plugin/tests/parse_real_esm.rs`).
@@ -78,7 +78,7 @@ Live numbers (parse rate, bench FPS/entities) come from a fresh harness run or R
 
 ### Dimension 4: Multi-Master Load Order + TES5 Cell-Load Regression
 **Scope split**: `/audit-esm` owns FormID remap, ESL `0xFE` space, tombstones and `.STRINGS`; this dimension owns Skyrim's data through them (record counts, DLC authoring, this title's masters).
-**Subagent**: `general-purpose`
+**Subagent**: `general-purpose`, `model: "sonnet"` (`"haiku"` when unchanged since D, `_audit-common.md` rule 5)
 **Paths**: `byroredux/src/cell_loader/load_order.rs`, `crates/plugin/src/esm/{reader,cell/}`, `crates/plugin/src/esm/cell/tests/integration.rs`
 **First step**: `git log --since=<last report> --format='%h %cs %s' -- byroredux/src/cell_loader/load_order.rs crates/plugin/src/esm/reader.rs crates/plugin/src/esm/cell`
 **Guards**: `parse_real_skyrim_esm` (`#[ignore]`d; walks `Skyrim.esm`, finds `SolitudeWinkingSkeever`, 92-byte XCLL); ESL / tombstone / strings tests live under `/audit-esm`.
@@ -93,7 +93,7 @@ Live numbers (parse rate, bench FPS/entities) come from a fresh harness run or R
 **Output**: `/tmp/audit/skyrim/dim_4.md`
 
 ### Dimension 5: Archives + Corpus Gates
-**Subagent**: `general-purpose`
+**Subagent**: `general-purpose`, `model: "sonnet"` (`"haiku"` when unchanged since D, `_audit-common.md` rule 5)
 **Paths**: `crates/bsa/src/archive/`, `crates/bsa/src/naming.rs`, `byroredux/src/asset_provider/archive.rs`, `crates/nif/tests/{parse_real_nifs,common/mod}.rs`, `crates/nif/src/corpus.rs`
 **First step**: `BYROREDUX_SKYRIMSE_DATA=… cargo test -p byroredux-nif --test parse_real_nifs -- --ignored skyrim` (`parse_rate_skyrim_se`, `parse_rate_skyrim_le`)
 **Guards**: real-data tests resolve the install through `test_paths::skyrim_se_data_dir()` / `require_or_skip` (`crates/plugin/src/esm/test_paths.rs`, #6184) — a typo'd `BYROREDUX_SKYRIMSE_DATA` no longer skips silently and an absent install fails on the strict lane (`BYROREDUX_REQUIRE_GAME_DATA`); `numeric_sibling_paths` cases in `byroredux/src/asset_provider/tests/archive_siblings.rs` (`siblings_skyrim_zero_start_offers_1_through_9`).

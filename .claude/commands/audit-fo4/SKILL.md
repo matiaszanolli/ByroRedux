@@ -32,7 +32,7 @@ Everything below is **shipped** — audit as regression guard, never re-propose 
 ## Dimensions
 
 ### Dimension 1: M49 Precombined Geometry — Decode + Spawn (highest FO4 risk)
-**Subagent**: `general-purpose`
+**Subagent**: `general-purpose`, `model: "sonnet"` (`"haiku"` when unchanged since D, `_audit-common.md` rule 5)
 **Paths**: `crates/nif/src/import/precombine.rs`, `byroredux/src/cell_loader/precombined.rs`, `byroredux/src/cell_loader/load.rs` + `exterior/apply_job.rs` (the streaming apply job, split out of `exterior.rs` by #6271) + `partial.rs`, `byroredux/src/cell_loader/spawn/{mesh_instance,precombined}.rs`, `byroredux/src/streaming/pre_parse.rs` (worker pre-parse), `crates/plugin/src/esm/cell/helpers.rs` (XCRI decode), `crates/bsa/src/csg.rs`, `crates/bsa/src/uvd.rs`
 **First step**: `git log --since=<last report> --format='%h %cs %s' -- crates/nif/src/import/precombine.rs byroredux/src/cell_loader/precombined.rs crates/bsa/src/csg.rs`
 **Guards** (confirm live, not `#[ignore]`d/vacuous): `precombine.rs` tests `decode_keeps_every_lod_band` + `lod_bands_skip_empty_bands_and_bound_the_read` (#4234); `csg.rs` `oversized_read_len_is_rejected_before_it_is_reserved` (#3758 — `read_psg` must bound its length before `Vec::with_capacity`; reader discipline is `/audit-parsers`); `precombined.rs` tests `resolve_precombine_owner_follows_form_id_mod_index`, `csg_paths_index_every_plugin_in_the_load_order`, `dedup_requires_both_a_cache_key_and_a_matching_length` (#3510), `oc_nif_paths_are_already_canonical_cache_keys`; `finish_partial_tests.rs::finish_partial_import_builds_precombine_geometry_entry`; blend restore on both routes (#5101): `precombined.rs::merge_precombine_materials_restores_blend_but_keeps_bgsm_flags` + `finish_partial_tests.rs::finish_partial_import_precombine_route_applies_the_material_merge`; zero origin (#5228): `exterior_apply_advances_precombine_at_zero_origin`; `#[ignore]`d real-data `dlc_rebake_of_a_master_owned_cell_decodes_from_the_dlc_csg` + `exterior_precombine_instances_are_world_absolute`. The runtime baseline is an interior, so no telemetry gate sees exterior placement.
@@ -50,7 +50,7 @@ Everything below is **shipped** — audit as regression guard, never re-propose 
 **Output**: `/tmp/audit/fo4/dim_1.md`
 
 ### Dimension 2: BGSM / BGEM → `ImportedMaterial` (merge + roles)
-**Subagent**: `general-purpose`
+**Subagent**: `general-purpose`, `model: "sonnet"` (`"haiku"` when unchanged since D, `_audit-common.md` rule 5)
 **Paths**: `crates/bgsm/src/`, `byroredux/src/asset_provider/material/{merge,mod,provider}.rs`, `byroredux/src/cell_loader/spawn/mesh_instance.rs` (REFR overlay), `byroredux/src/asset_provider/tests/{bgsm_merge,material_flags}.rs`
 **First step**: `git log --since=<last report> --format='%h %cs %s' -- crates/bgsm byroredux/src/asset_provider/material`
 **Guards**: `bgsm_merge.rs` (`bgsm_merge_forwards_alpha_blend_mode`, `bgsm_blend_to_gamebryo_is_identity_narrowing`, the neutral-roughness pair, `bgem_glass_forwards_authored_optics_and_overlay_roles`); `material_flags.rs::bgsm_metalness_*`; `crates/bgsm/src/template.rs` `resolve_breaks_*_cycle` (#1148) + `resolve_reports_per_file_parse_diagnostics` (#5010, 746e0858e); `crates/bgsm/tests/parse_all.rs` real-data sweeps (hardened #5011, e8676b097) and `asset_provider/tests/bgsm_diagnostics.rs`. Parser discipline for `crates/bgsm` is `/audit-parsers`.
@@ -82,7 +82,7 @@ Everything below is **shipped** — audit as regression guard, never re-propose 
 
 ### Dimension 4: ESM Architecture Records + Cell Expansion
 **Scope split with `/audit-esm`**: it owns the parser as a parser (GRUP walk, `SubReader` accounting, FormID remap); this dimension owns FO4's data through it. Shared-mechanism defects → `/audit-esm`.
-**Subagent**: `general-purpose`
+**Subagent**: `general-purpose`, `model: "sonnet"` (`"haiku"` when unchanged since D, `_audit-common.md` rule 5)
 **Paths**: `crates/plugin/src/esm/records/{scol,movs,pkin,mswp,parse}.rs`, `crates/plugin/src/esm/records/actor/npc.rs`, `crates/plugin/src/equip.rs`, `crates/plugin/src/esm/cell/{mod,support,walkers,wrld}.rs`, `byroredux/src/cell_loader/{refr,references/,spawn.rs,nif_import_registry.rs}`
 **First step**: `git log --since=<last report> --format='%h %cs %s' -- crates/plugin/src/esm/records crates/plugin/src/esm/cell byroredux/src/cell_loader/refr.rs`
 **Guards**: `cell_loader/scol_expansion_tests.rs`, `pkin_expansion_tests.rs`, `attach_points_spawn_tests.rs`, `refr_texture_overlay_tests.rs`; the real-data ESM harness (#819) before any parse-rate claim.
@@ -99,7 +99,7 @@ Everything below is **shipped** — audit as regression guard, never re-propose 
 **Output**: `/tmp/audit/fo4/dim_4.md`
 
 ### Dimension 5: Archives + Real-Data Validation + Forward Scope
-**Subagent**: `general-purpose`
+**Subagent**: `general-purpose`, `model: "sonnet"` (`"haiku"` when unchanged since D, `_audit-common.md` rule 5)
 **Paths**: `crates/bsa/src/ba2.rs`, `crates/nif/tests/parse_real_nifs.rs`, `crates/nif/examples/nif_stats.rs`, `ROADMAP.md`, `docs/feature-matrix.md`
 **First step**: `BYROREDUX_FO4_DATA=… cargo test -p byroredux-nif --test parse_real_nifs -- --ignored fo4`
 **Checklist**:

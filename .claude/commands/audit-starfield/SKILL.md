@@ -31,7 +31,7 @@ Status authority: `ROADMAP.md` compat row (100.00% over 120,543 NIFs as of 2026-
 ## Dimensions (ordered by Starfield-specific risk)
 
 ### Dimension 1: BA2 v2/v3 + Corpus Validation
-**Subagent**: `general-purpose`
+**Subagent**: `general-purpose`, `model: "sonnet"` (`"haiku"` when unchanged since D, `_audit-common.md` rule 5)
 **Paths**: `crates/bsa/src/ba2.rs`, `crates/nif/tests/parse_real_nifs.rs`, `crates/nif/examples/nif_stats.rs`
 **First step**: `BYROREDUX_STARFIELD_DATA=… cargo test -p byroredux-nif --test parse_real_nifs parse_rate_starfield_all_meshes -- --ignored` (all 13 mesh archives; `parse_rate_starfield` = Meshes01 only)
 **Guards** (`ba2.rs`): `decompress_chunk_lz4_*`, `v3_unknown_compression_method_rejected`, `extract_dx10_concatenates_a_raw_chunk_and_an_lz4_chunk_in_one_record`, the `extract_dx10_*_short_*_chunk*` pair (#4662), `dx10_open_rejects_a_non_24_chunk_hdr_len_as_invalid_data` + `dx10_open_tolerates_non_monotonic_start_mip_without_panicking` (#5008 — both were file-controlled `debug_assert`s that panicked debug builds).
@@ -68,7 +68,7 @@ Status authority: `ROADMAP.md` compat row (100.00% over 120,543 NIFs as of 2026-
 
 ### Dimension 4: ESM Resolve Rate + Cell Bring-up
 **Scope split with `/audit-esm`**: it owns the parser as a parser; this dimension owns Starfield's data through it. Shared-mechanism defects → `/audit-esm`.
-**Subagent**: `general-purpose`
+**Subagent**: `general-purpose`, `model: "sonnet"` (`"haiku"` when unchanged since D, `_audit-common.md` rule 5)
 **Paths**: `byroredux/src/sf_smoke.rs`, `crates/plugin/examples/{sf_smoke,sf_parse_check}.rs`, `crates/plugin/src/esm/records/{parse,lmsw,reflection}.rs`, `crates/plugin/src/esm/reader.rs` (`FormIdRemap`), `crates/plugin/src/esm/cell/{support,walkers}.rs`, `byroredux/src/cell_loader/spawn.rs`, `byroredux/src/npc_spawn/`, `byroredux/src/systems/light_anim.rs`
 **First step** (two different questions): `cargo run --release -- --esm Starfield.esm --sf-smoke <CELL_EDID>` (per-cell base-form resolve rate, Cydonia) and `cargo run --release -p byroredux-plugin --example sf_smoke -- <ESM_PATH> --tsv --recurse` (GRUP byte coverage vs `DISPATCH_HANDLED_FOURCCS`, diffed against `.claude/audit-baselines/sf-esm/*.tsv`).
 **Guards**: `DISPATCH_HANDLED_FOURCCS` is derived beside the dispatch and pinned in `records/tests.rs` (#4278), and `sf_esm_baseline_handled_column_tracks_the_dispatch_list` holds the checked-in `sf-esm/*.tsv` handled column to it in both directions (#5758, 6cbae341c — a new arm without a regenerated baseline goes red; since #6807, ace0e68b9, the leaf rows are held to it too, so diff `sf_smoke --tsv --recurse`: without `--recurse` only the top rows are emitted); `starfield_ligh_dat2_decodes_to_light_data`; `light_anim.rs` `starfield_light_type_enum_drives_the_spot_shape` + `starfield_shadow_technique_follows_the_light_type_enum`.

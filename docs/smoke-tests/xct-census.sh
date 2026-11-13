@@ -77,7 +77,7 @@ done
 pass "engine held in $P0_CELL"
 
 ask "xct.sweep" >"$LOG_DIR/sweep.out"
-sweep=$(grep -o 'xct.sweep: .*' "$LOG_DIR/sweep.out" | head -1)
+sweep=$(grep -o 'xct.sweep: .*' "$LOG_DIR/sweep.out" | head -1 | sed 's/"$//')
 [[ -n "$sweep" ]] || fail "xct.sweep gave no answer ($(head -3 "$LOG_DIR/sweep.out" | tr '\n' ' '))"
 swept=$(grep -oE '[0-9]+ actor\(s\) swept' <<<"$sweep" | grep -oE '^[0-9]+')
 (( swept > 0 )) || fail "nothing to sweep: $sweep"

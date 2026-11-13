@@ -90,7 +90,9 @@ pass "engine reached Goodsprings, the saloon unloaded"
 # ── 2 — Sunny's logical identity ─────────────────────────────────────────────
 wait_for 60 "Sunny not loaded, in the saloon" "actor.where $SUNNY" "not loaded, in Interior .*GSProspectorSaloonInterior"
 ask "obscript.cmd $SUNNY 109e r:$MARKER" >"$LOG_DIR/move.out"
-grep -q "MoveTo" "$LOG_DIR/move.out" || fail "the console could not run MoveTo on Sunny ($(head -3 "$LOG_DIR/move.out" | tr '\n' ' '))"
+# A carried-out command with no return value answers `0x109e -> (no answer)`; a decline or an
+# unresolved caller answers otherwise.
+grep -q '0x109e -> (no answer)' "$LOG_DIR/move.out" || fail "the console could not run MoveTo on Sunny ($(grep 'byro>' "$LOG_DIR/move.out" | head -2 | tr '\n' ' '))"
 pass "Sunny resolves as an ObScript caller with her cell unloaded (XCT-LOC-005)"
 
 # ── 3 — she is moved through the ledger to the marker ────────────────────────

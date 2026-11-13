@@ -117,8 +117,8 @@ records only its destination, where it will stand, and when:
   cell loader skips it at its home cell and at its ledger cell. Its logical
   identity (§5) stays at its origin pose, so a script that reads its position
   mid-route sees its origin (PRD deviation 1).
-- **Arrival**: the arrival step (part of the relocation step, once per
-  in-game minute) ends every journey whose time has come:
+- **Arrival**: the relocation step checks the journeys every frame (one
+  comparison each) and ends every journey whose time has come:
   - the player is in the destination's space with the far side of its last
     door loaded: the actor comes through that door, placed at the door's
     `XTEL` pose, and its package walks it on (XCT-OFF-004);
@@ -152,6 +152,13 @@ keyed on the loaded cells and the ledger digest:
   the identity instead of running beside it.
 
 A stub runs no `GameMode` (#6220). Its event blocks still answer.
+
+A stub found beside a body (a load path that bypassed the promote) is retired
+by the same reconcile. **Gap:** worldspace-persistent actors keep only the
+worldspace loader's stubs, which exist while their worldspace is loaded. In an
+interior they have no identity. Giving them one would race the persistent
+job's own spawn (`prepare_logical_actor_stubs` treats any candidate as alive),
+so it waits for the stub/body reconciliation #2664 left open.
 
 ## 6. Scripts, reporting and the sweep
 

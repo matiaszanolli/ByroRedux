@@ -59,7 +59,7 @@ Routing: block decode `/audit-nif`; single-boundary / no-fabrication / particle 
 **Output**: `/tmp/audit/fo3/dim_1.md`
 
 ### Dimension 2: ESM Data Slice (Fallout3.esm)
-**Subagent**: `general-purpose`
+**Subagent**: `general-purpose`, `model: "sonnet"` (`"haiku"` when unchanged since D, `_audit-common.md` rule 5)
 Routing: GRUP walk, `SubReader` accounting, dispatch, remap `/audit-esm`. This dimension owns FO3-only authoring and its counts.
 **Paths**: `crates/plugin/src/esm/records/`, `crates/plugin/src/esm/cell/`, `crates/plugin/tests/parse_real_esm.rs`
 **First step**: `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored parse_rate_fo3_esm` (one test at a time; whole-file `--ignored` runs can spike >20 GB).
@@ -74,7 +74,7 @@ Routing: GRUP walk, `SubReader` accounting, dispatch, remap `/audit-esm`. This d
 **Output**: `/tmp/audit/fo3/dim_2.md`
 
 ### Dimension 3: Cell Loading — Interior + Exterior
-**Subagent**: `general-purpose`
+**Subagent**: `general-purpose`, `model: "sonnet"` (`"haiku"` when unchanged since D, `_audit-common.md` rule 5)
 Routing: terrain / WTHR / water / LOD mechanism `/audit-exterior`; unload hygiene `/audit-safety` Dim 3.
 **Paths**: `byroredux/src/cell_loader/` (`load`, `unload`, `exterior`, `references/`, `spawn`), `byroredux/src/scene/`, `byroredux/src/cell_loader/legacy_lod_index.rs`, `crates/plugin/src/esm/cell/wrld.rs`, `docs/engine/exterior-readiness-plan.md`
 **First step**: `git log --since=<date> --format='%h %cs %s' -- byroredux/src/cell_loader byroredux/src/scene crates/plugin/src/esm/cell`
@@ -85,7 +85,7 @@ Routing: terrain / WTHR / water / LOD mechanism `/audit-exterior`; unload hygien
 **Output**: `/tmp/audit/fo3/dim_3.md`
 
 ### Dimension 4: BSA v104 & Real-Data Validation
-**Subagent**: `general-purpose`
+**Subagent**: `general-purpose`, `model: "sonnet"` (`"haiku"` when unchanged since D, `_audit-common.md` rule 5)
 Routing: reader discipline `/audit-parsers`. FO3's BSA is byte-identical in format to FNV's — a divergence here is a v104 regression, not a format gap.
 **Paths**: `crates/bsa/src/archive/`, `crates/facegen/`, `crates/spt/`, `crates/nif/examples/nif_stats.rs`
 **First step**: `cargo test -p byroredux-bsa --release --test bsa_real -- --ignored fo3_fnv_and_skyrimse_bsa_corpus_census` (#5903, `ce008af1c` — opens all 16 FO3 `.bsa`, pins 159 155 entries and **extracts every one** with 0 errors; the older #4665 `fo3_bsa_corpus_opens_and_lists` in `ba2_real.rs` only opens and lists) and `--test bsa_real -- --ignored fnv_meshes_bsa_v104`.

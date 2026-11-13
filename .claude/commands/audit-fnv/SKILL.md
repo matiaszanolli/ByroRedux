@@ -43,7 +43,7 @@ Read `.claude/commands/_audit-common.md` (layout, methodology, dedup, finding fo
 Ordered by FNV risk: cell load first (highest blast radius), gameplay-data slices last.
 
 ### Dimension 1: Cell Loading & Streaming
-**Subagent**: `general-purpose`
+**Subagent**: `general-purpose`, `model: "sonnet"` (`"haiku"` when unchanged since D, `_audit-common.md` rule 5)
 **Paths**: `byroredux/src/cell_loader/` (general files; `terrain*`, `water.rs`, `lod*`, `object_lod.rs`, `placement_lod.rs` are `/audit-exterior`), `byroredux/src/scene/`, `byroredux/src/streaming/`, `docs/engine/pipeline-overview.md`, `docs/engine/exterior-grid-streaming.md`
 **First step**: `git log --since=<date> --format='%h %cs %s' -- byroredux/src/cell_loader byroredux/src/scene byroredux/src/streaming`
 - Interior `GSProspectorSaloonInterior`: entity/draw counts vs the ROADMAP row; the synchronous interior load is `InteriorCellApplyJob` `begin()` + `advance()` under an unlimited budget, no longer a line-for-line twin in `load_cell_with_masters` (#5589, `a4496c79b`); every interior-load fix now lands once; XCLL lighting resolves (`fog_far_color` optional field; an authored LIGH falloff of 0.0 must resolve to the pre-Skyrim quadratic default, `falloff_exponent_sentinel_resolves_per_layout_generation` in `byroredux/src/systems/light_anim.rs`); `NiAlphaProperty` decal routing.
@@ -59,7 +59,7 @@ Ordered by FNV risk: cell load first (highest blast radius), gameplay-data slice
 **Output**: `/tmp/audit/fnv/dim_1.md`
 
 ### Dimension 2: ESM Data Slice (FalloutNV.esm)
-**Subagent**: `general-purpose`
+**Subagent**: `general-purpose`, `model: "sonnet"` (`"haiku"` when unchanged since D, `_audit-common.md` rule 5)
 Routing: GRUP walk, `SubReader` byte accounting, schema dispatch, FormID remap -> `/audit-esm`. This dimension owns the semantics that only show on FNV's masters.
 **Paths**: `crates/plugin/src/esm/records/`, `crates/plugin/src/esm/cell/`, `crates/plugin/src/equip.rs`, `crates/plugin/tests/parse_real_esm.rs`
 **First step**: `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored parse_rate_fnv_esm` (one test at a time; whole-file `--ignored` runs can spike >20 GB).
@@ -99,7 +99,7 @@ Routing: the solver end (collider translation, fixed-step, `build_ragdoll`, cont
 **Output**: `/tmp/audit/fnv/dim_4.md`
 
 ### Dimension 5: Ambient AI, Dialogue, Consumables & HUD — FNV Data Through Gameplay Mechanisms
-**Subagent**: `general-purpose`
+**Subagent**: `general-purpose`, `model: "sonnet"` (`"haiku"` when unchanged since D, `_audit-common.md` rule 5)
 Routing: procedure runtimes, package selection, seat reservation, CTDA fail-open, consumable/restoration/loot mechanics, HUD driver -> `/audit-gameplay`; MenuXml eval/layout/raster -> `/audit-ui`, parse side -> `/audit-parsers`; character formulas -> `/audit-character`. Check here only what FNV authors.
 **Paths**: `byroredux/src/npc_spawn/`, `byroredux/src/boot/schedule/post_update.rs`, `byroredux/src/player_body.rs`, `byroredux/src/systems/{npc_dialogue,forcegreet,dialogue_voice,eat_sleep}.rs`, `crates/scripting/src/dialogue.rs`, `byroredux/src/hud.rs`, `byroredux/src/inventory/`, `crates/menuxml/src/profile.rs`, `docs/engine/npc-spawn-ai-packages.md`, `docs/engine/dialogue-trees.md`, `docs/engine/playable-vertical-slice.md`
 **First step**: `git log --since=<date> --format='%h %cs %s' -- byroredux/src/npc_spawn byroredux/src/systems/npc_dialogue.rs byroredux/src/systems/forcegreet.rs byroredux/src/systems/dialogue_voice.rs byroredux/src/systems/eat_sleep.rs crates/scripting/src/dialogue.rs byroredux/src/hud.rs byroredux/src/inventory/ crates/menuxml`
@@ -117,7 +117,7 @@ Routing: procedure runtimes, package selection, seat reservation, CTDA fail-open
 **Output**: `/tmp/audit/fnv/dim_5.md`
 
 ### Dimension 6: Real-Data Validation, Bench-of-Record & Smoke Gates
-**Subagent**: `general-purpose`
+**Subagent**: `general-purpose`, `model: "sonnet"` (`"haiku"` when unchanged since D, `_audit-common.md` rule 5)
 Routing: renderer correctness of RT lighting / denoise / sky on FNV scenes -> `/audit-renderer`, `/audit-exterior`; runtime telemetry diff -> `/audit-runtime --game fnv`.
 **Paths**: `assets/debug_profiles.toml`, `byroredux/src/game_profiles.rs`, `scripts/fsr-bench-matrix.sh`, `docs/smoke-tests/`, `.claude/audit-baselines/runtime/`
 **First step**: `git log --since=<date> --format='%h %cs %s' -- scripts/fsr-bench-matrix.sh docs/smoke-tests assets/debug_profiles.toml`

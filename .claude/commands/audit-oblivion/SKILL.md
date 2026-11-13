@@ -58,7 +58,7 @@ Routing: generic stream position / dispatch / version gating -> `/audit-nif`; co
 **Output**: `/tmp/audit/oblivion/dim_1.md`
 
 ### Dimension 2: BSA v103 & ESM Data Slice (Oblivion.esm)
-**Subagent**: `general-purpose`
+**Subagent**: `general-purpose`, `model: "sonnet"` (`"haiku"` when unchanged since D, `_audit-common.md` rule 5)
 Routing: reader discipline `/audit-parsers`; GRUP walk / `SubReader` / remap / dispatch `/audit-esm`. This dimension owns TES4-only decode branches and their real-data pins.
 **Paths**: `crates/bsa/src/archive/`, `crates/plugin/src/esm/records/` (`actor/`, `items.rs`, `climate.rs`, `pathgrid.rs`, `misc/dialogue.rs`, `misc/pack.rs`, `calendar.rs`), `crates/plugin/src/esm/cell/walkers.rs`, `byroredux/src/systems/find_package.rs`
 **First step**: `cargo test -p byroredux-bsa --release --test bsa_real -- --ignored oblivion`, then `cargo test -p byroredux-plugin --release --test parse_real_esm -- --ignored clas_oblivion_knight race_oblivion` (single named tests).
@@ -91,7 +91,7 @@ Routing: the single material boundary / no render-time fallback / emitter transl
 **Output**: `/tmp/audit/oblivion/dim_3.md`
 
 ### Dimension 4: Exterior & Lighting Data (Tamriel)
-**Subagent**: `general-purpose`
+**Subagent**: `general-purpose`, `model: "sonnet"` (`"haiku"` when unchanged since D, `_audit-common.md` rule 5)
 Routing: WTHR / sun / terrain / LOD / water translation mechanism -> `/audit-exterior`. This dimension checks the Oblivion-only inputs.
 **Paths**: `byroredux/src/cell_loader/` (`placement_lod.rs`, `tree_lod_legacy.rs`, `terrain.rs`), `byroredux/src/env_translate/`, `byroredux/src/light_translate.rs`, `byroredux/src/systems/light_anim.rs`, `crates/plugin/src/esm/cell/`, `docs/engine/exterior-readiness-plan.md`
 **First step**: `docs/smoke-tests/m-exteriors.sh oblivion static` (needs a Vulkan device), and `git log --since=<date> --format='%h %cs %s' -- byroredux/src/cell_loader byroredux/src/env_translate`
@@ -107,7 +107,7 @@ Routing: WTHR / sun / terrain / LOD / water translation mechanism -> `/audit-ext
 **Output**: `/tmp/audit/oblivion/dim_4.md`
 
 ### Dimension 5: Gameplay & UI Data Slice (M47.3 ObScript quests, MenuXml HUD)
-**Subagent**: `general-purpose`
+**Subagent**: `general-purpose`, `model: "sonnet"` (`"haiku"` when unchanged since D, `_audit-common.md` rule 5)
 Routing: quest-script runtime `/audit-scripting`; HUD drivers / MenuXml eval-layout-raster `/audit-ui`, parse side `/audit-parsers`; gameplay mechanism `/audit-gameplay`.
 **Paths**: `crates/scripting/src/obscript_vm.rs`, `crates/scripting/src/obscript_quests.rs`, `crates/scripting/src/obscript_objects.rs`, `byroredux/src/systems/dialogue_voice.rs`, `byroredux/src/hud.rs`, `crates/menuxml/`, `byroredux/src/cell_loader/references/attach.rs`
 **First step**: `cargo test -p byroredux-scripting --release -- --ignored vanilla_oblivion_quest_scripts_execute_and_setstage` (`BYROREDUX_OBLIVION_DATA`, ~160 MB resident; it fails rather than passes without data under `BYROREDUX_REQUIRE_GAME_DATA=1` and runs as a named step in `.github/workflows/real-data-gates.yml` — #5088, `1377d3463`) and `git log --since=<date> --format='%h %cs %s' -- crates/scripting crates/menuxml byroredux/src/hud.rs`

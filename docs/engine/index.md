@@ -13,6 +13,7 @@ a working checkout and want to understand or change engine internals.
 | Doc | Crate(s) | What it covers |
 |---|---|---|
 | [Pipeline Overview](pipeline-overview.md) | all | Cross-cutting: one interior cell load traced end-to-end, CLI → parse → NIFAL → ECS spawn → scheduler → GPU upload → present |
+| [Workspace Map](workspace-map.md) | all | File-level map of every crate and the binary; moved out of CLAUDE.md, read on demand |
 | [Exterior Grid Streaming](exterior-grid-streaming.md) | byroredux, plugin, renderer | Cross-cutting: WRLD/LAND → terrain+REFRs, async pre-parse worker, multi-cell streaming, door-teleport cell swap |
 | [Stream-Boundary State Continuity](stream-boundary-state-continuity.md) | byroredux, core | PROPOSED. One design for two flagged gaps sharing every hard part: EX-14/15's persistent-CELL "reconcile instead of re-spawn" and EX-16's actor/package snapshot-restore across ordinary despawn/respawn. FormID-keyed state (never raw `EntityId`), traced against real `Seated`/`TravelState`/`AmbientPackageRuntime` |
 | [Save/Load Round-Trip](save-load-roundtrip.md) | save, byroredux | Cross-cutting: curated ECS snapshot, validation gates, atomic write + ring buffer, M45.1 live load-apply (FormId-keyed deltas + player-pose restore) |
