@@ -785,6 +785,21 @@ impl EsmIndex {
         tiles
     }
 
+    /// XCT-ROUTE-003 — the door references this load order's navmesh data
+    /// links to a navmesh: `NAVI` `NVCI` door links (FO3 / FNV) and `NAVM` door
+    /// triangles (`NVDP` on the typed form, the packed form's door list on
+    /// Skyrim and Starfield). Empty when the game authors neither (Oblivion)
+    /// or its navmeshes are undecoded (Fallout 4); the router then treats
+    /// every load door as walkable ([`crate::esm::cell::SpaceGraph::build`]).
+    pub fn navmesh_door_links(&self) -> std::collections::HashSet<u32> {
+        self.navi_info
+            .values()
+            .flat_map(|navi| navi.door_links.iter().copied())
+            .chain(self.navmeshes.values().flat_map(|navm| navm.door_triangles.iter().map(|t| t.door_form_id)))
+            .filter(|door| *door != 0)
+            .collect()
+    }
+
     /// Resolve a Creation-era LSCR's NNAM model reference (Skyrim/FO4)
     /// against this index: the target's cached NIF path via
     /// `cells.statics` (STAT directly, SCOL through its baked `CM*.NIF`),

@@ -353,21 +353,19 @@ fn game_kind(name: &str) -> anyhow::Result<byroredux_plugin::esm::reader::GameKi
 }
 
 /// `cross-space-census <game> <ESM> [<actor REFR hex> <PACK hex>]` — the cross-cell actor travel
-/// Phase 0 census (#6851, `docs/prd/cross-cell-actor-travel.md` §2 / §8). For every placed actor
-/// (a reference whose base is an `NPC_` / `CREA`) it walks the template-resolved `PKID` list and
-/// keeps each package whose location is a **Near Reference** (`PLDT` type 0; on Skyrim+ the first
-/// such `Location` data input): one (actor, package) pair. A pair is **cross-space** when
-/// `EsmCellIndex::locate_refr` puts the destination in another space than the actor's home — an
-/// interior cell, or a whole worldspace — and its hops are the BFS distance over load doors (a
-/// placed `XTEL` door in space A whose destination door lies in space B is an edge A→B). Prints one
-/// Markdown table row, ten cross-space pairs spread over the form-sorted list (`SHOW_ALL=1`: all),
-/// and, given a REFR and a PACK, that pair (the FNV pin is `fnv … 104E85 10A216`, SunnyRef's
-/// VCG02SunnyTravelOutside: 1 hop).
+/// Phase 0 census (#6851, `docs/prd/cross-cell-actor-travel.md` §8). For every placed actor (a
+/// reference whose base is an `NPC_` / `CREA`) it walks the template-resolved `PKID` list and keeps
+/// each package whose location names a reference ([`PackRecord::location_reference`]): one (actor,
+/// package) pair. A pair is **cross-space** when the destination's space is not the actor's home
+/// space; its hop count is the fewest load doors between the two in the engine's own routing graph
+/// ([`SpaceGraph`], navmesh door links applied where the game authors them), so the census measures
+/// the routes the engine takes. Prints the Markdown table row, ten cross-space pairs spread over the
+/// form-sorted list (`SHOW_ALL=1`: all), and the pinned pair when one is given.
 fn cross_space_census(args: &[String]) -> anyhow::Result<()> {
     use byroredux_plugin::equip::resolve_inherited_ai_packages;
-    use byroredux_plugin::esm::cell::CellRef;
-    use byroredux_plugin::esm::records::{effective_actor_level, PackDataValue, PackLocationTarget, PackRecord};
-    use std::collections::{HashMap, HashSet, VecDeque};
+    use byroredux_plugin::esm::cell::{SpaceGraph, SpaceKey};
+    use byroredux_plugin::esm::records::{effective_actor_level, PackRecord};
+    use std::collections::HashSet;
     let (Some(game), Some(esm)) = (args.first(), args.get(1)) else {
         anyhow::bail!("usage: cross-space-census <game> <ESM> [<actor REFR hex> <PACK hex>]");
     };
@@ -381,41 +379,12 @@ fn cross_space_census(args: &[String]) -> anyhow::Result<()> {
         eprintln!("warning: {esm} parses as {:?}, not {game}", index.game);
     }
     let cells = &index.cells;
-    // `locate_refr` names an interior by its EDID, which FO4 leaves empty on some cells: those
-    // fall back to the index's own `cell_<FORMID>` key so two of them stay two spaces.
-    let unnamed: HashMap<u32, &str> = cells
-        .cells
-        .iter()
-        .filter(|(_, cell)| cell.editor_id.is_empty())
-        .flat_map(|(key, cell)| cell.references.iter().map(move |r| (r.form_id, key.as_str())))
-        .collect();
-    let (mut names, mut ids) = (Vec::<String>::new(), HashMap::<(bool, String), usize>::new());
-    let mut space_of = |form: u32| -> Option<usize> {
-        let (key, name) = match cells.locate_refr(form)?.0 {
-            CellRef::Interior { editor_id: "" } => {
-                let key = unnamed.get(&form)?;
-                ((true, key.to_string()), key.to_string())
-            }
-            CellRef::Interior { editor_id } => ((true, editor_id.to_ascii_lowercase()), editor_id.to_string()),
-            CellRef::Exterior { worldspace, .. } => (
-                (false, worldspace.to_string()),
-                cells.worldspaces.get(worldspace).map_or(worldspace.to_string(), |w| w.editor_id.clone()),
-            ),
-        };
-        Some(*ids.entry(key).or_insert_with(|| {
-            names.push(name);
-            names.len() - 1
-        }))
-    };
-    let near_reference = |pack: &PackRecord| {
-        let inputs = pack.data_inputs.iter().filter_map(|input| match &input.value {
-            PackDataValue::Location(location) => Some(location),
-            _ => None,
-        });
-        pack.location.iter().chain(inputs).find_map(|location| match location.target {
-            PackLocationTarget::NearReference(form) if form != 0 => Some(form),
-            _ => None,
-        })
+    let links = index.navmesh_door_links();
+    let graph = SpaceGraph::build(cells, &links);
+    let every_door = SpaceGraph::build(cells, &HashSet::new());
+    let name = |key: &SpaceKey| match key {
+        SpaceKey::Interior(cell) => cell.clone(),
+        SpaceKey::Worldspace(world) => cells.worldspaces.get(world).map_or(world.clone(), |w| w.editor_id.clone()),
     };
 
     let references = cells
@@ -424,82 +393,66 @@ fn cross_space_census(args: &[String]) -> anyhow::Result<()> {
         .chain(cells.exterior_cells.values().flat_map(|grids| grids.values()))
         .chain(cells.worldspace_persistent_cells.values())
         .flat_map(|cell| cell.references.iter());
-    let mut edges = HashMap::<usize, HashSet<usize>>::new();
-    let (mut doors, mut seen) = (0usize, HashSet::new());
-    // (actor REFR, base, package, home space, destination space or None when not placed here).
+    let mut seen = HashSet::new();
+    // (actor REFR, base, package, persistent, home space, destination space or None when not placed).
     let mut pairs = Vec::new();
     let (mut actors_with_packages, mut to_player) = (0usize, 0usize);
     for r in references {
         if !seen.insert(r.form_id) {
             continue;
         }
-        if let Some(teleport) = &r.teleport {
-            doors += 1;
-            if let (Some(a), Some(b)) = (space_of(r.form_id), space_of(teleport.destination)) {
-                if a != b {
-                    edges.entry(a).or_default().insert(b);
-                }
-            }
-        }
         let Some(npc) = index.npcs.get(&r.base_form_id).or_else(|| index.creatures.get(&r.base_form_id)) else {
             continue;
         };
         let packages = &resolve_inherited_ai_packages(npc, effective_actor_level(npc), &index).ai_packages;
         actors_with_packages += usize::from(!packages.is_empty());
-        let Some(home) = space_of(r.form_id) else { continue };
+        let Some(home) = cells.space_of_refr(r.form_id) else { continue };
         let mut counted = HashSet::new();
         for pack in packages.iter().filter(|p| counted.insert(**p)).filter_map(|p| index.packages.get(p)) {
-            if let Some(destination) = near_reference(pack) {
-                let space = space_of(destination);
+            if let Some(destination) = pack.location_reference() {
+                let space = cells.space_of_refr(destination);
                 // PlayerRef (0x14) is in no cell: a destination that moves with the player.
                 to_player += usize::from(space.is_none() && destination == 0x14);
-                pairs.push((r.form_id, npc.editor_id.as_str(), pack, home, space));
+                pairs.push((r.form_id, npc.editor_id.as_str(), pack, r.is_persistent(), home.clone(), space));
             }
         }
     }
 
-    let hops = |from: usize, to: usize| -> Option<usize> {
-        let (mut distance, mut queue) = (HashMap::from([(from, 0usize)]), VecDeque::from([from]));
-        while let Some(at) = queue.pop_front() {
-            if at == to {
-                return distance.get(&at).copied();
-            }
-            for &next in edges.get(&at).into_iter().flatten() {
-                if !distance.contains_key(&next) {
-                    distance.insert(next, distance[&at] + 1);
-                    queue.push_back(next);
-                }
-            }
-        }
-        None
-    };
+    let hops = |from: &SpaceKey, to: &SpaceKey| graph.id(from).zip(graph.id(to)).and_then(|(a, b)| graph.hops(a, b));
     let mut buckets = [0usize; 4]; // 1, 2, 3+, unreachable
-    let (mut cross, mut unplaced) = (Vec::new(), 0usize);
+    let (mut cross, mut unplaced, mut persistent) = (Vec::new(), 0usize, 0usize);
     for pair in &pairs {
-        match pair.4 {
+        match &pair.5 {
             None => unplaced += 1,
-            Some(destination) if destination != pair.3 => {
-                let distance = hops(pair.3, destination);
+            Some(destination) if *destination != pair.4 => {
+                let distance = hops(&pair.4, destination);
                 buckets[distance.map_or(3, |d| d.clamp(1, 3) - 1)] += 1;
+                persistent += usize::from(pair.3);
                 cross.push((pair, distance));
             }
             Some(_) => {}
         }
     }
-    let show = |(pair, distance): &(&(u32, &str, &PackRecord, usize, Option<usize>), Option<usize>)| {
-        let (actor, base, pack, home, destination) = pair;
+    type Pair<'a> = (u32, &'a str, &'a PackRecord, bool, SpaceKey, Option<SpaceKey>);
+    let show = |(pair, distance): &(&Pair, Option<usize>)| {
+        let (actor, base, pack, _, home, destination) = pair;
         let hops = distance.map_or("unreachable".to_string(), |d| d.to_string());
-        let destination = destination.map_or("(not placed)", |d| names[d].as_str());
-        println!(
-            "| {actor:08X} {base} | {:08X} {} | {} | {destination} | {hops} |",
-            pack.form_id, pack.editor_id, names[*home]
-        );
+        let destination = destination.as_ref().map_or("(not placed)".to_string(), name);
+        println!("| {actor:08X} {base} | {:08X} {} | {} | {destination} | {hops} |", pack.form_id, pack.editor_id, name(home));
     };
-    println!("{esm}: {} spaces, {doors} load doors, {} space edges", names.len(), edges.values().map(HashSet::len).sum::<usize>());
-    println!("| game | actors with packages | pairs (ref destination) | destination not placed | cross-space | 1 hop | 2 hops | 3+ hops | unreachable |");
-    println!("|---|---|---|---|---|---|---|---|---|");
+    let linked = every_door.doors().iter().filter(|door| links.contains(&door.door)).count();
     println!(
-        "| {game} | {actors_with_packages} | {} | {unplaced} ({to_player} player) | {} | {} | {} | {} | {} |",
+        "{esm}: {} spaces, {} load doors ({} on a navmesh door link{}), {} space edges",
+        graph.space_count(),
+        every_door.doors().len(),
+        linked,
+        if links.is_empty() { "; the game authors none, so every door routes" } else { "" },
+        graph.edge_count()
+    );
+    println!("| game | actors with packages | pairs (ref destination) | destination not placed | cross-space | persistent actor | 1 hop | 2 hops | 3+ hops | unreachable |");
+    println!("|---|---|---|---|---|---|---|---|---|---|");
+    println!(
+        "| {game} | {actors_with_packages} | {} | {unplaced} ({to_player} player) | {} | {persistent} | {} | {} | {} | {} |",
         pairs.len(),
         cross.len(),
         buckets[0],
@@ -513,7 +466,10 @@ fn cross_space_census(args: &[String]) -> anyhow::Result<()> {
     cross.iter().step_by(step).for_each(show);
     if let Some((actor, pack)) = pin {
         match pairs.iter().find(|pair| pair.0 == actor && pair.2.form_id == pack) {
-            Some(pair) => show(&(pair, pair.4.and_then(|d| if d == pair.3 { Some(0) } else { hops(pair.3, d) }))),
+            Some(pair) => {
+                let distance = pair.5.as_ref().and_then(|d| if *d == pair.4 { Some(0) } else { hops(&pair.4, d) });
+                show(&(pair, distance))
+            }
             None => println!("pin {actor:08X} / {pack:08X}: not a counted pair"),
         }
     }

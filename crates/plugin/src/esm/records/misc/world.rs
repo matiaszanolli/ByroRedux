@@ -20,9 +20,37 @@ pub struct NaviRecord {
     pub editor_id: String,
     /// `NVER` version tag — format revision the mesh data was exported at.
     pub version: u32,
+    /// FO3 / FNV `NVCI` *Door Links*: every door `REFR` some navmesh
+    /// connection names, flattened over the connections (XCT-ROUTE-003, the
+    /// load doors an actor can path through). xEdit `wbDefinitionsFO3.pas`
+    /// `NAVI`: `NVCI` is a navmesh FormID, then three `u32`-counted FormID
+    /// arrays — *Standard*, *Preferred*, *Door Links*. A row whose arrays do not
+    /// consume it exactly is skipped, not guessed at. Empty on games whose
+    /// `NAVI` has no `NVCI` (Skyrim+ keep door links in `NAVM`).
+    pub door_links: Vec<u32>,
 }
 
-pub fn parse_navi(form_id: u32, subs: &[SubRecord]) -> NaviRecord {
+/// One `NVCI` row's door links, or `None` when the row does not reconcile
+/// (see [`NaviRecord::door_links`]).
+fn nvci_door_links(data: &[u8], remap: &Option<FormIdRemap>) -> Option<Vec<u32>> {
+    let mut at = 4usize; // the connection's own navmesh
+    let mut doors = Vec::new();
+    for list in 0..3 {
+        let count = le_u32_at(data, at)? as usize;
+        at += 4;
+        let end = at.checked_add(count.checked_mul(4)?)?;
+        if end > data.len() {
+            return None;
+        }
+        if list == 2 {
+            doors.extend((0..count).filter_map(|i| le_u32_at(data, at + i * 4)).map(|raw| remap_fid(raw, remap)));
+        }
+        at = end;
+    }
+    (at == data.len()).then_some(doors)
+}
+
+pub fn parse_navi(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> NaviRecord {
     let mut out = NaviRecord {
         form_id,
         ..Default::default()
@@ -38,9 +66,16 @@ pub fn parse_navi(form_id: u32, subs: &[SubRecord]) -> NaviRecord {
             b"NVER" if sub.data.len() >= 4 => {
                 out.version = SubReader::new(&sub.data).u32_or_default();
             }
+            b"NVCI" => {
+                if let Some(doors) = nvci_door_links(&sub.data, remap) {
+                    out.door_links.extend(doors.into_iter().filter(|door| *door != 0));
+                }
+            }
             _ => {}
         }
     }
+    out.door_links.sort_unstable();
+    out.door_links.dedup();
     out
 }
 
@@ -2026,9 +2061,31 @@ mod tests {
             sub(b"EDID", b"NavMaster\0"),
             sub(b"NVER", 11u32.to_le_bytes()),
         ];
-        let n = parse_navi(0x5678, &subs);
+        let n = parse_navi(0x5678, &subs, &None);
         assert_eq!(n.editor_id, "NavMaster");
         assert_eq!(n.version, 11);
+    }
+
+    /// XCT-ROUTE-003 — `NVCI` door links: navmesh, then three counted FormID
+    /// arrays, the third the doors; a row that does not reconcile is skipped.
+    #[test]
+    fn parse_navi_collects_nvci_door_links() {
+        let row = |standard: &[u32], doors: &[u32], trailing: &[u8]| {
+            let mut data = 0x1111u32.to_le_bytes().to_vec();
+            for list in [standard, &[], doors] {
+                data.extend((list.len() as u32).to_le_bytes());
+                list.iter().for_each(|form| data.extend(form.to_le_bytes()));
+            }
+            data.extend_from_slice(trailing);
+            data
+        };
+        let subs = vec![
+            sub(b"NVCI", row(&[0x2222], &[0x0010_0001, 0x0010_0002], &[])),
+            sub(b"NVCI", row(&[], &[0x0010_0002, 0x0010_0003], &[])),
+            sub(b"NVCI", row(&[], &[0x0010_0009], &[0xAB])),
+        ];
+        let n = parse_navi(0x5678, &subs, &None);
+        assert_eq!(n.door_links, vec![0x0010_0001, 0x0010_0002, 0x0010_0003], "deduplicated; the trailing-byte row is skipped");
     }
 
     #[test]

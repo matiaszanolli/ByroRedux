@@ -90,9 +90,13 @@ pub(super) fn dispatch_misc_gameplay_a_group(
                     .insert(fid, parse_watr(fid, subs, game, &watr_remap));
             })?
         }
-        b"NAVI" => extract_records(reader, end, b"NAVI", &mut |fid, subs| {
-            index.navi_info.insert(fid, parse_navi(fid, subs));
-        })?,
+        b"NAVI" => {
+            // XCT-ROUTE-003 — `NVCI` door links name door REFRs.
+            let remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"NAVI", &mut |fid, subs| {
+                index.navi_info.insert(fid, parse_navi(fid, subs, &remap));
+            })?
+        }
         // #3401 — both carry embedded FormIDs (NAVM: parent cell,
         // cross-tile mesh, door REFR; REGN: weather / sound / object /
         // imposter forms).

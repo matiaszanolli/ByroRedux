@@ -798,6 +798,21 @@ impl PackSchedule {
 }
 
 impl PackRecord {
+    /// The reference this package's location names (`PLDT` type 0, *Near
+    /// Reference*, or the first such Skyrim+ `Location` data input): where a
+    /// Travel goes, and the package location Papyrus `MoveToPackageLocation`
+    /// places an actor at (XCT-LOC-006). `None` for any other location type.
+    pub fn location_reference(&self) -> Option<u32> {
+        let inputs = self.data_inputs.iter().filter_map(|input| match &input.value {
+            PackDataValue::Location(location) => Some(location),
+            _ => None,
+        });
+        self.location.iter().chain(inputs).find_map(|location| match location.target {
+            PackLocationTarget::NearReference(form) if form != 0 => Some(form),
+            _ => None,
+        })
+    }
+
     /// Resolve this package's force-greet line across both dialects
     /// (#5367 Phase F / Skyrim follow-up). FO3/FNV: `PKDT` procedure
     /// 15 (Dialogue) + `PKDD`'s topic. Skyrim+: a `ForceGreet` leaf in

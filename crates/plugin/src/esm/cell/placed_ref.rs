@@ -271,6 +271,15 @@ pub struct PlacedRef {
 }
 
 impl PlacedRef {
+    /// Whether this reference is persistent: placed in its cell's *Persistent
+    /// Children* group (GRUP type 8), or created at run time
+    /// ([`Self::at`]'s `0xFF`). Only persistent actors change spaces (PRD
+    /// `cross-cell-actor-travel` Q3, XCT-DEST-004): a reference "must be
+    /// checked" persistent "to be used in a script" (GECK *Reference*).
+    pub fn is_persistent(&self) -> bool {
+        self.group_type == 8 || self.group_type == 0xFF
+    }
+
     /// A bare placement of `base_form_id` at a Z-up pose: unit scale and no
     /// flags, links, ownership or scripts — what a runtime-created reference
     /// (M47.2's Created Object aliases) and test fixtures start from.

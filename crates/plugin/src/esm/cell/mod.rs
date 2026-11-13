@@ -22,6 +22,7 @@ mod index;
 mod landscape;
 mod lighting;
 mod placed_ref;
+mod spaces;
 pub(crate) mod support;
 pub(crate) mod walkers;
 mod worldspace;
@@ -48,6 +49,7 @@ pub use placed_ref::{
     ActivateParent, CellOwnership, EnableParent, LinkedRef, LockData, PlacedRef, PortalLink,
     PrimitiveBounds, RagdollPoseBone, TeleportDest, TextureSlotSwap,
 };
+pub use spaces::{LoadDoor, SpaceGraph, SpaceId, SpaceKey, SpaceRoute};
 pub use worldspace::{WorldspaceRecord, worldspace_flags};
 
 // `pub(crate)` items siblings reach via `super::` / `crate::esm::cell::`.

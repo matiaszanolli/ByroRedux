@@ -832,6 +832,20 @@ impl EsmCellIndex {
     /// The interior spawn ladder reads a door's *partner* through this: the
     /// partner's own `XTEL` is the floor-level pose the engine places the
     /// player at when they walk through it into the door's cell.
+    /// The cell-map key of the interior holding `refr_form_id` (its lower-cased
+    /// editor ID, or `cell_<FORMID>` for an unnamed cell); `None` for a
+    /// reference in no interior. Read from the same reverse index as
+    /// [`Self::locate_refr`].
+    pub(crate) fn interior_cell_key_of_refr(&self, refr_form_id: u32) -> Option<&str> {
+        self.locate_refr(refr_form_id)?;
+        let lookup = self.refr_lookup.get()?;
+        let &(slot, _) = lookup.refs.get(&refr_form_id)?;
+        match lookup.cells.get(slot as usize)? {
+            CellLocator::Interior(key) => Some(key),
+            _ => None,
+        }
+    }
+
     pub fn locate_refr(&self, refr_form_id: u32) -> Option<(CellRef<'_>, &PlacedRef)> {
         let lookup = self.refr_lookup.get_or_init(|| {
             let mut lookup = RefrLookup::default();
