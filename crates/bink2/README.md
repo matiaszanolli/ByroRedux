@@ -12,9 +12,11 @@ the tag of the experiment that established it; the experiments are in
 
 ## What it decodes
 Every frame of every Bink 2 file of the three games — 54 files, 74,680 frames — decodes to planes
-identical to those of the games' own `bink2w64.dll` (measured 2026-11-13). Not decoded: the audio
-tracks, alpha planes, and other revisions (Wolfenstein II's `KB2i`, for one). On a Ryzen 9 7950X the
-4K files take 10-13 ms a frame on one thread and about 4 ms on four.
+identical to those of the games' own `bink2w64.dll` (measured 2026-11-13). Not decoded: alpha planes
+and other revisions (Wolfenstein II's `KB2i`, for one). The container also reads the audio track
+headers and packets (`Bk2::tracks`, `Bk2::audio`); the sound itself is
+[`byroredux-binkaudio`](../binkaudio/README.md)'s. On a Ryzen 9 7950X the 4K files take 10-13 ms a
+frame on one thread and about 4 ms on four.
 
 ## Use
 

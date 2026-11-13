@@ -1,6 +1,6 @@
 # Bink video playback — Product Requirements
 
-**Status**: ACTIVE (2026-11-13). Revision 7 re-decides Q2 at the owner's direction: Bink 2 video decodes in process through the workspace's clean-room decoder. Revision 6 re-decides Q1 at the owner's direction: Bink 1 decodes in process, no FFmpeg at run time. Revision 4 files the tracking issues. Revision 3 records the owner's approval
+**Status**: ACTIVE (2026-11-13). Revision 8 extends Q2 at the owner's direction: Bink 2 sound decodes in process too, through the workspace's clean-room Bink Audio decoder. Revision 7 re-decides Q2 at the owner's direction: Bink 2 video decodes in process through the workspace's clean-room decoder. Revision 6 re-decides Q1 at the owner's direction: Bink 1 decodes in process, no FFmpeg at run time. Revision 4 files the tracking issues. Revision 3 records the owner's approval
 with every §10 decision taken as recommended and folded into the
 requirements (BIK-DEC-003, BIK-DEC-005, BIK-REQ-005). Statements about how
 an original engine, format or tool behaves cite external sources; a claim
@@ -14,8 +14,8 @@ engine starts, and every movie a script asks for (`PlayBink`). Each plays
 full-screen with its sound, holds the game while it runs, and ends early on
 Escape when its request allows it. For every title whose movies the engine
 can decode. Outside it: encoding or authoring Bink, linking RAD's Bink SDK,
-Scaleform menu movies and main-menu background movies. Bink 2 video is in
-scope since decision Q2's re-decision; its sound is not yet (BIK-DEC-003).
+Scaleform menu movies and main-menu background movies. Bink 2 video and
+sound are in scope since decision Q2's re-decision (BIK-DEC-003).
 
 **Related**: this document states the *promise*; the designs below own the
 *how*. Every mechanism promised here has an owner in this table, or Phase 0
@@ -27,7 +27,7 @@ writes the missing design.
 | Sound playback and its tracks | none: the `audio` crate (M44) has no design document; Phase 0's design covers the movie's audio half |
 | The new-game route that starts the FNV intro | [Playable vertical slice](../engine/playable-vertical-slice.md#from-the-beginning--a-new-game-2026-11-11) |
 | Decoding, presentation, A/V sync | none yet: Phase 0 writes `docs/engine/video-playback.md` |
-| The Bink 2 decoder's format rules and their provenance | [`crates/bink2`](../../crates/bink2/README.md): its spec (`docs/spec/`) and `CLEANROOM.md` |
+| The Bink 2 decoders' format rules and their provenance | [`crates/bink2`](../../crates/bink2/README.md) (video) and [`crates/binkaudio`](../../crates/binkaudio/README.md) (sound): their specs (`docs/spec/`) and `CLEANROOM.md` |
 
 Normative terms **MUST**, **SHOULD** and **MAY** have their RFC 2119
 meanings, as in the related designs. Requirement IDs use the `BIK-` prefix.
@@ -105,8 +105,8 @@ The corpus below was measured on 2026-11-11 from the installed games
 
 FFmpeg decodes both streams of `FNVIntro.bik` (`binkvideo`,
 `binkaudio_dct`) and the audio of `Intro.bk2`, but reports the Bink 2 video
-codec as unknown. The workspace's own decoder (Q2, re-decided 2026-11-13)
-decodes the video of every Bink 2 file above.
+codec as unknown. The workspace's own decoders (Q2, re-decided 2026-11-13)
+decode the video and the sound of every Bink 2 file above.
 
 What starts each game's movies, measured on 2026-11-11 from the masters and
 the default INIs:
@@ -127,7 +127,7 @@ The engine's state at HEAD on 2026-11-11 (after Phases 1 and 2's first part):
 | 2 | Where a request goes | `step_video` hands it to the movie player, which opens the file under `Video` (any case, `..\` out of it), draws frames full screen, holds game time like the loading cover, ends on the last frame or on Escape / `video.skip` for an interruptable request | `VideoPlayer`, `byroredux/src/video.rs`; `step_video`, `byroredux/src/app_step.rs`; `docs/smoke-tests/fnv-new-game.sh` leg 0 |
 | 3 | Papyrus `Game.PlayBink` | No native | `rg -i playbink crates/scripting/src` finds only the ObScript files |
 | 4 | Start sequence (INI movies) | Not read | `rg -i sintrosequence` finds nothing outside the reference dumps |
-| 5 | Decoder | In process: Bink 1 (`BIKi`) video and audio through `mercs2_bink` (Q1, re-decided 2026-11-12); Bink 2 (`KB2g`, `KB2j`) video through `byroredux-bink2` (Q2, re-decided 2026-11-13), without its sound; other revisions are reported Skipped. The mute and pause-music flags, and audio kept within a frame of the picture, are not done | `crates/video/src/lib.rs` and `crates/bink2`; the ignored corpus test in `crates/video` |
+| 5 | Decoder | In process: Bink 1 (`BIKi`) video and audio through `mercs2_bink` (Q1, re-decided 2026-11-12); Bink 2 (`KB2g`, `KB2j`) video and sound through `byroredux-bink2` and `byroredux-binkaudio` (Q2, re-decided 2026-11-13), the first audio track; other revisions are reported Skipped. The mute and pause-music flags, and audio kept within a frame of the picture, are not done | `crates/video/src/lib.rs`, `crates/bink2`, `crates/binkaudio`; the ignored corpus test in `crates/video` |
 
 The census is re-measured by Phase 0's checked-in corpus script; the HEAD
 table is replaced by `video.status` once Phase 2 ships entirely.
@@ -197,15 +197,17 @@ table is replaced by `video.status` once Phase 2 ships entirely.
   and channel count. **Phase 0: verify** which of several tracks the
   original plays (Skyrim's logo has two, Fallout 4's intro five); settled by
   RAD's published Bink sound-track documentation or by listening to each
-  track against the original.
-- **BIK-DEC-003.** Bink 2 video (`KB2g`, `KB2j`) MUST decode in process
-  through the workspace's clean-room decoder `byroredux-bink2` (MIT, pure
-  Rust, no dependencies) to frames at the file's resolution and frame rate,
-  and another Bink 2 revision MUST be **Skipped** with one log line (Q2).
-  Until Bink 2 sound decodes, a Bink 2 movie MUST show its picture without
-  sound and log one line saying so. **Phase 0: verify** whether Bink 2's
-  audio tracks are in the Bink 1 audio format; settled by decoding them with
-  Q1's library against FFmpeg's decode of the same tracks.
+  track against the original. Measured: a Bink 2 file's tracks are language
+  versions of one mix (`crates/binkaudio`, probe A9); until this is settled
+  the first track plays.
+- **BIK-DEC-003.** Bink 2 video (`KB2g`, `KB2j`) and its sound MUST decode in
+  process through the workspace's clean-room decoders `byroredux-bink2` and
+  `byroredux-binkaudio` (MIT, pure Rust, no dependencies) to frames at the
+  file's resolution and frame rate and to PCM at the track's rate and
+  channels (Q2). Another Bink 2 revision MUST be **Skipped** with one log
+  line; a track the audio decoder does not take (anything but 48 kHz stereo
+  DCT, the only kind in the corpus) MUST leave the picture playing without
+  sound, with one log line.
 - **BIK-DEC-005.** Bink 1 MUST decode in process through a pure-Rust,
   MIT-licensed library, so a player installs no external tool; the workspace
   MUST NOT link FFmpeg or any native decoder, and a format the library does not
@@ -249,7 +251,7 @@ table is replaced by `video.status` once Phase 2 ships entirely.
 
 | # | Original behaviour | Redux behaviour | Becomes redundant | Risk and its requirement |
 |---|---|---|---|---|
-| 1 | Plays Bink 2 (Fallout 4, Fallout 76, Starfield) through RAD's SDK | Bink 2 video decoded by the workspace's clean-room decoder (Q2), without its sound | A Bink 2 audio decoder | Fallout 4's and Starfield's films play silent. Reported per file (BIK-DEC-003) |
+| 1 | Plays Bink 2 (Fallout 4, Fallout 76, Starfield) through RAD's SDK | Bink 2 video and sound decoded by the workspace's clean-room decoders (Q2); the first audio track plays | BIK-DEC-002's verify item | The original may pick another track (a language version) than the first (BIK-DEC-002, BIK-DEC-003) |
 | 2 | Decoder built into the game | Q1's library decodes Bink 1, Q2's decoder Bink 2 `KB2g` / `KB2j` | — | A format they cannot decode plays no movie. **Skipped** is reported, never silent (BIK-DEC-003, BIK-RPT-001) |
 | 3 | Main menu with a background movie | No main menu, so no menu movie (BIK-NG-004) | — | Unowned: no PRD promises a main menu yet. Recorded here so the gap has a home |
 
@@ -268,9 +270,9 @@ reaches one now.
 | Fallout 3 | yes | Wave 1. Bink 1 only; shares FNV's `PlayBink` |
 | Fallout: New Vegas | yes | Wave 1. Reference title; its new-game route reaches `FNVIntro.bik` today |
 | Skyrim (LE / SE / AE) | yes | Wave 2. One Bink 1 logo; Papyrus `Game.PlayBink` (BIK-REQ-002) |
-| Fallout 4 | yes | Wave 2. Its one Bink 1 file plays; its Bink 2 films play without sound until Bink 2 sound decodes (BIK-DEC-003) |
+| Fallout 4 | yes | Wave 2. Its one Bink 1 file plays; its Bink 2 films play with their first audio track (BIK-DEC-002, BIK-DEC-003) |
 | Fallout 76 | no | No playable flow starts its movies (BIK-NG-005) |
-| Starfield | yes | Wave 2. Every file is Bink 2 (Q2), without sound as Fallout 4's; Papyrus `Game.PlayBink` reaches them (BIK-REQ-002) |
+| Starfield | yes | Wave 2. Every file is Bink 2 (Q2); Papyrus `Game.PlayBink` reaches them (BIK-REQ-002) |
 
 ### 7.2 Acceptance
 
@@ -282,7 +284,8 @@ A scenario passes when:
 1. **Corpus (per game, headless).** An ignored `cargo test`, run with the
    game's data variable, decodes every Bink 1 file in `Data\Video` to its
    last frame (BIK-G-002), and every Bink 2 file of Fallout 4, Fallout 76
-   and Starfield (BIK-DEC-003).
+   and Starfield, each with its first audio track where it has tracks
+   (BIK-DEC-003).
 2. **FNV intro (headless).** In `fnv-new-game.sh`, `video.status` reports
    `FNVIntro.bik` playing with flags `1 1 0 1` at the new game; `video.skip`
    ends it as **Played**; VCG00 then moves the player (BIK-G-001).
@@ -290,7 +293,7 @@ A scenario passes when:
    plays a movie `video.skip` cannot end, and `… t:FNVIntro.bik 1` one it
    can (BIK-PRES-004, BIK-RPT-003).
 4. **Bink 2 (Fallout 4, headless).** A Bink 2 request plays to its last
-   frame and logs its one no-sound line (BIK-DEC-003).
+   frame with its first audio track (BIK-DEC-003).
 
 ---
 
@@ -384,8 +387,17 @@ last frame.
    2026-11-13 against that DLL: every frame of all 54 Bink 2 files of Fallout 4
    (14), Fallout 76 (4) and Starfield (36), 74,680 frames, has planes identical to
    the DLL's. On a Ryzen 9 7950X its 4K files decode in 10–13 ms a frame on one
-   thread and about 4 ms on four. It decodes no sound: Bink 2 movies play silent
-   until a Bink 2 audio decoder exists.
+   thread and about 4 ms on four.
+   **Extended** (2026-11-13, owner): the sound too, through `crates/binkaudio`
+   (`byroredux-binkaudio`, MIT, pure Rust, no dependencies), written the same way
+   from the MultimediaWiki *Bink Audio* page and black-box probes of the DLL's
+   exported track API (`BinkOpenTrack`, `BinkGetTrackData`). Measured 2026-11-13:
+   every track of the 17 Bink 2 files with sound (80 tracks, 938 million samples)
+   has the DLL's sample count, and 0.017% of samples differ by one (where the DLL's
+   32-bit float arithmetic rounds a .5 tie the other way). Its
+   [`CLEANROOM.md`](../../crates/binkaudio/CLEANROOM.md) discloses that the
+   authoring model was very probably trained on public code including FFmpeg's
+   Bink audio decoder: a procedural clean room, a question for counsel.
 3. **Q3 — When an engine-started movie plays.** Recommended: at the point
    the original plays it (logo sequence at launch, the intro at a new
    game), with a launch flag that skips them for development and the gates.
@@ -417,3 +429,4 @@ last frame.
 | 5 | 2026-11-11 | §3 HEAD table refreshed for the shipped decoder, request flags and movie player (BIK-DEC-001/002/004/005, BIK-REQ-001/003, BIK-PRES-001/002/004/006, BIK-RPT-001..003); mute/pause flags, A/V sync, Papyrus native, start sequences open | — |
 | 6 | 2026-11-12 | Owner-directed: Q1 re-decided: Bink 1 decodes in process through `mercs2_bink`, no FFmpeg at run time (BIK-DEC-005 reworded; §3 HEAD rows 2 and 5; §5 row 2; provenance note) | — |
 | 7 | 2026-11-13 | Owner-directed: Q2 re-decided: Bink 2 video decodes in process through the clean-room `byroredux-bink2` (BIK-DEC-003 reworded, moved to Phase 1, Bink 2 audio verify item; scope line; Related row; §3 Skipped row, census note, HEAD row 5; §6 rows 1–2; §7.1 Fallout 4 and Starfield; acceptance 1 and 4; decode-rate metric; provenance note) | — |
+| 8 | 2026-11-13 | Owner-directed: Q2 extended to Bink 2 sound through the clean-room `byroredux-binkaudio` (BIK-DEC-003 reworded: sound decodes, the no-sound rule and its verify item dropped; BIK-DEC-002 notes that tracks are language versions and the first plays; scope line; Related row; §3 census note and HEAD row 5; §6 row 1; Fallout 4 and Starfield in §7.1; acceptance 1 and 4; Q2 provenance note with the training-data disclosure) | — |

@@ -2,14 +2,13 @@
 //!
 //! Bink 1 (`BIKi`) video and audio are decoded in process by the pure-Rust, MIT-licensed
 //! `mercs2_bink` crate (BIK-DEC-005): no external tool is needed and nothing foreign is linked.
-//! Bink 2 (`KB2g`, `KB2j`) video is decoded by the workspace's clean-room `byroredux-bink2`
-//! (BIK-DEC-003); its sound is not decoded yet, so a Bink 2 movie plays silent. Other Bink 1 and
-//! Bink 2 revisions are reported [`VideoError::Unsupported`] and the caller marks the movie
-//! *skipped*.
+//! Bink 2 (`KB2g`, `KB2j`) video and audio are decoded by the workspace's clean-room
+//! `byroredux-bink2` and `byroredux-binkaudio` (BIK-DEC-003). Other Bink 1 and Bink 2 revisions are
+//! reported [`VideoError::Unsupported`] and the caller marks the movie *skipped*.
 //!
 //! A reader thread decodes frames, converts them to RGBA with each decoder's converter and fits
-//! them to the window; a Bink 1 movie's first audio track is decoded up front into a temporary WAV
-//! the audio crate streams. [`Movie::advance`] is the whole playback contract: the caller owns the clock and asks
+//! them to the window; the movie's first audio track is decoded up front into a temporary WAV the
+//! audio crate streams. [`Movie::advance`] is the whole playback contract: the caller owns the clock and asks
 //! which frame belongs at a given elapsed time; a decoder that falls behind holds the last
 //! frame, one that runs ahead is held back by a small bounded ring.
 
@@ -103,7 +102,7 @@ fn describe_bink2(file: &bink2::Bk2) -> MovieInfo {
         height: file.height as u32,
         fps,
         duration_secs: file.frames as f64 / fps,
-        audio_tracks: file.audio_tracks as u32,
+        audio_tracks: file.tracks.len() as u32,
     }
 }
 
@@ -189,14 +188,20 @@ fn extract_audio(movie: &mercs2_bink::Movie) -> Option<PathBuf> {
             None => break,
         }
     }
+    write_wav(&pcm, track.channels() as u16, track.rate())
+}
+
+/// Interleaved 16-bit PCM into a temporary WAV the audio crate streams; `None` when there is none or
+/// it cannot be written (the picture then plays silent, with a warning).
+fn write_wav(pcm: &[i16], channels: u16, rate: u32) -> Option<PathBuf> {
     if pcm.is_empty() {
         return None;
     }
     let wav = temp_wav_path();
     let written = std::fs::File::create(&wav).and_then(|file| {
         let mut out = std::io::BufWriter::new(file);
-        out.write_all(&wav_header(pcm.len(), track.channels() as u16, track.rate()))?;
-        for sample in &pcm {
+        out.write_all(&wav_header(pcm.len(), channels, rate))?;
+        for sample in pcm {
             out.write_all(&sample.to_le_bytes())?;
         }
         out.flush()
@@ -209,6 +214,41 @@ fn extract_audio(movie: &mercs2_bink::Movie) -> Option<PathBuf> {
             None
         }
     }
+}
+
+/// BIK-DEC-003: a Bink 2 movie's sound, its first track decoded up front by `byroredux-binkaudio` into
+/// a temporary WAV. The tracks are language versions of one mix (binkaudio A9); which one the original
+/// picks is BIK-DEC-002's open question, so the first plays. `None` without tracks, or when the track
+/// does not decode (the picture then plays silent, with a warning).
+fn bink2_audio(file: &mut bink2::Bk2, name: &str) -> Option<PathBuf> {
+    let track = *file.tracks.first()?;
+    let mut decoder = match byroredux_binkaudio::Decoder::new(track.rate, track.stereo(), track.dct()) {
+        Ok(decoder) => decoder,
+        Err(error) => {
+            log::warn!("video: {name}: its first audio track cannot be decoded: {error}");
+            return None;
+        }
+    };
+    let mut pcm: Vec<i16> = Vec::new();
+    for frame in 0..file.frames {
+        let packet = match file.audio(frame) {
+            Ok(mut packets) => packets.swap_remove(0),
+            Err(error) => {
+                log::warn!("video: {name}: its audio stops at frame {frame}: {error}");
+                break;
+            }
+        };
+        if let Some(packet) = packet {
+            if let Err(error) = decoder.decode(packet.decoded_bytes, &packet.data, &mut pcm) {
+                log::warn!("video: {name}: its audio stops at frame {frame}: {error}");
+                break;
+            }
+        }
+    }
+    if file.tracks.len() > 1 {
+        log::info!("video: {name}: sound from audio track ID {} (the first of {})", track.id, file.tracks.len());
+    }
+    write_wav(&pcm, track.channels() as u16, track.rate)
 }
 
 /// `rgba` (`src` pixels wide and high) fitted into a `dst` frame: centred inside it with black bars
@@ -279,7 +319,7 @@ pub struct Movie {
 
 impl Movie {
     /// Start decoding `path` into `size` RGBA frames: fitted inside it with black bars when
-    /// `letterbox`, stretched to fill it otherwise. Blocks while a Bink 1 audio track is decoded.
+    /// `letterbox`, stretched to fill it otherwise. Blocks while the audio track is decoded.
     pub fn open(path: &Path, size: (u32, u32), letterbox: bool) -> Result<Self, VideoError> {
         let magic = magic(path)?;
         if &magic[..3] == b"KB2" {
@@ -316,16 +356,14 @@ impl Movie {
         Ok(Self { info, size: (width, height), rx: Some(rx), reader: Some(reader), audio, frame: Vec::new(), index: -1, exhausted: false })
     }
 
-    /// BIK-DEC-003: a Bink 2 movie, its packets read from the file as the reader thread needs them
-    /// and its slices decoded on up to `BINK2_THREADS` threads. Its sound is not decoded yet: the
-    /// picture plays silent, said once in the log.
+    /// BIK-DEC-003: a Bink 2 movie, its first audio track decoded up front, its video packets read
+    /// from the file as the reader thread needs them and its slices decoded on up to `BINK2_THREADS`
+    /// threads.
     fn open_bink2(path: &Path, magic: &[u8], size: (u32, u32), letterbox: bool) -> Result<Self, VideoError> {
         let mut file = bink2_container(path, magic)?;
         let info = describe_bink2(&file);
         let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-        if info.audio_tracks > 0 {
-            log::warn!("video: {name}: Bink 2 sound is not decoded yet; the picture plays silent");
-        }
+        let audio = bink2_audio(&mut file, &name);
         let (width, height) = (size.0.max(2), size.1.max(2));
         let (tx, rx) = sync_channel::<Vec<u8>>(FRAME_RING);
         let reader = std::thread::Builder::new()
@@ -353,7 +391,7 @@ impl Movie {
                 }
             })
             .map_err(|error| VideoError::Decode(format!("decoder thread: {error}")))?;
-        Ok(Self { info, size: (width, height), rx: Some(rx), reader: Some(reader), audio: None, frame: Vec::new(), index: -1, exhausted: false })
+        Ok(Self { info, size: (width, height), rx: Some(rx), reader: Some(reader), audio, frame: Vec::new(), index: -1, exhausted: false })
     }
 
     /// A movie over frames that already exist (tests).
@@ -541,10 +579,11 @@ mod tests {
         assert!(matches!(probe(&dir.path().join("missing.bik")), Err(VideoError::Unreadable(_))));
     }
 
-    /// BIK-DEC-003: a Bink 2 movie (the 96x32 probe stream of `byroredux-bink2`'s tests, four
-    /// frames at 30 fps) plays every frame, converted as the decoder converts it, and without sound.
+    /// BIK-DEC-003: a Bink 2 movie without audio tracks (the 96x32 probe stream of
+    /// `byroredux-bink2`'s tests, four frames at 30 fps) plays every frame, converted as the decoder
+    /// converts it.
     #[test]
-    fn a_bink_2_movie_plays_its_frames_without_sound() {
+    fn a_bink_2_movie_plays_its_frames() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("probe.bk2");
         std::fs::write(&path, include_bytes!("../../bink2/tests/data/probe_pr.bk2")).unwrap();
@@ -562,6 +601,21 @@ mod tests {
             last = decoder.decode(&packet, file.is_key(index)).unwrap().to_rgba();
         }
         assert_eq!(movie.frame, last, "the last frame, unscaled");
+    }
+
+    /// BIK-DEC-003: a Bink 2 movie's sound (`byroredux-binkaudio`'s handcrafted stream: 5 frames, one
+    /// 48 kHz stereo track, a short last packet) becomes the WAV the audio crate streams.
+    #[test]
+    fn a_bink_2_movie_brings_its_sound() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sound.bk2");
+        std::fs::write(&path, include_bytes!("../../binkaudio/tests/data/fixture.bk2")).unwrap();
+        let movie = Movie::open(&path, (32, 32), true).unwrap();
+        let wav = std::fs::read(movie.audio_path().expect("a soundtrack")).unwrap();
+        assert_eq!(&wav[..4], b"RIFF");
+        assert_eq!(u16::from_le_bytes([wav[22], wav[23]]), 2, "stereo");
+        assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 48000);
+        assert_eq!(wav.len() - 44, 2 * (4 * 3840 + 1280), "every stated sample");
     }
 
     /// BIK-G-002, BIK-DEC-003 / acceptance scenario 1: every Bink 1 movie (`BIKi`) and every Bink 2
@@ -602,6 +656,12 @@ mod tests {
                 let outcome = probe(&file).and_then(|info| {
                     let expected = (info.duration_secs * info.fps).round() as u64;
                     Movie::open(&file, (320, 180), true).map(|mut movie| (movie.decode_to_end(), expected))
+                });
+                // BIK-DEC-003: a Bink 2 movie with tracks brings its sound
+                let outcome = outcome.and_then(|(frames, expected)| match (bink2, probe(&file)) {
+                    (true, Ok(info)) if info.audio_tracks > 0 => Movie::open(&file, (32, 32), true)
+                        .map(|movie| (if movie.audio_path().is_some() { frames } else { 0 }, expected)),
+                    _ => Ok((frames, expected)),
                 });
                 match outcome {
                     Ok((frames, expected)) if frames > 0 && frames == expected => {

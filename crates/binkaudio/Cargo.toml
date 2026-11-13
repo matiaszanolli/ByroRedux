@@ -1,0 +1,15 @@
+[package]
+name = "byroredux-binkaudio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Clean-room Bink Audio decoder (the soundtracks of Bink 2 movies)"
+
+# The sound of the games' Bink 2 movies (PRD bink-video-playback, BIK-DEC-002, BIK-DEC-003). Written in
+# a clean room: read CLEANROOM.md before changing anything here. No dependencies, by design; the
+# container (track headers, packets) is byroredux-bink2's.
+
+[dependencies]
+
+[dev-dependencies]
+byroredux-bink2 = { workspace = true }

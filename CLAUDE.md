@@ -299,8 +299,9 @@ crates/
       mod.rs                 Parser struct, token access, type parsing
       expr.rs                Pratt expression parser (precedence climbing)
   audio/                     Audio playback (descriptors, spatial tracks, one-shots)
-  video/                     Movie decoding + the playback contract: Bink 1 via `mercs2_bink`, Bink 2 via bink2
-  bink2/                     Clean-room Bink 2 (KB2g/KB2j) video decoder — read its CLEANROOM.md first; spec in docs/spec/
+  video/                     Movie decoding + the playback contract: Bink 1 via `mercs2_bink`, Bink 2 via bink2 + binkaudio
+  bink2/                     Clean-room Bink 2 (KB2g/KB2j) video decoder + container — read its CLEANROOM.md first; spec in docs/spec/
+  binkaudio/                 Clean-room Bink Audio decoder (Bink 2 soundtracks) — read its CLEANROOM.md first; spec in docs/spec/
   bgsm/                      Bethesda GS material (.bgsm/.bgem) reader
   boot-request/              Engine boot handshake types
   cxx-bridge/                C++ interop (cxx crate)

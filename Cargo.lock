@@ -630,6 +630,13 @@ name = "byroredux-bink2"
 version = "0.1.0"
 
 [[package]]
+name = "byroredux-binkaudio"
+version = "0.1.0"
+dependencies = [
+ "byroredux-bink2",
+]
+
+[[package]]
 name = "byroredux-boot-request"
 version = "0.1.0"
 dependencies = [
@@ -964,6 +971,7 @@ name = "byroredux-video"
 version = "0.1.0"
 dependencies = [
  "byroredux-bink2",
+ "byroredux-binkaudio",
  "log",
  "mercs2_bink",
  "tempfile",

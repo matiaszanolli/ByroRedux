@@ -112,8 +112,8 @@ colour converter measured in P33. `container.rs`: `.bk2`.
    assumed; only 0 is confirmed).
 3. **Colour:** the DLL's converter is measured (P33: full-range BT.601, bilinear centred chroma) but
    not its exact rounding; `Frame::to_rgba` is within 2 of it.
-4. **Sound:** Bink 2's audio tracks are not decoded (ByroRedux PRD `bink-video-playback`,
-   BIK-DEC-003: whether they are the Bink 1 audio format is a verify item there).
+4. **Sound** is `crates/binkaudio`'s (its own spec and probes); this crate's container reads the
+   audio track headers and packets for it (`Bk2::tracks`, `Bk2::audio`).
 
 ## Hypotheses that failed (don't repeat)
 - Slice 2 at the packet's offset word / split at (mbh + 1) // 2 (P22).
