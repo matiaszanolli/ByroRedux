@@ -62,7 +62,7 @@ cd "$SMOKE_DATA"
 env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
     BYROREDUX_SETTINGS_PATH="$LOG_DIR/settings.toml" \
     BYROREDUX_SAVE_DIR="$LOG_DIR/saves" \
-    RUST_LOG="warn" \
+    RUST_LOG="warn,byroredux::cell_loader::relocated=info" \
     "${SMOKE_HEADLESS[@]}" "$ENGINE_BIN" "${SMOKE_ENGINE_ARGS[@]}" \
     --cell "$P0_CELL" --bench-frames 30 --bench-hold \
     >"$LOG_DIR/engine.stdout" 2>"$LOG_DIR/engine.stderr" &
@@ -85,13 +85,17 @@ pass "$sweep"
 
 # Every journey's walk time is hours at most; two game days is past them all.
 ask "time.advance 48" >/dev/null
-deadline=$((SECONDS + 180))
-until ask "actor.where --census" | grep -Eq 'offscreen 0, routing 0,'; do
+settle_started=$SECONDS
+deadline=$((SECONDS + ${XCT_SETTLE_SECS:-180}))
+# Match on the captured tally, not a `grep -q` pipe: the census is a line per actor, and an early
+# grep exit SIGPIPEs the producer, which `pipefail` reports as a miss.
+until [[ "$(ask "actor.where --census" | grep -o 'census: .*' | head -1)" == *"offscreen 0, routing 0,"* ]]; do
     kill -0 "$engine_pid" 2>/dev/null || fail "the engine exited before every journey ended"
     (( SECONDS < deadline )) || fail "journeys still pending: $(ask 'actor.where --census' | grep -o 'census: .*' | head -1)"
     sleep 3
 done
 census=$(ask "actor.where --census" | grep -o 'census: .*' | head -1)
+echo "smoke[$GATE]: journeys settled $((SECONDS - settle_started)) s after the clock advanced"
 arrived=$(grep -oE 'arrived [0-9]+' <<<"$census" | grep -oE '[0-9]+')
 pass "$census"
 awk -v a="$arrived" -v s="$swept" 'BEGIN { printf "smoke['"$GATE"']: arrival rate %d / %d = %.1f%%\n", a, s, 100 * a / s }'

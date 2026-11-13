@@ -62,7 +62,8 @@ ask() {
 }
 wait_for() {
     local seconds="$1" description="$2" command="$3" pattern="$4" deadline=$((SECONDS + $1))
-    until ask "$command" | grep -Eiq -- "$pattern"; do
+    # No `grep -q`: an early exit SIGPIPEs `ask`, which `pipefail` reports as a miss.
+    until ask "$command" | grep -Ei -- "$pattern" >/dev/null; do
         kill -0 "$engine_pid" 2>/dev/null || fail "the engine exited waiting for: $description"
         (( SECONDS < deadline )) || fail "timeout (${seconds}s) waiting for: $description ($(ask "$command" | tail -2 | tr '\n' ' ' | cut -c1-300))"
         sleep 2
