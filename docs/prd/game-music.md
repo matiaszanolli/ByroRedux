@@ -1,14 +1,14 @@
 # Game Music — Product Requirements
 
-**Status**: ACTIVE (2026-11-13). Revision 4 files the tracking issues, one
-small issue per work item under each phase. Revision 3 records the owner's
-approval with every §10 decision taken as recommended; revision 2 folded
-in review round 1 on the first draft, which was written from a census of
-the three masters and the installed `Data\Music` trees (§3.4) and an
-inventory of the engine at HEAD (§3.5). Statements about how an original
-engine, format or tool behaves cite external sources; a claim that could
-not be verified is marked **Phase 0: verify** instead of being stated as
-fact.
+**Status**: ACTIVE (2026-11-13). Revision 5 moves the census to ROADMAP
+(#6865). Revision 4 files the tracking issues, one small issue per work
+item under each phase. Revision 3 records the owner's approval with every
+§10 decision taken as recommended; revision 2 folded in review round 1 on
+the first draft, which was written from a census of the three masters and
+the installed `Data\Music` trees (§3.4) and an inventory of the engine at
+HEAD (§3.5). Statements about how an original engine, format or tool
+behaves cite external sources; a claim that could not be verified is
+marked **Phase 0: verify** instead of being stated as fact.
 
 **Tracking**: #6860 (parent). Phases: #6861 (0), #6862 (1), #6863 (2), #6864 (3); work items #6865–#6890.
 
@@ -132,26 +132,16 @@ controller past it has no per-game branch (R5).
 
 ### 3.4 Census
 
-Measured on 2026-11-13 from the three base masters (no DLC) with a scratch
-record walker, and from the installed `Data\Music` trees; Phase 0 checks in
-the script and extends it to the DLC masters. Game files are never checked
-in. At the Phase 0 exit this table is replaced by a link to ROADMAP's music
-column, which then holds the numbers (§8).
-
-| Item | Oblivion | Fallout 3 | Fallout: New Vegas |
-|---|---|---|---|
-| Loose files under `Data\Music` | 28 MP3 | 58 MP3 | 199 MP3 |
-| Music entries in the sound archives | 0 | 0 | 0 |
-| `MUSC` records | none (no such record) | 31 | 20 |
-| Folder-form music types | — | 6 (`DefaultBase`, `DefaultBattle`, `DefaultDungeon`, `DefaultExplore`, `DefaultPublic`, `TranquilityLaneLP`) | the same 6 |
-| Cells authoring music | 1,871 `XCMT` (1,104 Dungeon, 767 Public) | 447 `XCMO` (103 of them `1NoMusic`); 17 legacy `XCMT`, which xEdit marks unused | 297 `XCMO` (159 of them `1NoMusic`) |
-| Worldspaces authoring music | 39 `SNAM` (23 Dungeon, 16 Public) | 7 `ZNAM` | 3 `ZNAM` (`Freeside01`) |
-| Regions authoring music | 127 `RDMD` (126 Default, 1 Dungeon) | 2 `RDMD`, 0 `RDMO` | 0 `RDMO`; 44 `RDSB`, 11 `RDSI` |
-| Default music objects (slots 9–13) | — | `DefaultExplore`, `DefaultBattle`, `DefaultDeath`, `DefaultSuccess`, `DefaultSuccess` | the same |
-| Media sets (`MSET`) | — | — | 140: 81 Location, 32 Battle, 23 Dungeon, 4 Incidental; all 359 paths are files |
-| Media location controllers (`ALOC`) | — | — | 89 |
-| Audio markers | — | — | 572, pointing at 87 controllers |
-| Shipped `Special` tracks | `death`, `success`, `tes4title` | `Death`, `Success`, `MainTitle`, `ExitTheVault` | `EndCredits`, `MainTitle`, three stingers; **no** `death` or `success` |
+The census of every music source in the three games, base masters and
+official DLC together, lives in ROADMAP's
+[compatibility matrix](../../ROADMAP.md#compatibility-matrix) (music
+column), measured by the `music_census` example (#6865). In short: none of
+the three ships music in an archive, all of it is loose under
+`Data\Music`; Oblivion authors music categories (cells, worldspaces,
+regions); Fallout 3 and New Vegas author music types (`MUSC`), with the
+default music objects in `DOBJ` slots 9–13; New Vegas adds media sets,
+media location controllers and audio markers. Game files are never checked
+in.
 
 Two consequences shape the phases. First, New Vegas does not ship the five
 `Default*` folders its music types and cells name, nor the death and success
@@ -160,9 +150,10 @@ stings its default objects name: on that install those directives are
 **Phase 0: verify** that the original is silent there too; settled by the
 GECK wiki's Music Type page (geckwiki.com, unreachable from this
 environment) or by listening in a `DefaultDungeon` cell such as `Vault19a`.
-Second, Fallout 3's cell, worldspace and default-object sources all
-resolve to shipped folders, so it is the first title the controller can
-play end to end.
+Second, Fallout 3's default-object and worldspace sources and all but one
+of its cell sources resolve to shipped files and folders (the exception is
+`TenpennyLobbyMusic`, a `.wav` the install does not ship), so it is the
+first title the controller can play end to end.
 
 ### 3.5 State at HEAD
 
@@ -444,7 +435,7 @@ Vegas are Tier 1, Oblivion Tier 3.
 | Game | In scope | Why / wave |
 |---|---|---|
 | Oblivion | yes | Wave 2. Category music, `StreamMusic`, stings (MUS-SRC-008, MUS-SRC-009, MUS-SCR-003) |
-| Fallout 3 | yes | Wave 1. Every music source resolves to a shipped folder (§3.4), so the controller is proven here first |
+| Fallout 3 | yes | Wave 1. All but one of its location and default-object sources resolve to shipped files and folders (§3.4), so the controller is proven here first |
 | Fallout: New Vegas | yes | Wave 1 for the controller, its cell music types and `PlayMusic`; wave 2 for media sets (MUS-SRC-005 to MUS-SRC-007), which is where its music actually lives |
 | Skyrim (LE / SE / AE) | no | xWMA and the `MUSC` / `MUST` stack: the separate xWMA PRD (MUS-NG-001) |
 | Fallout 4 | no | As Skyrim (MUS-NG-001) |
@@ -487,8 +478,9 @@ A scenario passes when:
    the Location track resumes at the position it had. In
    `fnv-new-game.sh`, the intro's own `PlayBink "FNVIntro.bik" 1 1 0 1`
    raises no Hold layer (MUS-MIX-002, MUS-SCR-002).
-6. **New Vegas media sets (headless).** Standing at an audio marker of the
-   Goodsprings area (Phase 0 names its FormID) by day and by night reports
+6. **New Vegas media sets (headless).** Standing at audio marker
+   `0x00152433` (controller `musCtrlGoodsprings`, `WastelandNV` cell
+   `000846EA` at grid (-18, 0)) by day and by night reports
    its controller's Location set with the day and night layers in turn
    (MUS-SRC-005, MUS-SRC-006).
 7. **Oblivion categories (headless).** A Public cell (`BrumaJGhastasHouse`)
@@ -627,3 +619,4 @@ and Oblivion's source coverage is published.
 | 2 | 2026-11-13 | Review round 1 folded in: HEAD corrections (level-up/death drivers, movie audio, §3.5 row 10 cites), PlayMusic quote and layer-combination model, MUS-CMB-004 moved to translation, Q6 sourced from CS StreamMusic, scenarios 3–5 data and Phase 1 exit, mute flag out of scope, StreamMusic deviations, MUS-SRC-011 split, census home; Fallout 3 `RDMD` added to MUS-SRC-002's verify | claude: revise |
 | 3 | 2026-11-13 | Owner approval: Q1–Q6 decided as recommended (MUS-SEL-001, MUS-CMB-001, MUS-CMB-002, MUS-SRC-005, MUS-MIX-001, MUS-SAV-001, MUS-SAV-002, MUS-SRC-009) | owner: approved |
 | 4 | 2026-11-13 | APPROVED → ACTIVE: tracking issues filed (#6860 parent; phases #6861–#6864; 26 work items #6865–#6890, each citing the requirement IDs it satisfies) | — |
+| 5 | 2026-11-13 | §3.4's census table replaced by a link to ROADMAP's music column, now measured over base masters and DLC by the checked-in `music_census` example; scenario 6's Goodsprings marker named; Fallout 3's `TenpennyLobbyMusic` exception noted (#6865) | — |

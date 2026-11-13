@@ -217,16 +217,23 @@ Each row carries its own measurement date. This table is the single home for
 parse rates; other sections link here instead of restating them. Frame-time
 figures for the scenes named below are in the bench-of-record, not here.
 
-| Game              | Archive       | NIF parse rate (clean / recoverable) | Verified content |
-|-------------------|---------------|--------------------------------------|------------------|
-| Oblivion          | BSA v103      | **100%** (9 612 / 9 612) · recover 100% — includes the eight vanilla DLC archives (2026-09-07, #3925) | Interior (Anvil Heinrich Oaken Halls). Exterior Tamriel `(0,0)` r1 passes the image-health and environment-value gates ([`exterior-readiness-plan.md`](docs/engine/exterior-readiness-plan.md)). |
-| Fallout 3         | BSA v104      | 100% (17 172 across 6 archives, base + 5 DLC; 2026-08-28) | Interior (Megaton, 929 REFRs). Exterior wired. |
-| Fallout New Vegas | BSA v104      | 100% (20 746 across all 11 mesh-bearing archives; 2026-08-28) | Interior (Prospector Saloon, a bench-of-record scene). Exterior 7×7; Lake Mead water traversal (W1). |
-| Skyrim SE         | BSA v105 LZ4  | 100% (**33 468** across 8 archives — the two base + `_ResourcePack` + five CC/AE + `Animations`; #3712 added the 44-NIF Animations archive, re-measured 2026-09-29) | Interior (WhiterunBanneredMare, a bench-of-record scene, with equipped named NPCs). Exterior Tamriel with `.btr`/`.bto` LOD. MQ101 plays end-to-end. |
-| Skyrim LE         | BSA v104 zlib | 100% (**22 466 / 22 466**, `Skyrim - Meshes.bsa`; gated since fb8173fe0) | Parse only. |
-| Fallout 4         | BA2 v1/v7/v8  | **100.00%** (**235 082 / 235 082**) · recover 100% — all 8 mesh-bearing archives, including 9 073 `.bto`/`.btr` LOD meshes (2026-08-29, #3466) | Interior (MedTekResearch01 and Dugout Inn, bench-of-record scenes). CSG precombines (M49). Commonwealth exterior streaming. |
-| Fallout 76        | BA2 v1        | **100%** (**102 980 / 102 980**; re-measured 2026-10-03 (#4628) over 5 of the 20 mesh-bearing archives (Meshes, StaticMeshes, both `GeneratedMeshes`, Startup) — #3461 (2026-09-02) closed the 3 056-NIF truncation tail the 2026-08-29 sweep found, so the old `GeneratedMeshes02` 0.00% / `GeneratedMeshes01` 95.03% split no longer exists) | Parse only. |
-| Starfield         | BA2 v2/v3 LZ4 | **100.00%** (**120 543 / 120 543**) · recover 100% — all 13 mesh-bearing archives (2026-09-24, #4440) | Walkable Cydonia interior. `BSWeakReferenceNode` still leaves an undecoded remainder in `starfield_tail`; the 100% is recovery, not decode. |
+Music sources come from `cargo run --release -p byroredux-plugin --example
+music_census -- <base master> <DLC>...` (#6865), base master and official DLC
+together; each cell is a census of what the data authors and whether its
+music types resolve under `Data\Music`, not what plays. The
+[Game Music PRD](docs/prd/game-music.md) §8 coverage figures join it as its
+phases land; music plays in none of the titles yet.
+
+| Game              | Archive       | NIF parse rate (clean / recoverable) | Verified content | Music sources |
+|-------------------|---------------|--------------------------------------|------------------|---------------|
+| Oblivion          | BSA v103      | **100%** (9 612 / 9 612) · recover 100% — includes the eight vanilla DLC archives (2026-09-07, #3925) | Interior (Anvil Heinrich Oaken Halls). Exterior Tamriel `(0,0)` r1 passes the image-health and environment-value gates ([`exterior-readiness-plan.md`](docs/engine/exterior-readiness-plan.md)). | 1 972 cell `XCMT`, 44 worldspace `SNAM`, 142 region `RDMD` (base + 9 DLC plugins; Shivering Isles is merged into `Oblivion.esm`); 28 tracks in `public`/`dungeon`/`explore`/`battle`/`special`, none in an archive (2026-11-13) |
+| Fallout 3         | BSA v104      | 100% (17 172 across 6 archives, base + 5 DLC; 2026-08-28) | Interior (Megaton, 929 REFRs). Exterior wired. | 616 cell `XCMO`, 19 worldspace `ZNAM`, 0 region `RDMO`, plus 17 legacy cell `XCMT` and 2 region `RDMD` (base + 5 DLC); 31 music types: 22 files and 6 folders resolve, 2 missing, 1 silent (`1NoMusic`); all five default music objects resolve (2026-11-13) |
+| Fallout New Vegas | BSA v104      | 100% (20 746 across all 11 mesh-bearing archives; 2026-08-28) | Interior (Prospector Saloon, a bench-of-record scene). Exterior 7×7; Lake Mead water traversal (W1). | 394 cell `XCMO`, 6 worldspace `ZNAM`, 44 region `RDSB` + 11 `RDSI` (base + 9 DLC); 29 music types: 15 files resolve, 13 missing (the `Default*` folders and death / success stings are not shipped), 1 silent; 144 media sets, all 362 track paths resolve; 101 controllers, 689 audio markers (2026-11-13) |
+| Skyrim SE         | BSA v105 LZ4  | 100% (**33 468** across 8 archives — the two base + `_ResourcePack` + five CC/AE + `Animations`; #3712 added the 44-NIF Animations archive, re-measured 2026-09-29) | Interior (WhiterunBanneredMare, a bench-of-record scene, with equipped named NPCs). Exterior Tamriel with `.btr`/`.bto` LOD. MQ101 plays end-to-end. | — xWMA; separate PRD (MUS-NG-001) |
+| Skyrim LE         | BSA v104 zlib | 100% (**22 466 / 22 466**, `Skyrim - Meshes.bsa`; gated since fb8173fe0) | Parse only. | — xWMA; separate PRD (MUS-NG-001) |
+| Fallout 4         | BA2 v1/v7/v8  | **100.00%** (**235 082 / 235 082**) · recover 100% — all 8 mesh-bearing archives, including 9 073 `.bto`/`.btr` LOD meshes (2026-08-29, #3466) | Interior (MedTekResearch01 and Dugout Inn, bench-of-record scenes). CSG precombines (M49). Commonwealth exterior streaming. | — xWMA; separate PRD (MUS-NG-001) |
+| Fallout 76        | BA2 v1        | **100%** (**102 980 / 102 980**; re-measured 2026-10-03 (#4628) over 5 of the 20 mesh-bearing archives (Meshes, StaticMeshes, both `GeneratedMeshes`, Startup) — #3461 (2026-09-02) closed the 3 056-NIF truncation tail the 2026-08-29 sweep found, so the old `GeneratedMeshes02` 0.00% / `GeneratedMeshes01` 95.03% split no longer exists) | Parse only. | — Wwise banks (MUS-NG-005) |
+| Starfield         | BA2 v2/v3 LZ4 | **100.00%** (**120 543 / 120 543**) · recover 100% — all 13 mesh-bearing archives (2026-09-24, #4440) | Walkable Cydonia interior. `BSWeakReferenceNode` still leaves an undecoded remainder in `starfield_tail`; the 100% is recovery, not decode. | — Wwise banks (MUS-NG-005) |
 
 ---
 
