@@ -963,6 +963,7 @@ dependencies = [
 name = "byroredux-video"
 version = "0.1.0"
 dependencies = [
+ "byroredux-bink2",
  "log",
  "mercs2_bink",
  "tempfile",

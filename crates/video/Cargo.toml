@@ -5,9 +5,11 @@ edition.workspace = true
 
 # Movie decoding for the games' own Bink videos (PRD bink-video-playback). Bink 1 (BIKi) video and
 # audio are decoded in process by `mercs2_bink` (MIT, pure Rust, no dependencies), so players need
-# no external tool (BIK-DEC-005). Bink 2 has no open decoder and is reported unsupported.
+# no external tool (BIK-DEC-005); Bink 2 (KB2g, KB2j) video by the workspace's clean-room
+# `byroredux-bink2` (BIK-DEC-003), without its sound so far.
 [dependencies]
 mercs2_bink = "=0.1.0"
+byroredux-bink2 = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 

@@ -2,12 +2,14 @@
 //!
 //! Bink 1 (`BIKi`) video and audio are decoded in process by the pure-Rust, MIT-licensed
 //! `mercs2_bink` crate (BIK-DEC-005): no external tool is needed and nothing foreign is linked.
-//! Bink 2 (`KB2`) has no open decoder and any other Bink 1 revision is not supported by that
-//! crate; both are reported [`VideoError::Unsupported`] and the caller marks the movie *skipped*.
+//! Bink 2 (`KB2g`, `KB2j`) video is decoded by the workspace's clean-room `byroredux-bink2`
+//! (BIK-DEC-003); its sound is not decoded yet, so a Bink 2 movie plays silent. Other Bink 1 and
+//! Bink 2 revisions are reported [`VideoError::Unsupported`] and the caller marks the movie
+//! *skipped*.
 //!
-//! A reader thread decodes frames, converts them to RGBA with Bink's own converter and fits them
-//! to the window; the first audio track is decoded up front into a temporary WAV the audio crate
-//! streams. [`Movie::advance`] is the whole playback contract: the caller owns the clock and asks
+//! A reader thread decodes frames, converts them to RGBA with each decoder's converter and fits
+//! them to the window; a Bink 1 movie's first audio track is decoded up front into a temporary WAV
+//! the audio crate streams. [`Movie::advance`] is the whole playback contract: the caller owns the clock and asks
 //! which frame belongs at a given elapsed time; a decoder that falls behind holds the last
 //! frame, one that runs ahead is held back by a small bounded ring.
 
@@ -17,16 +19,23 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, TryRecvError};
 use std::thread::JoinHandle;
 
+use byroredux_bink2 as bink2;
 use mercs2_bink::{AudioDecoder, VideoDecoder};
 
 /// Decoded frames the reader thread may run ahead of playback.
 const FRAME_RING: usize = 6;
 
+/// The Bink 2 revisions `byroredux-bink2` decodes (the last byte of the magic).
+const BINK2_REVISIONS: &[u8] = b"gj";
+
+/// Threads a Bink 2 movie's slices decode on (its frames have at most 4 slices).
+const BINK2_THREADS: usize = 4;
+
 /// What a movie request cannot do.
 #[derive(Debug, thiserror::Error)]
 pub enum VideoError {
-    /// The movie is in a format this build has no decoder for (Bink 2, another Bink 1 revision,
-    /// an alpha or grayscale plane).
+    /// The movie is in a format this build has no decoder for (a Bink 1 revision other than `i`, a
+    /// Bink 2 revision other than `g` and `j`, an alpha or grayscale plane).
     #[error("{0}")]
     Unsupported(String),
     /// The file is missing or is no movie.
@@ -47,11 +56,13 @@ pub struct MovieInfo {
     pub audio_tracks: u32,
 }
 
-/// `mercs2_bink`'s parse error, sorted into what the caller does with it: Bink 2 and other Bink
-/// revisions are *unsupported*, anything else is a damaged file.
+/// A parse error, sorted into what the caller does with it: Bink revisions without a decoder are
+/// *unsupported*, anything else is a damaged file.
 fn container_error(magic: &[u8], detail: String) -> VideoError {
     match magic {
-        [b'K', b'B', b'2', ..] => VideoError::Unsupported("Bink 2 (KB2) has no decoder in this build".into()),
+        [b'K', b'B', b'2', revision, ..] if !BINK2_REVISIONS.contains(revision) => {
+            VideoError::Unsupported(format!("Bink 2 revision '{}' has no decoder in this build", char::from(*revision)))
+        }
         [b'B', b'I', b'K', revision, ..] if *revision != b'i' => {
             VideoError::Unsupported(format!("Bink 1 revision '{}' has no decoder in this build", char::from(*revision)))
         }
@@ -70,8 +81,47 @@ fn describe(movie: &mercs2_bink::Movie) -> MovieInfo {
     }
 }
 
+/// A Bink 2 movie's container, for a revision `byroredux-bink2` decodes.
+fn bink2_container(path: &Path, magic: &[u8]) -> Result<bink2::Bk2, VideoError> {
+    if !BINK2_REVISIONS.contains(&magic[3]) {
+        return Err(container_error(magic, String::new()));
+    }
+    let file = bink2::Bk2::open(path).map_err(|error| VideoError::Unreadable(error.to_string()))?;
+    if file.width == 0 || file.height == 0 || file.frames == 0 || file.fps_num == 0 || file.fps_den == 0 {
+        return Err(VideoError::Unreadable(format!(
+            "not a playable Bink 2 movie: {}x{}, {} frames at {}/{} fps",
+            file.width, file.height, file.frames, file.fps_num, file.fps_den
+        )));
+    }
+    Ok(file)
+}
+
+fn describe_bink2(file: &bink2::Bk2) -> MovieInfo {
+    let fps = f64::from(file.fps_num) / f64::from(file.fps_den);
+    MovieInfo {
+        width: file.width as u32,
+        height: file.height as u32,
+        fps,
+        duration_secs: file.frames as f64 / fps,
+        audio_tracks: file.audio_tracks as u32,
+    }
+}
+
+/// The file's first four bytes.
+fn magic(path: &Path) -> Result<[u8; 4], VideoError> {
+    let mut magic = [0u8; 4];
+    std::fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut magic))
+        .map_err(|error| VideoError::Unreadable(error.to_string()))?;
+    Ok(magic)
+}
+
 /// Measure `path` from its container header alone: nothing of the picture is read.
 pub fn probe(path: &Path) -> Result<MovieInfo, VideoError> {
+    let magic = magic(path)?;
+    if &magic[..3] == b"KB2" {
+        return bink2_container(path, &magic).map(|file| describe_bink2(&file));
+    }
     let mut file = std::fs::File::open(path).map_err(|error| VideoError::Unreadable(error.to_string()))?;
     // The header names the tracks (0x28) and the frame index (0x10); the offset table ends the
     // part the parser reads.
@@ -229,8 +279,12 @@ pub struct Movie {
 
 impl Movie {
     /// Start decoding `path` into `size` RGBA frames: fitted inside it with black bars when
-    /// `letterbox`, stretched to fill it otherwise. Blocks while the audio track is decoded.
+    /// `letterbox`, stretched to fill it otherwise. Blocks while a Bink 1 audio track is decoded.
     pub fn open(path: &Path, size: (u32, u32), letterbox: bool) -> Result<Self, VideoError> {
+        let magic = magic(path)?;
+        if &magic[..3] == b"KB2" {
+            return Self::open_bink2(path, &magic, size, letterbox);
+        }
         let bytes = std::fs::read(path).map_err(|error| VideoError::Unreadable(error.to_string()))?;
         let (info, audio, mut video) = {
             let movie = mercs2_bink::Movie::parse(&bytes).map_err(|detail| container_error(&bytes, detail))?;
@@ -260,6 +314,46 @@ impl Movie {
             })
             .map_err(|error| VideoError::Decode(format!("decoder thread: {error}")))?;
         Ok(Self { info, size: (width, height), rx: Some(rx), reader: Some(reader), audio, frame: Vec::new(), index: -1, exhausted: false })
+    }
+
+    /// BIK-DEC-003: a Bink 2 movie, its packets read from the file as the reader thread needs them
+    /// and its slices decoded on up to `BINK2_THREADS` threads. Its sound is not decoded yet: the
+    /// picture plays silent, said once in the log.
+    fn open_bink2(path: &Path, magic: &[u8], size: (u32, u32), letterbox: bool) -> Result<Self, VideoError> {
+        let mut file = bink2_container(path, magic)?;
+        let info = describe_bink2(&file);
+        let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        if info.audio_tracks > 0 {
+            log::warn!("video: {name}: Bink 2 sound is not decoded yet; the picture plays silent");
+        }
+        let (width, height) = (size.0.max(2), size.1.max(2));
+        let (tx, rx) = sync_channel::<Vec<u8>>(FRAME_RING);
+        let reader = std::thread::Builder::new()
+            .name("movie-decode".into())
+            .spawn(move || {
+                let mut decoder = bink2::Decoder::for_file(&file);
+                decoder.options.threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(BINK2_THREADS);
+                let (source, target) = ((file.width, file.height), (width as usize, height as usize));
+                let mut rgba = vec![0u8; source.0 * source.1 * 4];
+                for index in 0..file.frames {
+                    let decoded = match file.video(index) {
+                        Ok(packet) => decoder.decode(&packet, file.is_key(index)).map_err(|error| error.to_string()),
+                        Err(error) => Err(error.to_string()),
+                    };
+                    match decoded {
+                        Ok(frame) => frame.rgba_into(&mut rgba),
+                        Err(error) => {
+                            log::warn!("video: {name}: frame {index} does not decode: {error}");
+                            return;
+                        }
+                    }
+                    if tx.send(fit(&rgba, source, target, letterbox)).is_err() {
+                        return;
+                    }
+                }
+            })
+            .map_err(|error| VideoError::Decode(format!("decoder thread: {error}")))?;
+        Ok(Self { info, size: (width, height), rx: Some(rx), reader: Some(reader), audio: None, frame: Vec::new(), index: -1, exhausted: false })
     }
 
     /// A movie over frames that already exist (tests).
@@ -423,8 +517,8 @@ mod tests {
         assert_eq!(u32::from_le_bytes(h[40..44].try_into().unwrap()), 200);
     }
 
-    /// Bink 2 and other Bink 1 revisions are reported unsupported, not as damaged files; garbage
-    /// and a missing file are unreadable.
+    /// Bink 1 and Bink 2 revisions without a decoder are reported unsupported, not as damaged
+    /// files; garbage, an empty Bink 2 header and a missing file are unreadable.
     #[test]
     fn formats_without_a_decoder_are_unsupported_and_damage_is_unreadable() {
         let dir = tempfile::tempdir().unwrap();
@@ -433,10 +527,13 @@ mod tests {
             std::fs::write(&path, bytes).unwrap();
             path
         };
-        let mut bink2 = b"KB2g".to_vec();
+        let mut bink2 = b"KB2a".to_vec();
         bink2.resize(0x80, 0);
-        assert!(matches!(probe(&write("a.bk2", &bink2)), Err(VideoError::Unsupported(reason)) if reason.contains("Bink 2")));
+        assert!(matches!(probe(&write("a.bk2", &bink2)), Err(VideoError::Unsupported(reason)) if reason.contains("Bink 2 revision 'a'")));
         assert!(matches!(Movie::open(&write("b.bk2", &bink2), (8, 8), true), Err(VideoError::Unsupported(_))));
+        bink2[3] = b'g';
+        assert!(matches!(probe(&write("e.bk2", &bink2)), Err(VideoError::Unreadable(_))), "no frames, no size");
+        assert!(matches!(Movie::open(&write("f.bk2", &bink2), (8, 8), true), Err(VideoError::Unreadable(_))));
         let mut other = b"BIKb".to_vec();
         other.resize(0x80, 0);
         assert!(matches!(probe(&write("c.bik", &other)), Err(VideoError::Unsupported(reason)) if reason.contains("'b'")));
@@ -444,32 +541,62 @@ mod tests {
         assert!(matches!(probe(&dir.path().join("missing.bik")), Err(VideoError::Unreadable(_))));
     }
 
-    /// BIK-G-002 / acceptance scenario 1: every Bink 1 movie (`BIKi`) of every installed game
-    /// decodes to its last frame, and the frame count is the header's. Also reports the decode
-    /// speed. `BYROREDUX_STEAM_COMMON=<steamapps/common> cargo test -p byroredux-video --release
-    /// -- --ignored --nocapture` (needs the games).
+    /// BIK-DEC-003: a Bink 2 movie (the 96x32 probe stream of `byroredux-bink2`'s tests, four
+    /// frames at 30 fps) plays every frame, converted as the decoder converts it, and without sound.
+    #[test]
+    fn a_bink_2_movie_plays_its_frames_without_sound() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("probe.bk2");
+        std::fs::write(&path, include_bytes!("../../bink2/tests/data/probe_pr.bk2")).unwrap();
+        let info = probe(&path).unwrap();
+        assert_eq!((info.width, info.height, info.fps, info.audio_tracks), (96, 32, 30.0, 0));
+        assert!((info.duration_secs - 4.0 / 30.0).abs() < 1e-9);
+        let mut movie = Movie::open(&path, (96, 32), true).unwrap();
+        assert!(movie.audio_path().is_none());
+        assert_eq!(movie.decode_to_end(), 4);
+        let mut file = bink2::Bk2::open(&path).unwrap();
+        let mut decoder = bink2::Decoder::for_file(&file);
+        let mut last = Vec::new();
+        for index in 0..file.frames {
+            let packet = file.video(index).unwrap();
+            last = decoder.decode(&packet, file.is_key(index)).unwrap().to_rgba();
+        }
+        assert_eq!(movie.frame, last, "the last frame, unscaled");
+    }
+
+    /// BIK-G-002, BIK-DEC-003 / acceptance scenario 1: every Bink 1 movie (`BIKi`) and every Bink 2
+    /// movie (`KB2g`, `KB2j`) of every installed game decodes to its last frame, and the frame count
+    /// is the header's. Also reports the decode speed. `BYROREDUX_STEAM_COMMON=<steamapps/common>
+    /// cargo test -p byroredux-video --release -- --ignored --nocapture` (needs the games).
     #[test]
     #[ignore = "needs the games' Data\\Video folders"]
-    fn every_installed_bink_1_movie_decodes_to_its_last_frame() {
+    fn every_installed_bink_movie_decodes_to_its_last_frame() {
         let Ok(common) = std::env::var("BYROREDUX_STEAM_COMMON") else {
             panic!("set BYROREDUX_STEAM_COMMON to the Steam library's steamapps/common folder");
         };
-        let (mut decoded, mut failed) = (0u32, Vec::new());
+        let (mut decoded, mut failed) = ([0u32; 2], Vec::new());
         for (game, folder) in [
             ("Oblivion", "Data/Video"),
             ("Fallout 3 goty", "Data/Video"),
             ("Fallout New Vegas", "Data/Video"),
             ("Skyrim Special Edition", "Data/Video"),
             ("Fallout 4", "Data/Video"),
+            ("Fallout76", "Data/Video"),
+            ("Starfield", "Data/video"),
         ] {
             let Ok(entries) = std::fs::read_dir(Path::new(&common).join(game).join(folder)) else { continue };
             let mut files: Vec<_> = entries.flatten().map(|entry| entry.path()).collect();
             files.sort();
             for file in files {
                 let mut magic = [0u8; 3];
-                if std::fs::File::open(&file).and_then(|mut f| f.read_exact(&mut magic)).is_err() || &magic != b"BIK" {
+                if std::fs::File::open(&file).and_then(|mut f| f.read_exact(&mut magic)).is_err() {
                     continue;
                 }
+                let bink2 = match &magic {
+                    b"BIK" => false,
+                    b"KB2" => true,
+                    _ => continue,
+                };
                 let name = format!("{game}/{}", file.file_name().unwrap().to_string_lossy());
                 let started = std::time::Instant::now();
                 let outcome = probe(&file).and_then(|info| {
@@ -478,15 +605,15 @@ mod tests {
                 });
                 match outcome {
                     Ok((frames, expected)) if frames > 0 && frames == expected => {
-                        decoded += 1;
+                        decoded[bink2 as usize] += 1;
                         println!("ok   {name}: {frames} frames in {:.1} s", started.elapsed().as_secs_f64());
                     }
                     other => failed.push(format!("{name}: {other:?}")),
                 }
             }
         }
-        println!("{decoded} Bink 1 movies decoded");
+        println!("{} Bink 1 and {} Bink 2 movies decoded", decoded[0], decoded[1]);
         assert!(failed.is_empty(), "movies that did not decode to their last frame: {failed:#?}");
-        assert!(decoded > 0, "no Bink 1 movie was found");
+        assert!(decoded.iter().sum::<u32>() > 0, "no Bink movie was found");
     }
 }

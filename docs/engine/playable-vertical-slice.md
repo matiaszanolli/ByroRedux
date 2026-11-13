@@ -1779,8 +1779,8 @@ Mitchell's house to Goodsprings with no console step a player would not take.
 **The route.** The engine starts the intro quest VCG00 at stage 0 (no record or
 script in the masters starts it; its own `MenuMode` block runs under the
 original's new-game menus): `FNVIntro.bik` plays full screen, decoded in the engine
-(`PlayBink "FNVIntro.bik" 1 1 0 1`: Escape ends it; a Bink 2 file is
-reported Skipped), the player is moved to `VCG01PlayerStartMarkerREF`, and VCG00
+(`PlayBink "FNVIntro.bik" 1 1 0 1`: Escape ends it; a Bink 2 file plays
+without sound), the player is moved to `VCG01PlayerStartMarkerREF`, and VCG00
 hands over to VCG01. Doc's
 lines chain through their End result scripts; the five character-creation screens
 open on a native page (name, sex and race, SPECIAL from the Vit-o-matic, tag
@@ -1851,7 +1851,7 @@ front door opens onto Goodsprings.
   (the bark hands over a Varmint Rifle). `fnv-vcg02-route.sh` gates all of it.
 
 **Not modelled yet.** The movies' mute and pause-music flags, Papyrus
-`Game.PlayBink`, the INI start sequences and Bink 2 (PRD `bink-video-playback`,
+`Game.PlayBink`, the INI start sequences and Bink 2 sound (PRD `bink-video-playback`,
 #6855); face sliders (GUI-NG-005); an unwatched actor's offscreen arrival and multi-hop routes
 (`cross-cell-actor-travel` Phase 3, #6854); a live `Disable()` (the rest of #5065);
 the MenuXml documents these screens have in the original (the page stands in,
