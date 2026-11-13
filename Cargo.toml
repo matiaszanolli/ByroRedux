@@ -27,6 +27,7 @@ members = [
     "crates/facegen",
     "crates/audio",
     "crates/video",
+    "crates/bink2",
     "crates/debug-protocol",
     "crates/debug-server",
     "crates/debug-ui",
@@ -73,6 +74,7 @@ byroredux-pex = { path = "crates/pex" }
 byroredux-facegen = { path = "crates/facegen" }
 byroredux-audio = { path = "crates/audio" }
 byroredux-video = { path = "crates/video" }
+byroredux-bink2 = { path = "crates/bink2" }
 byroredux-debug-protocol = { path = "crates/debug-protocol" }
 byroredux-debug-server = { path = "crates/debug-server" }
 byroredux-debug-ui = { path = "crates/debug-ui" }

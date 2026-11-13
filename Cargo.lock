@@ -626,6 +626,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "byroredux-bink2"
+version = "0.1.0"
+
+[[package]]
 name = "byroredux-boot-request"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,11 @@
+[package]
+name = "byroredux-bink2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Clean-room Bink Video 2 (KB2g, KB2j) decoder"
+
+# The games' Bink 2 movies (PRD bink-video-playback, BIK-DEC-003, decision Q2). Written in a clean
+# room: read CLEANROOM.md before changing anything here. No dependencies, by design.
+
+[dependencies]

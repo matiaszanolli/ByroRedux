@@ -299,6 +299,7 @@ crates/
       mod.rs                 Parser struct, token access, type parsing
       expr.rs                Pratt expression parser (precedence climbing)
   audio/                     Audio playback (descriptors, spatial tracks, one-shots)
+  bink2/                     Clean-room Bink 2 (KB2g/KB2j) video decoder — read its CLEANROOM.md first; spec in docs/spec/
   bgsm/                      Bethesda GS material (.bgsm/.bgem) reader
   boot-request/              Engine boot handshake types
   cxx-bridge/                C++ interop (cxx crate)
