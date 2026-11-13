@@ -1384,7 +1384,11 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // #6851 (cross-cell actor travel Phase 0) re-measure: `inspect cross-space-census`, the PRD §8
         // cross-space / multi-hop census over PKID Near Reference destinations and XTEL load doors (a
         // subcommand of the existing probe, no new target; `wthr-dump`'s game parse became shared).
-        ("plugin", 73, 9796),
+        // #6865 (game music Phase 0) re-measure: +1 — `music_census.rs`, the per-game music-source census
+        // (cell `XCMO`, worldspace `ZNAM`, region `RDMO`, `MUSC` / `MUST` resolution under `Data\Music`) whose
+        // output ROADMAP's compatibility matrix publishes. #6851 moved `cross-space-census` onto the shared
+        // `SpaceGraph` (-44 LOC).
+        ("plugin", 74, 10142),
         // M47.3 result scripts — `obscript_tools avcodes` aligns the Fallout
         // misc-stat codes and `live` names the quests a script advanced
         // (no new target; the existing triage tool grew).

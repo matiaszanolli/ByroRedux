@@ -217,12 +217,7 @@ Each row carries its own measurement date. This table is the single home for
 parse rates; other sections link here instead of restating them. Frame-time
 figures for the scenes named below are in the bench-of-record, not here.
 
-Music sources come from `cargo run --release -p byroredux-plugin --example
-music_census -- <base master> <DLC>...` (#6865), base master and official DLC
-together; each cell is a census of what the data authors and whether its
-music types resolve under `Data\Music`, not what plays. The
-[Game Music PRD](docs/prd/game-music.md) §8 coverage figures join it as its
-phases land; music plays in none of the titles yet.
+Music sources come from `cargo run --release -p byroredux-plugin --example music_census -- <base master> <DLC>...` (#6865), base master and official DLC together; each cell is a census of what the data authors and whether its music types resolve under `Data\Music`, not what plays. The [Game Music PRD](docs/prd/game-music.md) §8 coverage figures join it as its phases land; music plays in none of the titles yet.
 
 | Game              | Archive       | NIF parse rate (clean / recoverable) | Verified content | Music sources |
 |-------------------|---------------|--------------------------------------|------------------|---------------|
