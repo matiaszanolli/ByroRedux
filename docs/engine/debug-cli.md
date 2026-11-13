@@ -343,7 +343,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**172**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**173**) grouped by
 purpose:
 
 ```
@@ -558,7 +558,9 @@ actor.look <entity|.> <target|none> → force an actor's head to track a referen
 actor.revive <entity|.>      → bring a dead or unconscious actor back like ObScript Resurrect (M47.3)
 magic.effects [entity]       → list the magic effects running on a reference (script effects, timed value changes)
 weather.force <WTHR|none> [lock] → force the exterior weather like ObScript ForceWeather (saved); `none` releases it
-actor.where <entity|0xREFR> → where an actor is now: its current cell (its ledger placement once it has moved between spaces), pose, and whether it is routing via a load door (XCT-RPT-001)
+actor.where <entity|0xREFR> → where an actor is now and its cross-cell travel state: `routing via door entity <id> toward <cell>`, `offscreen, arrives at day <d> <hh:mm> in <cell>`, `unroutable <reason>`, or `in <cell>` / `not loaded, in <cell>`, with its pose (XCT-RPT-001)
+actor.where --census          → every actor the relocation ledger or the router knows: home cell, current cell and state, under a tally line (arrived / offscreen / routing / unroutable by reason, XCT-RPT-002)
+xct.sweep [limit]             → send every unloaded actor with a cross-space package on its way offscreen, or record it Unroutable with its reason (PRD scenario 4, `docs/smoke-tests/xct-census.sh`)
 video.status → the movie player: the movie playing (frame/count, PlayBink flags) and how the last request ended: Played, Skipped (a format with no decoder) or Failed (BIK-RPT-001)
 video.skip → Escape sent to the playing movie; it ends if its PlayBink request is interruptable (BIK-RPT-003)
 nav.path <entity|0xREFR> <entity|0xREFR> → the navmesh route the AI movers would take between two references: the resident tile and triangle each lands on, and the waypoint count

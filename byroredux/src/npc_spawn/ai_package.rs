@@ -3109,6 +3109,7 @@ mod tests {
                     position_zup: [0.0; 3],
                     rotation_zup: [0.0; 3],
                 },
+                target: 0x10A201,
             },
         );
 

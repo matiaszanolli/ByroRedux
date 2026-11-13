@@ -801,63 +801,224 @@ impl ConsoleCommand for DoorListCommand {
 ///
 /// [`ActivateEvent`]: byroredux_scripting::ActivateEvent
 /// [`papyrus_demo::rumble_on_activate_system`]: byroredux_scripting::papyrus_demo::rumble_on_activate_system
-/// XCT-RPT-001 (#6852) — `actor.where <entity|0xREFR>`: where an actor is
-/// now: its current cell (its ledger placement once it has moved between
-/// spaces, its load-order cell before), its pose, and whether it is walking to
-/// a load door. A FormID answers even while the actor is not loaded.
+/// XCT-RPT-001 / XCT-RPT-002 (#6852, #6854) — `actor.where <entity|0xREFR>`:
+/// where an actor is now and its cross-cell travel state (PRD §3): `routing
+/// via door entity <id> toward <cell>`, `offscreen, arrives at day <d>
+/// <hh:mm> in <cell>`, `unroutable <reason>`, or `in <cell>` / `not loaded, in
+/// <cell>` (Arrived, or never moved), with its pose. A FormID answers even
+/// while the actor is not loaded. `actor.where --census` lists every actor the
+/// ledger or the router knows, with its home cell, current cell and state.
 pub(crate) struct ActorWhereCommand;
 impl ConsoleCommand for ActorWhereCommand {
     fn name(&self) -> &str {
         "actor.where"
     }
     fn description(&self) -> &str {
-        "Where an actor is now: current cell, pose, and routing through a load door (usage: actor.where <entity|0xREFR>)"
+        "Where an actor is now and its cross-cell travel state (usage: actor.where <entity|0xREFR> | actor.where --census)"
     }
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
         let token = args.trim();
-        let form = token
-            .strip_prefix("0x")
-            .or_else(|| token.strip_prefix("0X"))
-            .and_then(|hex| u32::from_str_radix(hex, 16).ok());
-        let entity = match form {
-            Some(form) => byroredux_scripting::condition::resolve_entity_by_global_form_id(world, form),
-            None => match super::shared::resolve_console_entity(world, token) {
-                Ok(entity) => Some(entity),
-                Err(error) => return CommandOutput::error(format!("actor.where: {error}")),
-            },
-        };
-        let Some(form) = form.or_else(|| {
-            let id = world.get::<byroredux_core::ecs::components::FormIdComponent>(entity?)?.0;
-            world.try_resource::<byroredux_core::form_id::FormIdPool>()?.local_of(id)
-        }) else {
-            return CommandOutput::error("actor.where: the entity is no placed reference");
-        };
         let Some(index) = world
             .try_resource::<crate::cell_loader::LoadedCellIndex>()
             .map(|index| std::sync::Arc::clone(&index.0))
         else {
             return CommandOutput::error("actor.where: no load order");
         };
-        let moved = world
-            .try_resource::<byroredux_scripting::ActorRelocations>()
-            .is_some_and(|ledger| ledger.contains(form));
-        let cell = crate::cell_loader::relocated::current_cell(world, &index, form)
-            .map_or_else(|| "an unknown cell".to_string(), |cell| format!("{cell:?}"));
-        let live = entity.filter(|_| crate::cell_loader::relocated::has_live_entity(world, form));
-        let state = match live {
-            Some(entity) => match world.get::<crate::cell_loader::relocated::CrossSpaceHop>(entity) {
-                Some(hop) => format!("routing via door entity {} toward {:?}", hop.door, hop.placement.cell),
-                None => "in".to_string(),
-            },
-            None => "not loaded, in".to_string(),
+        if token == "--census" {
+            return actor_where_census(world, &index);
+        }
+        let form = token
+            .strip_prefix("0x")
+            .or_else(|| token.strip_prefix("0X"))
+            .and_then(|hex| u32::from_str_radix(hex, 16).ok());
+        let form = match form {
+            Some(form) => form,
+            None => {
+                let entity = match super::shared::resolve_console_entity(world, token) {
+                    Ok(entity) => entity,
+                    Err(error) => return CommandOutput::error(format!("actor.where: {error}")),
+                };
+                match crate::cell_loader::relocated::local_form(world, entity) {
+                    Some(form) => form,
+                    None => return CommandOutput::error("actor.where: the entity is no placed reference"),
+                }
+            }
         };
-        let pose = live
-            .and_then(|entity| world.get::<GlobalTransform>(entity))
-            .map(|t| format!(" at ({:.0}, {:.0}, {:.0})", t.translation.x, t.translation.y, t.translation.z))
-            .unwrap_or_default();
+        CommandOutput::line(actor_where_line(world, &index, form))
+    }
+}
+
+/// The game time `hours` (since day 0) as `day <d> <hh:mm>`.
+fn game_time_label(hours: f64) -> String {
+    let day = (hours / 24.0).floor();
+    let minutes = ((hours - day * 24.0) * 60.0).round() as i64;
+    format!("day {day} {:02}:{:02}", minutes / 60, minutes % 60)
+}
+
+/// One actor's `actor.where` state and cell.
+fn actor_where_state(world: &World, index: &byroredux_plugin::esm::records::EsmIndex, form: u32) -> (String, String) {
+    use crate::cell_loader::relocated;
+    let cell = relocated::current_cell(world, index, form).map_or_else(|| "an unknown cell".to_string(), |cell| format!("{cell:?}"));
+    let ledger = world.try_resource::<byroredux_scripting::ActorRelocations>();
+    if let Some(journey) = ledger.as_ref().and_then(|ledger| ledger.journey(form)) {
+        return (
+            format!("offscreen, arrives at {} in {:?}", game_time_label(journey.arrives_at_hours), journey.arrival.cell),
+            cell,
+        );
+    }
+    let live = relocated::live_body(world, form);
+    if let Some(hop) = live.and_then(|entity| world.get::<relocated::CrossSpaceHop>(entity)) {
+        return (format!("routing via door entity {} toward {:?}", hop.door, hop.placement.cell), cell);
+    }
+    if let Some(reason) = world.try_resource::<relocated::TravelReports>().and_then(|reports| reports.0.get(&form).copied()) {
+        return (format!("unroutable {reason}, in"), cell);
+    }
+    (if live.is_some() { "in".to_string() } else { "not loaded, in".to_string() }, cell)
+}
+
+fn actor_where_line(world: &World, index: &byroredux_plugin::esm::records::EsmIndex, form: u32) -> String {
+    use crate::cell_loader::relocated;
+    let (state, cell) = actor_where_state(world, index, form);
+    let moved = world
+        .try_resource::<byroredux_scripting::ActorRelocations>()
+        .is_some_and(|ledger| ledger.placement(form).is_some());
+    let pose = match relocated::live_body(world, form).and_then(|entity| world.get::<GlobalTransform>(entity)) {
+        Some(t) => Some(t.translation),
+        None => relocated::current_placement(world, index, form)
+            .map(|p| Vec3::from(byroredux_core::math::coord::zup_to_yup_pos(p.position_zup))),
+    }
+    .map(|t| format!(" at ({:.0}, {:.0}, {:.0})", t.x, t.y, t.z))
+    .unwrap_or_default();
+    format!("actor {form:08X}: {state} {cell}{pose}{}", if moved { " (moved from its home cell)" } else { "" })
+}
+
+/// XCT-RPT-002 — every actor the ledger or the router knows: moved, on a
+/// journey, or unroutable, with a tally the §8 sweep reads.
+fn actor_where_census(world: &World, index: &byroredux_plugin::esm::records::EsmIndex) -> CommandOutput {
+    let mut forms: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    if let Some(ledger) = world.try_resource::<byroredux_scripting::ActorRelocations>() {
+        forms.extend(ledger.iter().map(|(actor, _)| actor));
+        forms.extend(ledger.journeys().map(|(actor, _)| actor));
+    }
+    if let Some(reports) = world.try_resource::<crate::cell_loader::relocated::TravelReports>() {
+        forms.extend(reports.0.keys().copied());
+    }
+    let mut lines = Vec::with_capacity(forms.len() + 1);
+    let (mut arrived, mut offscreen, mut routing) = (0usize, 0usize, 0usize);
+    let mut unroutable: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for form in forms {
+        let home = index
+            .cells
+            .locate_refr(form)
+            .map_or_else(|| "no cell".to_string(), |(cell, _)| format!("{:?}", cell.to_owned()));
+        let (state, cell) = actor_where_state(world, index, form);
+        if let Some(reason) = state.strip_prefix("unroutable ") {
+            *unroutable.entry(reason.trim_end_matches(", in").to_string()).or_default() += 1;
+        } else if state.starts_with("offscreen") {
+            offscreen += 1;
+        } else if state.starts_with("routing") {
+            routing += 1;
+        } else {
+            arrived += 1;
+        }
+        lines.push(format!("actor {form:08X}: home {home} | {state} {cell}"));
+    }
+    let reasons = unroutable.iter().map(|(reason, n)| format!("{reason}: {n}")).collect::<Vec<_>>().join("; ");
+    lines.insert(
+        0,
+        format!(
+            "census: {} actors — arrived {arrived}, offscreen {offscreen}, routing {routing}, unroutable {}{}",
+            lines.len(),
+            unroutable.values().sum::<usize>(),
+            if reasons.is_empty() { String::new() } else { format!(" ({reasons})") }
+        ),
+    );
+    CommandOutput::lines(lines)
+}
+
+/// PRD scenario 4 (#6854) — `xct.sweep [limit]`: start, offscreen, the first
+/// cross-space package of every placed actor that has one (the §8 census
+/// population, at most `limit` actors), from where the actor stands, at the
+/// engine's walk speed; an actor that cannot route is recorded **Unroutable**
+/// with its reason. Actors with a body are left to their own packages.
+/// `docs/smoke-tests/xct-census.sh` then advances the clock and reads
+/// `actor.where --census`.
+pub(crate) struct XctSweepCommand;
+impl ConsoleCommand for XctSweepCommand {
+    fn name(&self) -> &str {
+        "xct.sweep"
+    }
+    fn description(&self) -> &str {
+        "Send every unloaded actor with a cross-space package on its way, offscreen (usage: xct.sweep [limit])"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        use byroredux_plugin::equip::resolve_inherited_ai_packages;
+        use byroredux_plugin::esm::records::effective_actor_level;
+        use crate::cell_loader::relocated;
+        let limit = args.trim().parse::<usize>().unwrap_or(usize::MAX);
+        let Some(index) = world
+            .try_resource::<crate::cell_loader::LoadedCellIndex>()
+            .map(|index| std::sync::Arc::clone(&index.0))
+        else {
+            return CommandOutput::error("xct.sweep: no load order");
+        };
+        let cells = &index.cells;
+        let references = cells
+            .cells
+            .values()
+            .chain(cells.exterior_cells.values().flat_map(|grids| grids.values()))
+            .chain(cells.worldspace_persistent_cells.values())
+            .flat_map(|cell| cell.references.iter());
+        let mut seen = std::collections::HashSet::new();
+        let (mut swept, mut departed, mut loaded) = (0usize, 0usize, 0usize);
+        let mut reasons: std::collections::BTreeMap<&'static str, usize> = std::collections::BTreeMap::new();
+        let speed = crate::components::WalkSpeed::or_default(None);
+        for placed in references {
+            if swept >= limit {
+                break;
+            }
+            if !seen.insert(placed.form_id) {
+                continue;
+            }
+            let Some(npc) = index.npcs.get(&placed.base_form_id).or_else(|| index.creatures.get(&placed.base_form_id)) else {
+                continue;
+            };
+            let Some(home) = cells.space_of_refr(placed.form_id) else { continue };
+            let packages = &resolve_inherited_ai_packages(npc, effective_actor_level(npc), &index).ai_packages;
+            let Some(target) = packages
+                .iter()
+                .filter_map(|package| index.packages.get(package))
+                .filter_map(|package| package.location_reference())
+                .find(|target| cells.space_of_refr(*target).is_some_and(|there| there != home))
+            else {
+                continue;
+            };
+            if relocated::has_live_entity(world, placed.form_id) {
+                loaded += 1;
+                continue;
+            }
+            swept += 1;
+            let outcome = if !placed.is_persistent() {
+                Err("not persistent")
+            } else {
+                match relocated::current_placement(world, &index, placed.form_id) {
+                    Some(from) => relocated::depart(world, placed.form_id, from, target, speed),
+                    None => Err("its home is not in the load order"),
+                }
+            };
+            match outcome {
+                Ok(()) => departed += 1,
+                Err(reason) => {
+                    relocated::report(world, placed.form_id, Some(reason));
+                    *reasons.entry(reason).or_default() += 1;
+                }
+            }
+        }
+        let reasons = reasons.iter().map(|(reason, n)| format!("{reason}: {n}")).collect::<Vec<_>>().join("; ");
         CommandOutput::line(format!(
-            "actor {form:08X}: {state} {cell}{pose}{}",
-            if moved { " (moved from its home cell)" } else { "" }
+            "xct.sweep: {swept} actor(s) swept, {departed} on their way, {} unroutable{}; {loaded} loaded actor(s) left to their packages",
+            swept - departed,
+            if reasons.is_empty() { String::new() } else { format!(" ({reasons})") }
         ))
     }
 }

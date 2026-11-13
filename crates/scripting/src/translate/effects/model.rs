@@ -622,6 +622,12 @@ pub enum Effect {
     /// M47.2 — `<reference>.MoveToMyEditorLocation()`: back to where the plugin
     /// placed it ([`crate::EditorLocation`]).
     MoveToEditorLocation { moved: ObjectRef },
+    /// XCT-LOC-006 — `<actor>.MoveToPackageLocation()` (CK: "Moves this actor
+    /// to the location of its current package"): queued for the engine
+    /// ([`crate::PendingActorMoves`]), which reads the running package's
+    /// location reference and moves the actor there, across spaces through the
+    /// relocation ledger.
+    MoveToPackageLocation { moved: ObjectRef },
     /// M47.2 — `<reference>.SetLinkedRef(apRef, apKeyword = None)`
     /// ([`crate::LinkedRefOverrides`]); a `None` target clears the link.
     SetLinkedRef {
@@ -974,6 +980,7 @@ impl Effect {
             Effect::SetLinkedRef { .. } => "SetLinkedRef",
             Effect::SetLocRefType { .. } => "SetLocRefType",
             Effect::MoveToEditorLocation { .. } => "MoveToEditorLocation",
+            Effect::MoveToPackageLocation { .. } => "MoveToPackageLocation",
             Effect::SetLocationKeywordData { .. } => "SetLocationKeywordData",
             Effect::ForceLocationTo { .. } => "ForceLocationTo",
             Effect::SetPlayerTeammate { .. } => "SetPlayerTeammate",

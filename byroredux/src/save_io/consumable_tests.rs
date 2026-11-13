@@ -707,3 +707,58 @@ fn dismember_record_round_trips_through_a_disk_save_and_load() {
         }
     }
 }
+
+/// XCT-LOC-003 (#6852, PRD scenario 2) / XCT-OFF-001 (#6854) — the relocation
+/// ledger rides the save: a moved actor's cell and pose and an offscreen
+/// actor's journey come back on a load, replacing the outgoing session's
+/// ledger, so a reload puts the actor in its current space and not its home
+/// cell (the loader reads the ledger, `cell_loader::relocated::skipped_at_home`).
+#[test]
+fn the_relocation_ledger_round_trips_through_a_disk_save_and_load() {
+    use byroredux_scripting::{ActorRelocations, CreatedCell, CreatedPlacement, Journey};
+    let directory = tempfile::tempdir().unwrap();
+    let index = EsmIndex::default();
+    let mut source = world(&index, directory.path().to_owned());
+    player(&mut source);
+    let outside = CreatedPlacement {
+        cell: CreatedCell::Exterior { worldspace: "wastelandnv".into(), grid: (-17, 0) },
+        position_zup: [-68000.0, 100.0, 8000.0],
+        rotation_zup: [0.0, 0.0, 1.5],
+    };
+    let saloon = CreatedPlacement {
+        cell: CreatedCell::Interior { editor_id: "GSProspectorSaloonInterior".into() },
+        position_zup: [10.0, 20.0, 30.0],
+        rotation_zup: [0.0; 3],
+    };
+    let mut ledger = ActorRelocations::default();
+    ledger.relocate(0x0010_4E85, outside.clone());
+    ledger.start_journey(
+        0x0010_4E86,
+        Journey { destination: 0x0010_A201, origin: saloon.clone(), arrival: outside.clone(), last_door: Some(outside), arrives_at_hours: 31.5 },
+    );
+    source.insert_resource(ledger.clone());
+    let output = SaveCommand.execute(&source, "0");
+    assert!(!command_output_is_failure(&output), "{:?}", output.lines);
+
+    let mut live = world(&index, directory.path().to_owned());
+    player(&mut live);
+    let mut outgoing = ActorRelocations::default();
+    outgoing.relocate(0x0099_0001, saloon);
+    live.insert_resource(outgoing);
+    let output = LoadCommand.execute(&live, "0");
+    assert!(!command_output_is_failure(&output), "{:?}", output.lines);
+    let snapshot = live.resource_mut::<PendingSaveLoadSlot>().snapshot.take().unwrap();
+    let registry = build_save_registry();
+    byroredux_save::validate_snapshot_types(&registry, &snapshot).unwrap();
+    byroredux_save::restore_resources(&mut live, &registry, &snapshot).unwrap();
+    let restored = live.resource::<ActorRelocations>();
+    assert_eq!(*restored, ledger, "the saved ledger replaces the outgoing one");
+    assert!(restored.contains(0x0010_4E85) && restored.contains(0x0010_4E86));
+    assert!(!restored.contains(0x0099_0001));
+    drop(restored);
+    assert!(
+        crate::cell_loader::relocated::skipped_at_home(&live, 0x0010_4E85),
+        "a reload does not spawn the moved actor in its home cell"
+    );
+    assert!(crate::cell_loader::relocated::skipped_at_home(&live, 0x0010_4E86), "nor the one on the road");
+}

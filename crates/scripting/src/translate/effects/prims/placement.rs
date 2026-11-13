@@ -75,6 +75,18 @@ pub(super) fn prim_move_to_editor_location(e: &Expr, scope: &Scope) -> Option<Ef
     })
 }
 
+/// XCT-LOC-006 — `<actor>.MoveToPackageLocation()` (CK *MoveToPackageLocation
+/// - Actor*: "Moves this actor to the location of its current package").
+pub(super) fn prim_move_to_package_location(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "MoveToPackageLocation")?;
+    if !args.is_empty() {
+        return None;
+    }
+    Some(Effect::MoveToPackageLocation {
+        moved: receiver_object(object, scope)?,
+    })
+}
+
 /// `Disable([abFadeOut])`, FO4/Starfield's `DisableNoWait([abFadeOut])` (the
 /// same disable, returning before the fade), and — M47.2 —
 /// `ReferenceAlias.TryToDisable()`, the CK's "disable a reference in an alias

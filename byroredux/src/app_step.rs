@@ -1228,75 +1228,104 @@ impl App {
         }
     }
 
-    /// XCT (PRD cross-cell-actor-travel, #6852/#6853) — carry out the actor
-    /// moves raised this frame ([`byroredux_scripting::PendingRelocations`]):
-    /// record each in the ledger and take the actor out of the cell it leaves
-    /// (XCT-ROUTE-002); then spawn every ledgered actor whose cell is loaded
-    /// and who has no entity yet, at its ledger pose (XCT-LOC-002,
-    /// XCT-ROUTE-005). Idle — one key over the ledger and the loaded cells —
-    /// while neither changes.
+    /// XCT (PRD cross-cell-actor-travel, #6852–#6854;
+    /// `docs/engine/cross-cell-travel.md` §1) — carry out the actor moves
+    /// raised this frame: Travel hops and followers
+    /// ([`byroredux_scripting::PendingRelocations`]), scripted `MoveTo` /
+    /// `MoveToPackageLocation` ([`byroredux_scripting::PendingActorMoves`])
+    /// and offscreen arrivals whose time has come. Each is recorded in the
+    /// ledger (or continues as a journey, XCT-ROUTE-006) and takes the actor
+    /// out of the cell it leaves (XCT-ROUTE-002); then every ledgered actor
+    /// whose cell is loaded and who has no entity yet is spawned at its ledger
+    /// pose (XCT-LOC-002, XCT-ROUTE-005), and the actors whose cell is not
+    /// loaded keep a logical identity (XCT-LOC-005). Idle — one key over the
+    /// ledger and the loaded cells — while neither changes.
     pub(crate) fn step_actor_relocations(&mut self) {
+        use cell_loader::relocated;
+        use byroredux_scripting::CreatedCell;
         if self.interior_transition.is_some() {
             return;
         }
-        let requests: Vec<(u32, byroredux_scripting::CreatedPlacement)> = self
-            .world
-            .try_resource_mut::<byroredux_scripting::PendingRelocations>()
-            .map(|mut pending| std::mem::take(&mut pending.0))
-            .unwrap_or_default();
-        for (actor, placement) in requests {
-            log::info!("actor {actor:08X} -> {:?}", placement.cell);
-            if let Some(mut ledger) = self.world.try_resource_mut::<byroredux_scripting::ActorRelocations>() {
-                ledger.relocate(actor, placement);
-            }
-            let resident = byroredux_scripting::condition::resolve_entity_by_global_form_id(&self.world, actor)
-                .filter(|_| cell_loader::relocated::has_live_entity(&self.world, actor));
-            if let (Some(entity), Some(ctx)) = (resident, self.renderer.as_mut()) {
-                cell_loader::unload::evict_actor(&mut self.world, ctx, entity);
-            }
-        }
-        let Some(digest) = self
-            .world
-            .try_resource::<byroredux_scripting::ActorRelocations>()
-            .filter(|ledger| !ledger.is_empty())
-            .map(|ledger| ledger.digest())
-        else {
-            return;
-        };
         let interior_root = self
             .world
             .try_resource::<cell_loader::CurrentCellRoot>()
             .and_then(|root| root.0);
+        let mut cells: Vec<(byroredux_core::ecs::storage::EntityId, CreatedCell)> = Vec::new();
+        if let Some((cell_root, editor_id)) = interior_root.zip(
+            self.world
+                .try_resource::<cell_loader::CurrentCellContext>()
+                .map(|cell| cell.cell_editor_id.clone()),
+        ) {
+            cells.push((cell_root, CreatedCell::Interior { editor_id }));
+        }
+        if let Some(state) = self.streaming.as_ref() {
+            let worldspace = state.wctx.worldspace_key.clone();
+            cells.extend(state.loaded.iter().map(|(grid, cell)| {
+                (cell.cell_root, CreatedCell::Exterior { worldspace: worldspace.clone(), grid: *grid })
+            }));
+        }
+        let loaded: Vec<CreatedCell> = cells.iter().map(|(_, cell)| cell.clone()).collect();
+
+        let mut requests: Vec<byroredux_scripting::Relocation> = self
+            .world
+            .try_resource_mut::<byroredux_scripting::PendingRelocations>()
+            .map(|mut pending| std::mem::take(&mut pending.0))
+            .unwrap_or_default();
+        let arrivals = relocated::due_arrivals(&self.world, &loaded);
+        let door_arrivals = arrivals.iter().filter(|arrival| {
+            self.world
+                .try_resource::<byroredux_scripting::ActorRelocations>()
+                .and_then(|ledger| ledger.journey(arrival.actor).and_then(|journey| journey.last_door.clone()))
+                .is_some_and(|door| door == arrival.placement)
+        });
+        // The actors that come through a load door fade in (XCT-ROUTE-008).
+        let faded: std::collections::HashSet<u32> =
+            requests.iter().map(|r| r.actor).chain(door_arrivals.map(|r| r.actor)).collect();
+        requests.extend(relocated::resolve_actor_moves(&self.world));
+        requests.extend(arrivals);
+        for relocation in &requests {
+            let actor = relocation.actor;
+            let on_the_road = relocated::continue_hop(&self.world, relocation, &loaded);
+            if !on_the_road {
+                log::info!("actor {actor:08X} -> {:?}", relocation.placement.cell);
+                if let Some(mut ledger) = self.world.try_resource_mut::<byroredux_scripting::ActorRelocations>() {
+                    ledger.relocate(actor, relocation.placement.clone());
+                }
+            }
+            if let (Some(entity), Some(ctx)) = (relocated::live_body(&self.world, actor), self.renderer.as_mut()) {
+                cell_loader::unload::evict_actor(&mut self.world, ctx, entity);
+            }
+        }
+
+        let Some(digest) = self
+            .world
+            .try_resource::<byroredux_scripting::ActorRelocations>()
+            .map(|ledger| ledger.digest())
+        else {
+            return;
+        };
         let grids = self.streaming.iter().flat_map(|state| state.loaded.keys().copied());
         let key = cell_loader::created::mix_key([digest, cell_loader::created::loaded_cells_key(interior_root, grids)]);
         if self.relocation_step_key == Some(key) {
             return;
         }
         self.relocation_step_key = Some(key);
-        let mut cells: Vec<(byroredux_core::ecs::storage::EntityId, byroredux_scripting::CreatedCell)> = Vec::new();
-        if let Some((cell_root, editor_id)) = interior_root.zip(
-            self.world
-                .try_resource::<cell_loader::CurrentCellContext>()
-                .map(|cell| cell.cell_editor_id.clone()),
-        ) {
-            cells.push((cell_root, byroredux_scripting::CreatedCell::Interior { editor_id }));
-        }
-        if let Some(state) = self.streaming.as_ref() {
-            let worldspace = state.wctx.worldspace_key.clone();
-            cells.extend(state.loaded.iter().map(|(grid, cell)| {
-                (cell.cell_root, byroredux_scripting::CreatedCell::Exterior { worldspace: worldspace.clone(), grid: *grid })
-            }));
-        }
+        let mut spawned = Vec::new();
         for (cell_root, cell) in cells {
-            let refs = cell_loader::relocated::relocated_in(&self.world, &cell, |actor| {
-                cell_loader::relocated::has_live_entity(&self.world, actor)
-            });
-            if !refs.is_empty() {
-                self.spawn_into_loaded_cell(cell_root, |world, ctx, tex_provider, mat_provider| {
-                    cell_loader::created::spawn_relocated(world, ctx, tex_provider, mat_provider, cell_root, &refs);
-                });
+            let refs = relocated::relocated_in(&self.world, &cell, |actor| relocated::has_live_entity(&self.world, actor));
+            if refs.is_empty() {
+                continue;
             }
+            let forms: std::collections::HashSet<u32> = refs.iter().map(|placed| placed.form_id).collect();
+            relocated::promote(&mut self.world, &forms);
+            spawned.extend(forms);
+            self.spawn_into_loaded_cell(cell_root, |world, ctx, tex_provider, mat_provider| {
+                cell_loader::created::spawn_relocated(world, ctx, tex_provider, mat_provider, cell_root, &refs);
+            });
         }
+        let through: Vec<u32> = spawned.into_iter().filter(|form| faded.contains(form)).collect();
+        relocated::fade_in(&self.world, &through);
+        relocated::reconcile_logical_identities(&mut self.world, &loaded);
     }
 
     /// BIK (#6855) — the movie player: end the movie that finished or was skipped and start the next
@@ -1654,6 +1683,9 @@ impl App {
                     );
                 }
                 cell_loader::unload_current_interior(&mut self.world, ctx);
+                // XCT-LOC-005 — the interior's actors get their bodies from
+                // its load: their logical identities step aside first.
+                cell_loader::relocated::promote_for_interior(&mut self.world, &editor_id);
                 let tex_provider = crate::asset_provider::build_texture_provider(&args);
                 let mat_provider = crate::asset_provider::build_material_provider(&args);
                 match cell_loader::InteriorCellApply::begin(

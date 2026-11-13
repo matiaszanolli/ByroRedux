@@ -261,11 +261,9 @@ fn move_to(world: &World, args: &[ObScriptValue], caller: u32, known: Option<(u3
         return Action::Declined;
     };
     let offset = [1, 2, 3].map(|i| args.get(i).map_or(0.0, |v| v.as_num()));
-    let Some(moved) = entity_of(world, caller, known) else {
-        return Action::Declined;
-    };
     let effect = format!("MoveTo {caller:08X} -> {target:08X}");
-    if PapyrusPlayerEntity::get(world) == Some(moved) {
+    let moved = entity_of(world, caller, known);
+    if moved.is_some() && PapyrusPlayerEntity::get(world) == moved {
         // Fallout queues the player's move; Oblivion's also ends the script.
         if !ScriptGame::is_fallout3_nv(world) || offset != [0.0; 3] {
             return Action::Declined;
@@ -278,10 +276,19 @@ fn move_to(world: &World, args: &[ObScriptValue], caller: u32, known: Option<(u3
             None => Action::Declined,
         };
     }
-    let Some(destination) = resolve_entity_by_global_form_id(world, target) else {
-        return Action::Declined;
-    };
-    if apply_move_to_effect(world, moved, destination, offset, false, caller) {
+    let body = |entity: EntityId| !crate::is_logical_stub(world, entity);
+    let destination = resolve_entity_by_global_form_id(world, target).filter(|e| body(*e));
+    if let (Some(moved), Some(destination)) = (moved.filter(|e| body(*e)), destination) {
+        return if apply_move_to_effect(world, moved, destination, offset, false, caller) {
+            Action::Done { value: None, effect }
+        } else {
+            Action::Declined
+        };
+    }
+    // XCT-LOC-004 — the actor or the target is in a cell that is not loaded:
+    // the engine moves it through the relocation ledger, across spaces when the
+    // target is in another one.
+    if crate::queue_actor_move(world, crate::ActorMoveRequest::ToReference { actor: caller, target, offset }) {
         Action::Done { value: None, effect }
     } else {
         Action::Declined
@@ -437,6 +444,31 @@ mod tests {
         }
         assert_eq!(run(&world, CMD_MOVE_TO, &[ObScriptValue::Ref(MARKER)], Some(0x00FF_FFFF)), Action::Declined);
         assert_eq!(world.get::<Transform>(moved).unwrap().translation, Vec3::ZERO);
+    }
+
+    /// XCT-LOC-004 — with the engine's queue installed, a move whose caller or
+    /// target has no body (its cell is not loaded) goes to the engine, which
+    /// relocates through the ledger, instead of declining; a stub is no body.
+    #[test]
+    fn move_to_an_unloaded_end_is_queued_for_the_engine() {
+        let (mut world, moved, marker) = world(GameKind::Fallout3NV);
+        world.insert_resource(crate::PendingActorMoves::default());
+        assert_eq!(
+            run(&world, CMD_MOVE_TO, &[ObScriptValue::Ref(0x0010_A201), ObScriptValue::Num(0.0), ObScriptValue::Num(0.0), ObScriptValue::Num(8.0)], Some(MOVED)),
+            done("MoveTo 00010001 -> 0010A201")
+        );
+        assert_eq!(run(&world, CMD_MOVE_TO, &[ObScriptValue::Ref(MARKER)], Some(0x0010_4E85)), done("MoveTo 00104E85 -> 00010002"));
+        world.insert(marker, crate::obscript_objects::UnloadedReferenceStub);
+        assert_eq!(run(&world, CMD_MOVE_TO, &[ObScriptValue::Ref(MARKER)], Some(MOVED)), done("MoveTo 00010001 -> 00010002"));
+        assert_eq!(
+            world.resource::<crate::PendingActorMoves>().0,
+            vec![
+                crate::ActorMoveRequest::ToReference { actor: MOVED, target: 0x0010_A201, offset: [0.0, 0.0, 8.0] },
+                crate::ActorMoveRequest::ToReference { actor: 0x0010_4E85, target: MARKER, offset: [0.0; 3] },
+                crate::ActorMoveRequest::ToReference { actor: MOVED, target: MARKER, offset: [0.0; 3] },
+            ]
+        );
+        assert_eq!(world.get::<Transform>(moved).unwrap().translation, Vec3::ZERO, "nothing moved in place");
     }
 
     fn with_player(mut world: World, moved: EntityId) -> World {

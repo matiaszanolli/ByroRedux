@@ -22,23 +22,26 @@ pub(super) fn apply_placement_effect(
             offset,
             match_rotation,
         } => {
+            let body = |entity: EntityId| !crate::is_logical_stub(world, entity);
             let moved_entity =
-                resolve_object(vmad, world, context, moved, &deferred.scene_actor_bindings)?;
-            let destination_entity = resolve_object(
-                vmad,
-                world,
-                context,
-                destination,
-                &deferred.scene_actor_bindings,
-            )?;
-            apply_move_to_effect(
-                world,
-                moved_entity,
-                destination_entity,
-                *offset,
-                *match_rotation,
-                context.0,
-            );
+                resolve_object(vmad, world, context, moved, &deferred.scene_actor_bindings).filter(|e| body(*e));
+            let destination_entity =
+                resolve_object(vmad, world, context, destination, &deferred.scene_actor_bindings).filter(|e| body(*e));
+            if let (Some(moved_entity), Some(destination_entity)) = (moved_entity, destination_entity) {
+                apply_move_to_effect(world, moved_entity, destination_entity, *offset, *match_rotation, context.0);
+                return None;
+            }
+            // XCT-LOC-004 — an end with no body (its cell is not loaded): the
+            // engine reads the target's placement and moves the actor through
+            // the relocation ledger, across spaces when it must.
+            let actor = object_form_id(vmad, world, context, moved, deferred)?;
+            let target = object_form_id(vmad, world, context, destination, deferred)?;
+            crate::queue_actor_move(world, crate::ActorMoveRequest::ToReference { actor, target, offset: *offset });
+            None
+        }
+        Effect::MoveToPackageLocation { moved } => {
+            let actor = object_form_id(vmad, world, context, moved, deferred)?;
+            crate::queue_actor_move(world, crate::ActorMoveRequest::ToPackageLocation { actor });
             None
         }
         Effect::MoveToEditorLocation { moved } => {

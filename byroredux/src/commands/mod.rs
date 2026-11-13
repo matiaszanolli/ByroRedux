@@ -252,6 +252,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(TonemapCommand);
     registry.register(ScriptActivateCommand);
     registry.register(ActorWhereCommand);
+    registry.register(XctSweepCommand);
     registry.register(NavPathCommand);
     registry.register(VideoStatusCommand);
     registry.register(VideoSkipCommand);

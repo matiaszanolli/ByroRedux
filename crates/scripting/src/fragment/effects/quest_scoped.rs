@@ -180,6 +180,7 @@ pub(super) fn apply_quest_scoped_effect(
         | Effect::SetLinkedRef { .. }
         | Effect::SetLocRefType { .. }
         | Effect::MoveToEditorLocation { .. }
+        | Effect::MoveToPackageLocation { .. }
         | Effect::SetLocationKeywordData { .. }
         | Effect::ForceLocationTo { .. }
         | Effect::SetPlayerTeammate { .. }

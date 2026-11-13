@@ -16,4 +16,6 @@ pub(super) fn register_script_requests_systems(scheduler: &mut Scheduler) {
     scheduler.add_exclusive(Stage::Update, crate::combat::chargen_catch_up_system);
     scheduler.add_exclusive(Stage::Update, crate::systems::script_requests::script_ui_request_system);
     scheduler.add_exclusive(Stage::Update, crate::systems::script_requests::actor_alpha_system);
+    // XCT-ROUTE-008 — actors fade out at a load door and in on the far side.
+    scheduler.add_exclusive(Stage::Update, crate::cell_loader::relocated::door_fade_system);
 }

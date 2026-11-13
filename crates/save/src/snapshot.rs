@@ -622,7 +622,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v125 -> v126 (XCT-LOC-003, #6852): a new resource column, `ActorRelocations` (the cell and pose of each actor
 /// that has moved out of its home cell), so a v125 save cannot say where a moved actor is and the schema no
 /// longer matches.
-pub const FORMAT_MAJOR: u16 = 126;
+///
+/// v126 -> v127 (XCT-OFF-001, #6854): the saved `ActorRelocations` gained the required `journeys` map (the
+/// actors travelling offscreen toward another space, with their arrival time), so a v126 save's ledger no
+/// longer has the column's shape.
+pub const FORMAT_MAJOR: u16 = 127;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

@@ -277,11 +277,14 @@ pub fn queue_door_transition(
         .query::<DoorTeleport>()
         .and_then(|query| query.get(entity).copied())
         .ok_or(QueueDoorTransitionError::MissingDoor(entity))?;
-    queue_transition_to_reference(
+    let queued = queue_transition_to_reference(
         world,
         door.destination_form_id,
         Some((door.position_zup, door.rotation_zup)),
-    )
+    )?;
+    // XCT-FOL-001 — the player's followers come through the door with it.
+    super::relocated::player_passes_door(world, door.destination_form_id, door.position_zup, door.rotation_zup);
+    Ok(queued)
 }
 
 /// Queue a transition to placed reference `destination_form_id`'s cell,

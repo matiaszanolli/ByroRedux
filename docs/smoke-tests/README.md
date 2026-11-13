@@ -94,6 +94,8 @@ docs/smoke-tests/p4-fnv-quest-route.sh           # FNV: Sunny's force-greet -> l
 docs/smoke-tests/p5-fnv-quest-persistence.sh     # FNV: VCG02 + the meeting variable vs F9 + process restart
 docs/smoke-tests/fnv-new-game.sh                 # FNV: --new-game -> intro quest -> the five chargen screens -> Doc Mitchell's opening -> VCG02 -> Goodsprings
 docs/smoke-tests/fnv-vcg02-route.sh              # FNV: VCG02 in the saloon -> Sunny leaves through a load door (cross-cell actor travel) -> the shooting range -> her bark, a live Enable, the rifle -> three bottles
+docs/smoke-tests/xct-scripted-move.sh            # FNV: Goodsprings, the saloon unloaded -> Sunny's logical identity -> ObScript MoveTo moves her across spaces through the ledger (XCT scenario 3)
+docs/smoke-tests/xct-census.sh [game]            # every unloaded actor with a cross-space package sent offscreen -> the clock advanced -> all Arrived or Unroutable with a reason; prints the arrival rate (XCT scenario 4)
 docs/smoke-tests/p5-f5-f9-quicksave.sh fnv       # F5/F9 bound-input quicksave/quickload + graceful quit + validation
 docs/smoke-tests/p5-quest-persistence.sh         # Skyrim SE: MS01 objective state vs F9 + process restart
 docs/smoke-tests/p5-door-transition.sh fnv       # save/reload both sides of the P0 door route

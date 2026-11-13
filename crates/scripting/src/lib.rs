@@ -236,9 +236,9 @@ pub use actor_value_names::{install_actor_value_names, ActorValueNames, ScriptGa
 pub use alias_overrides::{AliasOverride, AliasOverrides};
 pub use equipment::PendingNonArmorEquips;
 pub use created_references::{
-    ActorRelocations, CreatedCell, CreatedDeletion, CreatedPlacement, CreatedReference,
-    CreatedReferences, PendingRelocations, ScriptedIds, CREATED_FORM_ID_BASE,
-    SCRIPTED_FORM_ID_BASE,
+    is_logical_stub, queue_actor_move, ActorMoveRequest, ActorRelocations, CreatedCell,
+    CreatedDeletion, CreatedPlacement, CreatedReference, CreatedReferences, Journey, PendingActorMoves,
+    PendingRelocations, Relocation, ScriptedIds, CREATED_FORM_ID_BASE, SCRIPTED_FORM_ID_BASE,
 };
 pub use load_order::LoadOrderIdentity;
 pub use map_markers::{

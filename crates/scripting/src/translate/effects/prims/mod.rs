@@ -124,6 +124,7 @@ pub(super) const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_equip_item,
     prim_move_to,
     prim_move_to_editor_location,
+    prim_move_to_package_location,
     prim_force_location_to,
     prim_set_location_keyword_data,
     prim_disable,

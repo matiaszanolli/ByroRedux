@@ -260,14 +260,63 @@ impl CreatedReferences {
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ActorRelocations {
     placements: std::collections::BTreeMap<u32, CreatedPlacement>,
+    /// XCT-OFF-001 — actors travelling **Offscreen** toward a destination in
+    /// another space, by FormID. An actor on a journey has no body anywhere
+    /// until it arrives (XCT-OFF-003); its logical identity stands at
+    /// [`Journey::origin`].
+    journeys: std::collections::BTreeMap<u32, Journey>,
+}
+
+/// An offscreen trip toward a destination in another space
+/// (`docs/engine/cross-cell-travel.md` §4). Nothing is simulated en route
+/// (XCT-NG-002): the journey is where the actor left, where it will stand, and
+/// when it gets there.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct Journey {
+    /// The destination reference (its package location).
+    pub destination: u32,
+    /// Where the actor stood when it went out of sight.
+    pub origin: CreatedPlacement,
+    /// Where it stands on arrival when the player is not watching the far side
+    /// of its last door: its package location (XCT-OFF-002).
+    pub arrival: CreatedPlacement,
+    /// The far side of the last load door of its route: where it comes through
+    /// when the player is already in the destination space (XCT-OFF-004).
+    pub last_door: Option<CreatedPlacement>,
+    /// Game time of arrival, in hours since the clock's day 0 (route length ÷
+    /// walk speed, XCT-OFF-001).
+    pub arrives_at_hours: f64,
 }
 
 impl Resource for ActorRelocations {}
 
 impl ActorRelocations {
-    /// Record that `actor` is now at `placement`.
+    /// Record that `actor` is now at `placement`. A journey it was on ends: a
+    /// move puts it somewhere definite.
     pub fn relocate(&mut self, actor: u32, placement: CreatedPlacement) {
+        self.journeys.remove(&actor);
         self.placements.insert(actor, placement);
+    }
+
+    /// Start (or replace) `actor`'s offscreen journey.
+    pub fn start_journey(&mut self, actor: u32, journey: Journey) {
+        self.journeys.insert(actor, journey);
+    }
+
+    /// `actor`'s journey, while it travels offscreen.
+    pub fn journey(&self, actor: u32) -> Option<&Journey> {
+        self.journeys.get(&actor)
+    }
+
+    /// Every journey, in FormID order.
+    pub fn journeys(&self) -> impl Iterator<Item = (u32, &Journey)> {
+        self.journeys.iter().map(|(&actor, journey)| (actor, journey))
+    }
+
+    /// End `actor`'s journey without moving it.
+    pub fn end_journey(&mut self, actor: u32) -> Option<Journey> {
+        self.journeys.remove(&actor)
     }
 
     /// Where `actor` is, if it has moved.
@@ -275,8 +324,10 @@ impl ActorRelocations {
         self.placements.get(&actor)
     }
 
+    /// Whether the ledger decides where `actor` is: it has moved, or it is on
+    /// a journey.
     pub fn contains(&self, actor: u32) -> bool {
-        self.placements.contains_key(&actor)
+        self.placements.contains_key(&actor) || self.journeys.contains_key(&actor)
     }
 
     /// Every moved actor and its placement, in FormID order.
@@ -285,7 +336,7 @@ impl ActorRelocations {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.placements.is_empty()
+        self.placements.is_empty() && self.journeys.is_empty()
     }
 
     /// A digest of which actor is in which cell (not their poses): what the
@@ -297,19 +348,73 @@ impl ActorRelocations {
             actor.hash(&mut hasher);
             placement.cell.hash(&mut hasher);
         }
+        for actor in self.journeys.keys() {
+            (actor, "journey").hash(&mut hasher);
+        }
         hasher.finish()
     }
 }
 
 /// A request to move an actor to another space: a Travel hop through a load
-/// door (XCT-ROUTE-002) or a scripted move. The engine records it in
-/// [`ActorRelocations`], takes the actor out of the cell it leaves and spawns it
-/// in the one it enters once that cell is loaded. `NOT_SAVED_BY_DESIGN`:
-/// drained the frame it is raised.
+/// door (XCT-ROUTE-002), a follower passing it with its leader, or a scripted
+/// move. The engine records it in [`ActorRelocations`], takes the actor out of
+/// the cell it leaves and spawns it in the one it enters once that cell is
+/// loaded. `NOT_SAVED_BY_DESIGN`: drained the frame it is raised.
 #[derive(Debug, Default)]
-pub struct PendingRelocations(pub Vec<(u32, CreatedPlacement)>);
+pub struct PendingRelocations(pub Vec<Relocation>);
+
+/// One move of [`PendingRelocations`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Relocation {
+    pub actor: u32,
+    pub placement: CreatedPlacement,
+    /// For a Travel hop: the destination reference beyond the door and the
+    /// actor's walk speed, so a hop that lands short of the destination's space
+    /// in a cell that is not loaded continues as a journey (XCT-ROUTE-006).
+    pub onward: Option<(u32, f32)>,
+}
 
 impl Resource for PendingRelocations {}
+
+/// A scripted move of an actor the scripting side cannot finish itself: the
+/// actor or its target has no live body, so the target's placement has to be
+/// read from the load order or the ledger (XCT-LOC-004, XCT-LOC-006). The
+/// engine resolves it into a [`PendingRelocations`] entry.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ActorMoveRequest {
+    /// `MoveTo <target>` (ObScript) / `ObjectReference.MoveTo` (Papyrus): to
+    /// the target reference's current pose plus a Z-up `offset`, at its
+    /// rotation (the ledger keeps the target pose, PRD deviation 5).
+    ToReference { actor: u32, target: u32, offset: [f32; 3] },
+    /// `Actor.MoveToPackageLocation()`: to the location reference of the
+    /// package the actor runs.
+    ToPackageLocation { actor: u32 },
+}
+
+/// The [`ActorMoveRequest`]s raised this frame. `NOT_SAVED_BY_DESIGN`:
+/// drained by the engine the frame they are raised.
+#[derive(Debug, Default)]
+pub struct PendingActorMoves(pub Vec<ActorMoveRequest>);
+
+impl Resource for PendingActorMoves {}
+
+/// Whether `entity` is a logical identity standing in for a reference whose
+/// cell is not loaded (`UnloadedReferenceStub` / `RemoteSceneActorStub`), not
+/// a body in a loaded cell.
+pub fn is_logical_stub(world: &World, entity: byroredux_core::ecs::EntityId) -> bool {
+    world.has::<crate::obscript_objects::UnloadedReferenceStub>(entity) || world.has::<crate::RemoteSceneActorStub>(entity)
+}
+
+/// Queue `request`; `false` when the engine installed no queue (a test world).
+pub fn queue_actor_move(world: &World, request: ActorMoveRequest) -> bool {
+    match world.try_resource_mut::<PendingActorMoves>() {
+        Some(mut pending) => {
+            pending.0.push(request);
+            true
+        }
+        None => false,
+    }
+}
 
 /// #5802 — this subsystem's world setup, owned here instead of the crate's
 /// `register` hub: created-object references and the relocation ledger
@@ -318,6 +423,7 @@ pub fn install(world: &mut World) {
     world.init_resource::<CreatedReferences>();
     world.init_resource::<ActorRelocations>();
     world.init_resource::<PendingRelocations>();
+    world.init_resource::<PendingActorMoves>();
 }
 
 /// #5802 — this subsystem's saved columns. Called by the binary's

@@ -2257,6 +2257,27 @@ fn lowers_move_to_two_arg() {
     );
 }
 
+/// XCT-LOC-006 — `MoveToPackageLocation()` lowers to its own effect; an
+/// argument is not its shape and declines.
+#[test]
+fn lowers_move_to_package_location() {
+    let body = first_fn_body(
+        "ScriptName QF extends Quest\n\
+         Function Fragment_11()\n\
+         SomeRef.MoveToPackageLocation()\n EndFunction\n",
+    );
+    assert_eq!(
+        lower_fragment(&body),
+        Some(vec![Effect::MoveToPackageLocation { moved: ObjectRef::Property("SomeRef".into()) }])
+    );
+    let with_argument = first_fn_body(
+        "ScriptName QF extends Quest\n\
+         Function Fragment_11()\n\
+         SomeRef.MoveToPackageLocation(SomeMarker)\n EndFunction\n",
+    );
+    assert_eq!(lower_fragment(&with_argument), None);
+}
+
 /// M47.2 — the player's `MoveTo` (a teleport) lowers to its own effect;
 /// the default-offsets rule still applies.
 #[test]

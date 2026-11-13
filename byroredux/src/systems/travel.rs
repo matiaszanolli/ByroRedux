@@ -280,6 +280,10 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             if traveled_q.as_ref().is_some_and(|q| q.contains(entity)) {
                 continue; // already arrived (one-shot guard)
             }
+            // XCT-ROUTE-008 — fading out at its load door before it passes.
+            if crate::cell_loader::relocated::is_fading_at_door(world, entity) {
+                continue;
+            }
             let Some(transform) = transform_q.get(entity) else {
                 continue;
             };
@@ -298,13 +302,28 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
                         }
                         scratch.unroutable.remove(&entity);
                     }
-                    // XCT-ROUTE-001 — a destination in another space is
-                    // reached through a load door of the actor's own cell.
-                    use crate::cell_loader::relocated::{route_toward, CrossSpaceHop, Route};
-                    match route_toward(world, entity, behavior.target_form_id) {
+                    // XCT-ROUTE-001 / -003 — a destination in another space is
+                    // reached through the load doors leading there, the first
+                    // in the actor's own cell.
+                    use crate::cell_loader::relocated::{local_form, report, route_toward, CrossSpaceHop, Route};
+                    let route = route_toward(world, entity, behavior.target_form_id);
+                    if let Some(form) = local_form(world, entity) {
+                        report(world, form, match &route {
+                            Route::Unroutable(reason) => Some(*reason),
+                            _ => None,
+                        });
+                    }
+                    match route {
                         Route::Door { door, position, placement } => {
                             scratch.anchor_retry.remove(&entity);
-                            scratch.hops.push((entity, CrossSpaceHop { door, placement }));
+                            let target = behavior.target_form_id.unwrap_or(0);
+                            scratch.hops.push((entity, CrossSpaceHop { door, placement, target }));
+                            position
+                        }
+                        // XCT-DEST-001 — in its own space but not resident: its
+                        // load-order position, not a wander target.
+                        Route::Within(position) => {
+                            scratch.anchor_retry.remove(&entity);
                             position
                         }
                         Route::Unroutable(reason) => {
@@ -459,32 +478,20 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             }
         }
     }
-    // XCT-ROUTE-002 — a traveler that reached its load door passes it: the
-    // move is requested here and carried out by the app's relocation step,
-    // which needs the renderer to take the actor out of its cell. It is
-    // tagged `Traveled` so it stands still until then; the package itself
-    // has not ended (its destination is beyond the door).
-    let passed: Vec<(EntityId, byroredux_scripting::CreatedPlacement)> = scratch
+    // XCT-ROUTE-002 / -008 — a traveler that reached its load door fades out
+    // and passes it: the move is requested (after the fade) and carried out by
+    // the app's relocation step, which needs the renderer to take the actor
+    // out of its cell. It is tagged `Traveled` so it stands still until then;
+    // the package itself has not ended (its destination is beyond the door).
+    let passed: Vec<EntityId> = scratch
         .decisions
         .iter()
         .filter(|d| d.state.is_none())
-        .filter_map(|d| {
-            let hop = world.get::<crate::cell_loader::relocated::CrossSpaceHop>(d.entity)?;
-            Some((d.entity, hop.placement.clone()))
-        })
+        .filter(|d| world.has::<crate::cell_loader::relocated::CrossSpaceHop>(d.entity))
+        .map(|d| d.entity)
         .collect();
-    if !passed.is_empty() {
-        let forms: Vec<(u32, byroredux_scripting::CreatedPlacement)> = passed
-            .iter()
-            .filter_map(|(entity, placement)| {
-                let id = world.get::<byroredux_core::ecs::components::FormIdComponent>(*entity)?.0;
-                let local = world.try_resource::<byroredux_core::form_id::FormIdPool>()?.local_of(id)?;
-                Some((local, placement.clone()))
-            })
-            .collect();
-        if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingRelocations>() {
-            pending.0.extend(forms);
-        }
+    for &entity in &passed {
+        crate::cell_loader::relocated::reach_door(world, entity);
     }
     if let Some(mut sq) = world.query_mut::<TravelState>() {
         for d in &scratch.decisions {
@@ -510,7 +517,7 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
     for d in scratch
         .decisions
         .iter()
-        .filter(|d| d.state.is_none() && !passed.iter().any(|(entity, _)| *entity == d.entity))
+        .filter(|d| d.state.is_none() && !passed.contains(&d.entity))
     {
         let package = world
             .get::<crate::components::AmbientPackageRuntime>(d.entity)

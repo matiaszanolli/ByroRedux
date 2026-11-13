@@ -430,6 +430,9 @@ fn unload_cell_inner(
     // radius-3 crossing's 7-cell capture cost was invisible to every
     // UnloadPhaseTimings bucket.
     let phase_started = Instant::now();
+    // XCT-OFF-001 — an actor walking to a load door when its cell unloads
+    // goes on offscreen.
+    crate::cell_loader::relocated::depart_unwatched(world, &victims);
     crate::cell_loader::stream_snapshot::capture_actor_snapshots(world, &victims);
     crate::cell_loader::reference_state::capture(world, &victims);
     // M47.2 — the scripts of the references about to despawn hear

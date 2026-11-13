@@ -199,6 +199,7 @@ pub(crate) fn apply_effect(
         }
         Effect::MoveTo { .. }
         | Effect::MoveToEditorLocation { .. }
+        | Effect::MoveToPackageLocation { .. }
         | Effect::MovePlayerTo { .. }
         | Effect::Disable { .. }
         | Effect::Enable { .. } => {
