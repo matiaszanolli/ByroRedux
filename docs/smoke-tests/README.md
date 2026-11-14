@@ -96,6 +96,8 @@ docs/smoke-tests/fnv-new-game.sh                 # FNV: --new-game -> intro ques
 docs/smoke-tests/fnv-vcg02-route.sh              # FNV: VCG02 in the saloon -> Sunny leaves through a load door (cross-cell actor travel) -> the shooting range -> her bark, a live Enable, the rifle -> three bottles
 docs/smoke-tests/xct-scripted-move.sh            # FNV: Goodsprings, the saloon unloaded -> Sunny's logical identity -> ObScript MoveTo moves her across spaces through the ledger (XCT scenario 3)
 docs/smoke-tests/xct-census.sh [game]            # every unloaded actor with a cross-space package sent offscreen -> the clock advanced -> all Arrived or Unroutable with a reason; prints the arrival rate (XCT scenario 4)
+docs/smoke-tests/bik-flags.sh                    # FNV: PlayBink flags reach the player (mute / pause hold in video.status); video.skip ends an interruptable movie and not another (BIK scenario 3)
+docs/smoke-tests/bik-start-sequence.sh [game]    # oblivion / skyrim_se / fo4: the start sequence from the INI / exe defaults plays to its last frame; on fo4 a Bink 2 movie with its first audio track (BIK Phase 3, scenario 4)
 docs/smoke-tests/p5-f5-f9-quicksave.sh fnv       # F5/F9 bound-input quicksave/quickload + graceful quit + validation
 docs/smoke-tests/p5-quest-persistence.sh         # Skyrim SE: MS01 objective state vs F9 + process restart
 docs/smoke-tests/p5-door-transition.sh fnv       # save/reload both sides of the P0 door route
