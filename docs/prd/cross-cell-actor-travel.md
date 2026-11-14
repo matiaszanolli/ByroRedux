@@ -1,6 +1,6 @@
 # Cross-cell actor travel — Product Requirements
 
-**Status**: ACTIVE (2026-11-14). Revision 5 folds in review round 2 and the owner's Q4 (Starfield is census-only). Revision 4 files the tracking issues. Revision 3 records the owner's approval
+**Status**: ACTIVE (2026-11-14). Revision 6 names XCT-ROUTE-008's test. Revision 5 folds in review round 2 and the owner's Q4 (Starfield is census-only). Revision 4 files the tracking issues. Revision 3 records the owner's approval
 with every §10 decision taken as recommended and folded into the
 requirements (XCT-OFF-001, XCT-DEST-004, XCT-FOL-001). Statements about how
 an original engine, format or tool behaves cite external sources; a claim
@@ -209,8 +209,9 @@ ROADMAP's M42 row (§8).
   passes and in after it arrives, each over the load order's
   `fActorTeleportFadeSeconds` (CS *fActorTeleportFadeSeconds*), observable as
   its `AnimatedAlpha` ramp (`door_fade_system`,
-  `byroredux/src/cell_loader/relocated.rs`). No test or gate pins the ramp
-  yet (#6895).
+  `byroredux/src/cell_loader/relocated.rs`); the actor passes when its
+  fade-out ends
+  (`a_door_fade_ramps_alpha_over_the_authored_time_and_passes_at_its_end`).
 - **XCT-ROUTE-009.** A hop that lands in the destination's space MUST make
   the actor **Arrived**; one that does not MUST leave it **Routing** for its
   next hop.
@@ -458,3 +459,4 @@ Skyrim and Fallout 4 (Starfield is census-only, Q4).
 | 3 | 2026-11-11 | Owner approval: Q1–Q3 decided as recommended and folded in (XCT-OFF-001 reworded; XCT-DEST-004, XCT-FOL-001 added) | owner: approved |
 | 4 | 2026-11-11 | APPROVED → ACTIVE: tracking issues filed (#6850 (parent). Phases: #6851 (0), #6852 (1), #6853 (2), #6854 (3)) | — |
 | 5 | 2026-11-14 | Review round 2 folded in: HEAD inventory and "Today" claims now history, exact actor.where and hop-log strings, scenario 1 rewritten to the shipped gate, Starfield census-only (owner's Q4), verify items #6891–#6894 linked, SubSpace overreach, deviation rows for #6895's gaps, XCT-ROUTE-007 split (010–012) and XCT-ROUTE-008's observable, document map | claude: revise |
+| 6 | 2026-11-14 | XCT-ROUTE-008 names the test that pins the door-fade ramp | — |
