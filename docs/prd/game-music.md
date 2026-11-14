@@ -1,6 +1,7 @@
 # Game Music — Product Requirements
 
-**Status**: SHIPPED (2026-11-14). Revision 13 settles the stings from
+**Status**: SHIPPED (2026-11-14). Revision 14 settles New Vegas's marker
+triggers, `ANAM` and Dungeon sets from the GECK wiki (#6902). Revision 13 settles the stings from
 the executables (#6901). Revision 12 settles Oblivion's
 precedence, fades, battle recovery and `StreamMusic` from `Oblivion.exe`
 (#6903). Revision 11 settles MUS-SRC-002 from
@@ -260,21 +261,21 @@ shipped behaviour is [music.md](../engine/music.md) and `music.status`.
   Location layer the outcome **Silent** and play nothing.
 - **MUS-SRC-005.** On New Vegas, while the player is inside an audio
   marker's area, the Location directive MUST come from that marker's
-  controller's Location media sets. **Phase 0: verify** the area's shape
-  and radius and the rule when areas overlap; settled by the GECK wiki's
-  Media Location Controller page, or by comparing xEdit across the vanilla
-  markers. The only source read so far is a modder's tutorial
-  ([Nexus wiki: Fallout New Vegas Music, 2014](https://web.archive.org/web/20170614070055/http://wiki.nexusmods.com/index.php/Fallout_New_Vegas_Music)).
+  controller's Location media sets. The area is a sphere of the
+  reference's `XRDS` radius (every vanilla marker). No source says which of
+  two overlapping areas wins (not the GECK wiki dump either, #6906); the
+  engine takes the one the player is deepest into.
 - **MUS-SRC-006.** A New Vegas Location media set MUST play its day layers
   between the controller's day start and night start and its night layers
-  otherwise, against `GameTimeRes`. **Phase 0: verify** the start times'
-  unit (xEdit renders them as `value / 256` hours,
-  `wbDefinitionsFNV.pas:1213-1221`).
+  otherwise, against `GameTimeRes`. The start times are `value / 256` of a
+  day (xEdit `wbAlocTime`, `wbDefinitionsFNV.pas:1213-1221`; every vanilla
+  controller authors 64 and 255, 06:00 and 23:54).
 - **MUS-SRC-007.** A New Vegas Location media set MUST enable its Outer,
   Middle and Inner layers by the player's distance into the marker's area
-  against the set's boundary percentages and enable flags. **Phase 0:
-  verify** how layers combine (crossfade or mix) and what the marker's
-  layer trigger percentages mean; settled as MUS-SRC-005.
+  against the set's boundary percentages and enable flags, the layers
+  mixing, or with the marker's "Use Controller Values" clear against its
+  own layer 2 / layer 3 triggers: Inner to layer 2's, Middle to layer 3's,
+  Outer to the edge (GECK wiki *Reference*, #6902).
 - **MUS-SRC-008.** On Oblivion, the Location category MUST come from the
   cell's `XCMT`, else, for an exterior, the winning region's `RDMD` by the
   region override and priority rule
@@ -315,9 +316,9 @@ shipped behaviour is [music.md](../engine/music.md) and `music.status`.
   ([CS: StreamMusic](https://cs.uesp.net/wiki/StreamMusic), Notes).
 - **MUS-SEL-003.** A New Vegas music type MUST loop when its `ANAM` value
   is positive (xEdit's "dB (positive = Loop)"), at the magnitude's volume.
-  Today `MuscRecord::looping` reads the sign; the volume is applied only
-  when negative (`byroredux/src/systems/script_requests.rs:376`).
-  **Phase 0: verify** the magnitude's meaning for a positive value.
+  The magnitude is an attenuation for either sign: the GECK's Music Type
+  dialog packs a Loop flag and "dB: Amount of attenuation" into it (GECK
+  wiki *Music Type*, #6902).
 - **MUS-SEL-004.** A change of Location directive MUST crossfade over the
   directive's fade time: a New Vegas media set's crossfade fields (xEdit
   `ENAM` / `FNAM`), otherwise the game's: Fallout 3 / New Vegas
@@ -333,8 +334,9 @@ shipped behaviour is [music.md](../engine/music.md) and `music.status`.
 - **MUS-CMB-001.** While the player is in combat (Q2), the Battle layer MUST
   play: Oblivion's `Battle` folder, the Fallout 3 / New Vegas Battle Music
   object, and on New Vegas the active controller's Battle sets, else the
-  region's `RDSB` battle set. **Phase 0: verify** which wins between a
-  controller's and a region's battle set.
+  Battle track of the Dungeon set the marker plays (GECK wiki *Media
+  Set*: "while the player is engaged in combat", #6902), else the region's
+  `RDSB` battle set. No source orders those three (#6906).
 - **MUS-CMB-002.** After combat ends, the Battle layer MUST hold for a
   recovery time before the Location layer resumes: a New Vegas Battle
   set's recovery time (xEdit `FNAM`); Fallout 3's `fCombatMusicStopTime`.
@@ -395,13 +397,11 @@ shipped behaviour is [music.md](../engine/music.md) and `music.status`.
   layers while it holds a track or a silence (settled by #6899 from the
   vanilla scripts that rely on it: Fallout 3's `MQ05Script` / `MQ11Script`,
   New Vegas's `VVault11ExterminationChairSCRIPT` and `VCG00`; the layer mixed
-  over them until then). The only source is one ambiguous note, quoted
-  verbatim: "-Will non stop the currently playing music of the cell."
-  [sic] ([GECK: PlayMusic](https://geck.uesp.net/wiki/PlayMusic), Notes).
-  **Phase 0: verify** whether `PlayMusic` mixes over or replaces the cell's
-  music and whether a cell change ends it; settled by the GECK wiki's
-  current PlayMusic page or by observing a vanilla quest that calls it
-  (Phase 0 names one from the census).
+  over them until then). On New Vegas it MUST NOT suspend an audio
+  marker's Location music: the GECK wiki's later PlayMusic page says "Will
+  not stop the currently playing music of a music marker. NV Only." (the
+  2022 dump, #6902). That a cell change ends the layer is the engine's
+  rule.
 
 ### 5.6 Mix (`MUS-MIX`)
 
@@ -659,3 +659,4 @@ and Oblivion's source coverage is published.
 | 11 | 2026-11-14 | MUS-SRC-002 settled (#6900) from `Fallout3.exe`: cell `XCMO` → an exterior's worldspace `ZNAM` → Default Music; no region `RDMO` (none authored), `RDMD` and `XCMT` dropped by the loaders; an absent `Default*` folder is silence in the original, so New Vegas's 0 % cell playable coverage is faithful; §3.3 and MUS-SRC-012 updated | — |
 | 12 | 2026-11-14 | Oblivion's verify items settled from `Oblivion.exe` (#6903): MUS-SRC-008 (cell → an exterior's region → worldspace, Default falling through), MUS-SEL-004 (0.85 s out, 0.85 s in; a cell change at once), MUS-CMB-002 (no recovery), MUS-CMB-004 (Battle ends a stream), MUS-SCR-003 (keywords play on, `Random` rolls a category, a file hands over to Default, a stream outlives a cell change into its own category) | — |
 | 13 | 2026-11-14 | MUS-STG-001 to MUS-STG-004 settled from the executables (#6901): Fallout 3 / New Vegas's stings are the `MUSDeath` / `MUSSuccess` sounds, the level-up one over the music; the Death, Success and Level Up Music objects are never read; every other sting stops the music until the place changes, combat starts or a script plays | — |
+| 14 | 2026-11-14 | New Vegas items settled from the GECK wiki dump (#6902): MUS-SRC-007 (the marker's own triggers), MUS-SEL-003 (positive `ANAM` is the Loop flag; the magnitude attenuates), MUS-CMB-001 (a Dungeon set's Battle track in combat); MUS-SRC-005's overlap, the battle order, `NAM1`'s packing and Suspense's trigger moved to #6906 | — |

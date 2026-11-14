@@ -263,12 +263,14 @@ impl MusicController {
             // 1NoMusic`) silences it (MUS-SCR-005, #6899).
             let script = self.state(Layer::Script).directive.as_ref();
             let script_holds = script.is_some_and(|d| matches!(d.outcome(), Outcome::Playing | Outcome::Silent));
+            let beside_script = self.state(Layer::Location).directive.as_ref().is_some_and(|d| d.beside_script);
             let by = match layer {
                 _ if inputs.hold => Some("Hold"),
                 // Stopped, not paused: nothing resumes when the sting ends (#6901).
                 Layer::Battle | Layer::Location if self.silenced => Some("a sting's silence"),
                 Layer::Script | Layer::Battle | Layer::Location if sting_audible => Some("Sting"),
-                Layer::Battle | Layer::Location if script_holds => Some("Script"),
+                Layer::Battle if script_holds => Some("Script"),
+                Layer::Location if script_holds && !beside_script => Some("Script"),
                 Layer::Location if battle_audible => Some("Battle"),
                 _ => None,
             };
@@ -702,6 +704,19 @@ pub(crate) mod tests {
         music.step(frame(0.1), no_battle, &mut out);
         assert_eq!(music.directive(Layer::Script).map(|d| d.source.label.as_str()), Some("Default"));
         assert_eq!(out.voices[&8].0, "music\\explore\\x.mp3");
+    }
+
+    /// #6902 — a New Vegas music marker's music plays on beside a scripted track (GECK wiki
+    /// *PlayMusic*: "Will not stop the currently playing music of a music marker. NV Only.").
+    #[test]
+    fn a_scripted_track_plays_beside_a_music_markers_music() {
+        let mut out = FakeOutput::default();
+        let mut music = MusicController::seeded(1);
+        music.set(Layer::Location, Some(Directive { beside_script: true, ..playlist("musSetGoodsprings", &["music\\loc\\a.mp3"]) }), &mut out);
+        music.step(frame(0.1), no_battle, &mut out);
+        music.set(Layer::Script, Some(playlist("musSCRGoodspringsStinger", &["music\\scr\\s.mp3"])), &mut out);
+        music.step(frame(0.1), no_battle, &mut out);
+        assert!(!out.voices[&24].1 && !out.voices[&8].1, "both play: {:?}", out.voices);
     }
 
     /// #6899 — vanilla scripts rely on PlayMusic replacing what plays: `PlayMusic 1NoMusic`

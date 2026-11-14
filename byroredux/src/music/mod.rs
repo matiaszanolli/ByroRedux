@@ -277,7 +277,8 @@ pub(crate) fn music_system(world: &World, dt: f32) {
         hour: world.try_resource::<crate::components::GameTimeRes>().map_or(12.0, |time| time.hour),
     };
     let (place, marker) = (state.place.clone(), state.marker);
-    music.step(inputs, || catalog.battle(&index, place.as_ref(), marker.as_ref()), &mut out);
+    let relation = state.relation.unwrap_or(byroredux_sdk::relationships::CombatReaction::Neutral);
+    music.step(inputs, || catalog.battle(&index, place.as_ref(), marker.as_ref(), relation), &mut out);
 }
 
 /// `music.status` (MUS-RPT-001).

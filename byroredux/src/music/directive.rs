@@ -85,6 +85,10 @@ pub(crate) struct Directive {
     /// Oblivion's music type this directive stands for: a place's category, or a stream's (a
     /// streamed file counts as Default). A stream outlives a place change into its own (#6903).
     pub(crate) category: Option<u32>,
+    /// Location layer: a New Vegas music marker's music, which a scripted track plays beside rather
+    /// than replaces ("Will not stop the currently playing music of a music marker. NV Only.", GECK
+    /// wiki *PlayMusic*, #6902).
+    pub(crate) beside_script: bool,
     /// Sting layer: plays over the music, which keeps playing, rather than stopping it (Fallout 3
     /// / New Vegas's level-up `MUSSuccess`, MUS-STG-004, #6901).
     pub(crate) over_music: bool,
@@ -115,6 +119,7 @@ impl Directive {
             fade_secs: 0.0,
             change_fade_secs: None,
             category: None,
+            beside_script: false,
             over_music: false,
             ends_on_battle: false,
             persists: false,

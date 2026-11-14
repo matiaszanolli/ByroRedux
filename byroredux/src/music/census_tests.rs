@@ -240,5 +240,5 @@ fn oblivion_music_sources_translate_against_the_census() {
     for sting in [super::Sting::Death, super::Sting::LevelUp] {
         assert_eq!(index_free(sting).map(|d| d.outcome()), Some(Outcome::Playing), "{sting:?}");
     }
-    assert_eq!(catalog.battle(&Default::default(), None, None).outcome(), Outcome::Playing);
+    assert_eq!(catalog.battle(&Default::default(), None, None, byroredux_sdk::relationships::CombatReaction::Neutral).outcome(), Outcome::Playing);
 }

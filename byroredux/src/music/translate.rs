@@ -45,6 +45,9 @@ pub(crate) struct Marker {
     pub(crate) center: [f32; 3],
     pub(crate) radius: f32,
     pub(crate) controller: u32,
+    /// The marker's own layer 2 / layer 3 triggers (`MNAM` / `NNAM`, fractions of the radius), when
+    /// "Use Controller Values" is clear (#6902).
+    pub(crate) triggers: Option<[f32; 2]>,
 }
 
 /// Oblivion's music categories (`XCMT`, `SNAM`, `RDMD`; xEdit `wbDefinitionsCommon.pas:7976-7983`)
@@ -106,7 +109,13 @@ impl Catalog {
                     continue;
                 };
                 let Some(controller) = marker.controller else { continue };
-                markers.entry(space.clone()).or_default().push(Marker { form: r.form_id, center: r.position, radius, controller });
+                // GECK *Reference*, Audio Marker: "Use Controller Values: Check box to enable using
+                // the 3 layer triggers of the selected Media Location Controller"; clear, the marker's
+                // "Layer 2 trigger %" (middle) and "Layer 3 trigger %" (outer) apply. Vanilla authors
+                // fractions (0.33 / 0.67); xEdit's default is 100.
+                let fraction = |v: f32| if v > 1.0 { v / 100.0 } else { v };
+                let triggers = (!marker.use_controller_values).then(|| marker.layer_triggers.map(fraction));
+                markers.entry(space.clone()).or_default().push(Marker { form: r.form_id, center: r.position, radius, controller, triggers });
             }
         }
         Self { game, files, fade_secs, recovery_secs, markers }
@@ -117,7 +126,7 @@ impl Catalog {
     }
 
     /// The audio marker whose area holds `player` at `place`: of several, the one the player is
-    /// deepest into, by distance over radius (MUS-SRC-005, #6902).
+    /// deepest into, by distance over radius; no source says which wins (MUS-SRC-005, #6906).
     pub(crate) fn marker_at(&self, place: &Place, player: [f32; 3]) -> Option<Marker> {
         let depth = |m: &Marker| {
             let d = [player[0] - m.center[0], player[1] - m.center[1], player[2] - m.center[2]];
@@ -142,19 +151,7 @@ impl Catalog {
         // ahead of its Location list. With no conditional faction the area is Neutral. `NAM1`'s
         // option to force one list is not decoded (xEdit: "Flags and Enums, messily combined").
         let relation = if aloc.conditional_faction.is_some() { relation } else { CombatReaction::Neutral };
-        let (list, via) = match relation {
-            CombatReaction::Neutral => (&aloc.neutral_sets, "audio marker Neutral set"),
-            CombatReaction::Enemy => (&aloc.enemy_sets, "audio marker Enemy set"),
-            CombatReaction::Ally => (&aloc.ally_sets, "audio marker Ally set"),
-            CombatReaction::Friend => (&aloc.friend_sets, "audio marker Friend set"),
-        };
-        // The relation's list, else the Location list, else the Neutral list; Battle sets only
-        // leave the place's own music playing.
-        let (set_form, via) = list
-            .first()
-            .map(|form| (*form, via))
-            .or_else(|| aloc.location_sets.first().map(|form| (*form, "audio marker")))
-            .or_else(|| aloc.neutral_sets.first().map(|form| (*form, "audio marker Neutral set")))?;
+        let (set_form, via) = Self::active_set(index, marker, relation)?;
         let mut directive = match index.media_sets.get(&set_form) {
             Some(set) => self.location_set(set, marker, aloc.day_start, aloc.night_start, via),
             None => Directive::unresolved(
@@ -162,6 +159,7 @@ impl Catalog {
                 "not a media set in the load order",
             ),
         };
+        directive.beside_script = true;
         directive.notes.push(format!("controller {} ({:#010x}), marker {:#010x}", aloc.editor_id, aloc.form_id, marker.form));
         if let Some(faction) = aloc.conditional_faction {
             directive.notes.push(format!("{relation:?} to the player: faction {faction:#010x}"));
@@ -169,15 +167,35 @@ impl Catalog {
         Some(directive)
     }
 
+    /// The set a marker's controller plays for `relation`: the relation's list, else the Location
+    /// list, else the Neutral list, each its first set (`NAM1`'s looping and "Faction Not Found"
+    /// options are not decoded, #6906). `None` for a controller with Battle sets only.
+    fn active_set(index: &EsmIndex, marker: &Marker, relation: CombatReaction) -> Option<(u32, &'static str)> {
+        let aloc = index.media_locations.get(&marker.controller)?;
+        let relation = if aloc.conditional_faction.is_some() { relation } else { CombatReaction::Neutral };
+        let (list, via) = match relation {
+            CombatReaction::Neutral => (&aloc.neutral_sets, "audio marker Neutral set"),
+            CombatReaction::Enemy => (&aloc.enemy_sets, "audio marker Enemy set"),
+            CombatReaction::Ally => (&aloc.ally_sets, "audio marker Ally set"),
+            CombatReaction::Friend => (&aloc.friend_sets, "audio marker Friend set"),
+        };
+        list.first()
+            .map(|form| (*form, via))
+            .or_else(|| aloc.location_sets.first().map(|form| (*form, "audio marker")))
+            .or_else(|| aloc.neutral_sets.first().map(|form| (*form, "audio marker Neutral set")))
+    }
+
     fn location_set(&self, set: &MediaSetRecord, marker: &Marker, day_start: u32, night_start: u32, via: &'static str) -> Directive {
         let source = Source::record(set.editor_id.clone(), set.form_id, via);
         let fade = Some(set.timings[2]).filter(|t| *t > 0.0).unwrap_or(self.fade_secs);
-        // 23 of New Vegas's controllers list a Dungeon set among their Location sets. Its slots are
-        // Battle / Explore / Suspense (xEdit's `(D)` labels), not layers: its Explore track plays;
-        // when Suspense and Battle play is #6902.
+        // 40 of New Vegas's controllers list a Dungeon set. Its slots are Battle / Explore / Suspense
+        // (xEdit's `(D)` labels), not layers. GECK *Media Set*: Explore plays "while player is
+        // exploring", Battle "while the player is engaged in combat" (`Self::battle`), Suspense
+        // "while enemies are on alert (unverified)" — a state the engine does not model, so the
+        // Explore track plays (#6902). Every vanilla Dungeon set names one file for all three.
         if set.kind == MediaSetKind::Dungeon {
             let directive = Directive { fade_secs: fade, looping: true, level: 10f32.powf(set.track_decibels[1] / 20.0), ..Directive::new(source, self.files.resolve(&set.tracks[1])) };
-            return Directive { notes: vec!["a Dungeon set: its Explore track (Suspense and Battle: #6902)".to_string()], ..directive };
+            return Directive { notes: vec!["a Dungeon set: its Explore track (Suspense waits on an alert state)".to_string()], ..directive };
         }
         if set.kind != MediaSetKind::Location {
             return Directive::unresolved(source, format!("a {:?} set as a Location set", set.kind));
@@ -193,7 +211,7 @@ impl Catalog {
                     key: keys[0].clone(),
                     level: 10f32.powf(set.track_decibels[i] / 20.0),
                     night: i >= 3,
-                    reach: set.boundaries[i] / 100.0,
+                    reach: Self::reach(set, marker, i),
                 }),
                 Content::Missing(path) => missing = missing.or(Some(path)),
                 _ => missing = missing.or_else(|| Some(format!("Data\\Music\\{track}"))),
@@ -211,12 +229,28 @@ impl Catalog {
         Directive { fade_secs: fade, looping: true, ..Directive::new(source, content) }
     }
 
-    /// A New Vegas Battle set: its loop track, intro and outro, and recovery time (MUS-CMB-001 to -003).
+    /// How far out a Location set's slot `i` (Outer / Middle / Inner, day then night) plays, as a
+    /// fraction of the radius: the set's boundary, or with "Use Controller Values" clear the
+    /// marker's triggers, each where the next ring out begins — Inner to layer 2's, Middle to layer
+    /// 3's, Outer to the edge (#6902). Every vanilla marker's triggers equal the sets' boundaries.
+    fn reach(set: &MediaSetRecord, marker: &Marker, i: usize) -> f32 {
+        match (marker.triggers, i % 3) {
+            (Some(_), 0) => 1.0,
+            (Some([_, layer3]), 1) => layer3,
+            (Some([layer2, _]), _) => layer2,
+            (None, _) => set.boundaries[i] / 100.0,
+        }
+    }
+
+    /// A New Vegas Battle set: its loop track, intro and outro, and recovery time (MUS-CMB-001 to -003);
+    /// or a Dungeon set's Battle track, intro and outro (GECK *Media Set*, #6902), which carries no
+    /// recovery time of its own.
     pub(crate) fn battle_set(&self, index: &EsmIndex, set: &MediaSetRecord, via: &'static str) -> Directive {
         let source = Source::record(set.editor_id.clone(), set.form_id, via);
-        if set.kind != MediaSetKind::Battle {
+        if !matches!(set.kind, MediaSetKind::Battle | MediaSetKind::Dungeon) {
             return Directive::unresolved(source, format!("a {:?} set, not a battle set", set.kind));
         }
+        let dungeon = set.kind == MediaSetKind::Dungeon;
         let sound = |form: Option<u32>| {
             let form = form?;
             (!crate::asset_provider::sound_is_folder(&index.sounds, form))
@@ -227,9 +261,10 @@ impl Catalog {
         Directive {
             looping: true,
             level: 10f32.powf(set.track_decibels[0] / 20.0),
-            // `ENAM` "Loop Fade Out", `FNAM` "Recovery Time" (xEdit's (B) labels).
-            fade_secs: Some(set.timings[1]).filter(|t| *t > 0.0).unwrap_or(self.fade_secs),
-            recovery_secs: Some(set.timings[2]).filter(|t| *t > 0.0).or(Some(self.recovery_secs)),
+            // `ENAM` "Loop Fade Out", `FNAM` "Recovery Time" (xEdit's (B) labels); a Dungeon set's
+            // `FNAM` is its layer crossfade.
+            fade_secs: Some(set.timings[if dungeon { 2 } else { 1 }]).filter(|t| *t > 0.0).unwrap_or(self.fade_secs),
+            recovery_secs: Some(set.timings[2]).filter(|t| *t > 0.0 && !dungeon).or(Some(self.recovery_secs)),
             intro: sound(set.sound_a),
             outro: sound(set.sound_b),
             ..Directive::new(source, self.files.resolve(&set.tracks[0]))
@@ -250,7 +285,7 @@ impl Catalog {
     }
 
     /// A Fallout 3 / New Vegas music type (`MUSC`): its file or folder, looping when New Vegas's
-    /// `ANAM` is positive, at `-|ANAM|` dB (MUS-SEL-003, #6902).
+    /// `ANAM` is positive, at `-|ANAM|` dB: the GECK's Loop flag and attenuation (MUS-SEL-003, #6902).
     pub(crate) fn music_type(&self, index: &EsmIndex, form: u32, via: &'static str) -> Directive {
         let Some(musc) = index.music_types.get(&form) else {
             return Directive::unresolved(
@@ -348,9 +383,10 @@ impl Catalog {
     }
 
     /// The Battle directive while the player is in combat at `place` (MUS-CMB-001): on New Vegas the
-    /// marker's controller's Battle sets, then the region's `RDSB` set (#6902), then the Battle Music
-    /// object; Oblivion's `Battle` folder.
-    pub(crate) fn battle(&self, index: &EsmIndex, place: Option<&Place>, marker: Option<&Marker>) -> Directive {
+    /// marker's controller's Battle sets, then the Battle track of the Dungeon set the marker plays
+    /// for `relation`, then the region's `RDSB` set, then the Battle Music object (that order between
+    /// them is the engine's, #6906); Oblivion's `Battle` folder.
+    pub(crate) fn battle(&self, index: &EsmIndex, place: Option<&Place>, marker: Option<&Marker>, relation: CombatReaction) -> Directive {
         if self.game == GameKind::Oblivion {
             let folder = self.files.resolve("battle\\");
             return Directive { recovery_secs: Some(self.recovery_secs), ..self.directive(Source::keyword("Battle", "Data\\Music\\Battle"), folder) };
@@ -360,13 +396,17 @@ impl Catalog {
             .and_then(|aloc| aloc.battle_sets.first())
             .and_then(|form| index.media_sets.get(form))
             .map(|set| (set, "audio marker Battle set"));
+        let dungeon_set = || {
+            let (form, _) = Self::active_set(index, marker?, relation)?;
+            index.media_sets.get(&form).filter(|set| set.kind == MediaSetKind::Dungeon).map(|set| (set, "audio marker Dungeon set"))
+        };
         let region_set = || {
             let cell = Self::cell(index, place?)?;
             let entry = select_active_region_sound(&cell.regions, &index.regions)?;
             let RegionDataPayload::Sound { music: Some(form), .. } = &entry.payload else { return None };
             index.media_sets.get(form).map(|set| (set, "region RDSB"))
         };
-        if let Some((set, via)) = controller_set.or_else(region_set) {
+        if let Some((set, via)) = controller_set.or_else(dungeon_set).or_else(region_set) {
             return self.battle_set(index, set, via);
         }
         let directive = match index.default_music.and_then(|music| music.battle) {
@@ -509,7 +549,7 @@ mod tests {
     fn battle_comes_from_the_battle_music_object_and_the_stings_from_their_sounds() {
         use byroredux_plugin::esm::records::SounRecord;
         let (mut index, catalog) = fallout3();
-        let battle = catalog.battle(&index, None, None);
+        let battle = catalog.battle(&index, None, None, CombatReaction::Neutral);
         assert_eq!(battle.source.label, "DefaultBattle");
         assert_eq!(battle.recovery_secs, Some(5.0), "fCombatMusicStopTime's compiled-in 5.0");
         assert_eq!(catalog.sting(&index, Sting::Death), None, "no MUSDeath sound, no sting");
@@ -650,16 +690,62 @@ mod tests {
         assert_eq!(pick(&index, CombatReaction::Neutral), None, "battle sets only: the place's own music");
     }
 
+    /// #6902 — GECK *Reference*: with "Use Controller Values" clear the marker's own triggers place
+    /// the rings — Inner to layer 2's, Middle to layer 3's, Outer to the edge.
+    #[test]
+    fn a_markers_own_layer_triggers_place_the_rings_when_controller_values_are_off() {
+        use byroredux_plugin::esm::cell::AudioMarker;
+        let (mut index, _) = new_vegas();
+        let marker = &mut index.cells.worldspace_persistent_cells.get_mut("wastelandnv").unwrap().references[0];
+        marker.audio_marker = Some(AudioMarker { controller: Some(0x70), use_controller_values: false, layer_triggers: [0.2, 0.5] });
+        let files = ["music\\loc\\gs\\day_outer.mp3", "music\\loc\\gs\\day_middle.mp3", "music\\loc\\gs\\night_outer.mp3"].map(String::from);
+        let catalog = Catalog::new(&index, MusicFiles::new(files), None);
+        let place = Place::Exterior { worldspace: "wastelandnv".into(), grid: (0, 0) };
+        let marker = catalog.marker_at(&place, [1000.0, 0.0, 0.0]).unwrap();
+        assert_eq!(marker.triggers, Some([0.2, 0.5]));
+        let d = catalog.marker_location(&index, &marker, CombatReaction::Neutral).unwrap();
+        let Content::Stems { stems, .. } = &d.content else { panic!("{d:?}") };
+        assert_eq!(stems.iter().map(|s| s.reach).collect::<Vec<_>>(), [1.0, 0.5, 1.0], "outer to the edge, middle to layer 3's trigger");
+    }
+
+    /// #6902 — GECK *Media Set*: a Dungeon set's Battle track plays "while the player is engaged in
+    /// combat", after the controller's Battle sets and before the region's.
+    #[test]
+    fn a_dungeon_sets_battle_track_plays_in_combat() {
+        let (mut index, _) = new_vegas();
+        let mut tracks: [String; 6] = Default::default();
+        tracks[0] = "old\\fo1\\battle.mp3".into();
+        tracks[1] = "old\\fo1\\explore.mp3".into();
+        tracks[2] = tracks[1].clone();
+        index.media_sets.insert(0x53, MediaSetRecord { form_id: 0x53, editor_id: "musSetOldFO1".into(), kind: MediaSetKind::Dungeon, tracks, timings: [0.0, 0.0, 4.0, 0.0], ..Default::default() });
+        let aloc = index.media_locations.get_mut(&0x70).unwrap();
+        aloc.location_sets = vec![0x53];
+        let files = ["music\\old\\fo1\\battle.mp3", "music\\old\\fo1\\explore.mp3", "music\\battle\\loop.mp3"].map(String::from);
+        let catalog = Catalog::new(&index, MusicFiles::new(files.clone()), None);
+        let place = Place::Exterior { worldspace: "wastelandnv".into(), grid: (0, 0) };
+        let marker = catalog.marker_at(&place, [1000.0, 0.0, 0.0]);
+        let explore = catalog.marker_location(&index, marker.as_ref().unwrap(), CombatReaction::Neutral).unwrap();
+        assert_eq!(explore.content, Content::Playlist(vec!["music\\old\\fo1\\explore.mp3".into()]));
+        let battle = catalog.battle(&index, Some(&place), marker.as_ref(), CombatReaction::Neutral);
+        assert_eq!(battle.source.label, "musSetBattleGS", "the controller's Battle sets first");
+        index.media_locations.get_mut(&0x70).unwrap().battle_sets.clear();
+        let catalog = Catalog::new(&index, MusicFiles::new(files), None);
+        let battle = catalog.battle(&index, Some(&place), marker.as_ref(), CombatReaction::Neutral);
+        assert_eq!((battle.source.label.as_str(), battle.source.via), ("musSetOldFO1", "audio marker Dungeon set"));
+        assert_eq!(battle.content, Content::Playlist(vec!["music\\old\\fo1\\battle.mp3".into()]));
+        assert_eq!((battle.fade_secs, battle.recovery_secs), (4.0, Some(catalog.recovery_secs)), "its layer crossfade, the game's recovery");
+    }
+
     #[test]
     fn new_vegas_battle_prefers_the_markers_set_then_the_regions() {
         let (index, catalog) = new_vegas();
         let place = Place::Exterior { worldspace: "wastelandnv".into(), grid: (0, 0) };
         let marker = catalog.marker_at(&place, [1000.0, 0.0, 0.0]);
-        let battle = catalog.battle(&index, Some(&place), marker.as_ref());
+        let battle = catalog.battle(&index, Some(&place), marker.as_ref(), CombatReaction::Neutral);
         assert_eq!((battle.source.label.as_str(), battle.recovery_secs), ("musSetBattleGS", Some(10.0)));
         assert_eq!(battle.content, Content::Playlist(vec!["music\\battle\\loop.mp3".into()]));
         assert!(battle.looping);
-        let regional = catalog.battle(&index, Some(&place), None);
+        let regional = catalog.battle(&index, Some(&place), None, CombatReaction::Neutral);
         assert_eq!((regional.source.label.as_str(), regional.source.via), ("musSetBattleRegion", "region RDSB"));
         let location = catalog.location(&index, &place);
         assert_ne!(location.source.via, "region RDSB", "an RDSB battle set is no Location source");
@@ -758,7 +844,7 @@ mod tests {
     #[test]
     fn oblivion_battle_stings_and_stream_music() {
         let (index, catalog) = oblivion();
-        assert_eq!(catalog.battle(&index, None, None).content, Content::Playlist(vec!["music\\battle\\battle_01.mp3".into()]));
+        assert_eq!(catalog.battle(&index, None, None, CombatReaction::Neutral).content, Content::Playlist(vec!["music\\battle\\battle_01.mp3".into()]));
         assert_eq!(catalog.sting(&index, Sting::LevelUp).unwrap().content, Content::Playlist(vec!["music\\special\\success.mp3".into()]));
         let stream = |text: &str, roll| catalog.stream_music(text, roll).expect(text);
         let dungeon = stream("Dungeon", 0);

@@ -41,7 +41,7 @@ The controller holds at most one directive per layer (PRD §3.1):
 |---|---|---|
 | Hold | `AudioWorld::movie_hold().music_paused`, raised by a movie with the pause-music flag (BIK-PRES-005) | Every voice paused; resumed at the same position when the movie ends (MUS-MIX-002) |
 | Sting | The player's death (the player gains `Dead`), a level-up (`PendingMusicEvents`, pushed where the level is awarded) | In the music's place: Script ended, Battle and Location stopped and silent until the place changes, combat starts or a script plays; Fallout 3 / New Vegas's level-up sting plays over the music instead (MUS-STG-004, #6901) |
-| Script | `PlayMusic` (`PendingMusic`), `StreamMusic` | Replaces Battle and Location: a scripted track plays in their place, a scripted silence (`1NoMusic`) silences them (MUS-SCR-005, #6899); Battle ends an Oblivion stream |
+| Script | `PlayMusic` (`PendingMusic`), `StreamMusic` | Replaces Battle and Location: a scripted track plays in their place, a scripted silence (`1NoMusic`) silences them (MUS-SCR-005, #6899), except a New Vegas audio marker's music, which plays on beside it (#6902); Battle ends an Oblivion stream |
 | Battle | `is_in_combat` for the player (Q2), held for the recovery time after it ends (MUS-CMB-002) | Location paused, crossfading (MUS-SEL-004) |
 | Location | The player's place (§3) | — |
 
@@ -108,7 +108,9 @@ silent, as in the original: New Vegas ships none of the `Default*` folders.
 
 A music type's level: Fallout 3 authors no `ANAM`. New Vegas's sign marks looping
 ("dB (positive = Loop)"); its magnitude is played as an attenuation, `-|ANAM|` dB, for
-either sign (MUS-SEL-003; #6902).
+either sign (MUS-SEL-003). The GECK's Music Type dialog has the two fields this packs: a
+**Loop** flag and "dB: Amount of attenuation to apply to this sound file or folder"
+(GECK wiki *Music Type*, #6902).
 
 ## 4. The Script layer
 
@@ -151,8 +153,10 @@ Vegas's `VVault11ExterminationChairSCRIPT` drops a commented-out `PlayMusic
 MUSVault10106` for `PlayMusic 1NoMusic` before enabling the sound reference that carries
 the slideshow music. `VCG00` silences the game start the same way. While the Script
 layer holds a track or a silence, Battle and Location are paused, and they resume when
-it ends. That the layer ends on a cell change is the engine's rule (the scripts are
-silent on it). `PlayMusic` does not give way to battle (the Fallout 3 scripts queue
+it ends. The one exception is New Vegas's audio-marker music: "Will not stop the
+currently playing music of a music marker. NV Only." (the GECK wiki's later *PlayMusic*
+page, #6902), so a marker's Location stems play on beside the scripted track. That the
+layer ends on a cell change is the engine's rule (the scripts are silent on it). `PlayMusic` does not give way to battle (the Fallout 3 scripts queue
 battle music themselves); Battle ends a `StreamMusic` stream.
 
 ## 5. Battle and stings
@@ -190,7 +194,7 @@ An **audio marker** is a placed reference with an `MMRK` block: its controller (
 and the reference's `XRDS` radius. Every one of the 572 vanilla markers carries a
 radius (402 at 5000 units); that sphere is the marker's **area** (MUS-SRC-005). Of
 several areas holding the player, the one the player is deepest into (smallest
-distance ÷ radius) wins (#6902).
+distance ÷ radius) wins; no source says which wins (#6906).
 
 A controller's Location sets become the Location directive while the player is in its
 area. A Location set is **Stems**: up to six tracks, day Outer / Middle / Inner and
@@ -211,9 +215,14 @@ enable bit (`PNAM`). The controller plays:
   while within the radius"), and the vanilla stems are written to stack
   (`mus_loc_desexpl_day_1low` / `_2mid` / `_3high`).
 - a marker's own layer triggers (`MNAM` / `NNAM`) replace the set's boundaries when its
-  "Use Controller Values" flag is clear (146 of the 572 base-game markers); the tutorial
-  says only that triggers of zero leave the Outer layer alone. Their exact reading is
-  #6902, so the engine uses the set's boundaries for every marker.
+  "Use Controller Values" flag is clear (146 of the 572 base-game markers). GECK wiki
+  *Reference*: "Use Controller Values: Check box to enable using the 3 layer triggers of
+  the selected Media Location Controller"; "Layer 2 trigger %: Distance percentage from
+  the center … for the layer 2 trigger (middle)", Layer 3 "(outer)" (xEdit: `MNAM` is
+  Layer 2, `NNAM` Layer 3). A trigger is where its ring begins, counting outward, so
+  Inner reaches to layer 2's trigger, Middle to layer 3's and Outer to the edge (#6902).
+  Every vanilla marker carries 0.33 / 0.67, the sets' own 33.3 / 66.6 boundaries; the
+  tutorial's "triggers of zero leave the Outer layer alone" reads the same way.
 
 A controller's Neutral, Ally, Friend and Enemy lists play by how its **conditional
 faction** (`RNAM`) treats the player: "music that plays ... when you're in an area
@@ -224,17 +233,27 @@ factions, scripted `SetEnemy` / `SetFactionReaction` overrides first), re-read e
 frame, so a faction turning hostile switches the area's music. The relation's list
 plays, else the Location list, else the Neutral list; a controller with no conditional
 faction is Neutral. Nine of the 689 markers sit under controllers with relation lists and
-no Location set, `musCtrlGoodsprings` among them (#6904). `NAM1`'s option to force one
-list whatever the relation is not decoded (xEdit: "Flags and Enums, messily combined").
-A controller with several sets in a list plays the first; one with Battle sets only
-(169 markers) leaves the place's own music playing.
+no Location set, `musCtrlGoodsprings` among them (#6904). A controller with several sets
+in a list plays the first; one with Battle sets only (169 markers) leaves the place's own
+music playing. `NAM1` (xEdit: "Flags and Enums, messily combined") holds the GECK's
+**Looping Options** (Loop: "Loop through the Media Location Set in the active list";
+Random: "Choose a random Media Location Set"; Retrigger and None: "Unknown") and
+**Faction Not Found** (the list to play "if there is no faction relation": Neutral, Ally,
+Location, Enemy, None or Friend), but not how they are packed; until that is known the
+engine plays the first set and treats no relation as Neutral (#6906).
 
-Twenty-three controllers list a **Dungeon** set among their Location sets. A Dungeon
-set's slots are Battle, Explore and Suspense (xEdit's `(D)` labels), not layers: its
-Explore track (`NAM3`) plays, looping; when Suspense and Battle play is #6902.
+Forty controllers list a **Dungeon** set. A Dungeon set's slots are Battle, Explore and
+Suspense (xEdit's `(D)` labels), not layers. GECK wiki *Media Set*: Explore plays "while
+player is exploring", Battle "while the player is engaged in combat", with an Intro
+"while player starts combat" and an Outro "when combat stops", and Suspense "while
+enemies are on alert (unverified)". The Explore track (`NAM3`) plays, looping; the Battle
+track feeds the Battle layer (below); Suspense waits on an alert state the engine does
+not model (the Sneak and Detection PRD), so Explore plays on (#6902, #6906). Every
+vanilla Dungeon set names one Fallout 1 / 2 track for all three.
 
-A controller's Battle sets, else the region's `RDSB` set (the precedence is #6902), feed
-the Battle layer (MUS-CMB-001): the set's loop track (`NAM2`), its Intro (`HNAM`, a
+A controller's Battle sets, else the Battle track of the Dungeon set the marker plays,
+else the region's `RDSB` set (that order is the engine's, #6906), feed the Battle layer
+(MUS-CMB-001): the set's loop track (`NAM2`), its Intro (`HNAM`, a
 `SOUN`) on entering combat and its Outro (`INAM`) on leaving it, and its recovery time
 (`FNAM`, 10 s on every vanilla Battle set) as the hold (MUS-CMB-002). The tutorial
 describes Intro and Outro as the sounds that open and close the battle piece, "compared
@@ -295,17 +314,18 @@ not-saved list with its reason.
 
 | Item | Settled by | State |
 |---|---|---|
-| MUS-SRC-005 area shape and radius | `XRDS` on every marker | closed: a sphere of the reference's radius. Overlap: #6902 |
+| MUS-SRC-005 area shape and radius | `XRDS` on every marker | closed: a sphere of the reference's radius. Overlap: #6906 |
 | MUS-SRC-006 day / night unit | xEdit `wbAlocTime`, vanilla data | closed: `value / 256` of a day |
-| MUS-SRC-007 boundaries, layer triggers, mixing | vanilla data, Nexus wiki (2014) | boundaries are percentages of the radius; layers mix; the marker's own triggers: #6902 |
-| MUS-SEL-003 positive `ANAM` | — | #6902 |
+| MUS-SRC-007 boundaries, layer triggers, mixing | vanilla data, Nexus wiki (2014), GECK wiki *Reference* | closed (#6902): boundaries are percentages of the radius; layers mix; with "Use Controller Values" clear the marker's triggers place the rings |
+| MUS-SEL-003 positive `ANAM` | GECK wiki *Music Type* | closed (#6902): the sign is the Loop flag, the magnitude the attenuation |
 | MUS-SEL-004, MUS-CMB-002 (Fallout 3 / New Vegas) | executable defaults, `FalloutNV.esm` GMSTs | closed (§7) |
 | MUS-SEL-004, MUS-CMB-002 (Oblivion) | `Oblivion.exe` (the music manager's transition and update, the combat-target count) | closed (#6903): 0.85 s out then in, a cell change at once; no recovery (§7) |
 | MUS-SRC-002 precedence, Fallout 3 `RDMD`, New Vegas silence (§3.4) | `Fallout3.exe` (`TESObjectCELL::GetMusicType`, the region and cell loaders, the music routine) | closed (#6900): cell → exterior's worldspace → Default Music, no region; `RDMD` / `XCMT` dropped; an absent folder is silence (§3) |
 | MUS-SCR-005, MUS-CMB-004 (`PlayMusic`) | vanilla scripts (`MQ05Script`, `MQ11Script`, `VVault11ExterminationChairSCRIPT`, `VCG00`) | closed (#6899): replaces; does not give way to battle; ends on a cell change (engine rule) |
 | MUS-STG-003, MUS-STG-004 | `Fallout3.exe` (`GetDefaultObject` callers, the death handler, `LevelUpMenu`), `Oblivion.exe` (the sting calls, the update) | closed (#6901): Fallout 3 / New Vegas stings are sounds, the level-up one over the music; the music objects are unread; other stings stop the music until the place, combat or a script changes it (§5) |
 | MUS-CMB-003 (New Vegas) intro / outro | xEdit labels, Nexus wiki (2014) | closed: Intro on entering combat, Outro on leaving it |
-| MUS-CMB-001 (New Vegas) controller vs region battle set; `NAM1` looping mode and forced relation | — | #6902 |
+| MUS-CMB-001 (New Vegas) Dungeon sets | GECK wiki *Media Set* | closed (#6902): Explore while exploring, Battle (with Intro / Outro) in combat; Suspense needs an alert state |
+| MUS-CMB-001 (New Vegas) battle precedence; `NAM1` looping and Faction Not Found; overlap; Suspense | GECK wiki (options named, layout not) | #6906 |
 | Q3: how the relation picks a list | Nexus wiki *Fallout New Vegas Music* (2014): by the conditional faction's relation to the player | closed (#6904); `NAM1`'s forced list undecoded |
 | MUS-SRC-008, MUS-SCR-003 (Oblivion) | `Oblivion.exe` (`GetMusicType`, the cell-change hook, `StreamMusic`) | closed (#6903): cell → region → worldspace, Default falling through; a stream outlives a cell change into its own category (§3, §4) |
 | MUS-SCR-004 (OBSE opcodes) | xOBSE `CommandTable.cpp` order, checked against five known OBSE opcodes | closed: `0x1617`, `0x19e5` |
