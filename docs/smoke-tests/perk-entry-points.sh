@@ -47,7 +47,7 @@ require_data() { # <label> <data dir> <file>...
     shift 2
     for f in "$@"; do
         if [[ ! -f "$dir/$f" ]]; then
-            echo "smoke[perk-entry-points]: SKIP -- $label: missing $dir/$f"
+            echo "smoke[perk-entry-points]: SKIP -- missing $dir/$f ($label)"
             return 1
         fi
     done

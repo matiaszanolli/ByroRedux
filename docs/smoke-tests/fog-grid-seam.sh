@@ -17,7 +17,7 @@
 #
 # Usage: docs/smoke-tests/fog-grid-seam.sh [fnv|skyrim|all]
 # BYRO_SEAM_BIN overrides the engine binary; BYRO_SEAM_OUT keeps captures in a chosen directory;
-# BYROREDUX_FNV_DATA / BYROREDUX_SKYRIM_DATA name the Data directories (defaults below);
+# BYROREDUX_FNV_DATA / BYROREDUX_SKYRIMSE_DATA name the Data directories (defaults below);
 # SEAM_TOLERANCE sets the gate (default 2.5). Exit 77 when data or a display is missing.
 
 set -euo pipefail
@@ -27,7 +27,7 @@ BIN="${BYRO_SEAM_BIN:-$ROOT/target/release/byroredux}"
 OUT="${BYRO_SEAM_OUT:-$(mktemp -d /tmp/byro-fog-seam.XXXXXX)}"
 WHICH="${1:-all}"
 FNV_DATA="${BYROREDUX_FNV_DATA:-/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data}"
-SKYRIM_DATA="${BYROREDUX_SKYRIM_DATA:-/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data}"
+SKYRIM_DATA="${BYROREDUX_SKYRIMSE_DATA:-/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data}"
 NEAR_M=128
 FAR_M=512
 
@@ -56,7 +56,7 @@ capture() {
 }
 
 run_fnv() {
-    [[ -f "$FNV_DATA/FalloutNV.esm" ]] || { echo "SKIP fnv: no FalloutNV.esm in $FNV_DATA" >&2; return 0; }
+    [[ -f "$FNV_DATA/FalloutNV.esm" ]] || { echo "smoke[fog-grid-seam]: SKIP -- missing $FNV_DATA/FalloutNV.esm" >&2; return 0; }
     # Goodsprings, the Prospector Saloon door's arrival pose (probe_slice_fixture), turned to face the town.
     local args=(--esm "$FNV_DATA/FalloutNV.esm" --grid -17,0 --radius 3 --wrld WastelandNV
         --bsa "$FNV_DATA/Fallout - Meshes.bsa" --bsa "$FNV_DATA/Update.bsa"
@@ -65,10 +65,11 @@ run_fnv() {
     capture fnv "$FNV_DATA" "$NEAR_M" a "${args[@]}"
     capture fnv "$FNV_DATA" "$NEAR_M" b "${args[@]}"
     capture fnv "$FNV_DATA" "$FAR_M" far "${args[@]}"
+    ran=$((ran + 1))
 }
 
 run_skyrim() {
-    [[ -f "$SKYRIM_DATA/Skyrim.esm" ]] || { echo "SKIP skyrim: no Skyrim.esm in $SKYRIM_DATA" >&2; return 0; }
+    [[ -f "$SKYRIM_DATA/Skyrim.esm" ]] || { echo "smoke[fog-grid-seam]: SKIP -- missing $SKYRIM_DATA/Skyrim.esm" >&2; return 0; }
     # An elevated pose over the Whiterun plains (grid 2,-4), looking north-east at Dragonsreach and the far ridges.
     local args=(--esm "$SKYRIM_DATA/Skyrim.esm" --grid 2,-4 --radius 3 --wrld Tamriel
         --bsa "$SKYRIM_DATA/Skyrim - Meshes0.bsa" --bsa "$SKYRIM_DATA/Skyrim - Meshes1.bsa"
@@ -77,14 +78,18 @@ run_skyrim() {
     capture skyrim "$SKYRIM_DATA" "$NEAR_M" a "${args[@]}"
     capture skyrim "$SKYRIM_DATA" "$NEAR_M" b "${args[@]}"
     capture skyrim "$SKYRIM_DATA" "$FAR_M" far "${args[@]}"
+    ran=$((ran + 1))
 }
 
+ran=0
 case "$WHICH" in
     fnv) run_fnv ;;
     skyrim) run_skyrim ;;
     all) run_fnv; run_skyrim ;;
     *) echo "usage: $0 [fnv|skyrim|all]" >&2; exit 2 ;;
 esac
+# SKIP != PASS: with no game captured the comparison below finds nothing and would report a 0.00 pass.
+(( ran > 0 )) || exit 77
 
 python3 -I - "$OUT" "$NEAR_M" "$FAR_M" "${GATE:-1}" "${SEAM_TOLERANCE:-2.5}" <<'PY'
 import sys

@@ -24,9 +24,9 @@ commit. Live state only: when something closes, it becomes a one-liner under
 files, issue dirs) live in [Project Stats](#project-stats) only.
 
 **Gates.** `rust-toolchain.toml` pins rustc 1.96.0 (#5308), the bin crate's MSRV since wasmtime 49. CI on
-`main` is **red** (last green `305af7beb`) on the smoke-gate contract loop alone, which does not neutralise
-`BYROREDUX_SKYRIM_DATA`; `cargo clippy -D warnings` is clean again since just after the Session 112 close (the
-plugin errors had hidden seven more in `scripting` and the bin; all twelve were fixed in one commit). The bench-of-record below (`d9a201c71`, 2026-10-22) shows HEAD 1–9% slower than the
+`main` was red from Session 110 to just after the Session 112 close (last green `305af7beb`); both reds are fixed:
+`cargo clippy -D warnings` (twelve errors, seven hidden behind the plugin's) and the smoke-gate contract loop (a
+stale `BYROREDUX_SKYRIM_DATA` spelling, then ten unregistered gates and two that passed with no data). The bench-of-record below (`d9a201c71`, 2026-10-22) shows HEAD 1–9% slower than the
 outgoing record under a same-machine control (R6a-regress-23). Its older **R6a-regress-22** was the bench camera
 moving with `b9e961eeb`'s spawn ladder, not renderer code (#5128); a small residual stays open — the top-of-frame
 all-slots fence wait that dominates GPU-bound frames (#5365, the throughput half of closed #4606/#5117).

@@ -73,13 +73,15 @@ games=(fnv fo3 obl sky fo4)
 [[ "$WHICH" != all ]] && games=("$WHICH")
 ran=()
 for game in "${games[@]}"; do
-    if ! fixture "$game"; then echo "SKIP $game: data not found" >&2; continue; fi
+    if ! fixture "$game"; then echo "smoke[exterior-shafts-content]: SKIP -- missing $DATA_DIR" >&2; continue; fi
     for hour in "${HOURS[@]}"; do
         capture "$game" "$hour" radiance
         capture "$game" "$hour" final
     done
     ran+=("$game")
 done
+# SKIP != PASS: with no game captured the table below would print empty and exit 0.
+(( ${#ran[@]} > 0 )) || exit 77
 
 python3 -I - "$OUT" "${ran[@]}" <<'PY'
 import sys

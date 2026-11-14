@@ -28,7 +28,7 @@ door arrival pose) and Skyrim (an elevated Whiterun pose), captures each at `--f
 512 in `renderer-stepped` mode, and prints the mean luminance of the distant regions with the repeat's noise. It
 fails when a distant region moves more than `SEAM_TOLERANCE` levels (default 2.5 of 255) when the grid's reach
 changes; `GATE=0` makes it measure only. The three captures per game stay in the printed `/tmp/byro-fog-seam.*`
-directory. It needs FNV and Skyrim SE data (`BYROREDUX_FNV_DATA`, `BYROREDUX_SKYRIM_DATA`), a display or
+directory. It needs FNV and Skyrim SE data (`BYROREDUX_FNV_DATA`, `BYROREDUX_SKYRIMSE_DATA`), a display or
 `xvfb-run`, and Python with numpy and Pillow; exit `77` when one is missing.
 
 `exterior-shafts-content.sh` is the A8 measurement on content (VLM-SH-006, #6773). For FNV, FO3, Oblivion, Skyrim and

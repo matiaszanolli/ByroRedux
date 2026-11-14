@@ -123,10 +123,13 @@ done
 # exits 77 on missing data and never joined these lists (the third recurrence of the class);
 # w2-dynamic-water is game-parameterised, so it is in the fixture loop above.
 # #6589 — the nine M43 live gates of 2026-10-30/31 (armor through tempering) are the fourth.
+# The Session 111/112 gates (Bink, FNV routes, music, perk entry points, cross-cell travel) are the fifth.
 for name in dt1-dialogue-layers m42-eat-sleep sm1-story-manager dt2-skyrim-forcegreet m47-3-obscript fo4-ragdoll m41-ragdoll \
     p4-fnv-quest-route p5-fnv-quest-persistence m42-package-procedures vats-targeting m43-adia-conversations m43-item-drop m43-crafting \
     m43-armor m43-attraction m43-attraction-reaction m43-fo4-actions m43-hello m43-mines m43-node-window \
-    m43-skyrim-actions m43-tempering; do
+    m43-skyrim-actions m43-tempering \
+    bik-flags bik-start-sequence fnv-new-game fnv-vcg02-route music-fnv music-fo3 music-oblivion perk-entry-points \
+    xct-census xct-scripted-move; do
     smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
     set +e
     output="$(env "${DATA_NEUTRALISE[@]}" "$smoke" 2>&1)"
@@ -347,6 +350,25 @@ done
 (( $(grep -c 'exit 77' "$ROOT_DIR/docs/smoke-tests/exterior-shafts.sh") >= 3 )) \
     || fail "exterior-shafts.sh must exit 77 for each missing host dependency"
 echo "playable-smoke-contracts: PASS -- exterior-shafts.sh skips (77) on a missing host dependency"
+
+# The two capture-and-compare scripts check their engine binary and display first, so on a CI runner (no
+# release build) the loops above would only ever exercise that guard. Hand them a stub binary and a display
+# name, with no game data: each must SKIP (77), never compare zero captures and report a pass, which is
+# what both did until the Session 112 close (fog-grid-seam printed "0.00 levels" and exited 0).
+for name in fog-grid-seam exterior-shafts-content; do
+    set +e
+    output="$(env "${DATA_NEUTRALISE[@]}" BYROREDUX_GAMES_DIR="$MISSING_DATA" DISPLAY=:0 \
+        BYRO_SEAM_BIN=/bin/true BYRO_CONTENT_BIN=/bin/true \
+        BYRO_SEAM_OUT="$MISSING_DATA/out" BYRO_CONTENT_OUT="$MISSING_DATA/out" \
+        "$ROOT_DIR/docs/smoke-tests/$name.sh" 2>&1)"
+    status=$?
+    set -e
+    [[ $status -eq 77 ]] \
+        || fail "$name with no game data exited $status instead of SKIP=77"
+    grep -Fq "smoke[$name]: SKIP -- missing" <<<"$output" \
+        || fail "$name did not emit an explicit SKIP diagnostic"
+    echo "playable-smoke-contracts: PASS -- $name distinguishes SKIP from PASS"
+done
 
 # #6461 — a gate script that is in neither the loops above nor this list has an unenforced
 # SKIP != PASS contract: the class recurred three times (#5427, #6057, #6461) because the loops
