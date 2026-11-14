@@ -214,6 +214,12 @@ pub trait ObScriptHost {
 /// `obscript_tools avcodes`.
 const STRING_FORM_COMMANDS: [u16; 6] = [0x1190, 0x1100, 0x11b9, 0x11ff, 0x114d, 0x1114];
 
+/// Whether `cmd` is decoded in string form: its text's value ([`ObScriptHost::text_argument`]) leads
+/// its argument list, the ordinary arguments after it.
+pub fn is_string_form_command(cmd: u16) -> bool {
+    STRING_FORM_COMMANDS.contains(&cmd)
+}
+
 /// Commands that take a reference and then strings (`SwapTexture <ref> "<slot>" "<texture>"`), the
 /// strings handed to the host through [`ObScriptHost::text_arguments`].
 const REF_STRINGS_COMMANDS: [u16; 1] = [0x1269];

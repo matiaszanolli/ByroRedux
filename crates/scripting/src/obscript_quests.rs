@@ -1069,10 +1069,32 @@ impl ObScriptCommandHost<'_> {
 /// (`obscript.cmd`): the answer the command gave (`None` for a command with no answer or one the host
 /// declined) and how many commands the host declined.
 pub fn run_console_command(world: &World, caller: Option<u32>, cmd: u16, args: &[ObScriptValue]) -> (Option<ObScriptValue>, u32) {
+    run_console_command_with_text(world, caller, cmd, None, args)
+}
+
+/// [`run_console_command`] with a string argument. A string-form command
+/// ([`crate::obscript_vm::is_string_form_command`]: `PlayBink`, `PlayIdle`, `GetGS` …) gets the
+/// text's value first and `args` after it, as the VM decodes it from a script; any other command
+/// leaves `text` to the caller's `TextArguments`.
+pub fn run_console_command_with_text(
+    world: &World,
+    caller: Option<u32>,
+    cmd: u16,
+    text: Option<&str>,
+    args: &[ObScriptValue],
+) -> (Option<ObScriptValue>, u32) {
     let script = ScriptRecord::default();
     let reference = caller.and_then(|form| resolve_entity_by_global_form_id(world, form));
     let mut host = ObScriptCommandHost::new(world, caller.unwrap_or(0), reference, 0.0, &script);
-    let answer = host.call(cmd, args, caller);
+    let answer = match text.filter(|_| crate::obscript_vm::is_string_form_command(cmd)) {
+        Some(text) => {
+            let value = host.text_argument(cmd, text, args).unwrap_or(ObScriptValue::Ref(0));
+            let mut full = vec![value];
+            full.extend_from_slice(args);
+            host.call(cmd, &full, caller)
+        }
+        None => host.call(cmd, args, caller),
+    };
     (answer, host.declined.get())
 }
 

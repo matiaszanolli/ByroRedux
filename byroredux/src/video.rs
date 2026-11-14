@@ -264,13 +264,14 @@ impl VideoPlayer {
         let info = movie.info();
         let frames = (info.duration_secs * info.fps).round().max(0.0) as u64;
         log::info!(
-            "video: playing '{}' ({}x{} at {:.2} fps, {:.1} s, {} audio track(s)) interruptable={} mute={} pause_music={} letterbox={} new_game={}",
+            "video: playing '{}' ({}x{} at {:.2} fps, {:.1} s, {} audio track(s), soundtrack={}) interruptable={} mute={} pause_music={} letterbox={} new_game={}",
             request.file,
             info.width,
             info.height,
             info.fps,
             info.duration_secs,
             info.audio_tracks,
+            if movie.audio_path().is_some() { "yes" } else { "no" },
             request.interruptable,
             request.mute_audio,
             request.pause_music,

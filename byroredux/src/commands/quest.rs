@@ -1468,7 +1468,7 @@ impl ConsoleCommand for ObScriptCmdCommand {
             }
         };
         let mut values = Vec::new();
-        let mut texts = Vec::new();
+        let mut texts: Vec<String> = Vec::new();
         for token in parts {
             // `t:<text>` is a string argument (`%20` stands for a space): the strings of `SwapTexture`,
             // `EssentialDeathReload`.
@@ -1488,12 +1488,20 @@ impl ConsoleCommand for ObScriptCmdCommand {
             };
             values.push(value);
         }
+        // A string-form command (`PlayBink`, …) gets its text's value first, as a script's does.
+        let first_text = texts.first().cloned();
         if !texts.is_empty() {
             if let Some(mut stored) = world.try_resource_mut::<byroredux_scripting::obscript_more::TextArguments>() {
                 stored.0 = texts;
             }
         }
-        let (answer, declined) = byroredux_scripting::obscript_quests::run_console_command(world, caller, cmd, &values);
+        let (answer, declined) = byroredux_scripting::obscript_quests::run_console_command_with_text(
+            world,
+            caller,
+            cmd,
+            first_text.as_deref(),
+            &values,
+        );
         let answer = match answer {
             Some(ObScriptValue::Num(n)) => format!("{n}"),
             Some(ObScriptValue::Ref(form)) => format!("ref {form:08X}"),

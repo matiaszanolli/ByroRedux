@@ -1004,3 +1004,23 @@ fn untracked_state_declines_instead_of_answering_a_constant() {
         assert_eq!(run(&fo, 0x1170, &nums(&[index]), &c), Action::Declined, "IsPlayerActionActive {index}");
     }
 }
+
+/// BIK-REQ-001 / PRD scenario 3 — a string-form command run from the console
+/// (`obscript.cmd none 1114 t:FNVIntro.bik 1 1 0 1`) gets its text's value first,
+/// as a script's does, so its flags land in their own slots.
+#[test]
+fn a_console_play_bink_keeps_its_flags_in_their_slots() {
+    let (world, ..) = world(GameKind::Fallout3NV);
+    crate::obscript_quests::run_console_command_with_text(
+        &world,
+        None,
+        0x1114,
+        Some("FNVIntro.bik"),
+        &[ObScriptValue::Num(1.0), ObScriptValue::Num(1.0), ObScriptValue::Num(0.0), ObScriptValue::Num(1.0)],
+    );
+    crate::obscript_quests::run_console_command_with_text(&world, None, 0x1114, Some("Other.bik"), &[ObScriptValue::Num(0.0)]);
+    let queued = world.resource::<PendingVideos>().0.clone();
+    let flags: Vec<(&str, bool, bool, bool, bool)> =
+        queued.iter().map(|r| (r.file.as_str(), r.interruptable, r.mute_audio, r.pause_music, r.letterbox)).collect();
+    assert_eq!(flags, vec![("FNVIntro.bik", true, true, false, true), ("Other.bik", false, true, true, true)]);
+}
