@@ -136,25 +136,13 @@ remain follow-up work.
 - **Documented legacy reference** — parses `nif.xml` (niftools
   authoritative spec) and the Gamebryo 2.3 source tree for byte-exact
   serialization. No proprietary bits linked — just data understood.
-- **Movies, decoded in process** — engine start sequences (each game's
-  logos and intro, read from its INI and executable defaults) and script
-  `PlayBink` requests (ObScript and Papyrus) play full-screen with sound,
-  the picture locked to the soundtrack's playback position, the game held
-  while they run, the movie's mute / pause-music flags applied to the world's
-  sound, and Escape skipping the interruptable ones. Fallout 4, Fallout 76 and
-  Starfield ship Bink 2; ByroRedux decodes it, and its Bink Audio, with
-  decoders written under [clean-room rules](#clean-room-decoders) — no RAD
-  SDK, no other project's decoder. See
-  [docs/engine/video-playback.md](docs/engine/video-playback.md).
-- **Game music, the way each original picks it** — one directive per layer
-  (movie hold, sting, script, battle, location), translated from each game's
-  own sources: Oblivion's cell / region / worldspace categories, Fallout 3's
-  music types and default music, New Vegas's audio markers and media sets
-  (day and night layers stacking as the player walks in, faction-relation
-  lists, Dungeon sets). Where no document says how the original behaves —
-  source precedence, fades, battle hold, stings, `StreamMusic` across a cell
-  change — the answer was traced in the games' own executables and cited in
-  [docs/engine/music.md](docs/engine/music.md).
+- **Movies, decoded in process** — start sequences and script `PlayBink`
+  requests play full-screen with sound, Bink 2 through ByroRedux's own
+  [clean-room decoders](#clean-room-decoders)
+  ([video-playback.md](docs/engine/video-playback.md)).
+- **Game music, the way each original picks it** — per-game sources feed one
+  controller; where no document says how the original behaves, the games'
+  executables were traced ([music.md](docs/engine/music.md)).
 
 ## Why ByroRedux exists
 
@@ -168,81 +156,11 @@ The goal is not a replacement for the original engines. The goal is a reference 
 
 ## Clean-room decoders
 
-Bink is RAD Game Tools' proprietary video codec. Fallout 4, Fallout 76 and
-Starfield ship their movies as Bink 2, and when this work started no decoder
-for it existed under a permissive licence (FFmpeg has none; NihAV's is
-AGPL). So ByroRedux wrote its own: [`crates/bink2`](crates/bink2/README.md)
-(Bink 2 video, `KB2g` / `KB2j`, and the container) and
-[`crates/binkaudio`](crates/binkaudio/README.md) (Bink Audio, the
-soundtracks). Both are pure Rust, MIT, with no dependencies, and both were
-written so that every fact in them can be traced to where it came from.
-
-**Allowed sources**, and nothing else:
-
-1. Public documentation: the MultimediaWiki pages *Bink Video 2*, *Bink
-   Audio*, *Bink Container* and *RAD Game Tools Bink API*, and RAD's
-   user-facing pages — snapshotted on the day they were read.
-2. The black-box behaviour of the owner's own copy of a game's
-   `bink2w64.dll`: called through its exported functions with inputs we
-   construct (synthetic `.bk2` streams built one feature at a time), its
-   outputs (pixels, PCM, return values) compared against ours. The DLL's
-   code is never read — no disassembly, no decompilation, no debugging of
-   its internals, no dumps of its tables.
-3. The `.bk2` files in the owner's own game installs, as inputs.
-4. Our own experiments and measurements.
-
-**Not allowed:** reading, translating or "checking against" any other Bink
-decoder's source — FFmpeg (including `binkaudio.c` and unmerged patches),
-NihAV, libavcodec forks, bonkdec, unbikit, vgmstream, the Bink code shipped
-in game engines, `mercs2_bink`, or RAD's SDK headers and samples; copying
-their tables or constants; running another decoder to get reference output
-(the reference is the game's own DLL).
-
-**Provenance.** Every rule in the specifications carries a tag —
-`[wiki:<page>]`, `[probe:<experiment>]` or `[ours]` — and every probe is
-written down with the experiment that established it:
-[`crates/bink2/docs/spec/probes.md`](crates/bink2/docs/spec/probes.md) and
-[`crates/binkaudio/docs/spec/probes.md`](crates/binkaudio/docs/spec/probes.md).
-The research harnesses (the DLL oracle, the probe-stream builders, the
-comparison tools) live in separate research repositories that build against
-these crates.
-
-**Results**, measured against the DLL on every Bink 2 file the games ship:
-
-- Video: bit-exact on all 54 files, 74,680 frames (scalar and AVX2 paths).
-- Audio: all 80 tracks of the 17 files with sound (938 million samples)
-  decode to the DLL's sample counts; 0.017% of samples differ by one, where
-  the DLL's 32-bit float rounding lands on the other side of a half.
-
-**Disclosures.** This is a *procedural* clean room, not an independent
-two-party one, and the crates say why in their
-[`CLEANROOM.md`](crates/bink2/CLEANROOM.md) files
-([audio](crates/binkaudio/CLEANROOM.md)):
-
-- The decoders were written by an AI model working for the project's owner.
-  Models of its kind are trained on public source code, very probably
-  including FFmpeg's Bink audio decoder. No such source was consulted and
-  nothing was written from recall — every rule comes from a tagged source
-  above — but the model cannot rule out that prior knowledge shaped which
-  hypotheses it tested first.
-- While options were being evaluated, before the video decoder existed, a
-  summariser read NihAV's Bink 2 source in a separate session and reported
-  a few facts about it. They are logged in `CLEANROOM.md`, were not used as
-  a source, and anything the decoder needed from them was re-established by
-  its own probe.
-
-Whether that is sufficient is a question for counsel, not for this README.
-
-**What it does not cover.** Bink 1 (`BIKi`, the Oblivion → Skyrim movies)
-plays through [`mercs2_bink`](https://crates.io/crates/mercs2_bink), an MIT
-crate from another project whose own description says it was written "from
-the specifications beside it, which were read out of binkw32.dll"; it is a
-dependency, outside these rules, and the clean-room crates' authors do not
-read its source. Separately, the engine's *behaviour* research — how the
-original games choose music, for instance — is not clean-room work: it
-reads the community references credited below and, where none answers,
-the games' executables (Fallout 3's and Oblivion's code was traced for the
-music rules) as documentation. No code is copied from any of them.
+Fallout 4, Fallout 76 and Starfield ship their movies as Bink 2, RAD's proprietary codec, which had
+no permissively licensed decoder. ByroRedux wrote its own, [`crates/bink2`](crates/bink2/README.md)
+and [`crates/binkaudio`](crates/binkaudio/README.md), from public documentation and black-box probes
+of the game's own DLL, and measures them bit-exact against it. The rules, the provenance tags, the
+results and the disclosures: [docs/clean-room-decoders.md](docs/clean-room-decoders.md).
 
 ## State
 
@@ -447,25 +365,14 @@ active path, its render/output extents, the FSR provider version and
 FP16/FP32 permutation, and the GPU memory the SDK reserved for itself
 (invisible to `mem.frag`, since the FSR backend allocates it directly).
 
-**Texture-set upscaling.** The
-[offline workbench](tools/texture-upscale/README.md) discovers related assets
-through loose directories, BSA archives, and BA2 archives. It applies learned
-detail only to the color reference; companion maps are edge-guided from that
-result, with normal vectors renormalized and authored alpha preserved. It runs
-only when `byroredux texture-upscale ...` is selected; ordinary game launches
-never start the external model. Before writing, the workbench estimates final
-output plus temporary-workspace usage and refuses the run when either target
-filesystem lacks space.
+**Texture-set upscaling.** An [offline workbench](tools/texture-upscale/README.md)
+(`byroredux texture-upscale ...`) upscales a texture set found in loose files, BSAs
+or BA2s; ordinary game launches never start its model.
 
-Measured on an RTX 4070 Ti at 1280×720, FSR Quality against native TAA:
-+47% frame time on FNV Prospector, +40% on Skyrim Whiterun, +50% on FO4
-MedTek, at SSIM 0.955–0.990 versus the native render. See
-[ROADMAP](ROADMAP.md) Bench-of-record for the full matrix and its caveats —
-these figures are ~6–12% pessimistic, measured on a non-idle desktop. Note
-**Native AA
-(1.0×) is slower than TAA** — it pays reconstruction with no pixel savings
-and exists to separate reconstruction quality from upscaling quality, not
-as a performance option. Details and troubleshooting in
+FSR's cost against native TAA, per scene, is ROADMAP's
+[Bench-of-record](ROADMAP.md). **Native AA (1.0×) is slower than TAA**: it pays
+reconstruction with no pixel savings and exists to separate reconstruction quality
+from upscaling quality. Troubleshooting:
 [docs/engine/fsr3-troubleshooting.md](docs/engine/fsr3-troubleshooting.md).
 
 **Named benchmark modes.** Every `--bench-frames` summary records one complete
@@ -486,34 +393,14 @@ TLAS counts, and a deterministic scene-state hash. CI runs `renderer-static`
 twice and rejects hash drift before it can contaminate a performance cycle.
 
 **Ground-cover terrain-attribute sampling bench.** `--bench-groundcover-sampling`
-measures the two candidate paths for reading terrain height, normal and splat
-weights at an arbitrary world point — reading the global vertex SSBO directly,
-or sampling a baked per-cell attribute texture — for both consumers the EXAL
-ground-cover design has (the scatter pass, once per candidate point; the blade
-vertex shader, once per vertex per blade). It needs a loaded **exterior**
-worldspace, and emits one `groundcover-bench:` row per variant alongside the
-`bench:` summary:
-
-```bash
-cargo run --release -- --game skyrim --grid 5,-9 --radius 3 \
-  --bench-frames 400 --bench-groundcover-sampling --bench-mode renderer-static
-```
-
-An optional `<samples_per_thread>,<blades_per_chunk>` argument sweeps the
-working-set size, which is how a run tells a real per-sample difference from a
-cache-residency artefact. Results and the recommendations they settle are in
+compares the two terrain-attribute sampling paths on a loaded exterior; how to
+run it and its results are in
 [docs/engine/exal-groundcover.md](docs/engine/exal-groundcover.md) §11.1.
 
-**Movies and music.** A game launch plays that game's start sequence first
-(its logos and intro, as the original names them); Escape skips an
-interruptable movie, and `--skip-movies` skips the sequence. `--bench-frames`
-runs skip it too unless given `--start-movies`. Script `PlayBink` requests play
-the same way in game. Music plays on Oblivion, Fallout 3 and New Vegas, from
-the game's loose `Data\Music` folder (none of them ships music in an
-archive). Over `byro-dbg`, `video.status` / `video.skip` report and end the
-playing movie, and `music.status` shows each music layer with its source,
-file and position; the music level is the `audio.music_volume` setting,
-seeded from the game's default INI.
+**Movies and music.** A launch plays the game's start sequence (`--skip-movies`
+skips it; `--bench-frames` runs skip it unless given `--start-movies`). Over
+`byro-dbg`, `video.status` / `video.skip` and `music.status` report and drive them
+([video-playback.md](docs/engine/video-playback.md), [music.md](docs/engine/music.md)).
 
 **Sibling archive auto-load.** When `--bsa` / `--textures-bsa` points
 at an unsuffixed `.bsa` / `.ba2` (e.g. `Fallout - Textures.bsa`), the
@@ -563,9 +450,8 @@ BYROREDUX_STARFIELD_DATA  .../Starfield/Data
 - [HISTORY.md](HISTORY.md) — session narratives (2026-04 audit closeouts, Session 42 Starfield bring-up, etc.)
 - [docs/engine/nifal.md](docs/engine/nifal.md) — NIFAL canonical translation tier (three-tier model, per-category leak inventory)
 - [docs/engine/material-abstraction.md](docs/engine/material-abstraction.md) — the material slice that NIFAL generalises (canonical `Material`, glass/PBR resolved at parse)
-- [docs/engine/video-playback.md](docs/engine/video-playback.md) — Bink movies: decoders, presentation, A/V sync, `PlayBink`, start sequences
-- [docs/engine/music.md](docs/engine/music.md) — the music controller and each game's sources, with the executable traces behind them
-- [crates/bink2/CLEANROOM.md](crates/bink2/CLEANROOM.md) / [crates/binkaudio/CLEANROOM.md](crates/binkaudio/CLEANROOM.md) — the clean-room rules, provenance log and disclosures
+- [docs/engine/video-playback.md](docs/engine/video-playback.md) and [docs/engine/music.md](docs/engine/music.md) — Bink movies, and the music controller with the executable traces behind it
+- [docs/clean-room-decoders.md](docs/clean-room-decoders.md) — how the Bink 2 and Bink Audio decoders were written; each crate's `CLEANROOM.md` holds its rules and provenance log
 - [docs/engine/](docs/engine/) — architecture, renderer, NIF parser, ECS, physics, debug CLI
 - [docs/legacy/](docs/legacy/) — Gamebryo 2.3 architecture reference, Papyrus API, Creation Engine UI
 
@@ -649,22 +535,18 @@ BYROREDUX_STARFIELD_DATA  .../Starfield/Data
   [docs/](docs/)); development works from full offline wikitext dumps of
   all five. Only documented facts and numeric values inform the engine —
   no article text is reproduced.
-- [**MultimediaWiki**](https://wiki.multimedia.cx) — its *Bink Video 2*,
-  *Bink Audio*, *Bink Container* and *RAD Game Tools Bink API* pages are the
-  only documentation the clean-room Bink 2 and Bink Audio decoders were
-  written from ([Clean-room decoders](#clean-room-decoders)); everything else
-  in them was measured. Prose only — those pages carry no code.
+- [**MultimediaWiki**](https://wiki.multimedia.cx) — its Bink pages are the only
+  documentation the clean-room Bink 2 and Bink Audio decoders were written from
+  ([details](docs/clean-room-decoders.md)); prose only, they carry no code.
 - [**mercs2_bink**](https://crates.io/crates/mercs2_bink) — the Mercenaries 2
   fan project's Bink 1 (`BIKi`) decoder, which ByroRedux links to play the
   Oblivion → Skyrim movies and their sound. MIT.
 - [**kira**](https://github.com/tesselode/kira) — the Rust audio library
   ByroRedux's audio layer is built on: positional sound, streaming music,
   tweened fades, the reverb and low-pass sends. MIT / Apache-2.0.
-- [**JohnnyGuitar NVSE**](https://github.com/carxt/JohnnyGuitarNVSE) — its
-  reverse-engineered New Vegas `MediaLocationController` (flag layout and the
-  "dead reputation" fallback documented in its tweaks) is how ByroRedux reads
-  the audio-marker controllers' looping and faction options; OpenMW's ESM4
-  reader agrees on the enums. Read as documentation only — no code is copied.
+- [**JohnnyGuitar NVSE**](https://github.com/carxt/JohnnyGuitarNVSE) — its reverse-engineered New
+  Vegas `MediaLocationController` is how ByroRedux reads the audio-marker controllers' looping and
+  faction options (OpenMW's ESM4 reader agrees). Documentation only; no code is copied.
 - [**Ruffle**](https://ruffle.rs) — the open-source Flash Player emulator.
   ByroRedux's UI layer embeds Ruffle to render the Scaleform/SWF menus
   Bethesda shipped with every Creation Engine title.

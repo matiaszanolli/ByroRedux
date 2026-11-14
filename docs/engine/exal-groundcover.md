@@ -908,6 +908,18 @@ now encoded in the script instead of only in audit prose (#4482, #4509):
    buried under an overhead that dominates both". One variant per frame, one
    bracket, round-robin.
 
+   It needs a loaded **exterior** worldspace and emits one `groundcover-bench:`
+   row per variant beside the `bench:` summary:
+
+   ```bash
+   cargo run --release -- --game skyrim --grid 5,-9 --radius 3 \
+     --bench-frames 400 --bench-groundcover-sampling --bench-mode renderer-static
+   ```
+
+   An optional `<samples_per_thread>,<blades_per_chunk>` argument sweeps the
+   working-set size, which is how a run tells a real per-sample difference from
+   a cache-residency artefact.
+
    RTX 4070 Ti, `--radius 3` (49 resident cells → 3136 chunks of 512 units),
    1024 samples per chunk, 3.21 M samples per frame. `net` is with the
    consumer's own control subtracted.

@@ -181,7 +181,7 @@ separate integration gap. See the gaps table below.
 
 | Feature | Status |
 |---|---|
-| Decoders | ✓ in process: Bink 1 via `mercs2_bink`; Bink 2 (`KB2g` / `KB2j`) and Bink Audio via the clean-room `byroredux-bink2` / `byroredux-binkaudio` (bit-exact against the game's DLL on every shipped file; audio within one sample value on 0.017 %) — see the README's [Clean-room decoders](../README.md#clean-room-decoders) |
+| Decoders | ✓ in process: Bink 1 via `mercs2_bink`; Bink 2 (`KB2g` / `KB2j`) and Bink Audio via the clean-room `byroredux-bink2` / `byroredux-binkaudio` (bit-exact against the game's DLL on every shipped file; audio within one sample value on 0.017 %) — see [Clean-room decoders](clean-room-decoders.md) |
 | Presentation | ✓ full screen over the game, letterboxed when flagged, the picture locked to the soundtrack's playback position, the game held while it plays; Escape / `video.skip` ends an interruptable movie |
 | Requests | ✓ ObScript `PlayBink` (opcode `0x1114`) and Papyrus `Game.PlayBink` (the calling script frozen until the movie ends); the movie's mute and pause-music flags hold the world's sound and music |
 | Observability | ✓ `video.status` / `video.skip`; `--skip-movies`, and `--start-movies` for a benchmark run |
