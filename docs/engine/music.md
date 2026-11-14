@@ -149,7 +149,14 @@ enable bit (`PNAM`). The controller plays:
   set, Middle and Inner smaller (66.6 / 33.3 on most), so the stems stack as the player
   walks in (MUS-SRC-007);
 - the stems **mix**, each looping, each faded in or out over the set's layer crossfade
-  time (`FNAM`, 6 or 9 s on the vanilla sets) as it turns on or off (#6902).
+  time (`FNAM`, 6 or 9 s on the vanilla sets) as it turns on or off. The tutorial reads
+  the layers as stacking ("each part is a trigger that controls when each layer plays
+  while within the radius"), and the vanilla stems are written to stack
+  (`mus_loc_desexpl_day_1low` / `_2mid` / `_3high`).
+- a marker's own layer triggers (`MNAM` / `NNAM`) replace the set's boundaries when its
+  "Use Controller Values" flag is clear (146 of the 572 base-game markers); the tutorial
+  says only that triggers of zero leave the Outer layer alone. Their exact reading is
+  #6902, so the engine uses the set's boundaries for every marker.
 
 A controller's Neutral, Ally, Friend and Enemy lists play by how its **conditional
 faction** (`RNAM`) treats the player: "music that plays ... when you're in an area
@@ -167,10 +174,19 @@ A controller with several sets in a list plays the first; one with Battle sets o
 
 Twenty-three controllers list a **Dungeon** set among their Location sets. A Dungeon
 set's slots are Battle, Explore and Suspense (xEdit's `(D)` labels), not layers: its
-Explore track (`NAM3`) plays, looping; when Suspense and Battle play is #6902. A controller's Battle sets, else the region's `RDSB` set, feed the Battle layer
-(MUS-CMB-001): the set's loop track (`NAM2`), its Intro (`HNAM`, a `SOUN`) on entering
-combat and its Outro (`INAM`) on leaving it (MUS-CMB-003), and its recovery time (`FNAM`,
-10 s on every vanilla Battle set) as the hold (MUS-CMB-002).
+Explore track (`NAM3`) plays, looping; when Suspense and Battle play is #6902.
+
+A controller's Battle sets, else the region's `RDSB` set (the precedence is #6902), feed
+the Battle layer (MUS-CMB-001): the set's loop track (`NAM2`), its Intro (`HNAM`, a
+`SOUN`) on entering combat and its Outro (`INAM`) on leaving it, and its recovery time
+(`FNAM`, 10 s on every vanilla Battle set) as the hold (MUS-CMB-002). The tutorial
+describes Intro and Outro as the sounds that open and close the battle piece, "compared
+to the Finale folder" Fallout 3 played as combat ended (MUS-CMB-003).
+
+The controller's `NAM1` also holds its looping mode (the tutorial's Loop, Random,
+Re-trigger, None) beside the forced-relation option. In the base game, bit `0x10` is set
+on 38 of the 89 controllers, including 26 of the 29 with several Location sets, so it
+may be Random. Nothing confirms that, so the engine plays a list's first set.
 
 ## 7. Timing and level
 
@@ -224,14 +240,15 @@ not-saved list with its reason.
 |---|---|---|
 | MUS-SRC-005 area shape and radius | `XRDS` on every marker | closed: a sphere of the reference's radius. Overlap: #6902 |
 | MUS-SRC-006 day / night unit | xEdit `wbAlocTime`, vanilla data | closed: `value / 256` of a day |
-| MUS-SRC-007 boundaries, layer triggers, mixing | vanilla data | boundaries are percentages of the radius; triggers and mixing: #6902 |
+| MUS-SRC-007 boundaries, layer triggers, mixing | vanilla data, Nexus wiki (2014) | boundaries are percentages of the radius; layers mix; the marker's own triggers: #6902 |
 | MUS-SEL-003 positive `ANAM` | — | #6902 |
 | MUS-SEL-004, MUS-CMB-002 (Fallout 3 / New Vegas) | executable defaults, `FalloutNV.esm` GMSTs | closed (§7) |
 | MUS-SEL-004, MUS-CMB-002 (Oblivion) | `Oblivion.exe` has no setting | #6903 |
 | MUS-SRC-002 precedence, Fallout 3 `RDMD`, New Vegas silence (§3.4) | — | #6900 |
 | MUS-SCR-005, MUS-CMB-004 (`PlayMusic`) | data leans toward *replace* | #6899 |
 | MUS-STG-003, MUS-STG-004 | — | #6901 |
-| MUS-CMB-001, MUS-CMB-003 (New Vegas) | xEdit labels | #6902 |
+| MUS-CMB-003 (New Vegas) intro / outro | xEdit labels, Nexus wiki (2014) | closed: Intro on entering combat, Outro on leaving it |
+| MUS-CMB-001 (New Vegas) controller vs region battle set; `NAM1` looping mode and forced relation | — | #6902 |
 | Q3: how the relation picks a list | Nexus wiki *Fallout New Vegas Music* (2014): by the conditional faction's relation to the player | closed (#6904); `NAM1`'s forced list undecoded |
 | MUS-SRC-008, MUS-SCR-003 (Oblivion) | — | #6903 |
 | MUS-SCR-004 (OBSE opcodes) | xOBSE `CommandTable.cpp` order, checked against five known OBSE opcodes | closed: `0x1617`, `0x19e5` |
