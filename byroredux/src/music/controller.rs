@@ -116,6 +116,9 @@ pub(crate) struct MusicController {
     hold: bool,
     /// Seconds Battle still holds after combat ended (MUS-CMB-002).
     battle_hold: f32,
+    /// A sting stopped the music: Battle and Location stay silent until the place changes, combat
+    /// starts or a script plays (MUS-STG-004, #6901).
+    silenced: bool,
     /// Sources and paths already logged as Unresolved or Missing this session (MUS-RPT-002).
     reported: HashSet<String>,
 }
@@ -137,7 +140,7 @@ impl MusicController {
         for (i, layer) in layers.iter_mut().enumerate() {
             layer.shuffle = Shuffle::seeded(seed.wrapping_add((i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)));
         }
-        Self { layers, hold: false, battle_hold: 0.0, reported: HashSet::new() }
+        Self { layers, hold: false, battle_hold: 0.0, silenced: false, reported: HashSet::new() }
     }
 
     fn state(&self, layer: Layer) -> &LayerState {
@@ -174,6 +177,10 @@ impl MusicController {
     /// Give `layer` a new directive, or none. The same music keeps playing where it is
     /// (MUS-SEL-005); anything else fades the old tracks out over the new directive's fade.
     pub(crate) fn set(&mut self, layer: Layer, directive: Option<Directive>, out: &mut dyn MusicOutput) {
+        // A new place, combat or scripted track brings back the music a sting stopped (#6901).
+        if directive.is_some() && layer != Layer::Sting {
+            self.silenced = false;
+        }
         let state = &mut self.layers[layer as usize];
         match (&state.directive, &directive) {
             (Some(old), Some(new)) if old.same_music(new) => {
@@ -217,8 +224,19 @@ impl MusicController {
         self.layers[Layer::Script as usize].shuffle.roll(n)
     }
 
-    /// Play a sting over Battle and Location (MUS-STG-004).
+    /// Play a sting (MUS-STG-004, #6901): over the music (Fallout 3 / New Vegas's level-up), or in
+    /// its place. Fallout3.exe stops the music on the player's death (`0x8e52b0`); Oblivion.exe
+    /// plays both stings on its one music graph, stopping the track (`0x6ab160`), and nothing
+    /// comes back until the place changes, combat starts or a script plays: the place's music then
+    /// starts afresh.
     pub(crate) fn sting(&mut self, directive: Directive, out: &mut dyn MusicOutput) {
+        if !directive.over_music {
+            self.set(Layer::Script, None, out);
+            for layer in [Layer::Battle, Layer::Location] {
+                self.layers[layer as usize].stop_all(out, 0.0);
+            }
+            self.silenced = true;
+        }
         // A second sting restarts the slot rather than being merged into the first.
         self.set(Layer::Sting, None, out);
         self.set(Layer::Sting, Some(directive), out);
@@ -239,13 +257,16 @@ impl MusicController {
         // Top down, so a layer sees the higher layers as this frame left them (a sting that just
         // ended releases Location the same frame).
         for layer in Layer::ALL {
-            let (sting_audible, battle_audible) = (playing(self, Layer::Sting), playing(self, Layer::Battle));
+            let sting_audible = playing(self, Layer::Sting) && self.state(Layer::Sting).directive.as_ref().is_some_and(|d| !d.over_music);
+            let battle_audible = playing(self, Layer::Battle);
             // A scripted track replaces the music below it, and a scripted silence (`PlayMusic
             // 1NoMusic`) silences it (MUS-SCR-005, #6899).
             let script = self.state(Layer::Script).directive.as_ref();
             let script_holds = script.is_some_and(|d| matches!(d.outcome(), Outcome::Playing | Outcome::Silent));
             let by = match layer {
                 _ if inputs.hold => Some("Hold"),
+                // Stopped, not paused: nothing resumes when the sting ends (#6901).
+                Layer::Battle | Layer::Location if self.silenced => Some("a sting's silence"),
                 Layer::Script | Layer::Battle | Layer::Location if sting_audible => Some("Sting"),
                 Layer::Battle | Layer::Location if script_holds => Some("Script"),
                 Layer::Location if battle_audible => Some("Battle"),
@@ -551,21 +572,45 @@ pub(crate) mod tests {
         assert_eq!(music.track(Layer::Location, &out).unwrap().1, 1.5, "only the frame it resumed on counts");
     }
 
+    /// #6901 — a sting in the music's place (Fallout 3 / New Vegas death, either Oblivion sting)
+    /// stops it, and the place's music returns afresh only with the next place, combat or script.
     #[test]
-    fn a_sting_pauses_battle_and_location_and_ends_after_one_play() {
+    fn a_sting_stops_the_music_until_the_place_changes() {
+        let mut out = FakeOutput { live: true, ..Default::default() };
+        let mut music = MusicController::seeded(1);
+        let explore = playlist("Explore", &["music\\explore\\a.mp3"]);
+        music.set(Layer::Location, Some(explore.clone()), &mut out);
+        music.step(frame(1.0), no_battle, &mut out);
+        music.sting(playlist("death", &["music\\special\\death.mp3"]), &mut out);
+        music.step(frame(1.0), no_battle, &mut out);
+        assert_eq!(out.voices[&0], ("music\\special\\death.mp3".to_string(), false), "played once, not looped");
+        assert!(!out.voices.contains_key(&24), "the music is stopped, not paused");
+        out.voices.remove(&0);
+        music.step(frame(1.0), no_battle, &mut out);
+        assert!(music.directive(Layer::Sting).is_none());
+        music.step(frame(1.0), no_battle, &mut out);
+        assert!(!out.voices.contains_key(&24), "nothing comes back on its own");
+        assert!(music.status(&out)[4].contains("a sting's silence"), "{:?}", music.status(&out));
+        music.set(Layer::Location, Some(explore), &mut out);
+        music.step(frame(1.0), no_battle, &mut out);
+        assert_eq!(out.voices[&24], ("music\\explore\\a.mp3".to_string(), false), "the next place's music starts afresh");
+    }
+
+    /// #6901 — Fallout 3 / New Vegas's level-up `MUSSuccess` plays over the music.
+    #[test]
+    fn a_sting_over_the_music_leaves_it_playing() {
         let mut out = FakeOutput { live: true, ..Default::default() };
         let mut music = MusicController::seeded(1);
         music.set(Layer::Location, Some(playlist("Explore", &["music\\explore\\a.mp3"])), &mut out);
         music.step(frame(1.0), no_battle, &mut out);
-        music.sting(playlist("DefaultDeath", &["music\\special\\death.mp3"]), &mut out);
+        music.sting(Directive { over_music: true, ..playlist("MUSSuccess", &["sound\\fx\\mus\\mus_success.wav"]) }, &mut out);
         music.step(frame(1.0), no_battle, &mut out);
-        assert_eq!(out.voices[&0], ("music\\special\\death.mp3".to_string(), false), "played once, not looped");
-        assert!(out.log.contains(&"play 0 music\\special\\death.mp3".to_string()));
-        assert!(out.voices[&24].1);
+        assert_eq!(out.voices[&0].0, "sound\\fx\\mus\\mus_success.wav");
+        assert_eq!(out.voices[&24], ("music\\explore\\a.mp3".to_string(), false), "the music plays on");
         out.voices.remove(&0);
         music.step(frame(1.0), no_battle, &mut out);
         assert!(music.directive(Layer::Sting).is_none());
-        assert!(!out.voices[&24].1, "Location resumes (MUS-STG-004)");
+        assert_eq!(music.track(Layer::Location, &out).unwrap().1, 2.0, "never paused: every frame after the first counts");
     }
 
     #[test]

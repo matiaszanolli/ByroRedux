@@ -40,7 +40,7 @@ The controller holds at most one directive per layer (PRD §3.1):
 | Layer | Fed by | While active |
 |---|---|---|
 | Hold | `AudioWorld::movie_hold().music_paused`, raised by a movie with the pause-music flag (BIK-PRES-005) | Every voice paused; resumed at the same position when the movie ends (MUS-MIX-002) |
-| Sting | The player's death (the player gains `Dead`), a level-up (`PendingMusicEvents`, pushed where the level is awarded) | Script, Battle and Location paused (MUS-STG-004) |
+| Sting | The player's death (the player gains `Dead`), a level-up (`PendingMusicEvents`, pushed where the level is awarded) | In the music's place: Script ended, Battle and Location stopped and silent until the place changes, combat starts or a script plays; Fallout 3 / New Vegas's level-up sting plays over the music instead (MUS-STG-004, #6901) |
 | Script | `PlayMusic` (`PendingMusic`), `StreamMusic` | Replaces Battle and Location: a scripted track plays in their place, a scripted silence (`1NoMusic`) silences them (MUS-SCR-005, #6899); Battle ends an Oblivion stream |
 | Battle | `is_in_combat` for the player (Q2), held for the recovery time after it ends (MUS-CMB-002) | Location paused, crossfading (MUS-SEL-004) |
 | Location | The player's place (§3) | — |
@@ -164,11 +164,19 @@ battle music themselves); Battle ends a `StreamMusic` stream.
   time (§7), then Location resumes. Oblivion has none: it counts the actors whose combat
   targets include the player (`0x6136b0` / `0x6136e0`) and switches back when the count
   reaches 0.
-- **Stings (MUS-STG).** Death plays the Death Music object (Oblivion
-  `Special\death.mp3`), a level-up the Level Up Music object (Oblivion
-  `Special\success.mp3`, the "Success" track UESP lists for a level-up). Fallout 3 / New
-  Vegas's Success Music object is bound to no event (MUS-STG-003, #6901). A sting plays
-  once; Battle and Location resume when it ends. Both drivers are the ones the console
+- **Stings (MUS-STG, #6901).** Oblivion plays `Special\death.mp3` on the player's death
+  (`0x600b7d`) and `Special\success.mp3` on a level-up (`0x5ad005`, the "Success" track
+  UESP lists), both on its one music graph (`0x6ab160`), which stops the track that was
+  playing. Fallout 3 and New Vegas play sounds, not music types: `MUSDeath`
+  (`fx\mus\mus_death.wav`) when the player dies, after stopping the music (`0x7e5d7d`,
+  `0x8e52b0`), and `MUSSuccess` (`fx\mus\mus_success.wav`) when the level-up menu opens
+  (`LevelUpMenu::Update`, `0x93cdd0`), over the music. `Fallout3.exe` never reads the
+  Death, Success or Level Up Music objects: no `GetDefaultObject` call names slot 11, 12 or
+  13 (MUS-STG-003). A sting plays once. The level-up sound leaves the music playing;
+  every other sting ends the Script layer and stops Battle and Location, which stay
+  silent (`music.status`: "paused under a sting's silence") until the place changes,
+  combat starts or a script plays, and then start a fresh track (MUS-STG-004): Oblivion's
+  update replays the sting's type, a no-op, until one of those changes the type. Both drivers are the ones the console
   reaches (MUS-RPT-004): `levelup xp <n>` awards levels through the same loop that
   pushes the level-up event, and `obscript.cmd 0x14 108b` (`KillActor` on the player)
   inserts `Dead`, which the controller watches on the player. Oblivion's level-up sting
@@ -268,8 +276,8 @@ game's master and official DLC (PRD §7.2 scenario 1, §8), 2026-11-14:
 
 | Game | Sources | Source coverage | Playable coverage |
 |---|---|---|---|
-| Fallout 3 | 591 cells, 16 worldspaces, 5 default objects, 31 music types | 100 % | cells 99.8 % (one `.wav` the install lacks), music types 93.3 % |
-| New Vegas | 375 cells, 3 worldspaces, 14 region battle sets, 5 default objects, 520 audio-marker areas | 100 % | markers and battle sets 100 %; cells, worldspaces and default objects 0 %: the `Default*` folders are not shipped, and the original is silent there too (§3) |
+| Fallout 3 | 591 cells, 16 worldspaces, 2 default objects (Default, Battle; #6901), 31 music types | 100 % | cells 99.8 % (one `.wav` the install lacks), music types 93.3 % |
+| New Vegas | 375 cells, 3 worldspaces, 14 region battle sets, 2 default objects, 520 audio-marker areas | 100 % | markers and battle sets 100 %; cells, worldspaces and default objects 0 %: the `Default*` folders are not shipped, and the original is silent there too (§3) |
 | Oblivion | 1919 cells, 39 worldspaces, 128 regions | 100 % | 100 % |
 
 `docs/smoke-tests/music-fo3.sh` drives scenarios 2 to 5, `music-fnv.sh` scenario 6 (at
@@ -295,7 +303,7 @@ not-saved list with its reason.
 | MUS-SEL-004, MUS-CMB-002 (Oblivion) | `Oblivion.exe` (the music manager's transition and update, the combat-target count) | closed (#6903): 0.85 s out then in, a cell change at once; no recovery (§7) |
 | MUS-SRC-002 precedence, Fallout 3 `RDMD`, New Vegas silence (§3.4) | `Fallout3.exe` (`TESObjectCELL::GetMusicType`, the region and cell loaders, the music routine) | closed (#6900): cell → exterior's worldspace → Default Music, no region; `RDMD` / `XCMT` dropped; an absent folder is silence (§3) |
 | MUS-SCR-005, MUS-CMB-004 (`PlayMusic`) | vanilla scripts (`MQ05Script`, `MQ11Script`, `VVault11ExterminationChairSCRIPT`, `VCG00`) | closed (#6899): replaces; does not give way to battle; ends on a cell change (engine rule) |
-| MUS-STG-003, MUS-STG-004 | — | #6901 |
+| MUS-STG-003, MUS-STG-004 | `Fallout3.exe` (`GetDefaultObject` callers, the death handler, `LevelUpMenu`), `Oblivion.exe` (the sting calls, the update) | closed (#6901): Fallout 3 / New Vegas stings are sounds, the level-up one over the music; the music objects are unread; other stings stop the music until the place, combat or a script changes it (§5) |
 | MUS-CMB-003 (New Vegas) intro / outro | xEdit labels, Nexus wiki (2014) | closed: Intro on entering combat, Outro on leaving it |
 | MUS-CMB-001 (New Vegas) controller vs region battle set; `NAM1` looping mode and forced relation | — | #6902 |
 | Q3: how the relation picks a list | Nexus wiki *Fallout New Vegas Music* (2014): by the conditional faction's relation to the player | closed (#6904); `NAM1`'s forced list undecoded |

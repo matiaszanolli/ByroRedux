@@ -11,8 +11,8 @@
 #   5. In MegatonCratersideSupply, `obscript.cmd none 1114 t:B01.bik 1 1 1 1` raises the Hold layer and
 #      the Location track keeps its position under it; after video.skip it plays on from there.
 #   4. StartCombat (0x1016) on the Craterside merc switches to Battle; KillActor (0x108b) on it returns
-#      to Location after the recovery time; `levelup xp` and `obscript.cmd 0x14 108b` raise the level-up
-#      and death stings.
+#      to Location after the recovery time; `levelup xp` raises the level-up sting (`MUSSuccess`, over
+#      the music) and `obscript.cmd 0x14 108b` the death sting (`MUSDeath`, which stops it, #6901).
 #
 #   docs/smoke-tests/music-fo3.sh
 
@@ -157,10 +157,14 @@ wait_layer Battle 20 "the recovery time to pass" '^Battle: none'
 wait_layer Location 5 "Location to resume" '^Location: Playing — DefaultPublic'
 pass "KillActor: Battle held for its recovery, then Location resumed"
 ask "levelup xp 2000" >/dev/null
-wait_layer Sting 10 "the level-up sting" '^Sting: Playing — DefaultSuccess .*DOBJ Level Up Music.* music\\special\\success\.mp3'
-pass "levelup: $(layer Sting)"
+# Fallout3.exe's stings are sounds (#6901): MUSSuccess over the music, MUSDeath in its place.
+wait_layer Sting 10 "the level-up sting" '^Sting: Playing — MUSSuccess .*SOUN.* sound\\fx\\mus\\mus_success\.wav'
+[[ "$(layer Location)" == "Location: Playing — DefaultPublic"* && "$(layer Location)" != *"paused"* ]] \
+    || fail "the level-up sting interrupted the music ($(layer Location))"
+pass "levelup: $(layer Sting), over the music"
 ask "obscript.cmd 0x14 108b" >/dev/null
-wait_layer Sting 10 "the death sting" '^Sting: Playing — DefaultDeath .*DOBJ Death Music.* music\\special\\death\.mp3'
-pass "the player's death: $(layer Sting)"
+wait_layer Sting 10 "the death sting" '^Sting: Playing — MUSDeath .*SOUN.* sound\\fx\\mus\\mus_death\.wav'
+[[ "$(layer Location)" == *"a sting's silence"* ]] || fail "the death sting did not stop the music ($(layer Location))"
+pass "the player's death: $(layer Sting), the music stopped"
 
 echo "smoke[music-fo3]: PASS -- Fallout 3 is scored: cell, default, battle, sting and movie hold"

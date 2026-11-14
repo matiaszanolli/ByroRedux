@@ -115,8 +115,9 @@ fn census(data: &std::path::Path, plugins: &[&str]) -> (Catalog, Vec<(&'static s
     for musc in index.music_types.values() {
         add("music type", catalog.music_type(&index, musc.form_id, "census").outcome());
     }
+    // The two default music objects the executables read (#6900, #6901): Default and Battle.
     if let Some(music) = index.default_music {
-        for form in [music.default, music.battle, music.death, music.success, music.level_up].into_iter().flatten() {
+        for form in [music.default, music.battle].into_iter().flatten() {
             add("default object", catalog.music_type(&index, form, "census").outcome());
         }
     }
@@ -155,8 +156,8 @@ fn tally<'a>(tallies: &'a [(&'static str, Tally)], kind: &str) -> &'a Tally {
 }
 
 /// Fallout 3 (base + 5 DLC): 31 music types — 22 files and 6 folders play, 2 missing
-/// (`TenpennyLobbyMusic`'s `.wav`, `ProjPurityActivate`), 1 silent (`1NoMusic`); all five default
-/// music objects play.
+/// (`TenpennyLobbyMusic`'s `.wav`, `ProjPurityActivate`), 1 silent (`1NoMusic`); both default
+/// music objects the executable reads (Default, Battle) play.
 #[test]
 #[ignore = "needs Fallout 3 game data on disk"]
 fn fallout3_music_sources_translate_against_the_census() {
@@ -168,14 +169,15 @@ fn fallout3_music_sources_translate_against_the_census() {
     let types = tally(&tallies, "music type");
     assert_eq!((types.sources, types.count("playing"), types.count("missing"), types.count("silent")), (31, 28, 2, 1));
     let objects = tally(&tallies, "default object");
-    assert_eq!((objects.sources, objects.count("playing")), (5, 5));
+    assert_eq!((objects.sources, objects.count("playing")), (2, 2));
     let cells = tally(&tallies, "cell");
     assert_eq!(cells.count("unresolved"), 0, "every cell source translates");
 }
 
 /// New Vegas (base + 9 DLC): 29 music types — 15 play, 13 missing (the `Default*` folders and the
-/// death / success stings are not shipped), 1 silent; every audio marker's Location set plays.
-/// The cells' music types all name those missing folders or `1NoMusic` (#6900).
+/// unread death / success music types are not shipped), 1 silent; every audio marker's Location
+/// set plays. The cells' music types all name those missing folders or `1NoMusic`, silent in the
+/// original too (#6900); its stings are the `MUSDeath` / `MUSSuccess` sounds (#6901).
 #[test]
 #[ignore = "needs New Vegas game data on disk"]
 fn new_vegas_music_sources_translate_against_the_census() {

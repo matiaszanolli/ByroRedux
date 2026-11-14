@@ -130,8 +130,12 @@ pass "StreamMusic Battle is ignored: battle music follows combat (#6903)"
 # The level-up sting is translated (Special\success.mp3, a unit test pins it) but has no driver here:
 # Oblivion levels by major-skill increases, which the engine does not model yet (`levelup xp` awards
 # no level under classic-TES rules).
+# A fresh engine: KillActor on the player stops landing a few seconds after the load (#6905).
+start_engine death --cell BrumaJGhastasHouse
+wait_layer Location 20 "BrumaJGhastasHouse's music" '^Location: Playing — Public'
 ask "obscript.cmd 0x14 108b" >/dev/null
 wait_layer Sting 10 "the death sting" '^Sting: Playing — death .* music\\special\\death\.mp3'
-pass "the player's death: $(layer Sting)"
+[[ "$(layer Location)" == *"a sting's silence"* ]] || fail "the death sting did not stop the music ($(layer Location))"
+pass "the player's death: $(layer Sting), the music stopped (#6901)"
 
 echo "smoke[music-oblivion]: PASS -- Oblivion plays its categories, StreamMusic and stings"

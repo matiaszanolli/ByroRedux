@@ -1,6 +1,7 @@
 # Game Music — Product Requirements
 
-**Status**: SHIPPED (2026-11-14). Revision 12 settles Oblivion's
+**Status**: SHIPPED (2026-11-14). Revision 13 settles the stings from
+the executables (#6901). Revision 12 settles Oblivion's
 precedence, fades, battle recovery and `StreamMusic` from `Oblivion.exe`
 (#6903). Revision 11 settles MUS-SRC-002 from
 `Fallout3.exe`: cell, then an exterior's worldspace, then Default Music; no
@@ -139,7 +140,7 @@ controller past it has no per-game branch (R5).
 | Game | Location sources | Battle source | Sting sources |
 |---|---|---|---|
 | Oblivion | `CELL.XCMT`, `WRLD.SNAM`, `REGN.RDMD` category → a `Data\Music` folder (MUS-SRC-008, MUS-SRC-009) | `Data\Music\Battle` ([UESP: Oblivion Music](https://en.uesp.net/wiki/Oblivion:Music)) | `Special\death.mp3`, `Special\success.mp3` (same page) |
-| Fallout 3 | `CELL.XCMO`, an exterior's `WRLD.ZNAM`, then the Default Music object → a music type (MUS-SRC-001 to MUS-SRC-004) | Battle Music object | Death Music and Level Up Music objects |
+| Fallout 3 | `CELL.XCMO`, an exterior's `WRLD.ZNAM`, then the Default Music object → a music type (MUS-SRC-001 to MUS-SRC-004) | Battle Music object | The `MUSDeath` and `MUSSuccess` sounds (#6901) |
 | Fallout: New Vegas | Audio marker → media location controller → media set (MUS-SRC-005 to MUS-SRC-007); music types as Fallout 3 | The controller's Battle sets, the region's `RDSB` battle sets (MUS-CMB-001) | As Fallout 3 (MUS-STG) |
 
 ### 3.4 Census
@@ -354,17 +355,23 @@ shipped behaviour is [music.md](../engine/music.md) and `music.status`.
 ### 5.4 Stings (`MUS-STG`)
 
 - **MUS-STG-001.** The player's death MUST play the death sting: Oblivion's
-  `Special\death.mp3`, the Fallout 3 / New Vegas Death Music object. Today
-  death plays no music (§3.5 row 10).
+  `Special\death.mp3`, the Fallout 3 / New Vegas `MUSDeath` sound
+  (`fx\mus\mus_death.wav`), which `Fallout3.exe` plays when the player
+  dies (#6901).
 - **MUS-STG-002.** A player level-up MUST play the level-up sting:
   Oblivion's "Success" track
   ([UESP: Oblivion Music](https://en.uesp.net/wiki/Oblivion:Music)), the
-  Fallout 3 / New Vegas Level Up Music object.
-- **MUS-STG-003.** The Fallout 3 / New Vegas Success Music object MUST NOT
-  be bound to an event until Phase 0 verifies which event plays it; settled
-  by the GECK wiki's Default Form page in full or by observation.
-- **MUS-STG-004.** A sting MUST suspend the Battle and Location layers for
-  its length. **Phase 0: verify** whether they resume or restart.
+  Fallout 3 / New Vegas `MUSSuccess` sound (`fx\mus\mus_success.wav`),
+  which `Fallout3.exe`'s level-up menu plays when it opens (#6901).
+- **MUS-STG-003.** The Fallout 3 / New Vegas Death, Success and Level Up
+  Music objects MUST NOT be bound to an event: `Fallout3.exe` never reads
+  them (#6901).
+- **MUS-STG-004.** Fallout 3 / New Vegas's level-up sting MUST play over
+  the music, which plays on. Every other sting MUST stop the Script, Battle
+  and Location music, which MUST stay silent until the place changes,
+  combat starts or a script plays, and then start afresh: `Fallout3.exe`
+  stops the music on the player's death, and `Oblivion.exe` plays its
+  stings on its one music graph (#6901).
 
 ### 5.5 Script requests (`MUS-SCR`)
 
@@ -651,3 +658,4 @@ and Oblivion's source coverage is published.
 | 10 | 2026-11-14 | MUS-SCR-005 settled (#6899): `PlayMusic` replaces the cell's music (vanilla `MQ05Script`, `MQ11Script`, `VVault11ExterminationChairSCRIPT`, `VCG00`), so the Script layer replaces Battle and Location; §3.1 updated | — |
 | 11 | 2026-11-14 | MUS-SRC-002 settled (#6900) from `Fallout3.exe`: cell `XCMO` → an exterior's worldspace `ZNAM` → Default Music; no region `RDMO` (none authored), `RDMD` and `XCMT` dropped by the loaders; an absent `Default*` folder is silence in the original, so New Vegas's 0 % cell playable coverage is faithful; §3.3 and MUS-SRC-012 updated | — |
 | 12 | 2026-11-14 | Oblivion's verify items settled from `Oblivion.exe` (#6903): MUS-SRC-008 (cell → an exterior's region → worldspace, Default falling through), MUS-SEL-004 (0.85 s out, 0.85 s in; a cell change at once), MUS-CMB-002 (no recovery), MUS-CMB-004 (Battle ends a stream), MUS-SCR-003 (keywords play on, `Random` rolls a category, a file hands over to Default, a stream outlives a cell change into its own category) | — |
+| 13 | 2026-11-14 | MUS-STG-001 to MUS-STG-004 settled from the executables (#6901): Fallout 3 / New Vegas's stings are the `MUSDeath` / `MUSSuccess` sounds, the level-up one over the music; the Death, Success and Level Up Music objects are never read; every other sting stops the music until the place changes, combat starts or a script plays | — |

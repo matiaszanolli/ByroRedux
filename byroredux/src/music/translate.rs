@@ -425,8 +425,13 @@ impl Catalog {
         Some(directive)
     }
 
-    /// A sting's directive (MUS-STG-001, -002); the Success Music object is bound to no event
-    /// (MUS-STG-003, #6901).
+    /// A sting's directive (MUS-STG-001, -002; #6901). Oblivion.exe plays its two files on the
+    /// music graph (`0x600b7d` on the player's death, `0x5ad005` on a level-up), in the music's
+    /// place. Fallout3.exe plays sounds: `MUSDeath` when the player dies, once it has stopped the
+    /// music (`0x7e5d7d`), and `MUSSuccess` when the level-up menu opens (`LevelUpMenu::Update`,
+    /// `0x93cdd0`), over the music. It never reads the Death, Success or Level Up Music objects
+    /// (no `GetDefaultObject` call names slot 11, 12 or 13); New Vegas carries the same records
+    /// and names.
     pub(crate) fn sting(&self, index: &EsmIndex, sting: Sting) -> Option<Directive> {
         if self.game == GameKind::Oblivion {
             // `Oblivion.exe` names both: `.\Data\Music\Special\death.mp3`, `success.mp3`.
@@ -436,13 +441,14 @@ impl Catalog {
             };
             return Some(self.directive(Source::keyword(label, "Data\\Music\\Special"), self.files.resolve(file)));
         }
-        let music = index.default_music?;
-        let (form, via) = match sting {
-            Sting::Death => (music.death?, "DOBJ Death Music"),
-            Sting::LevelUp => (music.level_up?, "DOBJ Level Up Music"),
+        let (editor_id, over_music) = match sting {
+            Sting::Death => ("MUSDeath", false),
+            Sting::LevelUp => ("MUSSuccess", true),
         };
-        // A sting plays once, whatever its music type's loop flag says.
-        Some(Directive { looping: false, ..self.music_type(index, form, via) })
+        let sound = index.sounds.values().find(|s| s.editor_id.eq_ignore_ascii_case(editor_id) && !s.is_folder())?;
+        let path = crate::asset_provider::resolve_sound_path(&index.sounds, sound.form_id)?;
+        let content = Content::Playlist(vec![crate::asset_provider::sound_archive_path(path)]);
+        Some(Directive { over_music, ..self.directive(Source::record(sound.editor_id.clone(), sound.form_id, "SOUN"), content) })
     }
 }
 
@@ -497,16 +503,26 @@ mod tests {
         assert_eq!(d.fade_secs, 1.0, "iMusicTransitionInMS's compiled-in 1000 ms");
     }
 
+    /// #6901 — battle from the Battle Music object; the stings from the `MUSDeath` / `MUSSuccess`
+    /// sounds Fallout3.exe plays, not the Death Music object the fixture also sets.
     #[test]
-    fn battle_and_stings_come_from_the_default_music_objects() {
-        let (index, catalog) = fallout3();
+    fn battle_comes_from_the_battle_music_object_and_the_stings_from_their_sounds() {
+        use byroredux_plugin::esm::records::SounRecord;
+        let (mut index, catalog) = fallout3();
         let battle = catalog.battle(&index, None, None);
         assert_eq!(battle.source.label, "DefaultBattle");
         assert_eq!(battle.recovery_secs, Some(5.0), "fCombatMusicStopTime's compiled-in 5.0");
+        assert_eq!(catalog.sting(&index, Sting::Death), None, "no MUSDeath sound, no sting");
+        for (form, edid, path) in [(0x78595, "MUSDeath", "fx\\mus\\mus_death.wav"), (0x78594, "MUSSuccess", "fx\\mus\\mus_success.wav")] {
+            index.sounds.insert(form, SounRecord { form_id: form, editor_id: edid.into(), sound_path: path.into(), ..Default::default() });
+        }
         let death = catalog.sting(&index, Sting::Death).unwrap();
-        assert_eq!(death.content, Content::Playlist(vec!["music\\special\\death.mp3".into()]));
-        assert!(!death.looping);
-        assert_eq!(catalog.sting(&index, Sting::LevelUp), None, "an unset slot plays nothing");
+        assert_eq!((death.source.label.as_str(), death.source.via), ("MUSDeath", "SOUN"));
+        assert_eq!(death.content, Content::Playlist(vec!["sound\\fx\\mus\\mus_death.wav".into()]));
+        assert!(!death.looping && !death.over_music, "death stops the music");
+        let level_up = catalog.sting(&index, Sting::LevelUp).unwrap();
+        assert_eq!(level_up.content, Content::Playlist(vec!["sound\\fx\\mus\\mus_success.wav".into()]));
+        assert!(level_up.over_music, "the level-up sting plays over the music");
     }
 
     #[test]
