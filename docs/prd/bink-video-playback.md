@@ -1,13 +1,13 @@
 # Bink video playback — Product Requirements
 
-**Status**: ACTIVE (2026-11-13). Revision 8 extends Q2 at the owner's direction: Bink 2 sound decodes in process too, through the workspace's clean-room Bink Audio decoder. Revision 7 re-decides Q2 at the owner's direction: Bink 2 video decodes in process through the workspace's clean-room decoder. Revision 6 re-decides Q1 at the owner's direction: Bink 1 decodes in process, no FFmpeg at run time. Revision 4 files the tracking issues. Revision 3 records the owner's approval
+**Status**: ACTIVE (2026-11-14). Revision 10 folds in review round 2: BIK-DEC-004 is met (a frame that does not decode now ends the movie Failed), the stale HEAD claims are history, and the provenance questions go to the owner in #6907. Revision 9 refreshes the HEAD table. Revision 8 extends Q2 at the owner's direction: Bink 2 sound decodes in process too, through the workspace's clean-room Bink Audio decoder. Revision 7 re-decides Q2 at the owner's direction: Bink 2 video decodes in process through the workspace's clean-room decoder. Revision 6 re-decides Q1 at the owner's direction: Bink 1 decodes in process, no FFmpeg at run time. Revision 4 files the tracking issues. Revision 3 records the owner's approval
 with every §10 decision taken as recommended and folded into the
 requirements (BIK-DEC-003, BIK-DEC-005, BIK-REQ-005). Statements about how
 an original engine, format or tool behaves cite external sources; a claim
 that could not be verified is marked **Phase 0: verify** instead of being
 stated as fact.
 
-**Tracking**: #6855 (parent). Phases: #6856 (0), #6857 (1), #6858 (2), #6859 (3).
+**Tracking**: #6855 (parent). Phases: #6856 (0), #6857 (1), #6858 (2), #6859 (3). Verify items: #6896–#6898. Decoder provenance: #6907.
 
 **Scope**: the games' own Bink movies play: the intro and logo movies the
 engine starts, and every movie a script asks for (`PlayBink`). Each plays
@@ -24,7 +24,7 @@ writes the missing design.
 | Mechanism | Owning design |
 |---|---|
 | Menus, native pages and the pause they impose | [Game UI Integration — PRD](game-ui-integration.md#31-state-at-head) (§3.1 row 16) |
-| Sound playback and its tracks | none: the `audio` crate (M44) has no design document; Phase 0's design covers the movie's audio half |
+| Sound playback and its tracks | The `audio` crate (M44) has no design document; [Video playback](../engine/video-playback.md) §3 covers the movie's audio half (its own slot, the hold) |
 | The new-game route that starts the FNV intro | [Playable vertical slice](../engine/playable-vertical-slice.md#from-the-beginning--a-new-game-2026-11-11) |
 | Decoding, presentation, A/V sync, start sequences | [Video playback](../engine/video-playback.md) (Phase 0, #6856) |
 | The Bink 2 decoders' format rules and their provenance | [`crates/bink2`](../../crates/bink2/README.md) (video) and [`crates/binkaudio`](../../crates/binkaudio/README.md) (sound): their specs (`docs/spec/`) and `CLEANROOM.md` |
@@ -38,8 +38,8 @@ meanings, as in the related designs. Requirement IDs use the `BIK-` prefix.
 
 The owner's goal for New Vegas is "make FNV playable from the beginning".
 The original begins a new game with the intro quest VCG00 running
-`PlayBink "FNVIntro.bik" 1 1 0 1`; this engine records the request and logs
-`video FNVIntro.bik (no Bink decoder)`. Every title in the lineage ships
+`PlayBink "FNVIntro.bik" 1 1 0 1`; before this PRD the engine recorded the
+request and logged `video FNVIntro.bik (no Bink decoder)`. Every title in the lineage ships
 movies the same way (census in §3): logo sequences, intros, ending films.
 They are part of how the games begin and end.
 
@@ -63,7 +63,11 @@ reported, never silently dropped.** The engine plays what it can decode,
 says per file what it cannot, and never stalls the game on a movie it cannot
 play. The project is "FOSS-only by design. No proprietary dependencies, no
 closed-source middleware" ([README](../../README.md#why-byroredux-exists)), so
-what can be decoded is bounded by the open decoders that exist (Q1, Q2).
+what can be decoded is bounded by the in-process open decoders: `mercs2_bink`
+for Bink 1, the workspace's `byroredux-bink2` and `byroredux-binkaudio` for
+Bink 2 (Q1, Q2; their provenance is the owner's question in #6907). FFmpeg is
+a development-time measurement tool only (`ffprobe` in
+`scripts/bink-corpus.sh`), never a run-time dependency.
 
 ---
 
@@ -71,8 +75,8 @@ what can be decoded is bounded by the open decoders that exist (Q1, Q2).
 
 | Term | Meaning |
 |---|---|
-| **Bink 1** | RAD's first Bink format; file magic `BIK` and a revision letter (`BIKi` in every title's corpus below) |
-| **Bink 2** | RAD's second format; file magic `KB2` and a revision letter (`KB2g`, `KB2j`) |
+| **Bink 1** | RAD's first Bink format; file magic `BIK` and a revision letter ([MultimediaWiki: Bink Container](https://wiki.multimedia.cx/index.php/Bink_Container)); every vanilla file in the corpus below is `BIKi` |
+| **Bink 2** | RAD's second format; file magic `KB2` and a revision letter (same page); the corpus holds `KB2g` and `KB2j` |
 | **Movie request** | A movie to play, with its flags: from a script (`PlayBink`) or from the engine's own start sequence |
 | **Flags** | The request's options: GECK `PlayBink`'s four (interruptable, mute audio, pause music, letterboxed), CS `PlayBink`'s one (allow Escape), Papyrus's arguments |
 | **Start sequence** | The movies the original plays outside any script, named by INI settings (`SIntroSequence`, `SMainMenuMovieIntro`, `sIntroMovie`) |
@@ -86,12 +90,14 @@ A movie request ends in one of three outcomes, each reported:
 
 | Outcome | Meaning | Reported by |
 |---|---|---|
-| **Played** | Every frame decoded and shown, sound with it, or ended early by Escape on an interruptable request | `video.status` (BIK-RPT-001) |
-| **Skipped** | The file's format has no decoder in this build (a Bink 1 revision other than `BIKi`, a Bink 2 revision other than `KB2g` / `KB2j`) | one log line per file and `video.status` |
-| **Failed** | The file is missing or does not decode | one log line and `video.status`; the game continues |
+| **Played** | Every frame decoded and shown, sound with it; *ended early* when Escape or `video.skip` ends an interruptable request | `video.status` (BIK-RPT-001) |
+| **Skipped** | The file's format has no decoder in this build (a Bink 1 revision other than `BIKi`, a Bink 2 revision other than `KB2g` / `KB2j`), or there is no window to show it in | one log line per file and `video.status` |
+| **Failed** | The file is missing, does not open, or a frame does not decode (BIK-DEC-004) | one log line and `video.status`; the game continues |
 
-The corpus below was measured on 2026-11-11 from the installed games
-(`ffprobe` and the file magic; game files are never checked in).
+The corpus below is Phase 0's census, measured on 2026-11-11 from the
+installed games (`ffprobe` and the file magic; game files are never checked
+in). The live counts and decode rate are ROADMAP's compatibility matrix,
+Video column (§8).
 
 | Game | Files in `Data\Video` | Bink 1 | Bink 2 | Audio tracks per file | Example |
 |---|---|---|---|---|---|
@@ -99,27 +105,34 @@ The corpus below was measured on 2026-11-11 from the installed games
 | Fallout 3 | 35 | 35 | 0 | 0–1 | `Fallout INTRO Vsk.bik`, `B01.bik` … |
 | Fallout: New Vegas | 1 | 1 | 0 | 1 | `FNVIntro.bik`: 1280×720, 30 fps, Bink audio 48 kHz stereo, 289.7 s |
 | Skyrim SE | 1 | 1 | 0 | 2 | `BGS_Logo.bik` |
-| Fallout 4 | 15 | 1 | 14 | 0–6 | `Intro.bk2`: 1920×1080, 23.976 fps, five Bink audio tracks |
+| Fallout 4 | 15 | 1 (a mod's) | 14 | 0–6 | `Intro.bk2`: 1920×1080, 23.976 fps, five Bink audio tracks |
 | Fallout 76 | 4 | 0 | 4 | 0–6 | — |
 | Starfield | 36 | 0 | 36 | 0–6 | `PowerVision_*.bk2` |
 
-FFmpeg decodes both streams of `FNVIntro.bik` (`binkvideo`,
-`binkaudio_dct`) and the audio of `Intro.bk2`, but reports the Bink 2 video
-codec as unknown. The workspace's own decoders (Q2, re-decided 2026-11-13)
-decode the video and the sound of every Bink 2 file above.
+Fallout 4's one Bink 1 file, `threeweekslater_withSound.bik`, was added by
+the Sim Settlements 2 mod in the measured install: vanilla Fallout 4 ships
+Bink 2 only. FFmpeg decodes both streams of `FNVIntro.bik` (`binkvideo`,
+`binkaudio_dct`) and the audio of `Intro.bk2`, but `ffprobe` reports the
+Bink 2 video codec as unknown: the patch adding a decoder was never merged
+([ffmpeg-devel, 2020-03](https://ffmpeg.org/pipermail/ffmpeg-devel/2020-March/258774.html)).
+The workspace's own decoders (Q2, re-decided 2026-11-13) decode the video and
+the sound of every Bink 2 file above.
 
-What starts each game's movies, measured on 2026-11-11 from the masters and
-the default INIs:
+What starts each game's movies: the default INIs, and each executable's
+compiled-in defaults where the INI does not set the key (read out of the
+executables on 2026-11-13; method and values in
+[video-playback.md](../engine/video-playback.md) §5):
 
-| Game | Start sequence (default INI) | New-game movie |
+| Game | Start sequence | New-game movie |
 |---|---|---|
-| Oblivion | `SIntroSequence` (four logos), `SMainMenuMovieIntro=Oblivion iv logo.bik` (`Oblivion_default.ini`) | `OblivionIntro.bik`: named by neither the INI nor `Oblivion.esm`. **Phase 0: verify** where |
-| Fallout 3 | `SIntroSequence=` and `SMainMenuMovieIntro=` empty; `sIntroMovie=Fallout INTRO Vsk.bik` (`Fallout_default.ini`) | **Phase 0: verify** whether `sIntroMovie` is it |
-| Fallout: New Vegas | Same INI as Fallout 3; `Fallout INTRO Vsk.bik` is not installed | VCG00 runs `PlayBink "FNVIntro.bik" 1 1 0 1` (interruptable, muted, music not paused, letterboxed), then `FNVLogo1.bik` and `FNVLogo2.bik`, which are not installed |
-| Skyrim SE | `Skyrim_Default.ini` names no movie | `BGS_Logo.bik`: **Phase 0: verify** where it is named |
-| Fallout 4 | `Fallout4_Default.ini` names no movie | Papyrus `PlayBink` with the new-game flag (Fallout 4 CK) |
+| Oblivion | `SIntroSequence` (four logos), then `SMainMenuMovieIntro=Oblivion iv logo.bik`; `Oblivion_default.ini` and `Oblivion.exe` agree | `OblivionIntro.bik`: a bare string in `Oblivion.exe`, not a setting. **Phase 0: verify** when it plays (filed #6897) |
+| Fallout 3 | `SIntroSequence` and `SMainMenuMovieIntro` empty in `Fallout_default.ini` and `Fallout3.exe`; the INI also sets `sIntroMovie=Fallout INTRO Vsk.bik`, empty compiled-in | **Phase 0: verify** whether and when `sIntroMovie` plays (filed #6897) |
+| Fallout: New Vegas | Same settings as Fallout 3; `Fallout INTRO Vsk.bik` is not installed | VCG00 runs `PlayBink "FNVIntro.bik" 1 1 0 1` (interruptable, muted, music not paused, letterboxed), then `FNVLogo1.bik` and `FNVLogo2.bik`, which are not installed |
+| Skyrim SE | `Skyrim_Default.ini` names no movie; `SkyrimSE.exe`'s `sIntroSequence` is `BGS_Logo.bik` | — |
+| Fallout 4 | `Fallout4_Default.ini` names no movie; `Fallout4.exe`'s `sIntroSequence` is `GameIntro_V3_B.bk2` | Papyrus `PlayBink` with the new-game flag (Fallout 4 CK) |
+| Starfield | `Starfield.ini` names no movie; `Starfield.exe`'s `sIntroSequence` is `BGS_LOGO_1080p_BinkVersion.bk2` | — |
 
-The engine's state at HEAD on 2026-11-13 (all phases built; design: [video-playback.md](../engine/video-playback.md)):
+The engine's state at HEAD on 2026-11-14 (all phases built; design: [video-playback.md](../engine/video-playback.md)):
 
 | # | Piece | Today | Proof |
 |---|---|---|---|
@@ -127,10 +140,10 @@ The engine's state at HEAD on 2026-11-13 (all phases built; design: [video-playb
 | 2 | Where a request goes | `step_video` hands it to the movie player, which opens the file under `Video` (any case, `..\` out of it), draws frames full screen, holds game time like the loading cover, ends on the last frame or on Escape / `video.skip` for an interruptable request | `VideoPlayer`, `byroredux/src/video.rs`; `step_video`, `byroredux/src/app_step.rs`; `docs/smoke-tests/fnv-new-game.sh` leg 0 |
 | 3 | Papyrus `Game.PlayBink` | Lowers to `Effect::PlayBink` (the VM evaluates a run-time name) with the CK's defaults and Fallout 4's new-game flag; the script freezes until the movie ends (`FragmentResumeCondition::MovieEnded`) | `prim_play_bink`, `crates/scripting/src/translate/effects/prims/world.rs`; `play_bink_freezes_the_run_until_the_movie_ends` |
 | 4 | Start sequence (INI movies) | `sIntroSequence` then `sMainMenuMovieIntro` from the install's default INI, else the executable's compiled-in default, queued once the boot load ends; `--skip-movies` skips them, a `--bench-frames` run unless `--start-movies` | `start_sequence`, `byroredux/src/video.rs`; `docs/smoke-tests/bik-start-sequence.sh` |
-| 5 | Decoder | In process: Bink 1 (`BIKi`) video and audio through `mercs2_bink` (Q1, re-decided 2026-11-12); Bink 2 (`KB2g`, `KB2j`) video and sound through `byroredux-bink2` and `byroredux-binkaudio` (Q2, re-decided 2026-11-13), the first audio track; other revisions are reported Skipped. The mute and pause-music flags hold the world's sound and the music (`AudioWorld::hold_for_movie`), and the picture follows the soundtrack's playback position | `crates/video/src/lib.rs`, `crates/bink2`, `crates/binkaudio`; the ignored corpus test in `crates/video` |
+| 5 | Decoder | In process: Bink 1 (`BIKi`) video and audio through `mercs2_bink` (Q1, re-decided 2026-11-12); Bink 2 (`KB2g`, `KB2j`) video and sound through `byroredux-bink2` and `byroredux-binkaudio` (Q2, re-decided 2026-11-13), the first audio track; other revisions are reported Skipped, and a frame that does not decode ends the movie Failed (BIK-DEC-004). The mute and pause-music flags hold the world's sound and the music (`AudioWorld::hold_for_movie`), and the picture follows the soundtrack's playback position | `crates/video/src/lib.rs`, `crates/bink2`, `crates/binkaudio`; the ignored corpus test in `crates/video` |
 
-The census is re-measured by Phase 0's checked-in corpus script; the HEAD
-table is replaced by `video.status` once Phase 2 ships entirely.
+`scripts/bink-corpus.sh` re-measures the census; `video.status` reports a
+run's live state.
 
 ---
 
@@ -149,12 +162,16 @@ table is replaced by `video.status` once Phase 2 ships entirely.
 
 - **BIK-NG-001.** Linking RAD's Bink SDK or any closed decoder: the
   project is FOSS-only ([README](../../README.md#why-byroredux-exists)).
+  Whether an open decoder whose format description was read out of RAD's
+  library with a disassembler counts as closed is the owner's decision in
+  #6907.
 - **BIK-NG-002.** Encoding or authoring Bink files.
 - **BIK-NG-003.** Scaleform and MenuXml menu movies: the
   [Game UI Integration PRD](game-ui-integration.md)'s surfaces.
-- **BIK-NG-004.** Main-menu background movies (Oblivion's `Map loop.bik`,
-  Fallout 4's `MainMenuLoop.bk2`): the engine has no main menu and no PRD
-  owns one today (§6 row 3).
+- **BIK-NG-004.** Main-menu background movies (Oblivion's
+  `smainmenumovie=Map Loop.bik`,
+  [UESP: Oblivion.ini](https://en.uesp.net/wiki/Oblivion_Mod:Oblivion.ini)):
+  the engine has no main menu and no PRD owns one today (§6 row 3).
 - **BIK-NG-005.** Fallout 76: no playable flow starts its movies (§7.1).
 
 ---
@@ -166,28 +183,34 @@ table is replaced by `video.status` once Phase 2 ships entirely.
 - **BIK-REQ-001.** ObScript `PlayBink` MUST carry its flags with the file
   name to the player: the GECK's four on FO3 / FNV, defaulting to
   interruptable 0, mute 1, pause 1, letterbox 1, and the CS's one Escape
-  flag on Oblivion. The per-game difference is read in the translate step.
-  Today FO3 / FNV drop the flags and Oblivion's command is not dispatched
-  (§3 HEAD row 1).
+  flag on Oblivion, through one handler: Oblivion's script supplies one flag
+  and the rest take their defaults. Before Phase 2 (2026-11-11) FO3 / FNV
+  dropped the flags and Oblivion's command was not dispatched (§3 HEAD
+  row 1).
 - **BIK-REQ-002.** Papyrus `Game.PlayBink` MUST reach the same player with
-  its arguments, including Fallout 4's new-game flag. Today there is no
-  native (§3 HEAD row 3).
+  its arguments, including Fallout 4's new-game flag. Before Phase 2 there
+  was no native (§3 HEAD row 3).
 - **BIK-REQ-003.** A request MUST resolve its file relative to
   `Data\Video` as a loose file, as the GECK states for FO3 / FNV ("they
-  can't be packaged into a BSA File"); a missing file is **Failed**.
-  **Phase 0: verify** the same for Skyrim, Fallout 4 and Starfield; settled
-  by their CK pages or by whether any archive in the corpus holds a Bink
-  file.
-- **BIK-REQ-004.** The start sequence MUST play from the game's INI: for
-  Oblivion `SIntroSequence`, then `SMainMenuMovieIntro`
-  ([UESP: Oblivion.ini](https://en.uesp.net/wiki/Oblivion_Mod:Oblivion.ini)).
-  **Phase 0: verify** what Fallout 3's `sIntroMovie` plays and where
-  Oblivion's new-game intro and Skyrim's logo are named (§3); settled by
-  the original's behaviour with the setting changed.
+  can't be packaged into a BSA File"); a missing file is **Failed**. For
+  Skyrim, Fallout 4 and Starfield, Phase 0 found no vanilla archive that
+  holds a Bink file ([video-playback.md](../engine/video-playback.md) §6):
+  their movies ship loose. That shows only absence: a mod that packs its
+  movies in an archive does not play (deviation 8, #6898).
+- **BIK-REQ-004.** The start sequence MUST play `sIntroSequence`, then
+  `sMainMenuMovieIntro`, each from the install's default INI when it sets
+  the key (even to nothing) and from the executable's compiled-in default
+  otherwise (Oblivion's settings:
+  [UESP: Oblivion.ini](https://en.uesp.net/wiki/Oblivion_Mod:Oblivion.ini);
+  every game's compiled-in defaults: §3). A user INI is not read
+  (deviation 6). **Phase 0: verify** when Fallout 3's `sIntroMovie` and
+  Oblivion's `OblivionIntro.bik` play; settled by the original's behaviour
+  at a new game (filed #6897).
 
 - **BIK-REQ-005.** Engine-started movies MUST play where the original
   plays them, and a launch flag MUST skip every one of them for development
-  and the gates (Q3).
+  and the gates (Q3). A `--bench-frames` run skips them too unless
+  `--start-movies` asks for them (deviation 4).
 
 ### 5.2 Decoding (`BIK-DEC`)
 
@@ -195,11 +218,11 @@ table is replaced by `video.status` once Phase 2 ships entirely.
   resolution and frame rate.
 - **BIK-DEC-002.** Bink audio MUST decode to PCM at the file's sample rate
   and channel count. **Phase 0: verify** which of several tracks the
-  original plays (Skyrim's logo has two, Fallout 4's intro five); settled by
-  RAD's published Bink sound-track documentation or by listening to each
-  track against the original. Measured: a Bink 2 file's tracks are language
-  versions of one mix (`crates/binkaudio`, probe A9); until this is settled
-  the first track plays.
+  original plays (Skyrim's logo has two, Fallout 4's intro five), and
+  whether they are language versions of one mix; settled by listening to
+  each track against the original (filed #6896). Measured
+  (`crates/binkaudio`, probe A9): a file's tracks differ but correlate
+  closely. Until this is settled the first track plays.
 - **BIK-DEC-003.** Bink 2 video (`KB2g`, `KB2j`) and its sound MUST decode in
   process through the workspace's clean-room decoders `byroredux-bink2` and
   `byroredux-binkaudio` (MIT, pure Rust, no dependencies) to frames at the
@@ -213,27 +236,37 @@ table is replaced by `video.status` once Phase 2 ships entirely.
   MUST NOT link FFmpeg or any native decoder, and a format the library does not
   decode MUST be **Skipped** with one log line (Q1).
 - **BIK-DEC-004.** A frame that fails to decode MUST end the movie as
-  **Failed** with a log line naming the file and frame, and the game MUST
-  continue.
+  **Failed**, once the frames before it have been shown, with a log line
+  naming the file and frame and the same reason in `video.status`; the game
+  MUST continue (`a_frame_that_does_not_decode_ends_the_movie_as_failed`,
+  `crates/video`; `a_frame_that_does_not_decode_is_reported_failed`,
+  `byroredux/src/video.rs`).
 
 ### 5.3 Presentation (`BIK-PRES`)
 
 - **BIK-PRES-001.** With the letterbox flag set, frames MUST keep their
   aspect ratio inside the window with bars on the unfilled sides. **Phase 0:
   verify** what the original does with the flag clear (the GECK says only
-  that the movie "will not be letterboxed"); settled by observation.
+  that "the bink will not be letterboxed if it is widescreen and is showing
+  on a 4:3 screen"); settled by observation (filed #6898).
 - **BIK-PRES-002.** Game time MUST stop while a movie plays: the GECK's
   "appears to stop game time" and the CK's "the game (including Papyrus) is
   completely frozen".
-- **BIK-PRES-003.** Sound MUST stay within one video frame of the picture
-  for the whole movie.
+- **BIK-PRES-003.** The picture MUST follow the soundtrack's playback
+  position (`movie_clock`, `byroredux/src/video.rs`, reads
+  `AudioWorld::movie_sound_position`), so sound and picture cannot drift
+  apart; a movie with no sound, or no audio device, MUST follow the wall
+  clock. No test pins the clock's source yet.
 - **BIK-PRES-004.** Escape MUST end an interruptable movie and MUST NOT end
   one that is not.
 - **BIK-PRES-005.** The mute and pause flags MUST silence world sound and
   pause music for the movie's length, and `video.status` MUST report both.
 - **BIK-PRES-006.** The script that requested a movie MUST resume only when
-  it ends: the CS's "Stops any script that it is called in from running"
-  for ObScript, the CK's freeze for Papyrus.
+  it ends. Papyrus: the run suspends until the movie ends, the CK's freeze.
+  ObScript: the world is held from the next frame, but the rest of the
+  calling run executes the frame the request is made (deviation 7; the CS's
+  "Stops any script that it is called in from running" is met for later
+  frames only).
 
 ### 5.4 Reporting and drivers (`BIK-RPT`)
 
@@ -243,7 +276,8 @@ table is replaced by `video.status` once Phase 2 ships entirely.
   last frame, so the gates can drive it without a display.
 - **BIK-RPT-003.** `video.skip` MUST act as Escape on the playing movie,
   honouring its interruptable flag: the window-level Escape key is out of
-  `input.press`'s reach (`byroredux/src/app_events.rs:1216`).
+  `input.press`'s reach (the `KeyCode::Escape` arm in
+  `byroredux/src/app_events.rs` that calls `VideoPlayer::request_skip`).
 
 ---
 
@@ -251,9 +285,14 @@ table is replaced by `video.status` once Phase 2 ships entirely.
 
 | # | Original behaviour | Redux behaviour | Becomes redundant | Risk and its requirement |
 |---|---|---|---|---|
-| 1 | Plays Bink 2 (Fallout 4, Fallout 76, Starfield) through RAD's SDK | Bink 2 video and sound decoded by the workspace's clean-room decoders (Q2); the first audio track plays | BIK-DEC-002's verify item | The original may pick another track (a language version) than the first (BIK-DEC-002, BIK-DEC-003) |
-| 2 | Decoder built into the game | Q1's library decodes Bink 1, Q2's decoder Bink 2 `KB2g` / `KB2j` | — | A format they cannot decode plays no movie. **Skipped** is reported, never silent (BIK-DEC-003, BIK-RPT-001) |
-| 3 | Main menu with a background movie | No main menu, so no menu movie (BIK-NG-004) | — | Unowned: no PRD promises a main menu yet. Recorded here so the gap has a home |
+| 1 | Plays Bink 2 (Fallout 4, Fallout 76, Starfield) through RAD's library, shipped beside the executable (`bink2w64.dll` in each install) | Bink 2 video and sound decoded by the workspace's clean-room decoders (Q2); the first audio track plays | BIK-DEC-002's verify item | The original may pick another track (a language version) than the first (BIK-DEC-002, BIK-DEC-003, #6896) |
+| 2 | Plays Bink 1 through RAD's library (`binkw32.dll` in each install) | Q1's library decodes Bink 1, Q2's decoders Bink 2 `KB2g` / `KB2j` | — | A format they cannot decode plays no movie. **Skipped** is reported, never silent (BIK-DEC-003, BIK-RPT-001) |
+| 3 | Main menu with a background movie (`smainmenumovie`, UESP *Oblivion.ini*) | No main menu, so no menu movie (BIK-NG-004) | — | Unowned: no PRD promises a main menu yet. Recorded here so the gap has a home |
+| 4 | The start sequence plays at every launch | A `--bench-frames` run skips it unless `--start-movies` is given | — | A benchmark or gate never sees it by accident; `bik-start-sequence.sh` passes `--start-movies` (BIK-REQ-005) |
+| 5 | Whether a start movie can be skipped is not recorded | Start movies are interruptable | — | A player may skip a logo the original would not let them; low (BIK-REQ-004) |
+| 6 | The user INI (`My Games\<game>\<game>.ini`) holds the settings the player changes (UESP *Oblivion.ini*) | Only the default INI and the executable's compiled-in defaults are read; `--skip-movies` stands in for the common "skip the intro" edit | — | A player who blanked `sIntroSequence` still sees the logos (BIK-REQ-004, BIK-REQ-005) |
+| 7 | ObScript `PlayBink` "Stops any script that it is called in from running" (CS *PlayBink*) | The rest of the calling run executes that frame; the world is held from the next | — | A statement after `PlayBink` in the same run takes effect before the movie (BIK-PRES-006) |
+| 8 | **Phase 0: verify** whether the original plays a movie packed in an archive; settled by a mod's archived movie in the original game (#6898) | Only loose files under `Data\Video` play | — | A mod that packs its movies (Sim Settlements 2's `ss2_xpac_chapter3 - main.ba2`) gets **Failed** (BIK-REQ-003) |
 
 ---
 
@@ -269,44 +308,54 @@ reaches one now.
 | Oblivion | yes | Wave 2. Bink 1 only; the start sequence comes from documented INI settings (BIK-REQ-004); `PlayBink` gets dispatched with its one flag (BIK-REQ-001) |
 | Fallout 3 | yes | Wave 1. Bink 1 only; shares FNV's `PlayBink` |
 | Fallout: New Vegas | yes | Wave 1. Reference title; its new-game route reaches `FNVIntro.bik` today |
-| Skyrim (LE / SE / AE) | yes | Wave 2. One Bink 1 logo; Papyrus `Game.PlayBink` (BIK-REQ-002) |
-| Fallout 4 | yes | Wave 2. Its one Bink 1 file plays; its Bink 2 films play with their first audio track (BIK-DEC-002, BIK-DEC-003) |
+| Skyrim SE | yes | Wave 2. One Bink 1 logo, its start sequence; Papyrus `Game.PlayBink` (BIK-REQ-002). LE and AE are not in the census |
+| Fallout 4 | yes | Wave 2. Its Bink 2 films play with their first audio track (BIK-DEC-002, BIK-DEC-003); a mod's Bink 1 file plays too |
 | Fallout 76 | no | No playable flow starts its movies (BIK-NG-005) |
-| Starfield | yes | Wave 2. Every file is Bink 2 (Q2); Papyrus `Game.PlayBink` reaches them (BIK-REQ-002) |
+| Starfield | yes | Wave 2. Every file is Bink 2 (Q2); Papyrus `Game.PlayBink` reaches them (BIK-REQ-002). Its start sequence is wired (BIK-REQ-004) but no smoke fixture gates it |
 
 ### 7.2 Acceptance
 
-Game data comes from local installs only (`BYROREDUX_FNV_DATA` and the
-other per-game variables the smoke scripts read); nothing is checked in.
+Game data comes from local installs only: the corpus test reads
+`BYROREDUX_STEAM_COMMON` (the Steam library's `steamapps/common`), the smoke
+gates the per-game variables (`BYROREDUX_FNV_DATA`, …). Nothing is checked
+in.
 
 A scenario passes when:
 
-1. **Corpus (per game, headless).** An ignored `cargo test`, run with the
-   game's data variable, decodes every Bink 1 file in `Data\Video` to its
-   last frame (BIK-G-002), and every Bink 2 file of Fallout 4, Fallout 76
-   and Starfield, each with its first audio track where it has tracks
-   (BIK-DEC-003).
+1. **Corpus (every installed game, headless).** The ignored
+   `every_installed_bink_movie_decodes_to_its_last_frame` (`crates/video`)
+   decodes every Bink file in each game's `Data\Video` to its last frame
+   (BIK-G-002, BIK-DEC-003) and checks that each Bink 2 file with tracks
+   brings its first soundtrack. It does not assert the audio's rate or
+   channel count (BIK-DEC-002).
 2. **FNV intro (headless).** In `fnv-new-game.sh`, `video.status` reports
    `FNVIntro.bik` playing with flags `1 1 0 1` at the new game; `video.skip`
    ends it as **Played**; VCG00 then moves the player (BIK-G-001).
-3. **Flags (FNV, headless).** `obscript.cmd none 1114 t:FNVIntro.bik 0`
-   plays a movie `video.skip` cannot end, and `… t:FNVIntro.bik 1` one it
-   can (BIK-PRES-004, BIK-RPT-003).
-4. **Bink 2 (Fallout 4, headless).** A Bink 2 request plays to its last
-   frame with its first audio track (BIK-DEC-003).
+3. **Flags (FNV, headless; `docs/smoke-tests/bik-flags.sh`).** VCG00's
+   flags reach the player and the audio hold (world muted, music playing);
+   `video.skip` ends the interruptable movie as **Played** (ended early) and
+   leaves a non-interruptable one playing (BIK-PRES-004, BIK-PRES-005,
+   BIK-RPT-003).
+4. **Bink 2 (Fallout 4, headless; `docs/smoke-tests/bik-start-sequence.sh
+   fo4`).** Fallout 4's start sequence, `GameIntro_V3_B.bk2` (Bink 2 with
+   six audio tracks), plays to its last frame with its first track
+   (BIK-DEC-003).
 
 ---
 
 ## 8. Metrics
 
-The numbers live in ROADMAP's per-game compatibility matrix, in a video
-column added by Phase 1.
+The numbers live in [ROADMAP](../../ROADMAP.md)'s per-game compatibility
+matrix, Video column.
 
 | Metric | Definition | Granularity |
 |---|---|---|
 | Bink decode rate | Bink files decoded to their last frame ÷ Bink files in `Data\Video`, Bink 1 and Bink 2 apart | per game |
-| Movie coverage | Files the build can play (**Played** possible) ÷ files in `Data\Video` | per game |
-| A/V drift | Largest gap between the audio and video clocks over a movie | per file, worst per game |
+
+Two metrics were withdrawn in revision 10: movie coverage equals the decode
+rate while every file in the corpus has a decoder, and A/V drift is zero by
+construction, because the picture follows the soundtrack's clock
+(BIK-PRES-003).
 
 ---
 
@@ -315,7 +364,8 @@ column added by Phase 1.
 **Phase 0 — Corpus, verify list, design (no engine code).** Check in the
 corpus script that re-measures §3's census; close the **Phase 0: verify**
 items (BIK-REQ-003, BIK-REQ-004, BIK-DEC-002, BIK-PRES-001, the §3 start
-rows, the open Bink 2 decoders) or file each as an issue; write
+rows, the open Bink 2 decoders) or file each as an issue (filed
+#6896–#6898); write
 `docs/engine/video-playback.md` and add it to Related; decide Q1–Q3. Exit:
 the census is in ROADMAP for every in-scope game, the design is merged, and
 every verify item is closed or filed.
@@ -331,9 +381,9 @@ row 16) and the `audio` crate's streaming playback (M44). Exit: scenarios
 2, 3 and 4 pass.
 
 **Phase 3 — Start sequences.** BIK-REQ-004 and BIK-REQ-005 for every
-in-scope game. Exit:
-a headless boot of Oblivion and of Skyrim plays its start sequence to its
-last frame.
+in-scope game. Exit: a headless boot of Oblivion and of Skyrim plays its
+start sequence to its last frame (`bik-start-sequence.sh`, which gates
+Fallout 4's too; Starfield's is wired but has no smoke fixture).
 
 ---
 
@@ -353,16 +403,17 @@ last frame.
    **Re-decided** (2026-11-12, owner): ship a basic player inside the engine so
    players install no tool, using a Rust library where one exists. The choice
    is `mercs2_bink` 0.1.0 (MIT, pure Rust, no dependencies), pinned: it decodes
-   `BIKi` video and DCT audio, and on all 47 Bink 1 files of Oblivion, Fallout 3,
+   `BIKi` video and DCT audio, and on every Bink 1 file of Oblivion, Fallout 3,
    Fallout: New Vegas, Skyrim SE and Fallout 4 every video frame is bit-identical
-   to FFmpeg's, with audio within one 16-bit step apart from 1–2 samples in a
-   file (measured with a probe against the FFmpeg tools, 2026-11-12). It does not
+   to FFmpeg's, and its audio within one 16-bit step (measured with a probe
+   against the FFmpeg tools, 2026-11-12). It does not
    decode other Bink 1 revisions, alpha or grayscale planes, or RDFT audio; none
    occurs in the corpus. **Provenance, for the owner:** its author reports the
    format description was read out of RAD's `binkw32.dll` with a disassembler and
    states that no third-party decoder source was read
    ([SPEC-video.md](https://github.com/Mercenaries-Fan-Build/notes-on-the-released-game),
    shipped inside the crate); this repository has not verified that claim.
+   **Open** (2026-11-14): the owner's decision on this provenance is #6907.
 2. **Q2 — Bink 2.** Recommended: **Skipped** with a log line until Phase 0
    has measured the open Bink 2 decoders, then decide on that measurement.
    **Phase 0: verify** NihAV's reported Rust decoder
@@ -384,20 +435,21 @@ last frame.
    of one earlier exposure to facts about NihAV's decoder (which makes the process
    procedural rather than two-party clean room, a question for counsel) are in
    [`crates/bink2/CLEANROOM.md`](../../crates/bink2/CLEANROOM.md). Measured
-   2026-11-13 against that DLL: every frame of all 54 Bink 2 files of Fallout 4
-   (14), Fallout 76 (4) and Starfield (36), 74,680 frames, has planes identical to
-   the DLL's. On a Ryzen 9 7950X its 4K files decode in 10–13 ms a frame on one
-   thread and about 4 ms on four.
+   2026-11-13 against that DLL: every frame of every Bink 2 file of Fallout 4,
+   Fallout 76 and Starfield has planes identical to the DLL's (the counts and
+   decode times: [`crates/bink2/README.md`](../../crates/bink2/README.md)).
    **Extended** (2026-11-13, owner): the sound too, through `crates/binkaudio`
    (`byroredux-binkaudio`, MIT, pure Rust, no dependencies), written the same way
    from the MultimediaWiki *Bink Audio* page and black-box probes of the DLL's
    exported track API (`BinkOpenTrack`, `BinkGetTrackData`). Measured 2026-11-13:
-   every track of the 17 Bink 2 files with sound (80 tracks, 938 million samples)
-   has the DLL's sample count, and 0.017% of samples differ by one (where the DLL's
-   32-bit float arithmetic rounds a .5 tie the other way). Its
+   every track of every Bink 2 file with sound has the DLL's sample count, and a
+   small fraction of samples differ by one, where the DLL's 32-bit float
+   arithmetic rounds a .5 tie the other way (the counts:
+   [`crates/binkaudio/README.md`](../../crates/binkaudio/README.md)). Its
    [`CLEANROOM.md`](../../crates/binkaudio/CLEANROOM.md) discloses that the
    authoring model was very probably trained on public code including FFmpeg's
    Bink audio decoder: a procedural clean room, a question for counsel.
+   **Open** (2026-11-14): the owner's decision on both clean rooms is #6907.
 3. **Q3 — When an engine-started movie plays.** Recommended: at the point
    the original plays it (logo sequence at launch, the intro at a new
    game), with a launch flag that skips them for development and the gates.
@@ -413,6 +465,9 @@ last frame.
 |---|---|
 | The pause native pages already impose; menus | [Game UI Integration — PRD](game-ui-integration.md#31-state-at-head) |
 | The new-game route the FNV intro opens | [Playable vertical slice](../engine/playable-vertical-slice.md#from-the-beginning--a-new-game-2026-11-11) |
+| Decoding, presentation, A/V sync, start sequences, the Phase 0 verify list | [video-playback.md](../engine/video-playback.md) |
+| The Bink 2 video and audio decoders, their measurements and clean-room rules | [crates/bink2/README.md](../../crates/bink2/README.md), [crates/binkaudio/README.md](../../crates/binkaudio/README.md) |
+| The decoders' provenance, for the owner | #6907 |
 | The project's dependency stance | [README](../../README.md#why-byroredux-exists) |
 | Live milestone state and published metrics | [ROADMAP.md](../../ROADMAP.md) |
 
@@ -431,3 +486,4 @@ last frame.
 | 7 | 2026-11-13 | Owner-directed: Q2 re-decided: Bink 2 video decodes in process through the clean-room `byroredux-bink2` (BIK-DEC-003 reworded, moved to Phase 1, Bink 2 audio verify item; scope line; Related row; §3 Skipped row, census note, HEAD row 5; §6 rows 1–2; §7.1 Fallout 4 and Starfield; acceptance 1 and 4; decode-rate metric; provenance note) | — |
 | 8 | 2026-11-13 | Owner-directed: Q2 extended to Bink 2 sound through the clean-room `byroredux-binkaudio` (BIK-DEC-003 reworded: sound decodes, the no-sound rule and its verify item dropped; BIK-DEC-002 notes that tracks are language versions and the first plays; scope line; Related row; §3 census note and HEAD row 5; §6 row 1; Fallout 4 and Starfield in §7.1; acceptance 1 and 4; Q2 provenance note with the training-data disclosure) | — |
 | 9 | 2026-11-13 | §3 HEAD rows 3–5 refreshed for the built Papyrus native and freeze, the mute / pause hold and A/V lock, and the start sequences (Phases 0–3, #6856–#6859); Related row points to `video-playback.md` | — |
+| 10 | 2026-11-14 | Review round 2 folded in: BIK-DEC-004 met by a code fix (a frame that does not decode ends the movie Failed, two tests), stale "Today" claims (BIK-REQ-001/-002, thesis), BIK-PRES-006 narrowed and BIK-PRES-003 restated as the sound clock, start-sequence table and BIK-REQ-004 (executable defaults, Starfield), Fallout 4's mod Bink 1 file, verify items linked to #6896–#6898, provenance to #6907, format and original-engine citations, coverage and A/V-drift metrics withdrawn, §6 rows 4–8, scenarios 1, 3, 4 named to their gates, numbers moved to the crate READMEs, document map | claude: revise |
