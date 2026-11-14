@@ -1,6 +1,7 @@
 # Game Music — Product Requirements
 
-**Status**: SHIPPED (2026-11-14). Revision 9 records Q3's follow-up done:
+**Status**: SHIPPED (2026-11-14). Revision 10 settles MUS-SCR-005: a
+scripted track replaces Battle and Location (#6899). Revision 9 records Q3's follow-up done:
 the faction-relation media sets play by the conditional faction's relation
 to the player (#6904). Revision 8 records every phase closed
 (#6861–#6864, parent #6860) with the §8 metrics in ROADMAP; the PRD is kept
@@ -113,7 +114,7 @@ what is audible is the highest active layer plus any layer it mixes with.
 |---|---|---|---|
 | **Hold** | A movie whose pause-music flag is set | Pauses all of them: "the game's music will continue to play while the movie is running, otherwise it will be paused" ([GECK: PlayBink](https://geck.uesp.net/wiki/PlayBink), Notes) | The movie ends; every layer below resumes where it was |
 | **Sting** | Player death; player level-up (MUS-STG) | Pauses Battle and Location (MUS-STG-004) | The track ends |
-| **Script** | `PlayMusic` (Fallout 3 / New Vegas), `StreamMusic` (Oblivion) | Mixes over Battle and Location, as at HEAD (§3.5 row 1), until Phase 0 settles MUS-SCR-005; a directive that gives way to Battle waits while Battle plays (MUS-CMB-004) | The track ends or a load (MUS-SCR, MUS-SAV); a cell change per MUS-SCR-003 and MUS-SCR-005 |
+| **Script** | `PlayMusic` (Fallout 3 / New Vegas), `StreamMusic` (Oblivion) | Replaces Battle and Location (MUS-SCR-005, settled by #6899); a directive that gives way to Battle waits while Battle plays (MUS-CMB-004) | The track ends or a load (MUS-SCR, MUS-SAV); a cell change per MUS-SCR-003 and MUS-SCR-005 |
 | **Battle** | The player in combat (Q2) | Replaces Location, crossfading (MUS-SEL-004) | Combat ends and the recovery time passes (MUS-CMB) |
 | **Location** | The player's cell, worldspace, region or audio marker (MUS-SRC) | — | Never; it changes as the player moves |
 
@@ -372,9 +373,11 @@ shipped behaviour is [music.md](../engine/music.md) and `music.status`.
 - **MUS-SCR-004.** OBSE `GetCellMusicType` and `SetCellMusicType` MAY get
   catalog entries under LMC-SCR-004, reading and writing the cell's
   category ([CS: SetCellMusicType](https://cs.uesp.net/wiki/SetCellMusicType)).
-- **MUS-SCR-005.** The Script layer MUST mix over the Battle and Location
-  layers, as `PlayMusic` does at HEAD (§3.5 row 7), until Phase 0 settles
-  the original's rule. The only source is one ambiguous note, quoted
+- **MUS-SCR-005.** The Script layer MUST replace the Battle and Location
+  layers while it holds a track or a silence (settled by #6899 from the
+  vanilla scripts that rely on it: Fallout 3's `MQ05Script` / `MQ11Script`,
+  New Vegas's `VVault11ExterminationChairSCRIPT` and `VCG00`; the layer mixed
+  over them until then). The only source is one ambiguous note, quoted
   verbatim: "-Will non stop the currently playing music of the cell."
   [sic] ([GECK: PlayMusic](https://geck.uesp.net/wiki/PlayMusic), Notes).
   **Phase 0: verify** whether `PlayMusic` mixes over or replaces the cell's
@@ -634,3 +637,4 @@ and Oblivion's source coverage is published.
 | 7 | 2026-11-14 | Scenario 6 moved from the Goodsprings marker `0x00152433` to Sloan's `0x0015D028`: `musCtrlGoodsprings` carries faction-relation sets and no Location set, which Q3 defers (#6904) | — |
 | 8 | 2026-11-14 | ACTIVE → SHIPPED: Phases 0–3 closed (#6861–#6864, #6860); source and playable coverage published in ROADMAP; follow-ups #6899–#6904 stay open | — |
 | 9 | 2026-11-14 | Q3's follow-up delivered (#6904): a controller's Neutral / Ally / Friend / Enemy lists play by its conditional faction's relation to the player (Nexus wiki, 2014), ahead of its Location list; scenario 6's Goodsprings note updated | — |
+| 10 | 2026-11-14 | MUS-SCR-005 settled (#6899): `PlayMusic` replaces the cell's music (vanilla `MQ05Script`, `MQ11Script`, `VVault11ExterminationChairSCRIPT`, `VCG00`), so the Script layer replaces Battle and Location; §3.1 updated | — |

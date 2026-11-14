@@ -4,6 +4,8 @@
 #   2. MegatonCratersideSupply (DefaultPublic), RedRacer03 (DefaultDungeon) and
 #      MegatonWaterProcessingPlant (1NoMusic) report Location Playing from public\, Playing from
 #      dungeon\, and Silent.
+#      In RedRacer03, PlayMusic Tension (0x11ff) replaces the dungeon music and PlayMusic 1NoMusic
+#      silences it (#6899).
 #   3. --grid 0,0 in Wasteland (no cell XCMO, no worldspace ZNAM) reports the Default Music object
 #      DefaultExplore Playing from explore\.
 #   5. In MegatonCratersideSupply, `obscript.cmd none 1114 t:B01.bik 1 1 1 1` raises the Hold layer and
@@ -104,6 +106,16 @@ start_engine() {
 start_engine dungeon --cell RedRacer03
 wait_layer Location 20 "RedRacer03's music" '^Location: Playing — DefaultDungeon .*cell XCMO.* music\\dungeon\\'
 pass "RedRacer03: $(layer Location)"
+
+# ── PlayMusic replaces the music (MUS-SCR-005, #6899) ────────────────────────
+ask "obscript.cmd none 11ff t:Tension" >/dev/null
+wait_layer Script 10 "PlayMusic Tension" '^Script: Playing — Tension .*PlayMusic.* music\\tension\\'
+[[ "$(layer Location)" == *"paused under Script"* ]] || fail "PlayMusic did not replace the cell's music ($(layer Location))"
+pass "PlayMusic Tension replaces the cell's music: $(layer Script)"
+ask "obscript.cmd none 11ff t:1NoMusic" >/dev/null
+wait_layer Script 10 "PlayMusic 1NoMusic" '^Script: Silent — 1NoMusic'
+[[ "$(layer Location)" == *"paused under Script"* ]] || fail "PlayMusic 1NoMusic did not silence the cell's music ($(layer Location))"
+pass "PlayMusic 1NoMusic silences it"
 
 start_engine silent --cell MegatonWaterProcessingPlant
 wait_layer Location 20 "MegatonWaterProcessingPlant's music" '^Location: Silent — 1NoMusic .*cell XCMO'

@@ -38,8 +38,8 @@ The controller holds at most one directive per layer (PRD §3.1):
 | Layer | Fed by | While active |
 |---|---|---|
 | Hold | `AudioWorld::movie_hold().music_paused`, raised by a movie with the pause-music flag (BIK-PRES-005) | Every voice paused; resumed at the same position when the movie ends (MUS-MIX-002) |
-| Sting | The player's death (the player gains `Dead`), a level-up (`PendingMusicEvents`, pushed where the level is awarded) | Battle and Location paused (MUS-STG-004) |
-| Script | `PlayMusic` (`PendingMusic`), `StreamMusic` | Mixes over Battle and Location (MUS-SCR-005); a giving-way directive is paused while Battle plays |
+| Sting | The player's death (the player gains `Dead`), a level-up (`PendingMusicEvents`, pushed where the level is awarded) | Script, Battle and Location paused (MUS-STG-004) |
+| Script | `PlayMusic` (`PendingMusic`), `StreamMusic` | Replaces Battle and Location: a scripted track plays in their place, a scripted silence (`1NoMusic`) silences them (MUS-SCR-005, #6899); a giving-way directive is paused while Battle plays |
 | Battle | `is_in_combat` for the player (Q2), held for the recovery time after it ends (MUS-CMB-002) | Location paused, crossfading (MUS-SEL-004) |
 | Location | The player's place (§3) | — |
 
@@ -86,8 +86,9 @@ either sign (MUS-SEL-003; #6902).
 
 - **`PlayMusic <music type>`** (Fallout 3 / New Vegas) translates the type like a
   Location source, folder form included (MUS-SCR-001). The directive replaces the
-  previous scripted one; `PlayMusic 1NoMusic` is a Silent directive and so ends a
-  scripted track (New Vegas's `VVault11ExterminationChairSCRIPT` does exactly that).
+  previous scripted one; `PlayMusic 1NoMusic` is a Silent directive, which silences the
+  music until the layer ends (New Vegas's `VVault11ExterminationChairSCRIPT` does exactly
+  that).
 - **`StreamMusic "<file>" | Public | Explore | Dungeon | Random`** (Oblivion, opcode
   `0x104e` in `Oblivion.exe`'s command table, a string-form command) plays a
   quoted path relative to the game folder, or a random track of the named folder
@@ -105,8 +106,16 @@ either sign (MUS-SEL-003; #6902).
 - The movie's soundtrack is not on the Script layer: it has its own voice in the audio
   world (MUS-SCR-002, BIK-PRES-003).
 
-Whether the original's scripted track mixes over or replaces the cell's music, ends on
-a cell change, and gives way to battle on Fallout 3 / New Vegas is #6899.
+A scripted track **replaces** the music (#6899): the vanilla scripts are written for it.
+Fallout 3's `MQ05Script` and `MQ11Script` call `playMusic defaultBattle` "every frame to
+ensure it remains queued", then "cut the music" with `playMusic defaultExplore`. New
+Vegas's `VVault11ExterminationChairSCRIPT` drops a commented-out `PlayMusic
+MUSVault10106` for `PlayMusic 1NoMusic` before enabling the sound reference that carries
+the slideshow music. `VCG00` silences the game start the same way. While the Script
+layer holds a track or a silence, Battle and Location are paused, and they resume when
+it ends. That the layer ends on a cell change is the engine's rule (the scripts are
+silent on it). `PlayMusic` does not give way to battle (the Fallout 3 scripts queue
+battle music themselves); `StreamMusic` does.
 
 ## 5. Battle and stings
 
@@ -245,7 +254,7 @@ not-saved list with its reason.
 | MUS-SEL-004, MUS-CMB-002 (Fallout 3 / New Vegas) | executable defaults, `FalloutNV.esm` GMSTs | closed (§7) |
 | MUS-SEL-004, MUS-CMB-002 (Oblivion) | `Oblivion.exe` has no setting | #6903 |
 | MUS-SRC-002 precedence, Fallout 3 `RDMD`, New Vegas silence (§3.4) | — | #6900 |
-| MUS-SCR-005, MUS-CMB-004 (`PlayMusic`) | data leans toward *replace* | #6899 |
+| MUS-SCR-005, MUS-CMB-004 (`PlayMusic`) | vanilla scripts (`MQ05Script`, `MQ11Script`, `VVault11ExterminationChairSCRIPT`, `VCG00`) | closed (#6899): replaces; does not give way to battle; ends on a cell change (engine rule) |
 | MUS-STG-003, MUS-STG-004 | — | #6901 |
 | MUS-CMB-003 (New Vegas) intro / outro | xEdit labels, Nexus wiki (2014) | closed: Intro on entering combat, Outro on leaving it |
 | MUS-CMB-001 (New Vegas) controller vs region battle set; `NAM1` looping mode and forced relation | — | #6902 |

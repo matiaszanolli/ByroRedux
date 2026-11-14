@@ -214,12 +214,17 @@ impl MusicController {
         // ended releases Location the same frame).
         for layer in Layer::ALL {
             let (sting_audible, battle_audible) = (playing(self, Layer::Sting), playing(self, Layer::Battle));
-            let state = &self.layers[layer as usize];
-            let gives_way = state.directive.as_ref().is_some_and(|d| d.gives_way_to_battle);
+            // A scripted track replaces the music below it, and a scripted silence (`PlayMusic
+            // 1NoMusic`) silences it (MUS-SCR-005, #6899) — unless it gives way to Battle.
+            let script = self.state(Layer::Script).directive.as_ref();
+            let script_gives_way = script.is_some_and(|d| d.gives_way_to_battle);
+            let script_holds = script.is_some_and(|d| matches!(d.outcome(), Outcome::Playing | Outcome::Silent))
+                && !(script_gives_way && battle_audible);
             let by = match layer {
                 _ if inputs.hold => Some("Hold"),
-                Layer::Script if gives_way && battle_audible => Some("Battle"),
-                Layer::Battle | Layer::Location if sting_audible => Some("Sting"),
+                Layer::Script | Layer::Battle | Layer::Location if sting_audible => Some("Sting"),
+                Layer::Script if script_gives_way && battle_audible => Some("Battle"),
+                Layer::Battle | Layer::Location if script_holds => Some("Script"),
                 Layer::Location if battle_audible => Some("Battle"),
                 _ => None,
             };
@@ -538,7 +543,6 @@ pub(crate) mod tests {
         let mut out = FakeOutput::default();
         let mut music = MusicController::seeded(1);
         music.set(Layer::Location, Some(playlist("Public", &["music\\public\\p.mp3"])), &mut out);
-        music.set(Layer::Script, Some(playlist("Tension", &["music\\tension\\t.mp3"])), &mut out);
         music.step(frame(0.0), no_battle, &mut out);
         music.step(frame(2.0), no_battle, &mut out);
         let held = Inputs { dt: 3.0, hold: true, ..Default::default() };
@@ -554,16 +558,42 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_giving_way_script_directive_waits_while_battle_plays_and_a_plain_one_mixes_over_it() {
+    fn a_giving_way_script_directive_waits_while_battle_plays_and_a_plain_one_replaces_it() {
         let mut out = FakeOutput::default();
         let mut music = MusicController::seeded(1);
         let battle = playlist("Battle", &["music\\battle\\x.mp3"]);
+        let fight = Inputs { dt: 0.1, in_combat: true, ..Default::default() };
         music.set(Layer::Script, Some(Directive { gives_way_to_battle: true, ..playlist("Stream", &["music\\public\\p.mp3"]) }), &mut out);
-        music.step(Inputs { dt: 0.1, in_combat: true, ..Default::default() }, || battle.clone(), &mut out);
+        music.step(fight, || battle.clone(), &mut out);
         assert!(!out.voices.contains_key(&8), "the streamed track waits (MUS-CMB-004)");
+        assert_eq!(out.voices[&16], ("music\\battle\\x.mp3".to_string(), false), "Battle plays");
         music.set(Layer::Script, Some(playlist("Tension", &["music\\tension\\t.mp3"])), &mut out);
-        music.step(Inputs { dt: 0.1, in_combat: true, ..Default::default() }, || battle.clone(), &mut out);
-        assert_eq!(out.voices[&8], ("music\\tension\\t.mp3".to_string(), false), "PlayMusic mixes over Battle (MUS-SCR-005)");
+        music.step(fight, || battle.clone(), &mut out);
+        assert_eq!(out.voices[&8], ("music\\tension\\t.mp3".to_string(), false));
+        assert!(out.voices[&16].1, "PlayMusic replaces the Battle music (MUS-SCR-005, #6899)");
+        assert!(music.status(&out)[3].contains("paused under Script"), "{:?}", music.status(&out));
+    }
+
+    /// #6899 — vanilla scripts rely on PlayMusic replacing what plays: `PlayMusic 1NoMusic`
+    /// silences the cell's music (New Vegas `VVault11ExterminationChairSCRIPT`, `VCG00`), and a
+    /// scripted track hands back to it when it ends.
+    #[test]
+    fn a_scripted_track_or_silence_replaces_the_location_music_until_it_ends() {
+        let mut out = FakeOutput { live: true, ..Default::default() };
+        let mut music = MusicController::seeded(1);
+        music.set(Layer::Location, Some(playlist("Public", &["music\\public\\p.mp3"])), &mut out);
+        music.step(frame(0.1), no_battle, &mut out);
+        music.set(Layer::Script, Some(Directive::new(Source::keyword("1NoMusic", "test"), Content::Silent)), &mut out);
+        music.step(frame(0.1), no_battle, &mut out);
+        assert!(out.voices[&24].1, "1NoMusic silences the cell's music");
+        assert!(music.status(&out)[4].contains("paused under Script"), "{:?}", music.status(&out));
+        music.set(Layer::Script, Some(playlist("musSCRGoodspringsStinger", &["music\\scr\\s.mp3"])), &mut out);
+        music.step(frame(0.1), no_battle, &mut out);
+        assert!(out.voices[&24].1 && !out.voices[&8].1, "the stinger plays in its place");
+        out.voices.remove(&8);
+        music.step(frame(0.1), no_battle, &mut out);
+        assert!(music.directive(Layer::Script).is_none());
+        assert!(!out.voices[&24].1, "the cell's music resumes when the stinger ends");
     }
 
     #[test]

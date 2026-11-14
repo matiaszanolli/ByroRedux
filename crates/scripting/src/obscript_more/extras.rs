@@ -266,7 +266,8 @@ fn cmd_119c(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ct
 }
 
 // ── presentation ───────────────────────────────────────────────────────────────────────────
-// GECK *PlayMusic <music type>*: plays the track "and will not stop the music of the cell".
+// GECK *PlayMusic <music type>*: plays the music type in place of the cell's music (#6899: vanilla
+// scripts rely on it replacing what plays; `PlayMusic 1NoMusic` silences it).
 fn cmd_11ff(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
     match args.first() {
         Some(ObScriptValue::Ref(form)) if *form != 0 => {
