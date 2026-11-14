@@ -1,6 +1,6 @@
 # Cross-cell actor travel
 
-**Status**: ACTIVE (2026-11-13). The design the
+**Status**: SHIPPED (2026-11-14). The design the
 [cross-cell actor travel PRD](../prd/cross-cell-actor-travel.md) names as the
 owner of door routing, the relocation ledger and offscreen arrival
 (PRD *Related*, last row). Tracking: #6850; phases #6851 (0, this document),

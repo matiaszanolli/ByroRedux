@@ -1,6 +1,6 @@
 # Cross-cell actor travel — Product Requirements
 
-**Status**: ACTIVE (2026-11-14). Revision 6 names XCT-ROUTE-008's test. Revision 5 folds in review round 2 and the owner's Q4 (Starfield is census-only). Revision 4 files the tracking issues. Revision 3 records the owner's approval
+**Status**: SHIPPED (2026-11-14). Revision 7 records ACTIVE → SHIPPED. Revision 6 names XCT-ROUTE-008's test. Revision 5 folds in review round 2 and the owner's Q4 (Starfield is census-only). Revision 4 files the tracking issues. Revision 3 records the owner's approval
 with every §10 decision taken as recommended and folded into the
 requirements (XCT-OFF-001, XCT-DEST-004, XCT-FOL-001). Statements about how
 an original engine, format or tool behaves cite external sources; a claim
@@ -460,3 +460,4 @@ Skyrim and Fallout 4 (Starfield is census-only, Q4).
 | 4 | 2026-11-11 | APPROVED → ACTIVE: tracking issues filed (#6850 (parent). Phases: #6851 (0), #6852 (1), #6853 (2), #6854 (3)) | — |
 | 5 | 2026-11-14 | Review round 2 folded in: HEAD inventory and "Today" claims now history, exact actor.where and hop-log strings, scenario 1 rewritten to the shipped gate, Starfield census-only (owner's Q4), verify items #6891–#6894 linked, SubSpace overreach, deviation rows for #6895's gaps, XCT-ROUTE-007 split (010–012) and XCT-ROUTE-008's observable, document map | claude: revise |
 | 6 | 2026-11-14 | XCT-ROUTE-008 names the test that pins the door-fade ramp | — |
+| 7 | 2026-11-14 | ACTIVE → SHIPPED: Phases 0–3 closed (#6851–#6854, #6850); the census, arrival rates and Unroutable reasons are published in ROADMAP's M42 row (Starfield census-only, Q4); verify items #6891–#6894 and the remainder #6895 stay open | — |

@@ -55,6 +55,7 @@ byroredux/              Binary — game loop, scene setup, systems
   src/hud.rs                MenuXml HUD driver — per-game profiles Oblivion/FO3/FNV (--hud, triple-buffered uploads)
   src/scaleform_hud.rs      Scaleform HUD driver — Skyrim + Fallout 4 hudmenu.swf via --hud (transparent stage, hud.debug)
   src/cell_loader.rs        ESM cell loading (interior + exterior)
+    relocated.rs             Cross-cell actor travel: ledger spawns, door hops and fades, journeys, logical identities (docs/engine/cross-cell-travel.md)
   src/boot/                 CLI parsing, World/Scheduler construction, per-stage system registration (schedule/*)
   src/streaming/            M40 exterior cell streaming — live (gx,gy)→cell map, load/unload hysteresis
   src/save_io.rs            M45 binary-side save/load wiring — populates the SaveRegistry for byroredux-save
