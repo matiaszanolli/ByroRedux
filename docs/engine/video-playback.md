@@ -24,10 +24,14 @@ A reader thread decodes frames ahead of playback into a small bounded ring
 the flag is set), and hands them to `Movie::advance(elapsed)`. That call is the
 whole playback contract: the caller owns the clock and asks which frame belongs
 at a given time. A decoder that falls behind holds the last frame; one that runs
-ahead is held back by the ring. The movie's first audio track is decoded once,
+ahead is held back by the ring. A frame that does not decode ends the ring with
+its reason (file and frame): `advance` shows the frames decoded before it, then
+returns `Playhead::Failed`, and the player reports the movie **Failed** with that
+reason in `video.status` (BIK-DEC-004). The movie's first audio track is decoded once,
 up front, into a temporary WAV that the audio crate streams (BIK-DEC-002: the
 first track plays until #6896 settles which one the original picks; a Bink 2
-file's tracks are language versions of one mix, `crates/binkaudio` probe A9).
+file's tracks differ but correlate closely, `crates/binkaudio` probe A9, and
+whether they are language versions is part of #6896).
 
 ## 3. Presentation
 

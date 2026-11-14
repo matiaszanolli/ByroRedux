@@ -303,18 +303,26 @@ pub enum Playhead<'a> {
     Frame { index: u64, pixels: &'a [u8], new: bool },
     /// Every frame has been shown.
     Finished,
+    /// BIK-DEC-004 — a frame did not decode: the frames before it have been shown, and the movie
+    /// ends here. Carries the decoder's reason, naming the file and the frame.
+    Failed(&'a str),
 }
+
+/// What the reader thread hands the player: a fitted RGBA frame, or why the next one did not decode.
+type DecodedFrame = Result<Vec<u8>, String>;
 
 /// One movie being decoded.
 pub struct Movie {
     info: MovieInfo,
     size: (u32, u32),
-    rx: Option<Receiver<Vec<u8>>>,
+    rx: Option<Receiver<DecodedFrame>>,
     reader: Option<JoinHandle<()>>,
     audio: Option<PathBuf>,
     frame: Vec<u8>,
     index: i64,
     exhausted: bool,
+    /// BIK-DEC-004 — why decoding stopped short, once the reader said so.
+    failure: Option<String>,
 }
 
 impl Movie {
@@ -332,28 +340,37 @@ impl Movie {
             (describe(&movie), extract_audio(&movie), video)
         };
         let (width, height) = (size.0.max(2), size.1.max(2));
-        let (tx, rx) = sync_channel::<Vec<u8>>(FRAME_RING);
+        let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        let (tx, rx) = sync_channel::<DecodedFrame>(FRAME_RING);
         let reader = std::thread::Builder::new()
             .name("movie-decode".into())
             .spawn(move || {
-                let Ok(movie) = mercs2_bink::Movie::parse(&bytes) else { return };
+                let movie = match mercs2_bink::Movie::parse(&bytes) {
+                    Ok(movie) => movie,
+                    Err(error) => {
+                        let _ = tx.send(Err(format!("{name}: the container does not re-parse: {error}")));
+                        return;
+                    }
+                };
                 let target = (width as usize, height as usize);
                 for index in 0..movie.frame_count {
                     let frame = match video.decode(&movie, index) {
                         Ok(frame) => frame,
                         Err(error) => {
-                            log::warn!("video: frame {index} does not decode: {error}");
+                            let reason = format!("{name}: frame {index} does not decode: {error}");
+                            log::warn!("video: {reason}");
+                            let _ = tx.send(Err(reason));
                             return;
                         }
                     };
                     let rgba = mercs2_bink::rgb::to_rgba(frame);
-                    if tx.send(fit(&rgba, (frame.width as usize, frame.height as usize), target, letterbox)).is_err() {
+                    if tx.send(Ok(fit(&rgba, (frame.width as usize, frame.height as usize), target, letterbox))).is_err() {
                         return;
                     }
                 }
             })
             .map_err(|error| VideoError::Decode(format!("decoder thread: {error}")))?;
-        Ok(Self { info, size: (width, height), rx: Some(rx), reader: Some(reader), audio, frame: Vec::new(), index: -1, exhausted: false })
+        Ok(Self { info, size: (width, height), rx: Some(rx), reader: Some(reader), audio, frame: Vec::new(), index: -1, exhausted: false, failure: None })
     }
 
     /// BIK-DEC-003: a Bink 2 movie, its first audio track decoded up front, its video packets read
@@ -365,7 +382,7 @@ impl Movie {
         let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
         let audio = bink2_audio(&mut file, &name);
         let (width, height) = (size.0.max(2), size.1.max(2));
-        let (tx, rx) = sync_channel::<Vec<u8>>(FRAME_RING);
+        let (tx, rx) = sync_channel::<DecodedFrame>(FRAME_RING);
         let reader = std::thread::Builder::new()
             .name("movie-decode".into())
             .spawn(move || {
@@ -381,26 +398,43 @@ impl Movie {
                     match decoded {
                         Ok(frame) => frame.rgba_into(&mut rgba),
                         Err(error) => {
-                            log::warn!("video: {name}: frame {index} does not decode: {error}");
+                            let reason = format!("{name}: frame {index} does not decode: {error}");
+                            log::warn!("video: {reason}");
+                            let _ = tx.send(Err(reason));
                             return;
                         }
                     }
-                    if tx.send(fit(&rgba, source, target, letterbox)).is_err() {
+                    if tx.send(Ok(fit(&rgba, source, target, letterbox))).is_err() {
                         return;
                     }
                 }
             })
             .map_err(|error| VideoError::Decode(format!("decoder thread: {error}")))?;
-        Ok(Self { info, size: (width, height), rx: Some(rx), reader: Some(reader), audio, frame: Vec::new(), index: -1, exhausted: false })
+        Ok(Self { info, size: (width, height), rx: Some(rx), reader: Some(reader), audio, frame: Vec::new(), index: -1, exhausted: false, failure: None })
     }
 
     /// A movie over frames that already exist (tests).
     pub fn from_frames(info: MovieInfo, size: (u32, u32), frames: Vec<Vec<u8>>) -> Self {
-        let (tx, rx) = sync_channel(frames.len().max(1));
-        for frame in frames {
-            tx.send(frame).expect("the ring holds every frame");
+        Self::from_decoded(info, size, frames.into_iter().map(Ok).collect())
+    }
+
+    /// A movie whose decoder fails after `frames`, with `reason` (tests of BIK-DEC-004).
+    pub fn failing_after(info: MovieInfo, size: (u32, u32), frames: Vec<Vec<u8>>, reason: &str) -> Self {
+        let decoded = frames.into_iter().map(Ok).chain(std::iter::once(Err(reason.to_owned()))).collect();
+        Self::from_decoded(info, size, decoded)
+    }
+
+    fn from_decoded(info: MovieInfo, size: (u32, u32), decoded: Vec<DecodedFrame>) -> Self {
+        let (tx, rx) = sync_channel(decoded.len().max(1));
+        for item in decoded {
+            tx.send(item).expect("the ring holds every frame");
         }
-        Self { info, size, rx: Some(rx), reader: None, audio: None, frame: Vec::new(), index: -1, exhausted: false }
+        Self { info, size, rx: Some(rx), reader: None, audio: None, frame: Vec::new(), index: -1, exhausted: false, failure: None }
+    }
+
+    /// BIK-DEC-004 — why decoding stopped before the last frame, once the reader has said so.
+    pub fn failure(&self) -> Option<&str> {
+        self.failure.as_deref()
     }
 
     pub fn info(&self) -> &MovieInfo {
@@ -426,9 +460,17 @@ impl Movie {
     /// movie held in all. For measuring a corpus (BIK-G-002), not for playback.
     pub fn decode_to_end(&mut self) -> u64 {
         if let Some(rx) = &self.rx {
-            while let Ok(frame) = rx.recv() {
-                self.frame = frame;
-                self.index += 1;
+            while let Ok(item) = rx.recv() {
+                match item {
+                    Ok(frame) => {
+                        self.frame = frame;
+                        self.index += 1;
+                    }
+                    Err(reason) => {
+                        self.failure = Some(reason);
+                        break;
+                    }
+                }
             }
         }
         self.exhausted = true;
@@ -447,16 +489,23 @@ impl Movie {
                 break;
             };
             match rx.try_recv() {
-                Ok(frame) => {
+                Ok(Ok(frame)) => {
                     self.frame = frame;
                     self.index += 1;
+                }
+                Ok(Err(reason)) => {
+                    self.failure = Some(reason);
+                    self.exhausted = true;
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => self.exhausted = true,
             }
         }
         if self.exhausted && self.index < target {
-            return Playhead::Finished;
+            return match &self.failure {
+                Some(reason) => Playhead::Failed(reason),
+                None => Playhead::Finished,
+            };
         }
         if self.index < 0 {
             return Playhead::Waiting;
@@ -506,13 +555,28 @@ mod tests {
         let mut movie = Movie::from_frames(info(10.0), (2, 2), Vec::new());
         // A live channel with no frame yet is `Empty`; the stand-in's sender is already gone, so
         // build the waiting case by hand.
-        let (tx, rx) = sync_channel::<Vec<u8>>(1);
+        let (tx, rx) = sync_channel::<DecodedFrame>(1);
         movie.rx = Some(rx);
         assert_eq!(movie.advance(0.0), Playhead::Waiting);
-        tx.send(vec![7; 16]).unwrap();
+        tx.send(Ok(vec![7; 16])).unwrap();
         assert_eq!(movie.advance(0.0), Playhead::Frame { index: 0, pixels: &[7u8; 16], new: true });
         drop(tx);
         assert_eq!(movie.advance(0.2), Playhead::Finished, "the decoder closed before frame 2");
+    }
+
+    /// BIK-DEC-004 — a frame that does not decode ends the movie as Failed with the decoder's reason,
+    /// after the frames decoded before it have been shown; never as a clean finish.
+    #[test]
+    fn a_frame_that_does_not_decode_ends_the_movie_as_failed() {
+        let reason = "x.bik: frame 2 does not decode: bad block";
+        let mut movie = Movie::failing_after(info(10.0), (2, 2), vec![vec![0; 16], vec![1; 16]], reason);
+        assert_eq!(movie.advance(0.15), Playhead::Frame { index: 1, pixels: &[1u8; 16], new: true }, "frames before it play");
+        assert_eq!(movie.advance(0.25), Playhead::Failed(reason));
+        assert_eq!(movie.failure(), Some(reason));
+
+        let mut movie = Movie::failing_after(info(10.0), (2, 2), vec![vec![0; 16]], reason);
+        assert_eq!(movie.decode_to_end(), 1, "the corpus count stops at the failure");
+        assert_eq!(movie.failure(), Some(reason));
     }
 
     /// A solid `w`×`h` RGBA picture.

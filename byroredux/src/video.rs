@@ -26,7 +26,7 @@ pub(crate) enum VideoOutcome {
     Played { ended_early: bool },
     /// This build has no decoder for its format (Bink 2, another Bink revision).
     Skipped(String),
-    /// The file is missing or did not decode.
+    /// The file is missing, does not open, or a frame did not decode (BIK-DEC-004).
     Failed(String),
 }
 
@@ -62,7 +62,9 @@ struct Active {
     request: VideoRequest,
     /// When the first frame was shown: the movie clock starts there, with its audio.
     started: Option<Instant>,
-    finished: bool,
+    /// How the movie ended on its own (the last frame passed, or a frame did not decode,
+    /// BIK-DEC-004); the next `step` reports it.
+    ended: Option<VideoOutcome>,
 }
 
 /// The movie player the app owns.
@@ -192,8 +194,8 @@ impl VideoPlayer {
     pub(crate) fn step(&mut self, world: &World, window: Option<(u32, u32)>) {
         let skipped = world.try_resource_mut::<VideoControl>().is_some_and(|mut control| std::mem::take(&mut control.skip));
         if let Some(active) = &self.active {
-            if active.finished {
-                self.finish(world, VideoOutcome::Played { ended_early: false });
+            if let Some(outcome) = active.ended.clone() {
+                self.finish(world, outcome);
             } else if skipped && active.request.interruptable {
                 self.finish(world, VideoOutcome::Played { ended_early: true });
             } else if skipped {
@@ -253,7 +255,7 @@ impl VideoPlayer {
         if let Some(mut audio) = world.try_resource_mut::<byroredux_audio::AudioWorld>() {
             audio.hold_for_movie(request.mute_audio, request.pause_music);
         }
-        self.active = Some(Active { movie, request, started: None, finished: false });
+        self.active = Some(Active { movie, request, started: None, ended: None });
     }
 
     fn finish(&mut self, world: &World, outcome: VideoOutcome) {
@@ -282,7 +284,11 @@ impl VideoPlayer {
         match active.movie.advance(elapsed) {
             Playhead::Waiting => *texture,
             Playhead::Finished => {
-                active.finished = true;
+                active.ended = Some(VideoOutcome::Played { ended_early: false });
+                *texture
+            }
+            Playhead::Failed(reason) => {
+                active.ended = Some(VideoOutcome::Failed(reason.to_owned()));
                 *texture
             }
             Playhead::Frame { index, pixels, new } => {
@@ -416,12 +422,35 @@ mod tests {
         let request = |interruptable| VideoRequest { file: "x.bik".into(), interruptable, mute_audio: true, pause_music: true, letterbox: true, new_game: false };
         let frames = || Movie::from_frames(byroredux_video::MovieInfo { width: 2, height: 2, fps: 10.0, duration_secs: 1.0, audio_tracks: 0 }, (2, 2), vec![vec![0; 16]]);
         for (interruptable, ends) in [(false, false), (true, true)] {
-            player.active = Some(Active { movie: frames(), request: request(interruptable), started: None, finished: false });
+            player.active = Some(Active { movie: frames(), request: request(interruptable), started: None, ended: None });
             world.resource_mut::<VideoControl>().skip = true;
             player.step(&world, Some((64, 48)));
             assert_eq!(player.active(), !ends, "interruptable={interruptable}");
         }
         assert!(matches!(world.resource::<VideoStatus>().last, Some((_, VideoOutcome::Played { ended_early: true }))));
+    }
+
+    /// BIK-DEC-004 — a movie whose frame did not decode is reported Failed with the decoder's reason,
+    /// not Played: the playhead's verdict reaches `video.status` through the next `step`.
+    #[test]
+    fn a_frame_that_does_not_decode_is_reported_failed() {
+        let mut world = World::new();
+        world.insert_resource(PendingVideos::default());
+        world.insert_resource(VideoStatus::default());
+        world.insert_resource(VideoControl::default());
+        let info = byroredux_video::MovieInfo { width: 2, height: 2, fps: 10.0, duration_secs: 1.0, audio_tracks: 0 };
+        let reason = "x.bik: frame 1 does not decode: bad block";
+        let mut movie = Movie::failing_after(info, (2, 2), vec![vec![0; 16]], reason);
+        let ended = match movie.advance(0.15) {
+            Playhead::Failed(reason) => Some(VideoOutcome::Failed(reason.to_owned())),
+            other => panic!("expected the decode failure, got {other:?}"),
+        };
+        let request = VideoRequest { file: "x.bik".into(), interruptable: false, mute_audio: true, pause_music: true, letterbox: true, new_game: false };
+        let mut player = VideoPlayer::default();
+        player.active = Some(Active { movie, request, started: None, ended });
+        player.step(&world, Some((64, 48)));
+        assert!(!player.active());
+        assert_eq!(world.resource::<VideoStatus>().last, Some(("x.bik".to_string(), VideoOutcome::Failed(reason.to_string()))));
     }
 
     /// BIK-REQ-004 — the start sequence comes from the shipped default INI where it sets the key
