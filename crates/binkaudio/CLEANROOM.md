@@ -46,4 +46,5 @@ behaviour). The same agent also wrote the Bink 2 video decoder, whose `CLEANROOM
 exposure to facts about NihAV's video decoder (none about audio).
 
 This makes the process a **procedural** clean room, not an independent two-party one. Whether that
-is sufficient is a question for counsel, not for this file.
+is sufficient is a question for counsel, not for this file. The project owner accepted this risk on
+2026-11-14 (#6907, PRD `bink-video-playback` Q2); the decoder ships as documented here.

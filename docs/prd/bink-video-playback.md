@@ -1,13 +1,13 @@
 # Bink video playback — Product Requirements
 
-**Status**: ACTIVE (2026-11-14). Revision 10 folds in review round 2: BIK-DEC-004 is met (a frame that does not decode now ends the movie Failed), the stale HEAD claims are history, and the provenance questions go to the owner in #6907. Revision 9 refreshes the HEAD table. Revision 8 extends Q2 at the owner's direction: Bink 2 sound decodes in process too, through the workspace's clean-room Bink Audio decoder. Revision 7 re-decides Q2 at the owner's direction: Bink 2 video decodes in process through the workspace's clean-room decoder. Revision 6 re-decides Q1 at the owner's direction: Bink 1 decodes in process, no FFmpeg at run time. Revision 4 files the tracking issues. Revision 3 records the owner's approval
+**Status**: ACTIVE (2026-11-14). Revision 11 records the owner's acceptance of the decoders' provenance risk (#6907). Revision 10 folds in review round 2: BIK-DEC-004 is met (a frame that does not decode now ends the movie Failed), the stale HEAD claims are history, and the provenance questions go to the owner in #6907. Revision 9 refreshes the HEAD table. Revision 8 extends Q2 at the owner's direction: Bink 2 sound decodes in process too, through the workspace's clean-room Bink Audio decoder. Revision 7 re-decides Q2 at the owner's direction: Bink 2 video decodes in process through the workspace's clean-room decoder. Revision 6 re-decides Q1 at the owner's direction: Bink 1 decodes in process, no FFmpeg at run time. Revision 4 files the tracking issues. Revision 3 records the owner's approval
 with every §10 decision taken as recommended and folded into the
 requirements (BIK-DEC-003, BIK-DEC-005, BIK-REQ-005). Statements about how
 an original engine, format or tool behaves cite external sources; a claim
 that could not be verified is marked **Phase 0: verify** instead of being
 stated as fact.
 
-**Tracking**: #6855 (parent). Phases: #6856 (0), #6857 (1), #6858 (2), #6859 (3). Verify items: #6896–#6898. Decoder provenance: #6907.
+**Tracking**: #6855 (parent). Phases: #6856 (0), #6857 (1), #6858 (2), #6859 (3). Verify items: #6896–#6898. Decoder provenance: #6907 (risk accepted by the owner).
 
 **Scope**: the games' own Bink movies play: the intro and logo movies the
 engine starts, and every movie a script asks for (`PlayBink`). Each plays
@@ -65,7 +65,7 @@ play. The project is "FOSS-only by design. No proprietary dependencies, no
 closed-source middleware" ([README](../../README.md#why-byroredux-exists)), so
 what can be decoded is bounded by the in-process open decoders: `mercs2_bink`
 for Bink 1, the workspace's `byroredux-bink2` and `byroredux-binkaudio` for
-Bink 2 (Q1, Q2; their provenance is the owner's question in #6907). FFmpeg is
+Bink 2 (Q1, Q2; the owner accepted their provenance as a documented risk, #6907). FFmpeg is
 a development-time measurement tool only (`ffprobe` in
 `scripts/bink-corpus.sh`), never a run-time dependency.
 
@@ -162,9 +162,10 @@ run's live state.
 
 - **BIK-NG-001.** Linking RAD's Bink SDK or any closed decoder: the
   project is FOSS-only ([README](../../README.md#why-byroredux-exists)).
-  Whether an open decoder whose format description was read out of RAD's
-  library with a disassembler counts as closed is the owner's decision in
-  #6907.
+  An open decoder whose format description was read out of RAD's library
+  with a disassembler (`mercs2_bink`) is not closed: the owner accepted it,
+  with the procedural clean rooms of `byroredux-bink2` and
+  `byroredux-binkaudio`, as a documented risk (Q1, Q2, #6907).
 - **BIK-NG-002.** Encoding or authoring Bink files.
 - **BIK-NG-003.** Scaleform and MenuXml menu movies: the
   [Game UI Integration PRD](game-ui-integration.md)'s surfaces.
@@ -413,7 +414,8 @@ Fallout 4's too; Starfield's is wired but has no smoke fixture).
    states that no third-party decoder source was read
    ([SPEC-video.md](https://github.com/Mercenaries-Fan-Build/notes-on-the-released-game),
    shipped inside the crate); this repository has not verified that claim.
-   **Open** (2026-11-14): the owner's decision on this provenance is #6907.
+   **Provenance accepted** (2026-11-14, owner): the risk is accepted as
+   documented; `mercs2_bink` keeps shipping (#6907).
 2. **Q2 — Bink 2.** Recommended: **Skipped** with a log line until Phase 0
    has measured the open Bink 2 decoders, then decide on that measurement.
    **Phase 0: verify** NihAV's reported Rust decoder
@@ -449,7 +451,10 @@ Fallout 4's too; Starfield's is wired but has no smoke fixture).
    [`CLEANROOM.md`](../../crates/binkaudio/CLEANROOM.md) discloses that the
    authoring model was very probably trained on public code including FFmpeg's
    Bink audio decoder: a procedural clean room, a question for counsel.
-   **Open** (2026-11-14): the owner's decision on both clean rooms is #6907.
+   **Provenance accepted** (2026-11-14, owner): both procedural clean rooms are
+   accepted as documented in their `CLEANROOM.md`, and the decoders keep
+   shipping. Their specs (`docs/spec/`) leave a two-party re-implementation
+   possible should review ever be wanted (#6907).
 3. **Q3 — When an engine-started movie plays.** Recommended: at the point
    the original plays it (logo sequence at launch, the intro at a new
    game), with a launch flag that skips them for development and the gates.
@@ -467,7 +472,7 @@ Fallout 4's too; Starfield's is wired but has no smoke fixture).
 | The new-game route the FNV intro opens | [Playable vertical slice](../engine/playable-vertical-slice.md#from-the-beginning--a-new-game-2026-11-11) |
 | Decoding, presentation, A/V sync, start sequences, the Phase 0 verify list | [video-playback.md](../engine/video-playback.md) |
 | The Bink 2 video and audio decoders, their measurements and clean-room rules | [crates/bink2/README.md](../../crates/bink2/README.md), [crates/binkaudio/README.md](../../crates/binkaudio/README.md) |
-| The decoders' provenance, for the owner | #6907 |
+| The decoders' provenance and the owner's acceptance | #6907; Q1, Q2 |
 | The project's dependency stance | [README](../../README.md#why-byroredux-exists) |
 | Live milestone state and published metrics | [ROADMAP.md](../../ROADMAP.md) |
 
@@ -487,3 +492,4 @@ Fallout 4's too; Starfield's is wired but has no smoke fixture).
 | 8 | 2026-11-13 | Owner-directed: Q2 extended to Bink 2 sound through the clean-room `byroredux-binkaudio` (BIK-DEC-003 reworded: sound decodes, the no-sound rule and its verify item dropped; BIK-DEC-002 notes that tracks are language versions and the first plays; scope line; Related row; §3 census note and HEAD row 5; §6 row 1; Fallout 4 and Starfield in §7.1; acceptance 1 and 4; Q2 provenance note with the training-data disclosure) | — |
 | 9 | 2026-11-13 | §3 HEAD rows 3–5 refreshed for the built Papyrus native and freeze, the mute / pause hold and A/V lock, and the start sequences (Phases 0–3, #6856–#6859); Related row points to `video-playback.md` | — |
 | 10 | 2026-11-14 | Review round 2 folded in: BIK-DEC-004 met by a code fix (a frame that does not decode ends the movie Failed, two tests), stale "Today" claims (BIK-REQ-001/-002, thesis), BIK-PRES-006 narrowed and BIK-PRES-003 restated as the sound clock, start-sequence table and BIK-REQ-004 (executable defaults, Starfield), Fallout 4's mod Bink 1 file, verify items linked to #6896–#6898, provenance to #6907, format and original-engine citations, coverage and A/V-drift metrics withdrawn, §6 rows 4–8, scenarios 1, 3, 4 named to their gates, numbers moved to the crate READMEs, document map | claude: revise |
+| 11 | 2026-11-14 | Owner-directed: the decoders' provenance risk is accepted (#6907): Q1 and Q2 record it, BIK-NG-001 says a disassembly-derived open decoder is not closed, thesis and document map updated | — |

@@ -43,4 +43,5 @@ as such. The same session read the MultimediaWiki pages above (allowed) and Kost
 blog posts about Bink 2 in summary (prose, no code).
 
 This exposure means the process is **procedural** clean room, not an independent two-party one.
-Whether that is sufficient is a question for counsel, not for this file.
+Whether that is sufficient is a question for counsel, not for this file. The project owner accepted
+this risk on 2026-11-14 (#6907, PRD `bink-video-playback` Q2); the decoder ships as documented here.
