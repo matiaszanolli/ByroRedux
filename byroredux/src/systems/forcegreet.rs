@@ -35,6 +35,28 @@ use std::collections::HashMap;
 /// ambient Dialogue-procedure wiring install with.
 pub(crate) const FORCE_GREET_RADIUS: f32 = 128.0;
 
+/// How far, in exterior cells either side of the player's, a greeter held against architecture
+/// may still greet from where it stands: the original's loaded grid, `uGridsToLoad=5` (5 x 5 cells)
+/// in the shipped default INI of Oblivion, Fallout 3, New Vegas and Fallout 4 and the compiled-in
+/// default of `SkyrimSE.exe`. An actor beyond it is outside the original's detailed processing and
+/// never reaches its Activate Distance there (GECK *Dialogue Package*: it engages "when the actor
+/// reaches the Activate Distance"); this engine loads farther (12 cells by default), so without the
+/// bound a greeter stuck across the map opened its conversation from there (the FNV new-game gate's
+/// PrimmWarning trooper, 12 cells out).
+pub(crate) const STUCK_GREET_GRID_REACH: i32 = 2;
+
+/// Whether `npc` (Y-up engine position) stands inside the original's loaded grid around `player`
+/// ([`STUCK_GREET_GRID_REACH`]): the exterior cell each falls in, Z-up `(x, y)`.
+fn within_loaded_grid(npc: Vec3, player: Vec3) -> bool {
+    let units = byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
+    let cell = |p: Vec3| {
+        let zup = byroredux_core::math::coord::yup_to_zup_pos(p.to_array());
+        ((zup[0] / units).floor() as i32, (zup[1] / units).floor() as i32)
+    };
+    let (a, b) = (cell(npc), cell(player));
+    (a.0 - b.0).abs() <= STUCK_GREET_GRID_REACH && (a.1 - b.1).abs() <= STUCK_GREET_GRID_REACH
+}
+
 /// The force-greet bridge state. One-shot: consumed the moment the
 /// conversation opens (removed with the directive). `NOT_SAVED_BY_DESIGN`
 /// — a save taken mid-approach re-greets after load, which is the
@@ -218,7 +240,9 @@ fn forcegreet_system_inner(
                 speed,
             );
             let timer = stuck_secs.entry(npc).or_insert(0.0);
-            if !advance_stuck_repick(timer, step.blocked, dt) {
+            // Blocked outside the original's loaded grid: no greeting from there; the greeter keeps
+            // its directive and keeps approaching ([`STUCK_GREET_GRID_REACH`]).
+            if !advance_stuck_repick(timer, step.blocked, dt) || !within_loaded_grid(current, player_pos) {
                 steps.push((
                     npc,
                     Step::Walk {
@@ -622,5 +646,19 @@ mod tests {
             world.get::<Transform>(npc).expect("transform").translation.x < 0.0,
             "the greeter never passes the wall"
         );
+    }
+
+    /// A greeter held against architecture greets from where it stands only inside the original's
+    /// loaded grid around the player (`uGridsToLoad=5`); from farther it keeps its directive. The
+    /// FNV new-game gate's PrimmWarning trooper stood 12 cells out and opened its greeting from there.
+    #[test]
+    fn a_stuck_greeter_greets_from_where_it_stands_only_inside_the_loaded_grid() {
+        let units = byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
+        let cell = |gx: f32, gy: f32| Vec3::from(byroredux_core::math::coord::zup_to_yup_pos([gx * units + 10.0, gy * units + 10.0, 0.0]));
+        let player = cell(-18.0, 0.0);
+        assert!(within_loaded_grid(cell(-18.0, 0.0), player), "its own cell");
+        assert!(within_loaded_grid(cell(-16.0, -2.0), player), "two cells out, diagonally");
+        assert!(!within_loaded_grid(cell(-15.0, 0.0), player), "three cells out");
+        assert!(!within_loaded_grid(cell(-15.0, -12.0), player), "Primm from Goodsprings");
     }
 }
