@@ -43,6 +43,14 @@ byroredux/              Binary — game loop, scene setup, systems
     world_info.rs            Engine / world / memory introspection commands
     view.rs                  Camera + selection/picking commands
     shared.rs                Cross-command formatting helpers + shared import prelude
+    music.rs                 music.status — the music controller's layers (docs/engine/music.md)
+  src/music/                Game music (docs/engine/music.md): per-game translate step + game-neutral controller
+    mod.rs                   music_system, the audio-voice output, place tracking, music volume default
+    directive.rs             Directive / outcomes, music-file resolution (folder forms), playlist shuffle
+    translate.rs             Oblivion / FO3 / FNV sources → directives (cells, worldspaces, regions, DOBJ, audio markers)
+    controller.rs            Hold / Sting / Script / Battle / Location layers, suspension, fades, music.status
+    census_tests.rs          Ignored per-game source-coverage census (PRD scenario 1)
+  src/game_ini.rs           The install's default INI: [section] key reads, plugin game detection
   src/helpers.rs            add_child, world_resource_set utilities
   src/hud.rs                MenuXml HUD driver — per-game profiles Oblivion/FO3/FNV (--hud, triple-buffered uploads)
   src/scaleform_hud.rs      Scaleform HUD driver — Skyrim + Fallout 4 hudmenu.swf via --hud (transparent stage, hud.debug)

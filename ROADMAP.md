@@ -82,8 +82,8 @@ all-slots fence wait that dominates GPU-bound frames (#5365, the throughput half
   lifecycle, live-gated by [`sm1-story-manager.sh`](docs/smoke-tests/sm1-story-manager.sh).
 - **Save/load.** Full-ECS snapshot with validation gates, atomic write and
   live load-apply (M45/M45.1).
-- **Audio.** kira spatial audio: footsteps, ambient, music, per-cell reverb,
-  water routing (M44).
+- **Audio.** kira spatial audio: footsteps, ambient, per-cell reverb, water routing (M44);
+  game music on Oblivion / FO3 / FNV ([music.md](docs/engine/music.md), #6860).
 - **UI.** Ruffle-hosted Scaleform menus with Skyrim (AVM1) and FO4 (AVM2) host
   profiles (R4). Native MenuXml HUDs for Oblivion/FO3/FNV, and the vanilla
   Skyrim/FO4 `hudmenu.swf` via `--hud` (M48.4–M48.7). `PlayBink` movies play full screen, decoded in
@@ -781,7 +781,7 @@ a new claim without one.
 | `byroredux-debug-protocol`    | Wire types + component registry for debug CLI                                                                    |
 | `byroredux-debug-server`      | TCP debug server (Late-stage exclusive system)                                                                   |
 | `byroredux-cxx-bridge`        | C++ interop via cxx                                                                                              |
-| `byroredux-audio`             | 3D spatial audio via kira 0.12 (spatial sub-tracks, reverb send, streaming music — M44)                          |
+| `byroredux-audio`             | 3D spatial audio via kira 0.12 (spatial sub-tracks, reverb send, streaming music voices the music controller drives — M44) |
 | `byroredux-boot-request`      | The launcher → engine handoff contract (`BootRequest`: what to play, not which flags express it)               |
 | `byroredux-game-detect`       | Install detection and pre-launch validation                                                                    |
 | `byroredux-settings-io`       | Persistent user settings — `(id, value)` pairs overlaid on the universal registry                              |

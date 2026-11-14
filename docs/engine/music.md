@@ -1,6 +1,6 @@
 # Music
 
-**Status**: ACTIVE (2026-11-13). The design the [Game Music PRD](../prd/game-music.md)
+**Status**: SHIPPED (2026-11-14). The design the [Game Music PRD](../prd/game-music.md)
 names as the owner of the music controller (PRD *Related*). It also covers the music
 half of the `audio` crate, which has no design document of its own. Tracking: #6860;
 phases #6861 (0, this document), #6862 (1), #6863 (2), #6864 (3). The PRD states the
