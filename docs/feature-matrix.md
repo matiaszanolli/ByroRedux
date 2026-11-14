@@ -148,7 +148,7 @@ separate integration gap. See the gaps table below.
 
 ---
 
-## Audio (M44 — Phases 1–6 complete, plus the WATAL water consumer)
+## Audio (M44 — Phases 1–6 complete, the WATAL water consumer, and the Game Music controller)
 
 | Feature | Status |
 |---|---|
@@ -157,7 +157,9 @@ separate integration gap. See the gaps table below.
 | One-shot sounds + footstep system | ✓ |
 | Looping ambient (tweened stop on despawn) | ✓ |
 | Streaming music (OGG / MP3 / WAV, crossfade) | ✓ |
-| Scripted `PlayMusic` (FO3/FNV `MUSC` track layered over the cell music; loose `Data\Music` files or archive) | ◐ single-file types play (#6226); the 6 folder-form types per master (`DefaultBattle`, `DefaultExplore`, … — `FNAM` is a directory of variants) log one info line and stay silent: variant selection is not modelled (#6438) |
+| Game music controller — Oblivion / FO3 / FNV ([music.md](engine/music.md), Game Music PRD SHIPPED 2026-11-14) | ✓ one directive per layer (movie hold, sting, script, battle, location), shuffled playlists, fades. Location music from Oblivion's cell `XCMT` → region `RDMD` → worldspace `SNAM` categories; FO3/FNV's cell `XCMO` → worldspace `ZNAM` → Default Music; New Vegas audio markers (media sets as day / night layers stacking by depth, the conditional faction's relation lists, `NAM1`'s Faction Not Found and Random options, Dungeon sets with Suspense under tension). Census: source coverage 100 % on all three (ROADMAP music column) |
+| Battle music and stings | ✓ battle sets / Battle Music / Oblivion `Battle\` with intro, outro and recovery (none on Oblivion); FO3/FNV death and level-up stings are the `MUSDeath` / `MUSSuccess` sounds, Oblivion's `Special\death.mp3` / `success.mp3`; a sting stops the music until the next place, combat or script (#6901) |
+| Scripted music (`PlayMusic`, `StreamMusic`, OBSE `Get`/`SetCellMusicType`) | ✓ `PlayMusic` replaces the cell's music, folder-form types included (#6899, #6438); on New Vegas it plays beside an audio marker's music; Oblivion `StreamMusic` keywords and files with the original's cell-change and battle rules (#6903) |
 | NPC dialogue voice playback (Phase V; archive-backed segmented lines) | ✓ (Skyrim / FO4 `.fuz` voice needs an optional host `ffmpeg` to decode the xWMA payload; without one the line stays silent on the subtitle estimate) |
 | Script sound plays (Papyrus `Sound.Play`, ObScript `PlaySound` / `PlaySound3D`, graph `SoundPlay.*`) | ◐ played from the source through the bounded `VoiceSoundCache`, with a `SOUN`'s authored `SNDD` attenuation and `2D` / `Menu Sound` flags; Skyrim `SNDR` output-model attenuation is not decoded, so those use the generic range; looping descriptors are not played (#6281) |
 | Contact-force impact sounds (Wave 4) | ◐ config-driven dispatch mechanism shipped; default/per-material sound content is not populated |
@@ -165,8 +167,25 @@ separate integration gap. See the gaps table below.
 | Underwater low-pass (submersion-driven, 900 Hz wet / dry bypass) | ✓ |
 | Water-surface splash + ripple one-shots (WATAL events) | ✓ |
 | Per-material footsteps (FOOT records) | ◐ mechanism shipped (`select_footstep_sound` + surface-material probe); no authored data yet — the FOOT→IPDS material table awaits decode |
-| Region ambient (REGN) — background music | ◐ dispatch mechanism ✓; Skyrim `RDMO` → `MUSC` → first playable `MUST` track resolves (28/28 vanilla regions, #3816) but the tracks ship as xWMA (`.xwm`), which the streaming path cannot decode, so nothing plays yet; cycling/random selection and loop points are not modelled; FNV `MSET` and Oblivion `RDMD` playback still await #3816 |
-| Region ambient (REGN) — incidental/loop sounds | ✗ |
+| Skyrim / FO4 music (`MUSC` / `MUST`) | ✗ the tracks ship as xWMA (`.xwm`), which the streaming path cannot decode; Skyrim's `RDMO` → `MUSC` → first `MUST` track resolves (28/28 vanilla regions) but nothing plays — waits on its own PRD (MUS-NG-001, #3816's Skyrim half) |
+| Region ambient (REGN) — incidental/loop sounds | ✗ (New Vegas's Incidental media sets are reported Unresolved) |
+
+---
+
+## Video ([video-playback.md](engine/video-playback.md), Bink PRD #6855)
+
+| | Oblivion | FO3 | FNV | Skyrim SE | FO4 | FO76 | Starfield |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **Installed movies decode** | ✓ 9 Bink 1 | ✓ 35 Bink 1 | ✓ 1 Bink 1 | ✓ 1 Bink 1 | ✓ 14 Bink 2 (+1 mod Bink 1) | ✓ 4 Bink 2 (out of scope) | ✓ 36 Bink 2 |
+| **Start sequence** | ✓ four logos + `Oblivion iv logo.bik` | — | — | ✓ `BGS_Logo.bik` | ✓ `GameIntro_V3_B.bk2` | — | ✓ `BGS_LOGO_1080p_BinkVersion.bk2` |
+
+| Feature | Status |
+|---|---|
+| Decoders | ✓ in process: Bink 1 via `mercs2_bink`; Bink 2 (`KB2g` / `KB2j`) and Bink Audio via the clean-room `byroredux-bink2` / `byroredux-binkaudio` (bit-exact against the game's DLL on every shipped file; audio within one sample value on 0.017 %) — see the README's [Clean-room decoders](../README.md#clean-room-decoders) |
+| Presentation | ✓ full screen over the game, letterboxed when flagged, the picture locked to the soundtrack's playback position, the game held while it plays; Escape / `video.skip` ends an interruptable movie |
+| Requests | ✓ ObScript `PlayBink` (opcode `0x1114`) and Papyrus `Game.PlayBink` (the calling script frozen until the movie ends); the movie's mute and pause-music flags hold the world's sound and music |
+| Observability | ✓ `video.status` / `video.skip`; `--skip-movies`, and `--start-movies` for a benchmark run |
+| Open verify items | ◐ which audio track the original plays (#6896, the first plays); when FO3's `sIntroMovie` and `OblivionIntro.bik` play (#6897); the letterbox flag clear, and movies packed in mod archives (#6898) |
 
 ---
 
