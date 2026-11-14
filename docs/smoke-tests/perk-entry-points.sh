@@ -57,7 +57,14 @@ if ss -ltn "sport = :$PORT" | grep -q LISTEN; then
     fail "port $PORT already occupied; refusing to attach to another session"
 fi
 
-cargo build --release --offline --quiet -p byroredux -p byro-dbg || fail "release build failed"
+# Built on the first launch, after a leg's data check: a runner without game data must SKIP (77) without
+# needing a release build (the CI contract loop has none to make).
+built=0
+ensure_built() {
+    (( built )) && return 0
+    cargo build --release --offline --quiet -p byroredux -p byro-dbg || fail "release build failed"
+    built=1
+}
 
 wait_log() {
     local file="$1" pattern="$2" deadline=$((SECONDS + TIMEOUT))
@@ -79,6 +86,7 @@ EOF2
 launch() { # <label> <engine args...>
     local label="$1"
     shift
+    ensure_built
     mkdir -p "$LOG_DIR/$label-saves"
     env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
         BYROREDUX_SAVE_DIR="$LOG_DIR/$label-saves" \
