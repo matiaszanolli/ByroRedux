@@ -1423,10 +1423,14 @@ fn apply_operator(stack: &mut Vec<ObScriptValue>, token: &str) {
             }
         }
         "!" => flag(!truthy(pop(stack))),
+        // Unary minus: the compiler writes `-1` as `1 ~` and `-x` as `x ~` (#6905: Oblivion's
+        // `VampireScript` opens with `set randomdream to -1`, and read as 0 it shows a vampire
+        // dream's MessageBox to every new character). 358 records of the three masters use it.
+        "~" => ObScriptValue::Num(-pop(stack)),
         _ => {
             // Unknown operator token: push a neutral zero to keep the
-            // stack balanced. The corpus census covers every operator
-            // vanilla quest scripts use, so this arm is defensive.
+            // stack balanced. Every operator the three masters' compiled
+            // scripts use is matched above, so this arm is defensive.
             ObScriptValue::Num(0.0)
         }
     };
@@ -1681,6 +1685,20 @@ mod tests {
         let outcome = program.run_block(BLOCK_GAME_MODE, &mut state, &mut host);
         assert_eq!(outcome, BlockOutcome::Completed);
         assert_eq!(state.locals.get(&1), Some(&5.0));
+    }
+
+    /// #6905 — `~` is unary minus: `set x to -1` compiles to `1 ~`, `set x to 2 - -3` to `2 3 ~ -`.
+    #[test]
+    fn a_tilde_negates_its_operand() {
+        for (expr, want) in [(b"1 ~ ".as_slice(), -1.0), (b"2 3 ~ - ".as_slice(), 5.0), (b"1 ~ 0 >= ".as_slice(), 0.0)] {
+            let body = set_stmt(b's', 1, expr, 0);
+            let script = script(wrap_body(body), vec![local(1, "x", 1)], vec![]);
+            let program = ObScriptProgram::new(&script);
+            let mut state = VmState::default();
+            let outcome = program.run_block(BLOCK_GAME_MODE, &mut state, &mut Recorder::default());
+            assert_eq!(outcome, BlockOutcome::Completed);
+            assert_eq!(state.locals.get(&1), Some(&want), "{}", String::from_utf8_lossy(expr));
+        }
     }
 
     #[test]
