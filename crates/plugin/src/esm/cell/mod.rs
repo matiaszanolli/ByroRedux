@@ -46,7 +46,7 @@ pub use index::{
 pub use landscape::{LandscapeData, LandscapeTextureHavok, TerrainQuadrant, TerrainTextureLayer};
 pub use lighting::{CellLighting, HeightFogTail, StarfieldLighting};
 pub use placed_ref::{
-    ActivateParent, CellOwnership, EnableParent, LinkedRef, LockData, PlacedRef, PortalLink,
+    ActivateParent, AudioMarker, CellOwnership, EnableParent, LinkedRef, LockData, PlacedRef, PortalLink,
     PrimitiveBounds, RagdollPoseBone, TeleportDest, TextureSlotSwap,
 };
 pub use spaces::{LoadDoor, SpaceGraph, SpaceId, SpaceKey, SpaceRoute};

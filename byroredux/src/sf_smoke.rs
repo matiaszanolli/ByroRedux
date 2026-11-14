@@ -59,7 +59,7 @@ fn nonstatic_base_type(
     if index.acoustic_spaces.contains_key(&form_id) {
         return Some("ASPC");
     }
-    if index.audio_locations.contains_key(&form_id) {
+    if index.media_locations.contains_key(&form_id) {
         return Some("ALOC");
     }
     None
@@ -437,8 +437,8 @@ mod unresolved_attribution_tests {
             .acoustic_spaces
             .insert(0x0000_1003, minimal(0x0000_1003));
         index
-            .audio_locations
-            .insert(0x0000_1004, minimal(0x0000_1004));
+            .media_locations
+            .insert(0x0000_1004, byroredux_plugin::esm::records::MediaLocationRecord { form_id: 0x0000_1004, ..Default::default() });
 
         for (form_id, expected) in [
             (0x0000_1001u32, "SECH"),

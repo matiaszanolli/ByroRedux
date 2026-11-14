@@ -34,10 +34,9 @@ pub(super) fn dispatch_misc_stub_group(
         // cinematic presentation now consumes its curves.
         //
         // Audio metadata (11):
+        // #6882 — the FNV media location controller an audio marker names. See `media_location.rs`.
         b"ALOC" => extract_records(reader, end, b"ALOC", &mut |fid, subs| {
-            index
-                .audio_locations
-                .insert(fid, parse_minimal_esm_record(fid, subs));
+            index.media_locations.insert(fid, parse_aloc(fid, subs, &remap));
         })?,
         b"ANIO" => extract_records(reader, end, b"ANIO", &mut |fid, subs| {
             index
@@ -81,6 +80,12 @@ pub(super) fn dispatch_misc_stub_group(
             // `DNAM` is a run of (4-char code, FormID) pairs; `CMPX` is the Complex Scene Object.
             if let Some(object) = complex_scene_object(subs, &remap) {
                 index.complex_scene_object = Some(object);
+            }
+            // #6870 — FO3 / FNV keep the five default music objects in `DATA` entries 9 to 13.
+            if game == GameKind::Fallout3NV {
+                if let Some(music) = parse_default_music(subs, &remap) {
+                    index.default_music = Some(music);
+                }
             }
             index
                 .default_objects

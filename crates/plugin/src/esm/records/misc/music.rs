@@ -216,6 +216,34 @@ pub fn first_playable_track<'a>(
     musc.tracks.iter().find_map(|&form_id| walk(form_id, tracks, 0))
 }
 
+/// The five Fallout 3 / New Vegas default music objects: `DOBJ` `DATA` entries 9 to 13 (xEdit
+/// `wbDefinitionsFO3.pas:5672-5676`, GECK *Default Form*: DefaultMusic, BattleMusic, DefaultDeath,
+/// SuccessMusic, LevelUpMusic), each a `MUSC` FormID; `None` where the slot is null.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DefaultMusic {
+    pub default: Option<u32>,
+    pub battle: Option<u32>,
+    pub death: Option<u32>,
+    pub success: Option<u32>,
+    pub level_up: Option<u32>,
+}
+
+/// The `DATA` index of the first music slot.
+const DOBJ_FIRST_MUSIC_SLOT: usize = 9;
+
+/// Read the five music slots of a Fallout 3 / New Vegas `DOBJ` (its `DATA`, a flat array of
+/// FormIDs), load-order remapped. `None` when `DATA` is too short to reach them.
+pub fn parse_default_music(subs: &[SubRecord], remap: &Option<FormIdRemap>) -> Option<DefaultMusic> {
+    let data = &subs.iter().find(|sub| &sub.sub_type == b"DATA")?.data;
+    let slot = |i: usize| {
+        let at = (DOBJ_FIRST_MUSIC_SLOT + i) * 4;
+        let raw = u32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?);
+        Some(remap_fid(raw, remap)).filter(|&form| form != 0)
+    };
+    data.get((DOBJ_FIRST_MUSIC_SLOT + 5) * 4 - 1)?;
+    Some(DefaultMusic { default: slot(0), battle: slot(1), death: slot(2), success: slot(3), level_up: slot(4) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,5 +370,21 @@ mod tests {
             .into_iter()
             .collect();
         assert!(first_playable_track(&musc_with(vec![1]), &tracks).is_none());
+    }
+
+    #[test]
+    fn the_default_music_objects_are_data_entries_9_to_13() {
+        let mut data = vec![0u8; 4 * 9];
+        for form in [0x10u32, 0x11, 0, 0x13, 0x14] {
+            data.extend_from_slice(&form.to_le_bytes());
+        }
+        let subs = [SubRecord { sub_type: *b"DATA", data: data.clone() }];
+        let music = parse_default_music(&subs, &None).unwrap();
+        assert_eq!(music.default, Some(0x10));
+        assert_eq!(music.battle, Some(0x11));
+        assert_eq!(music.death, None, "a null slot is no music type");
+        assert_eq!((music.success, music.level_up), (Some(0x13), Some(0x14)));
+        let short = [SubRecord { sub_type: *b"DATA", data: data[..4 * 12].to_vec() }];
+        assert_eq!(parse_default_music(&short, &None), None);
     }
 }

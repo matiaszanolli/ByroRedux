@@ -1197,3 +1197,17 @@ fn exterior_xclc_keeps_the_land_flags_byte() {
     assert_eq!(world[&(5, 4)].land_flags, 0x0C);
     assert_eq!(world[&(6, 4)].land_flags, 0);
 }
+
+/// #6870 — Oblivion's `WRLD.SNAM` is the music category enum; the same bytes on another game are not.
+#[test]
+fn oblivion_snam_is_the_worldspace_music_category() {
+    let wrld = build_wrld_record(
+        0x0000_003C,
+        &[(b"EDID", b"Tamriel\0".to_vec()), (b"SNAM", 1u32.to_le_bytes().to_vec())],
+    );
+    let buf = build_wrld_group(&[wrld]);
+    let (worldspaces, ..) = parse_synthetic_wrld_for_game(&buf, crate::esm::reader::GameKind::Oblivion);
+    assert_eq!(worldspaces.get("tamriel").unwrap().music_category, Some(1));
+    let (worldspaces, ..) = parse_synthetic_wrld(&buf);
+    assert_eq!(worldspaces.get("tamriel").unwrap().music_category, None);
+}

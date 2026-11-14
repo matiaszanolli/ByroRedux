@@ -1213,6 +1213,7 @@ mod script_kill_tests {
             starts_unconscious: false,
             ragdoll_pose: Vec::new(),
             map_marker: None,
+            audio_marker: None,
             encounter_zone_form: None,
         }
     }

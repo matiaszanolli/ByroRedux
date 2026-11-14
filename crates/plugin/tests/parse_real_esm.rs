@@ -2506,7 +2506,7 @@ fn parse_rate_fnv_esm() {
     // the SUM as a single anti-regression guard: vanilla FNV ships 5000+
     // records across the long tail (1000+ SOUN alone), so a count below
     // 1000 means the dispatch arms aren't firing.
-    let long_tail_total: usize = index.audio_locations.len()
+    let long_tail_total: usize = index.media_locations.len()
         + index.animation_objects.len()
         + index.acoustic_spaces.len()
         + index.camera_shots.len()
@@ -6958,4 +6958,36 @@ fn fo4_goodneighbor_inherits_the_commonwealth_landscape() {
         (100..=109).contains(&filled),
         "expected ~108 inherited landscapes (Goodneighbor's 109 cells), filled {filled}"
     );
+}
+
+/// Game Music #6870 / #6882 — the music sources decode against the MUS-0a census
+/// (`music_census`, 2026-11-13): the five `DOBJ` music objects, 89 media location controllers and
+/// 572 audio markers on the New Vegas master, every marker with a controller and a radius.
+#[test]
+#[ignore = "needs FNV game data on disk"]
+fn fnv_music_sources_decode_against_the_census() {
+    let Some(data) = data_dir(test_paths::FNV_ENV, test_paths::FNV_DEFAULT) else {
+        eprintln!("[FNV] skipping: BYROREDUX_FNV_DATA unset and fallback path missing");
+        return;
+    };
+    let bytes = std::fs::read(data.join("FalloutNV.esm")).expect("read FalloutNV.esm");
+    let index = parse_esm(&bytes).expect("parse FalloutNV.esm");
+    let music = index.default_music.expect("FalloutNV.esm's DOBJ carries the music slots");
+    let edid = |form: Option<u32>| form.and_then(|f| index.music_types.get(&f)).map(|m| m.editor_id.as_str());
+    assert_eq!(edid(music.default), Some("DefaultExplore"));
+    assert_eq!(edid(music.battle), Some("DefaultBattle"));
+    assert_eq!(edid(music.death), Some("DefaultDeath"));
+    assert_eq!(edid(music.success), Some("DefaultSuccess"));
+    assert_eq!(edid(music.level_up), Some("DefaultSuccess"), "New Vegas's Level Up slot names DefaultSuccess");
+    assert_eq!(index.media_locations.len(), 89);
+    // A third of the markers are persistent: they live in each worldspace's persistent cell.
+    let cells = index.cells.cells.values()
+        .chain(index.cells.exterior_cells.values().flat_map(|w| w.values()))
+        .chain(index.cells.worldspace_persistent_cells.values());
+    let markers: Vec<_> = cells.flat_map(|c| c.references.iter()).filter(|r| r.audio_marker.is_some()).collect();
+    assert_eq!(markers.len(), 572);
+    assert!(markers.iter().all(|r| r.radius_override.is_some_and(|radius| radius > 0.0)));
+    assert!(markers
+        .iter()
+        .all(|r| r.audio_marker.and_then(|m| m.controller).is_some_and(|c| index.media_locations.contains_key(&c))));
 }

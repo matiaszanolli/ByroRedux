@@ -128,9 +128,10 @@ pub struct PlacedRef {
     /// the interior room-to-room visibility graph. Pre-#412 this was
     /// silently dropped so any vault using portals couldn't cull.
     pub portals: Vec<PortalLink>,
-    /// LIGH radius override from the REFR's `XRDS` sub-record. When
-    /// `Some`, overrides the base LIGH record's radius for per-ref
-    /// light tuning (bulb placement, lantern fine-tune).
+    /// The REFR's `XRDS` radius. On a light it overrides the base LIGH
+    /// record's radius for per-ref tuning (bulb placement, lantern
+    /// fine-tune); on a New Vegas audio marker it is the radius of the
+    /// marker's area ([`Self::audio_marker`], #6882).
     pub radius_override: Option<f32>,
     /// Alternate texture set from the REFR's `XATO` sub-record — a
     /// TXST FormID that overrides the base mesh's NIF-authored textures
@@ -264,6 +265,11 @@ pub struct PlacedRef {
     /// block, `XMRK` then `FNAM`); `None` when the reference is no map
     /// marker.
     pub map_marker: Option<u8>,
+    /// New Vegas — the reference's audio-marker block (`MMRK`, then `FULL`, `CNAM`, `BNAM`, `MNAM`,
+    /// `NNAM`; xEdit `wbDefinitionsFNV.pas:7616-7623`): the area of [`Self::radius_override`]
+    /// around it plays its controller's media sets (Game Music MUS-SRC-005, #6882). `None` when the
+    /// reference is no audio marker.
+    pub audio_marker: Option<AudioMarker>,
     /// `XEZN` — the reference's own `ECZN` (CK: a reference can be tagged
     /// with an encounter zone of its own); `None` falls back to its cell's
     /// [`CellData::encounter_zone_form`](crate::esm::cell::CellData::encounter_zone_form). `CalculateEncounterLevel` reads it.
@@ -318,9 +324,22 @@ impl PlacedRef {
             starts_unconscious: false,
             ragdoll_pose: Vec::new(),
             map_marker: None,
+            audio_marker: None,
             encounter_zone_form: None,
         }
     }
+}
+
+/// A New Vegas audio marker's block on its placed reference (#6882).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct AudioMarker {
+    /// `CNAM` — the `ALOC` media location controller.
+    pub controller: Option<u32>,
+    /// `BNAM` bit 0 — "Use Controller Values".
+    pub use_controller_values: bool,
+    /// `MNAM` / `NNAM` — the layer 2 and layer 3 triggers, as authored (0.33 / 0.67 on every vanilla
+    /// marker; xEdit's default is 100).
+    pub layer_triggers: [f32; 2],
 }
 
 /// One 28-byte entry of a placement's `XRGD` ragdoll pose (#5015).

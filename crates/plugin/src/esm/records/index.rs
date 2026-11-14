@@ -16,7 +16,7 @@ use super::{
     HdptRecord,
     IdleRecord, ImadRecord, LctnRecord, ImgsRecord, ImodRecord, InfoRecord, IpctRecord, IpdsRecord, ItemRecord,
     GdryRecord, LeveledList, LgtmRecord, LoadScreenRecord, LoadScreenTransform, MesgRecord, MgefRecord,
-    MediaSetRecord, MinimalEsmRecord, MuscRecord, MustRecord, RadiationStageRecord, ResolvedLoadScreenModel,
+    DefaultMusic, MediaLocationRecord, MediaSetRecord, MinimalEsmRecord, MuscRecord, MustRecord, RadiationStageRecord, ResolvedLoadScreenModel,
     NaviRecord, NavmRecord,
     NpcRecord, OtftRecord, PackRecord, PerkRecord, ProjRecord, QustRecord, RaceRecord, RegnRecord,
     RepuRecord, ScenRecord, ScriptRecord, SlgmRecord, SmNodeRecord, SounRecord, SpelRecord,
@@ -429,6 +429,9 @@ pub struct EsmIndex {
     /// non-zero, which holds back random NPC conversations (CK *Scenes*, *SetSceneIsComplex*). `None`
     /// before a merge and on games without a `DOBJ`; a later plugin's entry replaces an earlier one's.
     pub complex_scene_object: Option<u32>,
+    /// The Fallout 3 / New Vegas `DOBJ` music slots (Default, Battle, Death, Success, Level Up; Game
+    /// Music MUS-SRC-003, #6870). `None` on other games; a later plugin's `DOBJ` replaces an earlier one's.
+    pub default_music: Option<DefaultMusic>,
     /// Skyrim+ `DLBR` dialogue branches, keyed by form id — the
     /// Top-Level / Blocking structure `DialRecord::branch` points into
     /// (#5037). Empty on Oblivion / FO3 / FNV.
@@ -604,8 +607,9 @@ pub struct EsmIndex {
     // pattern.
     //
     // Audio metadata (11):
-    /// `ALOC` audio location controller.
-    pub audio_locations: HashMap<u32, MinimalEsmRecord>,
+    /// `ALOC` media location controller (FNV): the media sets an audio marker's area plays
+    /// (Game Music MUS-SRC-005, #6882).
+    pub media_locations: HashMap<u32, MediaLocationRecord>,
     /// `ANIO` animation object.
     pub animation_objects: HashMap<u32, MinimalEsmRecord>,
     /// `ASPC` acoustic space.
@@ -1083,7 +1087,7 @@ impl EsmIndex {
             map_category!("placed_object_keywords", placed_object_keywords),
             map_category!("attraction_rules", attraction_rules),
             // #810 / FNV-D2-NEW-03 — long-tail minimal stubs.
-            map_category!("audio_locations", audio_locations),
+            map_category!("media_locations", media_locations),
             map_category!("animation_objects", animation_objects),
             map_category!("acoustic_spaces", acoustic_spaces),
             map_category!("sound_echoes", sound_echoes),
@@ -1535,6 +1539,9 @@ impl EsmIndex {
     pub fn merge_from(&mut self, mut other: EsmIndex) {
         if other.complex_scene_object.is_some() {
             self.complex_scene_object = other.complex_scene_object;
+        }
+        if other.default_music.is_some() {
+            self.default_music = other.default_music;
         }
         // M41.0 Phase 1b — preserve the latest plugin's game variant on the
         // merged index. Multi-plugin loads always share a single game in
@@ -2199,6 +2206,11 @@ mod tests {
             (
                 "complex_scene_object",
                 "scalar read from the DOBJ `CMPX` entry; the DOBJ record itself is counted in `default_objects`",
+            ),
+            // #6870 — the five music slots of the same `DOBJ`, another scalar read out of one record.
+            (
+                "default_music",
+                "scalar read from the FO3/FNV DOBJ `DATA` music slots; the DOBJ record itself is counted in `default_objects`",
             ),
             // #6350 — a resolution side-table, not an independent record
             // map: lower-cased EditorID → winning FormID, maintained by

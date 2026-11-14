@@ -666,6 +666,8 @@ fn parse_refr_group_inner(
             // M47.2 — `XMRK` opens the map-marker block; its `FNAM` is the
             // marker's flags.
             let mut map_marker: Option<u8> = None;
+            // #6882 — `MMRK` opens the New Vegas audio-marker block.
+            let mut audio_marker: Option<AudioMarker> = None;
             let mut encounter_zone_form: Option<u32> = None;
             // SCR-D7-01 / #1737 — the REFR's own `VMAD` (Skyrim+
             // objectReference override scripts), decoded so the cell loader
@@ -955,6 +957,19 @@ fn parse_refr_group_inner(
                     b"FNAM" if map_marker.is_some() && !sub.data.is_empty() => {
                         map_marker = Some(sub.data[0]);
                     }
+                    b"MMRK" => audio_marker = Some(AudioMarker::default()),
+                    b"CNAM" | b"BNAM" | b"MNAM" | b"NNAM" if audio_marker.is_some() => {
+                        let marker = audio_marker.as_mut().expect("checked above");
+                        match &sub.sub_type {
+                            b"CNAM" => {
+                                marker.controller =
+                                    r.u32().ok().map(|fid| reader.remap_form_id(fid)).filter(|&fid| fid != 0)
+                            }
+                            b"BNAM" => marker.use_controller_values = r.u32().is_ok_and(|flags| flags & 1 != 0),
+                            b"MNAM" => marker.layer_triggers[0] = r.f32().unwrap_or_default(),
+                            _ => marker.layer_triggers[1] = r.f32().unwrap_or_default(),
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1015,6 +1030,7 @@ fn parse_refr_group_inner(
                         && header.flags & FLAG_STARTS_UNCONSCIOUS != 0,
                     ragdoll_pose,
                     map_marker,
+                    audio_marker,
                     encounter_zone_form,
                 });
             }

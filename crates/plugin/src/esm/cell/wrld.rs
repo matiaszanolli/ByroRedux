@@ -155,6 +155,12 @@ pub(crate) fn parse_wrld_group(
                         b"ZNAM" if sub.data.len() >= 4 => {
                             record.default_music = read_form_id(reader, &sub.data);
                         }
+                        // SNAM — Oblivion's music category enum (Default / Public / Dungeon; xEdit
+                        // `wbDefinitionsCommon.pas:7976-7983`), not a FormID: kept raw (#6870).
+                        b"SNAM" if game == GameKind::Oblivion && sub.data.len() == 4 => {
+                            record.music_category =
+                                Some(u32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]));
+                        }
                         // NAM3 / NAM4 — LOD-water type FormID + LOD-water
                         // height, the distant-LOD-ring counterparts of
                         // NAM2 / DNAM. FO3-and-later; Oblivion authors

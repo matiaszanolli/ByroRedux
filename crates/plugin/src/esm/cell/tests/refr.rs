@@ -825,6 +825,26 @@ fn parse_refr_extracts_xrds_radius_override() {
     assert_eq!(r.radius_override, Some(256.0));
 }
 
+/// #6882 — a New Vegas audio marker keeps its controller, flag and layer triggers; a `CNAM` outside
+/// the `MMRK` block is not read as one.
+#[test]
+fn parse_refr_extracts_the_audio_marker_block() {
+    let (cnam, bnam, mnam, nnam, xrds) =
+        (0x0014_B5A1u32.to_le_bytes(), 1u32.to_le_bytes(), 0.33f32.to_le_bytes(), 0.67f32.to_le_bytes(), 5000f32.to_le_bytes());
+    let record = build_refr_with_subs(
+        0xBEEF,
+        &[(b"MMRK", &[]), (b"FULL", b"Goodsprings\0"), (b"CNAM", &cnam), (b"BNAM", &bnam), (b"MNAM", &mnam), (b"NNAM", &nnam), (b"XRDS", &xrds)],
+    );
+    let r = parse_one_refr(&record);
+    let marker = r.audio_marker.expect("an MMRK reference is an audio marker");
+    assert_eq!(marker.controller, Some(0x0014_B5A1));
+    assert!(marker.use_controller_values);
+    assert_eq!(marker.layer_triggers, [0.33, 0.67]);
+    assert_eq!(r.radius_override, Some(5000.0), "the marker's area");
+    let plain = parse_one_refr(&build_refr_with_subs(0xBEEF, &[(b"CNAM", &cnam)]));
+    assert_eq!(plain.audio_marker, None);
+}
+
 /// Regression for #971 / FO4-D4-NEW-08 — XMSP populates
 /// `material_swap_ref` so the cell loader can resolve the per-REFR
 /// MSWP table at spawn time. Pre-fix the arm was missing and every
