@@ -1662,7 +1662,7 @@ mod activate_choices {
     #[test]
     fn activate_choice_runs_its_entry() {
         let mut details = label("Deactivate");
-        details.script = Some(robotics_expert_script());
+        details.script = Some(Box::new(robotics_expert_script()));
         let idx = index(GameKind::Fallout3NV, vec![perk(PERK, vec![activate_entry(0, 0, fnv::ACTIVATE, details, vec![])])]);
         let (mut world, player, target) = activation_world(&idx);
         // What the ObScript host reads and writes on a booted FO3 / FNV world.

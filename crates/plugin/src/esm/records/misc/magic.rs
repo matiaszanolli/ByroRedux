@@ -235,7 +235,9 @@ pub struct PerkEntryDetails {
     /// `EPF2` "Button Label", resolved: a string on FO3 / FNV, an lstring on Skyrim and Fallout 4.
     pub button_label: String,
     /// The FO3 / FNV activate entry's embedded script (`SCHR` / `SCDA` / `SCTX` / locals / references).
-    pub script: Option<ScriptRecord>,
+    /// Boxed: only a few FO3 / FNV activate entries carry one, and inline it made every
+    /// `PerkEntryBody` (Quest and Ability included) several hundred bytes (clippy::large_enum_variant).
+    pub script: Option<Box<ScriptRecord>>,
 }
 
 /// One body of a `PRKE`/`PRKF` perk entry block. The block opens with
@@ -735,7 +737,7 @@ pub fn parse_perk(
                 {
                     if game == GameKind::Fallout3NV && !script_subs.is_empty() {
                         if let PerkEntryBody::EntryPoint { details, .. } = &mut body {
-                            details.script = embedded_script_at(form_id, &script_subs, 0, remap).0;
+                            details.script = embedded_script_at(form_id, &script_subs, 0, remap).0.map(Box::new);
                         }
                     }
                     out.entries.push(PerkEntry {

@@ -561,8 +561,8 @@ pub enum Effect {
     /// M47.2 — `Debug.Notification(asText)` with a literal text.
     Notification { text: String },
     /// BIK-REQ-002 — `Game.PlayBink(asFileName, abInterruptible = false, abMuteAudio = true,
-    /// abMuteMusic = true, abLetterbox = true[, abIsNewGameBink = false])` (CK / Fallout 4 CK *PlayBink
-    /// - Game*): the movie is queued for the app's player and the script is frozen until it ends ("It
+    /// abMuteMusic = true, abLetterbox = true[, abIsNewGameBink = false])` (CK / Fallout 4 CK
+    /// *PlayBink - Game*): the movie is queued for the app's player and the script is frozen until it ends ("It
     /// will not return until the movie is over, or the user has canceled the movie").
     PlayBink {
         file: String,

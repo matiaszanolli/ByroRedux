@@ -236,6 +236,7 @@ fn verdict(
 /// Spawn hook: when the setting is on and the mesh qualifies, bind a generated
 /// height map and its UV scale into `handles`. A no-op otherwise, and always when
 /// the material already has a height map (authored, or Oblivion's alpha route).
+#[allow(clippy::too_many_arguments)] // The spawn site's material inputs and the two outputs it fills.
 pub(crate) fn bind_synthetic_height(
     world: &mut World,
     ctx: &mut VulkanContext,

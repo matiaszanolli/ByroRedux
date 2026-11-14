@@ -62,7 +62,7 @@ impl PerkActivateChoice {
                 PerkFunctionData::FormId(spell) if *spell != 0 => Some(*spell),
                 _ => None,
             },
-            script: details.script.clone().map(Arc::new),
+            script: details.script.clone().map(Arc::from),
         }
     }
 }

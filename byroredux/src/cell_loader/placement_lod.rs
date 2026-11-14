@@ -526,6 +526,9 @@ fn spawn_placement_lod_cell(
     })
 }
 
+/// Turns a STAT model path into the `(archive key, bytes)` of the distant mesh to draw, or `None` to skip it.
+type PickMesh<'a> = dyn Fn(&str) -> Option<(String, Vec<u8>)> + 'a;
+
 /// Spawn the distant meshes of already-parsed placement `groups` as one [`PlacementLodBlock`]: each group's
 /// base resolves to a STAT model, `pick_mesh` turns that model path into the `(archive key, bytes)` of the
 /// distant mesh to draw (or `None` to skip the group), and every placement instances it. Shared by Oblivion's
@@ -537,7 +540,7 @@ pub(super) fn spawn_placement_groups(
     tex_provider: &TextureProvider,
     wctx: &ExteriorWorldContext,
     groups: &[PlacementGroup],
-    pick_mesh: &dyn Fn(&str) -> Option<(String, Vec<u8>)>,
+    pick_mesh: &PickMesh<'_>,
 ) -> Option<PlacementLodBlock> {
     ctx.allocator.as_ref()?;
     // #6332 — the cell's sub-meshes stand or fall together: if the pool refuses one, the ones

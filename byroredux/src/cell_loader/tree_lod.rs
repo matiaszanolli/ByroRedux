@@ -426,8 +426,8 @@ pub(crate) fn drop_holed_trees(trees: &[TreeLodInstance], qx: i32, qy: i32, hole
     trees
         .iter()
         .filter(|tree| {
-            !super::lod_coverage::quad_cell_bit(qx, qy, tree.position[0], tree.position[1])
-                .is_some_and(|bit| hole_mask & bit != 0)
+            super::lod_coverage::quad_cell_bit(qx, qy, tree.position[0], tree.position[1])
+                .is_none_or(|bit| hole_mask & bit == 0)
         })
         .copied()
         .collect()

@@ -183,8 +183,8 @@ impl SpaceGraph {
         while let Some(at) = queue.pop_front() {
             let next = hops[&at] + 1;
             for &from in &self.entering[at] {
-                if !hops.contains_key(&from) {
-                    hops.insert(from, next);
+                if let std::collections::hash_map::Entry::Vacant(slot) = hops.entry(from) {
+                    slot.insert(next);
                     queue.push_back(from);
                 }
             }

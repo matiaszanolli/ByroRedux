@@ -268,6 +268,7 @@ fn apply_environment(
 /// ([`InstalledOutdoorEnvironment`]), and install. Recording here, not at each caller, keeps the
 /// record true however the environment arrived: a worldspace bootstrap, a cell's `XCCM`, a
 /// Show-Sky interior, or a forced-weather re-apply.
+#[allow(clippy::too_many_arguments)] // The record chain's pieces, passed apart so each caller lends what it holds.
 fn install_environment(
     world: &mut World,
     ctx: &mut VulkanContext,

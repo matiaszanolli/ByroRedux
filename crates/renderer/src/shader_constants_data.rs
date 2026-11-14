@@ -2164,7 +2164,7 @@ pub const COMBUSTION_PHASE_BAKE_WORKGROUP: u32 = 64;
 const _: () = {
     // The sim dispatches `LOCAL_GRID_DIM / LOCAL_SIM_WORKGROUP` groups per axis
     // with no remainder group.
-    assert!(LOCAL_GRID_DIM % LOCAL_SIM_WORKGROUP == 0);
+    assert!(LOCAL_GRID_DIM.is_multiple_of(LOCAL_SIM_WORKGROUP));
 };
 /// Width, in cells of the box, of the cross-fade at a box face: the local march
 /// fades its density out and the froxels fade theirs in over this distance, so

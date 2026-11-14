@@ -819,12 +819,16 @@ pub fn compose_vats_hit_chance(world: &World, player: EntityId, target: EntityId
     })
 }
 
+/// Each perk's entries, by perk FormID: the snapshot [`compose_death_leveled_lists`] takes before releasing the
+/// perk table.
+type PerkBodies = Vec<(u32, Vec<PerkBodyEntry>)>;
+
 /// The leveled lists `killer`'s perks add to `victim` on its death (PERK-HOOK-006): each `Add Leveled List`
 /// entry on the dialect's *Add Leveled List On Death* hook, at the rank held, whose condition tabs pass with the
 /// victim as the Target subject (tab 1: xEdit FNV `epcTarget`). In perk order, one row per entry. Empty when the
 /// world has no perk table or the dialect has no such hook.
 pub fn compose_death_leveled_lists(world: &World, killer: EntityId, victim: EntityId) -> Vec<u32> {
-    let (hook, held, bodies): (u8, Vec<(u32, u8)>, Vec<(u32, Vec<PerkBodyEntry>)>) = {
+    let (hook, held, bodies): (u8, Vec<(u32, u8)>, PerkBodies) = {
         let Some(table) = world.try_resource::<PerkEntryTable>() else {
             return Vec::new();
         };

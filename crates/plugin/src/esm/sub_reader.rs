@@ -134,7 +134,7 @@ impl<'a> SubReader<'a> {
     /// the cursor unmoved, rather than decoding a shorter valid-looking one (#6782).
     pub fn u32_array(&mut self) -> Result<Vec<u32>> {
         let rest = self.rest();
-        if rest.len() % 4 != 0 {
+        if !rest.len().is_multiple_of(4) {
             bail!(
                 "u32 array of {} bytes at offset {} is not a whole number of words",
                 rest.len(),

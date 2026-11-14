@@ -117,7 +117,6 @@ impl Catalog {
         let spaces = cells
             .cells
             .iter()
-            .map(|(key, cell)| (key, cell))
             .chain(cells.exterior_cells.iter().flat_map(|(ws, grid)| grid.values().map(move |cell| (ws, cell))))
             .chain(cells.worldspace_persistent_cells.iter());
         for (space, cell) in spaces {
