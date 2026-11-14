@@ -26,7 +26,7 @@ writes the missing design.
 | Menus, native pages and the pause they impose | [Game UI Integration — PRD](game-ui-integration.md#31-state-at-head) (§3.1 row 16) |
 | Sound playback and its tracks | none: the `audio` crate (M44) has no design document; Phase 0's design covers the movie's audio half |
 | The new-game route that starts the FNV intro | [Playable vertical slice](../engine/playable-vertical-slice.md#from-the-beginning--a-new-game-2026-11-11) |
-| Decoding, presentation, A/V sync | none yet: Phase 0 writes `docs/engine/video-playback.md` |
+| Decoding, presentation, A/V sync, start sequences | [Video playback](../engine/video-playback.md) (Phase 0, #6856) |
 | The Bink 2 decoders' format rules and their provenance | [`crates/bink2`](../../crates/bink2/README.md) (video) and [`crates/binkaudio`](../../crates/binkaudio/README.md) (sound): their specs (`docs/spec/`) and `CLEANROOM.md` |
 
 Normative terms **MUST**, **SHOULD** and **MAY** have their RFC 2119
@@ -119,15 +119,15 @@ the default INIs:
 | Skyrim SE | `Skyrim_Default.ini` names no movie | `BGS_Logo.bik`: **Phase 0: verify** where it is named |
 | Fallout 4 | `Fallout4_Default.ini` names no movie | Papyrus `PlayBink` with the new-game flag (Fallout 4 CK) |
 
-The engine's state at HEAD on 2026-11-11 (after Phases 1 and 2's first part):
+The engine's state at HEAD on 2026-11-13 (all phases built; design: [video-playback.md](../engine/video-playback.md)):
 
 | # | Piece | Today | Proof |
 |---|---|---|---|
 | 1 | ObScript `PlayBink` | FO3 / FNV / Oblivion: a `VideoRequest` carries the file and the four flags (Oblivion's one flag; the rest default). The string's own value leads the VM's argument list, so the flags are read from index 1 | `cmd_1114`, `crates/scripting/src/obscript_more/tail.rs`, registered `Games::Both`; `a_string_form_commands_text_value_leads_its_other_arguments`, `crates/scripting/src/obscript_vm.rs` |
 | 2 | Where a request goes | `step_video` hands it to the movie player, which opens the file under `Video` (any case, `..\` out of it), draws frames full screen, holds game time like the loading cover, ends on the last frame or on Escape / `video.skip` for an interruptable request | `VideoPlayer`, `byroredux/src/video.rs`; `step_video`, `byroredux/src/app_step.rs`; `docs/smoke-tests/fnv-new-game.sh` leg 0 |
-| 3 | Papyrus `Game.PlayBink` | No native | `rg -i playbink crates/scripting/src` finds only the ObScript files |
-| 4 | Start sequence (INI movies) | Not read | `rg -i sintrosequence` finds nothing outside the reference dumps |
-| 5 | Decoder | In process: Bink 1 (`BIKi`) video and audio through `mercs2_bink` (Q1, re-decided 2026-11-12); Bink 2 (`KB2g`, `KB2j`) video and sound through `byroredux-bink2` and `byroredux-binkaudio` (Q2, re-decided 2026-11-13), the first audio track; other revisions are reported Skipped. The mute and pause-music flags, and audio kept within a frame of the picture, are not done | `crates/video/src/lib.rs`, `crates/bink2`, `crates/binkaudio`; the ignored corpus test in `crates/video` |
+| 3 | Papyrus `Game.PlayBink` | Lowers to `Effect::PlayBink` (the VM evaluates a run-time name) with the CK's defaults and Fallout 4's new-game flag; the script freezes until the movie ends (`FragmentResumeCondition::MovieEnded`) | `prim_play_bink`, `crates/scripting/src/translate/effects/prims/world.rs`; `play_bink_freezes_the_run_until_the_movie_ends` |
+| 4 | Start sequence (INI movies) | `sIntroSequence` then `sMainMenuMovieIntro` from the install's default INI, else the executable's compiled-in default, queued once the boot load ends; `--skip-movies` skips them, a `--bench-frames` run unless `--start-movies` | `start_sequence`, `byroredux/src/video.rs`; `docs/smoke-tests/bik-start-sequence.sh` |
+| 5 | Decoder | In process: Bink 1 (`BIKi`) video and audio through `mercs2_bink` (Q1, re-decided 2026-11-12); Bink 2 (`KB2g`, `KB2j`) video and sound through `byroredux-bink2` and `byroredux-binkaudio` (Q2, re-decided 2026-11-13), the first audio track; other revisions are reported Skipped. The mute and pause-music flags hold the world's sound and the music (`AudioWorld::hold_for_movie`), and the picture follows the soundtrack's playback position | `crates/video/src/lib.rs`, `crates/bink2`, `crates/binkaudio`; the ignored corpus test in `crates/video` |
 
 The census is re-measured by Phase 0's checked-in corpus script; the HEAD
 table is replaced by `video.status` once Phase 2 ships entirely.
@@ -430,3 +430,4 @@ last frame.
 | 6 | 2026-11-12 | Owner-directed: Q1 re-decided: Bink 1 decodes in process through `mercs2_bink`, no FFmpeg at run time (BIK-DEC-005 reworded; §3 HEAD rows 2 and 5; §5 row 2; provenance note) | — |
 | 7 | 2026-11-13 | Owner-directed: Q2 re-decided: Bink 2 video decodes in process through the clean-room `byroredux-bink2` (BIK-DEC-003 reworded, moved to Phase 1, Bink 2 audio verify item; scope line; Related row; §3 Skipped row, census note, HEAD row 5; §6 rows 1–2; §7.1 Fallout 4 and Starfield; acceptance 1 and 4; decode-rate metric; provenance note) | — |
 | 8 | 2026-11-13 | Owner-directed: Q2 extended to Bink 2 sound through the clean-room `byroredux-binkaudio` (BIK-DEC-003 reworded: sound decodes, the no-sound rule and its verify item dropped; BIK-DEC-002 notes that tracks are language versions and the first plays; scope line; Related row; §3 census note and HEAD row 5; §6 row 1; Fallout 4 and Starfield in §7.1; acceptance 1 and 4; Q2 provenance note with the training-data disclosure) | — |
+| 9 | 2026-11-13 | §3 HEAD rows 3–5 refreshed for the built Papyrus native and freeze, the mute / pause hold and A/V lock, and the start sequences (Phases 0–3, #6856–#6859); Related row points to `video-playback.md` | — |
