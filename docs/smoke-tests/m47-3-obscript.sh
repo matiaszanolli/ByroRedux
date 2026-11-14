@@ -90,7 +90,10 @@ engine_pid=$!
 wait_log "$LOG_DIR/session.stderr" 'bench-hold:'
 sleep 3
 
-objects() { debug_command "obscript.objects 40" "$LOG_DIR/objects.log" || fail "obscript.objects unavailable"; }
+# Every row: the listing orders by runs, then FormID, and the session now carries 1124 scripted
+# references (persistent actors from beyond the cell among them), so a reference that has not run
+# yet (Sunny's trigger, before the walk) falls past any short limit.
+objects() { debug_command "obscript.objects 5000" "$LOG_DIR/objects.log" || fail "obscript.objects unavailable"; }
 effects() { debug_command "quest.effects $1" "$LOG_DIR/effects.log" || fail "quest.effects unavailable"; }
 row_for() { grep -E "ref $1 " "$LOG_DIR/objects.log" | head -1; }
 entity_of() { row_for "$1" | sed -E 's/.*entity ([0-9]+) .*/\1/'; }
