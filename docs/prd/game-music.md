@@ -1,6 +1,8 @@
 # Game Music — Product Requirements
 
-**Status**: SHIPPED (2026-11-14). Revision 11 settles MUS-SRC-002 from
+**Status**: SHIPPED (2026-11-14). Revision 12 settles Oblivion's
+precedence, fades, battle recovery and `StreamMusic` from `Oblivion.exe`
+(#6903). Revision 11 settles MUS-SRC-002 from
 `Fallout3.exe`: cell, then an exterior's worldspace, then Default Music; no
 region (#6900). Revision 10 settles MUS-SCR-005: a
 scripted track replaces Battle and Location (#6899). Revision 9 records Q3's follow-up done:
@@ -116,7 +118,7 @@ what is audible is the highest active layer plus any layer it mixes with.
 |---|---|---|---|
 | **Hold** | A movie whose pause-music flag is set | Pauses all of them: "the game's music will continue to play while the movie is running, otherwise it will be paused" ([GECK: PlayBink](https://geck.uesp.net/wiki/PlayBink), Notes) | The movie ends; every layer below resumes where it was |
 | **Sting** | Player death; player level-up (MUS-STG) | Pauses Battle and Location (MUS-STG-004) | The track ends |
-| **Script** | `PlayMusic` (Fallout 3 / New Vegas), `StreamMusic` (Oblivion) | Replaces Battle and Location (MUS-SCR-005, settled by #6899); a directive that gives way to Battle waits while Battle plays (MUS-CMB-004) | The track ends or a load (MUS-SCR, MUS-SAV); a cell change per MUS-SCR-003 and MUS-SCR-005 |
+| **Script** | `PlayMusic` (Fallout 3 / New Vegas), `StreamMusic` (Oblivion) | Replaces Battle and Location (MUS-SCR-005, settled by #6899); Battle ends an Oblivion stream (MUS-CMB-004, #6903) | The track ends or a load (MUS-SCR, MUS-SAV); a cell change per MUS-SCR-003 and MUS-SCR-005 |
 | **Battle** | The player in combat (Q2) | Replaces Location, crossfading (MUS-SEL-004) | Combat ends and the recovery time passes (MUS-CMB) |
 | **Location** | The player's cell, worldspace, region or audio marker (MUS-SRC) | — | Never; it changes as the player moves |
 
@@ -157,9 +159,8 @@ Two consequences shape the phases. First, New Vegas does not ship the five
 `Default*` folders its music types and cells name, nor the death and success
 stings its default objects name: on that install those directives are
 **Missing**, and its location and battle music comes from media sets alone.
-**Phase 0: verify** that the original is silent there too; settled by the
-GECK wiki's Music Type page (geckwiki.com, unreachable from this
-environment) or by listening in a `DefaultDungeon` cell such as `Vault19a`.
+The original is silent there too: a music type whose folder is absent
+stops the old track and opens nothing (settled from `Fallout3.exe`, #6900).
 Second, Fallout 3's default-object and worldspace sources and all but one
 of its cell sources resolve to shipped files and folders (the exception is
 `TenpennyLobbyMusic`, a `.wav` the install does not ship), so it is the
@@ -274,11 +275,12 @@ shipped behaviour is [music.md](../engine/music.md) and `music.status`.
   verify** how layers combine (crossfade or mix) and what the marker's
   layer trigger percentages mean; settled as MUS-SRC-005.
 - **MUS-SRC-008.** On Oblivion, the Location category MUST come from the
-  cell's `XCMT`, else the worldspace's `SNAM`, else the winning region's
-  `RDMD` by the region override and priority rule
-  ([CS: Regions](https://cs.uesp.net/wiki/Regions)). **Phase 0: verify**
-  this precedence; settled by observing a Default cell inside a region with
-  a non-Default `RDMD`.
+  cell's `XCMT`, else, for an exterior, the winning region's `RDMD` by the
+  region override and priority rule
+  ([CS: Regions](https://cs.uesp.net/wiki/Regions)), else the worldspace's
+  `SNAM`; a Default value at any step falls through to the next. Settled
+  from `Oblivion.exe`'s `TESObjectCELL::GetMusicType` (#6903,
+  [Music](../engine/music.md#3-the-location-layer-per-game)).
 - **MUS-SRC-009.** On Oblivion, Public MUST play `Data\Music\Public`,
   Dungeon `Data\Music\Dungeon`, and Default the folder or folders Q6
   decides. A Default cell does play music: "When used in a 'Default' cell,
@@ -317,10 +319,10 @@ shipped behaviour is [music.md](../engine/music.md) and `music.status`.
   **Phase 0: verify** the magnitude's meaning for a positive value.
 - **MUS-SEL-004.** A change of Location directive MUST crossfade over the
   directive's fade time: a New Vegas media set's crossfade fields (xEdit
-  `ENAM` / `FNAM`), otherwise the interim `REGN_AMBIENT_CROSSFADE_SECS` at
-  HEAD. **Phase 0: verify** Oblivion's and Fallout 3's fade and whether
-  `fASFadeInTime` / `fRegionLoopFadeInTime` in the default INI govern
-  music.
+  `ENAM` / `FNAM`), otherwise the game's: Fallout 3 / New Vegas
+  `iMusicTransitionInMS`; Oblivion 0.85 s out and 0.85 s in, and none on a
+  cell change, which switches at once (`Oblivion.exe`, #6903). The default
+  INIs' `fASFadeInTime` / `fRegionLoopFadeInTime` do not govern music.
 - **MUS-SEL-005.** Moving between two places with the same Location
   directive MUST NOT restart the track. Today region music meets this by
   FormID (`load.rs:782-785`).
@@ -334,18 +336,20 @@ shipped behaviour is [music.md](../engine/music.md) and `music.status`.
   controller's and a region's battle set.
 - **MUS-CMB-002.** After combat ends, the Battle layer MUST hold for a
   recovery time before the Location layer resumes: a New Vegas Battle
-  set's recovery time (xEdit `FNAM`). **Phase 0: verify** Oblivion's and
-  Fallout 3's delay; the default INIs carry no combat-music key.
+  set's recovery time (xEdit `FNAM`); Fallout 3's `fCombatMusicStopTime`.
+  Oblivion has none: its battle music ends when no actor targets the
+  player (`Oblivion.exe`, #6903).
 - **MUS-CMB-003.** A New Vegas Battle set's Intro MUST play on entering
   combat and its Outro on leaving it (xEdit `HNAM` / `INAM`). **Phase 0:
   verify** against the GECK wiki's Media Set page.
-- **MUS-CMB-004.** A Script directive MUST carry whether it gives way to
-  the Battle layer, set in the translate step, and the controller MUST
-  hold a giving-way Script directive while Battle plays. Oblivion's
-  translation sets it for `StreamMusic`, which "will also not override
-  combat music" ([CS: StreamMusic](https://cs.uesp.net/wiki/StreamMusic),
-  Notes). **Phase 0: verify** Fallout 3 and New Vegas `PlayMusic`; until
-  then their translation leaves it unset.
+- **MUS-CMB-004.** A Script directive MUST carry whether Battle ends it,
+  set in the translate step, and the controller MUST end such a directive
+  when Battle plays. Oblivion's translation sets it for `StreamMusic`,
+  which "will also not override combat music"
+  ([CS: StreamMusic](https://cs.uesp.net/wiki/StreamMusic), Notes): combat
+  switches the music to Battle and, when it ends, to the place's music, not
+  back to the stream (`Oblivion.exe`, #6903). Fallout 3 and New Vegas
+  `PlayMusic` leave it unset (#6899).
 
 ### 5.4 Stings (`MUS-STG`)
 
@@ -368,13 +372,15 @@ shipped behaviour is [music.md](../engine/music.md) and `music.status`.
   (MUS-SRC-010). Today it refuses them (§3.5 row 7).
 - **MUS-SCR-002.** A movie's sound MUST NOT replace or stop the Script
   layer. Today it plays on the script slot (§3.5 row 11).
-- **MUS-SCR-003.** Oblivion `StreamMusic` MUST play a quoted file relative
-  to the game folder, or a random track for the keywords `Public`,
-  `Explore`, `Dungeon` and `Random`, on the Script layer, and MUST hand
-  back to the Location layer when the track ends
-  ([CS: StreamMusic](https://cs.uesp.net/wiki/StreamMusic)). Today it is
-  not dispatched (§3.5 row 8). **Phase 0: verify** what a cell change does
-  to a streamed track.
+- **MUS-SCR-003.** Oblivion `StreamMusic` MUST play, on the Script layer,
+  a quoted file relative to the game folder (at once, then the Default
+  music), or for the keywords `Public`, `Explore` and `Dungeon` that
+  folder's tracks, and for `Random` one of four rolled categories
+  (Explore, Public, Dungeon, Explore), playing on after a track; `Battle`
+  is ignored. A stream MUST outlive a cell change into its own category
+  (a file's is Default) and end at any other
+  ([CS: StreamMusic](https://cs.uesp.net/wiki/StreamMusic); settled from
+  `Oblivion.exe`, #6903).
 - **MUS-SCR-004.** OBSE `GetCellMusicType` and `SetCellMusicType` MAY get
   catalog entries under LMC-SCR-004, reading and writing the cell's
   category ([CS: SetCellMusicType](https://cs.uesp.net/wiki/SetCellMusicType)).
@@ -644,3 +650,4 @@ and Oblivion's source coverage is published.
 | 9 | 2026-11-14 | Q3's follow-up delivered (#6904): a controller's Neutral / Ally / Friend / Enemy lists play by its conditional faction's relation to the player (Nexus wiki, 2014), ahead of its Location list; scenario 6's Goodsprings note updated | — |
 | 10 | 2026-11-14 | MUS-SCR-005 settled (#6899): `PlayMusic` replaces the cell's music (vanilla `MQ05Script`, `MQ11Script`, `VVault11ExterminationChairSCRIPT`, `VCG00`), so the Script layer replaces Battle and Location; §3.1 updated | — |
 | 11 | 2026-11-14 | MUS-SRC-002 settled (#6900) from `Fallout3.exe`: cell `XCMO` → an exterior's worldspace `ZNAM` → Default Music; no region `RDMO` (none authored), `RDMD` and `XCMT` dropped by the loaders; an absent `Default*` folder is silence in the original, so New Vegas's 0 % cell playable coverage is faithful; §3.3 and MUS-SRC-012 updated | — |
+| 12 | 2026-11-14 | Oblivion's verify items settled from `Oblivion.exe` (#6903): MUS-SRC-008 (cell → an exterior's region → worldspace, Default falling through), MUS-SEL-004 (0.85 s out, 0.85 s in; a cell change at once), MUS-CMB-002 (no recovery), MUS-CMB-004 (Battle ends a stream), MUS-SCR-003 (keywords play on, `Random` rolls a category, a file hands over to Default, a stream outlives a cell change into its own category) | — |

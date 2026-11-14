@@ -30,8 +30,10 @@ A **directive** is what translation produces and the controller plays:
   - **Silent**: the data asks for silence (`1NoMusic`, or no source at all);
   - **Unresolved**: a source this build does not translate, with the reason;
   - **Missing**: a path the install lacks;
-- its **loop** flag, **level** (linear), **fade** time and, for the Script layer,
-  whether it **gives way to battle** (MUS-CMB-004).
+- its **loop** flag, **level** (linear), **fade** time, and where they differ the fade
+  for **replacing** another directive (Oblivion's cell change is instant) and Oblivion's
+  **category**; for the Script layer, whether **Battle ends it** (MUS-CMB-004), whether it
+  **plays on** past a track, and what **follows** it (Oblivion `StreamMusic`, §4).
 
 The controller holds at most one directive per layer (PRD §3.1):
 
@@ -39,7 +41,7 @@ The controller holds at most one directive per layer (PRD §3.1):
 |---|---|---|
 | Hold | `AudioWorld::movie_hold().music_paused`, raised by a movie with the pause-music flag (BIK-PRES-005) | Every voice paused; resumed at the same position when the movie ends (MUS-MIX-002) |
 | Sting | The player's death (the player gains `Dead`), a level-up (`PendingMusicEvents`, pushed where the level is awarded) | Script, Battle and Location paused (MUS-STG-004) |
-| Script | `PlayMusic` (`PendingMusic`), `StreamMusic` | Replaces Battle and Location: a scripted track plays in their place, a scripted silence (`1NoMusic`) silences them (MUS-SCR-005, #6899); a giving-way directive is paused while Battle plays |
+| Script | `PlayMusic` (`PendingMusic`), `StreamMusic` | Replaces Battle and Location: a scripted track plays in their place, a scripted silence (`1NoMusic`) silences them (MUS-SCR-005, #6899); Battle ends an Oblivion stream |
 | Battle | `is_in_combat` for the player (Q2), held for the recovery time after it ends (MUS-CMB-002) | Location paused, crossfading (MUS-SEL-004) |
 | Location | The player's place (§3) | — |
 
@@ -69,12 +71,23 @@ also follows the audio-marker area the player stands in (§6).
 | Game | Order (first authored wins) | Default |
 |---|---|---|
 | Fallout 3, New Vegas | cell `XCMO` → worldspace `ZNAM` (an exterior's) → `DOBJ` Default Music (MUS-SRC-001, -002; #6900) | — |
-| Oblivion | cell `XCMT` → worldspace `SNAM` → winning region's `RDMD` (MUS-SRC-008); the category picks `Data\Music\Public`, `Dungeon` or, for Default, `Explore` (MUS-SRC-009, Q6) | Default |
+| Oblivion | cell `XCMT` (or an OBSE override) → an exterior's winning region's `RDMD` → worldspace `SNAM`, a Default value falling through (MUS-SRC-008, #6903); the category picks `Data\Music\Public`, `Dungeon` or, for Default, `Explore` (MUS-SRC-009, Q6) | Default |
 | Skyrim and later | **Unresolved** ("xWMA music waits on its own PRD", MUS-NG-001) | — |
 
 On Oblivion the winning region is the one the engine's region selection already picks
 (`select_active_region_sound`: override flag, then priority). A music type with no file
 is **Silent** (MUS-SRC-004).
+
+The Oblivion order is `Oblivion.exe`'s (#6903). `TESObjectCELL::GetMusicType` (`0x4cad00`)
+returns the cell's `ExtraCellMusicType` (extra `0xb`, which `XCMT` and OBSE's
+`SetCellMusicType` set); if that is 0 and the cell is an exterior, the music type of the
+sound region data (type 7) at the player's position; if that is 0, the worldspace's
+(`SNAM`, `TESWorldSpace+0x94`). Each step reads a value, so a Default one falls through,
+and an interior reads no region. The folder switch (`0x6a8e80`) maps 0 and 3 to
+`Explore\`, 1 to `Public\`, 2 to `Dungeon\` and 4 to `Battle\`. On a cell change
+(`0x66eaf0` → `0x6ab160`) the music keeps playing if the new type is the playing one;
+otherwise the old track stops and one of the new type's starts **at once**, with no fade:
+an Oblivion Location directive replaces another instantly.
 
 The Fallout 3 / New Vegas order is `Fallout3.exe`'s (#6900): `TESObjectCELL::GetMusicType`
 (`0x745460`) returns the cell's `ExtraCellMusicType` (`XCMO`), else, for an exterior cell,
@@ -104,10 +117,21 @@ either sign (MUS-SEL-003; #6902).
   previous scripted one; `PlayMusic 1NoMusic` is a Silent directive, which silences the
   music until the layer ends (New Vegas's `VVault11ExterminationChairSCRIPT` does exactly
   that).
-- **`StreamMusic "<file>" | Public | Explore | Dungeon | Random`** (Oblivion, opcode
-  `0x104e` in `Oblivion.exe`'s command table, a string-form command) plays a
-  quoted path relative to the game folder, or a random track of the named folder
-  (`Random`: one of the three), and gives way to battle music ("StreamMusic will also
+- **`StreamMusic "<file>" | Public | Explore | Dungeon | Random | Battle`** (Oblivion,
+  opcode `0x104e`, a string-form command; `Oblivion.exe` runs it at `0x509610`, #6903):
+  - a keyword makes its category the music's (`0x6acd10`, the 1.7 s transition of §7):
+    `Random` rolls one of four (Explore, Public, Dungeon, Explore, so Explore is twice as
+    likely). The music plays on from that folder after a track, as the update replays the
+    current type;
+  - a quoted path relative to the game folder plays at once (`0x6ab160`) as Default
+    music, so when it ends the Default music (`Explore\`) plays on;
+  - `Battle` is ignored: the update ends battle music whenever the player is not in
+    combat (`0x6ad9fc`), and in combat it is already playing.
+
+  A stream outlives a cell change into its own category (a path's is Default) and ends at
+  any other: the cell change compares types, not cells. Battle ends it: combat switches
+  the music to Battle (`0x6136b0` → `0x6acd10`), and when combat ends the place's music
+  returns, not the stream's; a path streamed in combat is dropped ("StreamMusic will also
   not override combat music", CS *StreamMusic*). A missing file is **Missing** and the
   playing track keeps playing (PRD §6 row 5).
 - **OBSE `GetCellMusicType` / `SetCellMusicType`** (Oblivion, opcodes `0x1617` / `0x19e5`
@@ -115,9 +139,8 @@ either sign (MUS-SEL-003; #6902).
   give a cell another one. The override wins over the cell's `XCMT` in the translate step
   and re-resolves Location at once; it lasts the session, like OBSE's change to a cell.
 - The layer ends when its track ends (a non-looping directive does not advance to a
-  next track: "at the end of the file, a new random music will be chosen according to
-  the current location", which is the Location layer's), on a cell change and on a
-  load (MUS-SAV-002).
+  next track), on a cell change and on a load (MUS-SAV-002); an Oblivion stream ends by
+  the rules above instead, a load counting as a cell change.
 - The movie's soundtrack is not on the Script layer: it has its own voice in the audio
   world (MUS-SCR-002, BIK-PRES-003).
 
@@ -130,7 +153,7 @@ the slideshow music. `VCG00` silences the game start the same way. While the Scr
 layer holds a track or a silence, Battle and Location are paused, and they resume when
 it ends. That the layer ends on a cell change is the engine's rule (the scripts are
 silent on it). `PlayMusic` does not give way to battle (the Fallout 3 scripts queue
-battle music themselves); `StreamMusic` does.
+battle music themselves); Battle ends a `StreamMusic` stream.
 
 ## 5. Battle and stings
 
@@ -138,7 +161,9 @@ battle music themselves); `StreamMusic` does.
   the game's battle directive: Fallout 3 / New Vegas the `DOBJ` Battle Music object,
   New Vegas the active controller's Battle sets first and the region's `RDSB` set next
   (§6), Oblivion `Data\Music\Battle`. When combat ends, the layer holds for the recovery
-  time (§7), then Location resumes.
+  time (§7), then Location resumes. Oblivion has none: it counts the actors whose combat
+  targets include the player (`0x6136b0` / `0x6136e0`) and switches back when the count
+  reaches 0.
 - **Stings (MUS-STG).** Death plays the Death Music object (Oblivion
   `Special\death.mp3`), a level-up the Level Up Music object (Oblivion
   `Special\success.mp3`, the "Success" track UESP lists for a level-up). Fallout 3 / New
@@ -216,8 +241,8 @@ may be Random. Nothing confirms that, so the engine plays a list's first set.
 
 | Value | Fallout 3 | New Vegas | Oblivion | Source |
 |---|---|---|---|---|
-| Crossfade between directives | 1 s | 1 s; a media set's layer crossfade time | 3 s (interim, #6903) | `iMusicTransitionInMS:Audio`, compiled-in default 1000 in `Fallout3.exe` (read 2026-11-13 by the pointer method, [video-playback.md §5](video-playback.md#5-start-sequences-bik-req-004--005)); neither default INI sets it. `fASFadeInTime` and `fRegionLoopFadeInTime` are the ambient-sound and region-loop fades, not music |
-| Battle recovery | 5 s | 3 s; a Battle set's recovery time | 5 s (interim, #6903) | GMST `fCombatMusicStopTime`: compiled-in 5.0 in `Fallout3.exe`, overridden to 3.0 by `FalloutNV.esm`; `Oblivion.exe` has no such setting |
+| Crossfade between directives | 1 s | 1 s; a media set's layer crossfade time | 0.85 s out, then 0.85 s in; a cell change at once (#6903) | `iMusicTransitionInMS:Audio`, compiled-in default 1000 in `Fallout3.exe` (read 2026-11-13 by the pointer method, [video-playback.md §5](video-playback.md#5-start-sequences-bik-req-004--005)); neither default INI sets it. `fASFadeInTime` and `fRegionLoopFadeInTime` are the ambient-sound and region-loop fades, not music. `Oblivion.exe` plays music through one DirectShow graph: a transition (`0x6acd10`) fades the old track out linearly over the first half of 1700 ms (`0x6a4`, the divisor `1700.0` at `0xa771c0`), starts the new track once the level is under 0.05, and fades it in over the second half; here the two halves overlap |
+| Battle recovery | 5 s | 3 s; a Battle set's recovery time | none (#6903) | GMST `fCombatMusicStopTime`: compiled-in 5.0 in `Fallout3.exe`, overridden to 3.0 by `FalloutNV.esm`; `Oblivion.exe` has no such setting and ends battle music when combat ends (§5) |
 | Default music level | 0.3 | 0.6 | 0.3 | `fDefaultMusicVolume` in the shipped default INI (Q4); Oblivion's `bMusicEnabled=0` maps to 0 |
 
 The level is the `audio.music_volume` setting (MUS-MIX-001). Its default is seeded from
@@ -267,12 +292,12 @@ not-saved list with its reason.
 | MUS-SRC-007 boundaries, layer triggers, mixing | vanilla data, Nexus wiki (2014) | boundaries are percentages of the radius; layers mix; the marker's own triggers: #6902 |
 | MUS-SEL-003 positive `ANAM` | — | #6902 |
 | MUS-SEL-004, MUS-CMB-002 (Fallout 3 / New Vegas) | executable defaults, `FalloutNV.esm` GMSTs | closed (§7) |
-| MUS-SEL-004, MUS-CMB-002 (Oblivion) | `Oblivion.exe` has no setting | #6903 |
+| MUS-SEL-004, MUS-CMB-002 (Oblivion) | `Oblivion.exe` (the music manager's transition and update, the combat-target count) | closed (#6903): 0.85 s out then in, a cell change at once; no recovery (§7) |
 | MUS-SRC-002 precedence, Fallout 3 `RDMD`, New Vegas silence (§3.4) | `Fallout3.exe` (`TESObjectCELL::GetMusicType`, the region and cell loaders, the music routine) | closed (#6900): cell → exterior's worldspace → Default Music, no region; `RDMD` / `XCMT` dropped; an absent folder is silence (§3) |
 | MUS-SCR-005, MUS-CMB-004 (`PlayMusic`) | vanilla scripts (`MQ05Script`, `MQ11Script`, `VVault11ExterminationChairSCRIPT`, `VCG00`) | closed (#6899): replaces; does not give way to battle; ends on a cell change (engine rule) |
 | MUS-STG-003, MUS-STG-004 | — | #6901 |
 | MUS-CMB-003 (New Vegas) intro / outro | xEdit labels, Nexus wiki (2014) | closed: Intro on entering combat, Outro on leaving it |
 | MUS-CMB-001 (New Vegas) controller vs region battle set; `NAM1` looping mode and forced relation | — | #6902 |
 | Q3: how the relation picks a list | Nexus wiki *Fallout New Vegas Music* (2014): by the conditional faction's relation to the player | closed (#6904); `NAM1`'s forced list undecoded |
-| MUS-SRC-008, MUS-SCR-003 (Oblivion) | — | #6903 |
+| MUS-SRC-008, MUS-SCR-003 (Oblivion) | `Oblivion.exe` (`GetMusicType`, the cell-change hook, `StreamMusic`) | closed (#6903): cell → region → worldspace, Default falling through; a stream outlives a cell change into its own category (§3, §4) |
 | MUS-SCR-004 (OBSE opcodes) | xOBSE `CommandTable.cpp` order, checked against five known OBSE opcodes | closed: `0x1617`, `0x19e5` |

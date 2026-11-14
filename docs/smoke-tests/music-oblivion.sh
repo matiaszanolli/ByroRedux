@@ -3,7 +3,8 @@
 #
 #   7. BrumaJGhastasHouse (Public) and SageGlenHollow (Dungeon) report Location from public\ and
 #      dungeon\; `StreamMusic Random` (0x104e) reports the Script layer playing one of the three
-#      folders, and a streamed file that does not exist reports Missing and leaves it playing.
+#      folders (a rolled category, #6903), and a streamed file that does not exist reports Missing
+#      and `StreamMusic Battle` is ignored, both leaving it playing.
 #      Death plays the Special\death.mp3 sting. OBSE GetCellMusicType (0x1617) answers the cell's
 #      category and SetCellMusicType (0x19e5) changes it, re-resolving Location (MUS-SCR-004).
 #
@@ -120,6 +121,10 @@ ask 'obscript.cmd none 104e t:"Data\Music\Special\nope.mp3"' >/dev/null
 sleep 1
 [[ "$(layer Script)" == *"Random (StreamMusic)"* ]] || fail "a missing StreamMusic file replaced the playing track ($(layer Script))"
 pass "a missing StreamMusic file leaves the streamed track playing"
+ask "obscript.cmd none 104e t:Battle" >/dev/null
+sleep 1
+[[ "$(layer Script)" == *"Random (StreamMusic)"* ]] || fail "StreamMusic Battle replaced the streamed track ($(layer Script))"
+pass "StreamMusic Battle is ignored: battle music follows combat (#6903)"
 
 # ── stings ───────────────────────────────────────────────────────────────────
 # The level-up sting is translated (Special\success.mp3, a unit test pins it) but has no driver here:

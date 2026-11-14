@@ -16,11 +16,15 @@ pub(crate) enum Place {
     Exterior { worldspace: String, grid: (i32, i32) },
 }
 
-/// The crossfade where a game names none: the interim region-music fade at HEAD (Oblivion, #6903).
+/// The crossfade where a game names none (Skyrim and later, whose music is Unresolved).
 pub(crate) const FALLBACK_FADE_SECS: f32 = 3.0;
+/// Oblivion.exe's music transition (`0x6acd10` with the update at `0x6ad030`, #6903): 1700 ms, the
+/// old track fading out over the first half and the new one in over the second.
+const OBLIVION_FADE_SECS: f32 = 1.7 / 2.0;
 /// `iMusicTransitionInMS:Audio`, compiled into `Fallout3.exe` as 1000 (read 2026-11-13).
 const FALLOUT_MUSIC_TRANSITION_MS: f32 = 1000.0;
-/// GMST `fCombatMusicStopTime`, compiled into `Fallout3.exe` as 5.0; also Oblivion's interim (#6903).
+/// GMST `fCombatMusicStopTime`, compiled into `Fallout3.exe` as 5.0. Oblivion has no recovery: its
+/// battle music ends when the last actor drops the player as a combat target (`0x6136e0`, #6903).
 const COMBAT_MUSIC_STOP_SECS: f32 = 5.0;
 
 impl Place {
@@ -85,6 +89,7 @@ impl Catalog {
                     / 1000.0,
                 index.game_setting_float("fCombatMusicStopTime").unwrap_or(COMBAT_MUSIC_STOP_SECS),
             ),
+            GameKind::Oblivion => (OBLIVION_FADE_SECS, 0.0),
             _ => (FALLBACK_FADE_SECS, COMBAT_MUSIC_STOP_SECS),
         };
         let mut markers: HashMap<String, Vec<Marker>> = HashMap::new();
@@ -296,20 +301,26 @@ impl Catalog {
             Place::Interior { .. } => None,
         };
         if self.game == GameKind::Oblivion {
+            // Oblivion.exe's `TESObjectCELL::GetMusicType` (`0x4cad00`, #6903): the cell's
+            // `ExtraCellMusicType` (XCMT, or an OBSE SetCellMusicType override, MUS-SCR-004), then
+            // for an exterior the region sound data at the player (RDMD), then the worldspace's SNAM.
+            // Each is read as a value, so a Default one falls through to the next (MUS-SRC-008).
+            let set = |v: u32| (v != 0).then_some(v);
             let region_category = || {
                 let entry = select_active_region_sound(&cell?.regions, &index.regions)?;
                 let RegionDataPayload::Sound { music_type, .. } = &entry.payload else { return None };
-                *music_type
+                music_type.and_then(set)
             };
-            // Cell XCMT → worldspace SNAM → region RDMD → Default (MUS-SRC-008, #6903); an OBSE
-            // SetCellMusicType override first (MUS-SCR-004).
-            let (value, via) = cell
-                .and_then(|c| overrides.get(&c.form_id).map(|v| (*v, "SetCellMusicType")))
-                .or_else(|| cell.and_then(|c| c.music_type_enum).map(|v| (u32::from(v), "cell XCMT")))
-                .or_else(|| worldspace.and_then(|w| w.music_category).map(|v| (v, "worldspace SNAM")))
-                .or_else(|| region_category().map(|v| (v, "region RDMD")))
+            let own = cell.and_then(|c| match overrides.get(&c.form_id) {
+                Some(v) => set(*v).map(|v| (v, "SetCellMusicType")),
+                None => c.music_type_enum.map(u32::from).and_then(set).map(|v| (v, "cell XCMT")),
+            });
+            let (value, via) = own
+                .or_else(|| worldspace.and(region_category()).map(|v| (v, "region RDMD")))
+                .or_else(|| worldspace.and_then(|w| w.music_category).and_then(set).map(|v| (v, "worldspace SNAM")))
                 .unwrap_or((0, "no category"));
-            return self.category(value, via);
+            // A cell change starts another category's music at once (`0x6ab160` stops the old track).
+            return Directive { category: Some(value), change_fade_secs: Some(0.0), ..self.category(value, via) };
         }
         // Fallout 3 / New Vegas: cell XCMO → worldspace ZNAM (an exterior's) → DOBJ Default Music
         // (#6900). Fallout3.exe's `TESObjectCELL::GetMusicType` (0x745460) reads the cell's
@@ -365,37 +376,53 @@ impl Catalog {
         Directive { recovery_secs: Some(self.recovery_secs), ..directive }
     }
 
-    /// Oblivion `StreamMusic` (MUS-SCR-003): a quoted path relative to the game folder, or a random
-    /// track of `Public`, `Explore`, `Dungeon`, or of all three (`Random`). It gives way to battle
-    /// music ("StreamMusic will also not override combat music", CS *StreamMusic*, MUS-CMB-004).
-    pub(crate) fn stream_music(&self, text: &str) -> Directive {
+    /// Oblivion `StreamMusic` (MUS-SCR-003), as Oblivion.exe runs it (`0x509610`, #6903):
+    /// - a keyword makes its category the music's: `Explore`, `Public`, `Dungeon`, or `Random` (a
+    ///   roll of four: Explore, Public, Dungeon, Explore), playing on from its folder after a track;
+    /// - a quoted path relative to the game folder plays once, at once, as Default music, then the
+    ///   Default music plays on;
+    /// - `Battle` is `None`: battle music follows combat, which drops it at once.
+    ///
+    /// Either outlives a cell change into its own category (`category`) and ends when Battle plays.
+    pub(crate) fn stream_music(&self, text: &str, roll: u64) -> Option<Directive> {
         let text = text.trim().trim_matches('"').trim();
         let source = Source::keyword(text, "StreamMusic");
-        let folder = |name: &str| self.files.resolve(&format!("{name}\\"));
-        let content = match text.to_ascii_lowercase().as_str() {
-            keyword @ ("public" | "explore" | "dungeon") => folder(keyword),
+        let keyword = |source: Source, category: u32, name: &str| Directive {
+            category: Some(category),
+            persists: true,
+            ends_on_battle: true,
+            ..self.directive(source, self.files.resolve(&format!("{name}\\")))
+        };
+        let directive = match text.to_ascii_lowercase().as_str() {
+            "explore" => keyword(source, 0, "explore"),
+            "public" => keyword(source, 1, "public"),
+            "dungeon" => keyword(source, 2, "dungeon"),
             "random" => {
-                let files: Vec<String> = ["public", "explore", "dungeon"]
-                    .into_iter()
-                    .filter_map(|name| match folder(name) {
-                        Content::Playlist(files) => Some(files),
-                        _ => None,
-                    })
-                    .flatten()
-                    .collect();
-                if files.is_empty() { Content::Missing("Data\\Music\\{Public,Explore,Dungeon}\\".to_string()) } else { Content::Playlist(files) }
+                let (category, name) = [(0, "explore"), (1, "public"), (2, "dungeon"), (3, "explore")][(roll % 4) as usize];
+                let mut directive = keyword(source, category, name);
+                directive.notes.push(format!("rolled {name}"));
+                directive
             }
+            "battle" => return None,
             _ => {
                 let path = text.replace('/', "\\");
                 let lower = path.to_ascii_lowercase();
                 let lower = lower.trim_start_matches(".\\");
-                match lower.strip_prefix("data\\music\\") {
+                let content = match lower.strip_prefix("data\\music\\") {
                     Some(rest) => self.files.resolve(&path[path.len() - rest.len()..]),
                     None => Content::Unresolved(format!("{text} is outside Data\\Music")),
+                };
+                let then = keyword(Source::keyword("Default", "StreamMusic"), 0, "explore");
+                Directive {
+                    category: Some(0),
+                    change_fade_secs: Some(0.0),
+                    ends_on_battle: true,
+                    then: Some(Box::new(then)),
+                    ..self.directive(source, content)
                 }
             }
         };
-        Directive { gives_way_to_battle: true, ..self.directive(source, content) }
+        Some(directive)
     }
 
     /// A sting's directive (MUS-STG-001, -002); the Success Music object is bound to no event
@@ -671,20 +698,30 @@ mod tests {
         (index, catalog)
     }
 
+    /// #6903 — Oblivion.exe's `GetMusicType` (`0x4cad00`): the cell, then an exterior's region,
+    /// then its worldspace; a Default value at any step falls through to the next.
     #[test]
-    fn oblivion_categories_pick_their_folders_cell_then_worldspace_then_region() {
-        let (index, catalog) = oblivion();
+    fn oblivion_categories_pick_their_folders_cell_then_region_then_worldspace() {
+        let (mut index, _) = oblivion();
+        index.cells.worldspaces.get_mut("tamriel").unwrap().music_category = Some(2);
+        index.cells.exterior_cells.get_mut("tamriel").unwrap().insert((2, 0), CellData { music_type_enum: Some(0), regions: vec![0x80], ..Default::default() });
+        index.cells.cells.insert("defaultinterior".into(), CellData { music_type_enum: Some(0), regions: vec![0x80], ..Default::default() });
+        let catalog = Catalog::new(&index, oblivion().1.files, None);
         let public = catalog.location(&index, &Place::Interior { cell: "brumajghastashouse".into() });
         assert_eq!((public.source.label.as_str(), public.source.via), ("Public", "cell XCMT"));
         assert_eq!(public.content, Content::Playlist(vec!["music\\public\\town_01.mp3".into()]));
         let dungeon = catalog.location(&index, &Place::Interior { cell: "sageglenhollow".into() });
         assert_eq!(dungeon.content, Content::Playlist(vec!["music\\dungeon\\dungeon_01.mp3".into()]));
-        let region = catalog.location(&index, &Place::Exterior { worldspace: "tamriel".into(), grid: (0, 0) });
-        assert_eq!((region.source.label.as_str(), region.source.via), ("Public", "region RDMD"));
-        let default = catalog.location(&index, &Place::Exterior { worldspace: "tamriel".into(), grid: (1, 0) });
-        assert_eq!(default.source.label, "Default");
-        assert_eq!(default.content, Content::Playlist(vec!["music\\explore\\atmosphere_01.mp3".into()]), "Q6: Default plays Explore");
-        assert_eq!(default.fade_secs, FALLBACK_FADE_SECS);
+        let exterior = |grid| catalog.location(&index, &Place::Exterior { worldspace: "tamriel".into(), grid });
+        let region = exterior((0, 0));
+        assert_eq!((region.source.label.as_str(), region.source.via), ("Public", "region RDMD"), "the region before the worldspace");
+        assert_eq!((exterior((2, 0)).source.label.as_str(), exterior((2, 0)).source.via), ("Public", "region RDMD"), "a Default XCMT falls through");
+        assert_eq!((exterior((1, 0)).source.label.as_str(), exterior((1, 0)).source.via), ("Dungeon", "worldspace SNAM"));
+        let interior = catalog.location(&index, &Place::Interior { cell: "defaultinterior".into() });
+        assert_eq!((interior.source.label.as_str(), interior.source.via), ("Default", "no category"), "an interior reads no region");
+        assert_eq!(interior.content, Content::Playlist(vec!["music\\explore\\atmosphere_01.mp3".into()]), "Q6: Default plays Explore");
+        assert_eq!((interior.category, interior.change_fade_secs, interior.fade_secs), (Some(0), Some(0.0), 0.85), "a cell change switches at once");
+        assert_eq!(catalog.recovery_secs, 0.0, "battle music ends with combat");
     }
 
     /// MUS-SCR-004 — a SetCellMusicType override wins over the cell's XCMT, and GetCellMusicType reads it.
@@ -701,16 +738,31 @@ mod tests {
         assert_eq!(Catalog::cell_category(&index, &place, &overrides), 2);
     }
 
+    /// #6903 — `StreamMusic` as Oblivion.exe's `0x509610` runs it.
     #[test]
     fn oblivion_battle_stings_and_stream_music() {
         let (index, catalog) = oblivion();
         assert_eq!(catalog.battle(&index, None, None).content, Content::Playlist(vec!["music\\battle\\battle_01.mp3".into()]));
         assert_eq!(catalog.sting(&index, Sting::LevelUp).unwrap().content, Content::Playlist(vec!["music\\special\\success.mp3".into()]));
-        let random = catalog.stream_music("Random");
-        assert!(random.gives_way_to_battle, "MUS-CMB-004");
-        assert!(matches!(&random.content, Content::Playlist(files) if files.len() == 3));
-        assert_eq!(catalog.stream_music("\"data\\music\\special\\success.mp3\"").content, Content::Playlist(vec!["music\\special\\success.mp3".into()]));
-        assert_eq!(catalog.stream_music("\"Data\\Music\\Special\\nope.mp3\"").outcome(), crate::music::directive::Outcome::Missing);
-        assert_eq!(catalog.stream_music("\"C:\\WINDOWS\\Media\\tada.wav\"").outcome(), crate::music::directive::Outcome::Unresolved);
+        let stream = |text: &str, roll| catalog.stream_music(text, roll).expect(text);
+        let dungeon = stream("Dungeon", 0);
+        assert_eq!((dungeon.category, dungeon.persists, dungeon.ends_on_battle), (Some(2), true, true), "MUS-CMB-004");
+        assert_eq!(dungeon.content, Content::Playlist(vec!["music\\dungeon\\dungeon_01.mp3".into()]));
+        let rolled: Vec<_> = (0..4).map(|roll| (stream("Random", roll).category, stream("Random", roll).content)).collect();
+        let folder = |file: &str| Content::Playlist(vec![file.to_string()]);
+        assert_eq!(rolled, [
+            (Some(0), folder("music\\explore\\atmosphere_01.mp3")),
+            (Some(1), folder("music\\public\\town_01.mp3")),
+            (Some(2), folder("music\\dungeon\\dungeon_01.mp3")),
+            (Some(3), folder("music\\explore\\atmosphere_01.mp3")),
+        ]);
+        assert_eq!(stream("Random", 1).source.label, "Random");
+        assert_eq!(catalog.stream_music("battle", 0), None, "battle music follows combat");
+        let file = stream("\"data\\music\\special\\success.mp3\"", 0);
+        assert_eq!(file.content, Content::Playlist(vec!["music\\special\\success.mp3".into()]));
+        assert_eq!((file.category, file.change_fade_secs, file.persists), (Some(0), Some(0.0), false), "a file plays once, at once, as Default");
+        assert_eq!(file.then.as_ref().map(|then| (then.category, then.persists)), Some((Some(0), true)), "then the Default music");
+        assert_eq!(stream("\"Data\\Music\\Special\\nope.mp3\"", 0).outcome(), crate::music::directive::Outcome::Missing);
+        assert_eq!(stream("\"C:\\WINDOWS\\Media\\tada.wav\"", 0).outcome(), crate::music::directive::Outcome::Unresolved);
     }
 }

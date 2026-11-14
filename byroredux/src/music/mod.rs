@@ -202,7 +202,12 @@ pub(crate) fn music_system(world: &World, dt: f32) {
         if let Some(types) = cell_music.as_mut() {
             types.current = category;
         }
+        // Oblivion: a stream outlives a place change into its own category only (#6903).
+        let place_category = directive.as_ref().and_then(|d| d.category).filter(|_| place != state.place);
         music.set(Layer::Location, directive, &mut out);
+        if let Some(category) = place_category {
+            music.place_category(category, &mut out);
+        }
         state.place = place;
         state.marker = marker;
         state.relation = relation;
@@ -227,12 +232,13 @@ pub(crate) fn music_system(world: &World, dt: f32) {
         .map(|mut pending| std::mem::take(&mut pending.0))
         .unwrap_or_default();
     if let Some(text) = streams.last() {
-        let directive = catalog.stream_music(text);
-        // A missing file leaves the playing track alone (PRD §6 row 5, MUS-SRC-012).
-        if directive.outcome() == directive::Outcome::Missing {
-            music.note(Layer::Script, &directive);
-        } else {
-            music.set(Layer::Script, Some(directive), &mut out);
+        let roll = music.roll(4);
+        match catalog.stream_music(text, roll) {
+            // `StreamMusic Battle`: Oblivion.exe's battle music follows combat (#6903).
+            None => log::info!("music: StreamMusic {text}: battle music follows combat; ignored"),
+            // A missing file leaves the playing track alone (PRD §6 row 5, MUS-SRC-012).
+            Some(directive) if directive.outcome() == directive::Outcome::Missing => music.note(Layer::Script, &directive),
+            Some(directive) => music.set(Layer::Script, Some(directive), &mut out),
         }
     }
 

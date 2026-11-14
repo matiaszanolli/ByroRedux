@@ -79,8 +79,20 @@ pub(crate) struct Directive {
     /// Linear level, before the music volume.
     pub(crate) level: f32,
     pub(crate) fade_secs: f32,
-    /// Script layer: paused while Battle plays (MUS-CMB-004).
-    pub(crate) gives_way_to_battle: bool,
+    /// The fade when this directive replaces another on its layer, where it is not `fade_secs`:
+    /// Oblivion switches at once on a cell change (#6903).
+    pub(crate) change_fade_secs: Option<f32>,
+    /// Oblivion's music type this directive stands for: a place's category, or a stream's (a
+    /// streamed file counts as Default). A stream outlives a place change into its own (#6903).
+    pub(crate) category: Option<u32>,
+    /// Script layer: Battle ends it (Oblivion `StreamMusic`, MUS-CMB-004, #6903).
+    pub(crate) ends_on_battle: bool,
+    /// Script layer: chooses another track when one ends rather than handing back to Location (an
+    /// Oblivion `StreamMusic` keyword, #6903).
+    pub(crate) persists: bool,
+    /// Script layer: what plays once this directive's track ends (an Oblivion streamed file hands
+    /// over to the Default music, #6903).
+    pub(crate) then: Option<Box<Directive>>,
     /// Battle layer: how long it holds after combat ends (MUS-CMB-002).
     pub(crate) recovery_secs: Option<f32>,
     /// Battle layer: played once on entering and on leaving combat (MUS-CMB-003).
@@ -98,7 +110,11 @@ impl Directive {
             looping: false,
             level: 1.0,
             fade_secs: 0.0,
-            gives_way_to_battle: false,
+            change_fade_secs: None,
+            category: None,
+            ends_on_battle: false,
+            persists: false,
+            then: None,
             recovery_secs: None,
             intro: None,
             outro: None,
@@ -201,6 +217,11 @@ impl Shuffle {
         self.rng ^= self.rng << 25;
         self.rng ^= self.rng >> 27;
         self.rng.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// A roll in `0..n` (`StreamMusic Random`'s category, #6903).
+    pub(crate) fn roll(&mut self, n: u64) -> u64 {
+        self.random() % n.max(1)
     }
 
     /// The next track of a playlist of `len`.

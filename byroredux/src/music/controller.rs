@@ -71,6 +71,9 @@ struct LayerState {
     shuffle: Shuffle,
     /// The layer (or Hold) that suspends this one, while one does.
     suspended: Option<&'static str>,
+    /// The fade for the first track after a directive change, where it is not the directive's own
+    /// (`Directive::change_fade_secs`).
+    start_fade: Option<f32>,
 }
 
 impl LayerState {
@@ -180,20 +183,38 @@ impl MusicController {
             (None, None) => return,
             _ => {}
         }
-        let fade = directive
-            .as_ref()
-            .or(state.directive.as_ref())
-            .map_or(0.0, |d| d.fade_secs);
+        let fade = match &directive {
+            Some(new) => new.change_fade_secs.unwrap_or(new.fade_secs),
+            None => state.directive.as_ref().map_or(0.0, |old| old.fade_secs),
+        };
         state.stop_all(out, fade);
+        state.start_fade = directive.as_ref().and_then(|d| d.change_fade_secs);
         state.directive = directive;
         if let Some(d) = state.directive.clone() {
             self.report(layer, &d);
         }
     }
 
-    /// End the Script layer: a cell change or a load (MUS-SCR, MUS-SAV-002).
+    /// End the Script layer: a cell change or a load (MUS-SCR, MUS-SAV-002). An Oblivion stream is
+    /// left to [`Self::place_category`], which runs when the place changes.
     pub(crate) fn end_script(&mut self, out: &mut dyn MusicOutput) {
+        if self.state(Layer::Script).directive.as_ref().is_some_and(|d| d.category.is_some()) {
+            return;
+        }
         self.set(Layer::Script, None, out);
+    }
+
+    /// Oblivion's place change (#6903): `0x6ab160` keeps the music whose type is the new place's
+    /// and replaces any other, so a stream outlives a change into its own category only.
+    pub(crate) fn place_category(&mut self, category: u32, out: &mut dyn MusicOutput) {
+        if self.state(Layer::Script).directive.as_ref().and_then(|d| d.category).is_some_and(|own| own != category) {
+            self.set(Layer::Script, None, out);
+        }
+    }
+
+    /// A roll in `0..n` from the Script layer's generator (`StreamMusic Random`).
+    pub(crate) fn roll(&mut self, n: u64) -> u64 {
+        self.layers[Layer::Script as usize].shuffle.roll(n)
     }
 
     /// Play a sting over Battle and Location (MUS-STG-004).
@@ -210,20 +231,22 @@ impl MusicController {
         self.step_battle(inputs, battle, out);
 
         let playing = |music: &Self, layer: Layer| music.state(layer).directive.as_ref().is_some_and(|d| d.outcome() == Outcome::Playing);
+        // Battle replaces an Oblivion stream: arriving in combat, or combat starting under it, ends
+        // it, and Location follows combat (Oblivion.exe `0x6acd10`, MUS-CMB-004, #6903).
+        if playing(self, Layer::Battle) && self.state(Layer::Script).directive.as_ref().is_some_and(|d| d.ends_on_battle) {
+            self.set(Layer::Script, None, out);
+        }
         // Top down, so a layer sees the higher layers as this frame left them (a sting that just
         // ended releases Location the same frame).
         for layer in Layer::ALL {
             let (sting_audible, battle_audible) = (playing(self, Layer::Sting), playing(self, Layer::Battle));
             // A scripted track replaces the music below it, and a scripted silence (`PlayMusic
-            // 1NoMusic`) silences it (MUS-SCR-005, #6899) — unless it gives way to Battle.
+            // 1NoMusic`) silences it (MUS-SCR-005, #6899).
             let script = self.state(Layer::Script).directive.as_ref();
-            let script_gives_way = script.is_some_and(|d| d.gives_way_to_battle);
-            let script_holds = script.is_some_and(|d| matches!(d.outcome(), Outcome::Playing | Outcome::Silent))
-                && !(script_gives_way && battle_audible);
+            let script_holds = script.is_some_and(|d| matches!(d.outcome(), Outcome::Playing | Outcome::Silent));
             let by = match layer {
                 _ if inputs.hold => Some("Hold"),
                 Layer::Script | Layer::Battle | Layer::Location if sting_audible => Some("Sting"),
-                Layer::Script if script_gives_way && battle_audible => Some("Battle"),
                 Layer::Battle | Layer::Location if script_holds => Some("Script"),
                 Layer::Location if battle_audible => Some("Battle"),
                 _ => None,
@@ -313,9 +336,10 @@ impl MusicController {
                 let ended = state.track.as_ref().is_some_and(|p| live && !d.looping && !out.active(p.voice));
                 if ended {
                     state.track = None;
-                    // A sting plays once; a scripted track hands back to Location (MUS-SCR-003).
-                    if matches!(layer, Layer::Sting | Layer::Script) {
-                        state.directive = None;
+                    // A sting plays once; a scripted track hands back to Location (MUS-SCR-003), or to
+                    // what follows it, or plays on (an Oblivion stream, #6903).
+                    if matches!(layer, Layer::Sting | Layer::Script) && !d.persists {
+                        state.directive = d.then.as_deref().cloned();
                         return;
                     }
                 }
@@ -325,7 +349,8 @@ impl MusicController {
                     let voice = layer.voice(0);
                     // A one-track playlist loops its track (Q1); so does a looping directive.
                     let looping = d.looping || tracks.len() == 1 && !matches!(layer, Layer::Sting | Layer::Script);
-                    if out.play(voice, &key, d.level, d.fade_secs, looping) {
+                    let fade = state.start_fade.take().unwrap_or(d.fade_secs);
+                    if out.play(voice, &key, d.level, fade, looping) {
                         state.track = Some(Playing { key, voice, clock: 0.0 });
                     } else {
                         let missing = Directive { content: Content::Missing(key), ..d };
@@ -349,12 +374,13 @@ impl MusicController {
                     None => (0.0, true),
                 };
                 state.stems.resize(stems.len(), None);
+                let start_fade = state.start_fade.take().unwrap_or(d.fade_secs);
                 for (i, stem) in stems.iter().enumerate() {
                     let wanted = stem.night != day && depth <= stem.reach;
                     let voice = layer.voice(i as u32);
                     match (&state.stems[i], wanted) {
                         (None, true) => {
-                            if out.play(voice, &stem.key, d.level * stem.level, d.fade_secs, true) {
+                            if out.play(voice, &stem.key, d.level * stem.level, start_fade, true) {
                                 state.stems[i] = Some(Playing { key: stem.key.clone(), voice, clock: 0.0 });
                             }
                         }
@@ -422,19 +448,23 @@ pub(crate) mod tests {
         pub(crate) live: bool,
         pub(crate) voices: HashMap<u32, (String, bool)>,
         pub(crate) log: Vec<String>,
+        /// `play` / `stop` with their fades.
+        pub(crate) faded: Vec<String>,
     }
 
     impl MusicOutput for FakeOutput {
         fn live(&self) -> bool {
             self.live
         }
-        fn play(&mut self, voice: u32, key: &str, _level: f32, _fade: f32, looping: bool) -> bool {
+        fn play(&mut self, voice: u32, key: &str, _level: f32, fade: f32, looping: bool) -> bool {
             self.log.push(format!("play {voice} {key}{}", if looping { " loop" } else { "" }));
+            self.faded.push(format!("play {voice} {fade}"));
             self.voices.insert(voice, (key.to_string(), false));
             true
         }
-        fn stop(&mut self, voice: u32, _fade: f32) {
+        fn stop(&mut self, voice: u32, fade: f32) {
             self.log.push(format!("stop {voice}"));
+            self.faded.push(format!("stop {voice} {fade}"));
             self.voices.remove(&voice);
         }
         fn pause(&mut self, voice: u32, fade: f32) {
@@ -557,21 +587,76 @@ pub(crate) mod tests {
         assert_eq!(music.track(Layer::Location, &out).unwrap().1, 2.0, "the held seconds did not count");
     }
 
+    /// #6903 — Oblivion.exe's `0x6acd10`: combat replaces a stream, which does not come back; a
+    /// plain scripted track (`PlayMusic`, #6899) replaces Battle instead.
     #[test]
-    fn a_giving_way_script_directive_waits_while_battle_plays_and_a_plain_one_replaces_it() {
+    fn battle_ends_an_oblivion_stream_and_a_plain_scripted_track_replaces_battle() {
         let mut out = FakeOutput::default();
         let mut music = MusicController::seeded(1);
         let battle = playlist("Battle", &["music\\battle\\x.mp3"]);
         let fight = Inputs { dt: 0.1, in_combat: true, ..Default::default() };
-        music.set(Layer::Script, Some(Directive { gives_way_to_battle: true, ..playlist("Stream", &["music\\public\\p.mp3"]) }), &mut out);
+        music.set(Layer::Script, Some(Directive { ends_on_battle: true, ..playlist("Stream", &["music\\public\\p.mp3"]) }), &mut out);
+        music.step(frame(0.1), no_battle, &mut out);
+        assert!(out.voices.contains_key(&8), "the stream plays out of combat");
         music.step(fight, || battle.clone(), &mut out);
-        assert!(!out.voices.contains_key(&8), "the streamed track waits (MUS-CMB-004)");
+        assert!(music.directive(Layer::Script).is_none(), "combat ends the stream (MUS-CMB-004)");
+        assert!(!out.voices.contains_key(&8));
         assert_eq!(out.voices[&16], ("music\\battle\\x.mp3".to_string(), false), "Battle plays");
         music.set(Layer::Script, Some(playlist("Tension", &["music\\tension\\t.mp3"])), &mut out);
         music.step(fight, || battle.clone(), &mut out);
         assert_eq!(out.voices[&8], ("music\\tension\\t.mp3".to_string(), false));
         assert!(out.voices[&16].1, "PlayMusic replaces the Battle music (MUS-SCR-005, #6899)");
         assert!(music.status(&out)[3].contains("paused under Script"), "{:?}", music.status(&out));
+    }
+
+    /// #6903 — Oblivion.exe's cell change (`0x6ab160`): another category's music starts at once; a
+    /// stream outlives the change into its own category and ends otherwise, not on the cell leave.
+    #[test]
+    fn an_oblivion_place_change_switches_at_once_and_a_stream_outlives_its_own_category() {
+        let mut out = FakeOutput::default();
+        let mut music = MusicController::seeded(1);
+        let place = |label: &str, file: &str, category| Directive {
+            fade_secs: 0.85,
+            change_fade_secs: Some(0.0),
+            category: Some(category),
+            ..playlist(label, &[file])
+        };
+        music.set(Layer::Location, Some(place("Public", "music\\public\\p.mp3", 1)), &mut out);
+        music.step(frame(0.1), no_battle, &mut out);
+        music.set(Layer::Location, Some(place("Dungeon", "music\\dungeon\\d.mp3", 2)), &mut out);
+        music.step(frame(0.1), no_battle, &mut out);
+        assert_eq!(out.faded, ["play 24 0", "stop 24 0", "play 24 0"], "a cell change switches at once");
+        let stream = Directive { category: Some(2), persists: true, ..playlist("Dungeon", &["music\\dungeon\\e.mp3"]) };
+        music.set(Layer::Script, Some(stream), &mut out);
+        music.end_script(&mut out);
+        music.place_category(2, &mut out);
+        assert!(music.directive(Layer::Script).is_some(), "a Dungeon stream outlives a change into a Dungeon cell");
+        music.place_category(1, &mut out);
+        assert!(music.directive(Layer::Script).is_none(), "and ends in a Public one");
+    }
+
+    /// #6903 — after its track, a `StreamMusic` keyword plays another of its folder (Oblivion.exe's
+    /// update replays the current type), and a streamed file hands over to the Default music.
+    #[test]
+    fn an_oblivion_stream_keyword_plays_on_and_a_streamed_file_hands_over_to_default() {
+        let mut out = FakeOutput { live: true, ..Default::default() };
+        let mut music = MusicController::seeded(1);
+        let keyword = Directive { persists: true, ..playlist("Dungeon", &["music\\dungeon\\a.mp3", "music\\dungeon\\b.mp3"]) };
+        music.set(Layer::Script, Some(keyword), &mut out);
+        music.step(frame(0.1), no_battle, &mut out);
+        let first = out.voices[&8].0.clone();
+        out.voices.remove(&8);
+        music.step(frame(0.1), no_battle, &mut out);
+        assert_ne!(out.voices[&8].0, first, "the next track of the keyword's folder");
+        let default = Directive { persists: true, category: Some(0), ..playlist("Default", &["music\\explore\\x.mp3"]) };
+        let file = Directive { then: Some(Box::new(default)), category: Some(0), ..playlist("file", &["music\\special\\s.mp3"]) };
+        music.set(Layer::Script, Some(file), &mut out);
+        music.step(frame(0.1), no_battle, &mut out);
+        out.voices.remove(&8);
+        music.step(frame(0.1), no_battle, &mut out);
+        music.step(frame(0.1), no_battle, &mut out);
+        assert_eq!(music.directive(Layer::Script).map(|d| d.source.label.as_str()), Some("Default"));
+        assert_eq!(out.voices[&8].0, "music\\explore\\x.mp3");
     }
 
     /// #6899 — vanilla scripts rely on PlayMusic replacing what plays: `PlayMusic 1NoMusic`
