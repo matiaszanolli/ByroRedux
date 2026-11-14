@@ -1,6 +1,6 @@
 # Video playback
 
-**Status**: ACTIVE (2026-11-13). The design the
+**Status**: SHIPPED (2026-11-14). The design the
 [Bink video playback PRD](../prd/bink-video-playback.md) names as the owner of
 decoding, presentation and A/V sync (PRD *Related*). Tracking: #6855; phases
 #6856 (0, this document), #6857 (1), #6858 (2), #6859 (3). The PRD states the

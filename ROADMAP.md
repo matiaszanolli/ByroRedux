@@ -118,8 +118,6 @@ all-slots fence wait that dominates GPU-bound frames (#5365, the throughput half
   blocks the slice.
 - M-LIGHT (#6595, ACTIVE since 2026-11-02): Phases 0–2 closed; Phase 3 (#6603) has RLT-SHD-003/-007/-012
   built, and #6721's flat-floor control, A11 and A13 are measured, awaiting the owner (PRD rev 31).
-- Bink video playback (#6855): every phase closed 2026-11-14; the PRD stays ACTIVE until the owner decides
-  the decoders' provenance (#6907). Open verify items: #6896–#6898.
 - Texture streaming (M39, #6626): Phases 0–1 closed 2026-11-03; Phases 2–4 (#6629–#6631) built
   and measured on five games, open on the gates in its [Tier 5 row](#tier-5--renderer-polish-quality-not-capability).
 - Fire, smoke and explosions (#6531, [plan](docs/engine/fire-volumetrics-plan.md)):

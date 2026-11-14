@@ -51,6 +51,7 @@ byroredux/              Binary — game loop, scene setup, systems
     controller.rs            Hold / Sting / Script / Battle / Location layers, suspension, fades, music.status
     census_tests.rs          Ignored per-game source-coverage census (PRD scenario 1)
   src/game_ini.rs           The install's default INI: [section] key reads, plugin game detection
+  src/video.rs              Movie player: PlayBink requests, start sequences, presentation, the movie hold, video.status (docs/engine/video-playback.md)
   src/helpers.rs            add_child, world_resource_set utilities
   src/hud.rs                MenuXml HUD driver — per-game profiles Oblivion/FO3/FNV (--hud, triple-buffered uploads)
   src/scaleform_hud.rs      Scaleform HUD driver — Skyrim + Fallout 4 hudmenu.swf via --hud (transparent stage, hud.debug)
