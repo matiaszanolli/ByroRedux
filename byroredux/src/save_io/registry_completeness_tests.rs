@@ -827,6 +827,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("TextArguments", "M47.3 — the strings of the ObScript command being run, handed over for that one call"),
         ("MusicTracks", "M47.3 — the load order's music types (MUSC) by editor ID; rebuilt from the records at every content load"),
         ("PendingMusic", "M47.3 — tracks PlayMusic asked for, drained by the music system the frame they are raised"),
+        ("CellMusicTypes", "Game Music MUS-SCR-004 — OBSE SetCellMusicType overrides last the session, as OBSE's own change to a cell does; GetCellMusicType's answer is republished every place change"),
         ("PendingStreamMusic", "Game Music MUS-SCR-003 — StreamMusic requests, drained by the music system the frame they are raised"),
         ("MusicController", "Game Music Q5 / MUS-SAV-002 — a save keeps no music: Location and Battle re-resolve after a load, a scripted track ends"),
         ("MusicCatalog", "Game Music — the load order's music translated per content load, plus last frame's place, marker and death edge; re-derived after a load"),

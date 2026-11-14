@@ -85,6 +85,15 @@ pub fn classify_obscript_command(command: &str) -> Option<CompatibilityMatch> {
             "the xNVSE command namespace is recognized, but this command has no engine semantic mapping",
         ));
     }
+    if command.eq_ignore_ascii_case("GetCellMusicType")
+        || command.eq_ignore_ascii_case("SetCellMusicType")
+    {
+        return Some(native(
+            ExtenderFamily::Obse,
+            WORLD_PROJECTION_SERVICE,
+            "the music controller reads and writes the cell's music category (Game Music MUS-SCR-004)",
+        ));
+    }
     if command.eq_ignore_ascii_case("GetOBSEVersion")
         || command.eq_ignore_ascii_case("GetOBSERevision")
     {

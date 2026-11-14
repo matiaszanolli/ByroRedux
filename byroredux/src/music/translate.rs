@@ -265,7 +265,21 @@ impl Catalog {
     }
 
     /// The Location directive for `place` (MUS-SRC-001, -002, -004, -008, -009).
+    /// [`Self::location_with`] without OBSE overrides: the authored sources alone (the census, tests).
+    #[cfg(test)]
     pub(crate) fn location(&self, index: &EsmIndex, place: &Place) -> Directive {
+        self.location_with(index, place, &HashMap::new())
+    }
+
+    /// The cell's own Oblivion category, as OBSE `GetCellMusicType` reads it: a `SetCellMusicType`
+    /// override (by CELL FormID), else its `XCMT`, else Default (MUS-SCR-004).
+    pub(crate) fn cell_category(index: &EsmIndex, place: &Place, overrides: &HashMap<u32, u32>) -> u32 {
+        let Some(cell) = Self::cell(index, place) else { return 0 };
+        overrides.get(&cell.form_id).copied().or(cell.music_type_enum.map(u32::from)).unwrap_or(0)
+    }
+
+    /// [`Self::location`] with OBSE `SetCellMusicType` overrides, which win over the cell's `XCMT`.
+    pub(crate) fn location_with(&self, index: &EsmIndex, place: &Place, overrides: &HashMap<u32, u32>) -> Directive {
         if let Some(reason) = self.untranslated() {
             return Directive::unresolved(Source::keyword("location", "game"), reason);
         }
@@ -281,10 +295,11 @@ impl Catalog {
                 _ => None,
             });
         if self.game == GameKind::Oblivion {
-            // Cell XCMT → worldspace SNAM → region RDMD → Default (MUS-SRC-008, #6903).
+            // Cell XCMT → worldspace SNAM → region RDMD → Default (MUS-SRC-008, #6903); an OBSE
+            // SetCellMusicType override first (MUS-SCR-004).
             let (value, via) = cell
-                .and_then(|c| c.music_type_enum)
-                .map(|v| (u32::from(v), "cell XCMT"))
+                .and_then(|c| overrides.get(&c.form_id).map(|v| (*v, "SetCellMusicType")))
+                .or_else(|| cell.and_then(|c| c.music_type_enum).map(|v| (u32::from(v), "cell XCMT")))
                 .or_else(|| worldspace.and_then(|w| w.music_category).map(|v| (v, "worldspace SNAM")))
                 .or_else(|| region.and_then(|(_, category)| category).map(|v| (v, "region RDMD")))
                 .unwrap_or((0, "no category"));
@@ -631,6 +646,20 @@ mod tests {
         assert_eq!(default.source.label, "Default");
         assert_eq!(default.content, Content::Playlist(vec!["music\\explore\\atmosphere_01.mp3".into()]), "Q6: Default plays Explore");
         assert_eq!(default.fade_secs, FALLBACK_FADE_SECS);
+    }
+
+    /// MUS-SCR-004 — a SetCellMusicType override wins over the cell's XCMT, and GetCellMusicType reads it.
+    #[test]
+    fn an_obse_override_changes_the_cells_category() {
+        let (mut index, catalog) = oblivion();
+        index.cells.cells.get_mut("brumajghastashouse").unwrap().form_id = 0x42;
+        let place = Place::Interior { cell: "brumajghastashouse".into() };
+        let mut overrides = HashMap::new();
+        assert_eq!(Catalog::cell_category(&index, &place, &overrides), 1);
+        overrides.insert(0x42, 2);
+        let d = catalog.location_with(&index, &place, &overrides);
+        assert_eq!((d.source.label.as_str(), d.source.via), ("Dungeon", "SetCellMusicType"));
+        assert_eq!(Catalog::cell_category(&index, &place, &overrides), 2);
     }
 
     #[test]

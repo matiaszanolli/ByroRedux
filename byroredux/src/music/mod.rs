@@ -95,6 +95,8 @@ pub(crate) struct MusicCatalog {
     end_script: bool,
     /// The music volume last applied.
     volume: Option<f32>,
+    /// `CellMusicTypes::changes` last seen: an OBSE `SetCellMusicType` re-resolves Location.
+    cell_music_changes: u64,
 }
 
 impl byroredux_core::ecs::Resource for MusicCatalog {}
@@ -167,16 +169,27 @@ pub(crate) fn music_system(world: &World, dt: f32) {
     // an equal directive playing).
     let place = current_place(world);
     let marker = place.as_ref().zip(player_position).and_then(|(place, at)| catalog.marker_at(place, at));
-    if place != state.place || marker != state.marker {
+    let mut cell_music = world.try_resource_mut::<byroredux_scripting::obscript_more::CellMusicTypes>();
+    let cell_music_changes = cell_music.as_ref().map_or(0, |types| types.changes);
+    if place != state.place || marker != state.marker || cell_music_changes != state.cell_music_changes {
+        let empty = std::collections::HashMap::new();
+        let overrides = cell_music.as_ref().map_or(&empty, |types| &types.overrides);
         let directive = place.as_ref().map(|place| {
             marker
                 .and_then(|marker| catalog.marker_location(&index, &marker))
-                .unwrap_or_else(|| catalog.location(&index, place))
+                .unwrap_or_else(|| catalog.location_with(&index, place, overrides))
         });
+        // OBSE `GetCellMusicType` answers the player's cell's own category (MUS-SCR-004).
+        let category = place.as_ref().map_or(0, |place| Catalog::cell_category(&index, place, overrides));
+        if let Some(types) = cell_music.as_mut() {
+            types.current = category;
+        }
         music.set(Layer::Location, directive, &mut out);
         state.place = place;
         state.marker = marker;
+        state.cell_music_changes = cell_music_changes;
     }
+    drop(cell_music);
 
     // Script: a cell change or a load ends it; `PlayMusic` replaces it (MUS-SCR-001).
     if std::mem::take(&mut state.end_script) {

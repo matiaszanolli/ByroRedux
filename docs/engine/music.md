@@ -94,6 +94,10 @@ either sign (MUS-SEL-003; #6902).
   (`Random`: one of the three), and gives way to battle music ("StreamMusic will also
   not override combat music", CS *StreamMusic*). A missing file is **Missing** and the
   playing track keeps playing (PRD §6 row 5).
+- **OBSE `GetCellMusicType` / `SetCellMusicType`** (Oblivion, opcodes `0x1617` / `0x19e5`
+  by xOBSE's command-table order; MUS-SCR-004) read the player's cell's own category and
+  give a cell another one. The override wins over the cell's `XCMT` in the translate step
+  and re-resolves Location at once; it lasts the session, like OBSE's change to a cell.
 - The layer ends when its track ends (a non-looping directive does not advance to a
   next track: "at the end of the file, a new random music will be chosen according to
   the current location", which is the Location layer's), on a cell change and on a
@@ -222,3 +226,4 @@ not-saved list with its reason.
 | MUS-STG-003, MUS-STG-004 | — | #6901 |
 | MUS-CMB-001, MUS-CMB-003, Q3 (New Vegas) | xEdit labels | #6902; relation-only controllers #6904 |
 | MUS-SRC-008, MUS-SCR-003 (Oblivion) | — | #6903 |
+| MUS-SCR-004 (OBSE opcodes) | xOBSE `CommandTable.cpp` order, checked against five known OBSE opcodes | closed: `0x1617`, `0x19e5` |

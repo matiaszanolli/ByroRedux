@@ -129,6 +129,16 @@ fn ui_menu_alias_reads_only_the_active_visible_menu() {
     );
 }
 
+/// MUS-SCR-004 — OBSE's cell-music pair runs natively on the music controller.
+#[test]
+fn obse_cell_music_type_is_native() {
+    for command in ["GetCellMusicType", "setcellmusictype"] {
+        let found = classify_obscript_command(command).unwrap();
+        assert_eq!((found.family, found.disposition), (ExtenderFamily::Obse, CompatibilityDisposition::Native));
+        assert_eq!(found.service, Some(WORLD_PROJECTION_SERVICE));
+    }
+}
+
 #[test]
 fn legacy_obscript_version_probes_map_to_context_discovery() {
     let nvse = classify_obscript_command("getnvseversion").unwrap();

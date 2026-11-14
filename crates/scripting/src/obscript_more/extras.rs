@@ -77,6 +77,21 @@ pub struct PendingStreamMusic(pub Vec<String>);
 
 impl byroredux_core::ecs::Resource for PendingStreamMusic {}
 
+/// Oblivion's music categories as OBSE reads and writes them (`GetCellMusicType`,
+/// `SetCellMusicType`; Game Music MUS-SCR-004): `0` Default, `1` Public, `2` Dungeon.
+/// `NOT_SAVED_BY_DESIGN`: OBSE's change to a cell lasts the session, like the original's.
+#[derive(Debug, Default)]
+pub struct CellMusicTypes {
+    /// The player's cell's category, published by the music system each frame.
+    pub current: u32,
+    /// Categories `SetCellMusicType` gave cells, by CELL FormID; read before the cell's `XCMT`.
+    pub overrides: HashMap<u32, u32>,
+    /// Bumped on every change, so the music system re-resolves the Location layer.
+    pub changes: u64,
+}
+
+impl byroredux_core::ecs::Resource for CellMusicTypes {}
+
 /// A texture swap a script asked for (`SwapTexture <ref> "<slot>" "<texture>"`): the meshes under `target`
 /// whose texture is named `slot` take `texture`. `NOT_SAVED_BY_DESIGN`: drained by the render-side swap
 /// system the frame it is raised.
@@ -154,6 +169,7 @@ pub fn install(world: &mut World) {
     world.init_resource::<MusicTracks>();
     world.init_resource::<PendingMusic>();
     world.init_resource::<PendingStreamMusic>();
+    world.init_resource::<CellMusicTypes>();
     world.init_resource::<PendingTextureSwaps>();
     world.init_resource::<ReloadRequest>();
     world.init_resource::<AshPiles>();
@@ -275,6 +291,24 @@ fn stream_music(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue
     done(summary)
 }
 
+// CS *GetCellMusicType* (OBSE v0014): "Returns the music type of the player's current cell."
+fn get_cell_music_type(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
+    answer(world.try_resource::<CellMusicTypes>().map_or(0, |types| types.current) as f32)
+}
+
+// CS *SetCellMusicType cell:ref musicType:int* (OBSE v0021): "Sets the music type used in the
+// specified cell" — 0 Default, 1 Public, 2 Dungeon.
+fn set_cell_music_type(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
+    let (Some(cell), value) = (form_arg(args, 0).filter(|cell| *cell != 0), num(args, 1)) else { return Action::Declined };
+    if !(0.0..=2.0).contains(&value) || value.fract() != 0.0 {
+        return Action::Declined;
+    }
+    let Some(mut types) = world.try_resource_mut::<CellMusicTypes>() else { return Action::Declined };
+    types.overrides.insert(cell, value as u32);
+    types.changes += 1;
+    done(format!("SetCellMusicType {cell:08X} {value}"))
+}
+
 // `SwapTexture <ref> "<slot>" "<texture>"`: the end-slide screens' picture.
 fn swap_texture(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
     let strings = texts(world);
@@ -375,6 +409,11 @@ pub(crate) const EXTRAS_COMMANDS: &[Command] = &[
     Command { id: 0x11ff, games: Games::Fallout, needs_caller: false, handler: cmd_11ff },
     // `Oblivion.exe`'s command table: `StreamMusic` is 0x104e (the table reads `PlayMusic` as 0x11ff on Fallout3.exe).
     Command { id: 0x104e, games: Games::Oblivion, needs_caller: false, handler: stream_music },
+    // OBSE opcodes, xOBSE's `CommandTable.cpp` registration order from 0x1400 (the order that gives the
+    // five OBSE opcodes `obscript::push_known_call` decodes): GetCellMusicType 0x1617,
+    // SetCellMusicType 0x19e5 (MUS-SCR-004).
+    Command { id: 0x1617, games: Games::Oblivion, needs_caller: false, handler: get_cell_music_type },
+    Command { id: 0x19e5, games: Games::Oblivion, needs_caller: false, handler: set_cell_music_type },
     Command { id: 0x1269, games: Games::Fallout, needs_caller: false, handler: swap_texture },
     Command { id: 0x114d, games: Games::Oblivion, needs_caller: false, handler: cmd_114d },
     Command { id: 0x1211, games: Games::Fallout, needs_caller: false, handler: cmd_1211 },

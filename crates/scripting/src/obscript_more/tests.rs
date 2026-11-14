@@ -72,7 +72,7 @@ const FALLOUT: &[u16] = &[
 
 /// Oblivion command ids this module runs.
 const OBLIVION: &[u16] = &[
-    0x104e, 0x101b, 0x1024, 0x1031, 0x1032, 0x103e, 0x1040, 0x1045, 0x1053, 0x1055, 0x1058, 0x1063, 0x106e, 0x1070, 0x1074,
+    0x104e, 0x1617, 0x19e5, 0x101b, 0x1024, 0x1031, 0x1032, 0x103e, 0x1040, 0x1045, 0x1053, 0x1055, 0x1058, 0x1063, 0x106e, 0x1070, 0x1074,
     0x1075, 0x1076, 0x1077, 0x1082, 0x108f, 0x10a8, 0x10ae, 0x10af, 0x10b1, 0x10b5, 0x10bb, 0x10be, 0x10c1, 0x10c2,
     0x10c3, 0x10c4, 0x10c5, 0x10c6, 0x10c7, 0x10d1, 0x10d8, 0x10df, 0x10f8, 0x10f9, 0x10fb, 0x1109, 0x110d, 0x1116,
     0x111c, 0x1122, 0x1132, 0x1134, 0x1137, 0x1145, 0x1147, 0x114e, 0x1151, 0x1156, 0x1159, 0x115a, 0x115b, 0x115c,
@@ -542,6 +542,21 @@ fn play_music_names_a_silent_music_type_too() {
     world.insert_resource(MusicTracks::from_index(&index));
     assert!(is_done(&run(&world, 0x11ff, &refs(&[0x10]), &ctx(None))));
     assert_eq!(world.try_resource::<PendingMusic>().unwrap().0[0].file, "");
+}
+
+/// MUS-SCR-004 — OBSE `SetCellMusicType <cell> <0..2>` records an override and `GetCellMusicType`
+/// answers the player's cell's category the music system publishes.
+#[test]
+fn obse_cell_music_type_reads_and_writes_the_category() {
+    use crate::obscript_more::CellMusicTypes;
+    let (world, ..) = world(GameKind::Oblivion);
+    world.resource_mut::<CellMusicTypes>().current = 2;
+    assert_eq!(value(run(&world, 0x1617, &[], &ctx(None))), 2.0);
+    assert!(is_done(&run(&world, 0x19e5, &[ObScriptValue::Ref(0x1234), ObScriptValue::Num(1.0)], &ctx(None))));
+    let types = world.resource::<CellMusicTypes>();
+    assert_eq!((types.overrides.get(&0x1234), types.changes), (Some(&1), 1));
+    drop(types);
+    assert_eq!(run(&world, 0x19e5, &[ObScriptValue::Ref(0x1234), ObScriptValue::Num(3.0)], &ctx(None)), Action::Declined, "not a category");
 }
 
 /// MUS-SCR-003 — Oblivion's `StreamMusic` (0x104e, string form) queues its text for the music system.

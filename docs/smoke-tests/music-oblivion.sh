@@ -4,7 +4,8 @@
 #   7. BrumaJGhastasHouse (Public) and SageGlenHollow (Dungeon) report Location from public\ and
 #      dungeon\; `StreamMusic Random` (0x104e) reports the Script layer playing one of the three
 #      folders, and a streamed file that does not exist reports Missing and leaves it playing.
-#      Death plays the Special\death.mp3 sting.
+#      Death plays the Special\death.mp3 sting. OBSE GetCellMusicType (0x1617) answers the cell's
+#      category and SetCellMusicType (0x19e5) changes it, re-resolving Location (MUS-SCR-004).
 #
 #   docs/smoke-tests/music-oblivion.sh
 
@@ -100,6 +101,15 @@ pass "SageGlenHollow: $(layer Location)"
 start_engine public --cell BrumaJGhastasHouse
 wait_layer Location 20 "BrumaJGhastasHouse's music" '^Location: Playing — Public \(cell XCMT\) — music\\public\\'
 pass "BrumaJGhastasHouse: $(layer Location)"
+
+# ── OBSE GetCellMusicType / SetCellMusicType (MUS-SCR-004) ─────────────────
+ask "obscript.cmd none 1617" | grep -q -- '-> 1' || fail "GetCellMusicType does not answer Public (1) in a Public cell ($(ask "obscript.cmd none 1617" | grep -o '0x1617.*'))"
+ask "obscript.cmd none 19e5 r:00030066 2" >/dev/null
+wait_layer Location 10 "SetCellMusicType to re-resolve the cell" '^Location: Playing — Dungeon \(SetCellMusicType\) — music\\dungeon\\'
+ask "obscript.cmd none 1617" | grep -q -- '-> 2' || fail "GetCellMusicType does not read the override back"
+pass "OBSE SetCellMusicType BrumaJGhastasHouse 2: $(layer Location)"
+ask "obscript.cmd none 19e5 r:00030066 1" >/dev/null
+wait_layer Location 10 "the cell back to Public" '^Location: Playing — Public \(SetCellMusicType\)'
 
 # ── StreamMusic ──────────────────────────────────────────────────────────────
 ask "obscript.cmd none 104e t:Random" >/dev/null

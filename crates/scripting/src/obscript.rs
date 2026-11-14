@@ -350,6 +350,8 @@ fn push_known_call(
         (ObscriptDialect::Xnvse, 0x14b0) => "GetNumLoadedMods",
         (ObscriptDialect::Xnvse, 0x1586) => "GetNthModName",
         (ObscriptDialect::Obse, 0x1438) => "GetOBSEVersion",
+        (ObscriptDialect::Obse, 0x1617) => "GetCellMusicType",
+        (ObscriptDialect::Obse, 0x19e5) => "SetCellMusicType",
         (ObscriptDialect::Obse, 0x1651) => "IsModLoaded",
         (ObscriptDialect::Obse, 0x165e) => "GetModIndex",
         (ObscriptDialect::Obse, 0x16b7) => "GetOBSERevision",
@@ -370,6 +372,11 @@ fn decode_known_arguments(
     byte_offset: usize,
     decoded: &mut ObscriptDecode,
 ) -> Vec<ObscriptArgument> {
+    // Recognised for the compatibility report; their arguments (a cell, a category) are the VM's to
+    // read when the command runs (MUS-SCR-004).
+    if matches!(command, "GetCellMusicType" | "SetCellMusicType") {
+        return Vec::new();
+    }
     let expected = usize::from(matches!(
         command,
         "IsModLoaded" | "GetModIndex" | "GetNthModName"
@@ -573,6 +580,16 @@ mod tests {
         bytes.push(b'n');
         bytes.extend_from_slice(&value.to_le_bytes());
         bytes
+    }
+
+    /// MUS-SCR-004 — compiled OBSE `GetCellMusicType` (0x1617) is recognised for the report, with
+    /// no argument check (its arguments are the VM's).
+    #[test]
+    fn obse_cell_music_calls_are_recognised_in_bytecode() {
+        let compiled = conditional(&expression_call(0x1617));
+        let decoded = decode_extender_calls(&compiled, ObscriptDialect::Obse);
+        assert_eq!(decoded.calls.iter().map(|c| c.command).collect::<Vec<_>>(), ["GetCellMusicType"]);
+        assert!(decoded.diagnostics.is_empty(), "{:?}", decoded.diagnostics);
     }
 
     #[test]

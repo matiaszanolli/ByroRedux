@@ -369,6 +369,9 @@ pub fn analyze_obscript_bytecode_compatibility(
 }
 
 fn obscript_argument_count(command: &str) -> usize {
+    if command.eq_ignore_ascii_case("SetCellMusicType") {
+        return 2;
+    }
     usize::from(
         command.eq_ignore_ascii_case("IsModLoaded")
             || command.eq_ignore_ascii_case("GetModIndex")
