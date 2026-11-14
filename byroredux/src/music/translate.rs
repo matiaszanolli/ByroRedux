@@ -295,34 +295,32 @@ impl Catalog {
             Place::Exterior { worldspace, .. } => index.cells.worldspaces.get(worldspace),
             Place::Interior { .. } => None,
         };
-        let region = cell
-            .and_then(|cell| select_active_region_sound(&cell.regions, &index.regions))
-            .and_then(|entry| match &entry.payload {
-                RegionDataPayload::Sound { music, music_type, .. } => Some((*music, *music_type)),
-                _ => None,
-            });
         if self.game == GameKind::Oblivion {
+            let region_category = || {
+                let entry = select_active_region_sound(&cell?.regions, &index.regions)?;
+                let RegionDataPayload::Sound { music_type, .. } = &entry.payload else { return None };
+                *music_type
+            };
             // Cell XCMT → worldspace SNAM → region RDMD → Default (MUS-SRC-008, #6903); an OBSE
             // SetCellMusicType override first (MUS-SCR-004).
             let (value, via) = cell
                 .and_then(|c| overrides.get(&c.form_id).map(|v| (*v, "SetCellMusicType")))
                 .or_else(|| cell.and_then(|c| c.music_type_enum).map(|v| (u32::from(v), "cell XCMT")))
                 .or_else(|| worldspace.and_then(|w| w.music_category).map(|v| (v, "worldspace SNAM")))
-                .or_else(|| region.and_then(|(_, category)| category).map(|v| (v, "region RDMD")))
+                .or_else(|| region_category().map(|v| (v, "region RDMD")))
                 .unwrap_or((0, "no category"));
             return self.category(value, via);
         }
-        // Fallout 3 / New Vegas: cell XCMO → worldspace ZNAM → region RDMO → DOBJ Default Music.
-        // The region's `music` word also carries New Vegas's RDSB, a battle `MSET`: only a `MUSC`
-        // is a Location source.
+        // Fallout 3 / New Vegas: cell XCMO → worldspace ZNAM (an exterior's) → DOBJ Default Music
+        // (#6900). Fallout3.exe's `TESObjectCELL::GetMusicType` (0x745460) reads the cell's
+        // `ExtraCellMusicType`, else an exterior's worldspace music; a null result plays
+        // `GetDefaultObject(DefaultMusic)` (0x8e10b0). No region is consulted: the region loader
+        // keeps `RDMO` but no music path reads it, and drops `RDMD` (as the cell loader drops `XCMT`).
         if let Some(form) = cell.and_then(|c| c.music_type_form) {
             return self.music_type(index, form, "cell XCMO");
         }
         if let Some(form) = worldspace.and_then(|w| w.default_music) {
             return self.music_type(index, form, "worldspace ZNAM");
-        }
-        if let Some(form) = region.and_then(|(music, _)| music).filter(|form| index.music_types.contains_key(form)) {
-            return self.music_type(index, form, "region RDMO");
         }
         match index.default_music.and_then(|music| music.default) {
             Some(form) => self.music_type(index, form, "DOBJ Default Music"),
@@ -621,7 +619,26 @@ mod tests {
         let regional = catalog.battle(&index, Some(&place), None);
         assert_eq!((regional.source.label.as_str(), regional.source.via), ("musSetBattleRegion", "region RDSB"));
         let location = catalog.location(&index, &place);
-        assert_ne!(location.source.via, "region RDMO", "an RDSB battle set is no Location source");
+        assert_ne!(location.source.via, "region RDSB", "an RDSB battle set is no Location source");
+    }
+
+    /// #6900 — Fallout3.exe reads no region for location music: a region `RDMO` naming a music type
+    /// loses to the Default Music object, and an interior never takes a worldspace's music.
+    #[test]
+    fn a_region_music_type_is_no_location_source_on_fallout_3_and_new_vegas() {
+        use byroredux_plugin::esm::records::{RegionDataEntry, RegionDataKind, RegnRecord};
+        let (mut index, _) = fallout3();
+        let payload = RegionDataPayload::Sound { music: Some(2), music_type: Some(1), incidental: None, sounds: Vec::new() };
+        let entry = RegionDataEntry { kind: RegionDataKind::Sound, flags: 0, priority: 50, payload };
+        index.regions.insert(0x80, RegnRecord { entries: vec![entry], ..Default::default() });
+        index.cells.exterior_cells.get_mut("wasteland").unwrap().get_mut(&(0, 0)).unwrap().regions = vec![0x80];
+        index.cells.cells.insert("vault19a".into(), CellData { regions: vec![0x80], ..Default::default() });
+        index.cells.worldspaces.get_mut("wasteland").unwrap().default_music = Some(2);
+        let catalog = Catalog::new(&index, MusicFiles::new(["music\\explore\\a.mp3".to_string()]), None);
+        let exterior = catalog.location(&index, &Place::Exterior { worldspace: "wasteland".into(), grid: (0, 0) });
+        assert_eq!((exterior.source.label.as_str(), exterior.source.via), ("DefaultPublic", "worldspace ZNAM"));
+        let interior = catalog.location(&index, &Place::Interior { cell: "vault19a".into() });
+        assert_eq!((interior.source.label.as_str(), interior.source.via), ("DefaultExplore", "DOBJ Default Music"));
     }
 
     fn oblivion() -> (EsmIndex, Catalog) {

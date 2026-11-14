@@ -103,12 +103,10 @@ fn census(data: &std::path::Path, plugins: &[&str]) -> (Catalog, Vec<(&'static s
     for region in index.regions.values() {
         for entry in &region.entries {
             let byroredux_plugin::esm::records::RegionDataPayload::Sound { music, music_type, .. } = &entry.payload else { continue };
-            if let Some(form) = *music {
-                let outcome = match index.media_sets.get(&form) {
-                    Some(set) => catalog.battle_set(&index, set, "census").outcome(),
-                    None => catalog.music_type(&index, form, "census").outcome(),
-                };
-                add("region", outcome);
+            // New Vegas's RDSB battle sets; a Fallout 3 / New Vegas RDMO music type is no source
+            // (no music path reads it, #6900).
+            if let Some(set) = music.and_then(|form| index.media_sets.get(&form)) {
+                add("region", catalog.battle_set(&index, set, "census").outcome());
             } else if let Some(category) = music_type.filter(|_| catalog.game == byroredux_plugin::esm::reader::GameKind::Oblivion) {
                 add("region", catalog.category(category, "census").outcome());
             }

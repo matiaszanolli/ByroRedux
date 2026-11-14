@@ -1,6 +1,8 @@
 # Game Music — Product Requirements
 
-**Status**: SHIPPED (2026-11-14). Revision 10 settles MUS-SCR-005: a
+**Status**: SHIPPED (2026-11-14). Revision 11 settles MUS-SRC-002 from
+`Fallout3.exe`: cell, then an exterior's worldspace, then Default Music; no
+region (#6900). Revision 10 settles MUS-SCR-005: a
 scripted track replaces Battle and Location (#6899). Revision 9 records Q3's follow-up done:
 the faction-relation media sets play by the conditional faction's relation
 to the player (#6904). Revision 8 records every phase closed
@@ -135,7 +137,7 @@ controller past it has no per-game branch (R5).
 | Game | Location sources | Battle source | Sting sources |
 |---|---|---|---|
 | Oblivion | `CELL.XCMT`, `WRLD.SNAM`, `REGN.RDMD` category → a `Data\Music` folder (MUS-SRC-008, MUS-SRC-009) | `Data\Music\Battle` ([UESP: Oblivion Music](https://en.uesp.net/wiki/Oblivion:Music)) | `Special\death.mp3`, `Special\success.mp3` (same page) |
-| Fallout 3 | `CELL.XCMO`, `WRLD.ZNAM`, `REGN.RDMO`, then the Default Music object → a music type (MUS-SRC-001 to MUS-SRC-004) | Battle Music object | Death Music and Level Up Music objects |
+| Fallout 3 | `CELL.XCMO`, an exterior's `WRLD.ZNAM`, then the Default Music object → a music type (MUS-SRC-001 to MUS-SRC-004) | Battle Music object | Death Music and Level Up Music objects |
 | Fallout: New Vegas | Audio marker → media location controller → media set (MUS-SRC-005 to MUS-SRC-007); music types as Fallout 3 | The controller's Battle sets, the region's `RDSB` battle sets (MUS-CMB-001) | As Fallout 3 (MUS-STG) |
 
 ### 3.4 Census
@@ -242,11 +244,13 @@ shipped behaviour is [music.md](../engine/music.md) and `music.status`.
   MUST become the Location directive while the player is in that cell.
   Today it is parsed and discarded (§3.5 row 5).
 - **MUS-SRC-002.** On Fallout 3 and New Vegas, a cell with no `XCMO` MUST
-  take its worldspace's `ZNAM`, then its region's `RDMO`, then the Default
-  Music object. **Phase 0: verify** this precedence, and whether Fallout 3
-  reads the music category `RDMD` that two of its regions author (§3.4);
-  settled by the GECK wiki's Music Type page or by observing a cell whose
-  cell and worldspace music differ.
+  take its worldspace's `ZNAM` if it is an exterior, then the Default Music
+  object; a region's `RDMO`, and Fallout 3's music category `RDMD` and
+  `XCMT`, MUST NOT be read. Settled from `Fallout3.exe` (#6900,
+  [Music](../engine/music.md#3-the-location-layer-per-game)):
+  `TESObjectCELL::GetMusicType` reads the cell, then an exterior's
+  worldspace; a null result plays the Default Music object; no music path
+  reads a region, and the loaders drop `RDMD` and `XCMT`.
 - **MUS-SRC-003.** The Fallout 3 / New Vegas `DOBJ` record MUST decode its
   five music slots (§2). Today `DOBJ` is an EditorID-only stub (§3.5
   row 6).
@@ -294,7 +298,8 @@ shipped behaviour is [music.md](../engine/music.md) and `music.status`.
   ships music (§3.4, §3.5 row 3).
 - **MUS-SRC-012.** A source whose file or folder is absent MUST give the
   outcome **Missing** naming the path. On New Vegas this covers the
-  `Default*` music types and the death and success stings (§3.4).
+  `Default*` music types and the death and success stings (§3.4); the
+  original is silent there too (#6900).
 
 ### 5.2 Playback and track selection (`MUS-SEL`)
 
@@ -638,3 +643,4 @@ and Oblivion's source coverage is published.
 | 8 | 2026-11-14 | ACTIVE → SHIPPED: Phases 0–3 closed (#6861–#6864, #6860); source and playable coverage published in ROADMAP; follow-ups #6899–#6904 stay open | — |
 | 9 | 2026-11-14 | Q3's follow-up delivered (#6904): a controller's Neutral / Ally / Friend / Enemy lists play by its conditional faction's relation to the player (Nexus wiki, 2014), ahead of its Location list; scenario 6's Goodsprings note updated | — |
 | 10 | 2026-11-14 | MUS-SCR-005 settled (#6899): `PlayMusic` replaces the cell's music (vanilla `MQ05Script`, `MQ11Script`, `VVault11ExterminationChairSCRIPT`, `VCG00`), so the Script layer replaces Battle and Location; §3.1 updated | — |
+| 11 | 2026-11-14 | MUS-SRC-002 settled (#6900) from `Fallout3.exe`: cell `XCMO` → an exterior's worldspace `ZNAM` → Default Music; no region `RDMO` (none authored), `RDMD` and `XCMT` dropped by the loaders; an absent `Default*` folder is silence in the original, so New Vegas's 0 % cell playable coverage is faithful; §3.3 and MUS-SRC-012 updated | — |

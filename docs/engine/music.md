@@ -68,15 +68,30 @@ also follows the audio-marker area the player stands in (§6).
 
 | Game | Order (first authored wins) | Default |
 |---|---|---|
-| Fallout 3, New Vegas | cell `XCMO` → worldspace `ZNAM` → winning region's `RDMO` → `DOBJ` Default Music (MUS-SRC-001, -002) | — |
+| Fallout 3, New Vegas | cell `XCMO` → worldspace `ZNAM` (an exterior's) → `DOBJ` Default Music (MUS-SRC-001, -002; #6900) | — |
 | Oblivion | cell `XCMT` → worldspace `SNAM` → winning region's `RDMD` (MUS-SRC-008); the category picks `Data\Music\Public`, `Dungeon` or, for Default, `Explore` (MUS-SRC-009, Q6) | Default |
 | Skyrim and later | **Unresolved** ("xWMA music waits on its own PRD", MUS-NG-001) | — |
 
-The winning region is the one the engine's region selection already picks
+On Oblivion the winning region is the one the engine's region selection already picks
 (`select_active_region_sound`: override flag, then priority). A music type with no file
-is **Silent** (MUS-SRC-004). Fallout 3's legacy `XCMT` (17 cells) and region `RDMD`
-(2 regions) are not read: the executables' music lookups name the music type, never the
-category (#6900).
+is **Silent** (MUS-SRC-004).
+
+The Fallout 3 / New Vegas order is `Fallout3.exe`'s (#6900): `TESObjectCELL::GetMusicType`
+(`0x745460`) returns the cell's `ExtraCellMusicType` (`XCMO`), else, for an exterior cell,
+its worldspace's music (`ZNAM`, `TESWorldSpace+0x9c`, not inherited from a parent
+worldspace); the cell-change handler (`0x8bfbf1`) plays that, and a null music type plays
+`GetDefaultObject(DefaultMusic)` (`0x8e10b0`). No music path reads a region: the region
+loader keeps `RDMO` but nothing plays it (no vanilla region authors one), and it reads
+`RDMD` into a local and drops it, as the cell loader drops `XCMT`, so Fallout 3's 17 legacy
+`XCMT` cells and 2 `RDMD` regions have no effect. New Vegas's code is SteamStub-encrypted;
+it keeps the shared `BGSMusicType.cpp` and the same music strings, and authors no
+`RDMO`, `RDMD` or `XCMT`, so the same order is taken.
+
+A music type whose folder is absent has an empty file list; its `GetFileName` falls back to
+the bare `FNAM` folder path, the stream open fails, and the music routine (`0x8e2680`) has
+already stopped the old track: silence. That is **Missing** here, which also stops the
+old track. So a New Vegas `DefaultDungeon` cell outside any audio marker (`Vault19a`) is
+silent, as in the original: New Vegas ships none of the `Default*` folders.
 
 A music type's level: Fallout 3 authors no `ANAM`. New Vegas's sign marks looping
 ("dB (positive = Loop)"); its magnitude is played as an attenuation, `-|ANAM|` dB, for
@@ -229,7 +244,7 @@ game's master and official DLC (PRD §7.2 scenario 1, §8), 2026-11-14:
 | Game | Sources | Source coverage | Playable coverage |
 |---|---|---|---|
 | Fallout 3 | 591 cells, 16 worldspaces, 5 default objects, 31 music types | 100 % | cells 99.8 % (one `.wav` the install lacks), music types 93.3 % |
-| New Vegas | 375 cells, 3 worldspaces, 14 region battle sets, 5 default objects, 520 audio-marker areas | 100 % | markers and battle sets 100 %; cells, worldspaces and default objects 0 % (the `Default*` folders are not shipped, #6900) |
+| New Vegas | 375 cells, 3 worldspaces, 14 region battle sets, 5 default objects, 520 audio-marker areas | 100 % | markers and battle sets 100 %; cells, worldspaces and default objects 0 %: the `Default*` folders are not shipped, and the original is silent there too (§3) |
 | Oblivion | 1919 cells, 39 worldspaces, 128 regions | 100 % | 100 % |
 
 `docs/smoke-tests/music-fo3.sh` drives scenarios 2 to 5, `music-fnv.sh` scenario 6 (at
@@ -253,7 +268,7 @@ not-saved list with its reason.
 | MUS-SEL-003 positive `ANAM` | — | #6902 |
 | MUS-SEL-004, MUS-CMB-002 (Fallout 3 / New Vegas) | executable defaults, `FalloutNV.esm` GMSTs | closed (§7) |
 | MUS-SEL-004, MUS-CMB-002 (Oblivion) | `Oblivion.exe` has no setting | #6903 |
-| MUS-SRC-002 precedence, Fallout 3 `RDMD`, New Vegas silence (§3.4) | — | #6900 |
+| MUS-SRC-002 precedence, Fallout 3 `RDMD`, New Vegas silence (§3.4) | `Fallout3.exe` (`TESObjectCELL::GetMusicType`, the region and cell loaders, the music routine) | closed (#6900): cell → exterior's worldspace → Default Music, no region; `RDMD` / `XCMT` dropped; an absent folder is silence (§3) |
 | MUS-SCR-005, MUS-CMB-004 (`PlayMusic`) | vanilla scripts (`MQ05Script`, `MQ11Script`, `VVault11ExterminationChairSCRIPT`, `VCG00`) | closed (#6899): replaces; does not give way to battle; ends on a cell change (engine rule) |
 | MUS-STG-003, MUS-STG-004 | — | #6901 |
 | MUS-CMB-003 (New Vegas) intro / outro | xEdit labels, Nexus wiki (2014) | closed: Intro on entering combat, Outro on leaving it |
