@@ -68,7 +68,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/plugin/src/esm/cell/wrld.rs` | esm, exterior; per-game | HIGH |
 | `crates/plugin/src/esm/records/misc/{location,relationship}.rs` | esm, scripting, performance Dim 7; per-game | HIGH |
 | `crates/plugin/src/esm/records/misc/challenge.rs` | esm, scripting, performance Dim 7; fnv | MEDIUM |
-| `crates/plugin/src/esm/records/misc/{music,media_set}.rs` | esm, audio Dim 3, performance Dim 7; per-game | MEDIUM |
+| `crates/plugin/src/esm/records/misc/{music,media_set,media_location}.rs` | esm, audio Dim 3, performance Dim 7; per-game | MEDIUM |
 | `crates/plugin/src/esm/cell/index.rs` | esm, exterior, performance Dim 7; per-game | HIGH |
 | `crates/plugin/src/esm/records/lmsw.rs` | esm, nifal, performance Dim 7; starfield, fo4 | MEDIUM |
 | `crates/plugin/src/esm/records/actor/npc.rs` | esm, character Dim 4, performance Dim 7; per-game | HIGH |
@@ -215,6 +215,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/objectives.rs` | gameplay Dim 6, ui, scripting | MEDIUM |
 | `byroredux/src/player_body.rs` | gameplay Dim 1, ecs Dim 9, save, physics Dim 4, concurrency Dim 4 | MEDIUM |
 | `byroredux/src/scaleform_hud.rs` | ui | MEDIUM |
+| `byroredux/src/music/` | audio Dim 3+4+5, scripting Dim 6, save; fnv, fo3, oblivion | MEDIUM |
 | `byroredux/src/video.rs` | ui, audio, scripting | MEDIUM |
 | `byroredux/src/chargen.rs` | character, gameplay, ui; fnv | MEDIUM |
 | `byroredux/src/perk_activate.rs` | character, gameplay | MEDIUM |
