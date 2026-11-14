@@ -266,6 +266,11 @@ pub(crate) fn build_spatial_track(
 }
 
 pub(crate) fn drain_pending_oneshots(audio_world: &mut AudioWorld) {
+    // BIK-PRES-005 — a movie that mutes the world drops what is raised under it.
+    if audio_world.movie_hold.world_muted {
+        audio_world.pending_oneshots.clear();
+        return;
+    }
     let Some(listener_id) = audio_world.listener.as_ref().map(|l| l.id()) else {
         return;
     };

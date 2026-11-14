@@ -568,6 +568,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PendingRelocations", "actor moves raised this frame (a Travel hop, a scripted move); drained by step_actor_relocations into the saved ActorRelocations ledger"),
         ("RelocatedSpawning", "the relocated actors the reference loader is spawning right now (#6852); present only for that call"),
         ("CrossSpaceHop", "a traveler's chosen load door toward another space (XCT-ROUTE-001); chosen again from its package after a load"),
+        ("MoviePlaying", "whether the movie player has a movie on screen (BIK-PRES-006); written by the app every frame, a load starts no movie"),
         ("PendingActorMoves", "scripted MoveTo / MoveToPackageLocation moves whose ends have no body (XCT-LOC-004/006); drained by step_actor_relocations the frame they are raised"),
         ("TravelIndex", "the load-door routing graph and the interior-persistent actor list (#6852); derived from the records, rebuilt per load order"),
         ("TravelReports", "why each actor last failed to route (XCT-RPT-001); routes are chosen again from the packages after a load"),

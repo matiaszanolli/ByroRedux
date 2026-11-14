@@ -290,7 +290,7 @@ pub(crate) fn apply_effect(
         | Effect::EvaluatePackage { .. } => {
             apply_ai_combat_effect(effect, context, vmad, world, deferred)
         }
-        Effect::Wait { .. } | Effect::WaitForActors3DLoaded { .. } | Effect::WaitWhile { .. } => {
+        Effect::Wait { .. } | Effect::WaitForActors3DLoaded { .. } | Effect::WaitWhile { .. } | Effect::PlayBink { .. } => {
             None
         }
         Effect::Conditional { .. } | Effect::QuestScope { .. } | Effect::Interpret { .. } => {
@@ -386,7 +386,12 @@ pub fn apply_effects(
                             vmad: vmad.cloned(),
                             effects: tail,
                             remaining_seconds: seconds,
-                            resume_when: FragmentResumeCondition::DelayElapsed,
+                            // BIK-PRES-006 — a `Game.PlayBink` the run called waits for its movie.
+                            resume_when: if std::mem::take(&mut deferred.awaits_movie) {
+                                FragmentResumeCondition::MovieEnded
+                            } else {
+                                FragmentResumeCondition::DelayElapsed
+                            },
                         });
                     } else {
                         log::debug!("Papyrus VM continuation dropped: FragmentExecutionQueue is unavailable");
@@ -566,6 +571,22 @@ pub fn apply_effects(
                     ))
                 }
                 Effect::WaitForActors3DLoaded { .. } => None,
+                // BIK-REQ-002 / BIK-PRES-006 — the movie is queued and the rest of the program
+                // waits for it to end.
+                Effect::PlayBink { file, interruptable, mute_audio, pause_music, letterbox, new_game } => {
+                    crate::obscript_more::queue_video(
+                        world,
+                        crate::obscript_more::VideoRequest {
+                            file: file.clone(),
+                            interruptable: *interruptable,
+                            mute_audio: *mute_audio,
+                            pause_music: *pause_music,
+                            letterbox: *letterbox,
+                            new_game: *new_game,
+                        },
+                    );
+                    Some((0.0, FragmentResumeCondition::MovieEnded))
+                }
                 _ => None,
             };
             if let Some((remaining_seconds, resume_when)) = suspension {

@@ -626,7 +626,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v126 -> v127 (XCT-OFF-001, #6854): the saved `ActorRelocations` gained the required `journeys` map (the
 /// actors travelling offscreen toward another space, with their arrival time), so a v126 save's ledger no
 /// longer has the column's shape.
-pub const FORMAT_MAJOR: u16 = 127;
+///
+/// v127 -> v128 (BIK-REQ-002 / BIK-PRES-006, #6858): the saved `Effect` enum gained `PlayBink` (Papyrus
+/// `Game.PlayBink`) and a queued fragment continuation's resume condition gained `MovieEnded` (a script
+/// frozen until its movie ends), so a v127 continuation queue no longer has the column's shape.
+pub const FORMAT_MAJOR: u16 = 128;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

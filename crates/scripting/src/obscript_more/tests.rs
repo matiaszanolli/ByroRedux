@@ -852,6 +852,7 @@ fn video_and_exit_requests_are_raised_for_the_app() {
         mute_audio,
         pause_music,
         letterbox,
+        new_game: false,
     };
     // No flags: the GECK's defaults (not interruptable; muted, music paused, letterboxed).
     assert_eq!(world.try_resource::<PendingVideos>().unwrap().0, vec![request("credits.bik", false, true, true, true)]);

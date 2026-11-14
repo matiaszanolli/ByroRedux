@@ -774,6 +774,9 @@ pub(crate) struct PendingFragmentExecution {
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) enum FragmentResumeCondition {
     DelayElapsed,
+    /// BIK-PRES-006 — `Game.PlayBink` froze the script: it resumes once no movie is playing or
+    /// queued (CK *PlayBink - Game*: "It will not return until the movie is over").
+    MovieEnded,
     Actors3DLoaded {
         actors: Vec<ActorRef>,
         poll_seconds: f32,

@@ -1004,6 +1004,8 @@ fn play_oneshot_queue_caps_at_max_pending_when_active() {
         oneshots_requested: 0,
         music: None,
         script_music: None,
+        movie_sound: None,
+        movie_hold: crate::MovieHold::default(),
         reverb_send: None,
         reverb_send_db: f32::NEG_INFINITY,
         listener: None,
@@ -1751,6 +1753,8 @@ fn emitter_position_follows_the_source_entity_regression_3086() {
         oneshots_requested: 0,
         music: None,
         script_music: None,
+        movie_sound: None,
+        movie_hold: crate::MovieHold::default(),
         reverb_send: None,
         reverb_send_db: f32::NEG_INFINITY,
         listener: None,
@@ -1875,6 +1879,8 @@ fn anchored_voice_follows_survives_prune_and_stops() {
         oneshots_requested: 0,
         music: None,
         script_music: None,
+        movie_sound: None,
+        movie_hold: crate::MovieHold::default(),
         reverb_send: None,
         reverb_send_db: f32::NEG_INFINITY,
         listener: None,
@@ -2124,4 +2130,21 @@ fn non_positional_plays_disable_the_ear_model_and_falloff() {
         src.contains("fn apply_placement(builder: SpatialTrackBuilder, positional: bool)"),
         "the placement switch has one definition (#6437)"
     );
+}
+
+/// BIK-PRES-005 — a movie's flags hold the world's sound and the music until it
+/// ends, and `video.status` reads the hold back; a second hold replaces the
+/// first, and with no soundtrack there is no movie clock to follow.
+#[test]
+fn a_movie_holds_world_sound_and_music_until_released() {
+    let mut audio = AudioWorld::headless();
+    assert_eq!(audio.movie_hold(), crate::MovieHold::default());
+    audio.hold_for_movie(true, false);
+    assert_eq!(audio.movie_hold(), crate::MovieHold { world_muted: true, music_paused: false });
+    audio.hold_for_movie(false, true);
+    assert_eq!(audio.movie_hold(), crate::MovieHold { world_muted: false, music_paused: true }, "replaced, not merged");
+    audio.release_movie_hold();
+    assert_eq!(audio.movie_hold(), crate::MovieHold::default());
+    assert_eq!(audio.movie_sound_position(), None, "no soundtrack, no clock");
+    audio.stop_movie_sound();
 }

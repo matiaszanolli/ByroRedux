@@ -154,6 +154,15 @@ pub(crate) struct PendingOneShot {
 /// `SpatialTrackHandle`s) drops before `listener` drops before
 /// `manager` drops. Rust struct-field drop order is declaration order
 /// — the field declarations below match that, top-to-bottom.
+/// What a playing movie's flags hold still (GECK *PlayBink*: "mute audio",
+/// "pause music"): the world's sounds and the two music layers, released when
+/// the movie ends.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MovieHold {
+    pub world_muted: bool,
+    pub music_paused: bool,
+}
+
 pub struct AudioWorld {
     /// Currently-playing one-shot sounds. Cleaned up per-frame as
     /// kira reports `PlaybackState::Stopped`.
@@ -178,6 +187,12 @@ pub struct AudioWorld {
     /// scripted track "will not stop the currently playing music of the
     /// cell" (GECK *PlayMusic*). A second scripted track replaces the first.
     pub(crate) script_music: Option<StreamingSoundHandle<FromFileError>>,
+    /// A movie's soundtrack (PRD `bink-video-playback`): non-spatial on the main
+    /// track, a slot of its own so the music layers can be paused under it
+    /// (BIK-PRES-005), and the clock the movie's picture follows (BIK-PRES-003).
+    pub(crate) movie_sound: Option<StreamingSoundHandle<FromFileError>>,
+    /// What a playing movie holds (BIK-PRES-005).
+    pub(crate) movie_hold: MovieHold,
     /// Reverb send track (Phase 6). Created on manager init when
     /// the audio device is available. Each spatial sub-track opts
     /// into routing signal here via `with_send` at construction
@@ -294,6 +309,8 @@ impl AudioWorld {
             oneshots_requested: 0,
             music: None,
             script_music: None,
+            movie_sound: None,
+            movie_hold: MovieHold::default(),
             reverb_send: None,
             reverb_send_db: f32::NEG_INFINITY,
             listener: None,
@@ -561,6 +578,74 @@ impl AudioWorld {
     /// it). No-op when nothing is playing.
     pub fn stop_script_music(&mut self, fade_out_secs: f32) {
         stop_main_track(&mut self.script_music, fade_out_secs);
+    }
+
+    /// Play a movie's soundtrack from its start, on its own slot (BIK-PRES-003).
+    /// No-op when the manager is inactive.
+    pub fn play_movie_sound(&mut self, streaming_sound: StreamingSoundData<FromFileError>) {
+        let Some(mgr) = self.manager.as_mut() else {
+            return;
+        };
+        play_main_track(mgr, &mut self.movie_sound, streaming_sound, 1.0, 0.0, false);
+    }
+
+    /// Stop the movie's soundtrack at once.
+    pub fn stop_movie_sound(&mut self) {
+        stop_main_track(&mut self.movie_sound, 0.0);
+    }
+
+    /// The movie soundtrack's playback position in seconds while it plays: the
+    /// clock the movie's picture follows, so picture and sound cannot drift
+    /// apart (BIK-PRES-003). `None` with no soundtrack (none in the file, no
+    /// audio device, or ended).
+    pub fn movie_sound_position(&self) -> Option<f64> {
+        self.movie_sound
+            .as_ref()
+            .filter(|h| matches!(h.state(), PlaybackState::Playing))
+            .map(|h| h.position())
+    }
+
+    /// BIK-PRES-005 — hold the world for a movie: pause the world's playing
+    /// sounds (and drop the one-shots raised meanwhile) when `mute_world`, the
+    /// cell and scripted music when `pause_music`. Released by
+    /// [`Self::release_movie_hold`].
+    pub fn hold_for_movie(&mut self, mute_world: bool, pause_music: bool) {
+        self.release_movie_hold();
+        let now = Tween { duration: std::time::Duration::ZERO, ..Default::default() };
+        if mute_world {
+            for sound in &mut self.active_sounds {
+                sound.handle.pause(now);
+            }
+            self.pending_oneshots.clear();
+        }
+        if pause_music {
+            for track in [&mut self.music, &mut self.script_music].into_iter().flatten() {
+                track.pause(now);
+            }
+        }
+        self.movie_hold = MovieHold { world_muted: mute_world, music_paused: pause_music };
+    }
+
+    /// Release what [`Self::hold_for_movie`] held: the paused sounds and music
+    /// resume where they stopped.
+    pub fn release_movie_hold(&mut self) {
+        let now = Tween { duration: std::time::Duration::ZERO, ..Default::default() };
+        if self.movie_hold.world_muted {
+            for sound in &mut self.active_sounds {
+                sound.handle.resume(now);
+            }
+        }
+        if self.movie_hold.music_paused {
+            for track in [&mut self.music, &mut self.script_music].into_iter().flatten() {
+                track.resume(now);
+            }
+        }
+        self.movie_hold = MovieHold::default();
+    }
+
+    /// What a playing movie holds now (BIK-PRES-005, reported by `video.status`).
+    pub fn movie_hold(&self) -> MovieHold {
+        self.movie_hold
     }
 
     /// Whether a scripted track is installed and not yet stopped (see

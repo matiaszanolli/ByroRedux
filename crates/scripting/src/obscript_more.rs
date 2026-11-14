@@ -27,7 +27,7 @@ mod state;
 mod tail;
 pub(crate) use state::STATE_COMMANDS;
 pub(crate) use tail::TAIL_COMMANDS;
-pub use tail::{player_tag_skills, set_player_tag_skill, ChildRaces, CellZones, ExitGameRequest, PendingVideos, PlayableRaces, VideoRequest};
+pub use tail::{player_tag_skills, set_player_tag_skill, ChildRaces, CellZones, ExitGameRequest, MoviePlaying, PendingVideos, PlayableRaces, VideoRequest, movies_idle, queue_video};
 pub(crate) use actions::ACTIONS_COMMANDS;
 pub(crate) use extras::EXTRAS_COMMANDS;
 pub use extras::{AshPiles, MusicTrack, MusicTracks, PendingMusic, PendingTextureSwaps, ReloadRequest, TextArguments, TextureSwap, UseWeaponOptions, UseWeaponRequest};
@@ -141,6 +141,7 @@ pub fn install(world: &mut World) {
     world.register::<ResetInventoryRequest>();
     extras::install(world);
     world.init_resource::<PendingVideos>();
+    world.init_resource::<MoviePlaying>();
     world.init_resource::<ExitGameRequest>();
     world.init_resource::<CellZones>();
     world.init_resource::<ChildRaces>();

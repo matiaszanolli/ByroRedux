@@ -215,6 +215,7 @@ pub(super) fn apply_quest_scoped_effect(
         | Effect::RegisterPlayerAnimationEvent { .. }
         | Effect::EvaluatePackage { .. }
         | Effect::Wait { .. }
+        | Effect::PlayBink { .. }
         | Effect::WaitForActors3DLoaded { .. }
         | Effect::WaitWhile { .. }
         | Effect::Interpret { .. }

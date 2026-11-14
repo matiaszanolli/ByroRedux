@@ -78,6 +78,28 @@ pub(super) fn prim_notification(e: &Expr, _scope: &Scope) -> Option<Effect> {
     Some(Effect::Notification { text: text.clone() })
 }
 
+/// BIK-REQ-002 — `Game.PlayBink("file.bik"[, interruptible, muteAudio, muteMusic, letterbox[,
+/// isNewGameBink]])`: the CK's defaults (false, true, true, true, false) for the omitted flags. A file
+/// name or flag that is not a literal declines (the VM evaluates it).
+pub(super) fn prim_play_bink(e: &Expr, _scope: &Scope) -> Option<Effect> {
+    let args = static_call(e, "Game", "PlayBink")?;
+    if args.is_empty() || args.len() > 6 {
+        return None;
+    }
+    let Expr::StringLit(file) = &args[0].value.node else {
+        return None;
+    };
+    let flag = |index: usize, default: bool| bool_arg(args, index).map(|value| value.unwrap_or(default));
+    Some(Effect::PlayBink {
+        file: file.clone(),
+        interruptable: flag(1, false)?,
+        mute_audio: flag(2, true)?,
+        pause_music: flag(3, true)?,
+        letterbox: flag(4, true)?,
+        new_game: flag(5, false)?,
+    })
+}
+
 /// `ObjectReference.AddKeyword(apKeyword)` / `RemoveKeyword(apKeyword)` /
 /// FO4's `ResetKeyword(apKeyword)`.
 pub(super) fn prim_change_keyword(e: &Expr, scope: &Scope) -> Option<Effect> {

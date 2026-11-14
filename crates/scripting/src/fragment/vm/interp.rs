@@ -1400,6 +1400,12 @@ impl Vm<'_> {
         if crate::translate::effects::is_latent(&effect) {
             return stop("a latent call");
         }
+        // BIK-REQ-002 / BIK-PRES-006 — the movie is queued and the run freezes until it ends.
+        if let crate::Effect::PlayBink { .. } = &effect {
+            apply_effects(std::slice::from_ref(&effect), self.context, Some(&vmad), self.world, self.stages, self.objectives, self.deferred);
+            self.deferred.awaits_movie = true;
+            return Ok(Flow::Suspend(0.0, Vec::new(), Vec::new()));
+        }
         let advances = apply_effects(
             std::slice::from_ref(&effect),
             self.context,

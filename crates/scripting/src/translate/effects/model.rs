@@ -560,6 +560,18 @@ pub enum Effect {
     ShowHelpMessage { message: ObjectRef },
     /// M47.2 — `Debug.Notification(asText)` with a literal text.
     Notification { text: String },
+    /// BIK-REQ-002 — `Game.PlayBink(asFileName, abInterruptible = false, abMuteAudio = true,
+    /// abMuteMusic = true, abLetterbox = true[, abIsNewGameBink = false])` (CK / Fallout 4 CK *PlayBink
+    /// - Game*): the movie is queued for the app's player and the script is frozen until it ends ("It
+    /// will not return until the movie is over, or the user has canceled the movie").
+    PlayBink {
+        file: String,
+        interruptable: bool,
+        mute_audio: bool,
+        pause_music: bool,
+        letterbox: bool,
+        new_game: bool,
+    },
     /// M47.2 — a fragment the lowering declines, or a reference script's
     /// event, run by the Papyrus VM ([`crate::fragment::vm`]): `script`'s
     /// `function` (or event), installed with the scripts it reaches.
@@ -991,6 +1003,7 @@ impl Effect {
             Effect::ShowMessage { .. } => "ShowMessage",
             Effect::ShowHelpMessage { .. } => "ShowHelpMessage",
             Effect::Notification { .. } => "Notification",
+            Effect::PlayBink { .. } => "PlayBink",
             Effect::ShowBarterMenu { .. } => "ShowBarterMenu",
             Effect::ChangeKeyword { .. } => "ChangeKeyword",
             Effect::SetGhost { .. } => "SetGhost",

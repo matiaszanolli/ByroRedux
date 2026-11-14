@@ -1332,7 +1332,14 @@ impl App {
     /// `PlayBink` request. One resource read while nothing is queued or playing.
     pub(crate) fn step_video(&mut self) {
         let window = self.renderer.as_ref().map(|ctx| ctx.swapchain_extent());
+        // BIK-REQ-004 — the game's start sequence, once the boot load has finished.
+        let ready = window.is_some() && !self.loading_screen.active() && self.interior_transition.is_none();
+        self.video.queue_start_sequence(&self.world, ready);
         self.video.step(&self.world, window);
+        // BIK-PRES-006 — what a script frozen by `Game.PlayBink` waits out.
+        if let Some(mut playing) = self.world.try_resource_mut::<byroredux_scripting::obscript_more::MoviePlaying>() {
+            playing.0 = self.video.active();
+        }
     }
 
     /// #5065 — the enable edge: a placement spawned disabled whose reference a

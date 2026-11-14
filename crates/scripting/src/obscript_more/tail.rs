@@ -12,6 +12,7 @@ use crate::obscript_actions::{Action, Context};
 use crate::obscript_cmd::{Command, Games};
 use crate::obscript_effects::{form_arg, live, num, remove_from_all_factions};
 use crate::obscript_vm::ObScriptValue;
+use byroredux_core::ecs::Resource;
 
 /// One movie a script asked to play (`PlayBink`) with its flags (GECK *PlayBink*: `[interruptable]
 /// [mute audio] [pause music] [letterboxed]`; Oblivion's takes the first only, CS *PlayBink*).
@@ -27,6 +28,34 @@ pub struct VideoRequest {
     pub pause_music: bool,
     /// A widescreen movie is letterboxed on a narrower screen (default on).
     pub letterbox: bool,
+    /// Fallout 4's `abIsNewGameBink`: "the bink we show at the start of a new game" (Fallout 4 CK
+    /// *PlayBink - Game*). False for every other request.
+    pub new_game: bool,
+}
+
+/// Whether the app's movie player has a movie on screen, written by the app once a frame. With the
+/// requests still queued in [`PendingVideos`], it is what a script frozen by `Game.PlayBink` waits
+/// out (BIK-PRES-006). `NOT_SAVED_BY_DESIGN`: a load starts no movie.
+#[derive(Debug, Default)]
+pub struct MoviePlaying(pub bool);
+
+impl Resource for MoviePlaying {}
+
+/// Whether no movie is playing or waiting to: a script frozen by `Game.PlayBink` resumes.
+pub fn movies_idle(world: &World) -> bool {
+    !world.try_resource::<MoviePlaying>().is_some_and(|playing| playing.0)
+        && world.try_resource::<PendingVideos>().is_none_or(|pending| pending.0.is_empty())
+}
+
+/// Queue a movie for the app's player (`PlayBink` from either script language).
+pub fn queue_video(world: &World, request: VideoRequest) -> bool {
+    match world.try_resource_mut::<PendingVideos>() {
+        Some(mut videos) => {
+            videos.0.push(request);
+            true
+        }
+        None => false,
+    }
 }
 
 /// The videos scripts asked for (`PlayBink`), for the app's movie player. `NOT_SAVED_BY_DESIGN`:
@@ -187,10 +216,9 @@ fn cmd_1114(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _c
         mute_audio: flag(1, true),
         pause_music: flag(2, true),
         letterbox: flag(3, true),
+        new_game: false,
     };
-    if let Some(mut videos) = world.try_resource_mut::<PendingVideos>() {
-        videos.0.push(request);
-    }
+    queue_video(world, request);
     done(format!("PlayBink {file}"))
 }
 

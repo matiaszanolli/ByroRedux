@@ -6173,3 +6173,47 @@ fn advance_skill_queues_the_usage_xp() {
         [("Lockpicking".to_owned(), 50.0)]
     );
 }
+
+/// BIK-REQ-002 / BIK-PRES-006 — in the VM, `Game.PlayBink` with a run-time
+/// file name queues the movie and suspends the run until the movie ends (CK:
+/// "It will not return until the movie is over").
+#[test]
+fn play_bink_freezes_the_run_until_the_movie_ends() {
+    const SOURCE: &str = "ScriptName QF_VmBink extends Quest\n\
+        Function Fragment_1()\n\
+          String movie = \"BGS_Logo.bik\"\n\
+          Game.PlayBink(movie, true)\n\
+          Self.SetStage(20)\n\
+        EndFunction\n";
+    let (script, errors) = byroredux_papyrus::parse_script(SOURCE).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    let script = Arc::new(script);
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vmad(Q, vmad());
+        fragments.insert_vm_script(Arc::clone(&script));
+        fragments.insert(
+            Q,
+            10,
+            vec![Effect::Interpret { script: "QF_VmBink".into(), function: "Fragment_1".into(), args: Vec::new(), resume: None }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    let queued = world.resource::<crate::obscript_more::PendingVideos>().0.clone();
+    assert_eq!(queued.len(), 1, "the movie is queued");
+    assert_eq!((queued[0].file.as_str(), queued[0].interruptable, queued[0].mute_audio), ("BGS_Logo.bik", true, true));
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 10, "frozen behind the movie");
+    world.resource_mut::<crate::obscript_more::PendingVideos>().0.clear();
+    world.resource_mut::<crate::obscript_more::MoviePlaying>().0 = true;
+    crate::fragment::fragment_continuation_system(&world, 1.0);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 10, "still playing");
+    world.resource_mut::<crate::obscript_more::MoviePlaying>().0 = false;
+    crate::fragment::fragment_continuation_system(&world, 0.0);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20, "resumed after the movie");
+}

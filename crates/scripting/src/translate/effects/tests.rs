@@ -5450,3 +5450,26 @@ fn a_self_provider_alias_does_not_shadow_the_canonical_effect_table() {
         "the canonical effect table must win over a manifest alias"
     );
 }
+
+/// BIK-REQ-002 — `Game.PlayBink` lowers with the CK's defaults for omitted
+/// flags and Fallout 4's new-game flag; a file name or flag that is not a
+/// literal is the VM's to evaluate.
+#[test]
+fn lowers_game_play_bink() {
+    let lower = |call: &str| {
+        lower_fragment(&first_fn_body(&format!(
+            "ScriptName QF extends Quest\nFunction Fragment_1()\n{call}\n EndFunction\n"
+        )))
+    };
+    let bink = |file: &str, interruptable, mute_audio, pause_music, letterbox, new_game| {
+        Some(vec![Effect::PlayBink { file: file.into(), interruptable, mute_audio, pause_music, letterbox, new_game }])
+    };
+    assert_eq!(lower("Game.PlayBink(\"CoolMovie.bik\")"), bink("CoolMovie.bik", false, true, true, true, false));
+    assert_eq!(lower("Game.PlayBink(\"CoolMovie.bik\", true)"), bink("CoolMovie.bik", true, true, true, true, false));
+    assert_eq!(
+        lower("Game.PlayBink(\"Intro.bk2\", true, false, false, true, true)"),
+        bink("Intro.bk2", true, false, false, true, true)
+    );
+    assert_eq!(lower("Game.PlayBink(SomeName)"), None, "a non-literal name");
+    assert_eq!(lower("Game.PlayBink(\"x.bik\", SomeFlag)"), None, "a non-literal flag");
+}

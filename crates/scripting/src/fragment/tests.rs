@@ -6889,3 +6889,49 @@ fn set_relationship_rank_raises_chrr_only_when_the_deferred_effects_flush() {
         "the rank was recorded as well"
     );
 }
+
+/// BIK-REQ-002 / BIK-PRES-006 — a lowered `Game.PlayBink` queues its movie and
+/// freezes the rest of the fragment until no movie is playing or queued.
+#[test]
+fn play_bink_queues_the_movie_and_freezes_the_fragment_until_it_ends() {
+    let world = fixture();
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert(
+            Q,
+            10,
+            vec![
+                Effect::PlayBink {
+                    file: "Intro.bk2".into(),
+                    interruptable: true,
+                    mute_audio: true,
+                    pause_music: true,
+                    letterbox: true,
+                    new_game: true,
+                },
+                Effect::SetHudCartMode { cart_mode: true },
+            ],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+    quest_fragment_dispatch_system(&world);
+    let queued = world.resource::<crate::obscript_more::PendingVideos>().0.clone();
+    assert_eq!(queued.len(), 1);
+    assert!(queued[0].new_game && queued[0].interruptable && queued[0].file == "Intro.bk2");
+    assert!(!world.resource::<crate::PlayerControlState>().hud_cart_mode, "frozen behind the movie");
+
+    // Queued, then playing: still frozen, whatever time passes.
+    fragment_continuation_system(&world, 5.0);
+    assert!(!world.resource::<crate::PlayerControlState>().hud_cart_mode);
+    world.resource_mut::<crate::obscript_more::PendingVideos>().0.clear();
+    world.resource_mut::<crate::obscript_more::MoviePlaying>().0 = true;
+    fragment_continuation_system(&world, 5.0);
+    assert!(!world.resource::<crate::PlayerControlState>().hud_cart_mode);
+
+    // Over: the fragment resumes.
+    world.resource_mut::<crate::obscript_more::MoviePlaying>().0 = false;
+    fragment_continuation_system(&world, 0.0);
+    assert!(world.resource::<crate::PlayerControlState>().hud_cart_mode);
+    assert!(world.resource::<FragmentExecutionQueue>().is_empty());
+}

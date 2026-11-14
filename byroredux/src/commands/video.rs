@@ -20,16 +20,24 @@ impl ConsoleCommand for VideoStatusCommand {
         };
         let playing = match &status.playing {
             Some(playing) => format!(
-                "playing {} frame {}/{} (interruptable={} mute={} pause_music={} letterbox={})",
+                "playing {} frame {}/{} (interruptable={} mute={} pause_music={} letterbox={} new_game={})",
                 playing.request.file,
                 playing.frame,
                 playing.frames,
                 playing.request.interruptable,
                 playing.request.mute_audio,
                 playing.request.pause_music,
-                playing.request.letterbox
+                playing.request.letterbox,
+                playing.request.new_game
             ),
             None => "not playing".to_owned(),
+        };
+        // BIK-PRES-005 — what the flags actually hold, read back from the audio world.
+        let hold = world.try_resource::<byroredux_audio::AudioWorld>().map(|audio| audio.movie_hold()).unwrap_or_default();
+        let playing = if status.playing.is_some() {
+            format!("{playing} holding world_muted={} music_paused={}", hold.world_muted, hold.music_paused)
+        } else {
+            playing
         };
         let last = match &status.last {
             Some((file, VideoOutcome::Played { ended_early })) => format!("last: {file} Played{}", if *ended_early { " (ended early)" } else { "" }),

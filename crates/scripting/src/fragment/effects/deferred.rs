@@ -55,6 +55,9 @@ pub(super) enum DeferredLockChange {
 
 #[derive(Debug)]
 pub struct DeferredFragmentEffects {
+    /// BIK-PRES-006 — the VM run called `Game.PlayBink`: its suspension waits for the movie, not a
+    /// delay.
+    pub(crate) awaits_movie: bool,
     pub(super) quest_definitions: Option<crate::QuestDefinitionRegistry>,
     /// #2660 (SCR-D6-NEW11-03) — snapshot of `SceneActorBindings`, cloned
     /// before the quest-state guards so `resolve_object` can resolve
@@ -316,6 +319,7 @@ impl DeferredFragmentEffects {
     /// this system already does.
     pub fn new(world: &World) -> Self {
         Self {
+            awaits_movie: false,
             quest_definitions: world
                 .try_resource::<crate::QuestDefinitionRegistry>()
                 .map(|definitions| definitions.clone()),

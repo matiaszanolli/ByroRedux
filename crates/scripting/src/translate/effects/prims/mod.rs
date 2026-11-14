@@ -106,6 +106,7 @@ pub(super) const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_set_relationship_rank,
     prim_show_message,
     prim_notification,
+    prim_play_bink,
     prim_show_barter_menu,
     prim_delete_when_able,
     prim_change_keyword,

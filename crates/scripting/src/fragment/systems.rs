@@ -80,6 +80,13 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
         }
         match &mut pending.resume_when {
             FragmentResumeCondition::DelayElapsed => ready.push(pending),
+            FragmentResumeCondition::MovieEnded => {
+                if crate::obscript_more::movies_idle(world) {
+                    ready.push(pending);
+                } else {
+                    still_pending.push(pending);
+                }
+            }
             FragmentResumeCondition::Actors3DLoaded {
                 actors,
                 poll_seconds,

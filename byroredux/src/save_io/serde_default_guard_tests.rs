@@ -801,7 +801,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 127;
+    const BASELINE_MAJOR: u16 = 128;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1212,7 +1212,10 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // XCT-OFF-001 (#6854) — v127 is a genuine bump: `ActorRelocations` gained the required `journeys` map
     // (the actors travelling offscreen toward another space, with their arrival time), so a v126 ledger
     // has no column for an actor on the road.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x992d_786d_c93b_42f3;
+    // BIK-REQ-002 / BIK-PRES-006 (#6858) — v128 is a genuine bump: the saved `Effect` enum gained
+    // `PlayBink` and `FragmentResumeCondition` gained `MovieEnded`, so a v127 continuation queue cannot
+    // hold a script frozen behind its movie.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xb842_9bb2_d296_d3f3;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.
