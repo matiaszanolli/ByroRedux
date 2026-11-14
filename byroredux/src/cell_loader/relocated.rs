@@ -1197,4 +1197,82 @@ mod tests {
         assert_eq!(actors, vec![(SUNNY, true), (0x501, false), (0x502, false)]);
         assert!(moves.iter().all(|m| m.placement == far_side));
     }
+
+    /// XCT-ROUTE-008 — with an authored `fActorTeleportFadeSeconds`, an actor at
+    /// its door fades its meshes out over that time and passes only when the
+    /// fade-out ends; an arrival fades in and ends opaque (its alpha override
+    /// removed); a fade-out whose hop was dropped at the door is called off, the
+    /// actor opaque and not passed.
+    #[test]
+    fn a_door_fade_ramps_alpha_over_the_authored_time_and_passes_at_its_end() {
+        use byroredux_core::ecs::components::{AnimatedAlpha, Children, MeshHandle};
+        use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
+        use byroredux_plugin::esm::records::{GameSetting, SettingValue};
+        let mut index = town();
+        index.game_settings.insert(
+            0x10,
+            GameSetting { form_id: 0x10, editor_id: "fActorTeleportFadeSeconds".into(), value: SettingValue::Float(1.0) },
+        );
+        let settings = byroredux_scripting::obscript_state::GameSettings::from_index(&index);
+        let mut world = world_with(index);
+        world.insert_resource(settings);
+        world.register::<CrossSpaceHop>();
+        world.register::<DoorFade>();
+        world.register::<AnimatedAlpha>();
+        assert_eq!(door_fade_seconds(&world), 1.0);
+
+        let mut pool = FormIdPool::new();
+        let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("FalloutNV.esm"), local: LocalFormId(SUNNY) });
+        world.insert_resource(pool);
+        let actor = world.spawn();
+        world.insert(actor, FormIdComponent(id));
+        world.insert(actor, CellRoot(1));
+        let mesh = world.spawn();
+        world.insert(mesh, MeshHandle(7));
+        world.insert(actor, Children(vec![mesh]));
+        let alpha = |world: &World| world.get::<AnimatedAlpha>(mesh).map(|a| a.0);
+        let passed = |world: &World| world.resource::<PendingRelocations>().0.len();
+
+        let far_side = CreatedPlacement {
+            cell: CreatedCell::Exterior { worldspace: "wastelandnv".into(), grid: (0, 0) },
+            position_zup: [1000.0, 0.0, 0.0],
+            rotation_zup: [0.0; 3],
+        };
+        world.insert(actor, CrossSpaceHop { door: 9, placement: far_side.clone(), target: MARKER });
+        reach_door(&world, actor);
+        assert!(is_fading_at_door(&world, actor));
+        assert_eq!(passed(&world), 0, "an authored fade holds the actor at its door");
+
+        door_fade_system(&world, 0.25);
+        assert_eq!(alpha(&world), Some(0.75));
+        door_fade_system(&world, 0.5);
+        assert_eq!(alpha(&world), Some(0.25));
+        assert_eq!(passed(&world), 0, "still fading out");
+        door_fade_system(&world, 0.5);
+        assert_eq!(alpha(&world), Some(0.0), "faded out completely, never below zero");
+        assert!(!is_fading_at_door(&world, actor));
+        let moves = std::mem::take(&mut world.resource_mut::<PendingRelocations>().0);
+        assert_eq!(moves.len(), 1, "the actor passes when the fade-out ends");
+        assert_eq!((moves[0].actor, moves[0].placement.clone()), (SUNNY, far_side));
+
+        // The arrival on the far side fades in and ends opaque.
+        world.remove::<CrossSpaceHop>(actor);
+        fade_in(&world, &[SUNNY]);
+        door_fade_system(&world, 0.25);
+        assert_eq!(alpha(&world), Some(0.25));
+        door_fade_system(&world, 1.0);
+        assert_eq!(alpha(&world), None, "a finished fade-in leaves no alpha override");
+        assert!(world.get::<DoorFade>(actor).is_none());
+
+        // A fade-out whose hop is dropped at the door is called off.
+        world.insert(actor, CrossSpaceHop { door: 9, placement: saloon_placement(), target: MARKER });
+        reach_door(&world, actor);
+        door_fade_system(&world, 0.25);
+        assert_eq!(alpha(&world), Some(0.75));
+        world.remove::<CrossSpaceHop>(actor);
+        door_fade_system(&world, 0.25);
+        assert_eq!(alpha(&world), None, "called off: opaque again");
+        assert!(world.get::<DoorFade>(actor).is_none());
+        assert_eq!(passed(&world), 0, "and not passed");
+    }
 }
