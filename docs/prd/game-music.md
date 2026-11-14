@@ -1,6 +1,7 @@
 # Game Music — Product Requirements
 
-**Status**: ACTIVE (2026-11-13). Revision 6 closes Phase 0: the design is
+**Status**: ACTIVE (2026-11-14). Revision 7 moves scenario 6 to Sloan's
+audio marker (#6904). Revision 6 closes Phase 0: the design is
 [music.md](../engine/music.md) and the verify items left open are #6899–#6903.
 Revision 5 moves the census to ROADMAP
 (#6865). Revision 4 files the tracking issues, one small issue per work
@@ -481,10 +482,12 @@ A scenario passes when:
    `fnv-new-game.sh`, the intro's own `PlayBink "FNVIntro.bik" 1 1 0 1`
    raises no Hold layer (MUS-MIX-002, MUS-SCR-002).
 6. **New Vegas media sets (headless).** Standing at audio marker
-   `0x00152433` (controller `musCtrlGoodsprings`, `WastelandNV` cell
-   `000846EA` at grid (-18, 0)) by day and by night reports
-   its controller's Location set with the day and night layers in turn
-   (MUS-SRC-005, MUS-SRC-006).
+   `0x0015D028` (controller `musCtrlSloan`, `WastelandNV` grid (-8, 1)) by
+   day and by night reports its controller's Location set with the day and
+   night layers in turn (MUS-SRC-005, MUS-SRC-006). The Goodsprings marker
+   `0x00152433` first named here sits under `musCtrlGoodsprings`, which
+   carries faction-relation sets and no Location set, so that area reports
+   **Unresolved** until #6904.
 7. **Oblivion categories (headless).** A Public cell (`BrumaJGhastasHouse`)
    and a Dungeon cell (`SageGlenHollow`) report `public\` and `dungeon\`;
    `StreamMusic Random` reports the Script layer (MUS-SRC-008,
@@ -623,3 +626,4 @@ and Oblivion's source coverage is published.
 | 4 | 2026-11-13 | APPROVED → ACTIVE: tracking issues filed (#6860 parent; phases #6861–#6864; 26 work items #6865–#6890, each citing the requirement IDs it satisfies) | — |
 | 5 | 2026-11-13 | §3.4's census table replaced by a link to ROADMAP's music column, now measured over base masters and DLC by the checked-in `music_census` example; scenario 6's Goodsprings marker named; Fallout 3's `TenpennyLobbyMusic` exception noted (#6865) | — |
 | 6 | 2026-11-13 | Phase 0 closed: `docs/engine/music.md` written and linked from Related; verify items settled from the executables' defaults and New Vegas's data, or filed as #6899–#6903 | — |
+| 7 | 2026-11-14 | Scenario 6 moved from the Goodsprings marker `0x00152433` to Sloan's `0x0015D028`: `musCtrlGoodsprings` carries faction-relation sets and no Location set, which Q3 defers (#6904) | — |

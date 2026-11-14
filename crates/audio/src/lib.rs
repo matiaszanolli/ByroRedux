@@ -94,12 +94,12 @@
 //!   without buffering the whole decompressed PCM in memory. The
 //!   bytes-overload is for BSA-extracted music; the file-overload
 //!   is for loose `Data/Music/*.mp3` / `*.wav`.
-//! - [`AudioWorld::play_music`] — single-slot music dispatch through
-//!   the main (non-spatial) track. Overwrites any currently-playing
-//!   track with a tweened fade. Music is non-positional by design:
-//!   the listener doesn't move relative to the music source.
-//! - [`AudioWorld::stop_music`] — explicit stop (cell exit, menu
-//!   open, etc.) with a configurable fade duration.
+//! - [`AudioWorld::play_music_voice`] and its siblings — the music
+//!   voices the music controller (`byroredux/src/music`,
+//!   `docs/engine/music.md`) drives: streamed tracks on the main
+//!   (non-spatial) track, each crossfaded, paused, resumed and levelled
+//!   on its own, all scaled by one music volume. Music is non-positional
+//!   by design: the listener doesn't move relative to the music source.
 //!
 //! # Phase 6
 //!

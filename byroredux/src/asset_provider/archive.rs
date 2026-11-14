@@ -47,7 +47,9 @@ enum Backend {
 /// `geometries` is Starfield's external `.mesh` data (`geometries\<hash>.mesh`,
 /// no `meshes\` prefix — see [`normalize_mesh_path`]); without it a loose NIF
 /// override that names new `.mesh` bodies resolves none of them (#6330).
-const LOOSE_ASSET_ROOTS: [&str; 4] = ["textures", "meshes", "materials", "geometries"];
+/// `music` is where Oblivion, Fallout 3 and New Vegas ship all their music,
+/// loose (Game Music MUS-SRC-011): the sound provider's loose tier reads it.
+const LOOSE_ASSET_ROOTS: [&str; 5] = ["textures", "meshes", "materials", "geometries", "music"];
 
 /// How many directory levels below an asset root the loose index descends.
 /// Archive paths are shallow (vanilla nests a handful deep), so this only

@@ -777,18 +777,9 @@ impl InteriorCellApplyJob {
             result.center,
             &cell_name,
         );
+        // Region music is the music controller's (`crate::music`, which reads the cell context).
         let region_ambient =
             crate::components::RegionAmbientRes::resolve(&cell.regions, &index.regions);
-        let previous_music_form = world
-            .try_resource::<crate::components::RegionAmbientRes>()
-            .and_then(|r| r.music_form);
-        if previous_music_form != region_ambient.music_form {
-            crate::asset_provider::dispatch_region_ambient_music(
-                world,
-                crate::asset_provider::RegionMusicTables::new(&index),
-                region_ambient.music_form,
-            );
-        }
 
         ensure_globals_resource(world, &index.globals);
         let form_resolver =

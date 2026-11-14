@@ -23,6 +23,11 @@ pub const SHOW_PROMPTS_SETTING_ID: &str = "interface.show_prompts";
 pub const SHOW_VITALS_SETTING_ID: &str = "interface.show_vitals";
 pub const SHOW_OBJECTIVES_SETTING_ID: &str = "interface.show_objectives";
 pub const FOV_SETTING_ID: &str = "gameplay.field_of_view";
+/// Game Music MUS-MIX-001 — the background music level (0..1), scaling music
+/// and nothing else. Registered at the authored level (1.0); the engine seeds
+/// the game's own `fDefaultMusicVolume` as the default before stored values
+/// load ([`SettingsRegistry::set_default`], Q4).
+pub const MUSIC_VOLUME_SETTING_ID: &str = "audio.music_volume";
 
 /// Stable registry key for the temporal reconstruction path. The value is the
 /// same spec string the `r.upscaler` console command and the `--upscaler` /
@@ -106,6 +111,17 @@ pub fn register_builtin_settings(registry: &mut SettingsRegistry) -> Result<(), 
         2.0,
         0.05,
         "×",
+    ))?;
+    registry.register(SettingEntry::slider(
+        MUSIC_VOLUME_SETTING_ID,
+        "Audio",
+        "Music volume",
+        "Background music level. Defaults to the game's own music volume; scales music only.",
+        1.0,
+        0.0,
+        1.0,
+        0.05,
+        "",
     ))?;
     registry.register(SettingEntry::toggle(
         SHOW_CROSSHAIR_SETTING_ID,

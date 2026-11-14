@@ -44,7 +44,8 @@ The controller holds at most one directive per layer (PRD §3.1):
 | Location | The player's place (§3) | — |
 
 A paused voice keeps its position: a layer that a higher one suspended resumes where it
-stopped, it is not restarted. A layer's **outcome** (PRD §3.2) is **Playing**, **Silent**,
+stopped, it is not restarted. A higher layer crossfades over the one it suspends; the Hold
+layer pauses and releases at once, so the music stops where the movie begins. A layer's **outcome** (PRD §3.2) is **Playing**, **Silent**,
 **Unresolved** or **Missing**; a Playing layer under a higher one reports
 `Playing (paused under <layer>)`.
 
@@ -87,7 +88,8 @@ either sign (MUS-SEL-003; #6902).
   Location source, folder form included (MUS-SCR-001). The directive replaces the
   previous scripted one; `PlayMusic 1NoMusic` is a Silent directive and so ends a
   scripted track (New Vegas's `VVault11ExterminationChairSCRIPT` does exactly that).
-- **`StreamMusic "<file>" | Public | Explore | Dungeon | Random`** (Oblivion) plays a
+- **`StreamMusic "<file>" | Public | Explore | Dungeon | Random`** (Oblivion, opcode
+  `0x104e` in `Oblivion.exe`'s command table, a string-form command) plays a
   quoted path relative to the game folder, or a random track of the named folder
   (`Random`: one of the three), and gives way to battle music ("StreamMusic will also
   not override combat music", CS *StreamMusic*). A missing file is **Missing** and the
@@ -116,7 +118,9 @@ a cell change, and gives way to battle on Fallout 3 / New Vegas is #6899.
   once; Battle and Location resume when it ends. Both drivers are the ones the console
   reaches (MUS-RPT-004): `levelup xp <n>` awards levels through the same loop that
   pushes the level-up event, and `obscript.cmd 0x14 108b` (`KillActor` on the player)
-  inserts `Dead`, which the controller watches on the player.
+  inserts `Dead`, which the controller watches on the player. Oblivion's level-up sting
+  is translated but has no driver yet: Oblivion levels by major-skill increases, which the
+  engine does not model (`levelup xp` awards no level under classic-TES rules).
 
 ## 6. New Vegas media sets
 
@@ -145,7 +149,14 @@ enable bit (`PNAM`). The controller plays:
 
 A controller with several Location sets plays the first. One with Neutral, Ally, Friend
 or Enemy lists plays its Location set and reports the relation lists **Unresolved**
-(Q3). A controller's Battle sets, else the region's `RDSB` set, feed the Battle layer
+(Q3). Nine of the 689 markers sit under controllers with relation lists and *no*
+Location set, `musCtrlGoodsprings` among them: those areas report Location
+**Unresolved** and play nothing from the marker until the relation is modelled (#6904).
+A controller with Battle sets only (169 markers) leaves the place's own music playing.
+
+Twenty-three controllers list a **Dungeon** set among their Location sets. A Dungeon
+set's slots are Battle, Explore and Suspense (xEdit's `(D)` labels), not layers: its
+Explore track (`NAM3`) plays, looping; when Suspense and Battle play is #6902. A controller's Battle sets, else the region's `RDSB` set, feed the Battle layer
 (MUS-CMB-001): the set's loop track (`NAM2`), its Intro (`HNAM`, a `SOUN`) on entering
 combat and its Outro (`INAM`) on leaving it (MUS-CMB-003), and its recovery time (`FNAM`,
 10 s on every vanilla Battle set) as the hold (MUS-CMB-002).
@@ -165,13 +176,29 @@ voice and nothing else.
 
 ## 8. Reporting and headless runs
 
-`music.status` prints the Hold flag and one line per layer: its outcome, its source
-(EditorID, FormID), the file playing and its position (MUS-RPT-001). Each Unresolved
+`music.status` prints the place and the audio marker whose area holds the player, the
+Hold flag, and one line per layer: its outcome, its source (EditorID, FormID, the field
+that named it), the file playing and its position (MUS-RPT-001). Each Unresolved
 source and each Missing path logs once per session (MUS-RPT-002). With no audio device
 (a headless `--bench-hold` run) the controller runs the same way: directives resolve,
 tracks are chosen, and a voice's position is the controller's own clock, which a paused
 layer stops (MUS-RPT-003). Tracks never end on that clock, so a headless run reports the
 first track of each directive.
+
+### Census and gates
+
+The ignored `music::census_tests` (`byroredux`) translate every music source of each
+game's master and official DLC (PRD §7.2 scenario 1, §8), 2026-11-14:
+
+| Game | Sources | Source coverage | Playable coverage |
+|---|---|---|---|
+| Fallout 3 | 591 cells, 16 worldspaces, 5 default objects, 31 music types | 100 % | cells 99.8 % (one `.wav` the install lacks), music types 93.3 % |
+| New Vegas | 375 cells, 3 worldspaces, 14 region battle sets, 5 default objects, 520 audio-marker areas | 100 %, markers 98.3 % (9 relation-only, #6904) | markers and battle sets 100 %; cells, worldspaces and default objects 0 % (the `Default*` folders are not shipped, #6900) |
+| Oblivion | 1919 cells, 39 worldspaces, 128 regions | 100 % | 100 % |
+
+`docs/smoke-tests/music-fo3.sh` drives scenarios 2 to 5, `music-fnv.sh` scenario 6 (at
+Sloan: the Goodsprings marker the PRD first named is relation-only) and scenario 5's New
+Vegas leg, `music-oblivion.sh` scenario 7.
 
 ## 9. Saves
 
@@ -193,5 +220,5 @@ not-saved list with its reason.
 | MUS-SRC-002 precedence, Fallout 3 `RDMD`, New Vegas silence (§3.4) | — | #6900 |
 | MUS-SCR-005, MUS-CMB-004 (`PlayMusic`) | data leans toward *replace* | #6899 |
 | MUS-STG-003, MUS-STG-004 | — | #6901 |
-| MUS-CMB-001, MUS-CMB-003, Q3 (New Vegas) | xEdit labels | #6902 |
+| MUS-CMB-001, MUS-CMB-003, Q3 (New Vegas) | xEdit labels | #6902; relation-only controllers #6904 |
 | MUS-SRC-008, MUS-SCR-003 (Oblivion) | — | #6903 |

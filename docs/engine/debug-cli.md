@@ -343,7 +343,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**173**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**174**) grouped by
 purpose:
 
 ```
@@ -561,6 +561,7 @@ weather.force <WTHR|none> [lock] → force the exterior weather like ObScript Fo
 actor.where <entity|0xREFR> → where an actor is now and its cross-cell travel state: `routing via door entity <id> toward <cell>`, `offscreen, arrives at day <d> <hh:mm> in <cell>`, `unroutable <reason>`, or `in <cell>` / `not loaded, in <cell>`, with its pose (XCT-RPT-001)
 actor.where --census          → every actor the relocation ledger or the router knows: home cell, current cell and state, under a tally line (arrived / offscreen / routing / unroutable by reason, XCT-RPT-002)
 xct.sweep [limit]             → send every unloaded actor with a cross-space package on its way offscreen, or record it Unroutable with its reason (PRD scenario 4, `docs/smoke-tests/xct-census.sh`)
+music.status → the music controller (`docs/engine/music.md` §8): the place and the New Vegas audio marker whose area holds the player, Hold, then one line per layer (Sting, Script, Battle, Location) with its outcome (Playing, paused under a higher layer, Silent, Unresolved with the reason, Missing with the path), its source record (EditorID, FormID, the field that named it), the file playing and its position — the controller's own clock with no audio device (MUS-RPT-001, -003)
 video.status → the movie player: the movie playing (frame/count, PlayBink flags incl. new_game, and the mute / pause-music hold the audio world applies: `holding world_muted=… music_paused=…`) and how the last request ended: Played, Skipped (a format with no decoder) or Failed (BIK-RPT-001, BIK-PRES-005)
 video.skip → Escape sent to the playing movie; it ends if its PlayBink request is interruptable (BIK-RPT-003)
 nav.path <entity|0xREFR> <entity|0xREFR> → the navmesh route the AI movers would take between two references: the resident tile and triangle each lands on, and the waypoint count

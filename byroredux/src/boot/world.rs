@@ -259,6 +259,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     crate::asset_provider::try_load_default_footstep(&mut world, &sound_archives);
     crate::asset_provider::try_load_default_water_splash(&mut world, &sound_archives);
     world.insert_resource(sound_archives);
+    // Game Music — the controller and its translation of the load order (`docs/engine/music.md`).
+    crate::music::install(&mut world);
     // Process-lifetime cache of parsed-and-imported NIF scenes.
     // Persists across cell transitions so repeat visits don't re-
     // parse every clutter mesh. See #381.

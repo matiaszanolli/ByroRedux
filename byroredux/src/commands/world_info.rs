@@ -886,10 +886,9 @@ fn format_form_id(form_id: Option<u32>) -> String {
 ///   current one. Reads 0 tiles on Oblivion, which authors no NAVM at all
 ///   (`docs/engine/navmesh-pathfinding.md`) — that's the correct answer,
 ///   not a bug in this command.
-/// - **Audio**: only the single global REGN music channel exists today
-///   (#3804 is the open per-region-emitter follow-up); attributed to the
-///   target cell only when it's also the player's current cell,
-///   best-effort.
+/// - **Audio**: the music controller's Location layer (`music.status` has
+///   every layer), attributed to the target cell only when it's also the
+///   player's current cell; region ambient emitters are #3804.
 /// - **AI**: every resident actor with an
 ///   [`crate::components::AmbientPackageRuntime`] whose `GlobalTransform`
 ///   resolves (via [`crate::streaming::world_pos_to_grid`]) to the target
@@ -947,15 +946,12 @@ impl ConsoleCommand for CellOwnersCommand {
             "  NAVM: {navm_tiles} tile(s), {navm_vertices} vertices, {navm_triangles} triangles"
         ));
 
-        // Audio — one global channel today; attributed only to the current cell.
-        let music_active = world
-            .try_resource::<byroredux_audio::AudioWorld>()
-            .map(|audio| audio.is_music_active())
-            .unwrap_or(false);
-        lines.push(match (music_active, Some(target) == current_grid) {
-            (true, true) => "  Audio: 1 active channel (global REGN music, this cell)".to_string(),
-            (true, false) => "  Audio: 1 active channel (global REGN music, elsewhere)".to_string(),
-            (false, _) => "  Audio: no active channel".to_string(),
+        // Audio — the music's Location layer, attributed only to the current cell.
+        let location = crate::music::status_lines(world).into_iter().find(|line| line.starts_with("Location:"));
+        lines.push(match (location, Some(target) == current_grid) {
+            (Some(line), true) => format!("  Audio: music {line}"),
+            (Some(_), false) => "  Audio: music follows the player's cell, not this one".to_string(),
+            (None, _) => "  Audio: no music controller".to_string(),
         });
 
         // AI — actors whose live position resolves to the target grid cell.

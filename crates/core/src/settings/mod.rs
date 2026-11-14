@@ -234,6 +234,23 @@ impl SettingsRegistry {
         Ok(changed)
     }
 
+    /// Replace `id`'s default with a validated value known only at launch (a
+    /// game's own music volume, say). A value still at the old default follows
+    /// it; one already moved stays. Call it before stored values are loaded,
+    /// so a stored choice still wins.
+    pub fn set_default(&mut self, id: &str, value: SettingValue) -> Result<(), SettingsError> {
+        let entry = self
+            .entries
+            .get_mut(id)
+            .ok_or_else(|| SettingsError::Unknown(id.to_owned()))?;
+        validate_value(&entry.id, &entry.control, &value)?;
+        if entry.value == entry.default {
+            entry.value = value.clone();
+        }
+        entry.default = value;
+        Ok(())
+    }
+
     pub fn reset(&mut self, id: &str) -> Result<bool, SettingsError> {
         let default = self
             .entries
@@ -333,6 +350,23 @@ fn type_mismatch(id: &str, expected: &'static str, value: &SettingValue) -> Sett
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MUS-MIX-001 — a launch-time default moves an untouched value with it and leaves a moved one.
+    #[test]
+    fn a_seeded_default_moves_an_untouched_value_only() {
+        let slider = || SettingEntry::slider("audio.music_volume", "Audio", "Music", "Music", 1.0, 0.0, 1.0, 0.05, "");
+        let mut registry = SettingsRegistry::default();
+        registry.register(slider()).unwrap();
+        registry.set_default("audio.music_volume", SettingValue::Number(0.3)).unwrap();
+        let entry = registry.get("audio.music_volume").unwrap();
+        assert_eq!((entry.value.clone(), entry.default.clone()), (SettingValue::Number(0.3), SettingValue::Number(0.3)));
+        let mut moved = SettingsRegistry::default();
+        moved.register(slider()).unwrap();
+        moved.set("audio.music_volume", SettingValue::Number(0.8)).unwrap();
+        moved.set_default("audio.music_volume", SettingValue::Number(0.3)).unwrap();
+        assert_eq!(moved.get("audio.music_volume").unwrap().value, SettingValue::Number(0.8));
+        assert!(moved.set_default("audio.music_volume", SettingValue::Number(2.0)).is_err(), "validated");
+    }
 
     #[test]
     fn registry_updates_and_resets_a_validated_slider() {

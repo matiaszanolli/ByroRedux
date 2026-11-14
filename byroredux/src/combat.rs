@@ -840,6 +840,11 @@ pub(crate) fn grant_experience(world: &World, player: EntityId, xp: u32) {
             reached = leveling.roll_levels(progress);
         }
     }
+    if !reached.is_empty() {
+        // MUS-STG-002 — one level-up sting however many levels the award reached; the path
+        // `levelup xp <n>` takes too (MUS-RPT-004).
+        crate::music::raise_sting(world, crate::music::Sting::LevelUp);
+    }
     for level in &reached {
         log::info!("Player reached level {level}");
         crate::notifications::push(world, format!("Level up! You reached level {level}"));

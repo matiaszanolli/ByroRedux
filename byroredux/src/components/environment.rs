@@ -221,11 +221,10 @@ pub(crate) struct AppliedWeather {
 
 /// Resolved ambient-audio directive for the currently resident cell's
 /// highest-priority `REGN` `Sound` entry (EX-16 item 1, #2372). CPU-only —
-/// carries FormIDs, not decoded audio; `asset_provider::audio`'s
-/// `resolve_sound_path`/`sound_archive_path` resolve them to archive
-/// paths, and a consumer — `dispatch_region_ambient_music`
-/// (`byroredux/src/asset_provider/audio.rs`), shipped 2026-08-23 (`ede48ffb`/
-/// `3ef05d1b`) — dispatches actual playback via `AudioWorld::play_music`.
+/// carries FormIDs, not decoded audio. Read by `cell.owners`; the music
+/// controller (`crate::music`, `docs/engine/music.md`) resolves the region's
+/// music itself from the cell context, which replaced the 2026-08-23
+/// `dispatch_region_ambient_music` path (#6872).
 /// Mirrors `CellLightingRes`'s shape
 /// and lifecycle: computed once at cell-apply time from data already
 /// parsed into `EsmIndex`, not recomputed per-frame.
@@ -249,11 +248,8 @@ pub(crate) struct RegionAmbientRes {
     /// `crates/plugin/src/esm/records/misc/world.rs` for the full
     /// per-era census (#3787 FNV, #3811 Oblivion + Skyrim — both closed
     /// doc-only; the runtime for all three target types is tracked by
-    /// #3816, FNV's `MSET` included since #3915).
-    /// `dispatch_region_ambient_music` (`asset_provider::audio`) resolves
-    /// this against the `SounRecord` map and, for Skyrim's `MUSC`, through
-    /// `MUSC` → `MUST` to a track file (#3816). FNV `MSET` and Oblivion
-    /// `RDMD` still resolve to nothing.
+    /// #3816, FNV's `MSET` included since #3915). The music controller's
+    /// translate step reads the region itself (`music::translate`).
     pub music_form: Option<u32>,
     /// `RDSI` — FNV-only incidental FormID. Same caveat: census-confirmed
     /// `MSET`, not `SOUN` (#3787; runtime tracked by #3816).

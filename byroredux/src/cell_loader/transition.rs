@@ -116,10 +116,10 @@ pub(crate) use crate::components::{CurrentCellContext, CurrentExteriorContext, L
 /// between a teardown and its following rebuild — same as `CurrentCellRoot`
 /// briefly reading `None` mid-transition today.
 pub(crate) fn clear_current_exterior_identity(world: &mut byroredux_core::ecs::World) {
-    // #6717 — stays a call into `systems`: ending the scripted music layer is runtime behaviour
-    // owned by `script_requests` (it holds the fade constant) and must run at this cell-leave
-    // choke point (#6226); there is no translation content to move down.
-    crate::systems::script_requests::stop_script_music(world);
+    // #6717 — stays a call into the music runtime: ending the scripted music layer is runtime
+    // behaviour owned by the music controller and must run at this cell-leave choke point (#6226,
+    // MUS-SCR); there is no translation content to move down.
+    crate::music::end_script_layer(world);
     world.remove_resource::<CurrentExteriorContext>();
 }
 
@@ -379,8 +379,8 @@ pub fn unload_current_interior(
     ctx: &mut byroredux_renderer::VulkanContext,
 ) {
     // #6226 — a scripted `PlayMusic` track belongs to the cell it was played in. (Stays a call into
-    // `systems` for the reason given at `clear_current_exterior_identity`, #6717.)
-    crate::systems::script_requests::stop_script_music(world);
+    // the music runtime for the reason given at `clear_current_exterior_identity`, #6717.)
+    crate::music::end_script_layer(world);
     let prev_root = world.try_resource::<CurrentCellRoot>().and_then(|r| r.0);
     if let Some(prev) = prev_root {
         log::info!("Transition: unloading prior interior cell (root {prev})");

@@ -45,7 +45,8 @@ impl byroredux_core::ecs::Resource for MusicTracks {}
 impl MusicTracks {
     pub fn from_index(index: &EsmIndex) -> Self {
         let mut out = Self::default();
-        for musc in index.music_types.values().filter(|musc| !musc.file.is_empty() && !musc.editor_id.is_empty()) {
+        // A type with no file is kept: `PlayMusic 1NoMusic` silences the scripted layer (MUS-SRC-004).
+        for musc in index.music_types.values().filter(|musc| !musc.editor_id.is_empty()) {
             out.by_form.insert(musc.form_id, musc.editor_id.clone());
             out.by_editor_id.insert(&musc.editor_id, MusicTrack { form_id: musc.form_id, file: musc.file.clone(), looping: musc.looping(), decibels: musc.decibels });
         }
@@ -67,6 +68,14 @@ impl MusicTracks {
 pub struct PendingMusic(pub Vec<MusicTrack>);
 
 impl byroredux_core::ecs::Resource for PendingMusic {}
+
+/// What an Oblivion script asked `StreamMusic` to play, as written: a quoted path relative to the game
+/// folder, or `Public`, `Explore`, `Dungeon`, `Random` (CS *StreamMusic*; Game Music MUS-SCR-003).
+/// `NOT_SAVED_BY_DESIGN`: drained by the music system the frame it is raised.
+#[derive(Debug, Default)]
+pub struct PendingStreamMusic(pub Vec<String>);
+
+impl byroredux_core::ecs::Resource for PendingStreamMusic {}
 
 /// A texture swap a script asked for (`SwapTexture <ref> "<slot>" "<texture>"`): the meshes under `target`
 /// whose texture is named `slot` take `texture`. `NOT_SAVED_BY_DESIGN`: drained by the render-side swap
@@ -144,6 +153,7 @@ pub fn install(world: &mut World) {
     world.init_resource::<TextArguments>();
     world.init_resource::<MusicTracks>();
     world.init_resource::<PendingMusic>();
+    world.init_resource::<PendingStreamMusic>();
     world.init_resource::<PendingTextureSwaps>();
     world.init_resource::<ReloadRequest>();
     world.init_resource::<AshPiles>();
@@ -254,6 +264,17 @@ fn cmd_11ff(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _c
     }
 }
 
+// CS *StreamMusic "<file>" | Public | Explore | Dungeon | Random*: "start playing a new track or play a
+// specific music file" — the music system's Script layer (MUS-SCR-003).
+fn stream_music(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
+    let Some(text) = texts(world).into_iter().next().filter(|text| !text.trim().is_empty()) else { return Action::Declined };
+    let summary = format!("StreamMusic {text}");
+    if let Some(mut pending) = world.try_resource_mut::<PendingStreamMusic>() {
+        pending.0.push(text);
+    }
+    done(summary)
+}
+
 // `SwapTexture <ref> "<slot>" "<texture>"`: the end-slide screens' picture.
 fn swap_texture(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
     let strings = texts(world);
@@ -352,6 +373,8 @@ pub(crate) const EXTRAS_COMMANDS: &[Command] = &[
     Command { id: 0x124e, games: Games::Fallout, needs_caller: false, handler: get_owner_last_target },
     Command { id: 0x119c, games: Games::Fallout, needs_caller: false, handler: cmd_119c },
     Command { id: 0x11ff, games: Games::Fallout, needs_caller: false, handler: cmd_11ff },
+    // `Oblivion.exe`'s command table: `StreamMusic` is 0x104e (the table reads `PlayMusic` as 0x11ff on Fallout3.exe).
+    Command { id: 0x104e, games: Games::Oblivion, needs_caller: false, handler: stream_music },
     Command { id: 0x1269, games: Games::Fallout, needs_caller: false, handler: swap_texture },
     Command { id: 0x114d, games: Games::Oblivion, needs_caller: false, handler: cmd_114d },
     Command { id: 0x1211, games: Games::Fallout, needs_caller: false, handler: cmd_1211 },

@@ -594,27 +594,42 @@ fn underwater_listener_state_persists() {
     assert!(!world.underwater());
 }
 
-/// **Phase 5**: `play_music` and `stop_music` are no-ops when
-/// the audio world is inactive (no audio device). Pinned because
-/// a refactor that "asserts a manager exists" would crash on
-/// every headless host on the very first cell-load music event.
+/// **Phase 5**: the music voices are no-ops when the audio world is
+/// inactive (no audio device). Pinned because a refactor that "asserts a
+/// manager exists" would crash on every headless host on the very first
+/// music decision; the music controller runs headless too (MUS-RPT-003).
 #[test]
-fn play_music_no_op_when_inactive() {
+fn music_voices_no_op_when_inactive() {
     // We can't construct a real StreamingSoundData without bytes
     // that decode, so this test only exercises the early-return
-    // branch (manager.is_none() → silent return). is_music_active
-    // and stop_music are also pinned along the inactive path.
+    // branch (manager.is_none() → silent return) of every other call.
     let mut audio_world = AudioWorld::headless();
-    assert!(!audio_world.is_music_active());
-    audio_world.stop_music(0.5); // No-op on no-music + no-manager.
-    assert!(!audio_world.is_music_active());
+    assert!(!audio_world.music_voice_active(1));
+    audio_world.stop_music_voice(1, 0.5);
+    audio_world.pause_music_voice(1, 0.5);
+    audio_world.resume_music_voice(1, 0.5);
+    audio_world.set_music_voice_level(1, 0.5, 0.0);
+    assert_eq!(audio_world.music_voice_position(1), None);
+    audio_world.set_music_volume(0.3);
+    assert_eq!(audio_world.music_volume(), 0.3);
+}
+
+/// BIK-PRES-005 / MUS-MIX-002 — a movie's pause-music flag is recorded for the
+/// music controller's Hold layer, and released with the movie.
+#[test]
+fn a_movie_hold_records_the_pause_music_flag() {
+    let mut audio_world = AudioWorld::headless();
+    audio_world.hold_for_movie(false, true);
+    assert_eq!(audio_world.movie_hold(), MovieHold { world_muted: false, music_paused: true });
+    audio_world.release_movie_hold();
+    assert_eq!(audio_world.movie_hold(), MovieHold::default());
 }
 
 /// **Phase 5 real-data integration**: open FNV `Fallout - Sound.bsa`,
 /// extract the longest OGG (proxy for "music" — vanilla FNV
 /// ships music as separate `Fallout - Music.bsa` which we don't
-/// require for the test), play it through `play_music`, verify
-/// `is_music_active() == true` after dispatch, then `stop_music`
+/// require for the test), play it on a music voice, verify
+/// `music_voice_active` after dispatch, then stop the voice
 /// and verify it goes inactive.
 ///
 /// `#[ignore]` — needs working audio device + vanilla FNV data.
@@ -649,30 +664,28 @@ fn play_music_drives_streaming_playback_on_real_ogg() {
         return;
     }
 
-    // play_music with 0.05s fade-in (short so the test is fast).
-    // Non-looping baseline — see `play_music_looping_survives_track_end`
-    // for the `looping: true` counterpart.
-    audio_world.play_music(streaming, 0.5, 0.05, false);
+    // A 0.05s fade-in (short so the test is fast). Non-looping
+    // baseline — see `play_music_looping_survives_track_end` for the
+    // `looping: true` counterpart.
+    audio_world.play_music_voice(7, streaming, 0.5, 0.05, false);
     assert!(
-        audio_world.is_music_active(),
-        "play_music must produce a Playing handle on first dispatch"
+        audio_world.music_voice_active(7),
+        "a music voice must hold a Playing handle on first dispatch"
     );
 
-    // Let it play briefly, then stop with a fade.
+    // Let it play briefly, then stop with a fade: the voice is freed at once.
     std::thread::sleep(Duration::from_millis(100));
-    audio_world.stop_music(0.05);
-
-    // Poll until inactive (the stop fade completes).
+    audio_world.stop_music_voice(7, 0.05);
     let deadline = Instant::now() + Duration::from_secs(2);
-    while audio_world.is_music_active() {
+    while audio_world.music_voice_active(7) {
         if Instant::now() > deadline {
-            panic!("stop_music never produced an inactive state");
+            panic!("stop_music_voice never produced an inactive state");
         }
         std::thread::sleep(Duration::from_millis(20));
     }
 }
 
-/// **#3775 (AUD-2026-08-30-D4-01)**: `play_music(.., looping: true)` must
+/// **#3775 (AUD-2026-08-30-D4-01)**: a looping music voice must
 /// survive past the source track's natural end — the exact defect this
 /// issue reported: kira's `StreamingSoundSettings` default is
 /// `loop_region: None`, so with no continuation mechanism a track plays
@@ -720,18 +733,18 @@ fn play_music_looping_survives_track_end() {
         return;
     }
 
-    audio_world.play_music(streaming, 0.5, 0.05, true);
-    assert!(audio_world.is_music_active());
+    audio_world.play_music_voice(7, streaming, 0.5, 0.05, true);
+    assert!(audio_world.music_voice_active(7));
 
     std::thread::sleep(Duration::from_secs(3));
     assert!(
-        audio_world.is_music_active(),
+        audio_world.music_voice_active(7),
         "looping music must survive past the source track's natural end — \
          loop_region(0.0..) wasn't applied?"
     );
 
     // Clean stop so the test doesn't leak a playing handle.
-    audio_world.stop_music(0.05);
+    audio_world.stop_music_voice(7, 0.05);
 }
 
 /// **Phase 4**: an `AudioEmitter` with `looping = true` plays
@@ -1002,8 +1015,8 @@ fn play_oneshot_queue_caps_at_max_pending_when_active() {
         active_sounds: Vec::new(),
         pending_oneshots: VecDeque::new(),
         oneshots_requested: 0,
-        music: None,
-        script_music: None,
+        music_voices: std::collections::HashMap::new(),
+        music_volume: 1.0,
         movie_sound: None,
         movie_hold: crate::MovieHold::default(),
         reverb_send: None,
@@ -1751,8 +1764,8 @@ fn emitter_position_follows_the_source_entity_regression_3086() {
         active_sounds: Vec::new(),
         pending_oneshots: std::collections::VecDeque::new(),
         oneshots_requested: 0,
-        music: None,
-        script_music: None,
+        music_voices: std::collections::HashMap::new(),
+        music_volume: 1.0,
         movie_sound: None,
         movie_hold: crate::MovieHold::default(),
         reverb_send: None,
@@ -1877,8 +1890,8 @@ fn anchored_voice_follows_survives_prune_and_stops() {
         active_sounds: Vec::new(),
         pending_oneshots: std::collections::VecDeque::new(),
         oneshots_requested: 0,
-        music: None,
-        script_music: None,
+        music_voices: std::collections::HashMap::new(),
+        music_volume: 1.0,
         movie_sound: None,
         movie_hold: crate::MovieHold::default(),
         reverb_send: None,

@@ -38,6 +38,7 @@ mod limbs;
 mod env_translate;
 mod extensions;
 mod fog;
+mod game_ini;
 mod game_profiles;
 mod groundcover_state;
 mod groundcover_translate;
@@ -48,6 +49,7 @@ mod armor;
 mod lockpick;
 mod smithing;
 mod inventory;
+mod music;
 mod notifications;
 mod perk_activate;
 mod objectives;
@@ -752,6 +754,14 @@ fn install_universal_settings(
         .expect("debug-UI built-in settings must be valid and unique");
     interaction::register_input_settings(&mut settings)
         .expect("input settings must be valid and unique");
+    // Q4 / MUS-MIX-001 — the music level defaults to the game's own; seeded before the stored
+    // values load, so a level the user chose still wins.
+    if let Err(error) = settings.set_default(
+        music::MUSIC_VOLUME_SETTING_ID,
+        SettingValue::Number(music::default_music_volume(args)),
+    ) {
+        log::warn!("could not seed the music volume default: {error}");
+    }
     let mut settings_persistence = settings_io::SettingsPersistence::discover();
     settings_io::load(&mut settings, &settings_persistence);
 

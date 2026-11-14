@@ -1222,7 +1222,12 @@ grep. REGN's `Sound.music` field now has a real consumer (items 1 + 5,
    (EX-14/15 item C2's reconcile half, #2369) landing first, per §7's
    own sequencing.
 5. [x] **Ambient audio emitter REGN-binding — music done, `incidental` not
-   attempted.** The generic crossfade machinery already existed
+   attempted.** **Superseded for music (2026-11-13, #6872):** region music
+   is now one source of the music controller's Location layer
+   ([music.md](music.md) §3), which resolves the winning region itself
+   from the cell context; `dispatch_region_ambient_music` and the two
+   music slots below were removed. The history of the 2026-08-23 wiring
+   follows. The generic crossfade machinery already existed
    (`AudioWorld::play_music`/`stop_music`, `crates/audio/src/world.rs`);
    what landed (2026-08-23) is the dispatch wiring, not a new spatial
    emitter type — `play_music` is non-spatial by design (background

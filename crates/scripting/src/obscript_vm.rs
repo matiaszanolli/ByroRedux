@@ -211,8 +211,8 @@ pub trait ObScriptHost {
 /// actual editorID string of the idle as parameter"), `GetGS <setting>` and `ShowWarning "text"`.
 /// `GetPCMiscStat` / `ModPCMiscStat` are not among them: their quoted name compiles to a stat code
 /// (`01 00 0a 00` for `"Times Addicted"`) on every game, measured over every vanilla call by
-/// `obscript_tools avcodes`.
-const STRING_FORM_COMMANDS: [u16; 6] = [0x1190, 0x1100, 0x11b9, 0x11ff, 0x114d, 0x1114];
+/// `obscript_tools avcodes`. Oblivion's `StreamMusic "<file>" | <keyword>` (0x104e) is one too.
+const STRING_FORM_COMMANDS: [u16; 7] = [0x1190, 0x1100, 0x11b9, 0x11ff, 0x114d, 0x1114, 0x104e];
 
 /// Whether `cmd` is decoded in string form: its text's value ([`ObScriptHost::text_argument`]) leads
 /// its argument list, the ordinary arguments after it.

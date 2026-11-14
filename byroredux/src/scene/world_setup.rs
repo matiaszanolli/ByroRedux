@@ -983,7 +983,8 @@ fn claim_climate_evaluation(evaluated_grid: &mut Option<(i32, i32)>, player_grid
 
 /// Re-resolve the REGN ambient-sound directive (EX-16 items 1 + 5,
 /// #2372's `RegionAmbientRes`) for the exterior tile the player is
-/// currently in, and dispatch background-music playback for it.
+/// currently in. Background music is the music controller's
+/// (`crate::music`), which reads the same region.
 ///
 /// #3679 — `RegionAmbientRes::resolve` bottoms out in
 /// `select_active_region_sound`, which collects and sorts a fresh `Vec`;
@@ -994,14 +995,13 @@ fn claim_climate_evaluation(evaluated_grid: &mut Option<(i32, i32)>, player_grid
 /// for; `resolve()` only runs again once the player has actually left that
 /// grid cell — the answer is otherwise identical, since `wctx`'s REGN/XCLR
 /// data doesn't change within a `WorldStreamingState`'s lifetime (see the
-/// field's own doc). The `RegionAmbientRes` *write* to the `World` (and the
-/// music dispatch it can trigger) is still separately change-guarded below
-/// so a cache-refresh that resolves to the same directive doesn't churn the
-/// resource or restart the ambient track. Called outside the grid-changed
+/// field's own doc). The `RegionAmbientRes` *write* to the `World` is still
+/// separately change-guarded below so a cache-refresh that resolves to the
+/// same directive doesn't churn the resource. Called outside the grid-changed
 /// guard in `step_streaming`, mirroring the climate override's own
 /// placement — a session that starts (or a save that loads) inside a
-/// region-tagged cell must get its ambient directive and music applied
-/// immediately, not only on the first subsequent crossing.
+/// region-tagged cell must get its ambient directive applied immediately,
+/// not only on the first subsequent crossing.
 pub(crate) fn apply_cell_region_ambient(
     world: &mut World,
     wctx: &cell_loader::ExteriorWorldContext,
@@ -1033,18 +1033,8 @@ pub(crate) fn apply_cell_region_ambient(
     if previous == Some(ambient) {
         return;
     }
-    // EX-16 item 5 (#2372) — dispatch only on an actual `music` change.
-    // `incidental` has no consumer yet (see `RegionAmbientRes`'s doc), so
-    // an ambient-directive change that only touches it must not restart
-    // whatever track is currently playing.
-    let previous_music_form = previous.and_then(|p| p.music_form);
-    if previous_music_form != ambient.music_form {
-        crate::asset_provider::dispatch_region_ambient_music(
-            world,
-            crate::asset_provider::RegionMusicTables::new(&wctx.record_index),
-            ambient.music_form,
-        );
-    }
+    // Region music is the music controller's (`crate::music`): it follows the exterior context's
+    // grid and resolves the region itself (MUS-SRC-002).
     world.insert_resource(ambient);
 }
 
@@ -2138,9 +2128,8 @@ mod tests {
 
     /// One exterior worldspace, one tagged cell at `grid`, with a single
     /// `Sound`-kind REGN entry carrying `incidental`. `music` stays `None`
-    /// throughout this test module so the resolve path never reaches
-    /// `dispatch_region_ambient_music` (which needs an `AudioWorld`
-    /// resource these tests don't set up).
+    /// throughout this test module: region music is the music controller's
+    /// (`crate::music`), not this resolve path's.
     fn region_wctx(grid: (i32, i32), region_form: u32, incidental: u32) -> ExteriorWorldContext {
         let mut index = EsmIndex::default();
         index

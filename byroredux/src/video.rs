@@ -81,7 +81,6 @@ pub(crate) struct VideoPlayer {
 /// its name; `docs/engine/video-playback.md` §5). An INI key that is present, even empty, overrides
 /// the compiled-in value.
 struct StartSettings {
-    default_ini: &'static str,
     intro_sequence: &'static str,
     main_menu_movie_intro: &'static str,
 }
@@ -91,47 +90,24 @@ fn start_settings(game: byroredux_plugin::esm::reader::GameKind) -> Option<Start
     Some(match game {
         // Oblivion.exe; `Oblivion_default.ini` names the same four logos and the menu intro.
         GameKind::Oblivion => StartSettings {
-            default_ini: "Oblivion_default.ini",
             intro_sequence: "bethesda softworks HD720p.bik,2k games.bik,game studios.bik,Oblivion Legal.bik",
             main_menu_movie_intro: "Oblivion iv logo.bik",
         },
         // Fallout3.exe: every movie setting is empty; `Fallout_default.ini` (FO3 and FNV) leaves
         // `SIntroSequence` and `SMainMenuMovieIntro` empty too.
-        GameKind::Fallout3NV => StartSettings { default_ini: "Fallout_default.ini", intro_sequence: "", main_menu_movie_intro: "" },
+        GameKind::Fallout3NV => StartSettings { intro_sequence: "", main_menu_movie_intro: "" },
         // SkyrimSE.exe: `BGS_Logo.bik`; `Skyrim_Default.ini` names no movie.
-        GameKind::Skyrim => StartSettings { default_ini: "Skyrim_Default.ini", intro_sequence: "BGS_Logo.bik", main_menu_movie_intro: "" },
+        GameKind::Skyrim => StartSettings { intro_sequence: "BGS_Logo.bik", main_menu_movie_intro: "" },
         // Fallout4.exe: `GameIntro_V3_B.bk2`; the exe has no `sMainMenuMovieIntro`.
-        GameKind::Fallout4 => StartSettings { default_ini: "Fallout4_Default.ini", intro_sequence: "GameIntro_V3_B.bk2", main_menu_movie_intro: "" },
+        GameKind::Fallout4 => StartSettings { intro_sequence: "GameIntro_V3_B.bk2", main_menu_movie_intro: "" },
         // Starfield.exe: `BGS_LOGO_1080p_BinkVersion.bk2`; no `sMainMenuMovieIntro`.
         GameKind::Starfield => StartSettings {
-            default_ini: "Starfield.ini",
             intro_sequence: "BGS_LOGO_1080p_BinkVersion.bk2",
             main_menu_movie_intro: "",
         },
         // Fallout 76 is out of scope (BIK-NG-005).
         _ => return None,
     })
-}
-
-/// `[General] key` of an INI file's text, case-insensitively: `Some("")` for a key set to nothing.
-fn ini_general(text: &str, key: &str) -> Option<String> {
-    let mut in_general = false;
-    for line in text.lines() {
-        let line = line.trim();
-        if let Some(section) = line.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')) {
-            in_general = section.trim().eq_ignore_ascii_case("General");
-            continue;
-        }
-        if !in_general || line.starts_with(';') {
-            continue;
-        }
-        if let Some((name, value)) = line.split_once('=') {
-            if name.trim().eq_ignore_ascii_case(key) {
-                return Some(value.trim().to_string());
-            }
-        }
-    }
-    None
 }
 
 /// BIK-REQ-004 — the movies `game` plays at launch, in order: `sIntroSequence` (a comma- or
@@ -141,7 +117,7 @@ pub(crate) fn start_sequence(game: byroredux_plugin::esm::reader::GameKind, ini_
     let Some(settings) = start_settings(game) else {
         return Vec::new();
     };
-    let setting = |key: &str, compiled: &str| ini_text.and_then(|text| ini_general(text, key)).unwrap_or_else(|| compiled.to_string());
+    let setting = |key: &str, compiled: &str| ini_text.and_then(|text| crate::game_ini::ini_value(text, "General", key)).unwrap_or_else(|| compiled.to_string());
     let intro = setting("sIntroSequence", settings.intro_sequence);
     let menu = setting("sMainMenuMovieIntro", settings.main_menu_movie_intro);
     intro
@@ -180,15 +156,7 @@ impl VideoPlayer {
         };
         self.start_sequence_done = true;
         let args = crate::cli_args::effective_args();
-        let ini = crate::cli_args::esm_discovery_root(&args)
-            .ok()
-            .and_then(|(_, data)| {
-                let install = data.parent()?.to_path_buf();
-                let name = start_settings(game)?.default_ini;
-                crate::systems::script_requests::find_case_insensitive(&install, name)
-            })
-            .and_then(|path| std::fs::read(path).ok())
-            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+        let ini = crate::game_ini::read_default_ini(&args, game);
         let movies = start_sequence(game, ini.as_deref());
         if movies.is_empty() {
             return;
@@ -473,7 +441,6 @@ mod tests {
         assert!(start_sequence(GameKind::Fallout3NV, Some("[General]\nSIntroSequence=\nsIntroMovie=Fallout INTRO Vsk.bik\n")).is_empty());
         assert_eq!(start_sequence(GameKind::Fallout4, None), ["GameIntro_V3_B.bk2"]);
         assert_eq!(start_sequence(GameKind::Starfield, None), ["BGS_LOGO_1080p_BinkVersion.bk2"]);
-        assert_eq!(ini_general("[General]\n; sIntroSequence=x\n[Other]\nsIntroSequence=y\n", "sIntroSequence"), None, "comments and other sections");
     }
 
     /// BIK-REQ-005 — `--skip-movies` skips the start sequence; a benchmark skips it unless

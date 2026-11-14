@@ -155,12 +155,29 @@ pub(crate) struct PendingOneShot {
 /// `manager` drops. Rust struct-field drop order is declaration order
 /// — the field declarations below match that, top-to-bottom.
 /// What a playing movie's flags hold still (GECK *PlayBink*: "mute audio",
-/// "pause music"): the world's sounds and the two music layers, released when
-/// the movie ends.
+/// "pause music"): the world's sounds, paused here, and the music, which the
+/// music controller pauses while `music_paused` is set (its Hold layer).
+/// Released when the movie ends.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MovieHold {
     pub world_muted: bool,
     pub music_paused: bool,
+}
+
+/// One music voice: its handle and its own level, kept so a change of the
+/// music volume can rescale it.
+pub(crate) struct MusicVoice {
+    pub(crate) handle: StreamingSoundHandle<FromFileError>,
+    pub(crate) level: f32,
+}
+
+/// A linear tween over `secs` (0 = at once).
+fn linear_tween(secs: f32) -> Tween {
+    Tween {
+        start_time: kira::StartTime::Immediate,
+        duration: std::time::Duration::from_secs_f32(secs.max(0.0)),
+        easing: kira::Easing::Linear,
+    }
 }
 
 pub struct AudioWorld {
@@ -177,16 +194,13 @@ pub struct AudioWorld {
     /// Monotonic count of one-shot dispatch requests, including headless
     /// calls discarded before queueing. Used by device-less smoke gates.
     pub(crate) oneshots_requested: u64,
-    /// Single-slot music handle (Phase 5). Music is non-spatial —
-    /// it routes through the main track, not a spatial sub-track.
-    /// Calling `play_music` while a track is already playing fades
-    /// the old one out and the new one in (crossfade).
-    pub(crate) music: Option<StreamingSoundHandle<FromFileError>>,
-    /// #6226 — the scripted music layer (`PlayMusic`): non-spatial on the
-    /// main track like [`Self::music`], but a slot of its own, since a
-    /// scripted track "will not stop the currently playing music of the
-    /// cell" (GECK *PlayMusic*). A second scripted track replaces the first.
-    pub(crate) script_music: Option<StreamingSoundHandle<FromFileError>>,
+    /// The music voices (`docs/engine/music.md` §1): streamed, non-spatial
+    /// tracks on the main track, keyed by the id the music controller gives
+    /// each. The controller owns every one; nothing else plays music.
+    pub(crate) music_voices: std::collections::HashMap<u32, MusicVoice>,
+    /// The music level (`audio.music_volume`, MUS-MIX-001): every voice
+    /// plays at its own level times this, and nothing else is scaled by it.
+    pub(crate) music_volume: f32,
     /// A movie's soundtrack (PRD `bink-video-playback`): non-spatial on the main
     /// track, a slot of its own so the music layers can be paused under it
     /// (BIK-PRES-005), and the clock the movie's picture follows (BIK-PRES-003).
@@ -307,8 +321,8 @@ impl AudioWorld {
             active_sounds: Vec::new(),
             pending_oneshots: VecDeque::new(),
             oneshots_requested: 0,
-            music: None,
-            script_music: None,
+            music_voices: std::collections::HashMap::new(),
+            music_volume: 1.0,
             movie_sound: None,
             movie_hold: MovieHold::default(),
             reverb_send: None,
@@ -519,65 +533,88 @@ impl AudioWorld {
         stopped
     }
 
-    /// **Phase 5**: play a streaming sound through the main track.
-    /// Music is non-spatial by design — it shouldn't attenuate with
-    /// player position the way a campfire's crackle does. Volume
-    /// is linear amplitude (1.0 = nominal); `fade_in_secs` controls
-    /// the kira tween used to fade in (and to fade out any existing
-    /// track being replaced). `looping` sets kira's `loop_region` to
-    /// the whole track (`0.0..`) so playback continues indefinitely
-    /// instead of stopping after one pass through — kira's own
-    /// default is `loop_region: None` (#3775 / AUD-2026-08-30-D4-01):
-    /// with no continuation mechanism at all, a non-looping track
-    /// plays exactly once and then goes silent until something
-    /// re-dispatches it.
-    ///
-    /// No-op when the manager is inactive (returns silently). When
-    /// active and a track is already playing, the existing handle
-    /// is told to fade out over `fade_in_secs` and replaced — the
-    /// fade-in of the new track and fade-out of the old overlap as
-    /// a natural crossfade.
-    pub fn play_music(
+    /// Play a streaming track on music voice `voice`, at `level` (linear
+    /// amplitude, 1.0 = authored) times the music volume, fading in over
+    /// `fade_secs`. A track the voice already held fades out over the same
+    /// time, so the two overlap into a crossfade. `looping` loops the whole
+    /// track (kira's default is to play it once, #3775). Music bypasses the
+    /// reverb send and the underwater filter (MUS-MIX-003). No-op when the
+    /// manager is inactive.
+    pub fn play_music_voice(
         &mut self,
+        voice: u32,
         streaming_sound: StreamingSoundData<FromFileError>,
-        volume: f32,
-        fade_in_secs: f32,
+        level: f32,
+        fade_secs: f32,
         looping: bool,
     ) {
         let Some(mgr) = self.manager.as_mut() else {
             return;
         };
-        play_main_track(mgr, &mut self.music, streaming_sound, volume, fade_in_secs, looping);
+        let mut slot = self.music_voices.remove(&voice).map(|v| v.handle);
+        play_main_track(mgr, &mut slot, streaming_sound, level * self.music_volume, fade_secs, looping);
+        if let Some(handle) = slot {
+            self.music_voices.insert(voice, MusicVoice { handle, level });
+        }
     }
 
-    /// **Phase 5**: stop the currently-playing music with a fade-out.
-    /// No-op when nothing is playing or when the manager is inactive.
-    pub fn stop_music(&mut self, fade_out_secs: f32) {
-        stop_main_track(&mut self.music, fade_out_secs);
+    /// Fade music voice `voice` out over `fade_secs` and free it.
+    pub fn stop_music_voice(&mut self, voice: u32, fade_secs: f32) {
+        let mut slot = self.music_voices.remove(&voice).map(|v| v.handle);
+        stop_main_track(&mut slot, fade_secs);
     }
 
-    /// #6226 — play a scripted track (`PlayMusic`) on its own main-track
-    /// layer, over the cell's music rather than in place of it: streamed,
-    /// non-spatial, with no reverb send or underwater filter, exactly as
-    /// [`Self::play_music`] plays the cell's. A scripted track already
-    /// playing crossfades out. No-op when the manager is inactive.
-    pub fn play_script_music(
-        &mut self,
-        streaming_sound: StreamingSoundData<FromFileError>,
-        volume: f32,
-        fade_in_secs: f32,
-        looping: bool,
-    ) {
-        let Some(mgr) = self.manager.as_mut() else {
-            return;
-        };
-        play_main_track(mgr, &mut self.script_music, streaming_sound, volume, fade_in_secs, looping);
+    /// Pause music voice `voice`, fading out over `fade_secs`; it keeps its
+    /// position for [`Self::resume_music_voice`].
+    pub fn pause_music_voice(&mut self, voice: u32, fade_secs: f32) {
+        if let Some(v) = self.music_voices.get_mut(&voice) {
+            v.handle.pause(linear_tween(fade_secs));
+        }
     }
 
-    /// #6226 — stop the scripted music layer (a cell change or a load ends
-    /// it). No-op when nothing is playing.
-    pub fn stop_script_music(&mut self, fade_out_secs: f32) {
-        stop_main_track(&mut self.script_music, fade_out_secs);
+    /// Resume a paused music voice where it stopped, fading in over `fade_secs`.
+    pub fn resume_music_voice(&mut self, voice: u32, fade_secs: f32) {
+        if let Some(v) = self.music_voices.get_mut(&voice) {
+            v.handle.resume(linear_tween(fade_secs));
+        }
+    }
+
+    /// Change music voice `voice`'s own level (linear), over `fade_secs`.
+    pub fn set_music_voice_level(&mut self, voice: u32, level: f32, fade_secs: f32) {
+        let volume = self.music_volume;
+        if let Some(v) = self.music_voices.get_mut(&voice) {
+            v.level = level;
+            v.handle.set_volume(linear_volume_to_db(level * volume), linear_tween(fade_secs));
+        }
+    }
+
+    /// The playback position of music voice `voice` in seconds; `None` when
+    /// it holds no track.
+    pub fn music_voice_position(&self, voice: u32) -> Option<f64> {
+        self.music_voices.get(&voice).map(|v| v.handle.position())
+    }
+
+    /// Whether music voice `voice` holds a track that has not finished:
+    /// playing, paused or fading. `false` once a non-looping track has
+    /// played to its end, which is how the controller knows to start the
+    /// next one (MUS-SEL-002).
+    pub fn music_voice_active(&self, voice: u32) -> bool {
+        self.music_voices
+            .get(&voice)
+            .is_some_and(|v| !matches!(v.handle.state(), PlaybackState::Stopped))
+    }
+
+    /// The music level every voice is scaled by (MUS-MIX-001).
+    pub fn set_music_volume(&mut self, volume: f32) {
+        self.music_volume = volume.max(0.0);
+        let tween = linear_tween(0.0);
+        for v in self.music_voices.values_mut() {
+            v.handle.set_volume(linear_volume_to_db(v.level * self.music_volume), tween);
+        }
+    }
+
+    pub fn music_volume(&self) -> f32 {
+        self.music_volume
     }
 
     /// Play a movie's soundtrack from its start, on its own slot (BIK-PRES-003).
@@ -606,38 +643,29 @@ impl AudioWorld {
     }
 
     /// BIK-PRES-005 — hold the world for a movie: pause the world's playing
-    /// sounds (and drop the one-shots raised meanwhile) when `mute_world`, the
-    /// cell and scripted music when `pause_music`. Released by
+    /// sounds (and drop the one-shots raised meanwhile) when `mute_world`.
+    /// `pause_music` is recorded for the music controller, whose Hold layer
+    /// pauses every music voice while it is set (MUS-MIX-002). Released by
     /// [`Self::release_movie_hold`].
     pub fn hold_for_movie(&mut self, mute_world: bool, pause_music: bool) {
         self.release_movie_hold();
-        let now = Tween { duration: std::time::Duration::ZERO, ..Default::default() };
+        let now = linear_tween(0.0);
         if mute_world {
             for sound in &mut self.active_sounds {
                 sound.handle.pause(now);
             }
             self.pending_oneshots.clear();
         }
-        if pause_music {
-            for track in [&mut self.music, &mut self.script_music].into_iter().flatten() {
-                track.pause(now);
-            }
-        }
         self.movie_hold = MovieHold { world_muted: mute_world, music_paused: pause_music };
     }
 
-    /// Release what [`Self::hold_for_movie`] held: the paused sounds and music
-    /// resume where they stopped.
+    /// Release what [`Self::hold_for_movie`] held: the paused sounds resume
+    /// where they stopped, and the music controller lets the music go.
     pub fn release_movie_hold(&mut self) {
-        let now = Tween { duration: std::time::Duration::ZERO, ..Default::default() };
         if self.movie_hold.world_muted {
+            let now = linear_tween(0.0);
             for sound in &mut self.active_sounds {
                 sound.handle.resume(now);
-            }
-        }
-        if self.movie_hold.music_paused {
-            for track in [&mut self.music, &mut self.script_music].into_iter().flatten() {
-                track.resume(now);
             }
         }
         self.movie_hold = MovieHold::default();
@@ -646,29 +674,6 @@ impl AudioWorld {
     /// What a playing movie holds now (BIK-PRES-005, reported by `video.status`).
     pub fn movie_hold(&self) -> MovieHold {
         self.movie_hold
-    }
-
-    /// Whether a scripted track is installed and not yet stopped (see
-    /// [`Self::is_music_active`] for the fade-tail caveat).
-    pub fn is_script_music_active(&self) -> bool {
-        self.script_music
-            .as_ref()
-            .is_some_and(|h| !matches!(h.state(), PlaybackState::Stopped))
-    }
-
-    /// True while a music handle is installed and its state has not
-    /// yet reached `Stopped`. **Not** true for the whole fade-out
-    /// window: `stop_music` clears the slot immediately after issuing
-    /// `handle.stop(fade)`, so this reports `false` from the moment
-    /// `stop_music` returns even though kira keeps rendering the fade
-    /// tail (`fade_out_secs`, e.g. `REGN_AMBIENT_CROSSFADE_SECS` =
-    /// 3.0 s) internally. A caller that needs to know "is the slot
-    /// still audibly occupied" cannot use this alone.
-    pub fn is_music_active(&self) -> bool {
-        self.music
-            .as_ref()
-            .map(|h| !matches!(h.state(), PlaybackState::Stopped))
-            .unwrap_or(false)
     }
 
     /// **Phase 6**: set the per-new-spatial-track reverb send level

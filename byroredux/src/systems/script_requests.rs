@@ -8,7 +8,7 @@ use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::Quat;
 use byroredux_plugin::esm::records::ItemKind;
-use byroredux_scripting::obscript_more::{PendingMusic, PendingSleep, ReloadRequest, ResetInventoryRequest, UseWeaponRequest};
+use byroredux_scripting::obscript_more::{PendingSleep, ReloadRequest, ResetInventoryRequest, UseWeaponRequest};
 
 // ── UseWeapon ──────────────────────────────────────────────────────────────────────────────────────
 
@@ -295,98 +295,7 @@ pub(crate) fn sleep_system(world: &World, _dt: f32) {
     }
 }
 
-// ── PlayMusic ──────────────────────────────────────────────────────────────────────────────────────
-
-/// The crossfade a scripted track starts and stops with.
-const SCRIPT_MUSIC_FADE_SECS: f32 = 1.0;
-
-/// Whether a `MUSC` `FNAM` names a folder of variant tracks (a trailing separator) rather than
-/// one file (#6438; the `SOUN` twin is `sound_is_folder`, #3914).
-fn music_file_is_folder(file: &str) -> bool {
-    file.ends_with(['\\', '/'])
-}
-
-/// Music types already announced as folder-form: the notice is once per type, not once per
-/// `PlayMusic` (a script that retries every cycle would otherwise log each time).
-/// `NOT_SAVED_BY_DESIGN`: log de-dup only.
-static FOLDER_MUSIC_NOTED: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
-
-/// `true` the first time `form` is seen in `noted`.
-fn note_folder_music(noted: &std::sync::Mutex<Vec<u32>>, form: u32) -> bool {
-    let mut noted = noted.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if noted.contains(&form) {
-        return false;
-    }
-    noted.push(form);
-    true
-}
-
-/// `PlayMusic`: play the named music type's track over what the cell is already playing (GECK: "will not
-/// stop the currently playing music of the cell"), from the sound archives. #6226 — on the audio world's
-/// scripted music layer: streamed (a stinger is tens of MB of PCM decoded whole), non-spatial on the
-/// main track like the cell's music, looping when its positive dB marks it so, and replaced by the next
-/// `PlayMusic`. A cell change or a load ends it ([`stop_script_music`]).
-pub(crate) fn music_system(world: &World, _dt: f32) {
-    let tracks: Vec<_> = match world.try_resource_mut::<PendingMusic>() {
-        Some(mut pending) if !pending.0.is_empty() => std::mem::take(&mut pending.0),
-        _ => return,
-    };
-    // One layer: of several asked for in a frame, the last is what would be left playing.
-    let Some(track) = tracks.into_iter().last() else { return };
-    // A headless session has nothing to play it on: no archive read, no decode.
-    if !world.try_resource::<byroredux_audio::AudioWorld>().is_some_and(|audio| audio.is_active()) {
-        return;
-    }
-    // #6438 — a folder-form type (`FNAM` `battle\\`, `explore\\`, ...) names a directory of
-    // variant tracks, and which variant plays is a policy this engine has not made. Without
-    // this gate the lookup lands on the directory itself and the decode failure below blames
-    // the codec. Same fence `sound_is_folder` puts on a `SOUN` folder (#3914): no fallback.
-    if music_file_is_folder(&track.file) {
-        if note_folder_music(&FOLDER_MUSIC_NOTED, track.form_id) {
-            log::info!(
-                "PlayMusic: '{}' is a folder-form music type — variant selection is not modelled, nothing plays",
-                track.file
-            );
-        }
-        return;
-    }
-    let key = format!("music\\{}", track.file.replace('/', "\\").to_ascii_lowercase());
-    // The music is loose in `Data\Music` on Fallout 3 / New Vegas; an archive is tried first.
-    let from_archive = world
-        .try_resource::<crate::asset_provider::SoundArchiveProvider>()
-        .and_then(|provider| provider.extract(&key))
-        .map(byroredux_audio::load_streaming_sound_from_bytes);
-    let sound = from_archive.or_else(|| {
-        let (_, data) = crate::cli_args::esm_discovery_root(&crate::cli_args::effective_args()).ok()?;
-        let path = find_case_insensitive(&data, &format!("Music\\{}", track.file))?;
-        Some(byroredux_audio::load_streaming_sound_from_file(path))
-    });
-    let sound = match sound {
-        Some(Ok(sound)) => sound,
-        Some(Err(error)) => {
-            log::warn!("PlayMusic: '{key}' failed to decode: {error}");
-            return;
-        }
-        None => {
-            log::warn!("PlayMusic: '{key}' is in no sound archive and not under the data folder's Music");
-            return;
-        }
-    };
-    // Only a negative level attenuates; a positive one is the loop marker, not a gain.
-    let volume = if track.decibels < 0.0 { 10f32.powf(track.decibels / 20.0) } else { 1.0 };
-    if let Some(mut audio) = world.try_resource_mut::<byroredux_audio::AudioWorld>() {
-        audio.play_script_music(sound, volume, SCRIPT_MUSIC_FADE_SECS, track.looping);
-        log::info!("PlayMusic: playing '{key}' at {volume:.2}{}", if track.looping { " (looping)" } else { "" });
-    }
-}
-
-/// #6226 — end the scripted music layer: called where a cell is left (an interior unloaded, an exterior
-/// session drained), which every door transition and every load passes through.
-pub(crate) fn stop_script_music(world: &World) {
-    if let Some(mut audio) = world.try_resource_mut::<byroredux_audio::AudioWorld>() {
-        audio.stop_script_music(SCRIPT_MUSIC_FADE_SECS);
-    }
-}
+// ── Data-folder lookups ────────────────────────────────────────────────────────────────────────────
 
 /// `relative` (`\\`- or `/`-separated) under `root`, matching each component without regard to case
 /// (the games' files are Windows-cased; this filesystem is not).
@@ -748,57 +657,14 @@ mod tests {
         assert_eq!(now.items[0].base_form_id, 0x12);
     }
 
-    /// #6226 — `PlayMusic` goes nowhere near the one-shot pool (no spatial sub-track, no
-    /// `oneshots_requested` count), and a headless session drains the request without touching the
-    /// archives or decoding anything.
+    /// #6226 / MUS-SCR — the scripted layer ends where a cell is left: both teardown choke points
+    /// end it.
     #[test]
-    fn play_music_is_no_one_shot_and_a_headless_session_only_drains_it() {
-        use byroredux_scripting::obscript_more::MusicTrack;
-        let mut world = World::new();
-        world.insert_resource(byroredux_audio::AudioWorld::headless());
-        let track = |file: &str| MusicTrack { form_id: 1, file: file.into(), looping: false, decibels: -6.0 };
-        world.insert_resource(PendingMusic(vec![track("a.mp3"), track("b.mp3")]));
-        music_system(&world, 0.0);
-        assert!(world.resource::<PendingMusic>().0.is_empty());
-        let audio = world.resource::<byroredux_audio::AudioWorld>();
-        assert_eq!(audio.oneshots_requested(), 0);
-        assert!(!audio.is_script_music_active());
-    }
-
-    /// #6438 — a folder-form `FNAM` (`battle\\`) is fenced before resolution: it is recognised by
-    /// its trailing separator in either slash form, a file is not, and the notice fires once per
-    /// type.
-    #[test]
-    fn a_folder_form_music_type_is_gated_and_announced_once() {
-        assert!(music_file_is_folder("battle\\"));
-        assert!(music_file_is_folder("explore/"));
-        assert!(!music_file_is_folder("battle\\battle_01.mp3"));
-        assert!(!music_file_is_folder(""));
-
-        let noted = std::sync::Mutex::new(Vec::new());
-        assert!(note_folder_music(&noted, 0x10), "the first sighting is announced");
-        assert!(!note_folder_music(&noted, 0x10), "a repeat of the same type is silent");
-        assert!(note_folder_music(&noted, 0x11), "another type is announced in its own right");
-    }
-
-    /// #6438 — the gate runs before any archive or data-folder lookup, so the folder never reaches
-    /// the decoder (the old misleading "failed to decode" warning).
-    #[test]
-    fn the_folder_gate_precedes_the_archive_lookup() {
-        let source = include_str!("script_requests.rs");
-        let body = source.split_once("pub(crate) fn music_system(").map(|(_, rest)| rest).unwrap();
-        let gate = body.find("music_file_is_folder(&track.file)").expect("music_system gates folder-form types");
-        let lookup = body.find("provider.extract(&key)").expect("the archive lookup");
-        assert!(gate < lookup, "the folder gate must run before the archive lookup");
-    }
-
-    /// #6226 — the scripted layer ends where a cell is left: both teardown choke points stop it.
-    #[test]
-    fn leaving_a_cell_stops_the_scripted_music() {
+    fn leaving_a_cell_ends_the_scripted_music() {
         let source = include_str!("../cell_loader/transition.rs");
         for teardown in ["pub fn unload_current_interior(", "pub(crate) fn clear_current_exterior_identity("] {
             let body = source.split_once(teardown).and_then(|(_, rest)| rest.split_once("\n}\n")).map(|(body, _)| body).unwrap();
-            assert!(body.contains("stop_script_music(world)"), "{teardown} must stop the scripted music");
+            assert!(body.contains("crate::music::end_script_layer(world)"), "{teardown} must end the scripted music");
         }
     }
 }

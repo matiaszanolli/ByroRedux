@@ -53,9 +53,9 @@ pub fn load_streaming_sound_from_bytes(
     StreamingSoundData::from_cursor(cursor)
 }
 
-/// Play a streaming sound into one main-track music slot, fading out
-/// whatever the slot held over the same duration so the two overlap into a
-/// crossfade. Shared by the cell music and the scripted layer (#6226).
+/// Play a streaming sound into one main-track slot, fading out whatever the
+/// slot held over the same duration so the two overlap into a crossfade.
+/// Shared by the music voices and the movie soundtrack.
 pub(crate) fn play_main_track(
     mgr: &mut AudioManager<DefaultBackend>,
     slot: &mut Option<StreamingSoundHandle<FromFileError>>,
@@ -82,7 +82,7 @@ pub(crate) fn play_main_track(
     match mgr.play(configured) {
         Ok(handle) => *slot = Some(handle),
         Err(e) => {
-            log::warn!("M44 Phase 5: play_music failed: {e}");
+            log::warn!("M44 Phase 5: a music track failed to play: {e}");
             *slot = None;
         }
     }

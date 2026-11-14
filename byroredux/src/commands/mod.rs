@@ -65,6 +65,7 @@ mod time;
 mod view;
 mod water;
 mod world_info;
+mod music;
 mod video;
 
 use actor_value::*;
@@ -96,6 +97,7 @@ use time::*;
 use view::*;
 use water::*;
 use world_info::*;
+use music::MusicStatusCommand;
 use video::{VideoSkipCommand, VideoStatusCommand};
 
 pub(crate) fn build_command_registry() -> CommandRegistry {
@@ -254,6 +256,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(ActorWhereCommand);
     registry.register(XctSweepCommand);
     registry.register(NavPathCommand);
+    registry.register(MusicStatusCommand);
     registry.register(VideoStatusCommand);
     registry.register(VideoSkipCommand);
     registry.register(MatListCommand);
