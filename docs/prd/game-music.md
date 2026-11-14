@@ -1,6 +1,8 @@
 # Game Music — Product Requirements
 
-**Status**: ACTIVE (2026-11-13). Revision 5 moves the census to ROADMAP
+**Status**: ACTIVE (2026-11-13). Revision 6 closes Phase 0: the design is
+[music.md](../engine/music.md) and the verify items left open are #6899–#6903.
+Revision 5 moves the census to ROADMAP
 (#6865). Revision 4 files the tracking issues, one small issue per work
 item under each phase. Revision 3 records the owner's approval with every
 §10 decision taken as recommended; revision 2 folded in review round 1 on
@@ -29,7 +31,7 @@ writes the missing design.
 
 | Mechanism | Owning design |
 |---|---|
-| The music controller: layers, directives, track selection, fades, `music.status` | none yet: Phase 0 writes `docs/engine/music.md`. The `audio` crate (M44) has no design document either; the new one covers its music half |
+| The music controller: layers, directives, track selection, fades, `music.status` | [Music](../engine/music.md) (Phase 0, #6869), which also covers the `audio` crate's music half |
 | Loose files under `Data\` and their precedence over archives | [Archives § Asset provider precedence and the loose tier](../engine/archives.md#asset-provider-precedence-and-the-loose-tier) |
 | Region resolution (`REGN` sound data, override and priority) | [Exterior readiness § EX-16](../engine/exterior-readiness-plan.md#ex-16-2372--regn-navm-ambient-audio-ai-integration) |
 | A movie's pause-music flag (its mute flag silences world sound, not music, and stays with the Bink PRD) | [Bink video playback — PRD § 5.3](bink-video-playback.md#53-presentation-bik-pres) (BIK-PRES-005) |
@@ -600,7 +602,7 @@ and Oblivion's source coverage is published.
 
 | Need | Go to |
 |---|---|
-| How the controller works | `docs/engine/music.md` (Phase 0) |
+| How the controller works | [music.md](../engine/music.md) |
 | Loose files and archive precedence | [archives.md](../engine/archives.md#asset-provider-precedence-and-the-loose-tier) |
 | Region resolution and the ambient-audio epic | [exterior-readiness-plan.md § EX-16](../engine/exterior-readiness-plan.md#ex-16-2372--regn-navm-ambient-audio-ai-integration) |
 | Movie flags and the Hold layer's trigger | [bink-video-playback.md](bink-video-playback.md) |
@@ -620,3 +622,4 @@ and Oblivion's source coverage is published.
 | 3 | 2026-11-13 | Owner approval: Q1–Q6 decided as recommended (MUS-SEL-001, MUS-CMB-001, MUS-CMB-002, MUS-SRC-005, MUS-MIX-001, MUS-SAV-001, MUS-SAV-002, MUS-SRC-009) | owner: approved |
 | 4 | 2026-11-13 | APPROVED → ACTIVE: tracking issues filed (#6860 parent; phases #6861–#6864; 26 work items #6865–#6890, each citing the requirement IDs it satisfies) | — |
 | 5 | 2026-11-13 | §3.4's census table replaced by a link to ROADMAP's music column, now measured over base masters and DLC by the checked-in `music_census` example; scenario 6's Goodsprings marker named; Fallout 3's `TenpennyLobbyMusic` exception noted (#6865) | — |
+| 6 | 2026-11-13 | Phase 0 closed: `docs/engine/music.md` written and linked from Related; verify items settled from the executables' defaults and New Vegas's data, or filed as #6899–#6903 | — |
