@@ -10,6 +10,11 @@
 //! Census of `FalloutNV.esm` (2026-11-13): 89 controllers, every one with day start 64 and night start
 //! 255; 8 to 10 carry the faction-relation lists. `NAM7` reads as an uninitialised float on most
 //! records (values from 1e-44 to 3e18), so it is kept raw and has no reader.
+//!
+//! `NAM1`'s first byte packs the GECK dialog's options (xEdit: "Flags and Enums, messily combined";
+//! decoded by JohnnyGuitar NVSE's `MediaLocationController`, `_Flags`, and agreeing with OpenMW's ESM4
+//! `MLC_Flags`, #6906): bits 0-3 "Faction Not Found" (JG `DeadRep`), bits 4-5 the Looping Options, bit
+//! 6 "Use Defaults" for the day / night times. Vanilla: 0x44 ×48, 0x54 ×37, 0x40 ×2, 0x45, 0x55.
 
 use super::super::common::{remap_fid, CommonNamedFields};
 use crate::esm::reader::{FormIdRemap, SubRecord};
@@ -35,9 +40,61 @@ pub struct MediaLocationRecord {
     pub battle_sets: Vec<u32>,
     /// `RNAM` — the faction whose relation to the player picks among the relation sets.
     pub conditional_faction: Option<u32>,
+    /// `NAM1`'s first byte (see the module doc and [`Self::faction_not_found`], [`Self::looping`]).
+    pub flags: u8,
+}
+
+/// The list a controller plays while no actor of its conditional faction is found (`NAM1` bits 0-3, the
+/// GECK's "Faction Not Found", JG's `DeadRep`): "Don't use any Media Set" for `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FactionNotFound {
+    Neutral,
+    Enemy,
+    Ally,
+    Friend,
+    Location,
+    None,
+}
+
+/// How a controller picks among a list's sets (`NAM1` bits 4-5, the GECK's Looping Options): Loop
+/// "through the Media Location Set in the active list", Random "a random Media Location Set";
+/// Retrigger and None are "Unknown" in the GECK wiki.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopingOption {
+    Loop,
+    Random,
+    Retrigger,
+    None,
 }
 
 impl MediaLocationRecord {
+    /// `NAM1` bits 0-3; an undefined value reads as Location.
+    pub fn faction_not_found(&self) -> FactionNotFound {
+        match self.flags & 0x0F {
+            0 => FactionNotFound::Neutral,
+            1 => FactionNotFound::Enemy,
+            2 => FactionNotFound::Ally,
+            3 => FactionNotFound::Friend,
+            5 => FactionNotFound::None,
+            _ => FactionNotFound::Location,
+        }
+    }
+
+    /// `NAM1` bits 4-5.
+    pub fn looping(&self) -> LoopingOption {
+        match (self.flags >> 4) & 0x3 {
+            0 => LoopingOption::Loop,
+            1 => LoopingOption::Random,
+            2 => LoopingOption::Retrigger,
+            _ => LoopingOption::None,
+        }
+    }
+
+    /// `NAM1` bit 6 — "Use Defaults" for the day and night start times.
+    pub fn uses_default_times(&self) -> bool {
+        self.flags & 0x40 != 0
+    }
+
     /// A `NAM5` / `NAM6` value as an hour of the day (`64` → 6.0).
     pub fn start_hour(value: u32) -> f32 {
         value as f32 / 256.0 * 24.0
@@ -72,6 +129,7 @@ pub fn parse_aloc(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
         let mut reader = SubReader::new(&sub.data);
         let form = |raw: u32| Some(remap_fid(raw, remap)).filter(|&v| v != 0);
         match &sub.sub_type {
+            b"NAM1" => out.flags = sub.data.first().copied().unwrap_or_default(),
             b"NAM4" => out.location_delay = reader.f32().unwrap_or_default(),
             b"NAM5" => out.day_start = reader.u32().unwrap_or_default(),
             b"NAM6" => out.night_start = reader.u32().unwrap_or_default(),
@@ -123,6 +181,20 @@ mod tests {
         assert_eq!(aloc.enemy_sets, [0x30]);
         assert_eq!(aloc.conditional_faction, Some(0x40));
         assert!(aloc.has_relation_sets());
+    }
+
+    /// #6906 — the five vanilla `NAM1` values.
+    #[test]
+    fn nam1_packs_faction_not_found_looping_and_default_times() {
+        let read = |byte: u8| {
+            let aloc = parse_aloc(1, &[sub(b"NAM1", [byte, 0, 0, 0])], &None);
+            (aloc.faction_not_found(), aloc.looping(), aloc.uses_default_times())
+        };
+        assert_eq!(read(0x44), (FactionNotFound::Location, LoopingOption::Loop, true));
+        assert_eq!(read(0x54), (FactionNotFound::Location, LoopingOption::Random, true));
+        assert_eq!(read(0x40), (FactionNotFound::Neutral, LoopingOption::Loop, true), "musCtrlGoodsprings");
+        assert_eq!(read(0x55), (FactionNotFound::None, LoopingOption::Random, true), "musCtrlViperHwy95");
+        assert_eq!(read(0x45), (FactionNotFound::None, LoopingOption::Loop, true), "musCtrlSmallRV");
     }
 
     #[test]

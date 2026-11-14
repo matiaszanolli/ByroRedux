@@ -69,7 +69,7 @@ fn census(data: &std::path::Path, plugins: &[&str]) -> (Catalog, Vec<(&'static s
     // the place's census already counts.
     let add_marker = |add: &mut dyn FnMut(&'static str, Outcome), catalog: &Catalog, place: &Place, r: &byroredux_plugin::esm::cell::PlacedRef| {
         let found = catalog.marker_at(place, r.position).filter(|m| m.form == r.form_id).expect("a marker is found at its own center");
-        match catalog.marker_location(&index, &found, byroredux_sdk::relationships::CombatReaction::Neutral) {
+        match catalog.marker_location(&index, &found, super::translate::Surroundings::default(), 0) {
             Some(directive) => {
                 if directive.outcome() == Outcome::Playing && std::env::var_os("MUSIC_CENSUS_LIST").is_some() {
                     let day_night = matches!(&directive.content, super::directive::Content::Stems { stems, .. } if stems.iter().any(|s| s.night) && stems.iter().any(|s| !s.night));
@@ -201,11 +201,12 @@ fn new_vegas_music_sources_translate_against_the_census() {
     assert_eq!(catalog.recovery_secs, 3.0, "FalloutNV.esm's fCombatMusicStopTime");
     let types = tally(&tallies, "music type");
     assert_eq!((types.sources, types.count("playing"), types.count("missing"), types.count("silent")), (29, 15, 13, 1));
-    // 689 markers (MUS-0a): 520 under a controller with a Location or faction-relation list, every one
-    // playing (the 9 relation-only areas, Goodsprings among them, by the Neutral relation, #6904); 169
+    // 689 markers (MUS-0a): 520 under a controller with a Location or faction-relation list; with no
+    // faction actor found each plays its Faction Not Found list (#6906): 514 play, and the 6 under
+    // musCtrlSmallRV / musCtrlViperHwy95 (`NAM1` 0x45 / 0x55, None) are silent until one is. 169 sit
     // under a controller with Battle sets only, where the place's own music plays.
     let markers = tally(&tallies, "audio marker");
-    assert_eq!((markers.sources, markers.count("playing")), (520, 520));
+    assert_eq!((markers.sources, markers.count("playing"), markers.count("silent")), (520, 514, 6));
     assert_eq!(tally(&tallies, "audio marker (battle sets only)").sources, 169);
 }
 
@@ -240,5 +241,5 @@ fn oblivion_music_sources_translate_against_the_census() {
     for sting in [super::Sting::Death, super::Sting::LevelUp] {
         assert_eq!(index_free(sting).map(|d| d.outcome()), Some(Outcome::Playing), "{sting:?}");
     }
-    assert_eq!(catalog.battle(&Default::default(), None, None, byroredux_sdk::relationships::CombatReaction::Neutral).outcome(), Outcome::Playing);
+    assert_eq!(catalog.battle(&Default::default(), None, None, super::translate::Surroundings::default(), 0).outcome(), Outcome::Playing);
 }

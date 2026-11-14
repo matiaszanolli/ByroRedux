@@ -87,8 +87,10 @@ pub(crate) struct MusicCatalog {
     place: Option<Place>,
     /// The New Vegas audio marker whose area the player is in (MUS-SRC-005).
     marker: Option<translate::Marker>,
-    /// How that marker's controller's conditional faction treats the player (#6904).
-    relation: Option<byroredux_sdk::relationships::CombatReaction>,
+    /// What that marker's controller counts around the player (#6904, #6906).
+    around: translate::Surroundings,
+    /// The roll a Random controller picks its set by, drawn on entering the marker's area (#6906).
+    roll: u64,
     /// Whether the player was dead last frame: the death sting plays on the change (MUS-STG-001).
     player_dead: bool,
     /// Stings raised since the last frame (a level-up, [`raise_sting`]).
@@ -102,6 +104,44 @@ pub(crate) struct MusicCatalog {
 }
 
 impl byroredux_core::ecs::Resource for MusicCatalog {}
+
+/// What a New Vegas controller counts around the player (#6906): the conditional faction's relation
+/// to the player while a live actor of that faction is found, and whether a live actor that would
+/// attack the player is (tension). New Vegas counts the player's compass targets, which follow
+/// detection; until the Sneak and Detection PRD lands, an actor counts while inside the marker's area.
+fn surroundings(world: &World, marker: &translate::Marker, faction: Option<u32>, player: byroredux_core::ecs::EntityId) -> translate::Surroundings {
+    use byroredux_core::ecs::components::{Dead, FactionRanks, GlobalTransform};
+    let mut around = translate::Surroundings::default();
+    // The live actors inside the area, and whether one belongs to the faction; the guards drop before
+    // the hostility test takes these locks again.
+    let (inside, faction_found) = {
+        let (Some(ranks), Some(globals)) = (world.query::<FactionRanks>(), world.query::<GlobalTransform>()) else {
+            return around;
+        };
+        let dead = world.query::<Dead>();
+        let mut inside = Vec::new();
+        let mut faction_found = false;
+        for (actor, actor_ranks) in ranks.iter() {
+            if actor == player || dead.as_ref().is_some_and(|dead| dead.get(actor).is_some()) {
+                continue;
+            }
+            let Some(at) = globals.get(actor).map(|t| byroredux_core::math::coord::yup_to_zup_pos(t.translation.to_array())) else {
+                continue;
+            };
+            let d = [at[0] - marker.center[0], at[1] - marker.center[1], at[2] - marker.center[2]];
+            if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() <= marker.radius {
+                faction_found |= faction.is_some_and(|faction| actor_ranks.0.iter().any(|(f, rank)| *f == faction && *rank >= 0));
+                inside.push(actor);
+            }
+        }
+        (inside, faction_found)
+    };
+    around.tension = inside.into_iter().any(|actor| crate::systems::faction_hostility::actor_would_attack(world, actor, player));
+    if faction_found {
+        around.relation = faction.and_then(|faction| byroredux_scripting::faction_reaction_toward(world, faction, player));
+    }
+    around
+}
 
 /// The player's place for music, from the session's cell contexts.
 fn current_place(world: &World) -> Option<Place> {
@@ -171,30 +211,28 @@ pub(crate) fn music_system(world: &World, dt: f32) {
     // an equal directive playing).
     let place = current_place(world);
     let marker = place.as_ref().zip(player_position).and_then(|(place, at)| catalog.marker_at(place, at));
-    // The conditional faction's reaction picks a relation list; re-read each frame so a SetEnemy /
-    // SetFactionReaction changes the music where the player stands (#6904).
-    let relation = marker.map(|marker| {
-        index
-            .media_locations
-            .get(&marker.controller)
-            .and_then(|aloc| aloc.conditional_faction)
-            .zip(player)
-            .and_then(|(faction, player)| byroredux_scripting::faction_reaction_toward(world, faction, player))
-            .unwrap_or(byroredux_sdk::relationships::CombatReaction::Neutral)
+    // What the controller counts around the player, re-read each frame so a SetEnemy /
+    // SetFactionReaction, or an actor arriving or dying, changes the music where the player stands
+    // (#6904, #6906).
+    let around = marker.zip(player).map_or_else(translate::Surroundings::default, |(marker, player)| {
+        let faction = index.media_locations.get(&marker.controller).and_then(|aloc| aloc.conditional_faction);
+        surroundings(world, &marker, faction, player)
     });
+    if marker != state.marker {
+        state.roll = music.roll(u64::from(u32::MAX));
+    }
     let mut cell_music = world.try_resource_mut::<byroredux_scripting::obscript_more::CellMusicTypes>();
     let cell_music_changes = cell_music.as_ref().map_or(0, |types| types.changes);
     if place != state.place
         || marker != state.marker
-        || relation != state.relation
+        || around != state.around
         || cell_music_changes != state.cell_music_changes
     {
         let empty = std::collections::HashMap::new();
         let overrides = cell_music.as_ref().map_or(&empty, |types| &types.overrides);
         let directive = place.as_ref().map(|place| {
             marker
-                .zip(relation)
-                .and_then(|(marker, relation)| catalog.marker_location(&index, &marker, relation))
+                .and_then(|marker| catalog.marker_location(&index, &marker, around, state.roll))
                 .unwrap_or_else(|| catalog.location_with(&index, place, overrides))
         });
         // OBSE `GetCellMusicType` answers the player's cell's own category (MUS-SCR-004).
@@ -210,7 +248,7 @@ pub(crate) fn music_system(world: &World, dt: f32) {
         }
         state.place = place;
         state.marker = marker;
-        state.relation = relation;
+        state.around = around;
         state.cell_music_changes = cell_music_changes;
     }
     drop(cell_music);
@@ -277,8 +315,8 @@ pub(crate) fn music_system(world: &World, dt: f32) {
         hour: world.try_resource::<crate::components::GameTimeRes>().map_or(12.0, |time| time.hour),
     };
     let (place, marker) = (state.place.clone(), state.marker);
-    let relation = state.relation.unwrap_or(byroredux_sdk::relationships::CombatReaction::Neutral);
-    music.step(inputs, || catalog.battle(&index, place.as_ref(), marker.as_ref(), relation), &mut out);
+    let (around, roll) = (state.around, state.roll);
+    music.step(inputs, || catalog.battle(&index, place.as_ref(), marker.as_ref(), around, roll), &mut out);
 }
 
 /// `music.status` (MUS-RPT-001).

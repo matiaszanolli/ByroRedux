@@ -1,6 +1,7 @@
 # Game Music — Product Requirements
 
-**Status**: SHIPPED (2026-11-14). Revision 14 settles New Vegas's marker
+**Status**: SHIPPED (2026-11-14). Revision 15 decodes New Vegas's
+controller options (#6906). Revision 14 settles New Vegas's marker
 triggers, `ANAM` and Dungeon sets from the GECK wiki (#6902). Revision 13 settles the stings from
 the executables (#6901). Revision 12 settles Oblivion's
 precedence, fades, battle recovery and `StreamMusic` from `Oblivion.exe`
@@ -261,10 +262,13 @@ shipped behaviour is [music.md](../engine/music.md) and `music.status`.
   Location layer the outcome **Silent** and play nothing.
 - **MUS-SRC-005.** On New Vegas, while the player is inside an audio
   marker's area, the Location directive MUST come from that marker's
-  controller's Location media sets. The area is a sphere of the
-  reference's `XRDS` radius (every vanilla marker). No source says which of
-  two overlapping areas wins (not the GECK wiki dump either, #6906); the
-  engine takes the one the player is deepest into.
+  controller's media sets: with a conditional faction, its relation list
+  while an actor of the faction is found, else the `NAM1` Faction Not
+  Found list (None: no music); else its Location list; a Random controller
+  rolls the set (#6904, #6906). The area is a sphere of the reference's
+  `XRDS` radius (every vanilla marker). No source says which of two
+  overlapping areas wins (#6906); the engine takes the one the player is
+  deepest into.
 - **MUS-SRC-006.** A New Vegas Location media set MUST play its day layers
   between the controller's day start and night start and its night layers
   otherwise, against `GameTimeRes`. The start times are `value / 256` of a
@@ -660,3 +664,4 @@ and Oblivion's source coverage is published.
 | 12 | 2026-11-14 | Oblivion's verify items settled from `Oblivion.exe` (#6903): MUS-SRC-008 (cell → an exterior's region → worldspace, Default falling through), MUS-SEL-004 (0.85 s out, 0.85 s in; a cell change at once), MUS-CMB-002 (no recovery), MUS-CMB-004 (Battle ends a stream), MUS-SCR-003 (keywords play on, `Random` rolls a category, a file hands over to Default, a stream outlives a cell change into its own category) | — |
 | 13 | 2026-11-14 | MUS-STG-001 to MUS-STG-004 settled from the executables (#6901): Fallout 3 / New Vegas's stings are the `MUSDeath` / `MUSSuccess` sounds, the level-up one over the music; the Death, Success and Level Up Music objects are never read; every other sting stops the music until the place changes, combat starts or a script plays | — |
 | 14 | 2026-11-14 | New Vegas items settled from the GECK wiki dump (#6902): MUS-SRC-007 (the marker's own triggers), MUS-SEL-003 (positive `ANAM` is the Loop flag; the magnitude attenuates), MUS-CMB-001 (a Dungeon set's Battle track in combat); MUS-SRC-005's overlap, the battle order, `NAM1`'s packing and Suspense's trigger moved to #6906 | — |
+| 15 | 2026-11-14 | `NAM1` decoded from JohnnyGuitar NVSE's reverse-engineered `MediaLocationController` and OpenMW's ESM4 reader (#6906): a controller's relation list plays only while an actor of its conditional faction is found, else its Faction Not Found list (None: no music); Random controllers roll a set; a Dungeon set plays Suspense under the controller's tension. Actors count inside the marker's area until detection exists | — |

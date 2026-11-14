@@ -225,7 +225,7 @@ enable bit (`PNAM`). The controller plays:
   tutorial's "triggers of zero leave the Outer layer alone" reads the same way.
 
 A controller's Neutral, Ally, Friend and Enemy lists play by how its **conditional
-faction** (`RNAM`) treats the player: "music that plays ... when you're in an area
+faction** (`RNAM`) treats the player, while an actor of that faction is found: "music that plays ... when you're in an area
 controlled by an Enemy Faction (relates to Conditional Faction)" (Nexus wiki *Fallout New
 Vegas Music*, 2014). The relation is the engine's one faction rule
 (`faction_reaction_toward`: authored `XNAM` relations from the faction to the player's
@@ -233,23 +233,45 @@ factions, scripted `SetEnemy` / `SetFactionReaction` overrides first), re-read e
 frame, so a faction turning hostile switches the area's music. The relation's list
 plays, else the Location list, else the Neutral list; a controller with no conditional
 faction is Neutral. Nine of the 689 markers sit under controllers with relation lists and
-no Location set, `musCtrlGoodsprings` among them (#6904). A controller with several sets
-in a list plays the first; one with Battle sets only (169 markers) leaves the place's own
-music playing. `NAM1` (xEdit: "Flags and Enums, messily combined") holds the GECK's
-**Looping Options** (Loop: "Loop through the Media Location Set in the active list";
-Random: "Choose a random Media Location Set"; Retrigger and None: "Unknown") and
-**Faction Not Found** (the list to play "if there is no faction relation": Neutral, Ally,
-Location, Enemy, None or Friend), but not how they are packed; until that is known the
-engine plays the first set and treats no relation as Neutral (#6906).
+no Location set, `musCtrlGoodsprings` among them (#6904). One with Battle sets only (169
+markers) leaves the place's own music playing.
+
+`NAM1` (xEdit: "Flags and Enums, messily combined") packs the GECK dialog's options in its
+first byte, decoded by JohnnyGuitar NVSE's reverse-engineered `MediaLocationController`
+(`_Flags`) and agreeing with OpenMW's ESM4 reader (#6906):
+
+| Bits | GECK option | Values | Vanilla |
+|---|---|---|---|
+| 0-3 | Faction Not Found (JG `DeadRep`) | 0 Neutral, 1 Enemy, 2 Ally, 3 Friend, 4 Location, 5 None | 4 on 85 controllers; 0 on Goodsprings and Doc Mitchell; 5 on SmallRV and Highway 95 |
+| 4-5 | Looping Options | 0 Loop, 1 Random, 2 Retrigger, 3 None | Loop 50, Random 39 |
+| 6 | Use Defaults (day / night times) | | all 89 |
+
+"Normally, a MLC requires detected faction actors to use reaction-based mediasets … In
+vanilla, if no actors are detected, MLC uses the 'Dead Reputation' value to pick the
+mediaset, overriding the actual faction relation" (JohnnyGuitar's
+`MediaLocationControllerTweaks`). So the relation picks a list only while an actor of the
+conditional faction is found; while none is, the Faction Not Found list plays, and None
+plays no music. A controller with no conditional faction plays its Location list. An empty
+list falls back to the Location list, then the Neutral list. Of the list, a Random
+controller plays a set rolled when the player enters the area; Loop (and the
+undocumented Retrigger and None) plays the first. When either moves on to another set,
+and what Location Delay (`NAM4`) and Retrigger Delay (`NAM7`) time, is not known (#6906).
+
+The controller finds actors among the player's compass targets (JG: `uiFoundFactionActors`,
+`uiFoundHostileActors`, "both based on player's compass targets"), and those follow
+detection. Until the Sneak and Detection PRD lands, an actor counts while it is alive and
+inside the marker's area, the same stand-in Q2 takes for combat. A found actor that would
+attack the player (`actor_would_attack`, the ambient hostility rule) is the controller's
+**tension**.
 
 Forty controllers list a **Dungeon** set. A Dungeon set's slots are Battle, Explore and
 Suspense (xEdit's `(D)` labels), not layers. GECK wiki *Media Set*: Explore plays "while
 player is exploring", Battle "while the player is engaged in combat", with an Intro
 "while player starts combat" and an Outro "when combat stops", and Suspense "while
-enemies are on alert (unverified)". The Explore track (`NAM3`) plays, looping; the Battle
-track feeds the Battle layer (below); Suspense waits on an alert state the engine does
-not model (the Sneak and Detection PRD), so Explore plays on (#6902, #6906). Every
-vanilla Dungeon set names one Fallout 1 / 2 track for all three.
+enemies are on alert (unverified)". The Explore track (`NAM3`) plays, looping, and the
+Suspense track (`NAM4`) under the controller's tension (JG: `bInTension`); the Battle track
+feeds the Battle layer (below) (#6902, #6906). Every vanilla Dungeon set names one
+Fallout 1 / 2 track for all three.
 
 A controller's Battle sets, else the Battle track of the Dungeon set the marker plays,
 else the region's `RDSB` set (that order is the engine's, #6906), feed the Battle layer
@@ -296,7 +318,7 @@ game's master and official DLC (PRD §7.2 scenario 1, §8), 2026-11-14:
 | Game | Sources | Source coverage | Playable coverage |
 |---|---|---|---|
 | Fallout 3 | 591 cells, 16 worldspaces, 2 default objects (Default, Battle; #6901), 31 music types | 100 % | cells 99.8 % (one `.wav` the install lacks), music types 93.3 % |
-| New Vegas | 375 cells, 3 worldspaces, 14 region battle sets, 2 default objects, 520 audio-marker areas | 100 % | markers and battle sets 100 %; cells, worldspaces and default objects 0 %: the `Default*` folders are not shipped, and the original is silent there too (§3) |
+| New Vegas | 375 cells, 3 worldspaces, 14 region battle sets, 2 default objects, 520 audio-marker areas | 100 % | markers and battle sets 100 % (6 marker areas silent until a faction actor is found: Faction Not Found is None); cells, worldspaces and default objects 0 %: the `Default*` folders are not shipped, and the original is silent there too (§3) |
 | Oblivion | 1919 cells, 39 worldspaces, 128 regions | 100 % | 100 % |
 
 `docs/smoke-tests/music-fo3.sh` drives scenarios 2 to 5, `music-fnv.sh` scenario 6 (at
@@ -325,7 +347,8 @@ not-saved list with its reason.
 | MUS-STG-003, MUS-STG-004 | `Fallout3.exe` (`GetDefaultObject` callers, the death handler, `LevelUpMenu`), `Oblivion.exe` (the sting calls, the update) | closed (#6901): Fallout 3 / New Vegas stings are sounds, the level-up one over the music; the music objects are unread; other stings stop the music until the place, combat or a script changes it (§5) |
 | MUS-CMB-003 (New Vegas) intro / outro | xEdit labels, Nexus wiki (2014) | closed: Intro on entering combat, Outro on leaving it |
 | MUS-CMB-001 (New Vegas) Dungeon sets | GECK wiki *Media Set* | closed (#6902): Explore while exploring, Battle (with Intro / Outro) in combat; Suspense needs an alert state |
-| MUS-CMB-001 (New Vegas) battle precedence; `NAM1` looping and Faction Not Found; overlap; Suspense | GECK wiki (options named, layout not) | #6906 |
+| `NAM1` looping and Faction Not Found; Suspense | JohnnyGuitar NVSE's `MediaLocationController`, OpenMW ESM4 | closed (#6906): decoded; the relation applies while a faction actor is found, else Faction Not Found; Suspense under tension; actors found inside the area until detection exists |
+| MUS-CMB-001 (New Vegas) battle precedence; overlap; when a set advances; Location / Retrigger Delay | none found | #6906 |
 | Q3: how the relation picks a list | Nexus wiki *Fallout New Vegas Music* (2014): by the conditional faction's relation to the player | closed (#6904); `NAM1`'s forced list undecoded |
 | MUS-SRC-008, MUS-SCR-003 (Oblivion) | `Oblivion.exe` (`GetMusicType`, the cell-change hook, `StreamMusic`) | closed (#6903): cell → region → worldspace, Default falling through; a stream outlives a cell change into its own category (§3, §4) |
 | MUS-SCR-004 (OBSE opcodes) | xOBSE `CommandTable.cpp` order, checked against five known OBSE opcodes | closed: `0x1617`, `0x19e5` |

@@ -71,7 +71,7 @@ pub use equipment::{
 };
 pub use imagespace::{parse_imad, ImadColorKey, ImadRecord, ImadScalarKey};
 pub use location::{parse_lctn, LctnRecord};
-pub use media_location::{parse_aloc, MediaLocationRecord};
+pub use media_location::{parse_aloc, FactionNotFound, LoopingOption, MediaLocationRecord};
 pub use media_set::{parse_mset, IncidentalMediaSet, MediaSetKind, MediaSetRecord};
 pub use music::{
     first_playable_track, parse_default_music, parse_musc, parse_must, DefaultMusic, MuscRecord, MustKind, MustLoop,
