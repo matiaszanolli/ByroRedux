@@ -806,8 +806,8 @@ fn eval_all(xml: &str) -> (crate::parse::Document, HashMap<(usize, String), Scal
         &overrides,
     );
     let mut memo = HashMap::new();
-    for tile in 0..doc.tiles.len() {
-        let keys: Vec<String> = doc.tiles[tile].traits.keys().cloned().collect();
+    for (tile, t) in doc.tiles.iter().enumerate() {
+        let keys: Vec<String> = t.traits.keys().cloned().collect();
         for key in keys {
             let v = eval.trait_value(tile, &key);
             memo.insert((tile, key), v);
@@ -1135,9 +1135,9 @@ fn blit_scales_and_tints() {
 
     let mut tex = Rgba8::new(2, 2);
     // Red opaque quadrant pattern.
-    for (i, px) in tex.pixels.chunks_exact_mut(4).enumerate() {
+    for (i, px) in tex.pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let odd = i % 2 == 1;
-        px.copy_from_slice(&[255, 0, 0, if odd { 255 } else { 0 }]);
+        *px = [255, 0, 0, if odd { 255 } else { 0 }];
     }
     let mut fb = Framebuffer::new(4, 2);
     fb.blit(

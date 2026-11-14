@@ -258,7 +258,7 @@ fn fit(rgba: &[u8], src: (usize, usize), dst: (usize, usize), letterbox: bool) -
         return rgba.to_vec();
     }
     let mut out = vec![0u8; dst.0 * dst.1 * 4];
-    for pixel in out.chunks_exact_mut(4) {
+    for pixel in out.as_chunks_mut::<4>().0 {
         pixel[3] = 255;
     }
     // The destination rectangle the picture fills.
@@ -283,7 +283,7 @@ fn fit(rgba: &[u8], src: (usize, usize), dst: (usize, usize), letterbox: bool) -
         let (bottom, wy) = ((top + 1).min(src.1 - 1), ((at - top as f64) * 256.0) as u32);
         let (row_a, row_b) = (&rgba[top * src.0 * 4..(top + 1) * src.0 * 4], &rgba[bottom * src.0 * 4..(bottom + 1) * src.0 * 4]);
         let line = &mut out[((y0 + y) * dst.0 + x0) * 4..((y0 + y) * dst.0 + x0 + rw) * 4];
-        for (pixel, &(left, right, wx)) in line.chunks_exact_mut(4).zip(&columns) {
+        for (pixel, &(left, right, wx)) in line.as_chunks_mut::<4>().0.iter_mut().zip(&columns) {
             for channel in 0..3 {
                 let a = row_a[left * 4 + channel] as u32 * (256 - wx) + row_a[right * 4 + channel] as u32 * wx;
                 let b = row_b[left * 4 + channel] as u32 * (256 - wx) + row_b[right * 4 + channel] as u32 * wx;

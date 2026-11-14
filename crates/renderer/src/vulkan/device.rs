@@ -1325,8 +1325,9 @@ mod caps_tests {
         /// 5-word header, so a linear instruction walk reaches all of them.
         fn capabilities(spv: &[u8]) -> Vec<u32> {
             let words: Vec<u32> = spv
-                .chunks_exact(4)
-                .map(|w| u32::from_le_bytes(w.try_into().expect("chunks_exact(4)")))
+                .as_chunks::<4>().0
+                .iter()
+                .map(|&w| u32::from_le_bytes(w))
                 .collect();
             assert_eq!(words.first().copied(), Some(0x0723_0203), "SPIR-V magic");
             let mut out = Vec::new();

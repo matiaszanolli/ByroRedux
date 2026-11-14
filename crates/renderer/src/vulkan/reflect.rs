@@ -1528,8 +1528,9 @@ mod tests {
         );
         fn without_early_tests(bytes: &[u8]) -> (Vec<u32>, bool) {
             let words: Vec<_> = bytes
-                .chunks_exact(4)
-                .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+                .as_chunks::<4>().0
+                .iter()
+                .map(|&b| u32::from_le_bytes(b))
                 .collect();
             let mut offset = 5;
             let mut found = false;

@@ -18,12 +18,12 @@ cargo build --release          # Release build
 - **`--features inspect` on core (#3895).** Without it the `AnimationPlayer` /
   `AnimationStack` serialization round-trips (`#[cfg(all(test, feature = "inspect"))]`)
   are silently dropped, and a bare `cargo test -p byroredux-core` is green without them.
-- **Toolchain: rustc ≥ 1.96 (#4466).** `rust-toolchain.toml` pins 1.96.0 (wasmtime 49's
-  MSRV). If an older distro cargo shadows the rustup shims, call the pinned one directly,
+- **Toolchain: rustc ≥ 1.96 (#4466).** `rust-toolchain.toml` pins 1.100.0; the MSRV floor is
+  1.96 (wasmtime 49). If an older distro cargo shadows the rustup shims, call the pinned one directly,
   and verify any `byroredux/src/` change this way before pushing
   ([docs/contributing.md](docs/contributing.md) §Tests):
   ```bash
-  TC=$(rustup which --toolchain 1.96.0 cargo)
+  TC=$(rustup which --toolchain 1.100.0 cargo)
   PATH="$(dirname "$TC"):$PATH" "$TC" test -p byroredux --bin byroredux
   ```
 - **Shaders.** SPIR-V is pre-compiled and `include_bytes!`'d: after a GLSL edit,

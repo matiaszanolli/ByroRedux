@@ -1452,9 +1452,9 @@ pub fn parse_watr(
                 // 12 bytes = daytime/nighttime/underwater related waters.
                 // Fewer bytes → unfilled slots stay at zero.
                 let mut r = SubReader::new(&sub.data);
-                for i in 0..3 {
+                for slot in &mut out.related_waters {
                     if let Ok(fid) = r.u32() {
-                        out.related_waters[i] = fid;
+                        *slot = fid;
                     }
                 }
             }

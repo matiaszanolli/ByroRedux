@@ -293,11 +293,11 @@ impl EquipmentSlots {
     /// mesh set" follow-up logic in spawn paths.
     pub fn equip(&mut self, slot_mask: u64, idx: InventoryIndex) -> Vec<InventoryIndex> {
         let mut displaced = Vec::new();
-        for bit in 0..MAX_BIPED_SLOTS {
+        for (bit, occupant) in self.occupants.iter_mut().enumerate() {
             if slot_mask & (1u64 << bit) == 0 {
                 continue;
             }
-            if let Some(prev) = self.occupants[bit].replace(idx) {
+            if let Some(prev) = occupant.replace(idx) {
                 if prev != idx && !displaced.contains(&prev) {
                     displaced.push(prev);
                 }
@@ -310,11 +310,11 @@ impl EquipmentSlots {
     /// set of inventory indices that were occupying those bits.
     pub fn unequip(&mut self, slot_mask: u64) -> Vec<InventoryIndex> {
         let mut released = Vec::new();
-        for bit in 0..MAX_BIPED_SLOTS {
+        for (bit, occupant) in self.occupants.iter_mut().enumerate() {
             if slot_mask & (1u64 << bit) == 0 {
                 continue;
             }
-            if let Some(prev) = self.occupants[bit].take() {
+            if let Some(prev) = occupant.take() {
                 if !released.contains(&prev) {
                     released.push(prev);
                 }
@@ -489,8 +489,8 @@ mod tests {
 
         // And the reverse direction: wielding a weapon must not evict armor.
         slots.equip_weapon(InventoryIndex(5));
-        for bit in 0..MAX_BIPED_SLOTS {
-            assert_eq!(slots.occupants[bit], Some(InventoryIndex(4)));
+        for occupant in &slots.occupants {
+            assert_eq!(*occupant, Some(InventoryIndex(4)));
         }
     }
 

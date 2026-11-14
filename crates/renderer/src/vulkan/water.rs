@@ -2311,7 +2311,7 @@ mod absorption_ramp_tests {
         let spirv = include_bytes!("../../shaders/water.frag.spv");
         assert_eq!(spirv.len() % 4, 0, "water.frag.spv must be word aligned");
         let words: Vec<u32> = spirv
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
             .collect();
         assert_eq!(

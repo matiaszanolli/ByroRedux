@@ -39,6 +39,13 @@
 # needs the same treatment, extend prune_examples_stale_hashes's generation
 # logic to it rather than reaching for `cargo clean`.
 #
+# Cargo 1.100 layout (the toolchain pin since 2026-11-14): intermediate
+# artifacts moved out of deps/ into one directory per unit,
+# target/debug/build/<pkg>/<hash>/, and target/debug/examples now holds only
+# the uplifted, unhashed binaries — so step 2 finds nothing to prune there,
+# and stale generations accumulate as old <hash>/ directories instead. A
+# deps/ tree left over from a pre-1.100 build is never read again.
+#
 # Usage:
 #   scripts/prune-target-cache.sh              # prune only if target/ > --limit-gb
 #   scripts/prune-target-cache.sh --force       # prune regardless of current size

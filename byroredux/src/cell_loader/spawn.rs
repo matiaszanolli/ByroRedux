@@ -415,7 +415,7 @@ fn synthesize_static_trimesh(
         .collect();
     let vert_count = vertices.len() as u32;
     let mut indices: Vec<[u32; 3]> = Vec::with_capacity(tri_count);
-    for tri in mesh_indices.chunks_exact(3) {
+    for tri in mesh_indices.as_chunks::<3>().0 {
         // Defensive: skip any triangle that references a vertex out of
         // range (corrupt index buffer) so parry3d's trimesh builder
         // doesn't panic mid-cell-load.

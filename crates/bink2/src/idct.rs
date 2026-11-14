@@ -131,9 +131,8 @@ fn idct8<T: Coef>(s: [T; 8]) -> [T; 8] {
 /// Rows first, then columns (P12), in place: the column outputs before the final `>> 6`, i.e. in units
 /// of 1/64 pixel.
 pub(crate) fn idct_block<T: Coef>(c: &mut [T; 64]) {
-    for row in c.chunks_exact_mut(8) {
-        let v = idct8(row.try_into().unwrap());
-        row.copy_from_slice(&v);
+    for row in c.as_chunks_mut::<8>().0 {
+        *row = idct8(*row);
     }
     for col in 0..8 {
         let v = idct8(std::array::from_fn(|r| c[r * 8 + col]));

@@ -1359,7 +1359,8 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // FO4 `OnStory*` event payloads out of `Quest.pex` (docs/engine/story-manager.md §6.4).
         // M48 Phase 0 (#6643) re-measure: +1 — `pex_find_call.rs`, which lists every call site of a
         // function across an archive's scripts (the race-menu caller census, race-menu-caller-wait.tsv).
-        ("pex", 5, 1304),
+        // Rust 1.100 clippy re-measure: +1 — a `type Extract` alias in `pex_find_call.rs` (`type_complexity`).
+        ("pex", 5, 1305),
         // #6350 re-measure: +3 corpus probes (probe_bptd — the BPTD spike,
         // probe_weap_dnam — DNAM VATS-slot alignment, probe_gmst_vats — the
         // fVATS/fActionPoints defaults dump). All three carry wiki-pinned
@@ -1403,7 +1404,9 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // M48 Phase 0 (#6643) — three read-only Scaleform censuses whose output is checked in under
         // docs/data/game-ui/: `host_call_sites.rs` (GUI-HOST-001 call sites), `gfx_extension_census.rs`
         // (GUI-GFX-003) and `hud_feed_paths.rs` (GUI-HUD-003); each states its re-run command.
-        ("ui", 3, 2276),
+        // Rust 1.100 clippy re-measure: +3 — `type_complexity` aliases and reasoned allows in `host_call_sites.rs` and
+        // `hud_feed_paths.rs`, net of a collapsed `if_same_then_else`.
+        ("ui", 3, 2279),
     ];
     let by_entry = |root: &std::path::Path| {
         // `crates/<name>/examples` or `byroredux/examples` → crate name.

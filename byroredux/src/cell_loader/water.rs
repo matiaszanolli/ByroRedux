@@ -2163,9 +2163,7 @@ mod tests {
             quadrants: Default::default(),
         };
         // The whole southern LAND row sits below XCLW.
-        for col in 0..33 {
-            land.heights[col] = -100.0;
-        }
+        land.heights[..33].fill(-100.0);
         let (vertices, indices) = build_full_detail_water_grid(2048.0, Some(&land), 0.0);
         assert!(!indices.is_empty());
         assert!(
@@ -2228,7 +2226,7 @@ mod tests {
         let geometry = build_distant_water_mesh(&cells, Some(0.0), (0, 0), resident, 6);
         let drawn: std::collections::BTreeSet<(i32, i32)> = geometry
             .vertices
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|quad| {
                 (
                     (quad[0].position[0] / EXTERIOR_CELL_UNITS) as i32,
@@ -2291,7 +2289,7 @@ mod tests {
         // exactly.
         let quad_cells: Vec<((i32, i32), f32)> = geometry
             .vertices
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|quad| {
                 let v = quad[0];
                 (
@@ -2332,7 +2330,7 @@ mod tests {
         // exactly.
         let cols: std::collections::BTreeSet<(i32, i32)> = geometry
             .vertices
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|quad| {
                 let v = quad[0];
                 (
@@ -2452,7 +2450,7 @@ mod tests {
         // Every emitted quad belongs to a cell with resolved water and sits
         // in the (hole, reach] window. Quads emit their min corner first, so
         // its coordinates divide back to the cell id exactly.
-        for quad in geometry.vertices.chunks_exact(4) {
+        for quad in geometry.vertices.as_chunks::<4>().0 {
             let v = quad[0];
             let gx = (v.position[0] / EXTERIOR_CELL_UNITS) as i32;
             let gy = (-v.position[2] / EXTERIOR_CELL_UNITS) as i32;

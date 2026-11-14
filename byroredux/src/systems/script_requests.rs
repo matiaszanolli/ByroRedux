@@ -375,7 +375,7 @@ const REQUEST_LOG_CAP: usize = 64;
 pub(crate) fn script_ui_request_system(world: &World, _dt: f32) {
     use byroredux_scripting::obscript_more::{ExitGameRequest, PendingMenus};
     let mut lines = Vec::new();
-    let menus: Vec<_> = world.try_resource_mut::<PendingMenus>().map(|mut menus| menus.0.drain(..).collect()).unwrap_or_default();
+    let menus: Vec<_> = world.try_resource_mut::<PendingMenus>().map(|mut menus| std::mem::take(&mut menus.0)).unwrap_or_default();
     for menu in menus {
         // The character-creation screens have a page (`chargen.rs`); the rest are logged.
         match crate::chargen::ChargenScreen::for_request(menu.menu, menu.form) {

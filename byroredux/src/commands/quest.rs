@@ -1605,6 +1605,49 @@ impl ConsoleCommand for ScriptRequestsCommand {
     }
 }
 
+/// `chargen [answer]` — show the open character-creation screen, or answer it as its page would
+/// (GUI-OPS-005's console control, for the screens New Vegas's opening raises): `keep`,
+/// `name <text>`, `race <male|female> <race hex>`, `special <seven values>`, `tags <codes…>`,
+/// `traits [perk hex…]`. The answer applies on the app's next frame and closes the page.
+pub(crate) struct ChargenCommand;
+
+impl ConsoleCommand for ChargenCommand {
+    fn name(&self) -> &str {
+        "chargen"
+    }
+
+    fn description(&self) -> &str {
+        "Show or answer the open character-creation screen: chargen [keep | name <text> | race <male|female> <race hex> | special <7 values> | tags <codes> | traits [perk hex...]]"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let Some(screen) = world.try_resource::<crate::chargen::ChargenSession>().and_then(|session| session.open()) else {
+            return CommandOutput::line("chargen: no character-creation screen is open");
+        };
+        if args.trim().is_empty() {
+            let mut lines = vec![format!("chargen: {screen:?} (menu {}) is open", screen.menu_code())];
+            if let Some(snapshot) = crate::chargen::snapshot(world) {
+                lines.push(format!("  name={:?} female={} race={:08X}", snapshot.name, snapshot.female, snapshot.race));
+                lines.push(format!("  races: {}", snapshot.races.iter().map(|race| format!("{:08X} {}", race.id, race.name)).collect::<Vec<_>>().join(", ")));
+                lines.push(format!("  special: {}", snapshot.attributes.iter().map(|(attribute, value)| format!("{}={value}", attribute.name)).collect::<Vec<_>>().join(" ")));
+                lines.push(format!("  skills: {}", snapshot.skills.iter().map(|(skill, value)| format!("{}:{}={value}", skill.id, skill.name)).collect::<Vec<_>>().join(" ")));
+                lines.push(format!("  traits: {}", snapshot.traits.iter().map(|perk| format!("{:08X} {}", perk.id, perk.name)).collect::<Vec<_>>().join(", ")));
+            }
+            return CommandOutput::lines(lines);
+        }
+        match crate::chargen::parse_answer(screen, args) {
+            Ok(choice) => {
+                let summary = format!("{choice:?}");
+                if let Some(mut session) = world.try_resource_mut::<crate::chargen::ChargenSession>() {
+                    session.answer(choice);
+                }
+                CommandOutput::line(format!("chargen: answered {screen:?} with {summary}"))
+            }
+            Err(error) => CommandOutput::error(format!("chargen: {error}")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1747,48 +1790,5 @@ mod tests {
         assert!(output.contains("quest: 0x00001234"));
         assert!(output.contains("playback: Dormant phase=0"));
         assert!(output.contains("package-actions: 0"));
-    }
-}
-
-/// `chargen [answer]` — show the open character-creation screen, or answer it as its page would
-/// (GUI-OPS-005's console control, for the screens New Vegas's opening raises): `keep`,
-/// `name <text>`, `race <male|female> <race hex>`, `special <seven values>`, `tags <codes…>`,
-/// `traits [perk hex…]`. The answer applies on the app's next frame and closes the page.
-pub(crate) struct ChargenCommand;
-
-impl ConsoleCommand for ChargenCommand {
-    fn name(&self) -> &str {
-        "chargen"
-    }
-
-    fn description(&self) -> &str {
-        "Show or answer the open character-creation screen: chargen [keep | name <text> | race <male|female> <race hex> | special <7 values> | tags <codes> | traits [perk hex...]]"
-    }
-
-    fn execute(&self, world: &World, args: &str) -> CommandOutput {
-        let Some(screen) = world.try_resource::<crate::chargen::ChargenSession>().and_then(|session| session.open()) else {
-            return CommandOutput::line("chargen: no character-creation screen is open");
-        };
-        if args.trim().is_empty() {
-            let mut lines = vec![format!("chargen: {screen:?} (menu {}) is open", screen.menu_code())];
-            if let Some(snapshot) = crate::chargen::snapshot(world) {
-                lines.push(format!("  name={:?} female={} race={:08X}", snapshot.name, snapshot.female, snapshot.race));
-                lines.push(format!("  races: {}", snapshot.races.iter().map(|race| format!("{:08X} {}", race.id, race.name)).collect::<Vec<_>>().join(", ")));
-                lines.push(format!("  special: {}", snapshot.attributes.iter().map(|(attribute, value)| format!("{}={value}", attribute.name)).collect::<Vec<_>>().join(" ")));
-                lines.push(format!("  skills: {}", snapshot.skills.iter().map(|(skill, value)| format!("{}:{}={value}", skill.id, skill.name)).collect::<Vec<_>>().join(" ")));
-                lines.push(format!("  traits: {}", snapshot.traits.iter().map(|perk| format!("{:08X} {}", perk.id, perk.name)).collect::<Vec<_>>().join(", ")));
-            }
-            return CommandOutput::lines(lines);
-        }
-        match crate::chargen::parse_answer(screen, args) {
-            Ok(choice) => {
-                let summary = format!("{choice:?}");
-                if let Some(mut session) = world.try_resource_mut::<crate::chargen::ChargenSession>() {
-                    session.answer(choice);
-                }
-                CommandOutput::line(format!("chargen: answered {screen:?} with {summary}"))
-            }
-            Err(error) => CommandOutput::error(format!("chargen: {error}")),
-        }
     }
 }

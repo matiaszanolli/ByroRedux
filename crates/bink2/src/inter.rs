@@ -353,7 +353,7 @@ fn fill_grid<T: Coef>(grid: &mut [T], n: usize, order: &[(usize, usize)], dc: &[
             continue;
         }
         block_pixels(dc[i] * 8 + 32, coefs, &mut px);
-        for (yy, row) in px.chunks_exact(8).enumerate() {
+        for (yy, row) in px.as_chunks::<8>().0.iter().enumerate() {
             let o = (dy * 8 + yy) * w + dx * 8;
             grid[o..o + 8].copy_from_slice(row);
         }

@@ -1967,13 +1967,13 @@ mod shared_parse_tests {
                 calls.set(calls.get() + 1);
                 Ok((index_with_a_land_less_child(game), LoadOrder::all_regular(Vec::new())))
             };
-            let (interior_index, _) = cache.get_or_parse(&[path.as_str()], &parse).unwrap();
+            let (interior_index, _) = cache.get_or_parse(&[path.as_str()], parse).unwrap();
             assert_eq!(
                 child_height(&interior_index),
                 Some(7.0),
                 "{game:?}: the interior-first parse is already processed"
             );
-            let (exterior_index, _) = cache.get_or_parse(&[path.as_str()], &parse).unwrap();
+            let (exterior_index, _) = cache.get_or_parse(&[path.as_str()], parse).unwrap();
             assert_eq!(calls.get(), 1, "{game:?}: the first door outside re-parsed the load order");
             assert!(Arc::ptr_eq(&interior_index, &exterior_index), "{game:?}: the resident index");
         }
@@ -2014,7 +2014,7 @@ mod shared_parse_tests {
                 LoadOrder::all_regular(Vec::new()),
             ))
         };
-        let (index, _) = cache.get_or_parse(&[path.as_str()], &parse).unwrap();
+        let (index, _) = cache.get_or_parse(&[path.as_str()], parse).unwrap();
         assert_eq!(child_height(&index), None);
     }
 

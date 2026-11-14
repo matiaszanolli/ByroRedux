@@ -255,7 +255,7 @@ mod contract_tests {
                 location_2: None,
                 scripted: Default::default(),
             },
-            |w| crate::story_manager_dispatch_system(w),
+            crate::story_manager_dispatch_system,
         );
         drains("TwoStateTransitionBatch", TwoStateTransitionBatch::default(), |w| {
             crate::vm_state::two_state_activator_system(w, 0.0)

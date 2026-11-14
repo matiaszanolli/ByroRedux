@@ -369,7 +369,7 @@ pub(crate) fn cover_masks_for_cell(
     let mut masks: CellCoverMasks = [0; GROUNDCOVER_MODEL_COVER_CELL_WORDS as usize];
     let count = form_ids.len().min(GROUNDCOVER_MODEL_MAX_RECORDS as usize);
     if !localised {
-        for lane in masks.chunks_exact_mut(WORDS) {
+        for lane in masks.as_chunks_mut::<WORDS>().0 {
             for record in 0..count {
                 lane[record / 32] |= 1 << (record % 32);
             }
@@ -377,7 +377,7 @@ pub(crate) fn cover_masks_for_cell(
         return masks;
     }
     let lists = std::iter::once(base).chain(layers.iter().map(Vec::as_slice));
-    for (lane, list) in masks.chunks_exact_mut(WORDS).zip(lists) {
+    for (lane, list) in masks.as_chunks_mut::<WORDS>().0.iter_mut().zip(lists) {
         for grass in list {
             if let Ok(record) = form_ids[..count].binary_search(grass) {
                 lane[record / 32] |= 1 << (record % 32);
@@ -1585,13 +1585,13 @@ mod tests {
         let form_ids: Vec<u32> = (0..33).collect();
         let layers: [Vec<u32>; TERRAIN_SPLAT_LAYERS as usize] = Default::default();
         let masks = cover_masks_for_cell(&form_ids, false, &[], &layers);
-        for lane in masks.chunks_exact(WORDS) {
+        for lane in masks.as_chunks::<WORDS>().0 {
             assert_eq!(lane, &[u32::MAX, 1, 0, 0]);
         }
         // Records past the tier limit never get a bit.
         let many: Vec<u32> = (0..300).collect();
         let masks = cover_masks_for_cell(&many, false, &[], &layers);
-        assert!(masks.chunks_exact(WORDS).all(|lane| lane == [u32::MAX; WORDS]));
+        assert!(masks.as_chunks::<WORDS>().0.iter().all(|lane| *lane == [u32::MAX; WORDS]));
     }
 
     /// The shader's per-candidate arithmetic (`gcPickLocalRecord`), mirrored
@@ -1944,10 +1944,10 @@ mod tests {
         let edge = GROUNDCOVER_DETAIL_ATLAS_EDGE as usize;
         assert_eq!(atlas.species_count, 1);
         assert_eq!(atlas.pixels.len(), edge * edge * 4);
-        assert!(atlas.pixels.chunks_exact(4).any(|pixel| pixel[3] == 0));
+        assert!(atlas.pixels.as_chunks::<4>().0.iter().any(|pixel| pixel[3] == 0));
         assert!(atlas
             .pixels
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .any(|pixel| pixel[3] == u8::MAX));
         // Tier 2 relies on this being a blade silhouette rather than the old
         // checker alpha: every occupied lane extends continuously up a row.
@@ -2245,7 +2245,7 @@ mod palette_decode_tests {
         let expected = |c: [f32; 3]| c.map(|v| (v * 255.0).round() as u8);
         let texels: std::collections::HashSet<[u8; 3]> = atlas
             .pixels
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|p| [p[0], p[1], p[2]])
             .collect();
         assert!(texels.contains(&expected(base)) && texels.contains(&expected(tip)));

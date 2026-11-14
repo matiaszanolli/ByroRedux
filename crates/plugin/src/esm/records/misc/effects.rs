@@ -1080,7 +1080,7 @@ mod tests {
         let beam = decode(0x0005_1208, 2, 40);
         assert_eq!((beam.projectile_type(), beam.projectile_flags(), beam.extended_flags), (4, 0x1208, 5));
         // A body that stops before the type byte decodes nothing.
-        let short = [sub(b"PROD", starfield_prod(0, 1, 11)[..80].to_vec())];
+        let short = [sub(b"PROD", &starfield_prod(0, 1, 11)[..80])];
         let p = parse_proj(1, &short, crate::esm::reader::GameKind::Starfield, &None);
         assert_eq!((p.flags, p.muzzle_speed), (0, 0.0));
         // Other games ignore `PROD`.
@@ -1100,7 +1100,7 @@ mod tests {
             (GameKind::Oblivion, 36),
             (GameKind::Starfield, 36),
         ] {
-            let e = parse_expl(1, &[sub(b"DATA", expl_data(36, 0, &floats)[..len].to_vec())], game);
+            let e = parse_expl(1, &[sub(b"DATA", &expl_data(36, 0, &floats)[..len])], game);
             assert_eq!((e.damage, e.inner_radius, e.radius), (0.0, 0.0, 0.0), "{game:?} {len} B");
         }
     }

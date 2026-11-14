@@ -137,10 +137,7 @@ impl TextureRegistry {
             return false;
         }
         entry.ref_count -= 1;
-        if entry.ref_count > 0 {
-            return false;
-        }
-        true
+        entry.ref_count == 0
     }
 
     /// Drain deferred-destroy queues across all entries, destroying

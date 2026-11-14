@@ -87,7 +87,7 @@ fn main() -> anyhow::Result<()> {
     let exterior_worldspaces = index.cells.exterior_cells.len();
     let mut exterior_cells_total = 0usize;
     let mut exterior_refrs_total = 0usize;
-    for (_, grid) in index.cells.exterior_cells.iter() {
+    for grid in index.cells.exterior_cells.values() {
         for cell in grid.values() {
             exterior_cells_total += 1;
             exterior_refrs_total += cell.references.len();

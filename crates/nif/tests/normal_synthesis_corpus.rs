@@ -188,7 +188,7 @@ fn lod_and_facegen_geometry_no_longer_imports_flat() {
 fn mean_dot_against_derived(mesh: &byroredux_nif::import::ImportedMesh) -> (f64, usize) {
     let triangles: Vec<[u16; 3]> = mesh
         .indices
-        .chunks_exact(3)
+        .as_chunks::<3>().0.iter()
         .filter_map(|c| {
             Some([
                 u16::try_from(c[0]).ok()?,
@@ -221,7 +221,7 @@ fn mean_dot_against_derived(mesh: &byroredux_nif::import::ImportedMesh) -> (f64,
 /// this and is correctly ignored.
 fn faces_disagree_with_world_up(mesh: &byroredux_nif::import::ImportedMesh) -> bool {
     const COS_15_DEG: f32 = 0.965_925_8;
-    for c in mesh.indices.chunks_exact(3) {
+    for c in mesh.indices.as_chunks::<3>().0 {
         let (i0, i1, i2) = (c[0] as usize, c[1] as usize, c[2] as usize);
         let n = mesh.positions.len();
         if i0 >= n || i1 >= n || i2 >= n {

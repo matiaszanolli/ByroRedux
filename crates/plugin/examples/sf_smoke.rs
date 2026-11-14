@@ -135,7 +135,7 @@ fn main() -> anyhow::Result<()> {
     eprintln!(
         "  master_files  : {} ({:?})",
         file_header.master_files.len(),
-        &file_header.master_files
+        file_header.master_files
     );
     eprintln!(
         "  total_records : {} (declared in HEDR)",

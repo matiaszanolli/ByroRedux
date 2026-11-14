@@ -1187,14 +1187,14 @@ mod tests {
 
         let first_rgb = [pixels[0], pixels[1], pixels[2]];
         let varies = pixels
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .any(|p| [p[0], p[1], p[2]] != first_rgb);
         assert!(
             varies,
             "normal map must vary spatially, not be uniformly flat/neutral"
         );
         assert!(
-            pixels.chunks_exact(4).all(|p| p[3] == 255),
+            pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 255),
             "normal map must be fully opaque"
         );
     }

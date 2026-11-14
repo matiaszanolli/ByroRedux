@@ -717,13 +717,13 @@ fn read_fo3_stride_nam0(record: &mut WeatherRecord, data: &[u8]) {
         4
     };
     let mut offset = 0;
-    for group in 0..SKY_COLOR_GROUPS {
-        for slot in 0..on_disk_slots {
-            record.sky_colors[group][slot] = sky_color_at(data, offset);
+    for group in &mut record.sky_colors {
+        for colour in group.iter_mut().take(on_disk_slots) {
+            *colour = sky_color_at(data, offset);
             offset += 4;
         }
         if on_disk_slots < SKY_TIME_SLOTS {
-            synthesize_noon_midnight(&mut record.sky_colors[group]);
+            synthesize_noon_midnight(group);
         }
     }
 }
@@ -1141,12 +1141,12 @@ fn read_creation_nam0(record: &mut WeatherRecord, data: &[u8], game: GameKind) {
         None => {}
         Some(Nam0Layout::Fo3Stride) => read_fo3_stride_nam0(record, data),
         Some(Nam0Layout::Creation { groups, slots }) => {
-            for group in 0..SKY_COLOR_GROUPS.min(groups) {
-                for slot in 0..4 {
+            for (group, colours) in record.sky_colors.iter_mut().enumerate().take(groups) {
+                for (slot, colour) in colours.iter_mut().enumerate().take(4) {
                     let offset = (group * slots + slot) * 4;
-                    record.sky_colors[group][slot] = sky_color_at(data, offset);
+                    *colour = sky_color_at(data, offset);
                 }
-                synthesize_noon_midnight(&mut record.sky_colors[group]);
+                synthesize_noon_midnight(colours);
             }
         }
         Some(Nam0Layout::Skyrim { groups }) => {
@@ -2104,17 +2104,17 @@ mod tests {
         assert_eq!((horiz_sunset.r, horiz_sunset.g), (80, 100));
 
         // Synthesised slots: HIGH_NOON = DAY, MIDNIGHT = NIGHT.
-        for group in 0..SKY_COLOR_GROUPS {
-            let day = w.sky_colors[group][TOD_DAY];
-            let high_noon = w.sky_colors[group][TOD_HIGH_NOON];
+        for (group, colours) in w.sky_colors.iter().enumerate() {
+            let day = colours[TOD_DAY];
+            let high_noon = colours[TOD_HIGH_NOON];
             assert_eq!(
                 (day.r, day.g, day.b),
                 (high_noon.r, high_noon.g, high_noon.b),
                 "HIGH_NOON should mirror DAY for group {}",
                 group,
             );
-            let night = w.sky_colors[group][TOD_NIGHT];
-            let midnight = w.sky_colors[group][TOD_MIDNIGHT];
+            let night = colours[TOD_NIGHT];
+            let midnight = colours[TOD_MIDNIGHT];
             assert_eq!(
                 (night.r, night.g, night.b),
                 (midnight.r, midnight.g, midnight.b),
@@ -2135,11 +2135,8 @@ mod tests {
         ];
         let w = parse_wthr(0xBADD, &subs, GameKind::Fallout3NV, &None);
         // All slots remain at SkyColor::default() (all zero).
-        for group in 0..SKY_COLOR_GROUPS {
-            for slot in 0..SKY_TIME_SLOTS {
-                let c = w.sky_colors[group][slot];
-                assert_eq!((c.r, c.g, c.b, c.a), (0, 0, 0, 0));
-            }
+        for c in w.sky_colors.iter().flatten() {
+            assert_eq!((c.r, c.g, c.b, c.a), (0, 0, 0, 0));
         }
     }
 
@@ -2350,9 +2347,9 @@ mod tests {
         let w = parse_wthr(0x1234, &subs, GameKind::Skyrim, &None);
 
         // Group 0 (SKY_UPPER), all 4 TOD slots.
-        for slot in 0..4 {
-            assert_eq!(w.sky_colors[SKY_UPPER][slot].r, 1);
-            assert_eq!(w.sky_colors[SKY_UPPER][slot].g, slot as u8 + 1);
+        for (slot, colour) in w.sky_colors[SKY_UPPER].iter().enumerate().take(4) {
+            assert_eq!(colour.r, 1);
+            assert_eq!(colour.g, slot as u8 + 1);
         }
         // Group 5 (SKY_SUN), TOD_SUNRISE.
         assert_eq!(w.sky_colors[SKY_SUN][TOD_SUNRISE].r, 6);
@@ -2376,7 +2373,7 @@ mod tests {
         let w = parse_wthr(0x61A2, &[sub(b"NAM2", table.clone()), sub(b"NAM3", table.clone())], GameKind::Skyrim, &None);
         assert_eq!(w.skyrim_sun_glare[3], SkyColor { r: 4, g: 0x10, b: 0x20, a: 0 });
         assert_eq!(w.skyrim_moon_glare, w.skyrim_sun_glare);
-        let short = parse_wthr(0x61A3, &[sub(b"NAM2", table[..SKYRIM_GLARE_TABLE_LEN - 4].to_vec())], GameKind::Skyrim, &None);
+        let short = parse_wthr(0x61A3, &[sub(b"NAM2", &table[..SKYRIM_GLARE_TABLE_LEN - 4])], GameKind::Skyrim, &None);
         assert_eq!(short.skyrim_sun_glare, [SkyColor::default(); 4]);
     }
 
@@ -2402,14 +2399,14 @@ mod tests {
             assert_eq!(w.sky_colors[SKY_UPPER][TOD_HIGH_NOON].g, 2);
             // Side-table groups 10.. up to the authored count; the rest stay
             // default rather than reading past the sub-record.
-            for extra in 0..7 {
+            for (extra, colours) in w.skyrim_extra_colors.iter().enumerate() {
                 let expected = if 10 + extra < authored {
                     11 + extra as u8
                 } else {
                     0
                 };
                 assert_eq!(
-                    w.skyrim_extra_colors[extra][TOD_DAY].r, expected,
+                    colours[TOD_DAY].r, expected,
                     "{authored} groups, extra group {extra}"
                 );
             }
@@ -2603,9 +2600,8 @@ mod tests {
                 subs.push(sub(&[b'0' + layer, b'0', b'T', b'X'], b"sky\\c.dds\0"));
             }
             let w = parse_wthr(0xC10, &subs, game, &None);
-            for layer in 0..4 {
-                for slot in 0..4 {
-                    let c = w.cloud_layer_colors[layer][slot];
+            for (layer, colours) in w.cloud_layer_colors.iter().enumerate() {
+                for (slot, c) in colours.iter().enumerate() {
                     assert_eq!(
                         (c.r as usize, c.g as usize),
                         (layer, slot),

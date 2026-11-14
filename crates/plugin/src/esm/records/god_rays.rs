@@ -132,18 +132,18 @@ mod tests {
     fn parse_voli_decodes_every_field() {
         let subs = vec![
             sub(b"EDID", b"VolumetricDayClear\0"),
-            sub(b"CNAM", &f(2.5)),
-            sub(b"DNAM", &f(0.25)),
-            sub(b"ENAM", &f(0.9)),
-            sub(b"FNAM", &f(0.8)),
-            sub(b"GNAM", &f(0.7)),
-            sub(b"HNAM", &f(0.3)),
-            sub(b"INAM", &f(10.0)),
-            sub(b"JNAM", &f(15.0)),
-            sub(b"KNAM", &f(0.35)),
-            sub(b"LNAM", &f(0.75)),
-            sub(b"MNAM", &f(0.85)),
-            sub(b"NNAM", &f(40.0)),
+            sub(b"CNAM", f(2.5)),
+            sub(b"DNAM", f(0.25)),
+            sub(b"ENAM", f(0.9)),
+            sub(b"FNAM", f(0.8)),
+            sub(b"GNAM", f(0.7)),
+            sub(b"HNAM", f(0.3)),
+            sub(b"INAM", f(10.0)),
+            sub(b"JNAM", f(15.0)),
+            sub(b"KNAM", f(0.35)),
+            sub(b"LNAM", f(0.75)),
+            sub(b"MNAM", f(0.85)),
+            sub(b"NNAM", f(40.0)),
         ];
         let v = parse_voli(0x1234, &subs);
         assert_eq!(v.editor_id, "VolumetricDayClear");

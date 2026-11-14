@@ -130,10 +130,10 @@ impl Decoder {
 
     /// One channel's coefficients (A2-A6) into `self.coefs`.
     fn channel(&mut self, r: &mut Bits) {
-        for k in 0..2 {
+        for coef in self.coefs.iter_mut().take(2) {
             let (e, m, neg) = (r.bits(5), r.bits(23), r.bit());
             let v = if e <= 23 { m as f64 * 2f64.powi(e as i32 - 23) } else { 0.0 }; // A3
-            self.coefs[k] = if neg { -v } else { v };
+            *coef = if neg { -v } else { v };
         }
         let bands = self.edges.len() - 1;
         let mut q = [0f64; 32];

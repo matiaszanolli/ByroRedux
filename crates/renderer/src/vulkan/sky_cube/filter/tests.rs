@@ -333,7 +333,7 @@ unsafe fn run_filter_cases(
     );
     // A 2x2 face has no texel on the major axis whereas the 1x1 face does.
     // Do not demand monotonic texel-centre samples across different directions.
-    for pixel in case_outputs[1].chunks_exact(8) {
+    for pixel in case_outputs[1].as_chunks::<8>().0 {
         let red = decode(pixel);
         assert!((0.0..=2.01).contains(&red), "filter created energy: {red}");
     }

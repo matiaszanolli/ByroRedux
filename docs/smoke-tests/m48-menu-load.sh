@@ -77,7 +77,7 @@ fail() {
 # ever starts. Resolve the installed rustup toolchain's cargo AND put its
 # bin dir on PATH (cargo invokes `rustc` from PATH; the distro rustc
 # shadows the shims otherwise), same recipe as AGENTS.md §Tests.
-CARGO="$(rustup which --toolchain 1.96.0 cargo 2>/dev/null || command -v cargo)"
+CARGO="$(rustup which --toolchain 1.100.0 cargo 2>/dev/null || command -v cargo)"
 PATH="$(dirname "$CARGO"):$PATH"
 
 # Args: $1 = label, $2 = archive path, $3 = archive-relative SWF path.

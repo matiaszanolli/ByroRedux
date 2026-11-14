@@ -25,7 +25,7 @@ fn luma(px: &[u8]) -> f32 {
 /// High-passed luminance of `img`, zero mean, in luminance units.
 pub fn highpass_luminance(img: &Rgba) -> HeightField {
     let mut field = HeightField::new(img.width, img.height);
-    for (dst, px) in field.data.iter_mut().zip(img.pixels.chunks_exact(4)) {
+    for (dst, px) in field.data.iter_mut().zip(img.pixels.as_chunks::<4>().0) {
         *dst = luma(px);
     }
     let sigma = (img.width as f32 * HIGHPASS_SIGMA_FRACTION).max(1.0);

@@ -324,7 +324,7 @@ fn dump_png(name: &str, width: u32, height: u32, rgba: &[u8]) {
     // Composite over opaque black — the frame carries straight alpha and
     // viewers/analytics render un-composited transparent PNGs as flat gray.
     let mut opaque = rgba.to_vec();
-    for px in opaque.chunks_exact_mut(4) {
+    for px in opaque.as_chunks_mut::<4>().0 {
         let a = px[3] as u32;
         px[0] = ((px[0] as u32 * a) / 255) as u8;
         px[1] = ((px[1] as u32 * a) / 255) as u8;

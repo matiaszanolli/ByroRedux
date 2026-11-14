@@ -429,7 +429,7 @@ pub(crate) fn drop_holed_triangles(
         return indices.to_vec();
     }
     let mut kept = Vec::with_capacity(indices.len());
-    for tri in indices.chunks_exact(3) {
+    for tri in indices.as_chunks::<3>().0 {
         let corner = |i: u32| positions.get(i as usize).map(|&p| to_world(p));
         let (Some(a), Some(b), Some(c)) = (corner(tri[0]), corner(tri[1]), corner(tri[2])) else {
             kept.extend_from_slice(tri);

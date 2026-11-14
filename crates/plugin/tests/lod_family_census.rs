@@ -19,6 +19,11 @@ use byroredux_plugin::esm::test_paths;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// One master's NAMA census row: (master, WRLD records, NAMA records, those that are not 1.0).
+type NamaSummary = (String, usize, usize, Vec<(String, f32)>);
+/// A LOD file name split into (family, worldspace, level/kind, cell) by `classify`.
+type LodName = (String, Option<String>, Option<String>, Option<(i32, i32)>);
+
 struct Title {
     name: &'static str,
     data_dir: fn() -> PathBuf,
@@ -668,7 +673,7 @@ fn worldspace_distant_lod_multiplier_census() {
         }
     }
     // (master, WRLD records, NAMA records, those that are not 1.0)
-    let summary: Vec<(String, usize, usize, Vec<(String, f32)>)> = report
+    let summary: Vec<NamaSummary> = report
         .iter()
         .map(|(m, w, a)| (m.clone(), *w, a.len(), a.iter().filter(|(_, v)| *v != 1.0).cloned().collect()))
         .collect();
@@ -712,7 +717,7 @@ fn skyrim_le_ships_the_same_lod_family_names_as_se() {
         test_paths::require_or_skip("Skyrim LE and SE installs");
         return;
     }
-    let names = |dir: &Path, archives: &[&str]| -> BTreeSet<(String, Option<String>, Option<String>, Option<(i32, i32)>)> {
+    let names = |dir: &Path, archives: &[&str]| -> BTreeSet<LodName> {
         archives
             .iter()
             .flat_map(|a| list_files(&dir.join(a)))
@@ -721,7 +726,7 @@ fn skyrim_le_ships_the_same_lod_family_names_as_se() {
             .collect()
     };
     let le = names(&le_dir, &["Skyrim - Meshes.bsa", "Skyrim - Misc.bsa", "Skyrim - Textures.bsa"]);
-    let se = names(&se_dir, &TITLES[3].base.iter().copied().collect::<Vec<_>>());
+    let se = names(&se_dir, TITLES[3].base);
     let only_le: Vec<_> = le.difference(&se).collect();
     let only_se: Vec<_> = se.difference(&le).collect();
     eprintln!("LE {} LOD names, SE {}; only LE: {}, only SE: {}", le.len(), se.len(), only_le.len(), only_se.len());
@@ -732,6 +737,6 @@ fn skyrim_le_ships_the_same_lod_family_names_as_se() {
     // DLC worldspaces' LOD into its main archives, 5,459 more names, which LE ships in its DLC archives, not read here).
     assert_eq!((le.len(), only_le.len()), (5_618, 1));
     assert_eq!(only_le[0].1.as_deref(), Some("labyrinthianmazeworld"));
-    let families = |s: &BTreeSet<(String, Option<String>, Option<String>, Option<(i32, i32)>)>| s.iter().map(|x| x.0.clone()).collect::<BTreeSet<_>>();
+    let families = |s: &BTreeSet<LodName>| s.iter().map(|x| x.0.clone()).collect::<BTreeSet<_>>();
     assert_eq!(families(&le), families(&se), "the same families in both editions");
 }

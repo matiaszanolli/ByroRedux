@@ -106,9 +106,9 @@ mod tests {
     fn neutral_chroma_is_grey_and_a_colour_follows_bt601() {
         let grey = frame(40, 24, |p, x, y| if p == 0 { (x * 7 + y * 3) as u8 } else { 128 });
         let rgba = grey.to_rgba();
-        for (i, px) in rgba.chunks_exact(4).enumerate() {
+        for (i, px) in rgba.as_chunks::<4>().0.iter().enumerate() {
             let y = grey.planes[0].px[(i / 40) * grey.planes[0].width + i % 40];
-            assert_eq!(px, [y, y, y, 255]);
+            assert_eq!(*px, [y, y, y, 255]);
         }
         // Y 128, Cr = Cb = 192: R = 128 + 1.402 * 64, G = 128 - (0.344136 + 0.714136) * 64, B = 128 + 1.772 * 64
         let colour = frame(32, 32, |p, _, _| if p == 0 { 128 } else { 192 });

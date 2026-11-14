@@ -883,9 +883,7 @@ pub fn story_manager_dispatch_system(world: &World) {
                 // pass belong to the old round and are marked before it.
                 if candidate.wrap_first {
                     if let Some(runtime) = node_state.nodes.get_mut(&candidate.node) {
-                        for fired in &mut runtime.fired {
-                            *fired = false;
-                        }
+                        runtime.fired.fill(false);
                     }
                 }
                 let runtime = node_state.nodes.entry(candidate.node).or_default();

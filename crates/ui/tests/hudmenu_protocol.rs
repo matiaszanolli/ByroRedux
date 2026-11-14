@@ -21,10 +21,8 @@ use byroredux_ui::ScaleformHostCatalog;
 use byroredux_ui::ScaleformProfile;
 
 fn data_dir() -> Option<std::path::PathBuf> {
-    for var in [byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV] {
-        if let Ok(dir) = std::env::var(var) {
-            return Some(std::path::PathBuf::from(dir));
-        }
+    if let Ok(dir) = std::env::var(byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV) {
+        return Some(std::path::PathBuf::from(dir));
     }
     let default = std::path::PathBuf::from(
         "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",

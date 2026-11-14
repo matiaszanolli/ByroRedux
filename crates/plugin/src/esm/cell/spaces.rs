@@ -258,12 +258,14 @@ mod tests {
         );
         cells.cells.insert("store".into(), interior("Store", vec![door(0x30, [0.0; 3], 0x22, [2000.0, 0.0, 0.0])]));
         let mut grids = HashMap::new();
-        let mut cell = CellData::default();
-        cell.references = vec![
-            door(0x20, [100.0, 0.0, 0.0], 0x10, [10.0, 0.0, 0.0]),
-            door(0x21, [900.0, 0.0, 0.0], 0x11, [490.0, 0.0, 0.0]),
-            door(0x22, [2000.0, 0.0, 0.0], 0x30, [5.0, 0.0, 0.0]),
-        ];
+        let cell = CellData {
+            references: vec![
+                door(0x20, [100.0, 0.0, 0.0], 0x10, [10.0, 0.0, 0.0]),
+                door(0x21, [900.0, 0.0, 0.0], 0x11, [490.0, 0.0, 0.0]),
+                door(0x22, [2000.0, 0.0, 0.0], 0x30, [5.0, 0.0, 0.0]),
+            ],
+            ..Default::default()
+        };
         grids.insert((0, 0), cell);
         cells.exterior_cells.insert("wasteland".into(), grids);
         cells

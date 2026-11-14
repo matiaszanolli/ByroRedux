@@ -46,6 +46,7 @@ impl Ex {
     fn lit(s: &str) -> Self {
         Ex { s: s.to_string(), lit: true }
     }
+    #[allow(clippy::self_named_constructors)] // `Ex::ex` reads as the expression constructor beside `Ex::lit`
     fn ex(s: impl Into<String>) -> Self {
         Ex { s: s.into(), lit: false }
     }
@@ -100,6 +101,7 @@ fn unq(e: &Ex) -> String {
     e.name()
 }
 
+#[allow(clippy::too_many_arguments)] // a recursive AVM1 walker threading its whole context through each level
 fn walk(
     ctx: &mut Ctx,
     code: &[u8],
@@ -230,7 +232,7 @@ fn walk(
             Action::Pop => {
                 if let Some(t) = stack.pop() {
                     if t.s.contains('(') && !t.lit {
-                        emit(lines, format!("{}", t.s));
+                        emit(lines, t.s.to_string());
                     }
                 }
             }
@@ -346,7 +348,7 @@ fn walk(
             }
             Action::If(i) => {
                 let c = pop!();
-                let tgt = (reader.as_slice().len() as isize * -1 + total as isize) + i.offset as isize;
+                let tgt = (-(reader.as_slice().len() as isize) + total as isize) + i.offset as isize;
                 emit(lines, format!("if ({}) goto L{:04x}", c.shown(), tgt));
             }
             Action::Jump(j) => {
@@ -481,11 +483,8 @@ trait ShownObj {
 }
 impl ShownObj for Ex {
     fn shown_obj(&self) -> String {
-        if self.lit {
-            self.s.clone()
-        } else {
-            self.s.clone()
-        }
+        // A literal and an expression read the same in object position.
+        self.s.clone()
     }
 }
 
@@ -838,7 +837,10 @@ fn trait_desc(abc: &AbcFile, t: &swf::avm2::types::Trait, tn: &str, stat: bool) 
     }
 }
 
-fn load_movie_avm2(data: &[u8]) -> (Vec<Abc3>, Vec<String>, Vec<(u16, String)>, Vec<String>) {
+/// (ABC blocks, `ImportAssets` lines, `SymbolClass` (id, class) pairs, tag tree) of an AVM2 movie.
+type Avm2Movie = (Vec<Abc3>, Vec<String>, Vec<(u16, String)>, Vec<String>);
+
+fn load_movie_avm2(data: &[u8]) -> Avm2Movie {
     let dec = decompress_swf(data).expect("decompress");
     let movie = parse_swf(&dec).expect("parse");
     let mut abcs = Vec::new();

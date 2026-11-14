@@ -53,14 +53,14 @@ impl Spread {
 
 fn f32s(sub: &SubRecord) -> Vec<f32> {
     sub.data
-        .chunks_exact(4)
+        .as_chunks::<4>().0.iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
 
 fn forms(sub: &SubRecord) -> Vec<u32> {
     sub.data
-        .chunks_exact(4)
+        .as_chunks::<4>().0.iter()
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }

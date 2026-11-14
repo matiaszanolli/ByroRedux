@@ -334,7 +334,7 @@ fn put_blocks<T: Coef>(
         }
         block_pixels(dc_term, coefs, &mut px);
         let out = T::clamp_u8(&px);
-        for (yy, row) in out.chunks_exact(8).enumerate() {
+        for (yy, row) in out.as_chunks::<8>().0.iter().enumerate() {
             let o = plane.at(bx * 8, by * 8 + yy);
             plane.px[o..o + 8].copy_from_slice(row);
         }

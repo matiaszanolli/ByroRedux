@@ -42,7 +42,7 @@ impl HeightField {
     /// the workspace's CPU codec — so there is one BC4 decoder, not two.
     pub fn from_red_channel(width: usize, height: usize, pixels: &[u8]) -> Self {
         let mut field = Self::new(width, height);
-        for (dst, px) in field.data.iter_mut().zip(pixels.chunks_exact(4)) {
+        for (dst, px) in field.data.iter_mut().zip(pixels.as_chunks::<4>().0) {
             *dst = px[0] as f32 / 255.0;
         }
         field

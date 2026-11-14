@@ -2062,12 +2062,14 @@ mod unit_tests {
     #[test]
     fn open_sky_sun_dust_rides_the_sun_term_only_and_fades_with_a_high_sun() {
         use crate::shader_constants::{SUN_DUST_FULL_BELOW_SUN_SIN, SUN_DUST_ZERO_ABOVE_SUN_SIN};
-        assert!(
-            0.0 < SUN_DUST_FULL_BELOW_SUN_SIN
-                && SUN_DUST_FULL_BELOW_SUN_SIN < SUN_DUST_ZERO_ABOVE_SUN_SIN
-                && SUN_DUST_ZERO_ABOVE_SUN_SIN <= 1.0,
-            "the shaping edges must be an increasing pair of elevation sines"
-        );
+        const {
+            assert!(
+                0.0 < SUN_DUST_FULL_BELOW_SUN_SIN
+                    && SUN_DUST_FULL_BELOW_SUN_SIN < SUN_DUST_ZERO_ABOVE_SUN_SIN
+                    && SUN_DUST_ZERO_ABOVE_SUN_SIN <= 1.0,
+                "the shaping edges must be an increasing pair of elevation sines"
+            )
+        };
         let shader = crate::source_scan::volumetrics_inject_glsl();
         let decl = shader
             .find("vec3 openSkySunDust")

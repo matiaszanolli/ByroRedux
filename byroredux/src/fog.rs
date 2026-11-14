@@ -2674,7 +2674,7 @@ mod tests {
         assert_eq!(meshes.len(), 1);
         let volumes = fnv_nellis_hangar_beam_volumes_from_mesh(Some(path), &meshes[0]).unwrap();
         assert_eq!(volumes.len(), 8);
-        for (panel, pair) in [0, 2, 3, 4].into_iter().zip(volumes.chunks_exact(2)) {
+        for (panel, pair) in [0, 2, 3, 4].into_iter().zip(volumes.as_chunks::<2>().0) {
             let medium = pair[0];
             let aperture = pair[1];
             assert_eq!(medium.profile, FogProfile::Homogeneous);

@@ -239,7 +239,7 @@ pub struct SceneGeometryGroup {
 /// Indices past the vertex count are skipped, as the upload paths clamp them.
 pub fn uv_texel_density(vertices: &[Vertex], indices: &[u32]) -> Option<f32> {
     let (mut world, mut uv) = (0.0f64, 0.0f64);
-    for tri in indices.chunks_exact(3) {
+    for tri in indices.as_chunks::<3>().0 {
         let (Some(a), Some(b), Some(c)) = (
             vertices.get(tri[0] as usize),
             vertices.get(tri[1] as usize),

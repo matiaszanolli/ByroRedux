@@ -349,7 +349,7 @@ mod leveled_add_tests {
     /// pistol. Here a list offers a level-1 and a level-10 entry; a level-1 receiver gets the first.
     #[test]
     fn adding_a_leveled_list_adds_what_it_resolves_to() {
-        const LIST: u32 = 0x00E3_982;
+        const LIST: u32 = 0x000E_3982;
         const PISTOL: u32 = 0x0000_E3A1;
         const RIFLE: u32 = 0x0000_E3A2;
         let mut world = World::new();

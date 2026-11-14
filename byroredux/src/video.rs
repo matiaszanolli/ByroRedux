@@ -446,8 +446,7 @@ mod tests {
             other => panic!("expected the decode failure, got {other:?}"),
         };
         let request = VideoRequest { file: "x.bik".into(), interruptable: false, mute_audio: true, pause_music: true, letterbox: true, new_game: false };
-        let mut player = VideoPlayer::default();
-        player.active = Some(Active { movie, request, started: None, ended });
+        let mut player = VideoPlayer { active: Some(Active { movie, request, started: None, ended }), ..Default::default() };
         player.step(&world, Some((64, 48)));
         assert!(!player.active());
         assert_eq!(world.resource::<VideoStatus>().last, Some(("x.bik".to_string(), VideoOutcome::Failed(reason.to_string()))));

@@ -1740,8 +1740,8 @@ mod tests {
         assert_eq!(inputs.layer_grass_colour[0], [0.8, 0.1, 0.1, 1.0], "lane 0 is the red lane's grass");
         assert_eq!(inputs.layer_grass_colour[1], [0.0; 4], "the default land texture lists no grass: unknown");
         assert_eq!(inputs.layer_grass_colour[2], [0.1, 0.1, 0.8, 1.0], "lane 2 is the blue lane's grass");
-        for lane in 3..TERRAIN_SPLAT_LAYERS as usize {
-            assert_eq!(inputs.layer_grass_colour[lane], [0.0; 4], "lane {lane} is past the layer count: unknown");
+        for (lane, colour) in inputs.layer_grass_colour.iter().enumerate().skip(3) {
+            assert_eq!(*colour, [0.0; 4], "lane {lane} is past the layer count: unknown");
         }
         assert_eq!(inputs.base_grass_colour, [0.1, 0.8, 0.1, 1.0], "the BTXT base takes its own texture's list");
         // The affinity chain the colour mixes beside uses the same lanes.
@@ -2442,7 +2442,7 @@ mod tests {
         let positions = flat_land_positions(0.0);
         let indices = land_tile_indices(0);
         assert_eq!(indices.len(), 32 * 32 * 6);
-        for tri in indices.chunks_exact(3) {
+        for tri in indices.as_chunks::<3>().0 {
             let [a, b, c] = [tri[0], tri[1], tri[2]].map(|i| Vec3::from(positions[i as usize]));
             let normal = (b - a).cross(c - a);
             assert!(
@@ -2582,12 +2582,12 @@ mod tests {
         for q in 0..4u8 {
             let indices = land_tile_indices(1 << q);
             assert_eq!(indices.len(), 3 * 16 * 16 * 6, "quadrant {q}");
-            assert!(indices.chunks_exact(3).all(|tri| quadrant_of(tri) != q));
+            assert!(indices.as_chunks::<3>().0.iter().all(|tri| quadrant_of(tri) != q));
         }
         // 0x0C hides the northern half: only south-row quads remain.
         let south = land_tile_indices(0x0C);
         assert_eq!(south.len(), 2 * 16 * 16 * 6);
-        assert!(south.chunks_exact(3).all(|tri| quadrant_of(tri) < 2));
+        assert!(south.as_chunks::<3>().0.iter().all(|tri| quadrant_of(tri) < 2));
         assert!(land_tile_indices(0x0F).is_empty());
         // The high nibble (FO4 No Collision bits) is not a hide bit.
         assert_eq!(land_tile_indices(0xF0).len(), 32 * 32 * 6);

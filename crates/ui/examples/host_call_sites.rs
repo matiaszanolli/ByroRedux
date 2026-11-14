@@ -260,7 +260,8 @@ fn main() {
             let needle = std::env::args().nth(3).unwrap_or_default().to_ascii_lowercase();
             let out = std::env::args().nth(4).unwrap_or_default();
             let dir = "/mnt/data/SteamLibrary/steamapps/common/";
-            let (names, extract): (Vec<String>, Box<dyn Fn(&str) -> Vec<u8>>) = if game == "skyrim" {
+            type Extract = Box<dyn Fn(&str) -> Vec<u8>>;
+            let (names, extract): (Vec<String>, Extract) = if game == "skyrim" {
                 let a = BsaArchive::open(std::path::Path::new(&format!("{dir}Skyrim Special Edition/Data/Skyrim - Interface.bsa"))).expect("bsa");
                 let n = a.list_files().into_iter().map(str::to_string).collect();
                 (n, Box::new(move |f| a.extract(f).expect("extract")))

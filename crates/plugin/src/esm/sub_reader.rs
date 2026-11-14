@@ -142,7 +142,7 @@ impl<'a> SubReader<'a> {
             );
         }
         let words = rest
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
             .collect();
         self.pos = self.data.len();

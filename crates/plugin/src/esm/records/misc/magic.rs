@@ -2315,12 +2315,12 @@ mod tests {
         let hex = |text: &str| (0..text.len()).step_by(2).map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap()).collect::<Vec<u8>>();
         let subs = vec![
             sub(b"EDID", b"PlayerConcussed\0"),
-            sub(b"SPIT", &hex("0000000000000000000000000acdcdcd")),
-            sub(b"EFID", &hex("39530600")),
-            sub(b"EFIT", &hex("00000000000000000003cc1200000000ffffffff")),
-            sub(b"EFID", &hex("e32d0300")),
-            sub(b"EFIT", &hex("04000000000000000003cc120000000006000000")),
-            sub(b"CTDA", &hex("a0000000000000000e00000019000000000000000000000000000000")),
+            sub(b"SPIT", hex("0000000000000000000000000acdcdcd")),
+            sub(b"EFID", hex("39530600")),
+            sub(b"EFIT", hex("00000000000000000003cc1200000000ffffffff")),
+            sub(b"EFID", hex("e32d0300")),
+            sub(b"EFIT", hex("04000000000000000003cc120000000006000000")),
+            sub(b"CTDA", hex("a0000000000000000e00000019000000000000000000000000000000")),
         ];
         let spell = parse_spel(0x0006_533A, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(spell.effects.len(), 2);

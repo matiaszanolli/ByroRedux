@@ -37,7 +37,7 @@ fn main() -> anyhow::Result<()> {
     let all_total = idx.npcs.len();
     let mut all_with_morphs = 0usize;
 
-    for (_, n) in idx.npcs.iter() {
+    for n in idx.npcs.values() {
         if n.face_morphs.is_some() {
             all_with_morphs += 1;
         }

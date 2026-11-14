@@ -316,7 +316,8 @@ fn tree_lod_ref_form_id_census() {
     };
     let index = parse_esm(&bytes).expect("parse Skyrim.esm");
     // REFR FormID -> (worldspace, cell, base, position)
-    let mut refs: HashMap<u32, (&str, (i32, i32), u32, [f32; 3])> = HashMap::new();
+    type RefSite<'a> = (&'a str, (i32, i32), u32, [f32; 3]);
+    let mut refs: HashMap<u32, RefSite> = HashMap::new();
     for (ws, cells) in &index.cells.exterior_cells {
         for (cell, data) in cells {
             for r in &data.references {

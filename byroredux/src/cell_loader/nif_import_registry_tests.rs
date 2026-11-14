@@ -1132,7 +1132,8 @@ fn bulk_trim_matches_the_one_victim_at_a_time_policy() {
         .collect();
     let mut expected_freed = Vec::new();
     while live.len() > 40 {
-        let pick = |pred: &dyn Fn(&(String, u64, bool, bool)) -> bool| {
+        type Entry = (String, u64, bool, bool);
+        let pick = |pred: &dyn Fn(&Entry) -> bool| {
             live.iter().enumerate().filter(|(_, e)| pred(e)).min_by_key(|(_, e)| e.1).map(|(i, _)| i)
         };
         let i = pick(&|e| e.3 && !e.2)

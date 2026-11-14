@@ -516,8 +516,8 @@ mod tests {
 
     fn red_tex() -> Rgba8 {
         let mut tex = Rgba8::new(2, 2);
-        for px in tex.pixels.chunks_exact_mut(4) {
-            px.copy_from_slice(&[255, 0, 0, 255]);
+        for px in tex.pixels.as_chunks_mut::<4>().0 {
+            *px = [255, 0, 0, 255];
         }
         tex
     }
@@ -567,7 +567,7 @@ mod tests {
             );
         });
         assert_eq!(count, FB_PIXELS, "one blend per framebuffer pixel, no more");
-        assert!(fb.pixels.chunks_exact(4).all(|p| p == [255, 0, 0, 255]));
+        assert!(fb.pixels.as_chunks::<4>().0.iter().all(|p| *p == [255, 0, 0, 255]));
 
         // A tile that starts far off-screen but spans the framebuffer.
         let (count, _) = blended(|fb| {
@@ -761,8 +761,8 @@ mod tests {
     fn clamping_the_loop_does_not_shift_the_sampled_texels() {
         // 8x1 ramp: texel i has red = i * 10.
         let mut tex = Rgba8::new(8, 1);
-        for (i, px) in tex.pixels.chunks_exact_mut(4).enumerate() {
-            px.copy_from_slice(&[i as u8 * 10, 0, 0, 255]);
+        for (i, px) in tex.pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            *px = [i as u8 * 10, 0, 0, 255];
         }
         let mut fb = Framebuffer::new(4, 1);
         // Stretch 8 texels over an 8-wide tile starting at x = -2: framebuffer
@@ -775,7 +775,7 @@ mod tests {
             false,
             style(),
         );
-        let reds: Vec<u8> = fb.pixels.chunks_exact(4).map(|p| p[0]).collect();
+        let reds: Vec<u8> = fb.pixels.as_chunks::<4>().0.iter().map(|p| p[0]).collect();
         assert_eq!(reds, [20, 30, 40, 50]);
     }
 

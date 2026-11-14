@@ -261,7 +261,7 @@ fn boundary_vertices(positions: &[Vec3], indices: &[u32]) -> Vec<usize> {
         })
         .collect();
     let mut edges: HashMap<(usize, usize), u32> = HashMap::new();
-    for triangle in indices.chunks_exact(3) {
+    for triangle in indices.as_chunks::<3>().0 {
         for (a, b) in [
             (triangle[0], triangle[1]),
             (triangle[1], triangle[2]),

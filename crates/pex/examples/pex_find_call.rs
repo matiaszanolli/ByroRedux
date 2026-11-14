@@ -20,7 +20,8 @@ fn main() {
     let path = args.next().expect("usage: pex_find_call <archive> <function>");
     let want = args.next().expect("usage: pex_find_call <archive> <function>").to_ascii_lowercase();
     let only = args.next().map(|s| s.to_ascii_lowercase());
-    let (files, extract): (Vec<String>, Box<dyn Fn(&str) -> std::io::Result<Vec<u8>>>) =
+    type Extract = Box<dyn Fn(&str) -> std::io::Result<Vec<u8>>>;
+    let (files, extract): (Vec<String>, Extract) =
         if path.to_ascii_lowercase().ends_with(".ba2") {
             let a = Ba2Archive::open(&path).unwrap();
             let f = a.list_files().into_iter().map(String::from).collect();

@@ -3,7 +3,7 @@ use super::super::placement_lod::Placement;
 
 fn solid(width: u32, height: u32, rgba: [u8; 4]) -> Rgba8 {
     let mut image = Rgba8::new(width, height);
-    for px in image.pixels.chunks_exact_mut(4) {
+    for px in image.pixels.as_chunks_mut::<4>().0 {
         px.copy_from_slice(&rgba);
     }
     image

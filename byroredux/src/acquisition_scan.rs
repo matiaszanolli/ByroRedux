@@ -623,7 +623,7 @@ pub(crate) fn declaration_with_delegates(
     files.extend_from_slice(delegates);
     let index = Index::build_all(&files);
     for (_, call) in registrations(file) {
-        let (Some(target), Some(access)) = (call.args.iter().nth(1), call.args.iter().last())
+        let (Some(target), Some(access)) = (call.args.iter().nth(1), call.args.last())
         else {
             continue;
         };

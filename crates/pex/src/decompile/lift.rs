@@ -88,8 +88,8 @@ pub fn lift_function(
             continue;
         }
         let mut scope = Vec::new();
-        for ip in block.begin..=block.end {
-            if let Some(node) = ctx.create_node(ip, &function.instructions[ip])? {
+        for (ip, instruction) in (block.begin..).zip(&function.instructions[block.begin..=block.end]) {
+            if let Some(node) = ctx.create_node(ip, instruction)? {
                 scope.push(check_assign(node));
             }
         }

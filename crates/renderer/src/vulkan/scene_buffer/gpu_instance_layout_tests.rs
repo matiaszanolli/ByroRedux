@@ -481,7 +481,7 @@ fn shipped_triangle_frag_spv_carries_the_terrain_tile_stride() {
     // parsing the module — the point is only that the new stride is present
     // and the old one is not still describing this array.
     let words: Vec<u32> = spv
-        .chunks_exact(4)
+        .as_chunks::<4>().0.iter()
         .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
         .collect();
     let mut strides = Vec::new();

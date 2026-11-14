@@ -147,9 +147,9 @@ development loop.
 
 The engine binary depends on wasmtime 49 and cranelift 0.136 (via
 `mod-runtime`), whose MSRV is 1.96 (1.94 before the 2026-10 wasmtime 47 → 49
-bump); the repo pins 1.96.0 via `rust-toolchain.toml`. As of 2026-10-15 the
-reference machine's default toolchain (1.97.1) satisfies the MSRV and bare
-`cargo` works. If the default `cargo`/`rustc` on PATH is older (e.g. a
+bump); the repo pins 1.100.0 via `rust-toolchain.toml` (bumped from 1.96.0 on
+2026-11-14). With the rustup shims first on PATH, bare `cargo` picks up the
+pin. If the default `cargo`/`rustc` on PATH is older (e.g. a
 distro 1.93.1), every `cargo` invocation that resolves the full workspace —
 including `cargo check` and `cargo test -p byroredux-core`'s workspace
 walk — fails at dependency resolution with a wall of
@@ -163,7 +163,7 @@ rustup shims (the `+toolchain` directive is rejected and the distro binary
 runs anyway):
 
 ```bash
-TC=$(rustup which --toolchain 1.96.0 cargo)
+TC=$(rustup which --toolchain 1.100.0 cargo)
 PATH="$(dirname "$TC"):$PATH" "$TC" test -p byroredux --bin byroredux
 ```
 

@@ -2720,12 +2720,12 @@ fn sraf(role: u16, perspective: u16) -> Vec<u8> {
 fn race_subgraph_additive_race_stays_on_the_record() {
     let additive = 0x0000_347Du32.to_le_bytes();
     let subs = [
-        sub(b"SADD", &additive),
-        sub(b"SAKD", &0x0000_0C01u32.to_le_bytes()),
+        sub(b"SADD", additive),
+        sub(b"SAKD", 0x0000_0C01u32.to_le_bytes()),
         sub(b"SGNM", b"first.hkx\0"),
-        sub(b"SRAF", &sraf(1, 0)),
+        sub(b"SRAF", sraf(1, 0)),
         sub(b"SGNM", b"second.hkx\0"),
-        sub(b"SRAF", &sraf(0, 1)),
+        sub(b"SRAF", sraf(0, 1)),
     ];
     for game in [GameKind::Fallout4, GameKind::Fallout76, GameKind::Starfield] {
         let race = parse_race(0x20, &subs, game, &None);
@@ -2743,7 +2743,7 @@ fn race_subgraph_additive_race_stays_on_the_record() {
 #[test]
 fn race_subgraph_role_enum_follows_the_game() {
     let role_of = |raw, game| {
-        let subs = [sub(b"SRAF", &sraf(raw, 0))];
+        let subs = [sub(b"SRAF", sraf(raw, 0))];
         parse_race(0x22, &subs, game, &None).subgraph_data[0].role
     };
     assert_eq!(role_of(3, GameKind::Fallout4), SubgraphRole::Idle);

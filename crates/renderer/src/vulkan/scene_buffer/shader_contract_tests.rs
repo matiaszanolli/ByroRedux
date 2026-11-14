@@ -7718,7 +7718,7 @@ fn local_gust_rust_and_glsl_mirrors_use_the_same_numbers_in_the_same_order() {
                     i += 1;
                 }
                 let raw: String = chars[start..i].iter().filter(|c| **c != '_').collect::<String>().to_lowercase();
-                let raw = raw.trim_end_matches(|c| c == 'u' || c == 'f' || c == 'i').to_string();
+                let raw = raw.trim_end_matches(['u', 'f', 'i']).to_string();
                 let value = if let Some(hex) = raw.strip_prefix("0x") {
                     u64::from_str_radix(hex.trim_end_matches('u'), 16).map(|v| format!("{v}")).unwrap_or(raw.clone())
                 } else if raw.contains('.') {

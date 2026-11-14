@@ -759,7 +759,7 @@ fn dump_class(data: &[u8], needle: &str) -> Result<(), String> {
                 let tok = &tail[..end];
                 let n: u32 = tok["Index(".len()..].split(',').next().and_then(|x| x.trim().parse().ok()).unwrap_or(0);
                 let name = if tok.contains("Multiname") {
-                    local(&abc, Index::new(n)).map(|x| format!("{x}")).unwrap_or_else(|| format!("mn#{n}"))
+                    local(&abc, Index::new(n)).map(|x| x.to_string()).unwrap_or_else(|| format!("mn#{n}"))
                 } else if tok.contains("String") {
                     pool_str(&abc, Index::new(n)).map(|x| format!("{x:?}")).unwrap_or_else(|| format!("str#{n}"))
                 } else {

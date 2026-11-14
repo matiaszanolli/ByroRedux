@@ -459,7 +459,7 @@ pub(crate) fn water_volume_from_mesh(
 
     let to_world = |p: [f32; 3]| position + rotation * (Vec3::from_array(p) * scale);
     let triangles: Vec<[[f32; 3]; 3]> = indices
-        .chunks_exact(3)
+        .as_chunks::<3>().0.iter()
         .filter_map(|tri| {
             let corner = |i: u32| positions.get(i as usize).copied().map(to_world);
             let (a, b, c) = (corner(tri[0])?, corner(tri[1])?, corner(tri[2])?);
@@ -2014,7 +2014,7 @@ mod tests {
         assert!(frag.contains("mat.multiLayerEnvmapStrength > 0.3"), "shader authored-scale threshold moved");
         assert!(frag.contains("legacyEnvMaskMetalness = 0.9"), "shader mask conductor value moved");
         assert!(frag.contains("roughness < 0.6"), "shader reflection gate moved");
-        assert!(ENV_MASK_ROUGHNESS_CEILING < 0.6, "the ceiling must stay inside the reflection gate");
+        const { assert!(ENV_MASK_ROUGHNESS_CEILING < 0.6, "the ceiling must stay inside the reflection gate") };
 
         let base = PbrClassifierInputs {
             texture_path: Some("textures/clutter/office/typewriter01.dds"),

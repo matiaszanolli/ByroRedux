@@ -408,8 +408,8 @@ pub(crate) fn local_sim_push_bytes(boxes: &LocalBoxSet) -> [u8; LOCAL_SIM_PUSH_B
     let mut put = |offset: usize, word: [u8; 4]| bytes[offset..offset + 4].copy_from_slice(&word);
     for (slot, b) in boxes.boxes().iter().enumerate() {
         if let Some(b) = b {
-            for axis in 0..3 {
-                put(slot * 16 + axis * 4, b.origin[axis].to_ne_bytes());
+            for (axis, coord) in b.origin.iter().enumerate() {
+                put(slot * 16 + axis * 4, coord.to_ne_bytes());
             }
             put(slot * 16 + 12, b.cell.to_ne_bytes());
         }
@@ -1178,8 +1178,8 @@ impl LocalGrid {
             let mut words = [0u32; MAX_LOCAL_BOXES * STATS_WORDS_PER_BOX];
             {
                 let bytes = buffer.mapped_slice_mut()?;
-                for (word, chunk) in words.iter_mut().zip(bytes.chunks_exact(4)) {
-                    *word = u32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                for (word, chunk) in words.iter_mut().zip(bytes.as_chunks::<4>().0) {
+                    *word = u32::from_ne_bytes(*chunk);
                 }
                 bytes[..STATS_BYTES].fill(0);
             }

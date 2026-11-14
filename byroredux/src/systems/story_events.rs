@@ -173,15 +173,14 @@ fn location_key(world: &World, location: Option<u32>) -> Option<u64> {
         1u8.hash(&mut hasher);
         cell.esm_path.hash(&mut hasher);
         cell.cell_editor_id.hash(&mut hasher);
-    } else if let Some(exterior) = world.try_resource::<CurrentExteriorContext>() {
+    } else {
+        // Neither context → `None`: mid-transition window or loose-NIF mode.
+        // The cursor follows so the post-transition frame counts as a change.
+        let exterior = world.try_resource::<CurrentExteriorContext>()?;
         2u8.hash(&mut hasher);
         exterior.esm_path.hash(&mut hasher);
         exterior.worldspace_key.hash(&mut hasher);
         exterior.grid.hash(&mut hasher);
-    } else {
-        // Neither context: mid-transition window or loose-NIF mode. The
-        // cursor follows so the post-transition frame counts as a change.
-        return None;
     }
     // Process-local identity hash for change detection only — never
     // persisted, so `DefaultHasher`'s unspecified seeding is fine.

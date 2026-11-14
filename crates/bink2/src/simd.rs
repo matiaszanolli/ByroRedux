@@ -188,13 +188,13 @@ mod x86 {
 
     #[target_feature(enable = "avx2")]
     pub(super) fn clamp_u8(px: &[i32; 64], out: &mut [u8; 64]) {
-        for (k, o) in out.chunks_exact_mut(16).enumerate() {
+        for (k, o) in out.as_chunks_mut::<16>().0.iter_mut().enumerate() {
             // SAFETY: 16 i32 read inside `px`
             let (lo, hi) = unsafe {
                 let p = px.as_ptr().add(16 * k);
                 (_mm256_loadu_si256(p as *const __m256i), _mm256_loadu_si256(p.add(8) as *const __m256i))
             };
-            store_u8x16(_mm256_permute4x64_epi64::<0xd8>(_mm256_packs_epi32(lo, hi)), o.try_into().unwrap());
+            store_u8x16(_mm256_permute4x64_epi64::<0xd8>(_mm256_packs_epi32(lo, hi)), o);
         }
     }
 
@@ -290,7 +290,7 @@ mod x86 {
     /// either way.
     #[target_feature(enable = "avx2")]
     pub(super) fn add_clamped(px: &mut [u8], g: &[i32]) {
-        for (p, g) in px.chunks_exact_mut(16).zip(g.chunks_exact(16)) {
+        for (p, g) in px.as_chunks_mut::<16>().0.iter_mut().zip(g.as_chunks::<16>().0) {
             // SAFETY: 16 i32 read from `g`
             let (lo, hi) = unsafe {
                 (
@@ -300,7 +300,7 @@ mod x86 {
             };
             let r = _mm256_permute4x64_epi64::<0xd8>(_mm256_packs_epi32(lo, hi));
             let v = _mm256_adds_epi16(r, widen16(p));
-            store_u8x16(v, p.try_into().unwrap());
+            store_u8x16(v, p);
         }
     }
 

@@ -91,7 +91,7 @@ impl Bk2 {
             .collect();
         let mut raw = vec![0u8; 4 * (frames + 1)];
         file.read_exact(&mut raw)?;
-        let index = raw.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
+        let index = raw.as_chunks::<4>().0.iter().map(|&c| u32::from_le_bytes(c)).collect();
         Ok(Self {
             file,
             magic: h[..4].try_into().unwrap(),

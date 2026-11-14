@@ -488,7 +488,6 @@ fn the_limb_commands_answer_from_the_dismember_record() {
     assert_eq!(value(run(&world, 0x11f0, &[], &c)), -1.0);
     world.insert(actor, Dead);
     assert_eq!(run(&world, 0x11f0, &[], &c), Action::Declined, "a corpse with no recorded blow");
-    let mut record = record;
     record.killing_blow = Some(1);
     world.insert(actor, record);
     assert_eq!(value(run(&world, 0x11f0, &[], &c)), 1.0);

@@ -127,6 +127,10 @@ fn parse_float(lex: &mut logos::Lexer<Token>) -> Result<f64, ()> {
 // `\   ` forms (blanks and a comment between the slash and the line
 // break) continue the line. Spans stay in source coordinates.
 #[logos(skip r"\\[ \t]*(;[^\r\n]*)?(\r\n|\r|\n)")]
+// Clippy 1.100's `duplicated_attributes` compares arguments across logos's `#[regex]` / `#[token]`
+// helper attributes: distinct patterns sharing one callback (`parse_int`, `parse_float`) or one
+// priority are the logos idiom, and the suggested removal would delete a lexer rule.
+#[allow(clippy::duplicated_attributes)]
 pub enum Token {
     // ── Newlines (significant for statement termination) ──
     // #4479 — CRLF, bare CR, and LF all terminate a line. Longest-match

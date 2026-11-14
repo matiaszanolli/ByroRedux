@@ -348,7 +348,7 @@ mod primitive_winding_tests {
     /// its authored vertex normals. RT hit shading and front-face tests use
     /// the geometric normal; a mismatch shades a lit face as a back face.
     fn assert_winding(name: &str, (vertices, indices): (Vec<Vertex>, Vec<u32>)) {
-        for (triangle, corners) in indices.chunks_exact(3).enumerate() {
+        for (triangle, corners) in indices.as_chunks::<3>().0.iter().enumerate() {
             let [a, b, c] =
                 [corners[0], corners[1], corners[2]].map(|index| &vertices[index as usize]);
             let sub = |p: [f32; 3], q: [f32; 3]| [p[0] - q[0], p[1] - q[1], p[2] - q[2]];

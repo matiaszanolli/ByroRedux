@@ -913,9 +913,9 @@ fn an_fo4_creature_corpse_is_posed_by_node_order() {
         10..=19 => body - 9,
         _ => body + 10,
     };
-    for body in 0..20 {
+    for (body, &bone) in bones.iter().enumerate().take(20) {
         assert!(
-            same_rotation(rotation(bones[body]), expected_yup(0.0, 0.0, 0.01 * (rank_of(body) + 1) as f32)),
+            same_rotation(rotation(bone), expected_yup(0.0, 0.0, 0.01 * (rank_of(body) + 1) as f32)),
             "body {body} is posed by entry {}",
             rank_of(body)
         );

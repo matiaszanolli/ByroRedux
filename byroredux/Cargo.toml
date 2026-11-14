@@ -11,7 +11,7 @@ debug-server = ["dep:byroredux-debug-server"]
 # #886 / INFRA-PERF-01. Off by default — the dep is heavy and Tracy
 # is a developer-time tool, not a shipping-build feature. Enable
 # with `cargo run --features tracing-tracy`.
-tracing-tracy = ["dep:tracing-tracy"]
+tracing-tracy = ["dep:tracing-tracy", "dep:tracing-subscriber"]
 # Heap-allocation profiling: installs `dhat` as the global allocator and
 # starts a whole-run heap profiler that writes `dhat-heap.json` on exit
 # (view at https://nnethercote.github.io/dh_view/dh_view.html). Off by
@@ -59,7 +59,7 @@ rayon = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, optional = true }
 # Optional: pipes spans into a Tracy capture session. Behind the
 # `tracing-tracy` binary feature so default builds don't pull it in.
 tracing-tracy = { workspace = true, optional = true }

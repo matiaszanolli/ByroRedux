@@ -961,7 +961,7 @@ pub(crate) fn ply_bytes(source: &CornellMeshSource, with_uv: bool) -> Vec<u8> {
             }
         }
     }
-    for tri in source.indices.chunks_exact(3) {
+    for tri in source.indices.as_chunks::<3>().0 {
         out.push(3);
         for i in tri {
             out.extend_from_slice(&i.to_le_bytes());

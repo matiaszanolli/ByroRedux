@@ -2191,7 +2191,9 @@ mod app_scratch_telemetry_coverage_tests {
     /// it holds, and which field names belong inside it rather than on `App`.
     /// A field matching the predicate on `App` itself would quietly rebuild the
     /// sprawl the group replaced.
-    const APP_STATE_GROUPS: [(&str, &str, fn(&str) -> bool); 4] = [
+    /// (group, owning type path, predicate naming the group's former `App` fields).
+    type StateGroup = (&'static str, &'static str, fn(&str) -> bool);
+    const APP_STATE_GROUPS: [StateGroup; 4] = [
         ("bench", "crate::bench_state::BenchState", |n| {
             n.starts_with("bench_") || n == "pending_soak_cycle"
         }),

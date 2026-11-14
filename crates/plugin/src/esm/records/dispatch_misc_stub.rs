@@ -328,7 +328,7 @@ pub(super) fn dispatch_misc_stub_group(
 fn complex_scene_object(subs: &[crate::esm::reader::SubRecord], remap: &Option<crate::esm::reader::FormIdRemap>) -> Option<u32> {
     let dnam = subs.iter().find(|sub| &sub.sub_type == b"DNAM")?;
     dnam.data
-        .chunks_exact(8)
+        .as_chunks::<8>().0.iter()
         .find(|pair| &pair[..4] == b"CMPX")
         .map(|pair| super::common::remap_fid(u32::from_le_bytes([pair[4], pair[5], pair[6], pair[7]]), remap))
         .filter(|form| *form != 0)

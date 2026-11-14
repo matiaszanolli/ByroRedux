@@ -854,8 +854,8 @@ impl VolumetricsPipeline {
             .context("Volumetrics local grid")
         ));
         if let Some(grid) = partial.local_grid.as_ref() {
-            for f in 0..MAX_FRAMES_IN_FLIGHT {
-                grid.write_inject_bindings(device, partial.descriptor_sets[f], f);
+            for (f, &set) in partial.descriptor_sets[..MAX_FRAMES_IN_FLIGHT].iter().enumerate() {
+                grid.write_inject_bindings(device, set, f);
             }
         }
 

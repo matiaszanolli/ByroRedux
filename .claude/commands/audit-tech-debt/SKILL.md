@@ -308,9 +308,11 @@ cargo machete --with-metadata 2>/dev/null || echo "cargo machete not installed �
 - **Unused-dependency gate**: CI job `Unused dependencies` runs `cargo machete --with-metadata` (#3890; `--with-metadata`
   since #5851, 251d491ef, so `[dev-dependencies]` workspace entries are seen too, plus a `Cargo.lock` drift check) — a red
   run is a finding. Its blind spots are macro-only and re-export-only use (the job comment says so); the hand scan earns its
-  keep there and on deps used only under a non-default feature.
+  keep there and on deps used only under a non-default feature. Since the 1.100 pin, cargo's own `cargo::unused_dependencies`
+  lint (warn by default) covers that last case on any full-target build: its first run caught `byroredux`'s non-optional
+  `tracing-subscriber`, referenced only under `feature = "tracing-tracy"`.
 - **Clippy gate** (CI job `Test + Check + Clippy` runs `cargo clippy --workspace --keep-going -- -D warnings` plus a
-  renderer-only `undocumented_unsafe_blocks` re-lint, #5121; the toolchain is pinned at 1.96.0 by `rust-toolchain.toml` since #5308 (b24cb46b6) after floating
+  renderer-only `undocumented_unsafe_blocks` re-lint, #5121; the toolchain is pinned by `rust-toolchain.toml` since #5308 (b24cb46b6) — 1.96.0, raised to 1.100.0 on 2026-11-14 — after floating
   `stable` let rustc 1.99's *chunks_exact_to_as_chunks* wave turn the gate red for four days — rustc 1.96 (800802516) and 1.98
   (530c9e7aa) raised lints on untouched code too; a toolchain bump is now a deliberate commit, and the distro cargo ignores
   the pin; wasmtime 49's MSRV is exactly 1.96.0, 15a6b1d2d, so the pin can rise but not fall). The blocking gate went red again on untouched code and was re-zeroed by #6222 (fde8836dd, 2026-10-27, exit 0 on 1.96.0) and again by #6582 (72673394b, 2026-11-02, nine sites hidden behind the first three failing crates). A red gate is a finding:

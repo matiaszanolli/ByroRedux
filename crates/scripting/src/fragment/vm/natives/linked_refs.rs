@@ -102,7 +102,7 @@ impl Vm<'_> {
                     Some(Value::Form(keyword)) => *keyword,
                     _ => 0,
                 };
-                let cap = values.get(1).and_then(Value::number).map_or(MAX_LINK_CHAIN_HOPS as f32, |max| max).min(MAX_LINK_CHAIN_HOPS as f32) as i64;
+                let cap = values.get(1).and_then(Value::number).unwrap_or(MAX_LINK_CHAIN_HOPS as f32).min(MAX_LINK_CHAIN_HOPS as f32) as i64;
                 let mut count = 0i64;
                 let mut current = Some(*form);
                 while let Some(here) = current {

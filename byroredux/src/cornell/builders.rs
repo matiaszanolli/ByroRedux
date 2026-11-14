@@ -175,7 +175,7 @@ pub(super) fn wavy_normal_map_pixels(size: u32) -> Vec<u8> {
 /// the vertex normal, written as each corner's tangent with w = +1. Meant for
 /// meshes whose faces share no vertices (the box primitives).
 pub(super) fn set_uv_tangents(verts: &mut [byroredux_renderer::Vertex], idxs: &[u32]) {
-    for tri in idxs.chunks_exact(3) {
+    for tri in idxs.as_chunks::<3>().0 {
         let [a, b, c] = [tri[0] as usize, tri[1] as usize, tri[2] as usize];
         let p = |k: usize| Vec3::from_array(verts[k].position);
         let uv = |k: usize| verts[k].uv;

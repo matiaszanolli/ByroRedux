@@ -68,7 +68,7 @@ fn uv_extent(uvs: &[[f32; 2]]) -> f32 {
 
 fn surface_area(positions: &[[f32; 3]], indices: &[u32], scale: f32) -> f64 {
     let mut a = 0.0f64;
-    for t in indices.chunks_exact(3) {
+    for t in indices.as_chunks::<3>().0 {
         let (p0, p1, p2) = (
             positions.get(t[0] as usize),
             positions.get(t[1] as usize),

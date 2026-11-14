@@ -1620,7 +1620,7 @@ mod activate_choices {
         assert_eq!((summary.consumed_bodies, summary.skipped_undecoded), (1, 1), "{summary}");
         let (mut world, player, target) = activation_world(&idx);
         assert_eq!(labels(&compose_activate_choices(&world, player, target)), vec!["Deactivate"]);
-        world.insert(target, Dead::default());
+        world.insert(target, Dead);
         assert!(compose_activate_choices(&world, player, target).is_empty(), "the Target tab reads the target");
         // A perk the activator does not hold offers nothing.
         let stranger = world.spawn();

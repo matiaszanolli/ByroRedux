@@ -466,7 +466,7 @@ fn full_copy_region(extent: vk::Extent2D) -> vk::BufferImageCopy {
 /// dropped). Returns the number of non-finite channel samples, which add 0.
 fn accumulate_rgba16f(bytes: &[u8], sum: &mut [f64]) -> u64 {
     let mut nonfinite = 0u64;
-    for (texel, out) in bytes.chunks_exact(SCENE_TEXEL_BYTES).zip(sum.chunks_exact_mut(3)) {
+    for (texel, out) in bytes.as_chunks::<SCENE_TEXEL_BYTES>().0.iter().zip(sum.as_chunks_mut::<3>().0) {
         for (channel, slot) in out.iter_mut().enumerate() {
             let bits = u16::from_le_bytes([texel[channel * 2], texel[channel * 2 + 1]]);
             let value = half::f16::from_bits(bits).to_f32();

@@ -1412,8 +1412,7 @@ mod tests {
     /// The installed index, as `game`: ownership is alias-bound on Skyrim and
     /// later, every running quest's on FO3 / FNV ([`npc_topic_quests`]).
     fn as_game(world: &mut World, game: byroredux_plugin::esm::reader::GameKind) {
-        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
-        index.game = game;
+        let mut index = byroredux_plugin::esm::records::EsmIndex { game, ..Default::default() };
         index.dialogues.insert(TOPIC, fixture_topic());
         index.dialogues.insert(TOPIC_RUMORS, fixture_second_topic());
         world.insert_resource(crate::components::LoadedCellIndex(Arc::new(index)));

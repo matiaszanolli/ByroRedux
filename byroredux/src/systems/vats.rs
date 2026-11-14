@@ -1489,7 +1489,9 @@ mod scan_tests {
         assert!(world.resource::<VatsState>().sequence_targets.is_empty(), "the sequence is settled");
 
         world.resource_mut::<VatsState>().sequence_targets = vec![npc];
-        world.query_mut::<Dead>().map(|mut dead| dead.insert(npc, Dead));
+        if let Some(mut dead) = world.query_mut::<Dead>() {
+            dead.insert(npc, Dead);
+        }
         vats_sequence_end_system(&world, 0.0);
         assert_eq!(ap(&world), 35.0, "a kill restored 15 AP");
         vats_sequence_end_system(&world, 0.0);

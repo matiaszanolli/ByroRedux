@@ -142,7 +142,7 @@ fn main() {
                 }
             }
             if show_indices {
-                for (index, triangle) in mesh.indices.chunks_exact(3).enumerate() {
+                for (index, triangle) in mesh.indices.as_chunks::<3>().0.iter().enumerate() {
                     println!("  tri {index:>2}: {triangle:?}");
                 }
             }

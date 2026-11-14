@@ -40,7 +40,7 @@ fn srgb_to_linear(byte: u8) -> f32 {
 pub(crate) fn mean_leaf_colour(image: &Rgba8) -> Option<[f32; 3]> {
     let lut: [f32; 256] = std::array::from_fn(|i| srgb_to_linear(i as u8));
     let (mut sum, mut kept) = ([0.0f64; 3], 0u64);
-    for px in image.pixels.chunks_exact(4) {
+    for px in image.pixels.as_chunks::<4>().0 {
         if px[3] >= ALPHA_CUT {
             sum[0] += f64::from(lut[px[0] as usize]);
             sum[1] += f64::from(lut[px[1] as usize]);

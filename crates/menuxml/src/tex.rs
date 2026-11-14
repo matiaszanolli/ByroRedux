@@ -320,7 +320,7 @@ fn write_channel(out: &mut Rgba8, bx: u32, by: u32, c: usize, values: &[u8; 16])
 /// sample of a `BC4_UNORM` texture returns.
 fn decode_bc4(bytes: &[u8], width: u32, height: u32) -> Option<Rgba8> {
     let mut out = bc_output(bytes, width, height, 8)?;
-    for chunk in out.pixels.chunks_exact_mut(4) {
+    for chunk in out.pixels.as_chunks_mut::<4>().0 {
         chunk[3] = 255;
     }
     for (bx, by) in blocks(width, height) {
@@ -334,7 +334,7 @@ fn decode_bc4(bytes: &[u8], width: u32, height: u32) -> Option<Rgba8> {
 /// 4's tangent-space normal maps, whose `z` the consumer reconstructs.
 fn decode_bc5(bytes: &[u8], width: u32, height: u32) -> Option<Rgba8> {
     let mut out = bc_output(bytes, width, height, 16)?;
-    for chunk in out.pixels.chunks_exact_mut(4) {
+    for chunk in out.pixels.as_chunks_mut::<4>().0 {
         chunk[3] = 255;
     }
     for (bx, by) in blocks(width, height) {
@@ -371,7 +371,7 @@ fn decode_dx10(bytes: &[u8], width: u32, height: u32) -> Option<Rgba8> {
             .map(|mut img| {
                 // Decoded through the L8 path as (r, r, r); a GPU sample of
                 // R8 is (r, 0, 0).
-                for px in img.pixels.chunks_exact_mut(4) {
+                for px in img.pixels.as_chunks_mut::<4>().0 {
                     px[1] = 0;
                     px[2] = 0;
                 }
@@ -649,7 +649,7 @@ mod uncompressed_decode_tests {
         let mut dds = dxt_dds(4, 4, b"ATI1");
         dds.extend_from_slice(&block);
         let img = Rgba8::decode_dds(&dds).unwrap();
-        let reds: Vec<u8> = img.pixels.chunks_exact(4).take(8).map(|p| p[0]).collect();
+        let reds: Vec<u8> = img.pixels.as_chunks::<4>().0.iter().take(8).map(|p| p[0]).collect();
         assert_eq!(reds, [40, 200, 72, 104, 136, 168, 0, 255]);
     }
 
@@ -658,7 +658,7 @@ mod uncompressed_decode_tests {
         let mut bc4 = dxt_dds(4, 4, b"ATI1");
         bc4.extend_from_slice(&bc4_block_bytes());
         let img = Rgba8::decode_dds(&bc4).unwrap();
-        let reds: Vec<u8> = img.pixels.chunks_exact(4).take(4).map(|p| p[0]).collect();
+        let reds: Vec<u8> = img.pixels.as_chunks::<4>().0.iter().take(4).map(|p| p[0]).collect();
         assert_eq!(reds, [0, 255, 51, 255]);
         assert_eq!(&img.pixels[4..8], &[255, 0, 0, 255]);
 

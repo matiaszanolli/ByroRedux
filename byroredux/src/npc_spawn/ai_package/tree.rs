@@ -313,7 +313,7 @@ mod tests {
         PackProcedure {
             procedure_type: name.to_owned(),
             data_input_indexes: inputs.to_vec(),
-            conditions: conditions.into(),
+            conditions,
             ..Default::default()
         }
     }
@@ -495,7 +495,7 @@ mod tests {
             ..Default::default()
         };
         let (mut package, template) = tree(vec![leaf("ForceGreet", &[], vec![])], vec![]);
-        package.conditions = vec![uncatalogued].into();
+        package.conditions = vec![uncatalogued];
         assert!(decide(&package, &template, None, &world).is_err(), "a fail-open pass must not arm a takeover");
 
         let (package, template) = tree(vec![leaf("Sit", &[], vec![]), leaf("UseMagic", &[], vec![]), leaf("Wait", &[], vec![])], vec![]);

@@ -56,7 +56,7 @@ impl Gradients {
         let n = img.width * img.height;
         let mut p = Vec::with_capacity(n);
         let mut q_y_up = Vec::with_capacity(n);
-        for px in img.pixels.chunks_exact(4).take(n) {
+        for px in img.pixels.as_chunks::<4>().0.iter().take(n) {
             let x = px[0] as f32 / 127.5 - 1.0;
             let y = px[1] as f32 / 127.5 - 1.0;
             let z = (1.0 - x * x - y * y).max(0.0).sqrt().max(MIN_NORMAL_Z);

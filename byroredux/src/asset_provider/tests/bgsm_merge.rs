@@ -718,7 +718,7 @@ fn bgsm_and_bgem_blend_triples_survive_the_production_merge() {
         let mut pool = byroredux_core::string::StringPool::new();
         let mut provider = MaterialProvider::new();
         let mut bgsm = BgsmFile::default();
-        bgsm.base.alpha_blend_mode = blend.clone();
+        bgsm.base.alpha_blend_mode = blend;
         provider.insert_bgsm_for_test(
             "materials/tests/blend.bgsm",
             ResolvedMaterial {

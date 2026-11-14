@@ -1320,9 +1320,9 @@ fn one_hundred_uploads_queue_to_one_flush_batch() {
     );
     // Sibling: 100 fresh slots reserved, all with `texture: None`.
     assert_eq!(reg.textures.len(), 102, "fallback + seed + 100 queued");
-    for i in 2..102 {
-        assert!(reg.textures[i].texture.is_none());
-        assert_eq!(reg.textures[i].ref_count, 1);
+    for entry in &reg.textures[2..102] {
+        assert!(entry.texture.is_none());
+        assert_eq!(entry.ref_count, 1);
     }
 }
 

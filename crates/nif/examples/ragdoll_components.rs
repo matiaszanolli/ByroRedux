@@ -63,9 +63,9 @@ fn main() {
             }
         }
         let mut groups: std::collections::BTreeMap<usize, Vec<&str>> = Default::default();
-        for i in 0..n {
+        for (i, body) in rag.bodies.iter().enumerate() {
             let r = find(&mut parent, i);
-            groups.entry(r).or_default().push(&rag.bodies[i].bone_name);
+            groups.entry(r).or_default().push(&body.bone_name);
         }
         println!(
             "{name}: {authored} authored -> {} surfaced, {} component(s), {n} bodies",

@@ -110,7 +110,7 @@ pub(crate) fn uv_extent(uvs: &[[f32; 2]]) -> f32 {
 /// triangles, `scale` applied. `None` when the UV area is degenerate.
 pub(crate) fn units_per_uv(mesh: &ImportedMesh) -> Option<f32> {
     let (mut world, mut uv_area) = (0.0f64, 0.0f64);
-    for tri in mesh.indices.chunks_exact(3) {
+    for tri in mesh.indices.as_chunks::<3>().0 {
         let (Some(p), Some(t)) = (
             tri.iter()
                 .map(|&i| mesh.positions.get(i as usize).copied())

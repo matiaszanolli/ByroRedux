@@ -1129,7 +1129,7 @@ mod tests {
         };
         let hop = |target| Relocation { actor: SUNNY, placement: landing.clone(), onward: Some((target, 100.0)) };
         assert!(!continue_hop(&world, &hop(MARKER), &[]), "the marker's space: arrived");
-        assert!(!continue_hop(&world, &hop(STORE_MARKER), &[landing.cell.clone()]), "a loaded cell: spawn and route on");
+        assert!(!continue_hop(&world, &hop(STORE_MARKER), std::slice::from_ref(&landing.cell)), "a loaded cell: spawn and route on");
         assert!(continue_hop(&world, &hop(STORE_MARKER), &[]), "unwatched, short of the store: on the road");
         let journey = world.resource::<ActorRelocations>().journey(SUNNY).cloned().unwrap();
         assert_eq!(journey.origin, landing);

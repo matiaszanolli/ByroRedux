@@ -1557,7 +1557,6 @@ mod tests {
             environment: 208,
             environment_mask: 209,
             greyscale_lut: 210,
-            ..Default::default()
         };
         let expected: [(usize, u32); 16] = [
             (slot::TINT, 101),

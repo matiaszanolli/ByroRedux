@@ -60,10 +60,10 @@ fail() {
     exit 1
 }
 
-# Binary-crate toolchain (#4466): the bin crate needs rustc >= 1.96 and the
-# distro cargo (1.93.1) cannot resolve cranelift's MSRV — use the installed
-# 1.96.0 toolchain's cargo directly, same invocation as CLAUDE.md.
-TC="$(rustup which --toolchain 1.96.0 cargo)"
+# Binary-crate toolchain (#4466): the bin crate needs rustc >= 1.96 and a
+# distro cargo (1.93.1) cannot resolve cranelift's MSRV — use the pinned
+# 1.100.0 toolchain's cargo directly, same invocation as CLAUDE.md.
+TC="$(rustup which --toolchain 1.100.0 cargo)"
 PATH="$(dirname "$TC"):$PATH" "$TC" build --release --offline --quiet -p byroredux -p byro-dbg
 
 debug_command() {

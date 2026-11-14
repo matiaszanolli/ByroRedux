@@ -82,7 +82,7 @@ Skill-reading tests: rerun any whose matched text was touched.
 To re-derive the list: `git grep -n '\.claude/commands' -- '*.rs'`, keeping the non-comment hits. The `skin_offsets_hasher_tests.rs` guards pin `_audit-common.md`'s hot-path rule in code but never read the file.
 
 The bin crate needs rustc ≥ 1.96 (wasmtime 49's MSRV since 15a6b1d2d; #4466 set the earlier 1.94 floor):
-`TC=$(rustup which --toolchain 1.96.0 cargo); PATH="$(dirname "$TC"):$PATH" "$TC" test -p byroredux --bin byroredux -- <filter>`.
+`TC=$(rustup which --toolchain 1.100.0 cargo); PATH="$(dirname "$TC"):$PATH" "$TC" test -p byroredux --bin byroredux -- <filter>`.
 
 ## Phase 5: Close
 

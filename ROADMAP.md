@@ -23,7 +23,7 @@ commit. Live state only: when something closes, it becomes a one-liner under
 **Last session close:** Session 112, 2026-11-14. Workspace numbers (tests, LOC,
 files, issue dirs) live in [Project Stats](#project-stats) only.
 
-**Gates.** `rust-toolchain.toml` pins rustc 1.96.0 (#5308), the bin crate's MSRV since wasmtime 49. CI on
+**Gates.** `rust-toolchain.toml` pins rustc 1.100.0 (#5308; raised from 1.96.0 on 2026-11-14), above the bin crate's 1.96 MSRV (wasmtime 49). CI on
 `main` was red from Session 110 to just after the Session 112 close (last green `305af7beb`); both reds are fixed:
 `cargo clippy -D warnings` (twelve errors, seven hidden behind the plugin's) and the smoke-gate contract loop (a
 stale `BYROREDUX_SKYRIM_DATA` spelling, then ten unregistered gates and two that passed with no data). The bench-of-record below (`d9a201c71`, 2026-10-22) shows HEAD 1–9% slower than the
@@ -711,7 +711,7 @@ Ground-truth as of 2026-11-14, HEAD `18d7dd331`: all figures re-counted at the S
 | Rust total lines (all `.rs`, excl. `target/`) | 1 000 218                |
 | Source files (`.rs`, excl. `target/`)   | 1804 total · 1695 outside `tests/` dirs (+10 / +10 since the Session 111 close) |
 | Workspace members                       | 38 (count the `[workspace] members` block only; 33 crates — `video`, `bink2`, `binkaudio` joined in Session 111 — + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
-| Tests                                   | **12 408 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-11-14; 432 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
+| Tests                                   | **12 417 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.100.0, 2026-11-14; 433 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
 | Open issue directories                  | 6743 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **562 069** across eight games (Skyrim SE re-measured 2026-09-29 at 33 468 over 8 archives, #3712 added Animations; FO76's tail closed by #3461 and the 2026-10-03 re-measure (#4628) swept 102 980 over 5 of its 20 mesh-bearing archives; Skyrim LE 22 466 gated since fb8173fe0; earlier widenings #3369/#3466, Oblivion DLC #3925, Starfield #4440). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 468 · Skyrim LE 22 466 · FO4 235 082 · FO76 102 980 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on all eight titles (Starfield re-measured 2026-09-24 #4440; FO76's `GeneratedMeshes` truncation tail closed by #3461 and re-measured 2026-10-03, #4628). |
