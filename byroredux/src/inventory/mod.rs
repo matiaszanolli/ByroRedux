@@ -54,7 +54,8 @@ const PLAYER_NPC_FORM_ID: u32 = 0x0000_0007;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EquipTarget {
     /// Authored biped-slot bits (FO3/FNV `BMDT`, Skyrim+ `BOD2`/`BODT`).
-    BipedSlots(u32),
+    /// The armor's biped mask, 64-bit for Starfield's `BO64` (#6778).
+    BipedSlots(u64),
     /// The wielded-weapon slot, outside the biped occupancy array.
     Weapon,
 }

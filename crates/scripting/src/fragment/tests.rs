@@ -4003,7 +4003,7 @@ fn dispatch_tethers_cart_and_equips_carried_armor() {
     const CART_ALIAS: i16 = 41;
     const HORSE_ALIAS: i16 = 42;
     const GAG: u32 = 0x0004_6B44;
-    const GAG_SLOT: u32 = 1 << 12;
+    const GAG_SLOT: u64 = 1 << 12;
 
     let mut world = fixture();
     world.register::<Transform>();

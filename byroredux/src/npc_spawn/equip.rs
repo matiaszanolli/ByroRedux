@@ -30,8 +30,9 @@ pub(super) struct ResolvedArmor<'a> {
     /// `EquipmentSlots::equip`. **Zero is meaningful**: such a record
     /// claims no biped region at all, so it never enters `occupants` and
     /// the #2094 occupancy filter has no opinion about it — see the
-    /// retain at the end of [`build_npc_equip_state`] and #3408.
-    pub(super) authored_biped_mask: u32,
+    /// retain at the end of [`build_npc_equip_state`] and #3408. 64-bit for
+    /// Starfield's `BO64` (#6778).
+    pub(super) authored_biped_mask: u64,
 }
 
 /// Spawn-derived ownership of an armor NIF root. Multiple ARMA meshes may
@@ -161,12 +162,12 @@ pub(super) struct NpcEquipState<'a> {
 }
 
 impl NpcEquipState<'_> {
-    pub(super) fn covers_biped_mask(&self, mask: u32) -> bool {
+    pub(super) fn covers_biped_mask(&self, mask: u64) -> bool {
         self.equipment_slots
             .occupants
             .iter()
             .enumerate()
-            .any(|(bit, occupant)| mask & (1u32 << bit) != 0 && occupant.is_some())
+            .any(|(bit, occupant)| mask & (1u64 << bit) != 0 && occupant.is_some())
     }
 
     /// Whether the winning equipment layer occupies this game's canonical
@@ -174,8 +175,7 @@ impl NpcEquipState<'_> {
     /// naked upper-body mesh; prebaked-FaceGen games get the equivalent result
     /// by displacing the lower-priority `RACE.WNAM` skin armor.
     pub(super) fn main_body_covered(&self, game: GameKind) -> bool {
-        byroredux_plugin::equip::main_body_bit(game)
-            .is_some_and(|bit| self.covers_biped_mask(1u32 << bit))
+        byroredux_plugin::equip::main_body_mask(game).is_some_and(|mask| self.covers_biped_mask(mask))
     }
 }
 
@@ -215,7 +215,7 @@ pub(super) fn build_npc_equip_state<'a>(
     let mut equipment_slots = EquipmentSlots::new();
     let mut equipped_weapon: Option<EquippedWeapon> = None;
     let mut armor_to_spawn: Vec<ResolvedArmor<'a>> = Vec::new();
-    let mut race_skin_mask: Option<u32> = None;
+    let mut race_skin_mask: Option<u64> = None;
     // #2955 — same PC-level-multiplier gate as `stamp_character_components`
     // (both go through `effective_actor_level`; this site then backfills a
     // level-0 LVLN pick via `resolved.level()`, #4232, which the stats side
@@ -417,14 +417,17 @@ pub(super) fn build_npc_equip_state<'a>(
     // dismember partitions to suppress. Bits outside the skin ARMO's authored
     // mask are irrelevant even if some other item occupies them.
     if let Some(skin_biped_flags) = race_skin_mask {
+        // The partition format covers biped bits 0-31 (dismember body parts 30-61); Starfield's
+        // spacesuit layer above them has no skin partitions (#6778).
         let displaced_mask =
             equipment_slots
                 .occupants
                 .iter()
+                .take(32)
                 .enumerate()
                 .fold(0u32, |mask, (bit, occupant)| {
                     let bit_mask = 1u32 << bit;
-                    if skin_biped_flags & bit_mask != 0 && occupant.is_some() {
+                    if skin_biped_flags & u64::from(bit_mask) != 0 && occupant.is_some() {
                         mask | bit_mask
                     } else {
                         mask
@@ -476,7 +479,7 @@ pub(super) fn build_npc_equip_state<'a>(
         armor.authored_biped_mask == 0
             || match armor.inv_idx {
                 Some(idx) => equipment_slots.occupants.contains(&Some(idx)),
-                None => armor.authored_biped_mask & !armor.hidden_biped_mask != 0,
+                None => armor.authored_biped_mask & !u64::from(armor.hidden_biped_mask) != 0,
             }
     });
 
@@ -515,6 +518,7 @@ pub(super) fn build_npc_equip_state<'a>(
         equipment_slots
             .occupants
             .iter()
+            .take(32)
             .enumerate()
             .fold(0u32, |mask, (bit, occupant)| match occupant {
                 Some(_) => mask | (1u32 << bit),

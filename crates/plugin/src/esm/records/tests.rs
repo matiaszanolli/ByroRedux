@@ -220,7 +220,7 @@ fn skyrim_bodt_body_templates_decode_their_biped_masks() {
     // census table in #5358: the six creature skins claim Body (0x04),
     // the two Draugr hairs claim Hair (0x02), the two beards claim
     // 0x10.
-    let expected: &[(&str, u32)] = &[
+    let expected: &[(&str, u64)] = &[
         ("SkinDraugr", 0x04),
         ("SkinSkeever", 0x04),
         ("SkinSabrecat", 0x04),

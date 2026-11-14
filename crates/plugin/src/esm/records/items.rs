@@ -169,8 +169,10 @@ pub enum ItemKind {
         /// Body parts covered (bitfield). Source varies by game: Oblivion
         /// uses the BMDT u16 Biped Flags (its General Flags byte is not part
         /// of the mask, #5696); FO3/FNV use BMDT low-u32 as biped slots;
-        /// Skyrim uses BOD2 u32 biped slots directly.
-        biped_flags: u32,
+        /// Skyrim uses BOD2 u32 biped slots directly; Starfield's `BO64` is
+        /// 64 bits, its clothing layer in bits 0-31 and its spacesuit layer in
+        /// bits 32-63 (#6778).
+        biped_flags: u64,
         /// Damage Threshold (FO3/FNV) — flat damage absorbed. 0 on Skyrim
         /// and later (game uses `armor_rating` instead).
         dt: f32,
@@ -673,7 +675,7 @@ pub fn parse_armo(
     remap: &Option<FormIdRemap>,
 ) -> ItemRecord {
     let mut common = CommonItemFields::from_subs_with_remap(subs, remap);
-    let mut biped_flags = 0u32;
+    let mut biped_flags = 0u64;
     let mut dt = 0.0f32;
     let mut dr = 0u32;
     let mut health = 0u32;
@@ -703,18 +705,18 @@ pub fn parse_armo(
             // 00` decoded to 0x0080_0003). The slots are the low u16 only.
             b"BMDT" => {
                 let mut r = SubReader::new(&sub.data);
-                biped_flags = if game == GameKind::Oblivion {
+                biped_flags = u64::from(if game == GameKind::Oblivion {
                     u32::from(r.u16_or_default())
                 } else {
                     r.u32_or_default()
-                };
+                });
                 slot_mask = (biped_flags & 0xFFFF) as u16;
             }
             // BOD2 (Skyrim+): biped_slots (u32) + armor_type (u32).
             // armor_type: 0=light, 1=clothing, 2=heavy, 3=none, 4=gauntlets.
             b"BOD2" => {
                 let mut r = SubReader::new(&sub.data);
-                biped_flags = r.u32_or_default();
+                biped_flags = u64::from(r.u32_or_default());
                 slot_mask = (biped_flags & 0xFFFF) as u16;
                 if let Ok(t) = r.u32() {
                     armor_type = Some(t);
@@ -729,7 +731,7 @@ pub fn parse_armo(
             // decoding read as `biped_flags == 0` — "claims no region".
             b"BODT" if is_skyrim_or_later && sub.data.len() >= 8 => {
                 let mut r = SubReader::new(&sub.data);
-                biped_flags = r.u32_or_default();
+                biped_flags = u64::from(r.u32_or_default());
                 slot_mask = (biped_flags & 0xFFFF) as u16;
                 if sub.data.len() >= 12 {
                     r.skip_or_eof(4); // general_flags u8 + 3 pad
@@ -737,6 +739,13 @@ pub fn parse_armo(
                         armor_type = Some(t);
                     }
                 }
+            }
+            // BO64 (Starfield, xEdit `wbBO64`, `wbDefinitionsSF1.pas:2543`): one u64 "First Person
+            // Flags" over `wbBipedObjectFlags` (`:2474`) — Starfield has no BOD2 on ARMO. #6778:
+            // `Spacesuit_Constellation_01` carries bit 35 "SS BODY".
+            b"BO64" if game == GameKind::Starfield && sub.data.len() >= 8 => {
+                biped_flags = SubReader::new(&sub.data).u64_or_default();
+                slot_mask = (biped_flags & 0xFFFF) as u16;
             }
             b"DATA" => {
                 let mut r = SubReader::new(&sub.data);
@@ -1039,7 +1048,7 @@ pub fn parse_clot(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
         form_id,
         common,
         kind: ItemKind::Armor {
-            biped_flags: u32::from(slots),
+            biped_flags: u64::from(slots),
             slot_mask: slots,
             female_model_path,
             dt: 0.0,
@@ -2705,6 +2714,21 @@ mod tests {
             }
             _ => panic!("expected Armor kind"),
         }
+    }
+
+    #[test]
+    fn starfield_armo_reads_its_64_bit_bo64_mask() {
+        // #6778 — `Spacesuit_Constellation_01` (Starfield.esm 001E2B18): BO64 = 08 00 00 00 at the high
+        // dword, bit 35 "SS BODY" (wbDefinitionsSF1.pas:2510). Starfield authors no BOD2.
+        let subs = vec![sub(b"BO64", (1u64 << 35).to_le_bytes())];
+        let item = parse_armo(0x001E_2B18, &subs, GameKind::Starfield, &None);
+        match item.kind {
+            ItemKind::Armor { biped_flags, .. } => assert_eq!(biped_flags, 1 << 35),
+            _ => panic!("expected Armor kind"),
+        }
+        // Another game's ARMO ignores a BO64 it does not author.
+        let item = parse_armo(0x1, &subs, GameKind::Fallout4, &None);
+        assert!(matches!(item.kind, ItemKind::Armor { biped_flags: 0, .. }));
     }
 
     #[test]

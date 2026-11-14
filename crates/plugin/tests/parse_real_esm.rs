@@ -1600,6 +1600,44 @@ fn fo76_stored_avif_outputs_resolve_on_shipped_master() {
     assert_eq!(index.actor_value_form_id("ActionPoints"), Some(0x0000_02D5));
 }
 
+/// #6778 — Starfield's ARMO / ARMA carry the 64-bit `BO64` (xEdit `wbDefinitionsSF1.pas:2474-2543`): the
+/// Constellation spacesuit's body, helmet and backpack claim the spacesuit layer's bits 35 / 36 / 37.
+#[test]
+#[ignore = "needs Starfield game data on disk"]
+fn starfield_armor_reads_its_64_bit_bo64_masks() {
+    use byroredux_plugin::esm::records::ItemKind;
+    let Some(data) = data_dir(test_paths::STARFIELD_ENV, test_paths::STARFIELD_DEFAULT) else {
+        eprintln!("[Starfield BO64] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Starfield.esm")).expect("read Starfield.esm");
+    let index = parse_esm(&bytes).expect("parse Starfield.esm");
+    let mask = |editor_id: &str| {
+        let item = index.items.values().find(|item| item.common.editor_id == editor_id).unwrap_or_else(|| panic!("{editor_id} is in Starfield.esm"));
+        match item.kind {
+            ItemKind::Armor { biped_flags, .. } => biped_flags,
+            _ => panic!("{editor_id} must be an ARMO"),
+        }
+    };
+    assert_eq!(mask("Spacesuit_Constellation_01"), 1 << 35, "SS BODY");
+    assert_eq!(mask("Spacesuit_Constellation_Helmet_01"), 1 << 36, "SS Helmet");
+    assert_eq!(mask("Spacesuit_Constellation_Backpack_01"), 1 << 37, "SS Backpack");
+    let armors: Vec<u64> = index
+        .items
+        .values()
+        .filter_map(|item| match item.kind {
+            ItemKind::Armor { biped_flags, .. } => Some(biped_flags),
+            _ => None,
+        })
+        .collect();
+    let authored = armors.iter().filter(|m| **m != 0).count();
+    let spacesuit = armors.iter().filter(|m| **m >> 32 != 0).count();
+    let armas_high = index.armor_addons.values().filter(|a| a.biped_flags >> 32 != 0).count();
+    eprintln!("[Starfield BO64] ARMO {} ({authored} with a mask, {spacesuit} on the spacesuit layer); ARMA with a spacesuit bit: {armas_high}", armors.len());
+    assert!(authored * 2 > armors.len(), "most Starfield armors author a BO64 mask");
+    assert!(armas_high > 0, "Starfield ARMAs carry the spacesuit layer too");
+}
+
 #[test]
 #[ignore = "needs Starfield game data on disk"]
 fn starfield_stored_avif_outputs_resolve_on_shipped_master() {

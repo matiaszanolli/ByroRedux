@@ -21,51 +21,34 @@
 //! ## Bit layouts (low bits only — high bits skipped where unused
 //! by the helpers below)
 //!
-//! | bit | Oblivion (BMDT u16) | FO3 / FNV (BMDT low u16) | Skyrim+ (BOD2 u32) | FO4 (BOD2 u32) | FO76 (BOD2 u32) | Starfield (BOD2 u32) |
+//! | bit | Oblivion (BMDT u16) | FO3 / FNV (BMDT low u16) | Skyrim+ (BOD2 u32) | FO4 (BOD2 u32) | FO76 (BOD2 u32) | Starfield (BO64 u64) |
 //! |-----|---------------------|--------------------------|--------------------|----------------|-----------------|----------------------|
-//! | 0   | Head                | Head                     | 30 - Head          | 30 - Hair Top  | *unsourced*     | *unsourced*          |
-//! | 1   | Hair                | Hair                     | 31 - Hair          | 31 - Hair Long | *unsourced*     | *unsourced*          |
-//! | 2   | **Upper Body**      | **Upper Body**           | **32 - Body**      | 32 - FaceGen Head | *unsourced*  | *unsourced*          |
-//! | 3   | Lower Body          | Left Hand                | 33 - Hands         | **33 - BODY**  | *assumed BODY*  | *assumed BODY*       |
-//! | 4   | Hand                | Right Hand               | 34 - Forearms      | 34 - L Hand    | *unsourced*     | *unsourced*          |
+//! | 0   | Head                | Head                     | 30 - Head          | 30 - Hair Top  | 30 - Hair Top   | Hide Hair            |
+//! | 1   | Hair                | Hair                     | 31 - Hair          | 31 - Hair Long | 31 - Hair Long  | Morph Hair           |
+//! | 2   | **Upper Body**      | **Upper Body**           | **32 - Body**      | 32 - FaceGen Head | 32 - FaceGen Head | Hide Head        |
+//! | 3   | Lower Body          | Left Hand                | 33 - Hands         | **33 - BODY**  | **33 - BODY**   | **BODY**             |
+//! | 4   | Hand                | Right Hand               | 34 - Forearms      | 34 - L Hand    | 34 - L Hand     | Hat                  |
+//! | 35  | —                   | —                        | —                  | —              | —               | **SS BODY**          |
 //!
 //! "Main body" — the bit that, when occupied, means the equipped
 //! armor's mesh covers the actor's torso/legs/arms enough to make the
 //! base body NIF (`upperbody.nif` on FO3/FNV) redundant — is **bit 2**
-//! on Oblivion / FO3 / FNV / Skyrim+ but **bit 3** on FO4. The helper
-//! below routes per game so callers don't need to know.
+//! on Oblivion / FO3 / FNV / Skyrim+, **bit 3** on FO4 and FO76, and
+//! **bit 3 or bit 35** on Starfield. The helper below routes per game so
+//! callers don't need to know.
 //!
-//! ## The FO76 and Starfield columns are provisional (#4074)
+//! ## FO76 and Starfield (#4074, #6778)
 //!
-//! Every other column above is cited to a specific xEdit `.pas` line and
-//! pinned by a test that repeats the citation. The last two are not: they
-//! carry FO4's answer forward on an inheritance assumption, which is the
-//! one inference in a file the project otherwise holds up as its
-//! citation-discipline example.
-//!
-//! Searched and not found, so the next reader does not repeat it:
-//! no xEdit checkout is available in this tree (`dev-4.1.6` is cited from
-//! a prior session's read, and `wbDefinitionsFO76.pas` /
-//! `wbDefinitionsSF1.pas` are not on disk); OpenMW's ESM4 reader
-//! (`components/esm4/loadarmo.cpp`) stores BOD2 as an opaque
-//! `mArmorFlags` and labels the sub-record "FO4, TES5" only, so it names
-//! no bits for either game; `nifxml`'s `BSDismemberBodyPartType` is the
-//! NIF dismemberment enum, a different namespace from the ESM biped
-//! bitfield (the `32 -` prefixes above are that enum's *values*, not bit
-//! positions); and `Gibbed.Starfield` covers FormTypes and condition
-//! functions, not ARMO body templates. No FO76 or Starfield master is
-//! mounted to census against either.
-//!
-//! `docs/engine/starfield-esm-roadmap.md` hedges the same way — "ARMA
-//! biped definitions *likely* FO4-baseline" — which is corroboration that
-//! this was never sourced, not a second source.
-//!
-//! **Both arms are therefore marked provisional rather than asserted.**
-//! They are also currently unreachable in practice: the sole caller is
-//! `npc_spawn/equip.rs`, and no FO76 or Starfield NPC spawn path exercises it
-//! yet. Unblocking is cheap when either game's masters are mounted —
-//! census `ARMO` BOD2 values against the armours whose meshes visibly
-//! replace the torso, exactly as the FO4 column was settled.
+//! FO76 keeps FO4's table: `wbDefinitionsFO76.pas:4211-4215`
+//! (`wbBipedObjectFlags`, bit 3 = "33 - BODY") and `:4248` (`BOD2` is one
+//! u32). Starfield replaced `BOD2` with `BO64`, one u64 over its own table
+//! (`wbDefinitionsSF1.pas:2474-2539`, `wbBO64` at `:2543`, on ARMA `:9631`
+//! and ARMO `:9724`): bits 0-31 are the clothing layer (3 = "BODY", 4 =
+//! "Hat", 5 = "Backpack") and bits 32-63 the spacesuit layer the same
+//! slots shifted by 32 (35 = "SS BODY", 36 = "SS Helmet", 37 = "SS
+//! Backpack"). Both layers are worn at once, so the masks are 64-bit end
+//! to end. `Starfield.esm` agrees: `Spacesuit_Constellation_01` carries
+//! bit 35, its helmet bit 36 and its backpack bit 37 (#6778's audit).
 
 use crate::esm::reader::GameKind;
 use crate::esm::records::{EsmIndex, ItemKind, ItemRecord};
@@ -94,30 +77,24 @@ impl Gender {
     }
 }
 
-/// Returns the bit position (`0..32`) within an ARMO biped-flags
-/// bitmask whose set state means "this armor covers the actor's main
-/// body / torso." `None` for games that don't expose ARMO records
-/// through this codepath (TES3 — separate format).
-pub const fn main_body_bit(game: GameKind) -> Option<u8> {
+/// The ARMO biped-mask bits whose occupation means "this armor covers the
+/// actor's main body / torso" (any one of them). `None` for games that don't
+/// expose ARMO records through this codepath (TES3 — separate format).
+pub const fn main_body_mask(game: GameKind) -> Option<u64> {
     match game {
         // BMDT u16 (Oblivion 4-byte total) and BMDT u32 low half
         // (FO3/FNV 8-byte total). Both put Upper Body at bit 2.
         // Skyrim+ BOD2 u32 also lands "32 - Body" at bit 2 (the
         // "32" in the xEdit label is the BSDismemberBodyPartType
         // enum value, NOT the bit position).
-        GameKind::Oblivion | GameKind::Fallout3NV | GameKind::Skyrim => Some(2),
+        GameKind::Oblivion | GameKind::Fallout3NV | GameKind::Skyrim => Some(1 << 2),
         // FO4 reorganised the layout — bit 2 became "FaceGen Head"
-        // and bit 3 became BODY. Cited: wbDefinitionsFO4.pas.
-        GameKind::Fallout4 => Some(3),
-        // PROVISIONAL (#4074) — FO4's answer carried forward on an
-        // inheritance assumption, NOT a citation. See the module docs for
-        // what was searched and why nothing could be cited. Kept at 3
-        // rather than `None` because `None` means "this game has no ARMO
-        // through this codepath" (TES3), which would be a different and
-        // equally unsourced claim; 3 is the likelier of two guesses and is
-        // marked as a guess. Pinned by `fo76_and_starfield_arms_are_marked
-        // _provisional` so it cannot quietly become an asserted fact.
-        GameKind::Fallout76 | GameKind::Starfield => Some(3),
+        // and bit 3 became BODY. Cited: wbDefinitionsFO4.pas; FO76 keeps it
+        // (wbDefinitionsFO76.pas:4214).
+        GameKind::Fallout4 | GameKind::Fallout76 => Some(1 << 3),
+        // Starfield's BO64: "3 - BODY" for clothing, "35 - SS BODY" for a
+        // spacesuit (wbDefinitionsSF1.pas:2478, :2510), #6778.
+        GameKind::Starfield => Some((1 << 3) | (1 << 35)),
     }
 }
 
@@ -293,7 +270,7 @@ pub fn resolve_armor_meshes<'a>(
     // An ARMA declaring `0` carries no region claim at all, so there is
     // nothing to reason about: it is always accepted, as before.
     let mut out: Vec<&'a str> = Vec::new();
-    let mut covered: u32 = 0;
+    let mut covered: u64 = 0;
     for &arma_fid in armatures {
         let Some(arma) = index.armor_addons.get(&arma_fid) else {
             continue;
@@ -1234,102 +1211,48 @@ mod template_tests;
 mod tests {
     use super::*;
 
-    // #4714 — these four pins used to assert through
-    // `armor_covers_main_body`, a wrapper nothing in production called
-    // (the spawn pipeline's `NpcEquipState::main_body_covered` reads
-    // `main_body_bit` directly). The wrapper is gone; the pins are about
-    // the per-game bit table, so they now call it directly.
+    // #4714 — these pins used to assert through `armor_covers_main_body`, a
+    // wrapper nothing in production called. They pin the per-game table
+    // through `main_body_mask`, which the spawn pipeline's
+    // `NpcEquipState::main_body_covered` reads.
 
     #[test]
     fn fnv_upper_body_bit_is_2() {
         // 0x0004 = bit 2 = "Upper Body" per xEdit wbDefinitionsFNV.pas:4031
-        assert_eq!(main_body_bit(GameKind::Fallout3NV), Some(2));
+        assert_eq!(main_body_mask(GameKind::Fallout3NV), Some(1 << 2));
     }
 
     #[test]
     fn oblivion_upper_body_bit_is_2() {
         // wbDefinitionsTES4.pas:1332 — bit 2 = "Upper Body".
-        assert_eq!(main_body_bit(GameKind::Oblivion), Some(2));
+        assert_eq!(main_body_mask(GameKind::Oblivion), Some(1 << 2));
     }
 
     #[test]
     fn skyrim_body_bit_is_2() {
         // wbDefinitionsTES5.pas:2593 — bit 2 = "32 - Body".
-        assert_eq!(main_body_bit(GameKind::Skyrim), Some(2));
+        assert_eq!(main_body_mask(GameKind::Skyrim), Some(1 << 2));
     }
 
     #[test]
-    fn fo4_body_bit_is_3() {
+    fn fo4_and_fo76_body_bit_is_3() {
         // wbDefinitionsFO4.pas — bit 3 = "33 - BODY". Bit 2 is
         // "32 - FaceGen Head", which does NOT cover the actor's
         // torso even though the SBP enum value is the same as
-        // Skyrim's body slot.
-        assert_eq!(main_body_bit(GameKind::Fallout4), Some(3));
+        // Skyrim's body slot. FO76: wbDefinitionsFO76.pas:4214, the same.
+        assert_eq!(main_body_mask(GameKind::Fallout4), Some(1 << 3));
+        assert_eq!(main_body_mask(GameKind::Fallout76), Some(1 << 3));
     }
 
-    /// #4074 — the FO76/Starfield arms are an inference, and the danger is
-    /// that they stop looking like one. Every sibling arm is cited to an
-    /// xEdit `.pas` line and its test repeats the citation; these two have
-    /// nothing to cite, so what is pinned instead is the *marking*.
-    ///
-    /// A future contributor who sources the real tables should delete this
-    /// test along with the PROVISIONAL comment. One who merely assumes the
-    /// value is right will find the test in their way, which is the point.
+    /// #6778 — Starfield's BO64: "3 - BODY" for clothing and "35 - SS BODY"
+    /// for a spacesuit (wbDefinitionsSF1.pas:2478, :2510); bit 2 ("Hide
+    /// Head") and bit 36 ("SS Helmet") cover neither.
     #[test]
-    fn fo76_and_starfield_arms_are_marked_provisional() {
-        // Needle assembled at run time so this test's own text is not what
-        // the scan matches on.
-        const EQUIP_RS: &str = include_str!("equip.rs");
-        let marker = format!("{}{}", "PROVISIONAL", " (#4074)");
-        assert!(
-            EQUIP_RS.contains(marker.as_str()),
-            "the FO76/Starfield `main_body_bit` arms must stay marked as an \
-             unsourced inference until someone cites wbDefinitionsFO76.pas / \
-             wbDefinitionsSF1.pas (or censuses real masters). Every other arm \
-             in this file carries a line citation; these two carry a guess, \
-             and an unmarked guess in a file the project cites as its \
-             citation-discipline example is worse than the guess.",
-        );
-    }
-
-    /// Pins today's behaviour for the two provisional arms so a change is
-    /// deliberate. Deliberately NOT phrased as "bit 3 is correct for FO76" —
-    /// that is exactly the claim there is no source for. It says: this is
-    /// what the code does, and it matches FO4, which is the assumption.
-    #[test]
-    fn fo76_and_starfield_currently_follow_fo4() {
-        for game in [GameKind::Fallout76, GameKind::Starfield] {
-            assert_eq!(
-                main_body_bit(game),
-                main_body_bit(GameKind::Fallout4),
-                "the provisional arms track FO4 by assumption (#4074); if this \
-                 diverges, the divergence needs its own citation",
-            );
-            // The bit-position equivalents of the removed
-            // `armor_covers_main_body` assertions: bit 3 covers, bit 2
-            // (FaceGen Head) does not.
-            assert_eq!(main_body_bit(game), Some(3));
-        }
-        assert!(main_body_bit(GameKind::Fallout4).is_some());
-    }
-
-    /// No game has a `None` bit here except TES3-era titles the equip path
-    /// never sees, so every supported arm returns a bit position — `None` is
-    /// the "this game has no ARMO through this codepath" answer, kept
-    /// distinct from "the bitmask is empty". The positions themselves are the
-    /// "Upper Body" / "BODY" bits cited on `main_body_bit`.
-    #[test]
-    fn every_supported_game_has_its_documented_main_body_bit() {
-        for (game, bit) in [
-            (GameKind::Oblivion, 2),
-            (GameKind::Fallout3NV, 2),
-            (GameKind::Skyrim, 2),
-            (GameKind::Fallout4, 3),
-            (GameKind::Fallout76, 3),
-            (GameKind::Starfield, 3),
-        ] {
-            assert_eq!(main_body_bit(game), Some(bit), "{game:?}");
-        }
+    fn starfield_body_is_bit_3_or_the_spacesuits_bit_35() {
+        let mask = main_body_mask(GameKind::Starfield).unwrap();
+        assert_eq!(mask, (1 << 3) | (1 << 35));
+        assert!(mask & (1 << 35) != 0, "Spacesuit_Constellation_01 covers the body");
+        assert!(mask & ((1 << 2) | (1 << 36)) == 0);
     }
 
     // ── resolve_armor_mesh ────────────────────────────────────────────
@@ -2641,7 +2564,7 @@ mod arma_alternative_gate_tests {
     use super::*;
     use crate::esm::records::{ArmaRecord, ItemRecord};
 
-    fn arma(form_id: u32, race: u32, bits: u32, mesh: &str) -> ArmaRecord {
+    fn arma(form_id: u32, race: u32, bits: u64, mesh: &str) -> ArmaRecord {
         ArmaRecord {
             form_id,
             editor_id: String::new(),
@@ -2656,7 +2579,7 @@ mod arma_alternative_gate_tests {
         }
     }
 
-    fn armor(form_id: u32, bits: u32, armatures: Vec<u32>) -> ItemRecord {
+    fn armor(form_id: u32, bits: u64, armatures: Vec<u32>) -> ItemRecord {
         ItemRecord {
             form_id,
             common: crate::esm::records::common::CommonItemFields::default(),

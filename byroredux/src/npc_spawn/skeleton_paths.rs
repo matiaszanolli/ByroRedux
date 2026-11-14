@@ -264,7 +264,7 @@ pub fn humanoid_body_paths(
 /// shared Hand bit for its single `hand.nif`, plus Lower Body (`0x08`)
 /// and Foot (`0x20`) bits for the meshes its archive actually ships
 /// (#5487 — pre-fix there was no arm that could request them).
-pub(super) fn humanoid_body_path_biped_mask(game: GameKind, path: &str) -> u32 {
+pub(super) fn humanoid_body_path_biped_mask(game: GameKind, path: &str) -> u64 {
     if path.ends_with("upperbody.nif") {
         return 1 << 2;
     }

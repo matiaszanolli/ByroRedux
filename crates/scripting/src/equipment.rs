@@ -14,11 +14,12 @@ use crate::events::{EquipmentChange, EquipmentEventBatch, ItemEventBatch, ItemTr
 
 #[derive(Debug, Clone, Default)]
 pub struct EquipItemCatalog {
-    biped_slot_masks: HashMap<u32, u32>,
+    /// Item FormID → biped mask, 64-bit for Starfield's `BO64` (#6778).
+    biped_slot_masks: HashMap<u32, u64>,
 }
 
 impl EquipItemCatalog {
-    pub fn slot_mask(&self, form_id: u32) -> Option<u32> {
+    pub fn slot_mask(&self, form_id: u32) -> Option<u64> {
         self.biped_slot_masks.get(&form_id).copied()
     }
 
@@ -37,7 +38,7 @@ impl Resource for EquipItemCatalog {}
 /// plugin load order. Callers filter the full item index to armor records.
 pub fn install_equip_item_catalog(
     world: &mut World,
-    items: impl IntoIterator<Item = (u32, u32)>,
+    items: impl IntoIterator<Item = (u32, u64)>,
 ) -> usize {
     let catalog = EquipItemCatalog {
         biped_slot_masks: items.into_iter().filter(|(_, mask)| *mask != 0).collect(),

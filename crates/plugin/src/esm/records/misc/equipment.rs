@@ -41,7 +41,8 @@ pub struct ArmaRecord {
     pub editor_id: String,
     /// `BMDT` (FNV/FO3) or `BOD2` (Skyrim+) offset 0..4 — biped slot
     /// bitfield. Drives the ARMO → ARMA biped-slot routing.
-    pub biped_flags: u32,
+    /// The biped mask: `BMDT` / `BOD2` / `BODT` u32, or Starfield's 64-bit `BO64` (#6778).
+    pub biped_flags: u64,
     /// `BMDT` offset 4..8 — general flags (Heavy / Medium / Light,
     /// power armor, etc.). Decoded lazily per-game. 0 on Skyrim+
     /// (BOD2 carries `armor_type` instead, captured below).
@@ -99,11 +100,16 @@ pub fn parse_arma(
         match &sub.sub_type {
             b"BMDT" if sub.data.len() >= 8 => {
                 let mut r = SubReader::new(&sub.data);
-                out.biped_flags = r.u32_or_default();
+                out.biped_flags = u64::from(r.u32_or_default());
                 out.general_flags = r.u32_or_default();
             }
             b"BOD2" if is_skyrim_or_later && sub.data.len() >= 4 => {
-                out.biped_flags = SubReader::new(&sub.data).u32_or_default();
+                out.biped_flags = u64::from(SubReader::new(&sub.data).u32_or_default());
+            }
+            // BO64 — Starfield's ARMA carries the 64-bit mask instead of BOD2 (xEdit `wbBO64`,
+            // `wbDefinitionsSF1.pas:9631`), #6778.
+            b"BO64" if game == GameKind::Starfield && sub.data.len() >= 8 => {
+                out.biped_flags = SubReader::new(&sub.data).u64_or_default();
             }
             // BODT — Skyrim's pre-BOD2 body template (xEdit `wbBODTBOD2`):
             // the first u32 is the same biped mask BOD2 carries; then
@@ -112,7 +118,7 @@ pub fn parse_arma(
             // 766 Skyrim.esm ARMAs author BODT, not BOD2, so BOD2-only
             // decoding left every Skyrim addon claiming no region.
             b"BODT" if is_skyrim_or_later && sub.data.len() >= 8 => {
-                out.biped_flags = SubReader::new(&sub.data).u32_or_default();
+                out.biped_flags = u64::from(SubReader::new(&sub.data).u32_or_default());
             }
             b"DNAM" if !is_skyrim_or_later && sub.data.len() >= 4 => {
                 let mut r = SubReader::new(&sub.data);
@@ -574,6 +580,17 @@ mod tests {
     /// Skyrim.esm ARMAs author BODT. Both widths decode the same leading
     /// u32; the 12-byte form's tail (general flags u8 + 3 pad + armor
     /// type u32) is nothing an ARMA consumer reads.
+    #[test]
+    fn parse_arma_reads_starfields_bo64_mask() {
+        // #6778 — Starfield's ARMA carries `wbBO64` (wbDefinitionsSF1.pas:9631), not BOD2: a spacesuit
+        // helmet's bit 36 "SS Helmet" lands above the 32-bit range.
+        let subs = vec![sub(b"EDID", b"AA_Spacesuit_Helmet\0"), sub(b"BO64", (1u64 << 36).to_le_bytes())];
+        let a = parse_arma(0x1, &subs, GameKind::Starfield, &None);
+        assert_eq!(a.biped_flags, 1 << 36);
+        let truncated = parse_arma(0x1, &[sub(b"BO64", [0u8; 4])], GameKind::Starfield, &None);
+        assert_eq!(truncated.biped_flags, 0, "a truncated BO64 is ignored");
+    }
+
     #[test]
     fn parse_arma_reads_bodt_biped_flags() {
         // 12-byte form: mask (Hair 0x02), general flags + pad, armor type.

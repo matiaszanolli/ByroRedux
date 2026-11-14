@@ -630,7 +630,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v127 -> v128 (BIK-REQ-002 / BIK-PRES-006, #6858): the saved `Effect` enum gained `PlayBink` (Papyrus
 /// `Game.PlayBink`) and a queued fragment continuation's resume condition gained `MovieEnded` (a script
 /// frozen until its movie ends), so a v127 continuation queue no longer has the column's shape.
-pub const FORMAT_MAJOR: u16 = 128;
+///
+/// v128 -> v129 (#6778): `EquipmentSlots::occupants` grew from 32 to 64 biped slots for Starfield's
+/// 64-bit `BO64` mask (a spacesuit layer in bits 32-63, worn together with the clothing layer), so a
+/// v128 save's 32-entry array no longer has the column's shape.
+pub const FORMAT_MAJOR: u16 = 129;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

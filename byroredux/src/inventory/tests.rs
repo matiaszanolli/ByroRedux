@@ -1633,7 +1633,7 @@ fn equipping_a_weapon_does_not_displace_a_bit31_armor() {
 /// its authored mask — can ever yield `EquipTarget::Weapon`.
 #[test]
 fn no_armor_describe_kind_output_can_target_the_weapon_slot() {
-    for biped_flags in [1u32 << 31, u32::MAX, 0x8000_1000, 1, 0] {
+    for biped_flags in [1u64 << 63, 1u64 << 31, u64::MAX, 0x8000_1000, 1, 0] {
         let (_, _, target) = describe_kind(&ItemKind::Armor {
             female_model_path: String::new(),
             biped_flags,

@@ -144,7 +144,7 @@ Populates cells with NPCs. SF inhabitants are humanoid (FO4 ARMA-style biped); t
 
 - New NPC subrecords (probably; SF added perks / traits / backgrounds)
 - Outfit (OTFT) records — same as Skyrim+
-- ARMA (armor addon) — biped definitions likely FO4-baseline
+- ARMA (armor addon) — biped masks are **not** FO4-baseline: Starfield's ARMO/ARMA carry the 64-bit `BO64` (a clothing layer in bits 0-31 and a spacesuit layer in bits 32-63, worn together), decoded since #6778; `EquipmentSlots` holds 64 slots
 - Face genetics — SF uses a different head-mesh system (probably distinct from FO4 FaceGen; needs research)
 
 Defer face genetics to a follow-up; render NPCs with neutral default heads for Phase 6.

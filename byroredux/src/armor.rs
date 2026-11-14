@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// The `BOD2` biped bit of the body (cuirass) slot — the "chest armor" column of the quality table.
-const BODY_SLOT_BIT: u32 = 0x4;
+const BODY_SLOT_BIT: u64 = 0x4;
 
 /// Which skill governs a piece (`BOD2` armor type, xEdit `wbArmorTypeEnum`: 0 light, 1 heavy, 2 clothing).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

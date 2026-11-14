@@ -209,11 +209,12 @@ impl Component for EquippedWeapon {
 /// The number of biped-slot bits an actor's equipment can occupy.
 ///
 /// FO3 / FNV `BMDT.biped_flags` is the low 16 bits; Skyrim+ `BOD2`/`BODT`
-/// the full 32. Either fits in this array. The slot's *meaning* (head
+/// the full 32; Starfield's `BO64` all 64 — its clothing layer in bits 0-31
+/// and its spacesuit layer in bits 32-63, worn together (#6778). The slot's *meaning* (head
 /// vs torso vs eyes etc.) is game-specific and lives near the parser
 /// (`crates/plugin/src/esm/records/items.rs`), not here — this layer
 /// just tracks "which inventory entry occupies bit N."
-pub const MAX_BIPED_SLOTS: usize = 32;
+pub const MAX_BIPED_SLOTS: usize = 64;
 
 /// Per-actor map: biped-slot bit → which `Inventory` entry currently
 /// fills it.
@@ -229,6 +230,9 @@ pub const MAX_BIPED_SLOTS: usize = 32;
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct EquipmentSlots {
+    /// serde derives arrays only up to 32 elements, so the 64 slots go through
+    /// [`occupants_serde`] as a sequence of exactly [`MAX_BIPED_SLOTS`].
+    #[cfg_attr(feature = "inspect", serde(with = "occupants_serde"))]
     pub occupants: [Option<InventoryIndex>; MAX_BIPED_SLOTS],
     /// The currently wielded weapon's `Inventory` entry.
     ///
@@ -247,6 +251,25 @@ pub struct EquipmentSlots {
     /// compatibility default would mask this intra-type change, so
     /// `byroredux_save::FORMAT_MAJOR` is bumped instead.
     pub weapon: Option<InventoryIndex>,
+}
+
+/// [`EquipmentSlots::occupants`] as a sequence of exactly [`MAX_BIPED_SLOTS`] entries.
+#[cfg(feature = "inspect")]
+mod occupants_serde {
+    use super::{InventoryIndex, MAX_BIPED_SLOTS};
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(occupants: &[Option<InventoryIndex>; MAX_BIPED_SLOTS], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(occupants.iter())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[Option<InventoryIndex>; MAX_BIPED_SLOTS], D::Error> {
+        let slots = Vec::<Option<InventoryIndex>>::deserialize(deserializer)?;
+        let len = slots.len();
+        slots
+            .try_into()
+            .map_err(|_| serde::de::Error::invalid_length(len, &"exactly MAX_BIPED_SLOTS (64) biped slots"))
+    }
 }
 
 impl Default for EquipmentSlots {
@@ -268,10 +291,10 @@ impl EquipmentSlots {
     /// `Vec` if the slots were free). Callers can use the return
     /// value to drive "remove the displaced item from the visible
     /// mesh set" follow-up logic in spawn paths.
-    pub fn equip(&mut self, slot_mask: u32, idx: InventoryIndex) -> Vec<InventoryIndex> {
+    pub fn equip(&mut self, slot_mask: u64, idx: InventoryIndex) -> Vec<InventoryIndex> {
         let mut displaced = Vec::new();
         for bit in 0..MAX_BIPED_SLOTS {
-            if slot_mask & (1u32 << bit) == 0 {
+            if slot_mask & (1u64 << bit) == 0 {
                 continue;
             }
             if let Some(prev) = self.occupants[bit].replace(idx) {
@@ -285,10 +308,10 @@ impl EquipmentSlots {
 
     /// Clear every set bit in `slot_mask`. Returns the (deduplicated)
     /// set of inventory indices that were occupying those bits.
-    pub fn unequip(&mut self, slot_mask: u32) -> Vec<InventoryIndex> {
+    pub fn unequip(&mut self, slot_mask: u64) -> Vec<InventoryIndex> {
         let mut released = Vec::new();
         for bit in 0..MAX_BIPED_SLOTS {
-            if slot_mask & (1u32 << bit) == 0 {
+            if slot_mask & (1u64 << bit) == 0 {
                 continue;
             }
             if let Some(prev) = self.occupants[bit].take() {
@@ -405,7 +428,7 @@ mod tests {
     fn equip_marks_every_set_bit_in_mask() {
         let mut slots = EquipmentSlots::new();
         // Bits 2 + 3 + 5 set.
-        let mask = 0b00101100u32;
+        let mask = 0b00101100u64;
         let displaced = slots.equip(mask, InventoryIndex(7));
         assert!(displaced.is_empty());
         assert_eq!(slots.occupants[2], Some(InventoryIndex(7)));
@@ -453,7 +476,7 @@ mod tests {
         let mut slots = EquipmentSlots::new();
         slots.equip_weapon(InventoryIndex(9));
 
-        let displaced = slots.equip(u32::MAX, InventoryIndex(4));
+        let displaced = slots.equip(u64::MAX, InventoryIndex(4));
         assert!(
             !displaced.contains(&InventoryIndex(9)),
             "an armor mask must never displace the weapon"
@@ -471,11 +494,39 @@ mod tests {
         }
     }
 
+    /// #6778 — Starfield's spacesuit layer (bits 32-63 of `BO64`) is worn together with its clothing
+    /// layer (bits 0-31): SS BODY (bit 35) and BODY (bit 3) are different slots.
+    #[test]
+    fn a_spacesuit_bit_and_a_clothing_bit_are_different_slots() {
+        let mut slots = EquipmentSlots::new();
+        assert!(slots.equip(1 << 3, InventoryIndex(1)).is_empty(), "the outfit takes BODY");
+        assert!(slots.equip(1 << 35, InventoryIndex(2)).is_empty(), "the spacesuit takes SS BODY, displacing nothing");
+        assert_eq!((slots.at(3), slots.at(35)), (Some(InventoryIndex(1)), Some(InventoryIndex(2))));
+        assert_eq!(slots.at(63), None);
+        assert_eq!(slots.at(64), None, "past the last slot");
+        assert_eq!(slots.unequip(1 << 35), vec![InventoryIndex(2)]);
+        assert_eq!(slots.at(3), Some(InventoryIndex(1)));
+    }
+
+    /// #6778 — the 64 slots round-trip as a sequence of exactly 64; a pre-v129 32-slot array is refused.
+    #[cfg(feature = "inspect")]
+    #[test]
+    fn the_64_slots_round_trip_and_a_32_slot_array_is_refused() {
+        let mut slots = EquipmentSlots::new();
+        slots.equip((1 << 35) | (1 << 2), InventoryIndex(7));
+        let json = serde_json::to_value(&slots).unwrap();
+        assert_eq!(json["occupants"].as_array().map(Vec::len), Some(MAX_BIPED_SLOTS));
+        let back: EquipmentSlots = serde_json::from_value(json).unwrap();
+        assert_eq!((back.at(2), back.at(35)), (Some(InventoryIndex(7)), Some(InventoryIndex(7))));
+        let old = serde_json::json!({ "occupants": vec![serde_json::Value::Null; 32], "weapon": null });
+        assert!(serde_json::from_value::<EquipmentSlots>(old).is_err());
+    }
+
     #[test]
     fn unequip_mask_cannot_clear_the_weapon_slot() {
         let mut slots = EquipmentSlots::new();
         slots.equip_weapon(InventoryIndex(9));
-        let released = slots.unequip(u32::MAX);
+        let released = slots.unequip(u64::MAX);
         assert!(released.is_empty());
         assert_eq!(slots.weapon, Some(InventoryIndex(9)));
     }

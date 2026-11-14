@@ -221,6 +221,12 @@ impl<'a> SubReader<'a> {
         Ok(u32::from_le_bytes(bytes))
     }
 
+    /// Read one little-endian `u64`. Errors on truncation.
+    pub fn u64(&mut self) -> Result<u64> {
+        let bytes = self.fixed::<8>()?;
+        Ok(u64::from_le_bytes(bytes))
+    }
+
     /// Read one little-endian `i16`. Errors on truncation.
     pub fn i16(&mut self) -> Result<i16> {
         let bytes = self.fixed::<2>()?;
@@ -326,6 +332,11 @@ impl<'a> SubReader<'a> {
     /// Lenient `u32` — returns 0 on truncation.
     pub fn u32_or_default(&mut self) -> u32 {
         self.u32().unwrap_or(0)
+    }
+
+    /// Lenient `u64` — returns 0 on truncation (Starfield's `BO64` biped mask, #6778).
+    pub fn u64_or_default(&mut self) -> u64 {
+        self.u64().unwrap_or(0)
     }
 
     /// Lenient `i16` — returns 0 on truncation.

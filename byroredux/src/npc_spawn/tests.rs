@@ -1532,7 +1532,7 @@ fn stamp_character_components_uses_own_values_without_template_flags() {
 
 fn skyrim_armor_item(
     form_id: u32,
-    biped_flags: u32,
+    biped_flags: u64,
     armatures: Vec<u32>,
 ) -> byroredux_plugin::esm::records::ItemRecord {
     byroredux_plugin::esm::records::ItemRecord {
@@ -1569,7 +1569,7 @@ fn arma(form_id: u32, mesh_path: &str) -> byroredux_plugin::esm::records::ArmaRe
 
 fn legacy_armor_item(
     form_id: u32,
-    biped_flags: u32,
+    biped_flags: u64,
     mesh_path: &str,
 ) -> byroredux_plugin::esm::records::ItemRecord {
     byroredux_plugin::esm::records::ItemRecord {
@@ -1602,7 +1602,7 @@ fn unified_equip_state_covers_fallout_runtime_body_and_preserves_count() {
     use byroredux_plugin::esm::records::NpcInventoryEntry;
 
     const ARMOR: u32 = 0x000A_AAAA;
-    const UPPER_BODY: u32 = 1 << 2;
+    const UPPER_BODY: u64 = 1 << 2;
     let mut npc = test_npc(0x000B_BBBB, "RuntimeSkinFixture");
     npc.inventory.push(NpcInventoryEntry {
         item_form_id: ARMOR,
@@ -1646,8 +1646,8 @@ fn prebaked_race_skin_remains_intrinsic_through_equip_and_corpse_loot() {
     const SKIN_ARMA: u32 = 0x0100_0022;
     const FEET: u32 = 0x0100_0023;
     const FEET_ARMA: u32 = 0x0100_0024;
-    const TORSO_HANDS: u32 = 0x0004 | 0x0010;
-    const FEET_BIT: u32 = 0x0080;
+    const TORSO_HANDS: u64 = 0x0004 | 0x0010;
+    const FEET_BIT: u64 = 0x0080;
 
     let mut race = byroredux_plugin::esm::records::RaceRecord {
         form_id: RACE,
@@ -1840,7 +1840,7 @@ fn prebaked_equip_state_uses_the_passed_race_form_id_not_the_shells_own() {
     const RESOLVED_RACE: u32 = 0x0100_0031;
     const SKIN: u32 = 0x0100_0032;
     const SKIN_ARMA: u32 = 0x0100_0033;
-    const TORSO_HANDS: u32 = 0x0004 | 0x0010;
+    const TORSO_HANDS: u64 = 0x0004 | 0x0010;
 
     let shell_race = byroredux_plugin::esm::records::RaceRecord {
         form_id: SHELL_RACE,
@@ -1914,7 +1914,7 @@ fn prebaked_npc_wnam_skin_overrides_the_race_default_and_follows_the_traits_term
     const RACE_SKIN_ARMA: u32 = 0x0100_0052;
     const WORN: u32 = 0x0100_0053;
     const WORN_ARMA: u32 = 0x0100_0054;
-    const TORSO_HANDS: u32 = 0x0004 | 0x0010;
+    const TORSO_HANDS: u64 = 0x0004 | 0x0010;
 
     let race = byroredux_plugin::esm::records::RaceRecord {
         form_id: RACE,
@@ -1994,8 +1994,8 @@ fn prebaked_equip_state_marks_only_partially_displaced_skin_slots() {
     const SKIN_ARMA: u32 = 0x0100_0042;
     const TORSO: u32 = 0x0100_0043;
     const TORSO_ARMA: u32 = 0x0100_0044;
-    const TORSO_BIT: u32 = 0x0004;
-    const HANDS_BIT: u32 = 0x0010;
+    const TORSO_BIT: u64 = 0x0004;
+    const HANDS_BIT: u64 = 0x0010;
 
     let race = byroredux_plugin::esm::records::RaceRecord {
         form_id: RACE,
@@ -2064,8 +2064,8 @@ fn prebaked_equip_state_marks_only_partially_displaced_skin_slots() {
         .iter()
         .find(|armor| armor.form_id == SKIN)
         .unwrap();
-    assert_eq!(skin.hidden_biped_mask, TORSO_BIT);
-    assert_eq!(skin.hidden_biped_mask & HANDS_BIT, 0);
+    assert_eq!(u64::from(skin.hidden_biped_mask), TORSO_BIT);
+    assert_eq!(u64::from(skin.hidden_biped_mask) & HANDS_BIT, 0);
     assert_eq!(state.restore_skin_paths, vec![r"actors\character\skin.nif"]);
 }
 
@@ -2165,7 +2165,7 @@ fn zero_mask_exemption_does_not_disable_the_occupancy_filter() {
     const SKIN_ARMA: u32 = 0x0100_0072;
     const TORSO: u32 = 0x0100_0073;
     const TORSO_ARMA: u32 = 0x0100_0074;
-    const TORSO_BIT: u32 = 0x0004;
+    const TORSO_BIT: u64 = 0x0004;
 
     let mut race = byroredux_plugin::esm::records::RaceRecord {
         form_id: RACE,
@@ -2248,7 +2248,7 @@ fn zero_mask_exemption_does_not_disable_the_occupancy_filter() {
 ///   closed helm (Dwarven / Daedric / Nord Plate / Guard FullReach) = bits
 ///   0,1,12,13; open helm (Iron / Hide / Studded / Steel light) = bits 1,12;
 ///   circlet = bit 12; `SkinNaked` = bits 0,2,3,7.
-fn facegen_mask_fixture(helmet_bits: u32, skin_bits: u32) -> u32 {
+fn facegen_mask_fixture(helmet_bits: u64, skin_bits: u64) -> u32 {
     const RACE: u32 = 0x0100_0080;
     const SKIN: u32 = 0x0100_0081;
     const SKIN_ARMA: u32 = 0x0100_0082;
@@ -2328,7 +2328,7 @@ fn facegen_mask_fixture(helmet_bits: u32, skin_bits: u32) -> u32 {
 /// of most humanoid NPCs.
 #[test]
 fn facegen_mask_excludes_the_race_skin_own_bits() {
-    const SKIN_NAKED: u32 = 0b1000_1101; // bits 0, 2, 3, 7
+    const SKIN_NAKED: u64 = 0b1000_1101; // bits 0, 2, 3, 7
     assert_eq!(
         facegen_mask_fixture(0, SKIN_NAKED),
         0,
@@ -2340,8 +2340,8 @@ fn facegen_mask_excludes_the_race_skin_own_bits() {
 /// bit 0 stays with the skin because the helmet never claimed it.
 #[test]
 fn facegen_mask_open_helm_hides_hair_but_not_the_face() {
-    const OPEN_HELM: u32 = 0b0001_0000_0000_0010; // bits 1, 12
-    const SKIN_NAKED: u32 = 0b1000_1101;
+    const OPEN_HELM: u64 = 0b0001_0000_0000_0010; // bits 1, 12
+    const SKIN_NAKED: u64 = 0b1000_1101;
     let mask = facegen_mask_fixture(OPEN_HELM, SKIN_NAKED);
     assert_eq!(
         mask & (1 << 1),
@@ -2361,8 +2361,8 @@ fn facegen_mask_open_helm_hides_hair_but_not_the_face() {
 /// partition-30 geometry (Dwarven: 1514 triangles) to replace them.
 #[test]
 fn facegen_mask_closed_helm_displaces_the_head_bit() {
-    const CLOSED_HELM: u32 = 0b0011_0000_0000_0011; // bits 0, 1, 12, 13
-    const SKIN_NAKED: u32 = 0b1000_1101;
+    const CLOSED_HELM: u64 = 0b0011_0000_0000_0011; // bits 0, 1, 12, 13
+    const SKIN_NAKED: u64 = 0b1000_1101;
     let mask = facegen_mask_fixture(CLOSED_HELM, SKIN_NAKED);
     assert_eq!(
         mask & 1,
@@ -2383,7 +2383,7 @@ fn prebaked_equip_state_drops_skin_mesh_fully_displaced_by_gear() {
     const SKIN_ARMA: u32 = 0x0100_0032;
     const TORSO: u32 = 0x0100_0033;
     const TORSO_ARMA: u32 = 0x0100_0034;
-    const TORSO_BIT: u32 = 0x0004;
+    const TORSO_BIT: u64 = 0x0004;
 
     let mut race = byroredux_plugin::esm::records::RaceRecord {
         form_id: RACE,

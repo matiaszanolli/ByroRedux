@@ -801,7 +801,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 128;
+    const BASELINE_MAJOR: u16 = 129;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1215,7 +1215,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // BIK-REQ-002 / BIK-PRES-006 (#6858) — v128 is a genuine bump: the saved `Effect` enum gained
     // `PlayBink` and `FragmentResumeCondition` gained `MovieEnded`, so a v127 continuation queue cannot
     // hold a script frozen behind its movie.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xb842_9bb2_d296_d3f3;
+    // #6778 — v129 is a genuine bump: `EquipmentSlots::occupants` grew from 32 to 64 biped slots for
+    // Starfield's 64-bit `BO64` mask, so a v128 document's 32-entry array is refused, not padded.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x9f1f_00da_2f6e_7e77;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.
