@@ -1049,6 +1049,16 @@ impl App {
                 Ok(handle) => Some(handle),
                 Err(error) => {
                     log::error!("Debug server failed to bind 127.0.0.1:{debug_port}: {error}");
+                    // `--bench-hold` exists to be attached to: held open with no debug server, the
+                    // engine waits for a client that can never connect, and a smoke gate that
+                    // times out leaves it running on the next gate's port. Exit instead.
+                    if args.iter().any(|arg| arg == "--bench-hold") {
+                        eprintln!(
+                            "bench-hold-unavailable: the debug server could not bind 127.0.0.1:{debug_port} \
+                             ({error}); is another engine still running? Exiting instead of holding open."
+                        );
+                        std::process::exit(2);
+                    }
                     None
                 }
             }

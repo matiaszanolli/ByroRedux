@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A pending command: the request and a channel to send the response back.
 pub(crate) struct PendingCommand {
@@ -163,14 +163,42 @@ impl Drop for DebugServerHandle {
     }
 }
 
+/// How long a busy port is retried before the bind fails: an engine that was just told to exit
+/// (the previous run of a back-to-back smoke batch) can hold the port for a few seconds while it
+/// tears down Vulkan and its threads.
+pub const BIND_RETRY_WINDOW: Duration = Duration::from_secs(5);
+
 /// Spawn the TCP listener thread and return the drain system + the
 /// shutdown-aware handle. Holding the handle keeps the listener thread
 /// alive; dropping it signals shutdown and joins cleanly.
 pub fn spawn(port: u16) -> std::io::Result<(DebugDrainSystem, DebugServerHandle)> {
+    spawn_with_bind_retry(port, BIND_RETRY_WINDOW)
+}
+
+/// Bind `127.0.0.1:port`, retrying an occupied port every 100 ms for up to `window`.
+fn bind_with_retry(port: u16, window: Duration) -> std::io::Result<TcpListener> {
+    let deadline = Instant::now() + window;
+    let mut logged = false;
+    loop {
+        match TcpListener::bind(("127.0.0.1", port)) {
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse && Instant::now() < deadline => {
+                if !logged {
+                    log::warn!("debug server: 127.0.0.1:{port} is in use; retrying for up to {window:?}");
+                    logged = true;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            result => return result,
+        }
+    }
+}
+
+/// [`spawn`] with an explicit retry window for an occupied port.
+fn spawn_with_bind_retry(port: u16, window: Duration) -> std::io::Result<(DebugDrainSystem, DebugServerHandle)> {
     // Bind synchronously so callers cannot announce readiness while the
     // background thread is still racing (or has already failed) to claim the
     // port. Port 0 remains useful for collision-free tests.
-    let listener = TcpListener::bind(("127.0.0.1", port))?;
+    let listener = bind_with_retry(port, window)?;
     listener.set_nonblocking(true)?;
     let local_addr = listener.local_addr()?;
 
@@ -455,11 +483,26 @@ mod tests {
         let occupied = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = occupied.local_addr().unwrap().port();
 
-        let error = match spawn(port) {
+        let error = match spawn_with_bind_retry(port, Duration::ZERO) {
             Ok(_) => panic!("debug listener unexpectedly bound occupied port {port}"),
             Err(error) => error,
         };
         assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+    }
+
+    /// A port freed within the retry window is bound: the previous engine of a back-to-back run
+    /// releasing it while this one starts.
+    #[test]
+    fn a_port_freed_within_the_retry_window_is_bound() {
+        let occupied = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = occupied.local_addr().unwrap().port();
+        let releaser = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            drop(occupied);
+        });
+        let (_drain, handle) = spawn_with_bind_retry(port, Duration::from_secs(5)).expect("bound once the port was freed");
+        assert_eq!(handle.local_addr().port(), port);
+        releaser.join().unwrap();
     }
 
     fn empty_queue() -> CommandQueue {

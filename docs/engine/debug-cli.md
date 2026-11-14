@@ -1326,7 +1326,10 @@ The `--bench-hold` flag is the companion: a `--bench-frames N --bench-hold` run
 executes the bench, prints the summary, and then **keeps the engine open** so
 `byro-dbg` can attach (port 9876) and drive console commands against the loaded
 scene. Without `--bench-hold` the bench exits immediately and the debug server
-isn't reachable.
+isn't reachable. A busy port is retried for up to 5 s (an engine that was just
+told to exit can hold it while it tears down); if the debug server was asked for
+and still cannot bind, a `--bench-hold` run prints `bench-hold-unavailable: …`
+and exits with status 2 rather than holding open with nothing to attach to.
 
 ### Example session
 

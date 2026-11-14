@@ -330,7 +330,11 @@ All smoke tests follow the same workflow:
    sets it on the launch, a rule pinned statically by
    [`scripts/check-byro-dbg-harness-contracts.sh`](../../scripts/check-byro-dbg-harness-contracts.sh).
 2. Wait for the `bench-hold:` notice in the engine's stderr (signals
-   the engine is held open, attach window).
+   the engine is held open, attach window). An engine whose debug server
+   cannot bind its port (after retrying a busy one for 5 s — the previous
+   gate's engine still shutting down) exits with status 2 and a
+   `bench-hold-unavailable:` line, so the gate's "engine exited" check fails
+   it at once and no engine is left holding the port for the next gate.
 3. Pipe a command sequence into `byro-dbg` (it reads stdin
    line-by-line and exits on EOF):
    ```
