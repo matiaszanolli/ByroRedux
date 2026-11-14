@@ -63,12 +63,14 @@ impl TextureRegistry {
             if let Some(fallback) = self.textures[fallback_idx].texture.as_ref() {
                 let image_view = fallback.image_view;
                 let sampler = fallback.sampler;
+                let first_level = fallback.first_level();
                 self.apply_descriptor_write(
                     device,
                     handle,
                     old_view_kind.descriptor_binding(),
                     image_view,
                     sampler,
+                    first_level,
                 );
             }
         }

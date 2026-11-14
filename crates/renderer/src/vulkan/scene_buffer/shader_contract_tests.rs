@@ -8142,3 +8142,81 @@ fn reservoir_glsl_is_scalars_at_the_host_stride() {
         "the GLSL `struct Reservoir` must be exactly RESERVOIR_STRIDE bytes"
     );
 }
+
+/// M39 (A11) — a partly resident streamed texture's view starts at chain level
+/// `first_resident`, so an absolute LOD counted from the full chain (the
+/// roughness·8 reflection blur, the refraction mip floor, the glass blurs)
+/// reads that many levels too coarse unless it goes through `residentLod`.
+/// Every `textureLod` on the 2D bindless array in the secondary-ray helpers
+/// and the raster shader samples either LOD 0 (the finest resident level is
+/// the intended one) or a LOD made view-relative by `residentLod`.
+#[test]
+fn explicit_bindless_lods_are_view_relative_under_streaming() {
+    let bindings = crate::source_scan::strip_glsl_comments(include_str!(
+        "../../../shaders/include/bindings.glsl"
+    ));
+    assert!(
+        bindings
+            .contains("layout(std430, set = 0, binding = 2) readonly buffer TextureFirstLevels")
+            && bindings.contains("float residentLod(uint handle, float chainLod)"),
+        "bindings.glsl must declare the first-level table and `residentLod`"
+    );
+    let sources = [
+        (
+            "include/ray_hit.glsl",
+            include_str!("../../../shaders/include/ray_hit.glsl"),
+        ),
+        (
+            "triangle.frag",
+            include_str!("../../../shaders/triangle.frag"),
+        ),
+    ];
+    let mut corrected = 0;
+    for (name, src) in sources {
+        let src = crate::source_scan::strip_glsl_comments(src);
+        let mut rest = src.as_str();
+        while let Some(start) = rest.find("textureLod(") {
+            let call = &rest[start + "textureLod(".len()..];
+            // The argument list up to the matching close paren, and the last
+            // top-level argument in it (the LOD).
+            let (mut depth, mut end, mut last_arg) = (1usize, 0usize, 0usize);
+            for (i, c) in call.char_indices() {
+                match c {
+                    '(' | '[' => depth += 1,
+                    ')' | ']' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = i;
+                            break;
+                        }
+                    }
+                    ',' if depth == 1 => last_arg = i + 1,
+                    _ => {}
+                }
+            }
+            assert!(end > 0, "{name}: unbalanced textureLod call");
+            let args = &call[..end];
+            rest = &call[end..];
+            if !args.trim_start().starts_with("textures[") {
+                continue;
+            }
+            let lod = args[last_arg..].trim();
+            if lod == "0.0" {
+                continue;
+            }
+            assert!(
+                lod.starts_with("residentLod("),
+                "{name}: `textureLod({})` samples the streamed 2D array at an explicit LOD \
+                 counted from the full chain; wrap it in `residentLod(handle, lod)` (M39 A11)",
+                args.split_whitespace().collect::<Vec<_>>().join(" ")
+            );
+            corrected += 1;
+        }
+    }
+    // sampleRayHitBase + six rayHitAlbedo/rayHitEmission roles + three glass
+    // blurs: a scan that finds fewer has stopped reading the code.
+    assert!(
+        corrected >= 10,
+        "found only {corrected} corrected explicit-LOD samples"
+    );
+}

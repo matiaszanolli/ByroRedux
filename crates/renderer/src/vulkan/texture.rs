@@ -62,6 +62,12 @@ pub struct Texture {
     creation_extent: vk::Extent3D,
     /// Mip levels the image was created with (M39 telemetry classes).
     level_count: u32,
+    /// M39 — the chain level the image's level 0 holds: `first_resident` for
+    /// a streamed texture's floor or promotion image, 0 for every other one.
+    /// An explicit LOD counted from the full chain must subtract it to land
+    /// on the same level through this image's view (`residentLod` in
+    /// `bindings.glsl`, which reads it per bindless slot).
+    first_level: u32,
     /// Only single-mip, single-layer sRGB RGBA images accept raw replacements.
     rgba_updateable: bool,
 }
@@ -541,6 +547,7 @@ impl Texture {
                 allocator: Some(allocator.clone()),
                 creation_extent: image_extent,
                 level_count,
+                first_level: change.new_first,
                 rgba_updateable: false,
             },
             staging,
@@ -709,6 +716,7 @@ impl Texture {
                 allocator: Some(allocator.clone()),
                 creation_extent: image_extent,
                 level_count,
+                first_level: first_mip,
                 rgba_updateable: meta.format == vk::Format::R8G8B8A8_SRGB
                     && meta.mip_count == 1 && meta.array_layers == 1 && !meta.is_cubemap,
             },
@@ -719,6 +727,11 @@ impl Texture {
     /// Mip levels of the image.
     pub(crate) fn level_count(&self) -> u32 {
         self.level_count
+    }
+
+    /// The chain level of the image's level 0 (see the field).
+    pub(crate) fn first_level(&self) -> u32 {
+        self.first_level
     }
 
     /// Bytes of the image's memory allocation (0 once destroyed).

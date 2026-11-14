@@ -15,7 +15,7 @@
 //! VUID-vkUpdateDescriptorSets-None-03047. See #92.
 
 use crate::vulkan::allocator::SharedAllocator;
-use crate::vulkan::buffer::StagingPool;
+use crate::vulkan::buffer::{GpuBuffer, StagingPool};
 use crate::vulkan::descriptors::{sampled_image_info, write_combined_image_sampler_at};
 use crate::vulkan::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::vulkan::texture::{Texture, TextureViewKind};
@@ -73,6 +73,9 @@ struct PendingSetWrite {
     binding: u32,
     image_view: vk::ImageView,
     sampler: vk::Sampler,
+    /// [`Texture::first_level`] of the image behind `image_view`, written
+    /// into the slot's first-level table with the descriptor (binding 2).
+    first_level: u32,
 }
 
 /// Upper bound on the DDS bytes one `flush_pending_uploads` submit stages
@@ -295,6 +298,7 @@ enum SlotRewrite {
         binding: u32,
         view: vk::ImageView,
         sampler: vk::Sampler,
+        first_level: u32,
     },
     /// The slot holds no texture (reserved-unflushed #881, dead after a
     /// failed flush #1922, dropped #372) — redirect to the dimension-matched
@@ -330,10 +334,20 @@ pub struct TextureRegistry {
     cube_fallback_handle: Option<TextureHandle>,
     descriptor_pool: vk::DescriptorPool,
     /// Layout for set 0: binding 0 = sampler2D[max_textures], binding 1 =
-    /// samplerCube[max_textures], both PARTIALLY_BOUND.
+    /// samplerCube[max_textures], both PARTIALLY_BOUND; binding 2 = the
+    /// first-level table (`first_level_tables`).
     pub descriptor_set_layout: vk::DescriptorSetLayout,
     /// One bindless descriptor set per frame-in-flight.
     bindless_sets: Vec<vk::DescriptorSet>,
+    /// M39 — one `uint[max_textures]` table per frame-in-flight, bound at
+    /// set 0 binding 2 of that slot's set: each 2D slot's
+    /// [`Texture::first_level`]. A partly resident texture's view starts at
+    /// chain level `first_resident`, so a shader's explicit LOD counted from
+    /// the full chain (rough reflections, refraction, glass blur) subtracts
+    /// it (`residentLod`, `bindings.glsl`). Written in the same call that
+    /// writes the slot's descriptor, so the level and the view it describes
+    /// always change together. Empty on a device-free test registry.
+    first_level_tables: Vec<GpuBuffer>,
     /// Default LINEAR/REPEAT sampler. Aliased onto `samplers[0]` so
     /// the legacy `shared_sampler` field stays valid for non-bindless
     /// callers (composite.rs reads it for the HDR sampler in some
@@ -478,26 +492,98 @@ pub struct TextureRegistry {
 /// runtime can't drift. See #427 / #950.
 pub(crate) fn build_bindless_descriptor_bindings(
     max_textures: u32,
-) -> [vk::DescriptorSetLayoutBinding<'static>; 2] {
-    [0, 1].map(|binding| {
+) -> [vk::DescriptorSetLayoutBinding<'static>; 3] {
+    // FRAGMENT | COMPUTE. The fragment stage is the historical consumer
+    // (`triangle.frag`, `water.frag`, `composite.frag`); COMPUTE was added
+    // for the SKYAL sky-cubemap bake (`sky_cube.comp`), which samples the
+    // WTHR cloud layers and the CLMT sun sprite through `include/sky.glsl`
+    // exactly as the background pass does.
+    //
+    // Stage flags only widen where a descriptor is *visible*; they bind
+    // nothing extra and cost nothing. Omitting the stage is accepted by the
+    // shader compiler and rejected at pipeline creation
+    // (VUID-VkComputePipelineCreateInfo-layout-07988) — validation-layer-only,
+    // invisible to `cargo test`.
+    let stages = vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE;
+    let sampler_array = |binding| {
         vk::DescriptorSetLayoutBinding::default()
             .binding(binding)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .descriptor_count(max_textures)
-            // FRAGMENT | COMPUTE. The fragment stage is the historical
-            // consumer (`triangle.frag`, `water.frag`, `composite.frag`);
-            // COMPUTE was added for the SKYAL sky-cubemap bake
-            // (`sky_cube.comp`), which samples the WTHR cloud layers and
-            // the CLMT sun sprite through `include/sky.glsl` exactly as
-            // the background pass does.
-            //
-            // Stage flags only widen where a descriptor is *visible*; they
-            // bind nothing extra and cost nothing. Omitting the stage is
-            // accepted by the shader compiler and rejected at pipeline
-            // creation (VUID-VkComputePipelineCreateInfo-layout-07988) —
-            // validation-layer-only, invisible to `cargo test`.
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE)
-    })
+            .stage_flags(stages)
+    };
+    [
+        sampler_array(0),
+        sampler_array(1),
+        // M39 — the per-slot first-level table (`first_level_tables`).
+        crate::vulkan::descriptors::layout_binding(
+            FIRST_LEVEL_BINDING,
+            vk::DescriptorType::STORAGE_BUFFER,
+            stages,
+        ),
+    ]
+}
+
+/// Set 0 binding of the first-level table (`textureFirstLevel[]` in
+/// `bindings.glsl`).
+const FIRST_LEVEL_BINDING: u32 = 2;
+
+/// Binding flags matching [`build_bindless_descriptor_bindings`]. The two
+/// sampler arrays are written while earlier frames are in flight, so they are
+/// `UPDATE_AFTER_BIND` and `PARTIALLY_BOUND`. The first-level table's
+/// descriptor is written once per set, before the set is first bound (`new`,
+/// `recreate_descriptor_sets`); only the buffer's contents change afterwards.
+/// So it needs neither flag, nor the device feature
+/// `descriptorBindingStorageBufferUpdateAfterBind`.
+const BINDLESS_BINDING_FLAGS: [vk::DescriptorBindingFlags; 3] = [
+    vk::DescriptorBindingFlags::from_raw(
+        vk::DescriptorBindingFlags::PARTIALLY_BOUND.as_raw()
+            | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND.as_raw(),
+    ),
+    vk::DescriptorBindingFlags::from_raw(
+        vk::DescriptorBindingFlags::PARTIALLY_BOUND.as_raw()
+            | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND.as_raw(),
+    ),
+    vk::DescriptorBindingFlags::empty(),
+];
+
+/// One frame slot's first-level table: `max_textures` zeroed `u32`s in
+/// host-visible memory, so a write lands without a transfer. 128 KiB at the
+/// usual 32 767 slots (`docs/engine/memory-budget.md` § Texture Registry).
+fn create_first_level_table(
+    device: &ash::Device,
+    allocator: &SharedAllocator,
+    max_textures: u32,
+) -> Result<GpuBuffer> {
+    let size = max_textures as vk::DeviceSize * std::mem::size_of::<u32>() as vk::DeviceSize;
+    let mut table = GpuBuffer::create_host_visible(
+        device,
+        allocator,
+        size,
+        vk::BufferUsageFlags::STORAGE_BUFFER,
+    )
+    .context("Failed to create the bindless first-level table")?;
+    if let Err(e) = table.write_mapped(device, &vec![0u32; max_textures as usize]) {
+        table.destroy(device, allocator);
+        return Err(e).context("Failed to zero the bindless first-level table");
+    }
+    Ok(table)
+}
+
+/// Pool sizes for `MAX_FRAMES_IN_FLIGHT` bindless sets: two
+/// `max_textures`-sized sampler arrays and one first-level table each. One
+/// definition for `new` and `recreate_descriptor_sets`.
+fn bindless_pool_sizes(max_textures: u32) -> [vk::DescriptorPoolSize; 2] {
+    [
+        vk::DescriptorPoolSize {
+            ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            descriptor_count: max_textures * 2 * MAX_FRAMES_IN_FLIGHT as u32,
+        },
+        vk::DescriptorPoolSize {
+            ty: vk::DescriptorType::STORAGE_BUFFER,
+            descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
+        },
+    ]
 }
 
 impl TextureRegistry {
@@ -579,10 +665,8 @@ impl TextureRegistry {
         // When/if a real low-RAM path lands, re-add the flag *and* the
         // allocate-info struct *and* enable the device feature in
         // device.rs in the same change.
-        let binding_flags = [vk::DescriptorBindingFlags::PARTIALLY_BOUND
-            | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND; 2];
-        let mut binding_flags_info =
-            vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
+        let mut binding_flags_info = vk::DescriptorSetLayoutBindingFlagsCreateInfo::default()
+            .binding_flags(&BINDLESS_BINDING_FLAGS);
 
         let bindings = build_bindless_descriptor_bindings(max_textures);
 
@@ -631,6 +715,7 @@ impl TextureRegistry {
             descriptor_pool: vk::DescriptorPool::null(),
             descriptor_set_layout: vk::DescriptorSetLayout::null(),
             bindless_sets: Vec::new(),
+            first_level_tables: Vec::new(),
             shared_sampler: vk::Sampler::null(),
             samplers: [vk::Sampler::null(); 4],
             max_sampler_anisotropy,
@@ -675,20 +760,17 @@ impl TextureRegistry {
                 }
             };
 
-        // Pool: two bindings in each per-frame set, each with max_textures
-        // combined image samplers.
-        let pool_size = vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            descriptor_count: max_textures * 2 * MAX_FRAMES_IN_FLIGHT as u32,
-        };
+        // Pool: two max_textures-sized sampler arrays and one first-level
+        // table in each per-frame set.
+        let pool_sizes = bindless_pool_sizes(max_textures);
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
-            .pool_sizes(std::slice::from_ref(&pool_size))
+            .pool_sizes(&pool_sizes)
             .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
 
         // SAFETY: `device` is live; `pool_info` sizes cover exactly
-        // `MAX_FRAMES_IN_FLIGHT` sets of two `max_textures`-sized bindings
-        // each, matching the allocation below.
+        // `MAX_FRAMES_IN_FLIGHT` sets of the three bindings, matching the
+        // allocation below.
         partial.descriptor_pool = match unsafe { device.create_descriptor_pool(&pool_info, None) }
             .context("Failed to create bindless texture descriptor pool")
         {
@@ -717,6 +799,20 @@ impl TextureRegistry {
                 return Err(e);
             }
         };
+
+        // M39 — one zeroed first-level table per set (every slot reads level
+        // 0 of a whole image until a streamed one is written), bound before
+        // any set is.
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+            match create_first_level_table(device, allocator, max_textures) {
+                Ok(table) => partial.first_level_tables.push(table),
+                Err(e) => {
+                    partial.destroy(device, allocator);
+                    return Err(e);
+                }
+            }
+        }
+        partial.write_first_level_table_descriptors(device, &partial.bindless_sets);
 
         // Build one sampler per Gamebryo `TexClampMode` value (4
         // total) so a per-texture `clamp_mode` can route to the right
@@ -823,7 +919,14 @@ impl TextureRegistry {
         );
         let handle = self.textures.len() as TextureHandle;
         let binding = cube_texture.view_kind.descriptor_binding();
-        self.apply_descriptor_write(device, 0, binding, cube_texture.image_view, cube_texture.sampler);
+        self.apply_descriptor_write(
+            device,
+            0,
+            binding,
+            cube_texture.image_view,
+            cube_texture.sampler,
+            cube_texture.first_level(),
+        );
         self.write_texture_to_all_sets(device, handle, &cube_texture);
         self.textures.push(TextureEntry {
             texture: Some(cube_texture),
@@ -986,6 +1089,7 @@ impl TextureRegistry {
                     binding: write.binding,
                     image_view: texture.image_view,
                     sampler: texture.sampler,
+                    first_level: texture.first_level(),
                 });
             }
         }
@@ -1033,6 +1137,67 @@ impl TextureRegistry {
         unsafe {
             device.update_descriptor_sets(&writes, &[]);
         }
+        for write in &drained {
+            self.write_first_level(device, slot, write.handle, write.binding, write.first_level);
+        }
+    }
+
+    /// Record `first_level` for `handle` in `slot`'s first-level table, beside
+    /// the descriptor write it belongs to. Only the 2D binding has a table
+    /// entry: cubemaps are never streamed and the shaders read the table for
+    /// `textures[]` only. Callers hold the same idle-slot guarantee the
+    /// descriptor write needs; a device-free test registry has no tables.
+    fn write_first_level(
+        &mut self,
+        device: &ash::Device,
+        slot: usize,
+        handle: TextureHandle,
+        binding: u32,
+        first_level: u32,
+    ) {
+        if binding != TextureViewKind::D2.descriptor_binding() {
+            return;
+        }
+        let Some(table) = self.first_level_tables.get_mut(slot) else {
+            return;
+        };
+        let offset = handle as usize * std::mem::size_of::<u32>();
+        if let Err(e) = table.write_mapped_at(device, offset, &[first_level]) {
+            log::warn!("first-level table write for handle {handle} on slot {slot} failed: {e:#}");
+        }
+    }
+
+    /// Point binding 2 of each of `sets` at the first-level table of the same
+    /// frame slot. Run before any of `sets` is bound: the binding is not
+    /// `UPDATE_AFTER_BIND` (see [`BINDLESS_BINDING_FLAGS`]).
+    fn write_first_level_table_descriptors(
+        &self,
+        device: &ash::Device,
+        sets: &[vk::DescriptorSet],
+    ) {
+        let infos: Vec<[vk::DescriptorBufferInfo; 1]> = self
+            .first_level_tables
+            .iter()
+            .map(|table| {
+                [vk::DescriptorBufferInfo {
+                    buffer: table.buffer,
+                    offset: 0,
+                    range: vk::WHOLE_SIZE,
+                }]
+            })
+            .collect();
+        let writes: Vec<vk::WriteDescriptorSet> = sets
+            .iter()
+            .zip(&infos)
+            .map(|(&set, info)| {
+                crate::vulkan::descriptors::write_storage_buffer(set, FIRST_LEVEL_BINDING, info)
+            })
+            .collect();
+        // SAFETY: `sets` are freshly allocated and not yet bound by any
+        // command buffer (caller contract above); `infos` outlives `writes`.
+        unsafe {
+            device.update_descriptor_sets(&writes, &[]);
+        }
     }
 
     /// Apply a descriptor write by writing to the current recording
@@ -1040,6 +1205,10 @@ impl TextureRegistry {
     /// slot. The deferred writes fire from `begin_frame` on each slot's
     /// next turn, after the caller has waited on that slot's fence.
     /// See #92.
+    ///
+    /// `first_level` is [`Texture::first_level`] of the image behind
+    /// `image_view`; it lands in the same slot's first-level table at the same
+    /// time as the descriptor (M39).
     fn apply_descriptor_write(
         &mut self,
         device: &ash::Device,
@@ -1047,6 +1216,7 @@ impl TextureRegistry {
         binding: u32,
         image_view: vk::ImageView,
         sampler: vk::Sampler,
+        first_level: u32,
     ) {
         // #2715 (CONC-D7-UI-01) — the immediate-write fast path is safe
         // ONLY while a completed fence wait has proven `current_slot`
@@ -1059,7 +1229,13 @@ impl TextureRegistry {
         // every slot, `current_slot` included, in that case; the next
         // `begin_frame` flush applies it before that frame records.
         if self.fence_confirmed_idle_slot != Some(self.current_slot) {
-            self.record_pending_write_for_all_slots(handle, binding, image_view, sampler);
+            self.record_pending_write_for_all_slots(
+                handle,
+                binding,
+                image_view,
+                sampler,
+                first_level,
+            );
             return;
         }
 
@@ -1079,7 +1255,14 @@ impl TextureRegistry {
         unsafe {
             device.update_descriptor_sets(&[write], &[]);
         }
-        self.record_pending_writes_for_other_slots(handle, binding, image_view, sampler);
+        self.write_first_level(device, self.current_slot, handle, binding, first_level);
+        self.record_pending_writes_for_other_slots(
+            handle,
+            binding,
+            image_view,
+            sampler,
+            first_level,
+        );
     }
 
     /// Pure queue bookkeeping: push a pending write onto every slot
@@ -1092,6 +1275,7 @@ impl TextureRegistry {
         binding: u32,
         image_view: vk::ImageView,
         sampler: vk::Sampler,
+        first_level: u32,
     ) {
         for (slot, queue) in self.pending_set_writes.iter_mut().enumerate() {
             if slot == self.current_slot {
@@ -1102,6 +1286,7 @@ impl TextureRegistry {
                 binding,
                 image_view,
                 sampler,
+                first_level,
             });
         }
     }
@@ -1119,6 +1304,7 @@ impl TextureRegistry {
         binding: u32,
         image_view: vk::ImageView,
         sampler: vk::Sampler,
+        first_level: u32,
     ) {
         for queue in &mut self.pending_set_writes {
             queue.push(PendingSetWrite {
@@ -1126,6 +1312,7 @@ impl TextureRegistry {
                 binding,
                 image_view,
                 sampler,
+                first_level,
             });
         }
     }
@@ -1198,7 +1385,8 @@ impl TextureRegistry {
             .expect("entry was just populated above");
         let image_view = live.image_view;
         let sampler = live.sampler;
-        self.apply_descriptor_write(ctx.device, handle, 0, image_view, sampler);
+        let first_level = live.first_level();
+        self.apply_descriptor_write(ctx.device, handle, 0, image_view, sampler, first_level);
 
         Ok(())
     }
@@ -1274,6 +1462,7 @@ impl TextureRegistry {
                 binding,
                 view: texture.image_view,
                 sampler: texture.sampler,
+                first_level: texture.first_level(),
             }),
             None => {
                 // Same dimension-matched fallback `drop_released_texture`
@@ -1310,13 +1499,10 @@ impl TextureRegistry {
         // #4886 — allocate into locals first; `self.descriptor_pool` and
         // `self.bindless_sets` keep naming the live old objects until every
         // fallible step below has succeeded.
-        let pool_size = vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            descriptor_count: self.max_textures * 2 * MAX_FRAMES_IN_FLIGHT as u32,
-        };
+        let pool_sizes = bindless_pool_sizes(self.max_textures);
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
-            .pool_sizes(std::slice::from_ref(&pool_size))
+            .pool_sizes(&pool_sizes)
             .max_sets(MAX_FRAMES_IN_FLIGHT as u32);
         // SAFETY: `device` is live; sizes mirror `new()`'s pool exactly.
         let new_pool = unsafe {
@@ -1385,6 +1571,10 @@ impl TextureRegistry {
         }
         self.descriptor_pool = new_pool;
         self.bindless_sets = new_sets;
+        // M39 — the tables outlive the sets and keep their contents; the
+        // fresh sets only need pointing at them. Every slot's level is
+        // rewritten below with its descriptor anyway.
+        self.write_first_level_table_descriptors(device, &self.bindless_sets);
 
         if let Some(new_samplers) = replacement_samplers {
             let old_samplers = self.samplers;
@@ -1432,25 +1622,29 @@ impl TextureRegistry {
         // dimension-matched fallback. Collect into a Vec first so the
         // `self.textures` immutable borrow doesn't alias
         // `apply_descriptor_write`'s `&mut self`.
-        let rewrites: Vec<(TextureHandle, u32, vk::ImageView, vk::Sampler)> = (0..self
-            .textures
-            .len() as TextureHandle)
-            .filter_map(|handle| {
-                match self.slot_rewrite(handle)? {
+        let rewrites: Vec<(TextureHandle, u32, vk::ImageView, vk::Sampler, u32)> =
+            (0..self.textures.len() as TextureHandle)
+                .filter_map(|handle| match self.slot_rewrite(handle)? {
                     SlotRewrite::Live {
                         binding,
                         view,
                         sampler,
-                    } => Some((handle, binding, view, sampler)),
+                        first_level,
+                    } => Some((handle, binding, view, sampler, first_level)),
                     SlotRewrite::Fallback { binding, source } => {
                         let fallback = self.textures[source as usize].texture.as_ref()?;
-                        Some((handle, binding, fallback.image_view, fallback.sampler))
+                        Some((
+                            handle,
+                            binding,
+                            fallback.image_view,
+                            fallback.sampler,
+                            fallback.first_level(),
+                        ))
                     }
-                }
-            })
-            .collect();
-        for (handle, binding, image_view, sampler) in rewrites {
-            self.apply_descriptor_write(device, handle, binding, image_view, sampler);
+                })
+                .collect();
+        for (handle, binding, image_view, sampler, first_level) in rewrites {
+            self.apply_descriptor_write(device, handle, binding, image_view, sampler, first_level);
         }
         if let Some(cube_fallback_handle) = self.cube_fallback_handle {
             if let Some(cube) = self
@@ -1460,7 +1654,8 @@ impl TextureRegistry {
             {
                 let image_view = cube.image_view;
                 let sampler = cube.sampler;
-                self.apply_descriptor_write(device, 0, 1, image_view, sampler);
+                let first_level = cube.first_level();
+                self.apply_descriptor_write(device, 0, 1, image_view, sampler, first_level);
             }
         }
 
@@ -1504,6 +1699,9 @@ impl TextureRegistry {
         // failed.
         if let Some(mut pool) = self.staging_pool.take() {
             pool.destroy();
+        }
+        for mut table in self.first_level_tables.drain(..) {
+            table.destroy(device, allocator);
         }
 
         // SAFETY: caller contract (`destroy()` runs only during shutdown,
@@ -1550,6 +1748,7 @@ impl TextureRegistry {
             texture.view_kind.descriptor_binding(),
             texture.image_view,
             texture.sampler,
+            texture.first_level(),
         );
     }
 }

@@ -398,7 +398,8 @@ vec2 resolveRayHitUV(
 }
 
 vec4 sampleRayHitBase(GpuInstance inst, GpuMaterial mat, vec2 uv, float lod) {
-    return textureLod(textures[nonuniformEXT(inst.textureIndex)], uv, lod);
+    return textureLod(textures[nonuniformEXT(inst.textureIndex)], uv,
+        residentLod(inst.textureIndex, lod));
 }
 
 bool rayHitHasCoverage(
@@ -525,7 +526,8 @@ vec3 rayHitAlbedo(GpuMaterial mat, vec2 uv, vec3 baseRgb, float lod, uint dbgFla
         if (handle == 0u) {
             continue;
         }
-        vec4 decalSample = textureLod(textures[nonuniformEXT(handle)], uv, lod);
+        vec4 decalSample =
+            textureLod(textures[nonuniformEXT(handle)], uv, residentLod(handle, lod));
         rgb = mix(rgb, decalSample.rgb, decalSample.a);
     }
 
@@ -537,7 +539,8 @@ vec3 rayHitAlbedo(GpuMaterial mat, vec2 uv, vec3 baseRgb, float lod, uint dbgFla
     if ((mat.tintMapIndex & ~TINT_ALPHA_WEIGHT_BIT) != 0u
         && (mat.tintMapIndex & TINT_ALPHA_WEIGHT_BIT) != 0u) {
         vec4 tintSample = textureLod(
-            textures[nonuniformEXT(mat.tintMapIndex & ~TINT_ALPHA_WEIGHT_BIT)], uv, lod);
+            textures[nonuniformEXT(mat.tintMapIndex & ~TINT_ALPHA_WEIGHT_BIT)], uv,
+            residentLod(mat.tintMapIndex & ~TINT_ALPHA_WEIGHT_BIT, lod));
         rgb = mix(rgb, rgb * tintSample.rgb, tintSample.a);
     }
 
@@ -552,7 +555,8 @@ vec3 rayHitAlbedo(GpuMaterial mat, vec2 uv, vec3 baseRgb, float lod, uint dbgFla
             authoredInnerScale.y > 0.0001 ? authoredInnerScale.y : 1.0
         );
         vec4 innerSample = textureLod(
-            textures[nonuniformEXT(mat.innerLayerMapIndex)], uv * innerScale, lod);
+            textures[nonuniformEXT(mat.innerLayerMapIndex)], uv * innerScale,
+            residentLod(mat.innerLayerMapIndex, lod));
         float innerWeight = clamp(mat.multiLayerInnerThickness, 0.0, 1.0)
             * innerSample.a;
         rgb = mix(rgb, innerSample.rgb, innerWeight);
@@ -560,7 +564,8 @@ vec3 rayHitAlbedo(GpuMaterial mat, vec2 uv, vec3 baseRgb, float lod, uint dbgFla
 
     if (mat.darkMapIndex != 0u) {
         vec3 darkSample = textureLod(
-            textures[nonuniformEXT(mat.darkMapIndex)], uv, lod).rgb;
+            textures[nonuniformEXT(mat.darkMapIndex)], uv,
+            residentLod(mat.darkMapIndex, lod)).rgb;
         rgb *= darkSample;
     }
 
@@ -570,7 +575,8 @@ vec3 rayHitAlbedo(GpuMaterial mat, vec2 uv, vec3 baseRgb, float lod, uint dbgFla
     // DBG_BYPASS_DETAIL gate.
     if (mat.detailMapIndex != 0u && (dbgFlags & DBG_BYPASS_DETAIL) == 0u) {
         vec3 detailSample = textureLod(
-            textures[nonuniformEXT(mat.detailMapIndex)], uv * 2.0, lod).rgb;
+            textures[nonuniformEXT(mat.detailMapIndex)], uv * 2.0,
+            residentLod(mat.detailMapIndex, lod)).rgb;
         rgb *= detailSample / max(mat.detailNeutral, 1e-4);
     }
 
@@ -581,7 +587,8 @@ vec3 rayHitEmission(GpuMaterial mat, vec2 uv, vec3 baseRgb, float lod) {
     vec3 mask = baseRgb;
     if (mat.glowMapIndex != 0u) {
         mask = textureLod(
-            textures[nonuniformEXT(mat.glowMapIndex)], uv, lod).rgb;
+            textures[nonuniformEXT(mat.glowMapIndex)], uv,
+            residentLod(mat.glowMapIndex, lod)).rgb;
     }
     return max(
         vec3(mat.emissiveR, mat.emissiveG, mat.emissiveB)

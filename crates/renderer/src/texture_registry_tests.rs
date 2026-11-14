@@ -137,6 +137,7 @@ fn make_registry_for_overflow_test(max_textures: u32, occupied: usize) -> Textur
         descriptor_pool: vk::DescriptorPool::null(),
         descriptor_set_layout: vk::DescriptorSetLayout::null(),
         bindless_sets: Vec::new(),
+        first_level_tables: Vec::new(),
         shared_sampler: vk::Sampler::null(),
         samplers: [vk::Sampler::null(); 4],
         max_sampler_anisotropy: 1.0,
@@ -984,7 +985,7 @@ fn pending_write_records_on_other_slots_only() {
     let image_view = vk::ImageView::null();
     let sampler = vk::Sampler::null();
 
-    reg.record_pending_writes_for_other_slots(7, 0, image_view, sampler);
+    reg.record_pending_writes_for_other_slots(7, 0, image_view, sampler, 0);
 
     // Current slot (0): empty.
     assert_eq!(reg.pending_set_writes[0].len(), 0);
@@ -1002,7 +1003,7 @@ fn pending_write_records_on_other_slots_only() {
 fn pending_write_current_slot_change_flips_deferred_target() {
     let mut reg = make_registry_for_overflow_test(16, 0);
     reg.current_slot = 0;
-    reg.record_pending_writes_for_other_slots(1, 0, vk::ImageView::null(), vk::Sampler::null());
+    reg.record_pending_writes_for_other_slots(1, 0, vk::ImageView::null(), vk::Sampler::null(), 0);
     assert_eq!(reg.pending_set_writes[0].len(), 0);
     assert_eq!(reg.pending_set_writes[1].len(), 1);
 
@@ -1010,7 +1011,7 @@ fn pending_write_current_slot_change_flips_deferred_target() {
     // do this after the caller waits on slot 1's fence). A
     // subsequent write now queues on slot 0 instead.
     reg.current_slot = 1;
-    reg.record_pending_writes_for_other_slots(2, 0, vk::ImageView::null(), vk::Sampler::null());
+    reg.record_pending_writes_for_other_slots(2, 0, vk::ImageView::null(), vk::Sampler::null(), 0);
     assert_eq!(reg.pending_set_writes[0].len(), 1);
     assert_eq!(reg.pending_set_writes[0][0].handle, 2);
     // Slot 1's queue is untouched by this call (handle 2 didn't
@@ -1033,6 +1034,7 @@ fn pending_writes_accumulate_and_preserve_order() {
             0,
             vk::ImageView::null(),
             vk::Sampler::null(),
+            0,
         );
     }
     let deferred = &reg.pending_set_writes[1];
@@ -1052,7 +1054,7 @@ fn pending_writes_accumulate_and_preserve_order() {
 fn pending_writes_cleared_by_recreate_semantics() {
     let mut reg = make_registry_for_overflow_test(16, 0);
     reg.current_slot = 0;
-    reg.record_pending_writes_for_other_slots(5, 0, vk::ImageView::null(), vk::Sampler::null());
+    reg.record_pending_writes_for_other_slots(5, 0, vk::ImageView::null(), vk::Sampler::null(), 0);
     assert!(!reg.pending_set_writes[1].is_empty());
 
     // Simulate the `recreate_descriptor_sets` queue-clear step
@@ -1127,7 +1129,7 @@ fn write_queues_for_current_slot_too_when_not_fence_confirmed_idle() {
     reg.current_slot = 0;
     reg.fence_confirmed_idle_slot = None; // not yet confirmed for ANY slot
 
-    reg.record_pending_write_for_all_slots(9, 0, vk::ImageView::null(), vk::Sampler::null());
+    reg.record_pending_write_for_all_slots(9, 0, vk::ImageView::null(), vk::Sampler::null(), 0);
 
     assert_eq!(
         reg.pending_set_writes[0].len(),
@@ -1908,6 +1910,7 @@ fn replayed_descriptor_writes_never_name_a_view_the_entry_no_longer_holds() {
         binding: 0,
         image_view: vk::ImageView::from_raw(raw),
         sampler: vk::Sampler::null(),
+        first_level: 0,
     };
     let resolved = reg.resolve_pending_set_writes(vec![stale(0, 0xdead), stale(0, 0xbeef), stale(5, 0xf00d)]);
     assert!(

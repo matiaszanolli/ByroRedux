@@ -9,6 +9,27 @@ layout(set = 0, binding = 0) uniform sampler2D textures[];
 // Authored DDS environment cubemaps. Kept in a separate binding so a cube
 // image view is never consumed through the sampler2D type above.
 layout(set = 0, binding = 1) uniform samplerCube cubemaps[];
+// M39 — the chain level each `textures[]` slot's image starts at
+// (`Texture::first_level`, written with the slot's descriptor). 0 for a whole
+// texture; `first_resident` for a partly resident streamed one, whose view
+// starts at that level of the authored chain.
+layout(std430, set = 0, binding = 2) readonly buffer TextureFirstLevels {
+    uint textureFirstLevel[];
+};
+
+// An explicit LOD counted from the full authored chain, as a LOD into the view
+// of `textures[handle]`. Implicit-derivative and size-relative LODs need no
+// help: they are computed from the view's own extent. An absolute level
+// (roughness·8 reflection blur, the refraction and glass blurs) is not, and
+// would read `first_level` levels coarser than the same texture fully
+// resident. A level the view holds is reached exactly; a finer one clamps to
+// the finest resident level. LOD 0 skips the table read.
+float residentLod(uint handle, float chainLod) {
+    if (chainLod <= 0.0) {
+        return chainLod;
+    }
+    return max(chainLod - float(textureFirstLevel[handle]), 0.0);
+}
 
 #include "include/gpu_instance.glsl"
 

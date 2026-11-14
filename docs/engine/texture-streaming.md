@@ -165,6 +165,21 @@ can address a non-resident level (TXS-RES-003). `ray_hit.glsl`'s explicit
 `textureLod(…, 0)` then reads the finest *resident* level, which is the
 intended behaviour.
 
+An explicit LOD *above* 0 that is counted from the full chain is not
+view-relative: the roughness·8 reflection blur, the refraction mip floor and
+the glass blurs (LOD 4 and 6) would read `first_resident` levels coarser than
+the same texture fully resident. Each `Texture` records the chain level its
+image starts at (`first_level`), and the registry keeps one `uint[max_textures]`
+table per frame slot at set 0 binding 2, written in the same call as the slot's
+descriptor, so a frame never sees a view with another image's level.
+`residentLod(handle, lod)` (`bindings.glsl`) subtracts it and clamps at 0, so a
+level the view holds is reached exactly and a finer one reads the finest
+resident level. Implicit-derivative and size-relative LODs (`textureQueryLod`,
+the cloud layers' `textureSize` term) are already view-relative and need no
+table. `explicit_bindless_lods_are_view_relative_under_streaming` holds every
+`textureLod` on `textures[]` in `ray_hit.glsl` and `triangle.frag` to LOD 0 or
+`residentLod`.
+
 ### 3.3 Floor rule (Q3)
 
 From §2.1–2.2 the last BA2 chunk tops out at **256 px** for 89–98 % of
@@ -584,12 +599,17 @@ first read 12 promotions, 5 evictions and churn 5; see §7.2 for what changed.
   `render.debug material_lobe` shows every visible surface dielectric except a
   few papers, so no reflected texture is on screen. A mirror pose has to be found
   in another FO4 cell, with a metal or glass surface facing a texture-rich wall.
-- **Open question for A11's real subject.** A reflected ray samples with the
-  explicit LOD `mipBias` (`raytrace.glsl`, `sampleRayHitBase`), which is the
-  roughness-scaled blur level counted from the *full* chain. On a texture whose
-  top `k` levels are not resident the view starts at chain level `k`, so a
-  rough reflection (`mipBias > 0`) reads chain level `mipBias + k`, `k` levels
-  too coarse, and a smooth one (`mipBias = 0`) reads level `k`. §3.2 only
-  argued the `mipBias = 0` case. Not measured; it needs the mirror pose above.
+- **A11's real subject, fixed by reading, not yet measured (2026-11-14).** A
+  reflected ray samples with the explicit LOD `mipBias` (`raytrace.glsl`,
+  `sampleRayHitBase`), the roughness-scaled blur level counted from the *full*
+  chain. On a texture whose top `k` levels are not resident the view starts at
+  chain level `k`, so a rough reflection read chain level `mipBias + k`, `k`
+  levels too coarse. The refraction mip floor and the three glass blurs in
+  `triangle.frag` had the same defect. All now go through `residentLod` (§3.2).
+  Checked on FO4 MedTek with validation on and streaming on at a pinned
+  100 MiB (757 tail-only floors, 24 promotions, 66 declines), including two
+  live upscaler switches that recreate the bindless sets: no `VUID-` or
+  `SYNC-HAZARD` message, frame intact. The visual A/B still needs the mirror
+  pose above, so A11 stays open.
 - **Streaming on by default** (the Phase 4 switch flip) is withheld until the
   gates above close.

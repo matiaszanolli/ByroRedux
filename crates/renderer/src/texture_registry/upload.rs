@@ -268,8 +268,19 @@ impl TextureRegistry {
                 if let Some(fallback) =
                     self.textures.get(source as usize).and_then(|e| e.texture.as_ref())
                 {
-                    let (image_view, sampler) = (fallback.image_view, fallback.sampler);
-                    self.apply_descriptor_write(device, outcome.handle(), binding, image_view, sampler);
+                    let (image_view, sampler, first_level) = (
+                        fallback.image_view,
+                        fallback.sampler,
+                        fallback.first_level(),
+                    );
+                    self.apply_descriptor_write(
+                        device,
+                        outcome.handle(),
+                        binding,
+                        image_view,
+                        sampler,
+                        first_level,
+                    );
                 }
             }
         }
@@ -1611,7 +1622,15 @@ impl TextureRegistry {
                 let image_view = texture.image_view;
                 let sampler = texture.sampler;
                 let binding = texture.view_kind.descriptor_binding();
-                self.apply_descriptor_write(device, handle, binding, image_view, sampler);
+                let first_level = texture.first_level();
+                self.apply_descriptor_write(
+                    device,
+                    handle,
+                    binding,
+                    image_view,
+                    sampler,
+                    first_level,
+                );
 
                 // Move the texture into its reserved slot. A residency
                 // change replaces the live image, which retires through

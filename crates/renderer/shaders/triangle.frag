@@ -2042,7 +2042,8 @@ void main() {
     // for glass (lightmaps are never baked onto transparent objects).
     if (isGlass) {
         vec3 glassBase = textureLod(
-            textures[nonuniformEXT(fragTexIndex)], sampleUV, 4.0).rgb;
+            textures[nonuniformEXT(fragTexIndex)], sampleUV,
+            residentLod(fragTexIndex, 4.0)).rgb;
         texColor = vec4(glassBase, texColor.a);
         albedo   = glassBase * fragColor.rgb;
     }
@@ -2764,7 +2765,7 @@ void main() {
         vec3 glassTint = clamp(textureLod(
             textures[nonuniformEXT(inst.textureIndex)],
             sampleUV,
-            6.0
+            residentLod(inst.textureIndex, 6.0)
         ).rgb * vec3(mat.diffuseR, mat.diffuseG, mat.diffuseB),
             vec3(0.02), vec3(1.0));
         // Beer-style bulk absorption. Only actual in-medium distance is
@@ -2890,7 +2891,7 @@ void main() {
         vec3 glassDiffuse = textureLod(
             textures[nonuniformEXT(fragTexIndex)],
             sampleUV,
-            6.0
+            residentLod(fragTexIndex, 6.0)
         ).rgb;
         float fallbackDirtAlpha = clamp(glassDirt.a, 0.0, 1.0);
         albedo = mix(glassDiffuse, glassDirt.rgb, fallbackDirtAlpha);
