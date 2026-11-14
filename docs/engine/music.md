@@ -151,12 +151,19 @@ enable bit (`PNAM`). The controller plays:
 - the stems **mix**, each looping, each faded in or out over the set's layer crossfade
   time (`FNAM`, 6 or 9 s on the vanilla sets) as it turns on or off (#6902).
 
-A controller with several Location sets plays the first. One with Neutral, Ally, Friend
-or Enemy lists plays its Location set and reports the relation lists **Unresolved**
-(Q3). Nine of the 689 markers sit under controllers with relation lists and *no*
-Location set, `musCtrlGoodsprings` among them: those areas report Location
-**Unresolved** and play nothing from the marker until the relation is modelled (#6904).
-A controller with Battle sets only (169 markers) leaves the place's own music playing.
+A controller's Neutral, Ally, Friend and Enemy lists play by how its **conditional
+faction** (`RNAM`) treats the player: "music that plays ... when you're in an area
+controlled by an Enemy Faction (relates to Conditional Faction)" (Nexus wiki *Fallout New
+Vegas Music*, 2014). The relation is the engine's one faction rule
+(`faction_reaction_toward`: authored `XNAM` relations from the faction to the player's
+factions, scripted `SetEnemy` / `SetFactionReaction` overrides first), re-read every
+frame, so a faction turning hostile switches the area's music. The relation's list
+plays, else the Location list, else the Neutral list; a controller with no conditional
+faction is Neutral. Nine of the 689 markers sit under controllers with relation lists and
+no Location set, `musCtrlGoodsprings` among them (#6904). `NAM1`'s option to force one
+list whatever the relation is not decoded (xEdit: "Flags and Enums, messily combined").
+A controller with several sets in a list plays the first; one with Battle sets only
+(169 markers) leaves the place's own music playing.
 
 Twenty-three controllers list a **Dungeon** set among their Location sets. A Dungeon
 set's slots are Battle, Explore and Suspense (xEdit's `(D)` labels), not layers: its
@@ -197,11 +204,11 @@ game's master and official DLC (PRD §7.2 scenario 1, §8), 2026-11-14:
 | Game | Sources | Source coverage | Playable coverage |
 |---|---|---|---|
 | Fallout 3 | 591 cells, 16 worldspaces, 5 default objects, 31 music types | 100 % | cells 99.8 % (one `.wav` the install lacks), music types 93.3 % |
-| New Vegas | 375 cells, 3 worldspaces, 14 region battle sets, 5 default objects, 520 audio-marker areas | 100 %, markers 98.3 % (9 relation-only, #6904) | markers and battle sets 100 %; cells, worldspaces and default objects 0 % (the `Default*` folders are not shipped, #6900) |
+| New Vegas | 375 cells, 3 worldspaces, 14 region battle sets, 5 default objects, 520 audio-marker areas | 100 % | markers and battle sets 100 %; cells, worldspaces and default objects 0 % (the `Default*` folders are not shipped, #6900) |
 | Oblivion | 1919 cells, 39 worldspaces, 128 regions | 100 % | 100 % |
 
 `docs/smoke-tests/music-fo3.sh` drives scenarios 2 to 5, `music-fnv.sh` scenario 6 (at
-Sloan: the Goodsprings marker the PRD first named is relation-only) and scenario 5's New
+Sloan, and at Goodsprings its Neutral and, after `SetFactionReaction`, Enemy set) and scenario 5's New
 Vegas leg, `music-oblivion.sh` scenario 7.
 
 ## 9. Saves
@@ -224,6 +231,7 @@ not-saved list with its reason.
 | MUS-SRC-002 precedence, Fallout 3 `RDMD`, New Vegas silence (§3.4) | — | #6900 |
 | MUS-SCR-005, MUS-CMB-004 (`PlayMusic`) | data leans toward *replace* | #6899 |
 | MUS-STG-003, MUS-STG-004 | — | #6901 |
-| MUS-CMB-001, MUS-CMB-003, Q3 (New Vegas) | xEdit labels | #6902; relation-only controllers #6904 |
+| MUS-CMB-001, MUS-CMB-003 (New Vegas) | xEdit labels | #6902 |
+| Q3: how the relation picks a list | Nexus wiki *Fallout New Vegas Music* (2014): by the conditional faction's relation to the player | closed (#6904); `NAM1`'s forced list undecoded |
 | MUS-SRC-008, MUS-SCR-003 (Oblivion) | — | #6903 |
 | MUS-SCR-004 (OBSE opcodes) | xOBSE `CommandTable.cpp` order, checked against five known OBSE opcodes | closed: `0x1617`, `0x19e5` |

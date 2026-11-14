@@ -245,6 +245,19 @@ pub fn faction_reaction(world: &World, actor: EntityId, other: EntityId) -> Opti
     Some(reaction_raw(combined_reaction(&own, &other, &overrides, &catalog)) as i32)
 }
 
+/// How `faction` reacts to `actor`: [`combined_reaction`] from the faction toward each faction the
+/// actor belongs to, scripted overrides first — the rule `GetFactionReaction` uses. A New Vegas media
+/// location controller's conditional faction picks its Neutral / Ally / Friend / Enemy media sets by
+/// it (Game Music MUS-SRC-005, #6904). `None` when the load order's identity is not installed or does
+/// not know the faction.
+pub fn faction_reaction_toward(world: &World, faction: u32, actor: EntityId) -> Option<CombatReaction> {
+    let faction = world.try_resource::<crate::LoadOrderIdentity>()?.form_ref(faction)?;
+    let other = faction_refs(world, actor)?;
+    let overrides = world.try_resource::<FactionRelations>().map(|r| r.clone()).unwrap_or_default();
+    let catalog = world.try_resource::<FactionCatalog>().map(|c| Arc::clone(&c.0)).unwrap_or_default();
+    Some(combined_reaction(&[faction], &other, &overrides, &catalog))
+}
+
 /// ObScript *SetFactionReaction*: "set the specified faction's reaction towards the target faction". The
 /// number the script gives is a disposition-style modifier; the engine's combat reaction has four
 /// states, so a positive value is Friend, a negative one Enemy and zero Neutral. `false` when the load
@@ -360,6 +373,23 @@ mod tests {
         relations.set_reaction(a, c, CombatReaction::Friend);
         assert_eq!(combined_reaction(&[a], &[b, c], &relations, &catalog), CombatReaction::Friend);
         assert_eq!(combined_reaction(&[], &[b, c], &relations, &catalog), CombatReaction::Neutral);
+    }
+
+    /// #6904 — a faction's reaction toward an actor: Neutral by default, a scripted override toward
+    /// one of the actor's factions next; a faction the identity does not know answers `None`.
+    #[test]
+    fn faction_reaction_toward_reads_the_actor_s_factions() {
+        use byroredux_core::form_id::PluginId;
+        use byroredux_plugin::esm::reader::GlobalSlot;
+        let mut world = World::new();
+        register(&mut world);
+        world.insert_resource(crate::LoadOrderIdentity::new(vec![(GlobalSlot::Regular(0), PluginId::from_filename("FalloutNV.esm"))]));
+        let player = world.spawn();
+        world.insert(player, byroredux_core::ecs::components::FactionRanks(vec![(0x1B2A4, 0)]));
+        assert_eq!(faction_reaction_toward(&world, 0x104C6E, player), Some(CombatReaction::Neutral));
+        assert!(set_faction_reaction(&world, 0x104C6E, 0x1B2A4, -100.0));
+        assert_eq!(faction_reaction_toward(&world, 0x104C6E, player), Some(CombatReaction::Enemy));
+        assert_eq!(faction_reaction_toward(&world, 0x0900_0001, player), None, "no plugin in slot 9");
     }
 
     #[test]

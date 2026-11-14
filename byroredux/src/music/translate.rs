@@ -4,6 +4,7 @@
 use super::directive::{Area, Content, Directive, MusicFiles, Source, Stem};
 use byroredux_plugin::esm::cell::CellData;
 use byroredux_plugin::esm::reader::GameKind;
+use byroredux_sdk::relationships::CombatReaction;
 use byroredux_plugin::esm::records::{select_active_region_sound, EsmIndex, MediaSetKind, MediaSetRecord, RegionDataPayload};
 use std::collections::HashMap;
 
@@ -128,37 +129,43 @@ impl Catalog {
     /// A marker's Location directive: its controller's first Location set, as stems by day and night
     /// and by depth (MUS-SRC-005 to -007). `None` when the controller names no Location set, so the
     /// place's own music plays.
-    pub(crate) fn marker_location(&self, index: &EsmIndex, marker: &Marker) -> Option<Directive> {
+    pub(crate) fn marker_location(&self, index: &EsmIndex, marker: &Marker, relation: CombatReaction) -> Option<Directive> {
         let aloc = index.media_locations.get(&marker.controller)?;
-        let note = format!("controller {} ({:#010x}), marker {:#010x}", aloc.editor_id, aloc.form_id, marker.form);
-        let Some(&set_form) = aloc.location_sets.first() else {
-            // Battle sets only: the place's own music plays. Relation sets only (Goodsprings): what
-            // they play waits on the faction relation (Q3), so the area reports Unresolved rather
-            // than falling back to music the data does not ask for.
-            if !aloc.has_relation_sets() {
-                return None;
-            }
-            let source = Source::record(aloc.editor_id.clone(), aloc.form_id, "audio marker");
-            let reason = "faction-relation sets only (Neutral / Ally / Friend / Enemy): not played until the relation is modelled (Q3, #6904)";
-            return Some(Directive { notes: vec![note], ..Directive::unresolved(source, reason) });
+        // A controller's Neutral / Ally / Friend / Enemy lists play by how its conditional faction
+        // treats the player ("Music that plays ... when you're in an area controlled by an Enemy
+        // Faction (relates to Conditional Faction)", Nexus wiki *Fallout New Vegas Music*, 2014),
+        // ahead of its Location list. With no conditional faction the area is Neutral. `NAM1`'s
+        // option to force one list is not decoded (xEdit: "Flags and Enums, messily combined").
+        let relation = if aloc.conditional_faction.is_some() { relation } else { CombatReaction::Neutral };
+        let (list, via) = match relation {
+            CombatReaction::Neutral => (&aloc.neutral_sets, "audio marker Neutral set"),
+            CombatReaction::Enemy => (&aloc.enemy_sets, "audio marker Enemy set"),
+            CombatReaction::Ally => (&aloc.ally_sets, "audio marker Ally set"),
+            CombatReaction::Friend => (&aloc.friend_sets, "audio marker Friend set"),
         };
+        // The relation's list, else the Location list, else the Neutral list; Battle sets only
+        // leave the place's own music playing.
+        let (set_form, via) = list
+            .first()
+            .map(|form| (*form, via))
+            .or_else(|| aloc.location_sets.first().map(|form| (*form, "audio marker")))
+            .or_else(|| aloc.neutral_sets.first().map(|form| (*form, "audio marker Neutral set")))?;
         let mut directive = match index.media_sets.get(&set_form) {
-            Some(set) => self.location_set(set, marker, aloc.day_start, aloc.night_start),
+            Some(set) => self.location_set(set, marker, aloc.day_start, aloc.night_start, via),
             None => Directive::unresolved(
-                Source { label: format!("{set_form:#010x}"), form: Some(set_form), via: "audio marker" },
+                Source { label: format!("{set_form:#010x}"), form: Some(set_form), via },
                 "not a media set in the load order",
             ),
         };
-        directive.notes.push(note);
-        if aloc.has_relation_sets() {
-            // Q3: the faction-relation lists wait on how the relation is computed (#6902).
-            directive.notes.push("relation sets Unresolved (faction relation not modelled, Q3)".to_string());
+        directive.notes.push(format!("controller {} ({:#010x}), marker {:#010x}", aloc.editor_id, aloc.form_id, marker.form));
+        if let Some(faction) = aloc.conditional_faction {
+            directive.notes.push(format!("{relation:?} to the player: faction {faction:#010x}"));
         }
         Some(directive)
     }
 
-    fn location_set(&self, set: &MediaSetRecord, marker: &Marker, day_start: u32, night_start: u32) -> Directive {
-        let source = Source::record(set.editor_id.clone(), set.form_id, "audio marker");
+    fn location_set(&self, set: &MediaSetRecord, marker: &Marker, day_start: u32, night_start: u32, via: &'static str) -> Directive {
+        let source = Source::record(set.editor_id.clone(), set.form_id, via);
         let fade = Some(set.timings[2]).filter(|t| *t > 0.0).unwrap_or(self.fade_secs);
         // 23 of New Vegas's controllers list a Dungeon set among their Location sets. Its slots are
         // Battle / Explore / Suspense (xEdit's `(D)` labels), not layers: its Explore track plays;
@@ -557,7 +564,7 @@ mod tests {
         assert_eq!(catalog.marker_at(&place, [7000.0, 0.0, 0.0]), None, "outside the 5000-unit area");
         let marker = catalog.marker_at(&place, [2000.0, 0.0, 0.0]).expect("inside it");
         assert_eq!(marker.form, 0x152433);
-        let d = catalog.marker_location(&index, &marker).unwrap();
+        let d = catalog.marker_location(&index, &marker, CombatReaction::Neutral).unwrap();
         assert_eq!(d.source.label, "musSetGoodsprings");
         assert_eq!(d.fade_secs, 9.0, "the set's layer crossfade time");
         let Content::Stems { stems, area } = &d.content else { panic!("{d:?}") };
@@ -567,24 +574,39 @@ mod tests {
             ("music\\loc\\gs\\night_outer.mp3", true, 1.0),
         ]);
         assert_eq!((area.radius, area.day_start, area.night_start), (5000.0, 64, 255));
-        assert!(d.notes.iter().any(|n| n.contains("relation sets Unresolved")), "Q3");
+        assert!(d.notes.iter().any(|n| n.contains("controller musCtrlGoodsprings")), "{:?}", d.notes);
     }
 
-    /// #6904 — a controller with faction-relation sets and no Location set (Goodsprings) reports
-    /// Unresolved instead of falling back to music the data does not ask for.
+    /// #6904 — the conditional faction's reaction to the player picks the relation list ahead of the
+    /// Location list; a missing list falls back to Location, then Neutral; Battle sets only play none.
     #[test]
-    fn a_relation_only_controller_is_unresolved() {
+    fn the_conditional_factions_relation_picks_the_list() {
         let (mut index, _) = new_vegas();
+        let mut set = |form: u32, edid: &str| {
+            let mut tracks: [String; 6] = Default::default();
+            tracks[0] = "loc\\gs\\day_outer.mp3".into();
+            index.media_sets.insert(form, MediaSetRecord { form_id: form, editor_id: edid.into(), kind: MediaSetKind::Location, tracks, enable_flags: 1, boundaries: [100.0; 6], ..Default::default() });
+        };
+        set(0x52, "musSetGoodspringsNeutral");
+        set(0x51, "musSetGoodspringsEnemy");
         let aloc = index.media_locations.get_mut(&0x70).unwrap();
+        aloc.conditional_faction = Some(0x104C6E);
+        aloc.neutral_sets = vec![0x52];
         aloc.location_sets.clear();
-        let catalog = Catalog::new(&index, MusicFiles::default(), None);
+        let catalog = Catalog::new(&index, MusicFiles::new(["music\\loc\\gs\\day_outer.mp3".to_string()]), None);
         let place = Place::Exterior { worldspace: "wastelandnv".into(), grid: (0, 0) };
         let marker = catalog.marker_at(&place, [1000.0, 0.0, 0.0]).unwrap();
-        let d = catalog.marker_location(&index, &marker).unwrap();
-        assert_eq!(d.source.label, "musCtrlGoodsprings");
-        assert!(matches!(&d.content, Content::Unresolved(reason) if reason.contains("faction-relation sets only")), "{d:?}");
-        index.media_locations.get_mut(&0x70).unwrap().enemy_sets.clear();
-        assert_eq!(catalog.marker_location(&index, &marker), None, "battle sets only: the place's own music");
+        let pick = |index: &EsmIndex, relation| catalog.marker_location(index, &marker, relation).map(|d| (d.source.label, d.source.via));
+        assert_eq!(pick(&index, CombatReaction::Neutral), Some(("musSetGoodspringsNeutral".into(), "audio marker Neutral set")));
+        assert_eq!(pick(&index, CombatReaction::Enemy), Some(("musSetGoodspringsEnemy".into(), "audio marker Enemy set")));
+        assert_eq!(pick(&index, CombatReaction::Friend), Some(("musSetGoodspringsNeutral".into(), "audio marker Neutral set")), "no Friend list, no Location list: Neutral");
+        index.media_locations.get_mut(&0x70).unwrap().location_sets = vec![0x50];
+        assert_eq!(pick(&index, CombatReaction::Friend), Some(("musSetGoodsprings".into(), "audio marker")), "no Friend list: Location");
+        index.media_locations.get_mut(&0x70).unwrap().conditional_faction = None;
+        assert_eq!(pick(&index, CombatReaction::Enemy).unwrap().0, "musSetGoodspringsNeutral", "no conditional faction: Neutral");
+        let aloc = index.media_locations.get_mut(&0x70).unwrap();
+        (aloc.location_sets, aloc.neutral_sets, aloc.enemy_sets) = (Vec::new(), Vec::new(), Vec::new());
+        assert_eq!(pick(&index, CombatReaction::Neutral), None, "battle sets only: the place's own music");
     }
 
     #[test]

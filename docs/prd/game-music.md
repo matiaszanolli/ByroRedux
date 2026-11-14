@@ -1,6 +1,8 @@
 # Game Music — Product Requirements
 
-**Status**: SHIPPED (2026-11-14). Revision 8 records every phase closed
+**Status**: SHIPPED (2026-11-14). Revision 9 records Q3's follow-up done:
+the faction-relation media sets play by the conditional faction's relation
+to the player (#6904). Revision 8 records every phase closed
 (#6861–#6864, parent #6860) with the §8 metrics in ROADMAP; the PRD is kept
 as history. Revision 7 moves scenario 6 to Sloan's
 audio marker (#6904). Revision 6 closes Phase 0: the design is
@@ -489,8 +491,8 @@ A scenario passes when:
    day and by night reports its controller's Location set with the day and
    night layers in turn (MUS-SRC-005, MUS-SRC-006). The Goodsprings marker
    `0x00152433` first named here sits under `musCtrlGoodsprings`, which
-   carries faction-relation sets and no Location set, so that area reports
-   **Unresolved** until #6904.
+   carries faction-relation sets and no Location set; it plays its Neutral
+   set, and its Enemy set once `GoodspringsFaction` turns hostile (#6904).
 7. **Oblivion categories (headless).** A Public cell (`BrumaJGhastasHouse`)
    and a Dungeon cell (`SageGlenHollow`) report `public\` and `dungeon\`;
    `StreamMusic Random` reports the Script layer (MUS-SRC-008,
@@ -631,3 +633,4 @@ and Oblivion's source coverage is published.
 | 6 | 2026-11-13 | Phase 0 closed: `docs/engine/music.md` written and linked from Related; verify items settled from the executables' defaults and New Vegas's data, or filed as #6899–#6903 | — |
 | 7 | 2026-11-14 | Scenario 6 moved from the Goodsprings marker `0x00152433` to Sloan's `0x0015D028`: `musCtrlGoodsprings` carries faction-relation sets and no Location set, which Q3 defers (#6904) | — |
 | 8 | 2026-11-14 | ACTIVE → SHIPPED: Phases 0–3 closed (#6861–#6864, #6860); source and playable coverage published in ROADMAP; follow-ups #6899–#6904 stay open | — |
+| 9 | 2026-11-14 | Q3's follow-up delivered (#6904): a controller's Neutral / Ally / Friend / Enemy lists play by its conditional faction's relation to the player (Nexus wiki, 2014), ahead of its Location list; scenario 6's Goodsprings note updated | — |

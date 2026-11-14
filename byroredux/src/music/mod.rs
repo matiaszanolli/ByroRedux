@@ -87,6 +87,8 @@ pub(crate) struct MusicCatalog {
     place: Option<Place>,
     /// The New Vegas audio marker whose area the player is in (MUS-SRC-005).
     marker: Option<translate::Marker>,
+    /// How that marker's controller's conditional faction treats the player (#6904).
+    relation: Option<byroredux_sdk::relationships::CombatReaction>,
     /// Whether the player was dead last frame: the death sting plays on the change (MUS-STG-001).
     player_dead: bool,
     /// Stings raised since the last frame (a level-up, [`raise_sting`]).
@@ -169,14 +171,30 @@ pub(crate) fn music_system(world: &World, dt: f32) {
     // an equal directive playing).
     let place = current_place(world);
     let marker = place.as_ref().zip(player_position).and_then(|(place, at)| catalog.marker_at(place, at));
+    // The conditional faction's reaction picks a relation list; re-read each frame so a SetEnemy /
+    // SetFactionReaction changes the music where the player stands (#6904).
+    let relation = marker.map(|marker| {
+        index
+            .media_locations
+            .get(&marker.controller)
+            .and_then(|aloc| aloc.conditional_faction)
+            .zip(player)
+            .and_then(|(faction, player)| byroredux_scripting::faction_reaction_toward(world, faction, player))
+            .unwrap_or(byroredux_sdk::relationships::CombatReaction::Neutral)
+    });
     let mut cell_music = world.try_resource_mut::<byroredux_scripting::obscript_more::CellMusicTypes>();
     let cell_music_changes = cell_music.as_ref().map_or(0, |types| types.changes);
-    if place != state.place || marker != state.marker || cell_music_changes != state.cell_music_changes {
+    if place != state.place
+        || marker != state.marker
+        || relation != state.relation
+        || cell_music_changes != state.cell_music_changes
+    {
         let empty = std::collections::HashMap::new();
         let overrides = cell_music.as_ref().map_or(&empty, |types| &types.overrides);
         let directive = place.as_ref().map(|place| {
             marker
-                .and_then(|marker| catalog.marker_location(&index, &marker))
+                .zip(relation)
+                .and_then(|(marker, relation)| catalog.marker_location(&index, &marker, relation))
                 .unwrap_or_else(|| catalog.location_with(&index, place, overrides))
         });
         // OBSE `GetCellMusicType` answers the player's cell's own category (MUS-SCR-004).
@@ -187,6 +205,7 @@ pub(crate) fn music_system(world: &World, dt: f32) {
         music.set(Layer::Location, directive, &mut out);
         state.place = place;
         state.marker = marker;
+        state.relation = relation;
         state.cell_music_changes = cell_music_changes;
     }
     drop(cell_music);

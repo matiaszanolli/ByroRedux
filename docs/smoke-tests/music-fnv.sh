@@ -4,9 +4,11 @@
 #
 #   6. At Sloan (WastelandNV grid (-8,1)), inside audio marker 0x0015D028 (musCtrlSloan, radius 7000),
 #      music.status reports the controller's Location set musSetLOCDesSttlBothABC with its day layers
-#      at noon and its night layers at 02:00. (The PRD first named the Goodsprings marker 0x00152433;
-#      musCtrlGoodsprings carries faction-relation sets only, so that area reports Unresolved until
-#      #6904 — checked here too.)
+#      at noon and its night layers at 02:00.
+#   6b. At Goodsprings, marker 0x00152433's controller (musCtrlGoodsprings) carries faction-relation
+#      lists only: the Neutral set plays while GoodspringsFaction (0x00104C6E) is neutral to the
+#      player, and its Enemy set once SetFactionReaction (0x10a8) turns it hostile to PlayerFaction
+#      (0x0001B2A4) (#6904).
 #   5. The intro's own `PlayBink "FNVIntro.bik" 1 1 0 1` (pause music off) raises no Hold layer.
 #
 #   docs/smoke-tests/music-fnv.sh
@@ -111,8 +113,11 @@ night=$(layer Location)
 pass "02:00: $night"
 
 start_engine goodsprings --wrld WastelandNV --grid -18,0 --radius 1
-wait_layer Location 20 "Goodsprings' relation-only controller" '^Location: Unresolved \(faction-relation sets only.*musCtrlGoodsprings'
-pass "Goodsprings reports its relation-only controller Unresolved (#6904)"
+wait_layer Location 20 "Goodsprings' Neutral set" '^Location: Playing — musSetLOCDesExplBothABC .*audio marker Neutral set.*Neutral to the player'
+pass "Goodsprings, neutral: $(layer Location)"
+ask "obscript.cmd none 10a8 r:00104C6E r:0001B2A4 -100" >/dev/null
+wait_layer Location 10 "Goodsprings' Enemy set" '^Location: .*audio marker Enemy set.*Enemy to the player'
+pass "Goodsprings, hostile: $(layer Location)"
 
 # ── 5 — the intro's PlayBink leaves the music playing ────────────────────────
 if [[ -f "$SMOKE_DATA/Video/FNVIntro.bik" ]]; then
