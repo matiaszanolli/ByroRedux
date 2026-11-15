@@ -145,3 +145,14 @@ Classes as before. **input** = the read feeds a check, it is not itself a scan.
 
 **Still open.** One candidate is named above: the `sandbox` / `zup_yup` pair that
 wait on a fixture (`skin_offsets_hasher_tests` was replaced in the fifth pass). Nearly every file is classed by doc, not by reading; if a doc is wrong, the class is wrong.
+
+## Sixth pass — scans added since the fourth pass (2026-11-15, #6991)
+
+The 2026-11-15 tech-debt audit (TD9-2026-11-15-02) found four scans written after the fourth pass.
+
+| File | Test | Class | Basis / next step |
+|---|---|---|---|
+| `detection/sight.rs` | `the_detection_module_is_the_only_caller_of_the_line_test_and_the_range` | syntax (single caller) | *Read.* Walks every `.rs` under `byroredux/src` and `crates/` with `read_dir` and searches whole-file text for `line_of_sight_blocked(`, `config.range(`, `.range(exterior)`, so a comment, doc or test body in any crate that spells a needle fails it, and every `cargo test` reads the tree. **Candidate:** the same "single caller" shape #6685 turned into a `syn` walk (`acquisition_scan.rs`), or at least `production_text` per file. Not converted yet: M65 detection was still being edited when this pass ran. |
+| `detection/tick.rs` | `get_detection_level_toward_the_player_answers_the_real_level` (last line only) | input | *Read.* A behavioural test that ends with an `include_str!("../boot/world.rs")` check that boot installs `SightQuery(crate::detection::detects)`. **Candidate:** assert the installed resource on a world built by boot's own constructor, or drop the line (the behavioural part already runs `detects`). Deferred with the row above. |
+| `crates/video/src/lib.rs` | `every_reader_thread_runs_under_the_decoder_guard` | syntax → **replaced** | #6959 made `spawn_reader` the one reader spawn site (it always runs `guard_decoder`); the 260-byte window scan became `spawn_reader_is_the_only_reader_thread` (one named-thread spawn, inside `spawn_reader`), and `a_decoder_panic_ends_the_movie_as_failed` now runs the production spawner. |
+| `crates/audio/src/tests.rs` | `the_movie_hold_skips_sounds_already_stopping` | device/data | *Read.* Slices `world.rs` for the `.filter(|sound| !sound.stop_issued)` in `hold_for_movie` / `release_movie_hold`; the doc states that the runtime form needs an audio device. Outside this binary-crate record's scope; noted here so the next audio scan pass finds it. |
