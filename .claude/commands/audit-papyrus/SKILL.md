@@ -148,8 +148,10 @@ First step: `cargo test -p byroredux-pex -- decompile::`; with game data: `cargo
   fold that deletes a block, or a new CFG mutation that skips `link`/`unlink`, is the regression.
 - **Recursion**: `MAX_REBUILD_DEPTH = 1024` in `control_flow.rs` (`boolean.rs` derives it — not restated);
   both rebuilds return `RecursionLimit` (`rebuild_rejects_excessive_recursion_depth` exists in *both* files).
-  It and `MAX_EXPR_DEPTH` (256) compose additively (~1,280) and independent edits erode the margin
-  (#4113 still open, verified 2026-11-14) — check any change to either constant.
+  It and `MAX_EXPR_DEPTH` (256) compose additively (~1,280); since #4113 a `const` assert in
+  `decompile/mod.rs` holds their sum under `MAX_NODE_TREE_DEPTH` (2048, ~5x under the measured
+  2 MB-worker abort), so raising either cap alone fails to compile. Raising `MAX_NODE_TREE_DEPTH`
+  itself needs a fresh stack measurement.
 - **`lower.rs` totality**: `lower_expr`/`lower_stmt` never panic on any `NodeKind`; intentional lossy lowerings
   matter only if a recognizer keys on the lost info: statement-shaped node as sub-expression → `NoneLit`
   (should be unreachable), `is` → `Cast`, `lower_binary_op` default arm →

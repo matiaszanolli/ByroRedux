@@ -42,6 +42,10 @@ use std::collections::BTreeMap;
 /// untrusted CFG one step earlier and documented itself as "mirroring" this
 /// bound while restating the literal, which is the same unenforced-alignment
 /// pattern that issue removed from the `256` caps.
+///
+/// Expression nesting stacks on top of statement nesting in the same tree,
+/// so this plus `lift::MAX_EXPR_DEPTH` is asserted against
+/// `MAX_NODE_TREE_DEPTH` (#4113).
 pub(super) const MAX_REBUILD_DEPTH: usize = 1024;
 
 use super::cfg::{Cfg, END};

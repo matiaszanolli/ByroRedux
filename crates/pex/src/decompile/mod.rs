@@ -45,6 +45,21 @@ pub use node::{Node, NodeKind};
 
 use thiserror::Error;
 
+/// The deepest `Node` tree the decompiler may hand to its recursive walks
+/// (`Node`'s derived `Clone` and drop glue, `count_constant_id` /
+/// `replace_constant_id`, `lower_expr`). Statement nesting is bounded by
+/// [`control_flow::MAX_REBUILD_DEPTH`] and expression nesting inside it by
+/// [`lift::MAX_EXPR_DEPTH`], so the worst case is their sum. Neither cap
+/// alone bounds it (#4113).
+///
+/// Measured stack aborts (a `SIGABRT` `catch_unwind` cannot stop): about
+/// 10 000 levels on a default 2 MB worker thread and 30 000 on an 8 MB main
+/// thread. 2048 keeps a ~5x margin under the worker figure.
+const MAX_NODE_TREE_DEPTH: usize = 2048;
+
+// Raising either cap alone must not erode the stack margin unnoticed (#4113).
+const _: () = assert!(control_flow::MAX_REBUILD_DEPTH + lift::MAX_EXPR_DEPTH <= MAX_NODE_TREE_DEPTH);
+
 /// Why decompilation of a function body failed. Structural defects in the
 /// bytecode that a well-formed `.pex` never exhibits.
 #[derive(Debug, Error, PartialEq, Eq)]

@@ -376,7 +376,8 @@ const NO_LINK: usize = usize::MAX;
 /// nesting (`IfElse`/`While` bodies) lives in the same tree the recursive
 /// walks traverse, it counts toward this bound too — which is the right
 /// quantity for stack safety, and is separately bounded by
-/// `MAX_REBUILD_DEPTH`. Real Papyrus is nowhere near either.
+/// `MAX_REBUILD_DEPTH`. Real Papyrus is nowhere near either. Their sum is
+/// the real tree bound, asserted against `MAX_NODE_TREE_DEPTH` (#4113).
 pub(super) const MAX_EXPR_DEPTH: usize = byroredux_papyrus::parser::expr::MAX_EXPR_DEPTH as usize;
 
 pub(super) fn rebuild_expression(

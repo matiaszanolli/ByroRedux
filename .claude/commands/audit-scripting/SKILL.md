@@ -83,8 +83,7 @@ injected packages/spells/keywords/names/voice-type/combat overlays — don't re-
 **Known-open — cite, don't re-file** (re-verified 2026-11-14 with `gh issue view`; #6657 — M24.2 Phase 3, condition subjects and the FO3/FNV/Skyrim hooks — is open too, and still collects `Refs #6657` getter commits): #5764 (interpreter deferral ~0.8 µs a delivery; a value-called function or an
 array/struct-holding frame cannot suspend — the budget-split residual; its idle-walk half shipped as `11685934d`,
 Dim 2),
-#4113 is open but lives in `crates/papyrus`/`crates/pex`
-(`/audit-papyrus`). Closed since the 2026-11-06 sync: #5802 (closed 2026-11-07; hub-file growth — every subsystem migrated to its own
+Closed since the 2026-11-06 sync: #5802 (closed 2026-11-07; hub-file growth — every subsystem migrated to its own
 `install` + `register_saved` + `register_*_systems` file, `bde3478db`/`e619dbbaf`, `93bcda9bc`, and the Part-of commits #6701-#6707
 `c22a9d410`..`5c983ecd0`: `register_late_systems` is a flat 14-call list, the Update domains and `register_post_update_systems` are flat
 call lists into one file per subsystem, `Scheduler::run_before`/`run_after` replace file position as the order carrier). Closed since the
