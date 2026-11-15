@@ -969,11 +969,20 @@ mod tests {
     /// Skyrim's Battle is an explicit Unresolved, and there is no sting (which would silence it).
     #[test]
     fn battle_and_stings_decline_where_the_music_is_not_translated() {
-        let index = EsmIndex { game: GameKind::Skyrim, ..Default::default() };
+        // The index carries the sting SOUNs, so only the decline can make `sting()` return `None`
+        // (INC2 missing test: without them both assertions held before #6931 too).
+        let mut index = EsmIndex { game: GameKind::Skyrim, ..Default::default() };
+        for (form, edid) in [(0x10, "MUSDeath"), (0x11, "MUSSuccess")] {
+            index.sounds.insert(form, byroredux_plugin::esm::records::SounRecord { form_id: form, editor_id: edid.into(), sound_path: "music\\special\\sting.wav".into(), ..Default::default() });
+        }
         let catalog = Catalog::new(&index, MusicFiles::new(Vec::<String>::new()), None);
         let battle = catalog.battle(&index, None, None, Surroundings::default(), 0);
         assert_eq!(battle.outcome(), crate::music::directive::Outcome::Unresolved, "{battle:?}");
         assert!(catalog.sting(&index, Sting::Death).is_none());
         assert!(catalog.sting(&index, Sting::LevelUp).is_none());
+        // The same records on a translated game do resolve: the fixture is not what declines.
+        index.game = GameKind::Fallout3NV;
+        let fallout = Catalog::new(&index, MusicFiles::new(Vec::<String>::new()), None);
+        assert!(fallout.sting(&index, Sting::Death).is_some());
     }
 }
