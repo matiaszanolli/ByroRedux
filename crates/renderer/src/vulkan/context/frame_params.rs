@@ -105,23 +105,18 @@ pub(super) struct CameraFrameDeltas {
 
 /// Derive the frame-over-frame camera signals for cut detection.
 ///
-/// #2159: the VP-matrix limb used to BE the cut signal — a raw element-wise
-/// diff against `prev_view_proj`, which is camera-RELATIVE to the PREVIOUS
-/// frame's render origin, so a plain 4096-unit grid crossing (zero real
-/// camera motion) produced a huge, meaningless delta; the same raw diff also
-/// tripped on ordinary walk/run speeds (a 6 units/frame forward move alone
-/// crossed the old 0.75 threshold by 8x). Both false-positives defeated
-/// #1489's origin correction on exactly the frame it exists for, and forced
-/// TAA/SVGF/FSR into a permanent reset loop while the player was simply
-/// moving.
-///
-/// It was replaced by two signals that are each robust on their own: an
-/// absolute position jump (unaffected by origin-relativity) and an angular
+/// A cut is one of two signals, each robust on its own (#2159): an absolute
+/// position jump (unaffected by the render origin) and an angular
 /// forward-vector flip (unaffected by translation speed) — a real
 /// teleport/cutscene snap reorients the camera far more than any continuous
-/// turn does in one frame. `vp_max_abs_delta` survives only as a per-frame
-/// debug-log field; keeping it here (rather than at the log site) documents
-/// that its exclusion from [`is_camera_cut`] is deliberate.
+/// turn does in one frame.
+///
+/// The element-wise view-proj diff is not a cut signal. `prev_view_proj` is
+/// relative to the previous frame's render origin, so a 4096-unit grid
+/// crossing with no camera motion yields a large delta, and ordinary walk
+/// speeds trip it too; either would defeat #1489's origin correction and hold
+/// TAA/SVGF/FSR in a reset loop. `vp_max_abs_delta` is a debug-log field only;
+/// computing it here keeps its exclusion from [`is_camera_cut`] visible.
 pub(super) fn camera_frame_deltas(
     camera_pos: [f32; 3],
     prev_camera_position: [f32; 3],
@@ -180,8 +175,8 @@ pub(super) fn rigid_instance_set_changed(
 /// get `0` regardless of `slot_address` (defensive — a stray populated
 /// slot must never leak into a rigid instance's field), and a skinned draw
 /// with no registered `SkinSlot` yet (first-sight frame, or a
-/// pool-exhaustion fallback) also gets `0`, falling back to the bind-pose
-/// hit-normal path `ray_hit.glsl` already had before this fix.
+/// pool-exhaustion fallback) also gets `0`, which selects the bind-pose
+/// hit-normal path in `ray_hit.glsl`.
 #[inline]
 pub(super) fn skinned_vertex_address_for_draw(
     bone_offset: u32,
@@ -215,9 +210,9 @@ pub(super) fn skinned_vertex_address_for_draw(
 /// Equality rather than `>=`: a larger slot is in-bounds but still holds
 /// a *different* mesh's skinned positions, which reconstructs hit normals
 /// from the wrong geometry. Either way the caller falls back to `0`, and
-/// `ray_hit.glsl`'s `skinnedVertexAddress != 0` branch takes the bind-pose
-/// path it used before #2219 — the same fallback a first-sight frame or a
-/// pool-exhaustion miss already gets.
+/// `ray_hit.glsl`'s `skinnedVertexAddress != 0` test sends it down the
+/// bind-pose path — the same fallback a first-sight frame or a
+/// pool-exhaustion miss gets.
 #[inline]
 pub(super) fn skin_slot_backs_mesh(slot_vertex_count: u32, mesh_vertex_count: u32) -> bool {
     slot_vertex_count == mesh_vertex_count
@@ -394,18 +389,11 @@ mod skinned_vertex_address_tests {
 /// reconstructs a super-sampled result; the vertex shader applies it AFTER
 /// motion-vector computation so reprojection stays jitter-free.
 ///
-/// Period 16 (#1093 / REN-D11-002). **Correction 2026-08-31**: this
-/// comment previously claimed Halton(2)/Halton(3) have "natural periods"
-/// of 2/3 with an LCM of 6 — Halton sequences are aperiodic (the radical
-/// inverse is injective on the index), so there is no such period to take.
-/// It also claimed `% 8` never reached "the 9th Halton(3) sample ≈ 0.889";
-/// `halton(9, 3) = 1/27 ≈ 0.037` is what index 9 actually gives, and
-/// `0.889 = halton(8, 3)` — reached by `% 8` (index range `1..=8`). The
-/// sample `% 8` actually omits is index 9's `1/27`; `% 8`'s Y set is in
-/// fact perfectly stratified to ninths, and `% 16` adds four 27ths that
-/// are *not* aligned to that grid, so it is not obviously more uniform.
-/// The real motivation for 16 over 8 is not re-derived here — treat this
-/// as an open question rather than re-quote the retracted rationale above.
+/// Period 16 (#1093 / REN-D11-002). Halton sequences are aperiodic (the
+/// radical inverse is injective on the index), so the period is a choice, not
+/// a property of the sequence. `% 8`'s Y set is stratified to ninths; `% 16`
+/// adds four 27ths that are not aligned to that grid, so it is not obviously
+/// more uniform. Why 16 rather than 8 is an open question.
 ///
 /// Returns `(0.0, 0.0)` (no jitter) whenever `taa_present` is false OR
 /// `taa_failed` is true (#1932 / TAA-D13-01) — a permanent TAA failure must
@@ -417,11 +405,9 @@ mod skinned_vertex_address_tests {
 /// meaning regardless of which upscaler is active. `clip.xy += jitter.xy *
 /// clip.w` in triangle.vert/water.vert is sign-agnostic (a jittered sample
 /// is undone by neighborhood-clamp + motion-vector reprojection in TAA/SVGF
-/// resolve, never by re-reading the sign back out), so this had no
-/// rendering effect either way — the only shader-side reader that cares
-/// about the sign is `triangle.frag`'s `DBG_VIZ_FSR_TEMPORAL` debug view,
-/// which hard-codes the FSR convention and was silently wrong under TAA
-/// before this fix.
+/// resolve, never by re-reading the sign back out). The one shader reader
+/// that depends on the sign is `triangle.frag`'s `DBG_VIZ_FSR_TEMPORAL` debug
+/// view, which hard-codes the FSR convention.
 pub(super) fn taa_jitter(
     taa_present: bool,
     taa_failed: bool,
@@ -709,15 +695,11 @@ pub(super) fn dof_effective_view_proj(
     let up = Vec3::from_array(dof.cam_up);
     let fwd = Vec3::from_array(dof.cam_forward);
 
-    // #4002 — rebase FIRST, then compose. Both offsets below used to be added
-    // to the raw absolute `camera_pos` and only rebased inside the view
-    // call (then `Mat4::look_at_rh`, now `look_at_mat4`), which threw the
-    // aperture term away before it could
-    // matter: at Markarth's X ~ -176 000 an f32 ULP is 0.015625, so a sub-unit
-    // lens offset is quantised (and below ~0.008 u discarded outright) by that
-    // addition. The subtraction itself was never the lossy step — `render_origin`
-    // is a multiple of 4096 and the difference is < 4096, so it is exactly
-    // representable — which is why doing it first is exact and free.
+    // #4002 — rebase FIRST, then compose. Adding the lens offsets to the
+    // absolute `camera_pos` would quantise them: at Markarth's X ~ -176 000 an
+    // f32 ULP is 0.015625, so a sub-unit offset is rounded (and below ~0.008 u
+    // discarded). The subtraction is exact — `render_origin` is a multiple of
+    // 4096 and the difference is < 4096 — so rebasing first costs nothing.
     let rel = Vec3::from_array(camera_pos) - render_origin;
 
     // Jitter the camera position on the aperture disk (render-relative).
@@ -925,13 +907,13 @@ pub(super) fn build_composite_params(
         super::super::composite::MAX_SKY_APERTURES];
     let mut aperture_count = 0usize;
     // The forward view-projection `inv_vp_arr` inverts, once on the CPU: the aperture projection
-    // below and the shader's underwater god-ray march both need it, and the shader used to
+    // below and the shader's underwater god-ray march both need it, so the shader does not
     // `inverse()` it per submerged pixel (#6486).
     let view_proj = byroredux_core::math::Mat4::from_cols_array_2d(&inv_vp_arr).inverse();
     if !is_exterior && interior_portal_sky {
         // VLM-INT-005: collect every usable aperture with its distance to the camera, then keep the
-        // nearest `MAX_SKY_APERTURES`. The upload used to stop at the cap in iteration order, so in a
-        // cell with more marked openings than the cap the ones that were dropped were whichever came last.
+        // nearest `MAX_SKY_APERTURES`, so a cell with more marked openings than the cap drops the
+        // farthest ones rather than whichever came last in iteration order.
         let mut nearest = super::sky_apertures::NearestApertures::new(&mut sky_apertures[..]);
         for volume in sky_aperture_volumes {
             if (volume.center_shape[3] != crate::shader_constants::FOG_VOLUME_SHAPE_BOX as f32
@@ -1045,8 +1027,7 @@ pub(super) fn build_composite_params(
         // origin-invariant differences, so supply the camera position
         // in the SAME relative space.
         //
-        // REN-D16-01 / #2225 — `w` (previously unused padding) now
-        // carries the height-fog reference altitude in the same
+        // REN-D16-01 / #2225 — `w` carries the height-fog reference altitude in the same
         // render-origin-relative space, consumed by
         // `heightFogOpticalDepth`'s `baseHeight` parameter instead of
         // `camera_pos.y` (which made beyond-grid fog follow the
@@ -1131,10 +1112,9 @@ fn pack_sky_dome(
             sky.sun_color[1],
             sky.sun_color[2],
             // #478 — pack the CLMT FNAM sun sprite handle
-            // into the previously-unused w slot via
-            // `from_bits`. The shader reinterprets with
-            // `floatBitsToUint`; `0` keeps the procedural
-            // disc (pre-fix behaviour).
+            // into the w slot via `from_bits`. The shader
+            // reinterprets with `floatBitsToUint`; `0` keeps
+            // the procedural disc.
             f32::from_bits(sky.sun_texture_index),
         ],
         cloud_params: [
@@ -2095,9 +2075,9 @@ pub(super) fn should_use_indirect_draws(
 
 /// All per-frame inputs consumed by [`VulkanContext::draw_frame`].
 ///
-/// Groups the (formerly 22) loose `draw_frame` arguments into one struct so
-/// the call stays under the argument-count lint. Construction is mechanical:
-/// every field is exactly the argument it replaces, in the same order.
+/// Groups `draw_frame`'s per-frame inputs into one struct so the call stays
+/// under the argument-count lint. Construction is mechanical: one field per
+/// input.
 pub struct FrameInputs<'a> {
     /// Clear color (RGBA) for the main render pass.
     pub clear_color: [f32; 4],
@@ -2192,7 +2172,7 @@ pub struct FrameInputs<'a> {
     /// a downward ray-cast from the camera against static collision, or
     /// the camera's own Y as a fallback when no ground is found below.
     /// Threaded through to `VolumetricsParams`/`CompositeParams` in place
-    /// of the camera's raw Y, which pre-fix made fog density follow the
+    /// of the camera's raw Y, which would make fog density follow the
     /// player vertically instead of thinning with real altitude.
     pub fog_height_reference: f32,
     /// Shared atmospheric wind for volumetric advection. `[x, z, base_speed,
