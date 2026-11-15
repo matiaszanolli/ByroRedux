@@ -400,17 +400,23 @@ impl MusicController {
                 }
                 if state.track.is_none() {
                     let index = state.shuffle.next(tracks.len());
-                    let key = tracks[index].clone();
                     let voice = layer.voice(0);
                     // A one-track playlist loops its track (Q1); so does a looping directive.
                     let looping = d.looping || tracks.len() == 1 && !matches!(layer, Layer::Sting | Layer::Script);
                     let fade = state.start_fade.take().unwrap_or(d.fade_secs);
-                    if out.play(voice, &key, d.level, fade, looping) {
-                        state.track = Some(Playing { key, voice, clock: 0.0 });
-                    } else {
-                        let missing = Directive { content: Content::Missing(key), ..(*d).clone() };
-                        state.directive = Some(Arc::new(missing.clone()));
-                        self.report(layer, &missing);
+                    // AUD-3 — a track that will not play (a corrupt or empty file among good ones) is
+                    // skipped for the next in the list; only a playlist none of whose tracks plays is
+                    // Missing. Demoting on the first failure silenced the whole place until it changed.
+                    let played = (0..tracks.len())
+                        .map(|offset| &tracks[(index + offset) % tracks.len()])
+                        .find(|key| out.play(voice, key, d.level, fade, looping));
+                    match played {
+                        Some(key) => state.track = Some(Playing { key: key.clone(), voice, clock: 0.0 }),
+                        None => {
+                            let missing = Directive { content: Content::Missing(tracks[index].clone()), ..(*d).clone() };
+                            state.directive = Some(Arc::new(missing.clone()));
+                            self.report(layer, &missing);
+                        }
                     }
                 }
             }
@@ -502,6 +508,30 @@ pub(crate) mod tests {
     use super::*;
     use crate::music::directive::Source;
     use std::collections::HashMap;
+
+    /// AUD-3 — one track that will not play does not silence its playlist: the next one plays, and
+    /// only a playlist with no playable track is Missing.
+    #[test]
+    fn an_unplayable_track_is_skipped_for_the_next() {
+        let mut out = FakeOutput { unplayable: ["broken".to_string()].into(), ..Default::default() };
+        let mut music = MusicController::seeded(1);
+        let playlist = |files: &[&str]| {
+            Directive::new(Source::keyword("explore", "test"), Content::Playlist(files.iter().map(|f| f.to_string()).collect()))
+        };
+        let at = Inputs { dt: 0.1, player: Some([0.0; 3]), hour: 12.0, ..Default::default() };
+        for _ in 0..4 {
+            music.set(Layer::Location, Some(playlist(&["broken", "fine"])), &mut out);
+            music.step(at, no_battle, &mut out);
+            assert_eq!(out.voices.values().map(|v| v.0.as_str()).collect::<Vec<_>>(), ["fine"], "{:?}", out.log);
+            music.set(Layer::Location, None, &mut out);
+            music.step(at, no_battle, &mut out);
+        }
+        assert!(out.log.iter().any(|line| line.contains(" broken")), "the shuffle tried the broken track: {:?}", out.log);
+        let mut out = FakeOutput { unplayable: ["broken".to_string()].into(), ..Default::default() };
+        music.set(Layer::Location, Some(playlist(&["broken"])), &mut out);
+        music.step(at, no_battle, &mut out);
+        assert!(out.voices.is_empty(), "nothing plays");
+    }
 
     /// A recording output: every voice "plays" until a test ends it.
     #[derive(Default)]
