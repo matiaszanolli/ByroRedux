@@ -372,6 +372,8 @@ pub fn register_all(registry: &mut ComponentRegistry) {
         vec!["inventory_index", "base_form_id", "damage", "reach", "speed"],
     );
     register_component::<Dead>(registry, "Dead", vec![]);
+    // M65 (SNK-STN-002, #6910) — the player's sneak stance marker.
+    register_component::<Sneaking>(registry, "Sneaking", vec![]);
     register_component::<CreatureAttack>(registry, "CreatureAttack", vec!["damage"]);
     register_component::<Perks>(registry, "Perks", vec!["entries"]);
     // PERK-DX-006 — a perk-granted ability is visible on the actor as a spell in its list.

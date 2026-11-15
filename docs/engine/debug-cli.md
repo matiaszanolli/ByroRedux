@@ -186,7 +186,7 @@ using the generic `register_component::<T>()` helper, called from
 `byroredux-core`). The registry is owned by the `DebugDrainSystem`
 (`DebugDrainSystem.registry`), not stored as a World resource.
 
-### Currently registered (83 components)
+### Currently registered (84 components)
 
 | Component | Fields |
 |-----------|--------|
@@ -242,6 +242,7 @@ using the generic `register_component::<T>()` helper, called from
 | `ActorVitals` | health — resolved per-game health AVIF FormID |
 | `EquippedWeapon` | inventory_index, base_form_id, damage, reach, speed |
 | `Dead` | (marker) — actor death state |
+| `Sneaking` | (marker) — the player is in the sneak stance (M65) |
 | `CreatureAttack` | damage — creature attack profile |
 | `Perks` | entries — owned perk ranks |
 | `SpellList` | 0 — the actor's spell FormIDs, in arrival order (a perk's Ability spell is one of them, PERK-DX-006) |
@@ -1400,7 +1401,7 @@ byro> components
   TextureHandle
   Transform
   WorldBound
-(83 components)
+(84 components)
 
 byro> entities Inventory
   Entity 12 "saadia"

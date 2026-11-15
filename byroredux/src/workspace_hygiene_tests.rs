@@ -1461,7 +1461,9 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // (cell `XCMO`, worldspace `ZNAM`, region `RDMO`, `MUSC` / `MUST` resolution under `Data\Music`) whose
         // output ROADMAP's compatibility matrix publishes. #6851 moved `cross-space-census` onto the shared
         // `SpaceGraph` (-44 LOC).
-        ("plugin", 74, 10142),
+        // #6909 (M65 Phase 0) re-measure: +1 — `stealth_gmst_census.rs`, the per-master stealth /
+        // detection GMST census the PRD's §7.2 scenario 3 reads (+67 LOC).
+        ("plugin", 75, 10209),
         // M47.3 result scripts — `obscript_tools avcodes` aligns the Fallout
         // misc-stat codes and `live` names the quests a script advanced
         // (no new target; the existing triage tool grew).

@@ -124,12 +124,13 @@ done
 # w2-dynamic-water is game-parameterised, so it is in the fixture loop above.
 # #6589 — the nine M43 live gates of 2026-10-30/31 (armor through tempering) are the fourth.
 # The Session 111/112 gates (Bink, FNV routes, music, perk entry points, cross-cell travel) are the fifth.
+# The Session 113 M65 gates (m65-stealth-detection, m65-robotics-expert) are the sixth.
 for name in dt1-dialogue-layers m42-eat-sleep sm1-story-manager dt2-skyrim-forcegreet m47-3-obscript fo4-ragdoll m41-ragdoll \
     p4-fnv-quest-route p5-fnv-quest-persistence m42-package-procedures vats-targeting m43-adia-conversations m43-item-drop m43-crafting \
     m43-armor m43-attraction m43-attraction-reaction m43-fo4-actions m43-hello m43-mines m43-node-window \
     m43-skyrim-actions m43-tempering \
     bik-flags bik-start-sequence fnv-new-game fnv-vcg02-route music-fnv music-fo3 music-oblivion perk-entry-points \
-    xct-census xct-scripted-move; do
+    xct-census xct-scripted-move m65-stealth-detection m65-robotics-expert; do
     smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
     set +e
     output="$(env "${DATA_NEUTRALISE[@]}" "$smoke" 2>&1)"
