@@ -635,9 +635,6 @@ performance finding. The measured knob table is in
   so the `OVERSIZED REACH` canary fires for each: one extra light per cluster, not
   a visual defect. Owed: a reach that tracks illuminance relative to the cell's
   ambient, then retire or retune the canary. Captures: `~/Downloads/fire-lighting-ab/`.
-- [ ] **Skyrim exterior → interior door loses the Vulkan device** (#6608, 2026-10-31):
-  NVRM Xid 109 on `p1-character-traversal`'s second Bannered Mare entry in 3 of 4
-  display runs; not bisected ([report](docs/audits/AUDIT_RUNTIME_2026-10-31.md)).
 - [ ] **CHARAL runtime-dead surface.** The 2026-08-15 audit verified 62
   constants with zero mismatch at that HEAD; #5238 later falsified the
   then-current NPC Health row (fixed, and the capture's Health rows are now
