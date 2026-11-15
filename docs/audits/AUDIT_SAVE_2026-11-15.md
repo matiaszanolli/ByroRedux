@@ -41,4 +41,4 @@ Read-only audit, then every finding was fixed the same night. Guards run at audi
 
 ## Not fixed (noted)
 - **`Background` allowlist row**: it says "no live production mutator", which is no longer true (`player_identity_sync_system`, `sync_body_after_load` both write it). This is doc-rot only.
-- **Cold `--load` variant of SAVE-2**: on a cold load the player spawns with empty `Perks`, and the first tick may set that empty set as the baseline before the load drain. Unverified whether `PerkEntryTable` is installed on that first tick.
+- **Cold `--load` variant of SAVE-2**: covered by the same fix. `--load` queues through `queue_startup_load` and drains through `execute_pending_save_loads`, the F9 path (`main.rs`), so the removal after the overlay applies there too.
