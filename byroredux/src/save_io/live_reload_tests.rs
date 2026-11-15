@@ -658,6 +658,51 @@ fn pre_reload_restore_installs_the_scripted_faction_ledger() {
     );
 }
 
+/// XCT-LOC-002 (#6852) — `skipped_at_home` reads the relocation ledger as the
+/// reload re-spawns the home cell, so the *pre*-reload subset must install the
+/// save's: with the live ledger an actor the save moved away spawns at home,
+/// and one only the outgoing session moved is skipped and never respawned.
+#[test]
+fn pre_reload_restore_installs_the_relocation_ledger() {
+    use byroredux_scripting::{ActorRelocations, CreatedCell, CreatedPlacement};
+
+    const MOVED_IN_SAVE: u32 = 0x0010_4E85;
+    const MOVED_IN_LIVE: u32 = 0x0099_0001;
+    let away = CreatedPlacement {
+        cell: CreatedCell::Exterior { worldspace: "wastelandnv".into(), grid: (-17, 0) },
+        position_zup: [-68000.0, 100.0, 8000.0],
+        rotation_zup: [0.0; 3],
+    };
+    let reg = build_save_registry();
+    let mut source = World::new();
+    source.insert_resource(StringPool::new());
+    source.insert_resource(FormIdPool::new());
+    let mut saved = ActorRelocations::default();
+    saved.relocate(MOVED_IN_SAVE, away.clone());
+    source.insert_resource(saved);
+    let snapshot = save_world(&source, &reg).unwrap();
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    let mut world = World::new();
+    world.insert_resource(StringPool::new());
+    world.insert_resource(FormIdPool::new());
+    let mut live = ActorRelocations::default();
+    live.relocate(MOVED_IN_LIVE, away);
+    world.insert_resource(live);
+
+    byroredux_save::restore_resources_subset(&mut world, &reg, &decoded, PRE_RELOAD_RESOURCES)
+        .unwrap();
+    assert!(
+        crate::cell_loader::relocated::skipped_at_home(&world, MOVED_IN_SAVE),
+        "the save's move must govern the reload's home-cell spawn"
+    );
+    assert!(
+        !crate::cell_loader::relocated::skipped_at_home(&world, MOVED_IN_LIVE),
+        "the outgoing session's move must not hide its actor from the reload"
+    );
+}
+
 /// #6081 — a load refused at its pre-teardown preflight keeps the live
 /// session, so the pre-reload restore (which overwrites the four ledgers with
 /// the save's) must be undone: the player keeps their own `Disable()`, lock,

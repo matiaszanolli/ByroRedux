@@ -19,7 +19,13 @@ use super::*;
 /// (`cell_loader::spawn::scripted_lock_override`, #4136) — both are
 /// FormID-keyed ledgers the spawn path reads while the reload is
 /// actively building the new cell, so a post-reload restore would
-/// arrive after the placements they govern were already stamped. The same holds
+/// arrive after the placements they govern were already stamped. So does
+/// `ActorRelocations` (XCT-LOC-002, #6852): `cell_loader::relocated::skipped_at_home`
+/// leaves a relocated or journeying actor out of its home cell as the reload
+/// builds it, so the ledger must already be the save's — the live one would
+/// hide an actor the save keeps at home, or spawn one the save moved away. Its
+/// teardown writer, `depart_unwatched`, is held off for the reload by
+/// `reference_state::without_parked_state`. The same holds
 /// for `ScriptedFactionChanges` (#5919): `stamp_quest_reference` replays it onto
 /// each NPC as the reload re-spawns the cell, and nothing re-applies it to
 /// actors already stamped (`FactionRanks` is re-derived, not saved), so a ledger
@@ -42,6 +48,9 @@ pub(super) const PRE_RELOAD_RESOURCES: &[&str] = &[
     // #6237 — `cell_loader::spawn::scripted_motion_type` reads it as each
     // collider is built.
     "ReferenceMotionTypeState",
+    // XCT-LOC-002 — `cell_loader::relocated::skipped_at_home` reads it as each
+    // home-cell reference is placed.
+    "ActorRelocations",
 ];
 
 /// The live values of the [`PRE_RELOAD_RESOURCES`] ledgers, taken before the
@@ -61,6 +70,7 @@ pub(super) struct LiveReloadLedgers {
     script: Option<byroredux_scripting::ReferenceScriptState>,
     factions: Option<byroredux_scripting::ScriptedFactionChanges>,
     motion: Option<byroredux_scripting::ReferenceMotionTypeState>,
+    relocations: Option<byroredux_scripting::ActorRelocations>,
 }
 
 impl LiveReloadLedgers {
@@ -74,6 +84,7 @@ impl LiveReloadLedgers {
             script: live(world),
             factions: live(world),
             motion: live(world),
+            relocations: live(world),
         }
     }
 
@@ -95,6 +106,7 @@ impl LiveReloadLedgers {
         put(world, self.script);
         put(world, self.factions);
         put(world, self.motion);
+        put(world, self.relocations);
     }
 }
 

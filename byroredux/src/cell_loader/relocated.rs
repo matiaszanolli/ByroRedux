@@ -47,6 +47,18 @@ pub(crate) struct RelocatedSpawning(pub(crate) HashSet<u32>);
 
 impl Resource for RelocatedSpawning {}
 
+/// Present while a save load's cell reload runs (inside
+/// `reference_state::without_parked_state`). The reload's teardown releases
+/// the *outgoing* session's actors, and [`depart_unwatched`] must not start
+/// their offscreen journeys: the ledger already holds the save's value, which
+/// the home-cell skip ([`skipped_at_home`]) reads as the reload re-spawns the
+/// cell, so an outgoing departure would hide an actor the save keeps at home.
+/// `NOT_SAVED_BY_DESIGN`.
+#[derive(Debug, Default)]
+pub(crate) struct SaveReloadTeardown;
+
+impl Resource for SaveReloadTeardown {}
+
 /// The routing data of one load order, built on first use: the load-door graph
 /// and the interior-persistent actors that need a logical identity while their
 /// cell is not loaded. Rebuilt when the load order's index changes.
@@ -411,6 +423,9 @@ pub(crate) fn report(world: &World, actor: u32, unroutable: Option<&'static str>
 /// journey from where it stood. Called by the unload path before the actors are
 /// released.
 pub(crate) fn depart_unwatched(world: &World, victims: &[EntityId]) {
+    if world.try_resource::<SaveReloadTeardown>().is_some() {
+        return;
+    }
     let routing: Vec<(EntityId, u32)> = world
         .query::<CrossSpaceHop>()
         .map(|hops| victims.iter().filter_map(|&e| hops.get(e).map(|hop| (e, hop.target))).collect())
@@ -1082,6 +1097,36 @@ mod tests {
         assert_eq!(journey.arrival.rotation_zup, [0.0, 0.0, 0.5]);
         assert_eq!(journey.last_door.as_ref().unwrap().position_zup, [1000.0, 0.0, 0.0]);
         assert!(matches!(journey.arrival.cell, CreatedCell::Exterior { grid: (0, 0), .. }));
+    }
+
+    /// XCT-OFF-001 — a save load's teardown releases the *outgoing* session's
+    /// actors: one walking to a door starts no journey in the ledger the save
+    /// restored before the reload (`SaveReloadTeardown`), while an ordinary
+    /// unload still sends it on offscreen.
+    #[test]
+    fn a_save_reload_teardown_starts_no_offscreen_journeys() {
+        use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
+        let mut world = world_with(town());
+        world.register::<CrossSpaceHop>();
+        let mut pool = FormIdPool::new();
+        let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("FalloutNV.esm"), local: LocalFormId(SUNNY) });
+        world.insert_resource(pool);
+        let actor = world.spawn();
+        world.insert(actor, FormIdComponent(id));
+        let door = CreatedPlacement {
+            cell: CreatedCell::Exterior { worldspace: "wastelandnv".into(), grid: (0, 0) },
+            position_zup: [1000.0, 0.0, 0.0],
+            rotation_zup: [0.0; 3],
+        };
+        world.insert(actor, CrossSpaceHop { door: 9, placement: door, target: MARKER });
+
+        world.insert_resource(SaveReloadTeardown);
+        depart_unwatched(&world, &[actor]);
+        assert!(world.resource::<ActorRelocations>().journey(SUNNY).is_none(), "the save's ledger is left as saved");
+
+        world.remove_resource::<SaveReloadTeardown>();
+        depart_unwatched(&world, &[actor]);
+        assert!(world.resource::<ActorRelocations>().journey(SUNNY).is_some(), "an ordinary unload sends it on offscreen");
     }
 
     /// XCT-ROUTE-003 — a destination two doors away is routed through both.

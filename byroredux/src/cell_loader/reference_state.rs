@@ -192,7 +192,11 @@ pub(crate) fn without_parked_state<T>(
     let had_stream_cache = world
         .remove_resource::<super::stream_snapshot::StreamStateSnapshots>()
         .is_some();
+    // Nor may the teardown start the outgoing actors' offscreen journeys in
+    // the relocation ledger the save restored before the reload (XCT-OFF-001).
+    world.insert_resource(super::relocated::SaveReloadTeardown);
     let outcome = reload(world);
+    world.remove_resource::<super::relocated::SaveReloadTeardown>();
     if let Some(parked) = parked {
         world.insert_resource(parked);
     }

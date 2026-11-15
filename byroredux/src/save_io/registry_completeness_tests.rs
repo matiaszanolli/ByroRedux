@@ -567,6 +567,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PendingNonArmorEquips", "weapon equips scripts asked for (EquipItem of a non-armor); drained by drain_script_weapon_equips the frame they are raised"),
         ("PendingRelocations", "actor moves raised this frame (a Travel hop, a scripted move); drained by step_actor_relocations into the saved ActorRelocations ledger"),
         ("RelocatedSpawning", "the relocated actors the reference loader is spawning right now (#6852); present only for that call"),
+        ("SaveReloadTeardown", "a zero-sized marker present only while a save load's cell reload runs inside without_parked_state, holding off depart_unwatched (XCT-OFF-001); nothing to persist"),
         ("CrossSpaceHop", "a traveler's chosen load door toward another space (XCT-ROUTE-001); chosen again from its package after a load"),
         ("MoviePlaying", "whether the movie player has a movie on screen (BIK-PRES-006); written by the app every frame, a load starts no movie"),
         ("PendingActorMoves", "scripted MoveTo / MoveToPackageLocation moves whose ends have no body (XCT-LOC-004/006); drained by step_actor_relocations the frame they are raised"),
