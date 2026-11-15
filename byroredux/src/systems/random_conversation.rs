@@ -98,8 +98,7 @@ pub(crate) fn complex_scene_active(world: &World) -> bool {
         .query::<byroredux_scripting::SceneAliasCandidate>()
         .is_some_and(|candidates| {
             candidates.iter().any(|(_, candidate)| {
-                candidate.base_form_id == marker
-                    && (candidate.reference_form_id == 0 || byroredux_scripting::reference_enabled(world, candidate.reference_form_id))
+                candidate.base_form_id == marker && candidate.reference_is_enabled(world)
             })
         })
 }

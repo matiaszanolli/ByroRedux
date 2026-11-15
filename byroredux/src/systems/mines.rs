@@ -224,15 +224,15 @@ pub(crate) fn placed_mines(world: &World) -> Vec<MineView> {
     let Some(book) = world.try_resource::<MineBook>().map(|book| book.0.clone()) else {
         return Vec::new();
     };
-    let candidates: Vec<(EntityId, u32)> = world
+    let candidates: Vec<(EntityId, u32, u32)> = world
         .query::<byroredux_scripting::SceneAliasCandidate>()
-        .map(|all| all.iter().filter(|(_, c)| book.contains_key(&c.base_form_id)).map(|(e, c)| (e, c.base_form_id)).collect())
+        .map(|all| all.iter().filter(|(_, c)| book.contains_key(&c.base_form_id)).map(|(e, c)| (e, c.base_form_id, c.reference_form_id)).collect())
         .unwrap_or_default();
     candidates
         .into_iter()
-        .filter_map(|(entity, base)| {
+        .filter_map(|(entity, base, form)| {
             let position = world.get::<GlobalTransform>(entity)?.translation;
-            let state = if world.has::<SpentMine>(entity) {
+            let state = if world.has::<SpentMine>(entity) || !byroredux_scripting::SceneAliasCandidate::placement_enabled(world, form) {
                 "spent"
             } else if world.has::<ArmedMine>(entity) {
                 "armed"
@@ -278,11 +278,16 @@ pub(crate) fn mine_system(world: &World, dt: f32) {
         .map(|candidates| {
             candidates
                 .iter()
-                .filter_map(|(entity, candidate)| Some((entity, *book.get(&candidate.base_form_id)?)))
+                .filter_map(|(entity, candidate)| Some((entity, *book.get(&candidate.base_form_id)?, candidate.reference_form_id)))
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default()
         .into_iter()
+        // A disabled reference keeps a content-less placement root: an authored dormant mine field, or a
+        // mine that went off before a reload (`SpentMine` is session state; the ledger entry `detonate`
+        // writes is what persists). Neither trips (#6539).
+        .filter(|(_, _, form)| byroredux_scripting::SceneAliasCandidate::placement_enabled(world, *form))
+        .map(|(entity, spec, _)| (entity, spec))
         .filter(|(entity, _)| !world.has::<SpentMine>(*entity) && !world.has::<ArmedMine>(*entity))
         .filter_map(|(entity, spec)| Some((entity, spec, world.get::<GlobalTransform>(entity)?.translation)))
         .collect();
@@ -573,5 +578,45 @@ mod tests {
             mine_system(&world, 0.3);
         }
         assert!(world.get::<ArmedMine>(mine).is_none() && world.get::<SpentMine>(mine).is_none());
+    }
+
+    /// A mine that went off is in the enable ledger, not just `SpentMine` (session state). After a reload
+    /// drops the session component, the content-less root it comes back as must not trip again (#6539).
+    #[test]
+    fn a_spent_mine_stays_spent_across_a_reload() {
+        let (mut world, mine, _victim) = setup();
+        if world.try_resource::<byroredux_scripting::ReferenceEnableState>().is_none() {
+            world.insert_resource(byroredux_scripting::ReferenceEnableState::default());
+        }
+        mine_system(&world, 0.3);
+        mine_system(&world, 2.0);
+        assert!(world.get::<SpentMine>(mine).is_some(), "gone off");
+        assert!(!byroredux_scripting::reference_enabled(&world, 0x77), "detonate writes the ledger");
+        // The reload: session components are gone, the ledger is back.
+        world.query_mut::<SpentMine>().unwrap().remove(mine);
+        for _ in 0..10 {
+            mine_system(&world, 0.3);
+        }
+        assert!(world.get::<ArmedMine>(mine).is_none(), "a disabled mine does not re-arm");
+        assert_eq!(placed_mines(&world)[0].state, "spent", "the console reports it spent, not waiting");
+    }
+
+    /// An authored dormant mine ("Initially Disabled", or off through its enable parent) does not trip
+    /// until it is enabled.
+    #[test]
+    fn a_disabled_mine_trips_only_once_enabled() {
+        let (mut world, mine, _victim) = setup();
+        let mut authored = byroredux_scripting::AuthoredDisabledReferences::default();
+        authored.initially_disabled.insert(0x77);
+        world.insert_resource(authored);
+        for _ in 0..10 {
+            mine_system(&world, 0.3);
+        }
+        assert!(world.get::<ArmedMine>(mine).is_none(), "the dormant mine does not trip");
+        let mut state = byroredux_scripting::ReferenceEnableState::default();
+        state.set_enabled(0x77, true);
+        world.insert_resource(state);
+        mine_system(&world, 0.3);
+        assert!(world.get::<ArmedMine>(mine).is_some(), "enabled, it trips");
     }
 }

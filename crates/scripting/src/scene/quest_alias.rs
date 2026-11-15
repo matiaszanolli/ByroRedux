@@ -154,6 +154,24 @@ impl Component for SceneAliasCandidate {
     type Storage = SparseSetStorage<Self>;
 }
 
+impl SceneAliasCandidate {
+    /// Whether this placement's reference is enabled, enable parents followed
+    /// ([`crate::reference_enabled`]). A candidate with no reference form
+    /// (a synthetic placement) counts as enabled. A disabled reference still
+    /// gets a placement root with its content withheld, so a scan that finds
+    /// placements by base form must ask this before treating one as present
+    /// (#6539).
+    pub fn reference_is_enabled(&self, world: &World) -> bool {
+        Self::placement_enabled(world, self.reference_form_id)
+    }
+
+    /// [`Self::reference_is_enabled`] for a caller that copied the form id out
+    /// of the query first, so the enable ledgers are not read under its guard.
+    pub fn placement_enabled(world: &World, reference_form_id: u32) -> bool {
+        reference_form_id == 0 || crate::reference_enabled(world, reference_form_id)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 /// Installed parsed QUST alias definitions keyed by quest. Read-mostly at
 /// runtime — `install_scene_quest_aliases` fills it, and the alias refresh

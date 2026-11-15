@@ -118,6 +118,9 @@ pub(crate) fn tracked(world: &World) -> (usize, usize) {
     let mut actors = 0;
     if let Some(candidates) = world.query::<byroredux_scripting::SceneAliasCandidate>() {
         for (entity, candidate) in candidates.iter() {
+            if !candidate.reference_is_enabled(world) {
+                continue;
+            }
             if book.objects.contains_key(&candidate.base_form_id) {
                 objects += 1;
             }
@@ -173,6 +176,11 @@ pub(crate) fn attraction_system(world: &World, dt: f32) {
             let is_object = book.objects.get(&candidate.base_form_id);
             let is_actor = book.actors.get(&candidate.base_form_id);
             if is_object.is_none() && is_actor.is_none() {
+                continue;
+            }
+            // A disabled reference keeps a content-less placement root: nothing renders it, so nothing
+            // is drawn to it, and a disabled actor reacts to nothing (#6539).
+            if !candidate.reference_is_enabled(world) {
                 continue;
             }
             let Some(at) = world.get::<GlobalTransform>(entity).map(|t| t.translation) else {
@@ -342,5 +350,20 @@ mod tests {
             attraction_system(&world, 1.0);
         }
         assert_eq!(events(&world), 0, "outside 256 units nothing is detected");
+    }
+
+    /// A disabled attraction object keeps a content-less placement root; nothing is drawn to it (#6539).
+    #[test]
+    fn a_disabled_attraction_object_draws_no_one() {
+        let (mut world, _actor, object) = setup(false);
+        world.insert(object, byroredux_scripting::SceneAliasCandidate { reference_form_id: 0x55, base_form_id: OBJECT_BASE, ..Default::default() });
+        let mut authored = byroredux_scripting::AuthoredDisabledReferences::default();
+        authored.initially_disabled.insert(0x55);
+        world.insert_resource(authored);
+        for _ in 0..10 {
+            attraction_system(&world, 1.0);
+        }
+        assert_eq!(events(&world), 0);
+        assert_eq!(tracked(&world).0, 0, "the console does not count it either");
     }
 }

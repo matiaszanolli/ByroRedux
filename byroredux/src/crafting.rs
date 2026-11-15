@@ -521,14 +521,15 @@ pub(crate) fn loaded_benches(world: &World) -> Vec<(EntityId, u32, byroredux_cor
     let Some(book) = world.try_resource::<CraftingBook>() else {
         return Vec::new();
     };
-    let found: Vec<(EntityId, u32)> = world
+    let found: Vec<(EntityId, u32, u32)> = world
         .query::<byroredux_scripting::SceneAliasCandidate>()
-        .map(|all| all.iter().filter(|(_, identity)| book.is_bench_base(identity.base_form_id)).map(|(entity, identity)| (entity, identity.base_form_id)).collect())
+        .map(|all| all.iter().filter(|(_, identity)| book.is_bench_base(identity.base_form_id)).map(|(entity, identity)| (entity, identity.base_form_id, identity.reference_form_id)).collect())
         .unwrap_or_default();
     drop(book);
     found
         .into_iter()
-        .filter_map(|(entity, base)| Some((entity, base, world.get::<byroredux_core::ecs::components::GlobalTransform>(entity)?.translation)))
+        .filter(|(_, _, form)| byroredux_scripting::SceneAliasCandidate::placement_enabled(world, *form))
+        .filter_map(|(entity, base, _)| Some((entity, base, world.get::<byroredux_core::ecs::components::GlobalTransform>(entity)?.translation)))
         .collect()
 }
 
@@ -536,16 +537,18 @@ pub(crate) fn nearest_bench(world: &World) -> Option<EntityId> {
     let player = PlayerEntity::get(world)?;
     let here = world.get::<byroredux_core::ecs::components::GlobalTransform>(player)?.translation;
     let book = world.try_resource::<CraftingBook>()?;
-    let candidates: Vec<EntityId> = world
+    let candidates: Vec<(EntityId, u32)> = world
         .query::<byroredux_scripting::SceneAliasCandidate>()?
         .iter()
         .filter(|(_, identity)| book.is_bench_base(identity.base_form_id))
-        .map(|(entity, _)| entity)
+        .map(|(entity, identity)| (entity, identity.reference_form_id))
         .collect();
     drop(book);
     candidates
         .into_iter()
-        .filter_map(|entity| {
+        // A disabled bench keeps a content-less placement root (#6539).
+        .filter(|(_, form)| byroredux_scripting::SceneAliasCandidate::placement_enabled(world, *form))
+        .filter_map(|(entity, _)| {
             let at = world.get::<byroredux_core::ecs::components::GlobalTransform>(entity)?.translation;
             Some((entity, (at - here).length()))
         })
