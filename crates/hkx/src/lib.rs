@@ -11,6 +11,7 @@ mod behavior;
 #[cfg(test)]
 mod corpus_tests;
 mod expression;
+pub mod container;
 mod packfile;
 
 pub use animation::{

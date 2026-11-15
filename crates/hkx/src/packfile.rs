@@ -1,22 +1,6 @@
+use crate::container::{Container, Section};
 use crate::{HkxError, Result};
 
-const MAGIC_0: u32 = 0x57e0_e057;
-const MAGIC_1: u32 = 0x10c0_c010;
-const HEADER_SIZE: usize = 0x40;
-const SECTION_HEADER_SIZE: usize = 0x30;
-/// Havok 2014 (file version 11) pads each section header to 0x40 bytes.
-const SECTION_HEADER_SIZE_V11: usize = 0x40;
-
-#[derive(Debug, Clone)]
-struct Section {
-    tag: String,
-    start: usize,
-    local_fixups: usize,
-    global_fixups: usize,
-    virtual_fixups: usize,
-    exports: usize,
-    end: usize,
-}
 
 /// Resolved view of a Havok 2010 binary packfile.
 pub(crate) struct Packfile<'a> {
@@ -40,193 +24,45 @@ pub(crate) struct Packfile<'a> {
 
 impl<'a> Packfile<'a> {
     pub(crate) fn parse(bytes: &'a [u8]) -> Result<Self> {
-        if read_u32(bytes, 0, "HKX magic")? != MAGIC_0
-            || read_u32(bytes, 4, "HKX magic")? != MAGIC_1
-        {
-            return Err(HkxError::InvalidMagic);
-        }
-        let pointer_size = *bytes.get(0x10).ok_or(HkxError::Truncated("layout rules"))?;
-        let little_endian = *bytes.get(0x11).ok_or(HkxError::Truncated("layout rules"))?;
-        // Skyrim ships both: the 2011 release's packfiles are 32-bit, Special
-        // Edition re-exported the same `hk_2010.2.0-r1` content as 64-bit.
-        // The header, section table and fixup tables are fixed-width either
-        // way; only object field offsets depend on this byte, and
-        // `animation.rs` derives those from it.
-        if !matches!(pointer_size, 4 | 8) || little_endian != 1 {
-            return Err(HkxError::UnsupportedLayout(
-                "expected a 32- or 64-bit little-endian packfile",
-            ));
-        }
-        // #4332 — pointer width and endianness are not the whole layout.
-        // `animation.rs`'s `Layout` also assumes Havok 2010 class field order
-        // and MSVC struct packing, and neither byte above confirms either: an
-        // `hk_2014` file, or one written with tail-padding reuse (which
-        // shifts every derived member of `hkReferencedObject`), would pass
-        // and decode with wrong offsets. The header states all three
-        // (`hkPackfileHeader`: `m_fileVersion` @0x0C, `m_layoutRules[2]` =
-        // `m_reusePaddingOptimization` @0x12, `m_contentsVersion` @0x28).
-        // Every sampled vanilla Skyrim LE and SE packfile is version 8,
-        // `hk_2010.2.0-r1`, reuse-padding 0.
-        let version = read_u32(bytes, 0x0C, "file version")?;
-        if version != 8 && version != 11 {
-            return Err(HkxError::UnsupportedLayout(
-                "expected a version-8 (Havok 2010) or version-11 (Havok 2014) packfile",
-            ));
-        }
-        if *bytes.get(0x12).ok_or(HkxError::Truncated("layout rules"))? != 0 {
-            return Err(HkxError::UnsupportedLayout(
-                "expected MSVC struct layout without tail-padding reuse",
-            ));
-        }
-        let contents_version = bytes
-            .get(0x28..0x38)
-            .ok_or(HkxError::Truncated("contents version"))?;
-        let expected: &[u8] = if version == 8 { b"hk_2010" } else { b"hk_2014" };
-        if !contents_version.starts_with(expected) {
-            return Err(HkxError::UnsupportedLayout(
-                "packfile contents do not match its file version",
-            ));
-        }
-        let section_header_size = if version == 8 { SECTION_HEADER_SIZE } else { SECTION_HEADER_SIZE_V11 };
-
-        let section_count = read_u32(bytes, 0x14, "section count")? as usize;
-        if section_count == 0 || section_count > 64 {
-            return Err(HkxError::InvalidData("implausible section count"));
-        }
-        // Havok 2014 follows the 0x40-byte header with a predicate area
-        // (`m_predicateArraySizePlusPadding`, u16 @0x3E) before the section table;
-        // the animation clips of Fallout 4 carry one (0x10 bytes), its behavior
-        // graphs none.
-        let table_start = if version == 11 {
-            HEADER_SIZE
-                + usize::from(u16::from_le_bytes(
-                    bytes
-                        .get(0x3E..0x40)
-                        .ok_or(HkxError::Truncated("predicate area size"))?
-                        .try_into()
-                        .unwrap(),
-                ))
-        } else {
-            HEADER_SIZE
-        };
-        let section_table_bytes = section_count
-            .checked_mul(section_header_size)
-            .ok_or(HkxError::InvalidData("section table size overflow"))?;
-        let section_table_end = table_start
-            .checked_add(section_table_bytes)
-            .ok_or(HkxError::InvalidData("section table overflow"))?;
-        if section_table_end > bytes.len() {
-            return Err(HkxError::Truncated("section table"));
-        }
-
-        let mut sections = Vec::with_capacity(section_count);
-        for index in 0..section_count {
-            let base = table_start + index * section_header_size;
-            let tag_bytes = &bytes[base..base + 19];
-            let tag_end = tag_bytes.iter().position(|byte| *byte == 0).unwrap_or(19);
-            let tag = String::from_utf8_lossy(&tag_bytes[..tag_end]).into_owned();
-            let start = read_u32(bytes, base + 20, "section data start")? as usize;
-            let relative = |field, label| -> Result<usize> {
-                start
-                    .checked_add(read_u32(bytes, base + field, label)? as usize)
-                    .ok_or(HkxError::InvalidData("section offset overflow"))
-            };
-            let section = Section {
-                tag,
-                start,
-                local_fixups: relative(24, "local fixups")?,
-                global_fixups: relative(28, "global fixups")?,
-                virtual_fixups: relative(32, "virtual fixups")?,
-                exports: relative(36, "exports")?,
-                end: relative(44, "section end")?,
-            };
-            if section.start > section.local_fixups {
-                return Err(HkxError::InvalidData("local fixups precede section data"));
-            }
-            if section.local_fixups > section.global_fixups {
-                return Err(HkxError::InvalidData("global fixups precede local fixups"));
-            }
-            if section.global_fixups > section.virtual_fixups {
-                return Err(HkxError::InvalidData(
-                    "virtual fixups precede global fixups",
-                ));
-            }
-            if section.virtual_fixups > section.exports {
-                return Err(HkxError::InvalidData("exports precede virtual fixups"));
-            }
-            if section.exports > section.end {
-                return Err(HkxError::InvalidData("section end precedes exports"));
-            }
-            if section.end > bytes.len() {
-                return Err(HkxError::InvalidData("section end exceeds file"));
-            }
-            sections.push(section);
-        }
-
-        let data_section = sections
+        let container = Container::parse(bytes)?;
+        let data_section = container
+            .sections
             .iter()
             .position(|section| section.tag == "__data__")
             .ok_or(HkxError::MissingSection("__data__"))?;
-        let data = &sections[data_section];
+        let data = &container.sections[data_section];
 
-        let mut local_fixups = Vec::new();
-        let mut cursor = data.local_fixups;
-        while cursor + 8 <= data.global_fixups {
-            let source = read_u32(bytes, cursor, "local fixup source")?;
-            let target = read_u32(bytes, cursor + 4, "local fixup target")?;
-            if source == u32::MAX {
-                break;
-            }
-            local_fixups.push((source as usize, target as usize));
-            cursor += 8;
-        }
+        let mut local_fixups: Vec<(usize, usize)> = container
+            .local_fixups(data)?
+            .into_iter()
+            .map(|(source, target)| (source as usize, target as usize))
+            .collect();
         local_fixups.sort_unstable_by_key(|entry| entry.0);
 
-        let mut global_fixups = Vec::new();
-        cursor = data.global_fixups;
-        while cursor + 12 <= data.virtual_fixups {
-            let source = read_u32(bytes, cursor, "global fixup source")?;
-            let target_section = read_u32(bytes, cursor + 4, "global fixup section")?;
-            let target = read_u32(bytes, cursor + 8, "global fixup target")?;
-            if source == u32::MAX {
-                break;
-            }
-            if target_section as usize >= sections.len() {
-                return Err(HkxError::InvalidData("global fixup section out of range"));
-            }
-            global_fixups.push((source as usize, target_section as usize, target as usize));
-            cursor += 12;
-        }
+        let mut global_fixups: Vec<(usize, usize, usize)> = container
+            .global_fixups(data)?
+            .into_iter()
+            .map(|(source, section, target)| (source as usize, section as usize, target as usize))
+            .collect();
         global_fixups.sort_unstable_by_key(|entry| entry.0);
 
         let mut objects = Vec::new();
-        cursor = data.virtual_fixups;
-        while cursor + 12 <= data.exports {
-            let source = read_u32(bytes, cursor, "virtual fixup source")?;
-            let class_section = read_u32(bytes, cursor + 4, "virtual fixup section")?;
-            let class_offset = read_u32(bytes, cursor + 8, "virtual fixup class")?;
-            if source == u32::MAX {
-                break;
-            }
-            let class_section = sections
-                .get(class_section as usize)
-                .ok_or(HkxError::InvalidData("class-name section out of range"))?;
+        for (source, class_section, class_offset) in container.virtual_fixups(data)? {
             // Havok virtual fixups address the first byte of the
             // NUL-terminated class name inside the classname section.
-            let name_start = class_section
+            let name_start = container.sections[class_section as usize]
                 .start
                 .checked_add(class_offset as usize)
                 .ok_or(HkxError::InvalidData("class-name offset overflow"))?;
             let name = read_cstr(bytes, name_start, "class name")?;
             objects.push((source as usize, name_start, name.len() as u32));
-            cursor += 12;
         }
 
         Ok(Self {
             bytes,
-            pointer_size: usize::from(pointer_size),
-            version,
-            sections,
+            pointer_size: container.pointer_size(),
+            version: container.header.file_version,
+            sections: container.sections,
             data_section,
             local_fixups,
             global_fixups,
@@ -370,14 +206,6 @@ impl<'a> Packfile<'a> {
     }
 }
 
-fn read_u32(bytes: &[u8], offset: usize, label: &'static str) -> Result<u32> {
-    let end = offset
-        .checked_add(4)
-        .ok_or(HkxError::InvalidData("integer offset overflow"))?;
-    let raw = bytes.get(offset..end).ok_or(HkxError::Truncated(label))?;
-    Ok(u32::from_le_bytes(raw.try_into().unwrap()))
-}
-
 /// #4648/#4649 — Havok class/bone/track names and annotation texts are
 /// short (a few dozen bytes); 256 is a generous ceiling. Without it the
 /// existing object-count caps bound the number of strings, not the
@@ -404,7 +232,7 @@ fn read_cstr<'a>(bytes: &'a [u8], offset: usize, label: &'static str) -> Result<
 /// [`PackfileBuilder`](fixtures::PackfileBuilder).
 #[cfg(test)]
 pub(crate) mod fixtures {
-    use super::*;
+    use crate::container::{HEADER_SIZE, MAGIC_0, MAGIC_1, SECTION_HEADER_SIZE, SECTION_HEADER_SIZE_V11};
 
     pub(crate) const HEADER: usize = HEADER_SIZE;
 
@@ -538,6 +366,7 @@ pub(crate) mod fixtures {
 #[cfg(test)]
 mod tests {
     use super::fixtures::{PackfileBuilder, HEADER};
+    use crate::container::SECTION_HEADER_SIZE;
     use super::*;
 
     /// `Packfile` carries a borrowed slice and derives neither `Debug` nor

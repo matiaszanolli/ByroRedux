@@ -5,6 +5,8 @@ edition.workspace = true
 
 [dependencies]
 byroredux-core = { workspace = true }
+# #6954 — the Havok packfile container `bhkSystemBinary` blobs are read through.
+byroredux-hkx = { workspace = true }
 log = { workspace = true }
 nalgebra = { workspace = true }
 # Optional — pulled in only when the `dhat-heap` feature is enabled

@@ -154,7 +154,7 @@ dependency is only ever consumed by that one crate:
 | byroredux-sdk               | byroredux-core |
 | byroredux-boot-request      | byroredux-core |
 | byroredux-settings-io       | byroredux-core |
-| byroredux-nif               | byroredux-core (`byroredux-bsa` dev-only) |
+| byroredux-nif               | byroredux-core, byroredux-hkx (the Havok packfile container, #6954) (`byroredux-bsa` dev-only) |
 | byroredux-spt               | byroredux-core, byroredux-nif (`byroredux-bsa` dev-only) |
 | byroredux-plugin            | byroredux-core, byroredux-bsa, byroredux-sdk |
 | byroredux-game-detect       | byroredux-core, byroredux-bsa, byroredux-plugin |

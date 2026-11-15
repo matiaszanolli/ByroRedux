@@ -29,13 +29,18 @@
 //! A few header fields have no confirmed semantic across the corpus and
 //! are kept as opaque `reserved_*` fields rather than guessed at.
 //!
-//! This decoder is validated against `file_version == 11` /
-//! `contents_version == "hk_2014.1.0-r1"` — the only variant observed in
-//! the FO4 corpus. Other Havok packfile versions may use a different
-//! header shape; this module does not attempt to handle them.
+//! The container (header, section table, fixup tables) is decoded and
+//! validated by `byroredux_hkx::container`, the reader the HKX animation path
+//! uses too (#6954): version 8 (`hk_2010`) or 11 (`hk_2014`), little-endian,
+//! no tail-padding reuse, ordered sections. The FO4 corpus is all version 11,
+//! `hk_2014.1.0-r1`. This module adds the tagfile refusal, the
+//! `__classnames__` record walk and the public `HavokPackfile` view.
 
 use std::io;
 use std::ops::Range;
+
+use byroredux_hkx::container::Container;
+use byroredux_hkx::HkxError;
 
 /// Byte-identical prefix confirmed across every sampled
 /// [`BhkSystemBinary`](super::BhkSystemBinary) blob: the classic Havok
@@ -52,19 +57,6 @@ pub const HAVOK_TAGFILE_TAG: [u8; 4] = *b"TAG0";
 pub fn is_havok_tagfile_error(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::Unsupported
 }
-
-/// Size of one section-table entry: a 20-byte name block (19 bytes of
-/// null-padded ASCII + a `0xFF` terminator byte, verified at the same
-/// relative offset regardless of name length), 7×`u32` offset fields
-/// (28 bytes), then 16 bytes of `0xFFFFFFFF` padding — 64 bytes total.
-const SECTION_HEADER_SIZE: usize = 64;
-const SECTION_NAME_FIELD_LEN: usize = 19;
-const SECTION_TABLE_START: usize = 0x40;
-
-/// Entry stride of the local-fixup table: two `u32`s.
-const LOCAL_FIXUP_SIZE: usize = 8;
-/// Entry stride of the global- and virtual-fixup tables: three `u32`s.
-const GLOBAL_FIXUP_SIZE: usize = 12;
 
 /// A pointer relocation *within* one section: the `u32`/`u64` slot at
 /// `src_offset` holds a pointer whose target is `dst_offset`, both
@@ -260,23 +252,6 @@ impl HavokPackfile {
     }
 }
 
-fn read_u32_le(data: &[u8], offset: usize) -> io::Result<u32> {
-    byroredux_core::bytes::le_u32_at(data, offset)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "havok packfile: truncated"))
-}
-
-fn read_cstr(data: &[u8], offset: usize, max_len: usize) -> io::Result<String> {
-    let end = (offset + max_len).min(data.len());
-    let slice = data.get(offset..end).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "havok packfile: truncated string",
-        )
-    })?;
-    let nul = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
-    Ok(String::from_utf8_lossy(&slice[..nul]).into_owned())
-}
-
 /// Fixed per-entry prefix in the `__classnames__` section, ahead of each
 /// null-terminated name: verified as 5 bytes (a leading 4-byte value —
 /// likely a class-signature hash, semantic unconfirmed — plus 1 further
@@ -315,64 +290,6 @@ fn parse_classname_records(content: &[u8]) -> Vec<(u32, String)> {
     names
 }
 
-/// Read a fixup table, stopping at the first `0xFFFFFFFF` sentinel (real
-/// blobs pad a table's tail to its declared span) or at `end`.
-fn read_local_fixups(data: &[u8], start: usize, end: usize) -> Vec<LocalFixup> {
-    let mut out = Vec::new();
-    let mut p = start;
-    while p + LOCAL_FIXUP_SIZE <= end.min(data.len()) {
-        let (src, dst) = (
-            u32::from_le_bytes(data[p..p + 4].try_into().unwrap()),
-            u32::from_le_bytes(data[p + 4..p + 8].try_into().unwrap()),
-        );
-        if src == u32::MAX {
-            break;
-        }
-        out.push(LocalFixup {
-            src_offset: src,
-            dst_offset: dst,
-        });
-        p += LOCAL_FIXUP_SIZE;
-    }
-    out
-}
-
-fn read_global_fixups(data: &[u8], start: usize, end: usize) -> Vec<GlobalFixup> {
-    let mut out = Vec::new();
-    let mut p = start;
-    while p + GLOBAL_FIXUP_SIZE <= end.min(data.len()) {
-        let src = u32::from_le_bytes(data[p..p + 4].try_into().unwrap());
-        if src == u32::MAX {
-            break;
-        }
-        out.push(GlobalFixup {
-            src_offset: src,
-            dst_section: u32::from_le_bytes(data[p + 4..p + 8].try_into().unwrap()),
-            dst_offset: u32::from_le_bytes(data[p + 8..p + 12].try_into().unwrap()),
-        });
-        p += GLOBAL_FIXUP_SIZE;
-    }
-    out
-}
-
-fn read_virtual_fixups(data: &[u8], start: usize, end: usize) -> Vec<VirtualFixup> {
-    let mut out = Vec::new();
-    let mut p = start;
-    while p + GLOBAL_FIXUP_SIZE <= end.min(data.len()) {
-        let off = u32::from_le_bytes(data[p..p + 4].try_into().unwrap());
-        if off == u32::MAX {
-            break;
-        }
-        out.push(VirtualFixup {
-            data_offset: off,
-            class_section: u32::from_le_bytes(data[p + 4..p + 8].try_into().unwrap()),
-            class_name_offset: u32::from_le_bytes(data[p + 8..p + 12].try_into().unwrap()),
-        });
-        p += GLOBAL_FIXUP_SIZE;
-    }
-    out
-}
-
 /// Parse the outer container of a [`BhkSystemBinary`](super::BhkSystemBinary)
 /// blob's raw `data`. Returns `Err` if the magic doesn't match or the
 /// buffer is too short for the section table it declares — callers
@@ -390,80 +307,44 @@ pub fn parse_havok_packfile(data: &[u8]) -> io::Result<HavokPackfile> {
             "havok tagfile (TAG0, FO76/Starfield) — not a packfile, not decoded",
         ));
     }
-    if data.len() < SECTION_TABLE_START {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "havok packfile: too short for header",
-        ));
-    }
-    let magic0 = read_u32_le(data, 0)?;
-    let magic1 = read_u32_le(data, 4)?;
-    if [magic0, magic1] != HAVOK_PACKFILE_MAGIC {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "havok packfile: magic mismatch",
-        ));
-    }
-    let user_tag = read_u32_le(data, 8)?;
-    let file_version = read_u32_le(data, 12)?;
-    let layout_rules = [data[16], data[17], data[18], data[19]];
-    let num_sections = read_u32_le(data, 20)?;
-    // #4624: validate the complete table before reserving host structs.
-    if num_sections as usize > (data.len() - SECTION_TABLE_START) / SECTION_HEADER_SIZE {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "havok packfile: section count exceeds available section headers",
-        ));
-    }
-    let reserved_after_num_sections = read_u32_le(data, 24)?;
-    let reserved_before_version_string = read_u32_le(data, 36)?;
-    let contents_version = read_cstr(data, 40, 16)?;
-    let reserved_after_version_string = read_u32_le(data, 60)?;
-
-    let mut sections = Vec::with_capacity(num_sections as usize);
-    for i in 0..num_sections as usize {
-        let base = SECTION_TABLE_START + i * SECTION_HEADER_SIZE;
-        let name = read_cstr(data, base, SECTION_NAME_FIELD_LEN)?;
-        let f = base + 20; // past the 19-byte name field + 0xFF terminator
-        let absolute_data_start = read_u32_le(data, f)?;
-        let local_fixups_offset = read_u32_le(data, f + 4)?;
-        let global_fixups_offset = read_u32_le(data, f + 8)?;
-        let virtual_fixups_offset = read_u32_le(data, f + 12)?;
-        let exports_offset = read_u32_le(data, f + 16)?;
-
-        // The three fixup tables sit back-to-back between their declared
-        // offsets. Each table is read only up to the number of whole
-        // entries its declared byte span holds — real blobs pad the tail
-        // of a table with `0xFFFFFFFF`, which `read_fixups` stops on.
-        let base_abs = absolute_data_start as usize;
-        let local_fixups = read_local_fixups(
-            data,
-            base_abs + local_fixups_offset as usize,
-            base_abs + global_fixups_offset as usize,
-        );
-        let global_fixups = read_global_fixups(
-            data,
-            base_abs + global_fixups_offset as usize,
-            base_abs + virtual_fixups_offset as usize,
-        );
-        let virtual_fixups = read_virtual_fixups(
-            data,
-            base_abs + virtual_fixups_offset as usize,
-            base_abs + exports_offset as usize,
-        );
-
+    let container = Container::parse(data).map_err(container_error)?;
+    let mut sections = Vec::with_capacity(container.sections.len());
+    for section in &container.sections {
+        // Every offset is validated `>= start` and inside the file by the container.
+        let relative = |absolute: usize| -> io::Result<u32> {
+            u32::try_from(absolute - section.start).map_err(|_| too_large("section offset"))
+        };
         sections.push(PackfileSection {
-            name,
-            absolute_data_start,
-            local_fixups_offset,
-            global_fixups_offset,
-            virtual_fixups_offset,
-            exports_offset,
-            imports_offset: read_u32_le(data, f + 20)?,
-            end_offset: read_u32_le(data, f + 24)?,
-            local_fixups,
-            global_fixups,
-            virtual_fixups,
+            name: section.tag.clone(),
+            absolute_data_start: u32::try_from(section.start).map_err(|_| too_large("section start"))?,
+            local_fixups_offset: relative(section.local_fixups)?,
+            global_fixups_offset: relative(section.global_fixups)?,
+            virtual_fixups_offset: relative(section.virtual_fixups)?,
+            exports_offset: relative(section.exports)?,
+            imports_offset: relative(section.imports)?,
+            end_offset: relative(section.end)?,
+            local_fixups: container
+                .local_fixups(section)
+                .map_err(container_error)?
+                .into_iter()
+                .map(|(src_offset, dst_offset)| LocalFixup { src_offset, dst_offset })
+                .collect(),
+            global_fixups: container
+                .global_fixups(section)
+                .map_err(container_error)?
+                .into_iter()
+                .map(|(src_offset, dst_section, dst_offset)| GlobalFixup { src_offset, dst_section, dst_offset })
+                .collect(),
+            virtual_fixups: container
+                .virtual_fixups(section)
+                .map_err(container_error)?
+                .into_iter()
+                .map(|(data_offset, class_section, class_name_offset)| VirtualFixup {
+                    data_offset,
+                    class_section,
+                    class_name_offset,
+                })
+                .collect(),
         });
     }
 
@@ -474,16 +355,18 @@ pub fn parse_havok_packfile(data: &[u8]) -> io::Result<HavokPackfile> {
     let class_name_offsets = class_name_records.iter().map(|(o, _)| *o).collect();
     let class_names = class_name_records.into_iter().map(|(_, n)| n).collect();
 
+    // The header is at least 0x40 bytes once the container has parsed, so the raw words are present.
+    let raw = |offset| container.raw_header_u32(offset).unwrap_or(0);
     Ok(HavokPackfile {
         header: HavokPackfileHeader {
-            user_tag,
-            file_version,
-            layout_rules,
-            num_sections,
-            reserved_after_num_sections,
-            contents_version,
-            reserved_before_version_string,
-            reserved_after_version_string,
+            user_tag: container.header.user_tag,
+            file_version: container.header.file_version,
+            layout_rules: container.header.layout_rules,
+            num_sections: container.header.section_count,
+            reserved_after_num_sections: raw(0x18),
+            contents_version: container.header.contents_version.clone(),
+            reserved_before_version_string: raw(0x24),
+            reserved_after_version_string: raw(0x3C),
         },
         sections,
         class_names,
@@ -491,9 +374,37 @@ pub fn parse_havok_packfile(data: &[u8]) -> io::Result<HavokPackfile> {
     })
 }
 
+/// A container error as this module's `io::Error`: truncation is `UnexpectedEof`, anything else
+/// `InvalidData`.
+fn container_error(error: HkxError) -> io::Error {
+    let kind = if matches!(error, HkxError::Truncated(_)) {
+        io::ErrorKind::UnexpectedEof
+    } else {
+        io::ErrorKind::InvalidData
+    };
+    io::Error::new(kind, format!("havok packfile: {error}"))
+}
+
+fn too_large(what: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, format!("havok packfile: {what} exceeds u32"))
+}
+
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+
+    /// Size of one section-table entry: a 20-byte name block (19 bytes of
+    /// null-padded ASCII + a `0xFF` terminator byte, verified at the same
+    /// relative offset regardless of name length), 7×`u32` offset fields
+    /// (28 bytes), then 16 bytes of `0xFFFFFFFF` padding — 64 bytes total.
+    const SECTION_HEADER_SIZE: usize = 64;
+    const SECTION_NAME_FIELD_LEN: usize = 19;
+    const SECTION_TABLE_START: usize = 0x40;
+
+    /// Entry stride of the local-fixup table: two `u32`s.
+    const LOCAL_FIXUP_SIZE: usize = 8;
+    /// Entry stride of the global- and virtual-fixup tables: three `u32`s.
+    const GLOBAL_FIXUP_SIZE: usize = 12;
 
     /// Hand-built synthetic packfile matching the exact layout verified
     /// against the real FO4 corpus: header + 3-section table
@@ -523,19 +434,24 @@ pub(super) mod tests {
         assert!(!is_havok_tagfile_error(&parse_havok_packfile(&garbage[..16]).unwrap_err()));
     }
 
+    /// #4624 / #6954 — the section count is bounded before anything is sized from it: zero
+    /// or more than 64 is refused as invalid, and a plausible count whose table runs past
+    /// the blob is a truncation.
     #[test]
     fn section_count_is_bounded_before_allocation() {
         let mut bytes = build_synthetic_packfile(&[], &[]);
         assert_eq!(parse_havok_packfile(&bytes).unwrap().sections.len(), 3);
         bytes.truncate(SECTION_TABLE_START);
-        for count in [1u32, u32::MAX] {
+        for count in [0u32, 65, u32::MAX] {
             bytes[20..24].copy_from_slice(&count.to_le_bytes());
             let error = parse_havok_packfile(&bytes).unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
-            assert!(error.to_string().contains("section count"));
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData, "count {count}");
+            assert!(error.to_string().contains("section count"), "{error}");
         }
-        bytes[20..24].copy_from_slice(&0u32.to_le_bytes());
-        assert!(parse_havok_packfile(&bytes).unwrap().sections.is_empty());
+        bytes[20..24].copy_from_slice(&1u32.to_le_bytes());
+        let error = parse_havok_packfile(&bytes).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(error.to_string().contains("section table"), "{error}");
     }
 
     /// As above, but `__data__` also carries the three fixup tables. The

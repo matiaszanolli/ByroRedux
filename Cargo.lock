@@ -780,6 +780,7 @@ version = "0.1.0"
 dependencies = [
  "byroredux-bsa",
  "byroredux-core",
+ "byroredux-hkx",
  "dhat",
  "env_logger",
  "log",
