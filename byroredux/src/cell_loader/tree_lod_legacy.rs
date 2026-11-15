@@ -264,8 +264,7 @@ pub(crate) fn dtl_placement_groups(
 pub(crate) fn lod_flat_nif_path(model_path: &str) -> Option<String> {
     let lower = model_path.to_ascii_lowercase().replace('/', "\\");
     let stem = lower.strip_suffix(".nif")?;
-    let flat = format!("{stem}_lod_flat.nif");
-    Some(if flat.starts_with("meshes\\") { flat } else { format!("meshes\\{flat}") })
+    Some(crate::asset_provider::canonical_mesh_key(&format!("{stem}_lod_flat.nif")))
 }
 
 /// One archive file name as a Fallout 3 tree quad: `Some((worldspace, level, x, y))` for

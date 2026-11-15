@@ -47,12 +47,7 @@ use crate::parsed_nif_cache::ParsedNifCache;
 /// one already threaded through from the streaming payload) is a
 /// no-op.
 pub(crate) fn canonical_model_path_key(model_path: &str) -> String {
-    let lower = model_path.to_ascii_lowercase().replace('/', "\\");
-    if lower.starts_with("meshes\\") {
-        lower
-    } else {
-        format!("meshes\\{lower}")
-    }
+    crate::asset_provider::canonical_mesh_key(model_path)
 }
 
 #[cfg(test)]

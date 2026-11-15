@@ -15,6 +15,7 @@
 //! order once, registers the clips, and records them in [`ArchetypeIdleClips`] for
 //! `systems::archetype_idle_system`.
 
+use super::actor_graph::project_directory;
 use super::animation::convert_hkx_clip;
 use super::TextureProvider;
 use byroredux_core::animation::AnimationClipRegistry;
@@ -56,26 +57,6 @@ impl ArchetypeIdleClips {
     pub(crate) fn clip_for(&self, entry: &SubgraphData) -> Option<u32> {
         self.handles.get(&idle_key(entry)).copied().flatten()
     }
-}
-
-/// `meshes\<relative>`, lower-cased.
-fn mesh_path(relative: &str) -> String {
-    let relative = relative.trim_start_matches(['\\', '/']).replace('/', "\\").to_ascii_lowercase();
-    if relative.starts_with("meshes\\") {
-        relative
-    } else {
-        format!("meshes\\{relative}")
-    }
-}
-
-/// The directory a behavior path's project lives in: the part before its
-/// `Behaviors\` folder (`actors\character\behaviors\mtbehavior.hkx` →
-/// `actors\character`). References and `CharacterAssets\` are relative to it.
-fn project_directory(behavior_graph: &str) -> Option<String> {
-    let lower = behavior_graph.trim_start_matches(['\\', '/']).replace('/', "\\").to_ascii_lowercase();
-    let lower = lower.strip_prefix("meshes\\").unwrap_or(&lower).to_owned();
-    let at = lower.rfind("\\behaviors\\")?;
-    Some(lower[..at].to_owned())
 }
 
 /// The file stem of an animation name a graph's clip carries
@@ -128,9 +109,9 @@ pub(crate) fn populate_archetype_idles(world: &mut World, provider: &TextureProv
             let name = idle_names
                 .entry(entry.behavior_graph.to_ascii_lowercase())
                 .or_insert_with(|| {
-                    let graph = load_graph(provider, &mesh_path(&entry.behavior_graph))?;
+                    let graph = load_graph(provider, &super::canonical_mesh_key(&entry.behavior_graph))?;
                     let mut loader = |reference: &str| {
-                        let path = mesh_path(&format!("{directory}\\{}", reference.trim_start_matches(['\\', '/'])));
+                        let path = super::canonical_mesh_key(&format!("{directory}\\{}", reference.trim_start_matches(['\\', '/'])));
                         load_graph(provider, &path)
                     };
                     graph.start_clip(&mut loader).map(|clip| clip.animation)
@@ -143,7 +124,7 @@ pub(crate) fn populate_archetype_idles(world: &mut World, provider: &TextureProv
                     entry
                         .animation_paths
                         .iter()
-                        .map(|folder| mesh_path(&format!("{folder}\\{stem}.hkx")))
+                        .map(|folder| super::canonical_mesh_key(&format!("{folder}\\{stem}.hkx")))
                         .find(|path| provider.has_mesh(path))
                 })
                 .clone()?;
@@ -154,7 +135,7 @@ pub(crate) fn populate_archetype_idles(world: &mut World, provider: &TextureProv
             let skeleton = skeletons
                 .entry(directory.clone())
                 .or_insert_with(|| {
-                    let bytes = provider.extract_mesh(&mesh_path(&format!("{directory}\\characterassets\\skeleton.hkx")))?;
+                    let bytes = provider.extract_mesh(&super::canonical_mesh_key(&format!("{directory}\\characterassets\\skeleton.hkx")))?;
                     byroredux_hkx::decode_skeleton(&bytes)
                         .map_err(|error| log::warn!("archetype idle: skeleton of '{directory}' did not decode: {error}"))
                         .ok()

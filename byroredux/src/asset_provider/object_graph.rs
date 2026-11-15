@@ -64,15 +64,6 @@ const STUCK_PRUNE_THRESHOLD: usize = 256;
 
 impl Resource for ObjectGraphCache {}
 
-fn mesh_path(relative: &str) -> String {
-    let relative = relative.trim_start_matches(['\\', '/']).replace('/', "\\");
-    if relative.get(..7).is_some_and(|prefix| prefix.eq_ignore_ascii_case("meshes\\")) {
-        relative
-    } else {
-        format!("meshes\\{relative}")
-    }
-}
-
 /// `name` as a behavior project authors it — backslashes or slashes, `.` and `..` hops — joined onto
 /// `directory` and collapsed to the exact key the archives store (#6556). FO4 characters name a
 /// shared rig directories up (`..\..\GenericBehaviors\zSingleBoneSkeleton\SingleBoneSkeleton.hkt`),
@@ -185,7 +176,7 @@ fn load_graph(
     project: &str,
     sequences: &HashMap<String, GraphClip>,
 ) -> Option<Arc<LoadedGraph>> {
-    let project_path = mesh_path(project);
+    let project_path = super::archive_mesh_path(project);
     let directory = project_path.rsplit_once('\\')?.0.to_owned();
     let relative = |name: &str| project_relative(&directory, name);
     let fetch = |path: &str, what: &str| {

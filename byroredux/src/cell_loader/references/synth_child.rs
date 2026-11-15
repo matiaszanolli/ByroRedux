@@ -632,12 +632,8 @@ pub(super) fn spawn_synth_child(
     };
     let model_path = if is_spt {
         super::import::resolve_spt_model_path(&model_src, |p| tex_provider.has_mesh_exact(p))
-    } else if model_src.to_ascii_lowercase().starts_with("meshes\\")
-        || model_src.to_ascii_lowercase().starts_with("meshes/")
-    {
-        model_src.to_string()
     } else {
-        format!("meshes\\{model_src}")
+        crate::asset_provider::normalize_mesh_path(&model_src).into_owned()
     };
 
     // Fetch parsed+imported NIF from the process-lifetime

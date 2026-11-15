@@ -251,12 +251,7 @@ pub(crate) fn placement_lod_cell_path(
 pub(crate) fn far_nif_path(model_path: &str) -> Option<String> {
     let lower = model_path.to_ascii_lowercase();
     let stem = lower.strip_suffix(".nif")?;
-    let far = format!("{stem}_far.nif");
-    if far.starts_with("meshes\\") || far.starts_with("meshes/") {
-        Some(far)
-    } else {
-        Some(format!("meshes\\{far}"))
-    }
+    Some(crate::asset_provider::canonical_mesh_key(&format!("{stem}_far.nif")))
 }
 
 /// Archive path of a base record's **full** model, used as the distant
@@ -264,12 +259,7 @@ pub(crate) fn far_nif_path(model_path: &str) -> Option<String> {
 /// objects ship a dedicated far mesh). Adds the `meshes\` prefix when the
 /// stored `model_path` is folder-relative, mirroring the REFR spawn path.
 pub(crate) fn full_model_path(model_path: &str) -> String {
-    let lower = model_path.to_ascii_lowercase();
-    if lower.starts_with("meshes\\") || lower.starts_with("meshes/") {
-        lower
-    } else {
-        format!("meshes\\{lower}")
-    }
+    crate::asset_provider::canonical_mesh_key(model_path)
 }
 
 /// Cells whose `.lod` should be resident this frame: within the LOD ring

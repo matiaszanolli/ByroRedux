@@ -26,7 +26,7 @@ pub(crate) use texture_prefetch::{prefetch_textures, PrefetchStats};
 // `normalize_mesh_path` is `pub` (used outside the crate); re-export it at
 // that visibility explicitly — a `pub(crate) use` glob can't carry a `pub`
 // item back out (E0364).
-pub use archive::normalize_mesh_path;
+pub use archive::{archive_mesh_path, canonical_mesh_key, normalize_mesh_path};
 
 #[cfg(test)]
 mod tests;

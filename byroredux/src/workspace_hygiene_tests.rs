@@ -1250,6 +1250,39 @@ fn no_source_hand_spells_the_player_entity_read() {
     );
 }
 
+/// #6956 — "prepend `meshes\` unless present" has one home,
+/// `asset_provider::normalize_mesh_path` (with its owned forms `archive_mesh_path` and
+/// `canonical_mesh_key`). Ten hand-written copies had grown five behaviours between
+/// them (case, separators, a leading separator, the #1292 `geometries\` exemption
+/// none of them carried). A production `format!("meshes\\{name}")` that prefixes a
+/// whole variable outside `archive.rs` is a new copy; a fixed archive path such as
+/// `meshes\terrain\…` is not.
+#[test]
+fn no_production_code_prefixes_meshes_by_hand() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let needle = concat!("\"meshes", "\\\\{");
+    let mut found = Vec::new();
+    visit_workspace_rs_files(&manifest.join("src"), &mut |path, contents| {
+        if path.ends_with("asset_provider/archive.rs") || is_test_source(path) {
+            return;
+        }
+        let production = byroredux_core::source_scan::production_text_or_whole(contents);
+        let copies = production.match_indices(needle).filter(|(at, _)| {
+            let rest = &production[at + needle.len()..];
+            let name_len = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(rest.len());
+            name_len > 0 && rest[name_len..].starts_with("}\"")
+        });
+        if copies.count() > 0 {
+            found.push(path.strip_prefix(manifest).unwrap_or(path).display().to_string());
+        }
+    });
+    assert!(
+        found.is_empty(),
+        "hand-written `meshes\\` prefix — use `asset_provider::{{normalize_mesh_path, archive_mesh_path, canonical_mesh_key}}` (#6956):\n{}",
+        found.join("\n"),
+    );
+}
+
 /// #6577 — a whole-`Children` walk goes through `byroredux_core::ecs::collect_subtree`,
 /// which carries the visited set and `HierarchyTraversalGuard` budget that #5513 added
 /// after unguarded stack walks hung streaming adoption and loading-cover setup on a

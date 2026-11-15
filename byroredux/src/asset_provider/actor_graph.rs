@@ -66,16 +66,10 @@ impl ActorGraphCache {
     }
 }
 
-fn mesh_path(relative: &str) -> String {
-    let relative = relative.trim_start_matches(['\\', '/']).replace('/', "\\").to_ascii_lowercase();
-    if relative.starts_with("meshes\\") {
-        relative
-    } else {
-        format!("meshes\\{relative}")
-    }
-}
-
-fn project_directory(behavior_graph: &str) -> Option<String> {
+/// The directory a behavior path's project lives in: the part before its
+/// `Behaviors\` folder (`actors\character\behaviors\mtbehavior.hkx` →
+/// `actors\character`). References and `CharacterAssets\` are relative to it.
+pub(super) fn project_directory(behavior_graph: &str) -> Option<String> {
     let lower = behavior_graph.trim_start_matches(['\\', '/']).replace('/', "\\").to_ascii_lowercase();
     let lower = lower.strip_prefix("meshes\\").unwrap_or(&lower).to_owned();
     let at = lower.rfind("\\behaviors\\")?;
@@ -105,10 +99,10 @@ fn decode_behavior(cache: &mut ActorGraphCache, provider: &TextureProvider, path
 
 fn build(cache: &mut ActorGraphCache, provider: &TextureProvider, entry: &SubgraphData) -> Option<CachedActorGraph> {
     let directory = project_directory(&entry.behavior_graph)?;
-    let mut graph = decode_behavior(cache, provider, &mesh_path(&entry.behavior_graph))?;
+    let mut graph = decode_behavior(cache, provider, &super::canonical_mesh_key(&entry.behavior_graph))?;
     {
         let mut resolve = |reference: &str| {
-            let path = mesh_path(&format!("{directory}\\{}", reference.trim_start_matches(['\\', '/'])));
+            let path = super::canonical_mesh_key(&format!("{directory}\\{}", reference.trim_start_matches(['\\', '/'])));
             decode_behavior(cache, provider, &path)
         };
         graph.inline_references(&mut resolve);
@@ -117,7 +111,7 @@ fn build(cache: &mut ActorGraphCache, provider: &TextureProvider, entry: &Subgra
         .skeletons
         .entry(directory.clone())
         .or_insert_with(|| {
-            let bytes = provider.extract_mesh(&mesh_path(&format!("{directory}\\characterassets\\skeleton.hkx")))?;
+            let bytes = provider.extract_mesh(&super::canonical_mesh_key(&format!("{directory}\\characterassets\\skeleton.hkx")))?;
             byroredux_hkx::decode_skeleton(&bytes)
                 .map_err(|error| log::warn!("actor graph: skeleton of '{directory}' did not decode: {error} - none of its clips can load"))
                 .ok()
@@ -131,7 +125,7 @@ fn build(cache: &mut ActorGraphCache, provider: &TextureProvider, entry: &Subgra
         sequences: HashMap::new(),
         lazy: Some(Arc::clone(&lazy)),
     });
-    let folders = entry.animation_paths.iter().map(|folder| mesh_path(folder)).collect();
+    let folders = entry.animation_paths.iter().map(|folder| super::canonical_mesh_key(folder)).collect();
     Some(CachedActorGraph { loaded, lazy, folders, skeleton })
 }
 

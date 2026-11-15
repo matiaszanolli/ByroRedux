@@ -182,7 +182,7 @@ pub(crate) fn populate_kf_idle_clips(world: &mut World, index: &EsmIndex, provid
             .get(&form_id)
             .filter(|idle| !idle.animation_path.is_empty())
             .and_then(|idle| {
-                let path = kf_mesh_path(&idle.animation_path);
+                let path = super::canonical_mesh_key(&idle.animation_path);
                 let handle = crate::npc_spawn::load_kf_clip_by_path(world, provider, &path);
                 if handle.is_none() {
                     log::debug!("IDLE {form_id:08X} ({}): '{path}' is not an archived .kf", idle.editor_id);
@@ -201,12 +201,6 @@ pub(crate) fn populate_kf_idle_clips(world: &mut World, index: &EsmIndex, provid
         }
     }
     installed
-}
-
-/// An IDLE's animation path (relative to `meshes\`) as the archive lookup spells it.
-fn kf_mesh_path(animation_path: &str) -> String {
-    let lower = animation_path.replace('/', "\\").to_ascii_lowercase();
-    if lower.starts_with("meshes\\") { lower } else { format!("meshes\\{lower}") }
 }
 
 /// Whether an actor waits on a `.kf` IDLE no clip is installed for yet — the cue for the app to resolve it

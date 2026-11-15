@@ -686,12 +686,9 @@ impl byroredux_ui::ScaleformResourceProvider for Archive {
 /// separator). `MODL` sub-records on RACE / NPC_ / ARMO records are
 /// authored relative to the `meshes\` root; the BSA layer stores the
 /// full prefix. Allocation only fires when the prefix is missing —
-/// already-prefixed paths borrow.
-///
-/// Mirror of the static-spawn path's manual prefix-prepend at
-/// [`cell_loader::references`] line ~421 (which predates this
-/// helper; the cell-loader form is now a redundant idempotent
-/// double-normalisation and can be removed in a follow-up sweep).
+/// already-prefixed paths borrow. The single home of "prepend `meshes\`
+/// unless present" (#6956): [`archive_mesh_path`] and
+/// [`canonical_mesh_key`] are its owned forms.
 pub fn normalize_mesh_path(path: &str) -> std::borrow::Cow<'_, str> {
     let bytes = path.as_bytes();
     if bytes.len() >= 7 {
@@ -714,6 +711,19 @@ pub fn normalize_mesh_path(path: &str) -> std::borrow::Cow<'_, str> {
         }
     }
     std::borrow::Cow::Owned(format!(r"meshes\{}", path))
+}
+
+/// `path` as an archive mesh key: leading separators trimmed, `/` turned into `\`, and
+/// `meshes\` prefixed per [`normalize_mesh_path`] (case kept).
+pub fn archive_mesh_path(path: &str) -> String {
+    let path = path.trim_start_matches(['\\', '/']).replace('/', "\\");
+    normalize_mesh_path(&path).into_owned()
+}
+
+/// [`archive_mesh_path`], lower-cased: the key a lookup table or cache shares between
+/// every producer of it.
+pub fn canonical_mesh_key(path: &str) -> String {
+    archive_mesh_path(&path.to_ascii_lowercase())
 }
 
 /// Strip the Bethesda build-server prefix from an asset path.

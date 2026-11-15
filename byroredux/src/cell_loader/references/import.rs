@@ -355,14 +355,7 @@ const SPT_CANDIDATE_DIRS: [&str; 1] = ["trees\\"];
 /// `normalize_mesh_path` is shared by every mesh consumer in the engine and
 /// `trees\` prefixing is a SpeedTree rule, not a general one.
 pub(super) fn resolve_spt_model_path(model_path: &str, probe: impl Fn(&str) -> bool) -> String {
-    let meshes_rooted = |path: &str| {
-        let lower = path.to_ascii_lowercase();
-        if lower.starts_with("meshes\\") || lower.starts_with("meshes/") {
-            path.to_owned()
-        } else {
-            format!("meshes\\{path}")
-        }
-    };
+    let meshes_rooted = |path: &str| crate::asset_provider::normalize_mesh_path(path).into_owned();
 
     if probe(model_path) {
         return model_path.to_owned();
