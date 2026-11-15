@@ -57,6 +57,16 @@ fn construction_and_recording_drivers_stay_within_their_size_pins() {
             "fn record_queued_upload(",
             221,
         ),
+        // #6949 — volumetrics (614 code lines) and composite (434) constructors were one
+        // body each; the numbered stages are construction functions beside them, each
+        // keeping its `try_or_cleanup!` rollback.
+        (include_str!("../volumetrics/init.rs"), "fn new_inner(", 69),
+        (include_str!("../volumetrics/init.rs"), "fn create_froxel_volumes(", 164),
+        (include_str!("../volumetrics/init.rs"), "fn build_inject_pass(", 150),
+        (include_str!("../volumetrics/init.rs"), "fn build_integration_pass(", 128),
+        (include_str!("../composite.rs"), "fn new_inner(", 53),
+        (include_str!("../composite.rs"), "fn create_params_and_descriptors(", 142),
+        (include_str!("../composite.rs"), "fn build_pipelines(", 116),
     ] {
         let measured = function_line_count(source, declaration);
         assert!(

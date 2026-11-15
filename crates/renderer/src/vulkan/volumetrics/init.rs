@@ -231,6 +231,23 @@ impl VolumetricsPipeline {
             local_grid: None,
         };
 
+        Self::create_froxel_volumes(&mut partial, device, allocator, extent)?;
+        Self::create_inject_params(&mut partial, device, allocator)?;
+        Self::build_inject_pass(&mut partial, device, allocator, pipeline_cache, bindless_layout)?;
+        Self::build_integration_pass(&mut partial, device, allocator, pipeline_cache, config, extent)?;
+        Self::create_local_grid(&mut partial, device, allocator, pipeline_cache, render_extent, config, extent)?;
+
+        Ok(partial)
+    }
+
+    /// Stage 1: the per-frame-in-flight froxel volumes and the shared noise volumes and samplers. Builds into `partial`; on a failure `try_or_cleanup!` has already
+    /// torn `partial` down, so the caller only propagates the error.
+    fn create_froxel_volumes(
+        partial: &mut Self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        extent: vk::Extent3D,
+    ) -> Result<()> {
         // ── 1. Allocate per-frame-in-flight froxel volumes ────────────
         // Six volumes per frame: lighting (injection output → integration
         // input), integrated (integration output → composite read), scalar
@@ -413,7 +430,15 @@ impl VolumetricsPipeline {
                 )
                 .context("Volumetrics density-noise sampler")
         });
-
+        Ok(())
+    }
+    /// Stage 2: the per-frame injection parameter UBOs. Builds into `partial`; on a failure `try_or_cleanup!` has already
+    /// torn `partial` down, so the caller only propagates the error.
+    fn create_inject_params(
+        partial: &mut Self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+    ) -> Result<()> {
         // ── 2. Per-frame parameter UBOs ───────────────────────────────
         let param_size = std::mem::size_of::<VolumetricsParams>() as vk::DeviceSize;
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
@@ -523,6 +548,18 @@ impl VolumetricsPipeline {
                 occupancy_init
             );
         }
+        Ok(())
+    }
+    /// Stages 3-6: the injection pass — descriptor set layout, compute pipeline, descriptor pool and sets, and their writes. Builds into `partial`; on a failure `try_or_cleanup!` has already
+    /// torn `partial` down, so the caller only propagates the error.
+    fn build_inject_pass(
+        partial: &mut Self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        pipeline_cache: vk::PipelineCache,
+        bindless_layout: vk::DescriptorSetLayout,
+    ) -> Result<()> {
+        let param_size = std::mem::size_of::<VolumetricsParams>() as vk::DeviceSize;
 
         // ── 3. Descriptor set layout ──────────────────────────────────
         let bindings = volumetrics_inject_layout_bindings();
@@ -690,7 +727,18 @@ impl VolumetricsPipeline {
             // in-flight frame.
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
-
+        Ok(())
+    }
+    /// Stages 7-11: the integration pass — its parameters, descriptor set layout, compute pipeline, descriptor pool and sets, and their writes. Builds into `partial`; on a failure `try_or_cleanup!` has already
+    /// torn `partial` down, so the caller only propagates the error.
+    fn build_integration_pass(
+        partial: &mut Self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        pipeline_cache: vk::PipelineCache,
+        config: VolumetricsConfig,
+        extent: vk::Extent3D,
+    ) -> Result<()> {
         // ── 7. Per-FIF integration parameters ─────────────────────────
         // The hybrid distribution makes slab thickness depend on Z. Keep the
         // parameters per-FIF so future weather-driven reach changes cannot
@@ -836,7 +884,19 @@ impl VolumetricsPipeline {
             // use by any in-flight frame.
             unsafe { device.update_descriptor_sets(&int_writes, &[]) };
         }
-
+        Ok(())
+    }
+    /// Stage 12: the world-space local grid (#6533). Builds into `partial`; on a failure `try_or_cleanup!` has already
+    /// torn `partial` down, so the caller only propagates the error.
+    fn create_local_grid(
+        partial: &mut Self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        pipeline_cache: vk::PipelineCache,
+        render_extent: vk::Extent2D,
+        config: VolumetricsConfig,
+        extent: vk::Extent3D,
+    ) -> Result<()> {
         // ── 12. World-space local grid (#6533) ────────────────────────
         // Required: the inject set's bindings 26..=31 and composite's 12..=17
         // point at its resources, so a missing grid cannot be papered over.
@@ -875,8 +935,7 @@ impl VolumetricsPipeline {
             FROXEL_VOLUMES_PER_SLOT,
             config.grid_far_meters,
         );
-
-        Ok(partial)
+        Ok(())
     }
 
     /// #3860 — was ~85 lines of create → allocate → bind → view with its own

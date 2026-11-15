@@ -630,6 +630,22 @@ impl CompositePipeline {
             render_extent: extents.render,
         };
 
+        Self::create_hdr_targets(&mut partial, device, allocator, extents)?;
+        Self::create_render_pass_and_framebuffers(&mut partial, device, allocator, reactive_views, transparency_views, extents)?;
+        Self::create_params_and_descriptors(&mut partial, device, allocator, indirect_views, indirect_is_general, albedo_views, depth_view, caustic_views, water_caustic_views, volumetric_views, local_fire, bloom_views, shadow_correction, cloud_noise, bindless_layout)?;
+        Self::build_pipelines(&mut partial, device, allocator, pipeline_cache, extents)?;
+
+        Ok(partial)
+    }
+
+    /// Stages 1-2: the per-frame HDR images and their sampler. Builds into `partial`; on a failure `try_or_cleanup!` has already
+    /// torn `partial` down, so the caller only propagates the error.
+    fn create_hdr_targets(
+        partial: &mut Self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        extents: FrameExtentSet,
+    ) -> Result<()> {
         // ── 1. Create HDR images (one per frame-in-flight) ───────────
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             // #3860 — was ~85 lines of create → allocate → bind → view with a
@@ -706,7 +722,18 @@ impl CompositePipeline {
             clamp_sampler(device, vk::Filter::NEAREST, vk::SamplerMipmapMode::NEAREST)
                 .context("NEAREST sampler (indirect + caustic)")
         });
-
+        Ok(())
+    }
+    /// Stages 3-4: the composite render pass and its per-frame framebuffers. Builds into `partial`; on a failure `try_or_cleanup!` has already
+    /// torn `partial` down, so the caller only propagates the error.
+    fn create_render_pass_and_framebuffers(
+        partial: &mut Self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        reactive_views: &[vk::ImageView],
+        transparency_views: &[vk::ImageView],
+        extents: FrameExtentSet,
+    ) -> Result<()> {
         // ── 3. Composite render pass ─────────────────────────────────
         // Attachment 0 is render-resolution linear HDR. Attachments 1/2 load
         // the main pass' FSR masks and MAX-blend fog coverage into them before
@@ -866,7 +893,28 @@ impl CompositePipeline {
             });
             partial.composite_framebuffers.push(fb);
         }
-
+        Ok(())
+    }
+    /// Stages 5-7: the per-frame parameter UBOs, the descriptor set and pipeline layouts, the descriptor pool and the per-frame sets with their writes. Builds into `partial`; on a failure `try_or_cleanup!` has already
+    /// torn `partial` down, so the caller only propagates the error.
+    #[allow(clippy::too_many_arguments)] // Construction stage: each argument is a separate caller-owned input of `new_inner`.
+    fn create_params_and_descriptors(
+        partial: &mut Self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        indirect_views: &[vk::ImageView],
+        indirect_is_general: bool,
+        albedo_views: &[vk::ImageView],
+        depth_view: vk::ImageView,
+        caustic_views: &[vk::ImageView],
+        water_caustic_views: &[vk::ImageView],
+        volumetric_views: &[vk::ImageView],
+        local_fire: &super::volumetrics::LocalFireViews,
+        bloom_views: &[vk::ImageView],
+        shadow_correction: ShadowCorrectionViews<'_>,
+        cloud_noise: CloudNoiseViews,
+        bindless_layout: vk::DescriptorSetLayout,
+    ) -> Result<()> {
         // ── 5. Per-frame parameter UBOs ──────────────────────────────
         let param_size = std::mem::size_of::<CompositeParams>() as vk::DeviceSize;
         partial.param_buffers = try_or_cleanup!(
@@ -1034,7 +1082,17 @@ impl CompositePipeline {
             // for the duration of this `new()` call.
             unsafe { device.update_descriptor_sets(&writes, &[]) };
         }
-
+        Ok(())
+    }
+    /// Stages 8-9: the shader modules and the sunlit and sunless graphics pipelines. Builds into `partial`; on a failure `try_or_cleanup!` has already
+    /// torn `partial` down, so the caller only propagates the error.
+    fn build_pipelines(
+        partial: &mut Self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        pipeline_cache: vk::PipelineCache,
+        extents: FrameExtentSet,
+    ) -> Result<()> {
         // ── 8. Shader modules ────────────────────────────────────────
         partial.vert_module = try_or_cleanup!(
             partial,
@@ -1176,8 +1234,7 @@ impl CompositePipeline {
             extents.output.width,
             extents.output.height,
         );
-
-        Ok(partial)
+        Ok(())
     }
 
     /// Compose the complete render-resolution linear-HDR scene.
