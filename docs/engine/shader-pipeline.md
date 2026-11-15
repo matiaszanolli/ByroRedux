@@ -854,6 +854,7 @@ pipeline. Defined in
 |---|---|---|---|---|
 | 0 | 0 | `COMBINED_IMAGE_SAMPLER` (bindless array) | All scene textures | triangle, water, ui, composite |
 | 0 | 1 | `COMBINED_IMAGE_SAMPLER` (bindless array) | Environment cubemaps — `samplerCube cubemaps[]` (`include/bindings.glsl`). Declared alongside binding 0 by `build_bindless_descriptor_bindings` (`texture_registry/mod.rs`); the set-0 layout is one array per sampler dimension | triangle (the only `cubemaps[]` consumer today — env-map reflections; water / groundcover_blade share the layout for binding 0) |
+| 0 | 2 | `STORAGE_BUFFER` | `TextureFirstLevels` — per-handle first resident mip (`Texture::first_level`, M39 #6629), written with each slot's descriptor (`FIRST_LEVEL_BINDING`, `texture_registry/mod.rs`); read by `residentLod` (`include/bindings.glsl`) | triangle, water, groundcover_blade (via `residentLod`, also through `include/ray_hit.glsl`) |
 | 1 | 0 | `STORAGE_BUFFER` | Light buffer (`u32 count` + 3 pad + 1024-entry `previousLightToCurrent` remap + `GpuLight[]` at offset 4112) | triangle, groundcover_blade |
 | 1 | 1 | `UNIFORM_BUFFER` | `GpuCamera` (368 B) | triangle, water, cluster_cull |
 | 1 | 2 | `ACCELERATION_STRUCTURE` | TLAS | triangle, water |
