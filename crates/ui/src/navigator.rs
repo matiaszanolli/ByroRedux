@@ -656,7 +656,7 @@ fn prepare_import_asset_swf(movie_data: &[u8]) -> Result<(Vec<u8>, bool), String
 }
 
 fn is_swf(data: &[u8]) -> bool {
-    matches!(data.get(..3), Some(b"FWS" | b"CWS" | b"ZWS"))
+    crate::prepare::is_swf_container(data)
 }
 
 fn raw_tag_records(data: &[u8]) -> Result<Vec<(u16, usize)>, String> {
@@ -722,15 +722,17 @@ mod tests {
     /// by BOTH before any inflate, as a recorded degraded dependency.
     #[test]
     fn dependency_decodes_refuse_an_over_ceiling_claim() {
-        let bomb = crate::prepare::hostile_cws_header_bomb();
-        let error = prepare_import_asset_swf(&bomb).unwrap_err();
-        assert!(
-            error.contains("ceiling"),
-            "prepare_import_asset_swf: {error}"
-        );
-        let url = url::Url::parse("file:///interface/hudmenu.swf").unwrap();
-        let error = import_asset_paths(&url, &bomb).unwrap_err();
-        assert!(error.contains("ceiling"), "import_asset_paths: {error}");
+        for signature in [b"CWS", b"CFX"] {
+            let bomb = crate::prepare::hostile_header_bomb(signature);
+            let error = prepare_import_asset_swf(&bomb).unwrap_err();
+            assert!(
+                error.contains("ceiling"),
+                "prepare_import_asset_swf: {error}"
+            );
+            let url = url::Url::parse("file:///interface/hudmenu.swf").unwrap();
+            let error = import_asset_paths(&url, &bomb).unwrap_err();
+            assert!(error.contains("ceiling"), "import_asset_paths: {error}");
+        }
     }
 
     /// #6225 — a movie a running menu fetches (`Loader.load` / `loadClip`), named by no
@@ -738,9 +740,16 @@ mod tests {
     /// claim itself. It answers the placeholder and records the refusal.
     #[test]
     fn a_runtime_loaded_movie_over_the_ceiling_is_refused_before_ruffle_sees_it() {
+        for signature in [b"CWS", b"CFX"] {
+            a_runtime_loaded_bomb_is_refused(crate::prepare::hostile_header_bomb(signature));
+        }
+    }
+
+    /// #6997 — `CFX`, Scaleform's own zlib container, is refused like `CWS`.
+    fn a_runtime_loaded_bomb_is_refused(bomb: Vec<u8>) {
         let provider = Arc::new(MemoryProvider(HashMap::from([(
             "interface\\pipboy_datapage.swf".to_string(),
-            crate::prepare::hostile_cws_header_bomb(),
+            bomb,
         )])));
         let (navigator, mut runtime, _) = ScaleformNavigatorRuntime::create(
             archive_movie_url("interface\\pipboy_menu.swf").unwrap(),

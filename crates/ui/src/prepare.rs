@@ -105,8 +105,9 @@ fn normalize_scaleform_dialect_counting(swf_data: &[u8], inflates: &mut usize) -
     let mut file = match &swf_data[0..3] {
         b"CWS" => decompress_zlib_after_header_counting(swf_data, MAX_SWF_BODY_BYTES, inflates)?,
         b"FWS" => swf_data.to_vec(),
-        // ZWS (LZMA) is not something this shim touches; leave it to the
-        // stock loader.
+        // ZWS (LZMA) and Scaleform's own GFX / CFX containers are not
+        // something this shim touches (the Starfield dialect ships as `.swf`);
+        // leave them to the stock loader, behind the same ceiling (#6997).
         _ => return None,
     };
     let tags_start = tag_stream_start(&file)?;
@@ -199,16 +200,31 @@ fn decompress_zlib_after_header_counting(
 /// stock reader directly and never saw the ceiling at all.
 ///
 /// Every decode site calls this first, so an over-ceiling claim is a hard
-/// `Err` however the movie is reached. It reads the claim for all three
-/// containers (FWS / CWS / ZWS): LZMA is handed to the stock reader too, and
-/// an FWS claim bounds nothing but a hostile header. Input too short to carry
+/// `Err` however the movie is reached. It reads the claim for every container
+/// the stock reader accepts ([`is_swf_container`]): LZMA and Scaleform's zlib
+/// `CFX` are inflated by the stock reader to the header's claim, and an
+/// uncompressed claim bounds nothing but a hostile header. Input too short to carry
 /// a header passes through to the decoder, which rejects it itself.
 pub(crate) fn ensure_declared_len_within_ceiling(swf_data: &[u8]) -> Result<(), String> {
     ensure_declared_len_within(swf_data, MAX_SWF_BODY_BYTES)
 }
 
+/// Every container signature the pinned Ruffle `swf` reader accepts
+/// (`read_compression_type`): Flash's `FWS` / `CWS` / `ZWS` and Scaleform's own
+/// `GFX` (uncompressed) / `CFX` (zlib), which Skyrim's and Fallout 4's interface
+/// archives ship as `.gfx` (#6997). The one predicate for "is this a movie" on
+/// every path that hands bytes to that reader.
+pub(crate) fn is_swf_container(data: &[u8]) -> bool {
+    matches!(data.get(..3), Some(b"FWS" | b"CWS" | b"ZWS" | b"GFX" | b"CFX"))
+}
+
+/// Whether the stock reader inflates `data`'s container (`CWS`, `ZWS`, `CFX`).
+fn is_compressed_container(data: &[u8]) -> bool {
+    matches!(data.get(..3), Some(b"CWS" | b"ZWS" | b"CFX"))
+}
+
 fn ensure_declared_len_within(swf_data: &[u8], ceiling: u64) -> Result<(), String> {
-    if !matches!(swf_data.get(..3), Some(b"FWS" | b"CWS" | b"ZWS")) {
+    if !is_swf_container(swf_data) {
         return Ok(());
     }
     let Some(claim) = swf_data.get(4..8).and_then(|b| <[u8; 4]>::try_from(b).ok()) else {
@@ -372,7 +388,7 @@ pub(crate) fn prepare_movie(
     // compressed. A shim that handed back FWS leaves it an uncompressed copy;
     // a shim that inflated and then declined (or never ran) leaves a CWS/ZWS
     // container for it to inflate AGAIN, and that second pass is counted.
-    let stock_inflates = usize::from(matches!(swf_data.get(..3), Some(b"CWS" | b"ZWS")));
+    let stock_inflates = usize::from(is_compressed_container(swf_data));
     let decompresses = shim_inflates + stock_inflates;
     let decompressed =
         swf::decompress_swf(swf_data).map_err(|error| format!("Failed to parse SWF: {error}"))?;
@@ -450,10 +466,16 @@ fn logged(prepared: PreparedMovie) -> PreparedMovie {
 /// assertion instead of allocating gigabytes.
 #[cfg(test)]
 pub(crate) fn hostile_cws_header_bomb() -> Vec<u8> {
+    hostile_header_bomb(b"CWS")
+}
+
+/// [`hostile_cws_header_bomb`] under another zlib container signature (`CFX`, #6997).
+#[cfg(test)]
+pub(crate) fn hostile_header_bomb(signature: &[u8; 3]) -> Vec<u8> {
     use std::io::Write;
     let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(&vec![0u8; 64 * 1024]).unwrap();
-    let mut out = b"CWS".to_vec();
+    let mut out = signature.to_vec();
     out.push(15); // version
     out.extend_from_slice(&u32::MAX.to_le_bytes());
     out.extend_from_slice(&encoder.finish().unwrap());
@@ -953,13 +975,19 @@ mod dialect_tests {
     /// The same refusal from every other decode entry point in the crate.
     #[test]
     fn every_public_decode_entry_refuses_an_over_ceiling_claim() {
-        let bomb = hostile_cws_header_bomb();
-        let error = ScaleformProfile::detect(&bomb).unwrap_err().to_string();
-        assert!(error.contains("ceiling"), "detect: {error}");
-        let error = crate::avm1_host::referenced_host_methods(&bomb).unwrap_err();
-        assert!(error.contains("ceiling"), "AVM1 scanner: {error}");
-        let error = crate::avm2_host::referenced_host_methods(&bomb).unwrap_err();
-        assert!(error.contains("ceiling"), "AVM2 scanner: {error}");
+        // #6997 — Scaleform's `CFX` is held to the same ceiling as `CWS`.
+        for signature in [b"CWS", b"CFX"] {
+            let bomb = hostile_header_bomb(signature);
+            let label = String::from_utf8_lossy(signature);
+            let error = ScaleformProfile::detect(&bomb).unwrap_err().to_string();
+            assert!(error.contains("ceiling"), "{label} detect: {error}");
+            let error = crate::avm1_host::referenced_host_methods(&bomb).unwrap_err();
+            assert!(error.contains("ceiling"), "{label} AVM1 scanner: {error}");
+            let error = crate::avm2_host::referenced_host_methods(&bomb).unwrap_err();
+            assert!(error.contains("ceiling"), "{label} AVM2 scanner: {error}");
+            let error = prepare_movie(&bomb, None, None).err().expect("refused");
+            assert!(error.contains("ceiling"), "{label} prepare_movie: {error}");
+        }
     }
 
     /// Boundary of the shared pre-check: the claim is the body length plus
@@ -979,6 +1007,10 @@ mod dialect_tests {
         assert!(ensure_declared_len_within(&claim(b"CWS", 1009), ceiling).is_err());
         assert!(ensure_declared_len_within(&claim(b"ZWS", 1009), ceiling).is_err());
         assert!(ensure_declared_len_within(&claim(b"FWS", 1009), ceiling).is_err());
+        // #6997 — Scaleform's own containers, which the stock reader accepts too.
+        assert!(ensure_declared_len_within(&claim(b"CFX", 1009), ceiling).is_err());
+        assert!(ensure_declared_len_within(&claim(b"GFX", 1009), ceiling).is_err());
+        assert!(ensure_declared_len_within(&claim(b"CFX", 1008), ceiling).is_ok());
         // A length below the header size saturates to a zero body.
         assert!(ensure_declared_len_within(&claim(b"CWS", 3), ceiling).is_ok());
         // Too short for a header, or not a SWF: nothing to gate.
