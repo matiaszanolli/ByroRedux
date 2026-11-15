@@ -152,6 +152,7 @@ mod tests {
     use super::*;
 
     /// `Skyrim.esm`'s `SPED` for the two types (§13.3 of the design, V2).
+    #[allow(clippy::approx_constant)] // 1.57 / 3.14 are authored SPED rotation speeds, not approximations of PI
     fn skyrim_speeds(editor_id: &str) -> Option<Vec<f32>> {
         match editor_id {
             "NPC_Sneaking_MT" => Some(vec![41.44, 200.0, 41.44, 200.0, 47.2, 222.0, 43.38, 150.0, 1.57, 3.14, 3.14]),

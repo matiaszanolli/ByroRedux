@@ -119,9 +119,7 @@ mod tests {
 
         world.remove_resource::<InputLayers>();
         assert_eq!(set_sneaking(&world, actor, true), Ok(true));
-        let mut controls = crate::PlayerControlState::default();
-        controls.sneaking_enabled = false;
-        world.insert_resource(controls);
+        world.insert_resource(crate::PlayerControlState { sneaking_enabled: false, ..Default::default() });
         assert_eq!(set_sneaking(&world, actor, false), Ok(false), "leaving is never refused");
         assert_eq!(toggle_sneaking(&world, actor), Err(SneakRefusal::ControlDisabled));
     }
