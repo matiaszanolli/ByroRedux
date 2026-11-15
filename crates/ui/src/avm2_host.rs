@@ -1404,25 +1404,16 @@ mod tests {
     };
     use crate::{ScaleformHostCatalog, ScaleformHostObjectState, ScaleformProfile};
 
-    /// FO4 interface archive used by the corpus sweeps, or `None` when the
-    /// game isn't installed on this machine (the corpus is multi-gigabyte
-    /// game data that can't ship with the repo, so the sweeps self-skip
-    /// rather than failing — see #2717).
-    fn fallout4_interface_archive(test_name: &str) -> Option<Ba2Archive> {
-        let path = std::env::var("BYROREDUX_FO4_DATA").unwrap_or_else(|_| {
-            "/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data".to_string()
-        });
-        let archive_path = std::path::Path::new(&path).join("Fallout4 - Interface.ba2");
-        match Ba2Archive::open(&archive_path) {
-            Ok(archive) => Some(archive),
-            Err(_) => {
-                eprintln!(
-                    "skipping {test_name}: {archive_path:?} not available \
-                     (set BYROREDUX_FO4_DATA to override)"
-                );
-                None
-            }
-        }
+    /// FO4 interface archive the corpus sweeps read. The sweeps are
+    /// `#[ignore]`d (the corpus is multi-gigabyte game data that can't ship
+    /// with the repo, #2717), so they run only in the real-data lane, where a
+    /// missing archive is a failure, not a green skip (#6999, as #6993 did for
+    /// the Skyrim sweep).
+    fn fallout4_interface_archive() -> Ba2Archive {
+        use byroredux_plugin::esm::test_paths::{data_dir, FO4_DEFAULT, FO4_ENV};
+        let archive_path = data_dir(FO4_ENV, FO4_DEFAULT).join("Fallout4 - Interface.ba2");
+        Ba2Archive::open(&archive_path)
+            .unwrap_or_else(|error| panic!("open {archive_path:?}: {error} (set {FO4_ENV})"))
     }
 
     fn fallout4_swf_paths(archive: &Ba2Archive) -> Vec<String> {
@@ -1653,12 +1644,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs Fallout 4 game data on disk"]
     fn installed_menus_without_destroy_trait_report_the_partial_lifecycle() {
-        let Some(archive) = fallout4_interface_archive(
-            "installed_menus_without_destroy_trait_report_the_partial_lifecycle",
-        ) else {
-            return;
-        };
+        let archive = fallout4_interface_archive();
         let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
         for path in [
             "interface\\dialoguemenu.swf",
@@ -1725,8 +1713,9 @@ mod tests {
     /// could not be: it inspected **three** movies out of 311 and was
     /// `#[ignore]`d, so 308 shipped menus were unverified against the catalog
     /// and nothing ran in a normal `cargo test`. It now walks every `.swf` in
-    /// the interface archive, and self-skips (like its `all_installed_…`
-    /// sibling) instead of being permanently opted out.
+    /// the interface archive. It is `#[ignore]`d again since #6999, now that
+    /// the real-data lane runs the crate's `--ignored` suite: a self-skip
+    /// reported green wherever the archive was missing, CI included.
     ///
     /// The assertion also changed shape with the fix. `referenced ⊆ catalog`
     /// is no longer the safety property — an uncataloged method is no longer
@@ -1738,12 +1727,9 @@ mod tests {
     /// reported rather than asserted — it is a to-do list for the catalog's
     /// `kind`/response metadata, not a load-blocker.
     #[test]
+    #[ignore = "needs Fallout 4 game data on disk"]
     fn installed_fallout4_host_calls_are_all_forwarded() {
-        let Some(archive) =
-            fallout4_interface_archive("installed_fallout4_host_calls_are_all_forwarded")
-        else {
-            return;
-        };
+        let archive = fallout4_interface_archive();
         let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
         let swf_paths = fallout4_swf_paths(&archive);
 
@@ -1986,11 +1972,10 @@ mod tests {
     /// only real-data evidence for "lossless on FO4 content" was 2 of 311
     /// menus, checked by an `#[ignore]`d test that never runs in CI. This
     /// sweeps every `.swf` in the FO4 interface archive through
-    /// injection and asserts the output re-parses — NOT gated behind
-    /// `#[ignore]` (so the corpus is actually swept whenever it's
-    /// present), but self-skips (rather than failing) when the archive
-    /// isn't available, since the corpus is multi-gigabyte game data that
-    /// can't ship with the repo.
+    /// injection and asserts the output re-parses. #6999 — `#[ignore]`d,
+    /// because the corpus is multi-gigabyte game data that can't ship with
+    /// the repo; the real-data lane's `--ignored` run sweeps it and fails on a
+    /// missing archive (the earlier self-skip reported green without one).
     ///
     /// #2963 — `DialogueMenu`, `MultiActivateMenu`, `SPECIALMenu` and
     /// `Terminal` used to be excluded here (`KNOWN_MISSING_ON_DESTROY_TRAIT`):
@@ -2006,12 +1991,9 @@ mod tests {
     /// starts failing on a real corpus, that is a new, real regression, not
     /// a resurfaced on-destroy gap.
     #[test]
+    #[ignore = "needs Fallout 4 game data on disk"]
     fn all_installed_fallout4_swfs_round_trip_through_injection() {
-        let Some(archive) =
-            fallout4_interface_archive("all_installed_fallout4_swfs_round_trip_through_injection")
-        else {
-            return;
-        };
+        let archive = fallout4_interface_archive();
         let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
         let swf_paths = fallout4_swf_paths(&archive);
 
@@ -2218,14 +2200,11 @@ mod tests {
     /// so this is pinned on real shipped movies rather than a synthetic one,
     /// because the whole risk is that a future caller (byte caching, or
     /// rebuilding a player from its current movie) reaches it with real bytes.
-    /// Self-skips when FO4 isn't installed, like its corpus siblings.
+    /// Needs FO4 installed, like its corpus siblings (`#[ignore]`d, #6999).
     #[test]
+    #[ignore = "needs Fallout 4 game data on disk"]
     fn re_injecting_already_patched_bytes_is_a_no_op() {
-        let Some(archive) =
-            fallout4_interface_archive("re_injecting_already_patched_bytes_is_a_no_op")
-        else {
-            return;
-        };
+        let archive = fallout4_interface_archive();
         let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
 
         let adapter_tag_count = |bytes: &[u8]| -> usize {
@@ -2297,12 +2276,9 @@ mod tests {
     /// directly on an already-patched root ABC it must refuse rather than
     /// splice a second bootstrap in front of the same `BGSCodeObj` init.
     #[test]
+    #[ignore = "needs Fallout 4 game data on disk"]
     fn patching_an_already_patched_root_constructor_is_rejected() {
-        let Some(archive) =
-            fallout4_interface_archive("patching_an_already_patched_root_constructor_is_rejected")
-        else {
-            return;
-        };
+        let archive = fallout4_interface_archive();
         let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
 
         for movie_path in fallout4_swf_paths(&archive) {

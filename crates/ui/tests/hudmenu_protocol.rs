@@ -1,8 +1,9 @@
 //! Skyrim `hudmenu.swf` protocol pins (M48.6).
 //!
-//! Gated on the canonical `BYROREDUX_SKYRIMSE_DATA` test path.
-//! pointing at a real Skyrim SE `Data/` directory, so `cargo test` stays
-//! hermetic without the game installed.
+//! Needs a real Skyrim SE `Data/` directory (`BYROREDUX_SKYRIMSE_DATA`, else
+//! the canonical install path), so the pin is `#[ignore]`d: plain `cargo test`
+//! stays hermetic, and the real-data lane's `--ignored` run fails on a
+//! missing archive instead of skipping green (#6999).
 //!
 //! Pins the menu→engine half of the Scaleform HUD protocol from the
 //! installed vanilla movie: every `GameDelegate.call` site in
@@ -20,22 +21,16 @@ use byroredux_ui::avm1_host::referenced_host_methods;
 use byroredux_ui::ScaleformHostCatalog;
 use byroredux_ui::ScaleformProfile;
 
-fn data_dir() -> Option<std::path::PathBuf> {
-    if let Ok(dir) = std::env::var(byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV) {
-        return Some(std::path::PathBuf::from(dir));
-    }
-    let default = std::path::PathBuf::from(
-        "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
-    );
-    default.is_dir().then_some(default)
+/// The game's `Data/` directory; an explicitly set override must exist.
+fn data_dir() -> std::path::PathBuf {
+    use byroredux_plugin::esm::test_paths::{data_dir, SKYRIM_SE_DEFAULT, SKYRIM_SE_ENV};
+    data_dir(SKYRIM_SE_ENV, SKYRIM_SE_DEFAULT)
 }
 
 #[test]
+#[ignore = "needs Skyrim SE game data on disk"]
 fn hudmenu_host_calls_are_pinned_and_cataloged() {
-    let Some(dir) = data_dir() else {
-        eprintln!("skipping: Skyrim data not found");
-        return;
-    };
+    let dir = data_dir();
     let archive =
         byroredux_bsa::BsaArchive::open(dir.join("Skyrim - Interface.bsa")).expect("open Interface BSA");
     let swf = archive.extract("interface\\hudmenu.swf").expect("extract hudmenu.swf");

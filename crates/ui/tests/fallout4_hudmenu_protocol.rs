@@ -1,7 +1,9 @@
 //! Fallout 4 `hudmenu.swf` protocol pins (M48.7).
 //!
-//! Gated on `BYROREDUX_FO4_DATA` pointing at a real Fallout 4 `Data/`
-//! directory, so `cargo test` stays hermetic without the game installed.
+//! Needs a real Fallout 4 `Data/` directory (`BYROREDUX_FO4_DATA`, else the
+//! canonical install path), so the pin is `#[ignore]`d: plain `cargo test`
+//! stays hermetic, and the real-data lane's `--ignored` run fails on a
+//! missing archive instead of skipping green (#6999).
 //!
 //! Pins the runtime lifecycle contract the Scaleform HUD driver
 //! (`byroredux/src/scaleform_hud.rs`) relies on for the AVM2 game: the
@@ -16,20 +18,16 @@ use std::sync::Arc;
 use byroredux_bsa::Ba2Archive;
 use byroredux_ui::{ScaleformHostObjectState, ScaleformProfile, ScaleformValue, SwfPlayer};
 
-fn data_dir() -> Option<std::path::PathBuf> {
-    if let Ok(dir) = std::env::var("BYROREDUX_FO4_DATA") {
-        return Some(std::path::PathBuf::from(dir));
-    }
-    let default = std::path::PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data");
-    default.is_dir().then_some(default)
+/// The game's `Data/` directory; an explicitly set override must exist.
+fn data_dir() -> std::path::PathBuf {
+    use byroredux_plugin::esm::test_paths::{data_dir, FO4_DEFAULT, FO4_ENV};
+    data_dir(FO4_ENV, FO4_DEFAULT)
 }
 
 #[test]
+#[ignore = "needs Fallout 4 game data on disk"]
 fn fallout4_hudmenu_lifecycle_and_calls_are_pinned() {
-    let Some(dir) = data_dir() else {
-        eprintln!("skipping: FO4 data not found");
-        return;
-    };
+    let dir = data_dir();
     let archive =
         Arc::new(Ba2Archive::open(dir.join("Fallout4 - Interface.ba2")).expect("open Interface BA2"));
 
