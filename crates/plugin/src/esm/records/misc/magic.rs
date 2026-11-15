@@ -497,7 +497,7 @@ pub fn parse_perk(
     }
     for sub in subs {
         match &sub.sub_type {
-            b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
+            b"DESC" => out.description = crate::esm::records::common::read_lstring_field(b"PERK", b"DESC", &sub.data),
             // PERK-level DATA. Starfield has its own layout (PERK-DEC-009,
             // `docs/prd/perk-entry-points.md`), decoded by this arm; the arm after it covers
             // FO3, FNV, Skyrim and FO4: trait + level + num_ranks + playable + hidden
@@ -1285,7 +1285,7 @@ pub fn parse_mgef(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
-            b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
+            b"DESC" => out.description = crate::esm::records::common::read_lstring_field(b"MGEF", b"DESC", &sub.data),
             b"SCRI" if sub.data.len() >= 4 => {
                 out.script_form_id = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }

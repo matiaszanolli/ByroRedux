@@ -2,7 +2,7 @@
 //! lighting templates, image-space adapters, activators, terminals.
 
 use byroredux_core::bytes::le_u32_at;
-use super::super::common::{read_lstring_or_zstring, read_zstring, remap_fid, CommonNamedFields};
+use super::super::common::{read_lstring_field, read_lstring_or_zstring, read_zstring, remap_fid, CommonNamedFields};
 use super::super::condition::{push_ctda, ConditionList};
 use crate::esm::cell::StarfieldLighting;
 use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
@@ -1966,7 +1966,7 @@ pub fn parse_term(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                     out.bodies.push(finished);
                 }
                 current_body = Some(TerminalBody {
-                    text: read_lstring_or_zstring(&sub.data),
+                    text: read_lstring_field(b"TERM", &sub.sub_type, &sub.data),
                     conditions: ConditionList::default(),
                 });
                 in_menu_item = Some(false);

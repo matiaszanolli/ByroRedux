@@ -628,7 +628,7 @@ pub fn parse_info(
             b"RNAM" => out.prompt = read_lstring_or_zstring(&sub.data),
             b"NAM1" => {
                 current_response.get_or_insert_with(Default::default).text =
-                    read_lstring_or_zstring(&sub.data);
+                    crate::esm::records::common::read_lstring_field(b"INFO", b"NAM1", &sub.data);
             }
             b"NAM2" => {
                 current_response
@@ -1088,7 +1088,7 @@ pub fn parse_mesg(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
-            b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
+            b"DESC" => out.description = crate::esm::records::common::read_lstring_field(b"MESG", b"DESC", &sub.data),
             // #4071 — QNAM is a QUST cross-reference and needs the
             // load-order remap.
             b"QNAM" if sub.data.len() >= 4 => {

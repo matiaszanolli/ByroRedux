@@ -248,7 +248,10 @@ drop/unwind) so every record parser's text decoder routes through
 `read_lstring_or_zstring`. The actual string table is loaded by
 [`strings_table.rs`](../../crates/plugin/src/esm/strings_table.rs)
 (#989); an unresolved index renders as a `<lstring 0xNNNNNNNN>`
-placeholder.
+placeholder. The three files are separate id namespaces: a field whose
+file xEdit's `LocalizedValueDecider` names (`DESC` except on LSCR, QUST /
+BOOK `CNAM`, INFO fields but `RNAM`) reads through `read_lstring_field`,
+which tries that file first (`StringsFile::for_field`, #6798).
 
 ## Cell tier
 

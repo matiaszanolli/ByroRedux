@@ -127,10 +127,15 @@ impl Drop for StringsTableGuard {
 /// the ID, `None` otherwise. Called by [`read_lstring_or_zstring`] after
 /// identifying a 4-byte localized payload.
 pub fn resolve_lstring(id: u32) -> Option<String> {
+    resolve_lstring_in(crate::esm::StringsFile::Strings, id)
+}
+
+/// [`resolve_lstring`] reading `file` first ([`StringTableSet::resolve_in`], #6798).
+pub fn resolve_lstring_in(file: crate::esm::StringsFile, id: u32) -> Option<String> {
     CURRENT_STRINGS_TABLE.with(|t| {
         t.borrow()
             .as_ref()
-            .and_then(|set| set.resolve(id))
+            .and_then(|set| set.resolve_in(file, id))
             .map(str::to_owned)
     })
 }
@@ -190,7 +195,23 @@ pub fn read_mesh_path(data: &[u8]) -> Result<String, String> {
 /// Phase 2 (the real `.STRINGS` loader that turns the placeholder
 /// into the authored English / language-pack string) is tracked as
 /// a follow-up. See audit S6-03 / #348.
+///
+/// A localized id resolves `.STRINGS` first; a field that xEdit reads from
+/// another file goes through [`read_lstring_field`] instead (#6798).
 pub fn read_lstring_or_zstring(data: &[u8]) -> String {
+    read_lstring_in(crate::esm::StringsFile::Strings, data)
+}
+
+/// [`read_lstring_or_zstring`] for sub-record `sub` of a `record` record: a
+/// localized id resolves from the companion file that field belongs to
+/// ([`crate::esm::StringsFile::for_field`]). The files are separate id
+/// namespaces, so `PERK` `DESC` 148 and `CELL` `FULL` 148 are different
+/// strings (#6798).
+pub fn read_lstring_field(record: &[u8; 4], sub: &[u8; 4], data: &[u8]) -> String {
+    read_lstring_in(crate::esm::StringsFile::for_field(record, sub), data)
+}
+
+fn read_lstring_in(file: crate::esm::StringsFile, data: &[u8]) -> String {
     if is_localized_plugin() && data.len() == std::mem::size_of::<u32>() {
         let id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
         // #4072 (ESM-2026-09-09-D6-07) — id 0 is the authored "no string"
@@ -208,7 +229,7 @@ pub fn read_lstring_or_zstring(data: &[u8]) -> String {
         // Resolve against the active StringTableSet first (#989).
         // Falls back to the placeholder when no table is installed or
         // the ID is absent from all three companion files.
-        return resolve_lstring(id).unwrap_or_else(|| format!("<lstring 0x{:08X}>", id));
+        return resolve_lstring_in(file, id).unwrap_or_else(|| format!("<lstring 0x{:08X}>", id));
     }
     read_zstring(data)
 }

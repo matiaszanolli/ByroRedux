@@ -1,6 +1,6 @@
 //! Effects / FX / VATS / impact records.
 
-use super::super::common::{read_lstring_or_zstring, read_zstring, remap_fid, CommonNamedFields};
+use super::super::common::{read_lstring_field, read_lstring_or_zstring, read_zstring, remap_fid, CommonNamedFields};
 use crate::esm::reader::{GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
@@ -60,7 +60,7 @@ pub fn parse_avif(
     out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
-            b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
+            b"DESC" => out.description = read_lstring_field(b"AVIF", b"DESC", &sub.data),
             // `ANAM` is a `wbString` through Skyrim but a `wbLString` on FO4 and FO76
             // (`wbDefinitionsFO4.pas:11680`): reading the FO4+ id as text produced garbage, while
             // reading Skyrim's 3-character abbreviation as an lstring would invent an id (#6800).
@@ -444,7 +444,7 @@ pub fn parse_imod(form_id: u32, subs: &[SubRecord]) -> ImodRecord {
     out.full_name = common.full_name;
     for sub in subs {
         match &sub.sub_type {
-            b"DESC" => out.description = read_lstring_or_zstring(&sub.data),
+            b"DESC" => out.description = read_lstring_field(b"IMOD", b"DESC", &sub.data),
             b"DATA" if sub.data.len() >= 8 => {
                 let mut r = SubReader::new(&sub.data);
                 out.value = r.i32_or_default();

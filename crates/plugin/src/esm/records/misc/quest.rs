@@ -1,7 +1,7 @@
 //! `QUST` quest records — stages, objectives, and the Skyrim+ VMAD
 //! fragment-dispatch bindings.
 
-use super::super::common::{read_lstring_or_zstring, read_zstring, CommonNamedFields};
+use super::super::common::{read_lstring_field, read_lstring_or_zstring, read_zstring, CommonNamedFields};
 use super::super::condition::{push_ctda, ConditionList};
 use super::super::script_instance::{
     parse_quest_alias_scripts_with_remap, parse_quest_fragments, QuestAliasScripts, QuestScriptFragment,
@@ -1194,13 +1194,13 @@ fn parse_qust_contextual(
         // NNAM). Dispatch on the open block.
         b"CNAM" => match &mut *block {
             QustBlock::Stage(stage) => {
-                stage.log_text = read_lstring_or_zstring(&sub.data);
+                stage.log_text = read_lstring_field(b"QUST", b"CNAM", &sub.data);
                 if let Some(log) = stage.log_entries.last_mut() {
                     log.text = stage.log_text.clone();
                 }
             }
             QustBlock::Objective(obj) => {
-                obj.text = read_lstring_or_zstring(&sub.data);
+                obj.text = read_lstring_field(b"QUST", b"CNAM", &sub.data);
             }
             QustBlock::Alias(_) | QustBlock::None => {}
         },

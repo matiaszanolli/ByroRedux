@@ -479,6 +479,10 @@ First step: `cargo test -p byroredux-plugin strings_table`
 - The TES4 localized flag (`0x80`) — not "looks like a small integer" — decides literal vs
   `u32` string id. lstring id `0` means "no string" (empty, never the `<lstring 0x…>`
   placeholder, #4072); only a genuinely unresolved id yields the placeholder.
+- The three files are separate id namespaces (Dragonborn id 148 is in two). A new localized
+  field whose file is not `.STRINGS` reads through `read_lstring_field` with its record and
+  sub-record (`StringsFile::for_field`, xEdit's `LocalizedValueDecider`, #6798), not
+  `read_lstring_or_zstring`.
 - `.STRINGS` has no length prefix; `.DLSTRINGS`/`.ILSTRINGS` do (`has_length_prefix`). A
   flag/data disagreement warns loudly (declared length vs NUL offset, ±1 band, #4178)
   instead of yielding shifted strings.

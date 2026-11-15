@@ -84,7 +84,7 @@ pub fn parse_chal(form_id: u32, subs: &[SubRecord], remap: &Option<crate::esm::r
     };
     for sub in subs {
         match &sub.sub_type {
-            b"DESC" => out.description = super::super::common::read_lstring_or_zstring(&sub.data),
+            b"DESC" => out.description = crate::esm::records::common::read_lstring_field(b"CHAL", b"DESC", &sub.data),
             b"DATA" if sub.data.len() >= CHAL_DATA_LEN => {
                 let mut r = SubReader::new(&sub.data);
                 out.challenge_type = r.u32_or_default();

@@ -315,6 +315,34 @@ pub fn language_candidates(language: &str) -> Vec<String> {
     out
 }
 
+/// Which of the three companion files a localized field's id belongs to.
+/// The files are separate id namespaces, so the same id can name different
+/// text in each (Dragonborn id 148: a CELL name in `.STRINGS`, a PERK
+/// description in `.DLSTRINGS`; #6798).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StringsFile {
+    Strings,
+    DlStrings,
+    IlStrings,
+}
+
+impl StringsFile {
+    /// The file a record's sub-record reads from, per xEdit's
+    /// `TwbLocalizationHandler.LocalizedValueDecider` (`Core/wbInterface.pas`):
+    /// `DESC` from `.DLSTRINGS` except on `LSCR`; QUST `CNAM` (the stage log)
+    /// and BOOK `CNAM` from `.DLSTRINGS`; every INFO field but `RNAM` from
+    /// `.ILSTRINGS`; everything else from `.STRINGS`.
+    pub fn for_field(record: &[u8; 4], sub: &[u8; 4]) -> Self {
+        match (record, sub) {
+            (b"LSCR", b"DESC") => Self::Strings,
+            (_, b"DESC") | (b"QUST", b"CNAM") | (b"BOOK", b"CNAM") => Self::DlStrings,
+            (b"INFO", b"RNAM") => Self::Strings,
+            (b"INFO", _) => Self::IlStrings,
+            _ => Self::Strings,
+        }
+    }
+}
+
 /// All three companion-file variants for one localized plugin.
 ///
 /// Constructed by [`StringTableSet::load`] from a plugin path + language tag.
@@ -455,17 +483,26 @@ impl StringTableSet {
         }
     }
 
-    /// Resolve an lstring ID against all three tables.
-    ///
-    /// Checks `.STRINGS` first (most FULL/name records land here), then
-    /// `.DLSTRINGS`, then `.ILSTRINGS`. Returns `None` when the ID is not
-    /// present in any table.
+    /// Resolve an lstring ID for a field whose file is not known: `.STRINGS`
+    /// first (most FULL/name records land here), then `.DLSTRINGS`, then
+    /// `.ILSTRINGS`. Returns `None` when the ID is not present in any table.
     pub fn resolve(&self, id: u32) -> Option<&str> {
-        self.strings
-            .as_ref()
-            .and_then(|t| t.get(id))
-            .or_else(|| self.dlstrings.as_ref().and_then(|t| t.get(id)))
-            .or_else(|| self.ilstrings.as_ref().and_then(|t| t.get(id)))
+        self.resolve_in(StringsFile::Strings, id)
+    }
+
+    /// Resolve an lstring ID from `file` ([`StringsFile::for_field`]) first,
+    /// so an id present in two tables reads the one its field names (#6798).
+    /// The other tables are the fall-through, in [`Self::resolve`]'s order,
+    /// for content that files a string in an unexpected table.
+    pub fn resolve_in(&self, file: StringsFile, id: u32) -> Option<&str> {
+        let table = |file: StringsFile| match file {
+            StringsFile::Strings => self.strings.as_ref(),
+            StringsFile::DlStrings => self.dlstrings.as_ref(),
+            StringsFile::IlStrings => self.ilstrings.as_ref(),
+        };
+        std::iter::once(file)
+            .chain([StringsFile::Strings, StringsFile::DlStrings, StringsFile::IlStrings].into_iter().filter(|other| *other != file))
+            .find_map(|file| table(file).and_then(|t| t.get(id)))
     }
 }
 
@@ -555,6 +592,57 @@ mod tests {
         assert_eq!(set.resolve(0x0001), Some("Iron Sword"));
         assert_eq!(set.resolve(0x0010), Some("A fine blade."));
         assert_eq!(set.resolve(0xDEAD), None);
+    }
+
+    /// Dragonborn id 148 is a CELL name in `.STRINGS` and a PERK description
+    /// in `.DLSTRINGS`: each field reads its own file, and a field whose own
+    /// file lacks the id still falls through to the others (#6798).
+    #[test]
+    fn a_colliding_id_resolves_from_the_fields_own_file() {
+        let strings_data = build_strings_file(&[(148u32, "Quick Test Cell"), (1, "Only here")], false);
+        let dlstrings_data = build_strings_file(&[(148u32, "Protection spells are stronger.")], true);
+        let ilstrings_data = build_strings_file(&[(148u32, "Hello there.")], true);
+        let set = StringTableSet {
+            strings: Some(StringsTable::parse(&strings_data, false).unwrap()),
+            dlstrings: Some(StringsTable::parse(&dlstrings_data, true).unwrap()),
+            ilstrings: Some(StringsTable::parse(&ilstrings_data, true).unwrap()),
+        };
+        let perk_desc = StringsFile::for_field(b"PERK", b"DESC");
+        assert_eq!(perk_desc, StringsFile::DlStrings);
+        assert_eq!(set.resolve_in(perk_desc, 148), Some("Protection spells are stronger."));
+        assert_eq!(set.resolve_in(StringsFile::for_field(b"CELL", b"FULL"), 148), Some("Quick Test Cell"));
+        assert_eq!(set.resolve_in(StringsFile::for_field(b"INFO", b"NAM1"), 148), Some("Hello there."));
+        assert_eq!(set.resolve_in(perk_desc, 1), Some("Only here"), "the other tables are the fall-through");
+    }
+
+    /// The record parsers' reader: a PERK `DESC` id reads `.DLSTRINGS` and a
+    /// plain lstring field reads `.STRINGS` (Dragonborn's `DLC2MageArmor50NPC`
+    /// described as "Quick Test Cell" before #6798).
+    #[test]
+    fn the_field_reader_picks_the_fields_file() {
+        use crate::esm::records::common::{read_lstring_field, read_lstring_or_zstring, LocalizedPluginGuard, StringsTableGuard};
+        let strings_data = build_strings_file(&[(148u32, "Quick Test Cell")], false);
+        let dlstrings_data = build_strings_file(&[(148u32, "Protection spells are stronger.")], true);
+        let _localized = LocalizedPluginGuard::new(true);
+        let _tables = StringsTableGuard::new(StringTableSet {
+            strings: Some(StringsTable::parse(&strings_data, false).unwrap()),
+            dlstrings: Some(StringsTable::parse(&dlstrings_data, true).unwrap()),
+            ilstrings: None,
+        });
+        let id = 148u32.to_le_bytes();
+        assert_eq!(read_lstring_field(b"PERK", b"DESC", &id), "Protection spells are stronger.");
+        assert_eq!(read_lstring_or_zstring(&id), "Quick Test Cell");
+    }
+
+    /// xEdit's `LocalizedValueDecider` exceptions.
+    #[test]
+    fn the_field_to_file_map_follows_xedit() {
+        assert_eq!(StringsFile::for_field(b"LSCR", b"DESC"), StringsFile::Strings);
+        assert_eq!(StringsFile::for_field(b"QUST", b"CNAM"), StringsFile::DlStrings);
+        assert_eq!(StringsFile::for_field(b"BOOK", b"CNAM"), StringsFile::DlStrings);
+        assert_eq!(StringsFile::for_field(b"MESG", b"CNAM"), StringsFile::Strings);
+        assert_eq!(StringsFile::for_field(b"INFO", b"RNAM"), StringsFile::Strings);
+        assert_eq!(StringsFile::for_field(b"QUST", b"NNAM"), StringsFile::Strings);
     }
 
     #[test]

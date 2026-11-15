@@ -28,5 +28,5 @@ pub use records::{
     InventoryEntry, ItemKind, ItemRecord, LeveledEntry, LeveledList, NpcRecord, RaceRecord,
     SettingValue, StringsTableGuard,
 };
-pub use strings_table::{StringTableSet, StringsTable};
+pub use strings_table::{StringTableSet, StringsFile, StringsTable};
 pub use sub_reader::SubReader;

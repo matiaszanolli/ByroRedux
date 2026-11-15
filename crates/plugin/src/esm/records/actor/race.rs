@@ -1,4 +1,4 @@
-use super::super::common::{read_lstring_or_zstring, read_zstring, remap_fid, CommonNamedFields};
+use super::super::common::{read_lstring_field, read_zstring, remap_fid, CommonNamedFields};
 use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
@@ -502,7 +502,7 @@ pub fn parse_race(
 
     for sub in subs {
         match &sub.sub_type {
-            b"DESC" => record.description = read_lstring_or_zstring(&sub.data),
+            b"DESC" => record.description = read_lstring_field(b"RACE", b"DESC", &sub.data),
             // #4415 — racial spell list, same one-FormID shape as NPC_.
             b"SPLO" if sub.data.len() >= 4 => {
                 let raw = SubReader::new(&sub.data).u32_or_default();

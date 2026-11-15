@@ -1,4 +1,4 @@
-use super::super::common::{read_lstring_or_zstring, CommonNamedFields};
+use super::super::common::{read_lstring_field, CommonNamedFields};
 use crate::esm::reader::{GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
@@ -111,7 +111,7 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassReco
 
     for sub in subs {
         match &sub.sub_type {
-            b"DESC" => record.description = read_lstring_or_zstring(&sub.data),
+            b"DESC" => record.description = read_lstring_field(b"CLAS", b"DESC", &sub.data),
             // DATA layout (Oblivion CLAS — 48 or 52 bytes per empirical
             // probe against vanilla Oblivion.esm, #968; histogram is
             // 79 × 52-byte + 31 × 48-byte):
