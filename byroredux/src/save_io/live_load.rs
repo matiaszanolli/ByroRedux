@@ -535,6 +535,14 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     if let Some(mut reports) = world.try_resource_mut::<crate::cell_loader::relocated::TravelReports>() {
         reports.0.clear();
     }
+    // INC4-1 — the player survives a live load but the furniture they sat on is respawned under a new
+    // entity, and `Seated` (an `EntityId`) is not a delta column: the outgoing seat would name a dead
+    // or recycled entity. The loaded player stands; the seat is not restored from the save.
+    if let Some(player) = crate::systems::PlayerEntity::get(world) {
+        if let Some(mut seats) = world.query_mut::<byroredux_core::ecs::components::Seated>() {
+            seats.remove(player);
+        }
+    }
 }
 
 /// Drain a queued live-load: reload the saved cell or exterior worldspace

@@ -50,10 +50,19 @@ pub(crate) fn player_seat_system(world: &World, _dt: f32) {
         .map(|events| events.iter().filter(|(_, event)| event.activator == player).map(|(target, _)| target).collect())
         .unwrap_or_default();
     let seat = activated.into_iter().find(|&target| is_seat(world, target));
-    let seated = world.get::<Seated>(player).is_some();
+    let seated_on = world.get::<Seated>(player).map(|seated| seated.furniture);
+    let seated = seated_on.is_some();
+    // A seat whose furniture is gone (its cell unloaded, a door or `MoveTo` taken while seated)
+    // stands the player up, scripted movement lock or not: there is nothing left to sit on (INC4-1).
+    let seat_gone = seated_on.is_some_and(|furniture| !is_seat(world, furniture));
     let Some(mut seats) = world.query_mut::<Seated>() else {
         return;
     };
+    if seat_gone {
+        seats.remove(player);
+        log::info!("player stands up: the seat is gone");
+        return;
+    }
     match seat {
         Some(furniture) if !seated => {
             seats.insert(player, Seated { furniture, animation_restore: SeatedAnimationRestore::default() });
@@ -68,5 +77,32 @@ pub(crate) fn player_seat_system(world: &World, _dt: f32) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_core::ecs::components::FurnitureMarker;
+
+    /// INC4-1: a seat whose furniture entity is gone stands the player up, even while a script holds
+    /// movement (the furniture went with its cell, or the player was moved while seated).
+    #[test]
+    fn a_player_on_a_vanished_seat_stands_up() {
+        let mut world = World::new();
+        world.register::<Seated>();
+        world.register::<Furniture>();
+        world.register::<byroredux_scripting::ActivateEvent>();
+        let player = world.spawn();
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert_resource(byroredux_scripting::PlayerControlState { movement_enabled: false, ..Default::default() });
+        let couch = world.spawn();
+        world.insert(couch, Furniture { markers: vec![FurnitureMarker { local_offset: [0.0; 3], heading_z_radians: None, animation_type: 0, kind: FurnitureMarkerKind::Sit }] });
+        world.insert(player, Seated { furniture: couch, animation_restore: SeatedAnimationRestore::default() });
+        player_seat_system(&world, 0.0);
+        assert!(world.get::<Seated>(player).is_some(), "seated and held by the script");
+        world.despawn(couch);
+        player_seat_system(&world, 0.0);
+        assert!(world.get::<Seated>(player).is_none(), "the couch is gone, so is the seat");
     }
 }

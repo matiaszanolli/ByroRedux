@@ -993,7 +993,14 @@ fn live_load_drain_discards_the_outgoing_sessions_requests() {
     let mut reports = crate::cell_loader::relocated::TravelReports::default();
     reports.0.insert(0x104C1C, "no load door leaves its space");
     world.insert_resource(reports);
+    // INC4-1 — the player's seat names the outgoing world's furniture entity.
+    world.register::<byroredux_core::ecs::components::Seated>();
+    let seated_player = world.spawn();
+    world.insert_resource(crate::systems::PlayerEntity(Some(seated_player)));
+    let old_couch = world.spawn();
+    world.insert(seated_player, byroredux_core::ecs::components::Seated { furniture: old_couch, animation_restore: Default::default() });
     discard_outgoing_session_requests(&world);
+    assert!(world.get::<byroredux_core::ecs::components::Seated>(seated_player).is_none(), "INC4-1: the loaded player stands");
     assert!(world.resource::<byroredux_scripting::PendingRelocations>().0.is_empty(), "#6927: queued relocations are dropped");
     assert!(world.resource::<byroredux_scripting::PendingActorMoves>().0.is_empty(), "#6927: queued scripted moves are dropped");
     assert!(world.resource::<crate::cell_loader::relocated::TravelReports>().0.is_empty(), "#6927: stale route reasons are dropped");
