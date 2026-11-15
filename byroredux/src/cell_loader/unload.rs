@@ -54,10 +54,8 @@ fn cinematic_retained_entities(world: &World) -> HashSet<EntityId> {
 /// when non-empty.
 fn player_owned_entities(world: &World) -> HashSet<EntityId> {
     let mut protected = HashSet::new();
-    if let Some(player) = world.try_resource::<crate::components::PlayerEntity>() {
-        if let Some(entity) = player.0 {
-            protected.insert(entity);
-        }
+    if let Some(entity) = crate::components::PlayerEntity::get(world) {
+        protected.insert(entity);
     }
     if let Some(camera) = world.try_resource::<ActiveCamera>() {
         protected.insert(camera.0);

@@ -225,13 +225,9 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     if mode != PlayerMode::Character {
         return;
     }
-    let Some(player_res) = world.try_resource::<PlayerEntity>() else {
+    let Some(player_entity) = PlayerEntity::get(world) else {
         return;
     };
-    let Some(player_entity) = player_res.0 else {
-        return;
-    };
-    drop(player_res);
     if world.get::<Dead>(player_entity).is_some() {
         return;
     }
@@ -770,13 +766,9 @@ pub(crate) fn camera_follow_system(world: &World, dt: f32) {
     if mode != PlayerMode::Character {
         return;
     }
-    let Some(player_res) = world.try_resource::<PlayerEntity>() else {
+    let Some(player_entity) = PlayerEntity::get(world) else {
         return;
     };
-    let Some(player_entity) = player_res.0 else {
-        return;
-    };
-    drop(player_res);
 
     // cam_entity needed early so we can read its previous Y for smoothing.
     let Some(active) = world.try_resource::<ActiveCamera>() else {

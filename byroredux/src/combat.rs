@@ -704,9 +704,7 @@ pub(crate) fn install_experience_rules(
 
 /// Add the player's `dealt` damage on `target` to its kill-experience share.
 fn note_player_damage(world: &World, aggressor: EntityId, target: EntityId, dealt: f32) {
-    let is_player = world
-        .try_resource::<crate::systems::PlayerEntity>()
-        .is_some_and(|player| player.0 == Some(aggressor));
+    let is_player = PlayerEntity::get(world) == Some(aggressor);
     if !is_player || dealt <= 0.0 || world.try_resource::<ExperienceRules>().is_none() {
         return;
     }

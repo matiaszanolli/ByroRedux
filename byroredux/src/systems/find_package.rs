@@ -106,10 +106,7 @@ fn ground_distance(a: Vec3, b: Vec3) -> f32 {
 }
 
 fn is_actor(world: &World, entity: EntityId) -> bool {
-    world.has::<ActorValues>(entity)
-        || world
-            .try_resource::<crate::systems::PlayerEntity>()
-            .is_some_and(|player| player.0 == Some(entity))
+    world.has::<ActorValues>(entity) || crate::systems::PlayerEntity::get(world) == Some(entity)
 }
 
 /// Memo of [`item_kind`] per placed base, valid for one `LoadedCellIndex` (#6339). A kind search
@@ -480,7 +477,7 @@ fn classify_arrival(world: &World, actor: EntityId, target: EntityId, behavior: 
         let hostile = world.has::<CreatureActor>(target) || actor_would_attack(world, actor, target);
         if hostile {
             (ENGAGE, Arrival::Attack)
-        } else if world.try_resource::<crate::systems::PlayerEntity>().is_some_and(|p| p.0 == Some(target)) {
+        } else if crate::systems::PlayerEntity::get(world) == Some(target) {
             (BESIDE, Arrival::Greet)
         } else {
             (BESIDE, Arrival::Stand)

@@ -1229,7 +1229,17 @@ fn no_source_hand_spells_the_player_entity_read() {
         }
         // Whitespace-insensitive: rustfmt splits the chain across lines.
         let flat: String = contents.split_whitespace().collect();
-        if flat.contains(&needle) {
+        // #6958 — any `try_resource::<…PlayerEntity>()` read, not only the
+        // `.and_then(` spelling: a `let Some(res) = …; res.0` ladder or an
+        // `.is_some_and(|p| p.0 == Some(x))` compare is the same hand-spelled read.
+        // The path's last segment must be exactly `PlayerEntity`, so the scripting
+        // crate's `PapyrusPlayerEntity` does not match.
+        let reads_by_hand = flat.split("try_resource::<").skip(1).any(|rest| {
+            rest.split_once(">()").is_some_and(|(path, _)| {
+                path.rsplit("::").next() == Some("PlayerEntity")
+            })
+        });
+        if flat.contains(&needle) || reads_by_hand {
             found.push(path.strip_prefix(manifest).unwrap_or(path).display().to_string());
         }
     });
