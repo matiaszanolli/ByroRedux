@@ -62,6 +62,10 @@ pub struct Bk2 {
 /// is 3840x2160 (`docs/spec/STATE.md`), so a side past 8192 is not a movie this crate plays; the
 /// track and frame limits are the ones `byroredux-video`'s Bink 1 probe clamps to.
 pub const MAX_DIMENSION: usize = 8192;
+/// See [`MAX_DIMENSION`]: a frame's area, so a header cannot ask for two 8192x8192 reference
+/// frames plus their RGBA (~0.5 GB) from a few bytes (BIK-AUD-3). Twice the corpus's largest
+/// (3840x2160 is 8.3 Mpx).
+pub const MAX_PIXELS: usize = 4096 * 4096;
 /// See [`MAX_DIMENSION`].
 pub const MAX_AUDIO_TRACKS: usize = 0x100;
 /// See [`MAX_DIMENSION`].
@@ -85,6 +89,12 @@ impl Bk2 {
         let (width, height) = (u(4) as usize, u(5) as usize);
         if frames > MAX_FRAMES || tracks > MAX_AUDIO_TRACKS || width > MAX_DIMENSION || height > MAX_DIMENSION {
             return Err(bad("header sizes out of range"));
+        }
+        // A frame with no area has no line map and no rows: the decoder sizes both from it
+        // (`read_line_map`'s `n - 1`, `chunks_exact_mut(w * 4)`), so it is refused here rather than
+        // trusted to every caller (BIK-AUD-2).
+        if width == 0 || height == 0 || width * height > MAX_PIXELS {
+            return Err(bad("frame size out of range"));
         }
         // KB2j and later carry 4 extra header bytes at offset 44, before the audio tables (P15)
         let extra = if h[3] >= b'j' { 4 } else { 0 };
@@ -261,6 +271,9 @@ mod tests {
         assert_eq!(refused("frames", &header(u32::MAX, 64, 64, 0)), "header sizes out of range");
         assert_eq!(refused("tracks", &header(1, 64, 64, u32::MAX)), "header sizes out of range");
         assert_eq!(refused("width", &header(1, 65535, 64, 0)), "header sizes out of range");
+        assert_eq!(refused("no-width", &header(1, 0, 64, 0)), "frame size out of range");
+        assert_eq!(refused("no-height", &header(1, 64, 0, 0)), "frame size out of range");
+        assert_eq!(refused("area", &header(1, 8192, 8192, 0)), "frame size out of range");
         assert_eq!(
             refused("tables", &header(MAX_FRAMES as u32, 64, 64, 0)),
             "header tables run past the end of the file"

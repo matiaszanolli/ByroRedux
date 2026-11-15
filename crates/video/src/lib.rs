@@ -165,13 +165,23 @@ fn wav_header(samples: usize, channels: u16, rate: u32) -> [u8; 44] {
     h
 }
 
+/// The longest soundtrack decoded up front `[ours]`: an hour, twelve times the longest installed
+/// movie (`FNVIntro.bik`, 290 s, measured 2026-11-15 over every game's `Data\Video`).
+const MAX_SOUNDTRACK_SECS: f64 = 3600.0;
+/// The most samples any soundtrack decodes to, whatever its header says: an hour of 48 kHz stereo
+/// (the highest rate in the corpus), 691 MB of PCM, inside the WAV header's `u32` byte count.
+const MAX_SOUNDTRACK_SAMPLES: usize = MAX_SOUNDTRACK_SECS as usize * 48_000 * 2;
+
 /// The most interleaved samples a movie's soundtrack may decode to: its running time plus two
-/// seconds, with half again as slack, at the track's rate and channel count `[ours]`. A real track
-/// never comes near it (a stream ends with the picture); a hostile header whose packets each pass
-/// the decoder's per-packet bound could otherwise grow the up-front buffer without limit (INC3-1).
+/// seconds, with half again as slack, at the track's rate and channel count, and never past
+/// [`MAX_SOUNDTRACK_SAMPLES`] `[ours]`. Every term of the running time is a header field, so the
+/// absolute ceiling is what bounds a hostile file (BIK-AUD-1: an fps of 1/u32::MAX overflowed
+/// the old product, and a 1M-frame header allowed ~9.6 GB); the per-movie term only keeps an honest
+/// short movie's buffer tight. Saturating throughout.
 fn pcm_cap(duration_secs: f64, rate: u32, channels: usize) -> usize {
-    let secs = if duration_secs.is_finite() { duration_secs.max(0.0) } else { 0.0 };
-    ((secs + 2.0) * 1.5 * f64::from(rate)) as usize * channels
+    let secs = if duration_secs.is_finite() { duration_secs.clamp(0.0, MAX_SOUNDTRACK_SECS) } else { 0.0 };
+    let per_movie = (((secs + 2.0) * 1.5 * f64::from(rate)) as usize).saturating_mul(channels);
+    per_movie.min(MAX_SOUNDTRACK_SAMPLES)
 }
 
 /// Whether `pcm` has passed `cap`; it is truncated to the cap and the stop logged once.
@@ -266,6 +276,11 @@ fn bink2_audio(file: &mut bink2::Bk2, name: &str) -> Option<PathBuf> {
             }
         };
         if let Some(packet) = packet {
+            // Refuse a packet that would pass the cap before `decode` grows the buffer for it.
+            if pcm.len().saturating_add(packet.decoded_bytes as usize / 2) > cap {
+                log::warn!("video: {name}: its audio decodes past the movie's running time; stopped at frame {frame}");
+                break;
+            }
             if let Err(error) = decoder.decode(packet.decoded_bytes, &packet.data, &mut pcm) {
                 log::warn!("video: {name}: its audio stops at frame {frame}: {error}");
                 break;
@@ -709,6 +724,12 @@ mod tests {
     fn the_soundtrack_is_capped_by_the_running_time() {
         assert_eq!(pcm_cap(10.0, 48_000, 2), (12.0 * 1.5 * 48_000.0) as usize * 2);
         assert_eq!(pcm_cap(f64::NAN, 48_000, 2), pcm_cap(0.0, 48_000, 2), "a degenerate duration is no running time");
+        // BIK-AUD-1: header-controlled terms cannot overflow it or lift it past the absolute ceiling.
+        let hostile_secs = 30_000.0 / (1.0 / f64::from(u32::MAX));
+        assert_eq!(pcm_cap(hostile_secs, 48_000, 2), MAX_SOUNDTRACK_SAMPLES);
+        assert_eq!(pcm_cap(1_000_000.0 / 30.0, 48_000, 2), MAX_SOUNDTRACK_SAMPLES);
+        assert_eq!(pcm_cap(10.0, u32::MAX, 2), MAX_SOUNDTRACK_SAMPLES, "nor can the track's rate");
+        assert!(MAX_SOUNDTRACK_SAMPLES * 2 <= u32::MAX as usize, "the WAV header's byte count holds it");
         let mut pcm = vec![0i16; 10];
         assert!(!over_pcm_cap(&mut pcm, 10, "t"));
         pcm.push(1);
