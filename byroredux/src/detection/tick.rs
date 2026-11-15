@@ -138,7 +138,7 @@ pub(crate) fn detection_tick_system(world: &World, dt: f32) {
         .try_resource_mut::<PlayerActionNoise>()
         .map(|mut noise| std::mem::take(&mut noise.rating))
         .unwrap_or(0.0);
-    let events = player_detection_events(world, player);
+    let events = player_detection_events(world);
 
     let mut summary = PlayerDetection::default();
     for detector in crate::systems::faction_hostility::living_actors(world) {
@@ -278,7 +278,7 @@ fn player_inputs(world: &World, player: EntityId, at: Vec3) -> DetectionInputs {
 
 /// Drain `CreateDetectionEvent`s and keep the player's (owner 0x14) as
 /// `(position, sound level)`.
-fn player_detection_events(world: &World, _player: EntityId) -> Vec<(Vec3, f32)> {
+fn player_detection_events(world: &World) -> Vec<(Vec3, f32)> {
     let events = world
         .try_resource_mut::<byroredux_scripting::detection_events::PendingDetectionEvents>()
         .map(|mut pending| std::mem::take(&mut pending.0))

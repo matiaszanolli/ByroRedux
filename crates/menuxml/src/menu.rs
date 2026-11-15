@@ -415,7 +415,7 @@ impl MenuRenderer {
                     clip,
                     ..
                 } => {
-                    if let Some(tex) = self.texture(assets, filename, *zoom) {
+                    if let Some(tex) = self.texture(assets, filename) {
                         self.frame
                             .blit(
                                 &tex,
@@ -460,7 +460,7 @@ impl MenuRenderer {
 
     /// Resolve an authored `<filename>` to a decoded texture through the
     /// resolution-class table (`Menus\…` → `textures\menus…\…`).
-    fn texture(&mut self, assets: &dyn MenuAssets, filename: &str, _zoom: f32) -> Option<Arc<Rgba8>> {
+    fn texture(&mut self, assets: &dyn MenuAssets, filename: &str) -> Option<Arc<Rgba8>> {
         let normalized = filename.trim().replace('/', "\\");
         let cache_key = normalized.to_lowercase();
         if let Some(cached) = self.tex_cache.get(&cache_key) {
