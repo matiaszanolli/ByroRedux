@@ -295,8 +295,8 @@ Bars are eyeballed weight, not a computed metric — read the rows, not the bars
 | ✔ | Feature | Original baseline | Notes |
 |:-:|---------|-------------------|-------|
 | `[x]` | SWF/Flash rendering | Scaleform GFx | Pinned Ruffle, offscreen wgpu → pixel readback → UI overlay pass |
-| `[x]` | Skyrim `GameDelegate` contract | — | 74 SkyUI methods + 12 request contracts, re-entrant response routing |
-| `[x]` | FO4 `BGSCodeObj` contract | — | 138 installed-corpus methods, generated AVM2 forwarding adapter |
+| `[x]` | Skyrim `GameDelegate` contract | — | 142 corpus-measured methods (16 request contracts, [counts](engine/ui.md#scaleform-host-methods-and-remaining-_globalgfx-stubs)), re-entrant response routing |
+| `[x]` | FO4 `BGSCodeObj` contract | — | 269 installed-corpus methods ([counts](engine/ui.md#scaleform-host-methods-and-remaining-_globalgfx-stubs)), generated AVM2 forwarding adapter |
 | `[x]` | Archive-backed SWF resource resolution | — | Relative resources through BSA/BA2 |
 | `[~]` | HUD menu | HUDMenu.swf | Loads + readiness/destruction checks pass; not driven by game state |
 | `[~]` | Pip-Boy menu (FO4) | PipboyMenu.swf | Loads; lifecycle ownership verified |
