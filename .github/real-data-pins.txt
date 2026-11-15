@@ -52,6 +52,8 @@ plugin-esm skyrim_leveled_item_multi_pick_semantics_are_pinned_on_the_shipped_ma
 # #6354 - the Oblivion corpse census (#5013) and the FO3 leg of #5005 (the FNV twin is above)
 plugin-esm oblivion_starts_dead_bases_and_their_placements_match_the_audit_census
 plugin-esm fo3_corpses_key_on_base_health_not_xrgd
+# #6990 - #819 (FO4 parse-rate floors, incl. the five FO4 categories #817 added)
+plugin-esm parse_rate_fo4_esm
 # scripting lib (ObScript / condition guards that read the shipped masters)
 # #6354 - #5629 (references resolve against the SCRO-only list) and #5989 (GetActorValue enum code read as a FormID)
 scripting-lib fnv_patch04_quest_script_targets_its_own_scro_quests
