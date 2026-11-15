@@ -382,16 +382,7 @@ impl DebugUiState {
         }
         if !self.visible
             && !self.game_menu.visible
-            && snapshot.interaction_prompt.is_none()
-            && !snapshot.show_crosshair
-            // Vitals/objectives only count toward "something visible" when
-            // there is actual content to draw — a toggle with no player body
-            // or no active objective must keep the hidden-overlay steady
-            // state cheap.
-            && (!snapshot.show_vitals || snapshot.vitals.as_ref().is_none_or(Vec::is_empty))
-            && (!snapshot.show_objectives
-                || snapshot.objectives.as_ref().is_none_or(Vec::is_empty))
-            && snapshot.loading_tip.is_none()
+            && !snapshot.has_live_hud_content()
             && self.player_message.is_none()
         {
             // #2831 — still drain. `on_window_event` is forwarded for EVERY
@@ -481,6 +472,36 @@ mod builtin_settings_tests {
 
 #[cfg(test)]
 mod hidden_overlay_drain_tests {
+    /// #7002 — every always-live HUD layer keeps the egui pass running with
+    /// the overlay hidden. The sneak indicator was drawn by `draw_hud` but was
+    /// no term of the skip, so with the crosshair, vitals and objectives off a
+    /// sneaking player's label never drew.
+    #[test]
+    fn each_live_hud_layer_keeps_the_hidden_pass_running() {
+        assert!(!crate::PanelSnapshot::default().has_live_hud_content());
+        let indicator = crate::PanelSnapshot {
+            stealth_indicator: Some(crate::StealthIndicatorView {
+                state: byroredux_core::stealth::IndicatorState::Hidden,
+                look: crate::StealthIndicatorLook::Eye,
+            }),
+            ..Default::default()
+        };
+        assert!(indicator.has_live_hud_content());
+        let crosshair = crate::PanelSnapshot {
+            show_crosshair: true,
+            ..Default::default()
+        };
+        assert!(crosshair.has_live_hud_content());
+        // A toggle with nothing to draw stays cheap.
+        let empty_vitals = crate::PanelSnapshot {
+            show_vitals: true,
+            vitals: Some(Vec::new()),
+            show_objectives: true,
+            ..Default::default()
+        };
+        assert!(!empty_vitals.has_live_hud_content());
+    }
+
     /// #2831 — `DebugUiState::run`'s hidden-overlay early return must still
     /// drain egui-winit's raw-input queue.
     ///

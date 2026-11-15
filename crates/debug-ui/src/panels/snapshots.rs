@@ -73,6 +73,24 @@ pub struct PanelSnapshot {
     pub studio: Option<StudioSnapshot>,
 }
 
+impl PanelSnapshot {
+    /// Whether the snapshot carries a HUD layer that draws with the F3
+    /// overlay and the game menu both hidden. `DebugUiState::run` skips the
+    /// whole egui pass when it doesn't, so every always-live layer `draw_hud`
+    /// paints must be a term here. Vitals and objectives count only with
+    /// content to draw: a toggle with no player body or no active objective
+    /// must keep the hidden-overlay steady state cheap.
+    pub(crate) fn has_live_hud_content(&self) -> bool {
+        self.interaction_prompt.is_some()
+            || self.show_crosshair
+            || (self.show_vitals && self.vitals.as_ref().is_some_and(|v| !v.is_empty()))
+            || (self.show_objectives && self.objectives.as_ref().is_some_and(|o| !o.is_empty()))
+            || self.loading_tip.is_some()
+            // #7002 — the sneak indicator stays live with the overlay hidden.
+            || self.stealth_indicator.is_some()
+    }
+}
+
 /// One script message box (`Message.Show` on a `MESG` with its "Message
 /// Box" flag): title, formatted text, and the authored buttons.
 #[derive(Debug, Clone, Default, PartialEq)]
