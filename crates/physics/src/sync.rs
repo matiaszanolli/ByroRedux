@@ -111,7 +111,7 @@ pub fn physics_sync_system(world: &World, dt: f32) {
     // can be localized without guessing (Phase 1 collect/register, 2
     // push-kinematic, 2.5 buoyancy, 3 Rapier step, 4 pull-dynamic). Silent
     // otherwise.
-    let profile = profile_phases();
+    let profile = PROFILE_PHASES.get();
     let t = |on: bool| on.then(std::time::Instant::now);
     let ms = |s: Option<std::time::Instant>| s.map(|i| i.elapsed().as_secs_f32() * 1000.0);
 
@@ -181,7 +181,7 @@ pub fn physics_sync_system(world: &World, dt: f32) {
     // #1698 — opt-in awake-faller diagnostic (separate from BYRO_PROFILE so a
     // root-cause run can name the clutter behind a cell-entry settle storm
     // without the per-phase spam).
-    if profile_fallers() {
+    if PROFILE_FALLERS.get() {
         dump_awake_fallers(world);
     }
 }
@@ -248,27 +248,30 @@ pub fn register_newcomers_and_refresh_queries(world: &World) -> usize {
 ///
 /// Caching also makes the flags honest: a diagnostic that could flip
 /// mid-session would produce a log with an unannounced gap in it.
-fn profile_phases() -> bool {
-    static PROFILE: OnceLock<bool> = OnceLock::new();
-    env_flag_once(&PROFILE, PROFILE_VAR)
-}
+static PROFILE_PHASES: EnvFlag = EnvFlag::new("BYRO_PROFILE");
 
 /// `BYRO_PROFILE_FALLERS` — one-shot awake-faller dump. See
-/// [`profile_phases`] for why this is cached (#2881).
-fn profile_fallers() -> bool {
-    static PROFILE_FALLERS: OnceLock<bool> = OnceLock::new();
-    env_flag_once(&PROFILE_FALLERS, PROFILE_FALLERS_VAR)
+/// [`PROFILE_PHASES`] for why this is cached (#2881).
+static PROFILE_FALLERS: EnvFlag = EnvFlag::new("BYRO_PROFILE_FALLERS");
+
+/// An environment flag looked up the first time it is asked and never again.
+/// The variable name and its cache are one value, so a flag cannot read
+/// another flag's variable or share its cache (#7014); the cache is this
+/// type's property, tested on its own (#6689).
+struct EnvFlag {
+    name: &'static str,
+    cell: OnceLock<bool>,
 }
 
-const PROFILE_VAR: &str = "BYRO_PROFILE";
-const PROFILE_FALLERS_VAR: &str = "BYRO_PROFILE_FALLERS";
+impl EnvFlag {
+    const fn new(name: &'static str) -> Self {
+        Self { name, cell: OnceLock::new() }
+    }
 
-/// Whether `name` is set in the environment, looked up the first time `cell` is
-/// asked and never again. One helper for both flags, so the cache is the helper's
-/// property — tested on its own (#6689) — rather than two accessors each hoped to
-/// have kept their `OnceLock`.
-fn env_flag_once(cell: &OnceLock<bool>, name: &str) -> bool {
-    *cell.get_or_init(|| std::env::var_os(name).is_some())
+    /// Whether the variable is set, as it was at the first call.
+    fn get(&self) -> bool {
+        *self.cell.get_or_init(|| std::env::var_os(self.name).is_some())
+    }
 }
 
 // ── #1698 awake-faller diagnostic ───────────────────────────────────────
@@ -2641,39 +2644,38 @@ mod tick_documentation_tests {
         assert!(
             !system_body.contains("env::var"),
             "physics_sync_system must not probe the environment per tick — \
-             hoist the flag into a OnceLock accessor like `profile_phases` \
+             hoist the flag into a cached `EnvFlag` like `PROFILE_PHASES` \
              (#2881)"
         );
     }
 
     /// The cache behind both flags, run: the first lookup reads the environment,
-    /// a change afterwards is not seen, and a fresh cell reads it again. Replaces
+    /// a change afterwards is not seen, and a fresh flag reads it again. Replaces
     /// a search of the accessors' source for `OnceLock` (#6689).
     #[test]
     fn an_env_flag_is_read_once_and_then_cached() {
         const VAR: &str = "BYRO_TEST_ENV_FLAG_ONCE_6689";
         std::env::remove_var(VAR);
-        let cell = std::sync::OnceLock::new();
-        assert!(!super::env_flag_once(&cell, VAR), "unset reads as false");
+        let flag = super::EnvFlag::new(VAR);
+        assert!(!flag.get(), "unset reads as false");
         std::env::set_var(VAR, "1");
         assert!(
-            !super::env_flag_once(&cell, VAR),
+            !flag.get(),
             "a flag that flipped mid-session must not be seen: the lookup is cached (#2881)"
         );
-        let fresh = std::sync::OnceLock::new();
-        assert!(super::env_flag_once(&fresh, VAR), "a fresh cell reads the variable it is given");
+        assert!(super::EnvFlag::new(VAR).get(), "a fresh flag reads the variable it names");
         std::env::remove_var(VAR);
     }
 
-    /// The two flags are different variables, one a prefix of the other — a
-    /// copy-paste that reads the same name twice would make `BYRO_PROFILE_FALLERS`
-    /// inert.
+    /// #7014 — each profile flag reads its own variable. The two are different
+    /// variables, one a prefix of the other: a flag that named the other's would
+    /// make `BYRO_PROFILE_FALLERS` inert or tie it to `BYRO_PROFILE`. The name and
+    /// the cache are one `EnvFlag`, so the name a flag carries is the one it reads.
     #[test]
-    fn the_two_profile_flags_name_different_variables() {
-        assert_eq!(super::PROFILE_VAR, "BYRO_PROFILE");
-        assert_eq!(super::PROFILE_FALLERS_VAR, "BYRO_PROFILE_FALLERS");
-        assert_eq!(super::profile_phases(), super::profile_phases());
-        assert_eq!(super::profile_fallers(), super::profile_fallers());
+    fn each_profile_flag_reads_its_own_variable() {
+        assert_eq!(super::PROFILE_PHASES.name, "BYRO_PROFILE");
+        assert_eq!(super::PROFILE_FALLERS.name, "BYRO_PROFILE_FALLERS");
+        assert!(!std::ptr::eq(&super::PROFILE_PHASES.cell, &super::PROFILE_FALLERS.cell));
     }
 
     /// #4997 — `register_newcomers` converts shapes across the rayon pool
