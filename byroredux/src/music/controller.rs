@@ -206,6 +206,19 @@ impl MusicController {
         }
     }
 
+    /// End a sting's silence: a load or a cell change (#6922). A place change already ends it through
+    /// [`Self::set`], but a load back into the same cell or grid changes no place, so the music a
+    /// death sting stopped stayed silent until the player left the area (`docs/engine/music.md` §9).
+    pub(crate) fn end_sting_silence(&mut self) {
+        self.silenced = false;
+    }
+
+    /// Whether a sting's silence holds Battle and Location.
+    #[cfg(test)]
+    pub(crate) fn silenced(&self) -> bool {
+        self.silenced
+    }
+
     /// End the Script layer: a cell change or a load (MUS-SCR, MUS-SAV-002). An Oblivion stream is
     /// left to [`Self::place_category`], which runs when the place changes.
     pub(crate) fn end_script(&mut self, out: &mut dyn MusicOutput) {
@@ -611,6 +624,24 @@ pub(crate) mod tests {
         music.set(Layer::Location, Some(explore), &mut out);
         music.step(frame(1.0), no_battle, &mut out);
         assert_eq!(out.voices[&24], ("music\\explore\\a.mp3".to_string(), false), "the next place's music starts afresh");
+    }
+
+    /// #6922 — a load back into the same cell changes no place, but it still ends a sting's
+    /// silence: the place's music plays again.
+    #[test]
+    fn a_load_into_the_same_place_ends_a_stings_silence() {
+        let mut out = FakeOutput { live: true, ..Default::default() };
+        let mut music = MusicController::seeded(1);
+        music.set(Layer::Location, Some(playlist("Explore", &["music\\explore\\a.mp3"])), &mut out);
+        music.step(frame(1.0), no_battle, &mut out);
+        music.sting(playlist("death", &["music\\special\\death.mp3"]), &mut out);
+        music.step(frame(1.0), no_battle, &mut out);
+        out.voices.remove(&0);
+        music.step(frame(1.0), no_battle, &mut out);
+        assert!(!out.voices.contains_key(&24), "silenced by the sting");
+        music.end_sting_silence();
+        music.step(frame(1.0), no_battle, &mut out);
+        assert_eq!(out.voices[&24].0, "music\\explore\\a.mp3", "the same place's music plays again");
     }
 
     /// #6901 — Fallout 3 / New Vegas's level-up `MUSSuccess` plays over the music.

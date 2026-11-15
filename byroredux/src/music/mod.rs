@@ -286,9 +286,11 @@ pub(crate) fn music_system(world: &World, dt: f32) {
             state.cell_music_changes = cell_music_changes;
         }
 
-        // Script: a cell change or a load ends it; `PlayMusic` replaces it (MUS-SCR-001).
+        // Script: a cell change or a load ends it; `PlayMusic` replaces it (MUS-SCR-001). A load into
+        // the same place changes no place, so the same signal ends a sting's silence (#6922).
         if std::mem::take(&mut state.end_script) {
             music.end_script(&mut out);
+            music.end_sting_silence();
         }
         if let Some(track) = requests.last() {
             let directive = catalog.music_type(&index, track.form_id, "PlayMusic");
@@ -440,5 +442,28 @@ mod tests {
         music_system(&world, 0.016);
         let lines = status_lines(&world);
         assert!(lines.iter().any(|line| line.starts_with("Place:")), "the catalog was built: {lines:?}");
+    }
+
+    /// #6922 — the load / cell-leave signal (`end_script_layer`, which `unload_current_interior`
+    /// and `clear_current_exterior_identity` raise on every save load) ends a sting's silence on the
+    /// next music frame, even with no place change.
+    #[test]
+    fn a_load_ends_a_stings_silence_in_the_music_system() {
+        let mut world = World::new();
+        install(&mut world);
+        world.insert_resource(crate::components::LoadedCellIndex(Arc::new(Default::default())));
+        world.insert_resource(byroredux_audio::AudioWorld::headless());
+        music_system(&world, 0.016);
+        {
+            let mut out = controller::tests::FakeOutput::default();
+            let death = controller::tests::playlist("death", &["music\\special\\death.mp3"]);
+            world.resource_mut::<MusicController>().sting(death, &mut out);
+        }
+        assert!(world.resource::<MusicController>().silenced());
+        music_system(&world, 0.016);
+        assert!(world.resource::<MusicController>().silenced(), "nothing ends it on its own");
+        end_script_layer(&world);
+        music_system(&world, 0.016);
+        assert!(!world.resource::<MusicController>().silenced(), "a load ends it");
     }
 }
