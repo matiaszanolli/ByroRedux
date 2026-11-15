@@ -201,9 +201,11 @@ jobs:
       # #5624 — every workspace consumer takes core with its default
       # features, so `parallel-scheduler` (rayon) is always on and the
       # serial phase-1 arm in `Scheduler::run` is compiled by nothing else.
-      # The flag is a documented runtime-disable knob (docs/engine/ecs.md).
-      - name: cargo check (core without parallel-scheduler)
-        run: cargo check -p byroredux-core --no-default-features --lib --tests
+      # The flag is a documented runtime-disable knob (docs/engine/ecs.md), so
+      # the lane runs core's lib and integration tests on it, not only
+      # type-checks them (#6992).
+      - name: cargo test (core without parallel-scheduler)
+        run: cargo test -p byroredux-core --no-default-features --lib --tests
       - name: cargo test
         run: cargo test --workspace --no-fail-fast
       # #4595 — clippy MUST run even when tests are red: the renderer's
