@@ -274,25 +274,32 @@ impl MusicController {
         // Top down, so a layer sees the higher layers as this frame left them (a sting that just
         // ended releases Location the same frame).
         for layer in Layer::ALL {
-            let sting_audible = playing(self, Layer::Sting) && self.state(Layer::Sting).directive.as_ref().is_some_and(|d| !d.over_music);
-            let battle_audible = playing(self, Layer::Battle);
-            // A scripted track replaces the music below it, and a scripted silence (`PlayMusic
-            // 1NoMusic`) silences it (MUS-SCR-005, #6899).
-            let script = self.state(Layer::Script).directive.as_ref();
-            let script_holds = script.is_some_and(|d| matches!(d.outcome(), Outcome::Playing | Outcome::Silent));
-            let beside_script = self.state(Layer::Location).directive.as_ref().is_some_and(|d| d.beside_script);
-            let by = match layer {
-                _ if inputs.hold => Some("Hold"),
-                // Stopped, not paused: nothing resumes when the sting ends (#6901).
-                Layer::Battle | Layer::Location if self.silenced => Some("a sting's silence"),
-                Layer::Script | Layer::Battle | Layer::Location if sting_audible => Some("Sting"),
-                Layer::Battle if script_holds => Some("Script"),
-                Layer::Location if script_holds && !beside_script => Some("Script"),
-                Layer::Location if battle_audible => Some("Battle"),
-                _ => None,
-            };
+            let by = self.suspended_by(layer, inputs);
             self.suspend(layer, by, out);
             self.play(layer, inputs, out);
+        }
+    }
+
+    /// What holds `layer` silent now, if anything: the rule [`Self::step`] suspends each layer by,
+    /// and the one a battle set's intro and outro obey too (#6928).
+    fn suspended_by(&self, layer: Layer, inputs: Inputs) -> Option<&'static str> {
+        let playing = |layer: Layer| self.state(layer).directive.as_ref().is_some_and(|d| d.outcome() == Outcome::Playing);
+        let sting_audible = playing(Layer::Sting) && self.state(Layer::Sting).directive.as_ref().is_some_and(|d| !d.over_music);
+        let battle_audible = playing(Layer::Battle);
+        // A scripted track replaces the music below it, and a scripted silence (`PlayMusic
+        // 1NoMusic`) silences it (MUS-SCR-005, #6899).
+        let script = self.state(Layer::Script).directive.as_ref();
+        let script_holds = script.is_some_and(|d| matches!(d.outcome(), Outcome::Playing | Outcome::Silent));
+        let beside_script = self.state(Layer::Location).directive.as_ref().is_some_and(|d| d.beside_script);
+        match layer {
+            _ if inputs.hold => Some("Hold"),
+            // Stopped, not paused: nothing resumes when the sting ends (#6901).
+            Layer::Battle | Layer::Location if self.silenced => Some("a sting's silence"),
+            Layer::Script | Layer::Battle | Layer::Location if sting_audible => Some("Sting"),
+            Layer::Battle if script_holds => Some("Script"),
+            Layer::Location if script_holds && !beside_script => Some("Script"),
+            Layer::Location if battle_audible => Some("Battle"),
+            _ => None,
         }
     }
 
@@ -301,7 +308,11 @@ impl MusicController {
             if self.state(Layer::Battle).directive.is_none() {
                 let directive = battle();
                 self.set(Layer::Battle, Some(directive), out);
-                self.one_shot(Layer::Battle, true, out);
+                // The intro is Battle's music too: a movie's hold, a sting or a scripted track
+                // that holds Battle holds it (#6928).
+                if self.suspended_by(Layer::Battle, inputs).is_none() {
+                    self.one_shot(Layer::Battle, true, out);
+                }
             }
             self.battle_hold = self.state(Layer::Battle).directive.as_ref().and_then(|d| d.recovery_secs).unwrap_or(0.0);
         } else if self.state(Layer::Battle).directive.is_some() {
@@ -310,7 +321,9 @@ impl MusicController {
                 // A battle set's outro plays as Battle hands back (MUS-CMB-003).
                 let outro = self.state(Layer::Battle).directive.as_ref().and_then(|d| d.outro.clone().map(|key| (key, d.level)));
                 self.set(Layer::Battle, None, out);
-                if let Some((key, level)) = outro {
+                // Not after a death sting, under a movie, or under a scripted track: the original
+                // stops all music there (#6928).
+                if let Some((key, level)) = outro.filter(|_| self.suspended_by(Layer::Battle, inputs).is_none()) {
                     let voice = Layer::Battle.voice(ONE_SHOT_SLOT);
                     if out.play(voice, &key, level, 0.0, false) {
                         self.layers[Layer::Battle as usize].one_shot = Some(Playing { key, voice, clock: 0.0 });
@@ -884,5 +897,36 @@ pub(crate) mod tests {
         music.step(frame(1.5), no_battle, &mut out);
         assert!(music.directive(Layer::Battle).is_none());
         assert_eq!(out.voices[&23].0, "sound\\outro.wav", "the outro as Battle hands back");
+    }
+
+    /// #6928 — a battle set's intro and outro are Battle's music, held by what holds Battle: the
+    /// outro does not play after a death sting, or under a movie's hold; nor the intro under a hold.
+    #[test]
+    fn a_battle_sets_intro_and_outro_obey_what_holds_battle() {
+        let battle = Directive {
+            recovery_secs: Some(1.0),
+            looping: true,
+            intro: Some("sound\\intro.wav".into()),
+            outro: Some("sound\\outro.wav".into()),
+            ..playlist("musSetBattleGS", &["music\\battle\\loop.mp3"])
+        };
+        let fight = Inputs { dt: 0.1, in_combat: true, ..Default::default() };
+
+        let mut out = FakeOutput { live: true, ..Default::default() };
+        let mut music = MusicController::seeded(1);
+        music.step(fight, || battle.clone(), &mut out);
+        out.voices.remove(&23);
+        music.sting(playlist("death", &["music\\special\\death.mp3"]), &mut out);
+        music.step(frame(1.5), no_battle, &mut out);
+        assert!(music.directive(Layer::Battle).is_none(), "Battle hands back");
+        assert!(!out.log.iter().any(|line| line.contains("outro")), "no outro after a death sting: {:?}", out.log);
+
+        let mut out = FakeOutput { live: true, ..Default::default() };
+        let mut music = MusicController::seeded(1);
+        music.step(Inputs { hold: true, ..fight }, || battle.clone(), &mut out);
+        assert!(!out.log.iter().any(|line| line.contains("intro")), "no intro under a hold: {:?}", out.log);
+        music.step(Inputs { dt: 1.5, hold: true, ..Default::default() }, no_battle, &mut out);
+        assert!(music.directive(Layer::Battle).is_none());
+        assert!(!out.log.iter().any(|line| line.contains("outro")), "no outro under a hold: {:?}", out.log);
     }
 }
