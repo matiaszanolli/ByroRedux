@@ -298,10 +298,14 @@ pub(crate) fn sleep_system(world: &World, _dt: f32) {
 // ── Data-folder lookups ────────────────────────────────────────────────────────────────────────────
 
 /// `relative` (`\\`- or `/`-separated) under `root`, matching each component without regard to case
-/// (the games' files are Windows-cased; this filesystem is not).
+/// (the games' files are Windows-cased; this filesystem is not). Never above `root`: a `.` or `..`
+/// component is refused, since `relative` can come from a mod's script (`PlayBink`, INC4-3).
 pub(crate) fn find_case_insensitive(root: &std::path::Path, relative: &str) -> Option<std::path::PathBuf> {
     let mut path = root.to_path_buf();
     for component in relative.split(['\\', '/']).filter(|part| !part.is_empty()) {
+        if component == ".." || component == "." {
+            return None;
+        }
         let exact = path.join(component);
         path = if exact.exists() {
             exact

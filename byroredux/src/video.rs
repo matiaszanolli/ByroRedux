@@ -345,21 +345,21 @@ fn play_audio(world: &World, wav: &Path) {
     }
 }
 
-/// `file` under the data folder's `Video`, matching case-insensitively. A leading `..\` climbs out of
-/// `Video` (the GECK's `PlayBink "..\sound\videos\x.bik"`).
+/// `file` under the data folder's `Video`, matching case-insensitively. One leading `..\` climbs out of
+/// `Video` into the data folder (the GECK's `PlayBink "..\sound\videos\x.bik"`); nothing climbs
+/// further, since the path is a script's (INC4-3: `..\..\..\` reached any file on disk).
 fn movie_path(file: &str) -> Option<PathBuf> {
     let (_, data) = crate::cli_args::esm_discovery_root(&crate::cli_args::effective_args()).ok()?;
     resolve_under(&data.join("Video"), file)
 }
 
 fn resolve_under(video_root: &Path, file: &str) -> Option<PathBuf> {
-    let mut root = video_root.to_path_buf();
-    let mut rest = file;
-    while let Some(trimmed) = rest.strip_prefix("..\\").or_else(|| rest.strip_prefix("../")) {
-        root = root.parent()?.to_path_buf();
-        rest = trimmed;
-    }
-    crate::systems::script_requests::find_case_insensitive(&root, rest).filter(|path| path.is_file())
+    let (root, rest) = match file.strip_prefix("..\\").or_else(|| file.strip_prefix("../")) {
+        Some(rest) => (video_root.parent()?, rest),
+        None => (video_root, file),
+    };
+    // `find_case_insensitive` refuses any further `..`, so the movie stays under the data folder.
+    crate::systems::script_requests::find_case_insensitive(root, rest).filter(|path| path.is_file())
 }
 
 #[cfg(test)]
@@ -382,6 +382,11 @@ mod tests {
         assert_eq!(resolve_under(&video, "..\\sound\\videos\\Other.bik"), Some(dir.path().join("sound").join("videos").join("Other.bik")));
         assert_eq!(resolve_under(&video, "Missing.bik"), None);
         assert_eq!(resolve_under(&video, "Mymod"), None, "a folder is no movie");
+        // INC4-3: a script's path never leaves the data folder.
+        std::fs::write(dir.path().join("secret.bik"), b"x").unwrap();
+        assert_eq!(resolve_under(&video, "..\\..\\secret.bik"), None, "one `..` at most");
+        assert_eq!(resolve_under(&video, "Mymod\\..\\..\\secret.bik"), None, "no `..` inside the path");
+        assert_eq!(resolve_under(&video, "..\\secret.bik"), Some(dir.path().join("secret.bik")), "the data folder itself is in reach");
     }
 
     /// A request with nothing to decode it is reported and dropped; one that cannot start never
