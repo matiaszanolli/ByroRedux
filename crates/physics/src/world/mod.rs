@@ -1196,20 +1196,23 @@ impl PhysicsWorld {
     /// [`Self::step`] delivers it as the force `impulse / PHYSICS_DT` for the
     /// first substep it runs — the channel the articulated solve does read
     /// (the same reason link damping and buoyancy ride forces, #5540) — so the
-    /// link's velocity change is `impulse / mass`, as for a free body. A
-    /// non-finite impulse on a link is refused (`false`) rather than queued.
+    /// link's velocity change is `impulse / mass`, as for a free body.
+    ///
+    /// A non-finite impulse is refused (`false`) on every body, link or free
+    /// (#7015): a script's bad `ApplyHavokImpulse` vector would otherwise put
+    /// NaN in a free body's velocity and surface as an explosion recovery.
     pub fn apply_impulse(
         &mut self,
         handle: RigidBodyHandle,
         impulse: byroredux_core::math::Vec3,
     ) -> bool {
+        if !impulse.is_finite() {
+            return false;
+        }
         let is_link = self.is_multibody_link(handle);
         if let Some(b) = self.bodies.get_mut(handle) {
             if b.body_type() == RigidBodyType::Dynamic {
                 if is_link {
-                    if !impulse.is_finite() {
-                        return false;
-                    }
                     // A sleeping island would not integrate the queued force.
                     b.wake_up(true);
                     self.pending_link_impulses.push((handle, impulse));
@@ -4240,6 +4243,25 @@ mod tests {
             "upward impulse must yield upward velocity; vy = {}",
             w.bodies[h].linvel().y
         );
+    }
+
+    /// #7015 — a non-finite impulse on a free body is refused like one on a link: nothing changes, the
+    /// newcomer stays spawn-asleep, and the next step records no explosion recovery.
+    #[test]
+    fn a_non_finite_impulse_on_a_free_body_is_refused() {
+        let mut w = PhysicsWorld::new();
+        let h = spawn_ball(&mut w, 100.0);
+        let spawn = w.bodies[h].translation();
+        w.spawn_sleep_pending.push((h, spawn));
+        let before = w.bodies[h].linvel();
+        for bad in [f32::NAN, f32::INFINITY] {
+            assert!(!w.apply_impulse(h, byroredux_core::math::Vec3::new(bad, 0.0, 0.0)));
+        }
+        assert_eq!(w.bodies[h].linvel(), before, "velocity untouched");
+        assert_eq!(w.spawn_sleep_pending.len(), 1, "a refused impulse is not an explicit wake");
+        w.step(PHYSICS_DT);
+        assert!(w.bodies[h].linvel().is_finite());
+        assert_eq!(w.recovery_counts().0, 0, "no recovery event from a refused impulse");
     }
 
     /// An explicit wake before the newcomer's first step must not be
