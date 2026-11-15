@@ -1,10 +1,12 @@
 # Oblivion Actor Values — Product Requirements
 
-**Status**: APPROVED (2026-11-15). Revision 4 records the owner's approval; revision 3 the decisions on Q1–Q3; revision 2 folded in review round 1. Statements
+**Status**: ACTIVE (2026-11-15). Revision 5 files the tracking issues; revision 4 records the owner's approval; revision 3 the decisions on Q1–Q3; revision 2 folded in review round 1. Statements
 about how Oblivion behaves cite external sources (UESP, the Construction Set
 wiki dump under `/mnt/data/src/reference/`, xEdit's `wbDefinitionsTES4.pas`);
 a claim that could not be verified is marked **Phase 0: verify** instead of
 being stated as fact.
+
+**Tracking**: #7007 (parent). Phases: #7008 (0), #7009 (1), #7010 (2), #7011 (3).
 
 **Scope**: every Oblivion actor (NPC, creature and the player) carries its
 actor values (attributes, derived pools, skills and the extra values UESP
@@ -363,3 +365,4 @@ Exit: §7.2 scenario 4 passes; consumers on real values 10 / 10.
 | 2 | 2026-11-15 | Review round 1 folded in: auto-calc flag and Luck verify, creature level scaling, Fame / Infamy verify, Remastered citation, regen proof, observable OAV-USE-004 / -POP-007, Q4 folded into OAV-POP-003, reporting, content-addressed identity for engine-supplied records, phase dependencies, live smoke named, auto-calc table | claude: revise |
 | 3 | 2026-11-15 | Owner's decisions recorded: Q1 engine-supplied `AVIF` records under an engine-owned plugin identity, Q2 starting disposition and the aggression comparison in scope (OAV-USE-005 unconditional), Q3 the `Player` `NPC_` record (OAV-POP-006) | — |
 | 4 | 2026-11-15 | PROPOSED → APPROVED | owner: approved |
+| 5 | 2026-11-15 | APPROVED → ACTIVE: parent #7007, phases #7008–#7011; the Phase 0 verify items are on #7008 | — |
