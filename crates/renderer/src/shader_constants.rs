@@ -1193,6 +1193,15 @@ mod tests {
             assert!(irradiance.contains(pinned), "sky_irradiance.comp: {pinned:?}");
         }
         assert!(!irradiance.contains("local_size_x = 64") && !irradiance.contains("coefficients[9]"));
+        // The consumer side: the SSBO declaration and the evaluation loop in
+        // `bindings.glsl` read the same count (#6983).
+        let bindings = include_str!("../shaders/include/bindings.glsl");
+        assert!(
+            bindings.contains("vec4 skyDiffuseCoefficients[SKY_SH_COEFFICIENTS];")
+                && bindings.contains("i < uint(SKY_SH_COEFFICIENTS);")
+                && !bindings.contains("skyDiffuseCoefficients[9]"),
+            "bindings.glsl must size and walk skyDiffuseCoefficients by SKY_SH_COEFFICIENTS"
+        );
         for (file, src) in [
             ("sky_prefilter.comp", include_str!("../shaders/sky_prefilter.comp")),
             ("groundcover_bench_bake.comp", include_str!("../shaders/groundcover_bench_bake.comp")),

@@ -280,7 +280,7 @@ layout(set = 1, binding = 20) uniform samplerCube skyCube;
 
 #include "include/sky_sh.glsl"
 layout(std430, set = 1, binding = 21) readonly buffer SkyDiffuseBuffer {
-    vec4 skyDiffuseCoefficients[9];
+    vec4 skyDiffuseCoefficients[SKY_SH_COEFFICIENTS];
 };
 
 // Incident sky convolved with cosine / PI. Material diffuse weight and albedo
@@ -288,7 +288,7 @@ layout(std430, set = 1, binding = 21) readonly buffer SkyDiffuseBuffer {
 vec3 exteriorSkyDiffuseOr(vec3 normal, vec3 fallback) {
     if (jitter.w <= 0.5 || exteriorSkyTint.w <= 0.5) return fallback;
     vec3 value = vec3(0.0);
-    for (uint i = 0u; i < 9u; ++i) value += skyDiffuseCoefficients[i].rgb * sky_sh_basis(i, normal);
+    for (uint i = 0u; i < uint(SKY_SH_COEFFICIENTS); ++i) value += skyDiffuseCoefficients[i].rgb * sky_sh_basis(i, normal);
     return max(value, vec3(0.0)); // band-limited SH can ring below zero
 }
 
