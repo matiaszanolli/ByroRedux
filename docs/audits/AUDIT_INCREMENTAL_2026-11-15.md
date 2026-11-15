@@ -105,3 +105,18 @@ Each finding was re-checked against HEAD before being acted on.
   - no unbounded loop past the end of the bit reader;
   - the IDCT, shift and motion-vector arithmetic are bounded;
   - no panic reachable from input on the caller's thread beyond BIK-AUD-1.
+
+---
+
+# Part 3: the binary-crate files the window pass did not reach
+
+AI packages (spawn, tree, find, use-weapon, eat/sleep, force-greet), projectiles, limbs, fog, region weather, LOD, material merge and debug commands, over `310444b69..72010bd15`.
+
+| ID | Sev | Finding | Outcome |
+|---|---|---|---|
+| INC7-1 | MEDIUM | A Skyrim+ tree package whose leaf had its own conditions was chosen actor-less at spawn and stamped as running, so the first tick never installed the right leaf. | aee4fab7a: such a package is deferred to the first tick. `install_result` takes the actor. |
+| INC7-2 | LOW | A Find-furniture arrival sat on the nearest free chair, not on the piece it walked to. | 945839e81 |
+| INC7-3 | LOW | Crippled legs did not slow find, eat/sleep, force-greet or the conversation approach. | 26091168f: `limbs::actor_walk_speed` |
+| INC7-4 | LOW | An "In Cell" Dialogue trigger was measured around the greeter. | 52c56c2e7 |
+| INC7-5 | LOW | `MELEE_ANIM_TYPES` was duplicated. | 0ec6f797c |
+| INC7-6 | LOW | `PackageDayBlocks` never shrank. | 0ec6f797c: expired entries are dropped. |
