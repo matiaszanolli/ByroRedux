@@ -321,8 +321,13 @@ VFX sheets (#6459), and any alpha-blended surface whose NIF authored no
 collision body at all (#6555 — Oblivion's cobwebs and FX sheets; the
 original engines give such a mesh no body). A blended surface keeps the
 stand-in only where collision was authored but cannot be read yet (FO4+
-packed Havok, a precombine's `_physics.nif`). Havok
-constraints / ragdolls remain parse-only.
+packed Havok, a precombine's `_physics.nif`). In the classic-Havok dialects
+(Oblivion, FO3, FNV, Skyrim: `BSVER` below 130) every body a model has is
+a `bhk*` object in its own NIF, so a model with none gets no stand-in at
+all, opaque or not (#6549: FNV's sky planes, fake sky dome and waterfall
+sheet, cave fungus stalks, rugs; about 125k placements across the four
+games). The stand-in remains for collision authored but declined, and for
+FO4+. Havok constraints / ragdolls remain parse-only.
 
 ### 11. Mesh GPU upload
 

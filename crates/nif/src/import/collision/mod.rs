@@ -105,6 +105,14 @@ pub struct CollisionAuthoringSummary {
     /// `bhkNPCollisionObject` in every vanilla one). Never set by [`summarize_collision_authoring`];
     /// the cell loader stamps it on precombine imports.
     pub external: u32,
+    /// #6549 — the NIF is a classic-Havok dialect: its `BSVER` is below Fallout 4's (Oblivion,
+    /// FO3, FNV, Skyrim LE/SE). Every body such a model has is a `bhk*` collision object in the NIF
+    /// itself, so finding none means the model has no body in the original engine either. Set by
+    /// [`summarize_collision_authoring`]; `false` in [`Default`], which keeps the conservative
+    /// fallback for a summary of unknown provenance. Morrowind's `BSVER` is 0 too, but its
+    /// collision is its render geometry. No Morrowind cell path exists, so this does not matter
+    /// today; a Morrowind loader must not read this flag.
+    pub classic_dialect: bool,
 }
 
 impl CollisionAuthoringSummary {
@@ -114,6 +122,16 @@ impl CollisionAuthoringSummary {
     /// trigger volume, not a body.
     pub const fn authors_no_body(self) -> bool {
         self.classic == 0 && self.new_physics == 0 && self.external == 0
+    }
+
+    /// #6549 — whether the original engine gives this geometry no body: a classic-dialect NIF
+    /// that authored none ([`Self::authors_no_body`]). The CS wiki (*Blender/Custom Collision*):
+    /// "Without a collision mesh there is no collision which means objects, like the player, can
+    /// pass right through them." A render-geometry stand-in is for collision that was authored
+    /// where the importer cannot read it (FO4+ packed Havok, a precombine's `_physics.nif`), not
+    /// for this.
+    pub const fn walk_through_by_authoring(self) -> bool {
+        self.classic_dialect && self.authors_no_body()
     }
 
     /// Whether the scene contains at least one FO4+/FO76/Starfield packed
@@ -151,7 +169,10 @@ fn classify_collision_block(block: &dyn crate::blocks::NiObject) -> CollisionAut
 /// shape import result. Orphaned blocks are counted as authored data too; that
 /// is the safe bias for compatibility fallback and diagnostics.
 pub fn summarize_collision_authoring(scene: &NifScene) -> CollisionAuthoringSummary {
-    let mut summary = CollisionAuthoringSummary::default();
+    let mut summary = CollisionAuthoringSummary {
+        classic_dialect: scene.bsver < crate::version::bsver::FALLOUT4,
+        ..Default::default()
+    };
     for block in &scene.blocks {
         summary.record(classify_collision_block(block.as_ref()));
         // #4163 — measured alongside the collision-object census above so

@@ -106,7 +106,8 @@ enum MissingCollisionFallback {
 /// body only when collision *was* authored and the importer cannot read it (FO4+
 /// packed Havok, a precombine's `_physics.nif`); with none authored it is an
 /// overlay. (The 2026-10-31 Oblivion audit census: 19 STAT bases, 8,949 REFRs, 6,906 of them
-/// cobwebs and `HangCrud01`.) An opaque surface keeps the fallback either way.
+/// cobwebs and `HangCrud01`.) An opaque surface keeps the fallback here; a classic-dialect
+/// model that authored no body never reaches this predicate (#6549, [`missing_collision_fallback`]).
 ///
 /// [`MATERIAL_KIND_NO_LIGHTING`]: byroredux_renderer::MATERIAL_KIND_NO_LIGHTING
 fn render_geometry_can_collide(
@@ -136,6 +137,11 @@ fn missing_collision_fallback(
         return MissingCollisionFallback::None;
     }
     if base_layer == RenderLayer::Architecture {
+        // #6549 — a classic-dialect model that authored no body has none in the original engine
+        // (FNV's sky planes and cave fungus stalks, FO3's rubble, Skyrim's water planes).
+        if authoring.walk_through_by_authoring() {
+            return MissingCollisionFallback::None;
+        }
         return MissingCollisionFallback::ArchitectureTriMesh;
     }
     if authoring.needs_packed_collision_fallback()

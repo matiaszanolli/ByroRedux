@@ -628,6 +628,7 @@ const PACKED: CollisionAuthoringSummary = CollisionAuthoringSummary {
     phantom: 0,
     plane_shapes: 0,
     external: 0,
+    classic_dialect: false,
 };
 
 /// #6459 — FO3 / FNV light beams, light rays and glow fills are `BSShaderNoLightingProperty` +
@@ -676,6 +677,93 @@ fn blended_surfaces_collide_only_where_collision_was_authored() {
     let cached = crate::cell_loader::precombined::geometry_only_cached(Vec::new(), Vec::new());
     assert!(!cached.collision_authoring.authors_no_body());
     assert!(!cached.collision_authoring.needs_packed_collision_fallback(), "telemetry counts stay as they were");
+}
+
+/// #6549 — a classic-dialect NIF (Oblivion, FO3, FNV, Skyrim) that authored no collision body gets
+/// no render-geometry stand-in at all, opaque or not: the original engine gives it no body. The
+/// stand-in stays where a body was authored and the importer declined it, and where the dialect
+/// is FO4+ or unknown (a default summary).
+#[test]
+fn classic_dialect_models_that_author_no_body_get_no_stand_in() {
+    let classic_nothing = CollisionAuthoringSummary { classic_dialect: true, ..Default::default() };
+    assert!(classic_nothing.walk_through_by_authoring());
+    assert_eq!(
+        missing_collision_fallback(true, classic_nothing, RenderLayer::Architecture),
+        MissingCollisionFallback::None,
+        "a sky plane, a fungus stalk, a rug: no body in the original engine",
+    );
+    let classic_trigger = CollisionAuthoringSummary { classic_dialect: true, phantom: 1, ..Default::default() };
+    assert_eq!(
+        missing_collision_fallback(true, classic_trigger, RenderLayer::Architecture),
+        MissingCollisionFallback::None,
+        "a phantom is a trigger, not a body",
+    );
+    let classic_declined = CollisionAuthoringSummary { classic_dialect: true, classic: 1, ..Default::default() };
+    assert_eq!(
+        missing_collision_fallback(true, classic_declined, RenderLayer::Architecture),
+        MissingCollisionFallback::ArchitectureTriMesh,
+        "authored but declined shapes keep the stand-in",
+    );
+    assert_eq!(
+        missing_collision_fallback(true, CollisionAuthoringSummary::default(), RenderLayer::Architecture),
+        MissingCollisionFallback::ArchitectureTriMesh,
+        "an FO4+ or unknown-dialect model with nothing readable keeps the stand-in",
+    );
+    assert_eq!(
+        missing_collision_fallback(true, PACKED, RenderLayer::Architecture),
+        MissingCollisionFallback::ArchitectureTriMesh,
+    );
+}
+
+/// #6549 — the dialect comes from the scene's `BSVER`: FO3/FNV (34) and Skyrim SE (100) are
+/// classic, FO4 (130) and Starfield (172) are not.
+#[test]
+fn collision_dialect_is_read_from_the_scene_bsver() {
+    let summary = |bsver| {
+        byroredux_nif::import::collision::summarize_collision_authoring(&byroredux_nif::scene::NifScene {
+            bsver,
+            ..Default::default()
+        })
+    };
+    assert!(summary(34).classic_dialect);
+    assert!(summary(100).classic_dialect);
+    assert!(!summary(130).classic_dialect);
+    assert!(!summary(172).classic_dialect);
+}
+
+/// #6549 — against the shipped data: FNV's sky backdrops (`WastelandSkyPlane` and its overhead
+/// variants, `FakeSkyDome01`), the lit `NVWaterfall` sheet and the cave fungus stalks (3,600
+/// placements) author no collision, and the missing-collision fallback builds them no body.
+///
+///   cargo test -p byroredux --bin byroredux fnv_backdrops -- --ignored
+#[test]
+#[ignore = "needs Fallout New Vegas game data on disk"]
+fn fnv_backdrops_and_collisionless_statics_synthesize_no_collider() {
+    let meshes = byroredux_plugin::esm::test_paths::fnv_data_dir().join("Fallout - Meshes.bsa");
+    if !meshes.is_file() {
+        byroredux_plugin::esm::test_paths::require_or_skip(&format!("{meshes:?}"));
+        return;
+    }
+    let archive = byroredux_bsa::BsaArchive::open(&meshes).unwrap();
+    let wanted = ["\\wastelandskyplane", "\\fakeskydome01.nif", "\\nv_waterfall.nif", "\\nvfungusstalk0"];
+    let mut checked = 0usize;
+    for path in archive.list_files() {
+        let lower = path.to_ascii_lowercase();
+        if !lower.ends_with(".nif") || !wanted.iter().any(|w| lower.contains(w)) {
+            continue;
+        }
+        let scene = byroredux_nif::parse_nif(&archive.extract(path).unwrap()).unwrap();
+        let authoring = byroredux_nif::import::collision::summarize_collision_authoring(&scene);
+        assert!(authoring.classic_dialect, "{path}: an FNV NIF must read as the classic dialect");
+        assert!(authoring.authors_no_body(), "{path}: authors collision ({authoring:?})");
+        assert_eq!(
+            missing_collision_fallback(true, authoring, RenderLayer::Architecture),
+            MissingCollisionFallback::None,
+            "{path}: would synthesize a solid collider the original engine never had"
+        );
+        checked += 1;
+    }
+    assert!(checked >= 11, "only {checked} census NIFs found — the probe read nothing");
 }
 
 /// #6459 — against the shipped data: FNV's census bases (the largest by placement count) are
@@ -745,7 +833,8 @@ fn assert_census_vfx_sheets_synthesize_no_collider(data_dir: std::path::PathBuf,
 
 /// #6555 — against the shipped data: Oblivion's cobwebs, hanging crud and FX sheets (the audit
 /// census's STAT bases, 8,949 placements) author no collision and are blended, so none of their
-/// meshes synthesizes a collider. An opaque, collision-less architecture mesh keeps the fallback.
+/// meshes synthesizes a collider. (Since #6549 an Oblivion NIF with no authored body gets no stand-in
+/// at all; this pins the material predicate on its own.)
 ///
 ///   cargo test -p byroredux --bin byroredux oblivion_cobwebs -- --ignored
 #[test]
