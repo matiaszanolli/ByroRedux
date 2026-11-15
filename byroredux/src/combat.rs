@@ -382,8 +382,6 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
     }
 }
 
-/// Record the body location a killing blow struck on `target`'s [`DismemberRecord`] (VATS-LIMB-008), creating the
-/// record on first use. A world with no storage for it records nothing.
 /// An attack with a weapon draws it: the player's `WeaponDrawn` mark (`IsWeaponOut`, which New
 /// Vegas's shooting tutorial bottles test before they count a hit).
 fn draw_weapon(world: &World, player: EntityId) {
@@ -432,6 +430,8 @@ fn fire_player_gun(world: &World, player: EntityId, origin: byroredux_core::math
     true
 }
 
+/// Record the body location a killing blow struck on `target`'s [`DismemberRecord`] (VATS-LIMB-008), creating the
+/// record on first use. A world with no storage for it records nothing.
 fn record_killing_blow(world: &World, target: EntityId, location: u8) {
     use byroredux_core::character::DismemberRecord;
     if let Some(mut records) = world.query_mut::<DismemberRecord>() {
