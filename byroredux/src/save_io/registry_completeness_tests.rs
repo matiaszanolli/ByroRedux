@@ -885,7 +885,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("HeadLook", "M47.3 — a forced head-track target (an entity of this session); presentation"),
         ("PendingGroupSwap", "#4128 — PlayGroup flag 0's held sequence request (\"let the current cycle finish first\"); a script's transient presentation intent — a save taken mid-wait resumes the outgoing sequence"),
         ("ShaderTintRestore", "M47.3 — the emissive of the meshes a magic shader is tinting, kept to put back; session-local"),
-        ("PendingScriptedLines", "M47.3 — the lines ObScript Say/SayTo made actors say, waiting for the voice player and timing their SayToDone; a moment of speech, not gameplay state"),
+        ("PendingScriptedLines", "M47.3 — the lines ObScript Say/SayTo made actors say, waiting for the voice player and timing their SayToDone; a load discards them (SCR-2026-11-15-02: a line's End result script would run in the loaded game). A save does not carry a line in flight, so its End SetStage is lost: #6944"),
         ("GameClockGlobals", "M47.3 — the FormID of the GameHour GLOB, found in the records when the globals are installed; the hour itself is written into the saved Globals every frame"),
         ("ObScriptItemScripts", "M47.3 — each item base record's installed object script, by item FormID; rebuilt from the records at every content load"),
         ("ObScriptInCombat", "M47.3 — marks an actor whose ObScript OnStartCombat has run for its current fight; after a load an actor still in combat is told again"),

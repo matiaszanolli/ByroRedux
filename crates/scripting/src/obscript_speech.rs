@@ -56,8 +56,10 @@ pub struct Speaking {
     pub started: bool,
 }
 
-/// The lines scripts have made actors say. `NOT_SAVED_BY_DESIGN`: a line in flight is a
-/// moment of speech, not gameplay state, and ends with the session.
+/// The lines scripts have made actors say. `NOT_SAVED_BY_DESIGN`, and discarded on a live load:
+/// a line's INFO result scripts run at its start and end, so a line left over from the outgoing
+/// session would run its End script in the loaded game (SCR-2026-11-15-02). A save does not carry
+/// a line in flight, so that End script is lost (#6944).
 #[derive(Debug, Default)]
 pub struct PendingScriptedLines {
     /// Lines the voice player has not picked up yet.

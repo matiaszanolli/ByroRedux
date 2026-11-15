@@ -546,6 +546,14 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     if let Some(mut equips) = world.try_resource_mut::<byroredux_scripting::PendingNonArmorEquips>() {
         equips.0.clear();
     }
+    // SCR-2026-11-15-02 — the lines the outgoing session's scripts made actors say carry INFO result
+    // scripts now (e8fdab51a): a line still in flight runs its End script (a `SetStage`, the next
+    // `SayTo`) when it finishes, which would land in the loaded game on a surviving speaker.
+    if let Some(mut lines) = world.try_resource_mut::<byroredux_scripting::obscript_speech::PendingScriptedLines>() {
+        lines.pending.clear();
+        lines.speaking.clear();
+        lines.conversations.clear();
+    }
     // INC4-1 — the player survives a live load but the furniture they sat on is respawned under a new
     // entity, and `Seated` (an `EntityId`) is not a delta column: the outgoing seat would name a dead
     // or recycled entity. The loaded player stands; the seat is not restored from the save.

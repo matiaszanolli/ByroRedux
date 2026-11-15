@@ -1009,7 +1009,20 @@ fn live_load_drain_discards_the_outgoing_sessions_requests() {
         scripted: None,
     }]));
     world.insert_resource(byroredux_scripting::PendingNonArmorEquips(vec![(seated_player, 0x1234)]));
+    let mut lines = byroredux_scripting::obscript_speech::PendingScriptedLines::default();
+    lines.speaking.push(byroredux_scripting::obscript_speech::Speaking {
+        speaker: seated_player,
+        topic_form_id: 0x10,
+        remaining: 2.0,
+        info: None,
+        started: true,
+    });
+    world.insert_resource(lines);
     discard_outgoing_session_requests(&world);
+    assert!(
+        world.resource::<byroredux_scripting::obscript_speech::PendingScriptedLines>().speaking.is_empty(),
+        "SCR-2026-11-15-02: a line in flight from the outgoing session is dropped"
+    );
     assert!(world.resource::<byroredux_scripting::story_manager::PendingScriptStoryEvents>().0.is_empty(), "SAVE-3: queued story events are dropped");
     assert!(world.resource::<byroredux_scripting::PendingNonArmorEquips>().0.is_empty(), "SAVE-3: queued weapon equips are dropped");
     assert!(world.get::<byroredux_core::ecs::components::Seated>(seated_player).is_none(), "INC4-1: the loaded player stands");
