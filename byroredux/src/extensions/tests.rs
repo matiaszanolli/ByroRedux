@@ -3891,6 +3891,34 @@ fn deferred_actor_value_batch_that_zeroes_health_kills_the_actor() {
     );
 }
 
+/// #6918 — `EquipmentSlots::occupants` holds 64 slots since #6778. An item in a
+/// Starfield spacesuit slot (`BO64` bit 35) is captured as bit 35, not shifted
+/// out of a `u32` (a debug-build panic) or aliased onto bit 3 (release).
+#[test]
+fn inventory_projection_keeps_starfield_spacesuit_slots() {
+    let mut world = World::new();
+    let actor = world.spawn();
+    let mut inventory = Inventory::new();
+    let suit = inventory.push(byroredux_core::ecs::components::ItemStack::new(0x1234, 1));
+    world.insert(actor, inventory);
+    let mut equipment = EquipmentSlots::new();
+    equipment.equip((1_u64 << 35) | 1, suit);
+    world.insert(actor, equipment);
+    let order = crate::cell_loader::load_order::LoadOrder::new(
+        vec!["Starfield.esm".into()],
+        vec![byroredux_plugin::esm::reader::GlobalSlot::Regular(0)],
+    );
+    world.insert_resource(
+        crate::cell_loader::load_order::GlobalFormIdResolver::from_load_order(&order),
+    );
+
+    let projections = capture_entity_projections(&world, &BTreeSet::from([actor]));
+    let snapshot = projections[&actor].inventory.as_ref().unwrap();
+    let entry = snapshot.entries().iter().find(|entry| entry.item().local() == 0x1234).unwrap();
+    assert_eq!(entry.biped_slots(), (1_u64 << 35) | 1);
+    assert!(entry.is_equipped());
+}
+
 #[test]
 fn inventory_projection_aggregates_portable_forms_and_equipment_slots() {
     let mut world = World::new();

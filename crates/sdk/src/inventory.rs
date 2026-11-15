@@ -83,7 +83,7 @@ impl ItemMetadata {
 pub struct InventoryEntry {
     item: FormRef,
     count: u64,
-    biped_slots: u32,
+    biped_slots: u64,
     weapon_equipped: bool,
     metadata: Option<ItemMetadata>,
 }
@@ -92,7 +92,7 @@ impl InventoryEntry {
     pub fn new(
         item: FormRef,
         count: u64,
-        biped_slots: u32,
+        biped_slots: u64,
         weapon_equipped: bool,
         metadata: Option<ItemMetadata>,
     ) -> Result<Self, InventoryError> {
@@ -116,8 +116,9 @@ impl InventoryEntry {
         self.count
     }
 
-    /// Engine-neutral authored biped-slot bit mask occupied by this item.
-    pub const fn biped_slots(&self) -> u32 {
+    /// Engine-neutral authored biped-slot bit mask occupied by this item: all 64
+    /// slots, so Starfield's `BO64` spacesuit layer (bits 32-63) is kept (#6918).
+    pub const fn biped_slots(&self) -> u64 {
         self.biped_slots
     }
 

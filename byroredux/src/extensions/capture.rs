@@ -286,14 +286,17 @@ pub(super) fn capture_entity_projections(
                     break;
                 };
                 let index = InventoryIndex(raw_index);
+                // `occupants` holds `MAX_BIPED_SLOTS` (64) entries since #6778, so the
+                // mask is 64-bit: a `u32` shift overflowed at Starfield's spacesuit
+                // slots (#6918).
                 let biped_slots = equipment.map_or(0, |slots| {
                     slots
                         .occupants
                         .iter()
                         .enumerate()
-                        .fold(0_u32, |mask, (bit, occupant)| {
+                        .fold(0_u64, |mask, (bit, occupant)| {
                             if *occupant == Some(index) {
-                                mask | (1_u32 << bit)
+                                mask | (1_u64 << bit)
                             } else {
                                 mask
                             }
@@ -305,7 +308,7 @@ pub(super) fn capture_entity_projections(
                     .and_then(|catalog| catalog.sdk_metadata(stack.base_form_id));
                 let summary = summaries
                     .entry(item)
-                    .or_insert_with(|| (0_u64, 0_u32, false, metadata.clone()));
+                    .or_insert_with(|| (0_u64, 0_u64, false, metadata.clone()));
                 summary.0 = summary
                     .0
                     .checked_add(u64::from(stack.count))

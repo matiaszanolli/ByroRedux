@@ -107,10 +107,18 @@ pub(crate) fn wit_inventory_entry(entry: &InventoryEntry) -> inventory::Inventor
     inventory::InventoryEntry {
         item: wit_form_ref(entry.item()),
         count: entry.count(),
-        biped_slots: entry.biped_slots(),
+        biped_slots: wit_biped_slots(entry.biped_slots()),
         weapon_equipped: entry.weapon_equipped(),
         metadata: entry.metadata().map(wit_item_metadata),
     }
+}
+
+/// The `byro:mod-host@0.1.0` `inventory-entry.biped-slots` is a `u32`: biped slots
+/// 0-31, every game's body slots. Starfield's `BO64` spacesuit layer (slots
+/// 32-63, #6778) has no place in that contract until a WIT revision widens the
+/// field, so it is dropped here explicitly, never aliased onto slots 0-31 (#6918).
+fn wit_biped_slots(slots: u64) -> u32 {
+    (slots & u64::from(u32::MAX)) as u32
 }
 
 pub(crate) fn wit_item_metadata(metadata: &ItemMetadata) -> inventory::ItemMetadata {
@@ -999,6 +1007,15 @@ mod projection_tests {
             1.0,
         )
         .is_err());
+    }
+
+    /// #6918 — the WIT 0.1 `biped-slots` field is 32-bit: Starfield's spacesuit
+    /// slots (32-63) are dropped at the boundary, never aliased onto slots 0-31.
+    #[test]
+    fn wit_biped_slots_drop_the_spacesuit_layer_rather_than_alias_it() {
+        assert_eq!(wit_biped_slots(0b101), 0b101);
+        assert_eq!(wit_biped_slots((1_u64 << 35) | 1), 1, "bit 35 is not bit 3");
+        assert_eq!(wit_biped_slots(1_u64 << 63), 0);
     }
 
     #[test]
