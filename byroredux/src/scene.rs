@@ -146,6 +146,22 @@ fn select_initial_player_mode(
     }
 }
 
+/// Decompose a forward vector into the `(yaw, pitch)` pair that
+/// `fly_camera_system` would need to produce it (#2383).
+///
+/// That system composes `Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch)`
+/// and looks down local `-Z`, which expands to
+///
+/// ```text
+/// forward = (-cos(pitch)·sin(yaw),  sin(pitch),  -cos(pitch)·cos(yaw))
+/// ```
+///
+/// so `pitch = asin(y)` and `yaw = atan2(-x, -z)`. Inverting the engine's own
+/// convention — rather than picking any rotation that happens to face the
+/// right way — is the whole point: a shortest-arc quaternion also faces the
+/// right way and still snaps on the first mouse event, because it carries
+/// roll the driving system cannot represent.
+///
 /// Looking exactly along ±Y is the degenerate case: `cos(pitch)` is zero, both
 /// `atan2` arguments vanish, and yaw is genuinely arbitrary — every yaw yields
 /// the same view. `atan2(0.0, 0.0)` is defined as `0.0`, so this returns a

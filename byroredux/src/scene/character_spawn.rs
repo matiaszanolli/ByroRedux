@@ -252,21 +252,6 @@ impl GroundProbe {
     }
 }
 
-/// Decompose a forward vector into the `(yaw, pitch)` pair that
-/// `fly_camera_system` would need to produce it (#2383).
-///
-/// That system composes `Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch)`
-/// and looks down local `-Z`, which expands to
-///
-/// ```text
-/// forward = (-cos(pitch)·sin(yaw),  sin(pitch),  -cos(pitch)·cos(yaw))
-/// ```
-///
-/// so `pitch = asin(y)` and `yaw = atan2(-x, -z)`. Inverting the engine's own
-/// convention — rather than picking any rotation that happens to face the
-/// right way — is the whole point: a shortest-arc quaternion also faces the
-/// right way and still snaps on the first mouse event, because it carries
-/// roll the driving system cannot represent.
 /// Probe for walkable ground beneath `cam_pos`.
 ///
 /// Split from the spawn itself so the *decision* (may Character mode start?)
