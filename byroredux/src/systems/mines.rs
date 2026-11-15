@@ -585,9 +585,7 @@ mod tests {
     #[test]
     fn a_spent_mine_stays_spent_across_a_reload() {
         let (mut world, mine, _victim) = setup();
-        if world.try_resource::<byroredux_scripting::ReferenceEnableState>().is_none() {
-            world.insert_resource(byroredux_scripting::ReferenceEnableState::default());
-        }
+        world.init_resource::<byroredux_scripting::ReferenceEnableState>();
         mine_system(&world, 0.3);
         mine_system(&world, 2.0);
         assert!(world.get::<SpentMine>(mine).is_some(), "gone off");
