@@ -300,11 +300,8 @@ pub fn read_string_sub(subs: &[SubRecord], code: &[u8; 4]) -> Option<String> {
     find_sub(subs, code).map(read_zstring)
 }
 
-/// Read a sub-record as an lstring-or-zstring. Returns `None` if absent.
-///
-/// Collapses the `find_sub(subs, code).map(read_lstring_or_zstring)` two-liner
-/// that appears at every FULL / DESC / RNAM site. Use this instead of the
-/// open-coded pair. See TD3-007 / #1045.
+/// Read a sub-record's first four bytes as a little-endian `u32`. Returns
+/// `None` if the sub-record is absent or shorter than four bytes.
 pub fn read_u32_sub(subs: &[SubRecord], code: &[u8; 4]) -> Option<u32> {
     byroredux_core::bytes::le_u32_at(find_sub(subs, code)?, 0)
 }
