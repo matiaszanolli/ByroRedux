@@ -154,7 +154,7 @@ pub(super) fn unequip_item(world: &World, _fallout: bool, _cmd: u16, args: &[ObS
         };
         let Some(index) = inventories
             .get(actor)
-            .and_then(|inventory| inventory.items.iter().position(|stack| stack.base_form_id == item && stack.count > 0))
+            .and_then(|inventory| inventory.first_row_of(item))
             .and_then(|index| u32::try_from(index).ok())
             .map(InventoryIndex)
         else {

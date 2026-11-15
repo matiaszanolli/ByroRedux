@@ -148,6 +148,13 @@ impl Inventory {
             .fold(0u32, |total, stack| total.saturating_add(stack.count))
     }
 
+    /// The first row holding at least one `base_form_id`, as a row index: the row a
+    /// "use / drop / equip the item with this form" request acts on. `None` when no
+    /// row of that form has a positive count.
+    pub fn first_row_of(&self, base_form_id: u32) -> Option<usize> {
+        self.items.iter().position(|stack| stack.base_form_id == base_form_id && stack.count > 0)
+    }
+
     /// How many items this inventory holds across every form in `base_form_ids`
     /// (a form list's members). A row counts once even if its form is listed
     /// twice. Saturates like [`Self::count_of`] (#6470).
@@ -622,6 +629,19 @@ mod tests {
 
         inv.push(ItemStack::new(0xF, u32::MAX));
         assert_eq!(inv.count_of(0xF), u32::MAX);
+    }
+
+    /// #6965 — `first_row_of` skips empty rows of the form and other forms.
+    #[test]
+    fn first_row_of_finds_the_first_non_empty_row_of_one_form() {
+        let mut inv = Inventory::new();
+        assert_eq!(inv.first_row_of(0xF), None);
+        inv.push(ItemStack::new(0x1, 3));
+        inv.push(ItemStack::new(0xF, 0));
+        inv.push(ItemStack::new(0xF, 2));
+        assert_eq!(inv.first_row_of(0xF), Some(2));
+        assert_eq!(inv.first_row_of(0x1), Some(0));
+        assert_eq!(inv.first_row_of(0x2), None);
     }
 
     /// #6470 — `count_of_any` sums a form list's members, counts a row once when

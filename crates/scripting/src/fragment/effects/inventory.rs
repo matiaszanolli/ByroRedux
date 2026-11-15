@@ -236,9 +236,7 @@ pub(super) fn apply_inventory_effect(
                 return None;
             };
             let Some(index) = inventory
-                .items
-                .iter()
-                .position(|stack| stack.base_form_id == item_form_id && stack.count > 0)
+                .first_row_of(item_form_id)
                 .and_then(|index| u32::try_from(index).ok())
                 .map(InventoryIndex)
             else {

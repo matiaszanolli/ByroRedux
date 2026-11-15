@@ -197,7 +197,7 @@ pub(crate) fn player_ammo_for(
     };
     let accepted: Vec<u32> = index.form_lists.get(&ammo_form).map_or_else(|| vec![ammo_form], |list| list.entries.clone());
     let inventory = world.get::<byroredux_core::ecs::components::Inventory>(player)?;
-    accepted.into_iter().find(|ammo| inventory.items.iter().any(|stack| stack.base_form_id == *ammo && stack.count > 0))
+    accepted.into_iter().find(|&ammo| inventory.count_of(ammo) > 0)
 }
 
 /// The player's shot with `weapon` and `ammo`, from `origin` along `direction` (the camera's aim:

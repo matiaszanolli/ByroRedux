@@ -143,30 +143,31 @@ pub(crate) fn queue_equip_by_form_id(world: &World, form_id: u32) -> Result<Stri
 /// Queue the menu's own `Consume` of the player's row carrying `form_id` (`inv.use`): the same door a
 /// click on "use" takes, drained by [`drain_pending_inventory_actions`].
 pub(crate) fn queue_consume_by_form_id(world: &World, form_id: u32) -> Result<String, String> {
-    let player = PlayerEntity::get(world).ok_or_else(|| "no player".to_string())?;
-    let index = world
-        .get::<Inventory>(player)
-        .and_then(|inventory| inventory.items.iter().position(|stack| stack.base_form_id == form_id && stack.count > 0))
-        .ok_or_else(|| format!("no inventory row with form {form_id:08X}"))?;
-    let Some(mut pending) = world.try_resource_mut::<PendingInventoryActions>() else {
-        return Err("inventory action queue unavailable".to_string());
-    };
-    pending.0.push(byroredux_debug_ui::InventoryAction::Consume { index: index as u32, form_id });
-    Ok(format!("queued use of row {index} (form {form_id:08X})"))
+    queue_by_form_id(world, form_id, "use", |index, form_id| byroredux_debug_ui::InventoryAction::Consume { index, form_id })
 }
 
 /// Queue the menu's own `Drop` of one item of the player's row carrying `form_id` (`inv.drop`).
 pub(crate) fn queue_drop_by_form_id(world: &World, form_id: u32) -> Result<String, String> {
+    queue_by_form_id(world, form_id, "drop", |index, form_id| byroredux_debug_ui::InventoryAction::Drop { index, form_id })
+}
+
+/// Queue `action` for the player's first row carrying `form_id`; `verb` names it in the reply.
+fn queue_by_form_id(
+    world: &World,
+    form_id: u32,
+    verb: &str,
+    action: impl FnOnce(u32, u32) -> byroredux_debug_ui::InventoryAction,
+) -> Result<String, String> {
     let player = PlayerEntity::get(world).ok_or_else(|| "no player".to_string())?;
     let index = world
         .get::<Inventory>(player)
-        .and_then(|inventory| inventory.items.iter().position(|stack| stack.base_form_id == form_id && stack.count > 0))
+        .and_then(|inventory| inventory.first_row_of(form_id))
         .ok_or_else(|| format!("no inventory row with form {form_id:08X}"))?;
     let Some(mut pending) = world.try_resource_mut::<PendingInventoryActions>() else {
         return Err("inventory action queue unavailable".to_string());
     };
-    pending.0.push(byroredux_debug_ui::InventoryAction::Drop { index: index as u32, form_id });
-    Ok(format!("queued drop of row {index} (form {form_id:08X})"))
+    pending.0.push(action(index as u32, form_id));
+    Ok(format!("queued {verb} of row {index} (form {form_id:08X})"))
 }
 
 /// The weapon equips scripts asked for (`player.equipitem <weapon>`, the VCG02 tutorial's rifle):
@@ -196,7 +197,7 @@ fn drain_script_weapon_equips(world: &mut World) {
         }
         let row = world
             .get::<Inventory>(actor)
-            .and_then(|inventory| inventory.items.iter().position(|stack| stack.base_form_id == form_id && stack.count > 0));
+            .and_then(|inventory| inventory.first_row_of(form_id));
         let Some(row) = row else {
             log::debug!("script EquipItem {form_id:08X}: the player does not carry it");
             continue;
