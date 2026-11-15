@@ -584,9 +584,19 @@ pub(crate) fn resolve_actor_moves(world: &World) -> Vec<Relocation> {
                 (actor, target, [0.0; 3])
             }
         };
-        let is_actor = index.cells.locate_refr(actor).is_none_or(|(_, placed)| index.is_actor(placed.base_form_id));
+        // #6916 — the player moves by a cell transition (`PlayerMoveRequest`), never
+        // through the ledger: `live_body(PLAYER_REF)` is the player, and the
+        // relocation step would evict its body.
+        if actor == PLAYER_REF {
+            log::info!("MoveTo {actor:08X} -> {target:08X} declined: the player moves by cell transition");
+            continue;
+        }
+        // Only an actor the load order places: `relocated_in` respawns a moved actor
+        // from its own record, so a runtime-created reference, or a quest or script
+        // FormID, would be evicted and never come back.
+        let is_actor = index.cells.locate_refr(actor).is_some_and(|(_, placed)| index.is_actor(placed.base_form_id));
         if !is_actor {
-            log::info!("MoveTo {actor:08X} -> {target:08X} declined: only actors move between cells");
+            log::info!("MoveTo {actor:08X} -> {target:08X} declined: only actors the load order places move between cells");
             continue;
         }
         let Some(mut placement) = placement_of_target(world, &index, target) else {
@@ -1197,9 +1207,14 @@ mod tests {
         world.resource_mut::<PendingActorMoves>().0.extend([
             ActorMoveRequest::ToReference { actor: SUNNY, target: MARKER, offset: [0.0, 0.0, 64.0] },
             ActorMoveRequest::ToReference { actor: 0x10, target: MARKER, offset: [0.0; 3] },
+            // #6916 — the player moves by cell transition, and a FormID the load
+            // order does not place (a runtime-created reference, a quest) could
+            // never be respawned from the ledger.
+            ActorMoveRequest::ToReference { actor: PLAYER_REF, target: MARKER, offset: [0.0; 3] },
+            ActorMoveRequest::ToReference { actor: 0xFF00_0801, target: MARKER, offset: [0.0; 3] },
         ]);
         let moves = resolve_actor_moves(&world);
-        assert_eq!(moves.len(), 1, "the door is no actor");
+        assert_eq!(moves.len(), 1, "the door is no actor; the player and an unplaced FormID are declined");
         assert_eq!(moves[0].actor, SUNNY);
         assert_eq!(moves[0].placement.position_zup, [1500.0, 0.0, 64.0]);
         assert_eq!(moves[0].placement.rotation_zup, [0.0, 0.0, 0.5], "the target's rotation");

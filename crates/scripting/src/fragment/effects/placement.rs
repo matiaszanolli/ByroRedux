@@ -36,6 +36,21 @@ pub(super) fn apply_placement_effect(
             // the relocation ledger, across spaces when it must.
             let actor = object_form_id(vmad, world, context, moved, deferred)?;
             let target = object_form_id(vmad, world, context, destination, deferred)?;
+            // #6916 — the player (a `PlayerRef` property, or an alias holding the
+            // player: both resolve to `0x14`) moves by a cell transition, as
+            // `MovePlayerTo` does. The actor ledger would evict the player's body.
+            // The same terms as the lowering's `MovePlayerTo`: no offset, rotation
+            // matched.
+            if actor == crate::PLAYER_REFERENCE {
+                if *offset != [0.0; 3] || !*match_rotation {
+                    log::debug!("fragment MoveTo (player) skipped: a cell transition carries no offset ({target:08X})");
+                    return None;
+                }
+                if let Some(mut request) = world.try_resource_mut::<super::PlayerMoveRequest>() {
+                    request.0 = Some(target);
+                }
+                return None;
+            }
             if !crate::queue_actor_move(world, crate::ActorMoveRequest::ToReference { actor, target, offset: *offset }) {
                 log::debug!("fragment MoveTo skipped: no actor-move queue is installed ({actor:08X} -> {target:08X})");
             }

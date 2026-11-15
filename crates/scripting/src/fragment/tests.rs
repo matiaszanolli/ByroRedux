@@ -2577,6 +2577,62 @@ fn dispatch_player_move_to_requests_the_destination_reference() {
     );
 }
 
+/// #6916 — `PlayerRef.MoveTo(<a marker whose cell is not loaded>)`. A `PlayerRef`
+/// property is no `Game.GetPlayer()` local, so it lowers to a plain `MoveTo`,
+/// and the destination has no body. The player moves by a cell transition, as
+/// `MovePlayerTo` does; nothing reaches the actor ledger, whose relocation step
+/// would evict the player's body. With an offset (which a cell transition does
+/// not carry) the move is skipped, not queued.
+#[test]
+fn dispatch_move_to_on_a_player_property_requests_a_cell_transition() {
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+    use crate::translate::compose::ObjectRef;
+    const DEST_FORM: u32 = 0x0000_7001;
+    let property = |name: &str, form_id: u32| ScriptProperty {
+        name: name.into(),
+        status: 1,
+        value: PropertyValue::Object { form_id, alias: -1 },
+    };
+    let move_to = |offset: [f32; 3]| Effect::MoveTo {
+        moved: ObjectRef::Property("PlayerRef".into()),
+        destination: ObjectRef::Property("StartMarker".into()),
+        offset,
+        match_rotation: true,
+    };
+    let world = fixture();
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance {
+                    name: "QF_Test".into(),
+                    status: 0,
+                    properties: vec![property("PlayerRef", crate::PLAYER_REFERENCE), property("StartMarker", DEST_FORM)],
+                }],
+            },
+        );
+        frags.insert(Q, 10, vec![move_to([0.0; 3])]);
+        frags.insert(Q, 20, vec![move_to([0.0, 0.0, 64.0])]);
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+    quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<crate::PlayerMoveRequest>().0, Some(DEST_FORM));
+    assert!(world.resource::<crate::PendingActorMoves>().0.is_empty(), "the player never reaches the actor ledger");
+
+    world.resource_mut::<crate::PlayerMoveRequest>().0 = None;
+    world.resource_mut::<QuestStageState>().set_stage(Q, 20);
+    emit_advance(&world, Q, 20);
+    quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<crate::PlayerMoveRequest>().0, None, "a cell transition carries no offset");
+    assert!(world.resource::<crate::PendingActorMoves>().0.is_empty());
+}
+
 #[test]
 fn dispatch_scene_start_via_registered_vmad() {
     use byroredux_plugin::esm::records::script_instance::{
