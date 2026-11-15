@@ -471,9 +471,18 @@ pub(crate) fn followers_of(world: &World, leader: u32) -> Vec<u32> {
 }
 
 /// XCT-ROUTE-002 — `entity` passes the load door of `hop`: request its move to
-/// the far side, with its followers (XCT-FOL-001).
+/// the far side, with its followers (XCT-FOL-001). It is tagged `Traveled` here,
+/// as it passes, so it stands still until the relocation step takes it out of
+/// its cell this frame. Not while it fades at the door (`is_fading_at_door`
+/// holds it then): `Traveled` is saved and the hop and fade are not, so a save
+/// taken mid-fade restored an arrived traveler with no hop, which never passed
+/// (#6925). Now it chooses its hop again after the load, as the save registry
+/// expects.
 pub(crate) fn pass_door(world: &World, entity: EntityId, hop: &CrossSpaceHop) {
     let Some(form) = local_form(world, entity) else { return };
+    if let Some(mut traveled) = world.query_mut::<byroredux_core::ecs::components::Traveled>() {
+        traveled.insert(entity, byroredux_core::ecs::components::Traveled);
+    }
     let speed = crate::components::WalkSpeed::or_default(world.get::<crate::components::WalkSpeed>(entity).as_deref());
     let mut moves = vec![Relocation { actor: form, placement: hop.placement.clone(), onward: Some((hop.target, speed)) }];
     moves.extend(
@@ -1318,6 +1327,7 @@ mod tests {
         world.register::<CrossSpaceHop>();
         world.register::<DoorFade>();
         world.register::<AnimatedAlpha>();
+        world.register::<byroredux_core::ecs::components::Traveled>();
         assert_eq!(door_fade_seconds(&world), 1.0);
 
         let mut pool = FormIdPool::new();
@@ -1347,9 +1357,12 @@ mod tests {
         door_fade_system(&world, 0.5);
         assert_eq!(alpha(&world), Some(0.25));
         assert_eq!(passed(&world), 0, "still fading out");
+        let traveled = |world: &World| world.has::<byroredux_core::ecs::components::Traveled>(actor);
+        assert!(!traveled(&world), "#6925: not arrived while it fades: a save now restores a traveler");
         door_fade_system(&world, 0.5);
         assert_eq!(alpha(&world), Some(0.0), "faded out completely, never below zero");
         assert!(!is_fading_at_door(&world, actor));
+        assert!(traveled(&world), "it stands as it passes, until the relocation step takes it");
         let moves = std::mem::take(&mut world.resource_mut::<PendingRelocations>().0);
         assert_eq!(moves.len(), 1, "the actor passes when the fade-out ends");
         assert_eq!((moves[0].actor, moves[0].placement.clone()), (SUNNY, far_side));

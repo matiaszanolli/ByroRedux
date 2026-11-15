@@ -500,9 +500,11 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             }
         }
     }
+    // An actor at its load door is not arrived: its fade holds it, and
+    // `pass_door` tags it `Traveled` as it passes (#6925).
     if let Some(mut tq) = world.query_mut::<Traveled>() {
         for d in &scratch.decisions {
-            if d.state.is_none() {
+            if d.state.is_none() && !passed.contains(&d.entity) {
                 tq.insert(d.entity, Traveled);
             }
         }
