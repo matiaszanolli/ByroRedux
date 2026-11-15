@@ -3,24 +3,51 @@
 //! Split out of `frame_params.rs` (#5089's file budget) with its tests.
 use super::super::composite::CompositeSkyAperture;
 
-/// VLM-INT-005: keep the `cap` apertures nearest the camera, in nearest-first order, and report how many
-/// were dropped, writing the survivors into `out` and returning `(kept, dropped)`. `candidates` carries each aperture's squared distance to the camera; ties keep their
-/// input order, so which one survives a tie is stable from frame to frame. Under the cap nothing is
-/// dropped and the order is simply nearest-first.
-pub(super) fn nearest_apertures(
-    candidates: &mut [(f32, CompositeSkyAperture)],
-    out: &mut [CompositeSkyAperture],
-) -> (usize, usize) {
-    // `total_cmp` orders NaN last, so a degenerate distance is the first thing dropped, and a stable
-    // sort keeps equal distances in submission order.
-    candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
-    // The cap is the output's length, and the nearest `kept` are written straight into it: no second
-    // vector per frame (#6753).
-    let kept = candidates.len().min(out.len());
-    for (slot, (_, aperture)) in out.iter_mut().zip(&candidates[..kept]) {
-        *slot = *aperture;
+/// VLM-INT-005: keep the apertures nearest the camera, as many as `out` holds, in nearest-first order,
+/// and count how many were dropped. Each [`Self::push`] carries the aperture's squared distance to the
+/// camera; ties keep their submission order, so which one survives a tie is stable from frame to frame,
+/// and `total_cmp` orders NaN last, so a degenerate distance is the first thing dropped.
+///
+/// The survivors are insertion-sorted straight into `out` with their distances beside them on the
+/// stack: no per-frame candidate vector (#6841; #6753 removed the second one).
+pub(super) struct NearestApertures<'a> {
+    out: &'a mut [CompositeSkyAperture],
+    distances: [f32; super::super::composite::MAX_SKY_APERTURES],
+    kept: usize,
+    dropped: usize,
+}
+
+impl<'a> NearestApertures<'a> {
+    /// The cap is `out.len()`, at most `MAX_SKY_APERTURES`.
+    pub(super) fn new(out: &'a mut [CompositeSkyAperture]) -> Self {
+        let cap = out.len().min(super::super::composite::MAX_SKY_APERTURES);
+        Self { out: &mut out[..cap], distances: [0.0; super::super::composite::MAX_SKY_APERTURES], kept: 0, dropped: 0 }
     }
-    (kept, candidates.len() - kept)
+
+    pub(super) fn push(&mut self, distance_sq: f32, aperture: CompositeSkyAperture) {
+        let cap = self.out.len();
+        // After every kept aperture at or nearer this distance: equal distances keep submission order.
+        let at = self.distances[..self.kept].partition_point(|kept| kept.total_cmp(&distance_sq).is_le());
+        if at >= cap {
+            self.dropped += 1;
+            return;
+        }
+        if self.kept == cap {
+            // Full: the farthest survivor makes room.
+            self.dropped += 1;
+        } else {
+            self.kept += 1;
+        }
+        self.distances.copy_within(at..self.kept - 1, at + 1);
+        self.out.copy_within(at..self.kept - 1, at + 1);
+        self.distances[at] = distance_sq;
+        self.out[at] = aperture;
+    }
+
+    /// `(kept, dropped)`; the first `kept` entries of `out` are the survivors, nearest first.
+    pub(super) fn finish(self) -> (usize, usize) {
+        (self.kept, self.dropped)
+    }
 }
 
 /// The dropped-aperture count last reported, so a cell that stays over the cap logs once instead of every
@@ -49,15 +76,19 @@ mod sky_aperture_overflow_tests {
         use super::*;
     use std::sync::atomic::AtomicUsize;
 
-    /// An aperture tagged by `id` in a field `nearest_apertures` never touches.
+    /// An aperture tagged by `id` in a field the selection never touches.
     fn tagged(distance_sq: f32, id: f32) -> (f32, CompositeSkyAperture) {
         (distance_sq, CompositeSkyAperture { half_extents: [id, 0.0, 0.0, 0.0], ..Default::default() })
     }
 
-    /// `nearest_apertures` against a `cap`-long output, as the Vec-returning shape the cases read.
-    fn nearest(mut candidates: Vec<(f32, CompositeSkyAperture)>, cap: usize) -> (Vec<CompositeSkyAperture>, usize) {
+    /// `NearestApertures` against a `cap`-long output, as the Vec-returning shape the cases read.
+    fn nearest(candidates: Vec<(f32, CompositeSkyAperture)>, cap: usize) -> (Vec<CompositeSkyAperture>, usize) {
         let mut out = vec![CompositeSkyAperture::default(); cap];
-        let (kept, dropped) = nearest_apertures(&mut candidates, &mut out);
+        let mut nearest = NearestApertures::new(&mut out);
+        for (distance_sq, aperture) in candidates {
+            nearest.push(distance_sq, aperture);
+        }
+        let (kept, dropped) = nearest.finish();
         out.truncate(kept);
         (out, dropped)
     }
@@ -94,6 +125,22 @@ mod sky_aperture_overflow_tests {
         let (kept, dropped) = nearest(candidates, 3);
         assert_eq!(dropped, 1);
         assert_eq!(ids(&kept), [0.0, 2.0, 3.0]);
+    }
+
+    /// The selection matches a full stable sort for any submission order, including evictions from a
+    /// full output and ties across the cap boundary.
+    #[test]
+    fn the_selection_matches_a_stable_sort() {
+        let distances = [7.0, 3.0, 3.0, 9.0, 1.0, 3.0, 8.0, 0.5, 3.0, 2.0, 7.0];
+        for cap in 0..=distances.len() + 1 {
+            let candidates: Vec<_> = distances.iter().enumerate().map(|(i, d)| tagged(*d, i as f32)).collect();
+            let mut sorted = candidates.clone();
+            sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let want: Vec<f32> = sorted.iter().take(cap).map(|(_, a)| a.half_extents[0]).collect();
+            let (kept, dropped) = nearest(candidates, cap);
+            assert_eq!(ids(&kept), want, "cap {cap}");
+            assert_eq!(dropped, distances.len().saturating_sub(cap));
+        }
     }
 
     /// VLM-INT-005: logged once per overflow episode, re-armed when the cell is back under the cap.

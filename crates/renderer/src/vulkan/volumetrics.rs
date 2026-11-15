@@ -1205,9 +1205,15 @@ impl VolumetricsPipeline {
         if let Some(grid) = self.local_grid.as_ref() {
             grid.record_publish_bricks(device, cmd);
         }
-        let published: Vec<vk::ImageMemoryBarrier> = std::iter::once(post_int)
-            .chain(local_published.into_iter().flatten())
-            .collect();
+        // One barrier, or four with the grid: a stack array, not a per-frame Vec (#6841).
+        let mut published = [post_int; 4];
+        let published_len = match local_published {
+            Some(grid) => {
+                published[1..].copy_from_slice(&grid);
+                4
+            }
+            None => 1,
+        };
         device.cmd_pipeline_barrier(
             cmd,
             vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -1215,7 +1221,7 @@ impl VolumetricsPipeline {
             vk::DependencyFlags::empty(),
             &[],
             &[],
-            &published,
+            &published[..published_len],
         );
         // Publish binding 18's atomic writes to the host. The actual read is
         // deferred until this slot's fence is waited on at its next reuse;

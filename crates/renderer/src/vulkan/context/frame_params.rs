@@ -932,7 +932,7 @@ pub(super) fn build_composite_params(
         // VLM-INT-005: collect every usable aperture with its distance to the camera, then keep the
         // nearest `MAX_SKY_APERTURES`. The upload used to stop at the cap in iteration order, so in a
         // cell with more marked openings than the cap the ones that were dropped were whichever came last.
-        let mut candidates: Vec<(f32, super::super::composite::CompositeSkyAperture)> = Vec::new();
+        let mut nearest = super::sky_apertures::NearestApertures::new(&mut sky_apertures[..]);
         for volume in sky_aperture_volumes {
             if (volume.center_shape[3] != crate::shader_constants::FOG_VOLUME_SHAPE_BOX as f32
                 && volume.center_shape[3]
@@ -955,10 +955,9 @@ pub(super) fn build_composite_params(
             };
             let to_camera = byroredux_core::math::Vec3::from_slice(&volume.center_shape[..3])
                 - byroredux_core::math::Vec3::from_array(camera_pos);
-            candidates.push((to_camera.length_squared(), aperture));
+            nearest.push(to_camera.length_squared(), aperture);
         }
-        let (kept, dropped) =
-            super::sky_apertures::nearest_apertures(&mut candidates, &mut sky_apertures[..]);
+        let (kept, dropped) = nearest.finish();
         aperture_count = kept;
         super::sky_apertures::note_sky_aperture_overflow(dropped, kept);
     }
