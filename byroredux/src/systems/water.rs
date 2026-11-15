@@ -285,6 +285,9 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
             _ => {}
         }
     }
+    // CONC-2 — the bed field too: the `WaterVolume` / `ParticleEmitter` write below must not run
+    // under it (the player controller and physics sync take `WaterVolume` before `WaterBedField`).
+    drop(bed_q);
     drop(surface_q);
     drop(wq);
     drop(vq);
@@ -799,6 +802,28 @@ mod tests {
             ),
             0.0
         );
+    }
+
+    /// CONC-2 — with a `WaterBedField` storage present the submersion pass takes it after
+    /// `WaterVolume`, as the player controller and physics sync do, and must not still hold it when it
+    /// writes `WaterVolume` / `ParticleEmitter` for the disturbance rate. No fixture registered the bed
+    /// field, so the lock-order lane (`BYRO_LOCK_ORDER_CHECK=1`) never saw the inverted edge.
+    #[test]
+    fn submersion_with_a_bed_field_takes_its_locks_in_one_order() {
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.register::<byroredux_core::ecs::components::water::WaterBedField>();
+        let camera = world.spawn();
+        world.insert_resource(ActiveCamera(camera));
+        world.insert(camera, GlobalTransform::IDENTITY);
+        world.insert(camera, SubmersionState::default());
+        let water = world.spawn();
+        world.insert(water, WaterPlane { kind: WaterKind::Calm, material: WaterMaterial::default(), damage_per_second: 0.0 });
+        world.insert(water, WaterVolume { min: [-50.0, -100.0, -50.0], max: [50.0, 0.0, 50.0] });
+        world.insert(water, GlobalTransform::IDENTITY);
+        world.insert(water, ParticleEmitter::water_splash());
+        submersion_system(&world, 0.016);
+        submersion_system(&world, 0.016);
     }
 
     #[test]

@@ -260,11 +260,12 @@ pub(super) fn capture_entity_projections(
                 .collect::<BTreeMap<_, _>>()
         })
         .unwrap_or_default();
+    // CONC-4 — the catalog before `Inventory`, the order `encumbrance_system` takes them in.
+    let item_catalog = world.try_resource::<crate::inventory::InventoryCatalog>();
     if let (Some(inventories), Some(resolver)) = (
         world.query::<Inventory>(),
         world.try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>(),
     ) {
-        let item_catalog = world.try_resource::<crate::inventory::InventoryCatalog>();
         for (entity, projection) in &mut projections {
             let Some(inventory) = inventories.get(*entity) else {
                 continue;

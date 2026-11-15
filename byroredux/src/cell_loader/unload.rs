@@ -849,7 +849,6 @@ pub(crate) fn collect_victim_gpu_handles(
     let wnq = world.query::<WaterNoiseMapHandles>();
     let mtq = world.query::<MaterialTextureHandles>();
     let ttq = world.query::<TerrainTileSlot>();
-    let ftq = world.query::<AnimatedTextureFlip>();
     for &eid in victims {
         if let Some(mq) = &mq {
             if let Some(mh) = mq.get(eid) {
@@ -883,22 +882,27 @@ pub(crate) fn collect_victim_gpu_handles(
                 }
             }
         }
-        // #4427 — flipbook frames are acquired once per frame per placement
-        // by `attach_animation_sinks`, independently of the static roles.
-        if let Some(ftq) = &ftq {
-            if let Some(flip) = ftq.get(eid) {
-                for handle in flip.all_handles() {
-                    push_tex_drop(handle, &mut texture_drops);
-                }
-            }
-        }
         if let Some(ttq) = &ttq {
             if let Some(slot) = ttq.get(eid) {
                 terrain_tile_slots.insert(slot.0);
             }
         }
     }
-    drop((mq, tq, nq, wnq, mtq, ttq, ftq));
+    drop((mq, tq, nq, wnq, mtq, ttq));
+    // #4427 — flipbook frames are acquired once per frame per placement by
+    // `attach_animation_sinks`, independently of the static roles. CONC-5 —
+    // its own pass, like #6209's below: the static-mesh render collect takes
+    // `AnimatedTextureFlip` before `MaterialTextureHandles` / `TerrainTileSlot`,
+    // so holding it after them in the joint walk closed a cycle.
+    if let Some(ftq) = world.query::<AnimatedTextureFlip>() {
+        for &eid in victims {
+            if let Some(flip) = ftq.get(eid) {
+                for handle in flip.all_handles() {
+                    push_tex_drop(handle, &mut texture_drops);
+                }
+            }
+        }
+    }
     // #6109 — an emitter's greyscale palette LUT is a `resolve_texture` ref
     // the spawn took and stored in a plain `u32`; without this the ref was
     // never given back (`0`, its "no LUT" sentinel, is skipped by

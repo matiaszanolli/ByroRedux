@@ -215,14 +215,19 @@ pub(crate) fn kf_idle_work_pending(world: &World, game: GameKind) -> bool {
     if !game.has_kf_animations() {
         return false;
     }
-    let Some(states) = world.query::<byroredux_scripting::ActorCinematicState>() else { return false };
+    // CONC-3 — the requested forms are copied out and the state guard dropped before the catalog is
+    // read: `idle_clip_playback_system` takes `IdleClipCatalog` before `ActorCinematicState` (#4546).
+    let requested: Vec<u32> = match world.query::<byroredux_scripting::ActorCinematicState>() {
+        Some(states) => states.iter().filter_map(|(_, state)| state.requested_idle_form_id).collect(),
+        None => return false,
+    };
+    if requested.is_empty() {
+        return false;
+    }
     let catalog = world.try_resource::<IdleClipCatalog>();
-    let pending = states.iter().any(|(_, state)| {
-        state
-            .requested_idle_form_id
-            .is_some_and(|form| catalog.as_ref().is_none_or(|catalog| !catalog.handles.contains_key(&form) && !catalog.unresolved.contains(&form)))
-    });
-    pending
+    requested
+        .into_iter()
+        .any(|form| catalog.as_ref().is_none_or(|catalog| !catalog.handles.contains_key(&form) && !catalog.unresolved.contains(&form)))
 }
 
 /// M42.10 — decode the humanoid walk cycle into the `SkyrimWalkClip`

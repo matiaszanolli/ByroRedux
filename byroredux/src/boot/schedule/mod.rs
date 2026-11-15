@@ -749,6 +749,7 @@ mod system_access_declaration_tests {
     // #4994 — cross-file hops the within-file follower cannot reach.
     const WATER_SRC: &str = include_str!("../../../../crates/physics/src/water.rs");
     const COMBAT_SRC: &str = include_str!("../../combat.rs");
+    const LIMBS_SRC: &str = include_str!("../../limbs.rs");
     const COMBAT_AI_SRC: &str = include_str!("../../systems/combat_ai.rs");
     const LOOT_SRC: &str = include_str!("../../inventory/loot.rs");
     const CRIME_SRC: &str = include_str!("../../crime.rs");
@@ -905,6 +906,10 @@ mod system_access_declaration_tests {
                 // `note_death` (d1b298921): the kill record write and the victim's
                 // identity reads.
                 (OBSCRIPT_STATE_SRC, "note_death"),
+                // CONC-6 — the crippled-leg speed multiplier (VATS-LIMB-006):
+                // `LimbEffects` and the player's `ActorValues`.
+                (LIMBS_SRC, "locomotion_mult"),
+                (LIMBS_SRC, "crippled_legs"),
             ],
         ),
         ("timer_tick_system", &[(TIMER_SRC, "timer_tick_system")]),

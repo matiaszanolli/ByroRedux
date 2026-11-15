@@ -29,6 +29,8 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
             .reads_resource::<crate::components::VatsState>()
             // M47.2 — over-encumbrance's movement effect.
             .reads_resource::<crate::encumbrance::PlayerEncumbrance>()
+            // CONC-6 — crippled legs slow the player (`limbs::locomotion_mult`).
+            .reads_resource::<crate::limbs::LimbEffects>()
             .reads_resource::<ActiveCamera>()
             .reads_resource::<InputState>()
             .reads_resource::<ActionBindings>()

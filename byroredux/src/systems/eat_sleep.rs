@@ -274,12 +274,14 @@ fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch)
     // forcegreet, the wander/patrol gather) acquires them in. #5527 first
     // gathered `GlobalTransform` → `WalkSpeed` → `Transform`, closing both a
     // `Transform`/`GlobalTransform` and a `Transform`/`WalkSpeed` lock-order
-    // cycle (`BYRO_LOCK_ORDER_CHECK=1`).
+    // cycle (`BYRO_LOCK_ORDER_CHECK=1`). CONC-1 — and `WalkSpeed` before
+    // `GlobalTransform`: escort, follow, flee, travel and guard hold their
+    // `WalkSpeed` guard while they read `GlobalTransform`.
     {
         let state_q = world.query::<EatSleepState>();
         let transform_q = world.query::<Transform>();
-        let global_q = world.query::<GlobalTransform>();
         let speed_q = world.query::<crate::components::WalkSpeed>();
+        let global_q = world.query::<GlobalTransform>();
         for actor in &mut actors {
             actor.destination = state_q
                 .as_ref()
@@ -1067,6 +1069,26 @@ mod tests {
             moved, Vec3::ZERO,
             "the step computed through the physics world"
         );
+    }
+
+    /// CONC-1 — escort, follow, flee, travel and guard hold their `WalkSpeed` guard while they read
+    /// `GlobalTransform`; the diner gather must take the two in that order too. No eat/sleep fixture
+    /// registered `WalkSpeed`, so the lock-order lane (`BYRO_LOCK_ORDER_CHECK=1`) never saw both edges.
+    /// The mover's edge is taken here the way a mover takes it, then the diner walks.
+    #[test]
+    fn the_diner_gather_takes_walk_speed_before_global_transform() {
+        let (mut world, actor) = setup();
+        world.register::<crate::components::WalkSpeed>();
+        world.insert(actor, crate::components::WalkSpeed(120.0));
+        world.insert(actor, EditorPlacement { translation: Vec3::new(300.0, 0.0, 0.0) });
+        world.insert(actor, EatBehavior { radius: Some(512.0), location: EatSleepLocation::NearEditorLocation, form_id: 0xAB });
+        {
+            // A mover: `WalkSpeed` held, then `GlobalTransform` read.
+            let speeds = world.query::<crate::components::WalkSpeed>();
+            let _globals = world.query::<GlobalTransform>();
+            drop(speeds);
+        }
+        eat_sleep_system(&world, 1.0);
     }
 
     /// Sleep prefers sleep markers: with a sleep marker adjacent, the
