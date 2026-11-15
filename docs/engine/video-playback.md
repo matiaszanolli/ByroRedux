@@ -56,7 +56,10 @@ whether they are language versions is part of #6896).
   holds (`holding world_muted=… music_paused=…`).
 - **Escape (BIK-PRES-004, BIK-RPT-003).** The Escape key and `video.skip` raise
   `VideoControl::skip`. It ends an interruptable movie as **Played (ended
-  early)**, and is logged and consumed for any other movie.
+  early)**, and is logged and consumed for any other movie. It is the only
+  input a movie lets through: like the loading cover, it discards every other
+  key, mouse, wheel, touch and IME event and releases mouse look
+  (`App::cover_holds_game`, #7000).
 
 ## 4. Scripts and the freeze (BIK-REQ-001, -002, BIK-PRES-006)
 

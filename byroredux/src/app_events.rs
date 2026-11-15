@@ -1149,11 +1149,19 @@ impl ApplicationHandler for App {
             self.loading_screen.focus_lost();
             self.release_world_input_for_ui();
         }
-        if self.loading_screen.active()
+        // A full-screen cover (the loading screen or a movie) holds the game: no
+        // gameplay input reaches the dispatch below (#7000 — a movie used to let
+        // the inventory key, F, V and the save hotkeys through).
+        if self.cover_holds_game()
             && matches!(&event, WindowEvent::KeyboardInput { .. }
                 | WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. }
                 | WindowEvent::Touch(_) | WindowEvent::Ime(_))
         {
+            // A movie owns Escape: it ends an interruptable one and does nothing for one
+            // that is not (BIK-PRES-004); either way the pause menu does not open over it.
+            if self.video.active() && pressed_key(&event) == Some(KeyCode::Escape) {
+                video::VideoPlayer::request_skip(&self.world);
+            }
             return;
         }
         // A finite named benchmark owns the measured world state. Matrix runs
@@ -1190,23 +1198,7 @@ impl ApplicationHandler for App {
             false
         };
 
-        let pressed_key = match &event {
-            WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed && !event.repeat =>
-            {
-                match event.physical_key {
-                    PhysicalKey::Code(code) => Some(code),
-                    _ => None,
-                }
-            }
-            _ => None,
-        };
-        // A movie owns Escape: it ends an interruptable one and does nothing for one that is not
-        // (BIK-PRES-004); either way the pause menu does not open over it.
-        if pressed_key == Some(KeyCode::Escape) && self.video.active() {
-            video::VideoPlayer::request_skip(&self.world);
-            return;
-        }
+        let pressed_key = pressed_key(&event);
         let game_menu_open = self
             .debug_ui
             .as_ref()
@@ -1350,8 +1342,8 @@ impl ApplicationHandler for App {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     // The player taking control ends the explicit-start pin
                     // (#5968). Only a press that reached this world-input arm
-                    // counts: the loading cover, the bench harness, egui, the
-                    // native menus and a focused Scaleform menu all return
+                    // counts: the loading / movie cover, the bench harness, egui,
+                    // the native menus and a focused Scaleform menu all return
                     // above, and a modal opener is not control of the world.
                     if event.state == ElementState::Pressed
                         && press_takes_world_control(code, inventory_pressed)
@@ -1455,7 +1447,7 @@ impl ApplicationHandler for App {
                 .debug_ui
                 .as_ref()
                 .is_some_and(byroredux_debug_ui::DebugUiState::captures_gameplay_input);
-            if ui_focused || native_ui_focused || self.loading_screen.active() {
+            if ui_focused || native_ui_focused || self.cover_holds_game() {
                 self.release_world_input_for_ui();
                 return;
             }
@@ -1939,6 +1931,21 @@ fn honour_egui_consumed(
     egui_consumed && interactive_surface_showing && !lifecycle_event
 }
 
+/// The key a fresh (non-repeat) press names, if `event` is one.
+fn pressed_key(event: &WindowEvent) -> Option<KeyCode> {
+    match event {
+        WindowEvent::KeyboardInput { event, .. }
+            if event.state == ElementState::Pressed && !event.repeat =>
+        {
+            match event.physical_key {
+                PhysicalKey::Code(code) => Some(code),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Whether a pressed key that reached the world-input arm is the player
 /// taking control of the world (#5968), which ends the explicit-start pin.
 /// Escape opens the native pause menu and the Inventory binding opens the
@@ -1977,7 +1984,7 @@ mod bench_camera_startup_order_tests {
 
 /// #5968 — the explicit-start pin ends when the player takes control of the
 /// world, "the first key or mouse press". `window_event` quarantines input
-/// before the world-input arms: the loading cover discards it, a finite bench
+/// before the world-input arms: the loading / movie cover discards it, a finite bench
 /// owns the world, egui and the native menus consume it, a focused Scaleform
 /// menu routes it. A press the router swallows is not the player taking
 /// control, so releasing the pin ahead of those returns let a stray press on a
@@ -2014,7 +2021,7 @@ mod explicit_start_pin_release_tests {
             .find(release)
             .expect("window_event must still release the explicit-start pin");
         for (needle, what) in [
-            ("self.loading_screen.active()", "the loading-cover input discard"),
+            ("self.cover_holds_game()", "the loading / movie cover input discard"),
             ("harness_owns_input(", "the bench-harness quarantine"),
             ("honour_egui_consumed(", "the egui-consumed gate"),
             ("self.route_scaleform_window_event(&event)", "the Scaleform menu route"),
@@ -2028,6 +2035,18 @@ mod explicit_start_pin_release_tests {
                  branch swallows would unpin the start (#5968)"
             );
         }
+        // #7000 — the movie cover discards input, so its Escape-to-skip must sit
+        // inside that discard, ahead of the bench quarantine; after it, Escape
+        // could never reach `request_skip`.
+        let cover = body.find("self.cover_holds_game()").unwrap();
+        let skip = body
+            .find("VideoPlayer::request_skip(")
+            .expect("window_event must still let Escape skip a movie");
+        let bench = body.find("harness_owns_input(").unwrap();
+        assert!(
+            cover < skip && skip < bench,
+            "a movie's Escape-to-skip must be handled inside the cover discard"
+        );
     }
 }
 
