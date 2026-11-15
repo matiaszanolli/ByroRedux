@@ -568,6 +568,8 @@ pub fn execute_pending_save_loads(
     };
 
     let registry = build_save_registry();
+    // INC4-2 — the identity the player's live body was assembled from, before the load replaces it.
+    let identity_before = crate::player_body::player_identity(world);
 
     // #3163 — every typed column is decodable from the snapshot alone.
     // Reject before the irreversible cell/streaming teardown so no serde
@@ -877,6 +879,8 @@ pub fn execute_pending_save_loads(
 
     // M45.1 refinement — put the player back where they saved, on top of
     // the reloaded cell (which spawns the player at the default door).
+    // INC4-2 — the overlay may have restored a different sex or race than the live body wears.
+    crate::player_body::sync_body_after_load(world, identity_before);
     if let Some(pose) = snapshot_player_pose(&snapshot) {
         if apply_player_pose(world, &pose) {
             log::info!(

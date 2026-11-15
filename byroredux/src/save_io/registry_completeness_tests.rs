@@ -579,7 +579,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ExplicitStartPin", "session flag set from the --cell/--grid launch arguments, released by the first key or mouse press; never gameplay state"),
         ("LeveledItemLists", "the load order's leveled item lists for AddItem of a list; rebuilt from the records by install_actor_value_names every boot"),
         ("ChargenSession", "the character-creation screens asked for and the one open: a menu, presentation state (GUI-EVT-005); a load opens none"),
-        ("PlayerBodyRebuildRequest", "a one-frame request to assemble the player's body again after a sex or race change; a load assembles it from the saved CharacterIdentity"),
+        ("PlayerBodyRebuildRequest", "a one-frame request to assemble the player's body again after a sex or race change; a cold load assembles it from the saved CharacterIdentity and a live load raises it when the restored identity differs (INC4-2)"),
         ("NewGameStart", "session flag set once from the launch arguments (no named location, or --new-game, and no --load); gates the opening quests an original executable starts on a new game; never gameplay state"),
         ("PlayerMoveRequest", "a fragment's player MoveTo destination, drained by step_player_move_request the frame it is written, after the load drain; a load discards it (#6239)"),
         ("LocationTable", "the load order's LCTN hierarchy, keywords and cell / editor-location maps; rebuilt by install_location_table every boot"),

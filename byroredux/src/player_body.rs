@@ -242,13 +242,54 @@ pub(crate) fn attach_player_body(
     );
 }
 
-/// Asked for when the player's sex or race changed (character creation): the body is
-/// assembled again from the changed record on the next frame with a renderer.
-/// `NOT_SAVED_BY_DESIGN`: a load assembles the body from the saved identity anyway.
+/// Asked for when the player's sex or race changed (character creation, or a live load that restored
+/// a different identity): the body is assembled again from the changed record on the next frame with
+/// a renderer. `NOT_SAVED_BY_DESIGN`: a cold load assembles the body from the saved identity, and a
+/// live load raises it through [`sync_body_after_load`].
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct PlayerBodyRebuildRequest(pub(crate) bool);
 
 impl Resource for PlayerBodyRebuildRequest {}
+
+/// The sex and race the player's body is assembled from: the character-creation choice, when there
+/// is one ([`CharacterIdentity`](byroredux_core::character::CharacterIdentity)).
+pub(crate) fn player_identity(world: &World) -> Option<(bool, u32)> {
+    let player = crate::components::PlayerEntity::get(world)?;
+    world.get::<byroredux_core::character::CharacterIdentity>(player).map(|identity| (identity.female, identity.race_form_id))
+}
+
+/// The race the player's own record gives, chargen aside: the Use-Traits terminal's, as the body
+/// assembly resolves it.
+fn record_race_form_id(world: &World) -> Option<u32> {
+    let index = world.try_resource::<LoadedCellIndex>()?.0.clone();
+    let npc = index.npcs.get(&crate::inventory::player_npc_form_id(index.game))?;
+    Some(byroredux_plugin::equip::traits_terminal(npc, &index).race_form_id).filter(|race| *race != 0)
+}
+
+/// INC4-2 — a live load restores `CharacterIdentity` (a replacing delta column) onto the player, who
+/// survives the load with the body assembled from `before`, the identity the outgoing session had.
+/// A different one asks for the body again. A load that cleared it (a save from before character
+/// creation) also puts the record's race back on `Background`, which `player_identity_sync_system`
+/// only writes from an identity and which would otherwise keep the outgoing session's choice.
+pub(crate) fn sync_body_after_load(world: &World, before: Option<(bool, u32)>) {
+    let after = player_identity(world);
+    if after == before {
+        return;
+    }
+    if let Some(mut request) = world.try_resource_mut::<PlayerBodyRebuildRequest>() {
+        request.0 = true;
+    }
+    if after.is_none() {
+        let (Some(player), Some(race)) = (crate::components::PlayerEntity::get(world), record_race_form_id(world)) else {
+            return;
+        };
+        if let Some(mut backgrounds) = world.query_mut::<byroredux_core::character::Background>() {
+            if let Some(background) = backgrounds.get_mut(player) {
+                background.race_form_id = race;
+            }
+        }
+    }
+}
 
 /// Release the player's assembled body through the GPU-aware teardown equipment changes use
 /// and assemble it again, keeping the camera view. A no-op without a player.
@@ -687,6 +728,39 @@ mod tests {
     use super::*;
     use byroredux_core::ecs::components::collision::MotionType;
     use byroredux_core::ecs::MeshHandle;
+
+    /// INC4-2: a live load that restores a different sex or race asks for the body again; one that
+    /// restores the same does not; one from before character creation (no identity) also puts the
+    /// record's race back on `Background`.
+    #[test]
+    fn a_live_load_with_another_identity_rebuilds_the_body() {
+        use byroredux_core::character::{Background, CharacterIdentity};
+        const RECORD_RACE: u32 = 0x19;
+        const CHOSEN_RACE: u32 = 0x42;
+        let mut world = World::new();
+        world.register::<CharacterIdentity>();
+        world.register::<Background>();
+        world.init_resource::<PlayerBodyRebuildRequest>();
+        let mut index = byroredux_plugin::esm::EsmIndex::default();
+        let player_npc = crate::inventory::player_npc_form_id(index.game);
+        index.npcs.insert(player_npc, byroredux_plugin::esm::records::NpcRecord { form_id: player_npc, race_form_id: RECORD_RACE, ..Default::default() });
+        world.insert_resource(LoadedCellIndex(std::sync::Arc::new(index)));
+        let player = world.spawn();
+        world.insert_resource(crate::components::PlayerEntity(Some(player)));
+        world.insert(player, Background { race_form_id: CHOSEN_RACE, class_form_id: 0 });
+        let requested = |world: &World| std::mem::take(&mut world.resource_mut::<PlayerBodyRebuildRequest>().0);
+
+        world.insert(player, CharacterIdentity { name: "A".into(), female: true, race_form_id: CHOSEN_RACE });
+        sync_body_after_load(&world, Some((true, CHOSEN_RACE)));
+        assert!(!requested(&world), "the same identity keeps the body");
+        sync_body_after_load(&world, Some((false, CHOSEN_RACE)));
+        assert!(requested(&world), "another sex asks for the body again");
+
+        world.remove::<CharacterIdentity>(player);
+        sync_body_after_load(&world, Some((true, CHOSEN_RACE)));
+        assert!(requested(&world), "a pre-chargen save asks for the record's body");
+        assert_eq!(world.get::<Background>(player).map(|b| b.race_form_id), Some(RECORD_RACE), "and the record's race");
+    }
 
     /// A stand-in for what `NpcSpawnJob::advance` assembled: a root at the
     /// feet, one armor part root (ownership stamped on `part_actor`, the
