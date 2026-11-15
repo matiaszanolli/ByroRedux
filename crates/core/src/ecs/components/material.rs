@@ -1,8 +1,8 @@
 //! Material component — surface properties for rendering.
 //!
-//! Captures the rich material data from NIF properties (NiMaterialProperty,
-//! BSLightingShaderProperty, BSEffectShaderProperty) that was previously
-//! discarded during import.
+//! Carries the material data from NIF properties (NiMaterialProperty,
+//! BSLightingShaderProperty, BSEffectShaderProperty) from import to the
+//! renderer.
 
 use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::Component;
@@ -224,10 +224,8 @@ pub struct Material {
     /// BSLightingShaderProperty backing. Variant-specific shading is
     /// per-variant follow-up; this field just exposes the data so the
     /// next renderer milestone has something to consume. See #344.
-    /// Widened to `u32` per #570 (SK-D3-03) — both ends of the
-    /// pipeline (`shader_type` u32 → GPU u32) match now; the
-    /// pre-fix `as u8` cast in the importer silently masked any value
-    /// ≥ 256.
+    /// `u32` end to end (`shader_type` u32 → GPU u32, #570 / SK-D3-03), so
+    /// a value ≥ 256 is never masked.
     pub material_kind: u32,
     /// The normalised `BSLightingShaderType` the importer authored for this
     /// surface (#4256), kept apart from [`Self::material_kind`], which is an
@@ -265,13 +263,11 @@ pub struct Material {
     pub z_test: bool,
     /// Depth write enabled (`NiZBufferProperty.z_write`). Default true.
     /// `false` is set by sky domes, first-person viewmodels, ghost
-    /// overlays, HUD markers, billboarded particles, glow halos —
-    /// pre-#398 it was extracted but never reached the GPU, causing
-    /// z-fighting against world geometry.
+    /// overlays, HUD markers, billboarded particles, glow halos. It must
+    /// reach the GPU (#398), or those surfaces z-fight world geometry.
     pub z_write: bool,
     /// Depth comparison function (Gamebryo `TestFunction` enum). 3
-    /// (LESSEQUAL) is the Gamebryo default and the value used pre-#398
-    /// for every mesh.
+    /// (LESSEQUAL) is the Gamebryo default (#398).
     pub z_function: u8,
     /// Per-variant scalar/vector payload from `BSLightingShaderProperty`
     /// Skyrim+ shader types (SkinTint, HairTint, EyeEnvmap, SparkleSnow,
@@ -330,29 +326,9 @@ pub struct Material {
     /// exponents. `.fresnel_power` — the FO4+ per-material Schlick
     /// exponent for the Fresnel rim term.
     ///
-    /// #2284 (MAT-D1-NEW-04) — captured at the NIF importer boundary
-    /// since `#1241` (`ImportedMaterial::{lighting_effect_1,2,
-    /// subsurface_rolloff, rimlight_power, backlight_power,
-    /// fresnel_power}`) but dead-ended there with zero consumers: no
-    /// field existed here, so `translate_material` had nothing to copy
-    /// into. Skin/hair/cloth materials authoring non-default rim-
-    /// lighting, backlight, subsurface-rolloff, or Fresnel-exponent
-    /// values rendered with the engine's fixed Disney BSDF response
-    /// instead of the author's tuned curve.
-    ///
-    /// Landed here first, without wiring a `GpuMaterial`/`triangle.frag`
-    /// consumer in the same change, so the canonical `Material` stopped
-    /// silently dropping authored data while the GPU-side shading consumer
-    /// landed as separate, independently-reviewable follow-up work. Defaults
-    /// mirror `ImportedMaterial`'s own parser-stub defaults (`fresnel_power`
-    /// 5.0 = standard Schlick exponent; the rest 0.0 = no contribution).
-    ///
-    /// **That follow-up landed on 2026-08-25 — all six are shaded.** #3908
-    /// (REN-2026-09-05-D6-01): this doc said "captured, not yet shaded" for
-    /// nine months after it stopped being true, which both hid real progress
-    /// and invited someone hunting unwired fields to re-plumb wired ones.
-    /// Each has a `GpuMaterial` lane, is hashed in both material-table paths,
-    /// is mirrored in `include/bindings.glsl`, and is read by the canonical
+    /// #2284 (MAT-D1-NEW-04) / #3908 — all six are shaded. Each has a
+    /// `GpuMaterial` lane, is hashed in both material-table paths, is
+    /// mirrored in `include/bindings.glsl`, and is read by the canonical
     /// direct / glass / GI response: `lighting_effect_1` and
     /// `subsurface_rolloff` are the two lanes of the wrap width, and
     /// `lighting_effect_2` and `rimlight_power` the two lanes of the rim
@@ -360,22 +336,11 @@ pub struct Material {
     /// prefers whichever is non-zero, so the shader never asks which game
     /// wrote it); `backlight_power` scales the back-lighting term there too;
     /// `fresnel_power` drives the Schlick rim exponent in `triangle.frag`.
-    ///
-    /// #2592 (SKY-D7-04) — this doc used to justify that shape by citing
-    /// "the existing `grayscale_to_palette_scale` precedent (see that
-    /// field's doc)". At the time there was no such field on `Material`,
-    /// and the pointer was worse than dangling: `grayscale_to_palette_scale`
-    /// lived only on `byroredux_nif`'s `ImportedMaterial` — the raw tier —
-    /// with `translate_material` dropping it, so it never reached this type
-    /// at all. It was therefore not a precedent for "captured here but
-    /// unshaded" but a strictly *earlier* failure mode, one tier back.
-    ///
-    /// #2443 (MAT-D3-01) closed that gap:
-    /// [`grayscale_to_palette_scale`](Self::grayscale_to_palette_scale) is
-    /// now a canonical field copied at the boundary, so it caught up to these
-    /// six and the two groups are genuinely the same shape. Both groups have
-    /// since been shaded as well (#3908), so neither is a parked passthrough
-    /// any more — `docs/engine/nifal.md` records the closure.
+    /// Defaults mirror `ImportedMaterial`'s (`fresnel_power` 5.0 = standard
+    /// Schlick exponent; the rest 0.0 = no contribution). They share their
+    /// shape with [`grayscale_to_palette_scale`](Self::grayscale_to_palette_scale),
+    /// a canonical field copied at the boundary the same way (#2443);
+    /// `docs/engine/nifal.md` records the closure.
     pub lighting_effect_1: f32,
     pub lighting_effect_2: f32,
     pub subsurface_rolloff: f32,
@@ -499,10 +464,9 @@ pub struct Material {
     /// **3** (WRAP_S_WRAP_T) — the Gamebryo default #610 established, and
     /// the value `resolve_texture` hardcodes for its clamp-unaware variant.
     ///
-    /// #3515 — this doc used to teach that the default was `0`
-    /// (CLAMP_S_CLAMP_T), the opposite end of the enum, and the `Default`
-    /// impl agreed with it. Both are corrected; the two tiers below now
-    /// match `MaterialInfo`, which always used `3`.
+    /// #3515 — the `Default` impl and the two tiers below use `3`, as
+    /// `MaterialInfo` does; `0` (CLAMP_S_CLAMP_T) is the opposite end of the
+    /// enum.
     ///
     /// #2571 (OBL-D5-01) — added so spawn sites can read this off the
     /// canonical `Material` instead of re-reading the raw `ImportedMaterial`
@@ -541,8 +505,7 @@ pub struct Material {
     /// #3073 (NIFAL-D1) — same doctrine as [`Self::texture_clamp_mode`]:
     /// resolved once here from `ImportedMaterial::parallax_height_scale`
     /// so spawn sites read the canonical value instead of each carrying
-    /// its own `.unwrap_or(0.04)` fallback (pre-fix duplicated at both
-    /// `scene/nif_loader.rs` and `cell_loader/spawn/mesh_instance.rs`).
+    /// its own `.unwrap_or(0.04)` fallback.
     pub parallax_height_scale: f32,
     /// POM ray-march sample budget (typically 4-16);
     /// [`DEFAULT_PARALLAX_MAX_PASSES`] when unauthored. Same resolve-once
@@ -573,9 +536,8 @@ pub struct EffectFalloff {
 /// FO4+ `BSSPWetnessParams` — the authored wet-surface
 /// specular/fresnel envelope on `BSLightingShaderProperty`. Core-owned
 /// canonical shape so importers populate it directly (the
-/// `ShaderTypeFields` pattern); #4282 made the sink exist — the parsed
-/// block previously had no `ImportedMaterial`/`Material` destination at
-/// all. Deliberately excludes the FO4-family `metalness`/trailing
+/// `ShaderTypeFields` pattern); #4282 gave the parsed block its
+/// `ImportedMaterial`/`Material` destination. Deliberately excludes the FO4-family `metalness`/trailing
 /// unknowns: their Starfield wire positions hold the luminance quad
 /// instead (#2622 / SF-D6-02), so copying them verbatim would
 /// misattribute data.
@@ -921,10 +883,7 @@ pub enum EmissiveSource {
     /// `BSLightingShaderProperty` with `emissive_multiple == 0.0` reports
     /// `None`, not `Lighting`.
     ///
-    /// #3371 — this paragraph used to assert the opposite ("there is no
-    /// non-zero-emissive gate … still reports `Lighting`", citing #2641).
-    /// That was accurate until #2591 (`aedde151`) added the gate; it then
-    /// sat here contradicting the helper's own doc 20 lines below.
+    /// The non-zero-emissive gate is #2591's (`aedde151`, #3371).
     #[default]
     None,
     /// `NiMaterialProperty.emissive_mult` (Oblivion / FO3 / FNV legacy
