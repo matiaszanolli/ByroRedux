@@ -1251,6 +1251,7 @@ fn per_frame_driver_functions_stay_within_their_size_pins() {
     const STATIC_MESHES_RS: &str = include_str!("render/static_meshes.rs");
     const REFERENCES_RS: &str = include_str!("cell_loader/references/mod.rs");
     const SYNTH_CHILD_RS: &str = include_str!("cell_loader/references/synth_child.rs");
+    const NPC_RUNTIME_RS: &str = include_str!("npc_spawn/resumable/runtime.rs");
     // #6359 — the Update / Late registration functions are straight-line
     // sequences that only ever grew (`register_update_systems` 854 -> 981 -> 998
     // in 14 commits). Update is now an orchestrator over five contiguous order
@@ -1278,6 +1279,9 @@ fn per_frame_driver_functions_stay_within_their_size_pins() {
         // out; nesting 9 -> 5.
         (REFERENCES_RS, "fn load_references_budgeted(", 256),
         (REFERENCES_RS, "fn advance_actor_synth(", 151),
+        // #6950 — a 383-line, nine-arm state machine before each phase moved into
+        // its own `advance_<phase>` step; the dispatcher only matches.
+        (NPC_RUNTIME_RS, "fn advance_runtime_unit(", 22),
         // Not extracted by #6143 (a placement is one long straight-line
         // spawn); pinned at its 2026-10-26 size so growth is deliberate.
         (SYNTH_CHILD_RS, "fn spawn_synth_child(", 388),

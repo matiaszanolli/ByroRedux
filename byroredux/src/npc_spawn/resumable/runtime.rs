@@ -644,446 +644,534 @@ pub(super) fn advance_runtime_unit(
     world: &mut World,
     ctx: &mut VulkanContext,
     npc: &NpcRecord,
-    // #2567 — `game` used to select the skeleton path here; that moved onto
-    // `RuntimeNpcState::skeleton_path` at prepare time so creatures can carry
-    // their own, and nothing else in this function needed it.
+    // #2567 — the skeleton path is `RuntimeNpcState::skeleton_path`, resolved
+    // at prepare time so a creature carries its own.
     tex_provider: &TextureProvider,
-    mut mat_provider: Option<&mut MaterialProvider>,
+    mat_provider: Option<&mut MaterialProvider>,
     idle_pool: &[u32],
     index: &EsmIndex,
 ) -> UnitOutcome {
     match state.phase {
-        RuntimePhase::Skeleton => {
-            // #2567 — was `humanoid_skeleton_path(game)`; now whatever the
-            // prepare step resolved, so a creature loads its own per-species
-            // skeleton instead of the humanoid rig.
-            if state.skeleton_path.is_empty() {
-                // #6075 — nothing to build a body on. The placement root
-                // carries `ActorValues` / `FactionRanks` / an attack, so left
-                // behind it was a body-less phantom for AI and combat scans;
-                // finalize (AI, disposition, tagging) never runs for it.
-                world.despawn(state.placement_root);
-                return UnitOutcome::Complete(None);
-            }
-            let skel_path = state.skeleton_path.clone();
-            let skel_path = skel_path.as_str();
-            let SkeletonUnit::Loaded { root: skel_root, skel_map } = spawn_skeleton_unit(
-                world,
-                ctx,
-                tex_provider,
-                mat_provider.as_deref_mut(),
-                npc,
-                skel_path,
-                state.placement_root,
-                state.player_body,
-            ) else {
-                return UnitOutcome::Complete(Some(state.placement_root));
-            };
-            state.skel_root = skel_root;
-            state.skel_map = skel_map;
-            if state.blend_skin_seams && state.skel_root.is_some() {
-                let context = build_seam_context(state, world, tex_provider, mat_provider.as_deref_mut());
-                // #6320 — a covered hand the corpse restore re-imports later
-                // blends on these binds, against the skin worn by then.
-                let restores_a_hand = state
-                    .appearance
-                    .parts
-                    .iter()
-                    .any(|part| super::seam_blend::is_hand_part(&part.path));
-                if restores_a_hand {
-                    let worn_body = state
-                        .body_paths
-                        .iter()
-                        .cloned()
-                        .zip(state.body_textures.iter().cloned())
-                        .collect();
-                    state.appearance.seams = Some(super::super::loot_appearance::RestoreSeams::new(&context, worn_body));
-                }
-                state.seam_context = Some(std::sync::Arc::new(context));
-            }
-            state.phase = RuntimePhase::Body(0);
-            UnitOutcome::Continue
+        RuntimePhase::Skeleton => advance_skeleton(state, world, ctx, npc, tex_provider, mat_provider),
+        RuntimePhase::Body(index) => advance_body(state, world, ctx, npc, tex_provider, mat_provider, index),
+        RuntimePhase::Head => advance_head(state, world, ctx, npc, tex_provider, mat_provider),
+        RuntimePhase::Hair => advance_hair(state, world, ctx, npc, tex_provider, mat_provider),
+        RuntimePhase::Brow => advance_brow(state, world, ctx, npc, tex_provider, mat_provider),
+        RuntimePhase::Eye(index) => advance_eye(state, world, ctx, npc, tex_provider, mat_provider, index),
+        RuntimePhase::HeadSubPart(index) => advance_head_sub_part(state, world, ctx, npc, tex_provider, mat_provider, index),
+        RuntimePhase::Armor(index) => advance_armor(state, world, ctx, npc, tex_provider, mat_provider, index),
+        RuntimePhase::Finalize => advance_finalize(state, world, npc, tex_provider, idle_pool, index),
+    }
+}
+
+/// The `RuntimePhase::Skeleton` step of [`advance_runtime_unit`] (#6950).
+fn advance_skeleton(
+    state: &mut RuntimeNpcState,
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    npc: &NpcRecord,
+    tex_provider: &TextureProvider,
+    mut mat_provider: Option<&mut MaterialProvider>,
+) -> UnitOutcome {
+        // #2567 — was `humanoid_skeleton_path(game)`; now whatever the
+        // prepare step resolved, so a creature loads its own per-species
+        // skeleton instead of the humanoid rig.
+        if state.skeleton_path.is_empty() {
+            // #6075 — nothing to build a body on. The placement root
+            // carries `ActorValues` / `FactionRanks` / an attack, so left
+            // behind it was a body-less phantom for AI and combat scans;
+            // finalize (AI, disposition, tagging) never runs for it.
+            world.despawn(state.placement_root);
+            return UnitOutcome::Complete(None);
         }
-        RuntimePhase::Body(index) => {
-            let Some(body_path) = state.body_paths.get(index) else {
-                state.phase = RuntimePhase::Head;
-                return UnitOutcome::Continue;
+        let skel_path = state.skeleton_path.clone();
+        let skel_path = skel_path.as_str();
+        let SkeletonUnit::Loaded { root: skel_root, skel_map } = spawn_skeleton_unit(
+            world,
+            ctx,
+            tex_provider,
+            mat_provider.as_deref_mut(),
+            npc,
+            skel_path,
+            state.placement_root,
+            state.player_body,
+        ) else {
+            return UnitOutcome::Complete(Some(state.placement_root));
+        };
+        state.skel_root = skel_root;
+        state.skel_map = skel_map;
+        if state.blend_skin_seams && state.skel_root.is_some() {
+            let context = build_seam_context(state, world, tex_provider, mat_provider);
+            // #6320 — a covered hand the corpse restore re-imports later
+            // blends on these binds, against the skin worn by then.
+            let restores_a_hand = state
+                .appearance
+                .parts
+                .iter()
+                .any(|part| super::seam_blend::is_hand_part(&part.path));
+            if restores_a_hand {
+                let worn_body = state
+                    .body_paths
+                    .iter()
+                    .cloned()
+                    .zip(state.body_textures.iter().cloned())
+                    .collect();
+                state.appearance.seams = Some(super::super::loot_appearance::RestoreSeams::new(&context, worn_body));
+            }
+            state.seam_context = Some(std::sync::Arc::new(context));
+        }
+        state.phase = RuntimePhase::Body(0);
+        UnitOutcome::Continue
+}
+
+/// The `RuntimePhase::Body(index)` step of [`advance_runtime_unit`] (#6950).
+fn advance_body(
+    state: &mut RuntimeNpcState,
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    npc: &NpcRecord,
+    tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
+    index: usize,
+) -> UnitOutcome {
+        let Some(body_path) = state.body_paths.get(index) else {
+            state.phase = RuntimePhase::Head;
+            return UnitOutcome::Continue;
+        };
+        // #5487 — the race's body-section ICON replaces the
+        // NIF's own (Imperial-default) base texture. Hands
+        // additionally carry the wrist cut; they are the only
+        // body part blended on a private copy of the cached
+        // import. The torso and legs stay shared and untouched
+        // apart from the texture swap, which happens at spawn
+        // time, not in the shared cache.
+        let body_texture = state.body_textures.get(index).cloned().flatten();
+        let body_texture_id = body_texture.as_ref().map(|texture| {
+            let mut pool = world.resource_mut::<StringPool>();
+            pool.intern(texture)
+        });
+        let hand_seams = state
+            .seam_context
+            .clone()
+            .filter(|_| super::seam_blend::is_hand_part(body_path));
+        let mut tone_sampler = super::seam_blend::ToneSampler::new(world, tex_provider);
+        let mut blend_hand = |scene: &mut byroredux_nif::import::ImportedScene| {
+            if let Some(texture) = body_texture_id {
+                super::super::loot_appearance::set_body_base_color(scene, texture);
+            }
+            let Some(context) = hand_seams.as_deref() else {
+                return;
             };
-            // #5487 — the race's body-section ICON replaces the
-            // NIF's own (Imperial-default) base texture. Hands
-            // additionally carry the wrist cut; they are the only
-            // body part blended on a private copy of the cached
-            // import. The torso and legs stay shared and untouched
-            // apart from the texture swap, which happens at spawn
-            // time, not in the shared cache.
-            let body_texture = state.body_textures.get(index).cloned().flatten();
-            let body_texture_id = body_texture.as_ref().map(|texture| {
-                let mut pool = world.resource_mut::<StringPool>();
-                pool.intern(texture)
-            });
-            let hand_seams = state
-                .seam_context
-                .clone()
-                .filter(|_| super::seam_blend::is_hand_part(body_path));
-            let mut tone_sampler = super::seam_blend::ToneSampler::new(world, tex_provider);
-            let mut blend_hand = |scene: &mut byroredux_nif::import::ImportedScene| {
-                if let Some(texture) = body_texture_id {
-                    super::super::loot_appearance::set_body_base_color(scene, texture);
+            let stats = super::seam_blend::blend_hand_scene_seams(
+                scene,
+                body_path,
+                body_texture.as_deref(),
+                context,
+                &mut |texture, uv| tone_sampler.sample(texture, uv),
+            );
+            log::debug!(
+                "NPC {:08X}: '{}' seam blend matched {} edge vertices, toned {}",
+                npc.form_id,
+                body_path,
+                stats.matched_vertices,
+                stats.toned_vertices,
+            );
+        };
+        let pre_spawn: Option<
+            &mut dyn FnMut(&mut byroredux_nif::import::ImportedScene),
+        > = if body_texture.is_some()
+            || (state.seam_context.is_some() && super::seam_blend::is_hand_part(body_path))
+        {
+            Some(&mut blend_hand)
+        } else {
+            None
+        };
+        // #6124 — torso, legs and feet are shared across NPCs:
+        // the bytes are read only on an import-cache miss.
+        match load_nif_extracting_with_skeleton(
+            world,
+            ctx,
+            body_path,
+            tex_provider,
+            mat_provider,
+            Some(&state.skel_map),
+            None,
+            pre_spawn,
+        ) {
+            Some((_, body_root, _)) => {
+                if let Some(root) = body_root {
+                    parent_part(world, state.placement_root, root);
                 }
-                let Some(context) = hand_seams.as_deref() else {
-                    return;
-                };
-                let stats = super::seam_blend::blend_hand_scene_seams(
-                    scene,
-                    body_path,
-                    body_texture.as_deref(),
-                    context,
-                    &mut |texture, uv| tone_sampler.sample(texture, uv),
-                );
-                log::debug!(
-                    "NPC {:08X}: '{}' seam blend matched {} edge vertices, toned {}",
-                    npc.form_id,
-                    body_path,
-                    stats.matched_vertices,
-                    stats.toned_vertices,
-                );
-            };
-            let pre_spawn: Option<
-                &mut dyn FnMut(&mut byroredux_nif::import::ImportedScene),
-            > = if body_texture.is_some()
-                || (state.seam_context.is_some() && super::seam_blend::is_hand_part(body_path))
-            {
-                Some(&mut blend_hand)
-            } else {
-                None
-            };
-            // #6124 — torso, legs and feet are shared across NPCs:
-            // the bytes are read only on an import-cache miss.
-            match load_nif_extracting_with_skeleton(
+            }
+            None => log::debug!(
+                "NPC {:08X} ({}): body '{}' not in archives — skipping body mesh",
+                npc.form_id,
+                npc.editor_id,
+                body_path,
+            ),
+        }
+        let next = index + 1;
+        state.phase = if next < state.body_paths.len() {
+            RuntimePhase::Body(next)
+        } else {
+            RuntimePhase::Head
+        };
+        UnitOutcome::Continue
+}
+
+/// The `RuntimePhase::Head` step of [`advance_runtime_unit`] (#6950).
+fn advance_head(
+    state: &mut RuntimeNpcState,
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    npc: &NpcRecord,
+    tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
+) -> UnitOutcome {
+        if let Some(head_path) = state.head_path.as_deref() {
+            spawn_runtime_head(
+                state,
                 world,
                 ctx,
-                body_path,
+                npc,
+                head_path,
                 tex_provider,
                 mat_provider,
-                Some(&state.skel_map),
-                None,
-                pre_spawn,
-            ) {
-                Some((_, body_root, _)) => {
-                    if let Some(root) = body_root {
-                        parent_part(world, state.placement_root, root);
-                    }
-                }
-                None => log::debug!(
-                    "NPC {:08X} ({}): body '{}' not in archives — skipping body mesh",
-                    npc.form_id,
-                    npc.editor_id,
-                    body_path,
-                ),
-            }
-            let next = index + 1;
-            state.phase = if next < state.body_paths.len() {
-                RuntimePhase::Body(next)
-            } else {
-                RuntimePhase::Head
-            };
-            UnitOutcome::Continue
+            );
         }
-        RuntimePhase::Head => {
-            if let Some(head_path) = state.head_path.as_deref() {
-                spawn_runtime_head(
-                    state,
-                    world,
-                    ctx,
-                    npc,
-                    head_path,
-                    tex_provider,
-                    mat_provider,
-                );
-            }
-            state.phase = RuntimePhase::Hair;
-            UnitOutcome::Continue
-        }
-        RuntimePhase::Hair => {
-            if state.skel_root.is_some() {
-                if let Some(path) = state.hair_path.as_deref() {
-                    let tint = state.hair_tint;
-                    let fallout_mask = state.hair_uses_fallout_tint_mask;
-                    let mut apply_hair_tint = |scene: &mut byroredux_nif::import::ImportedScene| {
-                        if fallout_mask {
-                            bake_fallout_hair_tint(&mut scene.meshes, tint);
-                        } else if let Some(tint) = tint {
-                            for mesh in &mut scene.meshes {
-                                for (channel, tint_channel) in
-                                    mesh.material.diffuse_color.iter_mut().zip(tint)
-                                {
-                                    *channel *= tint_channel;
-                                }
+        state.phase = RuntimePhase::Hair;
+        UnitOutcome::Continue
+}
+
+/// The `RuntimePhase::Hair` step of [`advance_runtime_unit`] (#6950).
+fn advance_hair(
+    state: &mut RuntimeNpcState,
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    npc: &NpcRecord,
+    tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
+) -> UnitOutcome {
+        if state.skel_root.is_some() {
+            if let Some(path) = state.hair_path.as_deref() {
+                let tint = state.hair_tint;
+                let fallout_mask = state.hair_uses_fallout_tint_mask;
+                let mut apply_hair_tint = |scene: &mut byroredux_nif::import::ImportedScene| {
+                    if fallout_mask {
+                        bake_fallout_hair_tint(&mut scene.meshes, tint);
+                    } else if let Some(tint) = tint {
+                        for mesh in &mut scene.meshes {
+                            for (channel, tint_channel) in
+                                mesh.material.diffuse_color.iter_mut().zip(tint)
+                            {
+                                *channel *= tint_channel;
                             }
                         }
-                    };
-                    spawn_shared_skeleton_part(
-                        state,
-                        world,
-                        ctx,
-                        npc,
-                        path,
-                        "hair",
-                        tex_provider,
-                        mat_provider,
-                        (fallout_mask || tint.is_some()).then_some(&mut apply_hair_tint),
-                    );
-                }
-            }
-            state.phase = RuntimePhase::Brow;
-            UnitOutcome::Continue
-        }
-        RuntimePhase::Brow => {
-            if state.skel_root.is_some() {
-                if let Some(path) = state.brow_path.as_deref() {
-                    spawn_shared_skeleton_part(
-                        state,
-                        world,
-                        ctx,
-                        npc,
-                        path,
-                        "eyebrow HDPT",
-                        tex_provider,
-                        mat_provider,
-                        None,
-                    );
-                }
-            }
-            state.phase = RuntimePhase::Eye(0);
-            UnitOutcome::Continue
-        }
-        RuntimePhase::Eye(index) => {
-            let Some(path) = state.eye_paths.get(index).cloned() else {
-                state.phase = RuntimePhase::HeadSubPart(0);
-                return UnitOutcome::Continue;
-            };
-            if state.skel_root.is_some() {
-                let interned_override = state.eye_texture_override.as_ref().map(|texture| {
-                    let mut pool = world.resource_mut::<StringPool>();
-                    pool.intern(texture)
-                });
-                let mut hook = |scene: &mut byroredux_nif::import::ImportedScene| {
-                    let Some(texture) = interned_override else {
-                        return;
-                    };
-                    for mesh in &mut scene.meshes {
-                        super::super::loot_appearance::override_base_color(mesh, texture);
                     }
                 };
-                let pre_spawn: Option<&mut dyn FnMut(&mut byroredux_nif::import::ImportedScene)> =
-                    if interned_override.is_some() {
-                        Some(&mut hook)
-                    } else {
-                        None
-                    };
                 spawn_shared_skeleton_part(
                     state,
                     world,
                     ctx,
                     npc,
-                    &path,
-                    "eye mesh",
+                    path,
+                    "hair",
                     tex_provider,
                     mat_provider,
-                    pre_spawn,
+                    (fallout_mask || tint.is_some()).then_some(&mut apply_hair_tint),
                 );
             }
-            let next = index + 1;
-            state.phase = if next < state.eye_paths.len() {
-                RuntimePhase::Eye(next)
-            } else {
-                RuntimePhase::HeadSubPart(0)
-            };
-            UnitOutcome::Continue
         }
-        // Mouth / teeth / tongue / ears. Same mount as the eyes — one
-        // shared-skeleton part each — but deliberately outside the eye
-        // loop: the `ENAM` eye-texture override belongs to the eyes
-        // alone, and painting it over the tongue is exactly the
-        // Oblivion misfire #3420 fixed on the selector side.
-        RuntimePhase::HeadSubPart(index) => {
-            let Some(path) = state.head_sub_paths.get(index).cloned() else {
-                state.phase = RuntimePhase::Armor(0);
-                return UnitOutcome::Continue;
-            };
-            if state.skel_root.is_some() {
+        state.phase = RuntimePhase::Brow;
+        UnitOutcome::Continue
+}
+
+/// The `RuntimePhase::Brow` step of [`advance_runtime_unit`] (#6950).
+fn advance_brow(
+    state: &mut RuntimeNpcState,
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    npc: &NpcRecord,
+    tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
+) -> UnitOutcome {
+        if state.skel_root.is_some() {
+            if let Some(path) = state.brow_path.as_deref() {
                 spawn_shared_skeleton_part(
                     state,
                     world,
                     ctx,
                     npc,
-                    &path,
-                    "head sub-part",
+                    path,
+                    "eyebrow HDPT",
                     tex_provider,
                     mat_provider,
                     None,
                 );
             }
-            let next = index + 1;
-            state.phase = if next < state.head_sub_paths.len() {
-                RuntimePhase::HeadSubPart(next)
-            } else {
-                RuntimePhase::Armor(0)
-            };
-            UnitOutcome::Continue
         }
-        RuntimePhase::Armor(index) => {
-            let Some(armor) = state.armor.get(index) else {
-                state.phase = RuntimePhase::Finalize;
-                return UnitOutcome::Continue;
+        state.phase = RuntimePhase::Eye(0);
+        UnitOutcome::Continue
+}
+
+/// The `RuntimePhase::Eye(index)` step of [`advance_runtime_unit`] (#6950).
+fn advance_eye(
+    state: &mut RuntimeNpcState,
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    npc: &NpcRecord,
+    tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
+    index: usize,
+) -> UnitOutcome {
+        let Some(path) = state.eye_paths.get(index).cloned() else {
+            state.phase = RuntimePhase::HeadSubPart(0);
+            return UnitOutcome::Continue;
+        };
+        if state.skel_root.is_some() {
+            let interned_override = state.eye_texture_override.as_ref().map(|texture| {
+                let mut pool = world.resource_mut::<StringPool>();
+                pool.intern(texture)
+            });
+            let mut hook = |scene: &mut byroredux_nif::import::ImportedScene| {
+                let Some(texture) = interned_override else {
+                    return;
+                };
+                for mesh in &mut scene.meshes {
+                    super::super::loot_appearance::override_base_color(mesh, texture);
+                }
             };
-            super::spawn_armor_or_log(
+            let pre_spawn: Option<&mut dyn FnMut(&mut byroredux_nif::import::ImportedScene)> =
+                if interned_override.is_some() {
+                    Some(&mut hook)
+                } else {
+                    None
+                };
+            spawn_shared_skeleton_part(
+                state,
                 world,
                 ctx,
+                npc,
+                &path,
+                "eye mesh",
                 tex_provider,
                 mat_provider,
-                npc,
-                &state.skel_map,
-                &mut state.appearance,
-                &mut state.equipped_armor_count,
-                armor,
+                pre_spawn,
             );
-            let next = index + 1;
-            state.phase = if next < state.armor.len() {
-                RuntimePhase::Armor(next)
-            } else {
-                RuntimePhase::Finalize
-            };
-            UnitOutcome::Continue
         }
-        RuntimePhase::Finalize => {
-            if state.equipped_armor_count > 0 {
-                log::info!(
-                    "NPC {:08X} ({}): equipped {} armor mesh(es) from {} inventory entries",
-                    npc.form_id,
-                    npc.editor_id,
-                    state.equipped_armor_count,
-                    state.inventory.as_ref().map_or(0, Inventory::len),
-                );
+        let next = index + 1;
+        state.phase = if next < state.eye_paths.len() {
+            RuntimePhase::Eye(next)
+        } else {
+            RuntimePhase::HeadSubPart(0)
+        };
+        UnitOutcome::Continue
+}
+
+/// The `RuntimePhase::HeadSubPart(index)` step of [`advance_runtime_unit`] (#6950).
+fn advance_head_sub_part(
+    state: &mut RuntimeNpcState,
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    npc: &NpcRecord,
+    tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
+    index: usize,
+) -> UnitOutcome {
+        let Some(path) = state.head_sub_paths.get(index).cloned() else {
+            state.phase = RuntimePhase::Armor(0);
+            return UnitOutcome::Continue;
+        };
+        if state.skel_root.is_some() {
+            spawn_shared_skeleton_part(
+                state,
+                world,
+                ctx,
+                npc,
+                &path,
+                "head sub-part",
+                tex_provider,
+                mat_provider,
+                None,
+            );
+        }
+        let next = index + 1;
+        state.phase = if next < state.head_sub_paths.len() {
+            RuntimePhase::HeadSubPart(next)
+        } else {
+            RuntimePhase::Armor(0)
+        };
+        UnitOutcome::Continue
+}
+
+/// The `RuntimePhase::Armor(index)` step of [`advance_runtime_unit`] (#6950).
+fn advance_armor(
+    state: &mut RuntimeNpcState,
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    npc: &NpcRecord,
+    tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
+    index: usize,
+) -> UnitOutcome {
+        let Some(armor) = state.armor.get(index) else {
+            state.phase = RuntimePhase::Finalize;
+            return UnitOutcome::Continue;
+        };
+        super::spawn_armor_or_log(
+            world,
+            ctx,
+            tex_provider,
+            mat_provider,
+            npc,
+            &state.skel_map,
+            &mut state.appearance,
+            &mut state.equipped_armor_count,
+            armor,
+        );
+        let next = index + 1;
+        state.phase = if next < state.armor.len() {
+            RuntimePhase::Armor(next)
+        } else {
+            RuntimePhase::Finalize
+        };
+        UnitOutcome::Continue
+}
+
+/// The `RuntimePhase::Finalize` step of [`advance_runtime_unit`] (#6950).
+fn advance_finalize(
+    state: &mut RuntimeNpcState,
+    world: &mut World,
+    npc: &NpcRecord,
+    tex_provider: &TextureProvider,
+    idle_pool: &[u32],
+    index: &EsmIndex,
+) -> UnitOutcome {
+        if state.equipped_armor_count > 0 {
+            log::info!(
+                "NPC {:08X} ({}): equipped {} armor mesh(es) from {} inventory entries",
+                npc.form_id,
+                npc.editor_id,
+                state.equipped_armor_count,
+                state.inventory.as_ref().map_or(0, Inventory::len),
+            );
+        }
+        // Player bodies keep the player entity's own inventory state
+        // (see `prepare_prebaked_state`'s mirrored note): only the mesh
+        // assembly and `NpcEquipmentPart` ownership stamps are wanted.
+        if !state.player_body {
+            world.insert(
+                state.placement_root,
+                state.inventory.take().unwrap_or_default(),
+            );
+            let mut equipment_slots = state.equipment_slots.take().unwrap_or_default();
+            let weapon = state.equipped_weapon.take();
+            // #3112 — mirror the wielded weapon into `EquipmentSlots::weapon`
+            // so "is this equipped?" consumers (CTDA `GetEquipped`) see it.
+            // The equip pipeline only fills `equipped_weapon`; the weapon slot
+            // is deliberately outside the biped occupancy array, so nothing
+            // else writes it.
+            if let Some(weapon) = weapon {
+                equipment_slots.equip_weapon(weapon.inventory_index);
             }
-            // Player bodies keep the player entity's own inventory state
-            // (see `prepare_prebaked_state`'s mirrored note): only the mesh
-            // assembly and `NpcEquipmentPart` ownership stamps are wanted.
-            if !state.player_body {
-                world.insert(
-                    state.placement_root,
-                    state.inventory.take().unwrap_or_default(),
-                );
-                let mut equipment_slots = state.equipment_slots.take().unwrap_or_default();
-                let weapon = state.equipped_weapon.take();
-                // #3112 — mirror the wielded weapon into `EquipmentSlots::weapon`
-                // so "is this equipped?" consumers (CTDA `GetEquipped`) see it.
-                // The equip pipeline only fills `equipped_weapon`; the weapon slot
-                // is deliberately outside the biped occupancy array, so nothing
-                // else writes it.
-                if let Some(weapon) = weapon {
-                    equipment_slots.equip_weapon(weapon.inventory_index);
-                }
-                world.insert(state.placement_root, equipment_slots);
-                if let Some(weapon) = weapon {
-                    world.insert(state.placement_root, weapon);
-                }
+            world.insert(state.placement_root, equipment_slots);
+            if let Some(weapon) = weapon {
+                world.insert(state.placement_root, weapon);
             }
-            if let Some(skeleton) = state.skel_root {
-                // The shared per-actor attach (AnimationTarget, bone map,
-                // Draugr marker) — #5794; see `attach_skeleton_runtime`.
-                // The Draugr marker is inserted only with a skeleton —
-                // without one there is nothing for a take to animate
-                // (`docs/engine/p2-combat-anim-sound-fixture.md`).
-                super::attach_skeleton_runtime(
-                    world,
-                    state.placement_root,
-                    skeleton,
-                    &state.skel_map,
-                    state.combat_anim_draugr && !state.player_body,
-                );
-                // #2567 — a creature animates off its own `idle.kf`, beside
-                // its skeleton. The shared per-cell pool holds the humanoid
-                // clip, whose bone names a creature rig doesn't have, so
-                // falling back to it would play nothing. Load-on-finalize
-                // (rather than at prepare) because this is where the
-                // `TextureProvider` is in hand.
-                let idle_handle = if state.player_body {
-                    // The job attaches no idle pool for the player body —
-                    // `player_body::attach_player_locomotion_animation`
-                    // resolves the idle itself (and first-person keeps the
-                    // body's meshes hidden either way).
-                    None
-                } else if !state.idle_kf_paths.is_empty() {
-                    let handle = state
-                        .idle_kf_paths
-                        .iter()
-                        .find_map(|path| load_kf_clip_by_path(world, tex_provider, path));
-                    if handle.is_none() {
-                        log::debug!(
-                            "Creature {:08X} ({}): no idle clip at {:?} — spawning unanimated",
-                            npc.form_id,
-                            npc.editor_id,
-                            state.idle_kf_paths,
-                        );
-                    }
-                    handle
-                } else {
-                    pick_idle_handle(idle_pool, npc.form_id)
-                };
-                if let Some(handle) = idle_handle {
-                    let player = crate::npc_spawn::desynced_idle_player(world, handle, npc.form_id, skeleton);
-                    world.insert(state.placement_root, player);
-                    world.insert(
-                        state.placement_root,
-                        crate::npc_spawn::SpawnIdle { clip: handle, desync_key: npc.form_id },
+        }
+        if let Some(skeleton) = state.skel_root {
+            // The shared per-actor attach (AnimationTarget, bone map,
+            // Draugr marker) — #5794; see `attach_skeleton_runtime`.
+            // The Draugr marker is inserted only with a skeleton —
+            // without one there is nothing for a take to animate
+            // (`docs/engine/p2-combat-anim-sound-fixture.md`).
+            super::attach_skeleton_runtime(
+                world,
+                state.placement_root,
+                skeleton,
+                &state.skel_map,
+                state.combat_anim_draugr && !state.player_body,
+            );
+            // #2567 — a creature animates off its own `idle.kf`, beside
+            // its skeleton. The shared per-cell pool holds the humanoid
+            // clip, whose bone names a creature rig doesn't have, so
+            // falling back to it would play nothing. Load-on-finalize
+            // (rather than at prepare) because this is where the
+            // `TextureProvider` is in hand.
+            let idle_handle = if state.player_body {
+                // The job attaches no idle pool for the player body —
+                // `player_body::attach_player_locomotion_animation`
+                // resolves the idle itself (and first-person keeps the
+                // body's meshes hidden either way).
+                None
+            } else if !state.idle_kf_paths.is_empty() {
+                let handle = state
+                    .idle_kf_paths
+                    .iter()
+                    .find_map(|path| load_kf_clip_by_path(world, tex_provider, path));
+                if handle.is_none() {
+                    log::debug!(
+                        "Creature {:08X} ({}): no idle clip at {:?} — spawning unanimated",
+                        npc.form_id,
+                        npc.editor_id,
+                        state.idle_kf_paths,
                     );
                 }
-            }
-            // M42.10/M42.11 — resolve the walk clip: creatures use their
-            // own directory clip, KF-game humanoids the per-body-class clip
-            // (`load_references` already registered every variant — a path
-            // lookup, no I/O), and Skyrim+ the decoded HKX walk staged into
-            // `SkyrimWalkClip` by `populate_skyrim_walk_clip`. Playback is
-            // left to `npc_walk_animation_system`, which swaps it in only
-            // while the actor is actually moving. The clip's authored
-            // stride (accum-root travel per loop) becomes the actor's
-            // `WalkSpeed`, so the step length matches the animation.
-            let walk_handle = if state.player_body {
-                // No `WalkAnimation`/`WalkSpeed` from the job: the capsule
-                // controller drives movement, and the walk system watches
-                // the entity it is attached to — which must be the capsule,
-                // not this body root. `player_body::` attaches both beside
-                // the assembled root after the job completes.
-                None
-            } else if !state.walk_kf_paths.is_empty() {
-                state
-                    .walk_kf_paths
-                    .iter()
-                    .find_map(|path| load_kf_clip_by_path(world, tex_provider, path))
-            } else if index.game.has_kf_animations() {
-                crate::npc_spawn::humanoid_walk_kf_path(index.game, state.gender, state.is_child)
-                    .and_then(|path| world.resource::<AnimationClipRegistry>().get_by_path(path))
+                handle
             } else {
-                world
-                    .try_resource::<crate::components::SkyrimWalkClip>()
-                    .and_then(|r| r.0)
+                pick_idle_handle(idle_pool, npc.form_id)
             };
-            if let Some(handle) = walk_handle {
-                super::attach_walk_animation(world, state.placement_root, handle);
+            if let Some(handle) = idle_handle {
+                let player = crate::npc_spawn::desynced_idle_player(world, handle, npc.form_id, skeleton);
+                world.insert(state.placement_root, player);
+                world.insert(
+                    state.placement_root,
+                    crate::npc_spawn::SpawnIdle { clip: handle, desync_key: npc.form_id },
+                );
             }
-            super::finish_actor(
-                world,
-                npc,
-                index,
-                state.placement_root,
-                state.player_body,
-                &mut state.appearance,
-                &state.skel_map,
-            );
-            UnitOutcome::Complete(Some(state.placement_root))
         }
-    }
+        // M42.10/M42.11 — resolve the walk clip: creatures use their
+        // own directory clip, KF-game humanoids the per-body-class clip
+        // (`load_references` already registered every variant — a path
+        // lookup, no I/O), and Skyrim+ the decoded HKX walk staged into
+        // `SkyrimWalkClip` by `populate_skyrim_walk_clip`. Playback is
+        // left to `npc_walk_animation_system`, which swaps it in only
+        // while the actor is actually moving. The clip's authored
+        // stride (accum-root travel per loop) becomes the actor's
+        // `WalkSpeed`, so the step length matches the animation.
+        let walk_handle = if state.player_body {
+            // No `WalkAnimation`/`WalkSpeed` from the job: the capsule
+            // controller drives movement, and the walk system watches
+            // the entity it is attached to — which must be the capsule,
+            // not this body root. `player_body::` attaches both beside
+            // the assembled root after the job completes.
+            None
+        } else if !state.walk_kf_paths.is_empty() {
+            state
+                .walk_kf_paths
+                .iter()
+                .find_map(|path| load_kf_clip_by_path(world, tex_provider, path))
+        } else if index.game.has_kf_animations() {
+            crate::npc_spawn::humanoid_walk_kf_path(index.game, state.gender, state.is_child)
+                .and_then(|path| world.resource::<AnimationClipRegistry>().get_by_path(path))
+        } else {
+            world
+                .try_resource::<crate::components::SkyrimWalkClip>()
+                .and_then(|r| r.0)
+        };
+        if let Some(handle) = walk_handle {
+            super::attach_walk_animation(world, state.placement_root, handle);
+        }
+        super::finish_actor(
+            world,
+            npc,
+            index,
+            state.placement_root,
+            state.player_body,
+            &mut state.appearance,
+            &state.skel_map,
+        );
+        UnitOutcome::Complete(Some(state.placement_root))
 }
 
 #[allow(clippy::too_many_arguments)] // One head part: the actor's state, world, GPU context, record, path and providers are separate caller-owned borrows.
