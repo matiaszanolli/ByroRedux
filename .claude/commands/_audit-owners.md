@@ -70,6 +70,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/plugin/src/esm/records/misc/challenge.rs` | esm, scripting, performance Dim 7; fnv | MEDIUM |
 | `crates/plugin/src/esm/records/misc/{music,media_set,media_location}.rs` | esm, audio Dim 3, performance Dim 7; per-game | MEDIUM |
 | `crates/plugin/src/esm/cell/index.rs` | esm, exterior, performance Dim 7; per-game | HIGH |
+| `crates/plugin/src/esm/cell/spaces.rs` | esm, gameplay Dim 5, performance Dim 7; per-game | MEDIUM |
 | `crates/plugin/src/esm/records/lmsw.rs` | esm, nifal, performance Dim 7; starfield, fo4 | MEDIUM |
 | `crates/plugin/src/esm/records/actor/npc.rs` | esm, character Dim 4, performance Dim 7; per-game | HIGH |
 | `crates/plugin/src/esm/cell/support.rs` | esm, physics, performance Dim 7; per-game | HIGH |
@@ -111,6 +112,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/scripting/src/weather_state.rs` | scripting, exterior | MEDIUM |
 | `crates/scripting/src/{menus,messages}.rs` | scripting, ui, gameplay | MEDIUM |
 | `crates/scripting/src/{animation_graph,animation_modifiers,anim_subgraph}.rs` | scripting, gameplay, ecs Dim 9 | MEDIUM |
+| `crates/scripting/src/created_references.rs` | scripting, gameplay Dim 5, save | MEDIUM |
 | `crates/scripting/` | scripting | MEDIUM |
 | `crates/pex/` | papyrus | MEDIUM |
 | `crates/papyrus/` | papyrus | MEDIUM |
@@ -119,7 +121,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/audio/` | audio | MEDIUM |
 | `crates/bink2/` | parsers, safety, performance | HIGH |
 | `crates/binkaudio/` | parsers, audio, safety | HIGH |
-| `crates/video/` | parsers, ui, audio, concurrency | MEDIUM |
+| `crates/video/` | parsers, ui, audio, concurrency, performance Dim 7 | MEDIUM |
 | `crates/ui/` | ui, safety | MEDIUM |
 | `crates/mod-runtime/` | safety Dim 8 | MEDIUM |
 | `crates/sdk/` | tooling | MEDIUM |
@@ -159,6 +161,8 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/cell_loader/tree_lod.rs` | exterior, performance; skyrim | MEDIUM |
 | `byroredux/src/cell_loader/tree_lod_legacy` | exterior, performance; oblivion, fo3 | MEDIUM |
 | `byroredux/src/cell_loader/{created,graph_nodes}.rs` | scripting, gameplay, performance; per-game | MEDIUM |
+| `byroredux/src/cell_loader/relocated.rs` | gameplay Dim 5, scripting Dim 4, save, ecs Dim 7, performance Dim 7, concurrency; per-game | HIGH |
+| `byroredux/src/cell_loader/enabled.rs` | scripting Dim 4, gameplay Dim 2, save, ecs Dim 7, performance Dim 7; per-game | HIGH |
 | `byroredux/src/cell_loader` | per-game; performance | MEDIUM |
 | `byroredux/src/material_translate.rs` | nifal | HIGH |
 | `byroredux/src/material_flags.rs` | nifal, starfield; per-game, performance | MEDIUM |
@@ -215,16 +219,20 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/objectives.rs` | gameplay Dim 6, ui, scripting | MEDIUM |
 | `byroredux/src/player_body.rs` | gameplay Dim 1, ecs Dim 9, save, physics Dim 4, concurrency Dim 4 | MEDIUM |
 | `byroredux/src/scaleform_hud.rs` | ui | MEDIUM |
-| `byroredux/src/music/` | audio Dim 3+4+5, scripting Dim 6, save; fnv, fo3, oblivion | MEDIUM |
-| `byroredux/src/video.rs` | ui, audio, scripting | MEDIUM |
-| `byroredux/src/chargen.rs` | character, gameplay, ui; fnv | MEDIUM |
-| `byroredux/src/perk_activate.rs` | character, gameplay | MEDIUM |
+| `byroredux/src/music/` | audio Dim 3+4+5, scripting Dim 6, save, performance Dim 1; fnv, fo3, oblivion | MEDIUM |
+| `byroredux/src/video.rs` | ui, audio, scripting, performance Dim 7 | MEDIUM |
+| `byroredux/src/chargen.rs` | character, gameplay, ui, scripting; fnv | MEDIUM |
+| `byroredux/src/player_seat.rs` | gameplay, scripting | MEDIUM |
+| `byroredux/src/game_ini.rs` | audio, ui, tooling | LOW |
+| `byroredux/src/perk_activate.rs` | character, gameplay, scripting Dim 6 | MEDIUM |
 | `byroredux/src/ui_input.rs` | ui | MEDIUM |
 | `byroredux/src/streaming/pre_parse.rs` | nif Dim 6, performance Dim 7, concurrency Dim 7, exterior; fo4 | MEDIUM |
 | `byroredux/src/streaming` | performance Dim 7, concurrency Dim 7, exterior; fo4 | MEDIUM |
 | `byroredux/src/extensions/` | safety Dim 8, tooling | MEDIUM |
 | `byroredux/src/studio_host.rs` | tooling | MEDIUM |
 | `byroredux/src/commands/hud.rs` | ui, tooling | MEDIUM |
+| `byroredux/src/commands/music.rs` | audio, ecs, tooling | MEDIUM |
+| `byroredux/src/commands/video.rs` | ui, audio, ecs, tooling | MEDIUM |
 | `byroredux/src/commands/env_health` | exterior, tooling | MEDIUM |
 | `byroredux/src/commands/actor_value.rs` | character Dim 4, ecs, tooling | MEDIUM |
 | `byroredux/src/commands/{quest,condition}.rs` | scripting, ecs, tooling | MEDIUM |
@@ -291,6 +299,8 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `scripts/renderer-eval-groundcover.sh` | exterior, runtime | LOW |
 | `scripts/check-byro-dbg-harness-contracts.sh` | runtime, tooling | LOW |
 | `scripts/package-release.sh` | tooling, tech-debt (release packaging) | LOW |
+| `scripts/bink-corpus.sh` | parsers, runtime | LOW |
+| `scripts/{prune-target-cache,target-size-guard}.sh` | tech-debt (dev tooling), tooling | LOW |
 | `scripts/game-ui-data/` | ui, runtime | LOW |
 | `scripts/sdp-fog-term.py` | renderer Dim 12, exterior, runtime | LOW |
 | `scripts/` | runtime, performance | LOW |
@@ -310,6 +320,10 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `docs/smoke-tests/{exterior,interior}-shafts` | runtime, renderer, exterior | LOW |
 | `docs/smoke-tests/fog-grid-seam.sh` | runtime, renderer, exterior | LOW |
 | `docs/smoke-tests/perk-entry-points.sh` | runtime, scripting, character | LOW |
+| `docs/smoke-tests/bik-` | runtime, parsers, ui, audio | LOW |
+| `docs/smoke-tests/music-` | runtime, audio, esm; fnv, fo3, oblivion | LOW |
+| `docs/smoke-tests/xct-` | runtime, gameplay, scripting | LOW |
+| `docs/smoke-tests/fnv-` | runtime, gameplay, character, scripting; fnv | LOW |
 | `docs/smoke-tests/` | runtime | LOW |
 | `docs/releasing.md` | tooling, tech-debt (release packaging) | LOW |
 | `docs/data/game-ui/` | ui, tooling, tech-debt (generated census data) | LOW |

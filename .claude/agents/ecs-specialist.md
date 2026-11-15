@@ -30,8 +30,8 @@ Also: `crates/core/src/string/` — StringPool, FixedString
 Cross-cuts you should know about (post-Session-34 layout):
 - ECS systems registered by the binary live under `byroredux/src/systems/`
   (one file per topic, `ls` it for the live set; `systems.rs` is the thin
-  module index beside it — CLAUDE.md's Workspace Structure is the
-  authoritative map).
+  module index beside it — `docs/engine/workspace-map.md` is the
+  file-level map).
   `animation_system` lives in `animation.rs` (the transform-propagation
   system is `make_transform_propagation_system` in
   `crates/core/src/ecs/systems.rs`); `footstep_system` in `audio.rs`; `weather_system` in

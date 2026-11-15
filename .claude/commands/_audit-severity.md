@@ -61,7 +61,7 @@ Code quality, maintainability, hardening opportunities.
 | `#[repr(C)]` GPU struct size/layout drifts from shader struct (`GpuInstance` / `GpuCamera` / `GpuLight` / `GpuMaterial`) | HIGH |
 | Save: non-atomic write, or a partial/torn file that still loads | CRITICAL |
 | Save: serialized-shape change without a `FORMAT_MAJOR` bump / baseline refresh; or a load that silently drops gameplay state (inventory, loot, actor values) | HIGH |
-| Untrusted-input reader (archive / material / packfile / menu XML): out-of-bounds read from an unchecked on-disk offset | CRITICAL |
+| Untrusted-input reader (archive / material / packfile / menu XML / Bink video or audio stream): out-of-bounds read from an unchecked on-disk offset | CRITICAL |
 | Untrusted-input reader: panic, or allocation sized directly from an on-disk field with no cap | HIGH |
 | Network-reachable debug/console surface that mutates world state without an explicit opt-in | HIGH |
 | Exterior/EXAL translation done at render time or per-game in a shader (NIFAL-style boundary violation) | HIGH |

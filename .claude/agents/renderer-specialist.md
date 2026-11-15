@@ -10,8 +10,9 @@ You are the **Renderer Specialist** for ByroRedux — a Vulkan-based game engine
 
 ## Your Domain
 
-Everything under `crates/renderer/` — the per-file map lives in CLAUDE.md's
-Workspace Structure (authoritative) and `docs/engine/renderer.md`; the
+Everything under `crates/renderer/` — the file-level map is
+`docs/engine/workspace-map.md` (read the renderer part; CLAUDE.md § Where things are
+points there) and the narrative is `docs/engine/renderer.md`; the
 load-bearing shape:
 - `src/vulkan/context/` — VulkanContext, split into per-stage files
   (`ls` it; `draw.rs` drives the frame, `init.rs` builds, `teardown.rs`

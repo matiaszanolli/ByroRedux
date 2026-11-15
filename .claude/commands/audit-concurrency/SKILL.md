@@ -57,7 +57,7 @@ artifact). "This barrier looks wrong" is a HYPOTHESIS row, not a fix.
 ## Phase 1: Setup
 
 1. Parse `$ARGUMENTS`. 2. `mkdir -p /tmp/audit/concurrency`. Toolchain: every `cargo test -p byroredux` / `--workspace`
-   step below needs rustc >= 1.96 (wasmtime 49 / cranelift 0.136 MSRV since 15a6b1d2d; it was 1.94 under #4466) —
+   step below needs rustc >= 1.96 (wasmtime 49 / cranelift 0.136 MSRV since 15a6b1d2d; it was 1.94 under #4466; the repo pins 1.100.0, 3c9949ec9) —
    rustup cargo per `docs/contributing.md` § Toolchain note — or the bin crate gives no feedback.
 3. `gh issue list --repo matiaszanolli/ByroRedux --limit 200 --json number,title,state,labels > /tmp/audit/concurrency/issues.json`
 
@@ -122,7 +122,7 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
   (`texture_registry/upload.rs`), bounded by `MAX_PROMOTION_UPLOAD_BYTES_PER_FRAME` and `MAX_RESIDENCY_CHANGES_PER_FRAME`
   (`texture_registry/budget.rs`). Check it takes the graphics-queue Mutex only around the submit, uses the persistent
   `transfer_fence`, and that the new images' descriptor writes reach the frame's slot at its `begin_frame`
-  (23f4aeee3 replays the deferred write against the live view, not the one queued); a second submit site per frame is the finding.
+  (23f4aeee3 replays the deferred write against the live view, not the one queued; since #6629, f754eee28, the same call also writes the slot's `first_level` into the per-FIF `textureFirstLevel` table at set 0 binding 2, immediate and replay alike, so a frame never pairs a view with another image's level — binding 2 is not `UPDATE_AFTER_BIND`, hence written before a set is first bound); a second submit site per frame is the finding.
 **Output**: `/tmp/audit/concurrency/dim_1.md`
 
 ### Dimension 2: Compute → AS → Fragment Chains
@@ -194,7 +194,7 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
 
 ### Dimension 3: ECS Lock Ordering & Deadlock (system level)
 Paths: `crates/core/src/ecs/{world,lock_tracker}.rs`, `byroredux/src/systems/`, `byroredux/src/extensions/`, `.github/workflows/ci.yml`
-First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` and the same with `-p byroredux-scripting` — the binary's graph is where every recent cycle lived (#4982–#4984, #5025, #5371, #5372, #5535, #5954, #6101, #6208, #6209, #6561, #6618; core alone stays green) — then CI's `lock-order-check` form, `cargo test --workspace --no-fail-fast --exclude byroredux-ui`. A nonzero failure count is a hard regression
+First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` and the same with `-p byroredux-scripting` — the binary's graph is where every recent cycle lived (#4982–#4984, #5025, #5371, #5372, #5535, #5954, #6101, #6208, #6209, #6561, #6618, and the untracked `live_body` / `live_forms` pool-before-component cycle that kept the lane red from 98aa53db9 to 4c1d54cc0; core alone stays green) — then CI's `lock-order-check` form, `cargo test --workspace --no-fail-fast --exclude byroredux-ui`. A nonzero failure count is a hard regression; the lane was red for exactly that from the XCT door-fade test (98aa53db9, 2026-11-14) until 4c1d54cc0, so a red `lock-order-check` is a real inversion, not CI noise
 Machinery — TypeId-sorted pairs, tracker-scope arming, `lock_tracker` internals (check-before-insert,
 `GRAPH` poison recovery, recursive-read warning) and poison resolution — is `/audit-ecs` Dim 1; do not
 re-audit it here. This dimension owns how *systems* use it.
@@ -242,13 +242,17 @@ re-audit it here. This dimension owns how *systems* use it.
   `select_info` held `QuestStageState` across `evaluate()`, a recursive read behind a possibly-parked writer (#6615,
   6af13ef37 — the tracker now prints the first holder's stack under `RUST_BACKTRACE`, and skips the benign
   `CommandRegistry` re-read in `help`, #6617 bcab15f47); `find_package` held a `SceneAliasCandidate` query across `is_pickup_target` (→ `InventoryCatalog`) and
-  `flee_package` read `AiCombatState` under `Transform` (ce22fcbcf — read cross-lock state before taking the guard). Attribution recipe: a temporary edge logger
+  `flee_package` read `AiCombatState` under `Transform` (ce22fcbcf — read cross-lock state before taking the guard); `live_body` / `live_forms`
+  (`cell_loader/relocated.rs`, reached from the door-fade `fade_in`) took the `FormIdPool` resource before the
+  `FormIdComponent` query, closing `FormIdComponent → FormIdPool → FormIdComponent` against every other holder of the pair
+  (4c1d54cc0: query first, then pool — the process-wide order). Attribution recipe: a temporary edge logger
   in `record_and_check`, `--test-threads=1 --nocapture`; fix by gathering under one guard, dropping it, then composing.
 - **`FormIdPool`'s entity index is a leaf mutex (#6338, ab3a604bf).** `FormIdPool::entity_with_local` rebuilds a lazily
   cached `local → entity` map under an interior `Mutex` keyed on `FormIdComponent`'s structural generation + pool length;
   `resolve_entity_by_global_form_id` (`crates/scripting/src/condition/eval.rs`) calls it per actor per frame with the
   `FormIdComponent` read guard and `FormIdPool` read guard both held (storage first, then pool — the order its comment
-  records). Nothing may be acquired while that mutex is held, and a new caller must take the pair in the same order.
+  records). Nothing may be acquired while that mutex is held, and a new caller must take the pair in the same order (`live_body` / `live_forms` did not until 4c1d54cc0 — the pair is
+  the commonest reverse-order site, since the pool reads like a plain lookup table).
 - **Two resources held nested take them TypeId-sorted** (`resource_2_mut`, or its read twin `try_resource_2`), never two
   `try_resource` calls in code order: TypeIds shift with the unified feature set, so a code-order pair agrees with the
   sorted sites in one build and closes an ABBA in another — deterministic per build configuration, so it looks
@@ -302,7 +306,8 @@ The access model and the mechanical declaration guard (`system_access_declaratio
   scan — `npc_combat_ai_system`, `interaction_system`, `container_loot_system` and `combat_damage_system` (#6546,
   5129240c4: M43 made their rows under-declare), `papyrus_provider_system`, `legacy_obscript_load_order_system`,
   `equipment_appearance_system` (its mid-life import surface, #5069), and
-  `npc_dialogue_selection_system`, whose scan follows the spoken-INFO fragment path into the scripting crate, #5307,
+  `npc_dialogue_selection_system`, whose scan follows the spoken-INFO fragment path into the scripting crate, #5307 (a spoken
+  `EquipItem` of a weapon queues on `PendingNonArmorEquips`, undeclared until 3890897e3),
   `apply_selection`'s voice / AHEL hops `play_line_voice` + `raise_hello_story_event`, #5414 9d8fd4cc9, and the condition
   evaluator `evaluate_function` — 18 acquisitions incl. the `StoryManagerRng` write, #5649 197a9e245, and the
   deferred-effects flush `apply_at_depth`, which the old over-reading text scan reached by accident and the syntax walk
@@ -423,7 +428,7 @@ First step: `grep -n 'load-bearing' -B4 -A12 crates/renderer/src/vulkan/context/
 **Output**: `/tmp/audit/concurrency/dim_6.md`
 
 ### Dimension 7: Worker Threads & Thread-Safety Bounds
-Paths: `byroredux/src/streaming/`, `byroredux/src/texture_streamer.rs`, `byroredux/src/asset_provider/texture_prefetch.rs`, `byroredux/src/terrain_height.rs`, `byroredux/src/asset_provider/material/cdb.rs`, `byroredux/src/cell_loader/load_order.rs`, `byroredux/src/render/mod.rs`, `crates/bsa/src/read_at.rs`, `crates/debug-server/src/{listener,system}.rs`, `crates/renderer/src/vulkan/allocator.rs`, `crates/ui/src/player.rs`, `crates/audio/src/`
+Paths: `byroredux/src/streaming/`, `byroredux/src/texture_streamer.rs`, `byroredux/src/asset_provider/texture_prefetch.rs`, `byroredux/src/terrain_height.rs`, `byroredux/src/asset_provider/material/cdb.rs`, `byroredux/src/cell_loader/load_order.rs`, `byroredux/src/render/mod.rs`, `crates/bsa/src/read_at.rs`, `crates/video/src/lib.rs`, `crates/debug-server/src/{listener,system}.rs`, `crates/renderer/src/vulkan/allocator.rs`, `crates/ui/src/player.rs`, `crates/audio/src/`
 First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs' crates byroredux tools | grep -v test` (a new worker thread outside this list is a coverage gap)
 **Checklist**:
 - **Streaming worker shutdown.** `WorldStreamingState::shutdown` takes the `worker` handle first, then
@@ -465,10 +470,19 @@ First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs'
   resolution (`merge_external_material`, which takes `&mut ImportedMaterial` + `&mut MaterialProvider` +
   `&mut StringPool`) is main-thread-only — moving it needs a real synchronisation story. The NIF import
   cache is read-only on the worker with write-back deferred to main.
+- **Movie decode (`crates/video`).** Each `Movie` owns one `movie-decode` thread (Bink 1 through `mercs2_bink`, Bink 2 through
+  `byroredux-bink2`, whose slices fan out on up to `BINK2_THREADS` = 4 `std::thread::scope` threads) feeding a
+  `sync_channel(FRAME_RING)`; `advance` drains it on the main thread, and `Drop` closes the ring (`rx = None`) before joining so a
+  reader blocked in `send` wakes. No ECS guard or `World` reference crosses into the thread. The reader runs no `catch_unwind` and
+  `Drop` ignores the join result: a panicking decoder drops the channel with no reason, which `advance` reads as
+  `Disconnected` → `Finished` rather than `Failed` (#6855's BIK-DEC-004 intent, `118afd645`, covers decode *errors* only) — no issue
+  tracks it (checked 2026-11-14), so report it as a finding if it is still true.
 - **Debug server (thread/lock shape only; command surface is `/audit-tooling`).** Per-client TCP threads
   never touch the `World`: they enqueue into a bounded queue (`MAX_QUEUED_COMMANDS`, client cap
   `MAX_CONCURRENT_CLIENTS`, `listener.rs`) and `DebugDrainSystem` (Late exclusive) executes on the main
-  thread. Screenshot readback completes on a fence wait — check the drain/present race.
+  thread. Screenshot readback completes on a fence wait — check the drain/present race. The listener binds synchronously and
+  retries an `AddrInUse` port every 100 ms for `BIND_RETRY_WINDOW` (5 s, b9749eb46) on the calling (main) thread, so startup
+  can stall that long behind a dying previous engine; `--bench-hold` exits when the bind still fails (`main.rs`).
 - **Allocator sharing.** `SharedAllocator = Arc<Mutex<Allocator>>` is cloned into the egui pass,
   volumetrics, SSAO, scene buffers, etc.; no holder keeps it locked across a queue submit or a
   fence wait. The egui pass takes the queue as a `Mutex` so its lock scopes to the `set_textures` submit (#1713).

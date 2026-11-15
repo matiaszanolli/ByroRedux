@@ -25,7 +25,7 @@ dimension whose Paths have no commits since the last report
 Paths: `crates/core/src/ecs/{world,lock_tracker,query,resource}.rs`
 First step: `cargo test -p byroredux-core lock_tracker` then `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux-core`
 AND `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux-scripting` AND `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux --bin byroredux`
-(rustc ≥ 1.96 toolchain — wasmtime 49's MSRV since 15a6b1d2d) — or read the last main run's `ABBA lock-order detector`
+(the pinned toolchain, 1.100.0 since 3c9949ec9 — `rustup which --toolchain 1.100.0 cargo` when a distro cargo shadows the shims; the bin crate's MSRV stays 1.96, wasmtime 49) — or read the last main run's `ABBA lock-order detector`
 job conclusion via `gh run view <id> --json jobs`. **Never skip this step on a delta-scoped run**, even when
 this dimension's Paths are unchanged: the process-wide graph is built by every *caller*, and the cycles live in
 the binary's graph, not core's — core stayed green through the whole 2026-09-22..28 red streak (#4985, #4982).
@@ -44,6 +44,12 @@ another acquisition records a back edge exactly like production code. Core's own
 (`resource_2_mut_both_writable` held `ResA`/`ResB` in code order after the TypeId-sorted `resource_2_mut`) and #6809 `80b2a7d56` (the
 plain-order query tests held the shared `Health`/`Position` pair that `query_2_mut` users take sorted; they now use private
 `PlainA`/`PlainB` fixtures) — the order flips with the build's dependency set, so these reddened only some lanes, ~1 in 100 runs. Nothing may hold a shared fixture pair in plain order.
+The lane went red again from `98aa53db9` (the door-fade test) until its fix `4c1d54cc0`: `live_body` / `live_forms`
+(`byroredux/src/cell_loader/relocated.rs`) held the `FormIdPool` resource while acquiring the `FormIdComponent` query,
+closing a `FormIdComponent → FormIdPool → FormIdComponent` cycle through `fade_in` under `BYRO_LOCK_ORDER_CHECK=1`.
+The process-wide order is **`FormIdComponent` before `FormIdPool`** (core's `FormIdPool::entity_with_local`, the save
+driver and registry, condition evaluation all keep it); a new site taking the pool first is the regression, and the
+lane's red-to-green history is the reason this step is never skipped.
 
 A wrong lock order is HIGH. This dimension owns the *machinery*; system-level cycles, canonical-order
 adherence and CI detector coverage are `/audit-concurrency` Dim 3 and Dim 5.
@@ -126,6 +132,10 @@ First step: `grep -rn 'type Storage = PackedStorage' crates byroredux --include=
   early-outs on an empty victim set and, in `PackedStorage`, compacts in place with zero allocations
   (`remove_entities_erased_does_not_reallocate`, #3689) while keeping sort order + dirty marks (#2396).
   A regression is a per-streaming-cycle cost.
+- **Wide array components**: serde derives arrays only up to 32 elements, so `EquipmentSlots::occupants`
+  (`[Option<InventoryIndex>; MAX_BIPED_SLOTS]`, 64 since #6778 `9405138e9`) serializes through `occupants_serde` as a sequence of
+  exactly 64 — a shorter array is an error, not padded; any further widening must keep that adapter and bump the save
+  format (`/audit-save` Dim 2). Equip/unequip walk `occupants.iter_mut().enumerate()` against `u64` masks.
 - `EntityId` is monotonic and never recycled (`World::spawn` `checked_add` panic #36; `despawn`
   reclaims nothing, #372/#3375). Do not describe it as generational or "fix" it by reuse (dangling
   `Parent` refs go silent). The "generation-keyed" index of #6338 keys on a *storage's* `structural_generation`,
@@ -178,8 +188,8 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/core/
   in `byroredux/src/workspace_hygiene_tests.rs` scans the bin and every crate so a fourth spelling fails the build — a
   site inserting a *configured* value, such as `TerrainHeightService`, is legitimately different).
   `World::resource_count()` (#6706 `70e58334f`) exists so `register_installs_the_same_resource_set` can pin the
-  scripting crate's `register` to the 138 resources it produced before it became a flat list of per-subsystem `install`
-  calls; a resource dropped from an `install` shows up there, not as a missing-resource panic at first use.
+  scripting crate's `register` to the exact resource count it produced before it became a flat list of per-subsystem `install`
+  calls (138 then, 145 at 2026-11-14 — the assert moves with every subsystem that adds a resource; read the live value); a resource dropped from an `install` shows up there, not as a missing-resource panic at first use.
 - **Read accessors, one spelling each**: the bin reads the player entity only through `PlayerEntity::get(world)`
   (`byroredux/src/systems/character.rs`, #6362 `67722b6e4` — it replaced 66 hand-spelled reads, and
   `no_source_hand_spells_the_player_entity_read` keeps it so). It is deliberately NOT synchronised with the scripting
@@ -309,7 +319,10 @@ moving a claim into a delegate must not drop it from the scan's reach.
   `schedule_order` helper, exact system names, panic on a missing name; two parallel systems in one stage count as
   unordered) rather than where registration text sits in `SOURCES`; the kill-switch and timing pins stay text scans because
   they cover environment-gated branches, and the movers need `BYRO_NO_AI_LOCOMOTION` unset. A new producer outside that
-  list needs a name in the test.
+  list needs a name in the test. One Late order is unpinned: `npc_dialogue_selection_system` registers before
+  `equipment_appearance_system` (`boot/schedule/late.rs`, `da95c875d`/`3890897e3`) because a spoken line's result-script
+  `EquipItem` raises equip events the reconcile must see before the end-of-Late `event_cleanup_system` drains them — no
+  `schedule_order` guard names the pair, so a registration reshuffle there is silent.
 
 ### 6. Hot-Path Performance Invariants (regression guards)
 
@@ -345,7 +358,7 @@ First step: `cargo test -p byroredux-core ecs::systems`
 ### 7. Component Lifecycles (load/unload, transient, idempotency)
 
 Paths: `byroredux/src/{streaming,npc_spawn}*`, `byroredux/src/cell_loader/{unload,load,exterior}.rs`, `byroredux/src/systems/cinematic.rs`, `crates/core/src/ecs/components/`, `crates/scripting/src/{events,timer,cleanup}.rs`, `crates/core/src/animation/registry.rs`
-First step: `cargo test -p byroredux --bin byroredux -- rapier_release persistent_cell_stamp_tests detach_tests cinematic_retention_tests` (rustc ≥ 1.96) then read `git log --since=<last-report-date> -- crates/core/src/ecs/components`
+First step: `cargo test -p byroredux --bin byroredux -- rapier_release persistent_cell_stamp_tests detach_tests cinematic_retention_tests` (pinned 1.100.0 toolchain) then read `git log --since=<last-report-date> -- crates/core/src/ecs/components`
 
 - **Cell load/unload symmetry** (`streaming/`, `cell_loader/unload.rs`): every component/resource row a
   cell load attaches is removed on unload (no orphan `CharacterController`, `LightFlicker`,
@@ -478,6 +491,6 @@ blending, root-motion split and text-key dispatch, driven by an ECS system.
 
 1. Scope: run each dimension's `First step:`; skim dimensions whose Paths are unchanged.
 2. `cargo test -p byroredux-core --features inspect` and `cargo test -p byroredux` (counts live in
-   ROADMAP.md; do not pin a number). Every `-p byroredux` invocation here needs the rustc ≥ 1.96
-   toolchain recipe in CLAUDE.md (#4466); the default toolchain gives no feedback.
+   ROADMAP.md; do not pin a number). Every `-p byroredux` invocation here needs the pinned-toolchain recipe in CLAUDE.md (#4466; the pin is
+   1.100.0 since `3c9949ec9`, use `rustup which --toolchain 1.100.0 cargo`); the default toolchain gives no feedback.
 3. Save the report to `docs/audits/AUDIT_ECS_<TODAY>.md`.

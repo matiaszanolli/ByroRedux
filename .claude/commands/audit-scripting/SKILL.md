@@ -29,7 +29,7 @@ Dim 2's lock rules cover both.
 
 ## Scope
 
-`crates/scripting/src/` (~124k LOC incl. tests; re-measure with `find crates/scripting/src -name '*.rs' | xargs wc -l`): `translate/` (`mod`, `source`, `archetype`, `compose`, `effects`, `tables`,
+`crates/scripting/src/` (~125k LOC incl. tests; re-measure with `find crates/scripting/src -name '*.rs' | xargs wc -l`): `translate/` (`mod`, `source`, `archetype`, `compose`, `effects`, `tables`,
 `recognizers/{quest_stage_gate,rumble,two_state_activator}`); `fragment.rs` + `fragment/{effects,populate,
 state,systems}.rs` with the per-family appliers in `fragment/effects/{resolve,deferred,inventory,placement,scene,lock,
 player_control,vehicle_cinematic,ai_combat,quest_scoped,evaluate,guards,quest_vars,actor_values,actor_lists,
@@ -48,7 +48,7 @@ event delivery), `fragment/{updates,distance,events,hits,anim_events}.rs` (regis
 **native-state stores** the VM's primitives write and conditions read — one small saved module each (CK page quoted
 in its module doc; each is a `FORMAT_MAJOR` question for `/audit-save`): `quest_variables.rs`, `location.rs`,
 `bleedout.rs`, `messages.rs`, `keywords.rs`, `relationships.rs`, `faction_changes.rs`, `alias_overrides.rs`,
-`alias_collections.rs`, `created_references.rs`, `perk_entry_points{,/{bodies,catalog,gates}}.rs` (the hook catalog + gate + body split of #6654), `destruction.rs` and the sibling
+`alias_collections.rs`, `created_references.rs` (the Created Object ledger **and** the XCT actor-travel ledger the engine's `cell_loader/relocated.rs` drives: `ActorRelocations`/`Journey` saved; `PendingRelocations`, `PendingActorMoves`/`ActorMoveRequest` + `queue_actor_move`, `is_logical_stub` unsaved — Dim 4), `perk_entry_points{,/{activate,bodies,catalog,gates}}.rs` (the hook catalog + gate + body split of #6654; `activate.rs` is PERK-HOOK-007/012's Activate choices, the engine side `byroredux/src/perk_activate.rs`), `destruction.rs` and the sibling
 `activate_parents`/`crime_*`/`jail`/`guards`/`followers`/`map_markers`/`menus`/`ownership`/`scanning`/`skills`/`speechcraft`/
 `*_requests`/`tempering`/`words_of_power` files (subsystems migrated by #5802 export their own `install(world)` + `register_saved(registry)`;
 `build_save_registry` calls each at its old row position — the schema fingerprint is order-sensitive); the M47.3 ObScript family
@@ -59,15 +59,15 @@ in its module doc; each is a `FORMAT_MAJOR` question for `/audit-save`): `quest_
 `register_installs_the_same_resource_set`); `papyrus_provider/`,
 `compatibility.rs`; `papyrus_demo/` (reference scripts/test fixtures; `ScriptRegistry` is the pre-Skyrim
 `SCRI`→`SCPT` extension point — boot no longer seeds it). Engine side: `byroredux/src/cell_loader/references/
-{attach,synth_child}.rs`, `cell_loader/{spawn,exterior,unload,created,graph_nodes}.rs` + `cell_loader/exterior/{persistent,apply_job}.rs` (#6271 split of the exterior hub; `created.rs` places/spawns
-Created Object "At" references; `graph_nodes.rs` keeps the NiNode tree of graph-animated props), `asset_provider/script.rs`
+{attach,synth_child}.rs`, `cell_loader/{spawn,exterior,unload,created,graph_nodes,enabled,relocated}.rs` + `cell_loader/exterior/{persistent,apply_job}.rs` (#6271 split of the exterior hub; `created.rs` places/spawns
+Created Object "At" references; `graph_nodes.rs` keeps the NiNode tree of graph-animated props; `enabled.rs` realizes a scripted `Enable()`'s withheld content into the same root, #5065; `relocated.rs` is cross-cell actor travel, XCT, #6852-#6854), `asset_provider/script.rs`
 (`attach_vm_reference_script`, `check_running_quest_alias_scripts`, `ProviderScriptLibrary`, `DecompiledPexCache`,
 `ensure_obscript_tables`), `scene/scene_runtime.rs` (`populate_scene_runtime` — the ObScript quest/object/item installs, ambient
 packages and the quest-fragment walk — and `materialize_scene_actor_alias_stubs`; both left `asset_provider/script.rs` in #6716 `6413d542b`),
 `asset_provider/{object_graph,actor_graph}.rs`,
 `systems/{cinematic,npc_dialogue,forcegreet,story_events,scripted_sound,trap_hits,projectiles,archetype_idle}.rs`
 (consumers of the VM's request markers), the M43 Story Manager producers `systems/{random_conversation,attraction,mines,dead_body,iron_sights}.rs` (registered in `boot/schedule/update/quest_scene/story_manager.rs`) and `commands/story_actions.rs` (their console doors) and the M47.3 ObScript request consumers
-`systems/{script_requests,script_queries,revive,knockdown,flee,magic_shader,head_look}.rs`, `commands/quest.rs` (`sm.event`, `dialogue.forcegreet`), `boot/schedule/` (one `register_*` file per subsystem under `update/<domain>/`, `late/` and `post_update/`, #6703/#6704 `22e0f71fc`/`49aa54e36`; a cross-subsystem order the old file position stood for is a named `run_after`/`run_before` constraint beside the later system, #6702 `065aac9c4`; `Access::with` lets a subsystem export its own declarations, #6701 `c22a9d410`), plus `crates/plugin/src/esm/records/{index,
+`systems/{script_requests,script_queries,revive,knockdown,flee,magic_shader,head_look}.rs` (`script_ui_request_system` logs `PendingMenus` except the chargen screens, which `chargen.rs` takes; `PlayBink` and `PlayMusic` left it — below), the app's movie player `byroredux/src/video.rs` (drains `PendingVideos`; `commands/video.rs` its console) and the music controller `byroredux/src/music/` (drains `PendingMusic`/`PendingStreamMusic`, reads `CellMusicTypes`), `commands/quest.rs` (`sm.event`, `dialogue.forcegreet`), `boot/schedule/` (one `register_*` file per subsystem under `update/<domain>/`, `late/` and `post_update/`, #6703/#6704 `22e0f71fc`/`49aa54e36`; a cross-subsystem order the old file position stood for is a named `run_after`/`run_before` constraint beside the later system, #6702 `065aac9c4`; `Access::with` lets a subsystem export its own declarations, #6701 `c22a9d410`), plus `crates/plugin/src/esm/records/{index,
 script_instance}.rs` (VMAD retention; decode is `/audit-esm`).
 
 Ground truth: `docs/engine/scripting.md` (the M47.2 sections — "The Papyrus VM", "The frame budget", "Reference
@@ -80,7 +80,7 @@ since shipped; still real gaps — world-query search across unloaded data, cond
 injected packages/spells/keywords/names/voice-type/combat overlays — don't re-file as discoveries), crate docstrings
 (`translate/mod.rs`, `fragment.rs`, `fragment/vm/`, `fragment/budget.rs`, `cleanup.rs` marker house rules).
 
-**Known-open — cite, don't re-file** (verified 2026-11-09 with `gh issue view`): #5764 (interpreter deferral ~0.8 µs a delivery; a value-called function or an
+**Known-open — cite, don't re-file** (re-verified 2026-11-14 with `gh issue view`; #6657 — M24.2 Phase 3, condition subjects and the FO3/FNV/Skyrim hooks — is open too, and still collects `Refs #6657` getter commits): #5764 (interpreter deferral ~0.8 µs a delivery; a value-called function or an
 array/struct-holding frame cannot suspend — the budget-split residual; its idle-walk half shipped as `11685934d`,
 Dim 2),
 #4113 is open but lives in `crates/papyrus`/`crates/pex`
@@ -97,7 +97,7 @@ marker scans became runs of the consumers — `every_documented_pattern_b_marker
 (the schedule-order guards read the built schedule — `build_scheduler()` / `access_report()`, `2a02c5446` — and
 `system_access_declaration_tests` reads acquisitions from a `syn` tree in `byroredux/src/acquisition_scan.rs`, depth 3
 same-file callees, `c98a4552f`; Dim 2), #6554/#6558/#6545 (CTDA getters the ObScript VM already answered
-catalogued — `CATALOG` 88 → 102 with #6657's `IsWeaponSkillType` (103 with #6654's `GetPermanentActorValue`), Oblivion's four `OBLIVION_CONDITION_GETTERS`,
+catalogued — `CATALOG` 88 → 102 with #6657's `IsWeaponSkillType` (103 with #6654's `GetPermanentActorValue`, 106 with #6657's activate-perk getters `GetSleeping` 49, `GetUnconscious` 242, `GetIsCreatureType` 438, `b73899734`), Oblivion's four `OBLIVION_CONDITION_GETTERS`,
 `6dec5c4a9`/`612f876f9`/`d3db6fd58`; Dim 3), #6570 (CTDA 659 foreign on Fallout 4, `57a49a4d4`), #6571
 (`tempering_multiplier` takes back the `SceneAliasCandidate` it lends, `9e033a595`), #6572 (`CHRR` queues on
 `DeferredFragmentEffects::relationship_events` and raises at the flush, not under the quest guards, `076de275e`), #6573
@@ -315,7 +315,7 @@ Guards: `boot/schedule/mod.rs` — `scene_and_fragment_dispatch_chain_stays_in_d
 `byroredux/src/acquisition_scan.rs` (#6685 `c98a4552f`: comments, strings and `#[cfg(test)]` cannot match; same-file callees to
 depth 3; `drain_into_resource` is listed as a write acquisition, #6707). Also `fragment/tests.rs::{nested_lock_contract_documents_
 apply_effect_itself, the_nested_lock_residual_list_names_every_type_apply_effect_acquires}` (source scans over
-`fragment::SOURCES`: `apply_effect`'s doc block must name every type its per-family helpers acquire).
+`fragment::SOURCES`: `apply_effect`'s doc block must name every type its per-family helpers acquire — since `51614ceda` that includes `PendingNonArmorEquips`, which `Effect::EquipItem` of an item with no armor slot pushes to for the binary's inventory, `da95c875d`).
 - **Nested-lock safety is exclusive scheduling.** `apply_effect` (`fragment/effects.rs`, ~120 lines: every arm
   delegates to `apply_{quest_vars,inventory,placement,scene,lock,player_control,vehicle_cinematic,messages,
   reference_state,player_stats,location_alias,actor_values,actor_lists,ai_combat}_effect`
@@ -438,6 +438,16 @@ apply_effect_itself, the_nested_lock_residual_list_names_every_type_apply_effect
   of its sources (`OnDeathEvent` — drained first, ahead of the early-out — bleedout/combat/player-location changes,
   `OnCellLoadEvent`, `OnInitEvent`, `ActivateEvent`, `OnTriggerEnterEvent`, `HitEvent`; #5764 part, `11685934d`): a new
   delivery source not added to that gate is silently never delivered.
+- **`Game.PlayBink` freezes the script until its movie ends** (BIK-REQ-002 / BIK-PRES-006, `6aa314bcf`): the lowered
+  `Effect::PlayBink` (`prim_play_bink`: literal file + flags only, the CK defaults for omitted ones; a non-literal declines
+  to the VM) and the VM's `call_statement_native` arm both queue the request through `obscript_more::queue_video` onto
+  `PendingVideos` and suspend with `FragmentResumeCondition::MovieEnded` (the VM sets `DeferredEffects::awaits_movie`,
+  which the suspend path `take`s); `fragment_continuation_system` resumes it once `movies_idle` (`MoviePlaying` — written
+  by the app's player once a frame — false and `PendingVideos` empty). A movie suspend that falls back to `DelayElapsed`,
+  or a request nothing ever drains (the freeze would never end), is the finding; the player ends every request Played /
+  Skipped / Failed, never a stall (`118afd645`: a frame that does not decode is Failed). `Effect::PlayBink` suspends like a `Wait`
+  but is not in `has_latent_tail` (`translate/effects/lower.rs`), so the speaker-line and run-time-local latent guards do not see it. ObScript `PlayBink` (Dim 6) queues the same request through the same
+  `queue_video` but does not freeze its caller.
 - **Delivery systems** (all exclusive `Update`; order in `boot/schedule/update/`): (`obscript_object_system`, Dim 6) →
   `check_alias_scripts_dispatch` →
   `alias_script_event_system` → `reference_script_event_system` (ahead of quest dispatch so a stage a script sets
@@ -508,7 +518,7 @@ the resolve and before the drain is the recurrence).
   reads `is_running` alone — a stopped/completed/failed quest is not running, #5636 `aac92c6ca`; the plugin-side
   `param1_is_form_id` load-order remap mirrors the catalog by index, with rows for 56/71/74 and an exhaustive
   mirror test, #5637 `722c06a76`; M47.2 grew `CATALOG` to 48, #5778 `71e488a26` to 52, #5750/#6251/the crime
-getters to 77, #6460 `102e4f5cd` + the tempering read to 88, #6558 `612f876f9` +9 to 97, #6545 `d3db6fd58` +4 to 101 and #6657's `IsWeaponSkillType` (109, FO3/FNV) to 102 and `GetPermanentActorValue` (495, FO3/FNV, #6654 `3ae93950b`) to 103 (the array length is the live count; #6251 `f57c75616` added 35 `GetDisabled`, 47 `GetItemCount`
+getters to 77, #6460 `102e4f5cd` + the tempering read to 88, #6558 `612f876f9` +9 to 97, #6545 `d3db6fd58` +4 to 101 and #6657's `IsWeaponSkillType` (109, FO3/FNV) to 102 and `GetPermanentActorValue` (495, FO3/FNV, #6654 `3ae93950b`) to 103 and `GetSleeping`/`GetUnconscious`/`GetIsCreatureType` (PERK-HOOK-007, `b73899734`) to 106 (the array length is the live count; #6251 `f57c75616` added 35 `GetDisabled`, 47 `GetItemCount`
 (a form list sums its members), 64 `GetIsCreature`, 84 `GetDeadCount`, 131 `GetPCIsSex`, 289 `IsInCombat`, FNV's
 420/421 `GetObjectiveCompleted`/`Displayed`, 431 `GetHealthPercentage`, 546 `GetQuestCompleted`; #5750 `20d01cd6c`
 426/427 `GetIsVoiceType` and 700 `IsCommandedActor`; the crime commits the `GetCrimeGold`/`GetCrime`/`IsGuard`/
@@ -533,7 +543,7 @@ getters to 77, #6460 `102e4f5cd` + the tempering read to 88, #6558 `612f876f9` +
   consumable branches through `evaluate_modeled`, #5993 `9b6dcf872`;
   every such check goes through the one game-aware `condition::is_modeled` — fn 79 `GetQuestVariable` reads
   `ObScriptQuestLocals` on Oblivion/FO3/FNV and stays unmodeled on FO4/Starfield where 79 is another function,
-  `f67d82b3c`; catalogued indices another game reuses — 109, 125, 131, 403, 426/427, 431, 449, 459, 533, 550, 555, 630, 659 (FO4 `HasVMScript`, #6570 `57a49a4d4`) — are unmodeled there (`FOREIGN_INDICES`, per-game rows), #5990 `9f418b4fa`; the VM-bridged getters (`vm_getter_command`: the ten of #6460 plus #6558's nine and #6545's four, 23 in all) are modeled only where `obscript_cmd::getter_answers_conditions` finds the VM's row — FO3/FNV, and Oblivion for the four `OBLIVION_CONDITION_GETTERS` (5/18/32/50, #6554 `6dec5c4a9`); an untranslatable `GetActorValue` index is unmodeled), and
+  `f67d82b3c`; catalogued indices another game reuses — 109, 125, 131, 403, 426/427, 431, 438 (FO4/FO76/Starfield `HasKey`), 449, 459, 495, 533, 550, 555, 630, 659 (FO4 `HasVMScript`, #6570 `57a49a4d4`) — are unmodeled there (`FOREIGN_INDICES`, per-game rows), #5990 `9f418b4fa`; the VM-bridged getters (`vm_getter_command`: the ten of #6460 plus #6558's nine, #6545's four and the three activate-perk getters, 26 in all) are modeled only where `obscript_cmd::getter_answers_conditions` finds the VM's row — FO3/FNV, and Oblivion for the four `OBLIVION_CONDITION_GETTERS` (5/18/32/50, #6554 `6dec5c4a9`); an untranslatable `GetActorValue` index is unmodeled), and
   a new intrusive consumer that trusts the fail-open pass is the finding; `RunOn`
   resolution declines (condition fails) on an unresolvable target rather than defaulting to the subject; a
   wrong sentinel flips a condition. `crates/plugin/src/consumables.rs` borrows fn-586 semantics by profile
@@ -563,7 +573,7 @@ getters to 77, #6460 `102e4f5cd` + the tempering read to 88, #6558 `612f876f9` +
 **Output**: `/tmp/audit/scripting/dim_3.md`
 
 ### Dimension 4: Engine Attach Path & Reference Identity
-Paths: `byroredux/src/cell_loader/references/{attach,synth_child,mod}.rs`, `byroredux/src/cell_loader/{spawn,exterior,unload}.rs`, `byroredux/src/cell_loader/exterior/persistent.rs`, `byroredux/src/asset_provider/script.rs`, `crates/scripting/src/fragment/{reference,alias_scripts}.rs` (the attached component + check), `crates/plugin/src/esm/records/index.rs`
+Paths: `byroredux/src/cell_loader/references/{attach,synth_child,mod}.rs`, `byroredux/src/cell_loader/{spawn,exterior,unload}.rs`, `byroredux/src/cell_loader/exterior/persistent.rs`, `byroredux/src/cell_loader/relocated.rs`, `byroredux/src/asset_provider/script.rs`, `crates/scripting/src/fragment/{reference,alias_scripts}.rs` (the attached component + check), `crates/plugin/src/esm/records/index.rs`
 First step: `cargo test -p byroredux --bin byroredux -- cell_loader::references reference_enable_gate`; `grep -rn 'spawn_logical_quest_reference' byroredux/src`
 Untrusted-Input: Yes — `.pex` bytes come from possibly-modded archives.
 - **Silent-miss everywhere**: no `--scripts-bsa`, VMAD absent, `.pex` missing (`extract_pex` → `None`), decode/
@@ -590,8 +600,8 @@ Untrusted-Input: Yes — `.pex` bytes come from possibly-modded archives.
   `SCRI` reference attaches its ObScript object script (`attach_object_script`, Dim 6) in the same `attach.rs` arm
   set. Verifying coverage against only the first few accessor arms re-derives a closed gap.
 - **Every identity-only actor/reference stub must attach scripts.** All `spawn_logical_quest_reference`
-  callers outside `synth_child.rs` — the persistent-worldspace loop in `cell_loader/exterior/persistent.rs` and
-  `materialize_scene_actor_alias_stubs` in `scene/scene_runtime.rs` — go through
+  callers outside `synth_child.rs` — the persistent-worldspace loop in `cell_loader/exterior/persistent.rs`,
+  `materialize_scene_actor_alias_stubs` in `scene/scene_runtime.rs` and XCT's `relocated::reconcile_logical_identities` (stamps `RemoteSceneActorStub`) — go through
   `spawn_logical_quest_reference_with_scripts` (attaches once per `reference_form_id`, #4112/#4331; the source
   pin in `cell_loader/references/source_pin_tests.rs` rejects the bare spelling and scans production text only,
   #5650 `a7e05dd7b`). Identity-only entities get `OnInit` alone: `attach_script_for_refr` takes `has_3d` and inserts
@@ -604,6 +614,30 @@ Untrusted-Input: Yes — `.pex` bytes come from possibly-modded archives.
   streaming in leaves scripts on both — stub/real reconciliation is unbuilt and untracked (the helper doc calls it
   *#2664's half*, but #2664 closed on the stamping/`Transform` half; no open issue owns it). New spawn paths
   that call the bare spawner are the recurrence.
+- **Cross-cell actor travel (XCT, #6852/#6853/#6854, `docs/engine/cross-cell-travel.md`, PRD `docs/prd/cross-cell-actor-travel.md`)**:
+  where a persistent actor *is* is ledger state, `ActorRelocations` (saved, keyed by load-order FormID; `placements` +
+  `journeys`), not "the cell its REFR sits in". Every move — a Travel hop through a load door (`CrossSpaceHop`,
+  `systems/travel.rs`), a scripted `MoveTo` / `MoveToPackageLocation`, a follower passing with its leader, an offscreen
+  arrival — is one `PendingRelocations` entry drained once a frame by `App::step_actor_relocations` (`app_step.rs`): record
+  the placement, evict the body through the same capture-and-release a cell unload runs (inventory/equipment/script
+  variables park in `PersistentReferenceStates`, XCT-ROUTE-007), then `relocated_in` → `created::spawn_relocated` once the
+  entered cell is loaded. **Every loader of a cell's reference list must consult `skipped_at_home`** (XCT-LOC-002: the
+  reference loader in `references/mod.rs`, `exterior/persistent.rs`; `RelocatedSpawning` lets only the relocation step
+  through) — a spawn path that never asks puts a travelled actor in two cells. An actor out of sight travels as a
+  `Journey` (no body, arrival game time from route length ÷ walk speed, XCT-OFF-001/003; `depart_unwatched` from
+  `unload.rs`, `due_arrivals`); `reconcile_logical_identities` gives every bodiless persistent actor a logical stub at
+  its ledger pose (XCT-LOC-005) and retires the stub beside a body. **A scripted move never guesses**: the lowered
+  `Effect::MoveTo` and ObScript `MoveTo` move in place only when both ends have a body (`!is_logical_stub` —
+  `UnloadedReferenceStub` / `RemoteSceneActorStub` are not bodies); otherwise they `queue_actor_move` an
+  `ActorMoveRequest` and the engine resolves the target's placement from the load order or ledger (`resolve_actor_moves`,
+  XCT-LOC-004/006), ObScript's declining only where no queue is installed (`move_to_an_unloaded_end_is_queued_for_the_engine`).
+  Door fades (XCT-ROUTE-008): `DoorFade` + `door_fade_system` ramp `AnimatedAlpha` over the game's
+  `fActorTeleportFadeSeconds` (0 when unauthored) and pass the door at the ramp's end
+  (`a_door_fade_ramps_alpha_over_the_authored_time_and_passes_at_its_end`, `98aa53db9`). **Lock order**:
+  `live_body` / `live_forms` take the `FormIdComponent` query *before* the `FormIdPool` resource, the order every other
+  holder keeps (core's `entity_with_local`, the save registry, condition evaluation); the reverse closed an ABBA cycle the
+  door-fade test tripped under `BYRO_LOCK_ORDER_CHECK=1` (`4c1d54cc0`) — a new resolver here that reaches the pool first is
+  the recurrence. Live gates: `docs/smoke-tests/xct-census.sh`, `docs/smoke-tests/xct-scripted-move.sh`; console `actor.where`.
 - **Canonical identity stamping** (`stamp_quest_reference`: `FormIdComponent` + `SceneAliasCandidate` +
   `mark_scene_actor_bindings_dirty`) is applied at every synthetic REFR path, gated on the primary synth child
   (`synth_idx == 0`) so a SCOL/PKIN fan-out registers one candidate per authored alias; the no-mesh fallback
@@ -950,7 +984,11 @@ SCTX frontend (`ScriptSource::Obscript` placeholder).
   (`f67d82b3c`; the game split and the cross-tick read are pinned since #5787 `a5e5346d0` by
   `get_quest_variable_uses_obscript_locals_only_for_legacy_game_paths` and
   `quest_game_mode_local_is_read_on_the_next_tick_and_by_condition_79`); `StartQuest`/`StopQuest` attach/detach the
-  script loop consistently. The 255-script corpus gate in `obscript_quests.rs`
+  script loop consistently. `Begin MenuMode [code]` blocks run in the sibling `obscript_quest_menu_mode_system` (GUI-EVT-006;
+  only while a menu is open per `EngineQueries::menu_open`, the app also calls it by hand on the frames a native page pauses
+  the simulation; its own per-quest `menu_mode_elapsed` timer on the quest's cadence, a code-less block runs for any menu —
+  NV's `VCG01` stage 36 → 40 rides `Begin MenuMode 1036`); a quest-delay change is logged only when the value changed.
+  The 255-script corpus gate in `obscript_quests.rs`
   (`vanilla_oblivion_quest_scripts_execute_and_setstage`, `#[ignore]`d) resolves Oblivion.esm via
   `test_paths::oblivion_esm()`, panics under `BYROREDUX_REQUIRE_GAME_DATA=1` instead of returning green, and runs in
   `.github/workflows/real-data-gates.yml` (#5088 `1377d3463`).
@@ -959,10 +997,19 @@ SCTX frontend (`ScriptSource::Obscript` placeholder).
   `obscript_stage_result_system` (exclusive `Update`, after `obscript_quest_tick_system`) polls the quest journal as
   its own subscriber (`OBSCRIPT_STAGE_QUEST_EVENT_SUBSCRIBER`, Dim 2) and runs every stage item whose conditions pass
   (GECK: all of them, not the first) plus the stages they set, up to `MAX_STAGE_SCRIPT_ROUNDS` = 16
-  (`a_stage_cycle_is_bounded`); an INFO's Begin/End scripts run with the speaker as implicit reference. Documented
+  (`a_stage_cycle_is_bounded`); an INFO's Begin/End scripts run with the speaker as implicit reference (for a *spoken* line `obscript_speech_system` runs Begin when the line starts and End when it finishes, `e8fdab51a`; a Say-Once line is marked spoken at that start, not when `say` chooses it, so two same-frame `SayTo`s pick the same line and the second replaces the first, `71d1e9ebb`). Documented
   deviation: the calling script finishes before the stage's items run (the original ran them inside the
   `SetStage` statement). Same decline rules as the other hosts: an `If` whose condition reads a declined getter runs no
   arm. Any new `SCDA` path here is untrusted input (above).
+- **Music and video requests left `script_requests.rs`**: `PlayMusic` / `StreamMusic` (`PendingMusic` / `PendingStreamMusic`) and OBSE
+  `Get/SetCellMusicType` (`CellMusicTypes`) are consumed by the music controller (`byroredux/src/music/`, `Layer::Script`): a
+  `PlayMusic` *replaces* what plays — the vanilla scripts re-issue it every frame to stay queued and `PlayMusic 1NoMusic` cuts the
+  cell's music (#6899 `d8654678f`), and a folder-form `MUSC` `FNAM` (the #6438 "nothing plays" fence) now expands to the playable files directly in the folder
+  (`music/directive.rs`; an empty folder or a missing file leaves the playing track alone, MUS-SRC-012) — `systems/script_requests.rs`
+  keeps only `find_case_insensitive` and `script_ui_request_system`. `PlayBink` (`PendingVideos`, string-form command) goes to the app's
+  movie player (`video.rs`) and logs nothing to `ScriptRequestLog`; character-creation `PendingMenus` open `chargen.rs`'s page.
+  ObScript `~` is **unary minus** (the compiler writes `-1` as `1 ~`): `a_tilde_negates_its_operand` (#6905 `ce438eb1a`) — an
+  unknown RPN operator that pushes 0 without consuming its operand is the failure shape.
 - **Sound commands** (`systems/scripted_sound.rs`, `crates/scripting/src/sound_requests.rs`): `PlaySound` is
   non-locational (GECK) — its request carries `NON_LOCATIONAL_SOURCE` (form 0, never a placement) and plays at the
   `AudioListener` entity, the player body only when none exists (`listener_or_player`; #6226 `f04c3433d`,

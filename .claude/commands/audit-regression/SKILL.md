@@ -70,8 +70,9 @@ For each issue, work the fix → guard-test chain:
    `byroredux-<crate>` (e.g. `cargo test -p byroredux-nif <test_name>`,
    `cargo test -p byroredux-renderer`, `cargo test -p byroredux-core --features inspect`
    — without `inspect` the animation-serialization guards silently drop, #3895).
-   The `byroredux` bin crate (and any workspace-resolving call) needs rustc ≥ 1.96 —
-   rustup cargo per `docs/contributing.md` § Toolchain note (#4466). Never run
+   The `byroredux` bin crate (and any workspace-resolving call) needs rustc ≥ 1.96 (its MSRV;
+   `rust-toolchain.toml` pins 1.100.0 since `3c9949ec9`) — if a distro cargo shadows the rustup
+   shims, use the pinned one per `docs/contributing.md` § Toolchain note (#4466). Never run
    `--ignored` on `byroredux-plugin` (real-master tests OOM past 20 GB).
    A closed-HIGH/CRITICAL fix whose guard is `#[ignore]`d on real game data is
    not run by `cargo test`: it is a line in `.github/real-data-pins.txt`
@@ -97,7 +98,7 @@ These contracts landed as refactors, not closed bugs, so issue discovery never s
 | Area | Contract | Verify |
 |---|---|---|
 | GPU struct sizes | every `#[repr(C)]` shader-contract struct keeps its pinned size (the pins, not this row, hold the numbers) | `cargo test -p byroredux-renderer gpu_` (`crates/renderer/src/vulkan/scene_buffer/gpu_instance_layout_tests.rs`, `crates/renderer/src/vulkan/material_tests.rs`) |
-| NIFAL single boundary | `translate_material` in `byroredux/src/material_translate.rs` is the only `ImportedMesh → Material` site; `metalness`/`roughness` stay plain resolved `f32`; `Material::resolve_pbr` fills only unresolved slots; both mesh spawn paths (`spawn_nif_mesh`, `spawn_mesh_instance`) attach components through the one step in `byroredux/src/scene/mesh_entity.rs` (`ee2862cda`, #6690; the two-file spawn-parity text guards were retired for it, #6692) | `cargo test -p byroredux-core resolve_pbr`; `cargo test -p byroredux both_spawn_paths_attach_through_the_shared_step` (bin crate, rustc ≥ 1.96); `/audit-nifal` |
+| NIFAL single boundary | `translate_material` in `byroredux/src/material_translate.rs` is the only `ImportedMesh → Material` site; `metalness`/`roughness` stay plain resolved `f32`; `Material::resolve_pbr` fills only unresolved slots; both mesh spawn paths (`spawn_nif_mesh`, `spawn_mesh_instance`) attach components through the one step in `byroredux/src/scene/mesh_entity.rs` (`ee2862cda`, #6690; the two-file spawn-parity text guards were retired for it, #6692) | `cargo test -p byroredux-core resolve_pbr`; `cargo test -p byroredux both_spawn_paths_attach_through_the_shared_step` (bin crate, rustc ≥ 1.96 MSRV, pinned 1.100.0); `/audit-nifal` |
 | Typed particle emitters | `NiPSysEmitter*` parse typed (`crates/nif/src/blocks/particle.rs`) → `extract_emitter_params` (`crates/nif/src/import/walk/emitter.rs`) → `apply_emitter_params` (`byroredux/src/systems/particle.rs`); an opaque `NiPSysBlock` shows as zero-sized emitters | `cargo test -p byroredux apply_emitter_params` |
 | Collision coverage | every `Bhk*Shape` parser maps to a `CollisionShape` in `crates/nif/src/import/collision/shape.rs` (incl. `BhkMultiSphereShape`, `BhkConvexListShape`) | `cargo test -p byroredux-nif collision` |
 | ReSTIR reservoir | the per-thread `resRadiance[]` array stays *retired* (#1369) — WRS is register-local, radiance recomputed via `shadowableLightRadiance` in `crates/renderer/shaders/include/lighting.glsl`; verify it stays gone, not "intact" | grep `resRadiance` in `crates/renderer/shaders/` → only the retirement comments |

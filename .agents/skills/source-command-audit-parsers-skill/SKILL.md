@@ -1,6 +1,6 @@
 ---
 name: source-command-audit-parsers-skill
-description: Parser-discipline audit of the non-NIF, non-ESM readers of untrusted game input — BSA/BA2/CSG archives, BGSM/BGEM, Starfield CDB, Havok HKX packfiles, FaceGen sidecars, MenuXml parsing, and Steam VDF/ACF. Use when the user requests a parser-discipline, archive-reader, or untrusted-format audit.
+description: Parser-discipline audit of the non-NIF, non-ESM readers of untrusted game input — BSA/BA2/CSG archives, BGSM/BGEM, Starfield CDB, Havok HKX packfiles, FaceGen sidecars, MenuXml parsing, Steam VDF/ACF, and the clean-room Bink 1/2 video and Bink Audio decoders. Use when the user requests a parser-discipline, archive-reader, or untrusted-format audit.
 ---
 
 # Parser Discipline Audit

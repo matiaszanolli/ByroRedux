@@ -94,7 +94,10 @@ Paths: `crates/pex/src/decompile/{cfg,lift,node}.rs`
 First step: `cargo test -p byroredux-pex -- decompile::cfg decompile::lift`
 - **Jump targets**: `checked_target` accepts `0 <= ip+offset <= count` (inclusive — `count` is the exit
   anchor); non-integer offset → `BadJumpOffset`, OOB → `JumpOutOfRange`, non-{ident,bool,int} condition →
-  `BadJumpCondition`. `CodeBlock::split(at)` is never called with `at == 0` (underflow).
+  `BadJumpCondition`. `CodeBlock::split(at)` is never called with `at == 0` (underflow). `lift_function` skips the
+  synthetic exit anchor (`begin >= count`) and zips `begin..` with the slice `instructions[begin..=end]` (3c9949ec9, a
+  clippy 1.100 rewrite of an indexed loop): it panics on a bad block bound exactly as the old index did, so the
+  guarantee is still that CFG blocks only come from the checked jump targets above — a block bound that escapes them is the finding.
 - **`jmpf`/`jmpt` polarity**: `jmpf` jumps when FALSE (true-edge = fall-through); a flip inverts every `If`
   (`forward_jmpf_builds_an_if_diamond`, `forward_jmpf_with_unconditional_backedge_builds_a_loop`, and
   `backward_jmpt_builds_a_loop_edge` — a true `JmpT` pin since #4476; it was a misnamed `JmpF` test before).
@@ -146,7 +149,7 @@ First step: `cargo test -p byroredux-pex -- decompile::`; with game data: `cargo
 - **Recursion**: `MAX_REBUILD_DEPTH = 1024` in `control_flow.rs` (`boolean.rs` derives it — not restated);
   both rebuilds return `RecursionLimit` (`rebuild_rejects_excessive_recursion_depth` exists in *both* files).
   It and `MAX_EXPR_DEPTH` (256) compose additively (~1,280) and independent edits erode the margin
-  (#4113 still open, verified 2026-11-09) — check any change to either constant.
+  (#4113 still open, verified 2026-11-14) — check any change to either constant.
 - **`lower.rs` totality**: `lower_expr`/`lower_stmt` never panic on any `NodeKind`; intentional lossy lowerings
   matter only if a recognizer keys on the lost info: statement-shaped node as sub-expression → `NoneLit`
   (should be unreachable), `is` → `Cast`, `lower_binary_op` default arm →
@@ -269,6 +272,9 @@ First step: `cargo test -p byroredux-papyrus -- depth chain the_two_parser_depth
   line comment likewise stops at the first `\r` *or* `\n` (`line_comment_ends_at_a_bare_cr`, #5019 `a75c7dc33` —
   it once searched only `\n`, swallowing a CR-only file to EOF with zero errors);
   `0x` and exponent shapes route through `MalformedNumber` to a `LexError`, not an adjacent token pair.
+  `Token` carries `#[allow(clippy::duplicated_attributes)]` with a comment (3c9949ec9): clippy 1.100 flags logos's
+  repeated `#[regex]`/`#[token]` helper attributes (distinct patterns sharing a callback or priority); applying its
+  suggested removal would delete a lexer rule, so keep the allow and re-run the lexer tests after any lint-driven edit to the enum.
 - **Recovery**: `parse_script` returns `Ok((Script, Vec<ParseError>))` for partial success and `Err` only for
   fatal; `skip_to_next_line` always consumes ≥1 token (no infinite loop); callers needing strict-fail check
   `result.1.is_empty()`. No `unwrap()` on `str::parse` of a malformed-but-lexable literal.

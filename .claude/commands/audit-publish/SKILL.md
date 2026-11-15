@@ -113,7 +113,7 @@ label. Map the finding's subsystem directly:
 | Water — WATAL translation, buoyancy, waterline | `water` |
 | Terrain / LOD / sky / weather / ground cover / worldspace (EXAL, SKYAL) | `terrain-exterior` (+ `renderer` / `shaders` for the GPU half) |
 | Inventory / containers / loot / consumables / combat / AI packages / locomotion | `gameplay` + the narrower tag (`inventory` / `combat` / `ai` / `quests` / `dialogue`) |
-| BGSM / CDB / HKX / FaceGen / MenuXml / game-detect readers | `import-pipeline` *(no own label — flag the gap)* |
+| BGSM / CDB / HKX / FaceGen / MenuXml / game-detect readers, Bink 1/2 video and Bink Audio decoders | `import-pipeline` *(no own label — flag the gap)* |
 | SDK, debug server / protocol / `byro-dbg`, launcher, settings-io | `tech-debt` *(no own label — flag the gap)* |
 | Physics — Havok→Rapier, colliders, ragdoll (PHYSAL) | `physics` |
 | SpeedTree (`.spt`) | `speedtree` |

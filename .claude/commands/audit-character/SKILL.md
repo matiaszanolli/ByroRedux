@@ -24,7 +24,7 @@ changes gameplay silently — no crash, no validation error, no failing test unl
   `essential_death_time_secs`, `BarterModel`, `PerkEntryPointDialect`; later `radiation_gauge` `e9b7bcead`,
   `level_cap_raises` #6227 `cafd3ccab`, `crime`, `vats`, `armor`; `PerkEntryPointDialect` has three variants — `Fallout3NV`, `Skyrim`, `Fallout4` — plus `None`, and `add_perk_raises_rank` #6619), `derived.rs` (`DerivedStatFormula`/`DerivedInput`/`DerivedOutput`/`DerivedScope`/
   `RoundMode`), `leveling.rs`, `attribute.rs`/`skill.rs`, `fallout.rs`/`tes.rs`/`skyrim.rs` (per-family
-  ruleset builders), `regen.rs`, `affliction.rs`/`resistance.rs`, `reputation.rs`, `crime.rs` (`CrimeModel` — Oblivion and Skyrim rows; `CrimeKind`, `BountyScope`), `vats.rs` (`VatsModel`/`VatsHitInput` — the `fVATS*`/`fActionPoints*` tuning family + the to-hit chain, FO3/FNV rows, #6350), `limb_effects.rs` (`LimbEffectModel` — crippled-leg speed, crippled-arm melee/gun-spread terms, FO3/FNV; VATS-LIMB-006/-010/-011), `armor.rs` (`ArmorModel` — Skyrim's `fArmor*`/`fMaxArmorRating` row with a GMST overlay, #6567 `cb9faca7d`), `components.rs` (incl. `DismemberRecord`, VATS-LIMB-008/-009).
+  ruleset builders), `regen.rs`, `affliction.rs`/`resistance.rs`, `reputation.rs`, `crime.rs` (`CrimeModel` — Oblivion and Skyrim rows; `CrimeKind`, `BountyScope`), `vats.rs` (`VatsModel`/`VatsHitInput` — the `fVATS*`/`fActionPoints*` tuning family + the to-hit chain, FO3/FNV rows, #6350), `limb_effects.rs` (`LimbEffectModel` — crippled-leg speed, crippled-arm melee/gun-spread terms, FO3/FNV; VATS-LIMB-006/-010/-011), `armor.rs` (`ArmorModel` — Skyrim's `fArmor*`/`fMaxArmorRating` row with a GMST overlay, #6567 `cb9faca7d`), `components.rs` (incl. `DismemberRecord`, VATS-LIMB-008/-009, and `CharacterIdentity` — the saved name/sex/race chargen chooses).
   Substrate: `crates/core/src/ecs/components/{actor_values,faction_ranks}.rs`.
 - CHARAL-adjacent (not submodules): `crates/core/src/combat.rs` (Oblivion damage math),
   `crates/core/src/stealth.rs` (FO3/FNV sneak detection) — consumer-less or thin today; verify anyway.
@@ -34,7 +34,7 @@ changes gameplay silently — no crash, no validation error, no failing test unl
   `crates/plugin/src/equip.rs` (`resolve_inherited_*`), `byroredux/src/cell_loader/references/`,
   `byroredux/src/inventory/` (`attach_to_player` stamps the player's `ActorValues`/`ActorVitals`/`CharacterLevel`/
   `Background`/`SpellList`/`RaceSpells` and reads `CharacterRulesProfile::vital_pools`), `byroredux/src/combat.rs` (`melee_damage_charal_bonus`, `grant_experience`), `byroredux/src/{armor,limbs}.rs` (`install_armor_book` reads the profile's `armor` row; `build_limb_effects` — FO3/FNV only, gated on `body_condition_base`),
-  `byroredux/src/commands/{actor_value,condition}.rs`, VATS runtime `byroredux/src/systems/vats.rs` + `components/vats.rs` (`VatsState`) +
+  `byroredux/src/commands/{actor_value,condition}.rs`, `byroredux/src/chargen.rs` (FNV new-game character creation, Session 111: the one UI-driven writer of the player's SPECIAL / tag skills / traits / `CharacterIdentity`) + `byroredux/src/systems/character.rs` (`player_derived_stats_system`, `player_identity_sync_system`), VATS runtime `byroredux/src/systems/vats.rs` + `components/vats.rs` (`VatsState`) +
   `commands/vats.rs` (`vats.*`; `build_vats_model` in `npc_spawn/stamps.rs` is the one installer), `byroredux/src/crime.rs` (installs the `CrimeModel` resource from
   `index.character_rules.crime()`), `crates/scripting/src/{crime_faction,jail}.rs` (crime-faction fines, Oblivion jail).
 - Handoff: gameplay writers of `ActorValues` (consumables, restoration, combat — `byroredux/src/
@@ -64,7 +64,7 @@ ruleset.md` — **the authority for every constant**; a coefficient no capture s
   Skyrim a perk point + a pool pick (#5916 `612bd179e`); only classic-TES `SkillUse` has no XP-driven roll.
 - Oblivion `RulesetBuilder::None` is deliberate (no AVIF pre-FO3 → no resolver); pinned by
   `oblivion_still_has_no_runtime_ruleset_and_that_is_deliberate`. FO76/Starfield: captures, no builders.
-- Open (verified 2026-11-09) — cite, do not re-file: #4137 (two `template_flags` bits with no consumer — Script 0x0200, Def Pack List 0x0400;
+- Open (verified 2026-11-14) — cite, do not re-file: #4137 (two `template_flags` bits with no consumer — Script 0x0200, Def Pack List 0x0400;
   the other four listed gained `ResolvedNpc` terminals, `eae8fd740`), #6350 (VATS umbrella, carries the to-hit ground-truth captures; #6403 itself is closed, `2d6af0aeb`). #4232 (`effective_actor_level` returns 0 verbatim) is closed (`4fbff2c6c`, see Dim 4). #4415 (magic runtime) is closed (`9813af435`). The 2026-09-19 report's
   #4452-#4457/#4459-#4463 are all closed — regression checks now. Verify with `gh issue view` before citing.
 
@@ -210,7 +210,7 @@ First step: `cargo test -p byroredux-core character::leveling character::regen c
 **Output**: `/tmp/audit/character/dim_3.md`
 
 ### Dimension 4: Population Boundary (parse → ruleset → actor) — highest yield
-Paths: `byroredux/src/npc_spawn*`, `crates/plugin/src/esm/records/{actor_value_derive,actor/mod}.rs`, `crates/plugin/src/equip.rs`, `byroredux/src/inventory/`, `byroredux/src/cell_loader/references/`
+Paths: `byroredux/src/npc_spawn*`, `crates/plugin/src/esm/records/{actor_value_derive,actor/mod}.rs`, `crates/plugin/src/equip.rs`, `byroredux/src/inventory/`, `byroredux/src/cell_loader/references/`, `byroredux/src/chargen.rs`
 First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_sites_are_enumerated_and_pinned; git log --since=<last report> --format='%h %cs %s' -- <Paths>`
 - **One derivation, one implementation** (the class that keeps recurring): `effective_actor_level` lives
   once in `actor/mod.rs` and is `.max(0)` on the non-multiplier branch — a second copy or a `.max(1)` (also
@@ -297,6 +297,16 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   Morality is seeded from the `AIDT` Responsibility byte (`ActorAiData::responsibility`, Skyrim-only decode) by
   `derive_resolved_actor_values` unless the stat model already supplied it (#5927 `a1eece82a` — `GetBribeAmount`
   once priced every NPC at Morality 0; `skyrim_spawn_seeds_morality_from_inherited_aidt_responsibility`).
+- **Chargen answers** (`byroredux/src/chargen.rs::apply`, FNV `VCG01`): SPECIAL lands as `set_base` on codes 5..=11,
+  clamped to the GECK 1..=10 (`SPECIAL_MIN`/`SPECIAL_MAX`), and the derived pools follow through
+  `player_derived_stats_system` — a chargen write into a derived output or a `set_override` is the regression. Tag skills go
+  through `byroredux_scripting::obscript_more::set_player_tag_skill` (the `SetPlayerTagSkill` path, `fAVDTagSkillBonus`,
+  three slots) — a second tag-bonus implementation is the regression; traits are `Perks::set_rank(…, 1)` / `remove` over
+  the playable `is_trait` PERKs. Name/sex/race live in the saved `CharacterIdentity`; `Background` is not saved, so
+  `player_identity_sync_system` re-seeds its race from the identity (writes only on a change). The SPECIAL/skill code ranges
+  (`SPECIAL_CODES` 5..=11, `SKILL_CODES` 32..=45) are Fallout actor-value codes hard-wired in the module — the one
+  non-table per-game constant set in the population path; verify they stay chargen-only and that retired skills
+  (`OBSOLETE_MARKER`, FNV's Big Guns) are never offered.
 - **One ceiling composition**: `ActorValue::undamaged()` (base + set_override + permanent + temporary) is the
   single ceiling; `current()` is `undamaged() − damage`. HUD bar fractions, debug vitals and the SDK projection
   read through it (the SDK folds `set_override` into base — `ActorValueState` has no override slot); a reader that

@@ -20,16 +20,16 @@ a dimension whose Paths have no commits since the last `AUDIT_SAFETY_*` report.
 
 Census recipe: `grep -rwo unsafe <crate>/src | wc -l` for tokens, `grep -rnE 'unsafe[[:space:]]*\{' <crate>/src`
 for blocks — **read the hits**: word counts also match prose (`byroredux` reports 5 tokens and
-only 2 real blocks). Re-measured 2026-11-09 at 88c239b35 (936 / 688 / 116 / 45 at 66c85af80 on 2026-11-06; 900 / 669 / 102 / 44 at 8985a2e99 on 2026-10-31; 948 / 717 / 102 / 44 at eae8fd740 on 2026-10-27; 943 tokens / 716 blocks / 100 `unsafe fn` / 38 impls at 1be33af66 on 2026-10-21; 922 / 704 at f4ae42a6f on 2026-10-15; #5593 (c6d36b4e7) removed eleven; #5273 removed five earlier):
+only 2 real blocks). Re-measured 2026-11-14 at 8ff82d514 (933 / 684 / 117 / 45 at 88c239b35 on 2026-11-09; 936 / 688 / 116 / 45 at 66c85af80 on 2026-11-06; 900 / 669 / 102 / 44 at 8985a2e99 on 2026-10-31; 948 / 717 / 102 / 44 at eae8fd740 on 2026-10-27; 943 tokens / 716 blocks / 100 `unsafe fn` / 38 impls at 1be33af66 on 2026-10-21; 922 / 704 at f4ae42a6f on 2026-10-15; #5593 (c6d36b4e7) removed eleven; #5273 removed five earlier):
 
-- `crates/renderer/src`: **933** word tokens — 684 `unsafe {`
+- `crates/renderer/src`: **935** word tokens — 686 `unsafe {`
   blocks, 117 declared `unsafe fn` (`grep -E '^\s*(pub(\([a-z]+\))?\s+)?unsafe fn'`; the loose `grep 'unsafe fn'` reads ~165: prose and source-scan
   strings; the newest are `texture::submit_initial_layouts`, #6146, and the local-grid / linear-capture record fns), 45 `unsafe impl` (every one a `NoUninit`, the
   `buffer.rs` primitive macro and `[T; N]` blanket included; newest: `NoUninit for ScatterPush` / `BladePush` / `BenchPush`, #6033 02b828fff, then #6270
   dedf6c0d6 added `Push` (shadow filter), `AtrousPush`, `WaterPush`, `PresentationPushConstants` and both skin push structs
   and routed those casts plus the geometry / morph-weight / bind-inverse bulk views through `byte_view`, dropping their
-  hand-rolled `from_raw_parts` blocks), ~784 `SAFETY` mentions. Growth since 10-15 is new
-  passes — `vulkan/shadow_filter.rs` (9 blocks + `unsafe fn destroy`) and the SKYAL cloud-shadow bake
+  hand-rolled `from_raw_parts` blocks), ~786 `SAFETY` mentions. Growth since 10-15 is new
+  passes — `vulkan/shadow_filter.rs` (10 blocks + `unsafe fn destroy`) and the SKYAL cloud-shadow bake
   `vulkan/sky_cube/cloud_shadow.rs` (5 + `unsafe fn record` / `destroy`, c231f5b5f); since 10-31 the world-space combustion local
   grid `vulkan/volumetrics/local_grid.rs` (15 blocks, #6533 / d3e3acc7b) and the M-LIGHT scene-linear capture
   `vulkan/context/linear_capture.rs` (3, 75b4024df), +5 in `context/helpers.rs`, while `screenshot.rs` / `depth_capture.rs`
@@ -42,10 +42,10 @@ only 2 real blocks). Re-measured 2026-11-09 at 88c239b35 (936 / 688 / 116 / 45 a
   #4599 poison-policy extraction cut `vulkan/buffer.rs` 40 → 19 blocks; #5273 (74ed66f0a) replaced the five
   `CStr::from_ptr` device/extension-name blocks in `vulkan/device.rs` with ash's bounded `*_as_c_str()` accessors
   (pinned by `device_names_read_through_bounded_accessors`); `vulkan/groundcover.rs` split into
-  `vulkan/groundcover/{construct,frame}.rs` (16 + 10 today). #6358 (0288f468d) turned `vulkan/gpu_timers.rs`'s 50 per-pass `cmd_<pass>_start/_end` methods into
+  `vulkan/groundcover/{construct,frame}.rs` (16 + 10 today). Since 11-09 the renderer's unsafe surface is flat: the new code (#6834 composite pair-create fix, #6629 bindless first-level table in `texture_registry/mod.rs`) added a handful of commented blocks, no new file. #6358 (0288f468d) turned `vulkan/gpu_timers.rs`'s 50 per-pass `cmd_<pass>_start/_end` methods into
   `cmd_start` / `cmd_end` over `TimerPass` table rows, taking it from 66 blocks (the old densest file) to 18 — the −48 block drop is that
   consolidation, not removed unsafe surface. Densest files: `vulkan/acceleration/blas_static.rs` (29), `vulkan/context/resize.rs` (28),
-  `vulkan/groundcover_bench.rs` (26), `vulkan/composite.rs` (26), `vulkan/presentation.rs` (21), `vulkan/texture.rs` / `vulkan/svgf.rs` (19 each; svgf fell 22 → 19 when #6371 b7fe116f1 routed its teardown through `descriptors::destroy_pass_objects`). Compare against the previous
+  `vulkan/groundcover_bench.rs` (26), `vulkan/composite.rs` (27), `vulkan/presentation.rs` (21), `vulkan/texture.rs` / `vulkan/svgf.rs` (19 each; svgf fell 22 → 19 when #6371 b7fe116f1 routed its teardown through `descriptors::destroy_pass_objects`). Compare against the previous
   report, not this text.
 - Tail: `crates/fsr3-sys` 10 blocks in `src` (one is the test-only `byro_fsr3_abi_layout` probe; Dim 1) plus 20 in the
   `examples/vulkan_context_smoke.rs` harness, `crates/nif` 1
@@ -55,10 +55,15 @@ only 2 real blocks). Re-measured 2026-11-09 at 88c239b35 (936 / 688 / 116 / 45 a
   `get_physical_device_properties` in `app_events.rs` (both commented since b7bc84722/#5120, which also replaced the
   `CStr::from_ptr` block with `device_name_as_c_str`), `tools/byro-launcher/src/preflight.rs` 1 block + 1 `unsafe fn` (Vulkan loader probe; its two name reads
   are bounded `*_as_c_str()` since #5717),
-  `crates/plugin` test-only env-var edits, `crates/cxx-bridge` one `unsafe extern "C++"`.
-- No `unsafe` at all (the remaining hits are prose): `crates/{audio,bgsm,boot-request,bsa,debug-protocol,
+  `crates/plugin` test-only env-var edits, `crates/cxx-bridge` one `unsafe extern "C++"`,
+  and **`crates/bink2` 15 blocks, all in `src/simd.rs`** (new since 11-09, 8e11d49a4: AVX2 kernels behind a runtime
+  `is_x86_feature_detected!("avx2")` dispatch; Dim 2). `crates/bink2` is outside the renderer's `deny` lint, so
+  comment presence is a by-hand check (14 of 15 carry a `// SAFETY:` within three lines; the `idct_px` store loop relies on
+  the comment seven lines above it).
+- No `unsafe` at all (the remaining hits are prose): `crates/{audio,bgsm,binkaudio,boot-request,bsa,debug-protocol,
   debug-server,debug-ui,facegen,game-detect,hkx,menuxml,mod-runtime,papyrus,physics,platform,save,scripting,
-  sdk,settings-io,sfmaterial,spt,terrain-height,ui}` (`terrain-height` is new, 5017a64c2) and `tools/{byro-dbg,byro-detect,texture-upscale}`.
+  sdk,settings-io,sfmaterial,spt,terrain-height,ui,video}` (`binkaudio` and `video` are new since 11-09; `video` decodes Bink 1
+  through the safe pure-Rust `mercs2_bink` dependency) (`terrain-height` is new, 5017a64c2) and `tools/{byro-dbg,byro-detect,texture-upscale}`.
   **Only `crates/sdk` carries `#![forbid(unsafe_code)]`** — for every other unsafe-free crate the absence is
   unenforced, so re-run the census on each and report any newcomer.
 
@@ -92,7 +97,7 @@ First step: `grep -nE 'unsafe|# Safety|extern "C' crates/fsr3-sys/src/lib.rs`
   fn appears (then it becomes a live CRITICAL surface).
 
 ### 2. Memory Corruption / UB
-Paths: `crates/core/src/ecs/query.rs`, `crates/nif/src/{stream,header}.rs`, `crates/pex/src/opcode.rs`, `crates/renderer/src/vulkan/{buffer,scene_buffer/gpu_types,material}.rs`, `Cargo.toml`
+Paths: `crates/core/src/ecs/query.rs`, `crates/nif/src/{stream,header}.rs`, `crates/pex/src/opcode.rs`, `crates/bink2/src/simd.rs`, `crates/renderer/src/vulkan/{buffer,scene_buffer/gpu_types,material}.rs`, `Cargo.toml`
 First step: `grep -rnE 'transmute|from_raw_parts|set_len|from_utf8_unchecked|unsafe impl' crates byroredux tools --include='*.rs' | grep -v test`
 
 - **ECS cached-pointer contract** (#35/#1367): audit lives in `/audit-ecs` Dim 3 (four derefs, Miri job); report a
@@ -119,6 +124,14 @@ First step: `grep -rnE 'transmute|from_raw_parts|set_len|from_utf8_unchecked|uns
   `#[repr(u8)]` with contiguous discriminants `0..MAX_OPCODE` AND `byte >= MAX_OPCODE` is rejected first. The
   last-discriminant half is a compile-time `const _: () = assert!(…)` (#4475); contiguity and the runtime bound
   are not — a gap in the table or a dropped bound is UB.
+- **Bink 2 SIMD kernels** (`crates/bink2/src/simd.rs`, 15 blocks): each kernel is a safe `#[target_feature(enable = "avx2")]`
+  fn in `mod x86`, reached only through the `dispatch!` macro, whose single `unsafe` call is guarded by
+  `avx2()` (`is_x86_feature_detected!` AND the `set_simd` switch) — a kernel called outside `dispatch!`, or a new one with
+  no scalar twin, is the regression. The inner blocks are unaligned `loadu` / `storeu` over `&[u8; 16]` / `&mut [u8; 16]`
+  (stores take `as_chunks_mut::<16>()` since 3c9949ec9) or `ptr.add(8 * r)` row offsets: re-derive that every offset stays
+  inside the slice the kernel's caller sized (`add_clamped` needs a length multiple of 16). Every kernel is compared with
+  its scalar twin on random input in the module's tests. Audit under `crates/bink2/CLEANROOM.md`: do not open `mercs2_bink`
+  or any other Bink decoder's source to compare. Untrusted-container bounds are `/audit-parsers`.
 - **LZ4 `safe-decode` pin** (`Cargo.toml`, `byroredux-bsa` the sole dependent, #3392): with the feature on,
   `lz4_flex::decompress` is bounds-checked; **off**, a short hint is a heap overflow no `catch_unwind` can
   catch. The workspace entry is `default-features = false` *with an explicit feature list* that names
@@ -185,6 +198,12 @@ First step: `cargo test -p byroredux rapier_release && grep -rn 'DeferredDestroy
   (4a17c5968), so a re-inlined raw free in `destroy_linear_capture_staging` fails it. Linear capture arms its readback only
   after `queue_submit` succeeds (#6811, 8f95465c4) — a discarded command buffer must not leave stale staging to be averaged
   into the EXR.
+- **Multi-pipeline create failure** (#6834, a45fd0669): `vkCreateGraphicsPipelines` can return `Err` together with valid
+  handles for the entries that built. Composite's `[sunlit, sunless]` pair hands every returned handle to `partial` through
+  `surviving_pipeline_pair` before its null-guarded `destroy`, so the half that built is freed
+  (`a_failed_pipeline_pair_create_keeps_the_pipeline_that_built`); `pipeline.rs`'s multi-info batch already destroys its
+  partials, and every other pass builds one pipeline, where a failed entry is null. A new multi-info create that matches
+  `Err((_, e))` is the regression.
 - **Pass teardown helper** (#6371, b7fe116f1): SVGF, TAA, SSAO and caustic destroy their pipeline / layout / pool /
   set-layout handles through `descriptors::destroy_pass_objects` (one order, one null-guard policy, SAFETY text once); the
   other ~19 renderer files that destroy a set layout still hand-write it, so a new pass should adopt the helper rather than add a third guard policy.
@@ -265,13 +284,17 @@ First step: `cargo test -p byroredux-renderer gpu_material gpu_instance gpu_came
 - **Intern cap (#797)**: `MaterialTable::intern` caps at `MAX_MATERIALS` (`scene_buffer/constants.rs`) and
   returns id `0` with a one-shot warn; `upload_materials` `debug_assert`s and clamps with `.min(MAX_MATERIALS)` —
   keep both in lockstep.
+- **Partial UBO uploads must cover every byte the shader reads** (#6836, 41fbddee1): composite's `upload_params` writes only
+  `composite_upload_ranges(aperture_count)` — the aperture-array prefix plus the always-written trailing `view_proj` — and
+  `the_composite_upload_reaches_every_byte_the_shader_reads` applies those ranges to a sentinel-filled struct for every
+  count. A field appended after the aperture array without extending the ranges is stale GPU data, not a layout-size failure.
 - `GpuInstance.material_id` indexes the SSBO with NO GPU bounds check — the CPU must guarantee in-range (CRITICAL).
 - `ui.vert` MaterialBuffer read offsets stay in lockstep with `bindings.glsl`'s `GpuMaterial` / `gpu_instance.glsl`'s `GpuInstance`
   (`triangle.frag` `#include`s it; #785 was a stale-hunk regression). Standing lockstep rule: `GpuInstance` in
   `bindings.glsl` plus its standalone shader copies change together.
 
 ### 7. GPU-Fed Data & Shader Loop Bounds
-Paths: `crates/renderer/shaders/triangle.frag`, `crates/renderer/src/{shader_constants.rs,shader_constants_data.rs}`, `byroredux/src/material_translate.rs`, `byroredux/src/app_frame.rs`, `crates/core/src/ecs/resources/skin_slot_pool.rs`
+Paths: `crates/renderer/shaders/{triangle.frag,include/bindings.glsl}`, `crates/renderer/src/{shader_constants.rs,shader_constants_data.rs,texture_registry/mod.rs}`, `byroredux/src/material_translate.rs`, `byroredux/src/app_frame.rs`, `crates/core/src/ecs/resources/skin_slot_pool.rs`
 First step: `cargo test -p byroredux-renderer shader_constants && cargo test -p byroredux bone_palette_overflow`
 
 - **RT glass loop bound**: the unbounded-recursion guard is `MAX_REFRACT_PASSTHRUS` (`= 2 + 2 * MAX_RAY_QUALITY_TIER`,
@@ -295,6 +318,14 @@ First step: `cargo test -p byroredux-renderer shader_constants && cargo test -p 
   pending uploads when `!ctx.skin.state_submitted || ctx.skin.bind_inverse_upload_failed` (the 17 skinning and morph fields moved into `SkinningState`, `ctx.skin`, #6697 0ae4da4ee). `skin.state_submitted` is the
   SUBMIT-time latch (set only after `queue_submit` returns `Ok`); reading the record-time `skin.dispatch_ran`
   instead loses palettes on the three tail `Err` sites of `draw_frame`. Verify the check and latch resets survive.
+- **Bindless first-level table (#6629, f754eee28)**: `textureFirstLevel[handle]` (set 0 binding 2, a per-FIF host-visible
+  `u32[max_textures]`, `texture_registry/mod.rs`) is read by `residentLod()` (`include/bindings.glsl`) with no GPU bounds
+  check, like `material_id`: the CPU keeps `handle < max_textures` (the registration reject) and `write_mapped_at` bounds-checks
+  the byte range. The slot's level is written in the same call as its descriptor (immediate and replay paths) so a frame never
+  pairs a view with another image's level; the binding has no `UPDATE_AFTER_BIND`, so it is written before a set is first bound
+  (`new` and `recreate_descriptor_sets`). The table is pushed into `partial` before use and drained in teardown. Guards:
+  `first_level_table_matches_every_set0_bindless_consumer`, `bindless_flags_and_pool_sizes_cover_every_binding`
+  (`texture_registry_bindless_tests.rs`).
 - Starfield content is walkable (Cydonia): do not dismiss spawn/animation safety with "no SF content exercises this".
 
 ### 8. Sandboxed Mod Runtime — Trust Boundary (`crates/mod-runtime`)
@@ -340,7 +371,7 @@ First step: `cargo tree -p byroredux-mod-runtime | grep -i wasi` (must print not
 ## Procedure
 
 1. Census (`Scale of the surface`); note new unsafe files since the last report. The `cargo test -p byroredux …`
-   first steps (Dims 3, 7) need rustc ≥ 1.96 (wasmtime 49's MSRV) through the rustup cargo — `docs/contributing.md`
+   first steps (Dims 3, 7) need rustc ≥ 1.96 (wasmtime 49's MSRV; the repo pins 1.100.0, 3c9949ec9) through the rustup cargo — `docs/contributing.md`
    § Toolchain note.
 2. Dims 1–2 first (live FFI, UB); then leaks/drop order (3), unsafe sweep (4), Vulkan spec (5), GPU layout (6), GPU-fed
    data (7), mod-runtime (8).
