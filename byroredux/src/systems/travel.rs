@@ -893,6 +893,44 @@ mod tests {
         );
     }
 
+    /// #6925 (INC2 missing test): an actor that arrives at its load door with a cross-space hop and
+    /// an authored fade starts fading there and is not `Traveled` yet; `pass_door` tags it when the
+    /// fade-out ends. Dropping travel_system's `!passed.contains(..)` guard tags it at the door,
+    /// so a save taken mid-fade would restore an arrived actor that never passed.
+    #[test]
+    fn an_actor_at_its_load_door_is_not_traveled_while_it_fades() {
+        use crate::cell_loader::relocated::{is_fading_at_door, CrossSpaceHop, DoorFade};
+        use byroredux_plugin::esm::records::{GameSetting, SettingValue};
+        let mut world = World::new();
+        world.register::<TravelBehavior>();
+        world.register::<TravelState>();
+        world.register::<Traveled>();
+        world.register::<Transform>();
+        world.register::<CrossSpaceHop>();
+        world.register::<DoorFade>();
+        let mut index = byroredux_plugin::esm::EsmIndex::default();
+        index.game_settings.insert(
+            0x10,
+            GameSetting { form_id: 0x10, editor_id: "fActorTeleportFadeSeconds".into(), value: SettingValue::Float(1.0) },
+        );
+        world.insert_resource(byroredux_scripting::obscript_state::GameSettings::from_index(&index));
+
+        let entity = world.spawn();
+        world.insert(entity, Transform::from_translation(Vec3::new(50.0, 0.0, 50.0)));
+        world.insert(entity, TravelBehavior { radius: Some(100.0), target_form_id: None, form_id: 0x0005_0005 });
+        world.insert(entity, TravelState { destination: Vec3::new(50.0, 0.0, 50.0) });
+        let far_side = byroredux_scripting::CreatedPlacement {
+            cell: byroredux_scripting::CreatedCell::Exterior { worldspace: "wastelandnv".into(), grid: (0, 0) },
+            position_zup: [1000.0, 0.0, 0.0],
+            rotation_zup: [0.0; 3],
+        };
+        world.insert(entity, CrossSpaceHop { door: 9, placement: far_side, target: 0x77 });
+
+        travel_system(&world, 0.5);
+        assert!(is_fading_at_door(&world, entity), "it reached its door and the fade started");
+        assert!(!world.has::<Traveled>(entity), "not arrived while it fades (#6925)");
+    }
+
     /// #2134 regression guard: with a *real* `PhysicsWorld` resource
     /// installed, `resolve_destination`'s `GlobalTransform` read (inside
     /// Pass 1a) must still resolve correctly before `PhysicsWorld` is
