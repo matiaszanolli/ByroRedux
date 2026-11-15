@@ -362,9 +362,9 @@ fn installed_skyrim_host_calls_are_all_cataloged() {
     // callback), the command-typed ones with two, and no name mixes arities.
     // Two entries whose sites measured four arguments (`LoadDLC`,
     // `RequestLoadingText`) were promoted out of #3773's name-prefix bucket
-    // into `Measured` requests; the rest keep `HeuristicNamePrefix`, and
-    // `skyrim_catalog_provenance_split_matches_the_3103_sweep` pins the 76/66
-    // split so neither half drifts.
+    // into `Measured` requests, and #5274 typed the other 66 sweep entries by
+    // their own measured arity, so every Skyrim entry is `Measured`;
+    // `catalog.rs::skyrim_catalog_is_fully_measured` pins that.
     assert!(
         uncataloged.is_empty(),
         "the shipped Skyrim menus call {} host methods absent from \
@@ -419,8 +419,8 @@ fn installed_skyrim_host_calls_are_all_cataloged() {
     assert!(
         four_arg >= 16,
         "the corpus measures 16 request-typed methods called with four \
-         arguments (every cataloged request, #5274 re-derived: command 62 / \
-         request 14 / sweep-command 64 / sweep-request 2); only {four_arg} \
+         arguments (every cataloged request, #5274 re-derived: SkyUI 62 \
+         commands + 12 requests, sweep 64 commands + 4 requests); only {four_arg} \
          resolved — the scanner is reading less than it did"
     );
     assert!(

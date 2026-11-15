@@ -282,11 +282,10 @@ fn skyrim_catalog_is_pinned_sorted_and_profile_specific() {
         catalog.find("RequestPlayerInfo").unwrap().kind,
         ScaleformHostMethodKind::Request
     );
-    // 14 from SkyUI's fourth-argument rule (12 original + the two #4720
-    // promotions, `LoadDLC` and `RequestLoadingText`), plus the 2 of the
-    // sweep's remaining 66 that the name-prefix heuristic classifies as
-    // queries. The split by provenance is pinned in `catalog.rs`'s own
-    // tests.
+    // 12 from SkyUI's fourth-argument rule plus 4 sweep entries whose sites
+    // measured four arguments (`LoadDLC` and `RequestLoadingText` #4720,
+    // `GetMouseButtonForSetDestination` and `ShouldShowMod` #5274). Every
+    // Skyrim entry is `Measured`, pinned in `catalog.rs`'s own tests.
     assert_eq!(
         catalog
             .methods()

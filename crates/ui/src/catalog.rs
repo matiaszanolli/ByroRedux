@@ -19,15 +19,16 @@ pub enum ScaleformHostMethodKind {
 /// name-prefix heuristic guessed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScaleformKindProvenance {
-    /// `kind` reflects a measured fact. Two evidence classes: Skyrim's
-    /// original 74 entries follow the AVM1 GameDelegate protocol from
-    /// SkyUI's own source (the fourth-argument rule — commands plus 12
-    /// requests, joined by #4720's two corpus-promoted requests; see
-    /// [`SKYRIM_SKYUI_METHODS`]'s own doc), and the 66 #3103 corpus-sweep
-    /// entries carry a measured per-site arity (#4721's scanner records
-    /// every `CallMethod` argument count) which SkyUI's rule types — four
-    /// arguments ⇔ `Request`, the two-argument complement ⇔ `Command`
-    /// (#5274's promotion; the corpus has no mixed-arity name). The FO4
+    /// `kind` reflects a measured fact. All 142 Skyrim entries carry it, in
+    /// two evidence classes (see [`SKYRIM_SKYUI_METHODS`]'s own doc): the 74
+    /// SkyUI-sourced entries follow the AVM1 GameDelegate protocol from
+    /// SkyUI's own source (the fourth-argument rule; 62 commands, 12
+    /// requests), and the 68 #3103 corpus-sweep entries carry a measured
+    /// per-site arity (#4721's scanner records every `CallMethod` argument
+    /// count) which the same rule types — four arguments ⇔ `Request`, the
+    /// two-argument complement ⇔ `Command` (64 commands, 4 requests:
+    /// `LoadDLC` and `RequestLoadingText` by #4720, `GetMouseButtonForSetDestination`
+    /// and `ShouldShowMod` by #5274; the corpus has no mixed-arity name). The FO4
     /// catalog's original 138 F4CF-reconstructed entries had `kind` read
     /// from reconstructed ActionScript source, not inferred from the name.
     Measured,
@@ -82,8 +83,8 @@ impl ScaleformHostMethod {
     }
 
     /// #3773 — sibling of [`Self::command`] for one of the corpus-sweep
-    /// entries typed by the name-prefix heuristic (#2966's 131 FO4 entries,
-    /// #3103's 66 Skyrim entries — see
+    /// entries typed by the name-prefix heuristic. FO4-only: #2966's 131
+    /// entries (no Skyrim entry has used it since #5274; see
     /// [`ScaleformKindProvenance::HeuristicNamePrefix`]).
     const fn command_heuristic(name: &'static str) -> Self {
         Self {
@@ -94,8 +95,8 @@ impl ScaleformHostMethod {
     }
 
     /// #3773 — sibling of [`Self::request`] for one of the corpus-sweep
-    /// entries typed by the name-prefix heuristic (#2966's 131 FO4 entries,
-    /// #3103's 2 remaining Skyrim entries — see
+    /// entries typed by the name-prefix heuristic. FO4-only: #2966's 131
+    /// entries (no Skyrim entry has used it since #5274; see
     /// [`ScaleformKindProvenance::HeuristicNamePrefix`]).
     const fn request_heuristic(name: &'static str) -> Self {
         Self {
