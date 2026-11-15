@@ -45,8 +45,8 @@ mod fx_hash_guard_tests {
     //! `SubtreeCache.map`'s inner map) stay on the Fx hasher. These are type
     //! ascriptions, not text scans (#6686): `FxHashMap<K, V>` names its
     //! hasher, so a revert to std's SipHash-1-3 stops this module compiling.
-    //! The renderer's `pose_dirty_crosses_the_crate_boundary_without_siphash`
-    //! (#2923) still scans text because its subject sits in another package.
+    //! The renderer's `hot_path_maps_are_fx_hashed` (#2923, #6687) ascribes
+    //! its own fields' types the same way.
 
     use byroredux_core::ecs::{EntityId, World};
     use byroredux_core::string::FixedString;

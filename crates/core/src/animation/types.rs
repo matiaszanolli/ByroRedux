@@ -331,8 +331,8 @@ impl AnimationClip {
 mod fx_hash_guard_tests {
     //! #3677 / PERF-D1-2026-08-30-01 — a source-scan pin, mirroring
     //! `crates/renderer/src/vulkan/context/mod.rs`'s
-    //! `pose_dirty_crosses_the_crate_boundary_without_siphash` (#2923):
-    //! asserts by text rather than by type so a future edit that reverts
+    //! #2923 `pose_dirty` pin (now `hot_path_maps_are_fx_hashed`, a type
+    //! ascription since #6687): asserts by text rather than by type so a future edit that reverts
     //! `AnimationClip.channels` back to std's SipHash-1-3 fails at
     //! `cargo test` instead of silently regressing the hot path.
 

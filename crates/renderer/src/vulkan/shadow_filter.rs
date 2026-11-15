@@ -575,16 +575,23 @@ mod tests {
         );
     }
 
+    /// `FrameImages` as its images: the destructure is exhaustive (no `..`) and the result is
+    /// typed `[GpuImage; FRAME_IMAGES]`, so a fourth image, or a field of another type, stops this module
+    /// compiling (#6687 replaced a `: GpuImage,` text count with it). Never called.
+    const FRAME_IMAGES: usize = 3;
+
+    #[allow(dead_code)]
+    fn frame_images(images: super::FrameImages) -> [super::GpuImage; FRAME_IMAGES] {
+        let super::FrameImages { ratio_a, ratio_b, delta } = images;
+        [ratio_a, ratio_b, delta]
+    }
+
     /// #6035 — the published figure the BLAS reservation bills must be the
-    /// three `FrameImages` at `FORMAT`'s 8 B/px.
+    /// three `FrameImages` (`frame_images` above pins the count) at `FORMAT`'s 8 B/px.
     #[test]
     fn bytes_per_pixel_matches_frame_images() {
         assert_eq!(super::FORMAT, ash::vk::Format::R16G16B16A16_SFLOAT);
-        let own = crate::source_scan::production_text(include_str!("shadow_filter.rs"));
-        let start = own.find("struct FrameImages {").expect("FrameImages");
-        let body = &own[start..start + own[start..].find('}').expect("FrameImages end")];
-        assert_eq!(body.matches(": GpuImage,").count(), 3);
-        assert_eq!(super::SHADOW_FILTER_BYTES_PER_PIXEL, 3 * 8);
+        assert_eq!(super::SHADOW_FILTER_BYTES_PER_PIXEL, FRAME_IMAGES as u64 * 8);
     }
 
     /// #6063 — a failed layout submit may still be executing against the

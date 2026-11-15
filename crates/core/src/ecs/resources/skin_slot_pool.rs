@@ -1100,7 +1100,7 @@ mod skin_slot_pool_tests {
 /// motion-history maps after `33d9a468` reintroduced it at a new site,
 /// and both sweeps missed this cluster entirely. Sibling of
 /// `crates/renderer/src/vulkan/context/mod.rs`'s
-/// `rigid_motion_history_maps_are_not_siphash`.
+/// `hot_path_maps_are_fx_hashed` (a type ascription since #6687).
 #[cfg(test)]
 mod skin_slot_pool_hasher_tests {
     const SKIN_SLOT_POOL_RS: &str = include_str!("skin_slot_pool.rs");

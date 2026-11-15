@@ -7,7 +7,7 @@
 //! (`skin_slot_pool_maps_are_not_siphash`,
 //! `pose_dirty_accessor_does_not_pin_siphash_across_the_crate_boundary`) and
 //! `FrameInputs.pose_dirty` plus `record_skinned_blas_refit`'s parameter
-//! (`pose_dirty_crosses_the_crate_boundary_without_siphash`). `skin_offsets`
+//! (`hot_path_maps_are_fx_hashed`, a type ascription since #6687). `skin_offsets`
 //! had none, and it is the one that lives in the binary crate — which is where
 //! both prior rounds of this defect class were reintroduced (#1368 → #2174 →
 //! #2923, each sweep missing the next cluster). It is `FxHashMap` at every

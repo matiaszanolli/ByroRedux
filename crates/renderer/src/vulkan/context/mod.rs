@@ -320,7 +320,7 @@ struct ScratchBuffers {
     /// the rest of the skinning path and stopped one field short of this one:
     /// `insert` runs once per skinned draw command per frame, which is the
     /// per-frame per-entity keyspace SipHash-1-3 is the wrong default for.
-    /// Pinned by `pose_dirty_crosses_the_crate_boundary_without_siphash`.
+    /// Pinned by `hot_path_maps_are_fx_hashed`.
     skin_dispatch_seen_scratch: FxHashSet<byroredux_core::ecs::storage::EntityId>,
     /// Sibling of `skin_dispatch_seen_scratch` — entity → SkinPushConstants
     /// + buffer handles for the per-frame compute dispatch.
@@ -2016,136 +2016,54 @@ mod rigid_history_hasher_tests {
         format!("{mod_production}\n{}", crate::vulkan::context::INIT_SOURCES)
     }
 
+    /// #6687 — the hasher is part of each field's type, so these ascriptions stop this module
+    /// compiling if any field reverts to std's SipHash-1-3 default. They replace per-field
+    /// declaration / construction text scans (#2174, #2923, #3045, #3061): an `FxHashMap` field
+    /// also cannot be built with `HashMap::new()`, so the construction half is covered too. Never
+    /// called, so no device is needed. `pose_dirty`'s type crosses the core/renderer boundary
+    /// through `FrameInputs` and is passed straight to `record_skinned_blas_refit` and its
+    /// siblings, whose parameters must therefore match it to compile.
+    #[allow(dead_code)]
+    fn hot_path_maps_are_fx_hashed(
+        history: &super::TemporalHistory,
+        scratch: &super::ScratchBuffers,
+        skin: &super::SkinningState,
+        ctx: &super::VulkanContext,
+        inputs: &super::frame_params::FrameInputs<'_>,
+    ) {
+        use super::super::morph_compute::MorphSlot;
+        use super::super::skin_compute::SkinSlot;
+        use ash::vk;
+        use byroredux_core::ecs::storage::EntityId;
+        use rustc_hash::{FxHashMap, FxHashSet};
+        // Probed twice per rigid draw per frame (~29K probes on MedTek, #2174).
+        let _: &FxHashMap<u32, [f32; 16]> = &history.previous_rigid_models;
+        let _: &FxHashMap<u32, [f32; 16]> = &scratch.current_rigid_models_scratch;
+        // Probed once per skinned entity or blend batch per frame (#3045, #3061).
+        let _: &FxHashSet<EntityId> = &scratch.skin_dispatch_seen_scratch;
+        let _: &FxHashSet<EntityId> = &scratch.skin_built_this_frame_scratch;
+        let _: &FxHashSet<(u8, u8, bool, bool)> = &scratch.blend_seen_scratch;
+        let _: &FxHashMap<(u8, u8, bool, bool), vk::Pipeline> = &ctx.blend_pipeline_cache;
+        let _: &FxHashSet<EntityId> = &skin.failed_skin_slots;
+        let _: &FxHashSet<EntityId> = &skin.failed_skin_blas;
+        // Probed once per draw command per frame by `draw.rs` (#3061).
+        let _: &FxHashMap<EntityId, SkinSlot> = &skin.slots;
+        let _: &FxHashMap<EntityId, MorphSlot> = &skin.morph_slots;
+        // #2923 — the field that pins the type across the core/renderer boundary.
+        let _: &FxHashSet<EntityId> = inputs.pose_dirty;
+    }
+
+    /// The blanket half the ascriptions above cannot express: no std `HashMap::new()` anywhere in
+    /// the context constructor (#2174 / #3061).
     #[test]
-    fn rigid_motion_history_maps_are_not_siphash() {
+    fn the_context_constructor_builds_no_std_hash_map() {
         let src = production_src();
-        for field in ["previous_rigid_models", "current_rigid_models_scratch"] {
-            let decl = format!("{field}: FxHashMap<u32, [f32; 16]>");
-            assert!(
-                src.contains(&decl),
-                "`{field}` is no longer declared `{decl}` — these two maps are \
-                 probed twice per rigid draw per frame (~29K probes on MedTek), \
-                 which is what makes SipHash-1-3 the wrong default here (#2174)",
-            );
-        }
-        // #3061 — this used to assert the WHOLE file contained exactly two
-        // `FxHashMap::default()` calls. That was a proxy for "neither
-        // rigid-history map reverted to `HashMap::new()`", and it stopped
-        // being one the moment an unrelated field was converted: the count
-        // broke while both maps it cares about were still correct. Name the
-        // two constructions instead — strictly stronger, and it says what it
-        // means.
-        for field in ["previous_rigid_models", "current_rigid_models_scratch"] {
-            assert!(
-                src.contains(&format!("{field}: FxHashMap::default(),")),
-                "`{field}` is no longer CONSTRUCTED as an `FxHashMap` — a \
-                 `HashMap::new()` crept back into it (#2174)",
-            );
-        }
         assert_eq!(
             src.matches("std::collections::HashMap::new()").count(),
             0,
             "a std `HashMap::new()` reappeared in the context constructor \
              (#2174 / #3061)",
         );
-    }
-
-    /// #2923 / PERF-D1-01 — the skinning path's half of the same pattern.
-    /// `#1368` and `#2174` both stopped at the `crates/renderer` boundary;
-    /// the skinning path crosses it, so `record_skinned_blas_refit`'s
-    /// once-per-skinned-BLAS `pose_dirty.contains()` probe was forced back
-    /// onto SipHash purely because `SkinSlotPool::pose_dirty()` returned a
-    /// std `HashSet` and `FrameInputs` pinned that type in its public
-    /// signature. Pinned here as well as in `skin_slot_pool.rs` because
-    /// either side alone can drag the other back.
-    #[test]
-    fn pose_dirty_crosses_the_crate_boundary_without_siphash() {
-        for (src, what) in [
-            (
-                include_str!("frame_params.rs"),
-                "FrameInputs.pose_dirty — the field that pins the type across \
-                 the core/renderer boundary",
-            ),
-            (
-                include_str!("skinned_blas_refit.rs"),
-                "record_skinned_blas_refit's pose_dirty parameter — probed once \
-                 per skinned BLAS entry per frame",
-            ),
-        ] {
-            assert!(
-                src.contains("rustc_hash::FxHashSet<EntityId>"),
-                "{what} must stay `FxHashSet` (#2923)"
-            );
-            assert!(
-                !src.contains("std::collections::HashSet<EntityId>"),
-                "{what} reverted to std's SipHash-1-3 (#2923)"
-            );
-        }
-
-        // #3045 / REN-D9-01 then #3061 / PERF-D6-01 — the rest of the
-        // cluster #2923 stopped short of. Declared on `VulkanContext` rather
-        // than in a signature, so they carry the struct's own spelling;
-        // asserted here rather than in the loop above for that reason alone.
-        //
-        // Each entry is (field, the declared type text). Spelled per field
-        // rather than checked with a blanket "no std collection in this file"
-        // sweep, which would pass today only by accident of what happens to
-        // have been converted and would say nothing about the next addition.
-        let src = production_src();
-        for (field, ty) in [
-            (
-                "skin_dispatch_seen_scratch",
-                "FxHashSet<byroredux_core::ecs::storage::EntityId>",
-            ),
-            (
-                "skin_built_this_frame_scratch",
-                "FxHashSet<byroredux_core::ecs::storage::EntityId>",
-            ),
-            (
-                "failed_skin_slots",
-                "FxHashSet<byroredux_core::ecs::storage::EntityId>",
-            ),
-            (
-                "failed_skin_blas",
-                "FxHashSet<byroredux_core::ecs::storage::EntityId>",
-            ),
-            ("blend_seen_scratch", "FxHashSet<(u8, u8, bool, bool)>"),
-            (
-                "blend_pipeline_cache",
-                "FxHashMap<(u8, u8, bool, bool), vk::Pipeline>",
-            ),
-        ] {
-            let decl = format!("{field}: {ty},");
-            assert!(
-                src.contains(&decl),
-                "`{field}` is no longer declared `{decl}` — every one of these \
-                 is probed once per skinned entity (or per blend batch) per \
-                 frame on the dispatch path the hot-path hashing rule names, \
-                 and none is keyed by anything an attacker chooses, so \
-                 SipHash-1-3 is the wrong default here (#3061, following \
-                 #1368 / #2174 / #2923 / #3045)",
-            );
-        }
-        // `skin.slots` and `morph_slots` wrap across two lines under rustfmt,
-        // so match their declarations rather than a single-line `field: ty,`.
-        for (field, decl) in [
-            (
-                "skin_slots",
-                "pub slots:\n        FxHashMap<byroredux_core::ecs::storage::EntityId, \
-                 super::skin_compute::SkinSlot>,",
-            ),
-            (
-                "morph_slots",
-                "pub morph_slots:\n        FxHashMap<byroredux_core::ecs::storage::EntityId, \
-                 super::morph_compute::MorphSlot>,",
-            ),
-        ] {
-            assert!(
-                src.contains(decl),
-                "`{field}` is no longer an `FxHashMap` — `draw.rs` probes it \
-                 once per draw command per frame (#3061)",
-            );
-        }
     }
 
     /// #3682 — same cluster (#1368 → #2174 → #2923 → #3045 → #3061), but

@@ -106,16 +106,21 @@ test cannot see where a function is called. The self-scan ratchet baseline for `
 
 Rows sum to 352.
 
-### Candidates that are not done
+### Third pass: the two named candidates
 
-- **The remaining Fx-hash cluster in `context/mod.rs`** (`pose_dirty_crosses_the_crate_boundary_without_siphash`, the
-  ten `VulkanContext` field spellings, `skin.slots` / `morph_slots`): each is an `FxHashMap` / `FxHashSet` in a declared
-  type, so each could be an accessor ascription like the `skinned_blas` one above. The fields sit in several modules
-  and `skin_slot_pool` is in `core`, so this is a dozen small edits, not one.
-- **`shadow_filter.rs::bytes_per_pixel_matches_frame_images`** counts `: GpuImage,` fields in a struct; an exhaustive
-  destructure would do it without constructing one.
+- **The Fx-hash cluster in `context/mod.rs`** is replaced by `hot_path_maps_are_fx_hashed`, a never-called function in
+  `rigid_history_hasher_tests` that ascribes the eleven fields' types (`TemporalHistory.previous_rigid_models`, the four
+  `ScratchBuffers` scratches, `blend_pipeline_cache`, `SkinningState`'s `slots` / `morph_slots` / `failed_skin_slots` /
+  `failed_skin_blas`, and `FrameInputs.pose_dirty`). `pose_dirty_crosses_the_crate_boundary_without_siphash` is gone:
+  `FrameInputs.pose_dirty` is passed straight into the `skinned_blas_refit.rs` parameters it scanned, so they must match
+  it to compile. The blanket "no std `HashMap::new()` in the constructor" sweep stays a scan
+  (`the_context_constructor_builds_no_std_hash_map`); no type can say it. Injected fault: a field reverted to
+  `std::collections::HashSet` fails to compile.
+- **`shadow_filter.rs::bytes_per_pixel_matches_frame_images`** now reads its count from `frame_images`, an exhaustive
+  `FrameImages` destructure into `[GpuImage; FRAME_IMAGES]`. Injected fault: a fourth `GpuImage` field fails with E0027
+  at the destructure.
 - The three decisions the first pass named (`caustic_sun_transmittance…`, `record_bloom_pass_skips…`,
   `record_volumetrics_pass_routes…`) are already pure; nothing new there.
 
-#6687 stays open for the Fx-hash cluster and the destructure; everything else in the inventory is classed, and none of
+With those two done, everything in the inventory is classed, and none of
 the 352 remaining scans has a device-free form I could find in the docs or in the bodies read.

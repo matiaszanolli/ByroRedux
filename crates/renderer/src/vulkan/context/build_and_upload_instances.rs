@@ -2022,9 +2022,9 @@ mod batches_scratch_reserve_tests {
     /// growth from whatever capacity the shrink policy left is a better
     /// fit; this pins that the reserve call stays gone. A live test is
     /// impractical here — `build_and_upload_instances` needs a real
-    /// `VulkanContext`, matching this crate's own established convention
-    /// (`pose_dirty_crosses_the_crate_boundary_without_siphash` in
-    /// `context/mod.rs`) for source-scanning that class of function.
+    /// `VulkanContext`, and an absent call has no type to ascribe, so this
+    /// one stays a source scan (as `the_context_constructor_builds_no_std_hash_map`
+    /// in `context/mod.rs` does for the same reason).
     #[test]
     fn batches_scratch_is_not_reserved_to_draw_command_count() {
         // Scoped to the PRODUCTION portion of the file, ending at this
