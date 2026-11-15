@@ -8147,11 +8147,34 @@ fn reservoir_glsl_is_scalars_at_the_host_stride() {
 /// `first_resident`, so an absolute LOD counted from the full chain (the
 /// roughness·8 reflection blur, the refraction mip floor, the glass blurs)
 /// reads that many levels too coarse unless it goes through `residentLod`.
-/// Every `textureLod` on the 2D bindless array in the secondary-ray helpers
-/// and the raster shader samples either LOD 0 (the finest resident level is
-/// the intended one) or a LOD made view-relative by `residentLod`.
+/// Every explicit-LOD sample of the 2D bindless array — `textureLod` or
+/// `texelFetch` on `textures[…]`, in *every* shader source (#6932: the scan
+/// read only `ray_hit.glsl` and `triangle.frag`) — samples LOD 0 (the finest
+/// resident level is the intended one), a LOD made view-relative by
+/// `residentLod`, or a reviewed LOD in [`REVIEWED_EXPLICIT_LODS`].
 #[test]
 fn explicit_bindless_lods_are_view_relative_under_streaming() {
+    /// Explicit LODs reviewed as correct under streaming without `residentLod`,
+    /// by (shader, LOD expression), with the reason. A new site is not added
+    /// here without the same review.
+    const REVIEWED_EXPLICIT_LODS: &[(&str, &str, &str)] = &[
+        (
+            "include/sky.glsl",
+            "cloud_layer_lod(base_lod, tile_scale, texture_index)",
+            "built from `textureSize(textures[i], 0)`, the view's own level 0: already view-relative",
+        ),
+        (
+            "include/material_sampling.glsl",
+            "lod",
+            "the parallax height LOD comes from `textureQueryLod`, which is view-relative",
+        ),
+        (
+            "include/clouds.glsl",
+            "12.0",
+            "past every mip chain: clamps to the 1x1 mean whatever the view's first level",
+        ),
+    ];
+
     let bindings = crate::source_scan::strip_glsl_comments(include_str!(
         "../../../shaders/include/bindings.glsl"
     ));
@@ -8161,57 +8184,82 @@ fn explicit_bindless_lods_are_view_relative_under_streaming() {
             && bindings.contains("float residentLod(uint handle, float chainLod)"),
         "bindings.glsl must declare the first-level table and `residentLod`"
     );
-    let sources = [
-        (
-            "include/ray_hit.glsl",
-            include_str!("../../../shaders/include/ray_hit.glsl"),
-        ),
-        (
-            "triangle.frag",
-            include_str!("../../../shaders/triangle.frag"),
-        ),
-    ];
-    let mut corrected = 0;
-    for (name, src) in sources {
-        let src = crate::source_scan::strip_glsl_comments(src);
-        let mut rest = src.as_str();
-        while let Some(start) = rest.find("textureLod(") {
-            let call = &rest[start + "textureLod(".len()..];
-            // The argument list up to the matching close paren, and the last
-            // top-level argument in it (the LOD).
-            let (mut depth, mut end, mut last_arg) = (1usize, 0usize, 0usize);
-            for (i, c) in call.char_indices() {
-                match c {
-                    '(' | '[' => depth += 1,
-                    ')' | ']' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            end = i;
-                            break;
-                        }
-                    }
-                    ',' if depth == 1 => last_arg = i + 1,
-                    _ => {}
-                }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders");
+    let mut files = Vec::new();
+    let mut dirs = vec![root.clone()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).expect("the shader directory") {
+            let path = entry.expect("a shader directory entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                matches!(e, "glsl" | "frag" | "vert" | "comp" | "rgen" | "rchit" | "rahit" | "rmiss" | "geom")
+            }) {
+                files.push(path);
             }
-            assert!(end > 0, "{name}: unbalanced textureLod call");
-            let args = &call[..end];
-            rest = &call[end..];
-            if !args.trim_start().starts_with("textures[") {
-                continue;
-            }
-            let lod = args[last_arg..].trim();
-            if lod == "0.0" {
-                continue;
-            }
-            assert!(
-                lod.starts_with("residentLod("),
-                "{name}: `textureLod({})` samples the streamed 2D array at an explicit LOD \
-                 counted from the full chain; wrap it in `residentLod(handle, lod)` (M39 A11)",
-                args.split_whitespace().collect::<Vec<_>>().join(" ")
-            );
-            corrected += 1;
         }
+    }
+    files.sort();
+    assert!(files.len() > 20, "found only {} shader sources under {}", files.len(), root.display());
+
+    let (mut corrected, mut reviewed_seen, mut scanned) = (0, Vec::new(), 0);
+    for path in &files {
+        let name = path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+        let src = crate::source_scan::strip_glsl_comments(&std::fs::read_to_string(path).unwrap());
+        for function in ["textureLod(", "texelFetch("] {
+            let mut rest = src.as_str();
+            while let Some(start) = rest.find(function) {
+                let call = &rest[start + function.len()..];
+                // The argument list up to the matching close paren, and the last
+                // top-level argument in it (the LOD).
+                let (mut depth, mut end, mut last_arg) = (1usize, 0usize, 0usize);
+                for (i, c) in call.char_indices() {
+                    match c {
+                        '(' | '[' => depth += 1,
+                        ')' | ']' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = i;
+                                break;
+                            }
+                        }
+                        ',' if depth == 1 => last_arg = i + 1,
+                        _ => {}
+                    }
+                }
+                assert!(end > 0, "{name}: unbalanced {function} call");
+                let args = &call[..end];
+                rest = &call[end..];
+                if !args.trim_start().starts_with("textures[") {
+                    continue;
+                }
+                scanned += 1;
+                let lod = args[last_arg..].split_whitespace().collect::<Vec<_>>().join(" ");
+                if lod == "0.0" || lod == "0" {
+                    continue;
+                }
+                if lod.starts_with("residentLod(") {
+                    corrected += 1;
+                    continue;
+                }
+                assert!(
+                    REVIEWED_EXPLICIT_LODS.iter().any(|(file, reviewed, _)| *file == name && *reviewed == lod),
+                    "{name}: `{function}{}` samples the streamed 2D array at an explicit LOD that is \
+                     neither 0 nor `residentLod(handle, lod)`: counted from the full chain it reads \
+                     too coarse under streaming (M39 A11). Wrap it, or review it into \
+                     REVIEWED_EXPLICIT_LODS with the reason it is view-relative",
+                    args.split_whitespace().collect::<Vec<_>>().join(" ")
+                );
+                reviewed_seen.push((name.clone(), lod));
+            }
+        }
+    }
+    for (file, lod, _) in REVIEWED_EXPLICIT_LODS {
+        assert!(
+            reviewed_seen.iter().any(|(seen_file, seen_lod)| seen_file == file && seen_lod == lod),
+            "REVIEWED_EXPLICIT_LODS names `{lod}` in {file}, which the scan no longer finds: drop the stale entry"
+        );
     }
     // sampleRayHitBase + six rayHitAlbedo/rayHitEmission roles + three glass
     // blurs: a scan that finds fewer has stopped reading the code.
@@ -8219,4 +8267,5 @@ fn explicit_bindless_lods_are_view_relative_under_streaming() {
         corrected >= 10,
         "found only {corrected} corrected explicit-LOD samples"
     );
+    assert!(scanned > corrected + REVIEWED_EXPLICIT_LODS.len(), "the LOD-0 samples were read too");
 }
