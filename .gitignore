@@ -45,3 +45,6 @@ crates/*/examples/tmp_*
 
 # Python bytecode (scripts/m-light tools)
 __pycache__/
+
+# A screenshot taken from the repo root (the engine writes them under screenshots/, #6933).
+/screenshot_*.png

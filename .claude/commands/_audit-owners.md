@@ -334,12 +334,15 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `.zcode/` | tech-debt (audit infrastructure mirror) | LOW |
 | `.claude/issues/` | regression | LOW |
 | `.claude/audit-baselines/` | runtime | LOW |
+| `.claude/settings.json` | tech-debt (agent permissions and hooks) | LOW |
 | `.agents/` | tech-debt (audit infrastructure mirror) | LOW |
 | `.github/workflows/release.yml` | tooling, tech-debt (release packaging — gates nothing) | LOW |
 | `.github/` | tech-debt, runtime (CI lanes) | LOW |
 | `Cargo.` | tech-debt, safety (dependency drift) | LOW |
 | `byroredux/Cargo.toml` | tech-debt | LOW |
 | `rust-toolchain.toml` | tech-debt | LOW |
+| `.git{attributes,ignore}` | tech-debt (repo config) | LOW |
+| `LICENSE` | tech-debt (repo config) | LOW |
 | `RENDERING-PLAN.md` | tech-debt (doc rot) | LOW |
 | `THIRD_PARTY_NOTICES.md` | tech-debt (doc rot) | LOW |
 | `README.md` | tech-debt (doc rot) | LOW |
