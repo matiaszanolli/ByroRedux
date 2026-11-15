@@ -1,7 +1,8 @@
 # Sneak and Detection — Product Requirements
 
-**Status**: APPROVED (2026-11-14). Revision 2 folded in review round 1, revision 3
-recorded the §10 decisions, and the owner approved it (§12).
+**Status**: ACTIVE (2026-11-14). Revision 5 files the tracking issues. Revision 2
+folded in review round 1, revision 3 recorded the §10 decisions, and the owner
+approved it (§12).
 The document covers the player's sneak stance, NPC detection of the player,
 the consumers that read both (conditions and script functions, witnessed
 crimes, hostility, sneak attacks, the sneak-gated perks) and the detection
@@ -14,6 +15,9 @@ Attack Critical* re-read on 2026-11-14). The Fallout wiki's formulas are
 community-derived, not official, and are cited as such. A claim that could not
 be verified is marked **Phase 0: verify** instead of being stated as fact, and
 every such item is a row of the Phase 0 verify table (§9).
+
+**Tracking**: #6908 (parent). Phases: #6909 (0), #6910 (1), #6911 (2), #6912 (3),
+#6913 (4), #6914 (5), #6915 (6).
 
 **Scope**: The player's sneak stance and how the actors around the player
 become aware of them, in Oblivion, Fallout 3, Fallout: New Vegas and Skyrim:
@@ -616,29 +620,29 @@ and the census table is checked in.
 
 | # | Verify item | IDs | What settles it | Issue |
 |---|---|---|---|---|
-| V1 | Whether disabling sneaking stands an already sneaking player up | SNK-STN-004 | An in-game test per game with the sneak control disabled | — |
-| V2 | The `MOVT` values vanilla Skyrim races name in `SNMV` | SNK-STN-005 | xEdit read of `Skyrim.esm` `RACE` and `MOVT` | — |
-| V3 | Whether FO3 and FNV let the player run in the stance | SNK-STN-006 | An in-game test on FO3 and FNV | — |
-| V4 | First-person camera height in the stance | SNK-STN-007 | A camera-height game setting found by the census, or an in-game measurement | — |
-| V5 | Sneak clip names (KF games) and Skyrim's behaviour-graph variable | SNK-STN-008 | A scan of each game's archives | — |
-| V6 | Values of the FO3 / FNV detection coefficients | SNK-DET-004 | The census (§7.2 scenario 3) | — |
-| V7 | The FO3 / FNV detection cadence | SNK-DET-006 | A timer setting found by the census, or the executable's default table | — |
-| V8 | Skyrim's `fSneakBaseValue` | SNK-DET-007 | `Skyrim.esm` through the census, or the executable's default table | — |
-| V9 | Whether Oblivion and FO3 / FNV have a view cone | SNK-DET-008 | A view-cone setting found by the census, or an in-game test | — |
-| V10 | The rule that moves a detector to level Lost | SNK-DET-012 | The *Category:Detection* timers through the census, then an in-game test | — |
-| V11 | Skyrim's stealth-point regeneration | SNK-DET-015 | The CK settings through the census and an in-game test | — |
-| V12 | Whether level Unseen counts as unaware for a sneak attack | SNK-ATK-001 | An in-game test per game | — |
-| V13 | Oblivion's Apprentice marksman multiplier and Novice bonus | SNK-ATK-002 | `Oblivion.esm` through the census and an in-game test | — |
-| V14 | The FO3 / FNV sneak-attack damage multiplier | SNK-ATK-003 | The three GECK-named settings through the census and an in-game test | — |
-| V15 | Where Skyrim's base sneak-attack multipliers live | SNK-ATK-004 | `Skyrim.esm` settings and weapon records, and an in-game test | — |
-| V16 | What `fVATSStealthMult` scales | SNK-ATK-006 | An in-game VATS test | — |
-| V17 | What `StartCannibal` and `StartMisterSandman` change, and whether "eaten" is saved | SNK-PERK-002 | An in-game test across a save and load | — |
-| V18 | Which terms Skyrim 48 and 57 scale | SNK-PERK-004 | An in-game test with a vanilla perk using each, named by the census | — |
-| V19 | What FNV 69, 70 and 71 do | SNK-PERK-006 | The vanilla perks using each, named by the census, and an in-game test | — |
-| V20 | Each game's indicator table: FO3 / FNV [DETECTED] versus flashing [DANGER], the rest whole | SNK-HUD-002, §3.2, §6 row 9 | In-game captures of each state with its detector's level and hostility | — |
-| V21 | The sneak element and trait of the vanilla `hud_main_menu.xml` | SNK-HUD-003 | Reading the XML from each MenuXml game's archives | — |
-| V22 | Whether each detector's timer runs on its own phase | §6 row 2 | An in-game timing test or the executable | — |
-| V23 | Whether detection state survives a save | §6 row 4 | An in-game test: save while an NPC searches, then load | — |
+| V1 | Whether disabling sneaking stands an already sneaking player up | SNK-STN-004 | An in-game test per game with the sneak control disabled | #6909 |
+| V2 | The `MOVT` values vanilla Skyrim races name in `SNMV` | SNK-STN-005 | xEdit read of `Skyrim.esm` `RACE` and `MOVT` | #6909 |
+| V3 | Whether FO3 and FNV let the player run in the stance | SNK-STN-006 | An in-game test on FO3 and FNV | #6909 |
+| V4 | First-person camera height in the stance | SNK-STN-007 | A camera-height game setting found by the census, or an in-game measurement | #6909 |
+| V5 | Sneak clip names (KF games) and Skyrim's behaviour-graph variable | SNK-STN-008 | A scan of each game's archives | #6909 |
+| V6 | Values of the FO3 / FNV detection coefficients | SNK-DET-004 | The census (§7.2 scenario 3) | #6909 |
+| V7 | The FO3 / FNV detection cadence | SNK-DET-006 | A timer setting found by the census, or the executable's default table | #6909 |
+| V8 | Skyrim's `fSneakBaseValue` | SNK-DET-007 | `Skyrim.esm` through the census, or the executable's default table | #6909 |
+| V9 | Whether Oblivion and FO3 / FNV have a view cone | SNK-DET-008 | A view-cone setting found by the census, or an in-game test | #6909 |
+| V10 | The rule that moves a detector to level Lost | SNK-DET-012 | The *Category:Detection* timers through the census, then an in-game test | #6909 |
+| V11 | Skyrim's stealth-point regeneration | SNK-DET-015 | The CK settings through the census and an in-game test | #6909 |
+| V12 | Whether level Unseen counts as unaware for a sneak attack | SNK-ATK-001 | An in-game test per game | #6909 |
+| V13 | Oblivion's Apprentice marksman multiplier and Novice bonus | SNK-ATK-002 | `Oblivion.esm` through the census and an in-game test | #6909 |
+| V14 | The FO3 / FNV sneak-attack damage multiplier | SNK-ATK-003 | The three GECK-named settings through the census and an in-game test | #6909 |
+| V15 | Where Skyrim's base sneak-attack multipliers live | SNK-ATK-004 | `Skyrim.esm` settings and weapon records, and an in-game test | #6909 |
+| V16 | What `fVATSStealthMult` scales | SNK-ATK-006 | An in-game VATS test | #6909 |
+| V17 | What `StartCannibal` and `StartMisterSandman` change, and whether "eaten" is saved | SNK-PERK-002 | An in-game test across a save and load | #6909 |
+| V18 | Which terms Skyrim 48 and 57 scale | SNK-PERK-004 | An in-game test with a vanilla perk using each, named by the census | #6909 |
+| V19 | What FNV 69, 70 and 71 do | SNK-PERK-006 | The vanilla perks using each, named by the census, and an in-game test | #6909 |
+| V20 | Each game's indicator table: FO3 / FNV [DETECTED] versus flashing [DANGER], the rest whole | SNK-HUD-002, §3.2, §6 row 9 | In-game captures of each state with its detector's level and hostility | #6909 |
+| V21 | The sneak element and trait of the vanilla `hud_main_menu.xml` | SNK-HUD-003 | Reading the XML from each MenuXml game's archives | #6909 |
+| V22 | Whether each detector's timer runs on its own phase | §6 row 2 | An in-game timing test or the executable | #6909 |
+| V23 | Whether detection state survives a save | §6 row 4 | An in-game test: save while an NPC searches, then load | #6909 |
 
 **Phase 1 — The stance.** SNK-STN-001 to -007, SNK-SAVE-001, SNK-DX-002, on
 every game. Exit: §7.2 scenario 1 passes, and `IsSneaking` reads 1 in a held
@@ -767,3 +771,4 @@ games are recorded out with the reason.
 | 2 | 2026-11-14 | Review round 1 folded in: inventory re-measured at `922072af8` (§3.1 row 8 per consumer: hostility's own `in_sight` over every pair, guard rush on `actor_detects`, dead-body discovery on `actor_sees_corpse`, flee on range alone; anchors re-pointed); §2 *Sight test* as the family, *level Lost* versus *alert state Lost*; `fVATSStealthMult` owner moved to the CHARAL FNV/FO3 ruleset (row 16, SNK-ATK-006); player-only detection scope as new Q7 with §6 row 8 (corollary, SNK-G-002, SNK-DET-001, SNK-USE-002 to -005 reworded, SNK-USE-006 split into -006, -008, -009); one-producer test re-aimed at `line_of_sight_blocked` / `DetectionConfig::range` (SNK-USE-007); FO3 / FNV indicator mapping keyed on level and hostility, sourced conflict marked verify (§3.2, SNK-HUD-002); §6 rows 2 and 3 cited, row 9 added; light-level quote cited at its wiki page; SNK-PERK-001 scoped to Robotics Expert, SNK-PERK-002 counts four; SNK-STN-006 given a provisional default and moved to Phase 1; fix-catalog entry as SNK-USE-010; FO4 sneak hooks as SNK-PERK-008; SNK-DET-010 split into -010, -016, -017; acceptance drivers named (scenarios 6, 7, 9) and the census fail rule matched to the fallback; SNK-SAVE-002 and SNK-HUD-004 scheduled; Phase 0 verify table (V1–V23); sneak-attack owners and document map rows; per-game rules stated as ruleset fields | claude: revise |
 | 3 | 2026-11-14 | Decisions Q1–Q7 recorded: every recommendation taken | — |
 | 4 | 2026-11-14 | PROPOSED → APPROVED | owner: approved |
+| 5 | 2026-11-14 | → ACTIVE: parent #6908 and phase issues #6909 to #6915 filed; the Phase 0 verify items V1–V23 are acceptance criteria of #6909; ROADMAP gains the M65 row (Q6) | — |
