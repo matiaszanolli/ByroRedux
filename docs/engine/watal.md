@@ -671,7 +671,12 @@ the authored flow), so the visible current bends with the channel. The same rule
 `WaterFlow::over_bed` in core: the physics current on floating bodies
 (`apply_buoyancy`) and the `WaterContact` it publishes use it at the body's
 position, so clutter in a river follows the visible bank turn and slows over
-the shallows (`river_current_on_a_floating_body_follows_the_bed`).
+the shallows (`river_current_on_a_floating_body_follows_the_bed`). The swimming
+player's current takes the same rule. Both samplers read a plane's flow through
+one entry point, `byroredux_physics::local_current` (River and Rapids over a
+bed run `over_bed`; every other kind keeps the plane's flow), so a new reader of
+`WaterFlow` that feeds a force or a contact goes through it too (#6488;
+`a_river_current_over_a_shallow_bed_matches_the_dynamic_bodys_flow`).
 
 *Verified:* the bed data arrives intact on the Skyrim river (depth and
 direction render as smooth continuous fields over the water, dry ground
