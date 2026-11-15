@@ -39,10 +39,8 @@ impl MusicOutput for AudioOutput<'_> {
             return false;
         };
         match byroredux_audio::load_streaming_sound_from_bytes(bytes) {
-            Ok(sound) => {
-                audio.play_music_voice(voice, sound, level, fade, looping);
-                true
-            }
+            // kira can refuse the track too: a silent voice is no playing track (#6921).
+            Ok(sound) => audio.play_music_voice(voice, sound, level, fade, looping),
             Err(error) => {
                 log::warn!("music: '{key}' failed to decode: {error}");
                 false

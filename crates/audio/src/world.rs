@@ -538,8 +538,11 @@ impl AudioWorld {
     /// `fade_secs`. A track the voice already held fades out over the same
     /// time, so the two overlap into a crossfade. `looping` loops the whole
     /// track (kira's default is to play it once, #3775). Music bypasses the
-    /// reverb send and the underwater filter (MUS-MIX-003). No-op when the
-    /// manager is inactive.
+    /// reverb send and the underwater filter (MUS-MIX-003).
+    ///
+    /// Returns whether the voice now plays the track: `false` with no audio
+    /// manager, or when kira refuses it (#6921), so a caller never takes a
+    /// silent voice for a playing one.
     pub fn play_music_voice(
         &mut self,
         voice: u32,
@@ -547,14 +550,18 @@ impl AudioWorld {
         level: f32,
         fade_secs: f32,
         looping: bool,
-    ) {
+    ) -> bool {
         let Some(mgr) = self.manager.as_mut() else {
-            return;
+            return false;
         };
         let mut slot = self.music_voices.remove(&voice).map(|v| v.handle);
         play_main_track(mgr, &mut slot, streaming_sound, level * self.music_volume, fade_secs, looping);
-        if let Some(handle) = slot {
-            self.music_voices.insert(voice, MusicVoice { handle, level });
+        match slot {
+            Some(handle) => {
+                self.music_voices.insert(voice, MusicVoice { handle, level });
+                true
+            }
+            None => false,
         }
     }
 

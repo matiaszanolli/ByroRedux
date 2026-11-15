@@ -66,6 +66,9 @@ struct LayerState {
     track: Option<Playing>,
     /// A media set's stems, by stem index, while each plays.
     stems: Vec<Option<Playing>>,
+    /// The stems that would not start under this directive, by stem index: tried once, not every
+    /// frame (#6921, MUS-SRC-012). A new directive tries them again.
+    failed_stems: Vec<bool>,
     /// A battle intro or outro playing on the one-shot slot.
     one_shot: Option<Playing>,
     shuffle: Shuffle,
@@ -91,6 +94,7 @@ impl LayerState {
         }
         self.track = None;
         self.stems.clear();
+        self.failed_stems.clear();
         self.one_shot = None;
     }
 
@@ -397,14 +401,20 @@ impl MusicController {
                     None => (0.0, true),
                 };
                 state.stems.resize(stems.len(), None);
+                state.failed_stems.resize(stems.len(), false);
                 let start_fade = state.start_fade.take().unwrap_or(d.fade_secs);
                 for (i, stem) in stems.iter().enumerate() {
                     let wanted = stem.night != day && depth <= stem.reach;
                     let voice = layer.voice(i as u32);
                     match (&state.stems[i], wanted) {
+                        // A stem that would not start stays silent under this directive: retrying it
+                        // re-read and re-decoded the file, with a warning, every frame (#6921).
+                        (None, true) if state.failed_stems[i] => {}
                         (None, true) => {
                             if out.play(voice, &stem.key, d.level * stem.level, start_fade, true) {
                                 state.stems[i] = Some(Playing { key: stem.key.clone(), voice, clock: 0.0 });
+                            } else {
+                                state.failed_stems[i] = true;
                             }
                         }
                         (Some(_), false) => {
@@ -473,6 +483,8 @@ pub(crate) mod tests {
         pub(crate) log: Vec<String>,
         /// `play` / `stop` with their fades.
         pub(crate) faded: Vec<String>,
+        /// Keys whose `play` fails (a file that cannot be read or decoded).
+        pub(crate) unplayable: std::collections::HashSet<String>,
     }
 
     impl MusicOutput for FakeOutput {
@@ -481,6 +493,9 @@ pub(crate) mod tests {
         }
         fn play(&mut self, voice: u32, key: &str, _level: f32, fade: f32, looping: bool) -> bool {
             self.log.push(format!("play {voice} {key}{}", if looping { " loop" } else { "" }));
+            if self.unplayable.contains(key) {
+                return false;
+            }
             self.faded.push(format!("play {voice} {fade}"));
             self.voices.insert(voice, (key.to_string(), false));
             true
@@ -784,6 +799,38 @@ pub(crate) mod tests {
         assert_eq!(playing, ["day_middle", "day_outer"], "the middle layer joins deeper in (MUS-SRC-007)");
         music.step(at(1000.0, 2.0), no_battle, &mut out);
         assert_eq!(out.voices.values().map(|v| v.0.as_str()).collect::<Vec<_>>(), ["night_outer"], "night (MUS-SRC-006)");
+    }
+
+    /// #6921 — a stem whose file will not start is tried once under its directive, not re-read,
+    /// re-decoded and re-warned every frame; the other stems play; a new directive tries again.
+    #[test]
+    fn a_stem_that_will_not_start_is_tried_once_per_directive() {
+        use crate::music::directive::{Area, Stem};
+        let mut out = FakeOutput { unplayable: ["broken".to_string()].into(), ..Default::default() };
+        let mut music = MusicController::seeded(1);
+        let stem = |key: &str| Stem { key: key.into(), level: 1.0, night: false, reach: 1.0 };
+        let set = |label: &str| Directive {
+            looping: true,
+            ..Directive::new(
+                Source::keyword(label, "test"),
+                Content::Stems {
+                    stems: vec![stem("broken"), stem("fine")],
+                    area: Area { center: [0.0; 3], radius: 5000.0, day_start: 64, night_start: 255 },
+                },
+            )
+        };
+        let at = Inputs { dt: 0.1, player: Some([0.0; 3]), hour: 12.0, ..Default::default() };
+        music.set(Layer::Location, Some(set("musSetA")), &mut out);
+        for _ in 0..5 {
+            music.step(at, no_battle, &mut out);
+        }
+        let tries = |out: &FakeOutput| out.log.iter().filter(|line| line.ends_with(" broken loop")).count();
+        assert_eq!(tries(&out), 1, "tried once: {:?}", out.log);
+        assert_eq!(out.voices.values().map(|v| v.0.as_str()).collect::<Vec<_>>(), ["fine"]);
+
+        music.set(Layer::Location, Some(set("musSetB")), &mut out);
+        music.step(at, no_battle, &mut out);
+        assert_eq!(tries(&out), 2, "a new directive tries it again");
     }
 
     #[test]
