@@ -1,6 +1,6 @@
 # Sneak and Detection
 
-**Status**: DESIGN (Phase 0, 2026-11-15); the stance (Phase 1, #6910), Wave 1 detection with its consumers (Phase 2, #6911), Wave 1 sneak attacks and perks (Phase 3, #6912), the indicator (Phase 4, #6913) and Wave 2 (Oblivion, Skyrim: detection, stealth points, sneak attacks, the Skyrim sneak hooks and the sneak locomotion clips; Phase 5, #6914) are BUILT (2026-11-15). The design the [Sneak and Detection
+**Status**: DESIGN (Phase 0, 2026-11-15); the stance (Phase 1, #6910), Wave 1 detection with its consumers (Phase 2, #6911), Wave 1 sneak attacks and perks (Phase 3, #6912), the indicator (Phase 4, #6913) and Wave 2 (Oblivion, Skyrim: detection, stealth points, sneak attacks, the Skyrim sneak hooks and the sneak locomotion clips; Phase 5, #6914) are BUILT (2026-11-15). Phase 6 (#6915) recorded Fallout 4 and Starfield on the sight test (Q2); their formulas are #6996. The design the [Sneak and Detection
 PRD](../prd/sneak-and-detection.md) names as the owner of the stance, the detection
 tick, the per-pair level and alert state, the actor-to-actor sight test (§10 Q7), the
 light input (Q3), consumer migration and FO3 / FNV sneak-attack damage (PRD
@@ -218,7 +218,14 @@ player as target has skill `fPlayerDetectionSneakMult` · Sneak +
 57 run inside the formula on the target's perks with the detector on tab 1
 (`0x14041d0af`, `0x14041ce35`; §9). The value is truncated to an integer, and
 0 < value < 1 becomes 1. **Fallout 4 and Starfield** keep the actor-to-actor sight
-test (§5) as their level source, Seen or Lost (Q2).
+test (§5) as their level source, Seen or Lost (Q2; Phase 6, #6915). A source now
+exists for Fallout 4: `Fallout4.exe`'s `.text` is readable and its settings are
+static `{value, name}` objects. Its detection is its own model: split sound and
+visual stealth-point drains and thresholds, cover (`fDetectionCover*`), object
+visibility, angular visual distance, an Agility skill term and sound / visual base
+values and ratings (~130 settings; formula routines at `0x1406c8580` and
+`0x1406c89f4`). `Starfield.exe` names its settings but does not keep them as static
+`{value, name}` objects. Decoding and building both rows is #6996.
 
 ### 4.3 Levels
 
