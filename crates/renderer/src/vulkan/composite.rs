@@ -1545,16 +1545,20 @@ impl CompositePipeline {
             buf.destroy(device, allocator);
         }
         self.param_buffers.clear();
-        if self.pipeline != vk::Pipeline::null() {
-            // SAFETY: `pipeline` was created by this device and is destroyed here
-            // at teardown, when the device is idle (frames-in-flight fenced /
-            // device_wait_idle), so no in-flight command buffer references it.
-            unsafe { device.destroy_pipeline(self.pipeline, None) };
-        }
-        if self.pipeline_sunless != vk::Pipeline::null() {
-            // SAFETY: as `pipeline` above.
-            unsafe { device.destroy_pipeline(self.pipeline_sunless, None) };
-        }
+        // SAFETY: the whole-function contract (the device is idle at teardown, so no in-flight
+        // command buffer references these); `destroy_pass_object_sets` skips null handles and nulls
+        // what it destroys (#6371).
+        unsafe {
+            super::descriptors::destroy_pass_object_sets(
+                device,
+                super::descriptors::PassHandleSets {
+                    pipelines: &mut [&mut self.pipeline, &mut self.pipeline_sunless],
+                    layouts: &mut [&mut self.pipeline_layout],
+                    pool: &mut self.descriptor_pool,
+                    set_layouts: &mut [&mut self.descriptor_set_layout],
+                },
+            )
+        };
         if self.vert_module != vk::ShaderModule::null() {
             // SAFETY: `vert_module` was created by this device and is destroyed here
             // at teardown, when the device is idle (frames-in-flight fenced /
@@ -1566,24 +1570,6 @@ impl CompositePipeline {
             // at teardown, when the device is idle (frames-in-flight fenced /
             // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_shader_module(self.frag_module, None) };
-        }
-        if self.pipeline_layout != vk::PipelineLayout::null() {
-            // SAFETY: `pipeline_layout` was created by this device and is destroyed here
-            // at teardown, when the device is idle (frames-in-flight fenced /
-            // device_wait_idle), so no in-flight command buffer references it.
-            unsafe { device.destroy_pipeline_layout(self.pipeline_layout, None) };
-        }
-        if self.descriptor_pool != vk::DescriptorPool::null() {
-            // SAFETY: `descriptor_pool` was created by this device and is destroyed here
-            // at teardown, when the device is idle (frames-in-flight fenced /
-            // device_wait_idle), so no in-flight command buffer references it.
-            unsafe { device.destroy_descriptor_pool(self.descriptor_pool, None) };
-        }
-        if self.descriptor_set_layout != vk::DescriptorSetLayout::null() {
-            // SAFETY: `descriptor_set_layout` was created by this device and is destroyed here
-            // at teardown, when the device is idle (frames-in-flight fenced /
-            // device_wait_idle), so no in-flight command buffer references it.
-            unsafe { device.destroy_descriptor_set_layout(self.descriptor_set_layout, None) };
         }
         for &fb in &self.composite_framebuffers {
             // SAFETY: `fb` was created by this device and is destroyed here
@@ -2468,7 +2454,8 @@ mod composite_frag_doc_tests {
             "&[pipeline_info, pipeline_info_sunless]",
             "partial.pipeline = pipelines[0];",
             "partial.pipeline_sunless = pipelines[1];",
-            "device.destroy_pipeline(self.pipeline_sunless, None)",
+            // Torn down beside the sunlit one through the shared helper (#6371).
+            "pipelines: &mut [&mut self.pipeline, &mut self.pipeline_sunless]",
         ] {
             assert!(
                 host.contains(needle),

@@ -918,6 +918,7 @@ mod pass_teardown_tests {
             ("skin_compute.rs", include_str!("skin_compute.rs")),
             ("bloom.rs", include_str!("bloom.rs")),
             ("volumetrics/local_grid.rs", include_str!("volumetrics/local_grid.rs")),
+            ("composite.rs", include_str!("composite.rs")),
         ];
         for &(name, src) in MIGRATED {
             // `strip_test_modules`, not a cut at the first test module: `sky_cube/filter.rs` declares
