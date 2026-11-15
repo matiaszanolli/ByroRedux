@@ -187,22 +187,15 @@ pub fn convert_xyz_euler_keys(data: &NiTransformData) -> (Vec<RotationKey>, Core
             let y = sample_float_key_group(&xyz[1], time);
             let z = sample_float_key_group(&xyz[2], time);
 
-            // #2434 / COORD-1 — Gamebryo euler angles are in radians,
-            // Z-up coordinate system, XYZ intrinsic order, and (per the
-            // vendor header `efd/Matrix3.h`: "positive angles are
-            // associated with clockwise rotations") CLOCKWISE-positive.
-            // Route through the same core SoT every other Gamebryo
-            // Euler consumer uses (REFR placement, XCLL directional
-            // lighting) instead of a second, independently-signed
-            // private formula: the prior `euler_to_quat_wxyz` composed
-            // the standard CCW-positive product with no negation,
-            // which — conjugated through the Z-up→Y-up swap — is
-            // exactly `--rotation-mode 3`
-            // (`byroredux/src/cell_loader/euler.rs`), a non-shipping
-            // diagnostic variant, not the canonical CW convention every
-            // other consumer honours. `euler_zup_to_quat_yup` composes
-            // AND axis-swaps in one step, so no separate
-            // `zup_to_yup_quat` call is needed here.
+            // #2434 / COORD-1 — Gamebryo Euler angles are radians, Z-up,
+            // XYZ intrinsic order and clockwise-positive (`efd/Matrix3.h`:
+            // "positive angles are associated with clockwise rotations").
+            // They go through the one core conversion every Gamebryo Euler
+            // consumer uses (REFR placement, XCLL directional lighting); a
+            // private CCW-positive formula here would equal the non-shipping
+            // `--rotation-mode 3` diagnostic (`byroredux/src/zup_yup.rs`).
+            // `euler_zup_to_quat_yup` composes and axis-swaps in one step,
+            // so no separate `zup_to_yup_quat` call follows.
             let q: Quat = byroredux_core::math::coord::euler_zup_to_quat_yup(x, y, z);
             let yup = [q.x, q.y, q.z, q.w];
 
