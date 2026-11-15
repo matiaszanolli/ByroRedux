@@ -22,7 +22,7 @@ mod rgb;
 mod simd;
 mod tables;
 
-pub use container::{AudioPacket, AudioTrack, Bk2};
+pub use container::{AudioPacket, AudioTrack, Bk2, MAX_AUDIO_TRACKS, MAX_FRAMES};
 pub use frame::{Frame, MbTrace, MbType, Plane};
 pub use simd::set_simd;
 

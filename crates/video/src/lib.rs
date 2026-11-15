@@ -115,6 +115,14 @@ fn magic(path: &Path) -> Result<[u8; 4], VideoError> {
     Ok(magic)
 }
 
+/// Bink 1 header layout `probe` reads: the frame count, the audio-track count, the header length,
+/// then one 12-byte record per track and a `frames + 1` table of 4-byte frame offsets.
+const BIK1_FRAME_COUNT_AT: usize = 0x10;
+const BIK1_TRACK_COUNT_AT: usize = 0x28;
+const BIK1_HEADER_LEN: usize = 0x2c;
+const BIK1_TRACK_RECORD_LEN: usize = 12;
+const BIK1_INDEX_ENTRY_LEN: usize = 4;
+
 /// Measure `path` from its container header alone: nothing of the picture is read.
 pub fn probe(path: &Path) -> Result<MovieInfo, VideoError> {
     let magic = magic(path)?;
@@ -122,18 +130,20 @@ pub fn probe(path: &Path) -> Result<MovieInfo, VideoError> {
         return bink2_container(path, &magic).map(|file| describe_bink2(&file));
     }
     let mut file = std::fs::File::open(path).map_err(|error| VideoError::Unreadable(error.to_string()))?;
-    // The header names the tracks (0x28) and the frame index (0x10); the offset table ends the
-    // part the parser reads.
-    let mut head = [0u8; 0x2c];
+    // The frame-offset table ends the part the parser reads.
+    let mut head = [0u8; BIK1_HEADER_LEN];
     file.read_exact(&mut head).map_err(|error| VideoError::Unreadable(error.to_string()))?;
     if &head[..4] != b"BIKi" {
         return Err(container_error(&head, format!("not a Bink 1 movie: magic {:02x?}", &head[..4])));
     }
     let word = |at: usize| u32::from_le_bytes([head[at], head[at + 1], head[at + 2], head[at + 3]]) as usize;
-    let table_end = 0x2c + 12 * word(0x28).min(0x100) + 4 * (word(0x10).min(1_000_000) + 1);
+    // The counts come from an untrusted header: clamp them to the Bink 2 container's ceilings.
+    let tracks = word(BIK1_TRACK_COUNT_AT).min(bink2::MAX_AUDIO_TRACKS);
+    let frames = word(BIK1_FRAME_COUNT_AT).min(bink2::MAX_FRAMES);
+    let table_end = BIK1_HEADER_LEN + BIK1_TRACK_RECORD_LEN * tracks + BIK1_INDEX_ENTRY_LEN * (frames + 1);
     let mut bytes = head.to_vec();
     bytes.resize(table_end, 0);
-    file.read_exact(&mut bytes[0x2c..]).map_err(|error| VideoError::Unreadable(error.to_string()))?;
+    file.read_exact(&mut bytes[BIK1_HEADER_LEN..]).map_err(|error| VideoError::Unreadable(error.to_string()))?;
     match mercs2_bink::Movie::parse(&bytes) {
         Ok(movie) => Ok(describe(&movie)),
         Err(detail) => Err(container_error(&bytes, detail)),
