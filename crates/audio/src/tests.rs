@@ -2221,3 +2221,46 @@ fn a_muting_movie_holds_the_emitters_dispatched_under_it() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }
+
+/// AUD-1 — a stream with no frames is refused at load: played as a looping music stem it spun a kira
+/// decoder thread at 100% CPU forever. A header-only 16-bit mono WAV, as a mod ships to silence a
+/// music category; one frame of data loads.
+#[test]
+fn a_stream_with_no_frames_is_refused() {
+    let wav = |frames: u32| {
+        let data = frames * 2;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // mono
+        bytes.extend_from_slice(&22050u32.to_le_bytes());
+        bytes.extend_from_slice(&(22050u32 * 2).to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data.to_le_bytes());
+        bytes.resize(bytes.len() + data as usize, 0);
+        bytes
+    };
+    assert!(load_streaming_sound_from_bytes(wav(0)).is_err(), "no frames, no stream");
+    assert!(load_streaming_sound_from_bytes(wav(100)).is_ok());
+}
+
+/// AUD-2 — the movie hold must leave a sound that is already stopping alone, in both halves: kira's
+/// `pause` overwrites `Stopping`, so pausing it and resuming it after the movie played a cut voice
+/// line to its end. Exercising it needs an audio device, so this pins both loops' filter.
+#[test]
+fn the_movie_hold_skips_sounds_already_stopping() {
+    let src = include_str!("world.rs");
+    for function in ["pub fn hold_for_movie(", "pub fn release_movie_hold("] {
+        let body = &src[src.find(function).unwrap_or_else(|| panic!("{function} exists"))..];
+        let body = &body[..body.find("\n    }\n").expect("body end")];
+        assert!(
+            body.contains(".filter(|sound| !sound.stop_issued)"),
+            "{function} must skip sounds with stop_issued (AUD-2)"
+        );
+    }
+}

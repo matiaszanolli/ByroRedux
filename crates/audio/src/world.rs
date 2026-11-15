@@ -665,7 +665,9 @@ impl AudioWorld {
         self.release_movie_hold();
         let now = linear_tween(0.0);
         if mute_world {
-            for sound in &mut self.active_sounds {
+            // A sound already told to stop is left to finish its fade: kira's `pause` overwrites
+            // `Stopping` and the release's `resume` would play the cut sound to its end (AUD-2).
+            for sound in self.active_sounds.iter_mut().filter(|sound| !sound.stop_issued) {
                 sound.handle.pause(now);
             }
             self.pending_oneshots.clear();
@@ -678,7 +680,8 @@ impl AudioWorld {
     pub fn release_movie_hold(&mut self) {
         if self.movie_hold.world_muted {
             let now = linear_tween(0.0);
-            for sound in &mut self.active_sounds {
+            // As in `hold_for_movie`: a stopping sound was never paused and must not be resumed.
+            for sound in self.active_sounds.iter_mut().filter(|sound| !sound.stop_issued) {
                 sound.handle.resume(now);
             }
         }

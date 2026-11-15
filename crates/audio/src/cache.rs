@@ -50,7 +50,24 @@ pub fn load_streaming_sound_from_bytes(
     bytes: Vec<u8>,
 ) -> Result<StreamingSoundData<FromFileError>, FromFileError> {
     let cursor = Cursor::new(bytes);
-    StreamingSoundData::from_cursor(cursor)
+    with_frames(StreamingSoundData::from_cursor(cursor)?)
+}
+
+/// Refuse a stream with no frames. kira 0.12.5's decoder thread never leaves its transport loop for
+/// a zero-length loop region (`Transport::increment_position`), and nothing outside the thread can
+/// stop it: a header-only WAV played as a looping music stem burned a core for the rest of the
+/// process (AUD-1; a mod's silent stub in `Data\Music` is enough). A stream that claims more frames
+/// than its data holds spins the same way inside kira and is not caught here (#6945).
+fn with_frames(
+    data: StreamingSoundData<FromFileError>,
+) -> Result<StreamingSoundData<FromFileError>, FromFileError> {
+    if data.num_frames() == 0 {
+        return Err(FromFileError::IoError(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "the audio holds no frames",
+        )));
+    }
+    Ok(data)
 }
 
 /// Play a streaming sound into one main-track slot, fading out whatever the
@@ -106,7 +123,7 @@ pub(crate) fn stop_main_track(slot: &mut Option<StreamingSoundHandle<FromFileErr
 pub fn load_streaming_sound_from_file(
     path: impl AsRef<std::path::Path>,
 ) -> Result<StreamingSoundData<FromFileError>, FromFileError> {
-    StreamingSoundData::from_file(path)
+    with_frames(StreamingSoundData::from_file(path)?)
 }
 
 /// Process-lifetime cache of decoded `StaticSoundData`, keyed by
