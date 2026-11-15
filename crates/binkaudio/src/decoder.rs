@@ -20,7 +20,8 @@ const RLE: [usize; 16] = [2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 32, 6
 pub enum Error {
     /// A track this decoder has not been measured on (A0: every game track is 48 kHz stereo DCT).
     Unsupported(String),
-    /// The packet's stated size is not a whole number of sample frames.
+    /// The packet's stated size is not a whole number of sample frames, or is more than its data
+    /// can hold.
     BadSize(u32),
 }
 
@@ -93,8 +94,16 @@ impl Decoder {
         if !decoded_bytes.is_multiple_of(2 * self.channels as u32) {
             return Err(Error::BadSize(decoded_bytes));
         }
+        // Every block reads at least 2 + 58 bits (`block`'s 2 unused bits, then `channel`'s two
+        // coefficients) before its 32-bit alignment, so a packet holds at most `data.len() / 8`
+        // blocks `[ours]`: a stated size past that is not this packet's, and decoding it would grow
+        // `out` from the container's word alone.
+        let blocks = (decoded_bytes as usize).div_ceil(per_block);
+        if blocks > data.len() / 8 {
+            return Err(Error::BadSize(decoded_bytes));
+        }
         let mut r = Bits::new(data);
-        for _ in 0..(decoded_bytes as usize).div_ceil(per_block) {
+        for _ in 0..blocks {
             self.block(&mut r, out);
         }
         out.truncate(want);
@@ -156,5 +165,24 @@ impl Decoder {
             }
             i += len;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A packet's container-stated size is untrusted: one claiming more blocks than its bytes can
+    /// hold is refused before `out` grows, instead of decoding gigabytes of samples from 16 bytes.
+    #[test]
+    fn a_stated_size_past_what_the_packet_holds_is_refused() {
+        let mut decoder = Decoder::new(48000, true, true).unwrap();
+        let mut out = Vec::new();
+        let huge = u32::MAX - u32::MAX % 4;
+        assert!(matches!(decoder.decode(huge, &[0u8; 16], &mut out), Err(Error::BadSize(n)) if n == huge));
+        assert!(out.is_empty(), "nothing decoded");
+        // One block's worth of size from one block's minimum bytes is still accepted.
+        assert!(decoder.decode(4, &[0u8; 8], &mut out).is_ok());
+        assert_eq!(out.len(), 2);
     }
 }
