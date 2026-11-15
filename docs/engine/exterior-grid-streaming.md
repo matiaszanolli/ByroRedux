@@ -22,12 +22,11 @@ wholesale — walking across a cell boundary, and a door teleport.
 
 ## 1. CLI entry: `--esm X.esm --grid gx,gy --radius N`
 
-`scene::setup_scene` (`byroredux/src/scene.rs:75` — the same dispatch
+`scene::setup_scene` (`byroredux/src/scene.rs` — the same dispatch
 function [Pipeline Overview](pipeline-overview.md) covers for `--cell`)
-handles `--grid` at `scene.rs:228-263`. `--radius` is parsed by
-`parse_exterior_radius` (`scene.rs:50-55`) and **clamped to `1..=12`**,
-default 12 — CLAUDE.md's Quick Reference and README's `--radius 3
-(1..=7)` note are both stale on the actual bound.
+handles `--grid` there. `--radius` is parsed by `parse_exterior_radius`
+(same file) and **clamped to `1..=12`**, default
+`DEFAULT_EXTERIOR_RADIUS` (12).
 
 There's no separate "bulk grid loader" — the CLI's initial load *is* the
 streaming system's first batch. Dispatch calls

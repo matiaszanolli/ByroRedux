@@ -35,7 +35,7 @@ The thin parser helpers (`parse_string_arg`, `parse_vec3_arg`,
 | `--bsa meshes.bsa --tree trees\joshua01.spt --textures-bsa textures.bsa` | SpeedTree `.spt` placeholder billboard |
 | `--esm FalloutNV.esm --cell CellID --bsa "Fallout - Meshes.bsa" --textures-bsa "Fallout - Textures.bsa"` | Interior cell from an ESM (vanilla FNV archive names — `--bsa` opens the literal path, there is no bare `Meshes.bsa`; `Fallout - Textures2.bsa` auto-loads as a `<stem>N.bsa` sibling, no third `--textures-bsa` needed) |
 | `--master Skyrim.esm --esm Dawnguard.esm --cell ... --bsa ...` | DLC interior (repeatable `--master`) |
-| `--esm FalloutNV.esm --grid 0,0 --radius 3 --bsa ...` | Exterior grid (radius 1..=7, default 3) |
+| `--esm FalloutNV.esm --grid 0,0 --radius 3 --bsa ...` | Exterior grid (radius clamped 1..=12, default 12) |
 | `--swf path/to/menu.swf` | Scaleform SWF menu overlay |
 | `--game <key>` | Profile-driven archive/ESM expansion (Phase 20) — **recommended over hand-typing `--esm`/`--bsa`/`--textures-bsa`**: expands to absolute paths from `assets/debug_profiles.toml`, so it is CWD-independent and cannot mistype an archive name, e.g. `--game fnv --cell GSProspectorSaloonInterior` |
 

@@ -42,7 +42,7 @@ cargo build --release          # Release build
 ```bash
 cargo run -- path/to/mesh.nif --kf anim.kf                     # loose NIF (+ animation)
 cargo run -- --esm FalloutNV.esm --cell <id> --bsa "Fallout - Meshes.bsa" --textures-bsa "Fallout - Textures.bsa"
-cargo run -- --esm FalloutNV.esm --grid 0,0 --radius 3 --bsa …  # exterior grid (radius 1..=7)
+cargo run -- --esm FalloutNV.esm --grid 0,0 --radius 3 --bsa …  # exterior grid (radius clamped 1..=12, default 12)
 cargo run -- --master Skyrim.esm --master Update.esm --esm Dawnguard.esm --cell Forelhost01 --bsa …
 cargo run --release -- … --bench-frames 300 --bench-hold         # bench, then hold open for byro-dbg
 ```

@@ -131,7 +131,7 @@ enum is tagged with `#[serde(tag = "cmd", rename_all = "snake_case")]`.
 | `Metrics` | Live runtime metrics: CPU %, RAM used/total, process RSS, VRAM used/reserved/budget, and per-pass GPU times. Reads the engine's ~2 Hz snapshot without forcing a refresh. Drives the TUI dashboard. |
 | `LoadNif { path, label? }` | Queue a loose-or-archive NIF load against the running engine. Returns `Ok` immediately (an `Error` for an absolute or `..` path — see "On-Demand Asset Loads"); the engine drains the queue between frames. |
 | `LoadInteriorCell { esm, cell, masters, bsas, textures_bsas }` | Queue an interior cell load by editor ID (same async-via-queue semantics). |
-| `LoadExteriorCell { esm, grid_x, grid_y, radius, worldspace?, masters, bsas, textures_bsas }` | Queue an exterior grid load (radius clamped `1..=7` engine-side). |
+| `LoadExteriorCell { esm, grid_x, grid_y, radius, worldspace?, masters, bsas, textures_bsas }` | Queue an exterior grid load (radius clamped `1..=12` engine-side, like the CLI). |
 | `ListGameProfiles` | Enumerate configured game profiles from `assets/debug_profiles.toml` + `~/.byroredux/profiles.toml` (debug-UI Phase 5). |
 | `Ping` | Keep-alive / connection check |
 

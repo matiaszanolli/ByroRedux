@@ -501,11 +501,9 @@ fn load_scene_content(
         // Anchorage) and the automatic pick lands on the wrong one.
         // Case-insensitive EDID match inside load_exterior_cells.
         let wrld_name = crate::cli_args::parse_string_arg(args, "--wrld");
-        // #531 — optional `--radius N` override for the exterior grid.
-        // Defaults to 5 (11×11 grid, ~45K terrain units view distance);
-        // raised from 3 for a longer horizon. Clamped to 1..=12 by
-        // [`parse_exterior_radius`] so an accidental 100 doesn't try
-        // to load 40 401 cells.
+        // #531 — optional `--radius N` override for the exterior grid,
+        // clamped to 1..=12 by [`parse_exterior_radius`] so an accidental
+        // 100 doesn't try to load 40 401 cells.
         let radius = crate::cli_args::parse_string_arg(args, "--radius")
             .map(|s| parse_exterior_radius(&s))
             // #1745 — default full-detail ring extended to the 12-cell max

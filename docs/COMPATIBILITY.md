@@ -166,7 +166,7 @@ Bars are eyeballed weight, not a computed metric — read the rows, not the bars
 | ✔ | Feature | Original baseline | Notes |
 |:-:|---------|-------------------|-------|
 | `[x]` | **Interior cell loading** | — | Verified on Oblivion, FO3, FNV, Skyrim SE, FO4, Starfield — one `cell_loader` |
-| `[x]` | Exterior grid loading | 5×5 loaded grid | 7×7 (radius 3) default, radius 1–7 |
+| `[x]` | Exterior grid loading | 5×5 loaded grid | 25×25 (radius 12) default, radius clamped 1–12 |
 | `[x]` | **World streaming** | Cell-buffer streaming | `WorldStreamingState` + async pre-parse + hysteresis + LRU BLAS eviction |
 | `[x]` | Interior ↔ exterior transitions | Door teleports | XTEL → `DoorTeleport` → full grid respawn at destination |
 | `[x]` | WRLD worldspace hierarchy | Parent worldspaces | Selective data inheritance |
