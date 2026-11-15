@@ -138,10 +138,6 @@ impl SettingEntry {
         }
     }
 
-    pub fn requiring_restart(mut self) -> Self {
-        self.restart_required = true;
-        self
-    }
 }
 
 /// A value change emitted by any settings presentation layer.

@@ -225,15 +225,8 @@ pub fn color_subresource_single_mip() -> vk::ImageSubresourceRange {
     }
 }
 
-/// `COLOR` aspect, mip 0..`level_count`, single array layer — for
-/// multi-mip texture uploads (DDS path).
-#[inline]
-pub fn color_subresource_mips(level_count: u32) -> vk::ImageSubresourceRange {
-    color_subresource_mips_layers(level_count, 1)
-}
-
-/// `COLOR` aspect, all requested mips and array layers. Cubemap uploads use
-/// six layers; ordinary DDS uploads route through [`color_subresource_mips`].
+/// `COLOR` aspect, all requested mips and array layers: six layers for a
+/// cubemap upload, one for an ordinary DDS upload.
 #[inline]
 pub fn color_subresource_mips_layers(
     level_count: u32,

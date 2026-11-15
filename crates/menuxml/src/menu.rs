@@ -284,11 +284,6 @@ impl MenuRenderer {
         );
     }
 
-    pub fn clear_override(&mut self, tile: &str, trait_name: &str) {
-        self.overrides
-            .remove(&(tile.to_lowercase(), trait_name.to_lowercase()));
-    }
-
     /// Runtime menu-API: clone a `<template>` prototype's content subtree
     /// under the named tile, renaming the clone's root `new_name`.
     ///

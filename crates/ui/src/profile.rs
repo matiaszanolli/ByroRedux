@@ -55,11 +55,6 @@ impl ScaleformProfile {
         }
     }
 
-    /// Whether this profile expects an AVM2 / ActionScript 3 movie.
-    pub const fn is_avm2(self) -> bool {
-        matches!(self, Self::Fallout4Avm2)
-    }
-
     pub(crate) const fn external_interface_id(self) -> &'static str {
         match self {
             Self::SkyrimAvm1 => "byroredux-skyrim-ui",

@@ -800,8 +800,8 @@ pub(crate) fn promote_for_interior(world: &mut World, editor_id: &str) {
 }
 
 /// Every actor the ledger decides the place of, once. An actor can hold both a
-/// placement and a journey: `start_journey` keeps the placement it left
-/// ([`ActorRelocations::end_journey`] falls back to it), so chaining the two
+/// placement and a journey: `start_journey` keeps the placement it left, so
+/// chaining the two
 /// lists named a multi-hop traveler twice, and each name spawned a stub (#6917).
 fn ledgered_actors(ledger: &ActorRelocations) -> BTreeSet<u32> {
     ledger.iter().map(|(actor, _)| actor).chain(ledger.journeys().map(|(actor, _)| actor)).collect()

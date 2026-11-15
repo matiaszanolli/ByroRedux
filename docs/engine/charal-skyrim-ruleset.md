@@ -728,8 +728,8 @@ affect each already-built stat:
 
 Given only Skyrim Carry Weight has a **positive, sourced** requirement for
 base-only reading, and nothing else is confirmed to need it, the safe move
-was additive: `DerivedStatFormula` gained chainable `.a_from_base()` /
-`.b_from_base()` methods (packed into the struct's `base_reads: u8` bitfield —
+was additive: `DerivedStatFormula` gained a chainable `.a_from_base()`
+method (packed into the struct's `base_reads: u8` bitfield —
 `size_of::<DerivedStatFormula>()` is **36 bytes**, enforced by
 `formula_is_thirty_six_bytes_and_copy`, having grown from 32 B when
 `clamped_below`'s `floor: f32` landed under #2939), with **zero behavior

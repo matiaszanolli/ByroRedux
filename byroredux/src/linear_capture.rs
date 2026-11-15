@@ -5,7 +5,7 @@
 //! The M-LIGHT gates compare linear radiance, never the 8-bit tone-mapped
 //! PNG `--screenshot` writes, and they average a stated number of frames so
 //! a capture's noise floor is a property of that count. The renderer side
-//! (`VulkanContext::request_linear_capture`) copies composite's scene image
+//! (`VulkanContext::request_linear_capture_at`) copies composite's scene image
 //! before bloom; this file holds only the argument contract and the
 //! per-tick drive `about_to_wait` calls after `advance_screenshot_request`.
 //!

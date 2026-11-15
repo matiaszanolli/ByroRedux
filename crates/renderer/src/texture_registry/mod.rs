@@ -115,7 +115,7 @@ struct PendingDdsUpload {
     view_kind: TextureViewKind,
     color_space: TextureColorSpace,
     /// Lowercased path — for diagnostic logging only. The path_map
-    /// entry is set up by `enqueue_dds_with_clamp` at queue time.
+    /// entry is set up by `enqueue_dds_with_clamp_and_color_space` at queue time.
     path: String,
     /// M39 — `Some` for a promotion or demotion of a live streamable
     /// texture (queued on `pending_promotions`); `None` for a first upload.
@@ -420,7 +420,7 @@ pub struct TextureRegistry {
     /// including `current_slot` — the next `begin_frame` flush applies it
     /// before that frame's command buffer is recorded.
     fence_confirmed_idle_slot: Option<usize>,
-    /// DDS uploads queued by `enqueue_dds_with_clamp` and drained by
+    /// DDS uploads queued by `enqueue_dds_with_clamp_and_color_space` and drained by
     /// `flush_pending_uploads` (#881 / CELL-PERF-03). Each entry's
     /// bindless slot is already reserved (with the descriptor
     /// redirected to the fallback texture) so callers can attach the

@@ -1091,7 +1091,8 @@ crossing / submerged movement, feeding *both* the render ripple-normal injection
   substitution is the canonical realisation of reflection/refraction; keep it. The
   canonical *type* still carries DISPLACEMENT/LOD/DEPTH/REFLECTIONS/REFRACTIONS
   flags so the per-game translate can disable rays for opaque waterfalls
-  (`WaterKind::refracts`) without a shader per-game branch.
+  (the water shaders branch on the `WATER_WATERFALL` / `WATER_LAVA` kind
+  constants) without a shader per-game branch.
 - **Per-frame BLAS water displacement.** Water receives raster-side displacement
   only; it remains outside the TLAS, so amplitude/frequency do not cause per-frame
   acceleration-structure rebuilds.

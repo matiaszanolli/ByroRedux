@@ -121,16 +121,8 @@ impl Drop for StringsTableGuard {
     }
 }
 
-/// Resolve an lstring-table ID against the active thread-local string tables.
-///
-/// Returns `Some(string)` if the active [`StringTableSet`] (if any) contains
-/// the ID, `None` otherwise. Called by [`read_lstring_or_zstring`] after
-/// identifying a 4-byte localized payload.
-pub fn resolve_lstring(id: u32) -> Option<String> {
-    resolve_lstring_in(crate::esm::StringsFile::Strings, id)
-}
-
-/// [`resolve_lstring`] reading `file` first ([`StringTableSet::resolve_in`], #6798).
+/// Resolve an lstring id against the active strings table, reading `file` first
+/// ([`StringTableSet::resolve_in`], #6798).
 pub fn resolve_lstring_in(file: crate::esm::StringsFile, id: u32) -> Option<String> {
     CURRENT_STRINGS_TABLE.with(|t| {
         t.borrow()
@@ -223,7 +215,7 @@ fn read_lstring_in(file: crate::esm::StringsFile, data: &[u8]) -> String {
         // #4072 (ESM-2026-09-09-D6-07) — id 0 is the authored "no string"
         // convention (mirrors `remap_fid`'s `raw == 0` null convention
         // below), never a real table entry: `skyrim_english`/`fallout4_en`
-        // both start at id `0x1`. Without this guard, `resolve_lstring(0)`
+        // both start at id `0x1`. Without this guard, resolving id 0
         // always misses and synthesizes the placeholder `<lstring
         // 0x00000000>` — indistinguishable from a genuine unresolved id,
         // and it poisons every `.is_empty()` check downstream (a

@@ -305,13 +305,6 @@ impl DerivedStatFormula {
         self
     }
 
-    /// Read input `b` from its AV's `base` layer only (chainable) — see
-    /// [`Self::a_from_base`].
-    pub const fn b_from_base(mut self) -> Self {
-        self.base_reads |= READ_B_FROM_BASE;
-        self
-    }
-
     /// Evaluate against an actor's [`ActorValues`] + level. Reads each input
     /// (AV by FormID, or the level), folds the bilinear expression, rounds,
     /// then clamps to `[floor, cap]`. Inputs absent from `avs` read `0.0`

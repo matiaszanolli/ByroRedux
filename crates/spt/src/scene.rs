@@ -9,7 +9,6 @@
 //! begins". The 2026-09-07 dissection (#3808) measured that claim and it
 //! does not hold — see [`SptScene::tail_offset`].
 
-use crate::tag::SptTagKind;
 
 /// One decoded `(tag, payload)` entry from a `.spt` parameter-section
 /// stream.
@@ -174,37 +173,6 @@ impl SptScene {
             .collect()
     }
 
-    /// Helper: count entries by [`SptTagKind`] for diagnostics.
-    pub fn count_by_kind(&self) -> [(SptTagKind, usize); 7] {
-        use SptTagKind::*;
-        let mut counts = [
-            Bare,
-            U8,
-            U32,
-            Vec3,
-            FixedBytes(0),
-            String,
-            ArrayBytes { stride: 0 },
-        ]
-        .map(|k| (k, 0usize));
-        for entry in &self.entries {
-            let k = match &entry.value {
-                SptValue::Bare => Bare,
-                SptValue::U8(_) => U8,
-                SptValue::U32(_) => U32,
-                SptValue::Vec3(_) => Vec3,
-                SptValue::Fixed(_) => FixedBytes(0),
-                SptValue::String(_) => String,
-                SptValue::ArrayBytes { .. } => ArrayBytes { stride: 0 },
-            };
-            for slot in &mut counts {
-                if std::mem::discriminant(&slot.0) == std::mem::discriminant(&k) {
-                    slot.1 += 1;
-                }
-            }
-        }
-        counts
-    }
 }
 
 #[cfg(test)]

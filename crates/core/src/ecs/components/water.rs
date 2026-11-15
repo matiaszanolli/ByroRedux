@@ -132,14 +132,6 @@ impl WaterKind {
         }
     }
 
-    /// `true` when the renderer should fire a refraction ray below
-    /// the surface. Waterfalls are opaque enough that the refraction
-    /// ray is wasted budget.
-    #[inline]
-    pub fn refracts(self) -> bool {
-        !matches!(self, WaterKind::Waterfall | WaterKind::Lava)
-    }
-
     /// `true` for kinds whose visible surface transport is owned by the
     /// canonical `WaterFlow` term (downstream advection), not the
     /// atmospheric wind.

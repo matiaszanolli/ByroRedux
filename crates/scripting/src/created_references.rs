@@ -314,11 +314,6 @@ impl ActorRelocations {
         self.journeys.iter().map(|(&actor, journey)| (actor, journey))
     }
 
-    /// End `actor`'s journey without moving it.
-    pub fn end_journey(&mut self, actor: u32) -> Option<Journey> {
-        self.journeys.remove(&actor)
-    }
-
     /// Where `actor` is, if it has moved.
     pub fn placement(&self, actor: u32) -> Option<&CreatedPlacement> {
         self.placements.get(&actor)

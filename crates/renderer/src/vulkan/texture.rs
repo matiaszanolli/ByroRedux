@@ -188,7 +188,7 @@ impl Texture {
         // (single-NIF render, debug paths).
         //
         // Cell-load and other bulk paths should instead route through
-        // `TextureRegistry::enqueue_dds_with_clamp` +
+        // `TextureRegistry::enqueue_dds_with_clamp_and_color_space` +
         // `flush_pending_uploads` so dozens of textures share ONE
         // submit + fence-wait. See #881.
         let mut texture_holder: Option<Self> = None;

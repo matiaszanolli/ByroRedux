@@ -486,8 +486,7 @@ impl Scheduler {
     /// closure systems, which can't override the trait method
     /// themselves; struct systems usually declare via `impl System`
     /// directly. The override is otherwise identical to [`add_to`] —
-    /// no duplicate-name rejection (use [`try_add_to_with_access`] for
-    /// that).
+    /// no duplicate-name rejection (use [`try_add_to`] for that).
     pub fn add_to_with_access<S: System + 'static>(
         &mut self,
         stage: Stage,
@@ -538,28 +537,6 @@ impl Scheduler {
             .push(SystemEntry {
                 system: Box::new(system),
                 declared_override: None,
-            });
-        Ok(self)
-    }
-
-    /// Strict sibling of [`add_to_with_access`] — rejects duplicate names.
-    pub fn try_add_to_with_access<S: System + 'static>(
-        &mut self,
-        stage: Stage,
-        system: S,
-        access: Access,
-    ) -> Result<&mut Self, String> {
-        let name = system.name().to_string();
-        if self.has_system(&name) {
-            return Err(name);
-        }
-        self.stages
-            .entry(stage)
-            .or_insert_with(StageData::new)
-            .parallel
-            .push(SystemEntry {
-                system: Box::new(system),
-                declared_override: Some(access),
             });
         Ok(self)
     }
@@ -1928,7 +1905,7 @@ mod tests {
     }
 
     /// #1236 — `try_add_exclusive_with_access` rejects duplicates by
-    /// name, mirroring `try_add_to_with_access` on the parallel side
+    /// name, mirroring `try_add_to` on the parallel side
     /// and `try_add_exclusive` on the lax-exclusive side.
     #[test]
     fn try_add_exclusive_with_access_rejects_duplicate() {

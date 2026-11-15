@@ -23,7 +23,6 @@ pub mod worldspace_flags {
     pub mod tes4 {
         pub const SMALL_WORLD: u8 = 0x01;
         pub const NO_FAST_TRAVEL: u8 = 0x02;
-        pub const OBLIVION_WORLDSPACE: u8 = 0x04;
         pub const NO_LOD_WATER: u8 = 0x10;
         /// FO3/FNV only.
         pub const NO_LOD_NOISE: u8 = 0x20;

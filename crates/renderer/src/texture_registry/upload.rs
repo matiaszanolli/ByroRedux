@@ -165,36 +165,6 @@ impl TextureRegistry {
         Ok(handle)
     }
 
-    /// Enqueue a DDS upload for batched flush. Counterpart of
-    /// [`Self::load_dds_with_clamp`]: same cache hit semantics
-    /// (returns the existing handle with refcount bumped on hit) but
-    /// the miss path defers the GPU upload + descriptor write until
-    /// the next [`Self::flush_pending_uploads`] call. The bindless
-    /// slot is reserved eagerly with `texture: None` and the
-    /// descriptor redirected to the fallback so any draw issued
-    /// before the flush degrades gracefully (sees the checkerboard,
-    /// not garbage). See #881 / CELL-PERF-03.
-    ///
-    /// `dds_bytes` is moved into the queue — the caller must not
-    /// retain a reference. Cell-load callers route through
-    /// `asset_provider::resolve_texture_with_clamp` which already
-    /// owns the bytes via `tex_provider.extract(path)`.
-    pub fn enqueue_dds_with_clamp(
-        &mut self,
-        device: &ash::Device,
-        path: &str,
-        dds_bytes: Vec<u8>,
-        clamp_mode: u8,
-    ) -> Result<TextureHandle> {
-        self.enqueue_dds_with_clamp_and_color_space(
-            device,
-            path,
-            dds_bytes,
-            clamp_mode,
-            TextureColorSpace::Srgb,
-        )
-    }
-
     /// Batched counterpart of [`Self::load_dds_with_clamp_and_color_space`].
     pub fn enqueue_dds_with_clamp_and_color_space(
         &mut self,
@@ -301,7 +271,7 @@ impl TextureRegistry {
 
     /// Pure-Rust queueing core — slot reservation, refcount bumping,
     /// path_map maintenance, and queue insertion. Split out of
-    /// [`Self::enqueue_dds_with_clamp`] so the unit tests can
+    /// [`Self::enqueue_dds_with_clamp_and_color_space`] so the unit tests can
     /// exercise the bookkeeping (cache miss reserves a fresh slot
     /// vs. cache hit bumps an existing refcount, queue length
     /// transitions, path_map membership) without needing an

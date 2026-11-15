@@ -1065,15 +1065,7 @@ impl ObScriptCommandHost<'_> {
     }
 }
 
-/// Run one ObScript command through the real host, as a script statement would — `caller` the reference
-/// it is called on (an object script's implicit one), `args` its decoded arguments. For the console
-/// (`obscript.cmd`): the answer the command gave (`None` for a command with no answer or one the host
-/// declined) and how many commands the host declined.
-pub fn run_console_command(world: &World, caller: Option<u32>, cmd: u16, args: &[ObScriptValue]) -> (Option<ObScriptValue>, u32) {
-    run_console_command_with_text(world, caller, cmd, None, args)
-}
-
-/// [`run_console_command`] with a string argument. A string-form command
+/// Run console command `cmd` for `caller` with a string argument. A string-form command
 /// ([`crate::obscript_vm::is_string_form_command`]: `PlayBink`, `PlayIdle`, `GetGS` …) gets the
 /// text's value first and `args` after it, as the VM decodes it from a script; any other command
 /// leaves `text` to the caller's `TextArguments`.

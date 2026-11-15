@@ -69,12 +69,9 @@ pub(super) const TERRAIN_SPLAT_LAYERS: usize =
 /// `byroredux/src/render/skinned.rs`.
 pub const MAX_TOTAL_BONES: usize = 196608;
 
-/// Slot 0 of the bone palette is always the identity matrix.
-pub const IDENTITY_BONE_SLOT: u32 = 0;
-
 /// M29.6 — allocatable skin-slot count of the persistent bone palette:
 /// `MAX_TOTAL_BONES / MAX_BONES_PER_MESH` slots of `MAX_BONES_PER_MESH`
-/// bones each, minus slot 0 (the global identity, [`IDENTITY_BONE_SLOT`]).
+/// bones each, minus slot 0 (the global identity matrix).
 /// `floor(196608 / 144) - 1 = 1364` today. The single source of the
 /// slot-pool capacity (#5583): `SkinSlotPool::new` in `main.rs`,
 /// `context::SKIN_MAX_SLOTS` and the per-frame first-sight upload cap

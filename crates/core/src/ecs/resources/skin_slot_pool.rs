@@ -361,17 +361,6 @@ impl SkinSlotPool {
         freed
     }
 
-    /// Number of slots currently allocated to entities. Diagnostic.
-    pub fn allocated_count(&self) -> usize {
-        self.entity_to_slot.len()
-    }
-
-    /// Free-list depth — slots reclaimed but not yet reused.
-    /// Diagnostic.
-    pub fn free_list_depth(&self) -> usize {
-        self.free_list.len()
-    }
-
     /// Highest slot ID issued (or 0 if none). The skin_palette
     /// dispatch covers slots `0..=max_used_slot` × MBPM. Diagnostic
     /// and dispatch-sizing.

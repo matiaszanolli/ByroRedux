@@ -1511,8 +1511,7 @@ pub const THREADS_PER_CLUSTER: u32 = 32;
 //
 // Consumed by `bloom_apply.comp` (`scene.rgb + bloom * BLOOM_INTENSITY`)
 // via the `#include`d `#define`; `composite.frag` mentions it in
-// comments only. Mirrored here so Rust-side
-// `bloom::DEFAULT_BLOOM_INTENSITY` stays in lockstep. The global HDR
+// comments only. Rust reads the same generated `BLOOM_INTENSITY`. The global HDR
 // emissive boost that would make this compensation unnecessary is named
 // once, in `BLOOM_THRESHOLD`'s note below — see
 // `feedback_color_space.md` for the policy discussion.

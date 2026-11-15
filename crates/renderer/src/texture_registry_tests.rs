@@ -1171,7 +1171,7 @@ fn stale_idle_mark_for_a_different_slot_does_not_authorize_immediate_write() {
 /// queue mechanics — slot reservation, refcount = 1, path_map
 /// entry, queue length — are exercisable without an
 /// `ash::Device`. The fallback descriptor redirect on top of this
-/// (in `enqueue_dds_with_clamp`) is gated on the fallback
+/// (in `enqueue_dds_with_clamp_and_color_space`) is gated on the fallback
 /// entry's `texture` being `Some` — it's a no-op in production
 /// when the fallback is uninitialised, so the queueing core is
 /// what actually drives behaviour.

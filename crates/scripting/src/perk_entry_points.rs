@@ -561,11 +561,6 @@ impl PerkEntryTable {
         self.bodies.get(&perk_form_id).map(|entries| entries.as_slice())
     }
 
-    /// How many perks author a `Quest` or `Ability` entry.
-    pub fn body_perk_count(&self) -> usize {
-        self.bodies.len()
-    }
-
     /// The entry-point numbering the table was folded under.
     pub fn dialect(&self) -> PerkEntryPointDialect {
         self.dialect

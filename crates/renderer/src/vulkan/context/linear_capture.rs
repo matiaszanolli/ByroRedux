@@ -94,13 +94,9 @@ pub struct LinearCaptureReport {
 }
 
 impl VulkanContext {
-    /// Start a capture of the next `frames` consecutive frames into `path`.
-    /// Replaces any capture still in progress. `frames` is clamped to ≥ 1.
-    pub fn request_linear_capture(&mut self, path: impl Into<PathBuf>, frames: u32) {
-        self.request_linear_capture_at(path, frames, LinearCaptureTap::PreBloom);
-    }
 
-    /// [`Self::request_linear_capture`] from a chosen tap.
+    /// Start a capture of the next `frames` consecutive frames into `path`, read
+    /// at `tap`. Replaces any capture still in progress. `frames` is clamped to ≥ 1.
     pub fn request_linear_capture_at(&mut self, path: impl Into<PathBuf>, frames: u32, tap: LinearCaptureTap) {
         self.overlay.linear_capture.outcome = None;
         self.overlay.linear_capture.job = Some(LinearCaptureJob {
@@ -113,11 +109,6 @@ impl VulkanContext {
             sum: Vec::new(),
             nonfinite: 0,
         });
-    }
-
-    /// `true` while a requested capture has not finished or failed.
-    pub fn linear_capture_pending(&self) -> bool {
-        self.overlay.linear_capture.job.is_some()
     }
 
     /// The outcome of the last finished capture, once.
