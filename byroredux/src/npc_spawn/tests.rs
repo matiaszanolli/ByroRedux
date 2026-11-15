@@ -2550,6 +2550,43 @@ fn apply_ai_package_behavior_tags_travel_with_location_from_active_package() {
     assert!(world.get::<SandboxBehavior>(placement_root).is_none());
 }
 
+/// INC7-1 — a Skyrim+ tree whose leaf has conditions of its own is left for the first tick: spawn
+/// cannot answer the leaf's conditions (no overlays or restored clock yet), and stamping the package
+/// running here made the first tick see "no change" and never install the right leaf. A tree with no
+/// conditional leaf still installs at spawn.
+#[test]
+fn apply_ai_package_behavior_defers_a_tree_whose_leaf_has_conditions() {
+    use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue};
+    use byroredux_plugin::esm::records::{PackDataInput, PackDataValue, PackLocation, PackLocationTarget, PackProcedure, PackRecord};
+    let tree = |form_id: u32, conditions: Vec<Condition>| PackRecord {
+        form_id,
+        procedures: vec![PackProcedure { procedure_type: "Sandbox".into(), data_input_indexes: vec![0], conditions, ..Default::default() }],
+        data_inputs: vec![PackDataInput {
+            index: 0,
+            value_type: "Location".into(),
+            value: PackDataValue::Location(PackLocation { location_type: 3, target: PackLocationTarget::Other(0), radius: 512 }),
+        }],
+        ..Default::default()
+    };
+    let alive = Condition { function_index: 46, comparator: ComparisonOp::Eq, comparand: ConditionValue::Literal(0.0), ..Default::default() };
+    for (conditions, deferred) in [(vec![alive], true), (Vec::new(), false)] {
+        let mut world = World::new();
+        let placement_root = world.spawn();
+        let npc = NpcRecord { ai_packages: vec![0xCCCC], ..Default::default() };
+        let mut index = EsmIndex::default();
+        index.packages.insert(0xCCCC, tree(0xCCCC, conditions));
+        apply_ai_package_behavior(&mut world, placement_root, &ResolvedNpc::resolve(&npc, &index), &index);
+        let active = world.get::<crate::components::AmbientPackageRuntime>(placement_root).and_then(|runtime| runtime.active_package_form_id);
+        if deferred {
+            assert_eq!(active, None, "a conditional-leaf tree waits for the first tick");
+            assert!(world.get::<SandboxBehavior>(placement_root).is_none());
+        } else {
+            assert_eq!(active, Some(0xCCCC), "an unconditional tree installs at spawn");
+            assert!(world.get::<SandboxBehavior>(placement_root).is_some());
+        }
+    }
+}
+
 /// No `ai_packages` at all → no active package → no Behavior
 /// component of any kind gets tagged. Mirrors the pre-#2052 pre-baked
 /// path's behavior for NPCs with no packages, and confirms the

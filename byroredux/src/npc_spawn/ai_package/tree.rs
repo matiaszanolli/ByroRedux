@@ -118,6 +118,13 @@ pub(super) fn decline_text(declines: &[(String, LeafDecline)]) -> String {
     declines.iter().map(|(leaf, decline)| format!("{leaf} {}", decline.reason())).collect::<Vec<_>>().join(", ")
 }
 
+/// Whether choosing this tree's leaf needs the actor: some leaf carries conditions of its own, which
+/// [`leaf_conditions`] can only answer against an entity. Spawn defers such a package to the first
+/// tick rather than skip those leaves actor-less and stamp the result as running (INC7-1).
+pub(super) fn needs_an_actor(template: &PackRecord) -> bool {
+    template.procedures.iter().any(|leaf| !leaf.conditions.is_empty())
+}
+
 /// AIP-TREE-001: the leaf's own conditions, fail-closed.
 fn leaf_conditions(leaf: &PackProcedure, actor: Option<EntityId>, world: &World) -> Result<(), LeafDecline> {
     if leaf.conditions.is_empty() {

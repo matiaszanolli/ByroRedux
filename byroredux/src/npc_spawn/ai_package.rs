@@ -997,7 +997,9 @@ fn select_active_package<'a>(
 
 /// The installer's answer for `package`: `installs`, or `declines: <reason>` (AIP-DX-001 / -002).
 /// FO3/FNV procedure 11 has no sourced semantics (AIP-CAST-004): it stays without a runtime and says so.
-fn install_result(world: &World, package: &PackRecord, registry: &PackageRegistry, actor_form_id: u32) -> String {
+/// `actor` is the subject a tree leaf's own conditions run on; `None` answers them as spawn would
+/// (skipped), which only the tests want (INC7-1: the explanation and the tick have the actor).
+fn install_result(world: &World, package: &PackRecord, registry: &PackageRegistry, actor_form_id: u32, actor: Option<EntityId>) -> String {
     // AIP-SCHED-003: a window no hour satisfies is never selected, so the installer never runs for it; say why,
     // with the reason the parser logs when it reads the record.
     if package.schedule.is_some_and(|schedule| schedule.is_unsatisfiable()) {
@@ -1021,11 +1023,11 @@ fn install_result(world: &World, package: &PackRecord, registry: &PackageRegistr
                 .package_template_form_id
                 .and_then(|form_id| registry.package(form_id))
                 .unwrap_or(package);
-            match AmbientBehavior::from_package(package, template, actor_form_id, None, world) {
+            match AmbientBehavior::from_package(package, template, actor_form_id, actor, world) {
                 Some(_) => "installs".into(),
                 // AIP-TREE-007: a Skyrim+ tree names the leaves it walked and why none installed.
                 None if !template.procedures.is_empty() => {
-                    match tree::tree_decision(package, template, actor_form_id, None, world) {
+                    match tree::tree_decision(package, template, actor_form_id, actor, world) {
                         Err(declines) if !declines.is_empty() => {
                             format!("declines: tree leaves: {}", tree::decline_text(&declines))
                         }
@@ -1117,7 +1119,7 @@ pub(crate) fn explain_ambient_packages(world: &World, actor: EntityId) -> Option
             .iter()
             .filter_map(|&form_id| registry.package(form_id))
             .map(|package| {
-                let result = install_result(world, package, &registry, runtime.actor_form_id);
+                let result = install_result(world, package, &registry, runtime.actor_form_id, Some(actor));
                 PackageExplanation {
                     form_id: package.form_id,
                     editor_id: package.editor_id.clone(),
@@ -1188,16 +1190,21 @@ pub(super) fn apply_ai_package_behavior(
             .iter()
             .filter_map(|form_id| index.packages.get(form_id)),
     );
-    let active_package_form_id = active.map(|package| package.form_id);
     if let Some(package) = active {
         package_flags::note_selected(world, placement_root, package.package_flags, package.form_id);
     }
+    fn template_of<'a>(index: &'a EsmIndex, package: &'a PackRecord) -> &'a PackRecord {
+        package.package_template_form_id.and_then(|form_id| index.packages.get(&form_id)).unwrap_or(package)
+    }
+    // INC7-1 — a procedure tree whose leaves carry conditions picks its leaf against the actor, which
+    // spawn has no answer for yet (the overlays and restored clock come after). Installing it here
+    // would skip those leaves and stamp the package running, so the first tick (which sees no change)
+    // would never install the right leaf. Leave it unselected: the first tick installs it against the
+    // actor, as a reselect and `install_package_now` do.
+    let active = active.filter(|package| !tree::needs_an_actor(template_of(index, package)));
+    let active_package_form_id = active.map(|package| package.form_id);
     let behavior = active.and_then(|package| {
-        let template = package
-            .package_template_form_id
-            .and_then(|form_id| index.packages.get(&form_id))
-            .unwrap_or(package);
-        AmbientBehavior::from_package(package, template, resolved.shell.form_id, None, world)
+        AmbientBehavior::from_package(package, template_of(index, package), resolved.shell.form_id, None, world)
     });
 
     // M47.2 / #5864 — the spawn-time winner is NOT reported here. It is chosen
@@ -1459,7 +1466,7 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
                 package.editor_id,
                 procedure_name(package),
                 package.procedure_type,
-                install_result(world, package, &registry, runtime.actor_form_id)
+                install_result(world, package, &registry, runtime.actor_form_id, Some(actor))
                     .trim_start_matches("declines: ")
             );
         }
@@ -1606,17 +1613,17 @@ mod tests {
         world.init_resource::<PackageRegistry>();
         let registry = world.resource::<PackageRegistry>().clone();
         for procedure in [PROCEDURE_SANDBOX, PROCEDURE_TRAVEL, PROCEDURE_USE_WEAPON] {
-            let declined = install_result(&world, &pack(0x1, procedure, Some(zero)), &registry, 0);
+            let declined = install_result(&world, &pack(0x1, procedure, Some(zero)), &registry, 0, None);
             assert!(declined.starts_with("declines: unsourced-semantics"), "{declined}");
             assert_ne!(
-                install_result(&world, &pack(0x2, procedure, Some(window)), &registry, 0),
+                install_result(&world, &pack(0x2, procedure, Some(window)), &registry, 0, None),
                 declined,
                 "an ordinary window is not declined for its schedule"
             );
         }
         // Any-time with no duration is a legitimate window (no start hour), not a zero-length one.
         let any_time = PackSchedule { start_hour: None, duration_minutes: 0, ..Default::default() };
-        let result = install_result(&world, &pack(0x3, PROCEDURE_SANDBOX, Some(any_time)), &registry, 0);
+        let result = install_result(&world, &pack(0x3, PROCEDURE_SANDBOX, Some(any_time)), &registry, 0, None);
         assert!(!result.contains("unsourced"), "{result}");
     }
 
@@ -3962,7 +3969,7 @@ mod tests {
         let mut declines: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
         let mut per_procedure: BTreeMap<String, (usize, usize)> = BTreeMap::new();
         for package in &packages {
-            let result = install_result(&world, package, &registry, 0);
+            let result = install_result(&world, package, &registry, 0, None);
             let entry = per_procedure.entry(procedure_name(package)).or_default();
             if result == "installs" {
                 installed += 1;
