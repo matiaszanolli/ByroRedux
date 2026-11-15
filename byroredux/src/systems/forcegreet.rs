@@ -198,6 +198,14 @@ fn forcegreet_system_inner(
         // A Trigger Location holds the greeter in place until the player
         // stands in it; an anchor that does not resolve yet holds it too.
         if let Some((anchor, trigger_radius)) = directive.trigger {
+            // An "In Cell" location is the whole cell, not a radius around the greeter (INC7-4): the
+            // resolved anchor is the greeter's own position, so the player elsewhere in the cell was
+            // never inside and the greeter waited for the life of the package. `use_weapon_package`'s
+            // `inside_place` reads it the same way.
+            let trigger_radius = match anchor {
+                byroredux_core::ecs::components::EatSleepLocation::InCell(_) => f32::INFINITY,
+                _ => trigger_radius,
+            };
             let inside = crate::systems::eat_sleep::resolve_anchor(world, npc, Some(current), anchor).is_some_and(|center| {
                 Vec3::new(player_pos.x - center.x, 0.0, player_pos.z - center.z).length() <= trigger_radius
             });
@@ -437,6 +445,40 @@ mod tests {
         world.query_mut::<GlobalTransform>().unwrap().get_mut(player).unwrap().translation = Vec3::new(400.0, 0.0, 0.0);
         forcegreet_system(&world, 0.5);
         assert_ne!(world.get::<Transform>(npc).unwrap().translation, Vec3::ZERO, "inside the zone the greeter comes to the player");
+    }
+
+    /// INC7-4 — an "In Cell" Trigger Location is the whole cell: the player far from the greeter but in
+    /// its cell is inside it, so the greeter comes. Measured around the greeter, it waited for good.
+    #[test]
+    fn an_in_cell_trigger_location_admits_the_player_anywhere_in_the_cell() {
+        use byroredux_core::ecs::components::EatSleepLocation;
+        let mut world = World::new();
+        world.register::<ForceGreetDirective>();
+        world.register::<GlobalTransform>();
+        world.register::<Transform>();
+        let player = world.spawn();
+        world.insert(player, GlobalTransform { translation: Vec3::new(5000.0, 0.0, 0.0), ..Default::default() });
+        world.insert(player, Transform::default());
+        world.insert_resource(crate::systems::character::PlayerEntity(Some(player)));
+        // The player's cell is the trigger cell: resident, by `CurrentCellContext` and the loaded index.
+        const CELL: u32 = 0x10;
+        let mut index = byroredux_plugin::esm::EsmIndex::default();
+        index.cells.cells.insert("triggercell".into(), byroredux_plugin::esm::cell::CellData { form_id: CELL, ..Default::default() });
+        world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(index)));
+        world.insert_resource(crate::components::CurrentCellContext {
+            cell_editor_id: "TriggerCell".into(),
+            esm_path: String::new(),
+            masters: Vec::new(),
+        });
+        let npc = world.spawn();
+        world.insert(npc, GlobalTransform::default());
+        world.insert(npc, Transform::default());
+        world.insert(
+            npc,
+            ForceGreetDirective { topic: None, radius: FORCE_GREET_RADIUS, trigger: Some((EatSleepLocation::InCell(CELL), 256.0)) },
+        );
+        forcegreet_system(&world, 0.5);
+        assert_ne!(world.get::<Transform>(npc).unwrap().translation, Vec3::ZERO, "in the cell, the greeter comes to the player");
     }
 
     /// #5430 — with the locomotion kill switch off the approach step is
