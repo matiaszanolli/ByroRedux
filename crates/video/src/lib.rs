@@ -206,35 +206,49 @@ fn over_pcm_cap(pcm: &mut Vec<i16>, cap: usize, name: &str) -> bool {
 
 /// Decode the movie's first audio track to a temporary WAV. `None` when it has no audio or the
 /// track does not decode (the picture then plays silent, with a warning).
-fn extract_audio(movie: &mercs2_bink::Movie) -> Option<PathBuf> {
+fn extract_audio(movie: &mercs2_bink::Movie, name: &str) -> Option<PathBuf> {
     let track = movie.tracks.first()?;
     let mut decoder = match AudioDecoder::new(track) {
         Ok(decoder) => decoder,
         Err(error) => {
-            log::warn!("video: its first audio track cannot be decoded: {error}");
+            log::warn!("video: {name}: its first audio track cannot be decoded: {error}");
             return None;
         }
     };
+    let cap = pcm_cap(describe(movie).duration_secs, track.rate(), track.channels() as usize);
+    let pcm = decode_soundtrack(name, movie.frame_count as usize, cap, |frame, pcm| {
+        let record = movie.split(frame as _).ok().and_then(|(records, _)| records.first().copied());
+        let Some(record) = record else { return Ok(false) };
+        pcm.extend(decoder.decode_record(record).map_err(|error| error.to_string())?);
+        Ok(true)
+    });
+    write_wav(&pcm, track.channels() as u16, track.rate())
+}
+
+/// Decode a soundtrack frame by frame into interleaved PCM, for every codec: `decode_frame` appends
+/// frame `n`'s samples and answers whether to go on (`Ok(false)` ends the track quietly, an `Err`
+/// ends it with a warning), and the result never passes `cap` ([`over_pcm_cap`]).
+fn decode_soundtrack(
+    name: &str,
+    frames: usize,
+    cap: usize,
+    mut decode_frame: impl FnMut(usize, &mut Vec<i16>) -> Result<bool, String>,
+) -> Vec<i16> {
     let mut pcm: Vec<i16> = Vec::new();
-    let info = describe(movie);
-    let cap = pcm_cap(info.duration_secs, track.rate(), track.channels() as usize);
-    for frame in 0..movie.frame_count {
-        let record = movie.split(frame).ok().and_then(|(records, _)| records.first().copied());
-        match record.map(|record| decoder.decode_record(record)) {
-            Some(Ok(samples)) => {
-                pcm.extend(samples);
-                if over_pcm_cap(&mut pcm, cap, "Bink 1 movie") {
-                    break;
-                }
-            }
-            Some(Err(error)) => {
-                log::warn!("video: its audio stops at frame {frame}: {error}");
+    for frame in 0..frames {
+        match decode_frame(frame, &mut pcm) {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(error) => {
+                log::warn!("video: {name}: its audio stops at frame {frame}: {error}");
                 break;
             }
-            None => break,
+        }
+        if over_pcm_cap(&mut pcm, cap, name) {
+            break;
         }
     }
-    write_wav(&pcm, track.channels() as u16, track.rate())
+    pcm
 }
 
 /// Interleaved 16-bit PCM into a temporary WAV the audio crate streams; `None` when there is none or
@@ -275,31 +289,18 @@ fn bink2_audio(file: &mut bink2::Bk2, name: &str) -> Option<PathBuf> {
             return None;
         }
     };
-    let mut pcm: Vec<i16> = Vec::new();
     let cap = pcm_cap(describe_bink2(file).duration_secs, track.rate, track.channels());
-    for frame in 0..file.frames {
-        let packet = match file.audio(frame) {
-            Ok(mut packets) => packets.swap_remove(0),
-            Err(error) => {
-                log::warn!("video: {name}: its audio stops at frame {frame}: {error}");
-                break;
-            }
-        };
-        if let Some(packet) = packet {
-            // Refuse a packet that would pass the cap before `decode` grows the buffer for it.
-            if pcm.len().saturating_add(packet.decoded_bytes as usize / 2) > cap {
-                log::warn!("video: {name}: its audio decodes past the movie's running time; stopped at frame {frame}");
-                break;
-            }
-            if let Err(error) = decoder.decode(packet.decoded_bytes, &packet.data, &mut pcm) {
-                log::warn!("video: {name}: its audio stops at frame {frame}: {error}");
-                break;
-            }
-            if over_pcm_cap(&mut pcm, cap, name) {
-                break;
-            }
+    let pcm = decode_soundtrack(name, file.frames, cap, |frame, pcm| {
+        let packet = file.audio(frame).map_err(|error| error.to_string())?.swap_remove(0);
+        let Some(packet) = packet else { return Ok(true) };
+        // Refuse a packet that would pass the cap before `decode` grows the buffer for it.
+        if pcm.len().saturating_add(packet.decoded_bytes as usize / 2) > cap {
+            log::warn!("video: {name}: its audio decodes past the movie's running time; stopped at frame {frame}");
+            return Ok(false);
         }
-    }
+        decoder.decode(packet.decoded_bytes, &packet.data, pcm).map_err(|error| error.to_string())?;
+        Ok(true)
+    });
     if file.tracks.len() > 1 {
         log::info!("video: {name}: sound from audio track ID {} (the first of {})", track.id, file.tracks.len());
     }
@@ -383,6 +384,38 @@ fn guard_decoder(name: &str, tx: &SyncSender<DecodedFrame>, decode: impl FnOnce(
     let _ = tx.send(Err(reason));
 }
 
+/// Start a movie's reader thread, the one place one is spawned. `decode` runs under
+/// [`guard_decoder`] (BIK-DEC-004) with the movie's name and an `emit` that hands one frame, or the
+/// reason the next did not decode, to the player's ring: a reason is logged, and `emit` answers
+/// `false` once the player has dropped the ring, so the reader stops.
+fn spawn_reader(
+    name: String,
+    decode: impl FnOnce(&str, &mut dyn FnMut(DecodedFrame) -> bool) + Send + 'static,
+) -> Result<(Receiver<DecodedFrame>, JoinHandle<()>), VideoError> {
+    let (tx, rx) = sync_channel::<DecodedFrame>(FRAME_RING);
+    let reader = std::thread::Builder::new()
+        .name("movie-decode".into())
+        .spawn(move || {
+            let panic_tx = tx.clone();
+            guard_decoder(&name.clone(), &panic_tx, move || {
+                let mut emit = |frame: DecodedFrame| {
+                    if let Err(reason) = &frame {
+                        log::warn!("video: {reason}");
+                    }
+                    tx.send(frame).is_ok()
+                };
+                decode(&name, &mut emit);
+            });
+        })
+        .map_err(|error| VideoError::Decode(format!("decoder thread: {error}")))?;
+    Ok((rx, reader))
+}
+
+/// The file name a movie's log lines and failure reasons carry.
+fn movie_name(path: &Path) -> String {
+    path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
+}
+
 /// One movie being decoded.
 pub struct Movie {
     info: MovieInfo,
@@ -405,47 +438,38 @@ impl Movie {
         if &magic[..3] == b"KB2" {
             return Self::open_bink2(path, &magic, size, letterbox);
         }
+        let name = movie_name(path);
         let bytes = std::fs::read(path).map_err(|error| VideoError::Unreadable(error.to_string()))?;
         let (info, audio, mut video) = {
             let movie = mercs2_bink::Movie::parse(&bytes).map_err(|detail| container_error(&bytes, detail))?;
             let video = VideoDecoder::new(&movie).map_err(VideoError::Unsupported)?;
-            (describe(&movie), extract_audio(&movie), video)
+            (describe(&movie), extract_audio(&movie, &name), video)
         };
         let (width, height) = (size.0.max(2), size.1.max(2));
-        let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-        let (tx, rx) = sync_channel::<DecodedFrame>(FRAME_RING);
-        let reader = std::thread::Builder::new()
-            .name("movie-decode".into())
-            .spawn(move || {
-                let panic_tx = tx.clone();
-                guard_decoder(&name.clone(), &panic_tx, move || {
-                    let movie = match mercs2_bink::Movie::parse(&bytes) {
-                        Ok(movie) => movie,
-                        Err(error) => {
-                            let _ = tx.send(Err(format!("{name}: the container does not re-parse: {error}")));
-                            return;
-                        }
-                    };
-                    let target = (width as usize, height as usize);
-                    for index in 0..movie.frame_count {
-                        let frame = match video.decode(&movie, index) {
-                            Ok(frame) => frame,
-                            Err(error) => {
-                                let reason = format!("{name}: frame {index} does not decode: {error}");
-                                log::warn!("video: {reason}");
-                                let _ = tx.send(Err(reason));
-                                return;
-                            }
-                        };
-                        let rgba = mercs2_bink::rgb::to_rgba(frame);
-                        if tx.send(Ok(fit(&rgba, (frame.width as usize, frame.height as usize), target, letterbox))).is_err() {
-                            return;
-                        }
+        let (rx, reader) = spawn_reader(name, move |name, emit| {
+            let movie = match mercs2_bink::Movie::parse(&bytes) {
+                Ok(movie) => movie,
+                Err(error) => {
+                    emit(Err(format!("{name}: the container does not re-parse: {error}")));
+                    return;
+                }
+            };
+            let target = (width as usize, height as usize);
+            for index in 0..movie.frame_count {
+                let frame = match video.decode(&movie, index) {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        emit(Err(format!("{name}: frame {index} does not decode: {error}")));
+                        return;
                     }
-                });
-            })
-            .map_err(|error| VideoError::Decode(format!("decoder thread: {error}")))?;
-        Ok(Self { info, size: (width, height), rx: Some(rx), reader: Some(reader), audio, frame: Vec::new(), index: -1, exhausted: false, failure: None })
+                };
+                let rgba = mercs2_bink::rgb::to_rgba(frame);
+                if !emit(Ok(fit(&rgba, (frame.width as usize, frame.height as usize), target, letterbox))) {
+                    return;
+                }
+            }
+        })?;
+        Ok(Self::streaming(info, (width, height), rx, Some(reader), audio))
     }
 
     /// BIK-DEC-003: a Bink 2 movie, its first audio track decoded up front, its video packets read
@@ -454,41 +478,43 @@ impl Movie {
     fn open_bink2(path: &Path, magic: &[u8], size: (u32, u32), letterbox: bool) -> Result<Self, VideoError> {
         let mut file = bink2_container(path, magic)?;
         let info = describe_bink2(&file);
-        let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        let name = movie_name(path);
         let audio = bink2_audio(&mut file, &name);
         let (width, height) = (size.0.max(2), size.1.max(2));
-        let (tx, rx) = sync_channel::<DecodedFrame>(FRAME_RING);
-        let reader = std::thread::Builder::new()
-            .name("movie-decode".into())
-            .spawn(move || {
-                let panic_tx = tx.clone();
-                guard_decoder(&name.clone(), &panic_tx, move || {
-                    let mut decoder = bink2::Decoder::for_file(&file);
-                    decoder.options.threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(BINK2_THREADS);
-                    let (source, target) = ((file.width, file.height), (width as usize, height as usize));
-                    let mut rgba = vec![0u8; source.0 * source.1 * 4];
-                    for index in 0..file.frames {
-                        let decoded = match file.video(index) {
-                            Ok(packet) => decoder.decode(&packet, file.is_key(index)).map_err(|error| error.to_string()),
-                            Err(error) => Err(error.to_string()),
-                        };
-                        match decoded {
-                            Ok(frame) => frame.rgba_into(&mut rgba),
-                            Err(error) => {
-                                let reason = format!("{name}: frame {index} does not decode: {error}");
-                                log::warn!("video: {reason}");
-                                let _ = tx.send(Err(reason));
-                                return;
-                            }
-                        }
-                        if tx.send(Ok(fit(&rgba, source, target, letterbox))).is_err() {
-                            return;
-                        }
+        let (rx, reader) = spawn_reader(name, move |name, emit| {
+            let mut decoder = bink2::Decoder::for_file(&file);
+            decoder.options.threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(BINK2_THREADS);
+            let (source, target) = ((file.width, file.height), (width as usize, height as usize));
+            let mut rgba = vec![0u8; source.0 * source.1 * 4];
+            for index in 0..file.frames {
+                let decoded = match file.video(index) {
+                    Ok(packet) => decoder.decode(&packet, file.is_key(index)).map_err(|error| error.to_string()),
+                    Err(error) => Err(error.to_string()),
+                };
+                match decoded {
+                    Ok(frame) => frame.rgba_into(&mut rgba),
+                    Err(error) => {
+                        emit(Err(format!("{name}: frame {index} does not decode: {error}")));
+                        return;
                     }
-                });
-            })
-            .map_err(|error| VideoError::Decode(format!("decoder thread: {error}")))?;
-        Ok(Self { info, size: (width, height), rx: Some(rx), reader: Some(reader), audio, frame: Vec::new(), index: -1, exhausted: false, failure: None })
+                }
+                if !emit(Ok(fit(&rgba, source, target, letterbox))) {
+                    return;
+                }
+            }
+        })?;
+        Ok(Self::streaming(info, (width, height), rx, Some(reader), audio))
+    }
+
+    /// A movie read from `rx`, which `reader` (when there is one) fills.
+    fn streaming(
+        info: MovieInfo,
+        size: (u32, u32),
+        rx: Receiver<DecodedFrame>,
+        reader: Option<JoinHandle<()>>,
+        audio: Option<PathBuf>,
+    ) -> Self {
+        Self { info, size, rx: Some(rx), reader, audio, frame: Vec::new(), index: -1, exhausted: false, failure: None }
     }
 
     /// A movie over frames that already exist (tests).
@@ -507,7 +533,7 @@ impl Movie {
         for item in decoded {
             tx.send(item).expect("the ring holds every frame");
         }
-        Self { info, size, rx: Some(rx), reader: None, audio: None, frame: Vec::new(), index: -1, exhausted: false, failure: None }
+        Self::streaming(info, size, rx, None, None)
     }
 
     /// BIK-DEC-004 — why decoding stopped before the last frame, once the reader has said so.
@@ -657,45 +683,31 @@ mod tests {
         assert_eq!(movie.failure(), Some(reason));
     }
 
-    /// BIK-DEC-004 (INC3 missing test, aa193bd9e): both reader threads, Bink 1 and Bink 2, run their
-    /// decode loop inside `guard_decoder`. `a_decoder_panic_ends_the_movie_as_failed` proves the guard
-    /// itself; a reader that dropped it would still pass that, and panic into a silent Finished.
+    /// BIK-DEC-004 / #6991 — every reader thread is spawned by `spawn_reader`, which runs the decode
+    /// loop under `guard_decoder` (`a_decoder_panic_ends_the_movie_as_failed` runs it). A second spawn
+    /// site would bypass that, so the one named-thread spawn in this file must sit inside
+    /// `spawn_reader`; the needle is split so this test's own text cannot match it (#5469).
     #[test]
-    fn every_reader_thread_runs_under_the_decoder_guard() {
-        // Production readers are the only named threads (`thread::Builder`); the needle is split so
-        // this test's own text cannot match it, and no test-module cut is needed (#5469).
+    fn spawn_reader_is_the_only_reader_thread() {
+        let src = include_str!("lib.rs");
         let needle = concat!("thread::Builder::", "new()");
-        let spawns: Vec<&str> = include_str!("lib.rs").split(needle).skip(1).collect();
-        assert_eq!(spawns.len(), 2, "one reader per format (Bink 1, Bink 2)");
-        for body in spawns {
-            let head = &body[..body.len().min(260)];
-            assert!(head.contains("guard_decoder("), "a reader thread decodes outside guard_decoder: {head}");
-        }
+        let spawns: Vec<usize> = src.match_indices(needle).map(|(at, _)| at).collect();
+        assert_eq!(spawns.len(), 1, "one reader spawn site, in spawn_reader");
+        let start = src.find("fn spawn_reader(").expect("spawn_reader exists");
+        let end = start + src[start..].find("\n}\n").expect("spawn_reader closes at column zero");
+        assert!((start..end).contains(&spawns[0]), "the reader spawn must be spawn_reader's");
     }
 
     /// BIK-DEC-004 — a decoder that panics mid-movie ends it as Failed with a reason, like a frame
     /// that does not decode: the panic would otherwise only close the ring, which reads as Finished.
     #[test]
     fn a_decoder_panic_ends_the_movie_as_failed() {
-        let (tx, rx) = sync_channel::<DecodedFrame>(FRAME_RING);
-        let reader = std::thread::spawn(move || {
-            let panic_tx = tx.clone();
-            guard_decoder("x.bk2", &panic_tx, move || {
-                tx.send(Ok(vec![7; 16])).unwrap();
-                panic!("slice 3 out of range");
-            });
-        });
-        let mut movie = Movie {
-            info: info(10.0),
-            size: (2, 2),
-            rx: Some(rx),
-            reader: Some(reader),
-            audio: None,
-            frame: Vec::new(),
-            index: -1,
-            exhausted: false,
-            failure: None,
-        };
+        let (rx, reader) = spawn_reader("x.bk2".to_owned(), |_, emit| {
+            assert!(emit(Ok(vec![7; 16])));
+            panic!("slice 3 out of range");
+        })
+        .unwrap();
+        let mut movie = Movie::streaming(info(10.0), (2, 2), rx, Some(reader), None);
         assert_eq!(movie.decode_to_end(), 1, "the frame before the panic was decoded");
         assert_eq!(movie.failure(), Some("x.bk2: the decoder panicked: slice 3 out of range"));
     }
