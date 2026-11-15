@@ -31,7 +31,7 @@
 //!    shader's header) against the blade scatter's chunk and cell records.
 //! 3. The geometry pass draws [`GroundCoverModelTier::shape_draws`].
 
-use crate::vulkan::descriptors::{layout_binding, DescriptorPoolBuilder};
+use crate::vulkan::descriptors::{layout_binding, memory_barrier, DescriptorPoolBuilder};
 use crate::vulkan::gpu_timers::TimerPass;
 use anyhow::{Context, Result};
 use ash::vk;
@@ -808,7 +808,7 @@ impl GroundCoverModelTier {
             // The slab, counters and draws are shared across frames in
             // flight: order this frame's writes after every earlier frame's
             // reads of them (the indirect draw and the emit phase).
-            barrier(
+            memory_barrier(
                 device,
                 cmd,
                 vk::PipelineStageFlags::DRAW_INDIRECT
@@ -845,7 +845,7 @@ impl GroundCoverModelTier {
                     byte_view(std::slice::from_ref(&push)),
                 );
                 device.cmd_dispatch(cmd, groups, 1, 1);
-                barrier(
+                memory_barrier(
                     device,
                     cmd,
                     vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -968,31 +968,6 @@ fn shape_instance_flags(
         flags |= INSTANCE_FLAG_FLAT_SHADING;
     }
     flags
-}
-
-fn barrier(
-    device: &ash::Device,
-    cmd: vk::CommandBuffer,
-    src_stage: vk::PipelineStageFlags,
-    src_access: vk::AccessFlags,
-    dst_stage: vk::PipelineStageFlags,
-    dst_access: vk::AccessFlags,
-) {
-    let barrier = [vk::MemoryBarrier::default()
-        .src_access_mask(src_access)
-        .dst_access_mask(dst_access)];
-    // SAFETY: `cmd` is recording and `barrier` outlives the call.
-    unsafe {
-        device.cmd_pipeline_barrier(
-            cmd,
-            src_stage,
-            dst_stage,
-            vk::DependencyFlags::empty(),
-            &barrier,
-            &[],
-            &[],
-        );
-    }
 }
 
 #[cfg(test)]

@@ -5,7 +5,7 @@
 //! in `construct.rs`.
 use super::*;
 use crate::vulkan::gpu_timers::TimerPass;
-use crate::vulkan::descriptors::write_storage_buffer;
+use crate::vulkan::descriptors::{memory_barrier, write_storage_buffer};
 
 impl GroundCoverPipeline {
     /// Upload the frame's chunk / cell / species records and rebind the
@@ -349,6 +349,11 @@ impl GroundCoverPipeline {
             // the end of the previous frame keeps the whole lifetime inside
             // one command buffer.
             device.cmd_fill_buffer(cmd, counters.buffer, 0, counters.size, 0);
+            // Global memory barriers rather than per-buffer ones throughout the
+            // scatter: its four written buffers are all consumed at the same two
+            // stages, so naming them individually would be four times the API
+            // traffic for the same edge.
+            //
             // #4293 — the seed fills below write ranges this zero fill already
             // wrote, and nothing orders the two: under the sync model this
             // crate follows (#4177/#4179/#4181) their relative order is
@@ -360,7 +365,7 @@ impl GroundCoverPipeline {
             // barrier is the device edge that sequences them. Confirmed as the
             // source of the ten `vkCmdFillBuffer` WAW hazards on a
             // `BYRO_VALIDATION=1` Skyrim tundra capture, and cleared by this.
-            buffer_barrier(
+            memory_barrier(
                 device,
                 cmd,
                 vk::PipelineStageFlags::TRANSFER,
@@ -385,7 +390,7 @@ impl GroundCoverPipeline {
                 4,
                 EXTREMA_MIN_SEED,
             );
-            buffer_barrier(
+            memory_barrier(
                 device,
                 cmd,
                 vk::PipelineStageFlags::TRANSFER,
@@ -465,7 +470,7 @@ impl GroundCoverPipeline {
             // Widening the existing edge rather than adding a second one:
             // same class of purely-additive change as #2403's skinned-vertex
             // publish mask.
-            buffer_barrier(
+            memory_barrier(
                 device,
                 cmd,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -534,7 +539,7 @@ impl GroundCoverPipeline {
             // #4177/#4179 settled: a host-side fence wait is not a device
             // edge, and the queue's synchronization model — which is what sync
             // validation checks — only sees barriers.
-            buffer_barrier(
+            memory_barrier(
                 device,
                 cmd,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -559,7 +564,7 @@ impl GroundCoverPipeline {
             device.cmd_dispatch(cmd, groups, groups, 1);
             // The field's two halves alternate, so this frame's writes are the
             // next frame's reads as well as this frame's vertex-shader reads.
-            buffer_barrier(
+            memory_barrier(
                 device,
                 cmd,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -788,34 +793,6 @@ fn commit_field_state(
     *field_previous = Some([state.current[0], state.current[1]]);
 }
 
-fn buffer_barrier(
-    device: &ash::Device,
-    cmd: vk::CommandBuffer,
-    src_stage: vk::PipelineStageFlags,
-    src_access: vk::AccessFlags,
-    dst_stage: vk::PipelineStageFlags,
-    dst_access: vk::AccessFlags,
-) {
-    let barrier = [vk::MemoryBarrier::default()
-        .src_access_mask(src_access)
-        .dst_access_mask(dst_access)];
-    // SAFETY: `cmd` is recording and `barrier` outlives the call. A global
-    // memory barrier rather than per-buffer ones: the scatter's four written
-    // buffers are all consumed at the same two stages, so naming them
-    // individually would be four times the API traffic for the same edge.
-    unsafe {
-        device.cmd_pipeline_barrier(
-            cmd,
-            src_stage,
-            dst_stage,
-            vk::DependencyFlags::empty(),
-            &barrier,
-            &[],
-            &[],
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -960,7 +937,7 @@ mod tests {
             .expect("the extrema seed fills follow the zero fill");
         let between = &after_zero[..first_seed];
         assert!(
-            between.contains("buffer_barrier(")
+            between.contains("memory_barrier(")
                 && between.contains(
                     "vk::PipelineStageFlags::TRANSFER,\n                vk::AccessFlags::TRANSFER_WRITE,\n                vk::PipelineStageFlags::TRANSFER,"
                 ),
