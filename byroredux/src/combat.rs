@@ -1072,27 +1072,35 @@ pub(crate) fn attack_damage(world: &World, aggressor: EntityId) -> f32 {
         // itself is a separate, deferred gap (#3092's own suggested fix only
         // names Melee Damage); UNARMED_DAMAGE stays the flat engine baseline
         // it always was for the no-weapon case.
+        // GAME-2 — GECK *Weapon Damage Formula*: `MeleeDamageActorValue` is a term of Melee Damage
+        // only. Gun Damage has none, and Unarmed Damage (hand to hand, animation type 0) takes the
+        // Unarmed actor value instead, so a VATS pistol volley gained Strength x 0.5 a shot. The
+        // weapon's animation type decides; an unknown one (no record in the index) keeps the bonus.
         Some(damage) => {
-            damage.max(0.0) + melee_damage_charal_bonus(world, aggressor) + melee_arm_condition_penalty(world, aggressor, damage)
+            let anim_type = equipped_weapon_anim_type(world, aggressor);
+            let melee = anim_type.is_none_or(crate::limbs::is_melee_anim_type);
+            let bonus = if melee { melee_damage_charal_bonus(world, aggressor) } else { 0.0 };
+            damage.max(0.0) + bonus + melee_arm_condition_penalty(anim_type, world, aggressor, damage)
         }
         None => UNARMED_DAMAGE,
     }
+}
+
+/// The `WEAP` animation type of `aggressor`'s equipped weapon, from its record: `None` with no weapon, no
+/// loaded index or no record. Tells a melee weapon from a gun and hand to hand (GAME-2, VATS-LIMB-011).
+fn equipped_weapon_anim_type(world: &World, aggressor: EntityId) -> Option<u8> {
+    let weapon = world.get::<EquippedWeapon>(aggressor).map(|weapon| weapon.base_form_id)?;
+    world.try_resource::<crate::components::LoadedCellIndex>().and_then(|index| match &index.0.items.get(&weapon)?.kind {
+        byroredux_plugin::esm::records::ItemKind::Weapon { anim_type, .. } => Some(*anim_type),
+        _ => None,
+    })
 }
 
 /// VATS-LIMB-011 - `MeleeArmConditionPenalty` of the GECK *Weapon Damage Formula* for the swing `aggressor` is
 /// making: negative when a crippled arm reduces it, `0.0` for a gun, no equipped weapon, healthy arms or a load
 /// order with no limb effects. The weapon's animation type (read from the record) tells a melee weapon from a gun
 /// and a one-handed weapon from a two-handed one.
-fn melee_arm_condition_penalty(world: &World, aggressor: EntityId, base_weapon_damage: f32) -> f32 {
-    let Some(weapon) = world.get::<EquippedWeapon>(aggressor).map(|weapon| weapon.base_form_id) else {
-        return 0.0;
-    };
-    let anim_type = world.try_resource::<crate::components::LoadedCellIndex>().and_then(|index| {
-        match &index.0.items.get(&weapon)?.kind {
-            byroredux_plugin::esm::records::ItemKind::Weapon { anim_type, .. } => Some(*anim_type),
-            _ => None,
-        }
-    });
+fn melee_arm_condition_penalty(anim_type: Option<u8>, world: &World, aggressor: EntityId, base_weapon_damage: f32) -> f32 {
     match anim_type {
         Some(anim_type) if crate::limbs::is_melee_anim_type(anim_type) => crate::limbs::melee_arm_penalty(
             world,
@@ -2409,6 +2417,55 @@ mod tests {
 
         // 18.0 weapon damage + (10.0 STR × 0.5) = 23.0, not 18.0.
         assert_eq!(attack_damage(&world, aggressor), 23.0);
+    }
+
+    /// GAME-2 — GECK *Weapon Damage Formula*: `MeleeDamageActorValue` is a term of Melee Damage only.
+    /// A gun (Gun Damage) and a hand-to-hand weapon (Unarmed Damage, which takes the Unarmed actor
+    /// value instead) get no Strength bonus; a melee weapon still does. A VATS pistol volley used to
+    /// add Strength x 0.5 to every shot.
+    #[test]
+    fn the_melee_damage_bonus_is_for_melee_weapons_only() {
+        use byroredux_core::character::{DerivedInput, DerivedStatFormula, LevelingModel};
+        use byroredux_plugin::esm::records::{common::CommonItemFields, EsmIndex, ItemKind, ItemRecord};
+        const STRENGTH: u32 = 0x2C2;
+        const MELEE_DAMAGE: u32 = 0x2CA;
+        const PISTOL: u32 = 0xB1;
+        const MACHETE: u32 = 0xB2;
+        const KNUCKLES: u32 = 0xB3;
+        let mut index = EsmIndex::default();
+        for (form_id, anim_type) in [(PISTOL, 3u8), (MACHETE, 1), (KNUCKLES, 0)] {
+            let mut kind = ItemKind::weapon_stub(18, 0);
+            if let ItemKind::Weapon { anim_type: slot, .. } = &mut kind {
+                *slot = anim_type;
+            }
+            index.items.insert(form_id, ItemRecord { form_id, common: CommonItemFields::default(), kind });
+        }
+        let mut world = World::new();
+        world.register::<ActorValues>();
+        world.register::<EquippedWeapon>();
+        world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(index)));
+        let mut rs = CharacterRuleset::new(LevelingModel::FNV);
+        rs.push_derived(MELEE_DAMAGE, DerivedStatFormula::affine(DerivedInput::actor_value(STRENGTH), 0.5, 0.0));
+        world.insert_resource(rs);
+        world.insert_resource(MeleeDamageConfig { melee_damage_avif: MELEE_DAMAGE });
+        let attack = |world: &mut World, weapon: u32| {
+            let actor = world.spawn();
+            world.insert(actor, ActorValues::from_pairs([(STRENGTH, 10.0)]));
+            world.insert(
+                actor,
+                EquippedWeapon {
+                    inventory_index: byroredux_core::ecs::components::InventoryIndex(0),
+                    base_form_id: weapon,
+                    damage: 18.0,
+                    reach: 0.0,
+                    speed: 0.0,
+                },
+            );
+            attack_damage(world, actor)
+        };
+        assert_eq!(attack(&mut world, PISTOL), 18.0, "a gun: no Melee Damage term");
+        assert_eq!(attack(&mut world, KNUCKLES), 18.0, "hand to hand takes the Unarmed actor value, not this one");
+        assert_eq!(attack(&mut world, MACHETE), 23.0, "a melee weapon: 18 + 10 STR x 0.5");
     }
 
     /// Regression for #3762. A `CREA` actor with an authored
