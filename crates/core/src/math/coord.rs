@@ -217,7 +217,7 @@ pub const REFR_ROTATION_MODE_SHIP: u8 = 0;
 
 /// The four candidate Euler→Y-up conversions the REFR-placement A/B
 /// triage sweeps over. **Single source of truth** for the formulas —
-/// `byroredux::cell_loader::euler`'s `--rotation-mode N` dispatcher and
+/// `byroredux::zup_yup`'s `--rotation-mode N` dispatcher and
 /// the `byroredux-plugin` `cell_rot_sweep` example both route here
 /// (#2438 / COORD-5; pre-fix the example hand-copied all four arms, so a
 /// retune of the dispatcher would have left the triage tool reporting
