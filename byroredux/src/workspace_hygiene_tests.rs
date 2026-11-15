@@ -1834,7 +1834,6 @@ const HARDCODED_GAME_PATH_ALLOWLIST: &[&str] = &[
     "crates/scripting/tests/pex_recognize_e2e.rs",
     "crates/sfmaterial/tests/real_cdb.rs",
     "crates/spt/tests/parse_real_spt.rs",
-    "crates/ui/src/avm1_host/tests.rs",
     "crates/ui/src/avm2_host.rs",
     "crates/ui/src/host/tests.rs",
     "crates/ui/tests/fallout4_hudmenu_protocol.rs",
