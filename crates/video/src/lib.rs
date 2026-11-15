@@ -637,12 +637,13 @@ mod tests {
     /// itself; a reader that dropped it would still pass that, and panic into a silent Finished.
     #[test]
     fn every_reader_thread_runs_under_the_decoder_guard() {
-        let src = include_str!("lib.rs");
-        let production = &src[..src.find("\n#[cfg(test)]\nmod tests").expect("the test module")];
-        let spawns: Vec<&str> = production.split(".spawn(move || {").skip(1).collect();
+        // Production readers are the only named threads (`thread::Builder`); the needle is split so
+        // this test's own text cannot match it, and no test-module cut is needed (#5469).
+        let needle = concat!("thread::Builder::", "new()");
+        let spawns: Vec<&str> = include_str!("lib.rs").split(needle).skip(1).collect();
         assert_eq!(spawns.len(), 2, "one reader per format (Bink 1, Bink 2)");
         for body in spawns {
-            let head = &body[..body.len().min(160)];
+            let head = &body[..body.len().min(260)];
             assert!(head.contains("guard_decoder("), "a reader thread decodes outside guard_decoder: {head}");
         }
     }
