@@ -124,7 +124,6 @@ fn register_interaction_system(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::character::Perks>()
             .writes_resource::<byroredux_scripting::PendingScriptMessages>()
             .writes_resource::<crate::perk_activate::PendingActivateChoice>()
-            .reads_resource::<byroredux_scripting::PerkFragments>()
-            .writes_resource::<byroredux_scripting::PendingPerkEntries>(),
+            .with(byroredux_scripting::perk_entry_points::perk_fragment_report_access),
     );
 }

@@ -761,6 +761,7 @@ mod system_access_declaration_tests {
         include_str!("../../../../crates/scripting/src/crime_faction.rs"),
         include_str!("../../../../crates/scripting/src/crime_gold.rs"),
         include_str!("../../../../crates/scripting/src/ownership.rs"),
+        include_str!("../../../../crates/scripting/src/perk_entry_points.rs"),
     );
     const ARMOR_SRC: &str = include_str!("../../armor.rs");
     const CRAFTING_SRC: &str = include_str!("../../crafting.rs");

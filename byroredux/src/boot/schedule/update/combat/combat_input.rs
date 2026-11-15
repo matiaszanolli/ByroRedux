@@ -16,18 +16,8 @@ pub(super) fn register_combat_input_systems(scheduler: &mut Scheduler) {
         Access::new()
             // PERK-SUB-002 — the outgoing-damage composition: its table, the owner's perks, the
             // `Add Range` draw, and the scratch weapon subject it lends a base form to.
-            .reads_resource::<byroredux_scripting::perk_entry_points::PerkEntryTable>()
-            .reads::<byroredux_core::character::Perks>()
-            .writes_resource::<byroredux_scripting::story_manager::StoryManagerRng>()
-            .reads_resource::<byroredux_scripting::perk_entry_points::WeaponSubject>()
-            // PERK-HOOK-008 — an applied FO4 entry with a bound fragment reports its run (`PendingPerkEntries`),
-            // looking the owner's reference id up first.
-            .reads_resource::<byroredux_scripting::PerkFragments>()
-            .writes_resource::<byroredux_scripting::PendingPerkEntries>()
-            .reads_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
-            .reads::<byroredux_core::ecs::components::FormIdComponent>()
-            .reads_resource::<byroredux_core::form_id::FormIdPool>()
-            .writes::<byroredux_scripting::SceneAliasCandidate>()
+            .with(byroredux_scripting::perk_entry_points::perk_entry_composition_access)
+            .with(byroredux_scripting::perk_entry_points::perk_fragment_report_access)
             .reads_resource::<ActionState>()
             .reads_resource::<crate::systems::PlayerEntity>()
             .reads_resource::<crate::systems::PlayerMode>()

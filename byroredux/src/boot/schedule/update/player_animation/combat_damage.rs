@@ -37,18 +37,10 @@ fn register_damage_pass(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::ActorBaseProtectionOverrides>()
             // PERK-SUB-002 — the Damage Threshold composition: its table, the owners' perks, the
             // `Add Range` draw, and the scratch weapon subject it lends a base form to.
-            .reads_resource::<byroredux_scripting::perk_entry_points::PerkEntryTable>()
-            .reads::<byroredux_core::character::Perks>()
+            .with(byroredux_scripting::perk_entry_points::perk_entry_composition_access)
             // PERK-HOOK-006 — a kill's Add Leveled List On Death entries land in the victim's inventory.
             .writes::<byroredux_core::ecs::components::Inventory>()
-            .writes_resource::<byroredux_scripting::story_manager::StoryManagerRng>()
-            .reads_resource::<byroredux_scripting::perk_entry_points::WeaponSubject>()
-            // PERK-HOOK-008 — an applied FO4 entry with a bound fragment reports its run (`PendingPerkEntries`),
-            // looking the owner's reference id up first.
-            .reads_resource::<byroredux_scripting::PerkFragments>()
-            .writes_resource::<byroredux_scripting::PendingPerkEntries>()
-            .reads_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
-            .writes::<byroredux_scripting::SceneAliasCandidate>()
+            .with(byroredux_scripting::perk_entry_points::perk_fragment_report_access)
             .writes::<byroredux_scripting::Bleedout>()
             .reads_resource::<byroredux_scripting::BleedoutRules>()
             .reads_resource::<byroredux_scripting::SceneQuestAliasRegistry>()

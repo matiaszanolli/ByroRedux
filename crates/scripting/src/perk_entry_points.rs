@@ -1212,6 +1212,33 @@ fn apply_op(world: &World, owner: EntityId, op: &PerkOp, value: f32) -> f32 {
     }
 }
 
+/// #6962 — what composing a perk entry point takes (PERK-SUB-002): the entry
+/// table, the owner's perks, the `Add Range` draw, the scratch weapon subject
+/// the composer lends a base form to, and the scene-alias candidates its
+/// conditions write. Called through `Access::with` by every row that composes
+/// entries (combat input, NPC combat AI, combat damage, the VATS scan).
+pub fn perk_entry_composition_access(access: byroredux_core::ecs::Access) -> byroredux_core::ecs::Access {
+    access
+        .reads_resource::<PerkEntryTable>()
+        .reads::<Perks>()
+        .writes_resource::<StoryManagerRng>()
+        .reads_resource::<WeaponSubject>()
+        .writes::<crate::SceneAliasCandidate>()
+}
+
+/// #6962 — what reporting an applied entry's fragment takes (PERK-HOOK-008): an
+/// applied FO4 entry with a bound fragment reports its run
+/// (`PendingPerkEntries`), looking the owner's reference id up first. Called
+/// through `Access::with` by every row whose composed entries can carry one.
+pub fn perk_fragment_report_access(access: byroredux_core::ecs::Access) -> byroredux_core::ecs::Access {
+    access
+        .reads_resource::<crate::PerkFragments>()
+        .writes_resource::<crate::PendingPerkEntries>()
+        .reads_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
+        .reads::<byroredux_core::ecs::components::FormIdComponent>()
+        .reads_resource::<byroredux_core::form_id::FormIdPool>()
+}
+
 mod activate;
 mod bodies;
 mod catalog;
