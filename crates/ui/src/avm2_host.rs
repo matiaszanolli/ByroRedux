@@ -793,13 +793,116 @@ fn build_adapter_abc(
     let object = catalog
         .host_object()
         .expect("AVM2 adapter requires a host-object profile");
+    let (mut pools, names) = build_adapter_pools(&object, has_destroy_trait);
+    let installed = installed_method_names(catalog, uncataloged);
+    let mut out = AdapterMethods::with_capacity(installed.len() + 4);
+    out.traits.push(Trait {
+        name: names.root_slot,
+        kind: TraitKind::Slot {
+            slot_id: 1,
+            type_name: Index::new(0),
+            value: None,
+        },
+        metadata: Vec::new(),
+        is_final: false,
+        is_override: false,
+    });
+
+    let forwarders = add_forwarding_helpers(&mut pools, &names, object.property, &installed, &mut out)?;
+    let mut next_disp_id = installed.len() as u32 + 1;
+    let ready_method = add_ready_method(&names, &mut out)?;
+    out.traits.push(method_trait(names.ready_helper, ready_method, next_disp_id));
+    next_disp_id += 1;
+    // #2963 — only wire the destroy helper (and its `addCallback`
+    // registration in the installer) when the movie's lifecycle class actually
+    // declared `onCodeObjDestruction`. Omitting it entirely leaves
+    // `DESTROY_CALLBACK` unregistered, which `SwfPlayer`'s close path already
+    // treats as optional (`has_callback(DESTROY_CALLBACK)`, `player.rs`) rather
+    // than an error.
+    if let Some(destroy) = &names.destroy {
+        let destroy_method = add_destroy_method(&names, destroy, &mut out)?;
+        out.traits.push(method_trait(destroy.helper, destroy_method, next_disp_id));
+        next_disp_id += 1;
+    }
+    let installer_method = add_installer_method(&names, &forwarders, &mut out)?;
+    out.traits.push(method_trait(names.install_helper, installer_method, next_disp_id));
+    let init_method = add_init_method(&names, &mut out)?;
+
+    let abc = AbcFile {
+        major_version: 46,
+        minor_version: 16,
+        constant_pool: ConstantPool {
+            ints: Vec::new(),
+            uints: Vec::new(),
+            doubles: Vec::new(),
+            strings: pools.strings,
+            namespaces: pools.namespaces,
+            namespace_sets: Vec::new(),
+            multinames: pools.multinames,
+        },
+        methods: out.methods,
+        metadata: Vec::new(),
+        instances: Vec::new(),
+        classes: Vec::new(),
+        scripts: vec![Script {
+            init_method,
+            traits: out.traits,
+        }],
+        method_bodies: out.bodies,
+    };
+
+    let mut bytes = Vec::new();
+    Writer::new(&mut bytes).write(abc)?;
+    Ok(bytes)
+}
+
+/// The adapter's constant pools. Built by [`build_adapter_pools`]; the forwarding helpers
+/// append their own names after the fixed entries.
+struct AdapterPools {
+    strings: Vec<Vec<u8>>,
+    namespaces: Vec<Namespace>,
+    multinames: Vec<Multiname>,
+    public_namespace: Index<Namespace>,
+}
+
+/// The pool entries the adapter's fixed methods name.
+struct AdapterNames {
+    external_interface: Index<Multiname>,
+    call: Index<Multiname>,
+    apply: Index<Multiname>,
+    unshift: Index<Multiname>,
+    code_object: Index<Multiname>,
+    on_create: Index<Multiname>,
+    install_helper: Index<Multiname>,
+    add_callback: Index<Multiname>,
+    ready_helper: Index<Multiname>,
+    root_slot: Index<Multiname>,
+    install_helper_string: Index<String>,
+    ready_helper_string: Index<String>,
+    ready_callback_string: Index<String>,
+    loaded_callback_string: Index<String>,
+    /// `None` when this movie's lifecycle class has no `onCodeObjDestruction` trait (#2963).
+    destroy: Option<DestroyNames>,
+}
+
+/// The destroy helper's pool entries (#2963).
+struct DestroyNames {
+    on_destroy: Index<Multiname>,
+    helper: Index<Multiname>,
+    helper_string: Index<String>,
+    callback_string: Index<String>,
+    destroyed_event_string: Index<String>,
+}
+
+/// The fixed constant-pool entries, in the order the emitted ABC has always carried them.
+fn build_adapter_pools(object: &crate::catalog::ScaleformHostObject, has_destroy_trait: bool) -> (AdapterPools, AdapterNames) {
     // #2724 / #2725 — every constant-pool entry is *derived* from the push that
     // creates it, never transcribed as a positional `Index::new(N)` literal. The
     // pools are 1-based (ABC index 0 is the "any" sentinel), so an off-by-one or
-    // a mid-pool insertion used to produce a valid-but-wrong ABC that still
+    // a mid-pool insertion would produce a valid-but-wrong ABC that still
     // parsed and still passed every count-based test, while forwarding calls
     // under the wrong names. Only `Index::new(0)` — the sentinel itself — is
-    // written literally below.
+    // written literally in this module.
     let mut strings = Vec::new();
     let empty_string = add_string(&mut strings, Vec::new());
     let flash_external_string = add_string(&mut strings, b"flash.external".to_vec());
@@ -814,11 +917,11 @@ fn build_adapter_abc(
     let ready_helper_string = add_string(&mut strings, READY_HELPER.as_bytes().to_vec());
     let ready_callback_string = add_string(&mut strings, READY_CALLBACK.as_bytes().to_vec());
     let loaded_callback_string = add_string(&mut strings, LOADED_CALLBACK.as_bytes().to_vec());
-    // #2963 — these four only feed the destroy helper below. A movie whose
+    // #2963 — these four only feed the destroy helper. A movie whose
     // lifecycle class never declared `onCodeObjDestruction` gets no destroy
     // machinery at all: emitting a `CallPropVoid` against a property the
-    // class doesn't have would just move the old "menu fails to load"
-    // failure into a runtime AVM2 error on close instead of fixing it.
+    // class doesn't have would just move the "menu fails to load" failure into
+    // a runtime AVM2 error on close instead of fixing it.
     let destroy_strings = has_destroy_trait.then(|| {
         (
             add_string(&mut strings, object.on_destroy.as_bytes().to_vec()),
@@ -829,11 +932,8 @@ fn build_adapter_abc(
     });
     let root_slot_string = add_string(&mut strings, b"__byro_fallout4_root".to_vec());
 
-    // Only two namespaces survive: the public (empty-name) package every helper
-    // lives in, and `flash.external` for `ExternalInterface`. The pool used to
-    // also declare `flash.display` and `flash.utils` for the abandoned
-    // `LoaderInfo.getLoaderInfoByDefinition` / `setTimeout` install strategy the
-    // constructor patch superseded (#2725).
+    // Two namespaces: the public (empty-name) package every helper lives in,
+    // and `flash.external` for `ExternalInterface` (#2725).
     let mut namespaces = Vec::new();
     let public_namespace = add_namespace(&mut namespaces, Namespace::Package(empty_string));
     let flash_external_namespace =
@@ -849,235 +949,211 @@ fn build_adapter_abc(
     let unshift = add_multiname(&mut multinames, qname(public_namespace, unshift_string));
     let code_object = add_multiname(&mut multinames, qname(public_namespace, code_object_string));
     let on_create = add_multiname(&mut multinames, qname(public_namespace, on_create_string));
-    let install_helper = add_multiname(
-        &mut multinames,
-        qname(public_namespace, install_helper_string),
-    );
-    let add_callback = add_multiname(
-        &mut multinames,
-        qname(public_namespace, add_callback_string),
-    );
-    let ready_helper = add_multiname(
-        &mut multinames,
-        qname(public_namespace, ready_helper_string),
-    );
-    // (on_destroy multiname, destroy_helper multiname, destroy_helper name
-    // string, destroy_callback string, destroyed_event string) — `None` when
-    // this movie's lifecycle class has no `onCodeObjDestruction` trait.
-    let destroy_names = destroy_strings.map(
-        |(
-            on_destroy_string,
-            destroy_helper_string,
-            destroy_callback_string,
+    let install_helper = add_multiname(&mut multinames, qname(public_namespace, install_helper_string));
+    let add_callback = add_multiname(&mut multinames, qname(public_namespace, add_callback_string));
+    let ready_helper = add_multiname(&mut multinames, qname(public_namespace, ready_helper_string));
+    let destroy = destroy_strings.map(
+        |(on_destroy_string, helper_string, callback_string, destroyed_event_string)| DestroyNames {
+            on_destroy: add_multiname(&mut multinames, qname(public_namespace, on_destroy_string)),
+            helper: add_multiname(&mut multinames, qname(public_namespace, helper_string)),
+            helper_string,
+            callback_string,
             destroyed_event_string,
-        )| {
-            let on_destroy =
-                add_multiname(&mut multinames, qname(public_namespace, on_destroy_string));
-            let destroy_helper = add_multiname(
-                &mut multinames,
-                qname(public_namespace, destroy_helper_string),
-            );
-            (
-                on_destroy,
-                destroy_helper,
-                destroy_helper_string,
-                destroy_callback_string,
-                destroyed_event_string,
-            )
         },
     );
     let root_slot = add_multiname(&mut multinames, qname(public_namespace, root_slot_string));
-
-    let installed = installed_method_names(catalog, uncataloged);
-    let mut methods = Vec::with_capacity(installed.len() + 4);
-    let mut method_bodies = Vec::with_capacity(installed.len() + 4);
-    let mut traits = Vec::with_capacity(installed.len() + 4);
-    let mut helper_multinames = Vec::with_capacity(installed.len());
-    let mut method_property_multinames = Vec::with_capacity(installed.len());
-    traits.push(Trait {
-        name: root_slot,
-        kind: TraitKind::Slot {
-            slot_id: 1,
-            type_name: Index::new(0),
-            value: None,
+    (
+        AdapterPools {
+            strings,
+            namespaces,
+            multinames,
+            public_namespace,
         },
-        metadata: Vec::new(),
-        is_final: false,
-        is_override: false,
-    });
+        AdapterNames {
+            external_interface,
+            call,
+            apply,
+            unshift,
+            code_object,
+            on_create,
+            install_helper,
+            add_callback,
+            ready_helper,
+            root_slot,
+            install_helper_string,
+            ready_helper_string,
+            ready_callback_string,
+            loaded_callback_string,
+            destroy,
+        },
+    )
+}
 
-    for (index, method) in installed.iter().enumerate() {
-        let helper_string = add_string(&mut strings, helper_name(index));
-        let transport_string = add_string(&mut strings, format!("{}.{}", object.property, method));
-        let method_property_string = add_string(&mut strings, *method);
+/// The adapter's method, body and script-trait tables, appended to in ABC index order.
+struct AdapterMethods {
+    methods: Vec<Method>,
+    bodies: Vec<MethodBody>,
+    traits: Vec<Trait>,
+}
 
-        let helper_multiname =
-            add_multiname(&mut multinames, qname(public_namespace, helper_string));
-        let method_property = add_multiname(
-            &mut multinames,
-            qname(public_namespace, method_property_string),
-        );
-        helper_multinames.push(helper_multiname);
-        method_property_multinames.push(method_property);
+impl AdapterMethods {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            methods: Vec::with_capacity(capacity),
+            bodies: Vec::with_capacity(capacity),
+            traits: Vec::with_capacity(capacity),
+        }
+    }
 
-        let method_index = Index::new(methods.len() as u32);
-        let body_index = Index::new(method_bodies.len() as u32);
-        methods.push(Method {
-            name: helper_string,
-            params: Vec::new(),
+    /// Append one method and its body; every adapter method runs at scope depth 1..2.
+    fn add(
+        &mut self,
+        name: Index<String>,
+        params: Vec<MethodParam>,
+        flags: MethodFlags,
+        (max_stack, num_locals): (u32, u32),
+        code: Vec<u8>,
+    ) -> Index<Method> {
+        let method = Index::new(self.methods.len() as u32);
+        let body = Index::new(self.bodies.len() as u32);
+        self.methods.push(Method {
+            name,
+            params,
             return_type: Index::new(0),
-            flags: MethodFlags::NEED_REST,
-            body: Some(body_index),
+            flags,
+            body: Some(body),
         });
-        method_bodies.push(MethodBody {
-            method: method_index,
-            max_stack: 3,
-            num_locals: 2,
+        self.bodies.push(MethodBody {
+            method,
+            max_stack,
+            num_locals,
             init_scope_depth: 1,
             max_scope_depth: 2,
-            code: write_ops(&[
-                Op::GetLocal { index: 0 },
-                Op::PushScope,
-                Op::GetLocal { index: 1 },
-                Op::PushString {
-                    value: transport_string,
-                },
-                Op::CallPropVoid {
-                    index: unshift,
-                    num_args: 1,
-                },
-                Op::GetLex {
-                    index: external_interface,
-                },
-                Op::GetProperty { index: call },
-                Op::PushNull,
-                Op::GetLocal { index: 1 },
-                Op::CallProperty {
-                    index: apply,
-                    num_args: 2,
-                },
-                Op::ReturnValue,
-            ])?,
+            code,
             exceptions: Vec::new(),
             traits: Vec::new(),
         });
-        traits.push(method_trait(
-            helper_multiname,
-            method_index,
-            index as u32 + 1,
-        ));
+        method
     }
+}
 
-    let ready_method = Index::new(methods.len() as u32);
-    let ready_body = Index::new(method_bodies.len() as u32);
-    methods.push(Method {
-        name: ready_helper_string,
-        params: Vec::new(),
-        return_type: Index::new(0),
-        flags: MethodFlags::empty(),
-        body: Some(ready_body),
-    });
-    method_bodies.push(MethodBody {
-        method: ready_method,
-        max_stack: 1,
-        num_locals: 1,
-        init_scope_depth: 1,
-        max_scope_depth: 2,
-        code: write_ops(&[
+/// One forwarding helper per installed method: it prepends `"<object>.<method>"` to its
+/// arguments and hands them to `ExternalInterface.call`. Returns each helper's multiname with
+/// the property the installer sets it on.
+fn add_forwarding_helpers(
+    pools: &mut AdapterPools,
+    names: &AdapterNames,
+    object_property: &str,
+    installed: &[&str],
+    out: &mut AdapterMethods,
+) -> std::io::Result<Vec<(Index<Multiname>, Index<Multiname>)>> {
+    let mut forwarders = Vec::with_capacity(installed.len());
+    for (index, method) in installed.iter().enumerate() {
+        let helper_string = add_string(&mut pools.strings, helper_name(index));
+        let transport_string = add_string(&mut pools.strings, format!("{object_property}.{method}"));
+        let method_property_string = add_string(&mut pools.strings, *method);
+        let helper_multiname =
+            add_multiname(&mut pools.multinames, qname(pools.public_namespace, helper_string));
+        let method_property = add_multiname(
+            &mut pools.multinames,
+            qname(pools.public_namespace, method_property_string),
+        );
+        forwarders.push((helper_multiname, method_property));
+        let code = write_ops(&[
             Op::GetLocal { index: 0 },
             Op::PushScope,
-            Op::PushTrue,
+            Op::GetLocal { index: 1 },
+            Op::PushString {
+                value: transport_string,
+            },
+            Op::CallPropVoid {
+                index: names.unshift,
+                num_args: 1,
+            },
+            Op::GetLex {
+                index: names.external_interface,
+            },
+            Op::GetProperty { index: names.call },
+            Op::PushNull,
+            Op::GetLocal { index: 1 },
+            Op::CallProperty {
+                index: names.apply,
+                num_args: 2,
+            },
             Op::ReturnValue,
-        ])?,
-        exceptions: Vec::new(),
-        traits: Vec::new(),
-    });
-    let mut next_disp_id = installed.len() as u32 + 1;
-    traits.push(method_trait(ready_helper, ready_method, next_disp_id));
-    next_disp_id += 1;
-
-    // #2963 — only wire the destroy helper (and its `addCallback`
-    // registration below) when the movie's lifecycle class actually declared
-    // `onCodeObjDestruction`. Omitting it entirely leaves `DESTROY_CALLBACK`
-    // unregistered, which `SwfPlayer`'s close path already treats as
-    // optional (`has_callback(DESTROY_CALLBACK)`, `player.rs`) rather than
-    // an error.
-    let mut destroy_registration = None;
-    if let Some((
-        on_destroy,
-        destroy_helper,
-        destroy_helper_string,
-        destroy_callback_string,
-        destroyed_event_string,
-    )) = destroy_names
-    {
-        let destroy_method = Index::new(methods.len() as u32);
-        let destroy_body = Index::new(method_bodies.len() as u32);
-        methods.push(Method {
-            name: destroy_helper_string,
-            params: Vec::new(),
-            return_type: Index::new(0),
-            flags: MethodFlags::empty(),
-            body: Some(destroy_body),
-        });
-        method_bodies.push(MethodBody {
-            method: destroy_method,
-            max_stack: 2,
-            num_locals: 1,
-            init_scope_depth: 1,
-            max_scope_depth: 2,
-            code: write_ops(&[
-                Op::GetLocal { index: 0 },
-                Op::PushScope,
-                Op::GetLex { index: root_slot },
-                Op::CallPropVoid {
-                    index: on_destroy,
-                    num_args: 0,
-                },
-                Op::GetLex {
-                    index: external_interface,
-                },
-                Op::PushString {
-                    value: destroyed_event_string,
-                },
-                Op::CallPropVoid {
-                    index: call,
-                    num_args: 1,
-                },
-                Op::ReturnVoid,
-            ])?,
-            exceptions: Vec::new(),
-            traits: Vec::new(),
-        });
-        traits.push(method_trait(destroy_helper, destroy_method, next_disp_id));
-        next_disp_id += 1;
-        destroy_registration = Some((destroy_helper, destroy_callback_string));
+        ])?;
+        let method_index = out.add(helper_string, Vec::new(), MethodFlags::NEED_REST, (3, 2), code);
+        out.traits.push(method_trait(helper_multiname, method_index, index as u32 + 1));
     }
+    Ok(forwarders)
+}
 
-    let installer_method = Index::new(methods.len() as u32);
-    let installer_body = Index::new(method_bodies.len() as u32);
-    methods.push(Method {
-        name: install_helper_string,
-        params: vec![MethodParam {
-            name: None,
-            kind: Index::new(0),
-            default_value: None,
-        }],
-        return_type: Index::new(0),
-        flags: MethodFlags::empty(),
-        body: Some(installer_body),
-    });
+/// The ready helper: answers `true`, so the host can tell the adapter is installed.
+fn add_ready_method(names: &AdapterNames, out: &mut AdapterMethods) -> std::io::Result<Index<Method>> {
+    let code = write_ops(&[
+        Op::GetLocal { index: 0 },
+        Op::PushScope,
+        Op::PushTrue,
+        Op::ReturnValue,
+    ])?;
+    Ok(out.add(names.ready_helper_string, Vec::new(), MethodFlags::empty(), (1, 1), code))
+}
+
+/// The destroy helper (#2963): calls the lifecycle class's `onCodeObjDestruction` on the stored
+/// root, then reports `DESTROYED_EVENT` to the host.
+fn add_destroy_method(
+    names: &AdapterNames,
+    destroy: &DestroyNames,
+    out: &mut AdapterMethods,
+) -> std::io::Result<Index<Method>> {
+    let code = write_ops(&[
+        Op::GetLocal { index: 0 },
+        Op::PushScope,
+        Op::GetLex {
+            index: names.root_slot,
+        },
+        Op::CallPropVoid {
+            index: destroy.on_destroy,
+            num_args: 0,
+        },
+        Op::GetLex {
+            index: names.external_interface,
+        },
+        Op::PushString {
+            value: destroy.destroyed_event_string,
+        },
+        Op::CallPropVoid {
+            index: names.call,
+            num_args: 1,
+        },
+        Op::ReturnVoid,
+    ])?;
+    Ok(out.add(destroy.helper_string, Vec::new(), MethodFlags::empty(), (2, 1), code))
+}
+
+/// The installer: stores the movie root, sets every forwarding helper on the code object, runs
+/// the lifecycle class's `onCodeObjCreate`, and registers the ready (and, #2963, destroy)
+/// callbacks with the host.
+fn add_installer_method(
+    names: &AdapterNames,
+    forwarders: &[(Index<Multiname>, Index<Multiname>)],
+    out: &mut AdapterMethods,
+) -> std::io::Result<Index<Method>> {
     let mut install_ops = vec![
         Op::GetLocal { index: 0 },
         Op::PushScope,
         Op::GetGlobalScope,
         Op::GetLocal { index: 1 },
-        Op::SetProperty { index: root_slot },
+        Op::SetProperty {
+            index: names.root_slot,
+        },
         Op::GetLocal { index: 1 },
-        Op::GetProperty { index: code_object },
+        Op::GetProperty {
+            index: names.code_object,
+        },
         Op::SetLocal { index: 2 },
     ];
-    for (helper, property) in helper_multinames.iter().zip(&method_property_multinames) {
+    for (helper, property) in forwarders {
         install_ops.extend([
             Op::GetLocal { index: 2 },
             Op::GetLex { index: *helper },
@@ -1087,118 +1163,72 @@ fn build_adapter_abc(
     install_ops.extend([
         Op::GetLocal { index: 1 },
         Op::CallPropVoid {
-            index: on_create,
+            index: names.on_create,
             num_args: 0,
         },
         Op::GetLex {
-            index: external_interface,
+            index: names.external_interface,
         },
         Op::PushString {
-            value: ready_callback_string,
+            value: names.ready_callback_string,
         },
         Op::GetLex {
-            index: ready_helper,
+            index: names.ready_helper,
         },
         Op::CallPropVoid {
-            index: add_callback,
+            index: names.add_callback,
             num_args: 2,
         },
     ]);
     // #2963 — only register the destroy callback when this movie's lifecycle
-    // class carries the trait the helper above was built to call.
-    if let Some((destroy_helper, destroy_callback_string)) = destroy_registration {
+    // class carries the trait the destroy helper was built to call.
+    if let Some(destroy) = &names.destroy {
         install_ops.extend([
             Op::GetLex {
-                index: external_interface,
+                index: names.external_interface,
             },
             Op::PushString {
-                value: destroy_callback_string,
+                value: destroy.callback_string,
             },
             Op::GetLex {
-                index: destroy_helper,
+                index: destroy.helper,
             },
             Op::CallPropVoid {
-                index: add_callback,
+                index: names.add_callback,
                 num_args: 2,
             },
         ]);
     }
     install_ops.push(Op::ReturnVoid);
-    method_bodies.push(MethodBody {
-        method: installer_method,
-        max_stack: 3,
-        num_locals: 3,
-        init_scope_depth: 1,
-        max_scope_depth: 2,
-        code: write_ops(&install_ops)?,
-        exceptions: Vec::new(),
-        traits: Vec::new(),
-    });
-    traits.push(method_trait(install_helper, installer_method, next_disp_id));
+    let params = vec![MethodParam {
+        name: None,
+        kind: Index::new(0),
+        default_value: None,
+    }];
+    Ok(out.add(names.install_helper_string, params, MethodFlags::empty(), (3, 3), write_ops(&install_ops)?))
+}
 
-    let init_method = Index::new(methods.len() as u32);
-    let init_body = Index::new(method_bodies.len() as u32);
-    methods.push(Method {
-        name: Index::new(0),
-        params: Vec::new(),
-        return_type: Index::new(0),
-        flags: MethodFlags::empty(),
-        body: Some(init_body),
-    });
-    method_bodies.push(MethodBody {
-        method: init_method,
-        max_stack: 3,
-        num_locals: 1,
-        init_scope_depth: 1,
-        max_scope_depth: 2,
-        code: write_ops(&[
-            Op::GetLocal { index: 0 },
-            Op::PushScope,
-            Op::GetLex {
-                index: external_interface,
-            },
-            Op::PushString {
-                value: loaded_callback_string,
-            },
-            Op::GetLex {
-                index: ready_helper,
-            },
-            Op::CallPropVoid {
-                index: add_callback,
-                num_args: 2,
-            },
-            Op::ReturnVoid,
-        ])?,
-        exceptions: Vec::new(),
-        traits: Vec::new(),
-    });
-
-    let abc = AbcFile {
-        major_version: 46,
-        minor_version: 16,
-        constant_pool: ConstantPool {
-            ints: Vec::new(),
-            uints: Vec::new(),
-            doubles: Vec::new(),
-            strings,
-            namespaces,
-            namespace_sets: Vec::new(),
-            multinames,
+/// The script initialiser: registers the ready helper under `LOADED_CALLBACK`.
+fn add_init_method(names: &AdapterNames, out: &mut AdapterMethods) -> std::io::Result<Index<Method>> {
+    let code = write_ops(&[
+        Op::GetLocal { index: 0 },
+        Op::PushScope,
+        Op::GetLex {
+            index: names.external_interface,
         },
-        methods,
-        metadata: Vec::new(),
-        instances: Vec::new(),
-        classes: Vec::new(),
-        scripts: vec![Script {
-            init_method,
-            traits,
-        }],
-        method_bodies,
-    };
-
-    let mut bytes = Vec::new();
-    Writer::new(&mut bytes).write(abc)?;
-    Ok(bytes)
+        Op::PushString {
+            value: names.loaded_callback_string,
+        },
+        Op::GetLex {
+            index: names.ready_helper,
+        },
+        Op::CallPropVoid {
+            index: names.add_callback,
+            num_args: 2,
+        },
+        Op::ReturnVoid,
+    ])?;
+    Ok(out.add(Index::new(0), Vec::new(), MethodFlags::empty(), (3, 1), code))
 }
 
 fn qname(namespace: Index<Namespace>, name: Index<String>) -> Multiname {
