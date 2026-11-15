@@ -243,6 +243,10 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
         if let Some(mut state) = world.try_resource_mut::<CombatState>() {
             state.attacks_started = state.attacks_started.saturating_add(1);
         }
+        // M65 (SNK-DET-016) — the attack's sound, the weapon's `VNAM` level, for the next detection tick.
+        if let Some(aggressor) = aggressor {
+            note_attack_noise(world, aggressor);
+        }
     }
     if !attack_ready {
         if attack_pressed {
@@ -1197,6 +1201,24 @@ pub(crate) fn attack_reach_bu(world: &World, aggressor: EntityId) -> f32 {
 /// Weapon-scaled swing cooldown. `EquippedWeapon::speed` is a cadence
 /// multiplier (>1.0 = faster attacks) on [`MELEE_COOLDOWN_SECONDS`]; `0.0`
 /// (unset/undecoded) falls back to the flat baseline.
+/// M65 (SNK-DET-016) — record the player's attack as an action sound for the
+/// detection tick: the equipped weapon's `VNAM` sound level, nothing for an
+/// unarmed strike or a weapon whose game authors none.
+fn note_attack_noise(world: &World, aggressor: EntityId) {
+    let Some(base) = world.get::<EquippedWeapon>(aggressor).map(|weapon| weapon.base_form_id) else {
+        return;
+    };
+    let Some(sound) = world
+        .try_resource::<crate::inventory::InventoryCatalog>()
+        .and_then(|catalog| catalog.weapon_sound(base))
+    else {
+        return;
+    };
+    if let Some(mut noise) = world.try_resource_mut::<crate::detection::PlayerActionNoise>() {
+        noise.rating = noise.rating.max(sound.rating());
+    }
+}
+
 pub(crate) fn attack_cooldown_seconds(world: &World, aggressor: EntityId) -> f32 {
     world
         .get::<EquippedWeapon>(aggressor)
@@ -1700,7 +1722,7 @@ mod tests {
         world.insert_resource(byroredux_core::character::CrimeModel::OBLIVION);
         world.insert_resource(byroredux_scripting::obscript_ledger::ObScriptLedger::default());
         world.insert_resource(crate::notifications::PlayerNotifications::default());
-        world.insert_resource(crate::systems::faction_hostility::DetectionConfig { max_distance: 1000.0, exterior_mult: 1.0 });
+        world.insert_resource(crate::detection::DetectionConfig { max_distance: 1000.0, exterior_mult: 1.0 });
         world.insert(player, GlobalTransform::new(Vec3::ZERO, Default::default(), 1.0));
         world.insert(player, FactionRanks::from_pairs([(0xAAA, 1)]));
         world.insert(victim, GlobalTransform::new(Vec3::new(0.0, 0.0, 100.0), Default::default(), 1.0));

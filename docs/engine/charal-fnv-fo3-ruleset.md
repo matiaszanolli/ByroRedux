@@ -266,7 +266,11 @@ target being checked (less alert about a threat it's already engaged with),
 `1.2` if the detector is alert, has lost a target, or is fighting someone
 *other* than the target being checked (on edge), else `1.0`. Implemented as
 `DetectorState::{SleepingOrFightingThisTarget, AlertLostOrFightingOther,
-Normal}` (`crates/core/src/stealth.rs`).
+Normal}` (`crates/core/src/stealth.rs`). **Superseded (M65, #6911):** `Fallout3.exe`'s
+formula (`0x57e300`) computes the factor as `1 + alert·fSneakAlertMod +
+sleeping·fSneakSleepBonus + notCombatTarget·fSneakCombatMod`, so `stealth.rs` now
+reads every coefficient from the load order's settings, and this grouping is kept
+only as the capture's record (`docs/engine/sneak-detection.md` §4.2).
 
 `Detection < −20` = undetected, `−20..0` = suspicious, `> 0` = detected.
 `TargetSkill` is FNV's addition over FO3 — it's the first confirmed instance of a

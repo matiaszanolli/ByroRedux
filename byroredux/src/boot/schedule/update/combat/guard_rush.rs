@@ -17,7 +17,7 @@ pub(super) fn register_guard_rush_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::guards::GuardClasses>()
             .reads_resource::<crate::systems::PlayerEntity>()
             .reads_resource::<crate::systems::npc_dialogue::DialogueSurfaceState>()
-            .reads_resource::<crate::systems::DetectionConfig>()
+            .reads_resource::<crate::detection::DetectionConfig>()
             .reads_resource::<crate::components::CellLightingRes>()
             .reads_resource::<byroredux_physics::PhysicsWorld>()
             .reads::<byroredux_physics::RapierHandles>()

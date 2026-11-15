@@ -39,6 +39,57 @@ impl ConsoleCommand for StealthSneakCommand {
     }
 }
 
+/// `stealth.status` — the detection rules row, the player's stance and worst
+/// level, then one line per detector: distance, line of sight, cone, each
+/// formula term, the value, level, alert state and timer (SNK-DX-001).
+pub(crate) struct StealthStatusCommand;
+
+impl ConsoleCommand for StealthStatusCommand {
+    fn name(&self) -> &str {
+        "stealth.status"
+    }
+    fn description(&self) -> &str {
+        "Detection rules, the player's stance and worst level, and every detector's terms, value, level and alert state"
+    }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(rules) = world.try_resource::<byroredux_core::stealth::StealthRules>().map(|r| *r) else {
+            return CommandOutput::error("stealth: no detection rules (no load order installed)");
+        };
+        let player = PlayerEntity::get(world);
+        let sneaking = player.is_some_and(|p| byroredux_scripting::stance::is_sneaking(world, p));
+        let summary = world.try_resource::<crate::detection::PlayerDetection>().map(|d| *d).unwrap_or_default();
+        let mut lines = vec![format!(
+            "stealth: rules {:?}, {}, worst level {:?} (alert {:?}, hostile {})",
+            rules.kind,
+            stance_word(sneaking),
+            summary.level,
+            summary.alert,
+            summary.hostile
+        )];
+        let mut rows: Vec<(byroredux_core::ecs::EntityId, byroredux_core::ecs::components::Awareness)> = world
+            .query::<byroredux_core::ecs::components::Awareness>()
+            .map(|q| q.iter().map(|(entity, awareness)| (entity, *awareness)).collect())
+            .unwrap_or_default();
+        rows.sort_by(|a, b| a.1.distance.total_cmp(&b.1.distance));
+        for (entity, a) in rows {
+            let form = world
+                .get::<byroredux_core::ecs::components::FormIdComponent>(entity)
+                .map_or(String::from("-"), |form| format!("{:?}", form.0));
+            let at = world
+                .get::<byroredux_core::ecs::components::GlobalTransform>(entity)
+                .map_or(String::from("(unplaced)"), |t| {
+                    format!("({:.0}, {:.0}, {:.0})", t.translation.x, t.translation.y, t.translation.z)
+                });
+            lines.push(format!(
+                "  entity {} ref {form} at {at} dist {:.0} los {} cone {} sound {:.2} visual {:.2} skill {:.2} value {:.2} level {:?} alert {:?} hostile {} next {:.2}s",
+                entity, a.distance, a.line_of_sight, a.in_cone, a.terms.sound, a.terms.visual, a.terms.skill, a.terms.value,
+                a.level, a.alert, a.hostile, a.timer
+            ));
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
 fn stance_word(sneaking: bool) -> &'static str {
     if sneaking { "sneaking" } else { "standing" }
 }

@@ -8,7 +8,7 @@
 //! No source gives a discovery distance, so the engine's one perception model is reused: a living, placed,
 //! non-player actor discovers a body when it sees it as the ambient hostility pass sees a target — inside
 //! `fSneakMaxDistance` (scaled outdoors) with nothing solid in the way
-//! ([`actor_sees_corpse`](super::faction_hostility::actor_sees_corpse)). That is a sight test, not the view
+//! ([`sees_body`](crate::detection::sees_body)). That is a sight test, not the view
 //! cone or the detection meter, which the hostility pass does not model either. Each body is discovered
 //! **once** (the nearest seeing actor wins); the player is not a discoverer, since the player's view cone
 //! is not modelled and a body behind the camera would otherwise count.
@@ -16,7 +16,7 @@
 //! The pass runs every [`PASS_SECS`] and only when the Story Manager tree has a `DEAD` root, so a title
 //! without one (Oblivion, Fallout 3, New Vegas) pays nothing.
 
-use super::faction_hostility::actor_sees_corpse;
+use crate::detection::sees_body;
 use byroredux_core::ecs::components::{Dead, GlobalTransform};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::storage::EntityId;
@@ -84,7 +84,7 @@ pub(crate) fn dead_body_discovery_system(world: &World, dt: f32) {
             .filter_map(|&actor| Some((world.get::<GlobalTransform>(actor)?.translation.distance(at), actor)))
             .collect();
         by_distance.sort_by(|a, b| a.0.total_cmp(&b.0));
-        if let Some(&(_, discoverer)) = by_distance.iter().find(|(_, actor)| actor_sees_corpse(world, *actor, body)) {
+        if let Some(&(_, discoverer)) = by_distance.iter().find(|(_, actor)| sees_body(world, *actor, body)) {
             found.push((discoverer, body));
         }
     }
@@ -95,6 +95,9 @@ pub(crate) fn dead_body_discovery_system(world: &World, dt: f32) {
     let location = crate::systems::story_events::derive_location(world).location;
     for (discoverer, body) in found {
         log::debug!("dead body discovered: {discoverer:?} found {body:?}");
+        // M65 (SNK-USE-008) — "When an enemy spots a dead body, it will often enter the [CAUTION]
+        // state" (Fallout wiki *Sneak (Fallout 3)*): a discoverer hostile to the player turns Alert.
+        crate::detection::alert_on_discovery(world, discoverer);
         if let Some(mut state) = world.try_resource_mut::<DeadBodyState>() {
             state.discovered.insert(body);
         }
@@ -116,7 +119,8 @@ pub(crate) fn dead_body_discovery_system(world: &World, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::faction_hostility::{CombatDisposition, DetectionConfig};
+    use crate::detection::DetectionConfig;
+    use crate::systems::faction_hostility::CombatDisposition;
     use byroredux_core::math::Vec3;
     use byroredux_plugin::esm::records::{ActorAiData, Aggression, Confidence, SmNodeKind, SmNodeRecord};
     use std::collections::HashMap;

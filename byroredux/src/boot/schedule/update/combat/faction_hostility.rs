@@ -14,7 +14,7 @@ pub(super) fn register_faction_hostility_systems(scheduler: &mut Scheduler) {
         Stage::Update,
         crate::systems::make_faction_hostility_system(),
         Access::new()
-            .reads_resource::<crate::systems::DetectionConfig>()
+            .reads_resource::<crate::detection::DetectionConfig>()
             .reads_resource::<crate::components::CellLightingRes>()
             .reads_resource::<crate::systems::PlayerEntity>()
             .reads_resource::<byroredux_scripting::LoadOrderIdentity>()

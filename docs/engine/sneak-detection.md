@@ -1,6 +1,6 @@
 # Sneak and Detection
 
-**Status**: DESIGN (Phase 0, 2026-11-15); the stance (Phase 1, #6910) is BUILT (2026-11-15). The design the [Sneak and Detection
+**Status**: DESIGN (Phase 0, 2026-11-15); the stance (Phase 1, #6910) and Wave 1 detection with its consumers (Phase 2, #6911) are BUILT (2026-11-15). The design the [Sneak and Detection
 PRD](../prd/sneak-and-detection.md) names as the owner of the stance, the detection
 tick, the per-pair level and alert state, the actor-to-actor sight test (§10 Q7), the
 light input (Q3), consumer migration and FO3 / FNV sneak-attack damage (PRD
@@ -27,8 +27,8 @@ those defaults one for one.
 | Stance speed | `StanceModel` profile row (`crates/core/src/character/stance.rs`) resolved per load into the `SneakMovement` resource; `MOVT` decoded into `EsmIndex::movement_types` | SNK-STN-005 |
 | Ruleset row | `StealthRules` built by `CharacterRulesProfile` from the load order's game settings (`crates/core/src/character/`) | Which formula, which settings, thresholds, cadence, view cone, indicator table. The only per-game data (SNK-DET-002) |
 | Formulas | `crates/core/src/stealth.rs` | Pure functions, one per ruleset kind: `fo3_value`, `fnv_value`, `oblivion_value`, `skyrim_value`. No ECS. Today's `detection_score` becomes `fnv_value` with its constants turned into `StealthRules` fields |
-| Detection module | a new `detection` module in the binary crate | The tick, the light level, the actor-to-actor sight test and the line test. The only caller of `PhysicsWorld::line_of_sight_blocked` and of the range from `DetectionConfig` (SNK-USE-007) |
-| Awareness | `Awareness` component on each detector (`SparseSetStorage`): value, level toward the player, alert state, per-detector timer, last terms | Produced by the tick only; read by every consumer (SNK-DET-001) |
+| Detection module | `byroredux/src/detection/` (`byroredux/src/detection/sight.rs`, `byroredux/src/detection/light.rs`, `byroredux/src/detection/tick.rs`) | The tick, the light level, the actor-to-actor sight test and the line test. The only caller of `PhysicsWorld::line_of_sight_blocked` and of the range from `DetectionConfig` (SNK-USE-007) |
+| Awareness | `Awareness` component on each detector (`crates/core/src/ecs/components/detection.rs`, `SparseSetStorage`): value, level toward the player, alert state, per-detector timer, last terms | Produced by the tick only; read by every consumer (SNK-DET-001) |
 | Summary | `PlayerDetection` resource: worst counted level, its detector's alert state and hostility | What the indicator draws (SNK-HUD-001) |
 | Observable | `stealth.status`, `stealth.sneak <on\|off>`, a new `stealth` console-command module | SNK-DX-001, -002 |
 
@@ -82,9 +82,10 @@ those defaults one for one.
 ## 3. The ruleset row
 
 The stance speed is its own profile row, `StanceModel` (Phase 1), because every
-game has the stance while only some have a detection formula. Phase 2 adds a
-`stealth: StealthRules` field to `CharacterRulesProfile`, built at the plugin
-boundary as `perk_entry_points` and `VatsModel` are. It holds:
+game has the stance while only some have a detection formula. The detection row
+is `CharacterRulesProfile::stealth()`, a `StealthKind`, resolved per load into
+the `StealthRules` resource (`byroredux_core::stealth`; `install_stealth_rules`)
+as `VatsModel` is. It holds:
 
 - **kind**: `Fo3`, `Fnv`, `Oblivion`, `Skyrim`, or `SightOnly` (Fallout 4 and
   Starfield, per Q2);
@@ -98,7 +99,7 @@ boundary as `perk_entry_points` and `VatsModel` are. It holds:
   when a loaded cell holds ComplexSceneMarkers);
 - **view cone**: `fDetectionViewCone` in degrees where the game authors one (FO3,
   FNV, Skyrim: 190). None for Oblivion until #6936 rules out a hardcoded one;
-- **indicator**: the table of §10, and Starfield's Stealth-rank gate (SNK-HUD-005).
+- **indicator** (Phase 4): the table of §10, and Starfield's Stealth-rank gate (SNK-HUD-005).
 
 Walls blocking sound (SNK-DET-017) needs no field. Every formula multiplies sound
 heard without line of sight by `fSneakSoundLosMult`: the CS formula does too, and
@@ -126,6 +127,9 @@ discovery in quest and scene, flee in script runtime. It reads the player's
   not computed. The original computes every high-process pair: `Fallout3.exe`'s
   update `0x8740c0`–`0x874435` loops over the high-process list, as the CS
   *Performance* section describes for Oblivion. That is the PRD §6 row 8 deviation.
+  `SetNotShowOnStealthMeter` (SNK-DET-014) is a Skyrim / Fallout 4 Papyrus
+  function and only the indicator reads it, so it lands with Phase 4 (#6913),
+  its save included.
 - **Cadence and phase (SNK-DET-006; V7, V22).** Each detector carries its own timer.
   `Fallout3.exe` stores it in the detector's process at `+0x2f0` and re-arms it as
   remainder + `fDetectionTimerSetting` (`0x87445a`–`0x874471`). One path re-arms it
@@ -230,8 +234,8 @@ search (SNK-NG-002).
 | view cone | the detector's facing against the row's cone |
 | light | §6 |
 | moving / running | the player controller's velocity and Sprint |
-| weight | worn item weight (inventory) |
-| action | the player's last strike or shot this period: `WEAP` `VNAM` sound level (Loud / Normal / Silent, SNK-DET-016); a queued `CreateDetectionEvent` at its position (SNK-DET-011) |
+| weight | the equipped items' catalog weight, each item once (`inventory::equipped_weight`) |
+| action | the player's attack since the last tick: combat input writes the equipped weapon's `WEAP` `VNAM` rating (Loud 100 / Normal 50 / Silent 10, SNK-DET-016) to `PlayerActionNoise`; a `CreateDetectionEvent` owned by the player (0x14) is heard at its own position as that sound level (SNK-DET-011) |
 | sneaking, sneak skill | `Sneaking`; the Sneak actor value |
 | Perception, sleeping, levels | actor values; the detector's sit / sleep state; `CharacterLevel` (FNV only) |
 | stealth boy, blindness, night eye | actor values Chameleon / Invisibility, Blindness, Night Eye |
@@ -267,6 +271,12 @@ range:
 It is blind to RT shadowing (PRD §6 row 1); `stealth.status` prints it.
 
 ## 7. Consumer migration
+
+Built in Phase 2: every consumer that asks about the player reads the level,
+and the count still on a sight test of its own is zero (the PRD §8 metric,
+100 %). Without detection rules installed (no load order yet, unit fixtures)
+there are no levels, and awareness of the player is the sight test, as on a
+sight-only row (`player_seen_by`).
 
 | Consumer | Today (HEAD `00472c4a1`) | After | Phase |
 |---|---|---|---|

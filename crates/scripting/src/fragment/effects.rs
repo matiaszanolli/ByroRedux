@@ -143,7 +143,9 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 ///   - **via the guard / value evaluators** (`evaluate_guard`, `evaluate_value`,
 ///     #5986) — `Dead`, `FollowerState`, `LocationTable`, `MiscStats`,
 ///     `StoryManagerRng` (the `GetRandomPercent` draw) and the `ActorVitals`
-///     reads, each taken and released alone
+///     reads, each taken and released alone; `SightQuery` (read, the
+///     `IsDetectedBy` guard — M65; its function pointer is copied out and the
+///     guard released before the engine's detection test runs)
 ///   - **via the latent-continuation path** (#5986; this list used to say the
 ///     `FragmentExecutionQueue` write was *not* here, which was false) —
 ///     `apply_effects` and `budget::defer` take `FragmentExecutionQueue` (write) for

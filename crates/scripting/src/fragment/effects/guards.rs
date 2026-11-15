@@ -85,6 +85,12 @@ pub(super) fn evaluate_actor_guard(
             let actor = guard_actor(actor, context, vmad, world, deferred)?;
             world.has::<byroredux_core::ecs::components::Dead>(actor) == *dead
         }
+        FragmentGuard::DetectedBy { actor, detector, expected } => {
+            let actor = guard_actor(actor, context, vmad, world, deferred)?;
+            let detector = guard_actor(detector, context, vmad, world, deferred)?;
+            let sight = world.try_resource::<crate::SightQuery>().map(|query| query.0)?;
+            sight(world, detector, actor) == *expected
+        }
         FragmentGuard::ActorSneaking { actor, expected } => {
             let actor = guard_actor(actor, context, vmad, world, deferred)?;
             crate::stance::is_sneaking(world, actor) == *expected

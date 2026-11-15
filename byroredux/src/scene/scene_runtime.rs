@@ -88,7 +88,9 @@ pub(crate) fn populate_scene_runtime(
     // #4415 — canonical spells for runtime `AddSpell` / `RemoveSpell`.
     world.insert_resource(byroredux_scripting::SpellCatalog::from_index(index));
     // #4414 — the ambient-hostility detection range (`fSneakMaxDistance`).
-    crate::systems::install_detection_config(world, index);
+    crate::detection::install_detection_config(world, index);
+    // M65 (SNK-DET-002, SNK-DX-003) — the detection rules row and its settings, logged.
+    crate::detection::install_stealth_rules(world, index);
     // M65 (SNK-STN-005) — the sneak stance's speed: `fMoveSneakMult` or the movement types.
     crate::systems::stance::install_sneak_movement(world, index);
     // The per-game crime fines (Oblivion's theft bounty), cleared for a game without a model.

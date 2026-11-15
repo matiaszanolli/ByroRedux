@@ -331,6 +331,10 @@ pub struct CharacterRulesProfile {
     /// Every game has the stance (PRD Q2); a row without a source is
     /// [`StanceModel::NONE`], which leaves the speed unscaled.
     stance: StanceModel,
+    /// M65 (SNK-DET-002) — which detection formula the tick runs. FO3 / FNV
+    /// carry theirs (Wave 1); Oblivion and Skyrim wait on Phase 5, Fallout 4
+    /// and Starfield on a source (Q2), so they answer from the sight test.
+    stealth: crate::stealth::StealthKind,
 }
 
 /// Skyrim's *Mod Buy Prices* / *Mod Sell Prices* entry points
@@ -359,6 +363,7 @@ impl CharacterRulesProfile {
         vats: None,
         armor: None,
         stance: StanceModel::NONE,
+        stealth: crate::stealth::StealthKind::SightOnly,
     };
 
     pub const OBLIVION: Self = Self {
@@ -385,6 +390,7 @@ impl CharacterRulesProfile {
         vats: None,
         armor: None,
         stance: StanceModel::OBLIVION,
+        stealth: crate::stealth::StealthKind::SightOnly,
     };
 
     pub const FALLOUT3: Self = Self {
@@ -420,6 +426,7 @@ impl CharacterRulesProfile {
         vats: Some(VatsModel::FALLOUT3),
         armor: None,
         stance: StanceModel::FALLOUT,
+        stealth: crate::stealth::StealthKind::Fallout3,
     };
 
     pub const FALLOUT_NEW_VEGAS: Self = Self {
@@ -460,6 +467,7 @@ impl CharacterRulesProfile {
         vats: Some(VatsModel::FALLOUT_NV),
         armor: None,
         stance: StanceModel::FALLOUT,
+        stealth: crate::stealth::StealthKind::FalloutNv,
     };
 
     pub const SKYRIM: Self = Self {
@@ -503,6 +511,7 @@ impl CharacterRulesProfile {
         vats: None,
         armor: Some(ArmorModel::SKYRIM),
         stance: StanceModel::SKYRIM,
+        stealth: crate::stealth::StealthKind::SightOnly,
     };
 
     pub const FALLOUT4: Self = Self {
@@ -544,6 +553,7 @@ impl CharacterRulesProfile {
         vats: None,
         armor: None,
         stance: StanceModel::FALLOUT4,
+        stealth: crate::stealth::StealthKind::SightOnly,
     };
 
     pub const FALLOUT76: Self = Self {
@@ -576,6 +586,7 @@ impl CharacterRulesProfile {
         vats: None,
         armor: None,
         stance: StanceModel::NONE,
+        stealth: crate::stealth::StealthKind::SightOnly,
     };
 
     pub const STARFIELD: Self = Self {
@@ -612,6 +623,7 @@ impl CharacterRulesProfile {
         vats: None,
         armor: None,
         stance: StanceModel::NONE,
+        stealth: crate::stealth::StealthKind::SightOnly,
     };
 
     #[must_use]
@@ -713,6 +725,12 @@ impl CharacterRulesProfile {
     #[must_use]
     pub const fn stance(self) -> StanceModel {
         self.stance
+    }
+
+    /// M65 (SNK-DET-002) — the detection formula the tick runs.
+    #[must_use]
+    pub const fn stealth(self) -> crate::stealth::StealthKind {
+        self.stealth
     }
 
     /// #5921 — the perk entry-point numbering the game's `PERK`s author.

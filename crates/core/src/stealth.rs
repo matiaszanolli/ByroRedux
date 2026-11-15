@@ -1,143 +1,91 @@
-//! Stealth detection — the FO3/NV sneak-detection formula.
+//! Stealth detection: the per-game detection value, level and alert state
+//! (M65, `docs/engine/sneak-detection.md` §4).
 //!
-//! A **pure, standalone transcription** of the shared FO3/New Vegas GECK
-//! engine's detection algorithm (source: fandom *Sneak (Fallout: New
-//! Vegas)*, 2026-07-03; see `docs/engine/charal-fnv-fo3-ruleset.md`). It
-//! answers one question: given a detector and a target actor's current
-//! state, what is the detector's `Detection` score, and does that mean
-//! undetected / suspicious / detected?
+//! Pure math, no ECS. The binary's detection tick gathers each detector's
+//! inputs and calls [`StealthRules::value`]; the rules are a character-ruleset
+//! row (`CharacterRulesProfile::stealth`), resolved against the load order's
+//! game settings at install, so no caller branches on the game (SNK-DET-002).
 //!
-//! ## Why this lives outside CHARAL
+//! ## The Fallout 3 / New Vegas formula
 //!
-//! The formula consumes CHARAL-produced values (Sneak skill, Perception,
-//! `CharacterLevel`) but also ~10 inputs CHARAL doesn't own — distance,
-//! indoor/outdoor, per-weapon noise, light level, movement state, AI alert
-//! state, the *other* actor's level. That's a perception/AI-subsystem
-//! concern, not character progression (`charal.md` §7 draws the same line
-//! around combat/dialogue). This module is the **math only** — no ECS
-//! component, no system, no consumer wired yet.
+//! [`StealthKind::Fallout3`] is the formula `Fallout3.exe` computes at
+//! `0x57e300` (design §4.2), which has the shape of the GECK's
+//! (*Category:Detection*) with every coefficient a game setting:
 //!
-//! ## Status: greenfield, math-only, by design
+//! ```text
+//! P      = fSneakPerceptionSkillMin + (Max − Min) · Perception / 10
+//! mod    = 1 + alert·fSneakAlertMod + sleeping·fSneakSleepBonus + notCombatTarget·fSneakCombatMod
+//! att    = max(0, (maxD − d) / maxD) ^ fSneakDistanceAttenuationExponent
+//! sound  = max(0, att · [no LOS: fSneakSoundLosMult] · fSneakSoundsMult
+//!            · (action · int(fSneakActionMult) + moving · (BootBase + BootMult·weight) · [running: fSneakRunningMult]))
+//! visual = max(0, sees · att · (1 + moving·fSneakLightMoveMult + running·fSneakLightRunMult)
+//!            · (light + fDetectionSneakLightMod) · fSneakLightMult · blindness · size) · [stealth boy: StealthBoyMult]
+//! skill  = (att · P · mod − sneaking · targetSkill) · fSneakSkillMult
+//! value  = fSneakBaseValue + sound + visual + skill
+//! ```
 //!
-//! Nothing in the engine feeds this yet: there's no line-of-sight/vision
-//! system, no alert-state component, and no sneak/crouch flag. Building the
-//! detection math now, decoupled from that unbuilt behavior layer, mirrors
-//! how the CHARAL affliction mechanism ([`crate::character::affliction`])
-//! was built ahead of its threshold data: the reusable, testable piece
-//! lands now; the ECS wiring (a `Sneaking` marker, an `AlertState`
-//! component, a tick system iterating detector/target pairs) is what
-//! remains.
+//! [`StealthKind::FalloutNv`] is the same shape plus New Vegas's target-skill
+//! terms from the Fallout wiki capture (CHARAL FNV ruleset *Sneak Detection*):
+//! `TargetSkill = Sneak + 5·(TargetLevel − DetectorLevel) + max(50 − 10·TargetLevel, 0) − Armor`.
+//! The capture's other constants (base −35, sound 1.6 / 0.16, `12 + w/2`,
+//! running 1.5, action ×2 with Silent 10 / Normal 50 / Loud 100, light 1.4,
+//! visual movement 0.01 / 0.21, `10 + 8·Perception`, the halving) are exactly
+//! the settings' values, so they are read from the load order rather than
+//! written here. The capture's `DetectorState` grouping (0.8 / 1.2) is
+//! superseded by the settings form the code shows.
 //!
-//! Second correction (#3878): this section used to justify the wait with
-//! "M42 'AI packages' … is Tier 7 and blocked on `PACK` record parsing,
-//! #446", closing "waits until M42 gives it something to drive". All three
-//! claims have since expired. #446 is CLOSED (`90e6b068`) and
-//! `crates/plugin/src/esm/records/misc/pack.rs` is ~1,800 lines of shipped
-//! PACK parsing; an AI-package evaluator exists
-//! (`package_conditions_pass` / `ambient_ai_package_system`, registered
-//! unconditionally as a `Stage::Update` exclusive in
-//! `byroredux/src/boot/schedule/update/quest_scene.rs`);
-//! and M42 has delivered seven procedure runtimes (Sandbox / Wander /
-//! Travel / Follow / Escort / Guard / Patrol, M42.1–M42.9). The conclusion
-//! is unchanged — this module still has no consumer — but it is *unscheduled*
-//! now, not *blocked*, and a contributor reading this to pick up work should
-//! not be sent to wait on things that are done.
-//!
-//! One correction to "nothing feeds this yet" (#2979): a melee-combat
-//! consumer shipped 2026-08-15/16 (`byroredux/src/combat.rs`), and the
-//! canonical `HitEvent` it produces carries a `sneak_attack` field — set to a
-//! hardcoded `false`, because no sneak/crouch input, alert state, or
-//! detection tick exists to compute it from. That field is this module's
-//! concrete future hook point, not evidence of a wired consumer; the
-//! zero-caller state above still holds.
-//!
-//! ## No-guessing caveat
-//!
-//! Unlike most CHARAL formulas, the source page gives **no worked numeric
-//! example** for the full `Detection` formula (only for its sub-terms, e.g.
-//! Action Points elsewhere). [`detection_score`] is a direct algebraic
-//! transcription of the cited formula, not a guess — so there is no
-//! "matches wiki example" test for the whole formula like the rest of
-//! CHARAL has. What there is instead, since #3482: the source's `Sound` and
-//! `Visual` sub-expressions are now captured *verbatim* in
-//! `docs/engine/charal-fnv-fo3-ruleset.md` (they previously survived only as
-//! prose there, which made every coefficient below unfalsifiable from the
-//! repository), and the `*_matches_the_source_table` /
-//! `*_matches_the_captured_*` tests pin each one to its exact captured value
-//! on top of the original monotonicity checks.
-//!
-//! One coefficient is a **disclosed modelling choice, not a transcription**:
-//! see [`MovementState::SilentRunning`].
+//! A game without a sourced formula ([`StealthKind::SightOnly`]: Oblivion and
+//! Skyrim until Phase 5, Fallout 4 and Starfield per Q2) has no value; the
+//! tick answers its levels from the sight test.
 
-/// Whether the detection roll happens indoors or outdoors — sets the maximum
-/// detection distance (2500 / 5000 game units).
+/// Which formula a game's detection runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Locale {
-    Indoor,
-    Outdoor,
+pub enum StealthKind {
+    /// No sourced formula: levels come from the actor-to-actor sight test.
+    SightOnly,
+    /// The GECK / `Fallout3.exe` formula without level terms (SNK-DET-003).
+    Fallout3,
+    /// The same with New Vegas's target-skill level and armor terms (SNK-DET-004).
+    FalloutNv,
 }
 
-impl Locale {
-    #[inline]
-    fn max_distance(self) -> f32 {
-        match self {
-            Locale::Indoor => 2500.0,
-            Locale::Outdoor => 5000.0,
-        }
+/// A detector's awareness of the player (CS *GetDetectionLevel*: "0 = Lost :1 =
+/// Unseen :2 = Noticed :3 = Seen"). FO3 / FNV store only Lost and Seen
+/// (`Fallout3.exe` `0x874393`); the band between is the alert state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DetectionLevel {
+    #[default]
+    Lost = 0,
+    Unseen = 1,
+    Noticed = 2,
+    Seen = 3,
+}
+
+impl DetectionLevel {
+    /// The number `GetDetectionLevel` answers.
+    #[must_use]
+    pub const fn as_number(self) -> u8 {
+        self as u8
     }
 }
 
-/// The target's current movement state — drives both the sound and visual
-/// terms. `SilentRunning` is the perk-driven exception that zeroes movement
-/// sound entirely (not just reduces it).
-///
-/// #3482 — this enum collapses two independent things the source keeps
-/// apart: how the target is moving, and whether it has the Silent Running
-/// perk. The source special-cases the perk in the **sound** branch only
-/// ("stationary *or* has Silent Running" ⇒ `MovementMultiplier = 0`) and
-/// never mentions it in `VisualMovement`, which discriminates on motion
-/// alone (`0` / `0.01` / `0.21` for not moving / moving / running). So this
-/// variant has to *choose* a visual coefficient, and it takes `0.01`
-/// ("moving but not running"); a target sprinting with the perk is arguably
-/// `0.21` under the source's own wording. That is the one number here the
-/// capture document owns rather than the source — recorded in
-/// `docs/engine/charal-fnv-fo3-ruleset.md` so it is visible instead of
-/// looking sourced. Splitting the perk out of this enum is an M42-era
-/// change (nothing consumes it today).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MovementState {
-    Stationary,
-    Walking,
-    Running,
-    SilentRunning,
-}
-
-/// The loudness class of whatever action the target just performed (firing
-/// a weapon, swinging melee, throwing a grenade, …), or none this tick.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActionSound {
-    None,
-    Silent,
+/// The detector's own state: "Normal->Alert->Combat->Lost->Normal" (GECK and
+/// CK *Category:Detection*). *Alert state Lost* (searching after combat) is not
+/// *level Lost*.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AlertState {
+    #[default]
     Normal,
-    Loud,
+    Alert,
+    Combat,
+    Lost,
 }
 
-impl ActionSound {
-    #[inline]
-    fn value(self) -> f32 {
-        match self {
-            ActionSound::None => 0.0,
-            ActionSound::Silent => 10.0,
-            ActionSound::Normal => 50.0,
-            ActionSound::Loud => 100.0,
-        }
-    }
-}
-
-/// The target's worn-armor noise class (light armor is silent; medium/heavy
-/// add a flat penalty to `TargetSkill`, making the target easier to detect).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The target's worn-armor noise class (New Vegas only: medium and heavy
+/// armor subtract 10 / 20 from the target skill, Fallout wiki capture).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ArmorClass {
+    #[default]
     Light,
     Medium,
     Heavy,
@@ -154,690 +102,502 @@ impl ArmorClass {
     }
 }
 
-/// The detector's current AI state — scales `DetectorSkill`. Sleeping actors
-/// and actors already fighting their current target are *less* alert
-/// (0.8×); actors on edge (alert, lost, or fighting someone else) are *more*
-/// alert (1.2×); anything else is neutral (1×).
+/// The action rating of a weapon's sound level (`WEAP` `VNAM`, SNK-DET-016):
+/// the Fallout wiki capture's Silent 10, Normal 50, Loud 100.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DetectorState {
-    SleepingOrFightingThisTarget,
-    AlertLostOrFightingOther,
+pub enum ActionSound {
+    Silent,
     Normal,
+    Loud,
 }
 
-impl DetectorState {
-    #[inline]
-    fn multiplier(self) -> f32 {
+impl ActionSound {
+    #[must_use]
+    pub const fn rating(self) -> f32 {
         match self {
-            DetectorState::SleepingOrFightingThisTarget => 0.8,
-            DetectorState::AlertLostOrFightingOther => 1.2,
-            DetectorState::Normal => 1.0,
+            ActionSound::Silent => 10.0,
+            ActionSound::Normal => 50.0,
+            ActionSound::Loud => 100.0,
         }
     }
 }
 
-/// Everything one detection roll needs — one detector, one target, and the
-/// environment between them. No field is a CHARAL type directly (the caller
-/// resolves `ActorValues`/`CharacterLevel`/`Transform` into these plain
-/// values); this module stays independent of the ECS.
+/// Everything one detection roll needs for one detector and the player. The
+/// caller resolves the ECS state into these plain values.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DetectionInputs {
-    /// World-unit distance between detector and target (~64 units/meter).
-    ///
-    /// **Precondition: `distance <= locale.max_distance()`.** The source's
-    /// `((MaxDist - d) / MaxDist)^2` attenuation is squared and states nothing
-    /// for `d > MaxDist`, so past the range it rises again (`d = 2 * MaxDist`
-    /// scores the same as `d = 0`) and an unguarded far call reports
-    /// "Detected". [`detection_score`] transcribes the formula as given and does
-    /// not clamp; the caller gates on range first.
+    /// World-unit distance between the two.
     pub distance: f32,
-    pub locale: Locale,
-    /// Whether the detector has an unobstructed line of sight to the target.
-    pub detector_has_los: bool,
-
-    // Detector-side.
-    /// Detector's Perception SPECIAL value.
+    /// Whether the pair is in an exterior (the range is scaled there).
+    pub exterior: bool,
+    /// An unobstructed ray between them (the sound term's line of sight).
+    pub line_of_sight: bool,
+    /// The line of sight and the detector's view cone both hold (visual contact).
+    pub sees: bool,
     pub detector_perception: f32,
-    pub detector_state: DetectorState,
+    /// The detector's alert state is Alert or alert state Lost.
+    pub detector_alert: bool,
+    pub detector_sleeping: bool,
+    /// The detector is in combat, but not with the target.
+    pub detector_not_combat_target: bool,
     pub detector_level: u16,
-    pub detector_has_night_eye: bool,
-
-    // Target-side.
-    /// `false` short-circuits `TargetSkill` to `0` (not sneaking at all).
-    pub target_is_sneaking: bool,
-    /// `true` (Chameleon / invisibility effects) zeroes the `Visual` term
-    /// regardless of light or line of sight.
-    pub target_is_invisible: bool,
+    pub detector_night_eye: bool,
+    /// The detector's Blindness, 0 to 100.
+    pub detector_blindness: f32,
+    pub target_sneaking: bool,
     pub target_sneak_skill: f32,
     pub target_level: u16,
     pub target_armor: ArmorClass,
-    pub target_equipped_weight: f32,
-    pub target_movement: MovementState,
-    pub target_action_sound: ActionSound,
-
-    /// Ambient light level at the target's position (source units, ~0–100
-    /// before the night-eye multiplier).
+    /// Equipped weight.
+    pub target_weight: f32,
+    pub target_moving: bool,
+    pub target_running: bool,
+    /// Chameleon / invisibility (a Stealth Boy): no visual contact.
+    pub target_stealth_boy: bool,
+    /// The size factor input (1 for a human).
+    pub target_size: f32,
+    /// The action rating heard this period (0 for none; [`ActionSound::rating`]
+    /// or a detection event's sound level).
+    pub action: f32,
+    /// The light level at the target, 0 to 100 (design §6).
     pub light_level: f32,
 }
 
-/// The three detection bands the source page defines. `Detection < −20` is
-/// undetected; `−20..=0` moves an AI from Normal to Alert (or Combat to
-/// Lost); `> 0` is a hard detect.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DetectionState {
-    Undetected,
-    Suspicious,
-    Detected,
-}
-
-/// Classify a raw [`detection_score`] into the three bands.
-#[inline]
-#[must_use]
-pub fn classify(score: f32) -> DetectionState {
-    if score < -20.0 {
-        DetectionState::Undetected
-    } else if score <= 0.0 {
-        DetectionState::Suspicious
-    } else {
-        DetectionState::Detected
+impl Default for DetectionInputs {
+    fn default() -> Self {
+        Self {
+            distance: 0.0,
+            exterior: false,
+            line_of_sight: true,
+            sees: true,
+            detector_perception: 5.0,
+            detector_alert: false,
+            detector_sleeping: false,
+            detector_not_combat_target: false,
+            detector_level: 1,
+            detector_night_eye: false,
+            detector_blindness: 0.0,
+            target_sneaking: false,
+            target_sneak_skill: 0.0,
+            target_level: 1,
+            target_armor: ArmorClass::Light,
+            target_weight: 0.0,
+            target_moving: false,
+            target_running: false,
+            target_stealth_boy: false,
+            target_size: 1.0,
+            action: 0.0,
+            light_level: 0.0,
+        }
     }
 }
 
-/// The FO3/NV `Detection` formula, transcribed exactly from the source (see
-/// module docs). Higher is easier to detect; see [`classify`] for the bands.
+/// One evaluation's terms, kept for `stealth.status` (SNK-DX-001).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct DetectionTerms {
+    pub sound: f32,
+    pub visual: f32,
+    pub skill: f32,
+    pub value: f32,
+}
+
+macro_rules! geck_settings {
+    ($( $field:ident : $name:literal = $default:expr ),+ $(,)?) => {
+        /// The FO3 / FNV detection settings. Defaults are `Fallout3.exe`'s
+        /// (design §13.1; New Vegas shares them, its executable being
+        /// encrypted); the load order's values replace them at install.
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        pub struct GeckSettings { $( pub $field: f32, )+ }
+
+        impl GeckSettings {
+            /// `Fallout3.exe`'s defaults (the census's E column).
+            pub const EXECUTABLE_DEFAULTS: Self = Self { $( $field: $default, )+ };
+
+            /// Every setting's EditorID, in declaration order.
+            pub const NAMES: &'static [&'static str] = &[ $( $name, )+ ];
+
+            /// Replace each default by the load order's value where it
+            /// authors one; report every setting and whether it was authored
+            /// (SNK-DX-003).
+            pub fn with_gmst(mut self, gmst: impl Fn(&str) -> Option<f32>) -> (Self, Vec<SettingReading>) {
+                let mut readings = Vec::with_capacity(Self::NAMES.len());
+                $(
+                    let authored = gmst($name).filter(|value| value.is_finite());
+                    if let Some(value) = authored {
+                        self.$field = value;
+                    }
+                    readings.push(SettingReading { name: $name, value: self.$field, authored: authored.is_some() });
+                )+
+                (self, readings)
+            }
+        }
+    };
+}
+
+geck_settings! {
+    base_value: "fSneakBaseValue" = -25.0,
+    max_distance: "fSneakMaxDistance" = 1500.0,
+    exterior_distance_mult: "fSneakExteriorDistanceMult" = 2.0,
+    attenuation_exponent: "fSneakDistanceAttenuationExponent" = 2.0,
+    sound_los_mult: "fSneakSoundLosMult" = 0.25,
+    sounds_mult: "fSneakSoundsMult" = 1.6,
+    boot_weight_base: "fSneakBootWeightBase" = 14.0,
+    boot_weight_mult: "fSneakBootWeightMult" = 1.0,
+    running_mult: "fSneakRunningMult" = 2.0,
+    action_mult: "fSneakActionMult" = 1.0,
+    light_move_mult: "fSneakLightMoveMult" = 0.01,
+    light_run_mult: "fSneakLightRunMult" = 0.2,
+    light_mod: "fDetectionSneakLightMod" = 0.0,
+    light_mult: "fSneakLightMult" = 1.4,
+    stealth_boy_mult: "fSneakStealthBoyMult" = 0.0,
+    night_eye_bonus: "fDetectionNightEyeBonus" = 3.0,
+    perception_skill_min: "fSneakPerceptionSkillMin" = 10.0,
+    perception_skill_max: "fSneakPerceptionSkillMax" = 90.0,
+    alert_mod: "fSneakAlertMod" = 0.2,
+    sleep_bonus: "fSneakSleepBonus" = -0.2,
+    combat_mod: "fSneakCombatMod" = -0.4,
+    skill_mult: "fSneakSkillMult" = 0.5,
+    noticed_min: "fSneakNoticedMin" = -20.0,
+    seen_min: "fSneakSeenMin" = 0.0,
+    timer: "fDetectionTimerSetting" = 0.3,
+    view_cone: "fDetectionViewCone" = 190.0,
+    event_expire_time: "fDetectionEventExpireTime" = 10.0,
+    large_actor_threshold: "fDetectionLargeActorThreshold" = 135.0,
+    large_actor_size_mult: "fDetectionLargeActorSizeMult" = 1.0,
+}
+
+/// One setting the install read: its value, and whether the load order
+/// authors it or it fell back to the executable default.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SettingReading {
+    pub name: &'static str,
+    pub value: f32,
+    pub authored: bool,
+}
+
+/// A load order's resolved detection rules: the profile row's kind over its
+/// settings. Installed as a resource by the binary.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StealthRules {
+    pub kind: StealthKind,
+    pub settings: GeckSettings,
+}
+
+impl crate::ecs::resource::Resource for StealthRules {}
+
+impl StealthRules {
+    /// Resolve `kind` against the load order's settings. A [`StealthKind::SightOnly`]
+    /// row reads only the range settings it shares with the sight test.
+    #[must_use]
+    pub fn resolve(kind: StealthKind, gmst: impl Fn(&str) -> Option<f32>) -> (Self, Vec<SettingReading>) {
+        let (settings, readings) = GeckSettings::EXECUTABLE_DEFAULTS.with_gmst(gmst);
+        let readings = match kind {
+            StealthKind::SightOnly => readings
+                .into_iter()
+                .filter(|reading| matches!(reading.name, "fSneakMaxDistance" | "fSneakExteriorDistanceMult"))
+                .collect(),
+            _ => readings,
+        };
+        (Self { kind, settings }, readings)
+    }
+
+    /// The detection range: `fSneakMaxDistance`, scaled in an exterior.
+    #[must_use]
+    pub fn range(&self, exterior: bool) -> f32 {
+        let s = &self.settings;
+        if exterior { s.max_distance * s.exterior_distance_mult } else { s.max_distance }
+    }
+
+    /// Seconds between one detector's re-evaluations (SNK-DET-006).
+    #[must_use]
+    pub fn period(&self) -> f32 {
+        self.settings.timer.max(0.01)
+    }
+
+    /// The full view-cone angle in degrees, where the game authors one (SNK-DET-008).
+    #[must_use]
+    pub fn view_cone_degrees(&self) -> Option<f32> {
+        match self.kind {
+            StealthKind::Fallout3 | StealthKind::FalloutNv => Some(self.settings.view_cone),
+            StealthKind::SightOnly => None,
+        }
+    }
+
+    /// The detection value and its terms, or `None` for a game without a
+    /// sourced formula.
+    #[must_use]
+    pub fn value(&self, inputs: &DetectionInputs) -> Option<DetectionTerms> {
+        let level_terms = match self.kind {
+            StealthKind::SightOnly => return None,
+            StealthKind::Fallout3 => false,
+            StealthKind::FalloutNv => true,
+        };
+        Some(geck_value(&self.settings, inputs, level_terms))
+    }
+
+    /// The level a value means (SNK-DET-012): FO3 / FNV store Seen above
+    /// `fSneakSeenMin` and Lost otherwise (`Fallout3.exe` `0x874393`).
+    #[must_use]
+    pub fn level(&self, value: f32) -> DetectionLevel {
+        if value > self.settings.seen_min { DetectionLevel::Seen } else { DetectionLevel::Lost }
+    }
+
+    /// Whether a value crosses the alert threshold (`fSneakNoticedMin`, GECK
+    /// *Category:Detection*: "Alert Threshold").
+    #[must_use]
+    pub fn noticed(&self, value: f32) -> bool {
+        value > self.settings.noticed_min
+    }
+
+    /// Seconds a detector stays Alert (or alert state Lost) after the last
+    /// thing it noticed (`fDetectionEventExpireTime`).
+    #[must_use]
+    pub fn alert_time(&self) -> f32 {
+        self.settings.event_expire_time.max(0.0)
+    }
+}
+
+/// Step one detector's alert state toward the player (SNK-DET-013; GECK
+/// *Category:Detection* transitions). `hostile`: the detector would attack the
+/// player. `noticed`: the value crossed the alert threshold, or a detection
+/// event or damage from the player arrived. `expired`: nothing was noticed for
+/// the alert time. A detector not hostile to the player stays Normal.
 #[must_use]
-pub fn detection_score(inputs: &DetectionInputs) -> f32 {
-    let max_distance = inputs.locale.max_distance();
-    let attenuation = ((max_distance - inputs.distance) / max_distance).powi(2);
+pub fn step_alert(previous: AlertState, level: DetectionLevel, hostile: bool, noticed: bool, expired: bool) -> AlertState {
+    if !hostile {
+        return AlertState::Normal;
+    }
+    let seen = level == DetectionLevel::Seen;
+    match previous {
+        _ if seen => AlertState::Combat,
+        AlertState::Combat => AlertState::Lost,
+        AlertState::Normal if noticed => AlertState::Alert,
+        AlertState::Normal => AlertState::Normal,
+        AlertState::Alert | AlertState::Lost if expired && !noticed => AlertState::Normal,
+        state => state,
+    }
+}
 
-    let sound_multiplier = if inputs.detector_has_los { 1.6 } else { 0.16 };
-    let movement_multiplier = match inputs.target_movement {
-        MovementState::Stationary | MovementState::SilentRunning => 0.0,
-        MovementState::Running => 1.5,
-        MovementState::Walking => 1.0,
-    };
-    let movement_sound = (12.0 + inputs.target_equipped_weight / 2.0) * movement_multiplier;
-    let sound = sound_multiplier * (movement_sound + 2.0 * inputs.target_action_sound.value());
-
-    let visual = if !inputs.detector_has_los || inputs.target_is_invisible {
-        0.0
+fn geck_value(s: &GeckSettings, i: &DetectionInputs, level_terms: bool) -> DetectionTerms {
+    let flag = |b: bool| if b { 1.0 } else { 0.0 };
+    let max_distance = if i.exterior { s.max_distance * s.exterior_distance_mult } else { s.max_distance };
+    let attenuation = if max_distance > 0.0 {
+        ((max_distance - i.distance) / max_distance).max(0.0).powf(s.attenuation_exponent)
     } else {
-        let night_eye = if inputs.detector_has_night_eye {
-            3.0
-        } else {
-            1.0
-        };
-        let light = 1.4 * (inputs.light_level * night_eye).min(100.0);
-        let visual_movement = match inputs.target_movement {
-            MovementState::Stationary => 0.0,
-            MovementState::Running => 0.21,
-            MovementState::Walking | MovementState::SilentRunning => 0.01,
-        };
-        light * (1.0 + visual_movement)
-    };
-
-    let detector_skill =
-        (10.0 + 8.0 * inputs.detector_perception) * inputs.detector_state.multiplier();
-
-    let target_skill = if !inputs.target_is_sneaking {
         0.0
+    };
+    let perception = s.perception_skill_min + (s.perception_skill_max - s.perception_skill_min) * i.detector_perception / 10.0;
+    let state = 1.0
+        + flag(i.detector_alert) * s.alert_mod
+        + flag(i.detector_sleeping) * s.sleep_bonus
+        + flag(i.detector_not_combat_target) * s.combat_mod;
+
+    let los = if i.line_of_sight { 1.0 } else { s.sound_los_mult };
+    let movement = if i.target_moving {
+        (s.boot_weight_base + s.boot_weight_mult * i.target_weight) * if i.target_running { s.running_mult } else { 1.0 }
     } else {
-        inputs.target_sneak_skill
-            + 5.0 * (f32::from(inputs.target_level) - f32::from(inputs.detector_level))
-            + (50.0 - 10.0 * f32::from(inputs.target_level)).max(0.0)
-            - inputs.target_armor.penalty()
+        0.0
+    };
+    let sound = (attenuation * los * s.sounds_mult * (i.action * s.action_mult.trunc() + movement)).max(0.0);
+
+    let visual = if i.sees && !i.target_stealth_boy {
+        let night_eye = if i.detector_night_eye { s.night_eye_bonus } else { 1.0 };
+        let light = (i.light_level * night_eye).min(100.0);
+        let motion = 1.0 + flag(i.target_moving) * s.light_move_mult + flag(i.target_running) * s.light_run_mult;
+        // `Fallout3.exe` divides as integers: any blindness of 1 or more zeroes sight.
+        let blindness = f32::from(u8::from((100.0 - i.detector_blindness.clamp(0.0, 100.0)) >= 100.0));
+        let size = if i.target_size > 1.0 { 1.0 + (i.target_size - 1.0) * s.large_actor_size_mult } else { 1.0 };
+        (attenuation * motion * (light + s.light_mod) * s.light_mult * blindness * size).max(0.0)
+    } else {
+        // A Stealth Boy removes visual contact (`Fallout3.exe` also multiplies
+        // by `fSneakStealthBoyMult`, 0 in every census row).
+        0.0
     };
 
-    attenuation * (sound + visual + detector_skill / 2.0) - target_skill / 2.0 - 35.0
+    let target = if i.target_sneaking {
+        let mut skill = i.target_sneak_skill;
+        if level_terms {
+            let (target_level, detector_level) = (f32::from(i.target_level), f32::from(i.detector_level));
+            skill += 5.0 * (target_level - detector_level) + (50.0 - 10.0 * target_level).max(0.0)
+                - i.target_armor.penalty();
+        }
+        skill
+    } else {
+        0.0
+    };
+    let skill = (attenuation * perception * state - target) * s.skill_mult;
+    DetectionTerms { sound, visual, skill, value: s.base_value + sound + visual + skill }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn baseline() -> DetectionInputs {
-        DetectionInputs {
-            distance: 500.0,
-            locale: Locale::Outdoor,
-            detector_has_los: true,
-            detector_perception: 5.0,
-            detector_state: DetectorState::Normal,
-            detector_level: 5,
-            detector_has_night_eye: false,
-            target_is_sneaking: true,
-            target_is_invisible: false,
-            target_sneak_skill: 50.0,
-            target_level: 5,
-            target_armor: ArmorClass::Light,
-            target_equipped_weight: 20.0,
-            target_movement: MovementState::Stationary,
-            target_action_sound: ActionSound::None,
-            light_level: 20.0,
-        }
+    /// `FalloutNV.esm`'s authored values over the executable defaults (design
+    /// §13.1): the settings the FNV capture's constants come from.
+    fn fnv() -> StealthRules {
+        let authored = |name: &str| match name {
+            "fSneakBaseValue" => Some(-35.0),
+            "fSneakMaxDistance" => Some(2500.0),
+            "fSneakExteriorDistanceMult" => Some(2.0),
+            "fSneakSoundLosMult" => Some(0.1),
+            "fSneakBootWeightBase" => Some(12.0),
+            "fSneakBootWeightMult" => Some(0.5),
+            "fSneakRunningMult" => Some(1.5),
+            "fSneakActionMult" => Some(2.0),
+            "fSneakLightMult" => Some(1.4),
+            "fSneakSkillMult" => Some(0.5),
+            _ => None,
+        };
+        StealthRules::resolve(StealthKind::FalloutNv, authored).0
     }
 
-    #[test]
-    fn closer_distance_raises_detection() {
-        let far = detection_score(&DetectionInputs {
-            distance: 4000.0,
-            ..baseline()
-        });
-        let near = detection_score(&DetectionInputs {
-            distance: 100.0,
-            ..baseline()
-        });
-        assert!(
-            near > far,
-            "standing closer to the detector must be easier to detect"
-        );
-    }
-
-    #[test]
-    fn indoor_max_distance_is_half_outdoor() {
-        assert_eq!(Locale::Indoor.max_distance(), 2500.0);
-        assert_eq!(Locale::Outdoor.max_distance(), 5000.0);
-    }
-
-    #[test]
-    fn running_raises_detection_over_stationary() {
-        let stationary = detection_score(&baseline());
-        let running = detection_score(&DetectionInputs {
-            target_movement: MovementState::Running,
-            ..baseline()
-        });
-        assert!(running > stationary, "running is louder and more visible");
-    }
-
-    #[test]
-    fn silent_running_matches_stationary_sound_but_not_visual() {
-        // Silent Running zeroes movement *sound* like standing still, but
-        // still counts as "moving" for the visual term (small +0.01 vs 0).
-        let stationary = detection_score(&baseline());
-        let silent_running = detection_score(&DetectionInputs {
-            target_movement: MovementState::SilentRunning,
-            ..baseline()
-        });
-        assert!(
-            silent_running > stationary,
-            "Silent Running still nudges the visual term up slightly"
-        );
-        // But dramatically less than actually running loudly.
-        let running = detection_score(&DetectionInputs {
-            target_movement: MovementState::Running,
-            ..baseline()
-        });
-        assert!(silent_running < running);
-    }
-
-    #[test]
-    fn loud_action_raises_detection() {
-        let quiet = detection_score(&baseline());
-        let loud = detection_score(&DetectionInputs {
-            target_action_sound: ActionSound::Loud,
-            ..baseline()
-        });
-        assert!(loud > quiet, "firing a loud weapon must be easier to hear");
-    }
-
-    #[test]
-    fn no_line_of_sight_zeroes_visual_and_softens_sound() {
-        let with_los = detection_score(&baseline());
-        let without_los = detection_score(&DetectionInputs {
-            detector_has_los: false,
-            ..baseline()
-        });
-        assert!(
-            without_los < with_los,
-            "losing line of sight can only help the target hide"
-        );
-    }
-
-    #[test]
-    fn invisibility_zeroes_visual_even_with_los() {
-        let visible = detection_score(&baseline());
-        let invisible = detection_score(&DetectionInputs {
-            target_is_invisible: true,
-            ..baseline()
-        });
-        assert!(invisible < visible, "Chameleon/invisibility only helps");
-    }
-
-    #[test]
-    fn heavier_armor_raises_detection() {
-        let light = detection_score(&baseline());
-        let heavy = detection_score(&DetectionInputs {
-            target_armor: ArmorClass::Heavy,
-            ..baseline()
-        });
-        assert!(heavy > light, "heavy armor is noisier, easier to detect");
-    }
-
-    #[test]
-    fn higher_sneak_skill_lowers_detection() {
-        let low_skill = detection_score(&DetectionInputs {
-            target_sneak_skill: 10.0,
-            ..baseline()
-        });
-        let high_skill = detection_score(&DetectionInputs {
-            target_sneak_skill: 90.0,
-            ..baseline()
-        });
-        assert!(high_skill < low_skill, "higher Sneak skill hides better");
-    }
-
-    #[test]
-    fn not_sneaking_ignores_sneak_skill_entirely() {
-        // TargetSkill collapses to 0 regardless of the skill value when the
-        // target isn't in sneak mode at all.
-        let a = detection_score(&DetectionInputs {
-            target_is_sneaking: false,
-            target_sneak_skill: 10.0,
-            ..baseline()
-        });
-        let b = detection_score(&DetectionInputs {
-            target_is_sneaking: false,
-            target_sneak_skill: 90.0,
-            ..baseline()
-        });
-        assert_eq!(a, b, "Sneak skill is irrelevant while not sneaking");
-    }
-
-    #[test]
-    fn target_level_advantage_over_detector_lowers_detection() {
-        // TargetSkill's `5·(TargetLevel − DetectorLevel)` term: a target
-        // higher-level than its detector is harder to spot.
-        let even = detection_score(&baseline());
-        let higher_target_level = detection_score(&DetectionInputs {
-            target_level: 15,
-            ..baseline()
-        });
-        assert!(
-            higher_target_level < even,
-            "outleveling the detector should make the target harder to detect"
-        );
-    }
-
-    #[test]
-    fn higher_detector_perception_raises_detection() {
-        let low_per = detection_score(&DetectionInputs {
-            detector_perception: 1.0,
-            ..baseline()
-        });
-        let high_per = detection_score(&DetectionInputs {
-            detector_perception: 10.0,
-            ..baseline()
-        });
-        assert!(high_per > low_per, "sharper-eyed detectors see better");
-    }
-
-    #[test]
-    fn alert_detector_state_raises_detection_over_normal() {
-        let normal = detection_score(&baseline());
-        let alert = detection_score(&DetectionInputs {
-            detector_state: DetectorState::AlertLostOrFightingOther,
-            ..baseline()
-        });
-        let sleeping = detection_score(&DetectionInputs {
-            detector_state: DetectorState::SleepingOrFightingThisTarget,
-            ..baseline()
-        });
-        assert!(alert > normal, "an alert detector is more perceptive");
-        assert!(sleeping < normal, "a sleeping detector is less perceptive");
-    }
-
-    #[test]
-    fn night_eye_raises_detection_in_the_dark() {
-        let without = detection_score(&baseline());
-        let with_night_eye = detection_score(&DetectionInputs {
-            detector_has_night_eye: true,
-            ..baseline()
-        });
-        assert!(
-            with_night_eye > without,
-            "NightEye triples the effective light level"
-        );
-    }
-
-    #[test]
-    fn classify_matches_the_documented_bands() {
-        assert_eq!(classify(-25.0), DetectionState::Undetected);
-        assert_eq!(
-            classify(-20.0),
-            DetectionState::Suspicious,
-            "boundary is inclusive"
-        );
-        assert_eq!(
-            classify(0.0),
-            DetectionState::Suspicious,
-            "boundary is inclusive"
-        );
-        assert_eq!(classify(0.1), DetectionState::Detected);
-    }
-
-    #[test]
-    fn light_level_is_capped_before_the_1_4_multiplier() {
-        // `min(100, light*nighteye)` caps the pre-multiplier term, not the
-        // final Light value — Light itself can exceed 100 (1.4 * 100 = 140).
-        let capped = detection_score(&DetectionInputs {
-            light_level: 200.0,
-            detector_has_night_eye: true, // light*nighteye = 600, capped to 100
-            ..baseline()
-        });
-        let at_cap = detection_score(&DetectionInputs {
-            light_level: 100.0,
-            detector_has_night_eye: false,
-            ..baseline()
-        });
-        assert!(
-            (capped - at_cap).abs() < 1e-4,
-            "both saturate the same min(100, ...) term"
-        );
-    }
-
-    // ── #3482 (CHAR-2026-08-27b-D2-01) — exact per-coefficient pins.
-    //
-    //   The monotonicity tests above check that each input moves the score
-    //   the direction the source's prose says. They cannot tell 1.6 from
-    //   2.6, 0.21 from 0.12, or 12 + w/2 from 12 + w — which is what made
-    //   the whole `Sound`/`Visual` coefficient set unfalsifiable while the
-    //   capture document recorded only prose for it. Each test below asserts
-    //   an exact value against the table now captured in
-    //   `docs/engine/charal-fnv-fo3-ruleset.md` § Sneak Detection (FNV).
-
-    /// Inputs that zero **every** term of `Detection` except the one under
-    /// test, so a probe's score minus [`ISOLATED_BASE`] is that term alone:
-    ///
-    /// * `distance = 0` ⇒ `Attenuation = ((5000−0)/5000)² = 1`
-    /// * stationary, no action, zero equipped weight ⇒ `Sound = 0`
-    /// * `light_level = 0` ⇒ `Light = 0` ⇒ `Visual = 0`
-    /// * `detector_perception = 0`, `Normal` state ⇒ `DetectorSkill = 10`
-    /// * not sneaking ⇒ `TargetSkill = 0`
-    ///
-    /// leaving `1·(0 + 0 + 10/2) − 0/2 − 35 = −30`.
-    fn isolated() -> DetectionInputs {
-        DetectionInputs {
-            distance: 0.0,
-            locale: Locale::Outdoor,
-            detector_has_los: true,
-            detector_perception: 0.0,
-            detector_state: DetectorState::Normal,
-            detector_level: 1,
-            detector_has_night_eye: false,
-            target_is_sneaking: false,
-            target_is_invisible: false,
-            target_sneak_skill: 0.0,
-            target_level: 1,
-            target_armor: ArmorClass::Light,
-            target_equipped_weight: 0.0,
-            target_movement: MovementState::Stationary,
-            target_action_sound: ActionSound::None,
-            light_level: 0.0,
-        }
-    }
-
-    const ISOLATED_BASE: f32 = -30.0;
-
-    /// `Detection`'s own constants, and the premise every probe below rests
-    /// on. `−35` is the flat term; `10 + 8·Perception` is `DetectorSkill`'s
-    /// base; both are halved/subtracted exactly as the source writes them.
-    #[test]
-    fn isolated_baseline_is_the_documented_constant_term() {
-        approx(detection_score(&isolated()), ISOLATED_BASE, "1·(10/2) − 35");
+    fn fo3() -> StealthRules {
+        StealthRules { kind: StealthKind::Fallout3, ..fnv() }
     }
 
     fn approx(actual: f32, expected: f32, what: &str) {
-        assert!(
-            (actual - expected).abs() < 1e-3,
-            "{what}: expected {expected}, got {actual}"
-        );
+        assert!((actual - expected).abs() < 1e-3, "{what}: expected {expected}, got {actual}");
     }
 
-    /// The term the probe under test contributes, isolated.
-    fn term(inputs: &DetectionInputs) -> f32 {
-        detection_score(inputs) - ISOLATED_BASE
-    }
-
-    /// `SoundMultiplier = 1.6 with LOS, 0.16 otherwise`. Probed through a
-    /// walking target at zero equipped weight, whose `MovementSound` is the
-    /// bare `12`, so the multiplier is the only unknown. Losing LOS also
-    /// zeroes `Visual`, which is already zero here.
-    #[test]
-    fn sound_multiplier_matches_the_source_table() {
-        let walking = DetectionInputs {
-            target_movement: MovementState::Walking,
-            ..isolated()
+    /// The Fallout wiki capture, written out with its own constants (CHARAL FNV
+    /// ruleset *Sneak Detection*), as the transcription oracle (PRD §7.2
+    /// scenario 2). Its `DetectorState` is taken as the settings form.
+    fn capture(i: &DetectionInputs) -> f32 {
+        let max = if i.exterior { 5000.0 } else { 2500.0 };
+        let att = ((max - i.distance) / max).max(0.0).powi(2);
+        let sound_mult = if i.line_of_sight { 1.6 } else { 0.16 };
+        let movement = if i.target_moving { (12.0 + i.target_weight / 2.0) * if i.target_running { 1.5 } else { 1.0 } } else { 0.0 };
+        let sound = sound_mult * (movement + 2.0 * i.action);
+        let visual = if i.sees && !i.target_stealth_boy {
+            let light = 1.4 * (i.light_level * if i.detector_night_eye { 3.0 } else { 1.0 }).min(100.0);
+            let motion = if i.target_running { 0.21 } else if i.target_moving { 0.01 } else { 0.0 };
+            light * (1.0 + motion)
+        } else {
+            0.0
         };
-        approx(term(&walking), 1.6 * 12.0, "1.6 × MovementSound with LOS");
-        approx(
-            term(&DetectionInputs {
-                detector_has_los: false,
-                ..walking
-            }),
-            0.16 * 12.0,
-            "0.16 × MovementSound without LOS",
-        );
-    }
-
-    /// `MovementSound = (12 + EquippedWeight/2) × MovementMultiplier`, with
-    /// the multiplier `0 / 1.5 / 1` for stationary-or-silent-running /
-    /// running / otherwise. 100 lb of equipment must add exactly 50, not 100.
-    #[test]
-    fn movement_sound_matches_the_source_table() {
-        let heavy = DetectionInputs {
-            target_equipped_weight: 100.0,
-            ..isolated()
+        let state = 1.0 + if i.detector_alert { 0.2 } else { 0.0 } + if i.detector_sleeping { -0.2 } else { 0.0 }
+            + if i.detector_not_combat_target { -0.4 } else { 0.0 };
+        let detector = (10.0 + 8.0 * i.detector_perception) * state;
+        let target = if i.target_sneaking {
+            i.target_sneak_skill + 5.0 * (f32::from(i.target_level) - f32::from(i.detector_level))
+                + (50.0 - 10.0 * f32::from(i.target_level)).max(0.0)
+                - i.target_armor.penalty()
+        } else {
+            0.0
         };
-        for (movement, multiplier) in [
-            (MovementState::Stationary, 0.0),
-            (MovementState::Walking, 1.0),
-            (MovementState::Running, 1.5),
-            (MovementState::SilentRunning, 0.0),
-        ] {
+        att * (sound + visual + detector / 2.0) - target / 2.0 - 35.0
+    }
+
+    fn cases() -> Vec<DetectionInputs> {
+        let base = DetectionInputs::default();
+        vec![
+            base,
+            DetectionInputs { distance: 800.0, light_level: 40.0, ..base },
+            DetectionInputs { distance: 300.0, exterior: true, target_moving: true, target_weight: 30.0, ..base },
+            DetectionInputs { target_moving: true, target_running: true, target_weight: 12.0, light_level: 70.0, ..base },
+            DetectionInputs { line_of_sight: false, sees: false, action: ActionSound::Loud.rating(), ..base },
+            DetectionInputs { target_sneaking: true, target_sneak_skill: 75.0, target_level: 8, detector_level: 3, ..base },
+            DetectionInputs { target_sneaking: true, target_armor: ArmorClass::Heavy, target_level: 2, ..base },
+            DetectionInputs { detector_alert: true, detector_perception: 8.0, light_level: 10.0, ..base },
+            DetectionInputs { detector_sleeping: true, detector_night_eye: true, light_level: 50.0, ..base },
+            DetectionInputs { target_stealth_boy: true, light_level: 90.0, action: ActionSound::Silent.rating(), ..base },
+        ]
+    }
+
+    /// PRD §7.2 scenario 2 (FNV): the settings-driven formula over
+    /// `FalloutNV.esm`'s values matches the captured transcription.
+    #[test]
+    fn the_fnv_row_matches_the_captured_formula() {
+        let rules = fnv();
+        for inputs in cases() {
+            approx(rules.value(&inputs).unwrap().value, capture(&inputs), &format!("{inputs:?}"));
+        }
+    }
+
+    /// PRD §7.2 scenario 2 (FO3): the same shape without New Vegas's level and
+    /// armor terms: the target skill is the Sneak skill alone.
+    #[test]
+    fn the_fo3_row_drops_the_level_and_armor_terms() {
+        let rules = fo3();
+        for inputs in cases() {
+            let fo3_target = if inputs.target_sneaking { inputs.target_sneak_skill } else { 0.0 };
+            let fnv_target = if inputs.target_sneaking {
+                inputs.target_sneak_skill + 5.0 * (f32::from(inputs.target_level) - f32::from(inputs.detector_level))
+                    + (50.0 - 10.0 * f32::from(inputs.target_level)).max(0.0)
+                    - inputs.target_armor.penalty()
+            } else {
+                0.0
+            };
             approx(
-                term(&DetectionInputs {
-                    target_movement: movement,
-                    ..heavy
-                }),
-                1.6 * ((12.0 + 100.0 / 2.0) * multiplier),
-                "MovementSound",
+                rules.value(&inputs).unwrap().value,
+                capture(&inputs) + (fnv_target - fo3_target) * 0.5,
+                &format!("{inputs:?}"),
             );
         }
     }
 
-    /// `ActionSound` is `100 / 50 / 10 / 0` for loud / normal / silent / no
-    /// action, and enters `Sound` **doubled**.
     #[test]
-    fn action_sound_matches_the_source_table() {
-        for (action, value) in [
-            (ActionSound::Loud, 100.0),
-            (ActionSound::Normal, 50.0),
-            (ActionSound::Silent, 10.0),
-            (ActionSound::None, 0.0),
-        ] {
-            assert_eq!(action.value(), value, "{action:?}");
-            approx(
-                term(&DetectionInputs {
-                    target_action_sound: action,
-                    ..isolated()
-                }),
-                1.6 * (2.0 * value),
-                "2 × ActionSound",
-            );
-        }
+    fn executable_defaults_apply_where_the_load_order_authors_nothing() {
+        let (rules, readings) = StealthRules::resolve(StealthKind::Fallout3, |_| None);
+        assert_eq!(rules.settings, GeckSettings::EXECUTABLE_DEFAULTS);
+        assert_eq!(readings.len(), GeckSettings::NAMES.len());
+        assert!(readings.iter().all(|reading| !reading.authored));
+        assert_eq!(rules.range(false), 1500.0);
+        assert_eq!(rules.range(true), 3000.0);
+        approx(rules.period(), 0.3, "fDetectionTimerSetting");
+        assert_eq!(rules.view_cone_degrees(), Some(190.0));
     }
 
-    /// `Light = 1.4 × min(100, LightLevel × nighteye)`, `nighteye = 3` with
-    /// the effect and `1` without. Stationary, so `VisualMovement = 0` and
-    /// `Visual` is `Light` exactly.
     #[test]
-    fn light_and_night_eye_match_the_source_table() {
-        for (light_level, night_eye, expected) in [
-            (50.0, false, 1.4 * 50.0),
-            (50.0, true, 1.4 * 100.0), // 150 → capped to 100
-            (30.0, true, 1.4 * 90.0),  // 90 → under the cap, so ×3 shows
-            (100.0, false, 1.4 * 100.0),
-        ] {
-            approx(
-                term(&DetectionInputs {
-                    light_level,
-                    detector_has_night_eye: night_eye,
-                    ..isolated()
-                }),
-                expected,
-                "1.4 × min(100, light × nighteye)",
-            );
-        }
+    fn sight_only_rows_have_no_value_and_read_only_the_range() {
+        let (rules, readings) = StealthRules::resolve(StealthKind::SightOnly, |name| (name == "fSneakMaxDistance").then_some(2500.0));
+        assert!(rules.value(&DetectionInputs::default()).is_none());
+        assert_eq!(rules.view_cone_degrees(), None);
+        assert_eq!(readings.iter().map(|r| r.name).collect::<Vec<_>>(), ["fSneakMaxDistance", "fSneakExteriorDistanceMult"]);
+        assert!(readings[0].authored);
     }
 
-    /// `VisualMovement = 0 / 0.01 / 0.21` for not moving / moving but not
-    /// running / running, applied as `Light × (1 + VisualMovement)`. The
-    /// expected value carries the movement's `Sound` contribution too, since
-    /// the two cannot be varied independently.
+    /// SNK-DET-012: FO3 / FNV store Seen above `fSneakSeenMin` (0) and Lost
+    /// otherwise; `fSneakNoticedMin` (−20) is the alert threshold.
     #[test]
-    fn visual_movement_matches_the_source_table() {
-        // Light = 1.4 × min(100, 50) = 70.
-        let lit = DetectionInputs {
-            light_level: 50.0,
-            ..isolated()
-        };
-        for (movement, sound_multiplier, visual_movement) in [
-            (MovementState::Stationary, 0.0, 0.0),
-            (MovementState::Walking, 1.0, 0.01),
-            (MovementState::Running, 1.5, 0.21),
-            // The disclosed choice, not the source — see `MovementState`'s
-            // docs and the capture document. Pinned so a future perk/movement
-            // split is a deliberate edit here rather than a silent drift.
-            (MovementState::SilentRunning, 0.0, 0.01),
-        ] {
-            approx(
-                term(&DetectionInputs {
-                    target_movement: movement,
-                    ..lit
-                }),
-                1.6 * (12.0 * sound_multiplier) + 70.0 * (1.0 + visual_movement),
-                "Light × (1 + VisualMovement)",
-            );
-        }
+    fn the_level_and_the_alert_threshold_follow_the_settings() {
+        let rules = fnv();
+        assert_eq!(rules.level(0.5), DetectionLevel::Seen);
+        assert_eq!(rules.level(0.0), DetectionLevel::Lost);
+        assert_eq!(rules.level(-19.0), DetectionLevel::Lost);
+        assert!(rules.noticed(-19.0));
+        assert!(!rules.noticed(-20.0));
+        assert_eq!(DetectionLevel::Seen.as_number(), 3);
     }
 
-    /// `Armor = 20 / 10 / 0` for heavy / medium / otherwise, subtracted from
-    /// `TargetSkill` — which is itself halved, so heavy armor costs the
-    /// target exactly 10 points of `Detection`. (Source note: the penalty is
-    /// for armor, not for helmets.)
     #[test]
-    fn armor_penalty_matches_the_source_table() {
-        // Sneak skill 0 and equal levels ⇒ TargetSkill = max(50 − 10·1, 0)
-        // − Armor = 40 − Armor.
-        let sneaking = DetectionInputs {
-            target_is_sneaking: true,
-            target_level: 5,
-            detector_level: 5, // 5·(5−5) = 0
-            ..isolated()
-        };
-        for (armor, penalty) in [
-            (ArmorClass::Heavy, 20.0),
-            (ArmorClass::Medium, 10.0),
-            (ArmorClass::Light, 0.0),
-        ] {
-            assert_eq!(armor.penalty(), penalty, "{armor:?}");
-            // max(50 − 10·5, 0) = 0, so TargetSkill is exactly −penalty.
-            approx(
-                term(&DetectionInputs {
-                    target_armor: armor,
-                    ..sneaking
-                }),
-                penalty / 2.0,
-                "−TargetSkill/2",
-            );
-        }
+    fn distance_light_and_movement_raise_the_value_and_cover_lowers_it() {
+        let rules = fnv();
+        let value = |inputs: DetectionInputs| rules.value(&inputs).unwrap().value;
+        let base = DetectionInputs { distance: 600.0, light_level: 30.0, ..DetectionInputs::default() };
+        assert!(value(DetectionInputs { distance: 100.0, ..base }) > value(base));
+        assert!(value(DetectionInputs { light_level: 80.0, ..base }) > value(base));
+        assert!(value(DetectionInputs { target_moving: true, target_running: true, ..base }) > value(base));
+        assert!(value(DetectionInputs { line_of_sight: false, sees: false, ..base }) < value(base));
+        assert!(value(DetectionInputs { target_sneaking: true, target_sneak_skill: 80.0, ..base }) < value(base));
+        assert!(value(DetectionInputs { detector_blindness: 1.0, ..base }) < value(base), "integer division");
+        let far = rules.value(&DetectionInputs { distance: 9000.0, ..base }).unwrap();
+        assert_eq!((far.sound, far.visual), (0.0, 0.0), "past the range the attenuation clamps to 0");
     }
 
-    /// `DetectorSkill = (10 + 8·Perception) × DetectorState`, the state
-    /// multiplier being `0.8` (sleeping / already fighting this target),
-    /// `1.2` (alert, lost, or fighting someone else) or `1`.
+    /// SNK-DET-013: the GECK transitions toward a hostile player.
     #[test]
-    fn detector_skill_and_state_match_the_source_table() {
-        for (state, multiplier) in [
-            (DetectorState::SleepingOrFightingThisTarget, 0.8),
-            (DetectorState::AlertLostOrFightingOther, 1.2),
-            (DetectorState::Normal, 1.0),
-        ] {
-            assert_eq!(state.multiplier(), multiplier, "{state:?}");
-            // Perception 10 ⇒ base 90, entering Detection as 90·mult/2.
-            approx(
-                detection_score(&DetectionInputs {
-                    detector_perception: 10.0,
-                    detector_state: state,
-                    ..isolated()
-                }),
-                (10.0 + 8.0 * 10.0) * multiplier / 2.0 - 35.0,
-                "DetectorSkill/2 − 35",
-            );
-        }
-    }
-
-    /// `Attenuation = ((MaxDist − distance)/MaxDist)²`, `MaxDist` 2500
-    /// indoors / 5000 outdoors — squared, so half the maximum distance
-    /// leaves a quarter of the term, not a half.
-    #[test]
-    fn attenuation_matches_the_captured_expression() {
-        for (locale, max_distance) in [(Locale::Indoor, 2500.0), (Locale::Outdoor, 5000.0)] {
-            for fraction in [0.0f32, 0.5, 1.0] {
-                let inputs = DetectionInputs {
-                    locale,
-                    distance: max_distance * fraction,
-                    // Something for the attenuation to bite on: a loud
-                    // action at 1.6 × 2 × 100 = 320 of Sound, plus the
-                    // constant 10/2 of DetectorSkill.
-                    target_action_sound: ActionSound::Loud,
-                    ..isolated()
-                };
-                let expected = (1.0 - fraction).powi(2) * (1.6 * 2.0 * 100.0 + 5.0) - 35.0;
-                approx(detection_score(&inputs), expected, "Attenuation");
-            }
-        }
-    }
-
-    /// The source states nothing past `MaxDist`, and the squared expression
-    /// rises again there (`d = 2·MaxDist` equals `d = 0`). Pins the documented
-    /// `DetectionInputs::distance` precondition: callers gate on range.
-    #[test]
-    fn attenuation_past_max_distance_is_not_clamped() {
-        let at = |distance| {
-            detection_score(&DetectionInputs {
-                distance,
-                target_action_sound: ActionSound::Loud,
-                ..isolated()
-            })
-        };
-        approx(at(10_000.0), at(0.0), "d = 2·MaxDist repeats d = 0");
-        assert!(at(10_000.0) > at(5_000.0));
-    }
-
-    /// `TargetSkill = SneakSkill + 5·(TargetLevel − DetectorLevel)
-    /// + max(50 − 10·TargetLevel, 0) − Armor`, and `0` when not sneaking.
-    ///
-    /// The `max(…, 0)` low-level bonus and the both-actors level term are
-    /// FNV's addition over FO3.
-    #[test]
-    fn target_skill_matches_the_captured_expression() {
-        for (sneak_skill, target_level, detector_level) in
-            [(0.0, 1, 1), (75.0, 3, 8), (25.0, 10, 2), (100.0, 6, 6)]
-        {
-            let expected_target_skill = sneak_skill
-                + 5.0 * (f32::from(target_level) - f32::from(detector_level))
-                + (50.0 - 10.0 * f32::from(target_level)).max(0.0);
-            approx(
-                term(&DetectionInputs {
-                    target_is_sneaking: true,
-                    target_sneak_skill: sneak_skill,
-                    target_level,
-                    detector_level,
-                    ..isolated()
-                }),
-                -expected_target_skill / 2.0,
-                "−TargetSkill/2",
-            );
-        }
+    fn the_alert_state_steps_through_the_geck_transitions() {
+        use AlertState::*;
+        use DetectionLevel::{Lost as Unaware, Seen};
+        assert_eq!(step_alert(Normal, Unaware, true, true, false), Alert, "noticed");
+        assert_eq!(step_alert(Normal, Seen, true, false, false), Combat, "seen without alert");
+        assert_eq!(step_alert(Alert, Seen, true, true, false), Combat);
+        assert_eq!(step_alert(Combat, Unaware, true, false, false), Lost);
+        assert_eq!(step_alert(Lost, Seen, true, false, false), Combat);
+        assert_eq!(step_alert(Lost, Unaware, true, false, true), Normal, "the alert timer ran out");
+        assert_eq!(step_alert(Alert, Unaware, true, true, true), Alert, "still noticing");
+        assert_eq!(step_alert(Combat, Seen, false, true, false), Normal, "not hostile: stays Normal");
     }
 }

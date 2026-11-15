@@ -4427,6 +4427,15 @@ fn actor_quest_scene_and_location_guards_lower() {
                 dead: true,
             },
         ),
+        // M65 (SNK-USE-004) — `IsDetectedBy`, as a Bool read.
+        (
+            "Game.GetPlayer().IsDetectedBy(Guard)",
+            FragmentGuard::DetectedBy {
+                actor: ActorRef::Player,
+                detector: ActorRef::Object(property("Guard")),
+                expected: true,
+            },
+        ),
         // M65 (SNK-STN-003) — the stance, as a Bool read.
         (
             "Game.GetPlayer().IsSneaking()",

@@ -225,6 +225,11 @@ pub enum FragmentGuard {
     /// M65 (SNK-STN-003) — `<actor>.IsSneaking()` is `expected`: the actor
     /// carries the `Sneaking` stance marker (only the player can).
     ActorSneaking { actor: ActorRef, expected: bool },
+    /// M65 (SNK-USE-004) — `<actor>.IsDetectedBy(<detector>)` is `expected`:
+    /// the detector is aware of the actor (toward the player, its level is
+    /// Seen; otherwise the actor-to-actor sight test), through the engine's
+    /// [`crate::SightQuery`].
+    DetectedBy { actor: ActorRef, detector: ActorRef, expected: bool },
 }
 
 /// M47.2 — a number a fragment reads at run time, for

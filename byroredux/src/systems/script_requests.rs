@@ -162,7 +162,7 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
                             // A gun whose records name no projectile (Fallout's WEAP carries the PROJ, which is not
                             // decoded yet): the shot lands, for the weapon's and the ammunition's damage, when the
                             // target is in sight.
-                            let clear = crate::systems::actor_has_line_of_sight(world, actor, target);
+                            let clear = crate::detection::has_line_of_sight(world, actor, target);
                             if clear {
                                 land(target, weapon_damage, ammo_damage);
                             }

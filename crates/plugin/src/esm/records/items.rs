@@ -284,7 +284,31 @@ pub enum ItemKind {
         /// `Fallout3.esm`, zero `VATS`), and FO4 folds AP cost back into
         /// `DNAM`. See [`WeaponVats`].
         vats: Option<WeaponVats>,
+        /// M65 (SNK-DET-016) — FO3/FNV `VNAM` "Sound Level" (xEdit `wbSoundLevelEnum`:
+        /// 0 Loud, 1 Normal, 2 Silent): how loud an attack with the weapon is to
+        /// detectors. `None` on other games and where the record authors none.
+        sound_level: Option<WeaponSoundLevel>,
     },
+}
+
+/// A weapon's `VNAM` sound level (FO3 / FNV; xEdit `wbSoundLevelEnum`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeaponSoundLevel {
+    Loud,
+    Normal,
+    Silent,
+}
+
+impl WeaponSoundLevel {
+    /// Decode the `u32` enum; an unknown value is `None`.
+    pub fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Loud),
+            1 => Some(Self::Normal),
+            2 => Some(Self::Silent),
+            _ => None,
+        }
+    }
 }
 
 impl ItemKind {
@@ -312,6 +336,7 @@ impl ItemKind {
             oblivion_type: 0,
             reload_anim: 0,
             vats: None,
+            sound_level: None,
         }
     }
 
@@ -399,6 +424,7 @@ pub fn parse_weap(
     let mut vats: Option<WeaponVats> = None;
     let mut reach = 0.0f32;
     let mut speed = 0.0f32;
+    let mut sound_level = None;
 
     for sub in subs {
         match &sub.sub_type {
@@ -639,6 +665,10 @@ pub fn parse_weap(
                 // Spread (FO3/FNV). Skyrim doesn't emit NAM6.
                 spread = SubReader::new(&sub.data).f32_or_default();
             }
+            // M65 (SNK-DET-016) — FO3/FNV `VNAM` "Sound Level", a `u32` enum.
+            b"VNAM" if matches!(game, GameKind::Fallout3NV) && sub.data.len() >= 4 => {
+                sound_level = WeaponSoundLevel::from_u32(SubReader::new(&sub.data).u32_or_default());
+            }
             _ => {}
         }
     }
@@ -664,6 +694,7 @@ pub fn parse_weap(
             oblivion_type,
             reload_anim,
             vats,
+            sound_level,
         },
     }
 }
@@ -1572,6 +1603,7 @@ mod tests {
         let ItemKind::Weapon {
             ammo_form, damage, clip_size, anim_type, ap_cost, vats_base_to_hit, projectile_form, equip_type,
             skill_actor_value, min_spread, spread, crit_mult, reach, speed, oblivion_type, reload_anim, vats,
+            sound_level,
         } = stub.clone()
         else {
             panic!("weapon_stub builds a Weapon");
@@ -1582,6 +1614,7 @@ mod tests {
         assert_eq!(crit_mult, 1.0);
         assert!(vats.is_none());
         assert_eq!(skill_actor_value, None);
+        assert_eq!(sound_level, None);
 
         let ItemKind::Weapon { skill_actor_value, .. } = stub.clone().with_weapon_skill(38) else {
             panic!("setters keep the variant");
@@ -1844,6 +1877,24 @@ mod tests {
         let skyrim = parse_weap(0x434F, &subs, GameKind::Skyrim, &None);
         let ItemKind::Weapon { ammo_form, .. } = skyrim.kind else { panic!("expected Weapon kind") };
         assert_eq!(ammo_form, 0);
+    }
+
+    /// M65 (SNK-DET-016) — FO3/FNV `VNAM` is the weapon's sound level (xEdit `wbSoundLevelEnum`:
+    /// 0 Loud, 1 Normal, 2 Silent); another game's `VNAM` is not read, nor is an unknown value.
+    #[test]
+    fn a_fallout_weapons_vnam_is_its_sound_level() {
+        let level = |game, value: u32| {
+            let subs = vec![sub(b"DATA", build_data_weap(250, 1.5, 12, 8)), sub(b"VNAM", value.to_le_bytes())];
+            let ItemKind::Weapon { sound_level, .. } = parse_weap(0x434F, &subs, game, &None).kind else {
+                panic!("expected Weapon kind")
+            };
+            sound_level
+        };
+        assert_eq!(level(GameKind::Fallout3NV, 0), Some(WeaponSoundLevel::Loud));
+        assert_eq!(level(GameKind::Fallout3NV, 1), Some(WeaponSoundLevel::Normal));
+        assert_eq!(level(GameKind::Fallout3NV, 2), Some(WeaponSoundLevel::Silent));
+        assert_eq!(level(GameKind::Fallout3NV, 7), None);
+        assert_eq!(level(GameKind::Skyrim, 0), None);
     }
 
     /// #3724 (ESM-2026-08-30-D2-03) — the issue's own worked case: a

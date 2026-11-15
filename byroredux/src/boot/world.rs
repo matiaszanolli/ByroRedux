@@ -177,6 +177,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // #3709 — per-combatant melee cooldown/blocking, split out of
     // CombatState (a Resource can only ever represent one combatant).
     world.register::<crate::combat::MeleeState>();
+    // M65 (SNK-DET-001) — each detector's awareness of the player, written by the detection tick.
+    world.register::<byroredux_core::ecs::components::Awareness>();
     world.insert_resource(crate::combat::PendingDeathReconciliations::default());
     world.insert_resource(crate::encumbrance::PlayerEncumbrance::default());
     // M47.2 — level-up skill points and perks, banked by grant_experience.
@@ -510,7 +512,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.init_resource::<crate::combat::ChargenWatch>();
     world.init_resource::<crate::systems::magic_shader::ShaderTintRestore>();
     // ObScript `GetDetected`: the sight test the hostility pass uses.
-    world.insert_resource(byroredux_scripting::SightQuery(crate::systems::actor_detects));
+    world.insert_resource(byroredux_scripting::SightQuery(crate::detection::detects));
     world.insert_resource(byroredux_scripting::SwimQuery(crate::systems::actor_is_swimming));
     // M47.3 — the other state ObScript commands ask the engine about (sight, camera, menus, the reticle, traps).
     crate::systems::script_queries::install(&mut world);

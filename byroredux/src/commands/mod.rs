@@ -99,7 +99,7 @@ use view::*;
 use water::*;
 use world_info::*;
 use music::MusicStatusCommand;
-use stealth::StealthSneakCommand;
+use stealth::{StealthSneakCommand, StealthStatusCommand};
 use video::{VideoSkipCommand, VideoStatusCommand};
 
 pub(crate) fn build_command_registry() -> CommandRegistry {
@@ -113,6 +113,8 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(HudDebugCommand);
     // M65 (SNK-DX-002) — the sneak stance through the key's path.
     registry.register(StealthSneakCommand);
+    // M65 (SNK-DX-001) — every detector's terms, value, level and alert state.
+    registry.register(StealthStatusCommand);
     registry.register(VatsEnterCommand);
     registry.register(VatsScanCommand);
     registry.register(VatsStatusCommand);

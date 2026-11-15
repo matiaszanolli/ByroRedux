@@ -67,7 +67,7 @@ pub(crate) fn install_crime_model(world: &mut World, index: &EsmIndex) {
     }
 }
 
-/// The living actors who can see the player: the people a crime is reported by. Creatures
+/// The living actors who have seen the player (level Seen, Q5): the people a crime is reported by. Creatures
 /// witness only where the game's model says they do (Skyrim's animals do, Oblivion's NPCs only).
 fn witnesses(world: &World, player: EntityId) -> Vec<EntityId> {
     let creatures = world.try_resource::<CrimeModel>().is_some_and(|model| model.creatures_witness);
@@ -76,7 +76,8 @@ fn witnesses(world: &World, player: EntityId) -> Vec<EntityId> {
         .filter(|&observer| {
             observer != player
                 && (creatures || world.get::<CreatureActor>(observer).is_none())
-                && crate::systems::faction_hostility::actor_detects(world, observer, player)
+                // M65 (SNK-USE-001, Q5) — a witness is a detector whose level toward the player is Seen.
+                && crate::detection::player_seen_by(world, observer)
         })
         .collect()
 }
@@ -520,7 +521,8 @@ mod bed_tests {
 mod alarm_tests {
     use super::*;
     use byroredux_core::ecs::components::Dead;
-    use crate::systems::faction_hostility::{CombatDisposition, DetectionConfig};
+    use crate::detection::DetectionConfig;
+    use crate::systems::faction_hostility::CombatDisposition;
     use crate::systems::forcegreet::ForceGreetDirective;
     use byroredux_core::character::Background;
     use byroredux_core::ecs::components::FormIdComponent;
@@ -828,7 +830,8 @@ fn rush_wanted_player(world: &World, waiting: &mut std::collections::HashMap<Ent
             || !byroredux_scripting::guards::is_guard(world, guard)
             || world.get::<CreatureActor>(guard).is_some()
             || world.get::<byroredux_scripting::AiCombatState>(guard).is_some()
-            || !crate::systems::faction_hostility::actor_detects(world, guard, player)
+            // M65 (SNK-USE-006) — only a guard whose level toward the player is Seen rushes.
+            || !crate::detection::player_seen_by(world, guard)
         {
             continue;
         }
@@ -844,7 +847,8 @@ fn rush_wanted_player(world: &World, waiting: &mut std::collections::HashMap<Ent
 #[cfg(test)]
 mod rush_tests {
     use super::*;
-    use crate::systems::faction_hostility::{CombatDisposition, DetectionConfig};
+    use crate::detection::DetectionConfig;
+    use crate::systems::faction_hostility::CombatDisposition;
     use crate::systems::forcegreet::ForceGreetDirective;
     use byroredux_core::character::Background;
     use byroredux_core::math::Vec3;

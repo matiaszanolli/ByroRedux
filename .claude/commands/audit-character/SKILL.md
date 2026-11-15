@@ -148,12 +148,12 @@ First step: `cargo test -p byroredux-core character::derived character::fallout 
   (`formula_is_thirty_six_bytes_and_copy`).
 - **Siblings**: `combat.rs` (`modified_skill` Luck 0.4, `oblivion_weapon_damage_multiplier` — the condition factor is `fDamageWeaponConditionBase + ratio·fDamageWeaponConditionMult` (0.5 + 0.5·ratio), not the bare ratio, #6762 `7f5e549ec` —
   `oblivion_hand_to_hand_damage` cross-term) vs `charal-oblivion-ruleset.md` "Complete Damage Formula";
-  `stealth.rs` (`detection_score`/`classify`) vs `charal-fnv-fo3-ruleset.md` "Sneak Detection"; Skyrim armor skill scaling lives in `byroredux/src/armor.rs`, which reads the installed `ArmorModel` (`crates/core/src/character/armor.rs`, the profile's `armor` row + the load order's `fArmor*`/`fMaxArmorRating` GMST overlay, #6567 `cb9faca7d`; six of its seven settings are master-authored, `fArmorRatingPCBase` is a CK Settings-page default no master authors, #6761 `fc41d4818`), whose skill multipliers derive from `LIGHT_ARMOR_RATING_COEFF`/`ARMOR_SKILL_RATING_COEFF_NPC` (`skyrim.rs`, the only home of UESP's 0.4/1.5, #6568 `a858df844`) — the `DamageResist` derived row is not what feeds it, and a restated literal or a `GameKind` test in `armor.rs` is the regression (`the_consumer_holds_no_game_gate_or_armor_constants`). Perspective
+  `stealth.rs` (`StealthRules::value` / `level`, M65 #6911) vs `charal-fnv-fo3-ruleset.md` "Sneak Detection" and `docs/engine/sneak-detection.md` §4.2; Skyrim armor skill scaling lives in `byroredux/src/armor.rs`, which reads the installed `ArmorModel` (`crates/core/src/character/armor.rs`, the profile's `armor` row + the load order's `fArmor*`/`fMaxArmorRating` GMST overlay, #6567 `cb9faca7d`; six of its seven settings are master-authored, `fArmorRatingPCBase` is a CK Settings-page default no master authors, #6761 `fc41d4818`), whose skill multipliers derive from `LIGHT_ARMOR_RATING_COEFF`/`ARMOR_SKILL_RATING_COEFF_NPC` (`skyrim.rs`, the only home of UESP's 0.4/1.5, #6568 `a858df844`) — the `DamageResist` derived row is not what feeds it, and a restated literal or a `GameKind` test in `armor.rs` is the regression (`the_consumer_holds_no_game_gate_or_armor_constants`). Perspective
   traps: UESP's "Opponent…" names are attacker-relative; the code reads the *wearer's* own skill (#4449).
-  `detection_score` transcribes the source's squared attenuation unclamped: past `MaxDist` it rises again (`d = 2·MaxDist` scores like `d = 0`), so
-  `DetectionInputs::distance <= locale.max_distance()` is a documented caller precondition (#6433 `7e9678fd8`,
-  `attenuation_past_max_distance_is_not_clamped`) — a caller that skips the range gate is the finding, not the formula.
-  Verify regardless of consumer-less status.
+  Since M65 (#6911) every coefficient is a game setting read from the load order (`GeckSettings`, `Fallout3.exe`'s
+  defaults behind them), and the attenuation clamps at the range as `Fallout3.exe` `0x57e300` does (`max(0, …)`), so the
+  #6433 unclamped-attenuation precondition is gone; a literal coefficient in `stealth.rs`, or a game test in the
+  detection tick, is the regression (`the_fnv_row_matches_the_captured_formula`, `the_fo3_row_drops_the_level_and_armor_terms`).
 **Output**: `/tmp/audit/character/dim_2.md`
 
 ### Dimension 3: Progression, Pools, Afflictions & Reputation

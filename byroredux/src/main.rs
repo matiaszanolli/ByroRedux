@@ -30,6 +30,7 @@ mod cli_args;
 mod combat;
 mod commands;
 mod crime;
+mod detection;
 mod components;
 mod cornell;
 mod debug_load;

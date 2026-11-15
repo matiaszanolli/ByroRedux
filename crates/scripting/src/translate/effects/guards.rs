@@ -250,6 +250,8 @@ enum GuardReading {
     ActorBleedingOut(ActorRef),
     /// M65 (SNK-STN-003) — `<actor>.IsSneaking()`.
     ActorSneaking(ActorRef),
+    /// M65 (SNK-USE-004) — `<actor>.IsDetectedBy(<other>)`: (the actor, the detector).
+    DetectedBy(ActorRef, ActorRef),
     ActorInCombat(ActorRef),
     ActorFollower(ActorRef, crate::FollowerFlag),
     ActorEssential(ActorRef),
@@ -591,6 +593,13 @@ fn guard_reading_actor(e: &Expr, scope: &Scope) -> Option<GuardReading> {
             receiver_actor(target, scope)?,
         ));
     }
+    // M65 (SNK-USE-004) — `Actor.IsDetectedBy(akOther)`: whether `akOther` is aware of the actor.
+    if let Some((object, args)) = method_call(e, "IsDetectedBy") {
+        let [other] = args else {
+            return None;
+        };
+        return Some(GuardReading::DetectedBy(receiver_actor(object, scope)?, receiver_actor(&other.value.node, scope)?));
+    }
     // M65 (SNK-STN-003) — `Actor.IsSneaking()`: the stance marker.
     if let Some((object, args)) = method_call(e, "IsSneaking") {
         return args
@@ -809,6 +818,11 @@ fn guard_from(reading: GuardReading, comparison: GuardComparison, value: f32) ->
         },
         GuardReading::ActorSneaking(actor) => FragmentGuard::ActorSneaking {
             actor,
+            expected: bool_expectation(comparison, value)?,
+        },
+        GuardReading::DetectedBy(actor, detector) => FragmentGuard::DetectedBy {
+            actor,
+            detector,
             expected: bool_expectation(comparison, value)?,
         },
         GuardReading::ActorInCombat(actor) => FragmentGuard::ActorInCombat {

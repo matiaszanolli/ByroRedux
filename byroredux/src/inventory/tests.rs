@@ -711,6 +711,7 @@ fn fixture() -> (World, byroredux_core::ecs::EntityId) {
                     weapon_damage: None,
                     weapon_reach: 0.0,
                     weapon_speed: 0.0,
+                    weapon_sound: None,
                 },
             ),
             (
@@ -725,6 +726,7 @@ fn fixture() -> (World, byroredux_core::ecs::EntityId) {
                     weapon_damage: None,
                     weapon_reach: 0.0,
                     weapon_speed: 0.0,
+                    weapon_sound: None,
                 },
             ),
             (
@@ -739,6 +741,7 @@ fn fixture() -> (World, byroredux_core::ecs::EntityId) {
                     weapon_damage: Some(12.0),
                     weapon_reach: 90.0,
                     weapon_speed: 1.1,
+                    weapon_sound: None,
                 },
             ),
         ]),
@@ -1081,7 +1084,7 @@ fn crime_world(witness_at: Option<byroredux_core::math::Vec3>) -> (World, byrore
     world.register::<crate::systems::faction_hostility::CombatDisposition>();
     world.insert_resource(byroredux_core::character::CrimeModel::OBLIVION);
     world.insert_resource(byroredux_scripting::obscript_ledger::ObScriptLedger::default());
-    world.insert_resource(crate::systems::faction_hostility::DetectionConfig { max_distance: 1000.0, exterior_mult: 1.0 });
+    world.insert_resource(crate::detection::DetectionConfig { max_distance: 1000.0, exterior_mult: 1.0 });
     let mut index = byroredux_plugin::esm::records::EsmIndex::default();
     index.factions.insert(
         0xF00D,
@@ -1128,6 +1131,36 @@ fn a_witnessed_theft_adds_the_bounty_and_marks_the_faction() {
     assert!(ledger.flag(FactionFlag::Steal, 0xF00D));
     drop(ledger);
     assert!(crate::notifications::drain(&world).contains(&"You were seen stealing. Your bounty is now 4 gold".to_owned()));
+}
+
+/// PRD §7.2 scenario 6 (SNK-USE-001, Q5): with detection rules installed, a witness is a detector whose
+/// level toward the player is Seen. The same onlooker in range and in sight reports nothing while its level
+/// is below Seen (the player sneaked past it), and adds the authored bounty once it is Seen.
+#[test]
+fn a_theft_is_witnessed_only_by_a_detector_whose_level_is_seen() {
+    use byroredux_core::ecs::components::Awareness;
+    use byroredux_core::stealth::{DetectionLevel, StealthKind, StealthRules};
+    use byroredux_scripting::obscript_ledger::ObScriptLedger;
+    let near = byroredux_core::math::Vec3::new(0.0, 0.0, 500.0);
+    let theft = |level: DetectionLevel| {
+        let (mut world, player, chest) = crime_world(Some(near));
+        world.insert_resource(StealthRules::resolve(StealthKind::FalloutNv, |_| None).0);
+        world.register::<Awareness>();
+        let onlooker = world
+            .query::<crate::systems::faction_hostility::CombatDisposition>()
+            .unwrap()
+            .iter()
+            .map(|(entity, _)| entity)
+            .next()
+            .unwrap();
+        world.insert(onlooker, Awareness { level, ..Awareness::default() });
+        transfer_loot(&world, player, chest, LootSelection::All).unwrap();
+        let gold = world.resource::<ObScriptLedger>().crime_gold;
+        gold
+    };
+    assert_eq!(theft(DetectionLevel::Lost), 0, "every detector below Seen: no witness, no bounty");
+    assert_eq!(theft(DetectionLevel::Noticed), 0, "Noticed is not Seen (Q5)");
+    assert_eq!(theft(DetectionLevel::Seen), 4, "one detector at Seen: the authored bounty");
 }
 
 #[test]
@@ -2631,6 +2664,7 @@ fn pickup_removes_the_taken_item_collision_bodies() {
             weapon_damage: None,
             weapon_reach: 0.0,
             weapon_speed: 0.0,
+            weapon_sound: None,
         },
     );
     world.insert_resource(InventoryCatalog {
@@ -2836,6 +2870,7 @@ fn gated_script_use(condition: byroredux_plugin::esm::records::condition::Condit
                 weapon_damage: None,
                 weapon_reach: 0.0,
                 weapon_speed: 0.0,
+                weapon_sound: None,
             },
         );
         catalog.script_effects.insert(
@@ -2981,6 +3016,7 @@ fn an_improved_weapons_instance_adds_its_quality_bonus_to_the_equipped_damage() 
                 weapon_damage: Some(8.0),
                 weapon_reach: 0.0,
                 weapon_speed: 0.0,
+                weapon_sound: None,
             },
         )]),
     });
@@ -3026,6 +3062,7 @@ fn the_inventory_snapshot_shows_an_improved_weapons_quality_and_value() {
                 weapon_damage: Some(8.0),
                 weapon_reach: 0.0,
                 weapon_speed: 0.0,
+                weapon_sound: None,
             },
         )]),
     });

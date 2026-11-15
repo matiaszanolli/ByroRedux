@@ -86,7 +86,7 @@ pub use gras::{
 pub use items::{
     parse_alch, parse_alch_for_game, parse_ammo, parse_appa, parse_armo, parse_book,
     parse_carryable_light, parse_ingr, parse_keym, parse_misc, parse_note, parse_omod_loose_item,
-    parse_scrl, parse_weap, ItemKind, ItemRecord,
+    parse_scrl, parse_weap, ItemKind, ItemRecord, WeaponSoundLevel,
 };
 pub use misc::{
     parse_musc, parse_must, first_playable_track, parse_default_music, DefaultMusic, parse_aloc, FactionNotFound, LoopingOption, MediaLocationRecord, MuscRecord, MustKind, MustLoop, MustRecord, parse_mset, IncidentalMediaSet, MediaSetKind, MediaSetRecord,

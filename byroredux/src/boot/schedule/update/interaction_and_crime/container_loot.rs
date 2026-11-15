@@ -63,7 +63,7 @@ pub(super) fn register_container_loot_systems(scheduler: &mut Scheduler) {
             .reads::<crate::systems::faction_hostility::CombatDisposition>()
             .reads::<byroredux_core::ecs::components::CreatureActor>()
             .reads::<byroredux_core::ecs::components::GlobalTransform>()
-            .reads_resource::<crate::systems::faction_hostility::DetectionConfig>()
+            .reads_resource::<crate::detection::DetectionConfig>()
             .reads_resource::<crate::components::CellLightingRes>()
             // #6546 — `AIPL` (loot.rs): `raise_story_event`'s marker, or its pending queue.
             .writes::<byroredux_scripting::StoryEvent>()

@@ -65,6 +65,7 @@ pub(crate) const SOURCES: &str = concat!(
     include_str!("schedule/early.rs"),
     include_str!("schedule/update/mod.rs"),
     include_str!("schedule/update/interaction_and_crime.rs"),
+    include_str!("schedule/update/interaction_and_crime/detection.rs"),
     include_str!("schedule/update/interaction_and_crime/vitals_upkeep.rs"),
     include_str!("schedule/update/interaction_and_crime/interaction.rs"),
     include_str!("schedule/update/interaction_and_crime/activation.rs"),

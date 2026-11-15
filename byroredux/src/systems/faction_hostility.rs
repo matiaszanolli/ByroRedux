@@ -29,7 +29,7 @@
 //! - **Detection range.** `fSneakMaxDistance`, times
 //!   `fSneakExteriorDistanceMult` outdoors (CK Detection: "Actors within the
 //!   detection radius (fSneakMaxDistance)"). Without that GMST there is no
-//!   [`DetectionConfig`] and no ambient hostility at all. The range is not
+//!   [`DetectionConfig`](crate::detection::DetectionConfig) and no ambient hostility at all. The range is not
 //!   invented.
 //!
 //! ## Engine policy (no source documents the original)
@@ -55,12 +55,11 @@
 //!   dropped this way; `StopCombat` ends it.
 
 use byroredux_core::ecs::components::{AmbushBehavior, Dead, FactionRanks, GlobalTransform};
-use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::Vec3;
-use byroredux_plugin::esm::records::{ActorAiData, Aggression, Confidence, EsmIndex};
+use byroredux_plugin::esm::records::{ActorAiData, Aggression, Confidence};
 use byroredux_scripting::{AiCombatState, FactionRelations, LoadOrderIdentity};
 use byroredux_sdk::identity::FormRef;
 use byroredux_sdk::relationships::{CombatReaction, FactionRelationshipCatalog};
@@ -107,129 +106,12 @@ pub(crate) fn living_actors(world: &World) -> Vec<EntityId> {
     actors.into_iter().filter(|actor| world.get::<Dead>(*actor).is_none()).collect()
 }
 
-/// Detection range from the load order's GMSTs. Absent when the game does
-/// not author `fSneakMaxDistance`, which disables ambient hostility.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct DetectionConfig {
-    /// `fSneakMaxDistance`, in BU.
-    pub(crate) max_distance: f32,
-    /// `fSneakExteriorDistanceMult`, or `1.0` (no scaling) when the game
-    /// does not author it.
-    pub(crate) exterior_mult: f32,
-}
-
-impl Resource for DetectionConfig {}
-
-impl DetectionConfig {
-    pub(crate) fn from_index(index: &EsmIndex) -> Option<Self> {
-        let max_distance = index
-            .game_setting_float("fSneakMaxDistance")
-            .filter(|d| d.is_finite() && *d > 0.0)?;
-        let exterior_mult = index
-            .game_setting_float("fSneakExteriorDistanceMult")
-            .filter(|m| m.is_finite() && *m > 0.0)
-            .unwrap_or(1.0);
-        Some(Self {
-            max_distance,
-            exterior_mult,
-        })
-    }
-
-    pub(crate) fn range(&self, exterior: bool) -> f32 {
-        if exterior {
-            self.max_distance * self.exterior_mult
-        } else {
-            self.max_distance
-        }
-    }
-}
-
-/// Install (or clear) the [`DetectionConfig`] for a freshly loaded index.
-pub(crate) fn install_detection_config(world: &mut World, index: &EsmIndex) {
-    match DetectionConfig::from_index(index) {
-        Some(config) => {
-            world.insert_resource(config);
-        }
-        None => {
-            world.remove_resource::<DetectionConfig>();
-        }
-    }
-}
-
-/// Whether `observer` currently detects `target` by sight — the test the hostility pass uses to start
-/// a fight, asked for one pair (ObScript `GetDetected`): both alive and placed, within the detection
-/// range (`fSneakMaxDistance`, scaled outdoors), and nothing in the way. `false` without a detection
-/// config (the game authors none), and for an observer that is not placed.
-pub(crate) fn actor_detects(world: &World, observer: EntityId, target: EntityId) -> bool {
-    let Some(config) = world.try_resource::<DetectionConfig>().map(|c| *c) else {
-        return false;
-    };
-    let exterior = world
-        .try_resource::<crate::components::CellLightingRes>()
-        .is_some_and(|cell| !cell.is_interior);
-    let Some((from, to)) = sight_points(world, observer, target) else {
-        return false;
-    };
-    if from.distance(to) > config.range(exterior) {
-        return false;
-    }
-    sight_is_clear(world, from, to)
-}
-
-/// Whether `observer` sees the body of `corpse` — the sight test the hostility pass uses on a living target
-/// (`fSneakMaxDistance`, scaled outdoors, through a clear line), asked of a dead one for the Story Manager's
-/// `DEAD` (CK *Dead Body*: "an actor discovers a dead body"). `false` for a dead or unplaced observer, and
-/// without a detection config (the game authors none). No source documents a corpse-specific range.
-pub(crate) fn actor_sees_corpse(world: &World, observer: EntityId, corpse: EntityId) -> bool {
-    let Some(config) = world.try_resource::<DetectionConfig>().map(|c| *c) else {
-        return false;
-    };
-    let exterior = world
-        .try_resource::<crate::components::CellLightingRes>()
-        .is_some_and(|cell| !cell.is_interior);
-    let centre = Vec3::Y * crate::npc_spawn::FALLBACK_ACTOR_CAPSULE_CENTRE_HEIGHT;
-    let (Some((from, _)), Some(body)) = (
-        sight_points(world, observer, observer),
-        world.get::<GlobalTransform>(corpse).map(|t| t.translation + centre),
-    ) else {
-        return false;
-    };
-    from.distance(body) <= config.range(exterior) && sight_is_clear(world, from, body)
-}
-
-/// The points sight rays between two actors start and end at; `None` when either is dead or unplaced.
-fn sight_points(world: &World, observer: EntityId, target: EntityId) -> Option<(Vec3, Vec3)> {
-    let player = crate::systems::PlayerEntity::get(world);
-    let centre = Vec3::Y * crate::npc_spawn::FALLBACK_ACTOR_CAPSULE_CENTRE_HEIGHT;
-    let sight_point = |entity: EntityId| -> Option<Vec3> {
-        if world.get::<Dead>(entity).is_some() {
-            return None;
-        }
-        let position = world.get::<GlobalTransform>(entity)?.translation;
-        // The player body's transform is already its capsule centre; an NPC placement root stands at its feet.
-        Some(if Some(entity) == player { position } else { position + centre })
-    };
-    Some((sight_point(observer)?, sight_point(target)?))
-}
-
-/// Whether nothing solid stands between two points (the player's own body excepted); true without a
-/// physics world.
-pub(crate) fn sight_is_clear(world: &World, from: Vec3, to: Vec3) -> bool {
-    let player = crate::systems::PlayerEntity::get(world);
-    let player_body = player.and_then(|player| {
-        world.query::<byroredux_physics::RapierHandles>().and_then(|handles| handles.get(player).map(|h| h.body))
-    });
-    !world
-        .try_resource::<byroredux_physics::PhysicsWorld>()
-        .is_some_and(|physics| physics.line_of_sight_blocked(from, to, player_body))
-}
-
 /// Whether a movable object (a dynamic body: a crate, a barrel, a dropped weapon) is the first solid thing
 /// between `shooter` and `target` (a UseWeapon package's Hold Fire When Blocked, AIP-UW-003). Walls, fixed
 /// props and actors do not count; the shooter's and target's own bodies are skipped. `false` without a
 /// physics world or when either end is unplaced.
 pub(crate) fn movable_object_blocks_fire(world: &World, shooter: EntityId, target: EntityId) -> bool {
-    let Some((from, to)) = sight_points(world, shooter, target) else {
+    let Some((from, to)) = crate::detection::sight_points(world, shooter, target) else {
         return false;
     };
     let own_bodies: Vec<_> = world
@@ -239,12 +121,6 @@ pub(crate) fn movable_object_blocks_fire(world: &World, shooter: EntityId, targe
     world
         .try_resource::<byroredux_physics::PhysicsWorld>()
         .is_some_and(|physics| physics.movable_body_blocks_line(from, to, &own_bodies))
-}
-
-/// Whether `observer` has an unobstructed line of sight to `target`, at any range (ObScript `GetLOS`);
-/// `false` for a dead or unplaced actor.
-pub(crate) fn actor_has_line_of_sight(world: &World, observer: EntityId, target: EntityId) -> bool {
-    sight_points(world, observer, target).is_some_and(|(from, to)| sight_is_clear(world, from, to))
 }
 
 /// Whether `perceiver` would attack `target` as the ambient hostility pass judges it (ObScript
@@ -423,13 +299,10 @@ fn faction_hostility_system_inner(world: &World, dt: f32, scratch: &mut Hostilit
         return;
     };
 
-    let Some(config) = world.try_resource::<DetectionConfig>().map(|c| *c) else {
+    // No detection config (the game authors no `fSneakMaxDistance`): no ambient hostility.
+    let Some(range) = crate::detection::detection_range(world) else {
         return;
     };
-    let exterior = world
-        .try_resource::<crate::components::CellLightingRes>()
-        .is_some_and(|cell| !cell.is_interior);
-    let range = config.range(exterior);
 
     let HostilityScratch {
         actors,
@@ -515,21 +388,12 @@ fn faction_hostility_system_inner(world: &World, dt: f32, scratch: &mut Hostilit
         .try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
         .map(|resolver| resolver.faction_relationships())
         .unwrap_or_default();
-    let player_body = player.and_then(|player| {
-        world
-            .query::<byroredux_physics::RapierHandles>()
-            .and_then(|handles| handles.get(player).map(|h| h.body))
-    });
-    // No physics world (tests, physics-less scenes) means nothing occludes.
-    // The physics guard is taken per cast and never overlaps a storage guard
-    // (#3580).
-    let in_sight = |from: Vec3, to: Vec3| {
-        !world
-            .try_resource::<byroredux_physics::PhysicsWorld>()
-            .is_some_and(|physics| physics.line_of_sight_blocked(from, to, player_body))
-    };
+    // M65 (SNK-USE-005, Q7) — contact with the player is the detector's level toward the player (Seen);
+    // every other pair is the actor-to-actor sight test. Both live in the detection module, the only
+    // caller of the physics line test; each is asked with no storage guard held here (#3580).
+    let contact = |observer: EntityId, target: EntityId| crate::detection::detects(world, observer, target);
 
-    disengage_lost_contact(world, actors, range, period, &in_sight);
+    disengage_lost_contact(world, actors, period, &contact);
 
     let fighting: Vec<EntityId> = world
         .query::<AiCombatState>()
@@ -590,7 +454,7 @@ fn faction_hostility_system_inner(world: &World, dt: f32, scratch: &mut Hostilit
         // Nearest target in sight.
         let target = candidates.iter().find_map(|&(_, target_index)| {
             let target = &actors[target_index];
-            in_sight(perceiver.sight_point, target.sight_point).then_some(target.entity)
+            contact(perceiver.entity, target.entity).then_some(target.entity)
         });
         if let Some(target) = target {
             starts.push((perceiver.entity, target));
@@ -638,9 +502,8 @@ fn faction_hostility_system_inner(world: &World, dt: f32, scratch: &mut Hostilit
 fn disengage_lost_contact(
     world: &World,
     actors: &[ActorSnapshot],
-    range: f32,
     period: f32,
-    in_sight: &dyn Fn(Vec3, Vec3) -> bool,
+    contact: &dyn Fn(EntityId, EntityId) -> bool,
 ) {
     let engagements: Vec<(EntityId, AmbientEngagement)> = world
         .query::<AmbientEngagement>()
@@ -673,10 +536,8 @@ fn disengage_lost_contact(
             updates.push((entity, None));
             continue;
         }
-        let contact = match (sight_point(entity), sight_point(engagement.target)) {
-            (Some(from), Some(to)) => from.distance(to) <= range && in_sight(from, to),
-            _ => false,
-        };
+        let contact = sight_point(entity).is_some() && sight_point(engagement.target).is_some()
+            && contact(entity, engagement.target);
         let lost = if contact {
             0.0
         } else {
@@ -721,6 +582,7 @@ pub(crate) fn make_faction_hostility_system() -> impl FnMut(&World, f32) + Send 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detection::DetectionConfig;
     use byroredux_core::ecs::components::Transform;
     use byroredux_core::form_id::PluginId;
     use byroredux_plugin::esm::reader::GlobalSlot;
@@ -942,10 +804,10 @@ mod tests {
         let watcher = spawn_actor(&mut world, Vec3::ZERO, GUARDS, Some(disposition(Aggression::Unaggressive)));
         let near = spawn_actor(&mut world, Vec3::new(0.0, 0.0, 500.0), PLAYER_FACTION, None);
         let far = spawn_actor(&mut world, Vec3::new(0.0, 0.0, 9000.0), PLAYER_FACTION, None);
-        assert!(actor_detects(&world, watcher, near));
-        assert!(!actor_detects(&world, watcher, far), "past fSneakMaxDistance");
+        assert!(crate::detection::sees(&world, watcher, near));
+        assert!(!crate::detection::sees(&world, watcher, far), "past fSneakMaxDistance");
         world.insert(near, Dead);
-        assert!(!actor_detects(&world, watcher, near), "a corpse is not detected");
+        assert!(!crate::detection::sees(&world, watcher, near), "a corpse is not detected");
     }
 
     fn run_once(world: &World) {

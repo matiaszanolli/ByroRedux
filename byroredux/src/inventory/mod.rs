@@ -228,3 +228,26 @@ pub(crate) fn drain_pending_inventory_actions(world: &mut World) {
         }
     }
 }
+
+/// M65 (SNK-DET-010) — the summed weight of what `actor` has equipped (each item
+/// once, though it covers several slots): the detection formula's boot / armor
+/// weight. 0 without an inventory, equipment or catalog.
+pub(crate) fn equipped_weight(world: &World, actor: byroredux_core::ecs::EntityId) -> f32 {
+    let Some(catalog) = world.try_resource::<InventoryCatalog>() else {
+        return 0.0;
+    };
+    let (Some(slots), Some(inventory)) = (
+        world.get::<byroredux_core::ecs::components::EquipmentSlots>(actor),
+        world.get::<byroredux_core::ecs::components::Inventory>(actor),
+    ) else {
+        return 0.0;
+    };
+    let mut indices: Vec<_> = slots.equipped_indices().collect();
+    indices.sort_unstable_by_key(|index| index.0);
+    indices.dedup();
+    indices
+        .into_iter()
+        .filter_map(|index| inventory.get(index))
+        .filter_map(|stack| catalog.entries.get(&stack.base_form_id).map(|entry| entry.weight))
+        .sum()
+}

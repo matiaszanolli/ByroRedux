@@ -255,7 +255,7 @@ pub(crate) fn install(world: &mut World) {
     world.init_resource::<MenuCodes>();
     world.init_resource::<TrapMotionSamples>();
     world.insert_resource(EngineQueries {
-        line_of_sight: Some(crate::systems::actor_has_line_of_sight),
+        line_of_sight: Some(crate::detection::has_line_of_sight),
         should_attack: Some(crate::systems::actor_would_attack),
         first_person: Some(first_person),
         menu_open: Some(menu_open),

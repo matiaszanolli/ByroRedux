@@ -55,11 +55,11 @@ pub(crate) fn ambient_package_may_run(world: &World, actor: EntityId) -> bool {
 }
 
 pub(crate) fn range(world: &World) -> f32 {
-    let exterior = world.try_resource::<crate::components::CellLightingRes>().is_some_and(|cell| !cell.is_interior);
-    world.try_resource::<crate::systems::DetectionConfig>().map_or(FALLBACK_RANGE, |config| config.range(exterior))
+    crate::detection::detection_range(world).unwrap_or(FALLBACK_RANGE)
 }
 
-/// The nearest actor within `range` that fights `actor` or would attack it.
+/// The nearest actor within `range` that fights `actor` or would attack it, and that `actor` is aware
+/// of (M65, SNK-USE-009): the player at the fleeing actor's level Seen, anyone else by the sight test (Q7).
 fn nearest_threat(world: &World, actor: EntityId, at: Vec3, range: f32) -> Option<EntityId> {
     let candidates: Vec<EntityId> = world.query::<byroredux_core::ecs::components::ActorVitals>()?.iter().map(|(entity, _)| entity).collect();
     let player = crate::systems::PlayerEntity::get(world);
@@ -72,6 +72,7 @@ fn nearest_threat(world: &World, actor: EntityId, at: Vec3, range: f32) -> Optio
             distance <= range
                 && (world.get::<AiCombatState>(other).is_some_and(|state| state.target == actor)
                     || crate::systems::actor_would_attack(world, other, actor))
+                && crate::detection::detects(world, actor, other)
         })
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(other, _)| other)

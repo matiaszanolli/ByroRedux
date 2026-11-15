@@ -334,9 +334,18 @@ pub(super) fn has_magic_effect(world: &World, _fallout: bool, _cmd: u16, args: &
     }
 }
 
-// GECK *GetDetectionLevel*: 0 Lost, 1 Unseen, 2 Noticed, 3 Seen. The engine's sight test is yes or
-// no — an actor either sees the target or does not — so the level is 3 or 0 (the GECK notes
-// the original too answers only 0 or 3 for every target but the player).
+// GECK *GetDetectionLevel*: 0 Lost, 1 Unseen, 2 Noticed, 3 Seen. The engine installs `SightQuery`
+// as the detection module's `detects` (M65): toward the player the caller's stored level, Seen or
+// Lost on FO3 / FNV, so 3 or 0; toward anyone else the actor-to-actor sight test, 3 or 0, which is
+// what the original answers there too ("It will only return a value of 3 or 0 for all other cases
+// where the player is not the target").
+//
+// SNK-USE-010 — an engine-behaviour fix of builtin-fixes.md §2, id `detection.getdetectionlevel-player-
+// target` (games FO3 and FNV, kind engine, `defect`; source GECK *GetDetectionLevel*: "it does not
+// return any value other than 0 when the player is the target"; test
+// `get_detection_level_toward_the_player_answers_the_real_level` in `byroredux/src/detection/tick.rs`).
+// The builtin-fixes catalog is not built, so this comment is the citation until it exists, as for
+// `perk.fo3-calculate-to-hit-chance`.
 pub(super) fn get_detection_level(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
     let caller = caller_of(context);
     let Some(subject) = live(world, caller) else { return Action::Declined };

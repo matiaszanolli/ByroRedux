@@ -238,6 +238,7 @@ pub(in crate::fragment) fn evaluate_guard(
         FragmentGuard::ActorDead { .. }
         | FragmentGuard::ActorBleedingOut { .. }
         | FragmentGuard::ActorSneaking { .. }
+        | FragmentGuard::DetectedBy { .. }
         | FragmentGuard::ActorInCombat { .. }
         | FragmentGuard::ActorFollower { .. }
         | FragmentGuard::ActorEssential { .. }

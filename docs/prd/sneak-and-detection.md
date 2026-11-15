@@ -1,6 +1,6 @@
 # Sneak and Detection — Product Requirements
 
-**Status**: ACTIVE (2026-11-15). Revision 6 records the Phase 0 results.
+**Status**: ACTIVE (2026-11-15). Revision 7 records the Phase 2 scope moves.
 Revision 5 filed the tracking issues. Revision 2
 folded in review round 1, revision 3 recorded the §10 decisions, and the owner
 approved it (§12).
@@ -774,3 +774,4 @@ games are recorded out with the reason.
 | 4 | 2026-11-14 | PROPOSED → APPROVED | owner: approved |
 | 5 | 2026-11-14 | → ACTIVE: parent #6908 and phase issues #6909 to #6915 filed; the Phase 0 verify items V1–V23 are acceptance criteria of #6909; ROADMAP gains the M65 row (Q6) | — |
 | 6 | 2026-11-15 | Phase 0 (#6909): the design [`sneak-detection.md`](../engine/sneak-detection.md) owns the mechanisms in *Related*; the §9 verify table carries each row's state (12 of 23 closed, the rest on #6935, #6936, #6937). Findings that refine requirements: no playable Skyrim race authors `SNMV`, so SNK-STN-005's Skyrim sneak speed comes from the `NPC_Sneaking_MT` movement type (design §2); FNV 69–71 are companion perception perks (SNK-PERK-006 stays Pending); FO3 / FNV store only levels Seen and Lost, so SNK-HUD-002's indicator table keys on the alert state as well as the level and hostility (design §10); `fVATSStealthMult` scales the VATS hit chance against Chameleon / Invisibility, not a sneak attack (SNK-ATK-006 holds) | — |
+| 7 | 2026-11-15 | Phase 2 (#6911): SNK-DET-014 (`SetNotShowOnStealthMeter`, a Skyrim / Fallout 4 Papyrus flag read only by the indicator) moves to Phase 4 (#6913) with its native and save; SNK-DET-017's Oblivion no-walls rule is the authored `fSneakSoundLosMult` = 1, not a separate ruleset field (design §3) | — |

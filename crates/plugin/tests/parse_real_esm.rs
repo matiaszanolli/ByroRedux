@@ -7029,3 +7029,43 @@ fn fnv_music_sources_decode_against_the_census() {
         .iter()
         .all(|r| r.audio_marker.and_then(|m| m.controller).is_some_and(|c| index.media_locations.contains_key(&c))));
 }
+
+/// M65 PRD §7.2 scenario 3 (A3, SNK-DX-003): every detection setting the FO3 / FNV rows read, from the
+/// installed master, reported with its value and whether the master authors it or it fell back to the
+/// executable default (the design's §13.1 census). A name with neither cannot occur: every setting has a
+/// default, so the test fails only if the row lost one. The authored values the design pins are checked.
+#[test]
+#[ignore = "needs FO3 / FNV game data on disk"]
+fn m65_detection_settings_census() {
+    use byroredux_core::stealth::{GeckSettings, StealthKind, StealthRules};
+    let cases = [
+        (test_paths::FO3_ENV, test_paths::FO3_DEFAULT, "Fallout3.esm", StealthKind::Fallout3),
+        (test_paths::FNV_ENV, test_paths::FNV_DEFAULT, "FalloutNV.esm", StealthKind::FalloutNv),
+    ];
+    let mut ran = 0;
+    for (env, fallback, master, kind) in cases {
+        let Some(data) = data_dir(env, fallback) else {
+            eprintln!("[M65] {master}: skipping, game data unavailable");
+            continue;
+        };
+        let bytes = std::fs::read(data.join(master)).expect("read master");
+        let index = parse_esm(&bytes).expect("parse master");
+        assert_eq!(index.character_rules.stealth(), kind, "{master}: the profile selects the row");
+        let (rules, readings) = StealthRules::resolve(kind, |name| index.game_setting_float(name));
+        assert_eq!(readings.len(), GeckSettings::NAMES.len(), "{master}: every setting reported");
+        for reading in &readings {
+            eprintln!(
+                "[M65] {master}\t{}\t{}\t{}",
+                reading.name,
+                reading.value,
+                if reading.authored { "authored" } else { "executable default" }
+            );
+        }
+        // Design §13.1: both masters author these.
+        let s = rules.settings;
+        assert_eq!((s.base_value, s.max_distance, s.sound_los_mult), (-35.0, 2500.0, 0.1), "{master}");
+        assert_eq!((s.boot_weight_base, s.boot_weight_mult, s.running_mult, s.action_mult), (12.0, 0.5, 1.5, 2.0), "{master}");
+        ran += 1;
+    }
+    eprintln!("[M65] {ran} master(s) censused");
+}

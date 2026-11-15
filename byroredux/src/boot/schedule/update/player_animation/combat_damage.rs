@@ -95,7 +95,7 @@ fn register_damage_pass(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::components::GlobalTransform>()
             .reads::<byroredux_scripting::AiCombatState>()
             .reads::<crate::systems::faction_hostility::CombatDisposition>()
-            .reads_resource::<crate::systems::faction_hostility::DetectionConfig>()
+            .reads_resource::<crate::detection::DetectionConfig>()
             .reads_resource::<crate::components::CellLightingRes>()
             .reads_resource::<byroredux_scripting::FactionRelations>()
             .reads_resource::<byroredux_scripting::LoadOrderIdentity>()

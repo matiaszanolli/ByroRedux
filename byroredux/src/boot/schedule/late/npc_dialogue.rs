@@ -307,7 +307,7 @@ fn bridged_script_getter_reads(access: Access) -> Access {
         .reads::<byroredux_core::ecs::components::Seated>()
         .reads::<byroredux_scripting::obscript_state::WeaponDrawn>()
         .reads_resource::<byroredux_scripting::SightQuery>()
-        .reads_resource::<crate::systems::faction_hostility::DetectionConfig>()
+        .reads_resource::<crate::detection::DetectionConfig>()
         .reads_resource::<crate::components::CellLightingRes>()
         .reads::<byroredux_physics::RapierHandles>()
         .reads_resource::<byroredux_physics::PhysicsWorld>()

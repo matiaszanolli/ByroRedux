@@ -1,6 +1,7 @@
 //! Built-in engine components.
 
 pub mod actor_state;
+pub mod detection;
 pub mod actor_values;
 pub mod animated;
 pub mod attach_points;
@@ -50,6 +51,7 @@ pub mod water;
 pub mod world_bound;
 
 pub use actor_state::{Dead, Sneaking};
+pub use detection::Awareness;
 pub use actor_values::{ActorValue, ActorValues, ActorVitals};
 pub use restoration::{TimedRestoration, TimedRestorations};
 pub use animated::{

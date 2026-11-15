@@ -210,7 +210,7 @@ pub(crate) fn attraction_system(world: &World, dt: f32) {
                     continue;
                 }
                 if rule.requires_line_of_sight
-                    && !crate::systems::faction_hostility::sight_is_clear(world, *actor_at + eye, *object_at + eye)
+                    && !crate::detection::line_clear(world, *actor_at + eye, *object_at + eye)
                 {
                     continue;
                 }

@@ -17,6 +17,10 @@ pub(crate) struct InventoryItemDefinition {
     /// treats `0.0` as "fall back to the unarmed constant."
     pub(crate) weapon_reach: f32,
     pub(crate) weapon_speed: f32,
+    /// M65 (SNK-DET-016) — the weapon's `VNAM` sound level as a detection action
+    /// rating: how loud a strike or shot with it is to detectors. `None` for a
+    /// non-weapon and where the game authors none.
+    pub(crate) weapon_sound: Option<byroredux_core::stealth::ActionSound>,
 }
 
 /// One caster-runtime effect of an ingestible with the effect-local CTDAs it was authored under (#6610). The
@@ -44,6 +48,13 @@ pub(crate) struct InventoryCatalog {
 }
 
 impl InventoryCatalog {
+    /// M65 (SNK-DET-016) — a weapon's `VNAM` sound level as a detection action sound.
+    pub(crate) fn weapon_sound(&self, base_form_id: u32) -> Option<byroredux_core::stealth::ActionSound> {
+        self.entries.get(&base_form_id).and_then(|entry| entry.weapon_sound)
+    }
+}
+
+impl InventoryCatalog {
     /// A catalog that knows these bases as plain pickup items - the fixture
     /// other systems' tests need to make a placement a pickup target.
     #[cfg(test)]
@@ -63,6 +74,7 @@ impl InventoryCatalog {
                         weapon_damage: None,
                         weapon_reach: 0.0,
                         weapon_speed: 0.0,
+                        weapon_sound: None,
                     },
                 )
             })
@@ -541,14 +553,15 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
                     "Consumable (effects unavailable)".to_owned()
                 };
             }
-            let (weapon_damage, weapon_reach, weapon_speed) = match &item.kind {
+            let (weapon_damage, weapon_reach, weapon_speed, weapon_sound) = match &item.kind {
                 ItemKind::Weapon {
                     damage,
                     reach,
                     speed,
+                    sound_level,
                     ..
-                } => (Some(*damage as f32), *reach, *speed),
-                _ => (None, 0.0, 0.0),
+                } => (Some(*damage as f32), *reach, *speed, sound_level.map(action_sound)),
+                _ => (None, 0.0, 0.0, None),
             };
             (
                 form_id,
@@ -562,6 +575,7 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
                     weapon_damage,
                     weapon_reach,
                     weapon_speed,
+                    weapon_sound,
                 },
             )
         })
@@ -847,5 +861,16 @@ pub(crate) fn attach_to_player(world: &mut World, player: byroredux_core::ecs::E
                     .collect(),
             },
         );
+    }
+}
+
+/// A weapon's `VNAM` sound level as the detection formula's action sound.
+fn action_sound(level: byroredux_plugin::esm::records::WeaponSoundLevel) -> byroredux_core::stealth::ActionSound {
+    use byroredux_core::stealth::ActionSound;
+    use byroredux_plugin::esm::records::WeaponSoundLevel;
+    match level {
+        WeaponSoundLevel::Loud => ActionSound::Loud,
+        WeaponSoundLevel::Normal => ActionSound::Normal,
+        WeaponSoundLevel::Silent => ActionSound::Silent,
     }
 }

@@ -1222,7 +1222,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // M65 (SNK-SAVE-001, #6910) — v130 is a genuine bump: `Sneaking` (the player's sneak stance) joined the
     // saved registry as a NEW component column, and the saved `FragmentGuard` / `Effect` enums gained
     // `ActorSneaking` / `StartPlayerSneaking`, so a pre-v130 snapshot has no record of the stance.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x1093_cece_8cc5_f47c;
+    // M65 (SNK-USE-004, #6911) — refreshed WITHOUT a bump: the appended `FragmentGuard::DetectedBy`
+    // variant (name-tagged; no older save carries it).
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xa583_6f87_f9c2_d506;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.
