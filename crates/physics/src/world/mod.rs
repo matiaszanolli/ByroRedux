@@ -1254,11 +1254,16 @@ impl PhysicsWorld {
 
     /// #6487 — undo [`Self::deliver_link_impulses`] once the substep it fed
     /// has run: the body's user force goes back exactly to what it was (the
-    /// water pass's buoyancy, the damping pass's drag).
+    /// water pass's buoyancy, the damping pass's drag). The kick adds no
+    /// torque, so the user torque is left alone: [`Self::reset_forces`]
+    /// clears both and dropped the link's angular damping (`-c·I·ω`, #5697)
+    /// for the frame's remaining substeps (#7012).
     fn release_link_impulse_forces(&mut self, before: &[(RigidBodyHandle, byroredux_core::math::Vec3)]) {
         for &(handle, force) in before {
-            self.reset_forces(handle, false);
-            self.add_force(handle, force, false);
+            if let Some(body) = self.bodies.get_mut(handle) {
+                body.reset_forces(false);
+                body.add_force(force, false);
+            }
         }
     }
 
@@ -2598,18 +2603,25 @@ mod tests {
 
     /// #6487 — the impulse is delivered once. The force it rides is taken back after the first substep, so
     /// the link keeps the velocity it was given instead of accelerating on, and a force the water pass had
-    /// put on the link survives untouched.
+    /// put on the link survives untouched. #7012 — so does the torque the damping pass put on it.
     #[test]
     fn a_link_impulse_is_a_single_kick_and_leaves_other_forces_alone() {
         let (mut w, [a, b]) = impulse_pair(true);
         let held = Vec3::new(0.0, 5.0, 0.0);
+        let held_torque = Vec3::new(0.0, 0.0, 3.0);
         w.add_force(a, held, false);
+        w.add_torque(a, held_torque, false);
         let mass = w.body_mass(a).unwrap();
         assert!(w.apply_impulse(a, Vec3::new(100.0 * mass, 0.0, 0.0)));
         w.step(PHYSICS_DT);
         assert!(w.pending_link_impulses.is_empty(), "consumed by the stepping frame");
         let user = w.bodies[a].user_force();
         assert!((user.x).abs() < 1.0e-4 && (user.y - held.y).abs() < 1.0e-4, "the kick's force is gone: {user:?}");
+        let torque = w.bodies[a].user_torque();
+        assert!(
+            (torque - held_torque).length() < 1.0e-4,
+            "releasing the kick kept the link's held torque (#7012): {torque:?}"
+        );
         // Equal masses: the pair's total x momentum is the one kick, `impulse / mass = 100`, however the
         // joint shares it between the two links. A force left applied would keep adding to it.
         for _ in 0..10 {
