@@ -520,6 +520,15 @@ pub fn local_current(kind: WaterKind, flow: WaterFlow, bed: Option<&WaterBedFiel
 /// [`WaterBedField`]; `None`, or a position outside it, is open water. The
 /// bed field and the mesh vertices come from the same LAND samples, so the
 /// visible crest and this one cannot disagree about the depth.
+/// The authored ripple's open-water amplitude: the material's amplitude times
+/// the weather's wind scale, clamped as `water.vert` clamps the uploaded
+/// `tune.w`. The crest sampler caps it further by the water under it; the
+/// contact-rescan gate takes it as the ripple's reach, so the two read one
+/// formula (#7018).
+fn ripple_amplitude(material: &WaterMaterial, wind_wave_scale: f32) -> f32 {
+    (material.wave_amplitude * wind_wave_scale).clamp(0.0, WATER_WAVE_AMPLITUDE_MAX)
+}
+
 pub fn authored_wave_height_over_bed(
     material: &WaterMaterial,
     position: Vec3,
@@ -571,9 +580,7 @@ pub fn authored_wave_height_over_bed(
     // the CPU used to clamp before the wind scale and floor a negative
     // frequency at 0, two crests the visible water never showed. The breaking
     // limit then caps it by the water under it.
-    let amplitude = (material.wave_amplitude * wind_wave_scale)
-        .clamp(0.0, WATER_WAVE_AMPLITUDE_MAX)
-        .min(WATER_SWELL_BREAK_RATIO * bed_depth);
+    let amplitude = ripple_amplitude(material, wind_wave_scale).min(WATER_SWELL_BREAK_RATIO * bed_depth);
     let frequency = material.wave_frequency.abs();
     if !amplitude.is_finite() || !frequency.is_finite() {
         return swell;
@@ -786,10 +793,11 @@ fn waves_require_contact_rescan(
     world: &World,
     surfaces: &[WaterSurface],
     weather_scroll: [f32; 2],
+    wind_wave_scale: f32,
 ) -> bool {
     let max_amplitude = surfaces
         .iter()
-        .map(|surface| surface_wave_reach(surface, weather_scroll))
+        .map(|surface| surface_wave_reach(surface, weather_scroll, wind_wave_scale))
         .filter(|amplitude| amplitude.is_finite())
         .fold(0.0_f32, f32::max);
     if max_amplitude <= 1.0e-4 {
@@ -807,15 +815,17 @@ fn waves_require_contact_rescan(
 }
 
 /// The furthest animated displacement can move `surface` from its rest
-/// height: the authored ripple amplitude plus the wind swell's crest at its
-/// full shoaling gain (the breaking cap only lowers it). The swell takes the
-/// plane's kind-damped weather, as the per-body crest sample does (#5354).
-fn surface_wave_reach(surface: &WaterSurface, weather_scroll: [f32; 2]) -> f32 {
+/// height: the ripple's open-water amplitude under this weather (the crest
+/// sampler's own [`ripple_amplitude`], #7018) plus the wind swell's crest at
+/// its full shoaling gain (the breaking cap only lowers either). The swell
+/// takes the plane's kind-damped weather, as the per-body crest sample does
+/// (#5354).
+fn surface_wave_reach(surface: &WaterSurface, weather_scroll: [f32; 2], wind_wave_scale: f32) -> f32 {
     let swell = surface
         .material
         .swell(surface.kind.weather_scroll_for(weather_scroll))
         .map_or(0.0, |swell| swell.amplitude * WATER_SWELL_SHOAL_GAIN_MAX);
-    surface.material.wave_amplitude.abs() + swell
+    ripple_amplitude(&surface.material, wind_wave_scale) + swell
 }
 
 /// WATAL Phase 2 — the buoyancy phase of [`physics_sync_system`]
@@ -944,8 +954,6 @@ fn apply_buoyancy_with_scratch(
     let (weather_scroll, wind_wave_scale) = time_secs
         .map(|time| weather_wave_adjustment(world, time))
         .unwrap_or(([0.0; 2], 1.0));
-    let waves_require_rescan =
-        time_secs.is_some() && waves_require_contact_rescan(world, surfaces, weather_scroll);
     // Fast path: without a surface no body can remain buoyant. Always clear
     // stale contacts first because a placed current marker may outlive the
     // plane during streaming; only return immediately when it is absent too.
@@ -971,17 +979,24 @@ fn apply_buoyancy_with_scratch(
     // load-bearing: a body that streams in already submerged spawns ASLEEP and
     // Phase 1 does NOT wake it (`register_newcomers`), so without this term its
     // first-frame dry→wet float-up would be skipped here.
-    {
+    //
+    // The wave gate reads every `WaterContact`, so it runs last: only when
+    // nothing else keeps the scan on, and after the `PhysicsWorld` guard is
+    // dropped (#7018).
+    let quiescent = {
         let pw = world.resource::<PhysicsWorld>();
-        if pw.active_island_counts().0 == 0 && !pw.pending_wake() && !had_newcomers && !waves_require_rescan
-        {
-            // #3268 — `in_current_prev` is deliberately NOT touched here.
-            // Nothing moved, so a body asleep inside a current volume is
-            // still inside it; clearing the latch would make the next real
-            // scan read it as a fresh entry and re-wake a body that has
-            // legitimately settled.
-            return;
-        }
+        pw.active_island_counts().0 == 0 && !pw.pending_wake() && !had_newcomers
+    };
+    if quiescent
+        && !(time_secs.is_some()
+            && waves_require_contact_rescan(world, surfaces, weather_scroll, wind_wave_scale))
+    {
+        // #3268 — `in_current_prev` is deliberately NOT touched here.
+        // Nothing moved, so a body asleep inside a current volume is
+        // still inside it; clearing the latch would make the next real
+        // scan read it as a fresh entry and re-wake a body that has
+        // legitimately settled.
+        return;
     }
 
     // Union XZ footprint of every water plane — a cheap per-body reject that
@@ -1687,7 +1702,7 @@ mod tests {
         }];
 
         assert!(
-            !waves_require_contact_rescan(&world, &surfaces, [0.0; 2]),
+            !waves_require_contact_rescan(&world, &surfaces, [0.0; 2], 1.0),
             "the canonical non-zero wave default must not disarm quiescence by itself"
         );
 
@@ -1702,7 +1717,7 @@ mod tests {
             },
         );
         assert!(
-            waves_require_contact_rescan(&world, &surfaces, [0.0; 2]),
+            waves_require_contact_rescan(&world, &surfaces, [0.0; 2], 1.0),
             "a live contact inside the crest band must continue to track authored waves"
         );
     }
@@ -1763,11 +1778,11 @@ mod tests {
             },
         );
         assert!(
-            waves_require_contact_rescan(&world, &swell_only, [0.0; 2]),
+            waves_require_contact_rescan(&world, &swell_only, [0.0; 2], 1.0),
             "a submerged float on a swell-only plane must keep the rescan armed"
         );
         assert!(
-            !waves_require_contact_rescan(&world, &still, [0.0; 2]),
+            !waves_require_contact_rescan(&world, &still, [0.0; 2], 1.0),
             "a plane with neither ripple nor swell still quiesces"
         );
 
@@ -1782,11 +1797,55 @@ mod tests {
             },
         );
         assert!(gale_crest > calm_crest * WATER_SWELL_SHOAL_GAIN_MAX + WATERLINE_HYSTERESIS + 1.0);
-        assert!(!waves_require_contact_rescan(&world, &swell_only, [0.0; 2]));
+        assert!(!waves_require_contact_rescan(&world, &swell_only, [0.0; 2], 1.0));
         assert!(
-            waves_require_contact_rescan(&world, &swell_only, gale),
+            waves_require_contact_rescan(&world, &swell_only, gale, 1.0),
             "the band must reach as far as the wind's swell does"
         );
+    }
+
+    /// #7018 — the gate sizes the ripple's reach with the crest sampler's own
+    /// formula: the authored amplitude times the weather's wind scale, clamped
+    /// to `WATER_WAVE_AMPLITUDE_MAX`. The raw amplitude under-counted a gale
+    /// (scale 1.5) and over-counted an amplitude above the clamp.
+    #[test]
+    fn the_rescan_band_reaches_as_far_as_the_sampled_ripple() {
+        let mut world = World::new();
+        world.register::<WaterContact>();
+        let surface_entity = world.spawn();
+        let ripple = |wave_amplitude| {
+            [WaterSurface {
+                entity: surface_entity,
+                kind: WaterKind::Calm,
+                volume: WaterVolume { min: [-10.0, -10.0, -10.0], max: [10.0, 0.0, 10.0] },
+                surface: None,
+                material: WaterMaterial { wave_amplitude, wind_driven: false, ..WaterMaterial::default() },
+                flow: None,
+                damage_per_second: 0.0,
+                bed: None,
+            }]
+        };
+        let contact = world.spawn();
+        let dry_at = |world: &mut World, depth: f32| {
+            world.insert(
+                contact,
+                WaterContact { surface_entity: Some(surface_entity), depth, submerged_fraction: 0.0, ..WaterContact::default() },
+            );
+        };
+        for (amplitude, wind_wave_scale) in [(10.0f32, 1.5f32), (4.0 * WATER_WAVE_AMPLITUDE_MAX, 1.0)] {
+            let surfaces = ripple(amplitude);
+            let reach = (amplitude * wind_wave_scale).min(WATER_WAVE_AMPLITUDE_MAX);
+            dry_at(&mut world, reach + WATERLINE_HYSTERESIS - 0.5);
+            assert!(
+                waves_require_contact_rescan(&world, &surfaces, [0.0; 2], wind_wave_scale),
+                "amplitude {amplitude} x {wind_wave_scale}: a contact inside the sampled crest is tracked"
+            );
+            dry_at(&mut world, reach + WATERLINE_HYSTERESIS + 0.5);
+            assert!(
+                !waves_require_contact_rescan(&world, &surfaces, [0.0; 2], wind_wave_scale),
+                "amplitude {amplitude} x {wind_wave_scale}: a contact beyond the sampled crest is not"
+            );
+        }
     }
 
     /// #5562 — a wet contact publishes the waterline under the collider AABB
