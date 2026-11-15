@@ -173,12 +173,17 @@ fn first_search_delay(actor: EntityId) -> f32 {
     (actor % 8) as f32 / 8.0 * SEARCH_PERIOD_SECS
 }
 
-/// Whether `target` is still worth going to.
+/// Whether `target` is still worth going to. A disabled reference keeps a content-less placement root
+/// with its identity and transform (#6539); finding it took a phantom item and tombstoned a quest
+/// object before its quest enabled it (GAME-1). Checked on every path, so a reference disabled
+/// mid-walk is dropped too.
 fn still_valid(world: &World, actor: EntityId, target: EntityId, scratch: &FindScratch) -> bool {
+    let reference = world.get::<SceneAliasCandidate>(target).map(|identity| identity.reference_form_id);
     world.get::<GlobalTransform>(target).is_some()
         && !world.has::<Dead>(target)
         && !world.has::<crate::inventory::PickedUp>(target)
         && !scratch.unreachable.contains_key(&(actor, target))
+        && reference.is_none_or(|form| SceneAliasCandidate::placement_enabled(world, form))
 }
 
 /// The nearest loaded candidate for a generic target, inside the search area.
@@ -647,6 +652,32 @@ mod tests {
         assert!(!world.has::<PickedUp>(far_food), "the food outside the area was left");
         let held: Vec<u32> = world.get::<Inventory>(actor).unwrap().items.iter().map(|s| s.base_form_id).collect();
         assert_eq!(held, vec![FOOD]);
+    }
+
+    /// GAME-1 -- a disabled reference (here "Initially Disabled") keeps a placement root with its
+    /// identity and transform, but it is not in the world: a Find passes it over for the next food
+    /// instead of taking a phantom stack and tombstoning it before its quest enables it.
+    #[test]
+    fn a_find_passes_over_a_disabled_placement() {
+        let mut world = world();
+        let disabled = place(&mut world, FOOD, 0x102, Vec3::new(0.0, 0.0, 200.0));
+        let enabled = place(&mut world, FOOD, 0x103, Vec3::new(0.0, 0.0, 600.0));
+        let mut authored = byroredux_scripting::AuthoredDisabledReferences::default();
+        authored.initially_disabled.insert(0x102);
+        world.insert_resource(authored);
+        let actor = finder(
+            &mut world,
+            FindPackageBehavior {
+                target: FindTarget::Kind(FindItemKind::Food),
+                count: 1,
+                area: EatSleepLocation::NearCurrentLocation,
+                area_radius: 1000.0,
+            },
+        );
+        run(&world, 300);
+        assert!(!world.has::<PickedUp>(disabled), "the disabled food is not taken");
+        assert!(world.has::<PickedUp>(enabled), "the enabled one is");
+        assert!(world.get::<FindProgress>(actor).is_some_and(|p| p.done));
     }
 
     /// GECK: "if a creature, attack it" - a creature target is not walked all the
