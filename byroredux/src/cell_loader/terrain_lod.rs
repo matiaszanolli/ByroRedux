@@ -323,7 +323,7 @@ pub(crate) fn lod_ring_reach_cells(game: GameKind) -> i32 {
 ///
 /// #5222 — the Fallout-legacy terrain selection: the authored colour
 /// quads the band ring touches
-/// ([`super::lod_bands::select_authored_lod_quads`]), plus level-4 synth
+/// ([`super::lod_bands::select_authored_lod_quads_refining`]), plus level-4 synth
 /// completion for ring ground no authored quad covers.
 ///
 /// The completion tiles are only added where a candidate tile overlaps NO

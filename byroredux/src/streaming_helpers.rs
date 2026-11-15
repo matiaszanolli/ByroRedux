@@ -409,9 +409,9 @@ fn update_lod_coverage(
     // construction: a resident `VisibleWhenDistant` full REFR's cell must
     // never fall inside a resident object-LOD quad's footprint (that quad's
     // `.bto` already bakes the object in — both drawing it is the z-fight
-    // the rule exists to prevent). `find_full_detail_overlaps` already
+    // the rule exists to prevent). `find_terrain_full_detail_overlaps`
     // answers exactly this shape of question (does a LOD quad footprint
-    // intersect a given cell); a VWD REFR's cell is that same kind of
+    // intersect a given cell, net of its hole mask); a VWD REFR's cell is that same kind of
     // "still-resident full-detail" input, just gathered from a different
     // source than `state.loaded`. Terrain LOD is deliberately excluded —
     // VWD culls against the *object* scheme only (EXAL §5.2), terrain LOD

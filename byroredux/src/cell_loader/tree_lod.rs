@@ -177,7 +177,7 @@ pub(crate) fn parse_tree_lst(bytes: &[u8]) -> Result<Vec<TreeLodSpecies>, TreeLo
 /// One Fallout 3 `treetypes.lst` entry (DLOD-TREE-004): a `u32` index and seven `f32`. What the seven floats
 /// mean is not established, so they are carried in file order and nothing draws from them yet.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(not(test), allow(dead_code))] // read by the A6 corpus test; nothing draws from its floats (unexplained)
+#[cfg(test)] // read by the A6 corpus test; nothing draws from its floats (unexplained)
 pub(crate) struct DtlTreeType {
     pub(crate) index: u32,
     pub(crate) values: [f32; 7],
@@ -186,7 +186,7 @@ pub(crate) struct DtlTreeType {
 /// Parse a Fallout 3 `treetypes.lst`: a `u32` count, then 32-byte entries (`u32` index, seven `f32`), V3 /
 /// #6678. The header count is trusted: `wasteland` declares 8 and holds 9, and the ninth names no tree a
 /// declared `.dtl` chunk places, so bytes past the declared entries are ignored.
-#[cfg_attr(not(test), allow(dead_code))] // read by the A6 corpus test; a drawn tree needs only its `.dtl` record
+#[cfg(test)] // read by the A6 corpus test; a drawn tree needs only its `.dtl` record
 pub(crate) fn parse_treetypes_lst(bytes: &[u8]) -> Result<Vec<DtlTreeType>, TreeLodError> {
     let count = u32_at(bytes, 0)?;
     let available = bytes.len() - 4;

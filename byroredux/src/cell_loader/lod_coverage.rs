@@ -16,7 +16,7 @@
 //!
 //! Two checks, both pure functions/state over plain key sets so they're
 //! testable without a `World` / `VulkanContext`:
-//!   - **Overlap** ([`find_overlaps`], [`find_full_detail_overlaps`]): any
+//!   - **Overlap** ([`find_overlaps`], [`find_terrain_full_detail_overlaps`]): any
 //!     two resident quad footprints (same scheme, or a resident quad against
 //!     a resident full-detail cell) that share a cell.
 //!   - **Churn** ([`ChurnTracker`]): a quad key that left residency and came
@@ -67,7 +67,8 @@ pub(crate) fn find_overlaps(keys: &[(i32, i32, i32)]) -> u32 {
 /// cell — the cross-scheme boundary `object_lod`/`terrain_lod` both keep
 /// conservative (gated on `radius_unload`, not `radius_load`; #1866/#1871)
 /// specifically to avoid this ever happening.
-#[cfg_attr(not(test), allow(dead_code))] // production counts hole-aware via `find_terrain_full_detail_overlaps`
+/// Test-only: production counts hole-aware through [`find_terrain_full_detail_overlaps`].
+#[cfg(test)]
 pub(crate) fn find_full_detail_overlaps(
     lod_keys: &[(i32, i32, i32)],
     full_cells: &[(i32, i32)],

@@ -574,6 +574,20 @@ fn prune_same_level_overlaps(
     out
 }
 
+/// Test helper: [`select_authored_lod_quads_refining`] with no refinement and no lattice origin.
+#[cfg(test)]
+pub(crate) fn select_authored_lod_quads(
+    authored: &[(i32, i32, i32)],
+    ladder: &LodBandLadder,
+    player: (i32, i32),
+    world_bounds: Option<((i32, i32), (i32, i32))>,
+    cell_exists: &dyn Fn(i32, i32) -> bool,
+) -> Vec<(i32, i32, i32)> {
+    select_authored_lod_quads_refining(authored, ladder, player, world_bounds, cell_exists, -1, None)
+}
+
+/// Select the authored quads the band ring touches.
+///
 /// Same-level overlaps are resolved first (#5387): six FO3 worldspaces
 /// (washmontop worst — 65 overlapping pairs of 37 level-8 quads, plus
 /// four DC worldspaces and two level-4 sets) ship name-table leftovers
@@ -589,22 +603,12 @@ fn prune_same_level_overlaps(
 ///
 /// Order is deterministic `(level, qy, qx)`; callers re-sort by their own
 /// streaming priorities.
-#[cfg_attr(not(test), allow(dead_code))] // production passes the descriptor origin through `_refining`
-pub(crate) fn select_authored_lod_quads(
-    authored: &[(i32, i32, i32)],
-    ladder: &LodBandLadder,
-    player: (i32, i32),
-    world_bounds: Option<((i32, i32), (i32, i32))>,
-    cell_exists: &dyn Fn(i32, i32) -> bool,
-) -> Vec<(i32, i32, i32)> {
-    select_authored_lod_quads_refining(authored, ladder, player, world_bounds, cell_exists, -1, None)
-}
-
-/// [`select_authored_lod_quads`] that also skips every quad above the finest
-/// level whose nearest cell is within `refine_within` (#6094) — the authored
-/// counterpart of [`LodBandSelection::refine_within`]. A skipped quad is not a
-/// hole: the finer authored quads beneath it stay selected, and the terrain
-/// ring's level-4 synth completion tiles any ground none of them cover.
+///
+/// Every quad above the finest level whose nearest cell is within `refine_within` is skipped
+/// (#6094; `-1` skips none) — the authored counterpart of [`LodBandSelection::refine_within`]. A
+/// skipped quad is not a hole: the finer authored quads beneath it stay selected, and the terrain
+/// ring's level-4 synth completion tiles any ground none of them cover. `lattice_origin` is the
+/// descriptor origin [`prune_same_level_overlaps`] keeps the residue class of (DLOD-BAND-004).
 pub(crate) fn select_authored_lod_quads_refining(
     authored: &[(i32, i32, i32)],
     ladder: &LodBandLadder,

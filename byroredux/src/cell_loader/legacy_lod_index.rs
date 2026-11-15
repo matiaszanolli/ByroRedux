@@ -18,7 +18,7 @@
 //! and asking the archive "is this quad there?", scan the archive name
 //! tables **once** per streaming state and enumerate the quads that are
 //! actually authored. Selection then works from footprints
-//! ([`super::lod_bands::select_authored_lod_quads`]), so residues — one or
+//! ([`super::lod_bands::select_authored_lod_quads_refining`]), so residues — one or
 //! many per worldspace/level — stop mattering.
 //!
 //! Oblivion's FormID-keyed 32-cell quad family is deliberately NOT indexed
