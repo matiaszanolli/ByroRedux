@@ -116,6 +116,9 @@ pub(crate) enum HudSneak {
     /// Oblivion: `hud_reticle.xml`'s `hudreticle_sneak` eye, whose alpha
     /// copies `user8` ("code set - alpha"). The reticle menu is grafted under
     /// the HUD at launch, its crosshair hidden (the native HUD draws one).
+    /// `crosshair` names the image itself, not its container `<rect>`:
+    /// `visible` is per-tile in this dialect, so hiding the container hides
+    /// nothing (#7001).
     Eye { menu: &'static str, root: &'static str, crosshair: &'static str, eye: &'static str },
 }
 
@@ -168,7 +171,7 @@ impl HudGameProfile {
             sneak: HudSneak::Eye {
                 menu: "menus\\main\\hud_reticle.xml",
                 root: "HUDReticle",
-                crosshair: "hudreticle_reticle",
+                crosshair: "hudreticle_reticle_crosshair",
                 eye: "hudreticle_sneak",
             },
         }
@@ -966,7 +969,7 @@ mod tests {
         profile: HudGameProfile,
         data: std::path::PathBuf,
         view: byroredux_debug_ui::StealthIndicatorView,
-    ) -> Option<(Vec<u8>, Vec<u8>)> {
+    ) -> Option<SneakFrames> {
         let misc = Archive::open(&data.join(profile.misc_bsa).to_string_lossy()).ok()?;
         let mut textures = Vec::new();
         let textures_path = data.join(profile.default_textures_bsa).to_string_lossy().into_owned();
@@ -978,12 +981,21 @@ mod tests {
         if let HudStyle::Authored { mode, .. } = profile.style {
             renderer.set_override(mode.0, mode.1, 1.0);
         }
+        let baseline = renderer.render_frame(&assets).to_vec();
         install_sneak_element(&mut renderer, &assets, profile.sneak, 1280.0);
         drive_sneak_element(&mut renderer, profile.sneak, None, 0);
         let hidden = renderer.render_frame(&assets).to_vec();
         drive_sneak_element(&mut renderer, profile.sneak, Some(&view), 255);
         let shown = renderer.render_frame(&assets).to_vec();
-        Some((hidden, shown))
+        Some(SneakFrames { baseline, hidden, shown })
+    }
+
+    /// The HUD before the sneak element is installed, with it installed and no
+    /// indicator, and with the indicator lit.
+    struct SneakFrames {
+        baseline: Vec<u8>,
+        hidden: Vec<u8>,
+        shown: Vec<u8>,
     }
 
     fn changed_pixels(a: &[u8], b: &[u8]) -> usize {
@@ -998,11 +1010,13 @@ mod tests {
             state: byroredux_core::stealth::IndicatorState::Hidden,
             look: byroredux_debug_ui::StealthIndicatorLook::Label("[HIDDEN]".into()),
         };
-        let Some((hidden, shown)) = sneak_frames(HudGameProfile::fallout_nv(), data, view) else {
+        let Some(frames) = sneak_frames(HudGameProfile::fallout_nv(), data, view) else {
             byroredux_plugin::esm::test_paths::require_or_skip("the FNV Misc and Textures archives");
             return;
         };
-        let changed = changed_pixels(&hidden, &shown);
+        let stray = changed_pixels(&frames.baseline, &frames.hidden);
+        assert_eq!(stray, 0, "the installed, unlit sneak label drew {stray} pixels");
+        let changed = changed_pixels(&frames.hidden, &frames.shown);
         eprintln!("FNV sneak label: {changed} pixels");
         assert!(changed > 100, "the [HIDDEN] label drew {changed} pixels");
     }
@@ -1015,11 +1029,16 @@ mod tests {
             state: byroredux_core::stealth::IndicatorState::Detected,
             look: byroredux_debug_ui::StealthIndicatorLook::Eye,
         };
-        let Some((dark, lit)) = sneak_frames(HudGameProfile::oblivion(), data, view) else {
+        let Some(frames) = sneak_frames(HudGameProfile::oblivion(), data, view) else {
             byroredux_plugin::esm::test_paths::require_or_skip("the Oblivion Misc and Textures archives");
             return;
         };
-        let changed = changed_pixels(&dark, &lit);
+        // #7001 — the grafted reticle adds nothing until the eye lights: a
+        // changed-pixel count alone passed while its crosshair (438 px at the
+        // screen centre) was drawn in both frames.
+        let stray = changed_pixels(&frames.baseline, &frames.hidden);
+        assert_eq!(stray, 0, "the grafted reticle drew {stray} pixels with the eye off");
+        let changed = changed_pixels(&frames.hidden, &frames.shown);
         eprintln!("Oblivion sneak eye: {changed} pixels");
         assert!(changed > 100, "the lit eye drew {changed} pixels");
     }
