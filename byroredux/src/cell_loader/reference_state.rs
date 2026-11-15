@@ -1661,6 +1661,21 @@ mod tests {
         assert!(world.get::<Inventory>(old).unwrap().is_empty());
     }
 
+    /// XCT-OFF-001 (7250362df; INC3 missing test): the save reload's teardown runs with the
+    /// `SaveReloadTeardown` marker in place, so `depart_unwatched` starts no journey in the ledger the
+    /// save just restored, and the marker is gone once the reload returns. Deleting the insert in
+    /// `without_parked_state` fails the first assertion; the existing relocated.rs test inserts the
+    /// marker by hand and could not see it.
+    #[test]
+    fn a_save_reload_runs_its_teardown_under_the_reload_marker() {
+        let mut world = World::new();
+        let inside = without_parked_state(&mut world, |world| {
+            world.try_resource::<super::super::relocated::SaveReloadTeardown>().is_some()
+        });
+        assert!(inside, "the reload runs under the marker");
+        assert!(world.try_resource::<super::super::relocated::SaveReloadTeardown>().is_none(), "and it is removed after");
+    }
+
     fn lock_order_check_enabled() -> bool {
         std::env::var_os("BYRO_LOCK_ORDER_CHECK").as_deref() == Some(std::ffi::OsStr::new("1"))
     }

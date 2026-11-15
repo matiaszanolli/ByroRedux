@@ -632,6 +632,21 @@ mod tests {
         assert_eq!(movie.failure(), Some(reason));
     }
 
+    /// BIK-DEC-004 (INC3 missing test, aa193bd9e): both reader threads, Bink 1 and Bink 2, run their
+    /// decode loop inside `guard_decoder`. `a_decoder_panic_ends_the_movie_as_failed` proves the guard
+    /// itself; a reader that dropped it would still pass that, and panic into a silent Finished.
+    #[test]
+    fn every_reader_thread_runs_under_the_decoder_guard() {
+        let src = include_str!("lib.rs");
+        let production = &src[..src.find("\n#[cfg(test)]\nmod tests").expect("the test module")];
+        let spawns: Vec<&str> = production.split(".spawn(move || {").skip(1).collect();
+        assert_eq!(spawns.len(), 2, "one reader per format (Bink 1, Bink 2)");
+        for body in spawns {
+            let head = &body[..body.len().min(160)];
+            assert!(head.contains("guard_decoder("), "a reader thread decodes outside guard_decoder: {head}");
+        }
+    }
+
     /// BIK-DEC-004 — a decoder that panics mid-movie ends it as Failed with a reason, like a frame
     /// that does not decode: the panic would otherwise only close the ring, which reads as Finished.
     #[test]
