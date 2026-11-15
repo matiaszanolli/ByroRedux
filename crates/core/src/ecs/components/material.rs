@@ -955,7 +955,7 @@ pub enum EmissiveSource {
 /// There are four, three NIF-side and one sidecar-side:
 /// `import/material/dedicated_shader.rs` (`Lighting`, `Effect`),
 /// `import/material/legacy_properties.rs` (`Material`), and
-/// `byroredux/src/asset_provider/material.rs`'s BGEM merge (`Effect`).
+/// `byroredux/src/asset_provider/material/merge.rs`'s BGEM merge (`Effect`).
 /// #2591 gated the first three; #3371 gated the BGEM one, which the
 /// earlier "all three set-sites" wording had silently excluded. Pre-fix, every
 /// BSLightingShaderProperty (the overwhelming majority of vanilla

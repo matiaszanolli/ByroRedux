@@ -32,7 +32,7 @@
 //! default given the heavier per-entry payload: `NifImportRegistry`'s
 //! 2048 default sized for the FLAT-import shape would be a poor fit
 //! here. Uses the simpler half-eviction-on-overflow shape
-//! `asset_provider/material.rs`'s `bgem_cache`/`failed_paths` already
+//! `asset_provider/material/provider.rs`'s `bgem_cache`/`failed_paths` already
 //! establish (#951/#1430) rather than porting `NifImportRegistry`'s
 //! full LRU-with-clip-handle-eviction-bias machinery — this cache has
 //! no clip-handle bookkeeping of its own to protect, so the extra

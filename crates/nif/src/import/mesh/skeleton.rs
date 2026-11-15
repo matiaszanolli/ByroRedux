@@ -254,7 +254,7 @@ const SKELETON_CANDIDATES: [&str; 2] = [
 ///
 /// Without it every skinned mesh in a cell would re-extract and re-parse a
 /// 116-node skeleton NIF — thousands of times per load. Mirrors the
-/// `sf_cdb_cache` shape in `asset_provider/material.rs`: module-scope, keyed
+/// `sf_cdb_cache` shape in `asset_provider/material/cdb.rs`: module-scope, keyed
 /// by path, and caching the *negative* result too so a missing skeleton is
 /// probed once.
 type SkeletonMap = std::collections::HashMap<&'static str, Option<Arc<SkeletonBones>>>;
