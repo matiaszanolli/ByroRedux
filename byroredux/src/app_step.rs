@@ -1066,6 +1066,13 @@ impl App {
             return;
         }
         crate::save_io::execute_pending_save_loads(&mut self.world, ctx, &mut self.streaming);
+        // SAVE-1 — the reload tore down every spawned created reference, relocated-in actor and
+        // enabled placement, but the steps that respawn them gate on keys a load can leave equal (an
+        // exterior's key is its grid set, and the saved ledger often matches the live one). Forget
+        // the keys so each step re-runs against the loaded world on the next frame.
+        self.created_step_key = None;
+        self.relocation_step_key = None;
+        self.enabled_step_key = None;
         // The synchronous drain has returned, including any early failure.
         // Show the resulting/current world before releasing input again.
         self.loading_screen.destination_ready();
@@ -1936,6 +1943,23 @@ mod tests {
     /// The ordering assertion matters as much as the presence one — the
     /// sync must precede the drain it guards, in the same call, or it
     /// describes the previous frame.
+    /// SAVE-1 — a live load tears down the created references, relocated-in actors and enabled
+    /// placements the step keys say are already spawned. An exterior reload onto the same grid set
+    /// with the same ledgers left every key equal, so the item or NPC stayed missing until the grid
+    /// set changed. `step_save_loads` forgets the three keys after the drain. (`App` needs a device,
+    /// so this reads the source.)
+    #[test]
+    fn a_save_load_forgets_the_respawn_step_keys() {
+        let src = include_str!("app_step.rs");
+        let body = &src[src.find("pub(crate) fn step_save_loads(").expect("step_save_loads")..];
+        let body = &body[..body.find("\n    }\n").expect("body boundary")];
+        let drain = body.find("execute_pending_save_loads(").expect("the load drain");
+        for key in ["self.created_step_key = None;", "self.relocation_step_key = None;", "self.enabled_step_key = None;"] {
+            let at = body.find(key).unwrap_or_else(|| panic!("step_save_loads no longer resets `{key}` (SAVE-1)"));
+            assert!(at > drain, "`{key}` must be reset after the drain, not before it");
+        }
+    }
+
     #[test]
     fn the_save_drain_publishes_the_transition_flag_before_draining() {
         let src = include_str!("app_step.rs");
