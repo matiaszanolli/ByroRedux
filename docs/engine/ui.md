@@ -148,18 +148,28 @@ pub struct SwfPlayer {
     height: u32,
     pixel_buffer: Vec<u8>,   // last captured RGBA8, reused frame to frame
     dirty: bool,             // set on tick(), cleared after a successful render()
+    pacer: RenderPacer,      // render-and-readback pacing, unpaced unless opted in (#4717)
+    render_passes: u64,      // passes that reached Ruffle's render()
     uploaded_once: bool,     // gates the "unchanged content" early-out below
-    host_object_state: ScaleformHostObjectState,
     host_bridge: ScaleformHostBridge,
+    host_object_state: ScaleformHostObjectState,
     navigator_runtime: Option<ScaleformNavigatorRuntime>,
     resource_errors: Vec<String>,
     resource_errors_capped: bool,
+    resource_loads: Vec<ScaleformResourceLoad>,  // deduplicated by archive_path (#2967)
+    resource_loads_capped: bool,
     preload_stall_frames: u32,
     preload_stalled: bool,
 }
 
 impl SwfPlayer {
     pub fn new(swf_data: &[u8], width: u32, height: u32) -> anyhow::Result<Self>;
+    pub fn new_with_profile(
+        swf_data: &[u8],
+        width: u32,
+        height: u32,
+        profile: ScaleformProfile,           // explicit; a contradicting movie is refused
+    ) -> anyhow::Result<Self>;
     pub fn from_resource_provider(
         provider: Arc<dyn ScaleformResourceProvider>,
         movie_path: &str,
@@ -169,6 +179,11 @@ impl SwfPlayer {
     ) -> anyhow::Result<Self>;
     pub fn tick(&mut self, dt: f64);          // seconds; wrapped in FloatDuration internally
     pub fn render(&mut self) -> Option<&[u8]>; // borrows pixel_buffer; None if the pixels are unchanged
+    pub fn set_render_pacing(&mut self, pacing: RenderPacing);
+    pub fn render_passes(&self) -> u64;
+    pub fn handle_input(&mut self, event: UiInputEvent) -> bool;
+    pub fn set_mouse_in_stage(&mut self, is_in_stage: bool);
+    pub fn set_stage_transparent(&mut self);
     pub fn dimensions(&self) -> (u32, u32);
     pub fn host_object_state(&self) -> ScaleformHostObjectState;
     pub fn current_frame(&self) -> Option<u16>;
@@ -176,7 +191,11 @@ impl SwfPlayer {
     pub fn resource_error(&self) -> Option<&str>;
     pub fn resource_errors(&self) -> &[String];
     pub fn preload_stalled(&self) -> bool;
-    pub fn invoke_callback(&mut self, name: &str, args: &[ScaleformValue]) -> bool;
+    pub fn invoke_callback(
+        &mut self,
+        name: &str,
+        arguments: impl IntoIterator<Item = ScaleformValue>,
+    ) -> Option<ScaleformValue>;              // None = unknown / unregistered; Some(Null) = returned null
     pub fn profile(&self) -> ScaleformProfile;
     pub fn host_bridge(&self) -> ScaleformHostBridge;
 }

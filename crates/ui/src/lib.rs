@@ -540,6 +540,41 @@ mod ui_doc_signature_pin {
         Some(line.split_whitespace().collect::<Vec<_>>().join(" "))
     }
 
+    /// The return type of every `pub fn <name>(` in `src`, whitespace-normalized
+    /// and stripped of any trailing `//` comment.
+    fn return_types(src: &str, name: &str) -> Vec<String> {
+        src.split(&format!("pub fn {name}("))
+            .skip(1)
+            .filter_map(|after| {
+                let tail = after.split_once(')')?.1;
+                let end = tail.find([';', '{'])?;
+                let ret = tail[..end].split("//").next()?.trim();
+                Some(ret.split_whitespace().collect::<Vec<_>>().join(" "))
+            })
+            .collect()
+    }
+
+    /// #7003 — the doc's `SwfPlayer` block said `invoke_callback` returns
+    /// `bool`, contradicting its own `UiManager` block and losing the
+    /// `None` (unknown / unregistered) vs `Some(Null)` (registered, returned
+    /// null) distinction the Papyrus bridge and menu stack rely on (#5732).
+    #[test]
+    fn documented_invoke_callback_returns_match_the_real_ones() {
+        let expected = "-> Option<ScaleformValue>";
+        let documented = return_types(DOC, "invoke_callback");
+        assert_eq!(documented.len(), 2, "SwfPlayer and UiManager blocks");
+        for (what, returns) in [
+            ("docs/engine/ui.md", documented),
+            ("player.rs", return_types(PLAYER_RS, "invoke_callback")),
+            ("lib.rs", return_types(LIB_RS, "invoke_callback")),
+        ] {
+            assert!(!returns.is_empty(), "{what} no longer has invoke_callback");
+            for ret in returns {
+                assert_eq!(ret, expected, "{what} documents invoke_callback as `{ret}`");
+            }
+        }
+    }
+
     #[test]
     fn documented_profile_parameters_match_the_real_signatures() {
         for (name, code) in [
