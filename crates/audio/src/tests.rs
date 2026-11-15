@@ -1509,15 +1509,17 @@ fn oneshot_marker_is_consumed_on_both_dispatch_failure_arms() {
         );
     }
 
-    // The success path must consume too — three pushes total, one per
-    // loop exit. A future arm added without a push would leave the
-    // count at 3 only if it also skipped the marker, so pin the shape.
+    // The success path must consume too — four pushes total, one per
+    // loop exit: the one-shot a muting movie drops (BIK-PRES-005, #6919),
+    // the two failure arms, and the success path. A future arm added
+    // without a push would leave the count at 4 only if it also skipped
+    // the marker, so pin the shape.
     assert_eq!(
         LIB_RS.matches("consumed.push(p.entity);").count(),
-        3,
-        "expected exactly 3 `consumed.push` sites in the one-shot dispatch \
-         loop (two failure arms + the success path) — a new exit path that \
-         doesn't consume the marker reintroduces #2394",
+        4,
+        "expected exactly 4 `consumed.push` sites in the one-shot dispatch \
+         loop (the movie-muted drop + two failure arms + the success path) — \
+         a new exit path that doesn't consume the marker reintroduces #2394",
     );
 }
 
@@ -2160,4 +2162,58 @@ fn a_movie_holds_world_sound_and_music_until_released() {
     assert_eq!(audio.movie_hold(), crate::MovieHold::default());
     assert_eq!(audio.movie_sound_position(), None, "no soundtrack, no clock");
     audio.stop_movie_sound();
+}
+
+/// BIK-PRES-005 / #6919 — under a movie that mutes the world, an emitter raised
+/// meanwhile is held like the sounds the hold paused: a loop is dispatched
+/// paused (the release resumes it), a one-shot is dropped like a queued one.
+/// Skips without an audio device.
+#[test]
+fn a_muting_movie_holds_the_emitters_dispatched_under_it() {
+    use std::time::Instant;
+    let mut world = byroredux_core::ecs::World::new();
+    let aw = AudioWorld::new();
+    if !aw.is_active() {
+        eprintln!("skipping: no audio device on this host");
+        return;
+    }
+    world.insert_resource(aw);
+    let listener = world.spawn();
+    world.insert(listener, Transform::IDENTITY);
+    world.insert(listener, GlobalTransform::IDENTITY);
+    world.insert(listener, AudioListener);
+    world.resource_mut::<AudioWorld>().hold_for_movie(true, false);
+
+    let pos = glam::Vec3::new(0.0, 0.0, 5.0);
+    let ambient = world.spawn();
+    world.insert(ambient, Transform::new(pos, glam::Quat::IDENTITY, 1.0));
+    world.insert(ambient, GlobalTransform::new(pos, glam::Quat::IDENTITY, 1.0));
+    world.insert(
+        ambient,
+        AudioEmitter {
+            sound: test_sound(),
+            attenuation: Attenuation::default(),
+            volume: 0.0,
+            looping: true,
+            unload_fade_ms: DEFAULT_UNLOAD_FADE_MS,
+        },
+    );
+    world.insert(ambient, OneShotSound);
+    let impact = spawn_oneshot_at(&mut world, test_sound(), pos, Attenuation::default(), 0.0);
+
+    audio_system(&world, 0.016);
+    assert!(!world.has::<OneShotSound>(ambient) && !world.has::<OneShotSound>(impact), "both markers are spent");
+    assert_eq!(world.resource::<AudioWorld>().active_sound_count(), 1, "the loop is held, the one-shot dropped");
+    let deadline = Instant::now() + std::time::Duration::from_secs(2);
+    while !matches!(world.resource::<AudioWorld>().active_sounds[0].handle.state(), PlaybackState::Paused) {
+        assert!(Instant::now() < deadline, "the loop never reported Paused under the hold");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    world.resource_mut::<AudioWorld>().release_movie_hold();
+    let deadline = Instant::now() + std::time::Duration::from_secs(2);
+    while !matches!(world.resource::<AudioWorld>().active_sounds[0].handle.state(), PlaybackState::Playing) {
+        assert!(Instant::now() < deadline, "the release never resumed the loop");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }

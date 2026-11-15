@@ -172,7 +172,7 @@ pub(crate) struct MusicVoice {
 }
 
 /// A linear tween over `secs` (0 = at once).
-fn linear_tween(secs: f32) -> Tween {
+pub(crate) fn linear_tween(secs: f32) -> Tween {
     Tween {
         start_time: kira::StartTime::Immediate,
         duration: std::time::Duration::from_secs_f32(secs.max(0.0)),

@@ -448,7 +448,16 @@ pub(crate) fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld)
     // can't clean up after it either: it walks `active_sounds`, and a
     // failed dispatch never pushed an `ActiveSound`.
     let mut consumed: Vec<EntityId> = Vec::with_capacity(pending.len());
+    // BIK-PRES-005 / #6919 — under a movie that mutes the world, an emitter is
+    // held like the sounds `hold_for_movie` paused: a loop (a newly loaded
+    // cell's ambient) starts paused, so `release_movie_hold` resumes it, and a
+    // one-shot is dropped, as `drain_pending_oneshots` drops the queued ones.
+    let world_muted = audio_world.movie_hold.world_muted;
     for p in pending {
+        if world_muted && !p.looping {
+            consumed.push(p.entity);
+            continue;
+        }
         // #5738 — the shared track build + sends; the play follows the
         // loop-region decision below.
         let (mut track, underwater_filter) = match build_spatial_track(
@@ -486,7 +495,7 @@ pub(crate) fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld)
             // missing entity and stops the handle.
             sound = sound.loop_region(..);
         }
-        let handle = match track.play(sound) {
+        let mut handle = match track.play(sound) {
             Ok(h) => h,
             Err(e) => {
                 log::warn!(
@@ -498,6 +507,9 @@ pub(crate) fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld)
                 continue;
             }
         };
+        if world_muted {
+            handle.pause(linear_tween(0.0));
+        }
         audio_world.active_sounds.push(ActiveSound {
             source: SoundSource::Emitter(p.entity),
             handle,
