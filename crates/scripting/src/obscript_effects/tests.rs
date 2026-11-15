@@ -723,12 +723,18 @@ fn none_ctx() -> Context {
 
 #[test]
 fn game_settings_sneaking_swimming_and_detection_level_answer_from_their_sources() {
-    let (mut world, _, _) = world();
+    let (mut world, actor, _) = world();
     let ctx = context(Some(ACTOR));
     // `GetGS`: the VM looks the name up and hands the value (or the null argument).
     assert_eq!(getter(&world, CMD_GET_GS, &[ObScriptValue::Num(2.5)], &context(None)), Action::number(2.5));
     assert_eq!(getter(&world, CMD_GET_GS, &[ObScriptValue::Ref(0)], &context(None)), Action::Declined);
-    // The engine has no sneak stance.
+    // M65 (SNK-STN-002) — `IsSneaking` reads the stance marker: 0, then 1 once the stance is
+    // entered through the one path, then 0 again.
+    world.register::<byroredux_core::ecs::components::Sneaking>();
+    assert_eq!(getter(&world, CMD_IS_SNEAKING, &[], &ctx), Action::number(0.0));
+    assert_eq!(crate::stance::toggle_sneaking(&world, actor), Ok(true));
+    assert_eq!(getter(&world, CMD_IS_SNEAKING, &[], &ctx), Action::number(1.0));
+    assert_eq!(crate::stance::toggle_sneaking(&world, actor), Ok(false));
     assert_eq!(getter(&world, CMD_IS_SNEAKING, &[], &ctx), Action::number(0.0));
     // Swimming and sight come from the queries the engine installs.
     assert_eq!(getter(&world, CMD_IS_SWIMMING, &[], &ctx), Action::Declined);

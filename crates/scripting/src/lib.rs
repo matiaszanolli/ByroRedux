@@ -100,6 +100,7 @@ pub mod perk_entry_points;
 pub mod papyrus_demo;
 pub mod papyrus_provider;
 pub mod player_control;
+pub mod stance;
 pub mod quest_stages;
 pub mod quest_variables;
 pub mod relationships;

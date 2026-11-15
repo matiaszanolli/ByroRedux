@@ -347,14 +347,13 @@ pub(super) fn get_detection_level(world: &World, _fallout: bool, _cmd: u16, args
     }
 }
 
-// GECK *IsSneaking*: "1 if the actor is sneaking (crouched)". The engine has no sneak stance —
-// no actor, the player included, can crouch — so nobody is.
+// GECK *IsSneaking*: "1 if the actor is sneaking (crouched)" — the `Sneaking` stance marker
+// (M65, SNK-STN-002). Only the player can carry it; every other actor answers 0. CTDA 286 reaches
+// this getter too.
 pub(super) fn is_sneaking(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
     let caller = caller_of(context);
-    if live(world, caller).is_none() {
-        return Action::Declined;
-    }
-    Action::number(0.0)
+    let Some(subject) = live(world, caller) else { return Action::Declined };
+    Action::number(f32::from(u8::from(crate::stance::is_sneaking(world, subject))))
 }
 
 // GECK *IsSwimming*: the walk/swim verdict of the character system, through the installed query.

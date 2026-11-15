@@ -65,6 +65,9 @@
 //!   the parser translates its broad `GameKind` into (FO3 and FNV share one
 //!   `GameKind` but not one ruleset), plus [`NpcHealthCurve`] /
 //!   [`NpcStatModel`].
+//! * [`stance`] — [`StanceModel`], the profile row naming where the sneak
+//!   stance's speed comes from (`fMoveSneakMult` or two `MOVT` types), and the
+//!   [`SneakMovement`] multipliers it resolves to per load order (M65).
 //!
 //! Per-game **population** lives at the parser boundary (FO4 `PRPS`/`DNAM`,
 //! FNV/FO3 class auto-calc) in `byroredux_plugin`; this crate holds the
@@ -99,6 +102,7 @@ pub mod resistance;
 pub mod ruleset;
 pub mod skill;
 pub mod skyrim;
+pub mod stance;
 pub mod tes;
 
 pub use affliction::{
@@ -136,6 +140,7 @@ pub use reputation::{
 };
 pub use resistance::{damage_multiplier, Affliction};
 pub use ruleset::CharacterRuleset;
+pub use stance::{SneakMovement, SneakSpeed, SneakSpeedSource, StanceModel};
 pub use skill::{ResolvedSkill, SkillDef, SkillSet};
 pub use skyrim::{
     skyrim_ruleset, skyrim_skill_xp_between, skyrim_skill_xp_to_next, SKYRIM_POOL_BASE,
@@ -172,7 +177,7 @@ mod tests {
             .collect();
         assert_eq!(
             declared.len(),
-            18,
+            19,
             "sub-module count changed — {declared:?}"
         );
         for module in declared {

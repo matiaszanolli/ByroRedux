@@ -49,7 +49,7 @@ pub mod wander;
 pub mod water;
 pub mod world_bound;
 
-pub use actor_state::Dead;
+pub use actor_state::{Dead, Sneaking};
 pub use actor_values::{ActorValue, ActorValues, ActorVitals};
 pub use restoration::{TimedRestoration, TimedRestorations};
 pub use animated::{

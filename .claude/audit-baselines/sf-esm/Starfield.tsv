@@ -123,7 +123,7 @@ top	SFPC	1	17765	61	0	0
 top	INNR	1	17361	5	0	0
 top	CURV	1	17273	28	0	0
 top	CPTH	1	16012	148	1	0
-top	MOVT	1	15591	43	0	0
+top	MOVT	1	15591	43	1	0
 top	EFSH	1	15030	47	1	0
 top	COLL	1	13780	62	0	0
 top	GCVR	1	13647	96	0	0
@@ -281,7 +281,7 @@ leaf	MATT	249	0	0	1	0
 leaf	MESG	1149	0	0	1	0
 leaf	MGEF	853	0	0	1	0
 leaf	MISC	1319	0	0	1	0
-leaf	MOVT	43	0	0	0	0
+leaf	MOVT	43	0	0	1	0
 leaf	MRPH	998	0	0	0	0
 leaf	MSTT	1771	0	0	1	0
 leaf	MTPT	877	0	0	1	0
@@ -361,3 +361,4 @@ leaf	ZOOM	118	0	0	0	0
 # regenerated 2026-10-21 (#5757): dispatch arms LMSW/MTPT now read handled=1.
 # 2026-11-03 (#6048): dispatch arm MATT now reads handled=1 (sf_smoke derives the flag from
 # DISPATCH_HANDLED_FOURCCS alone; no byte total moves).
+# 2026-11-15 (M65, #6910): dispatch arm MOVT now reads handled=1 (no byte total moves).

@@ -357,8 +357,16 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     // The helper normalises the WASD vector before scaling so diagonal
     // strafe doesn't go √2× faster than pure forward.
     // VATS-LIMB-006 - a crippled leg slows the player as the load order's settings define.
+    // M65 (SNK-STN-005, -006) — the sneak stance scales walking and, with Sprint held, running.
+    let sneaking = world.has::<byroredux_core::ecs::components::Sneaking>(player_entity);
+    let stance_mult = crate::systems::stance::stance_speed_mult(
+        sneaking,
+        want_sprint,
+        world.try_resource::<byroredux_core::character::SneakMovement>().as_deref(),
+    );
     let speed_mul = (if want_sprint { 2.0 } else { 1.0 })
         * encumbrance_speed
+        * stance_mult
         * crate::limbs::locomotion_mult(world, player_entity);
     // Swimming takes the pitched 3D form; walking keeps the yaw-only one. The
     // vertical share is kept separate so it can be added to the buoyancy

@@ -31,6 +31,9 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
             .reads_resource::<crate::encumbrance::PlayerEncumbrance>()
             // CONC-6 — crippled legs slow the player (`limbs::locomotion_mult`).
             .reads_resource::<crate::limbs::LimbEffects>()
+            // M65 (SNK-STN-005) — the sneak stance's speed.
+            .reads_resource::<byroredux_core::character::SneakMovement>()
+            .reads::<byroredux_core::ecs::components::Sneaking>()
             .reads_resource::<ActiveCamera>()
             .reads_resource::<InputState>()
             .reads_resource::<ActionBindings>()
@@ -163,6 +166,23 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_physics::PhysicsWorld>()
             .reads::<byroredux_physics::RapierHandles>()
             .reads::<byroredux_physics::ActorColliderOwner>(),
+    );
+    // M65 (SNK-STN-001) — the sneak stance toggles on the Sneak key's press edge, after this frame's
+    // `ActionState` edges like VATS above. The controller reads the stance next frame. Exclusive, so
+    // the declaration is for the `sys.accesses` report.
+    scheduler.add_exclusive_with_access(
+        Stage::Early,
+        crate::systems::stance::sneak_stance_system,
+        Access::new()
+            .reads_resource::<crate::interaction::ActionState>()
+            .reads_resource::<crate::systems::PlayerMode>()
+            .reads_resource::<crate::systems::PlayerEntity>()
+            .reads_resource::<crate::components::VatsState>()
+            .reads::<byroredux_core::ecs::components::Dead>()
+            .reads_resource::<byroredux_scripting::PlayerControlState>()
+            .reads_resource::<byroredux_scripting::input_layers::InputLayers>()
+            .reads::<byroredux_core::ecs::components::Sneaking>()
+            .writes::<byroredux_core::ecs::components::Sneaking>(),
     );
     // #3111 — weather writes WindField while the player controller samples it
     // for water waves. Keep weather in the same stage but serialize it after

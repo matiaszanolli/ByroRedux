@@ -22,6 +22,7 @@ pub mod container;
 pub mod global;
 pub mod god_rays;
 pub mod gras;
+pub mod movt;
 pub mod items;
 pub mod list_record;
 pub mod lmsw;
@@ -77,6 +78,7 @@ pub use container::{
 };
 pub use global::{parse_glob, parse_gmst, GameSetting, GlobalRecord, SettingValue};
 pub use god_rays::{parse_gdry, parse_voli, GdryRecord, VoliRecord};
+pub use movt::{parse_movt, MovementType};
 pub use gras::{
     parse_gras, GrasRecord, GRAS_DATA_LEN, GRAS_FLAG_FIT_TO_SLOPE, GRAS_FLAG_UNIFORM_SCALING,
     GRAS_FLAG_VERTEX_LIGHTING,

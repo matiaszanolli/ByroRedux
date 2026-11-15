@@ -60,6 +60,8 @@ fn delta_columns_carry_only_session_stable_fields() {
         // damage. Dead: empty marker. Neither carries session identity.
         "EquippedWeapon",
         "Dead",
+        // M65 — Sneaking: empty marker, the player's sneak stance.
+        "Sneaking",
         // VATS-LIMB-009 - DismemberRecord: u16 body-location bitset + Option<u8> killing-blow location.
         "DismemberRecord",
         // CharacterIdentity: an owned String name, a bool and a u32 race FormID.

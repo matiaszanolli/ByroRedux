@@ -4,7 +4,7 @@
 
 use super::*;
 
-/// Handles GLOB or GMST; the caller has already verified `label` is one
+/// Handles GLOB, GMST or MOVT; the caller has already verified `label` is one
 /// of this domain's.
 pub(super) fn dispatch_global_group(
     label: &[u8; 4],
@@ -19,6 +19,11 @@ pub(super) fn dispatch_global_group(
         })?,
         b"GMST" => extract_records(reader, end, b"GMST", &mut |fid, subs| {
             index.insert_game_setting(parse_gmst(fid, subs));
+        })?,
+        // M65 (SNK-STN-005) — movement types: the sneak stance's speed on
+        // Skyrim and Fallout 4 is a ratio of two of them.
+        b"MOVT" => extract_records(reader, end, b"MOVT", &mut |fid, subs| {
+            index.movement_types.insert(fid, parse_movt(fid, subs));
         })?,
         _ => unreachable!("dispatch_global_group: unexpected label {label:?}"),
     }

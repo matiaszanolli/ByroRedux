@@ -152,6 +152,7 @@ pub(super) fn apply_quest_scoped_effect(
         | Effect::SetLocked { .. }
         | Effect::SetLockLevel { .. }
         | Effect::SetPlayerRestrained { .. }
+        | Effect::StartPlayerSneaking
         | Effect::SetPlayerControls { .. }
         | Effect::SetPlayerAiDriven { .. }
         | Effect::SetHudCartMode { .. }

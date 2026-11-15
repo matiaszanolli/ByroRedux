@@ -237,6 +237,7 @@ pub(in crate::fragment) fn evaluate_guard(
         | FragmentGuard::QuestCompleted { .. } => evaluate_quest_guard(guard, context, vmad, world, stages, objectives, deferred)?,
         FragmentGuard::ActorDead { .. }
         | FragmentGuard::ActorBleedingOut { .. }
+        | FragmentGuard::ActorSneaking { .. }
         | FragmentGuard::ActorInCombat { .. }
         | FragmentGuard::ActorFollower { .. }
         | FragmentGuard::ActorEssential { .. }

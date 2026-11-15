@@ -1071,6 +1071,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("AmbientEngagement", "marker on an AiCombatState faction_hostility_system started (#4816) — its target and out-of-contact timer; AiCombatState itself is not saved and ambient combat is re-derived within EVALUATION_PERIOD_SECS after a load, so the marker is re-stamped with it"),
         ("CombatDisposition", "an NPC's AIDT aggression/confidence/aggro radius (#4414), re-stamped from its NPC_ record through the Use AI Data template terminal on every spawn — immutable authored data, same posture as WalkSpeed"),
         ("CrimeModel", "the game profile's crime fines (Oblivion's fCrimeGoldSteal theft multiplier) with the load order's GMST override, installed by populate_scene_runtime on every load — derived configuration; the bounty it feeds is the saved ObScriptLedger"),
+        ("SneakMovement", "M65 (SNK-STN-005) — the sneak stance's speed multipliers, resolved from the load order's fMoveSneakMult / MOVT records by populate_scene_runtime on every load — derived configuration"),
         ("DetectionConfig", "fSneakMaxDistance / fSneakExteriorDistanceMult (#4414), installed from the load order's GMSTs by populate_scene_runtime on every load — derived configuration"),
         ("AuthoredCover", "the worldspace's authored ground-cover records (#4413), translated from its GRAS records by install_ground_cover at every worldspace entry — derived configuration"),
         ("AuthoredCoverTemplate", "marks a hidden authored ground-cover template shape (#4413); templates are spawned per worldspace from GRAS models and reclaimed with the streaming state, never saved"),
@@ -1343,6 +1344,10 @@ fn every_delta_column_is_parked_or_explicitly_not() {
             "AI runtime that re-rolls on respawn, as WanderState does",
         ),
         ("CharacterController", "the player outlives cell reloads; never evicted"),
+        (
+            "Sneaking",
+            "M65 — only the player carries the stance (stance::set_sneaking); the player outlives cell reloads and is never evicted",
+        ),
     ];
 
     let unaudited: Vec<&str> = NOT_PARKED
@@ -1451,7 +1456,9 @@ fn the_schema_fingerprint_is_pinned() {
     // name, sex and race chosen in character creation), registered after `DismemberRecord`.
     // XCT-LOC-003 (#6852) — `ActorRelocations` joined the registry as a new resource (the space and pose of
     // each actor that has moved out of its home cell), registered after `CreatedReferences`.
-    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x5f44_02c2_bb11_7a12;
+    // M65 (SNK-SAVE-001, #6910) — `Sneaking` joined the registry as a new replacing component column (the
+    // player's sneak stance), registered after `Dead`.
+    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x1cb2_0dbc_42b9_a5bb;
     let actual = build_save_registry().schema_fingerprint();
     assert_eq!(
         actual, BASELINE_SCHEMA_FINGERPRINT,

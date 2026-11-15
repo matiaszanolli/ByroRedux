@@ -85,6 +85,10 @@ pub(super) fn evaluate_actor_guard(
             let actor = guard_actor(actor, context, vmad, world, deferred)?;
             world.has::<byroredux_core::ecs::components::Dead>(actor) == *dead
         }
+        FragmentGuard::ActorSneaking { actor, expected } => {
+            let actor = guard_actor(actor, context, vmad, world, deferred)?;
+            crate::stance::is_sneaking(world, actor) == *expected
+        }
         FragmentGuard::ActorBleedingOut { actor, expected } => {
             let actor = guard_actor(actor, context, vmad, world, deferred)?;
             crate::bleedout::is_bleeding_out(world, actor) == *expected

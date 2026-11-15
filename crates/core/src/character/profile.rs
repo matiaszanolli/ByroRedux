@@ -8,7 +8,7 @@
 
 use super::{
     fallout3_ruleset_with_gmst, fallout4_ruleset_with_gmst, falloutnv_ruleset_with_gmst, skyrim_ruleset, CharacterRuleset, CrimeModel,
-    SkillSet, VatsModel, ArmorModel,
+    SkillSet, StanceModel, VatsModel, ArmorModel,
 };
 
 /// A sourced FO3/FNV NPC Health curve (#5238): the record's `DATA` Base
@@ -327,6 +327,10 @@ pub struct CharacterRulesProfile {
     /// (`byroredux/src/armor.rs`) never tests the game: it reads the installed
     /// `ArmorModel` resource, which exists only where this row does.
     armor: Option<ArmorModel>,
+    /// M65 (SNK-STN-005) — where the speed in the sneak stance comes from.
+    /// Every game has the stance (PRD Q2); a row without a source is
+    /// [`StanceModel::NONE`], which leaves the speed unscaled.
+    stance: StanceModel,
 }
 
 /// Skyrim's *Mod Buy Prices* / *Mod Sell Prices* entry points
@@ -354,6 +358,7 @@ impl CharacterRulesProfile {
         crime: None,
         vats: None,
         armor: None,
+        stance: StanceModel::NONE,
     };
 
     pub const OBLIVION: Self = Self {
@@ -379,6 +384,7 @@ impl CharacterRulesProfile {
         crime: Some(CrimeModel::OBLIVION),
         vats: None,
         armor: None,
+        stance: StanceModel::OBLIVION,
     };
 
     pub const FALLOUT3: Self = Self {
@@ -413,6 +419,7 @@ impl CharacterRulesProfile {
         crime: None,
         vats: Some(VatsModel::FALLOUT3),
         armor: None,
+        stance: StanceModel::FALLOUT,
     };
 
     pub const FALLOUT_NEW_VEGAS: Self = Self {
@@ -452,6 +459,7 @@ impl CharacterRulesProfile {
         crime: None,
         vats: Some(VatsModel::FALLOUT_NV),
         armor: None,
+        stance: StanceModel::FALLOUT,
     };
 
     pub const SKYRIM: Self = Self {
@@ -494,6 +502,7 @@ impl CharacterRulesProfile {
         crime: Some(CrimeModel::SKYRIM),
         vats: None,
         armor: Some(ArmorModel::SKYRIM),
+        stance: StanceModel::SKYRIM,
     };
 
     pub const FALLOUT4: Self = Self {
@@ -534,6 +543,7 @@ impl CharacterRulesProfile {
         crime: None,
         vats: None,
         armor: None,
+        stance: StanceModel::FALLOUT4,
     };
 
     pub const FALLOUT76: Self = Self {
@@ -565,6 +575,7 @@ impl CharacterRulesProfile {
         crime: None,
         vats: None,
         armor: None,
+        stance: StanceModel::NONE,
     };
 
     pub const STARFIELD: Self = Self {
@@ -600,6 +611,7 @@ impl CharacterRulesProfile {
         crime: None,
         vats: None,
         armor: None,
+        stance: StanceModel::NONE,
     };
 
     #[must_use]
@@ -695,6 +707,12 @@ impl CharacterRulesProfile {
     #[must_use]
     pub const fn armor(self) -> Option<ArmorModel> {
         self.armor
+    }
+
+    /// M65 (SNK-STN-005) — the sneak-stance speed source.
+    #[must_use]
+    pub const fn stance(self) -> StanceModel {
+        self.stance
     }
 
     /// #5921 — the perk entry-point numbering the game's `PERK`s author.

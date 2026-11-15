@@ -683,6 +683,8 @@ pub enum InputAction {
     Quickload,
     /// #6350 — enter/exit VATS (FO3/FNV PC default: V).
     Vats,
+    /// M65 — toggle the sneak stance (PC default: Left Ctrl).
+    Sneak,
     Pause,
 }
 
@@ -703,6 +705,7 @@ impl InputAction {
             Self::Quicksave => "quicksave",
             Self::Quickload => "quickload",
             Self::Vats => "vats",
+            Self::Sneak => "sneak",
             Self::Pause => "pause",
         }
     }
@@ -723,6 +726,7 @@ impl InputAction {
             "quicksave" => Self::Quicksave,
             "quickload" => Self::Quickload,
             "vats" => Self::Vats,
+            "sneak" => Self::Sneak,
             "pause" => Self::Pause,
             _ => return None,
         })
@@ -888,6 +892,7 @@ mod spelling_roundtrip_tests {
             InputAction::Quicksave,
             InputAction::Quickload,
             InputAction::Vats,
+            InputAction::Sneak,
             InputAction::Pause,
         ];
         for action in all {
@@ -906,6 +911,7 @@ mod spelling_roundtrip_tests {
                 | InputAction::Quicksave
                 | InputAction::Quickload
                 | InputAction::Vats
+                | InputAction::Sneak
                 | InputAction::Pause => {}
             }
             assert_eq!(InputAction::parse(action.as_str()), Some(action), "{action:?}");

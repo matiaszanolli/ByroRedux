@@ -222,6 +222,9 @@ pub enum FragmentGuard {
         right: Option<ActorRef>,
         expected: bool,
     },
+    /// M65 (SNK-STN-003) — `<actor>.IsSneaking()` is `expected`: the actor
+    /// carries the `Sneaking` stance marker (only the player can).
+    ActorSneaking { actor: ActorRef, expected: bool },
 }
 
 /// M47.2 — a number a fragment reads at run time, for
@@ -488,6 +491,12 @@ pub enum Effect {
     SetLockLevel { target: ObjectRef, level: u8 },
     /// `Game.GetPlayer().SetRestrained(restrained)`.
     SetPlayerRestrained { restrained: bool },
+    /// M65 (SNK-STN-003) — `<player>.StartSneaking()`: enter the sneak stance,
+    /// or leave it when already sneaking ("If the actor was already sneaking,
+    /// cancels sneaking", CK *StartSneaking - Actor*), through the stance's one
+    /// path (`crate::stance`). Only the player sneaks (SNK-NG-001), so another
+    /// receiver declines at lowering.
+    StartPlayerSneaking,
     /// Selectively enable/disable the domains named by the two Papyrus
     /// `*PlayerControls` global functions.
     SetPlayerControls {
@@ -1020,6 +1029,7 @@ impl Effect {
             Effect::SetLocked { .. } => "SetLocked",
             Effect::SetLockLevel { .. } => "SetLockLevel",
             Effect::SetPlayerRestrained { .. } => "SetPlayerRestrained",
+            Effect::StartPlayerSneaking => "StartSneaking",
             Effect::SetPlayerControls { .. } => "SetPlayerControls",
             Effect::SetPlayerAiDriven { .. } => "SetPlayerAiDriven",
             Effect::SetHudCartMode { .. } => "SetHudCartMode",

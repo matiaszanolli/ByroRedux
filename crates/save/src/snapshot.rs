@@ -634,7 +634,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v128 -> v129 (#6778): `EquipmentSlots::occupants` grew from 32 to 64 biped slots for Starfield's
 /// 64-bit `BO64` mask (a spacesuit layer in bits 32-63, worn together with the clothing layer), so a
 /// v128 save's 32-entry array no longer has the column's shape.
-pub const FORMAT_MAJOR: u16 = 129;
+///
+/// v129 -> v130 (M65, SNK-SAVE-001): a new component column, `Sneaking` (the player's sneak stance), so a
+/// v129 save has no record of the stance and the schema no longer matches.
+pub const FORMAT_MAJOR: u16 = 130;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

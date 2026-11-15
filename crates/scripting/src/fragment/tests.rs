@@ -3526,6 +3526,29 @@ fn dispatch_activate_then_set_open_updates_mq101_style_gate() {
     );
 }
 
+/// M65 (SNK-STN-003, -004) — `StartSneaking` toggles the player's stance through the stance's one
+/// path: in, then out; and a disabled sneaking control refuses entering.
+#[test]
+fn dispatch_start_sneaking_toggles_the_player_stance() {
+    use byroredux_core::ecs::components::Sneaking;
+    let world = fixture();
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    let start_sneaking = |world: &World| {
+        let mut stages = QuestStageState::default();
+        let mut objectives = QuestObjectiveState::default();
+        let mut deferred = DeferredFragmentEffects::new(world);
+        apply_effects(&[Effect::StartPlayerSneaking], Q, None, world, &mut stages, &mut objectives, &mut deferred);
+        deferred.apply(world);
+    };
+    start_sneaking(&world);
+    assert!(world.has::<Sneaking>(player), "enters the stance");
+    start_sneaking(&world);
+    assert!(!world.has::<Sneaking>(player), "already sneaking: cancels it");
+    world.resource_mut::<crate::PlayerControlState>().sneaking_enabled = false;
+    start_sneaking(&world);
+    assert!(!world.has::<Sneaking>(player), "a disabled control refuses entering");
+}
+
 #[test]
 fn dispatch_player_control_and_evaluate_package_effects() {
     use byroredux_plugin::esm::records::script_instance::{

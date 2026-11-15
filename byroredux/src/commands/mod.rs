@@ -66,6 +66,7 @@ mod view;
 mod water;
 mod world_info;
 mod music;
+mod stealth;
 mod video;
 
 use actor_value::*;
@@ -98,6 +99,7 @@ use view::*;
 use water::*;
 use world_info::*;
 use music::MusicStatusCommand;
+use stealth::StealthSneakCommand;
 use video::{VideoSkipCommand, VideoStatusCommand};
 
 pub(crate) fn build_command_registry() -> CommandRegistry {
@@ -109,6 +111,8 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(HudHeadingCommand);
     registry.register(HudStatusCommand);
     registry.register(HudDebugCommand);
+    // M65 (SNK-DX-002) — the sneak stance through the key's path.
+    registry.register(StealthSneakCommand);
     registry.register(VatsEnterCommand);
     registry.register(VatsScanCommand);
     registry.register(VatsStatusCommand);

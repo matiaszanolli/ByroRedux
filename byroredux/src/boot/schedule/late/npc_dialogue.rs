@@ -179,6 +179,8 @@ pub(super) fn register_npc_dialogue_systems(scheduler: &mut Scheduler) {
             // IsEssential / IsBleedingOut guards.
             .reads::<byroredux_scripting::ActorProtection>()
             .reads::<byroredux_scripting::Bleedout>()
+            // M65 — the IsSneaking guard and getter read the stance marker.
+            .reads::<byroredux_core::ecs::components::Sneaking>()
             .reads_resource::<byroredux_scripting::ActorBaseProtectionOverrides>()
             .writes_resource::<byroredux_scripting::ActorBaseProtectionOverrides>()
             // M47.2 — the IsDisabled / IsEnabled guards' authored state.

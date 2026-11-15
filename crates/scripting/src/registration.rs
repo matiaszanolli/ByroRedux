@@ -138,6 +138,7 @@ pub fn register(world: &mut World) {
     package::register(world);
     equipment::register(world);
     player_control::register(world);
+    stance::register(world);
     bleedout::register(world);
     keywords::register(world);
     menus::register(world);

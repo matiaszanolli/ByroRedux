@@ -2022,7 +2022,8 @@ fn categories_table_row_count_pinned() {
     // Bumped 114 → 115 in #3816 (music_tracks — Skyrim MUST, what a MUSC `TNAM` lists).
     // Bumped 115 → 117 in #6725 (volumetric_lighting + god_rays — Skyrim SE VOLI and FO4 GDRY, the authored
     //   god-ray profiles of VLM-HF-010 / -011, decoded for the census and consumed by nothing).
-    assert_eq!(EsmIndex::categories().len(), 117);
+    // Bumped 117 → 118 in M65 (movement_types — Skyrim / FO4 MOVT, whose `SPED` sets the sneak stance's speed).
+    assert_eq!(EsmIndex::categories().len(), 118);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring
@@ -2976,6 +2977,8 @@ fn reads_u32(body: &str) -> bool {
 /// field is a FormID. That is the half of the check the old allowlist
 /// could never do.
 const EXEMPT_NO_U32_READS: &[(&str, &str)] = &[
+    // M65 — the MOVT movement type: EditorID, `MNAM` name and `SPED` f32s, no FormID.
+    ("movt.rs", "parse_movt"),
     // M43 — the FO4 `AORU` attraction rule: three f32 and two flag bytes, no FormID.
     ("misc/world.rs", "parse_aoru"),
     // #5152 — the INFO VMAD fragment section: flags bytes and

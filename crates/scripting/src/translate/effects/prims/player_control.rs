@@ -19,6 +19,17 @@ pub(super) fn prim_set_player_restrained(e: &Expr, _scope: &Scope) -> Option<Eff
     })
 }
 
+/// M65 (SNK-STN-003) — `actor.psc` declares `StartSneaking()` with no
+/// parameters. Only a player receiver lowers (`Game.GetPlayer()` or a player
+/// property): actors other than the player do not sneak (SNK-NG-001).
+pub(super) fn prim_start_sneaking(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "StartSneaking")?;
+    if !args.is_empty() || receiver_actor(object, scope)? != ActorRef::Player {
+        return None;
+    }
+    Some(Effect::StartPlayerSneaking)
+}
+
 pub(super) fn prim_disable_player_controls(e: &Expr, _scope: &Scope) -> Option<Effect> {
     prim_player_controls(e, "DisablePlayerControls", false)
 }

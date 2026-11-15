@@ -220,6 +220,7 @@ pub(crate) fn apply_effect(
             apply_lock_effect(effect, context, vmad, world, deferred)
         }
         Effect::SetPlayerRestrained { .. }
+        | Effect::StartPlayerSneaking
         | Effect::SetPlayerControls { .. }
         | Effect::SetPlayerAiDriven { .. }
         | Effect::SetHudCartMode { .. }

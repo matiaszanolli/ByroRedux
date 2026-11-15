@@ -12,7 +12,7 @@ use super::super::reader::GameKind;
 use super::{
     ActiRecord, ArmaRecord, AvifRecord, BptdRecord, ChalRecord, ClassRecord, ClimateRecord, CobjRecord,
     ContainerRecord, CstyRecord, DialRecord, DlbrRecord, CndfRecord, KywdRecord, EcznRecord, EfshRecord, EnchRecord,
-    ExplRecord, EyesRecord, FactionRecord, FlstRecord, GameSetting, GlobalRecord, GrasRecord, HairRecord,
+    ExplRecord, EyesRecord, FactionRecord, FlstRecord, GameSetting, GlobalRecord, MovementType, GrasRecord, HairRecord,
     HdptRecord,
     IdleRecord, ImadRecord, LctnRecord, ImgsRecord, ImodRecord, InfoRecord, IpctRecord, IpdsRecord, ItemRecord,
     GdryRecord, LeveledList, LgtmRecord, LoadScreenRecord, LoadScreenTransform, MesgRecord, MgefRecord,
@@ -322,6 +322,8 @@ pub struct EsmIndex {
     pub factions: HashMap<u32, FactionRecord>,
     pub globals: HashMap<u32, GlobalRecord>,
     pub game_settings: HashMap<u32, GameSetting>,
+    /// M65 (SNK-STN-005) — `MOVT` movement types by FormID (Skyrim, FO4, Starfield).
+    pub movement_types: HashMap<u32, MovementType>,
     /// #6350 — GMST resolution side-table: lower-cased EditorID → the
     /// FormID of the **last plugin in load order** that defines that
     /// EditorID. `game_settings` alone is keyed by FormID, which is only
@@ -946,6 +948,7 @@ impl EsmIndex {
             map_category!("classes", classes),
             map_category!("factions", factions),
             map_category!("globals", globals),
+            map_category!("MOVT", movement_types),
             // #6350 — game_settings is the one category whose merge needs a
             // second index kept coherent (see `game_settings_by_edid`): the
             // FormID map stays last-write-wins for proper overrides, and the
@@ -1303,6 +1306,16 @@ impl EsmIndex {
             super::SettingValue::Short(value) => Some(f32::from(value)),
             super::SettingValue::String(_) => None,
         })
+    }
+
+    /// M65 (SNK-STN-005) — a movement type's `SPED` floats by EditorID
+    /// (case-insensitive). A later plugin's override replaces the record under
+    /// its FormID, so the winning record is the one found.
+    pub fn movement_type_speeds(&self, editor_id: &str) -> Option<Vec<f32>> {
+        self.movement_types
+            .values()
+            .find(|movement| movement.editor_id.eq_ignore_ascii_case(editor_id))
+            .map(|movement| movement.speeds.clone())
     }
 
     /// Insert a GMST, maintaining the load-order EditorID side-table

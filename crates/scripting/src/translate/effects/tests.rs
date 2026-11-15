@@ -3500,6 +3500,21 @@ fn lowers_stop_combat_on_an_npc_only() {
     }
 }
 
+/// M65 (SNK-STN-003) — `StartSneaking()` lowers on the player only: actors
+/// other than the player do not sneak (SNK-NG-001), and it takes no argument.
+#[test]
+fn lowers_start_sneaking_on_the_player_only() {
+    let lowered = |call: &str| {
+        lower_fragment(&first_fn_body(&format!(
+            "ScriptName QF extends Quest\nFunction Fragment_1()\n{call}\nEndFunction\n"
+        )))
+    };
+    assert_eq!(lowered("Game.GetPlayer().StartSneaking()"), Some(vec![Effect::StartPlayerSneaking]));
+    for call in ["Alias_Guard.GetActorRef().StartSneaking()", "Game.GetPlayer().StartSneaking(true)"] {
+        assert_eq!(lowered(call), None, "{call}");
+    }
+}
+
 /// #5017 — `SetUnconscious` on an NPC lowers with its default (`true`)
 /// and an explicit `false` (the wake-up call); the player, or a second
 /// argument, declines.
@@ -4256,9 +4271,11 @@ fn declines_unmodeled_conditional_guard() {
     // two run-time numbers lower since M47.2; an unmodelled read (alone,
     // inside a disjunction or inside a comparison) and a fragment-script
     // variable (`Self.x`) still decline.
+    // M65 — `IsSneaking` lowers since the stance exists; killmoves are a
+    // non-goal (SNK-NG-004), so `IsInKillMove` stays the unmodelled read.
     for condition in [
-        "Game.GetPlayer().IsSneaking()",
-        "Self.GetStageDone(5) || Game.GetPlayer().IsSneaking()",
+        "Game.GetPlayer().IsInKillMove()",
+        "Self.GetStageDone(5) || Game.GetPlayer().IsInKillMove()",
         "Self.bDone",
         "Self.GetStage() >= Game.GetPlayer().GetEquippedWeapon().GetBaseDamage()",
     ] {
@@ -4408,6 +4425,14 @@ fn actor_quest_scene_and_location_guards_lower() {
             FragmentGuard::ActorDead {
                 actor: ActorRef::Object(property("Victim")),
                 dead: true,
+            },
+        ),
+        // M65 (SNK-STN-003) — the stance, as a Bool read.
+        (
+            "Game.GetPlayer().IsSneaking()",
+            FragmentGuard::ActorSneaking {
+                actor: ActorRef::Player,
+                expected: true,
             },
         ),
         (

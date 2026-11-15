@@ -91,6 +91,7 @@ interface state {
         quicksave,
         quickload,
         vats,
+        sneak,
         pause,
     }
 

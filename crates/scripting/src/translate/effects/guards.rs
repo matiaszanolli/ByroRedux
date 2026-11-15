@@ -248,6 +248,8 @@ enum GuardReading {
     MapMarkerFastTravel(ObjectRef),
     LocationCleared(ObjectRef),
     ActorBleedingOut(ActorRef),
+    /// M65 (SNK-STN-003) — `<actor>.IsSneaking()`.
+    ActorSneaking(ActorRef),
     ActorInCombat(ActorRef),
     ActorFollower(ActorRef, crate::FollowerFlag),
     ActorEssential(ActorRef),
@@ -589,6 +591,13 @@ fn guard_reading_actor(e: &Expr, scope: &Scope) -> Option<GuardReading> {
             receiver_actor(target, scope)?,
         ));
     }
+    // M65 (SNK-STN-003) — `Actor.IsSneaking()`: the stance marker.
+    if let Some((object, args)) = method_call(e, "IsSneaking") {
+        return args
+            .is_empty()
+            .then(|| receiver_actor(object, scope).map(GuardReading::ActorSneaking))
+            .flatten();
+    }
     if let Some((object, args)) = method_call(e, "IsBleedingOut") {
         return args
             .is_empty()
@@ -795,6 +804,10 @@ fn guard_from(reading: GuardReading, comparison: GuardComparison, value: f32) ->
             dead: bool_expectation(comparison, value)?,
         },
         GuardReading::ActorBleedingOut(actor) => FragmentGuard::ActorBleedingOut {
+            actor,
+            expected: bool_expectation(comparison, value)?,
+        },
+        GuardReading::ActorSneaking(actor) => FragmentGuard::ActorSneaking {
             actor,
             expected: bool_expectation(comparison, value)?,
         },

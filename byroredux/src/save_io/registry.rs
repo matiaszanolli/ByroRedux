@@ -88,6 +88,9 @@ pub(crate) const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     // player (#5027).
     "EquippedWeapon",
     "Dead",
+    // M65 (SNK-SAVE-001) — the player's sneak stance, a zero-field marker. Replacing, like `Dead`:
+    // a saved absence stands the process-lifetime player up on load.
+    "Sneaking",
     // VATS-LIMB-009 - a u16 bitset of body locations and an optional u8 killing-blow location: no
     // session-local identity. Replacing: a saved absence clears a live record.
     "DismemberRecord",
@@ -323,6 +326,10 @@ pub fn build_save_registry() -> SaveRegistry {
     // save where the player was alive. Saved absence on a FormID-matched
     // actor is authoritative; resident NPCs respawn alive regardless.
     r.register_replacing_component::<Dead>("Dead");
+    // M65 (SNK-SAVE-001, Q4) — the stance is the only stealth state a save keeps; levels and alert
+    // states re-derive on the first detection tick. Replacing: the process-lifetime player outlives
+    // the cell reload, so a save taken standing must stand a sneaking player up.
+    r.register_replacing_component::<byroredux_core::ecs::components::Sneaking>("Sneaking");
     // #2014 / SAVE-D1-NEW-01 — the seven M42 AI-procedure runtime-state
     // components. Continuously-updated state (WanderState/PatrolState/
     // GuardState) is cosmetically self-correcting if lost (the owning

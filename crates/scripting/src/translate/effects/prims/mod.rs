@@ -137,6 +137,7 @@ pub(super) const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_lock,
     prim_set_lock_level,
     prim_set_player_restrained,
+    prim_start_sneaking,
     prim_disable_player_controls,
     prim_enable_player_controls,
     prim_set_player_ai_driven,

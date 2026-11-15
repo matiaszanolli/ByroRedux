@@ -1,6 +1,6 @@
 # Sneak and Detection
 
-**Status**: DESIGN (Phase 0, 2026-11-15). The design the [Sneak and Detection
+**Status**: DESIGN (Phase 0, 2026-11-15); the stance (Phase 1, #6910) is BUILT (2026-11-15). The design the [Sneak and Detection
 PRD](../prd/sneak-and-detection.md) names as the owner of the stance, the detection
 tick, the per-pair level and alert state, the actor-to-actor sight test (§10 Q7), the
 light input (Q3), consumer migration and FO3 / FNV sneak-attack damage (PRD
@@ -22,7 +22,9 @@ those defaults one for one.
 | Piece | Where | Role |
 |---|---|---|
 | Stance | `Sneaking` marker component on the player (`SparseSetStorage`) | Present while the player is in the stance (SNK-STN-002). The only state a save keeps (§12) |
-| Stance input | `InputAction::Sneak` on Left Ctrl, consumed by the player controller in `Stage::Early` | Toggles the stance unless sneaking is disabled (SNK-STN-001, -004) |
+| Stance input | `InputAction::Sneak` on Left Ctrl; `sneak_stance_system` (`byroredux/src/systems/stance.rs`), an Early exclusive after VATS | Toggles the stance unless sneaking is disabled (SNK-STN-001, -004) |
+| Stance path | `byroredux_scripting::stance` (`set_sneaking`, `toggle_sneaking`, the `sneaking_enabled` gate) behind the binary's `set_player_sneaking` | The one write of `Sneaking`: the key, `stealth.sneak` and Papyrus `StartSneaking` (SNK-DX-002) |
+| Stance speed | `StanceModel` profile row (`crates/core/src/character/stance.rs`) resolved per load into the `SneakMovement` resource; `MOVT` decoded into `EsmIndex::movement_types` | SNK-STN-005 |
 | Ruleset row | `StealthRules` built by `CharacterRulesProfile` from the load order's game settings (`crates/core/src/character/`) | Which formula, which settings, thresholds, cadence, view cone, indicator table. The only per-game data (SNK-DET-002) |
 | Formulas | `crates/core/src/stealth.rs` | Pure functions, one per ruleset kind: `fo3_value`, `fnv_value`, `oblivion_value`, `skyrim_value`. No ECS. Today's `detection_score` becomes `fnv_value` with its constants turned into `StealthRules` fields |
 | Detection module | a new `detection` module in the binary crate | The tick, the light level, the actor-to-actor sight test and the line test. The only caller of `PhysicsWorld::line_of_sight_blocked` and of the range from `DetectionConfig` (SNK-USE-007) |
@@ -53,15 +55,20 @@ those defaults one for one.
   `NPC_Sneaking_MT` (`0003580B`, MNAM `NPCSneaking`). Its `SPED` gives forward 47.2
   walk / 222 run, left and right 41.44 / 200, back 43.38 / 150, against
   `NPC_Default_MT`'s forward 80.1 / 370. The Skyrim row takes the sneak speeds from
-  that record, not from a multiplier.
+  that record, not from a multiplier: the ratio of the forward walk (`SPED[4]`) and
+  run (`SPED[5]`) speeds. Fallout 4 does the same with `NPC_Sneaking` over
+  `NPC_Default_MT`, whose `SPED` holds four floats per direction (xEdit
+  `wbDefinitionsFO4`: walk `SPED[9]`, run `SPED[10]`). Starfield and Fallout 76
+  have no source read, so the stance leaves their speed unscaled. A load order
+  missing the named types also stays unscaled; the install log names the source.
 - **Running (SNK-STN-006).** Phase 1 lets Sprint work in the stance on FO3 / FNV
   and counts it as running in the value. The archives ship `sneakmtfast*` clips,
   and Silent Running (entry point 31) only has an effect if the player can run while
   sneaking. V3 (#6935) confirms it in game.
 - **Camera (SNK-STN-007).** None of the three readable executables has a
-  camera-height setting for the stance (§13.3, V4). Phase 1 lowers the first-person
-  eye by the height the sneak idle clip's head node gives. If no clip-driven value
-  is available it lowers nothing, and #6935 measures the original.
+  camera-height setting for the stance (§13.3, V4). Phase 1 leaves the
+  first-person camera at standing height (the owner's call, 2026-11-15) until
+  #6935 measures the original; nothing is invented.
 - **Locomotion clips (SNK-STN-008).** FO3 and FNV:
   `meshes\characters\_male\sneakmt{idle,forward,backward,left,right,fastforward,fastbackward,fastleft,fastright,turnleft,turnright}.kf`,
   with the `sneakmtjump*` set and per-weapon `sneak1h*` / `sneak2h*` sets.
@@ -74,8 +81,10 @@ those defaults one for one.
 
 ## 3. The ruleset row
 
-`CharacterRulesProfile::build_ruleset` gains a `stealth: StealthRules` field built
-at the plugin boundary, as `perk_entry_points` and `VatsModel` are. It holds:
+The stance speed is its own profile row, `StanceModel` (Phase 1), because every
+game has the stance while only some have a detection formula. Phase 2 adds a
+`stealth: StealthRules` field to `CharacterRulesProfile`, built at the plugin
+boundary as `perk_entry_points` and `VatsModel` are. It holds:
 
 - **kind**: `Fo3`, `Fnv`, `Oblivion`, `Skyrim`, or `SightOnly` (Fallout 4 and
   Starfield, per Q2);

@@ -801,7 +801,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 129;
+    // M65 (SNK-SAVE-001, #6910) — refreshed WITH a major bump (v129 -> v130): the new `Sneaking`
+    // component column, and the appended `FragmentGuard::ActorSneaking` / `Effect::StartPlayerSneaking`.
+    const BASELINE_MAJOR: u16 = 130;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1217,7 +1219,10 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // hold a script frozen behind its movie.
     // #6778 — v129 is a genuine bump: `EquipmentSlots::occupants` grew from 32 to 64 biped slots for
     // Starfield's 64-bit `BO64` mask, so a v128 document's 32-entry array is refused, not padded.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x9f1f_00da_2f6e_7e77;
+    // M65 (SNK-SAVE-001, #6910) — v130 is a genuine bump: `Sneaking` (the player's sneak stance) joined the
+    // saved registry as a NEW component column, and the saved `FragmentGuard` / `Effect` enums gained
+    // `ActorSneaking` / `StartPlayerSneaking`, so a pre-v130 snapshot has no record of the stance.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x1093_cece_8cc5_f47c;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

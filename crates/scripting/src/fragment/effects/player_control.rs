@@ -32,6 +32,16 @@ pub(super) fn apply_player_control_effect(
             }
             None
         }
+        Effect::StartPlayerSneaking => {
+            let Some(player) = crate::papyrus_demo::PapyrusPlayerEntity::get(world) else {
+                log::debug!("fragment StartSneaking skipped: player entity is unavailable");
+                return None;
+            };
+            if let Err(refusal) = crate::stance::toggle_sneaking(world, player) {
+                log::debug!("fragment StartSneaking refused: {}", refusal.reason());
+            }
+            None
+        }
         Effect::SetPlayerControls { enabled, selection } => {
             if let Some(mut controls) = world.try_resource_mut::<crate::PlayerControlState>() {
                 controls.apply_selection(*enabled, *selection);

@@ -66,6 +66,10 @@ pub(crate) enum InputAction {
     Quickload,
     /// #6350 — enter/exit VATS. Vanilla PC default is V on FO3/FNV.
     Vats,
+    /// M65 (SNK-STN-001, Q1) — toggle the sneak stance: "Ctrl … Toggle
+    /// crouch/sneak mode" (UESP *Oblivion:Controls*, *Skyrim:Controls*), "Left
+    /// Ctrl … Sneak / crouch" (Fallout wiki *Fallout: New Vegas (PC)*).
+    Sneak,
     #[allow(dead_code, reason = "no physical input source yet")]
     Pause,
 }
@@ -73,7 +77,7 @@ pub(crate) enum InputAction {
 impl InputAction {
     /// Actions with a live normalized input producer. `Pause` joins this list
     /// when its first physical binding is added.
-    pub(crate) const OBSERVABLE: [Self; 12] = [
+    pub(crate) const OBSERVABLE: [Self; 13] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::StrafeLeft,
@@ -86,13 +90,14 @@ impl InputAction {
         Self::Inventory,
         Self::Quicksave,
         Self::Quickload,
+        Self::Sneak,
     ];
 
     const fn bit(self) -> u16 {
         1_u16 << self as u8
     }
 
-    const CONFIGURABLE: [Self; 11] = [
+    const CONFIGURABLE: [Self; 12] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::StrafeLeft,
@@ -104,6 +109,7 @@ impl InputAction {
         Self::Block,
         Self::Inventory,
         Self::Vats,
+        Self::Sneak,
     ];
 
     const fn setting_id(self) -> &'static str {
@@ -120,6 +126,7 @@ impl InputAction {
             Self::Inventory => "controls.bind.inventory",
             Self::Quicksave | Self::Quickload => "",
             Self::Vats => "controls.bind.vats",
+            Self::Sneak => "controls.bind.sneak",
             Self::Pause => "",
         }
     }
@@ -137,6 +144,7 @@ impl InputAction {
             Self::Quicksave => "Quicksave",
             Self::Quickload => "Quickload",
             Self::Vats => "VATS",
+            Self::Sneak => "Sneak",
             Self::Attack => "Attack",
             Self::Block => "Block",
             Self::Pause => "Pause",
@@ -173,6 +181,7 @@ impl Default for ActionBindings {
                 (KeyCode::F5, InputAction::Quicksave),
                 (KeyCode::F9, InputAction::Quickload),
                 (KeyCode::KeyV, InputAction::Vats),
+                (KeyCode::ControlLeft, InputAction::Sneak),
             ]),
             mouse: HashMap::from([
                 (MouseButton::Left, InputAction::Attack),
@@ -275,6 +284,7 @@ fn papyrus_control_name(action: InputAction) -> &'static str {
         InputAction::Quicksave => "Quicksave",
         InputAction::Quickload => "Quickload",
         InputAction::Vats => "VATS",
+        InputAction::Sneak => "Sneak",
         InputAction::Pause => "Pause",
     }
 }
@@ -676,6 +686,7 @@ fn debug_action(name: &str) -> Option<InputAction> {
         "inventory" | "tab" => Some(InputAction::Inventory),
         "quicksave" | "f5" => Some(InputAction::Quicksave),
         "quickload" | "f9" => Some(InputAction::Quickload),
+        "sneak" | "ctrl" => Some(InputAction::Sneak),
         _ => None,
     }
 }

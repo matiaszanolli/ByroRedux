@@ -271,6 +271,7 @@ impl ModInstance {
             InputAction::Quicksave => state::InputAction::Quicksave,
             InputAction::Quickload => state::InputAction::Quickload,
             InputAction::Vats => state::InputAction::Vats,
+            InputAction::Sneak => state::InputAction::Sneak,
             InputAction::Pause => state::InputAction::Pause,
         };
         let phase = match event.phase {
