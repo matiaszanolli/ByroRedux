@@ -1,6 +1,6 @@
 # Oblivion Actor Values — Product Requirements
 
-**Status**: PROPOSED (2026-11-15). Revision 2 folds in review round 1. Statements
+**Status**: PROPOSED (2026-11-15). Revision 3 records the owner's decisions on Q1–Q3; revision 2 folded in review round 1. Statements
 about how Oblivion behaves cite external sources (UESP, the Construction Set
 wiki dump under `/mnt/data/src/reference/`, xEdit's `wbDefinitionsTES4.pas`);
 a claim that could not be verified is marked **Phase 0: verify** instead of
@@ -14,7 +14,7 @@ already exist for the other games then read them on Oblivion: CHARAL's built
 Oblivion ruleset, detection (M65), sneak attacks, magic effects, conditions,
 ObScript `GetAV` / `SetAV`, the HUD bars and pool regeneration. Disposition
 toward the player, which Oblivion's attack rule compares with Aggression, is
-in scope only as decision Q2 settles. Outside it: character creation menus,
+in scope as its starting value and that comparison only (Q2). Outside it: character creation menus,
 leveling the player (CHARAL's existing leveling model owns it), Morrowind,
 and the 2024 *Remastered* formulas.
 
@@ -155,7 +155,8 @@ census's output (§7.2 scenario 3).
 ### 4.2 Non-goals
 
 - **OAV-NG-001.** Character creation (race, class, birthsign menus): the
-  engine has no Oblivion new-game route; Q3 picks the player's source.
+  engine has no Oblivion new-game route, and the player's values come from
+  its record (Q3).
 - **OAV-NG-002.** Persuasion, bribery and the Speechcraft minigame: they
   change disposition but are dialogue features (UESP *Oblivion:Disposition*,
   "Increasing Disposition").
@@ -210,8 +211,8 @@ census's output (§7.2 scenario 3).
 - **OAV-POP-005.** Every actor MUST carry extra values 33–36 from its `AIDT`.
   **Phase 0: verify** that `GetAV Aggression` on an actor answers its `AIDT`
   byte (CS *Aggression*: "SetActorValue Aggression value").
-- **OAV-POP-006.** The player MUST carry the standard values from the source
-  Q3 picks.
+- **OAV-POP-006.** The player MUST carry the standard values of the `Player`
+  `NPC_` record as the master authors them (Q3).
 - **OAV-POP-007.** On an Oblivion index `build_character_ruleset` MUST return
   `Some`, and a `PoolRegenConfig` with Fatigue and Magicka lanes MUST be
   installed (§3.3 rows 1, 9).
@@ -227,10 +228,10 @@ census's output (§7.2 scenario 3).
 - **OAV-USE-004.** A constant-effect Fortify Sneak ability on an Oblivion
   actor MUST raise its `GetAV Sneak` by the effect's magnitude, through
   `canonical_spell`'s existing path.
-- **OAV-USE-005.** If Q2 puts disposition in scope, an actor's starting
-  disposition toward the player MUST follow UESP *Oblivion:Disposition*
-  "Starting Disposition", and a rated actor MUST attack when its Aggression
-  exceeds it (CS *Aggression*), replacing §3.3 row 10.
+- **OAV-USE-005.** An actor's starting disposition toward the player MUST
+  follow UESP *Oblivion:Disposition* "Starting Disposition", and a rated actor
+  MUST attack the player when its Aggression exceeds it (CS *Aggression*),
+  replacing §3.3 row 10 (Q2).
 
 ---
 
@@ -240,7 +241,7 @@ census's output (§7.2 scenario 3).
 |---|---|---|---|---|
 | 1 | Actor values are executable-hardcoded indices; no record exists (UESP *Oblivion Mod:Actor Value Indices*) | Engine-supplied `AVIF` records (OAV-RES-001) | — | A FormID collision with a mod's form → OAV-RES-003 |
 | 2 | Auto-calc stats are computed by the executable at load or spawn (CS *Stats Tab - NPC*: "Autocalc'd NPCs have this field grayed out, but it shows the calculated value") | Computed at spawn from the sourced formulas (OAV-POP-003) | — | A formula detail wrong at level 1 shifts every generic NPC → OAV-POP-003's verify item |
-| 3 | Disposition has many inputs (personality, race, faction, fame, infamy, crimes, charm, persuasion) | Starting disposition only, if Q2 includes it (OAV-USE-005) | — | Persuaded or charmed actors still attack → OAV-NG-002 records it |
+| 3 | Disposition has many inputs (personality, race, faction, fame, infamy, crimes, charm, persuasion) | Starting disposition only (OAV-USE-005, Q2) | — | Persuaded or charmed actors still attack → OAV-NG-002 records it |
 
 ---
 
@@ -308,11 +309,10 @@ index coverage 70 / 70.
 Oblivion ruleset ([charal.md](../engine/charal.md) §5). Exit: §7.2 scenarios 2
 and 3 pass; population coverage published.
 
-**Phase 3 — Consumers.** OAV-USE-001 to -004, and -005 if Q2 includes it.
+**Phase 3 — Consumers.** OAV-USE-001 to -005.
 Depends on M65's consumers ([sneak-detection.md](../engine/sneak-detection.md)
 §4, §8).
-Exit: §7.2 scenario 4 passes; consumers on real values 10 / 10 (9 / 10 if Q2
-excludes disposition).
+Exit: §7.2 scenario 4 passes; consumers on real values 10 / 10.
 
 ---
 
@@ -326,15 +326,20 @@ excludes disposition).
    invariant 1; the translation-boundary rule). Alternative: key Oblivion's
    `ActorValues` by index directly; every consumer then needs an Oblivion
    path, which is the branching the layers exist to avoid.
+   **Decided** (2026-11-15): engine-supplied `AVIF` records under an
+   engine-owned plugin identity.
 2. **Q2 — Disposition.** Recommended: in scope as Phase 3's last item, the
    starting disposition toward the player and the CS aggression comparison
    only, which is what #6995 needs for Oblivion to start combat.
    Alternative: its own PRD covering dialogue, barter, persuasion and crime
    reactions too; Oblivion actors keep starting no combat until it lands.
+   **Decided** (2026-11-15): in scope, the starting disposition toward the
+   player and the aggression comparison only.
 3. **Q3 — The player's starting values.** Recommended: the `Player` `NPC_`
    record's stats, as Oblivion's master authors them, since the engine has no
    Oblivion character creation. Alternative: an Oblivion character-creation
    route (race, class, birthsign), a much larger feature with its own UI.
+   **Decided** (2026-11-15): the `Player` `NPC_` record's stats.
 
 ---
 
@@ -356,3 +361,4 @@ excludes disposition).
 |---|---|---|---|
 | 1 | 2026-11-15 | First draft | — |
 | 2 | 2026-11-15 | Review round 1 folded in: auto-calc flag and Luck verify, creature level scaling, Fame / Infamy verify, Remastered citation, regen proof, observable OAV-USE-004 / -POP-007, Q4 folded into OAV-POP-003, reporting, content-addressed identity for engine-supplied records, phase dependencies, live smoke named, auto-calc table | claude: revise |
+| 3 | 2026-11-15 | Owner's decisions recorded: Q1 engine-supplied `AVIF` records under an engine-owned plugin identity, Q2 starting disposition and the aggression comparison in scope (OAV-USE-005 unconditional), Q3 the `Player` `NPC_` record (OAV-POP-006) | — |
