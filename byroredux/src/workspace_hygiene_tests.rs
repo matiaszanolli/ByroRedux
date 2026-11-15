@@ -936,6 +936,35 @@ fn readme_and_roadmap_hold_their_line_ceilings() {
     );
 }
 
+/// #6969 — every crate under `crates/` has a row in the "Internal Crate
+/// Dependencies" table of `docs/engine/dependencies.md` and an entry in the
+/// workspace tree of `docs/engine/architecture.md`. Both are hand-written and
+/// fell behind twice (#6164, #6969: `video`, `bink2`, `binkaudio` and six
+/// others were missing), so a new crate fails here until both docs name it.
+#[test]
+fn every_crate_is_named_in_the_dependency_table_and_the_workspace_tree() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let dependencies = std::fs::read_to_string(root.join("docs/engine/dependencies.md")).unwrap();
+    let architecture = std::fs::read_to_string(root.join("docs/engine/architecture.md")).unwrap();
+    let mut missing = Vec::new();
+    for entry in std::fs::read_dir(root.join("crates")).unwrap() {
+        let dir = entry.unwrap().path();
+        let Ok(manifest) = std::fs::read_to_string(dir.join("Cargo.toml")) else { continue };
+        let package = manifest
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("name = \"")?.strip_suffix('"'))
+            .unwrap_or_else(|| panic!("{} has no package name", dir.display()));
+        let dir_name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        if !dependencies.lines().any(|line| line.starts_with(&format!("| {package} "))) {
+            missing.push(format!("dependencies.md has no row for `{package}`"));
+        }
+        if !architecture.contains(&format!("── {dir_name}/ ")) {
+            missing.push(format!("architecture.md's workspace tree has no `{dir_name}/`"));
+        }
+    }
+    assert!(missing.is_empty(), "crates missing from the engine docs:\n{}", missing.join("\n"));
+}
+
 /// #5009 — production code in the bin crate must resolve archive content
 /// through the `asset_provider` layer, never by opening `BsaArchive` /
 /// `Ba2Archive` directly. The two stragglers this swept (debug_load's

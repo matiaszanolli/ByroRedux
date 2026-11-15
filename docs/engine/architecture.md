@@ -14,14 +14,13 @@ Bethesda Gamebryo/Creation game (Oblivion through Starfield).
 
 ## Workspace Structure
 
-The workspace is **35 members** (2026-10-22): 30 library/system crates under
-`crates/`, the `byroredux` binary, and four tools under `tools/`
-(`tools/nifskope` is on disk but not a member). The live count is in ROADMAP's
-Project Stats.
+The workspace members are the library/system crates under `crates/`, the
+`byroredux` binary, and four tools under `tools/` (`tools/nifskope` is on disk
+but not a member). The live count is in ROADMAP's Project Stats.
 
 ```
 byroredux/
-├── Cargo.toml                 Workspace root (35 members)
+├── Cargo.toml                 Workspace root
 ├── byroredux/                 Binary crate — game loop, scene setup, cell loader,
 │                              world streaming, NPC spawn/equip, fly + character
 │                              controllers, animation/transform/render systems
@@ -52,6 +51,9 @@ byroredux/
 │   │                          extensions (VK_KHR_ray_query)
 │   ├── fsr3-sys/              FidelityFX FSR 3 native bridge
 │   ├── audio/                 kira-backed audio (spatial sub-tracks, music, reverb)
+│   ├── video/                 Bink 1 / Bink 2 movie playback (decode thread, soundtrack)
+│   ├── bink2/                 Clean-room Bink 2 video decoder (no dependencies)
+│   ├── binkaudio/             Clean-room Bink Audio decoder (no dependencies)
 │   ├── ui/                    Scaleform/SWF UI system (Ruffle integration)
 │   ├── menuxml/               Oblivion / FO3 / FNV legacy MenuXml UI track
 │   ├── scripting/             ECS-native scripting (events, timers, conditions,

@@ -133,35 +133,46 @@ dependency is only ever consumed by that one crate:
 
 ## Internal Crate Dependencies
 
-| Crate                    | Depends on                                                              |
-|--------------------------|-------------------------------------------------------------------------|
-| byroredux-core           | (none — leaf; optional `rayon` under `parallel-scheduler`, `serde`/`serde_json` under `inspect`) |
-| byroredux-bsa            | (none — leaf)                                                           |
-| byroredux-bgsm           | (none — leaf; `byroredux-bsa` dev-only)                                 |
-| byroredux-sfmaterial     | (none — leaf; `byroredux-bsa` dev-only)                                 |
-| byroredux-facegen        | (none — leaf; `byroredux-bsa` dev-only)                                 |
-| byroredux-papyrus        | (none — leaf)                                                           |
-| byroredux-cxx-bridge     | (none — leaf)                                                           |
-| byroredux-debug-protocol | (none — leaf)                                                           |
-| byroredux-mod-runtime    | (none — leaf; Wasmtime host boundary only)                              |
-| byroredux-platform       | (none — leaf)                                                           |
-| byroredux-fsr3-sys       | (none — leaf; native FidelityFX SDK boundary)                           |
-| byroredux-hkx            | (none — leaf; `byroredux-bsa` dev-only)                                 |
-| byroredux-save           | byroredux-core                                                          |
-| byroredux-nif            | byroredux-core                                                          |
-| byroredux-spt            | byroredux-core, byroredux-nif                                           |
-| byroredux-plugin         | byroredux-core                                                          |
-| byroredux-physics        | byroredux-core                                                          |
-| byroredux-audio          | byroredux-core                                                          |
-| byroredux-pex            | byroredux-papyrus (`byroredux-bsa` dev-only)                            |
-| byroredux-scripting      | byroredux-core, byroredux-plugin, byroredux-papyrus, byroredux-pex (`byroredux-bsa` dev-only) |
-| byroredux-ui             | byroredux-bsa (+ vendored Ruffle/wgpu)                                  |
-| byroredux-renderer       | byroredux-core, byroredux-fsr3-sys (`byroredux-core` also build-time)   |
-| byroredux-debug-server   | byroredux-core (`inspect`), byroredux-papyrus, byroredux-debug-protocol |
-| byroredux-debug-ui       | byroredux-core                                                          |
-| byroredux (binary)       | all engine crates above + byro-texture-upscale (debug-server is optional, on by default) |
-| byro-dbg (tool)          | byroredux-debug-protocol                                                |
-| byro-texture-upscale (tool) | byroredux-bsa                                                     |
+| Crate                       | Depends on |
+|-----------------------------|------------|
+| byroredux-core              | (none — leaf; optional `rayon` under `parallel-scheduler`, `serde`/`serde_json` under `inspect`) |
+| byroredux-bsa               | (none — leaf) |
+| byroredux-bgsm              | (none — leaf; `byroredux-bsa` dev-only) |
+| byroredux-sfmaterial        | (none — leaf; `byroredux-bsa` dev-only) |
+| byroredux-facegen           | (none — leaf; `byroredux-bsa` dev-only) |
+| byroredux-menuxml           | (none — leaf; `byroredux-bsa` dev-only) |
+| byroredux-terrain-height    | (none — leaf; `byroredux-bsa`, `byroredux-menuxml` dev-only) |
+| byroredux-hkx               | (none — leaf; `byroredux-bsa`, `byroredux-plugin` dev-only) |
+| byroredux-papyrus           | (none — leaf) |
+| byroredux-bink2             | (none — leaf; clean-room, no dependencies by design) |
+| byroredux-binkaudio         | (none — leaf; clean-room; `byroredux-bink2` dev-only) |
+| byroredux-cxx-bridge        | (none — leaf) |
+| byroredux-debug-protocol    | (none — leaf) |
+| byroredux-platform          | (none — leaf) |
+| byroredux-fsr3-sys          | (none — leaf; native FidelityFX SDK boundary) |
+| byroredux-save              | byroredux-core |
+| byroredux-sdk               | byroredux-core |
+| byroredux-boot-request      | byroredux-core |
+| byroredux-settings-io       | byroredux-core |
+| byroredux-nif               | byroredux-core (`byroredux-bsa` dev-only) |
+| byroredux-spt               | byroredux-core, byroredux-nif (`byroredux-bsa` dev-only) |
+| byroredux-plugin            | byroredux-core, byroredux-bsa, byroredux-sdk |
+| byroredux-game-detect       | byroredux-core, byroredux-bsa, byroredux-plugin |
+| byroredux-physics           | byroredux-core |
+| byroredux-audio             | byroredux-core (`byroredux-bsa` dev-only) |
+| byroredux-video             | byroredux-bink2, byroredux-binkaudio |
+| byroredux-pex               | byroredux-papyrus (`byroredux-bsa` dev-only) |
+| byroredux-mod-runtime       | byroredux-sdk (Wasmtime host boundary) |
+| byroredux-scripting         | byroredux-core, byroredux-plugin, byroredux-papyrus, byroredux-pex, byroredux-hkx, byroredux-sdk; optional byroredux-save under `save` (`byroredux-bsa` dev-only) |
+| byroredux-ui                | byroredux-bsa (+ vendored Ruffle/wgpu; `byroredux-plugin` dev-only) |
+| byroredux-renderer          | byroredux-core, byroredux-fsr3-sys (`byroredux-core` also build-time) |
+| byroredux-debug-server      | byroredux-core (`inspect`), byroredux-papyrus, byroredux-scripting, byroredux-debug-protocol |
+| byroredux-debug-ui          | byroredux-core, byroredux-sdk |
+| byroredux (binary)          | every engine crate above except fsr3-sys (reached through the renderer), bink2 / binkaudio (through video), pex (through scripting) and debug-protocol (through debug-server), + byro-texture-upscale; debug-server is optional, on by default; `byroredux-papyrus` dev-only |
+| byro-dbg (tool)             | byroredux-debug-protocol |
+| byro-launcher (tool)        | byroredux-core, byroredux-boot-request, byroredux-game-detect, byroredux-settings-io |
+| byro-detect (tool)          | byroredux-game-detect |
+| byro-texture-upscale (tool) | byroredux-bsa |
 
 `byroredux-spt` (SpeedTree) depends on `byroredux-nif` so its importer emits
 the same `Imported*` scene types the cell loader spawns through one canonical
