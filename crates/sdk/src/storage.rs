@@ -208,6 +208,13 @@ pub enum HostCommand {
     Setting(crate::settings::SettingWriteCommand),
 }
 
+/// Default per-value caps shared by the principal storage service
+/// ([`PrincipalStorageLimits`]) and the component store
+/// ([`crate::component::ComponentStoreLimits`]).
+pub const DEFAULT_MAX_STRING_BYTES: usize = 16 * 1024;
+/// See [`DEFAULT_MAX_STRING_BYTES`].
+pub const DEFAULT_MAX_BLOB_BYTES: usize = 64 * 1024;
+
 /// Hard bounds for one engine-owned principal storage service.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PrincipalStorageLimits {
@@ -225,8 +232,8 @@ impl Default for PrincipalStorageLimits {
         Self {
             max_principals: 4_096,
             max_entries_per_principal: 4_096,
-            max_string_bytes: 16 * 1024,
-            max_blob_bytes: 64 * 1024,
+            max_string_bytes: DEFAULT_MAX_STRING_BYTES,
+            max_blob_bytes: DEFAULT_MAX_BLOB_BYTES,
             max_collection_entries: 4_096,
             max_collection_key_bytes: 1_024,
             max_total_bytes_per_principal: 4 * 1024 * 1024,

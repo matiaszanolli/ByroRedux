@@ -1,8 +1,7 @@
 use byroredux_sdk::identity::PrincipalId;
+use byroredux_sdk::manifest::MAX_DISPLAY_NAME_BYTES;
 
 use crate::{Result, SandboxError};
-
-const MAX_DISPLAY_NAME_BYTES: usize = 256;
 
 /// Human-facing information associated with a stable principal.
 #[derive(Clone, Debug, Eq, PartialEq)]

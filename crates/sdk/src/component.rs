@@ -176,8 +176,8 @@ impl Default for ComponentStoreLimits {
             max_fields_per_schema: 128,
             max_rows_per_principal: 65_536,
             max_commands_per_batch: 1_024,
-            max_string_bytes: 16 * 1024,
-            max_blob_bytes: 64 * 1024,
+            max_string_bytes: crate::storage::DEFAULT_MAX_STRING_BYTES,
+            max_blob_bytes: crate::storage::DEFAULT_MAX_BLOB_BYTES,
         }
     }
 }

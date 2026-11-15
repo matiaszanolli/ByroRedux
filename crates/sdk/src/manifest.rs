@@ -23,7 +23,9 @@ use crate::settings::{SettingDeclaration, MAX_EXTENSION_SETTINGS, MAX_SETTING_KE
 /// The only manifest schema understood by this SDK release.
 pub const EXTENSION_MANIFEST_VERSION: u32 = 1;
 
-const MAX_DISPLAY_NAME_BYTES: usize = 256;
+/// Longest display name, in bytes, for an extension manifest and for a runtime principal
+/// (`byroredux-mod-runtime`'s `Principal`), which carries the manifest name.
+pub const MAX_DISPLAY_NAME_BYTES: usize = 256;
 const MAX_COMPONENTS: usize = 32;
 const MAX_DEPENDENCIES: usize = 256;
 const MAX_CAPABILITIES: usize = 256;

@@ -1,5 +1,6 @@
 use crate::{Result, SandboxError};
 use byroredux_sdk::script_function::{MAX_SCRIPT_ARRAY_ELEMENTS, MAX_SCRIPT_STRING_BYTES};
+use byroredux_sdk::storage::{DEFAULT_MAX_BLOB_BYTES, DEFAULT_MAX_STRING_BYTES};
 
 // ── #3049 (SAFE-2026-08-16-02) — validate() ceilings ────────────────
 //
@@ -34,14 +35,20 @@ const HOSTCALL_ARGUMENT_SLACK_BYTES: usize = 1024;
 /// That is `set-result-string-array` at the SDK caps —
 /// [`MAX_SCRIPT_ARRAY_ELEMENTS`] strings of up to [`MAX_SCRIPT_STRING_BYTES`]
 /// each, ~2 MiB — which dwarfs every other interface's argument (console
-/// lines 4 KiB, custom-event payloads 4 KiB, storage strings 16 KiB and
-/// blobs 64 KiB by default). wasmtime's budget is per host call, so this is
+/// lines 4 KiB, custom-event payloads 4 KiB, storage strings
+/// [`DEFAULT_MAX_STRING_BYTES`] and blobs [`DEFAULT_MAX_BLOB_BYTES`] by
+/// default). wasmtime's budget is per host call, so this is
 /// the floor the store's `hostcall_fuel` must clear for the SDK's own
 /// contract to be callable at all; a lower value traps (and quarantines) a
 /// mod that stayed inside the SDK limits.
 pub(crate) const MAX_HOSTCALL_LIFT_BYTES: usize = MAX_SCRIPT_ARRAY_ELEMENTS
     * (MAX_SCRIPT_STRING_BYTES + HOSTCALL_LIST_ELEMENT_CHARGE_BYTES)
     + HOSTCALL_ARGUMENT_SLACK_BYTES;
+// The default storage caps must stay under the lift floor, or a guest write at
+// the default cap would trap. A configured cap above it is not covered here:
+// `SandboxConfig::hostcall_fuel` reads only this floor and the log cap.
+const _: () = assert!(DEFAULT_MAX_STRING_BYTES <= MAX_HOSTCALL_LIFT_BYTES);
+const _: () = assert!(DEFAULT_MAX_BLOB_BYTES <= MAX_HOSTCALL_LIFT_BYTES);
 
 /// `max_wasm_stack_bytes` needs a MUCH tighter ceiling than
 /// [`MAX_SANE_LIMIT`]: wasmtime's `Config::max_wasm_stack` documents
