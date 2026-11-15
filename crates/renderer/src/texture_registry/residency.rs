@@ -116,9 +116,10 @@ impl Residency {
 /// `entry.residency`, which only moves when the batch installs, so it passes
 /// both. The second change for a handle is therefore treated as stale: it
 /// replans against the new state on a later frame, like any change that lost
-/// the race across batches.
+/// the race across batches. Fx-hashed: it is built on the per-frame upload flush, keyed by
+/// engine-issued handles (the hot-path hashing rule; INC6-3).
 #[derive(Default)]
-pub(crate) struct StagedChanges(std::collections::HashSet<u32>);
+pub(crate) struct StagedChanges(rustc_hash::FxHashSet<u32>);
 
 impl StagedChanges {
     /// `true` for the first change claimed for `handle` in this batch.
