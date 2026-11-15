@@ -3,6 +3,7 @@
 
 use super::directive::{Content, Directive, Outcome, Shuffle};
 use std::collections::HashSet;
+use std::sync::Arc;
 
 /// The layers below Hold, top to bottom (PRD §3.1). Hold is a flag, not a slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,7 +62,8 @@ struct Playing {
 
 #[derive(Debug, Default)]
 struct LayerState {
-    directive: Option<Directive>,
+    /// Shared, so a frame's step reads it without deep-cloning its playlist and notes (#6931).
+    directive: Option<Arc<Directive>>,
     /// A playlist's current track.
     track: Option<Playing>,
     /// A media set's stems, by stem index, while each plays.
@@ -153,7 +155,7 @@ impl MusicController {
 
     #[cfg(test)]
     pub(crate) fn directive(&self, layer: Layer) -> Option<&Directive> {
-        self.state(layer).directive.as_ref()
+        self.state(layer).directive.as_deref()
     }
 
     /// Report a directive that is not played (a missing `StreamMusic` file): once per session.
@@ -188,7 +190,7 @@ impl MusicController {
         let state = &mut self.layers[layer as usize];
         match (&state.directive, &directive) {
             (Some(old), Some(new)) if old.same_music(new) => {
-                state.directive = directive;
+                state.directive = directive.map(Arc::new);
                 return;
             }
             (None, None) => return,
@@ -200,7 +202,7 @@ impl MusicController {
         };
         state.stop_all(out, fade);
         state.start_fade = directive.as_ref().and_then(|d| d.change_fade_secs);
-        state.directive = directive;
+        state.directive = directive.map(Arc::new);
         if let Some(d) = state.directive.clone() {
             self.report(layer, &d);
         }
@@ -392,7 +394,7 @@ impl MusicController {
                     // A sting plays once; a scripted track hands back to Location (MUS-SCR-003), or to
                     // what follows it, or plays on (an Oblivion stream, #6903).
                     if matches!(layer, Layer::Sting | Layer::Script) && !d.persists {
-                        state.directive = d.then.as_deref().cloned();
+                        state.directive = d.then.as_deref().cloned().map(Arc::new);
                         return;
                     }
                 }
@@ -406,8 +408,8 @@ impl MusicController {
                     if out.play(voice, &key, d.level, fade, looping) {
                         state.track = Some(Playing { key, voice, clock: 0.0 });
                     } else {
-                        let missing = Directive { content: Content::Missing(key), ..d };
-                        state.directive = Some(missing.clone());
+                        let missing = Directive { content: Content::Missing(key), ..(*d).clone() };
+                        state.directive = Some(Arc::new(missing.clone()));
                         self.report(layer, &missing);
                     }
                 }

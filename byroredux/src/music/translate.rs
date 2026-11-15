@@ -428,6 +428,11 @@ impl Catalog {
     /// then the region's `RDSB` set, then the Battle Music object (that order between
     /// them is the engine's, #6906); Oblivion's `Battle` folder.
     pub(crate) fn battle(&self, index: &EsmIndex, place: Option<&Place>, marker: Option<&Marker>, around: Surroundings, roll: u64) -> Directive {
+        // Declined explicitly, as `location_with` and `music_type` are: Skyrim+ combat walked the
+        // New Vegas marker and region path and resolved to nothing (#6931).
+        if let Some(reason) = self.untranslated() {
+            return Directive::unresolved(Source::keyword("Battle", "game"), reason);
+        }
         if self.game == GameKind::Oblivion {
             let folder = self.files.resolve("battle\\");
             return Directive { recovery_secs: Some(self.recovery_secs), ..self.directive(Source::keyword("Battle", "Data\\Music\\Battle"), folder) };
@@ -514,6 +519,11 @@ impl Catalog {
     /// (no `GetDefaultObject` call names slot 11, 12 or 13); New Vegas carries the same records
     /// and names.
     pub(crate) fn sting(&self, index: &EsmIndex, sting: Sting) -> Option<Directive> {
+        // No sting where the music is not translated: it would also silence the music (#6931).
+        // `sting()` scanned every `SOUN` for `MUSDeath` on Skyrim+ to find none.
+        if self.untranslated().is_some() {
+            return None;
+        }
         if self.game == GameKind::Oblivion {
             // `Oblivion.exe` names both: `.\Data\Music\Special\death.mp3`, `success.mp3`.
             let (label, file) = match sting {
@@ -953,5 +963,17 @@ mod tests {
         assert_eq!(file.then.as_ref().map(|then| (then.category, then.persists)), Some((Some(0), true)), "then the Default music");
         assert_eq!(stream("\"Data\\Music\\Special\\nope.mp3\"", 0).outcome(), crate::music::directive::Outcome::Missing);
         assert_eq!(stream("\"C:\\WINDOWS\\Media\\tada.wav\"", 0).outcome(), crate::music::directive::Outcome::Unresolved);
+    }
+
+    /// #6931 — combat and the stings decline where the music is not translated, as the place does:
+    /// Skyrim's Battle is an explicit Unresolved, and there is no sting (which would silence it).
+    #[test]
+    fn battle_and_stings_decline_where_the_music_is_not_translated() {
+        let index = EsmIndex { game: GameKind::Skyrim, ..Default::default() };
+        let catalog = Catalog::new(&index, MusicFiles::new(Vec::<String>::new()), None);
+        let battle = catalog.battle(&index, None, None, Surroundings::default(), 0);
+        assert_eq!(battle.outcome(), crate::music::directive::Outcome::Unresolved, "{battle:?}");
+        assert!(catalog.sting(&index, Sting::Death).is_none());
+        assert!(catalog.sting(&index, Sting::LevelUp).is_none());
     }
 }
