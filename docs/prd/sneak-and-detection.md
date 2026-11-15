@@ -1,15 +1,18 @@
 # Sneak and Detection — Product Requirements
 
-**Status**: PROPOSED (2026-11-11). Revision 1 is the first draft: the
-player's sneak stance, NPC detection of the player, the consumers that read
-both (conditions and script functions, witnessed crimes, hostility, sneak
-attacks, the sneak-gated perks) and the detection indicator. Statements about
-how an original engine behaves cite external sources: the CS, GECK, CK and
-Fallout 4 CK wiki dumps and UESP under `/mnt/data/src/reference/`, xEdit's
-`wbDefinitions*.pas` record definitions, and the Fallout and Starfield wikis
-read as raw wikitext on 2026-11-11. The Fallout wiki's formulas are
+**Status**: PROPOSED (2026-11-14). Revision 2 folds in review round 1 (§12).
+The document covers the player's sneak stance, NPC detection of the player,
+the consumers that read both (conditions and script functions, witnessed
+crimes, hostility, sneak attacks, the sneak-gated perks) and the detection
+indicator. Statements about how an original engine behaves cite external
+sources: the CS, GECK, CK and Fallout 4 CK wiki dumps and UESP under
+`/mnt/data/src/reference/`, xEdit's `wbDefinitions*.pas` record definitions,
+and the Fallout and Starfield wikis read as raw wikitext on 2026-11-11 (the
+Fallout wiki's *Sneak (Fallout 3)*, *Sneak (Fallout: New Vegas)* and *Sneak
+Attack Critical* re-read on 2026-11-14). The Fallout wiki's formulas are
 community-derived, not official, and are cited as such. A claim that could not
-be verified is marked **Phase 0: verify** instead of being stated as fact.
+be verified is marked **Phase 0: verify** instead of being stated as fact, and
+every such item is a row of the Phase 0 verify table (§9).
 
 **Scope**: The player's sneak stance and how the actors around the player
 become aware of them, in Oblivion, Fallout 3, Fallout: New Vegas and Skyrim:
@@ -37,15 +40,16 @@ writes the missing design.
 | FO3 / FNV detection formula and its sourced coefficients | [CHARAL FNV/FO3 ruleset § Sneak Detection](../engine/charal-fnv-fo3-ruleset.md#sneak-detection-fnv--locked-but-an-aistealth-subsystem-not-a-charal-stat) |
 | Skyrim detection formula | [CHARAL Skyrim ruleset § Sneak Detection](../engine/charal-skyrim-ruleset.md#sneak-detection-skyrim--locked-sounddistance-halves-pending-visualskill-halves--out-of-charal-scope) |
 | Oblivion sneak-attack multiplier inside the damage formula | [CHARAL Oblivion ruleset § The Complete Damage Formula](../engine/charal-oblivion-ruleset.md#the-complete-damage-formula--closes-marksmanhand-to-hand-adds-luck-chained-skill--armor-rating--all-now-built) |
+| Skyrim sneak-attack multipliers by weapon class | [CHARAL Skyrim ruleset § Sneak Detection](../engine/charal-skyrim-ruleset.md#sneak-detection-skyrim--locked-sounddistance-halves-pending-visualskill-halves--out-of-charal-scope) (its sneak-attack paragraph) |
 | Crime witnesses and fines | [CHARAL Oblivion ruleset § Crime fines](../engine/charal-oblivion-ruleset.md#crime-fines--theft-assault-and-murder-built-the-rest-sourced-and-unbuilt) |
 | Fallout 4 detection ("dead end" at HEAD) | [CHARAL FO4 ruleset](../engine/charal-fo4-ruleset.md) |
-| Stance, detection tick, per-pair level and alert state, the sight test, the light input, consumer migration | none yet; Phase 0 writes `docs/engine/sneak-detection.md` |
+| Stance, detection tick, per-pair level and alert state, the actor-to-actor sight test (§10 Q7), the light input, consumer migration, FO3 / FNV sneak-attack damage | none yet; Phase 0 writes `docs/engine/sneak-detection.md` |
 | `Control::Sneaking` input-enable domain | [Scripting § Input enable layers](../engine/scripting.md#input-enable-layers-m472) |
 | Indicator on MenuXml (Oblivion, FO3, FNV) and Scaleform (Skyrim, FO4) | [UI System § MenuXml](../engine/ui.md#menuxml-legacy-ui-m484-oblivion--m485-fo3), [UI System § Scaleform HUD](../engine/ui.md#scaleform-hud-m486-skyrim--m487-fallout-4) |
 | Menu framework and HUD meters the Scaleform games cannot feed | [Game UI Integration PRD](game-ui-integration.md) |
 | Perk entry-point hooks the stealth values compose through | [Perk Entry Points PRD](perk-entry-points.md) (`PERK-HOOK`) |
 | NPC sneaking (*Always Sneak*, Crouch To Reload) | [AI Packages Completion PRD](ai-packages-completion.md) (Q4, AIP-UW-006) |
-| VATS's stealth multiplier (`fVATSStealthMult`) | [VATS PRD](vats.md) |
+| VATS's stealth multiplier (`fVATSStealthMult`), read with no consumer | [CHARAL FNV/FO3 ruleset § VATS tuning](../engine/charal-fnv-fo3-ruleset.md#vats-tuning-action-points-regen-and-the-radiation-gauge--built-6350); SNK-ATK-006 holds it unconsumed |
 | The original engines' detection bugs the engine does not reproduce | [Built-in fixes § Fix catalog](../engine/builtin-fixes.md#3-fix-catalog) |
 | Saved stance and its `FORMAT_MAJOR` bump | [Save/Load Round-Trip § 2](../engine/save-load-roundtrip.md#2-ecs-snapshot-capture) |
 | Schedule placement of the detection tick | [Game Loop § schedule](../engine/game-loop.md#the-system-schedule-m27-declared-access) |
@@ -75,18 +79,21 @@ At HEAD the engine has the detection math for one game and nothing that uses
 it. `crates/core/src/stealth.rs` transcribes the FNV formula and has no caller.
 No actor can sneak, so `IsSneaking` answers 0 for everyone. Every check of
 awareness (crime witnesses, ambient hostility, guard rush, dead-body
-discovery, `GetDetected`) is a range-and-line-of-sight test,
-`actor_detects`. The activate-choice runtime that shipped on 2026-11-10
-(`683d9a92b`) therefore cannot offer a single vanilla FO3 / FNV perk in play.
+discovery, `GetDetected`) is a range-and-line-of-sight test, one of the sight
+tests of §2, and flee checks range alone (§3.1 row 8). The activate-choice
+runtime that shipped on 2026-11-10 (`683d9a92b`) therefore cannot offer a
+single vanilla FO3 / FNV perk in play.
 
 The owner's framing is the roadmap's priority: "shortest path to a playable
 cell … the bottlenecks are *consumers* — systems that make parsed data do
 something on screen, at the speakers, or in play" (ROADMAP, Active Roadmap),
 and the instruction of 2026-11-10 to "go for the gameplay layer".
 
-**Corollary.** Awareness has one producer. One detection tick computes the
-level of every detector toward the player, and every consumer reads that
-level; no consumer runs a sight test of its own. What differs between games
+**Corollary.** Awareness of the player has one producer. One detection tick
+computes the level of every detector toward the player, and every consumer
+that asks about the player reads that level; none runs a sight test of its
+own. Awareness between other actors (an NPC of an NPC, an actor of a corpse)
+follows §10 Q7. What differs between games
 (the formula, its game settings, the level thresholds, the indicator's
 vocabulary) is a row of the game's character ruleset, read at the plugin
 boundary, never a branch in a consumer. The engine will not make NPCs sneak,
@@ -102,12 +109,13 @@ formula for a game whose formula no source gives.
 | **Sneak stance** | The player's crouched mode: "Returns 1 if the actor is sneaking (crouched)" (GECK *IsSneaking*). Entered and left by a toggle (§5.1). |
 | **Detector** | An actor whose awareness of the player is computed: alive, placed, and counted by the ruleset (SNK-DET-014). |
 | **Detection value** | The number one game's formula produces for one detector and the player. The FO3 / FNV GECK form: "Detection Value = fSneakBaseValue + (Sound factor * Distance attenuation ) + (Visual factor * Distance attenuation) + (Actor Skill factor * Distance attenuation) - ( Target Skill factor )" (GECK *Category:Detection*). |
-| **Detection level** | The detector's awareness of the player, one of the four the original engines name: "0 = Lost :1 = Unseen :2 = Noticed :3 = Seen" (CS *GetDetectionLevel*); the GECK pairs them with the HUD words: "0 = Lost ("Undetected") … 1 = Unseen ("Caution") … 2 = Noticed ("Danger") … 3 = Seen (flashing "Danger")" (GECK *GetDetectionLevel*). |
-| **Alert state** | The detector's own state: "Actors pass through 4 detection states: Normal->Alert->Combat->Lost->Normal" (GECK and CK *Category:Detection*). It scales the detector's skill term (`stealth::DetectorState`). |
+| **Detection level** | The detector's awareness of the player, one of the four the original engines name: "0 = Lost :1 = Unseen :2 = Noticed :3 = Seen" (CS *GetDetectionLevel*); the GECK pairs them with HUD words: "0 = Lost ("Undetected") … 1 = Unseen ("Caution") … 2 = Noticed ("Danger") … 3 = Seen (flashing "Danger")" (GECK *GetDetectionLevel*), a pairing another source contradicts (§3.2). Where it could be confused with the alert state, this document writes *level Lost*. |
+| **Alert state** | The detector's own state: "Actors pass through 4 detection states: Normal->Alert->Combat->Lost->Normal" (GECK and CK *Category:Detection*). It scales the detector's skill term (`stealth::DetectorState`). *Alert state Lost* (searching after combat) is not *level Lost* (not detected); this document always qualifies the word. |
 | **Detection indicator** | What the HUD shows the player while sneaking: the worst level over the counted detectors ("it reports the worst detection state towards the player character of all potential targets", Fallout wiki *Sneak (Fallout 3)*), in the game's vocabulary (§3.2). |
 | **Detection tick** | The one system that computes values and levels, at the game's cadence (SNK-DET-006). |
 | **Sneak attack** | A strike by the sneaking player on a detector whose level toward the player is below the ruleset's attack threshold (SNK-ATK-001). |
-| **Sight test** | `actor_detects` at HEAD: range (`fSneakMaxDistance`, scaled outdoors) and an unobstructed physics ray, nothing else (`byroredux/src/systems/faction_hostility.rs:163`). |
+| **Sight test** | Any of the range-and-ray tests at HEAD: range (`fSneakMaxDistance`, scaled outdoors, `DetectionConfig::range`) and an unobstructed physics ray (`PhysicsWorld::line_of_sight_blocked`), nothing else. Three exist: `actor_detects` for one actor toward another (`byroredux/src/systems/faction_hostility.rs:163`), `actor_sees_corpse` for an actor toward a body (`:183`), and the hostility pass's own `in_sight` over every actor pair (`:526`, called at `:593`). |
+| **Actor-to-actor sight test** | The one sight test §10 Q7 keeps, if it keeps one, for awareness where the player is not the target. |
 
 ---
 
@@ -115,26 +123,27 @@ formula for a game whose formula no source gives.
 
 ### 3.1 Inventory
 
-The inventory below is the state at HEAD on 2026-11-11 (`b73899734`). Phase 0's
+The inventory below is the state at HEAD on 2026-11-14 (`922072af8`). Phase 0's
 design doc replaces the Today column with a test-backed table.
 
 | # | Mechanism | Class | Today |
 |---|---|---|---|
-| 1 | Sneak stance | Stance | Absent. `InputAction` has no sneak action (`byroredux/src/interaction.rs:54`); Left Ctrl is bound to nothing and C is Block (`:163`). No stance component exists. |
+| 1 | Sneak stance | Stance | Absent. `InputAction` has no sneak action (`byroredux/src/interaction.rs:54`); in `ActionBindings::default` Left Ctrl is bound to nothing and C is Block (`:171`). The only other use of Ctrl is as a text-editing modifier in menus (`byroredux/src/ui_input.rs:213`). No stance component exists. |
 | 2 | "Sneaking allowed" control | Stance | `PlayerControlState.sneaking_enabled`, saved; read only by `GetPlayerControlsDisabled` and the input layers (`crates/scripting/src/player_control.rs:73`, `input_layers.rs:150`). |
 | 3 | `IsSneaking` (ObScript `0x111e`, CTDA 286) | Condition | Answers 0 for every actor: "The engine has no sneak stance" (`crates/scripting/src/obscript_effects/getters.rs:350`). |
 | 4 | Papyrus `IsSneaking`, `StartSneaking`, `IsDetectedBy` | Script | No native; the call stops the fragment as unsupported (`crates/scripting/src/fragment/vm/interp.rs:1166`). |
-| 5 | `GetDetected` (CTDA 45), `GetDetectionLevel` (180), `IsActorDetected` | Condition | The sight test as 1 / 0; `GetDetectionLevel` answers 3 or 0 (`getters.rs:337`, `:370`; `crates/scripting/src/obscript_more/state.rs:651`). |
+| 5 | `GetDetected` (CTDA 45), `GetDetectionLevel` (180), `IsActorDetected` | Condition | `actor_detects` as 1 / 0, through the `SightQuery` resource (`byroredux/src/boot/world.rs:509`), for any target; `GetDetectionLevel` answers 3 or 0 (`getters.rs:337`, `:370`; `crates/scripting/src/obscript_more/state.rs:651`). |
 | 6 | Detection formula | Detection | The FNV formula, pure math, no caller (`crates/core/src/stealth.rs:249` `detection_score`, `:236` `classify`). |
-| 7 | Crime witnesses | Consumer | Every living non-creature actor the sight test passes (`byroredux/src/crime.rs:72`); "Not modelled yet: sneaking undetected" (`:40`). |
-| 8 | Ambient hostility, guard rush, dead-body discovery, flee range | Consumer | The sight test, every 0.5 s (`faction_hostility.rs:71`, `crime.rs:831`, `dead_body.rs:87`, `flee.rs:59`). |
+| 7 | Crime witnesses | Consumer | Every living non-creature actor `actor_detects` passes (`witnesses`, `byroredux/src/crime.rs:72`, the call at `:79`); "Not modelled yet: sneaking undetected" (`:40`). |
+| 8 | Ambient hostility, guard rush, dead-body discovery, flee range | Consumer | Four different tests. Ambient hostility: its own range filter and `in_sight` ray over every actor pair, NPC against NPC and creature included, every 0.5 s (`byroredux/src/systems/faction_hostility.rs:562-593`, period `:71`). Guard rush: `actor_detects` toward the player (`crime.rs:831`). Dead-body discovery: `actor_sees_corpse`, an actor toward a body, not toward the player (`byroredux/src/systems/dead_body.rs:87`). Flee: range alone, no line of sight, from any threat (`byroredux/src/systems/flee.rs:57`, `nearest_threat`). |
 | 9 | Sound events (`CreateDetectionEvent`) | Detection | Queued in `PendingDetectionEvents` and never read (`crates/scripting/src/detection_events.rs:7`). |
-| 10 | Sneak attack | Consumer | `HitEvent.sneak_attack` is `false` at every producer (`byroredux/src/combat.rs:345` among them: "no power-attack charge, sneak-attack, or bash input exists", `:355`); no damage code reads it. |
-| 11 | Sneak perk entry points | Perk | FO3 / FNV 31, 69, 70, 71 and Skyrim 15, 18, 47, 48, 57 are Pending (`UNCLASSIFIED`); Skyrim 69 is Pending under PERK-HOOK-009 (`crates/scripting/src/perk_entry_points/catalog.rs`). |
+| 10 | Sneak attack | Consumer | `HitEvent.sneak_attack` is `false` at every producer (`byroredux/src/combat.rs:354` among them: "no power-attack charge, sneak-attack, or bash input exists", `:366`); only the SDK, Papyrus `OnHit` and the mod runtime read it, no damage code. |
+| 11 | Sneak perk entry points | Perk | FO3 / FNV 31, 69, 70, 71, Skyrim 15, 18, 47, 48, 57 and Fallout 4 15, 18, 47, 48, 57, 69 (`FALLOUT4_HOOKS`) are Pending (`UNCLASSIFIED`); Skyrim 69 is Pending under PERK-HOOK-009 (`crates/scripting/src/perk_entry_points/catalog.rs`). |
 | 12 | FO3 / FNV *Activate* perks | Perk | The runtime is built (`byroredux/src/perk_activate.rs`); every vanilla entry fails closed on `IsSneaking` (the `683d9a92b` commit body). |
 | 13 | Detection indicator | Presentation | None on the native HUD (`crates/debug-ui/src/panels/hud.rs`), MenuXml (`byroredux/src/hud.rs`) or Scaleform (`byroredux/src/scaleform_hud.rs`). |
 | 14 | Sneak locomotion and crouch height | Stance | No sneak clip, graph variable or capsule change (`byroredux/src/npc_spawn/anim_clips.rs`, `systems/graph_locomotion.rs:192`, `crates/physics/src/components.rs:191`). |
 | 15 | Sneak skill actor value | Input | Populated on Oblivion, FO3, FNV and Skyrim (`crates/core/src/character/skill.rs`); no skill-use experience for sneaking. |
+| 16 | VATS stealth multiplier | Consumer | `fVATSStealthMult` is read into `VatsModel::stealth_mult` and nothing reads that field (`crates/core/src/character/vats.rs:256`). |
 
 ### 3.2 Detection level and its indicator per game
 
@@ -146,13 +155,21 @@ the history that "Lost" needs.
 | Game | Indicator, as sourced | Source |
 |---|---|---|
 | Oblivion | An eye that lights when anyone is aware: "If the eye lights up, that means somewhere an NPC or creature knows you're there" | UESP *Oblivion:Sneak* |
-| Fallout 3 / New Vegas | [HIDDEN], [CAUTION], [DANGER] (flashing when in sight), [DETECTED] | Fallout wiki *Sneak (Fallout 3)*, *Sneak (Fallout: New Vegas)* |
+| Fallout 3 / New Vegas | [HIDDEN] ("being undetected"); [CAUTION] ("unfriendly targets are suspicious of presence and are searching"); [DANGER] ("hostile NPCs are aware of one's presence, but they do not know the current location"), flashing when "the enemy has the player character in sight and will engage them"; [DETECTED] ("being in sight by one or more targets … shown instead of [CAUTION] because they haven't identified one as hostile") | Fallout wiki *Sneak (Fallout 3)*, *Sneak (Fallout: New Vegas)* |
 | Skyrim | "A flat horizontal line means you are completely hidden", "A slightly open eye means an enemy thinks a target may be near", "A half-open eye means the enemy is actively searching for you", "An open eye means the enemy knows where you are or can see you" | UESP *Skyrim:Sneak* |
 | Fallout 4 | A CAUTION state exists ("When the player enters CAUTION detection state while in sneak mode"); the other words **Phase 0: verify** | FO4 CK *OnTutorialEvent* |
 | Starfield | A meter only with the Stealth skill: "Rank 1 - Adds a Stealth Meter" | Starfield wiki *Stealth* |
 
-Which level each indicator state stands for is sourced only for FO3 / FNV
-(GECK *GetDetectionLevel*, §2); the rest is **Phase 0: verify** (SNK-HUD-002).
+No game's mapping from level to indicator state is fully sourced. On FO3 /
+FNV the GECK pairs the four levels with "Undetected", "Caution", "Danger" and
+flashing "Danger" (GECK *GetDetectionLevel*, §2), while the Fallout wiki names
+[HIDDEN] and a fifth state, [DETECTED], that a target shows instead of
+[CAUTION] when it has not identified the player as hostile. The state on
+screen therefore depends on the detector's hostility to the player as well as
+on the level. **Phase 0: verify** which level and hostility render [DETECTED]
+versus flashing [DANGER] on FO3 and FNV (GECK *GetDetectionLevel* and Fallout
+wiki *Sneak (Fallout 3)* disagree), and the Oblivion, Skyrim, Fallout 4 and
+Starfield tables (SNK-HUD-002).
 
 ---
 
@@ -162,9 +179,10 @@ Which level each indicator state stands for is sourced only for FO3 / FNV
 
 - **SNK-G-001 — The stance.** The player can enter and leave the sneak stance
   on every in-scope game, and `IsSneaking` reads it.
-- **SNK-G-002 — One producer of awareness.** Every consumer in §3.1 rows 5, 7
-  and 8 reads the detection level; the count of consumers still on the sight
-  test is zero.
+- **SNK-G-002 — One producer of awareness of the player.** Every consumer in
+  §3.1 rows 5, 7 and 8 that asks about the player reads the detection level;
+  the count of those still on a sight test of their own is zero. Awareness
+  where the player is not the target follows §10 Q7.
 - **SNK-G-003 — Each game's formula.** FO3, FNV, Oblivion and Skyrim compute
   the detection value from their own sourced formula and their load order's
   game settings.
@@ -194,6 +212,11 @@ Which level each indicator state stands for is sourced only for FO3 / FNV
 
 ## 5. Requirements by area
 
+Every per-game rule below (a formula, a game setting, a threshold, whether
+walls block sound, the indicator's table and gate) is a field of the
+character ruleset row SNK-DET-002 selects, read at the plugin boundary; none
+is a branch on the game in the tick, a consumer or the HUD.
+
 ### 5.1 The stance (`SNK-STN`)
 
 - **SNK-STN-001.** An `InputAction::Sneak` bound by default to Left Ctrl MUST
@@ -220,12 +243,18 @@ Which level each indicator state stands for is sourced only for FO3 / FNV
   by this when the actor is sneaking", GECK *Movement Settings*), Skyrim the
   race's sneak movement type (xEdit TES5 `RACE` `SNMV`, "Base Movement Default -
   Sneak"). **Phase 0: verify** the Skyrim `MOVT` values the vanilla races name.
-- **SNK-STN-006.** Running in the stance MUST follow the game's rule. FO3 is
-  sourced both ways: the game's text says "You cannot run and sneak at the
-  same time" while the Fallout wiki says the player "can both sneak and run …
-  However, without the Silent Running perk, they will suffer a detection
-  penalty while running"; **Phase 0: verify** in game which holds on FO3 and
-  FNV.
+- **SNK-STN-006.** On FO3 and FNV, Sprint MUST work in the stance and MUST
+  count as running in the detection value (the GECK formula's "Running *
+  fSneakLightRunMult" term, GECK *Category:Detection*). The vanilla Silent
+  Running perk of both masters is one *Ignore Running During Detection* (31)
+  entry (`perk_entry_census`, `CENSUS_ENTRY_POINT=31`), which has an effect
+  only if the player can run while sneaking. The sources disagree: the in-game
+  Sneak skill description says "You cannot run and sneak at the same time"
+  while the Fallout wiki says the player "can both sneak and run … However,
+  without the Silent Running perk, they will suffer a detection penalty while
+  running" (both on Fallout wiki *Sneak (Fallout 3)*). **Phase 0: verify** in
+  game which holds on FO3 and FNV; the requirement changes if the game forbids
+  it.
 - **SNK-STN-007.** The first-person camera SHOULD be lower in the stance (UESP
   *Skyrim:Sneak*, a bug note: "in first-person mode your character's view will
   be lower as if sneaking"). **Phase 0: verify** the height on each game; no
@@ -238,8 +267,9 @@ Which level each indicator state stands for is sourced only for FO3 / FNV
 
 - **SNK-DET-001.** One detection tick MUST compute, for every detector within
   the game's maximum distance of the player, a detection value and a detection
-  level, and MUST be the only producer of levels. Today detection is the sight
-  test and `stealth.rs` has no caller (§3.1 rows 5, 6).
+  level toward the player, and MUST be the only producer of levels. Which other
+  pairs it computes is §10 Q7. Today detection is a sight test and
+  `stealth.rs` has no caller (§3.1 rows 5, 6).
 - **SNK-DET-002.** Which formula the tick runs MUST be a property of the
   character ruleset row the load order selects (as
   `CharacterRulesProfile::perk_entry_points` is for perks), with no game named
@@ -278,16 +308,19 @@ Which level each indicator state stands for is sourced only for FO3 / FNV
   whether Oblivion and FO3 / FNV have a view cone.
 - **SNK-DET-009.** The light term MUST read a light level at the player computed
   by the engine from the lights it renders, by the method §10 Q3 decides. No
-  source gives the original's units: "Light levels are not well-understood"
-  (the CHARAL FNV ruleset, quoting the Fallout wiki); Skyrim's *GetLightLevel*
+  source gives the original's units: light levels "are not well-understood"
+  (Fallout wiki *Sneak (Fallout: New Vegas)*); Skyrim's *GetLightLevel*
   "Returns a number between 0 and 150" while `iLightLevelMax` is 300 (CK).
 - **SNK-DET-010.** The sound term MUST include the movement sound from equipped
-  weight and the action sound of the player's attacks from the weapon's
-  sound level (xEdit FO3 / FNV `WEAP` `VNAM` "Sound Level": Loud / Normal /
-  Silent). On Oblivion sound MUST NOT be blocked by walls ("Sound is not blocked
-  by walls, or even a dozen feet of solid rock", UESP *Oblivion:Sneak*); on FO3
-  / FNV and Skyrim it MUST be attenuated without line of sight by
-  `fSneakSoundLosMult` (GECK *Category:Detection*; CK *Category:Settings*).
+  weight.
+- **SNK-DET-016.** The sound term MUST include the action sound of the player's
+  attacks from the weapon's sound level (xEdit FO3 / FNV `WEAP` `VNAM` "Sound
+  Level": Loud / Normal / Silent).
+- **SNK-DET-017.** Walls MUST block sound by the game's rule: on Oblivion they
+  MUST NOT ("Sound is not blocked by walls, or even a dozen feet of solid
+  rock", UESP *Oblivion:Sneak*); on FO3 / FNV and Skyrim sound without line of
+  sight MUST be attenuated by `fSneakSoundLosMult` (GECK *Category:Detection*;
+  CK *Category:Settings*).
 - **SNK-DET-011.** A `CreateDetectionEvent` (GECK: "iSoundLevel = 0-100"; FO4 CK
   *CreateDetectionEvent - ObjectReference*) SHOULD enter the tick as an action
   sound at its position. Today the events are queued and never read (§3.1 row 9).
@@ -313,24 +346,48 @@ Which level each indicator state stands for is sourced only for FO3 / FNV
 
 - **SNK-USE-001.** A crime MUST be witnessed only by an actor whose level toward
   the player at the crime is at or above the level §10 Q5 decides. Today every
-  actor the sight test passes is a witness (§3.1 row 7).
-- **SNK-USE-002.** `GetDetected` (CTDA 45) MUST answer 1 when the run-on actor's
-  level toward the target is Seen ("Seen: Player has been detected (i.e.
-  GetDetected player > 0)", CS *Detection Tab*), and `GetDetectionLevel` (180)
-  MUST answer the level. Today both read the sight test (§3.1 row 5).
-- **SNK-USE-003.** `IsActorDetected` MUST answer 1 when any detector's level
-  toward the calling actor is Seen, and 0 when called on the player ("Will
-  always return 0 when called on the player", GECK *IsActorDetected*).
+  actor `actor_detects` passes is a witness (§3.1 row 7).
+- **SNK-USE-002.** When the target is the player, `GetDetected` (CTDA 45) MUST
+  answer 1 when the run-on actor's level toward the player is Seen ("Seen:
+  Player has been detected (i.e. GetDetected player > 0)", CS *Detection
+  Tab*), and `GetDetectionLevel` (180) MUST answer the level. For any other
+  target both MUST answer from the awareness §10 Q7 decides. Today both read
+  `actor_detects` (§3.1 row 5).
+- **SNK-USE-003.** `IsActorDetected` MUST answer 0 when called on the player
+  ("Will always return 0 when called on the player", GECK *IsActorDetected*).
+  On any other actor it MUST answer 1 when another actor is aware of it by the
+  awareness §10 Q7 decides: the calling actor is never the player, so no level
+  toward the player answers it.
 - **SNK-USE-004.** Papyrus `Actor.IsDetectedBy(akOther)` MUST answer whether
-  `akOther`'s level toward the actor is Seen. Today it is not a native.
+  `akOther`'s level toward the actor is Seen when the actor is the player, and
+  by §10 Q7's awareness otherwise. Today it is not a native.
 - **SNK-USE-005.** Ambient hostility MUST start combat with the player only from
   a detector whose level reaches Seen (Oblivion: the value reaches
-  `iAICombatMinDetection`, CS *Category:Detection*). Today the nearest hostile
-  in sight is engaged (`faction_hostility.rs:589`).
-- **SNK-USE-006.** Guard rush, dead-body discovery and the flee range MUST read
-  the level, not the sight test.
-- **SNK-USE-007.** The count of call sites of `actor_detects` outside the
-  detection tick MUST be zero, held by a test.
+  `iAICombatMinDetection`, CS *Category:Detection*); combat between other
+  actors starts by §10 Q7's awareness. Today the nearest hostile in sight is
+  engaged, NPC against NPC included (`faction_hostility.rs:589`).
+- **SNK-USE-006.** Guard rush MUST rush the player only from a guard whose level
+  toward the player is Seen. Today it reads `actor_detects` (`crime.rs:831`).
+- **SNK-USE-007.** Outside the detection module, code MUST NOT call
+  `PhysicsWorld::line_of_sight_blocked` or `DetectionConfig::range`, held by a
+  source-scan test. Callers that need a plain line test with no awareness
+  (ObScript `GetLOS` through `actor_has_line_of_sight`, attraction's line test
+  at `byroredux/src/systems/attraction.rs:205`) call the line test the module
+  exports. Today the two are called from the hostility pass, the shared sight
+  helpers and flee (§3.1 row 8).
+- **SNK-USE-008.** Dead-body discovery MUST stay a test of an actor toward the
+  body, not a level toward the player, run by the actor-to-actor sight test of
+  §10 Q7; an actor that discovers a body SHOULD enter alert state Alert ("When
+  an enemy spots a dead body, it will often enter the [CAUTION] state and move
+  toward the dead body", Fallout wiki *Sneak (Fallout 3)*).
+- **SNK-USE-009.** Flee MUST count the player as a threat only when the fleeing
+  actor's level toward the player is Seen, the level SNK-USE-005 starts combat
+  at; other threats count by §10 Q7's awareness. Today flee checks range alone,
+  with no line of sight (`byroredux/src/systems/flee.rs:57`).
+- **SNK-USE-010.** The Fallout 3 and Fallout: New Vegas fix catalogs MUST carry
+  an implemented engine-behaviour entry, with its test, for `GetDetectionLevel`
+  answering the real level when the player is the target (§6 row 5). At HEAD
+  on 2026-11-14 the built-in fixes design has no detection entry.
 
 ### 5.4 Sneak attacks (`SNK-ATK`)
 
@@ -360,20 +417,27 @@ Which level each indicator state stands for is sourced only for FO3 / FNV
   sneak damage modifiers are applied" and names `fCombatDamageBonusSneakingMult`,
   `fCombatDamageBonusMeleeSneakingMult` and `fDamageSneakAttackMult`.
 - **SNK-ATK-004.** On Skyrim a sneak attack MUST take the weapon class's
-  multiplier (UESP *Skyrim:Sneak*: ×2 unarmed, bow, two-handed; ×3 one-handed)
-  composed through *Mod Sneak Attack Mult* (18, "Adjusts damage multiplier
+  multiplier from the damage-multiplier table of UESP *Skyrim:Sneak* (captured
+  in the CHARAL Skyrim ruleset, Related) composed through *Mod Sneak Attack
+  Mult* (18, "Adjusts damage multiplier
   applied to a successful sneak attack", CK *Perk Entry Point*). **Phase 0:
   verify** where the base multipliers live (`fCombatSneakAttackBonusMult` is
   100 with no description, CK *Category:Settings*).
 - **SNK-ATK-005.** Papyrus `OnHit`'s `abSneakAttack` and the SDK hit event MUST
   carry the value SNK-ATK-001 sets; they already carry the field.
+- **SNK-ATK-006.** On FO3 / FNV, `VatsModel::stealth_mult` (`fVATSStealthMult`)
+  MUST stay unconsumed until **Phase 0: verify** says what it scales: GECK
+  *VATS Settings* gives the default 0.5 and an empty description. Today it is
+  read and unused (§3.1 row 16).
 
 ### 5.5 Perks (`SNK-PERK`)
 
-- **SNK-PERK-001.** The vanilla FO3 / FNV *Activate* perks MUST be offered when
-  their tabs pass with the player in the stance: the A8 live leg of the Perk
-  Entry Points PRD. Robotics Expert needs nothing else at HEAD (`b73899734`
-  bridged `GetUnconscious` and `GetIsCreatureType`).
+- **SNK-PERK-001.** Robotics Expert MUST be offered when its tabs pass with the
+  player in the stance: the A8 live leg of the Perk Entry Points PRD. Its other
+  conditions are answered at HEAD (`b73899734` bridged `GetUnconscious` and
+  `GetIsCreatureType`); its target tab also asks `GetDetected` toward the player
+  (CTDA 45, `perk_entry_census`, `CENSUS_ENTRY_POINT=27`), so it reads
+  SNK-USE-002. The other four *Activate* perks follow SNK-PERK-002.
 - **SNK-PERK-002.** Cannibal, Ghastly Scavenger and Dine and Dash read
   `HasBeenEaten` (CTDA 127: "Returns 1 if the calling actor has been eaten by
   the player", GECK *HasBeenEaten*) and run `StartCannibal` ("The victim gets
@@ -382,7 +446,7 @@ Which level each indicator state stands for is sourced only for FO3 / FNV
   is empty. **Phase 0: verify** what each command changes beyond what the perk
   descriptions state (Mister Sandman: "silently kill any human or Ghoul while
   they're sleeping"; Cannibal: "eat a corpse to regain Health"), and whether
-  "eaten" is saved; until then these three perks SHOULD stay unoffered rather
+  "eaten" is saved; until then these four perks SHOULD stay unoffered rather
   than run half their script.
 - **SNK-PERK-003.** *Ignore Running During Detection* (FO3 / FNV 31, Skyrim 15)
   MUST remove the running term when it composes non-zero ("If the value is
@@ -401,16 +465,21 @@ Which level each indicator state stands for is sourced only for FO3 / FNV
 - **SNK-PERK-007.** *Apply Sneaking Spell* (Skyrim 69) is owned by the Perk Entry
   Points PRD's PERK-HOOK-009; this PRD MUST supply the "while sneaking" state it
   reads.
+- **SNK-PERK-008.** Fallout 4's sneak hooks (15, 18, 47, 48, 57; §3.1 row 11)
+  MUST stay Pending until §10 Q2 gives Fallout 4 a detection value. Its *Apply
+  Sneaking Spell* (69) reads only the stance, which this PRD MUST supply as
+  SNK-PERK-007 does for Skyrim.
 
 ### 5.6 The indicator (`SNK-HUD`)
 
 - **SNK-HUD-001.** The native HUD MUST show the detection indicator while the
   player is in the stance, in the game's vocabulary (§3.2), and hide it
   otherwise. Today there is none (§3.1 row 13).
-- **SNK-HUD-002.** The indicator MUST map each level to the game's state by a
-  per-game table at the presentation boundary. FO3 / FNV is sourced (GECK
-  *GetDetectionLevel*, §2); **Phase 0: verify** the Oblivion, Skyrim, Fallout 4
-  and Starfield mappings.
+- **SNK-HUD-002.** The indicator MUST map each pair of (worst level, whether
+  that detector is hostile to the player) to the game's state by a table in
+  the ruleset row. Every game's table is **Phase 0: verify** (§3.2): on FO3 /
+  FNV which pair renders [DETECTED] versus flashing [DANGER]; the Oblivion,
+  Skyrim, Fallout 4 and Starfield tables whole.
 - **SNK-HUD-003.** The FO3 / FNV and Oblivion MenuXml HUDs SHOULD drive their
   vanilla sneak element. **Phase 0: verify** the element and trait the vanilla
   `hud_main_menu.xml` uses for it.
@@ -419,7 +488,7 @@ Which level each indicator state stands for is sourced only for FO3 / FNV
   design's Scaleform HUD section), which the Game UI Integration PRD owns.
 - **SNK-HUD-005.** On Starfield the indicator MUST show only while the player
   holds rank 1 of the Stealth skill ("Rank 1 - Adds a Stealth Meter",
-  Starfield wiki *Stealth*).
+  Starfield wiki *Stealth*), a gate in Starfield's ruleset row.
 
 ### 5.7 Persistence (`SNK-SAVE`)
 
@@ -446,12 +515,14 @@ Which level each indicator state stands for is sourced only for FO3 / FNV
 | # | Original behaviour | Redux behaviour | Becomes redundant | Risk and its requirement |
 |---|---|---|---|---|
 | 1 | The light level is the engine's own measure, in units no source documents (CK *GetLightLevel*: "0 and 150"; `iLightLevelMax` 300) | A canonical light level from the engine's lights, by §10 Q3 | — | A spot that hides the player in the original may not here → SNK-DET-009, SNK-DX-001 (every term visible) |
-| 2 | Each detector checks on its own timer phase | The sourced cadence, phase not reproduced | — | Detection a few frames earlier or later than the original; no content keys on it → SNK-DET-006 |
-| 3 | A searching NPC walks toward the player | The level and alert state only | — | [CAUTION] never resolves into a visible search → SNK-NG-002; the AI Packages PRD would own it |
+| 2 | Detectors re-evaluate on a timer ("every .3 seconds", CS *Category:Detection*); whether each detector's timer runs on its own phase is **Phase 0: verify** | The sourced cadence, phase not reproduced | — | Detection a few frames earlier or later than the original → SNK-DET-006 |
+| 3 | A searching NPC walks toward the player: "Alerted actors will search towards detection events" (GECK *Category:Detection*) | The level and alert state only | — | [CAUTION] never resolves into a visible search → SNK-NG-002; the AI Packages PRD would own it |
 | 4 | The detection state survives a save (**Phase 0: verify**) | Re-derived on the first tick | — | An NPC searching before a save forgets on load → SNK-SAVE-002 |
-| 5 | "it does not return any value other than 0 when the player is the target" (GECK *GetDetectionLevel*) | The real level, recorded as an engine-behaviour fix in the built-in fixes catalog | Mods that work around the bug | A script that relied on the 0 sees a level → SNK-USE-002 |
+| 5 | "it does not return any value other than 0 when the player is the target" (GECK *GetDetectionLevel*) | The real level, recorded as an engine-behaviour fix in the FO3 / FNV fix catalogs by SNK-USE-010 | Mods that work around the bug | A script that relied on the 0 sees a level → SNK-USE-002 |
 | 6 | Oblivion's sneak multipliers, sourced two ways (CS *Sneak* "4x Marksman" at Apprentice against 3.0 in the GMST pages; a loading screen's "A Novice of Sneak does not get the critical damage bonus") | The settings `Oblivion.esm` authors | — | The wrong bonus at low mastery if the load order's settings are not the ones the game uses → SNK-ATK-002, SNK-DX-003 |
 | 7 | Fallout 4 and Starfield detect by formulas no source gives | Per §10 Q2 | — | Either no detection on those games or an unverified one → SNK-DET-002 |
+| 8 | Actors detect each other through the same detection states as they detect the player ("Actors pass through 4 detection states", GECK *Category:Detection*) | Per §10 Q7; recommended, levels toward the player only and the actor-to-actor sight test for every other pair | — | NPCs notice each other by sight alone, blind to light, sound and sneak skill; `IsActorDetected` answers by sight → SNK-USE-003, SNK-USE-005, SNK-USE-008, SNK-USE-009 |
+| 9 | Skyrim shows detection in its vanilla HUD (the eye, UESP *Skyrim:Sneak*, §3.2); Fallout 4 names a CAUTION detection state (FO4 CK *OnTutorialEvent*), its HUD rendering **Phase 0: verify** | The vanilla Scaleform meter MAY stay empty until the Game UI Integration PRD feeds HUD meters; the native indicator stands in | — | A Skyrim or Fallout 4 player sees no vanilla eye or meter → SNK-HUD-004, SNK-HUD-001 |
 
 ---
 
@@ -465,7 +536,7 @@ Which level each indicator state stands for is sourced only for FO3 / FNV
 | Fallout 3 | yes | Wave 1. The GECK formula; shares the FNV runtime without the level terms |
 | Fallout: New Vegas | yes | Wave 1. The reference title, the formula `stealth.rs` already transcribes, and the activate perks |
 | Skyrim (LE / SE / AE) | yes | Wave 2. The CK formula and settings; stealth points; the Scaleform meter per SNK-HUD-004 |
-| Fallout 4 | partly | Stance and conditions in Wave 1; detection per §10 Q2 (the CHARAL FO4 ruleset records the formula as a dead end) |
+| Fallout 4 | partly | Stance and conditions in Wave 1; detection per §10 Q2 (the CHARAL FO4 ruleset records the formula as a dead end); sneak hooks per SNK-PERK-008 |
 | Fallout 76 | no | SNK-NG-005 |
 | Starfield | partly | Stance and conditions in Wave 1; detection per §10 Q2 (game settings sourced, formula not) |
 
@@ -474,33 +545,42 @@ Which level each indicator state stands for is sourced only for FO3 / FNV
 A scenario passes when:
 
 1. **Stance.** `cargo test` cases show the Sneak action toggling the stance,
-   `IsSneaking` answering 1 then 0, and a disabled `Control::Sneaking` layer
-   refusing it (SNK-STN-001, -002, -004).
+   `IsSneaking` answering 1 then 0, a disabled `Control::Sneaking` layer
+   refusing it, and Sprint in the stance counting as running on the FO3 / FNV
+   rows (SNK-STN-001, -002, -004, -006).
 2. **Formula.** A `cargo test` per ruleset row computes a fixture pair's value
    and level and matches the transcription test of that row's sourced formula
    (SNK-DET-003, -004, -005, -007).
 3. **Settings census.** An ignored real-data test reads every game setting the
    rows name from `Fallout3.esm`, `FalloutNV.esm`, `Oblivion.esm` and
    `Skyrim.esm`, reports each one's value or its fallback, and fails on a name
-   none of them authors (SNK-DX-003).
-4. **One producer.** A test holds the call sites of `actor_detects` outside the
-   tick at zero (SNK-USE-007).
+   with neither an authored value nor a documented default (SNK-DX-003).
+4. **One producer.** A source-scan test holds the calls of
+   `PhysicsWorld::line_of_sight_blocked` and `DetectionConfig::range` outside
+   the detection module at zero (SNK-USE-007).
 5. **FNV stealth.** A `docs/smoke-tests/` script holds the engine on a vanilla
    FNV interior Phase 0 names, sets the stance with `stealth.sneak on`, and reads
    through `stealth.status` a detector at Lost from behind cover and at Seen in
    its sight (SNK-DET-001, SNK-DX-001, -002).
-6. **Unseen theft.** On a vanilla Oblivion interior Phase 0 names, a theft with
-   every detector below §10 Q5's level adds no bounty, and the same theft in
-   sight adds the authored one (SNK-USE-001).
-7. **Activate perk, live.** On FNV, with the player holding Robotics Expert and
-   sneaking unseen behind a robot Phase 0 names, activating it offers
-   "Deactivate"; picking it leaves the robot unconscious (SNK-PERK-001; the Perk
-   Entry Points PRD's A8 live leg).
+6. **Unseen theft.** A `cargo test` in the shape of
+   `a_witnessed_theft_adds_the_bounty_and_marks_the_faction`
+   (`byroredux/src/inventory/tests.rs`): with every detector below §10 Q5's
+   level a theft has no witness and adds no bounty, and with one detector at
+   that level the same theft adds the authored bounty (SNK-USE-001).
+7. **Activate perk, live.** A `docs/smoke-tests/` script holds FNV
+   (`--bench-hold`) on a cell with a robot that Phase 0 names, gives the player
+   Robotics Expert with `obscript.cmd` (`AddPerk`), places the player behind
+   the robot with `cam.pos`, sets the stance with `stealth.sneak on`, presses
+   `input.press activate`, answers the "Deactivate" choice with `ui.answer`,
+   and reads `GetUnconscious` 1 on the robot through `obscript.cmd`
+   (SNK-PERK-001; the Perk Entry Points PRD's A8 live leg).
 8. **Sneak attack.** A `cargo test` per game shows a strike on an unaware
    detector setting `sneak_attack` and taking the game's multiplier, and the
    same strike on an aware detector doing neither (SNK-ATK-001 to -004).
-9. **Indicator.** A native-HUD snapshot test shows each game's word or icon for
-   each level (SNK-HUD-001, -002).
+9. **Indicator.** A `cargo test` builds the native HUD's `PanelSnapshot`
+   (`crates/debug-ui/src/panels/snapshots.rs`) for each game's ruleset row and
+   asserts its indicator field for every (level, hostility) pair, and its
+   absence outside the stance; no image is compared (SNK-HUD-001, -002).
 
 No game file is checked in; the scenarios read the owner's installs through
 the existing `BYROREDUX_*_DATA` paths.
@@ -513,46 +593,72 @@ The numbers live in the ROADMAP row this PRD's milestone gets (§10 Q6).
 
 | Metric | Definition | Granularity |
 |---|---|---|
-| Consumers on the level | Consumers in §3.1 rows 5, 7, 8 that read the level ÷ all of them | Per phase |
+| Consumers on the level | Consumers in §3.1 rows 5, 7, 8 that ask about the player and read the level ÷ all consumers there that ask about the player | Per phase |
 | Formula coverage | Formula terms computed from a sourced expression ÷ all terms of the row | Per game |
 | Settings resolved | Game settings the row reads that the master authors ÷ all it reads | Per game |
 | Sneak-gated perks fireable | Vanilla entries whose tabs can pass in play ÷ vanilla entries gated on `IsSneaking` | Per game |
-| Verify items closed | **Phase 0: verify** items answered ÷ all | Per phase |
+| Verify items closed | Rows of the §9 Phase 0 verify table answered ÷ all its rows | Per phase |
 
 ---
 
 ## 9. Delivery sequence
 
 **Phase 0 — Design and verify list (no engine code).** Write
-`docs/engine/sneak-detection.md` (stance, tick, level, alert state, light
-input, consumer migration, schedule placement) and register it; answer or file
-every **Phase 0: verify** item in §5; run the settings census of §7.2 scenario
-3 as a one-off example and check in its table; name the vanilla references
-scenarios 5 to 7 run on. Needs §10 Q1 to Q6 decided. Exit: the design is
-merged, the verify table has no unanswered row without an issue, and the census
-table is checked in.
+`docs/engine/sneak-detection.md` (stance, tick, level, alert state, the
+actor-to-actor sight test §10 Q7 decides, light input, consumer migration,
+FO3 / FNV sneak-attack damage, schedule placement) and register it; answer
+every row of the verify table below or file an issue for it; run the settings
+census of §7.2 scenario 3 as a one-off example and check in its table; name the
+vanilla references scenarios 5 and 7 run on. Needs §10 Q1 to Q7 decided. Exit:
+the design is merged, the verify table has no unanswered row without an issue,
+and the census table is checked in.
 
-**Phase 1 — The stance.** SNK-STN-001 to -005, SNK-STN-007, SNK-SAVE-001,
-SNK-DX-002, on every game. Exit: §7.2 scenario 1 passes, and `IsSneaking` reads
-1 in a held FNV session after `stealth.sneak on`.
+| # | Verify item | IDs | What settles it | Issue |
+|---|---|---|---|---|
+| V1 | Whether disabling sneaking stands an already sneaking player up | SNK-STN-004 | An in-game test per game with the sneak control disabled | — |
+| V2 | The `MOVT` values vanilla Skyrim races name in `SNMV` | SNK-STN-005 | xEdit read of `Skyrim.esm` `RACE` and `MOVT` | — |
+| V3 | Whether FO3 and FNV let the player run in the stance | SNK-STN-006 | An in-game test on FO3 and FNV | — |
+| V4 | First-person camera height in the stance | SNK-STN-007 | A camera-height game setting found by the census, or an in-game measurement | — |
+| V5 | Sneak clip names (KF games) and Skyrim's behaviour-graph variable | SNK-STN-008 | A scan of each game's archives | — |
+| V6 | Values of the FO3 / FNV detection coefficients | SNK-DET-004 | The census (§7.2 scenario 3) | — |
+| V7 | The FO3 / FNV detection cadence | SNK-DET-006 | A timer setting found by the census, or the executable's default table | — |
+| V8 | Skyrim's `fSneakBaseValue` | SNK-DET-007 | `Skyrim.esm` through the census, or the executable's default table | — |
+| V9 | Whether Oblivion and FO3 / FNV have a view cone | SNK-DET-008 | A view-cone setting found by the census, or an in-game test | — |
+| V10 | The rule that moves a detector to level Lost | SNK-DET-012 | The *Category:Detection* timers through the census, then an in-game test | — |
+| V11 | Skyrim's stealth-point regeneration | SNK-DET-015 | The CK settings through the census and an in-game test | — |
+| V12 | Whether level Unseen counts as unaware for a sneak attack | SNK-ATK-001 | An in-game test per game | — |
+| V13 | Oblivion's Apprentice marksman multiplier and Novice bonus | SNK-ATK-002 | `Oblivion.esm` through the census and an in-game test | — |
+| V14 | The FO3 / FNV sneak-attack damage multiplier | SNK-ATK-003 | The three GECK-named settings through the census and an in-game test | — |
+| V15 | Where Skyrim's base sneak-attack multipliers live | SNK-ATK-004 | `Skyrim.esm` settings and weapon records, and an in-game test | — |
+| V16 | What `fVATSStealthMult` scales | SNK-ATK-006 | An in-game VATS test | — |
+| V17 | What `StartCannibal` and `StartMisterSandman` change, and whether "eaten" is saved | SNK-PERK-002 | An in-game test across a save and load | — |
+| V18 | Which terms Skyrim 48 and 57 scale | SNK-PERK-004 | An in-game test with a vanilla perk using each, named by the census | — |
+| V19 | What FNV 69, 70 and 71 do | SNK-PERK-006 | The vanilla perks using each, named by the census, and an in-game test | — |
+| V20 | Each game's indicator table: FO3 / FNV [DETECTED] versus flashing [DANGER], the rest whole | SNK-HUD-002, §3.2, §6 row 9 | In-game captures of each state with its detector's level and hostility | — |
+| V21 | The sneak element and trait of the vanilla `hud_main_menu.xml` | SNK-HUD-003 | Reading the XML from each MenuXml game's archives | — |
+| V22 | Whether each detector's timer runs on its own phase | §6 row 2 | An in-game timing test or the executable | — |
+| V23 | Whether detection state survives a save | §6 row 4 | An in-game test: save while an NPC searches, then load | — |
+
+**Phase 1 — The stance.** SNK-STN-001 to -007, SNK-SAVE-001, SNK-DX-002, on
+every game. Exit: §7.2 scenario 1 passes, and `IsSneaking` reads 1 in a held
+FNV session after `stealth.sneak on`.
 
 **Phase 2 — Detection, Wave 1 (FO3, FNV).** SNK-DET-001 to -004, -006, -008 to
--014, SNK-USE-001 to -007, SNK-DX-001, -003. Depends on the CHARAL FNV ruleset's
-capture. Exit: §7.2 scenarios 2 to 5 pass on FO3 and FNV, and the
-consumers-on-the-level metric is 100 % in ROADMAP.
+-014, -016, -017, SNK-USE-001 to -010, SNK-SAVE-002, SNK-DX-001, -003. Depends
+on the CHARAL FNV ruleset's capture. Exit: §7.2 scenarios 2 to 6 pass on FO3
+and FNV, and the consumers-on-the-level metric is 100 % in ROADMAP.
 
-**Phase 3 — Sneak attacks and perks, Wave 1.** SNK-ATK-001, -003, -005,
-SNK-PERK-001 to -003, -006. Depends on the Perk Entry Points PRD's activate
-runtime (`683d9a92b`). Exit: §7.2 scenarios 7 and 8 pass on FNV, and the
-sneak-gated-perks metric is published for FO3 and FNV.
+**Phase 3 — Sneak attacks and perks, Wave 1.** SNK-ATK-001, -003, -005, -006,
+SNK-PERK-001 to -003, -006, -008. Depends on the Perk Entry Points PRD's
+activate runtime (`683d9a92b`). Exit: §7.2 scenarios 7 and 8 pass on FNV, and
+the sneak-gated-perks metric is published for FO3 and FNV.
 
-**Phase 4 — The indicator.** SNK-HUD-001 to -003, -005. Exit: §7.2 scenario 9
-passes for FO3, FNV, Oblivion and Skyrim.
+**Phase 4 — The indicator.** SNK-HUD-001 to -005. Exit: §7.2 scenario 9 passes
+for FO3, FNV, Oblivion and Skyrim.
 
 **Phase 5 — Wave 2 (Oblivion, Skyrim).** SNK-DET-005, -007, -015, SNK-ATK-002,
--004, SNK-PERK-004, -005, -007, SNK-STN-006, -008. Exit: §7.2 scenarios 2, 3,
-6 and 8 pass on Oblivion and Skyrim, and formula coverage is published for
-both.
+-004, SNK-PERK-004, -005, -007, SNK-STN-008. Exit: §7.2 scenarios 2, 3 and 8
+pass on Oblivion and Skyrim, and formula coverage is published for both.
 
 **Phase 6 — Fallout 4 and Starfield detection.** Per §10 Q2. Exit: the
 decision's outcome is in ROADMAP with its formula-coverage number, or the
@@ -601,6 +707,21 @@ games are recorded out with the reason.
    no M number is in use from M65 to M69. Alternative: fold it into M42;
    consequence: the AI Packages PRD's scope grows by a player-side system it
    does not describe.
+7. **Q7 — Whose awareness the tick computes.** Recommended: levels toward the
+   player only (SNK-DET-001), and one actor-to-actor sight test, owned by the
+   detection module, for every case where the player is not the target:
+   hostility between NPCs and creatures, flee from a non-player threat,
+   dead-body discovery, `GetDetected` / `GetDetectionLevel` on a non-player
+   target, `IsActorDetected` and `IsDetectedBy` on a non-player actor.
+   Consequence: the tick's cost stays linear in the detectors near the player,
+   and `GetDetectionLevel` on a non-player target keeps answering 3 or 0, which
+   is what the original answers there too ("It will only return a value of 3
+   or 0 for all other cases where the player is not the target", GECK
+   *GetDetectionLevel*); NPCs notice each other by sight alone (§6 row 8).
+   Alternative: run the formula for every detector–target pair in range;
+   consequence: NPC ambushes and NPC-on-NPC stealth follow the original's
+   detection states, at a per-tick cost quadratic in the actors in range and a
+   level to keep for every pair.
 
 ---
 
@@ -609,8 +730,10 @@ games are recorded out with the reason.
 | Need | Go to |
 |---|---|
 | The FO3 / FNV formula and its sources | [CHARAL FNV/FO3 ruleset § Sneak Detection](../engine/charal-fnv-fo3-ruleset.md#sneak-detection-fnv--locked-but-an-aistealth-subsystem-not-a-charal-stat) |
-| The Skyrim formula | [CHARAL Skyrim ruleset § Sneak Detection](../engine/charal-skyrim-ruleset.md#sneak-detection-skyrim--locked-sounddistance-halves-pending-visualskill-halves--out-of-charal-scope) |
+| `fVATSStealthMult` and the other VATS settings | [CHARAL FNV/FO3 ruleset § VATS tuning](../engine/charal-fnv-fo3-ruleset.md#vats-tuning-action-points-regen-and-the-radiation-gauge--built-6350) |
+| The Skyrim formula and sneak-attack multipliers | [CHARAL Skyrim ruleset § Sneak Detection](../engine/charal-skyrim-ruleset.md#sneak-detection-skyrim--locked-sounddistance-halves-pending-visualskill-halves--out-of-charal-scope) |
 | Oblivion damage and crime | [CHARAL Oblivion ruleset](../engine/charal-oblivion-ruleset.md) |
+| Fallout 4 detection, recorded as a dead end | [CHARAL FO4 ruleset](../engine/charal-fo4-ruleset.md) |
 | The activate perks and the sneak entry points | [Perk Entry Points PRD](perk-entry-points.md) |
 | NPC sneaking, Crouch To Reload | [AI Packages Completion PRD](ai-packages-completion.md) |
 | HUD surfaces | [UI System](../engine/ui.md), [Game UI Integration PRD](game-ui-integration.md) |
@@ -626,3 +749,4 @@ games are recorded out with the reason.
 | Rev | Date | Change | Review |
 |---|---|---|---|
 | 1 | 2026-11-11 | First draft | — |
+| 2 | 2026-11-14 | Review round 1 folded in: inventory re-measured at `922072af8` (§3.1 row 8 per consumer: hostility's own `in_sight` over every pair, guard rush on `actor_detects`, dead-body discovery on `actor_sees_corpse`, flee on range alone; anchors re-pointed); §2 *Sight test* as the family, *level Lost* versus *alert state Lost*; `fVATSStealthMult` owner moved to the CHARAL FNV/FO3 ruleset (row 16, SNK-ATK-006); player-only detection scope as new Q7 with §6 row 8 (corollary, SNK-G-002, SNK-DET-001, SNK-USE-002 to -005 reworded, SNK-USE-006 split into -006, -008, -009); one-producer test re-aimed at `line_of_sight_blocked` / `DetectionConfig::range` (SNK-USE-007); FO3 / FNV indicator mapping keyed on level and hostility, sourced conflict marked verify (§3.2, SNK-HUD-002); §6 rows 2 and 3 cited, row 9 added; light-level quote cited at its wiki page; SNK-PERK-001 scoped to Robotics Expert, SNK-PERK-002 counts four; SNK-STN-006 given a provisional default and moved to Phase 1; fix-catalog entry as SNK-USE-010; FO4 sneak hooks as SNK-PERK-008; SNK-DET-010 split into -010, -016, -017; acceptance drivers named (scenarios 6, 7, 9) and the census fail rule matched to the fallback; SNK-SAVE-002 and SNK-HUD-004 scheduled; Phase 0 verify table (V1–V23); sneak-attack owners and document map rows; per-game rules stated as ruleset fields | claude: revise |
