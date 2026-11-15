@@ -45,6 +45,18 @@ fn construction_and_recording_drivers_stay_within_their_size_pins() {
             "fn prepare_static_blas_batch(",
             154,
         ),
+        // #6948 — 369 code lines after the M39 residency work; recording,
+        // failure handling, install and floor bookkeeping are methods beside it.
+        (
+            include_str!("../../texture_registry/upload.rs"),
+            "fn flush_upload_batch(",
+            43,
+        ),
+        (
+            include_str!("../../texture_registry/upload.rs"),
+            "fn record_queued_upload(",
+            221,
+        ),
     ] {
         let measured = function_line_count(source, declaration);
         assert!(

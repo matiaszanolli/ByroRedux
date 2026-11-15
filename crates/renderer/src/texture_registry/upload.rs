@@ -1260,23 +1260,11 @@ impl TextureRegistry {
         pending: Vec<PendingDdsUpload>,
     ) -> Result<usize> {
         let count = pending.len();
-
-        // Per-upload outputs assembled during recording; consumed
-        // after the submit + wait completes.
-        struct StagedUpload {
-            handle: TextureHandle,
-            texture: crate::vulkan::texture::Texture,
-            staging: Option<crate::vulkan::buffer::StagingGuard>,
-            /// M39 — `Some` when this replaces a live streamable image.
-            change: Option<ResidencyChange>,
-            /// M39 — the residency a floor-first upload installs, whether
-            /// its source bytes hold the whole chain, the index of that
-            /// source in `pending`, and its header length.
-            floor: Option<(Residency, bool, usize, usize)>,
-        }
-        let mut staged: Vec<StagedUpload> = Vec::with_capacity(count);
-        let mut failed_changes: Vec<(TextureHandle, u32)> = Vec::new();
-        let mut batch_changes = residency::StagedChanges::default();
+        let mut batch = BatchRecording {
+            staged: Vec::with_capacity(count),
+            failed_changes: Vec::new(),
+            changes: residency::StagedChanges::default(),
+        };
 
         // Use the persistent transfer fence (#302) so we don't pay a
         // per-flush vk::Fence create/destroy. `with_one_time_commands_reuse_fence`
@@ -1288,294 +1276,303 @@ impl TextureRegistry {
             transfer_fence,
             |cmd| {
                 for (index, upload) in pending.iter().enumerate() {
-                    // #4879 — the release path purges queued uploads for
-                    // freed handles, but a slot whose last reference is
-                    // already gone must never be installed: `ref_count == 0`
-                    // means `decrement_ref` will refuse every future
-                    // release, so the texture would orphan for the process
-                    // lifetime. Skip before paying the parse/staging cost.
-                    if self
-                        .textures
-                        .get(upload.handle as usize)
-                        .is_some_and(|entry| entry.ref_count == 0)
-                    {
-                        log::warn!(
-                            "Skipping queued DDS upload '{}': handle {} was released before flush",
-                            upload.path,
-                            upload.handle,
-                        );
-                        continue;
-                    }
-                    let meta = match crate::vulkan::dds::parse_dds_with_color_space(
-                        &upload.dds_bytes,
-                        upload.color_space,
-                    ) {
-                        Ok(m) => m,
-                        Err(e) => {
-                            log::warn!(
-                                "Failed to parse DDS '{}': {} — dropping queued upload",
-                                upload.path,
-                                e,
-                            );
-                            continue;
-                        }
-                    };
-                    let parsed_view_kind = if meta.is_cubemap {
-                        TextureViewKind::Cube
-                    } else {
-                        TextureViewKind::D2
-                    };
-                    if parsed_view_kind != upload.view_kind {
-                        log::warn!(
-                            "DDS '{}' changed view kind between queue and flush ({:?} -> {:?}); dropping upload",
-                            upload.path,
-                            upload.view_kind,
-                            parsed_view_kind,
-                        );
-                        continue;
-                    }
-                    if let Some(entry) = self.textures.get_mut(upload.handle as usize) {
-                        entry.has_alpha = crate::vulkan::dds::format_has_alpha(meta.format);
-                    }
-                    let pixel_data = crate::vulkan::dds::upload_pixels(&meta, &upload.dds_bytes);
-                    let sampler = self.samplers[upload.clamp_mode as usize];
-                    // M39 — a BA2 floor read keeps the full-chain header over
-                    // a payload that starts at its last chunk's level.
-                    let payload_first = if meta.array_layers == 1 && meta.expand.is_none() {
-                        crate::vulkan::dds::payload_first_level(&meta, pixel_data.len())
-                    } else {
-                        0
-                    };
-
-                    // M39 — a promotion or demotion of a live streamable
-                    // texture: only if it still holds the range the change
-                    // was planned against (a later change or a release may
-                    // have moved it since).
-                    if let Some(change) = upload.change {
-                        let old_image =
-                            self.textures.get(upload.handle as usize).and_then(|entry| {
-                                let current = entry.residency?;
-                                let texture = entry.texture.as_ref()?;
-                                (current.first_resident == change.old_first)
-                                    .then_some(texture.image)
-                            });
-                        let Some(old_image) = old_image else {
-                            log::debug!(
-                                "Skipping stale residency change for '{}' ({change:?})",
-                                upload.path,
-                            );
-                            continue;
-                        };
-                        // #6738 — `entry.residency` moves only when the batch
-                        // installs, so a second change for this handle would
-                        // pass the check above too. It is stale by
-                        // construction; it replans on a later frame.
-                        if !batch_changes.claim(upload.handle) {
-                            log::debug!(
-                                "Skipping second residency change for '{}' in one batch ({change:?})",
-                                upload.path,
-                            );
-                            continue;
-                        };
-                        let upload_levels = change.upload_levels();
-                        let bytes: &[u8] = if upload_levels.is_empty() {
-                            &[]
-                        } else if upload_levels.start < payload_first {
-                            log::warn!(
-                                "Residency change for '{}' needs level {} but its bytes start at {}; dropping it",
-                                upload.path,
-                                upload_levels.start,
-                                payload_first,
-                            );
-                            continue;
-                        } else {
-                            let Some(bytes) = crate::vulkan::dds::level_payload(
-                                &meta,
-                                &pixel_data,
-                                upload_levels,
-                                payload_first,
-                            ) else {
-                                // #6737 — a truncated payload cannot hold the
-                                // levels its header describes; refuse the
-                                // change rather than slice past the end.
-                                log::warn!(
-                                    "Residency change for '{}' needs bytes past the end of its {}-byte payload; dropping it",
-                                    upload.path,
-                                    pixel_data.len(),
-                                );
-                                continue;
-                            };
-                            bytes
-                        };
-                        match crate::vulkan::texture::Texture::record_dds_residency_change(
-                            device,
-                            allocator,
-                            cmd,
-                            &meta,
-                            change,
-                            old_image,
-                            bytes,
-                            sampler,
-                            self.staging_pool.as_mut(),
-                        ) {
-                            Ok((texture, staging)) => staged.push(StagedUpload {
-                                handle: upload.handle,
-                                texture,
-                                staging,
-                                change: Some(change),
-                                floor: None,
-                            }),
-                            Err(e) => {
-                                // TXS-BUD-007 — the texture keeps the image
-                                // it has (the old one retires only once the
-                                // new one is installed): counted, and not
-                                // retried for a while.
-                                log::warn!(
-                                    "Failed to record residency change for '{}': {} — texture left as it was",
-                                    upload.path,
-                                    e,
-                                );
-                                failed_changes.push((upload.handle, change.new_first));
-                            }
-                        }
-                        continue;
-                    }
-
-                    // M39 — with streaming on, a streamable 2D texture's
-                    // first upload installs only its floor (TXS-RES-001).
-                    // 16/24-bpp sources expanded on the CPU stay whole.
-                    // Bytes that start above level 0 (a BA2 floor read) can
-                    // only install as a floor, whatever the switch says now.
-                    let floor_first = if payload_first > 0 {
-                        Some(payload_first)
-                    } else {
-                        (self.streaming
-                            && upload.view_kind == TextureViewKind::D2
-                            && !meta.is_cubemap
-                            && meta.array_layers == 1
-                            && meta.expand.is_none())
-                        .then(|| {
-                            residency::floor_first_level(meta.width, meta.height, meta.mip_count)
-                        })
-                        .flatten()
-                    };
-                    let first_mip = floor_first.unwrap_or(0);
-                    // #6737 — the range comes from the header; a truncated
-                    // payload is refused here, before any slice, so the
-                    // size check in `record_dds_upload` is reached by
-                    // well-formed uploads only.
-                    let Some(level_bytes) = crate::vulkan::dds::upload_payload(
-                        &meta,
-                        &pixel_data,
-                        first_mip,
-                        payload_first,
-                    ) else {
-                        log::warn!(
-                            "DDS '{}' payload ({} bytes) is shorter than its header's chain; dropping queued upload",
-                            upload.path,
-                            pixel_data.len(),
-                        );
-                        continue;
-                    };
-                    // #1542: a 16/24-bpp `DDPF_RGB` source is CPU-expanded to
-                    // R8G8B8A8. Its raw bytes aren't RGBA8 yet, so skip
-                    // `average_rgb` for it (it would misread the packed
-                    // pixels) — these are UI/font atlases, never diffuse
-                    // albedo anyway. The average reads the smallest level,
-                    // which a floor holds (TXS-RES-006).
-                    if upload.color_space == TextureColorSpace::Srgb && meta.expand.is_none() {
-                        if let Some(avg) = crate::vulkan::dds::average_rgb_levels(
-                            &meta,
-                            level_bytes,
-                            first_mip,
-                        ) {
-                            if let Some(entry) = self.textures.get_mut(upload.handle as usize) {
-                                entry.avg_rgb = Some(avg);
-                            }
-                        }
-                    }
-                    let (texture, staging) =
-                        match crate::vulkan::texture::Texture::record_dds_upload(
-                            device,
-                            allocator,
-                            cmd,
-                            &meta,
-                            first_mip,
-                            floor_first.is_some(),
-                            level_bytes,
-                            sampler,
-                            self.staging_pool.as_mut(),
-                        ) {
-                            Ok(t) => t,
-                            Err(e) => {
-                                log::warn!(
-                                    "Failed to record DDS upload '{}': {} — dropping queued upload",
-                                    upload.path,
-                                    e,
-                                );
-                                continue;
-                            }
-                        };
-                    let floor = floor_first.map(|floor_first| {
-                        let floor = crate::vulkan::dds::level_byte_range(
-                            &meta,
-                            floor_first..meta.mip_count,
-                        );
-                        (
-                            Residency::at_floor(
-                                meta.mip_count,
-                                floor_first,
-                                (floor.end - floor.start) as u64,
-                            ),
-                            payload_first == 0,
-                            index,
-                            meta.data_offset,
-                        )
-                    });
-                    staged.push(StagedUpload {
-                        handle: upload.handle,
-                        texture,
-                        staging: Some(staging),
-                        change: None,
-                        floor,
-                    });
+                    self.record_queued_upload(device, allocator, cmd, index, upload, &mut batch);
                 }
                 Ok(())
             },
         );
+        let BatchRecording {
+            staged,
+            failed_changes,
+            ..
+        } = batch;
 
         // Submit + wait done by `with_one_time_commands_reuse_fence`.
         // After it returns successfully, every recorded upload's GPU
         // work has retired, so each StagingGuard can be released +
         // each Texture installed into its slot's descriptor.
         if let Err(e) = record_result {
-            // The pending queue is gone (we `take`d it) — but `path_map`
-            // was already populated by `queue_or_hit` at enqueue time, so a
-            // later request for the same path cache-HITs the dead
-            // `texture: None` handle instead of re-queuing (#1922).
-            log::warn!(
-                "flush_pending_uploads submission failed ({} uploads dropped): {}",
-                staged.len(),
-                e,
-            );
-            if crate::vulkan::texture::OneTimeCommandError::may_be_in_flight(&e) {
-                // #4891 — submit or fence wait failed: the copies may still
-                // be executing, so a host-side destroy could race them. Leak
-                // both sides, as the batched buffer path does.
-                std::mem::forget(staged);
-            } else {
-                // Nothing was submitted: destroy the partially-staged
-                // textures so their VkImage / staging buffer don't leak.
-                for mut s in staged {
-                    s.texture.destroy(device, allocator);
-                    if let Some(staging) = s.staging {
-                        staging.destroy();
-                    }
-                }
-            }
+            discard_failed_batch(device, allocator, staged, &e);
             return Err(e);
         }
+        self.note_declined_changes(failed_changes);
+        let staged_count = staged.len();
+        let floor_sources = self.install_staged(device, staged);
+        self.record_floor_sources(&pending, floor_sources);
 
+        log::debug!("Flushed DDS upload sub-batch: {staged_count} of {count} staged");
+        Ok(staged_count)
+    }
+
+    /// Record one queued upload into the batch's command buffer, for
+    /// [`Self::flush_upload_batch`]: a residency change of a live streamable
+    /// texture, or a first upload (a floor, with streaming on). An upload
+    /// that cannot be recorded is logged and left out of `batch`.
+    fn record_queued_upload(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        cmd: vk::CommandBuffer,
+        index: usize,
+        upload: &PendingDdsUpload,
+        batch: &mut BatchRecording,
+    ) {
+        // #4879 — the release path purges queued uploads for
+        // freed handles, but a slot whose last reference is
+        // already gone must never be installed: `ref_count == 0`
+        // means `decrement_ref` will refuse every future
+        // release, so the texture would orphan for the process
+        // lifetime. Skip before paying the parse/staging cost.
+        if self
+            .textures
+            .get(upload.handle as usize)
+            .is_some_and(|entry| entry.ref_count == 0)
+        {
+            log::warn!(
+                "Skipping queued DDS upload '{}': handle {} was released before flush",
+                upload.path,
+                upload.handle,
+            );
+            return;
+        }
+        let meta = match crate::vulkan::dds::parse_dds_with_color_space(
+            &upload.dds_bytes,
+            upload.color_space,
+        ) {
+            Ok(m) => m,
+            Err(e) => {
+                log::warn!(
+                    "Failed to parse DDS '{}': {} — dropping queued upload",
+                    upload.path,
+                    e,
+                );
+                return;
+            }
+        };
+        let parsed_view_kind = if meta.is_cubemap {
+            TextureViewKind::Cube
+        } else {
+            TextureViewKind::D2
+        };
+        if parsed_view_kind != upload.view_kind {
+            log::warn!(
+                "DDS '{}' changed view kind between queue and flush ({:?} -> {:?}); dropping upload",
+                upload.path,
+                upload.view_kind,
+                parsed_view_kind,
+            );
+            return;
+        }
+        if let Some(entry) = self.textures.get_mut(upload.handle as usize) {
+            entry.has_alpha = crate::vulkan::dds::format_has_alpha(meta.format);
+        }
+        let pixel_data = crate::vulkan::dds::upload_pixels(&meta, &upload.dds_bytes);
+        let sampler = self.samplers[upload.clamp_mode as usize];
+        // M39 — a BA2 floor read keeps the full-chain header over
+        // a payload that starts at its last chunk's level.
+        let payload_first = if meta.array_layers == 1 && meta.expand.is_none() {
+            crate::vulkan::dds::payload_first_level(&meta, pixel_data.len())
+        } else {
+            0
+        };
+
+        // M39 — a promotion or demotion of a live streamable
+        // texture: only if it still holds the range the change
+        // was planned against (a later change or a release may
+        // have moved it since).
+        if let Some(change) = upload.change {
+            let old_image =
+                self.textures.get(upload.handle as usize).and_then(|entry| {
+                    let current = entry.residency?;
+                    let texture = entry.texture.as_ref()?;
+                    (current.first_resident == change.old_first)
+                        .then_some(texture.image)
+                });
+            let Some(old_image) = old_image else {
+                log::debug!(
+                    "Skipping stale residency change for '{}' ({change:?})",
+                    upload.path,
+                );
+                return;
+            };
+            // #6738 — `entry.residency` moves only when the batch
+            // installs, so a second change for this handle would
+            // pass the check above too. It is stale by
+            // construction; it replans on a later frame.
+            if !batch.changes.claim(upload.handle) {
+                log::debug!(
+                    "Skipping second residency change for '{}' in one batch ({change:?})",
+                    upload.path,
+                );
+                return;
+            };
+            let upload_levels = change.upload_levels();
+            let bytes: &[u8] = if upload_levels.is_empty() {
+                &[]
+            } else if upload_levels.start < payload_first {
+                log::warn!(
+                    "Residency change for '{}' needs level {} but its bytes start at {}; dropping it",
+                    upload.path,
+                    upload_levels.start,
+                    payload_first,
+                );
+                return;
+            } else {
+                let Some(bytes) = crate::vulkan::dds::level_payload(
+                    &meta,
+                    &pixel_data,
+                    upload_levels,
+                    payload_first,
+                ) else {
+                    // #6737 — a truncated payload cannot hold the
+                    // levels its header describes; refuse the
+                    // change rather than slice past the end.
+                    log::warn!(
+                        "Residency change for '{}' needs bytes past the end of its {}-byte payload; dropping it",
+                        upload.path,
+                        pixel_data.len(),
+                    );
+                    return;
+                };
+                bytes
+            };
+            match crate::vulkan::texture::Texture::record_dds_residency_change(
+                device,
+                allocator,
+                cmd,
+                &meta,
+                change,
+                old_image,
+                bytes,
+                sampler,
+                self.staging_pool.as_mut(),
+            ) {
+                Ok((texture, staging)) => batch.staged.push(StagedUpload {
+                    handle: upload.handle,
+                    texture,
+                    staging,
+                    change: Some(change),
+                    floor: None,
+                }),
+                Err(e) => {
+                    // TXS-BUD-007 — the texture keeps the image
+                    // it has (the old one retires only once the
+                    // new one is installed): counted, and not
+                    // retried for a while.
+                    log::warn!(
+                        "Failed to record residency change for '{}': {} — texture left as it was",
+                        upload.path,
+                        e,
+                    );
+                    batch.failed_changes.push((upload.handle, change.new_first));
+                }
+            }
+            return;
+        }
+
+        // M39 — with streaming on, a streamable 2D texture's
+        // first upload installs only its floor (TXS-RES-001).
+        // 16/24-bpp sources expanded on the CPU stay whole.
+        // Bytes that start above level 0 (a BA2 floor read) can
+        // only install as a floor, whatever the switch says now.
+        let floor_first = if payload_first > 0 {
+            Some(payload_first)
+        } else {
+            (self.streaming
+                && upload.view_kind == TextureViewKind::D2
+                && !meta.is_cubemap
+                && meta.array_layers == 1
+                && meta.expand.is_none())
+            .then(|| {
+                residency::floor_first_level(meta.width, meta.height, meta.mip_count)
+            })
+            .flatten()
+        };
+        let first_mip = floor_first.unwrap_or(0);
+        // #6737 — the range comes from the header; a truncated
+        // payload is refused here, before any slice, so the
+        // size check in `record_dds_upload` is reached by
+        // well-formed uploads only.
+        let Some(level_bytes) = crate::vulkan::dds::upload_payload(
+            &meta,
+            &pixel_data,
+            first_mip,
+            payload_first,
+        ) else {
+            log::warn!(
+                "DDS '{}' payload ({} bytes) is shorter than its header's chain; dropping queued upload",
+                upload.path,
+                pixel_data.len(),
+            );
+            return;
+        };
+        // #1542: a 16/24-bpp `DDPF_RGB` source is CPU-expanded to
+        // R8G8B8A8. Its raw bytes aren't RGBA8 yet, so skip
+        // `average_rgb` for it (it would misread the packed
+        // pixels) — these are UI/font atlases, never diffuse
+        // albedo anyway. The average reads the smallest level,
+        // which a floor holds (TXS-RES-006).
+        if upload.color_space == TextureColorSpace::Srgb && meta.expand.is_none() {
+            if let Some(avg) = crate::vulkan::dds::average_rgb_levels(
+                &meta,
+                level_bytes,
+                first_mip,
+            ) {
+                if let Some(entry) = self.textures.get_mut(upload.handle as usize) {
+                    entry.avg_rgb = Some(avg);
+                }
+            }
+        }
+        let (texture, staging) =
+            match crate::vulkan::texture::Texture::record_dds_upload(
+                device,
+                allocator,
+                cmd,
+                &meta,
+                first_mip,
+                floor_first.is_some(),
+                level_bytes,
+                sampler,
+                self.staging_pool.as_mut(),
+            ) {
+                Ok(t) => t,
+                Err(e) => {
+                    log::warn!(
+                        "Failed to record DDS upload '{}': {} — dropping queued upload",
+                        upload.path,
+                        e,
+                    );
+                    return;
+                }
+            };
+        let floor = floor_first.map(|floor_first| {
+            let floor = crate::vulkan::dds::level_byte_range(
+                &meta,
+                floor_first..meta.mip_count,
+            );
+            (
+                Residency::at_floor(
+                    meta.mip_count,
+                    floor_first,
+                    (floor.end - floor.start) as u64,
+                ),
+                payload_first == 0,
+                index,
+                meta.data_offset,
+            )
+        });
+        batch.staged.push(StagedUpload {
+            handle: upload.handle,
+            texture,
+            staging: Some(staging),
+            change: None,
+            floor,
+        });
+    }
+
+    /// TXS-BUD-007 — a residency change that could not be recorded is
+    /// counted, and its texture is not retried for a while.
+    fn note_declined_changes(&mut self, failed_changes: Vec<(TextureHandle, u32)>) {
         for (handle, target) in failed_changes {
             self.stream_counters.declines += 1;
             if let Some(source) = self.stream_sources.get_mut(&handle) {
@@ -1585,10 +1582,19 @@ impl TextureRegistry {
                     .wrapping_add(residency::DEMOTE_AFTER_FRAMES);
             }
         }
+    }
 
+    /// Install a submitted batch's textures: land residency changes, write
+    /// the real descriptors over the enqueue-time fallback, move each texture
+    /// into its slot and release its staging. Returns the floors installed,
+    /// as `(handle, whole, source index, header length)`.
+    fn install_staged(
+        &mut self,
+        device: &ash::Device,
+        staged: Vec<StagedUpload>,
+    ) -> Vec<(TextureHandle, bool, usize, usize)> {
         // Install textures + write real descriptors. Replaces the
         // fallback redirect installed at enqueue time.
-        let staged_count = staged.len();
         let current_frame_id = self.current_frame_id;
         let mut floor_sources = Vec::new();
         let mut landed_changes = Vec::new();
@@ -1669,7 +1675,16 @@ impl TextureRegistry {
         for (handle, change) in landed_changes {
             self.note_change_landed(handle, change);
         }
+        floor_sources
+    }
 
+    /// Record each installed floor's source.
+    fn record_floor_sources(
+        &mut self,
+        pending: &[PendingDdsUpload],
+        floor_sources: Vec<(TextureHandle, bool, usize, usize)>,
+    ) {
+        let current_frame_id = self.current_frame_id;
         // M39 — every floor records its source; from then on the wanted-mip
         // pass (`apply_wanted`) decides its promotions, read back by the
         // host. No high-mip bytes are kept (decision Q2 (b)).
@@ -1703,9 +1718,65 @@ impl TextureRegistry {
                 },
             );
         }
+    }
+}
 
-        log::debug!("Flushed DDS upload sub-batch: {staged_count} of {count} staged");
-        Ok(staged_count)
+// Per-upload outputs assembled during recording; consumed
+// after the submit + wait completes.
+struct StagedUpload {
+    handle: TextureHandle,
+    texture: crate::vulkan::texture::Texture,
+    staging: Option<crate::vulkan::buffer::StagingGuard>,
+    /// M39 — `Some` when this replaces a live streamable image.
+    change: Option<ResidencyChange>,
+    /// M39 — the residency a floor-first upload installs, whether
+    /// its source bytes hold the whole chain, the index of that
+    /// source in `pending`, and its header length.
+    floor: Option<(Residency, bool, usize, usize)>,
+}
+
+/// What recording one sub-batch produces, for [`TextureRegistry::flush_upload_batch`].
+struct BatchRecording {
+    staged: Vec<StagedUpload>,
+    /// Residency changes that could not be recorded: `(handle, target first level)`.
+    failed_changes: Vec<(TextureHandle, u32)>,
+    /// #6738 — the handles this batch already changes.
+    changes: residency::StagedChanges,
+}
+
+/// A submission failed (#4891): when the copies may still be executing, leak
+/// both sides, as the batched buffer path does; when nothing was submitted,
+/// destroy the partially-staged textures so their `VkImage` / staging buffer
+/// don't leak.
+fn discard_failed_batch(
+    device: &ash::Device,
+    allocator: &SharedAllocator,
+    staged: Vec<StagedUpload>,
+    e: &anyhow::Error,
+) {
+    // The pending queue is gone (we `take`d it) — but `path_map`
+    // was already populated by `queue_or_hit` at enqueue time, so a
+    // later request for the same path cache-HITs the dead
+    // `texture: None` handle instead of re-queuing (#1922).
+    log::warn!(
+        "flush_pending_uploads submission failed ({} uploads dropped): {}",
+        staged.len(),
+        e,
+    );
+    if crate::vulkan::texture::OneTimeCommandError::may_be_in_flight(e) {
+        // #4891 — submit or fence wait failed: the copies may still
+        // be executing, so a host-side destroy could race them. Leak
+        // both sides, as the batched buffer path does.
+        std::mem::forget(staged);
+    } else {
+        // Nothing was submitted: destroy the partially-staged
+        // textures so their VkImage / staging buffer don't leak.
+        for mut s in staged {
+            s.texture.destroy(device, allocator);
+            if let Some(staging) = s.staging {
+                staging.destroy();
+            }
+        }
     }
 }
 
