@@ -95,6 +95,8 @@ pub(crate) struct MusicCatalog {
     stings: Vec<Sting>,
     /// The Script layer ends on the next frame (a cell change, a load).
     end_script: bool,
+    /// A save load ended the outgoing session: its sting ends on the next frame too (AUD-4).
+    end_sting: bool,
     /// The music volume last applied.
     volume: Option<f32>,
     /// `CellMusicTypes::changes` last seen: an OBSE `SetCellMusicType` re-resolves Location.
@@ -155,6 +157,16 @@ fn current_place(world: &World) -> Option<Place> {
 pub(crate) fn raise_sting(world: &World, sting: Sting) {
     if let Some(mut catalog) = world.try_resource_mut::<MusicCatalog>() {
         catalog.stings.push(sting);
+    }
+}
+
+/// A save load replaced the session: the sting the outgoing game was playing (a death sting, most
+/// often, since the player loads after dying) ends with it, so it does not play on over the loaded
+/// game and keep Script, Battle and Location suspended (AUD-4, `docs/engine/music.md` §9). A cell
+/// change keeps a sting, so this is the load's own signal, beside [`end_script_layer`].
+pub(crate) fn end_sting_layer(world: &World) {
+    if let Some(mut catalog) = world.try_resource_mut::<MusicCatalog>() {
+        catalog.end_sting = true;
     }
 }
 
@@ -291,6 +303,9 @@ pub(crate) fn music_system(world: &World, dt: f32) {
         if std::mem::take(&mut state.end_script) {
             music.end_script(&mut out);
             music.end_sting_silence();
+        }
+        if std::mem::take(&mut state.end_sting) {
+            music.set(Layer::Sting, None, &mut out);
         }
         if let Some(track) = requests.last() {
             let directive = catalog.music_type(&index, track.form_id, "PlayMusic");
@@ -465,5 +480,27 @@ mod tests {
         end_script_layer(&world);
         music_system(&world, 0.016);
         assert!(!world.resource::<MusicController>().silenced(), "a load ends it");
+    }
+
+    /// AUD-4 — a load ends the sting itself, not only its silence: a death sting must not play on
+    /// over the loaded game. A cell change (`end_script_layer` alone) keeps it.
+    #[test]
+    fn a_load_ends_the_sting_layer() {
+        let mut world = World::new();
+        install(&mut world);
+        world.insert_resource(crate::components::LoadedCellIndex(Arc::new(Default::default())));
+        world.insert_resource(byroredux_audio::AudioWorld::headless());
+        music_system(&world, 0.016);
+        {
+            let mut out = controller::tests::FakeOutput::default();
+            let death = controller::tests::playlist("death", &["music\\special\\death.mp3"]);
+            world.resource_mut::<MusicController>().sting(death, &mut out);
+        }
+        end_script_layer(&world);
+        music_system(&world, 0.016);
+        assert!(world.resource::<MusicController>().directive(Layer::Sting).is_some(), "a cell change keeps the sting");
+        end_sting_layer(&world);
+        music_system(&world, 0.016);
+        assert!(world.resource::<MusicController>().directive(Layer::Sting).is_none(), "a load ends it");
     }
 }

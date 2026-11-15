@@ -329,8 +329,11 @@ Vegas leg, `music-oblivion.sh` scenario 7.
 
 A save keeps no music state (Q5, MUS-SAV-002). After a load, the place changes, so the
 Location layer re-resolves on the first frame of the loaded place (MUS-SAV-001); Battle
-follows combat; a scripted track ends. Every music resource is in the save registry's
-not-saved list with its reason.
+follows combat; a scripted track ends; a sting ends with the session that raised it (a death
+sting must not play over the loaded game, AUD-4, `end_sting_layer`). One exception stands: an
+Oblivion `StreamMusic` stream that carries a music category survives a load into a cell of the
+same category, as it survives such a cell change (#6903). Every music resource is in the save
+registry's not-saved list with its reason.
 
 ## 10. Phase 0 verify items
 

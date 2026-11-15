@@ -903,6 +903,9 @@ pub fn execute_pending_save_loads(
 
     // M45.1 refinement — put the player back where they saved, on top of
     // the reloaded cell (which spawns the player at the default door).
+    // AUD-4 — the outgoing session's sting ends with it (the reload's teardown already ended the
+    // Script layer through `end_script_layer`).
+    crate::music::end_sting_layer(world);
     // INC4-2 — the overlay may have restored a different sex or race than the live body wears.
     crate::player_body::sync_body_after_load(world, identity_before);
     if let Some(pose) = snapshot_player_pose(&snapshot) {
