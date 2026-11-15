@@ -366,19 +366,27 @@ fn locals_never_suspend(effects: &[Effect]) -> bool {
     !(effects.iter().any(sets_local) && effects.iter().any(has_latent_tail))
 }
 
-/// Whether running `effect` can suspend the fragment and queue the rest.
 /// M47.2 — whether `effect` suspends a run (a wait, a provider barrier),
-/// for the Papyrus VM, which cannot.
+/// for the Papyrus VM, which cannot. `PlayBink` is the exception: the VM
+/// freezes its own frames until the movie ends (BIK-REQ-002), so for it the
+/// call is not latent, though it is for the lowered path ([`has_latent_tail`]).
 pub fn is_latent(effect: &Effect) -> bool {
-    has_latent_tail(effect)
+    !matches!(effect, Effect::PlayBink { .. }) && has_latent_tail(effect)
 }
 
+/// Whether running `effect` can suspend the lowered fragment and queue the
+/// rest: the guards that keep a speaker line, run-time locals or an inlined
+/// body from spanning the suspension decline on it, and the VM runs the
+/// fragment instead.
 pub(super) fn has_latent_tail(effect: &Effect) -> bool {
     match effect {
         Effect::Wait { .. }
         | Effect::WaitForActors3DLoaded { .. }
         | Effect::WaitWhile { .. }
-        | Effect::ProviderCall(_) => true,
+        | Effect::ProviderCall(_)
+        // BIK-REQ-002 — the run is frozen until the movie ends
+        // (`FragmentResumeCondition::MovieEnded`), like a wait.
+        | Effect::PlayBink { .. } => true,
         Effect::Conditional {
             then_effects,
             else_effects,

@@ -1484,6 +1484,36 @@ fn a_speaker_fragment_with_a_latent_tail_declines() {
     .is_some());
 }
 
+/// BIK-REQ-002 — `Game.PlayBink` freezes the lowered run until the movie ends
+/// (`FragmentResumeCondition::MovieEnded`), so a speaker fragment across it
+/// declines like one across a wait, and the VM runs it. The VM does not count
+/// the movie a latent call: it freezes its own frames on it (`is_latent`).
+#[test]
+fn a_speaker_fragment_across_a_movie_declines_like_a_wait() {
+    let with_speaker = lower_first_info_fragment(
+        "ScriptName TIF__1 extends TopicInfo\n\
+         Function Fragment_0(ObjectReference akSpeakerRef)\n\
+         Actor akSpeaker = akSpeakerRef as Actor\n\
+         akSpeaker.AddItem(Gold001, 10)\n\
+         Game.PlayBink(\"Ending.bik\")\n EndFunction\n",
+    );
+    assert_eq!(with_speaker, None);
+
+    let effects = lower_first_info_fragment(
+        "ScriptName TIF__1 extends TopicInfo\n\
+         Function Fragment_0(ObjectReference akSpeakerRef)\n\
+         Game.GetPlayer().AddItem(Gold001, 10)\n\
+         Game.PlayBink(\"Ending.bik\")\n EndFunction\n",
+    )
+    .expect("without the speaker the movie lowers");
+    let movie = effects
+        .iter()
+        .find(|effect| matches!(effect, Effect::PlayBink { .. }))
+        .expect("a PlayBink effect");
+    assert!(super::lower::has_latent_tail(movie), "the lowered run suspends on it");
+    assert!(!is_latent(movie), "the VM freezes on it itself");
+}
+
 /// M47.2 — faction membership calls on an alias actor, the player and
 /// (in a topic-info fragment) the speaker; `SetFactionRank` takes a
 /// literal rank in `i8` range, negative included.
