@@ -50,9 +50,13 @@ pub(crate) fn ini_value(text: &str, section: &str, key: &str) -> Option<String> 
     None
 }
 
-/// [`ini_value`] read as a number; `None` when unset or not a number.
+/// [`ini_value`] read as a number; `None` when unset or not a finite number.
+///
+/// `f32::from_str` also accepts `inf`, `infinity` and `NaN`, and an overflow such as `1e39` parses
+/// as infinite. None of those is a setting: an infinite `iMusicTransitionInMS` made an infinite fade
+/// that `Duration::from_secs_f32` panics on, and a `NaN` volume passes `clamp` unchanged (#6929).
 pub(crate) fn ini_f32(text: &str, section: &str, key: &str) -> Option<f32> {
-    ini_value(text, section, key)?.parse().ok()
+    ini_value(text, section, key)?.parse::<f32>().ok().filter(|value| value.is_finite())
 }
 
 /// The game a plugin belongs to, from its `TES4` header alone (the first megabyte is far more than
@@ -78,5 +82,15 @@ mod tests {
         assert_eq!(ini_f32(ini, "Audio", "fDefaultMusicVolume"), Some(0.6));
         assert_eq!(ini_value(ini, "Audio", "sEmpty").as_deref(), Some(""), "set to nothing");
         assert_eq!(ini_f32(ini, "Audio", "sEmpty"), None);
+    }
+
+    /// #6929 — a non-finite number is no setting: it reads as unset, so the default stands.
+    #[test]
+    fn a_non_finite_number_reads_as_unset() {
+        for value in ["inf", "-inf", "infinity", "NaN", "1e39"] {
+            let ini = format!("[Audio]\niMusicTransitionInMS={value}\n");
+            assert_eq!(ini_f32(&ini, "Audio", "iMusicTransitionInMS"), None, "{value}");
+        }
+        assert_eq!(ini_f32("[Audio]\niMusicTransitionInMS=1000\n", "Audio", "iMusicTransitionInMS"), Some(1000.0));
     }
 }
