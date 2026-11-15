@@ -617,11 +617,7 @@ pub(crate) fn prune_stopped_sounds(world: &World, audio_world: &mut AudioWorld) 
         // 10 ms default matches `Tween::default()` exactly so authors
         // who don't override stay on the pre-#845 behaviour.
         let fade_ms = audio_world.active_sounds[*idx].unload_fade_ms.max(0.0);
-        let tween = Tween {
-            start_time: kira::StartTime::Immediate,
-            duration: Duration::from_secs_f32(fade_ms / 1000.0),
-            easing: kira::Easing::Linear,
-        };
+        let tween = crate::world::linear_tween(fade_ms / 1000.0);
         audio_world.active_sounds[*idx].handle.stop(tween);
         // Mark so subsequent prune ticks skip the re-stop until the
         // handle actually transitions to `Stopped` and `retain`

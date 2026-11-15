@@ -37,7 +37,7 @@ pub fn with_start_delay(sound: &std::sync::Arc<StaticSoundData>, secs: f64) -> s
     std::sync::Arc::new(
         (**sound)
             .clone()
-            .start_time(kira::StartTime::Delayed(std::time::Duration::from_secs_f64(secs.max(0.0)))),
+            .start_time(kira::StartTime::Delayed(crate::world::tween_duration(secs))),
     )
 }
 
@@ -64,11 +64,7 @@ pub(crate) fn play_main_track(
     fade_in_secs: f32,
     looping: bool,
 ) {
-    let fade = Tween {
-        start_time: kira::StartTime::Immediate,
-        duration: Duration::from_secs_f32(fade_in_secs.max(0.0)),
-        easing: kira::Easing::Linear,
-    };
+    let fade = crate::world::linear_tween(fade_in_secs);
     if let Some(existing) = slot.as_mut() {
         existing.stop(fade);
     }
@@ -95,11 +91,7 @@ pub(crate) fn stop_main_track(slot: &mut Option<StreamingSoundHandle<FromFileErr
     let Some(handle) = slot.as_mut() else {
         return;
     };
-    handle.stop(Tween {
-        start_time: kira::StartTime::Immediate,
-        duration: Duration::from_secs_f32(fade_out_secs.max(0.0)),
-        easing: kira::Easing::Linear,
-    });
+    handle.stop(crate::world::linear_tween(fade_out_secs));
     *slot = None;
 }
 

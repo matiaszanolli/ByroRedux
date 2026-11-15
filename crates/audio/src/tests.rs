@@ -3,6 +3,7 @@
 //! ~1300 lines; pulled in via `#[cfg(test)] mod tests;`.
 
 use super::*;
+use std::time::Duration;
 
 /// Every production source file of the crate, for the source-scan pins
 /// below. `lib.rs` was split into `dsp` / `world` / `components` / `system`
@@ -200,15 +201,18 @@ fn audio_emitter_authors_custom_unload_fade_for_long_ambients() {
     );
 }
 
-/// A negative `unload_fade_ms` (authoring mistake or wraparound)
-/// must clamp to 0 rather than panic at `Duration::from_secs_f32`.
-/// The prune-stop site's `.max(0.0)` is the guard.
+/// A negative `unload_fade_ms` (authoring mistake or wraparound), a
+/// non-finite one, or a finite but absurd INI fade (`1e30` ms, INC2-1)
+/// must not panic at `Duration::from_secs_f*`: every fade goes through
+/// `linear_tween` / `tween_duration`.
 #[test]
 fn unload_fade_clamps_negative_to_zero() {
-    let fade_ms: f32 = -50.0;
-    let clamped = fade_ms.max(0.0);
-    let _ = Duration::from_secs_f32(clamped / 1000.0); // must not panic
-    assert_eq!(clamped, 0.0);
+    assert_eq!(crate::world::tween_duration(-0.05), Duration::ZERO);
+    assert_eq!(crate::world::tween_duration(f64::NAN), Duration::ZERO);
+    assert_eq!(crate::world::tween_duration(f64::INFINITY), Duration::ZERO);
+    assert_eq!(crate::world::tween_duration(1e27), Duration::from_secs(u64::from(u32::MAX)));
+    assert_eq!(crate::world::linear_tween(1e27).duration, Duration::from_secs(u64::from(u32::MAX)));
+    assert_eq!(crate::world::linear_tween(0.25).duration, Duration::from_millis(250));
 }
 
 /// Issue #842 regression gate: kira's default `Capacities` caps

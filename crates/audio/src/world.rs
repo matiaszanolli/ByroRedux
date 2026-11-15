@@ -171,11 +171,22 @@ pub(crate) struct MusicVoice {
     pub(crate) level: f32,
 }
 
-/// A linear tween over `secs` (0 = at once).
+/// The longest fade or delay a number from content or an INI can ask for `[ours]`:
+/// `Duration::from_secs_f*` panics at 2^64 seconds, and nothing authored means more than this.
+const MAX_TWEEN_SECS: f64 = u32::MAX as f64;
+
+/// `secs` as a duration that cannot panic: negative and non-finite read as 0 (at once), and a
+/// finite but absurd value (a garbled `iMusicTransitionInMS=1e30`) is held at [`MAX_TWEEN_SECS`]
+/// (INC2-1, after #6929 filtered only the non-finite ones).
+pub(crate) fn tween_duration(secs: f64) -> std::time::Duration {
+    std::time::Duration::from_secs_f64(if secs.is_finite() { secs.clamp(0.0, MAX_TWEEN_SECS) } else { 0.0 })
+}
+
+/// A linear tween over `secs` (0 = at once). Every fade in the crate goes through this.
 pub(crate) fn linear_tween(secs: f32) -> Tween {
     Tween {
         start_time: kira::StartTime::Immediate,
-        duration: std::time::Duration::from_secs_f32(secs.max(0.0)),
+        duration: tween_duration(f64::from(secs)),
         easing: kira::Easing::Linear,
     }
 }
@@ -515,11 +526,7 @@ impl AudioWorld {
             !matches!(pending.source, SoundSource::Anchored(e) | SoundSource::Emitter(e) if e == entity)
         });
         let mut stopped = before - self.pending_oneshots.len();
-        let tween = Tween {
-            start_time: kira::StartTime::Immediate,
-            duration: Duration::from_secs_f32(fade_ms.max(0.0) / 1000.0),
-            easing: kira::Easing::Linear,
-        };
+        let tween = linear_tween(fade_ms / 1000.0);
         for sound in &mut self.active_sounds {
             if sound.stop_issued {
                 continue;
