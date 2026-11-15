@@ -190,6 +190,15 @@ pub fn depth_compare_op(z_function: u8) -> vk::CompareOp {
     gamebryo_to_vk_compare_op(ACTIVE_DEPTH_MAPPING.map_z_function(z_function))
 }
 
+/// A render layer's `vkCmdSetDepthBias` triple under the active mapping. The
+/// layer table is authored conventionally (negative = toward the camera);
+/// under reversed-Z the signs flip, or every biased layer loses its coplanar
+/// ties instead of winning them (INC6-1). Every `cmd_set_depth_bias` site
+/// takes its triple from here.
+pub fn layer_depth_bias(layer: byroredux_core::ecs::components::RenderLayer) -> (f32, f32, f32) {
+    ACTIVE_DEPTH_MAPPING.map_depth_bias(layer.depth_bias())
+}
+
 /// The engine's own default depth test (Gamebryo `LESSEQUAL`) under the
 /// active mapping — `LESS_OR_EQUAL` conventionally, `GREATER_OR_EQUAL`
 /// under reversed-Z.

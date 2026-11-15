@@ -68,7 +68,11 @@ pub enum RenderLayer {
 
 impl RenderLayer {
     /// The Vulkan `vkCmdSetDepthBias` triple `(constant_factor, clamp,
-    /// slope_factor)` per layer.
+    /// slope_factor)` per layer, **authored for the conventional depth
+    /// mapping** (negative = toward the camera). The render path reads it
+    /// through `ACTIVE_DEPTH_MAPPING.map_depth_bias(..)`
+    /// ([`super::camera::DepthMapping::map_depth_bias`]), which flips the
+    /// signs under reversed-Z (INC6-1); setting it raw is the bug.
     ///
     /// **Slope factors are zero for every layer except `Decal`.** The
     /// slope term `slope_factor × max_dz/dxy` is NOT scaled by the depth

@@ -753,6 +753,24 @@ impl DepthMapping {
     pub const fn default_z_function(self) -> u8 {
         self.map_z_function(3)
     }
+
+    /// Re-express a `vkCmdSetDepthBias` triple `(constant, clamp, slope)`
+    /// authored for the conventional mapping, where a *negative* bias pulls
+    /// a fragment toward the camera, so it keeps that meaning here. Vulkan
+    /// adds the bias to the fragment's depth, and reversed-Z puts the
+    /// camera at `1.0`, so every term changes sign (the clamp too: it bounds
+    /// the bias on the same side). [`RenderLayer::depth_bias`] is authored
+    /// conventionally; the render path reads it through this. Missing it
+    /// pushed decals, clutter and actors *behind* the surfaces they sit on
+    /// once #6642 made reversed-Z active (INC6-1).
+    ///
+    /// [`RenderLayer::depth_bias`]: crate::ecs::components::RenderLayer::depth_bias
+    pub fn map_depth_bias(self, (constant, clamp, slope): (f32, f32, f32)) -> (f32, f32, f32) {
+        match self {
+            Self::Conventional => (constant, clamp, slope),
+            Self::Reversed => (-constant, -clamp, -slope),
+        }
+    }
 }
 
 /// Summary of one captured depth buffer. See [`Camera::analyze_depth_field`].
@@ -1527,6 +1545,27 @@ mod tests {
             assert_eq!(DepthMapping::Reversed.map_z_function(code), code);
             assert_eq!(DepthMapping::Conventional.map_z_function(code), code);
         }
+    }
+
+    /// INC6-1: every biased layer still wins a coplanar tie against the surface it sits on, under
+    /// both mappings — Vulkan adds the bias to depth, and "nearer" is smaller conventionally and
+    /// larger under reversed-Z — and the active mapping is one of the two.
+    #[test]
+    fn a_layer_bias_pulls_toward_the_camera_under_either_mapping() {
+        use crate::ecs::components::RenderLayer;
+        let host = 0.5_f32;
+        let r = 1.0 / 16_777_216.0; // D32 minimum resolvable difference, as the constant term scales
+        for mapping in [DepthMapping::Conventional, DepthMapping::Reversed] {
+            for layer in [RenderLayer::Clutter, RenderLayer::Actor, RenderLayer::Decal] {
+                let (constant, _, slope) = mapping.map_depth_bias(layer.depth_bias());
+                let biased = host + constant * r + slope * 1e-6;
+                let nearer = if mapping.is_reversed() { biased > host } else { biased < host };
+                assert!(nearer, "{layer:?} under {mapping:?} is pushed away from the camera ({biased} vs {host})");
+            }
+            assert_eq!(mapping.map_depth_bias(RenderLayer::Architecture.depth_bias()), (0.0, 0.0, 0.0));
+        }
+        assert_eq!(DepthMapping::Reversed.map_depth_bias((-16.0, -1.0, -2.0)), (16.0, 1.0, 2.0));
+        assert_eq!(DepthMapping::Conventional.map_depth_bias((-16.0, -1.0, -2.0)), (-16.0, -1.0, -2.0));
     }
 
     #[test]

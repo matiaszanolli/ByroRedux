@@ -441,7 +441,8 @@ impl VulkanContext {
         }
 
         // #renderlayer — per-layer depth bias from
-        // `RenderLayer::depth_bias()`. The Vulkan formula is
+        // `RenderLayer::depth_bias()`, through `layer_depth_bias` so its
+        // signs follow the active depth mapping (INC6-1). The Vulkan formula is
         //   bias = constant_factor × r + slope_factor × |max_dz/dxy|
         // where `r` is the smallest representable depth at the
         // fragment (≈ 2⁻²⁴ ≈ 6e-8 for D32_SFLOAT around mid-
@@ -454,7 +455,7 @@ impl VulkanContext {
         // of truth — modifying it does NOT require touching
         // this site.
         if raster.last_render_layer != Some(batch.render_layer) {
-            let (bias_const, clamp, bias_slope) = batch.render_layer.depth_bias();
+            let (bias_const, clamp, bias_slope) = crate::vulkan::pipeline::layer_depth_bias(batch.render_layer);
             self.device
                 .cmd_set_depth_bias(cmd, bias_const, clamp, bias_slope);
             raster.last_render_layer = Some(batch.render_layer);
@@ -930,7 +931,7 @@ impl VulkanContext {
             }
             for (index, shape) in shapes.iter().enumerate() {
                 if raster.last_render_layer != Some(shape.render_layer) {
-                    let (constant, clamp, slope) = shape.render_layer.depth_bias();
+                    let (constant, clamp, slope) = crate::vulkan::pipeline::layer_depth_bias(shape.render_layer);
                     self.device.cmd_set_depth_bias(cmd, constant, clamp, slope);
                     raster.last_render_layer = Some(shape.render_layer);
                 }
