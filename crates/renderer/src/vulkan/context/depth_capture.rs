@@ -50,31 +50,10 @@ impl VulkanContext {
         // access scope, so it makes the copy complete without making it
         // visible to the host. `GpuToCpu` prefers `HOST_CACHED`, so without
         // this invalidate the read can return stale cache lines. Same
-        // reasoning and same shared range helper as the screenshot path;
-        // no-op on coherent memory.
-        if !allocation
-            .memory_properties()
-            .contains(vk::MemoryPropertyFlags::HOST_COHERENT)
-        {
-            let (aligned_offset, aligned_size) =
-                super::super::buffer::aligned_flush_range(allocation.offset(), allocation.size());
-            // SAFETY: `allocation` is live and owned by
-            // `self.overlay.depth_capture_staging` for this call. `aligned_flush_range`
-            // widens outward to `NON_COHERENT_ATOM_SIZE`, staying inside the
-            // parent `GpuAllocatorManaged` block; invalidating a superset only
-            // discards possibly-stale host cache lines, publishing nothing.
-            // `Allocation::memory` names the memory object for the range and
-            // is neither freed, mapped, nor bound through this call.
-            let result = unsafe {
-                let range = vk::MappedMemoryRange::default()
-                    .memory(allocation.memory())
-                    .offset(aligned_offset)
-                    .size(aligned_size);
-                self.device.invalidate_mapped_memory_ranges(&[range])
-            };
-            if let Err(e) = result {
-                log::warn!("Depth capture invalidate failed: {e} — samples may be stale");
-            }
+        // reasoning and same shared helper as the screenshot path; no-op on
+        // coherent memory.
+        if let Err(e) = super::super::buffer::invalidate_allocation(&self.device, allocation) {
+            log::warn!("Depth capture invalidate failed: {e} — samples may be stale");
         }
 
         let Some(slice) = allocation.mapped_slice() else {

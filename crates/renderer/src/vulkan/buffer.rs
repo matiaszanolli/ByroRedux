@@ -789,6 +789,40 @@ fn debug_assert_flush_range_bounded(
     }
 }
 
+/// Invalidate a host-mapped allocation so a CPU read after a GPU write sees
+/// the GPU's bytes (#2740 / REN-D4-04). A no-op when the memory is
+/// `HOST_COHERENT`; otherwise the range is widened to `NON_COHERENT_ATOM_SIZE`
+/// by [`aligned_flush_range`] and bounded by the #2683 dedicated-allocation
+/// check. The one home for the invalidate: [`GpuBuffer::invalidate_if_needed`]
+/// and the raw-`Allocation` readbacks (screenshot, depth capture, linear
+/// capture) all call it, and each caller decides how to report an error.
+pub(crate) fn invalidate_allocation(
+    device: &ash::Device,
+    alloc: &vulkan::Allocation,
+) -> std::result::Result<(), vk::Result> {
+    if alloc.memory_properties().contains(vk::MemoryPropertyFlags::HOST_COHERENT) {
+        return Ok(());
+    }
+    let (aligned_offset, aligned_size) = aligned_flush_range(alloc.offset(), alloc.size());
+    debug_assert_flush_range_bounded(alloc, aligned_offset, aligned_size);
+    // SAFETY: `alloc` is live for the call (the caller owns it), and
+    // `aligned_flush_range` rounds the offset DOWN and the size UP to
+    // `NON_COHERENT_ATOM_SIZE`, producing a superset of this allocation that
+    // stays inside the parent `GpuAllocatorManaged` block. Invalidating a
+    // superset is safe in a way flushing one is not: it discards
+    // possibly-stale host cache lines for a neighbouring suballocation,
+    // forcing a re-read from memory, rather than publishing anything.
+    // `Allocation::memory` only names the memory object for the range; the
+    // handle is neither freed, mapped nor bound through this call.
+    unsafe {
+        let range = vk::MappedMemoryRange::default()
+            .memory(alloc.memory())
+            .offset(aligned_offset)
+            .size(aligned_size);
+        device.invalidate_mapped_memory_ranges(&[range])
+    }
+}
+
 /// Pure bound check `debug_assert_flush_range_bounded` relies on, split out
 /// so the arithmetic is unit-testable without a live `Allocation` —
 /// `gpu_allocator::vulkan::Allocation`'s fields are all private with no
@@ -1274,28 +1308,10 @@ impl GpuBuffer {
             .context("Buffer has no allocation")?;
 
         if !self.is_coherent {
-            let (aligned_offset, aligned_size) = aligned_flush_range(alloc.offset(), alloc.size());
-            debug_assert_flush_range_bounded(alloc, aligned_offset, aligned_size);
-            // SAFETY: identical range-widening argument to `flush_if_needed`
-            // above — `aligned_flush_range` rounds the offset DOWN and the
-            // size UP to `NON_COHERENT_ATOM_SIZE`, producing a strict
-            // SUPERSET of this allocation that stays inside the parent
-            // `GpuAllocatorManaged` block. Invalidating a superset is safe in
-            // a way flushing one is not: it discards possibly-stale host
-            // cache lines for a neighbouring suballocation, forcing a re-read
-            // from memory, rather than publishing this allocation's bytes
-            // over anything. `IMAGE_HEALTH_BUFFER_BYTES` is 8, far below a
-            // typical 64-byte `nonCoherentAtomSize`, so the widening is the
-            // normal case here, not the edge case.
-            unsafe {
-                let range = vk::MappedMemoryRange::default()
-                    .memory(alloc.memory())
-                    .offset(aligned_offset)
-                    .size(aligned_size);
-                device
-                    .invalidate_mapped_memory_ranges(&[range])
-                    .context("Failed to invalidate mapped memory")?;
-            }
+            // `IMAGE_HEALTH_BUFFER_BYTES` is 8, far below a typical 64-byte
+            // `nonCoherentAtomSize`, so the range widening inside
+            // `invalidate_allocation` is the normal case here, not the edge case.
+            invalidate_allocation(device, alloc).context("Failed to invalidate mapped memory")?;
         }
         Ok(())
     }
@@ -2070,8 +2086,19 @@ mod tests {
             .find("\n    }\n")
             .expect("invalidate_if_needed must close at impl indentation")];
         assert!(
-            invalidate_body.contains(".invalidate_mapped_memory_ranges("),
-            "invalidate_if_needed must actually issue vkInvalidateMappedMemoryRanges"
+            invalidate_body.contains("invalidate_allocation("),
+            "invalidate_if_needed must route through invalidate_allocation (#6960)"
+        );
+        let shared = src
+            .find("pub(crate) fn invalidate_allocation(")
+            .expect("invalidate_allocation is the one home for the readback invalidate (#6960)");
+        let shared_body = &src[shared..];
+        let shared_body = &shared_body[..shared_body
+            .find("\n}\n")
+            .expect("invalidate_allocation must close at column zero")];
+        assert!(
+            shared_body.contains(".invalidate_mapped_memory_ranges("),
+            "invalidate_allocation must actually issue vkInvalidateMappedMemoryRanges"
         );
     }
 

@@ -145,32 +145,10 @@ impl VulkanContext {
             };
             // #2740 / REN-D4-04 — the fence makes the copy complete, not
             // host-visible; `GpuToCpu` prefers `HOST_CACHED`. Same shared
-            // range helper as the screenshot and depth readbacks; no-op when
+            // helper as the screenshot and depth readbacks; no-op when
             // coherent.
-            if !allocation
-                .memory_properties()
-                .contains(vk::MemoryPropertyFlags::HOST_COHERENT)
-            {
-                let (aligned_offset, aligned_size) = super::super::buffer::aligned_flush_range(
-                    allocation.offset(),
-                    allocation.size(),
-                );
-                // SAFETY: `allocation` is live and owned by
-                // `self.overlay.linear_capture.staging` for this call.
-                // `aligned_flush_range` widens outward to
-                // `NON_COHERENT_ATOM_SIZE` inside the parent
-                // `GpuAllocatorManaged` block; invalidating a superset only
-                // discards possibly-stale host cache lines.
-                let result = unsafe {
-                    let range = vk::MappedMemoryRange::default()
-                        .memory(allocation.memory())
-                        .offset(aligned_offset)
-                        .size(aligned_size);
-                    self.device.invalidate_mapped_memory_ranges(&[range])
-                };
-                if let Err(e) = result {
-                    log::warn!("Linear capture invalidate failed: {e} — samples may be stale");
-                }
+            if let Err(e) = super::super::buffer::invalidate_allocation(&self.device, allocation) {
+                log::warn!("Linear capture invalidate failed: {e} — samples may be stale");
             }
             match allocation.mapped_slice() {
                 None => Some("staging buffer not mapped".to_string()),

@@ -1325,8 +1325,8 @@ mod tests {
     fn screenshot_readback_invalidates_before_mapping() {
         let src = include_str!("screenshot.rs");
         let invalidate = src
-            .find("invalidate_mapped_memory_ranges")
-            .expect("screenshot readback must invalidate (#2752 sibling)");
+            .find("invalidate_allocation(")
+            .expect("screenshot readback must invalidate through the shared helper (#2752 sibling, #6960)");
         let read = src
             .find("allocation.mapped_slice()")
             .expect("screenshot readback must still read the staging mapping");
