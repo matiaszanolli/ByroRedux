@@ -687,49 +687,32 @@ impl GroundCoverPipeline {
     /// No in-flight command buffer or descriptor set may still reference any
     /// object owned here — the caller must have idled the device.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        for pipeline in [
-            &mut self.scatter_pipeline,
-            &mut self.interaction_pipeline,
-            &mut self.blade_pipeline,
-            &mut self.debug_pipeline,
-        ] {
-            if *pipeline != vk::Pipeline::null() {
-                // SAFETY: caller's contract — nothing in flight uses it.
-                unsafe { device.destroy_pipeline(*pipeline, None) };
-                *pipeline = vk::Pipeline::null();
-            }
-        }
-        for layout in [
-            &mut self.scatter_pipeline_layout,
-            &mut self.interaction_pipeline_layout,
-            &mut self.draw_pipeline_layout,
-        ] {
-            if *layout != vk::PipelineLayout::null() {
-                // SAFETY: every pipeline built against it is destroyed above.
-                unsafe { device.destroy_pipeline_layout(*layout, None) };
-                *layout = vk::PipelineLayout::null();
-            }
-        }
-        if self.descriptor_pool != vk::DescriptorPool::null() {
-            // SAFETY: destroying the pool frees its sets; caller guarantees no
-            // in-flight command buffer still binds them.
-            unsafe { device.destroy_descriptor_pool(self.descriptor_pool, None) };
-            self.descriptor_pool = vk::DescriptorPool::null();
-            self.scatter_sets.clear();
-            self.draw_sets.clear();
-            self.interaction_sets.clear();
-        }
-        for layout in [
-            &mut self.scatter_set_layout,
-            &mut self.interaction_set_layout,
-            &mut self.draw_set_layout,
-        ] {
-            if *layout != vk::DescriptorSetLayout::null() {
-                // SAFETY: the pipeline layouts and sets referencing it are gone.
-                unsafe { device.destroy_descriptor_set_layout(*layout, None) };
-                *layout = vk::DescriptorSetLayout::null();
-            }
-        }
+        // SAFETY: caller's contract (nothing in flight uses these); `destroy_pass_object_sets` skips
+        // null handles and nulls what it destroys, in the order this block used to (#6371).
+        unsafe {
+            crate::vulkan::descriptors::destroy_pass_object_sets(
+                device,
+                crate::vulkan::descriptors::PassHandleSets {
+                    pipelines: &mut [
+                        &mut self.scatter_pipeline,
+                        &mut self.interaction_pipeline,
+                        &mut self.blade_pipeline,
+                        &mut self.debug_pipeline,
+                    ],
+                    layouts: &mut [
+                        &mut self.scatter_pipeline_layout,
+                        &mut self.interaction_pipeline_layout,
+                        &mut self.draw_pipeline_layout,
+                    ],
+                    pool: &mut self.descriptor_pool,
+                    set_layouts: &mut [&mut self.scatter_set_layout, &mut self.interaction_set_layout, &mut self.draw_set_layout],
+                },
+            )
+        };
+        // The pool's sets died with it.
+        self.scatter_sets.clear();
+        self.draw_sets.clear();
+        self.interaction_sets.clear();
         for buffer in self
             .chunk_buffers
             .iter_mut()
