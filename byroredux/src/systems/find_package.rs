@@ -427,13 +427,15 @@ fn drive_find_packages(
                 progress.done = true;
             }
             // Furniture: the actor takes a sit marker of the piece it walked to, through the Eat / Sleep
-            // seating path (reservations, root snap, sit-enter park).
+            // seating path (reservations, root snap, sit-enter park). That piece only (INC7-2): with no
+            // piece named, the nearest free chair within 512 units won, so an actor that walked to a
+            // bench with no free marker sat on a neighbour's chair instead of trying the next piece.
             Arrival::Seat => match super::eat_sleep::seat_at_marker(
                 world,
                 actor,
                 super::eat_sleep::EatOrSleep::Eat,
                 None,
-                None,
+                Some(target),
                 &mut scratch.seats,
             ) {
                 super::eat_sleep::SeatAttempt::Seated => {
@@ -895,6 +897,47 @@ mod tests {
         run(&world, 200);
         assert!(world.has::<Seated>(actor), "the actor sat on the chair's marker");
         assert!(world.get::<FindProgress>(actor).is_some_and(|p| p.done), "the Find is finished once seated");
+    }
+
+    /// INC7-2 -- the actor sits on the piece it walked to, not the nearest free chair around it. The
+    /// nearer chair's only marker is taken; naming no piece, the old arrival walked the actor there and
+    /// then seated it on the farther chair while its Find still named the first. Now the taken chair is
+    /// skipped for the next piece, so the piece it found and the piece it sits on agree.
+    #[test]
+    fn a_furniture_search_sits_only_on_the_piece_it_walked_to() {
+        use crate::components::{SandboxSitClip, SeatReservations};
+        use byroredux_core::ecs::components::{Furniture, FurnitureMarker, FurnitureMarkerKind, Seated};
+        use byroredux_plugin::RecordType;
+
+        let mut world = world_with_statics(&[(0x8002, RecordType::FURN)]);
+        world.register::<Seated>();
+        world.register::<Furniture>();
+        world.register::<byroredux_core::animation::AnimationPlayer>();
+        world.insert_resource(SandboxSitClip(Some((3, 1.0))));
+        let sit = || Furniture {
+            markers: vec![FurnitureMarker { local_offset: [0.0, 0.0, 0.0], heading_z_radians: None, animation_type: 1, kind: FurnitureMarkerKind::Sit }],
+        };
+        let taken = place(&mut world, 0x8002, 0x601, Vec3::new(0.0, 0.0, 300.0));
+        world.insert(taken, sit());
+        let free = place(&mut world, 0x8002, 0x602, Vec3::new(0.0, 0.0, 600.0));
+        world.insert(free, sit());
+        let sitter = world.spawn();
+        let mut reservations = SeatReservations::default();
+        reservations.0.insert((taken, 0), sitter);
+        world.insert_resource(reservations);
+        let actor = finder(
+            &mut world,
+            FindPackageBehavior {
+                target: FindTarget::Kind(FindItemKind::Furniture),
+                count: 1,
+                area: EatSleepLocation::NearCurrentLocation,
+                area_radius: 1000.0,
+            },
+        );
+        run(&world, 400);
+        let seated_on = world.get::<Seated>(actor).map(|seated| seated.furniture);
+        assert_eq!(seated_on, Some(free), "it sits on the free chair");
+        assert_eq!(world.get::<FindProgress>(actor).and_then(|p| p.target), Some(free), "which is the piece it found");
     }
 
     /// A target the actor cannot reach is dropped, and tried again once the
