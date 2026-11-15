@@ -575,11 +575,6 @@ mod tests {
         assert_eq!(a.dr, 30);
     }
 
-    /// #5358 — Skyrim's ARMA carries its biped mask in `BODT` (the
-    /// pre-BOD2 body template, xEdit `wbBODTBOD2`), not `BOD2`: all 766
-    /// Skyrim.esm ARMAs author BODT. Both widths decode the same leading
-    /// u32; the 12-byte form's tail (general flags u8 + 3 pad + armor
-    /// type u32) is nothing an ARMA consumer reads.
     #[test]
     fn parse_arma_reads_starfields_bo64_mask() {
         // #6778 — Starfield's ARMA carries `wbBO64` (wbDefinitionsSF1.pas:9631), not BOD2: a spacesuit
@@ -591,6 +586,11 @@ mod tests {
         assert_eq!(truncated.biped_flags, 0, "a truncated BO64 is ignored");
     }
 
+    /// #5358 — Skyrim's ARMA carries its biped mask in `BODT` (the
+    /// pre-BOD2 body template, xEdit `wbBODTBOD2`), not `BOD2`: all 766
+    /// Skyrim.esm ARMAs author BODT. Both widths decode the same leading
+    /// u32; the 12-byte form's tail (general flags u8 + 3 pad + armor
+    /// type u32) is nothing an ARMA consumer reads.
     #[test]
     fn parse_arma_reads_bodt_biped_flags() {
         // 12-byte form: mask (Hair 0x02), general flags + pad, armor type.

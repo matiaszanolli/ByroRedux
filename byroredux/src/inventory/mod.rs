@@ -44,10 +44,11 @@ const PLAYER_NPC_FORM_ID: u32 = 0x0000_0007;
 /// Where an equippable item goes when the player toggles it.
 ///
 /// #3112 — this used to be a bare `Option<u32>` slot mask, with weapons
-/// assigned a "spare" bit 31. There is no spare bit: `EquipmentSlots`
-/// indexes `MAX_BIPED_SLOTS = 32` occupants and Skyrim+ `BOD2`/`BODT` addresses
-/// all 32 of them (bit 0 = body-part 30, so bit 31 = body-part 61 /
-/// `FX01`), so an authored ARMO in that slot displaced the weapon and
+/// assigned a "spare" bit 31. There is no spare bit: Skyrim+ `BOD2`/`BODT`
+/// addresses all 32 clothing slots (bit 0 = body-part 30, so bit 31 =
+/// body-part 61 / `FX01`), and since #6778 `EquipmentSlots` indexes
+/// `MAX_BIPED_SLOTS = 64` occupants, Starfield's `BO64` spacesuit layer in
+/// bits 32-63. An authored ARMO in the old weapon bit displaced the weapon and
 /// dropped the player to unarmed damage. Modelling the two destinations
 /// as distinct variants makes the collision unrepresentable instead of
 /// relying on a bit nobody authors.

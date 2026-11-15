@@ -825,13 +825,6 @@ impl EsmCellIndex {
         self.locate_refr(refr_form_id).map(|(cell, _)| cell)
     }
 
-    /// Locate a placed REFR by its placement-level FormID, returning both
-    /// its parent cell (same assignment rules as
-    /// [`Self::cell_for_refr_form_id`]) and the placement record itself.
-    ///
-    /// The interior spawn ladder reads a door's *partner* through this: the
-    /// partner's own `XTEL` is the floor-level pose the engine places the
-    /// player at when they walk through it into the door's cell.
     /// The cell-map key of the interior holding `refr_form_id` (its lower-cased
     /// editor ID, or `cell_<FORMID>` for an unnamed cell); `None` for a
     /// reference in no interior. Read from the same reverse index as
@@ -846,6 +839,13 @@ impl EsmCellIndex {
         }
     }
 
+    /// Locate a placed REFR by its placement-level FormID, returning both
+    /// its parent cell (same assignment rules as
+    /// [`Self::cell_for_refr_form_id`]) and the placement record itself.
+    ///
+    /// The interior spawn ladder reads a door's *partner* through this: the
+    /// partner's own `XTEL` is the floor-level pose the engine places the
+    /// player at when they walk through it into the door's cell.
     pub fn locate_refr(&self, refr_form_id: u32) -> Option<(CellRef<'_>, &PlacedRef)> {
         let lookup = self.refr_lookup.get_or_init(|| {
             let mut lookup = RefrLookup::default();

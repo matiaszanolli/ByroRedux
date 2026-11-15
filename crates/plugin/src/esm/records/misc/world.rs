@@ -786,18 +786,16 @@ pub enum RegionDataPayload {
         ///   Selection"/"Cycle Tracks" selection policy is not applied.
         /// - **FNV `RDSB`**: `MSET` (Media Set) — census-confirmed 44/44
         ///   (#3787), not `SOUN`. `MSET` is decoded into
-        ///   `EsmIndex::media_sets` (`media_set.rs`) but no runtime reads it
-        ///   yet — tracked by #3816.
+        ///   `EsmIndex::media_sets` (`media_set.rs`).
         ///
-        /// `dispatch_region_ambient_music` (`byroredux/src/asset_provider/
-        /// audio.rs`) looks the value up as a `SounRecord` first and, for
-        /// Skyrim's `RDMO`, as a `MUSC` (`resolve_music_track_path`). The
-        /// `SOUN` lookup structurally misses for Oblivion's `RDMD` enum and
-        /// FNV's `MSET`-pointing `RDSB`/`RDSI` — logged once per process rather
-        /// than treated as a missing-archive content gap. Census: #3787
-        /// (FNV) / #3811 (Oblivion + Skyrim, this doc), both closed doc-only;
-        /// what remains of the runtime (Oblivion `RDMD`, FNV `MSET`) is the
-        /// open issue #3816.
+        /// The music controller (`byroredux/src/music/translate.rs`,
+        /// `docs/engine/music.md`) reads Oblivion's `RDMD` as an exterior's
+        /// music category and FNV's `RDSB` as the region's Battle set;
+        /// Fallout 3 / New Vegas location music reads no region (#6900).
+        /// Skyrim's `RDMO` music waits on xWMA playback (#3816). It replaced
+        /// the 2026-08-23 *dispatch_region_ambient_music* path, which looked
+        /// every value up as a `SounRecord` (#6872). Census: #3787 (FNV) /
+        /// #3811 (Oblivion + Skyrim, this doc), both closed doc-only.
         music: Option<u32>,
         /// Oblivion / FO3 `RDMD`, kept apart from [`Self::Sound::music`] because it is NOT a FormID: a raw
         /// `uint32` music-category enum (`0` Default, `1` Public, `2` Dungeon; xEdit

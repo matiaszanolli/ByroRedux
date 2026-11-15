@@ -224,7 +224,7 @@ pub(crate) struct AppliedWeather {
 /// carries FormIDs, not decoded audio. Read by `cell.owners`; the music
 /// controller (`crate::music`, `docs/engine/music.md`) resolves the region's
 /// music itself from the cell context, which replaced the 2026-08-23
-/// `dispatch_region_ambient_music` path (#6872).
+/// *dispatch_region_ambient_music* path (#6872).
 /// Mirrors `CellLightingRes`'s shape
 /// and lifecycle: computed once at cell-apply time from data already
 /// parsed into `EsmIndex`, not recomputed per-frame.

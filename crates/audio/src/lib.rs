@@ -149,9 +149,10 @@
 //!
 //! - FOOT records parser (3.5b) → per-material sound lookup.
 //! - REGN `incidental`/`sounds` ambient-loop selection (blocked on the
-//!   `chance_raw` fixed-point scale). REGN ambient background **music** has
-//!   shipped — see `byroredux/src/asset_provider/audio.rs::dispatch_region_ambient_music`.
-//! - MUSC + hardcoded music routing with crossfade.
+//!   `chance_raw` fixed-point scale). Game music (region, location, battle,
+//!   scripted and stings, with crossfades) has shipped as the music
+//!   controller: `byroredux/src/music/`, `docs/engine/music.md`. Skyrim's
+//!   `MUSC`/`MUST` music waits on xWMA playback (#3816).
 //! - Per-cell acoustic reverb zones (kira's `ReverbBuilder`) keyed off
 //!   cell acoustics; raycast occlusion attenuation.
 

@@ -245,9 +245,11 @@ pub fn resolve_armor_meshes<'a>(
     // `biped_flags` population, whole-master sweeps:
     //
     //   Skyrim.esm     766 /  766 author bits   → 75 ARMOs, 80 redundant
-    //   Starfield.esm    0 / 1106 author bits   → rule is a total no-op
-    //     (Starfield by construction: its ARMA authors no per-addon
-    //      biped-slot field at all. Skyrim's does — see #5358 below.)
+    //   Starfield.esm  (BO64, #6778)            → the rule is live here too
+    //     (this row used to read "0 / 1106 author bits, a total no-op": no
+    //      decoder read Starfield's 64-bit BO64, so every mask was 0. With
+    //      BO64 decoded, all 1017 ARMOs carry a mask, 231 on the spacesuit
+    //      layer, and 223 ARMAs a spacesuit bit, measured at #6778.)
     //   Fallout4.esm  739 /  739  author bits   → 48 ARMOs, 118 redundant
     //   SeventySix.esm 3011/ 3026 author bits   → 391 ARMOs, 1480 redundant
     //
