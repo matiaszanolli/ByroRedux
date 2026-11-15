@@ -65,15 +65,12 @@ fn requested_shots(behavior: &UseWeaponPackageBehavior, index: &EsmIndex) -> u32
     }
 }
 
-/// `WEAP` animation types Melee (1 Hand) and Melee (2 Hand) (xEdit `wbWeaponAnimTypeEnum`); Hand to Hand (0)
-/// is a Phase 0 verify item and does not count.
-const MELEE_ANIM_TYPES: [u8; 2] = [1, 2];
-
 /// The weapon a class package fires: the equipped weapon, else the first weapon in the inventory (AIP-UW-008);
 /// for the melee class (object type 22, AIP-UW-009) only a weapon with a melee animation type.
 fn own_weapon(world: &World, actor: EntityId, index: &EsmIndex, melee_only: bool) -> Option<u32> {
     let fits = |base: &u32| match index.items.get(base).map(|item| &item.kind) {
-        Some(ItemKind::Weapon { anim_type, .. }) => !melee_only || MELEE_ANIM_TYPES.contains(anim_type),
+        // Melee (1 Hand) / (2 Hand) only; Hand to Hand (0) is a Phase 0 verify item and does not count.
+        Some(ItemKind::Weapon { anim_type, .. }) => !melee_only || crate::limbs::is_melee_anim_type(*anim_type),
         _ => false,
     };
     // An equipped weapon outside the class does not stop the actor drawing one of the class from its pack.

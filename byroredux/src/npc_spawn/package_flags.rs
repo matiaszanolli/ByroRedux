@@ -120,6 +120,9 @@ pub(super) fn note_selected(world: &World, actor: EntityId, package_flags: u32, 
     }
     let now = now_hours(world);
     if let Some(mut blocks) = world.try_resource_mut::<PackageDayBlocks>() {
+        // An entry past its 24 hours blocks nothing (`once_per_day_blocked`), so it is dropped here
+        // rather than kept for an actor whose cell unloaded long ago (INC7-6: the map only grew).
+        blocks.0.retain(|_, first| now - *first < ONCE_PER_DAY_HOURS);
         let first = blocks.0.entry((actor, package)).or_insert(now);
         if now - *first >= ONCE_PER_DAY_HOURS {
             *first = now;
@@ -166,6 +169,23 @@ mod tests {
 
     fn winner(world: &World, actor: EntityId, hour: f32, current: Option<u32>, packages: &[PackRecord]) -> Option<u32> {
         scan_with_flags(world, actor, PackClock::from(hour), current, packages.iter(), |_| true).map(|p| p.form_id)
+    }
+
+    /// INC7-6 -- an entry past its 24 hours blocks nothing, so the next selection drops it: the map does
+    /// not keep every Once Per Day actor the session ever saw.
+    #[test]
+    fn expired_day_blocks_are_dropped_when_a_new_one_is_noted() {
+        let (mut world, actor) = world_at(1, 9.0);
+        let other = world.spawn();
+        note_selected(&world, other, PKDT_ONCE_PER_DAY, 0x10);
+        assert_eq!(world.resource::<PackageDayBlocks>().0.len(), 1);
+        let mut later = GameTimeRes::frozen_at(10.0);
+        later.day = 2;
+        world.insert_resource(later);
+        note_selected(&world, actor, PKDT_ONCE_PER_DAY, 0x20);
+        let blocks = &world.resource::<PackageDayBlocks>().0;
+        assert_eq!(blocks.len(), 1, "the other actor's expired block is gone");
+        assert!(blocks.contains_key(&(actor, 0x20)));
     }
 
     /// AIP-FLG-002 -- a Must Complete package keeps winning past its window until its procedure is done.
