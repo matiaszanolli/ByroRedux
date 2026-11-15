@@ -8255,10 +8255,16 @@ fn explicit_bindless_lods_are_view_relative_under_streaming() {
             }
         }
     }
+    // Each entry is one reviewed call site. It matches on (file, LOD text), so a bare name such as
+    // `lod` would otherwise also pass a second, unreviewed call in the same file that happens to
+    // spell its LOD the same way (INC2-3): exactly one match each.
     for (file, lod, _) in REVIEWED_EXPLICIT_LODS {
-        assert!(
-            reviewed_seen.iter().any(|(seen_file, seen_lod)| seen_file == file && seen_lod == lod),
-            "REVIEWED_EXPLICIT_LODS names `{lod}` in {file}, which the scan no longer finds: drop the stale entry"
+        let sites = reviewed_seen.iter().filter(|(seen_file, seen_lod)| seen_file == file && seen_lod == lod).count();
+        assert!(sites != 0, "REVIEWED_EXPLICIT_LODS names `{lod}` in {file}, which the scan no longer finds: drop the stale entry");
+        assert_eq!(
+            sites, 1,
+            "`{lod}` in {file} now matches {sites} explicit-LOD samples; only one was reviewed. Review the new one and give it \
+             its own entry (rename its LOD if the text collides)"
         );
     }
     // sampleRayHitBase + six rayHitAlbedo/rayHitEmission roles + three glass
