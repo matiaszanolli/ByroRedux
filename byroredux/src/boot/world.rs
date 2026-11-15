@@ -435,8 +435,12 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // XCT-ROUTE-001 (#6853) — a traveler's chosen load door toward another
     // space; `travel_system` inserts it through `query_mut`.
     world.register::<crate::cell_loader::relocated::CrossSpaceHop>();
-    // XCT-ROUTE-008 — the door fade `door_fade_system` runs.
+    // XCT-ROUTE-008 — the door fade `door_fade_system` runs. It draws through
+    // `AnimatedAlpha` (`query_mut`), as `SetActorAlpha` does: that storage was
+    // otherwise created only when an alpha-animated clip first inserted it, so
+    // until then a fade ramped nothing (#6923).
     world.register::<crate::cell_loader::relocated::DoorFade>();
+    world.register::<byroredux_core::ecs::components::AnimatedAlpha>();
     // The routing graph cache and the Unroutable reasons `actor.where` reads.
     world.init_resource::<crate::cell_loader::relocated::TravelIndex>();
     world.init_resource::<crate::cell_loader::relocated::TravelReports>();
@@ -617,6 +621,10 @@ mod ai_storage_registration_tests {
         "TravelState",
         "Traveled",
         "CrossSpaceHop",
+        // XCT-ROUTE-008 — `door_fade_system` (`cell_loader/relocated.rs`) and
+        // `SetActorAlpha` (`systems/script_requests.rs`) write these (#6923).
+        "DoorFade",
+        "AnimatedAlpha",
         "FollowState",
         "EscortState",
         "Escorted",
