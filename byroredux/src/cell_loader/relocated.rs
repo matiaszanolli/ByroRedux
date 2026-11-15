@@ -666,8 +666,12 @@ pub(crate) fn live_body(world: &World, form: u32) -> Option<EntityId> {
     if form == PLAYER_REF {
         return byroredux_scripting::condition::resolve_entity_by_global_form_id(world, form);
     }
-    let pool = world.try_resource::<FormIdPool>()?;
+    // `FormIdComponent` before `FormIdPool`: the process-wide order every other
+    // holder of both keeps (core's `entity_with_local`, the save registry, condition
+    // evaluation). Taking the pool first closed an ABBA cycle under
+    // `BYRO_LOCK_ORDER_CHECK`.
     let ids = world.query::<FormIdComponent>()?;
+    let pool = world.try_resource::<FormIdPool>()?;
     let found = ids.iter().find(|(entity, id)| {
         pool.local_of(id.0) == Some(form)
             && world.has::<CellRoot>(*entity)
@@ -678,7 +682,8 @@ pub(crate) fn live_body(world: &World, form: u32) -> Option<EntityId> {
 
 /// Every FormID with a live body ([`live_body`]), in one pass.
 fn live_forms(world: &World) -> HashSet<u32> {
-    let (Some(pool), Some(ids)) = (world.try_resource::<FormIdPool>(), world.query::<FormIdComponent>()) else {
+    // Component before pool, as in `live_body`.
+    let (Some(ids), Some(pool)) = (world.query::<FormIdComponent>(), world.try_resource::<FormIdPool>()) else {
         return HashSet::new();
     };
     ids.iter()
