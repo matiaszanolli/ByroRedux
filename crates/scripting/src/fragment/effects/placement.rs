@@ -36,12 +36,16 @@ pub(super) fn apply_placement_effect(
             // the relocation ledger, across spaces when it must.
             let actor = object_form_id(vmad, world, context, moved, deferred)?;
             let target = object_form_id(vmad, world, context, destination, deferred)?;
-            crate::queue_actor_move(world, crate::ActorMoveRequest::ToReference { actor, target, offset: *offset });
+            if !crate::queue_actor_move(world, crate::ActorMoveRequest::ToReference { actor, target, offset: *offset }) {
+                log::debug!("fragment MoveTo skipped: no actor-move queue is installed ({actor:08X} -> {target:08X})");
+            }
             None
         }
         Effect::MoveToPackageLocation { moved } => {
             let actor = object_form_id(vmad, world, context, moved, deferred)?;
-            crate::queue_actor_move(world, crate::ActorMoveRequest::ToPackageLocation { actor });
+            if !crate::queue_actor_move(world, crate::ActorMoveRequest::ToPackageLocation { actor }) {
+                log::debug!("fragment MoveToPackageLocation skipped: no actor-move queue is installed ({actor:08X})");
+            }
             None
         }
         Effect::MoveToEditorLocation { moved } => {
