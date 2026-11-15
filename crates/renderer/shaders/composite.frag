@@ -308,18 +308,20 @@ vec4 sampleVolumetricColumn(
     );
 }
 
-// Steps one box's segment may take. A box is 64 cells across, so the cap only
-// matters for a ray running diagonally through a corner at a fraction of a cell
-// per step; it bounds the worst-case per-pixel cost.
-const int LOCAL_FIRE_MAX_STEPS_PER_BOX = 160;
+// Steps one box's segment may take: two and a half box widths, the sqrt(3)
+// ~ 1.73 diagonal at one cell per step plus headroom. It only matters for a ray
+// running diagonally through a corner at a fraction of a cell per step; it
+// bounds the worst-case per-pixel cost, and scales with LOCAL_GRID_DIM.
+const int LOCAL_FIRE_MAX_STEPS_PER_BOX = int(LOCAL_GRID_DIM) * 5 / 2;
 // Specialization constant: false builds the pipeline for a frame with no sun
 // radiance, with the sun-phase state folded out of the march loop. The sun
 // path costs ~0.1 ms of composite time per scene merely by existing in the
 // loop (register pressure), and every interior has no sun (#6535).
 layout(constant_id = 0) const bool LOCAL_FIRE_SUNLIT = true;
-// Empty-brick jumps a ray may take through one box (at most 3 * 8 bricks are
-// crossed along any axis-aligned path; diagonals cross a few more).
-const int LOCAL_FIRE_MAX_BRICK_JUMPS = 64;
+// Empty-brick jumps a ray may take through one box: at most
+// 3 * LOCAL_GRID_BRICKS_PER_AXIS bricks are crossed along any axis-aligned path
+// and diagonals cross a few more, so the cap is eight per brick of box width.
+const int LOCAL_FIRE_MAX_BRICK_JUMPS = 8 * int(LOCAL_GRID_BRICKS_PER_AXIS);
 // Adaptive step (#6534): the step grows through clear or thin gas and falls back
 // to one cell as soon as a sample is busy. It doubles per quiet sample up to
 // this many cells; the slab form integrates a longer segment exactly for a
