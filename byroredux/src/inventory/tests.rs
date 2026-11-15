@@ -712,6 +712,7 @@ fn fixture() -> (World, byroredux_core::ecs::EntityId) {
                     weapon_reach: 0.0,
                     weapon_speed: 0.0,
                     weapon_sound: None,
+                    weapon_sneak: None,
                 },
             ),
             (
@@ -727,6 +728,7 @@ fn fixture() -> (World, byroredux_core::ecs::EntityId) {
                     weapon_reach: 0.0,
                     weapon_speed: 0.0,
                     weapon_sound: None,
+                    weapon_sneak: None,
                 },
             ),
             (
@@ -742,6 +744,7 @@ fn fixture() -> (World, byroredux_core::ecs::EntityId) {
                     weapon_reach: 90.0,
                     weapon_speed: 1.1,
                     weapon_sound: None,
+                    weapon_sneak: None,
                 },
             ),
         ]),
@@ -2665,6 +2668,7 @@ fn pickup_removes_the_taken_item_collision_bodies() {
             weapon_reach: 0.0,
             weapon_speed: 0.0,
             weapon_sound: None,
+            weapon_sneak: None,
         },
     );
     world.insert_resource(InventoryCatalog {
@@ -2871,6 +2875,7 @@ fn gated_script_use(condition: byroredux_plugin::esm::records::condition::Condit
                 weapon_reach: 0.0,
                 weapon_speed: 0.0,
                 weapon_sound: None,
+                weapon_sneak: None,
             },
         );
         catalog.script_effects.insert(
@@ -3017,6 +3022,7 @@ fn an_improved_weapons_instance_adds_its_quality_bonus_to_the_equipped_damage() 
                 weapon_reach: 0.0,
                 weapon_speed: 0.0,
                 weapon_sound: None,
+                weapon_sneak: None,
             },
         )]),
     });
@@ -3063,6 +3069,7 @@ fn the_inventory_snapshot_shows_an_improved_weapons_quality_and_value() {
                 weapon_reach: 0.0,
                 weapon_speed: 0.0,
                 weapon_sound: None,
+                weapon_sneak: None,
             },
         )]),
     });

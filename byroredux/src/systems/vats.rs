@@ -959,10 +959,15 @@ pub(crate) fn vats_confirm(world: &World) -> bool {
             (target, strikes.iter().map(|strike| strike.damage).sum(), strikes)
         })
         .collect();
+    // M65 (SNK-ATK-001, -003) — each target's sneak attack, resolved before the events guard is taken.
+    let sneaks: Vec<(f32, bool)> = hits
+        .iter()
+        .map(|(target, damage, _)| crate::combat::sneak_strike(world, player, *target, *damage))
+        .collect();
     let Some(mut events) = world.query_mut::<byroredux_scripting::HitEvent>() else {
         return false;
     };
-    for (target, damage, _) in &hits {
+    for ((target, _, _), (damage, sneak_attack)) in hits.iter().zip(&sneaks) {
         events.insert(
             *target,
             byroredux_scripting::HitEvent {
@@ -971,7 +976,7 @@ pub(crate) fn vats_confirm(world: &World) -> bool {
                 projectile: 0,
                 damage: *damage,
                 power_attack: false,
-                sneak_attack: false,
+                sneak_attack: *sneak_attack,
                 bash_attack: false,
                 blocked: false,
             },

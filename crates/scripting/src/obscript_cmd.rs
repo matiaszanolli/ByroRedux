@@ -137,6 +137,31 @@ fn table() -> &'static Table {
     })
 }
 
+/// M65 (SNK-PERK-002) — the top-level commands of a compiled script that the host has no row for under the game
+/// loaded in `world` (flow ops and `set` aside; a malformed stream stops the scan). A perk activate choice whose
+/// script calls one would stop partway, so it is held unoffered rather than run half its script.
+pub(crate) fn unimplemented_commands(world: &World, bytes: &[u8]) -> Vec<u16> {
+    use crate::obscript::opcode::*;
+    let game = Game::of(world);
+    let mut missing = Vec::new();
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let Ok(frame) = crate::obscript::statement_frame(bytes, offset) else {
+            break;
+        };
+        let op = frame.opcode;
+        let flow = matches!(
+            op,
+            BEGIN | END | SHORT | LONG | FLOAT | SET_TO | IF | ELSE | ELSE_IF | END_IF | SCRIPT_NAME | RETURN
+        );
+        if !flow && find(op, game).is_none() {
+            missing.push(op);
+        }
+        offset = frame.next;
+    }
+    missing
+}
+
 /// The row for `cmd` under `game`, if the table owns it.
 pub(crate) fn find(cmd: u16, game: Game) -> Option<&'static Command> {
     table().get(&(cmd, game)).copied()

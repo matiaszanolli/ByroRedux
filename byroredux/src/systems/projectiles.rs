@@ -405,14 +405,17 @@ pub(crate) fn projectile_flight_system(world: &World, dt: f32) {
     // direct insert replaced a same-frame melee hit. The trap-hit flush, which
     // runs right after this, lands the queue and holds a hit whose target was
     // already struck this frame.
+    // M65 (SNK-ATK-001, -003) — a shot from the sneaking player on a target unaware of them. Resolved before
+    // the queue's write guard is taken: the detection test takes its own locks.
+    let landed: Vec<byroredux_scripting::TrapHit> = hits
+        .into_iter()
+        .map(|(target, shooter, damage)| {
+            let (damage, sneak_attack) = crate::combat::sneak_strike(world, shooter, target, damage);
+            byroredux_scripting::TrapHit { target, trap: shooter, damage, sneak_attack }
+        })
+        .collect();
     if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingTrapHits>() {
-        pending.0.extend(hits.into_iter().map(|(target, shooter, damage)| {
-            byroredux_scripting::TrapHit {
-                target,
-                trap: shooter,
-                damage,
-            }
-        }));
+        pending.0.extend(landed);
     }
 }
 

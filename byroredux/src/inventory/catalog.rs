@@ -21,6 +21,9 @@ pub(crate) struct InventoryItemDefinition {
     /// rating: how loud a strike or shot with it is to detectors. `None` for a
     /// non-weapon and where the game authors none.
     pub(crate) weapon_sound: Option<byroredux_core::stealth::ActionSound>,
+    /// M65 (SNK-ATK-003) — the weapon's critical data and melee class, for a sneak attack. `None` for a
+    /// non-weapon.
+    pub(crate) weapon_sneak: Option<byroredux_core::stealth::SneakWeapon>,
 }
 
 /// One caster-runtime effect of an ingestible with the effect-local CTDAs it was authored under (#6610). The
@@ -52,6 +55,11 @@ impl InventoryCatalog {
     pub(crate) fn weapon_sound(&self, base_form_id: u32) -> Option<byroredux_core::stealth::ActionSound> {
         self.entries.get(&base_form_id).and_then(|entry| entry.weapon_sound)
     }
+
+    /// M65 (SNK-ATK-003) — a weapon's critical data and melee class for a sneak attack.
+    pub(crate) fn weapon_sneak(&self, base_form_id: u32) -> Option<byroredux_core::stealth::SneakWeapon> {
+        self.entries.get(&base_form_id).and_then(|entry| entry.weapon_sneak)
+    }
 }
 
 impl InventoryCatalog {
@@ -75,6 +83,7 @@ impl InventoryCatalog {
                         weapon_reach: 0.0,
                         weapon_speed: 0.0,
                         weapon_sound: None,
+                        weapon_sneak: None,
                     },
                 )
             })
@@ -553,15 +562,30 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
                     "Consumable (effects unavailable)".to_owned()
                 };
             }
-            let (weapon_damage, weapon_reach, weapon_speed, weapon_sound) = match &item.kind {
+            let (weapon_damage, weapon_reach, weapon_speed, weapon_sound, weapon_sneak) = match &item.kind {
                 ItemKind::Weapon {
                     damage,
                     reach,
                     speed,
                     sound_level,
+                    crit_mult,
+                    crit_damage,
+                    anim_type,
                     ..
-                } => (Some(*damage as f32), *reach, *speed, sound_level.map(action_sound)),
-                _ => (None, 0.0, 0.0, None),
+                } => (
+                    Some(*damage as f32),
+                    *reach,
+                    *speed,
+                    sound_level.map(action_sound),
+                    // FO3 / FNV animation types 0-2 are hand-to-hand and one- / two-handed melee (xEdit
+                    // `wbWeaponAnimTypeEnum`; `Fallout3.exe` `0x8459a6`).
+                    Some(byroredux_core::stealth::SneakWeapon {
+                        critical_damage: *crit_damage,
+                        critical_chance_mult: *crit_mult,
+                        melee: *anim_type <= 2,
+                    }),
+                ),
+                _ => (None, 0.0, 0.0, None, None),
             };
             (
                 form_id,
@@ -576,6 +600,7 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
                     weapon_reach,
                     weapon_speed,
                     weapon_sound,
+                    weapon_sneak,
                 },
             )
         })

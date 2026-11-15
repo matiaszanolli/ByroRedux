@@ -133,7 +133,7 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
                 };
                 let land = |target: EntityId, weapon_damage: f32, ammo_damage: f32| {
                     if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingTrapHits>() {
-                        pending.0.push(byroredux_scripting::TrapHit { target, trap: actor, damage: if run.request.harmless { 0.0 } else { weapon_damage + ammo_damage.max(0.0) } });
+                        pending.0.push(byroredux_scripting::TrapHit { target, trap: actor, damage: if run.request.harmless { 0.0 } else { weapon_damage + ammo_damage.max(0.0) }, sneak_attack: false });
                     }
                 };
                 match target {
@@ -180,7 +180,7 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
                 let near = target.is_none() || options.always_hit || from.distance(to) <= reach;
                 if let (true, Some(target)) = (near, target) {
                     if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingTrapHits>() {
-                        pending.0.push(byroredux_scripting::TrapHit { target, trap: actor, damage: if run.request.harmless { 0.0 } else { *damage as f32 } });
+                        pending.0.push(byroredux_scripting::TrapHit { target, trap: actor, damage: if run.request.harmless { 0.0 } else { *damage as f32 }, sneak_attack: false });
                     }
                 }
                 near

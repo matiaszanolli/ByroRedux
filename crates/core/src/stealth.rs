@@ -264,6 +264,19 @@ geck_settings! {
     event_expire_time: "fDetectionEventExpireTime" = 10.0,
     large_actor_threshold: "fDetectionLargeActorThreshold" = 135.0,
     large_actor_size_mult: "fDetectionLargeActorSizeMult" = 1.0,
+    sneak_damage_mult: "fCombatDamageBonusSneakingMult" = 1.0,
+    melee_sneak_damage_mult: "fCombatDamageBonusMeleeSneakingMult" = 5.0,
+    unarmed_crit_damage_mult: "fCombatUnarmedCritDamageMult" = 0.5,
+}
+
+/// What a sneak attack needs to know about the weapon (SNK-ATK-003): its `CRDT`
+/// Critical Damage and Crit % Mult, and whether it is a melee weapon (FO3 / FNV
+/// animation types 0–2: hand-to-hand, one- and two-handed melee).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SneakWeapon {
+    pub critical_damage: f32,
+    pub critical_chance_mult: f32,
+    pub melee: bool,
 }
 
 /// One setting the install read: its value, and whether the load order
@@ -354,6 +367,36 @@ impl StealthRules {
     #[must_use]
     pub fn alert_time(&self) -> f32 {
         self.settings.event_expire_time.max(0.0)
+    }
+}
+
+impl StealthRules {
+    /// The damage of a sneak attack (SNK-ATK-003), or `None` where the row has no
+    /// sourced multipliers (a sight-only row; Oblivion and Skyrim are Phase 5).
+    ///
+    /// `Fallout3.exe` (design §8): a sneak attack multiplies the critical chance
+    /// by `fCombatSneakAttackBonusMult` (100 in both masters, so it is a
+    /// critical) unless the weapon's Crit % Mult is 0 ("If set to zero, the
+    /// weapon will not cause any critical hits, even for sneak attacks", GECK
+    /// *Weapons*). A critical adds the weapon's Critical Damage, or for an
+    /// unarmed strike the damage × `fCombatUnarmedCritDamageMult` (`0x845753`).
+    /// Then the damage is multiplied by `fCombatDamageBonusMeleeSneakingMult`
+    /// for unarmed and melee weapons, or `fCombatDamageBonusSneakingMult`
+    /// otherwise (`0x845980`). `weapon` is `None` for an unarmed strike.
+    #[must_use]
+    pub fn sneak_attack_damage(&self, damage: f32, weapon: Option<SneakWeapon>) -> Option<f32> {
+        if self.kind == StealthKind::SightOnly {
+            return None;
+        }
+        let s = &self.settings;
+        let critical = match weapon {
+            Some(weapon) if weapon.critical_chance_mult > 0.0 => weapon.critical_damage,
+            Some(_) => 0.0,
+            None => damage * s.unarmed_crit_damage_mult,
+        };
+        let melee = weapon.is_none_or(|weapon| weapon.melee);
+        let mult = if melee { s.melee_sneak_damage_mult } else { s.sneak_damage_mult };
+        Some((damage + critical) * mult)
     }
 }
 
@@ -584,6 +627,28 @@ mod tests {
         assert!(value(DetectionInputs { detector_blindness: 1.0, ..base }) < value(base), "integer division");
         let far = rules.value(&DetectionInputs { distance: 9000.0, ..base }).unwrap();
         assert_eq!((far.sound, far.visual), (0.0, 0.0), "past the range the attenuation clamps to 0");
+    }
+
+    /// PRD §7.2 scenario 8 (SNK-ATK-003), the numbers: FNV's masters author the ranged ×2 and the unarmed crit
+    /// ×1; melee ×5 is the executable default. A critical adds the weapon's Critical Damage unless its Crit % Mult
+    /// is 0; a sight-only row has no multiplier yet.
+    #[test]
+    fn a_sneak_attack_is_a_critical_times_the_sneak_multiplier() {
+        let rules = StealthRules::resolve(StealthKind::FalloutNv, |name| match name {
+            "fCombatDamageBonusSneakingMult" => Some(2.0),
+            "fCombatUnarmedCritDamageMult" => Some(1.0),
+            _ => None,
+        })
+        .0;
+        let knife = SneakWeapon { critical_damage: 10.0, critical_chance_mult: 1.0, melee: true };
+        let pistol = SneakWeapon { critical_damage: 12.0, critical_chance_mult: 1.0, melee: false };
+        let no_crits = SneakWeapon { critical_chance_mult: 0.0, ..pistol };
+        approx(rules.sneak_attack_damage(20.0, Some(knife)).unwrap(), (20.0 + 10.0) * 5.0, "melee ×5");
+        approx(rules.sneak_attack_damage(20.0, Some(pistol)).unwrap(), (20.0 + 12.0) * 2.0, "ranged ×2");
+        approx(rules.sneak_attack_damage(20.0, Some(no_crits)).unwrap(), 20.0 * 2.0, "no critical, still ×2");
+        approx(rules.sneak_attack_damage(8.0, None).unwrap(), (8.0 + 8.0) * 5.0, "unarmed: crit = damage × 1, ×5");
+        let sight_only = StealthRules { kind: StealthKind::SightOnly, ..rules };
+        assert_eq!(sight_only.sneak_attack_damage(20.0, Some(knife)), None);
     }
 
     /// SNK-DET-013: the GECK transitions toward a hostile player.

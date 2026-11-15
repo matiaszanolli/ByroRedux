@@ -1035,7 +1035,9 @@ mod catalog {
                 let (path, function) = site.split_once("::").unwrap_or_else(|| panic!("{} site `{site}` is not path::function", row.name));
                 let src = workspace_file(path);
                 let body = function_text(&src, &format!("fn {function}("));
-                let calls_a_composer = body.contains("compose_") || body.contains("has_concentrated_fire(");
+                let calls_a_composer = body.contains("compose_")
+                    || body.contains("has_concentrated_fire(")
+                    || body.contains("ignores_running_during_detection(");
                 assert!(calls_a_composer, "{dialect:?} hook {} ({}): `{site}` calls no compose_* function", row.index, row.name);
             }
         }
@@ -1628,7 +1630,31 @@ mod activate_choices {
         assert!(compose_activate_choices(&world, stranger, target).is_empty());
     }
 
-    /// The choices follow the entry rank held and the composition order: Skyrim ascends by priority, as
+    /// M65 (SNK-PERK-002) — vanilla Robotics Expert's script calls only implemented commands and is offered;
+    /// a choice whose script calls one the host lacks (Mister Sandman's `StartMisterSandman`, V17 #6937) is held.
+    #[test]
+    fn a_choice_whose_script_calls_an_unimplemented_command_is_held() {
+        let mut robotics = label("Deactivate");
+        robotics.script = Some(Box::new(robotics_expert_script()));
+        let mut sandman = label("Sandman");
+        // One statement: an opcode no command table row owns, no arguments (`[ff 1f][00 00]`).
+        sandman.script = Some(Box::new(ScriptRecord { compiled: vec![0xff, 0x1f, 0x00, 0x00], ..Default::default() }));
+        let idx = index(
+            GameKind::Fallout3NV,
+            vec![perk(
+                PERK,
+                vec![
+                    activate_entry(0, 0, fnv::ACTIVATE, robotics, vec![alive_target_tab()]),
+                    activate_entry(0, 0, fnv::ACTIVATE, sandman, vec![alive_target_tab()]),
+                ],
+            )],
+        );
+        let (world, player, target) = activation_world(&idx);
+        assert!(crate::obscript_cmd::unimplemented_commands(&world, &robotics_expert_script().compiled).is_empty());
+        assert_eq!(labels(&compose_activate_choices(&world, player, target)), vec!["Deactivate"]);
+    }
+
+    /// The choices follow the entry rank held and the composition order: Skyrim ascends by priority, as    /// The choices follow the entry rank held and the composition order: Skyrim ascends by priority, as
     /// vanilla `VampireFeed`'s 10 / 20 pair is authored.
     #[test]
     fn activate_choices_follow_the_rank_held_and_the_composition_order() {

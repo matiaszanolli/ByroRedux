@@ -98,6 +98,28 @@ pub(crate) fn detects(world: &World, observer: EntityId, target: EntityId) -> bo
     }
 }
 
+/// SNK-ATK-001 — whether `target` is unaware of the player at this moment: its
+/// value re-run now, as the originals do at the strike (`Fallout3.exe`
+/// `0x845580` calls the per-pair routine afresh), at or below `fSneakSeenMin`.
+/// V12: level Unseen and the Noticed band both count as unaware. A sight-only
+/// row, or no rules installed, answers from the sight test.
+pub(crate) fn unaware_of_player(world: &World, target: EntityId) -> bool {
+    let Some(player) = crate::systems::PlayerEntity::get(world) else {
+        return false;
+    };
+    let rules = world.try_resource::<StealthRules>().map(|r| *r);
+    let Some(rules) = rules.filter(|rules| rules.kind != byroredux_core::stealth::StealthKind::SightOnly) else {
+        return !sight::sees(world, target, player);
+    };
+    let Some(player_at) = world.get::<GlobalTransform>(player).map(|t| t.translation) else {
+        return false;
+    };
+    let mut awareness = world.get::<Awareness>(target).map(|a| *a).unwrap_or_default();
+    let target_inputs = player_inputs(world, player, player_at);
+    evaluate(world, &rules, target, player, target_inputs, 0.0, &[], sight::in_exterior(world), &mut awareness);
+    awareness.level != DetectionLevel::Seen
+}
+
 /// One frame of the detection tick.
 pub(crate) fn detection_tick_system(world: &World, dt: f32) {
     let Some(rules) = world.try_resource::<StealthRules>().map(|r| *r) else {
@@ -236,6 +258,8 @@ fn player_inputs(world: &World, player: EntityId, at: Vec3) -> DetectionInputs {
             (moving, moving && actions.is_held(Sprint))
         })
         .unwrap_or((false, false));
+    // SNK-PERK-003 — Silent Running: "If the value is modified to be non-zero, running will be ignored" (GECK).
+    let running = running && !byroredux_scripting::perk_entry_points::ignores_running_during_detection(world, player);
     let light_level = light_level_at(world, at) * 100.0;
     DetectionInputs {
         target_sneaking: world.has::<Sneaking>(player),

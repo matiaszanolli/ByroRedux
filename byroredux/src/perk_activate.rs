@@ -277,6 +277,44 @@ mod tests {
         resolve_answered_activation(&world);
     }
 
+    /// M65 (SNK-PERK-001) — an actor no quest binds (Robotics Expert's robot) is an interaction target exactly
+    /// while one of the player's activate entries offers a choice on it, and only within reach.
+    #[test]
+    fn an_unbound_actor_the_players_perk_offers_on_is_a_target() {
+        use byroredux_core::ecs::components::GlobalTransform;
+        use byroredux_core::math::{Quat, Vec3};
+        let (mut world, target) = activation_world(GameKind::Fallout3NV, vec![activate_entry(fnv::ACTIVATE, label("Deactivate"))]);
+        world.register::<GlobalTransform>();
+        world.register::<crate::systems::faction_hostility::CombatDisposition>();
+        let player = world.resource::<crate::systems::PlayerEntity>().0.unwrap();
+        world.insert(player, GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
+        world.insert(target.entity, GlobalTransform::new(Vec3::new(0.0, 0.0, -100.0), Quat::IDENTITY, 1.0));
+        world.insert(
+            target.entity,
+            crate::systems::faction_hostility::CombatDisposition(byroredux_plugin::esm::records::ActorAiData {
+                aggression: byroredux_plugin::esm::records::Aggression::Unaggressive,
+                confidence: byroredux_plugin::esm::records::Confidence::Average,
+                responsibility: None,
+                attack_radius: None,
+            }),
+        );
+        let mut candidates = rustc_hash::FxHashMap::default();
+        crate::interaction::add_perk_choice_actors(&world, &mut candidates);
+        assert_eq!(candidates.get(&target.entity), Some(&InteractionKind::Npc), "the perk offers a choice on it");
+
+        // Out of reach: not a target.
+        world.insert(target.entity, GlobalTransform::new(Vec3::new(0.0, 0.0, -2000.0), Quat::IDENTITY, 1.0));
+        candidates.clear();
+        crate::interaction::add_perk_choice_actors(&world, &mut candidates);
+        assert!(candidates.is_empty());
+
+        // No activate perk held: not a target.
+        world.insert(target.entity, GlobalTransform::new(Vec3::new(0.0, 0.0, -100.0), Quat::IDENTITY, 1.0));
+        world.insert(player, Perks::default());
+        crate::interaction::add_perk_choice_actors(&world, &mut candidates);
+        assert!(candidates.is_empty());
+    }
+
     /// No passing entry: the activation goes ahead at once, with no box.
     #[test]
     fn an_activation_with_no_passing_entry_is_not_held() {

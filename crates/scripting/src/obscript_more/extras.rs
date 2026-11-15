@@ -453,7 +453,7 @@ fn trap_update(world: &World, args: &[ObScriptValue], ctx: &Context) -> Action {
         let total = damage + levelled * level;
         if total > 0.0 {
             if let Some(mut pending) = world.try_resource_mut::<crate::PendingTrapHits>() {
-                pending.0.push(crate::TrapHit { target: contact.actor, trap, damage: total });
+                pending.0.push(crate::TrapHit { target: contact.actor, trap, damage: total, sneak_attack: false });
             }
         }
         if push > 0.0 {

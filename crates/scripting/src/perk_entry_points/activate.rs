@@ -110,6 +110,19 @@ pub fn compose_activate_choices(world: &World, activator: EntityId, target: Enti
     };
     due.sort_by_key(|(key, ..)| *key);
     due.into_iter()
+        // M65 (SNK-PERK-002) — a choice whose embedded script calls a command the host lacks (FNV
+        // `StartMisterSandman`, `StartCannibal`; V17, #6937) would stop partway: it stays unoffered.
+        .filter(|(_, perk, choice, _)| {
+            let missing = choice
+                .script
+                .as_ref()
+                .map(|script| crate::obscript_cmd::unimplemented_commands(world, &script.compiled))
+                .unwrap_or_default();
+            if !missing.is_empty() {
+                log::debug!("perk {perk:08X} activate choice {:?} held: commands {missing:04X?} are not implemented", choice.label);
+            }
+            missing.is_empty()
+        })
         .filter(|(_, _, _, tabs)| tabs_pass(world, activator, tabs, &[Some(target)]))
         .map(|(_, perk, choice, _)| ActivateChoiceOffer { perk, choice })
         .collect()

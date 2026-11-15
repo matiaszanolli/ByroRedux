@@ -962,20 +962,16 @@ fn select_interaction_target(world: &World) -> Option<InteractionTarget> {
     // A ragdoll may fall away from the placement root's bound. Its nearest
     // physical hit identifies the same canonical actor inventory; never cast
     // through the first obstruction to find a body behind a wall.
-    if candidates
-        .values()
-        .any(|kind| *kind == InteractionKind::Corpse)
-    {
-        if let Some((entity, distance)) = ray_hit_actor(world, origin, direction) {
-            if candidates.get(&entity) == Some(&InteractionKind::Corpse)
-                && rows.iter().any(|row| row.entity == entity && !row.blocked)
-            {
-                targets.retain(|target| target.entity != entity);
-                targets.push(InteractionTarget {
-                    entity,
-                    kind: InteractionKind::Corpse,
-                    distance,
-                });
+    // M65 (#6912) — a living actor too: the placement root's fallback sphere sits at the feet, so a ray aimed
+    // at a robot's chest misses it while hitting the robot's own body.
+    let by_body = |kind: InteractionKind| matches!(kind, InteractionKind::Corpse | InteractionKind::Npc);
+    if candidates.values().any(|kind| by_body(*kind)) {
+        if let Some((entity, distance)) = ray_hit_actor(world, origin, direction, &candidates) {
+            if let Some(kind) = candidates.get(&entity).copied().filter(|kind| by_body(*kind)) {
+                if rows.iter().any(|row| row.entity == entity && !row.blocked) {
+                    targets.retain(|target| target.entity != entity);
+                    targets.push(InteractionTarget { entity, kind, distance });
+                }
             }
         }
     }
@@ -1110,7 +1106,12 @@ fn corpse_collider_actors(
     actors
 }
 
-fn ray_hit_actor(world: &World, origin: Vec3, direction: Vec3) -> Option<(EntityId, f32)> {
+fn ray_hit_actor(
+    world: &World,
+    origin: Vec3,
+    direction: Vec3,
+    candidates: &FxHashMap<EntityId, InteractionKind>,
+) -> Option<(EntityId, f32)> {
     let player = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world);
     let excluded = player.and_then(|player| {
         world
@@ -1121,10 +1122,18 @@ fn ray_hit_actor(world: &World, origin: Vec3, direction: Vec3) -> Option<(Entity
         .try_resource::<byroredux_physics::PhysicsWorld>()?
         .cast_ray(origin, direction, INTERACTION_REACH_BU, excluded)?;
     let collider = ray_hit_entity(world, &hit)?;
-    let actor = world
-        .get::<byroredux_physics::ActorColliderOwner>(collider)
-        .map_or(collider, |owner| owner.0);
-    Some((actor, hit.distance))
+    let actor = world.get::<byroredux_physics::ActorColliderOwner>(collider).map(|owner| owner.0).or_else(|| {
+        // M65 (#6912) — a body-part model's bone collider is owner-unmarked: its parent chain leads to the actor.
+        let mut cursor = collider;
+        for _ in 0..32 {
+            if candidates.contains_key(&cursor) {
+                return Some(cursor);
+            }
+            cursor = world.get::<byroredux_core::ecs::components::Parent>(cursor)?.0;
+        }
+        None
+    });
+    Some((actor.unwrap_or(collider), hit.distance))
 }
 
 pub(crate) fn ray_hit_entity(
@@ -1206,6 +1215,19 @@ fn collider_belongs_to_target(world: &World, collider_entity: EntityId, target: 
     {
         return true;
     }
+    // M65 (#6912) — a collider nested under the target is the target's own body. A creature's body-part
+    // models bring their own bone colliders (a securitron's `bip01 rarm03`), which skeleton registration never
+    // owner-marks, so without this walk the robot's arm occluded the robot and it could not be activated.
+    let mut cursor = collider_entity;
+    for _ in 0..32 {
+        let Some(parent) = world.get::<byroredux_core::ecs::components::Parent>(cursor).map(|parent| parent.0) else {
+            break;
+        };
+        if parent == target {
+            return true;
+        }
+        cursor = parent;
+    }
     let target_form = world.get::<FormIdComponent>(target).map(|form| form.0);
     let collider_form = world
         .get::<FormIdComponent>(collider_entity)
@@ -1272,7 +1294,35 @@ fn collect_candidates(world: &World) -> FxHashMap<EntityId, InteractionKind> {
     };
     candidates.clear();
     populate_candidates(world, &mut candidates);
+    add_perk_choice_actors(world, &mut candidates);
     candidates
+}
+
+/// M65 (SNK-PERK-001) / PERK-HOOK-007 — a living actor within reach that one of the player's perks offers an
+/// *Activate* choice on is a target, although no quest binds it: Robotics Expert's robots ("deactivate a hostile
+/// robot by sneaking up on it"). Its activation then composes the perk choices (`activate_target`). Only actors
+/// near the player are asked, and the composition returns at once when the player holds no activate perk.
+pub(crate) fn add_perk_choice_actors(world: &World, candidates: &mut FxHashMap<EntityId, InteractionKind>) {
+    let Some(player) = crate::systems::PlayerEntity::get(world) else {
+        return;
+    };
+    let Some(player_at) = world.get::<GlobalTransform>(player).map(|t| t.translation) else {
+        return;
+    };
+    let near: Vec<EntityId> = crate::systems::faction_hostility::living_actors(world)
+        .into_iter()
+        .filter(|&actor| actor != player && !candidates.contains_key(&actor))
+        .filter(|&actor| {
+            world
+                .get::<GlobalTransform>(actor)
+                .is_some_and(|t| t.translation.distance(player_at) <= INTERACTION_REACH_BU * 2.0)
+        })
+        .collect();
+    for actor in near {
+        if !byroredux_scripting::perk_entry_points::compose_activate_choices(world, player, actor).is_empty() {
+            candidates.insert(actor, InteractionKind::Npc);
+        }
+    }
 }
 
 fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, InteractionKind>) {

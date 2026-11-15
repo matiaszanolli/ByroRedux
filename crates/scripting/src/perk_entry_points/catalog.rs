@@ -120,7 +120,7 @@ pub(super) const FALLOUT3_NV_HOOKS: &[Hook] = &[
     Hook { index: 28, name: "Mysterious Stranger", state: HookState::Pending { id: UNCLASSIFIED }, subjects: Some(&[]) },
     Hook { index: 29, name: "Has Paralyzing Palm", state: HookState::Pending { id: UNCLASSIFIED }, subjects: Some(&[]) },
     Hook { index: 30, name: "Hacking Science Bonus", state: HookState::Pending { id: UNCLASSIFIED }, subjects: Some(&[]) },
-    Hook { index: 31, name: "Ignore Running During Detection", state: HookState::Pending { id: UNCLASSIFIED }, subjects: Some(&[]) },
+    Hook { index: 31, name: "Ignore Running During Detection", state: HookState::Consumed { site: "byroredux/src/detection/tick.rs::player_inputs" }, subjects: Some(&[]) },
     Hook { index: 32, name: "Ignore Broken Lock", state: HookState::Pending { id: UNCLASSIFIED }, subjects: Some(&[]) },
     Hook { index: 33, name: "Has Concentrated Fire", state: HookState::Consumed { site: "byroredux/src/systems/vats.rs::vats_queue_part" }, subjects: Some(&[]) },
     Hook { index: 34, name: "Calculate Gun Spread", state: HookState::Pending { id: UNCLASSIFIED }, subjects: Some(&["Weapon"]) },

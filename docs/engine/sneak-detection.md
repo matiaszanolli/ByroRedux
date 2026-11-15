@@ -1,6 +1,6 @@
 # Sneak and Detection
 
-**Status**: DESIGN (Phase 0, 2026-11-15); the stance (Phase 1, #6910) and Wave 1 detection with its consumers (Phase 2, #6911) are BUILT (2026-11-15). The design the [Sneak and Detection
+**Status**: DESIGN (Phase 0, 2026-11-15); the stance (Phase 1, #6910) Wave 1 detection with its consumers (Phase 2, #6911), and Wave 1 sneak attacks and perks (Phase 3, #6912) are BUILT (2026-11-15). The design the [Sneak and Detection
 PRD](../prd/sneak-and-detection.md) names as the owner of the stance, the detection
 tick, the per-pair level and alert state, the actor-to-actor sight test (§10 Q7), the
 light input (Q3), consumer migration and FO3 / FNV sneak-attack damage (PRD
@@ -296,6 +296,13 @@ The player's strike sets `sneak_attack` when the player is in the stance and the
 target's value toward the player is at or below the row's bar. The strike re-runs
 the formula, as the originals do; it does not read the stored level.
 
+Built (Phase 3): `combat::sneak_strike` is the one decision, called by the melee
+swing, the projectile impact (carried on `TrapHit` to the landed `HitEvent`) and
+the VATS shot; `detection::unaware_of_player` re-runs the formula;
+`StealthRules::sneak_attack_damage` is the arithmetic below, with the weapon's
+`CRDT` Critical Damage now decoded (`ItemKind::Weapon::crit_damage`). Papyrus
+`OnHit`'s `abSneakAttack` and the SDK hit event carry the flag (SNK-ATK-005).
+
 - **FO3 / FNV** (`Fallout3.exe` `0x845580`). When the strike passes the gate at
   `0x845684`–`0x8456df` (an attacker virtual at `+0x35c`, an actor target, and two
   tests not yet named, `0x582760` and `0x7e4a50`), and the target's fresh detection
@@ -331,11 +338,21 @@ above 0. SNK-ATK-006 holds: it stays with the VATS model (#6350).
 
 - **Activate perks (SNK-PERK-001, -002).** Robotics Expert needs only `IsSneaking`,
   `GetIsCreatureType`, `GetUnconscious` and `GetDetected` toward the player, all
-  answered after Phase 2. The other four wait on #6937. `HasBeenEaten` in
+  answered after Phase 2. Phase 3 made it live (`docs/smoke-tests/m65-robotics-expert.sh`):
+  creature bases now carry their creature type (`ActorBaseTraits` read only `NPC_`
+  before, so `GetIsCreatureType` answered 0 for every FO3 / FNV creature); an actor
+  no quest binds is an interaction target while one of the player's activate entries
+  offers on it (`interaction::add_perk_choice_actors`); and a ray hitting an actor's
+  owner-unmarked body-part collider resolves to the actor through its parent chain.
+  A choice whose script calls a command the host lacks is held unoffered
+  (`obscript_cmd::unimplemented_commands`), which keeps Mister Sandman
+  (`StartMisterSandman`) and the Cannibal family (`StartCannibal`, also gated by the
+  unanswered `HasBeenEaten`) unoffered until V17. The other four wait on #6937. `HasBeenEaten` in
   `Fallout3.exe` is "dead, and extra-data `0x5F` (`ExtraDismemberedLimbs` in FOSE's
   numbering) byte `+0x1c` set" (`0x7dcd10`). `StartCannibal` calls an actor virtual
   not yet decoded. `StartMisterSandman` is New Vegas-only.
-- **31 / Skyrim 15 (SNK-PERK-003).** Zeroes `running` in the value.
+- **31 / Skyrim 15 (SNK-PERK-003).** Zeroes `running` in the value
+  (`perk_entry_points::ignores_running_during_detection`, hook 31 Consumed at the tick).
 - **Skyrim 47, 48, 57 (SNK-PERK-004).** Vanilla users: 47 and 48
   `MQ101IncreaseDetection` (×2); 57 the Stealth tree `Stealth00`–`Stealth80` (+20 to
   +40, chained by perk condition 448) and `VampireSkillsPerk02` (+20). Which terms 48

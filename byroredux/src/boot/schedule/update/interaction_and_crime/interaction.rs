@@ -41,6 +41,8 @@ fn register_interaction_system(scheduler: &mut Scheduler) {
             .writes_resource::<crate::notifications::PlayerNotifications>()
             .reads_resource::<byroredux_core::form_id::FormIdPool>()
             .reads::<byroredux_core::ecs::components::FormIdComponent>()
+            // M65 (#6912) — a hit bone collider walks its parent chain to the actor it belongs to.
+            .reads::<byroredux_core::ecs::components::Parent>()
             .writes_resource::<byroredux_scripting::ReferenceLockState>()
             .writes::<byroredux_core::ecs::components::Locked>()
             .reads_resource::<crate::systems::PlayerEntity>()

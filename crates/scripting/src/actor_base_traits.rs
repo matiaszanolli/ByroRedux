@@ -49,10 +49,15 @@ impl ActorBaseTraits {
 }
 
 /// Install the load order's actor base traits; returns how many bases.
+///
+/// M65 (#6912) — FO3 / FNV / Oblivion keep their creatures in `EsmIndex::creatures`, not `npcs`, so both maps
+/// feed the table: without the creatures every `CREA` read no creature type, `GetIsCreatureType` answered 0 for
+/// every creature, and Robotics Expert (target tab `GetIsCreatureType 6`) could never be offered.
 pub fn install_actor_base_traits(world: &mut World, index: &EsmIndex) -> usize {
     let traits: HashMap<u32, ActorBaseTrait> = index
         .npcs
         .iter()
+        .chain(index.creatures.iter())
         .map(|(&form_id, npc)| {
             (
                 form_id,
@@ -120,6 +125,25 @@ mod tests {
         assert_eq!(traits.get(1), Some(ActorBaseTrait { female: true, unique: false, voice: 0x77, creature_type: None, traits_base: 1 }));
         assert_eq!(traits.get(2), Some(ActorBaseTrait { female: false, unique: false, voice: 0, creature_type: None, traits_base: 2 }));
         assert_eq!(traits.get(3), None);
+    }
+
+    /// M65 (#6912) — a `CREA` base (FO3 / FNV `EsmIndex::creatures`) carries its creature type: a securitron
+    /// is a Robot (6), which Robotics Expert's `GetIsCreatureType 6` reads.
+    #[test]
+    fn a_creature_base_carries_its_creature_type() {
+        use byroredux_plugin::esm::records::CreatureStats;
+        let mut index = EsmIndex::default();
+        index.creatures.insert(
+            0x0011_2070,
+            NpcRecord {
+                form_id: 0x0011_2070,
+                creature_stats: Some(CreatureStats { creature_type: 6, ..Default::default() }),
+                ..Default::default()
+            },
+        );
+        let mut world = World::new();
+        assert_eq!(install_actor_base_traits(&mut world, &index), 1);
+        assert_eq!(world.resource::<ActorBaseTraits>().get(0x0011_2070).and_then(|t| t.creature_type), Some(6));
     }
 
     /// #6228 — a Use-Traits shell's actor has its terminal's sex and voice; the

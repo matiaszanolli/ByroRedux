@@ -332,6 +332,8 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
     }
 
     let damage = attack_damage_against(world, aggressor, target);
+    // M65 (SNK-ATK-001, -003) — the sneaking player's strike on an unaware target.
+    let (damage, sneak_attack) = sneak_strike(world, aggressor, target, damage);
     let Some(mut events) = world.query_mut::<byroredux_scripting::HitEvent>() else {
         record_miss(world, "HitEvent storage is not registered");
         return;
@@ -355,7 +357,7 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
             // to recompute from.
             damage,
             power_attack: false,
-            sneak_attack: false,
+            sneak_attack,
             bash_attack: false,
             // `block_held` is the *aggressor's* own Block state, snapshotted
             // above (#2976). Canonically `HitEvent::blocked` describes the
@@ -365,10 +367,8 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
             // field live and testable rather than a permanently-false
             // constant: swinging while holding Block now deals no damage
             // instead of costing the player nothing. `projectile`,
-            // `power_attack`, `sneak_attack`, `bash_attack` stay `false` —
-            // unlike Block, none of them has an input action driving them at
-            // all (no power-attack charge, sneak-attack, or bash input
-            // exists), so there is nothing to wire them to yet.
+            // `power_attack` and `bash_attack` stay `false` — no power-attack
+            // charge or bash input exists. `sneak_attack` is M65's (above).
             blocked: block_held,
         },
     );
@@ -1201,6 +1201,32 @@ pub(crate) fn attack_reach_bu(world: &World, aggressor: EntityId) -> f32 {
 /// Weapon-scaled swing cooldown. `EquippedWeapon::speed` is a cadence
 /// multiplier (>1.0 = faster attacks) on [`MELEE_COOLDOWN_SECONDS`]; `0.0`
 /// (unset/undecoded) falls back to the flat baseline.
+/// M65 (SNK-ATK-001, -003) — whether the player's strike on `target` is a sneak attack, and its damage. It is
+/// when the player is in the stance and `target` is unaware of them right now (`detection::unaware_of_player`;
+/// V12: Unseen and the Noticed band count). Its damage is the row's sneak-attack damage: on FO3 / FNV a critical
+/// (unless the weapon's Crit % Mult is 0) times the melee or ranged sneak multiplier; a sight-only row keeps the
+/// damage and only sets the flag until its multipliers land (Phase 5). Any other strike is `(damage, false)`.
+pub(crate) fn sneak_strike(world: &World, aggressor: EntityId, target: EntityId, damage: f32) -> (f32, bool) {
+    if PlayerEntity::get(world) != Some(aggressor)
+        || !world.has::<byroredux_core::ecs::components::Sneaking>(aggressor)
+        || world.get::<Dead>(target).is_some()
+        || !crate::detection::unaware_of_player(world, target)
+    {
+        return (damage, false);
+    }
+    let base = world.get::<EquippedWeapon>(aggressor).map(|weapon| weapon.base_form_id);
+    let weapon = base.map(|base| {
+        world
+            .try_resource::<crate::inventory::InventoryCatalog>()
+            .and_then(|catalog| catalog.weapon_sneak(base))
+            // A weapon the catalog does not describe: no critical data, counted as melee.
+            .unwrap_or(byroredux_core::stealth::SneakWeapon { critical_damage: 0.0, critical_chance_mult: 0.0, melee: true })
+    });
+    let rules = world.try_resource::<byroredux_core::stealth::StealthRules>().map(|rules| *rules);
+    let damage = rules.and_then(|rules| rules.sneak_attack_damage(damage, weapon)).unwrap_or(damage);
+    (damage, true)
+}
+
 /// M65 (SNK-DET-016) — record the player's attack as an action sound for the
 /// detection tick: the equipped weapon's `VNAM` sound level, nothing for an
 /// unarmed strike or a weapon whose game authors none.
@@ -1596,6 +1622,81 @@ mod death_voice_source_tests {
             body.contains("dialogue_voice::stop_line_voice(world, actor)"),
             "reconcile_dead_actor must cut the dead actor's voice line (#5432)"
         );
+    }
+}
+
+/// M65 PRD §7.2 scenario 8 (A8, SNK-ATK-001, -003) on FO3 and FNV.
+#[cfg(test)]
+mod sneak_attack_tests {
+    use super::*;
+    use byroredux_core::ecs::components::{Awareness, GlobalTransform, LightSource, Sneaking};
+    use byroredux_core::math::{Quat, Vec3};
+    use byroredux_core::stealth::{StealthKind, StealthRules};
+
+    /// A sneaking player 400 BU down −Z from a detector at the origin. `aware`: the detector faces the player
+    /// and a lamp lights them; otherwise it faces away in the dark.
+    fn scene(kind: StealthKind, aware: bool) -> (World, EntityId, EntityId) {
+        let mut world = World::new();
+        world.register::<GlobalTransform>();
+        world.register::<Awareness>();
+        world.register::<Sneaking>();
+        world.register::<LightSource>();
+        world.register::<Dead>();
+        world.register::<EquippedWeapon>();
+        let player = world.spawn();
+        world.insert(player, GlobalTransform::new(Vec3::new(0.0, 0.0, -400.0), Quat::IDENTITY, 1.0));
+        world.insert(player, Sneaking);
+        world.insert_resource(PlayerEntity(Some(player)));
+        let target = world.spawn();
+        let facing = if aware { Quat::IDENTITY } else { Quat::from_rotation_y(std::f32::consts::PI) };
+        world.insert(target, GlobalTransform::new(Vec3::ZERO, facing, 1.0));
+        if aware {
+            let lamp = world.spawn();
+            world.insert(lamp, GlobalTransform::new(Vec3::new(0.0, 0.0, -400.0), Quat::IDENTITY, 1.0));
+            world.insert(
+                lamp,
+                LightSource {
+                    emitter: byroredux_core::lighting::Emitter::from_legacy_world_units(
+                        512.0,
+                        [1.0; 3],
+                        byroredux_core::lighting::EmitterKind::Point,
+                        [0.0; 3],
+                        0.0,
+                        1.0,
+                        byroredux_core::lighting::VisibilityMask::for_legacy_local_light(),
+                    ),
+                    ..Default::default()
+                },
+            );
+        }
+        // Both masters author ranged ×2 and the unarmed crit ×1; melee ×5 is the executable's.
+        world.insert_resource(
+            StealthRules::resolve(kind, |name| match name {
+                "fCombatDamageBonusSneakingMult" => Some(2.0),
+                "fCombatUnarmedCritDamageMult" => Some(1.0),
+                _ => None,
+            })
+            .0,
+        );
+        world.insert_resource(crate::detection::DetectionConfig { max_distance: 1500.0, exterior_mult: 2.0 });
+        (world, player, target)
+    }
+
+    #[test]
+    fn a_strike_on_an_unaware_detector_is_a_sneak_attack_with_the_games_multiplier() {
+        for kind in [StealthKind::Fallout3, StealthKind::FalloutNv] {
+            // Unarmed: a critical of the damage × 1, then melee ×5.
+            let (world, player, target) = scene(kind, false);
+            assert_eq!(sneak_strike(&world, player, target, 10.0), ((10.0 + 10.0) * 5.0, true), "{kind:?} unaware");
+
+            let (world, player, target) = scene(kind, true);
+            assert_eq!(sneak_strike(&world, player, target, 10.0), (10.0, false), "{kind:?} aware: neither");
+
+            let (world, player, target) = scene(kind, false);
+            world.query_mut::<Sneaking>().unwrap().remove(player);
+            assert_eq!(sneak_strike(&world, player, target, 10.0), (10.0, false), "{kind:?} not in the stance");
+            assert_eq!(sneak_strike(&world, target, player, 10.0), (10.0, false), "{kind:?} only the player's strikes");
+        }
     }
 }
 

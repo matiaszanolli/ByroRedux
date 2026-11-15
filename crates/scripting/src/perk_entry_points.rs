@@ -101,6 +101,9 @@ pub mod fnv {
     pub const CALCULATE_TO_HIT_CHANCE: u8 = 8;
     /// `Activate`: "Run when the player activates something" (GECK *Entry Point*).
     pub const ACTIVATE: u8 = 27;
+    /// `Ignore Running During Detection`: "If the value is modified to be non-zero, running will be ignored"
+    /// (GECK *Entry Point*); vanilla Silent Running authors one entry here (M65, SNK-PERK-003).
+    pub const IGNORE_RUNNING_DURING_DETECTION: u8 = 31;
 }
 
 /// Skyrim entry-point indices (`wbEntryPointsEnum`, xEdit `wbDefinitionsTES5`).
@@ -113,6 +116,8 @@ pub mod skyrim {
     pub const ADD_LEVELED_LIST_ON_DEATH: u8 = 9;
     /// `Activate`: a choice "in addition to the normal activation prompt" (CK *Perk Entry Point*).
     pub const ACTIVATE: u8 = 14;
+    /// `Ignore Running During Detection` (M65, SNK-PERK-003).
+    pub const IGNORE_RUNNING_DURING_DETECTION: u8 = 15;
     pub const MOD_SNEAK_ATTACK_MULT: u8 = 18;
     pub const MOD_ATTACK_DAMAGE: u8 = 35;
     pub const MOD_INCOMING_DAMAGE: u8 = 36;
@@ -172,6 +177,9 @@ pub enum PerkCalculation {
     /// (PERK-HOOK-007). Fallout 4's *Activate* (14) has no row yet: its *Run Immediately* timing is a Phase 0
     /// verify item (the FO4 CK's two pages disagree), so its entries stay Pending until that settles.
     Activate,
+    /// *Ignore Running During Detection* (FO3 / FNV 31, Skyrim 15; M65 SNK-PERK-003): a flag composed from 0, a
+    /// non-zero result removes the running term from the owner's detection value.
+    IgnoreRunningDuringDetection,
 }
 
 impl PerkCalculation {
@@ -197,6 +205,8 @@ impl PerkCalculation {
             (Self::VatsHitChance, Fallout3NV) => Some(fnv::CALCULATE_TO_HIT_CHANCE),
             (Self::Activate, Fallout3NV) => Some(fnv::ACTIVATE),
             (Self::Activate, Skyrim) => Some(skyrim::ACTIVATE),
+            (Self::IgnoreRunningDuringDetection, Fallout3NV) => Some(fnv::IGNORE_RUNNING_DURING_DETECTION),
+            (Self::IgnoreRunningDuringDetection, Skyrim) => Some(skyrim::IGNORE_RUNNING_DURING_DETECTION),
             _ => None,
         }
     }
@@ -790,6 +800,12 @@ pub fn compose_damage_threshold(
 /// through the Get Max Carry Weight entry point (FO3 / FNV 22, Skyrim 10).
 pub fn compose_max_carry_weight(world: &World, actor: EntityId, base: f32) -> f32 {
     compose_calculation(world, actor, PerkCalculation::MaxCarryWeight, base, &[None, None])
+}
+
+/// M65 (SNK-PERK-003) — whether `actor`'s perks make the detection value ignore its running (Silent Running): the
+/// *Ignore Running During Detection* hook composed from 0, non-zero meaning ignore.
+pub fn ignores_running_during_detection(world: &World, actor: EntityId) -> bool {
+    compose_calculation(world, actor, PerkCalculation::IgnoreRunningDuringDetection, 0.0, &[None, None]) != 0.0
 }
 
 /// Whether `actor` holds a perk that grants VATS Concentrated Fire (FO3 / FNV entry point 33,

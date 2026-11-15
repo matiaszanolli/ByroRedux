@@ -261,8 +261,11 @@ pub enum ItemKind {
         min_spread: f32,
         /// Spread (radians).
         spread: f32,
-        /// Critical chance multiplier.
+        /// Critical chance multiplier (`CRDT` "Crit % Mult"; 0 means the weapon never crits, GECK *Weapons*).
         crit_mult: f32,
+        /// M65 (SNK-ATK-003) — `CRDT` "Critical Damage" (xEdit `wbDefinitionsFNV`: the leading `u16`), added to a
+        /// critical hit's damage. `0.0` where the record authors none.
+        crit_damage: f32,
         /// Melee/attack reach in Bethesda units. `0.0` means "not decoded
         /// for this game" (Skyrim/FO3/FNV/76/Starfield DNAM layouts aren't
         /// mapped yet) — combat.rs treats that as "use the unarmed
@@ -331,6 +334,7 @@ impl ItemKind {
             min_spread: 0.0,
             spread: 0.0,
             crit_mult: 1.0,
+            crit_damage: 0.0,
             reach: 0.0,
             speed: 0.0,
             oblivion_type: 0,
@@ -420,6 +424,7 @@ pub fn parse_weap(
     let mut min_spread = 0.0f32;
     let mut spread = 0.0f32;
     let mut crit_mult = 1.0f32;
+    let mut crit_damage = 0.0f32;
     let mut reload_anim = 0u8;
     let mut vats: Option<WeaponVats> = None;
     let mut reach = 0.0f32;
@@ -653,11 +658,11 @@ pub fn parse_weap(
             // handling; keeps this arm consistent with every other guarded
             // decoder in the file.
             b"CRDT" if sub.data.len() >= 8 => {
-                // Critical data: chance(u16), unused(u16), mult(f32). Shared
-                // shape across FO3/FNV; Skyrim extends with extra tail
-                // fields but the leading 8 bytes still produce a sane mult.
+                // Critical data (xEdit `wbDefinitionsFNV` / `TES5`): Critical Damage (u16), unused (u16),
+                // Crit % Mult (f32). Shared across FO3/FNV; Skyrim extends with extra tail fields but the
+                // leading 8 bytes keep this shape.
                 let mut r = SubReader::new(&sub.data);
-                let _chance = r.u16_or_default();
+                crit_damage = f32::from(r.u16_or_default());
                 let _unused = r.u16_or_default();
                 crit_mult = r.f32().unwrap_or(1.0);
             }
@@ -689,6 +694,7 @@ pub fn parse_weap(
             min_spread,
             spread,
             crit_mult,
+            crit_damage,
             reach,
             speed,
             oblivion_type,
@@ -1602,7 +1608,7 @@ mod tests {
         let stub = ItemKind::weapon_stub(22, 12);
         let ItemKind::Weapon {
             ammo_form, damage, clip_size, anim_type, ap_cost, vats_base_to_hit, projectile_form, equip_type,
-            skill_actor_value, min_spread, spread, crit_mult, reach, speed, oblivion_type, reload_anim, vats,
+            skill_actor_value, min_spread, spread, crit_mult, crit_damage, reach, speed, oblivion_type, reload_anim, vats,
             sound_level,
         } = stub.clone()
         else {
@@ -1612,6 +1618,7 @@ mod tests {
         assert_eq!((ammo_form, anim_type, equip_type, reload_anim, oblivion_type, projectile_form), (0, 0, 0, 0, 0, 0));
         assert_eq!((ap_cost, vats_base_to_hit, min_spread, spread, reach, speed), (0.0, 0.0, 0.0, 0.0, 0.0, 0.0));
         assert_eq!(crit_mult, 1.0);
+        assert_eq!(crit_damage, 0.0);
         assert!(vats.is_none());
         assert_eq!(skill_actor_value, None);
         assert_eq!(sound_level, None);
