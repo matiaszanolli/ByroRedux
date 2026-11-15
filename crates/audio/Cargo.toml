@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 byroredux-core = { workspace = true }
 kira = { workspace = true }
+symphonia = { workspace = true }
 log = { workspace = true }
 glam = { workspace = true }
 

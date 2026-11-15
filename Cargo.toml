@@ -220,6 +220,10 @@ walkdir = "2.5"
 # the platform supports it (Windows), a no-op on Linux, and no libdbus.
 # The cpal backend plus WAV/PCM, OGG/Vorbis (vanilla SFX), MP3 (Oblivion
 # and FO3/FNV music) and FLAC.
+# The streaming decoder (`crates/audio/src/stream_decoder.rs`, #6945) names symphonia's types
+# directly. It is the copy kira already builds (same version, its features unify in); no crate
+# is added to the graph.
+symphonia = { version = "0.6", default-features = false }
 kira = { version = "0.12", default-features = false, features = [
     "cpal",
     "cpal-realtime",

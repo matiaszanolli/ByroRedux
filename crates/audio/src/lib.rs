@@ -178,6 +178,7 @@ use std::sync::Arc;
 mod cache;
 mod components;
 mod dsp;
+mod stream_decoder;
 mod system;
 mod world;
 
@@ -187,6 +188,7 @@ pub use system::*;
 pub use world::*;
 
 use dsp::*;
+use stream_decoder::ClaimCheckedDecoder;
 
 
 // Re-export the kira types downstream crates need so they can hold

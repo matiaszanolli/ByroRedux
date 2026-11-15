@@ -615,6 +615,7 @@ dependencies = [
  "glam 0.33.12",
  "kira",
  "log",
+ "symphonia",
 ]
 
 [[package]]

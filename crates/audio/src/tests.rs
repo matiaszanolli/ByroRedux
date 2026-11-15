@@ -7,7 +7,7 @@ use std::time::Duration;
 
 /// Every production source file of the crate, for the source-scan pins
 /// below. `lib.rs` was split into `dsp` / `world` / `components` / `system`
-/// / `cache`; a pin that read `lib.rs` alone would go vacuous (#6140), so
+/// / `cache` / `stream_decoder`; a pin that read `lib.rs` alone would go vacuous (#6140), so
 /// they all read this. `fuz.rs` has its own tests and no pinned seam.
 const PRODUCTION_SOURCE: &str = concat!(
     include_str!("lib.rs"),
@@ -16,6 +16,7 @@ const PRODUCTION_SOURCE: &str = concat!(
     include_str!("components.rs"),
     include_str!("system.rs"),
     include_str!("cache.rs"),
+    include_str!("stream_decoder.rs"),
 );
 
 /// A new production module that is not listed in [`PRODUCTION_SOURCE`] would
@@ -2264,3 +2265,58 @@ fn the_movie_hold_skips_sounds_already_stopping() {
         );
     }
 }
+
+/// #6945 — a stream whose header claims more frames than its data holds ends at its true end. The
+/// fixture is a one-second 22.05 kHz VBR mp3 (ffmpeg / libmp3lame, `-q:a 9`) cut to its first half:
+/// its Xing header still claims the whole second, and symphonia's mp3 reader answers the early end
+/// of data with no packet rather than an error. Through kira's own decoder that sent the decode
+/// thread round `frame_at_index` on empty chunks at 100% CPU forever, looping or not, where stopping
+/// the sound could not reach it. (A WAV cut short does not: symphonia's RIFF reader errors at the
+/// missing bytes, and kira stops a sound whose decoder errors.) Played here through kira's mock
+/// backend, the sound has to reach `Stopped` on its own, and kira's thread exits on its next pass.
+#[test]
+fn a_stream_claiming_more_frames_than_it_holds_stops_at_its_data_end() {
+    use kira::backend::mock::{MockBackend, MockBackendSettings};
+    use std::time::{Duration, Instant};
+
+    let mp3 = include_bytes!("../tests/fixtures/truncated_xing.mp3");
+    for looping in [false, true] {
+        let mut manager = AudioManager::<MockBackend>::new(AudioManagerSettings {
+            backend_settings: MockBackendSettings { sample_rate: 22_050 },
+            ..Default::default()
+        })
+        .expect("mock manager");
+        let stream = load_streaming_sound_from_bytes(mp3.to_vec()).expect("the header loads");
+        assert!(stream.num_frames() >= 22_000, "the Xing header claims the whole second");
+        let stream = if looping { stream.loop_region(0.0..) } else { stream };
+        let handle = manager.play(stream).expect("play");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while handle.state() != PlaybackState::Stopped {
+            assert!(Instant::now() < deadline, "looping={looping}: the stream never stopped");
+            manager.backend_mut().on_start_processing();
+            for _ in 0..256 {
+                manager.backend_mut().process();
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
+/// #6945 — an honest stream decodes to its claimed count and is not cut short.
+#[test]
+fn an_honest_stream_decodes_every_claimed_frame() {
+    use kira::sound::streaming::Decoder;
+    let mut decoder =
+        crate::stream_decoder::ClaimCheckedDecoder::new(Box::new(Cursor::new(wav_bytes(5_000)))).expect("probe");
+    let mut decoded = 0;
+    loop {
+        let chunk = decoder.decode().expect("an honest stream never errors");
+        if chunk.is_empty() {
+            break;
+        }
+        decoded += chunk.len();
+    }
+    assert_eq!(decoded, decoder.num_frames());
+    assert_eq!(decoded, 5_000);
+}
+
