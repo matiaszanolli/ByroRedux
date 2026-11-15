@@ -487,7 +487,7 @@ by SVGF, TAA, SSAO, composite, and (the two FSR mask attachments)
 | Albedo | `B10G11R11_UFLOAT_PACK32` | Surface colour (diffuse × vertex colour) | `COLOR_ATTACHMENT_OPTIMAL` |
 | Reactive | `R8_UNORM` | Reactive mask (transparent coverage). FSR 3.1's reactive input, and read by `taa.comp` (binding 9, #4944) whenever the TAA resolve runs: 1.0 bypasses history, lower values raise the blend α | `COLOR_ATTACHMENT_OPTIMAL` |
 | Transparency | `R8_UNORM` | FSR 3.1 transparency & composition mask | `COLOR_ATTACHMENT_OPTIMAL` |
-| Depth | `D32_SFLOAT` | Standard depth (0.0 = near, 1.0 = far), `LESS_OR_EQUAL`, clear = 1.0 | `DEPTH_STENCIL_ATTACHMENT_OPTIMAL` |
+| Depth | `D32_SFLOAT` | Reversed-Z under the shipped `ACTIVE_DEPTH_MAPPING` (1.0 = near, 0.0 = far), `GREATER_OR_EQUAL`, clear = 0.0 (`DEPTH_CLEAR_VALUE`) | `DEPTH_STENCIL_ATTACHMENT_OPTIMAL` |
 
 After `vkCmdEndRenderPass` all eight **colour** attachments transition to
 `SHADER_READ_ONLY_OPTIMAL`; **depth** transitions to

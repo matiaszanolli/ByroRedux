@@ -318,7 +318,7 @@ with a Y-flip for Vulkan's inverted Y axis. The view side is
 
 ```rust
 // z_near / z_far are swapped under DepthMapping::Reversed (shipped:
-// Conventional — see `ACTIVE_DEPTH_MAPPING`).
+// Reversed — see `ACTIVE_DEPTH_MAPPING`).
 let mut proj = perspective(self.fov_y, self.aspect, z_near, z_far);
 proj.col_mut(1).y *= -1.0;
 ```

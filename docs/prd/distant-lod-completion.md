@@ -155,7 +155,7 @@ Cross-cutting state, the same date:
 | VWD rule | Ring separation: object LOD only outside the resident set. `LodCoverageStats::vwd_full_model_overlaps` is gated at 0 in `m-exteriors.sh` boundary mode. No active cull (#3307, open) |
 | LAND value-plausibility guards | Shipped: `sanitize_land_height`, `vnml_raw_magnitude`, `VNML_DEGENERATE_RAW_MAGNITUDE` (`cell_loader/terrain.rs`), with unit tests; exterior readiness EX-10/11 item 5 is checked |
 | `.btr` sampling mode | Shipped: clamp per the authored `texture_clamp_mode` (#4912, closed 2026-10-01) |
-| Depth mapping | Implemented behind `ACTIVE_DEPTH_MAPPING`, shipping `DepthMapping::Conventional` (`camera.rs`, pinned by `the_shipped_depth_mapping_is_conventional`). #3308 is closed by `c8ac5328d`; no open issue tracks the flip |
+| Depth mapping | Implemented behind `ACTIVE_DEPTH_MAPPING`, shipping `DepthMapping::Reversed` since 09940503b (#6642, DLOD-DEPTH-002), pinned by `the_shipped_depth_mapping_is_reversed` (`camera.rs`) |
 | Coverage gate | `lod-coverage:` reports `terrain_resident` and `object_resident` only (`LodCoverageStats::machine_line`, `crates/core/src/ecs/resources/mod.rs`) |
 
 ---
