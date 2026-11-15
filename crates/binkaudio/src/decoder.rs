@@ -94,12 +94,11 @@ impl Decoder {
         if !decoded_bytes.is_multiple_of(2 * self.channels as u32) {
             return Err(Error::BadSize(decoded_bytes));
         }
-        // Every block reads at least 2 + 58 bits (`block`'s 2 unused bits, then `channel`'s two
-        // coefficients) before its 32-bit alignment, so a packet holds at most `data.len() / 8`
-        // blocks `[ours]`: a stated size past that is not this packet's, and decoding it would grow
-        // `out` from the container's word alone.
+        // A stated size needing more blocks than the packet's bits can encode is not this packet's,
+        // and decoding it would grow `out` from the container's word alone: past the data every bit
+        // reads 0, and zeros decode as silent blocks `[ours]`.
         let blocks = (decoded_bytes as usize).div_ceil(per_block);
-        if blocks > data.len() / 8 {
+        if blocks.saturating_mul(self.min_block_bits()) > data.len().saturating_mul(8) {
             return Err(Error::BadSize(decoded_bytes));
         }
         let mut r = Bits::new(data);
@@ -108,6 +107,19 @@ impl Decoder {
         }
         out.truncate(want);
         Ok(())
+    }
+
+    /// The fewest bits any block can occupy, from what `block` and `channel` read unconditionally:
+    /// 2 unused bits, then per channel the two 29-bit leading coefficients (A3), 8 bits per band's
+    /// quantiser, and the runs covering coefficients 2..N, each at least a flag, a 4-bit length
+    /// index and a 4-bit width, and at most `8 * 64` coefficients long (the largest `RLE` entry).
+    /// Alignment padding is not counted, so a real block always meets it; a packet whose stated
+    /// size needs more blocks than this allows is refused (INC3-1: the earlier bound, 64 bits a
+    /// block, let a zero-filled packet expand ~100x further than a real stream does).
+    fn min_block_bits(&self) -> usize {
+        let bands = self.edges.len() - 1;
+        let runs = (N - 2).div_ceil(8 * RLE[RLE.len() - 1]);
+        2 + self.channels * (2 * 29 + 8 * bands + 9 * runs)
     }
 
     /// One block (A7): 2 unused bits, every channel, padding to 32 bits.
@@ -182,7 +194,26 @@ mod tests {
         assert!(matches!(decoder.decode(huge, &[0u8; 16], &mut out), Err(Error::BadSize(n)) if n == huge));
         assert!(out.is_empty(), "nothing decoded");
         // One block's worth of size from one block's minimum bytes is still accepted.
-        assert!(decoder.decode(4, &[0u8; 8], &mut out).is_ok());
+        let one_block = vec![0u8; decoder.min_block_bits().div_ceil(8)];
+        assert!(decoder.decode(4, &one_block, &mut out).is_ok());
         assert_eq!(out.len(), 2);
+    }
+
+    /// INC3-1: a zero-filled packet decodes as silent blocks, so the bound must be what a block
+    /// really occupies, not 64 bits: 1 KiB claiming one stereo block per 8 bytes (the old bound) is
+    /// refused, while the blocks those bits can really hold are not.
+    #[test]
+    fn the_block_bound_is_what_a_block_really_occupies() {
+        let mut decoder = Decoder::new(48000, true, true).unwrap();
+        let per_block = (2 * 2 * decoder.block_samples()) as u32;
+        let data = [0u8; 1024];
+        assert!(decoder.min_block_bits() > 8 * 64, "a stereo block is more than eight times the old 64-bit floor");
+        let mut out = Vec::new();
+        let old_bound = (data.len() / 8) as u32 * per_block;
+        assert!(matches!(decoder.decode(old_bound, &data, &mut out), Err(Error::BadSize(_))));
+        assert!(out.is_empty());
+        let fits = (data.len() * 8 / decoder.min_block_bits()) as u32 * per_block;
+        assert!(decoder.decode(fits, &data, &mut out).is_ok());
+        assert_eq!(out.len(), fits as usize / 2);
     }
 }

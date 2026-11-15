@@ -165,6 +165,25 @@ fn wav_header(samples: usize, channels: u16, rate: u32) -> [u8; 44] {
     h
 }
 
+/// The most interleaved samples a movie's soundtrack may decode to: its running time plus two
+/// seconds, with half again as slack, at the track's rate and channel count `[ours]`. A real track
+/// never comes near it (a stream ends with the picture); a hostile header whose packets each pass
+/// the decoder's per-packet bound could otherwise grow the up-front buffer without limit (INC3-1).
+fn pcm_cap(duration_secs: f64, rate: u32, channels: usize) -> usize {
+    let secs = if duration_secs.is_finite() { duration_secs.max(0.0) } else { 0.0 };
+    ((secs + 2.0) * 1.5 * f64::from(rate)) as usize * channels
+}
+
+/// Whether `pcm` has passed `cap`; it is truncated to the cap and the stop logged once.
+fn over_pcm_cap(pcm: &mut Vec<i16>, cap: usize, name: &str) -> bool {
+    if pcm.len() <= cap {
+        return false;
+    }
+    log::warn!("video: {name}: its audio decodes past the movie's running time; stopped at {cap} samples");
+    pcm.truncate(cap);
+    true
+}
+
 /// Decode the movie's first audio track to a temporary WAV. `None` when it has no audio or the
 /// track does not decode (the picture then plays silent, with a warning).
 fn extract_audio(movie: &mercs2_bink::Movie) -> Option<PathBuf> {
@@ -177,10 +196,17 @@ fn extract_audio(movie: &mercs2_bink::Movie) -> Option<PathBuf> {
         }
     };
     let mut pcm: Vec<i16> = Vec::new();
+    let info = describe(movie);
+    let cap = pcm_cap(info.duration_secs, track.rate(), track.channels() as usize);
     for frame in 0..movie.frame_count {
         let record = movie.split(frame).ok().and_then(|(records, _)| records.first().copied());
         match record.map(|record| decoder.decode_record(record)) {
-            Some(Ok(samples)) => pcm.extend(samples),
+            Some(Ok(samples)) => {
+                pcm.extend(samples);
+                if over_pcm_cap(&mut pcm, cap, "Bink 1 movie") {
+                    break;
+                }
+            }
             Some(Err(error)) => {
                 log::warn!("video: its audio stops at frame {frame}: {error}");
                 break;
@@ -230,6 +256,7 @@ fn bink2_audio(file: &mut bink2::Bk2, name: &str) -> Option<PathBuf> {
         }
     };
     let mut pcm: Vec<i16> = Vec::new();
+    let cap = pcm_cap(describe_bink2(file).duration_secs, track.rate, track.channels());
     for frame in 0..file.frames {
         let packet = match file.audio(frame) {
             Ok(mut packets) => packets.swap_remove(0),
@@ -241,6 +268,9 @@ fn bink2_audio(file: &mut bink2::Bk2, name: &str) -> Option<PathBuf> {
         if let Some(packet) = packet {
             if let Err(error) = decoder.decode(packet.decoded_bytes, &packet.data, &mut pcm) {
                 log::warn!("video: {name}: its audio stops at frame {frame}: {error}");
+                break;
+            }
+            if over_pcm_cap(&mut pcm, cap, name) {
                 break;
             }
         }
@@ -656,6 +686,18 @@ mod tests {
     fn without_letterbox_the_picture_fills_the_window() {
         let out = fit(&solid(4, 3, [9, 8, 7]), (4, 3), (8, 8), false);
         assert!(out.chunks(4).all(|p| p == [9, 8, 7, 255]));
+    }
+
+    /// INC3-1: the soundtrack buffer is bounded by the movie's running time, and stops there.
+    #[test]
+    fn the_soundtrack_is_capped_by_the_running_time() {
+        assert_eq!(pcm_cap(10.0, 48_000, 2), (12.0 * 1.5 * 48_000.0) as usize * 2);
+        assert_eq!(pcm_cap(f64::NAN, 48_000, 2), pcm_cap(0.0, 48_000, 2), "a degenerate duration is no running time");
+        let mut pcm = vec![0i16; 10];
+        assert!(!over_pcm_cap(&mut pcm, 10, "t"));
+        pcm.push(1);
+        assert!(over_pcm_cap(&mut pcm, 10, "t"));
+        assert_eq!(pcm.len(), 10);
     }
 
     #[test]
