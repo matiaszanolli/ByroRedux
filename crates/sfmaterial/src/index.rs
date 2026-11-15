@@ -929,8 +929,10 @@ fn stream_list(state: &mut State<'_>, mut f: impl FnMut(&Value)) -> Result<()> {
 
 
 /// #3398 — synthetic CDB fixture shared with the downstream merge-arm
-/// tests in `byroredux`. `#[doc(hidden)]`: an implementation detail of
-/// the test suite, not API.
+/// tests in `byroredux`. Compiled only for this crate's tests and under the
+/// `test-support` feature, which the binary enables from its
+/// `[dev-dependencies]` (#6951), so it never ships in the library.
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod test_support {
     /// One synthetic-CDB chunk: fourCC + payload, header stripped so

@@ -76,6 +76,8 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 byroredux-papyrus = { workspace = true }
+# The synthetic-CDB fixtures the Starfield merge-arm tests build on (#6951).
+byroredux-sfmaterial = { workspace = true, features = ["test-support"] }
 # Used by the golden-frame regression tests in `tests/golden_frames.rs`
 # to decode + per-pixel-compare PNG screenshots captured via the engine's
 # `--screenshot` CLI flag. See README in `tests/golden/` for the

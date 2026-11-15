@@ -8,5 +8,10 @@ license.workspace = true
 log = { workspace = true }
 thiserror = { workspace = true }
 
+[features]
+# The synthetic-CDB fixtures in `index::test_support`, for the binary's merge-arm tests (#6951);
+# off in every normal build.
+test-support = []
+
 [dev-dependencies]
 byroredux-bsa = { workspace = true }
