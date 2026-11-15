@@ -975,7 +975,28 @@ fn live_load_drain_discards_the_outgoing_sessions_requests() {
         sequence_targets: Vec::new(),
     });
     assert_eq!(world.resource::<crate::components::VatsState>().world_time_scale(), 0.0);
+    // #6927 — a relocation, a scripted move and an Unroutable reason raised before the load name
+    // the outgoing timeline's actors.
+    let placement = byroredux_scripting::CreatedPlacement {
+        cell: byroredux_scripting::CreatedCell::Interior { editor_id: "GSProspectorSaloonInterior".into() },
+        position_zup: [0.0; 3],
+        rotation_zup: [0.0; 3],
+    };
+    world.insert_resource(byroredux_scripting::PendingRelocations(vec![byroredux_scripting::Relocation {
+        actor: 0x104C1C,
+        placement,
+        onward: None,
+    }]));
+    world.insert_resource(byroredux_scripting::PendingActorMoves(vec![byroredux_scripting::ActorMoveRequest::ToPackageLocation {
+        actor: 0x104C1C,
+    }]));
+    let mut reports = crate::cell_loader::relocated::TravelReports::default();
+    reports.0.insert(0x104C1C, "no load door leaves its space");
+    world.insert_resource(reports);
     discard_outgoing_session_requests(&world);
+    assert!(world.resource::<byroredux_scripting::PendingRelocations>().0.is_empty(), "#6927: queued relocations are dropped");
+    assert!(world.resource::<byroredux_scripting::PendingActorMoves>().0.is_empty(), "#6927: queued scripted moves are dropped");
+    assert!(world.resource::<crate::cell_loader::relocated::TravelReports>().0.is_empty(), "#6927: stale route reasons are dropped");
     {
         let vats = world.resource::<crate::components::VatsState>();
         assert_eq!(vats.mode, crate::components::VatsMode::None, "VATS mode ends");

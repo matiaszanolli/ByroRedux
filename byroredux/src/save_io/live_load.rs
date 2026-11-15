@@ -522,6 +522,19 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     if let Some(mut dropped) = world.try_resource_mut::<crate::inventory::PendingDroppedItems>() {
         dropped.0.clear();
     }
+    // #6927 — XCT transients of the same shape. A relocation (a Travel hop, a door pass) or a scripted
+    // move raised earlier this frame names an actor by FormID in the outgoing timeline; the relocation
+    // step drains them after this load, in the same frame, and would move or evict that actor in the
+    // loaded game. The Unroutable reasons describe the outgoing session's routes.
+    if let Some(mut relocations) = world.try_resource_mut::<byroredux_scripting::PendingRelocations>() {
+        relocations.0.clear();
+    }
+    if let Some(mut moves) = world.try_resource_mut::<byroredux_scripting::PendingActorMoves>() {
+        moves.0.clear();
+    }
+    if let Some(mut reports) = world.try_resource_mut::<crate::cell_loader::relocated::TravelReports>() {
+        reports.0.clear();
+    }
 }
 
 /// Drain a queued live-load: reload the saved cell or exterior worldspace
