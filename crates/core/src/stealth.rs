@@ -34,13 +34,20 @@
 //! written here. The capture's `DetectorState` grouping (0.8 / 1.2) is
 //! superseded by the settings form the code shows.
 //!
-//! A game without a sourced formula ([`StealthKind::SightOnly`]: Oblivion and
-//! Skyrim until Phase 5, Fallout 4 and Starfield per Q2) has no value; the
-//! tick answers its levels from the sight test.
+//! [`StealthKind::Oblivion`] is the CS formula (`oblivion`), [`StealthKind::Skyrim`]
+//! `SkyrimSE.exe`'s (`skyrim`), with its stealth points. A game without a
+//! sourced formula ([`StealthKind::SightOnly`]: Fallout 4 and Starfield per Q2)
+//! has no value; the tick answers its levels from the sight test.
 
+mod fallout;
 pub mod indicator;
+pub mod oblivion;
+mod settings;
+pub mod skyrim;
 
 pub use indicator::{IndicatorGate, IndicatorModel, IndicatorState, IndicatorStyle, StealthIndicator};
+pub use settings::{DetectionSettings, SettingReading};
+pub use skyrim::{StealthPointInputs, StealthPoints};
 
 /// Which formula a game's detection runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,11 +58,17 @@ pub enum StealthKind {
     Fallout3,
     /// The same with New Vegas's target-skill level and armor terms (SNK-DET-004).
     FalloutNv,
+    /// The CS formula and `Oblivion.exe`'s levels (SNK-DET-005).
+    Oblivion,
+    /// `SkyrimSE.exe`'s formula with stealth points (SNK-DET-007, -015).
+    Skyrim,
 }
 
 /// A detector's awareness of the player (CS *GetDetectionLevel*: "0 = Lost :1 =
 /// Unseen :2 = Noticed :3 = Seen"). FO3 / FNV store only Lost and Seen
-/// (`Fallout3.exe` `0x874393`); the band between is the alert state.
+/// (`Fallout3.exe` `0x874393`); the band between is the alert state. Oblivion
+/// stores Lost, Noticed and Seen (`Oblivion.exe` `0x640900`); Skyrim's Noticed
+/// is a hostile detector held off by the player's stealth points.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DetectionLevel {
     #[default]
@@ -145,10 +158,14 @@ pub struct DetectionInputs {
     /// The detector is in combat, but not with the target.
     pub detector_not_combat_target: bool,
     pub detector_level: u16,
+    /// The detector's Sneak skill (Oblivion, Skyrim: the detector term).
+    pub detector_sneak_skill: f32,
     pub detector_night_eye: bool,
     /// The detector's Blindness, 0 to 100.
     pub detector_blindness: f32,
     pub target_sneaking: bool,
+    /// The target's Sneak skill. Skyrim transforms it (`fPlayerDetectionSneak*`)
+    /// and runs entry 57 over it inside the formula.
     pub target_sneak_skill: f32,
     pub target_level: u16,
     pub target_armor: ArmorClass,
@@ -156,10 +173,26 @@ pub struct DetectionInputs {
     pub target_weight: f32,
     pub target_moving: bool,
     pub target_running: bool,
-    /// Chameleon / invisibility (a Stealth Boy): no visual contact.
+    /// Chameleon / invisibility (a Stealth Boy): no visual contact (FO3 / FNV).
     pub target_stealth_boy: bool,
+    /// Invisibility alone (Oblivion: −100; Skyrim: no visual contact).
+    pub target_invisible: bool,
     /// The size factor input (1 for a human).
     pub target_size: f32,
+    /// Oblivion's Chameleon magnitude, 0 to 100.
+    pub target_chameleon: f32,
+    /// Oblivion: the target's boots' weight (the movement noise).
+    pub target_boot_weight: f32,
+    /// Oblivion: the target is in combat (sound bonus, no sneak subtraction).
+    pub target_in_combat: bool,
+    /// Oblivion: the target is swimming (no sound, sight scaled).
+    pub target_swimming: bool,
+    /// Oblivion: the target attacked this detector since its last evaluation.
+    pub target_attacked_detector: bool,
+    /// Skyrim: the movement-noise factor (1; Muffle lowers it).
+    pub target_noise_mult: f32,
+    /// Skyrim: the target race's size class, 0 small to 3 very large.
+    pub target_size_class: u8,
     /// The action rating heard this period (0 for none; [`ActionSound::rating`]
     /// or a detection event's sound level).
     pub action: f32,
@@ -179,6 +212,7 @@ impl Default for DetectionInputs {
             detector_sleeping: false,
             detector_not_combat_target: false,
             detector_level: 1,
+            detector_sneak_skill: 0.0,
             detector_night_eye: false,
             detector_blindness: 0.0,
             target_sneaking: false,
@@ -189,7 +223,15 @@ impl Default for DetectionInputs {
             target_moving: false,
             target_running: false,
             target_stealth_boy: false,
+            target_invisible: false,
             target_size: 1.0,
+            target_chameleon: 0.0,
+            target_boot_weight: 0.0,
+            target_in_combat: false,
+            target_swimming: false,
+            target_attacked_detector: false,
+            target_noise_mult: 1.0,
+            target_size_class: 1,
             action: 0.0,
             light_level: 0.0,
         }
@@ -205,91 +247,52 @@ pub struct DetectionTerms {
     pub value: f32,
 }
 
-macro_rules! geck_settings {
-    ($( $field:ident : $name:literal = $default:expr ),+ $(,)?) => {
-        /// The FO3 / FNV detection settings. Defaults are `Fallout3.exe`'s
-        /// (design §13.1; New Vegas shares them, its executable being
-        /// encrypted); the load order's values replace them at install.
-        #[derive(Debug, Clone, Copy, PartialEq)]
-        pub struct GeckSettings { $( pub $field: f32, )+ }
-
-        impl GeckSettings {
-            /// `Fallout3.exe`'s defaults (the census's E column).
-            pub const EXECUTABLE_DEFAULTS: Self = Self { $( $field: $default, )+ };
-
-            /// Every setting's EditorID, in declaration order.
-            pub const NAMES: &'static [&'static str] = &[ $( $name, )+ ];
-
-            /// Replace each default by the load order's value where it
-            /// authors one; report every setting and whether it was authored
-            /// (SNK-DX-003).
-            pub fn with_gmst(mut self, gmst: impl Fn(&str) -> Option<f32>) -> (Self, Vec<SettingReading>) {
-                let mut readings = Vec::with_capacity(Self::NAMES.len());
-                $(
-                    let authored = gmst($name).filter(|value| value.is_finite());
-                    if let Some(value) = authored {
-                        self.$field = value;
-                    }
-                    readings.push(SettingReading { name: $name, value: self.$field, authored: authored.is_some() });
-                )+
-                (self, readings)
-            }
-        }
-    };
+/// A Skyrim perk entry point the formula runs on the target's perks (SNK-PERK-004).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SneakPerkHook {
+    /// 47 *Mod Detection Light*: the light level, before Sneak and Invisibility apply.
+    DetectionLight,
+    /// 48 *Mod Detection Movement*: the visual movement multiplier (`0x14041d0af`).
+    DetectionMovement,
+    /// 57 *Mod Detection Sneak Skill*: the target's sneak skill (`0x14041ce35`).
+    DetectionSneakSkill,
 }
 
-geck_settings! {
-    base_value: "fSneakBaseValue" = -25.0,
-    max_distance: "fSneakMaxDistance" = 1500.0,
-    exterior_distance_mult: "fSneakExteriorDistanceMult" = 2.0,
-    attenuation_exponent: "fSneakDistanceAttenuationExponent" = 2.0,
-    sound_los_mult: "fSneakSoundLosMult" = 0.25,
-    sounds_mult: "fSneakSoundsMult" = 1.6,
-    boot_weight_base: "fSneakBootWeightBase" = 14.0,
-    boot_weight_mult: "fSneakBootWeightMult" = 1.0,
-    running_mult: "fSneakRunningMult" = 2.0,
-    action_mult: "fSneakActionMult" = 1.0,
-    light_move_mult: "fSneakLightMoveMult" = 0.01,
-    light_run_mult: "fSneakLightRunMult" = 0.2,
-    light_mod: "fDetectionSneakLightMod" = 0.0,
-    light_mult: "fSneakLightMult" = 1.4,
-    stealth_boy_mult: "fSneakStealthBoyMult" = 0.0,
-    night_eye_bonus: "fDetectionNightEyeBonus" = 3.0,
-    perception_skill_min: "fSneakPerceptionSkillMin" = 10.0,
-    perception_skill_max: "fSneakPerceptionSkillMax" = 90.0,
-    alert_mod: "fSneakAlertMod" = 0.2,
-    sleep_bonus: "fSneakSleepBonus" = -0.2,
-    combat_mod: "fSneakCombatMod" = -0.4,
-    skill_mult: "fSneakSkillMult" = 0.5,
-    noticed_min: "fSneakNoticedMin" = -20.0,
-    seen_min: "fSneakSeenMin" = 0.0,
-    timer: "fDetectionTimerSetting" = 0.3,
-    view_cone: "fDetectionViewCone" = 190.0,
-    event_expire_time: "fDetectionEventExpireTime" = 10.0,
-    large_actor_threshold: "fDetectionLargeActorThreshold" = 135.0,
-    large_actor_size_mult: "fDetectionLargeActorSizeMult" = 1.0,
-    sneak_damage_mult: "fCombatDamageBonusSneakingMult" = 1.0,
-    melee_sneak_damage_mult: "fCombatDamageBonusMeleeSneakingMult" = 5.0,
-    unarmed_crit_damage_mult: "fCombatUnarmedCritDamageMult" = 0.5,
-}
-
-/// What a sneak attack needs to know about the weapon (SNK-ATK-003): its `CRDT`
-/// Critical Damage and Crit % Mult, and whether it is a melee weapon (FO3 / FNV
-/// animation types 0–2: hand-to-hand, one- and two-handed melee).
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// What a sneak attack needs to know about the weapon: its `CRDT` Critical
+/// Damage and Crit % Mult (FO3 / FNV, SNK-ATK-003), its animation type (FO3 /
+/// FNV and Skyrim `DNAM`), and Oblivion's `DATA` weapon type.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct SneakWeapon {
     pub critical_damage: f32,
     pub critical_chance_mult: f32,
-    pub melee: bool,
+    pub anim_type: u8,
+    pub oblivion_type: u8,
 }
 
-/// One setting the install read: its value, and whether the load order
-/// authors it or it fell back to the executable default.
+/// What the level of one detector depends on besides its value.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SettingReading {
-    pub name: &'static str,
-    pub value: f32,
-    pub authored: bool,
+pub struct LevelContext {
+    /// The detector would attack the player.
+    pub hostile: bool,
+    pub target_sneaking: bool,
+    /// The player's stealth points (Skyrim).
+    pub stealth_points: f32,
+}
+
+impl Default for LevelContext {
+    fn default() -> Self {
+        Self { hostile: false, target_sneaking: false, stealth_points: f32::MAX }
+    }
+}
+
+/// Where a strike's unaware test reads the target's value from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrikeValue {
+    /// Re-run the formula at the strike (`Fallout3.exe` `0x845580`).
+    Fresh,
+    /// The target's stored value toward the attacker (`Oblivion.exe` `0x5ff23a`,
+    /// `SkyrimSE.exe` `0x1406a2520`).
+    Stored,
 }
 
 /// A load order's resolved detection rules: the profile row's kind over its
@@ -297,24 +300,16 @@ pub struct SettingReading {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StealthRules {
     pub kind: StealthKind,
-    pub settings: GeckSettings,
+    pub settings: DetectionSettings,
 }
 
 impl crate::ecs::resource::Resource for StealthRules {}
 
 impl StealthRules {
-    /// Resolve `kind` against the load order's settings. A [`StealthKind::SightOnly`]
-    /// row reads only the range settings it shares with the sight test.
+    /// Resolve `kind` against the load order's settings (`DetectionSettings::resolve`).
     #[must_use]
     pub fn resolve(kind: StealthKind, gmst: impl Fn(&str) -> Option<f32>) -> (Self, Vec<SettingReading>) {
-        let (settings, readings) = GeckSettings::EXECUTABLE_DEFAULTS.with_gmst(gmst);
-        let readings = match kind {
-            StealthKind::SightOnly => readings
-                .into_iter()
-                .filter(|reading| matches!(reading.name, "fSneakMaxDistance" | "fSneakExteriorDistanceMult"))
-                .collect(),
-            _ => readings,
-        };
+        let (settings, readings) = DetectionSettings::resolve(kind, gmst);
         (Self { kind, settings }, readings)
     }
 
@@ -325,82 +320,160 @@ impl StealthRules {
         if exterior { s.max_distance * s.exterior_distance_mult } else { s.max_distance }
     }
 
-    /// Seconds between one detector's re-evaluations (SNK-DET-006).
+    /// Seconds until one detector's next evaluation (SNK-DET-006): the fixed
+    /// `fDetectionTimerSetting`, or on Skyrim a draw from
+    /// [`fDetectionUpdateTimeMin`, `Max`] by `roll` in 0..1.
     #[must_use]
-    pub fn period(&self) -> f32 {
-        self.settings.timer.max(0.01)
+    pub fn period(&self, roll: f32) -> f32 {
+        let s = &self.settings;
+        match self.kind {
+            StealthKind::Skyrim => s.update_time_min + (s.update_time_max - s.update_time_min) * roll.clamp(0.0, 1.0),
+            _ => s.timer,
+        }
+        .max(0.01)
     }
 
-    /// The full view-cone angle in degrees, where the game authors one (SNK-DET-008).
+    /// The full view-cone angle in degrees, where the game authors one
+    /// (SNK-DET-008). Oblivion has no such setting and the CS formula no cone
+    /// term, so it sees along any unobstructed ray.
     #[must_use]
     pub fn view_cone_degrees(&self) -> Option<f32> {
         match self.kind {
-            StealthKind::Fallout3 | StealthKind::FalloutNv => Some(self.settings.view_cone),
-            StealthKind::SightOnly => None,
+            StealthKind::Fallout3 | StealthKind::FalloutNv | StealthKind::Skyrim => Some(self.settings.view_cone),
+            StealthKind::Oblivion | StealthKind::SightOnly => None,
         }
     }
 
     /// The detection value and its terms, or `None` for a game without a
-    /// sourced formula.
+    /// sourced formula. Skyrim's perk entry points take their unmodified value.
     #[must_use]
     pub fn value(&self, inputs: &DetectionInputs) -> Option<DetectionTerms> {
-        let level_terms = match self.kind {
+        self.value_with(inputs, &|_, value| value)
+    }
+
+    /// [`Self::value`] with Skyrim's perk entry points composed by `perks`.
+    #[must_use]
+    pub fn value_with(&self, inputs: &DetectionInputs, perks: &dyn Fn(SneakPerkHook, f32) -> f32) -> Option<DetectionTerms> {
+        let s = &self.settings;
+        Some(match self.kind {
             StealthKind::SightOnly => return None,
-            StealthKind::Fallout3 => false,
-            StealthKind::FalloutNv => true,
-        };
-        Some(geck_value(&self.settings, inputs, level_terms))
+            StealthKind::Fallout3 => fallout::value(s, inputs, false),
+            StealthKind::FalloutNv => fallout::value(s, inputs, true),
+            StealthKind::Oblivion => oblivion::value(s, inputs),
+            StealthKind::Skyrim => skyrim::value(s, inputs, perks),
+        })
     }
 
     /// The level a value means (SNK-DET-012): FO3 / FNV store Seen above
-    /// `fSneakSeenMin` and Lost otherwise (`Fallout3.exe` `0x874393`).
+    /// `fSneakSeenMin` and Lost otherwise (`Fallout3.exe` `0x874393`); Oblivion
+    /// adds Noticed above `fSneakNoticedMin` (`0x640900`); Skyrim gates a hostile
+    /// detector on the stealth points ([`skyrim`]).
     #[must_use]
-    pub fn level(&self, value: f32) -> DetectionLevel {
-        if value > self.settings.seen_min { DetectionLevel::Seen } else { DetectionLevel::Lost }
+    pub fn level(&self, value: f32, context: LevelContext) -> DetectionLevel {
+        let s = &self.settings;
+        match self.kind {
+            StealthKind::Oblivion => oblivion::level(s, value),
+            StealthKind::Skyrim => {
+                skyrim::level(s, value, context.hostile, context.target_sneaking, context.stealth_points)
+            }
+            _ => {
+                if value > s.seen_min { DetectionLevel::Seen } else { DetectionLevel::Lost }
+            }
+        }
     }
 
-    /// Whether a value crosses the alert threshold (`fSneakNoticedMin`, GECK
-    /// *Category:Detection*: "Alert Threshold").
+    /// Whether a value puts a hostile detector on alert: above `fSneakNoticedMin`
+    /// (GECK *Category:Detection*: "Alert Threshold"), or on Skyrim above 0 ("Comes
+    /// within my detection threshold (detection > 0)", CK).
     #[must_use]
     pub fn noticed(&self, value: f32) -> bool {
-        value > self.settings.noticed_min
+        match self.kind {
+            StealthKind::Skyrim => value > 0.0,
+            _ => value > self.settings.noticed_min,
+        }
     }
 
-    /// Seconds a detector stays Alert (or alert state Lost) after the last
-    /// thing it noticed (`fDetectionEventExpireTime`).
+    /// Whether an Alert (or searching) detector returns to Normal: the alert
+    /// time (`fDetectionEventExpireTime`) has passed since it last noticed
+    /// anything, or on Skyrim the player's stealth points are full again ("all
+    /// the targets have Stealth Points = 100", CK). Oblivion has no alert time
+    /// (no such setting), so its alert lasts while the detector notices.
     #[must_use]
-    pub fn alert_time(&self) -> f32 {
-        self.settings.event_expire_time.max(0.0)
+    pub fn alert_expired(&self, since_noticed: f32, stealth_points: f32) -> bool {
+        match self.kind {
+            StealthKind::Skyrim => stealth_points >= self.settings.stealth_point_max,
+            StealthKind::Oblivion => true,
+            _ => since_noticed >= self.settings.event_expire_time.max(0.0),
+        }
+    }
+
+    /// Where a strike reads the target's value from (SNK-ATK-001).
+    #[must_use]
+    pub fn strike_value(&self) -> StrikeValue {
+        match self.kind {
+            StealthKind::Oblivion | StealthKind::Skyrim => StrikeValue::Stored,
+            _ => StrikeValue::Fresh,
+        }
+    }
+
+    /// Whether a target with `value` toward the attacker is unaware of it
+    /// (SNK-ATK-001, V12): at most 0, and on Oblivion at most
+    /// `iAICombatMinDetection` while the target fights the attacker.
+    #[must_use]
+    pub fn unaware(&self, value: f32, fighting_attacker: bool) -> bool {
+        match self.kind {
+            StealthKind::Oblivion => oblivion::unaware(&self.settings, value, fighting_attacker),
+            _ => value <= 0.0,
+        }
+    }
+
+    /// A sneak attack's damage and whether the hit carries the sneak flag
+    /// (SNK-ATK-002 to -004), or `None` where the row has no sourced multipliers.
+    /// `weapon` is `None` for an unarmed strike; `sneak_skill` is the attacker's
+    /// Sneak (Oblivion's mastery); `mod_sneak_attack_mult` composes Skyrim's entry 18.
+    ///
+    /// - FO3 / FNV: a critical times the sneak multiplier, always flagged
+    ///   (`fallout::sneak_attack_damage`).
+    /// - Oblivion: × the mastery ladder for the weapon class, flagged even at 1
+    ///   (two-handed weapons and staves).
+    /// - Skyrim: × entry 18 of the class multiplier; flagged when above 1
+    ///   (`0x1407f1b86`).
+    #[must_use]
+    pub fn sneak_attack(
+        &self,
+        damage: f32,
+        weapon: Option<SneakWeapon>,
+        sneak_skill: f32,
+        mod_sneak_attack_mult: &dyn Fn(f32) -> f32,
+    ) -> Option<(f32, bool)> {
+        let s = &self.settings;
+        match self.kind {
+            StealthKind::SightOnly => None,
+            StealthKind::Fallout3 | StealthKind::FalloutNv => Some((fallout::sneak_attack_damage(s, damage, weapon), true)),
+            StealthKind::Oblivion => Some((damage * oblivion::sneak_attack_mult(s, weapon, sneak_skill), true)),
+            StealthKind::Skyrim => {
+                let mult = mod_sneak_attack_mult(skyrim::sneak_attack_mult(s, weapon));
+                Some((damage * mult, mult > 1.0))
+            }
+        }
+    }
+
+    /// Step the player's stealth points one frame (Skyrim; SNK-DET-015).
+    pub fn step_stealth_points(&self, points: &mut StealthPoints, inputs: StealthPointInputs, dt: f32) {
+        if self.kind == StealthKind::Skyrim {
+            skyrim::step_points(&self.settings, points, inputs, dt);
+        }
     }
 }
 
-impl StealthRules {
-    /// The damage of a sneak attack (SNK-ATK-003), or `None` where the row has no
-    /// sourced multipliers (a sight-only row; Oblivion and Skyrim are Phase 5).
-    ///
-    /// `Fallout3.exe` (design §8): a sneak attack multiplies the critical chance
-    /// by `fCombatSneakAttackBonusMult` (100 in both masters, so it is a
-    /// critical) unless the weapon's Crit % Mult is 0 ("If set to zero, the
-    /// weapon will not cause any critical hits, even for sneak attacks", GECK
-    /// *Weapons*). A critical adds the weapon's Critical Damage, or for an
-    /// unarmed strike the damage × `fCombatUnarmedCritDamageMult` (`0x845753`).
-    /// Then the damage is multiplied by `fCombatDamageBonusMeleeSneakingMult`
-    /// for unarmed and melee weapons, or `fCombatDamageBonusSneakingMult`
-    /// otherwise (`0x845980`). `weapon` is `None` for an unarmed strike.
-    #[must_use]
-    pub fn sneak_attack_damage(&self, damage: f32, weapon: Option<SneakWeapon>) -> Option<f32> {
-        if self.kind == StealthKind::SightOnly {
-            return None;
-        }
-        let s = &self.settings;
-        let critical = match weapon {
-            Some(weapon) if weapon.critical_chance_mult > 0.0 => weapon.critical_damage,
-            Some(_) => 0.0,
-            None => damage * s.unarmed_crit_damage_mult,
-        };
-        let melee = weapon.is_none_or(|weapon| weapon.melee);
-        let mult = if melee { s.melee_sneak_damage_mult } else { s.sneak_damage_mult };
-        Some((damage + critical) * mult)
+/// The distance attenuation every formula shares: `max(0, (maxD − d) / maxD) ^
+/// exponent` over the range (Oblivion's linear Distance Factor is exponent 1).
+fn attenuation(s: &DetectionSettings, i: &DetectionInputs, exponent: f32) -> f32 {
+    let max_distance = if i.exterior { s.max_distance * s.exterior_distance_mult } else { s.max_distance };
+    if max_distance > 0.0 {
+        ((max_distance - i.distance) / max_distance).max(0.0).powf(exponent)
+    } else {
+        0.0
     }
 }
 
@@ -423,57 +496,6 @@ pub fn step_alert(previous: AlertState, level: DetectionLevel, hostile: bool, no
         AlertState::Alert | AlertState::Lost if expired && !noticed => AlertState::Normal,
         state => state,
     }
-}
-
-fn geck_value(s: &GeckSettings, i: &DetectionInputs, level_terms: bool) -> DetectionTerms {
-    let flag = |b: bool| if b { 1.0 } else { 0.0 };
-    let max_distance = if i.exterior { s.max_distance * s.exterior_distance_mult } else { s.max_distance };
-    let attenuation = if max_distance > 0.0 {
-        ((max_distance - i.distance) / max_distance).max(0.0).powf(s.attenuation_exponent)
-    } else {
-        0.0
-    };
-    let perception = s.perception_skill_min + (s.perception_skill_max - s.perception_skill_min) * i.detector_perception / 10.0;
-    let state = 1.0
-        + flag(i.detector_alert) * s.alert_mod
-        + flag(i.detector_sleeping) * s.sleep_bonus
-        + flag(i.detector_not_combat_target) * s.combat_mod;
-
-    let los = if i.line_of_sight { 1.0 } else { s.sound_los_mult };
-    let movement = if i.target_moving {
-        (s.boot_weight_base + s.boot_weight_mult * i.target_weight) * if i.target_running { s.running_mult } else { 1.0 }
-    } else {
-        0.0
-    };
-    let sound = (attenuation * los * s.sounds_mult * (i.action * s.action_mult.trunc() + movement)).max(0.0);
-
-    let visual = if i.sees && !i.target_stealth_boy {
-        let night_eye = if i.detector_night_eye { s.night_eye_bonus } else { 1.0 };
-        let light = (i.light_level * night_eye).min(100.0);
-        let motion = 1.0 + flag(i.target_moving) * s.light_move_mult + flag(i.target_running) * s.light_run_mult;
-        // `Fallout3.exe` divides as integers: any blindness of 1 or more zeroes sight.
-        let blindness = f32::from(u8::from((100.0 - i.detector_blindness.clamp(0.0, 100.0)) >= 100.0));
-        let size = if i.target_size > 1.0 { 1.0 + (i.target_size - 1.0) * s.large_actor_size_mult } else { 1.0 };
-        (attenuation * motion * (light + s.light_mod) * s.light_mult * blindness * size).max(0.0)
-    } else {
-        // A Stealth Boy removes visual contact (`Fallout3.exe` also multiplies
-        // by `fSneakStealthBoyMult`, 0 in every census row).
-        0.0
-    };
-
-    let target = if i.target_sneaking {
-        let mut skill = i.target_sneak_skill;
-        if level_terms {
-            let (target_level, detector_level) = (f32::from(i.target_level), f32::from(i.detector_level));
-            skill += 5.0 * (target_level - detector_level) + (50.0 - 10.0 * target_level).max(0.0)
-                - i.target_armor.penalty();
-        }
-        skill
-    } else {
-        0.0
-    };
-    let skill = (attenuation * perception * state - target) * s.skill_mult;
-    DetectionTerms { sound, visual, skill, value: s.base_value + sound + visual + skill }
 }
 
 #[cfg(test)]
@@ -587,12 +609,12 @@ mod tests {
     #[test]
     fn executable_defaults_apply_where_the_load_order_authors_nothing() {
         let (rules, readings) = StealthRules::resolve(StealthKind::Fallout3, |_| None);
-        assert_eq!(rules.settings, GeckSettings::EXECUTABLE_DEFAULTS);
-        assert_eq!(readings.len(), GeckSettings::NAMES.len());
+        assert_eq!(rules.settings, DetectionSettings::fallout3_defaults());
+        assert_eq!(readings.len(), 32, "the Fallout rows read 32 settings");
         assert!(readings.iter().all(|reading| !reading.authored));
         assert_eq!(rules.range(false), 1500.0);
         assert_eq!(rules.range(true), 3000.0);
-        approx(rules.period(), 0.3, "fDetectionTimerSetting");
+        approx(rules.period(0.7), 0.3, "fDetectionTimerSetting");
         assert_eq!(rules.view_cone_degrees(), Some(190.0));
     }
 
@@ -610,9 +632,10 @@ mod tests {
     #[test]
     fn the_level_and_the_alert_threshold_follow_the_settings() {
         let rules = fnv();
-        assert_eq!(rules.level(0.5), DetectionLevel::Seen);
-        assert_eq!(rules.level(0.0), DetectionLevel::Lost);
-        assert_eq!(rules.level(-19.0), DetectionLevel::Lost);
+        let level = |value| rules.level(value, LevelContext::default());
+        assert_eq!(level(0.5), DetectionLevel::Seen);
+        assert_eq!(level(0.0), DetectionLevel::Lost);
+        assert_eq!(level(-19.0), DetectionLevel::Lost);
         assert!(rules.noticed(-19.0));
         assert!(!rules.noticed(-20.0));
         assert_eq!(DetectionLevel::Seen.as_number(), 3);
@@ -644,15 +667,20 @@ mod tests {
             _ => None,
         })
         .0;
-        let knife = SneakWeapon { critical_damage: 10.0, critical_chance_mult: 1.0, melee: true };
-        let pistol = SneakWeapon { critical_damage: 12.0, critical_chance_mult: 1.0, melee: false };
+        let knife = SneakWeapon { critical_damage: 10.0, critical_chance_mult: 1.0, anim_type: 1, ..Default::default() };
+        let pistol = SneakWeapon { critical_damage: 12.0, critical_chance_mult: 1.0, anim_type: 3, ..Default::default() };
         let no_crits = SneakWeapon { critical_chance_mult: 0.0, ..pistol };
-        approx(rules.sneak_attack_damage(20.0, Some(knife)).unwrap(), (20.0 + 10.0) * 5.0, "melee ×5");
-        approx(rules.sneak_attack_damage(20.0, Some(pistol)).unwrap(), (20.0 + 12.0) * 2.0, "ranged ×2");
-        approx(rules.sneak_attack_damage(20.0, Some(no_crits)).unwrap(), 20.0 * 2.0, "no critical, still ×2");
-        approx(rules.sneak_attack_damage(8.0, None).unwrap(), (8.0 + 8.0) * 5.0, "unarmed: crit = damage × 1, ×5");
+        let damage = |weapon, base| {
+            let (damage, flagged) = rules.sneak_attack(base, weapon, 0.0, &|mult| mult).unwrap();
+            assert!(flagged);
+            damage
+        };
+        approx(damage(Some(knife), 20.0), (20.0 + 10.0) * 5.0, "melee ×5");
+        approx(damage(Some(pistol), 20.0), (20.0 + 12.0) * 2.0, "ranged ×2");
+        approx(damage(Some(no_crits), 20.0), 20.0 * 2.0, "no critical, still ×2");
+        approx(damage(None, 8.0), (8.0 + 8.0) * 5.0, "unarmed: crit = damage × 1, ×5");
         let sight_only = StealthRules { kind: StealthKind::SightOnly, ..rules };
-        assert_eq!(sight_only.sneak_attack_damage(20.0, Some(knife)), None);
+        assert_eq!(sight_only.sneak_attack(20.0, Some(knife), 0.0, &|mult| mult), None);
     }
 
     /// SNK-DET-013: the GECK transitions toward a hostile player.

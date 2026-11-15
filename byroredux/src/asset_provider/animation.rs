@@ -248,57 +248,63 @@ pub(crate) fn populate_skyrim_walk_clip(world: &mut World, index: &EsmIndex, pro
     if index.game != GameKind::Skyrim {
         return None;
     }
-    let cached = world.resource::<AnimationClipRegistry>().get_by_path(SKYRIM_WALK_PATH);
-    if let Some(handle) = cached {
-        world.insert_resource(crate::components::SkyrimWalkClip(Some(handle)));
+    let handle = load_skyrim_locomotion_clip(world, provider, SKYRIM_WALK_PATH, "walkforward")?;
+    world.insert_resource(crate::components::SkyrimWalkClip(Some(handle)));
+    Some(handle)
+}
+
+/// Decode one looping Skyrim humanoid locomotion take (`path`, event name `name`) against the character
+/// skeleton, with `NPC COM [COM ]` bound as the accumulation root (#4563), into the clip registry. Path-keyed
+/// and idempotent; `None` (diagnosed at `warn`) when the archive or decode fails. The walk cycle and M65's
+/// sneak walk (SNK-STN-008) share it.
+pub(crate) fn load_skyrim_locomotion_clip(
+    world: &mut World,
+    provider: &TextureProvider,
+    path: &str,
+    name: &str,
+) -> Option<u32> {
+    if let Some(handle) = world.try_resource::<AnimationClipRegistry>()?.get_by_path(path) {
         return Some(handle);
     }
     let skeleton_bytes = provider.extract_mesh(SKELETON_PATH)?;
     let skeleton = match byroredux_hkx::decode_skeleton(&skeleton_bytes) {
         Ok(skeleton) => skeleton,
         Err(error) => {
-            log::warn!("Skyrim walk clip: failed to decode skeleton HKX: {error}");
+            log::warn!("Skyrim locomotion clip: failed to decode skeleton HKX: {error}");
             return None;
         }
     };
-    let Some(anim_bytes) = provider.extract_mesh(SKYRIM_WALK_PATH) else {
-        log::warn!(
-            "Skyrim walk clip: '{SKYRIM_WALK_PATH}' is missing; add Skyrim - Animations.bsa"
-        );
+    let Some(anim_bytes) = provider.extract_mesh(path) else {
+        log::warn!("Skyrim locomotion clip: '{path}' is missing; add Skyrim - Animations.bsa");
         return None;
     };
     let animation = match byroredux_hkx::decode_animation(&anim_bytes) {
         Ok(animation) => animation,
         Err(error) => {
-            log::warn!("Skyrim walk clip: HKX '{SKYRIM_WALK_PATH}' is not usable: {error}");
+            log::warn!("Skyrim locomotion clip: HKX '{path}' is not usable: {error}");
             return None;
         }
     };
-    let handle = {
-        let clip = {
-            let mut pool = world.resource_mut::<StringPool>();
-            convert_hkx_clip(
-                SKYRIM_WALK_PATH,
-                // Not an `idlecart*` event → no synthesized completion
-                // events and `CycleType::Loop`; the accum-root argument
-                // binds COM inside the boundary (#4563) — the cart idles
-                // get the same bone through their exit-event branch.
-                "walkforward",
-                &skeleton,
-                &animation,
-                &mut pool,
-                false,
-                Some("NPC COM [COM ]"),
-            )
-        };
-        world
-            .resource_mut::<AnimationClipRegistry>()
-            .get_or_insert_by_path(SKYRIM_WALK_PATH.to_owned(), || clip)
+    let clip = {
+        let mut pool = world.resource_mut::<StringPool>();
+        convert_hkx_clip(
+            path,
+            // Not an `idlecart*` event → no synthesized completion
+            // events and `CycleType::Loop`; the accum-root argument
+            // binds COM inside the boundary (#4563) — the cart idles
+            // get the same bone through their exit-event branch.
+            name,
+            &skeleton,
+            &animation,
+            &mut pool,
+            false,
+            Some("NPC COM [COM ]"),
+        )
     };
-    log::info!(
-        "Skyrim walk clip installed from '{SKYRIM_WALK_PATH}' → handle {handle}"
-    );
-    world.insert_resource(crate::components::SkyrimWalkClip(Some(handle)));
+    let handle = world
+        .resource_mut::<AnimationClipRegistry>()
+        .get_or_insert_by_path(path.to_owned(), || clip);
+    log::info!("Skyrim locomotion clip installed from '{path}' → handle {handle}");
     Some(handle)
 }
 

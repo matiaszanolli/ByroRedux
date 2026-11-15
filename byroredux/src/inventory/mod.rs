@@ -234,6 +234,20 @@ pub(crate) fn drain_pending_inventory_actions(world: &mut World) {
 /// once, though it covers several slots): the detection formula's boot / armor
 /// weight. 0 without an inventory, equipment or catalog.
 pub(crate) fn equipped_weight(world: &World, actor: byroredux_core::ecs::EntityId) -> f32 {
+    weight_of_equipped(world, actor, |slots| slots.equipped_indices().collect())
+}
+
+/// M65 (SNK-DET-005) — the weight of what `actor` wears in biped slot `bit` (Oblivion's boots, bit 5 Foot:
+/// the CS detection formula's movement noise).
+pub(crate) fn equipped_weight_at(world: &World, actor: byroredux_core::ecs::EntityId, bit: u8) -> f32 {
+    weight_of_equipped(world, actor, |slots| slots.at(bit).into_iter().collect())
+}
+
+fn weight_of_equipped(
+    world: &World,
+    actor: byroredux_core::ecs::EntityId,
+    pick: impl FnOnce(&byroredux_core::ecs::components::EquipmentSlots) -> Vec<byroredux_core::ecs::components::InventoryIndex>,
+) -> f32 {
     let Some(catalog) = world.try_resource::<InventoryCatalog>() else {
         return 0.0;
     };
@@ -243,7 +257,7 @@ pub(crate) fn equipped_weight(world: &World, actor: byroredux_core::ecs::EntityI
     ) else {
         return 0.0;
     };
-    let mut indices: Vec<_> = slots.equipped_indices().collect();
+    let mut indices = pick(&slots);
     indices.sort_unstable_by_key(|index| index.0);
     indices.dedup();
     indices

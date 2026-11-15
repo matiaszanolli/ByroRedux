@@ -571,18 +571,21 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
                     crit_mult,
                     crit_damage,
                     anim_type,
+                    oblivion_type,
                     ..
                 } => (
                     Some(*damage as f32),
                     *reach,
                     *speed,
                     sound_level.map(action_sound),
-                    // FO3 / FNV animation types 0-2 are hand-to-hand and one- / two-handed melee (xEdit
-                    // `wbWeaponAnimTypeEnum`; `Fallout3.exe` `0x8459a6`).
+                    // The game's own weapon-type codes; each ruleset row reads the one it keys on (FO3 / FNV
+                    // melee is animation types 0-2, Skyrim's table is indexed by its animation type, Oblivion's
+                    // ladder by its `DATA` type).
                     Some(byroredux_core::stealth::SneakWeapon {
                         critical_damage: *crit_damage,
                         critical_chance_mult: *crit_mult,
-                        melee: *anim_type <= 2,
+                        anim_type: *anim_type,
+                        oblivion_type: *oblivion_type,
                     }),
                 ),
                 _ => (None, 0.0, 0.0, None, None),

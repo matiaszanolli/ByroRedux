@@ -150,10 +150,12 @@ First step: `cargo test -p byroredux-core character::derived character::fallout 
   `oblivion_hand_to_hand_damage` cross-term) vs `charal-oblivion-ruleset.md` "Complete Damage Formula";
   `stealth.rs` (`StealthRules::value` / `level`, M65 #6911) vs `charal-fnv-fo3-ruleset.md` "Sneak Detection" and `docs/engine/sneak-detection.md` §4.2; Skyrim armor skill scaling lives in `byroredux/src/armor.rs`, which reads the installed `ArmorModel` (`crates/core/src/character/armor.rs`, the profile's `armor` row + the load order's `fArmor*`/`fMaxArmorRating` GMST overlay, #6567 `cb9faca7d`; six of its seven settings are master-authored, `fArmorRatingPCBase` is a CK Settings-page default no master authors, #6761 `fc41d4818`), whose skill multipliers derive from `LIGHT_ARMOR_RATING_COEFF`/`ARMOR_SKILL_RATING_COEFF_NPC` (`skyrim.rs`, the only home of UESP's 0.4/1.5, #6568 `a858df844`) — the `DamageResist` derived row is not what feeds it, and a restated literal or a `GameKind` test in `armor.rs` is the regression (`the_consumer_holds_no_game_gate_or_armor_constants`). Perspective
   traps: UESP's "Opponent…" names are attacker-relative; the code reads the *wearer's* own skill (#4449).
-  Since M65 (#6911) every coefficient is a game setting read from the load order (`GeckSettings`, `Fallout3.exe`'s
-  defaults behind them), and the attenuation clamps at the range as `Fallout3.exe` `0x57e300` does (`max(0, …)`), so the
-  #6433 unclamped-attenuation precondition is gone; a literal coefficient in `stealth.rs`, or a game test in the
-  detection tick, is the regression (`the_fnv_row_matches_the_captured_formula`, `the_fo3_row_drops_the_level_and_armor_terms`).
+  Since M65 (#6911) every coefficient is a game setting read from the load order (`DetectionSettings`, each row's own
+  executable defaults behind them: `Fallout3.exe`, `Oblivion.exe`, `SkyrimSE.exe`, #6914), and the attenuation clamps at
+  the range as `Fallout3.exe` `0x57e300` does (`max(0, …)`), so the #6433 unclamped-attenuation precondition is gone; a
+  literal coefficient in `stealth/`, or a game test in the detection tick, is the regression
+  (`the_fnv_row_matches_the_captured_formula`, `the_fo3_row_drops_the_level_and_armor_terms`,
+  `the_oblivion_row_matches_the_cs_formula`, `the_skyrim_row_matches_the_ck_formula`).
 **Output**: `/tmp/audit/character/dim_2.md`
 
 ### Dimension 3: Progression, Pools, Afflictions & Reputation

@@ -331,9 +331,9 @@ pub struct CharacterRulesProfile {
     /// Every game has the stance (PRD Q2); a row without a source is
     /// [`StanceModel::NONE`], which leaves the speed unscaled.
     stance: StanceModel,
-    /// M65 (SNK-DET-002) — which detection formula the tick runs. FO3 / FNV
-    /// carry theirs (Wave 1); Oblivion and Skyrim wait on Phase 5, Fallout 4
-    /// and Starfield on a source (Q2), so they answer from the sight test.
+    /// M65 (SNK-DET-002) — which detection formula the tick runs: FO3 / FNV
+    /// (Wave 1), Oblivion and Skyrim (Wave 2); Fallout 4 and Starfield wait on
+    /// a source (Q2), so they answer from the sight test.
     stealth: crate::stealth::StealthKind,
     /// M65 (SNK-HUD-002, -005) — the detection indicator's table, its drawing
     /// and Starfield's skill gate (`crate::stealth::indicator`). Fallout 76 has
@@ -395,7 +395,7 @@ impl CharacterRulesProfile {
         vats: None,
         armor: None,
         stance: StanceModel::OBLIVION,
-        stealth: crate::stealth::StealthKind::SightOnly,
+        stealth: crate::stealth::StealthKind::Oblivion,
         indicator: crate::stealth::IndicatorModel::OBLIVION,
     };
 
@@ -519,7 +519,7 @@ impl CharacterRulesProfile {
         vats: None,
         armor: Some(ArmorModel::SKYRIM),
         stance: StanceModel::SKYRIM,
-        stealth: crate::stealth::StealthKind::SightOnly,
+        stealth: crate::stealth::StealthKind::Skyrim,
         indicator: crate::stealth::IndicatorModel::SKYRIM,
     };
 

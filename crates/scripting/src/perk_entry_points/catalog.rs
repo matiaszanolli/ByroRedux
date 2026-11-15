@@ -182,10 +182,11 @@ pub(super) const SKYRIM_HOOKS: &[Hook] = &[
     Hook { index: 13, name: "Mod Positive Chem Duration", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
     // Tab 1 is the activated reference: UESP *Skyrim Mod:Mod File Format/PERK*, "Perk Owner (0) and Target (1)".
     Hook { index: 14, name: "Activate", state: HookState::Consumed { site: "byroredux/src/perk_activate.rs::compose_player_activation" }, subjects: Some(&["Target"]) },
-    Hook { index: 15, name: "Ignore Running During Detection", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
+    Hook { index: 15, name: "Ignore Running During Detection", state: HookState::Consumed { site: "byroredux/src/detection/tick.rs::player_inputs" }, subjects: None },
     Hook { index: 16, name: "Ignore Broken Lock", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
     Hook { index: 17, name: "Mod Enemy Critical Hit Chance", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
-    Hook { index: 18, name: "Mod Sneak Attack Mult", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
+    // M65 (SNK-PERK-005): `SkyrimSE.exe` `0x1407f1b69` runs it with the weapon and the target.
+    Hook { index: 18, name: "Mod Sneak Attack Mult", state: HookState::Consumed { site: "byroredux/src/combat.rs::sneak_strike" }, subjects: Some(&["Weapon", "Target"]) },
     Hook { index: 19, name: "Mod Max Placeable Mines", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
     Hook { index: 20, name: "Mod Bow Zoom", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
     Hook { index: 21, name: "Mod Recover Arrow Chance", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
@@ -214,8 +215,10 @@ pub(super) const SKYRIM_HOOKS: &[Hook] = &[
     Hook { index: 44, name: "Mod Player Reputation", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
     Hook { index: 45, name: "Mod Favor Points", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
     Hook { index: 46, name: "Mod Bribe Amount", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
-    Hook { index: 47, name: "Mod Detection Light", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
-    Hook { index: 48, name: "Mod Detection Movement", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
+    // M65 (SNK-PERK-004): the detection formula runs 47, 48 and 57 on the detection target's perks, the detector
+    // on tab 1 (`SkyrimSE.exe` `0x14041cd90`).
+    Hook { index: 47, name: "Mod Detection Light", state: HookState::Consumed { site: "byroredux/src/detection/tick.rs::detection_perks" }, subjects: Some(&["Target"]) },
+    Hook { index: 48, name: "Mod Detection Movement", state: HookState::Consumed { site: "byroredux/src/detection/tick.rs::detection_perks" }, subjects: Some(&["Target"]) },
     Hook { index: 49, name: "Mod Soul Gem Recharge", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
     Hook { index: 50, name: "Set Sweep Attack", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
     Hook { index: 51, name: "Apply Combat Hit Spell", state: HookState::Pending { id: "PERK-HOOK-009" }, subjects: None },
@@ -224,7 +227,7 @@ pub(super) const SKYRIM_HOOKS: &[Hook] = &[
     Hook { index: 54, name: "Set Boolean Graph Variable", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
     Hook { index: 55, name: "Mod Spell Casting Sound Event", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
     Hook { index: 56, name: "Mod Pickpocket Chance", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
-    Hook { index: 57, name: "Mod Detection Sneak Skill", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
+    Hook { index: 57, name: "Mod Detection Sneak Skill", state: HookState::Consumed { site: "byroredux/src/detection/tick.rs::detection_perks" }, subjects: Some(&["Target"]) },
     Hook { index: 58, name: "Mod Falling Damage", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
     Hook { index: 59, name: "Mod Lockpick Sweet Spot", state: HookState::Pending { id: UNCLASSIFIED }, subjects: None },
     Hook { index: 60, name: "Mod Sell Prices", state: HookState::Consumed { site: "byroredux/src/barter.rs::price_terms" }, subjects: None },

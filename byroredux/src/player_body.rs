@@ -469,7 +469,8 @@ fn attach_player_locomotion_animation(
     // record like every NPC's (Skyrim+ resolves None here — its ambient
     // actors also spawn with no player at all, and the walk system's stop
     // path removes the player it inserted, restoring the standing shape).
-    if let Some(handle) = crate::npc_spawn::load_idle_clip(world, tex_provider, game) {
+    let standing_idle = crate::npc_spawn::load_idle_clip(world, tex_provider, game);
+    if let Some(handle) = standing_idle {
         let idle = crate::npc_spawn::desynced_idle_player(world, handle, npc.form_id, skeleton);
         world.insert(player, idle);
     }
@@ -507,6 +508,23 @@ fn attach_player_locomotion_animation(
             transition_secs: 0.0,
         },
     );
+    // M65 (SNK-STN-008) — the sneak walk and idle the stance swaps in (`systems::stance`).
+    let (sneak_walk, sneak_idle) = crate::npc_spawn::sneak_locomotion_paths(game).map_or((None, None), |(walk, idle)| {
+        (load_locomotion_clip(world, tex_provider, game, walk), idle.and_then(|idle| load_locomotion_clip(world, tex_provider, game, idle)))
+    });
+    world.insert(
+        player,
+        crate::systems::stance::StanceLocomotion { standing_walk: walk_handle, standing_idle, sneak_walk, sneak_idle, sneaking: false },
+    );
+}
+
+/// One locomotion take by path: a KF clip on the KF games, a decoded HKX take on Skyrim.
+fn load_locomotion_clip(world: &mut World, tex_provider: &TextureProvider, game: GameKind, path: &str) -> Option<u32> {
+    if game.has_kf_animations() {
+        crate::npc_spawn::load_kf_clip_by_path(world, tex_provider, path)
+    } else {
+        crate::asset_provider::load_skyrim_locomotion_clip(world, tex_provider, path, "sneakwalkforward")
+    }
 }
 
 /// Every entity strictly under `root`, cycle-safe. Unlike

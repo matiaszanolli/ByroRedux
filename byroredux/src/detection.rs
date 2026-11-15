@@ -19,6 +19,6 @@ pub(crate) use sight::{
 #[cfg(test)]
 pub(crate) use sight::sees;
 pub(crate) use tick::{
-    alert_on_discovery, detection_tick_system, detects, install_stealth_rules, player_seen_by, unaware_of_player,
-    PlayerActionNoise, PlayerDetection,
+    actor_value, alert_on_discovery, detection_tick_system, detects, install_stealth_rules, player_seen_by,
+    unaware_of_player, PlayerActionNoise, PlayerDetection,
 };

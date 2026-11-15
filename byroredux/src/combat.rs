@@ -1196,14 +1196,12 @@ pub(crate) fn attack_reach_bu(world: &World, aggressor: EntityId) -> f32 {
         .map_or(MELEE_REACH_BU, |weapon| MELEE_REACH_BU * weapon.reach)
 }
 
-/// Weapon-scaled swing cooldown. `EquippedWeapon::speed` is a cadence
-/// multiplier (>1.0 = faster attacks) on [`MELEE_COOLDOWN_SECONDS`]; `0.0`
-/// (unset/undecoded) falls back to the flat baseline.
-/// M65 (SNK-ATK-001, -003) — whether the player's strike on `target` is a sneak attack, and its damage. It is
-/// when the player is in the stance and `target` is unaware of them right now (`detection::unaware_of_player`;
-/// V12: Unseen and the Noticed band count). Its damage is the row's sneak-attack damage: on FO3 / FNV a critical
-/// (unless the weapon's Crit % Mult is 0) times the melee or ranged sneak multiplier; a sight-only row keeps the
-/// damage and only sets the flag until its multipliers land (Phase 5). Any other strike is `(damage, false)`.
+/// M65 (SNK-ATK-001 to -004) — whether the player's strike on `target` is a sneak attack, and its damage. It is
+/// when the player is in the stance and `target` is unaware of them by the row's bar
+/// (`detection::unaware_of_player`; V12). Its damage is the row's (`StealthRules::sneak_attack`): FO3 / FNV a
+/// critical times the melee or ranged multiplier; Oblivion the Sneak-mastery ladder for the weapon class; Skyrim
+/// the class multiplier through *Mod Sneak Attack Mult* (18), flagged only above 1. A sight-only row keeps the
+/// damage and sets the flag. Any other strike is `(damage, false)`.
 pub(crate) fn sneak_strike(world: &World, aggressor: EntityId, target: EntityId, damage: f32) -> (f32, bool) {
     if PlayerEntity::get(world) != Some(aggressor)
         || !world.has::<byroredux_core::ecs::components::Sneaking>(aggressor)
@@ -1217,12 +1215,18 @@ pub(crate) fn sneak_strike(world: &World, aggressor: EntityId, target: EntityId,
         world
             .try_resource::<crate::inventory::InventoryCatalog>()
             .and_then(|catalog| catalog.weapon_sneak(base))
-            // A weapon the catalog does not describe: no critical data, counted as melee.
-            .unwrap_or(byroredux_core::stealth::SneakWeapon { critical_damage: 0.0, critical_chance_mult: 0.0, melee: true })
+            // A weapon the catalog does not describe: no critical data, counted as a one-handed melee weapon
+            // (FO3 / FNV and Skyrim animation type 1, Oblivion's `DATA` type 0).
+            .unwrap_or(byroredux_core::stealth::SneakWeapon { anim_type: 1, ..Default::default() })
     });
     let rules = world.try_resource::<byroredux_core::stealth::StealthRules>().map(|rules| *rules);
-    let damage = rules.and_then(|rules| rules.sneak_attack_damage(damage, weapon)).unwrap_or(damage);
-    (damage, true)
+    let sneak_skill = crate::detection::actor_value(world, aggressor, "Sneak");
+    // SNK-PERK-005 — Skyrim's *Mod Sneak Attack Mult* over the weapon class's multiplier.
+    let mod_sneak_attack_mult =
+        |mult| byroredux_scripting::perk_entry_points::compose_sneak_attack_mult(world, aggressor, target, mult);
+    rules
+        .and_then(|rules| rules.sneak_attack(damage, weapon, sneak_skill, &mod_sneak_attack_mult))
+        .unwrap_or((damage, true))
 }
 
 /// M65 (SNK-DET-016) — record the player's attack as an action sound for the
@@ -1243,6 +1247,9 @@ fn note_attack_noise(world: &World, aggressor: EntityId) {
     }
 }
 
+/// Weapon-scaled swing cooldown. `EquippedWeapon::speed` is a cadence
+/// multiplier (>1.0 = faster attacks) on [`MELEE_COOLDOWN_SECONDS`]; `0.0`
+/// (unset/undecoded) falls back to the flat baseline.
 pub(crate) fn attack_cooldown_seconds(world: &World, aggressor: EntityId) -> f32 {
     world
         .get::<EquippedWeapon>(aggressor)
@@ -1695,6 +1702,42 @@ mod sneak_attack_tests {
             assert_eq!(sneak_strike(&world, player, target, 10.0), (10.0, false), "{kind:?} not in the stance");
             assert_eq!(sneak_strike(&world, target, player, 10.0), (10.0, false), "{kind:?} only the player's strikes");
         }
+    }
+
+    /// PRD §7.2 scenario 8 (Oblivion, Skyrim; SNK-ATK-002, -004). Both read the target's stored value toward the
+    /// player (V12), and the strike carries a one-handed weapon the catalog does not describe: Oblivion's Novice
+    /// melee ladder (×4), Skyrim's one-handed sword (×2, `SkyrimSE.exe`'s default).
+    #[test]
+    fn oblivion_and_skyrim_strikes_read_the_stored_value_and_take_their_multipliers() {
+        use byroredux_core::ecs::components::InventoryIndex;
+        for (kind, expected) in [(StealthKind::Oblivion, 40.0), (StealthKind::Skyrim, 20.0)] {
+            let strike = |stored: f32, fighting: bool| {
+                let (mut world, player, target) = scene(kind, false);
+                world.insert_resource(StealthRules::resolve(kind, |_| None).0);
+                let weapon = EquippedWeapon { inventory_index: InventoryIndex(0), base_form_id: 0x1234, damage: 10.0, reach: 0.0, speed: 0.0 };
+                world.insert(player, weapon);
+                world.insert(target, Awareness { terms: byroredux_core::stealth::DetectionTerms { value: stored, ..Default::default() }, ..Default::default() });
+                if fighting {
+                    world.register::<byroredux_scripting::AiCombatState>();
+                    world.insert(target, byroredux_scripting::AiCombatState { target: player, attack_cooldown_remaining: 0.0 });
+                }
+                sneak_strike(&world, player, target, 10.0)
+            };
+            assert_eq!(strike(-5.0, false), (expected, true), "{kind:?}: stored value at most 0");
+            assert_eq!(strike(3.0, false), (10.0, false), "{kind:?}: stored value above 0");
+        }
+        let oblivion = |stored, fighting| {
+            let (mut world, player, target) = scene(StealthKind::Oblivion, false);
+            world.insert_resource(StealthRules::resolve(StealthKind::Oblivion, |_| None).0);
+            world.insert(target, Awareness { terms: byroredux_core::stealth::DetectionTerms { value: stored, ..Default::default() }, ..Default::default() });
+            if fighting {
+                world.register::<byroredux_scripting::AiCombatState>();
+                world.insert(target, byroredux_scripting::AiCombatState { target: player, attack_cooldown_remaining: 0.0 });
+            }
+            sneak_strike(&world, player, target, 10.0).1
+        };
+        assert!(!oblivion(-30.0, true), "fighting the player: above iAICombatMinDetection (-50) is aware");
+        assert!(oblivion(-60.0, true));
     }
 }
 

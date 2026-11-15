@@ -225,7 +225,11 @@ pub enum ItemKind {
         damage: u32,
         /// Magazine capacity.
         clip_size: u16,
-        /// Animation type (0 = handgun, 1 = rifle, 2 = launcher, ...).
+        /// Animation type: FO3 / FNV / FO4 `DNAM` (xEdit `wbWeaponAnimTypeEnum`: 0
+        /// hand-to-hand, 1 one-hand melee, 2 two-hand melee, 3 pistol …), and Skyrim's
+        /// `DNAM` byte 0 (0 hand-to-hand, 1 one-hand sword, 2 dagger, 3 axe, 4 mace,
+        /// 5 two-hand sword, 6 two-hand axe, 7 bow, 8 staff, 9 crossbow). 0 on
+        /// Oblivion, whose type is [`Self::Weapon::oblivion_type`].
         anim_type: u8,
         /// Action point cost (VATS) of the weapon's regular attack.
         /// FO3/FNV read it from `DNAM` offset 68 — xEdit's "Override -
@@ -587,6 +591,12 @@ pub fn parse_weap(
                     special_attack_ap,
                     silence_level,
                 });
+            }
+            // M65 (SNK-ATK-004) — Skyrim WEAP DNAM (xEdit `wbDefinitionsTES5`): byte 0 is the
+            // Animation Type, the index `SkyrimSE.exe` keys the sneak-attack multiplier on
+            // (`0x14028c410`). The rest of the struct (speed, reach, …) is not decoded here.
+            b"DNAM" if matches!(game, GameKind::Skyrim) => {
+                anim_type = sub.data.first().copied().unwrap_or(0);
             }
             // FO4 WEAP DNAM is a packed, unaligned 132-byte structure. Keep
             // the game-specific byte layout here at the parser boundary and
@@ -3020,5 +3030,18 @@ mod tests {
             panic!("expected Weapon kind");
         };
         assert_eq!(equip_type, 3);
+    }
+
+    /// M65 (SNK-ATK-004) — Skyrim's `DNAM` byte 0 is the animation type the sneak-attack table keys on
+    /// (a dagger, 2); FO3 / FNV's `DNAM` arm does not run on Skyrim.
+    #[test]
+    fn skyrim_weap_dnam_carries_the_animation_type() {
+        let mut dnam = vec![0u8; 100];
+        dnam[0] = 2;
+        let item = parse_weap(0x1397E, &[sub(b"DNAM", &dnam)], GameKind::Skyrim, &None);
+        let ItemKind::Weapon { anim_type, .. } = item.kind else {
+            panic!("expected Weapon kind");
+        };
+        assert_eq!(anim_type, 2);
     }
 }

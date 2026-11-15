@@ -7030,17 +7030,19 @@ fn fnv_music_sources_decode_against_the_census() {
         .all(|r| r.audio_marker.and_then(|m| m.controller).is_some_and(|c| index.media_locations.contains_key(&c))));
 }
 
-/// M65 PRD §7.2 scenario 3 (A3, SNK-DX-003): every detection setting the FO3 / FNV rows read, from the
-/// installed master, reported with its value and whether the master authors it or it fell back to the
-/// executable default (the design's §13.1 census). A name with neither cannot occur: every setting has a
-/// default, so the test fails only if the row lost one. The authored values the design pins are checked.
+/// M65 PRD §7.2 scenario 3 (A3, SNK-DX-003): every detection setting each row reads, from the installed master,
+/// reported with its value and whether the master authors it or it fell back to the row's executable default
+/// (the design's §13.1 census). A name with neither cannot occur: every setting a row reads has a default, so the
+/// test fails only if a row lost one. The authored values the design pins are checked.
 #[test]
-#[ignore = "needs FO3 / FNV game data on disk"]
+#[ignore = "needs FO3 / FNV / Oblivion / Skyrim SE game data on disk"]
 fn m65_detection_settings_census() {
-    use byroredux_core::stealth::{GeckSettings, StealthKind, StealthRules};
+    use byroredux_core::stealth::{StealthKind, StealthRules};
     let cases = [
         (test_paths::FO3_ENV, test_paths::FO3_DEFAULT, "Fallout3.esm", StealthKind::Fallout3),
         (test_paths::FNV_ENV, test_paths::FNV_DEFAULT, "FalloutNV.esm", StealthKind::FalloutNv),
+        (test_paths::OBLIVION_ENV, test_paths::OBLIVION_DEFAULT, "Oblivion.esm", StealthKind::Oblivion),
+        (test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT, "Skyrim.esm", StealthKind::Skyrim),
     ];
     let mut ran = 0;
     for (env, fallback, master, kind) in cases {
@@ -7052,7 +7054,8 @@ fn m65_detection_settings_census() {
         let index = parse_esm(&bytes).expect("parse master");
         assert_eq!(index.character_rules.stealth(), kind, "{master}: the profile selects the row");
         let (rules, readings) = StealthRules::resolve(kind, |name| index.game_setting_float(name));
-        assert_eq!(readings.len(), GeckSettings::NAMES.len(), "{master}: every setting reported");
+        assert!(readings.iter().all(|reading| reading.value.is_finite()), "{master}: every setting has a value");
+        let authored = readings.iter().filter(|reading| reading.authored).count();
         for reading in &readings {
             eprintln!(
                 "[M65] {master}\t{}\t{}\t{}",
@@ -7061,10 +7064,25 @@ fn m65_detection_settings_census() {
                 if reading.authored { "authored" } else { "executable default" }
             );
         }
-        // Design §13.1: both masters author these.
+        eprintln!("[M65] {master}: {} settings, {authored} authored", readings.len());
+        // Design §13.1: the masters' authored values.
         let s = rules.settings;
-        assert_eq!((s.base_value, s.max_distance, s.sound_los_mult), (-35.0, 2500.0, 0.1), "{master}");
-        assert_eq!((s.boot_weight_base, s.boot_weight_mult, s.running_mult, s.action_mult), (12.0, 0.5, 1.5, 2.0), "{master}");
+        match kind {
+            StealthKind::Oblivion => {
+                assert_eq!((s.base_value, s.max_distance, s.sound_los_mult, s.light_mod), (-25.0, 1500.0, 1.0, -5.0), "{master}");
+                assert_eq!((s.boot_weight_base, s.running_mult, s.sleep_bonus, s.target_in_combat_bonus), (14.0, 1.3, -10.0, 25.0));
+                assert_eq!((s.sneak_marksman_novice, s.sneak_melee_novice), (2.0, 4.0), "authored marksman, executable melee");
+            }
+            StealthKind::Skyrim => {
+                assert_eq!((s.base_value, s.max_distance, s.exterior_distance_mult, s.light_mult), (-15.0, 2500.0, 2.1, 0.33), "{master}");
+                assert_eq!((s.light_level_max, s.player_detection_sneak_mult, s.stealth_point_drain_mult), (300.0, 0.4, 3.0));
+                assert_eq!((s.sneak_dagger, s.sneak_two_hand_sword, s.sneak_bow), (3.0, 2.0, 2.0), "authored 1H / 2H, executable bow");
+            }
+            _ => {
+                assert_eq!((s.base_value, s.max_distance, s.sound_los_mult), (-35.0, 2500.0, 0.1), "{master}");
+                assert_eq!((s.boot_weight_base, s.boot_weight_mult, s.running_mult, s.action_mult), (12.0, 0.5, 1.5, 2.0), "{master}");
+            }
+        }
         ran += 1;
     }
     eprintln!("[M65] {ran} master(s) censused");

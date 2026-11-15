@@ -1,6 +1,6 @@
 # Sneak and Detection
 
-**Status**: DESIGN (Phase 0, 2026-11-15); the stance (Phase 1, #6910), Wave 1 detection with its consumers (Phase 2, #6911), Wave 1 sneak attacks and perks (Phase 3, #6912) and the indicator (Phase 4, #6913) are BUILT (2026-11-15). The design the [Sneak and Detection
+**Status**: DESIGN (Phase 0, 2026-11-15); the stance (Phase 1, #6910), Wave 1 detection with its consumers (Phase 2, #6911), Wave 1 sneak attacks and perks (Phase 3, #6912), the indicator (Phase 4, #6913) and Wave 2 (Oblivion, Skyrim: detection, stealth points, sneak attacks, the Skyrim sneak hooks and the sneak locomotion clips; Phase 5, #6914) are BUILT (2026-11-15). The design the [Sneak and Detection
 PRD](../prd/sneak-and-detection.md) names as the owner of the stance, the detection
 tick, the per-pair level and alert state, the actor-to-actor sight test (§10 Q7), the
 light input (Q3), consumer migration and FO3 / FNV sneak-attack damage (PRD
@@ -76,8 +76,13 @@ those defaults one for one.
   with `sneakonehand*`, `sneaktwohand*`, `sneakhandtohand*`, `sneakstaff*` and
   `sneakbow*`. Skyrim's master graph `meshes\actors\character\behaviors\0_master.hkx`
   carries the variables `IsSneaking`, `iIsInSneak` and `iState_NPCSneaking`, and the
-  clips `SneakWalk_*`, `SneakRun_*` and `SneakMTIdle`. The player-locomotion clip
-  table gains the sneak row, and Skyrim sets `IsSneaking` / `iIsInSneak` on the graph.
+  clips `SneakWalk_*`, `SneakRun_*` and `SneakMTIdle`. Built (Phase 5): the player
+  body carries `StanceLocomotion` (`npc_spawn::sneak_locomotion_paths`), and the stance
+  system swaps its walk and idle when the stance changes by any path: FO3 / FNV
+  `sneakmtforward` / `sneakmtidle`, Oblivion `sneakforward` / `sneakidle`, Skyrim the
+  decoded `sneakwalk_forward.hkx` (no standing idle, as for its walk). The engine
+  plays Skyrim's HKX takes directly, not through the behaviour graph, so the graph
+  variables are not set; the directional and running sneak takes are not wired.
 
 ## 3. The ruleset row
 
@@ -184,11 +189,36 @@ sleeping·(−0.2) + notCombatTarget·(−0.4) + ambush. Phase 2 uses the settin
 since the code shows it, and records the capture's grouping as superseded in the
 CHARAL ruleset.
 
-**Oblivion** is the CS formula (*Category:Detection*) over its settings (§13.1);
-Phase 5. **Skyrim** is the CK formula with `fSneakEquippedWeight*`,
-`fSneakLightExteriorMult` and the light range `iLightLevelMax`; Phase 5. **Fallout 4
-and Starfield** keep the actor-to-actor sight test (§5) as their level source, Seen
-or Lost (Q2).
+**Oblivion** (`byroredux_core::stealth::oblivion`) is the CS formula
+(*Category:Detection*), each term scaled by the linear Distance Factor
+1 − d / range; the module docs write it out. Its sound skips movement at Sneak
+mastery Expert and above and the boots' weight at Journeyman and above, adds
+`fSneakTargetInCombatBonus` while the target fights, and is 0 while it swims;
+sight is `fSneakLightMult` · DF · (`fDetectionSneakLightMod` + light [× night eye]) ·
+(1 − Chameleon/100) · (1 − Blindness/100) [× `fSneakSwimmingLightMult`]; the
+skill term is `fSneakSkillMult` · (detector Sneak · DF − target Sneak, while it
+sneaks out of combat); a sleeping detector adds `fSneakSleepBonus` and has no
+sight; Invisibility or 100 % Chameleon is −100. The defaults are `Oblivion.exe`'s
+own (`fSneakSkillMult` 0.75, `fSneakBootWeightBase` 7 …), not `Fallout3.exe`'s.
+
+**Skyrim** (`stealth::skyrim`) is `SkyrimSE.exe` `0x14041cd90`, read in full: the
+CK shape with every coefficient a setting. The detector term is
+`fSneakPerceptionSkillMin` + (Max − Min) · detector Sneak / 100 (Sneak, not
+Perception) times 1 + alert · `fSneakAlertMod` + asleep · `fSneakSleepMod` +
+not-combat-target · `fSneakCombatMod`. Sound is (action · int(`fSneakActionMult`) +
+moving · (`fSneakEquippedWeightBase` + Mult · weight) · noise · [running]) ·
+`fSneakSoundsMult` · attenuation [· `fSneakSoundLosMult` without line of sight] ·
+(1 + asleep · `fSneakSleepBonus`). Light is the light level ·
+(`fSneakLightExteriorMult` outdoors, `fSneakLightMult` indoors) +
+`fDetectionSneakLightMod` (the Fallout shape adds the mod before multiplying);
+blindness is a float factor, and a sleeping detector has no visual term; the
+target's size class picks `fSneakDetectionSize{Small,Normal,Large,VeryLarge}`. The
+player as target has skill `fPlayerDetectionSneakMult` · Sneak +
+`fPlayerDetectionSneakBase` (0.4 · Sneak + 10 in `Skyrim.esm`). Entry points 48 and
+57 run inside the formula on the target's perks with the detector on tab 1
+(`0x14041d0af`, `0x14041ce35`; §9). The value is truncated to an integer, and
+0 < value < 1 becomes 1. **Fallout 4 and Starfield** keep the actor-to-actor sight
+test (§5) as their level source, Seen or Lost (Q2).
 
 ### 4.3 Levels
 
@@ -205,11 +235,26 @@ a ruleset field:
   (`0x6efc30`). The FO3 / FNV row therefore produces Seen and Lost, and the
   in-between band shows as the alert state (§4.4). Level Lost (V10) is a value at
   or below `fSneakSeenMin` at the detector's last tick.
-- **Oblivion.** A classifier (`0x640900`) reads all four thresholds and switches on
-  the previous level, which is hysteresis. Decoding which threshold moves each level
-  is #6936; Phase 5.
-- **Skyrim.** Stealth points (CK *Stealth Points*) with the `iCombatStealthPoint*`
-  and `fCombatStealthPoint*` settings; the regeneration rule is #6936; Phase 5.
+- **Oblivion.** The classifier (`0x640900`) stores Seen above `fSneakSeenMin`,
+  Noticed strictly between `fSneakNoticedMin` and `fSneakSeenMin`, and Lost
+  otherwise (a value exactly 0 is Lost). Its jump table switches on a level computed
+  from the same value a few instructions earlier, so the arms reading
+  `fSneakUnseenMin` and `fSneakLostMin` are unreachable: there is no hysteresis (V10).
+- **Skyrim.** Stealth points (CK *Stealth Points*; `0x140818570`, V11). Every 0.1 s
+  the highest value any aggressive detector has toward the player drains them by
+  value · `fCombatStealthPointDrainMult` per second while it is 0 or more; otherwise,
+  once the alert wait (`…RegenAlertWaitTime`, or `…RegenLostWaitTime` while searching),
+  the attacked wait and the detection-event wait have all run, they refill by
+  max(`…RegenMin`, −value · `…RegenMult`) per second up to `fCombatStealthPointMax`. A
+  value above `iCombatStealthPointSneakDetectionThreshold` (sneaking, 70) or
+  `iCombatStealthPointDetectionThreshold` (25) empties them at once (`0x14081a0da`);
+  an attack caps them at `…AttackedMaxValue` (`0x14081af9a`), a detection event at
+  `…DetectedEventMaxValue` (`0x14081a4bb`); enemies in combat hold them at 0. The
+  level: Lost at or below 0; a non-hostile detector Seen above 0 ("Stealth points
+  only apply to 'aggro' detection"); a hostile one Seen once the points are gone or
+  its value passes the threshold, Noticed until then. The engine keeps one pool
+  against all aggressive detectors (the original keeps it per combat group's
+  target), and counts an attack as the player's attack start.
 
 ### 4.4 Alert state
 
@@ -222,8 +267,10 @@ steps it per detector, toward the player only:
 - Combat → Lost when the level falls to Lost;
 - Lost / Alert → Normal when the event list is empty and the alert timer has run.
 
-The timer is `fDetectionEventExpireTime` (FO3, FNV 10 s; Skyrim 5 s, plus
-`fDetectionStateExpireTime` 30 s). The state feeds the formula's `alert` and
+The timer is `fDetectionEventExpireTime` (FO3, FNV 10 s). On Skyrim an Alert or
+searching detector returns to Normal once the player's stealth points are full ("all
+the targets have Stealth Points = 100", CK). Oblivion has no alert timer setting: its
+Alert lasts while the detector notices. The state feeds the formula's `alert` and
 `notCombatTarget` flags and the indicator. An NPC that is Alert does not walk to
 search (SNK-NG-002).
 
@@ -301,7 +348,7 @@ the formula, as the originals do; it does not read the stored level.
 Built (Phase 3): `combat::sneak_strike` is the one decision, called by the melee
 swing, the projectile impact (carried on `TrapHit` to the landed `HitEvent`) and
 the VATS shot; `detection::unaware_of_player` re-runs the formula;
-`StealthRules::sneak_attack_damage` is the arithmetic below, with the weapon's
+`StealthRules::sneak_attack` is the arithmetic below, with the weapon's
 `CRDT` Critical Damage now decoded (`ItemKind::Weapon::crit_damage`). Papyrus
 `OnHit`'s `abSneakAttack` and the SDK hit event carry the flag (SNK-ATK-005).
 
@@ -325,11 +372,23 @@ the VATS shot; `detection::unaware_of_player` re-runs the formula;
   two-handed weapons and staves. Novice reads its own pair, so nothing withholds the
   bonus at Novice (V13). `Oblivion.esm` authors the marksman ladder 2 / 3 / 3 / 3 / 3,
   and the executable defaults are melee 4 / 6 / 6 / 6 / 6 and marksman 6 / 8 / 8 / 8 / 8.
-  The CS *Sneak* page's "4x Marksman" at Apprentice matches neither. Phase 5.
-- **Skyrim.** The base multipliers are the `fCombatSneak<Class>Mult` settings
-  (`Skyrim.esm`: one-handed ×3, two-handed ×2, hand-to-hand ×2; executable: bow and
-  crossbow ×2, staff ×1), composed through entry point 18 (V15). The unaware bar and
-  `fCombatSneakAttackBonusMult`'s role are #6936. Phase 5.
+  The CS *Sneak* page's "4x Marksman" at Apprentice matches neither. Built (Phase 5):
+  the multiplier scales the strike's damage (`0x5ff51f`–`0x5ff535`) and the hit is
+  flagged even at ×1. The bar (V12, `0x5ff23a`–`0x5ff278`) is the target's *stored*
+  value toward the attacker at most 0, and at most `iAICombatMinDetection` (−50) while
+  it fights the attacker; creatures never sneak attack. A Master-mastery flag set at
+  `0x5ff2c4` (read at `0x5ff712`) is not decoded. The engine has no power attacks, so
+  "not stacked with a power attack" holds trivially; spells never reach the strike.
+- **Skyrim** (V15, `0x1407f1b31`–`0x1407f1b93`). The base multiplier is the
+  `fCombatSneak<Class>Mult` setting the weapon's animation type indexes
+  (`0x14028c410`: hand, one-hand sword, dagger, one-hand axe, mace, two-hand sword,
+  two-hand axe, bow, staff, crossbow; `Skyrim.esm`: one-handed ×3, two-handed and
+  hand-to-hand ×2; executable: bow and crossbow ×2, staff ×1), 1 without a weapon.
+  Entry point 18 runs over it with the weapon and the target on its tabs; the damage
+  is multiplied, and the hit flagged only when the result is above 1. The bar is the
+  target's stored value toward the attacker at most 0 (`0x1406a2520`).
+  `fCombatSneakAttackBonusMult` has no RIP-relative reader. The parser now decodes
+  Skyrim's `WEAP DNAM` animation type (byte 0).
 
 `fVATSStealthMult` (V16) is not a sneak-attack term. `Fallout3.exe` `0x5bfc16`
 multiplies the player's VATS hit chance by it ("Stealth bonus: %f becomes %f") when
@@ -354,11 +413,20 @@ above 0. SNK-ATK-006 holds: it stays with the VATS model (#6350).
   numbering) byte `+0x1c` set" (`0x7dcd10`). `StartCannibal` calls an actor virtual
   not yet decoded. `StartMisterSandman` is New Vegas-only.
 - **31 / Skyrim 15 (SNK-PERK-003).** Zeroes `running` in the value
-  (`perk_entry_points::ignores_running_during_detection`, hook 31 Consumed at the tick).
-- **Skyrim 47, 48, 57 (SNK-PERK-004).** Vanilla users: 47 and 48
-  `MQ101IncreaseDetection` (×2); 57 the Stealth tree `Stealth00`–`Stealth80` (+20 to
-  +40, chained by perk condition 448) and `VampireSkillsPerk02` (+20). Which terms 48
-  and 57 scale is #6936.
+  (`perk_entry_points::ignores_running_during_detection`, hooks FNV 31 and Skyrim 15
+  Consumed at the tick).
+- **Skyrim 47, 48, 57 (SNK-PERK-004; V18).** `SkyrimSE.exe`'s formula runs 48 over the
+  visual movement multiplier (1 + moving · `fSneakLightMoveMult` + running ·
+  `fSneakLightRunMult`) and 57 over the target's sneak skill, on the target's perks
+  with the detector on tab 1. 47 scales the light level before the multipliers ("the
+  Sneak and Invisibility actor values are applied after this entry point runs", CK).
+  All three are Consumed at `detection/tick.rs::detection_perks`. Vanilla users: 47
+  and 48 `MQ101IncreaseDetection` (×2); 57 the Stealth tree `Stealth00`–`Stealth80`
+  (+20 to +40) and `VampireSkillsPerk02` (+20).
+- **Skyrim 18 (SNK-PERK-005).** Consumed at `combat.rs::sneak_strike` (§8).
+- **Skyrim 69 (SNK-PERK-007).** *Apply Sneaking Spell* stays Pending on the Perk Entry
+  Points PRD's PERK-HOOK-009, which owns every spell-applying hook; the stance it
+  reads is `Sneaking` (Phase 1).
 - **FNV 69, 70, 71 (SNK-PERK-006).** The only vanilla users are companion perks, each
   Set Value 1.0 with no conditions:
   - 69 *Enhanced Sensors* (`EnhancedSensors`, `0015C60E`), from ED-E: "the player can
@@ -630,16 +698,16 @@ and it fails on a name with neither.
 | V6 | FO3 / FNV detection coefficients | census | closed (§13.1): `fSneakAlertMod` 0.2, `fSneakCombatMod` −0.4, `fSneakLightMoveMult` 0.01, `fSneakLightRunMult` 0.2, `fSneakActionMult` 2, `fSneakDistanceAttenuationExponent` 2 |
 | V7 | FO3 / FNV cadence | `Fallout3.exe` default and `0x874421` | closed: `fDetectionTimerSetting` 0.3 s per detector |
 | V8 | Skyrim `fSneakBaseValue` | `Skyrim.esm` | closed: −15 authored (executable default −25) |
-| V9 | View cone (Oblivion, FO3 / FNV) | `Fallout3.exe` `0x7e6430`, `0x7e4f90`; `Oblivion.exe` | FO3 / FNV closed: 190°, applied by the detection routines. Oblivion: no setting; hardcoded cone #6936 |
-| V10 | Rule to level Lost | `Fallout3.exe` `0x87422d`, `0x6efd40`; `Oblivion.exe` `0x640900` | FO3 / FNV closed (§4.3). Oblivion, Skyrim #6936 |
-| V11 | Skyrim stealth-point regeneration | census | settings closed (§13.1); rule #6936 |
-| V12 | Unseen counts as unaware? | `Fallout3.exe` `0x845580`; `Oblivion.exe` `0x5ff29d` | FO3 / FNV closed: yes, value ≤ 0. Oblivion: value ≤ 0, second bar #6936. Skyrim #6936 |
+| V9 | View cone (Oblivion, FO3 / FNV) | `Fallout3.exe` `0x7e6430`, `0x7e4f90`; `Oblivion.exe` | FO3 / FNV closed: 190°, applied by the detection routines. Oblivion: no setting, and the CS formula reads line of sight only (the engine uses no cone); the sight routine is not traced, #6936 |
+| V10 | Rule to level Lost | `Fallout3.exe` `0x87422d`, `0x6efd40`; `Oblivion.exe` `0x640900`; CK *Stealth Points* | closed (§4.3): FO3 / FNV Seen / Lost; Oblivion Seen / Noticed / Lost without hysteresis; Skyrim by stealth points |
+| V11 | Skyrim stealth-point regeneration | `SkyrimSE.exe` `0x140818570`, `0x14081a0da`, `0x14081af9a`, `0x14081a4bb` | closed (§4.3) |
+| V12 | Unseen counts as unaware? | `Fallout3.exe` `0x845580`; `Oblivion.exe` `0x5ff23a`; `SkyrimSE.exe` `0x1406a2520` | closed (§8): FO3 / FNV a fresh value ≤ 0; Oblivion the stored value ≤ 0, and ≤ `iAICombatMinDetection` while fighting the attacker; Skyrim the stored value ≤ 0 |
 | V13 | Oblivion Apprentice marksman, Novice bonus | census, `Oblivion.exe` `0x5477f0` | closed (§8): Apprentice marksman 3 (`Oblivion.esm`); Novice gets its multiplier |
 | V14 | FO3 / FNV sneak-attack damage | `Fallout3.exe` `0x845580`, `0x845980` | closed (§8): critical, ×5 melee and unarmed, ×2 otherwise |
-| V15 | Skyrim base sneak-attack multipliers | census | closed (§8): `fCombatSneak<Class>Mult`; `fCombatSneakAttackBonusMult`'s role #6936 |
+| V15 | Skyrim base sneak-attack multipliers | census, `SkyrimSE.exe` `0x14028c410`, `0x1407f1b69` | closed (§8): `fCombatSneak<Class>Mult` by animation type through entry 18; `fCombatSneakAttackBonusMult` has no reader found |
 | V16 | `fVATSStealthMult` | `Fallout3.exe` `0x5bfc16` | closed (§8): VATS hit chance against Chameleon / Invisibility, not sneak |
 | V17 | `StartCannibal`, `StartMisterSandman`, "eaten" saved | `Fallout3.exe` `0x7aabd0`, `0x7dcd10` | partly (§9); #6937 |
-| V18 | Skyrim 48 and 57 | `perk_entry_census` on `Skyrim.esm` | vanilla users named (§9); terms #6936 |
+| V18 | Skyrim 48 and 57 | `perk_entry_census` on `Skyrim.esm`, `SkyrimSE.exe` `0x14041d0af`, `0x14041ce35` | closed (§9): 48 the visual movement multiplier, 57 the target's sneak skill |
 | V19 | FNV 69, 70, 71 | `perk_entry_census` and the perks' `DESC` on `FalloutNV.esm` | closed (§9): companion perception perks, not a detection term |
 | V20 | Indicator tables | `Fallout3.exe` `0x937a70`, `0x8d0da0`, `0x81ab50`, `0x8d4620` | FO3 / FNV decoded (§10). Oblivion, Skyrim, Fallout 4, Starfield provisional; #6935 |
 | V21 | Vanilla sneak element | the Misc archives, `Fallout3.exe` `0x92b64e` | closed (§10): FO3 / FNV `sneak_nif`, Oblivion `hudreticle_sneak` |
@@ -647,5 +715,6 @@ and it fails on a name with neither.
 | V23 | Detection state across a save | — | #6935 |
 
 The Phase 0 verify-item metric (PRD §8): 12 of 23 closed (V2, V5–V8, V13–V16, V19,
-V21, V22), 8 partly answered and 3 open (V1, V4, V23). Every row not closed is on
-#6935, #6936 or #6937.
+V21, V22), 8 partly answered and 3 open (V1, V4, V23). Phase 5 closed V10, V11, V12,
+V15 and V18 (17 of 23); V9 (Oblivion's cone) stays partly answered on #6936, the rest
+on #6935 and #6937.

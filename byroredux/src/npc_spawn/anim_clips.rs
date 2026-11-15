@@ -331,6 +331,19 @@ pub fn humanoid_default_idle_kf_path(game: GameKind) -> Option<&'static str> {
     }
 }
 
+/// M65 (SNK-STN-008) — the player's sneak locomotion clips: `(walk, idle)` (design §2, V5). FO3 / FNV and
+/// Oblivion ship move-type sneak takes under `characters\_male\` (the archives hold no gendered set); Skyrim
+/// the HKX `sneakwalk_forward` take of the `0_master.hkx` sneak state, and no standing sneak idle for a body
+/// that has no ambient idle either.
+pub(crate) fn sneak_locomotion_paths(game: GameKind) -> Option<(&'static str, Option<&'static str>)> {
+    match game {
+        GameKind::Fallout3NV => Some((r"meshes\characters\_male\sneakmtforward.kf", Some(r"meshes\characters\_male\sneakmtidle.kf"))),
+        GameKind::Oblivion => Some((r"meshes\characters\_male\sneakforward.kf", Some(r"meshes\characters\_male\sneakidle.kf"))),
+        GameKind::Skyrim => Some((r"meshes\actors\character\animations\sneakwalk_forward.hkx", None)),
+        GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield => None,
+    }
+}
+
 /// Speed jitter half-range for idle desync — NPC playback rate lands in
 /// `[1 - IDLE_SPEED_JITTER, 1 + IDLE_SPEED_JITTER]`. Small enough to read
 /// as natural variation, large enough that two NPCs on the same clip

@@ -118,8 +118,17 @@ pub mod skyrim {
     pub const ACTIVATE: u8 = 14;
     /// `Ignore Running During Detection` (M65, SNK-PERK-003).
     pub const IGNORE_RUNNING_DURING_DETECTION: u8 = 15;
+    /// `Mod Sneak Attack Mult` (M65, SNK-PERK-005): over the weapon class's base multiplier
+    /// (`SkyrimSE.exe` `0x1407f1b69`), tabs weapon and target.
     pub const MOD_SNEAK_ATTACK_MULT: u8 = 18;
     pub const MOD_ATTACK_DAMAGE: u8 = 35;
+    /// `Mod Detection Light` (M65, SNK-PERK-004): the light level the owner is seen in, "the Sneak and
+    /// Invisibility actor values are applied after this entry point runs" (CK *Perk Entry Point*).
+    pub const MOD_DETECTION_LIGHT: u8 = 47;
+    /// `Mod Detection Movement`: the visual movement multiplier (`0x14041d0af`, V18).
+    pub const MOD_DETECTION_MOVEMENT: u8 = 48;
+    /// `Mod Detection Sneak Skill`: the owner's sneak skill as a detection target (`0x14041ce35`, V18).
+    pub const MOD_DETECTION_SNEAK_SKILL: u8 = 57;
     pub const MOD_INCOMING_DAMAGE: u8 = 36;
     /// `Mod Tempering Health` (xEdit `wbEntryPointsEnum`, TES5 index 76): what the Smithing material perks
     /// (Steel Smithing and kin) multiply when improving an item.
@@ -180,6 +189,14 @@ pub enum PerkCalculation {
     /// *Ignore Running During Detection* (FO3 / FNV 31, Skyrim 15; M65 SNK-PERK-003): a flag composed from 0, a
     /// non-zero result removes the running term from the owner's detection value.
     IgnoreRunningDuringDetection,
+    /// A sneak attack's multiplier (Skyrim *Mod Sneak Attack Mult*, 18; M65 SNK-PERK-005).
+    SneakAttackMult,
+    /// The light level the owner is detected in (Skyrim 47; M65 SNK-PERK-004).
+    DetectionLight,
+    /// The owner's visual movement multiplier as a detection target (Skyrim 48).
+    DetectionMovement,
+    /// The owner's sneak skill as a detection target (Skyrim 57).
+    DetectionSneakSkill,
 }
 
 impl PerkCalculation {
@@ -207,6 +224,10 @@ impl PerkCalculation {
             (Self::Activate, Skyrim) => Some(skyrim::ACTIVATE),
             (Self::IgnoreRunningDuringDetection, Fallout3NV) => Some(fnv::IGNORE_RUNNING_DURING_DETECTION),
             (Self::IgnoreRunningDuringDetection, Skyrim) => Some(skyrim::IGNORE_RUNNING_DURING_DETECTION),
+            (Self::SneakAttackMult, Skyrim) => Some(skyrim::MOD_SNEAK_ATTACK_MULT),
+            (Self::DetectionLight, Skyrim) => Some(skyrim::MOD_DETECTION_LIGHT),
+            (Self::DetectionMovement, Skyrim) => Some(skyrim::MOD_DETECTION_MOVEMENT),
+            (Self::DetectionSneakSkill, Skyrim) => Some(skyrim::MOD_DETECTION_SNEAK_SKILL),
             _ => None,
         }
     }
@@ -806,6 +827,20 @@ pub fn compose_max_carry_weight(world: &World, actor: EntityId, base: f32) -> f3
 /// *Ignore Running During Detection* hook composed from 0, non-zero meaning ignore.
 pub fn ignores_running_during_detection(world: &World, actor: EntityId) -> bool {
     compose_calculation(world, actor, PerkCalculation::IgnoreRunningDuringDetection, 0.0, &[None, None]) != 0.0
+}
+
+/// M65 (SNK-PERK-005) — `attacker`'s sneak-attack multiplier on `target`: `base` (the weapon class's) through
+/// *Mod Sneak Attack Mult*, its tabs the attacking weapon and the target (`SkyrimSE.exe` `0x1407f1b69`).
+pub fn compose_sneak_attack_mult(world: &World, attacker: EntityId, target: EntityId, base: f32) -> f32 {
+    with_attacker_weapon(world, attacker, |weapon| {
+        compose_calculation(world, attacker, PerkCalculation::SneakAttackMult, base, &[weapon, Some(target)])
+    })
+}
+
+/// M65 (SNK-PERK-004) — one of `target`'s detection hooks (47, 48, 57) over `base`, with the detector on
+/// tab 1, as `SkyrimSE.exe`'s formula runs them on the detection target's perks.
+pub fn compose_detection(world: &World, target: EntityId, detector: EntityId, calculation: PerkCalculation, base: f32) -> f32 {
+    compose_calculation(world, target, calculation, base, &[Some(detector)])
 }
 
 /// Whether `actor` holds a perk that grants VATS Concentrated Fire (FO3 / FNV entry point 33,

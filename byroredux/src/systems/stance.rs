@@ -8,24 +8,106 @@
 //!
 //! Runs in `Stage::Early` after `player_controller_system`, like VATS, so this
 //! frame's `ActionState` edges are fresh; the controller reads the stance on
-//! the next frame.
+//! the next frame. The same system keeps the player body's locomotion clips on
+//! the stance's (SNK-STN-008), whichever path changed it.
 
+use crate::components::WalkAnimation;
 use crate::interaction::{ActionState, InputAction};
 use crate::systems::{player_can_act, PlayerEntity, PlayerMode};
+use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::character::SneakMovement;
-use byroredux_core::ecs::World;
+use byroredux_core::ecs::{Component, SparseSetStorage, World};
 use byroredux_plugin::esm::records::EsmIndex;
 
-/// Toggle the stance on the Sneak key's press edge (SNK-STN-001).
+/// Toggle the stance on the Sneak key's press edge (SNK-STN-001), then put the
+/// body's locomotion clips on the stance's (SNK-STN-008).
 pub(crate) fn sneak_stance_system(world: &World, _dt: f32) {
     let pressed = world
         .try_resource::<ActionState>()
         .is_some_and(|actions| actions.was_pressed(InputAction::Sneak));
-    if !pressed {
-        return;
+    if pressed {
+        if let Err(reason) = set_player_sneaking(world, None) {
+            log::debug!("sneak key refused: {reason}");
+        }
     }
-    if let Err(reason) = set_player_sneaking(world, None) {
-        log::debug!("sneak key refused: {reason}");
+    sync_stance_locomotion(world);
+}
+
+/// M65 (SNK-STN-008) — the player body's standing and sneak locomotion clips
+/// (`npc_spawn::sneak_locomotion_paths`), attached with its walk animation.
+/// `NOT_SAVED_BY_DESIGN`: rebuilt with the body.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct StanceLocomotion {
+    pub(crate) standing_walk: u32,
+    pub(crate) standing_idle: Option<u32>,
+    pub(crate) sneak_walk: Option<u32>,
+    pub(crate) sneak_idle: Option<u32>,
+    /// The stance the clips were last put on.
+    pub(crate) sneaking: bool,
+}
+
+impl Component for StanceLocomotion {
+    type Storage = SparseSetStorage<Self>;
+}
+
+impl StanceLocomotion {
+    /// `(walk, idle)` for a stance; a sneak clip the game lacks keeps the standing one.
+    fn clips(&self, sneaking: bool) -> (u32, Option<u32>) {
+        if sneaking {
+            (self.sneak_walk.unwrap_or(self.standing_walk), self.sneak_idle.or(self.standing_idle))
+        } else {
+            (self.standing_walk, self.standing_idle)
+        }
+    }
+}
+
+/// Put the player body on the stance's walk and idle clips when the stance
+/// changed. The walk system's take / restore stays consistent: the walk handle
+/// it compares against, the playing clip, and the idle it will restore all move
+/// together.
+fn sync_stance_locomotion(world: &World) {
+    let Some(player) = PlayerEntity::get(world) else {
+        return;
+    };
+    let sneaking = byroredux_scripting::stance::is_sneaking(world, player);
+    let (from, to) = {
+        let Some(mut stances) = world.query_mut::<StanceLocomotion>() else {
+            return;
+        };
+        let Some(stance) = stances.get_mut(player) else {
+            return;
+        };
+        if stance.sneaking == sneaking {
+            return;
+        }
+        stance.sneaking = sneaking;
+        (stance.clips(!sneaking), stance.clips(sneaking))
+    };
+    let walking = {
+        let Some(mut walks) = world.query_mut::<WalkAnimation>() else {
+            return;
+        };
+        let Some(walk) = walks.get_mut(player) else {
+            return;
+        };
+        walk.walk_handle = to.0;
+        if let (Some(snapshot), Some(idle)) = (walk.captured.as_mut(), to.1) {
+            if Some(snapshot.clip_handle) == from.1 {
+                snapshot.clip_handle = idle;
+            }
+        }
+        walk.walking
+    };
+    let Some(mut players) = world.query_mut::<AnimationPlayer>() else {
+        return;
+    };
+    if let Some(animation) = players.get_mut(player) {
+        let (old, new) = if walking { (Some(from.0), Some(to.0)) } else { (from.1, to.1) };
+        if let Some(new) = new.filter(|_| old == Some(animation.clip_handle)) {
+            animation.clip_handle = new;
+            animation.local_time = 0.0;
+            animation.prev_time = 0.0;
+        }
     }
 }
 
@@ -115,6 +197,46 @@ mod tests {
         world.resource_mut::<InputState>().keys_held.clear();
         refresh_action_state(world);
         sneak_stance_system(world, 0.0);
+    }
+
+    /// SNK-STN-008: entering the stance puts the standing body on the sneak idle and the walk system on the
+    /// sneak walk; mid-stride it swaps the playing walk and the idle the walk will restore; leaving goes back.
+    #[test]
+    fn the_stance_swaps_the_body_onto_the_sneak_clips() {
+        let (mut world, player) = world();
+        world.insert(
+            player,
+            StanceLocomotion { standing_walk: 1, standing_idle: Some(2), sneak_walk: Some(3), sneak_idle: Some(4), sneaking: false },
+        );
+        world.insert(
+            player,
+            WalkAnimation { walk_handle: 1, walking: false, last_pos: Default::default(), captured: None, transition_secs: 0.0 },
+        );
+        world.insert(player, AnimationPlayer::new(2));
+        let clip = |world: &World| world.get::<AnimationPlayer>(player).unwrap().clip_handle;
+        let walk = |world: &World| world.get::<WalkAnimation>(player).unwrap().walk_handle;
+
+        tap_sneak(&world);
+        assert_eq!((clip(&world), walk(&world)), (4, 3), "standing: the sneak idle, the sneak walk armed");
+
+        // Mid-stride, the walk system holds the idle it will restore.
+        {
+            let mut walks = world.query_mut::<WalkAnimation>().unwrap();
+            let state = walks.get_mut(player).unwrap();
+            state.walking = true;
+            state.captured = Some(crate::components::WalkAnimSnapshot {
+                clip_handle: 4,
+                local_time: 0.0,
+                prev_time: 0.0,
+                speed: 1.0,
+                playing: true,
+            });
+        }
+        world.query_mut::<AnimationPlayer>().unwrap().get_mut(player).unwrap().clip_handle = 3;
+        tap_sneak(&world);
+        assert_eq!((clip(&world), walk(&world)), (1, 1), "standing up mid-stride: the standing walk");
+        let restores = world.get::<WalkAnimation>(player).unwrap().captured.unwrap().clip_handle;
+        assert_eq!(restores, 2, "and the standing idle comes back when the stride ends");
     }
 
     /// PRD §7.2 scenario 1: the action toggles the stance, and `IsSneaking`'s
