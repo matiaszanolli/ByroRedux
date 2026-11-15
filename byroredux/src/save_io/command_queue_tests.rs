@@ -486,6 +486,33 @@ fn player_save_actions_wait_for_the_quiescent_fifo_drain() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// SAVE-4 — a quicksave queued while an actor move is still on its way to `ActorRelocations` waits for
+/// the relocation drain (later the same tick), so the save never holds the script state that raised
+/// a move without the move. Capped: a queue that never empties saves after `MAX_SAVE_DEFERRALS` ticks.
+#[test]
+fn a_quicksave_waits_for_queued_actor_moves_to_reach_their_ledger() {
+    let dir = std::env::temp_dir().join(format!("byro_deferred_move_save_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut world = quicksave_test_world(dir.clone());
+    world.insert_resource(PendingPlayerSaveActions::default());
+    let request = byroredux_scripting::ActorMoveRequest::ToPackageLocation { actor: 0x104C1C };
+    world.insert_resource(byroredux_scripting::PendingActorMoves(vec![request]));
+
+    queue_player_save_action(&world, PlayerSaveAction::Quicksave).unwrap();
+    assert!(execute_pending_player_save_actions(&world).is_empty(), "the move is not in the ledger yet");
+    assert_eq!(world.resource::<PendingPlayerSaveActions>().queued(), [PlayerSaveAction::Quicksave], "still queued");
+    // The relocation step drains the move; the next tick saves.
+    world.resource_mut::<byroredux_scripting::PendingActorMoves>().0.clear();
+    assert_eq!(execute_pending_player_save_actions(&world).len(), 1);
+
+    // A queue that never empties does not starve the save.
+    world.resource_mut::<byroredux_scripting::PendingActorMoves>().0.push(byroredux_scripting::ActorMoveRequest::ToPackageLocation { actor: 0x104C1C });
+    queue_player_save_action(&world, PlayerSaveAction::Quicksave).unwrap();
+    let waited = (0..10).take_while(|_| execute_pending_player_save_actions(&world).is_empty()).count();
+    assert_eq!(waited, 3, "it saves after MAX_SAVE_DEFERRALS ticks");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn quickload_empty_errors_and_corrupt_newest_falls_back() {
     let dir = std::env::temp_dir().join(format!("byro_quickload_fallback_{}", std::process::id()));

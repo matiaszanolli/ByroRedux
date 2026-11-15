@@ -54,11 +54,12 @@ impl PlayerSaveAction {
     }
 }
 
-/// FIFO ingress for player save/load requests.
+/// FIFO ingress for player save/load requests, and how many ticks the queue has waited for actor
+/// moves to reach their ledger (SAVE-4, [`execute_pending_player_save_actions`]).
 ///
 /// This is intentionally transient process state, not part of a save file.
 #[derive(Default)]
-pub struct PendingPlayerSaveActions(pub(crate) Vec<PlayerSaveAction>);
+pub struct PendingPlayerSaveActions(pub(crate) Vec<PlayerSaveAction>, pub(crate) u32);
 
 impl Resource for PendingPlayerSaveActions {}
 

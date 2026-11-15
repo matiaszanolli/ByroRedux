@@ -496,13 +496,32 @@ pub(crate) fn quickload_latest(world: &World) -> CommandOutput {
 /// The queue guard is dropped before either command starts, so it never joins
 /// the save registry/component lock set. FIFO order makes a quicksave followed
 /// by quickload deterministic within one frame.
+/// How many ticks a queued quicksave waits for pending actor moves (SAVE-4) before it saves anyway.
+const MAX_SAVE_DEFERRALS: u32 = 3;
+
 pub(crate) fn execute_pending_player_save_actions(
     world: &World,
 ) -> Vec<(PlayerSaveAction, CommandOutput)> {
+    // SAVE-4 — a relocation or scripted move raised this tick reaches `ActorRelocations` only when
+    // `step_actor_relocations` drains it, later in the same tick. A save taken now would carry the
+    // script state that raised the move (a quest stage, a variable) but not the move. Wait for the
+    // drain, a tick at most normally; capped so a script raising moves every frame cannot starve it.
+    let moves_pending = world
+        .try_resource::<byroredux_scripting::PendingRelocations>()
+        .is_some_and(|pending| !pending.0.is_empty())
+        || world
+            .try_resource::<byroredux_scripting::PendingActorMoves>()
+            .is_some_and(|pending| !pending.0.is_empty());
     let actions = {
         let Some(mut pending) = world.try_resource_mut::<PendingPlayerSaveActions>() else {
             return Vec::new();
         };
+        if moves_pending && pending.0.contains(&PlayerSaveAction::Quicksave) && pending.1 < MAX_SAVE_DEFERRALS {
+            pending.1 += 1;
+            log::debug!("quicksave waits a tick for queued actor moves to reach their ledger (SAVE-4)");
+            return Vec::new();
+        }
+        pending.1 = 0;
         std::mem::take(&mut pending.0)
     };
     actions
