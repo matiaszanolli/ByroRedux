@@ -414,3 +414,37 @@ fn flate_store(data: &[u8]) -> Vec<u8> {
 /// with future corpus assertions.
 #[allow(dead_code)]
 type _Unused = HashMap<(), ()>;
+
+/// #6994 — every font slot's glyph records read as `x` before `y`: the rect each
+/// glyph is drawn from is its padded atlas cell (no ink on the rect's edge for
+/// most glyphs; a reading with the axes crossed cuts through neighbouring
+/// glyphs and leaves almost none clean), and its texel extent equals the
+/// glyph's own width and height.
+#[test]
+#[ignore = "needs Oblivion game data on disk"]
+fn every_font_cuts_its_glyphs_from_clean_atlas_cells() {
+    let Some(assets) = open_assets() else { return };
+    let profile = MenuProfile::oblivion();
+    let (mut clean, mut inked) = (0, 0);
+    for index in 1..=profile.font_paths.len() as u8 {
+        let fnt = assets.font(index).expect("font slot extractable");
+        let name = String::from_utf8_lossy(&fnt[12..]).split('\0').next().unwrap_or("").to_string();
+        let atlas = (profile.font_atlas)(&name)
+            .iter()
+            .find_map(|p| assets.font_texture(p))
+            .unwrap_or_else(|| panic!("font {index} ({name}) atlas beside the .fnt"));
+        let font = byroredux_menuxml::font::Font::parse(&fnt, &atlas).unwrap();
+        let (font_clean, font_inked) = common::clean_glyph_rects(&font);
+        clean += font_clean;
+        inked += font_inked;
+        assert_eq!(
+            common::glyph_extent_mismatches(&font),
+            0,
+            "font {index} ({name}): a glyph's width / height disagree with its atlas rect"
+        );
+    }
+    assert!(
+        clean * 10 >= inked * 7,
+        "only {clean} of {inked} Oblivion glyph rects are clean atlas cells (#6994: axes crossed?)"
+    );
+}

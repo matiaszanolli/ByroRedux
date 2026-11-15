@@ -13,16 +13,16 @@
 //!               NUL-padded — 296-byte header total
 //! 296     56×256 glyph records, 14 f32s each:
 //!   [0]  left bearing (0 across the vanilla corpus)
-//!   [1]  v0 (atlas top edge, top-down V — verified against atlas ink)
-//!   [2]  u0
-//!   [3]  v1
-//!   [4]  u0 (corner repetition; [1]==[5], [2]==[4], [3]==[7], [6]==[8])
-//!   [5]  v0
-//!   [6]  u1
-//!   [7]  v1
-//!   [8]  u1
-//!   [9]  glyph height, texels
-//!   [10] glyph width, texels
+//!   [1]  u0 (atlas left edge, as a fraction of the atlas width)
+//!   [2]  v0 (atlas top edge, top-down V)
+//!   [3]  u1
+//!   [4]  v0 (corner repetition; [1]==[5], [2]==[4], [3]==[7], [6]==[8])
+//!   [5]  u0
+//!   [6]  v1
+//!   [7]  u1
+//!   [8]  v1
+//!   [9]  glyph width, texels
+//!   [10] glyph height, texels
 //!   [11] 0 across the corpus
 //!   [12] y offset (−1 for inked glyphs; the space glyph parks its
 //!        advance here — 11 — with [13] left at 0)
@@ -101,12 +101,15 @@ impl Font {
             let f = |i: usize| {
                 f32::from_le_bytes(fnt[base + i * 4..base + i * 4 + 4].try_into().unwrap())
             };
-            let v0 = f(1);
-            let u0 = f(2);
-            let v1 = f(3);
-            let u1 = f(6);
-            let width = f(10);
-            let height = f(9);
+            // #6994 — x before y: the rect these read is the glyph's padded cell in
+            // every vanilla Oblivion, FO3 and FNV font (`clean_glyph_rects` in the
+            // corpus tests), and its texel extent equals [9] x [10].
+            let u0 = f(1);
+            let v0 = f(2);
+            let u1 = f(3);
+            let v1 = f(6);
+            let width = f(9);
+            let height = f(10);
             let y_offset = f(12);
             // Advance lives at [13]; the space glyph alone parks it at
             // [12] with [13] zero (verified across the vanilla corpus:

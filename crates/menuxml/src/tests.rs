@@ -1849,3 +1849,34 @@ fn profiles_pin_corpus_facts() {
         assert!(profile.font_paths.len() >= 8);
     }
 }
+
+/// #6994 — a hand-built `.fnt` record: `[1]`/`[3]` are the x edges, `[2]`/`[6]`
+/// the y edges and `[9]`/`[10]` the glyph width / height (x before y). The
+/// real-data pin is `every_font_cuts_its_glyphs_from_clean_atlas_cells` in the
+/// three corpus test files.
+#[test]
+fn a_parsed_font_record_reads_x_before_y() {
+    use crate::font::Font;
+    let mut fnt = vec![0u8; 296 + 256 * 56];
+    fnt[0..4].copy_from_slice(&20.0f32.to_le_bytes());
+    fnt[12..16].copy_from_slice(b"Test");
+    let record = 296 + b'A' as usize * 56;
+    let mut put = |i: usize, v: f32| fnt[record + i * 4..record + i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+    put(1, 0.125); // u0
+    put(2, 0.25); // v0
+    put(3, 0.375); // u1
+    put(6, 0.75); // v1
+    put(9, 5.0); // width
+    put(10, 7.0); // height
+    put(12, -1.0);
+    put(13, 6.0);
+    let mut tex = Vec::new();
+    tex.extend_from_slice(&8u32.to_le_bytes());
+    tex.extend_from_slice(&8u32.to_le_bytes());
+    tex.extend_from_slice(&[0u8; 8 * 8 * 4]);
+    let font = Font::parse(&fnt, &tex).expect("synthetic font parses");
+    let g = font.glyph(b'A');
+    assert_eq!((g.u0, g.v0, g.u1, g.v1), (0.125, 0.25, 0.375, 0.75));
+    assert_eq!((g.width, g.height), (5.0, 7.0));
+    assert!(g.inked);
+}
