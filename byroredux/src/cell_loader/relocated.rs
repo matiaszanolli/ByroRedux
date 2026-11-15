@@ -531,9 +531,20 @@ pub(crate) fn continue_hop(world: &World, relocation: &Relocation, loaded: &[Cre
     depart(world, relocation.actor, relocation.placement.clone(), target, speed).is_ok()
 }
 
+/// Whether any offscreen journey's arrival time has come: the relocation step's
+/// idle check, which builds nothing (#6924).
+pub(crate) fn any_journey_due(world: &World) -> bool {
+    let Some(now) = world.try_resource::<crate::components::GameTimeRes>().map(|time| time.absolute_hours()) else {
+        return false;
+    };
+    world
+        .try_resource::<ActorRelocations>()
+        .is_some_and(|ledger| ledger.journeys().any(|(_, journey)| journey.arrives_at_hours <= now))
+}
+
 /// XCT-OFF-001..004 — the journeys whose arrival time has come, as moves: to
 /// the far side of the last door when the player is in that cell, to the
-/// package location otherwise.
+/// package location otherwise. [`any_journey_due`] asks without building them.
 pub(crate) fn due_arrivals(world: &World, loaded: &[CreatedCell]) -> Vec<Relocation> {
     let Some(now) = world.try_resource::<crate::components::GameTimeRes>().map(|time| time.absolute_hours()) else {
         return Vec::new();
@@ -1188,7 +1199,9 @@ mod tests {
         world.insert_resource(crate::components::GameTimeRes::new(10.0, 30.0));
         depart(&world, SUNNY, saloon_placement(), MARKER, 100.0).unwrap();
         assert!(due_arrivals(&world, &[]).is_empty(), "XCT-OFF-003: not yet");
+        assert!(!any_journey_due(&world), "#6924: the idle check agrees");
         world.resource_mut::<crate::components::GameTimeRes>().advance_hours(1.0);
+        assert!(any_journey_due(&world), "#6924: the idle check sees the due journey");
         let unwatched = due_arrivals(&world, &[]);
         assert_eq!(unwatched.len(), 1);
         assert_eq!(unwatched[0].placement.position_zup, [1500.0, 0.0, 0.0]);

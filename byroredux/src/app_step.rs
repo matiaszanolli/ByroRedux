@@ -1250,51 +1250,54 @@ impl App {
             .world
             .try_resource::<cell_loader::CurrentCellRoot>()
             .and_then(|root| root.0);
-        let mut cells: Vec<(byroredux_core::ecs::storage::EntityId, CreatedCell)> = Vec::new();
-        if let Some((cell_root, editor_id)) = interior_root.zip(
-            self.world
-                .try_resource::<cell_loader::CurrentCellContext>()
-                .map(|cell| cell.cell_editor_id.clone()),
-        ) {
-            cells.push((cell_root, CreatedCell::Interior { editor_id }));
-        }
-        if let Some(state) = self.streaming.as_ref() {
-            let worldspace = state.wctx.worldspace_key.clone();
-            cells.extend(state.loaded.iter().map(|(grid, cell)| {
-                (cell.cell_root, CreatedCell::Exterior { worldspace: worldspace.clone(), grid: *grid })
-            }));
-        }
-        let loaded: Vec<CreatedCell> = cells.iter().map(|(_, cell)| cell.clone()).collect();
-
-        let mut requests: Vec<byroredux_scripting::Relocation> = self
+        // #6924 — the loaded cells (a worldspace `String` per grid cell) are built only when this
+        // frame has a move to apply or the key below changed. Idle, the step is three emptiness
+        // checks and the key: building them first cost hundreds of small allocations a frame in a
+        // wide exterior window, every frame.
+        let moving = self
             .world
-            .try_resource_mut::<byroredux_scripting::PendingRelocations>()
-            .map(|mut pending| std::mem::take(&mut pending.0))
-            .unwrap_or_default();
-        let arrivals = relocated::due_arrivals(&self.world, &loaded);
-        let door_arrivals = arrivals.iter().filter(|arrival| {
-            self.world
-                .try_resource::<byroredux_scripting::ActorRelocations>()
-                .and_then(|ledger| ledger.journey(arrival.actor).and_then(|journey| journey.last_door.clone()))
-                .is_some_and(|door| door == arrival.placement)
-        });
-        // The actors that come through a load door fade in (XCT-ROUTE-008).
-        let faded: std::collections::HashSet<u32> =
-            requests.iter().map(|r| r.actor).chain(door_arrivals.map(|r| r.actor)).collect();
-        requests.extend(relocated::resolve_actor_moves(&self.world));
-        requests.extend(arrivals);
-        for relocation in &requests {
-            let actor = relocation.actor;
-            let on_the_road = relocated::continue_hop(&self.world, relocation, &loaded);
-            if !on_the_road {
-                log::info!("actor {actor:08X} -> {:?}", relocation.placement.cell);
-                if let Some(mut ledger) = self.world.try_resource_mut::<byroredux_scripting::ActorRelocations>() {
-                    ledger.relocate(actor, relocation.placement.clone());
+            .try_resource::<byroredux_scripting::PendingRelocations>()
+            .is_some_and(|pending| !pending.0.is_empty())
+            || self
+                .world
+                .try_resource::<byroredux_scripting::PendingActorMoves>()
+                .is_some_and(|pending| !pending.0.is_empty())
+            || relocated::any_journey_due(&self.world);
+        let mut built: Option<Vec<(byroredux_core::ecs::storage::EntityId, CreatedCell)>> = None;
+        let mut faded = std::collections::HashSet::new();
+        if moving {
+            let cells = self.relocation_cells(interior_root);
+            let loaded: Vec<CreatedCell> = cells.iter().map(|(_, cell)| cell.clone()).collect();
+            let mut requests: Vec<byroredux_scripting::Relocation> = self
+                .world
+                .try_resource_mut::<byroredux_scripting::PendingRelocations>()
+                .map(|mut pending| std::mem::take(&mut pending.0))
+                .unwrap_or_default();
+            let arrivals = relocated::due_arrivals(&self.world, &loaded);
+            let door_arrivals = arrivals.iter().filter(|arrival| {
+                self.world
+                    .try_resource::<byroredux_scripting::ActorRelocations>()
+                    .and_then(|ledger| ledger.journey(arrival.actor).and_then(|journey| journey.last_door.clone()))
+                    .is_some_and(|door| door == arrival.placement)
+            });
+            // The actors that come through a load door fade in (XCT-ROUTE-008).
+            faded = requests.iter().map(|r| r.actor).chain(door_arrivals.map(|r| r.actor)).collect();
+            requests.extend(relocated::resolve_actor_moves(&self.world));
+            requests.extend(arrivals);
+            for relocation in &requests {
+                let actor = relocation.actor;
+                let on_the_road = relocated::continue_hop(&self.world, relocation, &loaded);
+                if !on_the_road {
+                    log::info!("actor {actor:08X} -> {:?}", relocation.placement.cell);
+                    if let Some(mut ledger) = self.world.try_resource_mut::<byroredux_scripting::ActorRelocations>() {
+                        ledger.relocate(actor, relocation.placement.clone());
+                    }
+                }
+                if let (Some(entity), Some(ctx)) = (relocated::live_body(&self.world, actor), self.renderer.as_mut()) {
+                    cell_loader::unload::evict_actor(&mut self.world, ctx, entity);
                 }
             }
-            if let (Some(entity), Some(ctx)) = (relocated::live_body(&self.world, actor), self.renderer.as_mut()) {
-                cell_loader::unload::evict_actor(&mut self.world, ctx, entity);
-            }
+            built = Some(cells);
         }
 
         let Some(digest) = self
@@ -1310,6 +1313,8 @@ impl App {
             return;
         }
         self.relocation_step_key = Some(key);
+        let cells = built.unwrap_or_else(|| self.relocation_cells(interior_root));
+        let loaded: Vec<CreatedCell> = cells.iter().map(|(_, cell)| cell.clone()).collect();
         let mut spawned = Vec::new();
         for (cell_root, cell) in cells {
             let refs = relocated::relocated_in(&self.world, &cell, |actor| relocated::has_live_entity(&self.world, actor));
@@ -1326,6 +1331,30 @@ impl App {
         let through: Vec<u32> = spawned.into_iter().filter(|form| faded.contains(form)).collect();
         relocated::fade_in(&self.world, &through);
         relocated::reconcile_logical_identities(&mut self.world, &loaded);
+    }
+
+    /// The loaded cells the relocation step places actors in: the interior, or the exterior
+    /// streaming window's grid cells, each with its cell root.
+    fn relocation_cells(
+        &self,
+        interior_root: Option<byroredux_core::ecs::storage::EntityId>,
+    ) -> Vec<(byroredux_core::ecs::storage::EntityId, byroredux_scripting::CreatedCell)> {
+        use byroredux_scripting::CreatedCell;
+        let mut cells = Vec::new();
+        if let Some((cell_root, editor_id)) = interior_root.zip(
+            self.world
+                .try_resource::<cell_loader::CurrentCellContext>()
+                .map(|cell| cell.cell_editor_id.clone()),
+        ) {
+            cells.push((cell_root, CreatedCell::Interior { editor_id }));
+        }
+        if let Some(state) = self.streaming.as_ref() {
+            let worldspace = state.wctx.worldspace_key.clone();
+            cells.extend(state.loaded.iter().map(|(grid, cell)| {
+                (cell.cell_root, CreatedCell::Exterior { worldspace: worldspace.clone(), grid: *grid })
+            }));
+        }
+        cells
     }
 
     /// BIK (#6855) — the movie player: end the movie that finished or was skipped and start the next
