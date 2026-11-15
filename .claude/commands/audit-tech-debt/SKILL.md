@@ -369,9 +369,9 @@ grep -RInE '^[[:space:]]*#\[ignore' --include='*.rs' crates byroredux tools | gr
   (per-binary `test result: ok. N passed` sums, #6319, 718c7b836), since counting `test NAME ... ok` lines misreads a printing test.
 - **Source-scan tests** (a `#[test]` that `include_str!`s or reads a `.rs` file and searches its text): a standing test-gap
   bucket under triage, with per-issue records at `.claude/issues/<N>/CLASSIFICATION.md` — #6686 (binary, OPEN: four passes, the fourth on 2026-11-10 classified every remaining file — mostly by doc, not by reading —
-  and replaced four tests; 155 Rust-source reads in 75 files remain, with the `skin_offsets_hasher_tests` and `sandbox` / `zup_yup` rows named as candidates),
-  #6687 (renderer, OPEN: second pass 2026-11-10 classified all 352 remaining Rust-source scans; open for the Fx-hash cluster in
-  `context/mod.rs` and the `shadow_filter.rs` destructure, 055a5ca11 made the UI instance's two clamps pure functions with value tests), #6688 (scripting, closed, 58caf1799 ran the
+  and replaced four tests; a fifth pass (f5210e6e6) replaced `skin_offsets_hasher_tests` with a type ascription, leaving the `sandbox` / `zup_yup` rows as candidates),
+  #6687 (renderer, closed 2026-11-15 by d84a67cd9: the Fx-hash cluster in `context/mod.rs` became type ascriptions in
+  `hot_path_maps_are_fx_hashed` and the `shadow_filter.rs` count an exhaustive destructure; earlier, 055a5ca11 made the UI instance's two clamps pure functions with value tests), #6688 (scripting, closed, 58caf1799 ran the
   Pattern-B marker consumers instead of scanning them) and #6689 (nif/plugin/physics, closed, 8124d9594). Classes: device/data (needs Vulkan, the
   winit loop or game data — keep), runtime (replaceable by running the code), prose, syntax, input (a read that feeds a check). A scan whose
   property a behavioural test can state is the finding (precedents: #6685 turned the system-access scan into a `syn` walk,
