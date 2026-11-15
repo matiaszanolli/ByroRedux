@@ -109,9 +109,7 @@ pub struct CollisionAuthoringSummary {
     /// FO3, FNV, Skyrim LE/SE). Every body such a model has is a `bhk*` collision object in the NIF
     /// itself, so finding none means the model has no body in the original engine either. Set by
     /// [`summarize_collision_authoring`]; `false` in [`Default`], which keeps the conservative
-    /// fallback for a summary of unknown provenance. Morrowind's `BSVER` is 0 too, but its
-    /// collision is its render geometry. No Morrowind cell path exists, so this does not matter
-    /// today; a Morrowind loader must not read this flag.
+    /// fallback for a summary of unknown provenance.
     pub classic_dialect: bool,
 }
 
