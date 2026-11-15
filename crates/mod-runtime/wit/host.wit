@@ -92,6 +92,7 @@ interface state {
         quickload,
         vats,
         sneak,
+        ready-weapon,
         pause,
     }
 

@@ -171,15 +171,16 @@ pub(crate) fn release_held_dead_actor_reconciliations(world: &World) {
 
 /// Physical Attack/Block action frontend and melee-hit producer.
 pub(crate) fn combat_input_system(world: &World, dt: f32) {
-    let (attack_pressed, block_held) = world
+    let (attack_pressed, block_held, ready_pressed) = world
         .try_resource::<ActionState>()
         .map(|actions| {
             (
                 actions.was_pressed(InputAction::Attack),
                 actions.is_held(InputAction::Block),
+                actions.was_pressed(InputAction::ReadyWeapon),
             )
         })
-        .unwrap_or((false, false));
+        .unwrap_or((false, false, false));
 
     // Resolved once up front: both the cooldown arm below and the reach
     // used for the ray cast need the equipped weapon.
@@ -196,6 +197,12 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
         .is_some_and(|mode| *mode == PlayerMode::Character)
         // #4701 — a dead player's attack edge is not a swing either.
         && crate::systems::player_can_act(world);
+
+    if ready_pressed {
+        if let Some(player) = aggressor {
+            toggle_ready_weapon(world, player, can_swing);
+        }
+    }
 
     // #3697 (ECS-P2-01) — resolved before `CombatState`'s write guard opens,
     // not from inside it. `attack_cooldown_seconds` reads `EquippedWeapon`,
@@ -386,8 +393,28 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
     }
 }
 
+/// #6942 — the Ready Weapon key: put a drawn weapon away, or draw the equipped one. Drawing is
+/// gated like a swing (`can_draw`: the character mode, a player able to act); putting it away
+/// is never refused. With nothing equipped there is nothing to draw, as the attack paths agree.
+fn toggle_ready_weapon(world: &World, player: EntityId, can_draw: bool) {
+    if world.has::<byroredux_scripting::obscript_state::WeaponDrawn>(player) {
+        holster_weapon(world, player);
+    } else if can_draw && world.has::<EquippedWeapon>(player) {
+        draw_weapon(world, player);
+    }
+}
+
+/// Put `actor`'s weapon away: clear its `WeaponDrawn` mark, so `IsWeaponOut` reads 0 unless it
+/// is fighting (#6942). The Ready Weapon key and losing the equipped weapon both end here.
+pub(crate) fn holster_weapon(world: &World, actor: EntityId) {
+    if let Some(mut drawn) = world.query_mut::<byroredux_scripting::obscript_state::WeaponDrawn>() {
+        drawn.remove(actor);
+    }
+}
+
 /// An attack with a weapon draws it: the player's `WeaponDrawn` mark (`IsWeaponOut`, which New
-/// Vegas's shooting tutorial bottles test before they count a hit).
+/// Vegas's shooting tutorial bottles test before they count a hit). It stays until the Ready
+/// Weapon key puts the weapon away, the weapon is unequipped, or a script clears it (#6942).
 fn draw_weapon(world: &World, player: EntityId) {
     if world.has::<byroredux_scripting::obscript_state::WeaponDrawn>(player) {
         return;
@@ -3291,6 +3318,48 @@ mod tests {
         assert!(world
             .resource::<ActionState>()
             .was_pressed(InputAction::Attack));
+    }
+
+    fn tap_ready_weapon(world: &World) {
+        use crate::components::InputState;
+        use winit::keyboard::KeyCode;
+
+        world.resource_mut::<InputState>().keys_held.insert(KeyCode::KeyG);
+        crate::interaction::refresh_action_state(world);
+        assert!(world.resource::<ActionState>().was_pressed(InputAction::ReadyWeapon));
+        combat_input_system(world, 1.0 / 60.0);
+        world.resource_mut::<InputState>().keys_held.remove(&KeyCode::KeyG);
+        crate::interaction::refresh_action_state(world);
+    }
+
+    /// #6942 — the first attack drew the player's weapon and nothing put it away, so `IsWeaponOut`
+    /// read 1 for the rest of the save. The Ready Weapon key draws the equipped weapon and puts it
+    /// away again; with nothing equipped, or in fly-cam, it draws nothing, but a drawn weapon is
+    /// always put away.
+    #[test]
+    fn the_ready_weapon_key_draws_and_puts_away_the_equipped_weapon() {
+        use byroredux_scripting::obscript_state::is_weapon_out;
+
+        let (mut world, player) = attack_edge_fixture(PlayerMode::Character);
+        tap_ready_weapon(&world);
+        assert!(!is_weapon_out(&world, player), "nothing equipped, nothing to draw");
+
+        world.insert(
+            player,
+            EquippedWeapon { inventory_index: InventoryIndex(0), base_form_id: 0x1234, damage: 10.0, reach: 0.0, speed: 0.0 },
+        );
+        tap_ready_weapon(&world);
+        assert!(is_weapon_out(&world, player), "drawn");
+        tap_ready_weapon(&world);
+        assert!(!is_weapon_out(&world, player), "put away");
+
+        // Drawn as a swing leaves it (`draw_weapon`); the key puts it away, in fly-cam too.
+        world.insert(player, byroredux_scripting::obscript_state::WeaponDrawn);
+        *world.resource_mut::<PlayerMode>() = PlayerMode::FlyCam;
+        tap_ready_weapon(&world);
+        assert!(!is_weapon_out(&world, player), "putting it away is never refused");
+        tap_ready_weapon(&world);
+        assert!(!is_weapon_out(&world, player), "drawing waits for the character mode");
     }
 
     #[test]

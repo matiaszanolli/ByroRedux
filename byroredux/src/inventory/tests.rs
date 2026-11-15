@@ -3080,3 +3080,23 @@ fn the_inventory_snapshot_shows_an_improved_weapons_quality_and_value() {
     assert_eq!(better.value, 60, "45 x 1.333");
     assert_eq!(better.details, "Damage 8 | Improved: Superior (+3 damage)");
 }
+
+/// #6942 — a weapon that is no longer equipped is not out: losing the equipped weapon clears the
+/// `WeaponDrawn` mark its first attack set, so `IsWeaponOut` reads 0.
+#[test]
+fn unequipping_the_weapon_puts_it_away() {
+    use byroredux_scripting::obscript_state::{is_weapon_out, WeaponDrawn};
+    let mut world = World::new();
+    world.register::<EquippedWeapon>();
+    world.register::<WeaponDrawn>();
+    let player = world.spawn();
+    world.insert(
+        player,
+        EquippedWeapon { inventory_index: InventoryIndex(0), base_form_id: 0x1234, damage: 10.0, reach: 0.0, speed: 0.0 },
+    );
+    world.insert(player, WeaponDrawn);
+    assert!(is_weapon_out(&world, player));
+    super::actions::reconcile_equipped_weapon(&mut world, player, None);
+    assert!(world.get::<EquippedWeapon>(player).is_none());
+    assert!(!is_weapon_out(&world, player), "an unequipped weapon is not out");
+}

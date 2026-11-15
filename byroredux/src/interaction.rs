@@ -70,6 +70,11 @@ pub(crate) enum InputAction {
     /// crouch/sneak mode" (UESP *Oblivion:Controls*, *Skyrim:Controls*), "Left
     /// Ctrl … Sneak / crouch" (Fallout wiki *Fallout: New Vegas (PC)*).
     Sneak,
+    /// #6942 — draw or put away the equipped weapon (`WeaponDrawn`, ObScript
+    /// `IsWeaponOut`). Vanilla PC binds it to R (Skyrim, FO3, FNV, FO4; FO3/FNV
+    /// and FO4 on a hold) and F (Oblivion); here R is Attack and F the fly
+    /// toggle, so it defaults to G (`controls.bind.ready_weapon`).
+    ReadyWeapon,
     #[allow(dead_code, reason = "no physical input source yet")]
     Pause,
 }
@@ -77,7 +82,7 @@ pub(crate) enum InputAction {
 impl InputAction {
     /// Actions with a live normalized input producer. `Pause` joins this list
     /// when its first physical binding is added.
-    pub(crate) const OBSERVABLE: [Self; 13] = [
+    pub(crate) const OBSERVABLE: [Self; 14] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::StrafeLeft,
@@ -91,13 +96,14 @@ impl InputAction {
         Self::Quicksave,
         Self::Quickload,
         Self::Sneak,
+        Self::ReadyWeapon,
     ];
 
     const fn bit(self) -> u16 {
         1_u16 << self as u8
     }
 
-    const CONFIGURABLE: [Self; 12] = [
+    const CONFIGURABLE: [Self; 13] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::StrafeLeft,
@@ -110,6 +116,7 @@ impl InputAction {
         Self::Inventory,
         Self::Vats,
         Self::Sneak,
+        Self::ReadyWeapon,
     ];
 
     const fn setting_id(self) -> &'static str {
@@ -127,6 +134,7 @@ impl InputAction {
             Self::Quicksave | Self::Quickload => "",
             Self::Vats => "controls.bind.vats",
             Self::Sneak => "controls.bind.sneak",
+            Self::ReadyWeapon => "controls.bind.ready_weapon",
             Self::Pause => "",
         }
     }
@@ -145,6 +153,7 @@ impl InputAction {
             Self::Quickload => "Quickload",
             Self::Vats => "VATS",
             Self::Sneak => "Sneak",
+            Self::ReadyWeapon => "Ready weapon",
             Self::Attack => "Attack",
             Self::Block => "Block",
             Self::Pause => "Pause",
@@ -182,6 +191,7 @@ impl Default for ActionBindings {
                 (KeyCode::F9, InputAction::Quickload),
                 (KeyCode::KeyV, InputAction::Vats),
                 (KeyCode::ControlLeft, InputAction::Sneak),
+                (KeyCode::KeyG, InputAction::ReadyWeapon),
             ]),
             mouse: HashMap::from([
                 (MouseButton::Left, InputAction::Attack),
@@ -285,6 +295,7 @@ fn papyrus_control_name(action: InputAction) -> &'static str {
         InputAction::Quickload => "Quickload",
         InputAction::Vats => "VATS",
         InputAction::Sneak => "Sneak",
+        InputAction::ReadyWeapon => "Ready Weapon",
         InputAction::Pause => "Pause",
     }
 }
@@ -300,6 +311,7 @@ fn papyrus_keycode(key: KeyCode) -> Option<i32> {
         KeyCode::KeyD => 32,
         KeyCode::KeyE => 18,
         KeyCode::KeyR => 19,
+        KeyCode::KeyG => 34,
         KeyCode::KeyC => 46,
         KeyCode::KeyI => 23,
         KeyCode::KeyJ => 36,
@@ -455,6 +467,8 @@ const SUPPORTED_KEYS: &[KeyCode] = &[
     KeyCode::KeyR,
     // #6350 — the VATS key (vanilla FO3/FNV PC default).
     KeyCode::KeyV,
+    // #6942 — the Ready Weapon key (see `InputAction::ReadyWeapon` for why not R or F).
+    KeyCode::KeyG,
     KeyCode::KeyC,
     KeyCode::KeyI,
     KeyCode::KeyJ,
@@ -485,6 +499,7 @@ fn key_id(key: KeyCode) -> &'static str {
         KeyCode::KeyQ => "key_q",
         KeyCode::KeyR => "key_r",
         KeyCode::KeyV => "key_v",
+        KeyCode::KeyG => "key_g",
         KeyCode::KeyC => "key_c",
         KeyCode::KeyI => "key_i",
         KeyCode::KeyJ => "key_j",
@@ -523,6 +538,8 @@ fn key_label(key: KeyCode) -> &'static str {
         KeyCode::KeyF => "F",
         KeyCode::KeyQ => "Q",
         KeyCode::KeyR => "R",
+        KeyCode::KeyV => "V",
+        KeyCode::KeyG => "G",
         KeyCode::KeyC => "C",
         KeyCode::KeyI => "I",
         KeyCode::KeyJ => "J",
@@ -687,6 +704,7 @@ fn debug_action(name: &str) -> Option<InputAction> {
         "quicksave" | "f5" => Some(InputAction::Quicksave),
         "quickload" | "f9" => Some(InputAction::Quickload),
         "sneak" | "ctrl" => Some(InputAction::Sneak),
+        "ready_weapon" | "g" => Some(InputAction::ReadyWeapon),
         _ => None,
     }
 }

@@ -272,6 +272,7 @@ impl ModInstance {
             InputAction::Quickload => state::InputAction::Quickload,
             InputAction::Vats => state::InputAction::Vats,
             InputAction::Sneak => state::InputAction::Sneak,
+            InputAction::ReadyWeapon => state::InputAction::ReadyWeapon,
             InputAction::Pause => state::InputAction::Pause,
         };
         let phase = match event.phase {

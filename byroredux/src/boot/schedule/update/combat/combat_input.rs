@@ -40,6 +40,9 @@ pub(super) fn register_combat_input_systems(scheduler: &mut Scheduler) {
             .reads::<crate::combat::MeleeState>()
             .writes::<crate::combat::MeleeState>()
             .reads::<byroredux_core::ecs::components::CreatureAttack>()
+            // #6942 — an attack draws the weapon and the Ready Weapon key draws or puts it away.
+            .reads::<byroredux_scripting::obscript_state::WeaponDrawn>()
+            .writes::<byroredux_scripting::obscript_state::WeaponDrawn>()
             .writes::<byroredux_scripting::HitEvent>(),
     );
 }

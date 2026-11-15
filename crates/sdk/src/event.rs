@@ -685,6 +685,8 @@ pub enum InputAction {
     Vats,
     /// M65 — toggle the sneak stance (PC default: Left Ctrl).
     Sneak,
+    /// #6942 — draw or put away the equipped weapon (PC default here: G).
+    ReadyWeapon,
     Pause,
 }
 
@@ -706,6 +708,7 @@ impl InputAction {
             Self::Quickload => "quickload",
             Self::Vats => "vats",
             Self::Sneak => "sneak",
+            Self::ReadyWeapon => "ready-weapon",
             Self::Pause => "pause",
         }
     }
@@ -727,6 +730,7 @@ impl InputAction {
             "quickload" => Self::Quickload,
             "vats" => Self::Vats,
             "sneak" => Self::Sneak,
+            "ready-weapon" => Self::ReadyWeapon,
             "pause" => Self::Pause,
             _ => return None,
         })
@@ -893,6 +897,7 @@ mod spelling_roundtrip_tests {
             InputAction::Quickload,
             InputAction::Vats,
             InputAction::Sneak,
+            InputAction::ReadyWeapon,
             InputAction::Pause,
         ];
         for action in all {
@@ -912,6 +917,7 @@ mod spelling_roundtrip_tests {
                 | InputAction::Quickload
                 | InputAction::Vats
                 | InputAction::Sneak
+                | InputAction::ReadyWeapon
                 | InputAction::Pause => {}
             }
             assert_eq!(InputAction::parse(action.as_str()), Some(action), "{action:?}");

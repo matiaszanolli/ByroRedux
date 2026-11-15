@@ -641,5 +641,7 @@ pub(super) fn reconcile_equipped_weapon(
         world.insert(player, weapon);
     } else {
         let _ = world.remove::<EquippedWeapon>(player);
+        // #6942 — a weapon that is no longer equipped is not out.
+        crate::combat::holster_weapon(world, player);
     }
 }
