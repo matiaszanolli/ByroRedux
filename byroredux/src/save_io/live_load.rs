@@ -535,6 +535,17 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     if let Some(mut reports) = world.try_resource_mut::<crate::cell_loader::relocated::TravelReports>() {
         reports.0.clear();
     }
+    // SAVE-3 — two more queues with a Late producer and a consumer after this drain: a story event a
+    // fragment or INFO result raised (its dispatcher already ran in Update; R1 can be the surviving
+    // player) and a script's weapon equip (`drain_script_weapon_equips` runs after the load in the
+    // same tick, on the surviving player). Fired in the loaded game, they start quests or toggle gear
+    // the loaded save never asked for.
+    if let Some(mut events) = world.try_resource_mut::<byroredux_scripting::story_manager::PendingScriptStoryEvents>() {
+        events.0.clear();
+    }
+    if let Some(mut equips) = world.try_resource_mut::<byroredux_scripting::PendingNonArmorEquips>() {
+        equips.0.clear();
+    }
     // INC4-1 — the player survives a live load but the furniture they sat on is respawned under a new
     // entity, and `Seated` (an `EntityId`) is not a delta column: the outgoing seat would name a dead
     // or recycled entity. The loaded player stands; the seat is not restored from the save.
@@ -827,6 +838,11 @@ pub fn execute_pending_save_loads(
                 // the restored state (the visual sibling of the weapon
                 // re-derive above).
                 clear_player_gear_handoff_scratch(world, player);
+                // SAVE-2 — what `perk_body_system` last saw is the outgoing player's perks; left in
+                // place, every rank the save holds beyond them read as freshly taken and re-ran its
+                // Quest entries (StartQuest / SetStage). Without it the next pass baselines on the
+                // loaded perks, as on a cold start; the saved SpellList already carries the abilities.
+                world.remove::<byroredux_scripting::perk_entry_points::PerkBodyState>(player);
                 crate::npc_spawn::loot_appearance::reconcile_worn_gear(world, player);
                 // #5058 — the ledger reset above cannot name the player's
                 // stale alias-injected memberships anymore, so strip them

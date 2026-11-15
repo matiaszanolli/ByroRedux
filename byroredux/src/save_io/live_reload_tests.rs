@@ -999,7 +999,19 @@ fn live_load_drain_discards_the_outgoing_sessions_requests() {
     world.insert_resource(crate::systems::PlayerEntity(Some(seated_player)));
     let old_couch = world.spawn();
     world.insert(seated_player, byroredux_core::ecs::components::Seated { furniture: old_couch, animation_restore: Default::default() });
+    // SAVE-3 — a Late-raised story event and a script weapon equip name the surviving player.
+    world.insert_resource(byroredux_scripting::story_manager::PendingScriptStoryEvents(vec![byroredux_scripting::StoryEvent {
+        mnemonic: *b"KILL",
+        reference_1: seated_player,
+        reference_2: None,
+        location_1: None,
+        location_2: None,
+        scripted: None,
+    }]));
+    world.insert_resource(byroredux_scripting::PendingNonArmorEquips(vec![(seated_player, 0x1234)]));
     discard_outgoing_session_requests(&world);
+    assert!(world.resource::<byroredux_scripting::story_manager::PendingScriptStoryEvents>().0.is_empty(), "SAVE-3: queued story events are dropped");
+    assert!(world.resource::<byroredux_scripting::PendingNonArmorEquips>().0.is_empty(), "SAVE-3: queued weapon equips are dropped");
     assert!(world.get::<byroredux_core::ecs::components::Seated>(seated_player).is_none(), "INC4-1: the loaded player stands");
     assert!(world.resource::<byroredux_scripting::PendingRelocations>().0.is_empty(), "#6927: queued relocations are dropped");
     assert!(world.resource::<byroredux_scripting::PendingActorMoves>().0.is_empty(), "#6927: queued scripted moves are dropped");
@@ -1110,4 +1122,19 @@ fn a_corrupt_saved_pose_is_refused_and_leaves_the_player_where_the_cell_spawned_
     assert!(apply_player_pose(&mut world, &good));
     let tq = world.query::<Transform>().unwrap();
     assert_eq!(tq.get(cam).unwrap().translation, Vec3::new(10.0, 20.0, 30.0));
+}
+
+/// SAVE-2 — the live overlay replaces the surviving player's `Perks`, so the drain must drop what
+/// `perk_body_system` last saw of them: otherwise every rank the save holds beyond the outgoing
+/// player's reads as freshly taken and re-runs its Quest entries. Without the state the next pass
+/// baselines (`reconcile_perk_bodies` runs no Quest entry on first sight). The drain needs a device,
+/// so this reads the source: the removal must follow the delta overlay.
+#[test]
+fn a_live_load_rebaselines_the_players_perk_bodies() {
+    let src = include_str!("live_load.rs");
+    let overlay = src.find("apply_deltas(world, &registry, &snapshot, &remap, MUTABLE_DELTA_COLUMNS)").expect("the delta overlay");
+    let removal = src
+        .find("world.remove::<byroredux_scripting::perk_entry_points::PerkBodyState>(player);")
+        .expect("the live load must drop the player's PerkBodyState (SAVE-2)");
+    assert!(removal > overlay, "after the overlay that replaced the player's Perks");
 }
