@@ -21,34 +21,18 @@ fn papyrus_mod_event_declaration(
         _ => unreachable!("ModEvent declarations are a closed built-in set"),
     };
     let id = format!("mod-event-{operation}");
-    EnginePapyrusFunctionDeclaration {
+    BuiltinDeclaration {
         route: format!("{PAPYRUS_MOD_EVENT_ROUTE_PREFIX}{id}"),
-        declaration: ScriptFunctionDeclaration {
-            id: ScriptFunctionId::new(&id).expect("built-in ModEvent function ID is valid"),
-            component: ComponentId::new("legacy-mod-events")
-                .expect("built-in ModEvent component ID is valid"),
-            parameters: parameters
-                .iter()
-                .cloned()
-                .map(|(id, value_type, optional)| ScriptParameterDeclaration {
-                    id: ScriptParameterId::new(id)
-                        .expect("built-in ModEvent parameter ID is valid"),
-                    value_type,
-                    optional,
-                })
-                .collect(),
-            result: result.map(|value_type| ScriptResultDeclaration {
-                value_type,
-                optional: false,
-            }),
-            papyrus: Some(PapyrusFunctionAlias {
-                provider: "ModEvent".to_owned(),
-                function: function.to_owned(),
-            }),
-            description: "Engine-owned principal-private SKSE ModEvent builder compatibility"
-                .to_owned(),
-        },
+        id: &id,
+        component: "legacy-mod-events",
+        provider: "ModEvent",
+        function,
+        parameters,
+        result,
+        description: "Engine-owned principal-private SKSE ModEvent builder compatibility",
+        label: "ModEvent",
     }
+    .build()
 }
 
 /// Exact SKSE `ModEvent` handle-builder calls backed by the shared engine bus.

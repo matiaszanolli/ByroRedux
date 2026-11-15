@@ -305,33 +305,18 @@ fn papyrus_storage_util_declaration_with_result(
     parameters: &[(&str, ScriptValueType, bool)],
     result: Option<ScriptValueType>,
 ) -> EnginePapyrusFunctionDeclaration {
-    EnginePapyrusFunctionDeclaration {
+    BuiltinDeclaration {
         route: route.to_owned(),
-        declaration: ScriptFunctionDeclaration {
-            id: ScriptFunctionId::new(id).expect("built-in StorageUtil function ID is valid"),
-            component: ComponentId::new("principal-storage")
-                .expect("built-in StorageUtil component ID is valid"),
-            parameters: parameters
-                .iter()
-                .cloned()
-                .map(|(id, value_type, optional)| ScriptParameterDeclaration {
-                    id: ScriptParameterId::new(id)
-                        .expect("built-in StorageUtil parameter ID is valid"),
-                    value_type,
-                    optional,
-                })
-                .collect(),
-            result: result.map(|value_type| ScriptResultDeclaration {
-                value_type,
-                optional: false,
-            }),
-            papyrus: Some(PapyrusFunctionAlias {
-                provider: "StorageUtil".to_owned(),
-                function: function.to_owned(),
-            }),
-            description: "Engine-owned principal-private PapyrusUtil compatibility".to_owned(),
-        },
+        id,
+        component: "principal-storage",
+        provider: "StorageUtil",
+        function,
+        parameters,
+        result,
+        description: "Engine-owned principal-private PapyrusUtil compatibility",
+        label: "StorageUtil",
     }
+    .build()
 }
 
 /// `(route, function ID, Papyrus function, the one parameter that follows

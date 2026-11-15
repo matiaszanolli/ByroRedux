@@ -25,33 +25,18 @@ fn papyrus_legacy_container_declaration(
     result: Option<ScriptValueType>,
 ) -> EnginePapyrusFunctionDeclaration {
     let id = legacy_container_id(provider, function);
-    EnginePapyrusFunctionDeclaration {
+    BuiltinDeclaration {
         route: format!("{PAPYRUS_LEGACY_CONTAINERS_ROUTE_PREFIX}{id}"),
-        declaration: ScriptFunctionDeclaration {
-            id: ScriptFunctionId::new(&id).expect("built-in JContainers function ID is valid"),
-            component: ComponentId::new("legacy-containers")
-                .expect("built-in JContainers component ID is valid"),
-            parameters: parameters
-                .iter()
-                .cloned()
-                .map(|(id, value_type, optional)| ScriptParameterDeclaration {
-                    id: ScriptParameterId::new(id)
-                        .expect("built-in JContainers parameter ID is valid"),
-                    value_type,
-                    optional,
-                })
-                .collect(),
-            result: result.map(|value_type| ScriptResultDeclaration {
-                value_type,
-                optional: false,
-            }),
-            papyrus: Some(PapyrusFunctionAlias {
-                provider: provider.to_owned(),
-                function: function.to_owned(),
-            }),
-            description: "Engine-owned principal-private JContainers compatibility".to_owned(),
-        },
+        id: &id,
+        component: "legacy-containers",
+        provider,
+        function,
+        parameters,
+        result,
+        description: "Engine-owned principal-private JContainers compatibility",
+        label: "JContainers",
     }
+    .build()
 }
 
 /// Exact in-memory JValue/JArray/JMap core backed by the save-persistent,

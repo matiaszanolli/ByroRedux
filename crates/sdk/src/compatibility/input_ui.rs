@@ -18,31 +18,18 @@ fn papyrus_input_declaration(
     result: ScriptValueType,
     description: &str,
 ) -> EnginePapyrusFunctionDeclaration {
-    EnginePapyrusFunctionDeclaration {
+    BuiltinDeclaration {
         route: route.to_owned(),
-        declaration: ScriptFunctionDeclaration {
-            id: ScriptFunctionId::new(id).expect("built-in Input function ID is valid"),
-            component: ComponentId::new("input").expect("built-in Input component ID is valid"),
-            parameters: parameters
-                .iter()
-                .cloned()
-                .map(|(id, value_type, optional)| ScriptParameterDeclaration {
-                    id: ScriptParameterId::new(id).expect("built-in Input parameter ID is valid"),
-                    value_type,
-                    optional,
-                })
-                .collect(),
-            result: Some(ScriptResultDeclaration {
-                value_type: result,
-                optional: false,
-            }),
-            papyrus: Some(PapyrusFunctionAlias {
-                provider: "Input".to_owned(),
-                function: function.to_owned(),
-            }),
-            description: description.to_owned(),
-        },
+        id,
+        component: "input",
+        provider: "Input",
+        function,
+        parameters,
+        result: Some(result),
+        description,
+        label: "Input",
     }
+    .build()
 }
 
 fn papyrus_ui_declaration(
@@ -53,31 +40,18 @@ fn papyrus_ui_declaration(
     result: ScriptValueType,
     description: &str,
 ) -> EnginePapyrusFunctionDeclaration {
-    EnginePapyrusFunctionDeclaration {
+    BuiltinDeclaration {
         route: route.to_owned(),
-        declaration: ScriptFunctionDeclaration {
-            id: ScriptFunctionId::new(id).expect("built-in UI function ID is valid"),
-            component: ComponentId::new("ui").expect("built-in UI component ID is valid"),
-            parameters: parameters
-                .iter()
-                .cloned()
-                .map(|(id, value_type)| ScriptParameterDeclaration {
-                    id: ScriptParameterId::new(id).expect("built-in UI parameter ID is valid"),
-                    value_type,
-                    optional: false,
-                })
-                .collect(),
-            result: Some(ScriptResultDeclaration {
-                value_type: result,
-                optional: false,
-            }),
-            papyrus: Some(PapyrusFunctionAlias {
-                provider: "UI".to_owned(),
-                function: function.to_owned(),
-            }),
-            description: description.to_owned(),
-        },
+        id,
+        component: "ui",
+        provider: "UI",
+        function,
+        parameters: &required_parameters(parameters),
+        result: Some(result),
+        description,
+        label: "UI",
     }
+    .build()
 }
 
 /// Exact read-only `Input` functions executable through the engine's current

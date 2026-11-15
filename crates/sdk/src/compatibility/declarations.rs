@@ -9,6 +9,65 @@ pub struct EnginePapyrusFunctionDeclaration {
     pub declaration: ScriptFunctionDeclaration,
 }
 
+/// One built-in engine Papyrus declaration, described once and built by [`Self::build`]: the single
+/// home for the `ScriptFunctionDeclaration` every compatibility surface (Game, Input, UI, ModEvent,
+/// JContainers, StorageUtil) registers (#6961).
+pub(super) struct BuiltinDeclaration<'a> {
+    pub(super) route: String,
+    pub(super) id: &'a str,
+    /// The SDK component the function runs in.
+    pub(super) component: &'a str,
+    /// The Papyrus script the function is an alias on, and its name there.
+    pub(super) provider: &'a str,
+    pub(super) function: &'a str,
+    pub(super) parameters: &'a [(&'a str, ScriptValueType, bool)],
+    pub(super) result: Option<ScriptValueType>,
+    pub(super) description: &'a str,
+    /// The surface an invalid built-in ID names when it panics (`Papyrus`, `Input`, ...).
+    pub(super) label: &'a str,
+}
+
+impl BuiltinDeclaration<'_> {
+    pub(super) fn build(&self) -> EnginePapyrusFunctionDeclaration {
+        let label = self.label;
+        EnginePapyrusFunctionDeclaration {
+            route: self.route.clone(),
+            declaration: ScriptFunctionDeclaration {
+                id: ScriptFunctionId::new(self.id)
+                    .unwrap_or_else(|_| panic!("built-in {label} function ID is valid")),
+                component: ComponentId::new(self.component)
+                    .unwrap_or_else(|_| panic!("built-in {label} component ID is valid")),
+                parameters: self
+                    .parameters
+                    .iter()
+                    .map(|&(id, value_type, optional)| ScriptParameterDeclaration {
+                        id: ScriptParameterId::new(id)
+                            .unwrap_or_else(|_| panic!("built-in {label} parameter ID is valid")),
+                        value_type,
+                        optional,
+                    })
+                    .collect(),
+                result: self.result.map(|value_type| ScriptResultDeclaration {
+                    value_type,
+                    optional: false,
+                }),
+                papyrus: Some(PapyrusFunctionAlias {
+                    provider: self.provider.to_owned(),
+                    function: self.function.to_owned(),
+                }),
+                description: self.description.to_owned(),
+            },
+        }
+    }
+}
+
+/// `(id, type)` parameter pairs as required `(id, type, optional)` triples.
+pub(super) fn required_parameters<'a>(
+    parameters: &[(&'a str, ScriptValueType)],
+) -> Vec<(&'a str, ScriptValueType, bool)> {
+    parameters.iter().map(|&(id, value_type)| (id, value_type, false)).collect()
+}
+
 fn papyrus_game_content_declaration(
     route: &'static str,
     id: &str,
@@ -17,33 +76,18 @@ fn papyrus_game_content_declaration(
     result: ScriptValueType,
     description: &str,
 ) -> EnginePapyrusFunctionDeclaration {
-    let declaration = ScriptFunctionDeclaration {
-        id: ScriptFunctionId::new(id).expect("built-in Papyrus function ID is valid"),
-        component: ComponentId::new("content-catalog")
-            .expect("built-in Papyrus component ID is valid"),
-        parameters: parameters
-            .iter()
-            .cloned()
-            .map(|(id, value_type)| ScriptParameterDeclaration {
-                id: ScriptParameterId::new(id).expect("built-in Papyrus parameter ID is valid"),
-                value_type,
-                optional: false,
-            })
-            .collect(),
-        result: Some(ScriptResultDeclaration {
-            value_type: result,
-            optional: false,
-        }),
-        papyrus: Some(PapyrusFunctionAlias {
-            provider: "Game".to_owned(),
-            function: function.to_owned(),
-        }),
-        description: description.to_owned(),
-    };
-    EnginePapyrusFunctionDeclaration {
+    BuiltinDeclaration {
         route: route.to_owned(),
-        declaration,
+        id,
+        component: "content-catalog",
+        provider: "Game",
+        function,
+        parameters: &required_parameters(parameters),
+        result: Some(result),
+        description,
+        label: "Papyrus",
     }
+    .build()
 }
 
 fn papyrus_game_entity_declaration(
