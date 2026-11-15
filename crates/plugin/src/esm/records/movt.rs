@@ -32,11 +32,7 @@ pub fn parse_movt(form_id: u32, subs: &[SubRecord]) -> MovementType {
             b"EDID" => record.editor_id = text(&sub.data),
             b"MNAM" => record.name = text(&sub.data),
             b"SPED" => {
-                record.speeds = sub
-                    .data
-                    .chunks_exact(4)
-                    .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-                    .collect();
+                record.speeds = sub.data.as_chunks::<4>().0.iter().map(|bytes| f32::from_le_bytes(*bytes)).collect();
             }
             _ => {}
         }
