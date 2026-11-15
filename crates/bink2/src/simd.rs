@@ -280,6 +280,7 @@ mod x86 {
         let pass1 = idct8(transpose8(rows));
         let out = idct8(transpose8(pass1));
         for (r, v) in out.into_iter().enumerate() {
+            // SAFETY: `out` holds 8 rows, so `r < 8` and the 8 i32 written at `8 * r` lie inside `c`
             unsafe {
                 _mm256_storeu_si256(c.as_mut_ptr().add(8 * r) as *mut __m256i, _mm256_srai_epi32::<6>(v))
             };
