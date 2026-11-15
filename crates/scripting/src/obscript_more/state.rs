@@ -556,10 +556,12 @@ fn is_riding_horse(_world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptV
 
 // GECK *IsLimbGone <limb>*: "tests if an actor has had a particular limb dismembered" - answered from the actor's
 // `DismemberRecord` (VATS-LIMB-008): 1 when that body location is recorded gone. An actor with no record has lost
-// nothing; a limb outside the 0..=13 body locations is never gone.
+// nothing; a limb outside the 0..=13 body locations is never gone. A caller that does not resolve to a live
+// actor declines (SCR-2026-11-15-03): its record may be parked with its unloaded cell, so "not gone" would be a
+// guess, and `GetKillingBlowLimb` declines the same way.
 fn is_limb_gone(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
     let Some((_, actor)) = caller(world, ctx) else {
-        return flag(false);
+        return Action::Declined;
     };
     let location = num(args, 0);
     let gone = location >= 0.0

@@ -484,6 +484,8 @@ fn the_limb_commands_answer_from_the_dismember_record() {
     assert_eq!(value(run(&world, 0x118e, &nums(13.0), &c)), 1.0);
     assert_eq!(value(run(&world, 0x118e, &nums(3.0), &c)), 0.0, "another limb is still on");
     assert_eq!(value(run(&world, 0x118e, &nums(14.0), &c)), 0.0, "past the body locations");
+    // SCR-2026-11-15-03: an actor that is not live (its record may be parked) declines, as GetKillingBlowLimb does.
+    assert_eq!(run(&world, 0x118e, &nums(5.0), &ctx(Some(0x00FF_FFFF))), Action::Declined);
     // GetKillingBlowLimb: -1 alive; a corpse reports the recorded location; a corpse with none declines.
     assert_eq!(value(run(&world, 0x11f0, &[], &c)), -1.0);
     world.insert(actor, Dead);
