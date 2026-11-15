@@ -215,7 +215,9 @@ pub(crate) struct MineView {
     pub entity: EntityId,
     pub position: Vec3,
     pub base: u32,
-    /// `armed` (tripped, burning its fuse), `spent` (gone off) or `waiting`.
+    /// `armed` (tripped, burning its fuse), `spent` (gone off this session), `disabled` (its reference
+    /// is off: authored or scripted dormant, or a mine that went off before a reload, which the
+    /// enable ledger alone cannot tell apart) or `waiting`.
     pub state: &'static str,
 }
 
@@ -232,8 +234,10 @@ pub(crate) fn placed_mines(world: &World) -> Vec<MineView> {
         .into_iter()
         .filter_map(|(entity, base, form)| {
             let position = world.get::<GlobalTransform>(entity)?.translation;
-            let state = if world.has::<SpentMine>(entity) || !byroredux_scripting::SceneAliasCandidate::placement_enabled(world, form) {
+            let state = if world.has::<SpentMine>(entity) {
                 "spent"
+            } else if !byroredux_scripting::SceneAliasCandidate::placement_enabled(world, form) {
+                "disabled"
             } else if world.has::<ArmedMine>(entity) {
                 "armed"
             } else {
@@ -596,7 +600,7 @@ mod tests {
             mine_system(&world, 0.3);
         }
         assert!(world.get::<ArmedMine>(mine).is_none(), "a disabled mine does not re-arm");
-        assert_eq!(placed_mines(&world)[0].state, "spent", "the console reports it spent, not waiting");
+        assert_eq!(placed_mines(&world)[0].state, "disabled", "the console reports it off, not waiting");
     }
 
     /// An authored dormant mine ("Initially Disabled", or off through its enable parent) does not trip
@@ -611,6 +615,7 @@ mod tests {
             mine_system(&world, 0.3);
         }
         assert!(world.get::<ArmedMine>(mine).is_none(), "the dormant mine does not trip");
+        assert_eq!(placed_mines(&world)[0].state, "disabled", "dormant, not spent (INC3-2)");
         let mut state = byroredux_scripting::ReferenceEnableState::default();
         state.set_enabled(0x77, true);
         world.insert_resource(state);

@@ -620,6 +620,27 @@ mod tests {
         world.get_mut::<Inventory>(player).unwrap().push(ItemStack::new(item, count));
     }
 
+    /// A disabled bench keeps a content-less placement root; the console lookups skip it (#6539).
+    #[test]
+    fn a_disabled_bench_is_not_found() {
+        use byroredux_core::ecs::components::GlobalTransform;
+        let (mut world, player, forge, _cookpot) = world_with_bench();
+        // A second forge farther off (the cookpot has no recipe, so it is no bench).
+        let far_forge = world.spawn();
+        world.insert(far_forge, byroredux_scripting::SceneAliasCandidate { reference_form_id: 0x9500, base_form_id: FORGE, ..Default::default() });
+        world.register::<GlobalTransform>();
+        world.insert(player, GlobalTransform::default());
+        world.insert(forge, GlobalTransform { translation: byroredux_core::math::Vec3::X, ..Default::default() });
+        world.insert(far_forge, GlobalTransform { translation: byroredux_core::math::Vec3::X * 50.0, ..Default::default() });
+        assert_eq!(nearest_bench(&world), Some(forge));
+        let mut authored = byroredux_scripting::AuthoredDisabledReferences::default();
+        authored.initially_disabled.insert(0x9000 + FORGE);
+        world.insert_resource(authored);
+        assert_eq!(nearest_bench(&world), Some(far_forge), "the disabled forge is passed over");
+        let listed: Vec<EntityId> = loaded_benches(&world).into_iter().map(|(entity, ..)| entity).collect();
+        assert_eq!(listed, vec![far_forge]);
+    }
+
     #[test]
     fn bench_editor_ids_read_as_headings() {
         assert_eq!(bench_display_name("CraftingTanningRackMarker"), "Tanning Rack");
