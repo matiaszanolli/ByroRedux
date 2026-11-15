@@ -1,11 +1,9 @@
 //! `EsmIndex` aggregate struct + per-category bookkeeping (`categories`,
 //! `total`, `category_breakdown`, `merge_from`).
 //!
-//! Lifted out of the pre-#1118 monolithic `records/mod.rs` (TD9-003).
-//! The struct surface is byte-identical to the original; only the
-//! module location changed. `pub use` re-export from `mod.rs` keeps
-//! `byroredux_plugin::esm::records::EsmIndex` valid for every external
-//! caller.
+//! A `pub use` re-export from `mod.rs` keeps
+//! `byroredux_plugin::esm::records::EsmIndex` the path every external
+//! caller uses (#1118, TD9-003).
 
 use super::super::cell::EsmCellIndex;
 use super::super::reader::GameKind;
@@ -355,8 +353,7 @@ pub struct EsmIndex {
     pub scripts: HashMap<u32, ScriptRecord>,
     // ── Supplementary records (stubs, #458) ──────────────────────────
     //
-    // Nine record types that pre-#458 fell through to the catch-all
-    // skip. Each map stores a minimal extraction (EDID + a handful of
+    // Nine record types the catch-all skip would otherwise drop. Each map stores a minimal extraction (EDID + a handful of
     // form refs + scalar fields) — enough for dangling references
     // into these records to resolve at lookup time. Full per-record
     // decoding lands with the consuming subsystem.
@@ -912,10 +909,8 @@ impl EsmIndex {
     ///
     /// Each row is `(label, count_fn)`. [`total`] sums these counts;
     /// [`category_breakdown`] formats them. Adding a new top-level
-    /// record category is now a single-edit operation — pre-#634 the
-    /// `total()` math and the end-of-parse `log::info!` line drifted
-    /// independently, and at least one consumer (the cell.statics +
-    /// activators/terminals overlap) was already silently miscounted.
+    /// record category is a single-edit operation, so the `total()` math and
+    /// the end-of-parse `log::info!` line cannot drift apart (#634).
     ///
     /// **Semantic**: `cells.statics` is populated by `parse_modl_group`
     /// over every record-type that carries a `MODL` sub-record (STAT,
@@ -1068,12 +1063,9 @@ impl EsmIndex {
             // #2990 / ESM-2026-08-16-D4-01 — one entry per parsed OMOD
             // record (the value is the optional `LNAM` loose MISC, the KEY is
             // the OMOD's own FormID), so `.len()` is an OMOD record count like
-            // every other row here. It was merged by hand and left out of this
-            // table, which under-reported `total()` by 2,409 on Fallout4.esm
-            // and kept OMOD out of the end-of-parse census entirely — the same
-            // shape as #1773's `trees` and #2907's 41 unmerged maps. Counted
-            // here now, and merged by this table's own closure rather than by
-            // the hand-written line `merge_from` used to carry.
+            // every other row here; it is counted and merged by this table's
+            // own closure, like every other map (2,409 OMODs on Fallout4.esm;
+            // same rule as #1773's `trees` and #2907).
             map_category!("OMOD", object_mod_loose_items),
             map_category!("armor_addons", armor_addons),
             map_category!("outfits", outfits),
@@ -1342,11 +1334,10 @@ impl EsmIndex {
     /// `base_form_id` isn't found OR the matched record has
     /// `script_form_id == 0` (the "no script attached" sentinel).
     ///
-    /// #3941 closed the DOOR / FURN / LIGH / TACT / FLOR gap that used to
-    /// be listed here: rather than lifting that family into typed maps,
-    /// `StaticObject` gained a `script_form_id` and `cells.statics` gained
-    /// an arm below. 560 scripted base records across the three ObScript
-    /// games (174 FNV, 202 FO3, 184 Oblivion) reach the lane as a result.
+    /// DOOR / FURN / LIGH / TACT / FLOR are covered through
+    /// `StaticObject::script_form_id` and the `cells.statics` arm below
+    /// (#3941): 560 scripted base records across the three ObScript games
+    /// (174 FNV, 202 FO3, 184 Oblivion).
     ///
     /// **Coverage gaps to close later:**
     /// - Skyrim+ VMAD-attached scripts — the per-instance script
@@ -1489,17 +1480,15 @@ impl EsmIndex {
     /// Drop every indexed record whose header carried the Deleted
     /// tombstone (`0x20`), across all category maps (#3543).
     ///
-    /// `RECORD_FLAG_DELETED` used to be honoured at exactly one site — the
-    /// REFR/ACHR/ACRE placement walk in `cell/walkers.rs` (#1660). The
-    /// generic header reader records base-record tombstones into
-    /// [`Self::deleted_record_metadata`], but only `record_types` consumed
-    /// them, so a **base** record a later plugin marks Deleted was merged
-    /// under plain last-write-wins and REPLACED the master's live record
-    /// with the DLC's tombstoned copy. Measured on shipped Skyrim SE: nine
-    /// such records across `Update.esm` / `Dawnguard.esm` /
-    /// `Dragonborn.esm` (STAT, NPC_, IDLE, SMQN, SPEL, INFO, EXPL), each
-    /// with a non-empty 20-307 byte payload, so none were stubs the merge
-    /// would harmlessly absorb.
+    /// The generic header reader records base-record tombstones into
+    /// [`Self::deleted_record_metadata`]; without this prune, a **base**
+    /// record a later plugin marks Deleted would win plain last-write-wins
+    /// and replace the master's live record with the tombstoned copy
+    /// (placements are pruned separately, in the `cell/walkers.rs` walk,
+    /// #1660). Shipped Skyrim SE has nine such records across `Update.esm` /
+    /// `Dawnguard.esm` / `Dragonborn.esm` (STAT, NPC_, IDLE, SMQN, SPEL,
+    /// INFO, EXPL), each with a non-empty 20-307 byte payload, so none are
+    /// stubs the merge would harmlessly absorb.
     ///
     /// Vanilla scope is small; the mechanism is general, and a mod load
     /// order with real conflict resolution hits it at far higher volume.
@@ -1524,7 +1513,8 @@ impl EsmIndex {
     ///
     /// A record whose chain dangles or whose root instance decode
     /// declined keeps no synthesized weather; climate resolution then
-    /// falls back the way it did pre-#5627 (see `resolve_default_weather`).
+    /// falls back to the authored `DefaultWeather` record (#5363, a
+    /// fallback since #5627; see `resolve_default_weather`).
     pub fn synthesize_wths_weathers(&mut self) {
         if self.weather_settings.is_empty() {
             return;
@@ -1568,17 +1558,15 @@ impl EsmIndex {
         // does exactly that), so gating the two together would silently drop
         // the game.
         //
-        // #3403 (ESM-2026-08-27-D7-01) — the same empty-index hazard this
-        // note used to call out for `game` (deferred to /audit-esm) is now
-        // closed here directly, with its own guard rather than reusing
-        // `character_rules`'s: `parse_record_indexes_in_load_order`
+        // #3403 (ESM-2026-08-27-D7-01) — `game` has the same empty-index
+        // hazard and its own guard rather than `character_rules`'s:
+        // `parse_record_indexes_in_load_order`
         // (`byroredux/src/cell_loader/load_order.rs`) merges
         // `EsmIndex::default()` when a plugin's parse fails, and
         // `EsmIndex::default().game` is `GameKind::default()` =
-        // `Fallout3NV`. Pre-fix, a failure in the *last* plugin of a
-        // Skyrim/FO4/Starfield load order silently re-labelled the whole
-        // merged index as Fallout3NV — behind a `log::warn!` about an
-        // unrelated subject — and `game` is a broad dispatch key
+        // `Fallout3NV`. Unguarded, a failure in the *last* plugin of a
+        // Skyrim/FO4/Starfield load order would re-label the whole merged
+        // index as Fallout3NV, and `game` is a broad dispatch key
         // (skeleton/animation paths, terrain-LOD layout, player base form,
         // Havok gating), not a cosmetic label. `other.total() == 0` is the
         // same "a failed parse contributes nothing" signal the `warn!`
@@ -1663,8 +1651,8 @@ impl EsmIndex {
         self.deleted_record_metadata.extend(deleted_record_metadata);
 
         // Every top-level record category is merged by the same table that
-        // drives `total()` and `category_breakdown()`. Adding a category can
-        // no longer silently omit it from load-order folding (#2907).
+        // drives `total()` and `category_breakdown()`, so a new category
+        // cannot be left out of load-order folding (#2907).
         for (_, _, merge, _) in Self::categories() {
             merge(self, &mut other);
         }
