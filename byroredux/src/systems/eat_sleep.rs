@@ -363,7 +363,9 @@ fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch)
             // local on the next propagation, so writing it erased the
             // step every frame and the diner never reached its marker.
             // Same write shape as travel/wander's pass 2.
-            let speed = walk_speed.unwrap_or(crate::systems::locomotion::LOCOMOTION_WALK_SPEED);
+            // VATS-LIMB-006 - crippled legs shorten the stride (INC7-3).
+            let speed = walk_speed.unwrap_or(crate::systems::locomotion::LOCOMOTION_WALK_SPEED)
+                * crate::limbs::locomotion_mult(world, npc);
             // #5452 — routed along the cached NAVM path like Travel (which
             // also lines `destination.y` up with the ground contract), and
             // the KCC's `blocked` flag feeds the stuck clock. #5371 —

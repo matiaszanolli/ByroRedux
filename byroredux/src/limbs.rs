@@ -90,6 +90,15 @@ pub(crate) fn locomotion_mult(world: &World, actor: EntityId) -> f32 {
     effects.model.leg_speed_mult(crippled_legs(world, actor))
 }
 
+/// The speed `actor` walks at: its `WalkSpeed` (the locomotion default without one) times its
+/// crippled-leg multiplier (VATS-LIMB-006). A mover that reads `WalkSpeed` itself has to remember the
+/// multiplier, and find, eat/sleep, force-greet and the conversation approach did not (INC7-3); they
+/// go through this. Takes no guard across the two reads.
+pub(crate) fn actor_walk_speed(world: &World, actor: EntityId) -> f32 {
+    let base = world.get::<crate::components::WalkSpeed>(actor).map_or(crate::systems::locomotion::LOCOMOTION_WALK_SPEED, |speed| speed.0);
+    base * locomotion_mult(world, actor)
+}
+
 /// `MeleeArmConditionPenalty` for a swing of `base_weapon_damage` by `aggressor`: added to the damage, negative
 /// when it reduces it, `0.0` with healthy arms or no limb effects. `two_handed` is the weapon's handedness.
 pub(crate) fn melee_arm_penalty(world: &World, aggressor: EntityId, base_weapon_damage: f32, two_handed: bool) -> f32 {
@@ -162,6 +171,20 @@ mod tests {
             assert_eq!(crippled_legs(&world, actor), legs, "{conditions:?}");
             assert_eq!(locomotion_mult(&world, actor), want, "{conditions:?}");
         }
+    }
+
+    /// INC7-3 - the walk speed every mover takes: the actor's own `WalkSpeed` (or the locomotion default)
+    /// times its crippled-leg multiplier.
+    #[test]
+    fn the_walk_speed_includes_crippled_legs() {
+        use crate::systems::locomotion::LOCOMOTION_WALK_SPEED;
+        let (mut world, actor) = world_with([100.0, 100.0, 0.0, 0.0]);
+        assert_eq!(actor_walk_speed(&world, actor), LOCOMOTION_WALK_SPEED * 0.75, "two crippled legs, default speed");
+        world.register::<crate::components::WalkSpeed>();
+        world.insert(actor, crate::components::WalkSpeed(200.0));
+        assert_eq!(actor_walk_speed(&world, actor), 150.0, "its own speed, crippled");
+        let (healthy, h) = world_with([100.0; 4]);
+        assert_eq!(actor_walk_speed(&healthy, h), LOCOMOTION_WALK_SPEED);
     }
 
     /// An actor with no limb conditions, or a world with no limb effects, is never slowed: the absent-AV default

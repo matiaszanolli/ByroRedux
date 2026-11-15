@@ -219,10 +219,7 @@ fn forcegreet_system_inner(
             // the local on the next propagation, so writing it
             // erased the step every frame and the NPC only ever
             // turned in place.
-            let speed = world
-                .get::<crate::components::WalkSpeed>(npc)
-                .map(|speed| speed.0)
-                .unwrap_or(crate::systems::locomotion::LOCOMOTION_WALK_SPEED);
+            let speed = crate::limbs::actor_walk_speed(world, npc);
             let rotation = world
                 .get::<Transform>(npc)
                 .map(|t| t.rotation)

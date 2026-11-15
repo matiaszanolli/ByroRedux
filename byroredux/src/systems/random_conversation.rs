@@ -632,10 +632,7 @@ fn conversation_hold_inner(world: &World, dt: f32, walk_enabled: bool, stuck_sec
                     if elapsed >= MAX_APPROACH_SECS {
                         return HoldStep::Release;
                     }
-                    let speed = world
-                        .get::<crate::components::WalkSpeed>(initiator)
-                        .map(|speed| speed.0)
-                        .unwrap_or(crate::systems::locomotion::LOCOMOTION_WALK_SPEED);
+                    let speed = crate::limbs::actor_walk_speed(world, initiator);
                     let rotation = world.get::<Transform>(initiator).map(|t| t.rotation).unwrap_or_default();
                     let walk = crate::systems::navmesh_path::cached_walk_step(
                         world,

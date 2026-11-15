@@ -46,7 +46,7 @@
 
 use super::eat_sleep::resolve_anchor;
 use super::faction_hostility::actor_would_attack;
-use super::locomotion::{advance_stuck_repick, AI_PACKAGE_DEFAULT_RADIUS, LOCOMOTION_WALK_SPEED};
+use super::locomotion::{advance_stuck_repick, AI_PACKAGE_DEFAULT_RADIUS};
 use super::navmesh_path::{apply_walk_step, cached_walk_step};
 use byroredux_core::ecs::components::{
     ActorValues, CreatureActor, Dead, EatSleepLocation, FindItemKind, FindPackageBehavior, FindProgress,
@@ -371,9 +371,7 @@ fn drive_find_packages(
         };
 
         if distance > stop_at {
-            let speed = world
-                .get::<crate::components::WalkSpeed>(actor)
-                .map_or(LOCOMOTION_WALK_SPEED, |s| s.0);
+            let speed = crate::limbs::actor_walk_speed(world, actor);
             let step = cached_walk_step(world, actor, current, rotation, target_at, 0.0, dt, speed);
             apply_walk_step(world, [(actor, step.position, step.rotation)]);
             let stuck = scratch.stuck.entry(actor).or_insert(0.0);
@@ -444,9 +442,7 @@ fn drive_find_packages(
                 }
                 // The marker is across the last few steps: walk to it; the next pass seats the actor.
                 super::eat_sleep::SeatAttempt::Approach(marker) => {
-                    let speed = world
-                        .get::<crate::components::WalkSpeed>(actor)
-                        .map_or(LOCOMOTION_WALK_SPEED, |s| s.0);
+                    let speed = crate::limbs::actor_walk_speed(world, actor);
                     let step = cached_walk_step(world, actor, current, rotation, marker, 0.0, dt, speed);
                     apply_walk_step(world, [(actor, step.position, step.rotation)]);
                 }
