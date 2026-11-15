@@ -126,20 +126,20 @@ pub const WTHR_AURORA_FOLLOWS_SUN: u8 = 0x20;
 /// fog_day_far, fog_night_near, fog_night_far]` saturated every
 /// Oblivion exterior to solid fog within a few units of the camera.
 /// Fog distances come from FNAM (16 bytes) on Oblivion; HNAM feeds
-/// the renderer's eye-adaptation / bloom / scene-dimmer pipeline.
+/// the eye-adaptation / bloom / scene-dimmer side.
 ///
-/// FNV and Fallout 3 do not ship HNAM at all — their fog comes from
-/// FNAM + cloud textures from DNAM/CNAM/ANAM/BNAM. See audit M33-05.
+/// Oblivion-only: every Oblivion.esm WTHR carries it (37 / 37), while
+/// FalloutNV.esm (0 / 63) and Fallout3.esm (0 / 27) author none — their
+/// fog comes from FNAM + cloud textures from DNAM/CNAM/ANAM/BNAM. See
+/// audit M33-05 and #5351.
 ///
-/// Consumer wiring (HDR eye-adaptation system) is follow-up work —
-/// this captures the authored values verbatim so the future bloom /
-/// sunlight-dimmer system has a canonical source.
-///
-/// **Parse-but-don't-consume gate (TD5-010):** no renderer system reads
-/// `OblivionHdrLighting` fields yet. Gated on Tier-5 renderer polish —
-/// the eye-adaptation / bloom / scene-dimmer pipeline (no ROADMAP row
-/// yet). The `oblivion_hdr` field on `WeatherRecord` is exported from
-/// this crate so the future consumer can land without touching the parser.
+/// **Consumers.** Two fields are read: `sunlight_dimmer` scales the
+/// exterior sun (`df59c6362`; `env_translate/sky_weather.rs` →
+/// `WeatherDataRes::sunlight_dimmer` → `systems/weather.rs`) and
+/// `grass_dimmer` scales ground cover (#4057). The eye-adapt, bloom,
+/// luminance-ramp, emissive and tree fields are parsed but not consumed
+/// (TD5-010): they wait on an eye-adaptation / bloom pipeline that has no
+/// ROADMAP row yet.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct OblivionHdrLighting {
     /// Rate the scene luminance meter tracks toward the target (0–65536).
@@ -177,7 +177,7 @@ pub struct OblivionHdrLighting {
 }
 
 impl OblivionHdrLighting {
-    /// Wire size of the full 14-field HNAM payload (Oblivion / FO3 / FNV).
+    /// Wire size of the full 14-field HNAM payload (Oblivion only).
     /// 14 × f32 = 56 bytes. Used to gate the full decode path. See TD4-010.
     pub const WIRE_SIZE: usize = 56;
     /// Wire size of the legacy 4-field fog sub-record that predates `#537`.
