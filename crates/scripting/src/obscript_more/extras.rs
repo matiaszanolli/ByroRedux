@@ -80,11 +80,12 @@ impl byroredux_core::ecs::Resource for PendingStreamMusic {}
 /// Oblivion's music categories as OBSE reads and writes them (`GetCellMusicType`,
 /// `SetCellMusicType`; Game Music MUS-SCR-004): `0` Default, `1` Public, `2` Dungeon.
 ///
-/// `NOT_SAVED_BY_DESIGN`, and not cleared by a load (#6930, measured against xOBSE, not assumed):
-/// `Cmd_SetCellMusicType_Execute` (xOBSE `obse/obse/Commands_Cell.cpp`) writes an
-/// `ExtraCellMusicType` into the cell's in-memory extra data and marks no change on the form. So
-/// Oblivion's save does not carry it, a load in the same process does not reload the form and keeps
-/// it, and a fresh process starts without it. These overrides behave the same way.
+/// `NOT_SAVED_BY_DESIGN`, and not cleared by a load (#6930). Sourced: `Cmd_SetCellMusicType_Execute`
+/// (xOBSE `obse/obse/Commands_Cell.cpp`) writes an `ExtraCellMusicType` into the cell's in-memory
+/// extra data and marks no change on the form, so Oblivion's save does not carry it and a fresh
+/// process starts without it. Inferred, not measured: that a load in the same process keeps it
+/// (nothing reloads the cell's extra data from the master). No Oblivion.exe load-path reading or
+/// in-game capture backs that half yet. These overrides keep it across a load.
 #[derive(Debug, Default)]
 pub struct CellMusicTypes {
     /// The player's cell's category, published by the music system each frame.
