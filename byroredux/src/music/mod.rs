@@ -168,26 +168,19 @@ pub(crate) fn end_script_layer(world: &World) {
     }
 }
 
-/// The music system (`docs/engine/music.md` §2): translate the place, scripts, combat, stings and
-/// the movie hold into the controller's layers, then step it.
-pub(crate) fn music_system(world: &World, dt: f32) {
-    let Some(index) = world.try_resource::<crate::components::LoadedCellIndex>().map(|index| Arc::clone(&index.0)) else {
-        return;
-    };
-    let (Some(mut state), Some(mut music)) =
-        (world.try_resource_mut::<MusicCatalog>(), world.try_resource_mut::<MusicController>())
-    else {
-        return;
-    };
-    let mut audio = world.try_resource_mut::<byroredux_audio::AudioWorld>();
-    let provider = world.try_resource::<crate::asset_provider::SoundArchiveProvider>();
-    let mut out = AudioOutput { audio: audio.as_deref_mut(), provider: provider.as_deref() };
-
-    let address = Arc::as_ptr(&index) as usize;
+/// The catalog for `index`, built on the first frame after a new index (a game load). Takes
+/// `MusicCatalog`, then `SoundArchiveProvider` while it builds: the order [`music_system`] keeps.
+fn current_catalog(world: &World, index: &Arc<byroredux_plugin::esm::records::EsmIndex>) -> Option<Arc<Catalog>> {
+    let mut state = world.try_resource_mut::<MusicCatalog>()?;
+    let address = Arc::as_ptr(index) as usize;
     if state.index != address || state.catalog.is_none() {
-        let files = directive::MusicFiles::new(provider.as_deref().map(|p| p.music_keys()).unwrap_or_default());
+        let keys = world
+            .try_resource::<crate::asset_provider::SoundArchiveProvider>()
+            .map(|provider| provider.music_keys())
+            .unwrap_or_default();
+        let files = directive::MusicFiles::new(keys);
         let ini = crate::game_ini::read_default_ini(&crate::cli_args::effective_args(), index.game);
-        let catalog = Catalog::new(&index, files, ini.as_deref());
+        let catalog = Catalog::new(index, files, ini.as_deref());
         log::info!(
             "music: {:?}, {} music file(s), {} audio marker(s), crossfade {:.1}s, battle recovery {:.1}s",
             catalog.game,
@@ -200,13 +193,28 @@ pub(crate) fn music_system(world: &World, dt: f32) {
         state.index = address;
         state.place = None;
     }
-    let catalog = Arc::clone(state.catalog.as_ref().expect("built above"));
+    state.catalog.clone()
+}
+
+/// The music system (`docs/engine/music.md` §2): translate the place, scripts, combat, stings and
+/// the movie hold into the controller's layers, then step it.
+///
+/// #6920 — every read of another resource or of a component happens before the music locks are
+/// taken. The system then holds only `MusicCatalog` → `MusicController` → `AudioWorld` →
+/// `SoundArchiveProvider`, the order [`status_lines`] keeps, and never holds `AudioWorld` across a
+/// component query (the audio code's one-lock-at-a-time rule, #5556).
+pub(crate) fn music_system(world: &World, dt: f32) {
+    let Some(index) = world.try_resource::<crate::components::LoadedCellIndex>().map(|index| Arc::clone(&index.0)) else {
+        return;
+    };
+    let Some(catalog) = current_catalog(world, &index) else {
+        return;
+    };
 
     let player = crate::components::PlayerEntity::get(world);
     let player_position = player
         .and_then(|p| world.get::<byroredux_core::ecs::components::Transform>(p).map(|t| t.translation))
         .map(|p| byroredux_core::math::coord::yup_to_zup_pos(p.to_array()));
-
     // Location: re-translated whenever the place or the audio-marker area changes (MUS-SEL-005 keeps
     // an equal directive playing).
     let place = current_place(world);
@@ -218,80 +226,19 @@ pub(crate) fn music_system(world: &World, dt: f32) {
         let faction = index.media_locations.get(&marker.controller).and_then(|aloc| aloc.conditional_faction);
         surroundings(world, &marker, faction, player)
     });
-    if marker != state.marker {
-        state.roll = music.roll(u64::from(u32::MAX));
-    }
-    let mut cell_music = world.try_resource_mut::<byroredux_scripting::obscript_more::CellMusicTypes>();
-    let cell_music_changes = cell_music.as_ref().map_or(0, |types| types.changes);
-    if place != state.place
-        || marker != state.marker
-        || around != state.around
-        || cell_music_changes != state.cell_music_changes
-    {
-        let empty = std::collections::HashMap::new();
-        let overrides = cell_music.as_ref().map_or(&empty, |types| &types.overrides);
-        let directive = place.as_ref().map(|place| {
-            marker
-                .and_then(|marker| catalog.marker_location(&index, &marker, around, state.roll))
-                .unwrap_or_else(|| catalog.location_with(&index, place, overrides))
-        });
-        // OBSE `GetCellMusicType` answers the player's cell's own category (MUS-SCR-004).
-        let category = place.as_ref().map_or(0, |place| Catalog::cell_category(&index, place, overrides));
-        if let Some(types) = cell_music.as_mut() {
-            types.current = category;
-        }
-        // Oblivion: a stream outlives a place change into its own category only (#6903).
-        let place_category = directive.as_ref().and_then(|d| d.category).filter(|_| place != state.place);
-        music.set(Layer::Location, directive, &mut out);
-        if let Some(category) = place_category {
-            music.place_category(category, &mut out);
-        }
-        state.place = place;
-        state.marker = marker;
-        state.around = around;
-        state.cell_music_changes = cell_music_changes;
-    }
-    drop(cell_music);
-
-    // Script: a cell change or a load ends it; `PlayMusic` replaces it (MUS-SCR-001).
-    if std::mem::take(&mut state.end_script) {
-        music.end_script(&mut out);
-    }
+    let (cell_music_changes, overrides) = world
+        .try_resource::<byroredux_scripting::obscript_more::CellMusicTypes>()
+        .map_or_else(Default::default, |types| (types.changes, types.overrides.clone()));
     let requests = world
         .try_resource_mut::<byroredux_scripting::obscript_more::PendingMusic>()
         .map(|mut pending| std::mem::take(&mut pending.0))
         .unwrap_or_default();
-    if let Some(track) = requests.last() {
-        let directive = catalog.music_type(&index, track.form_id, "PlayMusic");
-        music.set(Layer::Script, Some(directive), &mut out);
-    }
     let streams = world
         .try_resource_mut::<byroredux_scripting::obscript_more::PendingStreamMusic>()
         .map(|mut pending| std::mem::take(&mut pending.0))
         .unwrap_or_default();
-    if let Some(text) = streams.last() {
-        let roll = music.roll(4);
-        match catalog.stream_music(text, roll) {
-            // `StreamMusic Battle`: Oblivion.exe's battle music follows combat (#6903).
-            None => log::info!("music: StreamMusic {text}: battle music follows combat; ignored"),
-            // A missing file leaves the playing track alone (PRD §6 row 5, MUS-SRC-012).
-            Some(directive) if directive.outcome() == directive::Outcome::Missing => music.note(Layer::Script, &directive),
-            Some(directive) => music.set(Layer::Script, Some(directive), &mut out),
-        }
-    }
-
-    // Stings: the player's death (MUS-STG-001) and a level-up (MUS-STG-002).
     let dead = player.is_some_and(|p| world.get::<byroredux_core::ecs::components::Dead>(p).is_some());
-    if dead && !state.player_dead {
-        state.stings.push(Sting::Death);
-    }
-    state.player_dead = dead;
-    for sting in std::mem::take(&mut state.stings) {
-        if let Some(directive) = catalog.sting(&index, sting) {
-            music.sting(directive, &mut out);
-        }
-    }
-
+    let in_combat = player.is_some_and(|p| !dead && byroredux_scripting::combat::is_in_combat(world, p));
     // The music level (MUS-MIX-001).
     let volume = world
         .try_resource::<byroredux_core::settings::SettingsRegistry>()
@@ -300,34 +247,114 @@ pub(crate) fn music_system(world: &World, dt: f32) {
             _ => None,
         })
         .unwrap_or(1.0);
-    if state.volume != Some(volume) {
-        if let Some(audio) = out.audio.as_deref_mut() {
-            audio.set_music_volume(volume);
-        }
-        state.volume = Some(volume);
-    }
+    let hour = world.try_resource::<crate::components::GameTimeRes>().map_or(12.0, |time| time.hour);
 
-    let inputs = Inputs {
-        dt,
-        hold: out.audio.as_ref().is_some_and(|audio| audio.movie_hold().music_paused),
-        in_combat: player.is_some_and(|p| !dead && byroredux_scripting::combat::is_in_combat(world, p)),
-        player: player_position,
-        hour: world.try_resource::<crate::components::GameTimeRes>().map_or(12.0, |time| time.hour),
+    let cell_category = {
+        let (Some(mut state), Some(mut music)) =
+            (world.try_resource_mut::<MusicCatalog>(), world.try_resource_mut::<MusicController>())
+        else {
+            return;
+        };
+        let mut audio = world.try_resource_mut::<byroredux_audio::AudioWorld>();
+        let provider = world.try_resource::<crate::asset_provider::SoundArchiveProvider>();
+        let mut out = AudioOutput { audio: audio.as_deref_mut(), provider: provider.as_deref() };
+
+        if marker != state.marker {
+            state.roll = music.roll(u64::from(u32::MAX));
+        }
+        let mut cell_category = None;
+        if place != state.place
+            || marker != state.marker
+            || around != state.around
+            || cell_music_changes != state.cell_music_changes
+        {
+            let directive = place.as_ref().map(|place| {
+                marker
+                    .and_then(|marker| catalog.marker_location(&index, &marker, around, state.roll))
+                    .unwrap_or_else(|| catalog.location_with(&index, place, &overrides))
+            });
+            // OBSE `GetCellMusicType` answers the player's cell's own category (MUS-SCR-004),
+            // written back once the music locks are released.
+            cell_category = Some(place.as_ref().map_or(0, |place| Catalog::cell_category(&index, place, &overrides)));
+            // Oblivion: a stream outlives a place change into its own category only (#6903).
+            let place_category = directive.as_ref().and_then(|d| d.category).filter(|_| place != state.place);
+            music.set(Layer::Location, directive, &mut out);
+            if let Some(category) = place_category {
+                music.place_category(category, &mut out);
+            }
+            state.place = place;
+            state.marker = marker;
+            state.around = around;
+            state.cell_music_changes = cell_music_changes;
+        }
+
+        // Script: a cell change or a load ends it; `PlayMusic` replaces it (MUS-SCR-001).
+        if std::mem::take(&mut state.end_script) {
+            music.end_script(&mut out);
+        }
+        if let Some(track) = requests.last() {
+            let directive = catalog.music_type(&index, track.form_id, "PlayMusic");
+            music.set(Layer::Script, Some(directive), &mut out);
+        }
+        if let Some(text) = streams.last() {
+            let roll = music.roll(4);
+            match catalog.stream_music(text, roll) {
+                // `StreamMusic Battle`: Oblivion.exe's battle music follows combat (#6903).
+                None => log::info!("music: StreamMusic {text}: battle music follows combat; ignored"),
+                // A missing file leaves the playing track alone (PRD §6 row 5, MUS-SRC-012).
+                Some(directive) if directive.outcome() == directive::Outcome::Missing => music.note(Layer::Script, &directive),
+                Some(directive) => music.set(Layer::Script, Some(directive), &mut out),
+            }
+        }
+
+        // Stings: the player's death (MUS-STG-001) and a level-up (MUS-STG-002).
+        if dead && !state.player_dead {
+            state.stings.push(Sting::Death);
+        }
+        state.player_dead = dead;
+        for sting in std::mem::take(&mut state.stings) {
+            if let Some(directive) = catalog.sting(&index, sting) {
+                music.sting(directive, &mut out);
+            }
+        }
+
+        if state.volume != Some(volume) {
+            if let Some(audio) = out.audio.as_deref_mut() {
+                audio.set_music_volume(volume);
+            }
+            state.volume = Some(volume);
+        }
+
+        let inputs = Inputs {
+            dt,
+            hold: out.audio.as_ref().is_some_and(|audio| audio.movie_hold().music_paused),
+            in_combat,
+            player: player_position,
+            hour,
+        };
+        let (place, marker) = (state.place.clone(), state.marker);
+        let (around, roll) = (state.around, state.roll);
+        music.step(inputs, || catalog.battle(&index, place.as_ref(), marker.as_ref(), around, roll), &mut out);
+        cell_category
     };
-    let (place, marker) = (state.place.clone(), state.marker);
-    let (around, roll) = (state.around, state.roll);
-    music.step(inputs, || catalog.battle(&index, place.as_ref(), marker.as_ref(), around, roll), &mut out);
+    if let Some(category) = cell_category {
+        if let Some(mut types) = world.try_resource_mut::<byroredux_scripting::obscript_more::CellMusicTypes>() {
+            types.current = category;
+        }
+    }
 }
 
 /// `music.status` (MUS-RPT-001).
 pub(crate) fn status_lines(world: &World) -> Vec<String> {
+    // `MusicCatalog` → `MusicController` → `AudioWorld`: the order `music_system` takes them (#6920).
+    let state = world.try_resource::<MusicCatalog>();
     let Some(music) = world.try_resource::<MusicController>() else {
         return vec!["music: no controller".to_string()];
     };
     let audio = world.try_resource::<byroredux_audio::AudioWorld>();
     let out = ReadOnlyOutput(audio.as_deref());
     let mut lines = music.status(&out);
-    if let Some(state) = world.try_resource::<MusicCatalog>() {
+    if let Some(state) = state.as_deref() {
         let place = match &state.place {
             Some(Place::Interior { cell }) => format!("interior {cell}"),
             Some(Place::Exterior { worldspace, grid }) => format!("exterior {worldspace} {grid:?}"),
@@ -401,5 +428,19 @@ mod tests {
         assert_eq!(music_volume_from_ini("[Audio]\nfDefaultMusicVolume=0.6000\n"), 0.6);
         assert_eq!(music_volume_from_ini("[Audio]\nfDefaultMusicVolume=0.3\nbMusicEnabled=0\n"), 0.0);
         assert_eq!(music_volume_from_ini("[General]\n"), 1.0);
+    }
+
+    /// #6920 — `music_system` and `music.status` take the music resources in one order,
+    /// `MusicCatalog` → `MusicController` → `AudioWorld`. Under `BYRO_LOCK_ORDER_CHECK=1` (CI's
+    /// ABBA job) the global order graph panics on an inverted pair, and this runs both.
+    #[test]
+    fn the_music_system_and_its_status_take_the_music_locks_in_one_order() {
+        let mut world = World::new();
+        install(&mut world);
+        world.insert_resource(crate::components::LoadedCellIndex(Arc::new(Default::default())));
+        world.insert_resource(byroredux_audio::AudioWorld::headless());
+        music_system(&world, 0.016);
+        let lines = status_lines(&world);
+        assert!(lines.iter().any(|line| line.starts_with("Place:")), "the catalog was built: {lines:?}");
     }
 }
