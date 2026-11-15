@@ -828,17 +828,52 @@ pub struct PassHandles<'a> {
 /// `device` must be the device that created every non-null handle, and no in-flight command buffer
 /// may reference the pipeline, or sets allocated from the pool.
 pub unsafe fn destroy_pass_objects(device: &ash::Device, handles: PassHandles<'_>) {
-    if *handles.pipeline != vk::Pipeline::null() {
-        // SAFETY: non-null per the guard, created by `device` per the function contract, and not
-        // referenced by any in-flight command buffer.
-        unsafe { device.destroy_pipeline(*handles.pipeline, None) };
-        *handles.pipeline = vk::Pipeline::null();
+    // SAFETY: forwarded verbatim; the contract is this function's own.
+    unsafe {
+        destroy_pass_object_sets(
+            device,
+            PassHandleSets {
+                pipelines: &mut [handles.pipeline],
+                layouts: &mut [handles.layout],
+                pool: handles.pool,
+                set_layouts: &mut [handles.set_layout],
+            },
+        )
     }
-    if *handles.layout != vk::PipelineLayout::null() {
-        // SAFETY: non-null per the guard; the pipeline that used it is destroyed first (above), and
-        // no in-flight command buffer uses it.
-        unsafe { device.destroy_pipeline_layout(*handles.layout, None) };
-        *handles.layout = vk::PipelineLayout::null();
+}
+
+/// [`PassHandles`] for a pass with several pipelines, layouts or set layouts sharing one descriptor
+/// pool (bloom's down / up / apply trio, the local grid's sim and phase-bake pipelines).
+pub struct PassHandleSets<'a, 'h> {
+    pub pipelines: &'a mut [&'h mut vk::Pipeline],
+    pub layouts: &'a mut [&'h mut vk::PipelineLayout],
+    pub pool: &'h mut vk::DescriptorPool,
+    pub set_layouts: &'a mut [&'h mut vk::DescriptorSetLayout],
+}
+
+/// [`destroy_pass_objects`] for [`PassHandleSets`]: every pipeline, then every pipeline layout, the
+/// pool, then every set layout — the same order and guard-and-null policy, so a pass with several
+/// of each tears down through one place too (#6371).
+///
+/// # Safety
+///
+/// As [`destroy_pass_objects`], for every handle in the sets.
+pub unsafe fn destroy_pass_object_sets(device: &ash::Device, handles: PassHandleSets<'_, '_>) {
+    for pipeline in handles.pipelines.iter_mut() {
+        if **pipeline != vk::Pipeline::null() {
+            // SAFETY: non-null per the guard, created by `device` per the function contract, and not
+            // referenced by any in-flight command buffer.
+            unsafe { device.destroy_pipeline(**pipeline, None) };
+            **pipeline = vk::Pipeline::null();
+        }
+    }
+    for layout in handles.layouts.iter_mut() {
+        if **layout != vk::PipelineLayout::null() {
+            // SAFETY: non-null per the guard; the pipelines that used it are destroyed first (above),
+            // and no in-flight command buffer uses it.
+            unsafe { device.destroy_pipeline_layout(**layout, None) };
+            **layout = vk::PipelineLayout::null();
+        }
     }
     if *handles.pool != vk::DescriptorPool::null() {
         // SAFETY: non-null per the guard; destroying the pool frees its sets, none of which an
@@ -846,11 +881,13 @@ pub unsafe fn destroy_pass_objects(device: &ash::Device, handles: PassHandles<'_
         unsafe { device.destroy_descriptor_pool(*handles.pool, None) };
         *handles.pool = vk::DescriptorPool::null();
     }
-    if *handles.set_layout != vk::DescriptorSetLayout::null() {
-        // SAFETY: non-null per the guard; its pool and pipeline layout are destroyed first (above),
-        // so nothing still references it.
-        unsafe { device.destroy_descriptor_set_layout(*handles.set_layout, None) };
-        *handles.set_layout = vk::DescriptorSetLayout::null();
+    for set_layout in handles.set_layouts.iter_mut() {
+        if **set_layout != vk::DescriptorSetLayout::null() {
+            // SAFETY: non-null per the guard; its pool and pipeline layouts are destroyed first
+            // (above), so nothing still references it.
+            unsafe { device.destroy_descriptor_set_layout(**set_layout, None) };
+            **set_layout = vk::DescriptorSetLayout::null();
+        }
     }
 }
 
@@ -876,13 +913,18 @@ mod pass_teardown_tests {
             ("exposure_meter.rs", include_str!("exposure_meter.rs")),
             ("shadow_filter.rs", include_str!("shadow_filter.rs")),
             ("groundcover_models.rs", include_str!("groundcover_models.rs")),
+            ("volumetrics.rs", include_str!("volumetrics.rs")),
+            ("water.rs", include_str!("water.rs")),
+            ("skin_compute.rs", include_str!("skin_compute.rs")),
+            ("bloom.rs", include_str!("bloom.rs")),
+            ("volumetrics/local_grid.rs", include_str!("volumetrics/local_grid.rs")),
         ];
         for &(name, src) in MIGRATED {
             // `strip_test_modules`, not a cut at the first test module: `sky_cube/filter.rs` declares
             // `#[cfg(test)] mod tests;` above its production code.
             let src = &crate::source_scan::strip_test_modules(src);
             assert!(
-                src.contains("destroy_pass_objects("),
+                src.contains("destroy_pass_objects(") || src.contains("destroy_pass_object_sets("),
                 "{name} no longer destroys its compute-pass objects through descriptors::destroy_pass_objects"
             );
             for hand_written in [
@@ -894,6 +936,9 @@ mod pass_teardown_tests {
                 "destroy_descriptor_set_layout(self.descriptor_set_layout,",
                 "destroy_descriptor_set_layout(self.set_layout,",
                 "destroy_descriptor_set_layout(self.dsl,",
+                "destroy_pipeline(self.apply_pipeline,",
+                "destroy_pipeline(self.phase_bake_pipeline,",
+                "destroy_descriptor_set_layout(self.apply_dsl,",
             ] {
                 assert!(
                     !src.contains(hand_written),

@@ -1351,27 +1351,17 @@ impl LocalGrid {
         // SAFETY: caller contract — nothing is in flight; each handle is
         // destroyed once and nulled.
         unsafe {
-            if self.pool != vk::DescriptorPool::null() {
-                device.destroy_descriptor_pool(self.pool, None);
-                self.pool = vk::DescriptorPool::null();
-            }
+            // #6371 — through the shared teardown; the pool's sets die with it.
+            crate::vulkan::descriptors::destroy_pass_object_sets(
+                device,
+                crate::vulkan::descriptors::PassHandleSets {
+                    pipelines: &mut [&mut self.pipeline, &mut self.phase_bake_pipeline],
+                    layouts: &mut [&mut self.pipeline_layout],
+                    pool: &mut self.pool,
+                    set_layouts: &mut [&mut self.set_layout],
+                },
+            );
             self.sets.clear();
-            if self.pipeline != vk::Pipeline::null() {
-                device.destroy_pipeline(self.pipeline, None);
-                self.pipeline = vk::Pipeline::null();
-            }
-            if self.phase_bake_pipeline != vk::Pipeline::null() {
-                device.destroy_pipeline(self.phase_bake_pipeline, None);
-                self.phase_bake_pipeline = vk::Pipeline::null();
-            }
-            if self.pipeline_layout != vk::PipelineLayout::null() {
-                device.destroy_pipeline_layout(self.pipeline_layout, None);
-                self.pipeline_layout = vk::PipelineLayout::null();
-            }
-            if self.set_layout != vk::DescriptorSetLayout::null() {
-                device.destroy_descriptor_set_layout(self.set_layout, None);
-                self.set_layout = vk::DescriptorSetLayout::null();
-            }
             if self.sampler != vk::Sampler::null() {
                 device.destroy_sampler(self.sampler, None);
                 self.sampler = vk::Sampler::null();

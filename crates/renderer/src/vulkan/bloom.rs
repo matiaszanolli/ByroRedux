@@ -912,46 +912,23 @@ impl BloomPipeline {
             frame.down_param_buffers.clear();
             frame.up_param_buffers.clear();
         }
-        if self.descriptor_pool != vk::DescriptorPool::null() {
-            device.destroy_descriptor_pool(self.descriptor_pool, None);
-            self.descriptor_pool = vk::DescriptorPool::null();
-        }
-        if self.downsample_pipeline != vk::Pipeline::null() {
-            device.destroy_pipeline(self.downsample_pipeline, None);
-            self.downsample_pipeline = vk::Pipeline::null();
-        }
-        if self.upsample_pipeline != vk::Pipeline::null() {
-            device.destroy_pipeline(self.upsample_pipeline, None);
-            self.upsample_pipeline = vk::Pipeline::null();
-        }
-        if self.apply_pipeline != vk::Pipeline::null() {
-            device.destroy_pipeline(self.apply_pipeline, None);
-            self.apply_pipeline = vk::Pipeline::null();
-        }
-        if self.downsample_pipeline_layout != vk::PipelineLayout::null() {
-            device.destroy_pipeline_layout(self.downsample_pipeline_layout, None);
-            self.downsample_pipeline_layout = vk::PipelineLayout::null();
-        }
-        if self.upsample_pipeline_layout != vk::PipelineLayout::null() {
-            device.destroy_pipeline_layout(self.upsample_pipeline_layout, None);
-            self.upsample_pipeline_layout = vk::PipelineLayout::null();
-        }
-        if self.apply_pipeline_layout != vk::PipelineLayout::null() {
-            device.destroy_pipeline_layout(self.apply_pipeline_layout, None);
-            self.apply_pipeline_layout = vk::PipelineLayout::null();
-        }
-        if self.downsample_dsl != vk::DescriptorSetLayout::null() {
-            device.destroy_descriptor_set_layout(self.downsample_dsl, None);
-            self.downsample_dsl = vk::DescriptorSetLayout::null();
-        }
-        if self.upsample_dsl != vk::DescriptorSetLayout::null() {
-            device.destroy_descriptor_set_layout(self.upsample_dsl, None);
-            self.upsample_dsl = vk::DescriptorSetLayout::null();
-        }
-        if self.apply_dsl != vk::DescriptorSetLayout::null() {
-            device.destroy_descriptor_set_layout(self.apply_dsl, None);
-            self.apply_dsl = vk::DescriptorSetLayout::null();
-        }
+        // SAFETY: the caller's contract (no in-flight work references the pass's pipelines or pool);
+        // `destroy_pass_object_sets` skips null handles and nulls what it destroys (#6371).
+        unsafe {
+            super::descriptors::destroy_pass_object_sets(
+                device,
+                super::descriptors::PassHandleSets {
+                    pipelines: &mut [&mut self.downsample_pipeline, &mut self.upsample_pipeline, &mut self.apply_pipeline],
+                    layouts: &mut [
+                        &mut self.downsample_pipeline_layout,
+                        &mut self.upsample_pipeline_layout,
+                        &mut self.apply_pipeline_layout,
+                    ],
+                    pool: &mut self.descriptor_pool,
+                    set_layouts: &mut [&mut self.downsample_dsl, &mut self.upsample_dsl, &mut self.apply_dsl],
+                },
+            )
+        };
         if self.sampler != vk::Sampler::null() {
             device.destroy_sampler(self.sampler, None);
             self.sampler = vk::Sampler::null();

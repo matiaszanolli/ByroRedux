@@ -857,27 +857,21 @@ impl WaterPipeline {
     /// idempotent — same policy as every other `destroy` in the
     /// renderer).
     pub unsafe fn destroy(&mut self, device: &ash::Device) {
-        if self.pipeline != vk::Pipeline::null() {
-            device.destroy_pipeline(self.pipeline, None);
-            self.pipeline = vk::Pipeline::null();
-        }
-        if self.pipeline_layout != vk::PipelineLayout::null() {
-            device.destroy_pipeline_layout(self.pipeline_layout, None);
-            self.pipeline_layout = vk::PipelineLayout::null();
-        }
-        // #1255 / Phase C of #1210 — destroy the set 2 descriptor
-        // pool + layout. Pool first so the per-FIF descriptor sets
-        // (allocated from it) free implicitly. Idempotent via
-        // null-handle guards, same policy as the pipeline pair above.
-        if self.water_caustic_descriptor_pool != vk::DescriptorPool::null() {
-            device.destroy_descriptor_pool(self.water_caustic_descriptor_pool, None);
-            self.water_caustic_descriptor_pool = vk::DescriptorPool::null();
-            self.water_caustic_descriptor_sets.clear();
-        }
-        if self.water_caustic_set_layout != vk::DescriptorSetLayout::null() {
-            device.destroy_descriptor_set_layout(self.water_caustic_set_layout, None);
-            self.water_caustic_set_layout = vk::DescriptorSetLayout::null();
-        }
+        // SAFETY: the caller's contract (no in-flight work references the pass's pipeline or pool);
+        // `destroy_pass_objects` skips null handles and nulls what it destroys (#6371).
+        unsafe {
+            super::descriptors::destroy_pass_objects(
+                device,
+                super::descriptors::PassHandles {
+                    pipeline: &mut self.pipeline,
+                    layout: &mut self.pipeline_layout,
+                    pool: &mut self.water_caustic_descriptor_pool,
+                    set_layout: &mut self.water_caustic_set_layout,
+                },
+            )
+        };
+        // #1255 — the per-FIF set-2 descriptor sets freed with their pool.
+        self.water_caustic_descriptor_sets.clear();
         if let Some(allocator) = self.allocator.as_ref() {
             for buffer in &mut self.param_buffers {
                 buffer.destroy(device, allocator);

@@ -1832,38 +1832,32 @@ impl VolumetricsPipeline {
             buf.destroy(device, allocator);
         }
         self.integration_param_buffers.clear();
-        if self.integration_pipeline != vk::Pipeline::null() {
-            device.destroy_pipeline(self.integration_pipeline, None);
-            self.integration_pipeline = vk::Pipeline::null();
-        }
-        if self.integration_pipeline_layout != vk::PipelineLayout::null() {
-            device.destroy_pipeline_layout(self.integration_pipeline_layout, None);
-            self.integration_pipeline_layout = vk::PipelineLayout::null();
-        }
-        if self.integration_descriptor_pool != vk::DescriptorPool::null() {
-            device.destroy_descriptor_pool(self.integration_descriptor_pool, None);
-            self.integration_descriptor_pool = vk::DescriptorPool::null();
-        }
-        if self.integration_descriptor_set_layout != vk::DescriptorSetLayout::null() {
-            device.destroy_descriptor_set_layout(self.integration_descriptor_set_layout, None);
-            self.integration_descriptor_set_layout = vk::DescriptorSetLayout::null();
-        }
-        if self.pipeline != vk::Pipeline::null() {
-            device.destroy_pipeline(self.pipeline, None);
-            self.pipeline = vk::Pipeline::null();
-        }
-        if self.pipeline_layout != vk::PipelineLayout::null() {
-            device.destroy_pipeline_layout(self.pipeline_layout, None);
-            self.pipeline_layout = vk::PipelineLayout::null();
-        }
-        if self.descriptor_pool != vk::DescriptorPool::null() {
-            device.destroy_descriptor_pool(self.descriptor_pool, None);
-            self.descriptor_pool = vk::DescriptorPool::null();
-        }
-        if self.descriptor_set_layout != vk::DescriptorSetLayout::null() {
-            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-            self.descriptor_set_layout = vk::DescriptorSetLayout::null();
-        }
+        // SAFETY: the caller's contract (no in-flight work references the pass's pipeline or pool);
+        // `destroy_pass_objects` skips null handles and nulls what it destroys (#6371).
+        unsafe {
+            super::descriptors::destroy_pass_objects(
+                device,
+                super::descriptors::PassHandles {
+                    pipeline: &mut self.integration_pipeline,
+                    layout: &mut self.integration_pipeline_layout,
+                    pool: &mut self.integration_descriptor_pool,
+                    set_layout: &mut self.integration_descriptor_set_layout,
+                },
+            )
+        };
+        // SAFETY: the caller's contract (no in-flight work references the pass's pipeline or pool);
+        // `destroy_pass_objects` skips null handles and nulls what it destroys (#6371).
+        unsafe {
+            super::descriptors::destroy_pass_objects(
+                device,
+                super::descriptors::PassHandles {
+                    pipeline: &mut self.pipeline,
+                    layout: &mut self.pipeline_layout,
+                    pool: &mut self.descriptor_pool,
+                    set_layout: &mut self.descriptor_set_layout,
+                },
+            )
+        };
         if self.history_sampler != vk::Sampler::null() {
             device.destroy_sampler(self.history_sampler, None);
             self.history_sampler = vk::Sampler::null();

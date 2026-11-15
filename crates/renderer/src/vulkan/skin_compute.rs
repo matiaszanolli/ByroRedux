@@ -842,10 +842,19 @@ impl SkinComputePipeline {
     /// and that no object owned by `self` (pipeline, layouts, descriptor pool,
     /// or outstanding slots) is still in use by an in-flight command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device) {
-        device.destroy_pipeline(self.pipeline, None);
-        device.destroy_pipeline_layout(self.pipeline_layout, None);
-        device.destroy_descriptor_pool(self.descriptor_pool, None);
-        device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+        // SAFETY: the caller's contract (no in-flight work references the pass's pipeline or pool);
+        // `destroy_pass_objects` skips null handles and nulls what it destroys (#6371).
+        unsafe {
+            super::descriptors::destroy_pass_objects(
+                device,
+                super::descriptors::PassHandles {
+                    pipeline: &mut self.pipeline,
+                    layout: &mut self.pipeline_layout,
+                    pool: &mut self.descriptor_pool,
+                    set_layout: &mut self.descriptor_set_layout,
+                },
+            )
+        };
     }
 }
 
@@ -1301,10 +1310,19 @@ impl SkinPaletteComputePipeline {
     /// and that no object owned by `self` is still in use by an in-flight
     /// command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device) {
-        device.destroy_pipeline(self.pipeline, None);
-        device.destroy_pipeline_layout(self.pipeline_layout, None);
-        device.destroy_descriptor_pool(self.descriptor_pool, None);
-        device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+        // SAFETY: the caller's contract (no in-flight work references the pass's pipeline or pool);
+        // `destroy_pass_objects` skips null handles and nulls what it destroys (#6371).
+        unsafe {
+            super::descriptors::destroy_pass_objects(
+                device,
+                super::descriptors::PassHandles {
+                    pipeline: &mut self.pipeline,
+                    layout: &mut self.pipeline_layout,
+                    pool: &mut self.descriptor_pool,
+                    set_layout: &mut self.descriptor_set_layout,
+                },
+            )
+        };
     }
 }
 
