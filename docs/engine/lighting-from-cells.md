@@ -235,7 +235,7 @@ Vanilla Skyrim ships interior cells (Solitude inn cluster, Dragonsreach
 throne room, Markarth) that omit `XCLL` and inherit from a Lighting
 Template. `CellData.lighting_template_form` carries the `LTMP` FormID;
 `LgtmRecord` lives in
-[`crates/plugin/src/esm/records/misc/world.rs`](../../crates/plugin/src/esm/records/misc/world.rs)
+[`crates/plugin/src/esm/records/misc/world/lighting.rs`](../../crates/plugin/src/esm/records/misc/world/lighting.rs)
 and is indexed in `EsmIndex.lighting_templates`. The resolution chain is
 `resolve_cell_lighting`
 ([`byroredux/src/cell_loader/load.rs`](../../byroredux/src/cell_loader/load.rs)):

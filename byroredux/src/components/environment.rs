@@ -233,7 +233,7 @@ pub(crate) struct AppliedWeather {
 /// authored FormIDs (`RDMD`/`RDMO`/`RDSB` and `RDSI`). The RDAT
 /// `sounds: Vec<RegionSound>` ambient-loop list is NOT surfaced here:
 /// each entry's `chance_raw` selection probability has an unresolved
-/// fixed-point scale (see `RegionSound`'s doc in `misc/world.rs`), and
+/// fixed-point scale (see `RegionSound`'s doc in `misc/world/region.rs`), and
 /// picking one without a verified scale would be exactly the kind of
 /// guessed threshold this project's no-guessing policy exists to
 /// prevent.
@@ -245,7 +245,7 @@ pub(crate) struct RegionAmbientRes {
     /// a FormID at all), Skyrim's `RDMO` is a FormID but targets `MUSC`,
     /// and FNV's `RDSB` targets `MSET` (Media Set) — see
     /// `RegionDataPayload::Sound`'s doc in
-    /// `crates/plugin/src/esm/records/misc/world.rs` for the full
+    /// `crates/plugin/src/esm/records/misc/world/region.rs` for the full
     /// per-era census (#3787 FNV, #3811 Oblivion + Skyrim — both closed
     /// doc-only; the runtime for all three target types is tracked by
     /// #3816, FNV's `MSET` included since #3915). The music controller's

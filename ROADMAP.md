@@ -458,8 +458,9 @@ not a stat to report.
 counts include inline test modules, not dedicated test files). Over the line:
 `crates/physics/src/world/mod.rs` 5 617, `byroredux/src/inventory.rs` 4 442,
 `byroredux/src/material_translate.rs` 4 415, `crates/renderer/src/vulkan/volumetrics.rs` 4 281,
-`crates/physics/src/water.rs` 4 208, `crates/plugin/src/esm/records/misc/world.rs` 3 508.
-`translate/effects.rs`, `fragment/vm.rs` and `condition.rs` are now hub directories (#5800–#5804).
+`crates/physics/src/water.rs` 4 208.
+`translate/effects.rs`, `fragment/vm.rs` and `condition.rs` are now hub directories (#5800–#5804),
+as is `misc/world/` (#6947).
 Before splitting one, grep for `include_str!` source-shape tests that read it.
 
 ### Pacing discipline

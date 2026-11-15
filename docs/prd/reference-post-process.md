@@ -134,7 +134,7 @@ command's output and deletes the column.
 | 9 | Velocity motion blur | new | Absent. Render-extent motion vectors exist (G-buffer, unjittered, skinned through the previous bone palette in `triangle.vert`). |
 | 10 | 3D LUT grading | new | Absent: no colour-grading LUT is sampled anywhere in `crates/renderer/shaders/`. |
 | 11 | Vignette, film grain | new | Absent from every shader. |
-| 12 | Authored DOF / vignette / LUT decode | new | Not decoded: `parse_imad` (`crates/plugin/src/esm/records/misc/imagespace.rs`) reads no `WNAM` / `XNAM` / `YNAM` / `NAM5` / `NAM6`; `decode_image_space` (`crates/plugin/src/esm/records/misc/world.rs`) reads the grade only and skips `DNAM` on Skyrim+ and `TX00`. |
+| 12 | Authored DOF / vignette / LUT decode | new | Not decoded: `parse_imad` (`crates/plugin/src/esm/records/misc/imagespace.rs`) reads no `WNAM` / `XNAM` / `YNAM` / `NAM5` / `NAM6`; `decode_image_space` (`crates/plugin/src/esm/records/misc/world/lighting.rs`) reads the grade only and skips `DNAM` on Skyrim+ and `TX00`. |
 
 ### 3.2 Parameter sources
 

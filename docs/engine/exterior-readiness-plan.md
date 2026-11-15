@@ -958,7 +958,7 @@ grep. REGN's `Sound.music` field now has a real consumer (items 1 + 5,
 
 1. [ ] **REGN runtime consumption** — **correction (2026-08-23): NOT the
    isolated slice this originally claimed.** `RegionDataEntry`/
-   `RegionDataKind` (`crates/plugin/src/esm/records/misc/world.rs:452-780`)
+   `RegionDataKind` (`crates/plugin/src/esm/records/misc/world/region.rs`)
    fully expose Objects/Weather/Map/Landscape/Grass/Sound/Imposter payloads
    with authored priority ordering (`entries_by_priority`), and `CellData.
    regions: Vec<u32>` (XCLR) already gives every resident cell its REGN

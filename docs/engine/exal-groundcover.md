@@ -787,7 +787,7 @@ Each phase is independently useful and independently reviewable.
   grass in a region.~~ **Revised 2026-09-06 — the mechanism exists in the
   source data and this repo already parses the record type.** `REGN` carries a
   `RegionDataKind::Grass` (`RDGS`) entry alongside `Objects` (`RDOT`)
-  ([`records/misc/world.rs:664`](../../crates/plugin/src/esm/records/misc/world.rs#L664)),
+  ([`records/misc/world/region.rs`](../../crates/plugin/src/esm/records/misc/world/region.rs)),
   which is precisely per-region authored grass placement — level designers
   used it to put grass where the texture-keyed scheme would not, and to keep
   it out of places it would.

@@ -2980,7 +2980,7 @@ const EXEMPT_NO_U32_READS: &[(&str, &str)] = &[
     // M65 — the MOVT movement type: EditorID, `MNAM` name and `SPED` f32s, no FormID.
     ("movt.rs", "parse_movt"),
     // M43 — the FO4 `AORU` attraction rule: three f32 and two flag bytes, no FormID.
-    ("misc/world.rs", "parse_aoru"),
+    ("misc/world/keyword.rs", "parse_aoru"),
     // #5152 — the INFO VMAD fragment section: flags bytes and
     // length-prefixed strings only; the scripts section (which carries the
     // FormIDs) is consumed by `ScriptInstanceData::parse_with_consumed`
@@ -3009,7 +3009,7 @@ const EXEMPT_NO_U32_READS: &[(&str, &str)] = &[
     ("misc/character.rs", "parse_hair"),
     ("misc/character.rs", "parse_hdpt"),
     ("misc/character.rs", "parse_idle"),
-    ("misc/world.rs", "parse_imgs"),
+    ("misc/world/lighting.rs", "parse_imgs"),
     ("misc/effects.rs", "parse_imod"),
     ("misc/effects.rs", "parse_ipct"),
     ("misc/effects.rs", "parse_ipds"),
@@ -3091,7 +3091,7 @@ const EXEMPT_JUSTIFIED: &[(&str, &str, &str)] = &[
         "IMAD DNAM's u32 is an animatable-field flag word.",
     ),
     (
-        "misc/world.rs",
+        "misc/world/navigation.rs",
         "parse_navi",
         "NAVI NVER's u32 is a format version number.",
     ),
@@ -3300,7 +3300,11 @@ fn remap_fid_has_exactly_one_definition() {
         ("outfit.rs", include_str!("outfit.rs")),
         ("scol.rs", include_str!("scol.rs")),
         ("pkin.rs", include_str!("pkin.rs")),
-        ("misc/world.rs", include_str!("misc/world.rs")),
+        ("misc/world/navigation.rs", include_str!("misc/world/navigation.rs")),
+        ("misc/world/region.rs", include_str!("misc/world/region.rs")),
+        ("misc/world/keyword.rs", include_str!("misc/world/keyword.rs")),
+        ("misc/world/lighting.rs", include_str!("misc/world/lighting.rs")),
+        ("misc/world/activator_terminal.rs", include_str!("misc/world/activator_terminal.rs")),
     ];
     for (file, source) in sources {
         assert!(

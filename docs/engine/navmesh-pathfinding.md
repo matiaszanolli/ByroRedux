@@ -9,7 +9,7 @@ that pass.
 ## 1. What already exists (the foundation this builds on)
 
 Unusually for a greenfield item, the data layer is *done*, not a blocker.
-`parse_navm` (`crates/plugin/src/esm/records/misc/world.rs`) decodes real
+`parse_navm` (`crates/plugin/src/esm/records/misc/world/navigation.rs`) decodes real
 triangle geometry and cross-mesh connectivity for every game that ships
 `NAVM` except Fallout 4:
 

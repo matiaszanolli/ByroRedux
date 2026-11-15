@@ -89,7 +89,7 @@ pub fn parse_movs(
 ) -> MovableStaticRecord {
     // #4222 / TD2-003 — EDID/MODL/VMAD presence now go through the shared
     // funnel (TD3-006 / #1045) instead of a hand-rolled copy of the same
-    // three arms, matching `container.rs` / `misc/world.rs` / `misc/scene.rs`.
+    // three arms, matching `container.rs` / `misc/world/` / `misc/scene.rs`.
     // `CommonNamedFields` also decodes FULL/ICON/SCRI/full VMAD attachments
     // MOVS doesn't carry any authored data for; those fields are simply
     // left at their defaults and dropped here.

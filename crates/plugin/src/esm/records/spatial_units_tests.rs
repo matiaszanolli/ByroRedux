@@ -363,7 +363,7 @@ fn starfield_watr_defers_the_unclassified_dnam_lanes() {
 }
 
 /// #5171 — the LGTM/XCLL unit lift had zero coverage: the only wire test
-/// (`starfield_lgtm_data_decodes_the_sf_xcll_layout`, `misc/world.rs`)
+/// (`starfield_lgtm_data_decodes_the_sf_xcll_layout`, `misc/world/tests.rs`)
 /// calls `parse_lgtm` directly on wire values, so deleting the whole LGTM
 /// arm of `normalize` — or just #5002's four height lines — left every
 /// test green. These fixtures go through the public `parse_esm` path so
@@ -372,7 +372,7 @@ fn starfield_watr_defers_the_unclassified_dnam_lanes() {
 /// ride this arm).
 ///
 /// 108-byte Starfield lighting body — the SF XCLL / LGTM DATA layout
-/// (xEdit SF1, same bytes as the wire test in `misc/world.rs`): fog
+/// (xEdit SF1, same bytes as the wire test in `misc/world/tests.rs`): fog
 /// near/far 12/16, gravity scale 28, fog clip/power 32/36, fog max 44,
 /// light fades 48/52, near height mid/range 60/64, the five dimensionless
 /// scales 76-95, far height mid/range 96/100.

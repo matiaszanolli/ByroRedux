@@ -144,7 +144,7 @@ any fn returning `SubRecord` built from a parameter 4-CC, not only fixed names).
 - Decoders read through `SubReader`; flag direct raw-slice indexing and any private
   cursor type. `take` / `wstring` / `counted` (a failed compound read leaves the reader where it
   started) carry the VMAD (`script_instance.rs`), `weather_settings_instance.rs` and NVNM
-  (`misc/world.rs`) shapes since `e04caa7e8` (#6367) — the three per-decoder cursors and the
+  (`misc/world/`) shapes since `e04caa7e8` (#6367) — the three per-decoder cursors and the
   `from_le_bytes(..try_into().unwrap())` sites in `reflection.rs` are gone (a width that disagrees
   with its type now declines instead of panicking); a new `Option`-returning cursor or
   `unwrap` on a slice-to-array in a decoder is the regression. FormID arrays read through
@@ -340,7 +340,7 @@ closure, like `dialogues` and `game_settings` — or a reasoned exclusion: `reco
   xEdit layout), and a "Use Base Data" template chain terminal (`ResolvedNpc::base_data`). The
   `EsmIndex::categories()` count is pinned in `records::tests` (117 on 2026-11-08) — read the live
   number there; each new map must be a category row or a recorded exclusion. M43 added FO4 `AORU`
-  attraction rules (`attraction_rules`, `parse_aoru` in `misc/world.rs`) and the `KWDA` side tables
+  attraction rules (`attraction_rules`, `parse_aoru` in `misc/world/keyword.rs`) and the `KWDA` side tables
   `furniture_keywords` (FURN) / `placed_object_keywords` (FURN, FLOR, ACTI, CONT; `kwda_keywords` in
   `common.rs`) — all three are category rows; `complex_scene_object` (the `DOBJ` `CMPX` pair, read
   by `complex_scene_object` in `dispatch_misc_stub.rs`; later plugin wins in `merge_from`) is a scalar
@@ -356,8 +356,8 @@ closure, like `dialogues` and `game_settings` — or a reasoned exclusion: `reco
 **Output**: `/tmp/audit/esm/dim_4.md`
 
 ### Dimension 5: CELL / WRLD Walkers & Placement Data
-Paths: `crates/plugin/src/esm/cell/**/*.rs`, `esm/records/misc/world.rs`, `esm/records/spatial_units.rs`
-First step: `git log --since=<last report> --format='%h %cs %s' -- crates/plugin/src/esm/cell crates/plugin/src/esm/records/misc/world.rs`
+Paths: `crates/plugin/src/esm/cell/**/*.rs`, `esm/records/misc/world/`, `esm/records/spatial_units.rs`
+First step: `git log --since=<last report> --format='%h %cs %s' -- crates/plugin/src/esm/cell crates/plugin/src/esm/records/misc/world`
 **Checklist**:
 - Cell child groups: type 6 is the `Cell Children` *container*; 8 = Persistent, 9 =
   Temporary, 10 = Visible Distant nest inside it (#4169 — earlier legends said 6/8/9).

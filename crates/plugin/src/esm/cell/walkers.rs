@@ -286,7 +286,7 @@ fn parse_cell_group_inner(
                             // is `Gravity Scale` (Skyrim's `Directional Fade`
                             // slot); the 28..108 tail is decoded by the ONE
                             // shared tail decoder (#5346) — the LGTM arm in
-                            // `records/misc/world.rs` decodes the same bytes.
+                            // `records/misc/world/lighting.rs` decodes the same bytes.
                             // `>= 108` (not `== 108`): a future-DLC SF XCLL with
                             // trailing pad must still take the SF arm and not
                             // fall through to the Skyrim `>= 92` ambient-cube
