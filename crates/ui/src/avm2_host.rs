@@ -1389,16 +1389,18 @@ mod tests {
     use byroredux_bsa::Ba2Archive;
     use ruffle_core::swf::avm2::read::Reader;
     use swf::avm2::types::{
-        AbcFile, ConstantPool, Index, Method, MethodBody, MethodFlags, Multiname, Namespace, Script,
+        AbcFile, ConstantPool, Index, Method, MethodBody, MethodFlags, Multiname, Namespace, Op,
+        Script, TraitKind,
     };
     use swf::avm2::write::Writer;
     use swf::extensions::ReadSwfExt;
     use swf::{DoAbc2, DoAbc2Flag, FileAttributes, SwfStr, Tag};
 
     use super::{
-        build_adapter_abc, inject_host_object_adapter, max_stack_with_injected_bootstrap_headroom,
-        referenced_host_methods, referenced_host_methods_in_tags, uncataloged_host_methods,
-        write_ops, DESTROYED_EVENT, DESTROY_CALLBACK, LOADED_CALLBACK,
+        build_adapter_abc, helper_name, inject_host_object_adapter, installed_method_names,
+        max_stack_with_injected_bootstrap_headroom, multiname_local_name, referenced_host_methods,
+        referenced_host_methods_in_tags, uncataloged_host_methods, write_ops, DESTROYED_EVENT,
+        DESTROY_CALLBACK, DESTROY_HELPER, LOADED_CALLBACK,
     };
     use crate::{ScaleformHostCatalog, ScaleformHostObjectState, ScaleformProfile};
 
@@ -1546,6 +1548,108 @@ mod tests {
         }
         // on_create + addCallback(ready) — no addCallback(destroy).
         assert_eq!(add_callback_calls, 2);
+    }
+
+    fn ops(code: &[u8]) -> Vec<Op> {
+        let mut reader = Reader::new(code);
+        let mut out = Vec::new();
+        while !reader.as_slice().is_empty() {
+            out.push(reader.read_op().unwrap());
+        }
+        out
+    }
+
+    /// #6998 — per-forwarder identity, not counts. A wrong constant-pool index
+    /// yields a movie that loads and calls the wrong host method, and every
+    /// count-based guard above stays green, so this pins each installed name
+    /// end to end: installer pair `i` is (`helper_name(i)`, `<method_i>`),
+    /// script trait `i + 1` is that helper with `disp_id == i + 1`, its body
+    /// pushes exactly `"BGSCodeObj.<method_i>"` and takes `...rest`, and the
+    /// destroy strings are in the pool iff the class declares the trait.
+    /// Two uncataloged names (deliberately unsorted) ride along so the
+    /// per-movie tail is covered too.
+    #[test]
+    fn every_forwarder_is_wired_to_its_own_name() {
+        let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::Fallout4Avm2);
+        let object = catalog.host_object().unwrap();
+        let extra = vec!["ZetaExtra".to_string(), "AlphaExtra".to_string()];
+        let names = installed_method_names(catalog, &extra);
+        for destroy in [false, true] {
+            let bytes = build_adapter_abc(catalog, &extra, destroy).unwrap();
+            let abc = Reader::new(&bytes).read().unwrap();
+            let strings = &abc.constant_pool.strings;
+            let string = |i: Index<String>| strings[i.as_u30() as usize - 1].clone();
+            let script = &abc.scripts[0];
+
+            // The installer is the second-to-last body with or without the
+            // destroy helper (the ready/init body follows it).
+            let installer = ops(&abc.method_bodies[abc.method_bodies.len() - 2].code);
+            let pairs: Vec<_> = installer
+                .windows(3)
+                .filter_map(|w| match w {
+                    [Op::GetLocal { index: 2 }, Op::GetLex { index: helper }, Op::SetProperty { index: property }] => {
+                        Some((*helper, *property))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(pairs.len(), names.len(), "destroy={destroy}");
+
+            for (i, name) in names.iter().enumerate() {
+                let (helper, property) = &pairs[i];
+                assert_eq!(
+                    multiname_local_name(&abc, *helper).unwrap(),
+                    helper_name(i).into_bytes(),
+                    "installer pair {i} ({name}) names the wrong helper"
+                );
+                assert_eq!(
+                    multiname_local_name(&abc, *property).unwrap(),
+                    name.as_bytes(),
+                    "installer pair {i} sets the wrong property"
+                );
+                let script_trait = &script.traits[i + 1];
+                assert_eq!(
+                    script_trait.name,
+                    *helper,
+                    "trait {} is not helper {i}",
+                    i + 1
+                );
+                let TraitKind::Method { disp_id, method } = &script_trait.kind else {
+                    panic!("trait {} ({name}) is not a method", i + 1);
+                };
+                assert_eq!(*disp_id as usize, i + 1, "{name}");
+                let body = abc
+                    .method_bodies
+                    .iter()
+                    .find(|body| body.method == *method)
+                    .unwrap();
+                let pushed: Vec<_> = ops(&body.code)
+                    .into_iter()
+                    .filter_map(|op| match op {
+                        Op::PushString { value } => Some(string(value)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    pushed,
+                    vec![format!("{}.{}", object.property, name).into_bytes()],
+                    "forwarder {i} pushes the wrong transport name"
+                );
+                assert!(abc.methods[method.as_u30() as usize]
+                    .flags
+                    .contains(MethodFlags::NEED_REST));
+            }
+
+            let has = |n: &str| strings.iter().any(|x| x.as_slice() == n.as_bytes());
+            for n in [
+                DESTROYED_EVENT,
+                DESTROY_CALLBACK,
+                DESTROY_HELPER,
+                object.on_destroy,
+            ] {
+                assert_eq!(has(n), destroy, "{n:?} with destroy={destroy}");
+            }
+        }
     }
 
     #[test]
