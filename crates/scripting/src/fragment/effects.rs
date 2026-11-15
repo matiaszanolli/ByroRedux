@@ -114,6 +114,11 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 ///     released in turn. The `CHRR` story event the change raises is *not* taken here: it is queued on
 ///     `DeferredFragmentEffects::relationship_events` and raised after the guards drop (#6572), as
 ///     `SendStoryEvent` is, so `StoryEvent` / `PendingScriptStoryEvents` are never nested under them
+///   - **via `crate::is_logical_stub` / `crate::queue_actor_move`** (`Effect::MoveTo`'s
+///     bodiless fallthrough and `Effect::MoveToPackageLocation`, XCT-LOC-004 — #6926) —
+///     `UnloadedReferenceStub` and `RemoteSceneActorStub` (read, presence tests), then
+///     `PendingActorMoves` (write), each taken and released alone. A `MoveTo` of the player
+///     takes `PlayerMoveRequest` (write) instead, as `MovePlayerTo` does (#6916)
 ///   - **via [`update_actor_cinematic_state`]** — `ActorCinematicState`
 ///   - **via `crate::magic::{add_spell, remove_spell}`** (the
 ///     `AddSpell`/`RemoveSpell` arms, applied inline rather than deferred —

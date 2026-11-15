@@ -4603,7 +4603,7 @@ fn magic_callout_bodies(src: &str) -> String {
 /// paired quest guards, so a lock one of them takes is a lock taken under it;
 /// the family-only scan was blind to them. Every name must be found, so a rename
 /// fails loud instead of scanning green.
-fn nested_helper_bodies(sources: &str, equipment_rs: &str) -> String {
+fn nested_helper_bodies(sources: &str, equipment_rs: &str, created_references_rs: &str) -> String {
     const IN_SOURCES: &[&str] = &[
         "apply_effects",
         "resolve_actor",
@@ -4618,11 +4618,15 @@ fn nested_helper_bodies(sources: &str, equipment_rs: &str) -> String {
         "add_items",
     ];
     const IN_EQUIPMENT: &[&str] = &["emit_equipment_changes", "emit_item_transfers"];
+    // #6926 — the XCT-LOC-004 `MoveTo` fallthrough and `MoveToPackageLocation`
+    // reach these from the placement arms.
+    const IN_CREATED_REFERENCES: &[&str] = &["is_logical_stub", "queue_actor_move"];
     let mut bodies = String::new();
     for (src, wanted, origin) in IN_SOURCES
         .iter()
         .map(|name| (sources, *name, "fragment::SOURCES"))
         .chain(IN_EQUIPMENT.iter().map(|name| (equipment_rs, *name, "equipment.rs")))
+        .chain(IN_CREATED_REFERENCES.iter().map(|name| (created_references_rs, *name, "created_references.rs")))
     {
         let mut at = 0usize;
         let mut found = false;
@@ -4711,7 +4715,12 @@ fn the_nested_lock_residual_list_names_every_type_apply_effect_acquires() {
     let mut bodies = apply_effect_family_bodies(FRAGMENT_RS);
     bodies.push_str(&magic_callout_bodies(MAGIC_RS));
     // #5986 — and the helpers one hop out in the fragment sources / equipment.rs.
-    bodies.push_str(&nested_helper_bodies(FRAGMENT_RS, include_str!("../equipment.rs")));
+    // #6926 — and the created-references helpers the placement arms call.
+    bodies.push_str(&nested_helper_bodies(
+        FRAGMENT_RS,
+        include_str!("../equipment.rs"),
+        include_str!("../created_references.rs"),
+    ));
     let body = bodies.as_str();
 
     // `.query_mut::<crate::HorseTetherState>()` -> `HorseTetherState`.
