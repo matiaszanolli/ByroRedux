@@ -65,7 +65,9 @@ use crate::vulkan::descriptors::layout_binding;
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{write_storage_buffer, write_storage_image, DescriptorPoolBuilder};
-use super::pipeline::{auxiliary_blend_attachment, coverage_alpha_factors, load_shader_module};
+use super::pipeline::{
+    auxiliary_blend_attachment, coverage_alpha_factors, fsr_mask_max_attachment, load_shader_module,
+};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use crate::vertex::Vertex;
 use anyhow::{Context, Result};
@@ -1007,15 +1009,7 @@ fn build_pipeline(
     // colour comes from reflection and refraction that neither depth nor
     // motion describes, so it writes both FSR masks at full strength with
     // the same MAX accumulation the alpha-blend pipeline uses.
-    let fsr_mask_max = vk::PipelineColorBlendAttachmentState::default()
-        .color_write_mask(vk::ColorComponentFlags::R)
-        .blend_enable(true)
-        .src_color_blend_factor(vk::BlendFactor::ONE)
-        .dst_color_blend_factor(vk::BlendFactor::ONE)
-        .color_blend_op(vk::BlendOp::MAX)
-        .src_alpha_blend_factor(vk::BlendFactor::ONE)
-        .dst_alpha_blend_factor(vk::BlendFactor::ONE)
-        .alpha_blend_op(vk::BlendOp::MAX);
+    let fsr_mask_max = fsr_mask_max_attachment();
     // Eight entries to match the main render pass's eight color attachments
     // (0 HDR + 1..5 G-buffer + 6/7 FSR masks). The array length sets
     // `attachmentCount`; it must equal the subpass color-attachment count

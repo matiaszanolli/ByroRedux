@@ -651,10 +651,6 @@ pub struct BlendPipelineCtx<'a> {
 /// REN-D11-2026-08-12-01: pin `is_caustic_source(cmd) ⇒ mesh-ID
 /// writable`, which a device-requiring pipeline-creation test couldn't
 /// have caught at `cargo test` time).
-///
-/// `hdr_blend` is the one attachment state that depends on the caller's
-/// authored (src, dst) Gamebryo blend factors, so it's built by the
-/// caller and passed in; every other state here is fixed.
 /// A "coverage blend" attachment state: the transparent fragment's own
 /// alpha attenuates whatever the opaque pass already wrote to this
 /// attachment (`SRC_ALPHA` / `ONE_MINUS_SRC_ALPHA` on color, replace on
@@ -675,6 +671,27 @@ pub(crate) fn auxiliary_blend_attachment() -> vk::PipelineColorBlendAttachmentSt
         .alpha_blend_op(vk::BlendOp::ADD)
 }
 
+/// The FSR 2/3 reactive / transparency mask attachment state: red channel
+/// only, ONE/ONE with `MAX` on colour and alpha, so a stack of overlapping
+/// translucent surfaces reports the most reactive coverage in the stack
+/// rather than whichever drew last. AMD's integration contract asks for
+/// exactly this accumulation rule for both masks. Shared by the alpha-blend,
+/// water and composite pipelines so the three cannot drift apart (#6964).
+pub(crate) fn fsr_mask_max_attachment() -> vk::PipelineColorBlendAttachmentState {
+    vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::R)
+        .blend_enable(true)
+        .src_color_blend_factor(vk::BlendFactor::ONE)
+        .dst_color_blend_factor(vk::BlendFactor::ONE)
+        .color_blend_op(vk::BlendOp::MAX)
+        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+        .dst_alpha_blend_factor(vk::BlendFactor::ONE)
+        .alpha_blend_op(vk::BlendOp::MAX)
+}
+
+/// `hdr_blend` is the one attachment state that depends on the caller's
+/// authored (src, dst) Gamebryo blend factors, so it's built by the
+/// caller and passed in; every other state here is fixed.
 fn blend_gbuffer_attachments(
     hdr_blend: vk::PipelineColorBlendAttachmentState,
     preserve_opaque_gbuffer: bool,
@@ -686,19 +703,7 @@ fn blend_gbuffer_attachments(
         .color_write_mask(vk::ColorComponentFlags::empty())
         .blend_enable(false);
     let auxiliary_blend = auxiliary_blend_attachment();
-    // MAX over ONE/ONE: a stack of overlapping translucent surfaces reports
-    // the most reactive coverage in the stack rather than whichever happened
-    // to draw last. AMD's integration contract asks for exactly this
-    // accumulation rule for both masks.
-    let fsr_mask_max = vk::PipelineColorBlendAttachmentState::default()
-        .color_write_mask(vk::ColorComponentFlags::R)
-        .blend_enable(true)
-        .src_color_blend_factor(vk::BlendFactor::ONE)
-        .dst_color_blend_factor(vk::BlendFactor::ONE)
-        .color_blend_op(vk::BlendOp::MAX)
-        .src_alpha_blend_factor(vk::BlendFactor::ONE)
-        .dst_alpha_blend_factor(vk::BlendFactor::ONE)
-        .alpha_blend_op(vk::BlendOp::MAX);
+    let fsr_mask_max = fsr_mask_max_attachment();
     if preserve_opaque_gbuffer {
         [
             hdr_blend, // 0 HDR color (glass blends over opaque color)
@@ -1199,6 +1204,19 @@ mod tests {
         assert_eq!(a.src_alpha_blend_factor, vk::BlendFactor::ONE);
         assert_eq!(a.dst_alpha_blend_factor, vk::BlendFactor::ZERO);
         assert_eq!(a.alpha_blend_op, vk::BlendOp::ADD);
+    }
+
+    #[test]
+    fn fsr_mask_max_attachment_is_a_red_only_max_accumulation() {
+        let a = fsr_mask_max_attachment();
+        assert_eq!(a.color_write_mask, vk::ColorComponentFlags::R);
+        assert_eq!(a.blend_enable, vk::TRUE);
+        assert_eq!(a.src_color_blend_factor, vk::BlendFactor::ONE);
+        assert_eq!(a.dst_color_blend_factor, vk::BlendFactor::ONE);
+        assert_eq!(a.color_blend_op, vk::BlendOp::MAX);
+        assert_eq!(a.src_alpha_blend_factor, vk::BlendFactor::ONE);
+        assert_eq!(a.dst_alpha_blend_factor, vk::BlendFactor::ONE);
+        assert_eq!(a.alpha_blend_op, vk::BlendOp::MAX);
     }
 
     /// Regression: #392 — every Gamebryo `AlphaFunction` value (0..10)
