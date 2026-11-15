@@ -1012,12 +1012,16 @@ fn fo4_xrgd_poses_resolve_against_the_real_skeletons() {
         _ => None,
     };
     // Skeleton → (host bone names, bone ids) in template order.
-    /// Host bone names, bone ids and node-order ranks of a skeleton's ragdoll bodies, in template order.
-    type Rig = (Vec<Option<String>>, Vec<Option<u8>>, Option<Vec<usize>>);
+    /// Host bone names, bone ids, node-order ranks and local offset lengths of a skeleton's ragdoll bodies, in
+    /// template order.
+    type Rig = (Vec<Option<String>>, Vec<Option<u8>>, Option<Vec<usize>>, Vec<f32>);
     let mut rigs: HashMap<&str, Rig> = HashMap::new();
     let (mut corpses, mut posable, mut mapped) = (0usize, 0usize, 0usize);
     let mut by_race: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
     let mut failures: Vec<String> = Vec::new();
+    // #7016 — per node-ordered rig and body, each resolved corpse's relative error between the entry's offset
+    // length and the body bone's own local offset in the NIF.
+    let mut offset_errors: std::collections::BTreeMap<(String, usize), Vec<f32>> = Default::default();
     let mut visit = |r: &byroredux_plugin::esm::cell::PlacedRef| {
         if !r.starts_dead || r.ragdoll_pose.is_empty() {
             return;
@@ -1025,7 +1029,7 @@ fn fo4_xrgd_poses_resolve_against_the_real_skeletons() {
         let Some(npc) = index.npcs.get(&r.base_form_id) else { return };
         let Some(race) = index.races.get(&npc.race_form_id) else { return };
         let Some(path) = skeleton_of(&race.editor_id) else { return };
-        let (names, ids, ranks) = rigs.entry(path).or_insert_with(|| {
+        let (names, ids, ranks, offsets) = rigs.entry(path).or_insert_with(|| {
             let bytes = archive.extract(path).expect("the skeleton NIF");
             let scene = byroredux_nif::parse_nif(&bytes).unwrap();
             let ragdoll = byroredux_nif::import::collision::extract_ragdoll(&scene).expect("a ragdoll");
@@ -1033,7 +1037,18 @@ fn fo4_xrgd_poses_resolve_against_the_real_skeletons() {
             let mut pool = byroredux_core::string::StringPool::new();
             let imported = byroredux_nif::import::import_nif_scene(&scene, &mut pool);
             let ranks = imported_body_ranks(&imported.nodes, &names);
-            (names, ragdoll.bodies.iter().map(|b| b.pose_bone_id).collect(), ranks)
+            let offsets = names
+                .iter()
+                .map(|name| {
+                    let name = name.as_deref().unwrap_or_default();
+                    imported
+                        .nodes
+                        .iter()
+                        .find(|n| n.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(name)))
+                        .map_or(0.0, |n| Vec3::from_array(n.translation).length())
+                })
+                .collect();
+            (names, ragdoll.bodies.iter().map(|b| b.pose_bone_id).collect(), ranks, offsets)
         });
         corpses += 1;
         let by_ids = is_fo4_posable_ragdoll(names);
@@ -1050,9 +1065,23 @@ fn fo4_xrgd_poses_resolve_against_the_real_skeletons() {
         let tally = by_race.entry(race.editor_id.clone()).or_default();
         tally.0 += 1;
         match resolved {
-            Ok(_) => {
+            Ok(mapping) => {
                 mapped += 1;
                 tally.1 += 1;
+                if !by_ids {
+                    for (body, &entry) in mapping.iter().enumerate() {
+                        // Entry 0 is the COM; a bone under 1 unit has no length to compare (the script's rule).
+                        let length = offsets[body];
+                        if entry == 0 || length < 1.0 {
+                            continue;
+                        }
+                        let authored = Vec3::from_array(r.ragdoll_pose[entry].position).length();
+                        offset_errors
+                            .entry((race.editor_id.clone(), body))
+                            .or_default()
+                            .push((authored - length).abs() / length);
+                    }
+                }
             }
             Err(e) => failures.push(format!("{:08x} ({}): {e}", r.form_id, race.editor_id)),
         }
@@ -1093,6 +1122,33 @@ fn fo4_xrgd_poses_resolve_against_the_real_skeletons() {
         ("YaoGuaiRace", (5, 5)),
     ] {
         assert_eq!(by_race.get(race).copied(), Some(want), "{race}");
+    }
+    // #7016 — the node-order mapping itself, on the spawned rig's ranks: every entry's offset length matches the
+    // bone it poses (median relative error per bone within 3 %, the bar the verified rigs hold), the check
+    // `scripts/xrgd-fo4-rigs.py` makes offline. A permuted order (an importer, loader or walk change) keeps
+    // every count above green and fails here. Measured 2026-11-15, per race: (bones checked, bones within 3 %).
+    let mut per_race: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
+    for ((race, _), errors) in &mut offset_errors {
+        errors.sort_by(f32::total_cmp);
+        let median = errors[errors.len() / 2];
+        let tally = per_race.entry(race.as_str()).or_default();
+        tally.0 += 1;
+        tally.1 += usize::from(median <= 0.03);
+    }
+    for (race, (checked, within)) in &per_race {
+        eprintln!("  offsets {race:<24} {within:>3} of {checked:<3} bones within 3 %");
+    }
+    for (race, want) in [
+        ("BrahminRace", (37, 37)),
+        ("MirelurkRace", (22, 22)),
+        ("MoleratRace", (17, 17)),
+        ("RadRoachRace", (21, 20)),
+        ("RadStagRace", (29, 29)),
+        ("StingwingRace", (30, 30)),
+        ("ViciousDogRace", (21, 21)),
+        ("YaoGuaiRace", (16, 16)),
+    ] {
+        assert_eq!(per_race.get(race).copied(), Some(want), "{race}: entry offsets against the bones they pose");
     }
 }
 

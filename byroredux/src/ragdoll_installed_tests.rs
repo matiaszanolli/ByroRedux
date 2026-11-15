@@ -486,6 +486,31 @@ fn check_fo4_bind_pose(skeleton: &str) {
 }
 
 
+/// An `EncMolerat01Template` corpse in the Commonwealth (REFR 0009449F, placed level: no X/Y tilt)'s authored
+/// XRGD entries, posed by node order: `[bone_id, px, py, pz, rx, ry, rz]`.
+const COMMONWEALTH_MOLERAT_XRGD: [[f32; 7]; 20] = [
+    [2.0, 31.87323, 17.796875, -1.6323242, -1.4696355, -0.18456303, 1.8901207],
+    [2.0, -0.030517578, 0.03173828, 0.04296875, -0.113443315, 0.0522242, -0.23348698],
+    [2.0, 14.268311, -0.0034179688, 0.00390625, -0.08911865, -0.04124236, 0.06749552],
+    [0.0, -0.0014343262, 0.07055664, 0.0, -0.6407681, 0.29693204, -0.20126562],
+    [1.0, 9.03418, 0.029296875, -0.0234375, 0.17850284, 0.025229465, -0.20418334],
+    [5.0, 6.767578, 0.0, 0.0041503906, 1.4367212, 0.185685, 0.7350958],
+    [6.0, 12.586914, -0.0029296875, -0.0390625, 0.30777067, 0.21182093, -1.5511945],
+    [7.0, 10.355469, -0.035888672, -0.01953125, 0.11434022, 0.025432339, 0.32066926],
+    [11.0, 6.8242188, 0.005859375, -0.020019531, -1.5708581, -0.4458526, 1.1636721],
+    [0.0, 12.674316, -0.0026855469, -0.01171875, 0.5500551, -0.40495366, -1.985085],
+    [13.0, 10.354492, -0.018554688, 0.02734375, -0.11252958, -0.028781736, 0.36732274],
+    [17.0, -11.909302, -1.6298828, 0.02734375, -0.11707204, -0.20042612, -2.9485974],
+    [17.0, 12.174316, -0.02734375, 0.00390625, 0.09475702, -0.0080413455, -0.28560257],
+    [17.0, 10.962402, 0.012237549, 0.00390625, 0.1856447, -0.03775579, -0.22164842],
+    [8.0, 1.6291504, -3.0551758, 9.5234375, -3.0741653, -0.013938588, 1.9319446],
+    [9.0, 14.1953125, -0.037719727, -0.0703125, 0.28426185, 0.4880306, 2.2660055],
+    [10.0, 14.387695, -0.044921875, 0.109375, -0.062565245, 0.01010316, -2.0166092],
+    [14.0, 1.5389404, -2.913086, -9.417969, -2.7995014, 0.030464057, 1.3474127],
+    [15.0, 14.234375, 0.025390625, 0.0390625, 0.09693686, 0.16967873, -0.023114912],
+    [16.0, 14.423828, -0.034179688, -0.044921875, 0.05366629, -0.023543984, -0.9778933],
+];
+
 /// The MedTekResearch01 feral-ghoul corpse (REFR 00106A72)'s authored XRGD
 /// entries: `[bone_id, px, py, pz, rx, ry, rz]`.
 const MEDTEK_GHOUL_XRGD: [[f32; 7]; 18] = [
@@ -516,6 +541,44 @@ const MEDTEK_GHOUL_XRGD: [[f32; 7]; 18] = [
 #[test]
 #[ignore = "requires installed Fallout 4 mesh archive"]
 fn fo4_xrgd_posed_ghoul_corpse_holds_together_in_free_fall() {
+    fo4_xrgd_posed_corpse_holds_together_in_free_fall(
+        r"meshes\actors\feralghoul\characterassets\skeleton.nif",
+        &MEDTEK_GHOUL_XRGD,
+        18,
+        &[],
+    );
+}
+
+/// #7016 — the same check on a creature rig posed by skeleton node order (#6065), the molerat: one of the three
+/// rigs admitted below the forward-kinematics bar, so a wrong entry→body order would show here as pivots that no
+/// longer meet, joints far past their limits, or a solver explosion.
+///
+/// Measured 2026-11-15: every pivot meets (gap <= 0.002), all 19 joints stay live through the fall, no recovery.
+/// One joint is posed past the 0.15 rad tolerance: joint 4, `back_lleg2`<->`back_lleg1`, twist 0.450 against
+/// [-0.175, 0.175]. Recorded, not hidden: the rig's rotation convention ranks 7th of 24 offline
+/// (`scripts/xrgd-fo4-rigs.py`), which a hind-knee twist fits; the entry order itself is pinned by the offset check
+/// in `fo4_xrgd_poses_resolve_against_the_real_skeletons`.
+#[test]
+#[ignore = "requires installed Fallout 4 mesh archive"]
+fn fo4_xrgd_posed_molerat_corpse_holds_together_in_free_fall() {
+    fo4_xrgd_posed_corpse_holds_together_in_free_fall(
+        r"meshes\actors\molerat\characterassets\skeleton.nif",
+        &COMMONWEALTH_MOLERAT_XRGD,
+        20,
+        &[4],
+    );
+}
+
+/// Pose `skeleton` from `pose` with the production [`crate::ragdoll_pose::pose_skeleton`] (on entities spawned in
+/// node order, as the loader spawns them), check every joint at the posed seed, then activate the `bodies`-body
+/// ragdoll and step it 120 ticks in free fall: every joint stays live and nothing explodes. `past_limits` is the
+/// exact set of ragdoll joints measured more than 0.15 rad past their limits at the seed; any other set fails.
+fn fo4_xrgd_posed_corpse_holds_together_in_free_fall(
+    skeleton: &str,
+    pose: &[[f32; 7]],
+    bodies: usize,
+    past_limits: &[usize],
+) {
     use byroredux_core::ecs::{Name, Parent};
     use byroredux_plugin::esm::cell::RagdollPoseBone;
     let data = std::env::var("BYROREDUX_FO4_DATA")
@@ -524,9 +587,7 @@ fn fo4_xrgd_posed_ghoul_corpse_holds_together_in_free_fall() {
         std::path::Path::new(&data).join("Fallout4 - Meshes.ba2"),
     )
     .unwrap();
-    let bytes = archive
-        .extract(r"meshes\actors\feralghoul\characterassets\skeleton.nif")
-        .unwrap();
+    let bytes = archive.extract(skeleton).unwrap();
     let parsed = byroredux_nif::parse_nif(&bytes).unwrap();
     let mut pool = StringPool::new();
     let imported = byroredux_nif::import::import_nif_scene(&parsed, &mut pool);
@@ -586,7 +647,7 @@ fn fo4_xrgd_posed_ghoul_corpse_holds_together_in_free_fall() {
     )
     .unwrap();
     world.insert(actor, template);
-    let entries: Vec<RagdollPoseBone> = MEDTEK_GHOUL_XRGD
+    let entries: Vec<RagdollPoseBone> = pose
         .iter()
         .map(|e| RagdollPoseBone {
             bone_id: e[0] as u8,
@@ -600,6 +661,7 @@ fn fo4_xrgd_posed_ghoul_corpse_holds_together_in_free_fall() {
 
     // Joint residuals at the posed seed.
     let template = world.get::<RagdollTemplate>(actor).unwrap().clone();
+    let mut past = Vec::new();
     let seed = |i: usize| {
         let b = &template.bodies[i];
         let gt = *world.get::<GlobalTransform>(b.bone).unwrap();
@@ -630,7 +692,9 @@ fn fo4_xrgd_posed_ghoul_corpse_holds_together_in_free_fall() {
                 wa.distance(wb), cone, cone_max, twist, twist_min, twist_max
             );
             assert!(wa.distance(wb) < 0.01, "joint {k}: pivots must name one world point");
-            assert!(cone <= cone_max + 0.15 && twist >= twist_min - 0.15 && twist <= twist_max + 0.15, "joint {k} is far past its limits");
+            if !(cone <= cone_max + 0.15 && twist >= twist_min - 0.15 && twist <= twist_max + 0.15) {
+                past.push(k);
+            }
         } else if let RagdollJointSpec::LimitedHinge { axis_a, pivot_a, axis_b, pivot_b, min_angle, max_angle, .. } = &c.joint {
             let wa = pa + ra * *pivot_a;
             let wb = pb + rb * *pivot_b;
@@ -645,7 +709,8 @@ fn fo4_xrgd_posed_ghoul_corpse_holds_together_in_free_fall() {
             assert!(wa.distance(wb) < 0.01, "hinge {k}: pivots must name one world point");
         }
     }
-    assert_eq!(activate_ragdoll(&world, actor).unwrap(), 18);
+    assert_eq!(past, past_limits, "the joints posed far past their limits");
+    assert_eq!(activate_ragdoll(&world, actor).unwrap(), bodies);
     let rag = world.get::<Ragdoll>(actor).unwrap().clone();
     let mut physics = world.resource_mut::<PhysicsWorld>();
     for _ in 0..120 {
