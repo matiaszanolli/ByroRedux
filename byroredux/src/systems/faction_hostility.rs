@@ -114,13 +114,24 @@ pub(crate) fn movable_object_blocks_fire(world: &World, shooter: EntityId, targe
     let Some((from, to)) = crate::detection::sight_points(world, shooter, target) else {
         return false;
     };
-    let own_bodies: Vec<_> = world
-        .query::<byroredux_physics::RapierHandles>()
-        .map(|handles| [shooter, target].iter().filter_map(|&entity| handles.get(entity).map(|h| h.body)).collect())
-        .unwrap_or_default();
+    let own_bodies = actor_owned_bodies(world, &[shooter, target]);
     world
         .try_resource::<byroredux_physics::PhysicsWorld>()
         .is_some_and(|physics| physics.movable_body_blocks_line(from, to, &own_bodies))
+}
+
+/// Every rapier body that belongs to one of `actors`: the actor entity's own body, and every collider
+/// entity whose [`ActorColliderOwner`](byroredux_physics::ActorColliderOwner) names it — keyframed bones,
+/// the stand-in capsule, and the bodies of an active ragdoll, which activation owner-marks (#6255). A
+/// ragdolled actor is many dynamic bodies, none of them on the actor entity, so a lookup of the actor's
+/// own handle alone let a knocked-down target block its own shot (#7013). The owner column is read and
+/// dropped before the per-collider handle lookups, so no two component guards are held together.
+fn actor_owned_bodies(world: &World, actors: &[EntityId]) -> Vec<byroredux_physics::RigidBodyHandle> {
+    let mut colliders: Vec<EntityId> = actors.to_vec();
+    if let Some(owners) = world.query::<byroredux_physics::ActorColliderOwner>() {
+        colliders.extend(owners.iter().filter(|(_, owner)| actors.contains(&owner.0)).map(|(collider, _)| collider));
+    }
+    colliders.into_iter().filter_map(|collider| world.get::<byroredux_physics::RapierHandles>(collider).map(|h| h.body)).collect()
 }
 
 /// Whether `perceiver` would attack `target` as the ambient hostility pass judges it (ObScript

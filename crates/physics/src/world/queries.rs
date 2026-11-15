@@ -421,9 +421,9 @@ impl PhysicsWorld {
     /// a crate, a dropped weapon. This is the "movable object" a UseWeapon package's Hold Fire When
     /// Blocked yields to (GECK, AIP-UW-003). A wall or fixed prop in the way is not a movable blocker,
     /// and neither is a kinematic body such as an actor, so the answer differs from
-    /// [`line_of_sight_blocked`](Self::line_of_sight_blocked) on both counts. `excluded_bodies` are the
-    /// shooter and the target, whose own colliders must not count (a dynamic ragdoll target would
-    /// otherwise block its own shot). Same **caller must have called
+    /// [`line_of_sight_blocked`](Self::line_of_sight_blocked) on both counts. `excluded_bodies` are every
+    /// body of the shooter and the target, whose own colliders must not count: a ragdolled actor is many
+    /// dynamic bodies, so the caller passes all of them, not one handle per actor (#7013). Same **caller must have called
     /// [`update_query_pipeline`](Self::update_query_pipeline)** contract as the other probes.
     pub fn movable_body_blocks_line(
         &self,

@@ -623,6 +623,45 @@ mod tests {
         assert_eq!(hits(&world), 1, "the line is clear: the shot is taken");
     }
 
+    /// #7013 — a ragdolled target is dynamic bodies on its bone entities, not on the target entity. Each
+    /// is owner-marked to the target (#6255), and none of them is a movable object in the target's own line
+    /// of fire: the shot is taken. The same body owned by nobody is a crate, and holds fire.
+    #[test]
+    fn a_ragdolled_targets_own_bodies_do_not_hold_fire() {
+        use byroredux_core::ecs::components::FormIdComponent;
+        use byroredux_physics::{ActorColliderOwner, PhysicsWorld, RapierHandles};
+        let near = Vec3::new(40.0, 0.0, 0.0);
+        let centre = Vec3::Y * crate::npc_spawn::FALLBACK_ACTOR_CAPSULE_CENTRE_HEIGHT;
+        let run = |owned: bool| {
+            let options = UseWeaponOptions { hold_fire_when_blocked: true, ..Default::default() };
+            let (mut world, actor) = volley_world(near, 1, 3, options);
+            let target = world
+                .query::<FormIdComponent>()
+                .unwrap()
+                .iter()
+                .map(|(entity, _)| entity)
+                .find(|entity| *entity != actor)
+                .unwrap();
+            // A torso body across the target's sight point, a bone entity's, made dynamic like a ragdoll's.
+            let mut physics = PhysicsWorld::new();
+            let handles = physics.spawn_fixed_cuboid_handles(Vec3::new(10.0, 20.0, 10.0), near + centre);
+            physics.set_motion_type(handles.body, byroredux_core::ecs::components::MotionType::Dynamic, false);
+            physics.update_query_pipeline();
+            world.insert_resource(physics);
+            world.register::<RapierHandles>();
+            world.register::<ActorColliderOwner>();
+            let bone = world.spawn();
+            world.insert(bone, handles);
+            if owned {
+                world.insert(bone, ActorColliderOwner(target));
+            }
+            use_weapon_system(&world, 1.0);
+            hits(&world)
+        };
+        assert_eq!(run(false), 0, "fixture: an unowned dynamic body in the way holds fire");
+        assert_eq!(run(true), 1, "the target's own ragdoll body does not block its own shot (#7013)");
+    }
+
     #[test]
     fn facing_points_the_forward_axis_at_the_target() {
         for (dx, dz) in [(1.0f32, 0.0f32), (0.0, 1.0), (-3.0, 4.0), (0.0, -2.0)] {
