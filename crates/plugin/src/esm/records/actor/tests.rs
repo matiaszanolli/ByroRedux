@@ -2756,3 +2756,15 @@ fn race_subgraph_role_enum_follows_the_game() {
     assert_eq!(role_of(5, GameKind::Fallout4), SubgraphRole::Other(5));
     assert_eq!(role_of(8, GameKind::Starfield), SubgraphRole::Other(8));
 }
+
+/// #6995 — Oblivion's AIDT is a 0–100 aggression and confidence, kept as authored (the CS rules compare them with
+/// disposition and health), so every Oblivion NPC carries an AI disposition.
+#[test]
+fn oblivion_aidt_keeps_its_rated_aggression_and_confidence() {
+    let aidt = [70u8, 50, 50, 50, 0, 0, 0, 0, 0xFF, 0, 0, 0];
+    let npc = parse_npc(0x1234, &[sub(b"AIDT", &aidt)], GameKind::Oblivion, &None);
+    let ai = npc.ai_data.expect("Oblivion AIDT decodes");
+    assert_eq!(ai.aggression, Aggression::Rated(70));
+    assert_eq!(ai.confidence, Confidence::Rated(50));
+    assert_eq!((ai.responsibility, ai.attack_radius), (None, None));
+}

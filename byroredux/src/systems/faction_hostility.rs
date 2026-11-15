@@ -199,6 +199,10 @@ pub(crate) fn attacks(disposition: &ActorAiData, standing: Standing, distance: f
         Aggression::Unaggressive => false,
         Aggression::Aggressive => standing == Standing::Enemy,
         Aggression::VeryAggressive | Aggression::Frenzied => true,
+        // #6995 — Oblivion attacks whoever it holds a disposition below this score toward (CS *Aggression*).
+        // The engine keeps no disposition yet (UESP *Oblivion:Disposition*: Personality, race and faction
+        // reactions, fame and infamy), so a rated actor starts no combat on its own, as before it was decoded.
+        Aggression::Rated(_) => false,
     }
 }
 
@@ -628,6 +632,22 @@ mod tests {
         world.insert(corpse, Dead);
         world.insert(unstamped, Dead);
         assert_eq!(living_actors(&world), vec![alive]);
+    }
+
+    /// #6995 — an Oblivion actor (rated aggression) is a living actor for detection, crime and observers, but
+    /// starts no combat on its own until the engine keeps a disposition to compare the score with.
+    #[test]
+    fn a_rated_oblivion_actor_lives_but_starts_no_combat() {
+        let mut world = World::new();
+        world.register::<CombatDisposition>();
+        world.register::<Dead>();
+        let bandit = world.spawn();
+        let rated = ActorAiData { aggression: Aggression::Rated(100), confidence: Confidence::Rated(100), ..disposition(Aggression::Unaggressive) };
+        world.insert(bandit, CombatDisposition(rated));
+        assert_eq!(living_actors(&world), vec![bandit]);
+        for standing in [Standing::Enemy, Standing::Neutral, Standing::Friendly] {
+            assert!(!attacks(&rated, standing, 100.0), "{standing:?}");
+        }
     }
 
     #[test]

@@ -19,9 +19,10 @@ pub(super) fn stamp_faction_ranks(world: &mut World, placement_root: EntityId, r
 
 /// #4414 — stamp the actor's `AIDT` combat disposition, read through the
 /// resolved "Use AI Data" terminal, so ambient faction hostility can decide
-/// whether it starts combat. No-op when the game's `AIDT` is not decoded
-/// (Oblivion's 0–100 scale, Starfield) — such an actor never starts combat
-/// on its own.
+/// whether it starts combat. The disposition also makes the actor one of
+/// `faction_hostility::living_actors` (detectors, witnesses, observers).
+/// No-op when the game's `AIDT` is not decoded (Starfield); Oblivion's 0–100
+/// scale is kept as `Aggression::Rated` (#6995).
 ///
 /// #4817 — called at job finalize, not when the placement root is created.
 /// A resumable job yields across frames, and a root that already carried the

@@ -20,6 +20,12 @@ pub enum Aggression {
     Aggressive,
     VeryAggressive,
     Frenzied,
+    /// Oblivion's 0–100 score (xEdit TES4 `AIDT` byte 0): "Setting an actor's
+    /// aggression to a value higher than their disposition for any other actor
+    /// will cause them to attack the other actor. A setting of 5 or below means
+    /// it will only initiate combat defensively" (CS *Aggression*). A scale, not
+    /// a category, so it is kept as authored.
+    Rated(u8),
 }
 
 /// #4414 — an actor's confidence (xEdit `wbConfidenceEnum`). Only
@@ -32,6 +38,9 @@ pub enum Confidence {
     Average,
     Brave,
     Foolhardy,
+    /// Oblivion's 0–100 score (TES4 `AIDT` byte 1): "what % of health an actor
+    /// must lose before fleeing in combat" (CS *Confidence*).
+    Rated(u8),
 }
 
 /// Skyrim `AIDT` Responsibility (`wbResponsibilityEnum`), also exposed as
@@ -66,7 +75,18 @@ pub struct ActorAiData {
 /// FO3/FNV aggro-radius behaviour bool @15 and radius s32 @16; Skyrim/FO4
 /// flags @6 (bit 0 = aggro-radius behaviour), Attack radius u32 @16.
 pub fn decode_ai_data(data: &[u8], game: GameKind) -> Option<ActorAiData> {
-    if data.len() < 20 || matches!(game, GameKind::Oblivion | GameKind::Starfield) {
+    // #6995 — Oblivion's 12-byte AIDT (xEdit `wbDefinitionsTES4`): Aggression,
+    // Confidence, Energy Level, Responsibility (u8 each, 0–100), service flags,
+    // teaches, maximum training level. No aggro radius.
+    if game == GameKind::Oblivion {
+        return (data.len() >= 2).then(|| ActorAiData {
+            aggression: Aggression::Rated(data[0]),
+            confidence: Confidence::Rated(data[1]),
+            responsibility: None,
+            attack_radius: None,
+        });
+    }
+    if data.len() < 20 || game == GameKind::Starfield {
         return None;
     }
     let aggression = match data[0] {
