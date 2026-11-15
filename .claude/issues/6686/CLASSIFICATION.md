@@ -125,7 +125,7 @@ Classes as before. **input** = the read feeds a check, it is not itself a scan.
 | `cell_loader/spawn.rs` (4), `scene/world_setup.rs` (3), `scene.rs` (1), `scene/scene_runtime.rs` (1), `scene/nif_loader.rs` (2), `scene/nif_loader_light_tests.rs` (2), `player_body.rs` (1), `precombined.rs` (1), `precombined_clip_handle_tests.rs` (1), `sky_params_cleanup_tests.rs` (1), `navm_boundary_soak_tests.rs` (1) | device/data | The spawn / install / flush / unload step each pins runs inside a function that takes a `VulkanContext` or a loaded index. |
 | `cell_loader/placement_lod.rs` (2), `terrain_lod.rs` (2), `terrain_lod_btr.rs` (2), `unload.rs` (2), `water.rs` (3) | device/data + syntax | Mesh-resolver threading (#2362), lod water render-only (#4500), rebuild reuses the projection (#5289): the spawners need a device and an archive. |
 | `parsed_nif_cache.rs` (4) | syntax | #6300: a new `parse_nif` call without a `note_scene_health` beside it. |
-| `render/skin_offsets_hasher_tests.rs` (4) | syntax | The spelling of one map type across four files. A type ascription per site would replace it; the sites are `App` and render-collection locals, so it needs a refactor first. Candidate, not done. |
+| `render/skin_offsets_hasher_tests.rs` (4) | syntax → **replaced** | The spelling of one map type across four files. Replaced by `skin_offsets_is_fx_hashed`, one ascription on `App.skin_offsets`: the other three sites receive that field by reference, so a whole-path swap must change it. No refactor was needed. Injected fault: the field as `std::collections::HashMap` fails at the ascription. |
 | `save_io/registry_completeness_tests.rs` (4) | syntax | Enumerates every `impl Component` / `impl Resource` in three directories; Rust cannot enumerate impls at runtime. |
 | `asset_provider/material/merge.rs` (3) | syntax + size pin | One exported fn; the private arms exist; `merge_bgsm_arm` line count (the line-budget item of #6680). |
 | `asset_provider/tests/starfield_mat.rs` (3) | prose + syntax | #4429, #5284: the parked-kinds table in `nifal.md` against `MaterialTextureSet`; the CDB resolve tail has one home. |
@@ -143,5 +143,5 @@ Classes as before. **input** = the read feeds a check, it is not itself a scan.
 | `sf_smoke.rs` (2) | prose + syntax | Report text; `tally_pack_ins` already has a value test. *read.* |
 | `systems/combat_anim.rs` (1), `asset_provider/texture.rs` (2), `asset_provider/tests/archive_precedence.rs` (1) | syntax | Fixture paths against the loader; swap acquires per mesh; a directory walk so "the provider nobody wrote down" is covered. |
 
-**Still open.** Two candidates are named above (`skin_offsets_hasher_tests`, and the `sandbox` / `zup_yup` pair that
-wait on a fixture). Nearly every file is classed by doc, not by reading; if a doc is wrong, the class is wrong.
+**Still open.** One candidate is named above: the `sandbox` / `zup_yup` pair that
+wait on a fixture (`skin_offsets_hasher_tests` was replaced in the fifth pass). Nearly every file is classed by doc, not by reading; if a doc is wrong, the class is wrong.

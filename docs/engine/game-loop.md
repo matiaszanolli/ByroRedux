@@ -384,7 +384,7 @@ struct App {
     gpu_lights: Vec<GpuLight>,               // reused per-frame scratch
     bone_world: Vec<[[f32; 4]; 4]>,          // M29.5/M29.6 skinning palette
     skin_slot_pool: SkinSlotPool,            // persistent per-entity bone slots
-    skin_offsets: HashMap<EntityId, u32>,
+    skin_offsets: FxHashMap<EntityId, u32>,  // hot path: Fx-hashed (#2985)
     material_table: MaterialTable,           // R1 deduplicated material SSBO
     streaming: Option<WorldStreamingState>,  // M40 exterior cell streaming
     // bench_* fields: --bench-frames / --bench-hold / --screenshot plumbing
