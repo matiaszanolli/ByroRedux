@@ -191,11 +191,13 @@
 //! lowest bone is 8.9 under that root. Unlike Skyrim's COM, its parent (`Bip01`)
 //! carries the 67.8-unit hip height, so the root body is placed at the skeleton
 //! root rather than given a zero local translation ([`BonePose::at_placement`]).
-//! Creatures stay refused until each rig is verified.
+//! FO3/FNV creatures stay refused until each rig is verified.
 //!
-//! **Scope:** only the verified ragdolls are posed — the Skyrim humanoid,
+//! **Scope:** only the admitted ragdolls are posed — the Skyrim humanoid,
 //! draugr, SkeletonS, falmer, skeever and deer rigs, the FO4 human,
-//! feral-ghoul and super-mutant rigs, and the FO3/FNV humanoid rig. A Skyrim rig is pinned by its bodies'
+//! feral-ghoul and super-mutant rigs, the eight FO4 creature rigs posed by node
+//! order (FO4 section above; molerat, dog and stingwing on the owner's call), and
+//! the FO3/FNV humanoid rig. A Skyrim rig is pinned by its bodies'
 //! bone names in order ([`is_skyrim_posable_ragdoll`]): a skeleton whose
 //! ragdoll bodies are anything else — another creature, the beast races'
 //! tailed rig — is refused rather than posed from a guess, and so is a pose

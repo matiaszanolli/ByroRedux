@@ -233,12 +233,22 @@ record boundary (Oblivion's header bit, FO3/FNV's DATA Base Health ≤ 0).
 template order, must be one of the verified sets, and each set carries its own map
 from entry to body. Skyrim's humanoid and creature sets and the FO3/FNV humanoid
 map entry *k* to body *k*. FO4's human, ghoul and super-mutant sets map each entry
-to a body by its `pose_bone_id`, allowing at most one trailing marker. Rotations
+to a body by its `pose_bone_id`, allowing at most one trailing marker. FO4's eight
+creature sets (brahmin, radstag, yao guai, mirelurk, radroach, molerat, dog,
+stingwing), which author bone id 0 on nearly every body, map entry *k* to the
+*k*-th body in the skeleton's depth-first node order (`entries_by_tree_order`,
+#6065); the real-data census pins that order by each entry's offset length
+against its bone's (#7016). Rotations
 use the empirically derived Gamebryo XYZ product with negated angles. The root
 body is placed at the skeleton root's position in its parent frame
 (`placement_local`), which is the reference itself where the parents sit at the
 placement origin (Skyrim's and FO4's COM) and undoes the hip lift of FO3/FNV's
-`Bip01`. A rig joins by adding its verified body set and map, never a game check.
+`Bip01`. A rig joins by adding its body set and map, never a game check, once
+its corpora pass both checks (offset lengths within 3 %, the Euler convention
+ranked first). Molerat, dog and stingwing are the exception: their offsets pass
+but their convention does not rank first, and they were admitted on the owner's
+call (2026-11-08); a posed molerat holds one hind-knee joint 0.45 rad into a
+±0.175 twist (`fo4_xrgd_posed_molerat_corpse_holds_together_in_free_fall`).
 Oblivion's humanoid rig is not verified (its bodies are not FO3/FNV's despite the
 shared `Bip01` names), so its posed corpses are parked and refused.
 

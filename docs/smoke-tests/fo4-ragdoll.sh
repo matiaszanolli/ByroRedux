@@ -14,8 +14,10 @@
 #                         000F123A, 19 XRGD entries: 18 bodies + the marker) the
 #                         same; a LvlRaiderMelee (REFR 0007432D, a human) dies to
 #                         real swings; and LvlMoleratAggro512Delayed (REFR
-#                         000F2A45), a creature whose rig is not posable, is a
-#                         starts-dead corpse that must simulate a stable 20-body
+#                         000F2A45), a creature corpse that authors no XRGD pose
+#                         (the molerat rig is posable since #6065; this placement
+#                         carries none), is a starts-dead corpse that must
+#                         collapse from its spawn pose into a stable 20-body
 #                         ragdoll (every molerat in this cell is dead on load, so
 #                         there is none to swing at).
 #
@@ -222,8 +224,8 @@ check_kill() {
     echo "smoke[fo4-ragdoll]: $cell $name $victim killed, $activation; $summary"
 }
 
-# A creature that spawns dead (its rig is not posable from an XRGD) collapses
-# into its ragdoll at load.
+# A creature that spawns dead with no authored XRGD pose collapses into its
+# ragdoll at load.
 check_creature_corpse() {
     local cell="$1" name="$2" refr="$3" bodies="$4"
     local corpse summary
