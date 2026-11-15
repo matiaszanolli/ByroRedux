@@ -1422,15 +1422,32 @@ fn apply_operator(stack: &mut Vec<ObScriptValue>, token: &str) {
                 ObScriptValue::Num(0.0)
             }
         }
+        // Modulus: "do integer division and return remainder" (CS *Set*), so both operands are
+        // integers first; a zero divisor reads 0, as `/` does. SCR-2026-11-15-01: it fell to the
+        // unknown arm, which pushed 0 over its operands, so FalloutNV's
+        // `VNovacChupacabraNightkinSCRIPT` read `timerBark % 31 == 0` as always true and barked
+        // every frame.
+        "%" => {
+            let (rhs, lhs) = (pop(stack) as i32, pop(stack) as i32);
+            ObScriptValue::Num(if rhs != 0 { lhs.wrapping_rem(rhs) as f32 } else { 0.0 })
+        }
         "!" => flag(!truthy(pop(stack))),
         // Unary minus: the compiler writes `-1` as `1 ~` and `-x` as `x ~` (#6905: Oblivion's
         // `VampireScript` opens with `set randomdream to -1`, and read as 0 it shows a vampire
         // dream's MessageBox to every new character). 358 records of the three masters use it.
         "~" => ObScriptValue::Num(-pop(stack)),
         _ => {
-            // Unknown operator token: push a neutral zero to keep the
-            // stack balanced. Every operator the three masters' compiled
-            // scripts use is matched above, so this arm is defensive.
+            // Every operator the CS *Set* page lists (`+ - * / % == != > < >= <= && || !`, and the
+            // compiler's unary `~`) is matched above, so only corrupt bytecode reaches here. Push a
+            // zero to keep the stack walk going, but say so once per token: a silent zero is what
+            // hid the missing `%` (SCR-2026-11-15-01).
+            static REPORTED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+            if let Ok(mut reported) = REPORTED.lock() {
+                if !reported.iter().any(|seen| seen == token) {
+                    reported.push(token.to_string());
+                    log::warn!("ObScript expression uses an operator the VM does not know: {token:?} (read as 0)");
+                }
+            }
             ObScriptValue::Num(0.0)
         }
     };
@@ -1440,6 +1457,30 @@ fn apply_operator(stack: &mut Vec<ObScriptValue>, token: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SCR-2026-11-15-01 — `%` is modulus on integers (CS *Set*), applied the way the RPN loop does:
+    /// `timerBark % 31 == 0` (FalloutNV's `VNovacChupacabraNightkinSCRIPT`) is true only on multiples
+    /// of 31, and a zero divisor reads 0 like `/`.
+    #[test]
+    fn a_percent_is_integer_modulus() {
+        let eval = |tokens: &[&str]| {
+            let mut stack = Vec::new();
+            for token in tokens {
+                match token.parse::<f32>() {
+                    Ok(n) => stack.push(ObScriptValue::Num(n)),
+                    Err(_) => apply_operator(&mut stack, token),
+                }
+            }
+            assert_eq!(stack.len(), 1, "{tokens:?} leaves one value");
+            stack[0].as_num()
+        };
+        assert_eq!(eval(&["7", "3", "%"]), 1.0);
+        assert_eq!(eval(&["7.9", "3", "%"]), 1.0, "integer division first");
+        assert_eq!(eval(&["5", "0", "%"]), 0.0);
+        assert_eq!(eval(&["62", "31", "%", "0", "=="]), 1.0);
+        assert_eq!(eval(&["5", "31", "%", "0", "=="]), 0.0, "not every tick");
+        assert_eq!(eval(&["4", "3", "*", "2", "%"]), 0.0, "the CS page's own example");
+    }
     use byroredux_plugin::esm::records::{ScriptLocalVar, ScriptRecord, ScriptRef, ScriptType};
 
     /// Recording host stub — captures every dispatched call.
