@@ -362,14 +362,13 @@ fn get_should_attack(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptV
 }
 
 // GECK *ShowMap <marker> [enableFastTravel]*: the marker joins the player's map, travelable when asked.
+// It opens no menu: the GECK, the geckwiki and the CS pages (`ShowMap.wiki` in each) all say it "adds
+// the specified map marker to the player's world map", and none says the map is shown (#6823).
 fn cmd_1055(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
     match form_arg(args, 0) {
         Some(marker) => {
             if let Some(mut markers) = world.try_resource_mut::<crate::MapMarkers>() {
                 markers.add(marker, num(args, 1) != 0.0);
-            }
-            if let Some(mut menus) = world.try_resource_mut::<PendingMenus>() {
-                menus.0.push(MenuRequest { menu: "map", form: marker });
             }
             done(format!("ShowMap {marker:08X}"))
         }

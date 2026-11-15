@@ -681,6 +681,22 @@ fn is_dlc_installed_reads_the_load_order() {
     assert_eq!(run(&world, 0x126f, &nums(&[9.0]), &ctx(None)), Action::Declined, "no such DLC");
 }
 
+/// `ShowMap` adds the marker (travelable only when asked) and opens no menu: the GECK and CS pages
+/// describe a map-marker change, not a menu (#6823).
+#[test]
+fn show_map_adds_the_marker_and_opens_no_menu() {
+    let (world, ..) = world(GameKind::Fallout3NV);
+    assert!(is_done(&run(&world, 0x1055, &refs(&[0x0001_2345]), &ctx(None))));
+    let mut args = refs(&[0x0001_2346]);
+    args.push(ObScriptValue::Num(1.0));
+    assert!(is_done(&run(&world, 0x1055, &args, &ctx(None))));
+    let markers = world.try_resource::<crate::MapMarkers>().unwrap();
+    assert!(markers.is_visible(0x0001_2345) && !markers.is_fast_travel(0x0001_2345));
+    assert!(markers.is_visible(0x0001_2346) && markers.is_fast_travel(0x0001_2346));
+    drop(markers);
+    assert!(world.try_resource::<PendingMenus>().is_none_or(|menus| menus.0.is_empty()), "no menu request");
+}
+
 #[test]
 fn the_character_creation_commands_queue_their_screens_with_their_points() {
     let (world, ..) = world(GameKind::Fallout3NV);

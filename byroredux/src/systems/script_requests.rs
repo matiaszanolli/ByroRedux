@@ -369,7 +369,7 @@ impl byroredux_core::ecs::Resource for ScriptRequestLog {}
 
 const REQUEST_LOG_CAP: usize = 64;
 
-/// Move the menus (`ShowMap`, the chargen screens, the casino games ...) scripts asked for into the log
+/// Move the menus (the chargen screens, the casino games ...) scripts asked for into the log
 /// (videos, `PlayBink`, are the app's movie player's: `video.rs`), and carry out `ExitGame` — "plays credits and returns the game to the main
 /// menu"; there is no main menu, so the game ends through the orderly shutdown.
 pub(crate) fn script_ui_request_system(world: &World, _dt: f32) {
