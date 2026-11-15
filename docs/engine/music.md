@@ -12,7 +12,7 @@ promise and the `MUS-` requirements. This document states how the engine keeps t
 |---|---|---|
 | Records | `byroredux-plugin` | The sources, as authored: cell `XCMO` / `XCMT` (`CellData::music_type_form` / `music_type_enum`), worldspace `ZNAM` / Oblivion `SNAM` (`WorldspaceRecord::default_music` / `music_category`), region `RDMO` / `RDMD` / `RDSB` (`RegionDataPayload::Sound`), the five `DOBJ` music slots (`EsmIndex::default_music`), `MUSC`, `MSET`, `ALOC` (`EsmIndex::media_locations`) and the New Vegas audio-marker block on a placed reference (`PlacedRef::audio_marker`) |
 | Files | `asset_provider::SoundArchiveProvider` | Music paths resolve loose first, then in the sound archives (MUS-SRC-011, -013); a folder form expands to the playable files directly in it (MUS-SRC-010) |
-| Translate | `byroredux/src/music/translate.rs` | Each game's sources become a `MusicDirective`. The only per-game code (R5) |
+| Translate | `byroredux/src/music/translate.rs` | Each game's sources become a `Directive` (`music/directive.rs`). The only per-game code (R5) |
 | Controller | `byroredux/src/music/controller.rs` (`MusicController`, `music_system`) | One directive per layer; decides what is audible; picks tracks; fades; reports |
 | Voices | `byroredux_audio::AudioWorld` music voices | Streamed, non-spatial tracks on the main track: no reverb send, no underwater filter (MUS-MIX-003). The controller owns every voice; nothing else plays music |
 | Observable | `music.status` (`byroredux/src/commands/music.rs`) | MUS-RPT-001 |
@@ -40,7 +40,7 @@ The controller holds at most one directive per layer (PRD §3.1):
 | Layer | Fed by | While active |
 |---|---|---|
 | Hold | `AudioWorld::movie_hold().music_paused`, raised by a movie with the pause-music flag (BIK-PRES-005) | Every voice paused; resumed at the same position when the movie ends (MUS-MIX-002) |
-| Sting | The player's death (the player gains `Dead`), a level-up (`PendingMusicEvents`, pushed where the level is awarded) | In the music's place: Script ended, Battle and Location stopped and silent until the place changes, combat starts or a script plays; Fallout 3 / New Vegas's level-up sting plays over the music instead (MUS-STG-004, #6901) |
+| Sting | The player's death (the player gains `Dead`), a level-up (`raise_sting(world, Sting::LevelUp)`, called where the level is awarded) | In the music's place: Script ended, Battle and Location stopped and silent until the place changes, combat starts or a script plays; Fallout 3 / New Vegas's level-up sting plays over the music instead (MUS-STG-004, #6901) |
 | Script | `PlayMusic` (`PendingMusic`), `StreamMusic` | Replaces Battle and Location: a scripted track plays in their place, a scripted silence (`1NoMusic`) silences them (MUS-SCR-005, #6899), except a New Vegas audio marker's music, which plays on beside it (#6902); Battle ends an Oblivion stream |
 | Battle | `is_in_combat` for the player (Q2), held for the recovery time after it ends (MUS-CMB-002) | Location paused, crossfading (MUS-SEL-004) |
 | Location | The player's place (§3) | — |
