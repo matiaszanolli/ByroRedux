@@ -127,28 +127,26 @@ pub fn run(plugin_paths: &[&str], filter: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// A localized plugin's FULL sub-record holds a string-table ID, not
-/// text; when the companion table can't be found the resolver hands back a
-/// `<lstring 0xNNNNNNNN>` placeholder. Printing that would read as a name,
-/// so drop it and leave the editor ID to identify the cell.
-///
-/// #3413 — this used to claim "Skyrim SE hits this for every cell", which
-/// stopped being true when the archive fallback landed (#1553). `run` goes
-/// through `parse_record_indexes_in_load_order`, which installs an
-/// `ArchiveStringSource` and calls `StringTableSet::load_with_archive`, not
-/// `::load`. That source matches `Skyrim - Interface.bsa` twice over — as
-/// the `skyrim` stem's own plugin archive, and as a shared `" - interface"`
-/// archive covering `Update.esm` / `Dawnguard.esm` / `HearthFires.esm` /
-/// `Dragonborn.esm`, whose 138 `strings\…` entries all live there. The
-/// real-data test `real_skyrim_load_order_preserves_categories_and_resolves_archive_strings`
-/// pins it.
-///
-/// The placeholder is still reachable, so this helper still earns its keep:
-/// a non-localized plugin, or a localized one whose table is genuinely
-/// absent, produces it.
-fn is_unresolved_lstring(display: &str) -> bool {
-    display.starts_with("<lstring ") && display.ends_with('>')
-}
+// A localized plugin's FULL sub-record holds a string-table ID, not
+// text; when the companion table can't be found the resolver hands back a
+// `<lstring 0xNNNNNNNN>` placeholder. Printing that would read as a name,
+// so drop it and leave the editor ID to identify the cell.
+//
+// #3413 — this used to claim "Skyrim SE hits this for every cell", which
+// stopped being true when the archive fallback landed (#1553). `run` goes
+// through `parse_record_indexes_in_load_order`, which installs an
+// `ArchiveStringSource` and calls `StringTableSet::load_with_archive`, not
+// `::load`. That source matches `Skyrim - Interface.bsa` twice over — as
+// the `skyrim` stem's own plugin archive, and as a shared `" - interface"`
+// archive covering `Update.esm` / `Dawnguard.esm` / `HearthFires.esm` /
+// `Dragonborn.esm`, whose 138 `strings\…` entries all live there. The
+// real-data test `real_skyrim_load_order_preserves_categories_and_resolves_archive_strings`
+// pins it.
+//
+// The placeholder is still reachable, so the check still earns its keep:
+// a non-localized plugin, or a localized one whose table is genuinely
+// absent, produces it.
+use byroredux_plugin::esm::records::is_unresolved_lstring;
 
 #[cfg(test)]
 mod tests {

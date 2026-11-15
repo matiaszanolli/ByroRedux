@@ -47,7 +47,7 @@ pub use panels::{
     BarterAction, BarterItemView, BarterSnapshot, ChargenChoice, ChargenDraft, ChargenOption, ChargenScreenView,
     ChargenSnapshot, CraftingAction, CraftingRecipeView, CraftingSnapshot, DialogueTopicEntryView, DialogueTopicSnapshot, DialogueUiAction, GameMenuPage, GameMenuState,
     InteractionPrompt, InventoryAction, InventoryItemView, InventorySnapshot, MessageBoxView,
-    ObjectiveView, PanelOutputs, PanelSnapshot, PanelTab, QueuedLoad, VitalBarView,
+    ObjectiveView, PanelOutputs, PanelSnapshot, PanelTab, QueuedLoad, StealthIndicatorLook, StealthIndicatorView, VitalBarView,
 };
 
 /// Setting IDs and the built-in registrations, re-exported from `core`.

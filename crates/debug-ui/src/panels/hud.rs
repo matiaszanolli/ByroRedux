@@ -1,4 +1,4 @@
-//! The in-game HUD the shipped game draws every frame: crosshair, interaction prompt, vitals, objectives, loading tip and player message (#6578, split from `panels.rs`).
+//! The in-game HUD the shipped game draws every frame: crosshair, interaction prompt, vitals, objectives, detection indicator, loading tip and player message (#6578, split from `panels.rs`).
 
 use super::*;
 use egui::{Align2, Color32, Context, CornerRadius, FontId, Frame, Id, Margin, Order, RichText, Stroke};
@@ -32,6 +32,10 @@ pub fn draw_hud(ctx: &Context, snapshot: &PanelSnapshot) {
         if let Some(objectives) = snapshot.objectives.as_ref() {
             draw_objective_lines(ctx, objectives);
         }
+    }
+
+    if let Some(indicator) = snapshot.stealth_indicator.as_ref() {
+        draw_stealth_indicator(ctx, indicator);
     }
 
     let Some(prompt) = snapshot
@@ -120,6 +124,60 @@ fn draw_vitals_bars(ctx: &Context, vitals: &[VitalBarView]) {
                 ui.add_space(GAP);
             }
         });
+}
+
+/// The danger state's flash: `Fallout3.exe` restarts a 0.5 s alpha animation on
+/// the meter while it shows `sSneakDanger` (`0x937bd2`).
+const DANGER_FLASH_SECS: f64 = 0.5;
+
+/// Draw the detection indicator just above the crosshair (SNK-HUD-001) — the
+/// presentation consumer of the detection tick's folded state. A label in the
+/// game's vocabulary, or Oblivion's eye.
+fn draw_stealth_indicator(ctx: &Context, indicator: &StealthIndicatorView) {
+    use byroredux_core::stealth::IndicatorState;
+    let alpha = if indicator.state == IndicatorState::Danger {
+        let phase = (ctx.input(|i| i.time) / DANGER_FLASH_SECS) * std::f64::consts::PI;
+        ctx.request_repaint();
+        (0.35 + 0.65 * phase.sin().abs()) as f32
+    } else {
+        1.0
+    };
+    let center = ctx.content_rect().center() + egui::vec2(0.0, -58.0);
+    let painter = ctx.layer_painter(egui::LayerId::new(Order::Middle, Id::new("stealth_indicator")));
+    match &indicator.look {
+        StealthIndicatorLook::Label(label) => {
+            let color = match indicator.state {
+                IndicatorState::Hidden => Color32::from_rgb(225, 225, 225),
+                IndicatorState::Detected => Color32::from_rgb(238, 214, 120),
+                IndicatorState::Caution => Color32::from_rgb(240, 156, 60),
+                IndicatorState::Danger => Color32::from_rgb(232, 64, 52),
+            };
+            let galley = painter.layout_no_wrap(label.to_string(), FontId::proportional(18.0), color.gamma_multiply(alpha));
+            let size = galley.size() + egui::vec2(20.0, 8.0);
+            let rect = egui::Rect::from_center_size(center, size);
+            painter.rect_filled(rect, CornerRadius::same(5), Color32::from_black_alpha(150));
+            painter.galley(rect.min + egui::vec2(10.0, 4.0), galley, Color32::WHITE);
+        }
+        StealthIndicatorLook::Eye => {
+            let lit = indicator.state > IndicatorState::Hidden;
+            let tone = if lit { Color32::from_white_alpha(240) } else { Color32::from_white_alpha(70) };
+            let stroke = Stroke::new(2.0, tone);
+            // An almond outline: upper and lower lids as polylines.
+            let lid = |sign: f32| -> Vec<egui::Pos2> {
+                (0..=16)
+                    .map(|i| {
+                        let t = i as f32 / 16.0 * 2.0 - 1.0;
+                        center + egui::vec2(18.0 * t, sign * 9.0 * (1.0 - t * t))
+                    })
+                    .collect()
+            };
+            painter.add(egui::Shape::line(lid(-1.0), stroke));
+            painter.add(egui::Shape::line(lid(1.0), stroke));
+            if lit {
+                painter.circle_filled(center, 5.0, tone);
+            }
+        }
+    }
 }
 
 /// Draw the active quest objective lines, top-left — the presentation
@@ -297,6 +355,29 @@ mod tests {
             output.shapes.is_empty(),
             "show_vitals=false must suppress the bars entirely, not merely their fill"
         );
+    }
+
+    #[test]
+    fn the_stealth_indicator_draws_in_each_look_and_not_without_a_view() {
+        use byroredux_core::stealth::IndicatorState;
+        for look in [StealthIndicatorLook::Label("[HIDDEN]".into()), StealthIndicatorLook::Eye] {
+            for state in IndicatorState::ALL {
+                let ctx = Context::default();
+                ctx.begin_pass(egui::RawInput::default());
+                draw_hud(
+                    &ctx,
+                    &PanelSnapshot {
+                        stealth_indicator: Some(StealthIndicatorView { state, look: look.clone() }),
+                        ..Default::default()
+                    },
+                );
+                assert!(!end_pass(&ctx).shapes.is_empty(), "{look:?} {state:?}");
+            }
+        }
+        let ctx = Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        draw_hud(&ctx, &PanelSnapshot::default());
+        assert!(end_pass(&ctx).shapes.is_empty(), "no view outside the stance draws nothing");
     }
 
     #[test]

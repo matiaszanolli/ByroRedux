@@ -72,7 +72,7 @@ pub use actor::{
 };
 pub use actor_value_derive::{derive_npc_actor_values, derive_resolved_actor_values};
 pub use climate::{parse_clmt, ClimateRecord, ClimateWeather};
-pub use common::StringsTableGuard;
+pub use common::{is_unresolved_lstring, StringsTableGuard};
 pub use container::{
     parse_cont, parse_leveled_list, ContainerRecord, InventoryEntry, LeveledEntry, LeveledList,
 };

@@ -1283,21 +1283,35 @@ impl EsmIndex {
     /// goes through [`Self::insert_game_setting`], which maintains the
     /// table.
     pub fn game_setting_float(&self, editor_id: &str) -> Option<f32> {
-        let setting = self
-            .game_settings_by_edid
+        self.game_setting(editor_id).and_then(|value| match *value {
+            super::SettingValue::Float(value) => Some(value),
+            super::SettingValue::Int(value) => Some(value as f32),
+            super::SettingValue::Short(value) => Some(f32::from(value)),
+            super::SettingValue::String(_) => None,
+        })
+    }
+
+    /// M65 (SNK-HUD-002) — a string GMST by EditorID (the indicator's
+    /// `sSneak*` labels), resolved like [`Self::game_setting_float`]. A
+    /// localized id no string table resolves reads as unauthored.
+    pub fn game_setting_string(&self, editor_id: &str) -> Option<&str> {
+        match self.game_setting(editor_id)? {
+            super::SettingValue::String(value) if !super::common::is_unresolved_lstring(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// The winning GMST's value by EditorID (the two lookups above).
+    fn game_setting(&self, editor_id: &str) -> Option<&super::SettingValue> {
+        self.game_settings_by_edid
             .get(&editor_id.to_ascii_lowercase())
             .and_then(|form_id| self.game_settings.get(form_id))
             .or_else(|| {
                 self.game_settings
                     .values()
                     .find(|setting| setting.editor_id.eq_ignore_ascii_case(editor_id))
-            });
-        setting.and_then(|setting| match setting.value {
-            super::SettingValue::Float(value) => Some(value),
-            super::SettingValue::Int(value) => Some(value as f32),
-            super::SettingValue::Short(value) => Some(f32::from(value)),
-            super::SettingValue::String(_) => None,
-        })
+            })
+            .map(|setting| &setting.value)
     }
 
     /// M65 (SNK-STN-005) — a movement type's `SPED` floats by EditorID

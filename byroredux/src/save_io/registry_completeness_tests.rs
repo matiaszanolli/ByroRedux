@@ -1075,6 +1075,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("StealthRules", "M65 (SNK-DET-002) — the detection formula row and its settings, resolved from the load order by populate_scene_runtime on every load — derived configuration"),
         ("PlayerDetection", "M65 — the worst level toward the player, rewritten by every detection tick from `Awareness` — derived"),
         ("PlayerActionNoise", "M65 (SNK-DET-016) — the last attack's sound, taken by the next detection tick within a frame — transient"),
+        ("StealthIndicator", "M65 (SNK-HUD-002) — the detection indicator's table, labels (the load order's sSneak* settings) and Starfield's skill-gate perk, resolved by install_stealth_rules on every load — derived configuration"),
         ("SneakMovement", "M65 (SNK-STN-005) — the sneak stance's speed multipliers, resolved from the load order's fMoveSneakMult / MOVT records by populate_scene_runtime on every load — derived configuration"),
         ("DetectionConfig", "fSneakMaxDistance / fSneakExteriorDistanceMult (#4414), installed from the load order's GMSTs by populate_scene_runtime on every load — derived configuration"),
         ("AuthoredCover", "the worldspace's authored ground-cover records (#4413), translated from its GRAS records by install_ground_cover at every worldspace entry — derived configuration"),

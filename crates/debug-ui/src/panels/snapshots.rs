@@ -39,6 +39,10 @@ pub struct PanelSnapshot {
     /// state. `None` (or empty) means no running quest has a displayed,
     /// unfinished objective.
     pub objectives: Option<Vec<ObjectiveView>>,
+    /// M65 (SNK-HUD-001) — the detection indicator, present only while the
+    /// player is in the sneak stance (and, on Starfield, holds the Stealth
+    /// skill). Like the prompt, it stays live with the F3 overlay hidden.
+    pub stealth_indicator: Option<StealthIndicatorView>,
     /// #5822 — core's snapshot directly; debug-ui depends on core, so
     /// no hand-synced view copy is needed.
     pub metrics: Option<byroredux_core::ecs::MetricsSnapshot>,
@@ -209,6 +213,25 @@ pub struct VitalBarView {
     pub label: &'static str,
     pub current: f32,
     pub max: f32,
+}
+
+/// The detection indicator's presentation (SNK-HUD-001, -002): the state the
+/// detection tick folded from every counted detector, drawn in the game's
+/// vocabulary. The label is the load order's string, shared with the resolved
+/// `StealthIndicator` resource, so a frame rebuild only bumps a refcount.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StealthIndicatorView {
+    pub state: byroredux_core::stealth::IndicatorState,
+    pub look: StealthIndicatorLook,
+}
+
+/// How the indicator is drawn.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StealthIndicatorLook {
+    /// The game's label for the state (`sSneakHidden` …); the danger state flashes.
+    Label(std::sync::Arc<str>),
+    /// Oblivion's eye, lit above the hidden state.
+    Eye,
 }
 
 /// One active quest objective's HUD line: the quest's display name and the

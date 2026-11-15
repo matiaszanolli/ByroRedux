@@ -349,6 +349,7 @@ impl App {
                     true,
                 ),
                 objectives: self.ui.objective_hud_cache.lend(&self.world),
+                stealth_indicator: crate::detection::indicator_view(&self.world),
                 ..Default::default()
             }
         };
@@ -366,19 +367,13 @@ impl App {
         let bench_window_open = self.bench.frames_target.is_some()
             && crate::bench::harness_active(self.bench.summary_printed);
         if bench_window_open {
-            snapshot.show_crosshair = false;
-            snapshot.vitals = None;
-            self.ui.objective_hud_cache
-                .give_back(snapshot.objectives.take());
+            strip_gameplay_hud(&mut snapshot, &mut self.ui.objective_hud_cache);
         }
         self.debug_ui_refresh_entities = false;
         snapshot.loading_tip = self.loading_screen.tip().map(str::to_owned);
         if snapshot.loading_tip.is_some() {
-            snapshot.show_crosshair = false;
+            strip_gameplay_hud(&mut snapshot, &mut self.ui.objective_hud_cache);
             snapshot.interaction_prompt = None;
-            snapshot.vitals = None;
-            self.ui.objective_hud_cache
-                .give_back(snapshot.objectives.take());
         }
 
         // #5153 — objective journal transitions (a stage fragment's
@@ -1422,6 +1417,19 @@ struct UiOverlayState<'a> {
     dropped_host_calls_menu: &'a mut Option<String>,
     reported_host_methods: &'a mut std::collections::HashSet<(String, String)>,
     reported_host_methods_capped: &'a mut bool,
+}
+
+/// Strip the gameplay HUD layer (crosshair, vitals, detection indicator,
+/// objectives) from a frame's snapshot — the bench capture window and the
+/// loading screen — handing the objective lines back to their cache.
+fn strip_gameplay_hud(
+    snapshot: &mut byroredux_debug_ui::PanelSnapshot,
+    objective_cache: &mut crate::objectives::ObjectiveHudCache,
+) {
+    snapshot.show_crosshair = false;
+    snapshot.vitals = None;
+    snapshot.stealth_indicator = None;
+    objective_cache.give_back(snapshot.objectives.take());
 }
 
 /// Tick the MenuXml HUD (Oblivion M48.4 / FO3-FNV M48.5): push engine

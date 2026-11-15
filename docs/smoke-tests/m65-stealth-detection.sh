@@ -8,6 +8,9 @@
 #   4. The player is placed beside that detector on each of its four sides (a 190° view cone leaves
 #      only a rear wedge blind, so at least one side is in front of it): it reads level Seen with a
 #      line of sight on one of them, through the same `stealth.status` (SNK-DET-001, SNK-DX-001).
+#   5. The indicator (#6913): while sneaking, `stealth.status` names a state and its bracketed FNV label
+#      (`Fallout3.exe`'s defaults; `FalloutNV.esm` authors none), not [HIDDEN] once a detector sees the
+#      player; out of the stance it is hidden (SNK-HUD-001, -002).
 #
 # Exits 77 when the FNV data is missing.
 set -euo pipefail
@@ -111,4 +114,14 @@ for offset in "96 0" "-96 0" "0 96" "0 -96"; do
 done
 [[ -n "$seen" ]] || fail "detector $entity never read level Seen beside it: $(cat "$LOG_DIR/status.log")"
 echo "smoke[m65-stealth-detection]: Seen PASS — detector $entity in sight: $seen"
+
+# ── 5. the indicator ──────────────────────────────────────────────
+# The reply quotes the label (`indicator Detected "[DETECTED]"`), escaped on the wire.
+indicator="$(grep -oE 'indicator [A-Za-z]+ \\?"\[[A-Z]+\]' "$LOG_DIR/status.log" | head -1 | tr -d '\\' || true)"
+grep -Eq '^indicator (Detected|Caution|Danger) "\[[A-Z]+\]' <<<"$indicator" \
+    || fail "a detector sees the player but the indicator reads: ${indicator:-nothing} ($(grep -F 'stealth: rules' "$LOG_DIR/status.log"))"
+debug_command "stealth.sneak off" "$LOG_DIR/stand.log" || fail "stealth.sneak unavailable"
+status
+grep -Fq "indicator hidden" "$LOG_DIR/status.log" || fail "the indicator shows out of the stance: $(grep -F 'stealth: rules' "$LOG_DIR/status.log")"
+echo "smoke[m65-stealth-detection]: indicator PASS — $indicator\", hidden standing"
 echo "smoke[m65-stealth-detection]: PASS"

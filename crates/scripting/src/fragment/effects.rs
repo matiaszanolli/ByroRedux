@@ -295,6 +295,7 @@ pub(crate) fn apply_effect(
         | Effect::SetCrimeFaction { .. }
         | Effect::SetUnconscious { .. }
         | Effect::SetGhost { .. }
+        | Effect::SetNotShowOnStealthMeter { .. }
         | Effect::EvaluatePackage { .. } => {
             apply_ai_combat_effect(effect, context, vmad, world, deferred)
         }

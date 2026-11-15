@@ -2,7 +2,7 @@
 //! detection levels. For every live actor within the row's range of the
 //! player it computes, on the detector's own timer, the detection value, the
 //! level toward the player and the detector's alert state, and keeps the
-//! worst counted level in [`PlayerDetection`].
+//! worst counted detector and the indicator state in [`PlayerDetection`].
 //!
 //! Registered as the first `Stage::Update` segment, so every consumer reads
 //! this frame's levels.
@@ -13,7 +13,10 @@ use byroredux_core::ecs::components::{ActorValues, Awareness, GlobalTransform, S
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::Vec3;
-use byroredux_core::stealth::{step_alert, AlertState, DetectionInputs, DetectionLevel, DetectionTerms, StealthRules};
+use byroredux_core::stealth::{
+    step_alert, AlertState, DetectionInputs, DetectionLevel, DetectionTerms, IndicatorModel, IndicatorState, StealthIndicator,
+    StealthRules,
+};
 use byroredux_plugin::esm::records::EsmIndex;
 
 /// GECK *Actor Value Codes* (FO3 / FNV), resolved to AVIFs through
@@ -24,13 +27,16 @@ const AV_INVISIBILITY: f32 = 48.0;
 const AV_CHAMELEON: f32 = 49.0;
 const AV_NIGHT_EYE: f32 = 50.0;
 
-/// The worst counted level toward the player, and its detector's alert state
-/// and hostility: what the indicator draws (SNK-HUD-001, Phase 4).
+/// The worst counted detector toward the player: its level, alert state and
+/// hostility, and the indicator state it asks for, the highest any counted
+/// detector asks for (SNK-HUD-002). An actor flagged by
+/// `SetNotShowOnStealthMeter` and not hostile is not counted (SNK-DET-014).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct PlayerDetection {
     pub(crate) level: DetectionLevel,
     pub(crate) alert: AlertState,
     pub(crate) hostile: bool,
+    pub(crate) indicator: IndicatorState,
     pub(crate) detector: Option<EntityId>,
 }
 
@@ -67,6 +73,21 @@ pub(crate) fn install_stealth_rules(world: &mut World, index: &EsmIndex) {
         );
     }
     world.insert_resource(rules);
+    let indicator = StealthIndicator::resolve(
+        index.character_rules.indicator(),
+        |editor_id| index.game_setting_string(editor_id).map(str::to_owned),
+        |editor_id| index.perks.values().find(|perk| perk.editor_id.eq_ignore_ascii_case(editor_id)).map(|perk| perk.form_id),
+    );
+    log::info!(
+        "Detection indicator: {:?} [{}]{}",
+        indicator.model.style,
+        indicator.labels.iter().map(|label| &**label).collect::<Vec<_>>().join(" / "),
+        match indicator.gate {
+            byroredux_core::stealth::IndicatorGate::Open => String::new(),
+            byroredux_core::stealth::IndicatorGate::Perk(form) => format!(", gated on {form:08X?}"),
+        }
+    );
+    world.insert_resource(indicator);
     world.insert_resource(PlayerDetection::default());
     world.insert_resource(PlayerActionNoise::default());
 }
@@ -139,6 +160,7 @@ pub(crate) fn detection_tick_system(world: &World, dt: f32) {
         .map(|mut noise| std::mem::take(&mut noise.rating))
         .unwrap_or(0.0);
     let events = player_detection_events(world);
+    let indicator = world.try_resource::<StealthIndicator>().map(|i| i.model).unwrap_or(IndicatorModel::NONE);
 
     let mut summary = PlayerDetection::default();
     for detector in crate::systems::faction_hostility::living_actors(world) {
@@ -164,14 +186,14 @@ pub(crate) fn detection_tick_system(world: &World, dt: f32) {
         awareness.since_noticed += dt;
         if previous.is_some() && awareness.timer > 0.0 {
             write(world, detector, awareness);
-            fold(&mut summary, detector, &awareness);
+            fold(world, &indicator, &mut summary, detector, &awareness);
             continue;
         }
         evaluate(world, &rules, detector, player, target, noise, &events, exterior, &mut awareness);
         // Re-armed on its own phase: the remainder carries over (`Fallout3.exe` `0x87445a`).
         awareness.timer = (awareness.timer + rules.period()).max(0.0);
         write(world, detector, awareness);
-        fold(&mut summary, detector, &awareness);
+        fold(world, &indicator, &mut summary, detector, &awareness);
     }
     if let Some(mut detection) = world.try_resource_mut::<PlayerDetection>() {
         *detection = summary;
@@ -307,20 +329,27 @@ fn write(world: &World, detector: EntityId, awareness: Awareness) {
     }
 }
 
-/// Keep the worst level toward the player, ties broken by the alert state.
-fn fold(summary: &mut PlayerDetection, detector: EntityId, awareness: &Awareness) {
+/// Fold one detector into the summary: the highest indicator state wins, then
+/// the higher level, then the later alert state.
+pub(crate) fn fold(world: &World, indicator: &IndicatorModel, summary: &mut PlayerDetection, detector: EntityId, awareness: &Awareness) {
+    if !awareness.hostile && byroredux_scripting::is_hidden_from_stealth_meter(world, detector) {
+        return;
+    }
     let rank = |alert: AlertState| match alert {
         AlertState::Normal => 0,
         AlertState::Alert => 1,
         AlertState::Lost => 2,
         AlertState::Combat => 3,
     };
-    let better = (awareness.level, rank(awareness.alert)) > (summary.level, rank(summary.alert));
+    let state = indicator.state(awareness.level, awareness.alert, awareness.hostile);
+    let better =
+        (state, awareness.level, rank(awareness.alert)) > (summary.indicator, summary.level, rank(summary.alert));
     if summary.detector.is_none() || better {
         *summary = PlayerDetection {
             level: awareness.level,
             alert: awareness.alert,
             hostile: awareness.hostile,
+            indicator: state,
             detector: Some(detector),
         };
     }

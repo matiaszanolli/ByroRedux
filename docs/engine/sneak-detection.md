@@ -1,6 +1,6 @@
 # Sneak and Detection
 
-**Status**: DESIGN (Phase 0, 2026-11-15); the stance (Phase 1, #6910) Wave 1 detection with its consumers (Phase 2, #6911), and Wave 1 sneak attacks and perks (Phase 3, #6912) are BUILT (2026-11-15). The design the [Sneak and Detection
+**Status**: DESIGN (Phase 0, 2026-11-15); the stance (Phase 1, #6910), Wave 1 detection with its consumers (Phase 2, #6911), Wave 1 sneak attacks and perks (Phase 3, #6912) and the indicator (Phase 4, #6913) are BUILT (2026-11-15). The design the [Sneak and Detection
 PRD](../prd/sneak-and-detection.md) names as the owner of the stance, the detection
 tick, the per-pair level and alert state, the actor-to-actor sight test (§10 Q7), the
 light input (Q3), consumer migration and FO3 / FNV sneak-attack damage (PRD
@@ -99,7 +99,9 @@ as `VatsModel` is. It holds:
   when a loaded cell holds ComplexSceneMarkers);
 - **view cone**: `fDetectionViewCone` in degrees where the game authors one (FO3,
   FNV, Skyrim: 190). None for Oblivion until #6936 rules out a hardcoded one;
-- **indicator** (Phase 4): the table of §10, and Starfield's Stealth-rank gate (SNK-HUD-005).
+- **indicator** (`CharacterRulesProfile::indicator`, an `IndicatorModel`): the table of §10,
+  how it is drawn, and Starfield's Stealth-rank gate (SNK-HUD-005). It is resolved per
+  load into the `StealthIndicator` resource with its labels.
 
 Walls blocking sound (SNK-DET-017) needs no field. Every formula multiplies sound
 heard without line of sight by `fSneakSoundLosMult`: the CS formula does too, and
@@ -128,8 +130,8 @@ discovery in quest and scene, flee in script runtime. It reads the player's
   update `0x8740c0`–`0x874435` loops over the high-process list, as the CS
   *Performance* section describes for Oblivion. That is the PRD §6 row 8 deviation.
   `SetNotShowOnStealthMeter` (SNK-DET-014) is a Skyrim / Fallout 4 Papyrus
-  function and only the indicator reads it, so it lands with Phase 4 (#6913),
-  its save included.
+  function and only the indicator reads it: the fold skips a flagged, non-hostile
+  detector (§10).
 - **Cadence and phase (SNK-DET-006; V7, V22).** Each detector carries its own timer.
   `Fallout3.exe` stores it in the detector's process at `+0x2f0` and re-arms it as
   remainder + `fDetectionTimerSetting` (`0x87445a`–`0x874471`). One path re-arms it
@@ -372,39 +374,95 @@ above 0. SNK-ATK-006 holds: it stays with the VATS model (#6350).
 
 ## 10. The indicator
 
-| Game | Vanilla element (V21) | Engine mapping |
-|---|---|---|
-| FO3 / FNV | `menus\main\hud_main_menu.xml`: root traits `_SneakVisible`, `_SneakLevel`; rect `SneakMeter` with text `sneak_nif` | `_SneakVisible` = in the stance; `_SneakLevel` and the text from the table below |
-| Oblivion | `menus\main\hud_reticle.xml`: image `hudreticle_sneak` (id 3, `Menus\Icons\icon_small_eye.dds`); alpha copied from `user8` ("code set - alpha"), fade speed `user9` | `user8` = 255 while any counted detector is Seen, 0 otherwise (UESP: the eye lights when anyone knows the player is there) |
-| Skyrim, FO4 | Scaleform meter, fed by GFx invocation (Game UI Integration PRD) | MAY stay empty (SNK-HUD-004); the native indicator stands in |
+**Built** (Phase 4, #6913). One state per frame, folded by the detection tick from
+every counted detector, drawn by every HUD in the game's vocabulary
+(`byroredux_core::stealth::indicator`; `byroredux/src/detection/indicator.rs`).
 
-On FO3 / FNV the level alone cannot give [CAUTION] or [DANGER], because only Seen
-and Lost are stored (§4.3). The provisional table keys on the worst counted
-detector's (level, alert state, hostility):
+**The Fallout 3 decision (V20, static).** `Fallout3.exe` draws the meter from
+`0x937a70`, called each frame while the player's movement flags hold sneaking
+(`0x400`) and not swimming (`0x800`; the caller at `0x92dff6`). Outside that it fades
+the meter's alpha to 0 over 0.5 s. The routine drives the `sneak_nif` text (the HUD
+menu's `+0x88`, bound under `SneakMeter` at `0x92b64e`) through four traits:
+`string` (`0xfc4`), `systemcolor` (`0xff4`), `alpha` (`0xfa9`) and `user0`
+(`0x1004`; ids from the registration at `0xb4ae3a`…). The first case that holds wins:
+
+| # | Condition (`Fallout3.exe`) | Shows | `systemcolor` |
+|---|---|---|---|
+| 1 | A combat group fights the player (`0x8d0da0` → `0x81ab50`, player `+0x9a4`) and some member saw it within `fCombatDetectionLostTime` | `sSneakDanger`, flashing (an alpha animation, `user0` = 1) | 2 |
+| 2 | Every such group lost the player longer ago (`+0x9a5`) | `sSneakCaution` | 2 |
+| 3 | A detector that would attack the player has a value above 0 (`+0x584`, set at `0x874060` and `0x8d4884`) | `sSneakCaution` | 2 |
+| 4 | Some high-process actor's value toward the player is above 0 (`0x8d4620` returns the highest) | `sSneakDetected` | 1 |
+| 5 | Otherwise | `sSneakHidden` | 1 |
+
+The labels are four string settings with executable defaults `[HIDDEN]`,
+`[DETECTED]`, `[CAUTION]`, `[DANGER]`. The Fallout wiki's [CAUTION] ("searching") and
+flashing [DANGER] ("has the player in sight") read the same cases loosely. The
+`_SneakVisible` / `_SneakLevel` root traits in `hud_main_menu.xml` are never named by
+the executable.
+
+**The table (SNK-HUD-002).** The ruleset row `IndicatorModel` holds a per-detector
+table on (level, alert state, hostility). The tick folds the counted detectors to the
+highest state, so the cases' order is the states' order: Hidden < Detected < Caution <
+Danger. The Fallout row reads the cases above per detector:
 
 | Level | Alert state | Hostile | Shows |
 |---|---|---|---|
-| Lost | Normal | any | [HIDDEN] |
-| Lost | Alert or Lost | yes | [CAUTION] |
-| Lost | Combat | yes | [DANGER] |
-| Seen | any | no | [DETECTED] |
-| Seen | any | yes | [DANGER], flashing |
+| any | Combat | any | Danger, flashing (case 1) |
+| any | Lost | any | Caution (case 2) |
+| Seen | Normal or Alert | yes | Caution (case 3) |
+| Seen | Normal or Alert | no | Detected (case 4) |
+| otherwise | | | Hidden |
 
-This extends SNK-HUD-002's key with the alert state. V20 (#6935) confirms each row
-in game. The PRD records the change in its revision log.
+The engine's alert state goes Combat → Lost when the level falls to Lost (§4.4), not
+`fCombatDetectionLostTime` after the last sighting, so [CAUTION] can arrive sooner
+than in the original. Alert alone (the noticed band) stays [HIDDEN], as case 3 needs
+a value above 0.
+
+| Game | Row | Labels | Source |
+|---|---|---|---|
+| Fallout 3, New Vegas | Fallout | bracketed defaults; neither master authors them | `Fallout3.exe` (above). New Vegas keeps the shared HUD code; its executable is encrypted |
+| Skyrim | Fallout, provisional | `Skyrim.esm` authors the four settings; `SkyrimSE.exe` carries the bracketed defaults | V20 on #6935 |
+| Fallout 4 | Fallout, provisional | `Fallout4.esm` authors them; `Fallout4.exe` defaults unbracketed | V20 on #6935 |
+| Starfield | Fallout, provisional, behind the `PERK` `Skill_Stealth` (`0x2CFCB2`) at rank 1 (SNK-HUD-005) | neither the master nor the executable carries them, so Fallout 4's stand in | V20 on #6935 |
+| Oblivion | Eye: lit while a detector sees or fights the player | none | UESP *Oblivion:Sneak*; V20 on #6935 |
+| Fallout 76 | none | — | no source |
+
+The labels resolve per load order from the four settings, then the executable
+default. A localized plugin's setting is a string-table id. The GMST parser now reads
+it through the string tables, and an unresolved id counts as unauthored.
+
+**SetNotShowOnStealthMeter (SNK-DET-014).** `ActorControlState` carries
+`not_shown_on_stealth_meter`. The Papyrus native lowers to
+`Effect::SetNotShowOnStealthMeter`, and the fold skips a flagged detector while it is
+not hostile to the player. Its level still feeds every other consumer.
+
+**HUDs.**
+
+| HUD | Vanilla element (V21) | Driven |
+|---|---|---|
+| Native (`PanelSnapshot::stealth_indicator`) | — | Above the crosshair: the label, colored by state, with the danger state flashing (0.5 s); Oblivion's eye. Present only in the stance, not swimming, and past the gate (SNK-HUD-001, -005) |
+| FO3 / FNV MenuXml | `hud_main_menu.xml` `SneakMeter` / `sneak_nif` | `string`, `systemcolor`, `alpha` (pulsed for danger, 0 outside the stance) and `user0`, as the original. The XML places neither tile and leaves the font unauthored, so the launch places the text at top centre in label font 7 (SNK-HUD-003) |
+| Oblivion MenuXml | `menus\main\hud_reticle.xml` image `hudreticle_sneak` (`user8` "code set - alpha") | The reticle menu is grafted under the HUD at launch, its crosshair hidden. `user8` is 255 while lit (SNK-HUD-003) |
+| Skyrim, Fallout 4 Scaleform | the meter, fed by GFx invocation (Game UI Integration PRD) | Empty; the native indicator stands in (SNK-HUD-004) |
+
+The FNV MenuXml label draws in place, but its glyphs come out scrambled in every font
+slot. That is a menuxml font decode fault, separate from the indicator (#6994).
 
 ## 11. Observability
 
-- `stealth.status`: per counted detector, the distance, line of sight, cone, each
-  term (sound, visual, skill), the value, level, alert state and timer.
+- `stealth.status`: the indicator's state and label; per counted detector, the
+  distance, line of sight, cone, each term (sound, visual, skill), the value, level,
+  alert state and timer.
+- Install log: `Detection indicator:` the row's style, its four labels and any gate.
 - `stealth.sneak on|off`: the toggle (§2).
 - Install log: the row kind and each setting with its provenance; a setting with
   neither an authored value nor a census default is an error (SNK-DX-003, scenario 3).
 
 ## 12. Saves
 
-`Sneaking` is saved (a `FORMAT_MAJOR` bump, SNK-SAVE-001). `Awareness` and
-`PlayerDetection` are not saved; the first tick after a load re-derives them
+`Sneaking` is saved (a `FORMAT_MAJOR` bump to 130, SNK-SAVE-001), and so is
+`ActorControlState.not_shown_on_stealth_meter` (SNK-DET-014, the bump to 131).
+`Awareness`, `PlayerDetection` and the resolved `StealthIndicator` are not saved; the first tick after a load re-derives them
 (SNK-SAVE-002, Q4). Whether the original keeps detection state is V23 (#6935).
 
 ## 13. Phase 0 results
@@ -583,8 +641,8 @@ and it fails on a name with neither.
 | V17 | `StartCannibal`, `StartMisterSandman`, "eaten" saved | `Fallout3.exe` `0x7aabd0`, `0x7dcd10` | partly (§9); #6937 |
 | V18 | Skyrim 48 and 57 | `perk_entry_census` on `Skyrim.esm` | vanilla users named (§9); terms #6936 |
 | V19 | FNV 69, 70, 71 | `perk_entry_census` and the perks' `DESC` on `FalloutNV.esm` | closed (§9): companion perception perks, not a detection term |
-| V20 | Indicator tables | §4.3, the HUD XML | provisional table (§10); #6935 |
-| V21 | Vanilla sneak element | the Misc archives | closed (§10) |
+| V20 | Indicator tables | `Fallout3.exe` `0x937a70`, `0x8d0da0`, `0x81ab50`, `0x8d4620` | FO3 / FNV decoded (§10). Oblivion, Skyrim, Fallout 4, Starfield provisional; #6935 |
+| V21 | Vanilla sneak element | the Misc archives, `Fallout3.exe` `0x92b64e` | closed (§10): FO3 / FNV `sneak_nif`, Oblivion `hudreticle_sneak` |
 | V22 | Per-detector phase | `Fallout3.exe` `0x87445a` | closed: each detector keeps its own timer and phase |
 | V23 | Detection state across a save | — | #6935 |
 

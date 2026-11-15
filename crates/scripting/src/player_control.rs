@@ -129,8 +129,8 @@ impl PlayerControlState {
     }
 }
 
-/// Per-actor state written by `Actor.SetRestrained`, `Actor.SetUnconscious`
-/// and `Actor.SetGhost`.
+/// Per-actor state written by `Actor.SetRestrained`, `Actor.SetUnconscious`,
+/// `Actor.SetGhost` and `Actor.SetNotShowOnStealthMeter`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ActorControlState {
@@ -148,6 +148,11 @@ pub struct ActorControlState {
     /// inflict damage", "will be hurt by water damage and some traps", and
     /// "is still able to talk".
     pub ghost: bool,
+    /// M65 (SNK-DET-014) — `Actor.SetNotShowOnStealthMeter`: "Sets this actor
+    /// to not affect the detection level on the stealth meter if he is not
+    /// hostile to the player" (CK *SetNotShowOnStealthMeter - Actor*). Only the
+    /// indicator reads it; the actor's level still feeds every other consumer.
+    pub not_shown_on_stealth_meter: bool,
 }
 
 impl ActorControlState {
@@ -205,6 +210,14 @@ pub fn is_incapacitated(world: &World, entity: EntityId) -> bool {
     is_unconscious(world, entity)
         || world.get::<AiSuspended>(entity).is_some()
         || crate::obscript_more::ai_disabled_actors(world).contains(&entity)
+}
+
+/// Whether `entity` is kept off the stealth meter while not hostile to the
+/// player (M65, SNK-DET-014).
+pub fn is_hidden_from_stealth_meter(world: &World, entity: EntityId) -> bool {
+    world
+        .get::<ActorControlState>(entity)
+        .is_some_and(|state| state.not_shown_on_stealth_meter)
 }
 
 /// Whether `entity` is a ghost (M47.2, `SetGhost`).

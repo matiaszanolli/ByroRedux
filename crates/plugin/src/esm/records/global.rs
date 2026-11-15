@@ -6,7 +6,7 @@
 //! determined by either an FNAM byte (GLOB) or by the editor_id prefix
 //! convention (GMST: `s`/`f`/`i` for string/float/int).
 
-use super::common::read_zstring;
+use super::common::{read_lstring_field, read_zstring};
 use crate::esm::reader::SubRecord;
 use crate::esm::sub_reader::SubReader;
 
@@ -117,7 +117,9 @@ pub fn parse_gmst(form_id: u32, subs: &[SubRecord]) -> GameSetting {
             data_bytes[2],
             data_bytes[3],
         ])),
-        Some(b's') => SettingValue::String(read_zstring(&data_bytes)),
+        // M65 — a localized plugin (Skyrim, Fallout 4) stores a string setting
+        // as a string-table id, which read as an inline C string gave garbage.
+        Some(b's') => SettingValue::String(read_lstring_field(b"GMST", b"DATA", &data_bytes)),
         // Unknown prefix — treat as raw int if 4 bytes, otherwise empty string.
         _ if data_bytes.len() >= 4 => SettingValue::Int(i32::from_le_bytes([
             data_bytes[0],
@@ -229,5 +231,19 @@ mod tests {
         let subs = vec![sub(b"EDID", b"sTalkAlt\0"), sub(b"DATA", b"Talk\0")];
         let g = parse_gmst(0x22, &subs);
         assert_eq!(g.value, SettingValue::String("Talk".into()));
+    }
+
+    /// M65 — `Skyrim.esm` stores `sSneakHidden` as a string-table id; read
+    /// inline it was the id's bytes. Unresolved, it is the placeholder, which
+    /// `EsmIndex::game_setting_string` treats as unauthored.
+    #[test]
+    fn a_localized_string_setting_is_a_table_id() {
+        let _guard = crate::esm::records::common::LocalizedPluginGuard::new(true);
+        let subs = vec![sub(b"EDID", b"sSneakHidden\0"), sub(b"DATA", 0x0001_2345u32.to_le_bytes())];
+        let g = parse_gmst(0x23, &subs);
+        assert_eq!(g.value, SettingValue::String("<lstring 0x00012345>".into()));
+        let mut index = crate::esm::records::EsmIndex::default();
+        index.insert_game_setting(g);
+        assert_eq!(index.game_setting_string("sSneakHidden"), None);
     }
 }

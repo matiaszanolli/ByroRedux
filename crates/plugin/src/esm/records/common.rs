@@ -211,6 +211,12 @@ pub fn read_lstring_field(record: &[u8; 4], sub: &[u8; 4], data: &[u8]) -> Strin
     read_lstring_in(crate::esm::StringsFile::for_field(record, sub), data)
 }
 
+/// Whether `text` is the placeholder [`read_lstring_or_zstring`] leaves for a
+/// localized id no installed table resolves.
+pub fn is_unresolved_lstring(text: &str) -> bool {
+    text.starts_with("<lstring ") && text.ends_with('>')
+}
+
 fn read_lstring_in(file: crate::esm::StringsFile, data: &[u8]) -> String {
     if is_localized_plugin() && data.len() == std::mem::size_of::<u32>() {
         let id = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);

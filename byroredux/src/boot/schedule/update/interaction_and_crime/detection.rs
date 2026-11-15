@@ -14,6 +14,8 @@ pub(super) fn register_detection(scheduler: &mut Scheduler) {
         crate::detection::detection_tick_system,
         Access::new()
             .reads_resource::<byroredux_core::stealth::StealthRules>()
+            // M65 Phase 4 — the indicator table the fold reads (SNK-HUD-002).
+            .reads_resource::<byroredux_core::stealth::StealthIndicator>()
             .reads_resource::<crate::systems::PlayerEntity>()
             .reads_resource::<crate::interaction::ActionState>()
             .reads_resource::<crate::components::CellLightingRes>()
@@ -35,6 +37,8 @@ pub(super) fn register_detection(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::components::Inventory>()
             .reads::<byroredux_core::character::CharacterLevel>()
             .reads::<byroredux_scripting::AiCombatState>()
+            // SNK-DET-014 — `SetNotShowOnStealthMeter` keeps a detector out of the fold.
+            .reads::<byroredux_scripting::ActorControlState>()
             .reads::<crate::systems::CombatDisposition>()
             .reads::<byroredux_physics::RapierHandles>()
             .reads::<byroredux_core::ecs::components::Awareness>()

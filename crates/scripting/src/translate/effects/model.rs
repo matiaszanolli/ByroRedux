@@ -741,6 +741,9 @@ pub enum Effect {
     /// M47.2 — `<actor>.SetGhost([abIsGhost = true])`
     /// ([`crate::ActorControlState::ghost`]).
     SetGhost { actor: ActorRef, ghost: bool },
+    /// M65 (SNK-DET-014) — `<actor>.SetNotShowOnStealthMeter(abNotShow)`
+    /// ([`crate::ActorControlState::not_shown_on_stealth_meter`]).
+    SetNotShowOnStealthMeter { actor: ActorRef, not_shown: bool },
     /// #4415 — `<actor>.AddSpell(<spell>[, abVerbose])`: put the spell on the
     /// actor's `SpellList`, applying a constant spell's value changes. The
     /// verbose flag only chooses whether a HUD message shows.
@@ -1021,6 +1024,7 @@ impl Effect {
             Effect::ShowBarterMenu { .. } => "ShowBarterMenu",
             Effect::ChangeKeyword { .. } => "ChangeKeyword",
             Effect::SetGhost { .. } => "SetGhost",
+            Effect::SetNotShowOnStealthMeter { .. } => "SetNotShowOnStealthMeter",
             Effect::SetAlly { .. } => "SetAlly",
             Effect::DeleteWhenAble { .. } => "DeleteWhenAble",
             Effect::WaitWhile { .. } => "WaitWhile",

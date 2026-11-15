@@ -335,6 +335,10 @@ pub struct CharacterRulesProfile {
     /// carry theirs (Wave 1); Oblivion and Skyrim wait on Phase 5, Fallout 4
     /// and Starfield on a source (Q2), so they answer from the sight test.
     stealth: crate::stealth::StealthKind,
+    /// M65 (SNK-HUD-002, -005) — the detection indicator's table, its drawing
+    /// and Starfield's skill gate (`crate::stealth::indicator`). Fallout 76 has
+    /// no source and shows none.
+    indicator: crate::stealth::IndicatorModel,
 }
 
 /// Skyrim's *Mod Buy Prices* / *Mod Sell Prices* entry points
@@ -364,6 +368,7 @@ impl CharacterRulesProfile {
         armor: None,
         stance: StanceModel::NONE,
         stealth: crate::stealth::StealthKind::SightOnly,
+        indicator: crate::stealth::IndicatorModel::NONE,
     };
 
     pub const OBLIVION: Self = Self {
@@ -391,6 +396,7 @@ impl CharacterRulesProfile {
         armor: None,
         stance: StanceModel::OBLIVION,
         stealth: crate::stealth::StealthKind::SightOnly,
+        indicator: crate::stealth::IndicatorModel::OBLIVION,
     };
 
     pub const FALLOUT3: Self = Self {
@@ -427,6 +433,7 @@ impl CharacterRulesProfile {
         armor: None,
         stance: StanceModel::FALLOUT,
         stealth: crate::stealth::StealthKind::Fallout3,
+        indicator: crate::stealth::IndicatorModel::FALLOUT,
     };
 
     pub const FALLOUT_NEW_VEGAS: Self = Self {
@@ -468,6 +475,7 @@ impl CharacterRulesProfile {
         armor: None,
         stance: StanceModel::FALLOUT,
         stealth: crate::stealth::StealthKind::FalloutNv,
+        indicator: crate::stealth::IndicatorModel::FALLOUT,
     };
 
     pub const SKYRIM: Self = Self {
@@ -512,6 +520,7 @@ impl CharacterRulesProfile {
         armor: Some(ArmorModel::SKYRIM),
         stance: StanceModel::SKYRIM,
         stealth: crate::stealth::StealthKind::SightOnly,
+        indicator: crate::stealth::IndicatorModel::SKYRIM,
     };
 
     pub const FALLOUT4: Self = Self {
@@ -554,6 +563,7 @@ impl CharacterRulesProfile {
         armor: None,
         stance: StanceModel::FALLOUT4,
         stealth: crate::stealth::StealthKind::SightOnly,
+        indicator: crate::stealth::IndicatorModel::FALLOUT4,
     };
 
     pub const FALLOUT76: Self = Self {
@@ -587,6 +597,7 @@ impl CharacterRulesProfile {
         armor: None,
         stance: StanceModel::NONE,
         stealth: crate::stealth::StealthKind::SightOnly,
+        indicator: crate::stealth::IndicatorModel::NONE,
     };
 
     pub const STARFIELD: Self = Self {
@@ -624,6 +635,7 @@ impl CharacterRulesProfile {
         armor: None,
         stance: StanceModel::NONE,
         stealth: crate::stealth::StealthKind::SightOnly,
+        indicator: crate::stealth::IndicatorModel::STARFIELD,
     };
 
     #[must_use]
@@ -731,6 +743,12 @@ impl CharacterRulesProfile {
     #[must_use]
     pub const fn stealth(self) -> crate::stealth::StealthKind {
         self.stealth
+    }
+
+    /// M65 (SNK-HUD-002) — the detection indicator row.
+    #[must_use]
+    pub const fn indicator(self) -> crate::stealth::IndicatorModel {
+        self.indicator
     }
 
     /// #5921 — the perk entry-point numbering the game's `PERK`s author.

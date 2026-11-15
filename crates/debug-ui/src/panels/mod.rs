@@ -28,7 +28,7 @@ pub use snapshots::{
     ChargenSnapshot, CraftingAction, CraftingRecipeView, CraftingSnapshot,
     DialogueTopicEntryView, DialogueTopicSnapshot, DialogueUiAction, InteractionPrompt, InventoryAction,
     InventoryItemView, InventorySnapshot, MessageBoxView, ObjectiveView, PanelOutputs, PanelSnapshot,
-    QueuedLoad, VitalBarView,
+    QueuedLoad, StealthIndicatorLook, StealthIndicatorView, VitalBarView,
 };
 pub use studio::{draw, PanelTab};
 

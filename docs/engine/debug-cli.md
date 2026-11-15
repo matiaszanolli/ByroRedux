@@ -574,7 +574,7 @@ challenge.status [CHAL id]  → New Vegas challenge progress (hex CHAL form id o
 
 # Legacy HUD + focused diagnostics
 stealth.sneak [on|off]        → enter/leave the sneak stance through the Sneak key's path; no argument reports it (M65, SNK-DX-002)
-stealth.status                → detection rules row, stance, worst level; per detector distance, LOS, cone, sound/visual/skill terms, value, level, alert state, next tick (M65, SNK-DX-001)
+stealth.status                → detection rules row, stance, worst level, indicator state and label; per detector distance, LOS, cone, sound/visual/skill terms, value, level, alert state, next tick (M65, SNK-DX-001)
 vats.enter / vats.exit        → enter/leave VATS targeting (FO3/FNV freezes the world)
 vats.scan                     → re-run the VATS limb scan against live positions
 vats.status                   → mode, per-part hit % and AP costs, queue depth (smoke observable)

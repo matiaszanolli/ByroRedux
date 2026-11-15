@@ -204,6 +204,7 @@ pub(super) fn apply_quest_scoped_effect(
         | Effect::SetCrimeFaction { .. }
         | Effect::SetUnconscious { .. }
         | Effect::SetGhost { .. }
+        | Effect::SetNotShowOnStealthMeter { .. }
         | Effect::SetAlly { .. }
         | Effect::AddSpell { .. }
         | Effect::RemoveSpell { .. }

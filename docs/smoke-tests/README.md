@@ -127,7 +127,7 @@ docs/smoke-tests/m47-2-bleedout.sh             # Skyrim: an essential NPC bleeds
 docs/smoke-tests/fo4-ragdoll.sh                  # FO4: XRGD-posed ghoul / human corpses + ghoul and raider ragdolls on death + a starts-dead molerat, validation-clean (#6070)
 docs/smoke-tests/dt2-skyrim-forcegreet.sh        # Skyrim SE: ForceGreet-tree PACK dialect resolves its PDTO topic / greets generically (#5367)
 docs/smoke-tests/m47-3-obscript.sh               # FNV: ObScript object scripts (OnLoad / OnTriggerEnter / OnDeath) and an item's OnAdd+RemoveMe run live (M47.3)
-docs/smoke-tests/m65-stealth-detection.sh        # FNV: the detection tick, sneaking in the Prospector Saloon — a detector Lost behind cover, Seen beside it (M65, PRD scenario 5)
+docs/smoke-tests/m65-stealth-detection.sh        # FNV: the detection tick, sneaking in the Prospector Saloon — a detector Lost behind cover, Seen beside it, and the indicator's label (M65, PRD scenarios 5 and 9)
 docs/smoke-tests/m65-robotics-expert.sh          # FNV: Robotics Expert deactivates a Lucky 38 securitron from the stance under Chameleon (M65, PRD scenario 7)
 docs/smoke-tests/tsd1-height-census.sh           # Skyrim/FNV/Oblivion/FO4 exteriors: every resident terrain layer has a height map (census `terrain.height all`, screenshots per area) (#6195)
 ```

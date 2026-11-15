@@ -1440,6 +1440,7 @@ fn build_debug_ui_snapshot(
             true,
         ),
         objectives: objectives::snapshot(world),
+        stealth_indicator: detection::indicator_view(world),
         metrics,
         settings,
         inventory: include_inventory

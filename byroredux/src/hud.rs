@@ -100,6 +100,23 @@ pub(crate) struct HudGameProfile {
     menu: MenuProfile,
     style: HudStyle,
     bars: &'static [HudBar],
+    sneak: HudSneak,
+}
+
+/// M65 (SNK-HUD-003) — the vanilla sneak element a MenuXml HUD drives.
+#[derive(Clone, Copy)]
+pub(crate) enum HudSneak {
+    /// FO3 / FNV: `Fallout3.exe` binds the `sneak_nif` text under the
+    /// `SneakMeter` rect (`0x92b64e`) and drives its `string` (the label),
+    /// `systemcolor` (1 for hidden / detected, 2 for caution / danger),
+    /// `alpha` (a 0.5 s animation for danger, faded to 0 outside the stance)
+    /// and `user0` (1 for danger) from `0x937a70`. The XML places neither
+    /// tile and leaves the text's font unauthored, so the launch sets them.
+    Text { meter: &'static str, text: &'static str },
+    /// Oblivion: `hud_reticle.xml`'s `hudreticle_sneak` eye, whose alpha
+    /// copies `user8` ("code set - alpha"). The reticle menu is grafted under
+    /// the HUD at launch, its crosshair hidden (the native HUD draws one).
+    Eye { menu: &'static str, root: &'static str, crosshair: &'static str, eye: &'static str },
 }
 
 static OBLIVION_BARS: &[HudBar] = &[
@@ -148,6 +165,12 @@ impl HudGameProfile {
                 mode: ("HUDMainMenu", "user3"),
             },
             bars: OBLIVION_BARS,
+            sneak: HudSneak::Eye {
+                menu: "menus\\main\\hud_reticle.xml",
+                root: "HUDReticle",
+                crosshair: "hudreticle_reticle",
+                eye: "hudreticle_sneak",
+            },
         }
     }
 
@@ -178,6 +201,7 @@ impl HudGameProfile {
                 compass_strip: "textures\\interface\\hud\\glow_hud_comp_direction_strip.dds",
             },
             bars: FALLOUT_BARS,
+            sneak: HudSneak::Text { meter: "SneakMeter", text: "sneak_nif" },
         }
     }
 
@@ -327,6 +351,8 @@ pub(crate) struct MenuXmlHud {
     /// the compass visually continuous at a bounded ~3.5 MB/33 ms
     /// transfer budget.
     last_upload: std::time::Instant,
+    /// The clock the danger state's flash runs on.
+    started: std::time::Instant,
 }
 
 /// Maximum HUD refresh cadence.
@@ -564,6 +590,8 @@ pub(crate) fn launch_hud(
                 }
             }
 
+            install_sneak_element(&mut renderer, &assets, profile.sneak, w as f32);
+
             // Same transparent initial upload the `--menu` route uses, so
             // the composite quad exists before the first rasterized frame.
             let registered = {
@@ -603,6 +631,7 @@ pub(crate) fn launch_hud(
                         height: h,
                         last_signature: 0,
                         last_upload: std::time::Instant::now(),
+                        started: std::time::Instant::now(),
                     })
                 }
                 Err(_) => {
@@ -641,6 +670,8 @@ impl MenuXmlHud {
         });
         // Heading quantized to 0.1° — sub-pixel for every game's compass
         // face (Oblivion's is 2048 px/360° ≈ 0.18°/px).
+        let sneak = crate::detection::indicator_view(world);
+        let sneak_alpha = sneak_alpha(sneak.as_ref(), self.started.elapsed().as_secs_f32());
         let hash = hash_signature((
             fractions[0].to_bits(),
             fractions[1].to_bits(),
@@ -648,6 +679,10 @@ impl MenuXmlHud {
             (heading * 10.0) as i32,
             u8::from(control.visible),
         ));
+        let hash = mix_signature(
+            hash,
+            sneak.as_ref().map_or(u64::MAX, |view| view.state as u64) ^ (u64::from(sneak_alpha) << 8),
+        );
         if hash == self.last_signature {
             return None;
         }
@@ -692,6 +727,7 @@ impl MenuXmlHud {
                 }
             }
         }
+        drive_sneak_element(&mut self.renderer, self.profile.sneak, sneak.as_ref(), sneak_alpha);
         let pixels = self.renderer.render_frame(&self.assets);
         // Debug: BYRO_HUD_DUMP=1 writes each rendered frame's raw RGBA so
         // engine-side output can be diffed against the crate renderer.
@@ -763,6 +799,73 @@ impl MenuXmlHud {
         let handle = self.upload_frame(ctx, &upload);
         self.upload_buffer = upload;
         Some(handle)
+    }
+}
+
+/// M65 (SNK-HUD-003) — place the vanilla sneak element at launch. A failure
+/// leaves the HUD without it rather than refusing the HUD.
+fn install_sneak_element(renderer: &mut MenuRenderer, assets: &HudAssets, sneak: HudSneak, width: f32) {
+    match sneak {
+        HudSneak::Text { meter, text } => {
+            // Engine-side placement, as for the meters: the XML authors only the
+            // meter's 356 × 34 size, and a child's x / y are screen positions
+            // unless it copies its parent's. Top centre (the text is
+            // `<justify> &center;`), in the HUD's label font, slot 7.
+            renderer.set_override(meter, "x", width / 2.0 - 178.0);
+            renderer.set_override(meter, "y", 40.0);
+            renderer.set_override(text, "x", width / 2.0);
+            renderer.set_override(text, "y", 40.0);
+            renderer.set_override(text, "font", 7.0);
+            renderer.set_override(text, "alpha", 0.0);
+        }
+        HudSneak::Eye { menu, root, crosshair, eye } => {
+            if let Err(error) = renderer.graft_fragment(assets, menu, "HUDMainMenu", "hud_reticle") {
+                log::warn!("hud: {menu} graft failed, no sneak eye: {error}");
+                return;
+            }
+            renderer.set_override(root, "visible", 2.0);
+            renderer.set_override(root, "alpha", 255.0);
+            renderer.set_override(crosshair, "visible", 0.0);
+            renderer.set_override(eye, "user8", 0.0);
+        }
+    }
+}
+
+/// The sneak element's alpha this frame: 0 without an indicator, a 0.5 s
+/// pulse in the danger state (`Fallout3.exe` `0x937bd2`), 255 otherwise.
+fn sneak_alpha(view: Option<&byroredux_debug_ui::StealthIndicatorView>, secs: f32) -> u8 {
+    match view.map(|view| view.state) {
+        None => 0,
+        Some(byroredux_core::stealth::IndicatorState::Danger) => {
+            (255.0 * (std::f32::consts::PI * secs / 0.5).sin().abs()) as u8
+        }
+        Some(_) => 255,
+    }
+}
+
+/// Drive the vanilla sneak element from this frame's indicator.
+fn drive_sneak_element(
+    renderer: &mut MenuRenderer,
+    sneak: HudSneak,
+    view: Option<&byroredux_debug_ui::StealthIndicatorView>,
+    alpha: u8,
+) {
+    use byroredux_core::stealth::IndicatorState;
+    match sneak {
+        HudSneak::Text { text, .. } => {
+            renderer.set_override(text, "alpha", f32::from(alpha));
+            let Some(view) = view else { return };
+            if let byroredux_debug_ui::StealthIndicatorLook::Label(label) = &view.look {
+                renderer.set_override_str(text, "string", label);
+            }
+            let alarmed = view.state >= IndicatorState::Caution;
+            renderer.set_override(text, "systemcolor", if alarmed { 2.0 } else { 1.0 });
+            renderer.set_override(text, "user0", f32::from(u8::from(view.state == IndicatorState::Danger)));
+        }
+        HudSneak::Eye { eye, .. } => {
+            let lit = view.is_some_and(|view| view.state > IndicatorState::Hidden);
+            renderer.set_override(eye, "user8", if lit { 255.0 } else { 0.0 });
+        }
     }
 }
 
@@ -842,14 +945,84 @@ pub(crate) fn hash_signature(sig: (u32, u32, u32, i32, u8)) -> u64 {
         sig.3 as u64,
         sig.4 as u64,
     ] {
-        hash = (hash.rotate_left(5) ^ part).wrapping_mul(0x2545_f491_4f6c_dd1d);
+        hash = mix_signature(hash, part);
     }
     hash
+}
+
+/// Fold one more lane into a frame signature.
+pub(crate) fn mix_signature(hash: u64, part: u64) -> u64 {
+    (hash.rotate_left(5) ^ part).wrapping_mul(0x2545_f491_4f6c_dd1d)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M65 (SNK-HUD-003) — the vanilla sneak element, rendered from the
+    /// installed corpus with no indicator and then with `view`; `None` when
+    /// the archives are missing.
+    fn sneak_frames(
+        profile: HudGameProfile,
+        data: std::path::PathBuf,
+        view: byroredux_debug_ui::StealthIndicatorView,
+    ) -> Option<(Vec<u8>, Vec<u8>)> {
+        let misc = Archive::open(&data.join(profile.misc_bsa).to_string_lossy()).ok()?;
+        let mut textures = Vec::new();
+        let textures_path = data.join(profile.default_textures_bsa).to_string_lossy().into_owned();
+        open_with_numeric_siblings(&textures_path, "HUD textures", &mut textures, &mut std::collections::HashSet::new());
+        let assets = HudAssets { misc, textures, profile };
+        let mut renderer =
+            MenuRenderer::load_with_profile(&assets, profile.menu_path, ScreenTraits::new(1280.0, 720.0), profile.menu)
+                .expect("the vanilla HUD loads");
+        if let HudStyle::Authored { mode, .. } = profile.style {
+            renderer.set_override(mode.0, mode.1, 1.0);
+        }
+        install_sneak_element(&mut renderer, &assets, profile.sneak, 1280.0);
+        drive_sneak_element(&mut renderer, profile.sneak, None, 0);
+        let hidden = renderer.render_frame(&assets).to_vec();
+        drive_sneak_element(&mut renderer, profile.sneak, Some(&view), 255);
+        let shown = renderer.render_frame(&assets).to_vec();
+        Some((hidden, shown))
+    }
+
+    fn changed_pixels(a: &[u8], b: &[u8]) -> usize {
+        a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0).filter(|(x, y)| x != y).count()
+    }
+
+    #[test]
+    #[ignore = "needs FNV game data on disk"]
+    fn the_fnv_hud_draws_the_sneak_label() {
+        let data = byroredux_plugin::esm::test_paths::fnv_data_dir();
+        let view = byroredux_debug_ui::StealthIndicatorView {
+            state: byroredux_core::stealth::IndicatorState::Hidden,
+            look: byroredux_debug_ui::StealthIndicatorLook::Label("[HIDDEN]".into()),
+        };
+        let Some((hidden, shown)) = sneak_frames(HudGameProfile::fallout_nv(), data, view) else {
+            byroredux_plugin::esm::test_paths::require_or_skip("the FNV Misc and Textures archives");
+            return;
+        };
+        let changed = changed_pixels(&hidden, &shown);
+        eprintln!("FNV sneak label: {changed} pixels");
+        assert!(changed > 100, "the [HIDDEN] label drew {changed} pixels");
+    }
+
+    #[test]
+    #[ignore = "needs Oblivion game data on disk"]
+    fn the_oblivion_hud_lights_the_sneak_eye() {
+        let data = byroredux_plugin::esm::test_paths::oblivion_data_dir();
+        let view = byroredux_debug_ui::StealthIndicatorView {
+            state: byroredux_core::stealth::IndicatorState::Detected,
+            look: byroredux_debug_ui::StealthIndicatorLook::Eye,
+        };
+        let Some((dark, lit)) = sneak_frames(HudGameProfile::oblivion(), data, view) else {
+            byroredux_plugin::esm::test_paths::require_or_skip("the Oblivion Misc and Textures archives");
+            return;
+        };
+        let changed = changed_pixels(&dark, &lit);
+        eprintln!("Oblivion sneak eye: {changed} pixels");
+        assert!(changed > 100, "the lit eye drew {changed} pixels");
+    }
 
     fn argv(values: &[&str]) -> Vec<String> {
         values.iter().map(|v| v.to_string()).collect()

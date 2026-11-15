@@ -154,6 +154,7 @@ pub(super) const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_set_crime_faction,
     prim_set_unconscious,
     prim_set_ghost,
+    prim_set_not_show_on_stealth_meter,
     prim_add_spell,
     prim_remove_spell,
     prim_add_race_spells,

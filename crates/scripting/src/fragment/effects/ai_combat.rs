@@ -151,6 +151,14 @@ pub(super) fn apply_ai_combat_effect(
             }
             None
         }
+        Effect::SetNotShowOnStealthMeter { actor, not_shown } => {
+            let bindings = &deferred.scene_actor_bindings;
+            let actor = resolve_actor(vmad, world, context, actor, bindings, deferred.speaker)?;
+            if !crate::update_actor_control(world, actor, |state| state.not_shown_on_stealth_meter = *not_shown) {
+                log::debug!("fragment SetNotShowOnStealthMeter skipped: actor-control storage is unavailable");
+            }
+            None
+        }
         Effect::SetUnconscious { actor, unconscious } => {
             let actor =
                 resolve_npc_actor(vmad, world, context, actor, &deferred.scene_actor_bindings, deferred.speaker)?;

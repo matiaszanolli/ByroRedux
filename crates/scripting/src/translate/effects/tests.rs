@@ -3515,6 +3515,27 @@ fn lowers_start_sneaking_on_the_player_only() {
     }
 }
 
+/// M65 (SNK-DET-014) — `SetNotShowOnStealthMeter(abNotShow)` lowers on any
+/// actor with its one argument; it has no default, so a bare call declines.
+#[test]
+fn lowers_set_not_show_on_stealth_meter() {
+    let lowered = |call: &str| {
+        lower_fragment(&first_fn_body(&format!(
+            "ScriptName QF extends Quest\nFunction Fragment_1()\n{call}\nEndFunction\n"
+        )))
+    };
+    let dog = || ActorRef::Object(ObjectRef::Property("Alias_Dog".into()));
+    assert_eq!(
+        lowered("Alias_Dog.GetActorRef().SetNotShowOnStealthMeter(true)"),
+        Some(vec![Effect::SetNotShowOnStealthMeter { actor: dog(), not_shown: true }])
+    );
+    assert_eq!(
+        lowered("Alias_Dog.GetActorRef().SetNotShowOnStealthMeter(false)"),
+        Some(vec![Effect::SetNotShowOnStealthMeter { actor: dog(), not_shown: false }])
+    );
+    assert_eq!(lowered("Alias_Dog.GetActorRef().SetNotShowOnStealthMeter()"), None);
+}
+
 /// #5017 — `SetUnconscious` on an NPC lowers with its default (`true`)
 /// and an explicit `false` (the wake-up call); the player, or a second
 /// argument, declines.

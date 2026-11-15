@@ -38,6 +38,10 @@
 //! Skyrim until Phase 5, Fallout 4 and Starfield per Q2) has no value; the
 //! tick answers its levels from the sight test.
 
+pub mod indicator;
+
+pub use indicator::{IndicatorGate, IndicatorModel, IndicatorState, IndicatorStyle, StealthIndicator};
+
 /// Which formula a game's detection runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StealthKind {

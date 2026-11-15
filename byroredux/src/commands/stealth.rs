@@ -49,7 +49,7 @@ impl ConsoleCommand for StealthStatusCommand {
         "stealth.status"
     }
     fn description(&self) -> &str {
-        "Detection rules, the player's stance and worst level, and every detector's terms, value, level and alert state"
+        "Detection rules, the player's stance, worst level and indicator, and every detector's terms, value, level and alert state"
     }
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
         let Some(rules) = world.try_resource::<byroredux_core::stealth::StealthRules>().map(|r| *r) else {
@@ -58,8 +58,15 @@ impl ConsoleCommand for StealthStatusCommand {
         let player = PlayerEntity::get(world);
         let sneaking = player.is_some_and(|p| byroredux_scripting::stance::is_sneaking(world, p));
         let summary = world.try_resource::<crate::detection::PlayerDetection>().map(|d| *d).unwrap_or_default();
+        let indicator = match crate::detection::indicator_view(world) {
+            Some(view) => match view.look {
+                byroredux_debug_ui::StealthIndicatorLook::Label(label) => format!("{:?} \"{label}\"", view.state),
+                byroredux_debug_ui::StealthIndicatorLook::Eye => format!("{:?} (eye)", view.state),
+            },
+            None => "hidden".to_string(),
+        };
         let mut lines = vec![format!(
-            "stealth: rules {:?}, {}, worst level {:?} (alert {:?}, hostile {})",
+            "stealth: rules {:?}, {}, worst level {:?} (alert {:?}, hostile {}), indicator {indicator}",
             rules.kind,
             stance_word(sneaking),
             summary.level,

@@ -803,7 +803,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // worldspace entry), so no snapshot has ever contained either shape.
     // M65 (SNK-SAVE-001, #6910) — refreshed WITH a major bump (v129 -> v130): the new `Sneaking`
     // component column, and the appended `FragmentGuard::ActorSneaking` / `Effect::StartPlayerSneaking`.
-    const BASELINE_MAJOR: u16 = 130;
+    // M65 (SNK-DET-014, #6913) — refreshed WITH a major bump (v130 -> v131): `ActorControlState`'s
+    // required `not_shown_on_stealth_meter`, and the appended `Effect::SetNotShowOnStealthMeter`.
+    const BASELINE_MAJOR: u16 = 131;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1224,7 +1226,10 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `ActorSneaking` / `StartPlayerSneaking`, so a pre-v130 snapshot has no record of the stance.
     // M65 (SNK-USE-004, #6911) — refreshed WITHOUT a bump: the appended `FragmentGuard::DetectedBy`
     // variant (name-tagged; no older save carries it).
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xa583_6f87_f9c2_d506;
+    // M65 (SNK-DET-014, #6913) — v131 is a genuine bump: `ActorControlState` (a saved replacing column,
+    // parked in `ReferenceState.control`) gained the required `not_shown_on_stealth_meter`, so a v130
+    // column has no value for it; the saved `Effect` gained `SetNotShowOnStealthMeter`.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x01c9_ebd7_fdc5_6b75;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

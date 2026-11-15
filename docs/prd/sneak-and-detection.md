@@ -1,6 +1,6 @@
 # Sneak and Detection — Product Requirements
 
-**Status**: ACTIVE (2026-11-15). Revision 7 records the Phase 2 scope moves.
+**Status**: ACTIVE (2026-11-15). Revision 8 records the Phase 4 findings; revision 7 the Phase 2 scope moves.
 Revision 5 filed the tracking issues. Revision 2
 folded in review round 1, revision 3 recorded the §10 decisions, and the owner
 approved it (§12).
@@ -775,3 +775,4 @@ games are recorded out with the reason.
 | 5 | 2026-11-14 | → ACTIVE: parent #6908 and phase issues #6909 to #6915 filed; the Phase 0 verify items V1–V23 are acceptance criteria of #6909; ROADMAP gains the M65 row (Q6) | — |
 | 6 | 2026-11-15 | Phase 0 (#6909): the design [`sneak-detection.md`](../engine/sneak-detection.md) owns the mechanisms in *Related*; the §9 verify table carries each row's state (12 of 23 closed, the rest on #6935, #6936, #6937). Findings that refine requirements: no playable Skyrim race authors `SNMV`, so SNK-STN-005's Skyrim sneak speed comes from the `NPC_Sneaking_MT` movement type (design §2); FNV 69–71 are companion perception perks (SNK-PERK-006 stays Pending); FO3 / FNV store only levels Seen and Lost, so SNK-HUD-002's indicator table keys on the alert state as well as the level and hostility (design §10); `fVATSStealthMult` scales the VATS hit chance against Chameleon / Invisibility, not a sneak attack (SNK-ATK-006 holds) | — |
 | 7 | 2026-11-15 | Phase 2 (#6911): SNK-DET-014 (`SetNotShowOnStealthMeter`, a Skyrim / Fallout 4 Papyrus flag read only by the indicator) moves to Phase 4 (#6913) with its native and save; SNK-DET-017's Oblivion no-walls rule is the authored `fSneakSoundLosMult` = 1, not a separate ruleset field (design §3) | — |
+| 8 | 2026-11-15 | Phase 4 (#6913): V20 decoded for FO3 / FNV from `Fallout3.exe` `0x937a70` — [DANGER] flashing while a combat group fights the player and saw it within `fCombatDetectionLostTime`, [CAUTION] when every such group lost it or a hostile detector's value is above 0, [DETECTED] for any value above 0, else [HIDDEN] (design §10); SNK-HUD-002's per-detector table is that decision, folded to the highest state. The original drives the `sneak_nif` text (`string`, `systemcolor`, `alpha`, `user0`), not the XML's `_SneakVisible` / `_SneakLevel` traits (SNK-HUD-003). Starfield's master and executable carry no labels, so Fallout 4's stand in; its gate is the `PERK` `Skill_Stealth` (SNK-HUD-005). SNK-DET-014 is saved at `FORMAT_MAJOR` 131. Oblivion, Skyrim, Fallout 4 and Starfield tables stay provisional on #6935 | — |

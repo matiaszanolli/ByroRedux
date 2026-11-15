@@ -141,6 +141,19 @@ pub(super) fn prim_set_ghost(e: &Expr, scope: &Scope) -> Option<Effect> {
     })
 }
 
+/// M65 (SNK-DET-014) — `Actor.SetNotShowOnStealthMeter(bool abNotShow)`
+/// (Skyrim and Fallout 4 `Actor.psc`; the parameter has no default).
+pub(super) fn prim_set_not_show_on_stealth_meter(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetNotShowOnStealthMeter")?;
+    if args.len() != 1 {
+        return None;
+    }
+    Some(Effect::SetNotShowOnStealthMeter {
+        actor: receiver_actor(object, scope)?,
+        not_shown: bool_arg(args, 0)??,
+    })
+}
+
 /// `Actor.EvaluatePackage()` on Skyrim; `Actor.EvaluatePackage(abResetAI
 /// = false)` on Fallout 4 and Starfield (shipped `Actor.psc`).
 ///

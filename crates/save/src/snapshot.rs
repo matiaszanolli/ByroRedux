@@ -637,7 +637,12 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v129 -> v130 (M65, SNK-SAVE-001): a new component column, `Sneaking` (the player's sneak stance), so a
 /// v129 save has no record of the stance and the schema no longer matches.
-pub const FORMAT_MAJOR: u16 = 130;
+///
+/// v130 -> v131 (M65, SNK-DET-014): `ActorControlState` gained the required
+/// `not_shown_on_stealth_meter` (Papyrus `SetNotShowOnStealthMeter`), so a v130
+/// save's column lacks the field, and the saved `Effect` gained
+/// `SetNotShowOnStealthMeter`.
+pub const FORMAT_MAJOR: u16 = 131;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 
