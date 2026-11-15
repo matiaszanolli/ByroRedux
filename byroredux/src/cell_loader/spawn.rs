@@ -978,7 +978,8 @@ pub(super) fn spawn_placed_instances(
     // own (#6253). #6471 — only the idle (`Idle`, else `SpecialIdle`): the
     // first listed sequence is usually a clamped activation clip, and playing
     // it loaded every animated door open and every activator activated. With
-    // no idle nothing plays and the object keeps its bind pose. The standalone controllers and the sequence each keep
+    // no idle nothing plays and the object holds its first sequence's first frame
+    // (#6543: the legacy load's rule, traced in `NamedSequences::spawn_handle`). The standalone controllers and the sequence each keep
     // their own cycle type, frequency and phase. Merged into one clip, the
     // standalone envelope won (a looping flag played once) and the
     // sequence's non-transform channels were dropped (a gate's idle showed
@@ -995,7 +996,13 @@ pub(super) fn spawn_placed_instances(
     if let Some(key) = mesh_cache_key {
         if let Some(sequences) = super::object_sequences::named_sequences_for(world, key, &cached.object_sequences) {
             let handles: Vec<u32> = sequences.0.iter().map(|(_, handle)| *handle).collect();
-            spawn_sequence = sequences.spawn_handle();
+            // #6543 — the legacy load starts an `Idle` only when it loops.
+            spawn_sequence = {
+                let registry = world.resource::<byroredux_core::animation::AnimationClipRegistry>();
+                sequences.spawn_handle(|handle| {
+                    registry.get(handle).is_some_and(|clip| clip.cycle_type == byroredux_core::animation::CycleType::Loop)
+                })
+            };
             parked_sequence = sequences.parked_handle().filter(|_| spawn_sequence.is_none());
             world.insert(placement_root, sequences);
             // The playing sequence's sinks are attached by the loop below.
@@ -1017,8 +1024,8 @@ pub(super) fn spawn_placed_instances(
         spawn_placement_player(world, placement_root, handle);
     }
     if let Some(handle) = parked_sequence {
-        // Its sinks were attached with the other non-playing sequences above. Stopped: the object keeps
-        // its bind pose until a script plays a group.
+        // Its sinks were attached with the other non-playing sequences above. Stopped but still sampled:
+        // the object holds the sequence's first frame until a script plays a group (#6543).
         let player = spawn_placement_player(world, placement_root, handle);
         if let Some(mut players) = world.query_mut::<byroredux_core::animation::AnimationPlayer>() {
             if let Some(player) = players.get_mut(player) {
@@ -1935,7 +1942,9 @@ mod placement_player_tests {
         // Production text only: the needles below would match this test's own source (#6474 class).
         let spawn = byroredux_core::source_scan::production_text(include_str!("spawn.rs"));
         assert!(spawn.contains("for handle in clip_handle.into_iter().chain(spawn_sequence) {"));
-        assert!(spawn.contains("spawn_sequence = sequences.spawn_handle();"));
+        assert!(spawn.contains("sequences.spawn_handle(|handle| {"));
+        // #6543 — and only an `Idle` that loops, as the legacy object load does.
+        assert!(spawn.contains("clip.cycle_type == byroredux_core::animation::CycleType::Loop"));
         // #6610 — and a model with no idle parks a STOPPED player for PlayGroup rather than playing nothing at all.
         assert!(spawn.contains("parked_sequence = sequences.parked_handle().filter(|_| spawn_sequence.is_none());"));
         assert!(spawn.contains("player.playing = false;"));

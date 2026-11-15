@@ -2566,6 +2566,10 @@ GECK's "getting ready to sit/stand" states 2 and 4 have no runtime here).
 126 `left`, 107 `right` — `crates/nif/tests/sequence_names_census.rs`). The NIF import now keeps those clips
 (`SceneSatellites::object_sequences`, converted once per model into the `AnimationClipRegistry` by
 `ObjectSequenceStore`) and the spawn stamps a `NamedSequences` component (name → clip handle) on the placement root.
+At spawn the object starts its `Idle` if that clip loops, otherwise its `SpecialIdle`. If it has neither, a stopped
+player holds the first frame of its first sequence, and a lone looping `Forward` (the Hoover Dam turbine shafts)
+waits for a script (#6471, #6610, #6543). This is the original engine's object-load rule, traced in `Fallout3.exe`
+and `Oblivion.exe`; the addresses are in `NamedSequences::spawn_handle`.
 `PlayGroup <index> <flag>` maps the index through the AnimGroups list (`3` Forward, `4` Backward … `16` TurnRight;
 Oblivion's documented depth is the first five) to a name and starts that clip from the first key on the object's
 `AnimationPlayer`; every init flag starts at once (the GECK's `0`, "let the current cycle finish", begins a cycle

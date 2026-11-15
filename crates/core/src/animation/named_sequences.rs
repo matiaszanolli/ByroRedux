@@ -25,21 +25,29 @@ impl NamedSequences {
         self.0.iter().find(|(sequence, _)| sequence.eq_ignore_ascii_case(name)).map(|(_, handle)| *handle)
     }
 
-    /// The sequence that starts when the object spawns: its `Idle`, else its `SpecialIdle`
-    /// (Oblivion's gates and machinery), else none (#6471).
+    /// The sequence that starts when the object spawns: its `Idle` when that clip loops, else its
+    /// `SpecialIdle` (Oblivion's gates and machinery), else none (#6471, #6543). `loops` answers
+    /// whether a handle's clip has a looping cycle.
     ///
-    /// The first listed sequence is usually an activation clip with a clamped cycle — playing it
-    /// at spawn leaves a door or container in its post-activation pose, and an activator as
-    /// already activated. The legacy engines start a placed object's idle; the rest are played
-    /// when something asks for them.
-    pub fn spawn_handle(&self) -> Option<u32> {
-        self.handle("idle").or_else(|| self.handle("specialidle"))
+    /// This is the legacy object-load rule (`TESObjectREFR` animation init: `Fallout3.exe`
+    /// `0x75eea9`–`0x75f19c`, `Oblivion.exe` `0x4e36eb`–`0x4e37f8`; FalloutNV.exe carries the same
+    /// function's warning strings). For a non-actor reference, the engine
+    /// looks up `Idle` and `SpecialIdle` by name and activates `Idle` only when its cycle type is
+    /// LOOP. Otherwise it logs "Idle animation must be looping" and skips it; it activates
+    /// `SpecialIdle` whatever its cycle. With neither, it activates the first sequence for one
+    /// update, so the model takes that sequence's first frame, then deactivates every sequence
+    /// and clears the manager's active flag: nothing plays until a script asks (the parked player,
+    /// [`Self::parked_handle`]). The engine would play both `Idle` and `SpecialIdle` on a model that
+    /// had both; no FNV, FO3 or Oblivion object mesh does, so one handle is enough.
+    pub fn spawn_handle(&self, loops: impl Fn(u32) -> bool) -> Option<u32> {
+        self.handle("idle").filter(|&idle| loops(idle)).or_else(|| self.handle("specialidle"))
     }
 
     /// The sequence a stopped player is parked on when [`Self::spawn_handle`] finds nothing to play (#6610): a
     /// script's `PlayGroup` retargets the object's sequence player, and a model with no `Idle` would otherwise
     /// have none, so every `PlayGroup Forward` on a looping activator (the force-field glow, the Lucky 38's
-    /// lights) was declined since #6471. It is the first listed sequence, never played at spawn.
+    /// lights) was declined since #6471. It is the first listed sequence, never played at spawn. A stopped
+    /// player is still sampled, so the model holds that sequence's first frame, as the legacy load does (#6543).
     pub fn parked_handle(&self) -> Option<u32> {
         self.0.first().map(|(_, handle)| *handle)
     }
@@ -66,12 +74,25 @@ mod tests {
     /// is not first still plays it; `Idle` wins over `SpecialIdle`.
     #[test]
     fn spawn_starts_the_idle_never_an_activation_clip() {
-        assert_eq!(set(&["open", "close"]).spawn_handle(), None);
-        assert_eq!(set(&["forward", "backward"]).spawn_handle(), None);
-        assert_eq!(set(&["open", "idle"]).spawn_handle(), Some(1));
-        assert_eq!(set(&["specialidle", "forward"]).spawn_handle(), Some(0));
-        assert_eq!(set(&["specialidle", "idle"]).spawn_handle(), Some(1));
-        assert_eq!(set(&[]).spawn_handle(), None);
+        let all_loop = |_| true;
+        assert_eq!(set(&["open", "close"]).spawn_handle(all_loop), None);
+        assert_eq!(set(&["forward", "backward"]).spawn_handle(all_loop), None);
+        assert_eq!(set(&["open", "idle"]).spawn_handle(all_loop), Some(1));
+        assert_eq!(set(&["specialidle", "forward"]).spawn_handle(all_loop), Some(0));
+        assert_eq!(set(&["specialidle", "idle"]).spawn_handle(all_loop), Some(1));
+        assert_eq!(set(&[]).spawn_handle(all_loop), None);
+    }
+
+    /// #6543 — the legacy load refuses an `Idle` that does not loop ("Idle animation must be looping"; FNV's
+    /// `tlpodplayer01.nif` carries a clamped one) and still starts the `SpecialIdle`. A lone looping `Forward`
+    /// (the Hoover Dam turbine shafts) is not an idle and does not play at spawn.
+    #[test]
+    fn spawn_refuses_an_idle_that_does_not_loop() {
+        let only_handle_1_loops = |handle| handle == 1;
+        assert_eq!(set(&["idle", "forward"]).spawn_handle(only_handle_1_loops), None);
+        assert_eq!(set(&["idle", "specialidle"]).spawn_handle(only_handle_1_loops), Some(1));
+        assert_eq!(set(&["idle", "specialidle"]).spawn_handle(|_| false), Some(1), "SpecialIdle starts whatever its cycle");
+        assert_eq!(set(&["forward"]).spawn_handle(|_| true), None);
     }
 
     /// #6610 — with no idle nothing plays, but a stopped player is parked on the first sequence so `PlayGroup`
@@ -79,7 +100,7 @@ mod tests {
     #[test]
     fn a_model_without_an_idle_parks_a_player_on_its_first_sequence() {
         let forward_only = set(&["forward", "backward"]);
-        assert_eq!(forward_only.spawn_handle(), None, "nothing plays at spawn");
+        assert_eq!(forward_only.spawn_handle(|_| true), None, "nothing plays at spawn");
         assert_eq!(forward_only.parked_handle(), Some(0), "but a player is parked for PlayGroup");
         assert_eq!(set(&[]).parked_handle(), None);
     }
