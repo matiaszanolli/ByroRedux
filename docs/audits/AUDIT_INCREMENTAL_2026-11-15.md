@@ -68,3 +68,40 @@ All of the following were checked with no finding:
 - 309b43fb1, 7595ad751, 783771851, f464c51f6
 - 54e8aeaa8. Every migrated pass still destroys every handle. The changed order is only among objects Vulkan places no destroy-order rule on. The SAFETY comments are accurate.
 - 6439145f9's `StringsFile::for_field` against xEdit's `LocalizedValueDecider`. Every remaining `read_lstring_or_zstring` site is `.STRINGS` per the decider.
+
+---
+
+# Part 2: the uncovered window `310444b69..72010bd15`, and the Bink decoders
+
+The 11-14 report named two gaps: the 256 commits between the two incremental audits, which no delta pass had covered, and the clean-room Bink decoders, which no parser audit had read.
+
+**Method.** Four read-only auditors:
+- the binary crate;
+- scripting and the ESM parser;
+- the renderer, core, physics and audio;
+- `crates/bink2`, `crates/binkaudio` and `crates/video`, under the clean-room rule (no other decoder's source).
+
+Each finding was re-checked against HEAD before being acted on.
+
+| ID | Sev | Finding | Outcome |
+|---|---|---|---|
+| INC6-1 | HIGH | Render-layer depth bias kept its conventional-Z sign after reversed-Z went live (09940503b). Decals, clutter and actors were pushed *behind* their host surfaces. | 0c118907c: `DepthMapping::map_depth_bias`, `pipeline::layer_depth_bias`. Not yet confirmed on screen. |
+| BIK-AUD-1 | MEDIUM | 706f95884's soundtrack cap was built from header fields alone. It could overflow (a debug-build panic on the caller's thread) or reach about 9.6 GB. | 538992417: absolute ceiling of one hour at 48 kHz stereo (12× the longest installed movie); a packet that would pass the cap is refused before decode. |
+| INC4-1 | MEDIUM | A live load neither restored nor cleared the player's `Seated`, which kept naming a dead furniture entity. | a69331ded: the load stands the player up; a vanished seat stands them up. |
+| INC4-2 | MEDIUM | A live load restoring another sex or race left the old body. A pre-chargen save left the chosen race on `Background`. | a0b255b77: `sync_body_after_load`. |
+| INC6-2 | MEDIUM | Cloud drift is speed(t) × session time, so it jumps on a wind change. | #6939. A GPU-struct change that needs a visual check. |
+| INC4-3 | LOW | `PlayBink "..\..\..\"` escaped the data folder. | ba3ee4307 |
+| BIK-AUD-2 | LOW | `Bk2::open` accepted a zero-sized frame, which the decoder cannot handle. | 538992417 |
+| BIK-AUD-3 | LOW | 8192² frames were allowed (about 0.5 GB from a header alone). | 538992417: `MAX_PIXELS` 4096² |
+| INC6-3 | LOW | A std `HashSet` on the per-flush residency path. | f64ed1b12 |
+| INC5-1 | LOW | FO4 Training perk rings (no level drop) cycle back to rank 1. | #6940. Needs saved chain state. |
+| INC5-2 | LOW | Two same-MGEF effects share the first effect's conditions. | #6941. Save-shape change. |
+
+**Checked clean (highlights).**
+- Scripting/ESM: PERK, PACK, REGN, LGTM and WEAP decoders. Byte accounting, per-game gates and `remap_fid` all hold. The FORMAT bumps for the new saved state are in place.
+- Renderer: no `#[repr(C)]` drift. Every `.spv` rebuilt byte-identical from its GLSL. The reversed-Z consumers outside the bias are correct.
+- Bink:
+  - no memory unsafety in `simd.rs`;
+  - no unbounded loop past the end of the bit reader;
+  - the IDCT, shift and motion-vector arithmetic are bounded;
+  - no panic reachable from input on the caller's thread beyond BIK-AUD-1.
