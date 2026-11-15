@@ -100,10 +100,10 @@ pub(crate) fn find_terrain_full_detail_overlaps(
             if !rects_overlap(quad, quad_rect(cx, cy, 1)) {
                 continue;
             }
-            let holed = level == 4
-                && (0..4).contains(&(cx - qx))
-                && (0..4).contains(&(cy - qy))
-                && (hole_mask & (1u16 << ((cy - qy) * 4 + (cx - qx)))) != 0;
+            let holed = level == QUAD_EDGE_CELLS
+                && (0..QUAD_EDGE_CELLS).contains(&(cx - qx))
+                && (0..QUAD_EDGE_CELLS).contains(&(cy - qy))
+                && (hole_mask & (1u16 << ((cy - qy) * QUAD_EDGE_CELLS + (cx - qx)))) != 0;
             if !holed {
                 overlaps += 1;
             }
@@ -112,16 +112,21 @@ pub(crate) fn find_terrain_full_detail_overlaps(
     overlaps
 }
 
+/// Edge, in cells, of a finest-level LOD quad (level 4). Its cells index a `u16` mask, one bit each
+/// (`QUAD_EDGE_CELLS²` = 16), as `(cy - qy) * QUAD_EDGE_CELLS + (cx - qx)`.
+pub(crate) const QUAD_EDGE_CELLS: i32 = 4;
+const _: () = assert!(QUAD_EDGE_CELLS * QUAD_EDGE_CELLS == u16::BITS as i32);
+
 /// Mask of a finest-level (4x4-cell) quad's cells that are resident at full detail: bit
 /// `(cy - qy) * 4 + (cx - qx)` is set for every resident cell `(cx, cy)` inside the quad whose south-west cell
 /// is `(qx, qy)`. `0xFFFF` means the quad is entirely covered by full detail. DLOD-OBJ-002 / DLOD-TREE-008:
 /// a quad that straddles the resident boundary is drawn minus these cells instead of not at all.
 pub(crate) fn quad_resident_mask(qx: i32, qy: i32, resident: &HashSet<(i32, i32)>) -> u16 {
     let mut mask = 0u16;
-    for dy in 0..4 {
-        for dx in 0..4 {
+    for dy in 0..QUAD_EDGE_CELLS {
+        for dx in 0..QUAD_EDGE_CELLS {
             if resident.contains(&(qx + dx, qy + dy)) {
-                mask |= 1u16 << (dy * 4 + dx);
+                mask |= 1u16 << (dy * QUAD_EDGE_CELLS + dx);
             }
         }
     }
@@ -131,10 +136,11 @@ pub(crate) fn quad_resident_mask(qx: i32, qy: i32, resident: &HashSet<(i32, i32)
 /// Which cell of the finest-level quad at `(qx, qy)` the point `(wx, wy)` (world Z-up x and y, Bethesda units)
 /// falls in, as its bit in a [`quad_resident_mask`] mask. `None` outside the quad.
 pub(crate) fn quad_cell_bit(qx: i32, qy: i32, wx: f32, wy: f32) -> Option<u16> {
-    const CELL: f32 = 4096.0;
-    let (cx, cy) = ((wx / CELL).floor() as i32, (wy / CELL).floor() as i32);
+    use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
+    let (cx, cy) = ((wx / EXTERIOR_CELL_UNITS).floor() as i32, (wy / EXTERIOR_CELL_UNITS).floor() as i32);
     let (dx, dy) = (cx - qx, cy - qy);
-    ((0..4).contains(&dx) && (0..4).contains(&dy)).then(|| 1u16 << (dy * 4 + dx))
+    let edge = 0..QUAD_EDGE_CELLS;
+    (edge.contains(&dx) && edge.contains(&dy)).then(|| 1u16 << (dy * QUAD_EDGE_CELLS + dx))
 }
 
 /// DLOD-GATE-005 — count a family's moat cells.

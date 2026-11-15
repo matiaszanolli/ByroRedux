@@ -2,6 +2,7 @@
 //! lighting templates, image-space adapters, activators, terminals.
 
 use byroredux_core::bytes::le_u32_at;
+use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 use super::super::common::{read_lstring_field, read_lstring_or_zstring, read_zstring, remap_fid, CommonNamedFields};
 use super::super::condition::{push_ctda, ConditionList};
 use crate::esm::cell::StarfieldLighting;
@@ -826,8 +827,6 @@ pub struct RegionArea {
     pub points: Vec<(f32, f32)>,
 }
 
-/// Width of one exterior cell in world units (the grid the region polygons are drawn against).
-const REGION_CELL_UNITS: f32 = 4096.0;
 /// Overlap smaller than this (world units) does not make a region cover a cell.
 const REGION_EDGE_EPSILON: f32 = 0.5;
 
@@ -922,10 +921,10 @@ impl RegnRecord {
         // The rectangle is inset by half a unit so a polygon that only shares a cell edge (the
         // usual case: regions are drawn on the cell grid) does not claim the neighbour.
         let (x0, y0) = (
-            grid_x as f32 * REGION_CELL_UNITS + REGION_EDGE_EPSILON,
-            grid_y as f32 * REGION_CELL_UNITS + REGION_EDGE_EPSILON,
+            grid_x as f32 * EXTERIOR_CELL_UNITS + REGION_EDGE_EPSILON,
+            grid_y as f32 * EXTERIOR_CELL_UNITS + REGION_EDGE_EPSILON,
         );
-        let side = REGION_CELL_UNITS - 2.0 * REGION_EDGE_EPSILON;
+        let side = EXTERIOR_CELL_UNITS - 2.0 * REGION_EDGE_EPSILON;
         self.areas
             .iter()
             .any(|area| area.overlaps_rect(x0, y0, x0 + side, y0 + side))

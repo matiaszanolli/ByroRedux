@@ -435,7 +435,7 @@ fn update_lod_coverage(
     // (`lod_object_available == false`) and a cell outside every authored `.btt` quad are not moat.
     let resident_full: std::collections::HashSet<(i32, i32)> = full_cells.iter().copied().collect();
     let game = state.wctx.record_index.game;
-    const FINEST_QUAD_EDGE: i32 = 4;
+    const FINEST_QUAD_EDGE: i32 = cell_loader::QUAD_EDGE_CELLS;
     let object_moat_cells = match cell_loader::object_ring_cells(game) {
         Some(ring) => {
             let missing: Vec<(i32, i32, i32)> = state
