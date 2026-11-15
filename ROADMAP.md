@@ -26,7 +26,10 @@ files, issue dirs) live in [Project Stats](#project-stats) only.
 **Gates.** `rust-toolchain.toml` pins rustc 1.100.0 (#5308; raised from 1.96.0 on 2026-11-14), above the bin crate's 1.96 MSRV (wasmtime 49). CI on
 `main` was red from Session 110 to just after the Session 112 close (last green `305af7beb`); both reds are fixed:
 `cargo clippy -D warnings` (twelve errors, seven hidden behind the plugin's) and the smoke-gate contract loop (a
-stale `BYROREDUX_SKYRIM_DATA` spelling, then ten unregistered gates and two that passed with no data). The bench-of-record below (`d9a201c71`, 2026-10-22) shows HEAD 1–9% slower than the
+stale `BYROREDUX_SKYRIM_DATA` spelling, then ten unregistered gates and two that passed with no data). The ABBA
+lock-order job (`BYRO_LOCK_ORDER_CHECK=1`) was red from `98aa53db9` (2026-11-14, the XCT door-fade test) until
+`4c1d54cc0`: `live_body` / `live_forms` in `cell_loader/relocated.rs` took `FormIdPool` before `FormIdComponent`,
+the reverse of every other holder of the pair, and the detector reported the cycle. The bench-of-record below (`d9a201c71`, 2026-10-22) shows HEAD 1–9% slower than the
 outgoing record under a same-machine control (R6a-regress-23). Its older **R6a-regress-22** was the bench camera
 moving with `b9e961eeb`'s spawn ladder, not renderer code (#5128); a small residual stays open — the top-of-frame
 all-slots fence wait that dominates GPU-bound frames (#5365, the throughput half of closed #4606/#5117).
@@ -689,10 +692,6 @@ performance finding. The measured knob table is in
 
 ### Infrastructure and tooling
 
-- [ ] **Clippy `--all-targets` carries 20 lints** (2026-10-19): test/example
-  targets across `scripting`, `plugin`, `pex`, `hkx`, `sfmaterial` and the bin. The lane is a
-  non-blocking CI step (#5621); the blocking `cargo clippy --workspace -- -D
-  warnings` form is red again since Session 110 (see Status → Gates).
 - [ ] **Offline texture-set upscale finalization.** `tools/texture-upscale`
   works end-to-end: set discovery, TOML manifests, an external ESRGAN-family
   pass, companion-map upsampling and provenance. Remaining: per-game/per-role

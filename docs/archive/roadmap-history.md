@@ -1579,6 +1579,15 @@ product instead of the work.
 - [ ] **FO4 Commonwealth LAND height crack, cells (3,0)/(4,0)** — [#3306](https://github.com/matiaszanolli/ByroRedux/issues/3306) (2026-08-26). The newly-wired live `terrain.seams` gate (#2371) found a genuine 3-vertex, 8-16 world-unit height disagreement at this shared cell edge — not floating-point noise, a real VHGT-chain mismatch. Not yet determined whether it's present in vanilla `Fallout4.esm` or introduced by an installed mod/plugin on the dev machine that ran the check.
 - [x] ~~**`#688`**~~ — **CLOSED.** Originally 149 Oblivion files truncated at root NiNode "failed to fill whole buffer" (pre-Gamebryo NetImmerse-vintage HUD brackets, menu assets, one creature head); after the #1506–#1509 family fixes the live count is **6** (the pre-Gamebryo v3.3–v4.2 markers, #1611) after #1543/#1544 also closed the 2 OBL-D1-NEW-01 files (live `nif_stats` over `Oblivion - Meshes.bsa`, 2026-06-15). Investigation (`.claude/issues/688/INVESTIGATION.md`) refuted the audit's "v=20.0.0.5 subset" framing — all 149 are `v=10.x.x.x / bsver=5` NetImmerse content with an undocumented 4-byte leading zero before `NiObjectNET.name`. Parser-side recovery (block_size gate) already handles them as truncated-not-failed; interior cells render fine. **Caution for future audit runs**: do NOT re-derive the "v=20.0.0.5 subset" framing — it has been empirically refuted.
 
+### Closed — Infrastructure (2026-11-14)
+
+- [x] **Clippy `--all-targets` carries 20 lints** (2026-10-19): test/example
+  targets across `scripting`, `plugin`, `pex`, `hkx`, `sfmaterial` and the bin. The lane is a
+  non-blocking CI step (#5621); the blocking `cargo clippy --workspace -- -D
+  warnings` form is red again since Session 110 (see Status → Gates). — **closed 2026-11-14.** Both forms
+  are at zero: the blocking form since the Session 112 fixes, and `--all-targets` since `3c9949ec9`, the rustc
+  1.100 pin, which cleared 140 sites. CI runs 43653391338 and 43656092595 show both steps green.
+
 ---
 
 ## 8. Retired repro-table rows
