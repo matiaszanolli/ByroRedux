@@ -22,7 +22,8 @@ name: Real-data corpus gates
 #
 # #4659 — the `parsers` job generalises the same gate to the non-NIF readers of
 # game-archive input (BSA/BA2/CSG, BGSM/BGEM, Starfield CDB, Havok HKX,
-# FaceGen, MenuXml). Their real-data suites are `#[ignore]`d too, so before this
+# FaceGen, MenuXml, and since #6993 SpeedTree, the Scaleform host, the .pex
+# decompiler and Bink video). Their real-data suites are `#[ignore]`d too, so before this
 # job nothing scheduled them anywhere and a regression in e.g. `Ba2Archive::open`
 # stayed invisible until someone ran them by hand.
 #
@@ -195,7 +196,7 @@ jobs:
         run: |
           set -euo pipefail
           # Same per-title directories as the corpus matrix above; every one
-          # of the six crates reads a subset of them.
+          # of the parser crates reads a subset of them.
           export BYROREDUX_OBLIVION_DATA="${GAMES_ROOT}/Oblivion/Data"
           export BYROREDUX_FO3_DATA="${GAMES_ROOT}/Fallout 3 goty/Data"
           export BYROREDUX_FNV_DATA="${GAMES_ROOT}/Fallout New Vegas/Data"
@@ -203,6 +204,9 @@ jobs:
           export BYROREDUX_FO4_DATA="${GAMES_ROOT}/Fallout 4/Data"
           export BYROREDUX_FO76_DATA="${GAMES_ROOT}/Fallout76/Data"
           export BYROREDUX_STARFIELD_DATA="${GAMES_ROOT}/Starfield/Data"
+          # The Bink movie sweep walks every title's Data/Video folder from the
+          # Steam library root (#6993).
+          export BYROREDUX_STEAM_COMMON="${GAMES_ROOT}"
           skip=()
           if [ -n "${SKYRIMLE_DATA}" ]; then
             export BYROREDUX_SKYRIMLE_DATA="${SKYRIMLE_DATA}"
@@ -214,7 +218,7 @@ jobs:
           fi
           mkdir -p target/real-data-gates
           failed=0
-          for crate in bsa bgsm sfmaterial hkx facegen menuxml; do
+          for crate in bsa bgsm sfmaterial hkx facegen menuxml spt ui pex video; do
             log="target/real-data-gates/parsers-${crate}.log"
             # #5660 — --no-fail-fast: without it a failing test binary stops
             # cargo before the crate's later ones (a red bsa_real hid
@@ -238,7 +242,7 @@ jobs:
           done
           exit "${failed}"
       # #5088 — the M47.3 ObScript quest-script corpus gate. Scoped to the
-      # named test (~160 MB resident): unlike the six parser crates above,
+      # named test (~160 MB resident): unlike the parser crates above,
       # the scripting crate's heavier real-data work lives in the `plugin`
       # crate's `--ignored` suite, which stays out of this lane.
       - name: Run the ObScript quest-script corpus gate (scripting crate)

@@ -254,14 +254,13 @@ fn an_unmodelled_action_loses_the_site_instead_of_misreading_it() {
 #[test]
 #[ignore = "needs Skyrim SE game data on disk"]
 fn installed_skyrim_host_calls_are_all_cataloged() {
-    let data = std::env::var("BYROREDUX_SKYRIMSE_DATA").unwrap_or_else(|_| {
-        "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data".to_string()
-    });
-    let archive_path = std::path::Path::new(&data).join("Skyrim - Interface.bsa");
-    let Ok(archive) = byroredux_bsa::BsaArchive::open(&archive_path) else {
-        eprintln!("skipping: {archive_path:?} not available (set BYROREDUX_SKYRIMSE_DATA)");
-        return;
-    };
+    use byroredux_plugin::esm::test_paths::{data_dir, SKYRIM_SE_DEFAULT, SKYRIM_SE_ENV};
+    // #6993 — fails rather than skipping when the archive is missing, like its
+    // two `host/tests.rs` siblings: the test is `#[ignore]`d, so it only runs
+    // where the data is expected to be.
+    let archive_path = data_dir(SKYRIM_SE_ENV, SKYRIM_SE_DEFAULT).join("Skyrim - Interface.bsa");
+    let archive = byroredux_bsa::BsaArchive::open(&archive_path)
+        .unwrap_or_else(|error| panic!("open {archive_path:?}: {error} (set {SKYRIM_SE_ENV})"));
 
     let movies: Vec<String> = archive
         .list_files()
