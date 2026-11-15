@@ -125,47 +125,49 @@ pub fn draw(ui: &mut egui::Ui, state: &mut SettingsState) -> bool {
 fn draw_gpu(ui: &mut egui::Ui, state: &mut SettingsState) {
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        match &state.gpu {
-            Ok(caps) => {
-                ui.small(caps.summary());
-                match caps.verdict() {
-                    Ok(()) => {
-                        if !caps.meets_rt_floor() {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(0xe0, 0xa0, 0x30),
-                                format!(
-                                    "Below the {} GB the ray-traced lighting wants. \
-                                     Expect to run at a lower preset.",
-                                    crate::preflight::RT_VRAM_FLOOR_BYTES / (1024 * 1024 * 1024)
-                                ),
-                            );
-                        }
-                        let recommended = caps.recommended_preset().to_owned();
-                        let already = state.active_preset().as_deref() == Some(&*recommended);
-                        if !already && !state.recommendation_applied {
-                            if let Some(preset) = state.presets.presets.get(&recommended).cloned() {
-                                ui.horizontal(|ui| {
-                                    ui.label(format!("Recommended for this card: {}", preset.name));
-                                    if ui.button("Use it").clicked() {
-                                        apply(&preset, &mut state.registry);
-                                        state.recommendation_applied = true;
-                                        state.dirty = true;
-                                    }
-                                });
-                            }
-                        }
-                    }
-                    Err(blocker) => {
-                        ui.colored_label(
-                            egui::Color32::from_rgb(0xe0, 0x5c, 0x50),
-                            blocker.explain(),
-                        );
-                    }
-                }
-            }
-            Err(blocker) => {
-                ui.colored_label(egui::Color32::from_rgb(0xe0, 0x5c, 0x50), blocker.explain());
-            }
+        let caps = match &state.gpu {
+            Ok(caps) => caps,
+            Err(blocker) => return blocker_label(ui, blocker),
+        };
+        ui.small(caps.summary());
+        if let Err(blocker) = caps.verdict() {
+            return blocker_label(ui, &blocker);
+        }
+        if !caps.meets_rt_floor() {
+            ui.colored_label(
+                egui::Color32::from_rgb(0xe0, 0xa0, 0x30),
+                format!(
+                    "Below the {} GB the ray-traced lighting wants. \
+                     Expect to run at a lower preset.",
+                    crate::preflight::RT_VRAM_FLOOR_BYTES / (1024 * 1024 * 1024)
+                ),
+            );
+        }
+        let recommended = caps.recommended_preset().to_owned();
+        recommended_preset_row(ui, state, &recommended);
+    });
+}
+
+/// A GPU that cannot run the engine, in the blocker colour.
+fn blocker_label(ui: &mut egui::Ui, blocker: &crate::preflight::Blocker) {
+    ui.colored_label(egui::Color32::from_rgb(0xe0, 0x5c, 0x50), blocker.explain());
+}
+
+/// Offer the preset the card's capabilities recommend, unless it is already active or was applied.
+fn recommended_preset_row(ui: &mut egui::Ui, state: &mut SettingsState, recommended: &str) {
+    let already = state.active_preset().as_deref() == Some(recommended);
+    if already || state.recommendation_applied {
+        return;
+    }
+    let Some(preset) = state.presets.presets.get(recommended).cloned() else {
+        return;
+    };
+    ui.horizontal(|ui| {
+        ui.label(format!("Recommended for this card: {}", preset.name));
+        if ui.button("Use it").clicked() {
+            apply(&preset, &mut state.registry);
+            state.recommendation_applied = true;
+            state.dirty = true;
         }
     });
 }

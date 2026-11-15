@@ -7,19 +7,7 @@ pub fn print_response(response: &DebugResponse) {
         DebugResponse::Value { data } => {
             println!("{}", serde_json::to_string_pretty(data).unwrap());
         }
-        DebugResponse::EntityList { entities } => {
-            if entities.is_empty() {
-                println!("(no entities)");
-                return;
-            }
-            for e in entities {
-                match &e.name {
-                    Some(name) => println!("  Entity {} \"{}\"", e.id, name),
-                    None => println!("  Entity {}", e.id),
-                }
-            }
-            println!("({} entities)", entities.len());
-        }
+        response @ DebugResponse::EntityList { .. } => print_entity_list(response),
         DebugResponse::ComponentList { components } => {
             for name in components {
                 println!("  {}", name);
@@ -31,42 +19,7 @@ pub fn print_response(response: &DebugResponse) {
                 println!("  [{}] {}", i, name);
             }
         }
-        DebugResponse::Stats {
-            fps,
-            avg_fps,
-            frame_time_ms,
-            entity_count,
-            mesh_count,
-            texture_count,
-            meshes_in_use,
-            textures_in_use,
-            draw_command_count,
-            batch_count,
-            indirect_call_count,
-        } => {
-            // #637 / FNV-D5-02 — show registry-wide AND scene-scoped
-            // counts for meshes / textures so a leak that holds the
-            // last reference past cell unload is visible as
-            // `<registry>` larger than `<in_use>`.
-            // #1258 / PERF-D3-NEW-03 — three-stage draw pipeline
-            // (commands → batches → GPU calls) so the real cost
-            // number is visible, not just the input to the batcher.
-            println!(
-                "FPS: {:.1} (avg {:.1}) | Frame: {:.2}ms | Entities: {} | \
-                 Meshes: {}/{} | Textures: {}/{} | Draws: {} cmds → {} batches → {} GPU calls",
-                fps,
-                avg_fps,
-                frame_time_ms,
-                entity_count,
-                mesh_count,
-                meshes_in_use,
-                texture_count,
-                textures_in_use,
-                draw_command_count,
-                batch_count,
-                indirect_call_count
-            );
-        }
+        response @ DebugResponse::Stats { .. } => print_stats(response),
         DebugResponse::ScreenshotSaved { path } => {
             println!("Screenshot saved: {}", path);
         }
@@ -76,244 +29,326 @@ pub fn print_response(response: &DebugResponse) {
         DebugResponse::Pong => {
             println!("pong");
         }
-        DebugResponse::Hierarchy { nodes } => {
-            if nodes.is_empty() {
-                println!("(empty hierarchy)");
-                return;
-            }
-            println!(
-                "{:>5} {:>5} {:>6} {:>30} {:>30} {:>5}  name",
-                "depth", "id", "parent", "GT.t", "local.t", "flags"
-            );
-            for n in nodes {
-                let fmt_t = |t: &Option<[f32; 3]>| -> String {
-                    t.map_or("                             ?".into(), |v| {
-                        format!("({:8.1},{:8.1},{:8.1})", v[0], v[1], v[2])
-                    })
-                };
-                let mut flags = String::new();
-                if n.has_skinned_mesh {
-                    flags.push('S');
-                }
-                if n.has_mesh_handle {
-                    flags.push('M');
-                }
-                let parent = n.parent.map_or("·".to_string(), |p| p.to_string());
-                let indent = "  ".repeat(n.depth as usize);
-                let name = n.name.as_deref().unwrap_or("");
-                println!(
-                    "{:>5} {:>5} {:>6} {:>30} {:>30} {:>5}  {}{}",
-                    n.depth,
-                    n.id,
-                    parent,
-                    fmt_t(&n.gt_translation),
-                    fmt_t(&n.local_translation),
-                    flags,
-                    indent,
-                    name,
-                );
-            }
-            println!("({} nodes)", nodes.len());
-        }
-        DebugResponse::SkinnedMesh {
-            skeleton_root,
-            bones,
-            bone_names,
-            bind_inverses,
-            global_skin_transform: _,
-            bone_world_matrices,
-            palette,
-        } => {
-            println!("skeleton_root: {:?}", skeleton_root);
-            println!(
-                "{} bones (col 1 bind.t · col 2 world.t · col 3 palette.t · ✗ = identity):",
-                bones.len()
-            );
-            // Column 4x4 matrix translation lives at indices 12/13/14.
-            let t_of = |m: &[f32; 16]| (m[12], m[13], m[14]);
-            let is_identity = |m: &[f32; 16]| {
-                (m[0] - 1.0).abs() < 1e-5
-                    && (m[5] - 1.0).abs() < 1e-5
-                    && (m[10] - 1.0).abs() < 1e-5
-                    && (m[15] - 1.0).abs() < 1e-5
-                    && m[12].abs() < 1e-5
-                    && m[13].abs() < 1e-5
-                    && m[14].abs() < 1e-5
-            };
-            let mut dropouts = 0usize;
-            for (i, ((((b, name), bind), world), pal)) in bones
-                .iter()
-                .zip(bone_names.iter())
-                .zip(bind_inverses.iter())
-                .zip(bone_world_matrices.iter())
-                .zip(palette.iter())
-                .enumerate()
-            {
-                let nm = name.as_deref().unwrap_or("?");
-                let bt = t_of(bind);
-                let wt = world.map(|m| t_of(&m));
-                let pt = t_of(pal);
-                let pal_drop = is_identity(pal);
-                if pal_drop {
-                    dropouts += 1;
-                }
-                let world_str = match wt {
-                    Some((x, y, z)) => format!("({:>7.2},{:>7.2},{:>7.2})", x, y, z),
-                    None => "(   none           )".to_string(),
-                };
-                println!(
-                    "  [{:>3}] entity={:>10} name={:<24} bind=({:>7.2},{:>7.2},{:>7.2}) world={} pal=({:>7.2},{:>7.2},{:>7.2}){}",
-                    i,
-                    b.map(|e| e.to_string()).unwrap_or_else(|| "None".to_string()),
-                    format!("{:?}", nm),
-                    bt.0, bt.1, bt.2,
-                    world_str,
-                    pt.0, pt.1, pt.2,
-                    if pal_drop { "  ✗" } else { "" }
-                );
-            }
-            if dropouts > 0 {
-                println!(
-                    "({} of {} palette slots are IDENTITY — likely #841 dropout)",
-                    dropouts,
-                    bones.len()
-                );
-            }
-        }
-        DebugResponse::Inspect {
-            entity,
-            name,
-            components,
-        } => {
-            // Header line: entity id + resolved Name (when present).
-            match name {
-                Some(n) => println!("Entity {} \"{}\":", entity, n),
-                None => println!("Entity {}:", entity),
-            }
-            if components.is_empty() {
-                println!(
-                    "  (no registered components present — entity may not exist, or only \
-                     carries unregistered components)"
-                );
-                return;
-            }
-            for (cname, json) in components {
-                // serde_json::to_string_pretty produces a JSON-RFC-compliant
-                // multi-line form. Re-indent so each component is visually
-                // grouped under the type header.
-                let pretty =
-                    serde_json::to_string_pretty(json).unwrap_or_else(|_| json.to_string());
-                let indented = pretty
-                    .lines()
-                    .map(|l| format!("    {l}"))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                println!("  {}:", cname);
-                println!("{}", indented);
-            }
-            println!("({} components)", components.len());
-        }
-        DebugResponse::Metrics(payload) => {
-            let byroredux_debug_protocol::MetricsPayload {
-                sampled_at_secs,
-
-            cpu_pct,
-            ram_used_mb,
-            ram_total_mb,
-            process_ram_mb,
-            vram_used_mb,
-            vram_reserved_mb,
-            vram_budget_mb,
-            gpu_busy_pct,
-            gpu_memory_busy_pct,
-            driver_vram_used_mb,
-            driver_vram_total_mb,
-            vulkan_heap_used_mb,
-            vulkan_heap_budget_mb,
-            gpu_pass_ms,
-            cpu_pass_ms,
-            top_systems_ms,
-            } = payload;
-
-            println!("Metrics (sampled at unix={}):", sampled_at_secs);
-            println!("  CPU: {:.1}% (whole-process)", cpu_pct);
-            println!(
-                "  RAM: {} / {} MB system  |  process RSS: {} MB",
-                ram_used_mb, ram_total_mb, process_ram_mb,
-            );
-            let vram_label = if *vram_budget_mb > 0 {
-                format!("{} MB", vram_budget_mb)
-            } else {
-                "?".to_string()
-            };
-            println!(
-                "  VRAM: {} used / {} reserved / {} budget",
-                vram_used_mb, vram_reserved_mb, vram_label,
-            );
-            if let (Some(used), Some(budget)) = (vulkan_heap_used_mb, vulkan_heap_budget_mb) {
-                println!("  Vulkan heap: {} / {} MB (live)", used, budget);
-            }
-            if let (Some(used), Some(total)) = (driver_vram_used_mb, driver_vram_total_mb) {
-                println!("  NVIDIA VRAM: {} / {} MB (driver-wide)", used, total);
-            }
-            if let Some(busy) = gpu_busy_pct {
-                println!("  GPU busy (NVIDIA): {:.0}%", busy);
-            }
-            if let Some(busy) = gpu_memory_busy_pct {
-                println!("  GPU memory-controller busy (NVIDIA): {:.0}%", busy);
-            }
-            if gpu_pass_ms.is_empty() {
-                println!("  GPU passes: (none reported)");
-            } else {
-                println!("  GPU passes:");
-                for (name, ms) in gpu_pass_ms {
-                    match ms {
-                        // #2513 / REN-D20-NEW-03 — a bracket that didn't
-                        // run this cycle prints "n/a", not an
-                        // indistinguishable `0.000 ms`.
-                        Some(ms) => println!("    {:<20} {:>6.3} ms", name, ms),
-                        None => println!("    {:<20} {:>10}", name, "n/a"),
-                    }
-                }
-            }
-            // #6278 — Phase 8 / Phase 11 breakdowns that the GPU brackets above
-            // cannot see: where the CPU frame time goes.
-            if !cpu_pass_ms.is_empty() {
-                println!("  CPU passes:");
-                for (name, ms) in cpu_pass_ms {
-                    println!("    {:<20} {:>6.3} ms", name, ms);
-                }
-            }
-            if !top_systems_ms.is_empty() {
-                println!("  Slowest systems:");
-                for (name, ms) in top_systems_ms.iter().take(10) {
-                    println!("    {:<32} {:>6.3} ms", name, ms);
-                }
-            }
-        }
-        DebugResponse::GameProfiles { profiles } => {
-            if profiles.is_empty() {
-                println!("(no game profiles configured)");
-                return;
-            }
-            println!("{} game profile(s):", profiles.len());
-            for p in profiles {
-                println!("  [{}] {}", p.key, p.name);
-                println!("    root: {}", p.root);
-                println!("    esm:  {}", p.esm);
-                if !p.default_bsas.is_empty() {
-                    println!("    bsas: {}", p.default_bsas.join(", "));
-                }
-                if !p.default_textures_bsas.is_empty() {
-                    println!("    txbsas: {}", p.default_textures_bsas.join(", "));
-                }
-                if !p.sample_cells.is_empty() {
-                    println!("    sample cells: {}", p.sample_cells.join(", "));
-                }
-            }
-        }
+        response @ DebugResponse::Hierarchy { .. } => print_hierarchy(response),
+        response @ DebugResponse::SkinnedMesh { .. } => print_skinned_mesh(response),
+        response @ DebugResponse::Inspect { .. } => print_inspect(response),
+        response @ DebugResponse::Metrics(..) => print_metrics(response),
+        response @ DebugResponse::GameProfiles { .. } => print_game_profiles(response),
         DebugResponse::Error { message } => {
             eprintln!("Error: {}", message);
+        }
+    }
+}
+
+fn print_entity_list(response: &DebugResponse) {
+    let DebugResponse::EntityList { entities } = response else {
+        return;
+    };
+    if entities.is_empty() {
+        println!("(no entities)");
+        return;
+    }
+    for e in entities {
+        match &e.name {
+            Some(name) => println!("  Entity {} \"{}\"", e.id, name),
+            None => println!("  Entity {}", e.id),
+        }
+    }
+    println!("({} entities)", entities.len());
+}
+
+fn print_stats(response: &DebugResponse) {
+    let DebugResponse::Stats {
+        fps,
+        avg_fps,
+        frame_time_ms,
+        entity_count,
+        mesh_count,
+        texture_count,
+        meshes_in_use,
+        textures_in_use,
+        draw_command_count,
+        batch_count,
+        indirect_call_count,
+    } = response else {
+        return;
+    };
+    // #637 / FNV-D5-02 — show registry-wide AND scene-scoped
+    // counts for meshes / textures so a leak that holds the
+    // last reference past cell unload is visible as
+    // `<registry>` larger than `<in_use>`.
+    // #1258 / PERF-D3-NEW-03 — three-stage draw pipeline
+    // (commands → batches → GPU calls) so the real cost
+    // number is visible, not just the input to the batcher.
+    println!(
+        "FPS: {:.1} (avg {:.1}) | Frame: {:.2}ms | Entities: {} | \
+         Meshes: {}/{} | Textures: {}/{} | Draws: {} cmds → {} batches → {} GPU calls",
+        fps,
+        avg_fps,
+        frame_time_ms,
+        entity_count,
+        mesh_count,
+        meshes_in_use,
+        texture_count,
+        textures_in_use,
+        draw_command_count,
+        batch_count,
+        indirect_call_count
+    );
+}
+
+fn print_hierarchy(response: &DebugResponse) {
+    let DebugResponse::Hierarchy { nodes } = response else {
+        return;
+    };
+    if nodes.is_empty() {
+        println!("(empty hierarchy)");
+        return;
+    }
+    println!(
+        "{:>5} {:>5} {:>6} {:>30} {:>30} {:>5}  name",
+        "depth", "id", "parent", "GT.t", "local.t", "flags"
+    );
+    for n in nodes {
+        let fmt_t = |t: &Option<[f32; 3]>| -> String {
+            t.map_or("                             ?".into(), |v| {
+                format!("({:8.1},{:8.1},{:8.1})", v[0], v[1], v[2])
+            })
+        };
+        let mut flags = String::new();
+        if n.has_skinned_mesh {
+            flags.push('S');
+        }
+        if n.has_mesh_handle {
+            flags.push('M');
+        }
+        let parent = n.parent.map_or("·".to_string(), |p| p.to_string());
+        let indent = "  ".repeat(n.depth as usize);
+        let name = n.name.as_deref().unwrap_or("");
+        println!(
+            "{:>5} {:>5} {:>6} {:>30} {:>30} {:>5}  {}{}",
+            n.depth,
+            n.id,
+            parent,
+            fmt_t(&n.gt_translation),
+            fmt_t(&n.local_translation),
+            flags,
+            indent,
+            name,
+        );
+    }
+    println!("({} nodes)", nodes.len());
+}
+
+fn print_skinned_mesh(response: &DebugResponse) {
+    let DebugResponse::SkinnedMesh {
+        skeleton_root,
+        bones,
+        bone_names,
+        bind_inverses,
+        global_skin_transform: _,
+        bone_world_matrices,
+        palette,
+    } = response else {
+        return;
+    };
+    println!("skeleton_root: {:?}", skeleton_root);
+    println!(
+        "{} bones (col 1 bind.t · col 2 world.t · col 3 palette.t · ✗ = identity):",
+        bones.len()
+    );
+    // Column 4x4 matrix translation lives at indices 12/13/14.
+    let t_of = |m: &[f32; 16]| (m[12], m[13], m[14]);
+    let is_identity = |m: &[f32; 16]| {
+        (m[0] - 1.0).abs() < 1e-5
+            && (m[5] - 1.0).abs() < 1e-5
+            && (m[10] - 1.0).abs() < 1e-5
+            && (m[15] - 1.0).abs() < 1e-5
+            && m[12].abs() < 1e-5
+            && m[13].abs() < 1e-5
+            && m[14].abs() < 1e-5
+    };
+    let mut dropouts = 0usize;
+    for (i, ((((b, name), bind), world), pal)) in bones
+        .iter()
+        .zip(bone_names.iter())
+        .zip(bind_inverses.iter())
+        .zip(bone_world_matrices.iter())
+        .zip(palette.iter())
+        .enumerate()
+    {
+        let nm = name.as_deref().unwrap_or("?");
+        let bt = t_of(bind);
+        let wt = world.map(|m| t_of(&m));
+        let pt = t_of(pal);
+        let pal_drop = is_identity(pal);
+        if pal_drop {
+            dropouts += 1;
+        }
+        let world_str = match wt {
+            Some((x, y, z)) => format!("({:>7.2},{:>7.2},{:>7.2})", x, y, z),
+            None => "(   none           )".to_string(),
+        };
+        println!(
+            "  [{:>3}] entity={:>10} name={:<24} bind=({:>7.2},{:>7.2},{:>7.2}) world={} pal=({:>7.2},{:>7.2},{:>7.2}){}",
+            i,
+            b.map(|e| e.to_string()).unwrap_or_else(|| "None".to_string()),
+            format!("{:?}", nm),
+            bt.0, bt.1, bt.2,
+            world_str,
+            pt.0, pt.1, pt.2,
+            if pal_drop { "  ✗" } else { "" }
+        );
+    }
+    if dropouts > 0 {
+        println!(
+            "({} of {} palette slots are IDENTITY — likely #841 dropout)",
+            dropouts,
+            bones.len()
+        );
+    }
+}
+
+fn print_inspect(response: &DebugResponse) {
+    let DebugResponse::Inspect {
+        entity,
+        name,
+        components,
+    } = response else {
+        return;
+    };
+    // Header line: entity id + resolved Name (when present).
+    match name {
+        Some(n) => println!("Entity {} \"{}\":", entity, n),
+        None => println!("Entity {}:", entity),
+    }
+    if components.is_empty() {
+        println!(
+            "  (no registered components present — entity may not exist, or only \
+             carries unregistered components)"
+        );
+        return;
+    }
+    for (cname, json) in components {
+        // serde_json::to_string_pretty produces a JSON-RFC-compliant
+        // multi-line form. Re-indent so each component is visually
+        // grouped under the type header.
+        let pretty =
+            serde_json::to_string_pretty(json).unwrap_or_else(|_| json.to_string());
+        let indented = pretty
+            .lines()
+            .map(|l| format!("    {l}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        println!("  {}:", cname);
+        println!("{}", indented);
+    }
+    println!("({} components)", components.len());
+}
+
+fn print_metrics(response: &DebugResponse) {
+    let DebugResponse::Metrics(payload) = response else {
+        return;
+    };
+    let byroredux_debug_protocol::MetricsPayload {
+        sampled_at_secs,
+
+    cpu_pct,
+    ram_used_mb,
+    ram_total_mb,
+    process_ram_mb,
+    vram_used_mb,
+    vram_reserved_mb,
+    vram_budget_mb,
+    gpu_busy_pct,
+    gpu_memory_busy_pct,
+    driver_vram_used_mb,
+    driver_vram_total_mb,
+    vulkan_heap_used_mb,
+    vulkan_heap_budget_mb,
+    gpu_pass_ms,
+    cpu_pass_ms,
+    top_systems_ms,
+    } = payload;
+
+    println!("Metrics (sampled at unix={}):", sampled_at_secs);
+    println!("  CPU: {:.1}% (whole-process)", cpu_pct);
+    println!(
+        "  RAM: {} / {} MB system  |  process RSS: {} MB",
+        ram_used_mb, ram_total_mb, process_ram_mb,
+    );
+    let vram_label = if *vram_budget_mb > 0 {
+        format!("{} MB", vram_budget_mb)
+    } else {
+        "?".to_string()
+    };
+    println!(
+        "  VRAM: {} used / {} reserved / {} budget",
+        vram_used_mb, vram_reserved_mb, vram_label,
+    );
+    if let (Some(used), Some(budget)) = (vulkan_heap_used_mb, vulkan_heap_budget_mb) {
+        println!("  Vulkan heap: {} / {} MB (live)", used, budget);
+    }
+    if let (Some(used), Some(total)) = (driver_vram_used_mb, driver_vram_total_mb) {
+        println!("  NVIDIA VRAM: {} / {} MB (driver-wide)", used, total);
+    }
+    if let Some(busy) = gpu_busy_pct {
+        println!("  GPU busy (NVIDIA): {:.0}%", busy);
+    }
+    if let Some(busy) = gpu_memory_busy_pct {
+        println!("  GPU memory-controller busy (NVIDIA): {:.0}%", busy);
+    }
+    if gpu_pass_ms.is_empty() {
+        println!("  GPU passes: (none reported)");
+    } else {
+        println!("  GPU passes:");
+        for (name, ms) in gpu_pass_ms {
+            match ms {
+                // #2513 / REN-D20-NEW-03 — a bracket that didn't
+                // run this cycle prints "n/a", not an
+                // indistinguishable `0.000 ms`.
+                Some(ms) => println!("    {:<20} {:>6.3} ms", name, ms),
+                None => println!("    {:<20} {:>10}", name, "n/a"),
+            }
+        }
+    }
+    // #6278 — Phase 8 / Phase 11 breakdowns that the GPU brackets above
+    // cannot see: where the CPU frame time goes.
+    if !cpu_pass_ms.is_empty() {
+        println!("  CPU passes:");
+        for (name, ms) in cpu_pass_ms {
+            println!("    {:<20} {:>6.3} ms", name, ms);
+        }
+    }
+    if !top_systems_ms.is_empty() {
+        println!("  Slowest systems:");
+        for (name, ms) in top_systems_ms.iter().take(10) {
+            println!("    {:<32} {:>6.3} ms", name, ms);
+        }
+    }
+}
+
+fn print_game_profiles(response: &DebugResponse) {
+    let DebugResponse::GameProfiles { profiles } = response else {
+        return;
+    };
+    if profiles.is_empty() {
+        println!("(no game profiles configured)");
+        return;
+    }
+    println!("{} game profile(s):", profiles.len());
+    for p in profiles {
+        println!("  [{}] {}", p.key, p.name);
+        println!("    root: {}", p.root);
+        println!("    esm:  {}", p.esm);
+        if !p.default_bsas.is_empty() {
+            println!("    bsas: {}", p.default_bsas.join(", "));
+        }
+        if !p.default_textures_bsas.is_empty() {
+            println!("    txbsas: {}", p.default_textures_bsas.join(", "));
+        }
+        if !p.sample_cells.is_empty() {
+            println!("    sample cells: {}", p.sample_cells.join(", "));
         }
     }
 }
