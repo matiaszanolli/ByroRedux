@@ -136,6 +136,11 @@ against real `Oblivion.esm` — don't assume the FO3/FNV path covers it.
 
 ## 4. First slice: Skyrim+ ambient Sandbox (shipped 2026-08-19)
 
+> **Superseded.** The *from_skyrim_procedure_tree* fallback that this section and §5 describe
+> was replaced by the procedure-tree walk in `byroredux/src/npc_spawn/ai_package/tree.rs`
+> (AIP-TREE-001..008, #6660); Sandbox and Patrol are two of its leaves. §4-5 are kept as the
+> record of the real-data findings behind those two leaves.
+
 Scoped the same way as M42.3 (Wander) — one procedure, real data behind the
 choice. Turned out smaller than planned once the real code was in front of
 me rather than sketched from the investigation alone — two corrections
@@ -172,7 +177,7 @@ What shipped: `AmbientBehavior::from_package` gained a `template: &PackRecord`
 parameter (both call sites already had a packages catalog in scope to chase
 `package_template_form_id` against — `EsmIndex.packages` at spawn,
 `PackageRegistry` in the M42.9 reevaluation system) and a
-`from_skyrim_procedure_tree` fallback: find a `template.procedures` leaf
+*from_skyrim_procedure_tree* fallback: find a `template.procedures` leaf
 with `procedure_type == "Sandbox"` (confirmed the literal authored string
 against real `Skyrim.esm` before writing any dispatch code — see the
 resolved-radius trace in §3), resolve its inputs against the *instance's*
@@ -251,7 +256,7 @@ wrapped in a `PackDataValue::Location` — it's a bare `PackDataValue::Float`
 (confirmed against the template's own leaf and 12 real per-NPC instances:
 index 1 is consistently the only resolved `Float`, values 50.0–150.0,
 never conflated with the `SingleRef` route-anchor at index 0 or the four
-`Bool` flags at indices 2/4/6/8). `from_skyrim_procedure_tree` now tries
+`Bool` flags at indices 2/4/6/8). *from_skyrim_procedure_tree* now tries
 `"Sandbox"` first, then `"Patrol"`, each reading its own value type.
 
 **Known limitation, carried over from §4 and now confirmed to matter
