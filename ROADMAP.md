@@ -668,7 +668,7 @@ performance finding. The measured knob table is in
   state is captured (#5277), emissive is parked (*tracked here only*: #5503 closed 2026-10-11). Owed: definition of done + a live Cydonia render.
 
 - [ ] **Parsed-but-unconsumed minimal records** (TD6-2026-10-25-01, #6387).
-  Fifteen `EsmIndex` maps built from EDID+FULL-only record types have no reader
+  Nineteen `EsmIndex` maps built from EDID+FULL-only record types have no reader
   outside tests/examples (`dispatch_misc_stub.rs` is the deliberate parking
   lot), and each costs a `HashMap<u32, MinimalEsmRecord>` plus String allocs on
   every FNV/FO3/Oblivion load. The ones that are owed a consumer:
@@ -684,7 +684,9 @@ performance finding. The measured knob table is in
   No owner yet, so candidates to drop (the group then falls to
   `skipped_unconsumed_groups`, which already reports it): `animation_objects`
   (ANIO), `menu_icons` (MICN), `ammo_effects` (AMEF), `load_screen_types`
-  (LSCT), `placeable_waters` (PWAT), `sigil_stones` (SGST). Re-derive the list
+  (LSCT), `placeable_waters` (PWAT), `sigil_stones` (SGST), `debris` (DEBR),
+  `casinos` (CSNO), and Oblivion's `clothing` (CLOT) / `apparatuses` (APPA), whose
+  records are read through `items` and `cells.statics` instead. Re-derive the list
   with `grep -w <field>` outside `tests/`, `examples/`, `index.rs`, `parse.rs`
   and `dispatch_misc_stub.rs`.
 

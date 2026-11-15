@@ -632,13 +632,13 @@ pub struct EsmIndex {
     pub default_objects: HashMap<u32, MinimalEsmRecord>,
     /// `MICN` menu icon.
     pub menu_icons: HashMap<u32, MinimalEsmRecord>,
-    /// `MSET` media set (FNV) — what REGN `RDSI`/`RDSB` point at (#3816).
-    ///
-    /// Typed but unconsumed: no runtime reads it yet; that is the open #3816 (#6805).
+    /// `MSET` media set (FNV) — what REGN `RDSI`/`RDSB` point at; the music
+    /// controller reads it (`byroredux/src/music/translate.rs`, #3816).
     pub media_sets: HashMap<u32, MediaSetRecord>,
     /// `MUSC` music type.
     pub music_types: HashMap<u32, MuscRecord>,
-    /// Skyrim `MUST` music track — what a Skyrim `MUSC.TNAM` lists (#3816).
+    /// Skyrim `MUST` music track — what a Skyrim `MUSC.TNAM` lists. Typed but
+    /// unconsumed: the Skyrim half of #3816 (`docs/engine/esm-records.md`).
     pub music_tracks: HashMap<u32, MustRecord>,
     /// `SOUN` sound. Upgraded from the `MinimalEsmRecord` long-tail stub
     /// (#810) to a real decode of `FNAM` (file path) — EX-16 item 1's
