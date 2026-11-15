@@ -435,6 +435,67 @@ pub(crate) fn classify_lod_attempt(produced: bool, admission_open_after: bool) -
     }
 }
 
+/// The load half every distant-LOD ring shares (#6092, #6955), the twin of
+/// [`retain_resident`]: before each candidate the ring asks [`Self::admit`], and after
+/// an admitted attempt that produced no block, [`Self::miss`]. The gate keeps the
+/// held-back accounting — a closed geometry pool holds back the candidate in hand and
+/// every one after it — and the completion rule, so the five rings cannot drift on
+/// them; each ring keeps its own spawn call and its own miss sentinel.
+pub(crate) struct LodLoadGate {
+    candidates: usize,
+    attempted: usize,
+    starved: bool,
+}
+
+impl LodLoadGate {
+    pub(crate) fn new(candidates: usize) -> Self {
+        Self {
+            candidates,
+            attempted: 0,
+            starved: false,
+        }
+    }
+
+    /// Whether to attempt the next candidate. `false` once the pool stops admitting
+    /// uploads — decoding and rejecting each remaining candidate would be wasted work for
+    /// a certain refusal, so the rest of the ring is held back — or the budget is spent.
+    pub(crate) fn admit(&mut self, budget: &mut LodWorkBudget, admission_open: bool) -> bool {
+        if !admission_open {
+            budget.note_held_back(self.candidates - self.attempted);
+            self.starved = true;
+            return false;
+        }
+        if !budget.try_take() {
+            return false;
+        }
+        self.attempted += 1;
+        true
+    }
+
+    /// After an admitted attempt produced no block: `true` for a real miss, which the ring
+    /// remembers so a budgeted reconcile can continue outward instead of retrying it every
+    /// crossing; `false` when the pool refused it, which says nothing about the asset, so
+    /// nothing is remembered and this candidate and the rest wait for admission to reopen.
+    pub(crate) fn miss(&mut self, budget: &mut LodWorkBudget, admission_open_after: bool) -> bool {
+        match classify_lod_attempt(false, admission_open_after) {
+            LodAttemptVerdict::Miss => true,
+            LodAttemptVerdict::HeldBack => {
+                budget.note_held_back(self.candidates - self.attempted + 1);
+                self.starved = true;
+                false
+            }
+            LodAttemptVerdict::Keep => unreachable!("no block was produced"),
+        }
+    }
+
+    /// Whether the ring has nothing left it can try: every candidate attempted, or the
+    /// ring starved at a closed pool (it then reports complete, and the caller's verdict
+    /// says it was held back rather than settled).
+    pub(crate) fn complete(&self) -> bool {
+        self.starved || self.attempted == self.candidates
+    }
+}
+
 /// Whether a starved LOD reconcile should be armed again (#6092).
 ///
 /// A `Starved` verdict stops the reconcile because retrying against a closed
@@ -581,6 +642,43 @@ pub(crate) fn vertex_bound(vertices: &[Vertex], skip: impl Fn(usize) -> bool) ->
 
 #[cfg(test)]
 mod tests {
+    use super::{LodLoadGate, LodWorkBudget};
+
+    /// #6955 — the shared load gate: a closed pool holds back the candidate in hand and
+    /// the rest; a refusal after an attempt holds back that candidate too; a spent budget
+    /// stops the ring incomplete.
+    #[test]
+    fn lod_load_gate_holds_back_the_rest_of_a_starved_ring() {
+        let mut budget = LodWorkBudget::new(10);
+        let mut gate = LodLoadGate::new(5);
+        assert!(gate.admit(&mut budget, true));
+        assert!(gate.admit(&mut budget, true));
+        assert!(!gate.admit(&mut budget, false), "a closed pool stops the ring");
+        assert_eq!(budget.held_back(), 3, "the candidate in hand and the two after it");
+        assert!(gate.complete(), "a starved ring reports complete");
+
+        let mut budget = LodWorkBudget::new(10);
+        let mut gate = LodLoadGate::new(4);
+        assert!(gate.admit(&mut budget, true));
+        assert!(gate.miss(&mut budget, true), "no block with the pool open is a real miss");
+        assert!(gate.admit(&mut budget, true));
+        assert!(!gate.miss(&mut budget, false), "a refusal is not a miss");
+        assert_eq!(budget.held_back(), 3, "the refused candidate and the two after it");
+        assert!(gate.complete());
+
+        let mut budget = LodWorkBudget::new(1);
+        let mut gate = LodLoadGate::new(3);
+        assert!(gate.admit(&mut budget, true));
+        assert!(!gate.admit(&mut budget, true), "a spent budget stops the ring");
+        assert_eq!(budget.held_back(), 0);
+        assert!(!gate.complete(), "candidates left untried: not complete");
+
+        let mut budget = LodWorkBudget::new(5);
+        let mut gate = LodLoadGate::new(2);
+        assert!(gate.admit(&mut budget, true) && gate.admit(&mut budget, true));
+        assert!(gate.complete(), "every candidate attempted");
+    }
+
     use super::*;
     use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
     use byroredux_plugin::esm::cell::{CellData, WorldspaceRecord};

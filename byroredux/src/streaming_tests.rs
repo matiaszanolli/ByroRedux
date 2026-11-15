@@ -965,42 +965,40 @@ fn the_starved_arm_closes_the_boundary_and_arms_the_retry() {
     );
 }
 
-/// #6092 — every distant-LOD ring gates on the pool and classifies a
-/// no-block attempt before caching it. A ring that reads `None` as a miss again
-/// would permanently drop a refused quad.
+/// #6092 — every distant-LOD ring gates on the pool and classifies a no-block
+/// attempt before caching it; a ring that read `None` as a miss again would
+/// permanently drop a refused quad. Since #6955 the classification, the held-back
+/// accounting and the completion rule are `LodLoadGate`'s (run by
+/// `lod_load_gate_holds_back_the_rest_of_a_starved_ring` in `lod_support.rs`); what
+/// stays per ring, and is checked here, is that each ring routes its loop through the
+/// gate and consults the admission query for its own tier. Terrain LOD is essential
+/// geometry (full pool cap, global latch); the object / tree / placement rings are
+/// props and stop at the reserve-reduced ceiling with their own latch.
 #[test]
 fn every_lod_ring_gates_on_admission_and_never_caches_a_refusal() {
-    // Terrain LOD is essential geometry (full pool cap, global latch); the
-    // object / tree / placement rings are props and stop at the reserve-reduced
-    // ceiling with their own latch — each consults the query for its own tier.
     for (name, src, admission_query) in [
         ("terrain_lod", include_str!("cell_loader/terrain_lod.rs"), "scene_geometry_admission_open()"),
         ("object_lod", include_str!("cell_loader/object_lod.rs"), "prop_geometry_admission_open()"),
         ("placement_lod", include_str!("cell_loader/placement_lod.rs"), "prop_geometry_admission_open()"),
         ("tree_lod", include_str!("cell_loader/tree_lod.rs"), "prop_geometry_admission_open()"),
+        ("tree_lod_legacy", include_str!("cell_loader/tree_lod_legacy.rs"), "prop_geometry_admission_open()"),
     ] {
         let production = byroredux_core::source_scan::production_text_or_whole(src);
         assert!(
             production.contains(admission_query),
             "{name}: the ring must check pool admission (`{admission_query}`) before an attempt (#6092)"
         );
-        if name != "terrain_lod" {
+        if !matches!(name, "terrain_lod" | "tree_lod_legacy") {
             assert!(
                 production.contains("GeometryAdmissionClass::Prop"),
                 "{name}: its uploads must be admitted as props, or the reserve is not kept back"
             );
         }
-        assert!(
-            production.contains("classify_lod_attempt("),
-            "{name}: a no-block attempt must be classified, not cached as a miss (#6092)"
-        );
-        assert!(
-            production.contains("note_held_back("),
-            "{name}: held-back quads must be reported to the reconcile (#6092)"
-        );
-        assert!(
-            production.contains("starved ||"),
-            "{name}: a starved ring must report complete so it stops (#6092)"
-        );
+        for call in ["LodLoadGate::new(", "gate.admit(", "gate.miss(", "gate.complete()"] {
+            assert!(
+                production.contains(call),
+                "{name}: the load loop must run through the shared LodLoadGate (`{call}`, #6955)"
+            );
+        }
     }
 }

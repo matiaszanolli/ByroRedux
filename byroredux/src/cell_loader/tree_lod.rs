@@ -76,7 +76,7 @@ use crate::components::{IsLodTerrain, TwoSided};
 use super::exterior::ExteriorWorldContext;
 use super::lod_bands::{quad_min_chebyshev, tree_load_cells, LOD_BAND_HYSTERESIS_CELLS};
 use super::lod_support::{
-    classify_lod_attempt, release_lod_gpu_resources, retain_resident, LodAttemptVerdict,
+    release_lod_gpu_resources, retain_resident, LodLoadGate,
     LodReconcileInput, LodWorkBudget,
 };
 use super::object_lod::{
@@ -592,35 +592,20 @@ pub(crate) fn stream_tree_lod_blocks(
         .filter(|key| keep.contains(key) && !ring.blocks.contains_key(key))
         .collect();
     let mut spawned = 0usize;
-    // #6092 — set when the geometry pool stops admitting uploads; see the
-    // terrain ring's twin of this flag.
-    let mut starved = false;
-    for (index, &(qx, qy)) in candidates.iter().enumerate() {
-        if !ctx.mesh_registry.prop_geometry_admission_open() {
-            budget.note_held_back(candidates.len() - index);
-            starved = true;
-            break;
-        }
-        if !budget.try_take() {
+    // #6092 / #6955 — the shared load gate holds the rest of the ring back
+    // once the geometry pool stops admitting uploads.
+    let mut gate = LodLoadGate::new(candidates.len());
+    for &(qx, qy) in &candidates {
+        if !gate.admit(budget, ctx.mesh_registry.prop_geometry_admission_open()) {
             break;
         }
         let path = tree_lod_archive_path(&lod_key, qx, qy);
         let hole_mask = hole_masks.get(&(qx, qy)).copied().unwrap_or(0);
         let block = match spawn_tree_lod_quad(world, ctx, tex_provider, &lod_key, &path, &species, (qx, qy, hole_mask)) {
             Some(block) => block,
-            None => match classify_lod_attempt(
-                false,
-                ctx.mesh_registry.prop_geometry_admission_open(),
-            ) {
-                LodAttemptVerdict::Miss => ObjectLodBlock::empty(),
-                // #6092 — pool refusal, not a missing quad: no sentinel.
-                LodAttemptVerdict::HeldBack => {
-                    budget.note_held_back(candidates.len() - index);
-                    starved = true;
-                    break;
-                }
-                LodAttemptVerdict::Keep => unreachable!("no block was produced"),
-            },
+            // A pool refusal is not a missing quad: no sentinel.
+            None if gate.miss(budget, ctx.mesh_registry.prop_geometry_admission_open()) => ObjectLodBlock::empty(),
+            None => break,
         };
         if !block.entities.is_empty() {
             spawned += 1;
@@ -628,7 +613,7 @@ pub(crate) fn stream_tree_lod_blocks(
         ring.blocks.insert((qx, qy), block);
     }
 
-    let complete = starved || candidates.iter().all(|key| ring.blocks.contains_key(key));
+    let complete = gate.complete();
     if complete && spawned + unloaded > 0 {
         log::info!(
             "Tree-LOD @cell ({},{}): +{} quads, -{} unloaded ({} tracked, {} cells deep)",

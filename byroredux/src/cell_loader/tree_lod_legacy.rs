@@ -49,7 +49,7 @@ use crate::asset_provider::TextureProvider;
 
 use super::lod_bands::{cells_from_bu, quad_min_chebyshev};
 use super::lod_support::{
-    classify_lod_attempt, release_lod_gpu_resources, retain_resident, LodAttemptVerdict,
+    release_lod_gpu_resources, retain_resident, LodLoadGate,
     LodReconcileInput, LodWorkBudget,
 };
 use super::object_lod::{unload_object_lod_block, ObjectLodBlock};
@@ -463,28 +463,16 @@ pub(crate) fn stream_legacy_tree_lod_blocks(
         desired.into_iter().filter(|key| !ring.blocks.contains_key(key)).collect();
     candidates.sort_unstable_by_key(|&(level, x, y)| (quad_min_chebyshev(x, y, level, player), level, x, y));
     let mut spawned = 0usize;
-    let mut starved = false;
-    for (index, &key) in candidates.iter().enumerate() {
-        if !ctx.mesh_registry.prop_geometry_admission_open() {
-            budget.note_held_back(candidates.len() - index);
-            starved = true;
-            break;
-        }
-        if !budget.try_take() {
+    let mut gate = LodLoadGate::new(candidates.len());
+    for &key in &candidates {
+        if !gate.admit(budget, ctx.mesh_registry.prop_geometry_admission_open()) {
             break;
         }
         let block = match spawn_legacy_tree_unit(world, ctx, input, family, key, atlas_handle, &species) {
             Some(block) => block,
-            None => match classify_lod_attempt(false, ctx.mesh_registry.prop_geometry_admission_open()) {
-                LodAttemptVerdict::Miss => LegacyTreeBlock::sentinel(),
-                // #6092 — pool refusal, not a missing unit: no sentinel.
-                LodAttemptVerdict::HeldBack => {
-                    budget.note_held_back(candidates.len() - index);
-                    starved = true;
-                    break;
-                }
-                LodAttemptVerdict::Keep => unreachable!("no block was produced"),
-            },
+            // A pool refusal is not a missing unit: no sentinel.
+            None if gate.miss(budget, ctx.mesh_registry.prop_geometry_admission_open()) => LegacyTreeBlock::sentinel(),
+            None => break,
         };
         if block.drew() {
             spawned += 1;
@@ -492,7 +480,7 @@ pub(crate) fn stream_legacy_tree_lod_blocks(
         ring.blocks.insert(key, block);
     }
 
-    let complete = starved || candidates.iter().all(|key| ring.blocks.contains_key(key));
+    let complete = gate.complete();
     if complete && spawned + unloaded > 0 {
         log::info!(
             "Legacy tree-LOD ring @cell ({},{}): +{} units, -{} unloaded ({} tracked)",

@@ -66,8 +66,8 @@ use crate::components::IsLodTerrain;
 use crate::zup_yup::euler_zup_to_quat_yup_refr;
 use super::exterior::ExteriorWorldContext;
 use super::lod_support::{
-    classify_lod_attempt, release_lod_gpu_resources, retain_resident, sort_lod_coords_nearest,
-    LodAttemptVerdict, LodReconcileInput, LodWorkBudget,
+    release_lod_gpu_resources, retain_resident, sort_lod_coords_nearest,
+    LodLoadGate, LodReconcileInput, LodWorkBudget,
 };
 
 /// The authored reach of Oblivion's building (placement) LOD: `[General] uGridDistantCount`, 25 in the shipped
@@ -401,23 +401,13 @@ pub(crate) fn stream_placement_lod_blocks(
         .into_iter()
         .filter(|coord| !blocks.contains_key(coord))
         .collect();
-    let candidate_count = candidates.len();
-    let mut attempted = 0usize;
-
-    // Load entering cells.
-    // #6092 — set when the geometry pool stops admitting uploads; see the
-    // terrain ring's twin of this flag.
-    let mut starved = false;
+    // Load entering cells. #6092 / #6955 — the shared load gate holds the rest
+    // of the ring back once the geometry pool stops admitting uploads.
+    let mut gate = LodLoadGate::new(candidates.len());
     for (cx, cy) in candidates {
-        if !ctx.mesh_registry.prop_geometry_admission_open() {
-            budget.note_held_back(candidate_count - attempted);
-            starved = true;
+        if !gate.admit(budget, ctx.mesh_registry.prop_geometry_admission_open()) {
             break;
         }
-        if !budget.try_take() {
-            break;
-        }
-        attempted += 1;
         match spawn_placement_lod_cell(world, ctx, tex_provider, wctx, cx, cy) {
             Some(blk) => {
                 if !blk.entities.is_empty() {
@@ -425,26 +415,16 @@ pub(crate) fn stream_placement_lod_blocks(
                 }
                 blocks.insert((cx, cy), blk);
             }
-            None => match classify_lod_attempt(
-                false,
-                ctx.mesh_registry.prop_geometry_admission_open(),
-            ) {
-                LodAttemptVerdict::Miss => {
-                    blocks.insert((cx, cy), PlacementLodBlock::empty());
-                }
-                // #6092 — pool refusal, not an empty cell: no sentinel, and the
-                // cell was abandoned whole by `spawn_placement_lod_cell`.
-                LodAttemptVerdict::HeldBack => {
-                    budget.note_held_back(candidate_count - attempted + 1);
-                    starved = true;
-                    break;
-                }
-                LodAttemptVerdict::Keep => unreachable!("no block was produced"),
-            },
+            // A pool refusal is not an empty cell: no sentinel, and the cell was
+            // abandoned whole by `spawn_placement_lod_cell`.
+            None if gate.miss(budget, ctx.mesh_registry.prop_geometry_admission_open()) => {
+                blocks.insert((cx, cy), PlacementLodBlock::empty());
+            }
+            None => break,
         }
     }
 
-    let complete = starved || attempted == candidate_count;
+    let complete = gate.complete();
     if complete && spawned + unloaded > 0 {
         log::info!(
             "Placement-LOD ring @cell ({},{}): +{} cells loaded, -{} unloaded ({} tracked)",

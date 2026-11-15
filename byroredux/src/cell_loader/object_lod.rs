@@ -68,8 +68,8 @@ use crate::components::IsLodTerrain;
 use super::exterior::ExteriorWorldContext;
 use super::lod_bands::{self, quad_min_chebyshev, LodBandLadder, LodBandSelection};
 use super::lod_support::{
-    classify_lod_attempt, lod_source_cell_exists, release_lod_gpu_resources, retain_resident,
-    worldspace_cell_bounds, LodAttemptVerdict, LodReconcileInput, LodWorkBudget,
+    lod_source_cell_exists, release_lod_gpu_resources, retain_resident,
+    worldspace_cell_bounds, LodLoadGate, LodReconcileInput, LodWorkBudget,
 };
 
 /// One streamed object-LOD quad: the `.bto` macro-mesh imports to several
@@ -321,23 +321,13 @@ pub(crate) fn stream_object_lod_blocks(
         .into_iter()
         .filter(|coord| !blocks.contains_key(coord))
         .collect();
-    let candidate_count = candidates.len();
-    let mut attempted = 0usize;
-
-    // Load entering quads.
-    // #6092 — set when the geometry pool stops admitting uploads; see the
-    // terrain ring's twin of this flag.
-    let mut starved = false;
+    // Load entering quads. #6092 / #6955 — the shared load gate holds the rest
+    // of the ring back once the geometry pool stops admitting uploads.
+    let mut gate = LodLoadGate::new(candidates.len());
     for (level, qx, qy) in candidates {
-        if !ctx.mesh_registry.prop_geometry_admission_open() {
-            budget.note_held_back(candidate_count - attempted);
-            starved = true;
+        if !gate.admit(budget, ctx.mesh_registry.prop_geometry_admission_open()) {
             break;
         }
-        if !budget.try_take() {
-            break;
-        }
-        attempted += 1;
         let quad = ObjectLodQuadKey {
             scheme,
             level,
@@ -352,29 +342,17 @@ pub(crate) fn stream_object_lod_blocks(
                 }
                 blocks.insert((level, qx, qy), blk);
             }
-            None => match classify_lod_attempt(
-                false,
-                ctx.mesh_registry.prop_geometry_admission_open(),
-            ) {
-                // No baked mesh for this quad — remember so we don't
-                // re-extract on every boundary crossing.
-                LodAttemptVerdict::Miss => {
-                    blocks.insert((level, qx, qy), ObjectLodBlock::empty());
-                }
-                // #6092 — the pool refused it (the quad was abandoned whole by
-                // `spawn_object_lod_quad`). Not a miss: no sentinel, retried
-                // when admission reopens.
-                LodAttemptVerdict::HeldBack => {
-                    budget.note_held_back(candidate_count - attempted + 1);
-                    starved = true;
-                    break;
-                }
-                LodAttemptVerdict::Keep => unreachable!("no block was produced"),
-            },
+            // No baked mesh for this quad — remember so we don't re-extract on
+            // every boundary crossing. A pool refusal (the quad was abandoned
+            // whole by `spawn_object_lod_quad`) leaves no sentinel.
+            None if gate.miss(budget, ctx.mesh_registry.prop_geometry_admission_open()) => {
+                blocks.insert((level, qx, qy), ObjectLodBlock::empty());
+            }
+            None => break,
         }
     }
 
-    let complete = starved || attempted == candidate_count;
+    let complete = gate.complete();
     if complete && spawned + unloaded > 0 {
         log::info!(
             "Object-LOD bands @cell ({},{}): +{} quads loaded, -{} unloaded \
