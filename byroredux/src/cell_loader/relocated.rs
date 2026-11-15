@@ -14,7 +14,7 @@
 //! travels as a [`Journey`]: no positions between departure and arrival, an
 //! arrival time from its route's length and its walk speed (XCT-OFF-001).
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::{Arc, Mutex};
 
 use byroredux_core::ecs::components::{
@@ -779,6 +779,14 @@ pub(crate) fn promote_for_interior(world: &mut World, editor_id: &str) {
     promote(world, &forms);
 }
 
+/// Every actor the ledger decides the place of, once. An actor can hold both a
+/// placement and a journey: `start_journey` keeps the placement it left
+/// ([`ActorRelocations::end_journey`] falls back to it), so chaining the two
+/// lists named a multi-hop traveler twice, and each name spawned a stub (#6917).
+fn ledgered_actors(ledger: &ActorRelocations) -> BTreeSet<u32> {
+    ledger.iter().map(|(actor, _)| actor).chain(ledger.journeys().map(|(actor, _)| actor)).collect()
+}
+
 /// XCT-LOC-005 — give every persistent actor that has no entity a logical
 /// identity at its current pose: the interior-persistent actors whose cell is
 /// not loaded, and every ledgered or journeying actor whose current cell is
@@ -809,7 +817,8 @@ pub(crate) fn reconcile_logical_identities(world: &mut World, loaded: &[CreatedC
         world.despawn_batch(superseded);
     }
 
-    let mut wanted: Vec<(u32, CreatedPlacement)> = Vec::new();
+    // Keyed by FormID: one identity per actor, whichever list names it (#6917).
+    let mut wanted: BTreeMap<u32, CreatedPlacement> = BTreeMap::new();
     for (form, cell) in &data.interior_actors {
         if ledger.contains(*form) {
             continue;
@@ -819,14 +828,13 @@ pub(crate) fn reconcile_logical_identities(world: &mut World, loaded: &[CreatedC
             continue;
         }
         if let Some(placement) = current_placement(world, &index, *form) {
-            wanted.push((*form, placement));
+            wanted.insert(*form, placement);
         }
     }
-    let moved: Vec<u32> = ledger.iter().map(|(actor, _)| actor).chain(ledger.journeys().map(|(actor, _)| actor)).collect();
-    for form in moved {
+    for form in ledgered_actors(&ledger) {
         if let Some(placement) = current_placement(world, &index, form) {
             if ledger.journey(form).is_some() || !is_loaded(&placement.cell, loaded) {
-                wanted.push((form, placement));
+                wanted.insert(form, placement);
             }
         }
     }
@@ -1137,6 +1145,19 @@ mod tests {
         world.remove_resource::<SaveReloadTeardown>();
         depart_unwatched(&world, &[actor]);
         assert!(world.resource::<ActorRelocations>().journey(SUNNY).is_some(), "an ordinary unload sends it on offscreen");
+    }
+
+    /// #6917 — a multi-hop traveler holds both a placement (where it last
+    /// landed) and a journey; the reconcile names it once, so it gets one
+    /// logical identity, not one per list.
+    #[test]
+    fn an_actor_with_a_placement_and_a_journey_is_one_ledgered_actor() {
+        let world = world_with(town());
+        world.resource_mut::<ActorRelocations>().relocate(SUNNY, saloon_placement());
+        depart(&world, SUNNY, saloon_placement(), STORE_MARKER, 100.0).unwrap();
+        let ledger = world.resource::<ActorRelocations>();
+        assert!(ledger.placement(SUNNY).is_some() && ledger.journey(SUNNY).is_some(), "the fixture holds both");
+        assert_eq!(ledgered_actors(&ledger).into_iter().collect::<Vec<_>>(), vec![SUNNY]);
     }
 
     /// XCT-ROUTE-003 — a destination two doors away is routed through both.
