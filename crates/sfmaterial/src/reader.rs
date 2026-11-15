@@ -583,45 +583,76 @@ fn offset_read_order(fields: &[Field]) -> Vec<u32> {
     order
 }
 
-fn consume_object(state: &mut State) -> Result<Value> {
-    let kind = state.peek_kind()?;
-    let (is_cast, is_diff) = match kind {
-        ChunkType::Objt => (false, false),
-        ChunkType::User => (true, false),
-        ChunkType::Diff => (false, true),
-        ChunkType::Usrd => (true, true),
-        _ => {
-            return Err(Error::WrongChunkType {
-                wanted: ChunkType::Objt,
-                got: kind,
-            });
-        }
-    };
-    let payload = state.consume_chunk(kind)?;
-    let mut cur = Cursor::new(payload);
+/// Which chunk kinds hold an object, as `(is_cast, is_diff)`: `USER` / `USRD` are casts (a
+/// target-type id before the type id, a trailing `u32` after the fields), `DIFF` / `USRD` carry
+/// diff payloads. Any other kind is not an object.
+fn object_chunk_flags(kind: ChunkType) -> Result<(bool, bool)> {
+    match kind {
+        ChunkType::Objt => Ok((false, false)),
+        ChunkType::User => Ok((true, false)),
+        ChunkType::Diff => Ok((false, true)),
+        ChunkType::Usrd => Ok((true, true)),
+        _ => Err(Error::WrongChunkType {
+            wanted: ChunkType::Objt,
+            got: kind,
+        }),
+    }
+}
 
+/// An object chunk opened for reading by [`open_object`]: the cast prefix and the type id are
+/// consumed and `cur` stands at the first field. [`ObjectChunk::finish`] closes it.
+pub(crate) struct ObjectChunk<'a> {
+    pub(crate) type_ref: TypeReference,
+    pub(crate) cur: Cursor<'a>,
+    pub(crate) is_diff: bool,
+    is_cast: bool,
+}
+
+/// Open the next chunk as an object. The one reader of the object chunk's header, shared by
+/// [`consume_object`], [`skip_object`] and the `.cdb` file-index stream (#6957).
+pub(crate) fn open_object<'a>(state: &mut State<'a>) -> Result<ObjectChunk<'a>> {
+    let kind = state.peek_kind()?;
+    let (is_cast, is_diff) = object_chunk_flags(kind)?;
+    let mut cur = Cursor::new(state.consume_chunk(kind)?);
     // Cast objects (`USER` / `USRD`) prepend a target-type id before the
     // actual type id; the target is unused by the decoder but consumes
     // bytes so the cursor offsets line up.
-    let _target_ref = if is_cast {
-        Some(TypeReference::new(cur.read_i32()?))
-    } else {
-        None
-    };
-    let type_ref = TypeReference::new(cur.read_i32()?);
-
-    let value = read_value(state, type_ref, &mut cur, is_diff)?;
-
     if is_cast {
-        // Trailing u32 on USER/USRD — purpose undocumented in Gibbed;
-        // consume it so the trailing-bytes assertion below holds.
-        let _unknown = cur.read_u32()?;
+        let _target_ref = TypeReference::new(cur.read_i32()?);
     }
+    let type_ref = TypeReference::new(cur.read_i32()?);
+    Ok(ObjectChunk {
+        type_ref,
+        cur,
+        is_diff,
+        is_cast,
+    })
+}
 
-    let leftover = payload.len() - cur.pos;
+impl ObjectChunk<'_> {
+    /// Consume a cast's trailing `u32` (purpose undocumented in Gibbed) and require the payload
+    /// to end there.
+    pub(crate) fn finish(mut self) -> Result<()> {
+        if self.is_cast {
+            let _unknown = self.cur.read_u32()?;
+        }
+        expect_consumed(&self.cur)
+    }
+}
+
+/// A chunk's payload must end exactly where its declared contents do.
+fn expect_consumed(cur: &Cursor) -> Result<()> {
+    let leftover = cur.bytes.len() - cur.pos;
     if leftover != 0 {
         return Err(Error::ObjectTrailingBytes { leftover });
     }
+    Ok(())
+}
+
+fn consume_object(state: &mut State) -> Result<Value> {
+    let mut object = open_object(state)?;
+    let value = read_value(state, object.type_ref, &mut object.cur, object.is_diff)?;
+    object.finish()?;
     Ok(value)
 }
 
@@ -629,42 +660,12 @@ fn consume_list(state: &mut State, is_diff: bool) -> Result<Value> {
     let payload = state.consume_chunk(ChunkType::List)?;
     let mut cur = Cursor::new(payload);
     let elem_ref = TypeReference::new(cur.read_i32()?);
-    let raw_count = cur.read_i32()?;
-    // #2623 / SF-D3-02 — `raw_count` is unvalidated on-disk data. Pre-fix
-    // this sign-extended a negative value through `as usize` into
-    // ~1.8e19; #2614 already dropped the `with_capacity` panic that used
-    // to follow, but the raw (possibly astronomical) count still drove
-    // `for _ in 0..count` directly. That's not purely theoretical even
-    // post-#2614: a user-class element type with no non-chunk fields is a
-    // structurally valid class shape whose `read_value` returns `Ok`
-    // while consuming ZERO bytes from `cur` — so a huge count paired with
-    // that element type wouldn't error out on the first iteration, it
-    // would loop until the process exhausts memory accumulating `items`.
-    // Reject a negative count outright (a clean, attributable error beats
-    // a confusing downstream one), then clamp to `payload.len()` — no
-    // chunk can contain more elements than it has bytes for the common
-    // (non-zero-byte-element) case, matching the issue's own suggested
-    // fix. Caveat, left as a documented edge case rather than solved
-    // here: a list whose element type is a genuinely zero-field class
-    // could in principle legitimately encode more elements than
-    // `payload.len()`; this clamp would truncate that (extremely
-    // unusual, unobserved in real content) shape rather than reject it
-    // outright. Closing that fully needs a stuck-cursor progress check
-    // instead of a count clamp, which is a larger change than this fix.
-    let count = usize::try_from(raw_count)
-        .map_err(|_| Error::NegativeCount {
-            what: "LIST element",
-            raw: raw_count,
-        })?
-        .min(payload.len());
+    let count = checked_container_count(cur.read_i32()?, payload.len(), "LIST element")?;
     let mut items = Vec::new();
     for _ in 0..count {
         items.push(read_value(state, elem_ref, &mut cur, is_diff)?);
     }
-    let leftover = payload.len() - cur.pos;
-    if leftover != 0 {
-        return Err(Error::ObjectTrailingBytes { leftover });
-    }
+    expect_consumed(&cur)?;
     Ok(Value::List(items))
 }
 
@@ -673,56 +674,21 @@ pub(crate) fn consume_map(state: &mut State, is_diff: bool) -> Result<Value> {
     let mut cur = Cursor::new(payload);
     let key_ref = TypeReference::new(cur.read_i32()?);
     let val_ref = TypeReference::new(cur.read_i32()?);
-    let raw_count = cur.read_i32()?;
-    // #2623 / SF-D3-02 — same rationale and caveat as `consume_list`.
-    let count = usize::try_from(raw_count)
-        .map_err(|_| Error::NegativeCount {
-            what: "MAPC pair",
-            raw: raw_count,
-        })?
-        .min(payload.len());
+    let count = checked_container_count(cur.read_i32()?, payload.len(), "MAPC pair")?;
     let mut pairs = Vec::new();
     for _ in 0..count {
         let k = read_value(state, key_ref, &mut cur, is_diff)?;
         let v = read_value(state, val_ref, &mut cur, is_diff)?;
         pairs.push((k, v));
     }
-    let leftover = payload.len() - cur.pos;
-    if leftover != 0 {
-        return Err(Error::ObjectTrailingBytes { leftover });
-    }
+    expect_consumed(&cur)?;
     Ok(Value::Map(pairs))
 }
 
 fn skip_object(state: &mut State) -> Result<()> {
-    let kind = state.peek_kind()?;
-    let (is_cast, is_diff) = match kind {
-        ChunkType::Objt => (false, false),
-        ChunkType::User => (true, false),
-        ChunkType::Diff => (false, true),
-        ChunkType::Usrd => (true, true),
-        _ => {
-            return Err(Error::WrongChunkType {
-                wanted: ChunkType::Objt,
-                got: kind,
-            });
-        }
-    };
-    let payload = state.consume_chunk(kind)?;
-    let mut cur = Cursor::new(payload);
-    if is_cast {
-        let _target_ref = TypeReference::new(cur.read_i32()?);
-    }
-    let type_ref = TypeReference::new(cur.read_i32()?);
-    skip_value(state, type_ref, &mut cur, is_diff)?;
-    if is_cast {
-        let _unknown = cur.read_u32()?;
-    }
-    let leftover = payload.len() - cur.pos;
-    if leftover != 0 {
-        return Err(Error::ObjectTrailingBytes { leftover });
-    }
-    Ok(())
+    let mut object = open_object(state)?;
+    skip_value(state, object.type_ref, &mut object.cur, object.is_diff)?;
+    object.finish()
 }
 
 fn skip_list(state: &mut State, is_diff: bool) -> Result<()> {
@@ -733,11 +699,7 @@ fn skip_list(state: &mut State, is_diff: bool) -> Result<()> {
     for _ in 0..count {
         skip_value(state, elem_ref, &mut cur, is_diff)?;
     }
-    let leftover = payload.len() - cur.pos;
-    if leftover != 0 {
-        return Err(Error::ObjectTrailingBytes { leftover });
-    }
-    Ok(())
+    expect_consumed(&cur)
 }
 
 fn skip_map(state: &mut State, is_diff: bool) -> Result<()> {
@@ -750,13 +712,19 @@ fn skip_map(state: &mut State, is_diff: bool) -> Result<()> {
         skip_value(state, key_ref, &mut cur, is_diff)?;
         skip_value(state, val_ref, &mut cur, is_diff)?;
     }
-    let leftover = payload.len() - cur.pos;
-    if leftover != 0 {
-        return Err(Error::ObjectTrailingBytes { leftover });
-    }
-    Ok(())
+    expect_consumed(&cur)
 }
 
+/// A LIST / MAPC element count from the payload (#2623 / SF-D3-02). The raw count is unvalidated
+/// on-disk data: a negative one is rejected (a clean, attributable error beats a confusing
+/// downstream one), and the rest is clamped to `payload_len`, since no chunk can hold more
+/// elements than it has bytes for in the common non-zero-byte-element case. Without the clamp a
+/// user-class element type with no non-chunk fields — a structurally valid shape whose
+/// `read_value` returns `Ok` while consuming zero bytes — would loop on a huge count until memory
+/// runs out. Caveat, a documented edge case rather than solved: a list of a genuinely zero-field
+/// class could legitimately encode more elements than `payload_len`; the clamp truncates that
+/// (unobserved) shape rather than rejecting it. Closing it fully needs a stuck-cursor progress
+/// check instead of a count clamp.
 fn checked_container_count(
     raw_count: i32,
     payload_len: usize,
@@ -1185,12 +1153,6 @@ pub(crate) struct Cursor<'a> {
 impl<'a> Cursor<'a> {
     pub(crate) fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, pos: 0 }
-    }
-
-    /// Bytes consumed so far — for trailing-bytes assertions by
-    /// out-of-module streamers (`index.rs`'s DBFileIndex path, #5320).
-    pub(crate) fn pos(&self) -> usize {
-        self.pos
     }
 
     pub(crate) fn read_bytes(&mut self, n: usize) -> Result<&'a [u8]> {

@@ -32,8 +32,8 @@
 
 use crate::error::{Error, Result};
 use crate::reader::{
-    consume_top_level_value, parse_schema, peek_top_level_class_name, state_has_more_chunks,
-    skip_top_level_value, Cursor, State,
+    consume_top_level_value, open_object, parse_schema, peek_top_level_class_name,
+    state_has_more_chunks, skip_top_level_value, Cursor, State,
 };
 use crate::types::TypeReference;
 use crate::value::Value;
@@ -739,32 +739,16 @@ fn id_field(o: &crate::value::ObjectInstance) -> Option<u32> {
 /// fields by layout, then its side-chunk collection fields in read
 /// order, decoding the big LISTs one element at a time.
 fn stream_db_file_index(state: &mut State<'_>, idx: &mut MaterialIndex) -> Result<()> {
+    // #5320 — the payload's inline fields are read in offset order, which only holds for whole
+    // (non-diff) payloads; a diff payload indexes fields by declaration slot. Vanilla's index is
+    // an OBJT, so a DIFF / USRD index is refused loudly rather than silently misparsed.
     let kind = state.peek_kind()?;
-    let (is_cast, is_diff) = match kind {
-        ChunkType::Objt => (false, false),
-        ChunkType::User => (true, false),
-        // #5320 — DIFF/USRD were "supported" here but the payload's
-        // inline fields were read in offset order, which only holds for
-        // whole (non-diff) payloads; a diff payload indexes fields by
-        // declaration slot. Vanilla's index is an OBJT, so the only
-        // thing the old arms produced was a silent misparse of mod
-        // data. Reject loudly instead.
-        ChunkType::Diff | ChunkType::Usrd => {
-            return Err(Error::UnsupportedDbFileIndexChunk { kind });
-        }
-        _ => {
-            return Err(Error::WrongChunkType {
-                wanted: ChunkType::Objt,
-                got: kind,
-            });
-        }
-    };
-    let payload = state.consume_chunk(kind)?;
-    let mut cur = Cursor::new(payload);
-    if is_cast {
-        let _target = cur.read_i32()?;
+    if matches!(kind, ChunkType::Diff | ChunkType::Usrd) {
+        return Err(Error::UnsupportedDbFileIndexChunk { kind });
     }
-    let type_ref = TypeReference::new(cur.read_i32()?);
+    let mut object = open_object(state)?;
+    let (type_ref, is_diff) = (object.type_ref, object.is_diff);
+    let cur = &mut object.cur;
     let (field_layout, read_order) = {
         let class = state.class_for(type_ref)?;
         (class.fields.clone(), class.read_order.clone())
@@ -776,7 +760,7 @@ fn stream_db_file_index(state: &mut State<'_>, idx: &mut MaterialIndex) -> Resul
         if state.is_chunk_type(field.type_ref) {
             chunk_fields.push(field.clone());
         } else {
-            let _ = crate::reader::read_value(state, field.type_ref, &mut cur, is_diff)?;
+            let _ = crate::reader::read_value(state, field.type_ref, cur, is_diff)?;
         }
     }
 
@@ -876,18 +860,9 @@ fn stream_db_file_index(state: &mut State<'_>, idx: &mut MaterialIndex) -> Resul
         }
     }
 
-    if is_cast {
-        let _trailing = cur.read_u32()?;
-    }
-    // #5320 — mirror `consume_object`'s ObjectTrailingBytes check: the
-    // inline payload must end exactly at the last declared field, or the
-    // index was built against a payload whose layout doesn't match its
-    // class declaration.
-    let leftover = payload.len() - cur.pos();
-    if leftover != 0 {
-        return Err(Error::ObjectTrailingBytes { leftover });
-    }
-    Ok(())
+    // #5320 — the inline payload must end exactly at the last declared field, or the index was
+    // built against a payload whose layout doesn't match its class declaration.
+    object.finish()
 }
 
 fn u32_field(o: &crate::value::ObjectInstance, name: &str) -> Option<u32> {
