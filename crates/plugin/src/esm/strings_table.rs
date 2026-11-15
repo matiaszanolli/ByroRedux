@@ -634,6 +634,31 @@ mod tests {
         assert_eq!(read_lstring_or_zstring(&id), "Quick Test Cell");
     }
 
+    /// The record parsers themselves read each field from its own file: a parser reverted to
+    /// `read_lstring_or_zstring` would read the `.STRINGS` text for these colliding ids (#6798,
+    /// INC3 missing test). One field per routed site family: DESC (PERK, CLAS, MGEF), INFO `NAM1`.
+    #[test]
+    fn the_record_parsers_read_each_field_from_its_own_file() {
+        use crate::esm::reader::{GameKind, SubRecord};
+        use crate::esm::records::common::{LocalizedPluginGuard, StringsTableGuard};
+        use crate::esm::records::{parse_clas, parse_info, parse_mgef, parse_perk};
+        let strings_data = build_strings_file(&[(148u32, "Quick Test Cell")], false);
+        let dlstrings_data = build_strings_file(&[(148u32, "A description.")], true);
+        let ilstrings_data = build_strings_file(&[(148u32, "A spoken line.")], true);
+        let _localized = LocalizedPluginGuard::new(true);
+        let _tables = StringsTableGuard::new(StringTableSet {
+            strings: Some(StringsTable::parse(&strings_data, false).unwrap()),
+            dlstrings: Some(StringsTable::parse(&dlstrings_data, true).unwrap()),
+            ilstrings: Some(StringsTable::parse(&ilstrings_data, true).unwrap()),
+        });
+        let field = |sub_type: &[u8; 4]| vec![SubRecord { sub_type: *sub_type, data: 148u32.to_le_bytes().to_vec() }];
+        assert_eq!(parse_perk(1, &field(b"DESC"), GameKind::Skyrim, &None).description, "A description.");
+        assert_eq!(parse_clas(1, &field(b"DESC"), GameKind::Skyrim).description, "A description.");
+        assert_eq!(parse_mgef(1, &field(b"DESC"), &None).description, "A description.");
+        let info = parse_info(1, &field(b"NAM1"), &None, GameKind::Skyrim);
+        assert_eq!(info.responses.first().map(|r| r.text.as_str()), Some("A spoken line."));
+    }
+
     /// xEdit's `LocalizedValueDecider` exceptions.
     #[test]
     fn the_field_to_file_map_follows_xedit() {
