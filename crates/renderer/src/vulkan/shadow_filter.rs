@@ -515,23 +515,17 @@ impl ShadowFilterPipeline {
         // SAFETY: caller guarantees no in-flight use; each handle is nulled
         // after destruction so a second call is a no-op.
         unsafe {
-            if self.descriptor_pool != vk::DescriptorPool::null() {
-                device.destroy_descriptor_pool(self.descriptor_pool, None);
-                self.descriptor_pool = vk::DescriptorPool::null();
-                self.descriptor_sets.clear();
-            }
-            if self.pipeline != vk::Pipeline::null() {
-                device.destroy_pipeline(self.pipeline, None);
-                self.pipeline = vk::Pipeline::null();
-            }
-            if self.pipeline_layout != vk::PipelineLayout::null() {
-                device.destroy_pipeline_layout(self.pipeline_layout, None);
-                self.pipeline_layout = vk::PipelineLayout::null();
-            }
-            if self.descriptor_set_layout != vk::DescriptorSetLayout::null() {
-                device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-                self.descriptor_set_layout = vk::DescriptorSetLayout::null();
-            }
+            // The pool's sets die with it (#6371: `destroy_pass_objects` owns the four handles).
+            super::descriptors::destroy_pass_objects(
+                device,
+                super::descriptors::PassHandles {
+                    pipeline: &mut self.pipeline,
+                    layout: &mut self.pipeline_layout,
+                    pool: &mut self.descriptor_pool,
+                    set_layout: &mut self.descriptor_set_layout,
+                },
+            );
+            self.descriptor_sets.clear();
             if self.point_sampler != vk::Sampler::null() {
                 device.destroy_sampler(self.point_sampler, None);
                 self.point_sampler = vk::Sampler::null();

@@ -290,22 +290,19 @@ impl ExposureMeterPipeline {
             buffer.destroy(device, allocator);
         }
         self.param_buffers.clear();
-        if self.descriptor_pool != vk::DescriptorPool::null() {
-            device.destroy_descriptor_pool(self.descriptor_pool, None);
-            self.descriptor_pool = vk::DescriptorPool::null();
-        }
-        if self.pipeline != vk::Pipeline::null() {
-            device.destroy_pipeline(self.pipeline, None);
-            self.pipeline = vk::Pipeline::null();
-        }
-        if self.pipeline_layout != vk::PipelineLayout::null() {
-            device.destroy_pipeline_layout(self.pipeline_layout, None);
-            self.pipeline_layout = vk::PipelineLayout::null();
-        }
-        if self.dsl != vk::DescriptorSetLayout::null() {
-            device.destroy_descriptor_set_layout(self.dsl, None);
-            self.dsl = vk::DescriptorSetLayout::null();
-        }
+        // SAFETY: the caller's contract (no in-flight work references the pass's pipeline or pool);
+        // `destroy_pass_objects` skips null handles and nulls what it destroys (#6371).
+        unsafe {
+            super::descriptors::destroy_pass_objects(
+                device,
+                super::descriptors::PassHandles {
+                    pipeline: &mut self.pipeline,
+                    layout: &mut self.pipeline_layout,
+                    pool: &mut self.descriptor_pool,
+                    set_layout: &mut self.dsl,
+                },
+            )
+        };
         if self.sampler != vk::Sampler::null() {
             device.destroy_sampler(self.sampler, None);
             self.sampler = vk::Sampler::null();

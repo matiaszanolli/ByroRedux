@@ -863,14 +863,24 @@ mod pass_teardown_tests {
     /// issue's remaining work and are not listed here.
     #[test]
     fn migrated_passes_destroy_through_the_shared_helper() {
-        const MIGRATED: [(&str, &str); 4] = [
+        const MIGRATED: &[(&str, &str)] = &[
             ("svgf.rs", include_str!("svgf.rs")),
             ("taa.rs", include_str!("taa.rs")),
             ("ssao.rs", include_str!("ssao.rs")),
             ("caustic.rs", include_str!("caustic.rs")),
+            ("sky_cube.rs", include_str!("sky_cube.rs")),
+            ("sky_cube/cloud_shadow.rs", include_str!("sky_cube/cloud_shadow.rs")),
+            ("sky_cube/filter.rs", include_str!("sky_cube/filter.rs")),
+            ("sky_cube/irradiance.rs", include_str!("sky_cube/irradiance.rs")),
+            ("compute.rs", include_str!("compute.rs")),
+            ("exposure_meter.rs", include_str!("exposure_meter.rs")),
+            ("shadow_filter.rs", include_str!("shadow_filter.rs")),
+            ("groundcover_models.rs", include_str!("groundcover_models.rs")),
         ];
-        for (name, src) in MIGRATED {
-            let src = crate::source_scan::production_text_or_whole(src);
+        for &(name, src) in MIGRATED {
+            // `strip_test_modules`, not a cut at the first test module: `sky_cube/filter.rs` declares
+            // `#[cfg(test)] mod tests;` above its production code.
+            let src = &crate::source_scan::strip_test_modules(src);
             assert!(
                 src.contains("destroy_pass_objects("),
                 "{name} no longer destroys its compute-pass objects through descriptors::destroy_pass_objects"
@@ -878,8 +888,12 @@ mod pass_teardown_tests {
             for hand_written in [
                 "destroy_pipeline(self.pipeline,",
                 "destroy_pipeline_layout(self.pipeline_layout,",
+                "destroy_pipeline_layout(self.layout,",
                 "destroy_descriptor_pool(self.descriptor_pool,",
+                "destroy_descriptor_pool(self.pool,",
                 "destroy_descriptor_set_layout(self.descriptor_set_layout,",
+                "destroy_descriptor_set_layout(self.set_layout,",
+                "destroy_descriptor_set_layout(self.dsl,",
             ] {
                 assert!(
                     !src.contains(hand_written),

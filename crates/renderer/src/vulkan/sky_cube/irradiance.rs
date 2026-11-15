@@ -164,10 +164,19 @@ impl SkyIrradiance {
 
     /// Safety: no pending commands reference these handles or their descriptors.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        device.destroy_descriptor_pool(self.pool, None);
-        device.destroy_pipeline(self.pipeline, None);
-        device.destroy_pipeline_layout(self.layout, None);
-        device.destroy_descriptor_set_layout(self.set_layout, None);
+        // SAFETY: the caller's contract (no in-flight work references the pass's pipeline or pool);
+        // `destroy_pass_objects` skips null handles and nulls what it destroys (#6371).
+        unsafe {
+            crate::vulkan::descriptors::destroy_pass_objects(
+                device,
+                crate::vulkan::descriptors::PassHandles {
+                    pipeline: &mut self.pipeline,
+                    layout: &mut self.layout,
+                    pool: &mut self.pool,
+                    set_layout: &mut self.set_layout,
+                },
+            )
+        };
         for view in self.views.drain(..) {
             device.destroy_image_view(view, None);
         }
