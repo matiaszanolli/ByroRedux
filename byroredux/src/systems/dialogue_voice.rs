@@ -336,9 +336,7 @@ pub(crate) fn scripted_line_voice_system(world: &World, _dt: f32) {
         let Some(seconds) = play_line_voice(world, line.speaker, &line.info, &line.topic_editor_id, line.owning_quest) else {
             continue;
         };
-        if let Some(mut lines) = world.try_resource_mut::<byroredux_scripting::obscript_speech::PendingScriptedLines>() {
-            lines.set_duration(line.speaker, line.topic_form_id, seconds as f32);
-        }
+        byroredux_scripting::obscript_speech::set_line_duration(world, line.speaker, line.topic_form_id, seconds as f32);
     }
 }
 

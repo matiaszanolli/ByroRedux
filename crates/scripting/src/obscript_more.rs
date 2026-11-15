@@ -525,7 +525,7 @@ fn has_been_eaten(_world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptVa
 // GECK *IsTalking*: 1 when the actor is speaking a line.
 fn is_talking(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
     match caller(world, ctx) {
-        Some((_, actor)) => flag(world.try_resource::<crate::obscript_speech::PendingScriptedLines>().is_some_and(|lines| lines.speaking.iter().any(|line| line.speaker == actor))),
+        Some((_, actor)) => flag(world.has::<crate::obscript_speech::SpeakingLine>(actor)),
         None => Action::Declined,
     }
 }

@@ -1009,18 +1009,14 @@ fn live_load_drain_discards_the_outgoing_sessions_requests() {
         scripted: None,
     }]));
     world.insert_resource(byroredux_scripting::PendingNonArmorEquips(vec![(seated_player, 0x1234)]));
-    let mut lines = byroredux_scripting::obscript_speech::PendingScriptedLines::default();
-    lines.speaking.push(byroredux_scripting::obscript_speech::Speaking {
-        speaker: seated_player,
-        topic_form_id: 0x10,
-        remaining: 2.0,
-        info: None,
-        started: true,
-    });
-    world.insert_resource(lines);
+    world.register::<byroredux_scripting::obscript_speech::SpeakingLine>();
+    world.insert(
+        seated_player,
+        byroredux_scripting::obscript_speech::SpeakingLine { topic_form_id: 0x10, info_form_id: None, remaining: 2.0, started: true },
+    );
     discard_outgoing_session_requests(&world);
     assert!(
-        world.resource::<byroredux_scripting::obscript_speech::PendingScriptedLines>().speaking.is_empty(),
+        world.get::<byroredux_scripting::obscript_speech::SpeakingLine>(seated_player).is_none(),
         "SCR-2026-11-15-02: a line in flight from the outgoing session is dropped"
     );
     assert!(world.resource::<byroredux_scripting::story_manager::PendingScriptStoryEvents>().0.is_empty(), "SAVE-3: queued story events are dropped");

@@ -885,7 +885,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("HeadLook", "M47.3 — a forced head-track target (an entity of this session); presentation"),
         ("PendingGroupSwap", "#4128 — PlayGroup flag 0's held sequence request (\"let the current cycle finish first\"); a script's transient presentation intent — a save taken mid-wait resumes the outgoing sequence"),
         ("ShaderTintRestore", "M47.3 — the emissive of the meshes a magic shader is tinting, kept to put back; session-local"),
-        ("PendingScriptedLines", "M47.3 — the lines ObScript Say/SayTo made actors say, waiting for the voice player and timing their SayToDone; a load discards them (SCR-2026-11-15-02: a line's End result script would run in the loaded game). A save does not carry a line in flight, so its End SetStage is lost: #6944"),
+        ("PendingScriptedLines", "M47.3 — the voice and conversation requests ObScript Say/SayTo/StartConversation make, drained within a frame; a load discards them (SCR-2026-11-15-02). The lines being said are the saved SpeakingLine column (#6944)"),
         ("GameClockGlobals", "M47.3 — the FormID of the GameHour GLOB, found in the records when the globals are installed; the hour itself is written into the saved Globals every frame"),
         ("ObScriptItemScripts", "M47.3 — each item base record's installed object script, by item FormID; rebuilt from the records at every content load"),
         ("ObScriptInCombat", "M47.3 — marks an actor whose ObScript OnStartCombat has run for its current fight; after a load an actor still in combat is told again"),
@@ -1355,6 +1355,10 @@ fn every_delta_column_is_parked_or_explicitly_not() {
             "Sneaking",
             "M65 — only the player carries the stance (stance::set_sneaking); the player outlives cell reloads and is never evicted",
         ),
+        (
+            "SpeakingLine",
+            "#6944 — a line lasts seconds; a speaker whose cell unloads stops talking, and its line ends with the cell, as conversation does",
+        ),
     ];
 
     let unaudited: Vec<&str> = NOT_PARKED
@@ -1465,7 +1469,9 @@ fn the_schema_fingerprint_is_pinned() {
     // each actor that has moved out of its home cell), registered after `CreatedReferences`.
     // M65 (SNK-SAVE-001, #6910) — `Sneaking` joined the registry as a new replacing component column (the
     // player's sneak stance), registered after `Dead`.
-    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x1cb2_0dbc_42b9_a5bb;
+    // #6944 — `SpeakingLine` joined the registry as a new replacing component column (the line an ObScript
+    // `Say` / `SayTo` made an actor say), registered after `ActiveMagicEffects`.
+    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0xfcd0_0f04_d111_bbd2;
     let actual = build_save_registry().schema_fingerprint();
     assert_eq!(
         actual, BASELINE_SCHEMA_FINGERPRINT,

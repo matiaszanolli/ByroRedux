@@ -805,7 +805,8 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // component column, and the appended `FragmentGuard::ActorSneaking` / `Effect::StartPlayerSneaking`.
     // M65 (SNK-DET-014, #6913) — refreshed WITH a major bump (v130 -> v131): `ActorControlState`'s
     // required `not_shown_on_stealth_meter`, and the appended `Effect::SetNotShowOnStealthMeter`.
-    const BASELINE_MAJOR: u16 = 131;
+    // #6944 — refreshed WITH a major bump (v131 -> v132): the new `SpeakingLine` component column.
+    const BASELINE_MAJOR: u16 = 132;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1229,7 +1230,10 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // M65 (SNK-DET-014, #6913) — v131 is a genuine bump: `ActorControlState` (a saved replacing column,
     // parked in `ReferenceState.control`) gained the required `not_shown_on_stealth_meter`, so a v130
     // column has no value for it; the saved `Effect` gained `SetNotShowOnStealthMeter`.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x01c9_ebd7_fdc5_6b75;
+    // #6944 — v132 is a genuine bump: `SpeakingLine` (the line an ObScript `Say` / `SayTo` made an actor
+    // say) joined the saved registry as a NEW component column, so a pre-v132 snapshot has no record of
+    // a line in flight.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x0bc6_83f2_c719_4eb3;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

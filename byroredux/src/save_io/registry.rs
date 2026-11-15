@@ -136,6 +136,11 @@ pub(crate) const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     "WeaponDrawn",
     "IgnoreCrime",
     "ActiveMagicEffects",
+    // #6944 — `SpeakingLine { topic_form_id: u32, info_form_id: Option<u32>, remaining: f32, started:
+    // bool }`: the line an actor is saying. FormIDs and seconds; no session-local identity. Replacing:
+    // a saved absence leaves the actor silent. A live load drops the outgoing session's lines first
+    // (`discard_outgoing_session_requests`).
+    "SpeakingLine",
     // #3165 — the player entity outlives cell reload, so its mutable breath
     // and fractional drowning state must be overlaid explicitly. The pose
     // restore below still clears velocity/grounded/jump after this column.
@@ -432,6 +437,8 @@ pub fn build_save_registry() -> SaveRegistry {
     byroredux_scripting::challenges::register_saved(&mut r);
     // M47.3 — the magic effects running on an actor (script effects, timed value changes).
     byroredux_scripting::magic_effects::register_saved(&mut r);
+    // #6944 — the line an actor is saying, so a save taken mid-line still runs its End result script.
+    byroredux_scripting::obscript_speech::register_saved(&mut r);
     // M47.2 — Actor.SetBribed / SetIntimidated flags.
     byroredux_scripting::speechcraft::register_saved(&mut r);
     // M47.2 — Actor.ChangeAnimArchetype assignments.

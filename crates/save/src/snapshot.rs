@@ -642,7 +642,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// `not_shown_on_stealth_meter` (Papyrus `SetNotShowOnStealthMeter`), so a v130
 /// save's column lacks the field, and the saved `Effect` gained
 /// `SetNotShowOnStealthMeter`.
-pub const FORMAT_MAJOR: u16 = 131;
+///
+/// v131 -> v132 (#6944): a new component column, `SpeakingLine` (the line an ObScript `Say` / `SayTo`
+/// made an actor say), so a save taken mid-line finishes the line after a load and runs its End
+/// result script; a v131 save has no such column and the schema no longer matches.
+pub const FORMAT_MAJOR: u16 = 132;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

@@ -88,6 +88,8 @@ fn delta_columns_carry_only_session_stable_fields() {
         "WeaponDrawn",
         "IgnoreCrime",
         "ActiveMagicEffects",
+        // #6944 — SpeakingLine: FormIDs, seconds and a bool. Delta-safe.
+        "SpeakingLine",
         // #3165 — CharacterController is f32/bool-only. Breath and drowning
         // carry are gameplay state; pose restore clears its three transient
         // movement fields after the overlay.
@@ -2343,4 +2345,29 @@ fn a_perk_granted_ability_survives_save_load_with_one_spell_and_one_value_change
     let restored = dst.query::<SpellList>().unwrap().iter().next().map(|(entity, list)| (entity, list.0.clone())).unwrap();
     assert_eq!(restored.1, vec![SPELL], "the ability is listed exactly once");
     assert_eq!(dst.get::<ActorValues>(restored.0).unwrap().current(HEALTH), 125.0, "its +25 is counted once");
+}
+
+/// #6944 — the line an actor is saying survives a save and a load, so a save taken mid-line still
+/// finishes it and runs its End result script.
+#[test]
+fn a_line_in_flight_survives_save_load_round_trip() {
+    use byroredux_scripting::obscript_speech::SpeakingLine;
+
+    let reg = build_save_registry();
+    let mut src = World::new();
+    src.insert_resource(StringPool::new());
+    src.insert_resource(FormIdPool::new());
+    src.register::<SpeakingLine>();
+    let actor = src.spawn();
+    let line = SpeakingLine { topic_form_id: 0x0010_4C20, info_form_id: Some(0x0010_4BEE), remaining: 2.75, started: true };
+    src.insert(actor, line.clone());
+
+    let snapshot = save_world(&src, &reg).unwrap();
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    restore_world(&mut dst, &reg, &decoded).unwrap();
+    assert_eq!(dst.get::<SpeakingLine>(actor).map(|l| l.clone()), Some(line));
 }

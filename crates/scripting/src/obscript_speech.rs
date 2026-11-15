@@ -28,7 +28,7 @@
 //! has no presenter here, only the conversation page has one.
 
 use byroredux_core::ecs::storage::EntityId;
-use byroredux_core::ecs::{Resource, World};
+use byroredux_core::ecs::{Component, Resource, SparseSetStorage, World};
 use byroredux_plugin::esm::records::misc::dialogue::InfoRecord;
 
 use crate::dialogue::{estimate_dialogue_duration, select_first_info, DialogueRegistry};
@@ -43,45 +43,60 @@ pub struct ScriptedLine {
     pub info: InfoRecord,
 }
 
-/// A line being spoken: the actor, the topic, and the seconds it has left.
-#[derive(Debug, Clone)]
-pub struct Speaking {
-    pub speaker: EntityId,
+/// The line an actor is saying: the topic, the INFO, and the seconds it has left. One per speaker:
+/// a new line replaces the one being said. Ticked by [`obscript_speech_system`].
+///
+/// Saved, keyed by the speaker's reference (#6944): the line's Begin result script has run and its
+/// Say-Once mark is spent and saved, so a save taken mid-line that dropped the line lost its End
+/// script — the `SetStage` or next `SayTo` a chain like Doc Mitchell's `VCG01Intro` moves on with.
+/// After a load the line finishes its remaining seconds (silently: the voice is not resumed) and
+/// runs its End script and `SayToDone` blocks once. A live load drops the outgoing session's lines
+/// before the save's are overlaid.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct SpeakingLine {
     pub topic_form_id: u32,
+    /// The INFO being said, one of the topic's, whose result scripts run at the start and end of
+    /// the line; `None` for a line with no record behind it.
+    pub info_form_id: Option<u32>,
     pub remaining: f32,
-    /// The INFO being said, whose result scripts run at the start and end of the line;
-    /// `None` for a line with no record behind it.
-    pub info: Option<std::sync::Arc<InfoRecord>>,
     /// Whether the Begin result script has run.
     pub started: bool,
 }
 
-/// The lines scripts have made actors say. `NOT_SAVED_BY_DESIGN`, and discarded on a live load:
-/// a line's INFO result scripts run at its start and end, so a line left over from the outgoing
-/// session would run its End script in the loaded game (SCR-2026-11-15-02). A save does not carry
-/// a line in flight, so that End script is lost (#6944).
+impl Component for SpeakingLine {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// The voice player resolved a recording for `speaker`'s line of `topic`: its duration replaces
+/// the estimate the call answered with.
+pub fn set_line_duration(world: &World, speaker: EntityId, topic_form_id: u32, seconds: f32) {
+    let Some(mut lines) = world.query_mut::<SpeakingLine>() else {
+        return;
+    };
+    if let Some(line) = lines.get_mut(speaker).filter(|line| line.topic_form_id == topic_form_id) {
+        line.remaining = seconds.max(0.0);
+    }
+}
+
+/// The INFO `speaker` is saying, if it is saying one.
+pub fn speaking_info(world: &World, speaker: EntityId) -> Option<u32> {
+    world.get::<SpeakingLine>(speaker).and_then(|line| line.info_form_id)
+}
+
+/// The requests scripts have made of the voice player and the dialogue runtime.
+/// `NOT_SAVED_BY_DESIGN`, and discarded on a live load: each is drained within a frame. The lines
+/// themselves are [`SpeakingLine`]s on their speakers, which are saved.
 #[derive(Debug, Default)]
 pub struct PendingScriptedLines {
     /// Lines the voice player has not picked up yet.
     pub pending: Vec<ScriptedLine>,
-    /// Lines in progress, ticked by [`obscript_speech_system`].
-    pub speaking: Vec<Speaking>,
     /// `StartConversation player <topic>`: the actor and the topic its force-greet opens with
     /// (`None` for the generic greeting), waiting for the dialogue runtime to install it.
     pub conversations: Vec<(EntityId, Option<u32>)>,
 }
 
 impl Resource for PendingScriptedLines {}
-
-impl PendingScriptedLines {
-    /// The voice player resolved a recording for `speaker`'s line of `topic`: its duration
-    /// replaces the estimate the call answered with.
-    pub fn set_duration(&mut self, speaker: EntityId, topic_form_id: u32, seconds: f32) {
-        if let Some(line) = self.speaking.iter_mut().find(|line| line.speaker == speaker && line.topic_form_id == topic_form_id) {
-            line.remaining = seconds.max(0.0);
-        }
-    }
-}
 
 /// Make `speaker` say a line of `topic` to `target` (the player when none is named).
 /// Returns the seconds it will take, or `None` when there is nothing to say: no such topic,
@@ -99,75 +114,98 @@ pub fn say(world: &World, speaker: EntityId, topic: u32, target: Option<EntityId
             seconds,
         )
     };
-    let mut lines = world.try_resource_mut::<PendingScriptedLines>()?;
+    let speaking = SpeakingLine { topic_form_id: line.topic_form_id, info_form_id: Some(line.info.form_id), remaining: seconds, started: false };
+    if world.try_resource::<PendingScriptedLines>().is_none() {
+        return None;
+    }
     // One line at a time per speaker: a new one replaces the one being spoken. A Say-Once line is
     // spent when it STARTS ([`obscript_speech_system`]), not when it is asked for: two `SayTo`s in
     // one frame (New Vegas's shooting-range trigger fires `OnTriggerEnter` and `OnTrigger` together)
     // choose the same line and the second replaces the first, instead of the first being spent
     // without its Begin result script ever running.
-    lines.speaking.retain(|speaking| speaking.speaker != speaker);
-    let info = std::sync::Arc::new(line.info.clone());
-    lines.speaking.push(Speaking { speaker, topic_form_id: line.topic_form_id, remaining: seconds, info: Some(info), started: false });
-    lines.pending.push(line);
+    world.query_mut::<SpeakingLine>()?.insert(speaker, speaking);
+    world.try_resource_mut::<PendingScriptedLines>()?.pending.push(line);
     Some(seconds)
 }
 
 /// Tick the lines in progress: run each new line's Begin result script, and for each that
 /// finished its End result script and then its `SayToDone` blocks.
 pub fn obscript_speech_system(world: &World, dt: f32) {
-    let (started, done): (Vec<Speaking>, Vec<Speaking>) = {
-        let Some(mut lines) = world.try_resource_mut::<PendingScriptedLines>() else {
+    let (started, done) = {
+        let Some(mut lines) = world.query_mut::<SpeakingLine>() else {
             return;
         };
-        if lines.speaking.is_empty() {
-            return;
-        }
         let mut started = Vec::new();
-        for line in &mut lines.speaking {
+        let mut done = Vec::new();
+        for (speaker, line) in lines.iter_mut() {
             if !line.started {
                 line.started = true;
-                started.push(line.clone());
+                started.push((speaker, line.clone()));
             }
             line.remaining -= dt;
+            if line.remaining <= 0.0 {
+                done.push((speaker, line.clone()));
+            }
         }
-        let (done, going): (Vec<_>, Vec<_>) = std::mem::take(&mut lines.speaking).into_iter().partition(|line| line.remaining <= 0.0);
-        lines.speaking = going;
+        for (speaker, _) in &done {
+            lines.remove(*speaker);
+        }
         (started, done)
     };
-    // The guard is dropped: a result script may `SayTo` again, which pushes a new line.
-    for line in &started {
+    // The guard is dropped: a result script may `SayTo` again, which gives the speaker a new line.
+    for (speaker, line) in &started {
         // The line is being said now: a Say-Once INFO stops qualifying before its own Begin script
         // (which may `SayTo` the same topic again) runs.
-        if let Some(info) = &line.info {
-            crate::note_info_spoken(world, line.speaker, info.form_id);
+        if let Some(info) = line.info_form_id {
+            crate::note_info_spoken(world, *speaker, info);
         }
-        run_line_result_script(world, line, true);
+        run_line_result_script(world, *speaker, line, true);
     }
-    for line in done {
-        run_line_result_script(world, &line, false);
-        crate::obscript_objects::deliver_say_to_done(world, line.speaker, line.topic_form_id, dt);
+    for (speaker, line) in done {
+        run_line_result_script(world, speaker, &line, false);
+        crate::obscript_objects::deliver_say_to_done(world, speaker, line.topic_form_id, dt);
     }
 }
 
-/// Run the Begin or End result script of the INFO `line` is saying, on its speaker.
-fn run_line_result_script(world: &World, line: &Speaking, begin: bool) {
-    let Some(info) = &line.info else {
+/// Run the Begin or End result script of the INFO `line` is saying, on its speaker. The INFO is
+/// looked up among its topic's records, which a load rebuilds, so a line restored from a save
+/// runs the same script.
+fn run_line_result_script(world: &World, speaker: EntityId, line: &SpeakingLine, begin: bool) {
+    let Some(info_form_id) = line.info_form_id else {
         return;
     };
-    if (if begin { &info.result_script_begin } else { &info.result_script_end }).is_none() {
-        return;
-    }
-    let Some(speaker_form) = crate::condition::entity_global_form_id(world, line.speaker) else {
-        log::warn!("SayTo: INFO {:08X}'s result script has no speaker reference to run on", info.form_id);
+    let info = {
+        let Some(registry) = world.try_resource::<DialogueRegistry>() else {
+            return;
+        };
+        let Some(info) = registry.topic(line.topic_form_id).and_then(|topic| topic.infos.iter().find(|info| info.form_id == info_form_id)) else {
+            log::warn!("SayTo: INFO {info_form_id:08X} is not a line of topic {:08X}; its result script does not run", line.topic_form_id);
+            return;
+        };
+        if (if begin { &info.result_script_begin } else { &info.result_script_end }).is_none() {
+            return;
+        }
+        info.clone()
+    };
+    let Some(speaker_form) = crate::condition::entity_global_form_id(world, speaker) else {
+        log::warn!("SayTo: INFO {info_form_id:08X}'s result script has no speaker reference to run on");
         return;
     };
-    crate::obscript_results::run_info_result_script(world, info, begin, line.speaker, speaker_form);
+    crate::obscript_results::run_info_result_script(world, &info, begin, speaker, speaker_form);
+}
+
+/// This subsystem's saved column. Called by the binary's `build_save_registry` in its row order.
+#[cfg(feature = "save")]
+pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
+    registry.register_replacing_component::<SpeakingLine>("SpeakingLine");
 }
 
 /// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.
 pub fn install(world: &mut byroredux_core::ecs::World) {
-    // M47.3 — the lines scripts made actors say (`Say` / `SayTo`; not saved).
+    // M47.3 — the voice and conversation requests `Say` / `SayTo` / `StartConversation` make (not
+    // saved), and the lines being said (saved, #6944).
     world.init_resource::<PendingScriptedLines>();
+    world.register::<SpeakingLine>();
 }
 
 #[cfg(test)]
@@ -175,16 +213,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_new_line_replaces_the_one_the_speaker_is_saying_and_the_voice_duration_replaces_the_estimate() {
-        let mut lines = PendingScriptedLines::default();
+    fn the_voice_duration_replaces_the_estimate() {
         let mut world = World::new();
+        world.register::<SpeakingLine>();
         let speaker = world.spawn();
-        lines.speaking.push(Speaking { speaker, topic_form_id: 7, remaining: 3.0, info: None, started: false });
-        lines.set_duration(speaker, 7, 1.25);
-        assert_eq!(lines.speaking[0].remaining, 1.25);
+        world.insert(speaker, SpeakingLine { topic_form_id: 7, info_form_id: None, remaining: 3.0, started: false });
+        set_line_duration(&world, speaker, 7, 1.25);
+        assert_eq!(world.get::<SpeakingLine>(speaker).unwrap().remaining, 1.25);
         // A line of another topic is not the one the voice player timed.
-        lines.set_duration(speaker, 8, 9.0);
-        assert_eq!(lines.speaking[0].remaining, 1.25);
+        set_line_duration(&world, speaker, 8, 9.0);
+        assert_eq!(world.get::<SpeakingLine>(speaker).unwrap().remaining, 1.25);
     }
 
     /// A Say-Once line is spent when it starts, not when it is asked for. New Vegas's VCG02
@@ -208,15 +246,13 @@ mod tests {
             ..Default::default()
         }]));
         world.insert_resource(PendingScriptedLines::default());
+        world.register::<SpeakingLine>();
         let speaker = world.spawn();
 
         assert!(say(&world, speaker, 0x10A1E0, None).is_some());
         assert!(say(&world, speaker, 0x10A1E0, None).is_some());
-        {
-            let lines = world.resource::<PendingScriptedLines>();
-            assert_eq!(lines.speaking.len(), 1, "the second call replaces the first");
-            assert_eq!(lines.speaking[0].info.as_ref().map(|info| info.form_id), Some(0x10A1E6), "both chose the first line");
-        }
+        assert_eq!(world.query::<SpeakingLine>().unwrap().len(), 1, "the second call replaces the first");
+        assert_eq!(speaking_info(&world, speaker), Some(0x10A1E6), "both chose the first line");
         assert!(world.resource::<crate::dialogue::DialogueSpokenInfoForms>().0.is_empty(), "nothing is spent before a line starts");
 
         obscript_speech_system(&world, 0.1);
@@ -224,8 +260,7 @@ mod tests {
 
         // The line is under way; a later call finds the next one.
         assert!(say(&world, speaker, 0x10A1E0, None).is_some());
-        let lines = world.resource::<PendingScriptedLines>();
-        assert_eq!(lines.speaking.last().and_then(|line| line.info.as_ref().map(|info| info.form_id)), Some(0x10A1E7));
+        assert_eq!(speaking_info(&world, speaker), Some(0x10A1E7));
     }
 
     /// A scripted line runs its INFO's Begin result script when it starts and its End
@@ -257,9 +292,13 @@ mod tests {
             result_script_end: Some(std::sync::Arc::new(set_stage(5))),
             ..Default::default()
         };
-        let mut lines = PendingScriptedLines::default();
-        lines.speaking.push(Speaking { speaker, topic_form_id: 7, remaining: 1.0, info: Some(std::sync::Arc::new(info)), started: false });
-        world.insert_resource(lines);
+        world.insert_resource(DialogueRegistry::from_records([byroredux_plugin::esm::records::DialRecord {
+            form_id: 7,
+            infos: vec![info],
+            ..Default::default()
+        }]));
+        world.register::<SpeakingLine>();
+        world.insert(speaker, SpeakingLine { topic_form_id: 7, info_form_id: Some(0x0010_4BEE), remaining: 1.0, started: false });
 
         obscript_speech_system(&world, 0.25);
         assert_eq!(world.resource::<QuestStageState>().get_stage(QuestFormId(VCG01)), 3, "Begin runs as the line starts");
@@ -267,6 +306,48 @@ mod tests {
         assert_eq!(world.resource::<QuestStageState>().get_stage(QuestFormId(VCG01)), 3, "End waits for the line to finish");
         obscript_speech_system(&world, 1.0);
         assert_eq!(world.resource::<QuestStageState>().get_stage(QuestFormId(VCG01)), 5, "End runs when it finishes");
-        assert!(world.resource::<PendingScriptedLines>().speaking.is_empty());
+        assert!(world.get::<SpeakingLine>(speaker).is_none());
     }
+
+    /// #6944 — a line restored from a save taken mid-line: its Begin script ran before the save
+    /// (`started`), so after the load only the End script runs, once, when the remaining seconds
+    /// are spent. VCG01's chain depends on that End `SetStage`.
+    #[test]
+    fn a_line_restored_mid_way_runs_only_its_end_result_script_once() {
+        use crate::quest_stages::{QuestFormId, QuestStageState};
+        use byroredux_plugin::esm::records::{ScriptRecord, ScriptRef};
+        const VCG01: u32 = 0x0010_4C1C;
+        let set_stage = |stage: u8| ScriptRecord {
+            compiled: vec![0x39, 0x10, 0x0a, 0x00, 0x02, 0x00, 0x72, 0x01, 0x00, 0x6e, stage, 0x00, 0x00, 0x00],
+            refs: vec![ScriptRef::Object(VCG01)],
+            ..Default::default()
+        };
+        let mut world = World::new();
+        world.insert_resource(QuestStageState::default());
+        world.insert_resource(crate::obscript_quests::ObScriptQuestTimers::default());
+        world.insert_resource(crate::obscript_quests::ObScriptEffectLog::default());
+        world.insert_resource(crate::ScriptGame(byroredux_plugin::esm::reader::GameKind::Fallout3NV));
+        let speaker = world.spawn();
+        world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(speaker));
+        world.insert_resource(DialogueRegistry::from_records([byroredux_plugin::esm::records::DialRecord {
+            form_id: 7,
+            infos: vec![InfoRecord {
+                form_id: 0x0010_4BEE,
+                result_script_begin: Some(std::sync::Arc::new(set_stage(3))),
+                result_script_end: Some(std::sync::Arc::new(set_stage(5))),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }]));
+        world.register::<SpeakingLine>();
+        // As the save holds it: begun, 0.5 s left.
+        world.insert(speaker, SpeakingLine { topic_form_id: 7, info_form_id: Some(0x0010_4BEE), remaining: 0.5, started: true });
+
+        obscript_speech_system(&world, 0.25);
+        assert_eq!(world.resource::<QuestStageState>().get_stage(QuestFormId(VCG01)), 0, "Begin does not run again");
+        obscript_speech_system(&world, 0.25);
+        assert_eq!(world.resource::<QuestStageState>().get_stage(QuestFormId(VCG01)), 5, "End runs when the line finishes");
+        assert!(world.get::<SpeakingLine>(speaker).is_none());
+    }
+
 }
