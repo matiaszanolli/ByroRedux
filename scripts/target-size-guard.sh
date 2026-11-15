@@ -30,6 +30,7 @@ du -sk "${target}"/*/* 2>/dev/null | sort -rn | head -8 | while read -r kb path;
 done
 cat <<'MSG'
 Cheapest first:
+  scripts/prune-target-cache.sh --dry-run    # stale unit generations, other-toolchain units, old trees
   rm -rf target/debug/incremental            # rebuilt on demand, often the biggest
   cargo clean -p <crate>                     # one crate's artifacts
   cargo clean --profile release              # keep the debug build
