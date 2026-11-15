@@ -1,6 +1,7 @@
 # Sneak and Detection — Product Requirements
 
-**Status**: PROPOSED (2026-11-14). Revision 2 folds in review round 1 (§12).
+**Status**: APPROVED (2026-11-14). Revision 2 folded in review round 1, revision 3
+recorded the §10 decisions, and the owner approved it (§12).
 The document covers the player's sneak stance, NPC detection of the player,
 the consumers that read both (conditions and script functions, witnessed
 crimes, hostility, sneak attacks, the sneak-gated perks) and the detection
@@ -672,6 +673,7 @@ games are recorded out with the reason.
    Skyrim and FNV ship it (SNK-STN-001's sources); it collides with nothing at
    HEAD. Alternative: hold to sneak; consequence: a departure from every
    sourced default, and a §6 row.
+   **Decided** (2026-11-14): the recommendation — a toggle on Left Ctrl.
 2. **Q2 — Fallout 4 and Starfield detection.** Recommended: ship their stance
    and conditions, and keep their detection on the sight test until a source
    gives their formula; consequence: those games keep today's awareness, with
@@ -682,6 +684,9 @@ games are recorded out with the reason.
    plausible stealth now, but unverified behaviour and a §6 row per game.
    Alternative B: drop both games from this PRD; consequence: `IsSneaking`
    stays 0 there too.
+   **Decided** (2026-11-14): the recommendation — Fallout 4 and Starfield ship the stance and its
+   conditions, and their detection stays on the sight test until a source gives
+   their formula.
 3. **Q3 — The light level.** Recommended: a light level computed on the CPU from
    the lights the renderer is given (the cell's ambient and directional light
    plus each point light's attenuated contribution at the player), scaled to
@@ -691,22 +696,29 @@ games are recorded out with the reason.
    screen, costs a readback and a frame of latency, and ties gameplay to the
    renderer. Alternative B: ignore light (a constant); consequence: darkness
    never helps the player.
+   **Decided** (2026-11-14): the recommendation — a light level computed on the CPU from the
+   lights the renderer is given, scaled to each game's documented range.
 4. **Q4 — What a save keeps.** Recommended: the stance only (SNK-SAVE-001,
    -002); consequence: one `FORMAT_MAJOR` bump, and awareness re-derived on the
    first tick. Alternative A: also save levels and alert states; consequence:
    a searching NPC keeps searching across a load, at the cost of per-actor
    state in every save. Alternative B: save nothing; consequence: the player
    stands up on every load.
+   **Decided** (2026-11-14): the recommendation — the save keeps the stance only.
 5. **Q5 — The witness level.** Recommended: Seen, the level the CS equates with
    `GetDetected` ("Seen: Player has been detected", CS *Detection Tab*), so a
    witness is exactly an actor for whom `GetDetected` is 1. Alternative:
    Noticed; consequence: stricter for the player (a suspicious NPC reports the
    crime), with no source that says so.
+   **Decided** (2026-11-14): the recommendation — a witness is an actor whose level toward the
+   player is Seen.
 6. **Q6 — The milestone.** Recommended: a new Tier 7 milestone, M65 "Sneak and
    detection", depending on M41 (actors), M42 (hostility) and M24.2 (perks);
    no M number is in use from M65 to M69. Alternative: fold it into M42;
    consequence: the AI Packages PRD's scope grows by a player-side system it
    does not describe.
+   **Decided** (2026-11-14): the recommendation — a new Tier 7 milestone, M65 "Sneak and
+   detection", depending on M41, M42 and M24.2.
 7. **Q7 — Whose awareness the tick computes.** Recommended: levels toward the
    player only (SNK-DET-001), and one actor-to-actor sight test, owned by the
    detection module, for every case where the player is not the target:
@@ -722,6 +734,9 @@ games are recorded out with the reason.
    consequence: NPC ambushes and NPC-on-NPC stealth follow the original's
    detection states, at a per-tick cost quadratic in the actors in range and a
    level to keep for every pair.
+   **Decided** (2026-11-14): the recommendation — levels toward the player only, and one
+   actor-to-actor sight test, owned by the detection module, for every other
+   case.
 
 ---
 
@@ -750,3 +765,5 @@ games are recorded out with the reason.
 |---|---|---|---|
 | 1 | 2026-11-11 | First draft | — |
 | 2 | 2026-11-14 | Review round 1 folded in: inventory re-measured at `922072af8` (§3.1 row 8 per consumer: hostility's own `in_sight` over every pair, guard rush on `actor_detects`, dead-body discovery on `actor_sees_corpse`, flee on range alone; anchors re-pointed); §2 *Sight test* as the family, *level Lost* versus *alert state Lost*; `fVATSStealthMult` owner moved to the CHARAL FNV/FO3 ruleset (row 16, SNK-ATK-006); player-only detection scope as new Q7 with §6 row 8 (corollary, SNK-G-002, SNK-DET-001, SNK-USE-002 to -005 reworded, SNK-USE-006 split into -006, -008, -009); one-producer test re-aimed at `line_of_sight_blocked` / `DetectionConfig::range` (SNK-USE-007); FO3 / FNV indicator mapping keyed on level and hostility, sourced conflict marked verify (§3.2, SNK-HUD-002); §6 rows 2 and 3 cited, row 9 added; light-level quote cited at its wiki page; SNK-PERK-001 scoped to Robotics Expert, SNK-PERK-002 counts four; SNK-STN-006 given a provisional default and moved to Phase 1; fix-catalog entry as SNK-USE-010; FO4 sneak hooks as SNK-PERK-008; SNK-DET-010 split into -010, -016, -017; acceptance drivers named (scenarios 6, 7, 9) and the census fail rule matched to the fallback; SNK-SAVE-002 and SNK-HUD-004 scheduled; Phase 0 verify table (V1–V23); sneak-attack owners and document map rows; per-game rules stated as ruleset fields | claude: revise |
+| 3 | 2026-11-14 | Decisions Q1–Q7 recorded: every recommendation taken | — |
+| 4 | 2026-11-14 | PROPOSED → APPROVED | owner: approved |
