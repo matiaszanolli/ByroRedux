@@ -557,6 +557,11 @@ fn obse_cell_music_type_reads_and_writes_the_category() {
     let types = world.resource::<CellMusicTypes>();
     assert_eq!((types.overrides.get(&0x1234), types.changes), (Some(&1), 1));
     drop(types);
+    // AUD-6: setting the same category again is no change (no music re-translation); a new one is.
+    assert!(is_done(&run(&world, 0x19e5, &[ObScriptValue::Ref(0x1234), ObScriptValue::Num(1.0)], &ctx(None))));
+    assert_eq!(world.resource::<CellMusicTypes>().changes, 1);
+    assert!(is_done(&run(&world, 0x19e5, &[ObScriptValue::Ref(0x1234), ObScriptValue::Num(2.0)], &ctx(None))));
+    assert_eq!(world.resource::<CellMusicTypes>().changes, 2);
     assert_eq!(run(&world, 0x19e5, &[ObScriptValue::Ref(0x1234), ObScriptValue::Num(3.0)], &ctx(None)), Action::Declined, "not a category");
 }
 

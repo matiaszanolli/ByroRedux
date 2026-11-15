@@ -311,8 +311,11 @@ fn set_cell_music_type(world: &World, _fallout: bool, _cmd: u16, args: &[ObScrip
         return Action::Declined;
     }
     let Some(mut types) = world.try_resource_mut::<CellMusicTypes>() else { return Action::Declined };
-    types.overrides.insert(cell, value as u32);
-    types.changes += 1;
+    // A script that sets the same category every frame changes nothing: bumping `changes` anyway
+    // re-translated the music each frame (AUD-6).
+    if types.overrides.insert(cell, value as u32) != Some(value as u32) {
+        types.changes += 1;
+    }
     done(format!("SetCellMusicType {cell:08X} {value}"))
 }
 
