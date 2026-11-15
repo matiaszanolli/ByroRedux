@@ -956,6 +956,11 @@ pub(crate) struct CloudSimState {
     pub(crate) cloud_scroll_2: [f32; 2],
     /// Cloud layer 3 scroll offset (WTHR BNAM).
     pub(crate) cloud_scroll_3: [f32; 2],
+    /// #6939 — how far the wind has carried the volumetric cloud deck, metres
+    /// along world X / Z, wrapped where the cloud noise tiles
+    /// (`systems::weather::advance_deck_drift`). f64 so a calm wind's
+    /// per-frame step (millimetres) is not lost to the accumulator's ulp.
+    pub(crate) deck_drift_m: [f64; 2],
 }
 impl Resource for CloudSimState {}
 

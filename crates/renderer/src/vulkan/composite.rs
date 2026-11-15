@@ -203,7 +203,8 @@ pub struct CompositeParams {
     /// z = thunder frequency, w = monotonic session time in seconds.
     pub weather_params: [f32; 4],
     /// Current horizontal wind direction/speed: x/z are the direction,
-    /// y is normalized WTHR speed, w reserved.
+    /// y is normalized WTHR speed, w the cloud deck's wind drift along X in
+    /// metres (`SkyWeatherParams::cloud_drift`, #6939).
     pub weather_wind: [f32; 4],
     /// Lightning RGB and moon-glare multiplier.
     pub weather_lightning: [f32; 4],
@@ -254,9 +255,10 @@ pub struct CompositeParams {
     /// (`SkyParams::sun_illuminance`), w unused. Lights the volumetric cloud
     /// body. Appended last, so every pre-existing offset is unchanged.
     pub sun_illuminance: [f32; 4],
-    /// SKYAL — xyz = the camera's world position in metres, w unused. The
-    /// cloud field and the upper plane are anchored to the world through it
-    /// (`SkyDome::cloud_origin`). Absolute, unlike `camera_pos`.
+    /// SKYAL — xyz = the camera's world position in metres, w the cloud deck's
+    /// wind drift along Z in metres (#6939). The cloud field and the upper
+    /// plane are anchored to the world through it (`SkyDome::cloud_origin`).
+    /// Absolute, unlike `camera_pos`.
     pub cloud_origin: [f32; 4],
     /// x = populated box-aperture count. y = the camera column's cloud-shadow
     /// transmittance (`0.0..=1.0`, `1.0` = clear sky) as `f32` bits, which the

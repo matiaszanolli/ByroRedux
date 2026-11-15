@@ -187,6 +187,7 @@ fn outdoor_sky_params(
         aurora_follows_sun: sky_res.weather.aurora_follows_sun,
         wind_direction: sky_res.weather.wind_direction,
         wind_speed: sky_res.weather.wind_speed,
+        cloud_drift: clouds.as_ref().map_or([0.0; 2], |c| [c.deck_drift_m[0] as f32, c.deck_drift_m[1] as f32]),
         surface_wetness: world
             .try_resource::<WeatherSurfaceState>()
             .map_or(0.0, |surface| surface.wetness),

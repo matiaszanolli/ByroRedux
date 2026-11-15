@@ -226,7 +226,7 @@ mod tests {
     }
 
     /// Every shader reading `weather_wind` must match the host packing,
-    /// `[dir.x, speed, dir.z, 0]`. The field's own comments once said
+    /// `[dir.x, speed, dir.z, deck drift x]` (the drift since #6939). The field's own comments once said
     /// "dir x/z, normalized speed", which reads as `.xy` / `.z`; the cloud
     /// march took it that way and advected with speed folded into the
     /// direction. The authored-plane path read it correctly, so the two
@@ -255,7 +255,7 @@ mod tests {
                 "sky.weather.wind_direction[0],",
                 "sky.weather.wind_speed,",
                 "sky.weather.wind_direction[1],",
-                "0.0,",
+                "sky.weather.cloud_drift[0],",
             ],
             "the host weather_wind packing changed — every shader swizzle below is \
              now suspect",
@@ -263,8 +263,12 @@ mod tests {
 
         let clouds = include_str!("../../shaders/include/clouds.glsl");
         assert!(
-            clouds.contains("dome.weather_wind.xz * dome.weather_wind.y"),
-            "clouds.glsl must advect along .xz at speed .y",
+            clouds.contains("vec2(dome.weather_wind.w, dome.cloud_origin.w)"),
+            "clouds.glsl must read the host-integrated deck drift from the two w lanes (#6939)",
+        );
+        assert!(
+            draw.contains("sky.weather.cloud_drift[1],\n        ],"),
+            "pack_sky_dome must put the drift's Z half in cloud_origin.w (#6939)",
         );
         for bad in ["weather_wind.xy", "weather_wind.z "] {
             assert!(
@@ -299,11 +303,17 @@ mod tests {
             &rest[..rest.find("\n}\n").expect("function body is terminated")]
         };
 
+        // #6939 — the drift is integrated on the host (`advance_deck_drift`, at the
+        // shared CLOUD_MAX_DRIFT_M_PER_S the textured layers are capped at). Derived
+        // here from the session time, any wind change jumped the whole deck.
         let offset = body("vec2 cloud_wind_offset");
         assert!(
-            offset.contains("CLOUD_MAX_DRIFT_M_PER_S"),
-            "the deck's drift must be the shared m/s figure the textured layers \
-             are capped at: {offset}"
+            offset.contains("return vec2(dome.weather_wind.w, dome.cloud_origin.w);"),
+            "the deck's drift must be the host-integrated one: {offset}"
+        );
+        assert!(
+            !offset.contains("weather_params.w") && !offset.contains("time"),
+            "the drift is derived from the session time again (#6939): {offset}"
         );
         assert!(!offset.contains("0.00002"), "the lookup-unit wind scale is back");
 

@@ -65,7 +65,7 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     vec4 cloud_params_2; // cloud layer 2 (WTHR ANAM) — same packing (M33.1)
     vec4 cloud_params_3; // cloud layer 3 (WTHR BNAM) — same packing (M33.1)
     vec4 weather_params; // rain, snow, thunder frequency, session seconds
-    vec4 weather_wind; // x = wind dir x, y = normalized speed, z = wind dir z, w reserved
+    vec4 weather_wind; // x = wind dir x, y = normalized speed, z = wind dir z, w = deck drift x (m)
     vec4 weather_lightning; // lightning RGB, moon glare
     vec4 weather_sky; // stars RGB, sun glare
     vec4 weather_aurora; // aurora intensity, follows-sun flag, procedural cloud coverage, column-coverage threshold
@@ -91,6 +91,7 @@ layout(set = 0, binding = 3) uniform CompositeParams {
     // (`SkyParams::sun_illuminance`), w unused. Lights the volumetric clouds.
     vec4 sun_illuminance;
     // SKYAL — xyz = camera world position in metres; anchors the cloud field.
+    // w = the cloud deck's wind drift along Z in metres (#6939).
     vec4 cloud_origin;
     // x = populated aperture count; y = the camera column's cloud-shadow transmittance as float bits
     // (the underwater god rays' sun scale, #6415); zw reserved.

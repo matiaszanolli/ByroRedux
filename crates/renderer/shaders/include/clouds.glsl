@@ -184,27 +184,24 @@ vec3 cloud_authored_colour(SkyDome dome, vec3 fallback) {
 }
 
 // Horizontal advection of the cloud field: how far downwind the wind has
-// carried it since the session began, in metres. One helper so the sky march
-// and the cloud-shadow bake drift identically.
+// carried it, in metres along world X / Z. One helper so the sky march and the
+// cloud-shadow bake drift identically.
 //
-// The host packs `[dir.x, speed, dir.z, 0]` (`pack_sky_dome` in
-// `context/frame_params.rs`, since #4925), so direction is `.xz` and speed
-// is `.y`. An earlier `.xy * .z` here folded the speed into the direction
-// and used `dir.z` as the speed, so the layer drifted off-axis and stood
-// still under a pure X wind.
+// The host integrates it (`advance_deck_drift` in `systems/weather.rs`): each
+// frame adds the wind direction (`weather_wind.xz`, the way it blows TOWARD,
+// `WindField::direction`, #4729) times the normalized speed (`.y`, the WTHR
+// wind byte over 255) times CLOUD_MAX_DRIFT_M_PER_S times the frame time, and
+// wraps the sum at 50 km, where both noise volumes tile (4 base and 45 detail
+// periods). It packs X into `weather_wind.w` and Z into `cloud_origin.w`.
+// It used to be the current wind times the session time, so any change of
+// speed or direction moved the whole deck by the change times the session
+// time: kilometres after half an hour, across the cloud-shadow bake too (#6939).
 //
-// `.y` is the WTHR wind byte over 255, and full wind moves the deck at
-// CLOUD_MAX_DRIFT_M_PER_S. This used to be `time * 2e-5` in base-lookup
-// units, which is 0.25 m/s at full wind and 2-5 cm/s at the vanilla median
-// weathers, so the deck looked frozen.
-//
-// `.xz` is the way the wind blows TOWARD (`WindField::direction`, #4729), so
 // `cloud_field_xz` SUBTRACTS this: the cloud over a point now is the air that
 // was upwind of it. Adding it, as the lookups used to, moved the deck upwind,
 // against the grass, trees and water under it.
 vec2 cloud_wind_offset(SkyDome dome) {
-    float time = dome.weather_params.w;
-    return dome.weather_wind.xz * dome.weather_wind.y * CLOUD_MAX_DRIFT_M_PER_S * time;
+    return vec2(dome.weather_wind.w, dome.cloud_origin.w);
 }
 
 // The horizontal coordinate every noise lookup reads for a field-space
@@ -215,9 +212,9 @@ vec2 cloud_wind_offset(SkyDome dome) {
 // the base frequency that slid the edges through the body at 73% of its speed.
 //
 // The wind is not scaled by `morphology.x`. That scale changes continuously
-// through a weather transition, and scaling a displacement that grows with
-// session time would sweep the whole field by displacement times the change,
-// which is kilometres after an hour of drift. The cost is that a
+// through a weather transition, and scaling the accumulated displacement
+// would sweep the whole field by displacement times the change, which is
+// kilometres after an hour of drift. The cost is that a
 // storm-morphology deck (scale 0.58) travels 1 / 0.58 = 1.7x its wind.
 vec2 cloud_field_xz(vec3 position, vec2 wind_offset, vec4 morphology) {
     return position.xz * morphology.x - wind_offset;

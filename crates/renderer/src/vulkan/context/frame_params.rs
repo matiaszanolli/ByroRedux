@@ -1151,7 +1151,7 @@ fn pack_sky_dome(
             sky.weather.wind_direction[0],
             sky.weather.wind_speed,
             sky.weather.wind_direction[1],
-            0.0,
+            sky.weather.cloud_drift[0],
         ],
         weather_lightning: [
             sky.weather.lightning_color[0],
@@ -1204,12 +1204,13 @@ fn pack_sky_dome(
             0.0,
         ],
         // SKYAL — the absolute camera position in metres anchors the cloud
-        // field to the world (`SkyDome::cloud_origin`).
+        // field to the world (`SkyDome::cloud_origin`); w carries the deck's
+        // drift along Z, the half `weather_wind.w` has no room for (#6939).
         cloud_origin: [
             camera_pos[0] / super::super::volumetrics::WORLD_UNITS_PER_METER,
             camera_pos[1] / super::super::volumetrics::WORLD_UNITS_PER_METER,
             camera_pos[2] / super::super::volumetrics::WORLD_UNITS_PER_METER,
-            0.0,
+            sky.weather.cloud_drift[1],
         ],
     }
 }

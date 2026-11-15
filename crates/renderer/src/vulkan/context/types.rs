@@ -608,6 +608,10 @@ pub struct SkyWeatherParams {
     pub aurora_follows_sun: bool,
     pub wind_direction: [f32; 2],
     pub wind_speed: f32,
+    /// #6939 — how far the wind has carried the volumetric cloud deck, metres
+    /// along world X / Z, integrated on the host and wrapped where the cloud
+    /// noise tiles. Packed into `weather_wind.w` / `cloud_origin.w`.
+    pub cloud_drift: [f32; 2],
     /// History-dependent exposed-ground rain film, normalized to `[0, 1]`.
     /// Packed into the low 16 bits of `GpuCamera.render_debug.w`.
     pub surface_wetness: f32,
@@ -631,6 +635,7 @@ impl Default for SkyWeatherParams {
             aurora_follows_sun: false,
             wind_direction: [1.0, 0.0],
             wind_speed: 0.0,
+            cloud_drift: [0.0; 2],
             surface_wetness: 0.0,
             surface_snow: 0.0,
         }

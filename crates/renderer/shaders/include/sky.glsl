@@ -42,7 +42,7 @@ struct SkyDome {
     vec4 cloud_tint_2;
     vec4 cloud_tint_3;
     vec4 weather_params;    // rain, snow, thunder frequency, session seconds
-    vec4 weather_wind;      // x = wind dir x, y = normalized speed, z = wind dir z, w reserved
+    vec4 weather_wind;      // x = wind dir x, y = normalized speed, z = wind dir z, w = deck drift x (m, #6939)
     vec4 weather_lightning; // lightning RGB, moon glare
     vec4 weather_sky;       // stars RGB, sun glare
     vec4 weather_aurora;    // intensity, follows-sun, procedural coverage, column-coverage threshold
@@ -52,7 +52,8 @@ struct SkyDome {
     // xyz = the directional light above the clouds, w unused. The cloud body
     // is lit by this; surfaces receive it through the cloud-shadow map.
     vec4 sun_illuminance;
-    // xyz = the camera's world position in metres (renderer Y-up), w unused.
+    // xyz = the camera's world position in metres (renderer Y-up), w = the
+    // cloud deck's wind drift along Z in metres (`cloud_wind_offset`, #6939).
     // The cloud field and the upper plane are anchored to the world through
     // it, so they parallax as the viewer moves and the shadows they cast
     // (`cloud_shadow.comp`) stay where they fall.

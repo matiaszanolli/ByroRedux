@@ -103,6 +103,7 @@ fn cloud_sim_state_survives_sky_params_unload_reload() {
         cloud_scroll_1: [0.71, 0.05],
         cloud_scroll_2: [0.18, 0.91],
         cloud_scroll_3: [0.50, 0.50],
+        deck_drift_m: [12_345.5, 678.25],
     });
     // Manual remove/reinsert cycle on `SkyParamsRes` — pins the
     // independence invariant. Production `unload_cell` no longer
@@ -120,6 +121,7 @@ fn cloud_sim_state_survives_sky_params_unload_reload() {
     assert_eq!(clouds.cloud_scroll_1, [0.71, 0.05]);
     assert_eq!(clouds.cloud_scroll_2, [0.18, 0.91]);
     assert_eq!(clouds.cloud_scroll_3, [0.50, 0.50]);
+    assert_eq!(clouds.deck_drift_m, [12_345.5, 678.25], "#6939 — the deck does not snap back either");
 }
 
 /// #1199 — `unload_cell` historically released worldspace-scoped

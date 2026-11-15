@@ -404,10 +404,22 @@ fixed with it:
 
 The displacement is in the fair-weather frame and not scaled by
 `morphology.x`. That scale changes continuously through a weather transition,
-and scaling a displacement that grows with session time would sweep the field
-by kilometres after an hour. The cost is that a full-storm deck (scale 0.58)
-travels 1.7x its wind. Pinned by
+and scaling the accumulated displacement would sweep the field by kilometres
+after an hour. The cost is that a full-storm deck (scale 0.58) travels 1.7x its
+wind. Pinned by
 `sky_dome::tests::the_cloud_deck_drifts_downwind_in_metres_as_one_body`.
+
+**The drift is integrated on the host (2026-11-15, #6939).** The wind term had
+the same hazard: the shader computed the current wind times the session time,
+so any change of wind speed or direction moved the whole deck (and its shadow
+bake) by the change times the session time, about 14 km for a 0.1 -> 0.5 change
+after 30 minutes, past the 12.5 km base period. `advance_deck_drift`
+(`systems/weather.rs`) now adds each frame's step to `CloudSimState::deck_drift_m`
+(f64, surviving interior visits like the textured scroll), wrapped at
+`CLOUD_DECK_DRIFT_WRAP_M` = 50 km, a whole number of both noise periods (4 base,
+45 detail). The host packs X into `weather_wind.w` and Z into `cloud_origin.w`,
+the two free lanes, so no struct layout changed; `cloud_wind_offset` reads them.
+Pinned by `deck_drift_tests` and `sky_dome::tests::wind_consumers_match_the_host_packing`.
 
 ### 2.4.1 The game's temperature and mood are the base (2026-10-20)
 

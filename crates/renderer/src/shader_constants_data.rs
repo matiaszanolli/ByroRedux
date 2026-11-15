@@ -1666,7 +1666,8 @@ pub const CLOUD_UPPER_PLANE_ALTITUDE: f32 = 9000.0;
 ///   ~1 700 m/s on the 9 km shell, so every textured layer under any wind
 ///   drifts at this cap;
 /// * the volumetric deck travels at it under full wind (byte 255) and in
-///   proportion below (`clouds.glsl` `cloud_wind_offset`). Over the vanilla
+///   proportion below (`advance_deck_drift`, `systems/weather.rs`, integrated
+///   on the host since #6939 and read by `clouds.glsl` `cloud_wind_offset`). Over the vanilla
 ///   WTHR records (2026-11-11 scan of each master's DATA byte 0) that is
 ///   2 m/s at the Oblivion and Skyrim median weathers (byte 25), 4 m/s at
 ///   FO3's and FNV's (50), 9 m/s at FO4's (115) and 14 m/s in the strongest
