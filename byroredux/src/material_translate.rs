@@ -1185,7 +1185,10 @@ pub(crate) const PARALLAX_ALPHA_HEIGHT_BIT: u32 =
 /// surface (`material_kind < 100`) that ships a normal map but no dedicated
 /// gloss/specular texture. Environment-mapped materials remain eligible:
 /// when no environment mask is authored, normal alpha is also the fallback
-/// reflection mask. Excludes glass/effect kinds (>= 100, own optics). The
+/// reflection mask — except MultiLayerParallax (Skyrim ice, kind 11), whose
+/// normal alpha is a local specular mask only and whose reflection is
+/// unmasked (`triangle.frag`'s `environmentReflectionMask`; kind 1 keeps the
+/// fallback). Excludes glass/effect kinds (>= 100, own optics). The
 /// inputs are the exact values both the spawn write-back and the render
 /// path read from the `Material` / [`MaterialTextureHandles`] components,
 /// so the gate cannot diverge between the two call sites.

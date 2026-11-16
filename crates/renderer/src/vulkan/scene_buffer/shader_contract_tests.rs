@@ -1065,10 +1065,11 @@ fn normal_alpha_masks_specular_intensity_not_roughness() {
         !normal_alpha_branch.contains("roughness"),
         "normal alpha must not be reinterpreted as gloss/roughness"
     );
-    // Normal alpha is the env-reflection fallback mask only for materials
-    // that do not author their own environment strength: MultiLayerParallax
-    // (Skyrim ice) reflects unmasked, its normal alpha being a local
-    // specular mask (FrozenLake01's averages 0.09).
+    // Normal alpha is the env-reflection fallback mask for every kind
+    // except MultiLayerParallax (kind 11, Skyrim ice) only: that kind
+    // reflects unmasked, its normal alpha being a local specular mask
+    // (FrozenLake01's averages 0.09). Kind 1 authors a strength too but
+    // keeps the fallback (#7023).
     assert!(triangle.contains(
         "mat.envMaskIndex != 0u\n            ? environmentMask\n            : (mat.materialKind == MATERIAL_KIND_MULTI_LAYER_PARALLAX\n                ? 1.0\n                : normalAlphaSpecMask)"
     ));
