@@ -1918,3 +1918,45 @@ fn replayed_descriptor_writes_never_name_a_view_the_entry_no_longer_holds() {
         "no entry holds a live image and there is no fallback: nothing may replay, got {resolved:?}"
     );
 }
+
+// ── #7028 — every `Vec<GpuBuffer>` the registry owns is drained by `destroy` ──
+
+/// Names of the `Vec<GpuBuffer>` fields `TextureRegistry` declares.
+fn registry_buffer_families(src: &str) -> Vec<String> {
+    let from = src
+        .find("pub struct TextureRegistry {")
+        .expect("TextureRegistry struct");
+    let body = &src[from..from + src[from..].find("\n}\n").expect("struct end")];
+    body.lines()
+        .filter_map(|line| {
+            let (name, ty) = line.trim().strip_prefix("pub ").unwrap_or(line.trim()).split_once(':')?;
+            (ty.trim() == "Vec<GpuBuffer>,").then(|| name.trim().to_string())
+        })
+        .collect()
+}
+
+/// A missed per-frame buffer family leaks the allocator `Arc`, so shutdown's
+/// `Arc::try_unwrap` fails and the device is deliberately leaked (the #6521
+/// shape, there for `SceneBuffers`). `destroy` needs a live device, so pin the
+/// coverage at the source: each `Vec<GpuBuffer>` field must be drained.
+#[test]
+fn destroy_drains_every_per_frame_buffer_family() {
+    let src = registry_production_text(include_str!("texture_registry/mod.rs"));
+    let families = registry_buffer_families(src);
+    assert!(
+        families.contains(&"first_level_tables".to_string()),
+        "the field scan lost its footing (found {families:?}); fix `registry_buffer_families`"
+    );
+    let from = src
+        .find("pub fn destroy(&mut self, device: &ash::Device")
+        .expect("TextureRegistry::destroy");
+    let destroy = &src[from..from + src[from..].find("\n    }\n").expect("destroy end")];
+    for family in &families {
+        assert!(
+            destroy.contains(&format!("self.{family}.drain(..)"))
+                || destroy.contains(&format!("in &mut self.{family}")),
+            "`TextureRegistry::destroy` never drains `{family}` — its buffers' allocations \
+             outlive the allocator teardown (#7028)"
+        );
+    }
+}
