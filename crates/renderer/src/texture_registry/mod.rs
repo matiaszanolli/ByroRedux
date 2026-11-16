@@ -485,7 +485,10 @@ pub struct TextureRegistry {
 
 /// Build the bindless texture descriptor-set-layout bindings consumed by the
 /// raster pipelines. Binding 0 is the ordinary 2D array; binding 1 is the
-/// authored environment cubemap array. Pure data — no Vulkan device required — so the
+/// authored environment cubemap array; binding 2 is the per-slot first-level
+/// table (`TextureFirstLevels`) that `residentLod` reads to clamp a streamed
+/// texture's sampled mip to its resident range (M39, #6629). Pure data — no
+/// Vulkan device required — so the
 /// `cargo test` reflection check can validate against the
 /// include_bytes!'d SPIR-V before the first frame runs. Production
 /// `TextureRegistry::new` routes through the same helper so test and
