@@ -1163,6 +1163,63 @@ pub fn create_ui_pipeline(
 mod tests {
     use super::*;
 
+    /// #7026 — INC6-1 shipped a reversed-Z sign flip that stayed missed for 8
+    /// days because the raw `RenderLayer::depth_bias()` triple compiles at any
+    /// `cmd_set_depth_bias` site. Only the core `map_depth_bias` test pins the
+    /// mapping, so pin the routing here: the raw accessor is read only inside
+    /// `layer_depth_bias`, and every `cmd_set_depth_bias` call in the crate is
+    /// paired with a `layer_depth_bias` call in the same file.
+    #[test]
+    fn every_depth_bias_site_goes_through_layer_depth_bias() {
+        let src_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        crate::source_scan::rust_files(&src_root, &mut files);
+        // Code lines only: the rustdoc and comments name `RenderLayer::depth_bias()`.
+        let code_matches = |text: &str, needle: &str| {
+            text.lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .map(|line| line.matches(needle).count())
+                .sum::<usize>()
+        };
+        let (mut raw_reads, mut set_sites, mut routed_sites) = (0, 0, 0);
+        for file in &files {
+            let text = std::fs::read_to_string(file).expect("readable source file");
+            let production = crate::source_scan::production_text_or_whole(&text);
+            let is_pipeline_rs = file.ends_with("vulkan/pipeline.rs");
+            let raw = code_matches(production, ".depth_bias()");
+            let sets = code_matches(production, ".cmd_set_depth_bias(");
+            let routed = code_matches(production, "layer_depth_bias(");
+            if is_pipeline_rs {
+                // The one raw read, inside `layer_depth_bias` itself.
+                assert_eq!(raw, 1, "pipeline.rs reads the raw triple only in `layer_depth_bias`");
+            } else {
+                assert_eq!(
+                    raw, 0,
+                    "{} reads `RenderLayer::depth_bias()` directly; route it through \
+                     `layer_depth_bias` so reversed-Z flips its sign (#7026)",
+                    file.display()
+                );
+            }
+            if sets > 0 {
+                assert!(
+                    routed >= sets,
+                    "{} sets a depth bias {sets}x but routes {routed}x through \
+                     `layer_depth_bias` (#7026)",
+                    file.display()
+                );
+            }
+            raw_reads += raw;
+            set_sites += sets;
+            routed_sites += if is_pipeline_rs { 0 } else { routed };
+        }
+        // The scan must find what it guards: today's two draw-time sites.
+        assert!(
+            set_sites >= 2 && routed_sites >= set_sites,
+            "the scan lost its footing: {set_sites} `cmd_set_depth_bias` site(s), \
+             {routed_sites} routed, {raw_reads} raw read(s)"
+        );
+    }
+
     /// #4005 — `create_ui_pipeline`'s doc states `WaterPush`'s size as a
     /// number, and that number drifted 128 -> 16 when the per-draw payload
     /// moved into the `GpuWaterParams[]` SSBO and the push block became a
