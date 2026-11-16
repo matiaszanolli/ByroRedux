@@ -1335,4 +1335,30 @@ mod tests {
             "the invalidate must precede the staging-buffer read"
         );
     }
+
+    /// #7027 — the depth and linear-radiance captures read the same `GpuToCpu`
+    /// staging kind as the screenshot, and after #6960 each invalidate is one
+    /// `invalidate_allocation(...)` line whose deletion compiles and passes
+    /// everything. Stale reads would corrupt the depth / linear-radiance
+    /// samples on non-coherent memory (the M-LIGHT linear-capture gates read
+    /// them). Both files carry test modules, so scan their production text.
+    #[test]
+    fn depth_and_linear_capture_readbacks_invalidate_before_mapping() {
+        for (name, src) in [
+            ("depth_capture.rs", include_str!("depth_capture.rs")),
+            ("linear_capture.rs", include_str!("linear_capture.rs")),
+        ] {
+            let production = crate::source_scan::production_text_or_whole(src);
+            let invalidate = production
+                .find("invalidate_allocation(")
+                .unwrap_or_else(|| panic!("{name}: readback must invalidate through the shared helper (#7027)"));
+            let read = production
+                .find("allocation.mapped_slice()")
+                .unwrap_or_else(|| panic!("{name}: readback must still read the staging mapping"));
+            assert!(
+                invalidate < read,
+                "{name}: the invalidate must precede the staging-buffer read (#7027)"
+            );
+        }
+    }
 }
