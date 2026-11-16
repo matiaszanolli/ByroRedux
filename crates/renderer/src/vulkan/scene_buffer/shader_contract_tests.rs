@@ -1070,9 +1070,34 @@ fn normal_alpha_masks_specular_intensity_not_roughness() {
     // reflects unmasked, its normal alpha being a local specular mask
     // (FrozenLake01's averages 0.09). Kind 1 authors a strength too but
     // keeps the fallback (#7023).
-    assert!(triangle.contains(
-        "mat.envMaskIndex != 0u\n            ? environmentMask\n            : (mat.materialKind == MATERIAL_KIND_MULTI_LAYER_PARALLAX\n                ? 1.0\n                : normalAlphaSpecMask)"
-    ));
+    // Token-level, not whitespace-exact (#7023): scope to the initializer
+    // and pin (a) an authored mask wins, (b) the fallback arm still reads
+    // normal alpha, (c) kind 11 is the one exemption — any other
+    // `MATERIAL_KIND_*` token here means another kind lost the fallback.
+    let init_start = triangle
+        .find("float environmentReflectionMask =")
+        .expect("environment reflection mask initializer");
+    let init_end = triangle[init_start..]
+        .find(';')
+        .map(|offset| init_start + offset)
+        .expect("initializer terminator");
+    let init: String = triangle[init_start..init_end]
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        init.contains("mat.envMaskIndex != 0u ? environmentMask"),
+        "an authored environment mask must win: {init}"
+    );
+    assert!(
+        init.contains("MATERIAL_KIND_MULTI_LAYER_PARALLAX ? 1.0 : normalAlphaSpecMask"),
+        "kind 11 reflects unmasked and every other kind keeps the normal-alpha fallback: {init}"
+    );
+    assert_eq!(
+        init.matches("MATERIAL_KIND_").count(),
+        1,
+        "only MultiLayerParallax is exempt from the normal-alpha fallback: {init}"
+    );
     assert!(triangle.contains("* environmentReflectionMask * environmentStrength"));
 }
 
