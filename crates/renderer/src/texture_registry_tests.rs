@@ -387,6 +387,7 @@ fn cache_separates_2d_and_cubemap_views() {
             3,
             TextureViewKind::Cube,
             TextureColorSpace::Srgb,
+            false,
         )
         .unwrap();
     assert!(matches!(outcome, EnqueueOutcome::Reserved(2)));
@@ -837,6 +838,7 @@ fn a_reserved_cube_slot_is_redirected_to_the_cube_fallback() {
             3,
             TextureViewKind::Cube,
             TextureColorSpace::Srgb,
+            false,
         )
         .unwrap();
     assert!(matches!(outcome, EnqueueOutcome::Reserved(3)));
@@ -889,6 +891,7 @@ fn reserved_slots_retain_their_view_kind() {
             3,
             TextureViewKind::Cube,
             TextureColorSpace::Srgb,
+            false,
         )
         .unwrap();
     assert_eq!(
@@ -1957,6 +1960,68 @@ fn destroy_drains_every_per_frame_buffer_family() {
                 || destroy.contains(&format!("in &mut self.{family}")),
             "`TextureRegistry::destroy` never drains `{family}` — its buffers' allocations \
              outlive the allocator teardown (#7028)"
+        );
+    }
+}
+
+// ── #7034 — alpha presence is known at slot reservation, before the flush ──
+
+/// Spawn reads `handle_has_alpha(normal)` into `MaterialTextureHandles::
+/// normal_has_alpha` while the texture is still only queued (the flush runs at
+/// the end of the cell load), and nothing refreshes the component afterwards.
+/// A reservation that carried the `false` placeholder made the flag false for
+/// every first-seen texture. The caller's header read must land on the slot.
+#[test]
+fn a_reserved_slot_reports_alpha_before_any_flush() {
+    let mut reg = make_registry_for_overflow_test(16, 0);
+    let alpha = match reg
+        .queue_or_hit_for_view(
+            "textures/a_n.dds",
+            vec![0; 128],
+            3,
+            TextureViewKind::D2,
+            TextureColorSpace::Linear,
+            true,
+        )
+        .unwrap()
+    {
+        EnqueueOutcome::Reserved(handle) => handle,
+        other => panic!("expected a fresh reservation, got {other:?}"),
+    };
+    let opaque = match reg
+        .queue_or_hit_for_view(
+            "textures/b_n.dds",
+            vec![0; 128],
+            3,
+            TextureViewKind::D2,
+            TextureColorSpace::Linear,
+            false,
+        )
+        .unwrap()
+    {
+        EnqueueOutcome::Reserved(handle) => handle,
+        other => panic!("expected a fresh reservation, got {other:?}"),
+    };
+    assert_eq!(reg.pending_dds_upload_count(), 2, "both are still queued, none flushed");
+    assert!(reg.handle_has_alpha(alpha), "a DXT5-class texture must read alpha before the flush");
+    assert!(!reg.handle_has_alpha(opaque));
+}
+
+/// The two public enqueue entry points parse the header before reserving a
+/// slot; each must hand its `format_has_alpha(meta.format)` to the reservation
+/// (a device is needed to call them, so pin the wiring at the source).
+#[test]
+fn both_enqueue_entry_points_pass_the_parsed_alpha_to_the_reservation() {
+    let src = registry_production_text(include_str!("texture_registry/upload.rs"));
+    for entry in [
+        "pub fn enqueue_dds_with_clamp_and_color_space(",
+        "pub fn enqueue_cubemap_dds_with_clamp(",
+    ] {
+        let from = src.find(entry).unwrap_or_else(|| panic!("`{entry}` not found"));
+        let body = &src[from..from + src[from..].find("\n    }\n").expect("fn end")];
+        assert!(
+            body.contains("crate::vulkan::dds::format_has_alpha(meta.format)"),
+            "`{entry}` must pass the parsed alpha presence to `enqueue_dds_for_view` (#7034)"
         );
     }
 }

@@ -187,6 +187,7 @@ impl TextureRegistry {
             clamp_mode,
             TextureViewKind::D2,
             color_space,
+            crate::vulkan::dds::format_has_alpha(meta.format),
         )
     }
 
@@ -209,6 +210,7 @@ impl TextureRegistry {
             clamp_mode,
             TextureViewKind::Cube,
             TextureColorSpace::Srgb,
+            crate::vulkan::dds::format_has_alpha(meta.format),
         )
     }
 
@@ -220,9 +222,16 @@ impl TextureRegistry {
         clamp_mode: u8,
         view_kind: TextureViewKind,
         color_space: TextureColorSpace,
+        has_alpha: bool,
     ) -> Result<TextureHandle> {
-        let outcome =
-            self.queue_or_hit_for_view(path, dds_bytes, clamp_mode, view_kind, color_space)?;
+        let outcome = self.queue_or_hit_for_view(
+            path,
+            dds_bytes,
+            clamp_mode,
+            view_kind,
+            color_space,
+            has_alpha,
+        )?;
         // For a fresh enqueue, redirect the freshly-reserved descriptor to
         // the dimension-matched fallback (the checkerboard for 2D, the
         // engine-owned 1x1 cube for a cubemap, #6624). Any
@@ -290,9 +299,15 @@ impl TextureRegistry {
             clamp_mode,
             TextureViewKind::D2,
             TextureColorSpace::Srgb,
+            false,
         )
     }
 
+    /// `has_alpha` is the DDS format's alpha presence, read by the caller from
+    /// the header it already parsed. It is recorded on the reserved slot here
+    /// so a spawn that reads `handle_has_alpha` before
+    /// [`Self::flush_pending_uploads`] runs sees the real answer, not the
+    /// placeholder (#7034).
     pub(super) fn queue_or_hit_for_view(
         &mut self,
         path: &str,
@@ -300,6 +315,7 @@ impl TextureRegistry {
         clamp_mode: u8,
         view_kind: TextureViewKind,
         color_space: TextureColorSpace,
+        has_alpha: bool,
     ) -> Result<EnqueueOutcome> {
         let clamp_mode = clamp_mode.min(3);
         let normalized =
@@ -331,10 +347,14 @@ impl TextureRegistry {
             // #4885 — retained so the resize rewrite knows which binding
             // the reserved slot must be fallback-redirected through.
             view_kind,
-            // Populated by `flush_pending_uploads` once the DDS header is
-            // parsed; `false`/`None` until then, matching the pre-#3682
-            // HashMap's "absent handle reads false/None" contract.
-            has_alpha: false,
+            // #7034 — known at reservation: the caller parsed the header.
+            // Spawn reads it (`normal_has_alpha`, `tint_has_alpha`) before
+            // the end-of-cell flush, and nothing refreshes those components
+            // afterwards, so the `false` placeholder this used to carry made
+            // the flag false for every first-seen texture. The flush
+            // re-derives it from the same header. `avg_rgb` is still `None`
+            // until then.
+            has_alpha,
             avg_rgb: None,
             residency: None,
         });
