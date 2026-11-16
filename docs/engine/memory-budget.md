@@ -1214,7 +1214,8 @@ one host-visible (`CpuToGpu`) `TRANSFER_SRC` arena per frame slot, sized to
 the sum of the dirty updates recorded into that slot's frame. It is
 **grow-only** — replaced only when a frame needs more — and lives until
 registry teardown. The consumers are the two HUD drivers (mutually exclusive
-per run), `--menu` Scaleform menus, and the ground-cover atlas.
+per run), `--menu` Scaleform menus, the ground-cover atlas, and the movie
+player (see [Movie overlay texture](#movie-overlay-texture-videoplayertexture-7030)).
 
 Formula: per slot, `Σ width × height × 4 B` over the updates dirty in one
 frame; × `MAX_FRAMES_IN_FLIGHT` (2) once both slots have seen a frame that
@@ -1228,6 +1229,28 @@ large. One full-viewport overlay:
 Two overlays dirty in the same frame double it. The arenas are not a
 `*_scratch` field, so the #4610 scratch-telemetry guard does not see them;
 this row is their only ledger.
+
+### Movie overlay texture (`VideoPlayer::texture`, #7030)
+
+[`byroredux/src/video.rs`](../../byroredux/src/video.rs) — the Bink movie
+player (`VideoPlayer::tick`) registers **one** RGBA8 overlay texture through
+`register_rgba` on the first decoded frame, at the *movie's* frame size (not
+the swapchain extent), and keeps the handle for the rest of the session so
+later movies reuse it: every new frame goes through `update_rgba`, which
+queues into the dynamic-RGBA path above while the size still matches (a movie
+of a different size takes the replace path, not a second texture). The handle
+is never released — `VideoPlayer::finish` leaves it in place.
+
+Formula: `width × height × 4 B` for the image, plus the same again in host RAM
+(the queued pixel copy in `DynamicRgbaUploads::updates`), plus the grow-only
+staging arena, which is two slots of one frame each:
+
+| Movie frame | Image | Host copy | Staging arena (2 slots) |
+|---|---|---|---|
+| 1920×1080 | ~8.3 MB | ~8.3 MB | up to ~16.6 MB (the shared arena above, sized to the sum of the updates dirty in one frame — the movie's frame is the only one while no HUD overlay is dirty) |
+
+The row is not in the estimated totals: a movie plays only over the start
+sequence and menu intros, and the HUD overlay and the movie rarely coexist.
 
 ### egui debug overlay (`EguiPass`) — #4986
 
@@ -1351,6 +1374,7 @@ authoritative rather than re-derived.
 | Scaleform UI (Ruffle wgpu device + target + readback + engine image) | ~25 MB (one menu) | ~33 MB during a resize (one deferred-destroy copy of the engine image) + a second logical device |
 | MenuXml HUD overlay texture (1 × swapchain extent, RGBA8, see [its section](#menuxml-hud-overlay-texture-1--swapchain-extent-4892)) | ~8.3 MB (1080p) | ~33 MB (4K) |
 | Dynamic RGBA staging arenas (2 slots × one dirty full-viewport overlay, see [its section](#dynamic-rgba-staging-arenas-dynamicrgbauploads-e2f99ad55)) | ~16.6 MB (1080p) | ~66 MB (4K) |
+| Movie overlay texture (movie-frame-sized RGBA8 + host copy, only after a movie has played; not in the totals, see [its section](#movie-overlay-texture-videoplayertexture-7030)) | ~16.6 MB (1080p movie) | ~66 MB (4K movie) |
 | Textures (BC compressed) | ~400 MB | ~2 GB |
 | BLAS structures | ~300 MB | ~1 GB (heavy scene) |
 | TLAS + scratch | ~50 MB | ~256 MB |
