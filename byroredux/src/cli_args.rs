@@ -499,6 +499,32 @@ mod tests {
         assert_eq!(parsed, RendererConfig::default());
     }
 
+    /// #7029 — on every launch without `--upscaler`, `install_universal_settings`
+    /// takes the settings registry's value over `RendererConfig::default()`.
+    /// `core` cannot depend on `renderer`, so the registry's default is a
+    /// hand-copied literal; nothing else ties it to `UpscalerMode::default()`
+    /// (`renderer_config_defaults_to_fsr_quality` covers only the bare CLI
+    /// path). Three-way agreement: registry default, type default, CLI default.
+    #[test]
+    fn settings_registry_upscaler_default_matches_the_engine_default() {
+        let mut registry = byroredux_core::settings::SettingsRegistry::default();
+        byroredux_debug_ui::register_builtin_settings(&mut registry)
+            .expect("built-in settings must register");
+        let entry = registry
+            .get(byroredux_debug_ui::UPSCALER_SETTING_ID)
+            .expect("the upscaler setting is registered");
+        let byroredux_core::settings::SettingValue::Choice(spec) = &entry.default else {
+            panic!("the upscaler setting default must be a choice, got {:?}", entry.default);
+        };
+        let from_registry = parse_upscaler_spec(spec).expect("the registry default must parse");
+        assert_eq!(from_registry, UpscalerMode::default(), "registry default `{spec}` drifted");
+        assert_eq!(
+            from_registry,
+            parse_renderer_config(&args(&["byroredux"])).unwrap().upscaler,
+            "registry default `{spec}` disagrees with the no-flag CLI default"
+        );
+    }
+
     /// `--fsr-quality` composes with the implicit default, so selecting a
     /// preset does not also require spelling out `--upscaler fsr3`.
     #[test]
