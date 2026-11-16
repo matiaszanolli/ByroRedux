@@ -700,6 +700,224 @@ follows the smoke-test pattern).
 
 ## 9. Open research items (no-guessing — [[feedback_no_guessing]])
 
+### Oblivion actor-value population (#7008, research in progress)
+
+- Fame and Infamy (indices 38 and 39) cannot be arguments to vanilla
+  `GetActorValue`, `SetActorValue`, or `ModActorValue`; the dedicated PC
+  fame/infamy commands handle them. OBSE actor functions can accept them.
+  See [Construction Set: Actor Values](https://cs.uesp.net/wiki/Category:Actor_Values).
+  The PRD's general-resolution acceptance excludes these indices; do not
+  infer that this describes the dedicated or OBSE commands.
+- A creature's Combat, Magic and Stealth skill is the value for every skill
+  in the corresponding specialization according to the [OBSE command
+  documentation](https://obse.silverlock.org/obse_command_doc.html).
+  The original executable has a material exception: creature current-value
+  dispatch at `0x62541c`–`0x62544d` maps Marksman (index 28) to Combat,
+  whereas the base-actor dispatch at `0x51d56a`–`0x51d577` maps it to
+  Stealth. The live path then jumps to `0x5f1a60`, while the base path calls
+  `0x51cb00`. This difference needs a design for the current/base views;
+  stamping the same raw value for both would not reproduce both observations.
+  The executable also remaps each skill group onto one current-value index
+  (`0x6253c0`–`0x625406`, `0x625410`–`0x625456`): Combat 12, Magic 19,
+  Stealth 26, with 28 routed to 12. The canonical store needs shared current
+  sources and independently resolved base views, with portable identities
+  for every alias in saves. Independent per-skill snapshots lose that sharing
+  when a script or magic effect modifies one of them.
+- The editor has an Auto-Calc Stats control independently of PC Level Offset;
+  PC Level Offset also forces recalculation ([Construction Set: NPC](https://cs.uesp.net/wiki/Category:NPC),
+  [NPC discussion](https://cs.uesp.net/wiki/Category_talk:NPC)). This does not
+  by itself establish the runtime flag precedence for every combination.
+  The [NPC record format](https://en.uesp.net/wiki/Oblivion_Mod:Mod_File_Format/NPC)
+  assigns Auto-calc Stats `0x10` and PC Level Offset `0x80`.
+  The executable provides two independent recalculation triggers. In the
+  NPC load path, `0x523fea` calls the NPC vtable slot `0xe4`, which resolves
+  to `0x519d40`; that method tests bit 4 at `0x519d46`–`0x519d4e`.
+  A true result calls the stat calculator `0x5222d0` at `0x523ff4`.
+  Separately, the NPC iteration at `0x447310`–`0x44734a` tests bit 7
+  (`0x44732b`–`0x447334`) and calls the same calculator at `0x44733a`.
+  The calculator reads race, sex, class and level and writes attributes and
+  skills (`0x522355`–`0x5225d7`). These traces establish both triggers;
+  the exact timing and interaction of subsequent recalculations are tracked
+  as an original-game observation in [#7022](https://github.com/matiaszanolli/ByroRedux/issues/7022).
+- [UESP NPC statistics](https://en.uesp.net/wiki/Oblivion:NPCs#NPC_Statistics)
+  fixes both Personality and Luck across levels. At level 1, attributes and
+  skills match a player of the same race, gender and class. Starting skills
+  have base 5, plus racial bonuses, 20 for a major skill and 5 for a skill in
+  the specialization; favored attributes gain 5
+  ([character creation](https://en.uesp.net/wiki/Oblivion:Character_Creation),
+  [classes](https://en.uesp.net/wiki/Oblivion:Classes#Custom_Classes)).
+  The executable's skill calculation corroborates the constants: for
+  `n = level - 1`, `0x5224ff`–`0x52251e` starts a minor skill at
+  `5 + 0.1*n` or a major at `25 + n`; the specialization arm at
+  `0x522529`–`0x522567` adds `5 + 0.5*n`. The racial bonus is added at
+  `0x52256b`–`0x522597` and the result is capped and converted at
+  `0x5225a3`–`0x5225ca` using x87 `fistp`. NPC Personality is skipped by
+  the calculator at `0x522345`–`0x52234f`, leaving its authored DATA byte.
+  Level offsets use the player level at `0x467807`–`0x46782b`; the bounds at
+  `0x467832`–`0x467864` apply only when nonzero, followed by a minimum of 1.
+- NPC auto-calculated health uses `0x547f80` in the executable identified
+  below. With `n = level - 1`, first convert
+  `(Strength + Endurance) * fNPCAttributeHealthMult` to an integer at
+  `0x547f80`–`0x547f98`; add `n * (iNPCBasePerLevelHealthMult +
+  is_endurance_favored + is_combat - is_magic)` at `0x547f9d`–`0x547fd0`.
+  If `n < iLowLevelNPCMaxLevel`, multiply by
+  `fLowLevelNPCBaseHealthMult + (1 - fLowLevelNPCBaseHealthMult) *
+  n / iLowLevelNPCMaxLevel`; otherwise multiply by 1. The code computes
+  that factor at `0x547fd2`–`0x54800c`, multiplies and converts at
+  `0x54800c`–`0x548014`. Setting initializers at `0x9ed910`, `0x9ed940`,
+  `0x9ed960` and `0x9ed980` associate those four names with the addresses
+  read by the calculation. The conversion helper is `0x9828c0`; its SSE
+  path uses `cvttsd2si` at `0x9828d5` (truncation). Values are read from
+  the active game settings, not the executable initializer defaults.
+- The [Aggression](https://cs.uesp.net/wiki/Aggression) page documents
+  `SetActorValue Aggression` and the disposition comparison; it does not
+  independently prove the initial `GetAV` value equals the AIDT byte.
+  On the local `Oblivion.exe` (SHA-256
+  `a8f313845c1545e9a60e1e995961eef4c033115da9443f6d756341df3c2b7dc6`),
+  the command table entry for `GetActorValue` points to `0x501670`, which
+  parses the argument and calls `0x4f6060` at `0x5016be`. For an NPC,
+  `0x4f60a6` dispatches through the Character vtable (`0xa6fc9c`, slot
+  `0x288`) to `0x5f1a60`; for value 33 it calls the process vtable's
+  `0x26c` method at `0x5f1b21`. High process `0x6289f0` delegates to
+  `0x6587e0`, then `0x6433e0`, which combines modifiers with the base
+  actor's `0x12c` virtual call (`0x64345a`). NPC and creature vtables
+  (`0xa53dd4` and `0xa5324c`) map that slot to `0x51e790`, which calls
+  their `0x128` method. NPC `0x5232d0` and creature `0x51d540` route
+  index 33 to `0x519d90`: its byte dispatch table at `0x519f24` selects
+  `0x519e8c`, adding `0x68` to the base and calling `0x538910`, which
+  reads byte `+4`. The `AIDT` loader at `0x5283b1`–`0x5283d0` passes
+  the 12-byte subrecord to `0x468280`, which copies its first byte to
+  component `+4` at `0x468291`; xOBSE's
+  [TESAIForm layout](https://github.com/llde/xOBSE/blob/master/obse/obse/GameForms.h)
+  identifies its `+4` byte as Aggression. Thus an unmodified actor starts
+  with the authored AIDT Aggression, and GetAV also includes active modifiers.
+
+- CTDA `GetActorValue` (function 14) takes `ptActorValue`; xEdit's TES4
+  definition represents that parameter as a signed 32-bit actor-value enum
+  (`/mnt/data/tmp/wbDefinitionsTES4.pas:121`, `:1327`).
+- Starting disposition research: the `GetDisposition` command table entry at
+  `0xb0d4a0` executes `0x503990`, which calls `0x4f4e20`; that function
+  dispatches through the actor's vtable slot `0x224` at `0x4f4e89`–`0x4f4e94`.
+  The calculation at `0x546260` has a caller at `0x5eacbe` and reads the
+  settings registered as `fDispTargetInfamyMult` (`0xb367e0`),
+  `fDispActorInfamyMult` (`0xb367f0`), and `fDispInfamyMax` (`0xb36cf8`);
+  their initializers are at `0x9e68d0`, `0x9e6930`, and `0x9e8600`.
+  The caller's personality and responsibility reads are the AV indices 6
+  and 36 at `0x5eac99`–`0x5eacbd`. Its race lookup at
+  `0x5eabb3`–`0x5eabea` is directed from the actor's race to the target's;
+  its faction lookup calls `0x467920` at `0x5eabff`. That function chooses
+  the largest positive self-faction relation, otherwise the least nonzero
+  directed actor-to-target faction relation, and returns the target's rank;
+  special-combat target factions are skipped for the player. The formula at
+  `0x546260`–`0x5463e7` truncates personality, fame, race and faction
+  terms separately, retains the Infamy term as a float until the final
+  conversion, and caps Fame and Infamy separately. The infamy term is
+  `(Responsibility * fDispActorInfamyMult + fDispTargetInfamyMult) *
+  Infamy * fDispTargetInfamyMult`, clamped to ±`fDispInfamyMax`; the
+  repeated setting is what the instructions read, although the executable
+  also registers an `fDispActorInfamyBase`. The faction term similarly uses
+  `fDispTargetFactionMult` twice, despite registering a separate rank
+  multiplier. `0x5eacc6`–`0x5eacef` clamps the result to 0–100. The
+  conversion helper at `0x9828c0` truncates toward zero. The setting
+  initializers span `0x9e67e0`–`0x9e6aa4` and `0x9e85c0`–`0x9e8624`.
+  A real-master GMST census finds three overrides in this family:
+  `fDispActorPerMult = 1.5`, `fDispTargetPerMult = 0.5`, and
+  `fDispTargetFactionRankBase = 1.0`. The starting-disposition model uses
+  the load order's values over the executable defaults.
+
+Exact flag timing and interactions remain observation #7022; the stat-model
+design is below.
+
+The identity design must account for the current boundary: `EsmIndex` and
+`ActorValues` both use global load-order `u32` keys, whereas `FormIdPool`
+interns `FormIdPair` to a distinct `u64` handle. `FormIdPool::local_of`
+returns only the pair's local field and therefore cannot distinguish two
+plugins with the same local ID. An engine-owned pair alone does not make an
+actor-value key collision-free. A bridge must assign distinct keys across the
+complete load order and preserve or remap those keys when actor values are
+saved and restored; a fixed reserved `u32` range does not satisfy Q1.
+The approved [identity PRD](../prd/oblivion-actor-value-identity.md) chooses
+an engine-owned pair, local ID `index + 1`, and the lowest unused regular
+slot after real plugins. Install the slot and records before constructing any
+consumer, and encode the pair when saving, resolving it through the current
+load order on restore.
+
+The master census also finds ten Oblivion.esm `REFR` records with raw slot
+`0x01` even though the master has no such dependency; none of their local
+IDs matches a slot-0 record. The parser preserves these unowned IDs rather
+than inventing an owner (`FormIdRemap::remap`, #1308). The engine slot must
+therefore avoid both real-plugin slots and any slot already occupied by a
+preserved record; otherwise the engine identity would silently claim those
+references. On this master the first genuinely unused slot is `0x02`.
+
+The Phase 0 save audit cross-checked the registry, registered subsystem
+columns and AVIF-bearing types. These references require portable encoding,
+including nested copies:
+
+| Saved column or resource | Actor-value reference |
+|---|---|
+| `ActorValues` | Map keys and each view-specific alias's key and source keys; all layers travel with their source key. |
+| `ActorVitals` | `health`; registered for full restore, re-derived on live cell reload. |
+| `TimedRestorations` | Each effect's `actor_value`. |
+| `ActiveMagicEffects` | Each `ActiveEffect.value.actor_value`, when present. |
+| `SkillProgress` | Map keys, even though the resource is not named as an actor-value component. |
+| `PersistentReferenceStates` | Parked `ActorValues` and `ActiveMagicEffects` nested inside each reference row. |
+
+`SpellCatalog` and `PoolRegenConfig` are rebuilt from content and are not
+save-registered; `SpellList` saves spell IDs rather than AVIF keys.
+`AfflictionStatus` is not registered or serialized. Recheck these exemptions
+against the registry when implementing the codec. `ObScriptLedger.tag_skills`
+stores actor-value *codes* as `u8`, not global AVIF keys, so it is exempt.
+`PersistentReferenceStates`
+also decodes snapshot columns while parking unresolved actors, so changing
+the column shape requires updating that path as well as normal restore and
+live overlay.
+
+The codec must cover all three registry operations: save maps runtime keys to
+pairs; full restore maps pairs to the current keys; live delta application
+does the same after mapping saved entity IDs to live entities. Snapshot type
+validation decodes the portable shape before world mutation. The parked-state
+resource needs the same conversion on both save and restore, and its
+unresolved-entity parking path must decode the portable component columns
+against the current identity before parking. A missing identity is reported
+with the owner and skipped, rather than falling back to the saved slot.
+`LoadOrderIdentity` is runtime context and must be present at each conversion;
+it must not itself be restored from the old save. The existing generic
+registry closures serialize the runtime types directly, so implementing this
+requires context-aware codec registration rather than serde on the runtime
+types alone. `FORMAT_MAJOR` changes with that on-disk shape.
+
+Live-load acceptance also needs the plugin-set boundary: the current drain
+passes the saved `CurrentCellContext` / `CurrentExteriorContext` plugin paths
+to the reload (`save_io/live_load.rs::execute_pending_save_loads`). Merely
+adding a plugin to the running session does not make that reload use it.
+The current session's plugin set must reach the reload for the requested
+changed-load-order scenario, and the saved context must not overwrite it
+afterward. Other saved form references also need consideration when their
+plugins move; silently interpreting an old global ID as a different plugin's
+form is not an acceptable way to satisfy the AVIF test.
+
+The Oblivion population boundary selects these models at actor spawn:
+
+| Actor | Model and inputs | Output |
+|---|---|---|
+| Stored NPC | `NPC_ DATA` skills, Health and attributes; `ACBS` spell points and Fatigue | Authored bases and derived Encumbrance |
+| Calculated NPC | `RACE` gender attributes and skill bonuses; `CLAS` favored attributes, specialization and major skills; resolved spawn level and health GMSTs | Level-one values and per-level gains above; Health calculated once, Magicka `2.5 * Intelligence`, Fatigue `Endurance + Strength + Agility + Willpower`, Encumbrance `5 * Strength` |
+| Creature | `CREA DATA` Combat/Magic/Stealth skills, Health and attributes; `ACBS` spell points and Fatigue; PC-level-offset flag and resolved level | Skills follow specialization, subject to the Marksman current/base exception above; offset creatures' Health, Magicka and Fatigue scale by level |
+| Player | `Player` NPC record | Its authored standard values |
+
+All models stamp AIDT Aggression, Confidence, Energy and Responsibility.
+The ruleset and regeneration configuration resolve the installed AVIFs once;
+consumers use those keys without per-game branches. Calculation-trigger
+timing remains observation #7022. The creature level-scaling rule is from
+[Construction Set: Stats Tab - Creatures](https://cs.uesp.net/wiki/Stats_Tab_-_Creatures).
+
+For the live acceptance, `byro-dbg` can attach to the running engine and
+invoke `obscript.cmd` on a resident reference, as well as inspect the
+Papyrus runtime. This requires a running Oblivion cell and its game data;
+the debugger does not itself supply the original game's behavior as a
+reference oracle.
+
 - ~~**FO4 NPC SPECIAL storage.**~~ **CLOSED** — answered by this spec's own
   child capture: `charal-fo4-ruleset.md` § "NPC SPECIAL storage — RESOLVED
   (xEdit `Core/wbDefinitionsFO4.pas`, dev-4.1.6)". It is the **`PRPS`
