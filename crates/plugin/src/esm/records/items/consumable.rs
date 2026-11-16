@@ -66,6 +66,7 @@ pub(super) fn parse_effects(
                         magnitude,
                         area,
                         duration,
+                        actor_value: None,
                         script_form_id: 0,
                         // An ingestible keeps its effect conditions on `ConsumableEffect`, with
                         // the CTDA flag bytes and the fail-closed checks its use applies.

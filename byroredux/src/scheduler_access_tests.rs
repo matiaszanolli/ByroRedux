@@ -27,6 +27,28 @@ const APP_FRAME_RS: &str = include_str!("app_frame.rs");
 /// turned into a vacuous pass rather than a failure.
 const BOOT_RS: &str = crate::boot::SOURCES;
 
+#[test]
+fn rated_hostility_declares_its_disposition_inputs() {
+    for system in ["crate::systems::make_faction_hostility_system()", "crate::detection::detection_tick_system"] {
+        let declaration = BOOT_RS
+            .split_once(system)
+            .expect("system registration")
+            .1
+            .split_once("\n    );")
+            .expect("end of system registration")
+            .0;
+        for needle in [
+            ".reads::<byroredux_core::ecs::components::ActorValues>()",
+            ".reads::<byroredux_core::ecs::components::FactionRanks>()",
+            ".reads::<byroredux_core::character::Background>()",
+            ".reads_resource::<byroredux_scripting::obscript_ledger::ObScriptLedger>()",
+            ".reads_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()",
+        ] {
+            assert!(declaration.contains(needle), "{system} lacks {needle}");
+        }
+    }
+}
+
 /// #1785 / CONC-D3-02 and #3252 — the animation system declaration must
 /// cover every animated-channel sink written by its bool, color, float,
 /// morph, and texture-flip dispatch paths.

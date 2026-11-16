@@ -377,8 +377,8 @@ pub(super) fn build_player_character_template(index: &EsmIndex) -> PlayerCharact
     });
     if pairs.is_empty() {
         // #6767 — pure record provenance, independent of the derivation:
-        // Oblivion (no AVIF, `NpcStatModel::None`), FO76 and Starfield derive
-        // nothing but their Player still has a level and a race/class, as every
+        // Profiles without a population model can derive nothing, but their
+        // Player still has a level and a race/class, as every
         // NPC does (`stamp_character_components` is unconditional).
         return PlayerCharacterTemplate {
             level: Some(level.max(0) as u16),

@@ -517,6 +517,7 @@ pub(crate) struct InteriorCellApplyJob {
     /// one already parsed (#6123).
     index: std::sync::Arc<esm::records::EsmIndex>,
     load_order: std::sync::Arc<LoadOrder>,
+    previous_resolver: super::load_order::PreviousFormResolver,
     cell_root: EntityId,
     /// #5484 — hashes whose `_oc.nif` bake drew geometry. Keys
     /// `CellData::absorbed_ref_bakes` at the reference gate.
@@ -564,6 +565,12 @@ impl InteriorCellApplyJob {
         phases.esm_parse = phase_started.elapsed();
 
         let cell = find_interior_cell(&index, cell_editor_id)?;
+        let resolver = super::load_order::GlobalFormIdResolver::from_load_order_with_records_and_factions(
+            &load_order, &index.record_types, &index.factions,
+        ).with_disposition(&index);
+        let previous_resolver = super::load_order::PreviousFormResolver::install(
+            world, resolver, std::sync::Arc::clone(&load_order),
+        );
         let textures_started = Instant::now();
         // M47.3 — the references below attach their ObScript object scripts as they
         // spawn, so the tables must exist first (`populate_scene_runtime` is too late).
@@ -637,6 +644,7 @@ impl InteriorCellApplyJob {
             cell_editor_id: cell_editor_id.to_string(),
             index,
             load_order,
+            previous_resolver,
             cell_root,
             baked_hashes,
             absorbed: None,
@@ -716,6 +724,7 @@ impl InteriorCellApplyJob {
             references.cancel(world);
         }
         super::unload_cell(world, ctx, self.cell_root);
+        self.previous_resolver.restore(world);
     }
 
     fn finish(
@@ -730,7 +739,6 @@ impl InteriorCellApplyJob {
             esm_path,
             cell_editor_id,
             index,
-            load_order,
             cell_root,
             mut phases,
             textures_started,
@@ -782,14 +790,7 @@ impl InteriorCellApplyJob {
             crate::components::RegionAmbientRes::resolve(&cell.regions, &index.regions);
 
         ensure_globals_resource(world, &index.globals);
-        let form_resolver =
-            super::load_order::GlobalFormIdResolver::from_load_order_with_records_and_factions(
-                &load_order,
-                &index.record_types,
-                &index.factions,
-            );
         world.insert_resource(super::LoadedCellIndex(index));
-        super::load_order::install_form_resolver(world, form_resolver, load_order);
         world.insert_resource(super::CurrentCellRoot(Some(cell_root)));
         world.insert_resource(super::CurrentCellContext {
             cell_editor_id: cell_editor_id.clone(),
@@ -1142,6 +1143,12 @@ mod tests {
             source.contains("references.cancel(world)") && source.contains("unload_cell(world, ctx, self.cell_root)"),
             "cancelling an interior job must release both reference continuations and its cell root (#3671)"
         );
+        let production = byroredux_core::source_scan::production_text(source);
+        let install = production.find("PreviousFormResolver::install(").expect("stage the load-order identity");
+        let consumers = production.find("ensure_obscript_tables(world, &index)").expect("install script tables");
+        let references = production.find("load_references_budgeted(").expect("spawn references");
+        assert!(install < consumers && consumers < references, "identity and records must precede script tables and actors");
+        assert!(production.contains("self.previous_resolver.restore(world)"), "cancel must restore the prior identity bridge");
     }
 
     /// #3320 — pin the load-order invariant that makes interior water render.

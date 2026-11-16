@@ -1430,7 +1430,7 @@ impl ConsoleCommand for WeatherForceCommand {
     }
 }
 
-/// `obscript.cmd <entity|.|none> <command id hex> [arg ...]` — run one ObScript command through the real
+/// `obscript.cmd <entity|.|none> <command id hex|actor-value command> [arg ...]` — run one ObScript command through the real
 /// host, as a script statement would, and print what it answered. The caller is the reference the command
 /// is called on (`none` for a command with no calling reference); an argument is a number, or `r:<hex>` for
 /// a form / reference (`player` is `r:14`), or `t:<text>` for a string. The ids are the ones `obscript_tools names <ESM>` prints
@@ -1443,17 +1443,27 @@ impl ConsoleCommand for ObScriptCmdCommand {
     }
 
     fn description(&self) -> &str {
-        "Run an ObScript command: obscript.cmd <caller entity|.|none> <command id hex> [number | r:<hex form> ...]"
+        "Run an ObScript command: obscript.cmd <caller entity|.|none> <command id or GetAV/GetBaseAV/SetAV/ModAV/ForceAV/DamageAV/RestoreAV> [arguments]"
     }
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
         use byroredux_scripting::obscript_vm::ObScriptValue;
-        const USAGE: &str = "usage: obscript.cmd <caller entity|.|none> <command id hex> [number | r:<hex form> ...]";
+        const USAGE: &str = "usage: obscript.cmd <caller entity|.|none> <command id hex|GetAV|GetBaseAV|SetAV|ModAV|ForceAV|DamageAV|RestoreAV> [arguments]";
         let mut parts = args.split_whitespace();
         let (Some(caller_token), Some(cmd_token)) = (parts.next(), parts.next()) else {
             return CommandOutput::error(USAGE);
         };
-        let Some(cmd) = u16::from_str_radix(cmd_token.trim_start_matches("0x"), 16).ok() else {
+        let named_command = match cmd_token.to_ascii_lowercase().as_str() {
+            "getav" | "getactorvalue" => Some(0x100e),
+            "getbaseav" | "getbaseactorvalue" => Some(0x1115),
+            "setav" | "setactorvalue" => Some(0x100f),
+            "modav" | "modactorvalue" => Some(0x1010),
+            "forceav" | "forceactorvalue" => Some(0x110e),
+            "damageav" | "damageactorvalue" => Some(0x1181),
+            "restoreav" | "restoreactorvalue" => Some(0x1182),
+            _ => None,
+        };
+        let Some(cmd) = named_command.or_else(|| u16::from_str_radix(cmd_token.trim_start_matches("0x"), 16).ok()) else {
             return CommandOutput::error(format!("bad command id `{cmd_token}`\n{USAGE}"));
         };
         let caller = if caller_token.eq_ignore_ascii_case("none") {
@@ -1483,6 +1493,12 @@ impl ConsoleCommand for ObScriptCmdCommand {
                 },
                 None => match token.parse::<f32>() {
                     Ok(number) => ObScriptValue::Num(number),
+                    Err(_) if values.is_empty() && matches!(cmd, 0x100e | 0x1115 | 0x100f | 0x1010 | 0x110e | 0x1181 | 0x1182) => {
+                        match byroredux_scripting::obscript_actor_values::actor_value_code(world, token) {
+                            Some(code) => ObScriptValue::Num(code as f32),
+                            None => return CommandOutput::error(format!("unknown actor value `{token}`")),
+                        }
+                    }
                     Err(_) => return CommandOutput::error(format!("bad argument `{token}`\n{USAGE}")),
                 },
             };
@@ -1659,6 +1675,57 @@ mod tests {
     };
 
     const QUEST: u32 = 0x1234;
+
+    #[test]
+    fn obscript_console_accepts_actor_value_names_and_preserves_numeric_commands() {
+        use byroredux_core::ecs::components::{ActorValues, FormIdComponent};
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+        use byroredux_plugin::esm::{reader::{GameKind, GlobalSlot}, records::EsmIndex};
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.insert_resource(QuestStageState::default());
+        world.register::<ActorValues>();
+        let mut pool = FormIdPool::new();
+        let form = pool.intern(FormIdPair { plugin: PluginId::from_filename("Oblivion.esm"), local: LocalFormId(0x1234) });
+        let actor = world.spawn();
+        world.insert(actor, FormIdComponent(form));
+        let mut values = ActorValues::new();
+        values.set_base(0x0100_0020, 37.0);
+        world.insert(actor, values);
+        world.insert_resource(pool);
+        let mut index = EsmIndex { game: GameKind::Oblivion, ..Default::default() };
+        index.install_oblivion_actor_values(GlobalSlot::Regular(1)).unwrap();
+        byroredux_scripting::install_actor_value_names(&mut world, &index);
+        let named = ObScriptCmdCommand.execute(&world, &format!("{actor} GetAV Sneak")).lines.join("\n");
+        let numeric = ObScriptCmdCommand.execute(&world, &format!("{actor} 100e 31")).lines.join("\n");
+        assert_eq!(named, numeric);
+        assert!(named.contains("37"), "{named}");
+        let reserved = ObScriptCmdCommand.execute(&world, &format!("{actor} GetAV Fame")).lines.join("\n");
+        assert!(reserved.contains("unknown actor value"), "{reserved}");
+    }
+
+    #[test]
+    fn obscript_console_damages_the_player_by_named_actor_value() {
+        use byroredux_core::ecs::components::{ActorValues, FormIdComponent};
+        use byroredux_core::form_id::{FormIdPool, PLAYER_FORM_ID_PAIR};
+        use byroredux_plugin::esm::{reader::{GameKind, GlobalSlot}, records::EsmIndex};
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.insert_resource(QuestStageState::default());
+        let mut pool = FormIdPool::new();
+        let form = pool.intern(PLAYER_FORM_ID_PAIR);
+        world.insert_resource(pool);
+        let mut index = EsmIndex { game: GameKind::Oblivion, ..Default::default() };
+        index.install_oblivion_actor_values(GlobalSlot::Regular(1)).unwrap();
+        byroredux_scripting::install_actor_value_names(&mut world, &index);
+        let player = world.spawn();
+        world.insert(player, FormIdComponent(form));
+        world.insert(player, ActorValues::from_pairs([(index.actor_value_form_id("Health").unwrap(), 100.0)]));
+        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(player));
+        let result = ObScriptCmdCommand.execute(&world, "0x14 DamageAV Health 10").lines.join("\n");
+        assert!(!result.contains("declined") && !result.contains("Error:"), "{result}");
+        assert_eq!(world.get::<ActorValues>(player).unwrap().current(index.actor_value_form_id("Health").unwrap()), 90.0);
+    }
 
     fn fixture() -> (World, EntityId) {
         let mut world = World::new();

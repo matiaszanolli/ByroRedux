@@ -80,7 +80,8 @@ pub fn install(world: &mut World) {
 /// fingerprint is order-sensitive).
 #[cfg(feature = "save")]
 pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
-    registry.register_resource::<SkillProgress>("SkillProgress");
+    registry.register_resource_codec("SkillProgress",
+        crate::actor_value_save::save_skill_progress, crate::actor_value_save::load_skill_progress);
 }
 
 /// Advance the player's skill `name` by `magnitude` usage units. Returns the
@@ -116,7 +117,7 @@ pub fn advance_skill(world: &World, player: byroredux_core::ecs::storage::Entity
         let Some(values) = values.get_mut(player) else {
             return Vec::new();
         };
-        let Some(entry) = values.get(skill) else {
+        let Some(entry) = values.get_base(skill) else {
             log::debug!("AdvanceSkill: the player has no '{name}' skill");
             return Vec::new();
         };

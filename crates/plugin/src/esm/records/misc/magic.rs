@@ -767,6 +767,9 @@ pub struct MagicEffectItem {
     pub area: u32,
     /// Duration in game seconds from EFIT offset 8 (u32).
     pub duration: u32,
+    /// TES4 EFIT's signed actor-value index, when present and nonnegative.
+    /// Skill/attribute effects select their target per effect item.
+    pub actor_value: Option<ActorValueRef>,
     /// `SCIT` — the `SCPT` an ObScript *script effect* runs (its `ScriptEffectStart` / `Update` /
     /// `Finish` blocks); `0` for an effect with no script. Fallout 3 / New Vegas and Oblivion.
     pub script_form_id: u32,
@@ -844,6 +847,10 @@ impl MagicEffectAccumulator {
                     magnitude,
                     area,
                     duration,
+                    actor_value: if self.game == GameKind::Oblivion {
+                        sub.data.get(20..24).map(|bytes| i32::from_le_bytes(bytes.try_into().unwrap()))
+                            .filter(|value| *value >= 0).map(|value| ActorValueRef::Index(value as u32))
+                    } else { None },
                     script_form_id: 0,
                     conditions: Vec::new(),
                 });
@@ -1135,6 +1142,17 @@ fn decode_mgef_archetype(
     let index_ref = |raw: u32| (raw as i32 >= 0).then_some(ActorValueRef::Index(raw));
     let form_ref = |raw: u32| (raw != 0).then(|| ActorValueRef::Form(remap_fid(raw, remap)));
     match game {
+        GameKind::Oblivion if data.len() >= 12 => {
+            const USE_SKILL: u32 = 1 << 19;
+            const USE_ATTRIBUTE: u32 = 1 << 20;
+            const USE_ACTOR_VALUE: u32 = 1 << 24;
+            if out.effect_flags & (USE_SKILL | USE_ATTRIBUTE | USE_ACTOR_VALUE) != 0 {
+                out.archetype = Some(MagicArchetype::ValueModifier);
+                if out.effect_flags & USE_ACTOR_VALUE != 0 {
+                    out.primary_actor_value = index_ref(read(8));
+                }
+            }
+        }
         GameKind::Fallout3NV if data.len() >= d::FO3NV_LEN => {
             out.archetype = Some(match read(d::ARCHETYPE) {
                 d::ARCHETYPE_VALUE_MODIFIER => MagicArchetype::ValueModifier,
@@ -2373,7 +2391,8 @@ mod tests {
         efit.extend_from_slice(&5i32.to_le_bytes()); // magnitude
         efit.extend_from_slice(&0u32.to_le_bytes()); // area
         efit.extend_from_slice(&3u32.to_le_bytes()); // duration
-        efit.extend_from_slice(&[0u8; 8]); // tail to 24
+        efit.extend_from_slice(&0u32.to_le_bytes()); // delivery
+        efit.extend_from_slice(&31i32.to_le_bytes()); // actor-value index
         assert_eq!(efit.len(), 24);
 
         let subs = vec![sub(b"EFID", b"FIDG"), sub(b"EFIT", &efit)];
@@ -2385,6 +2404,7 @@ mod tests {
             "the effect code is stored verbatim, never read as a FormID"
         );
         assert_eq!((s.effects[0].magnitude, s.effects[0].duration), (5.0, 3));
+        assert_eq!(s.effects[0].actor_value, Some(ActorValueRef::Index(31)));
 
         // The gate is per game, not global: the same accumulator with an
         // in-range FormID EFID remaps it on FO3/FNV but stores it verbatim

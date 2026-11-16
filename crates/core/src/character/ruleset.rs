@@ -32,6 +32,8 @@ pub struct CharacterRuleset {
     /// `(output AVIF FormID, formula)` — the stat each formula produces and
     /// how to compute it from base AVs + level.
     derived: Vec<(u32, DerivedStatFormula)>,
+    /// Whether player-only formulas replace carried bases on spawn and refresh.
+    refresh_player_bases: bool,
     /// XP curve + per-level reward.
     pub leveling: LevelingModel,
 }
@@ -45,6 +47,7 @@ impl CharacterRuleset {
             attributes: AttributeSet::default(),
             skills: SkillSet::default(),
             derived: Vec::new(),
+            refresh_player_bases: true,
             leveling,
         }
     }
@@ -62,6 +65,14 @@ impl CharacterRuleset {
     #[must_use]
     pub fn with_skills(mut self, skills: SkillSet) -> Self {
         self.skills = skills;
+        self
+    }
+
+    /// Keep the player's authored or accumulated bases instead of replacing
+    /// them with the stateless player formulas on each frame.
+    #[must_use]
+    pub fn retain_player_bases(mut self) -> Self {
+        self.refresh_player_bases = false;
         self
     }
 
@@ -108,6 +119,7 @@ impl CharacterRuleset {
     /// must not inherit — and re-evaluates them through
     /// [`Self::derived_value`] so the player's own formulas finally apply.
     pub fn player_only_output_avifs(&self) -> Vec<u32> {
+        if !self.refresh_player_bases { return Vec::new(); }
         let mut out: Vec<u32> = self
             .derived
             .iter()
@@ -183,7 +195,7 @@ impl CharacterRuleset {
     /// are left intact", which the old permanent_mod destination
     /// violated by overwriting the constant-spell sum).
     pub fn is_player_derived_pool(&self, avif: u32) -> bool {
-        self.derived_formula(avif).is_some_and(|formula| {
+        self.refresh_player_bases && self.derived_formula(avif).is_some_and(|formula| {
             formula.scope == DerivedScope::PlayerOnly && formula.kind == DerivedOutput::Absolute
         })
     }
@@ -205,6 +217,7 @@ impl CharacterRuleset {
     /// refreshed in table order, so a row that read another `PlayerOnly`
     /// output would see that output already refreshed; no shipped row does.
     pub fn refresh_player_only_bases(&self, avs: &mut ActorValues, level: u16) -> bool {
+        if !self.refresh_player_bases { return false; }
         let mut changed = false;
         for (index, (key, formula)) in self.derived.iter().enumerate() {
             // Scope and kind come from a stat's first row, as in

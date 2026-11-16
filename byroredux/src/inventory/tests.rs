@@ -1936,6 +1936,33 @@ fn player_character_template_derives_from_the_player_npc_record() {
     );
 }
 
+#[test]
+fn oblivion_player_template_keeps_the_authored_pools() {
+    use byroredux_plugin::esm::records::actor::{OblivionActorPools, OblivionNpcStats};
+    use byroredux_plugin::esm::reader::GlobalSlot;
+    let mut index = EsmIndex { game: GameKind::Oblivion, character_rules: byroredux_core::character::CharacterRulesProfile::OBLIVION, ..Default::default() };
+    index.install_oblivion_actor_values(GlobalSlot::Regular(1)).unwrap();
+    index.npcs.insert(PLAYER_NPC_FORM_ID, byroredux_plugin::esm::records::NpcRecord {
+        form_id: PLAYER_NPC_FORM_ID,
+        level: 1,
+        acbs_flags: 0x10,
+        oblivion_npc_stats: Some(OblivionNpcStats { skills: std::array::from_fn(|i| i as u8 + 10), health: 123, attributes: [31, 32, 33, 34, 35, 36, 37, 38] }),
+        oblivion_pools: Some(OblivionActorPools { magicka: 77, fatigue: 88, calc_max: 0 }),
+        ..Default::default()
+    });
+    let values = build_player_character_template(&index).values.unwrap();
+    assert_eq!(values.current(index.actor_value_form_id("Health").unwrap()), 123.0);
+    assert_eq!(values.current(index.actor_value_form_id("Magicka").unwrap()), 77.0);
+    assert_eq!(values.current(index.actor_value_form_id("Fatigue").unwrap()), 88.0);
+    for code in 0..8 {
+        assert_eq!(values.current(index.oblivion_actor_value(code, false).unwrap()), (code + 31) as f32);
+    }
+    assert_eq!(values.current(index.actor_value_form_id("Encumbrance").unwrap()), 155.0);
+    for code in 12..33 {
+        assert_eq!(values.current(index.oblivion_actor_value(code, false).unwrap()), (code - 2) as f32);
+    }
+}
+
 /// #5058 — the post-load reset gives the player the authored record
 /// answer: a stale alias-injected membership (which the pre-load
 /// session's refresh recorded as authored after the wholesale ledger

@@ -383,7 +383,7 @@ fn cmd_11ce(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _c
 fn get_knocked_state(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
     match caller(world, ctx) {
         Some((_, actor)) => {
-            let paralysed = crate::obscript_actor_values::actor_value_form(world, 47.0)
+            let paralysed = world.try_resource::<crate::ActorValueNames>().and_then(|names| names.resolve("Paralysis"))
                 .and_then(|form| world.get::<ActorValues>(actor).map(|values| values.current(form) > 0.0))
                 .unwrap_or(false);
             answer(if crate::is_unconscious(world, actor) || paralysed { 1.0 } else { 0.0 })

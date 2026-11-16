@@ -63,6 +63,100 @@ use byroredux_plugin::esm::records::{ActorAiData, Aggression, Confidence};
 use byroredux_scripting::{AiCombatState, FactionRelations, LoadOrderIdentity};
 use byroredux_sdk::identity::FormRef;
 use byroredux_sdk::relationships::{CombatReaction, FactionRelationshipCatalog};
+use std::collections::{HashMap, HashSet};
+
+/// The translated starting-disposition inputs for one load order. Kept with
+/// the load-order resolver, so cancellation restores it with the identity.
+#[derive(Clone, Debug)]
+pub(crate) struct DispositionData {
+    model: byroredux_core::character::DispositionModel,
+    personality: u32,
+    aggression: u32,
+    responsibility: u32,
+    races: HashMap<(u32, u32), i32>,
+    special_factions: HashSet<u32>,
+}
+
+impl DispositionData {
+    pub(crate) fn from_index(index: &byroredux_plugin::esm::records::EsmIndex) -> Option<Self> {
+        let model = index.character_rules.build_disposition(|name| index.game_setting_float(name))?;
+        Some(Self {
+            model,
+            personality: index.actor_value_form_id("Personality")?,
+            aggression: index.actor_value_form_id("Aggression")?,
+            responsibility: index.actor_value_form_id("Responsibility")?,
+            races: index.races.iter().flat_map(|(&source, race)| {
+                race.race_reactions.iter().map(move |&(target, value)| ((source, target), value))
+            }).collect(),
+            special_factions: index.factions.iter().filter_map(|(&form, faction)|
+                (faction.flags & 8 != 0).then_some(form)).collect(),
+        })
+    }
+}
+
+/// Oblivion.exe 0x467920 chooses the strongest positive shared-faction
+/// reaction first, otherwise the most negative nonzero directed relation.
+fn disposition_faction(
+    from: &FactionRanks,
+    to: &FactionRanks,
+    data: &DispositionData,
+    identity: &LoadOrderIdentity,
+    catalog: &FactionRelationshipCatalog,
+    ledger: Option<&byroredux_scripting::obscript_ledger::ObScriptLedger>,
+) -> (i32, i32) {
+    let mut shared = None;
+    let mut other = None;
+    for &(source, source_rank) in &from.0 {
+        if source_rank < 0 { continue; }
+        for &(target, rank) in &to.0 {
+            if rank < 0 || data.special_factions.contains(&target) { continue; }
+            let value = ledger.and_then(|l| l.reaction_override(source, target))
+                .map(|v| v as i32)
+                .or_else(|| {
+                    let a = identity.form_ref(source)?;
+                    let b = identity.form_ref(target)?;
+                    catalog.relationship(a, b).map(|r| r.modifier())
+                }).unwrap_or(0);
+            if source == target {
+                if value > shared.map_or(0, |(v, _)| v) { shared = Some((value, i32::from(rank))); }
+            } else if value != 0 && other.is_none_or(|(v, _)| value < v) {
+                other = Some((value, i32::from(rank)));
+            }
+        }
+    }
+    shared.or(other).unwrap_or((0, -1))
+}
+
+fn rated_attack(world: &World, actor: EntityId, target: EntityId) -> Option<bool> {
+    if Some(target) != crate::systems::PlayerEntity::get(world) { return None; }
+    let resolver = world.try_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()?;
+    let data = resolver.disposition_data()?;
+    let catalog = resolver.faction_relationships();
+    drop(resolver);
+    let identity = world.try_resource::<LoadOrderIdentity>()?.clone();
+    let (personality, aggression, responsibility) = {
+        let values = world.get::<byroredux_core::ecs::components::ActorValues>(actor)?;
+        (values.get(data.personality)?.current(), values.get(data.aggression)?.current(), values.get(data.responsibility)?.current())
+    };
+    let target_personality = world.get::<byroredux_core::ecs::components::ActorValues>(target)?.get(data.personality)?.current();
+    let actor_race = world.get::<byroredux_core::character::Background>(actor).map_or(0, |b| b.race_form_id);
+    let target_race = world.get::<byroredux_core::character::Background>(target).map_or(0, |b| b.race_form_id);
+    let from = world.get::<FactionRanks>(actor).map(|f| f.clone()).unwrap_or_default();
+    let to = world.get::<FactionRanks>(target).map(|f| f.clone()).unwrap_or_default();
+    let ledger = world.try_resource::<byroredux_scripting::obscript_ledger::ObScriptLedger>();
+    let (faction_reaction, target_faction_rank) = disposition_faction(&from, &to, &data, &identity, &catalog, ledger.as_deref());
+    let input = byroredux_core::character::DispositionInput {
+        actor_personality: personality,
+        target_personality,
+        actor_responsibility: responsibility,
+        target_fame: ledger.as_ref().map_or(0.0, |l| l.fame),
+        target_infamy: ledger.as_ref().map_or(0.0, |l| l.infamy),
+        race_reaction: data.races.get(&(actor_race, target_race)).copied().unwrap_or(0),
+        faction_reaction,
+        target_faction_rank,
+    };
+    Some(aggression.trunc() > data.model.starting(input) as f32)
+}
 
 /// Seconds between hostility evaluations. Engine policy: combat start is a
 /// perception decision, and re-deciding it every frame for every NPC buys
@@ -141,6 +235,9 @@ pub(crate) fn actor_would_attack(world: &World, perceiver: EntityId, target: Ent
     let Some(disposition) = world.get::<CombatDisposition>(perceiver).map(|d| d.0) else {
         return false;
     };
+    if matches!(disposition.aggression, Aggression::Rated(_)) {
+        return rated_attack(world, perceiver, target).unwrap_or(false);
+    }
     let Some(identity) = world.try_resource::<LoadOrderIdentity>() else {
         return false;
     };
@@ -458,7 +555,12 @@ fn faction_hostility_system_inner(world: &World, dt: f32, scratch: &mut Hostilit
                 &overrides,
                 &catalog,
             );
-            if attacks(&disposition, standing, distance) {
+            let hostile = if matches!(disposition.aggression, Aggression::Rated(_)) {
+                rated_attack(world, perceiver.entity, target.entity).unwrap_or(false)
+            } else {
+                attacks(&disposition, standing, distance)
+            };
+            if hostile {
                 candidates.push((distance, target_index));
             }
         }
@@ -645,8 +747,8 @@ mod tests {
         assert_eq!(living_actors(&world), vec![alive]);
     }
 
-    /// #6995 — an Oblivion actor (rated aggression) is a living actor for detection, crime and observers, but
-    /// starts no combat on its own until the engine keeps a disposition to compare the score with.
+    /// A rated actor remains in the shared living-actor roster. The generic
+    /// ordinal-aggression helper does not invent a rated disposition.
     #[test]
     fn a_rated_oblivion_actor_lives_but_starts_no_combat() {
         let mut world = World::new();
@@ -659,6 +761,65 @@ mod tests {
         for standing in [Standing::Enemy, Standing::Neutral, Standing::Friendly] {
             assert!(!attacks(&rated, standing, 100.0), "{standing:?}");
         }
+    }
+
+    #[test]
+    fn rated_hostility_reads_live_values_reputation_and_faction_override() {
+        use byroredux_core::ecs::components::ActorValues;
+        use byroredux_plugin::esm::{reader::GameKind, records::{EsmIndex, RaceRecord}};
+        let mut index = EsmIndex { game: GameKind::Oblivion, character_rules: byroredux_core::character::CharacterRulesProfile::OBLIVION, ..Default::default() };
+        index.install_oblivion_actor_values(GlobalSlot::Regular(1)).unwrap();
+        index.races.insert(0x300, RaceRecord { race_reactions: vec![(0x301, -5)], ..Default::default() });
+        let av = |name| index.actor_value_form_id(name).unwrap();
+        let (personality, aggression, responsibility) = (av("Personality"), av("Aggression"), av("Responsibility"));
+        let order = crate::cell_loader::load_order::LoadOrder::all_regular(vec!["Oblivion.esm".into()]);
+        let resolver = crate::cell_loader::load_order::GlobalFormIdResolver::from_load_order(&order).with_disposition(&index);
+        let mut world = fixture();
+        world.register::<ActorValues>();
+        world.register::<byroredux_core::character::Background>();
+        world.insert_resource(resolver);
+        world.insert_resource(byroredux_scripting::obscript_ledger::ObScriptLedger::default());
+        let actor = spawn_actor(&mut world, Vec3::ZERO, GUARDS, Some(ActorAiData {
+            aggression: Aggression::Rated(50), confidence: Confidence::Rated(50), ..disposition(Aggression::Unaggressive)
+        }));
+        let player = spawn_actor(&mut world, Vec3::X, PLAYER_FACTION, None);
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert(actor, ActorValues::from_pairs([(personality, 40.0), (aggression, 50.0), (responsibility, 100.0)]));
+        world.insert(player, ActorValues::from_pairs([(personality, 40.0)]));
+        world.insert(actor, byroredux_core::character::Background { race_form_id: 0x300, ..Default::default() });
+        world.insert(player, byroredux_core::character::Background { race_form_id: 0x301, ..Default::default() });
+        assert!(actor_would_attack(&world, actor, player));
+        world.resource_mut::<byroredux_scripting::obscript_ledger::ObScriptLedger>().fame = 100.0;
+        assert!(!actor_would_attack(&world, actor, player));
+        world.resource_mut::<byroredux_scripting::obscript_ledger::ObScriptLedger>().set_reaction(GUARDS, PLAYER_FACTION, -20.0);
+        assert!(actor_would_attack(&world, actor, player));
+        world.get_mut::<ActorValues>(actor).unwrap().set_base(aggression, 35.0);
+        assert!(!actor_would_attack(&world, actor, player), "equal aggression does not exceed disposition");
+        world.get_mut::<ActorValues>(actor).unwrap().set_base(aggression, 50.0);
+        run_once(&world);
+        assert_eq!(world.get::<AiCombatState>(actor).map(|state| state.target), Some(player));
+    }
+
+    #[test]
+    fn disposition_uses_directed_relations_and_the_target_rank() {
+        let data = DispositionData {
+            model: byroredux_core::character::DispositionModel::OBLIVION,
+            personality: 1, aggression: 2, responsibility: 3,
+            races: HashMap::new(), special_factions: HashSet::new(),
+        };
+        let catalog = FactionRelationshipCatalog::new([
+            FactionRelationship::new(form(GUARDS), form(PLAYER_FACTION), -20, 0).unwrap(),
+            FactionRelationship::new(form(BANDITS), form(BANDITS), 5, 0).unwrap(),
+            FactionRelationship::new(form(PLAYER_FACTION), form(GUARDS), 99, 0).unwrap(),
+        ], false).unwrap();
+        let actor = FactionRanks::from_pairs([(GUARDS, 0), (BANDITS, 1)]);
+        let player = FactionRanks::from_pairs([(PLAYER_FACTION, 3)]);
+        assert_eq!(disposition_faction(&actor, &player, &data, &identity(), &catalog, None), (-20, 3));
+        let shared = FactionRanks::from_pairs([(PLAYER_FACTION, 3), (BANDITS, 2)]);
+        assert_eq!(disposition_faction(&actor, &shared, &data, &identity(), &catalog, None), (5, 2));
+        let mut ledger = byroredux_scripting::obscript_ledger::ObScriptLedger::default();
+        ledger.set_reaction(BANDITS, BANDITS, 0.0);
+        assert_eq!(disposition_faction(&actor, &shared, &data, &identity(), &catalog, Some(&ledger)), (-20, 3));
     }
 
     #[test]

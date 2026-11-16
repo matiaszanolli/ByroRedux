@@ -147,6 +147,35 @@ impl NpcFaceGenRecipe {
     }
 }
 
+/// Oblivion NPC_ DATA (21 skills, Health, then eight attributes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OblivionNpcStats {
+    pub skills: [u8; 21],
+    pub health: u16,
+    pub attributes: [u8; 8],
+}
+
+/// Oblivion CREA DATA; its three skills stand in for the individual skills.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OblivionCreatureStats {
+    pub creature_type: u8,
+    pub combat: u8,
+    pub magic: u8,
+    pub stealth: u8,
+    pub soul: u8,
+    pub health: u16,
+    pub damage: u16,
+    pub attributes: [u8; 8],
+}
+
+/// Values and level ceiling from an Oblivion NPC_ or CREA ACBS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OblivionActorPools {
+    pub magicka: u16,
+    pub fatigue: u16,
+    pub calc_max: u16,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct NpcRecord {
     pub form_id: u32,
@@ -213,6 +242,11 @@ pub struct NpcRecord {
     /// `None` for `NPC_` (whose `DATA` is a different, 11-byte struct) and
     /// for every other game. See [`CreatureStats`].
     pub creature_stats: Option<CreatureStats>,
+    pub oblivion_npc_stats: Option<OblivionNpcStats>,
+    pub oblivion_creature_stats: Option<OblivionCreatureStats>,
+    pub oblivion_pools: Option<OblivionActorPools>,
+    /// TES4 AIDT's four raw actor-value bytes (Aggression through Responsibility).
+    pub oblivion_ai_values: Option<[u8; 4]>,
     /// FO3 / FNV `NPC_` `DATA` Base Health (`i32 @ 0`, #5005). `None` for
     /// `CREA` (see [`Self::creature_stats`]) and every other game. Health
     /// ≤ 0 stamps [`Self::starts_dead`] — the sourced FO3/FNV corpse rule;
@@ -500,6 +534,10 @@ pub fn parse_npc(
         is_creature: false,
         body_part_form: None,
         creature_stats: None,
+        oblivion_npc_stats: None,
+        oblivion_creature_stats: None,
+        oblivion_pools: None,
+        oblivion_ai_values: None,
         data_base_health: None,
         data_attributes: None,
         race_form_id: 0,
@@ -686,6 +724,24 @@ fn parse_npc_core(
         // dispatcher afterwards). The two `DATA` structs are unambiguous by
         // size in these games: `NPC_` authors 11 bytes (`i32` Base Health +
         // 7 attributes), or 25 with the legacy unused tail. Neither is 17.
+        b"DATA" if game == GameKind::Oblivion && sub.data.len() == 33 => {
+            let mut skills = [0; 21];
+            skills.copy_from_slice(&sub.data[..21]);
+            let health = u16::from_le_bytes([sub.data[21], sub.data[22]]);
+            let mut attributes = [0; 8];
+            attributes.copy_from_slice(&sub.data[25..33]);
+            record.oblivion_npc_stats = Some(OblivionNpcStats { skills, health, attributes });
+        }
+        b"DATA" if game == GameKind::Oblivion && sub.data.len() == 20 => {
+            let data = &sub.data;
+            let mut attributes = [0; 8];
+            attributes.copy_from_slice(&data[12..20]);
+            record.oblivion_creature_stats = Some(OblivionCreatureStats {
+                creature_type: data[0], combat: data[1], magic: data[2], stealth: data[3], soul: data[4],
+                health: u16::from_le_bytes([data[6], data[7]]),
+                damage: u16::from_le_bytes([data[10], data[11]]), attributes,
+            });
+        }
         b"DATA" if matches!(game, GameKind::Fallout3NV) && sub.data.len() == CREATURE_DATA_LEN => {
             let mut r = SubReader::new(&sub.data);
             let creature_type = r.u8_or_default();
@@ -764,7 +820,12 @@ fn parse_npc_core(
             let raw = SubReader::new(&sub.data).u32_or_default();
             record.spells.push(remap_fid(raw, remap));
         }
-        b"AIDT" => record.ai_data = decode_ai_data(&sub.data, game),
+        b"AIDT" => {
+            record.ai_data = decode_ai_data(&sub.data, game);
+            if game == GameKind::Oblivion && sub.data.len() >= 4 {
+                record.oblivion_ai_values = Some(sub.data[..4].try_into().expect("length checked"));
+            }
+        }
         // DOFT — Skyrim+ default outfit FormID. Pre-Skyrim games
         // don't emit DOFT (NPCs equip directly from inventory).
         // Stored as Option so the equip pipeline can dispatch on
@@ -842,10 +903,13 @@ fn parse_npc_core(
         b"ACBS" if matches!(game, GameKind::Oblivion) && sub.data.len() >= 16 => {
             let mut r = SubReader::new(&sub.data);
             record.acbs_flags = r.u32_or_default();
-            r.skip_or_eof(6); // baseSpell(u16) + fatigue(u16) + barterGold(u16)
+            let magicka = r.u16_or_default();
+            let fatigue = r.u16_or_default();
+            r.skip_or_eof(2); // barter gold
             record.level = r.i16_or_default();
             // calcMin@12 (#2955).
             record.calc_min = r.u16_or_default();
+            record.oblivion_pools = Some(OblivionActorPools { magicka, fatigue, calc_max: r.u16_or_default() });
             // disposition_base / template_flags stay at their
             // constructor defaults — Oblivion ACBS carries neither.
         }

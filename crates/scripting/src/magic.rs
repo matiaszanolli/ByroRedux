@@ -112,7 +112,7 @@ pub fn canonical_spell(index: &EsmIndex, form_id: u32) -> CanonicalSpell {
             let resolve = |reference| index.resolve_actor_value(reference);
             match mgef.archetype {
                 Some(MagicArchetype::ValueModifier | MagicArchetype::PeakValueModifier) => {
-                    if let Some(actor_value) = mgef.primary_actor_value.and_then(resolve) {
+                    if let Some(actor_value) = index.effect_actor_value(mgef, effect).and_then(resolve) {
                         constant_modifiers.push(ConstantModifier {
                             actor_value,
                             amount,
@@ -391,6 +391,7 @@ mod tests {
                     magnitude,
                     area: 0,
                     duration: 0,
+                    actor_value: None,
                     script_form_id: 0, conditions: Vec::new(),
                 })
                 .collect(),
@@ -524,6 +525,28 @@ mod tests {
             "an Oblivion EFID code must resolve through magic_effects_by_code (#5084), \
              not silently no-op in the FormID-keyed map"
         );
+    }
+
+    #[test]
+    fn oblivion_fortify_skill_uses_the_effect_items_actor_value() {
+        use byroredux_plugin::esm::reader::{GlobalSlot, SubRecord};
+        let mut index = EsmIndex { game: GameKind::Oblivion, ..Default::default() };
+        index.install_oblivion_actor_values(GlobalSlot::Regular(2)).unwrap();
+        let mut data = vec![0u8; 36];
+        data[..4].copy_from_slice(&(MGEF_FLAG_RECOVER | (1 << 19)).to_le_bytes());
+        let effect = byroredux_plugin::esm::records::parse_mgef_for_game(0x10, &[SubRecord { sub_type: *b"DATA", data }], GameKind::Oblivion, &None);
+        index.magic_effects.insert(0x10, effect);
+        index.magic_effects_by_code.insert(*b"FOSK", 0x10);
+        let mut ability = spell(0x20, SpellType::Ability, &[(u32::from_le_bytes(*b"FOSK"), 12.0)]);
+        ability.effects[0].actor_value = Some(ActorValueRef::Index(31));
+        index.spells.insert(0x20, ability);
+        let sneak = index.actor_value_form_id("Sneak").unwrap();
+        let mut values = ActorValues::from_pairs([(sneak, 25.0)]);
+        let canonical = canonical_spell(&index, 0x20);
+        apply_modifiers(&mut values, &canonical.constant_modifiers, 1.0);
+        assert_eq!(values.current(sneak), 37.0);
+        apply_modifiers(&mut values, &canonical.constant_modifiers, -1.0);
+        assert_eq!(values.current(sneak), 25.0);
     }
 
     /// #4415 — AddSpell applies a constant spell's changes to the permanent

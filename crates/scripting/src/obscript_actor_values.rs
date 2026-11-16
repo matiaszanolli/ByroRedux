@@ -21,8 +21,8 @@
 //! (`SpeedMult`, the resistances `ElectricResist` / `FrostResist` / `EmpResist`,
 //! `Variable02`..`Variable10`) resolves to nothing, and the command is declined.
 //!
-//! Oblivion has no `AVIF` records (its actor values are hard-coded) and Skyrim
-//! does not run ObScript, so only the Fallout pair translates.
+//! Oblivion's executable-defined codes use the engine-supplied AVIF roster.
+//! Skyrim does not run ObScript.
 
 use byroredux_core::ecs::World;
 
@@ -111,13 +111,19 @@ const FALLOUT_CODES: [&str; 77] = [
 ];
 
 /// The AVIF FormID the ObScript actor-value `code` names in the loaded game, or
-/// `None` when the game does not number actor values this way (Oblivion), the
-/// code is outside the table, or the master has no AVIF of that name.
+/// `None` when the game has no supported code table, the code is outside it,
+/// or the load order has no AVIF of that name.
 pub fn actor_value_form(world: &World, code: f32) -> Option<u32> {
-    if !crate::ScriptGame::is_fallout3_nv(world) || code < 0.0 || code.fract() != 0.0 {
+    use byroredux_plugin::esm::reader::GameKind;
+    if !code.is_finite() || code < 0.0 || code.fract() != 0.0 {
         return None;
     }
-    let name = fallout_actor_value_name(code as u32)?;
+    let game = world.try_resource::<crate::ScriptGame>()?.0;
+    let name = match game {
+        GameKind::Fallout3NV => fallout_actor_value_name(code as u32),
+        GameKind::Oblivion => byroredux_plugin::esm::records::oblivion_actor_values::vanilla_name(code as u32),
+        _ => None,
+    }?;
     world.try_resource::<ActorValueNames>()?.resolve(name)
 }
 
@@ -127,10 +133,24 @@ pub(crate) fn fallout_actor_value_name(code: u32) -> Option<&'static str> {
     FALLOUT_CODES.get(code as usize).copied()
 }
 
+/// Translate a console actor-value name to the game's ObScript argument code.
+pub fn actor_value_code(world: &World, name: &str) -> Option<u32> {
+    use byroredux_plugin::esm::reader::GameKind;
+    let game = world.try_resource::<crate::ScriptGame>()?.0;
+    let index = match game {
+        GameKind::Fallout3NV => FALLOUT_CODES.iter().position(|entry| entry.eq_ignore_ascii_case(name)),
+        GameKind::Oblivion => byroredux_plugin::esm::records::oblivion_actor_values::OBLIVION_ACTOR_VALUES
+            .iter().position(|entry| entry.eq_ignore_ascii_case(name)),
+        _ => None,
+    }?;
+    actor_value_form(world, index as f32).map(|_| index as u32)
+}
+
 /// Clear Health and the limb-condition values' damage on `actor` (`ResetHealth`, and the health a
 /// resurrected actor gets back). `false` when the load order names none of them.
 pub fn reset_health(world: &World, actor: byroredux_core::ecs::storage::EntityId) -> bool {
-    let vitals: Vec<u32> = RESET_HEALTH_CODES.iter().filter_map(|&code| actor_value_form(world, code as f32)).collect();
+    let Some(names) = world.try_resource::<ActorValueNames>() else { return false; };
+    let vitals: Vec<u32> = RESET_HEALTH_CODES.iter().filter_map(|&code| fallout_actor_value_name(code as u32)).filter_map(|name| names.resolve(name)).collect();
     if vitals.is_empty() {
         return false;
     }
@@ -189,5 +209,28 @@ mod tests {
     fn only_the_fallout_pair_numbers_actor_values_this_way() {
         let world = world_with(GameKind::Oblivion, &[(0x3E8, "AVStrength")]);
         assert_eq!(actor_value_form(&world, 5.0), None);
+    }
+
+    #[test]
+    fn oblivion_script_and_condition_indices_resolve_the_installed_roster() {
+        use byroredux_plugin::esm::reader::GlobalSlot;
+        use byroredux_plugin::esm::records::oblivion_actor_values::OBLIVION_ACTOR_VALUES;
+        let mut index = EsmIndex { game: GameKind::Oblivion, ..Default::default() };
+        let slot = GlobalSlot::Regular(2);
+        index.install_oblivion_actor_values(slot).unwrap();
+        let mut world = World::new();
+        crate::install_actor_value_names(&mut world, &index);
+        let names = world.try_resource::<ActorValueNames>().unwrap();
+        for (i, name) in OBLIVION_ACTOR_VALUES.iter().enumerate() {
+            let expected = (!matches!(i, 38 | 39)).then_some(slot.compose(i as u32 + 1));
+            assert_eq!(names.resolve(name), expected);
+            assert_eq!(actor_value_form(&world, i as f32), expected);
+            assert_eq!(actor_value_code(&world, name), expected.map(|_| i as u32));
+            assert_eq!(crate::actor_value_names::condition_actor_value_form(&world, i as u32), expected);
+        }
+        assert_eq!(actor_value_form(&world, 72.0), None);
+        assert_eq!(names.resolve("NightEye"), names.resolve("NightEyeBonus"));
+        assert_eq!(actor_value_form(&world, f32::NAN), None);
+        assert_eq!(crate::actor_value_names::condition_actor_value_form(&world, 72), None);
     }
 }

@@ -1562,7 +1562,7 @@ pub(crate) fn assemble_exterior_streaming(
             &wctx.load_order,
             &wctx.record_index.record_types,
             &wctx.record_index.factions,
-        ),
+        ).with_disposition(&wctx.record_index),
         std::sync::Arc::clone(&wctx.load_order),
     );
     crate::scene::populate_scene_runtime(world, &wctx.record_index);

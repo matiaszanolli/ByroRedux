@@ -14,6 +14,8 @@
 
 pub mod actor;
 pub mod actor_value_derive;
+pub mod oblivion_actor_values;
+mod oblivion_population;
 pub mod calendar;
 pub mod climate;
 pub mod common;
@@ -70,7 +72,8 @@ pub use actor::{
     CrimeValues, FactionCrime, FactionRecord, FactionRelation, NpcFaceMorphs, NpcInventoryEntry, NpcRecord, RaceRecord, SubgraphData, SubgraphRole,
     VendorData, ACBS_PC_LEVEL_MULT, CREATURE_DATA_LEN,
 };
-pub use actor_value_derive::{derive_npc_actor_values, derive_resolved_actor_values};
+pub use actor_value_derive::{derive_npc_actor_values, derive_resolved_actor_values, derive_resolved_actor_values_with_player_level};
+pub use oblivion_population::{actor_level_at_spawn, creature_skill_aliases};
 pub use climate::{parse_clmt, ClimateRecord, ClimateWeather};
 pub use common::{is_unresolved_lstring, StringsTableGuard};
 pub use container::{

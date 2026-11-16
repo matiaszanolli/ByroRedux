@@ -474,7 +474,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("MeleeDamageConfig", "immutable Fallout combat tuning, idempotently constructed alongside CharacterRuleset on first cell load, not at boot; absent on games authoring no MeleeDamage AVIF (#3092)"),
         ("Background", "derived character-creation metadata with no live production mutator; re-created with the actor"),
         ("PoolRegenAccumulator", "fractional fixed-step carry only; canonical pool values live in saved ActorValues and carry is safely re-seeded"),
-        ("PoolRegenConfig", "immutable game-profile regeneration tuning, re-derived from the load order by build_vats_model and installed on the first FO3/FNV cell load (#6350); never saved, so a mod's restore rate follows the load order"),
+        ("PoolRegenConfig", "immutable game-profile regeneration tuning, re-derived from the current load order for Fallout AP or Oblivion pools; never saved"),
         ("CombatSoundRequests", "diagnostic per-kind count of combat feedback one-shots requested this session (#5148), surfaced by combat.status for the P2 smoke gate; meaningless across a load"),
         ("MetricsSnapshot", "diagnostic telemetry sampled from current storages each frame"),
         ("GameProfileRegistry", "static per-game profile table installed at boot"),
@@ -1471,6 +1471,8 @@ fn the_schema_fingerprint_is_pinned() {
     // player's sneak stance), registered after `Dead`.
     // #6944 — `SpeakingLine` joined the registry as a new replacing component column (the line an ObScript
     // `Say` / `SayTo` made an actor say), registered after `ActiveMagicEffects`.
+    // OAI-SAVE v133 replaces codecs in place; names and row order are unchanged,
+    // so the row-order fingerprint remains the same despite the new wire shapes.
     const BASELINE_SCHEMA_FINGERPRINT: u64 = 0xfcd0_0f04_d111_bbd2;
     let actual = build_save_registry().schema_fingerprint();
     assert_eq!(

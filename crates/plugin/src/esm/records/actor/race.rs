@@ -9,7 +9,8 @@ pub struct RaceRecord {
     pub full_name: String,
     pub description: String,
     /// Skill bonuses: `(skill_index, bonus)` pairs, with `0xFF` (None)
-    /// slots dropped. Oblivion / FO3 / FNV author 8 pairs of the 0x0C..=0x20
+    /// slots dropped. Oblivion authors seven pairs and two padding bytes;
+    /// FO3 / FNV author eight pairs of the 0x0C..=0x20
     /// `SkillIndex` values; Skyrim authors 7 pairs of its own actor-value
     /// skill indices (6 = One-Handed … 23 = Enchanting).
     ///
@@ -509,7 +510,7 @@ pub fn parse_race(
                 record.spells.push(remap_fid(raw, remap));
             }
             // DATA (TES4 / FO3 / FONV — 36 bytes total):
-            //   8 × (u8 skill_index, u8 bonus)    16 B
+            //   TES4: 7 skill/bonus pairs + 2 padding bytes; FO3/FNV: 8 pairs
             //   heightMale + heightFemale (2 × f32) 8 B
             //   weightMale + weightFemale (2 × f32) 8 B
             //   raceFlags (u32)                     4 B
@@ -526,7 +527,8 @@ pub fn parse_race(
                     && sub.data.len() >= 36 =>
             {
                 let mut r = SubReader::new(&sub.data);
-                for _ in 0..8 {
+                let bonus_count = if game == GameKind::Oblivion { 7 } else { 8 };
+                for _ in 0..bonus_count {
                     let skill = r.u8_or_default();
                     let bonus = r.u8_or_default() as i8;
                     // Skip 0xFF (Skill_None sentinel) — OpenMW maps
@@ -539,6 +541,7 @@ pub fn parse_race(
                         record.skill_bonuses.push((skill, bonus));
                     }
                 }
+                if game == GameKind::Oblivion { r.skip_or_eof(2); }
                 let h_m = r.f32_or_default();
                 let h_f = r.f32_or_default();
                 let w_m = r.f32_or_default();
@@ -571,8 +574,8 @@ pub fn parse_race(
             // Both are strong evidence for the offsets *and* the skill-index
             // mapping, which a length check alone could not establish.
             //
-            // Note the pair count differs from the TES4 arm above: TES5 has 7
-            // skill slots plus two padding bytes where TES4/FO3/FNV has 8.
+            // TES5 and TES4 have seven skill slots and two padding bytes;
+            // the FO3/FNV arm above retains its eight-pair format.
             b"DATA" if matches!(game, GameKind::Skyrim) && matches!(sub.data.len(), 128 | 164) => {
                 let mut r = SubReader::new(&sub.data);
                 for _ in 0..7 {

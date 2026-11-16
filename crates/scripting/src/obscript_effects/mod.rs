@@ -178,9 +178,6 @@ const CMD_STOP_MAGIC_SHADER: u16 = 0x1125;
 const CMD_STOP_MAGIC_EFFECT: u16 = 0x1126;
 const CMD_CAST_IMMEDIATE_ON_SELF: u16 = 0x11d9;
 const CMD_DISPEL: u16 = 0x1142;
-/// `Karma` in the Fallout actor-value table.
-const KARMA_CODE: f32 = 23.0;
-
 /// An angle as the scripts read it: degrees, a heading (`Z`) in `[0, 360)` — "measured with the
 /// positive y-axis as 0 and increasing clockwise" (GECK *GetAngle*) — and the other two in
 /// `(-180, 180]`.

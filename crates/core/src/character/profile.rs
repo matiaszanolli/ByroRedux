@@ -7,7 +7,7 @@
 //! downstream character consumers read the same table.
 
 use super::{
-    fallout3_ruleset_with_gmst, fallout4_ruleset_with_gmst, falloutnv_ruleset_with_gmst, skyrim_ruleset, CharacterRuleset, CrimeModel,
+    fallout3_ruleset_with_gmst, fallout4_ruleset_with_gmst, falloutnv_ruleset_with_gmst, oblivion_ruleset, skyrim_ruleset, CharacterRuleset, CrimeModel,
     SkillSet, StanceModel, VatsModel, ArmorModel,
 };
 
@@ -106,6 +106,10 @@ pub enum NpcStatModel {
     /// [`CharacterRulesProfile::creature_stat_model`], so consumers still
     /// branch on record kind rather than on game identity.
     CreatureData,
+    /// Oblivion's stored or class-calculated NPC stats.
+    OblivionNpc,
+    /// Oblivion's creature-specific DATA and aggregate skill values.
+    OblivionCreature,
 }
 
 impl NpcStatModel {
@@ -212,13 +216,9 @@ pub struct BarterModel {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RulesetBuilder {
-    /// No runtime ruleset. Oblivion is the only *wired* game that lands
-    /// here, and deliberately: its actor values predate `AVIF`, so
-    /// `oblivion_ruleset`'s `resolve` closure has nothing to resolve
-    /// against until a legacy actor-value resolver exists (#3768). Read
-    /// this arm as blocked, not as an oversight — the Skyrim arm below was
-    /// missing for the opposite reason and that was a real gap (#3848).
+    /// No runtime ruleset has been captured for this profile.
     None,
+    Oblivion,
     Fallout3,
     FalloutNewVegas,
     Fallout4,
@@ -374,15 +374,13 @@ impl CharacterRulesProfile {
     pub const OBLIVION: Self = Self {
         name: "Oblivion",
         skills: SkillSet::OBLIVION,
-        npc_stats: NpcStatModel::None,
-        creature_stats: NpcStatModel::None,
+        npc_stats: NpcStatModel::OblivionNpc,
+        creature_stats: NpcStatModel::OblivionCreature,
         body_condition_base: None,
-        // Oblivion authors no AVIF records, so every candidate drops out
-        // at resolution until #3768's pre-AVIF resolver lands — the
-        // roster states the intent, the resolver gates reality.
+        // The loader supplies Oblivion's executable-defined actor values.
         vital_pools: &[("Health", "Health"), ("Magicka", "Magicka"), ("Fatigue", "Fatigue")],
         radiation_gauge: None,
-        ruleset: RulesetBuilder::None,
+        ruleset: RulesetBuilder::Oblivion,
         over_encumbered: OverEncumberedRule::None,
         kill_experience: false,
         // Oblivion.exe loads it as a constant beside the name.
@@ -489,7 +487,7 @@ impl CharacterRulesProfile {
         creature_stats: NpcStatModel::None,
         // #3170 / #3848 — Skyrim was the first family wired to
         // `LevelingModel::with_gmst` (`SkillXp`); the Fallout `XpCurve` arm
-        // followed in #5915, and Oblivion falls through `RulesetBuilder::None`.
+        // followed in #5915; Oblivion uses its skill-use model.
         body_condition_base: None,
         vital_pools: &[("Health", "Health"), ("Magicka", "Magicka"), ("Stamina", "Stamina")],
         radiation_gauge: None,
@@ -791,6 +789,7 @@ impl CharacterRulesProfile {
             RulesetBuilder::FalloutNewVegas => falloutnv_ruleset_with_gmst(resolve, &gmst),
             RulesetBuilder::Fallout4 => fallout4_ruleset_with_gmst(resolve, &gmst),
             RulesetBuilder::Skyrim => skyrim_ruleset(resolve),
+            RulesetBuilder::Oblivion => oblivion_ruleset(resolve).retain_player_bases(),
             RulesetBuilder::None => return None,
         };
         ruleset.leveling = ruleset
@@ -798,6 +797,26 @@ impl CharacterRulesProfile {
             .with_gmst(gmst)
             .raise_cap(self.level_cap_raise(plugin_files));
         Some(ruleset)
+    }
+
+    /// Resolve this profile's TES pool-regeneration lanes from its records.
+    pub fn build_tes_pool_regen(self, resolve: impl Fn(&str) -> Option<u32>) -> Option<super::regen::PoolRegenConfig> {
+        if self.npc_stats != NpcStatModel::OblivionNpc { return None; }
+        Some(super::regen::PoolRegenConfig {
+            fatigue_avif: resolve("Fatigue"),
+            magicka_avif: resolve("Magicka"),
+            willpower_avif: resolve("Willpower"),
+            stunted_magicka_avif: resolve("StuntedMagicka"),
+            action_points: None,
+        })
+    }
+
+    /// The starting-disposition policy selected at the character boundary.
+    pub fn build_disposition(self, gmst: impl Fn(&str) -> Option<f32>) -> Option<super::DispositionModel> {
+        match self.ruleset {
+            RulesetBuilder::Oblivion => Some(super::DispositionModel::OBLIVION.with_gmst(gmst)),
+            _ => None,
+        }
     }
 }
 
@@ -1237,21 +1256,38 @@ mod tests {
         }
     }
 
-    /// #3848 — Oblivion's `RulesetBuilder::None` is a blocked arm, not a
-    /// forgotten one, and the difference is worth pinning: the Skyrim arm
-    /// was missing for five weeks precisely because a reader could not tell
-    /// the two cases apart from the enum's shape. If Oblivion ever gains a
-    /// legacy actor-value resolver (#3768), this test is the thing that
-    /// should fail and be deleted.
     #[test]
-    fn oblivion_still_has_no_runtime_ruleset_and_that_is_deliberate() {
+    fn oblivion_builds_its_runtime_ruleset() {
         assert!(
             CharacterRulesProfile::OBLIVION
                 .build_ruleset(|_| None, |_| None, &[])
-                .is_none(),
-            "Oblivion is blocked on a pre-AVIF actor-value resolver (#3768); if it \
-             now builds one, wire it deliberately rather than letting this pass",
+                .is_some(),
         );
+    }
+
+    #[test]
+    fn oblivion_profile_keeps_authored_player_pools_on_refresh() {
+        use crate::ecs::components::ActorValues;
+        let resolve = |name: &str| match name { "Health" => Some(1), "Endurance" => Some(2), _ => None };
+        let rules = CharacterRulesProfile::OBLIVION.build_ruleset(resolve, |_| None, &[]).unwrap();
+        let mut values = ActorValues::from_pairs([(1, 123.0), (2, 40.0)]);
+        assert!(rules.player_only_output_avifs().is_empty());
+        assert!(!rules.is_player_derived_pool(1));
+        assert!(!rules.refresh_player_only_bases(&mut values, 5));
+        assert_eq!(values.current(1), 123.0);
+        assert!(rules.derived_value(1, &values, 5).is_some());
+    }
+
+    #[test]
+    fn oblivion_profile_resolves_pool_regeneration_inputs() {
+        let resolve = |name: &str| match name {
+            "Fatigue" => Some(1), "Magicka" => Some(2), "Willpower" => Some(3),
+            "StuntedMagicka" => Some(4), _ => None,
+        };
+        let config = CharacterRulesProfile::OBLIVION.build_tes_pool_regen(resolve).unwrap();
+        assert_eq!((config.fatigue_avif, config.magicka_avif, config.willpower_avif, config.stunted_magicka_avif), (Some(1), Some(2), Some(3), Some(4)));
+        assert!(config.action_points.is_none());
+        assert!(CharacterRulesProfile::FALLOUT3.build_tes_pool_regen(resolve).is_none());
     }
 
     /// #4453 — FO76 and Starfield claim no NPC stat model until a capture

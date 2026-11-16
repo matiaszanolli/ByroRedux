@@ -179,6 +179,93 @@ pub(crate) struct PersistentReferenceStates {
 
 impl Resource for PersistentReferenceStates {}
 
+/// Portable representation of parked state. Actor-value-bearing fields have
+/// their own save shapes; all other fields retain their existing wire types.
+#[derive(Debug, Serialize, Deserialize)]
+struct SavedReferenceState {
+    inventory: Option<Vec<StoredStack>>,
+    equipment: Option<EquipmentSlots>,
+    weapon: Option<EquippedWeapon>,
+    actor_values: Option<byroredux_scripting::actor_value_save::SavedActorValues>,
+    spells: Option<Vec<u32>>,
+    perks: Option<byroredux_core::character::Perks>,
+    control: Option<byroredux_scripting::ActorControlState>,
+    bleedout: Option<byroredux_scripting::Bleedout>,
+    dismember: Option<byroredux_core::character::DismemberRecord>,
+    script_package: Option<byroredux_scripting::script_packages::ScriptPackage>,
+    dead: bool,
+    corpse_pose: Option<(byroredux_core::math::Vec3, byroredux_core::math::Quat)>,
+    picked_up: bool,
+    magic_effects: Option<byroredux_scripting::actor_value_save::SavedActiveMagicEffects>,
+    weapon_drawn: bool,
+    ignore_crime: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct SavedPersistentReferenceStates {
+    rows: Vec<(FormIdPair, SavedReferenceState)>,
+    scripts: Vec<(FormIdPair, ScriptState)>,
+}
+
+pub(crate) fn save_parked(world: &World, store: &PersistentReferenceStates) -> Result<SavedPersistentReferenceStates, byroredux_save::SaveError> {
+    use byroredux_scripting::actor_value_save as codec;
+    let mut rows = Vec::with_capacity(store.rows.len());
+    for (&pair, state) in &store.rows {
+        rows.push((pair, SavedReferenceState {
+            inventory: state.inventory.clone(), equipment: state.equipment.clone(), weapon: state.weapon,
+            actor_values: state.actor_values.as_ref().map(|v| codec::save_values(world, 0, v)).transpose()?,
+            spells: state.spells.clone(), perks: state.perks.clone(), control: state.control,
+            bleedout: state.bleedout, dismember: state.dismember, script_package: state.script_package,
+            dead: state.dead, corpse_pose: state.corpse_pose, picked_up: state.picked_up,
+            magic_effects: state.magic_effects.as_ref().map(|v| codec::save_active_effects(world, 0, v)).transpose()?,
+            weapon_drawn: state.weapon_drawn, ignore_crime: state.ignore_crime,
+        }));
+    }
+    rows.sort_by_key(|(pair, _)| (pair.plugin, pair.local.0));
+    let mut scripts: Vec<_> = store.scripts.iter().map(|(&pair, value)| (pair, value.clone())).collect();
+    scripts.sort_by_key(|(pair, _)| (pair.plugin, pair.local.0));
+    Ok(SavedPersistentReferenceStates { rows, scripts })
+}
+
+pub(crate) fn load_parked(world: &World, saved: SavedPersistentReferenceStates) -> Result<PersistentReferenceStates, byroredux_save::SaveError> {
+    use byroredux_scripting::actor_value_save as codec;
+    let mut rows = HashMap::with_capacity(saved.rows.len());
+    for (pair, state) in saved.rows {
+        let actor_values = match state.actor_values {
+            Some(v) => {
+                let count = v.0.len() + v.1.len();
+                let restored = codec::load_values(world, 0, v)?;
+                if restored.as_ref().is_some_and(|values| values.len() < count) {
+                    log::warn!("load: parked reference {pair:?} lost unavailable actor-value identities");
+                }
+                restored
+            }
+            None => None,
+        };
+        let magic_effects = match state.magic_effects {
+            Some(v) => {
+                let count = v.value_count();
+                let restored = codec::load_active_effects(world, 0, v)?;
+                if restored.as_ref().is_some_and(|effects| effects.0.iter().filter(|effect| effect.value.is_some()).count() < count) {
+                    log::warn!("load: parked reference {pair:?} lost effect values with unavailable actor-value identities");
+                }
+                restored
+            }
+            None => None,
+        };
+        rows.insert(pair, ReferenceState {
+            inventory: state.inventory, equipment: state.equipment, weapon: state.weapon,
+            actor_values,
+            spells: state.spells, perks: state.perks, control: state.control, bleedout: state.bleedout,
+            dismember: state.dismember, script_package: state.script_package, dead: state.dead,
+            corpse_pose: state.corpse_pose, picked_up: state.picked_up,
+            magic_effects,
+            weapon_drawn: state.weapon_drawn, ignore_crime: state.ignore_crime,
+        });
+    }
+    Ok(PersistentReferenceStates { rows, scripts: saved.scripts.into_iter().collect() })
+}
+
 /// A save reload must not capture or consume the outgoing session's rows.
 /// Put them back even on a normal reload failure; the caller replaces them
 /// with saved resources only after its reload has succeeded.
@@ -974,7 +1061,14 @@ pub(crate) fn park_unresolved_snapshot_rows(
     let mut inventories = column::<Inventory>(snapshot, "Inventory");
     let mut equipment = column::<EquipmentSlots>(snapshot, "EquipmentSlots");
     let mut weapons = column::<EquippedWeapon>(snapshot, "EquippedWeapon");
-    let mut values = column::<ActorValues>(snapshot, "ActorValues");
+    let mut values = HashMap::new();
+    for (entity, saved) in column::<byroredux_scripting::actor_value_save::SavedActorValues>(snapshot, "ActorValues") {
+        match byroredux_scripting::actor_value_save::load_values(world, entity, saved) {
+            Ok(Some(value)) => { values.insert(entity, value); }
+            Ok(None) => {}
+            Err(e) => log::warn!("save load: ActorValues entity {entity} cannot be parked: {e}"),
+        }
+    }
     let mut spells = column::<byroredux_scripting::SpellList>(snapshot, "SpellList");
     let mut perks = column::<byroredux_core::character::Perks>(snapshot, "Perks");
     let mut controls =
@@ -993,10 +1087,14 @@ pub(crate) fn park_unresolved_snapshot_rows(
         snapshot,
         "RumbleOnActivate",
     );
-    let mut effects = column::<byroredux_scripting::magic_effects::ActiveMagicEffects>(
-        snapshot,
-        "ActiveMagicEffects",
-    );
+    let mut effects = HashMap::new();
+    for (entity, saved) in column::<byroredux_scripting::actor_value_save::SavedActiveMagicEffects>(snapshot, "ActiveMagicEffects") {
+        match byroredux_scripting::actor_value_save::load_active_effects(world, entity, saved) {
+            Ok(Some(value)) => { effects.insert(entity, value); }
+            Ok(None) => {}
+            Err(e) => log::warn!("save load: ActiveMagicEffects entity {entity} cannot be parked: {e}"),
+        }
+    }
     let weapon_drawn = column::<byroredux_scripting::obscript_state::WeaponDrawn>(
         snapshot,
         "WeaponDrawn",
@@ -1572,6 +1670,10 @@ mod tests {
 
     fn world() -> World {
         let mut world = World::new();
+        world.insert_resource(byroredux_scripting::LoadOrderIdentity::new(vec![(
+            byroredux_plugin::esm::reader::GlobalSlot::Regular(0),
+            PluginId::from_filename("Fixture.esm"),
+        )]));
         world.insert_resource(FormIdPool::new());
         world.insert_resource(ItemInstancePool::new());
         world.insert_resource(PersistentReferenceStates::default());
@@ -2469,6 +2571,36 @@ mod tests {
         assert!(restore(&mut dst, first));
         assert_eq!(dst.get::<Inventory>(second).unwrap().items[0].count, 7);
         assert!(dst.get::<Inventory>(first).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parked_actor_values_and_effects_follow_changed_engine_slot() {
+        use byroredux_core::form_id::ENGINE_PLUGIN_ID;
+        use byroredux_plugin::esm::reader::GlobalSlot;
+        use byroredux_scripting::magic_effects::{ActiveEffect, ActiveMagicEffects, ValueEffect};
+        let identity = |slot| byroredux_scripting::LoadOrderIdentity::new(vec![(GlobalSlot::Regular(slot), ENGINE_PLUGIN_ID)]);
+        let mut src = world();
+        src.insert_resource(identity(1));
+        let actor = reference(&mut src, "Band.esm", 0x200);
+        src.insert(actor, ActorValues::from_pairs([(0x0100_0020, 42.0)]));
+        src.insert(actor, ActiveMagicEffects(vec![ActiveEffect {
+            source: 1, mgef: 2, caster: 3, script: 4, duration: 5.0, indefinite: false,
+            elapsed: 1.0, started: true, ending: false,
+            value: Some(ValueEffect { actor_value: 0x0100_0020, amount: 5.0, recover: true }),
+            ticks: 0, locals: vec![], ref_locals: vec![], suspended: false,
+        }]));
+        evict(&mut src, &[actor]);
+        let registry = crate::save_io::build_save_registry();
+        let snapshot = byroredux_save::save_world(&src, &registry).unwrap();
+        let bytes = byroredux_save::encode(&snapshot, registry.schema_fingerprint()).unwrap();
+        let snapshot = byroredux_save::decode(&bytes, registry.schema_fingerprint()).unwrap();
+        let mut dst = world();
+        dst.insert_resource(identity(2));
+        byroredux_save::restore_resources(&mut dst, &registry, &snapshot).unwrap();
+        let actor = reference(&mut dst, "Band.esm", 0x200);
+        assert!(restore(&mut dst, actor));
+        assert_eq!(dst.get::<ActorValues>(actor).unwrap().current(0x0200_0020), 42.0);
+        assert_eq!(dst.get::<ActiveMagicEffects>(actor).unwrap().0[0].value.unwrap().actor_value, 0x0200_0020);
     }
 
     /// #5054 — a reference resident at save time (the exterior hysteresis

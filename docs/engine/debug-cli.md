@@ -566,7 +566,7 @@ music.status → the music controller (`docs/engine/music.md` §8): the place an
 video.status → the movie player: the movie playing (frame/count, PlayBink flags incl. new_game, and the mute / pause-music hold the audio world applies: `holding world_muted=… music_paused=…`) and how the last request ended: Played, Skipped (a format with no decoder) or Failed (BIK-RPT-001, BIK-PRES-005)
 video.skip → Escape sent to the playing movie; it ends if its PlayBink request is interruptable (BIK-RPT-003)
 nav.path <entity|0xREFR> <entity|0xREFR> → the navmesh route the AI movers would take between two references: the resident tile and triangle each lands on, and the waypoint count
-obscript.cmd <caller|none> <id> [args] → run one ObScript command through the real host and print its answer (M47.3); the caller may also be a resident reference's `0x<FormID>` (`resolve_console_entity`, shared with `cond`, `setav`, `mesh.info`, `script.activate`)
+obscript.cmd <caller|none> <id|GetAV|GetBaseAV|SetAV|ModAV|ForceAV|DamageAV|RestoreAV> [args] → run one ObScript command through the real host and print its answer (M47.3); actor-value commands also accept names, e.g. `obscript.cmd 0x00123456 GetAV Sneak`. Numeric command IDs and arguments remain available for the complete command surface; the caller may also be an entity ID or a resident reference's `0x<FormID>`.
 jail.serve                  → serve the jail sentence GoToJail started (the same as resting in the cell bed)
 obscript.objects [limit]    → ObScript object scripts attached to placed references: blocks, run counts, declines (M47.3)
 script.requests             → the menus and videos ObScript commands asked for (no UI shows them yet)

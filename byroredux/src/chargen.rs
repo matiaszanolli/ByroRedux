@@ -198,7 +198,7 @@ fn actor_value_option(world: &World, index: &EsmIndex, values: Option<&byroredux
         return None;
     }
     let value = values
-        .map_or(0.0, |values| if base { values.get(form).map_or(0.0, |value| value.base) } else { values.current(form) })
+        .map_or(0.0, |values| if base { values.get_base(form).map_or(0.0, |value| value.base) } else { values.current(form) })
         .round() as i32;
     Some((ChargenOption { id: code, name: record.full_name.clone(), description: record.description.clone() }, value))
 }

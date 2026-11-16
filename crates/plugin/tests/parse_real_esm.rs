@@ -5292,6 +5292,50 @@ fn installed_masters_actor_value_indices_resolve_by_layout() {
     }
 }
 
+#[test]
+#[ignore = "needs installed Oblivion.esm"]
+fn oblivion_actor_stat_source_census() {
+    let Some(data) = data_dir(test_paths::OBLIVION_ENV, test_paths::OBLIVION_DEFAULT) else { return; };
+    let bytes = std::fs::read(data.join("Oblivion.esm")).expect("read Oblivion.esm");
+    let mut index = parse_esm(&bytes).expect("parse Oblivion.esm");
+    let npcs = index.npcs.values().filter(|npc| npc.oblivion_npc_stats.is_some()).count();
+    let creatures = index.creatures.values().filter(|npc| npc.oblivion_creature_stats.is_some()).count();
+    let npc_pools = index.npcs.values().filter(|npc| npc.oblivion_pools.is_some()).count();
+    let creature_pools = index.creatures.values().filter(|npc| npc.oblivion_pools.is_some()).count();
+    eprintln!("Oblivion.esm: authored AVIF {}; NPC DATA {npcs}/{} ACBS {npc_pools}/{}; CREA DATA {creatures}/{} ACBS {creature_pools}/{}",
+        index.actor_values.len(), index.npcs.len(), index.npcs.len(), index.creatures.len(), index.creatures.len());
+    assert!(npcs > 0 && creatures > 0);
+    assert_eq!(index.actor_values.len(), 0);
+    let occupied: Vec<_> = index.record_types.iter().filter(|(id, _)| **id >> 24 == 1).take(8).collect();
+    eprintln!("Oblivion.esm raw slot-1 record samples: {occupied:?}");
+    let raw_slot_one: Vec<_> = index.record_types.iter().filter(|(id, _)| **id >> 24 == 1).collect();
+    let aliases = raw_slot_one.iter().filter(|(id, _)| index.record_types.contains_key(&(*id & 0x00ff_ffff))).count();
+    eprintln!("Oblivion.esm raw slot-1 records: {}, matching slot-0 local ids: {aliases}", raw_slot_one.len());
+    let slot = (1..=0xfb).find(|slot| !index.record_types.keys().any(|id| *id >> 24 == *slot)).expect("free raw slot");
+    index.install_oblivion_actor_values(byroredux_plugin::esm::reader::GlobalSlot::Regular(slot as u8)).unwrap();
+    let standard = |actor: &byroredux_plugin::esm::records::NpcRecord| {
+        let resolved = byroredux_plugin::equip::ResolvedNpc::resolve(actor, &index);
+        let pairs = byroredux_plugin::esm::records::derive_resolved_actor_values_with_player_level(&resolved, &index, Some(1));
+        let mut values = byroredux_core::ecs::components::ActorValues::from_pairs(pairs);
+        for (key, alias) in byroredux_plugin::esm::records::creature_skill_aliases(&resolved, &index) {
+            assert!(values.set_alias(key, alias));
+        }
+        (0..33).filter(|code| values.get((slot << 24) + 1 + code).is_some()).count()
+    };
+    let npc_complete = index.npcs.values().filter(|npc| standard(npc) == 33).count();
+    let creature_complete = index.creatures.values().filter(|npc| standard(npc) == 33).count();
+    eprintln!("Oblivion.esm at player level 1: standard values complete NPC {npc_complete}/{}; CREA {creature_complete}/{}", index.npcs.len(), index.creatures.len());
+    assert_eq!(npc_complete, index.npcs.len());
+    assert_eq!(creature_complete, index.creatures.len());
+    let code = u32::from_le_bytes(*b"FOSK");
+    let effect = index.resolve_magic_effect(code).expect("Fortify Skill MGEF");
+    let items: Vec<_> = index.spells.values().flat_map(|spell| &spell.effects)
+        .filter(|item| item.effect_form_id == code).collect();
+    eprintln!("Oblivion.esm FOSK: flags {:#x}, archetype {:?}, spell items {}", effect.effect_flags, effect.archetype, items.len());
+    assert!(!items.is_empty());
+    assert!(items.iter().any(|item| index.effect_actor_value(effect, item).and_then(|av| index.resolve_actor_value(av)).is_some()));
+}
+
 /// #4415 — the `SPIT` / `MGEF` decodes on shipped data: abilities exist,
 /// value-modifier effects exist, and every value-modifier actor value a
 /// vanilla ability names resolves to an AVIF.

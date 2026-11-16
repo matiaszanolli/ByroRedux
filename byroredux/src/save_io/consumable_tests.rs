@@ -22,6 +22,12 @@ fn player(world: &mut World) -> byroredux_core::ecs::EntityId {
 
 fn world(index: &EsmIndex, directory: PathBuf) -> World {
     let mut world = World::new();
+    let mut slots: Vec<_> = index.actor_values.keys().map(|&key| byroredux_scripting::load_order::global_slot_of(key)).collect();
+    slots.sort_by_key(|slot| format!("{slot:?}"));
+    slots.dedup();
+    world.insert_resource(byroredux_scripting::LoadOrderIdentity::new(slots.into_iter().map(|slot| {
+        (slot, PluginId::from_filename(&format!("fixture-{slot:?}")))
+    }).collect()));
     world.insert_resource(FormIdPool::new());
     world.insert_resource(StringPool::new());
     world.insert_resource(byroredux_core::ecs::resources::HardcoreMode::default());

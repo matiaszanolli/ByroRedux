@@ -1,8 +1,7 @@
 //! Pool regeneration (CHARAL) — Fatigue/Magicka per-second rates and the
 //! Fallout ActionPoints lane (#6350), driven by a **fixed 60 Hz tick**
-//! decoupled from the variable per-frame rate. Live today for FO3/FNV
-//! ActionPoints only; the Fatigue/Magicka lanes are off (no Fallout load
-//! order resolves those AVIFs, and Oblivion has no wired ruleset, #3768).
+//! decoupled from the variable per-frame rate. FO3/FNV use the ActionPoints
+//! lane; Oblivion uses the Fatigue and Magicka lanes.
 //!
 //! ## Why fixed-timestep
 //!
@@ -29,12 +28,8 @@
 //! * **Health**: **no passive regen at all** — deliberately not modeled here.
 //! * **Magicka**: `(Willpower × 0.02 + 0.75) × (MaxMagicka / 100)`. Stunted
 //!   Magicka (Atronach birthsign / *Astral Vapors* disease / one Shivering
-//!   Isles item) zeroes this entirely, but no status-effect component exists
-//!   yet to carry that flag anywhere in the engine — [`magicka_regen_per_sec`]
-//!   accepts a `stunted` parameter so the *formula* is complete, but
-//!   [`pool_regen_tick_system`] always passes `false` today. Revisit once a
-//!   status-effect component exists (same "mechanism ahead of its data"
-//!   deferral already used for `affliction`'s real threshold tables).
+//!   Isles item) zeroes this entirely; the resolved actor value supplies the
+//!   flag when present.
 
 use super::components::CharacterLevel;
 use super::derived::DerivedScope;
@@ -123,19 +118,8 @@ impl PoolRegenAccumulator {
 
 /// Per-game resolved AVIF ids the regen tick needs — a `Resource`.
 ///
-/// **Inserted in production for FO3/FNV only** (#6350):
-/// `build_vats_model` (`byroredux/src/npc_spawn/stamps.rs`) returns it with the
-/// [`ActionPointsRegen`] lane, and the cell loader installs it on the first
-/// cell load. Every other game takes [`pool_regen_tick_system`]'s `let … else`
-/// early return, and on FO3/FNV the Fatigue/Magicka/Willpower ids are `None`
-/// (the TES lanes are disabled outright, #6430 — not by a sentinel id that
-/// no actor happens to carry).
-///
-/// Oblivion once had a `tes::oblivion_pool_regen_config` constructor for
-/// this; it was deleted under #3848 because it had zero call sites
-/// anywhere, tests included, and cannot acquire one until Oblivion gets a
-/// pre-`AVIF` actor-value resolver (#3768). `git show` recovers it if a
-/// wiring pass wants the Fatigue/Magicka/Willpower EditorID set back.
+/// FO3/FNV install the Action Points lane; Oblivion resolves its Fatigue,
+/// Magicka, Willpower and Stunted Magicka records through its profile.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PoolRegenConfig {
     /// #6430 — `None` on every game that resolves no TES pool AVIF (all of
@@ -144,6 +128,8 @@ pub struct PoolRegenConfig {
     pub fatigue_avif: Option<u32>,
     pub magicka_avif: Option<u32>,
     pub willpower_avif: Option<u32>,
+    /// An active Stunted Magicka actor value disables Magicka regeneration.
+    pub stunted_magicka_avif: Option<u32>,
     /// #6350 — the Fallout ActionPoints lane. `None` on the TES games
     /// (and on any Fallout load whose AP AVIF failed to resolve, which
     /// disables regen rather than force-populating a zero entry — the
@@ -182,11 +168,8 @@ pub struct ActionPointsRegen {
 /// exactly those two:
 ///
 /// * [`PoolRegenConfig`] — per-game resolved AVIF ids. FO3/FNV install it for
-///   their Action Points lane (#6350); the Fatigue/Magicka lanes arrive only
-///   with Oblivion's wiring (blocked on the pre-AVIF actor-value resolver,
-///   #3768). Not "when a live [`CharacterRuleset`] lands" — a ruleset alone
-///   never installs one, because the Fatigue/Magicka lanes are
-///   Oblivion-shaped (#4460).
+///   their Action Points lane (#6350); Oblivion installs the Fatigue/Magicka
+///   lanes. A [`CharacterRuleset`] alone does not install this config.
 /// * [`PoolRegenAccumulator`] — the cross-frame clock, inserted unconditionally
 ///   at boot (`byroredux/src/boot/world.rs`, `build_world`).
 ///
@@ -274,7 +257,7 @@ pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
         }
         if let Some((magicka, base_max)) = config
             .magicka_avif
-            .and_then(|id| avs.get(id).map(|av| (id, av.base)))
+            .and_then(|id| avs.get(id).map(|av| (id, av.undamaged())))
         {
             let willpower = config.willpower_avif.map_or(0.0, |id| avs.current(id));
             // #2932 — honour `DerivedScope`, which `derived_value`
@@ -299,7 +282,8 @@ pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
                     .and_then(|_| ruleset.derived_value(magicka, avs, level))
             });
             let max_magicka = scoped_max.unwrap_or(base_max);
-            let rate = magicka_regen_per_sec(willpower, max_magicka, false);
+            let stunted = config.stunted_magicka_avif.is_some_and(|id| avs.current(id) > 0.0);
+            let rate = magicka_regen_per_sec(willpower, max_magicka, stunted);
             avs.restore(magicka, rate * elapsed);
         }
     }
@@ -307,6 +291,26 @@ pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn stunted_magicka_stops_only_magicka_regeneration() {
+        let mut world = World::new();
+        world.register::<ActorValues>();
+        world.insert_resource(PoolRegenConfig {
+            fatigue_avif: Some(1), magicka_avif: Some(2), willpower_avif: Some(3),
+            stunted_magicka_avif: Some(4), action_points: None,
+        });
+        world.insert_resource(PoolRegenAccumulator::default());
+        let actor = world.spawn();
+        let mut values = ActorValues::from_pairs([(1, 100.0), (2, 100.0), (3, 50.0), (4, 1.0)]);
+        values.apply_damage(1, 50.0);
+        values.apply_damage(2, 50.0);
+        world.insert(actor, values);
+        for _ in 0..60 { pool_regen_tick_system(&world, POOL_REGEN_DT); }
+        let values = world.get::<ActorValues>(actor).unwrap();
+        assert!(values.current(1) > 50.0);
+        assert_eq!(values.current(2), 50.0);
+    }
 
     /// #6350 — the ActionPoints lane restores on the same fixed tick at
     /// the unit-normalized per-second rate, skips actors without the AV,
@@ -319,6 +323,7 @@ mod tests {
             fatigue_avif: Some(0x01),
             magicka_avif: Some(0x10),
             willpower_avif: Some(0x11),
+            stunted_magicka_avif: None,
             action_points: Some(ActionPointsRegen {
                 avif: AP,
                 // FNV's authored 0.06 per frame, normalized to per-second.
@@ -361,6 +366,7 @@ mod tests {
             fatigue_avif: None,
             magicka_avif: None,
             willpower_avif: None,
+            stunted_magicka_avif: None,
             action_points: None,
         });
         world.insert_resource(PoolRegenAccumulator::default());
@@ -411,6 +417,7 @@ mod tests {
             fatigue_avif: Some(0x01),
             magicka_avif: Some(MAGICKA),
             willpower_avif: Some(WILLPOWER),
+            stunted_magicka_avif: None,
             action_points: None,
         });
         world.insert_resource(PoolRegenAccumulator::default());
@@ -466,6 +473,7 @@ mod tests {
             fatigue_avif: Some(0x01),
             magicka_avif: Some(MAGICKA),
             willpower_avif: Some(WILLPOWER),
+            stunted_magicka_avif: None,
             action_points: None,
         });
         world.insert_resource(PoolRegenAccumulator::default());
@@ -624,6 +632,7 @@ mod tests {
             fatigue_avif: Some(FATIGUE),
             magicka_avif: Some(MAGICKA),
             willpower_avif: Some(WILLPOWER),
+            stunted_magicka_avif: None,
             action_points: None,
         });
         world.insert_resource(PoolRegenAccumulator::default());
@@ -706,6 +715,7 @@ mod tests {
             fatigue_avif: Some(FATIGUE),
             magicka_avif: Some(MAGICKA),
             willpower_avif: Some(WILLPOWER),
+            stunted_magicka_avif: None,
             action_points: None,
         });
         world.insert_resource(PoolRegenAccumulator::default());

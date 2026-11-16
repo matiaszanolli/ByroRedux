@@ -87,7 +87,7 @@ impl DerivedInput {
         match self.0 {
             0 => 0.0,
             u32::MAX => f32::from(level),
-            avif if use_base => avs.get(avif).map_or(0.0, |v| v.base),
+            avif if use_base => avs.get_base(avif).map_or(0.0, |v| v.base),
             avif => avs.current(avif),
         }
     }
@@ -454,6 +454,17 @@ mod tests {
         // But an ordinary (current()-reading) formula on the same AV DOES move.
         let hypothetical_current_reader = DerivedStatFormula::affine(av(0x30), 0.5, 250.0);
         assert_eq!(hypothetical_current_reader.eval(&stamina_100, 1), 325.0);
+    }
+
+    #[test]
+    fn base_derived_formula_uses_the_base_view_of_an_alias() {
+        use crate::ecs::components::ActorValueAlias;
+        let mut values = avs(&[(1, 70.0), (2, 30.0)]);
+        assert!(values.set_alias(3, ActorValueAlias { current: 1, base: 2 }));
+        let current = DerivedStatFormula::affine(av(3), 1.0, 0.0);
+        let base = current.a_from_base();
+        assert_eq!(current.eval(&values, 1), 70.0);
+        assert_eq!(base.eval(&values, 1), 30.0);
     }
 
     #[test]

@@ -1766,6 +1766,22 @@ mod sneak_attack_tests {
         assert!(!oblivion(-30.0, true), "fighting the player: above iAICombatMinDetection (-50) is aware");
         assert!(oblivion(-60.0, true));
     }
+
+    #[test]
+    fn oblivion_sneak_attack_reads_the_players_installed_skill() {
+        use byroredux_core::ecs::components::ActorValues;
+        use byroredux_plugin::esm::{reader::{GameKind, GlobalSlot}, records::EsmIndex};
+        let (mut world, player, target) = scene(StealthKind::Oblivion, false);
+        let mut index = EsmIndex { game: GameKind::Oblivion, ..Default::default() };
+        index.install_oblivion_actor_values(GlobalSlot::Regular(1)).unwrap();
+        byroredux_scripting::install_actor_value_names(&mut world, &index);
+        let sneak = index.actor_value_form_id("Sneak").unwrap();
+        world.insert(player, ActorValues::from_pairs([(sneak, 20.0)]));
+        world.insert(target, Awareness { terms: byroredux_core::stealth::DetectionTerms { value: -5.0, ..Default::default() }, ..Default::default() });
+        assert_eq!(sneak_strike(&world, player, target, 10.0), (40.0, true));
+        world.get_mut::<ActorValues>(player).unwrap().set_base(sneak, 100.0);
+        assert_eq!(sneak_strike(&world, player, target, 10.0), (60.0, true));
+    }
 }
 
 #[cfg(test)]

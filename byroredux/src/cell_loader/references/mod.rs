@@ -374,6 +374,11 @@ pub(super) fn load_references_budgeted(
                 world.insert_resource(rs);
             }
         }
+        if world.try_resource::<byroredux_core::character::regen::PoolRegenConfig>().is_none() {
+            if let Some(regen) = record_index.character_rules.build_tes_pool_regen(|name| record_index.actor_value_form_id(name)) {
+                world.insert_resource(regen);
+            }
+        }
         // #6350 — same idempotent-once construction for the VATS tuning
         // model and the ActionPoints regen lane. Nothing is inserted on
         // non-Fallout loads (the builder returns None there), and a

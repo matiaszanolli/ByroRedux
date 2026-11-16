@@ -666,6 +666,7 @@ mod bodies {
                         magnitude,
                         area: 0,
                         duration: 0,
+                        actor_value: None,
                         script_form_id: 0,
                         conditions: Vec::new(),
                     }],

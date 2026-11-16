@@ -479,6 +479,8 @@ pub struct EsmIndex {
     /// the whole top-level group fell through to the catch-all skip.
     /// See #519.
     pub actor_values: HashMap<u32, AvifRecord>,
+    /// Slot of the engine's synthetic Oblivion AVIFs, installed after plugin merging.
+    pub oblivion_actor_value_slot: Option<crate::esm::reader::GlobalSlot>,
     // ── Activators / terminals (#521) ───────────────────────────────
     /// `ACTI` activator records — wall switches, vending machines,
     /// lever-activated doors, anything "use"-able that isn't a
@@ -1171,6 +1173,11 @@ impl EsmIndex {
     /// Linear over `actor_values` (~100 records) — cheap enough to call
     /// per-stat at spawn.
     pub fn actor_value_form_id(&self, editor_id: &str) -> Option<u32> {
+        if self.game == GameKind::Oblivion && self.oblivion_actor_value_slot.is_some()
+            && super::oblivion_actor_values::OBLIVION_ACTOR_VALUES.iter().any(|name| name.eq_ignore_ascii_case(editor_id))
+        {
+            return self.oblivion_actor_value_by_name(editor_id, false);
+        }
         let usable = |avif: &AvifRecord| avif.form_id != 0 && avif.form_id != u32::MAX;
         self.actor_values
             .values()
@@ -1218,6 +1225,17 @@ impl EsmIndex {
         }
     }
 
+    /// The value selected by an effect item, in the source game's vocabulary.
+    /// TES4 skill/attribute targets live on EFIT; other effects use MGEF.
+    pub fn effect_actor_value(&self, effect: &MgefRecord, item: &super::MagicEffectItem) -> Option<super::ActorValueRef> {
+        const TES4_ITEM_ACTOR_VALUE: u32 = (1 << 19) | (1 << 20);
+        if self.game == GameKind::Oblivion && effect.effect_flags & TES4_ITEM_ACTOR_VALUE != 0 {
+            item.actor_value
+        } else {
+            effect.primary_actor_value
+        }
+    }
+
     /// #4415 — resolve a magic effect's actor value to the AVIF FormID that
     /// keys `ActorValues`. FO4+ effects already name the AVIF; FO3/FNV and
     /// Skyrim name a game-local actor-value *index*, mapped here through
@@ -1240,12 +1258,15 @@ impl EsmIndex {
     /// | rest | 46..=76 @ `0x5DC` | 39..=163 @ `0x5CE` |
     ///
     /// An index whose slot has no AVIF record (several engine-only values)
-    /// resolves to `None`, as does Oblivion (no AVIF records).
+    /// resolves to `None`. Oblivion's indices name its engine-supplied records.
     pub fn resolve_actor_value(&self, reference: super::ActorValueRef) -> Option<u32> {
         use crate::esm::reader::GameKind;
         let form_id = match reference {
             super::ActorValueRef::Form(form_id) => form_id,
             super::ActorValueRef::Index(index) => {
+                if self.game == GameKind::Oblivion {
+                    return self.oblivion_actor_value(index, false);
+                }
                 let (first, base) = match (self.game, index) {
                     (GameKind::Fallout3NV, 0..=4) => (0, 0x514),
                     (GameKind::Fallout3NV, 5..=11) => (5, 0x3E8),
@@ -2226,6 +2247,10 @@ mod tests {
             (
                 "default_music",
                 "scalar read from the FO3/FNV DOBJ `DATA` music slots; the DOBJ record itself is counted in `default_objects`",
+            ),
+            (
+                "oblivion_actor_value_slot",
+                "scalar installation metadata set after plugin merging; the records are counted in actor_values",
             ),
             // #6350 — a resolution side-table, not an independent record
             // map: lower-cased EditorID → winning FormID, maintained by

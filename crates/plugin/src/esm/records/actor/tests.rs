@@ -178,6 +178,40 @@ fn oblivion_16byte_acbs_parses_level_and_gender() {
     );
 }
 
+#[test]
+fn oblivion_actor_stats_and_pools_decode_their_distinct_layouts() {
+    let mut npc_data: Vec<u8> = (1..=21).collect();
+    npc_data.extend_from_slice(&450u16.to_le_bytes());
+    npc_data.extend_from_slice(&[0xaa, 0xbb]);
+    npc_data.extend_from_slice(&[10, 20, 30, 40, 50, 60, 70, 80]);
+    let mut acbs = 0x90u32.to_le_bytes().to_vec();
+    acbs.extend_from_slice(&120u16.to_le_bytes());
+    acbs.extend_from_slice(&130u16.to_le_bytes());
+    acbs.extend_from_slice(&5u16.to_le_bytes());
+    acbs.extend_from_slice(&(-2i16).to_le_bytes());
+    acbs.extend_from_slice(&3u16.to_le_bytes());
+    acbs.extend_from_slice(&40u16.to_le_bytes());
+    let npc = parse_npc(1, &[sub(b"DATA", &npc_data), sub(b"ACBS", &acbs), sub(b"AIDT", &[5, 40, 70, 90])], GameKind::Oblivion, &None);
+    let stats = npc.oblivion_npc_stats.unwrap();
+    assert_eq!(stats.skills, std::array::from_fn(|i| i as u8 + 1));
+    assert_eq!((stats.health, stats.attributes), (450, [10, 20, 30, 40, 50, 60, 70, 80]));
+    assert_eq!(npc.oblivion_pools, Some(OblivionActorPools { magicka: 120, fatigue: 130, calc_max: 40 }));
+    assert_eq!(npc.oblivion_ai_values, Some([5, 40, 70, 90]));
+    assert_eq!((npc.level, npc.calc_min), (-2, 3));
+    assert!(npc.oblivion_creature_stats.is_none());
+
+    let creature_data = [2, 65, 45, 35, 3, 0, 0x2c, 1, 0, 0, 0x34, 0x12, 1, 2, 3, 4, 5, 6, 7, 8];
+    let creature = parse_npc(2, &[sub(b"DATA", &creature_data)], GameKind::Oblivion, &None);
+    let stats = creature.oblivion_creature_stats.unwrap();
+    assert_eq!((stats.creature_type, stats.combat, stats.magic, stats.stealth, stats.soul), (2, 65, 45, 35, 3));
+    assert_eq!((stats.health, stats.damage, stats.attributes), (300, 0x1234, [1, 2, 3, 4, 5, 6, 7, 8]));
+    assert!(creature.oblivion_npc_stats.is_none());
+    let short = parse_npc(3, &[sub(b"DATA", &npc_data[..32]), sub(b"ACBS", &acbs[..15])], GameKind::Oblivion, &None);
+    assert!(short.oblivion_npc_stats.is_none() && short.oblivion_pools.is_none());
+    let other = parse_npc(4, &[sub(b"DATA", &npc_data), sub(b"ACBS", &acbs)], GameKind::Fallout3NV, &None);
+    assert!(other.oblivion_npc_stats.is_none() && other.oblivion_pools.is_none());
+}
+
 /// The 16-byte ACBS layout is Oblivion-only: under FNV/FO3 the same
 /// payload must NOT be mis-decoded — that arm requires `>= 24` bytes,
 /// so a stray 16-byte ACBS is ignored and the defaults stand. Guards

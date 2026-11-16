@@ -196,6 +196,15 @@ pub fn derive_resolved_actor_values(
     resolved: &crate::equip::ResolvedNpc<'_>,
     index: &EsmIndex,
 ) -> Vec<(u32, f32)> {
+    derive_resolved_actor_values_with_player_level(resolved, index, None)
+}
+
+/// Population at spawn, with the current player level for level-offset actors.
+pub fn derive_resolved_actor_values_with_player_level(
+    resolved: &crate::equip::ResolvedNpc<'_>,
+    index: &EsmIndex,
+    player_level: Option<u16>,
+) -> Vec<(u32, f32)> {
     let stats = resolved.stats;
     // #3480 — race is NOT a stat. It rides the independently-set "Use
     // Traits" bit (`TEMPLATE_FLAG_USE_TRAITS`), which `ResolvedNpc`
@@ -229,6 +238,8 @@ pub fn derive_resolved_actor_values(
             health.with_gmst(|name| index.game_setting_float(name)),
         ),
         NpcStatModel::CreatureData => derive_creature_actor_values(stats, index),
+        NpcStatModel::OblivionNpc | NpcStatModel::OblivionCreature =>
+            super::oblivion_population::derive(resolved, index, player_level),
         NpcStatModel::None => Vec::new(),
     };
     // Skyrim's AIDT responsibility is the authored Morality AV consumed by
@@ -2007,14 +2018,13 @@ mod tests {
         assert!(derive_npc_actor_values(&npc, &index).is_empty());
     }
 
-    /// Oblivion's `CREA` `DATA` is a different struct that has not been
-    /// sourced, so its profile selects no creature model and the arm stays
-    /// closed rather than mis-decoding.
+    /// Oblivion uses its own sourced creature layout and must not reinterpret
+    /// an FO3/FNV creature block as if it were TES4 DATA.
     #[test]
-    fn oblivion_creatures_select_no_stat_model() {
+    fn oblivion_creatures_use_their_own_stat_model() {
         assert_eq!(
             CharacterRulesProfile::OBLIVION.creature_stat_model(),
-            byroredux_core::character::NpcStatModel::None,
+            byroredux_core::character::NpcStatModel::OblivionCreature,
         );
         let index = EsmIndex {
             character_rules: CharacterRulesProfile::OBLIVION,

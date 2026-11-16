@@ -543,6 +543,45 @@ mod tests {
         assert!(!detects(&world, detector, player));
     }
 
+    #[test]
+    fn oblivion_detection_reads_the_installed_actor_values() {
+        use byroredux_plugin::esm::{reader::{GameKind, GlobalSlot}, records::EsmIndex};
+        let (mut world, player, detector) = scene(StealthKind::Oblivion);
+        let mut index = EsmIndex { game: GameKind::Oblivion, ..Default::default() };
+        index.install_oblivion_actor_values(GlobalSlot::Regular(1)).unwrap();
+        byroredux_scripting::install_actor_value_names(&mut world, &index);
+        let key = |name| index.actor_value_form_id(name).unwrap();
+        let sneak = key("Sneak");
+        let chameleon = key("Chameleon");
+        let blindness = key("Blindness");
+        let night_eye = key("NightEyeBonus");
+        world.insert(player, Sneaking);
+        world.insert(player, ActorValues::from_pairs([(sneak, 20.0), (chameleon, 0.0)]));
+        world.insert(detector, ActorValues::from_pairs([(sneak, 50.0), (blindness, 0.0), (night_eye, 0.0)]));
+        detection_tick_system(&world, 1.0);
+        let before = world.get::<Awareness>(detector).unwrap().terms;
+        assert!(before.visual > 0.0 && before.skill != 0.0, "{before:?}");
+
+        world.get_mut::<ActorValues>(player).unwrap().set_base(sneak, 40.0);
+        detection_tick_system(&world, 1.0);
+        let sneak_changed = world.get::<Awareness>(detector).unwrap().terms;
+        assert!(sneak_changed.skill < before.skill);
+
+        world.get_mut::<ActorValues>(detector).unwrap().set_base(night_eye, 1.0);
+        detection_tick_system(&world, 1.0);
+        let night = world.get::<Awareness>(detector).unwrap().terms;
+        assert!(night.visual > sneak_changed.visual, "NightEyeBonus must feed the NightEye input");
+
+        world.get_mut::<ActorValues>(player).unwrap().set_base(chameleon, 50.0);
+        detection_tick_system(&world, 1.0);
+        let camouflaged = world.get::<Awareness>(detector).unwrap().terms;
+        assert!(camouflaged.visual < night.visual);
+        world.get_mut::<ActorValues>(detector).unwrap().set_base(blindness, 50.0);
+        detection_tick_system(&world, 1.0);
+        let blinded = world.get::<Awareness>(detector).unwrap().terms;
+        assert!(blinded.visual < camouflaged.visual);
+    }
+
     /// SNK-USE-010 (`detection.getdetectionlevel-player-target`): `GetDetectionLevel` / `GetDetected`
     /// toward the player answer the caller's real level through `SightQuery`, where the original
     /// answered 0. Boot installs `detects` as the query.

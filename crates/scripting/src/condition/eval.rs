@@ -480,7 +480,8 @@ pub fn actor_value_view(world: &World, entity: EntityId, avif: u32, view: ActorV
         // entry (a constant spell, `modav` or the SDK on a stat the
         // actor does not carry) is NOT authored: its `0.0` base is a
         // placeholder, so it falls through to the ruleset composer.
-        if let Some(value) = avs.get(avif).filter(|value| value.base_authored) {
+        let entry = if view == ActorValueView::Base { avs.get_base(avif) } else { avs.get(avif) };
+        if let Some(value) = entry.filter(|value| value.base_authored) {
             return match view {
                 ActorValueView::Current => value.current(),
                 ActorValueView::Base => value.base + value.set_override,

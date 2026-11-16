@@ -26,6 +26,8 @@
 //! * [`crime`] — the crime family: [`CrimeModel`], what a crime costs the
 //!   criminal (Oblivion's single bounty and Skyrim's per-crime-faction fines;
 //!   theft, assault and murder).
+//! * [`disposition`] — starting disposition from actor values, reputation,
+//!   directed race and faction reactions, and load-order game settings.
 //! * [`armor`] — [`ArmorModel`]: Skyrim's armor-rating tuning (the `fArmor*` /
 //!   `fMaxArmorRating` GMST family), load-order-driven (#6567).
 //! * [`vats`] — [`VatsModel`]: the `fVATS*` GMST tuning family and the
@@ -44,7 +46,7 @@
 //!   60 Hz tick** decoupled from the frame rate:
 //!   [`PoolRegenAccumulator`] (the fixed-step clock, mirrors
 //!   `crates/physics`'s accumulator) + [`PoolRegenConfig`] (per-game resolved
-//!   AVIF ids; installed for FO3/FNV only) + [`pool_regen_tick_system`] (the
+//!   AVIF ids; installed for Oblivion and FO3/FNV) + [`pool_regen_tick_system`] (the
 //!   driver).
 //! * [`components`] — [`CharacterLevel`] / [`LevelUpPoints`] / [`Perks`] /
 //!   [`Background`] / [`FactionReputation`] / [`FactionStanding`] /
@@ -75,9 +77,7 @@
 //! themselves have exactly one construction site —
 //! `CharacterRulesProfile::build_ruleset`, reached from
 //! `build_character_ruleset` (`byroredux/src/npc_spawn/stamps.rs`) — so "is game X
-//! wired?" is answered there, not by whether a `*_ruleset()` builder exists
-//! (Oblivion's does and is deliberately blocked on the pre-AVIF actor-value
-//! resolver, #3768; Skyrim's is wired, #3848).
+//! wired?" is answered there, not by whether a `*_ruleset()` builder exists.
 //!
 //! See also [`crate::combat`] and [`crate::stealth`] — CHARAL-*adjacent*
 //! siblings (not submodules of this module) that read `ActorValues` as
@@ -92,6 +92,7 @@ pub mod components;
 pub mod crime;
 pub mod vats;
 pub mod derived;
+pub mod disposition;
 pub mod fallout;
 pub mod leveling;
 pub mod limb_effects;
@@ -116,6 +117,7 @@ pub use components::{
 };
 pub use armor::ArmorModel;
 pub use crime::{BountyScope, CrimeKind, CrimeModel};
+pub use disposition::{DispositionInput, DispositionModel};
 pub use limb_effects::{arm_condition, LimbEffectModel};
 pub use vats::{VatsHitInput, VatsModel};
 pub use derived::{DerivedInput, DerivedOutput, DerivedScope, DerivedStatFormula, RoundMode};
@@ -177,7 +179,7 @@ mod tests {
             .collect();
         assert_eq!(
             declared.len(),
-            19,
+            20,
             "sub-module count changed — {declared:?}"
         );
         for module in declared {

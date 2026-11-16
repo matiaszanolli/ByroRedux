@@ -103,7 +103,7 @@ pub fn cast_effect(index: &EsmIndex, item: &MagicEffectItem) -> CastEffect {
         if !item.magnitude.is_finite() || !matches!(mgef.archetype, Some(MagicArchetype::ValueModifier)) {
             return None;
         }
-        let actor_value = mgef.primary_actor_value.and_then(|reference| index.resolve_actor_value(reference))?;
+        let actor_value = index.effect_actor_value(mgef, item).and_then(|reference| index.resolve_actor_value(reference))?;
         let sign = if mgef.effect_flags & MGEF_FLAG_DETRIMENTAL != 0 { -1.0 } else { 1.0 };
         Some(ValueEffect { actor_value, amount: sign * item.magnitude, recover: mgef.effect_flags & MGEF_FLAG_RECOVER != 0 })
     });
@@ -496,7 +496,8 @@ pub fn install(world: &mut World) {
 /// This subsystem's saved column. Called by the binary's `build_save_registry` in its row order.
 #[cfg(feature = "save")]
 pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
-    registry.register_replacing_component::<ActiveMagicEffects>("ActiveMagicEffects");
+    registry.register_component_codec("ActiveMagicEffects", true,
+        crate::actor_value_save::save_active_effects, crate::actor_value_save::load_active_effects);
 }
 
 #[cfg(test)]
@@ -543,7 +544,7 @@ mod tests {
             0x500,
             SpelRecord {
                 form_id: 0x500,
-                effects: vec![MagicEffectItem { effect_form_id: 0x77, magnitude, area: 0, duration, script_form_id: 0, conditions: Vec::new() }],
+                effects: vec![MagicEffectItem { effect_form_id: 0x77, magnitude, area: 0, duration, actor_value: None, script_form_id: 0, conditions: Vec::new() }],
                 ..Default::default()
             },
         );
@@ -588,10 +589,10 @@ mod tests {
         const MARK: u32 = 0x78;
         let mut index = index_with_value_effect(MGEF_FLAG_DETRIMENTAL, 4.0, 315_360_000);
         index.magic_effects.insert(MARK, MgefRecord { form_id: MARK, archetype: Some(MagicArchetype::ValueModifier), ..Default::default() });
-        index.spells.get_mut(&0x500).unwrap().effects.insert(0, MagicEffectItem { effect_form_id: MARK, magnitude: 0.0, area: 0, duration: 315_360_000, script_form_id: 0, conditions: Vec::new() });
+        index.spells.get_mut(&0x500).unwrap().effects.insert(0, MagicEffectItem { effect_form_id: MARK, magnitude: 0.0, area: 0, duration: 315_360_000, actor_value: None, script_form_id: 0, conditions: Vec::new() });
         index.spells.insert(
             0x501,
-            SpelRecord { form_id: 0x501, effects: vec![MagicEffectItem { effect_form_id: MARK, magnitude: 0.0, area: 0, duration: 0, script_form_id: 0, conditions: Vec::new() }], ..Default::default() },
+            SpelRecord { form_id: 0x501, effects: vec![MagicEffectItem { effect_form_id: MARK, magnitude: 0.0, area: 0, duration: 0, actor_value: None, script_form_id: 0, conditions: Vec::new() }], ..Default::default() },
         );
         let (world, target) = world_with(index);
         assert!(!has_effect(&world, target, MARK));
@@ -757,7 +758,7 @@ mod tests {
             0x501,
             SpelRecord {
                 form_id: 0x501,
-                effects: vec![MagicEffectItem { effect_form_id: 0x78, magnitude: 1.0, area: 0, duration: 2, script_form_id: 0x900, conditions: Vec::new() }],
+                effects: vec![MagicEffectItem { effect_form_id: 0x78, magnitude: 1.0, area: 0, duration: 2, actor_value: None, script_form_id: 0x900, conditions: Vec::new() }],
                 ..Default::default()
             },
         );

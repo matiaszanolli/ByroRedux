@@ -89,6 +89,10 @@ pub enum SaveError {
     #[error("save load needs resource '{0}' but it isn't installed in the world")]
     MissingResource(&'static str),
 
+    /// A session-local form cannot be converted to a durable identity.
+    #[error("save column '{column}' entity {entity}: form {form:#010x} has no load-order identity")]
+    UnownedFormId { column: &'static str, entity: u32, form: u32 },
+
     /// I/O error reading or writing a save file on disk.
     #[error("save I/O error: {0}")]
     Io(#[from] std::io::Error),

@@ -390,7 +390,7 @@ fn spawn_placement_root<'a>(
     stamp_actor_values(world, placement_root, &resolved, index);
     stamp_spell_list(world, placement_root, &resolved, index);
     stamp_creature_attack(world, placement_root, &resolved);
-    stamp_character_components(world, placement_root, &resolved);
+    stamp_character_components(world, placement_root, &resolved, index);
     // M47.2 — Essential / Protected, from the "Use Base Data" terminal.
     if let Some(protection) = byroredux_scripting::ActorProtection::from_record(resolved.base_data) {
         world.insert(placement_root, protection);

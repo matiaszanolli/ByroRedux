@@ -877,11 +877,9 @@ fn drive_sneak_element(
 ///
 /// Every profile resolves its bar editor ids through the per-load
 /// `PlayerVitals` table and reads `PlayerEntity`'s `ActorValues` only
-/// (#4675) — no literal FormIDs, no scan of other actors. Oblivion
-/// resolves no ids today (`build_player_vitals`, #3768/#4679: its
-/// index-keyed actor-value profile is not built), so its bars stay full
-/// unless pinned. `hud.values` drives everything deterministically for
-/// smokes either way.
+/// (#4675) — no literal FormIDs, no scan of other actors. Oblivion's
+/// engine-supplied records resolve through the same table. `hud.values`
+/// can still pin the bars for deterministic smokes.
 fn bar_fractions(world: &World, control: &HudControl, profile: &HudGameProfile) -> [f32; 3] {
     // #4675 — editor ids resolve through the per-load `PlayerVitals`
     // table (the same resolution `build_player_vitals` performs), never
@@ -1174,6 +1172,30 @@ mod tests {
             assert_eq!(control.live[1], Some(1.0), "the auto slot's derivation");
             assert_eq!(control.live[0], Some(0.1), "pinned slots publish too");
         }
+    }
+
+    #[test]
+    fn oblivion_hud_tracks_all_three_installed_vital_values() {
+        use byroredux_core::character::CharacterRulesProfile;
+        use byroredux_plugin::esm::{reader::{GameKind, GlobalSlot}, records::EsmIndex};
+        let mut index = EsmIndex { game: GameKind::Oblivion, character_rules: CharacterRulesProfile::OBLIVION, ..Default::default() };
+        index.install_oblivion_actor_values(GlobalSlot::Regular(1)).unwrap();
+        let mut world = World::new();
+        crate::inventory::install_catalog(&mut world, &index);
+        let player = world.spawn();
+        let mut values = ActorValues::new();
+        for (name, base, damage) in [("Health", 100.0, 40.0), ("Magicka", 80.0, 20.0), ("Fatigue", 200.0, 100.0)] {
+            let id = index.actor_value_form_id(name).unwrap();
+            values.set_base(id, base);
+            values.apply_damage(id, damage);
+        }
+        world.insert(player, values);
+        world.insert_resource(PlayerEntity(Some(player)));
+        let control = HudControl::default();
+        world.insert_resource(control);
+        let fractions = bar_fractions(&world, &control, &HudGameProfile::oblivion());
+        assert_eq!(fractions, [0.6, 0.75, 0.5]);
+        assert_eq!(world.resource::<HudControl>().live, [Some(0.6), Some(0.75), Some(0.5)]);
     }
 
     /// A data directory holding the named (empty) files — `hud_archive_args`
