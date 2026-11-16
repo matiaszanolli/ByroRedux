@@ -692,16 +692,18 @@ vec3 weather_precipitation(vec3 color, vec2 uv) {
     // authored wind direction, while a perpendicular term gives the slanted
     // fall seen in gusts. It is a presentation overlay for distant rain;
     // authored/local particle emitters remain responsible for close impacts.
-    vec2 rain_grid = uv * vec2(150.0, 90.0);
+    // Move the whole grid so streaks cross cell boundaries continuously.
+    vec2 rain_grid = uv * vec2(150.0, 90.0)
+        - vec2(wind.x * time * (0.11 + wind_speed * 0.23),
+               time * (0.42 + wind_speed * 0.8));
     vec2 rain_cell = floor(rain_grid);
     vec2 rain_local = fract(rain_grid);
     float rain_seed = weather_hash21(rain_cell);
-    vec2 rain_drift = wind * time * (0.11 + wind_speed * 0.23);
-    float rain_y = fract(rain_seed + time * (0.42 + wind_speed * 0.8));
-    float rain_x = fract(rain_seed * 7.13 + rain_drift.x + rain_local.y * 0.18);
-    float rain_line = 1.0 - smoothstep(0.012, 0.0,
+    float rain_x = fract(rain_seed * 7.13 + rain_local.y * 0.18);
+    float rain_line = 1.0 - smoothstep(0.0, 0.012,
         abs(rain_local.x - rain_x + wind.x * 0.018));
-    float rain_mask = smoothstep(0.52, 0.96, rain_seed);
+    float rain_mask = smoothstep(0.52, 0.96, rain_seed)
+        * (1.0 - smoothstep(0.30, 0.48, abs(rain_local.y - 0.5)));
     float rain = rain_line * rain_mask * params.weather_params.x;
 
     // Snow uses larger, slower, round flakes and only a small wind-driven

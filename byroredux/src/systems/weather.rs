@@ -560,13 +560,16 @@ pub(crate) fn cap_cloud_layer_drift(vectors: &mut [[f32; 2]; 4], tile_scales: [f
 pub(crate) const CLOUD_DECK_DRIFT_WRAP_M: f64 = 50_000.0;
 
 /// #6939 — advance the volumetric cloud deck by this frame's wind: `direction`
-/// (the way it blows toward) times the normalized WTHR speed times the deck's
-/// full-wind ground speed. Integrated, so a change of wind changes how fast the
+/// (the way it blows toward) and the WTHR speed, with a gentle cloud-altitude
+/// drift even when surface wind is calm. Integrated, so a change of wind changes how fast the
 /// deck moves from here on, not where it already is. The shader used to compute
 /// the current wind times the session time, so a 0.1 -> 0.5 wind change after
 /// 30 minutes moved the whole deck (and its shadow) about 14 km.
 pub(crate) fn advance_deck_drift(drift: &mut [f64; 2], direction: [f32; 2], speed: f32, dt: f32) {
-    let step = f64::from(speed) * f64::from(CLOUD_LAYER_MAX_DRIFT_M_PER_S) * f64::from(dt);
+    // Ground-level calm does not imply still air at cloud altitude. Keep a
+    // gentle 3 m/s drift there, rising with the authored surface wind.
+    let cloud_speed = 3.0 + speed.clamp(0.0, 1.0) * (CLOUD_LAYER_MAX_DRIFT_M_PER_S - 3.0);
+    let step = f64::from(cloud_speed) * f64::from(dt);
     if !step.is_finite() {
         return;
     }
@@ -1140,7 +1143,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
         advance_cloud_scroll(&mut clouds.cloud_scroll_2, scroll_vectors[2], dt);
         advance_cloud_scroll(&mut clouds.cloud_scroll_3, scroll_vectors[3], dt);
         // The volumetric deck, along the same wind the dome is handed (`sky.weather` above).
-        advance_deck_drift(&mut clouds.deck_drift_m, weather.wind_direction, weather.wind_speed, dt);
+        advance_deck_drift(&mut clouds.deck_drift_m, wind_direction, weather.wind_speed, dt);
     }
 
     // Update CellLightingRes — exterior cells only. Interior cells own
@@ -3194,20 +3197,20 @@ mod deck_drift_tests {
             advance_deck_drift(&mut drift, east, 0.1, dt);
         }
         let full_speed = f64::from(CLOUD_LAYER_MAX_DRIFT_M_PER_S);
-        let travelled = 0.1 * full_speed * 1800.0;
+        let travelled = (3.0 + 0.1 * (full_speed - 3.0)) * 1800.0;
         assert!((drift[0] - travelled.rem_euclid(CLOUD_DECK_DRIFT_WRAP_M)).abs() < 0.5, "{drift:?} vs {travelled}");
         assert_eq!(drift[1], 0.0);
 
         let before = drift;
         advance_deck_drift(&mut drift, east, 0.5, dt);
         let step = drift[0] - before[0];
-        assert!((step - 0.5 * full_speed * f64::from(dt)).abs() < 1e-6, "one frame at the new speed: {step} m");
+        assert!((step - (3.0 + 0.5 * (full_speed - 3.0)) * f64::from(dt)).abs() < 1e-6, "one frame at the new speed: {step} m");
 
         // A turn of the wind bends the path from where the deck is.
         let before = drift;
         advance_deck_drift(&mut drift, [0.0, 1.0], 0.5, dt);
         assert_eq!(drift[0], before[0]);
-        assert!((drift[1] - before[1] - 0.5 * full_speed * f64::from(dt)).abs() < 1e-6);
+        assert!((drift[1] - before[1] - (3.0 + 0.5 * (full_speed - 3.0)) * f64::from(dt)).abs() < 1e-6);
     }
 
     /// A calm wind still moves the deck: the per-frame step (a few millimetres) survives the
@@ -3218,5 +3221,12 @@ mod deck_drift_tests {
         let before = drift[0];
         advance_deck_drift(&mut drift, [1.0, 0.0], 0.01, 1.0 / 60.0);
         assert!(drift[0] > before);
+    }
+
+    #[test]
+    fn calm_surface_weather_still_advects_the_deck() {
+        let mut drift = [0.0; 2];
+        advance_deck_drift(&mut drift, [0.0, 1.0], 0.0, 10.0);
+        assert_eq!(drift, [0.0, 30.0]);
     }
 }

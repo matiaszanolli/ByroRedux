@@ -11,6 +11,7 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 use byroredux_core::math::Vec3;
 use byroredux_renderer::VulkanContext;
+use std::hash::{BuildHasher, Hasher};
 
 use crate::asset_provider::TextureProvider;
 use crate::cell_loader;
@@ -32,6 +33,36 @@ use crate::streaming_helpers::{
 // Defined in the renderer's shader-constant table since #4230, because
 // `sky.glsl` needs it too.
 use byroredux_renderer::shader_constants::CLOUD_REF_WIDTH;
+
+/// Pick a new starting part of the periodic cloud field for each session.
+/// A fixed seed permits repeatable captures; retain the state across cells.
+fn init_cloud_sim(world: &mut World) {
+    if world.try_resource::<CloudSimState>().is_some() {
+        return;
+    }
+    let seed = std::env::var("BYRO_CLOUD_SEED")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or_else(|| std::collections::hash_map::RandomState::new().build_hasher().finish());
+    world.insert_resource(cloud_sim_from_seed(seed));
+}
+
+fn cloud_sim_from_seed(seed: u64) -> CloudSimState {
+    // SplitMix64 distributes even adjacent capture seeds across the field.
+    fn mix(mut x: u64) -> u64 {
+        x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+        x ^ (x >> 31)
+    }
+    let coordinate = |x: u64| {
+        (mix(x) >> 11) as f64 / ((1u64 << 53) as f64)
+            * crate::systems::weather::CLOUD_DECK_DRIFT_WRAP_M
+    };
+    CloudSimState {
+        deck_drift_m: [coordinate(seed), coordinate(seed.wrapping_add(0x9e3779b97f4a7c15))],
+        ..Default::default()
+    }
+}
 
 /// Build the initial [`GameTimeRes`], honoring the `BYRO_HOUR` env var for
 /// offline / cinematic renders. When `BYRO_HOUR` is set to a value in
@@ -628,10 +659,10 @@ fn apply_environment_with_sources(
             ctx.texture_registry.drop_texture(&ctx.device, handle);
         }
         // #803 — cloud scroll lives on `CloudSimState`, which survives
-        // cell transitions. Insert a default-zero state on first
+        // cell transitions. Seed the field on first
         // exterior load only; subsequent loads reuse the existing
         // accumulator so clouds resume drift across interior visits.
-        world.init_resource::<CloudSimState>();
+        init_cloud_sim(world);
         // Surface response is simulation state, not authored WTHR data.
         // Seed it once so rain/snow survives cell streaming and the interior
         // visits that deliberately preserve worldspace weather.
@@ -1322,7 +1353,7 @@ fn insert_procedural_outdoor_environment(world: &mut World, sun_dir: [f32; 3]) {
     world.insert_resource(crate::env_translate::procedural_fallback_sky(sun_dir));
     // #803 — same survives-transitions pattern as the WTHR path: seed
     // CloudSimState only on the first exterior load.
-    world.init_resource::<CloudSimState>();
+    init_cloud_sim(world);
     world.init_resource::<WeatherSurfaceState>();
     world.insert_resource(crate::env_translate::procedural_fallback_weather());
     ensure_game_time(world);
@@ -2464,5 +2495,24 @@ mod tests {
         assert_eq!(weather.form_id, WEATHER);
         assert!(show_sky_interior_climate(false, Some(CLIMATE), &climates, &weathers).is_none());
         assert!(show_sky_interior_climate(true, None, &climates, &weathers).is_none());
+    }
+}
+
+#[cfg(test)]
+mod cloud_seed_tests {
+    use super::*;
+
+    #[test]
+    fn seed_selects_a_repeatable_field_and_initialization_preserves_it() {
+        let a = cloud_sim_from_seed(42);
+        let b = cloud_sim_from_seed(43);
+        assert_eq!(a.deck_drift_m, cloud_sim_from_seed(42).deck_drift_m);
+        assert_ne!(a.deck_drift_m, b.deck_drift_m);
+        assert!(a.deck_drift_m.iter().all(|&v| (0.0..crate::systems::weather::CLOUD_DECK_DRIFT_WRAP_M).contains(&v)));
+        let mut world = World::new();
+        let expected = a.deck_drift_m;
+        world.insert_resource(a);
+        init_cloud_sim(&mut world);
+        assert_eq!(world.try_resource::<CloudSimState>().unwrap().deck_drift_m, expected);
     }
 }

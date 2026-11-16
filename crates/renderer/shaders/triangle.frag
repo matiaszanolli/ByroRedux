@@ -3138,9 +3138,18 @@ void main() {
         // An explicit env mask replaces that fallback; multiplying both would
         // darken content that deliberately supplies separate local-specular
         // and reflection masks.
+        // MultiLayerParallax (Skyrim ice) authors its own cubemap and
+        // `multiLayerEnvmapStrength`, and its normal alpha is a LOCAL
+        // specular mask, not an environment mask: FrozenLake01's
+        // `icelakesurface_n` alpha averages 0.09 (max 0.51), so reusing it
+        // here scaled the authored 0.53 reflection to ~5% and left the ice
+        // a matte white sheet. With no env mask authored the reflection is
+        // unmasked, as the shader-type's own strength implies.
         float environmentReflectionMask = mat.envMaskIndex != 0u
             ? environmentMask
-            : normalAlphaSpecMask;
+            : (mat.materialKind == MATERIAL_KIND_MULTI_LAYER_PARALLAX
+                ? 1.0
+                : normalAlphaSpecMask);
         float environmentStrength = hasExplicitEnvironment
             ? max(mat.multiLayerEnvmapStrength, 0.0)
             : 1.0;
