@@ -14,6 +14,7 @@
 # Usage: docs/smoke-tests/exterior-shafts-content.sh [fnv|fo3|obl|sky|fo4|all]
 # BYRO_CONTENT_BIN overrides the engine binary; BYRO_CONTENT_OUT keeps captures; BYROREDUX_GAMES_DIR is the Steam
 # `common` directory. Needs a display or `xvfb-run`, a Vulkan device, python3 with numpy and Pillow. Exit 77 to skip.
+# BYRO_CLOUD_SEED selects the same cloud field for every capture (default 0).
 
 set -euo pipefail
 
@@ -26,6 +27,7 @@ HOURS=(12 7 17.5)
 
 [[ -x "$BIN" ]] || { echo "SKIP: engine binary not found at $BIN" >&2; exit 77; }
 mkdir -p "$OUT"
+printf '%s\n' "${BYRO_CLOUD_SEED:-0}" > "$OUT/cloud_seed.txt"
 if [[ -z "${DISPLAY:-}" ]]; then
     command -v xvfb-run >/dev/null || { echo "SKIP: no X display or xvfb-run" >&2; exit 77; }
     RUNNER=(xvfb-run -a)
@@ -62,7 +64,7 @@ fixture() {
 capture() { # game hour kind(final|radiance)
     local game="$1" hour="$2" kind="$3" debug=()
     [[ "$kind" == radiance ]] && debug=(--render-debug-mode volumetric_radiance)
-    ( cd "$DATA_DIR" && env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 BYRO_DEBUG_SERVER=0 BYRO_HOUR="$hour" \
+    ( cd "$DATA_DIR" && env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 BYRO_DEBUG_SERVER=0 BYRO_HOUR="$hour" BYRO_CLOUD_SEED="${BYRO_CLOUD_SEED:-0}" \
         "${RUNNER[@]}" timeout 300s "$BIN" "${ARGS[@]}" --bench-mode renderer-stepped --bench-camera static \
         --bench-frames 40 --upscaler taa --window-size 1280x720 "${debug[@]}" \
         --screenshot "$OUT/${game}_${hour}_${kind}.png" ) >"$OUT/${game}_${hour}_${kind}.log" 2>&1 \

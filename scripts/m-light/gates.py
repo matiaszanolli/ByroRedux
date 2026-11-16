@@ -324,6 +324,7 @@ class Row:
     # Set where a gate renders its references at a different sample count than
     # the run's (A5, CONTACT_REFERENCE_SPP_FACTOR); the manifest records it.
     reference_spp: int | None = None
+    temporal_seed: int | None = None
 
     @property
     def floor_combined(self) -> float:
@@ -346,11 +347,16 @@ def write_manifest(path: Path, rows: list[tuple[Row, str]], ctx: Context) -> Non
     with open(path, "w") as out:
         out.write("\t".join(MANIFEST_COLUMNS) + "\n")
         for row, key in rows:
+            # Temporal sequences use one seed and single moving/held frames;
+            # their parked references are engine captures, not Mitsuba seeds.
+            temporal = row.gate in {"A3", "A14", "SHD-006", "SHD-006-BASE"}
             values = [
                 row.gate, row.case, row.region, row.metric, f"{row.value:.6g}",
                 f"{row.floor_engine:.3g}", f"{row.floor_reference:.3g}", f"{row.floor_combined:.3g}",
-                row.frozen_floor, row.threshold, row.passed, str(ctx.tier), str(ctx.engine_frames),
-                ctx.engine_seeds, str(row.reference_spp or ctx.reference_spp), ctx.reference_seeds, ctx.k_exp, key,
+                row.frozen_floor, row.threshold, row.passed, str(ctx.tier), "1" if temporal else str(ctx.engine_frames),
+                str(row.temporal_seed if row.temporal_seed is not None else 0) if temporal else ctx.engine_seeds,
+                "" if temporal else str(row.reference_spp or ctx.reference_spp),
+                "" if temporal else ctx.reference_seeds, ctx.k_exp, key,
                 ctx.revision, ctx.gpu,
             ]
             out.write("\t".join(values) + "\n")
@@ -1148,12 +1154,11 @@ def temporal_error(moving: np.ndarray, parked: np.ndarray, mask: np.ndarray) -> 
     return float(np.sqrt(np.mean((m - p) ** 2)) / max(float(p.mean()), 1e-9))
 
 
-def gate_temporal(engine: Engine, store: ReferenceStore, ctx: Context, spp: int, gates: set[str]):
+def gate_temporal(engine: Engine, store: ReferenceStore, ctx: Context, spp: int, gates: set[str],
+                  seed: int = 0, debug_flags: str = "0"):
     """A14 moving blocker (RLT-SHD-010) and A3 camera pan (RLT-SHD-002):
-    the engine's `final` during and after a motion against itself parked and
-    converged at the same frame of the same path. The per-frame rows are
-    reported; the excess rows over the hold control are what the threshold
-    table gates. No reference: both sides carry the same indirect bias."""
+    compare each moving capture with the engine parked at the same pose.
+    A3 uses direct light and age-matched held controls; A14 retains final."""
     del store, spp
     rows = []
     stop = TEMPORAL_MOTION - 1
@@ -1171,41 +1176,49 @@ def gate_temporal(engine: Engine, store: ReferenceStore, ctx: Context, spp: int,
         # parked path would freeze the blocker too, it shares the clock).
         cases.append(("A14", "penumbra-moving", clock + ["--bench-camera", "static"]))
     if "A3" in gates:
-        cases.append(("A3", "penumbra", clock + ["--bench-camera", "pan"]))
+        cases.append(("A3", "penumbra", ["--bench-camera-length", str(TEMPORAL_MOTION),
+                                          "--upscaler", "taa", "--bench-camera", "pan"]))
     if "SHD-006" in gates:
-        # RLT-SHD-006: the A3 capture again with TAA's variance clip at 1.0
-        # beside the shipped 1.5, shadow filter on.
+        # A3 now measures direct light, so retain a separate final-image
+        # baseline for the TAA gamma comparison at the shipped 1.5.
+        cases.append(("SHD-006-BASE", "penumbra", clock + ["--bench-camera", "pan"]))
         cases.append(("SHD-006", "penumbra", clock + ["--bench-camera", "pan", "--rt-test-taa-gamma", "1.0"]))
     for gate, rung, extra in cases:
+        view = "direct_only" if gate == "A3" else "final"
         export = engine.out / "scenes" / f"{rung}-temporal"
         # The receiver in view at the rung's own (start) pose; the pan's
         # later poses see a rotated view of the same floor, so its mask is
         # taken from the parked capture's non-black floor pixels instead.
-        engine.capture(f"{gate}_export", rung, "final", 0, ctx.tier, export_dir=export)
+        engine.capture(f"{gate}_export", rung, "final", seed, ctx.tier, export_dir=export, debug_flags=debug_flags)
         masks = region_masks(export)
         floor = masks["pen_floor"]
-        moving = engine.sequence(f"{gate}_{rung}_moving", rung, ctx.tier, motion + post, bench_frames, extra)
+        moving = engine.sequence(f"{gate}_{rung}_moving", rung, ctx.tier, motion + post, bench_frames, extra,
+                                 view_mode=view, seed=seed, debug_flags=debug_flags)
         parked_at = {f: f for f in motion} | {f: stop for f in post}
         parked = {}
         for frame in sorted(set(parked_at.values())):
             parked[frame] = load_exr(engine.capture(
-                f"{gate}_{rung}_parked_f{frame}", rung, "final", 0, ctx.tier,
+                f"{gate}_{rung}_parked_f{frame}", rung, view, seed, ctx.tier,
                 extra=extra + ["--bench-camera-freeze-at", str(frame)],
-                bench_frames=frame + PARKED_SETTLE, bench_mode="renderer-stepped"))
+                bench_frames=frame + PARKED_SETTLE, bench_mode="renderer-stepped", debug_flags=debug_flags))
         # The floor: the same single-frame captures with the path held at
         # the stop pose from frame 0 (`--bench-camera-hold-at`: no motion
         # history; `--bench-camera-freeze-at` still travels the path up to its
         # frame, so as a control it is the moving run itself), against the
         # same converged reference — what per-frame sampling noise alone
         # contributes.
-        still = engine.sequence(f"{gate}_{rung}_still", rung, ctx.tier, post, bench_frames,
-                                extra + ["--bench-camera-hold-at", str(stop)])
+        held_post = list(TEMPORAL_POST_STOP) if gate == "A3" else post
+        still = engine.sequence(f"{gate}_{rung}_still", rung, ctx.tier, held_post, max(held_post) + 4,
+                                extra + ["--bench-camera-hold-at", str(stop)], view_mode=view, seed=seed,
+                                debug_flags=debug_flags)
 
         def mask_for(reference):
             return floor if gate == "A14" else erode(luminance(reference) > 1e-4, ERODE_PX)
 
-        floor_e = float(np.mean([temporal_error(load_exr(still[f][0]), parked[stop], mask_for(parked[stop]))
-                                 for f in post]))
+        post_controls = {f: temporal_error(load_exr(still[f - stop][0]), parked[stop], mask_for(parked[stop]))
+                         for f in post} if gate == "A3" else {}
+        floor_e = (float(np.mean([temporal_error(load_exr(still[f][0]), parked[stop], mask_for(parked[stop]))
+                                  for f in post])) if gate != "A3" else 0.0)
         # A sample during the motion also carries the run's cold start, since
         # the temporal accumulators are still filling at frame 32. Its floor
         # is therefore per frame: the same single frame of a run held at that
@@ -1215,7 +1228,8 @@ def gate_temporal(engine: Engine, store: ReferenceStore, ctx: Context, spp: int,
         cold = {}
         for frame in motion:
             held = engine.sequence(f"{gate}_{rung}_held_f{frame}", rung, ctx.tier, [frame], frame + 4,
-                                   extra + ["--bench-camera-hold-at", str(frame)])
+                                   extra + ["--bench-camera-hold-at", str(frame)], view_mode=view, seed=seed,
+                                   debug_flags=debug_flags)
             cold[frame] = temporal_error(load_exr(held[frame][0]), parked[frame], mask_for(parked[frame]))
         # The excess over the hold control, which the Q6 budgets are written
         # against (docs/audits/MLIGHT_thresholds.tsv): the value minus the
@@ -1225,12 +1239,14 @@ def gate_temporal(engine: Engine, store: ReferenceStore, ctx: Context, spp: int,
             image = load_exr(moving[frame][0])
             reference = parked[parked_at[frame]]
             phase = "during" if frame <= stop else f"post_stop_{frame - stop}"
-            control = cold.get(frame, floor_e)
+            control = cold.get(frame, post_controls.get(frame, floor_e))
             value = temporal_error(image, reference, mask_for(reference))
             rows.append((Row(gate, f"{rung}-{phase}", f"frame_{frame}", "temporal_error",
                              value, control, 0.0, passed="report"), ""))
             excess[frame] = (value - control, control)
         rows += temporal_excess_rows(gate, excess, motion, stop)
+    for row, _ in rows:
+        row.temporal_seed = seed
     return rows
 
 
@@ -1253,8 +1269,8 @@ def temporal_excess_rows(gate: str, excess: dict[int, tuple[float, float]], moti
 
     if gate == "A3":
         return [
-            row("penumbra-pan", "during_motion", "excess_over_hold_max", worst(motion)),
-            row("penumbra-pan", "post_stop_16", "excess_over_hold", excess[stop + A3_SETTLE_OFFSET]),
+            row("penumbra-direct-pan", "during_motion", "excess_over_hold_max", worst(motion)),
+            row("penumbra-direct-pan", "post_stop_16", "excess_over_hold", excess[stop + A3_SETTLE_OFFSET]),
         ]
     if gate == "A14":
         gated = [f for f in motion if f >= A14_GATED_FROM_FRAME]
@@ -1348,9 +1364,19 @@ def main() -> int:
     parser.add_argument("--spp", type=int, default=1024)
     parser.add_argument("--frames", type=int, default=64, help="engine frames averaged per capture")
     parser.add_argument("--warm-frames", type=int, default=20)
+    parser.add_argument("--temporal-seed", type=int, default=0,
+                        help="sampling seed offset for A3/A14 temporal captures")
+    parser.add_argument("--temporal-debug-flags", default="0",
+                        help="renderer debug mask for temporal attribution (diagnostic, not an acceptance run)")
     parser.add_argument("--profile", default="dev", choices=("dev", "release"))
     parser.add_argument("--cold", action="store_true", help="empty the reference cache first (A18)")
     args = parser.parse_args()
+    try:
+        temporal_mask = int(args.temporal_debug_flags, 0)
+    except ValueError:
+        parser.error("--temporal-debug-flags must be a decimal or 0x-prefixed integer")
+    if not 0 <= temporal_mask <= 0xFFFFFFFF:
+        parser.error("--temporal-debug-flags must fit an unsigned 32-bit mask")
 
     t_start = time.monotonic()
     out: Path = args.out.resolve()
@@ -1392,17 +1418,23 @@ def main() -> int:
     if "A5" in gates:
         rows += gate_contact(engine, store, ctx, args.spp)
     if gates & {"A3", "A14", "SHD-006"}:
-        rows += gate_temporal(engine, store, ctx, args.spp, gates)
+        rows += gate_temporal(engine, store, ctx, args.spp, gates, args.temporal_seed, args.temporal_debug_flags)
     if "SHD-005" in gates:
         rows += gate_reservoir_clamp(engine, store, ctx, args.spp)
 
-    apply_thresholds(rows, ctx.tier, load_thresholds())
+    # Debug-mask attribution deliberately changes the renderer; never judge
+    # those rows against thresholds frozen for normal rendering.
+    judged_rows = [(row, key) for row, key in rows
+                   if row.gate not in {"A3", "A14", "SHD-006", "SHD-006-BASE"}
+                   or temporal_mask == 0]
+    apply_thresholds(judged_rows, ctx.tier, load_thresholds())
     manifest = out / "manifest.tsv"
     write_manifest(manifest, rows, ctx)
     wall = time.monotonic() - t_start
     with open(out / "run-metadata.txt", "w") as meta:
         meta.write(f"revision={ctx.revision}\ngpu={ctx.gpu}\nmitsuba={mi.__version__}\nvariant={variant}\n")
         meta.write(f"tier={ctx.tier}\nengine_frames={ctx.engine_frames}\nreference_spp={ctx.reference_spp}\n")
+        meta.write(f"temporal_seed={args.temporal_seed}\ntemporal_debug_flags={args.temporal_debug_flags}\n")
         meta.write(f"cache={'cold' if args.cold else 'warm'}\nreferences_rendered={store.timings['rendered']}\n")
         meta.write(f"references_cached={store.timings['cached']}\n")
         meta.write(f"reference_render_seconds={store.timings['seconds']:.1f}\nwall_seconds={wall:.1f}\n")

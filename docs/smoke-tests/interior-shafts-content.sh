@@ -49,6 +49,8 @@
 #   BYRO_INTERIOR_BIN   engine binary (default target/release/byroredux); BYRO_INTERIOR_OUT keeps captures;
 #   BYRO_INTERIOR_PORT  first debug port (default 19900; each cell takes the next one);
 #   BYRO_INTERIOR_ONLY  comma-separated cell ids to run instead of the whole list.
+#   BYRO_INTERIOR_LOG   optional RUST_LOG filter; retain app_step=info for door transitions.
+#   BYRO_CLOUD_SEED     repeatable outdoor cloud field (default 0).
 # Needs xvfb-run or a display, a Vulkan device, python3 with numpy and Pillow, and the games' data (a game whose
 # data is absent is skipped). Exit 0 when every run cell passes, 1 when any fails, 77 when nothing could run.
 
@@ -60,6 +62,7 @@ export BYRO_BIN="${BYRO_INTERIOR_BIN:-$ROOT/target/release/byroredux}"
 export BYRO_DBG="${BYRO_INTERIOR_DBG:-$ROOT/target/release/byro-dbg}"
 export BYRO_OUT="${BYRO_INTERIOR_OUT:-$(mktemp -d /tmp/byro-interior-shafts.XXXXXX)}"
 export BYRO_PORT0="${BYRO_INTERIOR_PORT:-19900}"
+export BYRO_CLOUD_SEED="${BYRO_CLOUD_SEED:-0}"
 
 WHICH="${1:-all}"
 INVENTORY_ONLY=0
@@ -70,6 +73,7 @@ export BYRO_WHICH="$WHICH" BYRO_INVENTORY_ONLY="$INVENTORY_ONLY"
 [[ -x "$BYRO_BIN" ]] || { echo "SKIP: engine binary not found at $BYRO_BIN" >&2; exit 77; }
 [[ -x "$BYRO_DBG" ]] || { echo "SKIP: byro-dbg not found at $BYRO_DBG" >&2; exit 77; }
 mkdir -p "$BYRO_OUT"
+printf '%s\n' "$BYRO_CLOUD_SEED" > "$BYRO_OUT/cloud_seed.txt"
 if [[ -z "${DISPLAY:-}" ]]; then
     command -v xvfb-run >/dev/null || { echo "SKIP: no X display or xvfb-run" >&2; exit 77; }
     export BYRO_RUNNER=xvfb
@@ -82,7 +86,7 @@ if ss -ltn "sport = :$BYRO_PORT0" 2>/dev/null | grep -q LISTEN; then
 fi
 
 exec python3 -I - <<'PY'
-import json, os, re, shutil, subprocess, sys, time
+import json, os, re, shutil, signal, subprocess, sys, time, uuid
 from pathlib import Path
 
 import numpy as np
@@ -164,11 +168,16 @@ def dbg(port, *cmds, timeout=180):
 
 def luma(path):
     a = np.asarray(Image.open(path).convert("RGB")).astype(float)
+    if a.shape != (720, 1280, 3):
+        raise RuntimeError(f"{path} has shape {a.shape}, expected 720x1280 RGB")
     return a @ np.array([0.2126, 0.7152, 0.0722])
 
 def shot(port, name):
-    dbg(port, f"screenshot {name}")
-    src = ROOT / "screenshots" / name
+    # A failed earlier run may have left its screenshot in the engine cwd.
+    # Use a fresh source name so that file can never be mistaken for this shot.
+    source_name = f"shaft_{uuid.uuid4().hex}_{name}"
+    dbg(port, f"screenshot {source_name}")
+    src = ROOT / "screenshots" / source_name
     for _ in range(80):
         if src.exists():
             break
@@ -256,10 +265,10 @@ def wait_ready(port):
         n = len(re.findall(r"Entity \d+ ", dbg(port, "entities")))
         same = same + 1 if (n == last and n >= MIN_ENTITIES) else 0
         if same >= 2:
-            return True
+            return n
         last = n
         time.sleep(3)
-    return False
+    return None
 
 def wait_stable(port):
     """Streaming can outlast the first rendered frames: wait for the fog-volume count to stop changing."""
@@ -349,12 +358,13 @@ def run_cell(i, game, profile, cell, role, note):
     tag = f"{game}_{cell}" + ("_door" if ROUTE == "door" else "")
     log = open(OUT / f"{tag}.engine.log", "w")
     env = dict(os.environ, BYRO_DEBUG_SERVER="1", BYRO_DEBUG_PORT=str(port),
-               RUST_LOG="warn,byroredux::cell_loader::transition=info,byroredux::app_step=info")  # app_step logs "Cell transition applied"
+               BYROREDUX_SETTINGS_PATH=str(OUT / f"{tag}.settings.toml"),
+               RUST_LOG=os.environ.get("BYRO_INTERIOR_LOG", "warn,byroredux::cell_loader::transition=info,byroredux::app_step=info"))  # app_step logs "Cell transition applied"
     for v in ("WAYLAND_DISPLAY", "XDG_SESSION_TYPE"):
         env.pop(v, None)
     proc = subprocess.Popen(runner() + [BIN, "--game", profile, "--cell", cell, "--bench-frames", "60",
                                         "--bench-hold", "--fly", "--window-size", "1280x720"],
-                            cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
+                            cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     rec = {"game": game, "cell": cell, "role": role, "note": note, "route": ROUTE}
     try:
         t0 = time.time()
@@ -364,20 +374,28 @@ def run_cell(i, game, profile, cell, role, note):
             if time.time() - t0 > 420:
                 rec["status"] = "boot-timeout"; return rec
             time.sleep(1)
-        if not wait_ready(port):
+        direct_count = wait_ready(port)
+        if direct_count is None:
             rec["status"] = "invalid"; rec["why"] = "the world never rendered (loading cover or stalled boot)"; return rec
+        rec["direct_entity_count"] = direct_count
+        rec["measured_entity_count"] = direct_count
         if ROUTE == "door":
             fields, bad = door_round_trip(port, OUT / f"{tag}.engine.log", cell)
             if bad:
                 rec["status"], rec["why"] = bad
                 return rec
             rec.update(fields)
-            if not wait_ready(port):
+            returned_count = wait_ready(port)
+            if returned_count is None:
                 rec["status"] = "invalid"; rec["why"] = "the interior never rendered after the door transition"; return rec
+            rec["measured_entity_count"] = returned_count
         # Hold everything but the lighting still: a running game clock moves the sun and sky during a capture
         # pair, and auto-exposure re-adapts after every change; both would read as noise or as a false shaft.
         dbg(port, "time.pause", "exposure fixed 1.0")
         wait_stable(port)
+        entity_snapshot = OUT / f"{tag}.entities.txt"
+        entity_snapshot.write_text(dbg(port, "entities"))
+        rec["entity_snapshot"] = entity_snapshot.name
         inv = inventory(port)
         # Measure the in-scatter view, not the finished frame: a window or roof hole shows the sky, and the sky
         # changes between noon and midnight whether or not any shaft exists. The radiance view holds only the
@@ -390,6 +408,9 @@ def run_cell(i, game, profile, cell, role, note):
                             "show_sky": inv["show_sky"], "portal_radiance": inv["portal_radiance"],
                             "sources": sorted({v["source"] for v in inv["volumes"]}),
                             "extinction_max": max([v["extinction"] for v in inv["volumes"]] or [0.0])}
+        # Keep the individual names and centres so direct and door inventories
+        # can identify which volumes vanished, not just that their counts differ.
+        rec["volume_details"] = inv["volumes"]
         if INVENTORY_ONLY:
             rec["status"] = "inventory"; return rec
         if role in ("shaft", "gap"):
@@ -428,12 +449,21 @@ def run_cell(i, game, profile, cell, role, note):
         except Exception:
             pass
         time.sleep(3)
-        proc.terminate()
+        # xvfb-run and the engine belong to this private session. Never kill
+        # unrelated Xvfb servers belonging to another run or desktop.
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
         try:
             proc.wait(timeout=15)
         except subprocess.TimeoutExpired:
-            proc.kill()
-        subprocess.run(["pkill", "-x", "Xvfb"], check=False)
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait()
+        log.close()
 
 records = []
 for i, (game, profile, cell, role, note) in enumerate(CELLS):

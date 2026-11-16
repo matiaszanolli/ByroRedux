@@ -19,6 +19,7 @@
 # BYRO_SEAM_BIN overrides the engine binary; BYRO_SEAM_OUT keeps captures in a chosen directory;
 # BYROREDUX_FNV_DATA / BYROREDUX_SKYRIMSE_DATA name the Data directories (defaults below);
 # SEAM_TOLERANCE sets the gate (default 2.5). Exit 77 when data or a display is missing.
+# BYRO_CLOUD_SEED selects the same cloud field for every capture (default 0).
 
 set -euo pipefail
 
@@ -33,6 +34,7 @@ FAR_M=512
 
 [[ -x "$BIN" ]] || { echo "SKIP: engine binary not found at $BIN" >&2; exit 77; }
 mkdir -p "$OUT"
+printf '%s\n' "${BYRO_CLOUD_SEED:-0}" > "$OUT/cloud_seed.txt"
 if [[ -z "${DISPLAY:-}" ]]; then
     command -v xvfb-run >/dev/null || { echo "SKIP: no X display or xvfb-run" >&2; exit 77; }
     RUNNER=(xvfb-run -a)
@@ -44,7 +46,8 @@ fi
 capture() {
     local label="$1" data="$2" far="$3" tag="$4"
     shift 4
-    ( cd "$data" && env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 BYRO_DEBUG_SERVER=0 \
+    ( cd "$data" && env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 BYRO_DEBUG_SERVER=0 BYRO_CLOUD_SEED="${BYRO_CLOUD_SEED:-0}" \
+        BYROREDUX_SETTINGS_PATH="$OUT/settings_${label}_${tag}.toml" \
         "${RUNNER[@]}" timeout 400s "$BIN" "$@" \
         --bench-mode renderer-stepped --fly --bench-camera static --bench-frames 40 \
         --upscaler taa --window-size 1280x720 --fog-grid-far-m "$far" \
@@ -90,6 +93,10 @@ case "$WHICH" in
 esac
 # SKIP != PASS: with no game captured the comparison below finds nothing and would report a 0.00 pass.
 (( ran > 0 )) || exit 77
+if [[ "$WHICH" == all && "$ran" -ne 2 ]]; then
+    echo "SKIP: A6 requires both FNV and Skyrim fixtures; only $ran ran" >&2
+    exit 77
+fi
 
 python3 -I - "$OUT" "$NEAR_M" "$FAR_M" "${GATE:-1}" "${SEAM_TOLERANCE:-2.5}" <<'PY'
 import sys
@@ -113,7 +120,10 @@ REGIONS = {
 
 
 def load(label, tag):
-    img = np.asarray(Image.open(out / f"{label}_{tag}.png").convert("RGB")).astype(float)
+    path = out / f"{label}_{tag}.png"
+    img = np.asarray(Image.open(path).convert("RGB")).astype(float)
+    if img.shape != (720, 1280, 3):
+        sys.exit(f"FAIL: {path} has shape {img.shape}, expected 720x1280 RGB; capture is not comparable")
     return img.mean(axis=2)
 
 

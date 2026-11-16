@@ -106,7 +106,11 @@ class Engine:
         with tempfile.TemporaryDirectory() as settings_dir:
             env = dict(os.environ, RUST_LOG="warn",
                        BYROREDUX_SETTINGS_PATH=str(Path(settings_dir) / "settings.toml"))
+            # Separate anchor and comparison processes must see the same cloud shadows.
+            env.setdefault("BYRO_CLOUD_SEED", "0")
             with open(log_path, "w") as log_file:
+                log_file.write(f"cloud_seed={env['BYRO_CLOUD_SEED']}\n")
+                log_file.flush()
                 subprocess.run([str(self.binary), *args, *extra], cwd=workdir, env=env,
                                stdout=log_file, stderr=subprocess.STDOUT, timeout=1800)
         text = log_path.read_text(errors="replace")
