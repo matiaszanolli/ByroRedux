@@ -970,11 +970,14 @@ Four inject inputs carry more than their binding type suggests:
   smoke or fog, and on overflow each list keeps the nearest entries (the CPU
   input is distance-sorted).
 - **The aperture UBO lives in composite, not here.** `CompositeParams`
-  (composite set 0, binding 3) ends in `sky_aperture_count` plus up to
+  (composite set 0, binding 3) carries `sky_aperture_count` plus up to
   `MAX_COMPOSITE_SKY_APERTURES` (256) `CompositeSkyAperture` entries (48 B
   each), which `composite.frag::skyThroughAuthoredWindow` tests to show
-  outdoor sky through authored openings. Only the prefix below the count is
-  written each frame; the 12 KB tail stays allocated but unflushed.
+  outdoor sky through authored openings, and ends in `view_proj` *after* the
+  whole aperture array. The upload is two ranges (`composite_upload_ranges`):
+  the prefix through the live apertures, and the `view_proj` tail, which is
+  always written (#6836 — a prefix alone never reaches it); the unused
+  aperture tail stays allocated but unflushed.
 
 `volumetrics_integrate.comp` (3 bindings — a separate, much smaller
 descriptor set on the same `set = 0` index; do not conflate with the table
