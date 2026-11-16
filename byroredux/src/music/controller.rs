@@ -725,10 +725,11 @@ pub(crate) mod tests {
         assert_eq!(music.track(Layer::Location, &out).unwrap().1, 2.0, "the held seconds did not count");
     }
 
-    /// #6903 — Oblivion.exe's `0x6acd10`: combat replaces a stream, which does not come back; a
-    /// plain scripted track (`PlayMusic`, #6899) replaces Battle instead.
+    /// #6903 — Oblivion.exe's `0x6acd10`: combat replaces a stream, which does not come back.
+    /// #6946 — Fallout3.exe drops a `PlayMusic` while Battle plays, the same flag. A Script
+    /// directive Battle does not end (no game's translation makes one now) replaces Battle instead.
     #[test]
-    fn battle_ends_an_oblivion_stream_and_a_plain_scripted_track_replaces_battle() {
+    fn battle_ends_a_stream_or_a_play_music_track_and_an_unflagged_one_replaces_battle() {
         let mut out = FakeOutput::default();
         let mut music = MusicController::seeded(1);
         let battle = playlist("Battle", &["music\\battle\\x.mp3"]);
@@ -740,10 +741,14 @@ pub(crate) mod tests {
         assert!(music.directive(Layer::Script).is_none(), "combat ends the stream (MUS-CMB-004)");
         assert!(!out.voices.contains_key(&8));
         assert_eq!(out.voices[&16], ("music\\battle\\x.mp3".to_string(), false), "Battle plays");
+        music.set(Layer::Script, Some(Directive { ends_on_battle: true, ..playlist("MUSDefaultBattle", &["music\\b\\t.mp3"]) }), &mut out);
+        music.step(fight, || battle.clone(), &mut out);
+        assert!(music.directive(Layer::Script).is_none(), "a PlayMusic under Battle is dropped");
+        assert!(!out.voices.contains_key(&8) && !out.voices[&16].1, "Battle plays on: {:?}", out.voices);
         music.set(Layer::Script, Some(playlist("Tension", &["music\\tension\\t.mp3"])), &mut out);
         music.step(fight, || battle.clone(), &mut out);
         assert_eq!(out.voices[&8], ("music\\tension\\t.mp3".to_string(), false));
-        assert!(out.voices[&16].1, "PlayMusic replaces the Battle music (MUS-SCR-005, #6899)");
+        assert!(out.voices[&16].1, "an unflagged Script directive replaces the Battle music");
         assert!(music.status(&out)[3].contains("paused under Script"), "{:?}", music.status(&out));
     }
 
