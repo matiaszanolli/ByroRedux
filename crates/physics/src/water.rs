@@ -513,13 +513,6 @@ pub fn local_current(kind: WaterKind, flow: WaterFlow, bed: Option<&WaterBedFiel
     }
 }
 
-/// [`authored_wave_height_with_weather`] over a known bed: the wind-driven swell
-/// (`WaterMaterial::swell`) shoals, turns toward the shore and breaks exactly
-/// as `water.vert` does, and the authored ripple pair is capped by the same
-/// breaking limit and refracted the same way. `bed` is the plane's
-/// [`WaterBedField`]; `None`, or a position outside it, is open water. The
-/// bed field and the mesh vertices come from the same LAND samples, so the
-/// visible crest and this one cannot disagree about the depth.
 /// The authored ripple's open-water amplitude: the material's amplitude times
 /// the weather's wind scale, clamped as `water.vert` clamps the uploaded
 /// `tune.w`. The crest sampler caps it further by the water under it; the
@@ -529,6 +522,13 @@ fn ripple_amplitude(material: &WaterMaterial, wind_wave_scale: f32) -> f32 {
     (material.wave_amplitude * wind_wave_scale).clamp(0.0, WATER_WAVE_AMPLITUDE_MAX)
 }
 
+/// [`authored_wave_height_with_weather`] over a known bed: the wind-driven swell
+/// (`WaterMaterial::swell`) shoals, turns toward the shore and breaks exactly
+/// as `water.vert` does, and the authored ripple pair is capped by the same
+/// breaking limit and refracted the same way. `bed` is the plane's
+/// [`WaterBedField`]; `None`, or a position outside it, is open water. The
+/// bed field and the mesh vertices come from the same LAND samples, so the
+/// visible crest and this one cannot disagree about the depth.
 pub fn authored_wave_height_over_bed(
     material: &WaterMaterial,
     position: Vec3,
