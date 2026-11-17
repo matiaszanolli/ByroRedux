@@ -48,28 +48,34 @@ CODE-CONFIRMED: atomic write order, ring never clobbers the last good save, head
 ### SAVE-4 — LOW — `setav` / `modav` accept any actor-value key, and a bad key makes every later save fail
 - **Where**: `byroredux/src/commands/actor_value.rs`
 - **Problem**: a key whose slot is not in the load order (including local id 0) enters `ActorValues`; `save_key` then returns `UnownedFormId` on every save until a reload. Normal paths cannot produce such a key, and the abort is loud. The intended refusal is pinned by a test, so this is a robustness note for a debug command (Dim 4 rated it MEDIUM; the orchestrator rated it LOW as console-only and self-clearing).
+- **Outcome**: 110790dce. `setav` / `modav` refuse a key no loaded plugin owns (and local id 0) when a `LoadOrderIdentity` is installed.
 
 ### SAVE-5 — LOW — no pre-write actor-value identity check, and the abort names `entity 0`
 - **Where**: `crates/scripting/src/actor_value_save.rs`, `byroredux/src/cell_loader/reference_state.rs` (`codec::save_values(world, 0, ..)`), `SkillProgress`.
 - **Problem**: unresolvable keys surface from inside `save_world`, after the gate block, and the error names entity 0 for parked `PersistentReferenceStates` rows and for `SkillProgress`; for parked rows it also names the wrong column. The abort itself is clean and writes nothing; no realistic path reaches it today beyond SAVE-1 and SAVE-4.
 - **Fix**: a gate beside `validate_form_ids` that resolves every actor-value key and names the entity and column.
+- **Outcome**: 110790dce. `validate_actor_value_identities` dry-runs the real portable codecs before the snapshot (new `ValidationKind::ActorValueIdentity`); a parked row is named with its own reference pair (`PersistentReferenceStates::actor_value_errors`).
 
 ### SAVE-6 — LOW — `PendingDetectionEvents` and `PlayerActionNoise` straddle a load, and one allowlist reason is false
 - **Where**: `discard_outgoing_session_requests` (`byroredux/src/save_io/live_load.rs`), `detection/tick.rs:366`, `registry_completeness_tests.rs`.
 - **Problem**: producers run after the detection tick, which drains them next frame, so an F9 in between applies the outgoing session's events to the loaded world's first tick (same class as 11-15 SAVE-3). The `NOT_SAVED_BY_DESIGN` reason for `PendingDetectionEvents` ("none exists yet") has been false since 995ed089b.
 - **Found by**: Dim 4 and Dim 5.
+- **Outcome**: 110790dce. The load drain discards both; the two allowlist reasons are corrected.
 
 ### SAVE-7 — LOW — the console `save` can still save in the tick of a scripted move
 - **Where**: `DebugDrainSystem` (Late stage) versus `step_actor_relocations`.
 - **Problem**: the 11-15 SAVE-4 deferral lives only in the F5 / pause-menu drain; console `save` and `save <slot>` run before the relocation step. Residual of the earlier fix.
+- **Outcome**: 110790dce. The console `save` refuses with "save DEFERRED" while a move is queued; the player-action drain keeps its bounded wait and saves through `save_now`.
 
 ### SAVE-8 — LOW — ring resume tie-break differs from `slots_by_recency`
 - **Where**: `crates/save/src/disk.rs` (`cursor_after_newest` uses `max_by_key(mtime)`; `slots_by_recency` breaks ties by higher slot number).
 - **Problem**: only with identical mtimes (FAT / exFAT or an mtime-normalizing copy), where the resumed cursor can pick the wrong slot to overwrite next. Writes stay atomic, so nothing is torn.
+- **Outcome**: 110790dce. `cursor_after_newest` breaks ties like `slots_by_recency`.
 
 ### SAVE-9 — LOW — the `Background` allowlist reason is still false
 - **Where**: `registry_completeness_tests.rs` (`Background`: "no live production mutator").
 - **Problem**: `player_identity_sync_system` and `player_body.rs:286` write it from the saved `CharacterIdentity`. Noted but not fixed on 11-15. A garbled comment at `registry.rs:66-70` rides along.
+- **Outcome**: 110790dce. The reason names `player_identity_sync_system`; the comment is repaired.
 
 ### Format discipline (Dim 2) — three LOW, two INFO
 - **D2-01 (LOW)**: `registered_type_names` (`serde_default_guard_tests.rs:10-23`) matches only the turbofish register forms, so the six codec-registered columns (`ActorValues`, `ActorVitals`, `TimedRestorations`, `ActiveMagicEffects`, `SkillProgress`, `PersistentReferenceStates`) are visible only through four hand-listed files. The next codec wire type in an unlisted file escapes both serde guards, and a shape change there would not force a `FORMAT_MAJOR` bump.
