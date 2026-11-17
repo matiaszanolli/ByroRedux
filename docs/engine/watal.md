@@ -505,9 +505,13 @@ Rapids third normal layer also now scrolls at the CPU-baked authored rate
 fast), strobing the whitewater. Since 2026-11-16 the flow term moves the pattern at
 the physics current's own speed (see the directional-scroll paragraph below),
 so on Skyrim rivers the authored layer rates carry nearly all visible
-transport. The weather term is still a fixed `WEATHER_SCROLL_PER_BU_PER_S`
-UV/s with no per-layer scale — the same unit gap the flow term had — and is
-open.
+transport. The wind term follows the same rule: `wave_scrolls` decodes
+the (kind-damped) weather scroll back to a wind strength and adds the wind's
+share of the calm drift band above its dead-calm floor, in BU/s, converted by
+each layer's own UV scale. It used to add the weather scroll as a raw UV rate,
+which on Skyrim's finest layer swept the pattern sideways ~6× faster than
+intended; at the wind field's maximum a river now drifts ~8.5 BU/s with the
+wind on layer A.
 
 **Directional-scroll frame (#4544 superseded by #4727, 2026-09-24; scoped per
 game by #4910, 2026-10-01):** WATR's per-layer wind angles are wind-FROM
