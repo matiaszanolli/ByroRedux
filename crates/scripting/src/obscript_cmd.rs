@@ -178,8 +178,10 @@ fn run_row(row: &Command, world: &World, game: Game, args: &[ObScriptValue], con
 /// The bridged CTDA getters whose index is the same function on Oblivion as on Fallout 3 / New Vegas
 /// (UESP *Oblivion Mod:Function Indices*: 5 `GetLocked`, 18 `GetCurrentTime`, 32 `GetInSameCell`,
 /// 50 `GetTalkedToPC`) and whose VM body reads the same state there (#6554). 277
-/// `GetBaseActorValue` is the same function too but stays declined: its actor-value code has no
-/// Oblivion translation (no AVIFs), as `GetActorValue` (14) has none. The rest have no Oblivion index
+/// `GetBaseActorValue` is the same function too but stays declined (#7038): no installed Oblivion plugin
+/// uses it in a condition (0 of 64,396), and on Oblivion it reports the base *including* constant-ability
+/// fortify effects (CS wiki *Common Mistakes*), where this VM's getter reads the base alone. Its actor-value
+/// code now resolves (#7009), so the gate is the semantics, not the roster. The rest have no Oblivion index
 /// of that function.
 const OBLIVION_CONDITION_GETTERS: &[u16] = &[0x1005, 0x1012, 0x1020, 0x1032];
 

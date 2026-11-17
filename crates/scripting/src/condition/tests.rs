@@ -2778,7 +2778,8 @@ fn script_getter_functions_are_modeled_where_their_index_aligns_and_read_the_vms
             world.insert_resource(crate::ScriptGame(game));
             // 365 on Oblivion is the dialect's GetPlayerInSEWorld, modeled in its own right; 50, 5,
             // 18 and 32 are GetTalkedToPC / GetLocked / GetCurrentTime / GetInSameCell there too
-            // (#6554). 277 is GetBaseActorValue on Oblivion but its code has no AVIF to read.
+            // (#6554). 277 is GetBaseActorValue on Oblivion; it stays declined there (#7038): no installed
+            // plugin uses it, and Oblivion's reads the base with ability fortify effects included.
             let oblivion_aligned = matches!(index, 365 | 50 | 5 | 18 | 32);
             let expected = game == Fallout3NV || (oblivion_aligned && game == Oblivion);
             assert_eq!(is_modeled(&world, &condition), expected, "{index} on {game:?}");
