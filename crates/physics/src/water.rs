@@ -806,12 +806,11 @@ fn waves_require_contact_rescan(
     let Some(contacts) = world.query::<WaterContact>() else {
         return false;
     };
-    let needs_rescan = contacts.iter().any(|(_, contact)| {
+    contacts.iter().any(|(_, contact)| {
         contact.surface_entity.is_some()
             && (contact.submerged_fraction > 0.0
                 || contact.depth.abs() <= max_amplitude + WATERLINE_HYSTERESIS)
-    });
-    needs_rescan
+    })
 }
 
 /// The furthest animated displacement can move `surface` from its rest

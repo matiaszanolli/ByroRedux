@@ -255,12 +255,11 @@ pub fn destination_cell_label(
     destination_form_id: u32,
 ) -> Option<String> {
     let index = world.try_resource::<super::index::LoadedCellIndex>()?;
-    let label = index
+    index
         .0
         .cells
         .locate_refr(destination_form_id)
-        .map(|(cell, _)| cell_label(&cell.to_owned()));
-    label
+        .map(|(cell, _)| cell_label(&cell.to_owned()))
 }
 
 /// Resolve a door's destination REFR to its parent cell and enqueue the

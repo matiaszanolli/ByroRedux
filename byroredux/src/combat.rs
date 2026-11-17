@@ -2269,8 +2269,7 @@ mod tests {
                 world.insert(target, HitParts(parts));
             }
             combat_damage_system(&world, 0.0);
-            let damage = world.resource::<CombatState>().last.clone().unwrap().damage;
-            damage
+            world.resource::<CombatState>().last.clone().unwrap().damage
         };
         let per_part = build(Some(vec![strike(0, 5.0), strike(1, 25.0)]));
         assert!((per_part - 11.0).abs() < 1e-4, "5 -> 1 (floor) and 25 -> 10, got {per_part}");
@@ -2475,10 +2474,9 @@ mod tests {
             let player = world.spawn();
             world.insert(player, CharacterLevel { level, xp: 0 });
             grant_experience(&world, player, 10_000);
-            let progress = *world
+            *world
                 .get::<CharacterLevel>(player)
-                .expect("level remains present");
-            progress
+                .expect("level remains present")
         };
 
         assert_eq!(

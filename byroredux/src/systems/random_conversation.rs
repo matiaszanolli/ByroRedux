@@ -926,8 +926,7 @@ mod tests {
                 random_conversation_system(&world, 50.0);
             }
             assert!(world.query::<ConversationHold>().is_none_or(|holds| holds.iter().next().is_none()), "a hello holds nobody");
-            let events = world.query::<StoryEvent>().map(|events| events.iter().map(|(_, e)| *e).collect()).unwrap_or_default();
-            events
+            world.query::<StoryEvent>().map(|events| events.iter().map(|(_, e)| *e).collect()).unwrap_or_default()
         };
         let walked = run(true);
         assert_eq!(walked.len(), 1, "one hello for the one new target: {walked:?}");

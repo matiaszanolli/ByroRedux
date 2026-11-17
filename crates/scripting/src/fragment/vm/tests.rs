@@ -3943,8 +3943,7 @@ fn is_in_menu_mode_reads_the_menu_registry() {
         world.insert_resource(registry);
         world.resource_mut::<QuestStageState>().set_stage(Q, 10);
         crate::fragment::quest_fragment_dispatch_system(&world);
-        let stage = world.resource::<QuestStageState>().get_stage(Q);
-        stage
+        world.resource::<QuestStageState>().get_stage(Q)
     };
     assert_eq!(answer(&["HUD Menu", "InventoryMenu"]), 20, "the inventory pauses the game");
     assert_eq!(answer(&["HUD Menu", "Dialogue Menu"]), 30, "the dialogue menu does not");

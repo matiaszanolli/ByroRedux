@@ -1241,7 +1241,7 @@ pub(crate) fn player_current_drift(
 /// marker, so an absent storage means "no placed currents", never "no water".
 fn placed_current_flow_at(world: &World, pos: Vec3) -> Option<WaterFlow> {
     let current_q = world.query::<WaterCurrentVolume>()?;
-    let flow = current_q
+    current_q
         .iter()
         .find(|(_, current)| {
             let v = &current.volume;
@@ -1252,8 +1252,7 @@ fn placed_current_flow_at(world: &World, pos: Vec3) -> Option<WaterFlow> {
                 && pos.z >= v.min[2]
                 && pos.z <= v.max[2]
         })
-        .map(|(_, current)| current.flow);
-    flow
+        .map(|(_, current)| current.flow)
 }
 
 /// The nearest water column intersecting the player capsule, as sampled from

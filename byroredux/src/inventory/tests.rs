@@ -1158,8 +1158,7 @@ fn a_theft_is_witnessed_only_by_a_detector_whose_level_is_seen() {
             .unwrap();
         world.insert(onlooker, Awareness { level, ..Awareness::default() });
         transfer_loot(&world, player, chest, LootSelection::All).unwrap();
-        let gold = world.resource::<ObScriptLedger>().crime_gold;
-        gold
+        world.resource::<ObScriptLedger>().crime_gold
     };
     assert_eq!(theft(DetectionLevel::Lost), 0, "every detector below Seen: no witness, no bounty");
     assert_eq!(theft(DetectionLevel::Noticed), 0, "Noticed is not Seen (Q5)");

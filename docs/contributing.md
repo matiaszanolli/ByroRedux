@@ -25,7 +25,7 @@ New to the codebase? Read in this order:
 
 | Tool | Minimum | Notes |
 |---|---|---|
-| **Rust** | stable (2021 edition) | `rustup toolchain install stable` |
+| **Rust** | rustc ≥ 1.96 (2024 edition; pinned by rust-toolchain.toml) | `rustup toolchain install stable` |
 | **Vulkan driver** | 1.3 with `VK_KHR_ray_query` | Any RTX 20xx+ / RX 6000+ / Intel Arc GPU works |
 | **C++17 compiler** | GCC 10+ / Clang 14+ | For the `cxx` bridge (`crates/cxx-bridge`) |
 | **Linux** | — | Primary target. Windows/macOS untested. |

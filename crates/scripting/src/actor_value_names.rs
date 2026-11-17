@@ -291,7 +291,7 @@ pub fn condition_actor_value_form(world: &World, param_1: u32) -> Option<u32> {
     if names.contains_form(param_1) {
         return Some(param_1);
     }
-    let form = match game {
+    match game {
         GameKind::Fallout3NV => {
             crate::obscript_actor_values::fallout_actor_value_name(param_1).and_then(|name| names.resolve(name))
         }
@@ -301,8 +301,7 @@ pub fn condition_actor_value_form(world: &World, param_1: u32) -> Option<u32> {
             .flatten()
             .filter(|&form| names.contains_form(form)),
         _ => None,
-    };
-    form
+    }
 }
 
 /// Install the load order's [`ActorValueNames`]. Returns how many names map.

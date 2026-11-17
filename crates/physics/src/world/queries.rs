@@ -593,8 +593,7 @@ impl PhysicsWorld {
             filter = filter.exclude_rigid_body(body);
         }
         let queries = self.queries(filter);
-        let overlaps = queries.intersect_shape(pos, &shape).next().is_some();
-        overlaps
+        queries.intersect_shape(pos, &shape).next().is_some()
     }
 
     /// The bodies whose solid colliders overlap any collider of `body` and pass

@@ -115,9 +115,7 @@ pub fn say(world: &World, speaker: EntityId, topic: u32, target: Option<EntityId
         )
     };
     let speaking = SpeakingLine { topic_form_id: line.topic_form_id, info_form_id: Some(line.info.form_id), remaining: seconds, started: false };
-    if world.try_resource::<PendingScriptedLines>().is_none() {
-        return None;
-    }
+    world.try_resource::<PendingScriptedLines>()?;
     // One line at a time per speaker: a new one replaces the one being spoken. A Say-Once line is
     // spent when it STARTS ([`obscript_speech_system`]), not when it is asked for: two `SayTo`s in
     // one frame (New Vegas's shooting-range trigger fires `OnTriggerEnter` and `OnTrigger` together)

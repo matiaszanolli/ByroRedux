@@ -829,8 +829,7 @@ fn load_reset_makes_the_first_cloc_independent_of_the_outgoing_session() {
             emit_change_location_on_key_change(&world, Some(loaded_key), player, Some(loaded_lctn)),
             "the first post-load frame raises CLOC whatever the outgoing key was"
         );
-        let event = *world.get::<StoryEvent>(player).expect("the CLOC marker");
-        event
+        *world.get::<StoryEvent>(player).expect("the CLOC marker")
     };
     for (key, lctn) in [(2, 0xBBBB), (1, 0xAAAA)] {
         let event = cloc_after_load(key, lctn);

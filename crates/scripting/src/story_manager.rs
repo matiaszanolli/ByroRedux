@@ -2133,11 +2133,10 @@ mod tests {
                 );
             }
             story_manager_dispatch_system(&world);
-            let started = world
+            world
                 .try_resource::<QuestStageState>()
                 .unwrap()
-                .is_started(QuestFormId(0x888));
-            started
+                .is_started(QuestFormId(0x888))
         };
         assert!(
             gate(false),
@@ -2192,11 +2191,10 @@ mod tests {
                 );
             }
             story_manager_dispatch_system(&world);
-            let started = world
+            world
                 .try_resource::<QuestStageState>()
                 .unwrap()
-                .is_started(QuestFormId(0x888));
-            started
+                .is_started(QuestFormId(0x888))
         };
         let random_percent = |op, comparand| Condition {
             function_index: 77, // GetRandomPercent

@@ -429,7 +429,7 @@ pub(super) fn create_ssao(
     placeholder_ao: &Option<super::super::placeholder::PlaceholderImage>,
 ) -> Option<SsaoPipeline> {
     // 14a. SSAO pipeline (reads depth buffer after render pass)
-    let ssao = match SsaoPipeline::new(
+    match SsaoPipeline::new(
         device,
         gpu_allocator,
         pipeline_cache,
@@ -470,8 +470,7 @@ pub(super) fn create_ssao(
             }
             None
         }
-    };
-    ssao
+    }
 }
 
 /// The SKYAL cloud-noise volumes and sky-cube bake, the exposure resource and its metering pass (steps 14a-noise – 14b-bis). Cloud noise and exposure are hard requirements.

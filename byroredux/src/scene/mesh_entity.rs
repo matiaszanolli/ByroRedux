@@ -630,8 +630,7 @@ mod tests {
                 },
                 resolved(Material::default()),
             );
-            let layer = *world.get::<RenderLayer>(entity).unwrap();
-            layer
+            *world.get::<RenderLayer>(entity).unwrap()
         };
         assert_eq!(
             layer_for(RenderLayer::Architecture, 1.0),
@@ -763,8 +762,7 @@ mod tests {
             });
             resolved.mirror_pane_forced = mirror_pane_forced;
             let (world, entity) = attach(&mesh, &authored, placement(), resolved);
-            let roughness = world.get::<Material>(entity).unwrap().roughness;
-            roughness
+            world.get::<Material>(entity).unwrap().roughness
         };
         assert_eq!(roughness_with(true), 0.04);
         assert_ne!(roughness_with(false), 0.04);

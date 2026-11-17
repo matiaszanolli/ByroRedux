@@ -2006,7 +2006,7 @@ mod tests {
             .find("PlaceholderImage::new_storage_sink")
             .expect("the caustic-sink placeholder must be created at init");
         let ssao_init = src
-            .find("let ssao = match SsaoPipeline::new")
+            .find("match SsaoPipeline::new(")
             .expect("SSAO init block");
         let accum_init = src
             .find("let water_caustic_accum = match")

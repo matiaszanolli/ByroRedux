@@ -28,6 +28,14 @@ pub(super) struct BudgetRow {
     demoted: bool,
 }
 
+/// How a queued DDS is viewed and what its header says about alpha: the three facts
+/// `enqueue_dds_for_view` forwards to the reservation together.
+struct DdsView {
+    view_kind: TextureViewKind,
+    color_space: TextureColorSpace,
+    has_alpha: bool,
+}
+
 impl TextureRegistry {
     /// Load a DDS texture from raw bytes, or return a cached handle if already loaded.
     ///
@@ -183,9 +191,11 @@ impl TextureRegistry {
             path,
             dds_bytes,
             clamp_mode,
-            TextureViewKind::D2,
-            color_space,
-            crate::vulkan::dds::format_has_alpha(meta.format),
+            DdsView {
+                view_kind: TextureViewKind::D2,
+                color_space,
+                has_alpha: crate::vulkan::dds::format_has_alpha(meta.format),
+            },
         )
     }
 
@@ -206,9 +216,11 @@ impl TextureRegistry {
             path,
             dds_bytes,
             clamp_mode,
-            TextureViewKind::Cube,
-            TextureColorSpace::Srgb,
-            crate::vulkan::dds::format_has_alpha(meta.format),
+            DdsView {
+                view_kind: TextureViewKind::Cube,
+                color_space: TextureColorSpace::Srgb,
+                has_alpha: crate::vulkan::dds::format_has_alpha(meta.format),
+            },
         )
     }
 
@@ -218,10 +230,9 @@ impl TextureRegistry {
         path: &str,
         dds_bytes: Vec<u8>,
         clamp_mode: u8,
-        view_kind: TextureViewKind,
-        color_space: TextureColorSpace,
-        has_alpha: bool,
+        view: DdsView,
     ) -> Result<TextureHandle> {
+        let DdsView { view_kind, color_space, has_alpha } = view;
         let outcome = self.queue_or_hit_for_view(
             path,
             dds_bytes,
