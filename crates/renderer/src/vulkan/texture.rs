@@ -30,6 +30,22 @@ impl TextureViewKind {
 }
 
 /// A GPU-resident texture with image, view, and sampler.
+/// Where a DDS upload is recorded: the device and allocator that own the new image, and the
+/// command buffer its copies and barriers go into.
+#[derive(Clone, Copy)]
+pub(crate) struct DdsRecording<'a> {
+    pub device: &'a ash::Device,
+    pub allocator: &'a SharedAllocator,
+    pub cmd: vk::CommandBuffer,
+}
+
+/// A parsed DDS header and the pixel bytes that header describes.
+#[derive(Clone, Copy)]
+pub(crate) struct DdsPayload<'a> {
+    pub meta: &'a super::dds::DdsMetadata,
+    pub pixel_data: &'a [u8],
+}
+
 pub struct Texture {
     pub image: vk::Image,
     pub image_view: vk::ImageView,
@@ -196,13 +212,10 @@ impl Texture {
 
         with_one_time_commands(device, queue, command_pool, |cmd| {
             let (texture, staging) = Self::record_dds_upload(
-                device,
-                allocator,
-                cmd,
-                meta,
+                DdsRecording { device, allocator, cmd },
+                DdsPayload { meta, pixel_data },
                 0,
                 false,
-                pixel_data,
                 sampler,
                 staging_pool.as_deref_mut(),
             )?;
@@ -383,18 +396,16 @@ impl Texture {
     /// is `SHADER_READ_ONLY_OPTIMAL` before and after, so frames already
     /// submitted that sample it are unaffected; the caller retires it
     /// through `pending_destroy` once this batch's fence has signalled.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_dds_residency_change(
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        cmd: vk::CommandBuffer,
-        meta: &super::dds::DdsMetadata,
+        recording: DdsRecording,
+        payload: DdsPayload,
         change: crate::texture_registry::ResidencyChange,
         old_image: vk::Image,
-        pixel_data: &[u8],
         sampler: vk::Sampler,
         staging_pool: Option<&mut StagingPool>,
     ) -> Result<(Self, Option<StagingGuard>)> {
+        let DdsRecording { device, allocator, cmd } = recording;
+        let DdsPayload { meta, pixel_data } = payload;
         ensure!(
             change.mip_count == meta.mip_count
                 && change.new_first < meta.mip_count
@@ -581,18 +592,16 @@ impl Texture {
     /// chain's `first_mip`. Every caller that uploads a whole chain passes 0.
     /// `copy_source` adds `TRANSFER_SRC` usage, which a streamable texture
     /// needs so a later residency change can copy its levels out.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_dds_upload(
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        cmd: vk::CommandBuffer,
-        meta: &super::dds::DdsMetadata,
+        recording: DdsRecording,
+        payload: DdsPayload,
         first_mip: u32,
         copy_source: bool,
-        pixel_data: &[u8],
         sampler: vk::Sampler,
         staging_pool: Option<&mut StagingPool>,
     ) -> Result<(Self, StagingGuard)> {
+        let DdsRecording { device, allocator, cmd } = recording;
+        let DdsPayload { meta, pixel_data } = payload;
         ensure!(
             first_mip < meta.mip_count,
             "DDS upload first level {first_mip} is outside the {}-level chain",

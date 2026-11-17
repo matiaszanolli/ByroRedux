@@ -472,15 +472,18 @@ impl BloomPipeline {
 
         // ── 6. Per-frame mip pyramids + descriptor sets ───────────────
         for frame_idx in 0..MAX_FRAMES_IN_FLIGHT {
+            let shared = BloomShared {
+                descriptor_pool: partial.descriptor_pool,
+                down_dsl: partial.downsample_dsl,
+                up_dsl: partial.upsample_dsl,
+                apply_dsl: partial.apply_dsl,
+                sampler: partial.sampler,
+            };
             let frame = try_or_cleanup!(partial, device, allocator, BloomFrame::new(
                 device,
                 allocator,
                 screen_extent,
-                partial.descriptor_pool,
-                partial.downsample_dsl,
-                partial.upsample_dsl,
-                partial.apply_dsl,
-                partial.sampler,
+                shared,
                 frame_idx,
             ));
             partial.frames.push(frame);
@@ -928,19 +931,26 @@ impl BloomPipeline {
     }
 }
 
+/// The pool, layouts and sampler every frame-in-flight's mip pyramid shares; each
+/// [`BloomFrame`] allocates its descriptor sets from them.
+#[derive(Clone, Copy)]
+struct BloomShared {
+    descriptor_pool: vk::DescriptorPool,
+    down_dsl: vk::DescriptorSetLayout,
+    up_dsl: vk::DescriptorSetLayout,
+    apply_dsl: vk::DescriptorSetLayout,
+    sampler: vk::Sampler,
+}
+
 impl BloomFrame {
-    #[allow(clippy::too_many_arguments)] // Vulkan resource wiring: the device, allocator, extent and the shared descriptor layouts and sampler.
     fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
         screen_extent: vk::Extent2D,
-        descriptor_pool: vk::DescriptorPool,
-        down_dsl: vk::DescriptorSetLayout,
-        up_dsl: vk::DescriptorSetLayout,
-        apply_dsl: vk::DescriptorSetLayout,
-        sampler: vk::Sampler,
+        shared: BloomShared,
         frame_idx: usize,
     ) -> Result<Self> {
+        let BloomShared { descriptor_pool, down_dsl, up_dsl, apply_dsl, sampler } = shared;
         // Down mip extents: half-size per level, starting from
         // half-screen (mip 0 of the bloom pyramid is half the screen
         // resolution — Frostbite convention).

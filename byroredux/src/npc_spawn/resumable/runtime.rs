@@ -1172,7 +1172,6 @@ fn advance_finalize(
         UnitOutcome::Complete(Some(state.placement_root))
 }
 
-#[allow(clippy::too_many_arguments)] // One head part: the actor's state, world, GPU context, record, path and providers are separate caller-owned borrows.
 pub(super) fn spawn_runtime_head(
     state: &RuntimeNpcState,
     world: &mut World,

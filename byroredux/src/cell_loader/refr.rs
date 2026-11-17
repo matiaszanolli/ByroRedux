@@ -21,7 +21,7 @@
 //! `cell_loader_refr_texture_overlay_tests`); each picks up these items
 //! through the `pub(crate) use` re-exports in `cell_loader`.
 
-use byroredux_core::ecs::GlobalTransform;
+use byroredux_core::ecs::{GlobalTransform, Transform};
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_core::string::{FixedString, StringPool};
 use byroredux_plugin::esm;
@@ -723,9 +723,7 @@ fn expand_pkin_placements_with_depth(
                 push_expanded_child(
                     &mut out,
                     placed.base_form_id,
-                    pos,
-                    rot,
-                    scale,
+                    Transform::new(pos, rot, scale),
                     placed_material_swaps(placed),
                     index,
                     depth,
@@ -737,9 +735,7 @@ fn expand_pkin_placements_with_depth(
         push_expanded_child(
             &mut out,
             child_form_id,
-            outer_pos,
-            outer_rot,
-            outer_scale,
+            Transform::new(outer_pos, outer_rot, outer_scale),
             Vec::new(),
             index,
             depth,
@@ -765,17 +761,15 @@ fn expand_pkin_placements_with_depth(
 /// least reaches the loader's `stat_miss` accounting (bounded against
 /// accidental cycles). `swaps` (the child REFR's own material swaps, #6260)
 /// follow every placement it expands to, after the nested level's own.
-#[allow(clippy::too_many_arguments)]
 fn push_expanded_child(
     out: &mut Vec<SynthPlacement>,
     child_form_id: u32,
-    pos: Vec3,
-    rot: Quat,
-    scale: f32,
+    placement: Transform,
     swaps: Vec<MaterialSwapRef>,
     index: &esm::cell::EsmCellIndex,
     depth: u32,
 ) {
+    let Transform { translation: pos, rotation: rot, scale } = placement;
     let inherit = |nested: Vec<SynthPlacement>, out: &mut Vec<SynthPlacement>| {
         out.extend(nested.into_iter().map(|(base, pos, rot, scale, mut own)| {
             own.extend_from_slice(&swaps);

@@ -7,7 +7,7 @@
 //! copy that feeds soft-particle fade and runs immediately around the
 //! post-pass sequence.
 
-use super::super::descriptors::memory_barrier;
+use super::super::descriptors::{memory_barrier, whole_buffer};
 use crate::vulkan::gpu_timers::TimerPass;
 use super::super::frame_upscaler::{FsrFrameParameters, UpscaleDispatchInputs};
 use super::super::presentation::{ImageSpaceModifier, PresentationFrame, UiOverlayDraw};
@@ -820,14 +820,13 @@ impl VulkanContext {
                             vol.write_boundary_geometry(
                                 &self.device,
                                 frame,
-                                instance_buf,
-                                instance_buf_size,
-                                vertex_buf,
-                                vertex_buf_size,
-                                geometry_index_buf,
-                                geometry_index_buf_size,
-                                self.scene_buffers.material_buffers()[frame].buffer,
-                                self.scene_buffers.material_buffer_size(),
+                                whole_buffer(instance_buf, instance_buf_size),
+                                whole_buffer(vertex_buf, vertex_buf_size),
+                                whole_buffer(geometry_index_buf, geometry_index_buf_size),
+                                whole_buffer(
+                                    self.scene_buffers.material_buffers()[frame].buffer,
+                                    self.scene_buffers.material_buffer_size(),
+                                ),
                             );
                             // Compute→compute visibility: cluster_cull's own
                             // trailing barrier in `draw_frame` only
@@ -848,12 +847,9 @@ impl VulkanContext {
                             vol.write_lights_and_clusters(
                                 &self.device,
                                 frame,
-                                light_buf,
-                                light_buf_size,
-                                grid_buf,
-                                grid_size,
-                                index_buf,
-                                index_size,
+                                whole_buffer(light_buf, light_buf_size),
+                                whole_buffer(grid_buf, grid_size),
+                                whole_buffer(index_buf, index_size),
                             );
                             let vol_params = super::super::volumetrics::VolumetricsParams {
                                 inv_view_proj: inv_vp_arr,

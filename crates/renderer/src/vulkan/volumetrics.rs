@@ -1682,33 +1682,17 @@ impl VolumetricsPipeline {
     /// `draw.rs` before `dispatch`, after `cluster_cull.dispatch()`
     /// has recorded and after the compute→compute barrier that makes
     /// its writes visible (see the barrier note in `draw.rs`).
-    #[allow(clippy::too_many_arguments)]
     pub fn write_lights_and_clusters(
         &mut self,
         device: &ash::Device,
         frame: usize,
-        light_buffer: vk::Buffer,
-        light_buffer_size: vk::DeviceSize,
-        cluster_grid_buffer: vk::Buffer,
-        cluster_grid_size: vk::DeviceSize,
-        light_index_buffer: vk::Buffer,
-        light_index_size: vk::DeviceSize,
+        light: vk::DescriptorBufferInfo,
+        cluster_grid: vk::DescriptorBufferInfo,
+        light_index: vk::DescriptorBufferInfo,
     ) {
-        let light_info = [vk::DescriptorBufferInfo {
-            buffer: light_buffer,
-            offset: 0,
-            range: light_buffer_size,
-        }];
-        let cluster_info = [vk::DescriptorBufferInfo {
-            buffer: cluster_grid_buffer,
-            offset: 0,
-            range: cluster_grid_size,
-        }];
-        let index_info = [vk::DescriptorBufferInfo {
-            buffer: light_index_buffer,
-            offset: 0,
-            range: light_index_size,
-        }];
+        let light_info = [light];
+        let cluster_info = [cluster_grid];
+        let index_info = [light_index];
         let set = self.descriptor_sets[frame];
         let writes = [
             write_storage_buffer(set, 3, &light_info),
@@ -1729,40 +1713,19 @@ impl VolumetricsPipeline {
     /// two global geometry buffers. This keeps combustion collision response
     /// on the renderer's canonical scene representation rather than building
     /// a parallel obstacle grid or importing source-game rules into runtime.
-    #[allow(clippy::too_many_arguments)]
     pub fn write_boundary_geometry(
         &mut self,
         device: &ash::Device,
         frame: usize,
-        instance_buffer: vk::Buffer,
-        instance_buffer_size: vk::DeviceSize,
-        vertex_buffer: vk::Buffer,
-        vertex_buffer_size: vk::DeviceSize,
-        index_buffer: vk::Buffer,
-        index_buffer_size: vk::DeviceSize,
-        material_buffer: vk::Buffer,
-        material_buffer_size: vk::DeviceSize,
+        instance: vk::DescriptorBufferInfo,
+        vertex: vk::DescriptorBufferInfo,
+        index: vk::DescriptorBufferInfo,
+        material: vk::DescriptorBufferInfo,
     ) {
-        let material_info = [vk::DescriptorBufferInfo {
-            buffer: material_buffer,
-            offset: 0,
-            range: material_buffer_size,
-        }];
-        let instance_info = [vk::DescriptorBufferInfo {
-            buffer: instance_buffer,
-            offset: 0,
-            range: instance_buffer_size,
-        }];
-        let vertex_info = [vk::DescriptorBufferInfo {
-            buffer: vertex_buffer,
-            offset: 0,
-            range: vertex_buffer_size,
-        }];
-        let index_info = [vk::DescriptorBufferInfo {
-            buffer: index_buffer,
-            offset: 0,
-            range: index_buffer_size,
-        }];
+        let material_info = [material];
+        let instance_info = [instance];
+        let vertex_info = [vertex];
+        let index_info = [index];
         let set = self.descriptor_sets[frame];
         let writes = [
             write_storage_buffer(set, 19, &instance_info),

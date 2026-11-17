@@ -281,7 +281,6 @@ impl ExteriorCellApplyJob {
     }
 
     /// Advance placed references until the frame budget expires.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn advance(
         mut self,
         wctx: &ExteriorWorldContext,

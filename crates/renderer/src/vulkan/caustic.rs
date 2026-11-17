@@ -44,6 +44,7 @@
 
 use crate::vulkan::descriptors::clamp_sampler;
 use crate::vulkan::descriptors::compute_binding;
+use super::GpuUploadCtx;
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
@@ -367,65 +368,56 @@ pub(super) fn caustic_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<'s
     ]
 }
 
+/// The views and buffers the caustic splat shader binds: one view or buffer slice per resource,
+/// borrowed from the passes that own them. Shared by construction, the resize rebuild and the
+/// descriptor writes, which all take exactly this set.
+#[derive(Clone, Copy)]
+pub struct CausticInputs<'a> {
+    pub depth_view: vk::ImageView,
+    pub normal_views: &'a [vk::ImageView],
+    pub mesh_id_views: &'a [vk::ImageView],
+    pub light_buffers: &'a [GpuBuffer],
+    pub light_buffer_size: vk::DeviceSize,
+    pub camera_buffers: &'a [GpuBuffer],
+    pub camera_buffer_size: vk::DeviceSize,
+    pub instance_buffers: &'a [GpuBuffer],
+    /// #4199 — one size per slot: instance buffers grow independently.
+    pub instance_buffer_sizes: &'a [vk::DeviceSize],
+}
+
 impl CausticPipeline {
-    #[allow(clippy::too_many_arguments)] // Descriptor inputs: one view or buffer slice per resource the shader binds.
     pub fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
-        depth_view: vk::ImageView,
-        normal_views: &[vk::ImageView],
-        mesh_id_views: &[vk::ImageView],
-        light_buffers: &[GpuBuffer],
-        light_buffer_size: vk::DeviceSize,
-        camera_buffers: &[GpuBuffer],
-        camera_buffer_size: vk::DeviceSize,
-        instance_buffers: &[GpuBuffer],
-        // #4199 — one size per slot: instance buffers grow independently.
-        instance_buffer_sizes: &[vk::DeviceSize],
+        inputs: CausticInputs,
         width: u32,
         height: u32,
     ) -> Result<Self> {
-        let result = Self::new_inner(
-            device,
-            allocator,
-            pipeline_cache,
-            depth_view,
-            normal_views,
-            mesh_id_views,
-            light_buffers,
-            light_buffer_size,
-            camera_buffers,
-            camera_buffer_size,
-            instance_buffers,
-            instance_buffer_sizes,
-            width,
-            height,
-        );
+        let result = Self::new_inner(device, allocator, pipeline_cache, inputs, width, height);
         if let Err(ref e) = result {
             log::debug!("Caustic pipeline creation failed at: {e}");
         }
         result
     }
 
-    #[allow(clippy::too_many_arguments)] // Descriptor inputs: one view or buffer slice per resource the shader binds.
     fn new_inner(
         device: &ash::Device,
         allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
-        depth_view: vk::ImageView,
-        normal_views: &[vk::ImageView],
-        mesh_id_views: &[vk::ImageView],
-        light_buffers: &[GpuBuffer],
-        light_buffer_size: vk::DeviceSize,
-        camera_buffers: &[GpuBuffer],
-        camera_buffer_size: vk::DeviceSize,
-        instance_buffers: &[GpuBuffer],
-        // #4199 — one size per slot: instance buffers grow independently.
-        instance_buffer_sizes: &[vk::DeviceSize],
+        inputs: CausticInputs,
         width: u32,
         height: u32,
     ) -> Result<Self> {
+        let CausticInputs {
+            normal_views,
+            mesh_id_views,
+            light_buffers,
+            camera_buffers,
+            instance_buffers,
+            instance_buffer_sizes,
+            ..
+        } = inputs;
         debug_assert_eq!(normal_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(mesh_id_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(light_buffers.len(), MAX_FRAMES_IN_FLIGHT);
@@ -556,18 +548,7 @@ impl CausticPipeline {
         });
 
         // ── 7. Write non-TLAS descriptors (TLAS is written per-frame) ─
-        partial.write_descriptor_sets(
-            device,
-            depth_view,
-            normal_views,
-            mesh_id_views,
-            light_buffers,
-            light_buffer_size,
-            camera_buffers,
-            camera_buffer_size,
-            instance_buffers,
-            instance_buffer_sizes,
-        );
+        partial.write_descriptor_sets(device, inputs);
 
         // #2679 / PERF-D3-03 — attributing telemetry, same mechanism #1814
         // established for the ReSTIR reservoirs: the accumulator is
@@ -611,21 +592,18 @@ impl CausticPipeline {
         )
     }
 
-    #[allow(clippy::too_many_arguments)] // Descriptor inputs: one view or buffer slice per resource the shader binds.
-    fn write_descriptor_sets(
-        &self,
-        device: &ash::Device,
-        depth_view: vk::ImageView,
-        normal_views: &[vk::ImageView],
-        mesh_id_views: &[vk::ImageView],
-        light_buffers: &[GpuBuffer],
-        light_buffer_size: vk::DeviceSize,
-        camera_buffers: &[GpuBuffer],
-        camera_buffer_size: vk::DeviceSize,
-        instance_buffers: &[GpuBuffer],
-        // #4199 — one size per slot: instance buffers grow independently.
-        instance_buffer_sizes: &[vk::DeviceSize],
-    ) {
+    fn write_descriptor_sets(&self, device: &ash::Device, inputs: CausticInputs) {
+        let CausticInputs {
+            depth_view,
+            normal_views,
+            mesh_id_views,
+            light_buffers,
+            light_buffer_size,
+            camera_buffers,
+            camera_buffer_size,
+            instance_buffers,
+            instance_buffer_sizes,
+        } = inputs;
         let param_size = std::mem::size_of::<CausticParams>() as vk::DeviceSize;
         for f in 0..MAX_FRAMES_IN_FLIGHT {
             let depth_info = [depth_read_only_image_info(self.point_sampler, depth_view)];
@@ -1104,26 +1082,14 @@ impl CausticPipeline {
     /// are created at `initial_layout: UNDEFINED` and walked to
     /// GENERAL via [`Self::initialize_layouts`] internally, so
     /// post-resize first dispatches see a valid storage layout.
-    #[allow(clippy::too_many_arguments)]
     pub fn recreate_on_resize(
         &mut self,
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        queue: &std::sync::Mutex<vk::Queue>,
-        command_pool: vk::CommandPool,
-        depth_view: vk::ImageView,
-        normal_views: &[vk::ImageView],
-        mesh_id_views: &[vk::ImageView],
-        light_buffers: &[GpuBuffer],
-        light_buffer_size: vk::DeviceSize,
-        camera_buffers: &[GpuBuffer],
-        camera_buffer_size: vk::DeviceSize,
-        instance_buffers: &[GpuBuffer],
-        // #4199 — one size per slot: instance buffers grow independently.
-        instance_buffer_sizes: &[vk::DeviceSize],
+        ctx: GpuUploadCtx,
+        inputs: CausticInputs,
         width: u32,
         height: u32,
     ) -> Result<()> {
+        let GpuUploadCtx { device, allocator, queue, command_pool } = ctx;
         for mut slot in self.slots.drain(..) {
             // SAFETY: `recreate_on_resize` runs from the fenced
             // swapchain-resize path (`VulkanContext::recreate_swapchain`
@@ -1154,18 +1120,7 @@ impl CausticPipeline {
             return res;
         }
 
-        self.write_descriptor_sets(
-            device,
-            depth_view,
-            normal_views,
-            mesh_id_views,
-            light_buffers,
-            light_buffer_size,
-            camera_buffers,
-            camera_buffer_size,
-            instance_buffers,
-            instance_buffer_sizes,
-        );
+        self.write_descriptor_sets(device, inputs);
 
         // #1031 — walk fresh slot images from UNDEFINED to GENERAL.
         // SAFETY: fenced-resize contract — no concurrent reader on

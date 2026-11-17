@@ -158,6 +158,15 @@ pub fn compute_binding<'a>(
     layout_binding(binding, ty, vk::ShaderStageFlags::COMPUTE)
 }
 
+/// A descriptor buffer binding for the whole of `buffer` (offset 0, `size` bytes).
+///
+/// The buffer and its bound size always travel together, so the descriptor-write helpers that
+/// take several buffers take these instead of a `buffer, size` pair per binding.
+#[inline]
+pub fn whole_buffer(buffer: vk::Buffer, size: vk::DeviceSize) -> vk::DescriptorBufferInfo {
+    vk::DescriptorBufferInfo { buffer, offset: 0, range: size }
+}
+
 /// `STORAGE_BUFFER` write.
 #[inline]
 pub fn write_storage_buffer<'a>(

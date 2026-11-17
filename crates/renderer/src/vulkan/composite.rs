@@ -52,6 +52,32 @@ pub struct ShadowCorrectionViews<'a> {
     pub layout: vk::ImageLayout,
 }
 
+/// Every image the composite shader samples, borrowed from the passes that produce them.
+///
+/// [`CompositePipeline::new`] and [`CompositePipeline::recreate_on_resize`] both take exactly this
+/// set, so the constructor and the resize rebuild cannot drift apart on which bindings they wire
+/// (REN-D10-NEW-08). `bindless_layout` and `pipeline_cache` are device-owned and survive a resize,
+/// so they are passed to `new` alone.
+#[derive(Clone, Copy)]
+pub struct CompositeInputs<'a> {
+    /// The SVGF output in `GENERAL`, or the raw G-buffer output in `SHADER_READ_ONLY_OPTIMAL`;
+    /// which one is baked into the descriptor sets, per [`Self::indirect_is_general`].
+    pub indirect_views: &'a [vk::ImageView],
+    pub indirect_is_general: bool,
+    pub albedo_views: &'a [vk::ImageView],
+    pub depth_view: vk::ImageView,
+    pub caustic_views: &'a [vk::ImageView],
+    /// #1257 / Phase E of #1210.
+    pub water_caustic_views: &'a [vk::ImageView],
+    pub volumetric_views: &'a [vk::ImageView],
+    pub local_fire: &'a super::volumetrics::LocalFireViews,
+    pub bloom_views: &'a [vk::ImageView],
+    pub reactive_views: &'a [vk::ImageView],
+    pub transparency_views: &'a [vk::ImageView],
+    pub shadow_correction: ShadowCorrectionViews<'a>,
+    pub cloud_noise: CloudNoiseViews,
+}
+
 pub(super) const COMPOSITE_VERT_SPV: &[u8] = include_bytes!("../../shaders/composite.vert.spv");
 pub(super) const COMPOSITE_FRAG_SPV: &[u8] = include_bytes!("../../shaders/composite.frag.spv");
 
@@ -533,24 +559,11 @@ impl CompositePipeline {
     /// Which layout the indirect is in is baked into the descriptor sets
     /// at write time — callers must pass `indirect_is_general=true` when
     /// wiring up the SVGF output.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
-        indirect_views: &[vk::ImageView],
-        indirect_is_general: bool,
-        albedo_views: &[vk::ImageView],
-        depth_view: vk::ImageView,
-        caustic_views: &[vk::ImageView],
-        water_caustic_views: &[vk::ImageView], // #1257 / Phase E of #1210
-        volumetric_views: &[vk::ImageView],
-        local_fire: &super::volumetrics::LocalFireViews,
-        bloom_views: &[vk::ImageView],
-        reactive_views: &[vk::ImageView],
-        transparency_views: &[vk::ImageView],
-        shadow_correction: ShadowCorrectionViews<'_>,
-        cloud_noise: CloudNoiseViews,
+        inputs: CompositeInputs,
         bindless_layout: vk::DescriptorSetLayout,
         extents: FrameExtentSet,
     ) -> Result<Self> {
@@ -558,19 +571,7 @@ impl CompositePipeline {
             device,
             allocator,
             pipeline_cache,
-            indirect_views,
-            indirect_is_general,
-            albedo_views,
-            depth_view,
-            caustic_views,
-            water_caustic_views,
-            volumetric_views,
-            local_fire,
-            bloom_views,
-            reactive_views,
-            transparency_views,
-            shadow_correction,
-            cloud_noise,
+            inputs,
             bindless_layout,
             extents,
         );
@@ -580,27 +581,26 @@ impl CompositePipeline {
         result
     }
 
-    #[allow(clippy::too_many_arguments)] // Descriptor inputs: one view slice per image the composite shader samples.
     fn new_inner(
         device: &ash::Device,
         allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
-        indirect_views: &[vk::ImageView],
-        indirect_is_general: bool,
-        albedo_views: &[vk::ImageView],
-        depth_view: vk::ImageView,
-        caustic_views: &[vk::ImageView],
-        water_caustic_views: &[vk::ImageView], // #1257 / Phase E of #1210
-        volumetric_views: &[vk::ImageView],
-        local_fire: &super::volumetrics::LocalFireViews,
-        bloom_views: &[vk::ImageView],
-        reactive_views: &[vk::ImageView],
-        transparency_views: &[vk::ImageView],
-        shadow_correction: ShadowCorrectionViews<'_>,
-        cloud_noise: CloudNoiseViews,
+        inputs: CompositeInputs,
         bindless_layout: vk::DescriptorSetLayout,
         extents: FrameExtentSet,
     ) -> Result<Self> {
+        let CompositeInputs {
+            indirect_views,
+            albedo_views,
+            caustic_views,
+            water_caustic_views,
+            volumetric_views,
+            local_fire,
+            bloom_views,
+            reactive_views,
+            transparency_views,
+            ..
+        } = inputs;
         debug_assert_eq!(indirect_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(albedo_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(caustic_views.len(), MAX_FRAMES_IN_FLIGHT);
@@ -634,7 +634,7 @@ impl CompositePipeline {
 
         Self::create_hdr_targets(&mut partial, device, allocator, extents)?;
         Self::create_render_pass_and_framebuffers(&mut partial, device, allocator, reactive_views, transparency_views, extents)?;
-        Self::create_params_and_descriptors(&mut partial, device, allocator, indirect_views, indirect_is_general, albedo_views, depth_view, caustic_views, water_caustic_views, volumetric_views, local_fire, bloom_views, shadow_correction, cloud_noise, bindless_layout)?;
+        Self::create_params_and_descriptors(&mut partial, device, allocator, inputs, bindless_layout)?;
         Self::build_pipelines(&mut partial, device, allocator, pipeline_cache, extents)?;
 
         Ok(partial)
@@ -899,24 +899,18 @@ impl CompositePipeline {
     }
     /// Stages 5-7: the per-frame parameter UBOs, the descriptor set and pipeline layouts, the descriptor pool and the per-frame sets with their writes. Builds into `partial`; on a failure `try_or_cleanup!` has already
     /// torn `partial` down, so the caller only propagates the error.
-    #[allow(clippy::too_many_arguments)] // Construction stage: each argument is a separate caller-owned input of `new_inner`.
     fn create_params_and_descriptors(
         partial: &mut Self,
         device: &ash::Device,
         allocator: &SharedAllocator,
-        indirect_views: &[vk::ImageView],
-        indirect_is_general: bool,
-        albedo_views: &[vk::ImageView],
-        depth_view: vk::ImageView,
-        caustic_views: &[vk::ImageView],
-        water_caustic_views: &[vk::ImageView],
-        volumetric_views: &[vk::ImageView],
-        local_fire: &super::volumetrics::LocalFireViews,
-        bloom_views: &[vk::ImageView],
-        shadow_correction: ShadowCorrectionViews<'_>,
-        cloud_noise: CloudNoiseViews,
+        inputs: CompositeInputs,
         bindless_layout: vk::DescriptorSetLayout,
     ) -> Result<()> {
+        let CompositeInputs {
+            indirect_views, indirect_is_general, albedo_views, depth_view, caustic_views,
+            water_caustic_views, volumetric_views, local_fire, bloom_views, shadow_correction,
+            cloud_noise, ..
+        } = inputs;
         // ── 5. Per-frame parameter UBOs ──────────────────────────────
         let param_size = std::mem::size_of::<CompositeParams>() as vk::DeviceSize;
         partial.param_buffers = try_or_cleanup!(
@@ -1337,26 +1331,28 @@ impl CompositePipeline {
     /// bindless_layout) are device-owned immutable
     /// state that survives the swapchain resize, so re-passing them
     /// would be redundant.
-    #[allow(clippy::too_many_arguments)]
     pub fn recreate_on_resize(
         &mut self,
         device: &ash::Device,
         allocator: &SharedAllocator,
-        indirect_views: &[vk::ImageView],
-        indirect_is_general: bool,
-        albedo_views: &[vk::ImageView],
-        depth_view: vk::ImageView,
-        caustic_views: &[vk::ImageView],
-        water_caustic_views: &[vk::ImageView], // #1257 / Phase E of #1210
-        volumetric_views: &[vk::ImageView],
-        local_fire: &super::volumetrics::LocalFireViews,
-        bloom_views: &[vk::ImageView],
-        reactive_views: &[vk::ImageView],
-        transparency_views: &[vk::ImageView],
-        shadow_correction: ShadowCorrectionViews<'_>,
-        cloud_noise: CloudNoiseViews,
+        inputs: CompositeInputs,
         extents: FrameExtentSet,
     ) -> Result<()> {
+        let CompositeInputs {
+            indirect_views,
+            indirect_is_general,
+            albedo_views,
+            depth_view,
+            caustic_views,
+            water_caustic_views,
+            volumetric_views,
+            local_fire,
+            bloom_views,
+            reactive_views,
+            transparency_views,
+            shadow_correction,
+            cloud_noise,
+        } = inputs;
         // Destroy old framebuffers
         // SAFETY (the three destroy loops below): `recreate_on_resize`
         // runs from the fenced swapchain-resize path

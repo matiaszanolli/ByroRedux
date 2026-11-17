@@ -188,7 +188,6 @@ impl ImportedMesh {
     /// bounds directly but shares [`ImportedMaterial::default`].
     /// `local_bound_*` is computed from `positions` via
     /// [`crate::import::mesh::extract_local_bound`].
-    #[allow(clippy::too_many_arguments)]
     pub fn from_geometry(
         positions: Vec<[f32; 3]>,
         colors: Vec<[f32; 4]>,

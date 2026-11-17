@@ -19,7 +19,6 @@ use byroredux_core::ecs::{GlobalTransform, MeshHandle, TextureHandle, Transform,
 use byroredux_core::math::coord::{
     zup_to_yup_pos, EXTERIOR_CELL_UNITS, LAND_GRID_VERTS, LAND_VERTEX_SPACING,
 };
-use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_plugin::esm::cell::TextureSet;
 use byroredux_renderer::shader_constants::{TERRAIN_SPLAT_LANES_PER_WORD, TERRAIN_SPLAT_LAYERS};
@@ -99,7 +98,6 @@ type PerQuadrantAlpha = [Option<Vec<f32>>; 4];
 /// at 8 — the renderer's budget (`Vertex` packs splat weights as 2×RGBA8),
 /// not a LAND format limit; excess ATXT layers are dropped with a warning,
 /// by painted coverage.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn build_cell_splat_layers(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
@@ -296,7 +294,6 @@ pub(super) fn base_transition_layers_for_bases(
     transitions.into_iter().collect()
 }
 
-#[allow(clippy::too_many_arguments)] // One context per resolution input (textures, provider, cell tables, caches); grouping them would only move the count.
 fn resolve_cell_splat_layer(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
@@ -1009,9 +1006,7 @@ fn spawn_land_collider(
         world,
         positions,
         &land_tile_indices(0),
-        Vec3::ZERO,
-        Quat::IDENTITY,
-        1.0,
+        Transform::IDENTITY,
         None,
         surface_material,
     ) {
@@ -1665,6 +1660,7 @@ pub(super) fn spawn_terrain_mesh(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byroredux_core::math::{Quat, Vec3};
 
     /// #6735 - the grass colour of each splat lane is the colour of the grass THAT lane's texture lists, in the
     /// same lane order as `layer_affinity` (the shader mixes both through the same vec4-pair split): a lane
@@ -2477,9 +2473,7 @@ mod tests {
             &mut world,
             &positions,
             &land_tile_indices(0),
-            Vec3::ZERO,
-            Quat::IDENTITY,
-            1.0,
+            Transform::IDENTITY,
             None,
             None,
         ));
@@ -2681,6 +2675,7 @@ mod tests {
 #[cfg(test)]
 mod land_havok_tests {
     use super::*;
+    use byroredux_core::math::Vec3;
     use esm::cell::{LandscapeData, LandscapeTextureHavok, TerrainQuadrant, TerrainTextureLayer};
 
     const DIRT: u32 = 0x0000_0A01;

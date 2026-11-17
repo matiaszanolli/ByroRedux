@@ -31,9 +31,7 @@ impl PrecombinedPlacement {
         let (root, _) = spawn_placement_root(
             world,
             &cached,
-            origin,
-            Quat::IDENTITY,
-            1.0,
+            byroredux_core::ecs::components::Transform::new(origin, Quat::IDENTITY, 1.0),
             None,
             None,
             None,

@@ -1461,7 +1461,6 @@ fn spawn_nif_mesh(
 /// Phase 3 resolves skinning bone names through, and the per-node rest poses.
 /// Skeleton nodes are the only reliably-unique names in a typical NIF, so on
 /// a collision the first (root-most, depth-first) spawn wins.
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)] // the doc comment above names each element; a type alias would just move the naming, not reduce it
 fn spawn_nif_nodes(
     world: &mut World,
@@ -1586,7 +1585,6 @@ fn spawn_nif_nodes(
 
 /// Phase 2.5 of [`load_nif_bytes_with_skeleton`] (#3858): spawn the particle
 /// emitters the importer tagged with a host node index.
-#[allow(clippy::too_many_arguments)]
 fn spawn_nif_particle_emitters(
     world: &mut World,
     ctx: &mut VulkanContext,

@@ -252,7 +252,6 @@ pub(super) fn prebaked_head_fallback_paths(
     paths
 }
 
-#[allow(clippy::too_many_arguments)] // Resumable step: the actor's state, world, GPU context, providers and index are separate caller-owned borrows.
 pub(super) fn advance_prebaked_unit(
     state: &mut PrebakedNpcState,
     world: &mut World,

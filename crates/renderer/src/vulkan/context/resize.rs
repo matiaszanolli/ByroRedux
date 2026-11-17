@@ -767,21 +767,26 @@ impl VulkanContext {
             // `recreate_on_resize` walks the new slots to GENERAL
             // internally (#1031).
             caustic.recreate_on_resize(
-                &self.device,
-                self.allocator
-                    .as_ref()
-                    .expect("allocator missing during resize"),
-                &self.graphics_queue,
-                self.transfer_pool,
-                self.swapchain.depth_image_view,
-                &normal_views_in,
-                &mesh_id_views_in,
-                self.scene_buffers.light_buffers(),
-                self.scene_buffers.light_buffer_size(),
-                self.scene_buffers.camera_buffers(),
-                self.scene_buffers.camera_buffer_size(),
-                self.scene_buffers.instance_buffers(),
-                &self.scene_buffers.instance_buffer_sizes(),
+                super::super::GpuUploadCtx {
+                    device: &self.device,
+                    allocator: self
+                        .allocator
+                        .as_ref()
+                        .expect("allocator missing during resize"),
+                    queue: &self.graphics_queue,
+                    command_pool: self.transfer_pool,
+                },
+                super::super::caustic::CausticInputs {
+                    depth_view: self.swapchain.depth_image_view,
+                    normal_views: &normal_views_in,
+                    mesh_id_views: &mesh_id_views_in,
+                    light_buffers: self.scene_buffers.light_buffers(),
+                    light_buffer_size: self.scene_buffers.light_buffer_size(),
+                    camera_buffers: self.scene_buffers.camera_buffers(),
+                    camera_buffer_size: self.scene_buffers.camera_buffer_size(),
+                    instance_buffers: self.scene_buffers.instance_buffers(),
+                    instance_buffer_sizes: &self.scene_buffers.instance_buffer_sizes(),
+                },
                 self.frame_extents.render.width,
                 self.frame_extents.render.height,
             )?;
@@ -1173,19 +1178,21 @@ impl VulkanContext {
                 self.allocator
                     .as_ref()
                     .expect("allocator missing during resize"),
-                &composite_indirect_views,
-                indirect_is_general,
-                &views.albedo_views,
-                self.swapchain.depth_image_view,
-                &caustic_views,
-                &water_caustic_views,
-                &volumetric_views,
-                &local_fire,
-                &bloom_views,
-                &views.reactive_views,
-                &views.transparency_views,
-                shadow_correction,
-                self.post.cloud_noise.views(),
+                super::super::composite::CompositeInputs {
+                    indirect_views: &composite_indirect_views,
+                    indirect_is_general,
+                    albedo_views: &views.albedo_views,
+                    depth_view: self.swapchain.depth_image_view,
+                    caustic_views: &caustic_views,
+                    water_caustic_views: &water_caustic_views,
+                    volumetric_views: &volumetric_views,
+                    local_fire: &local_fire,
+                    bloom_views: &bloom_views,
+                    reactive_views: &views.reactive_views,
+                    transparency_views: &views.transparency_views,
+                    shadow_correction,
+                    cloud_noise: self.post.cloud_noise.views(),
+                },
                 self.frame_extents,
             )?;
         }
@@ -1351,11 +1358,13 @@ impl VulkanContext {
                 .expect("frame upscaler must exist during resize");
             upscaler.recreate(
                 &self.instance,
-                &self.device,
                 self.physical_device,
-                allocator,
-                &self.graphics_queue,
-                self.transfer_pool,
+                super::super::GpuUploadCtx {
+                    device: &self.device,
+                    allocator,
+                    queue: &self.graphics_queue,
+                    command_pool: self.transfer_pool,
+                },
                 self.renderer_config.upscaler,
                 self.frame_extents,
             )?;

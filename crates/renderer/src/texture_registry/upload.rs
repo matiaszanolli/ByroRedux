@@ -7,6 +7,7 @@
 //! allocation, a different point in the frame.
 
 use super::residency::{self, Residency};
+use crate::vulkan::texture::{DdsPayload, DdsRecording};
 use super::*;
 
 /// One streamed texture as the budget pass sees it (`spend_budget`).
@@ -1432,13 +1433,10 @@ impl TextureRegistry {
                 bytes
             };
             match crate::vulkan::texture::Texture::record_dds_residency_change(
-                device,
-                allocator,
-                cmd,
-                &meta,
+                DdsRecording { device, allocator, cmd },
+                DdsPayload { meta: &meta, pixel_data: bytes },
                 change,
                 old_image,
-                bytes,
                 sampler,
                 self.staging_pool.as_mut(),
             ) {
@@ -1518,13 +1516,10 @@ impl TextureRegistry {
                 }
         let (texture, staging) =
             match crate::vulkan::texture::Texture::record_dds_upload(
-                device,
-                allocator,
-                cmd,
-                &meta,
+                DdsRecording { device, allocator, cmd },
+                DdsPayload { meta: &meta, pixel_data: level_bytes },
                 first_mip,
                 floor_first.is_some(),
-                level_bytes,
                 sampler,
                 self.staging_pool.as_mut(),
             ) {

@@ -1310,9 +1310,7 @@ pub(super) fn spawn_mesh_instance(
             world,
             &mesh.positions,
             &mesh.indices,
-            final_pos,
-            final_rot,
-            final_scale,
+            byroredux_core::ecs::components::Transform::new(final_pos, final_rot, final_scale),
             source_form,
             None,
         );

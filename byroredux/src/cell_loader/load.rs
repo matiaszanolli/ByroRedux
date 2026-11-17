@@ -562,7 +562,6 @@ pub(crate) enum InteriorCellApplyProgress {
 
 impl InteriorCellApplyJob {
     /// Parse and install the atomic prefix of an interior load.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn begin(
         masters: &[String],
         esm_path: &str,
@@ -680,7 +679,6 @@ impl InteriorCellApplyJob {
     }
 
     /// Advance the REFR phase against the caller's frame deadline.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn advance(
         mut self,
         world: &mut World,
