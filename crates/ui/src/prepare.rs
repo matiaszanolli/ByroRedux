@@ -581,8 +581,18 @@ mod tests {
                 tag_parses: 0
             }
         );
-        // Untouched bytes, not a re-serialisation.
-        assert_eq!(prepared.data, data);
+        // M48 GUI-PATH-001 — the original file with the path adapter spliced in, not a
+        // re-serialisation: the original tag stream follows the adapter's `DoAction` unchanged.
+        assert_eq!(prepared.data, spliced(&data));
+    }
+
+    /// The bytes the AVM1 route hands Ruffle: the movie's own tag stream behind the path
+    /// adapter's frame-1 `DoAction` (`avm1_path::inject`).
+    fn spliced(fws: &[u8]) -> Vec<u8> {
+        let decoded = swf::decompress_swf(fws).unwrap();
+        let injected = crate::avm1_path::inject(decoded.header.swf_header(), &decoded.data).unwrap();
+        assert!(injected.ends_with(&decoded.data), "the original tag stream follows the adapter untouched");
+        injected
     }
 
     /// A movie whose profile contradicts the caller's must be rejected before
@@ -649,7 +659,7 @@ mod tests {
                 tag_parses: 0
             }
         );
-        assert_eq!(prepared.data, fws, "the shim's decode IS the original file");
+        assert_eq!(prepared.data, spliced(&fws), "the shim's decode, with the path adapter spliced in");
     }
 
     /// The counter has teeth: a shim that inflates and then declines leaves

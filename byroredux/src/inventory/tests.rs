@@ -2263,6 +2263,29 @@ fn vitals_snapshot_composes_layers_and_skips_absent_values() {
     );
 }
 
+/// M48 GUI-HUD-004 — while an original HUD is up it draws the vitals; the native layer draws no
+/// second copy, and draws them again once `hud.off` hides the original.
+#[test]
+fn vitals_snapshot_yields_to_a_visible_original_hud() {
+    let mut world = World::new();
+    world.register::<byroredux_core::ecs::components::ActorValues>();
+    let player = world.spawn();
+    world.insert_resource(PlayerEntity(Some(player)));
+    world.insert_resource(PlayerVitals {
+        bars: vec![("Health", 1000)],
+        by_editor_id: FxHashMap::from_iter([("Health", 1000)]),
+        radiation: None,
+    });
+    let mut values = byroredux_core::ecs::components::ActorValues::new();
+    values.set_base(1000, 100.0);
+    world.insert(player, values);
+    assert!(vitals_snapshot(&world).is_some(), "no original HUD: the native bars draw");
+    world.insert_resource(crate::hud::HudControl { visible: true, ..Default::default() });
+    assert!(vitals_snapshot(&world).is_none(), "the original HUD draws the vitals");
+    world.resource_mut::<crate::hud::HudControl>().visible = false;
+    assert!(vitals_snapshot(&world).is_some(), "hud.off brings the native bars back");
+}
+
 /// #5508 — a routed player `SetBase` lives in `set_override`; the
 /// vitals `max` must include it or the panel reports `base − damage`
 /// (negative once damage passes the formula base).

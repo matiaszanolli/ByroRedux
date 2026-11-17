@@ -901,62 +901,62 @@ and the next frame's length, and a Ruffle player without a renderer asserts the
 movie hears `Stage.onResize` with the new `Stage.width`. The live window-resize
 path itself is not driven by a gate yet.
 
-#### Path access (GUI-PATH-001…005, decision Q2)
+#### Path access (GUI-PATH-001…005, decision Q2) — built in Phase 2 (#6661)
 
 **Q2's first question: can an AVM1 adapter reach `_root` members through
-ExternalInterface? Yes.** `crates/ui/tests/avm1_path_access_probe.rs` builds an
-AVM1 movie by hand, registers three callbacks with
-`flash.external.ExternalInterface.addCallback`, and drives them with
-`Player::call_internal_interface` (the call `SwfPlayer::invoke_callback` makes).
-At Ruffle `2edfd97` it reads flat and nested members, reads an object's members,
-writes existing and new members, and invokes a function by path with its return
-value and side effects visible. So Skyrim does not fall back to Alternative A.
+ExternalInterface? Yes** (`crates/ui/tests/avm1_path_access_probe.rs`, Phase 0).
+Phase 2 built the path service on both VMs:
 
-What the probe fixes for the real adapter:
+- **The contract** (`crates/ui/src/path.rs`). Three ExternalInterface callbacks,
+  `__byro_path_get(p)`, `__byro_path_set(p, v)` and `__byro_path_call(p, args)`,
+  all in `RESERVED_ENGINE_CALLBACKS` by exact name (GUI-PATH-004). Both adapters
+  answer `{found, type, value}`, which `decode_reply` turns into a `PathOutcome`:
+  `Found(value)`, `Absent` (GUI-PATH-002, reported once per path), `NotReady`
+  (the adapter's callbacks are not registered yet) or `Queued`. `value` crosses
+  back only for a number, string or boolean: a display object or class instance
+  would be converted member by member across the boundary.
+- **AVM1** (`crates/ui/src/avm1_path.rs`). A `DoAction` spliced into frame 1 of
+  every AVM1 movie, after a leading `FileAttributes`, on the stock decode's tag
+  stream (no tag parse, #5479). Get is `eval(p)` (`GetVariable` on the dotted
+  string). Set and call split at the last dot and act on `eval(parent)`, so a call
+  binds its parent as `this`; a bare name resolves on `_root`. A present member
+  whose value is `undefined` reads as absent — AS2 cannot tell the two apart.
+- **AVM2** (`crates/ui/src/avm2_host/path_helpers.rs`). Three more methods in the
+  `BGSCodeObj` adapter plus a walker. AS3 has no `eval`, so the walker splits the
+  path, checks `k in o` per segment (falling back to `getChildByName` for a
+  display child that is not a declared variable) and indexes from the root the
+  installer stores. The installer registers the callbacks after
+  `onCodeObjCreate`. **Only movies carrying the `BGSCodeObj` lifecycle class get
+  the AVM2 adapter**, so an AVM2 movie without it answers `NotReady`.
+- **Queue or refuse** (GUI-PATH-003), chosen per call: `UiLayer::path_op(op,
+  WhenAbsent::Queue)` holds an operation whose target (or adapter) is not there
+  yet and retries it after every tick, a newer operation on the same path
+  replacing it (at most 64 per movie); `WhenAbsent::Refuse` answers now.
+- **The only route** (GUI-PATH-005). `UiLayer::path_op` is the only engine code
+  that reads, writes or invokes a movie member by path. The HUD driver's older
+  SkyUI-class pushes call *registered callbacks* by name, not members by path.
+  No script surface reaches it: the extender `UI.*` functions stay unserved until
+  the Legacy Mod Compatibility PRD maps them, and then they go through it.
+- **Tests (A6).** `avm1_adapter_sets_and_reads_a_root_path` (the real
+  `prepare_movie` injection on a synthetic AVM1 movie) and
+  `avm2_adapter_reports_an_absent_path` (the real adapter ABC, installed on a
+  stand-in root by a driver script, as the patched lifecycle constructor does),
+  both on renderer-less Ruffle players, no GPU.
 
-- **Injection.** Prepend a `DoAction` to frame 1, the AVM1 twin of the AVM2
-  `DoAbc2` prepend in `avm2_host.rs` (`write_swf` over the parsed tags). The class
-  is reached as `flash.external.ExternalInterface` (`GetVariable "flash"`, then
-  `GetMember "external"`, `"ExternalInterface"`); a bare `ExternalInterface` is
-  compile-time sugar.
-- **Names.** `__byro_path_get(p)`, `__byro_path_set(p, v)`,
-  `__byro_path_call(p, …args)`, all in `RESERVED_ENGINE_CALLBACKS` by exact name
-  (GUI-PATH-004).
-- **Semantics.** `GetVariable` on a dotted path string resolves it, so get is
-  `return eval(p)` and set is `eval(p) = v`; `CallMethod` with an undefined
-  method name calls the function object.
-- **Not proven, the real adapter owns it.** (a) A bare `eval` reads an absent
-  path as `Undefined`/`Null`, indistinguishable from a present `undefined`
-  (pinned by the probe's last test), so the adapter returns a tagged
-  `{found, value}` using `typeof` (GUI-PATH-002). (b) The probe calls functions
-  with no `this`; the adapter must split at the last dot and `CallMethod` on the
-  parent. (c) `_root` / `_global` / `_level0` scoping as SKSE's `UI.*` takes it.
-  (d) A path used before frame 1 has run: the adapter answers `found: false`
-  and the host decides queue-or-refuse per call (GUI-PATH-003).
-- **AVM2.** The same three names exist on the shipped `__byro` adapter pattern,
-  but AS3 has no `eval`; the adapter walks the dotted path from `root` by
-  splitting and indexing. **Not probed in Phase 0.** Phase 2 adds an AVM2 twin of
-  the probe test before building on it (GUI-PATH-001 needs both VMs).
+**What the runtime measurements settled** (Phase 0 read these from bytecode):
 
-**A finding that may shrink the AVM1 work (not run).** Vanilla Skyrim
-`hudmenu.swf` registers the standard pair `call` and `respond`;
-`GameDelegate.receiveCall` dispatches the first argument through a table that
-`HUDMenu.InitExtensions` fills with 26 keys, among them
-`SetHealthMeterPercent`, `SetMagickaMeterPercent`, `SetStaminaMeterPercent`,
-`SetCompassAngle(aPlayerAngle, aCompassAngle, abShowCompass)`, the crosshair,
-subtitle and notification calls (`hud-feeds-skyrim-se.tsv`). `invoke_callback("call",
-["SetHealthMeterPercent", 35, false])` should therefore reach the same handler a
-native `root.Invoke` reaches, with no injection; `respond` is the reply channel
-for the movie's own `GameDelegate.call(…, scope, callback)` requests, not a push
-surface as the section on the Scaleform HUD says. This is **bytecode only**; Phase
-2 confirms it at runtime first. Path-only members (not in the table):
-`ShowSurvivalElements`, `ShowArrowCount`, `RefreshActivateButtonArt`,
-`RegisterComponents`, and the `CompassTargetDataA` / `ObjectivesA` arrays, so
-compass *markers* still need GUI-PATH-001. Fallout 4 is a different shape: the
-meter feed is the setter `MeterBarWidget.Percent` (0..1, Skyrim's are 0..100) on
-document-relative paths such as `LeftMeters_mc.HPMeter_mc.MeterBar_mc`, and its
-compass widget has **no code** — heading and markers are entirely native, so
-GUI-HUD-005 cannot be built for Fallout 4 from the shipped movie.
+- **Skyrim's `call` callback does not reach the HUD handlers.**
+  `invoke_callback("call", ["SetHealthMeterPercent", …])` leaves
+  `lastHealthMeterPercent` untouched; the path service calls
+  `_root.HUDMovieBaseInstance.SetHealthMeterPercent` directly instead.
+- **Skyrim's meters need `abForce = false`.** The meters sit faded out (the
+  `Health` clip on frame 1 of its 200-frame animation); only the non-forced branch
+  runs `RunMeterAnim`, which fades them in, then tweens to the target.
+- **Fallout 4's HP bar sits under its rads overlay.** `RadsBar_mc.Percent` starts
+  at 1 and is drawn over the fill, so the HP meter shows nothing until the rads
+  overlay is fed. The engine models no Fallout 4 radiation, so the driver feeds 0.
+- **Fallout 4's compass widget has no ActionScript**; no path can drive it.
+  GUI-HUD-005 is Skyrim's here (`SetCompassAngle`); Fallout 4's is a follow-up.
 
 #### MenuXml input (GUI-XML-001…003)
 
@@ -1280,23 +1280,21 @@ the `hud.debug` smoke gate): vanilla hudmenu is passive chrome. Its
 bytecode calls exactly four host methods — `GetButtonFromUserEvent`,
 `PlaySound`, `RegisterHUDComponents`, `myLog` — and it registers only the
 GameDelegate pair `call`/`respond` on ExternalInterface. The vanilla
-engine feeds the meters by GFx *object-path* invocation
-(`HUDMovieBaseInstance.HealthMeter_mc…`), a surface Ruffle does not
-expose (`call_internal_interface` reaches registered ExternalInterface
-callbacks only), so the bars stay engine-empty. Driving them needs
-either AVM1 injection into the movie or SkyUI-class menus — whose poll
-protocol (`updateStats`, `RequestPlayerInfo`, 0-100 percents) the
-response handlers registered at launch already answer, and whose
-state callbacks the driver's push table already targets.
-
-> **Phase 0 note (#6643, bytecode only, not yet run).** The registered
-> `call` callback is not passive for the meters: it enters
-> `GameDelegate.receiveCall`, whose table (filled by `HUDMenu.InitExtensions`)
-> holds `SetHealthMeterPercent`, `SetMagickaMeterPercent`,
-> `SetStaminaMeterPercent` and `SetCompassAngle`, so those four may be reachable
-> through `invoke_callback("call", …)` without injection. See
-> [Menu registry, stack and path access](#menu-registry-stack-and-path-access-m48-design-phase-0);
-> Phase 2 confirms it at runtime before the paragraph above is rewritten.
+engine feeds the meters by invoking movie members by path, which Ruffle's
+ExternalInterface does not expose by itself. **Since M48 Phase 2 (#6661) the
+meters are live:** the injected path adapters reach those members, and the driver
+feeds them every changed frame through the path service
+(`ScaleformGame::meter_feeds`; see
+[Path access](#path-access-gui-path-001005-decision-q2--built-in-phase-2-6661)):
+Skyrim's `Set{Health,Magicka,Stamina}MeterPercent` (0..100, `abForce = false`) and
+`SetCompassAngle`, Fallout 4's HP and AP `MeterBarWidget.Percent` (0..1) with the
+rads overlay cleared. The movie's own `call` callback does not reach those
+handlers (measured in Phase 2; Phase 0 had read it from bytecode). The SkyUI-class
+poll handlers (`updateStats`, `RequestPlayerInfo`) and the push table stay for
+menus that speak that protocol. `hud.debug` prints each feed path's last outcome
+and the queued count. While an original HUD is up, the native layer draws no
+second set of vitals bars (GUI-HUD-004). Gates: `m48-skyrim-hud-meters.sh` (A4),
+`m48-fo4-hud-meters.sh` (A5).
 
 The smoke gate (`docs/smoke-tests/m48-6-skyrim-hud.sh`) gates the boot
 line, `backend=scaleform` + 3-bar pins, the `hud.debug` callback pair +

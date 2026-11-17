@@ -892,19 +892,15 @@ fn spoofed_engine_prefixed_names_do_not_displace_the_real_reservation() {
         "the spoofed names themselves must not have slipped in"
     );
 
-    // The adapter's installer runs after all of that movie code — the
-    // three real lifecycle names still land.
-    for name in [
-        crate::avm2_host::READY_CALLBACK,
-        crate::avm2_host::DESTROY_CALLBACK,
-        crate::avm2_host::LOADED_CALLBACK,
-    ] {
+    // The adapter's installer runs after all of that movie code — every
+    // real engine name (lifecycle and, M48, the path service's) still lands.
+    for name in crate::RESERVED_ENGINE_CALLBACKS {
         super::BridgeState::insert_bounded(&mut set, &mut capped, "callbacks", name.to_string());
         assert!(set.contains(name), "{name} must survive a spoofed band");
     }
     assert_eq!(
         set.len(),
-        crate::MAX_DISTINCT_HOST_METHOD_NAMES + 3,
+        crate::MAX_DISTINCT_HOST_METHOD_NAMES + crate::RESERVED_ENGINE_CALLBACKS.len(),
         "total residency is bounded by the main budget plus exactly the \
          reserved list — no 32-wide band to occupy"
     );
@@ -923,6 +919,10 @@ fn reserved_engine_callbacks_are_exactly_the_adapter_lifecycle_names() {
         crate::avm2_host::DESTROY_CALLBACK,
         crate::avm2_host::LOADED_CALLBACK,
         crate::avm2_host::READY_CALLBACK,
+        // M48 GUI-PATH-004 — the path adapters' callbacks, both VMs.
+        crate::path::PATH_GET_CALLBACK,
+        crate::path::PATH_SET_CALLBACK,
+        crate::path::PATH_CALL_CALLBACK,
     ];
     expected.sort_unstable();
     assert_eq!(

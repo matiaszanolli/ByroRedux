@@ -119,11 +119,16 @@ impl ScaleformGame {
     /// (`docs/data/game-ui/hud-feeds-*.tsv`), confirmed live by driving them.
     ///
     /// - **Skyrim** (AVM1): `_root.HUDMovieBaseInstance.Set{Health,Magicka,Stamina}MeterPercent
-    ///   (aPercent 0..100, abForce)`. `abForce = false` takes the movie's own path: it runs the
-    ///   meter's fade-in (`RunMeterAnim`) and tweens to the target; `true` sets the bar of a meter
-    ///   that stays faded out. `SetCompassAngle(aPlayerAngle, aCompassAngle, abShowCompass)`, both
-    ///   angles the heading in degrees. The movie's own `GameDelegate` `call` callback does not
-    ///   reach these handlers at runtime (Phase 0 read that from bytecode; Phase 2 measured it).
+    ///   (aPercent 0..100, abForce)` with `abForce = false`, the movie's own path: it runs the
+    ///   meter's fade-in (`RunMeterAnim`) and sets the tween target (`true` sets the bar of a meter
+    ///   that stays faded out). Each is followed by the meter object's own `SetPercent` (on
+    ///   `HealthMeterLeft`, `MagickaMeter`, `StaminaMeter`), which floors the frame it jumps to:
+    ///   the tween (`Components.Meter.Update`) calls `gotoAndStop` with a fractional frame, which
+    ///   Ruffle ignores, so without it the bar would never move. Survival penalties are not
+    ///   modelled, so the penalty-scaled value the handler computes equals the percent.
+    ///   `SetCompassAngle(aPlayerAngle, aCompassAngle, abShowCompass)`, both angles the heading in
+    ///   degrees. The movie's own `GameDelegate` `call` callback does not reach these handlers at
+    ///   runtime (Phase 0 read that from bytecode; Phase 2 measured it).
     /// - **Fallout 4** (AVM2): the `MeterBarWidget.Percent` setters (0..1) of
     ///   `LeftMeters_mc.HPMeter_mc.MeterBar_mc` and
     ///   `RightMeters_mc.ActionPointMeter_mc.MeterBar_mc`, plus the HP meter's rads overlay
@@ -135,21 +140,24 @@ impl ScaleformGame {
         let number = |value: f32| ScaleformValue::Number(value as f64);
         match self {
             Self::Skyrim => {
-                let meter = |name: &str, fraction: f32| {
-                    PathOp::Call(
+                let mut feeds = Vec::with_capacity(7);
+                for ((name, object), fraction) in
+                    [("Health", "HealthMeterLeft"), ("Magicka", "MagickaMeter"), ("Stamina", "StaminaMeter")]
+                        .into_iter()
+                        .zip(fractions)
+                {
+                    let percent = number(fraction * 100.0);
+                    feeds.push(PathOp::Call(
                         format!("_root.HUDMovieBaseInstance.Set{name}MeterPercent"),
-                        vec![number(fraction * 100.0), ScaleformValue::Bool(false)],
-                    )
-                };
-                vec![
-                    meter("Health", fractions[0]),
-                    meter("Magicka", fractions[1]),
-                    meter("Stamina", fractions[2]),
-                    PathOp::Call(
+                        vec![percent.clone(), ScaleformValue::Bool(false)],
+                    ));
+                    feeds.push(PathOp::Call(format!("_root.HUDMovieBaseInstance.{object}.SetPercent"), vec![percent]));
+                }
+                feeds.push(PathOp::Call(
                         "_root.HUDMovieBaseInstance.SetCompassAngle".into(),
                         vec![number(heading), number(heading), ScaleformValue::Bool(true)],
-                    ),
-                ]
+                ));
+                feeds
             }
             Self::Fallout4 => vec![
                 PathOp::Set("LeftMeters_mc.HPMeter_mc.MeterBar_mc.Percent".into(), number(fractions[0])),
@@ -593,6 +601,50 @@ mod tests {
             Some(1.0),
             "the driver publishes the live bar fractions each tick"
         );
+    }
+
+    /// M48 GUI-HUD-001…003, -005 — the vanilla meters are fed through the paths Phase 0 listed:
+    /// Skyrim's percent setters on 0..100 with `abForce = false` (the movie's own fade-in) and
+    /// its compass, Fallout 4's `Percent` setters on 0..1 with the rads overlay cleared; no path
+    /// drives Fallout 4's code-less compass.
+    #[test]
+    fn meter_feeds_follow_the_phase0_paths() {
+        let skyrim = ScaleformGame::Skyrim.meter_feeds([0.35, 1.0, 0.5], 90.0);
+        assert_eq!(
+            skyrim[0],
+            PathOp::Call(
+                "_root.HUDMovieBaseInstance.SetHealthMeterPercent".into(),
+                vec![ScaleformValue::Number(35.0), ScaleformValue::Bool(false)]
+            )
+        );
+        // The movie's handler, then the meter's own flooring `SetPercent` (Ruffle drops the tween's
+        // fractional frames).
+        assert_eq!(
+            skyrim[1],
+            PathOp::Call("_root.HUDMovieBaseInstance.HealthMeterLeft.SetPercent".into(), vec![ScaleformValue::Number(35.0)])
+        );
+        assert_eq!(skyrim[4].path(), "_root.HUDMovieBaseInstance.SetStaminaMeterPercent");
+        assert_eq!(skyrim[5].path(), "_root.HUDMovieBaseInstance.StaminaMeter.SetPercent");
+        assert_eq!(
+            skyrim[6],
+            PathOp::Call(
+                "_root.HUDMovieBaseInstance.SetCompassAngle".into(),
+                vec![ScaleformValue::Number(90.0), ScaleformValue::Number(90.0), ScaleformValue::Bool(true)]
+            )
+        );
+        let fallout4 = ScaleformGame::Fallout4.meter_feeds([0.35, 0.8, 1.0], 90.0);
+        let paths: Vec<&str> = fallout4.iter().map(PathOp::path).collect();
+        assert_eq!(
+            paths,
+            [
+                "LeftMeters_mc.HPMeter_mc.MeterBar_mc.Percent",
+                "LeftMeters_mc.HPMeter_mc.RadsBar_mc.Percent",
+                "RightMeters_mc.ActionPointMeter_mc.MeterBar_mc.Percent"
+            ]
+        );
+        assert_eq!(fallout4[0], PathOp::Set(paths[0].into(), ScaleformValue::Number(0.35f32 as f64)));
+        assert_eq!(fallout4[1], PathOp::Set(paths[1].into(), ScaleformValue::Number(0.0)));
+        assert!(!paths.iter().any(|path| path.contains("Compass")), "Fallout 4's compass has no ActionScript");
     }
 
     /// #4725 — the per-game poll-handler set is table data on

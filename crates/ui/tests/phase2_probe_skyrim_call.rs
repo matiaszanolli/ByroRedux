@@ -77,6 +77,8 @@ fn probe_fo4_meter_paths() {
         let f = last.unwrap_or_else(|| base.clone());
         let rows: Vec<usize> = (0..72).map(|band| (band * 10..band * 10 + 10).flat_map(|y| (0..1280).map(move |x| (y * 1280 + x) * 4)).filter(|&i| f[i..i + 4] != base[i..i + 4]).count()).collect();
         eprintln!("pct {pct}: changed per 10-row band {rows:?}");
+        let bbox = || { let (mut a, mut b, mut c, mut d) = (1280, 0, 720, 0); for y in 0..720 { for x in 0..1280 { let i = (y * 1280 + x) * 4; if f[i..i + 4] != base[i..i + 4] { a = a.min(x); b = b.max(x); c = c.min(y); d = d.max(y); } } } (a, b, c, d) };
+        eprintln!("pct {pct}: bbox {:?}", bbox());
         let half = |x0: usize, x1: usize| (600..720).flat_map(|y| (x0..x1).map(move |x| (y * 1280 + x) * 4)).filter(|&i| f[i..i + 4] != base[i..i + 4]).count();
         let xs: Vec<usize> = (0..16).map(|c| (600..720).flat_map(|y| (c * 80..c * 80 + 80).map(move |x| (y * 1280 + x) * 4)).filter(|&i| f[i..i + 4] != base[i..i + 4]).count()).collect();
         let ink = |x0: usize, x1: usize| (600..720).flat_map(|y| (x0..x1).map(move |x| (y * 1280 + x) * 4)).filter(|&i| f[i + 3] > 8).count();
@@ -88,4 +90,57 @@ fn probe_fo4_meter_paths() {
     for path in ["LeftMeters_mc.x", "LeftMeters_mc.y", "LeftMeters_mc.HPMeter_mc.x", "LeftMeters_mc.HPMeter_mc.y", "LeftMeters_mc.HPMeter_mc.MeterBar_mc.scaleX", "LeftMeters_mc.HPMeter_mc.MeterBar_mc.visible", "LeftMeters_mc.HPMeter_mc.MeterBar_mc.alpha", "LeftMeters_mc.HPMeter_mc.MeterBar_mc.width", "RightMeters_mc.x", "RightMeters_mc.y", "RightMeters_mc.ActionPointMeter_mc.MeterBar_mc.scaleX", "LeftMeters_mc.HPMeter_mc.MeterBar_mc.Percent", "LeftMeters_mc.HPMeter_mc.currentFrame", "LeftMeters_mc.HPMeter_mc.totalFrames", "LeftMeters_mc.currentFrame", "stage.stageWidth", "LeftMeters_mc.HPMeter_mc.MeterBar_mc.BarAlpha", "LeftMeters_mc.numChildren", "LeftMeters_mc.HPMeter_mc.numChildren", "LeftMeters_mc.HPMeter_mc.transform.colorTransform.alphaMultiplier", "LeftMeters_mc.HPMeter_mc.MeterBar_mc.transform.colorTransform.alphaMultiplier", "LeftMeters_mc.HPMeter_mc.MeterBar_mc.height", "RightMeters_mc.ActionPointMeter_mc.MeterBar_mc.width", "RightMeters_mc.ActionPointMeter_mc.MeterBar_mc.height", "LeftMeters_mc.HPMeter_mc.MeterBar_mc.numChildren", "LeftMeters_mc.HPMeter_mc.MeterBar_mc.mask", "LeftMeters_mc.HPMeter_mc.mask", "LeftMeters_mc.mask"] {
         eprintln!("get {path}: {:?}", player.path_op(&PathOp::Get(path.into())));
     }
+}
+
+#[test]
+#[ignore = "probe"]
+fn probe_skyrim_health_only() {
+    use byroredux_plugin::esm::test_paths::{data_dir, SKYRIM_SE_DEFAULT, SKYRIM_SE_ENV};
+    use byroredux_ui::PathOp;
+    let dir = data_dir(SKYRIM_SE_ENV, SKYRIM_SE_DEFAULT);
+    let archive = Arc::new(BsaArchive::open(dir.join("Skyrim - Interface.bsa")).unwrap());
+    let mut player = SwfPlayer::from_resource_provider(archive, "interface\\hudmenu.swf", 1280, 720, Some(ScaleformProfile::SkyrimAvm1)).unwrap();
+    player.set_stage_transparent();
+    for _ in 0..30 { player.tick(1.0 / 30.0); }
+    let frame = |player: &mut SwfPlayer| { player.tick(1.0 / 30.0); player.render().map(<[u8]>::to_vec) };
+    let set = |player: &mut SwfPlayer, h: f64, m: f64, s: f64| {
+        for ((name, obj), v) in [(("Health", "HealthMeterLeft"), h), (("Magicka", "MagickaMeter"), m), (("Stamina", "StaminaMeter"), s)] {
+            player.path_op(&PathOp::Call(format!("_root.HUDMovieBaseInstance.Set{name}MeterPercent"), vec![ScaleformValue::Number(v), ScaleformValue::Bool(false)]));
+            player.path_op(&PathOp::Call(format!("_root.HUDMovieBaseInstance.{obj}.SetPercent"), vec![ScaleformValue::Number(v)]));
+        }
+    };
+    set(&mut player, 100.0, 100.0, 100.0);
+    let mut full = Vec::new();
+    for _ in 0..60 { if let Some(f) = frame(&mut player) { full = f; } }
+    set(&mut player, 35.0, 100.0, 100.0);
+    let mut low = full.clone();
+    for _ in 0..60 { if let Some(f) = frame(&mut player) { low = f; } }
+    let mut minx = 1280; let mut maxx = 0; let mut miny = 720; let mut maxy = 0; let mut n = 0;
+    for y in 0..720 { for x in 0..1280 { let i = (y * 1280 + x) * 4; if full[i..i + 4] != low[i..i + 4] { n += 1; minx = minx.min(x); maxx = maxx.max(x); miny = miny.min(y); maxy = maxy.max(y); } } }
+    for path in ["_root.HUDMovieBaseInstance.HealthMeterLeft.Empty", "_root.HUDMovieBaseInstance.HealthMeterLeft.Full", "_root.HUDMovieBaseInstance.HealthMeterLeft.CurrentPercent", "_root.HUDMovieBaseInstance.HealthMeterLeft.meterMovieClip._currentframe", "_root.HUDMovieBaseInstance.HealthMeterLeft.meterMovieClip._totalframes", "_root.HUDMovieBaseInstance.HealthMeterLeft.meterMovieClip._visible", "Shared.GlobalFunc.Lerp", "_global.Shared.GlobalFunc.Lerp", "_root.HUDMovieBaseInstance.Health._currentframe", "_root.HUDMovieBaseInstance.Health.HealthMeter_mc._currentframe", "_root.HUDMovieBaseInstance.Health.HealthMeter_mc.HealthLeft._currentframe", "_root.HUDMovieBaseInstance.Health.HealthMeter_mc.HealthLeft._totalframes"] {
+        eprintln!("get {path}: {:?}", player.path_op(&PathOp::Get(path.into())));
+    }
+    set(&mut player, 35.0, 35.0, 35.0);
+    let mut both = low.clone();
+    for _ in 0..60 { if let Some(f) = frame(&mut player) { both = f; } }
+    for (name, x0, x1) in [("left", 0usize, 518usize), ("right", 764, 1280)] {
+        let (mut a, mut b, mut c, mut d, mut n) = (1280, 0, 720, 0, 0);
+        for y in 0..720 { for x in x0..x1 { let i = (y * 1280 + x) * 4; if low[i..i + 4] != both[i..i + 4] { n += 1; a = a.min(x); b = b.max(x); c = c.min(y); d = d.max(y); } } }
+        eprintln!("magicka/stamina {name}: {n} px x {a}..{b} y {c}..{d}");
+    }
+    let clip = "_root.HUDMovieBaseInstance.HealthMeterLeft.meterMovieClip";
+    eprintln!("gotoAndStop(130.35): {:?}", player.path_op(&PathOp::Call(format!("{clip}.gotoAndStop"), vec![ScaleformValue::Number(130.35)])));
+    eprintln!("  frame now {:?}", player.path_op(&PathOp::Get(format!("{clip}._currentframe"))));
+    eprintln!("gotoAndStop(120): {:?}", player.path_op(&PathOp::Call(format!("{clip}.gotoAndStop"), vec![ScaleformValue::Number(120.0)])));
+    eprintln!("  frame now {:?}", player.path_op(&PathOp::Get(format!("{clip}._currentframe"))));
+    eprintln!("SetPercent(50): {:?}", player.path_op(&PathOp::Call("_root.HUDMovieBaseInstance.HealthMeterLeft.SetPercent".into(), vec![ScaleformValue::Number(50.0)])));
+    eprintln!("  frame now {:?}", player.path_op(&PathOp::Get(format!("{clip}._currentframe"))));
+    eprintln!("Lerp(200,1,0,100,35) = {:?}", player.path_op(&PathOp::Call("_global.Shared.GlobalFunc.Lerp".into(), vec![200.0, 1.0, 0.0, 100.0, 35.0].into_iter().map(ScaleformValue::Number).collect())));
+    let mut after = low.clone();
+    for _ in 0..20 { if let Some(f) = frame(&mut player) { after = f; } }
+    let n = (0..720 * 1280).filter(|p| full[p * 4..p * 4 + 4] != after[p * 4..p * 4 + 4]).count();
+    eprintln!("pixels changed vs full after the direct frame calls: {n}");
+    eprintln!("skyrim health-only change: {n} px in x {minx}..{maxx} y {miny}..{maxy}");
+    let ink = |x0: usize, x1: usize, y0: usize, y1: usize| (y0..y1).flat_map(|y| (x0..x1).map(move |x| (y * 1280 + x) * 4)).filter(|&i| full[i + 3] > 8).count();
+    eprintln!("ink by 160-col block rows 600..680: {:?}", (0..8).map(|b| ink(b * 160, b * 160 + 160, 600, 680)).collect::<Vec<_>>());
 }

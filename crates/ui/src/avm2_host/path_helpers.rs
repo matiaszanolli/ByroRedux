@@ -386,21 +386,36 @@ fn params(count: usize) -> Vec<MethodParam> {
     (0..count).map(|_| MethodParam { name: None, kind: Index::new(0), default_value: None }).collect()
 }
 
-/// Append the walker and the three path helpers, and the pool entries they name. The helpers are
-/// script traits from `next_disp_id` on; the installer registers them ([`PathHelpers`]).
-pub(super) fn add_path_methods(
-    pools: &mut AdapterPools,
-    adapter: &AdapterNames,
-    out: &mut AdapterMethods,
-    next_disp_id: &mut u32,
-) -> std::io::Result<PathHelpers> {
+/// How many methods (and script traits) the path service adds to the adapter: the walker and
+/// get / set / call. They follow the adapter's fixed tail (ready / destroy / installer / init).
+#[cfg(test)]
+pub(super) const PATH_ADAPTER_METHODS: usize = 4;
+/// The constant-pool entries the path service adds: 14 member / type names, the walker and three
+/// helper names, the three callback names; 13 multinames (10 members plus the three helpers).
+#[cfg(test)]
+pub(super) const PATH_ADAPTER_STRINGS: usize = 21;
+#[cfg(test)]
+pub(super) const PATH_ADAPTER_MULTINAMES: usize = 13;
+
+/// The path methods' pool entries, made before the installer (which registers the helpers) and
+/// emitted after the script initialiser ([`emit`]).
+pub(super) struct PathPlan {
+    names: PathNames,
+    walker_string: Index<String>,
+    helper_strings: [Index<String>; 3],
+    helpers: [Index<Multiname>; 3],
+    pub(super) registrations: PathHelpers,
+}
+
+/// Add the pool entries the path methods name.
+pub(super) fn prepare(pools: &mut AdapterPools, adapter: &AdapterNames) -> PathPlan {
     let public = pools.public_namespace;
     let mut name = |text: &str| add_string(&mut pools.strings, text.as_bytes().to_vec());
     let found_string = name("found");
-    let value_string = name("value");
     let type_string = name("type");
     let object_string = name("o");
     let key_string = name("key");
+    let value_string = name("value");
     let split_string = name("split");
     let length_string = name("length");
     let get_child_by_name_string = name("getChildByName");
@@ -443,27 +458,36 @@ pub(super) fn add_path_methods(
         function_type,
     };
     let helpers = helper_strings.map(|helper| multiname(qname(public, helper)));
+    PathPlan {
+        names,
+        walker_string,
+        helper_strings,
+        helpers,
+        registrations: PathHelpers {
+            registrations: [
+                (callback_strings[0], helpers[0]),
+                (callback_strings[1], helpers[1]),
+                (callback_strings[2], helpers[2]),
+            ],
+        },
+    }
+}
 
-    let walker_method = out.add(walker_string, params(2), MethodFlags::empty(), (8, 9), walker(&names)?);
+/// Append the walker and the three path helpers as script traits from `next_disp_id` on.
+pub(super) fn emit(plan: &PathPlan, out: &mut AdapterMethods, next_disp_id: &mut u32) -> std::io::Result<()> {
+    let names = &plan.names;
+    let walker_method = out.add(plan.walker_string, params(2), MethodFlags::empty(), (8, 9), walker(names)?);
     out.traits.push(method_trait(names.walker, walker_method, *next_disp_id));
     *next_disp_id += 1;
-    let bodies = [
-        (get(&names)?, 1, (6, 5)),
-        (set(&names)?, 2, (6, 7)),
-        (call(&names)?, 2, (6, 8)),
-    ];
-    for ((code, param_count, sizes), (helper, helper_string)) in bodies.into_iter().zip(helpers.iter().zip(helper_strings)) {
+    let bodies = [(get(names)?, 1, (6, 5)), (set(names)?, 2, (6, 7)), (call(names)?, 2, (6, 8))];
+    for ((code, param_count, sizes), (helper, helper_string)) in
+        bodies.into_iter().zip(plan.helpers.iter().zip(plan.helper_strings))
+    {
         let method: Index<Method> = out.add(helper_string, params(param_count), MethodFlags::empty(), sizes, code);
         out.traits.push(method_trait(*helper, method, *next_disp_id));
         *next_disp_id += 1;
     }
-    Ok(PathHelpers {
-        registrations: [
-            (callback_strings[0], helpers[0]),
-            (callback_strings[1], helpers[1]),
-            (callback_strings[2], helpers[2]),
-        ],
-    })
+    Ok(())
 }
 
 #[cfg(test)]
