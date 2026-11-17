@@ -24,7 +24,10 @@ struct StoredStack {
     instance: Option<ItemInstance>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A reference's parked state. In memory only: the saved wire shape is [`SavedReferenceState`], which differs in
+/// its actor-value fields (portable pairs); the "required: pre-vN saves are rejected" notes on the fields below
+/// describe the matching wire fields.
+#[derive(Debug, Clone)]
 struct ReferenceState {
     inventory: Option<Vec<StoredStack>>,
     equipment: Option<EquipmentSlots>,
@@ -166,14 +169,12 @@ impl ScriptState {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+/// In memory only (O(1) lookup by pair); saved through [`SavedPersistentReferenceStates`], which writes both maps as
+/// `(pair, state)` rows because JSON cannot key an object by a struct. `scripts` is required there like the row
+/// fields: pre-v114 saves are rejected.
+#[derive(Debug, Default)]
 pub(crate) struct PersistentReferenceStates {
-    // JSON cannot encode a struct as an object key. Serialize stable pairs as
-    // rows, retaining O(1) lookup in the running engine.
-    #[serde(with = "pair_rows")]
     rows: HashMap<FormIdPair, ReferenceState>,
-    /// #6071 — required, like the row fields: pre-v114 saves are rejected.
-    #[serde(with = "pair_rows")]
     scripts: HashMap<FormIdPair, ScriptState>,
 }
 
@@ -314,22 +315,6 @@ pub(crate) fn without_parked_state<T>(
         world.insert_resource(super::stream_snapshot::StreamStateSnapshots::default());
     }
     outcome
-}
-
-mod pair_rows {
-    use super::*;
-    pub(super) fn serialize<S: serde::Serializer, T: Serialize>(
-        rows: &HashMap<FormIdPair, T>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        rows.iter().collect::<Vec<_>>().serialize(serializer)
-    }
-    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
-        deserializer: D,
-    ) -> Result<HashMap<FormIdPair, T>, D::Error> {
-        let rows = Vec::<(FormIdPair, T)>::deserialize(deserializer)?;
-        Ok(rows.into_iter().collect())
-    }
 }
 
 fn identity(world: &World, entity: EntityId) -> Option<FormIdPair> {

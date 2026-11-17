@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 
 fn registered_type_names(registry_source: &str) -> Vec<&str> {
-    [".register_component::<", ".register_replacing_component::<", ".register_resource::<"]
+    let turbofish = [".register_component::<", ".register_replacing_component::<", ".register_resource::<"]
         .into_iter()
         .flat_map(|prefix| {
             registry_source
@@ -18,6 +18,30 @@ fn registered_type_names(registry_source: &str) -> Vec<&str> {
                     let end = rest.find('>')?;
                     rest[..end].rsplit("::").next()
                 })
+        });
+    // D2-01 — a context-aware codec registers without a turbofish, but its column name is its type's name
+    // (`register_component_codec("ActorValues", ..)`), the same convention every turbofish row follows.
+    turbofish.chain(codec_registrations(registry_source).into_iter().map(|(name, _)| name)).collect()
+}
+
+/// D2-01 — every `register_component_codec(` / `register_resource_codec(` call in `source`, as the column name
+/// and the module that holds its save / load functions (the second-to-last segment of the `a::b::save_x`
+/// path). That module's file defines the portable wire types (`SavedActorValues`, …) the column serializes, so
+/// the scan must reach it without a hand-maintained list.
+fn codec_registrations(source: &str) -> Vec<(&str, Vec<&str>)> {
+    ["register_component_codec(", "register_resource_codec("]
+        .into_iter()
+        .flat_map(|needle| source.match_indices(needle).map(move |(start, _)| &source[start + needle.len()..]))
+        .filter_map(|call| {
+            let call = &call[..call.find(';')?];
+            let rest = call.strip_prefix('"')?;
+            let name = &rest[..rest.find('"')?];
+            let modules = call
+                .split(|c: char| c == ',' || c.is_whitespace())
+                .filter(|token| token.contains("::"))
+                .filter_map(|path| path.trim_end_matches(')').rsplit("::").nth(1))
+                .collect();
+            Some((name, modules))
         })
         .collect()
 }
@@ -91,14 +115,25 @@ fn save_type_sources() -> Vec<PathBuf> {
         .into_iter()
         .map(str::to_owned)
         .collect();
-    let mut candidates = save_scan_candidates();
+    let all_sources = save_scan_candidates();
+    let mut candidates = all_sources.clone();
+    let mut codec_modules: Vec<String> = codec_registrations(registry_source)
+        .into_iter()
+        .flat_map(|(_, modules)| modules)
+        .map(str::to_owned)
+        .collect();
     // #5802 — a subsystem that registers its own saved column
     // (`register_saved`, called from `build_save_registry`) is a registry
     // source too; its rows must reach the scan like the hub's.
     for path in &candidates {
+        // This file quotes `register_*` calls and `fn register_saved(` in its own prose and fixtures.
+        if path.ends_with("save_io/serde_default_guard_tests.rs") {
+            continue;
+        }
         if let Ok(source) = std::fs::read_to_string(path) {
             if source.contains("fn register_saved(") {
                 registered.extend(registered_type_names(&source).into_iter().map(str::to_owned));
+                codec_modules.extend(codec_registrations(&source).into_iter().flat_map(|(_, modules)| modules).map(str::to_owned));
             }
         }
     }
@@ -117,15 +152,15 @@ fn save_type_sources() -> Vec<PathBuf> {
         source.contains("cfg_attr(feature = \"save\"")
             || registered.iter().any(|name| defines_type(&source, name))
     });
-    // Non-turbofish and nested payloads cannot be derived from the registry's
-    // surface syntax. Keep these explicit edges small and asserted below.
+    // D2-01 — a codec's portable wire types live in the module its save / load functions come from; add every
+    // such file, so the next codec's wire type is scanned the day it is registered (its runtime type is found
+    // through its column name above).
+    candidates.extend(all_sources.iter().filter(|path| {
+        path.file_stem().and_then(|stem| stem.to_str()).is_some_and(|stem| codec_modules.iter().any(|module| module == stem))
+    }).cloned());
+    // Nested payloads cannot be derived from the registry's surface syntax.
+    // Keep these explicit edges small and asserted below.
     candidates.extend([
-        // OAI-SAVE: context-aware codecs register without a turbofish; scan
-        // both their portable shapes and the nested runtime payloads explicitly.
-        manifest.join("../crates/scripting/src/actor_value_save.rs"),
-        manifest.join("../crates/core/src/ecs/components/actor_values.rs"),
-        manifest.join("../crates/core/src/ecs/components/restoration.rs"),
-        manifest.join("src/cell_loader/reference_state.rs"),
         manifest.join("../crates/core/src/form_id.rs"),
         manifest.join("../crates/core/src/ecs/components/form_id.rs"),
         manifest.join("../crates/core/src/string/mod.rs"),
@@ -449,6 +484,44 @@ fn the_shape_scan_sees_the_whole_attribute_block() {
             "{marker} must contribute a serialized shape — the attribute-block \
              walk regressed to the nearest-#[ read"
         );
+    }
+}
+
+/// D2-01 — the codec registrations are discovered, not listed: every `register_*_codec(` call in the registry
+/// hub and in each `register_saved` module is parsed into a column name and a wire-type module, and the files
+/// that results in are in the scan. A call the parser cannot read (a renamed entry point, a closure instead of
+/// paths) fails here instead of dropping its wire types out of both serde guards.
+#[test]
+fn every_codec_registration_reaches_the_scan() {
+    let mut calls = 0;
+    let mut parsed = Vec::new();
+    for path in save_scan_candidates() {
+        let Ok(source) = std::fs::read_to_string(&path) else { continue };
+        if path.ends_with("save_io/serde_default_guard_tests.rs")
+            || !(path.ends_with("save_io/registry.rs") || source.contains("fn register_saved("))
+        {
+            continue;
+        }
+        calls += source.matches("registry.register_component_codec(").count()
+            + source.matches("registry.register_resource_codec(").count()
+            + source.matches("r.register_component_codec(").count()
+            + source.matches("r.register_resource_codec(").count();
+        parsed.extend(codec_registrations(&source).into_iter().map(|(name, modules)| (name.to_owned(), modules.into_iter().map(str::to_owned).collect::<Vec<_>>())));
+    }
+    assert_eq!(parsed.len(), calls, "every codec registration must parse: {parsed:?}");
+    let names: Vec<_> = parsed.iter().map(|(name, _)| name.as_str()).collect();
+    for expected in ["ActorValues", "TimedRestorations", "ActorVitals", "ActiveMagicEffects", "SkillProgress", "PersistentReferenceStates"] {
+        assert!(names.contains(&expected), "{expected} is codec-registered but was not discovered: {names:?}");
+    }
+    assert!(parsed.iter().all(|(_, modules)| !modules.is_empty()), "each codec names its wire-type module: {parsed:?}");
+    let sources = save_type_sources();
+    for (name, modules) in &parsed {
+        for module in modules {
+            assert!(
+                sources.iter().any(|path| path.file_stem().and_then(|stem| stem.to_str()) == Some(module.as_str())),
+                "codec `{name}`: module `{module}` must be in the shape scan"
+            );
+        }
     }
 }
 
@@ -1262,10 +1335,17 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // say) joined the saved registry as a NEW component column, so a pre-v132 snapshot has no record of
     // a line in flight.
     // OAI-SAVE: v133 stores actor-value identities as plugin/local pairs,
-    // including the portable parked-state and effect payloads.
+    // including the portable parked-state and effect payloads. That commit's baseline refresh ALSO absorbed
+    // the `declaration_terminator` scanner change (a tuple struct's shape now ends at its `;`, so an `impl`
+    // block that follows no longer joins the hash): no saved shape moved for that part (D2-04).
     // M48 GUI-EVT-001 (#6668) — v134 is a genuine bump: `MenuEventRegistrations` (each script's
     // `RegisterForMenuOpenCloseEvent` menus) joined the saved registry as a NEW resource.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x7fa4_3721_f4af_b596;
+    // D2-02 (audit 2026-11-17) — refreshed WITHOUT a major bump: `ReferenceState` and `PersistentReferenceStates`
+    // (`cell_loader/reference_state.rs`) lost their dead `Serialize` / `Deserialize` derives and the `pair_rows`
+    // adapter. Since v133 the wire shape of the parked store is `SavedReferenceState` /
+    // `SavedPersistentReferenceStates`, which are unchanged; nothing serialized the in-memory types any more.
+    // Only the scan's input shrank; no registered column decodes differently.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x2d67_b3dc_52fd_a43d;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

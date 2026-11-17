@@ -228,6 +228,13 @@ impl SaveRegistry {
     /// Register a component with a portable on-disk representation.
     /// Conversion runs with the current world on save, restore and overlay;
     /// validation checks the portable type without touching the world.
+    ///
+    /// `decode` returns `None` when a saved row cannot be restored (for
+    /// example every identity it names is unavailable): the value is dropped,
+    /// never attached to anything else. On an overlay of a `replace_missing`
+    /// column such an entity is treated like one with no saved row: its live
+    /// component belongs to the outgoing session, so it is cleared; an
+    /// additive column leaves the live component alone (D2-03).
     pub fn register_component_codec<T, S>(
         &mut self,
         name: &'static str,
@@ -295,6 +302,8 @@ impl SaveRegistry {
                 }
                 let count = decoded.len();
                 if replace_missing {
+                    // Entities with a restored value. A row that decoded to `None` is not restored, so its
+                    // entity is cleared with the ones that had no row at all (documented on the registration).
                     let present: std::collections::HashSet<_> =
                         decoded.iter().map(|(entity, _)| *entity).collect();
                     for entity in remap.values() {
@@ -642,6 +651,34 @@ mod tests {
         assert_eq!(apply(&mut world, serde_json::json!([]), &remap).unwrap(), 0);
         assert!(world.get::<Transform>(matched).is_none());
         assert!(world.get::<Transform>(unrelated).is_some());
+    }
+
+    /// D2-03 — a saved row the codec cannot restore (`decode` -> `None`) is dropped, and the overlay treats its
+    /// entity like one with no saved row: a replacing column clears the outgoing session's live value, an
+    /// additive column leaves it.
+    #[test]
+    fn a_codec_row_that_cannot_be_restored_clears_a_replacing_column_only() {
+        fn encode(_: &World, _: u32, _: &Transform) -> Result<u32, SaveError> {
+            Ok(7)
+        }
+        fn decode(_: &World, _: u32, value: u32) -> Result<Option<Transform>, SaveError> {
+            Ok((value != 7).then(Transform::default))
+        }
+        for (replace_missing, survives) in [(true, false), (false, true)] {
+            let mut registry = SaveRegistry::new();
+            registry.register_component_codec::<Transform, u32>("Transform", replace_missing, encode, decode);
+            let mut world = World::new();
+            let entity = world.spawn();
+            world.insert(entity, Transform::default());
+            let remap = HashMap::from([(9, entity)]);
+            let apply = registry.component_apply("Transform").unwrap();
+            assert_eq!(apply(&mut world, serde_json::json!([[9, 7]]), &remap).unwrap(), 0, "nothing was restored");
+            assert_eq!(
+                world.get::<Transform>(entity).is_some(),
+                survives,
+                "replace_missing = {replace_missing}"
+            );
+        }
     }
 
     #[test]
