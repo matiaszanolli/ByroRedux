@@ -805,17 +805,15 @@ fn release_finished_tethers(world: &World, finished: &[(EntityId, EntityId)]) {
             }
         }
     }
-    if !riders.is_empty() {
-        if let Some(mut states) = world.query_mut::<ActorCinematicState>() {
+    if !riders.is_empty()
+        && let Some(mut states) = world.query_mut::<ActorCinematicState>() {
             for (actor, vehicle) in &riders {
-                if let Some(state) = states.get_mut(*actor) {
-                    if state.vehicle == Some(*vehicle) {
+                if let Some(state) = states.get_mut(*actor)
+                    && state.vehicle == Some(*vehicle) {
                         state.vehicle = None;
                     }
-                }
             }
         }
-    }
     if !unplaced.is_empty() {
         log::info!(
             "{} released cinematic entit(y/ies) lack a cell owner — queued for re-adoption by the streaming step (#3817)",
@@ -949,11 +947,10 @@ pub(crate) fn retry_cinematic_readoption(
             "cinematic re-adoption: {dropped} pending entit(y/ies) were despawned outside cell teardown and dropped (#3817)"
         );
     }
-    if adopted > 0 || dropped > 0 {
-        if let Some(mut pending) = world.try_resource_mut::<CinematicReAdoption>() {
+    if (adopted > 0 || dropped > 0)
+        && let Some(mut pending) = world.try_resource_mut::<CinematicReAdoption>() {
             pending.pending = still_pending;
         }
-    }
     adopted
 }
 
@@ -1237,15 +1234,14 @@ fn scene_trigger_actor_approach_system_inner(
                         cap_targets.push(target);
                     }
                 }
-                if awaited_stage == u16::MAX {
-                    if let Some(next_stage) = cap_targets
+                if awaited_stage == u16::MAX
+                    && let Some(next_stage) = cap_targets
                         .iter()
                         .map(|(_, stage, _, _)| *stage)
                         .min()
                     {
                         cap_targets.retain(|(_, stage, _, _)| *stage == next_stage);
                     }
-                }
                 targets.extend(cap_targets);
             }
             targets
@@ -1317,8 +1313,8 @@ fn scene_trigger_actor_approach_system_inner(
             byroredux_physics::set_kinematic_translation(world, actor, translation);
         }
     }
-    if !arrivals.is_empty() {
-        if let Some(mut events) = world.query_mut::<byroredux_scripting::OnTriggerEnterEvent>() {
+    if !arrivals.is_empty()
+        && let Some(mut events) = world.query_mut::<byroredux_scripting::OnTriggerEnterEvent>() {
             for (trigger, actor) in arrivals {
                 if let Some(event) = events.get_mut(trigger) {
                     if !event.triggerers.contains(&actor) {
@@ -1334,7 +1330,6 @@ fn scene_trigger_actor_approach_system_inner(
                 }
             }
         }
-    }
 }
 
 /// Resolve MQ101's complete attachment chain: package-driven horse -> tethered

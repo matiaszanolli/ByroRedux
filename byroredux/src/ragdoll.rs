@@ -753,17 +753,15 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
     let mut mesh_walk_seen: HashSet<EntityId> = HashSet::new();
     let mut descendant_seen: HashSet<EntityId> = HashSet::new();
     for (actor, ragdoll) in rq.iter() {
-        if log::log_enabled!(log::Level::Trace) {
-            if let Some((bone, handle, _)) = ragdoll.bodies.first() {
-                if let Some(body) = pw.bodies.get(*handle) {
+        if log::log_enabled!(log::Level::Trace)
+            && let Some((bone, handle, _)) = ragdoll.bodies.first()
+                && let Some(body) = pw.bodies.get(*handle) {
                     log::trace!(
                         "ragdoll step: actor={actor} root_bone={bone} position={:?} velocity={:?}",
                         body.translation(),
                         body.linvel(),
                     );
                 }
-            }
-        }
         // The seed (activate_ragdoll) composed the body world pose as
         // body = bone ∘ body-local: `body_t = bone_t + bone_r * (local_t *
         // scale)`, `body_r = bone_r * local_r`. Invert that here so the
@@ -824,8 +822,8 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
         // not over-coverage. A body still within the existing bound is a
         // no-op: `WorldBound::merge` returns the unchanged bound when one
         // sphere already contains the other.
-        if !live_body_positions.is_empty() {
-            if let (Some(lb_q), Some(wb_q), Some(cq)) = (
+        if !live_body_positions.is_empty()
+            && let (Some(lb_q), Some(wb_q), Some(cq)) = (
                 local_bound_q.as_ref(),
                 world_bound_q.as_mut(),
                 children_q.as_ref(),
@@ -861,14 +859,12 @@ pub fn ragdoll_writeback_system(world: &World, _dt: f32) {
                     for &pos in &live_body_positions {
                         merged = merged.merge(&WorldBound::new(pos, local.radius));
                     }
-                    if merged.center != current.center || merged.radius != current.radius {
-                        if let Some(wb) = wb_q.get_mut(entity) {
+                    if (merged.center != current.center || merged.radius != current.radius)
+                        && let Some(wb) = wb_q.get_mut(entity) {
                             *wb = merged;
                         }
-                    }
                 }
             }
-        }
 
         // ── #1979 — re-derive non-body descendants from the simulated pose ──
         //

@@ -25,11 +25,10 @@ pub(crate) fn sneak_stance_system(world: &World, _dt: f32) {
     let pressed = world
         .try_resource::<ActionState>()
         .is_some_and(|actions| actions.was_pressed(InputAction::Sneak));
-    if pressed {
-        if let Err(reason) = set_player_sneaking(world, None) {
+    if pressed
+        && let Err(reason) = set_player_sneaking(world, None) {
             log::debug!("sneak key refused: {reason}");
         }
-    }
     sync_stance_locomotion(world);
 }
 
@@ -91,11 +90,10 @@ fn sync_stance_locomotion(world: &World) {
             return;
         };
         walk.walk_handle = to.0;
-        if let (Some(snapshot), Some(idle)) = (walk.captured.as_mut(), to.1) {
-            if Some(snapshot.clip_handle) == from.1 {
+        if let (Some(snapshot), Some(idle)) = (walk.captured.as_mut(), to.1)
+            && Some(snapshot.clip_handle) == from.1 {
                 snapshot.clip_handle = idle;
             }
-        }
         walk.walking
     };
     let Some(mut players) = world.query_mut::<AnimationPlayer>() else {

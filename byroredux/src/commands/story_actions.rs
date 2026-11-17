@@ -278,18 +278,16 @@ impl ConsoleCommand for EntityMoveCommand {
         };
         let delta = byroredux_core::math::Vec3::new(dx, dy, dz);
         let mut moved = false;
-        if let Some(mut transforms) = world.query_mut::<byroredux_core::ecs::components::Transform>() {
-            if let Some(transform) = transforms.get_mut(entity) {
+        if let Some(mut transforms) = world.query_mut::<byroredux_core::ecs::components::Transform>()
+            && let Some(transform) = transforms.get_mut(entity) {
                 transform.translation += delta;
                 moved = true;
             }
-        }
-        if let Some(mut globals) = world.query_mut::<GlobalTransform>() {
-            if let Some(global) = globals.get_mut(entity) {
+        if let Some(mut globals) = world.query_mut::<GlobalTransform>()
+            && let Some(global) = globals.get_mut(entity) {
                 global.translation += delta;
                 moved = true;
             }
-        }
         if moved {
             CommandOutput::line(format!("entity {entity} moved by ({dx}, {dy}, {dz})"))
         } else {

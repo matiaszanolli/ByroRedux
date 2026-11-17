@@ -191,11 +191,10 @@ fn main() -> anyhow::Result<()> {
         }
         for perk in index.perks.values() {
             for e in &perk.entries {
-                if e.priority != 0 {
-                    if let PerkEntryBody::EntryPoint { entry_point_index, function, function_data, .. } = &e.body {
+                if e.priority != 0
+                    && let PerkEntryBody::EntryPoint { entry_point_index, function, function_data, .. } = &e.body {
                         println!("  prio {:>3} {} ep {} fn {} {:?}", e.priority, perk.editor_id, entry_point_index, function, function_data);
                     }
-                }
             }
         }
         // Order-sensitivity: entry points where non-commuting math functions

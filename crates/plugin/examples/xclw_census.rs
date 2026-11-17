@@ -33,11 +33,10 @@ fn main() -> anyhow::Result<()> {
     let mut keys: Vec<_> = index.cells.exterior_cells.keys().cloned().collect();
     keys.sort();
     for wkey in keys {
-        if let Some(f) = world_filter {
-            if !wkey.to_ascii_lowercase().contains(&f.to_ascii_lowercase()) {
+        if let Some(f) = world_filter
+            && !wkey.to_ascii_lowercase().contains(&f.to_ascii_lowercase()) {
                 continue;
             }
-        }
         let cells = &index.cells.exterior_cells[&wkey];
         let wrld = index.cells.worldspaces.get(&wkey);
         // Same resolution the LOD spawn uses: NAM3/NAM4 first, else the

@@ -218,11 +218,10 @@ impl ConsoleCommand for TerrainParallaxCommand {
             _ => return CommandOutput::line(usage),
         };
         for (id, value) in [(RANGE, range), (DEPTH, depth)] {
-            if let Some(value) = value {
-                if let Err(error) = set_session_number(world, id, value) {
+            if let Some(value) = value
+                && let Err(error) = set_session_number(world, id, value) {
                     return CommandOutput::line(format!("terrain.parallax: {error}"));
                 }
-            }
         }
         let range = crate::setting_number(world, RANGE, f32::NAN);
         let depth = crate::setting_number(world, DEPTH, f32::NAN);

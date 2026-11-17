@@ -1231,11 +1231,10 @@ fn cover_density_inputs(
             .zip(authored_grass.iter())
             .zip(splat_layers.layers.iter())
         {
-            if layer.ltex_form_id.is_some() {
-                if let Some([r, g, b]) = cover.union_colour(grasses) {
+            if layer.ltex_form_id.is_some()
+                && let Some([r, g, b]) = cover.union_colour(grasses) {
                     *colour = [r, g, b, 1.0];
                 }
-            }
         }
         if normalize_base_ltex(base_ltex).is_some() {
             base_affinity = cover.union_density(&base_authored_grass);

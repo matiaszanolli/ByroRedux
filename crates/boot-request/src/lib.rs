@@ -296,14 +296,13 @@ impl BootRequest {
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), BootRequestError> {
         let path = path.as_ref();
         let text = self.to_toml_string()?;
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty() {
                 fs::create_dir_all(parent).map_err(|source| BootRequestError::Write {
                     path: path.to_path_buf(),
                     source,
                 })?;
             }
-        }
         let temp_path = byroredux_core::atomic_file::atomic_temp_path(path);
         // #5143 — no non-atomic fallback. The previous "Windows rename"
         // branch ran on *any* `atomic_write` error on every OS, copying the

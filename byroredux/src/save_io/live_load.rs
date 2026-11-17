@@ -581,11 +581,10 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     // INC4-1 — the player survives a live load but the furniture they sat on is respawned under a new
     // entity, and `Seated` (an `EntityId`) is not a delta column: the outgoing seat would name a dead
     // or recycled entity. The loaded player stands; the seat is not restored from the save.
-    if let Some(player) = crate::systems::PlayerEntity::get(world) {
-        if let Some(mut seats) = world.query_mut::<byroredux_core::ecs::components::Seated>() {
+    if let Some(player) = crate::systems::PlayerEntity::get(world)
+        && let Some(mut seats) = world.query_mut::<byroredux_core::ecs::components::Seated>() {
             seats.remove(player);
         }
-    }
 }
 
 /// Drain a queued live-load: reload the saved cell or exterior worldspace
@@ -932,8 +931,8 @@ pub fn execute_pending_save_loads(
     crate::music::end_sting_layer(world);
     // INC4-2 — the overlay may have restored a different sex or race than the live body wears.
     crate::player_body::sync_body_after_load(world, identity_before);
-    if let Some(pose) = snapshot_player_pose(&snapshot) {
-        if apply_player_pose(world, &pose) {
+    if let Some(pose) = snapshot_player_pose(&snapshot)
+        && apply_player_pose(world, &pose) {
             log::info!(
                 "save load: restored player pose at ({:.1}, {:.1}, {:.1}) yaw={:.2} pitch={:.2} ({})",
                 pose.position[0],
@@ -948,7 +947,6 @@ pub fn execute_pending_save_loads(
                 },
             );
         }
-    }
     if let Err(error) = crate::extensions::queue_session_event(
         world,
         byroredux_sdk::event::SessionEvent {

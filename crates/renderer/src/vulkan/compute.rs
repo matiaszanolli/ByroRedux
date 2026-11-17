@@ -309,57 +309,61 @@ impl ClusterCullPipeline {
     /// must not be lost, and the bound buffers must not be in use by another
     /// in-flight command buffer.
     pub unsafe fn dispatch(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
-        let telemetry = &self.telemetry_buffers[frame];
-        let telemetry_size = std::mem::size_of::<ClusterCullTelemetryGpu>() as vk::DeviceSize;
-        device.cmd_fill_buffer(cmd, telemetry.buffer, 0, telemetry_size, 0);
-        let clear_to_compute = vk::BufferMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .buffer(telemetry.buffer)
-            .offset(0)
-            .size(telemetry_size);
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[clear_to_compute],
-            &[],
-        );
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            let telemetry = &self.telemetry_buffers[frame];
+            let telemetry_size = std::mem::size_of::<ClusterCullTelemetryGpu>() as vk::DeviceSize;
+            device.cmd_fill_buffer(cmd, telemetry.buffer, 0, telemetry_size, 0);
+            let clear_to_compute = vk::BufferMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .buffer(telemetry.buffer)
+                .offset(0)
+                .size(telemetry_size);
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[clear_to_compute],
+                &[],
+            );
 
-        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
-        device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.pipeline_layout,
-            0,
-            &[self.descriptor_sets[frame]],
-            &[],
-        );
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.pipeline_layout,
+                0,
+                &[self.descriptor_sets[frame]],
+                &[],
+            );
 
-        device.cmd_dispatch(cmd, CLUSTER_TILES_X, CLUSTER_TILES_Y, CLUSTER_SLICES_Z);
+            device.cmd_dispatch(cmd, CLUSTER_TILES_X, CLUSTER_TILES_Y, CLUSTER_SLICES_Z);
 
-        let compute_to_host = vk::BufferMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::HOST_READ)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .buffer(telemetry.buffer)
-            .offset(0)
-            .size(telemetry_size);
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::PipelineStageFlags::HOST,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[compute_to_host],
-            &[],
-        );
-        self.telemetry_pending[frame] = true;
+            let compute_to_host = vk::BufferMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .dst_access_mask(vk::AccessFlags::HOST_READ)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .buffer(telemetry.buffer)
+                .offset(0)
+                .size(telemetry_size);
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::HOST,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[compute_to_host],
+                &[],
+            );
+            self.telemetry_pending[frame] = true;
+        }
     }
 
     /// Harvest the prior use of `frame` after its fence has signalled.

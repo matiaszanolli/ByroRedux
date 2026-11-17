@@ -151,80 +151,86 @@ impl SkyFilter {
         image: vk::Image,
         frame: usize,
     ) {
-        let range = vk::ImageSubresourceRange::default()
-            .aspect_mask(vk::ImageAspectFlags::COLOR)
-            .base_mip_level(1)
-            .level_count(SKY_CUBE_MIP_LEVELS - 1)
-            .layer_count(CUBE_FACES);
-        let begin = vk::ImageMemoryBarrier::default()
-            .image(image)
-            .subresource_range(range)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .dst_access_mask(vk::AccessFlags::SHADER_WRITE);
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[begin],
-        );
-        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
-        for mip in 1..SKY_CUBE_MIP_LEVELS {
-            let set = self.sets[frame * (SKY_CUBE_MIP_LEVELS - 1) as usize + mip as usize - 1];
-            device.cmd_bind_descriptor_sets(
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            let range = vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .base_mip_level(1)
+                .level_count(SKY_CUBE_MIP_LEVELS - 1)
+                .layer_count(CUBE_FACES);
+            let begin = vk::ImageMemoryBarrier::default()
+                .image(image)
+                .subresource_range(range)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .dst_access_mask(vk::AccessFlags::SHADER_WRITE);
+            device.cmd_pipeline_barrier(
                 cmd,
-                vk::PipelineBindPoint::COMPUTE,
-                self.layout,
-                0,
-                &[set],
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
                 &[],
+                &[],
+                &[begin],
             );
-            let roughness = mip as f32 / (SKY_CUBE_MIP_LEVELS - 1) as f32;
-            device.cmd_push_constants(
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+            for mip in 1..SKY_CUBE_MIP_LEVELS {
+                let set = self.sets[frame * (SKY_CUBE_MIP_LEVELS - 1) as usize + mip as usize - 1];
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::COMPUTE,
+                    self.layout,
+                    0,
+                    &[set],
+                    &[],
+                );
+                let roughness = mip as f32 / (SKY_CUBE_MIP_LEVELS - 1) as f32;
+                device.cmd_push_constants(
+                    cmd,
+                    self.layout,
+                    vk::ShaderStageFlags::COMPUTE,
+                    0,
+                    &roughness.to_ne_bytes(),
+                );
+                let edge = SKY_CUBE_FACE_SIZE >> mip;
+                device.cmd_dispatch(
+                    cmd,
+                    edge.div_ceil(WORKGROUP_X),
+                    edge.div_ceil(WORKGROUP_Y),
+                    CUBE_FACES,
+                );
+            }
+            let end = vk::ImageMemoryBarrier::default()
+                .image(image)
+                .subresource_range(range)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .old_layout(vk::ImageLayout::GENERAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ);
+            device.cmd_pipeline_barrier(
                 cmd,
-                self.layout,
-                vk::ShaderStageFlags::COMPUTE,
-                0,
-                &roughness.to_ne_bytes(),
-            );
-            let edge = SKY_CUBE_FACE_SIZE >> mip;
-            device.cmd_dispatch(
-                cmd,
-                edge.div_ceil(WORKGROUP_X),
-                edge.div_ceil(WORKGROUP_Y),
-                CUBE_FACES,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[end],
             );
         }
-        let end = vk::ImageMemoryBarrier::default()
-            .image(image)
-            .subresource_range(range)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ);
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[end],
-        );
     }
 
     /// Safety: no pending command buffers reference these handles.
     pub unsafe fn destroy(&mut self, device: &ash::Device) {
-        // SAFETY: the caller's contract (no in-flight work references the pass's pipeline or pool);
-        // `destroy_pass_objects` skips null handles and nulls what it destroys (#6371).
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
         unsafe {
+            // SAFETY: the caller's contract (no in-flight work references the pass's pipeline or pool);
+            // `destroy_pass_objects` skips null handles and nulls what it destroys (#6371).
             crate::vulkan::descriptors::destroy_pass_objects(
                 device,
                 crate::vulkan::descriptors::PassHandles {
@@ -233,11 +239,11 @@ impl SkyFilter {
                     pool: &mut self.pool,
                     set_layout: &mut self.set_layout,
                 },
-            )
-        };
-        for view in self.views.drain(..) {
-            device.destroy_image_view(view, None);
+            );
+            for view in self.views.drain(..) {
+                device.destroy_image_view(view, None);
+            }
+            *self = Self::default();
         }
-        *self = Self::default();
     }
 }

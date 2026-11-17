@@ -721,11 +721,10 @@ fn apply_alias_injections(
             if desired_factions.contains_key(&key) {
                 continue;
             }
-            if prior.original_rank.is_none() {
-                if let Some(current) = ranks.get_mut(entity) {
+            if prior.original_rank.is_none()
+                && let Some(current) = ranks.get_mut(entity) {
                     current.0.retain(|(form_id, _)| *form_id != faction);
                 }
-            }
         }
 
         for (key @ (entity, faction), _sources) in desired_factions {
@@ -1016,11 +1015,9 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
                         quest: source_quest,
                         alias_id: source_alias,
                     }) = alias.fill_type
-                    {
-                        if !locations.contains_key(&(*quest, alias.alias_id)) {
+                        && !locations.contains_key(&(*quest, alias.alias_id)) {
                             external_locations.push((*quest, alias.clone(), source_quest, source_alias));
                         }
-                    }
                 }
                 continue;
             }
@@ -1446,7 +1443,7 @@ fn fill_location_alias(
     let allow_reserved = alias.flags.has(ALIAS_FLAG_ALLOW_RESERVED);
     let taken: HashSet<u32> = locations
         .iter()
-        .filter(|(&(owner, alias_id), _)| {
+        .filter(|&(&(owner, alias_id), _)| {
             if owner == quest {
                 !allow_reuse
             } else {
@@ -1724,11 +1721,10 @@ pub fn running_quest_bound_entities_cached(world: &World) -> FxHashSet<EntityId>
     };
     // Cache read alone: the hit path clones the small bound set (tens of
     // entities on a live load) and never holds the guard across a probe.
-    if let Some(cache) = world.try_resource::<RunningQuestBoundCache>() {
-        if cache.key == key {
+    if let Some(cache) = world.try_resource::<RunningQuestBoundCache>()
+        && cache.key == key {
             return cache.bound.clone();
         }
-    }
     let bound = running_quest_bound_entities(world);
     if let Some(mut cache) = world.try_resource_mut::<RunningQuestBoundCache>() {
         cache.key = key;

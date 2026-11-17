@@ -755,11 +755,10 @@ pub fn parse_race(
             }
             b"MODL" => {
                 let path = read_zstring(&sub.data);
-                if let Some(idx) = pending_indx.take() {
-                    if in_head_section {
+                if let Some(idx) = pending_indx.take()
+                    && in_head_section {
                         record.head_parts.push((idx, path.clone(), gender_section));
                     }
-                }
                 // #5753 — Oblivion's body section authors the gender's tail as
                 // the `MODL` right after the `MNAM` / `FNAM` marker. A marker-less
                 // section (none exists in the vanilla data) is shared by both.

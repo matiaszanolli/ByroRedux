@@ -119,11 +119,10 @@ impl QuestAliasScripts {
 ///
 /// Idempotent: a second call keeps the first's table and its checked scripts.
 pub fn install_quest_alias_scripts(world: &mut World, index: &byroredux_plugin::esm::records::EsmIndex) -> usize {
-    if let Some(installed) = world.try_resource::<QuestAliasScripts>() {
-        if !installed.is_empty() {
+    if let Some(installed) = world.try_resource::<QuestAliasScripts>()
+        && !installed.is_empty() {
             return installed.raw.values().map(|scripts| scripts.len()).sum();
         }
-    }
     let mut raw: HashMap<QuestFormId, Arc<Vec<(i16, ScriptInstance)>>> = HashMap::new();
     let mut count = 0usize;
     for (&form_id, quest) in index.quests.iter() {

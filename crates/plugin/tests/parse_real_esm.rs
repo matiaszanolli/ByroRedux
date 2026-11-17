@@ -5952,14 +5952,13 @@ fn story_manager_skyrim_census_floor() {
     let mut in_tree = 0usize;
     let mut same_parent = 0usize;
     for node in &nodes {
-        if node.previous_sibling != 0 {
-            if let Some(target) = index.story_manager_nodes.get(&node.previous_sibling) {
+        if node.previous_sibling != 0
+            && let Some(target) = index.story_manager_nodes.get(&node.previous_sibling) {
                 in_tree += 1;
                 if target.parent == node.parent {
                     same_parent += 1;
                 }
             }
-        }
     }
     assert!(
         same_parent * 10 >= in_tree * 9,

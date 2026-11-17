@@ -555,15 +555,14 @@ fn attach_stage_result_scripts(
             b"SCHR" => {
                 let (script, end) =
                     crate::esm::records::script::embedded_script_at(out.form_id, subs, at, remap);
-                if let (Some(script), Some(stage), Some(item)) = (script, stage, item) {
-                    if let Some(entry) = out
+                if let (Some(script), Some(stage), Some(item)) = (script, stage, item)
+                    && let Some(entry) = out
                         .stages
                         .get_mut(stage)
                         .and_then(|stage| stage.log_entries.get_mut(item))
                     {
                         entry.result_script = Some(std::sync::Arc::new(script));
                     }
-                }
                 at = end;
                 continue;
             }
@@ -656,11 +655,9 @@ fn parse_qust_header(
             // section; the VM resolves them like any attached script's.
             if let Some(fragment_script) =
                 crate::esm::records::script_instance::parse_quest_fragment_script_with_remap(&sub.data, remap)
-            {
-                if instance.script(&fragment_script.name).is_none() {
+                && instance.script(&fragment_script.name).is_none() {
                     instance.scripts.push(fragment_script);
                 }
-            }
             out.script_instance = Some(instance);
             out.alias_scripts = parse_quest_alias_scripts_with_remap(&sub.data, remap);
         }
@@ -719,19 +716,17 @@ fn parse_qust_stage(
             }
         }
         b"NAM2" => {
-            if let QustBlock::Stage(stage) = &mut *block {
-                if let Some(log) = stage.log_entries.last_mut() {
+            if let QustBlock::Stage(stage) = &mut *block
+                && let Some(log) = stage.log_entries.last_mut() {
                     log.note = read_zstring(&sub.data);
                 }
-            }
         }
         b"NAM0" if sub.data.len() >= 4 => {
-            if let QustBlock::Stage(stage) = &mut *block {
-                if let Some(log) = stage.log_entries.last_mut() {
+            if let QustBlock::Stage(stage) = &mut *block
+                && let Some(log) = stage.log_entries.last_mut() {
                     let quest = remap_form_id(SubReader::new(&sub.data).u32_or_default(), remap);
                     log.next_quest = (quest != 0).then_some(quest);
                 }
-            }
         }
         _ => {}
     }
@@ -952,8 +947,8 @@ fn parse_qust_alias(
         // rather than fabricating a fill type from a companion
         // alone). ──
         b"ALCA" if sub.data.len() >= 4 => {
-            if let QustBlock::Alias(alias) = &mut *block {
-                if let Some(AliasFillType::CreatedObject {
+            if let QustBlock::Alias(alias) = &mut *block
+                && let Some(AliasFillType::CreatedObject {
                     target_alias,
                     create_mode,
                     ..
@@ -963,21 +958,18 @@ fn parse_qust_alias(
                     *target_alias = r.i16_or_default();
                     *create_mode = r.u16_or_default();
                 }
-            }
         }
         b"ALCL" if sub.data.len() >= 4 => {
-            if let QustBlock::Alias(alias) = &mut *block {
-                if let Some(AliasFillType::CreatedObject { level, .. }) = &mut alias.fill_type {
+            if let QustBlock::Alias(alias) = &mut *block
+                && let Some(AliasFillType::CreatedObject { level, .. }) = &mut alias.fill_type {
                     *level = SubReader::new(&sub.data).u32_or_default();
                 }
-            }
         }
         b"ALEA" if sub.data.len() >= 4 => {
-            if let QustBlock::Alias(alias) = &mut *block {
-                if let Some(AliasFillType::ExternalAlias { alias_id, .. }) = &mut alias.fill_type {
+            if let QustBlock::Alias(alias) = &mut *block
+                && let Some(AliasFillType::ExternalAlias { alias_id, .. }) = &mut alias.fill_type {
                     *alias_id = SubReader::new(&sub.data).i32_or_default();
                 }
-            }
         }
         b"ALFA" if sub.data.len() >= 4 => {
             if let QustBlock::Alias(alias) = &mut *block {
@@ -1015,18 +1007,16 @@ fn parse_qust_alias(
             }
         }
         b"ALNT" if sub.data.len() >= 4 => {
-            if let QustBlock::Alias(alias) = &mut *block {
-                if let Some(AliasFillType::NearAlias { relation, .. }) = &mut alias.fill_type {
+            if let QustBlock::Alias(alias) = &mut *block
+                && let Some(AliasFillType::NearAlias { relation, .. }) = &mut alias.fill_type {
                     *relation = SubReader::new(&sub.data).u32_or_default();
                 }
-            }
         }
         b"ALFD" if sub.data.len() >= 4 => {
-            if let QustBlock::Alias(alias) = &mut *block {
-                if let Some(AliasFillType::FromEvent { data, .. }) = &mut alias.fill_type {
+            if let QustBlock::Alias(alias) = &mut *block
+                && let Some(AliasFillType::FromEvent { data, .. }) = &mut alias.fill_type {
                     *data = SubReader::new(&sub.data).i32_or_default();
                 }
-            }
         }
         // ALFI — "Force Into Alias" (see `QuestAlias::force_into_alias`
         // doc). Independent of `fill_type`: an alias can carry an

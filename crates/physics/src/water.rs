@@ -1493,9 +1493,9 @@ fn apply_buoyancy_with_scratch(
                 // pinned against a bank is allowed to settle and stay
                 // settled, which is the reason the force itself is applied
                 // with `wake_up = false`.
-                if in_current_prev.binary_search(&t.entity).is_err() {
-                    if let Some(b) = pw.bodies.get_mut(t.handles.body) {
-                        if b.is_sleeping() {
+                if in_current_prev.binary_search(&t.entity).is_err()
+                    && let Some(b) = pw.bodies.get_mut(t.handles.body)
+                        && b.is_sleeping() {
                             b.wake_up(true);
                             woke_any = true;
                             // #5544 — a deliberate current wake is not the
@@ -1503,8 +1503,6 @@ fn apply_buoyancy_with_scratch(
                             // off it.
                             pw.note_water_force_target(t.handles.body);
                         }
-                    }
-                }
                 let current = pw.bodies.get(t.handles.body).and_then(|b| {
                     (!b.is_sleeping()).then(|| {
                         let velocity = b.linvel();

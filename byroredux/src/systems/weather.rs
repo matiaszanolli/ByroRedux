@@ -957,8 +957,7 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     if world
         .try_resource::<CellLightingRes>()
         .is_none_or(|cell| !cell.is_interior)
-    {
-        if let Some(mut surface) = world.try_resource_mut::<WeatherSurfaceState>() {
+        && let Some(mut surface) = world.try_resource_mut::<WeatherSurfaceState>() {
             advance_weather_surface(
                 &mut surface,
                 weather.precipitation,
@@ -967,7 +966,6 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
                 dt,
             );
         }
-    }
 
     // Cloud layer 0 base scroll rate, driven by the WTHR DATA
     // `wind_speed` byte (#1033 / REN-D15-NEW-12).
@@ -1033,11 +1031,10 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
 
     // Keep rainfall/snowfall disturbance continuous during a WTHR cross-fade;
     // the completion path below still promotes the exact target snapshot.
-    if !transition_done {
-        if let Some(mut wd) = world.try_resource_mut::<WeatherDataRes>() {
+    if !transition_done
+        && let Some(mut wd) = world.try_resource_mut::<WeatherDataRes>() {
             wd.precipitation = weather_precipitation.clamp(0.0, 1.0);
         }
-    }
 
     // Keep the shared atmospheric wind live during weather transitions. The
     // ground-cover install path seeds this resource when entering a
@@ -1153,8 +1150,8 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
     // and time-of-day-driven ambient/directional from the most recent
     // exterior worldspace, producing visibly wrong lighting on every
     // interior cell loaded after any exterior session. See #782.
-    if let Some(mut cell_lit) = world.try_resource_mut::<CellLightingRes>() {
-        if !cell_lit.is_interior {
+    if let Some(mut cell_lit) = world.try_resource_mut::<CellLightingRes>()
+        && !cell_lit.is_interior {
             cell_lit.ambient = ambient;
             cell_lit.directional_color = sunlight;
             cell_lit.directional_dir = sun_dir;
@@ -1163,7 +1160,6 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             cell_lit.fog_far = fog_far;
             cell_lit.fog_medium = fog_medium;
         }
-    }
 
     // #4416 — publish the exterior's base image space for the IMAD
     // composition. Interiors own theirs (the cell's `XCIM`, set at load),

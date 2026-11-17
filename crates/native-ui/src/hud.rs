@@ -22,17 +22,15 @@ pub fn draw_hud(ctx: &Context, snapshot: &PageSnapshot) {
         }
     }
 
-    if snapshot.show_vitals {
-        if let Some(vitals) = snapshot.vitals.as_ref() {
+    if snapshot.show_vitals
+        && let Some(vitals) = snapshot.vitals.as_ref() {
             draw_vitals_bars(ctx, vitals);
         }
-    }
 
-    if snapshot.show_objectives {
-        if let Some(objectives) = snapshot.objectives.as_ref() {
+    if snapshot.show_objectives
+        && let Some(objectives) = snapshot.objectives.as_ref() {
             draw_objective_lines(ctx, objectives);
         }
-    }
 
     if let Some(indicator) = snapshot.stealth_indicator.as_ref() {
         draw_stealth_indicator(ctx, indicator);

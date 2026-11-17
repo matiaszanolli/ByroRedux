@@ -401,11 +401,10 @@ pub fn bone_layer_weight(
     channel_name: FixedString,
 ) -> f32 {
     let mut weight = layer.effective_weight() * clip_weight;
-    if let (Some(weights), Some(index)) = (&layer.bone_weights, &stack.bone_index) {
-        if let Some(bone_weight) = index.get(&channel_name).and_then(|&bone| weights.get(usize::from(bone))) {
+    if let (Some(weights), Some(index)) = (&layer.bone_weights, &stack.bone_index)
+        && let Some(bone_weight) = index.get(&channel_name).and_then(|&bone| weights.get(usize::from(bone))) {
             weight *= bone_weight;
         }
-    }
     weight
 }
 

@@ -2,6 +2,7 @@
 name = "byroredux-menuxml"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
@@ -14,3 +15,6 @@ thiserror = { workspace = true }
 # `BYROREDUX_OBLIVION_DATA` is set (the smoke-test fixture convention).
 byroredux-bsa = { workspace = true }
 env_logger = { workspace = true }
+
+[lints]
+workspace = true

@@ -563,7 +563,7 @@ fn load_scene_content(
             world.insert_resource(script_provider);
         }
 
-        if let (Some(ref esm_path), Some(ref cell_id)) = (&esm_path, &cell_id) {
+        if let (Some(esm_path), Some(cell_id)) = (&esm_path, &cell_id) {
             // Interior cell mode
             let tex_provider = build_texture_provider(args);
             let mut mat_provider = build_material_provider(args);
@@ -613,7 +613,7 @@ fn load_scene_content(
                 }
                 Err(e) => log::error!("Failed to load cell: {:#}", e),
             }
-        } else if let (Some(ref esm_path), Some(ref grid)) = (&esm_path, &grid_str) {
+        } else if let (Some(esm_path), Some(grid)) = (&esm_path, &grid_str) {
             // Exterior cell mode: --esm <path> --grid <x>,<y> — driven
             // through `WorldStreamingState` (M40 Phase 1a). The bulk
             // loader has been retired from this path; cells stream in
@@ -1356,7 +1356,7 @@ fn spawn_player_body(
         log::warn!("Failed to build geometry SSBO: {e}");
     }
     // Write global geometry buffers to scene descriptor sets for RT reflection UV lookups.
-    if let (Some(ref vb), Some(ref ib)) = (
+    if let (Some(vb), Some(ib)) = (
         &ctx.mesh_registry.global_vertex_buffer,
         &ctx.mesh_registry.global_index_buffer,
     ) {

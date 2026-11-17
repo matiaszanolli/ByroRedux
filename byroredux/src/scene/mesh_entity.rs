@@ -308,11 +308,10 @@ fn attach_mesh_components(
     // PERF-D3-NEW-02 / #1136 — classify FX-decoration meshes at spawn time so
     // build_render_data can skip them via a component query instead of running 6
     // substring scans per draw per frame.
-    if let Some(ref base_color) = textures.base_color {
-        if texture_path_is_fx_mesh(base_color, material_kind) {
+    if let Some(ref base_color) = textures.base_color
+        && texture_path_is_fx_mesh(base_color, material_kind) {
             world.insert(entity, IsFxMesh);
         }
-    }
     world.insert(entity, texture_handles);
     if mesh_water {
         crate::material_translate::attach_mesh_water(

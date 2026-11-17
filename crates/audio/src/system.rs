@@ -530,13 +530,12 @@ pub(crate) fn dispatch_new_oneshots(world: &World, audio_world: &mut AudioWorld)
     // attempted — started or failed — so we don't re-dispatch next
     // frame. AudioEmitter stays — callers can observe "is this entity
     // still playing?" through the active list.
-    if !consumed.is_empty() {
-        if let Some(mut oneshot_q) = world.query_mut::<OneShotSound>() {
+    if !consumed.is_empty()
+        && let Some(mut oneshot_q) = world.query_mut::<OneShotSound>() {
             for entity in consumed {
                 oneshot_q.remove(entity);
             }
         }
-    }
 }
 
 /// Walk `active_sounds`, drop any whose `StaticSoundHandle::state()`
@@ -640,11 +639,10 @@ pub(crate) fn prune_stopped_sounds(world: &World, audio_world: &mut AudioWorld) 
             true
         }
     });
-    if !finished.is_empty() {
-        if let Some(mut emitter_q) = world.query_mut::<AudioEmitter>() {
+    if !finished.is_empty()
+        && let Some(mut emitter_q) = world.query_mut::<AudioEmitter>() {
             for entity in finished {
                 emitter_q.remove(entity);
             }
         }
-    }
 }

@@ -372,16 +372,13 @@ pub(super) fn load_references_budgeted(
         if world
             .try_resource::<byroredux_core::character::CharacterRuleset>()
             .is_none()
-        {
-            if let Some(rs) = crate::npc_spawn::build_character_ruleset(record_index) {
+            && let Some(rs) = crate::npc_spawn::build_character_ruleset(record_index) {
                 world.insert_resource(rs);
             }
-        }
-        if world.try_resource::<byroredux_core::character::regen::PoolRegenConfig>().is_none() {
-            if let Some(regen) = record_index.character_rules.build_tes_pool_regen(|name| record_index.actor_value_form_id(name)) {
+        if world.try_resource::<byroredux_core::character::regen::PoolRegenConfig>().is_none()
+            && let Some(regen) = record_index.character_rules.build_tes_pool_regen(|name| record_index.actor_value_form_id(name)) {
                 world.insert_resource(regen);
             }
-        }
         // #6350 — same idempotent-once construction for the VATS tuning
         // model and the ActionPoints regen lane. Nothing is inserted on
         // non-Fallout loads (the builder returns None there), and a
@@ -390,19 +387,16 @@ pub(super) fn load_references_budgeted(
         if world
             .try_resource::<byroredux_core::character::VatsModel>()
             .is_none()
-        {
-            if let Some((model, regen)) = crate::npc_spawn::build_vats_model(record_index) {
+            && let Some((model, regen)) = crate::npc_spawn::build_vats_model(record_index) {
                 world.insert_resource(model);
                 world.insert_resource(regen);
             }
-        }
         // VATS-LIMB-006/-011 - the crippled-limb effects, beside the VATS model: present only where the profile
         // seeds body conditions (FO3/FNV), idempotent-once like the rest.
-        if world.try_resource::<crate::limbs::LimbEffects>().is_none() {
-            if let Some(effects) = crate::limbs::build_limb_effects(record_index) {
+        if world.try_resource::<crate::limbs::LimbEffects>().is_none()
+            && let Some(effects) = crate::limbs::build_limb_effects(record_index) {
                 world.insert_resource(effects);
             }
-        }
         // #3092 — same idempotent-once construction for the Melee Damage
         // AVIF id `byroredux/src/combat.rs`'s `attack_damage` needs to look
         // the CharacterRuleset row above back up at combat time. Absent on
@@ -412,11 +406,9 @@ pub(super) fn load_references_budgeted(
         if world
             .try_resource::<byroredux_core::character::MeleeDamageConfig>()
             .is_none()
-        {
-            if let Some(config) = crate::npc_spawn::build_melee_damage_config(record_index) {
+            && let Some(config) = crate::npc_spawn::build_melee_damage_config(record_index) {
                 world.insert_resource(config);
             }
-        }
         // Process-lifetime cache of parsed-and-imported NIF scene data
         // (`NifImportRegistry`, #381). Each unique mesh is parsed exactly
         // once across the entire process — subsequent placements of the
@@ -916,14 +908,12 @@ fn advance_actor_synth(
                     }
                     if let Some(mut identities) =
                         world.query_mut::<byroredux_scripting::SceneAliasCandidate>()
-                    {
-                        if let Some(identity) = identities.get_mut(root) {
+                        && let Some(identity) = identities.get_mut(root) {
                             // A placed ACHR may reference an LVLN. Papyrus
                             // GetActorBase observes the resolved NPC_, which is
                             // the synthesized child selected above.
                             identity.base_form_id = child_form_id;
                         }
-                    }
                 }
                 // #2662 — actor jobs bypass `spawn_synth_child`
                 // entirely, so without this they never reached

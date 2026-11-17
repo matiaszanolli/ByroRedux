@@ -763,37 +763,41 @@ impl WaterPipeline {
         bindless_texture_set: vk::DescriptorSet, // set 0 — passed in by caller
         scene_set: vk::DescriptorSet,            // set 1 — passed in by caller
     ) {
-        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
 
-        device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::GRAPHICS,
-            self.pipeline_layout,
-            0,
-            &[bindless_texture_set],
-            &[],
-        );
-        device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::GRAPHICS,
-            self.pipeline_layout,
-            1,
-            &[scene_set],
-            &[],
-        );
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_layout,
+                0,
+                &[bindless_texture_set],
+                &[],
+            );
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_layout,
+                1,
+                &[scene_set],
+                &[],
+            );
 
-        // #1255 / Phase C of #1210 — bind set 2 (water-caustic
-        // accumulator storage image). The descriptor view itself is
-        // wired by `update_water_caustic_descriptors` at swapchain
-        // init / recreate time.
-        device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::GRAPHICS,
-            self.pipeline_layout,
-            2,
-            &[self.water_caustic_descriptor_sets[frame]],
-            &[],
-        );
+            // #1255 / Phase C of #1210 — bind set 2 (water-caustic
+            // accumulator storage image). The descriptor view itself is
+            // wired by `update_water_caustic_descriptors` at swapchain
+            // init / recreate time.
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_layout,
+                2,
+                &[self.water_caustic_descriptor_sets[frame]],
+                &[],
+            );
+        }
     }
 
     /// Record a single water draw into a command buffer that is
@@ -830,23 +834,27 @@ impl WaterPipeline {
         index_count: u32,
         instance_index: u32,
     ) {
-        let push = WaterPush {
-            water_index,
-            _reserved: [0; 3],
-        };
-        let bytes = super::buffer::byte_view(std::slice::from_ref(&push));
-        device.cmd_push_constants(
-            cmd,
-            self.pipeline_layout,
-            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-            0,
-            bytes,
-        );
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            let push = WaterPush {
+                water_index,
+                _reserved: [0; 3],
+            };
+            let bytes = super::buffer::byte_view(std::slice::from_ref(&push));
+            device.cmd_push_constants(
+                cmd,
+                self.pipeline_layout,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                0,
+                bytes,
+            );
 
-        // gl_InstanceIndex resolves to instance_index in the bound
-        // SSBO — same pattern the triangle path uses, just with a
-        // single draw per water plane rather than batched.
-        device.cmd_draw_indexed(cmd, index_count, 1, 0, 0, instance_index);
+            // gl_InstanceIndex resolves to instance_index in the bound
+            // SSBO — same pattern the triangle path uses, just with a
+            // single draw per water plane rather than batched.
+            device.cmd_draw_indexed(cmd, index_count, 1, 0, 0, instance_index);
+        }
     }
 
     /// Tear down — call only after `vkDeviceWaitIdle` to make sure

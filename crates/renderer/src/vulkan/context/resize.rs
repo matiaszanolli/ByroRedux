@@ -434,15 +434,14 @@ impl VulkanContext {
             // it with `None` here would leak the blade arena, the field images
             // and the descriptor pool. `record_draw` skips on the null
             // pipeline the failed rebuild leaves behind.
-            if let Some(groundcover) = self.exterior.groundcover.as_mut() {
-                if let Err(e) = groundcover.recreate_draw_pipelines(
+            if let Some(groundcover) = self.exterior.groundcover.as_mut()
+                && let Err(e) = groundcover.recreate_draw_pipelines(
                     &self.device,
                     self.pipeline_cache,
                     self.swapchain.render_pass,
                 ) {
                     log::warn!("Ground-cover pipeline recreate after resize failed: {e}");
                 }
-            }
         }
 
         Ok(())

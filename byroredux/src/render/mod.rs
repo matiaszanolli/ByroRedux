@@ -91,11 +91,10 @@ fn scene_has_effect_soft_material(world: &World) -> bool {
         (materials, emitters)
     };
 
-    if let Some(cache) = world.try_resource::<SceneEffectSoftCache>() {
-        if cache.key == Some(key) {
+    if let Some(cache) = world.try_resource::<SceneEffectSoftCache>()
+        && cache.key == Some(key) {
             return cache.value;
         }
-    }
 
     let value = scene_has_effect_soft_material_uncached(world);
 

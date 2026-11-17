@@ -193,11 +193,10 @@ fn apply_texture_flip_roles(
         *slot = handle;
     }
     let normal_flip = flip.handle_for_role(FlipTextureRole::Normal);
-    if parallax_height_in_alpha && flip.handle_for_role(FlipTextureRole::Height).is_none() {
-        if let Some(normal) = normal_flip {
+    if parallax_height_in_alpha && flip.handle_for_role(FlipTextureRole::Height).is_none()
+        && let Some(normal) = normal_flip {
             textures.height = normal;
         }
-    }
     let normal_has_alpha = match normal_flip {
         // A flipped frame whose alpha presence was not recorded is treated
         // as alpha-less: reading a missing channel is the #3562 failure,

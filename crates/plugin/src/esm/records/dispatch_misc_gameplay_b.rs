@@ -46,11 +46,10 @@ pub(super) fn dispatch_misc_gameplay_b_group(
             // Oblivion entry on a multi-game session. `read_zstring`
             // already strips the trailing null, so a real Oblivion
             // code lands here as `editor_id.len() == 4`.
-            if game == GameKind::Oblivion {
-                if let Ok(code) = <[u8; 4]>::try_from(rec.editor_id.as_bytes()) {
+            if game == GameKind::Oblivion
+                && let Ok(code) = <[u8; 4]>::try_from(rec.editor_id.as_bytes()) {
                     index.magic_effects_by_code.insert(code, fid);
                 }
-            }
             index.magic_effects.insert(fid, rec);
         })?,
         // AVIF actor-value records (#519). Pre-fix every NPC

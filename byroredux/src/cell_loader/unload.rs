@@ -60,15 +60,14 @@ fn player_owned_entities(world: &World) -> HashSet<EntityId> {
     if let Some(camera) = world.try_resource::<ActiveCamera>() {
         protected.insert(camera.0);
     }
-    if let Some(body) = world.try_resource::<crate::player_body::PlayerBodyRootEntity>() {
-        if let Some(root) = body.0 {
+    if let Some(body) = world.try_resource::<crate::player_body::PlayerBodyRootEntity>()
+        && let Some(root) = body.0 {
             // #5713 — the shared cycle-safe subtree collector (the same
             // one `cinematic_retained_entities` routes through).
             for entity in byroredux_core::ecs::collect_subtree(world, root) {
                 protected.insert(entity);
             }
         }
-    }
     protected
 }
 
@@ -848,30 +847,26 @@ pub(crate) fn collect_victim_gpu_handles(
     let mtq = world.query::<MaterialTextureHandles>();
     let ttq = world.query::<TerrainTileSlot>();
     for &eid in victims {
-        if let Some(mq) = &mq {
-            if let Some(mh) = mq.get(eid) {
+        if let Some(mq) = &mq
+            && let Some(mh) = mq.get(eid) {
                 mesh_drops.push(mh.0);
             }
-        }
-        if let Some(tq) = &tq {
-            if let Some(th) = tq.get(eid) {
+        if let Some(tq) = &tq
+            && let Some(th) = tq.get(eid) {
                 push_tex_drop(th.0, &mut texture_drops);
             }
-        }
-        if let Some(nq) = &nq {
-            if let Some(nh) = nq.get(eid) {
+        if let Some(nq) = &nq
+            && let Some(nh) = nq.get(eid) {
                 push_tex_drop(nh.0, &mut texture_drops);
             }
-        }
-        if let Some(wnq) = &wnq {
-            if let Some(handles) = wnq.get(eid) {
+        if let Some(wnq) = &wnq
+            && let Some(handles) = wnq.get(eid) {
                 for &handle in &handles.0 {
                     push_tex_drop(handle, &mut texture_drops);
                 }
             }
-        }
-        if let Some(mtq) = &mtq {
-            if let Some(handles) = mtq.get(eid) {
+        if let Some(mtq) = &mtq
+            && let Some(handles) = mtq.get(eid) {
                 let maps = &handles.textures;
                 // Base color is released through TextureHandle above. Every
                 // secondary semantic role was independently acquired.
@@ -879,12 +874,10 @@ pub(crate) fn collect_victim_gpu_handles(
                     push_tex_drop(handle, &mut texture_drops);
                 }
             }
-        }
-        if let Some(ttq) = &ttq {
-            if let Some(slot) = ttq.get(eid) {
+        if let Some(ttq) = &ttq
+            && let Some(slot) = ttq.get(eid) {
                 terrain_tile_slots.insert(slot.0);
             }
-        }
     }
     drop((mq, tq, nq, wnq, mtq, ttq));
     // #4427 — flipbook frames are acquired once per frame per placement by

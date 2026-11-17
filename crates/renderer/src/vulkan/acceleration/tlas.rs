@@ -54,397 +54,401 @@ impl AccelerationManager {
         instance_map: &[Option<u32>],
         frame_index: usize,
     ) -> Result<()> {
-        // Advance the frame counter for LRU tracking.
-        self.frame_counter += 1;
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            // Advance the frame counter for LRU tracking.
+            self.frame_counter += 1;
 
-        debug_assert_eq!(
-            instance_map.len(),
-            draw_commands.len(),
-            "instance_map must be 1:1 with draw_commands (see #419)"
-        );
-
-        let instances = self.build_tlas_instances(draw_commands, instance_map, frame_index);
-        let instance_count = instances.len() as u32;
-
-        // Even with 0 instances, we build a valid (empty) TLAS so the
-        // descriptor set binding is always valid for the shader.
-        self.ensure_tlas_state(device, allocator, frame_index, instance_count)?;
-
-        // Capture scratch_align before the mutable borrow on
-        // `self.tlas[frame_index]` so the alignment assert further down
-        // doesn't try to re-borrow `&self` (#659).
-        let scratch_align = self.scratch_align;
-
-        let tlas = self.tlas[frame_index].as_mut().unwrap();
-
-        // Decide BUILD vs UPDATE (#247). REFIT (UPDATE) is legal only
-        // when the per-instance BLAS references are unchanged from the
-        // last BUILD. Transforms, custom indices, SBT offsets, masks,
-        // and flags can all change and still be refitted; only the
-        // `acceleration_structure_reference` field is off-limits.
-        //
-        // Gate: if `needs_full_rebuild` is set (freshly created or
-        // previous frame BUILT), or the BLAS map mutated since the
-        // last build (#300 dirty flag), or the current BLAS address
-        // sequence differs from the last BUILD, we BUILD. Otherwise
-        // UPDATE. The dirty-flag short-circuit lets cell load /
-        // unload / eviction frames skip the O(N) per-instance
-        // zip-compare entirely — the gen mismatch already proves the
-        // address sequence could have shifted.
-        let map_gen = self.blas_map_generation;
-        // Materialise the current address sequence as `&[u64]` so the
-        // pure decision helper can compare it without re-reading the
-        // union field — same invariant as the push loop below.
-        // SAFETY: AccelerationStructureReferenceKHR is a union; our
-        // BLAS entries are always device-built so `device_handle` is
-        // the live variant on every push site in this manager.
-        let mut current_addresses_scratch = std::mem::take(&mut self.tlas_addresses_scratch);
-        current_addresses_scratch.clear();
-        current_addresses_scratch.reserve(instances.len());
-        for inst in &instances {
-            current_addresses_scratch.push(unsafe {
-                // SAFETY: `acceleration_structure_reference` is a union; every
-                // BLAS entry in this manager is device-built, so `device_handle`
-                // is the live variant at each push site (see note above).
-                inst.acceleration_structure_reference.device_handle
-            });
-        }
-        // Same-address, same-count membership replacement also BUILDs (#4948);
-        // see `decide_use_update`.
-        let (mut use_update, _did_zip) = decide_use_update(
-            tlas.needs_full_rebuild,
-            tlas.last_blas_map_gen,
-            map_gen,
-            &tlas.last_blas_addresses,
-            &current_addresses_scratch,
-            &tlas.last_entity_ids,
-            tlas_instance_entity_ids(&instances, &self.tlas_entity_ids_scratch),
-        );
-
-        // VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03708: UPDATE must
-        // use the same primitiveCount as the source BUILD. Any mismatch —
-        // growth or shrink — is a VUID violation that corrupts the BVH on
-        // NVIDIA and trips validation on debug builds. The grow case fires
-        // while `instance_count ∈ (built_primitive_count, max_instances]`
-        // (no resize needed but count would differ); the shrink case is
-        // normally caught by decide_use_update's length check, but we guard
-        // both directions here so a future refactor can't accidentally bypass
-        // the VUID contract. See #1083 / REN-D8-001 / #1418.
-        if use_update && instance_count != tlas.built_primitive_count {
-            use_update = false;
-        }
-
-        // NOTE (#2674 / CONC-D1-NEW-02): the three pieces of state that
-        // next frame's `decide_use_update` consults — the promoted
-        // `last_blas_addresses`, `needs_full_rebuild = false`, and
-        // `last_blas_map_gen = map_gen` — are committed *after*
-        // `cmd_build_acceleration_structures` records the build, at the
-        // bottom of this function. Committing them here (as this code
-        // used to) meant a failure of the `write_mapped(..)?` below left
-        // the manager asserting "a BUILD landed at generation `map_gen`
-        // with address list X" when no build was ever recorded, and the
-        // next frame would then pick UPDATE with changed BLAS references
-        // — a `VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03707`
-        // violation whose practical effect is a refit BVH holding device
-        // addresses of BLAS entries that `tick_deferred_destroy` frees a
-        // few frames later. The `instance_count != built_primitive_count`
-        // guard above only catches *count* changes, so a generation bump
-        // at constant instance count slipped straight through. Mirrors
-        // the post-`queue_submit` history advance in `draw_frame`
-        // (#917 / REN-D10-NEW-03).
-
-        // #2769 — the LRU stamping pass that used to sit here was removed:
-        // `build_tlas_instances` above already sets `last_used_frame` on
-        // exactly the same set. Both walked `draw_commands` under the same
-        // `draw_command_eligible_for_tlas` filter and stamped through the
-        // same skinned/rigid discriminator, so the second walk was a full
-        // O(draw_commands) re-bump of stamps that already carried this
-        // frame's counter.
-        //
-        // The finding that flagged it read the two as non-equivalent — the
-        // second also protecting BLAS the first dropped on its
-        // `missing_ssbo_instance` arm. That is not what the first pass does:
-        // it stamps while *resolving* the BLAS address, which is upstream of
-        // the `instance_map` lookup, so a draw dropped for lacking an SSBO
-        // instance has already been stamped by the time that arm runs. That
-        // ordering is the whole equivalence, and it is load-bearing rather
-        // than incidental — a BLAS whose draw is briefly missing from the
-        // compacted SSBO (mid-eviction) must not age out — so
-        // `stamp_precedes_the_ssbo_drop_in_build_tlas_instances` pins it.
-
-        // Write instances to host-visible staging buffer.
-        //
-        // REN-D8-NEW-02 — `write_mapped` performs the
-        // `vkFlushMappedMemoryRanges` internally when the allocation
-        // isn't HOST_COHERENT. The host→transfer barrier emitted
-        // below covers the visibility hop from host writes to the
-        // transfer engine; the flush is what makes the writes
-        // visible to the device in the first place. Together those
-        // two operations are sufficient — no additional flush is
-        // needed before the `cmd_copy_buffer` further down.
-        tlas.instance_buffer.write_mapped(device, &instances)?;
-
-        let copy_size = (instances.len()
-            * std::mem::size_of::<vk::AccelerationStructureInstanceKHR>())
-            as vk::DeviceSize;
-
-        // Skip the host→device staging copy entirely when there are no
-        // instances this frame (#317 / audit D1-02). Vulkan's spec
-        // rejects `VkBufferCopy.size` and `VkBufferMemoryBarrier.size`
-        // of 0 (VUID-VkBufferCopy-size-01988 and
-        // VUID-VkBufferMemoryBarrier-size-01188), and the spec leaves
-        // `size = 0` driver-defined: NVIDIA treats it as a no-op,
-        // AMD / Intel historically have not — this guard keeps the
-        // path portable across vendors. Pre-fix we tripped four
-        // validation errors per empty-TLAS frame (two barriers + one
-        // copy per TLAS slot × two frame-in-flight slots). The empty-
-        // instance TLAS BUILD below is still legal —
-        // `primitiveCount = 0` produces an empty AS that ray queries
-        // return "no hit" against.
-        if copy_size > 0 {
-            // Barrier 1: make host write visible to the transfer engine.
-            let host_to_transfer = vk::BufferMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::HOST_WRITE)
-                .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
-                .buffer(tlas.instance_buffer.buffer)
-                .offset(0)
-                .size(copy_size);
-            device.cmd_pipeline_barrier(
-                cmd,
-                vk::PipelineStageFlags::HOST,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[host_to_transfer],
-                &[],
-            );
-
-            // Copy staging → device-local. On discrete GPUs, the AS build
-            // reads from VRAM instead of traversing PCIe. See #289.
-            let copy_region = vk::BufferCopy {
-                src_offset: 0,
-                dst_offset: 0,
-                size: copy_size,
-            };
-            device.cmd_copy_buffer(
-                cmd,
-                tlas.instance_buffer.buffer,
-                tlas.instance_buffer_device.buffer,
-                &[copy_region],
-            );
-
-            // Barrier 2: transfer write → AS build INPUT read on the
-            // device-local buffer. AS-build input buffers (instance data here,
-            // and vertex/index elsewhere) are read with SHADER_READ at the
-            // AS_BUILD stage per the Vulkan spec — NOT ACCELERATION_STRUCTURE_
-            // READ_KHR, which is for reading an acceleration STRUCTURE itself.
-            // Synchronization validation flags the latter as a copy→build RAW
-            // hazard on the instance buffer. #1436.
-            let transfer_to_as = vk::BufferMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                .buffer(tlas.instance_buffer_device.buffer)
-                .offset(0)
-                .size(copy_size);
-            device.cmd_pipeline_barrier(
-                cmd,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[transfer_to_as],
-                &[],
-            );
-        }
-
-        let instance_address = device.get_buffer_device_address(
-            &vk::BufferDeviceAddressInfo::default().buffer(tlas.instance_buffer_device.buffer),
-        );
-
-        // `GeometryFlagsKHR::OPAQUE` on `INSTANCES` is redundant — see
-        // the matching note at the sizes-query site above. REN-D8-NEW-01.
-        let geometry = vk::AccelerationStructureGeometryKHR::default()
-            .geometry_type(vk::GeometryTypeKHR::INSTANCES)
-            .flags(vk::GeometryFlagsKHR::OPAQUE)
-            .geometry(vk::AccelerationStructureGeometryDataKHR {
-                instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
-                    .array_of_pointers(false)
-                    .data(vk::DeviceOrHostAddressConstKHR {
-                        device_address: instance_address,
-                    }),
-            });
-
-        // #2915 / REN-D1-03 — was `.unwrap()`. Every path that can leave
-        // this slot's scratch `None` while `tlas[frame_index]` is `Some`
-        // has been closed (`ensure_tlas_state` under #2673,
-        // `shrink_tlas_scratch_to_fit`'s live-slot arm under #2915), so
-        // this is defence-in-depth rather than a live case. It matters
-        // because the failure it guards is a panic inside an OPEN command
-        // buffer recording — the process aborts mid-`draw_frame` with the
-        // frame's command buffer never ended or submitted. Returning `Err`
-        // instead routes through `draw_frame`'s existing
-        // `tlas_build_failed` arm, which clears `rt_flag` and still
-        // publishes the AS barrier (#2931), degrading to no-RT for the
-        // frame instead of killing the process.
-        let scratch_buffer = self.scratch_buffers[frame_index].as_ref().ok_or_else(|| {
-            anyhow::anyhow!(
-                "TLAS[{frame_index}] build has no scratch buffer — the slot is live but its \
-                     scratch was retired without a replacement (see #2915 / #2673)"
-            )
-        })?;
-        let raw_scratch = device.get_buffer_device_address(
-            &vk::BufferDeviceAddressInfo::default().buffer(scratch_buffer.buffer),
-        );
-        // Round up to `scratch_align` (no-op on aligned drivers); the
-        // padding reserved at allocation absorbs the shift, enforcing
-        // VUID-…-pInfos-03715 in release where the prior debug_assert
-        // compiled out. Covers both the fresh BUILD and the UPDATE refit
-        // that reuses this address. See #1386 / #659.
-        let scratch_address = align_scratch_address(raw_scratch, scratch_align);
-
-        // Mirror the flags used at creation time so Vulkan's validation
-        // layer matches source and dst flags. The shared
-        // `UPDATABLE_AS_FLAGS` constant keeps this site lockstep with
-        // the fresh-build path above (VUID-…-pInfos-03667 / #307 / #958).
-        let mut build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
-            .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
-            .flags(UPDATABLE_AS_FLAGS)
-            .dst_acceleration_structure(tlas.accel)
-            .geometries(std::slice::from_ref(&geometry))
-            .scratch_data(vk::DeviceOrHostAddressKHR {
-                device_address: scratch_address,
-            });
-
-        // primitiveCount for the range info:
-        // - BUILD: current instance_count; record it so UPDATE can match it.
-        // - UPDATE: must equal the BUILD count (VUID-…-pInfos-03708 — the guard
-        //   above ensures instance_count ≤ built_primitive_count here).
-        let range_primitive_count = if use_update {
-            // REFIT path: reuse the existing accel as the source,
-            // write the updated instance transforms into the same dst.
-            build_info = build_info
-                .mode(vk::BuildAccelerationStructureModeKHR::UPDATE)
-                .src_acceleration_structure(tlas.accel);
-            // #1121 / REN-D8-NEW-01 — pin the device-buffer ↔ build-info
-            // count match explicitly. The host→device copy above writes
-            // exactly `instance_count` instances; the UPDATE range below
-            // reads `built_primitive_count` instances out of the buffer.
-            // If those two diverge (a future refactor decouples
-            // built_primitive_count from BUILD-time count, or adds a
-            // UPDATE-without-prior-BUILD path), instances
-            // `[instance_count..built_primitive_count]` would feed stale
-            // tail data into the BVH — silent shadow / GI / reflection
-            // corruption on the difference range. Today the
-            // `decide_use_update` zip-compare forces BUILD on
-            // `cached_addresses.len() != current_addresses.len()`, so
-            // this assert holds by construction. Pin it so a future
-            // refactor that breaks the invariant fails loudly in debug.
             debug_assert_eq!(
-                tlas.built_primitive_count, instance_count,
-                "TLAS UPDATE path: built_primitive_count ({}) must equal \
-                 instance_count ({}) — VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03708. \
-                 See #1121 / REN-D8-NEW-01.",
-                tlas.built_primitive_count, instance_count,
+                instance_map.len(),
+                draw_commands.len(),
+                "instance_map must be 1:1 with draw_commands (see #419)"
             );
-            // Must match the source BUILD's primitiveCount per VUID-03708.
-            tlas.built_primitive_count
-        } else {
-            build_info = build_info.mode(vk::BuildAccelerationStructureModeKHR::BUILD);
-            // Record so future UPDATEs know the count they must match.
-            tlas.built_primitive_count = instance_count;
-            instance_count
-        };
 
-        let range = vk::AccelerationStructureBuildRangeInfoKHR::default()
-            .primitive_count(range_primitive_count);
+            let instances = self.build_tlas_instances(draw_commands, instance_map, frame_index);
+            let instance_count = instances.len() as u32;
 
-        self.accel_loader.cmd_build_acceleration_structures(
-            cmd,
-            &[build_info],
-            &[std::slice::from_ref(&range)],
-        );
+            // Even with 0 instances, we build a valid (empty) TLAS so the
+            // descriptor set binding is always valid for the shader.
+            self.ensure_tlas_state(device, allocator, frame_index, instance_count)?;
 
-        // ── BUILD/UPDATE bookkeeping commit point (#2674) ─────────────
-        //
-        // Reached only once the build has actually been recorded into
-        // `cmd` and every fallible step above returned `Ok` — see the
-        // NOTE near the top of this function for what committing early
-        // cost. `built_primitive_count` is assigned in the BUILD arm
-        // just above; nothing fallible runs between that arm and here.
-        let tlas = self.tlas[frame_index].as_mut().unwrap();
+            // Capture scratch_align before the mutable borrow on
+            // `self.tlas[frame_index]` so the alignment assert further down
+            // doesn't try to re-borrow `&self` (#659).
+            let scratch_align = self.scratch_align;
 
-        if !use_update {
-            tlas.last_entity_ids.clear();
-            tlas.last_entity_ids.extend(tlas_instance_entity_ids(
-                &instances,
-                &self.tlas_entity_ids_scratch,
-            ));
+            let tlas = self.tlas[frame_index].as_mut().unwrap();
+
+            // Decide BUILD vs UPDATE (#247). REFIT (UPDATE) is legal only
+            // when the per-instance BLAS references are unchanged from the
+            // last BUILD. Transforms, custom indices, SBT offsets, masks,
+            // and flags can all change and still be refitted; only the
+            // `acceleration_structure_reference` field is off-limits.
+            //
+            // Gate: if `needs_full_rebuild` is set (freshly created or
+            // previous frame BUILT), or the BLAS map mutated since the
+            // last build (#300 dirty flag), or the current BLAS address
+            // sequence differs from the last BUILD, we BUILD. Otherwise
+            // UPDATE. The dirty-flag short-circuit lets cell load /
+            // unload / eviction frames skip the O(N) per-instance
+            // zip-compare entirely — the gen mismatch already proves the
+            // address sequence could have shifted.
+            let map_gen = self.blas_map_generation;
+            // Materialise the current address sequence as `&[u64]` so the
+            // pure decision helper can compare it without re-reading the
+            // union field — same invariant as the push loop below.
+            // SAFETY: AccelerationStructureReferenceKHR is a union; our
+            // BLAS entries are always device-built so `device_handle` is
+            // the live variant on every push site in this manager.
+            let mut current_addresses_scratch = std::mem::take(&mut self.tlas_addresses_scratch);
+            current_addresses_scratch.clear();
+            current_addresses_scratch.reserve(instances.len());
+            for inst in &instances {
+                current_addresses_scratch.push({
+                    // SAFETY: `acceleration_structure_reference` is a union; every
+                    // BLAS entry in this manager is device-built, so `device_handle`
+                    // is the live variant at each push site (see note above).
+                    inst.acceleration_structure_reference.device_handle
+                });
+            }
+            // Same-address, same-count membership replacement also BUILDs (#4948);
+            // see `decide_use_update`.
+            let (mut use_update, _did_zip) = decide_use_update(
+                tlas.needs_full_rebuild,
+                tlas.last_blas_map_gen,
+                map_gen,
+                &tlas.last_blas_addresses,
+                &current_addresses_scratch,
+                &tlas.last_entity_ids,
+                tlas_instance_entity_ids(&instances, &self.tlas_entity_ids_scratch),
+            );
+
+            // VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03708: UPDATE must
+            // use the same primitiveCount as the source BUILD. Any mismatch —
+            // growth or shrink — is a VUID violation that corrupts the BVH on
+            // NVIDIA and trips validation on debug builds. The grow case fires
+            // while `instance_count ∈ (built_primitive_count, max_instances]`
+            // (no resize needed but count would differ); the shrink case is
+            // normally caught by decide_use_update's length check, but we guard
+            // both directions here so a future refactor can't accidentally bypass
+            // the VUID contract. See #1083 / REN-D8-001 / #1418.
+            if use_update && instance_count != tlas.built_primitive_count {
+                use_update = false;
+            }
+
+            // NOTE (#2674 / CONC-D1-NEW-02): the three pieces of state that
+            // next frame's `decide_use_update` consults — the promoted
+            // `last_blas_addresses`, `needs_full_rebuild = false`, and
+            // `last_blas_map_gen = map_gen` — are committed *after*
+            // `cmd_build_acceleration_structures` records the build, at the
+            // bottom of this function. Committing them here (as this code
+            // used to) meant a failure of the `write_mapped(..)?` below left
+            // the manager asserting "a BUILD landed at generation `map_gen`
+            // with address list X" when no build was ever recorded, and the
+            // next frame would then pick UPDATE with changed BLAS references
+            // — a `VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03707`
+            // violation whose practical effect is a refit BVH holding device
+            // addresses of BLAS entries that `tick_deferred_destroy` frees a
+            // few frames later. The `instance_count != built_primitive_count`
+            // guard above only catches *count* changes, so a generation bump
+            // at constant instance count slipped straight through. Mirrors
+            // the post-`queue_submit` history advance in `draw_frame`
+            // (#917 / REN-D10-NEW-03).
+
+            // #2769 — the LRU stamping pass that used to sit here was removed:
+            // `build_tlas_instances` above already sets `last_used_frame` on
+            // exactly the same set. Both walked `draw_commands` under the same
+            // `draw_command_eligible_for_tlas` filter and stamped through the
+            // same skinned/rigid discriminator, so the second walk was a full
+            // O(draw_commands) re-bump of stamps that already carried this
+            // frame's counter.
+            //
+            // The finding that flagged it read the two as non-equivalent — the
+            // second also protecting BLAS the first dropped on its
+            // `missing_ssbo_instance` arm. That is not what the first pass does:
+            // it stamps while *resolving* the BLAS address, which is upstream of
+            // the `instance_map` lookup, so a draw dropped for lacking an SSBO
+            // instance has already been stamped by the time that arm runs. That
+            // ordering is the whole equivalence, and it is load-bearing rather
+            // than incidental — a BLAS whose draw is briefly missing from the
+            // compacted SSBO (mid-eviction) must not age out — so
+            // `stamp_precedes_the_ssbo_drop_in_build_tlas_instances` pins it.
+
+            // Write instances to host-visible staging buffer.
+            //
+            // REN-D8-NEW-02 — `write_mapped` performs the
+            // `vkFlushMappedMemoryRanges` internally when the allocation
+            // isn't HOST_COHERENT. The host→transfer barrier emitted
+            // below covers the visibility hop from host writes to the
+            // transfer engine; the flush is what makes the writes
+            // visible to the device in the first place. Together those
+            // two operations are sufficient — no additional flush is
+            // needed before the `cmd_copy_buffer` further down.
+            tlas.instance_buffer.write_mapped(device, &instances)?;
+
+            let copy_size = (instances.len()
+                * std::mem::size_of::<vk::AccelerationStructureInstanceKHR>())
+                as vk::DeviceSize;
+
+            // Skip the host→device staging copy entirely when there are no
+            // instances this frame (#317 / audit D1-02). Vulkan's spec
+            // rejects `VkBufferCopy.size` and `VkBufferMemoryBarrier.size`
+            // of 0 (VUID-VkBufferCopy-size-01988 and
+            // VUID-VkBufferMemoryBarrier-size-01188), and the spec leaves
+            // `size = 0` driver-defined: NVIDIA treats it as a no-op,
+            // AMD / Intel historically have not — this guard keeps the
+            // path portable across vendors. Pre-fix we tripped four
+            // validation errors per empty-TLAS frame (two barriers + one
+            // copy per TLAS slot × two frame-in-flight slots). The empty-
+            // instance TLAS BUILD below is still legal —
+            // `primitiveCount = 0` produces an empty AS that ray queries
+            // return "no hit" against.
+            if copy_size > 0 {
+                // Barrier 1: make host write visible to the transfer engine.
+                let host_to_transfer = vk::BufferMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::HOST_WRITE)
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                    .buffer(tlas.instance_buffer.buffer)
+                    .offset(0)
+                    .size(copy_size);
+                device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::HOST,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[host_to_transfer],
+                    &[],
+                );
+
+                // Copy staging → device-local. On discrete GPUs, the AS build
+                // reads from VRAM instead of traversing PCIe. See #289.
+                let copy_region = vk::BufferCopy {
+                    src_offset: 0,
+                    dst_offset: 0,
+                    size: copy_size,
+                };
+                device.cmd_copy_buffer(
+                    cmd,
+                    tlas.instance_buffer.buffer,
+                    tlas.instance_buffer_device.buffer,
+                    &[copy_region],
+                );
+
+                // Barrier 2: transfer write → AS build INPUT read on the
+                // device-local buffer. AS-build input buffers (instance data here,
+                // and vertex/index elsewhere) are read with SHADER_READ at the
+                // AS_BUILD stage per the Vulkan spec — NOT ACCELERATION_STRUCTURE_
+                // READ_KHR, which is for reading an acceleration STRUCTURE itself.
+                // Synchronization validation flags the latter as a copy→build RAW
+                // hazard on the instance buffer. #1436.
+                let transfer_to_as = vk::BufferMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                    .buffer(tlas.instance_buffer_device.buffer)
+                    .offset(0)
+                    .size(copy_size);
+                device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[transfer_to_as],
+                    &[],
+                );
+            }
+
+            let instance_address = device.get_buffer_device_address(
+                &vk::BufferDeviceAddressInfo::default().buffer(tlas.instance_buffer_device.buffer),
+            );
+
+            // `GeometryFlagsKHR::OPAQUE` on `INSTANCES` is redundant — see
+            // the matching note at the sizes-query site above. REN-D8-NEW-01.
+            let geometry = vk::AccelerationStructureGeometryKHR::default()
+                .geometry_type(vk::GeometryTypeKHR::INSTANCES)
+                .flags(vk::GeometryFlagsKHR::OPAQUE)
+                .geometry(vk::AccelerationStructureGeometryDataKHR {
+                    instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
+                        .array_of_pointers(false)
+                        .data(vk::DeviceOrHostAddressConstKHR {
+                            device_address: instance_address,
+                        }),
+                });
+
+            // #2915 / REN-D1-03 — was `.unwrap()`. Every path that can leave
+            // this slot's scratch `None` while `tlas[frame_index]` is `Some`
+            // has been closed (`ensure_tlas_state` under #2673,
+            // `shrink_tlas_scratch_to_fit`'s live-slot arm under #2915), so
+            // this is defence-in-depth rather than a live case. It matters
+            // because the failure it guards is a panic inside an OPEN command
+            // buffer recording — the process aborts mid-`draw_frame` with the
+            // frame's command buffer never ended or submitted. Returning `Err`
+            // instead routes through `draw_frame`'s existing
+            // `tlas_build_failed` arm, which clears `rt_flag` and still
+            // publishes the AS barrier (#2931), degrading to no-RT for the
+            // frame instead of killing the process.
+            let scratch_buffer = self.scratch_buffers[frame_index].as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "TLAS[{frame_index}] build has no scratch buffer — the slot is live but its \
+                         scratch was retired without a replacement (see #2915 / #2673)"
+                )
+            })?;
+            let raw_scratch = device.get_buffer_device_address(
+                &vk::BufferDeviceAddressInfo::default().buffer(scratch_buffer.buffer),
+            );
+            // Round up to `scratch_align` (no-op on aligned drivers); the
+            // padding reserved at allocation absorbs the shift, enforcing
+            // VUID-…-pInfos-03715 in release where the prior debug_assert
+            // compiled out. Covers both the fresh BUILD and the UPDATE refit
+            // that reuses this address. See #1386 / #659.
+            let scratch_address = align_scratch_address(raw_scratch, scratch_align);
+
+            // Mirror the flags used at creation time so Vulkan's validation
+            // layer matches source and dst flags. The shared
+            // `UPDATABLE_AS_FLAGS` constant keeps this site lockstep with
+            // the fresh-build path above (VUID-…-pInfos-03667 / #307 / #958).
+            let mut build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+                .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
+                .flags(UPDATABLE_AS_FLAGS)
+                .dst_acceleration_structure(tlas.accel)
+                .geometries(std::slice::from_ref(&geometry))
+                .scratch_data(vk::DeviceOrHostAddressKHR {
+                    device_address: scratch_address,
+                });
+
+            // primitiveCount for the range info:
+            // - BUILD: current instance_count; record it so UPDATE can match it.
+            // - UPDATE: must equal the BUILD count (VUID-…-pInfos-03708 — the guard
+            //   above ensures instance_count ≤ built_primitive_count here).
+            let range_primitive_count = if use_update {
+                // REFIT path: reuse the existing accel as the source,
+                // write the updated instance transforms into the same dst.
+                build_info = build_info
+                    .mode(vk::BuildAccelerationStructureModeKHR::UPDATE)
+                    .src_acceleration_structure(tlas.accel);
+                // #1121 / REN-D8-NEW-01 — pin the device-buffer ↔ build-info
+                // count match explicitly. The host→device copy above writes
+                // exactly `instance_count` instances; the UPDATE range below
+                // reads `built_primitive_count` instances out of the buffer.
+                // If those two diverge (a future refactor decouples
+                // built_primitive_count from BUILD-time count, or adds a
+                // UPDATE-without-prior-BUILD path), instances
+                // `[instance_count..built_primitive_count]` would feed stale
+                // tail data into the BVH — silent shadow / GI / reflection
+                // corruption on the difference range. Today the
+                // `decide_use_update` zip-compare forces BUILD on
+                // `cached_addresses.len() != current_addresses.len()`, so
+                // this assert holds by construction. Pin it so a future
+                // refactor that breaks the invariant fails loudly in debug.
+                debug_assert_eq!(
+                    tlas.built_primitive_count, instance_count,
+                    "TLAS UPDATE path: built_primitive_count ({}) must equal \
+                     instance_count ({}) — VUID-vkCmdBuildAccelerationStructuresKHR-pInfos-03708. \
+                     See #1121 / REN-D8-NEW-01.",
+                    tlas.built_primitive_count, instance_count,
+                );
+                // Must match the source BUILD's primitiveCount per VUID-03708.
+                tlas.built_primitive_count
+            } else {
+                build_info = build_info.mode(vk::BuildAccelerationStructureModeKHR::BUILD);
+                // Record so future UPDATEs know the count they must match.
+                tlas.built_primitive_count = instance_count;
+                instance_count
+            };
+
+            let range = vk::AccelerationStructureBuildRangeInfoKHR::default()
+                .primitive_count(range_primitive_count);
+
+            self.accel_loader.cmd_build_acceleration_structures(
+                cmd,
+                &[build_info],
+                &[std::slice::from_ref(&range)],
+            );
+
+            // ── BUILD/UPDATE bookkeeping commit point (#2674) ─────────────
+            //
+            // Reached only once the build has actually been recorded into
+            // `cmd` and every fallible step above returned `Ok` — see the
+            // NOTE near the top of this function for what committing early
+            // cost. `built_primitive_count` is assigned in the BUILD arm
+            // just above; nothing fallible runs between that arm and here.
+            let tlas = self.tlas[frame_index].as_mut().unwrap();
+
+            if !use_update {
+                tlas.last_entity_ids.clear();
+                tlas.last_entity_ids.extend(tlas_instance_entity_ids(
+                    &instances,
+                    &self.tlas_entity_ids_scratch,
+                ));
+            }
+            shrink_scratch_if_oversized(&mut tlas.last_entity_ids, instance_count as usize, 512);
+            debug_assert_eq!(tlas.last_entity_ids.len(), instance_count as usize);
+
+            // Promote this frame's addresses to be next frame's "last", and
+            // recover the previous "last" Vec into the manager-level scratch
+            // for next frame to refill (#660). Pre-fix this was a fresh
+            // `Vec::with_capacity(N)` per frame — 64 KB heap churn at the
+            // 8k-instance ceiling, 3.84 MB/s at 60 FPS, all to feed a 4-byte
+            // bool. Swap is allocation-free: each TLAS slot's Vec ping-pongs
+            // with the manager scratch.
+            std::mem::swap(
+                &mut tlas.last_blas_addresses,
+                &mut current_addresses_scratch,
+            );
+            // #914 / REN-D8-NEW-04 — invariant guard. `last_blas_addresses`
+            // is consumed by next frame's `decide_use_update` zip against
+            // the freshly-rebuilt `current_addresses_scratch`, and by the
+            // build-info `primitive_count` on UPDATE-mode rebuilds. Any
+            // future "skip empty tail instances" / partial-instance
+            // optimisation that desyncs the two would silently produce a
+            // `primitiveCount`-mismatch on next frame's UPDATE call (a
+            // validation-layer error in debug, garbage TLAS contents in
+            // release). The cached addresses were just swapped *out* of
+            // `current_addresses_scratch`, which was filled from
+            // `instances.iter()` in the loop above — so length must equal
+            // `instance_count`. Debug-only: zero release-build cost.
+            debug_assert_eq!(
+                tlas.last_blas_addresses.len(),
+                instance_count as usize,
+                "TLAS instance bookkeeping desync — UPDATE will fail next frame \
+                 (last_blas_addresses.len() != instance_count)"
+            );
+            // After this BUILD/UPDATE completes, the next frame can refit
+            // unless something invalidates it (resize, layout change).
+            tlas.needs_full_rebuild = false;
+            tlas.last_blas_map_gen = map_gen;
+
+            self.tlas_addresses_scratch = current_addresses_scratch;
+            shrink_scratch_if_oversized(
+                &mut self.tlas_addresses_scratch,
+                instance_count as usize,
+                512,
+            );
+
+            // Restore the scratch buffer so its capacity amortizes across
+            // frames, then shrink it if a past peak (exterior open cell with
+            // 10 k+ draw commands) left us holding 640 KB+ of unused
+            // capacity long after the scene returned to a small interior.
+            // `instance_count` is the number of entries we actually used
+            // this frame; the 512 floor keeps the buffer usefully large
+            // for common-case small scenes without reallocating on every
+            // cell transition. See #504.
+            self.tlas_instances_scratch = instances;
+            shrink_scratch_if_oversized(
+                &mut self.tlas_entity_ids_scratch,
+                draw_commands.len(),
+                512,
+            );
+            shrink_scratch_if_oversized(
+                &mut self.tlas_instances_scratch,
+                instance_count as usize,
+                512,
+            );
+
+            Ok(())
         }
-        shrink_scratch_if_oversized(&mut tlas.last_entity_ids, instance_count as usize, 512);
-        debug_assert_eq!(tlas.last_entity_ids.len(), instance_count as usize);
-
-        // Promote this frame's addresses to be next frame's "last", and
-        // recover the previous "last" Vec into the manager-level scratch
-        // for next frame to refill (#660). Pre-fix this was a fresh
-        // `Vec::with_capacity(N)` per frame — 64 KB heap churn at the
-        // 8k-instance ceiling, 3.84 MB/s at 60 FPS, all to feed a 4-byte
-        // bool. Swap is allocation-free: each TLAS slot's Vec ping-pongs
-        // with the manager scratch.
-        std::mem::swap(
-            &mut tlas.last_blas_addresses,
-            &mut current_addresses_scratch,
-        );
-        // #914 / REN-D8-NEW-04 — invariant guard. `last_blas_addresses`
-        // is consumed by next frame's `decide_use_update` zip against
-        // the freshly-rebuilt `current_addresses_scratch`, and by the
-        // build-info `primitive_count` on UPDATE-mode rebuilds. Any
-        // future "skip empty tail instances" / partial-instance
-        // optimisation that desyncs the two would silently produce a
-        // `primitiveCount`-mismatch on next frame's UPDATE call (a
-        // validation-layer error in debug, garbage TLAS contents in
-        // release). The cached addresses were just swapped *out* of
-        // `current_addresses_scratch`, which was filled from
-        // `instances.iter()` in the loop above — so length must equal
-        // `instance_count`. Debug-only: zero release-build cost.
-        debug_assert_eq!(
-            tlas.last_blas_addresses.len(),
-            instance_count as usize,
-            "TLAS instance bookkeeping desync — UPDATE will fail next frame \
-             (last_blas_addresses.len() != instance_count)"
-        );
-        // After this BUILD/UPDATE completes, the next frame can refit
-        // unless something invalidates it (resize, layout change).
-        tlas.needs_full_rebuild = false;
-        tlas.last_blas_map_gen = map_gen;
-
-        self.tlas_addresses_scratch = current_addresses_scratch;
-        shrink_scratch_if_oversized(
-            &mut self.tlas_addresses_scratch,
-            instance_count as usize,
-            512,
-        );
-
-        // Restore the scratch buffer so its capacity amortizes across
-        // frames, then shrink it if a past peak (exterior open cell with
-        // 10 k+ draw commands) left us holding 640 KB+ of unused
-        // capacity long after the scene returned to a small interior.
-        // `instance_count` is the number of entries we actually used
-        // this frame; the 512 floor keeps the buffer usefully large
-        // for common-case small scenes without reallocating on every
-        // cell transition. See #504.
-        self.tlas_instances_scratch = instances;
-        shrink_scratch_if_oversized(
-            &mut self.tlas_entity_ids_scratch,
-            draw_commands.len(),
-            512,
-        );
-        shrink_scratch_if_oversized(
-            &mut self.tlas_instances_scratch,
-            instance_count as usize,
-            512,
-        );
-
-        Ok(())
     }
 
     /// Assemble this frame's TLAS instance array from `draw_commands`
@@ -866,328 +870,332 @@ impl AccelerationManager {
         frame_index: usize,
         instance_count: u32,
     ) -> Result<()> {
-        // Create/resize instance buffer if needed for this frame slot.
-        //
-        // #2929 / CON-D1-01 — a pending shrink request also forces the
-        // rebuild. `shrink_tlas_to_fit` no longer frees the slot itself
-        // (that published a dangling binding-2 handle whenever the
-        // follow-up build failed); it records the intent and the
-        // allocate-then-swap below performs it, sizing from the now-smaller
-        // `instance_count` exactly as a grow would. The flag is cleared
-        // only on success, so a failed shrink retries next frame while the
-        // oversized-but-live TLAS keeps serving.
-        let need_new_tlas = self.tlas[frame_index].is_none()
-            || self.tlas[frame_index].as_ref().unwrap().max_instances < instance_count
-            || self.tlas_shrink_pending[frame_index];
-
-        if need_new_tlas {
-            // #2673 / CONC-D1-NEW-01 — ALLOCATE-THEN-SWAP. Every fallible
-            // step below (both instance buffers, the AS backing buffer,
-            // `create_acceleration_structure`, and the scratch regrow)
-            // runs against *locals*; the old `TlasState` for this slot is
-            // only retired once all of them have succeeded. Pre-fix this
-            // was destroy-then-allocate: an `Err` from any allocation
-            // left `self.tlas[frame_index] == None` while scene
-            // descriptor set binding 2 still named the just-destroyed
-            // `VkAccelerationStructureKHR` — `draw_frame` treats a failed
-            // `build_tlas` as non-fatal and skips `write_tlas`, and
-            // `SceneBuffers::tlas_written` is a one-way latch, so
-            // `rt_flag` stayed 1.0 and every RT-shading path kept ray-
-            // querying a dead handle (GPU page fault → TDR). The trigger
-            // — a device-local allocation failure at grow time — is
-            // precisely the VRAM-pressure regime the BLAS budget + LRU
-            // eviction machinery exists to survive.
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            // Create/resize instance buffer if needed for this frame slot.
             //
-            // Cost of the reorder: the old and new slot buffers coexist
-            // for the duration of this function (~512 KB staging +
-            // ~512 KB device-local + AS backing at the 8192 floor), so
-            // the peak is transiently ~2x one slot. That is the price of
-            // never publishing a dangling AS handle, and it is small
-            // against the per-FIF scene buffer total (~10-20 MB).
+            // #2929 / CON-D1-01 — a pending shrink request also forces the
+            // rebuild. `shrink_tlas_to_fit` no longer frees the slot itself
+            // (that published a dangling binding-2 handle whenever the
+            // follow-up build failed); it records the intent and the
+            // allocate-then-swap below performs it, sizing from the now-smaller
+            // `instance_count` exactly as a grow would. The flag is cleared
+            // only on success, so a failed shrink retries next frame while the
+            // oversized-but-live TLAS keeps serving.
+            let need_new_tlas = self.tlas[frame_index].is_none()
+                || self.tlas[frame_index].as_ref().unwrap().max_instances < instance_count
+                || self.tlas_shrink_pending[frame_index];
 
-            // Pre-size generously to avoid future resizes. 8192 covers
-            // interior cells (~200-800) and large exterior cells (~3000-5000).
-            // Growth: 2x current requirement, minimum 8192.
-            //
-            // The 2× + 8192-floor strategy intentionally over-allocates
-            // — a 200-instance interior gets 8192-slot backing
-            // (~512 KB BAR), a 3000-instance exterior gets 8192
-            // (still ~512 KB), and only past 4096 does the 2× term
-            // dominate. The trade-off: each TLAS resize destroys
-            // both the staging + device-local instance buffers and
-            // recreates them, including a fresh allocator slot lookup
-            // and host→device staging — collectively ~50 µs per
-            // resize. Over-allocating to amortise resizes away costs
-            // a fixed ~512 KB of BAR per TLAS slot in the typical
-            // case (~1.0 MB total across both FIF slots).
-            // See REN-D8-NEW-10 (audit 2026-05-09).
-            //
-            // REN-D2-NEW-02 (audit 2026-05-09) flagged the 8192 floor
-            // as wasting BAR on interior cells with < 100 instances.
-            // The waste is real (8192 slots × 64 B per instance × 2 FIF
-            // = ~1.0 MB across both slots, #1912 / REN-D1-02) but the
-            // floor stays for the cell-streaming case: M40
-            // exterior-tile loads frequently transition through low-
-            // instance frames between high-instance cell pairs, and
-            // a per-cell-tuned floor would resize every transition.
-            // The 8192 floor is the right knob for that pattern; the
-            // 1 MB BAR cost is a fraction of the per-FIF scene
-            // buffer total (~10-20 MB).
-            let padded_count =
-                ((instance_count as usize) * 2).max(MIN_TLAS_INSTANCE_RESERVE as usize);
-            let padded_size = (std::mem::size_of::<vk::AccelerationStructureInstanceKHR>()
-                * padded_count) as vk::DeviceSize;
+            if need_new_tlas {
+                // #2673 / CONC-D1-NEW-01 — ALLOCATE-THEN-SWAP. Every fallible
+                // step below (both instance buffers, the AS backing buffer,
+                // `create_acceleration_structure`, and the scratch regrow)
+                // runs against *locals*; the old `TlasState` for this slot is
+                // only retired once all of them have succeeded. Pre-fix this
+                // was destroy-then-allocate: an `Err` from any allocation
+                // left `self.tlas[frame_index] == None` while scene
+                // descriptor set binding 2 still named the just-destroyed
+                // `VkAccelerationStructureKHR` — `draw_frame` treats a failed
+                // `build_tlas` as non-fatal and skips `write_tlas`, and
+                // `SceneBuffers::tlas_written` is a one-way latch, so
+                // `rt_flag` stayed 1.0 and every RT-shading path kept ray-
+                // querying a dead handle (GPU page fault → TDR). The trigger
+                // — a device-local allocation failure at grow time — is
+                // precisely the VRAM-pressure regime the BLAS budget + LRU
+                // eviction machinery exists to survive.
+                //
+                // Cost of the reorder: the old and new slot buffers coexist
+                // for the duration of this function (~512 KB staging +
+                // ~512 KB device-local + AS backing at the 8192 floor), so
+                // the peak is transiently ~2x one slot. That is the price of
+                // never publishing a dangling AS handle, and it is small
+                // against the per-FIF scene buffer total (~10-20 MB).
 
-            // Host-visible staging buffer for CPU writes.
-            let mut instance_buffer = GpuBuffer::create_host_visible(
-                device,
-                allocator,
-                padded_size,
-                vk::BufferUsageFlags::TRANSFER_SRC,
-            )?;
+                // Pre-size generously to avoid future resizes. 8192 covers
+                // interior cells (~200-800) and large exterior cells (~3000-5000).
+                // Growth: 2x current requirement, minimum 8192.
+                //
+                // The 2× + 8192-floor strategy intentionally over-allocates
+                // — a 200-instance interior gets 8192-slot backing
+                // (~512 KB BAR), a 3000-instance exterior gets 8192
+                // (still ~512 KB), and only past 4096 does the 2× term
+                // dominate. The trade-off: each TLAS resize destroys
+                // both the staging + device-local instance buffers and
+                // recreates them, including a fresh allocator slot lookup
+                // and host→device staging — collectively ~50 µs per
+                // resize. Over-allocating to amortise resizes away costs
+                // a fixed ~512 KB of BAR per TLAS slot in the typical
+                // case (~1.0 MB total across both FIF slots).
+                // See REN-D8-NEW-10 (audit 2026-05-09).
+                //
+                // REN-D2-NEW-02 (audit 2026-05-09) flagged the 8192 floor
+                // as wasting BAR on interior cells with < 100 instances.
+                // The waste is real (8192 slots × 64 B per instance × 2 FIF
+                // = ~1.0 MB across both slots, #1912 / REN-D1-02) but the
+                // floor stays for the cell-streaming case: M40
+                // exterior-tile loads frequently transition through low-
+                // instance frames between high-instance cell pairs, and
+                // a per-cell-tuned floor would resize every transition.
+                // The 8192 floor is the right knob for that pattern; the
+                // 1 MB BAR cost is a fraction of the per-FIF scene
+                // buffer total (~10-20 MB).
+                let padded_count =
+                    ((instance_count as usize) * 2).max(MIN_TLAS_INSTANCE_RESERVE as usize);
+                let padded_size = (std::mem::size_of::<vk::AccelerationStructureInstanceKHR>()
+                    * padded_count) as vk::DeviceSize;
 
-            // Device-local buffer for GPU reads during AS build. On discrete
-            // GPUs this avoids PCIe traversal (~10-30x faster). See #289.
-            // The `inspect_err` releases the staging buffer allocated just
-            // above — without it a failure here leaked it for the process
-            // lifetime (#2673 SIBLING; the three allocations below already
-            // carried their own unwind cleanup).
-            let mut instance_buffer_device = GpuBuffer::create_device_local_uninit(
-                device,
-                allocator,
-                padded_size,
-                vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
-                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
-                    | vk::BufferUsageFlags::TRANSFER_DST,
-            )
-            .inspect_err(|_| {
-                instance_buffer.destroy(device, allocator);
-            })?;
-
-            let instance_address = device.get_buffer_device_address(
-                &vk::BufferDeviceAddressInfo::default().buffer(instance_buffer_device.buffer),
-            );
-
-            // Query TLAS sizes.
-            //
-            // `GeometryFlagsKHR::OPAQUE` on `INSTANCES` is redundant with
-            // the `gl_RayFlagsOpaqueEXT` set at every `rayQueryInitialize`
-            // call site in triangle.frag — the ray-query flag forces
-            // opaque traversal regardless of geometry/instance flags. We
-            // keep the flag set anyway for stylistic parity with the BLAS
-            // build paths (which need it for the any-hit-elision path),
-            // and so a future change that drops `gl_RayFlagsOpaqueEXT`
-            // doesn't silently un-opaque the TLAS. REN-D8-NEW-01
-            // (audit `2026-05-09`).
-            let geometry = vk::AccelerationStructureGeometryKHR::default()
-                .geometry_type(vk::GeometryTypeKHR::INSTANCES)
-                .flags(vk::GeometryFlagsKHR::OPAQUE)
-                .geometry(vk::AccelerationStructureGeometryDataKHR {
-                    instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
-                        .array_of_pointers(false)
-                        .data(vk::DeviceOrHostAddressConstKHR {
-                            device_address: instance_address,
-                        }),
-                });
-
-            // Shared `UPDATABLE_AS_FLAGS` (PREFER_FAST_TRACE | ALLOW_UPDATE):
-            // REFIT (#247) handles most per-frame TLAS changes, so full
-            // rebuilds are rare and the trace-time wins from a higher-
-            // quality BVH pay off on every ray query (shadows, reflections,
-            // GI, caustics, window portal). The UPDATE counterpart below
-            // must read the same flag set per VUID-…-pInfos-03667; the
-            // shared constant enforces that. See #307 / #958 /
-            // REN-D8-NEW-14 + AUDIT_PERFORMANCE_2026-04-13b P1-09.
-            let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
-                .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
-                .flags(UPDATABLE_AS_FLAGS)
-                .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
-                .geometries(std::slice::from_ref(&geometry));
-
-            let mut sizes = vk::AccelerationStructureBuildSizesInfoKHR::default();
-            self.accel_loader.get_acceleration_structure_build_sizes(
-                vk::AccelerationStructureBuildTypeKHR::DEVICE,
-                &build_info,
-                &[padded_count as u32],
-                &mut sizes,
-            );
-            // #5195 — the scratch is sized for the max of BUILD and
-            // UPDATE scratch: the spec does not relate the two sizes
-            // (VUID-…-pInfos-12259 bounds the UPDATE by the driver's
-            // `updateScratchSize`), so the same per-frame buffer can only
-            // serve both modes when it covers the larger of them.
-
-            // DEVICE_LOCAL: GPU-built, GPU-read during ray queries.
-            let mut tlas_buffer = GpuBuffer::create_device_local_uninit(
-                device,
-                allocator,
-                sizes.acceleration_structure_size,
-                vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
-                    | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            )
-            .inspect_err(|_| {
-                instance_buffer.destroy(device, allocator);
-                instance_buffer_device.destroy(device, allocator);
-            })?;
-
-            let accel_info = vk::AccelerationStructureCreateInfoKHR::default()
-                .buffer(tlas_buffer.buffer)
-                .size(sizes.acceleration_structure_size)
-                .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL);
-
-            let accel = self
-                .accel_loader
-                .create_acceleration_structure(&accel_info, None)
-                .inspect_err(|_| {
-                    tlas_buffer.destroy(device, allocator);
-                    instance_buffer.destroy(device, allocator);
-                    instance_buffer_device.destroy(device, allocator);
-                })
-                .context("Failed to create TLAS")?;
-
-            // Grow-only per-frame scratch buffer (#424 SIBLING) — reuse
-            // the existing allocation when it still fits the new build.
-            // DEVICE_LOCAL: GPU-only scratch during TLAS build. The
-            // `scratch_data.device_address` alignment requirement is
-            // enforced at the call site below via `align_scratch_address`
-            // (#1386 / #659 / #260 R-05).
-            // Pad by `scratch_alignment_padding` so the device address can
-            // be rounded up to `scratch_align` at the build site below
-            // without the build overrunning the buffer (#1386). The refit
-            // (UPDATE) path reuses this buffer, which is sized for the max
-            // of BUILD and UPDATE scratch (#5195) and so inherits the
-            // headroom.
-            let scratch_size = sizes.build_scratch_size
-                .max(sizes.update_scratch_size)
-                + scratch_alignment_padding(self.scratch_align);
-            let needs_new_scratch = scratch_needs_growth(
-                self.scratch_buffers[frame_index].as_ref().map(|b| b.size),
-                scratch_size,
-            );
-            // Same allocate-then-swap discipline as the slot buffers
-            // (#2673): create into a local and only retire the old
-            // scratch below, once nothing else can fail. Pre-fix a
-            // failure here left `scratch_buffers[frame_index] == None`
-            // with the slot's TLAS destroyed; had a later frame found
-            // the (now smaller) instance count fitting an existing
-            // TLAS, `build_tlas`'s `scratch_buffers[..].unwrap()` would
-            // have panicked on the missing scratch.
-            let new_scratch = if needs_new_scratch {
-                match GpuBuffer::create_device_local_uninit(
+                // Host-visible staging buffer for CPU writes.
+                let mut instance_buffer = GpuBuffer::create_host_visible(
                     device,
                     allocator,
-                    scratch_size,
-                    vk::BufferUsageFlags::STORAGE_BUFFER
+                    padded_size,
+                    vk::BufferUsageFlags::TRANSFER_SRC,
+                )?;
+
+                // Device-local buffer for GPU reads during AS build. On discrete
+                // GPUs this avoids PCIe traversal (~10-30x faster). See #289.
+                // The `inspect_err` releases the staging buffer allocated just
+                // above — without it a failure here leaked it for the process
+                // lifetime (#2673 SIBLING; the three allocations below already
+                // carried their own unwind cleanup).
+                let mut instance_buffer_device = GpuBuffer::create_device_local_uninit(
+                    device,
+                    allocator,
+                    padded_size,
+                    vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+                        | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
+                        | vk::BufferUsageFlags::TRANSFER_DST,
+                )
+                .inspect_err(|_| {
+                    instance_buffer.destroy(device, allocator);
+                })?;
+
+                let instance_address = device.get_buffer_device_address(
+                    &vk::BufferDeviceAddressInfo::default().buffer(instance_buffer_device.buffer),
+                );
+
+                // Query TLAS sizes.
+                //
+                // `GeometryFlagsKHR::OPAQUE` on `INSTANCES` is redundant with
+                // the `gl_RayFlagsOpaqueEXT` set at every `rayQueryInitialize`
+                // call site in triangle.frag — the ray-query flag forces
+                // opaque traversal regardless of geometry/instance flags. We
+                // keep the flag set anyway for stylistic parity with the BLAS
+                // build paths (which need it for the any-hit-elision path),
+                // and so a future change that drops `gl_RayFlagsOpaqueEXT`
+                // doesn't silently un-opaque the TLAS. REN-D8-NEW-01
+                // (audit `2026-05-09`).
+                let geometry = vk::AccelerationStructureGeometryKHR::default()
+                    .geometry_type(vk::GeometryTypeKHR::INSTANCES)
+                    .flags(vk::GeometryFlagsKHR::OPAQUE)
+                    .geometry(vk::AccelerationStructureGeometryDataKHR {
+                        instances: vk::AccelerationStructureGeometryInstancesDataKHR::default()
+                            .array_of_pointers(false)
+                            .data(vk::DeviceOrHostAddressConstKHR {
+                                device_address: instance_address,
+                            }),
+                    });
+
+                // Shared `UPDATABLE_AS_FLAGS` (PREFER_FAST_TRACE | ALLOW_UPDATE):
+                // REFIT (#247) handles most per-frame TLAS changes, so full
+                // rebuilds are rare and the trace-time wins from a higher-
+                // quality BVH pay off on every ray query (shadows, reflections,
+                // GI, caustics, window portal). The UPDATE counterpart below
+                // must read the same flag set per VUID-…-pInfos-03667; the
+                // shared constant enforces that. See #307 / #958 /
+                // REN-D8-NEW-14 + AUDIT_PERFORMANCE_2026-04-13b P1-09.
+                let build_info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+                    .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL)
+                    .flags(UPDATABLE_AS_FLAGS)
+                    .mode(vk::BuildAccelerationStructureModeKHR::BUILD)
+                    .geometries(std::slice::from_ref(&geometry));
+
+                let mut sizes = vk::AccelerationStructureBuildSizesInfoKHR::default();
+                self.accel_loader.get_acceleration_structure_build_sizes(
+                    vk::AccelerationStructureBuildTypeKHR::DEVICE,
+                    &build_info,
+                    &[padded_count as u32],
+                    &mut sizes,
+                );
+                // #5195 — the scratch is sized for the max of BUILD and
+                // UPDATE scratch: the spec does not relate the two sizes
+                // (VUID-…-pInfos-12259 bounds the UPDATE by the driver's
+                // `updateScratchSize`), so the same per-frame buffer can only
+                // serve both modes when it covers the larger of them.
+
+                // DEVICE_LOCAL: GPU-built, GPU-read during ray queries.
+                let mut tlas_buffer = GpuBuffer::create_device_local_uninit(
+                    device,
+                    allocator,
+                    sizes.acceleration_structure_size,
+                    vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
                         | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-                ) {
-                    Ok(scratch) => Some(scratch),
-                    Err(e) => {
-                        self.accel_loader
-                            .destroy_acceleration_structure(accel, None);
+                )
+                .inspect_err(|_| {
+                    instance_buffer.destroy(device, allocator);
+                    instance_buffer_device.destroy(device, allocator);
+                })?;
+
+                let accel_info = vk::AccelerationStructureCreateInfoKHR::default()
+                    .buffer(tlas_buffer.buffer)
+                    .size(sizes.acceleration_structure_size)
+                    .ty(vk::AccelerationStructureTypeKHR::TOP_LEVEL);
+
+                let accel = self
+                    .accel_loader
+                    .create_acceleration_structure(&accel_info, None)
+                    .inspect_err(|_| {
                         tlas_buffer.destroy(device, allocator);
                         instance_buffer.destroy(device, allocator);
                         instance_buffer_device.destroy(device, allocator);
-                        return Err(e);
-                    }
-                }
-            } else {
-                None
-            };
+                    })
+                    .context("Failed to create TLAS")?;
 
-            // ── Commit point (#2673) ──────────────────────────────────
-            // Everything fallible has succeeded. Retire the old slot
-            // resources now, then publish the replacement. An early
-            // return above leaves `self.tlas[frame_index]` — and the
-            // descriptor-set binding that names it — untouched and
-            // valid.
-            //
-            // INVARIANT: `draw_frame` calls `wait_for_fences` on both
-            // this slot's and the previous slot's `in_flight` fences
-            // BEFORE reaching this site, guaranteeing no command
-            // buffer still references the resources we are about to
-            // destroy.  The defensive `device_wait_idle` below is
-            // belt-and-suspenders for this site: in the normal
-            // draw_frame path the fence wait already makes it a no-op,
-            // but it prevents a silent use-after-destroy if a future
-            // refactor moves or splits the fence-wait pair.
-            // See REN-D2-NEW-04 (audit 2026-05-09), #1390.
-            let retiring_old = self.tlas[frame_index].is_some()
-                || (new_scratch.is_some() && self.scratch_buffers[frame_index].is_some());
-            if retiring_old {
-                // Defensive idle — see invariant note above.
-                let _ = device.device_wait_idle();
-            }
-            if let Some(mut old) = self.tlas[frame_index].take() {
-                log::info!(
-                    "TLAS[{frame_index}] resize: {} → {} instances",
-                    old.max_instances,
-                    instance_count,
+                // Grow-only per-frame scratch buffer (#424 SIBLING) — reuse
+                // the existing allocation when it still fits the new build.
+                // DEVICE_LOCAL: GPU-only scratch during TLAS build. The
+                // `scratch_data.device_address` alignment requirement is
+                // enforced at the call site below via `align_scratch_address`
+                // (#1386 / #659 / #260 R-05).
+                // Pad by `scratch_alignment_padding` so the device address can
+                // be rounded up to `scratch_align` at the build site below
+                // without the build overrunning the buffer (#1386). The refit
+                // (UPDATE) path reuses this buffer, which is sized for the max
+                // of BUILD and UPDATE scratch (#5195) and so inherits the
+                // headroom.
+                let scratch_size = sizes.build_scratch_size
+                    .max(sizes.update_scratch_size)
+                    + scratch_alignment_padding(self.scratch_align);
+                let needs_new_scratch = scratch_needs_growth(
+                    self.scratch_buffers[frame_index].as_ref().map(|b| b.size),
+                    scratch_size,
                 );
-                self.accel_loader
-                    .destroy_acceleration_structure(old.accel, None);
-                old.buffer.destroy(device, allocator);
-                old.instance_buffer.destroy(device, allocator);
-                old.instance_buffer_device.destroy(device, allocator);
-            }
-            if let Some(scratch) = new_scratch {
-                if let Some(mut old_scratch) = self.scratch_buffers[frame_index].take() {
-                    old_scratch.destroy(device, allocator);
+                // Same allocate-then-swap discipline as the slot buffers
+                // (#2673): create into a local and only retire the old
+                // scratch below, once nothing else can fail. Pre-fix a
+                // failure here left `scratch_buffers[frame_index] == None`
+                // with the slot's TLAS destroyed; had a later frame found
+                // the (now smaller) instance count fitting an existing
+                // TLAS, `build_tlas`'s `scratch_buffers[..].unwrap()` would
+                // have panicked on the missing scratch.
+                let new_scratch = if needs_new_scratch {
+                    match GpuBuffer::create_device_local_uninit(
+                        device,
+                        allocator,
+                        scratch_size,
+                        vk::BufferUsageFlags::STORAGE_BUFFER
+                            | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                    ) {
+                        Ok(scratch) => Some(scratch),
+                        Err(e) => {
+                            self.accel_loader
+                                .destroy_acceleration_structure(accel, None);
+                            tlas_buffer.destroy(device, allocator);
+                            instance_buffer.destroy(device, allocator);
+                            instance_buffer_device.destroy(device, allocator);
+                            return Err(e);
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                // ── Commit point (#2673) ──────────────────────────────────
+                // Everything fallible has succeeded. Retire the old slot
+                // resources now, then publish the replacement. An early
+                // return above leaves `self.tlas[frame_index]` — and the
+                // descriptor-set binding that names it — untouched and
+                // valid.
+                //
+                // INVARIANT: `draw_frame` calls `wait_for_fences` on both
+                // this slot's and the previous slot's `in_flight` fences
+                // BEFORE reaching this site, guaranteeing no command
+                // buffer still references the resources we are about to
+                // destroy.  The defensive `device_wait_idle` below is
+                // belt-and-suspenders for this site: in the normal
+                // draw_frame path the fence wait already makes it a no-op,
+                // but it prevents a silent use-after-destroy if a future
+                // refactor moves or splits the fence-wait pair.
+                // See REN-D2-NEW-04 (audit 2026-05-09), #1390.
+                let retiring_old = self.tlas[frame_index].is_some()
+                    || (new_scratch.is_some() && self.scratch_buffers[frame_index].is_some());
+                if retiring_old {
+                    // Defensive idle — see invariant note above.
+                    let _ = device.device_wait_idle();
                 }
-                self.scratch_buffers[frame_index] = Some(scratch);
+                if let Some(mut old) = self.tlas[frame_index].take() {
+                    log::info!(
+                        "TLAS[{frame_index}] resize: {} → {} instances",
+                        old.max_instances,
+                        instance_count,
+                    );
+                    self.accel_loader
+                        .destroy_acceleration_structure(old.accel, None);
+                    old.buffer.destroy(device, allocator);
+                    old.instance_buffer.destroy(device, allocator);
+                    old.instance_buffer_device.destroy(device, allocator);
+                }
+                if let Some(scratch) = new_scratch {
+                    if let Some(mut old_scratch) = self.scratch_buffers[frame_index].take() {
+                        old_scratch.destroy(device, allocator);
+                    }
+                    self.scratch_buffers[frame_index] = Some(scratch);
+                }
+
+                // Record this build's scratch requirement on the slot
+                // (#682 / MEM-2-7). The fresh-create path is the ONLY site
+                // that re-runs `vkGetAccelerationStructureBuildSizesKHR`
+                // for TLAS — refit/update reuse the existing scratch — so
+                // this is the canonical peak for the slot's lifetime,
+                // written unconditionally even if the existing scratch
+                // buffer is big enough to skip realloc above: a
+                // previous-slot's larger peak shouldn't permanently
+                // inflate a smaller current-slot's recorded peak. Written
+                // past the commit point so a failed resize doesn't leave
+                // telemetry claiming a peak that was never allocated
+                // (#2673). #5195 / #5250 — the spec does NOT bound UPDATE
+                // scratch by BUILD scratch (VUID-…-pInfos-12259), and
+                // `shrink_tlas_scratch_to_fit` reallocates from this
+                // record: record the max of both modes so a shrink can
+                // never cut the slot below what its refit path needs.
+                self.tlas_scratch_peak_bytes[frame_index] = sizes
+                    .build_scratch_size
+                    .max(sizes.update_scratch_size);
+
+                self.tlas[frame_index] = Some(TlasState {
+                    accel,
+                    buffer: tlas_buffer,
+                    instance_buffer,
+                    instance_buffer_device,
+                    max_instances: padded_count as u32,
+                    last_blas_addresses: Vec::with_capacity(padded_count),
+                    last_entity_ids: Vec::with_capacity(padded_count),
+                    // A freshly-created TLAS has no source to refit from —
+                    // the first frame after creation must do a full BUILD.
+                    needs_full_rebuild: true,
+                    // Sentinel that no real generation can match — forces
+                    // the first build_tlas after (re)creation to take the
+                    // gen-mismatch short-circuit, skipping the zip-compare
+                    // since `last_blas_addresses` is empty anyway.
+                    last_blas_map_gen: u64::MAX,
+                    // 0 signals "no prior BUILD" — the first build_tlas call
+                    // will always use BUILD mode (via needs_full_rebuild) and
+                    // set this to instance_count. (#1083)
+                    built_primitive_count: 0,
+                });
+
+                // #2929 / CON-D1-01 — the shrink request (if any) is now
+                // satisfied: the replacement is live and the oversized slot has
+                // been retired above. Cleared only here, past the commit point,
+                // so an `Err` from any fallible step leaves the flag set and
+                // the shrink is simply retried on the next build — with the
+                // old, oversized, but still-valid TLAS continuing to serve
+                // binding 2 in the meantime.
+                self.tlas_shrink_pending[frame_index] = false;
             }
-
-            // Record this build's scratch requirement on the slot
-            // (#682 / MEM-2-7). The fresh-create path is the ONLY site
-            // that re-runs `vkGetAccelerationStructureBuildSizesKHR`
-            // for TLAS — refit/update reuse the existing scratch — so
-            // this is the canonical peak for the slot's lifetime,
-            // written unconditionally even if the existing scratch
-            // buffer is big enough to skip realloc above: a
-            // previous-slot's larger peak shouldn't permanently
-            // inflate a smaller current-slot's recorded peak. Written
-            // past the commit point so a failed resize doesn't leave
-            // telemetry claiming a peak that was never allocated
-            // (#2673). #5195 / #5250 — the spec does NOT bound UPDATE
-            // scratch by BUILD scratch (VUID-…-pInfos-12259), and
-            // `shrink_tlas_scratch_to_fit` reallocates from this
-            // record: record the max of both modes so a shrink can
-            // never cut the slot below what its refit path needs.
-            self.tlas_scratch_peak_bytes[frame_index] = sizes
-                .build_scratch_size
-                .max(sizes.update_scratch_size);
-
-            self.tlas[frame_index] = Some(TlasState {
-                accel,
-                buffer: tlas_buffer,
-                instance_buffer,
-                instance_buffer_device,
-                max_instances: padded_count as u32,
-                last_blas_addresses: Vec::with_capacity(padded_count),
-                last_entity_ids: Vec::with_capacity(padded_count),
-                // A freshly-created TLAS has no source to refit from —
-                // the first frame after creation must do a full BUILD.
-                needs_full_rebuild: true,
-                // Sentinel that no real generation can match — forces
-                // the first build_tlas after (re)creation to take the
-                // gen-mismatch short-circuit, skipping the zip-compare
-                // since `last_blas_addresses` is empty anyway.
-                last_blas_map_gen: u64::MAX,
-                // 0 signals "no prior BUILD" — the first build_tlas call
-                // will always use BUILD mode (via needs_full_rebuild) and
-                // set this to instance_count. (#1083)
-                built_primitive_count: 0,
-            });
-
-            // #2929 / CON-D1-01 — the shrink request (if any) is now
-            // satisfied: the replacement is live and the oversized slot has
-            // been retired above. Cleared only here, past the commit point,
-            // so an `Err` from any fallible step leaves the flag set and
-            // the shrink is simply retried on the next build — with the
-            // old, oversized, but still-valid TLAS continuing to serve
-            // binding 2 in the meantime.
-            self.tlas_shrink_pending[frame_index] = false;
+            Ok(())
         }
-        Ok(())
     }
 
     /// Discard record-time TLAS bookkeeping when a frame was never submitted.

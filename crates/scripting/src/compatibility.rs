@@ -687,11 +687,10 @@ fn classify_source_callee(
                 Expr::Ident(identifier) => Some(identifier.0.as_str()),
                 _ => None,
             };
-            if let Some(provider) = provider {
-                if let Some(compatibility) = classify_static_call(provider, &member.node.0) {
+            if let Some(provider) = provider
+                && let Some(compatibility) = classify_static_call(provider, &member.node.0) {
                     return Some((Some(provider), &member.node.0, compatibility));
                 }
-            }
             classify_method_call(&member.node.0)
                 .map(|compatibility| (provider, member.node.0.as_str(), compatibility))
         }

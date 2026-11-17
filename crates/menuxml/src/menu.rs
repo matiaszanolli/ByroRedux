@@ -683,8 +683,8 @@ impl MenuRenderer {
             // this candidate resolves to nothing and is remembered; a
             // smaller sibling in another resolution set may still serve,
             // and already-decoded images keep being served.
-            if let Some(len) = Rgba8::decoded_len(&bytes) {
-                if self.decoded_bytes.saturating_add(len) > self.texture_budget {
+            if let Some(len) = Rgba8::decoded_len(&bytes)
+                && self.decoded_bytes.saturating_add(len) > self.texture_budget {
                     if !self.budget_warned {
                         self.budget_warned = true;
                         log::warn!(
@@ -699,7 +699,6 @@ impl MenuRenderer {
                     refused_any = true;
                     continue;
                 }
-            }
             match Rgba8::decode_dds(&bytes) {
                 Some(img) => {
                     let img = Arc::new(img);

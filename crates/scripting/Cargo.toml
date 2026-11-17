@@ -2,6 +2,7 @@
 name = "byroredux-scripting"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [features]
 # M45 — derive serde on the script-owned game-state components
@@ -43,3 +44,6 @@ serde_json = { workspace = true }
 # Opt-in end-to-end test: extract a real vanilla `.pex` from a game archive
 # and run it through decompile → recognize.
 byroredux-bsa = { workspace = true }
+
+[lints]
+workspace = true

@@ -232,11 +232,10 @@ fn confiscate_stolen_goods(world: &World, player: EntityId, chest: Option<u32>) 
             ledger.forget_stolen(item);
         }
         // What was taken goes to the jail's chest; the evidence stands until it arrives.
-        if let (Some(chest), true) = (chest, taken > 0) {
-            if let Some(mut deposits) = world.try_resource_mut::<PendingEvidenceDeposits>() {
+        if let (Some(chest), true) = (chest, taken > 0)
+            && let Some(mut deposits) = world.try_resource_mut::<PendingEvidenceDeposits>() {
                 deposits.0.push(EvidenceDeposit { chest, item, count: taken });
             }
-        }
     }
     taken_total
 }

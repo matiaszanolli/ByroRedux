@@ -72,11 +72,10 @@ impl Vm<'_> {
             self.deferred.created_references.push((form_id, *base, at, delete_when_able));
             last = Value::Form(form_id);
         }
-        if disabled {
-            if let Value::Form(form_id) = last {
+        if disabled
+            && let Value::Form(form_id) = last {
                 self.deferred.reference_enable_changes.push((form_id, false));
             }
-        }
         Ok(last)
     }
 

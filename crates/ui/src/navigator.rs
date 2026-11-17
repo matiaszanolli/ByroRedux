@@ -296,11 +296,10 @@ fn load_archive_resource(
     // #6225 — every SWF body is held to the #5966 ceiling, not only import assets: a movie a running
     // menu loads (`Loader.load`, `loadClip`, `loadMovie`) reaches Ruffle's own `SwfMovieData::from_data`,
     // which inflates to the header's claim, and no decode site in this crate sees that one.
-    if is_swf(&body) {
-        if let Err(message) = crate::prepare::ensure_declared_len_within_ceiling(&body) {
+    if is_swf(&body)
+        && let Err(message) = crate::prepare::ensure_declared_len_within_ceiling(&body) {
             return record_degraded(state, &request_url, message);
         }
-    }
     // #5480 — the shim's documented contract ("normalize … before Ruffle
     // sees it", prepare.rs) covers the movies Ruffle parses through THIS
     // response, not only the import scan: the body is normalized once

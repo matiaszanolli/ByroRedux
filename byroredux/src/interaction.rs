@@ -431,14 +431,13 @@ pub(crate) fn sync_registered_settings(world: &World) {
         .collect();
 
     for change in changes {
-        if let Some(companion) = apply_control_setting(world, &change) {
-            if let Err(error) = world
+        if let Some(companion) = apply_control_setting(world, &change)
+            && let Err(error) = world
                 .resource_mut::<SettingsRegistry>()
                 .set(&companion.id, companion.value)
             {
                 log::warn!("could not synchronize swapped binding: {error}");
             }
-        }
     }
 }
 
@@ -891,11 +890,10 @@ pub(crate) fn interaction_system(world: &World, _dt: f32) {
         state.target = target;
     }
 
-    if activate_pressed {
-        if let Some(target) = target {
+    if activate_pressed
+        && let Some(target) = target {
             activate_target(world, target, true);
         }
-    }
 }
 
 /// Refresh the physical-input → gameplay-action snapshot once per frame.
@@ -983,16 +981,13 @@ fn select_interaction_target(world: &World) -> Option<InteractionTarget> {
     // M65 (#6912) — a living actor too: the placement root's fallback sphere sits at the feet, so a ray aimed
     // at a robot's chest misses it while hitting the robot's own body.
     let by_body = |kind: InteractionKind| matches!(kind, InteractionKind::Corpse | InteractionKind::Npc);
-    if candidates.values().any(|kind| by_body(*kind)) {
-        if let Some((entity, distance)) = ray_hit_actor(world, origin, direction, &candidates) {
-            if let Some(kind) = candidates.get(&entity).copied().filter(|kind| by_body(*kind)) {
-                if rows.iter().any(|row| row.entity == entity && !row.blocked) {
+    if candidates.values().any(|kind| by_body(*kind))
+        && let Some((entity, distance)) = ray_hit_actor(world, origin, direction, &candidates)
+            && let Some(kind) = candidates.get(&entity).copied().filter(|kind| by_body(*kind))
+                && rows.iter().any(|row| row.entity == entity && !row.blocked) {
                     targets.retain(|target| target.entity != entity);
                     targets.push(InteractionTarget { entity, kind, distance });
                 }
-            }
-        }
-    }
     targets.sort_by(|a, b| a.distance.total_cmp(&b.distance));
     let selected = targets.iter().copied()
         .find(|target| target_has_line_of_sight(world, *target, origin, direction));
@@ -1693,8 +1688,8 @@ pub(crate) fn activate_target(world: &World, target: InteractionTarget, compose_
     }
     // PERK-HOOK-007 — before the lock gate: an activate entry may be what opens a lock the player cannot
     // (Skyrim's `doomTowerPerk` conditions its choice on the target's lock and lock level).
-    if compose_perks {
-        if let Some(player) = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world) {
+    if compose_perks
+        && let Some(player) = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world) {
             match crate::perk_activate::compose_player_activation(world, player, target) {
                 crate::perk_activate::PerkActivation::Default => {}
                 crate::perk_activate::PerkActivation::Replaced => {
@@ -1707,7 +1702,6 @@ pub(crate) fn activate_target(world: &World, target: InteractionTarget, compose_
                 }
             }
         }
-    }
     if activation_is_blocked(world, target.entity) {
         return;
     }

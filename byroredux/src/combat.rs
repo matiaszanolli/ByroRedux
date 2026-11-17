@@ -198,11 +198,10 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
         // #4701 — a dead player's attack edge is not a swing either.
         && crate::systems::player_can_act(world);
 
-    if ready_pressed {
-        if let Some(player) = aggressor {
+    if ready_pressed
+        && let Some(player) = aggressor {
             toggle_ready_weapon(world, player, can_swing);
         }
-    }
 
     // #3697 (ECS-P2-01) — resolved before `CombatState`'s write guard opens,
     // not from inside it. `attack_cooldown_seconds` reads `EquippedWeapon`,
@@ -834,11 +833,10 @@ pub(crate) fn chargen_catch_up_system(world: &World, _dt: f32) {
         Some(mut watch) => std::mem::replace(&mut watch.0, now),
         None => return,
     };
-    if was && !now {
-        if let Some(player) = PlayerEntity::get(world) {
+    if was && !now
+        && let Some(player) = PlayerEntity::get(world) {
             grant_experience(world, player, 0);
         }
-    }
 }
 
 /// FO3 / FNV skill points (`base + int_mult·INT`, composed by the Adjust
@@ -1087,13 +1085,11 @@ pub(crate) fn attack_damage(world: &World, aggressor: EntityId) -> f32 {
     let weapon_damage = world
         .get::<EquippedWeapon>(aggressor)
         .map(|weapon| weapon.damage);
-    if weapon_damage.is_none() {
-        if let Some(attack) = world.get::<CreatureAttack>(aggressor) {
-            if attack.damage.is_finite() && attack.damage > 0.0 {
+    if weapon_damage.is_none()
+        && let Some(attack) = world.get::<CreatureAttack>(aggressor)
+            && attack.damage.is_finite() && attack.damage > 0.0 {
                 return attack.damage;
             }
-        }
-    }
     match weapon_damage {
         // The capture document is explicit that Melee Damage is "an
         // additive bonus to Melee Weapon damage" and that "Unarmed has its
@@ -1346,11 +1342,9 @@ pub(crate) fn reconcile_dead_actor(world: &World, actor: EntityId) -> String {
     {
         if let Some(mut equipment) =
             world.query_mut::<byroredux_core::ecs::components::EquipmentSlots>()
-        {
-            if let Some(slots) = equipment.get_mut(actor) {
+            && let Some(slots) = equipment.get_mut(actor) {
                 *slots = byroredux_core::ecs::components::EquipmentSlots::new();
             }
-        }
         remove_component::<EquippedWeapon>(world, actor);
     }
     disable_actor_ai(world, actor);

@@ -848,9 +848,9 @@ pub(crate) fn clear_ambient_behavior(world: &World, actor: EntityId) {
     // marker is removed, for the same reason `SeatReservations` is retained
     // above it: this function is the only place that knows the actor was
     // seated at all.
-    if let Some(seated) = world.get::<Seated>(actor).map(|s| *s) {
-        if let Some(mut players) = world.query_mut::<AnimationPlayer>() {
-            if let Some(player) = players.get_mut(actor) {
+    if let Some(seated) = world.get::<Seated>(actor).map(|s| *s)
+        && let Some(mut players) = world.query_mut::<AnimationPlayer>()
+            && let Some(player) = players.get_mut(actor) {
                 let restore = seated.animation_restore;
                 player.clip_handle = restore.clip_handle;
                 player.local_time = restore.local_time;
@@ -858,8 +858,6 @@ pub(crate) fn clear_ambient_behavior(world: &World, actor: EntityId) {
                 player.playing = restore.playing;
                 player.speed = restore.speed;
             }
-        }
-    }
 
     // Declared in this body, not at module level, so the scheduler's source scan
     // (`acquired_in`) still sees every removal as a write acquisition.
@@ -951,12 +949,11 @@ pub(crate) fn suspend_ambient_behavior_for_combat(world: &World, actor: EntityId
         .and_then(|runtime| runtime.active_package_form_id);
     byroredux_scripting::report_package_transition(world, actor, previous, None);
     clear_ambient_behavior(world, actor);
-    if let Some(mut runtimes) = world.query_mut::<AmbientPackageRuntime>() {
-        if let Some(runtime) = runtimes.get_mut(actor) {
+    if let Some(mut runtimes) = world.query_mut::<AmbientPackageRuntime>()
+        && let Some(runtime) = runtimes.get_mut(actor) {
             runtime.active_package_form_id = None;
             runtime.last_evaluated_game_minute = None;
         }
-    }
 }
 
 fn select_active_package<'a>(
@@ -1269,11 +1266,10 @@ pub(crate) fn install_package_now(world: &World, actor: EntityId, package_form_i
     if let Some(behavior) = behavior {
         behavior.insert_at_runtime(world, actor);
     }
-    if let Some(mut query) = world.query_mut::<AmbientPackageRuntime>() {
-        if let Some(runtime) = query.get_mut(actor) {
+    if let Some(mut query) = world.query_mut::<AmbientPackageRuntime>()
+        && let Some(runtime) = query.get_mut(actor) {
             runtime.active_package_form_id = Some(package_form_id);
         }
-    }
     true
 }
 

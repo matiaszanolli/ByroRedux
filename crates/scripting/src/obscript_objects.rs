@@ -878,8 +878,8 @@ fn store_refs(world: &World, entity: EntityId, script: &ScriptRecord, before: &H
     if changed.is_empty() {
         return;
     }
-    if let Some(mut variables) = world.query_mut::<ScriptVariables>() {
-        if let Some(variables) = variables.get_mut(entity) {
+    if let Some(mut variables) = world.query_mut::<ScriptVariables>()
+        && let Some(variables) = variables.get_mut(entity) {
             for (name, form) in changed {
                 let (low_name, high_name) = ref_variable_halves(&name);
                 let (low, high) = crate::obscript_vm::form_halves(form);
@@ -887,7 +887,6 @@ fn store_refs(world: &World, entity: EntityId, script: &ScriptRecord, before: &H
                 variables.set_by_name(&high_name, high);
             }
         }
-    }
 }
 
 fn store_locals(world: &World, entity: EntityId, script: &ScriptRecord, before: &HashMap<u16, f32>, after: &HashMap<u16, f32>) {
@@ -904,13 +903,12 @@ fn store_locals(world: &World, entity: EntityId, script: &ScriptRecord, before: 
     if changed.is_empty() {
         return;
     }
-    if let Some(mut variables) = world.query_mut::<ScriptVariables>() {
-        if let Some(variables) = variables.get_mut(entity) {
+    if let Some(mut variables) = world.query_mut::<ScriptVariables>()
+        && let Some(variables) = variables.get_mut(entity) {
             for (name, value) in changed {
                 variables.set_by_name(name, value);
             }
         }
-    }
 }
 
 #[cfg(test)]

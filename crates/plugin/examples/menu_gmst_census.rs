@@ -76,11 +76,10 @@ fn resolved_gmsts(esm: &str) -> anyhow::Result<Vec<(String, String)>> {
     let path = std::path::Path::new(esm);
     let data_dir = path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
     let tables = StringTableSet::load_with_archive(path, "english", |relative| {
-        if let Ok(archive) = BsaArchive::open(data_dir.join("Skyrim - Interface.bsa")) {
-            if let Ok(bytes) = archive.extract(relative) {
+        if let Ok(archive) = BsaArchive::open(data_dir.join("Skyrim - Interface.bsa"))
+            && let Ok(bytes) = archive.extract(relative) {
                 return Some(bytes);
             }
-        }
         byroredux_bsa::Ba2Archive::open(data_dir.join("Fallout4 - Interface.ba2"))
             .ok()
             .and_then(|archive| archive.extract(relative).ok())
@@ -188,11 +187,10 @@ fn includes(text: &str) -> Vec<String> {
 
 fn class_entity(text: &str) -> String {
     // The menu's own `<class>` trait is the first `<class>` in the file.
-    if let Some(i) = text.find("<class>") {
-        if let Some(j) = text[i + 7..].find("</class>") {
+    if let Some(i) = text.find("<class>")
+        && let Some(j) = text[i + 7..].find("</class>") {
             return text[i + 7..i + 7 + j].trim().to_owned();
         }
-    }
     String::new()
 }
 

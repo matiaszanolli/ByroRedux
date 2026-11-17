@@ -2205,11 +2205,10 @@ fn parse_real_fnv_race_head_parts_exclude_the_body_section() {
                 })
                 .map(|(_, path, _)| path.to_ascii_lowercase())
         };
-        if let (Some(male), Some(female)) = (head_for(0), head_for(1)) {
-            if male != female {
+        if let (Some(male), Some(female)) = (head_for(0), head_for(1))
+            && male != female {
                 gendered_heads += 1;
             }
-        }
     }
     assert!(
         gendered_heads >= 20,

@@ -629,121 +629,125 @@ impl BloomPipeline {
         frame: usize,
         input_view: vk::ImageView,
     ) {
-        // Rewrite binding 0 of the very first down set to point at
-        // this frame's scene HDR. All other down sets (1..N) point
-        // at our own internally-owned mip views, written once at
-        // construction. This descriptor update depends on render-pass
-        // output so it cannot move to the pre-barrier upload phase.
-        let f = &mut self.frames[frame];
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            // Rewrite binding 0 of the very first down set to point at
+            // this frame's scene HDR. All other down sets (1..N) point
+            // at our own internally-owned mip views, written once at
+            // construction. This descriptor update depends on render-pass
+            // output so it cannot move to the pre-barrier upload phase.
+            let f = &mut self.frames[frame];
 
-        let scene_info = [sampled_image_info(self.sampler, input_view)];
-        let scene_write = write_combined_image_sampler(f.down_descriptor_sets[0], 0, &scene_info);
-        device.update_descriptor_sets(&[scene_write], &[]);
+            let scene_info = [sampled_image_info(self.sampler, input_view)];
+            let scene_write = write_combined_image_sampler(f.down_descriptor_sets[0], 0, &scene_info);
+            device.update_descriptor_sets(&[scene_write], &[]);
 
-        let subresource = super::descriptors::color_subresource_single_mip();
+            let subresource = super::descriptors::color_subresource_single_mip();
 
-        // ── Downsample chain ─────────────────────────────────────
-        //
-        // Barrier accounting (#931): only emit the *post*-barrier
-        // on the mip just written. Pre-barriers on each iteration's
-        // destination would be redundant — each `BloomFrame` slot
-        // owns its own mip allocations (no cross-frame WAR hazard
-        // beyond the per-frame fence, which sequences submissions),
-        // and within this command buffer no in-frame access has
-        // touched `mip[i]` before iteration i writes it. The prior
-        // iteration's post-barrier (srcStage=COMPUTE →
-        // dstStage=COMPUTE) acts as an execution barrier for the
-        // next dispatch on its way to writing a *different* mip —
-        // no memory dependency to publish since we're overwriting.
-        //
-        // Result: 19 → 10 barriers/frame. Audit's "~3 barriers"
-        // target requires single-pass FidelityFX SPD (workgroup
-        // atomic counters + LDS, several-hundred-LOC shader
-        // rewrite), not a barrier coalesce.
-        device.cmd_bind_pipeline(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.downsample_pipeline,
-        );
-        for i in 0..BLOOM_MIP_COUNT {
-            device.cmd_bind_descriptor_sets(
+            // ── Downsample chain ─────────────────────────────────────
+            //
+            // Barrier accounting (#931): only emit the *post*-barrier
+            // on the mip just written. Pre-barriers on each iteration's
+            // destination would be redundant — each `BloomFrame` slot
+            // owns its own mip allocations (no cross-frame WAR hazard
+            // beyond the per-frame fence, which sequences submissions),
+            // and within this command buffer no in-frame access has
+            // touched `mip[i]` before iteration i writes it. The prior
+            // iteration's post-barrier (srcStage=COMPUTE →
+            // dstStage=COMPUTE) acts as an execution barrier for the
+            // next dispatch on its way to writing a *different* mip —
+            // no memory dependency to publish since we're overwriting.
+            //
+            // Result: 19 → 10 barriers/frame. Audit's "~3 barriers"
+            // target requires single-pass FidelityFX SPD (workgroup
+            // atomic counters + LDS, several-hundred-LOC shader
+            // rewrite), not a barrier coalesce.
+            device.cmd_bind_pipeline(
                 cmd,
                 vk::PipelineBindPoint::COMPUTE,
-                self.downsample_pipeline_layout,
-                0,
-                &[f.down_descriptor_sets[i]],
-                &[],
+                self.downsample_pipeline,
             );
-            let extent = f.down_mips[i].extent;
-            let groups_x = extent.width.div_ceil(WORKGROUP_X);
-            let groups_y = extent.height.div_ceil(WORKGROUP_Y);
-            device.cmd_dispatch(cmd, groups_x, groups_y, 1);
+            for i in 0..BLOOM_MIP_COUNT {
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::COMPUTE,
+                    self.downsample_pipeline_layout,
+                    0,
+                    &[f.down_descriptor_sets[i]],
+                    &[],
+                );
+                let extent = f.down_mips[i].extent;
+                let groups_x = extent.width.div_ceil(WORKGROUP_X);
+                let groups_y = extent.height.div_ceil(WORKGROUP_Y);
+                device.cmd_dispatch(cmd, groups_x, groups_y, 1);
 
-            // Make this mip's WRITE visible to the next iteration's
-            // READ (downsample reads previous mip; upsample reads
-            // same-resolution mip).
-            let post = vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                .old_layout(vk::ImageLayout::GENERAL)
-                .new_layout(vk::ImageLayout::GENERAL)
-                .image(f.down_mips[i].gpu.image)
-                .subresource_range(subresource);
-            device.cmd_pipeline_barrier(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[post],
-            );
-        }
+                // Make this mip's WRITE visible to the next iteration's
+                // READ (downsample reads previous mip; upsample reads
+                // same-resolution mip).
+                let post = vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                    .old_layout(vk::ImageLayout::GENERAL)
+                    .new_layout(vk::ImageLayout::GENERAL)
+                    .image(f.down_mips[i].gpu.image)
+                    .subresource_range(subresource);
+                device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[post],
+                );
+            }
 
-        // ── Upsample chain ───────────────────────────────────────
-        // Same barrier accounting as the down chain — see the
-        // comment above. Per-frame `up_mips[i]` is exclusive to
-        // this frame slot, so the only in-frame producer of its
-        // contents is *this* iteration; no pre-barrier needed.
-        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.upsample_pipeline);
-        // Iterate from N-2 down to 0 — each level reads the
-        // previously-produced level (up_mips[i+1] or down_mips[N-1]
-        // for the seed) and the same-resolution down_mip.
-        for i in (0..(BLOOM_MIP_COUNT - 1)).rev() {
-            device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::COMPUTE,
-                self.upsample_pipeline_layout,
-                0,
-                &[f.up_descriptor_sets[i]],
-                &[],
-            );
-            let extent = f.up_mips[i].extent;
-            let groups_x = extent.width.div_ceil(WORKGROUP_X);
-            let groups_y = extent.height.div_ceil(WORKGROUP_Y);
-            device.cmd_dispatch(cmd, groups_x, groups_y, 1);
+            // ── Upsample chain ───────────────────────────────────────
+            // Same barrier accounting as the down chain — see the
+            // comment above. Per-frame `up_mips[i]` is exclusive to
+            // this frame slot, so the only in-frame producer of its
+            // contents is *this* iteration; no pre-barrier needed.
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.upsample_pipeline);
+            // Iterate from N-2 down to 0 — each level reads the
+            // previously-produced level (up_mips[i+1] or down_mips[N-1]
+            // for the seed) and the same-resolution down_mip.
+            for i in (0..(BLOOM_MIP_COUNT - 1)).rev() {
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::COMPUTE,
+                    self.upsample_pipeline_layout,
+                    0,
+                    &[f.up_descriptor_sets[i]],
+                    &[],
+                );
+                let extent = f.up_mips[i].extent;
+                let groups_x = extent.width.div_ceil(WORKGROUP_X);
+                let groups_y = extent.height.div_ceil(WORKGROUP_Y);
+                device.cmd_dispatch(cmd, groups_x, groups_y, 1);
 
-            let post = vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ)
-                .old_layout(vk::ImageLayout::GENERAL)
-                .new_layout(vk::ImageLayout::GENERAL)
-                .image(f.up_mips[i].gpu.image)
-                .subresource_range(subresource);
-            // #2796 / REN-D16-01 — mip 0's consumer used to be composite's
-            // fragment read; it's now `apply_to_scene`'s compute dispatch
-            // (composite no longer samples bloom directly), so every level
-            // — including i==0 — only needs COMPUTE_SHADER visibility.
-            let dst_stage = vk::PipelineStageFlags::COMPUTE_SHADER;
-            device.cmd_pipeline_barrier(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                dst_stage,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[post],
-            );
+                let post = vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                    .old_layout(vk::ImageLayout::GENERAL)
+                    .new_layout(vk::ImageLayout::GENERAL)
+                    .image(f.up_mips[i].gpu.image)
+                    .subresource_range(subresource);
+                // #2796 / REN-D16-01 — mip 0's consumer used to be composite's
+                // fragment read; it's now `apply_to_scene`'s compute dispatch
+                // (composite no longer samples bloom directly), so every level
+                // — including i==0 — only needs COMPUTE_SHADER visibility.
+                let dst_stage = vk::PipelineStageFlags::COMPUTE_SHADER;
+                device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    dst_stage,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[post],
+                );
+            }
         }
     }
 
@@ -881,26 +885,28 @@ impl BloomPipeline {
     /// device is not lost, and that none of the bloom resources are still in
     /// use by an in-flight command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        for mut frame in self.frames.drain(..) {
-            for mut mip in frame.down_mips.drain(..).chain(frame.up_mips.drain(..)) {
-                // #3860 — one call for view + image + slab, in that order.
-                mip.gpu.destroy(device, allocator);
-            }
-            for buf in frame
-                .down_param_buffers
-                .iter_mut()
-                .chain(frame.up_param_buffers.iter_mut())
-            {
-                buf.destroy(device, allocator);
-            }
-            // #732 LIFE-N1 — drop GpuBuffer structs after their
-            // GPU allocations are freed.
-            frame.down_param_buffers.clear();
-            frame.up_param_buffers.clear();
-        }
-        // SAFETY: the caller's contract (no in-flight work references the pass's pipelines or pool);
-        // `destroy_pass_object_sets` skips null handles and nulls what it destroys (#6371).
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
         unsafe {
+            for mut frame in self.frames.drain(..) {
+                for mut mip in frame.down_mips.drain(..).chain(frame.up_mips.drain(..)) {
+                    // #3860 — one call for view + image + slab, in that order.
+                    mip.gpu.destroy(device, allocator);
+                }
+                for buf in frame
+                    .down_param_buffers
+                    .iter_mut()
+                    .chain(frame.up_param_buffers.iter_mut())
+                {
+                    buf.destroy(device, allocator);
+                }
+                // #732 LIFE-N1 — drop GpuBuffer structs after their
+                // GPU allocations are freed.
+                frame.down_param_buffers.clear();
+                frame.up_param_buffers.clear();
+            }
+            // SAFETY: the caller's contract (no in-flight work references the pass's pipelines or pool);
+            // `destroy_pass_object_sets` skips null handles and nulls what it destroys (#6371).
             super::descriptors::destroy_pass_object_sets(
                 device,
                 super::descriptors::PassHandleSets {
@@ -913,11 +919,11 @@ impl BloomPipeline {
                     pool: &mut self.descriptor_pool,
                     set_layouts: &mut [&mut self.downsample_dsl, &mut self.upsample_dsl, &mut self.apply_dsl],
                 },
-            )
-        };
-        if self.sampler != vk::Sampler::null() {
-            device.destroy_sampler(self.sampler, None);
-            self.sampler = vk::Sampler::null();
+            );
+            if self.sampler != vk::Sampler::null() {
+                device.destroy_sampler(self.sampler, None);
+                self.sampler = vk::Sampler::null();
+            }
         }
     }
 }

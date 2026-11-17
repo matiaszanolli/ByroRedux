@@ -31,11 +31,10 @@ fn main() -> anyhow::Result<()> {
     // worldspace's single persistent CELL, not the grid cell they stand in.
     let mut sources: Vec<(String, &esm::cell::CellData)> = Vec::new();
     for (wkey, cells) in &index.cells.exterior_cells {
-        if wkey.to_ascii_lowercase().contains(&world) {
-            if let Some(cell) = cells.get(&grid) {
+        if wkey.to_ascii_lowercase().contains(&world)
+            && let Some(cell) = cells.get(&grid) {
                 sources.push((format!("{wkey} ({},{})", grid.0, grid.1), cell));
             }
-        }
     }
     for (wkey, cell) in &index.cells.worldspace_persistent_cells {
         if wkey.to_ascii_lowercase().contains(&world) {

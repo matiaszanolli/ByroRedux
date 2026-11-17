@@ -429,10 +429,15 @@ pub(crate) fn run() -> Result<()> {
 
     // Set up logging. --debug forces debug level.
     if debug_mode {
-        std::env::set_var(
-            "RUST_LOG",
-            std::env::var("RUST_LOG").unwrap_or("debug".into()),
-        );
+        // SAFETY: still on the main thread in `boot::run`'s argv handling, before the
+        // logger is installed and before this process starts any other thread, so
+        // nothing can read the environment concurrently with this write.
+        unsafe {
+            std::env::set_var(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("debug".into()),
+            )
+        };
     }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     init_tracing();

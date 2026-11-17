@@ -336,8 +336,8 @@ fn apply_cdb_material(
     // texture kinds (#4429 table) — pre-fix the first walked replacement
     // tinted the albedo whatever slot it sat on (a flat-normal became a
     // blue tint).
-    if material.textures.base_color.is_none() {
-        if let Some((_, [r, g, b, _a])) = cdb_mat
+    if material.textures.base_color.is_none()
+        && let Some((_, [r, g, b, _a])) = cdb_mat
             .flat_color_slots
             .iter()
             .find(|(slot, _)| *slot == byroredux_sfmaterial::SLOT_COLOR)
@@ -345,7 +345,6 @@ fn apply_cdb_material(
             material.diffuse_color = [*r, *g, *b];
             *touched = true;
         }
-    }
 
     if let Some(threshold) = cdb_mat.alpha_test_threshold {
         // #5196 / #5661 — the threshold applies only where an opacity
@@ -614,14 +613,13 @@ pub(crate) fn merge_external_material(
         // lookup. Vanilla ships none; four Creation archives carry 20 —
         // this is the mod path. #5396 — a file that does not decode no
         // longer pre-empts the CDB: it falls through to the lookup below.
-        if let Some(bytes) = provider.extract_from_archives(&path) {
-            if let Some(outcome) =
+        if let Some(bytes) = provider.extract_from_archives(&path)
+            && let Some(outcome) =
                 apply_loose_mat(material, &bytes, pool, &mut touched, texture_exists)
             {
                 trace_merge_outcome(&path, outcome);
                 return outcome;
             }
-        }
         // #3398 Phase 2 — resolve through the CDB material index next;
         // the Phase-1 PBR-routing flip is now the lookup-MISS fallback.
         // #5284 — the shared tail; this arm records its fill as a `.mat`
@@ -657,8 +655,8 @@ pub(crate) fn merge_external_material(
         None
     };
     let magic_kind = provider.peek_magic(&path);
-    if let (Some(ext), Some(magic)) = (ext_kind, magic_kind) {
-        if ext != magic {
+    if let (Some(ext), Some(magic)) = (ext_kind, magic_kind)
+        && ext != magic {
             log::warn!(
                 "material '{}': extension implies {:?} but file magic implies {:?}; \
                  dispatching on magic to avoid wrong override semantics",
@@ -667,7 +665,6 @@ pub(crate) fn merge_external_material(
                 magic
             );
         }
-    }
     // Magic wins when present; extension is the fallback for files not (yet)
     // in any loaded archive (caller already got None from peek_magic).
     let dispatch_kind = magic_kind.or(ext_kind);

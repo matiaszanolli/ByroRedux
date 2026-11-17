@@ -4966,11 +4966,10 @@ fn primitive_source_fns(src: &str) -> std::collections::HashMap<String, String> 
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
                 .collect();
             current = Some((name, vec![line]));
-        } else if let Some((_, lines)) = current.as_mut() {
-            if !line.trim_start().starts_with("//") {
+        } else if let Some((_, lines)) = current.as_mut()
+            && !line.trim_start().starts_with("//") {
                 lines.push(line);
             }
-        }
     }
     flush(&mut current);
     out

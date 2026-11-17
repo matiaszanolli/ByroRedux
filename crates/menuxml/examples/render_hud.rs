@@ -187,11 +187,10 @@ fn main() {
         }
         let items = build_draw_list(&doc, &mut eval);
         for item in &items {
-            if let byroredux_menuxml::layout::DrawItem::Image { tile: _, rect, filename, .. } = item {
-                if filename.to_lowercase().contains("health") || filename.to_lowercase().contains("magic") || filename.to_lowercase().contains("fatigue") {
+            if let byroredux_menuxml::layout::DrawItem::Image { tile: _, rect, filename, .. } = item
+                && (filename.to_lowercase().contains("health") || filename.to_lowercase().contains("magic") || filename.to_lowercase().contains("fatigue")) {
                     println!("draw {filename}: rect={:?}", rect);
                 }
-            }
         }
     }
 }

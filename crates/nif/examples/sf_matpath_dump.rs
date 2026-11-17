@@ -51,11 +51,10 @@ fn main() {
                             .downcast_ref::<BSEffectShaderProperty>()
                             .and_then(|p| p.net.name.as_deref())
                     });
-                if let Some(nm) = nm {
-                    if !nm.is_empty() {
+                if let Some(nm) = nm
+                    && !nm.is_empty() {
                         out.insert(nm.to_string());
                     }
-                }
             }
         }
     }

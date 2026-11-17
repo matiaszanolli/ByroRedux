@@ -659,8 +659,8 @@ fn load_nif_with_skeleton_from<'a>(
         // traps) that legitimately author a small constraint articulation.
         // Ordinary architecture/props with zero or one rigid body and no
         // constraint block still correctly get `ragdoll: None`.
-        if let Some(ragdoll) = imported.ragdoll.as_ref() {
-            if let Some(template) =
+        if let Some(ragdoll) = imported.ragdoll.as_ref()
+            && let Some(template) =
                 crate::ragdoll::template_from_imported(ragdoll, &node_by_name, &rest_pose_by_name)
             {
                 let bodies = template.bodies.len();
@@ -672,7 +672,6 @@ fn load_nif_with_skeleton_from<'a>(
                     label,
                 );
             }
-        }
     }
 
     // #2530 / NIFAL-D3-NEW-01 — spawn a `LightSource` per authored NIF

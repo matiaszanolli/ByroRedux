@@ -311,13 +311,12 @@ pub(crate) fn apply(world: &mut World, choice: ChargenChoice) -> bool {
                     Some((form, value.clamp(SPECIAL_MIN, SPECIAL_MAX) as f32))
                 })
                 .collect();
-            if let Some(mut actor_values) = world.query_mut::<byroredux_core::ecs::components::ActorValues>() {
-                if let Some(actor_values) = actor_values.get_mut(player) {
+            if let Some(mut actor_values) = world.query_mut::<byroredux_core::ecs::components::ActorValues>()
+                && let Some(actor_values) = actor_values.get_mut(player) {
                     for (form, value) in forms {
                         actor_values.set_base(form, value);
                     }
                 }
-            }
             false
         }
         ChargenChoice::TagSkills(skills) => {

@@ -408,16 +408,14 @@ impl UiManager {
         if owner == self.input_owner {
             return false;
         }
-        if let Some(old) = self.input_owner.take() {
-            if let Some(layer) = self.layer_mut(&old) {
+        if let Some(old) = self.input_owner.take()
+            && let Some(layer) = self.layer_mut(&old) {
                 layer.player.handle_input(UiInputEvent::FocusLost);
             }
-        }
-        if let Some(new) = owner.as_deref() {
-            if let Some(layer) = self.layer_mut(new) {
+        if let Some(new) = owner.as_deref()
+            && let Some(layer) = self.layer_mut(new) {
                 layer.player.handle_input(UiInputEvent::FocusGained);
             }
-        }
         self.input_owner = owner;
         true
     }

@@ -292,27 +292,24 @@ fn compute_billboard_size(params: &SptImportParams) -> (f32, f32) {
     // field falls through instead of poisoning the quad (#3529). OBND
     // reaches the cell route as `i16`→`f32` and cannot be NaN today, but
     // `SptImportParams` is public and the guard costs nothing.
-    if let Some((min, max)) = params.bounds {
-        if let (Some(width), Some(height)) = (
+    if let Some((min, max)) = params.bounds
+        && let (Some(width), Some(height)) = (
             clamp_billboard_extent(max[0] - min[0]),
             clamp_billboard_extent(max[2] - min[2]),
         ) {
             return (width, height);
         }
-    }
-    if let Some((w, h)) = params.billboard_size {
-        if let (Some(width), Some(height)) = (clamp_billboard_extent(w), clamp_billboard_extent(h))
+    if let Some((w, h)) = params.billboard_size
+        && let (Some(width), Some(height)) = (clamp_billboard_extent(w), clamp_billboard_extent(h))
         {
             return (width, height);
         }
-    }
-    if let Some(r) = params.bound_radius.filter(|r| *r > 0.0) {
-        if let (Some(width), Some(height)) =
+    if let Some(r) = params.bound_radius.filter(|r| *r > 0.0)
+        && let (Some(width), Some(height)) =
             (clamp_billboard_extent(r), clamp_billboard_extent(2.0 * r))
         {
             return (width, height);
         }
-    }
     (DEFAULT_BILLBOARD_WIDTH, DEFAULT_BILLBOARD_HEIGHT)
 }
 

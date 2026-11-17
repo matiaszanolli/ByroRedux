@@ -203,11 +203,10 @@ fn drain_script_weapon_equips(world: &mut World) {
             continue;
         };
         let wielded = world.get::<EquipmentSlots>(actor).is_some_and(|slots| slots.is_equipped(InventoryIndex(row as u32)));
-        if !wielded {
-            if let Some(mut pending) = world.try_resource_mut::<PendingInventoryActions>() {
+        if !wielded
+            && let Some(mut pending) = world.try_resource_mut::<PendingInventoryActions>() {
                 pending.0.push(byroredux_native_ui::InventoryAction::ToggleEquip { index: row as u32 });
             }
-        }
     }
 }
 

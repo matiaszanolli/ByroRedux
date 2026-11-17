@@ -355,8 +355,7 @@ impl App {
         if state.pending.is_empty()
             && state.active_apply.is_none()
             && state.persistent_apply.is_none()
-        {
-            if let Some((grid, elapsed)) = state.telemetry.settle_full_detail(Instant::now()) {
+            && let Some((grid, elapsed)) = state.telemetry.settle_full_detail(Instant::now()) {
                 log::info!(
                     "Exterior full detail settled around ({}, {}) in {:.2} ms",
                     grid.0,
@@ -370,7 +369,6 @@ impl App {
                 // once per transition (#3662).
                 ctx.log_memory_usage();
             }
-        }
 
         // Distant water's hole is the resident set (#5334): follow residency
         // changes and the crossing itself, coalesced inside the call. Before
@@ -788,12 +786,11 @@ impl App {
         // populated collision world resolves the subject distance and every
         // later frame reuses it — a per-frame re-cast would make the orbit
         // radius drift as the camera moves, which is not a fixed-radius orbit.
-        if self.bench.camera_subject_distance.is_none() {
-            if let Some((distance, source)) = self.measure_bench_subject_distance(origin) {
+        if self.bench.camera_subject_distance.is_none()
+            && let Some((distance, source)) = self.measure_bench_subject_distance(origin) {
                 self.bench.camera_subject_distance = Some(distance);
                 log::info!("bench camera subject distance {distance:.1} BU ({source})");
             }
-        }
         let subject_distance = self
             .bench.camera_subject_distance
             .unwrap_or(crate::bench_camera::BenchCameraPath::FALLBACK_SUBJECT_DISTANCE_BU);
@@ -807,11 +804,10 @@ impl App {
         self.bench.camera_applied_pose = Some(pose);
         self.apply_bench_camera_pose(active, pose);
 
-        if path.is_cut_frame(frame, total_frames) {
-            if let Some(ctx) = self.renderer.as_mut() {
+        if path.is_cut_frame(frame, total_frames)
+            && let Some(ctx) = self.renderer.as_mut() {
                 ctx.signal_temporal_discontinuity(BENCH_CUT_RECOVERY_FRAMES);
             }
-        }
 
         // EX-08 / #2374 — one ownership sample per completed out-and-back.
         // Arming happens on the logical frame the camera returns to origin;
@@ -830,11 +826,10 @@ impl App {
             // boundary transaction is mid-apply reads a half-built world: the
             // reachability classes swing with whichever cells happen to have
             // their entities attached, even though residency never moved.
-            if !boundary_in_progress {
-                if let Some(cycle) = self.bench.pending_soak_cycle.take() {
+            if !boundary_in_progress
+                && let Some(cycle) = self.bench.pending_soak_cycle.take() {
                     self.record_soak_ownership_cycle(cycle);
                 }
-            }
             self.bench.camera_path_frame = crate::bench_camera::advance_grid_cross_frame(
                 self.bench.camera_path_frame,
                 total_frames,
@@ -881,9 +876,9 @@ impl App {
         }
         let frame = self.bench.frames_count;
         let pose = self.bench.camera_applied_pose;
-        if let (Some(capture), Some(ctx)) = (self.capture.linear_capture.as_mut(), self.renderer.as_mut()) {
-            if capture.advance_sequence(ctx, frame) {
-                if let Some(pose) = pose {
+        if let (Some(capture), Some(ctx)) = (self.capture.linear_capture.as_mut(), self.renderer.as_mut())
+            && capture.advance_sequence(ctx, frame)
+                && let Some(pose) = pose {
                     // Full precision: the gates rebuild this frame's view from it.
                     println!(
                         "linear-capture: frame {frame} camera pos={:?},{:?},{:?} forward={:?},{:?},{:?}",
@@ -891,8 +886,6 @@ impl App {
                         pose.forward.x, pose.forward.y, pose.forward.z
                     );
                 }
-            }
-        }
     }
 
     /// M-LIGHT RLT-SHD-010: place every [`BenchMover`] at this frame's point
@@ -917,16 +910,14 @@ impl App {
             .collect();
         drop(movers);
         for (entity, position) in placed {
-            if let Some(mut transforms) = self.world.query_mut::<byroredux_core::ecs::Transform>() {
-                if let Some(transform) = transforms.get_mut(entity) {
+            if let Some(mut transforms) = self.world.query_mut::<byroredux_core::ecs::Transform>()
+                && let Some(transform) = transforms.get_mut(entity) {
                     transform.translation = position;
                 }
-            }
-            if let Some(mut globals) = self.world.query_mut::<byroredux_core::ecs::GlobalTransform>() {
-                if let Some(global) = globals.get_mut(entity) {
+            if let Some(mut globals) = self.world.query_mut::<byroredux_core::ecs::GlobalTransform>()
+                && let Some(global) = globals.get_mut(entity) {
                     global.translation = position;
                 }
-            }
         }
     }
 
@@ -938,12 +929,11 @@ impl App {
         // #6775 — the yaw/pitch convention, not a shortest arc (see
         // `CameraPose::rotation`).
         let rotation = pose.rotation();
-        if let Some(mut transforms) = self.world.query_mut::<byroredux_core::ecs::Transform>() {
-            if let Some(transform) = transforms.get_mut(active) {
+        if let Some(mut transforms) = self.world.query_mut::<byroredux_core::ecs::Transform>()
+            && let Some(transform) = transforms.get_mut(active) {
                 transform.translation = pose.position;
                 transform.rotation = rotation;
             }
-        }
         // `restore_bench_camera_pose` runs after the scheduler's transform
         // propagation.  Rendering reads the local Transform on this path,
         // but interaction, picking, and the debug camera commands read the
@@ -954,11 +944,9 @@ impl App {
         if let Some(mut globals) = self
             .world
             .query_mut::<byroredux_core::ecs::GlobalTransform>()
-        {
-            if let Some(global) = globals.get_mut(active) {
+            && let Some(global) = globals.get_mut(active) {
                 *global = byroredux_core::ecs::GlobalTransform::new(pose.position, rotation, 1.0);
             }
-        }
     }
 
     /// Reapply the already-selected pose after the scheduler's character

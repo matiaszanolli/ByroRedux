@@ -81,11 +81,10 @@ pub(crate) fn travel_data(world: &World) -> Option<Arc<TravelData>> {
     let cache = world.try_resource::<TravelIndex>()?;
     let mut slot = cache.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let key = Arc::as_ptr(&index) as usize;
-    if let Some((built_for, data)) = slot.as_ref() {
-        if *built_for == key {
+    if let Some((built_for, data)) = slot.as_ref()
+        && *built_for == key {
             return Some(Arc::clone(data));
         }
-    }
     let graph = SpaceGraph::build(&index.cells, &index.navmesh_door_links());
     let interior_actors = index
         .cells
@@ -626,11 +625,10 @@ pub(crate) fn resolve_actor_moves(world: &World) -> Vec<Relocation> {
         for (axis, delta) in offset.iter().enumerate() {
             placement.position_zup[axis] += delta;
         }
-        if let Some(cell) = index.cells.locate_refr(target).map(|(cell, _)| cell) {
-            if let CellRef::Exterior { .. } = cell {
+        if let Some(cell) = index.cells.locate_refr(target).map(|(cell, _)| cell)
+            && let CellRef::Exterior { .. } = cell {
                 placement.cell = cell_at(cell, placement.position_zup);
             }
-        }
         log::info!("MoveTo {actor:08X} -> {target:08X} in {:?}", placement.cell);
         moves.push(Relocation { actor, placement, onward: None });
     }
@@ -641,8 +639,8 @@ pub(crate) fn resolve_actor_moves(world: &World) -> Vec<Relocation> {
 /// load-order placement.
 fn placement_of_target(world: &World, index: &EsmIndex, target: u32) -> Option<CreatedPlacement> {
     let mut placement = current_placement(world, index, target)?;
-    if let Some(body) = live_body(world, target) {
-        if let Some(t) = world.get::<GlobalTransform>(body) {
+    if let Some(body) = live_body(world, target)
+        && let Some(t) = world.get::<GlobalTransform>(body) {
             placement.position_zup = yup_to_zup_pos(t.translation.to_array());
             let (x, y, z) = byroredux_core::math::coord::quat_yup_to_euler_zup(t.rotation);
             placement.rotation_zup = [x, y, z];
@@ -654,7 +652,6 @@ fn placement_of_target(world: &World, index: &EsmIndex, target: u32) -> Option<C
                 };
             }
         }
-    }
     Some(placement)
 }
 
@@ -852,11 +849,10 @@ pub(crate) fn reconcile_logical_identities(world: &mut World, loaded: &[CreatedC
         }
     }
     for form in ledgered_actors(&ledger) {
-        if let Some(placement) = current_placement(world, &index, form) {
-            if ledger.journey(form).is_some() || !is_loaded(&placement.cell, loaded) {
+        if let Some(placement) = current_placement(world, &index, form)
+            && (ledger.journey(form).is_some() || !is_loaded(&placement.cell, loaded)) {
                 wanted.insert(form, placement);
             }
-        }
     }
 
     let mut spawned = 0usize;
@@ -937,11 +933,10 @@ pub(crate) fn door_fade_system(world: &World, dt: f32) {
         if let Some(mut q) = world.query_mut::<DoorFade>() {
             q.remove(entity);
         }
-        if faded_out {
-            if let Some(hop) = world.get::<CrossSpaceHop>(entity).map(|hop| hop.clone()) {
+        if faded_out
+            && let Some(hop) = world.get::<CrossSpaceHop>(entity).map(|hop| hop.clone()) {
                 pass_door(world, entity, &hop);
             }
-        }
     }
 }
 

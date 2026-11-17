@@ -234,8 +234,8 @@ pub fn distance_event_system(world: &World, _dt: f32) {
         starts -= 1;
         fired.push((index, watch, form_a, form_b, distance));
     }
-    if !dropped.is_empty() || !fired.is_empty() {
-        if let Some(mut watches) = world.try_resource_mut::<DistanceWatches>() {
+    if (!dropped.is_empty() || !fired.is_empty())
+        && let Some(mut watches) = world.try_resource_mut::<DistanceWatches>() {
             let mut remove: Vec<usize> = dropped;
             remove.extend(fired.iter().map(|(index, ..)| *index));
             remove.sort_unstable();
@@ -246,7 +246,6 @@ pub fn distance_event_system(world: &World, _dt: f32) {
                 keep
             });
         }
-    }
     let mut advances = Vec::new();
     for (_, watch, form_a, form_b, distance) in fired {
         let owner = QuestFormId(watch.owner);

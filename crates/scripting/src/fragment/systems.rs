@@ -141,8 +141,8 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
         // The interpreter's frame budget is spent: what is still ready waits
         // for the next frame, untouched and in order, without paying the
         // scheduler snapshot each run costs just to be deferred again.
-        if super::budget::exhausted(world) {
-            if let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() {
+        if super::budget::exhausted(world)
+            && let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() {
                 let mut waiting = vec![PendingFragmentExecution {
                     remaining_seconds: 0.0,
                     ..pending
@@ -154,7 +154,6 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
                 queue.extend_capped(waiting);
                 break;
             }
-        }
         emitted.extend(apply_fragment_guard_free(
             world,
             &pending.effects,
@@ -364,12 +363,11 @@ pub fn quest_fragment_dispatch_system(world: &World) {
         }
         for event in legacy_events {
             let key = (event.quest, event.previous_stage, event.new_stage);
-            if let Some(mirrors) = journal_mirrors.get_mut(&key) {
-                if *mirrors > 0 {
+            if let Some(mirrors) = journal_mirrors.get_mut(&key)
+                && *mirrors > 0 {
                     *mirrors -= 1;
                     continue;
                 }
-            }
             if event.stage_set {
                 queue.push_back((event.quest, event.new_stage, false));
             }

@@ -521,11 +521,9 @@ fn method_called_with_bgs_receiver(abc: &AbcFile, ops: &[Op]) -> Option<Vec<u8>>
                     }
                     if call_name == b"call"
                         && matches!(arguments.first(), Some(InventoryStackValue::BgsCodeObj))
-                    {
-                        if let Some(InventoryStackValue::String(method)) = arguments.get(1) {
+                        && let Some(InventoryStackValue::String(method)) = arguments.get(1) {
                             return Some(method.clone());
                         }
-                    }
                     if matches!(op, Op::CallProperty { .. }) {
                         stack.push(InventoryStackValue::Other);
                     }
@@ -610,14 +608,13 @@ fn patch_root_constructor(abc_data: &[u8], root_class: &[u8]) -> Result<Vec<u8>,
             let op = reader
                 .read_op()
                 .map_err(|error| format!("scanning Fallout 4 root constructor: {error}"))?;
-            if let Op::CallPropVoid { index, .. } | Op::CallProperty { index, .. } = op {
-                if multiname_local_name(&abc, index).as_deref() == Some(INSTALL_HELPER.as_bytes()) {
+            if let Op::CallPropVoid { index, .. } | Op::CallProperty { index, .. } = op
+                && multiname_local_name(&abc, index).as_deref() == Some(INSTALL_HELPER.as_bytes()) {
                     return Err(format!(
                         "Fallout 4 root constructor already calls {INSTALL_HELPER}; \
                          these bytes are already patched (#2970)"
                     ));
                 }
-            }
         }
     }
     let insertion_offset = {

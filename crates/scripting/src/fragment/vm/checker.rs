@@ -272,11 +272,10 @@ impl<'l> Checker<'l> {
     /// The check's kind of the declared type `ty` in `script`: a struct type
     /// is a struct, the rest as [`kind_of_type`].
     pub(super) fn kind_of_declared(&mut self, script: &Arc<Script>, ty: &Type) -> Kind {
-        if let Type::Object(name) = ty {
-            if self.struct_declaration(script, &name.0).is_some() {
+        if let Type::Object(name) = ty
+            && self.struct_declaration(script, &name.0).is_some() {
                 return Kind::Struct;
             }
-        }
         kind_of_type(ty, self.library)
     }
 
@@ -754,8 +753,8 @@ impl<'l> Checker<'l> {
         // `ObjectReference`, a `ReferenceAlias`, a `Faction`) counts as one; a
         // form of any other type (a keyword, a base object) is a filter this
         // runtime does not match.
-        if name == "registerforhitevent" {
-            if let (Some(arg), Some(Arg::Kind(Kind::Object))) = (args.get(1), arg_kinds.get(1)) {
+        if name == "registerforhitevent"
+            && let (Some(arg), Some(Arg::Kind(Kind::Object))) = (args.get(1), arg_kinds.get(1)) {
                 // A cast to `ScriptObject` hides the declared type: look through it.
                 let mut declared = &arg.value.node;
                 while let Expr::Cast { expr, .. } = declared {
@@ -772,7 +771,6 @@ impl<'l> Checker<'l> {
                     arg_kinds[1] = Arg::Kind(Kind::Player);
                 }
             }
-        }
         self.check_call_forms(frame, callee, receiver, name, arg_kinds, statement)
     }
 
@@ -781,14 +779,13 @@ impl<'l> Checker<'l> {
     /// `MusicType.Add/Remove`. (#6142, split from [`Self::check_call`].)
     fn check_call_forms(&mut self, frame: &mut CheckFrame, callee: &Expr, receiver: Option<&Expr>, name: String, arg_kinds: Vec<Arg>, statement: bool) -> Option<Kind> {
         // Help-message housekeeping (see [`help_message_housekeeping`]).
-        if statement {
-            if let Some(arity) = help_message_housekeeping(callee) {
+        if statement
+            && let Some(arity) = help_message_housekeeping(callee) {
                 if arg_kinds.len() != arity {
                     return self.fail(|| format!("{name} as written"));
                 }
                 return Some(Kind::None);
             }
-        }
         // A function of an `InputEnableLayer` the receiver is declared as.
         if let (Some(native), Some(receiver)) = (layer_native(&name), receiver) {
             let mut declared = receiver;
@@ -818,8 +815,8 @@ impl<'l> Checker<'l> {
         // that keep it or test it and moot for the ones that would steer the
         // instance - `StopInstance` and `SetInstanceVolume` stay unsupported, so a
         // script that does is declined whole.
-        if name == "play" && matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object | Kind::Player | Kind::Alias)]) {
-            if let Some(receiver) = receiver {
+        if name == "play" && matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object | Kind::Player | Kind::Alias)])
+            && let Some(receiver) = receiver {
                 let mut declared = receiver;
                 while let Expr::Cast { expr, .. } = declared {
                     declared = &expr.node;
@@ -831,7 +828,6 @@ impl<'l> Checker<'l> {
                     return Some(if statement { Kind::None } else { Kind::Num });
                 }
             }
-        }
         // `<MusicType>.Add()` / `.Remove()` as a statement (see the runtime arm).
         if matches!(name.as_str(), "add" | "remove") && statement && arg_kinds.is_empty()
             && receiver.is_some_and(|receiver| declares_music_type(&frame.script, receiver)) {
@@ -946,14 +942,12 @@ impl<'l> Checker<'l> {
                     let script = Arc::clone(&frame.script);
                     self.member_type(&script, &script_name.0).is_some()
                 };
-            if !is_value {
-                if let Some(script) = self.library.and_then(|library| library.script(&script_name.0)) {
-                    if !is_engine_class(&script) && !self.versions(&script, &name).is_empty() {
+            if !is_value
+                && let Some(script) = self.library.and_then(|library| library.script(&script_name.0))
+                    && !is_engine_class(&script) && !self.versions(&script, &name).is_empty() {
                         self.scripts.insert(key, Arc::clone(&script));
                         return self.check_call_into(&script, &name, statement, Kind::None);
                     }
-                }
-            }
         }
         if let Some(class) = static_class(receiver) {
             return self.check_static_class(receiver, class, &name, &arg_kinds, statement);
@@ -1089,22 +1083,19 @@ impl<'l> Checker<'l> {
         }
         // A function of a script on another reference, through a cast or a
         // typed variable: it runs as that reference's.
-        if receiver_kind == Kind::Object {
-            if let Some(script) = self.declared_script(frame, receiver) {
-                if !is_engine_class(&script) && !self.versions(&script, &name).is_empty() {
+        if receiver_kind == Kind::Object
+            && let Some(script) = self.declared_script(frame, receiver)
+                && !is_engine_class(&script) && !self.versions(&script, &name).is_empty() {
                     // A script on an alias (`Alias_X as MyAliasScript`) runs with an
                     // alias as `Self`, so its `GetActorRef()` and the like read.
                     let self_kind = if self.script_extends_alias(&script) { Kind::Alias } else { Kind::Object };
                     return self.check_call_into(&script, &name, statement, self_kind);
                 }
-            }
-        }
         // A quest script's function, through a cast or a typed property.
-        if receiver_kind == Kind::Quest {
-            if let Some(script) = self.quest_script_for(frame, receiver, &name) {
+        if receiver_kind == Kind::Quest
+            && let Some(script) = self.quest_script_for(frame, receiver, &name) {
                 return self.check_call_into(&script, &name, statement, Kind::Quest);
             }
-        }
         let Some(placeholder) = spanned_placeholder(receiver_kind) else {
             return self.fail(|| format!("{name} on {receiver_kind:?}"));
         };
@@ -1265,11 +1256,10 @@ impl<'l> Checker<'l> {
             })),
             args,
         };
-        if statement {
-            if let Some(effect) = classify_native_effect(&call, &bindings) {
+        if statement
+            && let Some(effect) = classify_native_effect(&call, &bindings) {
                 return (!crate::translate::effects::is_latent(&effect)).then_some(Kind::None);
             }
-        }
         if classify_native_value(&call, &bindings).is_some() {
             return Some(Kind::Num);
         }

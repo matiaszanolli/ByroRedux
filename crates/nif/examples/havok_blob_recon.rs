@@ -232,11 +232,10 @@ fn census(archive: &Ba2Archive) {
                 *classes.entry(c.clone()).or_insert(0) += 1;
             }
 
-            if let Some(last) = pf.sections.last() {
-                if last.absolute_end() == blob.len() {
+            if let Some(last) = pf.sections.last()
+                && last.absolute_end() == blob.len() {
                     closed_exactly += 1;
                 }
-            }
 
             let data = pf.section("__data__");
             if let Some(d) = data {

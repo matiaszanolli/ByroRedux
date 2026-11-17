@@ -217,11 +217,10 @@ pub fn apply_pending_group_swaps(world: &World) {
         }
     }
     for (object, handle) in ready {
-        if start_clip_on_sequence_player(world, object, handle) {
-            if let Some(mut pendings) = world.query_mut::<PendingGroupSwap>() {
+        if start_clip_on_sequence_player(world, object, handle)
+            && let Some(mut pendings) = world.query_mut::<PendingGroupSwap>() {
                 pendings.remove(object);
             }
-        }
     }
 }
 

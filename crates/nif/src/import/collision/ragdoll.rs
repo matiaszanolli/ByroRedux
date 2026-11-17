@@ -385,13 +385,11 @@ pub(super) fn extract_np_ragdoll(scene: &NifScene) -> Option<ImportedRagdoll> {
     // Host bone block per body id.
     let mut host: HashMap<usize, usize> = HashMap::new();
     for block in &scene.blocks {
-        if let Some(c) = block.as_any().downcast_ref::<BhkNPCollisionObject>() {
-            if c.data_ref.index() == Some(system_idx) {
-                if let Some(target) = c.target_ref.index() {
+        if let Some(c) = block.as_any().downcast_ref::<BhkNPCollisionObject>()
+            && c.data_ref.index() == Some(system_idx)
+                && let Some(target) = c.target_ref.index() {
                     host.insert(c.body_id as usize, target);
                 }
-            }
-        }
     }
     let parents = node_parents(scene);
 

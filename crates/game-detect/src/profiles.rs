@@ -41,11 +41,10 @@ pub fn resolve_games_root(cli_arg: Option<&str>) -> PathBuf {
     if let Some(path) = cli_arg {
         return PathBuf::from(path);
     }
-    if let Ok(env) = std::env::var("BYROREDUX_GAMES_ROOT") {
-        if !env.is_empty() {
+    if let Ok(env) = std::env::var("BYROREDUX_GAMES_ROOT")
+        && !env.is_empty() {
             return PathBuf::from(env);
         }
-    }
     PathBuf::from(DEFAULT_GAMES_ROOT)
 }
 
@@ -317,11 +316,10 @@ fn load_default_from(user_path: Option<&std::path::Path>) -> GameProfileRegistry
     // Per-user override (#5294 — $BYRO_PROFILES when the launcher pointed
     // the engine at a different file, else the home default; #5476 —
     // this is the layer `load_with_user_path` names explicitly).
-    if let Some(user_path) = user_path {
-        if user_path.exists() {
+    if let Some(user_path) = user_path
+        && user_path.exists() {
             merge_from(user_path, &mut out);
         }
-    }
 
     // Root overrides from the selected user file. An explicit path is the
     // file the caller was pointed at; only the default loader falls back to
@@ -341,11 +339,10 @@ fn load_default_from(user_path: Option<&std::path::Path>) -> GameProfileRegistry
     // Expand `~/...` prefixes on roots so the registry's consumers
     // get a ready-to-use absolute path.
     for entry in out.values_mut() {
-        if let Some(stripped) = entry.root.strip_prefix("~/") {
-            if let Some(home) = home_dir() {
+        if let Some(stripped) = entry.root.strip_prefix("~/")
+            && let Some(home) = home_dir() {
                 entry.root = home.join(stripped).to_string_lossy().into_owned();
             }
-        }
     }
 
     GameProfileRegistry::new(out)
@@ -397,11 +394,10 @@ fn merge_from(path: &Path, out: &mut BTreeMap<String, GameProfileEntry>) {
 fn ordered_config_paths_with(user_path: Option<&std::path::Path>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     paths.extend(byroredux_core::paths::shipped_asset(DEFAULT_PROFILES_PATH));
-    if let Some(user_path) = user_path {
-        if user_path.exists() {
+    if let Some(user_path) = user_path
+        && user_path.exists() {
             paths.push(user_path.to_path_buf());
         }
-    }
     paths
 }
 
@@ -435,11 +431,10 @@ fn load_launch_defaults_from(user_path: Option<&std::path::Path>) -> LaunchDefau
     }
     // Expand a leading `~/` on games_root so callers get an absolute
     // path (mirrors the profile-root expansion in `load_default`).
-    if let Some(root) = out.games_root.as_ref().and_then(|r| r.strip_prefix("~/")) {
-        if let Some(home) = home_dir() {
+    if let Some(root) = out.games_root.as_ref().and_then(|r| r.strip_prefix("~/"))
+        && let Some(home) = home_dir() {
             out.games_root = Some(home.join(root).to_string_lossy().into_owned());
         }
-    }
     out
 }
 

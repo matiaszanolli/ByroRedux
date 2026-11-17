@@ -1187,11 +1187,10 @@ mod tests {
         let mut lod_trees: BTreeSet<u32> = BTreeSet::new();
         for name in meshes.list_files() {
             let lower = name.to_ascii_lowercase().replace('/', "\\");
-            if lower.starts_with("distantlod\\") && lower.ends_with(".lod") {
-                if let Ok(groups) = parse_placement_lod(&meshes.extract(name).unwrap()) {
+            if lower.starts_with("distantlod\\") && lower.ends_with(".lod")
+                && let Ok(groups) = parse_placement_lod(&meshes.extract(name).unwrap()) {
                     lod_trees.extend(groups.iter().map(|g| g.base_form_id).filter(|b| index.trees.contains_key(b)));
                 }
-            }
         }
         // Pair each LOD tree base with a billboard by the `.spt` stem, then by the ICON stem.
         let stem = |p: &str| p.rsplit(['\\', '/']).next().unwrap_or("").rsplit_once('.').map_or(String::new(), |(s, _)| s.to_ascii_lowercase());

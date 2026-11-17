@@ -217,7 +217,7 @@ impl ObScriptQuestLocals {
     pub fn of(&self, quest: u32) -> HashMap<u16, f32> {
         self.values
             .get(&quest)
-            .map(|slots| slots.iter().filter(|(&slot, _)| slot < REF_LOW_BASE).map(|(&slot, &value)| (slot, value)).collect())
+            .map(|slots| slots.iter().filter(|&(&slot, _)| slot < REF_LOW_BASE).map(|(&slot, &value)| (slot, value)).collect())
             .unwrap_or_default()
     }
 
@@ -228,7 +228,7 @@ impl ObScriptQuestLocals {
         };
         slots
             .iter()
-            .filter(|(&slot, _)| (REF_LOW_BASE..REF_HIGH_BASE).contains(&slot))
+            .filter(|&(&slot, _)| (REF_LOW_BASE..REF_HIGH_BASE).contains(&slot))
             .map(|(&slot, &low)| {
                 let variable = slot - REF_LOW_BASE;
                 (variable, form_from_halves(low, slots.get(&(REF_HIGH_BASE + variable)).copied().unwrap_or(0.0)))
@@ -767,11 +767,10 @@ impl ObScriptCommandHost<'_> {
                 };
                 crate::fragment::remove_items(self.world, holder, item.item, 1, None);
                 let ids = self.world.try_resource::<crate::CreatedReferences>().map(|created| created.scripted_ids());
-                if let Some(form) = ids.and_then(|ids| ids.next()) {
-                    if let Some(mut created) = self.world.try_resource_mut::<crate::CreatedReferences>() {
+                if let Some(form) = ids.and_then(|ids| ids.next())
+                    && let Some(mut created) = self.world.try_resource_mut::<crate::CreatedReferences>() {
                         created.create_scripted(form, item.item, item.container, false);
                     }
-                }
                 self.ends.set(true);
                 None
             }
@@ -918,11 +917,10 @@ impl ObScriptCommandHost<'_> {
                             .world
                             .try_resource::<crate::quest_stages::QuestDefinitionRegistry>()
                             .and_then(|definitions| definitions.start_up_stage(quest));
-                        if let Some(mut stages) = self.world.try_resource_mut::<QuestStageState>() {
-                            if !stages.is_running(quest) {
+                        if let Some(mut stages) = self.world.try_resource_mut::<QuestStageState>()
+                            && !stages.is_running(quest) {
                                 stages.start_quest(quest, start_up);
                             }
-                        }
                     }
                     if let Some(mut objectives) = self.world.try_resource_mut::<QuestObjectiveState>() {
                         objectives.set_displayed(quest, objective, on);

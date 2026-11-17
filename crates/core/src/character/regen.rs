@@ -250,11 +250,10 @@ pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
         // case here: the mode freezes world dt (Phase 3b), and a frozen
         // accumulator advances zero ticks — regen pauses inside VATS for
         // free, matching vanilla.
-        if let Some(ap) = config.action_points {
-            if avs.get(ap.avif).is_some() {
+        if let Some(ap) = config.action_points
+            && avs.get(ap.avif).is_some() {
                 avs.restore(ap.avif, ap.per_second * elapsed);
             }
-        }
         if let Some((magicka, base_max)) = config
             .magicka_avif
             .and_then(|id| avs.get(id).map(|av| (id, av.undamaged())))

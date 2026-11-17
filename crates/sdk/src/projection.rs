@@ -86,14 +86,13 @@ impl EntityProjection {
         name: Option<String>,
         world_transform: Option<WorldTransform>,
     ) -> Result<Self, ProjectionError> {
-        if let Some(name) = &name {
-            if name.len() > MAX_ENTITY_NAME_BYTES {
+        if let Some(name) = &name
+            && name.len() > MAX_ENTITY_NAME_BYTES {
                 return Err(ProjectionError::NameTooLarge {
                     actual: name.len(),
                     maximum: MAX_ENTITY_NAME_BYTES,
                 });
             }
-        }
         Ok(Self {
             entity,
             form,

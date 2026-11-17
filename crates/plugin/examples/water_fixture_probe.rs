@@ -56,11 +56,10 @@ fn main() -> anyhow::Result<()> {
             with_land += usize::from(cell.landscape.is_some());
             with_water += usize::from(cell.water_height.is_some());
             explicit_water += usize::from(cell.water_height_is_explicit);
-            if let Some([x0, y0, x1, y1]) = window {
-                if gx < x0 || gx > x1 || gy < y0 || gy > y1 {
+            if let Some([x0, y0, x1, y1]) = window
+                && (gx < x0 || gx > x1 || gy < y0 || gy > y1) {
                     continue;
                 }
-            }
             let surface = if cell.water_height_is_explicit {
                 cell.water_height
             } else {

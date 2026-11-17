@@ -178,11 +178,10 @@ fn walk(
                 let o = pop!();
                 let (os, ms, vs) = (o.shown_obj(), unq(&m), v.shown());
                 ctx.events.push(Event { kind: Kind::Set, func, obj: os.clone(), member: ms.clone(), value: vs.clone(), block: block.into() });
-                if let Some(id) = vs.strip_prefix("<fn#").and_then(|r| r.strip_suffix('>')).and_then(|r| r.parse::<usize>().ok()) {
-                    if ctx.funcs[id].label.is_empty() {
+                if let Some(id) = vs.strip_prefix("<fn#").and_then(|r| r.strip_suffix('>')).and_then(|r| r.parse::<usize>().ok())
+                    && ctx.funcs[id].label.is_empty() {
                         ctx.funcs[id].label = format!("{os}.{ms}");
                     }
-                }
                 emit(lines, format!("{os}.{ms} = {vs}"));
             }
             Action::SetVariable => {
@@ -190,11 +189,10 @@ fn walk(
                 let n = pop!();
                 let (ns, vs) = (unq(&n), v.shown());
                 ctx.events.push(Event { kind: Kind::Set, func, obj: String::new(), member: ns.clone(), value: vs.clone(), block: block.into() });
-                if let Some(id) = vs.strip_prefix("<fn#").and_then(|r| r.strip_suffix('>')).and_then(|r| r.parse::<usize>().ok()) {
-                    if ctx.funcs[id].label.is_empty() {
+                if let Some(id) = vs.strip_prefix("<fn#").and_then(|r| r.strip_suffix('>')).and_then(|r| r.parse::<usize>().ok())
+                    && ctx.funcs[id].label.is_empty() {
                         ctx.funcs[id].label = ns.clone();
                     }
-                }
                 emit(lines, format!("{ns} = {vs}   [SetVariable]"));
             }
             Action::DefineLocal => {
@@ -233,11 +231,10 @@ fn walk(
                 }
             }
             Action::Pop => {
-                if let Some(t) = stack.pop() {
-                    if t.s.contains('(') && !t.lit {
+                if let Some(t) = stack.pop()
+                    && t.s.contains('(') && !t.lit {
                         emit(lines, t.s.to_string());
                     }
-                }
             }
             Action::CallMethod => {
                 let m = pop!();

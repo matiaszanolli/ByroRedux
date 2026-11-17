@@ -2,9 +2,13 @@
 name = "byroredux-papyrus"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 logos = "0.16"
 bitflags = "2"
 
 [dev-dependencies]
+
+[lints]
+workspace = true

@@ -1649,8 +1649,8 @@ impl TextureRegistry {
         for (handle, binding, image_view, sampler, first_level) in rewrites {
             self.apply_descriptor_write(device, handle, binding, image_view, sampler, first_level);
         }
-        if let Some(cube_fallback_handle) = self.cube_fallback_handle {
-            if let Some(cube) = self
+        if let Some(cube_fallback_handle) = self.cube_fallback_handle
+            && let Some(cube) = self
                 .textures
                 .get(cube_fallback_handle as usize)
                 .and_then(|entry| entry.texture.as_ref())
@@ -1660,7 +1660,6 @@ impl TextureRegistry {
                 let first_level = cube.first_level();
                 self.apply_descriptor_write(device, 0, 1, image_view, sampler, first_level);
             }
-        }
 
         log::info!(
             "TextureRegistry descriptor sets recreated: {} textures (bindless), mip bias {:.3}",

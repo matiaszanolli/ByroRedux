@@ -1146,7 +1146,7 @@ mod tlas_commit_ordering_tests {
         );
         for (needle, what) in [
             (
-                "std::mem::swap(\n            &mut tlas.last_blas_addresses,",
+                "std::mem::swap(\n                &mut tlas.last_blas_addresses,",
                 "the last_blas_addresses promotion",
             ),
             (

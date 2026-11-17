@@ -187,12 +187,11 @@ fn draw_presets(ui: &mut egui::Ui, state: &mut SettingsState) {
         ui.label("Preset:");
         for (slug, name) in &ordered {
             let selected = active.as_deref() == Some(&**slug);
-            if ui.selectable_label(selected, name).clicked() {
-                if let Some(preset) = state.presets.presets.get(slug).cloned() {
+            if ui.selectable_label(selected, name).clicked()
+                && let Some(preset) = state.presets.presets.get(slug).cloned() {
                     apply(&preset, &mut state.registry);
                     state.dirty = true;
                 }
-            }
         }
         if active.is_none() {
             ui.label(CUSTOM_LABEL);

@@ -999,8 +999,8 @@ pub(super) fn spawn_placed_instances(
     let mut spawn_sequence = None;
     // #6610 — with no idle to play, a stopped player is parked on a sequence so `PlayGroup` has one to retarget.
     let mut parked_sequence = None;
-    if let Some(key) = mesh_cache_key {
-        if let Some(sequences) = super::object_sequences::named_sequences_for(world, key, &cached.object_sequences) {
+    if let Some(key) = mesh_cache_key
+        && let Some(sequences) = super::object_sequences::named_sequences_for(world, key, &cached.object_sequences) {
             let handles: Vec<u32> = sequences.0.iter().map(|(_, handle)| *handle).collect();
             // #6543 — the legacy load starts an `Idle` only when it loops.
             spawn_sequence = {
@@ -1016,7 +1016,6 @@ pub(super) fn spawn_placed_instances(
                 crate::anim_convert::attach_clip_sinks(world, handle, ctx, tex_provider, placement_root);
             }
         }
-    }
     for handle in clip_handle.into_iter().chain(spawn_sequence) {
         // #2221 — attach the `Animated*` sinks this clip's non-transform
         // channels write into, BEFORE the player starts ticking.
@@ -1033,11 +1032,10 @@ pub(super) fn spawn_placed_instances(
         // Its sinks were attached with the other non-playing sequences above. Stopped but still sampled:
         // the object holds the sequence's first frame until a script plays a group (#6543).
         let player = spawn_placement_player(world, placement_root, handle);
-        if let Some(mut players) = world.query_mut::<byroredux_core::animation::AnimationPlayer>() {
-            if let Some(player) = players.get_mut(player) {
+        if let Some(mut players) = world.query_mut::<byroredux_core::animation::AnimationPlayer>()
+            && let Some(player) = players.get_mut(player) {
                 player.playing = false;
             }
-        }
     }
 
     // M47.0 Phase 3b — return the placement_root alongside the

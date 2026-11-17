@@ -74,11 +74,10 @@ fn own_weapon(world: &World, actor: EntityId, index: &EsmIndex, melee_only: bool
         _ => false,
     };
     // An equipped weapon outside the class does not stop the actor drawing one of the class from its pack.
-    if let Some(equipped) = world.get::<EquippedWeapon>(actor).map(|e| e.base_form_id) {
-        if !melee_only || fits(&equipped) {
+    if let Some(equipped) = world.get::<EquippedWeapon>(actor).map(|e| e.base_form_id)
+        && (!melee_only || fits(&equipped)) {
             return Some(equipped);
         }
-    }
     let inventory = world.get::<Inventory>(actor)?;
     inventory.items.iter().filter(|stack| stack.count > 0).map(|stack| stack.base_form_id).find(fits)
 }
@@ -146,11 +145,10 @@ pub(crate) fn use_weapon_package_system(world: &World, _dt: f32) {
             continue;
         }
         // AIP-UW-002: and only once the target is inside the `PLD2` target location.
-        if let (Some(target), Some(place)) = (target, behavior.target_place) {
-            if !inside_place(world, target, place) {
+        if let (Some(target), Some(place)) = (target, behavior.target_place)
+            && !inside_place(world, target, place) {
                 continue;
             }
-        }
         // AIP-UW-008 / -009: a weapon class means the actor's own weapon, of that class.
         if behavior.weapon_form_id == USE_ACTORS_OWN_WEAPON || behavior.weapon_form_id == USE_ACTORS_OWN_MELEE_WEAPON {
             let Some(weapon) = own_weapon(world, actor, &index, behavior.weapon_form_id == USE_ACTORS_OWN_MELEE_WEAPON) else {

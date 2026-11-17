@@ -792,8 +792,8 @@ fn install_universal_settings(
         // #4974 — the flag wins for this launch only. The menu shows it, but
         // a later unrelated settings save must not make it the default.
         settings_persistence.pin_stored(byroredux_debug_ui::UPSCALER_SETTING_ID);
-    } else if let Some(entry) = settings.get(byroredux_debug_ui::UPSCALER_SETTING_ID) {
-        if let SettingValue::Choice(spec) = &entry.value {
+    } else if let Some(entry) = settings.get(byroredux_debug_ui::UPSCALER_SETTING_ID)
+        && let SettingValue::Choice(spec) = &entry.value {
             match cli_args::parse_upscaler_spec(spec) {
                 Ok(mode) => {
                     renderer_config.upscaler = mode;
@@ -804,7 +804,6 @@ fn install_universal_settings(
                 Err(error) => log::warn!("persisted upscaler '{spec}' is invalid: {error}"),
             }
         }
-    }
     boot::log_upscaler_selection(
         renderer_config.upscaler,
         upscaler_source,
@@ -1092,8 +1091,8 @@ impl App {
             }
             pending_player_messages.extend(output.lines);
         }
-        if !startup_load_queued {
-            if let Err(error) = extensions::queue_session_event(
+        if !startup_load_queued
+            && let Err(error) = extensions::queue_session_event(
                 &world,
                 byroredux_sdk::event::SessionEvent {
                     phase: byroredux_sdk::event::SessionPhase::NewGame,
@@ -1102,7 +1101,6 @@ impl App {
             ) {
                 log::warn!("new-game extension lifecycle event was not queued: {error}");
             }
-        }
 
         Self {
             window: None,
@@ -1268,12 +1266,11 @@ impl App {
     fn release_world_input_for_ui(&mut self) {
         let had_mouse_capture = ui_input::release_world_input(&self.world);
 
-        if had_mouse_capture {
-            if let Some(window) = self.window.as_ref() {
+        if had_mouse_capture
+            && let Some(window) = self.window.as_ref() {
                 let _ = window.set_cursor_grab(CursorGrabMode::None);
                 window.set_cursor_visible(true);
             }
-        }
     }
 
     /// Return mouse look to gameplay after a native modal closes.
@@ -1693,8 +1690,8 @@ fn apply_debug_ui_outputs(
     for command in outputs.studio_commands {
         studio_host::apply_command(world, command);
     }
-    if outputs.game.quicksave {
-        if let Err(error) =
+    if outputs.game.quicksave
+        && let Err(error) =
             save_io::queue_player_save_action(world, save_io::PlayerSaveAction::Quicksave)
         {
             surface_save_load_output(
@@ -1704,9 +1701,8 @@ fn apply_debug_ui_outputs(
                 byroredux_core::console::CommandOutput::error(error),
             );
         }
-    }
-    if outputs.game.quickload {
-        if let Err(error) =
+    if outputs.game.quickload
+        && let Err(error) =
             save_io::queue_player_save_action(world, save_io::PlayerSaveAction::Quickload)
         {
             surface_save_load_output(
@@ -1716,7 +1712,6 @@ fn apply_debug_ui_outputs(
                 byroredux_core::console::CommandOutput::error(error),
             );
         }
-    }
     let mut settings_changed = false;
     for action in outputs.game.inventory_actions {
         if inventory::apply_action(world, action) == inventory::MutationResult::Unavailable {
@@ -1860,11 +1855,10 @@ fn apply_camera_setting(world: &World, change: &SettingChange) {
     };
     let entity = active.0;
     drop(active);
-    if let Some(mut cameras) = world.query_mut::<byroredux_core::ecs::Camera>() {
-        if let Some(camera) = cameras.get_mut(entity) {
+    if let Some(mut cameras) = world.query_mut::<byroredux_core::ecs::Camera>()
+        && let Some(camera) = cameras.get_mut(entity) {
             camera.fov_y = degrees.to_radians();
         }
-    }
 }
 
 fn sync_camera_setting(world: &World) {

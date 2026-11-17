@@ -41,11 +41,10 @@ pub(super) fn keyframe_live_ragdoll_bones(
 
     let mut has_gameplay_collider = false;
     for &bone in skel_map.values() {
-        if let Some(body) = world.get_mut::<RigidBodyData>(bone) {
-            if body.motion_type == MotionType::Dynamic {
+        if let Some(body) = world.get_mut::<RigidBodyData>(bone)
+            && body.motion_type == MotionType::Dynamic {
                 body.motion_type = MotionType::Keyframed;
             }
-        }
         // Tag every bone that actually registers a collider, whatever its
         // authored motion type — a bone shipped Keyframed upstream is just as
         // self-hittable as one flipped above.

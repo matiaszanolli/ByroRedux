@@ -1506,11 +1506,10 @@ impl ConsoleCommand for ObScriptCmdCommand {
         }
         // A string-form command (`PlayBink`, …) gets its text's value first, as a script's does.
         let first_text = texts.first().cloned();
-        if !texts.is_empty() {
-            if let Some(mut stored) = world.try_resource_mut::<byroredux_scripting::obscript_more::TextArguments>() {
+        if !texts.is_empty()
+            && let Some(mut stored) = world.try_resource_mut::<byroredux_scripting::obscript_more::TextArguments>() {
                 stored.0 = texts;
             }
-        }
         let (answer, declined) = byroredux_scripting::obscript_quests::run_console_command_with_text(
             world,
             caller,

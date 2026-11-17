@@ -283,11 +283,10 @@ pub(crate) fn sync_body_after_load(world: &World, before: Option<(bool, u32)>) {
         let (Some(player), Some(race)) = (crate::components::PlayerEntity::get(world), record_race_form_id(world)) else {
             return;
         };
-        if let Some(mut backgrounds) = world.query_mut::<byroredux_core::character::Background>() {
-            if let Some(background) = backgrounds.get_mut(player) {
+        if let Some(mut backgrounds) = world.query_mut::<byroredux_core::character::Background>()
+            && let Some(background) = backgrounds.get_mut(player) {
                 background.race_form_id = race;
             }
-        }
     }
 }
 
@@ -641,11 +640,10 @@ pub(crate) fn player_body_facing_system(world: &World, _dt: f32) {
     };
     let yaw = input.yaw;
     drop(input);
-    if let Some(mut tq) = world.query_mut::<Transform>() {
-        if let Some(transform) = tq.get_mut(root) {
+    if let Some(mut tq) = world.query_mut::<Transform>()
+        && let Some(transform) = tq.get_mut(root) {
             transform.rotation = Quat::from_rotation_y(yaw + BODY_MODEL_FORWARD_HALF_TURN);
         }
-    }
 }
 
 /// `player.body` diagnostics — the smoke gate's one-stop summary of the

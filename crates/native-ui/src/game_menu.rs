@@ -864,11 +864,10 @@ mod tests {
             .shapes
             .iter()
             .find_map(|shape| {
-                if let egui::Shape::Text(text) = &shape.shape {
-                    if text.galley.text() == "Use" {
+                if let egui::Shape::Text(text) = &shape.shape
+                    && text.galley.text() == "Use" {
                         return Some(text.pos + text.galley.size() * 0.5);
                     }
-                }
                 None
             })
             .expect("Use button must be visible");
@@ -1007,11 +1006,10 @@ mod tests {
             .shapes
             .iter()
             .find_map(|shape| {
-                if let egui::Shape::Text(text) = &shape.shape {
-                    if text.galley.text() == "Rumors" {
+                if let egui::Shape::Text(text) = &shape.shape
+                    && text.galley.text() == "Rumors" {
                         return Some(text.pos + text.galley.size() * 0.5);
                     }
-                }
                 None
             })
             .expect("the owned-topic list must render every entry");
@@ -1078,11 +1076,10 @@ mod tests {
             .shapes
             .iter()
             .find_map(|shape| {
-                if let egui::Shape::Text(text) = &shape.shape {
-                    if text.galley.text().starts_with("Close") {
+                if let egui::Shape::Text(text) = &shape.shape
+                    && text.galley.text().starts_with("Close") {
                         return Some(text.pos + text.galley.size() * 0.5);
                     }
-                }
                 None
             })
             .expect("the Close button must be visible");

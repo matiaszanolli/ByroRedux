@@ -821,15 +821,14 @@ pub(crate) fn apply_show_sky_interior_climate(
         )
     } else {
         if show_sky {
-            if let Some(climate_id) = climate_id {
-                if let Some(climate) = index.climates.get(&climate_id) {
+            if let Some(climate_id) = climate_id
+                && let Some(climate) = index.climates.get(&climate_id) {
                     log::warn!(
                         "Show-Sky interior '{}' climate {:08X} has no default weather — keeping the current sky",
                         cell.editor_id,
                         climate.form_id,
                     );
                 }
-            }
             if let Some(region) = cell.sky_region {
                 log::warn!(
                     "Show-Sky interior '{}' names region {:08X} with no usable Weather table — keeping the current sky",
@@ -951,11 +950,10 @@ pub(crate) fn apply_cell_weather(
     if next.climate == applied.climate && next.weather == applied.weather {
         // The same weather by a different record: only the diagnostic changes.
         if next.source != applied.source {
-            if let Some(mut installed) = world.try_resource_mut::<InstalledOutdoorEnvironment>() {
-                if installed.forced_weather.is_none() {
+            if let Some(mut installed) = world.try_resource_mut::<InstalledOutdoorEnvironment>()
+                && installed.forced_weather.is_none() {
                     installed.source = next.source;
                 }
-            }
             applied.source = next.source;
         }
         return false;
@@ -1428,8 +1426,8 @@ pub(crate) fn stream_initial_radius(
             state.persistent_apply = Some(job);
         }
     }
-    if mode == ExteriorBootstrapMode::FullRadius {
-        if let Some(job) = state.persistent_apply.take() {
+    if mode == ExteriorBootstrapMode::FullRadius
+        && let Some(job) = state.persistent_apply.take() {
             let wctx = state.wctx.clone();
             let mut budget = crate::cell_loader::FrameTimeBudget::unlimited();
             match job.advance(
@@ -1446,7 +1444,6 @@ pub(crate) fn stream_initial_radius(
                 }
             }
         }
-    }
 
     let deltas = streaming::compute_streaming_deltas(
         &state.loaded,
@@ -1492,11 +1489,9 @@ pub(crate) fn stream_initial_radius(
             coord,
             center: Some(cell_center),
         } = consume_streaming_payload(world, ctx, state, payload)
-        {
-            if coord == center_coord {
+            && coord == center_coord {
                 center = cell_center;
             }
-        }
     }
     if mode == ExteriorBootstrapMode::ForegroundFirst && !state.pending.is_empty() {
         log::info!(

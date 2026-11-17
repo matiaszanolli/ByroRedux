@@ -582,11 +582,10 @@ impl ConsoleCommand for InputLookCommand {
             .is_none_or(|mode| *mode != crate::systems::PlayerMode::Character);
         if fly_mode {
             let camera = world.try_resource::<ActiveCamera>().map(|active| active.0);
-            if let (Some(camera), Some(mut tq)) = (camera, world.query_mut::<Transform>()) {
-                if let Some(transform) = tq.get_mut(camera) {
+            if let (Some(camera), Some(mut tq)) = (camera, world.query_mut::<Transform>())
+                && let Some(transform) = tq.get_mut(camera) {
                     transform.rotation = crate::systems::camera_look_rotation(yaw, pitch);
                 }
-            }
         }
         CommandOutput::line(format!(
             "input.look: yaw={:.1}° pitch={:.1}°",

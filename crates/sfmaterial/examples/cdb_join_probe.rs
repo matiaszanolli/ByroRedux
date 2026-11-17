@@ -475,8 +475,8 @@ fn main() {
         use std::collections::BTreeMap;
         let tex_id = class_ids.get("BSMaterial::MRTextureFile").copied();
         let mut by_index: BTreeMap<u64, BTreeMap<String, u64>> = BTreeMap::new();
-        if let Some(tid) = tex_id {
-            if let Some(recs) = captured.get(&tid) {
+        if let Some(tid) = tex_id
+            && let Some(recs) = captured.get(&tid) {
                 for (pos, leaves) in recs {
                     let (_obj, _ty, index) = idx.components[*pos as usize - 2];
                     let file = leaves.iter().find_map(|(n, l)| match (n.as_str(), l) {
@@ -494,7 +494,6 @@ fn main() {
                         .or_insert(0) += 1;
                 }
             }
-        }
         println!("\n== MRTextureFile Index → top filename suffixes ==");
         for (index, suffixes) in &by_index {
             let mut top: Vec<(u64, &String)> =
@@ -514,8 +513,8 @@ fn main() {
     {
         let fid = class_ids.get("BSMaterial::MaterialParamFloat").copied();
         let mut by_index: BTreeMap<u64, (u64, f32, f32, f64)> = BTreeMap::new();
-        if let Some(fid) = fid {
-            if let Some(recs) = captured.get(&fid) {
+        if let Some(fid) = fid
+            && let Some(recs) = captured.get(&fid) {
                 for (pos, leaves) in recs {
                     let (_obj, _ty, index) = idx.components[*pos as usize - 2];
                     let val = leaves.iter().find_map(|(n, l)| match (n.as_str(), l) {
@@ -530,7 +529,6 @@ fn main() {
                     e.3 += val as f64;
                 }
             }
-        }
         println!("\n== MaterialParamFloat Index → stats ==");
         for (index, (n, min, max, sum)) in &by_index {
             println!(
@@ -544,15 +542,14 @@ fn main() {
     {
         let tid = class_ids.get("BSMaterial::TextureReplacement").copied();
         let mut shapes: BTreeMap<String, u64> = BTreeMap::new();
-        if let Some(tid) = tid {
-            if let Some(recs) = captured.get(&tid) {
+        if let Some(tid) = tid
+            && let Some(recs) = captured.get(&tid) {
                 for (_pos, leaves) in recs {
                     let names: Vec<String> =
                         leaves.iter().map(|(n, _)| n.clone()).collect();
                     *shapes.entry(names.join(",")).or_insert(0) += 1;
                 }
             }
-        }
         println!("\n== TextureReplacement field shapes ==");
         for (shape, n) in &shapes {
             println!("   {n:>6} × {shape}");
@@ -563,14 +560,13 @@ fn main() {
     {
         let bid = class_ids.get("BSMaterial::ParamBool").copied();
         let mut by_index: BTreeMap<u64, u64> = BTreeMap::new();
-        if let Some(bid) = bid {
-            if let Some(recs) = captured.get(&bid) {
+        if let Some(bid) = bid
+            && let Some(recs) = captured.get(&bid) {
                 for (pos, _leaves) in recs {
                     let (_obj, _ty, index) = idx.components[*pos as usize - 2];
                     *by_index.entry(index).or_insert(0) += 1;
                 }
             }
-        }
         println!("\n== ParamBool Index → count ==");
         for (index, n) in &by_index {
             println!("   bool {index}: {n}");
@@ -671,22 +667,18 @@ fn walk_object(
         let sid = stream_classes.get(stream_pos).copied().unwrap_or(u16::MAX);
         let class = class_names.get(sid as usize).cloned().unwrap_or_default();
         println!("{pad}[{stream_pos}] {class} (Type {ty}, Index {index})");
-        if let Some(id) = class_names.iter().position(|n| *n == class) {
-            if let Some(recs) = captured.get(&(id as u16)) {
-                if let Some((_pos, leaves)) = recs.iter().find(|(p, _)| *p as usize == stream_pos) {
+        if let Some(id) = class_names.iter().position(|n| *n == class)
+            && let Some(recs) = captured.get(&(id as u16))
+                && let Some((_pos, leaves)) = recs.iter().find(|(p, _)| *p as usize == stream_pos) {
                     for (n, leaf) in leaves.iter().take(14) {
                         println!("{pad}    {n} = {leaf:?}");
-                        if n == ".ID.Value" {
-                            if let Leaf::U(v) = leaf {
-                                if *v != 0 {
+                        if n == ".ID.Value"
+                            && let Leaf::U(v) = leaf
+                                && *v != 0 {
                                     child_refs.push(*v);
                                 }
-                            }
-                        }
                     }
                 }
-            }
-        }
     }
     if rows.len() > 40 {
         println!("{pad}… ({} components total)", rows.len());
@@ -732,15 +724,13 @@ fn print_object_components(
         let class = class_names.get(sid as usize).cloned().unwrap_or_default();
         println!("{pad}[{stream_pos}] {class} (Type {ty}, Index {index})");
         // Leaves live in `captured` only for needed classes; print what's there.
-        if let Some(id) = class_names.iter().position(|n| *n == class) {
-            if let Some(recs) = captured.get(&(id as u16)) {
-                if let Some((_pos, leaves)) = recs.iter().find(|(p, _)| *p as usize == stream_pos) {
+        if let Some(id) = class_names.iter().position(|n| *n == class)
+            && let Some(recs) = captured.get(&(id as u16))
+                && let Some((_pos, leaves)) = recs.iter().find(|(p, _)| *p as usize == stream_pos) {
                     for (n, leaf) in leaves.iter().take(12) {
                         println!("{pad}    {n} = {leaf:?}");
                     }
                 }
-            }
-        }
     }
     if rows.len() > 24 {
         println!("{pad}… ({} components total)", rows.len());

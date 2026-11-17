@@ -336,13 +336,11 @@ mod tests {
         let (script, errs) = parse_script(src).expect("parses");
         assert!(errs.is_empty(), "{errs:?}");
         for item in &script.body {
-            if let ScriptItem::Event(e) = &item.node {
-                if let Some(stmt) = e.body.first() {
-                    if let Stmt::If { condition, .. } = &stmt.node {
+            if let ScriptItem::Event(e) = &item.node
+                && let Some(stmt) = e.body.first()
+                    && let Stmt::If { condition, .. } = &stmt.node {
                         return condition.node.clone();
                     }
-                }
-            }
         }
         panic!("no If condition found");
     }

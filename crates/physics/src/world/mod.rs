@@ -840,12 +840,11 @@ impl PhysicsWorld {
             }
         }
         for handle in [a, b] {
-            if let Some(body) = self.bodies.get(handle) {
-                if body.is_dynamic() {
+            if let Some(body) = self.bodies.get(handle)
+                && body.is_dynamic() {
                     let p = body.translation();
                     return Some(Vec3::new(p.x, p.y, p.z));
                 }
-            }
         }
         let pa = self.bodies.get(a)?.translation();
         let pb = self.bodies.get(b)?.translation();
@@ -977,8 +976,8 @@ impl PhysicsWorld {
         force: byroredux_core::math::Vec3,
         wake_up: bool,
     ) -> bool {
-        if let Some(b) = self.bodies.get_mut(handle) {
-            if b.body_type() == RigidBodyType::Dynamic {
+        if let Some(b) = self.bodies.get_mut(handle)
+            && b.body_type() == RigidBodyType::Dynamic {
                 b.add_force(force, wake_up);
                 if wake_up {
                     self.forget_spawn_sleep(handle);
@@ -986,7 +985,6 @@ impl PhysicsWorld {
                 }
                 return true;
             }
-        }
         false
     }
 
@@ -1001,8 +999,8 @@ impl PhysicsWorld {
         torque: byroredux_core::math::Vec3,
         wake_up: bool,
     ) -> bool {
-        if let Some(b) = self.bodies.get_mut(handle) {
-            if b.body_type() == RigidBodyType::Dynamic {
+        if let Some(b) = self.bodies.get_mut(handle)
+            && b.body_type() == RigidBodyType::Dynamic {
                 b.add_torque(torque, wake_up);
                 if wake_up {
                     self.forget_spawn_sleep(handle);
@@ -1010,7 +1008,6 @@ impl PhysicsWorld {
                 }
                 return true;
             }
-        }
         false
     }
 
@@ -1166,11 +1163,10 @@ impl PhysicsWorld {
             if lin > 0.0 {
                 self.add_force(handle, force, false);
             }
-            if ang > 0.0 {
-                if let Some(b) = self.bodies.get_mut(handle) {
+            if ang > 0.0
+                && let Some(b) = self.bodies.get_mut(handle) {
                     b.add_torque(torque, false);
                 }
-            }
         }
     }
 
@@ -1210,8 +1206,8 @@ impl PhysicsWorld {
             return false;
         }
         let is_link = self.is_multibody_link(handle);
-        if let Some(b) = self.bodies.get_mut(handle) {
-            if b.body_type() == RigidBodyType::Dynamic {
+        if let Some(b) = self.bodies.get_mut(handle)
+            && b.body_type() == RigidBodyType::Dynamic {
                 if is_link {
                     // A sleeping island would not integrate the queued force.
                     b.wake_up(true);
@@ -1223,7 +1219,6 @@ impl PhysicsWorld {
                 self.wake();
                 return true;
             }
-        }
         false
     }
 

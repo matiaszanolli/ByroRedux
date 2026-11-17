@@ -528,16 +528,14 @@ impl MaterialIndex {
                 out.has_opacity = *opacity;
             }
         }
-        if let Some(glass) = self.effect.get(&obj) {
-            if out.is_glass.is_none() {
+        if let Some(glass) = self.effect.get(&obj)
+            && out.is_glass.is_none() {
                 out.is_glass = *glass;
             }
-        }
-        if let Some(blend) = self.effect_blend.get(&obj) {
-            if out.blending_mode.is_none() {
+        if let Some(blend) = self.effect_blend.get(&obj)
+            && out.blending_mode.is_none() {
                 out.blending_mode = blend.clone();
             }
-        }
         if let Some(emissive) = self.emissive.get(&obj) {
             if out.emissive_enabled.is_none() {
                 out.emissive_enabled = emissive.0;

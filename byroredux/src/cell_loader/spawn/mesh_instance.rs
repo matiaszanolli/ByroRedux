@@ -112,8 +112,8 @@ pub(super) fn resolve_mesh_paths_with_pre_merge(
             // remap LUT at. Later-wins with the entry order, like the
             // path itself.
             let mut mswp_remap_row: Option<f32> = None;
-            if let Some(refr_ov) = ov {
-                if !refr_ov.material_swaps.is_empty() {
+            if let Some(refr_ov) = ov
+                && !refr_ov.material_swaps.is_empty() {
                     let base_path_sym = refr_ov.material_path.or(mesh.material.material_path);
                     if let Some(current) = resolve_to_owned(&pool, base_path_sym) {
                         let mut swapped = current.clone();
@@ -165,7 +165,6 @@ pub(super) fn resolve_mesh_paths_with_pre_merge(
                         }
                     }
                 }
-            }
             let ov = shape_ov.as_ref().or(ov);
 
             // #4290 — a material swap replaces the whole material, not just
@@ -965,8 +964,8 @@ pub(super) fn prepare_mesh_upload_range(
     }
 
     for (alias, representative) in content_aliases {
-        if let PreparedMeshUpload::Ready { handle, .. } = prepared[representative] {
-            if let Some(handle) = ctx
+        if let PreparedMeshUpload::Ready { handle, .. } = prepared[representative]
+            && let Some(handle) = ctx
                 .mesh_registry
                 .acquire_mesh_alias(handle, pc.mesh_cache_key.map(|key| (key, alias as u32)))
             {
@@ -975,7 +974,6 @@ pub(super) fn prepare_mesh_upload_range(
                     fresh_for_rt: false,
                 };
             }
-        }
     }
     resolve_shared_geometry(ctx, pc, &shared, &mut prepared);
     prepared
@@ -1329,8 +1327,8 @@ pub(super) fn spawn_mesh_instance(
     // light-bulb meshes (Prospector Saloon) rendered dark even
     // though both the NIF placeholder and the ESM LIGH record
     // agreed there should be a light. Track real spawns instead.
-    if let Some(ld) = light_data {
-        if spawned_nif_lights == 0 && count == 0 {
+    if let Some(ld) = light_data
+        && spawned_nif_lights == 0 && count == 0 {
             // The light belongs at the model's `AttachLight` node, not at
             // its base: `barrel02firelight.nif` authors it 102 units above
             // the REFR, which sits on the floor. Placing the light at the
@@ -1391,7 +1389,6 @@ pub(super) fn spawn_mesh_instance(
                 light_animation_flags,
             );
         }
-    }
     true
 }
 

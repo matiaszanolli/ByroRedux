@@ -82,11 +82,10 @@ pub(super) fn dispatch_misc_stub_group(
                 index.complex_scene_object = Some(object);
             }
             // #6870 — FO3 / FNV keep the five default music objects in `DATA` entries 9 to 13.
-            if game == GameKind::Fallout3NV {
-                if let Some(music) = parse_default_music(subs, &remap) {
+            if game == GameKind::Fallout3NV
+                && let Some(music) = parse_default_music(subs, &remap) {
                     index.default_music = Some(music);
                 }
-            }
             index
                 .default_objects
                 .insert(fid, parse_minimal_esm_record(fid, subs));

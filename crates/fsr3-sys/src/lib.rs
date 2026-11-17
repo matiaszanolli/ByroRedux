@@ -84,7 +84,7 @@ struct RawDispatchDesc {
     depth_inverted: bool,
 }
 
-extern "C" {
+unsafe extern "C" {
     fn byro_fsr3_query_version(out_version: *mut RawVersion) -> u32;
     #[cfg(test)]
     fn byro_fsr3_abi_layout(out_layout: *mut usize);

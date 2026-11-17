@@ -2,6 +2,7 @@
 name = "byroredux"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 default-run = "byroredux"
 
 [features]
@@ -103,3 +104,7 @@ semver = { workspace = true }
 # Dev-scoped, so no release build compiles it. Already in Cargo.lock as a
 # transitive dependency of the proc-macro crates.
 syn = { version = "2", features = ["full", "visit"] }
+
+# Contains `unsafe`, so it does not inherit the workspace `unsafe_code = "forbid"`.
+[lints.rust]
+unsafe_code = "allow"

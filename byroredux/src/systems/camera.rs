@@ -109,24 +109,22 @@ pub(crate) fn fly_camera_system(world: &World, dt: f32) {
         // Always update rotation on the Transform — Rapier Phase 4 only
         // writes translation/rotation for dynamic bodies, but we want the
         // rotation to reflect input instantly.
-        if let Some(mut tq) = world.query_mut::<Transform>() {
-            if let Some(transform) = tq.get_mut(cam_entity) {
+        if let Some(mut tq) = world.query_mut::<Transform>()
+            && let Some(transform) = tq.get_mut(cam_entity) {
                 transform.rotation = rotation;
             }
-        }
         // Write linear velocity into the Rapier body. `speed` from
         // InputState is already per-frame — divide out dt to get per-second.
         let velocity_per_sec = if dt > 0.0 { speed / dt } else { 0.0 };
         let v = move_world * velocity_per_sec;
         byroredux_physics::set_linear_velocity(world, cam_entity, v);
-    } else if let Some(mut tq) = world.query_mut::<Transform>() {
-        if let Some(transform) = tq.get_mut(cam_entity) {
+    } else if let Some(mut tq) = world.query_mut::<Transform>()
+        && let Some(transform) = tq.get_mut(cam_entity) {
             transform.rotation = rotation;
             if move_world != Vec3::ZERO {
                 transform.translation += move_world * speed;
             }
         }
-    }
 
     // The fly-camera system runs after the normal transform-propagation
     // phase.  Its local Transform therefore cannot wait until next frame to
@@ -137,11 +135,10 @@ pub(crate) fn fly_camera_system(world: &World, dt: f32) {
     let local_pose = world
         .query::<Transform>()
         .and_then(|transforms| transforms.get(cam_entity).copied());
-    if let (Some(local), Some(mut globals)) = (local_pose, world.query_mut::<GlobalTransform>()) {
-        if let Some(global) = globals.get_mut(cam_entity) {
+    if let (Some(local), Some(mut globals)) = (local_pose, world.query_mut::<GlobalTransform>())
+        && let Some(global) = globals.get_mut(cam_entity) {
             *global = GlobalTransform::new(local.translation, local.rotation, local.scale);
         }
-    }
 }
 
 #[cfg(test)]

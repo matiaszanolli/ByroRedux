@@ -88,16 +88,14 @@ fn parse_selector(src: &str) -> Selector<'_> {
             _ => {}
         }
     }
-    if let Some(rest) = trimmed.strip_prefix("sibling(") {
-        if let Some(name) = rest.strip_suffix(')') {
+    if let Some(rest) = trimmed.strip_prefix("sibling(")
+        && let Some(name) = rest.strip_suffix(')') {
             return Selector::Sibling(name.trim());
         }
-    }
-    if let Some(rest) = trimmed.strip_prefix("child(") {
-        if let Some(name) = rest.strip_suffix(')') {
+    if let Some(rest) = trimmed.strip_prefix("child(")
+        && let Some(name) = rest.strip_suffix(')') {
             return Selector::Child(name.trim());
         }
-    }
     // `screen`/`strings` also appear without parens in some menus.
     match trimmed {
         "screen" => Selector::Pseudo("screen"),
@@ -185,12 +183,11 @@ impl<'a> EvalState<'a> {
             return v.clone();
         }
         // Engine override wins over anything authored.
-        if let Some(owner) = self.doc.tiles[tile].name.as_deref() {
-            if let Some(v) = self.overrides.get(&(owner.to_lowercase(), key.clone())) {
+        if let Some(owner) = self.doc.tiles[tile].name.as_deref()
+            && let Some(v) = self.overrides.get(&(owner.to_lowercase(), key.clone())) {
                 self.memo.insert((tile, key), v.clone());
                 return v.clone();
             }
-        }
         if let Some(&(width, height)) = self.text_sizes.get(&tile) {
             let measured = match key.as_str() {
                 "width" => Some(width),
@@ -349,11 +346,10 @@ impl<'a> EvalState<'a> {
         use OpKind::*;
         // String flow: `copy` passes strings through untouched (region
         // text, filenames). Everything else coerces to numbers.
-        if matches!(kind, Copy) {
-            if let Scalar::Str(_) = arg {
+        if matches!(kind, Copy)
+            && let Scalar::Str(_) = arg {
                 return arg;
             }
-        }
         let w = working.as_ref().map(|s| s.as_num()).unwrap_or(0.0);
         let a = arg.as_num();
         let truthy_2 = |b: bool| Scalar::Num(if b { 2.0 } else { 0.0 });

@@ -858,11 +858,10 @@ pub(crate) fn vats_queue_part(
         .try_resource::<VatsState>()
         .map_or(0.0, |vats| vats.ap_reserved);
     let needed = reserved + part.ap_cost;
-    if let Some((_, available)) = player_ap(world) {
-        if exceeds_ap(needed, available) {
+    if let Some((_, available)) = player_ap(world)
+        && exceeds_ap(needed, available) {
             return Err(VatsQueueRefusal::NotEnoughAp { needed, available });
         }
-    }
     if let Some(mut vats) = world.try_resource_mut::<VatsState>() {
         vats.ap_reserved = needed;
         vats.queue.push(part);
@@ -894,16 +893,14 @@ pub(crate) fn vats_confirm(world: &World) -> bool {
     // up, but the pool is re-read here so a stale or hand-built
     // reservation can never overdraw it.
     let ap = player_ap(world);
-    if let Some((_, available)) = ap {
-        if exceeds_ap(reserved, available) {
+    if let Some((_, available)) = ap
+        && exceeds_ap(reserved, available) {
             return false;
         }
-    }
-    if let (Some((ap_avif, _)), Some(mut avs_q)) = (ap, world.query_mut::<ActorValues>()) {
-        if let Some(avs) = avs_q.get_mut(player) {
+    if let (Some((ap_avif, _)), Some(mut avs_q)) = (ap, world.query_mut::<ActorValues>())
+        && let Some(avs) = avs_q.get_mut(player) {
             avs.apply_damage(ap_avif, reserved.max(0.0));
         }
-    }
 
     // Execute: die roll per shot, then the combat funnel. The damage is the player's resolved attack damage ×
     // the weapon's authored VATS damage multiplier × the struck part's BPTD damage multiplier (VATS-LIMB-003);
@@ -1026,11 +1023,10 @@ pub(crate) fn vats_sequence_end_system(world: &World, _dt: f32) {
     let Some((ap_avif, _)) = player_ap(world) else {
         return;
     };
-    if let Some(mut avs_q) = world.query_mut::<ActorValues>() {
-        if let Some(avs) = avs_q.get_mut(player) {
+    if let Some(mut avs_q) = world.query_mut::<ActorValues>()
+        && let Some(avs) = avs_q.get_mut(player) {
             avs.restore(ap_avif, reward);
         }
-    }
     log::info!("VATS: a kill restored {reward} action points");
 }
 

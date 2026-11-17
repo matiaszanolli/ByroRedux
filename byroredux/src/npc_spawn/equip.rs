@@ -253,10 +253,10 @@ pub(super) fn build_npc_equip_state<'a>(
     // templated actor wears its terminal's skin, and 442 vanilla
     // Skyrim actors (Alduin, every Draugr variant skin, the Falmer
     // variants…) get their authored body instead of the race default.
-    if let Some(race) = index.races.get(&race_form_id) {
-        if let Some(skin_fid) = resolved.r#traits.worn_skin.or(race.default_skin) {
-            if let Some(item) = index.items.get(&skin_fid) {
-                if let ItemKind::Armor { biped_flags, .. } = item.kind {
+    if let Some(race) = index.races.get(&race_form_id)
+        && let Some(skin_fid) = resolved.r#traits.worn_skin.or(race.default_skin)
+            && let Some(item) = index.items.get(&skin_fid)
+                && let ItemKind::Armor { biped_flags, .. } = item.kind {
                     race_skin_mask = Some(biped_flags);
                     // #3357 — the race skin is the multi-ARMA case: its
                     // BOD2 covers Head|Body|Hands|Feet and three separate
@@ -281,9 +281,6 @@ pub(super) fn build_npc_equip_state<'a>(
                         });
                     }
                 }
-            }
-        }
-    }
 
     // Default outfit (OTFT.items) → expand each entry through the
     // LVLI dispatcher. Skyrim+ NPCs typically reference leveled
@@ -296,8 +293,8 @@ pub(super) fn build_npc_equip_state<'a>(
     // or an LVLN-resolved shell that lost its chain — dressed from the
     // terminal record instead. `npc` (the shell) remains the reader of
     // identity fields only.
-    if let Some(otft_fid) = resolved.inventory.default_outfit {
-        if let Some(otft) = index.outfits.get(&otft_fid) {
+    if let Some(otft_fid) = resolved.inventory.default_outfit
+        && let Some(otft) = index.outfits.get(&otft_fid) {
             for &fid in &otft.items {
                 resolved_buf.clear();
                 byroredux_plugin::equip::expand_leveled_form_id(
@@ -313,7 +310,6 @@ pub(super) fn build_npc_equip_state<'a>(
                 }));
             }
         }
-    }
 
     // CNTO inventory entries, from the resolved "Use Inventory" terminal
     // (#4457; the TPLT walk itself is `ResolvedNpc::resolve`'s). #1658 —

@@ -313,11 +313,10 @@ pub fn has_effect(world: &World, target: EntityId, mgef: u32) -> bool {
 }
 
 fn change_value(world: &World, target: EntityId, change: impl FnOnce(&mut ActorValues)) {
-    if let Some(mut values) = world.query_mut::<ActorValues>() {
-        if let Some(values) = values.get_mut(target) {
+    if let Some(mut values) = world.query_mut::<ActorValues>()
+        && let Some(values) = values.get_mut(target) {
             change(values);
         }
-    }
 }
 
 /// Run one block of an effect script on `target`, keeping the effect's own locals.
@@ -450,8 +449,8 @@ pub fn magic_effect_system(world: &World, dt: f32) {
                 });
             }
             // Write back — unless a script changed the list under us (a Dispel), which wins.
-            if let Some(mut active) = world.query_mut::<ActiveMagicEffects>() {
-                if let Some(list) = active.get_mut(target) {
+            if let Some(mut active) = world.query_mut::<ActiveMagicEffects>()
+                && let Some(list) = active.get_mut(target) {
                     let same = list.0.get(index).is_some_and(|current| *current == original);
                     if same {
                         if finished {
@@ -461,14 +460,12 @@ pub fn magic_effect_system(world: &World, dt: f32) {
                         list.0[index] = effect;
                     }
                 }
-            }
             index += 1;
         }
-        if let Some(mut active) = world.query_mut::<ActiveMagicEffects>() {
-            if active.get(target).is_some_and(|list| list.0.is_empty()) {
+        if let Some(mut active) = world.query_mut::<ActiveMagicEffects>()
+            && active.get(target).is_some_and(|list| list.0.is_empty()) {
                 active.remove(target);
             }
-        }
     }
 }
 

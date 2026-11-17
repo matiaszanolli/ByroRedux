@@ -404,12 +404,11 @@ pub fn reposition_camera(world: &mut byroredux_core::ecs::World, dest_pos: Vec3,
     if let Some(active) = world.try_resource::<byroredux_core::ecs::ActiveCamera>() {
         let cam_entity = active.0;
         drop(active);
-        if let Some(mut tq) = world.query_mut::<byroredux_core::ecs::Transform>() {
-            if let Some(transform) = tq.get_mut(cam_entity) {
+        if let Some(mut tq) = world.query_mut::<byroredux_core::ecs::Transform>()
+            && let Some(transform) = tq.get_mut(cam_entity) {
                 transform.translation = dest_pos;
                 transform.rotation = dest_rot;
             }
-        }
     }
 }
 

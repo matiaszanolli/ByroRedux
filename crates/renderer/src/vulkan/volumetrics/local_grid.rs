@@ -1131,14 +1131,18 @@ impl LocalGrid {
     ///
     /// `cmd` must be recording outside a render pass.
     pub(crate) unsafe fn record_publish_bricks(&self, device: &ash::Device, cmd: vk::CommandBuffer) {
-        super::memory_barrier(
-            device,
-            cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::AccessFlags::SHADER_WRITE,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
-            vk::AccessFlags::SHADER_READ,
-        );
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            super::memory_barrier(
+                device,
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::AccessFlags::SHADER_WRITE,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::AccessFlags::SHADER_READ,
+            );
+        }
     }
 
     /// Barriers publishing this frame's compute writes to composite's fragment
@@ -1210,36 +1214,36 @@ impl LocalGrid {
         inject_set: vk::DescriptorSet,
         mut timers: Option<&mut super::super::gpu_timers::GpuPerFrameTimers>,
     ) {
-        // Zero this slot's occupancy bricks; the sim only ever sets them.
-        // SAFETY: caller contract — `cmd` is recording outside a render pass and
-        // this slot's brick buffer is idle (its last reader, composite, finished
-        // two frames ago and the all-slots fence wait has retired it).
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
         unsafe {
+            // Zero this slot's occupancy bricks; the sim only ever sets them.
+            // SAFETY: caller contract — `cmd` is recording outside a render pass and
+            // this slot's brick buffer is idle (its last reader, composite, finished
+            // two frames ago and the all-slots fence wait has retired it).
             device.cmd_fill_buffer(cmd, self.brick_buffers[frame].buffer, 0, BRICK_BUFFER_BYTES, 0);
-        }
-        super::memory_barrier(
-            device,
-            cmd,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::AccessFlags::TRANSFER_WRITE,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
-        );
-        let previous = (frame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
-        let barriers = [&self.state, &self.dynamics, &self.optical].map(|slots| {
-            [
-                image_barrier_general_read_to_write(slots[frame].image),
-                image_barrier_general_write_to_read(slots[previous].image),
-            ]
-        });
-        // SAFETY: caller contract — `cmd` is recording and the images are the
-        // pipeline's own, living in GENERAL (`initialize_layouts`). The
-        // barriers sequence this slot's last reads (two frames ago) before
-        // this write and the previous slot's write before this read; the
-        // execution dependency also keeps the compute work recorded before this
-        // bracket from overlapping it (the froxel inject is recorded after the
-        // sim and is ordered by the publish barrier below).
-        unsafe {
+            super::memory_barrier(
+                device,
+                cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::AccessFlags::TRANSFER_WRITE,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
+            );
+            let previous = (frame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
+            let barriers = [&self.state, &self.dynamics, &self.optical].map(|slots| {
+                [
+                    image_barrier_general_read_to_write(slots[frame].image),
+                    image_barrier_general_write_to_read(slots[previous].image),
+                ]
+            });
+            // SAFETY: caller contract — `cmd` is recording and the images are the
+            // pipeline's own, living in GENERAL (`initialize_layouts`). The
+            // barriers sequence this slot's last reads (two frames ago) before
+            // this write and the previous slot's write before this read; the
+            // execution dependency also keeps the compute work recorded before this
+            // bracket from overlapping it (the froxel inject is recorded after the
+            // sim and is ordered by the publish barrier below).
             device.cmd_pipeline_barrier(
                 cmd,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -1249,16 +1253,14 @@ impl LocalGrid {
                 &[],
                 barriers.as_flattened(),
             );
-        }
-        if let Some(timers) = timers.as_deref_mut() {
-            timers.cmd_start(TimerPass::VolumetricsLocalSim, device, cmd, frame);
-        }
-        let push = local_sim_push_bytes(&self.boxes);
-        let groups = LOCAL_GRID_CELLS / LOCAL_SIM_WORKGROUP;
-        // SAFETY: pipeline, layout and sets are live and compatible (set 0 is
-        // the inject layout this pipeline layout was built from); the push
-        // range matches the shader's block.
-        unsafe {
+            if let Some(timers) = timers.as_deref_mut() {
+                timers.cmd_start(TimerPass::VolumetricsLocalSim, device, cmd, frame);
+            }
+            let push = local_sim_push_bytes(&self.boxes);
+            let groups = LOCAL_GRID_CELLS / LOCAL_SIM_WORKGROUP;
+            // SAFETY: pipeline, layout and sets are live and compatible (set 0 is
+            // the inject layout this pipeline layout was built from); the push
+            // range matches the shader's block.
             device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
             device.cmd_bind_descriptor_sets(
                 cmd,
@@ -1276,18 +1278,16 @@ impl LocalGrid {
                 &push,
             );
             device.cmd_dispatch(cmd, groups, groups, groups * self.boxes.slab_count() as u32);
-        }
-        if let Some(timers) = timers {
-            timers.cmd_end(TimerPass::VolumetricsLocalSim, device, cmd, frame);
-        }
-        // The inject pass samples this frame's atlas next (hand-off).
-        let published = [
-            image_barrier_general_write_to_read(self.state[frame].image),
-            image_barrier_general_write_to_read(self.dynamics[frame].image),
-            image_barrier_general_write_to_read(self.optical[frame].image),
-        ];
-        // SAFETY: as above; the barrier only orders this dispatch's writes.
-        unsafe {
+            if let Some(timers) = timers {
+                timers.cmd_end(TimerPass::VolumetricsLocalSim, device, cmd, frame);
+            }
+            // The inject pass samples this frame's atlas next (hand-off).
+            let published = [
+                image_barrier_general_write_to_read(self.state[frame].image),
+                image_barrier_general_write_to_read(self.dynamics[frame].image),
+                image_barrier_general_write_to_read(self.optical[frame].image),
+            ];
+            // SAFETY: as above; the barrier only orders this dispatch's writes.
             device.cmd_pipeline_barrier(
                 cmd,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -1297,10 +1297,10 @@ impl LocalGrid {
                 &[],
                 &published,
             );
+            self.stats_live_mask[frame] = self.boxes.live_mask();
+            self.stats_pending[frame] = true;
+            self.dispatched_this_frame = true;
         }
-        self.stats_live_mask[frame] = self.boxes.live_mask();
-        self.stats_pending[frame] = true;
-        self.dispatched_this_frame = true;
     }
 
     /// The frame that recorded `record_sim` was submitted.

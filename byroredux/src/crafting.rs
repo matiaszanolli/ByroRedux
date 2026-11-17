@@ -405,22 +405,18 @@ fn improve_item(world: &World, player: EntityId, recipe: &Recipe, enchanted: boo
         }
     }
     // The equipped weapon follows its row when that very row was improved in place.
-    if in_place {
-        if let Some(mut equipped) = world.query_mut::<byroredux_core::ecs::components::EquippedWeapon>() {
-            if let Some(weapon) = equipped.get_mut(player) {
-                if weapon.inventory_index == InventoryIndex(plan.stack as u32) {
+    if in_place
+        && let Some(mut equipped) = world.query_mut::<byroredux_core::ecs::components::EquippedWeapon>()
+            && let Some(weapon) = equipped.get_mut(player)
+                && weapon.inventory_index == InventoryIndex(plan.stack as u32) {
                     weapon.damage += crate::smithing::weapon_bonus(plan.to) - crate::smithing::weapon_bonus(plan.from);
                 }
-            }
-        }
-    }
     let base_value = world.try_resource::<InventoryCatalog>().map_or(0, |catalog| catalog.item_value(recipe.output));
     let xp = crate::smithing::improvement_xp(base_value, plan.from, plan.to);
-    if xp > 0.0 {
-        if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingSkillAdvances>() {
+    if xp > 0.0
+        && let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingSkillAdvances>() {
             pending.0.push((SMITHING_SKILL.to_owned(), xp));
         }
-    }
     let line = format!("Improved {} to {}", item_name(world, recipe.output), crate::smithing::quality_name(plan.to));
     crate::notifications::push(world, line.clone());
     Ok(line)

@@ -173,11 +173,10 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassReco
             b"DATA" if !is_oblivion && sub.data.len() >= 16 => {
                 let mut r = SubReader::new(&sub.data);
                 for _ in 0..4 {
-                    if let Ok(f) = r.u32() {
-                        if f != 0 {
+                    if let Ok(f) = r.u32()
+                        && f != 0 {
                             record.tag_skills.push(f);
                         }
-                    }
                 }
                 // The flags word follows the four tag skills (FO3 / FNV `DATA`: tags, flags, services...).
                 record.class_flags = r.u32().ok();

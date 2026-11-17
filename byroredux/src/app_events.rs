@@ -472,8 +472,8 @@ impl App {
         // rather than folded into the `bench:` line because there
         // are five of them and each carries its own sample count;
         // an existing `bench:` extractor sees nothing new.
-        if self.groundcover.bench.is_some() {
-            if let Some(ref ctx) = self.renderer {
+        if self.groundcover.bench.is_some()
+            && let Some(ref ctx) = self.renderer {
                 if ctx.groundcover_bench_has_samples() {
                     for line in ctx.groundcover_bench_report() {
                         println!("{line}");
@@ -489,7 +489,6 @@ impl App {
                     );
                 }
             }
-        }
     }
 
     /// Drive the `--screenshot` capture across frames: queue the request on the
@@ -506,8 +505,8 @@ impl App {
         // SCREENSHOT_DEADLINE_FRAMES times before giving
         // up.
         if let Some(path) = self.capture.screenshot_path.clone() {
-            if !self.capture.screenshot_requested {
-                if let Some(bridge) = self
+            if !self.capture.screenshot_requested
+                && let Some(bridge) = self
                     .world
                     .try_resource::<byroredux_core::ecs::ScreenshotBridge>()
                 {
@@ -533,7 +532,6 @@ impl App {
                         return true; // keep running frames
                     }
                 }
-            }
 
             // Poll the result slot until the PNG arrives.
             // Owner-gated take so a debug-server screenshot
@@ -1310,8 +1308,8 @@ impl ApplicationHandler for App {
                 self.shutdown(event_loop);
             }
             WindowEvent::Resized(size) => {
-                if let Some(ref mut ctx) = self.renderer {
-                    if size.width > 0 && size.height > 0 {
+                if let Some(ref mut ctx) = self.renderer
+                    && size.width > 0 && size.height > 0 {
                         if let Err(e) = ctx.recreate_swapchain([size.width, size.height]) {
                             log::error!("Swapchain recreate failed: {e:#}");
                             event_loop.exit();
@@ -1320,14 +1318,12 @@ impl ApplicationHandler for App {
                         if let Some(active) = self.world.try_resource::<ActiveCamera>() {
                             let cam_entity = active.0;
                             drop(active);
-                            if let Some(mut q) = self.world.query_mut::<Camera>() {
-                                if let Some(cam) = q.get_mut(cam_entity) {
+                            if let Some(mut q) = self.world.query_mut::<Camera>()
+                                && let Some(cam) = q.get_mut(cam_entity) {
                                     cam.aspect = size.width as f32 / size.height as f32;
                                 }
-                            }
                         }
                     }
-                }
             }
             WindowEvent::RedrawRequested => {
                 // Phase 14 — render is now driven by `about_to_wait`,
@@ -1722,19 +1718,18 @@ impl ApplicationHandler for App {
         // persistent-cell apply in flight is no longer a reason to pause:
         // #5483 reseeded its stamp cursor per advance, so it can no
         // longer claim appearance entities belonging to another cell.)
-        if self.interior_transition.is_none() && !self.loading_screen.active() {
-            if let Some(ctx) = self.renderer.as_mut() {
+        if self.interior_transition.is_none() && !self.loading_screen.active()
+            && let Some(ctx) = self.renderer.as_mut() {
                 self.loot_appearance_loader.step(&mut self.world, ctx, &mut self.appearance_providers);
                 self.gear_import_loader.step(&mut self.world, ctx, &mut self.appearance_providers);
             }
-        }
 
         // Update window title with stats (throttled: every 16 frames ≈ 4×/sec at 60fps).
         let config_debug = self.world.resource::<EngineConfig>().debug_logging;
         if config_debug {
             let stats = self.world.resource::<DebugStats>();
-            if stats.frame_index().is_multiple_of(16) {
-                if let Some(ref win) = self.window {
+            if stats.frame_index().is_multiple_of(16)
+                && let Some(ref win) = self.window {
                     // #1258 — `{}/{}b/{}c draws` = input DrawCommands /
                     // post-merge batches / actual GPU calls.
                     win.set_title(&format!(
@@ -1744,7 +1739,6 @@ impl ApplicationHandler for App {
                         stats.draw_command_count, stats.batch_count, stats.indirect_call_count,
                     ));
                 }
-            }
         }
 
         // Phase 14 — drive rendering directly from `about_to_wait`
@@ -1772,8 +1766,8 @@ impl ApplicationHandler for App {
         // The renderer must be up (bench counts start after the first
         // real frame); a `--bench-frames N` that never renders (window
         // creation fails, etc.) does nothing here.
-        if let Some(target) = self.bench.frames_target {
-            if self.renderer.is_some() {
+        if let Some(target) = self.bench.frames_target
+            && self.renderer.is_some() {
                 // Guard: under `--bench-hold` we re-enter this branch on
                 // every `about_to_wait` tick once the bench window has
                 // closed; without the `bench.summary_printed` flag the
@@ -1851,7 +1845,6 @@ impl ApplicationHandler for App {
                     }
                 }
             }
-        }
 
         // Phase 10 — write the about_to_wait phase timings into
         // `CpuFrameTimings` so the egui Metrics panel can show

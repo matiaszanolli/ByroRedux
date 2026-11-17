@@ -368,13 +368,12 @@ fn open_conversation<'a>(
     let menu = top_level_menu(index, owned, world, npc, player, None);
     // FO3 / FNV open on GREETING — the NPC's first line — followed by its
     // choices or, when it links nowhere, the default Top-level topics.
-    if index.game == byroredux_plugin::esm::reader::GameKind::Fallout3NV {
-        if let Some((greeting, info)) = generic_greeting_record(index).and_then(|greeting| {
+    if index.game == byroredux_plugin::esm::reader::GameKind::Fallout3NV
+        && let Some((greeting, info)) = generic_greeting_record(index).and_then(|greeting| {
             select_first_info(greeting, world, Some(npc), Some(player)).map(|info| (greeting, info))
         }) {
             return select_on_topic(index, greeting, info, world, npc, player, &menu);
         }
-    }
     if let Some((first, info)) = menu.first().copied() {
         return select_on_topic(index, first, info, world, npc, player, &menu);
     }
@@ -390,11 +389,10 @@ fn open_conversation<'a>(
 /// Shared by the activation path and the UI's re-selection door.
 fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record: &DialRecord) {
     // #6190 — the NPC has now spoken to the player: `GetTalkedToPC` reads this.
-    if let Some(form) = byroredux_scripting::condition::entity_global_form_id(world, npc) {
-        if let Some(mut ledger) = world.try_resource_mut::<byroredux_scripting::obscript_ledger::ObScriptLedger>() {
+    if let Some(form) = byroredux_scripting::condition::entity_global_form_id(world, npc)
+        && let Some(mut ledger) = world.try_resource_mut::<byroredux_scripting::obscript_ledger::ObScriptLedger>() {
             ledger.note_talked_to_player(form);
         }
-    }
     // The outgoing line ends before the new one begins (vanilla's OnEnd
     // ordering). One live selection (#5038) means every existing stamp IS
     // the outgoing line.

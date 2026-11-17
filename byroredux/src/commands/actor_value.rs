@@ -72,13 +72,12 @@ fn edit_av(world: &World, args: &str, cmd: &str, edit: AvEdit) -> CommandOutput 
     };
     // SAVE-4 — a key no loaded plugin owns (and local id 0) cannot be saved: `save_key` refuses it and every later
     // save fails until a reload. Refuse it at the source, with the load order that will have to name it.
-    if let Some(identity) = world.try_resource::<byroredux_scripting::LoadOrderIdentity>() {
-        if identity.pair(av).is_none_or(|pair| pair.local.0 == 0) {
+    if let Some(identity) = world.try_resource::<byroredux_scripting::LoadOrderIdentity>()
+        && identity.pair(av).is_none_or(|pair| pair.local.0 == 0) {
             return CommandOutput::error(format!(
                 "{cmd}: actor-value FormID {av:#010x} is not owned by any loaded plugin (it could not be saved)"
             ));
         }
-    }
     // `f32::from_str` accepts `nan` and `inf`; a non-finite layer serializes as JSON `null`, which makes the
     // next save unloadable (SAVE-3). The save gate refuses it too; refuse it at the source.
     let Some(value) = val_tok.parse::<f32>().ok().filter(|value| value.is_finite()) else {

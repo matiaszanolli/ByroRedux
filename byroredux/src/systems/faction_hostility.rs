@@ -545,11 +545,10 @@ fn faction_hostility_system_inner(world: &World, dt: f32, scratch: &mut Hostilit
                 continue;
             }
             // An ambusher holds its fire until the enemy is in the ambush location.
-            if let Some(gate) = ambush_gates.get(&perceiver.entity) {
-                if !gate.admits(target.entity, target.sight_point, Some(target.entity) == player) {
+            if let Some(gate) = ambush_gates.get(&perceiver.entity)
+                && !gate.admits(target.entity, target.sight_point, Some(target.entity) == player) {
                     continue;
                 }
-            }
             let standing = standing(
                 &factions[perceiver.factions.clone()],
                 &factions[target.factions.clone()],
@@ -668,13 +667,12 @@ fn disengage_lost_contact(
             updates.push((entity, Some(lost)));
         }
     }
-    if !disengage.is_empty() {
-        if let Some(mut states) = world.query_mut::<AiCombatState>() {
+    if !disengage.is_empty()
+        && let Some(mut states) = world.query_mut::<AiCombatState>() {
             for entity in &disengage {
                 states.remove(*entity);
             }
         }
-    }
     if let Some(mut markers) = world.query_mut::<AmbientEngagement>() {
         for (entity, lost) in updates {
             match lost {

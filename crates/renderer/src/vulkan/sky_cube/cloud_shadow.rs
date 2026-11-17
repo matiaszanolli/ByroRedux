@@ -191,61 +191,65 @@ impl CloudShadow {
         frame: usize,
         bindless_set: vk::DescriptorSet,
     ) {
-        let image = self.maps[frame].image;
-        let to_general =
-            image_barrier_to_general_write_layers(image, vk::ImageLayout::UNDEFINED, vk::AccessFlags::empty(), 1);
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[to_general],
-        );
-        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
-        device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.layout,
-            0,
-            &[self.sets[frame], bindless_set],
-            &[],
-        );
-        device.cmd_dispatch(
-            cmd,
-            CLOUD_SHADOW_MAP_SIZE.div_ceil(WORKGROUP_X),
-            CLOUD_SHADOW_MAP_SIZE.div_ceil(WORKGROUP_Y),
-            1,
-        );
-        let to_read = image_barrier_general_to_shader_read_layers(image, 1);
-        // A fence alone does not make device writes host-visible (#2740):
-        // the readback needs its own SHADER_WRITE -> HOST_READ dependency.
-        let host_visible = vk::BufferMemoryBarrier::default()
-            .buffer(self.readbacks[frame].buffer)
-            .size(READBACK_BYTES)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::HOST_READ);
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[to_read],
-        );
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::PipelineStageFlags::HOST,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[host_visible],
-            &[],
-        );
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            let image = self.maps[frame].image;
+            let to_general =
+                image_barrier_to_general_write_layers(image, vk::ImageLayout::UNDEFINED, vk::AccessFlags::empty(), 1);
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[to_general],
+            );
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.layout,
+                0,
+                &[self.sets[frame], bindless_set],
+                &[],
+            );
+            device.cmd_dispatch(
+                cmd,
+                CLOUD_SHADOW_MAP_SIZE.div_ceil(WORKGROUP_X),
+                CLOUD_SHADOW_MAP_SIZE.div_ceil(WORKGROUP_Y),
+                1,
+            );
+            let to_read = image_barrier_general_to_shader_read_layers(image, 1);
+            // A fence alone does not make device writes host-visible (#2740):
+            // the readback needs its own SHADER_WRITE -> HOST_READ dependency.
+            let host_visible = vk::BufferMemoryBarrier::default()
+                .buffer(self.readbacks[frame].buffer)
+                .size(READBACK_BYTES)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .dst_access_mask(vk::AccessFlags::HOST_READ);
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[to_read],
+            );
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::HOST,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[host_visible],
+                &[],
+            );
+        }
     }
 
     /// The camera column's transmittance the last bake in slot `frame`
@@ -261,9 +265,11 @@ impl CloudShadow {
 
     /// Safety: no pending commands reference these handles or their descriptors.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        // SAFETY: the caller's contract (no in-flight work references the pass's pipeline or pool);
-        // `destroy_pass_objects` skips null handles and nulls what it destroys (#6371).
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
         unsafe {
+            // SAFETY: the caller's contract (no in-flight work references the pass's pipeline or pool);
+            // `destroy_pass_objects` skips null handles and nulls what it destroys (#6371).
             crate::vulkan::descriptors::destroy_pass_objects(
                 device,
                 crate::vulkan::descriptors::PassHandles {
@@ -272,15 +278,15 @@ impl CloudShadow {
                     pool: &mut self.pool,
                     set_layout: &mut self.set_layout,
                 },
-            )
-        };
-        device.destroy_sampler(self.sampler, None);
-        for mut map in self.maps.drain(..) {
-            map.destroy(device, allocator);
+            );
+            device.destroy_sampler(self.sampler, None);
+            for mut map in self.maps.drain(..) {
+                map.destroy(device, allocator);
+            }
+            for buffer in &mut self.readbacks {
+                buffer.destroy(device, allocator);
+            }
+            *self = Self::default();
         }
-        for buffer in &mut self.readbacks {
-            buffer.destroy(device, allocator);
-        }
-        *self = Self::default();
     }
 }

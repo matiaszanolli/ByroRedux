@@ -242,7 +242,7 @@ mod census {
                     let mut host = Recorder { answer, calls: HashMap::new() };
                     let mut state = VmState::default();
                     program.run_at(&block, &mut state, &mut host);
-                    for (&id, _) in host.calls.iter().filter(|(&id, _)| id & 0x8000 != 0) {
+                    for (&id, _) in host.calls.iter().filter(|&(&id, _)| id & 0x8000 != 0) {
                         *vm_declines.entry(id & 0x7fff).or_insert(0) += 1;
                     }
                 }
@@ -751,7 +751,7 @@ mod avcodes {
                 let mut found: Vec<(u16, u32)> = Vec::new();
                 if op == 0x1c {
                     let cmd = u16_at(b, st + 4).unwrap();
-                    if ids.contains(&cmd) { if let Some(c) = first_code(b, st + 8, en) { found.push((cmd, c)); } }
+                    if ids.contains(&cmd) && let Some(c) = first_code(b, st + 8, en) { found.push((cmd, c)); }
                 } else if ids.contains(&op) {
                     if let Some(c) = first_code(b, st + 4, en) { found.push((op, c)); }
                 } else if matches!(op, 0x15 | 0x16 | 0x18) {
@@ -760,9 +760,8 @@ mod avcodes {
                         if b[i] == b'X' {
                             let cmd = u16_at(b, i + 1).unwrap();
                             let len = u16_at(b, i + 3).unwrap() as usize;
-                            if ids.contains(&cmd) && i + 5 + len <= en {
-                                if let Some(c) = first_code(b, i + 5, i + 5 + len) { found.push((cmd, c)); }
-                            }
+                            if ids.contains(&cmd) && i + 5 + len <= en
+                                && let Some(c) = first_code(b, i + 5, i + 5 + len) { found.push((cmd, c)); }
                         }
                         i += 1;
                     }

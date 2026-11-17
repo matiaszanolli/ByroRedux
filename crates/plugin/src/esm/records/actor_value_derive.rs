@@ -249,13 +249,11 @@ pub fn derive_resolved_actor_values_with_player_level(
     if let (Some(ai), Some(morality)) = (
         resolved.ai_data.ai_data,
         index.actor_value_form_id("Morality"),
-    ) {
-        if let Some(responsibility) = ai.responsibility {
-            if !values.iter().any(|(id, _)| *id == morality) {
+    )
+        && let Some(responsibility) = ai.responsibility
+            && !values.iter().any(|(id, _)| *id == morality) {
                 values.push((morality, responsibility as u8 as f32));
             }
-        }
-    }
     // #4447 — the body-condition seeding base is profile data
     // (`CharacterRulesProfile::body_condition_base`: FO3/FNV = 100 per the
     // GECK Stats List, every other family = none), not a `game ==` kind
@@ -265,22 +263,20 @@ pub fn derive_resolved_actor_values_with_player_level(
     // answer. Still gated on Health landing so the "unpopulated, not zero"
     // contract holds: a derivation that produced no Health is a shell and
     // gets no conditions either.
-    if let Some(condition_base) = index.character_rules.body_condition_base() {
-        if index
+    if let Some(condition_base) = index.character_rules.body_condition_base()
+        && index
             .health_actor_value_key()
             .is_some_and(|health| values.iter().any(|&(id, _)| id == health))
         {
             // GECK Stats List: body-condition AVs start at 100, independently of
             // actor health. Damage/restoration then use the same saved AV layers.
             for name in crate::consumables::BODY_CONDITION_VALUES {
-                if let Some(id) = index.actor_value_form_id(name) {
-                    if !values.iter().any(|&(key, _)| key == id) {
+                if let Some(id) = index.actor_value_form_id(name)
+                    && !values.iter().any(|&(key, _)| key == id) {
                         values.push((id, condition_base));
                     }
-                }
             }
         }
-    }
     values
 }
 
@@ -310,11 +306,10 @@ fn derive_creature_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, 
             out.push((fid, f32::from(stats.attributes[i])));
         }
     }
-    if stats.health > 0 {
-        if let Some(fid) = index.health_actor_value_key() {
+    if stats.health > 0
+        && let Some(fid) = index.health_actor_value_key() {
             out.push((fid, f32::from(stats.health)));
         }
-    }
     out
 }
 

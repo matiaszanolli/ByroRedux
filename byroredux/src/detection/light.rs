@@ -27,11 +27,10 @@ pub(crate) fn ambient_light(world: &World) -> f32 {
 /// (`Emitter::distance_attenuation`), as luminance, clamped.
 pub(crate) fn light_level_at(world: &World, position: Vec3) -> f32 {
     let mut level = ambient_light(world);
-    if let Some(cell) = world.try_resource::<crate::components::CellLightingRes>() {
-        if !cell.is_interior {
+    if let Some(cell) = world.try_resource::<crate::components::CellLightingRes>()
+        && !cell.is_interior {
             level += luminance(cell.directional_color);
         }
-    }
     let lights: Vec<(LightSource, Vec3)> = match (world.query::<LightSource>(), world.query::<GlobalTransform>()) {
         (Some(lights), Some(transforms)) => lights
             .iter()

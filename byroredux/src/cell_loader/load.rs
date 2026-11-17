@@ -978,14 +978,13 @@ pub(crate) fn resolve_cell_lighting(
 ) -> Option<esm::cell::CellLighting> {
     if let Some(mut lit) = cell.lighting.clone() {
         let flags = lit.inheritance_flags.unwrap_or(0);
-        if flags != 0 {
-            if let Some(template) = cell
+        if flags != 0
+            && let Some(template) = cell
                 .lighting_template_form
                 .and_then(|form| index.lighting_templates.get(&form))
             {
                 inherit_lighting_fields(&mut lit, template, flags);
             }
-        }
         return Some(lit);
     }
     let template_form = cell.lighting_template_form?;

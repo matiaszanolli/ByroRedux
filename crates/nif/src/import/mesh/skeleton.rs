@@ -86,11 +86,10 @@ impl SkeletonBones {
         for i in 0..n {
             if let Some(node) = node_at(i) {
                 for child in &node.children {
-                    if let Some(ci) = child.index() {
-                        if ci < n {
+                    if let Some(ci) = child.index()
+                        && ci < n {
                             parent[ci] = i;
                         }
-                    }
                 }
             }
         }

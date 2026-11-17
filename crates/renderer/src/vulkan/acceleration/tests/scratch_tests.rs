@@ -580,7 +580,7 @@ mod tlas_scratch_shrink_tests {
              `tlas_build_failed` arm degrade to no-RT for the frame (#2915)"
         );
         assert!(
-            TLAS_RS.contains("the slot is live but its \\\n                     scratch was retired without a replacement"),
+            TLAS_RS.contains("the slot is live but its \\\n                         scratch was retired without a replacement"),
             "the replacement must explain the invariant it guards (#2915)"
         );
     }
@@ -600,7 +600,7 @@ mod tlas_scratch_shrink_tests {
     fn fresh_build_records_peak_unconditionally_of_scratch_regrow() {
         let new_scratch_close = TLAS_RS
             .find(
-                "                self.scratch_buffers[frame_index] = Some(scratch);\n            }",
+                "                    self.scratch_buffers[frame_index] = Some(scratch);\n                }",
             )
             .expect(
                 "ensure_tlas_state must still conditionally reallocate the scratch buffer \
@@ -608,7 +608,7 @@ mod tlas_scratch_shrink_tests {
             );
         let peak_write = TLAS_RS
             .find(
-                "self.tlas_scratch_peak_bytes[frame_index] = sizes\n                .build_scratch_size\n                .max(sizes.update_scratch_size);",
+                "self.tlas_scratch_peak_bytes[frame_index] = sizes\n                    .build_scratch_size\n                    .max(sizes.update_scratch_size);",
             )
             .expect(
                 "ensure_tlas_state must still record the fresh build's scratch peak — as the \

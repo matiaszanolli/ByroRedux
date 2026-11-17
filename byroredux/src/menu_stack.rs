@@ -228,16 +228,14 @@ impl App {
     fn sync_ui_extent(&mut self) {
         let Some(ctx) = self.renderer.as_mut() else { return };
         let (width, height) = ctx.swapchain_extent();
-        if let Some(manager) = self.ui.manager.as_mut() {
-            if manager.resize(width, height) {
+        if let Some(manager) = self.ui.manager.as_mut()
+            && manager.resize(width, height) {
                 log::info!("ui: {} movie(s) resized to {width}x{height}", manager.layers().len());
             }
-        }
-        if let Some(hud) = self.ui.hud.as_mut() {
-            if hud.resize(ctx, width, height) {
+        if let Some(hud) = self.ui.hud.as_mut()
+            && hud.resize(ctx, width, height) {
                 log::info!("hud: resized to {width}x{height}");
             }
-        }
     }
 
     /// Republish the registry from the surfaces (once a frame, after the modal pages), then hand
@@ -337,11 +335,10 @@ impl App {
             (TargetSurface::Movie, _) => self.open_movie_menu(&def.name, def.document.as_deref(), game),
             (_, Some(page)) => self.open_native_page(&def.name, &page),
             _ => {
-                if let Some(mut requests) = self.world.try_resource_mut::<MenuRequests>() {
-                    if !requests.absent.iter().any(|open| open.eq_ignore_ascii_case(&def.name)) {
+                if let Some(mut requests) = self.world.try_resource_mut::<MenuRequests>()
+                    && !requests.absent.iter().any(|open| open.eq_ignore_ascii_case(&def.name)) {
                         requests.absent.push(def.name.clone());
                     }
-                }
                 Ok(format!("ui.open: {} opened with no surface (absent fallback=recorded)", def.name))
             }
         }

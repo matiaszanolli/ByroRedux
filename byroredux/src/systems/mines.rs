@@ -169,11 +169,10 @@ fn land_mine_hits(world: &World) {
     } else {
         held = hits;
     }
-    if !held.is_empty() {
-        if let Some(mut pending) = world.try_resource_mut::<PendingMineHits>() {
+    if !held.is_empty()
+        && let Some(mut pending) = world.try_resource_mut::<PendingMineHits>() {
             pending.0.extend(held);
         }
-    }
 }
 
 /// The damage `damage` at `distance` from a blast with the two radii: full inside `inner`, linear to nothing at
@@ -363,11 +362,9 @@ fn detonate(world: &World, book: &HashMap<u32, MineSpec>, mine: EntityId, victim
         .get::<byroredux_scripting::SceneAliasCandidate>(mine)
         .map(|candidate| candidate.reference_form_id)
         .filter(|form| *form != 0)
-    {
-        if let Some(mut state) = world.try_resource_mut::<byroredux_scripting::ReferenceEnableState>() {
+        && let Some(mut state) = world.try_resource_mut::<byroredux_scripting::ReferenceEnableState>() {
             state.set_enabled(form, false);
         }
-    }
 }
 
 #[cfg(test)]

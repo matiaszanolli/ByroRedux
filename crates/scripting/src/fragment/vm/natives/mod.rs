@@ -153,8 +153,8 @@ impl Vm<'_> {
     pub(in crate::fragment::vm) fn object_read(&mut self, frame: &mut Frame, callee: &Expr, args: &[CallArg]) -> Run<Option<Value>> {
         // The Form natives a script calls on itself without a receiver
         // (`RegisterForAnimationEvent(Self, "Reset")`) read as `Self.<name>(...)`.
-        if let Expr::Ident(called) = callee {
-            if matches!(
+        if let Expr::Ident(called) = callee
+            && matches!(
                 called.0.to_ascii_lowercase().as_str(),
                 "registerforanimationevent" | "unregisterforanimationevent"
             ) {
@@ -164,7 +164,6 @@ impl Vm<'_> {
                 };
                 return self.object_read(frame, &on_self, args);
             }
-        }
         let Expr::MemberAccess { object, member } = callee else {
             return Ok(None);
         };
@@ -274,8 +273,8 @@ impl Vm<'_> {
             let constant = constant_name(&arg.value.node).filter(|name| self.engine_constant(name).is_some());
             // `SetMotionType(4, …)`: the raw number is the game's (see
             // [`skyrim_motion_constant`]); it passes as the constant it names.
-            if bound.is_empty() && callee_member_is(&callee, "setmotiontype") {
-                if let Some(receiver) = &bound_receiver {
+            if bound.is_empty() && callee_member_is(&callee, "setmotiontype")
+                && let Some(receiver) = &bound_receiver {
                     let raw = self.eval(frame, &arg.value.node)?;
                     let skyrim = self
                         .world
@@ -295,7 +294,6 @@ impl Vm<'_> {
                         continue;
                     }
                 }
-            }
             let value = match (constant, &bound_receiver) {
                 (Some(name), Some(receiver)) => spanned(Expr::MemberAccess {
                     object: Box::new(receiver.clone()),

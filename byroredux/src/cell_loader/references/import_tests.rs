@@ -234,11 +234,10 @@ fn vanilla_tree_icons_all_resolve() {
         if let Ok(rd) = std::fs::read_dir(&dir) {
             for entry in rd.flatten() {
                 let p = entry.path();
-                if p.extension().and_then(|e| e.to_str()) == Some("bsa") {
-                    if let Ok(a) = byroredux_bsa::BsaArchive::open(&p) {
+                if p.extension().and_then(|e| e.to_str()) == Some("bsa")
+                    && let Ok(a) = byroredux_bsa::BsaArchive::open(&p) {
                         archives.push(a);
                     }
-                }
             }
         }
         let probe = |path: &str| {
@@ -412,11 +411,10 @@ fn vanilla_tree_models_all_resolve() {
         if let Ok(rd) = std::fs::read_dir(&dir) {
             for entry in rd.flatten() {
                 let p = entry.path();
-                if p.extension().and_then(|e| e.to_str()) == Some("bsa") {
-                    if let Ok(a) = byroredux_bsa::BsaArchive::open(&p) {
+                if p.extension().and_then(|e| e.to_str()) == Some("bsa")
+                    && let Ok(a) = byroredux_bsa::BsaArchive::open(&p) {
                         archives.push(a);
                     }
-                }
             }
         }
         // The exact-key probe, matching `TextureProvider::has_mesh_exact` —

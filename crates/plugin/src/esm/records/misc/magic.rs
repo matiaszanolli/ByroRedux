@@ -735,11 +735,10 @@ pub fn parse_perk(
                     ..
                 } = prev
                 {
-                    if game == GameKind::Fallout3NV && !script_subs.is_empty() {
-                        if let PerkEntryBody::EntryPoint { details, .. } = &mut body {
+                    if game == GameKind::Fallout3NV && !script_subs.is_empty()
+                        && let PerkEntryBody::EntryPoint { details, .. } = &mut body {
                             details.script = embedded_script_at(form_id, &script_subs, 0, remap).0.map(Box::new);
                         }
-                    }
                     out.entries.push(PerkEntry {
                         rank,
                         priority,

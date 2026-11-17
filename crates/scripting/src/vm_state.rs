@@ -95,14 +95,13 @@ pub fn set_two_state_open(world: &World, entity: EntityId, open: bool) -> bool {
         changed
     };
 
-    if let Some(mut variables) = world.query_mut::<ScriptVariables>() {
-        if let Some(state) = variables.get_mut(entity) {
+    if let Some(mut variables) = world.query_mut::<ScriptVariables>()
+        && let Some(state) = variables.get_mut(entity) {
             state.set_by_name(IS_OPEN_VARIABLE, f32::from(open));
             state.set_by_name(IS_ANIMATING_VARIABLE, 0.0);
         }
-    }
-    if changed {
-        if let Some(mut transitions) = world.query_mut::<TwoStateTransitionBatch>() {
+    if changed
+        && let Some(mut transitions) = world.query_mut::<TwoStateTransitionBatch>() {
             transitions.insert(
                 entity,
                 TwoStateTransitionBatch(vec![if open {
@@ -112,7 +111,6 @@ pub fn set_two_state_open(world: &World, entity: EntityId, open: bool) -> bool {
                 }]),
             );
         }
-    }
     true
 }
 

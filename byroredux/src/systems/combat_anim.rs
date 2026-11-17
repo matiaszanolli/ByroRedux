@@ -369,8 +369,8 @@ fn combat_feedback_system_inner(world: &World, dt: f32, scratch: &mut FeedbackSc
             FeedbackSound::Impact => IMPACT_SOUND_PATH,
             FeedbackSound::DeathVoice => DEATH_VOICE_PATH,
         };
-        if play_oneshot_cached(world, path, position) {
-            if let Some(mut counts) = world.try_resource_mut::<CombatSoundRequests>() {
+        if play_oneshot_cached(world, path, position)
+            && let Some(mut counts) = world.try_resource_mut::<CombatSoundRequests>() {
                 let slot = match sound {
                     FeedbackSound::Swing => &mut counts.swing,
                     FeedbackSound::Impact => &mut counts.impact,
@@ -378,7 +378,6 @@ fn combat_feedback_system_inner(world: &World, dt: f32, scratch: &mut FeedbackSc
                 };
                 *slot = slot.saturating_add(1);
             }
-        }
     }
     scratch.sound_events = sound_events;
 }

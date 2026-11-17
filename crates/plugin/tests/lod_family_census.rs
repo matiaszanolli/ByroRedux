@@ -588,11 +588,10 @@ fn dlodsettings_descriptors_against_the_authored_quads() {
         // world -> every authored quad (x, y, level)
         let mut quads: BTreeMap<String, BTreeSet<(i32, i32, i32)>> = BTreeMap::new();
         for (hit, _, _) in &files {
-            if let (Some(world), Some(level), Some((x, y))) = (&hit.world, &hit.level, hit.cell) {
-                if let Some(level) = level.strip_prefix("level").and_then(|l| l.parse().ok()) {
+            if let (Some(world), Some(level), Some((x, y))) = (&hit.world, &hit.level, hit.cell)
+                && let Some(level) = level.strip_prefix("level").and_then(|l| l.parse().ok()) {
                     quads.entry(world.clone()).or_default().insert((x, y, level));
                 }
-            }
         }
         for (hit, file, bytes) in files.iter().filter(|(h, _, _)| h.family == LodFamily::DlodSettings) {
             assert_eq!(bytes.len(), 24, "{file}");

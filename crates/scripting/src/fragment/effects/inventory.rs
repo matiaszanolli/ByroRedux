@@ -103,8 +103,8 @@ pub fn remove_items(
     // on the NPC for the session.
     let mut unequipped: Vec<crate::EquipmentChange> = Vec::new();
     if !emptied.is_empty() {
-        if let Some(mut equipment) = world.query_mut::<EquipmentSlots>() {
-            if let Some(slots) = equipment.get_mut(source) {
+        if let Some(mut equipment) = world.query_mut::<EquipmentSlots>()
+            && let Some(slots) = equipment.get_mut(source) {
                 for index in &emptied {
                     if slots.release(*index) {
                         unequipped.push(crate::EquipmentChange {
@@ -114,25 +114,22 @@ pub fn remove_items(
                     }
                 }
             }
-        }
-        if let Some(mut weapons) = world.query_mut::<byroredux_core::ecs::components::EquippedWeapon>() {
-            if weapons
+        if let Some(mut weapons) = world.query_mut::<byroredux_core::ecs::components::EquippedWeapon>()
+            && weapons
                 .get(source)
                 .is_some_and(|weapon| emptied.contains(&weapon.inventory_index))
             {
                 weapons.remove(source);
             }
-        }
     }
-    if !freed_instances.is_empty() {
-        if let Some(mut pool) =
+    if !freed_instances.is_empty()
+        && let Some(mut pool) =
             world.try_resource_mut::<byroredux_core::ecs::resources::ItemInstancePool>()
         {
             for instance in freed_instances {
                 pool.release(instance);
             }
         }
-    }
     let transfer = |added| crate::ItemTransfer {
         item_form_id,
         count: removed,

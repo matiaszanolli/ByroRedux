@@ -438,8 +438,8 @@ impl VulkanContext {
             // the same command buffer. Skipped unless both
             // `init_egui` ran AND a frame was submitted via
             // `submit_egui_frame` this iteration.
-            if let Some(pass) = self.overlay.egui_pass.as_mut() {
-                if let Some((egui_ctx, output)) = self.overlay.egui_pending_output.take() {
+            if let Some(pass) = self.overlay.egui_pass.as_mut()
+                && let Some((egui_ctx, output)) = self.overlay.egui_pending_output.take() {
                     // Pass the queue Mutex by reference: `dispatch` locks it
                     // only around the internal `set_textures` upload, not
                     // across tessellate + cmd_draw (which just record into
@@ -459,7 +459,6 @@ impl VulkanContext {
                         log::error!("egui overlay dispatch failed: {e:#}");
                     }
                 }
-            }
 
             // Screenshot capture: copy swapchain image to staging buffer
             // if requested. Must happen after composite (image has content)
@@ -758,8 +757,8 @@ impl VulkanContext {
         // we reach this line its previous use has completed by
         // construction. Same justification used by `#504` for the
         // CPU-side scratch shrink above.
-        if let Some(accel) = self.accel_manager.as_mut() {
-            if let Some(allocator) = self.allocator.as_ref() {
+        if let Some(accel) = self.accel_manager.as_mut()
+            && let Some(allocator) = self.allocator.as_ref() {
                 let slot_to_shrink = self.current_frame;
                 unsafe {
                     // SAFETY: `accel`, `device` and `allocator` are live; the
@@ -786,7 +785,6 @@ impl VulkanContext {
                     accel.shrink_tlas_scratch_to_fit(slot_to_shrink, &self.device, allocator);
                 }
             }
-        }
 
         t.post_present_ns = post_present_t0.elapsed().as_nanos() as u64;
         if let Some(out) = timings {

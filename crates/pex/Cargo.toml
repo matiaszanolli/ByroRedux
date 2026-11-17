@@ -2,6 +2,7 @@
 name = "byroredux-pex"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 # Compiled-Papyrus (`.pex`) container reader — the vanilla-runtime script
 # format. Phase 1 of M47.2: decode the file into a structured `Pex` model
@@ -25,3 +26,7 @@ byroredux-papyrus = { workspace = true }
 # Starfield script archives and parse every `.pex`. bsa does not depend on
 # pex, so this dev-only edge introduces no cycle.
 byroredux-bsa = { workspace = true }
+
+# Contains `unsafe`, so it does not inherit the workspace `unsafe_code = "forbid"`.
+[lints.rust]
+unsafe_code = "allow"

@@ -134,39 +134,45 @@ impl SkyIrradiance {
     /// Safety: frame slot fenced; base cube bake visible to compute, command
     /// buffer recording, all owned resources live. All coefficients overwritten.
     pub unsafe fn record(&self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
-        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
-        device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.layout,
-            0,
-            &[self.sets[frame]],
-            &[],
-        );
-        device.cmd_dispatch(cmd, SKY_SH_COEFFICIENTS, 1, 1);
-        let ready = vk::BufferMemoryBarrier::default()
-            .buffer(self.buffers[frame].buffer)
-            .size(SH_BYTES)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ);
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[ready],
-            &[],
-        );
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.layout,
+                0,
+                &[self.sets[frame]],
+                &[],
+            );
+            device.cmd_dispatch(cmd, SKY_SH_COEFFICIENTS, 1, 1);
+            let ready = vk::BufferMemoryBarrier::default()
+                .buffer(self.buffers[frame].buffer)
+                .size(SH_BYTES)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ);
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[ready],
+                &[],
+            );
+        }
     }
 
     /// Safety: no pending commands reference these handles or their descriptors.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        // SAFETY: the caller's contract (no in-flight work references the pass's pipeline or pool);
-        // `destroy_pass_objects` skips null handles and nulls what it destroys (#6371).
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
         unsafe {
+            // SAFETY: the caller's contract (no in-flight work references the pass's pipeline or pool);
+            // `destroy_pass_objects` skips null handles and nulls what it destroys (#6371).
             crate::vulkan::descriptors::destroy_pass_objects(
                 device,
                 crate::vulkan::descriptors::PassHandles {
@@ -175,14 +181,14 @@ impl SkyIrradiance {
                     pool: &mut self.pool,
                     set_layout: &mut self.set_layout,
                 },
-            )
-        };
-        for view in self.views.drain(..) {
-            device.destroy_image_view(view, None);
+            );
+            for view in self.views.drain(..) {
+                device.destroy_image_view(view, None);
+            }
+            for buffer in &mut self.buffers {
+                buffer.destroy(device, allocator);
+            }
+            *self = Self::default();
         }
-        for buffer in &mut self.buffers {
-            buffer.destroy(device, allocator);
-        }
-        *self = Self::default();
     }
 }

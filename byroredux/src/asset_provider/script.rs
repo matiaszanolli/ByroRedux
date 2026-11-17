@@ -1051,8 +1051,8 @@ pub(crate) fn build_script_provider(args: &[String]) -> ScriptProvider {
     let mut provider = ScriptProvider::new();
     let mut i = 0;
     while i < args.len() {
-        if args[i] == "--scripts-bsa" {
-            if let Some(path) = args.get(i + 1) {
+        if args[i] == "--scripts-bsa"
+            && let Some(path) = args.get(i + 1) {
                 match Archive::open(path) {
                     Ok(a) => {
                         log::info!("Opened script archive: '{path}'");
@@ -1066,7 +1066,6 @@ pub(crate) fn build_script_provider(args: &[String]) -> ScriptProvider {
                 i += 2;
                 continue;
             }
-        }
         i += 1;
     }
     provider

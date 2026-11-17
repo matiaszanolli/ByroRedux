@@ -234,12 +234,11 @@ fn publish_groundcover_detail_atlas(
     // its per-texel `powf` calls) just to compare a signature against it.
     let (signature, species_count) =
         crate::render::groundcover::groundcover_detail_atlas_signature(world);
-    if let Some((handle, cached)) = *atlas_state {
-        if cached == signature {
+    if let Some((handle, cached)) = *atlas_state
+        && cached == signature {
             ctx.set_groundcover_detail_atlas(handle, species_count);
             return;
         }
-    }
     let atlas = crate::render::groundcover::build_groundcover_detail_atlas(world);
     let edge = GROUNDCOVER_DETAIL_ATLAS_EDGE;
     let height = edge * atlas.species_count.max(1);
@@ -326,11 +325,10 @@ impl App {
         // HUD fields are populated (interaction prompt, HUD settings,
         // vitals, objectives). #4612: the objective list is lent from
         // `objective_hud_cache` and handed back after the UI pass.
-        if let Some(visible) = crate::studio_host::take_overlay_request(&self.world) {
-            if let Some(ui) = self.debug_ui.as_mut() {
+        if let Some(visible) = crate::studio_host::take_overlay_request(&self.world)
+            && let Some(ui) = self.debug_ui.as_mut() {
                 ui.set_visible(visible);
             }
-        }
         self.present_modal_pages();
         // M48 Phase 1 — UI extent, the console's ui.open / ui.close, the registry.
         self.step_menus();
@@ -388,11 +386,10 @@ impl App {
         if !objective_messages.is_empty() {
             player_messages.splice(..0, objective_messages);
         }
-        if let Some(ui) = self.debug_ui.as_mut() {
-            if !player_messages.is_empty() {
+        if let Some(ui) = self.debug_ui.as_mut()
+            && !player_messages.is_empty() {
                 ui.push_player_message(player_messages.join("\n"));
             }
-        }
 
         let (egui_frame, outputs) =
             if let (Some(ref mut ui), Some(win)) = (self.debug_ui.as_mut(), self.window.as_ref()) {
@@ -932,17 +929,15 @@ impl App {
                         }
                         self.bench.frames_count += 1;
                     }
-                    if needs_recreate {
-                        if let Some(ref win) = self.window {
+                    if needs_recreate
+                        && let Some(ref win) = self.window {
                             let size = win.inner_size();
-                            if size.width > 0 && size.height > 0 {
-                                if let Err(e) = ctx.recreate_swapchain([size.width, size.height]) {
+                            if size.width > 0 && size.height > 0
+                                && let Err(e) = ctx.recreate_swapchain([size.width, size.height]) {
                                     log::error!("Swapchain recreate failed: {e:#}");
                                     event_loop.exit();
                                 }
-                            }
                         }
-                    }
                 }
                 Err(e) => {
                     log::error!("Draw failed: {e:#}");

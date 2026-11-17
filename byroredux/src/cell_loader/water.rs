@@ -834,8 +834,8 @@ fn merge_placed_water(
     if kind != watr_kind {
         material.foam_strength = kind.canonical_foam_strength();
     }
-    if let Some(reference) = reference_flow {
-        if kind.has_directional_flow() {
+    if let Some(reference) = reference_flow
+        && kind.has_directional_flow() {
             crate::env_translate::compose_flow_scrolls(
                 &mut material,
                 watr_record,
@@ -844,7 +844,6 @@ fn merge_placed_water(
                 reference.speed,
             );
         }
-    }
     let plane = WaterPlane {
         kind,
         material,
@@ -1312,12 +1311,11 @@ pub(crate) fn rebuild_lod_water_mesh(
         world.remove::<MeshHandle>(plane.entity);
         // #5339 — `water.dump` must not keep reporting the last non-empty
         // histogram for a mesh that no longer exists.
-        if let Some(mut lod) = world.query_mut::<WaterLodInfo>() {
-            if let Some(info) = lod.get_mut(plane.entity) {
+        if let Some(mut lod) = world.query_mut::<WaterLodInfo>()
+            && let Some(info) = lod.get_mut(plane.entity) {
                 info.quad_heights = [(0.0, 0); 8];
                 info.quad_height_count = 0;
             }
-        }
         log::info!("LOD water mesh emptied: no wet distant cells @ grid {player_grid:?}");
         return false;
     }
@@ -1362,13 +1360,12 @@ pub(crate) fn rebuild_lod_water_mesh(
     }
     world.insert(plane.entity, MeshHandle(new_handle));
     // Overwrites when the mesh existed and re-adds after an emptied rebuild.
-    if let Some(mut lod) = world.query_mut::<WaterLodInfo>() {
-        if let Some(info) = lod.get_mut(plane.entity) {
+    if let Some(mut lod) = world.query_mut::<WaterLodInfo>()
+        && let Some(info) = lod.get_mut(plane.entity) {
             let (heights, count) = lod_quad_heights(&height_histogram);
             info.quad_heights = heights;
             info.quad_height_count = count;
         }
-    }
     true
 }
 

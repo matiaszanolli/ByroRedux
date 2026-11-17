@@ -121,8 +121,8 @@ impl Inventory {
     /// the same as a live one. A stack carrying an `instance` is its own
     /// identity and is always appended unchanged.
     pub fn add(&mut self, stack: ItemStack) -> InventoryIndex {
-        if stack.instance.is_none() {
-            if let Some(index) = self
+        if stack.instance.is_none()
+            && let Some(index) = self
                 .items
                 .iter()
                 .position(|row| row.base_form_id == stack.base_form_id && row.instance.is_none())
@@ -131,7 +131,6 @@ impl Inventory {
                 row.count = row.count.saturating_add(stack.count);
                 return InventoryIndex(index as u32);
             }
-        }
         self.push(stack)
     }
 
@@ -304,11 +303,10 @@ impl EquipmentSlots {
             if slot_mask & (1u64 << bit) == 0 {
                 continue;
             }
-            if let Some(prev) = occupant.replace(idx) {
-                if prev != idx && !displaced.contains(&prev) {
+            if let Some(prev) = occupant.replace(idx)
+                && prev != idx && !displaced.contains(&prev) {
                     displaced.push(prev);
                 }
-            }
         }
         displaced
     }
@@ -321,11 +319,10 @@ impl EquipmentSlots {
             if slot_mask & (1u64 << bit) == 0 {
                 continue;
             }
-            if let Some(prev) = occupant.take() {
-                if !released.contains(&prev) {
+            if let Some(prev) = occupant.take()
+                && !released.contains(&prev) {
                     released.push(prev);
                 }
-            }
         }
         released
     }

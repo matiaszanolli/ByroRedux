@@ -989,55 +989,57 @@ impl VolumetricsPipeline {
         queue: &std::sync::Mutex<vk::Queue>,
         pool: vk::CommandPool,
     ) -> Result<()> {
-        // #2231 / REN-D5-03 — memoized: this function reruns on every window
-        // resize (the whole pipeline is rebuilt because the froxel grid
-        // follows render resolution), but the noise itself is resolution-
-        // independent, so regenerating it via ~10^7 hash evaluations per
-        // resize was pure waste. See `noise::cached_base_density_noise`.
-        let base_texels = cached_base_density_noise();
-        let detail_texels = cached_detail_density_noise();
-        // Staging creation lives with the generator (#4344) — SKYAL's cloud
-        // volumes upload the same texels and shared this sequence.
-        let staging = noise::create_density_noise_staging(device, allocator)?;
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            // #2231 / REN-D5-03 — memoized: this function reruns on every window
+            // resize (the whole pipeline is rebuilt because the froxel grid
+            // follows render resolution), but the noise itself is resolution-
+            // independent, so regenerating it via ~10^7 hash evaluations per
+            // resize was pure waste. See `noise::cached_base_density_noise`.
+            let base_texels = cached_base_density_noise();
+            let detail_texels = cached_detail_density_noise();
+            // Staging creation lives with the generator (#4344) — SKYAL's cloud
+            // volumes upload the same texels and shared this sequence.
+            let staging = noise::create_density_noise_staging(device, allocator)?;
 
-        let upload_result = texture::with_one_time_commands(device, queue, pool, |cmd| {
-            let full_range = descriptors::color_subresource_single_mip();
-            let base_noise = self.base_noise_volume.as_ref().expect("base noise");
-            let detail_noise = self.detail_noise_volume.as_ref().expect("detail noise");
+            let upload_result = texture::with_one_time_commands(device, queue, pool, |cmd| {
+                let full_range = descriptors::color_subresource_single_mip();
+                let base_noise = self.base_noise_volume.as_ref().expect("base noise");
+                let detail_noise = self.detail_noise_volume.as_ref().expect("detail noise");
 
-            // ── 1. Initialize writable froxels and upload-only noise images.
-            let mut barriers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT * 9 + 2);
-            for slot in self
-                .lighting_volumes
-                .iter()
-                .chain(self.integrated_volumes.iter())
-                .chain(self.emission_history_volumes.iter())
-                .chain(self.combustion_state_volumes.iter())
-                .chain(self.combustion_dynamics_volumes.iter())
-                .chain(self.combustion_optical_volumes.iter())
-                .chain(self.local_grid.iter().flat_map(|grid| grid.images()))
-            {
-                barriers.push(image_barrier_undef_to_general(slot.image).dst_access_mask(
-                    vk::AccessFlags::SHADER_READ
-                        | vk::AccessFlags::SHADER_WRITE
-                        | vk::AccessFlags::TRANSFER_WRITE,
-                ));
-            }
-            for noise in [base_noise, detail_noise] {
-                // #2413 / TD2-116 SIBLING — same shape as the three sites
-                // the issue named; `full_range` is
-                // `color_subresource_single_mip()`, which is what the helper
-                // builds for (mips=1, layers=1).
-                barriers.push(descriptors::image_barrier_undef_to_transfer_dst(
-                    noise.image,
-                    1,
-                ));
-            }
-            // SAFETY: `cmd` is recording; every image is freshly allocated
-            // and exclusively owned by this pipeline. The barriers move
-            // froxels/noise from UNDEFINED to the layouts used by the
-            // immediately following transfer commands.
-            unsafe {
+                // ── 1. Initialize writable froxels and upload-only noise images.
+                let mut barriers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT * 9 + 2);
+                for slot in self
+                    .lighting_volumes
+                    .iter()
+                    .chain(self.integrated_volumes.iter())
+                    .chain(self.emission_history_volumes.iter())
+                    .chain(self.combustion_state_volumes.iter())
+                    .chain(self.combustion_dynamics_volumes.iter())
+                    .chain(self.combustion_optical_volumes.iter())
+                    .chain(self.local_grid.iter().flat_map(|grid| grid.images()))
+                {
+                    barriers.push(image_barrier_undef_to_general(slot.image).dst_access_mask(
+                        vk::AccessFlags::SHADER_READ
+                            | vk::AccessFlags::SHADER_WRITE
+                            | vk::AccessFlags::TRANSFER_WRITE,
+                    ));
+                }
+                for noise in [base_noise, detail_noise] {
+                    // #2413 / TD2-116 SIBLING — same shape as the three sites
+                    // the issue named; `full_range` is
+                    // `color_subresource_single_mip()`, which is what the helper
+                    // builds for (mips=1, layers=1).
+                    barriers.push(descriptors::image_barrier_undef_to_transfer_dst(
+                        noise.image,
+                        1,
+                    ));
+                }
+                // SAFETY: `cmd` is recording; every image is freshly allocated
+                // and exclusively owned by this pipeline. The barriers move
+                // froxels/noise from UNDEFINED to the layouts used by the
+                // immediately following transfer commands.
                 device.cmd_pipeline_barrier(
                     cmd,
                     vk::PipelineStageFlags::NONE,
@@ -1047,24 +1049,22 @@ impl VolumetricsPipeline {
                     &[],
                     &barriers,
                 );
-            }
 
-            // ── 2. Clear froxels to the no-fog sentinel.
-            // Zero inscatter + unit transmittance is the correct "no fog"
-            // sentinel: composite `final = scene * vol.a + vol.rgb`
-            // becomes `scene * 1 + 0 = scene`.
-            let clear_value = vk::ClearColorValue {
-                float32: [0.0, 0.0, 0.0, 1.0],
-            };
-            for slot in self
-                .lighting_volumes
-                .iter()
-                .chain(self.integrated_volumes.iter())
-            {
-                // SAFETY: this freshly allocated froxel is in GENERAL, has
-                // TRANSFER_DST usage, and cannot be referenced by an in-flight
-                // frame before initialization publishes the pipeline.
-                unsafe {
+                // ── 2. Clear froxels to the no-fog sentinel.
+                // Zero inscatter + unit transmittance is the correct "no fog"
+                // sentinel: composite `final = scene * vol.a + vol.rgb`
+                // becomes `scene * 1 + 0 = scene`.
+                let clear_value = vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 1.0],
+                };
+                for slot in self
+                    .lighting_volumes
+                    .iter()
+                    .chain(self.integrated_volumes.iter())
+                {
+                    // SAFETY: this freshly allocated froxel is in GENERAL, has
+                    // TRANSFER_DST usage, and cannot be referenced by an in-flight
+                    // frame before initialization publishes the pipeline.
                     device.cmd_clear_color_image(
                         cmd,
                         slot.image,
@@ -1073,20 +1073,18 @@ impl VolumetricsPipeline {
                         &[full_range],
                     );
                 }
-            }
-            let clear_history = vk::ClearColorValue { float32: [0.0; 4] };
-            for slot in self
-                .emission_history_volumes
-                .iter()
-                .chain(self.combustion_state_volumes.iter())
-                .chain(self.combustion_dynamics_volumes.iter())
-                .chain(self.combustion_optical_volumes.iter())
-                .chain(self.local_grid.iter().flat_map(|grid| grid.images()))
-            {
-                // SAFETY: same ownership/layout/usage contract as the RGBA
-                // froxels above; R32F consumes only the first clear channel,
-                // while the RGBA16F transport fields consume all four.
-                unsafe {
+                let clear_history = vk::ClearColorValue { float32: [0.0; 4] };
+                for slot in self
+                    .emission_history_volumes
+                    .iter()
+                    .chain(self.combustion_state_volumes.iter())
+                    .chain(self.combustion_dynamics_volumes.iter())
+                    .chain(self.combustion_optical_volumes.iter())
+                    .chain(self.local_grid.iter().flat_map(|grid| grid.images()))
+                {
+                    // SAFETY: same ownership/layout/usage contract as the RGBA
+                    // froxels above; R32F consumes only the first clear channel,
+                    // while the RGBA16F transport fields consume all four.
                     device.cmd_clear_color_image(
                         cmd,
                         slot.image,
@@ -1095,43 +1093,39 @@ impl VolumetricsPipeline {
                         &[full_range],
                     );
                 }
-            }
 
-            // ── 3. Copy deterministic R8 fields into their immutable images.
-            // SAFETY: both staging buffers are live and fully populated; both
-            // destination images are in TRANSFER_DST_OPTIMAL with matching R8
-            // extents and TRANSFER_DST usage.
-            unsafe {
+                // ── 3. Copy deterministic R8 fields into their immutable images.
+                // SAFETY: both staging buffers are live and fully populated; both
+                // destination images are in TRANSFER_DST_OPTIMAL with matching R8
+                // extents and TRANSFER_DST usage.
                 noise::record_density_noise_upload(
                     device,
                     cmd,
                     &staging,
                     [base_noise.image, detail_noise.image],
                 );
-            }
 
-            // ── 4. Publish transfer writes to the compute injector.
-            memory_barrier(
-                device,
-                cmd,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::AccessFlags::TRANSFER_WRITE,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
-            );
-            // The clear above is visible to compute; fill the phase table.
-            if let Some(grid) = self.local_grid.as_ref() {
-                // SAFETY: `cmd` is recording and the table was moved to GENERAL
-                // and cleared in this same command buffer.
-                unsafe { grid.record_phase_bake(device, cmd) };
-            }
-            let noise_ready = [base_noise, detail_noise].map(|image| {
-                descriptors::image_barrier_transfer_dst_to_shader_read(image.image, 1)
-            });
-            // SAFETY: `cmd` is recording and the noise images were written by
-            // the preceding copies. This makes those writes visible and moves
-            // both images into their descriptor-declared sampled layout.
-            unsafe {
+                // ── 4. Publish transfer writes to the compute injector.
+                memory_barrier(
+                    device,
+                    cmd,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::AccessFlags::TRANSFER_WRITE,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
+                );
+                // The clear above is visible to compute; fill the phase table.
+                if let Some(grid) = self.local_grid.as_ref() {
+                    // SAFETY: `cmd` is recording and the table was moved to GENERAL
+                    // and cleared in this same command buffer.
+                    grid.record_phase_bake(device, cmd);
+                }
+                let noise_ready = [base_noise, detail_noise].map(|image| {
+                    descriptors::image_barrier_transfer_dst_to_shader_read(image.image, 1)
+                });
+                // SAFETY: `cmd` is recording and the noise images were written by
+                // the preceding copies. This makes those writes visible and moves
+                // both images into their descriptor-declared sampled layout.
                 device.cmd_pipeline_barrier(
                     cmd,
                     vk::PipelineStageFlags::TRANSFER,
@@ -1141,22 +1135,22 @@ impl VolumetricsPipeline {
                     &[],
                     &noise_ready,
                 );
-            }
 
+                Ok(())
+            });
+
+            // #5947 — a submit/wait failure may leave the copies pending; the
+            // helper leaks the staging in that case and destroys it otherwise.
+            noise::release_density_noise_staging(device, allocator, staging, &upload_result);
+            upload_result?;
+            log::info!(
+                "Volumetric density noise uploaded: {}^3 base + {}^3 detail ({} KiB R8)",
+                BASE_NOISE_SIZE,
+                DETAIL_NOISE_SIZE,
+                (base_texels.len() + detail_texels.len()) / 1024,
+            );
             Ok(())
-        });
-
-        // #5947 — a submit/wait failure may leave the copies pending; the
-        // helper leaks the staging in that case and destroys it otherwise.
-        noise::release_density_noise_staging(device, allocator, staging, &upload_result);
-        upload_result?;
-        log::info!(
-            "Volumetric density noise uploaded: {}^3 base + {}^3 detail ({} KiB R8)",
-            BASE_NOISE_SIZE,
-            DETAIL_NOISE_SIZE,
-            (base_texels.len() + detail_texels.len()) / 1024,
-        );
-        Ok(())
+        }
     }
 }
 

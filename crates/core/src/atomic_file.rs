@@ -66,11 +66,10 @@ pub fn atomic_write(
     }
 
     // SAVE-D3-01 — see the durability note above.
-    if let Some(dir) = final_path.parent() {
-        if let Ok(dir_file) = fs::File::open(dir) {
+    if let Some(dir) = final_path.parent()
+        && let Ok(dir_file) = fs::File::open(dir) {
             dir_file.sync_all()?;
         }
-    }
     Ok(())
 }
 

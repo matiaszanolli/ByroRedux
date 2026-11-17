@@ -33,13 +33,12 @@ pub(super) fn apply_lock_effect(
                 // takes effect when its cell next loads. A re-lock is not:
                 // with no live component there is no authored `XLOC` level or
                 // key to record, and inventing one would overwrite both.
-                if !*locked {
-                    if let Some(form_id) = resolve_property_form_id(vmad, target.property_name()) {
+                if !*locked
+                    && let Some(form_id) = resolve_property_form_id(vmad, target.property_name()) {
                         deferred
                             .reference_lock_changes
                             .push((form_id, DeferredLockChange::Unlocked));
                     }
-                }
                 return None;
             };
             // Through `query_mut`, not `World::insert`/`remove`: this system
@@ -121,11 +120,10 @@ pub(super) fn apply_lock_effect(
             // change. Queuing it unconditionally would let the ledger
             // re-lock a door on the next cell load that `SetLockLevel`
             // explicitly declined to lock here.
-            if let Some(recorded) = recorded {
-                if let Some(form_id) = object_form_id(vmad, world, context, target, deferred) {
+            if let Some(recorded) = recorded
+                && let Some(form_id) = object_form_id(vmad, world, context, target, deferred) {
                     deferred.reference_lock_changes.push((form_id, recorded));
                 }
-            }
             None
         }
         _ => unreachable!("apply_lock_effect received a non-lock effect"),

@@ -146,14 +146,13 @@ impl DebugServerHandle {
                 }
             }
         }
-        if let Some(handle) = self.listener.take() {
-            if let Err(panic_payload) = handle.join() {
+        if let Some(handle) = self.listener.take()
+            && let Err(panic_payload) = handle.join() {
                 log::warn!(
                     "Debug server listener thread panicked during shutdown: {:?}",
                     panic_payload
                 );
             }
-        }
     }
 }
 

@@ -611,11 +611,10 @@ impl ScaleformHudDriver {
         // answers `UiFrame::Hidden` while this is false, which stops the
         // UI quad entirely — `hud.off` really hides a Scaleform HUD (the
         // MenuXml driver's equivalent is its own early return).
-        if let Some(layer) = layer.as_deref_mut() {
-            if layer.visible() != control.visible {
+        if let Some(layer) = layer.as_deref_mut()
+            && layer.visible() != control.visible {
                 layer.set_visible(control.visible);
             }
-        }
 
         // The shared snapshot the response handlers read. #4675 — editor
         // ids resolve through the per-load `PlayerVitals` table.
@@ -677,12 +676,11 @@ impl ScaleformHudDriver {
                         feed.push((path, outcome_name(&outcome).to_owned()));
                     }
                 }
-                if let Some(compass) = self.compass.as_mut() {
-                    if !compass.feed(layer, heading, &mut feed) {
+                if let Some(compass) = self.compass.as_mut()
+                    && !compass.feed(layer, heading, &mut feed) {
                         // Still waiting on the movie: push again next cadence, heading or not.
                         self.last_signature = 0;
                     }
-                }
                 if let Some(mut diag) = world.try_resource_mut::<ScaleformHudDiag>() {
                     diag.path_feed = feed;
                 }

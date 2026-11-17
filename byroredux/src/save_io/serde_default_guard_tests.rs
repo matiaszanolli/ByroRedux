@@ -130,12 +130,11 @@ fn save_type_sources() -> Vec<PathBuf> {
         if path.ends_with("save_io/serde_default_guard_tests.rs") {
             continue;
         }
-        if let Ok(source) = std::fs::read_to_string(path) {
-            if source.contains("fn register_saved(") {
+        if let Ok(source) = std::fs::read_to_string(path)
+            && source.contains("fn register_saved(") {
                 registered.extend(registered_type_names(&source).into_iter().map(str::to_owned));
                 codec_modules.extend(codec_registrations(&source).into_iter().flat_map(|(_, modules)| modules).map(str::to_owned));
             }
-        }
     }
 
     candidates.retain(|path| {

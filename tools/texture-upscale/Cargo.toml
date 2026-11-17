@@ -2,6 +2,7 @@
 name = "byro-texture-upscale"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [[bin]]
 name = "byro-texture-upscale"
@@ -21,3 +22,6 @@ sysinfo = { workspace = true, features = ["disk"] }
 tempfile = { workspace = true }
 toml = { workspace = true }
 walkdir = { workspace = true }
+
+[lints]
+workspace = true

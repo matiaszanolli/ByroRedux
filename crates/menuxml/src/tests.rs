@@ -1104,7 +1104,7 @@ fn nan_depth_siblings_do_not_panic_the_depth_sort() {
         .map(|item| {
             doc.name_index
                 .iter()
-                .find(|(_, &t)| t == item.tile())
+                .find(|&(_, &t)| t == item.tile())
                 .unwrap()
                 .0
         })

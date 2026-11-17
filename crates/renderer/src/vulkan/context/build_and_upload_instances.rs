@@ -1110,8 +1110,8 @@ impl VulkanContext {
         // glass draw and a particle draw that happen to agree on
         // every pipeline/depth axis must not fold together, or the
         // merged batch would take one population's path for both.
-        if let Some(batch) = batches.last_mut() {
-            if batch.mesh_handle == draw_cmd.mesh_handle
+        if let Some(batch) = batches.last_mut()
+            && batch.mesh_handle == draw_cmd.mesh_handle
                 && batch.pipeline_key == pipeline_key
                 && batch.two_sided == draw_cmd.two_sided
                 && batch.render_layer == render_layer
@@ -1124,7 +1124,6 @@ impl VulkanContext {
                 batch.instance_count += 1;
                 return;
             }
-        }
 
         // Start a new batch.
         batches.push(DrawBatch {
@@ -1551,11 +1550,10 @@ impl VulkanContext {
             camera_cloud_sun_transmittance: self.camera_cloud_sun_transmittance,
         };
         let composite_params = build_composite_params(composite_inputs);
-        if let Some(ref mut composite) = self.post.composite {
-            if let Err(e) = composite.upload_params(&self.device, frame, &composite_params) {
+        if let Some(ref mut composite) = self.post.composite
+            && let Err(e) = composite.upload_params(&self.device, frame, &composite_params) {
                 log::warn!("composite upload_params failed: {e}");
             }
-        }
 
         {
             // SKYAL — exteriors bake from the same parameters as the
@@ -1607,8 +1605,8 @@ impl VulkanContext {
         // machine is host-side and depends on `svgf_recovery_frames`
         // (advanced at end-of-tick); it does NOT depend on anything
         // produced by the render pass below.
-        if !self.post_state.svgf_failed {
-            if let Some(ref mut svgf) = self.post.svgf {
+        if !self.post_state.svgf_failed
+            && let Some(ref mut svgf) = self.post.svgf {
                 // #3995 — `scene_static` is passed in so the recovery window
                 // can veto the progressive-accumulation drop.
                 // #4046 (REN-2026-09-06-D8-02) — ANDs in `caustic_scene_static`
@@ -1653,7 +1651,6 @@ impl VulkanContext {
                     self.post_state.svgf_failed = true;
                 }
             }
-        }
 
         // TAA UBO — fold into the bulk barrier below (#1397 / NCPS-03).
         // upload_params writes the host-visible param_buffers[frame];
@@ -1727,11 +1724,10 @@ impl VulkanContext {
         // Water material UBO — upload before the shared HOST→FRAGMENT
         // barrier below. The per-draw push constant now carries only the
         // compact array index, so this is the sole material-data upload.
-        if let Some(ref mut water) = self.water {
-            if let Err(error) = water.upload_params(&self.device, frame, water_commands) {
+        if let Some(ref mut water) = self.water
+            && let Err(error) = water.upload_params(&self.device, frame, water_commands) {
                 log::warn!("water parameter upload failed: {error}; skipping water this frame");
             }
-        }
 
         // Bloom UBOs — #2037 / GPU-D5-01: every down/upsample param UBO
         // is a pure function of the (construction-time-fixed) mip
@@ -2722,7 +2718,7 @@ mod instance_capacity_growth_pin {
         let acquire = include_str!("sync_and_acquire_frame.rs");
         assert!(acquire.contains(".tick_retired_instance_buffers(&self.device, alloc);"));
         let descriptors = include_str!("../scene_buffer/descriptors.rs");
-        assert!(descriptors.contains("self.retired_instance_buffers\n            .drain("));
+        assert!(descriptors.contains("self.retired_instance_buffers\n                .drain("));
     }
 }
 

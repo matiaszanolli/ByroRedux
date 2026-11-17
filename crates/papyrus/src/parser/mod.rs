@@ -445,13 +445,12 @@ impl Parser {
         } else {
             self.skip_newlines();
         }
-        if let Some(tok) = self.tokens.get(self.pos) {
-            if tok.token == Token::KwParent {
+        if let Some(tok) = self.tokens.get(self.pos)
+            && tok.token == Token::KwParent {
                 let span = tok.span;
                 self.pos += 1;
                 return Ok(Spanned::new(Identifier::new("Parent".to_string()), span));
             }
-        }
         self.expect_ident(context)
     }
 

@@ -294,11 +294,10 @@ impl SaveRegistry {
                     })?;
                 let mut decoded = Vec::with_capacity(rows.len());
                 for (old, value) in rows {
-                    if let Some(&entity) = remap.get(&old) {
-                        if let Some(value) = decode(world, entity, value)? {
+                    if let Some(&entity) = remap.get(&old)
+                        && let Some(value) = decode(world, entity, value)? {
                             decoded.push((entity, value));
                         }
-                    }
                 }
                 let count = decoded.len();
                 if replace_missing {

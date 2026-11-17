@@ -833,11 +833,10 @@ impl SwfPlayer {
 
 impl Drop for SwfPlayer {
     fn drop(&mut self) {
-        if self.host_bridge.has_callback(DESTROY_CALLBACK) {
-            if let Ok(mut player) = self.player.lock() {
+        if self.host_bridge.has_callback(DESTROY_CALLBACK)
+            && let Ok(mut player) = self.player.lock() {
                 let _ = player.call_internal_interface(DESTROY_CALLBACK, []);
             }
-        }
     }
 }
 

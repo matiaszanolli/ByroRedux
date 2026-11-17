@@ -187,11 +187,10 @@ impl DebugUiState {
     /// Unknown IDs deliberately no-op so every universal setting change can
     /// flow through this hook without coupling the UI to other subsystems.
     pub fn apply_setting_change(&self, change: &SettingChange) {
-        if change.id == OVERLAY_SCALE_SETTING_ID {
-            if let SettingValue::Number(scale) = &change.value {
+        if change.id == OVERLAY_SCALE_SETTING_ID
+            && let SettingValue::Number(scale) = &change.value {
                 self.egui_ctx.set_zoom_factor(*scale);
             }
-        }
     }
 
     /// Reapply overlay-owned values after egui is recreated, for example when

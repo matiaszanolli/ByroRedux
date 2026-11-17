@@ -501,14 +501,13 @@ pub(super) fn toggle_equip(world: &mut World, index: u32) -> MutationResult {
                 .collect(),
         };
         for displaced in displaced {
-            if !equipment.is_equipped(displaced) {
-                if let Some(item_form_id) = inventory_form_ids.get(displaced.0 as usize).copied() {
+            if !equipment.is_equipped(displaced)
+                && let Some(item_form_id) = inventory_form_ids.get(displaced.0 as usize).copied() {
                     changes.push(byroredux_scripting::EquipmentChange {
                         item_form_id,
                         equipped: false,
                     });
                 }
-            }
         }
         changes.push(byroredux_scripting::EquipmentChange {
             item_form_id: form_id,

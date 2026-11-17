@@ -103,11 +103,10 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
                     end_run(world, actor);
                     continue;
                 };
-                if let Some(mut transforms) = world.query_mut::<Transform>() {
-                    if let Some(transform) = transforms.get_mut(actor) {
+                if let Some(mut transforms) = world.query_mut::<Transform>()
+                    && let Some(transform) = transforms.get_mut(actor) {
                         transform.rotation = facing(to.x - from.x, to.z - from.z);
                     }
-                }
                 to
             }
             None => from,
@@ -178,11 +177,10 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
             Some(ItemKind::Weapon { damage, .. }) => {
                 let reach = crate::combat::attack_reach_bu(world, actor);
                 let near = target.is_none() || options.always_hit || from.distance(to) <= reach;
-                if let (true, Some(target)) = (near, target) {
-                    if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingTrapHits>() {
+                if let (true, Some(target)) = (near, target)
+                    && let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingTrapHits>() {
                         pending.0.push(byroredux_scripting::TrapHit { target, trap: actor, damage: if run.request.harmless { 0.0 } else { *damage as f32 }, sneak_attack: false });
                     }
-                }
                 near
             }
             _ => {
@@ -412,8 +410,8 @@ pub(crate) fn script_ui_request_system(world: &World, _dt: f32) {
             None => lines.push(script_menu_report(world, &menu)),
         }
     }
-    if !lines.is_empty() {
-        if let Some(mut log) = world.try_resource_mut::<ScriptRequestLog>() {
+    if !lines.is_empty()
+        && let Some(mut log) = world.try_resource_mut::<ScriptRequestLog>() {
             for line in lines {
                 log::info!("script request: {line}");
                 if log.0.len() >= REQUEST_LOG_CAP {
@@ -422,7 +420,6 @@ pub(crate) fn script_ui_request_system(world: &World, _dt: f32) {
                 log.0.push_back(line);
             }
         }
-    }
     let exit = world.try_resource_mut::<ExitGameRequest>().is_some_and(|mut request| std::mem::take(&mut request.0));
     if exit {
         log::info!("ExitGame: ending the game through the orderly shutdown");

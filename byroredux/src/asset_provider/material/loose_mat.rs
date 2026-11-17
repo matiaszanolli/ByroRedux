@@ -96,14 +96,13 @@ pub(crate) fn parse_loose_mat(bytes: &[u8]) -> Option<(LooseMatStage, CdbMateria
             "TextureReplacement" => {
                 // `Enabled` absent counts as enabled — the CDB capture's
                 // rule (`CdbMaterial::flat_color_slots`).
-                if json_bool(data.get("Enabled")) != Some(false) {
-                    if let (Some(slot), Some(rgba)) =
+                if json_bool(data.get("Enabled")) != Some(false)
+                    && let (Some(slot), Some(rgba)) =
                         (index, data.get("Color").and_then(xmfloat4))
                     {
                         out.flat_color_slots.push((slot, rgba));
                         recognized = true;
                     }
-                }
             }
             "MaterialParamFloat" => {
                 if let (Some(idx), Some(value)) = (index, json_f32(data.get("Value"))) {
@@ -116,12 +115,11 @@ pub(crate) fn parse_loose_mat(bytes: &[u8]) -> Option<(LooseMatStage, CdbMateria
             // compiled CDB decoder uses, so the two producers of a
             // `CdbMaterial` cannot drift per component.
             "AlphaSettingsComponent" | "EffectSettingsComponent" | "EmissiveSettingsComponent" => {
-                if let Some(capture) = byroredux_sfmaterial::capture_settings(type_name, LooseFields(data)) {
-                    if !capture.is_empty() {
+                if let Some(capture) = byroredux_sfmaterial::capture_settings(type_name, LooseFields(data))
+                    && !capture.is_empty() {
                         capture.fill_unset(&mut out);
                         recognized = true;
                     }
-                }
             }
             "TranslucencySettingsComponent" | "TranslucencySettings" => {
                 if let Some(v) = json_bool(data.get("UseSSS")) {

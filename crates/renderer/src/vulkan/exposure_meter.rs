@@ -286,13 +286,15 @@ impl ExposureMeterPipeline {
     /// # Safety
     /// No in-flight command buffer may reference this pipeline.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        for buffer in &mut self.param_buffers {
-            buffer.destroy(device, allocator);
-        }
-        self.param_buffers.clear();
-        // SAFETY: the caller's contract (no in-flight work references the pass's pipeline or pool);
-        // `destroy_pass_objects` skips null handles and nulls what it destroys (#6371).
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
         unsafe {
+            for buffer in &mut self.param_buffers {
+                buffer.destroy(device, allocator);
+            }
+            self.param_buffers.clear();
+            // SAFETY: the caller's contract (no in-flight work references the pass's pipeline or pool);
+            // `destroy_pass_objects` skips null handles and nulls what it destroys (#6371).
             super::descriptors::destroy_pass_objects(
                 device,
                 super::descriptors::PassHandles {
@@ -301,13 +303,13 @@ impl ExposureMeterPipeline {
                     pool: &mut self.descriptor_pool,
                     set_layout: &mut self.dsl,
                 },
-            )
-        };
-        if self.sampler != vk::Sampler::null() {
-            device.destroy_sampler(self.sampler, None);
-            self.sampler = vk::Sampler::null();
+            );
+            if self.sampler != vk::Sampler::null() {
+                device.destroy_sampler(self.sampler, None);
+                self.sampler = vk::Sampler::null();
+            }
+            self.descriptor_sets.clear();
         }
-        self.descriptor_sets.clear();
     }
 }
 

@@ -60,7 +60,10 @@ pub(super) fn expand_boot_request(args: Vec<String>) -> Result<Vec<String>> {
     // setup. An explicit env var still wins — same precedence as argv.
     if let Some(settings_path) = request.settings_path() {
         if std::env::var_os(settings_io::SETTINGS_PATH_ENV).is_none() {
-            std::env::set_var(settings_io::SETTINGS_PATH_ENV, settings_path);
+            // SAFETY: argv expansion runs on the main thread at the top of `boot::run`,
+            // before this process starts any other thread, so nothing can read the
+            // environment concurrently with this write.
+            unsafe { std::env::set_var(settings_io::SETTINGS_PATH_ENV, settings_path) };
         } else {
             eprintln!(
                 "--boot {path}: settings path {settings_path:?} suppressed; \
@@ -418,12 +421,11 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
             args.push(worldspace.clone());
             args.push("--grid".to_string());
             args.push(grid.clone());
-            if !args.iter().any(|arg| arg == "--radius") {
-                if let Some(radius) = entry.new_game_radius {
+            if !args.iter().any(|arg| arg == "--radius")
+                && let Some(radius) = entry.new_game_radius {
                     args.push("--radius".to_string());
                     args.push(radius.to_string());
                 }
-            }
         }
     }
 
@@ -431,8 +433,8 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
     // resolved and no explicit location flag is present. A bare
     // `--game fnv` (or a no-arg default-game launch) then boots
     // straight into the configured cell.
-    if !args.iter().any(|arg| arg == "--studio") {
-        if let Some(cell) = &defaults.cell {
+    if !args.iter().any(|arg| arg == "--studio")
+        && let Some(cell) = &defaults.cell {
             let has_location = ["--cell", "--grid", "--wrld"]
                 .iter()
                 .any(|f| args.iter().any(|a| a == f));
@@ -442,7 +444,6 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
                 args.push(cell.clone());
             }
         }
-    }
     args
 }
 

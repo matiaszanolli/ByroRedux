@@ -73,11 +73,10 @@ pub fn pending_trap_hit_flush_system(world: &World, _dt: f32) {
             );
         }
     }
-    if !held.is_empty() {
-        if let Some(mut pending) = world.try_resource_mut::<PendingTrapHits>() {
+    if !held.is_empty()
+        && let Some(mut pending) = world.try_resource_mut::<PendingTrapHits>() {
             pending.0.extend(held);
         }
-    }
 }
 
 /// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.

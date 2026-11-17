@@ -161,11 +161,10 @@ fn function_item<'a>(
             }
             ScriptItem::State(st) => {
                 for si in &st.body {
-                    if let StateItem::Function(f) = &si.node {
-                        if f.name.node.0.eq_ignore_ascii_case(name) {
+                    if let StateItem::Function(f) = &si.node
+                        && f.name.node.0.eq_ignore_ascii_case(name) {
                             return Some(f);
                         }
-                    }
                 }
             }
             _ => {}
@@ -476,15 +475,14 @@ fn populate_quest_fragments_from_script_internal(
             },
             providers.and_then(|scope| scope.principal),
         );
-        if let Some(effects) = lowered {
-            if !effects.is_empty() {
+        if let Some(effects) = lowered
+            && !effects.is_empty() {
                 if !effects_by_stage.contains_key(stage) {
                     stage_order.push(*stage);
                 }
                 effects_by_stage.entry(*stage).or_default().extend(effects);
                 inserted += 1;
             }
-        }
     }
     for stage in stage_order {
         if let Some(effects) = effects_by_stage.remove(&stage) {
@@ -667,12 +665,11 @@ fn populate_scene_fragments_from_script_internal(
             },
             providers.and_then(|scope| scope.principal),
         );
-        if let Some(effects) = lowered {
-            if !effects.is_empty() {
+        if let Some(effects) = lowered
+            && !effects.is_empty() {
                 frags.insert(scene_form_id, *event, context, vmad.cloned(), effects);
                 inserted += 1;
             }
-        }
     }
     inserted
 }

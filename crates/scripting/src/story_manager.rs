@@ -874,18 +874,17 @@ pub fn story_manager_dispatch_system(world: &World) {
     // phase A holds `StoryManagerNodeState` while its conditions read
     // `QuestStageState`, so taking the node state under the stages WRITE
     // here would record the opposite edge and close a lock-order cycle.
-    if !started.is_empty() {
-        if let Some(mut node_state) = world.try_resource_mut::<StoryManagerNodeState>() {
+    if !started.is_empty()
+        && let Some(mut node_state) = world.try_resource_mut::<StoryManagerNodeState>() {
             for candidate in started {
                 // A wrap clears the fired set when the first quest picked
                 // after it actually starts — otherwise the wrap is
                 // re-derived on the next fire. Earlier picks of the same
                 // pass belong to the old round and are marked before it.
-                if candidate.wrap_first {
-                    if let Some(runtime) = node_state.nodes.get_mut(&candidate.node) {
+                if candidate.wrap_first
+                    && let Some(runtime) = node_state.nodes.get_mut(&candidate.node) {
                         runtime.fired.fill(false);
                     }
-                }
                 let runtime = node_state.nodes.entry(candidate.node).or_default();
                 if runtime.fired.len() <= candidate.pool_index {
                     runtime.fired.resize(candidate.pool_index + 1, false);
@@ -898,7 +897,6 @@ pub fn story_manager_dispatch_system(world: &World) {
                 runtime.last_node_fire_hours = hours as f32;
             }
         }
-    }
     // Phase 2 — record the event's slots for this quest's `FromEvent`
     // aliases and mark the binding table dirty so the alias refresh
     // (scheduled right after this system) re-fills with them. One

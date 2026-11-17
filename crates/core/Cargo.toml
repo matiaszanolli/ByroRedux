@@ -2,6 +2,7 @@
 name = "byroredux-core"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [features]
 default = ["parallel-scheduler"]
@@ -26,3 +27,7 @@ serde_json = { workspace = true, optional = true }
 string-interner = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
+
+# Contains `unsafe`, so it does not inherit the workspace `unsafe_code = "forbid"`.
+[lints.rust]
+unsafe_code = "allow"

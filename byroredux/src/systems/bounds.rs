@@ -240,11 +240,10 @@ pub(crate) fn make_world_bound_propagation_system() -> impl FnMut(&World, f32) +
                 let bound = skinned_world_bound(local, skin, |bone| {
                     g_q.get(bone).map(GlobalTransform::to_matrix)
                 });
-                if bound.radius > 0.0 {
-                    if let Some(wb) = wb_q.get_mut(entity) {
+                if bound.radius > 0.0
+                    && let Some(wb) = wb_q.get_mut(entity) {
                         *wb = bound;
                     }
-                }
             }
         }
 

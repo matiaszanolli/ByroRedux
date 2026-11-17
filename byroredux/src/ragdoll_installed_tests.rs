@@ -172,8 +172,8 @@ fn check_fo3_bind_pose(environment: Environment) {
                 entity,
                 GlobalTransform::compose(&placement, rest.translation, rest.rotation, rest.scale),
             );
-            if environment == Environment::ReloadedSaloon {
-                if let Some((shape, body)) = &node.collision {
+            if environment == Environment::ReloadedSaloon
+                && let Some((shape, body)) = &node.collision {
                     let global = *world.get::<GlobalTransform>(entity).unwrap();
                     world.insert(
                         entity,
@@ -185,7 +185,6 @@ fn check_fo3_bind_pose(environment: Environment) {
                     world.insert(entity, body);
                     world.insert(entity, byroredux_physics::ActorBoneCollider);
                 }
-            }
             if let Some(name) = &node.name {
                 by_name.entry(name.clone()).or_insert(entity);
                 rest_by_name.entry(name.clone()).or_insert(rest);

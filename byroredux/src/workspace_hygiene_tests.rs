@@ -599,11 +599,10 @@ fn no_string_literal_embeds_a_space_run() {
             let path = entry.path();
             if path.is_dir() {
                 visit_workspace_rs_files(&path, &mut visit);
-            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-                if let Ok(contents) = std::fs::read_to_string(&path) {
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs")
+                && let Ok(contents) = std::fs::read_to_string(&path) {
                     visit(&path, &contents);
                 }
-            }
         }
     }
 

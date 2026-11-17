@@ -72,11 +72,10 @@ pub(crate) fn sf_cdb_cache() -> &'static Mutex<HashMap<String, bool>> {
 /// reads nothing else from its header (#4386).
 pub(crate) fn sf_cdb_cache_insert(key: String, valid: bool) {
     let mut cache = sf_cdb_cache().lock().unwrap_or_else(|e| e.into_inner());
-    if !cache.contains_key(&key) && cache.len() >= SF_CDB_CACHE_MAX_ENTRIES {
-        if let Some(evicted) = cache.keys().next().cloned() {
+    if !cache.contains_key(&key) && cache.len() >= SF_CDB_CACHE_MAX_ENTRIES
+        && let Some(evicted) = cache.keys().next().cloned() {
             cache.remove(&evicted);
         }
-    }
     cache.insert(key, valid);
 }
 
@@ -125,11 +124,10 @@ fn cdb_index_slot_with_inserted(key: &str) -> (CdbIndexSlot, bool) {
     if let Some(slot) = cache.get(key) {
         return (Arc::clone(slot), false);
     }
-    if cache.len() >= SF_CDB_CACHE_MAX_ENTRIES {
-        if let Some(evicted) = cache.keys().next().cloned() {
+    if cache.len() >= SF_CDB_CACHE_MAX_ENTRIES
+        && let Some(evicted) = cache.keys().next().cloned() {
             cache.remove(&evicted);
         }
-    }
     let slot = CdbIndexSlot::default();
     cache.insert(key.to_owned(), Arc::clone(&slot));
     (slot, true)
@@ -289,11 +287,10 @@ pub(crate) fn lookup_cdb_material(
     path: &str,
 ) -> Option<CdbMaterial> {
     for (source, inner) in sources.iter().rev() {
-        if let Some(index) = cdb_material_index(source, inner) {
-            if let Some(mat) = index.lookup(path) {
+        if let Some(index) = cdb_material_index(source, inner)
+            && let Some(mat) = index.lookup(path) {
                 return Some(mat);
             }
-        }
     }
     None
 }

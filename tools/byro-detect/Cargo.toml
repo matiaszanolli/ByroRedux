@@ -2,6 +2,7 @@
 name = "byro-detect"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 # P1's front end: the launcher's detection + validation logic, printed to a
 # terminal. Exists so the whole install-discovery path can be exercised and
@@ -9,3 +10,6 @@ edition.workspace = true
 # the launcher will not start still has a way to find out why.
 [dependencies]
 byroredux-game-detect = { workspace = true }
+
+[lints]
+workspace = true

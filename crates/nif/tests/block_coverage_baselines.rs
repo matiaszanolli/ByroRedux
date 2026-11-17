@@ -374,8 +374,8 @@ fn diagnose_corpus(
     blocks_now: usize,
     label: &str,
 ) -> Option<String> {
-    if let Some(recorded) = install_files {
-        if recorded != files_now {
+    if let Some(recorded) = install_files
+        && recorded != files_now {
             return Some(format!(
                 "[{label}] corpus drift: the per-block baseline records {recorded} NIFs but the \
                  current install walks {files_now} — the game data moved under the baselines, \
@@ -385,7 +385,6 @@ fn diagnose_corpus(
                  -- --ignored` (#5260)."
             ));
         }
-    }
     if baseline_blocks == blocks_now {
         return None;
     }

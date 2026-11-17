@@ -573,15 +573,12 @@ pub(super) fn walk_node_hierarchical(
         // the same field as a node-bound one. See NIF-D4-NEW-04
         // (audit 2026-05-12). Oblivion + some FO3 modded content
         // attaches collision to the shape directly.
-        if let Some(parent_idx) = parent_node_idx {
-            if let Some(parent) = ctx.out.nodes.get(parent_idx) {
-                if parent.collision.is_none() {
-                    if let Some(collision) = extract_collision(scene, shape.av.collision_ref) {
+        if let Some(parent_idx) = parent_node_idx
+            && let Some(parent) = ctx.out.nodes.get(parent_idx)
+                && parent.collision.is_none()
+                    && let Some(collision) = extract_collision(scene, shape.av.collision_ref) {
                         ctx.out.nodes[parent_idx].collision = Some(collision);
                     }
-                }
-            }
-        }
         if let Some(mesh) = extract_mesh_local(scene, shape, ctx.inherited_props, ctx.pool) {
             let mut mesh = mesh;
             mesh.parent_node = parent_node_idx;
@@ -598,15 +595,12 @@ pub(super) fn walk_node_hierarchical(
         }
 
         // Mirror of the NiTriShape branch above — see NIF-D4-NEW-04.
-        if let Some(parent_idx) = parent_node_idx {
-            if let Some(parent) = ctx.out.nodes.get(parent_idx) {
-                if parent.collision.is_none() {
-                    if let Some(collision) = extract_collision(scene, shape.av.collision_ref) {
+        if let Some(parent_idx) = parent_node_idx
+            && let Some(parent) = ctx.out.nodes.get(parent_idx)
+                && parent.collision.is_none()
+                    && let Some(collision) = extract_collision(scene, shape.av.collision_ref) {
                         ctx.out.nodes[parent_idx].collision = Some(collision);
                     }
-                }
-            }
-        }
         if let Some(mesh) = extract_bs_tri_shape_local(scene, shape, ctx.pool) {
             let mut mesh = mesh;
             mesh.parent_node = parent_node_idx;
@@ -630,15 +624,12 @@ pub(super) fn walk_node_hierarchical(
             return;
         }
         // Mirror of the NiTriShape branch above — see NIF-D4-NEW-04.
-        if let Some(parent_idx) = parent_node_idx {
-            if let Some(parent) = ctx.out.nodes.get(parent_idx) {
-                if parent.collision.is_none() {
-                    if let Some(collision) = extract_collision(scene, shape.av.collision_ref) {
+        if let Some(parent_idx) = parent_node_idx
+            && let Some(parent) = ctx.out.nodes.get(parent_idx)
+                && parent.collision.is_none()
+                    && let Some(collision) = extract_collision(scene, shape.av.collision_ref) {
                         ctx.out.nodes[parent_idx].collision = Some(collision);
                     }
-                }
-            }
-        }
         if let Some(mesh) = extract_mesh_local(scene, shape, ctx.inherited_props, ctx.pool) {
             let mut mesh = mesh;
             mesh.parent_node = parent_node_idx;
@@ -660,15 +651,12 @@ pub(super) fn walk_node_hierarchical(
             return;
         }
         // Mirror of the NiTriShape branch above — see NIF-D4-NEW-04.
-        if let Some(parent_idx) = parent_node_idx {
-            if let Some(parent) = ctx.out.nodes.get(parent_idx) {
-                if parent.collision.is_none() {
-                    if let Some(collision) = extract_collision(scene, shape.av.collision_ref) {
+        if let Some(parent_idx) = parent_node_idx
+            && let Some(parent) = ctx.out.nodes.get(parent_idx)
+                && parent.collision.is_none()
+                    && let Some(collision) = extract_collision(scene, shape.av.collision_ref) {
                         ctx.out.nodes[parent_idx].collision = Some(collision);
                     }
-                }
-            }
-        }
         if let Some(mesh) = extract_bs_geometry_local(scene, shape, ctx.pool, resolver) {
             let mut mesh = mesh;
             mesh.parent_node = parent_node_idx;
@@ -780,8 +768,8 @@ pub(super) fn walk_node_flat(
             return;
         }
         let world_transform = compose_transforms(parent_transform, &node.av.transform);
-        if let Some(ref mut coll_out) = ctx.collisions {
-            if let Some((shape, body)) = extract_collision(scene, node.av.collision_ref) {
+        if let Some(ref mut coll_out) = ctx.collisions
+            && let Some((shape, body)) = extract_collision(scene, node.av.collision_ref) {
                 let t = &world_transform.translation;
                 let quat = zup_matrix_to_yup_quat(&world_transform.rotation);
                 coll_out.push(ImportedCollision {
@@ -792,7 +780,6 @@ pub(super) fn walk_node_flat(
                     body,
                 });
             }
-        }
         let prev_len = ctx.inherited_props.len();
         ctx.inherited_props.extend_from_slice(&node.av.properties);
         for idx in active_children {
@@ -826,8 +813,8 @@ pub(super) fn walk_node_flat(
         let world_transform = compose_transforms(parent_transform, &node.av.transform);
 
         // Extract collision data if requested and this node has a collision_ref.
-        if let Some(ref mut coll_out) = ctx.collisions {
-            if let Some((shape, body)) = extract_collision(scene, node.av.collision_ref) {
+        if let Some(ref mut coll_out) = ctx.collisions
+            && let Some((shape, body)) = extract_collision(scene, node.av.collision_ref) {
                 let t = &world_transform.translation;
                 let quat = zup_matrix_to_yup_quat(&world_transform.rotation);
                 coll_out.push(ImportedCollision {
@@ -838,7 +825,6 @@ pub(super) fn walk_node_flat(
                     body,
                 });
             }
-        }
 
         let prev_len = ctx.inherited_props.len();
         ctx.inherited_props.extend_from_slice(&node.av.properties);

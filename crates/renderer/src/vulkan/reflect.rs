@@ -242,11 +242,10 @@ pub fn reflect_output_locations(spirv_bytes: &[u8]) -> Result<Vec<u32>> {
         if inst.operands[0].unwrap_storage_class() != StorageClass::Output {
             continue;
         }
-        if let Some(var_id) = inst.result_id {
-            if let Some(&loc) = locations.get(&var_id) {
+        if let Some(var_id) = inst.result_id
+            && let Some(&loc) = locations.get(&var_id) {
                 out.push(loc);
             }
-        }
     }
     out.sort_unstable();
     out.dedup();
@@ -425,13 +424,11 @@ pub fn max_u_greater_than_rhs_constant(spirv_bytes: &[u8]) -> Result<Option<u32>
     // calling `unwrap_literal_bit32()` on those panics.
     let mut int32_types: std::collections::HashSet<u32> = std::collections::HashSet::new();
     for inst in &module.types_global_values {
-        if inst.class.opcode == Op::TypeInt {
-            if let (Some(id), Some(width)) = (inst.result_id, inst.operands.first()) {
-                if width.unwrap_literal_bit32() == 32 {
+        if inst.class.opcode == Op::TypeInt
+            && let (Some(id), Some(width)) = (inst.result_id, inst.operands.first())
+                && width.unwrap_literal_bit32() == 32 {
                     int32_types.insert(id);
                 }
-            }
-        }
     }
     let mut constants: HashMap<u32, u32> = HashMap::new();
     for inst in &module.types_global_values {

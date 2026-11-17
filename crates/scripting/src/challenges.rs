@@ -208,12 +208,11 @@ fn complete(world: &World, def: &ChalRecord) {
     }
     crate::obscript_more::mod_misc_stat(world, "Challenges Completed", 1);
     log::info!("challenge {:08X} {} completed", def.form_id, def.editor_id);
-    if def.script_form_id != 0 {
-        if let Some(player) = crate::papyrus_demo::PapyrusPlayerEntity::get(world) {
+    if def.script_form_id != 0
+        && let Some(player) = crate::papyrus_demo::PapyrusPlayerEntity::get(world) {
             let reward = CastEffect { mgef: 0, script: def.script_form_id, duration: 0.0, magnitude: 0.0, value: None, conditions: None };
             crate::magic_effects::start_effects(world, player, Some(player), def.form_id, &[reward], false);
         }
-    }
 }
 
 /// Whether `def` still counts: enabled, and not a finished non-recurring one.

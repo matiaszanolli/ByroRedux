@@ -1312,8 +1312,8 @@ pub fn parse_alch_for_game(
                 medicine_flag = game == GameKind::Fallout3NV && flags & 4 != 0;
             }
     }
-    if valid_header {
-        if let ItemKind::Aid {
+    if valid_header
+        && let ItemKind::Aid {
             immediate_effects,
             simple_consumption_header,
             medicine,
@@ -1324,7 +1324,6 @@ pub fn parse_alch_for_game(
             *medicine = medicine_flag;
             *simple_consumption_header = true;
         }
-    }
     item
 }
 
@@ -1421,13 +1420,12 @@ pub fn parse_carryable_light(
     }
     let duration_seconds = i32::from_le_bytes(data[..4].try_into().unwrap());
     let mut common = CommonItemFields::from_subs_with_remap(subs, remap);
-    if let Some(offset) = value_offset {
-        if let Some(economics) = data.get(offset..offset + 8) {
+    if let Some(offset) = value_offset
+        && let Some(economics) = data.get(offset..offset + 8) {
             let mut reader = SubReader::new(economics);
             common.value = reader.u32_or_default();
             common.weight = reader.f32_or_default();
         }
-    }
     Some(ItemRecord {
         form_id,
         common,

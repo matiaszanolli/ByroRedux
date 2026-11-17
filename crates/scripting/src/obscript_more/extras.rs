@@ -452,16 +452,14 @@ fn trap_update(world: &World, args: &[ObScriptValue], ctx: &Context) -> Action {
         }
         let level = world.get::<byroredux_core::character::CharacterLevel>(contact.actor).map_or(0.0, |level| f32::from(level.level));
         let total = damage + levelled * level;
-        if total > 0.0 {
-            if let Some(mut pending) = world.try_resource_mut::<crate::PendingTrapHits>() {
+        if total > 0.0
+            && let Some(mut pending) = world.try_resource_mut::<crate::PendingTrapHits>() {
                 pending.0.push(crate::TrapHit { target: contact.actor, trap, damage: total, sneak_attack: false });
             }
-        }
-        if push > 0.0 {
-            if let Some(mut requests) = world.query_mut::<super::PushActorRequest>() {
+        if push > 0.0
+            && let Some(mut requests) = world.query_mut::<super::PushActorRequest>() {
                 requests.insert(contact.actor, super::PushActorRequest { from: trap, force: push });
             }
-        }
     }
     if let Some(mut seen) = world.try_resource_mut::<super::ObTrapContacts>() {
         seen.0.insert(trap_form, touching);

@@ -379,11 +379,10 @@ pub(crate) fn music_system(world: &World, dt: f32) {
         music.step(inputs, || catalog.battle(&index, place.as_deref(), marker.as_ref(), around, roll), &mut out);
         cell_category
     };
-    if let Some(category) = cell_category {
-        if let Some(mut types) = world.try_resource_mut::<byroredux_scripting::obscript_more::CellMusicTypes>() {
+    if let Some(category) = cell_category
+        && let Some(mut types) = world.try_resource_mut::<byroredux_scripting::obscript_more::CellMusicTypes>() {
             types.current = category;
         }
-    }
 }
 
 /// `music.status` (MUS-RPT-001).

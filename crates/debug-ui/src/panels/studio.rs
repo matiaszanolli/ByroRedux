@@ -230,11 +230,10 @@ fn draw_gallery(
                 );
                 return;
             }
-            if state.studio_game.is_empty() {
-                if let Some(game) = &catalog.game {
+            if state.studio_game.is_empty()
+                && let Some(game) = &catalog.game {
                     state.studio_game = game.clone();
                 }
-            }
             let mut browse = false;
             ui.horizontal(|ui| {
                 let current = catalog

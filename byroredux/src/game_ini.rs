@@ -41,11 +41,10 @@ pub(crate) fn ini_value(text: &str, section: &str, key: &str) -> Option<String> 
         if !in_section || line.starts_with(';') {
             continue;
         }
-        if let Some((name, value)) = line.split_once('=') {
-            if name.trim().eq_ignore_ascii_case(key) {
+        if let Some((name, value)) = line.split_once('=')
+            && name.trim().eq_ignore_ascii_case(key) {
                 return Some(value.trim().to_string());
             }
-        }
     }
     None
 }

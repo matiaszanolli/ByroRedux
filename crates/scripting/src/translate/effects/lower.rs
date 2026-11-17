@@ -623,14 +623,13 @@ fn lower_quest_variable_write(
         return None;
     };
     // M47.2 — `<global>.Value = …`, the GlobalVariable property's write.
-    if member.node.0.eq_ignore_ascii_case("value") {
-        if let Some(global) = global_property(&object.node, scope) {
+    if member.node.0.eq_ignore_ascii_case("value")
+        && let Some(global) = global_property(&object.node, scope) {
             return Some(Effect::SetGlobalValue {
                 global,
                 value: classify_value(value, scope)?,
             });
         }
-    }
     let quest = quest_variable_receiver(&object.node, scope)?;
     if let Some(value) = as_num(value) {
         return Some(Effect::SetQuestVariable {

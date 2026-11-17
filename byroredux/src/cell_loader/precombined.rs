@@ -1491,7 +1491,7 @@ mod tests {
     /// Test resolver over a single blob, keyed by the real BSCRC32 of the
     /// plugin that owns it — so a decode that reaches the CSG proves the
     /// `_oc.nif` really does name *that* plugin's geometry (#2369).
-    fn one_csg(plugin_path: &str, csg: CsgArchive) -> impl Fn(u32) -> Option<Arc<CsgArchive>> {
+    fn one_csg(plugin_path: &str, csg: CsgArchive) -> impl Fn(u32) -> Option<Arc<CsgArchive>> + use<> {
         let want = byroredux_bsa::csg_name_hash(plugin_path).expect("plugin stem");
         let csg = Arc::new(csg);
         move |h| (h == want).then(|| csg.clone())

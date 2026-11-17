@@ -159,11 +159,10 @@ fn skill_form(world: &World, skill: f32) -> Option<u32> {
 fn tag_bonus(world: &World, player: EntityId, skill: u8, sign: f32) {
     let bonus = crate::obscript_state::game_setting(world, "fAVDTagSkillBonus").unwrap_or(0.0);
     let (Some(form), true) = (skill_form(world, f32::from(skill)), bonus != 0.0) else { return };
-    if let Some(mut values) = world.query_mut::<ActorValues>() {
-        if let Some(values) = values.get_mut(player) {
+    if let Some(mut values) = world.query_mut::<ActorValues>()
+        && let Some(values) = values.get_mut(player) {
             values.mod_permanent(form, sign * bonus);
         }
-    }
 }
 
 // ── the platform ───────────────────────────────────────────────────────────────────────────
@@ -329,11 +328,10 @@ fn cmd_10e7(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ct
 fn reset_xp(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
     match player(world) {
         Some(player) => {
-            if let Some(mut levels) = world.query_mut::<byroredux_core::character::CharacterLevel>() {
-                if let Some(level) = levels.get_mut(player) {
+            if let Some(mut levels) = world.query_mut::<byroredux_core::character::CharacterLevel>()
+                && let Some(level) = levels.get_mut(player) {
                     level.xp = 0;
                 }
-            }
             done("ResetXP")
         }
         None => Action::Declined,
@@ -495,11 +493,10 @@ fn cmd_11e5(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ct
             let race = world.get::<byroredux_core::character::Background>(other).map(|background| background.race_form_id);
             match race {
                 Some(race) => {
-                    if let Some(mut backgrounds) = world.query_mut::<byroredux_core::character::Background>() {
-                        if let Some(background) = backgrounds.get_mut(actor) {
+                    if let Some(mut backgrounds) = world.query_mut::<byroredux_core::character::Background>()
+                        && let Some(background) = backgrounds.get_mut(actor) {
                             background.race_form_id = race;
                         }
-                    }
                     done(format!("MatchRace {race:08X}"))
                 }
                 None => Action::Declined,
@@ -524,11 +521,10 @@ fn cmd_11df(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx
 fn cmd_10f0(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
     match (caller_or_player(world, ctx), form_arg(args, 0)) {
         (Some((_, actor)), Some(class)) => {
-            if let Some(mut backgrounds) = world.query_mut::<byroredux_core::character::Background>() {
-                if let Some(background) = backgrounds.get_mut(actor) {
+            if let Some(mut backgrounds) = world.query_mut::<byroredux_core::character::Background>()
+                && let Some(background) = backgrounds.get_mut(actor) {
                     background.class_form_id = class;
                 }
-            }
             done(format!("SetClass {class:08X}"))
         }
         _ => Action::Declined,

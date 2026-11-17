@@ -2,6 +2,7 @@
 name = "byroredux-bsa"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 log = { workspace = true }
@@ -10,3 +11,6 @@ lz4_flex = { workspace = true }
 
 [dev-dependencies]
 env_logger = { workspace = true }
+
+[lints]
+workspace = true

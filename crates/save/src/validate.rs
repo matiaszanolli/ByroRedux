@@ -254,8 +254,7 @@ fn validate_equipment(world: &World, errors: &mut Vec<ValidationError>) {
             );
             if let Some(base_form_id) =
                 inventory.and_then(|items| items.get(weapon.inventory_index.0 as usize))
-            {
-                if *base_form_id != weapon.base_form_id {
+                && *base_form_id != weapon.base_form_id {
                     errors.push(ValidationError {
                         entity,
                         kind: ValidationKind::Equipment,
@@ -265,7 +264,6 @@ fn validate_equipment(world: &World, errors: &mut Vec<ValidationError>) {
                         ),
                     });
                 }
-            }
         }
     }
 }
@@ -399,8 +397,8 @@ fn validate_animation(world: &World, next_entity: EntityId, errors: &mut Vec<Val
 
     if let Some(q) = world.query::<AnimationPlayer>() {
         for (entity, player) in q.iter() {
-            if let Some(reg) = registry.as_ref() {
-                if reg.get(player.clip_handle).is_none() {
+            if let Some(reg) = registry.as_ref()
+                && reg.get(player.clip_handle).is_none() {
                     errors.push(ValidationError {
                         entity,
                         kind: ValidationKind::AnimationClip,
@@ -410,16 +408,14 @@ fn validate_animation(world: &World, next_entity: EntityId, errors: &mut Vec<Val
                         ),
                     });
                 }
-            }
-            if let Some(root) = player.root_entity {
-                if root >= next_entity {
+            if let Some(root) = player.root_entity
+                && root >= next_entity {
                     errors.push(ValidationError {
                         entity,
                         kind: ValidationKind::DanglingEntity,
                         detail: format!("AnimationPlayer.root_entity {root} was never spawned"),
                     });
                 }
-            }
         }
     }
 
@@ -428,15 +424,14 @@ fn validate_animation(world: &World, next_entity: EntityId, errors: &mut Vec<Val
     // a future producer inherits this gate instead of an unguarded column.
     if let Some(q) = world.query::<AnimationStack>() {
         for (entity, stack) in q.iter() {
-            if let Some(root) = stack.root_entity {
-                if root >= next_entity {
+            if let Some(root) = stack.root_entity
+                && root >= next_entity {
                     errors.push(ValidationError {
                         entity,
                         kind: ValidationKind::DanglingEntity,
                         detail: format!("AnimationStack.root_entity {root} was never spawned"),
                     });
                 }
-            }
             if let Some(reg) = registry.as_ref() {
                 for (i, layer) in stack.layers.iter().enumerate() {
                     if reg.get(layer.clip_handle).is_none() {
@@ -462,8 +457,8 @@ fn validate_animation(world: &World, next_entity: EntityId, errors: &mut Vec<Val
     // riding to disk inside a saved column with no gate on the way out.
     if let Some(q) = world.query::<Seated>() {
         for (entity, seated) in q.iter() {
-            if let Some(reg) = registry.as_ref() {
-                if reg.get(seated.animation_restore.clip_handle).is_none() {
+            if let Some(reg) = registry.as_ref()
+                && reg.get(seated.animation_restore.clip_handle).is_none() {
                     errors.push(ValidationError {
                         entity,
                         kind: ValidationKind::AnimationClip,
@@ -474,7 +469,6 @@ fn validate_animation(world: &World, next_entity: EntityId, errors: &mut Vec<Val
                         ),
                     });
                 }
-            }
         }
     }
 }

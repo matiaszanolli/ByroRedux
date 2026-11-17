@@ -529,13 +529,12 @@ pub fn quest_advance_system(world: &World) {
                     .map(|identity| identity.reference_form_id)
             })
             .collect();
-        if !disabled_references.is_empty() {
-            if let Some(mut enable) = world.try_resource_mut::<crate::ReferenceEnableState>() {
+        if !disabled_references.is_empty()
+            && let Some(mut enable) = world.try_resource_mut::<crate::ReferenceEnableState>() {
                 for form_id in disabled_references {
                     enable.set_enabled(form_id, false);
                 }
             }
-        }
         // #4334 — every advanced once-only trigger parked its script in a
         // terminal state (`disableWhenDone` via its Disable, `onlyOnce`
         // via GotoState); both stay inert across reloads through this
@@ -548,13 +547,12 @@ pub fn quest_advance_system(world: &World) {
                     .map(|identity| identity.reference_form_id)
             })
             .collect();
-        if !parked_references.is_empty() {
-            if let Some(mut scripts) = world.try_resource_mut::<crate::ReferenceScriptState>() {
+        if !parked_references.is_empty()
+            && let Some(mut scripts) = world.try_resource_mut::<crate::ReferenceScriptState>() {
                 for form_id in parked_references {
                     scripts.park(form_id);
                 }
             }
-        }
     }
 
     // Phase 3: emit the marker events on a dedicated quest-events

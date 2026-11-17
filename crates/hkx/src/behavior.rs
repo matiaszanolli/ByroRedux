@@ -1349,11 +1349,10 @@ fn read_bone_weights(file: &Packfile, array_object: usize, walk: &mut Walk) -> R
             }
             let variable = file.u32(element + BINDING_VARIABLE_INDEX, "binding variable")? as i32;
             let offset = file.u32(element + BINDING_OFFSET_IN_ARRAY, "binding array offset")?;
-            if let (Ok(variable), Some(bone)) = (usize::try_from(variable), bone_of_binding(offset)) {
-                if let Some(driver) = drivers.get_mut(bone) {
+            if let (Ok(variable), Some(bone)) = (usize::try_from(variable), bone_of_binding(offset))
+                && let Some(driver) = drivers.get_mut(bone) {
                     *driver = Some(variable);
                 }
-            }
         }
         bound = drivers.into_iter().enumerate().filter_map(|(bone, variable)| Some((bone, variable?))).collect();
     }
@@ -1443,11 +1442,10 @@ fn read_generator_node(
                 return Ok(None);
             };
             let mut node = read_generator(file, inner, clip, content, depth + 1, walk)?;
-            if let Some(Generator::Blender(blender)) = &mut node {
-                if blender.parameter_variable.is_none() {
+            if let Some(Generator::Blender(blender)) = &mut node
+                && blender.parameter_variable.is_none() {
                     blender.parameter_variable = bound_variable(file, generator, "fBlendParameter", walk)?;
                 }
-            }
             node
         }
         Some("hkbManualSelectorGenerator") => {
@@ -1456,11 +1454,10 @@ fn read_generator_node(
             walk.charge(len)?;
             let mut children = Vec::with_capacity(len);
             for index in 0..len {
-                if let Some(inner) = file.object_pointer(data + index * 8) {
-                    if let Some(child) = read_generator(file, inner, clip, content, depth + 1, walk)? {
+                if let Some(inner) = file.object_pointer(data + index * 8)
+                    && let Some(child) = read_generator(file, inner, clip, content, depth + 1, walk)? {
                         children.push(child);
                     }
-                }
             }
             let index = i32::from(file.u8(generator + field + SELECTOR_INDEX_AFTER_ARRAY, "selected generator")? as i8);
             Some(Generator::Selector { index, index_variable: bound_variable(file, generator, "selectedGeneratorIndex", walk)?, children })

@@ -1148,16 +1148,14 @@ pub(crate) fn apply_texture_swap(
         if let Some(displaced) = displaced_texture(previous, fallback) {
             ctx.texture_registry.drop_texture(&ctx.device, displaced);
         }
-        if let Some(mut materials) = world.query_mut::<Material>() {
-            if let Some(material) = materials.get_mut(mesh) {
+        if let Some(mut materials) = world.query_mut::<Material>()
+            && let Some(material) = materials.get_mut(mesh) {
                 material.texture_path = Some(path.clone());
             }
-        }
-        if let Some(mut infos) = world.query_mut::<crate::components::MaterialTextureDebugInfo>() {
-            if let Some(info) = infos.get_mut(mesh) {
+        if let Some(mut infos) = world.query_mut::<crate::components::MaterialTextureDebugInfo>()
+            && let Some(info) = infos.get_mut(mesh) {
                 mark_base_color_swapped(info, &path);
             }
-        }
     }
     meshes.len()
 }

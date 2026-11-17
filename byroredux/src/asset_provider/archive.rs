@@ -340,20 +340,18 @@ impl Archive {
         let stamp = ArchiveStamp::of(path);
         if let Some(stamp) = stamp {
             let registry = shared_archives().lock().unwrap_or_else(|e| e.into_inner());
-            if let Some((cached_stamp, archive)) = registry.get(path) {
-                if *cached_stamp == stamp {
+            if let Some((cached_stamp, archive)) = registry.get(path)
+                && *cached_stamp == stamp {
                     return Ok((archive.clone(), true));
                 }
-            }
         }
         let archive = Self::open(path)?;
         if let Some(stamp) = stamp {
             let mut registry = shared_archives().lock().unwrap_or_else(|e| e.into_inner());
-            if !registry.contains_key(path) && registry.len() >= SHARED_ARCHIVE_MAX {
-                if let Some(evicted) = registry.keys().next().cloned() {
+            if !registry.contains_key(path) && registry.len() >= SHARED_ARCHIVE_MAX
+                && let Some(evicted) = registry.keys().next().cloned() {
                     registry.remove(&evicted);
                 }
-            }
             registry.insert(path.to_owned(), (stamp, archive.clone()));
         }
         Ok((archive, false))
@@ -500,16 +498,14 @@ impl ArchiveInner {
     /// from its length); a cubemap, a single-chunk record, a BSA or a loose
     /// file reads whole. Warns like [`Self::extract_or_warn`].
     pub(crate) fn extract_texture_floor_or_warn(&self, path: &str) -> Option<Vec<u8>> {
-        if let Backend::Ba2(archive) = &self.backend {
-            if let Some(layout) = archive.dx10_layout(path) {
-                if let (false, [_, .., last]) = (layout.is_cubemap, layout.chunks.as_slice()) {
+        if let Backend::Ba2(archive) = &self.backend
+            && let Some(layout) = archive.dx10_layout(path)
+                && let (false, [_, .., last]) = (layout.is_cubemap, layout.chunks.as_slice()) {
                     let read = archive
                         .extract_dx10_mips(path, u32::from(last.start_mip))
                         .map(|(dds, _)| dds);
                     return self.or_warn(path, read);
                 }
-            }
-        }
         self.extract_or_warn(path)
     }
 
@@ -1075,15 +1071,14 @@ pub(crate) fn shadow_count_for_open(new: &Archive, archives: &[Archive], reused:
         key.push('\0');
         key.push_str(a.path());
     }
-    if reused {
-        if let Some(&n) = shadow_count_cache()
+    if reused
+        && let Some(&n) = shadow_count_cache()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&key)
         {
             return n;
         }
-    }
     #[cfg(test)]
     SHADOW_COUNT_WALKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let n = count_shadowed_entries(new, archives);

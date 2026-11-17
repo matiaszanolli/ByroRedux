@@ -2,6 +2,7 @@
 name = "byroredux-nif"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 byroredux-core = { workspace = true }
@@ -41,3 +42,7 @@ harness = false
 [[example]]
 name = "nif_stats"
 path = "examples/nif_stats.rs"
+
+# Contains `unsafe`, so it does not inherit the workspace `unsafe_code = "forbid"`.
+[lints.rust]
+unsafe_code = "allow"

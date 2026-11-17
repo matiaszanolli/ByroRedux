@@ -393,10 +393,10 @@ pub(crate) fn build_static_object_from_subs(
         }
     }
 
-    if let (Some(ref mut ld), Some(form)) = (&mut light_data, xpwr_form_id) {
+    if let (Some(ld), Some(form)) = (&mut light_data, xpwr_form_id) {
         ld.xpwr_form_id = Some(form);
     }
-    if let (Some(ref mut ld), Some(form)) = (&mut light_data, god_rays_form) {
+    if let (Some(ld), Some(form)) = (&mut light_data, god_rays_form) {
         ld.god_rays_form = Some(form);
     }
 

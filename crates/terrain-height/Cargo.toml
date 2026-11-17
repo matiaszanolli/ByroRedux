@@ -2,6 +2,7 @@
 name = "byroredux-terrain-height"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
@@ -13,3 +14,6 @@ serde = { workspace = true }
 byroredux-bsa = { workspace = true }
 byroredux-menuxml = { workspace = true }
 image = { workspace = true }
+
+[lints]
+workspace = true

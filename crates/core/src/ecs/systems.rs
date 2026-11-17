@@ -330,8 +330,8 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
                 if parent_q.as_ref().and_then(|pq| pq.get(e)).is_none() {
                     expanded.insert(e);
                 }
-                if let Some(ref cq) = children_q {
-                    if let Some(children) = cq.get(e) {
+                if let Some(ref cq) = children_q
+                    && let Some(children) = cq.get(e) {
                         enqueue_unique_children(
                             &mut queue,
                             &mut queued,
@@ -341,7 +341,6 @@ pub fn make_transform_propagation_system() -> impl FnMut(&World, f32) + Send + S
                             &mut duplicate_reported,
                         );
                     }
-                }
             }
         }
 

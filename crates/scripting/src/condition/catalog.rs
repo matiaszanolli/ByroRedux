@@ -780,11 +780,10 @@ impl ConditionFunction {
     /// shared numbers ([`OBLIVION_DIALECT`]) win there; every other game, and
     /// every other index, resolves as `from_index` does.
     pub fn from_index_in(game: Option<GameKind>, index: u32) -> Self {
-        if game == Some(GameKind::Oblivion) {
-            if let Some(&(_, function)) = OBLIVION_DIALECT.iter().find(|(dialect, _)| *dialect == index) {
+        if game == Some(GameKind::Oblivion)
+            && let Some(&(_, function)) = OBLIVION_DIALECT.iter().find(|(dialect, _)| *dialect == index) {
                 return function;
             }
-        }
         Self::from_index(index)
     }
 

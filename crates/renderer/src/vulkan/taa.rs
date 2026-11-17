@@ -614,81 +614,85 @@ impl TaaPipeline {
     /// # Safety
     /// `cmd` must be a recording command buffer. `frame < MAX_FRAMES_IN_FLIGHT`.
     pub unsafe fn dispatch(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, frame: usize) {
-        // Order this frame's write after any lingering sample of the same
-        // slot (layout stays GENERAL). The in-flight fence already
-        // guarantees the previous GPU work on this slot has completed.
-        let out_img = self.history[frame].image;
-        let pre = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(out_img)
-            .subresource_range(super::descriptors::color_subresource_single_mip());
-        // Pre-barrier: protects this slot's TAA output `out_img`
-        // against write-after-read on the previous reader.
-        //
-        // src_stage_mask = COMPUTE_SHADER only — pre-fix this was
-        // `COMPUTE_SHADER | FRAGMENT_SHADER` to cover both the
-        // previous TAA dispatch (compute reader of `prev_history`)
-        // and the previous composite (fragment reader of this slot
-        // as input texture). The fragment reader is from the
-        // PREVIOUS frame's composite; the per-FIF fence wait at
-        // `draw_frame` entry serialises that fragment work against
-        // anything this frame submits, so `FRAGMENT_SHADER` is
-        // covered structurally and naming it here is over-spec.
-        // See REN-D11-NEW-05 (audit 2026-05-09).
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[pre],
-        );
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            // Order this frame's write after any lingering sample of the same
+            // slot (layout stays GENERAL). The in-flight fence already
+            // guarantees the previous GPU work on this slot has completed.
+            let out_img = self.history[frame].image;
+            let pre = vk::ImageMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .old_layout(vk::ImageLayout::GENERAL)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .image(out_img)
+                .subresource_range(super::descriptors::color_subresource_single_mip());
+            // Pre-barrier: protects this slot's TAA output `out_img`
+            // against write-after-read on the previous reader.
+            //
+            // src_stage_mask = COMPUTE_SHADER only — pre-fix this was
+            // `COMPUTE_SHADER | FRAGMENT_SHADER` to cover both the
+            // previous TAA dispatch (compute reader of `prev_history`)
+            // and the previous composite (fragment reader of this slot
+            // as input texture). The fragment reader is from the
+            // PREVIOUS frame's composite; the per-FIF fence wait at
+            // `draw_frame` entry serialises that fragment work against
+            // anything this frame submits, so `FRAGMENT_SHADER` is
+            // covered structurally and naming it here is over-spec.
+            // See REN-D11-NEW-05 (audit 2026-05-09).
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[pre],
+            );
 
-        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
-        device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.pipeline_layout,
-            0,
-            &[self.descriptor_sets[frame]],
-            &[],
-        );
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.pipeline_layout,
+                0,
+                &[self.descriptor_sets[frame]],
+                &[],
+            );
 
-        // #2768 — the tile must come from the same constants `taa.comp`'s
-        // `local_size` is generated from. With a literal here, lowering the
-        // tile would leave the bottom-right of the output never written and
-        // composite would sample the previous cycle's history as this
-        // frame's HDR.
-        let gx = self.width.div_ceil(WORKGROUP_X);
-        let gy = self.height.div_ceil(WORKGROUP_Y);
-        device.cmd_dispatch(cmd, gx, gy, 1);
+            // #2768 — the tile must come from the same constants `taa.comp`'s
+            // `local_size` is generated from. With a literal here, lowering the
+            // tile would leave the bottom-right of the output never written and
+            // composite would sample the previous cycle's history as this
+            // frame's HDR.
+            let gx = self.width.div_ceil(WORKGROUP_X);
+            let gy = self.height.div_ceil(WORKGROUP_Y);
+            device.cmd_dispatch(cmd, gx, gy, 1);
 
-        // Expose the result to composite's fragment shader read.
-        let post = image_barrier_general_write_to_read(out_img);
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            // dst = FRAGMENT for composite's read this frame + COMPUTE for
-            // next frame's TAA dispatch reading this slot as
-            // `prev_history`. Per-frame fence currently serialises both
-            // consumers, but the dst-stage mask still has to cover both
-            // for correctness once the fence wait is relaxed. #653.
-            vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[post],
-        );
+            // Expose the result to composite's fragment shader read.
+            let post = image_barrier_general_write_to_read(out_img);
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                // dst = FRAGMENT for composite's read this frame + COMPUTE for
+                // next frame's TAA dispatch reading this slot as
+                // `prev_history`. Per-frame fence currently serialises both
+                // consumers, but the dst-stage mask still has to cover both
+                // for correctness once the fence wait is relaxed. #653.
+                vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[post],
+            );
 
-        // #917 / REN-D10-NEW-03 — dispatch was successfully recorded.
-        // `mark_frame_completed` advances `frames_since_creation` after
-        // `queue_submit` returns success; record-time failures before
-        // this point leave the flag false.
-        self.dispatched_this_frame = true;
+            // #917 / REN-D10-NEW-03 — dispatch was successfully recorded.
+            // `mark_frame_completed` advances `frames_since_creation` after
+            // `queue_submit` returns success; record-time failures before
+            // this point leave the flag false.
+            self.dispatched_this_frame = true;
+        }
     }
 
     /// Mark the previous frame's dispatch as having reached

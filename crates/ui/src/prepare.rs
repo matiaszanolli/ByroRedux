@@ -393,13 +393,12 @@ pub(crate) fn prepare_movie(
     let decompressed =
         swf::decompress_swf(swf_data).map_err(|error| format!("Failed to parse SWF: {error}"))?;
     let profile = ScaleformProfile::from_header(&decompressed.header);
-    if let Some(expected) = expected_profile {
-        if profile != expected {
+    if let Some(expected) = expected_profile
+        && profile != expected {
             return Err(format!(
                 "Scaleform profile mismatch: requested {expected:?}, movie requires {profile:?}"
             ));
         }
-    }
 
     let catalog = ScaleformHostCatalog::for_profile(profile);
     let needs_injection = catalog.host_object().is_some();

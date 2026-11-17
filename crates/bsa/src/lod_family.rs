@@ -122,14 +122,13 @@ pub fn classify(path: &str) -> Vec<LodHit> {
     if l.ends_with("_far.nif") {
         push(LodFamily::FarNif, None, None, None);
     }
-    if let Some(rest) = l.strip_prefix("distantlod\\") {
-        if rest.ends_with(".lod") {
+    if let Some(rest) = l.strip_prefix("distantlod\\")
+        && rest.ends_with(".lod") {
             // `<ws>_<x>_<y>.lod`: the worldspace is everything before the last two `_` fields.
             let stem = rest.trim_end_matches(".lod");
             let world = stem.rsplitn(3, '_').nth(2).unwrap_or(stem);
             push(LodFamily::OblivionLod, Some(world), None, None);
         }
-    }
     if l.starts_with("meshes\\lod\\generated\\") && l.ends_with(".nif") {
         push(LodFamily::GeneratedLod, None, None, None);
     }

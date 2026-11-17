@@ -708,8 +708,8 @@ impl VulkanContext {
         // SAFETY: `cmd` is recording outside a render pass, and all volumetric,
         // cluster, TLAS, and timer resources belong to this live context/frame.
         unsafe {
-            if super::super::volumetrics::VOLUMETRIC_OUTPUT_CONSUMED {
-                if let Some(ref mut vol) = self.post.volumetrics {
+            if super::super::volumetrics::VOLUMETRIC_OUTPUT_CONSUMED
+                && let Some(ref mut vol) = self.post.volumetrics {
                     // In a clear interior the legacy CELL data commonly has
                     // no fog ramp at all.  A small neutral dust coefficient
                     // lets existing, authored local emitters scatter through
@@ -1034,7 +1034,6 @@ impl VulkanContext {
                         }
                     }
                 }
-            }
         }
     }
 
@@ -1355,8 +1354,8 @@ impl VulkanContext {
         // SAFETY: `cmd` is recording outside a render pass, and bloom's input
         // view, pipeline resources, and timers are live for the current frame.
         unsafe {
-            if let Some(ref mut bloom) = self.post.bloom {
-                if let Some(ref composite) = self.post.composite {
+            if let Some(ref mut bloom) = self.post.bloom
+                && let Some(ref composite) = self.post.composite {
                     let scene_image = composite.scene_image(frame);
                     let scene_view = composite.scene_view(frame);
                     if let Some(ref mut timers) = self.gpu_timers {
@@ -1371,7 +1370,6 @@ impl VulkanContext {
                         timers.cmd_end(TimerPass::Bloom, &self.device, cmd, frame);
                     }
                 }
-            }
         }
     }
 

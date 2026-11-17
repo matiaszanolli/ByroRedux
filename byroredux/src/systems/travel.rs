@@ -471,13 +471,12 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
     // ── Pass 2: apply writes (each a scoped single-type lock). The shared
     // Transform + NavPath tail (#5580), then this system's own state. ──
     super::navmesh_path::write_back_walk(world, &mut scratch.decisions);
-    if !scratch.hops.is_empty() {
-        if let Some(mut hq) = world.query_mut::<crate::cell_loader::relocated::CrossSpaceHop>() {
+    if !scratch.hops.is_empty()
+        && let Some(mut hq) = world.query_mut::<crate::cell_loader::relocated::CrossSpaceHop>() {
             for (entity, hop) in scratch.hops.drain(..) {
                 hq.insert(entity, hop);
             }
         }
-    }
     // XCT-ROUTE-002 / -008 — a traveler that reached its load door fades out
     // and passes it: the move is requested (after the fade) and carried out by
     // the app's relocation step, which needs the renderer to take the actor

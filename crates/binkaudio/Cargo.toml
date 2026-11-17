@@ -2,6 +2,7 @@
 name = "byroredux-binkaudio"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "Clean-room Bink Audio decoder (the soundtracks of Bink 2 movies)"
 
@@ -13,3 +14,6 @@ description = "Clean-room Bink Audio decoder (the soundtracks of Bink 2 movies)"
 
 [dev-dependencies]
 byroredux-bink2 = { workspace = true }
+
+[lints]
+workspace = true

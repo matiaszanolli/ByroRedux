@@ -2,6 +2,7 @@
 name = "byroredux-debug-ui"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 byroredux-core = { workspace = true }
@@ -10,3 +11,6 @@ byroredux-sdk = { workspace = true }
 egui = { workspace = true }
 egui-winit = { workspace = true }
 winit = { workspace = true }
+
+[lints]
+workspace = true

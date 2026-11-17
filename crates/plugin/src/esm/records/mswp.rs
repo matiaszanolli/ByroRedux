@@ -136,12 +136,11 @@ pub fn parse_mswp(form_id: u32, subs: &[SubRecord]) -> MaterialSwapRecord {
                 // pair — confirmed via vanilla corpus survey (every
                 // CNAM in 156 records is exactly 4 bytes, sitting
                 // after its paired SNAM).
-                if let Some(entry) = swaps.last_mut() {
-                    if sub.data.len() >= 4 {
+                if let Some(entry) = swaps.last_mut()
+                    && sub.data.len() >= 4 {
                         let bytes = [sub.data[0], sub.data[1], sub.data[2], sub.data[3]];
                         entry.color_remap_index = Some(f32::from_le_bytes(bytes));
                     }
-                }
             }
             _ => {
                 // EDID / FNAM are handled by their own match arms above;

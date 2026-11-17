@@ -172,11 +172,10 @@ fn raise_alarm(world: &World, model: CrimeModel, player: EntityId, kind: CrimeKi
     guards.sort_by(|a, b| a.0.total_cmp(&b.0));
     for (_, guard) in guards.into_iter().take(model.guards_responding as usize) {
         byroredux_scripting::crime_knowledge::note_known(world, guard, byroredux_scripting::PLAYER_REFERENCE, kind, victim);
-        if let Some(mut directives) = world.query_mut::<ForceGreetDirective>() {
-            if directives.get(guard).is_none() {
+        if let Some(mut directives) = world.query_mut::<ForceGreetDirective>()
+            && directives.get(guard).is_none() {
                 directives.insert(guard, ForceGreetDirective { topic: None, radius: FORCE_GREET_RADIUS, trigger: None });
             }
-        }
     }
 }
 
@@ -209,11 +208,10 @@ pub(crate) fn report_theft(world: &World, player: EntityId, owner: u32, rows: &[
         }
     }
     // The faction flag does not need a witness.
-    if byroredux_scripting::is_faction(world, owner) {
-        if let Some(mut ledger) = world.try_resource_mut::<ObScriptLedger>() {
+    if byroredux_scripting::is_faction(world, owner)
+        && let Some(mut ledger) = world.try_resource_mut::<ObScriptLedger>() {
             ledger.set_flag(FactionFlag::Steal, owner, true);
         }
-    }
     if seen_by.is_empty() {
         return 0;
     }
@@ -835,12 +833,11 @@ fn rush_wanted_player(world: &World, waiting: &mut std::collections::HashMap<Ent
         {
             continue;
         }
-        if let Some(mut directives) = world.query_mut::<ForceGreetDirective>() {
-            if directives.get(guard).is_none() {
+        if let Some(mut directives) = world.query_mut::<ForceGreetDirective>()
+            && directives.get(guard).is_none() {
                 directives.insert(guard, ForceGreetDirective { topic: None, radius: FORCE_GREET_RADIUS, trigger: None });
                 waiting.insert(guard, RUSH_RETRY_SECS);
             }
-        }
     }
 }
 

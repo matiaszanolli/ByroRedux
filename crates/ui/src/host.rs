@@ -619,9 +619,9 @@ impl ScaleformHostBridge {
         if self.profile == ScaleformProfile::SkyrimAvm1 {
             let looks_like_game_delegate_request =
                 self.catalog.find(transport_method).is_some() || self.has_callback("respond");
-            if looks_like_game_delegate_request {
-                if let Some((ScaleformValue::Number(request_id), rest)) = arguments.split_first() {
-                    if let Some(request_id) = numeric_request_id(*request_id) {
+            if looks_like_game_delegate_request
+                && let Some((ScaleformValue::Number(request_id), rest)) = arguments.split_first()
+                    && let Some(request_id) = numeric_request_id(*request_id) {
                         return NormalizedCall {
                             method: transport_method.to_string(),
                             host_object: None,
@@ -629,13 +629,11 @@ impl ScaleformHostBridge {
                             arguments: rest.to_vec(),
                         };
                     }
-                }
-            }
         }
 
-        if self.profile == ScaleformProfile::Fallout4Avm2 {
-            if let Some(object) = self.catalog.host_object() {
-                if let Some(method) = transport_method
+        if self.profile == ScaleformProfile::Fallout4Avm2
+            && let Some(object) = self.catalog.host_object()
+                && let Some(method) = transport_method
                     .strip_prefix(object.property)
                     .and_then(|method| method.strip_prefix('.'))
                 {
@@ -646,8 +644,6 @@ impl ScaleformHostBridge {
                         arguments,
                     };
                 }
-            }
-        }
 
         NormalizedCall {
             method: transport_method.to_string(),
@@ -734,11 +730,10 @@ impl ExternalInterfaceProvider for BridgeProvider {
         args: &[ExternalValue],
     ) -> ExternalValue {
         let outcome = self.bridge.record_call(name, args);
-        if let Some(arguments) = outcome.callback_response {
-            if let Some(callback) = context.external_interface.get_callback("respond") {
+        if let Some(arguments) = outcome.callback_response
+            && let Some(callback) = context.external_interface.get_callback("respond") {
                 callback.call(context, "respond", arguments);
             }
-        }
         outcome.return_value
     }
 

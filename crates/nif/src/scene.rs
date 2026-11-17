@@ -266,8 +266,8 @@ impl NifScene {
                      block_type: &'static str,
                      kind: RefKind,
                      r: BlockRef| {
-            if let Some(idx) = r.index() {
-                if idx >= len {
+            if let Some(idx) = r.index()
+                && idx >= len {
                     errors.push(RefError {
                         block_index,
                         block_type,
@@ -276,7 +276,6 @@ impl NifScene {
                         blocks_len: len,
                     });
                 }
-            }
         };
 
         for (i, block) in self.blocks.iter().enumerate() {
@@ -335,8 +334,8 @@ impl NifScene {
             }
         }
 
-        if let Some(root) = self.root_index {
-            if root >= len {
+        if let Some(root) = self.root_index
+            && root >= len {
                 errors.push(RefError {
                     block_index: usize::MAX,
                     block_type: "NifScene",
@@ -345,7 +344,6 @@ impl NifScene {
                     blocks_len: len,
                 });
             }
-        }
 
         errors
     }

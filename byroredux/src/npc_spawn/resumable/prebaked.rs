@@ -469,14 +469,13 @@ pub(super) fn finalize_prebaked(
         // with the same authored-stride speed derivation. The player
         // body takes neither from the job — `player_body::` attaches
         // its walk/idle playback beside the assembled root.
-        if !state.player_body {
-            if let Some(handle) = world
+        if !state.player_body
+            && let Some(handle) = world
                 .try_resource::<crate::components::SkyrimWalkClip>()
                 .and_then(|r| r.0)
             {
                 super::attach_walk_animation(world, state.placement_root, handle);
             }
-        }
     }
     super::finish_actor(
         world,

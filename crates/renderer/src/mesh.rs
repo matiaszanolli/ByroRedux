@@ -1290,13 +1290,12 @@ impl MeshRegistry {
         // `mesh_cache` directly without uploading real GPU buffers;
         // the production `upload` paths always push a paired entry.
         let mut was_scene_mesh = false;
-        if let Some(slot) = self.meshes.get_mut(idx) {
-            if let Some(mesh) = slot.take() {
+        if let Some(slot) = self.meshes.get_mut(idx)
+            && let Some(mesh) = slot.take() {
                 was_scene_mesh = mesh.is_scene_mesh;
                 self.deferred_destroy
                     .push((mesh.vertex_buffer, mesh.index_buffer), DEFAULT_COUNTDOWN);
             }
-        }
         if was_scene_mesh {
             self.geometry_dirty = true;
             // #2678 — this drop stranded the mesh's span inside the pending

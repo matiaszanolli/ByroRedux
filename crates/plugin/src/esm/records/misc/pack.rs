@@ -1233,11 +1233,10 @@ fn parse_skyrim_procedures(
     for sub in &subs[xnam + 1..] {
         match &sub.sub_type {
             b"ANAM" => {
-                if let Some(procedure) = current.take() {
-                    if !procedure.procedure_type.is_empty() {
+                if let Some(procedure) = current.take()
+                    && !procedure.procedure_type.is_empty() {
                         procedures.push(procedure);
                     }
-                }
                 if read_zstring(&sub.data) == "Procedure" {
                     current = Some(PackProcedure::default());
                 }
@@ -1271,11 +1270,10 @@ fn parse_skyrim_procedures(
             _ => {}
         }
     }
-    if let Some(procedure) = current {
-        if !procedure.procedure_type.is_empty() {
+    if let Some(procedure) = current
+        && !procedure.procedure_type.is_empty() {
             procedures.push(procedure);
         }
-    }
     procedures
 }
 

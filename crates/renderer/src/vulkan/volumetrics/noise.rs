@@ -380,12 +380,11 @@ pub(crate) fn release_density_noise_staging(
     staging: [GpuBuffer; 2],
     upload: &Result<()>,
 ) {
-    if let Err(error) = upload {
-        if OneTimeCommandError::may_be_in_flight(error) {
+    if let Err(error) = upload
+        && OneTimeCommandError::may_be_in_flight(error) {
             std::mem::forget(staging);
             return;
         }
-    }
     for mut buffer in staging {
         buffer.destroy(device, allocator);
     }

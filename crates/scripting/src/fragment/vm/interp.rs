@@ -772,11 +772,10 @@ impl Vm<'_> {
             Expr::MemberAccess { object, member } => {
                 let owner = self.eval(frame, &object.node)?;
                 let name = &member.node.0;
-                if name.eq_ignore_ascii_case("length") {
-                    if let Value::Array(array) = &owner {
+                if name.eq_ignore_ascii_case("length")
+                    && let Value::Array(array) = &owner {
                         return Ok(Value::Int(array.borrow().len() as i32));
                     }
-                }
                 if let Value::Struct(members) = &owner {
                     let members = members.borrow();
                     return match Value::member(&members, name) {
@@ -836,15 +835,14 @@ impl Vm<'_> {
     ) -> Option<Value> {
         if let Some(value) = Self::property(vmad, name) {
             // A numeric property a script wrote reads the written value.
-            if value.number().is_some() {
-                if let Some(written) = self.read_quest_variable(owner, name) {
+            if value.number().is_some()
+                && let Some(written) = self.read_quest_variable(owner, name) {
                     return Some(if value.is_float() {
                         Value::Float(written)
                     } else {
                         Value::Int(written as i32)
                     });
                 }
-            }
             // An object property a script re-pointed reads the new object; an
             // array or struct property is one shared value across the run,
             // starting from what a script last wrote or else the VMAD's.
@@ -887,11 +885,10 @@ impl Vm<'_> {
     /// shared value, else what a script last wrote, else `default`.
     pub(super) fn aggregate(&self, owner: QuestFormId, name: &str, default: Value) -> Value {
         let key = crate::QuestScriptVariables::property_key(name);
-        if let Some(held) = self.written_object(owner, key) {
-            if matches!(held, Value::Array(_) | Value::Struct(_)) {
+        if let Some(held) = self.written_object(owner, key)
+            && matches!(held, Value::Array(_) | Value::Struct(_)) {
                 return held;
             }
-        }
         self.aggregates.borrow_mut().insert((owner.0, key), default.clone());
         default
     }
@@ -1173,8 +1170,8 @@ impl Vm<'_> {
             return Ok(Flow::Normal);
         };
         // `Utility.Wait(seconds)` suspends the run, every frame of it.
-        if let Expr::MemberAccess { object, member } = &callee.node {
-            if static_class(&object.node) == Some("utility") && member.node.0.eq_ignore_ascii_case("wait") {
+        if let Expr::MemberAccess { object, member } = &callee.node
+            && static_class(&object.node) == Some("utility") && member.node.0.eq_ignore_ascii_case("wait") {
                 let seconds = match args.first() {
                     Some(arg) => self.eval(frame, &arg.value.node)?.number().unwrap_or(0.0),
                     None => 0.0,
@@ -1190,18 +1187,16 @@ impl Vm<'_> {
                 }
                 return Ok(Flow::Suspend(seconds.max(0.0), Vec::new(), Vec::new()));
             }
-        }
         // CK *WaitForAnimationEvent*: "waits for the specified animation event from
         // this object to happen before returning". The graph's schedule is
         // deterministic, so the wait is computed now; with no graph (or an event it
         // never raises) the call returns false at once, which the CK gives as "the
         // animation graph unloaded before the event was sent".
-        if let Expr::MemberAccess { object, member } = &callee.node {
-            if member.node.0.eq_ignore_ascii_case("waitforanimationevent")
+        if let Expr::MemberAccess { object, member } = &callee.node
+            && member.node.0.eq_ignore_ascii_case("waitforanimationevent")
                 && args.len() == 1
                 && static_class(&object.node).is_none()
-            {
-                if let Value::Form(reference) = self.eval(frame, &object.node)? {
+                && let Value::Form(reference) = self.eval(frame, &object.node)? {
                     let values = self.eval_args(frame, args)?;
                     let event = values[0].text();
                     let seconds = self
@@ -1215,18 +1210,15 @@ impl Vm<'_> {
                         None => Ok(Flow::Normal),
                     };
                 }
-            }
-        }
         // CK *PlayAnimationAndWait*: send the event and wait until the graph raises
         // the named one (the schedule is deterministic, so the wait is computed
         // now). A graph that rejects the event, or never raises the other, makes
         // the call return false at once: no wait.
-        if let Expr::MemberAccess { object, member } = &callee.node {
-            if member.node.0.eq_ignore_ascii_case("playanimationandwait")
+        if let Expr::MemberAccess { object, member } = &callee.node
+            && member.node.0.eq_ignore_ascii_case("playanimationandwait")
                 && args.len() == 2
                 && static_class(&object.node).is_none()
-            {
-                if let Value::Form(reference) = self.eval(frame, &object.node)? {
+                && let Value::Form(reference) = self.eval(frame, &object.node)? {
                     let values = self.eval_args(frame, args)?;
                     let (event, wait_event) = (values[0].text(), values[1].text());
                     let seconds = self.entity_of(reference).and_then(|entity| {
@@ -1240,8 +1232,6 @@ impl Vm<'_> {
                         None => Ok(Flow::Normal),
                     };
                 }
-            }
-        }
         self.call_statement_no_ops(frame, callee, args)
     }
 
@@ -1269,12 +1259,11 @@ impl Vm<'_> {
         // CK *StopDialogueCamera - Game*: "Stops all dialogue cameras". The
         // engine never starts one (a conversation here has no camera of its
         // own), so there is nothing to stop.
-        if let Expr::MemberAccess { object, member } = &callee.node {
-            if static_class(&object.node) == Some("game") && member.node.0.eq_ignore_ascii_case("stopdialoguecamera") {
+        if let Expr::MemberAccess { object, member } = &callee.node
+            && static_class(&object.node) == Some("game") && member.node.0.eq_ignore_ascii_case("stopdialoguecamera") {
                 self.eval_args(frame, args)?;
                 return Ok(Flow::Normal);
             }
-        }
         if help_message_housekeeping(&callee.node).is_some() {
             self.eval_args(frame, args)?;
             return Ok(Flow::Normal);
@@ -1301,18 +1290,14 @@ impl Vm<'_> {
         // the statement has nothing to refresh; only the Bool result (failure
         // with no active instance) is unmodelled, and the checker only lets
         // the call through with that result unused.
-        if let Expr::MemberAccess { object, member } = &callee.node {
-            if member.node.0.eq_ignore_ascii_case("updatecurrentinstanceglobal")
+        if let Expr::MemberAccess { object, member } = &callee.node
+            && member.node.0.eq_ignore_ascii_case("updatecurrentinstanceglobal")
                 && static_class(&object.node).is_none()
-            {
-                if let Value::Form(quest) = self.eval(frame, &object.node)? {
-                    if self.is_quest(quest) {
+                && let Value::Form(quest) = self.eval(frame, &object.node)?
+                    && self.is_quest(quest) {
                         self.eval_args(frame, args)?;
                         return Ok(Flow::Normal);
                     }
-                }
-            }
-        }
         self.call_statement_script(frame, callee, args)
     }
 
@@ -1334,24 +1319,21 @@ impl Vm<'_> {
         }
         // `Parent.OnInit()` and the like past the scripts to an engine class:
         // its events have no body, so the call does nothing.
-        if let Expr::MemberAccess { object, member } = &callee.node {
-            if matches!(object.node, Expr::ParentAccess) && is_event_name(&member.node.0) {
+        if let Expr::MemberAccess { object, member } = &callee.node
+            && matches!(object.node, Expr::ParentAccess) && is_event_name(&member.node.0) {
                 self.eval_args(frame, args)?;
                 return Ok(Flow::Normal);
             }
-        }
         // `GotoState`'s `OnEndState` / `OnBeginState` the script does not
         // handle: the empty events every script inherits.
         if is_state_event(&callee.node) {
             return Ok(Flow::Normal);
         }
-        if let Some((object, name)) = quest_update_call(&callee.node) {
-            if let Value::Form(quest) = self.eval(frame, object)? {
-                if self.is_quest(quest) {
+        if let Some((object, name)) = quest_update_call(&callee.node)
+            && let Value::Form(quest) = self.eval(frame, object)?
+                && self.is_quest(quest) {
                     return self.quest_update(frame, quest, &name, args).map(|_| Flow::Normal);
                 }
-            }
-        }
         if self_call_named(&callee.node, "sendcustomevent") {
             return self.send_custom_event(frame, args).map(|_| Flow::Normal);
         }

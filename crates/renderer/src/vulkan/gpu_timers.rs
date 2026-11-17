@@ -969,11 +969,10 @@ impl GpuPerFrameTimers {
         let read = unsafe {
             device.get_query_pool_results(pool, 0, &mut ticks, vk::QueryResultFlags::TYPE_64)
         };
-        if let Err(e) = read {
-            if e != vk::Result::NOT_READY {
+        if let Err(e) = read
+            && e != vk::Result::NOT_READY {
                 log::warn!("GPU TIMESTAMP batched read failed: {e}");
             }
-        }
 
         self.last_snapshot = snapshot_from_bits_with_valid_bits(
             bits,

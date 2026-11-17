@@ -710,8 +710,8 @@ pub(super) fn build_player_template_for(index: &EsmIndex, player_form_id: u32) -
 
     // Skyrim+ authors initial worn gear through OTFT. Older games generally
     // equip armor directly from CNTO, so their carried armor is equipped below.
-    if let Some(outfit_id) = resolved.inventory.default_outfit {
-        if let Some(outfit) = index.outfits.get(&outfit_id) {
+    if let Some(outfit_id) = resolved.inventory.default_outfit
+        && let Some(outfit) = index.outfits.get(&outfit_id) {
             for &form_id in &outfit.items {
                 expanded.clear();
                 byroredux_plugin::equip::expand_leveled_form_id(
@@ -727,7 +727,6 @@ pub(super) fn build_player_template_for(index: &EsmIndex, player_form_id: u32) -
                 }
             }
         }
-    }
 
     let equip_carried_armor = resolved.inventory.default_outfit.is_none();
     for entry in &resolved.inventory.inventory {

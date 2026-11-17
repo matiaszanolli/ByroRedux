@@ -2,6 +2,7 @@
 name = "byro-dbg"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [[bin]]
 name = "byro-dbg"
@@ -12,3 +13,6 @@ byroredux-debug-protocol = { workspace = true }
 serde_json = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
+
+[lints]
+workspace = true

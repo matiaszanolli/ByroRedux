@@ -32,11 +32,10 @@ fn main() {
         for state in &machine.states {
             let Some(clip) = &state.clip else { continue };
             for trigger in &clip.triggers {
-                if let Some(name) = graph.event_name(trigger.event) {
-                    if name.to_ascii_lowercase().starts_with("soundplay") {
+                if let Some(name) = graph.event_name(trigger.event)
+                    && name.to_ascii_lowercase().starts_with("soundplay") {
                         *by_event.entry(name.to_owned()).or_default() += 1;
                     }
-                }
             }
         }
     }

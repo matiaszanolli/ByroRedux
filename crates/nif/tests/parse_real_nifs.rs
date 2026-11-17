@@ -731,15 +731,14 @@ fn real_archive_torch_meshes_surface_particle_emitters() {
                     // A decoded param block must carry finite, positive spawn
                     // magnitudes — a zeroed or NaN decode is the regression
                     // this counts against, not a legitimately absent block.
-                    if let Some(p) = &em.emitter_params {
-                        if p.initial_radius.is_finite()
+                    if let Some(p) = &em.emitter_params
+                        && p.initial_radius.is_finite()
                             && p.initial_radius > 0.0
                             && p.life_span.is_finite()
                             && p.life_span > 0.0
                         {
                             with_params += 1;
                         }
-                    }
                     if em.emitter_rate.is_some_and(|r| r.is_finite() && r > 0.0) {
                         with_rate += 1;
                     }

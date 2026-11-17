@@ -422,8 +422,8 @@ pub(crate) fn check_environment(
     // interior lighting under an exterior sky is the normal interior state.
     // The one inconsistent pair is exterior lighting under a sky that does
     // not describe an exterior.
-    if let (Some(lit), Some(sky)) = (lighting, sky) {
-        if !lit.is_interior && !sky.is_exterior {
+    if let (Some(lit), Some(sky)) = (lighting, sky)
+        && !lit.is_interior && !sky.is_exterior {
             out.push(finding(
                 "is_interior/is_exterior",
                 format!(
@@ -433,7 +433,6 @@ pub(crate) fn check_environment(
                 ),
             ));
         }
-    }
 
     out
 }

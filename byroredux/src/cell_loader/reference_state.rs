@@ -216,16 +216,14 @@ impl PersistentReferenceStates {
         use byroredux_scripting::actor_value_save as codec;
         let mut errors = Vec::new();
         for (&pair, state) in &self.rows {
-            if let Some(values) = &state.actor_values {
-                if let Err(error) = codec::save_values(world, 0, values) {
+            if let Some(values) = &state.actor_values
+                && let Err(error) = codec::save_values(world, 0, values) {
                     errors.push((pair, error));
                 }
-            }
-            if let Some(effects) = &state.magic_effects {
-                if let Err(error) = codec::save_active_effects(world, 0, effects) {
+            if let Some(effects) = &state.magic_effects
+                && let Err(error) = codec::save_active_effects(world, 0, effects) {
                     errors.push((pair, error));
                 }
-            }
         }
         errors
     }
@@ -657,9 +655,9 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
         // reconcile seeds the ragdoll from it. Same divergence rule as the
         // stream snapshot, so a corpse that never left its placement is left
         // exactly on the authored pose.
-        if let Some((translation, rotation)) = state.corpse_pose {
-            if let Some(mut transforms) = world.query_mut::<byroredux_core::ecs::Transform>() {
-                if let Some(transform) = transforms.get_mut(entity) {
+        if let Some((translation, rotation)) = state.corpse_pose
+            && let Some(mut transforms) = world.query_mut::<byroredux_core::ecs::Transform>()
+                && let Some(transform) = transforms.get_mut(entity) {
                     if translation.distance(transform.translation)
                         > super::stream_snapshot::POSITION_DIVERGENCE_EPSILON
                     {
@@ -669,8 +667,6 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
                         transform.rotation = rotation;
                     }
                 }
-            }
-        }
         world.insert(entity, Dead);
         // #5267 (GAME-D4-2026-10-05-01) — queue the death teardown for the
         // Late-stage sink (`reconcile_pending_dead_actors_system`) instead

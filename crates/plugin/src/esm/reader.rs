@@ -926,8 +926,8 @@ impl<'a> EsmReader<'a> {
         // load-order so multi-plugin maps stay collision-free. No-op
         // when no remap is set (single-plugin load).
         let form_id = self.remap_form_id(form_id_raw);
-        if form_id != 0 {
-            if let Some(trace) = &self.record_type_trace {
+        if form_id != 0
+            && let Some(trace) = &self.record_type_trace {
                 let mut trace = trace.borrow_mut();
                 if flags & FLAG_DELETED != 0 {
                     trace.record_types.remove(&form_id);
@@ -937,7 +937,6 @@ impl<'a> EsmReader<'a> {
                     trace.record_types.insert(form_id, record_type);
                 }
             }
-        }
         Ok(RecordHeader {
             record_type,
             data_size,

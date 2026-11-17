@@ -415,11 +415,10 @@ pub fn mg07_on_activate_system(world: &World) {
                     }
                 }
                 // RemoveItem stub — flip the keystone flag off.
-                if let Some(mut keystones) = world.query_mut::<KeystoneInventory>() {
-                    if let Some(k) = keystones.get_mut(player) {
+                if let Some(mut keystones) = world.query_mut::<KeystoneInventory>()
+                    && let Some(k) = keystones.get_mut(player) {
                         k.has_mg07_keystone = false;
                     }
-                }
             }
             Outcome::Denied {
                 denial_message_form_id,

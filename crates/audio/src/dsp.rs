@@ -130,11 +130,10 @@ pub(crate) fn apply_reverb_send(
     reverb_send: Option<&SendTrackHandle>,
     reverb_send_db: f32,
 ) -> SpatialTrackBuilder {
-    if let Some(reverb) = reverb_send {
-        if reverb_send_gate_open(reverb_send_db) {
+    if let Some(reverb) = reverb_send
+        && reverb_send_gate_open(reverb_send_db) {
             builder = builder.with_send(reverb.id(), reverb_send_db);
         }
-    }
     builder
 }
 

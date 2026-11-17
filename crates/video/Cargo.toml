@@ -2,6 +2,7 @@
 name = "byroredux-video"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 # Movie decoding for the games' own Bink videos (PRD bink-video-playback). Bink 1 (BIKi) video and
 # audio are decoded in process by `mercs2_bink` (MIT, pure Rust, no dependencies), so players need
@@ -16,3 +17,6 @@ log = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[lints]
+workspace = true

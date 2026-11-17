@@ -356,11 +356,10 @@ impl ExtensionManifest {
             if function.validate().is_err() {
                 return Err(ManifestError::InvalidScriptFunction(function.id.clone()));
             }
-            if let Some(alias) = &function.papyrus {
-                if !papyrus_functions.insert(alias.canonical_key()) {
+            if let Some(alias) = &function.papyrus
+                && !papyrus_functions.insert(alias.canonical_key()) {
                     return Err(ManifestError::InvalidScriptFunction(function.id.clone()));
                 }
-            }
         }
 
         let mut settings = BTreeSet::new();

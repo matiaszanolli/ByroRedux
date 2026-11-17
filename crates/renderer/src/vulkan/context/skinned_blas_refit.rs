@@ -188,8 +188,7 @@ impl VulkanContext {
         let skin_t0 = Instant::now();
         if let (Some(skin_pipeline), Some(ref mut accel)) =
             (self.skin.compute.as_ref(), self.accel_manager.as_mut())
-        {
-            if let Some(ref alloc) = self.allocator {
+            && let Some(ref alloc) = self.allocator {
                 // Sub-block: limits the borrow scope on `mesh_registry` / `scene_buffers`, which
                 // the skin chain only reads.
                 let global_vert_buf = self
@@ -298,7 +297,6 @@ impl VulkanContext {
                 // for entities the cell loader had already despawned via `pending_skin_unload_victims`.
                 chain.evict_idle_skin_slots();
             }
-        }
         // The `MorphSlot` eviction pass runs outside the `skin_compute` + `accel_manager` guard above
         // (#3374). It needs neither: a `MorphSlot` owns two plain `GpuBuffer`s and no descriptor sets
         // (`morph_compute`'s module doc), so `destroy` wants only the device and the allocator.
@@ -971,83 +969,87 @@ impl SkinChain<'_> {
         built_this_frame: &FxHashSet<EntityId>,
         pose_dirty: &rustc_hash::FxHashSet<EntityId>,
     ) {
-        let accel = &mut *self.accel;
-        for &(entity_id, _, idx_buffer, idx_count, vertex_count) in dispatches {
-            let Some(slot) = self.skin_slots.get(&entity_id) else {
-                continue;
-            };
-            // #1196 / PERF-DIM7-02 — paired refit
-            // gate. Same predicate as the dispatch
-            // skip above: if the entity's pose was
-            // unchanged this frame AND the slot
-            // already has a populated output AND a
-            // live BLAS, skip the refit. The BLAS
-            // still references the same output
-            // buffer; nothing changed underneath
-            // it. The skip uses the same
-            // `pose_dirty` set so the two decisions
-            // can't diverge — the "split decisions
-            // are the trap" warning from the audit.
-            //
-            // D6-05 / #1812 — first-sight entities
-            // are always dirty, so the predicate
-            // above alone can't catch them; they
-            // used to fall through to a full UPDATE
-            // against the exact vertex data their
-            // BUILD (above, same `cmd`) just
-            // consumed — pure wasted work, not a
-            // correctness requirement. Skip them via
-            // `built_this_frame` instead.
-            let is_dirty = pose_dirty.contains(&entity_id);
-            if built_this_frame.contains(&entity_id)
-                || (slot.has_populated_output && !is_dirty && accel.has_skinned_blas(entity_id))
-            {
-                // Skip path mirrors the dispatch
-                // skip — counts via `dispatches_skipped`
-                // is the dispatch's responsibility;
-                // refit just falls through silently.
-                continue;
-            }
-            // #2802 — an entity with no BLAS cannot be
-            // refitted: `refit_skinned_blas` submits
-            // `mode = UPDATE` against an existing
-            // structure, so it would fail its "no
-            // skinned BLAS for entity" lookup and WARN.
-            // That state means this frame's first-sight
-            // build failed or was suppressed, and the
-            // first-sight path owns the retry — skip
-            // silently rather than counting an attempt
-            // that could never succeed. This is also
-            // what makes `refits_attempted` match its
-            // documented meaning ("entities with a slot
-            // AND an existing BLAS").
-            if !accel.has_skinned_blas(entity_id) {
-                continue;
-            }
-            // Past the slot gate → coverage counts a
-            // real refit attempt. Entities without a
-            // slot land in `slots_failed` instead.
-            self.last_skin_coverage_frame.refits_attempted += 1;
-            // Scratch-serialize barrier is now self-emitted at the
-            // top of refit_skinned_blas (blas_skinned.rs:555, #983).
-            // Removed the redundant caller-side emit (#1095 / REN-D12-002).
-            match accel.refit_skinned_blas(
-                self.device,
-                cmd,
-                entity_id,
-                crate::vulkan::acceleration::SkinnedBlasGeometry {
-                    vertex_address: slot.output_address(),
-                    vertex_count,
-                    index_buffer: idx_buffer,
-                    index_count: idx_count,
-                },
-            ) {
-                Ok(()) => {
-                    self.last_skin_coverage_frame.refits_succeeded += 1;
-                }
-                Err(e) => {
-                    log::warn!("skin_compute BLAS refit failed for entity {entity_id}: {e}");
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            let accel = &mut *self.accel;
+            for &(entity_id, _, idx_buffer, idx_count, vertex_count) in dispatches {
+                let Some(slot) = self.skin_slots.get(&entity_id) else {
                     continue;
+                };
+                // #1196 / PERF-DIM7-02 — paired refit
+                // gate. Same predicate as the dispatch
+                // skip above: if the entity's pose was
+                // unchanged this frame AND the slot
+                // already has a populated output AND a
+                // live BLAS, skip the refit. The BLAS
+                // still references the same output
+                // buffer; nothing changed underneath
+                // it. The skip uses the same
+                // `pose_dirty` set so the two decisions
+                // can't diverge — the "split decisions
+                // are the trap" warning from the audit.
+                //
+                // D6-05 / #1812 — first-sight entities
+                // are always dirty, so the predicate
+                // above alone can't catch them; they
+                // used to fall through to a full UPDATE
+                // against the exact vertex data their
+                // BUILD (above, same `cmd`) just
+                // consumed — pure wasted work, not a
+                // correctness requirement. Skip them via
+                // `built_this_frame` instead.
+                let is_dirty = pose_dirty.contains(&entity_id);
+                if built_this_frame.contains(&entity_id)
+                    || (slot.has_populated_output && !is_dirty && accel.has_skinned_blas(entity_id))
+                {
+                    // Skip path mirrors the dispatch
+                    // skip — counts via `dispatches_skipped`
+                    // is the dispatch's responsibility;
+                    // refit just falls through silently.
+                    continue;
+                }
+                // #2802 — an entity with no BLAS cannot be
+                // refitted: `refit_skinned_blas` submits
+                // `mode = UPDATE` against an existing
+                // structure, so it would fail its "no
+                // skinned BLAS for entity" lookup and WARN.
+                // That state means this frame's first-sight
+                // build failed or was suppressed, and the
+                // first-sight path owns the retry — skip
+                // silently rather than counting an attempt
+                // that could never succeed. This is also
+                // what makes `refits_attempted` match its
+                // documented meaning ("entities with a slot
+                // AND an existing BLAS").
+                if !accel.has_skinned_blas(entity_id) {
+                    continue;
+                }
+                // Past the slot gate → coverage counts a
+                // real refit attempt. Entities without a
+                // slot land in `slots_failed` instead.
+                self.last_skin_coverage_frame.refits_attempted += 1;
+                // Scratch-serialize barrier is now self-emitted at the
+                // top of refit_skinned_blas (blas_skinned.rs:555, #983).
+                // Removed the redundant caller-side emit (#1095 / REN-D12-002).
+                match accel.refit_skinned_blas(
+                    self.device,
+                    cmd,
+                    entity_id,
+                    crate::vulkan::acceleration::SkinnedBlasGeometry {
+                        vertex_address: slot.output_address(),
+                        vertex_count,
+                        index_buffer: idx_buffer,
+                        index_count: idx_count,
+                    },
+                ) {
+                    Ok(()) => {
+                        self.last_skin_coverage_frame.refits_succeeded += 1;
+                    }
+                    Err(e) => {
+                        log::warn!("skin_compute BLAS refit failed for entity {entity_id}: {e}");
+                        continue;
+                    }
                 }
             }
         }
@@ -1475,10 +1477,11 @@ mod skin_eviction_runs_without_global_vertex_buffer_tests {
         let guard_open_pos = recorder
             .find("if let (Some(skin_pipeline), Some(ref mut accel)) =")
             .expect("the skin_compute + accel_manager guard must exist");
-        // Last statement inside that guard, followed by its two closing
-        // braces. Everything after this point is outside the guard.
+        // Last statement inside that guard, followed by its closing brace (the
+        // guard and the allocator check are one let-chain `if`). Everything
+        // after this point is outside the guard.
         let guard_close_pos = recorder
-            .find("chain.evict_idle_skin_slots();\n            }\n        }")
+            .find("chain.evict_idle_skin_slots();\n            }\n")
             .expect(
                 "the (skin_compute, accel_manager) guard must close right after the \
                  skin eviction, with no morph eviction still nested inside it",

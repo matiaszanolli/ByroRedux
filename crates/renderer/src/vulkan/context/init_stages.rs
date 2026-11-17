@@ -618,8 +618,8 @@ pub(super) fn create_volumetrics(
             None
         }
     };
-    if let Some(ref mut v) = volumetrics {
-        if let Err(e) = unsafe {
+    if let Some(ref mut v) = volumetrics
+        && let Err(e) = unsafe {
             // SAFETY: `device` + `graphics_queue` are live and
             // `transfer_pool` is a command pool from this device; the
             // volumetrics pipeline `v`'s froxel images were just created
@@ -646,7 +646,6 @@ pub(super) fn create_volumetrics(
                 }
             }
         }
-    }
     volumetrics
 }
 
@@ -769,8 +768,8 @@ pub(super) fn create_svgf_and_restir(
     };
     // Transition history images UNDEFINED → GENERAL so first dispatch
     // and first descriptor sampling see a valid layout.
-    if let Some(ref s) = svgf {
-        if let Err(e) = unsafe {
+    if let Some(ref s) = svgf
+        && let Err(e) = unsafe {
             // SAFETY: `device` + `graphics_queue` are live and
             // `transfer_pool` is a command pool from this device; the SVGF
             // pipeline `s`'s history images were just created above by the
@@ -788,7 +787,6 @@ pub(super) fn create_svgf_and_restir(
                 });
             }
         }
-    }
 
     // ReSTIR-DI reservoir buffers (screen-sized, ping-pong per FIF).
     // Written into the scene descriptor set (bindings 16/17) here and
@@ -875,8 +873,8 @@ pub(super) fn create_caustic(
             return Err(anyhow::anyhow!("Caustic pipeline creation failed: {e}"));
         }
     };
-    if let Some(ref c) = caustic {
-        if let Err(e) = unsafe {
+    if let Some(ref c) = caustic
+        && let Err(e) = unsafe {
             // SAFETY: `device` + `graphics_queue` are live and
             // `transfer_pool` is a command pool from this device; the
             // caustic pipeline `c`'s images were just created above by the
@@ -896,7 +894,6 @@ pub(super) fn create_caustic(
                 "Caustic layout init failed: {e} — composite binding 5 requires the RGB array"
             ));
         }
-    }
     // Composite binding 5 is a `usampler2DArray`; only the RGB caustic
     // views have the required dimensionality. Pipeline creation and
     // layout transition are therefore hard requirements above.
@@ -1035,8 +1032,8 @@ pub(super) fn create_taa(
         );
         None
     };
-    if let Some(ref t) = taa {
-        if let Err(e) = unsafe {
+    if let Some(ref t) = taa
+        && let Err(e) = unsafe {
             // SAFETY: `device` + `graphics_queue` are live and
             // `transfer_pool` is a command pool from this device; the TAA
             // pipeline `t`'s history/output images were just created above
@@ -1054,7 +1051,6 @@ pub(super) fn create_taa(
                 });
             }
         }
-    }
     taa
 }
 

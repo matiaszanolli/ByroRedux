@@ -138,8 +138,8 @@ pub(super) fn build_skinned_palettes(
         }
     }
 
-    if cfg!(debug_assertions) && frame_count >= 60 && total_dropouts > 0 {
-        if let Some((entity, dropouts, bone_count)) = sample_entity {
+    if cfg!(debug_assertions) && frame_count >= 60 && total_dropouts > 0
+        && let Some((entity, dropouts, bone_count)) = sample_entity {
             SKIN_DROPOUT_DUMPED.call_once(|| {
                 log::warn!(
                     "Phase 1b.x DROPOUT — sample skinned mesh entity {:?}: {} of {} bones \
@@ -154,7 +154,6 @@ pub(super) fn build_skinned_palettes(
                 );
             });
         }
-    }
 
     // Pass 2: resize bone_world_out to cover slots 0..=max_used_slot
     // (caller seeded slot 0 already). #1794 / PERF-D4-NEW-01 — always

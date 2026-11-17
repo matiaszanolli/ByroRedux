@@ -393,14 +393,13 @@ pub(crate) fn blend_part_seams(
             let mut sum = [0.0f32; 3];
             let mut n = 0.0f32;
             for &(other, _, ratio) in &matched {
-                if let Some(r) = ratio {
-                    if (positions[other] - here).length() <= SEAM_SMOOTH_RADIUS {
+                if let Some(r) = ratio
+                    && (positions[other] - here).length() <= SEAM_SMOOTH_RADIUS {
                         for i in 0..3 {
                             sum[i] += r[i];
                         }
                         n += 1.0;
                     }
-                }
             }
             (here, sum.map(|s| s / n))
         })

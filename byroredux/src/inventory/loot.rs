@@ -281,12 +281,11 @@ pub(crate) fn transfer_loot(
     // acquiring the next one or publishing the script event batch.
     if matches!(selection, LootSelection::All) {
         let mut equipped = Vec::new();
-        if let Some(mut equipment) = world.query_mut::<EquipmentSlots>() {
-            if let Some(slots) = equipment.get_mut(source) {
+        if let Some(mut equipment) = world.query_mut::<EquipmentSlots>()
+            && let Some(slots) = equipment.get_mut(source) {
                 equipped.extend(slots.equipped_indices());
                 *slots = EquipmentSlots::new();
             }
-        }
         if let Some(mut weapons) = world.query_mut::<EquippedWeapon>() {
             weapons.remove(source);
         }
@@ -311,23 +310,21 @@ pub(crate) fn transfer_loot(
         // that index so a partially looted corpse's other slots survive.
         for (index, item_form_id) in cleared_source_indices {
             let mut was_equipped = false;
-            if let Some(mut equipment) = world.query_mut::<EquipmentSlots>() {
-                if let Some(slots) = equipment.get_mut(source) {
+            if let Some(mut equipment) = world.query_mut::<EquipmentSlots>()
+                && let Some(slots) = equipment.get_mut(source) {
                     was_equipped = slots.is_equipped(index);
                     if was_equipped {
                         slots.release(index);
                     }
                 }
-            }
-            if let Some(mut weapons) = world.query_mut::<EquippedWeapon>() {
-                if weapons
+            if let Some(mut weapons) = world.query_mut::<EquippedWeapon>()
+                && weapons
                     .get(source)
                     .is_some_and(|weapon| weapon.inventory_index == index)
                 {
                     weapons.remove(source);
                     was_equipped = true;
                 }
-            }
             if was_equipped {
                 byroredux_scripting::emit_equipment_changes(
                     world,

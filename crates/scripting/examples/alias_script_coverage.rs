@@ -71,8 +71,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // event" handle instead, weighted by instances.
         let mut census: HashMap<String, usize> = HashMap::new();
         for (name, count) in &instances {
-            if checks.get(name).is_some_and(|c| c.as_ref().err().is_some_and(|r| r.contains("no delivered event"))) {
-                if let Some(script) = library.script(name) {
+            if checks.get(name).is_some_and(|c| c.as_ref().err().is_some_and(|r| r.contains("no delivered event")))
+                && let Some(script) = library.script(name) {
                     for item in &script.body {
                         match &item.node {
                             byroredux_papyrus::ast::ScriptItem::Event(e) => {
@@ -89,7 +89,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
-            }
         }
         let mut ranked: Vec<_> = census.into_iter().collect();
         ranked.sort_by_key(|(_, count)| std::cmp::Reverse(*count));

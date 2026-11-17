@@ -168,8 +168,8 @@ pub(crate) fn build_sound_archive_provider(args: &[String]) -> SoundArchiveProvi
     provider.loose = super::archive::loose_data_dir(args).and_then(|data| Archive::open_loose(&data));
     let mut i = 0;
     while i < args.len() {
-        if args[i] == "--sounds-bsa" {
-            if let Some(path) = args.get(i + 1) {
+        if args[i] == "--sounds-bsa"
+            && let Some(path) = args.get(i + 1) {
                 match Archive::open(path) {
                     Ok(a) => {
                         log::info!("Opened sound archive: '{path}'");
@@ -180,7 +180,6 @@ pub(crate) fn build_sound_archive_provider(args: &[String]) -> SoundArchiveProvi
                 i += 2;
                 continue;
             }
-        }
         i += 1;
     }
     provider

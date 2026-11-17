@@ -632,11 +632,10 @@ pub fn remap_condition_form_ids(cond: &mut Condition, remap: &Option<FormIdRemap
     if cond.reference_form_id != 0 {
         cond.reference_form_id = remap.remap(cond.reference_form_id);
     }
-    if let ConditionValue::Global(fid) = cond.comparand {
-        if fid != 0 {
+    if let ConditionValue::Global(fid) = cond.comparand
+        && fid != 0 {
             cond.comparand = ConditionValue::Global(remap.remap(fid));
         }
-    }
     if cond.param_1 != 0 && param1_is_form_id(cond.function_index) {
         cond.param_1 = remap.remap(cond.param_1);
     }

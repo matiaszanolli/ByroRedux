@@ -86,11 +86,10 @@ pub(crate) fn validate_actor_value_identities(world: &World) -> Vec<ValidationEr
             }
         }
     }
-    if let Some(progress) = world.try_resource::<byroredux_scripting::skills::SkillProgress>() {
-        if let Err(error) = codec::save_skill_progress(world, &progress) {
+    if let Some(progress) = world.try_resource::<byroredux_scripting::skills::SkillProgress>()
+        && let Err(error) = codec::save_skill_progress(world, &progress) {
             note(0, format!("resource SkillProgress: {error}"));
         }
-    }
     if let Some(store) = world.try_resource::<crate::cell_loader::reference_state::PersistentReferenceStates>() {
         for (pair, error) in store.actor_value_errors(world) {
             note(0, format!("parked reference {pair:?}: {error}"));

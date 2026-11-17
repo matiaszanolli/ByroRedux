@@ -2,6 +2,7 @@
 name = "byroredux-hkx"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
@@ -11,3 +12,6 @@ log = { workspace = true }
 byroredux-bsa = { workspace = true }
 byroredux-plugin = { workspace = true }
 
+
+[lints]
+workspace = true

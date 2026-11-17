@@ -2,6 +2,7 @@
 name = "byroredux-boot-request"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 # The launcher/engine handoff contract. Deliberately dependency-free beyond
 # serde + toml at the application level; the shared durability helper comes
@@ -15,3 +16,6 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[lints]
+workspace = true

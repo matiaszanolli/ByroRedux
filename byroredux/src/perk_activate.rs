@@ -101,11 +101,10 @@ pub(crate) fn compose_player_activation(world: &World, player: EntityId, target:
 
 /// The player answered the activate-choice box with `button`; [`resolve_answered_activation`] acts on it.
 pub(crate) fn answer_activate_choice(world: &World, button: Option<usize>) {
-    if let Some(mut pending) = world.try_resource_mut::<PendingActivateChoice>() {
-        if pending.held.is_some() {
+    if let Some(mut pending) = world.try_resource_mut::<PendingActivateChoice>()
+        && pending.held.is_some() {
             pending.answer = Some(button);
         }
-    }
 }
 
 /// Act on the answered activate-choice box (PERK-HOOK-012). Button 0, a button past the last, or no answer

@@ -529,11 +529,10 @@ mod tests {
         // Move the target far in Z instead — a frozen destination
         // (Travel-style) would keep chasing +X; Follow must re-read the
         // live position and turn toward +Z.
-        if let Some(mut gq) = world.query_mut::<GlobalTransform>() {
-            if let Some(gt) = gq.get_mut(target) {
+        if let Some(mut gq) = world.query_mut::<GlobalTransform>()
+            && let Some(gt) = gq.get_mut(target) {
                 gt.translation = Vec3::new(pos_after_first.x, 0.0, 1000.0);
             }
-        }
 
         follow_system(&world, 0.1);
         let pos_after_second = {

@@ -688,13 +688,11 @@ pub fn run(stream: TcpStream) -> io::Result<()> {
 
             terminal.draw(|f| render(f, &app))?;
 
-            if event::poll(INPUT_POLL_TIMEOUT)? {
-                if let Event::Key(key) = event::read()? {
-                    if let Some(req) = app.handle_key(key) {
+            if event::poll(INPUT_POLL_TIMEOUT)?
+                && let Event::Key(key) = event::read()?
+                    && let Some(req) = app.handle_key(key) {
                         let _ = req_tx.send(req);
                     }
-                }
-            }
 
             if app.should_quit {
                 break;

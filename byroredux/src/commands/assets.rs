@@ -848,11 +848,10 @@ impl ConsoleCommand for MeshInfoCommand {
                 break;
             };
             chain.push(parent);
-            if found_form.is_none() {
-                if let Some(fid) = world.get::<FormIdComponent>(parent) {
+            if found_form.is_none()
+                && let Some(fid) = world.get::<FormIdComponent>(parent) {
                     found_form = Some(fid.0);
                 }
-            }
             current = parent;
         }
         if chain.len() > 1 {

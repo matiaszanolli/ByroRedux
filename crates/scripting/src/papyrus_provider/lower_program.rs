@@ -192,9 +192,9 @@ pub(crate) fn lower_event_parameters(
         PapyrusProviderEvent::OnActivate
             | PapyrusProviderEvent::OnHit
             | PapyrusProviderEvent::OnTriggerEnter
-    ) {
-        if let Some(parameter) = event.params.first() {
-            if matches!(&parameter.ty.node, Type::Object(_)) {
+    )
+        && let Some(parameter) = event.params.first()
+            && matches!(&parameter.ty.node, Type::Object(_)) {
                 let name = parameter.name.node.0.to_ascii_lowercase();
                 if let Type::Object(object) = &parameter.ty.node {
                     locals.insert(
@@ -207,14 +207,12 @@ pub(crate) fn lower_event_parameters(
                     source: PapyrusProviderParameterSource::Entity,
                 });
             }
-        }
-    }
     if matches!(
         event_kind,
         PapyrusProviderEvent::OnObjectEquipped | PapyrusProviderEvent::OnObjectUnequipped
-    ) {
-        if let Some(parameter) = event.params.first() {
-            if matches!(&parameter.ty.node, Type::Object(_)) {
+    )
+        && let Some(parameter) = event.params.first()
+            && matches!(&parameter.ty.node, Type::Object(_)) {
                 let name = parameter.name.node.0.to_ascii_lowercase();
                 if let Type::Object(object) = &parameter.ty.node {
                     locals.insert(
@@ -227,8 +225,6 @@ pub(crate) fn lower_event_parameters(
                     source: PapyrusProviderParameterSource::Form,
                 });
             }
-        }
-    }
     if event_kind != PapyrusProviderEvent::OnHit {
         return bindings;
     }

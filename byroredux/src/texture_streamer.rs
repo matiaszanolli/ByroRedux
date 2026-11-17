@@ -104,11 +104,10 @@ impl SettleClock {
             self.since = Some(now);
             self.restarts += 1;
         }
-        if idle {
-            if let Some(since) = self.since.take() {
+        if idle
+            && let Some(since) = self.since.take() {
                 self.last = Some(now.saturating_duration_since(since));
             }
-        }
     }
 
     pub(crate) fn reading(&self, now: Instant) -> SettleReading {

@@ -995,19 +995,17 @@ pub(crate) fn place_character_body(
             }
         }
     }
-    if let Some(mut gq) = world.query_mut::<GlobalTransform>() {
-        if let Some(g) = gq.get_mut(body) {
+    if let Some(mut gq) = world.query_mut::<GlobalTransform>()
+        && let Some(g) = gq.get_mut(body) {
             g.translation = pos;
             if let Some(rotation) = rotation {
                 g.rotation = rotation;
             }
         }
-    }
-    if let Some(mut cq) = world.query_mut::<byroredux_physics::CharacterController>() {
-        if let Some(c) = cq.get_mut(body) {
+    if let Some(mut cq) = world.query_mut::<byroredux_physics::CharacterController>()
+        && let Some(c) = cq.get_mut(body) {
             c.clear_momentum();
         }
-    }
     Some(byroredux_physics::set_kinematic_translation(world, body, pos))
 }
 
@@ -1135,16 +1133,14 @@ fn pin_camera_above_body(world: &byroredux_core::ecs::World, body_pos: Vec3, eye
         return;
     };
     let cam_pos = body_pos + Vec3::Y * eye_height;
-    if let Some(mut tq) = world.query_mut::<Transform>() {
-        if let Some(t) = tq.get_mut(cam_entity) {
+    if let Some(mut tq) = world.query_mut::<Transform>()
+        && let Some(t) = tq.get_mut(cam_entity) {
             t.translation = cam_pos;
         }
-    }
-    if let Some(mut gq) = world.query_mut::<GlobalTransform>() {
-        if let Some(g) = gq.get_mut(cam_entity) {
+    if let Some(mut gq) = world.query_mut::<GlobalTransform>()
+        && let Some(g) = gq.get_mut(cam_entity) {
             g.translation = cam_pos;
         }
-    }
 }
 
 pub fn toggle_player_mode(world: &mut byroredux_core::ecs::World) {

@@ -80,14 +80,12 @@ fn resolve_water_colors(
         .get(2)
         .copied()
         .filter(|form| *form != 0 && *form != rec.form_id)
-    {
-        if let Some(underwater) = waters.get(&underwater_form) {
+        && let Some(underwater) = waters.get(&underwater_form) {
             mat.underwater_color = underwater.params.underwater_color;
             mat.underwater_fog_near = underwater.params.underwater_fog_near;
             mat.underwater_fog_far = underwater.params.underwater_fog_far;
             mat.underwater_fog_amount = underwater.params.underwater_fog_amount.clamp(0.0, 8.0);
         }
-    }
 
     // FO4/FO76 suspended silt is a water-column contribution. Resolve it
     // once so the surface, refraction, and underwater sinks share a palette.
@@ -613,8 +611,8 @@ pub(crate) fn resolve_water_material(
     let mut normal_path: Option<String> = None;
     let mut noise_paths: [Option<String>; 3] = [None, None, None];
 
-    if let Some(form) = xcwt_form {
-        if let Some(rec) = waters.get(&form) {
+    if let Some(form) = xcwt_form
+        && let Some(rec) = waters.get(&form) {
             resolve_water_colors(waters, rec, &mut mat);
             resolve_water_specular(rec, &mut mat);
             resolve_water_noise_and_rain(rec, &mut mat, game);
@@ -622,7 +620,6 @@ pub(crate) fn resolve_water_material(
             (kind, flow) = classify_water_kind_and_flow(rec, &mut mat, game);
             (normal_path, noise_paths) = resolve_water_texture_paths(rec, kind);
         }
-    }
 
     // SubmersionState is per-actor, not per-plane — but seed a
     // sentinel value on the material itself so debug overlays can
@@ -2288,7 +2285,7 @@ mod tests {
             // Deterministic pick: the lowest FormID the master actually
             // ships. The invariant is per-format, not per-record, so any
             // real WATR must hold it.
-            let Some((&form, _)) = index.waters.iter().min_by_key(|(&fid, _)| fid) else {
+            let Some((&form, _)) = index.waters.iter().min_by_key(|&(&fid, _)| fid) else {
                 eprintln!(
                     "skipping {label}: no WATR records parsed from {}",
                     master_path.display()

@@ -459,9 +459,9 @@ pub(super) fn spawn_synth_child(
     // attached — just through whichever ordinary per-child branch below
     // actually matches its own record kind (LIGH / static mesh / etc.,
     // #3016), not through this REFR-level trigger path.
-    if trigger_volume_should_spawn_for_synth_child(is_primary_synth, has_mesh, has_script) {
-        if let Some(prim) = placed_ref.primitive.as_ref() {
-            if let Some(volume) = trigger_volume_from_primitive(prim, ref_pos, ref_rot, ref_scale) {
+    if trigger_volume_should_spawn_for_synth_child(is_primary_synth, has_mesh, has_script)
+        && let Some(prim) = placed_ref.primitive.as_ref()
+            && let Some(volume) = trigger_volume_from_primitive(prim, ref_pos, ref_rot, ref_scale) {
                 let entity = world.spawn();
                 world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
                 world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
@@ -495,8 +495,6 @@ pub(super) fn spawn_synth_child(
                 accum.entity_count += 1;
                 return;
             }
-        }
-    }
 
     let stat = match index.statics.get(&child_form_id) {
         Some(s) => {
@@ -772,8 +770,8 @@ pub(super) fn spawn_synth_child(
                 // unique model across the process — matches
                 // the loose-NIF path's one-clip-per-NIF
                 // invariant from #261.
-                if let Some(ref cached) = parsed {
-                    if let Some(nif_clip) = cached.embedded_clip.as_ref() {
+                if let Some(ref cached) = parsed
+                    && let Some(nif_clip) = cached.embedded_clip.as_ref() {
                         let handle = {
                             let mut pool =
                                 world.resource_mut::<byroredux_core::string::StringPool>();
@@ -786,7 +784,6 @@ pub(super) fn spawn_synth_child(
                         };
                         accum.pending_clip_handles.insert(cache_key.clone(), handle);
                     }
-                }
                 accum.pending_new.insert(cache_key.clone(), parsed.clone());
                 parsed
             }

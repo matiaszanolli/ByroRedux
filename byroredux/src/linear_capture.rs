@@ -141,12 +141,11 @@ impl LinearCaptureCli {
             return false;
         }
         let mut requested = false;
-        if let Some(captured) = self.in_flight {
-            if let Some(outcome) = ctx.take_linear_capture_outcome() {
+        if let Some(captured) = self.in_flight
+            && let Some(outcome) = ctx.take_linear_capture_outcome() {
                 report_outcome(outcome, Some(captured));
                 self.in_flight = None;
             }
-        }
         while self.next < self.at.len() && self.at[self.next] <= frame {
             let due = self.at[self.next];
             self.next += 1;

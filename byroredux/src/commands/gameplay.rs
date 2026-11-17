@@ -701,11 +701,10 @@ impl ConsoleCommand for LevelUpCommand {
                 let base = values.get_base(avif).map_or(0.0, |value| value.base);
                 values.set_base(avif, base + spend as f32);
                 drop(value_query);
-                if let Some(mut stored) = world.query_mut::<LevelUpPoints>() {
-                    if let Some(stored) = stored.get_mut(player) {
+                if let Some(mut stored) = world.query_mut::<LevelUpPoints>()
+                    && let Some(stored) = stored.get_mut(player) {
                         stored.skill_points -= spend;
                     }
-                }
                 CommandOutput::line(format!(
                     "levelup: {} {current} -> {} ({} skill points left)",
                     skill.editor_id,
@@ -748,11 +747,10 @@ impl ConsoleCommand for LevelUpCommand {
                     }
                 }
                 let (perk, rank) = (take.perk, take.rank);
-                if let Some(mut stored) = world.query_mut::<LevelUpPoints>() {
-                    if let Some(stored) = stored.get_mut(player) {
+                if let Some(mut stored) = world.query_mut::<LevelUpPoints>()
+                    && let Some(stored) = stored.get_mut(player) {
                         stored.perk_points -= 1;
                     }
-                }
                 match take.replaces {
                     Some(previous) => CommandOutput::line(format!(
                         "levelup: perk {previous:08X} -> next rank {perk:08X} (rank {rank})"
@@ -796,11 +794,10 @@ impl ConsoleCommand for LevelUpCommand {
                 let base = values.get_base(avif).map_or(0.0, |value| value.base);
                 values.set_base(avif, base + gain);
                 drop(value_query);
-                if let Some(mut stored) = world.query_mut::<LevelUpPoints>() {
-                    if let Some(stored) = stored.get_mut(player) {
+                if let Some(mut stored) = world.query_mut::<LevelUpPoints>()
+                    && let Some(stored) = stored.get_mut(player) {
                         stored.pool_picks -= 1;
                     }
-                }
                 CommandOutput::line(format!(
                     "levelup: {pool} {base} -> {} ({} pool picks left)",
                     base + gain,

@@ -1282,9 +1282,9 @@ impl GearImportLoader {
         }
         // NIF imports queue DDS data; flush the batch once the last path is
         // in, so the new mesh has its textures the frame it first draws.
-        if ctx.texture_registry.pending_dds_upload_count() != 0 {
-            if let Some(allocator) = ctx.allocator.as_ref() {
-                if let Err(error) = ctx.texture_registry.flush_pending_uploads(
+        if ctx.texture_registry.pending_dds_upload_count() != 0
+            && let Some(allocator) = ctx.allocator.as_ref()
+                && let Err(error) = ctx.texture_registry.flush_pending_uploads(
                     &ctx.device,
                     allocator,
                     &ctx.graphics_queue,
@@ -1293,8 +1293,6 @@ impl GearImportLoader {
                 ) {
                     log::warn!("mid-life gear: texture upload failed: {error:#}");
                 }
-            }
-        }
         log::info!("mid-life gear: imported {path} for {wearer} (form {:08X})", import.form_id);
         // #5034 — a load can restore several equipped forms that have no
         // root, but the pending slot takes one import at a time. Re-running

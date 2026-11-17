@@ -811,12 +811,11 @@ impl SharedParseCache {
         let files = fingerprint(plugin_paths);
         {
             let slot = self.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(shared) = slot.as_ref() {
-                if shared.files == files {
+            if let Some(shared) = slot.as_ref()
+                && shared.files == files {
                     log::debug!("load-order parse: reusing the resident index ({} plugins)", files.len());
                     return Ok((Arc::clone(&shared.index), Arc::clone(&shared.load_order)));
                 }
-            }
         }
         let (mut index, load_order) = parse(plugin_paths)?;
         apply_exterior_processing(&mut index);

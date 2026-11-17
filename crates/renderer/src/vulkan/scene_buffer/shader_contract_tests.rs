@@ -2543,12 +2543,11 @@ fn every_shader_struct_is_classified() {
             let path = entry.expect("src dir entry").path();
             if path.is_dir() {
                 stack.push(path);
-            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-                if let Ok(src) = std::fs::read_to_string(&path) {
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs")
+                && let Ok(src) = std::fs::read_to_string(&path) {
                     rust_sources.push_str(&src);
                     rust_sources.push('\n');
                 }
-            }
         }
     }
     let declares_rust_struct = |name: &str| {
@@ -7723,14 +7722,12 @@ fn local_gust_rust_and_glsl_mirrors_use_the_same_numbers_in_the_same_order() {
             let bytes = src.as_bytes();
             let mut i = 0;
             while i < bytes.len() {
-                if bytes[i] == b'[' {
-                    if let Some(end) = src[i..].find(']') {
-                        if src[i + 1..i + end].chars().all(|c| c.is_ascii_digit()) {
+                if bytes[i] == b'['
+                    && let Some(end) = src[i..].find(']')
+                        && src[i + 1..i + end].chars().all(|c| c.is_ascii_digit()) {
                             i += end + 1;
                             continue;
                         }
-                    }
-                }
                 out.push(bytes[i] as char);
                 i += 1;
             }

@@ -5,8 +5,6 @@
 //! how assets are imported and rendered; UI layers only consume snapshots and
 //! emit commands.
 
-#![forbid(unsafe_code)]
-
 pub mod actor_values;
 pub mod animation;
 pub mod compatibility;

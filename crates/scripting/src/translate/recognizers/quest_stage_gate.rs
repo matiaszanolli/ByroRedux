@@ -423,11 +423,10 @@ fn extract_stage_gate(event: &Event) -> Option<StageGate> {
     // guarded `If` — a sibling statement (a `Self.Disable()` before or
     // after the gate) means the handler carries logic beyond the advance,
     // so decline rather than emit and silently drop the sibling.
-    if let [only] = body {
-        if let Some(gate) = match_guarded_if(&only.node, player_param, player_only) {
+    if let [only] = body
+        && let Some(gate) = match_guarded_if(&only.node, player_param, player_only) {
             return Some(gate);
         }
-    }
 
     // Shape 3: unconditional — the body is exactly one `SetStage(Z)`.
     if let Some((target_stage, quest_via)) = single_set_stage(body) {
@@ -450,22 +449,19 @@ fn peel_player_gate<'a>(
     body: &'a [Spanned<Stmt>],
     player_param: Option<&str>,
 ) -> (&'a [Spanned<Stmt>], bool) {
-    if let [only] = body {
-        if let Stmt::If {
+    if let [only] = body
+        && let Stmt::If {
             condition,
             body: inner,
             elseif_clauses,
             else_body,
         } = &only.node
-        {
-            if elseif_clauses.is_empty()
+            && elseif_clauses.is_empty()
                 && else_body.is_none()
                 && crate::translate::compose::is_player_gate(&condition.node, player_param)
             {
                 return (inner, true);
             }
-        }
-    }
     (body, false)
 }
 

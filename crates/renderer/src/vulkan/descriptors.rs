@@ -303,18 +303,22 @@ pub(crate) unsafe fn memory_barrier(
     dst_stage: vk::PipelineStageFlags,
     dst_access: vk::AccessFlags,
 ) {
-    let barrier = vk::MemoryBarrier::default()
-        .src_access_mask(src_access)
-        .dst_access_mask(dst_access);
-    device.cmd_pipeline_barrier(
-        cmd,
-        src_stage,
-        dst_stage,
-        vk::DependencyFlags::empty(),
-        std::slice::from_ref(&barrier),
-        &[],
-        &[],
-    );
+    // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+    // covered by the caller contract documented on the function.
+    unsafe {
+        let barrier = vk::MemoryBarrier::default()
+            .src_access_mask(src_access)
+            .dst_access_mask(dst_access);
+        device.cmd_pipeline_barrier(
+            cmd,
+            src_stage,
+            dst_stage,
+            vk::DependencyFlags::empty(),
+            std::slice::from_ref(&barrier),
+            &[],
+            &[],
+        );
+    }
 }
 
 // ── ImageMemoryBarrier helpers ───────────────────────────────────────

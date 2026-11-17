@@ -77,12 +77,11 @@ impl VulkanContext {
         let mut skin_palette_timer_started = false;
         let bone_world_copy_recorded =
             !skip_skin_gpu_refresh && self.scene_buffers.bone_input_upload_bytes(frame) > 0;
-        if bone_world_copy_recorded {
-            if let Some(ref mut timers) = self.gpu_timers {
+        if bone_world_copy_recorded
+            && let Some(ref mut timers) = self.gpu_timers {
                 timers.cmd_start(TimerPass::SkinPalette, &self.device, cmd, frame);
                 skin_palette_timer_started = true;
             }
-        }
         if !skip_skin_gpu_refresh {
             self.scene_buffers
                 .record_bone_world_copy(&self.device, cmd, frame);
@@ -135,12 +134,11 @@ impl VulkanContext {
             .map(|(s, _)| *s)
             .collect();
         if pending_capped > 0 {
-            if !skin_palette_timer_started {
-                if let Some(ref mut timers) = self.gpu_timers {
+            if !skin_palette_timer_started
+                && let Some(ref mut timers) = self.gpu_timers {
                     timers.cmd_start(TimerPass::SkinPalette, &self.device, cmd, frame);
                     skin_palette_timer_started = true;
                 }
-            }
             self.scene_buffers.record_pending_bind_inverse_copies(
                 &self.device,
                 cmd,
@@ -203,12 +201,11 @@ impl VulkanContext {
                 && !palette_plan.is_empty()
                 && (bone_world_copy_recorded || pending_capped > 0)
             {
-                if !skin_palette_timer_started {
-                    if let Some(ref mut timers) = self.gpu_timers {
+                if !skin_palette_timer_started
+                    && let Some(ref mut timers) = self.gpu_timers {
                         timers.cmd_start(TimerPass::SkinPalette, &self.device, cmd, frame);
                         skin_palette_timer_started = true;
                     }
-                }
                 // #4829 — descriptor range = the whole buffer, never this
                 // frame's `bone_dispatch_bytes` (frozen by the cache).
                 let bone_world_size = self.scene_buffers.bone_world_buffers()[frame].size;
@@ -262,11 +259,10 @@ impl VulkanContext {
             self.scratch.palette_plan_scratch = palette_plan;
         }
 
-        if skin_palette_timer_started {
-            if let Some(ref mut timers) = self.gpu_timers {
+        if skin_palette_timer_started
+            && let Some(ref mut timers) = self.gpu_timers {
                 timers.cmd_end(TimerPass::SkinPalette, &self.device, cmd, frame);
             }
-        }
 
         self.record_skinned_blas_refit(cmd, frame, draw_commands, pose_dirty);
 
@@ -324,8 +320,8 @@ impl VulkanContext {
         // SAFETY: `cmd` is recording; `accel` and `alloc` are live. `build_tlas`
         // records into `cmd`; the following barrier sequences ray-query reads.
         unsafe {
-            if let Some(ref mut accel) = self.accel_manager {
-                if let Some(alloc) = self.allocator.as_ref() {
+            if let Some(ref mut accel) = self.accel_manager
+                && let Some(alloc) = self.allocator.as_ref() {
                     if let Some(ref mut timers) = self.gpu_timers {
                         timers.cmd_start(TimerPass::TlasBuild, &self.device, cmd, frame);
                     }
@@ -480,7 +476,6 @@ impl VulkanContext {
                         accel.evict_unused_blas(&self.device, alloc, 0);
                     }
                 }
-            }
         }
         t.tlas_build_ns = tlas_t0.elapsed().as_nanos() as u64;
 

@@ -500,14 +500,13 @@ impl CachedNifImport {
                     .filter_map(|(_, sym)| sym.and_then(|s| pool.resolve(s)))
                     .map(str::to_owned),
             );
-            if textures.normal.is_none() {
-                if let Some(base) = textures.base_color.and_then(|s| pool.resolve(s)) {
+            if textures.normal.is_none()
+                && let Some(base) = textures.base_color.and_then(|s| pool.resolve(s)) {
                     paths.extend(crate::asset_provider::derive_present_normal_map_path(
                         tex_provider,
                         base,
                     ));
                 }
-            }
         }
         paths
     }

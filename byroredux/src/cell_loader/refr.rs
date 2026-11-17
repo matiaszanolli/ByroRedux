@@ -136,13 +136,11 @@ impl RefrTextureOverlay {
     /// the engine [`StringPool`] so the resolved path lives in one
     /// dedup table shared with `ImportedMesh`. See #609.
     fn fill(slot: &mut Option<FixedString>, value: Option<&str>, pool: &mut StringPool) {
-        if slot.is_none() {
-            if let Some(v) = value {
-                if !v.is_empty() {
+        if slot.is_none()
+            && let Some(v) = value
+                && !v.is_empty() {
                     *slot = Some(pool.intern(v));
                 }
-            }
-        }
     }
 
     fn merge_from_texture_set(&mut self, ts: &esm::cell::TextureSet, pool: &mut StringPool) {
@@ -541,18 +539,16 @@ pub(crate) fn build_refr_texture_overlay_over(
     let mut ov = RefrTextureOverlay::default();
 
     // XATO — mesh-scoped TXST override.
-    if let Some(txst_ref) = placed.alt_texture_ref {
-        if let Some(ts) = index.texture_sets.get(&txst_ref) {
+    if let Some(txst_ref) = placed.alt_texture_ref
+        && let Some(ts) = index.texture_sets.get(&txst_ref) {
             ov.merge_from_texture_set(ts, pool);
         }
-    }
     // XTNM — LAND-scoped override; same wire layout as XATO. Fills slots
     // XATO didn't cover. Typical REFRs carry only one of the two.
-    if let Some(txst_ref) = placed.land_texture_ref {
-        if let Some(ts) = index.texture_sets.get(&txst_ref) {
+    if let Some(txst_ref) = placed.land_texture_ref
+        && let Some(ts) = index.texture_sets.get(&txst_ref) {
             ov.merge_from_texture_set(ts, pool);
         }
-    }
 
     // XTXR — per-slot swaps applied after the full-TXST overlay so
     // individual slot swaps can override what XATO/XTNM set. Later XTXR
@@ -613,11 +609,10 @@ pub(crate) fn build_refr_texture_overlay_over(
     // template chain to real textures. Matches import-time
     // `merge_external_material` semantics. Runs after the MSWP substitution
     // above so the chain walks the swapped target BGSM, not the source.
-    if ov.material_path.is_some() {
-        if let Some(mp) = mat_provider {
+    if ov.material_path.is_some()
+        && let Some(mp) = mat_provider {
             ov.fill_from_bgsm(mp, pool);
         }
-    }
 
     Some(ov)
 }
@@ -788,14 +783,13 @@ fn push_expanded_child(
         }));
     };
     // Recurse into nested PKINs up to the depth cap (#635).
-    if depth + 1 < MAX_PKIN_DEPTH && index.packins.contains_key(&child_form_id) {
-        if let Some(nested) =
+    if depth + 1 < MAX_PKIN_DEPTH && index.packins.contains_key(&child_form_id)
+        && let Some(nested) =
             expand_pkin_placements_with_depth(child_form_id, pos, rot, scale, index, depth + 1)
         {
             inherit(nested, out);
             return;
         }
-    }
     // #1180 / FO4-D4-003 — when a PKIN child resolves to a SCOL, fan the
     // SCOL out via its own expander. Otherwise modded PKINs containing SCOL
     // form IDs emit base-form-only placements and silently drop the SCOL's
@@ -920,11 +914,9 @@ pub(crate) fn scol_cm_path(
         .get(&base_form_id)
         .map(|s| s.model_path.as_str())
         .filter(|path| !path.is_empty())
-    {
-        if mesh_exists(authored) {
+        && mesh_exists(authored) {
             return Some(authored.to_owned());
         }
-    }
     scol_derived_cm_path(base_form_id, load_order).filter(|path| mesh_exists(path))
 }
 
@@ -1006,21 +998,19 @@ fn expand_scol_placements_with_depth(
             // an accident of which direction #1180 happened to fix, not a
             // deliberate limit. Same depth cap, same "empty result falls
             // through to the leaf path" contract as the SCOL arm above.
-            if depth + 1 < MAX_PKIN_DEPTH && index.packins.contains_key(&part.base_form_id) {
-                if let Some(nested) = expand_pkin_placements_with_depth(
+            if depth + 1 < MAX_PKIN_DEPTH && index.packins.contains_key(&part.base_form_id)
+                && let Some(nested) = expand_pkin_placements_with_depth(
                     part.base_form_id,
                     final_pos,
                     final_rot,
                     final_scale,
                     index,
                     depth + 1,
-                ) {
-                    if !nested.is_empty() {
+                )
+                    && !nested.is_empty() {
                         out.extend(nested);
                         continue;
                     }
-                }
-            }
             out.push((part.base_form_id, final_pos, final_rot, final_scale, Vec::new()));
         }
     }

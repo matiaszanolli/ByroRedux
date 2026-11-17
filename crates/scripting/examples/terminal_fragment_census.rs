@@ -18,11 +18,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
         terminals += 1;
-        if let Ok(filter) = std::env::var("LIST") {
-            if term.editor_id.to_ascii_lowercase().contains(&filter.to_ascii_lowercase()) {
+        if let Ok(filter) = std::env::var("LIST")
+            && term.editor_id.to_ascii_lowercase().contains(&filter.to_ascii_lowercase()) {
                 println!("{:08X} {} fragments {:?}", term.form_id, term.editor_id, term.script_fragments.iter().map(|f| f.index).collect::<Vec<_>>());
             }
-        }
         for fragment in &term.script_fragments {
             fragments += 1;
             let named = fragment.fragment_name.rsplit('_').next().and_then(|n| n.parse::<u32>().ok());

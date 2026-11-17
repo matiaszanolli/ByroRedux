@@ -286,12 +286,11 @@ pub fn resolve_armor_meshes<'a>(
         if arma.biped_flags != 0 && arma.biped_flags & !covered == 0 {
             continue;
         }
-        if let Some(path) = pick_path(arma) {
-            if !out.contains(&path) {
+        if let Some(path) = pick_path(arma)
+            && !out.contains(&path) {
                 out.push(path);
                 covered |= arma.biped_flags;
             }
-        }
     }
     if !out.is_empty() {
         return out;

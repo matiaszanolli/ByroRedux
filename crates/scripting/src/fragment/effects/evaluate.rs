@@ -280,11 +280,10 @@ pub(super) fn actor_reference_form_id(
     if matches!(actor, ActorRef::Player) {
         return Some(crate::PLAYER_REFERENCE);
     }
-    if let ActorRef::Object(object) = actor {
-        if let Some(form_id) = resolve_property_form_id(vmad, object.property_name()) {
+    if let ActorRef::Object(object) = actor
+        && let Some(form_id) = resolve_property_form_id(vmad, object.property_name()) {
             return Some(form_id);
         }
-    }
     let entity = guard_actor(actor, context, vmad, world, deferred)?;
     entity_global_form_id(world, entity).or_else(|| {
         world
@@ -405,11 +404,10 @@ pub(crate) fn queue_health_death_by(
     let lethal = world
         .get::<ActorValues>(actor)
         .is_some_and(|values| values.current(health) <= 0.0);
-    if lethal {
-        if let Some(mut pending) = world.try_resource_mut::<crate::story_manager::PendingScriptKills>() {
+    if lethal
+        && let Some(mut pending) = world.try_resource_mut::<crate::story_manager::PendingScriptKills>() {
             pending.0.push((actor, killer(), false));
         }
-    }
 }
 
 /// The `LCTN` a location-typed [`ObjectRef`] names: a direct property's

@@ -2,6 +2,7 @@
 name = "byroredux-plugin"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 byroredux-core = { workspace = true }
@@ -19,3 +20,7 @@ byroredux-bsa = { path = "../bsa" }
 
 [dev-dependencies]
 env_logger = { workspace = true }
+
+# Contains `unsafe`, so it does not inherit the workspace `unsafe_code = "forbid"`.
+[lints.rust]
+unsafe_code = "allow"

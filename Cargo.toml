@@ -47,8 +47,22 @@ resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+# The MSRV floor (wasmtime 49 sets it; see rust-toolchain.toml and AGENTS.md #4466). The
+# pin in rust-toolchain.toml is what CI builds with; this is what the code promises to
+# compile on. Every member inherits it via `rust-version.workspace = true`.
+rust-version = "1.96"
 license = "MIT"
+
+# Lint policy shared by the crates that contain no `unsafe` code. A crate opts in with
+# `[lints] workspace = true`; a crate that needs `unsafe` (renderer, core, nif, plugin,
+# bink2, fsr3-sys, cxx-bridge, pex, byroredux, byro-launcher) deliberately does NOT inherit
+# this table and carries its own policy (the renderer's `undocumented_unsafe_blocks` deny
+# lives in its lib.rs). Cargo does not allow overriding an inherited table, so a crate that
+# gains its first `unsafe` block has to drop `workspace = true`, which is the point: the
+# build fails and forces that decision to be a visible manifest edit.
+[workspace.lints.rust]
+unsafe_code = "forbid"
 
 [workspace.dependencies]
 # Engine crates

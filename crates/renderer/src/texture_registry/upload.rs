@@ -154,13 +154,11 @@ impl TextureRegistry {
         // #1542: for a to-be-expanded 16/24-bpp source the raw bytes aren't
         // RGBA8 yet, so `average_rgb` would misread them; skip. Numeric slots
         // likewise never feed the diffuse GI-albedo cache.
-        if color_space == TextureColorSpace::Srgb && meta.expand.is_none() {
-            if let Some(avg) = crate::vulkan::dds::average_rgb(&meta, dds_bytes) {
-                if let Some(entry) = self.textures.get_mut(handle as usize) {
+        if color_space == TextureColorSpace::Srgb && meta.expand.is_none()
+            && let Some(avg) = crate::vulkan::dds::average_rgb(&meta, dds_bytes)
+                && let Some(entry) = self.textures.get_mut(handle as usize) {
                     entry.avg_rgb = Some(avg);
                 }
-            }
-        }
 
         Ok(handle)
     }
@@ -240,11 +238,10 @@ impl TextureRegistry {
         // same defence `drop_texture` uses on the release side, and the
         // window is frames long on a yielded cell load. Cache hits skip this
         // step (the existing entry already has its real descriptor wired).
-        if matches!(outcome, EnqueueOutcome::Reserved(_)) {
-            if let Some(SlotRewrite::Fallback { binding, source }) =
+        if matches!(outcome, EnqueueOutcome::Reserved(_))
+            && let Some(SlotRewrite::Fallback { binding, source }) =
                 self.reserved_slot_fallback(view_kind)
-            {
-                if let Some(fallback) =
+                && let Some(fallback) =
                     self.textures.get(source as usize).and_then(|e| e.texture.as_ref())
                 {
                     let (image_view, sampler, first_level) = (
@@ -261,8 +258,6 @@ impl TextureRegistry {
                         first_level,
                     );
                 }
-            }
-        }
         Ok(outcome.handle())
     }
 
@@ -838,13 +833,12 @@ impl TextureRegistry {
         *candidates = kept;
 
         for (handle, target) in declined {
-            if let Some(source) = self.stream_sources.get_mut(&handle) {
-                if source.declined_target != Some(target) {
+            if let Some(source) = self.stream_sources.get_mut(&handle)
+                && source.declined_target != Some(target) {
                     source.declined_target = Some(target);
                     stats.declines += 1;
                     self.stream_counters.declines += 1;
                 }
-            }
         }
         demotions.extend(
             rows.iter()
@@ -1502,17 +1496,15 @@ impl TextureRegistry {
         // pixels) — these are UI/font atlases, never diffuse
         // albedo anyway. The average reads the smallest level,
         // which a floor holds (TXS-RES-006).
-        if upload.color_space == TextureColorSpace::Srgb && meta.expand.is_none() {
-            if let Some(avg) = crate::vulkan::dds::average_rgb_levels(
+        if upload.color_space == TextureColorSpace::Srgb && meta.expand.is_none()
+            && let Some(avg) = crate::vulkan::dds::average_rgb_levels(
                 &meta,
                 level_bytes,
                 first_mip,
-            ) {
-                if let Some(entry) = self.textures.get_mut(upload.handle as usize) {
+            )
+                && let Some(entry) = self.textures.get_mut(upload.handle as usize) {
                     entry.avg_rgb = Some(avg);
                 }
-            }
-        }
         let (texture, staging) =
             match crate::vulkan::texture::Texture::record_dds_upload(
                 device,

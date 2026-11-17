@@ -308,11 +308,10 @@ impl VideoPlayer {
                         Ok(handle) => *texture = Some(handle),
                         Err(error) => log::error!("video: frame {index} upload failed: {error:#}"),
                     }
-                    if let Some(mut status) = world.try_resource_mut::<VideoStatus>() {
-                        if let Some(playing) = &mut status.playing {
+                    if let Some(mut status) = world.try_resource_mut::<VideoStatus>()
+                        && let Some(playing) = &mut status.playing {
                             playing.frame = index;
                         }
-                    }
                 }
                 *texture
             }

@@ -524,40 +524,44 @@ impl SkyCubePipeline {
         frame: usize,
         bindless_set: vk::DescriptorSet,
     ) {
-        let to_general = image_barrier_to_general_write_layers(
-            self.cubes[frame].image,
-            vk::ImageLayout::UNDEFINED,
-            vk::AccessFlags::empty(),
-            CUBE_FACES,
-        );
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[to_general],
-        );
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            let to_general = image_barrier_to_general_write_layers(
+                self.cubes[frame].image,
+                vk::ImageLayout::UNDEFINED,
+                vk::AccessFlags::empty(),
+                CUBE_FACES,
+            );
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[to_general],
+            );
 
-        self.dispatch(device, cmd, frame, bindless_set);
+            self.dispatch(device, cmd, frame, bindless_set);
 
-        let to_read =
-            image_barrier_general_to_shader_read_layers(self.cubes[frame].image, CUBE_FACES);
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[to_read],
-        );
-        if let Some(filter) = &self.filter {
-            filter.record(device, cmd, self.cubes[frame].image, frame);
-        }
-        if let Some(irradiance) = &self.irradiance {
-            irradiance.record(device, cmd, frame);
+            let to_read =
+                image_barrier_general_to_shader_read_layers(self.cubes[frame].image, CUBE_FACES);
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[to_read],
+            );
+            if let Some(filter) = &self.filter {
+                filter.record(device, cmd, self.cubes[frame].image, frame);
+            }
+            if let Some(irradiance) = &self.irradiance {
+                irradiance.record(device, cmd, frame);
+            }
         }
     }
 
@@ -578,8 +582,12 @@ impl SkyCubePipeline {
         frame: usize,
         bindless_set: vk::DescriptorSet,
     ) {
-        if let Some(cloud_shadow) = &self.cloud_shadow {
-            cloud_shadow.record(device, cmd, frame, bindless_set);
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            if let Some(cloud_shadow) = &self.cloud_shadow {
+                cloud_shadow.record(device, cmd, frame, bindless_set);
+            }
         }
     }
 
@@ -607,21 +615,25 @@ impl SkyCubePipeline {
         frame: usize,
         bindless_set: vk::DescriptorSet,
     ) {
-        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
-        device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.pipeline_layout,
-            0,
-            &[self.descriptor_sets[frame], bindless_set],
-            &[],
-        );
-        device.cmd_dispatch(
-            cmd,
-            SKY_CUBE_FACE_SIZE.div_ceil(WORKGROUP_X),
-            SKY_CUBE_FACE_SIZE.div_ceil(WORKGROUP_Y),
-            CUBE_FACES,
-        );
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.pipeline_layout,
+                0,
+                &[self.descriptor_sets[frame], bindless_set],
+                &[],
+            );
+            device.cmd_dispatch(
+                cmd,
+                SKY_CUBE_FACE_SIZE.div_ceil(WORKGROUP_X),
+                SKY_CUBE_FACE_SIZE.div_ceil(WORKGROUP_Y),
+                CUBE_FACES,
+            );
+        }
     }
 
     /// # Safety
@@ -630,34 +642,36 @@ impl SkyCubePipeline {
     /// device is not lost, and that none of these resources are still in
     /// use by an in-flight command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        if let Some(mut cloud_shadow) = self.cloud_shadow.take() {
-            cloud_shadow.destroy(device, allocator);
-        }
-        if let Some(mut irradiance) = self.irradiance.take() {
-            irradiance.destroy(device, allocator);
-        }
-        if let Some(mut filter) = self.filter.take() {
-            filter.destroy(device);
-        }
-        // The extra CUBE views are ours, not `GpuImage`'s — destroy them
-        // before the images they view.
-        for view in self.cube_views.drain(..) {
-            device.destroy_image_view(view, None);
-        }
-        for mut cube in self.cubes.drain(..) {
-            cube.destroy(device, allocator);
-        }
-        for buf in &mut self.param_buffers {
-            buf.destroy(device, allocator);
-        }
-        // #732 LIFE-N1 — drop the `GpuBuffer` structs after their GPU
-        // allocations are freed so each one's allocator Arc clone releases
-        // now rather than at the tail of `VulkanContext::Drop`.
-        self.param_buffers.clear();
-        device.destroy_sampler(self.sampler, None);
-        // SAFETY: the caller's contract (no in-flight work references the pass's pipeline or pool);
-        // `destroy_pass_objects` skips null handles and nulls what it destroys (#6371).
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
         unsafe {
+            if let Some(mut cloud_shadow) = self.cloud_shadow.take() {
+                cloud_shadow.destroy(device, allocator);
+            }
+            if let Some(mut irradiance) = self.irradiance.take() {
+                irradiance.destroy(device, allocator);
+            }
+            if let Some(mut filter) = self.filter.take() {
+                filter.destroy(device);
+            }
+            // The extra CUBE views are ours, not `GpuImage`'s — destroy them
+            // before the images they view.
+            for view in self.cube_views.drain(..) {
+                device.destroy_image_view(view, None);
+            }
+            for mut cube in self.cubes.drain(..) {
+                cube.destroy(device, allocator);
+            }
+            for buf in &mut self.param_buffers {
+                buf.destroy(device, allocator);
+            }
+            // #732 LIFE-N1 — drop the `GpuBuffer` structs after their GPU
+            // allocations are freed so each one's allocator Arc clone releases
+            // now rather than at the tail of `VulkanContext::Drop`.
+            self.param_buffers.clear();
+            device.destroy_sampler(self.sampler, None);
+            // SAFETY: the caller's contract (no in-flight work references the pass's pipeline or pool);
+            // `destroy_pass_objects` skips null handles and nulls what it destroys (#6371).
             super::descriptors::destroy_pass_objects(
                 device,
                 super::descriptors::PassHandles {
@@ -666,8 +680,8 @@ impl SkyCubePipeline {
                     pool: &mut self.descriptor_pool,
                     set_layout: &mut self.descriptor_set_layout,
                 },
-            )
-        };
+            );
+        }
     }
 }
 

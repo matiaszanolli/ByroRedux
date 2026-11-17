@@ -607,8 +607,8 @@ impl DeferredFragmentEffects {
     }
 
     fn flush_reference_variables(&mut self, world: &World) {
-        if !self.reference_variables.is_empty() {
-            if let Some(mut variables) = world.query_mut::<crate::vm_state::ScriptVariables>() {
+        if !self.reference_variables.is_empty()
+            && let Some(mut variables) = world.query_mut::<crate::vm_state::ScriptVariables>() {
                 for (entity, variable, value) in std::mem::take(&mut self.reference_variables) {
                     if variables.get_mut(entity).is_none() {
                         variables.insert(entity, crate::vm_state::ScriptVariables::default());
@@ -619,7 +619,6 @@ impl DeferredFragmentEffects {
                         .set_by_name(&variable, value);
                 }
             }
-        }
     }
 
     fn flush_event_requests(&mut self, world: &World) {
@@ -668,16 +667,14 @@ impl DeferredFragmentEffects {
         if !self.camera_shakes.is_empty() || !self.controller_shakes.is_empty() {
             let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
             if let Some(player) = player {
-                if let Some(mut shakes) = world.query_mut::<crate::papyrus_demo::CameraShakeCommand>() {
-                    if let Some(shake) = self.camera_shakes.last() {
+                if let Some(mut shakes) = world.query_mut::<crate::papyrus_demo::CameraShakeCommand>()
+                    && let Some(shake) = self.camera_shakes.last() {
                         shakes.insert(player, *shake);
                     }
-                }
-                if let Some(mut shakes) = world.query_mut::<crate::papyrus_demo::ControllerRumbleCommand>() {
-                    if let Some(shake) = self.controller_shakes.last() {
+                if let Some(mut shakes) = world.query_mut::<crate::papyrus_demo::ControllerRumbleCommand>()
+                    && let Some(shake) = self.controller_shakes.last() {
                         shakes.insert(player, *shake);
                     }
-                }
             }
             self.camera_shakes.clear();
             self.controller_shakes.clear();
@@ -835,33 +832,30 @@ impl DeferredFragmentEffects {
     }
 
     fn flush_player_xp(&mut self, world: &World) {
-        if !self.player_xp.is_empty() {
-            if let Some(mut pending) =
+        if !self.player_xp.is_empty()
+            && let Some(mut pending) =
                 world.try_resource_mut::<crate::story_manager::PendingPlayerXp>()
             {
                 pending.0.append(&mut self.player_xp);
             }
-        }
     }
 
     fn flush_kills(&mut self, world: &World) {
-        if !self.kills.is_empty() {
-            if let Some(mut pending) =
+        if !self.kills.is_empty()
+            && let Some(mut pending) =
                 world.try_resource_mut::<crate::story_manager::PendingScriptKills>()
             {
                 pending.0.append(&mut self.kills);
             }
-        }
     }
 
     fn flush_story_events(&mut self, world: &World) {
-        if !self.story_events.is_empty() {
-            if let Some(mut pending) =
+        if !self.story_events.is_empty()
+            && let Some(mut pending) =
                 world.try_resource_mut::<crate::story_manager::PendingScriptStoryEvents>()
             {
                 pending.0.append(&mut self.story_events);
             }
-        }
     }
 
     fn flush_star_map_changes(&mut self, world: &World) {
@@ -871,23 +865,21 @@ impl DeferredFragmentEffects {
     }
 
     fn flush_map_markers(&mut self, world: &World) {
-        if !self.map_markers.is_empty() {
-            if let Some(mut markers) = world.try_resource_mut::<crate::MapMarkers>() {
+        if !self.map_markers.is_empty()
+            && let Some(mut markers) = world.try_resource_mut::<crate::MapMarkers>() {
                 for (marker, fast_travel) in std::mem::take(&mut self.map_markers) {
                     markers.add(marker, fast_travel);
                 }
             }
-        }
     }
 
     fn flush_relationship_changes(&mut self, world: &World) {
-        if !self.relationship_changes.is_empty() {
-            if let Some(mut ranks) = world.try_resource_mut::<crate::ScriptedRelationships>() {
+        if !self.relationship_changes.is_empty()
+            && let Some(mut ranks) = world.try_resource_mut::<crate::ScriptedRelationships>() {
                 for (pair, rank) in std::mem::take(&mut self.relationship_changes) {
                     ranks.0.insert(pair, rank);
                 }
             }
-        }
         // The guard on `ScriptedRelationships` is gone: the events take the Story Manager's storages.
         for (actor, other, old, new) in std::mem::take(&mut self.relationship_events) {
             crate::relationships::raise_relationship_change(world, actor, other, old, new);
@@ -895,44 +887,40 @@ impl DeferredFragmentEffects {
     }
 
     fn flush_base_protection(&mut self, world: &World) {
-        if !self.base_protection.is_empty() {
-            if let Some(mut overrides) = world.try_resource_mut::<crate::ActorBaseProtectionOverrides>()
+        if !self.base_protection.is_empty()
+            && let Some(mut overrides) = world.try_resource_mut::<crate::ActorBaseProtectionOverrides>()
             {
                 for (base, protected, value) in std::mem::take(&mut self.base_protection) {
                     overrides.set(base, protected, value);
                 }
             }
-        }
     }
 
     fn flush_location_clears(&mut self, world: &World) {
-        if !self.location_clears.is_empty() {
-            if let Some(mut state) = world.try_resource_mut::<crate::LocationClearState>() {
+        if !self.location_clears.is_empty()
+            && let Some(mut state) = world.try_resource_mut::<crate::LocationClearState>() {
                 for (location, cleared) in std::mem::take(&mut self.location_clears) {
                     state.set_cleared(location, cleared);
                 }
             }
-        }
     }
 
     fn flush_activation_blocks(&mut self, world: &World) {
-        if !self.activation_blocks.is_empty() {
-            if let Some(mut blocks) = world.try_resource_mut::<super::ReferenceActivationBlocks>() {
+        if !self.activation_blocks.is_empty()
+            && let Some(mut blocks) = world.try_resource_mut::<super::ReferenceActivationBlocks>() {
                 for (reference, blocked) in std::mem::take(&mut self.activation_blocks) {
                     blocks.set_blocked(reference, blocked);
                 }
             }
-        }
     }
 
     fn flush_alias_overrides(&mut self, world: &World) {
-        if !self.alias_overrides.is_empty() {
-            if let Some(mut overrides) = world.try_resource_mut::<crate::AliasOverrides>() {
+        if !self.alias_overrides.is_empty()
+            && let Some(mut overrides) = world.try_resource_mut::<crate::AliasOverrides>() {
                 for (quest, alias_id, value) in std::mem::take(&mut self.alias_overrides) {
                     overrides.set(quest, alias_id, value);
                 }
             }
-        }
     }
 
     fn flush_scene_actor_bindings_dirty(&mut self, world: &World) {
@@ -1009,8 +997,8 @@ impl DeferredFragmentEffects {
             .iter()
             .filter(|effect| matches!(effect, DeferredCinematicPresentationEffect::ShowRaceMenu))
             .count();
-        if race_menus > 0 {
-            if let Some(mut menus) = world.try_resource_mut::<crate::obscript_more::PendingMenus>() {
+        if race_menus > 0
+            && let Some(mut menus) = world.try_resource_mut::<crate::obscript_more::PendingMenus>() {
                 for _ in 0..race_menus {
                     menus.0.push(crate::obscript_more::MenuRequest {
                         menu: "race",
@@ -1021,7 +1009,6 @@ impl DeferredFragmentEffects {
                     });
                 }
             }
-        }
         drain_into_resource::<crate::CinematicPresentationState, _>(world, &mut self.cinematic_presentation, |state, effect| {
                 match effect {
                     DeferredCinematicPresentationEffect::SetSittingRotation(degrees) => {

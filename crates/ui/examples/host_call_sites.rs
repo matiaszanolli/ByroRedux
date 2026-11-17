@@ -114,11 +114,10 @@ fn call_after(abc: &AbcFile, ops: &[Op]) -> Option<(Vec<u8>, usize, usize)> {
                     if matches!(receiver, V::Bgs) && name != b"call" {
                         return Some((name, num_args, i));
                     }
-                    if name == b"call" && matches!(args.first(), Some(V::Bgs)) {
-                        if let Some(V::Str(m)) = args.get(1) {
+                    if name == b"call" && matches!(args.first(), Some(V::Bgs))
+                        && let Some(V::Str(m)) = args.get(1) {
                             return Some((m.clone(), num_args.saturating_sub(2), i));
                         }
-                    }
                     if matches!(op, Op::CallProperty { .. }) {
                         stack.push(V::Other);
                     }
