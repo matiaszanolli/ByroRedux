@@ -1937,7 +1937,7 @@ fn player_character_template_derives_from_the_player_npc_record() {
 }
 
 #[test]
-fn oblivion_player_template_keeps_health_and_fatigue_and_derives_magicka() {
+fn oblivion_player_template_keeps_health_and_derives_magicka_and_fatigue() {
     use byroredux_plugin::esm::records::actor::{OblivionActorPools, OblivionNpcStats};
     use byroredux_plugin::esm::reader::GlobalSlot;
     let mut index = EsmIndex { game: GameKind::Oblivion, character_rules: byroredux_core::character::CharacterRulesProfile::OBLIVION, ..Default::default() };
@@ -1952,10 +1952,10 @@ fn oblivion_player_template_keeps_health_and_fatigue_and_derives_magicka() {
     });
     let values = build_player_character_template(&index).values.unwrap();
     assert_eq!(values.current(index.actor_value_form_id("Health").unwrap()), 123.0);
-    // #7037: Magicka is the player formula, 2 x Intelligence (the record's 77 is replaced); Health and
-    // Fatigue keep the record's values.
+    // #7037, #7041: Magicka (2 x Intelligence = 64) and Fatigue (Str 31 + End 36 + Agi 34 + Wil 33 = 134)
+    // are the player formulas, replacing the record's 77 and 88; Health keeps the record's value.
     assert_eq!(values.current(index.actor_value_form_id("Magicka").unwrap()), 64.0);
-    assert_eq!(values.current(index.actor_value_form_id("Fatigue").unwrap()), 88.0);
+    assert_eq!(values.current(index.actor_value_form_id("Fatigue").unwrap()), 134.0);
     for code in 0..8 {
         assert_eq!(values.current(index.oblivion_actor_value(code, false).unwrap()), (code + 31) as f32);
     }
