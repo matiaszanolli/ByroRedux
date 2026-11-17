@@ -664,17 +664,26 @@ void main() {
     vec2 flowOffset0 = vec2(0.0);
     vec2 flowOffset1 = vec2(0.0);
     float flowPhaseBlend = 0.0;
+    // The two saw-tooth advection times (seconds) and phase 1's weight: 1
+    // while phase 0 resets (phase0 at 0/1), 0 while phase 1 resets (phase0 =
+    // 0.5). Shared by the BGSM flow map and the river's bed-aware current.
+    float phase0 = fract(time / WATER_FLOW_MAP_CYCLE_SECONDS);
+    float phase1 = fract(phase0 + 0.5);
+    float advectTime0 = phase0 * WATER_FLOW_MAP_CYCLE_SECONDS;
+    float advectTime1 = phase1 * WATER_FLOW_MAP_CYCLE_SECONDS;
+    float advectBlend = abs(1.0 - 2.0 * phase0);
     if (flowMapIndex != 0xFFFFFFFFu) {
         vec2 flowDirection = sampleFlowMap(flowMapIndex, vUV);
         float flowRate = 0.02 * clamp(push.uv_offset.w, 0.05, 8.0);
-        float phase0 = fract(time / WATER_FLOW_MAP_CYCLE_SECONDS);
-        float phase1 = fract(phase0 + 0.5);
-        flowOffset0 = flowDirection * flowRate * phase0 * WATER_FLOW_MAP_CYCLE_SECONDS;
-        flowOffset1 = flowDirection * flowRate * phase1 * WATER_FLOW_MAP_CYCLE_SECONDS;
-        // Phase 1's weight: 1 while phase 0 resets (phase0 at 0/1), 0 while
-        // phase 1 resets (phase0 = 0.5).
-        flowPhaseBlend = abs(1.0 - 2.0 * phase0);
+        flowOffset0 = flowDirection * flowRate * advectTime0;
+        flowOffset1 = flowDirection * flowRate * advectTime1;
+        flowPhaseBlend = advectBlend;
     }
+    // Per-layer river advection (UV/s): the bed-aware current's departure
+    // from the plane's uniform scroll, set in the river branch below.
+    vec2 riverAdvectA = vec2(0.0);
+    vec2 riverAdvectB = vec2(0.0);
+    vec2 riverAdvectC = vec2(0.0);
 
     // Imported NIF water meshes are not guaranteed to carry a valid tangent
     // frame (old NiTriShapes commonly have a zero tangent or a tangent
@@ -787,13 +796,31 @@ void main() {
                 float c = dot(flowDirXZ, localDir);
                 float sn = flowDirXZ.x * localDir.y - flowDirXZ.y * localDir.x;
                 mat2 turn = mat2(c, sn, -sn, c);
-                normalScrollA = turn * normalScrollA;
-                normalScrollB = turn * normalScrollB;
-                normalScrollC = turn * normalScrollC;
+                riverAdvectA = turn * normalScrollA;
+                riverAdvectB = turn * normalScrollB;
+                riverAdvectC = turn * normalScrollC;
+            } else {
+                riverAdvectA = normalScrollA;
+                riverAdvectB = normalScrollB;
+                riverAdvectC = normalScrollC;
             }
-            normalScrollA *= depthSpeed;
-            normalScrollB *= depthSpeed;
-            normalScrollC *= depthSpeed;
+            // The local current varies across the surface, so it must not
+            // ride the unbounded `scroll * time` term: a scroll that differs
+            // between neighbouring fragments shears the UVs by
+            // `Δscroll × uptime`, which outgrows the texture's own UV
+            // gradient within a minute and folds at every triangle edge of
+            // the interpolated bed field — the long zigzag streaks seen under
+            // the Riverwood bridge. The plane's uniform scroll keeps the
+            // unbounded term (it shears nothing); only the departure from it
+            // advects, through the bounded dual-phase offsets #4930 gave
+            // BGSM flow maps.
+            riverAdvectA = riverAdvectA * depthSpeed - normalScrollA;
+            riverAdvectB = riverAdvectB * depthSpeed - normalScrollB;
+            riverAdvectC = riverAdvectC * depthSpeed - normalScrollC;
+            if (dot(riverAdvectA, riverAdvectA) + dot(riverAdvectB, riverAdvectB)
+                + dot(riverAdvectC, riverAdvectC) > 1.0e-12) {
+                flowPhaseBlend = advectBlend;
+            }
         }
     }
     // Two scrolling normal layers (the "movement on flat surfaces"
@@ -804,8 +831,8 @@ void main() {
     // `WaterNormalEncoding` rides `optical.y` (0 = unit tangent normal,
     // 1 = FO3/FNV offset noise).
     bool offsetNoise = push.optical.y > 0.5;
-    vec3 nA = sampleFlowAdvectedNormal(noiseMapA, uvWorld, uvOrigin, normalUvOffset, flowOffset0, flowOffset1, flowPhaseBlend, normalScrollA, push.tune.x, time, ampScale * max(push.detail.y, 0.05) * max(push.depth.z, 0.0), freqScale, offsetNoise);
-    vec3 nB = sampleFlowAdvectedNormal(noiseMapB, uvWorld, uvOrigin, normalUvOffset, flowOffset0, flowOffset1, flowPhaseBlend, normalScrollB, push.tune.y, time, ampScale * max(push.detail.z, 0.05) * max(push.depth.z, 0.0), freqScale, offsetNoise);
+    vec3 nA = sampleFlowAdvectedNormal(noiseMapA, uvWorld, uvOrigin, normalUvOffset, flowOffset0 + riverAdvectA * advectTime0, flowOffset1 + riverAdvectA * advectTime1, flowPhaseBlend, normalScrollA, push.tune.x, time, ampScale * max(push.detail.y, 0.05) * max(push.depth.z, 0.0), freqScale, offsetNoise);
+    vec3 nB = sampleFlowAdvectedNormal(noiseMapB, uvWorld, uvOrigin, normalUvOffset, flowOffset0 + riverAdvectB * advectTime0, flowOffset1 + riverAdvectB * advectTime1, flowPhaseBlend, normalScrollB, push.tune.y, time, ampScale * max(push.detail.z, 0.05) * max(push.depth.z, 0.0), freqScale, offsetNoise);
 
     // A distinct authored NAM4 layer contributes on every horizontal water
     // kind. Rapids uses the faster flow-biased path for whitewater; calm and
@@ -831,8 +858,8 @@ void main() {
             uvWorld,
             uvOrigin,
             normalUvOffset,
-            flowOffset0,
-            flowOffset1,
+            flowOffset0 + riverAdvectC * advectTime0,
+            flowOffset1 + riverAdvectC * advectTime1,
             flowPhaseBlend,
             thirdScroll,
             push.detail.x,

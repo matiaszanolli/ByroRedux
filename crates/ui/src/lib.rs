@@ -7,12 +7,14 @@
 //! It lives in the main loop alongside VulkanContext.
 
 pub mod avm1_host;
+mod avm1_path;
 mod avm2_host;
 mod catalog;
 mod host;
 mod input;
 mod navigator;
 mod pacing;
+pub mod path;
 mod player;
 mod prepare;
 mod profile;
@@ -33,6 +35,7 @@ pub use input::{
 };
 pub use navigator::{ScaleformResourceLoad, ScaleformResourceProvider};
 pub use pacing::RenderPacing;
+pub use path::{PathOp, PathOutcome, WhenAbsent};
 pub use player::SwfPlayer;
 pub use profile::ScaleformProfile;
 /// What [`UiManager::render`] wants the compositor to do this frame.
@@ -66,6 +69,8 @@ pub struct UiLayer {
     /// Unique per installed player: a menu replaced under the same name gets a new id, so per-layer
     /// latches (the host-call drop counter, #3772) can tell the two apart.
     id: u64,
+    /// Path operations held for a retry, and the absent paths already reported (GUI-PATH-003).
+    paths: path::PathQueue,
 }
 
 impl UiLayer {
@@ -125,6 +130,42 @@ impl UiLayer {
     /// read beside [`Self::drain_host_calls`].
     pub fn dropped_host_calls(&self) -> u64 {
         self.player.host_bridge().dropped_calls()
+    }
+
+    /// Get, set or invoke a member by its dotted path from the movie root (M48 GUI-PATH-001):
+    /// the path service, the only engine route to a movie member by path (GUI-PATH-005).
+    /// `when_absent` decides, per call, what happens when the target is not there yet
+    /// (GUI-PATH-003): [`WhenAbsent::Queue`] holds the operation and retries it after every tick
+    /// until it lands ([`PathOutcome::Queued`]); [`WhenAbsent::Refuse`] answers
+    /// [`PathOutcome::Absent`] (reported once per path, GUI-PATH-002) or
+    /// [`PathOutcome::NotReady`] now.
+    pub fn path_op(&mut self, op: PathOp, when_absent: WhenAbsent) -> PathOutcome {
+        let outcome = self.player.path_op(&op);
+        match (outcome, when_absent) {
+            (PathOutcome::Absent | PathOutcome::NotReady, WhenAbsent::Queue) => {
+                self.paths.hold(op);
+                PathOutcome::Queued
+            }
+            (PathOutcome::Absent, WhenAbsent::Refuse) => {
+                self.paths.report_absent(&self.menu_name, &op);
+                PathOutcome::Absent
+            }
+            (outcome, _) => outcome,
+        }
+    }
+
+    /// Path operations waiting for their target.
+    pub fn queued_paths(&self) -> usize {
+        self.paths.len()
+    }
+
+    /// Retry the held path operations; the ones whose target is still missing stay held.
+    fn retry_queued_paths(&mut self) {
+        for op in self.paths.take() {
+            if !matches!(self.player.path_op(&op), PathOutcome::Found(_)) {
+                self.paths.hold(op);
+            }
+        }
     }
 
     /// Invoke a callback registered by the menu's ActionScript.
@@ -257,6 +298,7 @@ impl UiManager {
             visible: true,
             texture: None,
             id: self.next_id,
+            paths: path::PathQueue::default(),
         };
         self.set_input_owner(None);
         match self.layers.iter().position(|open| open.menu_name == menu_name) {
@@ -312,6 +354,7 @@ impl UiManager {
     pub fn tick(&mut self, dt: f64) {
         for layer in self.layers.iter_mut().filter(|layer| layer.visible) {
             layer.player.tick(dt);
+            layer.retry_queued_paths();
         }
     }
 

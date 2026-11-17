@@ -238,14 +238,22 @@ impl ConsoleCommand for HudDebugCommand {
                         format!("{labels} heading={deg:.1}")
                     })
                     .unwrap_or_else(|| "(never)".to_string());
+                // M48 GUI-HUD-001…003 — the path-service feed's last outcomes.
+                let feed = diag
+                    .path_feed
+                    .iter()
+                    .map(|(path, outcome)| format!("{path}={outcome}"))
+                    .collect::<Vec<_>>();
                 CommandOutput::line(format!(
-                    "hud.debug (scaleform, {}): {}\n{}\n{}\nlast_push: {}\nrender_passes: {}",
+                    "hud.debug (scaleform, {}): {}\n{}\n{}\nlast_push: {}\nrender_passes: {}\npaths (queued {}): {}",
                     diag.game,
                     list("callbacks", &diag.callbacks),
                     list("unknown_methods", &diag.unknown_methods),
                     list("unanswered_methods", &diag.unanswered_methods),
                     bars,
                     diag.render_passes,
+                    diag.queued_paths,
+                    if feed.is_empty() { "(none yet)".to_owned() } else { feed.join(", ") },
                 ))
             }
             None => {

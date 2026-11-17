@@ -287,6 +287,12 @@ pub(crate) fn vitals_snapshot(
     world: &World,
 ) -> Option<Vec<byroredux_debug_ui::VitalBarView>> {
     use byroredux_core::ecs::components::ActorValues;
+    // M48 GUI-HUD-004 — an original HUD that is up draws the player's vitals itself (the vanilla
+    // meters the path service feeds, or the MenuXml bars); the native layer draws no second copy.
+    // `hud.off` hides the original, and the native bars come back.
+    if world.try_resource::<crate::hud::HudControl>().is_some_and(|control| control.visible) {
+        return None;
+    }
     let player = PlayerEntity::get(world)?;
     let vitals = world.try_resource::<PlayerVitals>()?;
     let values = world.get::<ActorValues>(player)?;

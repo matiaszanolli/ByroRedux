@@ -36,7 +36,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use byroredux_core::ecs::World;
-use byroredux_ui::{RenderPacing, ScaleformHostBridge, ScaleformValue, UiLayer, UiManager};
+use byroredux_ui::{PathOp, PathOutcome, RenderPacing, ScaleformHostBridge, ScaleformValue, UiLayer, UiManager, WhenAbsent};
 
 use crate::asset_provider::Archive;
 use crate::hud::{fraction, HudBackend, HudControl, HUD_REFRESH_INTERVAL};
@@ -111,6 +111,51 @@ impl ScaleformGame {
                 ("RequestPlayerInfo", PollPayload::BarsAndHeading),
             ],
             Self::Fallout4 => &[],
+        }
+    }
+
+    /// The path-service operations that feed the vanilla HUD this frame's vitals and heading
+    /// (M48 GUI-HUD-001…003, -005): the members Phase 0 found the original engine drives
+    /// (`docs/data/game-ui/hud-feeds-*.tsv`), confirmed live by driving them.
+    ///
+    /// - **Skyrim** (AVM1): `_root.HUDMovieBaseInstance.Set{Health,Magicka,Stamina}MeterPercent
+    ///   (aPercent 0..100, abForce)`. `abForce = false` takes the movie's own path: it runs the
+    ///   meter's fade-in (`RunMeterAnim`) and tweens to the target; `true` sets the bar of a meter
+    ///   that stays faded out. `SetCompassAngle(aPlayerAngle, aCompassAngle, abShowCompass)`, both
+    ///   angles the heading in degrees. The movie's own `GameDelegate` `call` callback does not
+    ///   reach these handlers at runtime (Phase 0 read that from bytecode; Phase 2 measured it).
+    /// - **Fallout 4** (AVM2): the `MeterBarWidget.Percent` setters (0..1) of
+    ///   `LeftMeters_mc.HPMeter_mc.MeterBar_mc` and
+    ///   `RightMeters_mc.ActionPointMeter_mc.MeterBar_mc`, plus the HP meter's rads overlay
+    ///   `RadsBar_mc`, which the movie initialises full and draws over the HP fill. The engine
+    ///   models no Fallout 4 radiation (`PlayerVitals` carries FO3 / FNV rads only), so the overlay
+    ///   is 0: the state of a player with no rads. The compass widget has no ActionScript at all,
+    ///   so no path drives it (GUI-HUD-005 is Skyrim's here; Fallout 4's is a follow-up).
+    fn meter_feeds(self, fractions: [f32; 3], heading: f32) -> Vec<PathOp> {
+        let number = |value: f32| ScaleformValue::Number(value as f64);
+        match self {
+            Self::Skyrim => {
+                let meter = |name: &str, fraction: f32| {
+                    PathOp::Call(
+                        format!("_root.HUDMovieBaseInstance.Set{name}MeterPercent"),
+                        vec![number(fraction * 100.0), ScaleformValue::Bool(false)],
+                    )
+                };
+                vec![
+                    meter("Health", fractions[0]),
+                    meter("Magicka", fractions[1]),
+                    meter("Stamina", fractions[2]),
+                    PathOp::Call(
+                        "_root.HUDMovieBaseInstance.SetCompassAngle".into(),
+                        vec![number(heading), number(heading), ScaleformValue::Bool(true)],
+                    ),
+                ]
+            }
+            Self::Fallout4 => vec![
+                PathOp::Set("LeftMeters_mc.HPMeter_mc.MeterBar_mc.Percent".into(), number(fractions[0])),
+                PathOp::Set("LeftMeters_mc.HPMeter_mc.RadsBar_mc.Percent".into(), number(0.0)),
+                PathOp::Set("RightMeters_mc.ActionPointMeter_mc.MeterBar_mc.Percent".into(), number(fractions[1])),
+            ],
         }
     }
 
@@ -197,6 +242,10 @@ pub struct ScaleformHudDiag {
     /// Ruffle render-and-readback passes run so far (#4717) — a static HUD
     /// should grow this at the idle probe rate, not the movie's frame rate.
     pub render_passes: u64,
+    /// The last meter / compass feed through the path service: each path and its outcome
+    /// (M48 GUI-HUD-001…003), and the operations still queued for their target.
+    pub path_feed: Vec<(String, String)>,
+    pub queued_paths: usize,
 }
 
 impl byroredux_core::ecs::Resource for ScaleformHudDiag {}
@@ -431,6 +480,27 @@ impl ScaleformHudDriver {
             self.last_push = std::time::Instant::now();
             if let Some(layer) = layer.as_deref_mut() {
                 self.push(layer, fractions, heading);
+                // M48 GUI-HUD-001…003 — the vanilla meters and compass through the path service.
+                // Queued: the movie's adapter registers on its first frame (AVM1) or when the
+                // lifecycle class is constructed (AVM2); a newer value replaces a held one.
+                let feed: Vec<(String, String)> = self
+                    .game
+                    .meter_feeds(fractions, heading)
+                    .into_iter()
+                    .map(|op| {
+                        let path = op.path().to_owned();
+                        let outcome = match layer.path_op(op, WhenAbsent::Queue) {
+                            PathOutcome::Found(_) => "found",
+                            PathOutcome::Absent => "absent",
+                            PathOutcome::NotReady => "not-ready",
+                            PathOutcome::Queued => "queued",
+                        };
+                        (path, outcome.to_owned())
+                    })
+                    .collect();
+                if let Some(mut diag) = world.try_resource_mut::<ScaleformHudDiag>() {
+                    diag.path_feed = feed;
+                }
             }
             if let Some(mut diag) = world.try_resource_mut::<ScaleformHudDiag>() {
                 diag.last_push = Some((fractions[0], fractions[1], fractions[2], heading));
@@ -448,6 +518,7 @@ impl ScaleformHudDriver {
                 diag.unknown_methods = self.bridge.unknown_methods();
                 diag.unanswered_methods = self.bridge.unanswered_methods();
                 diag.render_passes = layer.as_deref().map_or(0, UiLayer::render_passes);
+                diag.queued_paths = layer.as_deref().map_or(0, UiLayer::queued_paths);
             }
         }
     }

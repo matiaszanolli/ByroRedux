@@ -23,6 +23,8 @@ use swf::{write_swf, DoAbc2, DoAbc2Flag, SwfStr, Tag};
 
 use crate::ScaleformHostCatalog;
 
+mod path_helpers;
+
 const HELPER_PREFIX: &str = "__byro_fallout4_host_";
 pub(crate) const INSTALL_HELPER: &str = "__byro_fallout4_install";
 const READY_HELPER: &str = "__byro_fallout4_ready";
@@ -824,7 +826,9 @@ fn build_adapter_abc(
         out.traits.push(method_trait(destroy.helper, destroy_method, next_disp_id));
         next_disp_id += 1;
     }
-    let installer_method = add_installer_method(&names, &forwarders, &mut out)?;
+    // M48 GUI-PATH-001 — the path service's get / set / call, registered by the installer.
+    let paths = path_helpers::add_path_methods(&mut pools, &names, &mut out, &mut next_disp_id)?;
+    let installer_method = add_installer_method(&names, &forwarders, &paths, &mut out)?;
     out.traits.push(method_trait(names.install_helper, installer_method, next_disp_id));
     let init_method = add_init_method(&names, &mut out)?;
 
@@ -837,7 +841,7 @@ fn build_adapter_abc(
             doubles: Vec::new(),
             strings: pools.strings,
             namespaces: pools.namespaces,
-            namespace_sets: Vec::new(),
+            namespace_sets: pools.namespace_sets,
             multinames: pools.multinames,
         },
         methods: out.methods,
@@ -861,6 +865,8 @@ fn build_adapter_abc(
 struct AdapterPools {
     strings: Vec<Vec<u8>>,
     namespaces: Vec<Namespace>,
+    /// Only the path walker's runtime-named access (`o[k]`) needs one (M48 GUI-PATH-001).
+    namespace_sets: Vec<swf::avm2::types::NamespaceSet>,
     multinames: Vec<Multiname>,
     public_namespace: Index<Namespace>,
 }
@@ -966,6 +972,7 @@ fn build_adapter_pools(object: &crate::catalog::ScaleformHostObject, has_destroy
         AdapterPools {
             strings,
             namespaces,
+            namespace_sets: Vec::new(),
             multinames,
             public_namespace,
         },
@@ -1137,6 +1144,7 @@ fn add_destroy_method(
 fn add_installer_method(
     names: &AdapterNames,
     forwarders: &[(Index<Multiname>, Index<Multiname>)],
+    paths: &path_helpers::PathHelpers,
     out: &mut AdapterMethods,
 ) -> std::io::Result<Index<Method>> {
     let mut install_ops = vec![
@@ -1193,6 +1201,20 @@ fn add_installer_method(
             Op::GetLex {
                 index: destroy.helper,
             },
+            Op::CallPropVoid {
+                index: names.add_callback,
+                num_args: 2,
+            },
+        ]);
+    }
+    // M48 GUI-PATH-001 — the path callbacks, once the root they walk from is stored.
+    for (callback, helper) in &paths.registrations {
+        install_ops.extend([
+            Op::GetLex {
+                index: names.external_interface,
+            },
+            Op::PushString { value: *callback },
+            Op::GetLex { index: *helper },
             Op::CallPropVoid {
                 index: names.add_callback,
                 num_args: 2,

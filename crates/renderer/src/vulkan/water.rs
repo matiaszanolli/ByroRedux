@@ -2748,6 +2748,36 @@ mod reflection_intensity_contract_tests {
         );
     }
 
+    /// The river's bed-aware current varies per fragment, so it must advect
+    /// through the bounded dual-phase offsets (#4930's flow-map scheme), never
+    /// by rewriting the scroll vectors that ride the unbounded `scroll * time`
+    /// term — that sheared the UVs by `Δscroll × uptime` into long zigzag
+    /// streaks folding at every bed-field triangle edge (Riverwood bridge).
+    #[test]
+    fn river_bed_current_advects_through_bounded_phases() {
+        for forbidden in [
+            "normalScrollA = turn * normalScrollA;",
+            "normalScrollA *= depthSpeed;",
+            "normalScrollB *= depthSpeed;",
+            "normalScrollC *= depthSpeed;",
+        ] {
+            assert!(
+                !WATER_FRAG_SRC.contains(forbidden),
+                "water.frag puts the per-fragment river current back on the \
+                 unbounded scroll term: `{forbidden}`"
+            );
+        }
+        for layer in ["A", "B", "C"] {
+            for phase in ["0", "1"] {
+                let offset = format!("flowOffset{phase} + riverAdvect{layer} * advectTime{phase}");
+                assert!(
+                    WATER_FRAG_SRC.contains(&offset),
+                    "water.frag no longer advects river layer {layer} through phase {phase}"
+                );
+            }
+        }
+    }
+
     /// The `water_refl` oracle keeps a dead mirror measurable from a
     /// capture (`water_term` exposes only refraction/foam/coverage).
     #[test]

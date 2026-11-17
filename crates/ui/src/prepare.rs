@@ -243,7 +243,7 @@ fn ensure_declared_len_within(swf_data: &[u8], ceiling: u64) -> Result<(), Strin
 /// Byte offset where the tag stream begins in an uncompressed SWF: skip
 /// the 8-byte file header, the stage RECT (5-bit count + 4 fields), the
 /// frame-rate and frame-count u16s.
-fn tag_stream_start(file: &[u8]) -> Option<usize> {
+pub(crate) fn tag_stream_start(file: &[u8]) -> Option<usize> {
     if file.len() < 9 {
         return None;
     }
@@ -403,11 +403,18 @@ pub(crate) fn prepare_movie(
 
     let catalog = ScaleformHostCatalog::for_profile(profile);
     let needs_injection = catalog.host_object().is_some();
+    // M48 GUI-PATH-001 — every AVM1 movie carries the path adapter, spliced into the stock
+    // decode's tag stream (no tag parse). AVM2 movies get theirs inside the host-object adapter.
+    let avm1_with_adapter = if profile == ScaleformProfile::SkyrimAvm1 {
+        Some(crate::avm1_path::inject(decompressed.header.swf_header(), &decompressed.data)?)
+    } else {
+        None
+    };
     if !needs_injection && movie_url.is_none() {
         return Ok(logged(PreparedMovie {
             profile,
             host_object_state: ScaleformHostObjectState::NotRequired,
-            data: swf_data.to_vec(),
+            data: avm1_with_adapter.unwrap_or_else(|| swf_data.to_vec()),
             import_asset_paths: Vec::new(),
             root_import_errors: Vec::new(),
             decode_counts: SwfDecodeCounts {
@@ -435,7 +442,7 @@ pub(crate) fn prepare_movie(
     Ok(logged(PreparedMovie {
         profile,
         host_object_state,
-        data: patched.unwrap_or_else(|| swf_data.to_vec()),
+        data: patched.or(avm1_with_adapter).unwrap_or_else(|| swf_data.to_vec()),
         import_asset_paths,
         root_import_errors,
         decode_counts: SwfDecodeCounts {

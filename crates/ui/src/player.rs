@@ -756,6 +756,13 @@ impl SwfPlayer {
     ///
     /// `None` distinguishes an unknown callback from a registered callback
     /// whose valid return value is `ScaleformValue::Null`.
+    /// One path operation through the movie's injected adapter (M48 GUI-PATH-001/002):
+    /// [`PathOutcome::NotReady`] while the adapter's callbacks are not registered.
+    pub fn path_op(&mut self, op: &crate::path::PathOp) -> crate::path::PathOutcome {
+        let (callback, arguments) = op.callback();
+        crate::path::decode_reply(self.invoke_callback(callback, arguments))
+    }
+
     pub fn invoke_callback(
         &mut self,
         name: &str,
