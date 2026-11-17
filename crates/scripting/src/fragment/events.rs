@@ -242,29 +242,37 @@ pub(super) fn enqueue(
         let Some(handler) = handler_name(&scripts, registration) else {
             continue;
         };
-        let owner = QuestFormId(registration.owner);
-        if !owners.handler_runs(registration.owner, &registration.script, &handler) {
-            log::debug!(
-                "{:08X}: {}.{handler} skipped: the Papyrus VM does not run it",
-                registration.owner,
-                registration.script
-            );
-            continue;
-        }
-        let vmad = owners.vmad(world, registration.owner, &registration.script);
         let mut handler_args = vec![VmStored::Form(sender_form)];
         handler_args.extend_from_slice(args);
-        let effect = Effect::interpret(registration.script.clone(), handler, handler_args);
-        if super::budget::defer(world, owner, vmad.as_ref(), vec![effect]).is_err() {
-            log::debug!("event delivery dropped: FragmentExecutionQueue is unavailable");
-        }
+        queue_handler(world, &owners, registration.owner, &registration.script, handler, handler_args);
+    }
+}
+
+/// Queue `owner`'s instance of `script` to run `handler` with `args` on the continuation queue,
+/// as its own run, when the handler runs whole on the VM.
+pub(super) fn queue_handler(
+    world: &World,
+    owners: &super::owners::ScriptOwners,
+    owner: u32,
+    script: &str,
+    handler: String,
+    args: Vec<VmStored>,
+) {
+    if !owners.handler_runs(owner, script, &handler) {
+        log::debug!("{owner:08X}: {script}.{handler} skipped: the Papyrus VM does not run it");
+        return;
+    }
+    let vmad = owners.vmad(world, owner, script);
+    let effect = Effect::interpret(script.to_owned(), handler, args);
+    if super::budget::defer(world, QuestFormId(owner), vmad.as_ref(), vec![effect]).is_err() {
+        log::debug!("event delivery dropped: FragmentExecutionQueue is unavailable");
     }
 }
 
 /// Drop the registrations of quests that stopped (the CK: "Aliases and quests
 /// will automatically unregister for this event when the quest stops"): the
-/// custom / remote event registrations and the hit event registrations of the
-/// quests and of the alias scripts they own.
+/// custom / remote, hit, animation and menu open / close event registrations of
+/// the quests and of the alias scripts they own.
 pub(super) fn prune_stopped_quests(world: &World) {
     let mut registered: Vec<u32> = world
         .try_resource::<EventRegistrations>()
@@ -275,6 +283,9 @@ pub(super) fn prune_stopped_quests(world: &World) {
     }
     if let Some(animation) = world.try_resource::<super::AnimationEventRegistrations>() {
         registered.extend(animation.entries().iter().map(|e| e.owner));
+    }
+    if let Some(menus) = world.try_resource::<super::MenuEventRegistrations>() {
+        registered.extend(menus.entries().iter().map(|e| e.owner));
     }
     if registered.is_empty() {
         return;
@@ -300,6 +311,9 @@ pub(super) fn prune_stopped_quests(world: &World) {
     }
     if let Some(mut animation) = world.try_resource_mut::<super::AnimationEventRegistrations>() {
         animation.drop_owners(&stopped);
+    }
+    if let Some(mut menus) = world.try_resource_mut::<super::MenuEventRegistrations>() {
+        menus.drop_owners(&stopped);
     }
 }
 

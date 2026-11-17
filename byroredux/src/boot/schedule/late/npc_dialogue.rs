@@ -261,6 +261,8 @@ pub(super) fn register_npc_dialogue_systems(scheduler: &mut Scheduler) {
             .writes_resource::<byroredux_scripting::LocationKeywordData>()
             // M47.2 — a spoken line's hit event registrations.
             .writes_resource::<byroredux_scripting::HitRegistrations>()
+            // M48 — a spoken line's menu open / close event registrations.
+            .writes_resource::<byroredux_scripting::MenuEventRegistrations>()
             // M47.2 — a spoken line's ProcessTrapHit (queued for the next
             // Update flush, #5872) and its shake calls.
             .writes_resource::<byroredux_scripting::PendingTrapHits>()

@@ -169,6 +169,9 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — hit event registration changes, applied to
     /// [`super::HitRegistrations`] after the guards drop.
     pub(in crate::fragment) hit_requests: Vec<(u32, String, super::HitRequest)>,
+    /// M48 GUI-EVT-001 — menu open / close registration changes, applied to
+    /// [`super::MenuEventRegistrations`] after the guards drop.
+    pub(in crate::fragment) menu_event_requests: Vec<(u32, String, super::MenuEventRequest)>,
     /// `RegisterForAnimationEvent` changes, applied to
     /// [`super::AnimationEventRegistrations`] after the guards drop.
     pub(in crate::fragment) animation_event_requests: Vec<(u32, String, super::AnimationEventRequest)>,
@@ -373,6 +376,7 @@ impl DeferredFragmentEffects {
             follower_changes: Vec::new(),
             distance_requests: Vec::new(),
             hit_requests: Vec::new(),
+            menu_event_requests: Vec::new(),
             animation_event_requests: Vec::new(),
             sound_plays: Vec::new(),
             camera_shakes: Vec::new(),
@@ -459,6 +463,7 @@ impl DeferredFragmentEffects {
         self.flush_trap_hits(world);
         self.flush_sound_plays(world);
         self.flush_hit_requests(world);
+        self.flush_menu_event_requests(world);
         self.flush_animation_event_requests(world);
         self.flush_distance_requests(world);
         self.flush_follower_changes(world);
@@ -703,6 +708,12 @@ impl DeferredFragmentEffects {
 
     fn flush_hit_requests(&mut self, world: &World) {
         drain_into_resource::<super::HitRegistrations, _>(world, &mut self.hit_requests, |registrations, (owner, script, request)| {
+                registrations.request(owner, &script, &request);
+        });
+    }
+
+    fn flush_menu_event_requests(&mut self, world: &World) {
+        drain_into_resource::<super::MenuEventRegistrations, _>(world, &mut self.menu_event_requests, |registrations, (owner, script, request)| {
                 registrations.request(owner, &script, &request);
         });
     }

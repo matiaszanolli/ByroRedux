@@ -177,3 +177,31 @@ fn menu_mode_types_and_codes() {
     assert!(report[0].starts_with("ui.menus: game=fallout3nv open=3 input_owner=RaceSexMenu paused=yes menu_mode=yes devices=0"), "{report:?}");
     assert!(report[1].contains("HUDMainMenu code=1004 surface=native Hud flags=hud basis=default"), "{report:?}");
 }
+
+/// GUI-EVT-001 — every opening and closing, whether published or opened / closed directly, leaves
+/// one transition under the table's spelling; a menu that stays up, or takes a new surface, leaves
+/// none. The queue is bounded.
+#[test]
+fn openings_and_closings_leave_transitions_for_the_script_events() {
+    let transition = |name: &str, opening: bool| MenuTransition { name: name.to_owned(), opening };
+    let mut registry = MenuRegistry::new(MenuGame::Fallout4);
+    registry.publish([("HUDMenu".to_owned(), native(NativeMenu::Hud))]);
+    registry.publish([("hudmenu".to_owned(), native(NativeMenu::Hud))]);
+    registry.open("containermenu", MenuSurface::Movie { path: "interface\\containermenu.swf".into(), profile: "Fallout 4".into() });
+    registry.open("ContainerMenu", native(NativeMenu::Inventory));
+    assert_eq!(registry.drain_transitions(), [transition("HUDMenu", true), transition("ContainerMenu", true)]);
+    assert!(registry.drain_transitions().is_empty(), "drained");
+
+    // A publish that leaves the container out closes it; a direct close of an absent menu is silent.
+    registry.publish([("HUDMenu".to_owned(), native(NativeMenu::Hud))]);
+    assert!(registry.close("ContainerMenu").is_none());
+    assert_eq!(registry.drain_transitions(), [transition("ContainerMenu", false)]);
+
+    for _ in 0..(MAX_PENDING_MENU_TRANSITIONS + 10) {
+        registry.open("PauseMenu", native(NativeMenu::Pause));
+        registry.close("PauseMenu");
+    }
+    let kept = registry.drain_transitions();
+    assert_eq!(kept.len(), MAX_PENDING_MENU_TRANSITIONS);
+    assert_eq!(kept.last(), Some(&transition("PauseMenu", false)), "the newest are kept");
+}

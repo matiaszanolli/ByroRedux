@@ -64,6 +64,7 @@ mod dispatch;
 mod anim_events;
 mod events;
 mod hits;
+mod menu_events;
 mod owners;
 mod package;
 mod perk;
@@ -82,6 +83,7 @@ pub use distance::*;
 pub(crate) use dispatch::{flush_advances, run_papyrus_call};
 pub use anim_events::*;
 pub use hits::*;
+pub use menu_events::*;
 pub use events::{EventRegistration, EventRegistrations, EventRequest, REMOTE_EVENTS};
 pub use package::*;
 pub use perk::*;
@@ -137,6 +139,7 @@ pub(crate) const SOURCES: &str = concat!(
     include_str!("fragment/dispatch.rs"),
     include_str!("fragment/events.rs"),
     include_str!("fragment/hits.rs"),
+    include_str!("fragment/menu_events.rs"),
     include_str!("fragment/owners.rs"),
     include_str!("fragment/package.rs"),
     include_str!("fragment/perk.rs"),
@@ -203,6 +206,11 @@ pub fn register_hits_saved(registry: &mut byroredux_save::SaveRegistry) {
 #[cfg(feature = "save")]
 pub fn register_anim_events_saved(registry: &mut byroredux_save::SaveRegistry) {
     anim_events::register_saved(registry);
+}
+
+#[cfg(feature = "save")]
+pub fn register_menu_events_saved(registry: &mut byroredux_save::SaveRegistry) {
+    menu_events::register_saved(registry);
 }
 
 #[cfg(feature = "save")]

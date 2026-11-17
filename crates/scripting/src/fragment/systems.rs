@@ -217,6 +217,7 @@ pub fn register(world: &mut World) {
     reference::install_reference(world);
     anim_events::install_anim_events(world);
     hits::install_hits(world);
+    menu_events::install_menu_events(world);
     budget::install_budget(world);
 }
 

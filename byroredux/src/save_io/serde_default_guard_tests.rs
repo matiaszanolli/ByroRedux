@@ -832,7 +832,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // M65 (SNK-DET-014, #6913) — refreshed WITH a major bump (v130 -> v131): `ActorControlState`'s
     // required `not_shown_on_stealth_meter`, and the appended `Effect::SetNotShowOnStealthMeter`.
     // #6944 — refreshed WITH a major bump (v131 -> v132): the new `SpeakingLine` component column.
-    const BASELINE_MAJOR: u16 = 133;
+    // M48 GUI-EVT-001 (#6668) — refreshed WITH a major bump (v133 -> v134): the new
+    // `MenuEventRegistrations` resource column.
+    const BASELINE_MAJOR: u16 = 134;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1261,7 +1263,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // a line in flight.
     // OAI-SAVE: v133 stores actor-value identities as plugin/local pairs,
     // including the portable parked-state and effect payloads.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x5aa8_e36b_31b2_a82b;
+    // M48 GUI-EVT-001 (#6668) — v134 is a genuine bump: `MenuEventRegistrations` (each script's
+    // `RegisterForMenuOpenCloseEvent` menus) joined the saved registry as a NEW resource.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x7fa4_3721_f4af_b596;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

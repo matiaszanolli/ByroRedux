@@ -651,7 +651,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// actor values, vitals, restorations, active effects, skill progress and
 /// parked references use portable plugin/local pairs instead of session slots;
 /// actor-value view aliases and both of their source keys are pairs as well.
-pub const FORMAT_MAJOR: u16 = 133;
+///
+/// v133 -> v134 (M48 GUI-EVT-001, #6668): the `MenuEventRegistrations` resource column
+/// (`RegisterForMenuOpenCloseEvent`), so a v133 snapshot has no record of a script's
+/// registrations and the schema no longer matches.
+pub const FORMAT_MAJOR: u16 = 134;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

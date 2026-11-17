@@ -6249,3 +6249,104 @@ fn play_bink_freezes_the_run_until_the_movie_ends() {
     crate::fragment::fragment_continuation_system(&world, 0.0);
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20, "resumed after the movie");
 }
+
+/// M48 GUI-EVT-001/002 — `RegisterForMenuOpenCloseEvent` registers the calling script for a menu
+/// name; each registry opening and closing of that menu reaches its `OnMenuOpenCloseEvent(asMenuName,
+/// abOpening)` as its own run, another menu's do not; the registration stands until it is
+/// unregistered, and it ends when the owning quest stops.
+#[test]
+fn menu_open_close_events_reach_registered_scripts() {
+    use byroredux_core::ecs::resources::menu_registry::{MenuGame, MenuRegistry, MenuSurface};
+    let script = parsed_source(
+        "ScriptName QF_VmMenuEvents extends Quest\n\
+         Int Opened\n\
+         Int Closed\n\
+         Function Fragment_1()\n\
+           RegisterForMenuOpenCloseEvent(\"ContainerMenu\")\n\
+         EndFunction\n\
+         Function Fragment_2()\n\
+           UnregisterForMenuOpenCloseEvent(\"containermenu\")\n\
+         EndFunction\n\
+         Event OnMenuOpenCloseEvent(String asMenuName, Bool abOpening)\n\
+           If asMenuName == \"ContainerMenu\"\n\
+             If abOpening\n\
+               Opened += 1\n\
+             Else\n\
+               Closed += 1\n\
+             EndIf\n\
+           EndIf\n\
+         EndEvent\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.insert_resource(MenuRegistry::new(MenuGame::Fallout4));
+    world.resource_mut::<crate::QuestStageFragments>().insert(
+        Q,
+        20,
+        vec![Effect::Interpret { script: "QF_VmMenuEvents".into(), function: "Fragment_2".into(), args: Vec::new(), resume: None }],
+    );
+    let variable = |world: &World, name: &str| {
+        world.resource::<crate::QuestScriptVariables>().get(Q, crate::QuestScriptVariables::property_key(name))
+    };
+    let menu = || MenuSurface::Movie { path: "interface\\containermenu.swf".into(), profile: "Fallout 4".into() };
+    let toggle = |world: &World, name: &str, open: bool| {
+        {
+            let mut registry = world.resource_mut::<MenuRegistry>();
+            if open {
+                registry.open(name, menu());
+            } else {
+                registry.close(name);
+            }
+        }
+        crate::menu_open_close_event_system(world, 0.0);
+        crate::fragment::fragment_continuation_system(world, 0.0);
+    };
+
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<crate::MenuEventRegistrations>().entries().len(), 1);
+    toggle(&world, "ContainerMenu", true);
+    assert_eq!((variable(&world, "Opened"), variable(&world, "Closed")), (Some(1.0), None), "the opening");
+    toggle(&world, "PauseMenu", true);
+    toggle(&world, "PauseMenu", false);
+    assert_eq!((variable(&world, "Opened"), variable(&world, "Closed")), (Some(1.0), None), "another menu is not heard");
+    toggle(&world, "ContainerMenu", false);
+    assert_eq!(variable(&world, "Closed"), Some(1.0), "the closing");
+    toggle(&world, "ContainerMenu", true);
+    assert_eq!(variable(&world, "Opened"), Some(2.0), "not one-shot");
+    toggle(&world, "ContainerMenu", false);
+
+    // Unregistered (the name compared case-insensitively): nothing more arrives.
+    world.resource_mut::<QuestStageState>().set_stage(Q, 20);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert!(world.resource::<crate::MenuEventRegistrations>().entries().is_empty());
+    toggle(&world, "ContainerMenu", true);
+    toggle(&world, "ContainerMenu", false);
+    assert_eq!((variable(&world, "Opened"), variable(&world, "Closed")), (Some(2.0), Some(2.0)));
+
+    // GUI-EVT-002: registered again, then the quest stops — the registration goes with it.
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<crate::MenuEventRegistrations>().entries().len(), 1);
+    world.resource_mut::<QuestStageState>().stop(Q);
+    crate::reference_script_event_system(&world, 0.0);
+    assert!(world.resource::<crate::MenuEventRegistrations>().entries().is_empty(), "the stopped quest unregistered");
+    toggle(&world, "ContainerMenu", true);
+    assert_eq!(variable(&world, "Opened"), Some(2.0));
+}
+
+/// A menu registration on another quest is not modelled: the check declines it (the run would
+/// stop) instead of registering the wrong script.
+#[test]
+fn menu_open_close_registration_on_another_quest_is_declined() {
+    let script = parsed_source(
+        "ScriptName QF_VmMenuOther extends Quest\n\
+         Quest Property Other Auto\n\
+         Function Fragment_1()\n\
+           Other.RegisterForMenuOpenCloseEvent(\"ContainerMenu\")\n\
+         EndFunction\n",
+    );
+    let reason = check_function_reason(script, "Fragment_1", None).err().unwrap_or_default();
+    assert!(reason.contains("registerformenuopencloseevent"), "{reason}");
+}

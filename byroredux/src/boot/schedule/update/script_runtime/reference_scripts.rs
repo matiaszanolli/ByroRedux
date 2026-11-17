@@ -30,4 +30,7 @@ pub(super) fn register_reference_scripts_systems(scheduler: &mut Scheduler) {
     // M47.2 — the object graphs' raised events, delivered as `OnAnimationEvent`
     // to the scripts that registered for them.
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::animation_event_system);
+    // M48 GUI-EVT-001 — the registry's menu openings and closings, delivered as
+    // `OnMenuOpenCloseEvent` to the scripts that registered for them.
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::menu_open_close_event_system);
 }

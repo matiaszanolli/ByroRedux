@@ -871,6 +871,16 @@ MenuXml input parts are Phases 2 and 3. Evidence is in `docs/data/game-ui/`
   run on them (`obscript_object_menu_mode_system` is new); Papyrus
   `Utility.IsInMenuMode` is `papyrus_in_menu_mode`; the SDK `ui.menu-is-open`
   snapshot is every registry name.
+- **Menu events** (GUI-EVT-001/002, #6668). Every opening and closing the
+  registry makes (`open`, `close`, and a publish that drops a menu) leaves a
+  `MenuTransition` under the table's spelling, at most 256 between drains.
+  `menu_open_close_event_system` drains them each frame and queues Fallout 4's
+  `OnMenuOpenCloseEvent(asMenuName, abOpening)` on every script registered for
+  that name through `RegisterForMenuOpenCloseEvent` (Papyrus VM;
+  `MenuEventRegistrations`, saved; details in
+  [scripting.md](scripting.md#menu-open--close-events-m48)). Scenario A8's
+  vanilla fixture waits on GUI-EVT-003 / the race menu: its handler is reached
+  through `Game.ShowSPECIALMenu` / `ShowRaceMenu`.
 - **Console.** `ui.menus`, `ui.open <menu>`, `ui.close <menu> [accept|cancel]`
   ([debug-cli.md](debug-cli.md)). `ui.open` loads a movie target from the
   game's interface archive, opens a bare-openable native page (Pause,

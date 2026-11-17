@@ -1221,8 +1221,27 @@ them apart by the handler's parameter count: the nine-parameter `OnHit` is left
 out of the automatic events (delivering seven arguments to it would mis-bind
 every one) and checked where the script registers.
 
-The delivery systems (updates, distance, custom/remote and hit events) share
-`ScriptOwners` (`fragment/owners.rs`): an owner's standing, kind and properties.
+### Menu open / close events (M48)
+
+Fallout 4's `RegisterForMenuOpenCloseEvent(asMenuName)`,
+`UnregisterForMenuOpenCloseEvent(asMenuName)` and
+`UnregisterForAllMenuOpenCloseEvents()` (CK *… - ScriptObject*) register the
+calling script, and only it, for a menu's
+`OnMenuOpenCloseEvent(asMenuName, abOpening)`; the registration stands until it
+is unregistered (`fragment/menu_events.rs`, `MenuEventRegistrations`, saved since
+v134). The menus are the menu registry's (`MenuRegistry`, [ui.md](ui.md)): each
+opening and closing it records reaches `menu_open_close_event_system`, which
+queues the handler of every registration for that name (case-insensitive) as its
+own run, a quest's or alias's while the quest runs, a reference's while it is
+loaded. A quest's or alias's registrations end when its quest stops
+(`prune_stopped_quests`, GUI-EVT-002). The CK's "active magic effects will
+automatically unregister when they are removed" has nothing to act on yet: the VM
+runs no `ActiveMagicEffect` script. A registration on another quest
+(`Quest.RegisterForMenuOpenCloseEvent`) is declined by the check.
+
+The delivery systems (updates, distance, custom/remote, hit, animation and menu
+events) share `ScriptOwners` (`fragment/owners.rs`): an owner's standing, kind and
+properties.
 
 ### Parent calls, locations and editor placement (M47.2)
 

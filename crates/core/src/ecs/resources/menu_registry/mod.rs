@@ -10,6 +10,9 @@
 //! (`NOT_SAVED_BY_DESIGN`, GUI-EVT-005).
 //!
 //! The flags and names come from the Phase 0 tables in `docs/data/game-ui/` ([`tables`]).
+//!
+//! Every menu that opens or closes leaves a [`MenuTransition`] for the script events
+//! (`OnMenuOpenCloseEvent`, GUI-EVT-001), drained once per frame by the scripting runtime.
 
 mod tables;
 #[cfg(test)]
@@ -288,6 +291,18 @@ impl OpenMenu {
     }
 }
 
+/// One menu opening or closing (GUI-EVT-001): the registry's name for it (the table's spelling)
+/// and which way it went.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuTransition {
+    pub name: String,
+    pub opening: bool,
+}
+
+/// Transitions kept for a drain at most; the oldest goes past it, so a world that runs no script
+/// events cannot grow the queue.
+pub const MAX_PENDING_MENU_TRANSITIONS: usize = 256;
+
 /// The open menus, bottom to top. See the module docs.
 #[derive(Debug)]
 pub struct MenuRegistry {
@@ -295,6 +310,8 @@ pub struct MenuRegistry {
     stack: Vec<OpenMenu>,
     frame: u64,
     movie_devices: u32,
+    /// Openings and closings since the last [`Self::drain_transitions`].
+    transitions: Vec<MenuTransition>,
 }
 
 impl Default for MenuRegistry {
@@ -308,7 +325,7 @@ impl Resource for MenuRegistry {}
 
 impl MenuRegistry {
     pub fn new(game: MenuGame) -> Self {
-        Self { game, stack: Vec::new(), frame: 0, movie_devices: 0 }
+        Self { game, stack: Vec::new(), frame: 0, movie_devices: 0, transitions: Vec::new() }
     }
 
     pub fn game(&self) -> MenuGame {
@@ -373,6 +390,7 @@ impl MenuRegistry {
             basis,
             opened_frame: self.frame,
         };
+        self.record(&entry.name, true);
         if entry.flags.contains(MenuFlags::HUD) {
             self.stack.insert(0, entry);
         } else {
@@ -383,7 +401,21 @@ impl MenuRegistry {
     /// Close `name`; what it was, or `None` when it was not open.
     pub fn close(&mut self, name: &str) -> Option<OpenMenu> {
         let at = self.stack.iter().position(|open| open.name.eq_ignore_ascii_case(name))?;
-        Some(self.stack.remove(at))
+        let closed = self.stack.remove(at);
+        self.record(&closed.name, false);
+        Some(closed)
+    }
+
+    fn record(&mut self, name: &str, opening: bool) {
+        if self.transitions.len() >= MAX_PENDING_MENU_TRANSITIONS {
+            self.transitions.remove(0);
+        }
+        self.transitions.push(MenuTransition { name: name.to_owned(), opening });
+    }
+
+    /// The openings and closings since the last drain, in order (GUI-EVT-001).
+    pub fn drain_transitions(&mut self) -> Vec<MenuTransition> {
+        std::mem::take(&mut self.transitions)
     }
 
     /// Republish the open menus from what the surfaces report this frame: a menu still up keeps
@@ -391,7 +423,15 @@ impl MenuRegistry {
     /// given. One call per frame.
     pub fn publish(&mut self, open: impl IntoIterator<Item = (String, MenuSurface)>) {
         let open: Vec<(String, MenuSurface)> = open.into_iter().collect();
-        self.stack.retain(|entry| open.iter().any(|(name, _)| name.eq_ignore_ascii_case(&entry.name)));
+        let gone: Vec<String> = self
+            .stack
+            .iter()
+            .filter(|entry| !open.iter().any(|(name, _)| name.eq_ignore_ascii_case(&entry.name)))
+            .map(|entry| entry.name.clone())
+            .collect();
+        for name in gone {
+            self.close(&name);
+        }
         for (name, surface) in open {
             self.open(&name, surface);
         }

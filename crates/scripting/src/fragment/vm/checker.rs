@@ -1066,6 +1066,11 @@ impl<'l> Checker<'l> {
                 };
                 return self.check_event_registration(&script, &name, &arg_kinds, statement, Kind::Quest);
             }
+            if crate::fragment::MenuEventRequest::handler(&name).is_some() {
+                // A registration delivers only to the script that makes it (CK); registering
+                // another quest's scripts through it is not modelled, so it declines.
+                return self.fail(|| format!("{name} on another quest"));
+            }
             if let Some(handler) = registration_handler(&name) {
                 let interval_ok = update_args_ok(&name, &arg_kinds);
                 if !statement || !interval_ok {

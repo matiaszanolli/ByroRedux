@@ -7,7 +7,7 @@ use std::num::NonZeroU32;
 mod hardcore;
 pub use hardcore::HardcoreMode;
 pub mod menu_registry;
-pub use menu_registry::MenuRegistry;
+pub use menu_registry::{MenuRegistry, MenuTransition};
 
 /// System names stored as a resource for debug and console queries.
 pub struct SystemList(pub Vec<String>);

@@ -1365,6 +1365,9 @@ impl Vm<'_> {
             if crate::fragment::HitRequest::handler(&name).is_some() {
                 return self.hit_registration(frame, &name, args).map(|_| Flow::Normal);
             }
+            if crate::fragment::MenuEventRequest::handler(&name).is_some() {
+                return self.menu_event_registration(frame, &name, args).map(|_| Flow::Normal);
+            }
             let mut numbers = Vec::with_capacity(args.len());
             for arg in args {
                 numbers.push(self.eval(frame, &arg.value.node)?.number());
